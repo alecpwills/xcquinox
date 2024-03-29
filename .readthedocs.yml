@@ -16,5 +16,5 @@ sphinx:
 #     - method: pip
 #       path: .
 
-conda:
-  environment: docs/requirements.yaml
+# conda:
+#   environment: docs/requirements.yaml
