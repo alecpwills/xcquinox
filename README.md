@@ -5,7 +5,7 @@ xcequinox
 [![codecov](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/xcequinox/branch/main/graph/badge.svg)](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/xcequinox/branch/main)
 
 
-A machine learning framework using the equinox library for learning XC functionals with JAX.
+A machine learning package using the equinox library for learning XC functionals with JAX.
 
 ### Copyright
 
