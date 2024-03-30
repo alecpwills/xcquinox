@@ -1,8 +1,8 @@
 """A machine learning framework using the equinox library for learning XC functionals with JAX."""
-import xcequinox.net
-import xcequinox.xc
-import xcequinox.utils
+import xcquinox.net
+import xcquinox.xc
+import xcquinox.utils
 
 # from ._version import get_versions
 # __version__ = get_versions()['version']
-from xcequinox._version import __version__
+from xcquinox._version import __version__
