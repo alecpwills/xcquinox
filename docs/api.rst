@@ -4,8 +4,8 @@ API Documentation
 .. autosummary::
    :toctree: autosummary
 
-   .. autmodule:: xcequinox.net
-   .. autmodule:: xcequinox.xc
-   .. autmodule:: xcequinox.utils
+   .. automodule:: xcequinox.net
+   .. automodule:: xcequinox.xc
+   .. automodule:: xcequinox.utils
 
    xcequinox.canvas
