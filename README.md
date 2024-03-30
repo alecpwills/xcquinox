@@ -8,7 +8,7 @@ xcequinox
 
 A machine learning package using the equinox library for learning XC functionals with JAX.
 
-You may find the [documentation here](https://xcequinox.readthedocs.io/en/latest/)
+You may find the [documentation here](https://xcequinox.readthedocs.io/en/latest/).
 
 
 ### Copyright
