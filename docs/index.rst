@@ -14,6 +14,10 @@ Welcome to xcequinox's documentation!
 
    getting_started
    api
+   ./docpages/net
+   ./docpages/xc
+   ./docpages/utils
+   
 
 
 
