@@ -6,9 +6,9 @@ Unit and regression test for the xcquinox package.
 import sys
 import jax
 import jax.numpy as jnp
-import equinox
 
 import pytest
+from ase import Atoms
 
 import xcquinox as xce
 
@@ -77,3 +77,12 @@ def test_net_eC_use_nolob_ueg():
     result = eC(inp)
     print(f"text_net_eX result = {result}")
     assert result.sum()
+
+
+def test_ase_atoms_to_mol():
+    h2 = Atoms('HH', positions=[[ 0.      ,  0.      ,  0.371395],
+                                [ 0.      ,  0.      , -0.371395]])
+    
+    name, mol = xce.utils.ase_atoms_to_mol(h2, basis='def2tzvpd')
+    assert name == 'H2'
+    assert mol.basis == 'def2tzvpd'

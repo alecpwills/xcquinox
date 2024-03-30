@@ -18,12 +18,6 @@ This package is designed to work well with the `pyscfad`_ package, `an end-to-en
 
 *This is a work in progress.*
 
-.. automodule:: xcquinox
-    :members:
-    :special_members:
-    :undoc-members:
-    :show-inheritance:
-
 .. toctree::
    :maxdepth: 5
    :numbered:
@@ -33,6 +27,7 @@ This package is designed to work well with the `pyscfad`_ package, `an end-to-en
    getting_started
    ./docpages/net
    ./docpages/xc
+   ./docpages/utils
 
 ..
    api
