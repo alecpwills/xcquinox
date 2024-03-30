@@ -9,6 +9,6 @@ Network Structure
 
     .. autosummary::
    
-      LOB
-      eX
-      eC
+      .. autoclass:: LOB
+      .. autoclass:: eX
+      .. autoclass:: eC
