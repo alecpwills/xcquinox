@@ -126,6 +126,7 @@ class eXC(eqx.Module):
             print('WARNING: Non-local models highly experimental and likely will not work ')
         self.loge = 1e-5
         self.s_gam = 1
+        self.debug = debug
 
         if heg_mult:
             self.heg_model = LDA_X()
