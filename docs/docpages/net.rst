@@ -1,14 +1,24 @@
 Network Structure
 =================
 
-.. automodule:: xcequinox.net
-    :noindex:
+The ``LOB`` Class
+*****************
+.. autoclass:: xcequinox.net.LOB
     :members:
-    
-    .. rubric:: Classes
+    :special-members:
+    :show-inheritance:
 
-    .. autosummary::
-   
-      .. autoclass:: LOB
-      .. autoclass:: eX
-      .. autoclass:: eC
+The ``eX`` Class
+*****************
+.. autoclass:: xcequinox.net.eX
+    :members:
+    :special-members:
+    :show-inheritance:
+
+The ``eC`` Class
+*****************
+.. autoclass:: xcequinox.net.eC
+    :members:
+    :special-members:
+    :show-inheritance:
+

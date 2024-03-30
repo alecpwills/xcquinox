@@ -2,6 +2,7 @@ Welcome to xcequinox's documentation!
 =========================================================
 .. automodule:: xcequinox
     :members:
+    :special_members:
     :undoc-members:
     :show-inheritance:
 
