@@ -92,20 +92,26 @@ class eXC(eqx.Module):
     pw_model: eqx.Module
     model_mult: list
     
-
     def __init__(self, grid_models=[], heg_mult=True, pw_mult=True,
                     level = 1, exx_a=None, epsilon=1e-8):
-        """Defines the XC functional on a grid
-
-        Args:
-            grid_models (list, optional): list of eX (local exchange) or eC (local correlation). Defines the xc-models/enhancement factors. Defaults to None.
-            heg_mult (bool, optional): Use homoegeneous electron gas exchange (multiplicative if grid_models is not empty). Defaults to True.
-            pw_mult (bool, optional): Use homoegeneous electron gas correlation (Perdew & Wang). Defaults to True.
-            level (int, optional): Controls the number of density "descriptors" generated. 1: LDA, 2: GGA, 3:meta-GGA, 4: meta-GGA + electrostatic (nonlocal). Defaults to 1.
-            exx_a (_type_, optional): Exact exchange mixing parameter. Defaults to None.
-            epsilon (float, optional): Offset to avoid div/0 in calculations. Defaults to 1e-8.
         """
+        __init__ Defines the XC functional
 
+        Constructed with two MLPs -- one for the local exchange energy on the grid, the other for the local correlation energy.
+
+        :param grid_models: list of eX (local exchange) or eC (local correlation). Defines the xc-models/enhancement factors, defaults to []
+        :type grid_models: list, optional
+        :param heg_mult: Use homoegeneous electron gas exchange (multiplicative if grid_models is not empty), defaults to True
+        :type heg_mult: bool, optional
+        :param pw_mult: Use homoegeneous electron gas correlation (Perdew & Wang), defaults to True
+        :type pw_mult: bool, optional
+        :param level: Controls the number of density "descriptors" generated. 1: LDA, 2: GGA, 3:meta-GGA, 4: meta-GGA + electrostatic (nonlocal), defaults to 1
+        :type level: int, optional
+        :param exx_a: Exact exchange mixing parameter, defaults to None
+        :type exx_a: float, optional
+        :param epsilon: Offset to avoid div/0 in calculations, defaults to 1e-8
+        :type epsilon: float, optional
+        """
         super().__init__()
         self.heg_mult = heg_mult
         self.pw_mult = pw_mult
@@ -193,18 +199,6 @@ class eXC(eqx.Module):
         return (tau - tw)/(uniform_factor*rho**(5/3)+self.epsilon)
 
     # Unit-less electrostatic potential
-        """Level 4 Descriptor -- Unitless electrostatic potential
-
-        .. todo:: implement in a useful manner
-
-        Args:
-            rho (jax.Array): density
-            nl (jax.Array): some non-local descriptor
-
-        Returns:
-            jax.Array: the non-local descriptors
-        """
-
     def l_4(self, rho, nl):
         """
         l_4 Level 4 (Non-local level) Descriptor -- Unitless electrostatic potential
