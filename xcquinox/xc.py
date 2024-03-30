@@ -371,8 +371,6 @@ class eXC(eqx.Module):
         """
         eval_grid_models Evaluates all models stored in self.grid_models along with HEG exchange and correlation
 
-        _extended_summary_
-
         :param rho: List/array with [rho0_a,rho0_b,gamma_a,gamma_ab,gamma_b, dummy for laplacian, dummy for laplacian, tau_a, tau_b, non_loc_a, non_loc_b]
                     Shape assumes, for instance, that rho0_a = rho[:, 0], etc.
         :type rho: jax.Array
