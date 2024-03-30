@@ -2,6 +2,7 @@ Network Structure
 =================
 
 .. automodule:: xcequinox.net
+    :noindex:
     :members:
     
     .. rubric:: Classes

@@ -15,7 +15,7 @@
 # Incase the project was not installed
 import os
 import sys
-sys.path.insert(0, os.path.abspath('../xcequinox'))
+sys.path.insert(0, os.path.abspath('..'))
 
 import xcequinox
 
@@ -56,6 +56,8 @@ autosummary_generate = True
 napoleon_google_docstring = False
 napoleon_use_param = False
 napoleon_use_ivar = True
+
+autodoc_mock_imports = ["jax", "equinox"]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']

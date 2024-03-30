@@ -1,8 +1,9 @@
 Welcome to xcequinox's documentation!
 =========================================================
-.. automodule:: xcequinox.net
-   :members:
-
+.. automodule:: xcequinox
+    :members:
+    :undoc-members:
+    :show-inheritance:
 
 .. toctree::
    :maxdepth: 5
@@ -13,7 +14,9 @@ Welcome to xcequinox's documentation!
    getting_started
    api
    ./docpages/net
+..
    ./docpages/xc
+..
    ./docpages/utils
 
 
