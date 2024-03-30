@@ -9,14 +9,29 @@ class LOB(eqx.Module):
     
     
     def __init__(self, limit=1.804):
-        """ Utility function to squash output to [-1, limit-1] inteval.
-            Can be used to enforce non-negativity and Lieb-Oxford bounds.
+        """
+        __init__ Utility function to squash output to [-1, limit-1] inteval.
+
+        Can be used to enforce non-negativity, Lieb-Oxford bounds, etc.
+        Initializes method :self.sig: -- the :jax.nn.sigmoid: function, as well.
+
+        :param limit: The Lieb-Oxford bound value to impose, defaults to 1.804
+        :type limit: float, optional
         """
         super().__init__()
         self.sig = jax.nn.sigmoid
         self.limit = limit
 
     def __call__(self, x):
+        """
+        __call__ Method calling the actual mapping of the input to the desired bounded region.
+
+
+        :param x: Energy value to map back into the bounded region.
+        :type x: float
+        :return: Energy value mapped into bounded region.
+        :rtype: float
+        """
         return self.limit*self.sig(x-jnp.log(self.limit-1))-1
 
 
@@ -40,7 +55,9 @@ class eX(eqx.Module):
         """
         __init__ Local exchange model based on MLP.
 
-        Receives density descriptors in this order : [rho, s, alpha, nl], where the input may be truncated depending on XC-level of approximation
+        Receives density descriptors in this order : [rho, s, alpha, nl], where the input may be truncated depending on XC-level of approximation.
+
+        The MLP generated is hard-coded to have one output value -- the predicted exchange energy given a specific input from the grid.
 
         :param n_input: Input dimensions (LDA: 1, GGA: 2, meta-GGA: 3, ...)
         :type n_input: int
@@ -87,6 +104,8 @@ class eX(eqx.Module):
         __call__ Forward pass for the exchange network.
 
         Uses :jax.vmap: to vectorize evaluation of the MLP on the descriptors, assuming a shape [batch, *, n_input]
+
+        TODO: Make sure the :vmap: call can work with specific :use: values beyond the defaults assumed in the previous implementation.
 
         :param rho: The descriptors to the MLP -- transformed densities and gradients appropriate to the XC-level. This network will only use the dimensions specified in self.use.
         :type rho: jax.Array
@@ -136,6 +155,8 @@ class eC(eqx.Module):
         __init__ Local correlation model based on MLP.
 
         Receives density descriptors in this order : [rho, spinscale, s, alpha, nl], where the input may be truncated depending on XC-level of approximation
+
+        TODO: Make sure the :vmap: call can work with specific :use: values beyond the defaults assumed in the previous implementation.
 
         :param n_input: Input dimensions (LDA: 2, GGA: 3 , meta-GGA: 4), defaults to 2.
         :type n_input: int

@@ -5,7 +5,11 @@ import jax.numpy as jnp
 
 class LDA_X(eqx.Module):
     def __init__(self):
-        """ UEG exchange"""
+        """
+        __init__ Constructs an object whose forward pass computes the LDA exchange energy based on a given density input.
+
+        .. math:: E_x = -\\frac{3}{4} (\\frac{3\\rho}{\\pi})^{1/3}
+        """
         super().__init__()
 
     def __call__(self, rho):
