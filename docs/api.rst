@@ -7,5 +7,3 @@ API Documentation
    .. automodule:: xcequinox.net
    .. automodule:: xcequinox.xc
    .. automodule:: xcequinox.utils
-
-   xcequinox.canvas
