@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 # Self-descriptive entries which should always be present
 # https://packaging.python.org/en/latest/specifications/declaring-project-metadata/
 [project]
-name = "xcequinox"
+name = "xcquinox"
 description = "A machine learning framework using the equinox library for learning XC functionals with JAX."
 dynamic = ["version"]
 readme = "README.md"
@@ -26,8 +26,8 @@ requires-python = ">=3.10"
 
 # Update the urls once the hosting is set up.
 [project.urls]
-"Source" = "https://github.com/alecpwills/xcequinox/"
-"Documentation" = "https://xcequinox.readthedocs.io/"
+"Source" = "https://github.com/alecpwills/xcquinox/"
+"Documentation" = "https://xcquinox.readthedocs.io/"
 
 [project.optional-dependencies]
 test = [
@@ -64,7 +64,7 @@ where = ["."]
 
 # Ref https://setuptools.pypa.io/en/latest/userguide/datafiles.html#package-data
 [tool.setuptools.package-data]
-xcequinox = [
+xcquinox = [
     "py.typed"
 ]
 
@@ -84,4 +84,4 @@ match = ["*"]
 default-tag = "1.0.0"
 
 [tool.versioningit.write]
-file = "xcequinox/_version.py"
+file = "xcquinox/_version.py"

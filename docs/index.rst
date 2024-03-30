@@ -1,4 +1,4 @@
-Welcome to xcequinox's documentation!
+Welcome to xcquinox's documentation!
 =========================================================
 Getting Started
 ===============
@@ -18,7 +18,7 @@ This package is designed to work well with the `pyscfad`_ package, `an end-to-en
 
 *This is a work in progress.*
 
-.. automodule:: xcequinox
+.. automodule:: xcquinox
     :members:
     :special_members:
     :undoc-members:

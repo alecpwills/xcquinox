@@ -54,11 +54,11 @@ jobs:
         # conda setup requires this special shell
         shell: bash -l {0}
         run: |
-          pytest -v --cov=xcequinox --cov-report=xml --color=yes xcequinox/tests/
+          pytest -v --cov=xcquinox --cov-report=xml --color=yes xcquinox/tests/
 
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4.0.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          slug: alecpwills/xcequinox
+          slug: alecpwills/xcquinox

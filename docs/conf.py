@@ -22,7 +22,7 @@ import xcequinox
 
 # -- Project information -----------------------------------------------------
 
-project = 'xcequinox'
+project = 'xcquinox'
 copyright = ("2024, Alec Wills. Project structure based on the "
              "Computational Molecular Science Python Cookiecutter version 1.1")
 author = 'Alec Wills'
@@ -119,7 +119,7 @@ html_static_path = ['_static']
 # -- Options for HTMLHelp output ---------------------------------------------
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = 'xcequinoxdoc'
+htmlhelp_basename = 'xcquinoxdoc'
 
 
 # -- Options for LaTeX output ------------------------------------------------
@@ -146,8 +146,8 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-    (master_doc, 'xcequinox.tex', 'xcequinox Documentation',
-     'xcequinox', 'manual'),
+    (master_doc, 'xcquinox.tex', 'xcquinox Documentation',
+     'xcquinox', 'manual'),
 ]
 
 
@@ -156,7 +156,7 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-    (master_doc, 'xcequinox', 'xcequinox Documentation',
+    (master_doc, 'xcquinox', 'xcquinox Documentation',
      [author], 1)
 ]
 
@@ -167,8 +167,8 @@ man_pages = [
 # (source start file, target name, title, author,
 #  dir menu entry, description, category)
 texinfo_documents = [
-    (master_doc, 'xcequinox', 'xcequinox Documentation',
-     author, 'xcequinox', 'A machine learning framework using the equinox library for learning XC functionals with JAX.',
+    (master_doc, 'xcquinox', 'xcquinox Documentation',
+     author, 'xcquinox', 'A machine learning framework using the equinox library for learning XC functionals with JAX.',
      'Miscellaneous'),
 ]
 

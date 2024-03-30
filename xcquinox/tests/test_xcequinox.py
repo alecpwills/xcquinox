@@ -1,5 +1,5 @@
 """
-Unit and regression test for the xcequinox package.
+Unit and regression test for the xcquinox package.
 """
 
 # Import package, test suite, and other packages as needed
@@ -10,12 +10,12 @@ import equinox
 
 import pytest
 
-import xcequinox as xce
+import xcquinox as xce
 
 
-def test_xcequinox_imported():
+def test_xcquinox_imported():
     """Sample test, will always pass so long as import statement worked."""
-    assert "xcequinox" in sys.modules
+    assert "xcquinox" in sys.modules
 
 
 def test_net_lob():
