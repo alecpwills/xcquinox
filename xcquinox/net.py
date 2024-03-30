@@ -105,7 +105,7 @@ class eX(eqx.Module):
 
         Uses :jax.vmap: to vectorize evaluation of the MLP on the descriptors, assuming a shape [batch, *, n_input]
 
-        TODO: Make sure the :vmap: call can work with specific :use: values beyond the defaults assumed in the previous implementation.
+        .. todo: Make sure the :vmap: call can work with specific :use: values beyond the defaults assumed in the previous implementation.
 
         :param rho: The descriptors to the MLP -- transformed densities and gradients appropriate to the XC-level. This network will only use the dimensions specified in self.use.
         :type rho: jax.Array
@@ -156,7 +156,7 @@ class eC(eqx.Module):
 
         Receives density descriptors in this order : [rho, spinscale, s, alpha, nl], where the input may be truncated depending on XC-level of approximation
 
-        TODO: Make sure the :vmap: call can work with specific :use: values beyond the defaults assumed in the previous implementation.
+        .. todo: Make sure the :vmap: call can work with specific :use: values beyond the defaults assumed in the previous implementation.
 
         :param n_input: Input dimensions (LDA: 2, GGA: 3 , meta-GGA: 4), defaults to 2.
         :type n_input: int

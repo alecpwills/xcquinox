@@ -15,7 +15,7 @@ class LDA_X(eqx.Module):
         """
         __call__ Computes the LDA exchange energy for a given value of the density.
 
-        .. math:: E_x = -\\frac{3}{4} \Big(\\frac{3\\rho}{\\pi} \Big)^{1/3}
+        .. math:: E_x = -\\frac{3}{4} \\Big(\\frac{3\\rho}{\\pi} \\Big)^{1/3}
 
         :param rho: The value of the density
         :type rho: float, broadcastable
@@ -53,12 +53,13 @@ class PW_C(eqx.Module):
 
         Atomic units are assumed.
         
-        ..math:: r_s = \Big\[\\frac{3}{4\\pi (\\rho_\uparrow+\\rho_\downarrow)} \Big\]^{1/3}
-        ..math:: \zeta = \\frac{\\rho_\uparrow-\\rho_\downarrow}{\\rho_\uparrow+\\rho_\downarrow)}
+        .. math:: r_s = \\Big[\\frac{3}{4\\pi (\\rho_\\uparrow+\\rho_\\downarrow)} \\Big]^{1/3}
 
-        :param rs: The 
+        .. math:: \\zeta = \\frac{\\rho_\\uparrow-\\rho_\\downarrow}{\\rho_\\uparrow+\\rho_\\downarrow}
+
+        :param rs: The Wigner-Seiz radius corresponding to the given density value
         :type rs: float, broadcastable
-        :param zeta: 
+        :param zeta: The spin-polarization
         :type zeta: float, broadcastable
         """
         def g_aux(k, rs):
@@ -137,7 +138,7 @@ class eXC(eqx.Module):
             rho (jax.Array): density
 
         Returns:
-            jax.Array: dimensionless density
+            jax.Array: Scaled density
         """
         return rho**(1/3)
 
@@ -184,14 +185,14 @@ class eXC(eqx.Module):
     def l_4(self, rho, nl):
         """Level 4 Descriptor -- Unitless electrostatic potential
 
-        .. todo:: Figure out what exactly this part is
+        .. todo:: implement in a useful manner
 
         Args:
             rho (jax.Array): density
             nl (jax.Array): some non-local descriptor
 
         Returns:
-            jax.nn.relu: _description_
+            jax.Array: the non-local descriptors
         """
         u = nl[:,:1]/((jnp.expand_dims(rho, -1)**(1/3))*self.nl_ueg[:,:1] + self.epsilon)
         wu = nl[:,1:]/((jnp.expand_dims(rho, -1))*self.nl_ueg[:,1:] + self.epsilon)
@@ -206,11 +207,13 @@ class eXC(eqx.Module):
             gamma_a (jax.Array): :math:`|\\nabla \\rho|^2` in spin-channel a 
             gamma_b (jax.Array): :math:`|\\nabla \\rho|^2` in spin-channel b
             gamma_ab (jax.Array): _description_
-            nl_a (jax.Array): _description_
-            nl_b (jax.Array): _description_
+            nl_a (jax.Array): Non-local descriptors in spin-channel a, not currently used.
+            nl_b (jax.Array): Non-local descriptors in spin-channel b, not currently used.
             tau_a (jax.Array): KE density in spin-channel a
             tau_b (jax.Array): KE density in spin-channel b
             spin_scaling (bool, optional): Flag for spin-scaling. Defaults to False.
+
+        .. todo: implement non-local descriptors.
 
         Returns:
             _type_: _description_
@@ -271,13 +274,20 @@ class eXC(eqx.Module):
 
 
     def __call__(self, dm, ao_eval, grid_weights):
-        """_summary_
+        """
+        __call__ Forward call for the XC network to get the grid point e_xc
 
-        Args:
-            dm (jax.Array): density matrix
+        Generates the density-on-grid from the density matrix, atomic orbital evaluation, and the grid weights from a :pyscfad: calculation.
 
-        Returns:
-            _type_: _description_
+
+        :param dm: Density matrix
+        :type dm: jax.Array
+        :param ao_eval: Atomic orbitals evaluated on the grid
+        :type ao_eval: jax.Array
+        :param grid_weights: Grid weights associated to the grid on which the atomic orbitals are evaluated
+        :type grid_weights: jax.Array
+        :return: Exc, exchange-correlation energy from integrating the network calls across the grid
+        :rtype: float
         """
         Exc = 0
         if self.grid_models or self.heg_mult:
@@ -334,14 +344,18 @@ class eXC(eqx.Module):
         return Exc
 
     def eval_grid_models(self, rho, debug=False):
-        """Evaluates all models stored in self.grid_models along with HEG exchange and correlation
+        """
+        eval_grid_models Evaluates all models stored in self.grid_models along with HEG exchange and correlation
 
+        _extended_summary_
 
-        Args:
-            rho ([list of jax.Arrays]): List with [rho0_a,rho0_b,gamma_a,gamma_ab,gamma_b, dummy for laplacian, dummy for laplacian, tau_a, tau_b, non_loc_a, non_loc_b]
-
-        Returns:
-            _type_: _description_
+        :param rho: List/array with [rho0_a,rho0_b,gamma_a,gamma_ab,gamma_b, dummy for laplacian, dummy for laplacian, tau_a, tau_b, non_loc_a, non_loc_b]
+                    Shape assumes, for instance, that rho0_a = rho[:, 0], etc.
+        :type rho: jax.Array
+        :param debug: If flagged, will print various statistics during the call, defaults to False
+        :type debug: bool, optional
+        :return: The exchange-correlation energy density (on the grid)
+        :rtype: jax.Array
         """
         Exc = 0
         rho0_a = rho[:, 0]
