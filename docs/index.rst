@@ -7,7 +7,9 @@ Welcome to xcequinox's documentation!
 =========================================================
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 5
+   :numbered:
+   :hidden:
    :caption: Contents:
 
    getting_started
