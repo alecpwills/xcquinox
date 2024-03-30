@@ -15,6 +15,7 @@ dependencies:
   - codecov
   - jax[cpu]
   - equinox
+  - ase
 
     # Pip-only installs
   #- pip:
