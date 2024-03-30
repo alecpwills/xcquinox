@@ -9,6 +9,7 @@ import jax.numpy as jnp
 
 import pytest
 from ase import Atoms
+from pyscfad import dft
 
 import xcquinox as xce
 
@@ -86,3 +87,48 @@ def test_ase_atoms_to_mol():
     name, mol = xce.utils.ase_atoms_to_mol(h2, basis='def2tzvpd')
     assert name == 'H2'
     assert mol.basis == 'def2tzvpd'
+
+
+def test_xc_lda_x():
+    ldax = xce.xc.LDA_X()
+    rho = 0.5
+    eldax = ldax(rho)
+    assert eldax
+
+def test_xc_pw_c():
+    pwc = xce.xc.PW_C()
+    rs = 0.5
+    zeta = 0.5
+    eldax = pwc(rs, zeta)
+    assert eldax
+
+def test_xc_defaults():
+    h2 = Atoms('HH', positions=[[ 0.      ,  0.      ,  0.371395],
+                                [ 0.      ,  0.      , -0.371395]])
+    
+    name, mol = xce.utils.ase_atoms_to_mol(h2, basis='def2tzvpd')
+    print('Doing short PBE calculation for inputs...')
+    mf = dft.RKS(mol, xc='PBE')
+    e_tot = mf.kernel()
+    dm = mf.make_rdm1()
+    ao_eval = jnp.array(mf._numint.eval_ao(mol, mf.grids.coords, deriv=2))
+
+    eX = xce.net.eX(n_input = 2,
+                n_hidden = 16,
+                depth = 3,
+                use = [1,2],
+                ueg_limit=True,
+                lob = 1.174,
+                seed = 9001)
+    eC = xce.net.eC(n_input = 4,
+                    n_hidden = 16,
+                    depth = 3,
+                    use = [2,3],
+                    ueg_limit=False,
+                    lob = 1.804,
+                    seed = 9001)
+    xc = xce.xc.eXC(grid_models = [eX, eC], level=3)
+
+    exc = xc(dm, ao_eval, mf.grids.weights)
+    assert exc
+
