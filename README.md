@@ -1,8 +1,8 @@
 xcequinox
 ==============================
 [//]: # (Badges)
-[![GitHub Actions Build Status](https://github.com/REPLACE_WITH_OWNER_ACCOUNT/xcequinox/workflows/CI/badge.svg)](https://github.com/REPLACE_WITH_OWNER_ACCOUNT/xcequinox/actions?query=workflow%3ACI)
-[![codecov](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/xcequinox/branch/main/graph/badge.svg)](https://codecov.io/gh/REPLACE_WITH_OWNER_ACCOUNT/xcequinox/branch/main)
+[![GitHub Actions Build Status](https://github.com/alecpwills/xcequinox/workflows/CI/badge.svg)](https://github.com/alecpwills/xcequinox/actions?query=workflow%3ACI)
+[![codecov](https://codecov.io/gh/alecpwills/xcequinox/branch/main/graph/badge.svg)](https://codecov.io/gh/alecpwills/xcequinox/branch/main)
 
 
 A machine learning package using the equinox library for learning XC functionals with JAX.
