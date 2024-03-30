@@ -10,11 +10,11 @@ build:
 sphinx:
   configuration: docs/conf.py
 
-# python:
-#   version: 3.10
-#   install:
-#     - method: pip
-#       path: .
+python:
+  version: 3.10
+  install:
+    - method: pip
+      path: .
 
-# conda:
-#   environment: docs/requirements.yaml
+conda:
+  environment: docs/requirements.yaml
