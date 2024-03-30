@@ -28,9 +28,9 @@ copyright = ("2024, Alec Wills. Project structure based on the "
 author = 'Alec Wills'
 
 # The short X.Y version
-version = ''
+version = '0.0.1'
 # The full version, including alpha/beta/rc tags
-release = ''
+release = '0.0.1'
 
 
 # -- General configuration ---------------------------------------------------

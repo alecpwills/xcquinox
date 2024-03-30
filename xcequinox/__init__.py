@@ -2,5 +2,6 @@
 
 # Add imports here
 from .xcequinox import *
-from .xcequinox._version import get_versions
-__version__ = get_versions()['version']
+# from ._version import get_versions
+# __version__ = get_versions()['version']
+from ._version import __version__
