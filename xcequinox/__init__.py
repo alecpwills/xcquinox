@@ -4,7 +4,5 @@
 from .xcequinox import *
 
 
-from ._version import __version__
-
 from . import _version
 __version__ = _version.get_versions()['version']
