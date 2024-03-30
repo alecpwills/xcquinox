@@ -50,3 +50,30 @@ def test_net_eC():
     result = eC(inp)
     print(f"text_net_eC result = {result}")
     assert result.sum()
+
+def test_net_eX_use_nolob_ueg():
+    eX = xce.net.eX(n_input = 1,
+                    n_hidden = 16,
+                    depth = 3,
+                    use = [0],
+                    ueg_limit=True,
+                    lob = 0,
+                    seed = 9001)
+    inp = 5*jax.random.normal(key=jax.random.PRNGKey(9001), shape=(1, 1, 1))
+    result = eX(inp)
+    print(f"text_net_eX result = {result}")
+    assert result.sum()
+
+
+def test_net_eC_use_nolob_ueg():
+    eC = xce.net.eC(n_input = 1,
+                    n_hidden = 16,
+                    depth = 3,
+                    use = [0, 1, 2],
+                    ueg_limit=True,
+                    lob = 0,
+                    seed = 9001)
+    inp = 5*jax.random.normal(key=jax.random.PRNGKey(9001), shape=(3, 1))
+    result = eC(inp)
+    print(f"text_net_eX result = {result}")
+    assert result.sum()

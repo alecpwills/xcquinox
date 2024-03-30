@@ -202,7 +202,7 @@ class eC(eqx.Module):
             else:
                 ueg_lim_a = 0
             if len(self.use) > 2:
-                ueg_lim_nl = jnp.sum(self.tanh(rho[...,self.use[2:]])**2,dim=-1)
+                ueg_lim_nl = jnp.sum(self.tanh(rho[...,self.use[2:]])**2,axis=-1)
             else:
                 ueg_lim_nl = 0
 
