@@ -8,11 +8,20 @@ class LDA_X(eqx.Module):
         """
         __init__ Constructs an object whose forward pass computes the LDA exchange energy based on a given density input.
 
-        .. math:: E_x = -\\frac{3}{4} (\\frac{3\\rho}{\\pi})^{1/3}
         """
         super().__init__()
 
     def __call__(self, rho):
+        """
+        __call__ Computes the LDA exchange energy for a given value of the density.
+
+        .. math:: E_x = -\\frac{3}{4} \Big(\\frac{3\\rho}{\\pi} \Big)^{1/3}
+
+        :param rho: The value of the density
+        :type rho: float, broadcastable
+        :return: The LDA exchange energy for the input value(s).
+        :rtype: float, broadcastable
+        """
         return -3/4*(3/np.pi)**(1/3)*rho**(1/3)
         
 params_a_pp     = [1,  1,  1]
@@ -27,10 +36,31 @@ params_a_fz20   = 1.709921
 class PW_C(eqx.Module):
     
     def __init__(self):
-        """ UEG correlation, Perdew & Wang"""
+        
+        """
+        __init__ Constructs an object whose forward pass computes the UEG correlation energy, as parameterized by Perdew & Wang
+
+        DOI: `10.1103/PhysRevB.45.13244`_
+
+        .. 10.1103/PhysRevB.45.13244_: https://doi.org/10.1103/PhysRevB.45.13244
+
+        """
         super().__init__()
         
     def __call__(self, rs, zeta):
+        """
+        __call__ Forward pass, computing the correlation energy per electron for the given input values, rs and zeta, where
+
+        Atomic units are assumed.
+        
+        ..math:: r_s = \Big\[\\frac{3}{4\\pi (n_\uparrow+n_\downarrow)} \Big\]^{1/3}
+        ..math:: \zeta = \\frac{n_\uparrow-n_\downarrow}{n_\uparrow+n_\downarrow)}
+
+        :param rs: The 
+        :type rs: float, broadcastable
+        :param zeta: 
+        :type zeta: float, broadcastable
+        """
         def g_aux(k, rs):
             return params_a_beta1[k]*jnp.sqrt(rs) + params_a_beta2[k]*rs\
           + params_a_beta3[k]*rs**1.5 + params_a_beta4[k]*rs**(params_a_pp[k] + 1)
