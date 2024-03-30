@@ -161,7 +161,7 @@ def test_xc_spinpol_defaults():
                     ueg_limit=False,
                     lob = 1.804,
                     seed = 9001)
-    xc = xce.xc.eXC(grid_models = [eX, eC], level=3)
+    xc = xce.xc.eXC(grid_models = [eX, eC], level=3, debug=True)
 
     exc = xc(dm, ao_eval, mfuks.grids.weights)
     assert exc
