@@ -91,9 +91,10 @@ class eXC(eqx.Module):
     heg_model: eqx.Module
     pw_model: eqx.Module
     model_mult: list
+    debug: bool
     
     def __init__(self, grid_models=[], heg_mult=True, pw_mult=True,
-                    level = 1, exx_a=None, epsilon=1e-8):
+                    level = 1, exx_a=None, epsilon=1e-8, debug=False):
         """
         __init__ Defines the XC functional
 
@@ -111,6 +112,9 @@ class eXC(eqx.Module):
         :type exx_a: float, optional
         :param epsilon: Offset to avoid div/0 in calculations, defaults to 1e-8
         :type epsilon: float, optional
+        :param debug: Controls printing of various stats throughout, defaults to False
+        :type debug: bool, optional
+
         """
         super().__init__()
         self.heg_mult = heg_mult
@@ -367,15 +371,13 @@ class eXC(eqx.Module):
             Exc += jnp.sum(((rho0_a + rho0_b)*exc[:,0])*grid_weights)
         return Exc
 
-    def eval_grid_models(self, rho, debug=False):
+    def eval_grid_models(self, rho):
         """
         eval_grid_models Evaluates all models stored in self.grid_models along with HEG exchange and correlation
 
         :param rho: List/array with [rho0_a,rho0_b,gamma_a,gamma_ab,gamma_b, dummy for laplacian, dummy for laplacian, tau_a, tau_b, non_loc_a, non_loc_b]
                     Shape assumes, for instance, that rho0_a = rho[:, 0], etc.
         :type rho: jax.Array
-        :param debug: If flagged, will print various statistics during the call, defaults to False
-        :type debug: bool, optional
         :return: The exchange-correlation energy density (on the grid)
         :rtype: jax.Array
         """
@@ -406,7 +408,7 @@ class eXC(eqx.Module):
         exc_b = jnp.zeros_like(rho0_a)
         exc_ab = jnp.zeros_like(rho0_a)
 
-        if debug:
+        if self.debug:
             print('eval_grid_models nan summary:')
             print('zeta, rs, rs_a, rs_b, exc_a, exc_b, exc_ab')
             print('{}, {}, {}, {}, {}, {}, {}'.format(
@@ -483,7 +485,7 @@ class eXC(eqx.Module):
 
 
         exc = exc_a * (rho0_a_ueg/ (rho_tot + self.epsilon)) + exc_b*(rho0_b_ueg / (rho_tot + self.epsilon)) + exc_ab
-        if debug:
+        if self.debug:
             print('eval_grid_models nan summary:')
             print('zeta, rs, rs_a, rs_b, exc_a, exc_b, exc_ab')
             print('{}, {}, {}, {}, {}, {}, {}'.format(
