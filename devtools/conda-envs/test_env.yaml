@@ -13,6 +13,8 @@ dependencies:
   - pytest
   - pytest-cov
   - codecov
+  - jax[cpu]
+  - equinox
 
     # Pip-only installs
   #- pip:
