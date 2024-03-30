@@ -32,11 +32,10 @@ This package is designed to work well with the `pyscfad`_ package, `an end-to-en
 
    getting_started
    ./docpages/net
+   ./docpages/xc
 
 ..
    api
-..
-   ./docpages/xc
 ..
    ./docpages/utils
 

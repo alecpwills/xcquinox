@@ -3,7 +3,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-class eLDA_X(eqx.Module):
+class LDA_X(eqx.Module):
     def __init__(self):
         """ UEG exchange"""
         super().__init__()
@@ -20,7 +20,7 @@ params_a_beta3  = [1.6382, 3.3662,  0.88026]
 params_a_beta4  = [0.49294, 0.62517, 0.49671]
 params_a_fz20   = 1.709921
        
-class ePW_C(eqx.Module):
+class PW_C(eqx.Module):
     
     def __init__(self):
         """ UEG correlation, Perdew & Wang"""
