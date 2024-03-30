@@ -16,6 +16,7 @@ dependencies:
   - jax[cpu]
   - equinox
   - ase
+  - pyscfad
 
     # Pip-only installs
   #- pip:
