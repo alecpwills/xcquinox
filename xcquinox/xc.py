@@ -53,8 +53,8 @@ class PW_C(eqx.Module):
 
         Atomic units are assumed.
         
-        ..math:: r_s = \Big\[\\frac{3}{4\\pi (n_\uparrow+n_\downarrow)} \Big\]^{1/3}
-        ..math:: \zeta = \\frac{n_\uparrow-n_\downarrow}{n_\uparrow+n_\downarrow)}
+        ..math:: r_s = \Big\[\\frac{3}{4\\pi (\\rho_\uparrow+\\rho_\downarrow)} \Big\]^{1/3}
+        ..math:: \zeta = \\frac{\\rho_\uparrow-\\rho_\downarrow}{\\rho_\uparrow+\\rho_\downarrow)}
 
         :param rs: The 
         :type rs: float, broadcastable
@@ -117,9 +117,9 @@ class eXC(eqx.Module):
         self.s_gam = 1
 
         if heg_mult:
-            self.heg_model = eLDA_X()
+            self.heg_model = LDA_X()
         if pw_mult:
-            self.pw_model = ePW_C()
+            self.pw_model = PW_C()
         self.model_mult = [1 for m in self.grid_models]
         if not exx_a:
             self.exx_a = 0
