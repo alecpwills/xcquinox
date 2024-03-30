@@ -1,10 +1,8 @@
-.. xcequinox documentation master file, created by
-   sphinx-quickstart on Thu Mar 15 13:55:56 2018.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
-
 Welcome to xcequinox's documentation!
 =========================================================
+.. automodule:: xcequinox.net
+   :members:
+
 
 .. toctree::
    :maxdepth: 5
@@ -17,7 +15,7 @@ Welcome to xcequinox's documentation!
    ./docpages/net
    ./docpages/xc
    ./docpages/utils
-   
+
 
 
 
