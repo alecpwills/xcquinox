@@ -3,6 +3,7 @@ xcequinox
 [//]: # (Badges)
 [![GitHub Actions Build Status](https://github.com/alecpwills/xcequinox/workflows/CI/badge.svg)](https://github.com/alecpwills/xcequinox/actions?query=workflow%3ACI)
 [![codecov](https://codecov.io/gh/alecpwills/xcequinox/branch/main/graph/badge.svg)](https://codecov.io/gh/alecpwills/xcequinox/branch/main)
+[![ReadTheDocs](https://readthedocs.org/projects/xcequinox/badge/?version=latest)](https://readthedocs.org/projects/xcequinox/badge/?version=latest)
 
 
 A machine learning package using the equinox library for learning XC functionals with JAX.

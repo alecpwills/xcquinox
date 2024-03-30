@@ -57,7 +57,7 @@ napoleon_google_docstring = False
 napoleon_use_param = False
 napoleon_use_ivar = True
 
-autodoc_mock_imports = ["jax", "equinox"]
+# autodoc_mock_imports = ["jax", "equinox"]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']

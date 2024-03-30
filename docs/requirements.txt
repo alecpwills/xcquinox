@@ -1,2 +1,4 @@
 sphinx-rtd-theme
 pytest
+jax[cpu]
+equinox
