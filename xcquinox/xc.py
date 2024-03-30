@@ -36,13 +36,12 @@ params_a_fz20   = 1.709921
 class PW_C(eqx.Module):
     
     def __init__(self):
-        
         """
         __init__ Constructs an object whose forward pass computes the UEG correlation energy, as parameterized by Perdew & Wang
 
-        DOI: `10.1103/PhysRevB.45.13244`_
+        DOI: `10.1103/PhysRevB.45.13244`_.
 
-        .. 10.1103/PhysRevB.45.13244_: https://doi.org/10.1103/PhysRevB.45.13244
+        .. _10.1103/PhysRevB.45.13244: https://doi.org/10.1103/PhysRevB.45.13244
 
         """
         super().__init__()
@@ -50,12 +49,13 @@ class PW_C(eqx.Module):
     def __call__(self, rs, zeta):
         """
         __call__ Forward pass, computing the correlation energy per electron for the given input values, rs and zeta, where
-
-        Atomic units are assumed.
         
         .. math:: r_s = \\Big[\\frac{3}{4\\pi (\\rho_\\uparrow+\\rho_\\downarrow)} \\Big]^{1/3}
 
         .. math:: \\zeta = \\frac{\\rho_\\uparrow-\\rho_\\downarrow}{\\rho_\\uparrow+\\rho_\\downarrow}
+
+        Atomic units are assumed.
+
 
         :param rs: The Wigner-Seiz radius corresponding to the given density value
         :type rs: float, broadcastable
@@ -129,60 +129,70 @@ class eXC(eqx.Module):
             
     # Density (rho)
     def l_1(self, rho):
-        """Level 1 Descriptor -- Creates dimensionless quantity from rho.
-        Eq. 3 in `base paper <https://link.aps.org/doi/10.1103/PhysRevB.104.L161109>`_
+        """
+        l_1 Level 1 (LDA-level) Descriptor -- Creates dimensionless quantity from rho.
+
+        Equation 3 from the `base paper`_.
+
+        .. _base paper: https://link.aps.org/doi/10.1103/PhysRevB.104.L161109
 
         .. math:: x_0 = \\rho^{1/3}
 
-        Args:
-            rho (jax.Array): density
 
-        Returns:
-            jax.Array: Scaled density
+        :param rho: density
+        :type rho: jax.Array
+        :return: Scaled density
+        :rtype: jax.Array
         """
         return rho**(1/3)
 
     # Reduced density gradient s
     def l_2(self, rho, gamma):
-        """Level 2 Descriptor -- Reduced gradient density
-        Eq. 5 in `base paper <https://link.aps.org/doi/10.1103/PhysRevB.104.L161109>`_
+        """
+        l_2 Level 2 (GGA-level) Descriptor -- Reduced gradient density
+
+        Equation 5 from the `base paper`_.
+
+        .. _base paper: https://link.aps.org/doi/10.1103/PhysRevB.104.L161109
 
         .. math:: x_2=s=\\frac{1}{2(3\\pi^2)^{1/3}} \\frac{|\\nabla \\rho|}{\\rho^{4/3}}
 
-        Args:
-            rho (jax.Array): density
-            gamma (jax.Array): squared density gradient
-
-        Returns:
-            jax.Array: reduced density gradient s
+        
+        :param rho: density
+        :type rho: jax.Array
+        :param gamma: squared density gradient
+        :type gamma: jax.Array
+        :return: reduced density gradient s
+        :rtype: jax.Array
         """
         return jnp.sqrt(gamma)/(2*(3*np.pi**2)**(1/3)*rho**(4/3)+self.epsilon)
 
     # Reduced kinetic energy density alpha
     def l_3(self, rho, gamma, tau):
-        """Level 3 Descriptor -- Reduced kinetic energy density
-        Eq. 6 in `base paper <https://link.aps.org/doi/10.1103/PhysRevB.104.L161109>`_
+        """
+        l_3 Level 3 (MGGA-level) Descriptor -- Reduced kinetic energy density
 
-        .. math:: x_3 = \\alpha = \\frac{\\tau-\\tau^W}{\\tau^{unif}},
+        Equation 6 from the `base paper`_.
 
-        where
+        .. _base paper: https://link.aps.org/doi/10.1103/PhysRevB.104.L161109
 
         .. math:: \\tau^W = \\frac{|\\nabla \\rho|^2}{8\\rho}, \\tau^{unif} = \\frac{3}{10} (3\\pi^2)^{2/3}\\rho^{5/3}.
 
-        Args:
-            rho (jax.Array): density
-            gamma (jax.Array): squared density gradient
-            tau (jax.Array): kinetic energy density
 
-        Returns:
-            jax.Array: reduced kinetic energy density
+        :param rho: density
+        :type rho: jax.Array
+        :param gamma: squared density gradient
+        :type gamma: jax.Array
+        :param tau: kinetic energy density
+        :type tau: jax.Array
+        :return: reduced kinetic energy density
+        :rtype: jax.Array
         """
         uniform_factor = (3/10)*(3*np.pi**2)**(2/3)
         tw = gamma/(8*(rho+self.epsilon))
-        return (tau - gamma/(8*(rho+self.epsilon)))/(uniform_factor*rho**(5/3)+self.epsilon)
+        return (tau - tw)/(uniform_factor*rho**(5/3)+self.epsilon)
 
     # Unit-less electrostatic potential
-    def l_4(self, rho, nl):
         """Level 4 Descriptor -- Unitless electrostatic potential
 
         .. todo:: implement in a useful manner
@@ -194,31 +204,51 @@ class eXC(eqx.Module):
         Returns:
             jax.Array: the non-local descriptors
         """
+
+    def l_4(self, rho, nl):
+        """
+        l_4 Level 4 (Non-local level) Descriptor -- Unitless electrostatic potential
+
+        .. todo:: document/implement in a more descriptive manner
+
+        :param rho: density
+        :type rho: jax.Array
+        :param nl: non-local values arising from density contractions
+        :type nl: jax.Array
+        :return: the non-local descriptors
+        :rtype: jax.Array
+        """
         u = nl[:,:1]/((jnp.expand_dims(rho, -1)**(1/3))*self.nl_ueg[:,:1] + self.epsilon)
         wu = nl[:,1:]/((jnp.expand_dims(rho, -1))*self.nl_ueg[:,1:] + self.epsilon)
         return jax.nn.relu(jnp.concatenate([u,wu],axis=-1))
     # @eqx.filter_jit
     def get_descriptors(self, rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab,nl_a,nl_b, tau_a, tau_b, spin_scaling = False):
-        """Creates 'ML-compatible' descriptors from the electron density and its gradients, a & b correspond to spin channels
-
-        Args:
-            rho0_a (jax.Array): :math:`\\rho` in spin-channel a
-            rho0_b (jax.Array): :math:`\\rho` in spin-channel b
-            gamma_a (jax.Array): :math:`|\\nabla \\rho|^2` in spin-channel a 
-            gamma_b (jax.Array): :math:`|\\nabla \\rho|^2` in spin-channel b
-            gamma_ab (jax.Array): _description_
-            nl_a (jax.Array): Non-local descriptors in spin-channel a, not currently used.
-            nl_b (jax.Array): Non-local descriptors in spin-channel b, not currently used.
-            tau_a (jax.Array): KE density in spin-channel a
-            tau_b (jax.Array): KE density in spin-channel b
-            spin_scaling (bool, optional): Flag for spin-scaling. Defaults to False.
-
-        .. todo: implement non-local descriptors.
-
-        Returns:
-            _type_: _description_
         """
+        get_descriptors Creates 'ML-compatible' descriptors from the electron density and its gradients, a & b correspond to spin channels
 
+        :param rho0_a: :math:`\\rho` in spin-channel a
+        :type rho0_a: jax.Array
+        :param rho0_b: :math:`\\rho` in spin-channel b
+        :type rho0_b: jax.Array
+        :param gamma_a: :math:`|\\nabla \\rho|^2` in spin-channel b
+        :type gamma_a: jax.Array
+        :param gamma_b: :math:`|\\nabla \\rho|^2` in spin-channel b
+        :type gamma_b: jax.Array
+        :param gamma_ab: :math:`|\\nabla \\rho|^2`, contracted from both spin channels
+        :type gamma_ab: jax.Array
+        :param nl_a: Non-local descriptors in spin-channel a, not currently used.
+        :type nl_a: jax.Array
+        :param nl_b: Non-local descriptors in spin-channel b, not currently used.
+        :type nl_b: jax.Array
+        :param tau_a: KE density in spin-channel a
+        :type tau_a: jax.Array
+        :param tau_b: KE density in spin-channel b
+        :type tau_b: jax.Array
+        :param spin_scaling: Flag for spin-scaling, defaults to False
+        :type spin_scaling: bool, optional
+        :return: Array of the machine-learning descriptors on the grid
+        :rtype: jax.Array
+        """
         if not spin_scaling:
             #If no spin-scaling, calculate polarization and use for X1
             zeta = (rho0_a - rho0_b)/(rho0_a + rho0_b + self.epsilon)
