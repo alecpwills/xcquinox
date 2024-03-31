@@ -4,10 +4,10 @@ xcquinox.tests package
 Submodules
 ----------
 
-xcquinox.tests.test\_xcequinox module
--------------------------------------
+xcquinox.tests.test\_xcquinox module
+------------------------------------
 
-.. automodule:: xcquinox.tests.test_xcequinox
+.. automodule:: xcquinox.tests.test_xcquinox
    :members:
    :undoc-members:
    :show-inheritance:
