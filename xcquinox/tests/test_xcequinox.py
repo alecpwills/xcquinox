@@ -200,3 +200,25 @@ def test_utils_make_rdm1():
     dm = mf_uks.make_rdm1()
     dm2 = mrdm(mocoe, moocc)
     assert jnp.allclose(dm, dm2)
+
+def test_utils_get_rho():
+    gr = xce.utils.get_rho()
+    ao_eval = mf_ad._numint.eval_ao(g_mol, mf_ad.grids.coords, deriv=2)
+    #1D rho
+    dm1d = mf_ad.make_rdm1()
+    #choose the first column for just rho, no derivs
+    rho1d = gr(dm1d, ao_eval[0])
+    nelec1 = jnp.sum(rho1d*mf_ad.grids.weights)
+    #assert that the integrate electron numbers are equal to the amount in nelec
+    nelec = mf_ad.mol.nelec
+
+    assert jnp.allclose(jnp.array(nelec).sum(), nelec1)
+    
+    #2D rho
+    dm2d = mf_uks.make_rdm1()
+    rho2d = gr(dm2d, ao_eval[0])
+    nelec = mf_uks.nelec
+    nelec1 = jnp.sum(rho2d*mf_ad.grids.weights, axis=1)
+
+    assert jnp.allclose(jnp.array(nelec), nelec1)
+    

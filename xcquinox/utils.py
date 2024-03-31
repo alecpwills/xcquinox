@@ -136,3 +136,29 @@ class make_rdm1(eqx.Module):
             print('Spin unpolarized make_rdm1()')
             mocc = jnp.where(mo_occ>0, mo_coeff, 0)
             return jnp.einsum('ij,jk->ik', mocc*jnp.where(mo_occ > 0, mo_occ, 0), mocc.T)
+
+class get_rho(eqx.Module):
+    def __init__(self):
+        """
+        A :class:`equinox.Module` object whose forward pass constructs the density on the grid, given input density matrix and atomic orbital evaluations.
+
+        """
+        super().__init__()
+
+
+    def __call__(self, dm, ao_eval):
+        """
+        Forward pass computing the density on the grid, projecting the density matrix onto the atomic orbitals
+
+        :param dm: Density matrix
+        :type dm: jax.Array
+        :param ao_eval: Atomic orbitals evaluated on the grid, NOT higher order derivatives.
+        :type ao_eval: jax.Array
+        :return: Density on the grid
+        :rtype: jax.Array
+        """
+        if dm.ndim == 2:
+            rho = jnp.einsum('ij,ik,jk->i', ao_eval, ao_eval, dm)
+        else:
+            rho = jnp.einsum('ij,ik,xjk->xi', ao_eval, ao_eval, dm)
+        return rho
