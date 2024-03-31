@@ -42,6 +42,21 @@ def test_utils_pad_array():
     assert arr3.shape == (100,)
     assert arr4.shape == (50,)
 
+
+def test_utils_pad_array_list():
+    arr1 = jax.random.normal(key=jax.random.PRNGKey(12345),
+                             shape=(10,))
+    arr2 = jax.random.normal(key=jax.random.PRNGKey(12345),
+                             shape=(100,))
+
+    newarrs = xce.utils.pad_array_list([arr1, arr2])
+
+    assert newarrs[0].shape == arr2.shape
+    assert newarrs[1].shape == arr2.shape
+
+    assert jnp.sum(newarrs[0]) == jnp.sum(arr1)
+    assert jnp.sum(newarrs[1]) == jnp.sum(arr2)
+
 def test_xcquinox_imported():
     """Sample test, will always pass so long as import statement worked."""
     assert "xcquinox" in sys.modules
