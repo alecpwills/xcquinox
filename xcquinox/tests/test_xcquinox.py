@@ -29,6 +29,18 @@ dm = mf_uhf.make_rdm1()
 mf_uks = pUKS(g_mol, xc='PBE')
 e_uks = mf_uks.kernel()
 
+def test_utils_pad_array():
+    #test via array size
+    arr1 = jax.random.normal(key=jax.random.PRNGKey(12345),
+                             shape=(10,))
+    arr2 = jax.random.normal(key=jax.random.PRNGKey(12345),
+                             shape=(100,))
+    arr3 = xce.utils.pad_array(arr1, arr2)
+
+    #test via shape
+    arr4 = xce.utils.pad_array(arr1, arr1, shape=(50,))
+    assert arr3.shape == (100,)
+    assert arr4.shape == (50,)
 
 def test_xcquinox_imported():
     """Sample test, will always pass so long as import statement worked."""
@@ -221,4 +233,47 @@ def test_utils_get_rho():
     nelec1 = jnp.sum(rho2d*mf_ad.grids.weights, axis=1)
 
     assert jnp.allclose(jnp.array(nelec), nelec1)
+
+def test_utils_energy_tot():
+
+    dm = mf_uks.make_rdm1()
+    hcore = mf_uks.get_hcore()
+    veff = jnp.array(mf_uks.get_veff())
+
+    ef = xce.utils.energy_tot()
+    e_tot = ef(dm, hcore, veff)
+    assert e_tot
+
+def test_utils_get_veff():
+    eri = g_mol.intor('int2e')
+    dm = mf_uks.make_rdm1()
+    veff = xce.utils.get_veff()(dm, eri)
+
+    assert (jnp.sum(veff))
+
+def test_utils_get_fock():
     
+    hc = mf_uks.get_hcore()
+    veff = jnp.array(mf_uks.get_veff())
+    fock = xce.utils.get_fock()(hc, veff)
+
+    assert jnp.sum(fock)
+
+def test_utils_get_hcore():
+
+    hcore = mf_uks.get_hcore()
+    v = g_mol.intor('int1e_nuc')
+    t = g_mol.intor('int1e_kin')
+    hcore1 = xce.utils.get_hcore()(v, t)
+
+    assert jnp.allclose(hcore, hcore1)
+
+def test_utils_eig():
+
+    h = mf_uks.get_hcore()
+    s_inv = jnp.linalg.inv(jnp.linalg.cholesky(g_mol.intor('int1e_ovlp')))
+
+    e, c = xce.utils.eig()(h, s_inv, h.shape)
+
+    assert(jnp.sum(e))
+    assert(jnp.sum(c))

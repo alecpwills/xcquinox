@@ -3,6 +3,58 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax
 
+def pad_array(arr, max_arr, shape=None, device=jax.devices('cpu')[0]):
+    """
+    Utility function designed to pad an array to a given maximum size, for use during jitted forward passes.
+
+    Since JAX jit compilations re-compile everytime a new array shape is passed, padding is a tactic to avoid this memory consumption.
+
+    :param arr: The original array meant to be padded
+    :type arr: jax.Array
+    :param max_arr: The array whose size is to be emulated, or an empty value if manually specifying `shape`
+    :type max_arr: jax.Array
+    :param shape: The array shape you want to pad to, if known a priori, defaults to None
+    :type shape: tuple of ints, optional
+    :param device: Where to place the padded arrays, defaults to jax.devices('cpu')[0]
+    :type device: jax.Device, optional
+    :return: Padded version of `arr`
+    :rtype: jax.Array
+    """
+    if not shape:
+        dims = max_arr.shape
+    else:
+        dims = shape
+    cdims = arr.shape
+    print(dims, cdims)
+    extensions = [dims[i]-cdims[i] for i in range(len(cdims))]
+    after_pad = [(0, e) for e in extensions]
+    with jax.default_device(device):
+        arr = jnp.pad(arr, after_pad)
+    return arr
+
+def pad_array_list(arrlst, device=jax.devices('cpu')[0]):
+    """
+    Automatically finds maximum size from a list of arrays, and pads all arrays to that size
+
+    :param arrlst: List of jax.Arrays with varying sizes
+    :type arrlst: list
+    :param device: Where to place the newly padded arrays, defaults to jax.devices('cpu')[0]
+    :type device: jax.Device, optional
+    :return: List of the padded arrays
+    :rtype: list of jax.Array
+    """
+    ndims = len(arrlst[0].shape)
+    maxdims = []
+    for i in range(ndims):
+        this_dim = [arr.shape[i] for arr in arrlst]
+        maxdims.append(max(this_dim))
+    newarrlst = []
+    for arr in arrlst:
+        with jax.default_device(device):
+            newarrlst.append(pad_array(arr, arr, shape=maxdims))
+    return newarrlst
+
+
 def ase_atoms_to_mol(atoms, basis='6-311++G(3df,2pd)', charge=0, spin=None):
     """
     Converts an ASE.Atoms object into a PySCF(ad).gto.Mol object
@@ -162,3 +214,145 @@ class get_rho(eqx.Module):
         else:
             rho = jnp.einsum('ij,ik,xjk->xi', ao_eval, ao_eval, dm)
         return rho
+
+
+class energy_tot(eqx.Module):
+
+    def __init__(self):
+        """
+        A :class:`equniox.Module` object whose forward pass constructs the total energy: (electron-electron + electron-ion; ion-ion not included)
+
+        """
+        super().__init__()
+
+    def __call__(self, dm, hcore, veff):
+        """
+        Forward pass contraction to find total electron energy (e-e + e-ion)
+
+        :param dm: Density matrix
+        :type dm: jax.Array
+        :param hcore: Core Hamiltonian
+        :type hcore: jax.Array
+        :param veff: Effective potential for the electrons
+        :type veff: jax.Array
+        :return: Total energy
+        :rtype: jax.Array/float
+        """
+        return jnp.expand_dims(jnp.sum((jnp.einsum('...ij,ij', dm, hcore) + .5*jnp.einsum('...ij,...ij', dm, veff))), 0)
+
+
+class get_veff(eqx.Module):
+    def __init__(self):
+        """
+        A :class:`equniox.Module` object whose forward pass constructs the one-electron effective potential (not including local xc-potential, to be found with the network)
+
+        """
+        super().__init__()
+
+    def __call__(self, dm, eri):
+        """
+        Forward pass, constructing the classical parts of the effective potential
+
+        :param dm: Density matrix
+        :type dm: jax.Arary
+        :param eri: Electron repulsion integral tensor
+        :type eri: jax.Array
+        :return: Effective potential
+        :rtype: jax.Array
+        """
+        J = jnp.einsum('...ij,ijkl->...kl',dm, eri)
+
+        if J.ndim == 3:
+            return J[0] + J[1]
+        else:
+            return J        
+
+class get_fock(eqx.Module):
+    def __init__(self):
+        """
+        A :class:`equniox.Module` object whose forward pass constructs the Fock matrix
+
+        """
+        super().__init__()
+
+    def __call__(self, hc, veff):
+        """
+        Returns the Fock matrix, the sum of the core Hamiltonian and the effective potential (including xc-potential)
+
+        :param hc: Core Hamiltonian
+        :type hc: jax.Array
+        :param veff: Effective Potential (including the xc-contribution)
+        :type veff: jax.Array
+        :return: Fock matrix
+        :rtype: jax.Array
+        """
+        return hc+veff
+
+class get_hcore(eqx.Module):
+    def __init__(self):
+        """
+        A :class:`equniox.Module` object whose forward pass constructs the core Hamiltonian, given the nuclear potential and kinetic energy matrix
+
+        """
+        super().__init__()
+
+    def __call__(self, v, t):
+        """
+        "Core" Hamiltionian forward pass, includes ion-electron and kinetic contributions
+
+        .. math:: H_{core} = T + V_{nuc-elec}
+
+        :param v: Electron-ion interaction energy
+        :type v: jax.Array
+        :param t: Kinetic energy
+        :type t: jax.Array
+        :return: Hcore
+        :rtype: jax.Array
+        """
+        return v+t
+
+
+class eig(eqx.Module):
+    def __init__(self):
+        """
+        A :class:`equniox.Module` object whose forward pass solves the generalized eigenvalue problem for the Hamiltonian, using Cholesky decomposition
+
+        """
+        super().__init__()
+        """Solver for generalized eigenvalue problem
+
+        .. todo:: torch.symeig is deprecated for torch.linalg.eigh, replace
+
+        Args:
+            h (torch.Tensor): Hamiltionian
+            s_chol (torch.Tensor): (Inverse) Cholesky decomp. of overlap matrix S
+                                    s_chol = np.linalg.inv(np.linalg.cholesky(S))
+
+        Returns:
+            (torch.Tensor, torch.Tensor): Eigenvalues (MO energies), eigenvectors (MO coeffs)
+        """
+
+    def __call__(self, h, s_chol, ogdim):
+        """
+        Solver for generalized eigenvalue problem, finding the molecular energies (eigenvalues) and orbital coefficients (eigenvectors)
+
+        :param h: Hamiltionian
+        :type h: jax.Array
+        :param s_chol: (Inverse) of the Cholesky decomposition of overlap matrix S
+        :type s_chol: jax.Array
+        :param ogdim: The original dimensions of the input array, or their current shapes if not padded. JAX jit compilations require static arrays to avoid recompilation with each call, and backpropagating through this eigendecomposition with padded arrays results in NaNs. Arrays are masked to original dimensions to avoid this.
+        :type ogdim: tuple, iterable of some original shape
+        :return: The eigenvalues (molecular orbital enegies) and eigenvectors (molecular orbital coefficients)
+        :rtype: tuple of jax.Arrays
+        """
+        upper=False
+        UPLO = "U" if upper else "L"
+        dim = ogdim[0]
+        diff = h.shape[0]
+        mask_h = h[:dim, :dim]
+        mask_s = s_chol[:dim, :dim]
+        e, c = jnp.linalg.eigh(jnp.einsum('ij,...jk,kl->...il',mask_s, mask_h, mask_s.T), UPLO=UPLO)
+        c = jnp.einsum('ij,...jk ->...ik',mask_s.T, c)
+        e = pad_array(e, e, shape=[diff])
+        c = pad_array(c, c, shape=(diff,diff))
+        return e, c
