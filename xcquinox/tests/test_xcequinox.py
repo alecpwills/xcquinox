@@ -14,6 +14,21 @@ from pyscf.dft import UKS as pUKS
 
 import xcquinox as xce
 
+#for some tests, pre-compute the calculations
+g_h2 = Atoms('HH', positions=[[ 0.      ,  0.      ,  0.371395],
+                            [ 0.      ,  0.      , -0.371395]])
+
+g_name, g_mol = xce.utils.ase_atoms_to_mol(g_h2, basis='def2tzvpd')
+print('Doing short RKS PBE calculation for inputs...')
+mf_ad = dft.RKS(g_mol, xc='PBE')
+mf_ad_e = mf_ad.kernel()
+print('Doing short UHF/UKS PBE calculation for inputs...')
+mf_uhf = scf.UHF(g_mol)
+e_tot = mf_uhf.kernel()
+dm = mf_uhf.make_rdm1()
+mf_uks = pUKS(g_mol, xc='PBE')
+e_uks = mf_uks.kernel()
+
 
 def test_xcquinox_imported():
     """Sample test, will always pass so long as import statement worked."""
@@ -104,15 +119,8 @@ def test_xc_pw_c():
     assert eldax
 
 def test_xc_defaults():
-    h2 = Atoms('HH', positions=[[ 0.      ,  0.      ,  0.371395],
-                                [ 0.      ,  0.      , -0.371395]])
-    
-    name, mol = xce.utils.ase_atoms_to_mol(h2, basis='def2tzvpd')
-    print('Doing short PBE calculation for inputs...')
-    mf = dft.RKS(mol, xc='PBE')
-    e_tot = mf.kernel()
-    dm = mf.make_rdm1()
-    ao_eval = jnp.array(mf._numint.eval_ao(mol, mf.grids.coords, deriv=2))
+    dm = mf_ad.make_rdm1()
+    ao_eval = jnp.array(mf_ad._numint.eval_ao(g_mol, mf_ad.grids.coords, deriv=2))
 
     eX = xce.net.eX(n_input = 2,
                 n_hidden = 16,
@@ -130,22 +138,11 @@ def test_xc_defaults():
                     seed = 9001)
     xc = xce.xc.eXC(grid_models = [eX, eC], level=3)
 
-    exc = xc(dm, ao_eval, mf.grids.weights)
+    exc = xc(dm, ao_eval, mf_ad.grids.weights)
     assert exc
 
 def test_xc_spinpol_defaults():
-    h2 = Atoms('HH', positions=[[ 0.      ,  0.      ,  0.371395],
-                                [ 0.      ,  0.      , -0.371395]])
-    
-    name, mol = xce.utils.ase_atoms_to_mol(h2, basis='def2tzvpd')
-    print('Doing short PBE calculation for inputs...')
-    mf = scf.UHF(mol)
-    e_tot = mf.kernel()
-    dm = mf.make_rdm1()
-    mfuks = pUKS(mol, xc='PBE')
-    e_uks = mfuks.kernel()
-
-    ao_eval = jnp.array(mfuks._numint.eval_ao(mol, mfuks.grids.coords, deriv=2))
+    ao_eval = jnp.array(mf_uks._numint.eval_ao(g_mol, mf_uks.grids.coords, deriv=2))
 
     eX = xce.net.eX(n_input = 2,
                 n_hidden = 16,
@@ -163,6 +160,43 @@ def test_xc_spinpol_defaults():
                     seed = 9001)
     xc = xce.xc.eXC(grid_models = [eX, eC], level=3, debug=True)
 
-    exc = xc(dm, ao_eval, mfuks.grids.weights)
+    exc = xc(dm, ao_eval, mf_uks.grids.weights)
     assert exc
 
+def test_xc_utils_get_spin():
+    h = Atoms('H', positions=[[0,0,0]])
+    spin = xce.utils.get_spin(h)
+    assert spin == 1
+    #try with radical signs, specified spins, and openshell
+    h2 = Atoms('HH', positions=[[ 0.      ,  0.      ,  0.371395],
+                            [ 0.      ,  0.      , -0.371395]])
+    spin = xce.utils.get_spin(h2)
+    assert spin == 0
+    h2.info['spin'] = 3
+    spin = xce.utils.get_spin(h2)
+    h2.info['spin'] = None
+    assert spin == 3
+    h2.info['name'] = 'H2 radical'
+    spin = xce.utils.get_spin(h2)
+    h2.info['name'] = 'H2'
+    assert spin == 1
+    h2.info['openshell'] = True
+    spin = xce.utils.get_spin(h2)
+    assert spin == 2
+
+def test_utils_make_rdm1():
+    mrdm = xce.utils.make_rdm1()
+
+    #1D test
+    moocc = mf_ad.mo_occ
+    mocoe = mf_ad.mo_coeff
+    dm = mf_ad.make_rdm1()
+    dm2 = mrdm(mocoe, moocc)
+    assert jnp.allclose(dm, dm2)
+
+    #2D test
+    moocc = mf_uks.mo_occ
+    mocoe = mf_uks.mo_coeff
+    dm = mf_uks.make_rdm1()
+    dm2 = mrdm(mocoe, moocc)
+    assert jnp.allclose(dm, dm2)
