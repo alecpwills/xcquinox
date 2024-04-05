@@ -2,6 +2,7 @@
 import xcquinox.net
 import xcquinox.xc
 import xcquinox.utils
+import xcquinox.train
 
 # from ._version import get_versions
 # __version__ = get_versions()['version']
