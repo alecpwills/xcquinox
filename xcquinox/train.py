@@ -15,6 +15,28 @@ class xcTrainer(eqx.Module):
     opt_state: tuple
     
     def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True):
+        '''
+        The base xcTrainer class, whose forward pass computes the training loop.
+
+        :param model: The network which will be trained
+        :type model: xcquinox.xc.eXC
+        :param optim: optax optimizer object, e.g. optax.adamw(1e-4)
+        :type optim: optax.GradientTransformation
+        :param loss: The loss function object that computes the loss to be trained against.
+        :type loss: eqx.Module
+        :param steps: Length of the training cycle, i.e. the number of epochs, defaults to 50
+        :type steps: int, optional
+        :param print_every: The number of epochs between loss information printing, defaults to 1
+        :type print_every: int, optional
+        :param clear_every: The number of epochs between calls to clear the cache, defaults to 1
+        :type clear_every: int, optional
+        :param memory_profile: If True, will write memory profiles at every epoch, to be used with `pprof`, defaults to False
+        :type memory_profile: bool, optional
+        :param verbose: If true, will print various extra information during the training cycle, defaults to False
+        :type verbose: bool, optional
+        :param do_jit: Controls whether the update function is jitted or not, useful for debugging if False, defaults to True
+        :type do_jit: bool, optional
+        '''
         super().__init__()
         self.model = model
         self.optim = optim
@@ -31,6 +53,9 @@ class xcTrainer(eqx.Module):
     #     object.__setattr__(self, attr, value)
     
     def clear_caches(self):
+        '''
+        A function that attempts to clear memory associated to jax caching
+        '''
         for module_name, module in sys.modules.items():
             if module_name.startswith("jax"):
                 if module_name not in ["jax.interpreters.partial_eval"]:
@@ -45,10 +70,28 @@ class xcTrainer(eqx.Module):
 
 
     def vprint(self, output):
+        '''
+        Custom print function. If self.verbose, will print the called output.
+
+        :param output: The string or value to be printed.
+        :type output: printable object
+        '''
         if self.verbose:
             print(output)
 
     def make_step(self, model, opt_state, *args):
+        '''
+        The update step for the training cycle.
+
+        *args input are the inputs to the self.loss function.
+
+        :param model: The model whose weights and biases are to be updated given the loss in self.loss
+        :type model: xcquinox.xc.eXC
+        :param opt_state: The state of the optimizer to drive the update
+        :type opt_state: result of optim.update
+        :return: The updated model
+        :rtype: xcquinox.xc.eXC
+        '''
         self.vprint('loss_value, grads')
         loss_value, grads = eqx.filter_value_and_grad(self.loss)(model, *args)
         self.vprint('updates, opt_state')
@@ -59,7 +102,19 @@ class xcTrainer(eqx.Module):
 
 
     def __call__(self, epoch_batch_len, model, *loss_input_lists):
-        
+        '''
+        Forward pass of the xcTrainer object, which goes through the training cycle.
+
+        *loss_input_lists are positional arguments, each a list of length [epoch_batch_len elements], corresponding to the proper input order and values for the self.loss function
+        I.e., for the E_loss object, these would be [density matrix list], [reference energy list], [ao_eval list], [grid_weight list]
+
+        :param epoch_batch_len: The number of batches in a given epoch (i.e., the number of molecules one is training on that are looped over)
+        :type epoch_batch_len: int
+        :param model: The baseline model to update in the training process
+        :type model: xcquinox.xc.eXC
+        :return: The updated model after the training cycle completes
+        :rtype: xcquinox.xc.eXC
+        '''
         for step in range(self.steps):
             print('Epoch {}'.format(step))
             epoch_loss = 0

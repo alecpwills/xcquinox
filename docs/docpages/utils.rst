@@ -21,48 +21,48 @@ Utility Structures and Functions
 ``make_rdm1``
 ********************
 .. autoclass:: xcquinox.utils.make_rdm1
-    :members:
     :special-members: __init__, __call__
+    :members:
     :show-inheritance:
 
 ``get_rho``
 ********************
 .. autoclass:: xcquinox.utils.get_rho
-    :members:
     :special-members: __init__, __call__
+    :members:
     :show-inheritance:
 
 ``energy_tot``
 ********************
 .. autoclass:: xcquinox.utils.energy_tot
-    :members:
     :special-members: __init__, __call__
+    :members:
     :show-inheritance:
 
 ``get_fock``
 ********************
 .. autoclass:: xcquinox.utils.get_fock
-    :members:
     :special-members: __init__, __call__
+    :members:
     :show-inheritance:
 
 ``get_hcore``
 ********************
 .. autoclass:: xcquinox.utils.get_hcore
-    :members:
     :special-members: __init__, __call__
+    :members:
     :show-inheritance:
 
 ``get_veff``
 ********************
 .. autoclass:: xcquinox.utils.get_veff
-    :members:
     :special-members: __init__, __call__
+    :members:
     :show-inheritance:
 
 ``eig``
 ********************
 .. autoclass:: xcquinox.utils.eig
-    :members:
     :special-members: __init__, __call__
+    :members:
     :show-inheritance:
