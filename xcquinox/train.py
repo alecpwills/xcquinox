@@ -120,7 +120,7 @@ class xcTrainer(eqx.Module):
             epoch_loss = 0
             if step == 0 and self.do_jit:
                 fmake_step = eqx.filter_jit(self.make_step)
-            elif (step % self.clear_every) == 0 and (step > 0) and self.do_jit:
+            elif ( (step % self.clear_every) == 0 ) and (step > 0) and self.do_jit:
                 fmake_step = eqx.filter_jit(self.make_step)
             else:
                 fmake_step = self.make_step
@@ -143,7 +143,7 @@ class xcTrainer(eqx.Module):
     
                 print('Batch Loss = {}'.format(this_loss))
                 epoch_loss += this_loss
-                if (step % self.clear_every) and (step > 0) == 0:
+                if ( (step % self.clear_every) == 0 ) and ( (step > 0) == 0 ):
                     fmake_step._clear_cache()
                     eqx.clear_caches()
                     jax.clear_backends()
@@ -152,11 +152,11 @@ class xcTrainer(eqx.Module):
                     self.loss.clear_cache()
                     xla._xla_callable.cache_clear()
     
-            if (step % self.print_every) == 0 or (step == self.steps - 1):
+            if ( (step % self.print_every) == 0 ) or (step == self.steps - 1):
                 print(
                     f"{step=}, epoch_train_loss={epoch_loss}"
                 )
-            if (step % self.clear_every) and (step > 0):
+            if ( (step % self.clear_every) == 0 ) and (step > 0):
                 fmake_step._clear_cache()
                 eqx.clear_caches()
                 jax.clear_backends()
