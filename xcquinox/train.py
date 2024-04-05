@@ -1,5 +1,5 @@
 import equinox as eqx
-import optax, sys, gc, jax
+import optax, sys, gc, jax, os
 from jax.interpreters import xla
 
 class xcTrainer(eqx.Module):
@@ -147,9 +147,6 @@ class xcTrainer(eqx.Module):
                     eqx.clear_caches()
                     jax.clear_backends()
                     jax.clear_caches()
-                    self.clear_caches()
-                    self.loss.clear_cache()
-                    xla._xla_callable.cache_clear()
     
             if ( (step % self.print_every) == 0 ) or (step == self.steps - 1):
                 print(
@@ -159,8 +156,5 @@ class xcTrainer(eqx.Module):
                 eqx.clear_caches()
                 jax.clear_backends()
                 jax.clear_caches()
-                self.clear_caches()
-                self.loss.clear_cache()
-                xla._xla_callable.cache_clear()
 
         return inp_model

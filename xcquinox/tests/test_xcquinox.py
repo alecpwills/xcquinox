@@ -3,9 +3,11 @@ Unit and regression test for the xcquinox package.
 """
 
 # Import package, test suite, and other packages as needed
-import sys
+import sys, os
 import jax, optax
 import jax.numpy as jnp
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
+os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 
 import pytest
 from ase import Atoms
