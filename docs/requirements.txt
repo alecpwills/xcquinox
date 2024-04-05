@@ -4,3 +4,4 @@ jax[cpu]
 equinox
 ase
 pyscfad
+optax
