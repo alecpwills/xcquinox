@@ -165,4 +165,4 @@ class xcTrainer(eqx.Module):
                 self.loss.clear_cache()
                 xla._xla_callable.cache_clear()
 
-        return model
+        return inp_model

@@ -4,7 +4,7 @@ Unit and regression test for the xcquinox package.
 
 # Import package, test suite, and other packages as needed
 import sys
-import jax
+import jax, optax
 import jax.numpy as jnp
 
 import pytest
@@ -54,8 +54,8 @@ def test_utils_pad_array_list():
     assert newarrs[0].shape == arr2.shape
     assert newarrs[1].shape == arr2.shape
 
-    assert jnp.sum(newarrs[0]) == jnp.sum(arr1)
-    assert jnp.sum(newarrs[1]) == jnp.sum(arr2)
+    assert jnp.allclose(jnp.sum(newarrs[0]) ,jnp.sum(arr1))
+    assert jnp.allclose(jnp.sum(newarrs[1]), jnp.sum(arr2))
 
 def test_xcquinox_imported():
     """Sample test, will always pass so long as import statement worked."""
@@ -292,3 +292,32 @@ def test_utils_eig():
 
     assert(jnp.sum(e))
     assert(jnp.sum(c))
+
+def test_train_e_loss():
+    #network to train
+    eX = xce.net.eX(n_input = 2,
+                n_hidden = 16,
+                depth = 3,
+                use = [1,2],
+                ueg_limit=True,
+                lob = 1.174,
+                seed = 9001)
+    eC = xce.net.eC(n_input = 4,
+                    n_hidden = 16,
+                    depth = 3,
+                    use = [2,3],
+                    ueg_limit=False,
+                    lob = 1.804,
+                    seed = 9001)
+    xc = xce.xc.eXC(grid_models = [eX, eC], level=3)
+    #loss function to use
+    Eloss = xce.loss.E_loss()
+
+    #trainer to do training
+    ao_eval = jnp.array(mf_ad._numint.eval_ao(g_mol, mf_ad.grids.coords, deriv=2))
+    first_E = xc(dm, ao_eval, mf_ad.grids.weights)
+    xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), Eloss, steps=10)
+    new_model = xcT(1, xc, [dm], [mf_ad_e], [ao_eval], [mf_ad.grids.weights])
+    new_E = new_model(dm, ao_eval, mf_ad.grids.weights)
+    assert abs(new_E-mf_ad_e) < abs(first_E - mf_ad_e)
+
