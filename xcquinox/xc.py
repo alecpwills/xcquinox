@@ -137,6 +137,76 @@ class eXC(eqx.Module):
             self.exx_a = 0
         else:
             self.exx_a = exx_a
+
+    def __call__(self, dm, ao_eval, grid_weights):
+        """
+        __call__ Forward call for the XC network to get the grid point e_xc
+
+        Generates the density-on-grid from the density matrix, atomic orbital evaluation, and the grid weights from a :pyscfad: calculation.
+
+
+        :param dm: Density matrix
+        :type dm: jax.Array
+        :param ao_eval: Atomic orbitals evaluated on the grid
+        :type ao_eval: jax.Array
+        :param grid_weights: Grid weights associated to the grid on which the atomic orbitals are evaluated
+        :type grid_weights: jax.Array
+        :return: Exc, exchange-correlation energy from integrating the network calls across the grid
+        :rtype: float
+        """
+        Exc = 0
+        if self.grid_models or self.heg_mult:
+            if ao_eval.ndim==2:
+                ao_eval = jnp.expand_dims(ao_eval,0)
+            else:
+                ao_eval = ao_eval
+
+            # Create density (and gradients) from atomic orbitals evaluated on grid
+            # and density matrix
+            # rho[ijsp]: del_i phi del_j phi dm (s: spin, p: grid point index)
+            rho = jnp.einsum('xij,yik,...jk->xy...i', ao_eval, ao_eval, dm)+1e-10
+            
+            rho0 = rho[0,0]
+            drho = rho[0,1:4] + rho[1:4,0]
+            tau = 0.5*(rho[1,1] + rho[2,2] + rho[3,3])
+
+            non_loc = jnp.zeros_like(tau)
+
+            if dm.ndim == 3: # If unrestricted (open-shell) calculation
+
+                # Density
+                rho0_a = rho0[0]
+                rho0_b = rho0[1]
+
+                # jnp.einsumed density gradient
+                gamma_a, gamma_b = jnp.einsum('ij,ij->j',drho[:,0],drho[:,0]), jnp.einsum('ij,ij->j',drho[:,1],drho[:,1])
+                gamma_ab = jnp.einsum('ij,ij->j',drho[:,0],drho[:,1])
+
+                # Kinetic energy density
+                tau_a, tau_b = tau
+
+                # E.-static
+                non_loc_a, non_loc_b = non_loc
+            else:
+                rho0_a = rho0_b = rho0*0.5
+                gamma_a=gamma_b=gamma_ab= jnp.einsum('ij,ij->j',drho[:],drho[:])*0.25
+                tau_a = tau_b = tau*0.5
+                non_loc_a=non_loc_b = non_loc*0.5
+
+            # xc-energy per unit particle
+            exc = self.eval_grid_models(jnp.concatenate([jnp.expand_dims(rho0_a,-1),
+                                                    jnp.expand_dims(rho0_b,-1),
+                                                    jnp.expand_dims(gamma_a,-1),
+                                                    jnp.expand_dims(gamma_ab,-1),
+                                                    jnp.expand_dims(gamma_b,-1),
+                                                    jnp.expand_dims(jnp.zeros_like(rho0_a),-1), #Dummy for laplacian
+                                                    jnp.expand_dims(jnp.zeros_like(rho0_a),-1), #Dummy for laplacian
+                                                    jnp.expand_dims(tau_a,-1),
+                                                    jnp.expand_dims(tau_b,-1),
+                                                    jnp.expand_dims(non_loc_a,-1),
+                                                    jnp.expand_dims(non_loc_b,-1)],axis=-1))
+            Exc += jnp.sum(((rho0_a + rho0_b)*exc[:,0])*grid_weights)
+        return Exc
             
     # Density (rho)
     def l_1(self, rho):
@@ -300,77 +370,6 @@ class eXC(eqx.Module):
         if spin_scaling:
             descr = jnp.transpose(jnp.reshape(descr,(jnp.shape(descr)[0],-1,2)), (2,0,1)) 
         return descr
-
-
-    def __call__(self, dm, ao_eval, grid_weights):
-        """
-        __call__ Forward call for the XC network to get the grid point e_xc
-
-        Generates the density-on-grid from the density matrix, atomic orbital evaluation, and the grid weights from a :pyscfad: calculation.
-
-
-        :param dm: Density matrix
-        :type dm: jax.Array
-        :param ao_eval: Atomic orbitals evaluated on the grid
-        :type ao_eval: jax.Array
-        :param grid_weights: Grid weights associated to the grid on which the atomic orbitals are evaluated
-        :type grid_weights: jax.Array
-        :return: Exc, exchange-correlation energy from integrating the network calls across the grid
-        :rtype: float
-        """
-        Exc = 0
-        if self.grid_models or self.heg_mult:
-            if ao_eval.ndim==2:
-                ao_eval = jnp.expand_dims(ao_eval,0)
-            else:
-                ao_eval = ao_eval
-
-            # Create density (and gradients) from atomic orbitals evaluated on grid
-            # and density matrix
-            # rho[ijsp]: del_i phi del_j phi dm (s: spin, p: grid point index)
-            rho = jnp.einsum('xij,yik,...jk->xy...i', ao_eval, ao_eval, dm)+1e-10
-            
-            rho0 = rho[0,0]
-            drho = rho[0,1:4] + rho[1:4,0]
-            tau = 0.5*(rho[1,1] + rho[2,2] + rho[3,3])
-
-            non_loc = jnp.zeros_like(tau)
-
-            if dm.ndim == 3: # If unrestricted (open-shell) calculation
-
-                # Density
-                rho0_a = rho0[0]
-                rho0_b = rho0[1]
-
-                # jnp.einsumed density gradient
-                gamma_a, gamma_b = jnp.einsum('ij,ij->j',drho[:,0],drho[:,0]), jnp.einsum('ij,ij->j',drho[:,1],drho[:,1])
-                gamma_ab = jnp.einsum('ij,ij->j',drho[:,0],drho[:,1])
-
-                # Kinetic energy density
-                tau_a, tau_b = tau
-
-                # E.-static
-                non_loc_a, non_loc_b = non_loc
-            else:
-                rho0_a = rho0_b = rho0*0.5
-                gamma_a=gamma_b=gamma_ab= jnp.einsum('ij,ij->j',drho[:],drho[:])*0.25
-                tau_a = tau_b = tau*0.5
-                non_loc_a=non_loc_b = non_loc*0.5
-
-            # xc-energy per unit particle
-            exc = self.eval_grid_models(jnp.concatenate([jnp.expand_dims(rho0_a,-1),
-                                                    jnp.expand_dims(rho0_b,-1),
-                                                    jnp.expand_dims(gamma_a,-1),
-                                                    jnp.expand_dims(gamma_ab,-1),
-                                                    jnp.expand_dims(gamma_b,-1),
-                                                    jnp.expand_dims(jnp.zeros_like(rho0_a),-1), #Dummy for laplacian
-                                                    jnp.expand_dims(jnp.zeros_like(rho0_a),-1), #Dummy for laplacian
-                                                    jnp.expand_dims(tau_a,-1),
-                                                    jnp.expand_dims(tau_b,-1),
-                                                    jnp.expand_dims(non_loc_a,-1),
-                                                    jnp.expand_dims(non_loc_b,-1)],axis=-1))
-            Exc += jnp.sum(((rho0_a + rho0_b)*exc[:,0])*grid_weights)
-        return Exc
 
     def eval_grid_models(self, rho):
         """

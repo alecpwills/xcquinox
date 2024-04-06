@@ -48,58 +48,6 @@ class xcTrainer(eqx.Module):
         self.verbose = verbose
         self.do_jit = do_jit
         self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array)) 
-    
-    # def __post_init__(self, attr, value):
-    #     object.__setattr__(self, attr, value)
-    
-    def clear_caches(self):
-        '''
-        A function that attempts to clear memory associated to jax caching
-        '''
-        for module_name, module in sys.modules.items():
-            if module_name.startswith("jax"):
-                if module_name not in ["jax.interpreters.partial_eval"]:
-                    for obj_name in dir(module):
-                        obj = getattr(module, obj_name)
-                        if hasattr(obj, "cache_clear"):
-                            try:
-                                obj.cache_clear()
-                            except:
-                                pass
-        gc.collect()
-
-
-    def vprint(self, output):
-        '''
-        Custom print function. If self.verbose, will print the called output.
-
-        :param output: The string or value to be printed.
-        :type output: printable object
-        '''
-        if self.verbose:
-            print(output)
-
-    def make_step(self, model, opt_state, *args):
-        '''
-        The update step for the training cycle.
-
-        *args input are the inputs to the self.loss function.
-
-        :param model: The model whose weights and biases are to be updated given the loss in self.loss
-        :type model: xcquinox.xc.eXC
-        :param opt_state: The state of the optimizer to drive the update
-        :type opt_state: result of optim.update
-        :return: The updated model
-        :rtype: xcquinox.xc.eXC
-        '''
-        self.vprint('loss_value, grads')
-        loss_value, grads = eqx.filter_value_and_grad(self.loss)(model, *args)
-        self.vprint('updates, opt_state')
-        updates, opt_state = self.optim.update(grads, opt_state, model)
-        self.vprint('model update')
-        model = eqx.apply_updates(model, updates)
-        return model, opt_state, loss_value
-
 
     def __call__(self, epoch_batch_len, model, *loss_input_lists):
         '''
@@ -158,3 +106,55 @@ class xcTrainer(eqx.Module):
                 jax.clear_caches()
 
         return inp_model
+
+    def make_step(self, model, opt_state, *args):
+        '''
+        The update step for the training cycle.
+
+        *args input are the inputs to the self.loss function.
+
+        :param model: The model whose weights and biases are to be updated given the loss in self.loss
+        :type model: xcquinox.xc.eXC
+        :param opt_state: The state of the optimizer to drive the update
+        :type opt_state: result of optim.update
+        :return: The updated model
+        :rtype: xcquinox.xc.eXC
+        '''
+        self.vprint('loss_value, grads')
+        loss_value, grads = eqx.filter_value_and_grad(self.loss)(model, *args)
+        self.vprint('updates, opt_state')
+        updates, opt_state = self.optim.update(grads, opt_state, model)
+        self.vprint('model update')
+        model = eqx.apply_updates(model, updates)
+        return model, opt_state, loss_value
+
+    # def __post_init__(self, attr, value):
+    #     object.__setattr__(self, attr, value)
+    
+    def clear_caches(self):
+        '''
+        A function that attempts to clear memory associated to jax caching
+        '''
+        for module_name, module in sys.modules.items():
+            if module_name.startswith("jax"):
+                if module_name not in ["jax.interpreters.partial_eval"]:
+                    for obj_name in dir(module):
+                        obj = getattr(module, obj_name)
+                        if hasattr(obj, "cache_clear"):
+                            try:
+                                obj.cache_clear()
+                            except:
+                                pass
+        gc.collect()
+
+
+    def vprint(self, output):
+        '''
+        Custom print function. If self.verbose, will print the called output.
+
+        :param output: The string or value to be printed.
+        :type output: printable object
+        '''
+        if self.verbose:
+            print(output)
+

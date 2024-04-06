@@ -147,6 +147,61 @@ def get_spin(at):
             spin = 0
     return spin
 
+def get_dm_moe(dm, eri, vxc_grad_func, mo_occ, hc, s, ogd, alpha0=0.7):
+    """
+    Generates the DM, molecular orbital energies, and molecular orbital coefficients for a model
+
+    _extended_summary_
+
+    :param dm: The initial DM starting point for the calculation.
+    :type dm: jax.Array
+    :param eri: The electron repulsion integrals to use in generating the effective potential
+    :type eri: jax.Array
+    :param vxc_grad_func: A function F(dm) = E, with which the derivative is taken to generate Vxc
+    :type vxc_grad_func: function
+    :param mo_occ: The molecular orbital occupation numbers for the molecule
+    :type mo_occ: jax.Array
+    :param hc: The molecule's core Hamiltonian
+    :type hc: jax.Array
+    :param s: The molecule's overlap matrix
+    :type s: jax.Array
+    :param ogd: The molecule's original DM dimensions
+    :type ogd: tuple/jax.Array
+    :param alpha0: The mixing parameter used for the one-shot DM creation, defaults to 0.7
+    :type alpha0: float, optional
+    :return: tuple of (density matrix, molecular orbital energies, molecular orbital coefficients)
+    :rtype: tuple of jax.Array
+    """
+    L = jnp.eye(dm.shape[-1])
+    scaling = jnp.ones([dm.shape[-1]]*2)
+    dm_old = dm
+    def true_func(vxc):
+        vxc.at[1].set(jnp.zeros_like(vxc[1]))
+        return vxc
+    def false_func(vxc):
+        return vxc
+    alpha = jnp.power(alpha0, 0)+0.3
+    beta = (1-alpha)
+    dm = alpha * dm + beta * dm_old
+    dm_old = dm
+    veff = get_veff()(dm, eri)
+    vxc = jax.grad(vxc_grad_func)(dm)
+    if vxc.ndim > 2:
+        vxc = jnp.einsum('ij,xjk,kl->xil',L,vxc,L.T)
+        vxc = jnp.where(jnp.expand_dims(scaling, 0) > 0 , vxc, jnp.expand_dims(scaling,0))
+    else:
+        vxc = jnp.matmul(L,jnp.matmul(vxc ,L.T))
+        vxc = jnp.where(scaling > 0 , vxc, scaling)
+    
+    jax.lax.cond(jnp.sum(mo_occ) == 1, true_func, false_func, vxc)
+    
+    veff += vxc
+    f = get_fock()(hc, veff)
+    mo_e, mo_c = eig()(f+1e-6*jax.random.uniform(key=jax.random.PRNGKey(92017), shape=f.shape), s, ogd)
+    dm = make_rdm1()(mo_c, mo_occ)
+    return dm, mo_e, mo_c
+
+
 class make_rdm1(eqx.Module):
 
     def __init__(self):

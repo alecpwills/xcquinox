@@ -18,6 +18,11 @@ Utility Structures and Functions
 ********************
 .. autofunction:: xcquinox.utils.get_spin
 
+``get_dm_moe``
+********************
+.. autofunction:: xcquinox.utils.get_dm_moe
+
+
 ``make_rdm1``
 ********************
 .. autoclass:: xcquinox.utils.make_rdm1
