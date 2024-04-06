@@ -113,6 +113,9 @@ class eX(eqx.Module):
         :rtype: jax.Array
         """
         squeezed = jnp.squeeze(jax.vmap(jax.vmap(self.net), in_axes=1)(rho[...,self.use])).T
+        # print(f"eX.__call__, rho shape: {rho.shape}")
+        # squeezed = jnp.squeeze(jax.vmap(self.net)(rho))
+
         if self.ueg_limit:
             ueg_lim = rho[...,self.use[0]]
             if len(self.use) > 1:
