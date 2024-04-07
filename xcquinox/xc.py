@@ -135,7 +135,6 @@ class eXC(eqx.Module):
         self.epsilon = epsilon
         if level > 3:
             print('WARNING: Non-local models highly experimental and likely will not work ')
-            assert is_cider,"CIDER Non-local descriptor package (CiderPress2022/mldftdat) not found"
         self.loge = 1e-5
         self.s_gam = 1
         self.debug = debug
