@@ -18,4 +18,4 @@ dependencies:
   - equinox
   - ase
   - optax
-  - mldftdat @ git@github.com:alecpwills/xcquinox-cider.git
+  - mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
