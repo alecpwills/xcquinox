@@ -58,7 +58,7 @@ napoleon_google_docstring = False
 napoleon_use_param = False
 napoleon_use_ivar = True
 
-autodoc_mock_imports = ["jax", "equinox", "ase", "pyscfad", "mldftdat"]
+autodoc_mock_imports = ["jax", "equinox", "ase", "pyscfad", "mldftdat", "psutil"]
 autodoc_default_options = {
     'member-order': 'bysource',
 }

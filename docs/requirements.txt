@@ -6,3 +6,4 @@ ase
 pyscfad
 optax
 mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
+psutil
