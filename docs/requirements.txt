@@ -5,3 +5,4 @@ equinox
 ase
 pyscfad
 optax
+mldftdat @ git@github.com:alecpwills/xcquinox-cider.git

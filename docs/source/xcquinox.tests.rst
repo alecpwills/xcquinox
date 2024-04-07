@@ -1,21 +1,21 @@
-xcquinox.tests package
-======================
+.. xcquinox.tests package
+.. ======================
 
-Submodules
-----------
+.. Submodules
+.. ----------
 
-xcquinox.tests.test\_xcquinox module
-------------------------------------
+.. xcquinox.tests.test\_xcquinox module
+.. ------------------------------------
 
-.. automodule:: xcquinox.tests.test_xcquinox
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. .. automodule:: xcquinox.tests.test_xcquinox
+..    :members:
+..    :undoc-members:
+..    :show-inheritance:
 
-Module contents
----------------
+.. Module contents
+.. ---------------
 
-.. automodule:: xcquinox.tests
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. .. automodule:: xcquinox.tests
+..    :members:
+..    :undoc-members:
+..    :show-inheritance:

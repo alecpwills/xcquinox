@@ -1,14 +1,6 @@
 xcquinox package
 ================
 
-Subpackages
------------
-
-.. toctree::
-   :maxdepth: 4
-
-   xcquinox.tests
-
 Submodules
 ----------
 

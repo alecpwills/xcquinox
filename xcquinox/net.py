@@ -112,9 +112,11 @@ class eX(eqx.Module):
         :return: The exchange energy on the grid
         :rtype: jax.Array
         """
-        squeezed = jnp.squeeze(jax.vmap(jax.vmap(self.net), in_axes=1)(rho[...,self.use])).T
-        # print(f"eX.__call__, rho shape: {rho.shape}")
-        # squeezed = jnp.squeeze(jax.vmap(self.net)(rho))
+        if self.n_input < 4:
+            squeezed = jnp.squeeze(jax.vmap(jax.vmap(self.net), in_axes=1)(rho[...,self.use])).T
+        else:
+            print(f"eX.__call__, rho shape: {rho.shape}")
+            squeezed = jnp.squeeze(jax.vmap(self.net)(rho))
 
         if self.ueg_limit:
             ueg_lim = rho[...,self.use[0]]
@@ -123,7 +125,7 @@ class eX(eqx.Module):
             else:
                 ueg_lim_a = 0
             if len(self.use) > 2:
-                ueg_lim_nl = jnp.sum(rho[...,self.use[2:]],dim=-1)
+                ueg_lim_nl = jnp.sum(rho[...,self.use[2:]],axis=-1)
             else:
                 ueg_lim_nl = 0
         else:
@@ -217,6 +219,7 @@ class eC(eqx.Module):
         :return: The exchange energy on the grid
         :rtype: jax.Array
         """
+        print(f"eC.__call__, rho shape: {rho.shape}")
         squeezed = jnp.squeeze(-jax.vmap(self.net)(rho))
 
         if self.ueg_limit:

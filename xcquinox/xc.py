@@ -1,7 +1,16 @@
 import numpy as np
 import equinox as eqx
-import jax
+import jax, os, sys
 import jax.numpy as jnp
+
+#check if cider is in the environment
+is_cider = os.environ.get('CIDERPATH', None)
+if is_cider:
+    sys.path.append(is_cider)
+    from mldftdat.density import get_exchange_descriptors2
+    from mldftdat.analyzers import RKSAnalyzer
+else:
+    pass
 
 class LDA_X(eqx.Module):
     def __init__(self):
@@ -92,9 +101,12 @@ class eXC(eqx.Module):
     pw_model: eqx.Module
     model_mult: list
     debug: bool
+    nlstart_i: int
+    nlend_i: int
     
     def __init__(self, grid_models=[], heg_mult=True, pw_mult=True,
-                    level = 1, exx_a=None, epsilon=1e-8, debug=False):
+                    level = 1, exx_a=None, epsilon=1e-8, debug=False,
+                nlstart_i = 3, nlend_i = 12):
         """
         __init__ Defines the XC functional
 
@@ -114,6 +126,10 @@ class eXC(eqx.Module):
         :type epsilon: float, optional
         :param debug: Controls printing of various stats throughout, defaults to False
         :type debug: bool, optional
+        :param nlstart_i: If level > 3, this controls the number of CIDER Nonlocal parameters are selected, defaults to 3 as the first nonlocal CIDER descriptor
+        :type nlstart_i: int, optional
+        :param nlend_i: If level > 3, this controls the number of CIDER Nonlocal parameters are selected, defaults to 12 as the last nonlocal CIDER descriptor
+        :type nlend_i: int, optional
 
         """
         super().__init__()
@@ -124,9 +140,12 @@ class eXC(eqx.Module):
         self.epsilon = epsilon
         if level > 3:
             print('WARNING: Non-local models highly experimental and likely will not work ')
+            assert is_cider,"CIDER Non-local descriptor package (CiderPress2022/mldftdat) not found"
         self.loge = 1e-5
         self.s_gam = 1
         self.debug = debug
+        self.nlstart_i = nlstart_i
+        self.nlend_i = nlend_i
 
         if heg_mult:
             self.heg_model = LDA_X()
@@ -138,7 +157,7 @@ class eXC(eqx.Module):
         else:
             self.exx_a = exx_a
 
-    def __call__(self, dm, ao_eval, grid_weights):
+    def __call__(self, dm, ao_eval, grid_weights, mf = None):
         """
         __call__ Forward call for the XC network to get the grid point e_xc
 
@@ -151,10 +170,14 @@ class eXC(eqx.Module):
         :type ao_eval: jax.Array
         :param grid_weights: Grid weights associated to the grid on which the atomic orbitals are evaluated
         :type grid_weights: jax.Array
+        :param mf: A pyscf(ad) converged calculation kernel if self.level > 3, used for building the CIDER nonlocal descriptors, defaults to None
+        :type mf: pyscfad.dft.RKS kernel
         :return: Exc, exchange-correlation energy from integrating the network calls across the grid
         :rtype: float
         """
         Exc = 0
+        if self.level > 3:
+            assert mf is not None
         if self.grid_models or self.heg_mult:
             if ao_eval.ndim==2:
                 ao_eval = jnp.expand_dims(ao_eval,0)
@@ -204,7 +227,8 @@ class eXC(eqx.Module):
                                                     jnp.expand_dims(tau_a,-1),
                                                     jnp.expand_dims(tau_b,-1),
                                                     jnp.expand_dims(non_loc_a,-1),
-                                                    jnp.expand_dims(non_loc_b,-1)],axis=-1))
+                                                    jnp.expand_dims(non_loc_b,-1)],axis=-1),
+                                       mf = mf, dm = dm)
             Exc += jnp.sum(((rho0_a + rho0_b)*exc[:,0])*grid_weights)
         return Exc
             
@@ -290,8 +314,27 @@ class eXC(eqx.Module):
         u = nl[:,:1]/((jnp.expand_dims(rho, -1)**(1/3))*self.nl_ueg[:,:1] + self.epsilon)
         wu = nl[:,1:]/((jnp.expand_dims(rho, -1))*self.nl_ueg[:,1:] + self.epsilon)
         return jax.nn.relu(jnp.concatenate([u,wu],axis=-1))
+
+    def nl_4(self, mf, dm):
+        """
+        Level 4 (non-local level) descriptor generator -- generates the CIDER nonlocal descriptors, given a density matrix and a converged kernel with associated mol and grids
+
+        :param mf: The converged calculation kernel, passed to RKSAnalyzer for descriptor generation
+        :type mf: pyscf(ad).dft.RKS kernel
+        :param dm: Density matrix to use in desciptor generation
+        :type dm: jax.Array
+        :return: The non-local CIDER descriptors, from self.nlstart_i to self.nlend_i
+        :rtype: jax.Array
+        """
+        an = RKSAnalyzer(mf)
+        descr5 = jnp.asarray(get_exchange_descriptors2(an, restricted=True, version='c', auxbasis=mf.mol.basis,
+                                   rdm1=True, dm=np.asarray(dm), inmol=True, mol=mf.mol, ingrid=True, grid=mf.grids))
+        descr5 = descr5[self.nlstart_i:self.nlend_i]
+        return descr5
+        
     # @eqx.filter_jit
-    def get_descriptors(self, rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab,nl_a,nl_b, tau_a, tau_b, spin_scaling = False):
+    def get_descriptors(self, rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab,nl_a,nl_b, tau_a, tau_b, spin_scaling = False,
+                       mf = None, dm = None):
         """
         get_descriptors Creates 'ML-compatible' descriptors from the electron density and its gradients, a & b correspond to spin channels
 
@@ -315,6 +358,11 @@ class eXC(eqx.Module):
         :type tau_b: jax.Array
         :param spin_scaling: Flag for spin-scaling, defaults to False
         :type spin_scaling: bool, optional
+        :param mf: The converged calculation kernel, passed to RKSAnalyzer for descriptor generation if self.level > 3, defaults to None
+        :type mf: pyscf(ad).dft.RKS kernel
+        :param dm: Density matrix to use in nonlocal desciptor generation if self.level > 3, defaults to None
+        :type dm: jax.Array
+
         :return: Array of the machine-learning descriptors on the grid
         :rtype: jax.Array
         """
@@ -358,26 +406,33 @@ class eXC(eqx.Module):
             descr4 = jnp.log((descr4 + 1)/2)
             descr = jnp.concatenate([descr, descr4],axis=-1)
         if self.level > 3: # meta-GGA + V_estat
-            if spin_scaling:
-                descr5a = self.l_4(2*rho0_a, 2*nl_a)
-                descr5b = self.l_4(2*rho0_b, 2*nl_b)
-                descr5 = jnp.log(jnp.stack([descr5a, descr5b],axis=-1) + self.loge)
-                descr5 = descr5.view(descr5.size()[0],-1)
-            else:
-                descr5= jnp.log(self.l_4(rho0_a + rho0_b, nl_a + nl_b) + self.loge)
+            # if spin_scaling:
+            #     descr5a = self.l_4(2*rho0_a, 2*nl_a)
+            #     descr5b = self.l_4(2*rho0_b, 2*nl_b)
+            #     descr5 = jnp.log(jnp.stack([descr5a, descr5b],axis=-1) + self.loge)
+            #     descr5 = descr5.view(descr5.size()[0],-1)
+            # else:
+            #     descr5= jnp.log(self.l_4(rho0_a + rho0_b, nl_a + nl_b) + self.loge)
 
-            descr = jnp.concatenate([descr, descr5],axis=-1)
-        if spin_scaling:
+            # descr = jnp.concatenate([descr, descr5],axis=-1)
+            descr5 = self.nl_4(mf, dm).T
+                
+            descr = jnp.concatenate([descr, descr5], axis=-1)
+        if spin_scaling and self.level <= 3:
             descr = jnp.transpose(jnp.reshape(descr,(jnp.shape(descr)[0],-1,2)), (2,0,1)) 
         return descr
 
-    def eval_grid_models(self, rho):
+    def eval_grid_models(self, rho, mf=None, dm=None):
         """
         eval_grid_models Evaluates all models stored in self.grid_models along with HEG exchange and correlation
 
         :param rho: List/array with [rho0_a,rho0_b,gamma_a,gamma_ab,gamma_b, dummy for laplacian, dummy for laplacian, tau_a, tau_b, non_loc_a, non_loc_b]
                     Shape assumes, for instance, that rho0_a = rho[:, 0], etc.
         :type rho: jax.Array
+        :param mf: The converged calculation kernel, passed to RKSAnalyzer for nonlocal descriptor generation
+        :type mf: pyscf(ad).dft.RKS kernel
+        :param dm: Density matrix to use in nonlocal desciptor generation
+        :type dm: jax.Array
         :return: The exchange-correlation energy density (on the grid)
         :rtype: jax.Array
         """
@@ -425,10 +480,12 @@ class eXC(eqx.Module):
         rho_tot = rho0_a + rho0_b
         #spin scaling false descriptors
         descr_dict[False] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
-                                                         gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = False)
+                                                         gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = False,
+                                                mf = mf, dm = dm)
         #spin scaling true descriptors
         descr_dict[True] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
-                                                         gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = True)
+                                                         gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = True,
+                                               mf = mf, dm = dm)
 
         def else_test_fun(exc, exc_b):
             if self.heg_mult:
@@ -444,6 +501,7 @@ class eXC(eqx.Module):
         def gm_eval_func(grid_model, exc_a, exc_b, exc_ab):
             if not grid_model.spin_scaling:
                 descr = descr_dict[False]
+                print(f"spin_scaling = False; input descr to exc shape: {descr.shape}")
                 exc = grid_model(descr)
                 if jnp.ndim(exc) == 2: #If using spin decomposition
                     pw_alpha = self.pw_model(rs_a, jnp.ones_like(rs_a))
@@ -460,7 +518,7 @@ class eXC(eqx.Module):
                         exc_ab += exc
             else:
                 descr = descr_dict[True]
-
+                print(f"spin_scaling = True; input descr to exc shape: {descr.shape}")
                 exc = grid_model(descr)
 
 
