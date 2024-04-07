@@ -9,7 +9,7 @@ dependencies:
   - python
   - pip:
     - pyscfad
-
+    - mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
     # Testing
   - pytest
   - pytest-cov
@@ -18,4 +18,3 @@ dependencies:
   - equinox
   - ase
   - optax
-  - mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
