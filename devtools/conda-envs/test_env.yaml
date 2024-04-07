@@ -18,3 +18,4 @@ dependencies:
   - equinox
   - ase
   - optax
+  - psutil
