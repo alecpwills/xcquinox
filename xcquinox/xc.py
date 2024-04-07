@@ -4,13 +4,8 @@ import jax, os, sys
 import jax.numpy as jnp
 
 #check if cider is in the environment
-is_cider = os.environ.get('CIDERPATH', None)
-if is_cider:
-    sys.path.append(is_cider)
-    from mldftdat.density import get_exchange_descriptors2
-    from mldftdat.analyzers import RKSAnalyzer
-else:
-    pass
+from mldftdat.density import get_exchange_descriptors2
+from mldftdat.analyzers import RKSAnalyzer
 
 class LDA_X(eqx.Module):
     def __init__(self):
