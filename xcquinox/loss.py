@@ -141,3 +141,58 @@ class DM_HoLu_loss(eqx.Module):
 
 
         return jnp.sqrt( (dmL*dmLv)**2 + (holuL*holuLv)**2 + (dm_to_rho*rhoLv)**2)
+
+
+class Band_gap_1shot_loss(eqx.Module):
+    def __init__(self):
+        """
+        Initializer for the loss module, which attempts to find loss bang gaps w.r.t. reference
+
+        .. todo: Make more robust for non-local descriptors
+        """
+        super().__init__()
+
+    def __call__(self, model, ao_eval, gw, dm, eri, mo_occ, hc, s, ogd, refgap, mf, alpha0=0.7):
+        """
+        Forward pass for loss object
+
+        NOTE: This differs from HoLu loss in that it selects the deepest minimum w.r.t. the LUMO (Fermi energy)
+
+        :param model: The model that will be used in generating the molecular orbital energies ('band' energies)
+        :type model: xcquinox.xc.eXC
+        :param ao_eval: The atomic orbitals evaluated on the grid for the given molecule
+        :type ao_eval: jax.Array
+        :param gw: The grid weights associated to the current molecule's grids
+        :type gw: jax.Array
+        :param dm: Input reference density matrix for use during the one-shot forward pass to generate the new DM
+        :type dm: jax.Array
+        :param eri: Electron repulsion integrals associated with this molecule
+        :type eri: jax.Array
+        :param mo_occ: The molecule's molecular orbital occupation numbers
+        :type mo_occ: jax.Array
+        :param hc: The molecule's core Hamiltonian
+        :type hc: jax.Array
+        :param s: The molecule's overlap matrix
+        :type s: jax.Array
+        :param ogd: The original dimensions of this molecule's density matrix, used if padded to constrict the eigendecomposition to a relevant shape
+        :type ogd: jax.Array
+        :param refgap: The reference gap to optimzie against
+        :type refgap: jax.Array
+        :param mf: A pyscf(ad) converged calculation kernel if self.level > 3, used for building the CIDER nonlocal descriptors, defaults to None
+        :type mf: pyscfad.dft.RKS kernel
+        :param alpha0: The mixing parameter for the one-shot density matrix generation, defaults to 0.7
+        :type alpha0: float, optional
+        :return: Root-squared error between predicted gap (minimum of molecular energies) and the reference
+        :rtype: jax.Array
+        """
+        vgf = lambda x: model(x, ao_eval, gw, mf)
+        dmp, moep, mocp = get_dm_moe(dm, eri, vgf, mo_occ, hc, s, ogd, alpha0)
+        
+        efermi = moep[mf.mol.nelectron//2-1]
+        moep -= efermi
+        # print(moep)
+        moep_gap = jnp.min(moep)
+        # print(moep_gap)
+        loss = jnp.sqrt( (moep_gap - refgap)**2)
+        # print(loss)
+        return jnp.sqrt( (moep_gap - refgap)**2)

@@ -22,3 +22,10 @@ The ``DM_HoLu_loss`` Class
     :special-members: __init__, __call__
     :members:
     :show-inheritance:
+
+The ``Band_gap_1shot_loss`` Class
+*********************************
+.. autoclass:: xcquinox.loss.Band_gap_1shot_loss
+    :special-members: __init__, __call__
+    :members:
+    :show-inheritance:

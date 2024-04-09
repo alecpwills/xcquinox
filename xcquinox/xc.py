@@ -134,7 +134,7 @@ class eXC(eqx.Module):
         self.grid_models = grid_models
         self.epsilon = epsilon
         if level > 3:
-            print('WARNING: Non-local models highly experimental and likely will not work ')
+            print('WARNING: External module "mldftdat" required for non-local descriptor use.s')
         self.loge = 1e-5
         self.s_gam = 1
         self.debug = debug
@@ -321,10 +321,12 @@ class eXC(eqx.Module):
         :rtype: jax.Array
         """
         an = RKSAnalyzer(mf)
-        descr5 = jnp.asarray(get_exchange_descriptors2(an, restricted=True, version='c', auxbasis=mf.mol.basis,
-                                   rdm1=True, dm=np.asarray(dm), inmol=True, mol=mf.mol, ingrid=True, grid=mf.grids))
-        descr5 = descr5[self.nlstart_i:self.nlend_i]
-        return descr5
+        descr5_func = lambda x: jax.lax.stop_gradient(jnp.asarray(get_exchange_descriptors2(an, restricted=True, version='c', auxbasis=mf.mol.basis,
+                                   rdm1=True, dm=x, inmol=True, mol=mf.mol, ingrid=True, grid=mf.grids)
+        ))
+        descr5 = descr5_func(dm)
+        descr5r = descr5[self.nlstart_i:self.nlend_i]
+        return descr5r
         
     # @eqx.filter_jit
     def get_descriptors(self, rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab,nl_a,nl_b, tau_a, tau_b, spin_scaling = False,
@@ -409,7 +411,11 @@ class eXC(eqx.Module):
             #     descr5= jnp.log(self.l_4(rho0_a + rho0_b, nl_a + nl_b) + self.loge)
 
             # descr = jnp.concatenate([descr, descr5],axis=-1)
-            descr5 = self.nl_4(mf, dm).T
+            def convert_dm(dm):
+                res_shape = jax.ShapeDtypeStruct(dm.shape, dm.dtype)
+                return jax.lax.stop_gradient(jax.pure_callback(np.asarray, res_shape, dm))
+            dmnp = np.asarray(jax.lax.stop_gradient(dm))
+            descr5 = self.nl_4(mf, dmnp).T
                 
             descr = jnp.concatenate([descr, descr5], axis=-1)
         if spin_scaling and self.level <= 3:
