@@ -13,8 +13,9 @@ class xcTrainer(eqx.Module):
     verbose: bool
     do_jit: bool
     opt_state: tuple
+    serialize_every: int
     
-    def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True):
+    def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True, serialize_every = 1):
         '''
         The base xcTrainer class, whose forward pass computes the training loop.
 
@@ -36,6 +37,8 @@ class xcTrainer(eqx.Module):
         :type verbose: bool, optional
         :param do_jit: Controls whether the update function is jitted or not, useful for debugging if False, defaults to True
         :type do_jit: bool, optional
+        :param serialize_every: Controls how often the checkpoint network is written to disk, defaults to 1
+        :type serialize_every: int, optional
         '''
         super().__init__()
         self.model = model
@@ -47,6 +50,7 @@ class xcTrainer(eqx.Module):
         self.memory_profile = memory_profile
         self.verbose = verbose
         self.do_jit = do_jit
+        self.serialize_every = serialize_every
         self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array)) 
 
     def __call__(self, epoch_batch_len, model, *loss_input_lists):
@@ -82,8 +86,8 @@ class xcTrainer(eqx.Module):
                 #assumes separate lists, each having inputs for multiple cases in the training set
                 loss_inputs = [inp[idx] for inp in loss_input_lists]
                 
-                this_loss = self.loss(inp_model, *loss_inputs).item()                
-                inp_model, inp_opt_state, train_loss = fmake_step(inp_model, inp_opt_state, *loss_inputs) 
+                # this_loss = self.loss(inp_model, *loss_inputs).item()                
+                inp_model, inp_opt_state, this_loss = fmake_step(inp_model, inp_opt_state, *loss_inputs) 
 
                 if self.memory_profile:
                     this_loss.block_until_ready()
@@ -95,7 +99,10 @@ class xcTrainer(eqx.Module):
                     eqx.clear_caches()
                     jax.clear_backends()
                     jax.clear_caches()
-    
+
+            if ( (step % self.serialize_every) == 0):
+                eqx.tree_serialise_leaves('xc.eqx.{}'.format(step), inp_model)
+
             if ( (step % self.print_every) == 0 ) or (step == self.steps - 1):
                 print(
                     f"{step=}, epoch_train_loss={epoch_loss}"

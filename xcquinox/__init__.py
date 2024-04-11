@@ -1,4 +1,5 @@
 """A machine learning framework using the equinox library for learning XC functionals with JAX."""
+
 import xcquinox.net
 import xcquinox.xc
 import xcquinox.utils
