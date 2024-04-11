@@ -67,6 +67,7 @@ class xcTrainer(eqx.Module):
         :return: The updated model after the training cycle completes
         :rtype: xcquinox.xc.eXC
         '''
+        BEST_LOSS = 1e10
         for step in range(self.steps):
             print('Epoch {}'.format(step))
             epoch_loss = 0
@@ -100,8 +101,9 @@ class xcTrainer(eqx.Module):
                     jax.clear_backends()
                     jax.clear_caches()
 
-            if ( (step % self.serialize_every) == 0):
+            if ( (step % self.serialize_every) == 0) and (epoch_loss.item() < BEST_LOSS):
                 eqx.tree_serialise_leaves('xc.eqx.{}'.format(step), inp_model)
+                BEST_LOSS = epoch_loss.item()
 
             if ( (step % self.print_every) == 0 ) or (step == self.steps - 1):
                 print(
