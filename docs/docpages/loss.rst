@@ -29,3 +29,17 @@ The ``Band_gap_1shot_loss`` Class
     :special-members: __init__, __call__
     :members:
     :show-inheritance:
+
+The ``DM_Gap_loss`` Class
+*************************
+.. autoclass:: xcquinox.loss.DM_Gap_loss
+    :special-members: __init__, __call__
+    :members:
+    :show-inheritance:
+
+The ``DM_Gap_Loop_loss`` Class
+******************************
+.. autoclass:: xcquinox.loss.DM_Gap_Loop_loss
+    :special-members: __init__, __call__
+    :members:
+    :show-inheritance:

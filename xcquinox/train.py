@@ -60,6 +60,8 @@ class xcTrainer(eqx.Module):
         *loss_input_lists are positional arguments, each a list of length [epoch_batch_len elements], corresponding to the proper input order and values for the self.loss function
         I.e., for the E_loss object, these would be [density matrix list], [reference energy list], [ao_eval list], [grid_weight list]
 
+        .. todo: Remove model from inputs, not used since retrieved from self at first iteration
+        
         :param epoch_batch_len: The number of batches in a given epoch (i.e., the number of molecules one is training on that are looped over)
         :type epoch_batch_len: int
         :param model: The baseline model to update in the training process

@@ -1,6 +1,6 @@
 import equinox as eqx
 import jax.numpy as jnp
-from xcquinox.utils import get_dm_moe
+from xcquinox.utils import get_dm_moe, pad_array, pad_array_list
 
 class E_loss(eqx.Module):
     def __init__(self):
@@ -146,7 +146,7 @@ class DM_HoLu_loss(eqx.Module):
 class Band_gap_1shot_loss(eqx.Module):
     def __init__(self):
         """
-        Initializer for the loss module, which attempts to find loss bang gaps w.r.t. reference
+        Initializer for the loss module, which attempts to find loss band gaps w.r.t. reference
 
         .. todo: Make more robust for non-local descriptors
         """
@@ -196,3 +196,137 @@ class Band_gap_1shot_loss(eqx.Module):
         loss = jnp.sqrt( (moep_gap - refgap)**2)
         # print(loss)
         return jnp.sqrt( (moep_gap - refgap)**2)
+
+class DM_Gap_loss(eqx.Module):
+    def __init__(self):
+        '''
+        Initializer for the DM_Gap_loss, a semi-local loss calculator to optimize the one-shot density matrices and band gaps for 
+        Gamma-Gamma direct transitions for PBC structures.
+
+        Band gap optimized is the HOMO-LUMO gap here, hence why specifically Gamma-Gamma
+        '''
+        super().__init__()
+
+    def __call__(self, model, ao, hc, eri, s, gw, inp_dm, mo_occ, ogd, refDM, refGap):
+        '''
+        Forward pass to calculate the DM (sum of squared error) and gap (squared error) loss for a given molecule.
+
+        Individual molecule loss is jnp.sqrt( dmL + gapL ),
+        where dmL = jnp.sum( (dm_pred-dm_ref)**2 )
+        and gapL = (gap_pred - gap_ref)**2
+
+        :param model: The model to use in the predictions, here to generate DM and molecular energies
+        :type model: xcquinox.xc.eXC
+        :param ao: Atomic orbitals evaluated on a grid
+        :type ao: jax.Array
+        :param hc: Core Hamiltonian
+        :type hc: jax.Array
+        :param eri: Electron repulsion integrals
+        :type eri: jax.Array
+        :param s: Overlap matrices
+        :type s: jax.Array
+        :param gw: Weights for the grid being used
+        :type gw: jax.Array
+        :param inp_dm: Initial density matrix guesses, from mf.get_init_guess(), to be used in the one-shot DM generation to produce a mixed DM to optimize against reference
+        :type inp_dm: jax.Array
+        :param mo_occ: Molecular orbital occupations
+        :type mo_occ: jax.Array
+        :param ogd: The original dimensions of the density matrix
+        :type ogd: tuple
+        :param refDM: Reference density matricex from high-accuracy method (e.g., CCSD(T)).
+        :type refDM: jax.Array
+        :param refGap: Reference band gap (e.g. from the Borlido 2019 dataset).
+        :type refGap: jax.Array
+        :return: The molecule's loss
+        :rtype: jax.Array/scalar
+        '''
+        homo_i = jnp.max(jnp.nonzero(mo_occ, size=inp_dm.shape[0])[0])
+        #vxc function for gradient
+        vgf = lambda x: model(x, ao, gw)
+        dmp, moep, mocoep = get_dm_moe(inp_dm, eri, vgf, mo_occ, hc, s, ogd)
+        
+        dmp = pad_array(dmp, inp_dm)
+        moep = pad_array(moep, moep,  shape=(dmp.shape[0],))
+        gap_pred = moep[homo_i+1]-moep[homo_i]
+
+        dm_L = jnp.sum( (dmp-refDM)**2)
+
+        gap_L = (gap_pred-refGap)**2
+
+        return jnp.sqrt(dm_L+gap_L)
+
+class DM_Gap_Loop_loss(eqx.Module):
+    def __init__(self):
+        '''
+        Initializer for the DM_Gap_Loop_loss, a semi-local loss calculator to optimize the one-shot density matrices and band gaps for 
+        Gamma-Gamma direct transitions for PBC structures.
+
+        Band gap optimized is the HOMO-LUMO gap here, hence why specifically Gamma-Gamma
+
+        This is a BATCH-CUMULATIVE LOSS class -- it will loop over the inputs and accumulate each DM_Gap loss before the loss is returned and used for optimization
+        '''
+        super().__init__()
+
+    def __call__(self, model, aos, hcs, eris, ss, gws, inp_dms, mo_occs, ogds, refDMs, refGaps):
+        '''
+        Forward pass to calculate the DM (sum of squared error) and gap (squared error) loss across a given dataset.
+
+        Individual molecule loss is jnp.sqrt( dmL + gapL ),
+        where dmL = jnp.sum( (dm_pred-dm_ref)**2 )
+        and gapL = (gap_pred - gap_ref)**2
+
+        :param model: The model to use in the predictions, here to generate DM and molecular energies
+        :type model: xcquinox.xc.eXC
+        :param aos: Atomic orbitals evaluated on a grid
+        :type aos: list of jax.Arrays
+        :param hcs: Core Hamiltonians
+        :type hcs: list of jax.Arrays
+        :param eris: Electron repulsion integrals
+        :type eris: list of jax.Arrays
+        :param ss: Overlap matrices
+        :type ss: list of jax.Arrays
+        :param gws: Weights for the grids being used
+        :type gws: list of jax.Arrays
+        :param inp_dms: Initial density matrix guesses, from mf.get_init_guess(), to be used in the one-shot DM generation to produce a mixed DM to optimize against reference
+        :type inp_dms: list of jax.Arrays
+        :param mo_occs: Molecular orbital occupations
+        :type mo_occs: list of jax.Arrays
+        :param ogds: The original dimensions of the density matrices
+        :type ogds: list of tuples
+        :param refDMs: List of reference density matrices from high-accuracy method (e.g., CCSD(T)).
+        :type refDMs: list of jax.Arrays
+        :param refGaps: List of reference band gaps (e.g. from the Borlido 2019 dataset).
+        :type refGaps: list of jax.Arrays
+        :return: The cumulative loss across the dataset
+        :rtype: jax.Array/scalar
+        '''
+        total_loss = 0
+        for idx in range(len(aos)):
+            #subselect the individual loss data
+            mo_occ = mo_occs[idx]
+            inp_dm = inp_dms[idx]
+            ao = aos[idx]
+            gw = gws[idx]
+            eri = eris[idx]
+            hc = hcs[idx]
+            s = ss[idx]
+            ogd = ogds[idx]
+            refGap = refGaps[idx]
+            refDM = refDMs[idx]
+
+            
+            homo_i = jnp.max(jnp.nonzero(mo_occ, size=inp_dm.shape[0])[0])
+            #vxc function for gradient
+            vgf = lambda x: model(x, ao, gw)
+            dmp, moep, mocoep = get_dm_moe(inp_dm, eri, vgf, mo_occ, hc, s, ogd)
+            
+            dmp = pad_array(dmp, inp_dm)
+            moep = pad_array(moep, moep,  shape=(dmp.shape[0],))
+            gap_pred = moep[homo_i+1]-moep[homo_i]
+    
+            dm_L = jnp.sum( (dmp-refDM)**2)
+    
+            gap_L = (gap_pred-refGap)**2
+    
+            total_loss += jnp.sqrt(dm_L+gap_L)
+        return total_loss
