@@ -134,7 +134,7 @@ class eXC(eqx.Module):
         self.grid_models = grid_models
         self.epsilon = epsilon
         if level > 3:
-            print('WARNING: External module "mldftdat" required for non-local descriptor use.s')
+            print('WARNING: External module "mldftdat" required for non-local descriptor use.')
         self.loge = 1e-5
         self.s_gam = 1
         self.debug = debug
@@ -415,8 +415,10 @@ class eXC(eqx.Module):
                 res_shape = jax.ShapeDtypeStruct(dm.shape, dm.dtype)
                 return jax.lax.stop_gradient(jax.pure_callback(np.asarray, res_shape, dm))
             dmnp = np.asarray(jax.lax.stop_gradient(dm))
+
             descr5 = self.nl_4(mf, dmnp).T
-                
+            # print('descr shape: ', descr.shape)    
+            # print('descr5 shape: ', descr5.shape)    
             descr = jnp.concatenate([descr, descr5], axis=-1)
         if spin_scaling and self.level <= 3:
             descr = jnp.transpose(jnp.reshape(descr,(jnp.shape(descr)[0],-1,2)), (2,0,1)) 
@@ -501,7 +503,7 @@ class eXC(eqx.Module):
         def gm_eval_func(grid_model, exc_a, exc_b, exc_ab):
             if not grid_model.spin_scaling:
                 descr = descr_dict[False]
-                print(f"spin_scaling = False; input descr to exc shape: {descr.shape}")
+                # print(f"spin_scaling = False; input descr to exc shape: {descr.shape}")
                 exc = grid_model(descr)
                 if jnp.ndim(exc) == 2: #If using spin decomposition
                     pw_alpha = self.pw_model(rs_a, jnp.ones_like(rs_a))
@@ -518,7 +520,7 @@ class eXC(eqx.Module):
                         exc_ab += exc
             else:
                 descr = descr_dict[True]
-                print(f"spin_scaling = True; input descr to exc shape: {descr.shape}")
+                # print(f"spin_scaling = True; input descr to exc shape: {descr.shape}")
                 exc = grid_model(descr)
 
 
