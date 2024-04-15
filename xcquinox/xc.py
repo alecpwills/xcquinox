@@ -329,7 +329,7 @@ class eXC(eqx.Module):
         return descr5r
         
     # @eqx.filter_jit
-    def get_descriptors(self, rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab,nl_a,nl_b, tau_a, tau_b, spin_scaling = False,
+    def get_descriptors(self, rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab, tau_a, tau_b, spin_scaling = False,
                        mf = None, dm = None):
         """
         get_descriptors Creates 'ML-compatible' descriptors from the electron density and its gradients, a & b correspond to spin channels
@@ -480,13 +480,22 @@ class eXC(eqx.Module):
 
         descr_dict = {}
         rho_tot = rho0_a + rho0_b
-        #spin scaling false descriptors
+        # #spin scaling false descriptors
+        # descr_dict[False] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
+        #                                                  gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = False,
+        #                                         mf = mf, dm = dm)
+        # #spin scaling true descriptors
+        # descr_dict[True] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
+        #                                                  gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = True,
+        #                                        mf = mf, dm = dm)
+
+        #spin scaling false descriptors; no NL inputs, as not used in get_descriptors
         descr_dict[False] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
-                                                         gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = False,
+                                                         gamma_ab, tau_a, tau_b, spin_scaling = False,
                                                 mf = mf, dm = dm)
-        #spin scaling true descriptors
+        #spin scaling true descriptors; no NL inputs, as not used in get_descriptors
         descr_dict[True] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
-                                                         gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = True,
+                                                         gamma_ab, tau_a, tau_b, spin_scaling = True,
                                                mf = mf, dm = dm)
 
         def else_test_fun(exc, exc_b):

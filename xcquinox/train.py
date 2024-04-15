@@ -109,7 +109,7 @@ class xcTrainer(eqx.Module):
 
             if ( (step % self.print_every) == 0 ) or (step == self.steps - 1):
                 print(
-                    f"{step=}, epoch_train_loss={epoch_loss}"
+                    f"{step}, epoch_train_loss={epoch_loss}"
                 )
             if ( (step % self.clear_every) == 0 ) and (step > 0):
                 eqx.clear_caches()
