@@ -320,7 +320,7 @@ class eXC(eqx.Module):
         :return: The non-local CIDER descriptors, from self.nlstart_i to self.nlend_i
         :rtype: jax.Array
         """
-        an = RKSAnalyzer(mf)
+        an = RKSAnalyzer(mf, idm=True, dm=dm)
         if len(dm.shape) == 2:
             restric = True
         elif len(dm.shape) == 3:

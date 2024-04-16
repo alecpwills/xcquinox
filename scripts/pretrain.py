@@ -6,6 +6,9 @@ from ase.io import read
 import xcquinox as xce
 import equinox as eqx
 import os, optax, jax, argparse
+import faulthandler
+
+faulthandler.enable()
 
 parser = argparse.ArgumentParser(description='Pre-train a network-based xc functional, for further optimization')
 parser.add_argument('--pretrain_level', action='store', type=str, choices=['GGA','MGGA','NONLOCAL'], help='The level of network to pre-train, i.e. GGA, MGGA, or nonlocal')
@@ -92,6 +95,7 @@ def get_data(mol, xcmodel, xc_func, localnet=None):
     dm = mf.make_rdm1()
     if len(dm.shape) == 2:
         dm = np.array([0.5*dm, 0.5*dm])
+    print('New DM shape: {}'.format(dm.shape))
     print('ao.shape', ao.shape)
 
     if localnet.spin_scaling:
@@ -231,6 +235,8 @@ if __name__ == '__main__':
 
     if pargs.use:
         inp = [tdrho[:, pargs.use]]
+    else:
+        inp = [tdrho]
 
     with jax.default_device(cpus[0]):
         newm = trainer(1, trainer.model, inp, [tFxc])
