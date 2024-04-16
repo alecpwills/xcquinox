@@ -321,12 +321,27 @@ class eXC(eqx.Module):
         :rtype: jax.Array
         """
         an = RKSAnalyzer(mf)
-        descr5_func = lambda x: jax.lax.stop_gradient(jnp.asarray(get_exchange_descriptors2(an, restricted=True, version='c', auxbasis=mf.mol.basis,
+        if len(dm.shape) == 2:
+            restric = True
+        elif len(dm.shape) == 3:
+            restric = False
+        descr5_func = lambda x: jax.lax.stop_gradient(jnp.asarray(get_exchange_descriptors2(an, restricted=restric, version='c', auxbasis=mf.mol.basis,
                                    rdm1=True, dm=x, inmol=True, mol=mf.mol, ingrid=True, grid=mf.grids)
         ))
         descr5 = descr5_func(dm)
-        descr5r = descr5[self.nlstart_i:self.nlend_i]
-        return descr5r
+        print('nl_4, descr5 shape: {}'.format(descr5.shape))
+        # print('nl_4, descr5[0] shape: {}'.format(descr5[0].shape))
+
+        # descr5r = descr5[self.nlstart_i:self.nlend_i]
+        # if len(descr5r.shape) == 3:
+        #     descr5r = jnp.reshape(descr5r, (descr5r.shape[1], descr5r.shape[2]))
+        # print('nl_4, descr5r return shape: {}'.format(descr5r.shape))
+        # print('nl_4, descr5r[0] return shape: {}'.format(descr5r[0].shape))
+        if len(descr5.shape) == 3:
+            #don't have good fix for this right now, just average the spin channels
+            descr5 = (descr5[0] + descr5[1])/2
+
+        return descr5
         
     # @eqx.filter_jit
     def get_descriptors(self, rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab, tau_a, tau_b, spin_scaling = False,
@@ -417,8 +432,9 @@ class eXC(eqx.Module):
             dmnp = np.asarray(jax.lax.stop_gradient(dm))
 
             descr5 = self.nl_4(mf, dmnp).T
-            # print('descr shape: ', descr.shape)    
-            # print('descr5 shape: ', descr5.shape)    
+            print('descr shape: ', descr.shape)    
+            print('descr5 shape: ', descr5.shape)
+
             descr = jnp.concatenate([descr, descr5], axis=-1)
         if spin_scaling and self.level <= 3:
             descr = jnp.transpose(jnp.reshape(descr,(jnp.shape(descr)[0],-1,2)), (2,0,1)) 

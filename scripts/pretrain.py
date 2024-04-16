@@ -72,7 +72,7 @@ def get_data_synth(xcmodel, xc_func, n=100):
  
     rho = jnp.asarray(rho)
     
-    tdrho = xcmodel.get_descriptors(rho[:,0]/2,rho[:,0]/2,(rho[:,1]/2)**2,(rho[:,1]/2)**2,(rho[:,1]/2)**2,rho[:,5]/2,rho[:,5]/2, spin_scaling=True)
+    tdrho = xcmodel.get_descriptors(rho[:,0]/2,rho[:,0]/2,(rho[:,1]/2)**2,(rho[:,1]/2)**2,(rho[:,1]/2)**2,rho[:,5]/2,rho[:,5]/2, spin_scaling=True, mf=mf, dm=dm)
     
 
 
@@ -88,10 +88,16 @@ def get_data(mol, xcmodel, xc_func, localnet=None):
     mf.xc = 'PBE'
     mf.grids.level = 1
     mf.kernel()
+    ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=2)
+    dm = mf.make_rdm1()
+    if len(dm.shape) == 2:
+        dm = np.array([0.5*dm, 0.5*dm])
+    print('ao.shape', ao.shape)
+
     if localnet.spin_scaling:
         print('spin scaling, indicates exchange network')
-        rho_alpha = mf._numint.eval_rho(mol, mf._numint.eval_ao(mol, mf.grids.coords, deriv=2) , mf.make_rdm1()[0], xctype='metaGGA',hermi=True)
-        rho_beta = mf._numint.eval_rho(mol, mf._numint.eval_ao(mol, mf.grids.coords, deriv=2) , mf.make_rdm1()[1], xctype='metaGGA',hermi=True)
+        rho_alpha = mf._numint.eval_rho(mol, ao, dm[0], xctype='metaGGA',hermi=True)
+        rho_beta = mf._numint.eval_rho(mol, ao, dm[1], xctype='metaGGA',hermi=True)
         fxc_a =  mf._numint.eval_xc(xc_func,(rho_alpha,rho_alpha*0), spin=1)[0]/mf._numint.eval_xc('LDA_X',(rho_alpha,rho_alpha*0), spin=1)[0] -1
         fxc_b =  mf._numint.eval_xc(xc_func,(rho_beta*0,rho_beta), spin=1)[0]/mf._numint.eval_xc('LDA_X',(rho_beta*0,rho_beta), spin=1)[0] -1
         print('fxc with xc_func = {} = {}'.format(fxc_a, xc_func))
@@ -104,39 +110,44 @@ def get_data(mol, xcmodel, xc_func, localnet=None):
             fxc = fxc_a
     else:    
         print('no spin scaling, indicates correlation network')
-        rho_alpha = mf._numint.eval_rho(mol, mf._numint.eval_ao(mol, mf.grids.coords, deriv=2) , mf.make_rdm1()[0], xctype='metaGGA',hermi=True)
-        rho_beta = mf._numint.eval_rho(mol, mf._numint.eval_ao(mol, mf.grids.coords, deriv=2) , mf.make_rdm1()[1], xctype='metaGGA',hermi=True)
+        rho_alpha = mf._numint.eval_rho(mol, ao, dm[0], xctype='metaGGA',hermi=True)
+        rho_beta = mf._numint.eval_rho(mol, ao, dm[1], xctype='metaGGA',hermi=True)
         exc = mf._numint.eval_xc(xc_func,(rho_alpha,rho_beta), spin=1)[0]
         print('exc with xc_func = {} = {}'.format(exc, xc_func))
         fxc = exc/mf._numint.eval_xc('LDA_C_PW',(rho_alpha, rho_beta), spin=1)[0] -1
-#         fxc = exc
         rho = jnp.stack([rho_alpha,rho_beta], axis=-1)
     
     dm = jnp.array(mf.make_rdm1())
+    print('get_data, dm shape = {}'.format(dm.shape))
     ao_eval = jnp.array(mf._numint.eval_ao(mol, mf.grids.coords, deriv=1))
     rho = jnp.einsum('xij,yik,...jk->xy...i', ao_eval, ao_eval, dm)
-    
+    print('rho shape', rho.shape)
     if dm.ndim == 3:
         rho_filt = (jnp.sum(rho[0,0],axis=0) > 1e-6)
     else:
         rho_filt = (rho[0,0] > 1e-6)
-    tdrho = xcmodel.get_descriptors(*get_rhos(rho, spin=1), spin_scaling=localnet.spin_scaling)
+    print('rho_filt shape:', rho_filt.shape)
+
+    
+    mf.converged=True
+    tdrho = xcmodel.get_descriptors(*get_rhos(rho, spin=1), spin_scaling=localnet.spin_scaling, mf=mf, dm=dm)
             
     if localnet.spin_scaling:
         if mol.spin != 0 and sum(mol.nelec) > 1:
-            tdrho = jnp.concatenate([tdrho[0],tdrho[1]])
+            #tdrho not returned in a spin-polarized form regardless,
+            #but the enhancement factors sampled as polarized, so double
+            tdrho = jnp.concatenate([tdrho,tdrho])
             rho_filt = jnp.concatenate([rho_filt]*2)
-            
-        else:
-            tdrho = tdrho[0]
-    tdrho = tdrho[rho_filt]
+        elif sum(mol.nelec) == 1:
+            pass
 
+    tdrho = tdrho[rho_filt]
     tFxc = jnp.array(fxc)[rho_filt]
     return tdrho, tFxc
 
 level_dict = {'GGA':2, 'MGGA':3, 'NONLOCAL':4}
 
-x_lob_level_dict = {'GGA': 1.804, 'MGGA': 1.174}
+x_lob_level_dict = {'GGA': 1.804, 'MGGA': 1.174, 'NONLOCAL': 1.174}
 
 class PT_E_Loss(eqx.Module):
 
