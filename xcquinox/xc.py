@@ -151,7 +151,7 @@ class eXC(eqx.Module):
         else:
             self.exx_a = exx_a
 
-    def __call__(self, dm, ao_eval, grid_weights, mf = None):
+    def __call__(self, dm, ao_eval, grid_weights, mf = None, coor=None):
         """
         __call__ Forward call for the XC network to get the grid point e_xc
 
@@ -222,7 +222,7 @@ class eXC(eqx.Module):
                                                     jnp.expand_dims(tau_b,-1),
                                                     jnp.expand_dims(non_loc_a,-1),
                                                     jnp.expand_dims(non_loc_b,-1)],axis=-1),
-                                       mf = mf, dm = dm)
+                                       mf = mf, dm = dm, ao=ao_eval, gw=grid_weights, coor=coor)
             Exc += jnp.sum(((rho0_a + rho0_b)*exc[:,0])*grid_weights)
         return Exc
             
@@ -243,6 +243,7 @@ class eXC(eqx.Module):
         :return: Scaled density
         :rtype: jax.Array
         """
+        print('l_1, descr shape: {}'.format(rho.shape))
         return rho**(1/3)
 
     # Reduced density gradient s
@@ -264,6 +265,8 @@ class eXC(eqx.Module):
         :return: reduced density gradient s
         :rtype: jax.Array
         """
+        l2 = jnp.sqrt(gamma)/(2*(3*np.pi**2)**(1/3)*rho**(4/3)+self.epsilon)
+        print('l_2, descr shape: {}'.format(l2.shape))
         return jnp.sqrt(gamma)/(2*(3*np.pi**2)**(1/3)*rho**(4/3)+self.epsilon)
 
     # Reduced kinetic energy density alpha
@@ -289,6 +292,8 @@ class eXC(eqx.Module):
         """
         uniform_factor = (3/10)*(3*np.pi**2)**(2/3)
         tw = gamma/(8*(rho+self.epsilon))
+        l3 = (tau - tw)/(uniform_factor*rho**(5/3)+self.epsilon)
+        print('l_3, descr shape: {}'.format(l3.shape))
         return (tau - tw)/(uniform_factor*rho**(5/3)+self.epsilon)
 
     # Unit-less electrostatic potential
@@ -309,7 +314,7 @@ class eXC(eqx.Module):
         wu = nl[:,1:]/((jnp.expand_dims(rho, -1))*self.nl_ueg[:,1:] + self.epsilon)
         return jax.nn.relu(jnp.concatenate([u,wu],axis=-1))
 
-    def nl_4(self, mf, dm):
+    def nl_4(self, mf, dm, ao=None, gw=None, coor=None):
         """
         Level 4 (non-local level) descriptor generator -- generates the CIDER nonlocal descriptors, given a density matrix and a converged kernel with associated mol and grids
 
@@ -320,23 +325,18 @@ class eXC(eqx.Module):
         :return: The non-local CIDER descriptors, from self.nlstart_i to self.nlend_i
         :rtype: jax.Array
         """
-        an = RKSAnalyzer(mf, idm=True, dm=dm)
+        an = RKSAnalyzer(mf, idm=True, dm=dm,
+                         coor=coor, weight=gw)
+        
         if len(dm.shape) == 2:
             restric = True
         elif len(dm.shape) == 3:
             restric = False
         descr5_func = lambda x: jax.lax.stop_gradient(jnp.asarray(get_exchange_descriptors2(an, restricted=restric, version='c', auxbasis=mf.mol.basis,
-                                   rdm1=True, dm=x, inmol=True, mol=mf.mol, ingrid=True, grid=mf.grids)
+                                   rdm1=True, dm=x, inmol=True, mol=mf.mol, ingrid=True, grid=mf.grids, weights=gw, coords=coor)
         ))
         descr5 = descr5_func(dm)
         print('nl_4, descr5 shape: {}'.format(descr5.shape))
-        # print('nl_4, descr5[0] shape: {}'.format(descr5[0].shape))
-
-        # descr5r = descr5[self.nlstart_i:self.nlend_i]
-        # if len(descr5r.shape) == 3:
-        #     descr5r = jnp.reshape(descr5r, (descr5r.shape[1], descr5r.shape[2]))
-        # print('nl_4, descr5r return shape: {}'.format(descr5r.shape))
-        # print('nl_4, descr5r[0] return shape: {}'.format(descr5r[0].shape))
         if len(descr5.shape) == 3:
             #don't have good fix for this right now, just average the spin channels
             descr5 = (descr5[0] + descr5[1])/2
@@ -345,7 +345,7 @@ class eXC(eqx.Module):
         
     # @eqx.filter_jit
     def get_descriptors(self, rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab, tau_a, tau_b, spin_scaling = False,
-                       mf = None, dm = None):
+                       mf = None, dm = None, ao=None, gw=None, coor=None):
         """
         get_descriptors Creates 'ML-compatible' descriptors from the electron density and its gradients, a & b correspond to spin channels
 
@@ -431,7 +431,7 @@ class eXC(eqx.Module):
                 return jax.lax.stop_gradient(jax.pure_callback(np.asarray, res_shape, dm))
             dmnp = np.asarray(jax.lax.stop_gradient(dm))
 
-            descr5 = self.nl_4(mf, dmnp).T
+            descr5 = self.nl_4(mf, dmnp, ao=ao, gw=gw, coor=coor).T
             print('descr shape: ', descr.shape)    
             print('descr5 shape: ', descr5.shape)
 
@@ -440,7 +440,8 @@ class eXC(eqx.Module):
             descr = jnp.transpose(jnp.reshape(descr,(jnp.shape(descr)[0],-1,2)), (2,0,1)) 
         return descr
 
-    def eval_grid_models(self, rho, mf=None, dm=None):
+    def eval_grid_models(self, rho, mf=None, dm=None, ao=None,
+                          gw=None, coor=None):
         """
         eval_grid_models Evaluates all models stored in self.grid_models along with HEG exchange and correlation
 
@@ -471,6 +472,9 @@ class eXC(eqx.Module):
         rho0_a_ueg = rho0_a
         rho0_b_ueg = rho0_b
 
+        if gw is not None:
+            print(f'custom gw and coor present in eval_grid_models; shapes: gw={gw.shape}, coor={coor.shape}')
+
         zeta = (rho0_a_ueg - rho0_b_ueg)/(rho0_a_ueg + rho0_b_ueg + 1e-8)
         rs = (4*np.pi/3*(rho0_a_ueg+rho0_b_ueg + 1e-8))**(-1/3)
         rs_a = (4*np.pi/3*(rho0_a_ueg + 1e-8))**(-1/3)
@@ -496,23 +500,15 @@ class eXC(eqx.Module):
 
         descr_dict = {}
         rho_tot = rho0_a + rho0_b
-        # #spin scaling false descriptors
-        # descr_dict[False] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
-        #                                                  gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = False,
-        #                                         mf = mf, dm = dm)
-        # #spin scaling true descriptors
-        # descr_dict[True] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
-        #                                                  gamma_ab, nl_a, nl_b, tau_a, tau_b, spin_scaling = True,
-        #                                        mf = mf, dm = dm)
 
         #spin scaling false descriptors; no NL inputs, as not used in get_descriptors
         descr_dict[False] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
                                                          gamma_ab, tau_a, tau_b, spin_scaling = False,
-                                                mf = mf, dm = dm)
+                                                mf = mf, dm = dm, ao=ao, gw=gw, coor=coor)
         #spin scaling true descriptors; no NL inputs, as not used in get_descriptors
         descr_dict[True] = self.get_descriptors(rho0_a, rho0_b, gamma_a, gamma_b,
                                                          gamma_ab, tau_a, tau_b, spin_scaling = True,
-                                               mf = mf, dm = dm)
+                                                mf = mf, dm = dm, ao=ao, gw=gw, coor=coor)
 
         def else_test_fun(exc, exc_b):
             if self.heg_mult:
