@@ -1,6 +1,12 @@
-![xcquinox-image](./xcquinox.png)
+<div align="center" class="margin: 0 auto;"> 
+
+ ![xcquinox-image](./xcquinox.png)
+
 xcquinox
 ==============================
+
+</div>
+
 [//]: # (Badges)
 [![GitHub Actions Build Status](https://github.com/alecpwills/xcquinox/workflows/CI/badge.svg)](https://github.com/alecpwills/xcquinox/actions?query=workflow%3ACI)
 [![codecov](https://codecov.io/gh/alecpwills/xcquinox/branch/main/graph/badge.svg)](https://codecov.io/gh/alecpwills/xcquinox/branch/main)
