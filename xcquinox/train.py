@@ -14,8 +14,9 @@ class xcTrainer(eqx.Module):
     do_jit: bool
     opt_state: tuple
     serialize_every: int
+    logfile: str
     
-    def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True, serialize_every = 1):
+    def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True, serialize_every = 1, logfile=''):
         '''
         The base xcTrainer class, whose forward pass computes the training loop.
 
@@ -51,7 +52,8 @@ class xcTrainer(eqx.Module):
         self.verbose = verbose
         self.do_jit = do_jit
         self.serialize_every = serialize_every
-        self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array)) 
+        self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array))
+        self.logfile = logfile
 
     def __call__(self, epoch_batch_len, model, *loss_input_lists):
         '''
@@ -73,6 +75,11 @@ class xcTrainer(eqx.Module):
         for step in range(self.steps):
             print('Epoch {}'.format(step))
             epoch_loss = 0
+            if step == 0 and self.logfile:
+                with open(self.logfile+'.dat', 'w') as f:
+                    f.write('#Epoch\tLoss\n')
+                with open(self.logfile+'batch.dat', 'w') as f:
+                    f.write('#Epoch\tBatch\tLoss\n')
             if step == 0 and self.do_jit:
                 fmake_step = eqx.filter_jit(self.make_step)
             elif ( (step % self.clear_every) == 0 ) and (step > 0) and self.do_jit:
@@ -97,6 +104,9 @@ class xcTrainer(eqx.Module):
                     jax.profiler.save_device_memory_profile(f"memory{step}_{idx}.prof")
     
                 print('Batch Loss = {}'.format(this_loss))
+                if self.logfile:
+                    with open(self.logfile+'batch.dat', 'a') as f:
+                        f.write(f'{step}\t{idx}\t{this_loss}\n')
                 epoch_loss += this_loss
                 if ( (step % self.clear_every) == 0 ) and ( (step > 0) == 0 ):
                     eqx.clear_caches()
@@ -115,6 +125,10 @@ class xcTrainer(eqx.Module):
                 eqx.clear_caches()
                 jax.clear_backends()
                 jax.clear_caches()
+
+            if self.logfile:
+                with open(self.logfile+'.dat', 'a') as f:
+                    f.write(f'{step}\t{this_loss}\n')
 
         return inp_model
 

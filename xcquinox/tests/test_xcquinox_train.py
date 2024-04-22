@@ -64,7 +64,7 @@ eC = xce.net.eC(n_input = 4,
                 ueg_limit=False,
                 lob = 1.804,
                 seed = 9001)
-xc = xce.xc.eXC(grid_models = [eX, eC], level=3)
+xc = xce.xc.eXC(grid_models = [eX, eC], level=3, verbose=True)
 
 
 def test_train_e_loss():
@@ -73,14 +73,14 @@ def test_train_e_loss():
 
     #trainer to do training
     first_E = xc(dms[0], ao_evals[0], gws[0])
-    xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), Eloss, steps=10)
+    xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), Eloss, steps=10, logfile='test_e_log')
     new_model = xcT(1, xc, dms, energies, ao_evals, gws)
     new_E = new_model(dms[0], ao_evals[0], gws[0])
     assert abs(new_E-energies[0]) < abs(first_E - energies[0])
 
 def test_train_dm_loss():
     DMloss = xce.loss.DM_HoLu_loss()
-    xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), DMloss, steps=3)
+    xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), DMloss, steps=3, logfile='test_dm_log')
     init_loss = DMloss(xc, ao_evals[0], gws[0], dms[0], eris[0], mo_occs[0], hcs[0], ss[0], ogds[0], hologaps[0], alpha0=0.7,
                        dmL = 1.0, holuL = 0.0, dm_to_rho=0.0)
 
@@ -93,7 +93,7 @@ def test_train_dm_loss():
 
 def test_train_holo_loss():
     DMloss = xce.loss.DM_HoLu_loss()
-    xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), DMloss, steps=3)
+    xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), DMloss, steps=3, logfile='test_holo_log')
     init_loss = DMloss(xc, ao_evals[0], gws[0], dms[0], eris[0], mo_occs[0], hcs[0], ss[0], ogds[0], hologaps[0], alpha0=0.7,
                        dmL = 0.0, holuL = 1.0, dm_to_rho=0.0)
 
@@ -106,7 +106,7 @@ def test_train_holo_loss():
 
 def test_train_rho_loss():
     DMloss = xce.loss.DM_HoLu_loss()
-    xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), DMloss, steps=3)
+    xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), DMloss, steps=3, logfile='test_rho_log')
     init_loss = DMloss(xc, ao_evals[0], gws[0], dms[0], eris[0], mo_occs[0], hcs[0], ss[0], ogds[0], hologaps[0], alpha0=0.7,
                        dmL = 0.0, holuL = 0.0, dm_to_rho=1.0)
 
@@ -173,7 +173,7 @@ def test_train_bandgap_si():
     cnet = xce.net.eC(n_input = 4, use = [2, 3], ueg_limit=True)
     blankxc = xce.xc.eXC(grid_models = [xnet, cnet], level=3)
     xc = blankxc
-    xct = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-2), steps=10, loss = loss, do_jit=True)
+    xct = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-2), steps=10, loss = loss, do_jit=True, logfile='test_bg_log')
     newm = xct(1, xct.model, ao_evals, gws, dms, eris, mo_occs, hcs, ss, ogds, [-1.17], mfs)
     vgf1 = lambda x: xc(x, ao_evals[0], gws[0], mfs[0])
     vgf2 = lambda x: newm(x, ao_evals[0], gws[0], mfs[0])
