@@ -473,8 +473,10 @@ class eXC(eqx.Module):
         rho0_b_ueg = rho0_b
 
         if gw is not None:
-            print(f'custom gw and coor present in eval_grid_models; shapes: gw={gw.shape}, coor={coor.shape}')
-
+            try:
+                print(f'custom gw and coor present in eval_grid_models; shapes: gw={gw.shape}, coor={coor.shape}')
+            except:
+                print(f'custom gw and coor present in eval_grid_models but shape print error; shapes: gw={gw}, coor={coor}')
         zeta = (rho0_a_ueg - rho0_b_ueg)/(rho0_a_ueg + rho0_b_ueg + 1e-8)
         rs = (4*np.pi/3*(rho0_a_ueg+rho0_b_ueg + 1e-8))**(-1/3)
         rs_a = (4*np.pi/3*(rho0_a_ueg + 1e-8))**(-1/3)
