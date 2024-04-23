@@ -231,7 +231,7 @@ if __name__ == '__main__':
     scheduler = optax.exponential_decay(init_value = 5e-2, transition_begin=50, transition_steps=pargs.n_steps, decay_rate=0.9)
     optimizer = optax.adam(learning_rate = scheduler)
 
-    trainer = xce.train.xcTrainer(model=localnet, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit)
+    trainer = xce.train.xcTrainer(model=localnet, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
 
     if pargs.use:
         inp = [tdrho[:, pargs.use]]
