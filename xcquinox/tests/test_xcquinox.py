@@ -165,7 +165,7 @@ def test_xc_defaults():
                     ueg_limit=False,
                     lob = 1.804,
                     seed = 9001)
-    xc = xce.xc.eXC(grid_models = [eX, eC], level=3)
+    xc = xce.xc.eXC(grid_models = [eX, eC], level=3, verbose=True)
 
     exc = xc(dm, ao_eval, mf_ad.grids.weights)
     assert exc
@@ -187,7 +187,7 @@ def test_xc_spinpol_defaults():
                     ueg_limit=False,
                     lob = 1.804,
                     seed = 9001)
-    xc = xce.xc.eXC(grid_models = [eX, eC], level=3, debug=True)
+    xc = xce.xc.eXC(grid_models = [eX, eC], level=3, debug=True, verbose=True)
 
     exc = xc(dm, ao_eval, mf_uks.grids.weights)
     assert exc
