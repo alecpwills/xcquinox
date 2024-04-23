@@ -9,6 +9,8 @@ import os, optax, jax, argparse
 import faulthandler
 
 faulthandler.enable()
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
 
 parser = argparse.ArgumentParser(description='Pre-train a network-based xc functional, for further optimization')
 parser.add_argument('--pretrain_level', action='store', type=str, choices=['GGA','MGGA','NONLOCAL'], help='The level of network to pre-train, i.e. GGA, MGGA, or nonlocal')
