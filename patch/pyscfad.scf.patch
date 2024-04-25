@@ -17,7 +17,7 @@
  
      def _eigh(self, h, s):
 -        return eigh(h, s)
-+        return jax.scipy.eigh(h, s)
++        return jax.scipy.linalg.eigh(h, s)
  
      def eig(self, h, s):
          return self._eigh(h, s)
