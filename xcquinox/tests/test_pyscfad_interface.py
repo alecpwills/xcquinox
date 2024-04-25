@@ -36,7 +36,9 @@ g_h2 = Atoms('HH', positions=[[ 0.      ,  0.      ,  0.371395],
 name, mol = xce.utils.ase_atoms_to_mol(g_h2, basis='def2tzvpd')
 mol.build()
 mf = dft.RKS(mol, xc='PBE')
+mf.grids.level = 1
 mf.conv_tol = 1e-4
+mf.max_cycle = 1
 e_tot = mf.kernel()
 e_tots.append(e_tot)
 dm = mf.make_rdm1()
@@ -56,27 +58,41 @@ ss.append(jnp.linalg.inv(jnp.linalg.cholesky(mol.intor('int1e_ovlp'))))
 hologaps.append(mf.mo_energy[mf.mo_occ == 0][0] - mf.mo_energy[mf.mo_occ > 1][-1])
 
 #network to train
-eX = xce.net.eX(n_input = 18,
+# eX = xce.net.eX(n_input = 14,
+#             n_hidden = 16,
+#             depth = 3,
+#             use = [1,2,3,4,5,6,7,8,9,10,11,12,13,14],
+#             ueg_limit=True,
+#             lob = 1.174,
+#             seed = 9001)
+# eC = xce.net.eC(n_input = 16,
+#                 n_hidden = 16,
+#                 depth = 3,
+#                 use = [],
+#                 ueg_limit=False,
+#                 lob = 1.804,
+#                 seed = 9001)
+eX = xce.net.eX(n_input = 2,
             n_hidden = 16,
             depth = 3,
-            use = [],
+            use = [1,2],
             ueg_limit=True,
             lob = 1.174,
             seed = 9001)
-eC = xce.net.eC(n_input = 16,
+eC = xce.net.eC(n_input = 4,
                 n_hidden = 16,
                 depth = 3,
                 use = [],
                 ueg_limit=False,
                 lob = 1.804,
                 seed = 9001)
-xc = xce.xc.eXC(grid_models = [eX, eC], level=4, verbose=True)
+xc = xce.xc.eXC(grid_models = [eX, eC], level=3, verbose=True)
 
 
 def test_pyscfad_e_loss():
     optimizer = optax.adam(learning_rate = 1e-2)
     print('training...')
-    trainer = xce.train.xcTrainer(model=xc, optim=optimizer, steps=1, loss = xce.loss.E_PySCFAD_loss(), do_jit=False, logfile='log')
+    trainer = xce.train.xcTrainer(model=xc, optim=optimizer, steps=3, loss = xce.loss.E_PySCFAD_loss(), do_jit=False, logfile='log')
     newm = trainer(1, trainer.model, [mf], init_dms, e_tots)
     print('training done; generating eval_xc functions')
     evxc_init = generate_network_eval_xc(mf=mf, dm=init_dms[0], network=xc)
