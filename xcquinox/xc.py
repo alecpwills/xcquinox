@@ -373,9 +373,9 @@ class eXC(eqx.Module):
         descrnans = jnp.sum(jnp.isnan(descr5))
         self.vprint(f'NaNs in descr from self.l_1 = {descrnans}')
 
-        if len(descr5.shape) == 3:
-            #don't have good fix for this right now, just average the spin channels
-            descr5 = (descr5[0] + descr5[1])/2
+        # if len(descr5.shape) == 3:
+        #     #don't have good fix for this right now, just average the spin channels
+        #     descr5 = (descr5[0] + descr5[1])/2
 
         return descr5
         
@@ -486,13 +486,28 @@ class eXC(eqx.Module):
             dmnp = np.asarray(jax.lax.stop_gradient(dm))
 
             descr5 = self.nl_4(mf, dmnp, ao=ao, gw=gw, coor=coor).T
-            self.vprint(f'descr shape: {descr.shape}')    
-            self.vprint(f'descr5 shape: {descr5.shape}')
+            #descr5 returned (spin, 12 descriptors, Ngrid)
+            #transpose makes (Ngrid, 12 descriptors, spin)
+            #want (spin, Ngrid, 12 descriptors)
+            descr5 = jnp.transpose(descr5, (2, 0, 1))
+            self.vprint(f'reshaped descr5.shape={descr5.shape}')
 
-            descr = jnp.concatenate([descr, descr5], axis=-1)
-        if spin_scaling and self.level <= 3:
+            if spin_scaling:
+                self.vprint(f'spin_scaling and self.level > 3, descr5.shape={descr5.shape}')
+            else:
+                self.vprint(f'not spin_scaling and self.level > 3, averaging descr5 spin channels')
+                descr5 = 0.5*(descr5[0] + descr5[1])
+        if spin_scaling:
             descr = jnp.transpose(jnp.reshape(descr,(jnp.shape(descr)[0],-1,2)), (2,0,1)) 
-            self.vprint(f'get_descriptors -> self.level <= 3, reshaping\ndescr.shape={descr.shape}')
+            if self.level > 3:
+                descr = jnp.concatenate([descr, descr5], axis=-1)
+                self.vprint(f'get_descriptors -> self.level > 3, descr5.shape={descr5.shape}')
+            self.vprint(f'spin_scaling, get_descriptors -> reshaping -> descr.shape={descr.shape}')
+        else:
+            if self.level > 3:
+                descr = jnp.concatenate([descr, descr5], axis=-1)
+                self.vprint(f'get_descriptors not_spin_scaling -> self.level > 3 -> descr5.shape={descr5.shape}')
+            self.vprint(f'get_descriptors, not spin_scaling -> descr.shape={descr.shape}')
         return descr
 
     def eval_grid_models(self, rho, mf=None, dm=None, ao=None,

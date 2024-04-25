@@ -113,7 +113,7 @@ class eX(eqx.Module):
         :rtype: jax.Array
         """
         print(f"eX.__call__, rho shape: {rho.shape}")
-        if self.n_input < 4:
+        if self.spin_scaling:
             squeezed = jnp.squeeze(jax.vmap(jax.vmap(self.net), in_axes=1)(rho[...,self.use])).T
         else:
             squeezed = jnp.squeeze(jax.vmap(self.net)(rho))

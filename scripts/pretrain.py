@@ -182,7 +182,7 @@ x_lob_level_dict = {'GGA': 1.804, 'MGGA': 1.174, 'NONLOCAL': 1.174}
 class PT_E_Loss(eqx.Module):
 
     def __call__(self, model, inp, ref):
-        if model.spin_scaling and model.n_input < 4:
+        if model.spin_scaling:
             #spin scaling shape = (2, N, len(self.use))
             pred = jax.vmap(jax.vmap(model.net), in_axes=1)(inp)[:, 0]
         else:
@@ -277,7 +277,7 @@ if __name__ == '__main__':
     trainer = xce.train.xcTrainer(model=localnet, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
 
     if pargs.use:
-        if localnet.spin_scaling and localnet.n_input < 4:
+        if localnet.spin_scaling:
             inp = [tdrho[:, :, pargs.use]]
         else:
             inp = [tdrho[:, pargs.use]]
