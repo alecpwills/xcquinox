@@ -2,15 +2,10 @@ name: test
 channels:
 
   - conda-forge
-  - auto
   - defaults
 dependencies:
     # Base depends
   - python
-  - pypatch
-  - pip:
-    - pyscfad
-    - mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
     # Testing
   - pytest
   - pytest-cov
@@ -20,3 +15,7 @@ dependencies:
   - ase
   - optax
   - psutil
+  - pip:
+    - pypatch
+    - pyscfad
+    - mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
