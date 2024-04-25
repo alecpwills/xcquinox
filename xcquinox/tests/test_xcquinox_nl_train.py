@@ -48,10 +48,10 @@ ss.append(jnp.linalg.inv(jnp.linalg.cholesky(mol.intor('int1e_ovlp'))))
 hologaps.append(mf.mo_energy[mf.mo_occ == 0][0] - mf.mo_energy[mf.mo_occ > 1][-1])
 
 #network to train
-eX = xce.net.eX(n_input = 18,
+eX = xce.net.eX(n_input = 14,
             n_hidden = 16,
             depth = 3,
-            use = [],
+            use = [1,2,3,4,5,6,7,8,9,10,11,12,13,14],
             ueg_limit=True,
             lob = 1.174,
             seed = 9001)

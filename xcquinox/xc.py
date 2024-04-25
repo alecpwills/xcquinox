@@ -486,17 +486,24 @@ class eXC(eqx.Module):
             dmnp = np.asarray(jax.lax.stop_gradient(dm))
 
             descr5 = self.nl_4(mf, dmnp, ao=ao, gw=gw, coor=coor).T
-            #descr5 returned (spin, 12 descriptors, Ngrid)
-            #transpose makes (Ngrid, 12 descriptors, spin)
-            #want (spin, Ngrid, 12 descriptors)
-            descr5 = jnp.transpose(descr5, (2, 0, 1))
-            self.vprint(f'reshaped descr5.shape={descr5.shape}')
+            self.vprint(f'get_descriptors -> self.level > 3 -> returned descr5 shape={descr5.shape}')
+            if len(descr5.shape) == 3:
+                #descr5 returned (spin, 12 descriptors, Ngrid)
+                #transpose makes (Ngrid, 12 descriptors, spin)
+                #want (spin, Ngrid, 12 descriptors)
+                descr5 = jnp.transpose(descr5, (2, 0, 1))
+                self.vprint(f'reshaped descr5.shape={descr5.shape}')
 
             if spin_scaling:
                 self.vprint(f'spin_scaling and self.level > 3, descr5.shape={descr5.shape}')
+                if len(descr5.shape) == 2:
+                    self.vprint('decomposing descriptors into spin channels, half each')
+                    descr5 = jnp.reshape(jnp.concatenate([0.5*descr5, 0.5*descr5]), (2, descr5.shape[0], -1))
+                    self.vprint(f'new descr5.shape={descr5.shape}')
             else:
-                self.vprint(f'not spin_scaling and self.level > 3, averaging descr5 spin channels')
-                descr5 = 0.5*(descr5[0] + descr5[1])
+                if len(descr5.shape) == 3:
+                    self.vprint(f'not spin_scaling and self.level > 3 but spin polarized NL descriptors, averaging descr5 spin channels')
+                    descr5 = 0.5*(descr5[0] + descr5[1])
         if spin_scaling:
             descr = jnp.transpose(jnp.reshape(descr,(jnp.shape(descr)[0],-1,2)), (2,0,1)) 
             if self.level > 3:
