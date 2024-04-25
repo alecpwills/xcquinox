@@ -35,7 +35,7 @@ jobs:
           ulimit -a
 
       # More info on options: https://github.com/marketplace/actions/provision-with-micromamba
-      - uses: mamba-org/provision-with-micromamba@main
+      - uses: mamba-org/setup-micromamba
         with:
           environment-file: devtools/conda-envs/test_env.yaml
           environment-name: test
@@ -54,7 +54,6 @@ jobs:
         shell: bash -l {0}
         run: |
           pypatch apply ./patch/pyscfad.dft.patch pyscfad.dft
-          pypatch apply ./patch/pyscfad.scf.patch pyscfad.scf
 
       - name: Run tests
         # conda setup requires this special shell
