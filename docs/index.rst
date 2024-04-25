@@ -30,6 +30,7 @@ This package is designed to work well with the `pyscfad`_ package, `an end-to-en
    ./docpages/utils
    ./docpages/train
    ./docpages/loss
+   ./docpages/pyscf
 
 ..
    api
