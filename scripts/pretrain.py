@@ -216,7 +216,7 @@ if __name__ == '__main__':
         
     ueg = xce.xc.LDA_X()
     xc = xce.xc.eXC(grid_models=[localnet], heg_mult=True,
-                    level = level_dict[pargs.pretrain_level])
+                    level = level_dict[pargs.pretrain_level], verbose=True)
     
 
     spins = {

@@ -430,6 +430,7 @@ class eXC(eqx.Module):
             self.vprint(f'self.level > 0; descr1 Nans = {jnp.sum(jnp.isnan(descr1))}')
             self.vprint(f'self.level > 0; descr2 Nans = {jnp.sum(jnp.isnan(descr2))}')
             descr = jnp.concatenate([jnp.expand_dims(descr1, -1), jnp.expand_dims(descr2, -1)],axis=-1)
+            self.vprint(f'get_descriptors -> self.level > 0\ndescr1.shape={descr1.shape}, descr2.shape={descr2.shape}, descr.shape={descr.shape}')
         if self.level > 1: # GGA
             if spin_scaling:
                 descr3a = self.l_2(2*rho0_a, 4*gamma_a) # s
@@ -438,6 +439,7 @@ class eXC(eqx.Module):
                 descr3 = (1-jnp.exp(-descr3**2/self.s_gam))*jnp.log(descr3 + 1)
                 self.vprint(f'self.level > 1; descr3a Nans = {jnp.sum(jnp.isnan(descr3a))}')
                 self.vprint(f'self.level > 1; descr3b Nans = {jnp.sum(jnp.isnan(descr3b))}')
+                self.vprint(f'get_descriptors -> self.level > 1 and spin_scaling\ndescr3a.shape={descr3a.shape}, descr3b.shape={descr3b.shape}')
             else:
                 descr3 = self.l_2(rho0_a + rho0_b, gamma_a + gamma_b + 2*gamma_ab) # s
                 descr3 = descr3/((1+zeta)**(2/3) + (1-zeta)**2/3)
@@ -445,6 +447,7 @@ class eXC(eqx.Module):
                 descr3 = (1-jnp.exp(-descr3**2/self.s_gam))*jnp.log(descr3 + 1)
             self.vprint(f'self.level > 1; descr3 Nans = {jnp.sum(jnp.isnan(descr3))}')
             descr = jnp.concatenate([descr, descr3],axis=-1)
+            self.vprint(f'get_descriptors -> self.level > 1\ndescr3.shape={descr3.shape}, descr.shape={descr.shape}')
         if self.level > 2: # meta-GGA
             if spin_scaling:
                 descr4a = self.l_3(2*rho0_a, 4*gamma_a, 2*tau_a)
@@ -453,6 +456,7 @@ class eXC(eqx.Module):
                 descr4 = descr4**3/(descr4**2+self.epsilon)
                 self.vprint(f'self.level > 2; descr4a Nans = {jnp.sum(jnp.isnan(descr4a))}')
                 self.vprint(f'self.level > 2; descr4b Nans = {jnp.sum(jnp.isnan(descr4b))}')
+                self.vprint(f'get_descriptors -> self.level > 2 and spin_scaling\ndescr3a.shape={descr4a.shape}, descr3b.shape={descr4b.shape}')
             else:
                 descr4 = self.l_3(rho0_a + rho0_b, gamma_a + gamma_b + 2*gamma_ab, tau_a + tau_b)
                 descr4 = 2*descr4/((1+zeta)**(5/3) + (1-zeta)**(5/3))
@@ -464,8 +468,8 @@ class eXC(eqx.Module):
             #original above; modified below to reduce NaN generation
             # descr4 = jnp.log((descr4 + 10)/2)
             self.vprint(f'self.level > 2; descr4 Nans = {jnp.sum(jnp.isnan(descr4))}')
-
             descr = jnp.concatenate([descr, descr4],axis=-1)
+            self.vprint(f'get_descriptors -> self.level > 2\ndescr4.shape={descr4.shape}, descr.shape={descr.shape}')
         if self.level > 3: # meta-GGA + V_estat
             # if spin_scaling:
             #     descr5a = self.l_4(2*rho0_a, 2*nl_a)
@@ -488,6 +492,7 @@ class eXC(eqx.Module):
             descr = jnp.concatenate([descr, descr5], axis=-1)
         if spin_scaling and self.level <= 3:
             descr = jnp.transpose(jnp.reshape(descr,(jnp.shape(descr)[0],-1,2)), (2,0,1)) 
+            self.vprint(f'get_descriptors -> self.level <= 3, reshaping\ndescr.shape={descr.shape}')
         return descr
 
     def eval_grid_models(self, rho, mf=None, dm=None, ao=None,
