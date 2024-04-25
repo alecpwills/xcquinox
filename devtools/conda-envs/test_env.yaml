@@ -10,6 +10,7 @@ dependencies:
   - pip:
     - pyscfad
     - mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
+    - pypatch
     # Testing
   - pytest
   - pytest-cov
@@ -19,4 +20,3 @@ dependencies:
   - ase
   - optax
   - psutil
-  - pypatch
