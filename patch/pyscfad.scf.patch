@@ -1,0 +1,23 @@
+--- hf.py	2024-04-25 14:05:07.888967453 -0400
++++ hf.py	2024-04-25 14:58:55.875813803 -0400
+@@ -59,8 +59,10 @@
+     for cycle in range(mf.max_cycle):
+         dm_last = dm
+         last_hf_e = e_tot
+-
++        print('getting fock, various matrices')
++        print(f'h1e = {h1e.shape}\ns1e={s1e.shape}\ndm={dm.shape}')
+         fock = mf.get_fock(h1e, s1e, vhf, dm, cycle, diis)
++        print('fock matrix: ', fock.shape)
+         mo_energy, mo_coeff = mf.eig(fock, s1e)
+         mo_occ = stop_trace(mf.get_occ)(mo_energy, mo_coeff)
+         dm = mf.make_rdm1(mo_coeff, mo_occ)
+@@ -397,7 +399,7 @@
+         return self.e_tot
+ 
+     def _eigh(self, h, s):
+-        return eigh(h, s)
++        return jax.scipy.eigh(h, s)
+ 
+     def eig(self, h, s):
+         return self._eigh(h, s)
