@@ -5,6 +5,7 @@ import xcquinox.xc
 import xcquinox.utils
 import xcquinox.train
 import xcquinox.loss
+import xcquinox.pyscf
 
 # from ._version import get_versions
 # __version__ = get_versions()['version']

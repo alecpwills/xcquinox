@@ -1,0 +1,23 @@
+--- rks.py	2024-04-25 14:05:07.884967377 -0400
++++ rks.py	2024-04-25 13:49:10.954713077 -0400
+@@ -1,5 +1,6 @@
+ import numpy
+ from jax import numpy as np
++import jax
+ from pyscf import __config__
+ from pyscf.lib import current_memory
+ from pyscf.lib import logger
+@@ -53,6 +54,13 @@
+     else:
+         max_memory = ks.max_memory - current_memory()[0]
+         n, vxc.exc, vxc.vxc = ni.nr_rks(mol, ks.grids, ks.xc, dm, max_memory=max_memory)
++        #XCQUINOX MODIFICATION
++        if np.isnan(vxc.exc):
++            print('RKSAnalyzer.get_veff; nans in exc, trying with network')
++            excG, vxcG = jax.value_and_grad(ks.network_eval)(dm)
++            vxc.vxc = vxcG
++            vxc.exc = excG
++            # print('network exc, vxc: {}, {}'.format(excG, vxcG))
+         if ks.nlc != '':
+             assert 'VV10' in ks.nlc.upper()
+             _, enlc, vnlc = ni.nr_rks(mol, ks.nlcgrids, ks.xc+'__'+ks.nlc, dm,

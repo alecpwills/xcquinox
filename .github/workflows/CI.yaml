@@ -50,12 +50,16 @@ jobs:
           python -m pip install . --no-deps
           micromamba list
 
+      - name: Patch pyscfad to integrate with xcquinox
+        shell: bash
+        run: |
+          pypatch apply ./patch/pyscfad.dft.patch pyscfad.dft
+
       - name: Run tests
         # conda setup requires this special shell
         shell: bash -l {0}
         run: |
           pytest -v --cov=xcquinox --cov-report=xml --color=yes xcquinox/tests/
-
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4.0.1

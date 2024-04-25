@@ -112,3 +112,7 @@ ENV/
 notebooks/tmp*
 notebooks/xc.eqx*
 notebooks/*.dat
+
+xcquinox/tests/*.dat
+xcquinox/tests/tmp*
+xcquinox/tests/xc.eqx*

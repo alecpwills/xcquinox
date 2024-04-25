@@ -1,6 +1,7 @@
 import equinox as eqx
 import jax.numpy as jnp
 from xcquinox.utils import get_dm_moe, pad_array, pad_array_list
+from xcquinox.pyscf import generate_network_eval_xc
 
 class E_loss(eqx.Module):
     def __init__(self):
@@ -330,3 +331,37 @@ class DM_Gap_Loop_loss(eqx.Module):
     
             total_loss += jnp.sqrt(dm_L+gap_L)
         return total_loss
+    
+
+class E_PySCFAD_loss(eqx.Module):
+    def __init__(self):
+        '''
+        The standard energy loss module, RMSE loss of predicted vs. reference energies.
+        '''
+        super().__init__()
+
+    def __call__(self, model, mf, inp_dm, ref_en):
+        '''
+        Computes the energy loss for a given model and associated input density matrix, atomic orbitals on the grid, and grid weights
+
+        Loss is the RMSE energy, so predicted energy can potentially be a jax.Array of SCF guesses.
+
+        :param model: The XC object whose forward pass predicts the XC energy based on the inputs here.
+        :type model: xcquinox.xc.eXC
+        :param mf: A pyscf(ad) converged calculation kernel, whose eval_xc is overwritten to use the model calculation
+        :type mf: pyscfad.dft.RKS kernel
+        :param inp_dm: The density matrix to pass into the network for density creation on the grid.
+        :type inp_dm: jax.Array
+        :param ref_en: The reference energy to take the loss with respect to.
+        :type ref_en: jax.Array
+        :return: The RMSE error.
+        :rtype: jax.Array
+        '''
+        print('generating eval_xc function to overwrite')
+        evxc = generate_network_eval_xc(mf=mf, dm=inp_dm, network=model)
+        mf.define_xc_(evxc, xctype='MGGA')
+        print('predicting energy...')
+        e_pred = mf.kernel()
+        print('energy predicted')
+        eL = jnp.sqrt( jnp.mean((e_pred-ref_en)**2))
+        return eL
