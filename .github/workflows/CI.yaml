@@ -55,6 +55,11 @@ jobs:
         run: |
           pypatch apply ./patch/pyscfad.dft.patch pyscfad.dft
 
+      - name: Set up pyscfad config file
+        shell: bash
+        run: |
+          cp ./patch/pyscf_conf.py ~/.pyscf_conf.py
+          
       - name: Run tests
         # conda setup requires this special shell
         shell: bash -l {0}
