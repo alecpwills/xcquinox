@@ -23,6 +23,7 @@ parser.add_argument('--pretrain_xc', action='store', type=str, help='Specify whi
 parser.add_argument('--n_steps', action='store', type=int, default=200, help='The number training epochs to go through.')
 parser.add_argument('--do_jit', action='store_true', default=False, help='If flagged, will try to utilize JAX-jitting during training')
 parser.add_argument('--g297_data_path', action='store', type=str, default='/home/awills/Documents/Research/xcquinox/scripts/script_data/haunschild_g2/g2_97.traj', help='Location of the data file for use during pre-training')
+parser.add_argument('--debug', action='store_true', help='If flagged, only selects first in the target list for quick debugging purposes.')
 def get_mol(atoms, basis='6-311++G**'):
     pos = atoms.positions
     spec = atoms.get_chemical_symbols()
@@ -96,6 +97,7 @@ def get_data(mol, xcmodel, xc_func, localnet=None):
     ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=2)
     dm = mf.make_rdm1()
     if len(dm.shape) == 2:
+        #artificially spin-polarize
         dm = np.array([0.5*dm, 0.5*dm])
     print('New DM shape: {}'.format(dm.shape))
     print('ao.shape', ao.shape)
@@ -107,13 +109,19 @@ def get_data(mol, xcmodel, xc_func, localnet=None):
         fxc_a =  mf._numint.eval_xc(xc_func,(rho_alpha,rho_alpha*0), spin=1)[0]/mf._numint.eval_xc('LDA_X',(rho_alpha,rho_alpha*0), spin=1)[0] -1
         fxc_b =  mf._numint.eval_xc(xc_func,(rho_beta*0,rho_beta), spin=1)[0]/mf._numint.eval_xc('LDA_X',(rho_beta*0,rho_beta), spin=1)[0] -1
         print('fxc with xc_func = {} = {}'.format(fxc_a, xc_func))
+        print(f'rho_a.shape={rho_alpha.shape}, rho_b.shape={rho_beta.shape}')
+        print(f'fxc_a.shape={fxc_a.shape}, fxc_b.shape={fxc_b.shape}')
 
         if mol.spin != 0 and sum(mol.nelec)>1:
-            rho = jnp.concatenate([rho_alpha, rho_beta])
+            print('mol.spin != 0 and sum(mol.nelec) > 1')
+            rho = jnp.concatenate([rho_alpha, rho_beta], axis=-1)
             fxc = jnp.concatenate([fxc_a, fxc_b])
+            print(f'rho.shape={rho.shape}, fxc.shape={fxc.shape}')
         else:
+            print('NOT (mol.spin != 0 and sum(mol.nelec) > 1)')
             rho = rho_alpha
             fxc = fxc_a
+            print(f'rho.shape={rho.shape}, fxc.shape={fxc.shape}')
     else:    
         print('no spin scaling, indicates correlation network')
         rho_alpha = mf._numint.eval_rho(mol, ao, dm[0], xctype='metaGGA',hermi=True)
@@ -126,31 +134,47 @@ def get_data(mol, xcmodel, xc_func, localnet=None):
     dm = jnp.array(mf.make_rdm1())
     print('get_data, dm shape = {}'.format(dm.shape))
     ao_eval = jnp.array(mf._numint.eval_ao(mol, mf.grids.coords, deriv=1))
-    rho = jnp.einsum('xij,yik,...jk->xy...i', ao_eval, ao_eval, dm)
+    print(f'ao_eval.shape={ao_eval.shape}')
+    rho = jnp.einsum('xij,yik,...jk->xy...i', ao_eval, ao_eval, dm)        
+    rho0 = rho[0,0]
+    drho = rho[0,1:4] + rho[1:4,0]
+    tau = 0.5*(rho[1,1] + rho[2,2] + rho[3,3])
+
     print('rho shape', rho.shape)
     if dm.ndim == 3:
-        rho_filt = (jnp.sum(rho[0,0],axis=0) > 1e-6)
+        rho_filt = (jnp.sum(rho0,axis=0) > 1e-6)
     else:
-        rho_filt = (rho[0,0] > 1e-6)
+        rho_filt = (rho0 > 1e-6)
     print('rho_filt shape:', rho_filt.shape)
 
     
     mf.converged=True
     tdrho = xcmodel.get_descriptors(*get_rhos(rho, spin=1), spin_scaling=localnet.spin_scaling, mf=mf, dm=dm)
-            
+    print(f'get descriptors tdrho.shape={tdrho.shape}')
     if localnet.spin_scaling:
         if mol.spin != 0 and sum(mol.nelec) > 1:
+            print('mol.spin != 0 and sum(mol.nelec) > 1')
             #tdrho not returned in a spin-polarized form regardless,
             #but the enhancement factors sampled as polarized, so double
-            tdrho = jnp.concatenate([tdrho,tdrho])
+            if len(tdrho.shape) == 3:
+                print('concatenating along axis=1')
+                tdrho = jnp.concatenate([tdrho,tdrho], axis=1)
+            else:
+                print('concatenating along axis=-1')
+                tdrho = jnp.concatenate([tdrho, tdrho], axis=0)
+            rho_filt2 = rho_filt.copy()
             rho_filt = jnp.concatenate([rho_filt]*2)
+            print(f'tdrho.shape={tdrho.shape}')
+            print(f'rho_filt.shape={rho_filt.shape}')
         elif sum(mol.nelec) == 1:
             pass
-
-    tdrho = tdrho[rho_filt]
-    tFxc = jnp.array(fxc)[rho_filt]
+    try:
+        tdrho = tdrho[rho_filt]
+        tFxc = jnp.array(fxc)[rho_filt]
+    except:
+        tdrho = tdrho[:, rho_filt, :]
+        tFxc = jnp.array(fxc)[rho_filt]
     return tdrho, tFxc
-
 level_dict = {'GGA':2, 'MGGA':3, 'NONLOCAL':4}
 
 x_lob_level_dict = {'GGA': 1.804, 'MGGA': 1.174, 'NONLOCAL': 1.174}
@@ -158,8 +182,11 @@ x_lob_level_dict = {'GGA': 1.804, 'MGGA': 1.174, 'NONLOCAL': 1.174}
 class PT_E_Loss(eqx.Module):
 
     def __call__(self, model, inp, ref):
-
-        pred = jax.vmap(model.net)(inp)[:, 0]
+        if model.spin_scaling and model.n_input < 4:
+            #spin scaling shape = (2, N, len(self.use))
+            pred = jax.vmap(jax.vmap(model.net), in_axes=1)(inp)[:, 0]
+        else:
+            pred = jax.vmap(model.net)(inp)[:, 0]
 
         err = pred-ref
 
@@ -168,6 +195,9 @@ class PT_E_Loss(eqx.Module):
     
 
 if __name__ == '__main__':
+    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+    os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
+
     pargs = parser.parse_args()
 
     if pargs.pretrain_net == 'x':
@@ -217,17 +247,28 @@ if __name__ == '__main__':
     mols = [i for i in mols if len(i.atom) < 8]
     for i in mols:
         print(i, i.atom, len(i.atom))
-
+    if pargs.debug:
+        mols = mols[:1]
     ref = pargs.pretrain_xc
     data = [get_data(mol, xcmodel=xc, xc_func=ref, localnet=localnet) for i,mol in enumerate(mols)]
-    tdrho = jnp.concatenate([d[0] for d in data])
+    if localnet.spin_scaling:
+        print(f'localnet.spin_scaling: concatenating the data')
+        print(f'first data shape = {data[0][0].shape}')
+        tdrho = jnp.concatenate([d[0] for d in data], axis=1)
+        print(f'concatenated: tdrho.shape={tdrho.shape}')
+    else:
+        tdrho = jnp.concatenate([d[0] for d in data])
+    
     tFxc = jnp.concatenate([d[1] for d in data])
-
-    nan_filt = ~jnp.any((tdrho != tdrho),axis=-1)
-
-    tFxc = tFxc[nan_filt]
-    tdrho = tdrho[nan_filt,:]
-
+    # nan_filt = ~jnp.any((tFxc != tFxc), axis=-1)
+    # print(f'nan_filt.shape={nan_filt.shape}')
+    # if localnet.spin_scaling:
+    #     tFxc = tFxc[nan_filt[0, :, 0]]
+    #     tdrho = tdrho[nan_filt, :]
+    # else:
+    #     tFxc = tFxc[nan_filt]
+    #     tdrho = tdrho[nan_filt,:]
+    print(f'tFxc.shape={tFxc.shape}, tdrho.shape={tdrho.shape}')
     cpus = jax.devices(backend='cpu')
 
     scheduler = optax.exponential_decay(init_value = 5e-2, transition_begin=50, transition_steps=pargs.n_steps, decay_rate=0.9)
@@ -236,9 +277,12 @@ if __name__ == '__main__':
     trainer = xce.train.xcTrainer(model=localnet, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
 
     if pargs.use:
-        inp = [tdrho[:, pargs.use]]
+        if localnet.spin_scaling and localnet.n_input < 4:
+            inp = [tdrho[:, :, pargs.use]]
+        else:
+            inp = [tdrho[:, pargs.use]]
     else:
         inp = [tdrho]
-
+    print(f'inp[0].shape = {inp[0].shape}')
     with jax.default_device(cpus[0]):
         newm = trainer(1, trainer.model, inp, [tFxc])
