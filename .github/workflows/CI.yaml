@@ -51,7 +51,7 @@ jobs:
           micromamba list
 
       - name: Patch pyscfad to integrate with xcquinox
-        shell: bash
+        shell: bash -l {0}
         run: |
           pypatch apply ./patch/pyscfad.dft.patch pyscfad.dft
 
