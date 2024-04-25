@@ -1,8 +1,8 @@
 import sys, os
 import jax, optax
 import jax.numpy as jnp
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
-os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
+# os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
+# os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 
 import pytest
 from ase import Atoms

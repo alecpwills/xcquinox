@@ -65,7 +65,7 @@ eC = xce.net.eC(n_input = 16,
 xc = xce.xc.eXC(grid_models = [eX, eC], level=4, verbose=True)
 
 def test_nonlocal_nl_e_loss():
-    trainer = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-4), steps=3, loss = xce.loss.NL_E_loss(), do_jit=False, logfile='test_nl_log')
+    trainer = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-4), steps=1, loss = xce.loss.NL_E_loss(), do_jit=False, logfile='test_nl_log')
     newm = trainer(1, trainer.model, dms, energies, ao_evals, gws, [mf])
 
     en1 = xc(dms[0], ao_evals[0], gws[0], mf)

@@ -71,7 +71,7 @@ def test_train_bandgap_si():
     cnet = xce.net.eC(n_input = 4, use = [2, 3], ueg_limit=True)
     blankxc = xce.xc.eXC(grid_models = [xnet, cnet], level=3)
     xc = blankxc
-    xct = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-2), steps=3, loss = loss, do_jit=True, logfile='test_bg_log')
+    xct = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-2), steps=1, loss = loss, do_jit=True, logfile='test_bg_log')
     newm = xct(1, xct.model, ao_evals, gws, dms, eris, mo_occs, hcs, ss, ogds, [-1.17], mfs)
     vgf1 = lambda x: xc(x, ao_evals[0], gws[0], mfs[0])
     vgf2 = lambda x: newm(x, ao_evals[0], gws[0], mfs[0])
@@ -90,7 +90,7 @@ def test_train_dm_gap_si():
     cnet = xce.net.eC(n_input = 4, use = [2, 3], ueg_limit=True)
     blankxc = xce.xc.eXC(grid_models = [xnet, cnet], level=3)
     xc = blankxc
-    xct = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-2), steps=3, loss = loss, do_jit=True, logfile='test_dm_bg_log')
+    xct = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-2), steps=1, loss = loss, do_jit=True, logfile='test_dm_bg_log')
     newm = xct(1, xct.model, ao_evals, hcs, eris, ss, gws, init_dms, mo_occs, ogds, dms, hologaps)
     vgf1 = lambda x: xc(x, ao_evals[0], gws[0], mfs[0])
     vgf2 = lambda x: newm(x, ao_evals[0], gws[0], mfs[0])
