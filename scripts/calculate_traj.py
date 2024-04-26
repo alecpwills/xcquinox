@@ -471,7 +471,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
             print('Kernel calculation failed, perhaps hydrogen is acting up or there is another issue')
             result.calc = SinglePointCalculator(result)
             result.calc.results = {'energy' : np.nan}
-            return results
+            return result
         xc_time = time() - xc_start
         with open('timing', 'a') as tfile:
             tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.xc.upper(), xc_time))
