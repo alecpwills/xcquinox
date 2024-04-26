@@ -408,7 +408,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
             print("Restart Flagged -- Setting mf.init_guess to chkfile")
             mf.init_guess = '{}_{}.chkpt'.format(idx, atoms.symbols)
 
-        mf.grids.level = 3
+        mf.grids.level = kwargs.get('gridlevel', 3)
         mf.max_cycle = 100
         mf.max_memory = 64000
         mf.grids.build()
@@ -457,7 +457,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
             mf.init_guess = '{}_{}.chkpt'.format(idx, atoms.symbols)
         init_dm = mf.get_init_guess()
         evxc = xce.pyscf.generate_network_eval_xc(mf, init_dm, kwargs['custom_xc_net'])
-        mf.grids.level = 1
+        mf.grids.level = kwargs.get('gridlevel', 3)
         mf.max_cycle = 50
         mf.max_memory = 64000
         mf.grids.build()
@@ -570,6 +570,7 @@ if __name__ == '__main__':
     parser.add_argument('--testgen', default=False, action='store_true', help='If flagged, calculation stops after mol generation.')
     parser.add_argument('--startind', default=-1, type=int, action='store', help='SERIAL MODE ONLY. If specified, will skip indices in trajectory before given value')
     parser.add_argument('--atomize', default=False, action='store_true', help='If flagged, will generate predictions for the single-atom components present in trajectory molecules.')
+    parser.add_argument('--mf_grid_level', type=int, default=3, action='store', help='Grid level for PySCF(AD) calculation')
     #add arguments for pyscfad network driver
     parser.add_argument('--xc_x_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. x_3_16_mgga)')
     parser.add_argument('--xc_x_ninput', type=int, action='store', help='Number of inputs the exchange network expects')
@@ -653,6 +654,7 @@ if __name__ == '__main__':
                                         owcharge=args.overwrite_gcharge,
                                         forcepol = args.forcepol,
                                         testgen = args.testgen,
+                                        gridlevel = args.mf_grid_level,
                                         atomize = args.atomize,
                                         custom_xc = CUSTOM_XC,
                                         custom_xc_net = xcnet)
@@ -670,6 +672,7 @@ if __name__ == '__main__':
                                         restart = args.restart,
                                         forcepol = args.forcepol,
                                         testgen = args.testgen,
+                                        gridlevel = args.mf_grid_level,
                                         atomize = args.atomize,
                                         custom_xc = CUSTOM_XC,
                                         custom_xc_net = xcnet) for ia in range(len(atoms)) if ia >= args.startind]
