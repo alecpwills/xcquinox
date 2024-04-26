@@ -51,7 +51,7 @@ class eX(eqx.Module):
     seed: int
     depth: int
 
-    def __init__(self, n_input, n_hidden=16, depth=3, use=[], ueg_limit=False, lob=1.804, seed=92017):
+    def __init__(self, n_input, n_hidden=16, depth=3, use=[], ueg_limit=False, lob=1.804, seed=92017, spin_scaling=True):
         """
         __init__ Local exchange model based on MLP.
 
@@ -76,7 +76,7 @@ class eX(eqx.Module):
         """
         super().__init__()
         self.ueg_limit = ueg_limit
-        self.spin_scaling = True
+        self.spin_scaling = spin_scaling
         self.lob = lob
         self.n_input = n_input
         self.n_hidden = n_hidden
@@ -155,7 +155,7 @@ class eC(eqx.Module):
     seed: int
     depth: int
 
-    def __init__(self, n_input=2,n_hidden=16, depth=3, use = [], ueg_limit=False, lob=2.0, seed=92017):
+    def __init__(self, n_input=2,n_hidden=16, depth=3, use = [], ueg_limit=False, lob=2.0, seed=92017, spin_scaling = False):
         """
         __init__ Local correlation model based on MLP.
 
@@ -179,7 +179,7 @@ class eC(eqx.Module):
         :type seed: int, optional
         """
         super().__init__()
-        self.spin_scaling = False
+        self.spin_scaling = spin_scaling
         self.lob = False
         self.ueg_limit = ueg_limit
         self.n_input=n_input

@@ -373,10 +373,6 @@ class eXC(eqx.Module):
         descrnans = jnp.sum(jnp.isnan(descr5))
         self.vprint(f'NaNs in descr from self.l_1 = {descrnans}')
 
-        # if len(descr5.shape) == 3:
-        #     #don't have good fix for this right now, just average the spin channels
-        #     descr5 = (descr5[0] + descr5[1])/2
-
         return descr5
         
     # @eqx.filter_jit
@@ -465,8 +461,6 @@ class eXC(eqx.Module):
             self.vprint(f'self.level > 2; pre-log descr4 Nans = {jnp.sum(jnp.isnan(descr4))}')
             self.vprint(f'descr4.min/max: {jnp.min(descr4)}, {jnp.max(descr4)}')
             descr4 = jnp.log((descr4 + 1)/2)
-            #original above; modified below to reduce NaN generation
-            # descr4 = jnp.log((descr4 + 10)/2)
             self.vprint(f'self.level > 2; descr4 Nans = {jnp.sum(jnp.isnan(descr4))}')
             descr = jnp.concatenate([descr, descr4],axis=-1)
             self.vprint(f'get_descriptors -> self.level > 2\ndescr4.shape={descr4.shape}, descr.shape={descr.shape}')
