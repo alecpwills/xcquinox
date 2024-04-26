@@ -40,6 +40,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import xcquinox as xce
 import os, optax, jax
+
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
 
@@ -160,6 +161,11 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
     print("Atoms Info")
     print(atoms.info)
     print('======================')
+    print('======================')
+    print("kwargs Summary")
+    print(kwargs)
+    print('======================')
+
     pos = atoms.positions
     spec = atoms.get_chemical_symbols()
     try:
@@ -192,9 +198,23 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         result = read('{}_{}.traj'.format(idx, atoms.symbols))
         return result
     print('Generating mol {} with charge {}'.format(idx, charge))
-    if kwargs['PBC'] == False and not PBCALC:
-        #guess spin
-        #mol = gto.M(atom=mol_input, basis=basis, charge=charge, spin=spin)
+    if kwargs.get('custom_xc', False):
+        print('CUSTOM XC SPECIFIED; WILL OVERWITE eval_xc')
+        molgen = False
+        scount = 0
+        while not molgen:
+            try:
+                mol = gtoa.Mole(atom=mol_input, basis=basis, spin=sping-scount, charge=charge)
+                molgen=True
+            except RuntimeError:
+                #spin disparity somehow, try with one less until 0
+                print("RuntimeError. Trying with reduced spin.")
+                scount += 1
+                if sping-scount < 0:
+                    raise ValueError
+        print('S: ', mol.spin)
+        print(f'generated pyscfad mol: {type(mol), mol}')
+    elif kwargs['PBC'] == False and not PBCALC:
         molgen = False
         scount = 0
         while not molgen:
@@ -207,7 +227,6 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
                 scount += 1
                 if sping-scount < 0:
                     raise ValueError
-
         print('S: ', mol.spin)
     elif kwargs['PBC'] == True and not PBCALC:
         print('PBC CALCULATION BY FLAG')
@@ -424,7 +443,49 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         #np.savetxt('{}.m_occ'.format(idx), mf.mo_occ, delimiter=' ')
         #np.savetxt('{}.mo_coeff'.format(idx), mf.mo_coeff, delimiter=' ')
         write_mycc(idx, atoms, mf, result)
-    
+    elif kwargs['XC'].lower() == 'custom_xc':
+        print('CUSTOM CALCULATION COMMENCING.....')
+        print(type(mol), mol)
+        #pyscfad only has spin-restricted DFT right now
+        mf = dfta.RKS(mol)
+        method = dfta.RKS
+        print("METHOD: ", mf)
+        if kwargs.get('chk', True):
+            mf.set(chkfile='{}_{}.chkpt'.format(idx, atoms.symbols))
+        if kwargs['restart']:
+            print("Restart Flagged -- Setting mf.init_guess to chkfile")
+            mf.init_guess = '{}_{}.chkpt'.format(idx, atoms.symbols)
+        init_dm = mf.get_init_guess()
+        evxc = xce.pyscf.generate_network_eval_xc(mf, init_dm, kwargs['custom_xc_net'])
+        mf.grids.level = 1
+        mf.max_cycle = 50
+        mf.max_memory = 64000
+        mf.grids.build()
+        print("Running {} calculation".format(kwargs['XC']))
+        mf.define_xc_(evxc, 'MGGA')
+        xc_start = time()
+        try:
+            mf.kernel()
+        except Exception as e:
+            print(e)
+            print('Kernel calculation failed, perhaps hydrogen is acting up or there is another issue')
+            result.calc = SinglePointCalculator(result)
+            result.calc.results = {'energy' : np.nan}
+            return results
+        xc_time = time() - xc_start
+        with open('timing', 'a') as tfile:
+            tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.xc.upper(), xc_time))
+        if kwargs['df'] == True:
+            print('Default auxbasis', mf.with_df.auxmol.basis)
+        result.calc = SinglePointCalculator(result)
+        result.calc.results = {'energy':mf.e_tot }
+        with open('progress','a') as progfile:
+            progfile.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.e_tot ))
+        #np.savetxt('{}.m_occ'.format(idx), mf.mo_occ, delimiter=' ')
+        #np.savetxt('{}.mo_coeff'.format(idx), mf.mo_coeff, delimiter=' ')
+        write_mycc(idx, atoms, mf, result)
+
+
     return result
 
 def calculate_distributed(atoms, n_workers = -1, basis='6-311++G(3df,2pd)', **kwargs):
@@ -448,6 +509,44 @@ def calculate_distributed(atoms, n_workers = -1, basis='6-311++G(3df,2pd)', **kw
     
     return [f.result() for f in futures]
 
+def loadnet_from_strucdir(path, ninput, use=[]):
+    sp = path.split('/')
+    if '.eqx' in sp[-1]:
+        f = sp[-1]
+        sdir = sp[-2]
+        fullpath = True
+    else:
+        sdir = sp[-1]
+        f = sorted([i for i in os.listdir(path) if '.eqx' in i], key = lambda x: int(x.split('.')[-1]))[-1]
+        fullpath = False
+    
+    loadnet = path if fullpath else os.path.join(path, f)
+    levels = {'gga': 2, 'mgga': 3, 'nl': 4}
+    net_type, ndepth, nhidden, level = sdir.split('_')
+    if level == 'gga':
+        if net_type == 'x':
+            use = use if use else [1]
+            thisnet = xce.net.eX(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), lob=1.804)
+        elif net_type == 'c':
+            use = use if use else [2]
+            thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True)
+    elif level == 'mgga':
+        if net_type == 'x':
+            use = use if use else [1, 2]
+            thisnet = xce.net.eX(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, lob=1.174)
+        elif net_type == 'c':
+            use = use if use else []
+            thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True)
+    elif level == 'nl':
+        if net_type == 'x':
+            use = use if use else []
+            thisnet = xce.net.eX(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, lob=1.174)
+        elif net_type == 'c':
+            use = use if use else []
+            thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True)
+    
+    thisnet = eqx.tree_deserialise_leaves(loadnet, thisnet)
+    return thisnet, levels[level]
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
@@ -470,14 +569,68 @@ if __name__ == '__main__':
     parser.add_argument('--forcepol', default=False, action='store_true', help='If flagged, all calculations are spin polarized.')
     parser.add_argument('--testgen', default=False, action='store_true', help='If flagged, calculation stops after mol generation.')
     parser.add_argument('--startind', default=-1, type=int, action='store', help='SERIAL MODE ONLY. If specified, will skip indices in trajectory before given value')
+    parser.add_argument('--atomize', default=False, action='store_true', help='If flagged, will generate predictions for the single-atom components present in trajectory molecules.')
+    #add arguments for pyscfad network driver
+    parser.add_argument('--xc_x_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. x_3_16_mgga)')
+    parser.add_argument('--xc_x_ninput', type=int, action='store', help='Number of inputs the exchange network expects')
+    parser.add_argument('--xc_x_use', nargs='+', type=int, action='store', default=[], help='Specify the desired indices for the exchange network to actually use, if not the full range of descriptors.')
+    parser.add_argument('--xc_c_net_path', type=str, default='', action='store', help='Path to the trained xcquinox correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. c_3_16_mgga)')
+    parser.add_argument('--xc_c_ninput', type=int, action='store', help='Number of inputs the correlation network expects')
+    parser.add_argument('--xc_c_use', nargs='+', type=int, action='store', default=[], help='Specify the desired indices for the correlation network to actually use, if not the full range of descriptors.')
+    parser.add_argument('--xc_xc_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange-correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. xc_3_16_mgga)')
+    parser.add_argument('--xc_xc_ninput', type=int, action='store', help='Number of inputs the exchange-correlation network expects')
     args = parser.parse_args()
     setattr(__config__, 'cubegen_box_margin', args.cmargin)
     GCHARGE = args.charge
+
     atoms = read(args.xyz, ':')
     print("==================")
     print("ARGS SUMMARY")
     print(args)
     print("==================")
+    
+    ATOMIZATION = args.atomize
+    if ATOMIZATION:
+        print('ATOMZATION CALCULATION FLAGGED -- GETTING ATOMIC CONSTITUENTS.')
+        total_syms = []
+        for idx, at in enumerate(atoms):
+            total_syms += at.get_chemical_symbols()
+        total_syms = sorted(list(set(total_syms)))
+        print('SINGLE ATOMS REPRESENTED: {}'.format(total_syms))
+        singles = []
+        for atm_idx, symbol in enumerate(total_syms):
+            print('========================================================')
+            print('GROUP {}/{} -- {}'.format(atm_idx, len(total_syms)-1, symbol))
+            print('--------------------------------------------------------')
+
+            molsym = symbol
+            syms = [symbol]
+            pos = [[0,0,0]]
+            form = symbol
+            spin = spins_dict[symbol]
+
+            singles.append(Atoms(form, pos))
+        print(f'Singles = {singles}')
+        atoms = singles + atoms
+    
+    gridmodels = []
+    CUSTOM_XC = False
+    xcnet = None
+    if args.xc_x_net_path:
+        'xcquinox network exchange path provided, attempting read-in...'
+        xnet, xlevel = loadnet_from_strucdir(args.xc_x_net_path, args.xc_x_ninput, args.xc_x_use)
+        gridmodels.append(xnet)
+        CUSTOM_XC = True
+    if args.xc_c_net_path:
+        'xcquinox network exchange path provided, attempting read-in...'
+        cnet, clevel = loadnet_from_strucdir(args.xc_c_net_path, args.xc_c_ninput, args.xc_c_use)
+        gridmodels.append(cnet)
+        CUSTOM_XC = True
+
+    xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel)
+
+    input_xc = args.xc if not CUSTOM_XC else 'custom_xc'
+
     if not args.rerun:
         print('beginning new progress file')
         with open('progress','w') as progfile:
@@ -491,20 +644,23 @@ if __name__ == '__main__':
     if not args.serial:
         results = calculate_distributed(atoms, args.nworkers, args.basis,
                                         margin=args.cmargin,
-                                        XC=args.xc,
+                                        XC=input_xc,
                                         PBC=args.pbc,
                                         L=args.L,
                                         df=args.df,
                                         pseudo=args.pseudo,
                                         rerun=args.rerun,
-                                        owcharge=args.overwite_gcharge,
+                                        owcharge=args.overwrite_gcharge,
                                         forcepol = args.forcepol,
-                                        testgen = args.testgen)
+                                        testgen = args.testgen,
+                                        atomize = args.atomize,
+                                        custom_xc = CUSTOM_XC,
+                                        custom_xc_net = xcnet)
     else:
         print("SERIAL CALCULATIONS")
         results = [do_ccsdt(ia, atoms[ia], basis=args.basis,
                                         margin=args.cmargin,
-                                        XC=args.xc,
+                                        XC=input_xc,
                                         PBC=args.pbc,
                                         L=args.L,
                                         df=args.df,
@@ -513,7 +669,10 @@ if __name__ == '__main__':
                                         owcharge=args.overwrite_gcharge,
                                         restart = args.restart,
                                         forcepol = args.forcepol,
-                                        testgen = args.testgen) for ia in range(len(atoms)) if ia >= args.startind]
+                                        testgen = args.testgen,
+                                        atomize = args.atomize,
+                                        custom_xc = CUSTOM_XC,
+                                        custom_xc_net = xcnet) for ia in range(len(atoms)) if ia >= args.startind]
 
     results_path = 'results.traj'
     write(results_path, results)
