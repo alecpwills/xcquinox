@@ -447,7 +447,14 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         print('CUSTOM CALCULATION COMMENCING.....')
         print(type(mol), mol)
         #pyscfad only has spin-restricted DFT right now
-        mf = dfta.RKS(mol)
+        method_gen = False
+        while not method_gen:
+            try:
+                mf = dfta.RKS(mol)
+                method_gen = True
+            except:
+                if mol.spin > 0:
+                    mol.spin = mol.spin - 1
         method = dfta.RKS
         print("METHOD: ", mf)
         if kwargs.get('chk', True):
