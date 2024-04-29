@@ -1,23 +1,82 @@
---- hf.py	2024-04-25 14:05:07.888967453 -0400
-+++ hf.py	2024-04-25 14:58:55.875813803 -0400
-@@ -59,8 +59,10 @@
+--- /home/awills/anaconda3/envs/pyscfad_base/lib/python3.10/site-packages/pyscfad/scf/hf.py	2024-04-29 15:22:16.506190524 -0400
++++ /home/awills/anaconda3/envs/pyscfad/lib/python3.10/site-packages/pyscfad/scf/hf.py	2024-04-29 15:14:10.758184595 -0400
+@@ -59,12 +59,29 @@
      for cycle in range(mf.max_cycle):
          dm_last = dm
          last_hf_e = e_tot
 -
-+        print('getting fock, various matrices')
-+        print(f'h1e = {h1e.shape}\ns1e={s1e.shape}\ndm={dm.shape}')
          fock = mf.get_fock(h1e, s1e, vhf, dm, cycle, diis)
-+        print('fock matrix: ', fock.shape)
          mo_energy, mo_coeff = mf.eig(fock, s1e)
          mo_occ = stop_trace(mf.get_occ)(mo_energy, mo_coeff)
          dm = mf.make_rdm1(mo_coeff, mo_occ)
-@@ -397,7 +399,7 @@
-         return self.e_tot
+         vhf = mf.get_veff(mol, dm, dm_last, vhf)
++        #XCQUINOX MODIFICATION
++        try:
++            if mf.network.verbose:
++                print(f'_scf cycle call, generated vhf = mf.get_veff(mol, dm) = {vhf}')
++                print(f'attempting to generate network-based exc/vxc')
++            excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm)
++            vhf.vxc = vxcG
++            vhf.exc = excG
++            vhf = vxcG
++            if mf.network.verbose:
++                print(f'_scf cycle call, generated excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm) = {vhf}')
++        except Exception as e:
++            try:
++                if mf.network.verbose:
++                    print(e)
++                    print(f'unable to use jax.value_and_grad to generate vhf, leaving as is')
++            except:
++                pass
+         e_tot = mf.energy_tot(dm, h1e, vhf)
  
-     def _eigh(self, h, s):
--        return eigh(h, s)
-+        return jax.lax.linalg.eigh(h, s)
+         fock = stop_trace(mf.get_fock)(h1e, s1e, vhf, dm)
+@@ -182,11 +199,48 @@
+     if (scf_conv and conv_check) or run_extra_cycle:
+         # An extra diagonalization, to remove level shift
+         vhf = mf.get_veff(mol, dm)
++        #XCQUINOX MODIFICATION
++        try:
++            if mf.network.verbose:
++                print(f'kernel cycle initial call, generated vhf = mf.get_veff(mol, dm) = {vhf}')
++                print(f'attempting to generate network-based exc/vxc')
++            excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm)
++            vhf.vxc = vxcG
++            vhf.exc = excG
++            vhf=vxcG
++            if mf.network.verbose:
++                print(f'kernel cycle initial call, generated excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm) = {vhf}')
++        except Exception as e:
++            try:
++                if mf.network.verbose:
++                    print(e)
++                    print(f'unable to use jax.value_and_grad to generate vhf, leaving as is')
++            except:
++                pass
++
+         fock = mf.get_fock(h1e, s1e, vhf, dm)
+         mo_energy, mo_coeff = mf.eig(fock, s1e)
+         mo_occ = stop_trace(mf.get_occ)(mo_energy, mo_coeff)
+         dm, dm_last = mf.make_rdm1(mo_coeff, mo_occ), dm
+         vhf = mf.get_veff(mol, dm, dm_last, vhf)
++        #XCQUINOX MODIFICATION
++        try:
++            if mf.network.verbose:
++                print(f'kernel cycle second call, generated vhf = mf.get_veff(mol, dm) = {vhf}')
++                print(f'attempting to generate network-based exc/vxc')
++            excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm)
++            vhf.vxc = vxcG
++            vhf.exc = excG
++            vhf=vxcG
++            if mf.network.verbose:
++                print(f'kernel cycle second call, generated excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm) = {vhf}')
++        except Exception as e:
++            try:
++                if mf.network.verbose:
++                    print(e)
++                    print(f'unable to use jax.value_and_grad to generate vhf, leaving as is')
++            except:
++                pass
+         e_tot, last_hf_e = mf.energy_tot(dm, h1e, vhf), e_tot
  
-     def eig(self, h, s):
-         return self._eigh(h, s)
+         fock = stop_trace(mf.get_fock)(h1e, s1e, vhf, dm)

@@ -681,5 +681,5 @@ class eXC(eqx.Module):
             jnp.sum((jnp.isnan(exc_b))),
             jnp.sum((jnp.isnan(exc_ab))),                
             ))
-
+        self.vprint(f'returning exc shape, pre-expanded dims: {exc.shape}')
         return jnp.expand_dims(exc, -1)

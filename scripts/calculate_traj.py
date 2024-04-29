@@ -446,6 +446,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
     elif kwargs['XC'].lower() == 'custom_xc':
         print('CUSTOM CALCULATION COMMENCING.....')
         print(type(mol), mol)
+        mol.build()
         #pyscfad only has spin-restricted DFT right now
         method_gen = False
         while not method_gen:
@@ -475,10 +476,17 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
             mf.kernel()
         except Exception as e:
             print(e)
-            print('Kernel calculation failed, perhaps hydrogen is acting up or there is another issue')
-            result.calc = SinglePointCalculator(result)
-            result.calc.results = {'energy' : np.nan}
-            return result
+            raise
+            # print(e)
+            # print('Kernel calculation failed, perhaps hydrogen is acting up or there is another issue')
+            # print('Trying with UHF')
+            # mf = scfa.UHF(mol)
+            # mf.max_cycle = 50
+            # mf.max_memory = 64000
+            # mf.define_xc_(evxc, 'MGGA')
+            # result.calc = SinglePointCalculator(result)
+            # result.calc.results = {'energy' : mf.e_tot}
+            # return result
         xc_time = time() - xc_start
         with open('timing', 'a') as tfile:
             tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.xc.upper(), xc_time))
@@ -634,8 +642,8 @@ if __name__ == '__main__':
         cnet, clevel = loadnet_from_strucdir(args.xc_c_net_path, args.xc_c_ninput, args.xc_c_use)
         gridmodels.append(cnet)
         CUSTOM_XC = True
-
-    xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel)
+    if args.xc_x_net_path or args.xc_c_net_path:
+        xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel)
 
     input_xc = args.xc if not CUSTOM_XC else 'custom_xc'
 
