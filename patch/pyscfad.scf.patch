@@ -1,5 +1,5 @@
---- /home/awills/anaconda3/envs/pyscfad_base/lib/python3.10/site-packages/pyscfad/scf/hf.py	2024-04-29 15:22:16.506190524 -0400
-+++ /home/awills/anaconda3/envs/pyscfad/lib/python3.10/site-packages/pyscfad/scf/hf.py	2024-04-29 15:14:10.758184595 -0400
+--- hf.py	2024-04-29 15:22:16.506190524 -0400
++++ hf.py	2024-04-29 15:14:10.758184595 -0400
 @@ -59,12 +59,29 @@
      for cycle in range(mf.max_cycle):
          dm_last = dm
