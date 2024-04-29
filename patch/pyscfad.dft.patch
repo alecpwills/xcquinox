@@ -1,5 +1,5 @@
 --- rks.py	2024-04-29 17:17:30.315042292 -0400
-+++ rks.py	2024-04-29 17:19:17.174110537 -0400
++++ rks.py	2024-04-29 18:30:23.544572661 -0400
 @@ -1,5 +1,6 @@
  import numpy
  from jax import numpy as np
@@ -14,15 +14,15 @@
 +        #XCQUINOX MODIFICATION
 +        if np.isnan(vxc.exc):
 +            print('RKSAnalyzer.get_veff; nans in exc, trying with network')
-+            excG, vxcG = jax.value_and_grad(ks.network_eval1)(dm)
++            excG, vxcG = jax.value_and_grad(ks.network_eval)(dm)
 +            #restore symmetry
 +            L = np.eye(dm.shape[-1])
 +            if ks.network.verbose:
 +                print('restoring vxc symmetry')
-+            if vxc.ndim > 2:
-+                vxc = np.einsum('ij,xjk,kl->xil',L,vxc,L.T)
++            if vxcG.ndim > 2:
++                vxcG = np.einsum('ij,xjk,kl->xil',L,vxcG,L.T)
 +            else:
-+                vxc = np.mm(L,np.mm(vxc,L.T))
++                vxcG = np.matmul(L,np.matmul(vxcG,L.T))
 +            vxc.vxc = vxcG
 +            vxc.exc = excG
 +            # print('network exc, vxc: {}, {}'.format(excG, vxcG))
@@ -30,7 +30,7 @@
              assert 'VV10' in ks.nlc.upper()
              _, enlc, vnlc = ni.nr_rks(mol, ks.nlcgrids, ks.xc+'__'+ks.nlc, dm,
 --- numint.py	2024-04-29 17:17:30.315042292 -0400
-+++ numint.py	2024-04-29 17:19:26.938381516 -0400
++++ numint.py	2024-04-29 18:05:16.057096753 -0400
 @@ -119,7 +119,18 @@
              #aow = numpy.ndarray(ao.shape, order='F', buffer=aow)
              for idm in range(nset):

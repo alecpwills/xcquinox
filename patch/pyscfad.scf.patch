@@ -1,5 +1,5 @@
 --- hf.py	2024-04-29 17:17:30.319042409 -0400
-+++ hf.py	2024-04-29 17:14:47.681937200 -0400
++++ hf.py	2024-04-29 18:30:26.280620886 -0400
 @@ -59,12 +59,37 @@
      for cycle in range(mf.max_cycle):
          dm_last = dm
@@ -15,20 +15,20 @@
 +            if mf.network.verbose:
 +                print(f'_scf cycle call, generated vhf = mf.get_veff(mol, dm) = {vhf}')
 +                print(f'attempting to generate network-based exc/vxc')
-+            excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm)
++            excG, vxcG = jax.value_and_grad(mf.network_eval)(dm)
 +            #restore symmetry
 +            L = np.eye(dm.shape[-1])
 +            if mf.network.verbose:
 +                print('restoring vxc symmetry')
-+            if vxc.ndim > 2:
-+                vxc = np.einsum('ij,xjk,kl->xil',L,vxc,L.T)
++            if vxcG.ndim > 2:
++                vxcG = np.einsum('ij,xjk,kl->xil',L,vxcG,L.T)
 +            else:
-+                vxc = np.mm(L,np.mm(vxc,L.T))
++                vxcG = np.matmul(L,np.matmul(vxcG,L.T))
 +            vhf.vxc = vxcG
 +            vhf.exc = excG
 +            vhf = vxcG
 +            if mf.network.verbose:
-+                print(f'_scf cycle call, generated excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm) = {vhf}')
++                print(f'_scf cycle call, generated excG, vxcG = jax.value_and_grad(mf.network_eval)(dm) = {vhf}')
 +        except Exception as e:
 +            try:
 +                if mf.network.verbose:
@@ -48,20 +48,20 @@
 +            if mf.network.verbose:
 +                print(f'kernel cycle initial call, generated vhf = mf.get_veff(mol, dm) = {vhf}')
 +                print(f'attempting to generate network-based exc/vxc')
-+            excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm)
++            excG, vxcG = jax.value_and_grad(mf.network_eval)(dm)
 +            #restore symmetry
 +            L = np.eye(dm.shape[-1])
 +            if mf.network.verbose:
 +                print('restoring vxc symmetry')
-+            if vxc.ndim > 2:
-+                vxc = np.einsum('ij,xjk,kl->xil',L,vxc,L.T)
++            if vxcG.ndim > 2:
++                vxcG = np.einsum('ij,xjk,kl->xil',L,vxcG,L.T)
 +            else:
-+                vxc = np.mm(L,np.mm(vxc,L.T))
++                vxcG = np.matmul(L,np.matmul(vxcG,L.T))
 +            vhf.vxc = vxcG
 +            vhf.exc = excG
 +            vhf=vxcG
 +            if mf.network.verbose:
-+                print(f'kernel cycle initial call, generated excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm) = {vhf}')
++                print(f'kernel cycle initial call, generated excG, vxcG = jax.value_and_grad(mf.network_eval)(dm) = {vhf}')
 +        except Exception as e:
 +            try:
 +                if mf.network.verbose:
@@ -80,20 +80,20 @@
 +            if mf.network.verbose:
 +                print(f'kernel cycle second call, generated vhf = mf.get_veff(mol, dm) = {vhf}')
 +                print(f'attempting to generate network-based exc/vxc')
-+            excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm)
++            excG, vxcG = jax.value_and_grad(mf.network_eval)(dm)
 +            #restore symmetry
 +            L = np.eye(dm.shape[-1])
 +            if mf.network.verbose:
 +                print('restoring vxc symmetry')
-+            if vxc.ndim > 2:
-+                vxc = np.einsum('ij,xjk,kl->xil',L,vxc,L.T)
++            if vxcG.ndim > 2:
++                vxcG = np.einsum('ij,xjk,kl->xil',L,vxcG,L.T)
 +            else:
-+                vxc = np.mm(L,np.mm(vxc,L.T))
++                vxcG = np.matmul(L,np.matmul(vxcG,L.T))
 +            vhf.vxc = vxcG
 +            vhf.exc = excG
 +            vhf=vxcG
 +            if mf.network.verbose:
-+                print(f'kernel cycle second call, generated excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm) = {vhf}')
++                print(f'kernel cycle second call, generated excG, vxcG = jax.value_and_grad(mf.network_eval)(dm) = {vhf}')
 +        except Exception as e:
 +            try:
 +                if mf.network.verbose:
@@ -113,20 +113,20 @@
 +            if mf.network.verbose:
 +                print(f'energy_elec call, generated vhf = mf.get_veff(mol, dm) = {vhf}')
 +                print(f'attempting to generate network-based exc/vxc')
-+            excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm)
++            excG, vxcG = jax.value_and_grad(mf.network_eval)(dm)
 +            #restore symmetry
 +            L = np.eye(dm.shape[-1])
 +            if mf.network.verbose:
 +                print('restoring vxc symmetry')
-+            if vxc.ndim > 2:
-+                vxc = np.einsum('ij,xjk,kl->xil',L,vxc,L.T)
++            if vxcG.ndim > 2:
++                vxcG = np.einsum('ij,xjk,kl->xil',L,vxcG,L.T)
 +            else:
-+                vxc = np.mm(L,np.mm(vxc,L.T))
++                vxcG = np.matmul(L,np.matmul(vxcG,L.T))
 +            vhf.vxc = vxcG
 +            vhf.exc = excG
 +            vhf=vxcG
 +            if mf.network.verbose:
-+                print(f'energy_elec call, generated excG, vxcG = jax.value_and_grad(mf.network_eval1)(dm) = {vhf}')
++                print(f'energy_elec call, generated excG, vxcG = jax.value_and_grad(mf.network_eval)(dm) = {vhf}')
 +        except Exception as e:
 +            try:
 +                if mf.network.verbose:

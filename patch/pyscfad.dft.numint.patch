@@ -1,5 +1,5 @@
 --- numint.py	2024-04-29 17:17:30.315042292 -0400
-+++ numint.py	2024-04-29 17:19:26.938381516 -0400
++++ numint.py	2024-04-29 18:05:16.057096753 -0400
 @@ -119,7 +119,18 @@
              #aow = numpy.ndarray(ao.shape, order='F', buffer=aow)
              for idm in range(nset):

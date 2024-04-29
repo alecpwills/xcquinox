@@ -457,7 +457,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
                 if mol.spin > 0:
                     mol.spin = mol.spin - 1
         method = dfta.RKS
-        print("METHOD: ", mf)
+        print(f'method, mf = {method}, {mf}')
         if kwargs.get('chk', True):
             mf.set(chkfile='{}_{}.chkpt'.format(idx, atoms.symbols))
         if kwargs['restart']:
@@ -474,32 +474,50 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         xc_start = time()
         try:
             mf.kernel()
+            if mf.e_tot >= 0 and kwargs.get('above0mo', False):
+                print('non-negative total energy; trying to rewrite with mo_energy of homo')
+                print(f'mf.e_tot = {mf.e_tot}')
+                print(f'mf.mo_occ = {mf.mo_occ}\nmf.mo_energy={mf.mo_energy}')
+                homo_i = jnp.max(jnp.nonzero(mf.mo_occ, size=init_dm.shape[0])[0])
+                homo_e = mf.mo_energy[homo_i]
+                print(f'homo_e = {homo_e}')
+                mf.e_tot = homo_e
+            else:
+                print(f'NON-NEGATIVE ENERGY DETECTED.\n{str(atoms.symbols), mol, mf}\nENERGY={mf.e_tot}')
+                raise
+            result.calc = SinglePointCalculator(result)
+            result.calc.results = {'energy' : mf.e_tot}
+            xc_time = time() - xc_start
+            with open('timing', 'a') as tfile:
+                tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.xc.upper(), xc_time))
+            if kwargs['df'] == True:
+                print('Default auxbasis', mf.with_df.auxmol.basis)
+            with open('progress','a') as progfile:
+                progfile.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, result.calc.results['energy']))
+            write_mycc(idx, atoms, mf, result)
         except Exception as e:
             print(e)
-            raise
-            # print(e)
-            # print('Kernel calculation failed, perhaps hydrogen is acting up or there is another issue')
-            # print('Trying with UHF')
-            # mf = scfa.UHF(mol)
-            # mf.max_cycle = 50
-            # mf.max_memory = 64000
-            # mf.define_xc_(evxc, 'MGGA')
-            # result.calc = SinglePointCalculator(result)
-            # result.calc.results = {'energy' : mf.e_tot}
-            # return result
-        xc_time = time() - xc_start
-        with open('timing', 'a') as tfile:
-            tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.xc.upper(), xc_time))
-        if kwargs['df'] == True:
-            print('Default auxbasis', mf.with_df.auxmol.basis)
-        result.calc = SinglePointCalculator(result)
-        result.calc.results = {'energy':mf.e_tot }
-        with open('progress','a') as progfile:
-            progfile.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.e_tot ))
-        #np.savetxt('{}.m_occ'.format(idx), mf.mo_occ, delimiter=' ')
-        #np.savetxt('{}.mo_coeff'.format(idx), mf.mo_coeff, delimiter=' ')
-        write_mycc(idx, atoms, mf, result)
-
+            print('Kernel calculation failed, perhaps hydrogen is acting up or there is another issue')
+            print('Trying with UHF')
+            vgf = lambda x: kwargs['custom_xc_net'](x, mf._numint.eval_ao(mol, mf.grids.coords, deriv=2), mf.grids.weights, mf=mf, coor=mf.grids.coords)
+            mf2 = scfa.UHF(mol)
+            mf2.max_cycle = 50
+            mf2.max_memory = 64000
+            print('Setting network and network_eval1')
+            mf2.network = kwargs['custom_xc_net']
+            mf2.network_eval = vgf
+            print('Running UHF calculation')
+            mf2.kernel()
+            result.calc = SinglePointCalculator(result)
+            result.calc.results = {'energy' : mf2.e_tot}
+            xc_time = time() - xc_start
+            with open('timing', 'a') as tfile:
+                tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, 'pyscfad.scf.UHF', xc_time))
+            if kwargs['df'] == True:
+                print('Default auxbasis', mf.with_df.auxmol.basis)
+            with open('progress','a') as progfile:
+                progfile.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, result.calc.results['energy']))
+            write_mycc(idx, atoms, mf2, result)
 
     return result
 
@@ -584,6 +602,7 @@ if __name__ == '__main__':
     parser.add_argument('--forcepol', default=False, action='store_true', help='If flagged, all calculations are spin polarized.')
     parser.add_argument('--testgen', default=False, action='store_true', help='If flagged, calculation stops after mol generation.')
     parser.add_argument('--startind', default=-1, type=int, action='store', help='SERIAL MODE ONLY. If specified, will skip indices in trajectory before given value')
+    parser.add_argument('--endind', default=999999999999, type=int, action='store', help='SERIAL MODE ONLY. If specified, will only calculate up to this index')
     parser.add_argument('--atomize', default=False, action='store_true', help='If flagged, will generate predictions for the single-atom components present in trajectory molecules.')
     parser.add_argument('--mf_grid_level', type=int, default=3, action='store', help='Grid level for PySCF(AD) calculation')
     #add arguments for pyscfad network driver
@@ -595,6 +614,7 @@ if __name__ == '__main__':
     parser.add_argument('--xc_c_use', nargs='+', type=int, action='store', default=[], help='Specify the desired indices for the correlation network to actually use, if not the full range of descriptors.')
     parser.add_argument('--xc_xc_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange-correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. xc_3_16_mgga)')
     parser.add_argument('--xc_xc_ninput', type=int, action='store', help='Number of inputs the exchange-correlation network expects')
+    parser.add_argument('--xc_verbose', default=False, action='store_true', help='If flagged, sets verbosity on the network.')
     args = parser.parse_args()
     setattr(__config__, 'cubegen_box_margin', args.cmargin)
     GCHARGE = args.charge
@@ -643,7 +663,7 @@ if __name__ == '__main__':
         gridmodels.append(cnet)
         CUSTOM_XC = True
     if args.xc_x_net_path or args.xc_c_net_path:
-        xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel)
+        xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel, verbose=args.xc_verbose)
 
     input_xc = args.xc if not CUSTOM_XC else 'custom_xc'
 
@@ -690,7 +710,7 @@ if __name__ == '__main__':
                                         gridlevel = args.mf_grid_level,
                                         atomize = args.atomize,
                                         custom_xc = CUSTOM_XC,
-                                        custom_xc_net = xcnet) for ia in range(len(atoms)) if ia >= args.startind]
+                                        custom_xc_net = xcnet) for ia in range(len(atoms)) if ia >= args.startind and ia < args.endind]
 
     results_path = 'results.traj'
     write(results_path, results)

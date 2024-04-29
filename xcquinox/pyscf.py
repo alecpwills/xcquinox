@@ -150,13 +150,13 @@ def generate_network_eval_xc(mf, dm, network):
             tau_a = tau_b = tau*0.5
             non_loc_a=non_loc_b = non_loc*0.5
 
-        # xc-energy per unit particle
-        # print(f'EVALUATING GRID MODELS; OPTIONAL PARAMETERS:')
-        # try:
-        #     print(f'gw.shape={gw.shape}, coor.shape={coor.shape}')
-        # except:
-        #     print('no externally supplied gw or coor')
-        # print('eval_xc eval_grid_models call')
+        if network.verbose:
+            print(f'EVALUATING GRID MODELS; OPTIONAL PARAMETERS:')
+            try:
+                print(f'gw.shape={gw.shape}, coords.shape={coords.shape}')
+            except:
+                print('no externally supplied gw or coor')
+            print('eval_xc eval_grid_models call')
         
         def EXC_exc_vs(x):
             exc = network.eval_grid_models(x, mf=mf, dm=dm, ao=ao, gw=gw, coor=coords)
@@ -182,11 +182,12 @@ def generate_network_eval_xc(mf, dm, network):
             raise
         else:
             exc = exc[:, 0]
-            
-        # print('ao shape: ', ao.shape)
-        # print('exc from network evaluation on grid models shape: ', exc.shape)
-        # print('vs from network evaluation on grid models shape: ', vs.shape)
-        # print('Exc from network evaluation on grid models shape: ', Exc)
+        
+        if network.verbose:
+            print('ao shape: ', ao.shape)
+            print('exc from network evaluation on grid models shape: ', exc.shape)
+            print('vs from network evaluation on grid models shape: ', vs.shape)
+            print('Exc from network evaluation on grid models shape: ', Exc)
 
         vgf = lambda x: network(x, ao, gw, mf=mf, coor=coords)
         mf.network = network
