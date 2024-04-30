@@ -116,7 +116,7 @@ class eX(eqx.Module):
         if self.spin_scaling:
             squeezed = jnp.squeeze(jax.vmap(jax.vmap(self.net), in_axes=1)(rho[...,self.use])).T
         else:
-            squeezed = jnp.squeeze(jax.vmap(self.net)(rho))
+            squeezed = jnp.squeeze(jax.vmap(self.net)(rho[..., self.use]))
 
         if self.ueg_limit:
             ueg_lim = rho[...,self.use[0]]
@@ -220,7 +220,7 @@ class eC(eqx.Module):
         :rtype: jax.Array
         """
         print(f"eC.__call__, rho shape: {rho.shape}")
-        squeezed = jnp.squeeze(-jax.vmap(self.net)(rho))
+        squeezed = jnp.squeeze(-jax.vmap(self.net)(rho[..., self.use]))
 
         if self.ueg_limit:
             ueg_lim = self.tanh(rho[...,self.use[0]])
