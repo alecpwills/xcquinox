@@ -205,6 +205,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         while not molgen:
             try:
                 mol = gtoa.Mole(atom=mol_input, basis=basis, spin=sping-scount, charge=charge)
+                mol.build()
                 molgen=True
             except RuntimeError:
                 #spin disparity somehow, try with one less until 0
@@ -446,7 +447,6 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
     elif kwargs['XC'].lower() == 'custom_xc':
         print('CUSTOM CALCULATION COMMENCING.....')
         print(type(mol), mol)
-        mol.build()
         #pyscfad only has spin-restricted DFT right now
         method_gen = False
         while not method_gen:
@@ -464,11 +464,15 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
             print("Restart Flagged -- Setting mf.init_guess to chkfile")
             mf.init_guess = '{}_{}.chkpt'.format(idx, atoms.symbols)
         init_dm = mf.get_init_guess()
-        evxc = xce.pyscf.generate_network_eval_xc(mf, init_dm, kwargs['custom_xc_net'])
+        #do short calculation to generate necessary ingredients to start
+        mf0 = method(mol)
+        mf0.max_cycle = -1
+        mf0.conv_tol = 1e-5
+        mf0.kernel()
+        evxc = xce.pyscf.generate_network_eval_xc(mf0, init_dm, kwargs['custom_xc_net'])
         mf.grids.level = kwargs.get('gridlevel', 3)
         mf.max_cycle = 50
         mf.max_memory = 64000
-        mf.grids.build()
         print("Running {} calculation".format(kwargs['XC']))
         mf.define_xc_(evxc, 'MGGA')
         xc_start = time()
@@ -482,7 +486,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
                 homo_e = mf.mo_energy[homo_i]
                 print(f'homo_e = {homo_e}')
                 mf.e_tot = homo_e
-            else:
+            elif mf.e_tot >= 0:
                 print(f'NON-NEGATIVE ENERGY DETECTED.\n{str(atoms.symbols), mol, mf}\nENERGY={mf.e_tot}')
                 raise
             result.calc = SinglePointCalculator(result)

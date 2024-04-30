@@ -358,8 +358,12 @@ class eXC(eqx.Module):
         :return: The non-local CIDER descriptors, from self.nlstart_i to self.nlend_i
         :rtype: jax.Array
         """
+        self.vprint('Constructing non-local CIDER descriptor generator')
+        self.vprint(f'Sending mf={mf} to RKSAnalyzer')
+        self.vprint(f'mf.e_tot={mf.e_tot}')
         an = RKSAnalyzer(mf, idm=True, dm=dm,
-                         coor=coor, weight=gw)
+                         coor=coor, weight=gw,
+                         require_converged=False)
         
         if len(dm.shape) == 2:
             restric = True
