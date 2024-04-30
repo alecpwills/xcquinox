@@ -68,7 +68,7 @@ def test_train_bandgap_si():
 
     #just do regular MGGA optimization, dont use NL for this test
     xnet = xce.net.eX(n_input = 2, use = [1, 2], ueg_limit=True, lob=1.174)
-    cnet = xce.net.eC(n_input = 4, use = [2, 3], ueg_limit=True)
+    cnet = xce.net.eC(n_input = 2, use = [2, 3], ueg_limit=True)
     blankxc = xce.xc.eXC(grid_models = [xnet, cnet], level=3)
     xc = blankxc
     xct = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-2), steps=1, loss = loss, do_jit=True, logfile='test_bg_log')
@@ -87,7 +87,7 @@ def test_train_dm_gap_si():
 
     #just do regular MGGA optimization, dont use NL for this test
     xnet = xce.net.eX(n_input = 2, use = [1, 2], ueg_limit=True, lob=1.174)
-    cnet = xce.net.eC(n_input = 4, use = [2, 3], ueg_limit=True)
+    cnet = xce.net.eC(n_input = 2, use = [2, 3], ueg_limit=True)
     blankxc = xce.xc.eXC(grid_models = [xnet, cnet], level=3)
     xc = blankxc
     xct = xce.train.xcTrainer(model=xc, optim=optax.adamw(1e-2), steps=1, loss = loss, do_jit=True, logfile='test_dm_bg_log')

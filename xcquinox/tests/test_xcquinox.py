@@ -112,7 +112,7 @@ def test_net_eX_use_nolob_ueg():
 
 
 def test_net_eC_use_nolob_ueg():
-    eC = xce.net.eC(n_input = 1,
+    eC = xce.net.eC(n_input = 3,
                     n_hidden = 16,
                     depth = 3,
                     use = [0, 1, 2],
@@ -158,7 +158,7 @@ def test_xc_defaults():
                 ueg_limit=True,
                 lob = 1.174,
                 seed = 9001)
-    eC = xce.net.eC(n_input = 4,
+    eC = xce.net.eC(n_input = 2,
                     n_hidden = 16,
                     depth = 3,
                     use = [2,3],
@@ -180,7 +180,7 @@ def test_xc_spinpol_defaults():
                 ueg_limit=True,
                 lob = 1.174,
                 seed = 9001)
-    eC = xce.net.eC(n_input = 4,
+    eC = xce.net.eC(n_input = 2,
                     n_hidden = 16,
                     depth = 3,
                     use = [2,3],

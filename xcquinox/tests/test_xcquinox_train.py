@@ -57,7 +57,7 @@ eX = xce.net.eX(n_input = 2,
             ueg_limit=True,
             lob = 1.174,
             seed = 9001)
-eC = xce.net.eC(n_input = 4,
+eC = xce.net.eC(n_input = 2,
                 n_hidden = 16,
                 depth = 3,
                 use = [2,3],
