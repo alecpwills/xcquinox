@@ -26,6 +26,11 @@ parser.add_argument('--g297_data_path', action='store', type=str, default='/home
 parser.add_argument('--debug', action='store_true', help='If flagged, only selects first in the target list for quick debugging purposes.')
 parser.add_argument('--verbose', action='store_true', help='If flagged, activates verbosity flag in the network.')
 parser.add_argument('--spin_scaling', action='store_true', help='If flagged, enforces spin_scaling behavior in the desired network.')
+parser.add_argument('--init_lr', action='store', type=float, default=5e-2, help='The initial learning rate for the network.')
+parser.add_argument('--lr_decay_start', action='store', type=int, default=50, help='The epoch at which the exponential decay begins.')
+parser.add_argument('--lr_decay_rate', action='store', type=float, default=0.9, help='The decay rate for the exponential decay.')
+
+
 
 def get_mol(atoms, basis='6-311++G**'):
     pos = atoms.positions
@@ -284,7 +289,7 @@ if __name__ == '__main__':
     print(f'tFxc.shape={tFxc.shape}, tdrho.shape={tdrho.shape}')
     cpus = jax.devices(backend='cpu')
 
-    scheduler = optax.exponential_decay(init_value = 5e-2, transition_begin=50, transition_steps=pargs.n_steps, decay_rate=0.9)
+    scheduler = optax.exponential_decay(init_value = pargs.init_lr, transition_begin=pargs.lr_decay_start, transition_steps=pargs.n_steps-pargs.lr_decay_start, decay_rate=pargs.lr_decay_rate)
     optimizer = optax.adam(learning_rate = scheduler)
 
     trainer = xce.train.xcTrainer(model=localnet, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
