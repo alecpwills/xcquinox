@@ -559,7 +559,14 @@ def loadnet_from_strucdir(path, ninput, use=[]):
     
     loadnet = path if fullpath else os.path.join(path, f)
     levels = {'gga': 2, 'mgga': 3, 'nl': 4}
-    net_type, ndepth, nhidden, level = sdir.split('_')
+    print('SDIR SPLIT: ', sdir.split('_'))
+    sd_split = sdir.split('_')
+    if len(sd_split) == 4:
+        net_type, ndepth, nhidden, level = sdir.split('_')
+    elif len(sd_split) == 5:
+        net_type, ndepth, nhidden, level, _ = sdir.split('_')
+    elif len(sd_split) == 6:
+        net_type, ndepth, nhidden, level, _, _ = sdir.split('_')
     if level == 'gga':
         if net_type == 'x':
             use = use if use else [1]

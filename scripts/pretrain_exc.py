@@ -59,41 +59,7 @@ def get_rhos(rho, spin):
         tau_a = tau_b = tau*0.5
     return rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab, tau_a, tau_b
     
-def get_data_synth(xcmodel, xc_func, n=100):
-    def get_rho(s, a):
-        c0 = 2*(3*np.pi**2)**(1/3)
-        c1 = 3/10*(3*np.pi**2)**(2/3)
-        gamma = c0*s
-        tau = c1*a+c0**2*s**2/8
-        rho = np.zeros([len(a),6])
-        rho[:, 1] = gamma
-        rho[:,-1] = tau
-        rho[:, 0] = 1
-        return rho
-    
-    s_grid = jnp.concatenate([[0],jnp.exp(jnp.linspace(-10,4,n))])
-    rho = []
-    for s in s_grid:
-        if 'MGGA' in xc_func:
-            a_grid = jnp.concatenate([jnp.exp(jnp.linspace(jnp.log((s/100)+1e-8),8,n))])
-        else:
-            a_grid = jnp.array([0])
-        rho.append(get_rho(s, a_grid))
-        
-    rho = jnp.concatenate(rho)
-    
-    fxc =  dft.numint.libxc.eval_xc(xc_func,rho.T, spin=0)[0]/dft.numint.libxc.eval_xc('LDA_X',rho.T, spin=0)[0] -1
- 
-    rho = jnp.asarray(rho)
-    
-    tdrho = xcmodel.get_descriptors(rho[:,0]/2,rho[:,0]/2,(rho[:,1]/2)**2,(rho[:,1]/2)**2,(rho[:,1]/2)**2,rho[:,5]/2,rho[:,5]/2, spin_scaling=True, mf=mf, dm=dm)
-    
-
-
-    tFxc = jnp.array(fxc)
-    return tdrho[0], tFxc
-
-def get_data(mol, xcmodel, xc_func, localnet=None):
+def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None):
     print('mol: ', mol.atom)
     try:
         mf = scf.UKS(mol)
@@ -110,6 +76,11 @@ def get_data(mol, xcmodel, xc_func, localnet=None):
     print('New DM shape: {}'.format(dm.shape))
     print('ao.shape', ao.shape)
 
+    #depending on the x or c type, choose the generation of the exchange or correlation density
+    if xorc == 'x':
+        xc_func = xc_func+','
+    elif xorc == 'c':
+        xc_func = ','+xc_func
     if localnet.spin_scaling:
         print('spin scaling, indicates exchange network')
         rho_alpha = mf._numint.eval_rho(mol, ao, dm[0], xctype='metaGGA',hermi=True)
@@ -259,7 +230,7 @@ if __name__ == '__main__':
     if pargs.debug:
         mols = mols[:1]
     ref = pargs.pretrain_xc
-    data = [get_data(mol, xcmodel=xc, xc_func=ref, localnet=localnet) for i,mol in enumerate(mols)]
+    data = [get_data(mol, xcmodel=xc, xc_func=ref, localnet=localnet, xorc=pargs.pretrain_net) for i,mol in enumerate(mols)]
     if localnet.spin_scaling:
         print(f'localnet.spin_scaling: concatenating the data')
         fdshape = data[0][0].shape
