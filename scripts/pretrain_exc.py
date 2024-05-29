@@ -78,11 +78,21 @@ def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None):
 
     #depending on the x or c type, choose the generation of the exchange or correlation density
     if xorc == 'x':
+        print('Exchange contribution only')
         xc_func = xc_func+','
+        if xc_func.lower() == 'pbe0,':
+            print('PBE0 detected. changing xc_func to be combination of HF and PBE')
+            xc_func = '0.25*HF + 0.75*PBE,'
+        print(xc_func)
     elif xorc == 'c':
+        print('Correlation contribution only')
         xc_func = ','+xc_func
+        if xc_func.lower() == ',pbe0':
+            print('PBE0 detected. Changing correlation to be just PBE')
+            xc_func = ',pbe'
+        print(xc_func)
     if localnet.spin_scaling:
-        print('spin scaling, indicates exchange network')
+        print('spin scaling')
         rho_alpha = mf._numint.eval_rho(mol, ao, dm[0], xctype='metaGGA',hermi=True)
         rho_beta = mf._numint.eval_rho(mol, ao, dm[1], xctype='metaGGA',hermi=True)
         fxc_a =  mf._numint.eval_xc(xc_func,(rho_alpha,rho_alpha*0), spin=1)[0]
@@ -102,7 +112,7 @@ def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None):
             fxc = fxc_a
             print(f'rho.shape={rho.shape}, fxc.shape={fxc.shape}')
     else:    
-        print('no spin scaling, indicates correlation network')
+        print('no spin scaling')
         rho_alpha = mf._numint.eval_rho(mol, ao, dm[0], xctype='metaGGA',hermi=True)
         rho_beta = mf._numint.eval_rho(mol, ao, dm[1], xctype='metaGGA',hermi=True)
         exc = mf._numint.eval_xc(xc_func,(rho_alpha,rho_beta), spin=1)[0]
