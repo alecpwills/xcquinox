@@ -1,6 +1,5 @@
 name: test
 channels:
-
   - conda-forge
   - defaults
 dependencies:
@@ -16,6 +15,7 @@ dependencies:
   - optax
   - psutil
   - pip:
+    - ase
     - pypatch
     - pyscfad
     - mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
