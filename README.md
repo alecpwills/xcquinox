@@ -21,7 +21,7 @@ You may find the [documentation here](https://xcquinox.readthedocs.io/en/latest/
 
 To install `xcquinox`, navigate to the root package directory. Install the dependencies first with `pip install -r requirements.txt`. After installation of the dependencies is complete, install the `xcquinox` package with `pip install -e .`.
 
-To ensure integrability of the non-local descriptors of the [non-local CIDER descriptors](https://github.com/mir-group/CiderPress2022), modifications to various routine calls in PySCF-AD have been made. These changes are located in the `xcquinox/patch/pyscfad.dft.patch` and `xcquinox/patch/pyscfad.scf.patch` files. You may apply these patches in whatever manner you deem easiest, but CI testing employs the use of the [pypatch](https://github.com/sitkatech/pypatch) package to update the packages with the needed patches, via
+To ensure integrability of the [non-local CIDER descriptors](https://github.com/mir-group/CiderPress2022), modifications to various routine calls in PySCF-AD have been made. These changes are located in the `xcquinox/patch/pyscfad.dft.patch` and `xcquinox/patch/pyscfad.scf.patch` files. You may apply these patches in whatever manner you deem easiest, but CI testing employs the use of the [pypatch](https://github.com/sitkatech/pypatch) package to update the packages with the needed patches, via
 ```
 pypatch apply ./patch/pyscfad.dft.patch pyscfad.dft
 pypatch apply ./patch/pyscfad.scf.patch pyscfad.scf
