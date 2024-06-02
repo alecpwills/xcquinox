@@ -34,20 +34,14 @@ jobs:
           df -h
           ulimit -a
 
-      # More info on options: https://github.com/marketplace/actions/provision-with-micromamba
-      # - uses: mamba-org/provision-with-micromamba@main
-      #   with:
-      #     environment-file: devtools/conda-envs/test_env.yaml
-      #     environment-name: test
-      #     channels: conda-forge,defaults
-      #     extra-specs: |
-      #       python=${{ matrix.python-version }}
-
       - uses: mamba-org/setup-micromamba@main
         with:
           environment-file: devtools/conda-envs/test_env.yaml
           environment-name: test
-          channels: conda-forge,defaults
+          condarc: |
+            channels:
+            - conda-forge
+            - defaults
           create-args: >-
             python=${{ matrix.python-version }}
 
