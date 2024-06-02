@@ -11,11 +11,10 @@ dependencies:
   - codecov
   - jax[cpu]
   - equinox
-  - ase
+  - ase=3.22.1
   - optax
   - psutil
   - pip:
-    - ase
     - pypatch
     - pyscfad
     - mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
