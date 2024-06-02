@@ -2,7 +2,7 @@ sphinx-rtd-theme
 pytest
 jax[cpu]
 equinox
-ase
+ase==3.22.1
 pyscfad
 optax
 mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
