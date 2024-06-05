@@ -29,6 +29,8 @@ pypatch apply ./patch/pyscfad.scf.patch pyscfad.scf
 
 [PySCF-AD](https://github.com/fishjojo/pyscfad) requires a specific set-up for the PySCF configuration file that tells the program to use the JAX backend. Copy `xcquinox/patch/pyscf_conf.py` into your home directory, or wherever you have PySCF looking for this configuration file. 
 
+Once the dependencies have been installed, you may install the `xcquinox` package via `pip install -e .`.
+
 After the installation, configuration, and patching have been completed, you may verify the functionality of the package by running `pytest -v .` in the `xcquinox/xcquinox/tests` directory.
 
 ### Copyright
