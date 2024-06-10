@@ -1,0 +1,1 @@
+python ~/xcquinox/scripts/pretrain_exc.py --pretrain_level NONLOCAL --pretrain_net x --n_hidden 32 --depth 3 --n_input 13 --use 1 2 3 6 7 8 9 10 11 12 13 14 15  --pretrain_xc scan --spin_scaling --n_steps 10000  --g297_data_path /gpfs/home/awills/xcquinox/scripts/script_data/haunschild_g2/g2_97.traj --lr_decay_start 1000
