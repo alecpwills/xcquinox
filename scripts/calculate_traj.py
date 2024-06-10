@@ -202,6 +202,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         print('CUSTOM XC SPECIFIED; WILL OVERWITE eval_xc')
         molgen = False
         scount = 0
+        initspin = sping
         while not molgen:
             try:
                 mol = gtoa.Mole(atom=mol_input, basis=basis, spin=sping-scount, charge=charge)
@@ -209,8 +210,12 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
                 molgen=True
             except RuntimeError:
                 #spin disparity somehow, try with one less until 0
-                print("RuntimeError. Trying with reduced spin.")
-                scount += 1
+                if initspin > 0:
+                    print("RuntimeError. Trying with reduced spin.")
+                    scount += 1
+                elif initspin == 0:
+                    print("RuntimeError. Trying with increased spin.")
+                    scount -= 1
                 if sping-scount < 0:
                     raise ValueError
         print('S: ', mol.spin)
