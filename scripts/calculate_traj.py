@@ -463,13 +463,17 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         if kwargs['restart']:
             print("Restart Flagged -- Setting mf.init_guess to chkfile")
             mf.init_guess = '{}_{}.chkpt'.format(idx, atoms.symbols)
+        print('Running get_init_guess()')
         init_dm = mf.get_init_guess()
         #do short calculation to generate necessary ingredients to start
-        mf0 = method(mol)
-        mf0.max_cycle = -1
-        mf0.conv_tol = 1e-5
-        mf0.kernel()
-        evxc = xce.pyscf.generate_network_eval_xc(mf0, init_dm, kwargs['custom_xc_net'])
+        # print('Running short calculation to get ingredients for network run...')
+        # mf0 = method(mol)
+        # mf0.max_cycle = -1
+        # mf0.conv_tol = 1e-5
+        # mf0.kernel()
+        # print('Starting kernel calculation complete.')
+        # evxc = xce.pyscf.generate_network_eval_xc(mf0, init_dm, kwargs['custom_xc_net'])
+        evxc = xce.pyscf.generate_network_eval_xc(mf, init_dm, kwargs['custom_xc_net'])
         mf.grids.level = kwargs.get('gridlevel', 3)
         mf.max_cycle = 50
         mf.max_memory = 64000
@@ -571,31 +575,36 @@ def loadnet_from_strucdir(path, ninput, use=[]):
     sd_split = sdir.split('_')
     if len(sd_split) == 4:
         net_type, ndepth, nhidden, level = sdir.split('_')
+        ss = None
     elif len(sd_split) == 5:
         net_type, ndepth, nhidden, ss, level = sdir.split('_')
     elif len(sd_split) == 6:
         net_type, ndepth, nhidden, ss, _, level = sdir.split('_')
+    DEFSSX = True
+    DEFSSC = False
+    DEFSS = DEFSSX if net_type == 'x' else DEFSSC
+    SPINSCALE = True if ss else DEFSS
     if level == 'gga':
         if net_type == 'x':
             use = use if use else [1]
-            thisnet = xce.net.eX(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), lob=1.804)
+            thisnet = xce.net.eX(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), lob=1.804, spin_scaling=SPINSCALE)
         elif net_type == 'c':
             use = use if use else [2]
-            thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True)
+            thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, spin_scaling=SPINSCALE)
     elif level == 'mgga':
         if net_type == 'x':
             use = use if use else [1, 2]
-            thisnet = xce.net.eX(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, lob=1.174)
+            thisnet = xce.net.eX(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, lob=1.174, spin_scaling=SPINSCALE)
         elif net_type == 'c':
             use = use if use else []
-            thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True)
+            thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, spin_scaling=SPINSCALE)
     elif level == 'nl':
         if net_type == 'x':
             use = use if use else []
-            thisnet = xce.net.eX(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, lob=1.174)
+            thisnet = xce.net.eX(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, lob=1.174, spin_scaling=SPINSCALE)
         elif net_type == 'c':
             use = use if use else []
-            thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True)
+            thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, spin_scaling=SPINSCALE)
     
     thisnet = eqx.tree_deserialise_leaves(loadnet, thisnet)
     return thisnet, levels[level]
