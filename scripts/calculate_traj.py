@@ -565,6 +565,7 @@ def loadnet_from_strucdir(path, ninput, use=[]):
         fullpath = False
     
     loadnet = path if fullpath else os.path.join(path, f)
+    print('loadnet: {}'.format(loadnet))
     levels = {'gga': 2, 'mgga': 3, 'nl': 4}
     print('SDIR SPLIT: ', sdir.split('_'))
     sd_split = sdir.split('_')
