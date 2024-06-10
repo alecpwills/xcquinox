@@ -548,6 +548,7 @@ def calculate_distributed(atoms, n_workers = -1, basis='6-311++G(3df,2pd)', **kw
 
 def loadnet_from_strucdir(path, ninput, use=[]):
     sp = path.split('/')
+    print('PATH SPLIT: {}'.format(sp))
     if '.eqx' in sp[-1]:
         #directing to the specific checkpoint
         f = sp[-1]
