@@ -570,9 +570,9 @@ def loadnet_from_strucdir(path, ninput, use=[]):
     if len(sd_split) == 4:
         net_type, ndepth, nhidden, level = sdir.split('_')
     elif len(sd_split) == 5:
-        net_type, ndepth, nhidden, level, _ = sdir.split('_')
+        net_type, ndepth, nhidden, ss, level = sdir.split('_')
     elif len(sd_split) == 6:
-        net_type, ndepth, nhidden, level, _, _ = sdir.split('_')
+        net_type, ndepth, nhidden, ss, _, level = sdir.split('_')
     if level == 'gga':
         if net_type == 'x':
             use = use if use else [1]
