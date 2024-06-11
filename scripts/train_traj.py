@@ -45,48 +45,6 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
 
 #%%
-def write_mycc(idx, atoms, mycc, result, mycc2=None):
-    """Write out the information in a PySCF kernel that's been evaluated.
-    The assumption is that this comes from a CC calculation, as we pass 'ao_repr=True' to make_rdm1, as the default for CC outputs the DM in the MO basis.
-
-    Outputs will be named '{idx}_{atoms.symbols}.x'
-
-    #TODO: refactor, results is already the atoms object
-    Args:
-        idx (int): Index of molecule in its trajectory. 
-        atoms (ase.Atoms): The Atoms object to generate the symbols
-        mycc (cc object): The CC kernel that was used to generate the results in result
-        result (ase.Atoms): Another Atoms object, whose calc.results['energy'] has been set appropriately
-    """
-    #if len(mycc.mo_occ.shape) == 2:
-        #if array shape length is 2, it is spin polarized -- (2, --) one channel for each spin
-        #transpose in this manner -- first dimension retains spin component, just transpose indiv. mo_coeffs
-    #    dm = contract('xij,xj,xjk -> xik', mycc.mo_coeff, mycc.mo_occ, np.transpose(mycc.mo_coeff, (0, 2, 1)))
-    #else:
-    #    dm = contract('ij,j,jk -> ik', mycc.mo_coeff, mycc.mo_occ, mycc.mo_coeff.T)
-    #To be consistent with general mf.make_rdm1(), which from the pyscf code comments makes it in AO rep
-    #CC calculations have make_rdm1() create it in the MO basis.
-    dm = mycc.make_rdm1(ao_repr=True)
-    #TODO: Make cubegen grid density optional
-    #cubegen.density(mol,'{}.cube'.format(idx), dm, nx=100, ny=100, nz=100,
-    #                margin=kwargs['margin'])
-    lumo = np.where(mycc.mo_occ == 0)[0][0]
-    homo = lumo - 1
-    #TODO: Make cubegen HOMO/LUMO optional
-    #cubegen.orbital(mol, '{}_lumo.cube'.format(idx), mycc.mo_coeff[lumo],nx=100, ny=100, nz=100,
-    #                margin=kwargs['margin'])
-    #cubegen.orbital(mol, '{}_homo.cube'.format(idx), mycc.mo_coeff[homo], nx=100, ny=100, nz=100,
-    #                margin=kwargs['margin'])
-    write('{}_{}.traj'.format(idx, atoms.symbols), result)
-    np.save('{}_{}.dm'.format(idx, atoms.symbols), dm)
-    np.save('{}_{}.mo_occ'.format(idx, atoms.symbols), mycc.mo_occ)
-    np.save('{}_{}.mo_coeff'.format(idx, atoms.symbols), mycc.mo_coeff)
-    try:
-        np.save('{}_{}.mo_energy'.format(idx, atoms.symbols), mycc.mo_energy)
-    except:
-        np.save('{}_{}.mo_energy'.format(idx, atoms.symbols), mycc2.mo_energy)
-    write('{}_{}.traj'.format(idx, atoms.symbols), result)
-
 #spins for single atoms, since pyscf doesn't guess this correctly.
 spins_dict = {
     'Al': 1,
@@ -142,7 +100,7 @@ def get_spin(at):
 
 
 
-def do_ccsdt(idx,atoms,basis, **kwargs):
+def do_net_calc(idx,atoms,basis, **kwargs):
     """Run a CCSD(T) (or PBE/SCAN) calculation on an Atoms object, with given basis and kwargs.
 
     Args:
@@ -255,201 +213,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
     if kwargs.get('testgen', None):
         print('{} Generated.'.format(atoms.get_chemical_formula()))
         return 0
-    if kwargs['XC'] == 'ccsdt':
-        print('CCSD(T) calculation commencing')
-        #If pol specified, it's a bool and takes precedence.
-        if type(pol) == bool:
-            #polarization specified, UHF
-            if pol:
-                if not PBCALC:
-                    mf = uhf.UHF(mol)
-                else:
-                    mf = scfp.UHF(mol)
-            #specified to not polarize, RHF
-            else:
-                if not PBCALC:
-                    mf = hf.RHF(mol)
-                else:
-                    mf = scfp.RHF(mol)
-        #if pol is not specified in atom info, spin value used instead
-        elif pol == None:
-            if (mol.spin != 0):
-                if not PBCALC:
-                    mf = scf.UHF(mol)
-                else:
-                    mf = scfp.UHF(mol)
-            else:
-                if not PBCALC:
-                    mf = scf.RHF(mol)
-                else:
-                    mf = scfp.RHF(mol)
-        print("METHOD: ", mf)
-        if kwargs.get('chk', True):
-            mf.set(chkfile='{}_{}.chkpt'.format(idx, atoms.symbols))
-        if kwargs['restart']:
-            print("Restart Flagged -- Setting mf.init_guess to chkfile")
-            mf.init_guess = '{}_{}.chkpt'.format(idx, atoms.symbols)
-        print("Running HF calculation")
-        hf_start = time()
-        mf.max_memory = 128000
-        try:
-            mf.run()
-        except Exception as e:
-            print('error raised: ', e)
-            return -1
-        hf_time = time() - hf_start
-        print("Running CCSD calculation from HF")
-        with open('timing', 'a') as tfile:
-            tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, 'HF', hf_time))
-
-        if not PBCALC:
-            mycc = cc.CCSD(mf)
-        else:
-            mycc = ccp.CCSD(mf)
-
-        try:
-            ccsd_start = time()
-            mycc.kernel()
-            ccsd_time = time() - ccsd_start
-            with open('timing', 'a') as tfile:
-                tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, 'CCSD', ccsd_time))
-        except AssertionError:
-            print("CCSD Failed. Stopping at HF")
-            result.calc = SinglePointCalculator(result)
-            ehf = (mf.e_tot) 
-            etot = ehf
-            eccsd = None
-            eccsdt = None
-            result.calc.results = {'energy': etot,
-                                    'e_hf': ehf,
-                                    'e_ccsd': None,
-                                    'e_ccsdt':None}
-            with open('progress','a') as progfile:
-                progfile.write('{}\t{}\t{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, etot, ehf, eccsd, eccsdt))
-            write_mycc(idx, atoms, mf, result, mycc2=mf)
-            return result
-
-        print('MO Occ shape: ', mycc.mo_occ.shape)
-        print("Running CCSD(T) calculation from CCSD")
-        try:
-            ccsdt_start = time()
-            ccsdt = mycc.ccsd_t()
-            ccsdt_time = time() - ccsdt_start
-            with open('timing', 'a') as tfile:
-                tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, 'CCSD(T)', ccsdt_time))
-
-        except ZeroDivisionError:
-            print("CCSD(T) Failed. DIV/0. Stopping at CCSD")
-            result.calc = SinglePointCalculator(result)
-            ehf = (mf.e_tot) 
-            eccsd = (mycc.e_tot) 
-            eccsdt = None
-            etot = eccsd
-            result.calc.results = {'energy': etot,
-                                    'e_hf': ehf,
-                                    'e_ccsd': eccsd,
-                                    'e_ccsdt':eccsdt}
-            with open('progress','a') as progfile:
-                progfile.write('{}\t{}\t{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, etot, ehf, eccsd, eccsdt))
-            write_mycc(idx, atoms, mycc, result, mycc2=mf)
-            return result
-
-        result.calc = SinglePointCalculator(result)
-        etot = (mycc.e_tot + ccsdt) 
-        ehf = (mf.e_tot) 
-        eccsd = (mycc.e_tot) 
-        eccsdt = (ccsdt) 
-        result.calc.results = {'energy': etot,
-                                'e_hf': ehf,
-                                'e_ccsd': eccsd,
-                                'e_ccsdt': eccsdt}
-        with open('progress','a') as progfile:
-            progfile.write('{}\t{}\t{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, etot, ehf, eccsd, eccsdt))
-        with open('timing', 'a') as tfile:
-            tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, 'TOTAL(HF->END)', time() - hf_start))
-
-        write_mycc(idx, atoms, mycc, result, mycc2=mf)
-
-    elif kwargs['XC'].lower() in ['pbe', 'scan']:
-        print('{} calculation commencing'.format(kwargs['XC']))
-            #If pol specified, it's a bool and takes precedence.
-        if type(pol) == bool:
-            #polarization specified, UHF
-            if pol:
-                if not PBCALC:
-                    mf = dft.UKS(mol)
-                    method = dft.UKS
-                else:
-                    mf = dftp.UKS(mol)
-                    method = dftp.UKS
-            #specified to not polarize, RHF
-            else:
-                if not PBCALC:
-                    mf = dft.RKS(mol)
-                    method = dft.RKS
-                else:
-                    mf = dftp.RKS(mol)
-                    method = dftp.RKS
-        #if pol is not specified in atom info, spin value used instead
-        elif pol == None:
-            if (mol.spin != 0):
-                if not PBCALC:
-                    mf = dft.UKS(mol)
-                    method = dft.UKS
-                else:
-                    mf = dftp.UKS(mol)
-                    method = dftp.UKS
-            else:
-                if not PBCALC:
-                    mf = dft.RKS(mol)
-                    method = dft.RKS
-                else:
-                    mf = dftp.RKS(mol)
-                    method = dftp.RKS
-
-        print("METHOD: ", mf)
-        if kwargs.get('chk', True):
-            mf.set(chkfile='{}_{}.chkpt'.format(idx, atoms.symbols))
-        if kwargs['restart']:
-            print("Restart Flagged -- Setting mf.init_guess to chkfile")
-            mf.init_guess = '{}_{}.chkpt'.format(idx, atoms.symbols)
-
-        mf.grids.level = kwargs.get('gridlevel', 3)
-        mf.max_cycle = 100
-        mf.max_memory = 64000
-        mf.grids.build()
-        print("Running {} calculation".format(kwargs['XC']))
-        #if kwargs['df'] == False:
-        #    mf = dft.RKS(mol)
-        #elif kwargs['df'] == True:
-        #    print('Using density fitting')
-        #    mf = dft.RKS(mol).density_fit()
-        mf.xc = '{},{}'.format(kwargs['XC'].lower(), kwargs['XC'].lower())
-        xc_start = time()
-        mf.kernel()
-        if not mf.converged:
-            print("Calculation did not converge. Trying second order convergence with PBE to feed into calculation.")
-            mfp = method(mol, xc='pbe').newton()
-            mfp.kernel()
-            print("PBE Calculation complete -- feeding into original kernel.")
-            mf.kernel(dm0 = mfp.make_rdm1())
-            if not mf.converged:
-                print("Convergence still failed -- {}".format(atoms.symbols))
-                with open('unconv', 'a') as f:
-                    f.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.e_tot))
-        xc_time = time() - xc_start
-        with open('timing', 'a') as tfile:
-            tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.xc.upper(), xc_time))
-        if kwargs['df'] == True:
-            print('Default auxbasis', mf.with_df.auxmol.basis)
-        result.calc = SinglePointCalculator(result)
-        result.calc.results = {'energy':mf.e_tot }
-        with open('progress','a') as progfile:
-            progfile.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.e_tot ))
-        #np.savetxt('{}.m_occ'.format(idx), mf.mo_occ, delimiter=' ')
-        #np.savetxt('{}.mo_coeff'.format(idx), mf.mo_coeff, delimiter=' ')
-        write_mycc(idx, atoms, mf, result)
-    elif kwargs['XC'].lower() == 'custom_xc':
+    if kwargs['XC'].lower() == 'custom_xc':
         print('CUSTOM CALCULATION COMMENCING.....')
         print(type(mol), mol)
         #pyscfad only has spin-restricted DFT right now
@@ -471,12 +235,12 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         print('Running get_init_guess()')
         init_dm = mf.get_init_guess()
         #do short calculation to generate necessary ingredients to start
-        print('Running short calculation to get ingredients for potential non-local network run...')
-        mf0 = method(mol)
-        mf0.max_cycle = -1
-        mf0.conv_tol = 1e-5
-        mf0.kernel()
-        print('Starting kernel calculation complete.')
+        # print('Running short calculation to get ingredients for network run...')
+        # mf0 = method(mol)
+        # mf0.max_cycle = -1
+        # mf0.conv_tol = 1e-5
+        # mf0.kernel()
+        # print('Starting kernel calculation complete.')
         # evxc = xce.pyscf.generate_network_eval_xc(mf0, init_dm, kwargs['custom_xc_net'])
         evxc = xce.pyscf.generate_network_eval_xc(mf, init_dm, kwargs['custom_xc_net'])
         mf.grids.level = kwargs.get('gridlevel', 3)
@@ -485,7 +249,6 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         print("Running {} calculation".format(kwargs['XC']))
         mf.define_xc_(evxc, 'MGGA')
         xc_start = time()
-        mf.mo_coeff = mf0.mo_coeff
         try:
             mf.kernel()
             if mf.e_tot >= 0 and kwargs.get('above0mo', False):
@@ -508,7 +271,6 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
                 print('Default auxbasis', mf.with_df.auxmol.basis)
             with open('progress','a') as progfile:
                 progfile.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, result.calc.results['energy']))
-            write_mycc(idx, atoms, mf, result)
         except Exception as e:
             print(e)
             print('Kernel calculation failed, perhaps hydrogen is acting up or there is another issue')
@@ -531,30 +293,9 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
                 print('Default auxbasis', mf.with_df.auxmol.basis)
             with open('progress','a') as progfile:
                 progfile.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, result.calc.results['energy']))
-            write_mycc(idx, atoms, mf2, result)
 
     return result
 
-def calculate_distributed(atoms, n_workers = -1, basis='6-311++G(3df,2pd)', **kwargs):
-    """_summary_
-
-    Args:
-        atoms (_type_): _description_
-        n_workers (int, optional): _description_. Defaults to -1.
-        basis (str, optional): _description_. Defaults to '6-311++G(3df,2pd)'.
-
-    Returns:
-        _type_: _description_
-    """
-    
-    print('Calculating {} systems on'.format(len(atoms)))
-    cluster = LocalCluster(n_workers = n_workers, threads_per_worker = 1)
-    print(cluster)
-    client = Client(cluster)
-
-    futures = client.map(do_ccsdt, np.arange(len(atoms)),atoms,[basis]*len(atoms), **kwargs)
-    
-    return [f.result() for f in futures]
 
 def loadnet_from_strucdir(path, ninput, use=[]):
     sp = path.split('/')
@@ -649,6 +390,16 @@ if __name__ == '__main__':
     parser.add_argument('--xc_xc_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange-correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. xc_3_16_mgga)')
     parser.add_argument('--xc_xc_ninput', type=int, action='store', help='Number of inputs the exchange-correlation network expects')
     parser.add_argument('--xc_verbose', default=False, action='store_true', help='If flagged, sets verbosity on the network.')
+    #add arguments for training
+    parser.add_argument('--n_steps', action='store', type=int, default=200, help='The number training epochs to go through.')
+    parser.add_argument('--do_jit', action='store_true', default=False, help='If flagged, will try to utilize JAX-jitting during training')
+    parser.add_argument('--train_traj_path', action='store', type=str, default='/home/awills/Documents/Research/xcquinox/scripts/script_data/haunschild_g2/g2_97.traj', help='Location of the data file for use during pre-training')
+    parser.add_argument('--debug', action='store_true', help='If flagged, only selects first in the target list for quick debugging purposes.')
+    parser.add_argument('--verbose', action='store_true', help='If flagged, activates verbosity flag in the network.')
+    parser.add_argument('--init_lr', action='store', type=float, default=5e-2, help='The initial learning rate for the network.')
+    parser.add_argument('--lr_decay_start', action='store', type=int, default=50, help='The epoch at which the exponential decay begins.')
+    parser.add_argument('--lr_decay_rate', action='store', type=float, default=0.9, help='The decay rate for the exponential decay.')
+    
     args = parser.parse_args()
     setattr(__config__, 'cubegen_box_margin', args.cmargin)
     GCHARGE = args.charge
@@ -711,25 +462,17 @@ if __name__ == '__main__':
         print('beginning new timing file')
         with open('timing','w') as tfile:
             tfile.write('#idx\tatoms.symbols\tcalc\ttime (s)\n')
-    if not args.serial:
-        results = calculate_distributed(atoms, args.nworkers, args.basis,
-                                        margin=args.cmargin,
-                                        XC=input_xc,
-                                        PBC=args.pbc,
-                                        L=args.L,
-                                        df=args.df,
-                                        pseudo=args.pseudo,
-                                        rerun=args.rerun,
-                                        owcharge=args.overwrite_gcharge,
-                                        forcepol = args.forcepol,
-                                        testgen = args.testgen,
-                                        gridlevel = args.mf_grid_level,
-                                        atomize = args.atomize,
-                                        custom_xc = CUSTOM_XC,
-                                        custom_xc_net = xcnet)
-    else:
         print("SERIAL CALCULATIONS")
-        results = [do_ccsdt(ia, atoms[ia], basis=args.basis,
+
+
+        scheduler = optax.exponential_decay(init_value = args.init_lr, transition_begin=args.lr_decay_start, transition_steps=args.n_steps-args.lr_decay_start, decay_rate=args.lr_decay_rate)
+        optimizer = optax.adam(learning_rate = scheduler)
+
+        trainer = xce.train.xcTrainer(model=xcnet, optim=optimizer, steps=args.n_steps, loss = PT_E_Loss(), do_jit=args.do_jit, logfile='trlog')
+
+        cpus = jax.devices(backend='cpu')
+
+        results = [do_net_calc(ia, atoms[ia], basis=args.basis,
                                         margin=args.cmargin,
                                         XC=input_xc,
                                         PBC=args.pbc,
@@ -742,11 +485,8 @@ if __name__ == '__main__':
                                         forcepol = args.forcepol,
                                         testgen = args.testgen,
                                         gridlevel = args.mf_grid_level,
-                                        atomize = args.atomize,
+                                        atomize = True,
                                         custom_xc = CUSTOM_XC,
                                         custom_xc_net = xcnet) for ia in range(len(atoms)) if ia >= args.startind and ia < args.endind]
-
-    results_path = 'results.traj'
-    write(results_path, results)
 
 # %%
