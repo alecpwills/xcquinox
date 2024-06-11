@@ -100,7 +100,7 @@ def get_spin(at):
 
 
 
-def do_net_calc(idx,atoms,basis, **kwargs):
+def do_net_calc(epoch, idx,atoms,basis, **kwargs):
     """Run a CCSD(T) (or PBE/SCAN) calculation on an Atoms object, with given basis and kwargs.
 
     Args:
@@ -235,12 +235,12 @@ def do_net_calc(idx,atoms,basis, **kwargs):
         print('Running get_init_guess()')
         init_dm = mf.get_init_guess()
         #do short calculation to generate necessary ingredients to start
-        # print('Running short calculation to get ingredients for network run...')
-        # mf0 = method(mol)
-        # mf0.max_cycle = -1
-        # mf0.conv_tol = 1e-5
-        # mf0.kernel()
-        # print('Starting kernel calculation complete.')
+        print('Running short calculation to get ingredients for network run...')
+        mf0 = method(mol)
+        mf0.max_cycle = -1
+        mf0.conv_tol = 1e-5
+        mf0.kernel()
+        print('Starting kernel calculation complete.')
         # evxc = xce.pyscf.generate_network_eval_xc(mf0, init_dm, kwargs['custom_xc_net'])
         evxc = xce.pyscf.generate_network_eval_xc(mf, init_dm, kwargs['custom_xc_net'])
         mf.grids.level = kwargs.get('gridlevel', 3)
@@ -264,13 +264,14 @@ def do_net_calc(idx,atoms,basis, **kwargs):
                 raise
             result.calc = SinglePointCalculator(result)
             result.calc.results = {'energy' : mf.e_tot}
+            result.calc.results = {'dm' : mf.make_rdm1()}
             xc_time = time() - xc_start
             with open('timing', 'a') as tfile:
-                tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, mf.xc.upper(), xc_time))
+                tfile.write('{}\t{}\t{}\t{}\n'.format(epoch, idx, atoms.symbols, mf.xc.upper(), xc_time))
             if kwargs['df'] == True:
                 print('Default auxbasis', mf.with_df.auxmol.basis)
             with open('progress','a') as progfile:
-                progfile.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, result.calc.results['energy']))
+                progfile.write('{}\t{}\t{}\n'.format(epoch, idx, atoms.symbols, result.calc.results['energy']))
         except Exception as e:
             print(e)
             print('Kernel calculation failed, perhaps hydrogen is acting up or there is another issue')
@@ -286,16 +287,20 @@ def do_net_calc(idx,atoms,basis, **kwargs):
             mf2.kernel()
             result.calc = SinglePointCalculator(result)
             result.calc.results = {'energy' : mf2.e_tot}
+            result.calc.results = {'dm' : mf2.make_rdm1()}
             xc_time = time() - xc_start
             with open('timing', 'a') as tfile:
-                tfile.write('{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, 'pyscfad.scf.UHF', xc_time))
+                tfile.write('{}\t{}\t{}\t{}\n'.format(epoch, idx, atoms.symbols, 'pyscfad.scf.UHF', xc_time))
             if kwargs['df'] == True:
                 print('Default auxbasis', mf.with_df.auxmol.basis)
             with open('progress','a') as progfile:
-                progfile.write('{}\t{}\t{}\n'.format(idx, atoms.symbols, result.calc.results['energy']))
+                progfile.write('{}\t{}\t{}\n'.format(epoch, idx, atoms.symbols, result.calc.results['energy']))
 
-    return result
+    return (result, result.calc.results['energy'], result.calc.results['dm'])
 
+class E_DM_Loss(eqx.Module):
+
+    def __call__(self, model, refdatatraj, refdatadir)
 
 def loadnet_from_strucdir(path, ninput, use=[]):
     sp = path.split('/')
