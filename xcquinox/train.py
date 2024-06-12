@@ -73,7 +73,7 @@ class xcTrainer(eqx.Module):
         '''
         BEST_LOSS = 1e10
         for step in range(self.steps):
-            print('Epoch {}'.format(step))
+            jax.debug.print('Epoch {}'.format(step))
             epoch_loss = 0
             if step == 0 and self.logfile:
                 with open(self.logfile+'.dat', 'w') as f:
@@ -90,7 +90,7 @@ class xcTrainer(eqx.Module):
                 inp_model = self.model
                 inp_opt_state = self.opt_state
             for idx in range(epoch_batch_len):  
-                print('Epoch {} :: Batch {}/{}'.format(step, idx, epoch_batch_len))
+                jax.debug.print('Epoch {} :: Batch {}/{}'.format(step, idx, epoch_batch_len))
 
                 #loops over every iterable in loss_input_lists, selecting one batch's input data
                 #assumes separate lists, each having inputs for multiple cases in the training set
@@ -103,7 +103,7 @@ class xcTrainer(eqx.Module):
                     this_loss.block_until_ready()
                     jax.profiler.save_device_memory_profile(f"memory{step}_{idx}.prof")
     
-                print('Batch Loss = {}'.format(this_loss))
+                jax.debug.print('Batch Loss = {}'.format(this_loss))
                 if self.logfile:
                     with open(self.logfile+'batch.dat', 'a') as f:
                         f.write(f'{step}\t{idx}\t{this_loss}\n')
@@ -118,7 +118,7 @@ class xcTrainer(eqx.Module):
                 BEST_LOSS = epoch_loss.item()
 
             if ( (step % self.print_every) == 0 ) or (step == self.steps - 1):
-                print(
+                jax.debug.print(
                     f"{step}, epoch_train_loss={epoch_loss}"
                 )
             if ( (step % self.clear_every) == 0 ) and (step > 0):
@@ -181,5 +181,5 @@ class xcTrainer(eqx.Module):
         :type output: printable object
         '''
         if self.verbose:
-            print(output)
+            jax.debug.print(output)
 

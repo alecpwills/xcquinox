@@ -244,7 +244,7 @@ def do_net_calc(epoch, idx,atoms,basis, **kwargs):
         # evxc = xce.pyscf.generate_network_eval_xc(mf0, init_dm, kwargs['custom_xc_net'])
         evxc = xce.pyscf.generate_network_eval_xc(mf, init_dm, kwargs['custom_xc_net'])
         mf.grids.level = kwargs.get('gridlevel', 3)
-        mf.max_cycle = 50
+        mf.max_cycle = 5
         mf.max_memory = 64000
         print("Running {} calculation".format(kwargs['XC']))
         mf.define_xc_(evxc, 'MGGA')
@@ -254,6 +254,7 @@ def do_net_calc(epoch, idx,atoms,basis, **kwargs):
             e_tot = mf.e_tot
             dmp = mf.make_rdm1()
             print('Kernel calculation complete: total energy = {}'.format(e_tot))
+            print('Kernel calculation complete: density matrix shape = {}'.format(dmp.shape))
             if mf.e_tot >= 0 and kwargs.get('above0mo', False):
                 print('non-negative total energy; trying to rewrite with mo_energy of homo')
                 print(f'mf.e_tot = {mf.e_tot}')
@@ -479,15 +480,17 @@ if __name__ == '__main__':
                                             gridlevel = args.mf_grid_level,
                                             atomize = True,
                                             custom_xc = CUSTOM_XC,
-                                            custom_xc_net = xcnet) for ia in range(len(atoms)) if ia >= args.startind and ia < args.endind]
+                                            custom_xc_net = model) for ia in range(len(atoms)) if ia >= args.startind and ia < args.endind]
             e_dct = {str(idx)+'_'+str(res[0].symbols): res[1] for idx, res in enumerate(results)}
-            dm_dct = {str(idx)+'_'+str(res[0].symbols): res[1] for idx, res in enumerate(results)}
+            dm_dct = {str(idx)+'_'+str(res[0].symbols): res[2] for idx, res in enumerate(results)}
             single_e_dct = {k.split('_')[1]:e_dct[k] for k in e_dct.keys() if int(k.split('_')[0]) >= singles_start}
-            ae_e_dct = {str(idx)+'_'+str(res[0].symbols): res[1] for idx, res in enumerate(results) if not res[0].info.get('reaction', None)}
+            ae_e_dct = {str(idx)+'_'+str(res[0].symbols): res[1] for idx, res in enumerate(results) if not res[0].info.get('reaction', None) and str(res[0].symbols) not in single_e_dct.keys()}
             rxn_e_dct = {str(idx)+'_'+str(res[0].symbols): res[1] for idx, res in enumerate(results) if res[0].info.get('reaction', None)}
 
             ae_losses = []
             dm_losses = []
+            ae_losses = jnp.array(ae_losses)
+            dm_losses = jnp.array(dm_losses)
             for k, v in ae_e_dct.items():
                 kidx, at = k.split('_')
                 kidx = int(kidx)
@@ -499,13 +502,25 @@ if __name__ == '__main__':
                     ATE -= single_e_dct[sym]
                 print(f'{kidx}_{at} atomization energy : {ATE}')
                 print(f'{kidx}_{at} reference atomization energy : {REFATE}')
-                ae_losses.append(ATE-REFATE)
-            
+                ae_losses = jnp.append(ae_losses, ATE-REFATE)
             for k, v in dm_dct.items():
+                print('Density matrix losses: {}'.format(k))
                 refdm = np.load(os.path.join(refdatadir, k+'.dm.npy'))
-                dm_losses.append(jnp.sum((refdm-v)**2))
-                
-            return jnp.sqrt(jnp.mean(jnp.power(ae_losses, 2))) + jnp.sqrt(jnp.mean(jnp.power(dm_losses, 2)))
+                refdm = jnp.array(refdm)
+                print(f'{k}: Reference density matrix shape = {refdm.shape}')
+                print(f'{k}: Predicted density matrix shape = {v.shape}')
+                if refdm.shape != v.shape:
+                    print('Reference and predicted density matrix shape mismatch. Reducing spin channels of non-matching.')
+                    if len(refdm.shape) == 3:
+                        refdm = refdm[0] + refdm[1]
+                        print('New reference density matrix shape: {}'.format(refdm.shape))
+                    if len(v.shape) == 3:
+                        v = v[0] + v[1]
+                        print('New predicted density matrix shape: {}'.format(v.shape))
+                dm_losses = jnp.append(dm_losses, jnp.sum((refdm-v)**2))
+            print('AE Losses: {}'.format(ae_losses))
+            print('DM Losses: {}'.format(dm_losses))
+            return jnp.sqrt(jnp.mean((ae_losses**2))) + jnp.sqrt(jnp.mean((dm_losses**2)))
 
     if not args.rerun:
         print('beginning new progress file')
