@@ -304,7 +304,7 @@ def do_net_calc(epoch, idx,atoms,basis, **kwargs):
     return (result, e_tot, dmp)
 
 
-def loadnet_from_strucdir(path, ninput, use=[]):
+def loadnet_from_strucdir(path, ninput, use=[], xc_full=False):
     sp = path.split('/')
     print('PATH SPLIT: {}'.format(sp))
     if '.eqx' in sp[-1]:
@@ -359,9 +359,9 @@ def loadnet_from_strucdir(path, ninput, use=[]):
         elif net_type == 'c':
             use = use if use else []
             thisnet = xce.net.eC(n_input=ninput, n_hidden=int(nhidden), use=use, depth=int(ndepth), ueg_limit=True, spin_scaling=SPINSCALE)
-    
-    thisnet = eqx.tree_deserialise_leaves(loadnet, thisnet)
-    return thisnet, levels[level]
+    if not xc_full:
+        thisnet = eqx.tree_deserialise_leaves(loadnet, thisnet)
+    return thisnet, levels[level], loadnet
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
@@ -397,6 +397,7 @@ if __name__ == '__main__':
     parser.add_argument('--xc_xc_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange-correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. xc_3_16_mgga)')
     parser.add_argument('--xc_xc_ninput', type=int, action='store', help='Number of inputs the exchange-correlation network expects')
     parser.add_argument('--xc_verbose', default=False, action='store_true', help='If flagged, sets verbosity on the network.')
+    parser.add_argument('--xc_full', default=False, action='store_true', help='If flagged, will deserialize a saved XC object, as opposed to individual X/C MLP networks.')
     #add arguments for training
     parser.add_argument('--n_steps', action='store', type=int, default=200, help='The number training epochs to go through.')
     parser.add_argument('--singles_start', action='store', type=int, default=4, help='The index at which the single-atom molecules start, assuming they are at the end of a list of trajectories containing molecules and reactions.')
@@ -448,16 +449,19 @@ if __name__ == '__main__':
     xcnet = None
     if args.xc_x_net_path:
         'xcquinox network exchange path provided, attempting read-in...'
-        xnet, xlevel = loadnet_from_strucdir(args.xc_x_net_path, args.xc_x_ninput, args.xc_x_use)
+        xnet, xlevel, loadnet = loadnet_from_strucdir(args.xc_x_net_path, args.xc_x_ninput, args.xc_x_use, xc_full=args.xc_full)
         gridmodels.append(xnet)
         CUSTOM_XC = True
     if args.xc_c_net_path:
         'xcquinox network exchange path provided, attempting read-in...'
-        cnet, clevel = loadnet_from_strucdir(args.xc_c_net_path, args.xc_c_ninput, args.xc_c_use)
+        cnet, clevel, loadnet = loadnet_from_strucdir(args.xc_c_net_path, args.xc_c_ninput, args.xc_c_use, xc_full=args.xc_full)
         gridmodels.append(cnet)
         CUSTOM_XC = True
     if args.xc_x_net_path or args.xc_c_net_path:
         xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel, verbose=args.xc_verbose)
+    if args.xc_full:
+        print('Full XC Object specified -- loading into constructed network')
+        xcnet = eqx.tree_deserialise_leaves(loadnet, xcnet)
 
     input_xc = args.xc if not CUSTOM_XC else 'custom_xc'
 
