@@ -8,6 +8,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--start_script', type=str, action='store', default = 'run_script.sh', help='The starting script that calls calculate_traj.py')
     parser.add_argument('--restart_script', type=str, action='store', default = 'run_script_restart.sh', help='The re-start script that calls calculate_traj.py with a new index')
+    parser.add_argument('--restart_copy_script', type=str, action='store', default = 'run_script_restart_rep.sh', help='The re-start script that calls calculate_traj.py with a new index')
     parser.add_argument('--replace_str', type=str, action='store', default='INSERTINDEXHERE', help='The string in the restart script to replace with the last calculated index')
     args = parser.parse_args()
 
@@ -19,8 +20,8 @@ if __name__ == '__main__':
     WORKDIR = os.getcwd()
     os.chdir(WORKDIR)
     _PROCESS_ARGS = ['bash', args.start_script]
-    RSR = 'run_script_local_restart.sh'
-    _RPROCESS_ARGS = ['bash', args.restart_script]
+    RSR = args.restart_script
+    _RPROCESS_ARGS = ['bash', args.restart_copy_script]
 
     progfile = 'supervisor.dat'
     with open(progfile, 'w') as f:
