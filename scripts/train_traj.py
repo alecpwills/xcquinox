@@ -461,7 +461,7 @@ if __name__ == '__main__':
         xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel, verbose=args.xc_verbose)
     if args.xc_full:
         print('Full XC Object specified -- loading into constructed network')
-        xcnet = eqx.tree_deserialise_leaves(loadnet, xcnet)
+        xcnet = eqx.tree_deserialise_leaves(args.xc_xc_net_path, xcnet)
 
     input_xc = args.xc if not CUSTOM_XC else 'custom_xc'
 
@@ -487,10 +487,24 @@ if __name__ == '__main__':
                                             custom_xc_net = model) for ia in range(len(atoms)) if ia >= args.startind and ia < args.endind]
             e_dct = {str(idx)+'_'+str(res[0].symbols): res[1] for idx, res in enumerate(results)}
             dm_dct = {str(idx)+'_'+str(res[0].symbols): res[2] for idx, res in enumerate(results)}
-            single_e_dct = {k.split('_')[1]:e_dct[k] for k in e_dct.keys() if int(k.split('_')[0]) >= singles_start}
+            single_e_dct = {k.split('_')[1]:e_dct[k] for k in e_dct.keys() if int(k.split('_')[0]) >= singles_start and k.split('_')[1] in spins_dict.keys()}
             ae_e_dct = {str(idx)+'_'+str(res[0].symbols): res[1] for idx, res in enumerate(results) if not res[0].info.get('reaction', None) and str(res[0].symbols) not in single_e_dct.keys()}
-            rxn_e_dct = {str(idx)+'_'+str(res[0].symbols): res[1] for idx, res in enumerate(results) if res[0].info.get('reaction', None)}
-
+            rxn_e_dct = {str(idx)+'_'+str(res[0].symbols): res[1] for idx, res in enumerate(results) if type(res[0].info.get('reaction', None)) == int}
+            rxn_part_dct = {}
+            for k in rxn_e_dct.keys():
+                kidx, ksym = k.split('_')
+                kidx = int(kidx)
+                ncomps = results[kidx][0].info.get('reaction')
+                rxncomps = [str(kidx-i)+'_'+str(results[kidx-i][0].symbols) for i in range(1,ncomps+1)]                    
+                rxn_part_dct[k] = rxncomps
+            print('------------------------------------------')
+            print('DICTIONARY SUMMARIES: ')
+            print(f'e_dct = {e_dct}')
+            print(f'single_e_dct = {single_e_dct}')
+            print(f'ae_e_dct = {ae_e_dct}')
+            print(f'rxn_e_dct = {rxn_e_dct}')
+            print(f'rxn_part_dct = {rxn_part_dct}')
+            print('------------------------------------------')
             ae_losses = []
             dm_losses = []
             ae_losses = jnp.array(ae_losses)
@@ -507,6 +521,13 @@ if __name__ == '__main__':
                 print(f'{kidx}_{at} atomization energy : {ATE}')
                 print(f'{kidx}_{at} reference atomization energy : {REFATE}')
                 ae_losses = jnp.append(ae_losses, ATE-REFATE)
+            for k, v in rxn_e_dct.items():
+                print(f'Reaction -- {k} : {rxn_part_dct[k]}')
+                rxnloss = v
+                for subcomp in rxn_part_dct[k]:
+                    rxnloss -= e_dct[subcomp]
+                print(f'Reaction -- {k} : Loss = {rxnloss}')
+                ae_losses = jnp.append(ae_losses, rxnloss)
             for k, v in dm_dct.items():
                 print('Density matrix losses: {}'.format(k))
                 refdm = np.load(os.path.join(refdatadir, k+'.dm.npy'))
