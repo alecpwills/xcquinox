@@ -1,4 +1,4 @@
-import subprocess, os, time, shutil
+import subprocess, os, time, shutil, psutil
 import pandas as pd
 from sh import sed
 import argparse
@@ -11,6 +11,7 @@ if __name__ == '__main__':
     parser.add_argument('--restart_copy_script', type=str, action='store', default = 'run_script_restart_rep.sh', help='The re-start script that calls calculate_traj.py with a new index')
     parser.add_argument('--replace_str', type=str, action='store', default='CHECKPOINTPATH', help='The string in the restart script to replace with the last calculated index')
     parser.add_argument('--cutoff_epochs', type=int, action='store', default=200, help='The number of unique epochs the supervisor will allow to occur.')
+    parser.add_argument('--cutoff_memory', type=float, action='store', default=0.9, help='The fraction of total memory the program will allow to accumulate before forcing a restart')
     args = parser.parse_args()
 
 
@@ -33,14 +34,21 @@ if __name__ == '__main__':
         f.write('#PID\tSTATUS\tACTION\n')
     #start initial process
     p = subprocess.Popen(_PROCESS_ARGS)
+    TOTALMEMORY = psutil.virtual_memory().total
+    print(f'Total virtual memory available via psutil: {TOTALMEMORY} bytes // {TOTALMEMORY/1e6} MB // {TOTALMEMORY/1e9} GB')
+    pp = psutil.Process(p.pid)
     PREVIOUS_LAST = 99999999
     PREVIOUS_COUNT = 0
     EPOCHS_DONE = 0
     REPEATED_SEGMENTS = 0
     while True:
         #check process -- returns None if complete
-        if p.poll() != None: #process completed
+        if (p.poll() != None) or (pp.memory_info().rss / TOTALMEMORY >= args.cutoff_memory) : #process completed
             RESTARTS += 1
+            if (pp.memory_info().rss / TOTALMEMORY >= args.cutoff_memory):
+                print(f'Calculation memory usage exceeds allowed value: {pp.memory_info().rss}/{TOTALMEMORY} >= {args.cutoff_memory}')
+                print('Killing current process...')
+                p.kill()
             #Read in the trlog.dat file to get epoch and loss information
             df = pd.read_csv('trlog.dat', delimiter='\t')
 
