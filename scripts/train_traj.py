@@ -459,9 +459,14 @@ if __name__ == '__main__':
         CUSTOM_XC = True
     if args.xc_x_net_path or args.xc_c_net_path:
         xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel, verbose=args.xc_verbose)
-    if args.xc_full:
+    if args.xc_full and args.xc_xc_net_path:
+        assert args.xc_x_net_path, "Must specify location of exchange network to generate template correctly"
+        assert args.xc_c_net_path, "Must specify location of correlation network to generate template correctly"
         print('Full XC Object specified -- loading into constructed network')
+        print('Specified path: {}'.format(args.xc_xc_net_path))
         xcnet = eqx.tree_deserialise_leaves(args.xc_xc_net_path, xcnet)
+        print(xcnet)
+        CUSTOM_XC = True
 
     input_xc = args.xc if not CUSTOM_XC else 'custom_xc'
 
