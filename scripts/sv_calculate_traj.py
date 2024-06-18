@@ -59,5 +59,5 @@ if __name__ == '__main__':
             #wait 2 minutes before rechecking
             print('Process still on-going, sleeping...')
             with open(progfile, 'a') as f:
-                f.write(f'{p.pid}\tONGOING\tSLEEP\n')
+                f.write(f'{p.pid}\tONGOING\tSLEEP\t{psutil.virtual_memory().used/TOTALMEMORY}\n')
             time.sleep(120)
