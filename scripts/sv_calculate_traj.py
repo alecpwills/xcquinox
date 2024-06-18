@@ -3,6 +3,11 @@ import pandas as pd
 from sh import sed
 import argparse
 
+def kill(proc_pid):
+    process = psutil.Process(proc_pid)
+    for proc in process.children(recursive=True):
+        proc.kill()
+    process.kill()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
@@ -33,12 +38,14 @@ if __name__ == '__main__':
     PREVIOUS_LAST = 99999999
     PREVIOUS_COUNT = 0
     while True:
-        #check process -- returns None if complete
+        #check process -- returns None if still running
         if (p.poll() != None) or (psutil.virtual_memory().used / TOTALMEMORY >= args.cutoff_memory) : #process completed
             if (psutil.virtual_memory().used / TOTALMEMORY >= args.cutoff_memory):
                 print(f'Calculation memory usage exceeds allowed value: {psutil.virtual_memory().used}/{TOTALMEMORY} >= {args.cutoff_memory}')
                 print('Killing current process...')
-                p.kill()
+                # p.kill()
+                # p.communicate()
+                kill(p.pid)
             else:
                 print('Process completed. Restarting...')
             with open(progfile, 'a') as f:
@@ -55,6 +62,7 @@ if __name__ == '__main__':
                 break
             PREVIOUS_LAST = lastind
             p = subprocess.Popen(_RPROCESS_ARGS)
+            time.sleep(120)
         else:
             #wait 2 minutes before rechecking
             print('Process still on-going, sleeping...')

@@ -3,6 +3,11 @@ import pandas as pd
 from sh import sed
 import argparse
 
+def kill(proc_pid):
+    process = psutil.Process(proc_pid)
+    for proc in process.children(recursive=True):
+        proc.kill()
+    process.kill()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
@@ -31,7 +36,7 @@ if __name__ == '__main__':
 
     progfile = 'supervisor.dat'
     with open(progfile, 'w') as f:
-        f.write('#PID\tSTATUS\tACTION\tMEMUSE\n')
+        f.write('#PID\tPOLL\tSTATUS\tACTION\tEPOCHS\tMEMUSE\n')
     #start initial process
     p = subprocess.Popen(_PROCESS_ARGS)
     TOTALMEMORY = psutil.virtual_memory().total
@@ -42,13 +47,18 @@ if __name__ == '__main__':
     EPOCHS_DONE = 0
     REPEATED_SEGMENTS = 0
     while True:
-        #check process -- returns None if complete
+        #check process -- returns None if still running
         if (p.poll() != None) or (psutil.virtual_memory().used / TOTALMEMORY >= args.cutoff_memory) : #process completed
             RESTARTS += 1
             if (psutil.virtual_memory().used / TOTALMEMORY >= args.cutoff_memory):
                 print(f'Calculation memory usage exceeds allowed value: {psutil.virtual_memory().used}/{TOTALMEMORY} >= {args.cutoff_memory}')
                 print('Killing current process...')
-                p.kill()
+                # p.kill()
+                # p.communicate()
+                kill(p.pid)
+                with open(progfile, 'a') as f:
+                    f.write(f'{p.pid}\t{p.poll()}\tDONE\tKILL\t{EPOCHS_DONE}\t{psutil.virtual_memory().used/TOTALMEMORY}\n')
+
             #Read in the trlog.dat file to get epoch and loss information
             df = pd.read_csv('trlog.dat', delimiter='\t')
 
@@ -71,7 +81,7 @@ if __name__ == '__main__':
         
             print('Process completed. Restarting...')
             with open(progfile, 'a') as f:
-                f.write(f'{p.pid}\tDONE\tRESTART\t{psutil.virtual_memory().used/TOTALMEMORY}\n')
+                f.write(f'{p.pid}\t{p.poll()}\tDONE\tRESTART\t{EPOCHS_DONE}\t{psutil.virtual_memory().used/TOTALMEMORY}\n')
             #find number of checkpoints in this directory
             chkpts = sorted([i for i in os.listdir() if 'xc.eqx' in i], key=lambda x: int(x.split('.')[-1]))
             os.mkdir(f'../run{RESTARTS}')
@@ -80,17 +90,17 @@ if __name__ == '__main__':
             #copy restart to new file to replace index of
             os.chdir(f'../run{RESTARTS}')
             with open(progfile, 'w') as f:
-                f.write('#PID\tSTATUS\tACTION\tMEMUSE\n')
+                f.write('#PID\tPOLL\tSTATUS\tACTION\tEPOCHS\tMEMUSE\n')
             shutil.copy(args.restart_script, args.restart_copy_script)
             sed(['-i', f's|{args.replace_str}|./{chkpts[-1]}|g', args.restart_copy_script])
             last_df = df
             p = subprocess.Popen(_RPROCESS_ARGS)
             pp = psutil.Process(p.pid)
+            time.sleep(120)
         else:
             #wait 2 minutes before rechecking
             print('Process still on-going, sleeping...')
             print(f'Current process memory usage: {pp.memory_info().rss}/{TOTALMEMORY} = {pp.memory_info().rss/TOTALMEMORY}')
             with open(progfile, 'a') as f:
-                # f.write(f'{p.pid}\tONGOING\tSLEEP\t{pp.memory_info().rss/TOTALMEMORY}\n')
-                f.write(f'{p.pid}\tONGOING\tSLEEP\t{psutil.virtual_memory().used/TOTALMEMORY}\n')
+                f.write(f'{p.pid}\t{p.poll()}\tONGOING\tSLEEP\t{EPOCHS_DONE}\t{psutil.virtual_memory().used/TOTALMEMORY}\n')
             time.sleep(120)
