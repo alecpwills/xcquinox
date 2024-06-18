@@ -1,4 +1,4 @@
-import subprocess, os, time, shutil
+import subprocess, os, time, shutil, psutil
 import pandas as pd
 from sh import sed
 import argparse
@@ -10,6 +10,7 @@ if __name__ == '__main__':
     parser.add_argument('--restart_script', type=str, action='store', default = 'run_script_restart.sh', help='The re-start script that calls calculate_traj.py with a new index')
     parser.add_argument('--restart_copy_script', type=str, action='store', default = 'run_script_restart_rep.sh', help='The re-start script that calls calculate_traj.py with a new index')
     parser.add_argument('--replace_str', type=str, action='store', default='INSERTINDEXHERE', help='The string in the restart script to replace with the last calculated index')
+    parser.add_argument('--cutoff_memory', type=float, action='store', default=0.8, help='The fraction of total memory the program will allow to accumulate before forcing a restart')
     args = parser.parse_args()
 
 
@@ -25,17 +26,23 @@ if __name__ == '__main__':
 
     progfile = 'supervisor.dat'
     with open(progfile, 'w') as f:
-        f.write('#PID\tSTATUS\tACTION\n')
+        f.write('#PID\tSTATUS\tACTION\tMEMUSE\n')
     #start initial process
     p = subprocess.Popen(_PROCESS_ARGS)
+    TOTALMEMORY = psutil.virtual_memory().total
     PREVIOUS_LAST = 99999999
     PREVIOUS_COUNT = 0
     while True:
         #check process -- returns None if complete
-        if p.poll() != None: #process completed
-            print('Process completed. Restarting...')
+        if (p.poll() != None) or (psutil.virtual_memory().used / TOTALMEMORY >= args.cutoff_memory) : #process completed
+            if (psutil.virtual_memory().used / TOTALMEMORY >= args.cutoff_memory):
+                print(f'Calculation memory usage exceeds allowed value: {psutil.virtual_memory().used}/{TOTALMEMORY} >= {args.cutoff_memory}')
+                print('Killing current process...')
+                p.kill()
+            else:
+                print('Process completed. Restarting...')
             with open(progfile, 'a') as f:
-                f.write(f'{p.pid}\tDONE\tRESTART\n')
+                f.write(f'{p.pid}\tDONE\tRESTART\t{psutil.virtual_memory().used/TOTALMEMORY}\n')
             #check progress file for last index
             progress = pd.read_csv('progress', delimiter='\t')
             lastind = progress.iloc[-1]['#idx']
