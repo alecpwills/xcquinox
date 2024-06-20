@@ -1,7 +1,8 @@
 import numpy as np
 import equinox as eqx
-import jax, os, sys
+import jax, os, sys, pickle
 import jax.numpy as jnp
+from xcquinox.net import get_net
 
 #check if cider is in the environment
 from mldftdat.density import get_exchange_descriptors2
@@ -687,3 +688,96 @@ class eXC(eqx.Module):
             ))
         self.vprint(f'returning exc shape, pre-expanded dims: {exc.shape}')
         return jnp.expand_dims(exc, -1)
+    
+
+
+def make_xcfunc(level, x_net_path, c_net_path, configfile = 'network.config', 
+                xdsfile = 'xc.eqx', cdsfile = 'xc.eqx', savepath = None):
+    '''
+    Constructs the combined :xcquinox.xc.eXC: object from previously-created and separate :xcquinox.net.eX: and :xquinox.net.eC: objects
+
+    :param level: one of ['GGA', 'MGGA', 'NONLOCAL', 'NL'], indicating the desired rung of Jacob's Ladder. NONLOCAL = NL
+    :type level: str
+    :param x_net_path: Location of the saved exchange network. Must have a {configfile}.pkl parameter file within.
+    :type x_net_path: str
+    :param c_net_path: Location of the saved correlation network. Must have a {configfile}.pkl parameter file within.
+    :type c_net_path: str
+    :param configfile: Name for the configuration file, needed when reading in the network to re-generate the same structure, defaults to 'network.config'
+    :type configfile: str, optional
+    :param xdsfile: Name for the exchange network file, needed when reading in the network overwrite generated random weights, defaults to 'xc.eqx'
+    :type xdsfile: str, optional
+    :param cdsfile: Name for the correlation network file, needed when reading in the network overwrite generated random weights, defaults to 'xc.eqx'
+    :type cdsfile: str, optional
+    :param savepath: Location to save the generated network and associated config file, defaults to None
+    :type savepath: str, optional
+    :return: The resulting exchange-correlation functional.
+    :rtype: :xcquinox.xc.eXC:
+
+    '''
+    level_dict = {'GGA':2, 'MGGA':3, 'NONLOCAL':4, 'NL':4}
+    try:
+        with open(os.path.join(x_net_path, configfile+'.pkl'), 'rb') as f:
+            xparams = pickle.load(f)
+        with open(os.path.join(c_net_path, configfile+'.pkl'), 'rb') as f:
+            cparams = pickle.load(f)
+    except:
+        print('BOTH exchange and correlation networks require a network.config.pkl file to generate the XC functional object.')
+        raise
+    #create the network to generate the descriptors for saving
+    xnet = get_net(xorc='X', level=level, net_path = x_net_path)
+    cnet = get_net(xorc='C', level=level, net_path = c_net_path)
+
+    if xdsfile:
+        xnet = eqx.tree_deserialise_leaves(os.path.join(x_net_path, xdsfile), xnet)
+    if cdsfile:
+        cnet = eqx.tree_deserialise_leaves(os.path.join(c_net_path, cdsfile), cnet)
+
+    xc = eXC(grid_models = [xnet, cnet], heg_mult = True, level = level_dict[level.upper()])
+
+    if savepath:
+        try:
+            os.makedirs(savepath)
+        except Exception as e:
+            print(e)
+            print(f'Exception raised in creating {savepath}.')
+        with open(os.path.join(savepath, 'x'+configfile+'.pkl'), 'wb') as f:
+            pickle.dump(xparams, f)
+        with open(os.path.join(savepath, 'c'+configfile+'.pkl'), 'wb') as f:
+            pickle.dump(cparams, f)
+        eqx.tree_serialise_leaves(os.path.join(savepath, 'xc.eqx'), xc)
+    return xc
+
+def get_xcfunc(level, xc_net_path, configfile = 'network.config', xcdsfile = 'xc.eqx'):
+    '''
+    Retrieves an XC functional object based on configuration files in given directory.
+
+    :param level: one of ['GGA', 'MGGA', 'NONLOCAL', 'NL'], indicating the desired rung of Jacob's Ladder. NONLOCAL = NL
+    :type level: str
+    :param xc_net_path: Location of the saved functional. Must have BOTH a 'x'+{configfile}+'.pkl' and 'c'+{configfile}+'.pkl' parameter files within.
+    :type xc_net_path: str
+    :param configfile: Base name for the configuration files to be read in, defaults to 'network.config'
+    :type configfile: str, optional
+    :param xcdsfile: If present, the network weights will be overwritten by what's present in this file, defaults to 'xc.eqx'
+    :type xcdsfile: str, optional
+    :return: The loaded functional
+    :rtype: :xcquinox.xc.eXC:
+    '''
+    level_dict = {'GGA':2, 'MGGA':3, 'NONLOCAL':4, 'NL':4}
+    try:
+        with open(os.path.join(xc_net_path, 'x'+configfile+'.pkl'), 'rb') as f:
+            xparams = pickle.load(f)
+        with open(os.path.join(xc_net_path, 'c'+configfile+'.pkl'), 'rb') as f:
+            cparams = pickle.load(f)
+    except:
+        print('Error in opening separate exchange/correlation configuration files. Both must be present to re-create the network architecture.')
+        raise
+
+    #create the network to generate the descriptors for saving
+    xnet = get_net(xorc='X', level=level, net_path = xc_net_path, configfile='x'+configfile, netfile=None)
+    cnet = get_net(xorc='C', level=level, net_path = xc_net_path, configfile='c'+configfile, netfile=None)
+
+    xc = eXC(grid_models = [xnet, cnet], heg_mult = True, level = level_dict[level.upper()])
+    if xcdsfile:
+        xc = eqx.tree_deserialise_leaves(os.path.join(xc_net_path, xcdsfile), xc)
+
+    return xc
