@@ -192,7 +192,7 @@ if __name__ == '__main__':
     pargs = parser.parse_args()
 
     if pargs.pretrain_net_path:
-        localnet = xce.net.get_net(xorc = pargs.pretrain_net,
+        localnet, params = xce.net.get_net(xorc = pargs.pretrain_net,
                                    level = pargs.pretrain_level,
                                    net_path = pargs.pretrain_net_path
                                    )
@@ -279,14 +279,14 @@ if __name__ == '__main__':
 
     trainer = xce.train.xcTrainer(model=localnet, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
 
-    if localnet.use:
+    if params['use']:
         if localnet.spin_scaling:
             if len(tdrho.shape) == 3:
-                inp = [tdrho[:, :, localnet.use]]
+                inp = [tdrho[:, :, params['use']]]
             else:
-                inp = [tdrho[:, localnet.use]]
+                inp = [tdrho[:, params['use']]]
         else:
-            inp = [tdrho[:, localnet.use]]
+            inp = [tdrho[:, params['use']]]
     else:
         inp = [tdrho]
     print(f'inp[0].shape = {inp[0].shape}')

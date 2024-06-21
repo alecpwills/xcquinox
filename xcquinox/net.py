@@ -359,4 +359,4 @@ def get_net(xorc, level, net_path, configfile='network.config', netfile='xc.eqx'
                        spin_scaling = ss, lob = lob, ueg_limit = ueg, random_seed = seed, configfile=configfile)
     if netfile:
         net = eqx.tree_deserialise_leaves(os.path.join(net_path, netfile), net)
-    return net
+    return net, params

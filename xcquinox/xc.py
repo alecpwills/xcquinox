@@ -724,8 +724,8 @@ def make_xcfunc(level, x_net_path, c_net_path, configfile = 'network.config',
         print('BOTH exchange and correlation networks require a network.config.pkl file to generate the XC functional object.')
         raise
     #create the network to generate the descriptors for saving
-    xnet = get_net(xorc='X', level=level, net_path = x_net_path)
-    cnet = get_net(xorc='C', level=level, net_path = c_net_path)
+    xnet, xparams = get_net(xorc='X', level=level, net_path = x_net_path)
+    cnet, cparams = get_net(xorc='C', level=level, net_path = c_net_path)
 
     if xdsfile:
         xnet = eqx.tree_deserialise_leaves(os.path.join(x_net_path, xdsfile), xnet)
@@ -773,8 +773,8 @@ def get_xcfunc(level, xc_net_path, configfile = 'network.config', xcdsfile = 'xc
         raise
 
     #create the network to generate the descriptors for saving
-    xnet = get_net(xorc='X', level=level, net_path = xc_net_path, configfile='x'+configfile, netfile=None)
-    cnet = get_net(xorc='C', level=level, net_path = xc_net_path, configfile='c'+configfile, netfile=None)
+    xnet, xparams = get_net(xorc='X', level=level, net_path = xc_net_path, configfile='x'+configfile, netfile=None)
+    cnet, cparams = get_net(xorc='C', level=level, net_path = xc_net_path, configfile='c'+configfile, netfile=None)
 
     xc = eXC(grid_models = [xnet, cnet], heg_mult = True, level = level_dict[level.upper()])
     if xcdsfile:
