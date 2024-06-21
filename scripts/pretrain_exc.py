@@ -14,7 +14,10 @@ os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
 
 parser = argparse.ArgumentParser(description='Pre-train a network-based xc functional, for further optimization')
 parser.add_argument('--pretrain_level', action='store', type=str, choices=['GGA','MGGA','NONLOCAL'], help='The level of network to pre-train, i.e. GGA, MGGA, or nonlocal')
+parser.add_argument('--pretrain_net_path', action='store', type=str, default='', help='The location of the network to load (if loading one), for get_net')
 parser.add_argument('--pretrain_net', action='store', type=str, choices=['x','c'], help='Specify whether to optimize the exchange network or correlation network, via "x" or "c"')
+parser.add_argument('--pretrain_lob', action='store', type=float, default=None, help='If specified and net_path is not, creates network using this LOB')
+parser.add_argument('--pretrain_ueg', action='store', type=float, default=None, help='If specified and net_path is not, creates network using this flag for HEG scaling')
 parser.add_argument('--n_hidden', action='store', type=int, default=16, help='The number of hidden nodes in a given layer for the network')
 parser.add_argument('--depth', action='store', type=int, default=3, help='The number of layers in the MLP for the network')
 parser.add_argument('--n_input', action='store', type=int, default=2, help='The number of inputs to the network you are generating.')
@@ -188,21 +191,22 @@ if __name__ == '__main__':
 
     pargs = parser.parse_args()
 
-    if pargs.pretrain_net == 'x':
-        localnet = xce.net.eX(n_input = pargs.n_input,
-                              n_hidden = pargs.n_hidden,
-                              depth = pargs.depth,
-                              use = pargs.use,
-                              lob = x_lob_level_dict[pargs.pretrain_level],
-                              ueg_limit = True,
-                              spin_scaling=pargs.spin_scaling)
+    if pargs.pretrain_net_path:
+        localnet = xce.net.get_net(xorc = pargs.pretrain_net,
+                                   level = pargs.pretrain_level,
+                                   net_path = pargs.pretrain_net_path
+                                   )
     else:
-        localnet = xce.net.eC(n_input = pargs.n_input,
-                              n_hidden = pargs.n_hidden,
-                              depth = pargs.depth,
-                              use = pargs.use,
-                              ueg_limit = True,
-                              spin_scaling=pargs.spin_scaling)
+        localnet, _ = xce.net.make_net(xorc = pargs.pretrain_net,
+                                    level = pargs.pretrain_level,
+                                    depth = pargs.depth,
+                                    nhidden = pargs.n_hidden,
+                                    ninput = pargs.n_input,
+                                    use = pargs.use,
+                                    spin_scaling = pargs.spin_scaling,
+                                    lob = pargs.pretrain_lob,
+                                    ueg_limit = pargs.pretrain_ueg
+        )
         
     ueg = xce.xc.LDA_X()
     xc = xce.xc.eXC(grid_models=[localnet], heg_mult=True,
@@ -275,14 +279,14 @@ if __name__ == '__main__':
 
     trainer = xce.train.xcTrainer(model=localnet, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
 
-    if pargs.use:
+    if localnet.use:
         if localnet.spin_scaling:
             if len(tdrho.shape) == 3:
-                inp = [tdrho[:, :, pargs.use]]
+                inp = [tdrho[:, :, localnet.use]]
             else:
-                inp = [tdrho[:, pargs.use]]
+                inp = [tdrho[:, localnet.use]]
         else:
-            inp = [tdrho[:, pargs.use]]
+            inp = [tdrho[:, localnet.use]]
     else:
         inp = [tdrho]
     print(f'inp[0].shape = {inp[0].shape}')
