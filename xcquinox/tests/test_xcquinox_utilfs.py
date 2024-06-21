@@ -32,7 +32,7 @@ def test_make_net():
 def test_get_net():
     xnet, xp = xce.net.make_net('X', 'GGA', 3, 16, random_seed = 12345)
 
-    loadx = xce.net.get_net('X', 'GGA', net_path='./testmakenet/x')
+    loadx, xparams = xce.net.get_net('X', 'GGA', net_path='./testmakenet/x')
 
     for idx, layer in enumerate(loadx.net.layers):
         assert jnp.sum(layer.weight - xnet.net.layers[idx].weight) == 0
