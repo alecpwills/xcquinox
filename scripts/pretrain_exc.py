@@ -13,7 +13,7 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
 
 parser = argparse.ArgumentParser(description='Pre-train a network-based xc functional, for further optimization')
-parser.add_argument('--pretrain_level', action='store', type=str, choices=['GGA','MGGA','NONLOCAL'], help='The level of network to pre-train, i.e. GGA, MGGA, or nonlocal')
+parser.add_argument('--pretrain_level', action='store', type=str, choices=['GGA','MGGA','NONLOCAL', 'NL'], help='The level of network to pre-train, i.e. GGA, MGGA, or nonlocal')
 parser.add_argument('--pretrain_net_path', action='store', type=str, default='', help='The location of the network to load (if loading one), for get_net')
 parser.add_argument('--pretrain_net', action='store', type=str, choices=['x','c'], help='Specify whether to optimize the exchange network or correlation network, via "x" or "c"')
 parser.add_argument('--pretrain_lob', action='store', type=float, default=None, help='If specified and net_path is not, creates network using this LOB')
@@ -166,9 +166,9 @@ def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None):
         tdrho = tdrho[:, rho_filt, :]
         tFxc = jnp.array(fxc)[rho_filt]
     return tdrho, tFxc
-level_dict = {'GGA':2, 'MGGA':3, 'NONLOCAL':4}
+level_dict = {'GGA':2, 'MGGA':3, 'NONLOCAL':4, 'NL':4}
 
-x_lob_level_dict = {'GGA': 1.804, 'MGGA': 1.174, 'NONLOCAL': 1.174}
+x_lob_level_dict = {'GGA': 1.804, 'MGGA': 1.174, 'NONLOCAL': 1.174, 'NL': 1.174}
 
 class PT_E_Loss(eqx.Module):
 
