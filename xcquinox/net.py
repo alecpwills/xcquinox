@@ -358,5 +358,18 @@ def get_net(xorc, level, net_path, configfile='network.config', netfile='xc.eqx'
     net, _ = make_net(xorc=xorc, level=level, depth=depth, nhidden=nodes, ninput=inp, use=use,
                        spin_scaling = ss, lob = lob, ueg_limit = ueg, random_seed = seed, configfile=configfile)
     if netfile:
-        net = eqx.tree_deserialise_leaves(os.path.join(net_path, netfile), net)
+        #make sure the netfile is actually there
+        netfs = [i for i in os.listdir(net_path) if netfile in i]
+        #if multiple returned, there was training to take place -- sort and select last checkpoint
+        if len(netfs) == 1:
+            print('SINGLE NETFILE MATCH FOUND. DESERIALIZING...')
+            net = eqx.tree_deserialise_leaves(os.path.join(net_path, netfs[0]), net)
+        elif len(netfs) > 1:
+            print('NETFILE MATCHES FOUND -- MULTIPLE. SELECTING LAST ONE.')
+            netf = sorted(netfs, key=lambda x: int(x.split('.')[-1]))[-1]
+            net = eqx.tree_deserialise_leaves(os.path.join(net_path, netf), net)
+        else:
+            print('NETFILE SPECIFIED BUT NO MATCHING FILE FOUND.')
+
+
     return net, params
