@@ -1,0 +1,30 @@
+#!/bin/bash
+#SBATCH --job-name=ptscan_gga
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=joshua.franklin@stonybrook.edu
+#SBATCH --output=gga.txt
+#SBATCH --ntasks-per-node=1
+#SBATCH --nodes=1
+#SBATCH --time=168:00:00
+#SBATCH -p extended-40core
+
+cd $HOME
+source .bashrc
+
+source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+
+conda init bash
+
+conda activate pyscfad
+
+WORKDIR=/gpfs/scratch/jofranklin/xcquinox/scan4
+cd $WORKDIR
+
+# Process GGA directories
+for dir in *_gga/
+do
+    cd $dir
+    bash ./run_script.sh 2>&1 | tee output.out
+    cd ../
+done
+
