@@ -647,7 +647,7 @@ if __name__ == '__main__':
     parser.add_argument('--xc_c_ninput', type=int, action='store', help='Number of inputs the correlation network expects')
     parser.add_argument('--xc_c_use', nargs='+', type=int, action='store', default=[], help='Specify the desired indices for the correlation network to actually use, if not the full range of descriptors.')
     parser.add_argument('--xc_xc_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange-correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. xc_3_16_mgga)')
-    parser.add_argument('--xc_xc_ninput', type=int, action='store', help='Number of inputs the exchange-correlation network expects')
+    parser.add_argument('--xc_xc_level', type=str, action='store', default='MGGA', help='Rung of Jacobs Ladder the loaded XC functional rests on', choices=["GGA","MGGA","NONLOCAL","NL"])
     parser.add_argument('--xc_verbose', default=False, action='store_true', help='If flagged, sets verbosity on the network.')
     args = parser.parse_args()
     setattr(__config__, 'cubegen_box_margin', args.cmargin)
@@ -687,16 +687,21 @@ if __name__ == '__main__':
     CUSTOM_XC = False
     xcnet = None
     if args.xc_x_net_path:
-        'xcquinox network exchange path provided, attempting read-in...'
+        print('xcquinox network exchange path provided, attempting read-in...')
         xnet, xlevel = loadnet_from_strucdir(args.xc_x_net_path, args.xc_x_ninput, args.xc_x_use)
         gridmodels.append(xnet)
         CUSTOM_XC = True
     if args.xc_c_net_path:
-        'xcquinox network exchange path provided, attempting read-in...'
+        print('xcquinox network correlation path provided, attempting read-in...')
         cnet, clevel = loadnet_from_strucdir(args.xc_c_net_path, args.xc_c_ninput, args.xc_c_use)
         gridmodels.append(cnet)
         CUSTOM_XC = True
-    if args.xc_x_net_path or args.xc_c_net_path:
+    if args.xc_xc_net_path:
+        print('xcquinox network exchange-correlation path provided, attempting read-in...')
+        xcnet = xce.xc.get_xcfunc(args.xc_xc_level,
+                               args.xc_xc_net_path)
+        CUSTOM_XC = True
+    elif args.xc_x_net_path or args.xc_c_net_path:
         xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel, verbose=args.xc_verbose)
 
     input_xc = args.xc if not CUSTOM_XC else 'custom_xc'
