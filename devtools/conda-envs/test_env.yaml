@@ -16,5 +16,5 @@ dependencies:
   - psutil
   - pip:
     - pypatch
-    - pyscfad
+    - pyscfad==0.1.4
     - mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main

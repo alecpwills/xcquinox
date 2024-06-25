@@ -3,7 +3,7 @@ pytest
 jax[cpu]
 equinox
 ase==3.22.1
-pyscfad
+pyscfad==0.1.4
 optax
 mldftdat @ git+https://github.com/alecpwills/xcquinox-cider@main
 psutil
