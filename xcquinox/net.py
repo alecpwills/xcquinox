@@ -366,7 +366,8 @@ def get_net(xorc, level, net_path, configfile='network.config', netfile='xc.eqx'
             net = eqx.tree_deserialise_leaves(os.path.join(net_path, netfs[0]), net)
         elif len(netfs) > 1:
             print('NETFILE MATCHES FOUND -- MULTIPLE. SELECTING LAST ONE.')
-            netf = sorted(netfs, key=lambda x: int(x.split('.')[-1]))[-1]
+            netf = sorted(netfs, key=lambda x: int(x.split('.')[-1]))[-2]
+            print('ATTEMPTING TO DESERIALIZE {}'.format(netf))
             net = eqx.tree_deserialise_leaves(os.path.join(net_path, netf), net)
         else:
             print('NETFILE SPECIFIED BUT NO MATCHING FILE FOUND.')
