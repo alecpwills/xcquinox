@@ -395,6 +395,7 @@ if __name__ == '__main__':
     parser.add_argument('--xc_c_ninput', type=int, action='store', help='Number of inputs the correlation network expects')
     parser.add_argument('--xc_c_use', nargs='+', type=int, action='store', default=[], help='Specify the desired indices for the correlation network to actually use, if not the full range of descriptors.')
     parser.add_argument('--xc_xc_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange-correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. xc_3_16_mgga)')
+    parser.add_argument('--xc_xc_level', type=str, default='MGGA', action='store', choices=['GGA','MGGA','NONLOCAL','NL'], help='Type of network being loaded (GGA,MGGA,NONLOCAL,NL)')
     parser.add_argument('--xc_xc_ninput', type=int, action='store', help='Number of inputs the exchange-correlation network expects')
     parser.add_argument('--xc_verbose', default=False, action='store_true', help='If flagged, sets verbosity on the network.')
     parser.add_argument('--xc_full', default=False, action='store_true', help='If flagged, will deserialize a saved XC object, as opposed to individual X/C MLP networks.')
@@ -457,8 +458,19 @@ if __name__ == '__main__':
         cnet, clevel, loadnet = loadnet_from_strucdir(args.xc_c_net_path, args.xc_c_ninput, args.xc_c_use, xc_full=args.xc_full)
         gridmodels.append(cnet)
         CUSTOM_XC = True
-    if args.xc_x_net_path or args.xc_c_net_path:
-        xcnet = xce.xc.eXC(grid_models=gridmodels, heg_mult=True, level=xlevel, verbose=args.xc_verbose)
+    if args.xc_xc_net_path:
+        print('xcquinox network exchange-correlation path provided, attempting read-in...')
+        if 'xc.eqx' in args.xc_xc_net_path:
+            xcdsf = args.xc_xc_net_path.split('/')[-1]
+            netpath = '/'.join(args.xc_xc_net_path.split('/')[:-1])
+            print('Loading in xc checkpoint from: netpath={}, file={}'.format(netpath, xcdsf))
+        else:
+            xcdsf = ''
+            netpath = args.xc_xc_net_path
+            print('Loading in xc checkpoint from: netpath={}, file={}'.format(netpath, xcdsf))
+        xcnet = xce.xc.get_xcfunc(args.xc_xc_level,
+                               netpath, xcdsfile = xcdsf)
+        CUSTOM_XC = True
     if args.xc_full and args.xc_xc_net_path:
         assert args.xc_x_net_path, "Must specify location of exchange network to generate template correctly"
         assert args.xc_c_net_path, "Must specify location of correlation network to generate template correctly"

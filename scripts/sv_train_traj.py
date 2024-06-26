@@ -15,6 +15,7 @@ if __name__ == '__main__':
     parser.add_argument('--restart_script', type=str, action='store', default = 'run_script_restart.sh', help='The re-start script that calls calculate_traj.py with a new index')
     parser.add_argument('--restart_copy_script', type=str, action='store', default = 'run_script_restart_rep.sh', help='The re-start script that calls calculate_traj.py with a new index')
     parser.add_argument('--replace_str', type=str, action='store', default='CHECKPOINTPATH', help='The string in the restart script to replace with the last calculated index')
+    parser.add_argument('--xc_config_dir', type=str, action='store', default='', help='The location of the network.config* files for use in re-creating the checkpoint network.')
     parser.add_argument('--cutoff_epochs', type=int, action='store', default=200, help='The number of unique epochs the supervisor will allow to occur.')
     parser.add_argument('--cutoff_memory', type=float, action='store', default=0.8, help='The fraction of total memory the program will allow to accumulate before forcing a restart')
     args = parser.parse_args()
@@ -87,6 +88,8 @@ if __name__ == '__main__':
             os.mkdir(f'../run{RESTARTS}')
             shutil.copy(args.restart_script, f'../run{RESTARTS}')
             shutil.copy(chkpts[-1], f'../run{RESTARTS}')
+            shutil.copy(os.path.join(args.xc_config_dir, 'cnetwork.config.pkl'), f'../run{RESTARTS}')
+            shutil.copy(os.path.join(args.xc_config_dir, 'xnetwork.config.pkl'), f'../run{RESTARTS}')
             #copy restart to new file to replace index of
             os.chdir(f'../run{RESTARTS}')
             with open(progfile, 'w') as f:

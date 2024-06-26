@@ -1,27 +1,8 @@
-Getting Started
-===============
-
-This package is a re-implementation of the `xc-diff`_ network architecture, originally implemented in PyTorch as a stand-alone SCF framework for Kohn-Sham density functional theory.
-
-.. _xc-diff: https://journals.aps.org/prb/abstract/10.1103/PhysRevB.104.L161109
-
-The architecture has been modified and translated to `JAX`-compliant methods and objects, based on the `equinox`_ library.
-
-.. _equinox: https://github.com/patrick-kidger/equinox
-
-This package is designed to work well with the `pyscfad`_ package, `an end-to-end autodifferentiable version of pyscf`_ written with JAX functions.
-
-.. _pyscfad: https://github.com/fishjojo/pyscfad
-.. _an end-to-end autodifferentiable version of pyscf: https://pubs.aip.org/aip/jcp/article/157/20/204801/2842264/Differentiable-quantum-chemistry-with-PySCF-for
-
-Example
-=======
-
-The following example is intended to work through the directories located in `xcquinox/examples`, to go from generating the exchange and correlation networks to optimization and usage of them for PySCF-AD calculations.
+# Examples
 
 This directory and the sub-directories within will walk you through the process of taking randomly initialized exchange/correlation networks (MGGA and non-local ones) through the pre-training and optimization processes, and then using these networks to do a calculation in PySCF-AD.
 
-In the following examples, some Python scripts have a variable `XCQUINOX_EXAMPLE_DIR` that should be set to point to the `xcquinox/examples` directory that comes with the package.
+In the following examples, each Python script has a variable `XCQUINOX_EXAMPLE_DIR` that should be set to point to the `xcquinox/examples` directory that comes with the package.
 
 # 00.generation
 

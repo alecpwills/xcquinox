@@ -1,0 +1,1 @@
+python ../../scripts/sv_calculate_traj.py 2>&1 | tee output.out
