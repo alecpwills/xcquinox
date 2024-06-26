@@ -1,7 +1,5 @@
 Welcome to xcquinox's documentation!
 =========================================================
-Getting Started
-===============
 
 This package is a re-implementation of the `xc-diff`_ network architecture, originally implemented in PyTorch as a stand-alone SCF framework for Kohn-Sham density functional theory.
 
@@ -15,6 +13,8 @@ This package is designed to work well with the `pyscfad`_ package, `an end-to-en
 
 .. _pyscfad: https://github.com/fishjojo/pyscfad
 .. _an end-to-end autodifferentiable version of pyscf: https://pubs.aip.org/aip/jcp/article/157/20/204801/2842264/Differentiable-quantum-chemistry-with-PySCF-for
+
+Users are encouraged to work through the example walkthrough present in the `examples` directory. This walkthrough is also in the `Getting Started` page.
 
 *This is a work in progress.*
 
