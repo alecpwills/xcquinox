@@ -185,6 +185,24 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
     owc = kwargs.get('owcharge', False)
     charge = atoms.info.get('charge', GCHARGE)
     ATOMGRID = atoms.info.get('grid_level', None)
+    SKIPLEN = kwargs.get('skip_length', 0)
+    if len(pos) >= SKIPLEN:
+        print("===========================")
+        print("Option Summary: {} ---> {}".format(atoms.symbols, atoms.get_chemical_formula()))
+        print("Spin: {}, Polarized: {}, Charge: {}".format(sping, pol, charge))
+        print("Grid: {}".format(ATOMGRID))
+        print("LENGTH OF ATOM LIST IN MOLECULE = {}/GREATER OR EQUAL SKIP_LENGTH = {}".format(len(pos), SKIPLEN))
+        print("===========================")
+        with open('progress','a') as progfile:
+            progfile.write('{}\t{}\t{}\t{}\t{}\t{}\n'.format(idx, atoms.symbols, 'SKIPPED','SKIPPED', 'SKIPPED', 'SKIPPED'))
+        result.calc = SinglePointCalculator(result)
+        result.calc.results = {'energy': None,
+                                'e_hf': None,
+                                'e_ccsd': None,
+                                'e_ccsdt':None}
+        return result
+
+
     print("===========================")
     print("Option Summary: {} ---> {}".format(atoms.symbols, atoms.get_chemical_formula()))
     print("Spin: {}, Polarized: {}, Charge: {}".format(sping, pol, charge))
@@ -651,6 +669,7 @@ if __name__ == '__main__':
     parser.add_argument('--xc_xc_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange-correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. xc_3_16_mgga)')
     parser.add_argument('--xc_xc_level', type=str, action='store', default='MGGA', help='Rung of Jacobs Ladder the loaded XC functional rests on', choices=["GGA","MGGA","NONLOCAL","NL"])
     parser.add_argument('--xc_verbose', default=False, action='store_true', help='If flagged, sets verbosity on the network.')
+    parser.add_argument('--skip_length', action='store', type=int, default=0, help='If flagged, will skip calculating molecules of this size or greater due to memory constraints.', default=0)
     args = parser.parse_args()
     setattr(__config__, 'cubegen_box_margin', args.cmargin)
     GCHARGE = args.charge
@@ -718,40 +737,24 @@ if __name__ == '__main__':
         print('beginning new timing file')
         with open('timing','w') as tfile:
             tfile.write('#idx\tatoms.symbols\tcalc\ttime (s)\n')
-    if not args.serial:
-        results = calculate_distributed(atoms, args.nworkers, args.basis,
-                                        margin=args.cmargin,
-                                        XC=input_xc,
-                                        PBC=args.pbc,
-                                        L=args.L,
-                                        df=args.df,
-                                        pseudo=args.pseudo,
-                                        rerun=args.rerun,
-                                        owcharge=args.overwrite_gcharge,
-                                        forcepol = args.forcepol,
-                                        testgen = args.testgen,
-                                        gridlevel = args.mf_grid_level,
-                                        atomize = args.atomize,
-                                        custom_xc = CUSTOM_XC,
-                                        custom_xc_net = xcnet)
-    else:
-        print("SERIAL CALCULATIONS")
-        results = [do_ccsdt(ia, atoms[ia], basis=args.basis,
-                                        margin=args.cmargin,
-                                        XC=input_xc,
-                                        PBC=args.pbc,
-                                        L=args.L,
-                                        df=args.df,
-                                        pseudo=args.pseudo,
-                                        rerun=args.rerun,
-                                        owcharge=args.overwrite_gcharge,
-                                        restart = args.restart,
-                                        forcepol = args.forcepol,
-                                        testgen = args.testgen,
-                                        gridlevel = args.mf_grid_level,
-                                        atomize = args.atomize,
-                                        custom_xc = CUSTOM_XC,
-                                        custom_xc_net = xcnet) for ia in range(len(atoms)) if ia >= args.startind and ia < args.endind]
+    print("SERIAL CALCULATIONS")
+    results = [do_ccsdt(ia, atoms[ia], basis=args.basis,
+                                    margin=args.cmargin,
+                                    XC=input_xc,
+                                    PBC=args.pbc,
+                                    L=args.L,
+                                    df=args.df,
+                                    pseudo=args.pseudo,
+                                    rerun=args.rerun,
+                                    owcharge=args.overwrite_gcharge,
+                                    restart = args.restart,
+                                    forcepol = args.forcepol,
+                                    testgen = args.testgen,
+                                    gridlevel = args.mf_grid_level,
+                                    atomize = args.atomize,
+                                    custom_xc = CUSTOM_XC,
+                                    custom_xc_net = xcnet,
+                                    skip_length = args.skip_length) for ia in range(len(atoms)) if ia >= args.startind and ia < args.endind]
 
     results_path = 'results.traj'
     write(results_path, results)

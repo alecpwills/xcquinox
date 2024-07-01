@@ -60,40 +60,6 @@ def get_rhos(rho, spin):
         tau_a = tau_b = tau*0.5
     return rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab, tau_a, tau_b
     
-def get_data_synth(xcmodel, xc_func, n=100):
-    def get_rho(s, a):
-        c0 = 2*(3*np.pi**2)**(1/3)
-        c1 = 3/10*(3*np.pi**2)**(2/3)
-        gamma = c0*s
-        tau = c1*a+c0**2*s**2/8
-        rho = np.zeros([len(a),6])
-        rho[:, 1] = gamma
-        rho[:,-1] = tau
-        rho[:, 0] = 1
-        return rho
-    
-    s_grid = jnp.concatenate([[0],jnp.exp(jnp.linspace(-10,4,n))])
-    rho = []
-    for s in s_grid:
-        if 'MGGA' in xc_func:
-            a_grid = jnp.concatenate([jnp.exp(jnp.linspace(jnp.log((s/100)+1e-8),8,n))])
-        else:
-            a_grid = jnp.array([0])
-        rho.append(get_rho(s, a_grid))
-        
-    rho = jnp.concatenate(rho)
-    
-    fxc =  dft.numint.libxc.eval_xc(xc_func,rho.T, spin=0)[0]/dft.numint.libxc.eval_xc('LDA_X',rho.T, spin=0)[0] -1
- 
-    rho = jnp.asarray(rho)
-    
-    tdrho = xcmodel.get_descriptors(rho[:,0]/2,rho[:,0]/2,(rho[:,1]/2)**2,(rho[:,1]/2)**2,(rho[:,1]/2)**2,rho[:,5]/2,rho[:,5]/2, spin_scaling=True, mf=mf, dm=dm)
-    
-
-
-    tFxc = jnp.array(fxc)
-    return tdrho[0], tFxc
-
 def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None):
     '''
     Gets the exchange or correlation energy density on the grid, given a reference XC functional to use (or a network to evaluate)
