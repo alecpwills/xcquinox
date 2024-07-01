@@ -1,1 +1,1 @@
-python ../../scripts/sv_calculate_traj.py 2>&1 | tee output.out
+python ../../scripts/sv_calculate_traj.py --start_script run_script_local.sh --restart_script run_script_restart_local.sh 2>&1 | tee output.out
