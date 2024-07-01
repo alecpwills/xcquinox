@@ -184,9 +184,11 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         pol=True
     owc = kwargs.get('owcharge', False)
     charge = atoms.info.get('charge', GCHARGE)
+    ATOMGRID = atoms.info.get('grid_level', None)
     print("===========================")
     print("Option Summary: {} ---> {}".format(atoms.symbols, atoms.get_chemical_formula()))
     print("Spin: {}, Polarized: {}, Charge: {}".format(sping, pol, charge))
+    print("Grid: {}".format(ATOMGRID))
     print("===========================")
     if owc:
         if charge != GCHARGE:
@@ -414,7 +416,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
             print("Restart Flagged -- Setting mf.init_guess to chkfile")
             mf.init_guess = '{}_{}.chkpt'.format(idx, atoms.symbols)
 
-        mf.grids.level = kwargs.get('gridlevel', 3)
+        mf.grids.level = ATOMGRID if ATOMGRID else kwargs.get('gridlevel', 3)
         mf.max_cycle = 100
         mf.max_memory = 64000
         mf.grids.build()
@@ -479,7 +481,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         print('Starting kernel calculation complete.')
         # evxc = xce.pyscf.generate_network_eval_xc(mf0, init_dm, kwargs['custom_xc_net'])
         evxc = xce.pyscf.generate_network_eval_xc(mf, init_dm, kwargs['custom_xc_net'])
-        mf.grids.level = kwargs.get('gridlevel', 3)
+        mf.grids.level = ATOMGRID if ATOMGRID else kwargs.get('gridlevel', 3)
         mf.max_cycle = 50
         mf.max_memory = 64000
         print("Running {} calculation".format(kwargs['XC']))

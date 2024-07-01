@@ -232,10 +232,7 @@ if __name__ == '__main__':
 
     selection = [2, 113, 25, 18, 11, 17, 114, 121, 101, 0, 20, 26, 29, 67, 28, 110, 125, 10, 115, 89, 105, 50]
     atoms = [read(pargs.g297_data_path,':')[s] for s in selection]
-    ksr_atoms = atoms
-    if pargs.pretrain_level == 'MGGA':
-        ksr_atoms = ksr_atoms[2:]
-    ksr_atoms = [Atoms('P',info={'spin':3}), Atoms('N', info={'spin':3}), Atoms('H', info={'spin':1}),Atoms('Li', info={'spin':1}), Atoms('O',info={'spin':2}),Atoms('Cl',info={'spin':1}),Atoms('Al',info={'spin':1}), Atoms('S',info={'spin':2})] + ksr_atoms
+    ksr_atoms = [Atoms('P',info={'spin':3}), Atoms('N', info={'spin':3}), Atoms('H', info={'spin':1}),Atoms('Li', info={'spin':1}), Atoms('O',info={'spin':2}),Atoms('Cl',info={'spin':1}),Atoms('Al',info={'spin':1}), Atoms('S',info={'spin':2})] + atoms
 
     mols = [get_mol(atoms) for atoms in ksr_atoms]
     mols = [i for i in mols if len(i.atom) < 8]
