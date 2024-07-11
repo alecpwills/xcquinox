@@ -671,7 +671,7 @@ if __name__ == '__main__':
     parser.add_argument('--xc_xc_net_path', type=str, default='', action='store', help='Path to the trained xcquinox exchange-correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. xc_3_16_mgga)')
     parser.add_argument('--xc_xc_level', type=str, action='store', default='MGGA', help='Rung of Jacobs Ladder the loaded XC functional rests on', choices=["GGA","MGGA","NONLOCAL","NL"])
     parser.add_argument('--xc_verbose', default=False, action='store_true', help='If flagged, sets verbosity on the network.')
-    parser.add_argument('--skip_length', action='store', type=int, default=0, help='If specified, will skip calculating molecules of this size or greater due to memory constraints.')
+    parser.add_argument('--skip_length', action='store', type=int, default=100, help='If specified, will skip calculating molecules of this size or greater due to memory constraints.')
     args = parser.parse_args()
     setattr(__config__, 'cubegen_box_margin', args.cmargin)
     GCHARGE = args.charge
