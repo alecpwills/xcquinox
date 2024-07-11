@@ -392,7 +392,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
 
         write_mycc(idx, atoms, mycc, result, mycc2=mf)
 
-    elif kwargs['XC'].lower() in ['pbe', 'scan']:
+    elif kwargs['XC'].lower() != 'custom_xc':
         print('{} calculation commencing'.format(kwargs['XC']))
             #If pol specified, it's a bool and takes precedence.
         if type(pol) == bool:
