@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --job-name=pbe0_g297
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=alec.wills@stonybrook.edu
+#SBATCH --output=g297_pbe0.txt
+#SBATCH --ntasks-per-node=1
+#SBATCH --nodes=1
+#SBATCH --time=168:00:00
+#SBATCH -p extended-40core
+
+cd $HOME
+source .bashrc
+source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+
+conda init bash
+conda activate pyscfad
+
+WORKDIR=/gpfs/scratch/awills/xcquinox_pt/val/pbe0_xc
+cd $WORKDIR
+
+#python ~/xcquinox/scripts/sv_calculate_traj.py --cutoff_memory 0.95 2>&1 | tee output.out
+bash run_script.sh
