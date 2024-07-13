@@ -77,9 +77,9 @@ class xcTrainer(eqx.Module):
             epoch_loss = 0
             if step == 0 and self.logfile:
                 with open(self.logfile+'.dat', 'w') as f:
-                    f.write('#Epoch\tLoss\n')
+                    f.write('#Epoch\tLoss\tBest\n')
                 with open(self.logfile+'batch.dat', 'w') as f:
-                    f.write('#Epoch\tBatch\tLoss\n')
+                    f.write('#Epoch\tBatch\tLoss\tBest\n')
             if step == 0 and self.do_jit:
                 fmake_step = eqx.filter_jit(self.make_step)
             elif ( (step % self.clear_every) == 0 ) and (step > 0) and self.do_jit:
@@ -87,10 +87,12 @@ class xcTrainer(eqx.Module):
             else:
                 fmake_step = self.make_step
             if step == 0:
+                print('Step = 0: initializing inp_model and inp_opt_state.')
                 inp_model = self.model
+                start_model = self.model
                 inp_opt_state = self.opt_state
             for idx in range(epoch_batch_len):  
-                jax.debug.print('Epoch {} :: Batch {}/{}'.format(step, idx, epoch_batch_len))
+                jax.debug.print('Epoch {} :: Batch {}/{}'.format(step, idx+1, epoch_batch_len))
 
                 #loops over every iterable in loss_input_lists, selecting one batch's input data
                 #assumes separate lists, each having inputs for multiple cases in the training set
@@ -98,7 +100,7 @@ class xcTrainer(eqx.Module):
                 
                 # this_loss = self.loss(inp_model, *loss_inputs).item()                
                 inp_model, inp_opt_state, this_loss = fmake_step(inp_model, inp_opt_state, *loss_inputs) 
-
+                
                 if self.memory_profile:
                     this_loss.block_until_ready()
                     jax.profiler.save_device_memory_profile(f"memory{step}_{idx}.prof")
@@ -106,7 +108,7 @@ class xcTrainer(eqx.Module):
                 jax.debug.print('Batch Loss = {}'.format(this_loss))
                 if self.logfile:
                     with open(self.logfile+'batch.dat', 'a') as f:
-                        f.write(f'{step}\t{idx}\t{this_loss}\n')
+                        f.write(f'{step}\t{idx}\t{this_loss}\t{BEST_LOSS}\n')
                 epoch_loss += this_loss
                 if ( (step % self.clear_every) == 0 ) and ( (step > 0) == 0 ):
                     eqx.clear_caches()
@@ -114,8 +116,12 @@ class xcTrainer(eqx.Module):
                     jax.clear_caches()
 
             if ( (step % self.serialize_every) == 0) and (epoch_loss.item() < BEST_LOSS):
-                eqx.tree_serialise_leaves('xc.eqx.{}'.format(step), inp_model)
+                eqx.tree_serialise_leaves('xc.eqx.{}'.format(step), start_model)
                 BEST_LOSS = epoch_loss.item()
+            #this will persist until next pass
+            #the inp_model output just now is fed into get the loss next time, so if better we want to save this
+            #not the updated one.
+            start_model = inp_model
 
             if ( (step % self.print_every) == 0 ) or (step == self.steps - 1):
                 jax.debug.print(
@@ -128,7 +134,7 @@ class xcTrainer(eqx.Module):
 
             if self.logfile:
                 with open(self.logfile+'.dat', 'a') as f:
-                    f.write(f'{step}\t{this_loss}\n')
+                    f.write(f'{step}\t{this_loss}\t{BEST_LOSS}\n')
 
         return inp_model
 

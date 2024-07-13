@@ -102,7 +102,7 @@ class eXC(eqx.Module):
     verbose: bool
     
     def __init__(self, grid_models=[], heg_mult=True, pw_mult=True,
-                    level = 1, exx_a=None, epsilon=1e-8, debug=False,
+                    level = 1, exx_a=None, epsilon=1e-6, debug=False,
                 nlstart_i = 3, nlend_i = 12, verbose=False):
         """
         __init__ Defines the XC functional
@@ -287,7 +287,11 @@ class eXC(eqx.Module):
         :return: reduced density gradient s
         :rtype: jax.Array
         """
-        l2 = jnp.sqrt(gamma)/(2*(3*np.pi**2)**(1/3)*rho**(4/3)+self.epsilon)
+        l2_1 = jnp.sqrt(gamma)
+        l2_2 = 2*(3*np.pi**2)**(1/3)*rho**(4/3)+self.epsilon
+        l2_nans = (jnp.sum(jnp.isnan(l2_1)), jnp.sum(jnp.isnan(l2_2)))
+        self.vprint(f'l_2 fraction nans: num = {l2_nans[0]}, denom = {l2_nans[1]}')
+        l2 = l2_1 / l2_2
         self.vprint('l_2, descr shape: {}'.format(l2.shape))
         descrnans = jnp.sum(jnp.isnan(l2))
         self.vprint(f'NaNs in descr from self.l_2 = {descrnans}')
@@ -320,7 +324,7 @@ class eXC(eqx.Module):
         self.vprint('l_3, descr shape: {}'.format(l3.shape))
         descrnans = jnp.sum(jnp.isnan(l3))
         self.vprint(f'NaNs in descr from self.l_3 = {descrnans}')
-        return l3
+        return jnp.clip(l3, 0, None)
 
     # Unit-less electrostatic potential
     def l_4(self, rho, nl):
@@ -416,10 +420,29 @@ class eXC(eqx.Module):
         :return: Array of the machine-learning descriptors on the grid
         :rtype: jax.Array
         """
+        self.vprint(f'get_descriptors called. Input stats: min/max')
+        self.vprint(f'rho0_a.min/max: {jnp.min(rho0_a)}, {jnp.max(rho0_a)}')
+        self.vprint(f'rho0_b.min/max: {jnp.min(rho0_b)}, {jnp.max(rho0_b)}')
+        self.vprint(f'gamma_a.min/max: {jnp.min(gamma_a)}, {jnp.max(gamma_a)}')
+        self.vprint(f'gamma_b.min/max: {jnp.min(gamma_b)}, {jnp.max(gamma_b)}')
+        self.vprint(f'gamma_ab.min/max: {jnp.min(gamma_ab)}, {jnp.max(gamma_ab)}')
+        self.vprint(f'tau_a.min/max: {jnp.min(tau_a)}, {jnp.max(tau_a)}')
+        self.vprint(f'tau_b.min/max: {jnp.min(tau_b)}, {jnp.max(tau_b)}')
+        self.vprint(f'get_descriptors called. Input stats: NaNs')
+        self.vprint(f'rho0_a.min/max: {jnp.isnan(rho0_a).sum()}')
+        self.vprint(f'rho0_b.min/max: {jnp.isnan(rho0_b).sum()}')
+        self.vprint(f'gamma_a.min/max: {jnp.isnan(gamma_a).sum()}')
+        self.vprint(f'gamma_b.min/max: {jnp.isnan(gamma_b).sum()}')
+        self.vprint(f'gamma_ab.min/max: {jnp.isnan(gamma_ab).sum()}')
+        self.vprint(f'tau_a.min/max: {jnp.isnan(tau_a).sum()}')
+        self.vprint(f'tau_b.min/max: {jnp.isnan(tau_b).sum()}')
+        self.vprint(f'spin_scaling: {spin_scaling}')
         if not spin_scaling:
             #If no spin-scaling, calculate polarization and use for X1
             zeta = (rho0_a - rho0_b)/(rho0_a + rho0_b + self.epsilon)
             spinscale = 0.5*((1+zeta)**(4/3) + (1-zeta)**(4/3)) # zeta
+            self.vprint(f'not spin_scaling: zeta nans: {jnp.isnan(zeta).sum()}')
+            self.vprint(f'not spin_scaling: spinscale nans: {jnp.isnan(spinscale).sum()}')
 
         if self.level > 0:  #  LDA
             if spin_scaling:
@@ -457,7 +480,9 @@ class eXC(eqx.Module):
                 descr4 = descr4**3/(descr4**2+self.epsilon)
                 self.vprint(f'self.level > 2; descr4a Nans = {jnp.sum(jnp.isnan(descr4a))}')
                 self.vprint(f'self.level > 2; descr4b Nans = {jnp.sum(jnp.isnan(descr4b))}')
-                self.vprint(f'get_descriptors -> self.level > 2 and spin_scaling\ndescr3a.shape={descr4a.shape}, descr3b.shape={descr4b.shape}')
+                self.vprint(f'descr4a.min/max: {jnp.min(descr4a)}, {jnp.max(descr4a)}')
+                self.vprint(f'descr4b.min/max: {jnp.min(descr4b)}, {jnp.max(descr4b)}')
+                self.vprint(f'get_descriptors -> self.level > 2 and spin_scaling\ndescr4a.shape={descr4a.shape}, descr4b.shape={descr4b.shape}')
             else:
                 descr4 = self.l_3(rho0_a + rho0_b, gamma_a + gamma_b + 2*gamma_ab, tau_a + tau_b)
                 descr4 = 2*descr4/((1+zeta)**(5/3) + (1-zeta)**(5/3))
@@ -613,8 +638,10 @@ class eXC(eqx.Module):
                 # print(f"spin_scaling = False; input descr to exc shape: {descr.shape}")
                 exc = grid_model(descr)
                 excnans = jnp.sum(jnp.isnan(exc))
+                self.vprint(10*'=')
                 self.vprint(f'exc.shape, descr with spin_scaling=False -> {exc.shape}')
                 self.vprint(f'NaNs in exc from gm_eval_func, spin_scaling=False -> = {excnans}')
+                self.vprint(10*'=')
 
                 if jnp.ndim(exc) == 2: #If using spin decomposition
                     pw_alpha = self.pw_model(rs_a, jnp.ones_like(rs_a))
@@ -634,9 +661,10 @@ class eXC(eqx.Module):
                 # print(f"spin_scaling = True; input descr to exc shape: {descr.shape}")
                 exc = grid_model(descr)
                 excnans = jnp.sum(jnp.isnan(exc))
+                self.vprint(10*'=')
                 self.vprint(f'exc.shape, descr with spin_scaling=True -> {exc.shape}')
                 self.vprint(f'NaNs in exc from gm_eval_func, spin_scaling=True -> = {excnans}')
-
+                self.vprint(10*'=')
 
                 if self.heg_mult:
                     exc_a += (1 + exc[0])*self.heg_model(2*rho0_a_ueg)*(1-self.exx_a)
@@ -649,22 +677,32 @@ class eXC(eqx.Module):
 
         if self.grid_models:
             self.vprint('Grid models present; looping over separate networks to construct exc')
-            exc_a, exc_b, exc_ab = gm_eval_func(self.grid_models[0], exc_a, exc_b, exc_ab)
-            self.vprint('eval_grid_models gm_eval_func [0] nan summary:')
-            self.vprint('exc_a, exc_b, exc_ab')
-            self.vprint('{}, {}, {}'.format(
-                jnp.sum((jnp.isnan(exc_a))),
-                jnp.sum((jnp.isnan(exc_b))),
-                jnp.sum((jnp.isnan(exc_ab))),                
-                ))
-            exc_a, exc_b, exc_ab = gm_eval_func(self.grid_models[1], exc_a, exc_b, exc_ab) 
-            self.vprint('eval_grid_models gm_eval_func [1] nan summary:')
-            self.vprint('exc_a, exc_b, exc_ab')
-            self.vprint('{}, {}, {}'.format(
-                jnp.sum((jnp.isnan(exc_a))),
-                jnp.sum((jnp.isnan(exc_b))),
-                jnp.sum((jnp.isnan(exc_ab))),                
-                ))
+            for gmidx, gm in enumerate(self.grid_models):
+                exc_a, exc_b, exc_ab = gm_eval_func(gm, exc_a, exc_b, exc_ab)
+                self.vprint('eval_grid_models gm_eval_func [{}] nan summary:'.format(gmidx))
+                self.vprint('exc_a, exc_b, exc_ab')
+                self.vprint('{}, {}, {}'.format(
+                    jnp.sum((jnp.isnan(exc_a))),
+                    jnp.sum((jnp.isnan(exc_b))),
+                    jnp.sum((jnp.isnan(exc_ab))),                
+                    ))
+
+            # exc_a, exc_b, exc_ab = gm_eval_func(self.grid_models[0], exc_a, exc_b, exc_ab)
+            # self.vprint('eval_grid_models gm_eval_func [0] nan summary:')
+            # self.vprint('exc_a, exc_b, exc_ab')
+            # self.vprint('{}, {}, {}'.format(
+            #     jnp.sum((jnp.isnan(exc_a))),
+            #     jnp.sum((jnp.isnan(exc_b))),
+            #     jnp.sum((jnp.isnan(exc_ab))),                
+            #     ))
+            # exc_a, exc_b, exc_ab = gm_eval_func(self.grid_models[1], exc_a, exc_b, exc_ab) 
+            # self.vprint('eval_grid_models gm_eval_func [1] nan summary:')
+            # self.vprint('exc_a, exc_b, exc_ab')
+            # self.vprint('{}, {}, {}'.format(
+            #     jnp.sum((jnp.isnan(exc_a))),
+            #     jnp.sum((jnp.isnan(exc_b))),
+            #     jnp.sum((jnp.isnan(exc_ab))),                
+            #     ))
                    
         else:
             if self.heg_mult:

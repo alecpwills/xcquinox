@@ -113,6 +113,7 @@ class eX(eqx.Module):
         :rtype: jax.Array
         """
         print(f"eX.__call__, rho shape: {rho.shape}")
+        print(f"eX.__call__, rho nans: {jnp.isnan(rho).sum()}")
         if self.spin_scaling:
             squeezed = jnp.squeeze(jax.vmap(jax.vmap(self.net), in_axes=1)(rho[...,self.use])).T
         else:
@@ -220,6 +221,7 @@ class eC(eqx.Module):
         :rtype: jax.Array
         """
         print(f"eC.__call__, rho shape: {rho.shape}")
+        print(f"eC.__call__, rho nans: {jnp.isnan(rho).sum()}")
         if self.spin_scaling:
             squeezed = -jnp.squeeze(jax.vmap(jax.vmap(self.net), in_axes=1)(rho[...,self.use])).T
         else:
