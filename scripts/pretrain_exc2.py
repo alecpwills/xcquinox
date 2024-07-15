@@ -268,21 +268,9 @@ if __name__ == '__main__':
 
     trainer = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
     NLtrainer = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = NL_PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
-    #these are (:, 9), so concatenate along 0
-    inp = jnp.concatenate([d[-2] for d in data], axis=0)
-
-    #can't have negatives, just clip
-    inp = jnp.clip(inp, 0, None)
-    #these are (:,) so doesn't matter
-    ref = jnp.concatenate([d[-1] for d in data], axis=-1)
-
-    inp_nans = jnp.isnan(inp)
-    print(f'inp_nans sum: {inp_nans.sum()}')
-    print(f'rho inp.shape = {inp.shape}')
-    print(f'ref.shape = {ref.shape}')
-
-
-    if pargs.pretrain_level.upper() in ['NONLOCAL', 'NL']:
+    
+    if nlnet:
+        #must train over batches instead of cooncatenation of them
         mfs = [d[2] for d in data]
         dms = [d[3] for d in data]
         aos = [d[4] for d in data]
@@ -291,6 +279,19 @@ if __name__ == '__main__':
         nlinp = [ d[0] for d in data]
         nlref = [d[1] for d in data]
     else:
+        #not non-local, thus the return is just input rho and refexc
+        #these are (:, 9), so concatenate along 0
+        inp = jnp.concatenate([d[-2] for d in data], axis=0)
+
+        #can't have negatives, just clip
+        inp = jnp.clip(inp, 0, None)
+        #these are (:,) so doesn't matter
+        ref = jnp.concatenate([d[-1] for d in data], axis=-1)
+
+        inp_nans = jnp.isnan(inp)
+        print(f'inp_nans sum: {inp_nans.sum()}')
+        print(f'rho inp.shape = {inp.shape}')
+        print(f'ref.shape = {ref.shape}')
         inp = [inp]
     if not nlnet:
         with jax.default_device(cpus[0]):
