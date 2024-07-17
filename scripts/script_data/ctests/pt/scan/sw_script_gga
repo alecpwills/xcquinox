@@ -1,0 +1,26 @@
+#!/bin/bash
+#SBATCH --job-name=pt_scan_gga
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=alec.wills@stonybrook.edu
+#SBATCH --output=pt_gga.txt
+#SBATCH --ntasks-per-node=1
+#SBATCH --nodes=1
+#SBATCH --time=168:00:00
+#SBATCH -p extended-40core
+
+cd $HOME
+source .bashrc
+source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+
+conda init bash
+conda activate pyscfad
+
+WORKDIR=~/xcquinox/scripts/script_data/ctests/pt/scan
+cd $WORKDIR
+
+for dir in *_gga/
+do
+    cd $dir
+    bash run_script.sh 2>&1 | tee output.out
+    cd ../
+done

@@ -134,7 +134,7 @@ class xcTrainer(eqx.Module):
 
             if self.logfile:
                 with open(self.logfile+'.dat', 'a') as f:
-                    f.write(f'{step}\t{this_loss}\t{BEST_LOSS}\n')
+                    f.write(f'{step}\t{epoch_loss}\t{BEST_LOSS}\n')
 
         return inp_model
 

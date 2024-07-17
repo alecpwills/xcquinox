@@ -200,6 +200,22 @@ class NL_PT_E_Loss(eqx.Module):
 
         return jnp.sqrt(jnp.mean(err))
 
+class NL_PT_E_Loss_Loop(eqx.Module):
+
+    def __call__(self, model, inp, mf, dm, ao, gw, coor, ref):
+        num_calcs = len(dms)
+        loss = 0
+        for i in range(num_calcs):
+            pred = model.eval_grid_models(inp[i], mf[i], dm[i], ao[i], gw[i], coor[i])[:, 0]
+            pred2 = jnp.nan_to_num(pred)
+            pred_nans = jnp.isnan(pred)
+            print(f'{i}: Pred stats: pred_nans = {pred_nans.sum()}')
+            print(f'{i}: Pred2 stats: shape={pred2.shape} mean={jnp.mean(pred)}')
+            print(f'{i}: Ref stats: shape={ref[i].shape} mean={jnp.mean(ref[i])}')
+            err = np.mean(pred2-ref[i])**2
+            loss += err
+    
+        return jnp.sqrt(loss)
 
 if __name__ == '__main__':
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
@@ -268,6 +284,7 @@ if __name__ == '__main__':
 
     trainer = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
     NLtrainer = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = NL_PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
+    NLtrainer2 = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = NL_PT_E_Loss_Loop(), do_jit=pargs.do_jit, logfile='ptlog')
     
     if nlnet:
         #must train over batches instead of cooncatenation of them
@@ -298,4 +315,7 @@ if __name__ == '__main__':
             newm = trainer(1, trainer.model, inp, [ref])
     else:
         with jax.default_device(cpus[0]):
-            newm = NLtrainer(len(mfs), NLtrainer.model, nlinp, mfs, dms, aos, gws, coors, nlref)
+            #this updates after each molecule, not the best for accuracy
+            # newm = NLtrainer(len(mfs), NLtrainer.model, nlinp, mfs, dms, aos, gws, coors, nlref)
+            #this updates after all molecules calculated and loss generated
+            newm = NLtrainer2(1, NLtrainer2.model, [nlinp], [mfs], [dms], [aos], [gws], [coors], [nlref])
