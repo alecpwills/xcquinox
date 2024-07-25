@@ -502,7 +502,7 @@ def do_ccsdt(idx,atoms,basis, **kwargs):
         # evxc = xce.pyscf.generate_network_eval_xc(mf0, init_dm, kwargs['custom_xc_net'])
         evxc = xce.pyscf.generate_network_eval_xc(mf, init_dm, kwargs['custom_xc_net'])
         mf.grids.level = ATOMGRID if ATOMGRID else kwargs.get('gridlevel', 3)
-        mf.max_cycle = 50
+        mf.max_cycle = kwargs.get('max_cycle', -1)
         mf.max_memory = 64000
         print("Running {} calculation".format(kwargs['XC']))
         mf.define_xc_(evxc, 'MGGA')
@@ -659,6 +659,7 @@ if __name__ == '__main__':
     parser.add_argument('--testgen', default=False, action='store_true', help='If flagged, calculation stops after mol generation.')
     parser.add_argument('--startind', default=-1, type=int, action='store', help='SERIAL MODE ONLY. If specified, will skip indices in trajectory before given value')
     parser.add_argument('--endind', default=999999999999, type=int, action='store', help='SERIAL MODE ONLY. If specified, will only calculate up to this index')
+    parser.add_argument('--max_cycle', default=-1, type=int, action='store', help='If flagged, determines the number of SCF cycles the custom network will use in calculation')
     parser.add_argument('--atomize', default=False, action='store_true', help='If flagged, will generate predictions for the single-atom components present in trajectory molecules.')
     parser.add_argument('--mf_grid_level', type=int, default=3, action='store', help='Grid level for PySCF(AD) calculation')
     #add arguments for pyscfad network driver
@@ -756,6 +757,7 @@ if __name__ == '__main__':
                                     atomize = args.atomize,
                                     custom_xc = CUSTOM_XC,
                                     custom_xc_net = xcnet,
+                                    max_cycle = args.max_cycle,
                                     skip_length = args.skip_length) for ia in range(len(atoms)) if ia >= args.startind and ia < args.endind]
 
     results_path = 'results.traj'
