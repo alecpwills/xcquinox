@@ -1,4 +1,7 @@
 from pyscf import gto,dft,scf
+from pyscfad import gto as gtoa
+from pyscfad import dft as dfta
+from pyscfad import scf as scfa
 import numpy as np
 import jax.numpy as jnp
 from ase import Atoms
@@ -15,7 +18,7 @@ os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
 parser = argparse.ArgumentParser(description='Pre-train a network-based xc functional, for further optimization')
 parser.add_argument('--pretrain_level', action='store', type=str, choices=['GGA','MGGA','NONLOCAL', 'NL'], help='The level of network to pre-train, i.e. GGA, MGGA, or nonlocal')
 parser.add_argument('--pretrain_net_path', action='store', type=str, default='', help='The location of the network to load (if loading one), for get_net')
-parser.add_argument('--pretrain_net', action='store', type=str, choices=['x','c'], help='Specify whether to optimize the exchange network or correlation network, via "x" or "c"')
+parser.add_argument('--pretrain_net', action='store', type=str, choices=['x','c', 'xc'], help='Specify whether to optimize the exchange network or correlation network, via "x" or "c"')
 parser.add_argument('--pretrain_lob', action='store', type=float, default=None, help='If specified and net_path is not, creates network using this LOB')
 parser.add_argument('--pretrain_ueg', action='store', type=float, default=None, help='If specified and net_path is not, creates network using this flag for HEG scaling')
 parser.add_argument('--n_hidden', action='store', type=int, default=16, help='The number of hidden nodes in a given layer for the network')
@@ -25,6 +28,8 @@ parser.add_argument('--use', nargs='+', type=int, action='store', default=[], he
 parser.add_argument('--pretrain_xc', action='store', type=str, help='Specify which XC functional to optimize against, e.g. PBE0')
 parser.add_argument('--n_steps', action='store', type=int, default=200, help='The number training epochs to go through.')
 parser.add_argument('--do_jit', action='store_true', default=False, help='If flagged, will try to utilize JAX-jitting during training')
+parser.add_argument('--full_calc', action='store_true', default=False, help='If flagged, will use XC network as a driver for a one-shot PySCF-AD calculation to train to total energies')
+parser.add_argument('--ref_calc_dir', action='store', type=str, help='If doing full energy pre-training, will look in this directory for the reference energies from the functional to use as targets')
 parser.add_argument('--g297_data_path', action='store', type=str, default='/home/awills/Documents/Research/xcquinox/scripts/script_data/haunschild_g2/g2_97.traj', help='Location of the data file for use during pre-training')
 parser.add_argument('--debug', action='store_true', help='If flagged, only selects first in the target list for quick debugging purposes.')
 parser.add_argument('--verbose', action='store_true', help='If flagged, activates verbosity flag in the network.')
@@ -91,15 +96,16 @@ def get_rhos2(rho, spin, libxc = False):
         return jnp.stack([rho0_a, rho0_b, gamma_a, gamma_b, gamma_ab, jnp.zeros_like(tau_a), jnp.zeros_like(tau_a), tau_a, tau_b], axis=-1)
 
 
-def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None, nlnet=False):
+def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None, nlnet=False, ret_etot=False):
     print('mol: ', mol.atom)
     try:
         mf = scf.UKS(mol)
     except:
         mf = dft.RKS(mol)
-    mf.xc = 'PBE'
+    mf.xc = xc_func
     mf.grids.level = 1
     mf.kernel()
+    print('{} calc: mf.energy_elec'.format(xc_func), mf.energy_elec())
     ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=2)
     dm = mf.make_rdm1()
     if len(dm.shape) == 2:
@@ -123,7 +129,15 @@ def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None, nlnet=False):
             print('PBE0 detected. Changing correlation to be just PBE')
             xc_func = ',pbe'
         print(xc_func)
-    if localnet.spin_scaling:
+    elif xorc == 'xc':
+        print('Both exchange and correlation contributions. No changes to xc_func required')
+    
+    try:
+        SPINSCALE = localnet.spin_scaling
+    except:
+        print("Unable to access spin scaling parameter, assuming not.")
+        SPINSCALE = False    
+    if SPINSCALE:
         print('spin scaling')
         rho_alpha = mf._numint.eval_rho(mol, ao, dm[0], xctype='metaGGA',hermi=True)
         rho_beta = mf._numint.eval_rho(mol, ao, dm[1], xctype='metaGGA',hermi=True)
@@ -151,6 +165,7 @@ def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None, nlnet=False):
         print(f'rho_a.shape={rho_alpha.shape}, rho_b.shape={rho_beta.shape}')
         print('exc with xc_func = {} = {}'.format(exc, xc_func))
         fxc = exc
+
         rho = jnp.stack([rho_alpha,rho_beta], axis=-1)
 
     dm = jnp.array(mf.make_rdm1())
@@ -163,7 +178,13 @@ def get_data(mol, xcmodel, xc_func, localnet=None, xorc=None, nlnet=False):
     mf.converged=True
     retrho = get_rhos2(rho, spin=1)
     refexc = mf._numint.eval_xc(xc_func,(rho_alpha,rho_beta), spin=1)[0]
-
+    if xorc == 'xc':
+        if ret_etot:
+            refexc = mf.e_tot
+            print(f'Reference E: {refexc}')
+        else:
+            refexc = mf.get_veff().exc
+            print('Reference Exc: {}'.format(refexc))
     print(f'retrho shape: {retrho.shape}')
     print(f'refexc shape: {refexc.shape}')
     if not nlnet:
@@ -216,6 +237,52 @@ class NL_PT_E_Loss_Loop(eqx.Module):
             loss += err
     
         return jnp.sqrt(loss)
+    
+class XC_PT_E_Loss_Loop(eqx.Module):
+
+    def __call__(self, model, inp, mf, dm, ao, gw, coor, ref):
+        num_calcs = len(dms)
+        loss = 0
+        for i in range(num_calcs):
+            print(f'{i}: Input stats: dm.shape = {dm[i].shape}, ao.shape = {ao[i].shape}, gw.shape = {gw[i].shape}')
+            pred = model(dm[i], ao[i], gw[i])
+            print(f'Pred = {pred}/Pred shape = {pred.shape}')
+            print(f'Ref shape = {ref[i].shape}')
+            pred2 = jnp.nan_to_num(pred)
+            pred_nans = jnp.isnan(pred)
+            print(f'{i}: Pred stats: pred_nans = {pred_nans.sum()}')
+            print(f'{i}: Pred2 stats: shape={pred2.shape} mean={jnp.mean(pred)}')
+            print(f'{i}: Input stats: shape={inp[i].shape} mean={jnp.mean(ref[i])}')
+            print(f'{i}: Ref stats: shape={ref[i].shape} mean={jnp.mean(ref[i])}')
+            print(f'{i}: Predicted Energy: {pred2}, Reference Energy: {ref[i]}')
+            err = (pred2-ref[i])**2
+            loss += err
+    
+        return jnp.sqrt(loss)
+
+class XC_PT_ETot_Loss_Loop(eqx.Module):
+
+    def __call__(self, model, inp, mf, dm, ao, gw, coor, ref):
+        num_calcs = len(dm)
+        loss = 0
+        for i in range(num_calcs):
+            this_mol = gtoa.Mole()
+            this_mol.atom = mf[i].mol.atom
+            this_mol.spin = mf[i].mol.spin
+            this_mol.basis = mf[i].mol.basis
+            this_mf = dfta.RKS(this_mol)
+            this_mf.max_cycle = -1
+            this_mf.max_memory = 32000
+            evxc = xce.pyscf.generate_network_eval_xc(this_mf, dm[i], model)
+            this_mf.define_xc_(evxc, 'MGGA')
+            pred = this_mf.kernel()
+            print(f'Pred = {pred}/Pred shape = {pred.shape}')
+            print(f'Ref = {ref[i]}')
+            err = (pred-ref[i])**2
+            loss += err
+    
+        return jnp.sqrt(loss)
+
 
 if __name__ == '__main__':
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
@@ -224,10 +291,13 @@ if __name__ == '__main__':
     pargs = parser.parse_args()
 
     if pargs.pretrain_net_path:
-        localnet, params = xce.net.get_net(xorc = pargs.pretrain_net,
+        if pargs.pretrain_net in ['x', 'c']:
+            localnet, params = xce.net.get_net(xorc = pargs.pretrain_net,
                                    level = pargs.pretrain_level,
                                    net_path = pargs.pretrain_net_path
                                    )
+        else:
+            localnet = xce.xc.get_xcfunc(level=pargs.pretrain_level, xc_net_path = pargs.pretrain_net_path, xcdsfile='')
     else:
         localnet, _ = xce.net.make_net(xorc = pargs.pretrain_net,
                                     level = pargs.pretrain_level,
@@ -241,9 +311,11 @@ if __name__ == '__main__':
         )
         
     ueg = xce.xc.LDA_X()
-    xc = xce.xc.eXC(grid_models=[localnet], heg_mult=True,
-                    level = level_dict[pargs.pretrain_level], verbose=pargs.verbose)
-    
+    if pargs.pretrain_net in ['x', 'c']:
+        xc = xce.xc.eXC(grid_models=[localnet], heg_mult=True,
+                        level = level_dict[pargs.pretrain_level], verbose=pargs.verbose)
+    else:
+        xc = localnet
 
     spins = {
     'Al': 1,
@@ -262,10 +334,17 @@ if __name__ == '__main__':
     'S': 2
 }
 
-    selection = [2, 113, 25, 18, 11, 17, 114, 121, 101, 0, 20, 26, 29, 67, 28, 110, 125, 10, 115, 89, 105, 50]
+    selection = [2, 113, 25, 18, 11, 17, 114, 121, 101, 0, 20, 26, 29, 67, 28, 110, 10, 115, 89, 50]
     atoms = [read(pargs.g297_data_path,':')[s] for s in selection]
+    for idx, sel in enumerate(selection):
+        print(idx, sel, atoms[idx])
+    singles = []
+    syms = []
+    for at in atoms:
+        syms += at.get_chemical_symbols()
+    singles = sorted(list(set(syms)))
     ksr_atoms = [Atoms('P',info={'spin':3}), Atoms('N', info={'spin':3}), Atoms('H', info={'spin':1}),Atoms('Li', info={'spin':1}), Atoms('O',info={'spin':2}),Atoms('Cl',info={'spin':1}),Atoms('Al',info={'spin':1}), Atoms('S',info={'spin':2})] + atoms
-
+    atomized_atomps = singles + atoms
     mols = [get_mol(atoms) for atoms in ksr_atoms]
     mols = [i for i in mols if len(i.atom) < 8]
     for i in mols:
@@ -274,7 +353,16 @@ if __name__ == '__main__':
         mols = mols[:1]
     ref = pargs.pretrain_xc
     nlnet = True if pargs.pretrain_level in ['NONLOCAL', 'NL'] else False
-    data = [get_data(mol, xcmodel=xc, xc_func=ref, localnet=localnet, xorc=pargs.pretrain_net, nlnet=nlnet) for i,mol in enumerate(mols)]
+    xc_pt = True if pargs.pretrain_net == 'xc' else False
+    data_nlnet = nlnet or xc_pt
+    #if the network is nonlocal or we're doing a full xc pretraining, generate the extra information in the data arrays
+    data = [get_data(mol, 
+                     xcmodel=xc, 
+                     xc_func=ref, 
+                     localnet=localnet, 
+                     xorc=pargs.pretrain_net, 
+                     nlnet=data_nlnet,
+                     ret_etot = pargs.full_calc) for i,mol in enumerate(mols)]
 
 
     cpus = jax.devices(backend='cpu')
@@ -283,11 +371,13 @@ if __name__ == '__main__':
     optimizer = optax.adam(learning_rate = scheduler)
 
     trainer = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
+    xc_trainer = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = XC_PT_E_Loss_Loop(), do_jit=pargs.do_jit, logfile='ptlog')
+    xc_trainer2 = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = XC_PT_ETot_Loss_Loop(), do_jit=pargs.do_jit, logfile='ptlog')
     NLtrainer = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = NL_PT_E_Loss(), do_jit=pargs.do_jit, logfile='ptlog')
     NLtrainer2 = xce.train.xcTrainer(model=xc, optim=optimizer, steps=pargs.n_steps, loss = NL_PT_E_Loss_Loop(), do_jit=pargs.do_jit, logfile='ptlog')
     
-    if nlnet:
-        #must train over batches instead of cooncatenation of them
+    if data_nlnet:
+        #must train over batches instead of concatenation of them
         mfs = [d[2] for d in data]
         dms = [d[3] for d in data]
         aos = [d[4] for d in data]
@@ -310,12 +400,41 @@ if __name__ == '__main__':
         print(f'rho inp.shape = {inp.shape}')
         print(f'ref.shape = {ref.shape}')
         inp = [inp]
-    if not nlnet:
+    
+    if pargs.ref_calc_dir:
+        print('Specified ref_calc_dir = {}'.format(pargs.ref_calc_dir))
+        print('Looking through .traj files for reference total energies')
+        trjs = sorted([i for i in os.listdir(pargs.ref_calc_dir) if '.traj' in i and '_' in i and i.split('_')[0].isnumeric()])
+        print('{} relevant trajectories:'.format(len(trjs)), trjs)
+        #training on ksr_atoms
+        refs = []
+        for kidx, at in enumerate(ksr_atoms):
+            print('Retriving energy for {}/{}'.format(kidx, at.symbols))
+            sub = [read(os.path.join(pargs.ref_calc_dir, i), ':')[0] for i in trjs if i.split('_')[1].split('.')[0] == str(at.symbols)]
+            print(at, sub)
+            if len(sub) > 1 or len(sub) == 0:
+                raise Exception
+            else:
+                print('Reference {} Energy = {}'.format(at.symbols, sub[0].calc.results['energy']))
+                refs.append(sub[0].calc.results['energy'])
+        nlref = refs
+    if not data_nlnet:
         with jax.default_device(cpus[0]):
             newm = trainer(1, trainer.model, inp, [ref])
     else:
-        with jax.default_device(cpus[0]):
-            #this updates after each molecule, not the best for accuracy
-            # newm = NLtrainer(len(mfs), NLtrainer.model, nlinp, mfs, dms, aos, gws, coors, nlref)
-            #this updates after all molecules calculated and loss generated
-            newm = NLtrainer2(1, NLtrainer2.model, [nlinp], [mfs], [dms], [aos], [gws], [coors], [nlref])
+        if nlnet and not xc_pt:
+            with jax.default_device(cpus[0]):
+                #this updates after each molecule, not the best for accuracy
+                # newm = NLtrainer(len(mfs), NLtrainer.model, nlinp, mfs, dms, aos, gws, coors, nlref)
+                #this updates after all molecules calculated and loss generated
+                newm = NLtrainer2(1, NLtrainer2.model, [nlinp], [mfs], [dms], [aos], [gws], [coors], [nlref])
+        elif xc_pt and not nlnet:
+            with jax.default_device(cpus[0]):
+                #this updates after each molecule, not the best for accuracy
+                # newm = NLtrainer(len(mfs), NLtrainer.model, nlinp, mfs, dms, aos, gws, coors, nlref)
+                #this updates after all molecules calculated and loss generated
+                if not pargs.full_calc:
+                    newm = xc_trainer(1, xc_trainer.model, [nlinp], [mfs], [dms], [aos], [gws], [coors], [nlref])
+                else:
+                    newm = xc_trainer2(1, xc_trainer2.model, [nlinp], [mfs], [dms], [aos], [gws], [coors], [nlref])
+

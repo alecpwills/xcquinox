@@ -76,6 +76,7 @@ def test_train_e_loss():
     xcT = xce.train.xcTrainer(xc, optax.adamw(1e-4), Eloss, steps=1, logfile='test_e_log')
     new_model = xcT(1, xc, dms, energies, ao_evals, gws)
     new_E = new_model(dms[0], ao_evals[0], gws[0])
+    assert xcT.loss_v
     assert abs(new_E-energies[0]) < abs(first_E - energies[0])
 
 def test_train_dm_loss():

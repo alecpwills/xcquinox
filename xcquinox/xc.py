@@ -677,7 +677,9 @@ class eXC(eqx.Module):
 
         if self.grid_models:
             self.vprint('Grid models present; looping over separate networks to construct exc')
+            gm_range = jnp.arange(0, len(self.grid_models))
             for gmidx, gm in enumerate(self.grid_models):
+                self.vprint('Evaluating gm: {}'.format(gm))
                 exc_a, exc_b, exc_ab = gm_eval_func(gm, exc_a, exc_b, exc_ab)
                 self.vprint('eval_grid_models gm_eval_func [{}] nan summary:'.format(gmidx))
                 self.vprint('exc_a, exc_b, exc_ab')
@@ -764,7 +766,8 @@ def make_xcfunc(level, x_net_path, c_net_path, configfile = 'network.config',
     #create the network to generate the descriptors for saving
     xnet, xparams = get_net(xorc='X', level=level, net_path = x_net_path)
     cnet, cparams = get_net(xorc='C', level=level, net_path = c_net_path)
-
+    print('XNET spin scaling: {}'.format(xnet.spin_scaling))
+    print('CNET spin scaling: {}'.format(cnet.spin_scaling))
     if xdsfile:
         xnet = eqx.tree_deserialise_leaves(os.path.join(x_net_path, xdsfile), xnet)
     if cdsfile:
@@ -813,9 +816,12 @@ def get_xcfunc(level, xc_net_path, configfile = 'network.config', xcdsfile = 'xc
     #create the network to generate the descriptors for saving
     xnet, xparams = get_net(xorc='X', level=level, net_path = xc_net_path, configfile='x'+configfile, netfile=None)
     cnet, cparams = get_net(xorc='C', level=level, net_path = xc_net_path, configfile='c'+configfile, netfile=None)
+    print('XNET spin scaling: {}'.format(xnet.spin_scaling))
+    print('CNET spin scaling: {}'.format(cnet.spin_scaling))
 
     xc = eXC(grid_models = [xnet, cnet], heg_mult = True, level = level_dict[level.upper()])
     if xcdsfile:
+        print('Deserializing XC Functional over created object')
         xc = eqx.tree_deserialise_leaves(os.path.join(xc_net_path, xcdsfile), xc)
 
     return xc

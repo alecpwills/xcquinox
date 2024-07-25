@@ -13,6 +13,10 @@ for lidx, lev in enumerate(levels):
             cdir = f'c_3_16_{constr}{sidx}_{lev}'
             xcdir = f'xc_3_16_{constr}{sidx}_{lev}'
 
+            # xc = xce.xc.make_xcfunc(level = lev.upper(),
+            #                         x_net_path = os.path.join(cwd, xdir),
+            #                         c_net_path = os.path.join(cwd, cdir),
+            #                         savepath = os.path.join(cwd, xcdir), xdsfile='xc.eqx.0', cdsfile='xc.eqx.0')
             xc = xce.xc.make_xcfunc(level = lev.upper(),
                                     x_net_path = os.path.join(cwd, xdir),
                                     c_net_path = os.path.join(cwd, cdir),

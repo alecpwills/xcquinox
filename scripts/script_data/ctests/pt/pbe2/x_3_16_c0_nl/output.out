@@ -1,0 +1,782 @@
+/gpfs/projects/FernandezGroup/Alec/miniconda3/envs/pyscfad/lib/python3.10/site-packages/pyscf/dft/libxc.py:772: UserWarning: Since PySCF-2.3, B3LYP (and B3P86) are changed to the VWN-RPA variant, the same to the B3LYP functional in Gaussian and ORCA (issue 1480). To restore the VWN5 definition, you can put the setting "B3LYP_WITH_VWN5 = True" in pyscf_conf.py
+  warnings.warn('Since PySCF-2.3, B3LYP (and B3P86) are changed to the VWN-RPA variant, '
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44273d30> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44273d30> in UKS object of <class 'pyscf.dft.uks.UKS'>
+SINGLE NETFILE MATCH FOUND. DESERIALIZING...
+WARNING: External module "mldftdat" required for non-local descriptor use.
+<pyscf.gto.mole.Mole object at 0x7ffe44273d30> [['P', array([0., 0., 0.])]] 1
+<pyscf.gto.mole.Mole object at 0x7ffe442737c0> [['N', array([0., 0., 0.])]] 1
+<pyscf.gto.mole.Mole object at 0x7ffe44270d90> [['H', array([0., 0., 0.])]] 1
+<pyscf.gto.mole.Mole object at 0x7ffe443cc190> [['Li', array([0., 0., 0.])]] 1
+<pyscf.gto.mole.Mole object at 0x7ffe443cd810> [['O', array([0., 0., 0.])]] 1
+<pyscf.gto.mole.Mole object at 0x7ffe44212ec0> [['Cl', array([0., 0., 0.])]] 1
+<pyscf.gto.mole.Mole object at 0x7ffe44211f30> [['Al', array([0., 0., 0.])]] 1
+<pyscf.gto.mole.Mole object at 0x7ffe44213c70> [['S', array([0., 0., 0.])]] 1
+<pyscf.gto.mole.Mole object at 0x7ffe44211240> [['H', array([0.      , 0.      , 0.371395])], ['H', array([ 0.      ,  0.      , -0.371395])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe442119c0> [['N', array([0.      , 0.      , 0.549396])], ['N', array([ 0.      ,  0.      , -0.549396])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe44213610> [['Li', array([ 0.      ,  0.      , -1.172697])], ['F', array([0.      , 0.      , 0.390899])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe442113c0> [['C', array([ 0.      ,  0.      , -0.499686])], ['N', array([0.      , 0.      , 0.652056])], ['H', array([ 0.        ,  0.        , -1.56627401])]] 3
+<pyscf.gto.mole.Mole object at 0x7ffe44213b50> [['C', array([0., 0., 0.])], ['O', array([0.      , 0.      , 1.162879])], ['O', array([ 0.      ,  0.      , -1.162879])]] 3
+<pyscf.gto.mole.Mole object at 0x7ffe44211510> [['Cl', array([0.      , 0.      , 1.008241])], ['Cl', array([ 0.      ,  0.      , -1.008241])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe44212a40> [['F', array([0.      , 0.      , 0.693963])], ['F', array([ 0.      ,  0.      , -0.693963])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe442100a0> [['O', array([0.      , 0.      , 0.603195])], ['O', array([ 0.      ,  0.      , -0.603195])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe44211a80> [['C', array([0.      , 0.      , 0.599454])], ['C', array([ 0.      ,  0.      , -0.599454])], ['H', array([ 0.        ,  0.        , -1.66162301])], ['H', array([0.        , 0.        , 1.66162301])]] 4
+<pyscf.gto.mole.Mole object at 0x7ffe44212500> [['O', array([0.      , 0.      , 0.484676])], ['C', array([ 0.      ,  0.      , -0.646235])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe44212290> [['Cl', array([0.      , 0.      , 0.071315])], ['H', array([ 0.      ,  0.      , -1.212358])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe442137f0> [['Li', array([0.      , 0.      , 0.403632])], ['H', array([ 0.      ,  0.      , -1.210897])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe44210a60> [['Na', array([0.        , 0.        , 1.50747901])], ['Na', array([ 0.        ,  0.        , -1.50747901])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe442117b0> [['Al', array([0., 0., 0.])], ['Cl', array([0.        , 2.08019101, 0.        ])], ['Cl', array([ 1.80149801, -1.040095  ,  0.        ])], ['Cl', array([-1.80149801, -1.040095  ,  0.        ])]] 4
+<pyscf.gto.mole.Mole object at 0x7ffe44213310> [['P', array([0.      , 0.      , 0.128906])], ['H', array([ 0.      ,  1.19333 , -0.644531])], ['H', array([ 1.033455, -0.596665, -0.644531])], ['H', array([-1.033455, -0.596665, -0.644531])]] 4
+<pyscf.gto.mole.Mole object at 0x7ffe44211b10> [['Si', array([0.      , 0.      , 1.135214])], ['Si', array([ 0.      ,  0.      , -1.135214])]] 2
+<pyscf.gto.mole.Mole object at 0x7ffe4439cf10> [['C', array([0., 0., 0.])], ['H', array([0.630382, 0.630382, 0.630382])], ['H', array([-0.630382, -0.630382,  0.630382])], ['H', array([ 0.630382, -0.630382, -0.630382])], ['H', array([-0.630382,  0.630382, -0.630382])]] 5
+<pyscf.gto.mole.Mole object at 0x7ffe441aebf0> [['C', array([0.      , 0.      , 0.179918])], ['H', array([ 0.      ,  0.855475, -0.539754])], ['H', array([ 0.      , -0.855475, -0.539754])]] 3
+<pyscf.gto.mole.Mole object at 0x7ffe441ac670> [['Si', array([0., 0., 0.])], ['H', array([0.855876, 0.855876, 0.855876])], ['H', array([-0.855876, -0.855876,  0.855876])], ['H', array([-0.855876,  0.855876, -0.855876])], ['H', array([ 0.855876, -0.855876, -0.855876])]] 5
+mol:  [['P', array([0., 0., 0.])]]
+converged SCF energy = -341.104145992717  <S^2> = 3.7502984  2S+1 = 4.0001492
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe442737c0> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe442737c0> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 30, 30)
+ao.shape (10, 6320, 30)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-1.37146458e-02 -3.81431926e-03 -5.46658343e-03 ... -9.48837115e+00
+ -9.48837115e+00 -9.48837115e+00] = PBE,
+rho_a.shape=(6, 6320), rho_b.shape=(6, 6320)
+exc_a.shape=(6320,), exc_b.shape=(6320,)
+mol.spin != 0 and sum(mol.nelec) > 1
+rho.shape=(6, 12640), fxc.shape=(12640,)
+get_data, dm shape = (2, 30, 30)
+ao_eval.shape=(4, 6320, 30)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(3.67994866e-11, dtype=float64), Array(1059.62286844, dtype=float64))
+rho0_b = (Array(4.43047991e-14, dtype=float64), Array(1059.87616936, dtype=float64))
+gamma_a = (Array(5.28031237e-21, dtype=float64), Array(9.20660135e+08, dtype=float64))
+gamma_b = (Array(8.5144319e-27, dtype=float64), Array(9.21228364e+08, dtype=float64))
+gamma_ab = (Array(-8.14145379e-18, dtype=float64), Array(9.20944206e+08, dtype=float64))
+tau_a = (Array(1.80944571e-11, dtype=float64), Array(117315.47918142, dtype=float64))
+tau_b = (Array(2.4091098e-14, dtype=float64), Array(117138.81600436, dtype=float64))
+retrho shape: (6320, 9)
+refexc shape: (6320,)
+mol:  [['N', array([0., 0., 0.])]]
+converged SCF energy = -54.5289742046674  <S^2> = 3.7524945  2S+1 = 4.0012471
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44270d90> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44270d90> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 22, 22)
+ao.shape (10, 5016, 22)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-8.04818553e-03 -3.38638507e-03 -7.82393630e-04 ... -4.29052856e+00
+ -4.29052856e+00 -4.29052856e+00] = PBE,
+rho_a.shape=(6, 5016), rho_b.shape=(6, 5016)
+exc_a.shape=(5016,), exc_b.shape=(5016,)
+mol.spin != 0 and sum(mol.nelec) > 1
+rho.shape=(6, 10032), fxc.shape=(10032,)
+get_data, dm shape = (2, 22, 22)
+ao_eval.shape=(4, 5016, 22)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(1.01250672e-10, dtype=float64), Array(98.02349249, dtype=float64))
+rho0_b = (Array(7.96767579e-13, dtype=float64), Array(98.07082061, dtype=float64))
+gamma_a = (Array(7.38523929e-20, dtype=float64), Array(1678679.86597092, dtype=float64))
+gamma_b = (Array(5.20206274e-24, dtype=float64), Array(1685178.28025285, dtype=float64))
+gamma_ab = (Array(6.19826412e-22, dtype=float64), Array(1681925.93464515, dtype=float64))
+tau_a = (Array(9.19823844e-11, dtype=float64), Array(2392.4769597, dtype=float64))
+tau_b = (Array(8.16119858e-13, dtype=float64), Array(2377.12659072, dtype=float64))
+retrho shape: (5016, 9)
+refexc shape: (5016,)
+mol:  [['H', array([0., 0., 0.])]]
+converged SCF energy = -0.499812984008539  <S^2> = 0.75  2S+1 = 2
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe443cc190> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe443cc190> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 7, 7)
+ao.shape (10, 2440, 7)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-7.57938855e-03 -3.07514578e-03 -5.57625799e-04 ... -6.19877933e-01
+ -6.19877933e-01 -6.19877933e-01] = PBE,
+rho_a.shape=(6, 2440), rho_b.shape=(6, 2440)
+exc_a.shape=(2440,), exc_b.shape=(2440,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 2440), fxc.shape=(2440,)
+get_data, dm shape = (2, 7, 7)
+ao_eval.shape=(4, 2440, 7)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(3.6658391e-11, dtype=float64), Array(0.29561959, dtype=float64))
+rho0_b = (Array(0., dtype=float64), Array(0., dtype=float64))
+gamma_a = (Array(4.73133914e-21, dtype=float64), Array(0.26449368, dtype=float64))
+gamma_b = (Array(0., dtype=float64), Array(0., dtype=float64))
+gamma_ab = (Array(0., dtype=float64), Array(0., dtype=float64))
+tau_a = (Array(1.61332065e-11, dtype=float64), Array(0.13786571, dtype=float64))
+tau_b = (Array(0., dtype=float64), Array(0., dtype=float64))
+retrho shape: (2440, 9)
+refexc shape: (2440,)
+mol:  [['Li', array([0., 0., 0.])]]
+converged SCF energy = -7.46006188627842  <S^2> = 0.75000049  2S+1 = 2.0000005
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe443cd810> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe443cd810> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 22, 22)
+ao.shape (10, 4592, 22)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.01468826 -0.00520333 -0.00520333 ... -0.02679169 -1.74635408
+ -1.74635408] = PBE,
+rho_a.shape=(6, 4592), rho_b.shape=(6, 4592)
+exc_a.shape=(4592,), exc_b.shape=(4592,)
+mol.spin != 0 and sum(mol.nelec) > 1
+rho.shape=(6, 9184), fxc.shape=(9184,)
+get_data, dm shape = (2, 22, 22)
+ao_eval.shape=(4, 4592, 22)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(2.98682912e-08, dtype=float64), Array(6.61008772, dtype=float64))
+rho0_b = (Array(5.00919173e-12, dtype=float64), Array(6.40126477, dtype=float64))
+gamma_a = (Array(8.7831563e-16, dtype=float64), Array(1337.91712145, dtype=float64))
+gamma_b = (Array(4.51852966e-22, dtype=float64), Array(1252.60460758, dtype=float64))
+gamma_ab = (Array(-7.10811059e-13, dtype=float64), Array(1294.55828409, dtype=float64))
+tau_a = (Array(3.70309247e-09, dtype=float64), Array(28.9347713, dtype=float64))
+tau_b = (Array(2.38827694e-13, dtype=float64), Array(27.96947733, dtype=float64))
+retrho shape: (4592, 9)
+refexc shape: (4592,)
+mol:  [['O', array([0., 0., 0.])]]
+converged SCF energy = -75.0033774428109  <S^2> = 2.0027452  2S+1 = 3.0018296
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44212ec0> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44212ec0> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 22, 22)
+ao.shape (10, 5040, 22)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-3.97341088e-03 -1.22750599e-03 -1.70129587e-04 ... -4.92806865e+00
+ -4.92806865e+00 -4.92806865e+00] = PBE,
+rho_a.shape=(6, 5040), rho_b.shape=(6, 5040)
+exc_a.shape=(5040,), exc_b.shape=(5040,)
+mol.spin != 0 and sum(mol.nelec) > 1
+rho.shape=(6, 10080), fxc.shape=(10080,)
+get_data, dm shape = (2, 22, 22)
+ao_eval.shape=(4, 5040, 22)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(6.72340309e-13, dtype=float64), Array(148.53261161, dtype=float64))
+rho0_b = (Array(9.54698868e-16, dtype=float64), Array(148.54628502, dtype=float64))
+gamma_a = (Array(5.88104893e-24, dtype=float64), Array(4945157.33789755, dtype=float64))
+gamma_b = (Array(1.30620618e-29, dtype=float64), Array(4956870.65890547, dtype=float64))
+gamma_ab = (Array(8.76403848e-27, dtype=float64), Array(4950939.46827112, dtype=float64))
+tau_a = (Array(1.10319089e-12, dtype=float64), Array(4773.97052499, dtype=float64))
+tau_b = (Array(1.4378819e-14, dtype=float64), Array(4747.12461429, dtype=float64))
+retrho shape: (5040, 9)
+refexc shape: (5040,)
+mol:  [['Cl', array([0., 0., 0.])]]
+converged SCF energy = -459.957577123738  <S^2> = 0.75161941  2S+1 = 2.0016188
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44211f30> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44211f30> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 30, 30)
+ao.shape (10, 6152, 30)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-3.60756951e-03 -3.73862729e-03 -2.10870952e-03 ... -1.07991209e+01
+ -1.07991209e+01 -1.07991209e+01] = PBE,
+rho_a.shape=(6, 6152), rho_b.shape=(6, 6152)
+exc_a.shape=(6152,), exc_b.shape=(6152,)
+mol.spin != 0 and sum(mol.nelec) > 1
+rho.shape=(6, 12304), fxc.shape=(12304,)
+get_data, dm shape = (2, 30, 30)
+ao_eval.shape=(4, 6152, 30)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(5.25755465e-11, dtype=float64), Array(1561.90471261, dtype=float64))
+rho0_b = (Array(6.99371542e-13, dtype=float64), Array(1561.95787144, dtype=float64))
+gamma_a = (Array(1.30534384e-20, dtype=float64), Array(2.7317145e+09, dtype=float64))
+gamma_b = (Array(2.93723363e-24, dtype=float64), Array(2.73216698e+09, dtype=float64))
+gamma_ab = (Array(-1.16101917e-17, dtype=float64), Array(2.73193745e+09, dtype=float64))
+tau_a = (Array(3.15263211e-11, dtype=float64), Array(239540.94869527, dtype=float64))
+tau_b = (Array(6.85251105e-13, dtype=float64), Array(239371.78950526, dtype=float64))
+retrho shape: (6152, 9)
+refexc shape: (6152,)
+mol:  [['Al', array([0., 0., 0.])]]
+converged SCF energy = -242.226560989248  <S^2> = 0.75226414  2S+1 = 2.0022629
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44213c70> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44213c70> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 30, 30)
+ao.shape (10, 6088, 30)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.03148618 -0.02166368 -0.01271799 ... -0.00117596 -0.00466334
+ -0.00078328] = PBE,
+rho_a.shape=(6, 6088), rho_b.shape=(6, 6088)
+exc_a.shape=(6088,), exc_b.shape=(6088,)
+mol.spin != 0 and sum(mol.nelec) > 1
+rho.shape=(6, 12176), fxc.shape=(12176,)
+get_data, dm shape = (2, 30, 30)
+ao_eval.shape=(4, 6088, 30)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(5.95167314e-12, dtype=float64), Array(679.40140664, dtype=float64))
+rho0_b = (Array(5.90704625e-12, dtype=float64), Array(679.49865974, dtype=float64))
+gamma_a = (Array(9.74978277e-23, dtype=float64), Array(2.6617071e+08, dtype=float64))
+gamma_b = (Array(9.7662159e-23, dtype=float64), Array(2.66254715e+08, dtype=float64))
+gamma_ab = (Array(1.07596115e-22, dtype=float64), Array(2.66212709e+08, dtype=float64))
+tau_a = (Array(3.69575589e-12, dtype=float64), Array(56081.37750329, dtype=float64))
+tau_b = (Array(2.09870927e-12, dtype=float64), Array(56073.23123013, dtype=float64))
+retrho shape: (6088, 9)
+refexc shape: (6088,)
+mol:  [['S', array([0., 0., 0.])]]
+converged SCF energy = -397.938786816355  <S^2> = 2.0022329  2S+1 = 3.0014882
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44211240> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44211240> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 30, 30)
+ao.shape (10, 6320, 30)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-6.30160841e-03 -4.16402218e-03 -3.90496995e-03 ... -1.01448448e+01
+ -1.01448448e+01 -1.01448448e+01] = PBE,
+rho_a.shape=(6, 6320), rho_b.shape=(6, 6320)
+exc_a.shape=(6320,), exc_b.shape=(6320,)
+mol.spin != 0 and sum(mol.nelec) > 1
+rho.shape=(6, 12640), fxc.shape=(12640,)
+get_data, dm shape = (2, 30, 30)
+ao_eval.shape=(4, 6320, 30)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(1.90633454e-12, dtype=float64), Array(1294.97547008, dtype=float64))
+rho0_b = (Array(9.49675802e-15, dtype=float64), Array(1295.10901447, dtype=float64))
+gamma_a = (Array(1.96619977e-23, dtype=float64), Array(1.63838356e+09, dtype=float64))
+gamma_b = (Array(5.12865764e-28, dtype=float64), Array(1.63892052e+09, dtype=float64))
+gamma_ab = (Array(-1.14493841e-15, dtype=float64), Array(1.63865082e+09, dtype=float64))
+tau_a = (Array(1.29883288e-12, dtype=float64), Array(172116.85552588, dtype=float64))
+tau_b = (Array(9.87073678e-15, dtype=float64), Array(171895.27195522, dtype=float64))
+retrho shape: (6320, 9)
+refexc shape: (6320,)
+mol:  [['H', array([0.      , 0.      , 0.371395])], ['H', array([ 0.      ,  0.      , -0.371395])]]
+converged SCF energy = -1.16580491182912  <S^2> = -8.8817842e-16  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe442119c0> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe442119c0> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 14, 14)
+ao.shape (10, 4776, 14)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-9.68551853e-04 -1.57841804e-04 -2.09323069e-03 ... -4.72032006e-01
+ -4.72032006e-01 -4.72032006e-01] = PBE,
+rho_a.shape=(6, 4776), rho_b.shape=(6, 4776)
+exc_a.shape=(4776,), exc_b.shape=(4776,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 4776), fxc.shape=(4776,)
+get_data, dm shape = (2, 14, 14)
+ao_eval.shape=(4, 4776, 14)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(1.44689399e-13, dtype=float64), Array(0.20861087, dtype=float64))
+rho0_b = (Array(1.44689332e-13, dtype=float64), Array(0.20861087, dtype=float64))
+gamma_a = (Array(7.72165748e-26, dtype=float64), Array(0.17008873, dtype=float64))
+gamma_b = (Array(7.72165033e-26, dtype=float64), Array(0.17008873, dtype=float64))
+gamma_ab = (Array(7.72165391e-26, dtype=float64), Array(0.17008873, dtype=float64))
+tau_a = (Array(6.67089084e-14, dtype=float64), Array(0.12766215, dtype=float64))
+tau_b = (Array(6.67088776e-14, dtype=float64), Array(0.12766216, dtype=float64))
+retrho shape: (4776, 9)
+refexc shape: (4776,)
+mol:  [['N', array([0.      , 0.      , 0.549396])], ['N', array([ 0.      ,  0.      , -0.549396])]]
+converged SCF energy = -109.439263799566  <S^2> = 2.1316282e-14  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44213610> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44213610> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 44, 44)
+ao.shape (10, 9848, 44)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00098449 -0.00469897 -0.00189737 ... -0.00039039 -0.00039039
+ -0.00098449] = PBE,
+rho_a.shape=(6, 9848), rho_b.shape=(6, 9848)
+exc_a.shape=(9848,), exc_b.shape=(9848,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 9848), fxc.shape=(9848,)
+get_data, dm shape = (2, 44, 44)
+ao_eval.shape=(4, 9848, 44)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(1.14686831e-11, dtype=float64), Array(97.7451329, dtype=float64))
+rho0_b = (Array(1.14686957e-11, dtype=float64), Array(97.74513282, dtype=float64))
+gamma_a = (Array(1.02439634e-21, dtype=float64), Array(1675905.64475824, dtype=float64))
+gamma_b = (Array(1.02439863e-21, dtype=float64), Array(1675905.63933798, dtype=float64))
+gamma_ab = (Array(1.02439749e-21, dtype=float64), Array(1675905.64204811, dtype=float64))
+tau_a = (Array(1.12920136e-11, dtype=float64), Array(2385.36851255, dtype=float64))
+tau_b = (Array(1.12920262e-11, dtype=float64), Array(2385.36850636, dtype=float64))
+retrho shape: (9848, 9)
+refexc shape: (9848,)
+mol:  [['Li', array([ 0.      ,  0.      , -1.172697])], ['F', array([0.      , 0.      , 0.390899])]]
+converged SCF energy = -107.339357395734  <S^2> = 2.6645353e-15  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe442113c0> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe442113c0> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 44, 44)
+ao.shape (10, 9752, 44)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00286189 -0.00231863 -0.00239899 ... -0.00271898 -0.75353821
+ -0.75353821] = PBE,
+rho_a.shape=(6, 9752), rho_b.shape=(6, 9752)
+exc_a.shape=(9752,), exc_b.shape=(9752,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 9752), fxc.shape=(9752,)
+get_data, dm shape = (2, 44, 44)
+ao_eval.shape=(4, 9752, 44)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(6.45847479e-10, dtype=float64), Array(213.38344803, dtype=float64))
+rho0_b = (Array(6.45847123e-10, dtype=float64), Array(213.38344813, dtype=float64))
+gamma_a = (Array(7.30703612e-21, dtype=float64), Array(12045972.15074638, dtype=float64))
+gamma_b = (Array(7.30703495e-21, dtype=float64), Array(12045972.1576728, dtype=float64))
+gamma_ab = (Array(7.30703553e-21, dtype=float64), Array(12045972.15420959, dtype=float64))
+tau_a = (Array(8.2392185e-12, dtype=float64), Array(8296.09746707, dtype=float64))
+tau_b = (Array(8.23921436e-12, dtype=float64), Array(8296.09747258, dtype=float64))
+retrho shape: (9752, 9)
+refexc shape: (9752,)
+mol:  [['C', array([ 0.      ,  0.      , -0.499686])], ['N', array([0.      , 0.      , 0.652056])], ['H', array([ 0.        ,  0.        , -1.56627401])]]
+converged SCF energy = -93.337792446513  <S^2> = 4.0072656e-10  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44213b50> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44213b50> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 51, 51)
+ao.shape (10, 12256, 51)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-1.84394517e-03 -3.55740664e-04 -4.08540312e-04 ... -5.84584997e-01
+ -5.84584997e-01 -5.84584997e-01] = PBE,
+rho_a.shape=(6, 12256), rho_b.shape=(6, 12256)
+exc_a.shape=(12256,), exc_b.shape=(12256,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 12256), fxc.shape=(12256,)
+get_data, dm shape = (2, 51, 51)
+ao_eval.shape=(4, 12256, 51)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(5.47734201e-14, dtype=float64), Array(97.63905609, dtype=float64))
+rho0_b = (Array(5.47744418e-14, dtype=float64), Array(97.63905217, dtype=float64))
+gamma_a = (Array(2.1109048e-26, dtype=float64), Array(1672514.39746184, dtype=float64))
+gamma_b = (Array(2.11098406e-26, dtype=float64), Array(1672514.37036921, dtype=float64))
+gamma_ab = (Array(2.11094443e-26, dtype=float64), Array(1672514.38391553, dtype=float64))
+tau_a = (Array(4.84017018e-14, dtype=float64), Array(2383.14480496, dtype=float64))
+tau_b = (Array(4.84026184e-14, dtype=float64), Array(2383.14461777, dtype=float64))
+retrho shape: (12256, 9)
+refexc shape: (12256,)
+mol:  [['C', array([0., 0., 0.])], ['O', array([0.      , 0.      , 1.162879])], ['O', array([ 0.      ,  0.      , -1.162879])]]
+converged SCF energy = -188.456965322843  <S^2> = 1.5987212e-14  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44211510> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44211510> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 66, 66)
+ao.shape (10, 14920, 66)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-1.72111972e-03 -1.54560011e-03 -4.43207013e-03 ... -8.76563027e-05
+ -3.64230826e+00 -3.64230826e+00] = PBE,
+rho_a.shape=(6, 14920), rho_b.shape=(6, 14920)
+exc_a.shape=(14920,), exc_b.shape=(14920,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 14920), fxc.shape=(14920,)
+get_data, dm shape = (2, 66, 66)
+ao_eval.shape=(4, 14920, 66)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(2.26912701e-14, dtype=float64), Array(148.00725437, dtype=float64))
+rho0_b = (Array(2.26912687e-14, dtype=float64), Array(148.00725431, dtype=float64))
+gamma_a = (Array(3.64491259e-27, dtype=float64), Array(4932043.35241198, dtype=float64))
+gamma_b = (Array(3.64491214e-27, dtype=float64), Array(4932043.35050114, dtype=float64))
+gamma_ab = (Array(3.64491237e-27, dtype=float64), Array(4932043.35145656, dtype=float64))
+tau_a = (Array(2.01975405e-14, dtype=float64), Array(4763.25601498, dtype=float64))
+tau_b = (Array(2.01975393e-14, dtype=float64), Array(4763.25601227, dtype=float64))
+retrho shape: (14920, 9)
+refexc shape: (14920,)
+mol:  [['Cl', array([0.      , 0.      , 1.008241])], ['Cl', array([ 0.      ,  0.      , -1.008241])]]
+converged SCF energy = -920.005608888959  <S^2> = 5.0093263e-13  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44212a40> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44212a40> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 60, 60)
+ao.shape (10, 12208, 60)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00502491 -0.00397238 -0.00534772 ... -0.00397238 -0.38764464
+ -0.38764464] = PBE,
+rho_a.shape=(6, 12208), rho_b.shape=(6, 12208)
+exc_a.shape=(12208,), exc_b.shape=(12208,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 12208), fxc.shape=(12208,)
+get_data, dm shape = (2, 60, 60)
+ao_eval.shape=(4, 12208, 60)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(1.03699875e-10, dtype=float64), Array(1561.84909056, dtype=float64))
+rho0_b = (Array(1.03699908e-10, dtype=float64), Array(1561.84909229, dtype=float64))
+gamma_a = (Array(4.91102934e-20, dtype=float64), Array(2.73287724e+09, dtype=float64))
+gamma_b = (Array(4.91103253e-20, dtype=float64), Array(2.73287725e+09, dtype=float64))
+gamma_ab = (Array(4.91103094e-20, dtype=float64), Array(2.73287724e+09, dtype=float64))
+tau_a = (Array(6.02564479e-11, dtype=float64), Array(239560.02664872, dtype=float64))
+tau_b = (Array(6.02564657e-11, dtype=float64), Array(239560.02652209, dtype=float64))
+retrho shape: (12208, 9)
+refexc shape: (12208,)
+mol:  [['F', array([0.      , 0.      , 0.693963])], ['F', array([ 0.      ,  0.      , -0.693963])]]
+converged SCF energy = -199.394370591172  <S^2> = 1.1901591e-13  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe442100a0> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe442100a0> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 44, 44)
+ao.shape (10, 9824, 44)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-1.71711590e-03 -3.76859494e-04 -5.79099694e-03 ... -4.85816307e-01
+ -4.85816307e-01 -4.85816307e-01] = PBE,
+rho_a.shape=(6, 9824), rho_b.shape=(6, 9824)
+exc_a.shape=(9824,), exc_b.shape=(9824,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 9824), fxc.shape=(9824,)
+get_data, dm shape = (2, 44, 44)
+ao_eval.shape=(4, 9824, 44)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(2.87956275e-12, dtype=float64), Array(213.92658889, dtype=float64))
+rho0_b = (Array(2.87956309e-12, dtype=float64), Array(213.9265899, dtype=float64))
+gamma_a = (Array(1.17053094e-22, dtype=float64), Array(12130448.41996834, dtype=float64))
+gamma_b = (Array(1.17053126e-22, dtype=float64), Array(12130448.47158333, dtype=float64))
+gamma_ab = (Array(1.1705311e-22, dtype=float64), Array(12130448.44577583, dtype=float64))
+tau_a = (Array(5.2690727e-12, dtype=float64), Array(8330.31451392, dtype=float64))
+tau_b = (Array(5.26907329e-12, dtype=float64), Array(8330.31451124, dtype=float64))
+retrho shape: (9824, 9)
+refexc shape: (9824,)
+mol:  [['O', array([0.      , 0.      , 0.603195])], ['O', array([ 0.      ,  0.      , -0.603195])]]
+converged SCF energy = -150.214894531951  <S^2> = 1.0018599  2S+1 = 2.2377309
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44211a80> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44211a80> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 44, 44)
+ao.shape (10, 9912, 44)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-2.95908633e-03 -9.22191694e-04 -1.29479606e-04 ... -6.00048813e-01
+ -6.00048813e-01 -6.00048813e-01] = PBE,
+rho_a.shape=(6, 9912), rho_b.shape=(6, 9912)
+exc_a.shape=(9912,), exc_b.shape=(9912,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 9912), fxc.shape=(9912,)
+get_data, dm shape = (2, 44, 44)
+ao_eval.shape=(4, 9912, 44)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(1.78373982e-13, dtype=float64), Array(148.29947184, dtype=float64))
+rho0_b = (Array(1.78373964e-13, dtype=float64), Array(148.29947185, dtype=float64))
+gamma_a = (Array(4.27337928e-25, dtype=float64), Array(4951708.94097613, dtype=float64))
+gamma_b = (Array(4.27337846e-25, dtype=float64), Array(4951708.94160323, dtype=float64))
+gamma_ab = (Array(2.13794054e-24, dtype=float64), Array(4951708.94128968, dtype=float64))
+tau_a = (Array(3.0714698e-13, dtype=float64), Array(4771.62332897, dtype=float64))
+tau_b = (Array(3.07146952e-13, dtype=float64), Array(4771.62332896, dtype=float64))
+retrho shape: (9912, 9)
+refexc shape: (9912,)
+mol:  [['C', array([0.      , 0.      , 0.599454])], ['C', array([ 0.      ,  0.      , -0.599454])], ['H', array([ 0.        ,  0.        , -1.66162301])], ['H', array([0.        , 0.        , 1.66162301])]]
+converged SCF energy = -77.2435048346373  <S^2> = 9.7699626e-15  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44212500> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44212500> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 58, 58)
+ao.shape (10, 15208, 58)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00080684 -0.00080684 -0.00433533 ... -0.0004262  -0.00042484
+ -0.00042484] = PBE,
+rho_a.shape=(6, 15208), rho_b.shape=(6, 15208)
+exc_a.shape=(15208,), exc_b.shape=(15208,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 15208), fxc.shape=(15208,)
+get_data, dm shape = (2, 58, 58)
+ao_eval.shape=(4, 15208, 58)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(6.13931846e-12, dtype=float64), Array(59.9351633, dtype=float64))
+rho0_b = (Array(6.13931316e-12, dtype=float64), Array(59.93516325, dtype=float64))
+gamma_a = (Array(1.65925574e-22, dtype=float64), Array(440696.01492364, dtype=float64))
+gamma_b = (Array(1.65925309e-22, dtype=float64), Array(440696.01408612, dtype=float64))
+gamma_ab = (Array(1.65925442e-22, dtype=float64), Array(440696.01450488, dtype=float64))
+tau_a = (Array(3.4327454e-12, dtype=float64), Array(998.2990185, dtype=float64))
+tau_b = (Array(3.43274276e-12, dtype=float64), Array(998.29901761, dtype=float64))
+retrho shape: (15208, 9)
+refexc shape: (15208,)
+mol:  [['O', array([0.      , 0.      , 0.484676])], ['C', array([ 0.      ,  0.      , -0.646235])]]
+converged SCF energy = -113.221335689652  <S^2> = 6.625811e-13  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44212290> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44212290> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 44, 44)
+ao.shape (10, 10040, 44)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00293144 -0.00403376 -0.00852947 ... -0.665808   -0.665808
+ -0.665808  ] = PBE,
+rho_a.shape=(6, 10040), rho_b.shape=(6, 10040)
+exc_a.shape=(10040,), exc_b.shape=(10040,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 10040), fxc.shape=(10040,)
+get_data, dm shape = (2, 44, 44)
+ao_eval.shape=(4, 10040, 44)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(4.33751683e-14, dtype=float64), Array(148.14285767, dtype=float64))
+rho0_b = (Array(4.33752459e-14, dtype=float64), Array(148.14285736, dtype=float64))
+gamma_a = (Array(1.33620756e-26, dtype=float64), Array(4935292.34683902, dtype=float64))
+gamma_b = (Array(1.33621237e-26, dtype=float64), Array(4935292.34129883, dtype=float64))
+gamma_ab = (Array(1.33620996e-26, dtype=float64), Array(4935292.34406893, dtype=float64))
+tau_a = (Array(3.85913574e-14, dtype=float64), Array(4761.65762933, dtype=float64))
+tau_b = (Array(3.8591427e-14, dtype=float64), Array(4761.65760861, dtype=float64))
+retrho shape: (10040, 9)
+refexc shape: (10040,)
+mol:  [['Cl', array([0.      , 0.      , 0.071315])], ['H', array([ 0.      ,  0.      , -1.212358])]]
+converged SCF energy = -460.624592374078  <S^2> = 7.1054274e-14  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe442137f0> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe442137f0> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 37, 37)
+ao.shape (10, 8552, 37)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-1.54831369e-03 -2.88695321e-04 -3.45248698e-04 ... -3.18329034e+00
+ -3.18329034e+00 -3.18329034e+00] = PBE,
+rho_a.shape=(6, 8552), rho_b.shape=(6, 8552)
+exc_a.shape=(8552,), exc_b.shape=(8552,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 8552), fxc.shape=(8552,)
+get_data, dm shape = (2, 37, 37)
+ao_eval.shape=(4, 8552, 37)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(1.16474784e-13, dtype=float64), Array(1561.4701971, dtype=float64))
+rho0_b = (Array(1.16474765e-13, dtype=float64), Array(1561.47019709, dtype=float64))
+gamma_a = (Array(6.83811728e-26, dtype=float64), Array(2.73154427e+09, dtype=float64))
+gamma_b = (Array(6.83811477e-26, dtype=float64), Array(2.73154427e+09, dtype=float64))
+gamma_ab = (Array(6.83811603e-26, dtype=float64), Array(2.73154427e+09, dtype=float64))
+tau_a = (Array(7.41738348e-14, dtype=float64), Array(239519.29876293, dtype=float64))
+tau_b = (Array(7.41738193e-14, dtype=float64), Array(239519.29876104, dtype=float64))
+retrho shape: (8552, 9)
+refexc shape: (8552,)
+mol:  [['Li', array([0.      , 0.      , 0.403632])], ['H', array([ 0.      ,  0.      , -1.210897])]]
+converged SCF energy = -8.04458854018922  <S^2> = 7.327472e-14  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44210a60> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44210a60> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 29, 29)
+ao.shape (10, 6936, 29)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00373656 -0.00390506 -0.00390506 ... -0.55062385 -0.55062385
+ -0.55062385] = PBE,
+rho_a.shape=(6, 6936), rho_b.shape=(6, 6936)
+exc_a.shape=(6936,), exc_b.shape=(6936,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 6936), fxc.shape=(6936,)
+get_data, dm shape = (2, 29, 29)
+ao_eval.shape=(4, 6936, 29)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(1.1956466e-09, dtype=float64), Array(6.49224216, dtype=float64))
+rho0_b = (Array(1.19564647e-09, dtype=float64), Array(6.49224223, dtype=float64))
+gamma_a = (Array(6.99865839e-19, dtype=float64), Array(1296.00260034, dtype=float64))
+gamma_b = (Array(6.99867634e-19, dtype=float64), Array(1296.00262925, dtype=float64))
+gamma_ab = (Array(6.99866736e-19, dtype=float64), Array(1296.00261479, dtype=float64))
+tau_a = (Array(7.59635231e-11, dtype=float64), Array(28.56238368, dtype=float64))
+tau_b = (Array(7.5963734e-11, dtype=float64), Array(28.56238403, dtype=float64))
+retrho shape: (6936, 9)
+refexc shape: (6936,)
+mol:  [['Na', array([0.        , 0.        , 1.50747901])], ['Na', array([ 0.        ,  0.        , -1.50747901])]]
+converged SCF energy = -324.340512506578  <S^2> = 1.5862867e-11  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe442117b0> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe442117b0> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 60, 60)
+ao.shape (10, 11536, 60)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00885727 -0.00885727 -0.01125223 ... -0.00885727 -0.00885727
+ -0.01125223] = PBE,
+rho_a.shape=(6, 11536), rho_b.shape=(6, 11536)
+exc_a.shape=(11536,), exc_b.shape=(11536,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 11536), fxc.shape=(11536,)
+get_data, dm shape = (2, 60, 60)
+ao_eval.shape=(4, 11536, 60)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(2.52246293e-10, dtype=float64), Array(403.20885679, dtype=float64))
+rho0_b = (Array(2.52300149e-10, dtype=float64), Array(403.20885662, dtype=float64))
+gamma_a = (Array(6.89938397e-19, dtype=float64), Array(74474467.65585075, dtype=float64))
+gamma_b = (Array(6.90222033e-19, dtype=float64), Array(74474467.43498261, dtype=float64))
+gamma_ab = (Array(6.90080201e-19, dtype=float64), Array(74474467.54541668, dtype=float64))
+tau_a = (Array(9.39053862e-10, dtype=float64), Array(25611.04602866, dtype=float64))
+tau_b = (Array(9.39060981e-10, dtype=float64), Array(25611.04594205, dtype=float64))
+retrho shape: (11536, 9)
+refexc shape: (11536,)
+mol:  [['Al', array([0., 0., 0.])], ['Cl', array([0.        , 2.08019101, 0.        ])], ['Cl', array([ 1.80149801, -1.040095  ,  0.        ])], ['Cl', array([-1.80149801, -1.040095  ,  0.        ])]]
+converged SCF energy = -1622.57507845814  <S^2> = 8.2778229e-13  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44213310> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44213310> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 120, 120)
+ao.shape (10, 24512, 120)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-1.23255293e-03 -2.61714541e-03 -6.05692576e-03 ... -8.17682398e+00
+ -8.17682398e+00 -8.17682398e+00] = PBE,
+rho_a.shape=(6, 24512), rho_b.shape=(6, 24512)
+exc_a.shape=(24512,), exc_b.shape=(24512,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 24512), fxc.shape=(24512,)
+get_data, dm shape = (2, 120, 120)
+ao_eval.shape=(4, 24512, 120)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(2.46952787e-13, dtype=float64), Array(1561.49823004, dtype=float64))
+rho0_b = (Array(2.46953012e-13, dtype=float64), Array(1561.49822975, dtype=float64))
+gamma_a = (Array(3.44377657e-25, dtype=float64), Array(2.73128852e+09, dtype=float64))
+gamma_b = (Array(3.44378235e-25, dtype=float64), Array(2.73128852e+09, dtype=float64))
+gamma_ab = (Array(3.44377946e-25, dtype=float64), Array(2.73128852e+09, dtype=float64))
+tau_a = (Array(1.76995542e-13, dtype=float64), Array(239490.70443847, dtype=float64))
+tau_b = (Array(1.76995676e-13, dtype=float64), Array(239490.70434005, dtype=float64))
+retrho shape: (24512, 9)
+refexc shape: (24512,)
+mol:  [['P', array([0.      , 0.      , 0.128906])], ['H', array([ 0.      ,  1.19333 , -0.644531])], ['H', array([ 1.033455, -0.596665, -0.644531])], ['H', array([-1.033455, -0.596665, -0.644531])]]
+converged SCF energy = -342.979728469575  <S^2> = 2.5394797e-11  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe44211b10> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe44211b10> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 51, 51)
+ao.shape (10, 13096, 51)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-4.16572090e-03 -2.30407809e-03 -4.63482671e-04 ... -1.93795428e+00
+ -1.93795428e+00 -1.93795428e+00] = PBE,
+rho_a.shape=(6, 13096), rho_b.shape=(6, 13096)
+exc_a.shape=(13096,), exc_b.shape=(13096,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 13096), fxc.shape=(13096,)
+get_data, dm shape = (2, 51, 51)
+ao_eval.shape=(4, 13096, 51)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(4.01629307e-12, dtype=float64), Array(1058.86187873, dtype=float64))
+rho0_b = (Array(4.01622475e-12, dtype=float64), Array(1058.86187689, dtype=float64))
+gamma_a = (Array(6.24753832e-23, dtype=float64), Array(9.1992722e+08, dtype=float64))
+gamma_b = (Array(6.24732653e-23, dtype=float64), Array(9.19927223e+08, dtype=float64))
+gamma_ab = (Array(6.24743242e-23, dtype=float64), Array(9.19927221e+08, dtype=float64))
+tau_a = (Array(1.97470238e-12, dtype=float64), Array(117220.07289163, dtype=float64))
+tau_b = (Array(1.97466879e-12, dtype=float64), Array(117220.07268553, dtype=float64))
+retrho shape: (13096, 9)
+refexc shape: (13096,)
+mol:  [['Si', array([0.      , 0.      , 1.135214])], ['Si', array([ 0.      ,  0.      , -1.135214])]]
+converged SCF energy = -578.565335811736  <S^2> = 1.0034705  2S+1 = 2.23917
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe4439cf10> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe4439cf10> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 60, 60)
+ao.shape (10, 12384, 60)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00124633 -0.00173495 -0.00173314 ... -0.34090632 -0.34090632
+ -0.34090632] = PBE,
+rho_a.shape=(6, 12384), rho_b.shape=(6, 12384)
+exc_a.shape=(12384,), exc_b.shape=(12384,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 12384), fxc.shape=(12384,)
+get_data, dm shape = (2, 60, 60)
+ao_eval.shape=(4, 12384, 60)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(8.41005424e-12, dtype=float64), Array(856.05049079, dtype=float64))
+rho0_b = (Array(8.4100545e-12, dtype=float64), Array(856.05049078, dtype=float64))
+gamma_a = (Array(2.86412626e-22, dtype=float64), Array(5.06808652e+08, dtype=float64))
+gamma_b = (Array(2.86412646e-22, dtype=float64), Array(5.06808652e+08, dtype=float64))
+gamma_ab = (Array(2.93940386e-22, dtype=float64), Array(5.06808652e+08, dtype=float64))
+tau_a = (Array(4.28046478e-12, dtype=float64), Array(79367.69596962, dtype=float64))
+tau_b = (Array(4.28046495e-12, dtype=float64), Array(79367.69596983, dtype=float64))
+retrho shape: (12384, 9)
+refexc shape: (12384,)
+mol:  [['C', array([0., 0., 0.])], ['H', array([0.630382, 0.630382, 0.630382])], ['H', array([-0.630382, -0.630382,  0.630382])], ['H', array([ 0.630382, -0.630382, -0.630382])], ['H', array([-0.630382,  0.630382, -0.630382])]]
+converged SCF energy = -40.4598214864074  <S^2> = 3.1974423e-13  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe441aebf0> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe441aebf0> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 50, 50)
+ao.shape (10, 13936, 50)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00393652 -0.00161627 -0.00027589 ... -0.00036038 -0.00036038
+ -0.00036038] = PBE,
+rho_a.shape=(6, 13936), rho_b.shape=(6, 13936)
+exc_a.shape=(13936,), exc_b.shape=(13936,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 13936), fxc.shape=(13936,)
+get_data, dm shape = (2, 50, 50)
+ao_eval.shape=(4, 13936, 50)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(4.44212404e-12, dtype=float64), Array(59.76454746, dtype=float64))
+rho0_b = (Array(4.44211909e-12, dtype=float64), Array(59.76454814, dtype=float64))
+gamma_a = (Array(7.40422815e-23, dtype=float64), Array(437657.06370626, dtype=float64))
+gamma_b = (Array(7.40421202e-23, dtype=float64), Array(437657.07271682, dtype=float64))
+gamma_ab = (Array(7.40422008e-23, dtype=float64), Array(437657.06821154, dtype=float64))
+tau_a = (Array(2.21705267e-12, dtype=float64), Array(994.09544356, dtype=float64))
+tau_b = (Array(2.21705041e-12, dtype=float64), Array(994.09545666, dtype=float64))
+retrho shape: (13936, 9)
+refexc shape: (13936,)
+mol:  [['C', array([0.      , 0.      , 0.179918])], ['H', array([ 0.      ,  0.855475, -0.539754])], ['H', array([ 0.      , -0.855475, -0.539754])]]
+converged SCF energy = -39.0756147483503  <S^2> = 6.202594e-12  2S+1 = 1
+Warning: <pyscf.gto.mole.Mole object at 0x7ffe441ac670> must be initialized before calling SCF.
+Initialize <pyscf.gto.mole.Mole object at 0x7ffe441ac670> in UKS object of <class 'pyscf.dft.uks.UKS'>
+New DM shape: (2, 36, 36)
+ao.shape (10, 9656, 36)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-3.51825186e-03 -5.33697675e-04 -1.44785184e-03 ... -1.25655094e+00
+ -1.25655094e+00 -1.25655094e+00] = PBE,
+rho_a.shape=(6, 9656), rho_b.shape=(6, 9656)
+exc_a.shape=(9656,), exc_b.shape=(9656,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 9656), fxc.shape=(9656,)
+get_data, dm shape = (2, 36, 36)
+ao_eval.shape=(4, 9656, 36)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(3.97325576e-13, dtype=float64), Array(60.29192193, dtype=float64))
+rho0_b = (Array(3.97312799e-13, dtype=float64), Array(60.2919211, dtype=float64))
+gamma_a = (Array(1.45216607e-24, dtype=float64), Array(446896.79345498, dtype=float64))
+gamma_b = (Array(1.45209229e-24, dtype=float64), Array(446896.79069891, dtype=float64))
+gamma_ab = (Array(1.45212918e-24, dtype=float64), Array(446896.79207694, dtype=float64))
+tau_a = (Array(4.14746853e-13, dtype=float64), Array(1005.74223904, dtype=float64))
+tau_b = (Array(4.14752919e-13, dtype=float64), Array(1005.74223364, dtype=float64))
+retrho shape: (9656, 9)
+refexc shape: (9656,)
+mol:  [['Si', array([0., 0., 0.])], ['H', array([0.855876, 0.855876, 0.855876])], ['H', array([-0.855876, -0.855876,  0.855876])], ['H', array([-0.855876,  0.855876, -0.855876])], ['H', array([ 0.855876, -0.855876, -0.855876])]]
+converged SCF energy = -291.719272437819  <S^2> = 1.3152146e-11  2S+1 = 1
+New DM shape: (2, 58, 58)
+ao.shape (10, 15256, 58)
+Exchange contribution only
+PBE,
+spin scaling
+exc with xc_func = [-0.00384022 -0.00157622 -0.00027985 ... -0.00029568 -0.00029568
+ -0.00029568] = PBE,
+rho_a.shape=(6, 15256), rho_b.shape=(6, 15256)
+exc_a.shape=(15256,), exc_b.shape=(15256,)
+NOT (mol.spin != 0 and sum(mol.nelec) > 1)
+rho.shape=(6, 15256), fxc.shape=(15256,)
+get_data, dm shape = (2, 58, 58)
+ao_eval.shape=(4, 15256, 58)
+get_rhos2 stats: mins/maxs
+rho0_a = (Array(4.5975292e-12, dtype=float64), Array(854.88974535, dtype=float64))
+rho0_b = (Array(4.59745479e-12, dtype=float64), Array(854.88973823, dtype=float64))
+gamma_a = (Array(7.56370859e-23, dtype=float64), Array(5.05221649e+08, dtype=float64))
+gamma_b = (Array(7.56346804e-23, dtype=float64), Array(5.0522164e+08, dtype=float64))
+gamma_ab = (Array(7.56358831e-23, dtype=float64), Array(5.05221645e+08, dtype=float64))
+tau_a = (Array(2.07913851e-12, dtype=float64), Array(79243.89454595, dtype=float64))
+tau_b = (Array(2.07910628e-12, dtype=float64), Array(79243.89351869, dtype=float64))
+retrho shape: (15256, 9)
+refexc shape: (15256,)
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/gpfs/home/awills/xcquinox/scripts/pretrain_exc2.py", line 277, in <module>
+    ref = jnp.concatenate([d[-1] for d in data], axis=-1)
+  File "/gpfs/projects/FernandezGroup/Alec/miniconda3/envs/pyscfad/lib/python3.10/site-packages/jax/_src/numpy/lax_numpy.py", line 1898, in concatenate
+    arrays_out = [lax.concatenate(arrays_out[i:i+k], axis)
+  File "/gpfs/projects/FernandezGroup/Alec/miniconda3/envs/pyscfad/lib/python3.10/site-packages/jax/_src/numpy/lax_numpy.py", line 1898, in <listcomp>
+    arrays_out = [lax.concatenate(arrays_out[i:i+k], axis)
+  File "/gpfs/projects/FernandezGroup/Alec/miniconda3/envs/pyscfad/lib/python3.10/site-packages/jax/_src/lax/lax.py", line 622, in concatenate
+    return concatenate_p.bind(*operands, dimension=dimension)
+  File "/gpfs/projects/FernandezGroup/Alec/miniconda3/envs/pyscfad/lib/python3.10/site-packages/jax/_src/core.py", line 422, in bind
+    return self.bind_with_trace(find_top_trace(args), args, params)
+  File "/gpfs/projects/FernandezGroup/Alec/miniconda3/envs/pyscfad/lib/python3.10/site-packages/jax/_src/core.py", line 425, in bind_with_trace
+    out = trace.process_primitive(self, map(trace.full_raise, args), params)
+  File "/gpfs/projects/FernandezGroup/Alec/miniconda3/envs/pyscfad/lib/python3.10/site-packages/jax/_src/core.py", line 913, in process_primitive
+    return primitive.impl(*tracers, **params)
+  File "/gpfs/projects/FernandezGroup/Alec/miniconda3/envs/pyscfad/lib/python3.10/site-packages/jax/_src/dispatch.py", line 87, in apply_primitive
+    outs = fun(*args)
+TypeError: Cannot concatenate arrays with shapes that differ in dimensions other than the one being concatenated: concatenating along dimension 1 for shapes (6320, 3), (5016, 3), (2440, 3), (4592, 3), (5040, 3), (6152, 3), (6088, 3), (6320, 3), (4776, 3), (9848, 3), (9752, 3), (12256, 3), (14920, 3), (12208, 3), (9824, 3), (9912, 3).

@@ -15,6 +15,7 @@ class xcTrainer(eqx.Module):
     opt_state: tuple
     serialize_every: int
     logfile: str
+    loss_v: float
     
     def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True, serialize_every = 1, logfile=''):
         '''
@@ -54,6 +55,7 @@ class xcTrainer(eqx.Module):
         self.serialize_every = serialize_every
         self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array))
         self.logfile = logfile
+        self.loss_v = 0
 
     def __call__(self, epoch_batch_len, model, *loss_input_lists):
         '''
@@ -114,10 +116,13 @@ class xcTrainer(eqx.Module):
                     eqx.clear_caches()
                     jax.clear_backends()
                     jax.clear_caches()
+            #update self.loss_v to epoch's loss
+            object.__setattr__(self, 'loss_v', epoch_loss.item())
 
             if ( (step % self.serialize_every) == 0) and (epoch_loss.item() < BEST_LOSS):
                 eqx.tree_serialise_leaves('xc.eqx.{}'.format(step), start_model)
                 BEST_LOSS = epoch_loss.item()
+            
             #this will persist until next pass
             #the inp_model output just now is fed into get the loss next time, so if better we want to save this
             #not the updated one.

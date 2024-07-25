@@ -371,8 +371,7 @@ def get_net(xorc, level, net_path, configfile='network.config', netfile='xc.eqx'
             net = eqx.tree_deserialise_leaves(os.path.join(net_path, netfs[0]), net)
         elif len(netfs) > 1:
             print('NETFILE MATCHES FOUND -- MULTIPLE. SELECTING LAST ONE.')
-            #select netfs[-2] because the model update happens after loss is calculated, so index-1 is the network with the minimal loss
-            netf = sorted(netfs, key=lambda x: int(x.split('.')[-1]))[-2]
+            netf = sorted(netfs, key=lambda x: int(x.split('.')[-1]))[-1]
             print('ATTEMPTING TO DESERIALIZE {}'.format(netf))
             net = eqx.tree_deserialise_leaves(os.path.join(net_path, netf), net)
         else:
