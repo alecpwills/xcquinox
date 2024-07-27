@@ -4,7 +4,7 @@ import xcquinox as xce
 cwd = os.getcwd()
 
 rseeds = [92017, 17920]
-levels = ['gga', 'mgga']
+levels = ['gga', 'mgga', 'nl']
 constrs = ['c', 'nc']
 for lidx, lev in enumerate(levels):
     for sidx, seed in enumerate(rseeds):
