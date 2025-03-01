@@ -1,40 +1,291 @@
 import jax, os, pickle
 import jax.numpy as jnp
 import equinox as eqx
-
+from warnings import warn
 
 class LOB(eqx.Module):
-    limit: jax.Array
-    sig: jax.named_call
-    
-    
-    def __init__(self, limit=1.804):
-        """
-        __init__ Utility function to squash output to [-1, limit-1] inteval.
+    limit: float
 
-        Can be used to enforce non-negativity, Lieb-Oxford bounds, etc.
-        Initializes method :self.sig: -- the :jax.nn.sigmoid: function, as well.
+    def __init__(self, limit: float):
+        '''
+        Utility function to squash output to [-1, limit-1] inteval.
 
         :param limit: The Lieb-Oxford bound value to impose, defaults to 1.804
         :type limit: float, optional
-        """
+        '''
         super().__init__()
-        self.sig = jax.nn.sigmoid
         self.limit = limit
 
     def __call__(self, x):
-        """
-        __call__ Method calling the actual mapping of the input to the desired bounded region.
-
+        '''
+        Method calling the actual mapping of the input to the desired bounded region.
 
         :param x: Energy value to map back into the bounded region.
         :type x: float
         :return: Energy value mapped into bounded region.
         :rtype: float
-        """
-        return self.limit*self.sig(x-jnp.log(self.limit-1))-1
+        '''
+        return self.limit * jax.nn.sigmoid(x-jnp.log(self.limit - 1))-1
+
+#base Fx/Fc networks:
+# Define the neural network module for Fx
+class GGA_FxNet_s(eqx.Module):
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    net: eqx.nn.MLP
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804):
+        '''
+        Constructor for the exchange enhancement factor object, for the GGA case.
+
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 1 -- just the gradient information is passed to the network, to guarantee that the energy yielded from this multiplicative factor behaves correctly under uniform scaling of the electron density and obeys the spin-scaling relation.
+
+        :param depth: Depth of the neural network
+        :type depth: int
+        :param nodes: Number of nodes in each layer
+        :type nodes: int
+        :param seed: The random seed to initiate baseline weight values for the network
+        :type seed: int
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
+        :type lob_lim: float, optional
+        '''
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        #to constrain this, we require only gradient inputs
+        self.net = eqx.nn.MLP(in_size = 1, # Input is ONLY gradient_descriptor
+                              out_size = 1, # Output is Fx
+                              depth = self.depth,
+                              width_size = self.nodes,
+                              activation = jax.nn.gelu,
+                              key = jax.random.PRNGKey(self.seed))
+        self.lobf = LOB(limit=lob_lim)
+
+    
+
+    def __call__(self, inputs):
+        '''
+        The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
+
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+
+        *NOTE*: Here, the gradient_descriptor is assumed to be the reduced density gradient, :s:, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+
+        :param inputs: _description_
+        :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
+        :return: The enhancement factor value
+        :rtype: float
+        '''
+        #takes forever if inputs[1] tanh input has extended shape , i.e. (1,1) as opposed to scalar shape (1,)
+        return 1+self.lobf((jnp.tanh(inputs[1])**2)*self.net(inputs[1, jnp.newaxis]).squeeze())
 
 
+# Define the neural network module for Fc
+class GGA_FcNet_s(eqx.Module):
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    net: eqx.nn.MLP
+    lobf: eqx.Module
+
+
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0):
+        '''
+        Constructor for the correlation enhancement factor object, for the GGA case.
+
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 2 -- both the density and gradient information is passed to the network.
+
+        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the correlation energy.
+
+        :param depth: Depth of the neural network
+        :type depth: int
+        :param nodes: Number of nodes in each layer
+        :type nodes: int
+        :param seed: The random seed to initiate baseline weight values for the network
+        :type seed: int
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2
+        :type lob_lim: float, optional
+        '''
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.net = eqx.nn.MLP(in_size = 2, # Input is rho, gradient_descriptor
+                              out_size = 1, # Output is Fc
+                              depth = self.depth,
+                              width_size = self.nodes,
+                              activation = jax.nn.gelu,
+                              key = jax.random.PRNGKey(self.seed))
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        '''
+        The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
+
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+
+        *NOTE*: Here, the gradient_descriptor is assumed to be the reduced density gradient, :s:, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+
+        :param inputs: _description_
+        :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
+        :return: The enhancement factor value
+        :rtype: float
+        '''
+        #takes forever if inputs[1] tanh input has extended shape , i.e. (1,1) as opposed to scalar shape (1,)
+        return 1+self.lobf((jnp.tanh(inputs[1])**2)*self.net(inputs).squeeze())
+
+
+# Define the neural network module for Fx
+class GGA_FxNet_sigma(eqx.Module):
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    lower_density_cutoff: float
+    net: eqx.nn.MLP
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804, lower_rho_cutoff = 1e-12):
+        '''
+        Constructor for the exchange enhancement factor object, for the GGA case.
+
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 1 -- just the gradient information is passed to the network, to guarantee that the energy yielded from this multiplicative factor behaves correctly under uniform scaling of the electron density and obeys the spin-scaling relation.
+
+        :param depth: Depth of the neural network
+        :type depth: int
+        :param nodes: Number of nodes in each layer
+        :type nodes: int
+        :param seed: The random seed to initiate baseline weight values for the network
+        :type seed: int
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
+        :type lob_lim: float, optional
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
+        :type lower_rho_cutoff: float, optional
+        '''
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.lower_rho_cutoff = lower_rho_cutoff
+        #to constrain this, we require only gradient inputs
+        self.net = eqx.nn.MLP(in_size = 1, # Input is ONLY gradient_descriptor
+                              out_size = 1, # Output is Fx
+                              depth = self.depth,
+                              width_size = self.nodes,
+                              activation = jax.nn.gelu,
+                              key = jax.random.PRNGKey(self.seed))
+        self.lobf = LOB(limit=lob_lim)
+
+    
+
+    def __call__(self, inputs):
+        '''
+        The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
+
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+
+        :param inputs: _description_
+        :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
+        :return: The enhancement factor value
+        :rtype: float
+        '''
+        #here, assume the inputs is [rho, sigma] and select the appropriate input
+        #takes forever if inputs[1] tanh input has extended shape , i.e. (1,1) as opposed to scalar shape (1,)
+        rho = jnp.maximum(self.lower_rho_cutoff, inputs[0]) #Prevents division by 0
+        rho = rho.flatten()
+        sigma = jnp.maximum(self.lower_rho_cutoff, inputs[1]) #Prevents division by 0
+        sigma = sigma.flatten()
+        k_F = (3 * jnp.pi**2 * rho)**(1/3)
+        s = jnp.sqrt(sigma) / (2 * k_F * rho)
+        s = s.flatten()
+        tanhterm = jnp.tanh(s)**2
+        netterm = self.net(s)
+        lobterm = self.lobf( tanhterm*netterm )
+        return 1+lobterm.squeeze()
+
+
+# Define the neural network module for Fc
+class GGA_FcNet_sigma(eqx.Module):
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    lower_density_cutoff: float
+    net: eqx.nn.MLP
+    lobf: eqx.Module
+
+
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0, lower_rho_cutoff = 1e-12):
+        '''
+        Constructor for the correlation enhancement factor object, for the GGA case.
+
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 2 -- both the density and gradient information is passed to the network.
+
+        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the correlation energy.
+
+        :param depth: Depth of the neural network
+        :type depth: int
+        :param nodes: Number of nodes in each layer
+        :type nodes: int
+        :param seed: The random seed to initiate baseline weight values for the network
+        :type seed: int
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2
+        :type lob_lim: float, optional
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
+        :type lower_rho_cutoff: float, optional
+        '''
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.lower_rho_cutoff = lower_rho_cutoff
+        self.net = eqx.nn.MLP(in_size = 2, # Input is rho, gradient_descriptor
+                              out_size = 1, # Output is Fc
+                              depth = self.depth,
+                              width_size = self.nodes,
+                              activation = jax.nn.gelu,
+                              key = jax.random.PRNGKey(self.seed))
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        '''
+        The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
+
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+
+        :param inputs: _description_
+        :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
+        :return: The enhancement factor value
+        :rtype: float
+        '''
+        #here, assume the inputs is [rho, sigma] and select the appropriate input
+        #takes forever if inputs[1] tanh input has extended shape , i.e. (1,1) as opposed to scalar shape (1,)
+        rho = jnp.maximum(self.lower_rho_cutoff, inputs[0]) #Prevents division by 0
+        rho = rho.flatten()
+        sigma = jnp.maximum(self.lower_rho_cutoff, inputs[1]) #Prevents division by 0
+        sigma = sigma.flatten()
+        k_F = (3 * jnp.pi**2 * rho)**(1/3)
+        s = jnp.sqrt(sigma) / (2 * k_F * rho)
+        s = s.flatten()
+        netinp = jnp.stack([rho, s], axis=0).flatten()
+        tanhterm = jnp.tanh(s)**2
+        netterm = self.net(netinp)
+        lobterm = self.lobf( tanhterm*netterm )
+        return 1+lobterm.squeeze()
+
+
+
+
+### DEPRECATED BELOW
 class eX(eqx.Module):
     n_input: int
     n_hidden: int
@@ -99,6 +350,8 @@ class eX(eqx.Module):
         self.sig = jax.nn.sigmoid
         self.shift = 1/(1+jnp.exp(-1e-3))
 
+        warn("WARNING - DEPRECATED. This class is not the currently working class and will be removed in the future.")
+
     def __call__(self, rho, **kwargs):
         """
         __call__ Forward pass for the exchange network.
@@ -141,6 +394,10 @@ class eX(eqx.Module):
 
         return result
 
+
+
+
+### DEPRECATED
 class eC(eqx.Module):
     n_input: int
     n_hidden: int
@@ -207,6 +464,7 @@ class eC(eqx.Module):
         else:
             self.lob =  1000.0
             self.lobf = LOB(self.lob)
+        warn("WARNING - DEPRECATED. This class is not the currently working class and will be removed in the future.")
 
 
     def __call__(self, rho, **kwargs):

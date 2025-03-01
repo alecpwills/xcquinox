@@ -1,6 +1,8 @@
 import equinox as eqx
 import optax, sys, gc, jax, os
 from jax.interpreters import xla
+import jax.numpy as jnp
+from typing import Callable
 
 class xcTrainer(eqx.Module):
     model: eqx.Module
@@ -194,3 +196,89 @@ class xcTrainer(eqx.Module):
         if self.verbose:
             jax.debug.print(output)
 
+
+
+### Pre-trainer
+class Pretrainer(eqx.Module):
+    model: eqx.Module
+    optim: optax.GradientTransformation
+    steps: int
+    print_every: int
+    opt_state: tuple
+    inputs: jnp.array
+    ref: jnp.array
+    loss: Callable
+
+    def __init__(self, model, optim, inputs, ref, loss, steps=1000, print_every=100):
+        '''
+        The Pretrainer object aids in the initial pre-training of enhancement factor networks to have a more physical starting point for further network optimization. This class is meant to pre-train a randomly initialized network to fit the values of a specific XC functional's enhancement factor (either X or C, in principle it could also be a combined XC enhancement facator)
+
+        :param model: The enhancement factor network to be pre-trained
+        :type model: :xcquinox.net: class
+        :param optim: The optimizer than will control the weight updates given a loss and gradient
+        :type optim: optax.GradientTransformation
+        :param inputs: The inputs the network itself is expecting in its forward pass function
+        :type inputs: jnp.array
+        :param ref: The reference values the network is expected to reproduce
+        :type ref: jnp.array
+        :param loss: A function from :xcquinox.loss: that is decorated with @eqx.filter_value_and_grad
+        :type loss: Callable
+        :param steps: Number of epochs to train over, defaults to 1000
+        :type steps: int, optional
+        :param print_every: How often to print loss statistic, defaults to 100
+        :type print_every: int, optional
+        '''
+        super().__init__()
+        self.model = model
+        self.optim = optim
+        self.inputs = inputs
+        self.ref = ref
+        self.steps = steps
+        self.print_every = print_every
+        self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array))
+        self.loss = loss
+
+    def __call__(self):
+        '''
+        The training loop itself. Here, a loop over the specifed epochs takes place to train the network to fit reference values.
+
+        :return: The trained model and an array of the losses during training.
+        :rtype: (:xcquinox.net: class, array)
+        '''
+        losses = []
+        for epoch in range(self.steps):
+            if epoch == 0:
+                this_model = self.model
+                this_opt_state = self.opt_state
+            loss, this_model, this_opt_state = self.make_step(this_model, self.inputs, self.ref, this_opt_state)
+            lossi = loss.item()
+            losses.append(lossi)
+            if epoch % self.print_every == 0:
+                print(f'Epoch {epoch}: Loss = {lossi}')
+
+        return this_model, losses
+
+    @eqx.filter_jit
+    def make_step(self, model, inputs, ref, opt_state):
+        '''
+        The function that does each epoch's network update. It generates a loss and gradient using the specific :xcquinox.loss: function (that must be decorated with @eqx.filter_value_and_grad and only explicitly returns the loss value inside the function proper) given the specified inputs and reference values and initial optimization state.
+
+        :param model: The enhancement factor network to be pre-trained
+        :type model: :xcquinox.net: class
+        :param inputs: The inputs the network itself is expecting in its forward pass function
+        :type inputs: jnp.array
+        :param ref: The reference values the network is expected to reproduce
+        :type ref: jnp.array
+        :param opt_state: The INITIAL optimization state to work against, typically generated via :self.optim.init(eqx.filter(self.model, eqx.is_array)):
+        :type opt_state: The type of the above
+        :return: The loss value for this step, the updated model after that loss is calculated, and the new optimization state for this step to use next time
+        :rtype: tuple
+        '''
+        loss, grad = self.loss(model, inputs, ref)
+        updates, opt_state = self.optim.update(grad, opt_state)
+        model = eqx.apply_updates(model, updates)
+        return loss, model, opt_state
+
+
+
+### Optimizer

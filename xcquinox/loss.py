@@ -1,7 +1,17 @@
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from xcquinox.utils import get_dm_moe, pad_array, pad_array_list
 from xcquinox.pyscf import generate_network_eval_xc
+
+
+@eqx.filter_value_and_grad
+def compute_loss_mae(model, inputs, ref):
+    pred = jax.vmap(model)(inputs)
+    loss = jnp.mean(jnp.abs(pred - ref))
+    return loss
+
+#---------------------deprecated below
 
 class E_loss(eqx.Module):
     def __init__(self):

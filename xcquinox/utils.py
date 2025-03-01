@@ -2,6 +2,8 @@ from pyscfad import gto
 import equinox as eqx
 import jax.numpy as jnp
 import jax
+from pyscf import dft
+import numpy as np
 
 def pad_array(arr, max_arr, shape=None, device=jax.devices('cpu')[0]):
     """
@@ -411,3 +413,329 @@ class eig(eqx.Module):
         e = pad_array(e, e, shape=[diff])
         c = pad_array(c, c, shape=(diff,diff))
         return e, c
+
+
+
+# Function to calculate statistics
+def calculate_stats(true, pred):
+    true_flat = true.flatten()
+    pred_flat = pred.flatten()
+    
+    # R-squared
+    ss_res = jnp.sum((true_flat - pred_flat) ** 2)
+    ss_tot = jnp.sum((true_flat - jnp.mean(true_flat)) ** 2)
+    r2 = 1 - (ss_res / ss_tot)
+    
+    # Mean Absolute Error
+    mae = jnp.mean(jnp.abs(true_flat - pred_flat))
+    
+    # Root Mean Squared Error
+    rmse = jnp.sqrt(jnp.mean((true_flat - pred_flat) ** 2))
+    
+    # Maximum Absolute Error
+    max_error = jnp.max(jnp.abs(true_flat - pred_flat))
+    
+    return r2, mae, rmse, max_error
+
+
+## Generate grid of rho, grad_rho, s values
+def gen_grid_s(npts=30000, start_stop_rho = (0.01, 5), start_stop_s = (0.01, 5),
+               train_pct = 0.8, ranseed=92017):
+    '''
+    Generates a grid of rho, grad_rho, and reduced_density_gradient values and returns their flattened forms to be fed into a given enhancement factor function for training or validation purposes.
+
+    :param npts: Number of points to generate in each array, defaults to 30000. The function will get close, but not necessarily exactly the number of points, unless the desired value is a perfect square.
+    :type npts: int, optional
+    :param start_stop_rho: Bounds for the generated reduced_density_gradient values, defaults to (0.01, 5)
+    :type start_stop_rho: tuple, optional
+    :param start_stop_s: Bounds for the generated rho values, defaults to (0.01, 5)
+    :type start_stop_s: tuple, optional
+    :return: The flattened density, grad_rho, and s arrays
+    :rtype: 3-tuple: (rho_flat, grad_rho_flat, s_flat)
+    '''
+    val_pct = 1.0 - train_pct
+    START_RHO, STOP_RHO = start_stop_rho
+    START_S, STOP_S = start_stop_s
+    s_values_low = jnp.linspace(START_S, 0.5, num=int(0.7 * jnp.sqrt(npts)))
+    s_values_high = jnp.linspace(0.5, STOP_S, num=int(0.3 * jnp.sqrt(npts)))
+    s_values = jnp.concatenate([s_values_low, s_values_high])
+    rho_values = jnp.logspace(jnp.log10(START_RHO), jnp.log10(STOP_RHO), num=int(jnp.sqrt(npts)))
+
+    ind_sel = np.arange(0, len(s_values))
+    np.random.seed(ranseed)
+    val_inds = np.random.choice(ind_sel, size = int(val_pct*len(s_values)), replace=False)
+    train_inds = np.array([i for i in ind_sel if i not in val_inds])
+    #randomize training point order
+    np.random.shuffle(train_inds)
+
+    
+    rho_mesh, s_mesh = jnp.meshgrid(rho_values, s_values)
+    rho_flat = rho_mesh.flatten()
+    s_flat = s_mesh.flatten()
+    # Calculate grad_rho
+    k_F = (3 * jnp.pi**2 * rho_flat)**(1/3)
+    grad_rho_flat = 2 * s_flat * k_F * rho_flat
+    print('shapes- r/gr/s: {}/{}/{}'.format(rho_flat.shape, grad_rho_flat.shape, s_flat.shape))
+    return (rho_flat, grad_rho_flat, s_flat)
+
+## PBE Exchange Enhancement Factor
+def PBE_Fx(rho, grad_rho, lower_rho_cutoff = 1e-12):
+    '''
+    Given density and density gradient magnitude values, calculates the PBE Exchange Enhancement Factor as denoted in:
+
+    Equation 14 from PBE paper -- DOI: 10.1103/PhysRevLett.77.3865
+
+    :param rho: the density value on the grid
+    :type rho: float, broadcastable array
+    :param grad_rho: the magnitude of the density gradient values on the grid
+    :type grad_rho: float, broadcastable array
+    :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
+    :type lower_rho_cutoff: float, optional
+    :return: The numerical value(s) of the exchange enhancement factor
+    :rtype: float, broadcastable array
+    '''
+    #Equation 14 from PBE paper -- DOI: 10.1103/PhysRevLett.77.3865
+    rho = jnp.maximum(lower_rho_cutoff, rho) #Prevents division by 0
+    k_F = (3 * jnp.pi**2 * rho)**(1/3)
+    s = grad_rho / (2 * k_F * rho)
+    kappa, mu = 0.804, 0.21951
+
+    Fx = 1 + kappa - kappa / (1 + mu * s**2 / kappa) #exchange enhancement factor
+
+    return Fx
+
+## NON-POLARIZED PBE Correlation Enhancement Factor
+## i.e., zeta == 0
+def PBE_Fc(rho, grad_rho,  lower_rho_cutoff = 1e-12):
+    '''
+    Given density and density gradient magnitude values, calculates the PBE Correlation Enhancement Factor as denoted in:
+
+    *CRITICALLY*, this function is only valid for the non-spin-polarized case where zeta = 0
+    
+    Equation 3 from PBE paper -- DOI: 10.1103/PhysRevLett.77.3865
+
+    :param rho: the density value on the grid
+    :type rho: float, broadcastable array
+    :param grad_rho: the magnitude of the density gradient values on the grid
+    :type grad_rho: float, broadcastable array
+    :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
+    :type lower_rho_cutoff: float, optional
+    :return: The numerical value(s) of the correlation enhancement factor
+    :rtype: float, broadcastable array
+    '''
+    #Equation 3 from PBE paper -- DOI: 10.1103/PhysRevLett.77.3865
+    #Ec = Integral[ rho * (e_C^HEG + H) ]
+    # H from equation 7
+    # A from equation 8
+    rho = jnp.maximum(lower_rho_cutoff, rho) #Prevents division by 0
+    pi = jnp.pi
+    k_F = (3 * pi**2 * rho)**(1/3)
+    s = grad_rho / (2 * k_F * rho)
+    k_s = jnp.sqrt((4 * k_F) / pi)
+    t = jnp.abs(grad_rho) / (2 * k_s * rho)
+    beta = 0.066725
+    gamma = (1 - jnp.log(2)) / (pi**2)
+
+    #Calculate e_heg_c (heterogeneous electron gas correlation energy)
+    N = rho.size 
+    rho_array = jnp.zeros((6, N))  # Initialize the rho_array with the correct shape. Only the first element (rho) matters, so the rest are populated with 0. 
+    rho_array = rho_array.at[0, :].set(rho)  # Populate first array value with rho
+    e_heg_c = dft.libxc.eval_xc(',LDA_C_PW', rho_array, spin=0, deriv=1)[0]
+
+    A = (beta / gamma) / (jnp.exp(-e_heg_c / (gamma)) - 1)
+
+    H = gamma * jnp.log(1 + (beta / gamma) * t**2 * ((1 + A * t**2) / (1 + A * t**2 + A**2 * t**4)))
+
+    Fc = 1 + (H / e_heg_c) #correlation enhancement factor
+
+    return Fc
+
+def pw91_correlation_energy_density(rho):
+    """
+    Calculate the correlation energy density according to the PW91 functional.
+
+    Parameters:
+    - rho: electron density (numpy array or scalar)
+    - grad_rho: gradient of the electron density (numpy array or scalar)
+
+    Returns:
+    - correlation energy density (numpy array or scalar)
+    """
+    A = 0.0311
+    B = 0.116
+    C = 0.145
+    
+    # Compute the correlation energy density
+    rho_1_3 = jnp.cbrt(rho)  # rho^(1/3)
+    term1 = 1 / jnp.sqrt(1 + C / rho_1_3)
+    epsilon_c = -A / rho * (1 + B * (term1 - 1))
+    
+    return epsilon_c  
+  
+def lda_c_pw(rho):
+    params_a_pp     = [1,  1,  1]
+    params_a_a      = [0.031091, 0.015545, 0.016887]
+    params_a_alpha1 = [0.21370,  0.20548,  0.11125]
+    params_a_beta1  = [7.5957, 14.1189, 10.357]
+    params_a_beta2  = [3.5876, 6.1977, 3.6231]
+    params_a_beta3  = [1.6382, 3.3662,  0.88026]
+    params_a_beta4  = [0.49294, 0.62517, 0.49671]
+    params_a_fz20   = 1.709921
+
+    zeta = (rho - rho)/(rho + rho + 1e-8)
+    rs = (4*np.pi*(rho + 1e-8)/3)**(-1/3)
+
+    def g_aux(k, rs):
+        return params_a_beta1[k]*jnp.sqrt(rs) + params_a_beta2[k]*rs\
+      + params_a_beta3[k]*rs**1.5 + params_a_beta4[k]*rs**(params_a_pp[k] + 1)
+
+    def g(k, rs):
+        return -2*params_a_a[k]*(1 + params_a_alpha1[k]*rs)\
+      * jnp.log(1 +  1/(2*params_a_a[k]*g_aux(k, rs)))
+
+    def f_zeta(zeta):
+        return ((1+zeta)**(4/3) + (1-zeta)**(4/3) - 2)/(2**(4/3)-2)
+
+    def f_pw(rs, zeta):
+        return g(0, rs) + zeta**4*f_zeta(zeta)*(g(1, rs) - g(0, rs) + g(2, rs)/params_a_fz20)\
+      - f_zeta(zeta)*g(2, rs)/params_a_fz20
+
+    return f_pw(rs, zeta)
+
+def lda_x(rho):
+    '''
+    The HEG exchange energy density.
+
+    :param rho: Total electron density array on a grid.
+    :type rho: jax.numpy array
+    :return: Exchange energy density array.
+    :rtype: jax.numpy array
+    '''
+    return -3/4*(3/jnp.pi)**(1/3)*rho**(1/3)
+
+def pw92c(rho):
+    '''
+    Implements the Perdew-Wang '92 local correlation (beyond RPA) for the unpolarized case.
+    Reference: J.P.Perdew & Y.Wang, PRB, 45, 13244 (1992)
+
+    :param rho: Total electron density array on a grid.
+    :type rho: jax.numpy array
+    :return: Correlation energy density and potential arrays.
+    :rtype: tuple of (jax.numpy array, jax.numpy array)
+    '''
+    # Constants
+    nspin = 1
+    DENMIN = 1.e-12
+    ONE = 1 + 1.e-12
+    PI = jnp.pi
+    # Parameters
+    P = jnp.array([1.00, 1.00, 1.00])
+    A = jnp.array([0.031091, 0.015545, 0.016887])
+    ALPHA1 = jnp.array([0.21370, 0.20548, 0.11125])
+    # MVFS test the transpose
+    X = jnp.array([[7.5957, 14.1189, 10.357],
+                      [3.5876, 6.1977, 3.6231],
+                      [1.6382, 3.3662, 0.88026],
+                      [0.49294, 0.62517, 0.49671]])
+    BETA = jnp.transpose(X)
+    # Calculate rs and zeta
+    if nspin == 1:
+        DTOT = jnp.maximum(DENMIN, rho[0])
+        ZETA = 0
+        RS = (3 / (4 * PI * DTOT)) ** (1 / 3)
+        DRSDD = -RS / DTOT / 3
+        DZDD = jnp.array([0.0])
+    else:
+        DTOT = jnp.maximum(DENMIN, rho[0] + rho[1])
+        ZETA = (rho[0] - rho[1]) / DTOT
+        RS = (3 / (4 * PI * DTOT)) ** (1 / 3)
+        DRSDD = -RS / DTOT / 3
+        DZDD = jnp.array([(ONE - ZETA) / DTOT, - (ONE + ZETA) / DTOT])
+    # Compute G and its derivatives
+    G = jnp.zeros(3)
+    DGDRS = jnp.zeros(3)
+    for IG in range(3):
+        B = BETA[IG, 0] * RS ** 0.5 + \
+            BETA[IG, 1] * RS + \
+            BETA[IG, 2] * RS ** 1.5 + \
+            BETA[IG, 3] * RS ** (P[IG] + 1)
+        DBDRS = BETA[IG, 0] * 0.5 / RS ** 0.5 + \
+                BETA[IG, 1] + \
+                BETA[IG, 2] * 1.5 * RS ** 0.5 + \
+                BETA[IG, 3] * (P[IG] + 1) * RS ** P[IG]
+        C = 1 + 1 / (2 * A[IG] * B)
+        DCDRS = - ((C - 1) * DBDRS / B)
+        Gtmp = (-2) * A[IG] * (1 + ALPHA1[IG] * RS) * jnp.log(C)
+        DGDRStmp = (-2) * A[IG] * (ALPHA1[IG] * jnp.log(C) + \
+                                    (1 + ALPHA1[IG] * RS) * DCDRS / C)
+        G = G.at[IG].set(Gtmp)
+        DGDRS = DGDRS.at[IG].set(DGDRStmp)
+    # Find f’’(0) and f(zeta)
+    C = 1 / (2 ** (4 / 3) - 2)
+    FPP0 = 8 * C / 9
+    F = ((ONE + ZETA) ** (4 / 3) + (ONE - ZETA) ** (4 / 3) - 2) * C
+    DFDZ = (4 / 3) * ((ONE + ZETA) ** (1 / 3) - (ONE - ZETA) ** (1 / 3)) * C
+    # Compute EC and VC
+    EC = G[0] - G[2] * F / FPP0 * (ONE - ZETA ** 4) + \
+         (G[1] - G[0]) * F * ZETA ** 4
+    DECDRS = DGDRS[0] - DGDRS[2] * F / FPP0 * (ONE - ZETA ** 4) + \
+             (DGDRS[1] - DGDRS[0]) * F * ZETA ** 4
+    DECDZ = (-G[2]) / FPP0 * (DFDZ * (ONE - ZETA ** 4) - F * 4 * ZETA ** 3) + \
+            (G[1] - G[0]) * (DFDZ * ZETA ** 4 + F * 4 * ZETA ** 3)
+    # Calculate correlation potential
+    if nspin == 1:
+        DECDD = DECDRS * DRSDD
+        VC = jnp.array([EC + DTOT * DECDD])
+    else:
+        DECDD = jnp.array([DECDRS * DRSDD + DECDZ * DZDD[0],
+                           DECDRS * DRSDD + DECDZ * DZDD[1]])
+        VC = jnp.array([EC + DTOT * DECDD[0],
+                        EC + DTOT * DECDD[1]])
+    return EC, VC
+
+def pw92c_unpolarized(rho):
+    '''
+    Implements the Perdew-Wang '92 local correlation (beyond RPA) for the unpolarized case.
+    Reference: J.P.Perdew & Y.Wang, PRB, 45, 13244 (1992)
+
+    :param rho: Total electron density array on a grid.
+    :type rho: jax.numpy array
+    :return: Correlation energy density array.
+    :rtype: jax.numpy array
+    '''
+    # Ensure rho is a jax.numpy array
+    rho = jnp.asarray(rho)
+
+    # Parameters from Table I of Perdew & Wang, PRB, 45, 13244 (92)
+    A = jnp.array([0.031091, 0.015545, 0.016887])
+    ALPHA1 = jnp.array([0.21370, 0.20548, 0.11125])
+    BETA1 = jnp.array([7.5957, 14.1189, 10.357])
+    BETA2 = jnp.array([3.5876, 6.1977, 3.6231])
+    BETA3 = jnp.array([1.6382, 3.3662, 0.88026])
+    BETA4 = jnp.array([0.49294, 0.62517, 0.49671])
+
+    # Compute rs (Wigner-Seitz radius) for each grid point
+    rs = (3 / (4 * jnp.pi * rho))**(1/3)
+
+    # Compute G for unpolarized case (zeta = 0) across all grid points
+    def compute_g(rs):
+        try:
+            G = jnp.zeros((len(rs), 3))
+        except:
+            G = jnp.zeros((1, 3))
+        for k in range(3):
+            B = (BETA1[k] * jnp.sqrt(rs) +
+                 BETA2[k] * rs +
+                 BETA3[k] * rs**1.5 +
+                 BETA4[k] * rs**2)
+            C = 1 + 1 / (2 * A[k] * B)
+            G = G.at[:, k].set(-2 * A[k] * (1 + ALPHA1[k] * rs) * jnp.log(C))
+        return G
+
+    # Apply compute_g to each grid point
+    G = compute_g(rs)
+
+    # For unpolarized case, correlation energy density is G[0]
+    EC = G[:, 0]
+
+    return EC
