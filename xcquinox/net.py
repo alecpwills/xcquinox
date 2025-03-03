@@ -146,7 +146,7 @@ class GGA_FxNet_sigma(eqx.Module):
     nodes: int
     seed: int
     lob_lim: float
-    lower_density_cutoff: float
+    lower_rho_cutoff: float
     net: eqx.nn.MLP
     lobf: eqx.Module
 
@@ -198,10 +198,12 @@ class GGA_FxNet_sigma(eqx.Module):
         '''
         #here, assume the inputs is [rho, sigma] and select the appropriate input
         #takes forever if inputs[1] tanh input has extended shape , i.e. (1,1) as opposed to scalar shape (1,)
-        rho = jnp.maximum(self.lower_rho_cutoff, inputs[0]) #Prevents division by 0
-        rho = rho.flatten()
-        sigma = jnp.maximum(self.lower_rho_cutoff, inputs[1]) #Prevents division by 0
-        sigma = sigma.flatten()
+        # rho = jnp.maximum(self.lower_rho_cutoff, inputs[0]) #Prevents division by 0
+        # rho = rho.flatten()
+        # sigma = jnp.maximum(self.lower_rho_cutoff, inputs[1]) #Prevents division by 0
+        # sigma = sigma.flatten()
+        rho = inputs[0]
+        sigma = inputs[1]
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
@@ -217,7 +219,7 @@ class GGA_FcNet_sigma(eqx.Module):
     nodes: int
     seed: int
     lob_lim: float
-    lower_density_cutoff: float
+    lower_rho_cutoff: float
     net: eqx.nn.MLP
     lobf: eqx.Module
 

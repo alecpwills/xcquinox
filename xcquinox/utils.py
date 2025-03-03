@@ -440,9 +440,11 @@ def calculate_stats(true, pred):
 
 ## Generate grid of rho, grad_rho, s values
 def gen_grid_s(npts=30000, start_stop_rho = (0.01, 5), start_stop_s = (0.01, 5),
-               train_pct = 0.8, ranseed=92017):
+               train_pct = 0.8, ranseed=92017, sigma=False):
     '''
-    Generates a grid of rho, grad_rho, and reduced_density_gradient values and returns their flattened forms to be fed into a given enhancement factor function for training or validation purposes.
+    Generates a grid of rho, grad_rho, and reduced_density_gradient values. Will generate ~sqrt(npts) sized rho and s arrays, used to generate a grad_rho array. 
+
+    The indices of these arrays are then randomly sub-sampled to yield (1 - train_pct) percent of validation indices, which are excluded from the training meshgrid.
 
     :param npts: Number of points to generate in each array, defaults to 30000. The function will get close, but not necessarily exactly the number of points, unless the desired value is a perfect square.
     :type npts: int, optional
@@ -450,8 +452,15 @@ def gen_grid_s(npts=30000, start_stop_rho = (0.01, 5), start_stop_s = (0.01, 5),
     :type start_stop_rho: tuple, optional
     :param start_stop_s: Bounds for the generated rho values, defaults to (0.01, 5)
     :type start_stop_s: tuple, optional
-    :return: The flattened density, grad_rho, and s arrays
-    :rtype: 3-tuple: (rho_flat, grad_rho_flat, s_flat)
+    :param train_pct: Percentage of generated BASE values to use in training, defaults to 0.8
+    :type train_pct: float, optional
+    :param ranseed: Seed to set for training/validation index selection, defaults to 92017
+    :type ranseed: int, optional
+    :param sigma: If flagged, will return array of SIGMA (= grad_rho**2) values instead of "grad_rho" values, defaults to False
+    :type sigma: bool, optional
+    :return: List of [(train_inds, val_inds), (rho_values, grad_rho_values, s_values),
+            (trho_flat, tgrad_rho_flat, ts_flat), (vrho_flat, vgrad_rho_flat, vs_flat)]
+    :rtype: list
     '''
     val_pct = 1.0 - train_pct
     START_RHO, STOP_RHO = start_stop_rho
@@ -459,8 +468,13 @@ def gen_grid_s(npts=30000, start_stop_rho = (0.01, 5), start_stop_s = (0.01, 5),
     s_values_low = jnp.linspace(START_S, 0.5, num=int(0.7 * jnp.sqrt(npts)))
     s_values_high = jnp.linspace(0.5, STOP_S, num=int(0.3 * jnp.sqrt(npts)))
     s_values = jnp.concatenate([s_values_low, s_values_high])
-    rho_values = jnp.logspace(jnp.log10(START_RHO), jnp.log10(STOP_RHO), num=int(jnp.sqrt(npts)))
-
+    rho_add = len(s_values) - int(jnp.sqrt(npts))
+    rho_values = jnp.logspace(jnp.log10(START_RHO), jnp.log10(STOP_RHO), num=int(jnp.sqrt(npts)+rho_add))
+    k_F = (3 * jnp.pi**2 * rho_values)**(1/3)
+    grad_rho_values = 2 * s_values * k_F * rho_values
+    if sigma:
+        grad_rho_values = grad_rho_values**2
+    
     ind_sel = np.arange(0, len(s_values))
     np.random.seed(ranseed)
     val_inds = np.random.choice(ind_sel, size = int(val_pct*len(s_values)), replace=False)
@@ -468,15 +482,33 @@ def gen_grid_s(npts=30000, start_stop_rho = (0.01, 5), start_stop_s = (0.01, 5),
     #randomize training point order
     np.random.shuffle(train_inds)
 
+    trho_values = rho_values[train_inds]
+    vrho_values = rho_values[val_inds]
     
-    rho_mesh, s_mesh = jnp.meshgrid(rho_values, s_values)
-    rho_flat = rho_mesh.flatten()
-    s_flat = s_mesh.flatten()
+    ts_values = s_values[train_inds]
+    vs_values = s_values[val_inds]
+
+    trho_mesh, ts_mesh = jnp.meshgrid(trho_values, ts_values)
+    trho_flat = trho_mesh.flatten()
+    ts_flat = ts_mesh.flatten()
     # Calculate grad_rho
-    k_F = (3 * jnp.pi**2 * rho_flat)**(1/3)
-    grad_rho_flat = 2 * s_flat * k_F * rho_flat
-    print('shapes- r/gr/s: {}/{}/{}'.format(rho_flat.shape, grad_rho_flat.shape, s_flat.shape))
-    return (rho_flat, grad_rho_flat, s_flat)
+    tk_F = (3 * jnp.pi**2 * trho_flat)**(1/3)
+    tgrad_rho_flat = 2 * ts_flat * tk_F * trho_flat
+    if sigma:
+        tgrad_rho_flat = tgrad_rho_flat**2
+
+    vrho_mesh, vs_mesh = jnp.meshgrid(vrho_values, vs_values)
+    vrho_flat = vrho_mesh.flatten()
+    vs_flat = vs_mesh.flatten()
+    # Calculate grad_rho
+    vk_F = (3 * jnp.pi**2 * vrho_flat)**(1/3)
+    vgrad_rho_flat = 2 * vs_flat * vk_F * vrho_flat
+    if sigma:
+        vgrad_rho_flat = vgrad_rho_flat**2
+
+    print('shapes- r/gr/s: {}/{}/{}'.format(rho_values.shape, grad_rho_values.shape, s_values.shape))
+    return [(train_inds, val_inds), (rho_values, grad_rho_values, s_values),
+            (trho_flat, tgrad_rho_flat, ts_flat), (vrho_flat, vgrad_rho_flat, vs_flat)]
 
 ## PBE Exchange Enhancement Factor
 def PBE_Fx(rho, grad_rho, lower_rho_cutoff = 1e-12):
