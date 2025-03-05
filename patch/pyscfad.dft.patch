@@ -42,7 +42,6 @@
 +                #XCQUINOX MODIFICATION
 +                try:
 +                    #First try using the custom eval_xc inputs, then resort to default for regular kernel
-+                    print(f'LDA ni.block_loop; input ao.shape={ao.shape}, weight.shape={weight.shape}, coords.shape={coords.shape}')
 +                    exc, vxc = ni.eval_xc(xc_code, rho, ao, weight, coords, spin=0,
 +                                      relativity=relativity, deriv=1,
 +                                      verbose=verbose)[:2]
@@ -62,7 +61,6 @@
 +                #XCQUINOX MODIFICATION
 +                try:
 +                    #First try using the custom eval_xc inputs, then resort to default for regular kernel
-+                    print(f'GGA ni.block_loop; input ao.shape={ao.shape}, weight.shape={weight.shape}, coords.shape={coords.shape}')
 +                    exc, vxc = ni.eval_xc(xc_code, rho, ao, weight, coords, spin=0,
 +                                      relativity=relativity, deriv=1,
 +                                      verbose=verbose)[:2]
@@ -82,7 +80,6 @@
 +                #XCQUINOX MODIFICATION
 +                try:
 +                    #First try using the custom eval_xc inputs, then resort to default for regular kernel
-+                    print(f'MGGA ni.block_loop; input ao.shape={ao.shape}, weight.shape={weight.shape}, coords.shape={coords.shape}')
 +                    exc, vxc = ni.eval_xc(xc_code, rho, ao, weight, coords, spin=0,
 +                                      relativity=relativity, deriv=1,
 +                                      verbose=verbose)[:2]

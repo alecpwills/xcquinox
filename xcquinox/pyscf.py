@@ -1,5 +1,9 @@
 import jax
+import equinox as eqx
+import numpy as np
 import jax.numpy as jnp
+from xcquinox.utils import lda_x,pw92c_unpolarized
+from functools import partial
 
 def generate_network_eval_xc(mf, dm, network):
     '''
@@ -217,3 +221,145 @@ def generate_network_eval_xc(mf, dm, network):
             print(f'shapes: vrho={vrho.shape}, vgamma={vgamma.shape}')
         return exc, (vrho, vgamma, vlapl, vtau), fxc, kxc
     return eval_xc
+
+
+
+## updated versions of this
+# GGA
+def custom_pbe_Fx(rho, sigma, XNET = None):
+    #this will be a call to the Fx neural network we want
+    # print('DEBUG custom_pbe_Fx, rho/sigma shapes: ', rho.shape, sigma.shape)
+    # print('DEBUG custom_pbe_Fx: rho: ', rho)
+    # print('DEBUG custom_pbe_Fx: sigma: ', sigma)
+
+    Fx = XNET([rho, sigma])
+    return Fx
+
+def custom_pbe_Fc(rho, sigma, CNET = None): #Assumes zeta = 0
+    #this will be a call to the Fc neural network we want
+    Fc = CNET([rho, sigma])
+    return Fc
+
+def custom_pbe_e(rho, sigma, XNET = None, CNET = None):
+    Fx = custom_pbe_Fx(rho, sigma, XNET = XNET)
+    Fc = custom_pbe_Fc(rho, sigma, CNET = CNET)
+
+    exc = lda_x(rho)*Fx + pw92c_unpolarized(rho)*Fc
+
+    return exc
+
+def custom_pbe_epsilon(rho, sigma, XNET = None, CNET = None):
+
+    return rho*custom_pbe_e(rho, sigma, XNET = XNET, CNET = CNET)
+
+def derivable_custom_pbe_e(rhosigma, XNET = None, CNET = None):
+    rho, sigma = rhosigma
+    # print('DEBUG derivable_custom_pbe_e: rhosigma len/shapes: ', len(rhosigma), rhosigma)
+    # print('DEBUG derivable_custom_pbe_e: rho/sigma shapes: ', rho.shape, sigma.shape)
+    # print('DEBUG derivable_custom_pbe_e: rho: ', rho)
+    # print('DEBUG derivable_custom_pbe_e: sigma: ', sigma)
+    return custom_pbe_e(rho, sigma, XNET = XNET, CNET = CNET)
+
+def derivable_custom_pbe_epsilon(rhosigma, XNET = None, CNET = None):
+    rho = rhosigma[0]
+    sigma = rhosigma[1]
+    result = custom_pbe_epsilon(rho, sigma, XNET = XNET, CNET = CNET)
+    return result[0]
+    
+def eval_xc_gga_j(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None,
+                 XNET = None, CNET = None):
+    #we only expect there to be a rho0 array, but I unpack it as (rho, deriv) here to be in line with the
+    #pyscf example -- the size of the 'rho' array depends on the xc type (LDA, GGA, etc.)
+    #so since LDA calculation, check for size first.
+    rho0, dx, dy, dz = rho[:4]
+    rho0 = jnp.array(rho0)
+    sigma = jnp.array(dx**2+dy**2+dz**2)
+    # print('DEBUG eval_xc_gga_j: rho0/sigma shapes: ', rho0.shape, sigma.shape)
+    rhosig = (rho0, sigma)
+    #calculate the "custom" energy with rho -- THIS IS e
+    #cast back to np.array since that's what pyscf works with
+    #pass as tuple -- (rho, sigma)
+    derivable_net_e = partial(derivable_custom_pbe_e, XNET = XNET, CNET = CNET)
+    derivable_net_epsilon = partial(derivable_custom_pbe_epsilon, XNET = XNET, CNET = CNET)
+    exc = np.array(jax.vmap(derivable_net_e)( rhosig ) )
+    
+    #first order derivatives w.r.t. rho and sigma
+    vrho_f = eqx.filter_grad(derivable_net_epsilon)
+    vrhosigma = np.array(jax.vmap(vrho_f)( rhosig ))
+    # print('vrhosigma shape:', vrhosigma.shape)
+    vxc = (vrhosigma[0], vrhosigma[1], None, None)
+
+    # v2_f = eqx.filter_hessian(derivable_custom_pbe_epsilon)
+    v2_f = jax.hessian(derivable_net_epsilon)
+    # v2_f = jax.hessian(custom_pbe_epsilon, argnums=[0, 1])
+    v2 = np.array(jax.vmap(v2_f)( rhosig ))
+    # print('v2 shape', v2.shape)
+    v2rho2 = v2[0][0]
+    v2rhosigma = v2[0][1]
+    v2sigma2 = v2[1][1]
+    v2lapl2 = None
+    vtau2 = None
+    v2rholapl = None
+    v2rhotau = None
+    v2lapltau = None
+    v2sigmalapl = None
+    v2sigmatau = None
+    # 2nd order functional derivative
+    fxc = (v2rho2, v2rhosigma, v2sigma2, v2lapl2, vtau2, v2rholapl, v2rhotau, v2lapltau, v2sigmalapl, v2sigmatau)
+    #3rd order
+    kxc = None
+    
+    return exc, vxc, fxc, kxc
+
+def eval_xc_gga_j2(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None,
+                 xcmodel = None):
+    #we only expect there to be a rho0 array, but I unpack it as (rho, deriv) here to be in line with the
+    #pyscf example -- the size of the 'rho' array depends on the xc type (LDA, GGA, etc.)
+    #so since LDA calculation, check for size first.
+    try:
+        rho0, dx, dy, dz = rho[:4]
+        sigma = jnp.array(dx**2+dy**2+dz**2)
+    except:
+        rho0, drho = rho[:4]
+        sigma = jnp.array(drho**2)
+    rho0 = jnp.array(rho0)
+    # sigma = jnp.array(dx**2+dy**2+dz**2)
+    # print('DEBUG eval_xc_gga_j: rho0/sigma shapes: ', rho0.shape, sigma.shape)
+    # rhosig = (rho0, sigma)
+    rhosig = jnp.stack([rho0, sigma], axis=1)
+    print(rhosig.shape)
+    #calculate the "custom" energy with rho -- THIS IS e
+    #cast back to np.array since that's what pyscf works with
+    #pass as tuple -- (rho, sigma)
+    exc = jax.vmap(xcmodel)(rhosig)
+    exc = jnp.array(exc)/rho0
+    # exc = jnp.array(jax.vmap(xcmodel)( rhosig ) )/rho0
+    # print('exc shape = {}'.format(exc.shape))
+    #first order derivatives w.r.t. rho and sigma
+    vrho_f = eqx.filter_grad(xcmodel)
+    vrhosigma = jnp.array(jax.vmap(vrho_f)( rhosig ))
+    # print('vrhosigma shape:', vrhosigma.shape)
+    vxc = (vrhosigma[:, 0], vrhosigma[:, 1], None, None)
+
+    # v2_f = eqx.filter_hessian(derivable_custom_pbe_epsilon)
+    v2_f = jax.hessian(xcmodel)
+    # v2_f = jax.hessian(custom_pbe_epsilon, argnums=[0, 1])
+    v2 = jnp.array(jax.vmap(v2_f)( rhosig ))
+    print('v2 shape', v2.shape)
+    v2rho2 = v2[:, 0, 0]
+    v2rhosigma = v2[:, 0, 1]
+    v2sigma2 = v2[:, 1, 1]
+    v2lapl2 = None
+    vtau2 = None
+    v2rholapl = None
+    v2rhotau = None
+    v2lapltau = None
+    v2sigmalapl = None
+    v2sigmatau = None
+    # 2nd order functional derivative
+    fxc = (v2rho2, v2rhosigma, v2sigma2, v2lapl2, vtau2, v2rholapl, v2rhotau, v2lapltau, v2sigmalapl, v2sigmatau)
+    #3rd order
+    kxc = None
+    
+    return exc, vxc, fxc, kxc
+
