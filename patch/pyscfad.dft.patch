@@ -1,13 +1,12 @@
---- rks.py	2024-04-29 17:17:30.315042292 -0400
-+++ rks.py	2024-04-29 18:30:23.544572661 -0400
-@@ -1,5 +1,6 @@
+--- rks.py	2025-03-05 11:08:56.533283190 -0500
++++ rks.py	2025-03-05 11:14:52.648249518 -0500
+@@ -1,4 +1,5 @@
  import numpy
- from jax import numpy as np
 +import jax
+ from jax import numpy as np
  from pyscf import __config__
  from pyscf.lib import current_memory
- from pyscf.lib import logger
-@@ -53,6 +54,21 @@
+@@ -53,6 +54,22 @@
      else:
          max_memory = ks.max_memory - current_memory()[0]
          n, vxc.exc, vxc.vxc = ni.nr_rks(mol, ks.grids, ks.xc, dm, max_memory=max_memory)
@@ -26,76 +25,63 @@
 +            vxc.vxc = vxcG
 +            vxc.exc = excG
 +            # print('network exc, vxc: {}, {}'.format(excG, vxcG))
++
          if ks.nlc != '':
              assert 'VV10' in ks.nlc.upper()
              _, enlc, vnlc = ni.nr_rks(mol, ks.nlcgrids, ks.xc+'__'+ks.nlc, dm,
---- numint.py	2024-04-29 17:17:30.315042292 -0400
-+++ numint.py	2024-04-29 18:05:16.057096753 -0400
-@@ -119,7 +119,18 @@
+--- numint.py	2025-03-05 11:08:56.533283190 -0500
++++ numint.py	2025-03-05 11:13:58.139186107 -0500
+@@ -119,9 +119,16 @@
              #aow = numpy.ndarray(ao.shape, order='F', buffer=aow)
              for idm in range(nset):
                  rho = make_rho(idm, ao, mask, 'LDA')
 -                exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
-+                # exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
-+                #                       relativity=relativity, deriv=1,
-+                #                       verbose=verbose)[:2]
 +                #XCQUINOX MODIFICATION
 +                try:
 +                    #First try using the custom eval_xc inputs, then resort to default for regular kernel
 +                    exc, vxc = ni.eval_xc(xc_code, rho, ao, weight, coords, spin=0,
-+                                      relativity=relativity, deriv=1,
-+                                      verbose=verbose)[:2]
-+                except:
-+                    exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
                                        relativity=relativity, deriv=1,
                                        verbose=verbose)[:2]
++                except:
++                    exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
++                                       relativity=relativity, deriv=1,
++                                       verbose=verbose)[:2]
                  vrho = vxc[0]
-@@ -138,7 +149,18 @@
+                 den = rho * weight
+                 nelec[idm] += stop_grad(den).sum()
+@@ -138,9 +145,16 @@
              #aow = numpy.ndarray(ao[0].shape, order='F', buffer=aow)
              for idm in range(nset):
                  rho = make_rho(idm, ao, mask, 'GGA')
 -                exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
-+                # exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
-+                #                       relativity=relativity, deriv=1,
-+                #                       verbose=verbose)[:2]
 +                #XCQUINOX MODIFICATION
 +                try:
 +                    #First try using the custom eval_xc inputs, then resort to default for regular kernel
 +                    exc, vxc = ni.eval_xc(xc_code, rho, ao, weight, coords, spin=0,
-+                                      relativity=relativity, deriv=1,
-+                                      verbose=verbose)[:2]
-+                except:
-+                    exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
                                        relativity=relativity, deriv=1,
                                        verbose=verbose)[:2]
++                except:
++                    exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
++                                       relativity=relativity, deriv=1,
++                                       verbose=verbose)[:2]
                  den = rho[0] * weight
-@@ -202,14 +224,28 @@
+                 nelec[idm] += stop_grad(den).sum()
+                 excsum[idm] += np.dot(den, exc)
+@@ -202,9 +216,16 @@
              #aow = numpy.ndarray(ao[0].shape, order='F', buffer=aow)
              for idm in range(nset):
                  rho = make_rho(idm, ao, mask, 'MGGA')
 -                exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
-+                # exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
-+                #                       relativity=relativity, deriv=1,
-+                #                       verbose=verbose)[:2]
 +                #XCQUINOX MODIFICATION
 +                try:
 +                    #First try using the custom eval_xc inputs, then resort to default for regular kernel
 +                    exc, vxc = ni.eval_xc(xc_code, rho, ao, weight, coords, spin=0,
-+                                      relativity=relativity, deriv=1,
-+                                      verbose=verbose)[:2]
-+                except:
-+                    exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
                                        relativity=relativity, deriv=1,
                                        verbose=verbose)[:2]
--                # pylint: disable=W0612
++                except:
++                    exc, vxc = ni.eval_xc(xc_code, rho, spin=0,
++                                       relativity=relativity, deriv=1,
++                                       verbose=verbose)[:2]
+                 # pylint: disable=W0612
                  vrho, vsigma, vlapl, vtau = vxc[:4]
                  den = rho[0] * weight
-+                # print(f'den={den}, rho[0]={rho[0]}')
-+                # print(f'den.shape={den.shape}, exc.shape={exc.shape}')
-+                # print(f'np.dot(den, exc)={np.dot(den, exc)}')
-                 nelec[idm] += stop_grad(den).sum()
-                 excsum[idm] += np.dot(den, exc)
-+                # print(f'nelec={nelec}, excsum={excsum}')
- 
-                 wv = _rks_gga_wv0(rho, vxc, weight)
-                 #:aow = numpy.einsum('npi,np->pi', ao[:4], wv, out=aow)
