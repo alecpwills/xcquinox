@@ -138,7 +138,7 @@ class RXCModel_GGA(eqx.Module):
         rho = inputs[0]
         sigma = inputs[1]
         # print('RXCModel call - inputs {}'.format(inputs))
-        return rho*(lda_x(rho)*jax.vmap(self.xnet)(inputs[..., jnp.newaxis]) + pw92c_unpolarized(rho)*jax.vmap(self.cnet)(inputs[..., jnp.newaxis])).flatten()[0]
+        return rho*(lda_x(rho)*self.xnet(inputs[..., jnp.newaxis]) + pw92c_unpolarized(rho)*self.cnet(inputs[..., jnp.newaxis])).flatten()[0]
         # return rho*(lda_x(rho)*self.xnet(inputs) + pw92c_unpolarized(rho)*self.cnet(inputs)).flatten()[0]
 
 # =====================================================================
@@ -154,7 +154,7 @@ class RXCModel_MGGA(eqx.Module):
 
     def __init__(self, xnet, cnet):
         '''
-        Initializes a combined X+C GGA model into one object that can be used in optimizing a functional.
+        Initializes a combined X+C MGGA model into one object that can be used in optimizing a functional.
 
         :param xnet: The exchange enhancement factor network
         :type xnet: eqx.Module
@@ -180,7 +180,7 @@ class RXCModel_MGGA(eqx.Module):
         # inputs expected -- [rho, sigma, lapl, tau]
         # this generates epsilon, not exc -- divide end result by rho when needed
         rho = inputs[0]
-        return rho*(lda_x(rho)*jax.vmap(self.xnet)(inputs[..., jnp.newaxis]) + pw92c_unpolarized(rho)*jax.vmap(self.cnet)(inputs[..., jnp.newaxis])).flatten()[0]
+        return rho*(lda_x(rho)*self.xnet(inputs[..., jnp.newaxis]) + pw92c_unpolarized(rho)*self.cnet(inputs[..., jnp.newaxis])).flatten()[0]
 
 
 # =====================================================================
