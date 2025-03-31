@@ -91,13 +91,6 @@ class GGA_FxNet_s(eqx.Module):
                               width_size=self.nodes,
                               activation=jax.nn.gelu,
                               key=jax.random.PRNGKey(self.seed))
-        # to constrain this, we require only gradient inputs
-        self.net = eqx.nn.MLP(in_size=1,  # Input is ONLY gradient_descriptor
-                              out_size=1,  # Output is Fx
-                              depth=self.depth,
-                              width_size=self.nodes,
-                              activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
         self.lobf = LOB(limit=lob_lim)
 
     def __call__(self, inputs):
