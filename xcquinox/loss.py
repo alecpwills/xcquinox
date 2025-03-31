@@ -7,11 +7,28 @@ from xcquinox.pyscf import generate_network_eval_xc
 
 @eqx.filter_value_and_grad
 def compute_loss_mae(model, inputs, ref):
+    '''
+    Computes the mean-absolute-error loss of the model's prediction using the given inputs against the provided reference.
+
+    :param model: The model which is given to `jax.vmap` to generate predictions using the inputs given.
+    :type model: eqx.Module
+    :param inputs: The input points that are given to the network. Shape will be dependent on your network architecture.
+    :type inputs: array
+    :param ref: The reference values to be used in generating prediction error.
+    :type ref: array
+    :return: The MAE that will be used in backpropagation. 
+    :rtype: float
+    '''
     pred = jax.vmap(model)(inputs)
     loss = jnp.mean(jnp.abs(pred - ref))
     return loss
 
-#---------------------deprecated below
+# =====================================================================
+# =====================================================================
+# DEPRECATED CLASSES -- TO BE REMOVED
+# =====================================================================
+# =====================================================================
+
 
 class E_loss(eqx.Module):
     def __init__(self):
@@ -40,8 +57,9 @@ class E_loss(eqx.Module):
         :rtype: jax.Array
         '''
         e_pred = model(inp_dm, ao_eval, grid_weights)
-        eL = jnp.sqrt( jnp.mean((e_pred-ref_en)**2))
+        eL = jnp.sqrt(jnp.mean((e_pred-ref_en)**2))
         return eL
+
 
 class NL_E_loss(eqx.Module):
     def __init__(self):
@@ -72,7 +90,7 @@ class NL_E_loss(eqx.Module):
         :rtype: jax.Array
         '''
         e_pred = model(inp_dm, ao_eval, grid_weights, mf)
-        eL = jnp.sqrt( jnp.mean((e_pred-ref_en)**2))
+        eL = jnp.sqrt(jnp.mean((e_pred-ref_en)**2))
         return eL
 
 
@@ -87,7 +105,7 @@ class DM_HoLu_loss(eqx.Module):
         super().__init__()
 
     def __call__(self, model, ao_eval, gw, dm, eri, mo_occ, hc, s, ogd, holu=None, alpha0=0.7,
-                dmL = 1.0, holuL = 1.0, dm_to_rho = 0.0):
+                 dmL=1.0, holuL=1.0, dm_to_rho=0.0):
         """
         Forward pass to compute the total loss based on the given inputs.
 
@@ -125,15 +143,15 @@ class DM_HoLu_loss(eqx.Module):
         :return: The root-sum of squares loss
         :rtype: jax.Array
         """
-        #create the function for calculating E to take derivative of for vxc
-        vgf = lambda x: model(x, ao_eval, gw)
-        #predict the network-based DM, mo_e, and mo_coeff
+        # create the function for calculating E to take derivative of for vxc
+        def vgf(x): return model(x, ao_eval, gw)
+        # predict the network-based DM, mo_e, and mo_coeff
         dmp, moep, mocp = get_dm_moe(dm, eri, vgf, mo_occ, hc, s, ogd, alpha0)
 
-        #density matrix loss, RMSE
-        dmLv = jnp.sqrt(jnp.mean( (dmp - dm)**2)) if dmL else 0
+        # density matrix loss, RMSE
+        dmLv = jnp.sqrt(jnp.mean((dmp - dm)**2)) if dmL else 0
 
-        #holu loss if needed
+        # holu loss if needed
         if holuL:
             homo_i = jnp.max(jnp.nonzero(mo_occ, size=dm.shape[0])[0])
             holup = moep[homo_i+1] - moep[homo_i]
@@ -141,17 +159,16 @@ class DM_HoLu_loss(eqx.Module):
         else:
             holuLv = 0
 
-        #rho on grid loss if needed
+        # rho on grid loss if needed
         if dm_to_rho:
             rho = jnp.einsum('xij,yik,...jk->xy...i', ao_eval, ao_eval, dm)+1e-10
             rhop = jnp.einsum('xij,yik,...jk->xy...i', ao_eval, ao_eval, dmp)+1e-10
-            #integrate squared density difference on grid, sqrt then weight by number of electrons
-            rhoLv = jnp.sqrt(jnp.sum( (rho-rhop)**2 * gw))/jnp.sum(mo_occ)
+            # integrate squared density difference on grid, sqrt then weight by number of electrons
+            rhoLv = jnp.sqrt(jnp.sum((rho-rhop)**2 * gw))/jnp.sum(mo_occ)
         else:
             rhoLv = 0
 
-
-        return jnp.sqrt( (dmL*dmLv)**2 + (holuL*holuLv)**2 + (dm_to_rho*rhoLv)**2)
+        return jnp.sqrt((dmL*dmLv)**2 + (holuL*holuLv)**2 + (dm_to_rho*rhoLv)**2)
 
 
 class Band_gap_1shot_loss(eqx.Module):
@@ -196,17 +213,18 @@ class Band_gap_1shot_loss(eqx.Module):
         :return: Root-squared error between predicted gap (minimum of molecular energies) and the reference
         :rtype: jax.Array
         """
-        vgf = lambda x: model(x, ao_eval, gw, mf)
+        def vgf(x): return model(x, ao_eval, gw, mf)
         dmp, moep, mocp = get_dm_moe(dm, eri, vgf, mo_occ, hc, s, ogd, alpha0)
-        
+
         efermi = moep[mf.mol.nelectron//2-1]
         moep -= efermi
         # print(moep)
         moep_gap = jnp.min(moep)
         # print(moep_gap)
-        loss = jnp.sqrt( (moep_gap - refgap)**2)
+        loss = jnp.sqrt((moep_gap - refgap)**2)
         # print(loss)
-        return jnp.sqrt( (moep_gap - refgap)**2)
+        return jnp.sqrt((moep_gap - refgap)**2)
+
 
 class DM_Gap_loss(eqx.Module):
     def __init__(self):
@@ -252,19 +270,20 @@ class DM_Gap_loss(eqx.Module):
         :rtype: jax.Array/scalar
         '''
         homo_i = jnp.max(jnp.nonzero(mo_occ, size=inp_dm.shape[0])[0])
-        #vxc function for gradient
-        vgf = lambda x: model(x, ao, gw)
+        # vxc function for gradient
+        def vgf(x): return model(x, ao, gw)
         dmp, moep, mocoep = get_dm_moe(inp_dm, eri, vgf, mo_occ, hc, s, ogd)
-        
+
         dmp = pad_array(dmp, inp_dm)
         moep = pad_array(moep, moep,  shape=(dmp.shape[0],))
         gap_pred = moep[homo_i+1]-moep[homo_i]
 
-        dm_L = jnp.sum( (dmp-refDM)**2)
+        dm_L = jnp.sum((dmp-refDM)**2)
 
         gap_L = (gap_pred-refGap)**2
 
         return jnp.sqrt(dm_L+gap_L)
+
 
 class DM_Gap_Loop_loss(eqx.Module):
     def __init__(self):
@@ -313,7 +332,7 @@ class DM_Gap_Loop_loss(eqx.Module):
         '''
         total_loss = 0
         for idx in range(len(aos)):
-            #subselect the individual loss data
+            # subselect the individual loss data
             mo_occ = mo_occs[idx]
             inp_dm = inp_dms[idx]
             ao = aos[idx]
@@ -325,23 +344,22 @@ class DM_Gap_Loop_loss(eqx.Module):
             refGap = refGaps[idx]
             refDM = refDMs[idx]
 
-            
             homo_i = jnp.max(jnp.nonzero(mo_occ, size=inp_dm.shape[0])[0])
-            #vxc function for gradient
-            vgf = lambda x: model(x, ao, gw)
+            # vxc function for gradient
+            def vgf(x): return model(x, ao, gw)
             dmp, moep, mocoep = get_dm_moe(inp_dm, eri, vgf, mo_occ, hc, s, ogd)
-            
+
             dmp = pad_array(dmp, inp_dm)
             moep = pad_array(moep, moep,  shape=(dmp.shape[0],))
             gap_pred = moep[homo_i+1]-moep[homo_i]
-    
-            dm_L = jnp.sum( (dmp-refDM)**2)
-    
+
+            dm_L = jnp.sum((dmp-refDM)**2)
+
             gap_L = (gap_pred-refGap)**2
-    
+
             total_loss += jnp.sqrt(dm_L+gap_L)
         return total_loss
-    
+
 
 class E_PySCFAD_loss(eqx.Module):
     def __init__(self):
@@ -373,5 +391,5 @@ class E_PySCFAD_loss(eqx.Module):
         print('predicting energy...')
         e_pred = mf.kernel()
         print('energy predicted')
-        eL = jnp.sqrt( jnp.mean((e_pred-ref_en)**2))
+        eL = jnp.sqrt(jnp.mean((e_pred-ref_en)**2))
         return eL

@@ -1,6 +1,10 @@
 Loss Computation Classes
 ========================
 
+The ``compute_loss_mae`` Function
+*********************************
+.. autofunction:: xcquinox.loss.compute_loss_mae
+
 The ``E_loss`` Class
 ********************
 .. autoclass:: xcquinox.loss.E_loss
