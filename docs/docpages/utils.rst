@@ -1,6 +1,34 @@
 Utility Structures and Functions
 ================================
 
+``gen_grid_s``
+********************
+.. autofunction:: xcquinox.utils.gen_grid_s
+
+``PBE_Fx``
+********************
+.. autofunction:: xcquinox.utils.PBE_Fx
+
+``PBE_Fc``
+********************
+.. autofunction:: xcquinox.utils.PBE_Fc
+
+``pw91_correlation_energy_density``
+********************
+.. autofunction:: xcquinox.utils.pw91_correlation_energy_density
+
+``lda_x``
+********************
+.. autofunction:: xcquinox.utils.lda_x
+
+``pw92c``
+********************
+.. autofunction:: xcquinox.utils.pw92c
+
+``pw92c_unpolarized``
+********************
+.. autofunction:: xcquinox.utils.pw92c_unpolarized
+
 ``pad_array``
 ********************
 .. autofunction:: xcquinox.utils.pad_array
