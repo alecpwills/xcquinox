@@ -322,6 +322,8 @@ class Optimizer(eqx.Module):
         self.print_every = print_every
         self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array))
         self.loss = loss
+    # S: x probar
+    # @eqx.filter_jit
 
     def __call__(self):
         '''
@@ -343,7 +345,7 @@ class Optimizer(eqx.Module):
 
         return this_model, losses
 
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def make_step(self, model, inputs, ref, opt_state):
         '''
         The function that does each epoch's network update. It generates a loss and gradient using the specific :xcquinox.loss: function (that must be decorated with @eqx.filter_value_and_grad and only explicitly returns the loss value inside the function proper) given the specified inputs and reference values and initial optimization state.
