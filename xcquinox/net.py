@@ -4,6 +4,8 @@ import pickle
 import jax.numpy as jnp
 import equinox as eqx
 from warnings import warn
+import json
+from typing import Union
 
 # =====================================================================
 # =====================================================================
@@ -43,8 +45,15 @@ class LOB(eqx.Module):
 # =====================================================================
 # =====================================================================
 # base Fx/Fc networks:
+
+# Base Fx/Fc networks:
 # Define the neural network module for Fx
 class GGA_FxNet_s(eqx.Module):
+    """S: Exchange enhancementt factor for GGA.
+
+    The input to the network is the reduced density gradient, s, and the output is the enhancement factor, Fx.
+    """
+    name: str
     depth: int
     nodes: int
     seed: int
@@ -56,7 +65,10 @@ class GGA_FxNet_s(eqx.Module):
         '''
         Constructor for the exchange enhancement factor object, for the GGA case.
 
-        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 1 -- just the gradient information is passed to the network, to guarantee that the energy yielded from this multiplicative factor behaves correctly under uniform scaling of the electron density and obeys the spin-scaling relation.
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is
+        hard-coded to 1 -- just the gradient information is passed to the network, to guarantee that the energy
+        yielded from this multiplicative factor behaves correctly under uniform scaling of the electron density
+        and obeys the spin-scaling relation.
 
         :param depth: Depth of the neural network
         :type depth: int
@@ -67,6 +79,7 @@ class GGA_FxNet_s(eqx.Module):
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
         :type lob_lim: float, optional
         '''
+        self.name = 'GGA_FxNet_s'
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
@@ -99,6 +112,11 @@ class GGA_FxNet_s(eqx.Module):
 
 # Define the neural network module for Fc
 class GGA_FcNet_s(eqx.Module):
+    """S: Correlation enhancement factor for GGA.
+
+    The input to the network is the reduced density gradient, s, and the output is the enhancement factor, Fc.
+    """
+    name: str
     depth: int
     nodes: int
     seed: int
@@ -123,6 +141,7 @@ class GGA_FcNet_s(eqx.Module):
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2
         :type lob_lim: float, optional
         '''
+        self.name = 'GGA_FcNet_s'
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
@@ -152,8 +171,108 @@ class GGA_FcNet_s(eqx.Module):
         return 1+self.lobf((jnp.tanh(inputs[1])**2)*self.net(inputs).squeeze())
 
 
+class GGA_FxNet_G(eqx.Module):
+    """S: Exchange enhancementt factor for GGA.
+
+    It takes rho and grad_rho as input and outputs the exchange enhancement factor, Fx.
+    It transforms the input to the reduced density gradient, s, and then passes it through the network.
+    """
+    name: str
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    net: eqx.nn.MLP
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804):
+        self.name = 'GGA_FxNet_G'
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        # to constrain this, we require only gradient inputs
+        self.net = eqx.nn.MLP(in_size=1,  # Input is ONLY s
+                              out_size=1,  # Output is Fx
+                              depth=self.depth,
+                              width_size=self.nodes,
+                              activation=jax.nn.gelu,
+                              key=jax.random.PRNGKey(self.seed))
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        # rho = jnp.maximum(1e-12, inputs[0])  # Prevents division by 0
+        # rho = rho.flatten()
+        # print('WITHOUT RHO MAXIMUM')
+        rho = inputs[0].flatten()
+        k_F = (3 * jnp.pi**2 * rho)**(1/3)
+        s = inputs[1].flatten() / (2 * k_F * rho)
+        s = s.flatten()
+        tanhterm = jnp.tanh(s)**2
+        netterm = self.net(s)
+        lobterm = self.lobf(tanhterm*netterm)
+        return 1+lobterm.squeeze()
+
+
+class GGA_FcNet_G(eqx.Module):
+    name: str
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    net: eqx.nn.MLP
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0):
+        """
+        Constructor for the correlation enhancement factor object, for the GGA case.
+
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 2 -- both the density and gradient information is passed to the network.
+
+        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the correlation energy.
+
+        :param depth: Depth of the neural network
+        :type depth: int
+        :param nodes: Number of nodes in each layer
+        :type nodes: int
+        :param seed: The random seed to initiate baseline weight values for the network
+        :type seed: int
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2
+        :type lob_lim: float, optional
+        """
+        self.name = 'GGA_FcNet_G'
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.net = eqx.nn.MLP(in_size=2,  # Input is rho, s
+                              out_size=1,  # Output is Fx
+                              depth=self.depth,
+                              width_size=self.nodes,
+                              activation=jax.nn.gelu,
+                              key=jax.random.PRNGKey(self.seed))
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        rho = inputs[0].flatten()
+        k_F = (3 * jnp.pi**2 * rho)**(1/3)
+        s = inputs[1].flatten() / (2 * k_F * rho)
+        s = s.flatten()
+        netinp = jnp.stack([rho, s], axis=0).flatten()
+        tanhterm = jnp.tanh(s)**2
+        netterm = self.net(netinp)
+        lobterm = self.lobf(tanhterm*netterm)
+        return 1+lobterm.squeeze()
+
+
 # Define the neural network module for Fx
 class GGA_FxNet_sigma(eqx.Module):
+    """S: Exchange enhancementt factor for GGA.
+
+    It takes rho and sigma (grad_rho²) as input and outputs the exchange enhancement factor, Fx.
+    It transforms the input to the reduced density gradient, s, and then passes it through the network.
+    """
+    name: str
     depth: int
     nodes: int
     seed: int
@@ -179,6 +298,7 @@ class GGA_FxNet_sigma(eqx.Module):
         :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
         :type lower_rho_cutoff: float, optional
         '''
+        self.name = 'GGA_FxNet_sigma'
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
@@ -225,6 +345,12 @@ class GGA_FxNet_sigma(eqx.Module):
 
 # Define the neural network module for Fc
 class GGA_FcNet_sigma(eqx.Module):
+    """S: Correlation enhancement factor for GGA.
+
+    It takes rho and sigma (grad_rho²) as input and outputs the correlation enhancement factor, Fc.
+    It transforms the input to the reduced density gradient, s, and then passes it through the network.
+    """
+    name: str
     depth: int
     nodes: int
     seed: int
@@ -252,6 +378,7 @@ class GGA_FcNet_sigma(eqx.Module):
         :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
         :type lower_rho_cutoff: float, optional
         '''
+        self.name = 'GGA_FcNet_sigma'
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
@@ -292,6 +419,71 @@ class GGA_FcNet_sigma(eqx.Module):
         netterm = self.net(netinp)
         lobterm = self.lobf(tanhterm*netterm)
         return 1+lobterm.squeeze()
+
+# Saving models
+
+
+def save_xcquinox_model(model, path: str = '', fixing: Union[str, None] = None,
+                        tail_info: Union[str, None] = None):
+    """Save our NN model to a file.
+
+    :param model: The model to save
+    :type model: eqx.Module
+    :param path: The path to save the model to, defaults to .
+    :type path: str, optional
+    :param fixing: A string to append to the model name, defaults to None. Useful to determine the type of fixing used in the model.
+    :type fixing: Union[str, None], optional
+    :param tail_info: A string to append to the model name, defaults to None. Useful to determine any additional information about the model.
+    :type tail_info: Union[str, None], optional
+    """
+    if fixing is None:
+        fixing = ''
+    else:
+        fixing = f'_{fixing}'
+    if tail_info is None:
+        tail_info = ''
+    else:
+        tail_info = f'_{tail_info}'
+    save_name = f'{model.name}_d{model.depth}_n{model.nodes}_s{model.seed}\
+{fixing}{tail_info}'
+
+    needen_info = {'depth': model.depth, 'nodes': model.nodes,
+                   'seed': model.seed, 'name': model.name}
+    eqx.tree_serialise_leaves(f'{path}/{save_name}.eqx', model)
+    with open(f"{path}/{save_name}.json", "w") as f:
+        json.dump(needen_info, f)
+    print(f'Saved {path}/{save_name}.eqx')
+
+
+def load_xcquinox_model(path: str):
+    """Load a model from a file.
+
+    Note that we must give the path where the model is stored, without the extension.
+    I.e, in path, we should have the files path.eqx and path.json.
+    """
+    jax.config.update("jax_enable_x64", True)  # Ensure 64-bit is enabled first
+
+    with open(f"{path}.json", "r") as f:
+        metadata = json.load(f)
+
+    # Model selection
+    name = metadata['name']
+    Model_Object = {
+        'GGA_FxNet_s': GGA_FxNet_s,
+        'GGA_FcNet_s': GGA_FcNet_s,
+        'GGA_FxNet_G': GGA_FxNet_G,
+        'GGA_FcNet_G': GGA_FcNet_G,
+        'GGA_FxNet_sigma': GGA_FxNet_sigma,
+        'GGA_FcNet_sigma': GGA_FcNet_sigma}.get(name)
+
+    dummy_model = Model_Object(depth=metadata["depth"],
+                               nodes=metadata["nodes"],
+                               seed=metadata["seed"])
+
+    # Load the saved model into the dummy structure
+    model = eqx.tree_deserialise_leaves(f"{path}.eqx", like=dummy_model)
+    print(f'Loaded {path}.eqx')
+    return model
 
 # unconstrained networks, for testing purposes
 
