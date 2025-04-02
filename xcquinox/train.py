@@ -322,8 +322,6 @@ class Optimizer(eqx.Module):
         self.print_every = print_every
         self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array))
         self.loss = loss
-    # S: x probar
-    # @eqx.filter_jit
 
     def __call__(self):
         '''
