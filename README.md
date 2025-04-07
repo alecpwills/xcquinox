@@ -17,6 +17,8 @@ A machine learning package using the equinox library for learning XC functionals
 
 You may find the [documentation here](https://xcquinox.readthedocs.io/en/latest/).
 
+**WARNING: This package is still in active development and changes are frequently made. Until an official release is made, user beware.**
+
 ### Installation
 
 To install `xcquinox`, navigate to the root package directory. Install the dependencies first with `pip install -r requirements.txt`. After installation of the dependencies is complete, install the `xcquinox` package with `pip install -e .`.
