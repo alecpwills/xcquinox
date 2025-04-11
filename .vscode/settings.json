@@ -1,4 +1,10 @@
 {
     "esbonio.sphinx.confDir": "",
-    "editor.formatOnSave": true
+    "editor.formatOnSave": true,
+    "flake8.severity": {
+        "E": "Information",
+        "F": "Information",
+        "I": "Information",
+        "W": "Information"
+    }
 }

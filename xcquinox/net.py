@@ -32,12 +32,18 @@ class LOB(eqx.Module):
         Method calling the actual mapping of the input to the desired bounded region.
 
         :param x: Energy value to map back into the bounded region.
-        :type x: float 
+        :type x: float
         :return: Energy value mapped into bounded region.
         :rtype: float
         '''
         return self.limit * jax.nn.sigmoid(x-jnp.log(self.limit - 1))-1
 
+
+# =====================================================================
+# =====================================================================
+# GGA LEVEL NETWORKS
+# =====================================================================
+# =====================================================================
 
 # Base Fx/Fc networks:
 # Define the neural network module for Fx
@@ -77,13 +83,6 @@ class GGA_FxNet_s(eqx.Module):
         self.nodes = nodes
         self.seed = seed
         self.lob_lim = lob_lim
-        # to constrain this, we require only gradient inputs
-        self.net = eqx.nn.MLP(in_size=1,  # Input is ONLY gradient_descriptor
-                              out_size=1,  # Output is Fx
-                              depth=self.depth,
-                              width_size=self.nodes,
-                              activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
         # to constrain this, we require only gradient inputs
         self.net = eqx.nn.MLP(in_size=1,  # Input is ONLY gradient_descriptor
                               out_size=1,  # Output is Fx
