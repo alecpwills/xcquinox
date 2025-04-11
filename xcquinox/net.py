@@ -21,7 +21,7 @@ class LOB(eqx.Module):
         '''
         Utility function to squash output to [-1, limit-1] inteval.
 
-        :param limit: The Lieb-Oxford bound value to impose, defaults to 1.804
+        :param limit: The Lieb-Oxford bound value to impose, defaults to 1.804.
         :type limit: float, optional
         '''
         super().__init__()
@@ -96,9 +96,13 @@ class GGA_FxNet_s(eqx.Module):
         '''
         The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
 
-        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho,
+        gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of
+        the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be the reduced density gradient, :s:, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be the reduced density gradient, :s:, and the call is
+        structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1,
+        so the resulting e = Fx*e_heg = e_heg.
 
         :param inputs: _description_
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
@@ -127,9 +131,11 @@ class GGA_FcNet_s(eqx.Module):
         '''
         Constructor for the correlation enhancement factor object, for the GGA case.
 
-        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 2 -- both the density and gradient information is passed to the network.
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is
+        hard-coded to 2 -- both the density and gradient information is passed to the network.
 
-        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the correlation energy.
+        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the
+        correlation energy.
 
         :param depth: Depth of the neural network
         :type depth: int
@@ -157,11 +163,14 @@ class GGA_FcNet_s(eqx.Module):
         '''
         The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
 
-        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho,
+        gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of
+        the network class.
+        *NOTE*: Here, the gradient_descriptor is assumed to be the reduced density gradient, :s:, and the call is
+        structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1,
+        so the resulting e = Fx*e_heg = e_heg.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be the reduced density gradient, :s:, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
-
-        :param inputs: _description_
+        :param inputs: _description_ TODO
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
         :return: The enhancement factor value
         :rtype: float
@@ -226,9 +235,11 @@ class GGA_FcNet_G(eqx.Module):
         """
         Constructor for the correlation enhancement factor object, for the GGA case.
 
-        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 2 -- both the density and gradient information is passed to the network.
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is
+        hard-coded to 2 -- both the density and gradient information is passed to the network.
 
-        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the correlation energy.
+        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of
+        the correlation energy.
 
         :param depth: Depth of the neural network
         :type depth: int
@@ -284,7 +295,10 @@ class GGA_FxNet_sigma(eqx.Module):
         '''
         Constructor for the exchange enhancement factor object, for the GGA case.
 
-        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 1 -- just the gradient information is passed to the network, to guarantee that the energy yielded from this multiplicative factor behaves correctly under uniform scaling of the electron density and obeys the spin-scaling relation.
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is
+        hard-coded to 1 -- just the gradient information is passed to the network, to guarantee that the energy
+        yielded from this multiplicative factor behaves correctly under uniform scaling of the electron density
+        and obeys the spin-scaling relation.
 
         :param depth: Depth of the neural network
         :type depth: int
@@ -294,7 +308,8 @@ class GGA_FxNet_sigma(eqx.Module):
         :type seed: int
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
         :type lob_lim: float, optional
-        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to
+        1e-12
         :type lower_rho_cutoff: float, optional
         '''
         self.name = 'GGA_FxNet_sigma'
@@ -316,9 +331,17 @@ class GGA_FxNet_sigma(eqx.Module):
         '''
         The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
 
-        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho,
+        gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of
+        the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density
+        gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized).
+        This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma
+        and use in convergence testing. However, within the call sigma is translated to the reduced density gradient,
+        :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to
+        respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting
+        e = Fx*e_heg = e_heg.
 
         :param inputs: _description_
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
@@ -362,9 +385,11 @@ class GGA_FcNet_sigma(eqx.Module):
         '''
         Constructor for the correlation enhancement factor object, for the GGA case.
 
-        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 2 -- both the density and gradient information is passed to the network.
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is
+        hard-coded to 2 -- both the density and gradient information is passed to the network.
 
-        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the correlation energy.
+        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the
+        correlation energy.
 
         :param depth: Depth of the neural network
         :type depth: int
@@ -374,7 +399,8 @@ class GGA_FcNet_sigma(eqx.Module):
         :type seed: int
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2
         :type lob_lim: float, optional
-        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, 
+        defaults to 1e-12.
         :type lower_rho_cutoff: float, optional
         '''
         self.name = 'GGA_FcNet_sigma'
@@ -395,9 +421,17 @@ class GGA_FcNet_sigma(eqx.Module):
         '''
         The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
 
-        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho,
+        gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of
+        the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density
+        gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized).
+        This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma
+        and use in convergence testing. However, within the call sigma is translated to the reduced density gradient,
+        :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to
+        respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting
+        e = Fx*e_heg = e_heg.
 
         :param inputs: _description_
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
@@ -428,12 +462,14 @@ def save_xcquinox_model(model, path: str = '', fixing: Union[str, None] = None,
 
     :param model: The model to save
     :type model: eqx.Module
-    :param path: The path to save the model to, defaults to .
-    :type path: str, optional
-    :param fixing: A string to append to the model name, defaults to None. Useful to determine the type of fixing used in the model.
-    :type fixing: Union[str, None], optional
-    :param tail_info: A string to append to the model name, defaults to None. Useful to determine any additional information about the model.
-    :type tail_info: Union[str, None], optional
+    :param path: The path to save the model to, defaults to ".".
+    :type path: str, optional.
+    :param fixing: A string to append to the model name, defaults to None. Useful to determine the type of fixing used
+    in the model.
+    :type fixing: Union[str, None], optional.
+    :param tail_info: A string to append to the model name, defaults to None. Useful to determine any additional
+    information about the model.
+    :type tail_info: Union[str, None], optional.
     """
     if fixing is None:
         fixing = ''
@@ -499,18 +535,22 @@ class GGA_FxNet_sigma_UNC(eqx.Module):
         '''
         Constructor for the exchange enhancement factor object, for the GGA case.
 
-        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 1 -- just the gradient information is passed to the network, to guarantee that the energy yielded from this multiplicative factor behaves correctly under uniform scaling of the electron density and obeys the spin-scaling relation.
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is
+        hard-coded to 1 -- just the gradient information is passed to the network, to guarantee that the energy
+        yielded from this multiplicative factor behaves correctly under uniform scaling of the electron density and
+        obeys the spin-scaling relation.
 
-        :param depth: Depth of the neural network
-        :type depth: int
-        :param nodes: Number of nodes in each layer
-        :type nodes: int
-        :param seed: The random seed to initiate baseline weight values for the network
-        :type seed: int
+        :param depth: Depth of the neural network.
+        :type depth: int.
+        :param nodes: Number of nodes in each layer.
+        :type nodes: int.
+        :param seed: The random seed to initiate baseline weight values for the network.
+        :type seed: int.
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
-        :type lob_lim: float, optional
-        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
-        :type lower_rho_cutoff: float, optional
+        :type lob_lim: float, optional.
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho,
+        defaults to 1e-12.
+        :type lower_rho_cutoff: float, optional.
         '''
         self.depth = depth
         self.nodes = nodes
@@ -528,9 +568,17 @@ class GGA_FxNet_sigma_UNC(eqx.Module):
         '''
         The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
 
-        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho,
+        gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of
+        the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density
+        gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized).
+        This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma
+        and use in convergence testing. However, within the call sigma is translated to the reduced density gradient,
+        :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to
+        respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting
+        e = Fx*e_heg = e_heg.
 
         :param inputs: _description_
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
@@ -565,20 +613,23 @@ class GGA_FcNet_sigma_UNC(eqx.Module):
         '''
         Constructor for the correlation enhancement factor object, for the GGA case.
 
-        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 2 -- both the density and gradient information is passed to the network.
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is
+        hard-coded to 2 -- both the density and gradient information is passed to the network.
 
-        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the correlation energy.
+        The default Lieb-Oxford bound the outputs are wrapped here is set to 2.0, to enforce the non-negativity of the
+        correlation energy.
 
-        :param depth: Depth of the neural network
-        :type depth: int
-        :param nodes: Number of nodes in each layer
-        :type nodes: int
-        :param seed: The random seed to initiate baseline weight values for the network
-        :type seed: int
-        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2
-        :type lob_lim: float, optional
-        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
-        :type lower_rho_cutoff: float, optional
+        :param depth: Depth of the neural network.
+        :type depth: int.
+        :param nodes: Number of nodes in each layer.
+        :type nodes: int.
+        :param seed: The random seed to initiate baseline weight values for the network.
+        :type seed: int.
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2.
+        :type lob_lim: float, optional.
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho,
+        efaults to 1e-12.
+        :type lower_rho_cutoff: float, optional.
         '''
         self.depth = depth
         self.nodes = nodes
@@ -596,9 +647,17 @@ class GGA_FcNet_sigma_UNC(eqx.Module):
         '''
         The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
 
-        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho,
+        gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of
+        the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density
+        gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized).
+        This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma
+        and use in convergence testing. However, within the call sigma is translated to the reduced density gradient,
+        :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to
+        respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting
+        e = Fx*e_heg = e_heg.
 
         :param inputs: _description_
         :type inputs: tuple, list, array of size 2 in order (rho, gradient_descriptor)
@@ -638,11 +697,11 @@ class MGGA_FxNet_sigma(eqx.Module):
         '''
         Constructor for the exchange enhancement factor object, for the MGGA case.
 
-        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy density). Here, 
-        the network's input size is hard-coded to 2 -- just the gradient and alpha (related to tau) information 
-        is passed to the network, to guarantee that the energy yielded from this multiplicative 
-        factor behaves correctly under uniform scaling of the electron density and obeys the 
-        spin-scaling relation.
+        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy
+        density). Here, the network's input size is hard-coded to 2 -- just the gradient and alpha
+        (related to tau) information is passed to the network, to guarantee that the energy yielded
+        from this multiplicative factor behaves correctly under uniform scaling of the electron density and
+        obeys the spin-scaling relation.
 
         :param depth: Depth of the neural network
         :type depth: int
@@ -652,7 +711,8 @@ class MGGA_FxNet_sigma(eqx.Module):
         :type seed: int
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
         :type lob_lim: float, optional
-        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho,
+        defaults to 1e-12
         :type lower_rho_cutoff: float, optional
         '''
         self.depth = depth
@@ -673,9 +733,17 @@ class MGGA_FxNet_sigma(eqx.Module):
         '''
         The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
 
-        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho,
+        gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of
+        the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density
+        gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized).
+        This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma
+        and use in convergence testing. However, within the call sigma is translated to the reduced density gradient,
+        :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to
+        respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting
+        e = Fx*e_heg = e_heg.
 
         :param inputs: A one-dimensional list/array of inputs [rho, sigma, laplacian_rho, alpha]
         :type inputs: tuple, list, one-dimensional array of size 4 in order [rho, sigma, laplacian_rho, alpha]
@@ -716,10 +784,10 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         '''
         Constructor for the exchange enhancement factor object, for the MGGA case.
 
-        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy density). Here, 
-        the network's input size is hard-coded to 2 -- just the gradient and alpha (related to tau) information 
-        is passed to the network, to guarantee that the energy yielded from this multiplicative 
-        factor behaves correctly under uniform scaling of the electron density and obeys the 
+        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy
+        density). Here, the network's input size is hard-coded to 2 -- just the gradient and alpha
+        (related to tau) information is passed to the network, to guarantee that the energy yielded from this
+        multiplicative factor behaves correctly under uniform scaling of the electron density and obeys the
         spin-scaling relation.
 
         This network transforms function inputs [rho, sigma, lapl, tau] to the below inputs for the network:
@@ -727,16 +795,17 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         sigma -> (1-exp(-s**2))*log(s+1)
         tau -> log((alpha+1)/2)
 
-        :param depth: Depth of the neural network
-        :type depth: int
-        :param nodes: Number of nodes in each layer
-        :type nodes: int
-        :param seed: The random seed to initiate baseline weight values for the network
-        :type seed: int
-        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
-        :type lob_lim: float, optional
-        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
-        :type lower_rho_cutoff: float, optional
+        :param depth: Depth of the neural network.
+        :type depth: int.
+        :param nodes: Number of nodes in each layer.
+        :type nodes: int.
+        :param seed: The random seed to initiate baseline weight values for the network.
+        :type seed: int.
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804.
+        :type lob_lim: float, optional.
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho,
+        defaults to 1e-12.
+        :type lower_rho_cutoff: float, optional.
         '''
         self.depth = depth
         self.nodes = nodes
@@ -756,14 +825,22 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         '''
         The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
 
-        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho,
+        gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of
+        the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density
+        gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized).
+        This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma
+        and use in convergence testing. However, within the call sigma is translated to the reduced density gradient,
+        :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to
+        respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting
+        e = Fx*e_heg = e_heg.
 
-        :param inputs: A one-dimensional list/array of inputs [rho, sigma, laplacian_rho, alpha]
-        :type inputs: tuple, list, one-dimensional array of size 4 in order [rho, sigma, laplacian_rho, alpha]
-        :return: The enhancement factor value
-        :rtype: float
+        :param inputs: A one-dimensional list/array of inputs [rho, sigma, laplacian_rho, alpha].
+        :type inputs: tuple, list, one-dimensional array of size 4 in order [rho, sigma, laplacian_rho, alpha].
+        :return: The enhancement factor value.
+        :rtype: float.
         '''
         # here, assume the inputs is [rho, sigma, laplacian, tau] and select the appropriate input
         # takes forever if inputs[1] tanh input has extended shape , i.e. (1,1) as opposed to scalar shape (1,)
@@ -781,7 +858,6 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
         # here we log-transform our descriptors to see if it improves convergence
-        x0 = jnp.log(rho**1/3+1e-5)
         x1 = (1-jnp.exp(-s**2))*jnp.log(s+1)
         x2 = jnp.log((alpha+1)/2)
         # the tanh term here to match xcdiff paper
@@ -804,20 +880,21 @@ class MGGA_FcNet_sigma(eqx.Module):
         '''
         Constructor for the correlation enhancement factor object, for the MGGA case.
 
-        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy density). Here, 
-        the network's input size is hard-coded to 3 -- just the density, gradient, and alpha (related to tau) information 
-        is passed to the network.
+        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy
+        density). Here, the network's input size is hard-coded to 3 -- just the density, gradient, and alpha
+        (related to tau) information is passed to the network.
 
-        :param depth: Depth of the neural network
-        :type depth: int
-        :param nodes: Number of nodes in each layer
-        :type nodes: int
-        :param seed: The random seed to initiate baseline weight values for the network
-        :type seed: int
-        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
-        :type lob_lim: float, optional
-        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
-        :type lower_rho_cutoff: float, optional
+        :param depth: Depth of the neural network.
+        :type depth: int.
+        :param nodes: Number of nodes in each layer.
+        :type nodes: int.
+        :param seed: The random seed to initiate baseline weight values for the network.
+        :type seed: int.
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804.
+        :type lob_lim: float, optional.
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho,
+        defaults to 1e-12.
+        :type lower_rho_cutoff: float, optional.
         '''
         self.depth = depth
         self.nodes = nodes
@@ -837,9 +914,17 @@ class MGGA_FcNet_sigma(eqx.Module):
         '''
         The network's forward pass, resulting in the enhancement factor associated to the input gradient descriptor.
 
-        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho, gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of the network class.
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point worth of data, the (rho,
+        gradient_descriptor) values at that point. This structure expects the :jax.vmap: call to be coded OUTSIDE of
+        the network class.
 
-        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized). This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma and use in convergence testing. However, within the call sigma is translated to the reduced density gradient, :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting e = Fx*e_heg = e_heg.
+        *NOTE*: Here, the gradient_descriptor is assumed to be Libxc's/PySCF's internal variable for the density
+        gradient -- sigma (gradient squared in non-spin-polarized, gradient contracted with itself in spin-polarized).
+        This is so that we have easy access to automatic derivatives with respect to sigma, thus can generate v_sigma
+        and use in convergence testing. However, within the call sigma is translated to the reduced density gradient,
+        :s:, which the network is still assumed to be parameterized by, and the call is structured in such a way to
+        respect the UEG limits for when gradients vanish. Namely, when s = 0, Fx = 1, so the resulting
+        e = Fx*e_heg = e_heg.
 
         :param inputs: A one-dimensional list/array of inputs [rho, sigma, laplacian_rho, alpha]
         :type inputs: tuple, list, one-dimensional array of size 4 in order [rho, sigma, laplacian_rho, alpha]
@@ -880,9 +965,9 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
         '''
         Constructor for the correlation enhancement factor object, for the MGGA case.
 
-        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy density). Here, 
-        the network's input size is hard-coded to 3 -- just the density, gradient, and alpha (related to tau) information 
-        is passed to the network.
+        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy
+        density). Here, the network's input size is hard-coded to 3 -- just the density, gradient, and alpha
+        (related to tau) information is passed to the network.
 
         This network transforms function inputs [rho, sigma, lapl, tau] to the below inputs for the network:
         rho -> log(rho**1/3 + 1e-5)

@@ -39,38 +39,42 @@ def generate_network_eval_xc(mf, dm, network):
                                             jnp.expand_dims(non_loc_b,-1)],axis=-1))
 
 
-        :param xc_code: The XC functional code string in libxc format, but it is ignored as the network is the calculation driver
-        :type xc_code: str
+        :param xc_code: The XC functional code string in libxc format, but it is ignored as the network is the 
+        calculation driver.
+        :type xc_code: str.
         :param rho: The [..., *, N] arrays (... for spin polarized), N is the number of grid points.
                     rho (*,N) ordered as (rho, grad_x, grad_y, grad_z, laplacian, tau)
                     rho (2,*,N) is [(rho_up, grad_x_up, grad_y_up, grad_z_up, laplacian_up, tau_up),
                                     (rho_down, grad_x_down, grad_y_down, grad_z_down, laplacian_down, tau_down)]
                     PySCFAD doesn't do spin-polarized grid calculations yet, so this will be unpolarized.
-        :type rho: jax.Array
-        :param ao: The atomic orbitals on the grid to use in the network calculation. Explcitly specified as the block loops break down the grid if memory is too low
-        :type ao: jax.Array
-        :param ao: The grid weights to use in the network calculation. Explcitly specified as the block loops break down the grid if memory is too low
-        :type ao: jax.Array
-        :param ao: The grid coordinates to use in the network calculation. Explcitly specified as the block loops break down the grid if memory is too low
-        :type ao: jax.Array
-        :param spin: The spin of the calculation, integer valued, polarized if non-zero, defaults to zero
-        :type spin: int
-        :param relativity: Integer, unused right now, defaults to zero
-        :type relativity: int
-        :param deriv: Unused here, defaults to 1
-        :type deriv: int
-        :param omega: Hybrid mixing term, unused here, defaults to None
-        :type omega: float
-        :param verbose: Unused here, defaults to None
-        :type verbose: int
-        :return: ex, vxc, fxc, kxc
+        :type rho: jax.Array.
+        :param ao: The atomic orbitals on the grid to use in the network calculation. Explcitly specified as the block
+        loops break down the grid if memory is too low.
+        :type ao: jax.Array.
+        :param ao: The grid weights to use in the network calculation. Explcitly specified as the block loops break
+        down the grid if memory is too low.
+        :type ao: jax.Array.
+        :param ao: The grid coordinates to use in the network calculation. Explcitly specified as the block loops
+        break down the grid if memory is too low.
+        :type ao: jax.Array.
+        :param spin: The spin of the calculation, integer valued, polarized if non-zero, defaults to zero.
+        :type spin: int.
+        :param relativity: Integer, unused right now, defaults to zero.
+        :type relativity: int.
+        :param deriv: Unused here, defaults to 1.
+        :type deriv: int.
+        :param omega: Hybrid mixing term, unused here, defaults to None.
+        :type omega: float.
+        :param verbose: Unused here, defaults to None.
+        :type verbose: int.
+        :return: ex, vxc, fxc, kxc.
                  where: ex -> exc, XC energy density on the grid
                         vxc -> (vrho, vsigma, vlapl, vtau), gradients of the exc w.r.t. the quantities given.
                         Only vrho and vtau are used, vsigma=vlapl=fxc=kxc=None.
                         vrho = vs[:, 0]+vs[:, 1]
                         vtau = vs[:, 7]+vs[:, 8]
 
-        :rtype: tuple
+        :rtype: tuple.
     '''
     def eval_xc(xc_code, rho, ao, gw, coords, spin=0, relativity=0, deriv=1, omega=None, verbose=None):
         '''

@@ -1,22 +1,24 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from xcquinox.utils import get_dm_moe, pad_array, pad_array_list
+from xcquinox.utils import get_dm_moe, pad_array  # , pad_array_list
 from xcquinox.pyscf import generate_network_eval_xc
 
 
 @eqx.filter_value_and_grad
 def compute_loss_mae(model, inputs, ref):
     '''
-    Computes the mean-absolute-error loss of the model's prediction using the given inputs against the provided reference.
+    Computes the mean-absolute-error loss of the model's prediction using the given inputs against the provided
+    reference.
 
     :param model: The model which is given to `jax.vmap` to generate predictions using the inputs given.
     :type model: eqx.Module
-    :param inputs: The input points that are given to the network. Shape will be dependent on your network architecture.
+    :param inputs: The input points that are given to the network. Shape will be dependent on your network
+    architecture.
     :type inputs: array
     :param ref: The reference values to be used in generating prediction error.
     :type ref: array
-    :return: The MAE that will be used in backpropagation. 
+    :return: The MAE that will be used in backpropagation.
     :rtype: float
     '''
     pred = jax.vmap(model)(inputs)
@@ -39,7 +41,8 @@ class E_loss(eqx.Module):
 
     def __call__(self, model, inp_dm, ref_en, ao_eval, grid_weights):
         '''
-        Computes the energy loss for a given model and associated input density matrix, atomic orbitals on the grid, and grid weights
+        Computes the energy loss for a given model and associated input density matrix, atomic orbitals on the grid,
+        and grid weights.
 
         Loss is the RMSE energy, so predicted energy can potentially be a jax.Array of SCF guesses.
 
@@ -49,9 +52,9 @@ class E_loss(eqx.Module):
         :type inp_dm: jax.Array
         :param ref_en: The reference energy to take the loss with respect to.
         :type ref_en: jax.Array
-        :param ao_eval: Atomic orbitals evaluated on the grid
+        :param ao_eval: Atomic orbitals evaluated on the grid.
         :type ao_eval: jax.Array
-        :param grid_weights: pyscfad's grid weights for the reference calculation
+        :param grid_weights: pyscfad's grid weights for the reference calculation.
         :type grid_weights: jax.Array
         :return: The RMSE error.
         :rtype: jax.Array
@@ -64,13 +67,15 @@ class E_loss(eqx.Module):
 class NL_E_loss(eqx.Module):
     def __init__(self):
         '''
-        The standard energy loss module for a non-local descriptor training, RMSE loss of predicted vs. reference energies.
+        The standard energy loss module for a non-local descriptor training, RMSE loss of predicted vs. reference
+        energies.
         '''
         super().__init__()
 
     def __call__(self, model, inp_dm, ref_en, ao_eval, grid_weights, mf):
         '''
-        Computes the energy loss for a given model and associated input density matrix, atomic orbitals on the grid, and grid weights
+        Computes the energy loss for a given model and associated input density matrix, atomic orbitals on the grid,
+        and grid weights
 
         Loss is the RMSE energy, so predicted energy can potentially be a jax.Array of SCF guesses.
 
@@ -84,7 +89,8 @@ class NL_E_loss(eqx.Module):
         :type ao_eval: jax.Array
         :param grid_weights: pyscfad's grid weights for the reference calculation
         :type grid_weights: jax.Array
-        :param mf: A pyscf(ad) converged calculation kernel if self.level > 3, used for building the CIDER nonlocal descriptors, defaults to None
+        :param mf: A pyscf(ad) converged calculation kernel if self.level > 3, used for building the CIDER nonlocal
+            descriptors, defaults to None
         :type mf: pyscfad.dft.RKS kernel
         :return: The RMSE error.
         :rtype: jax.Array
@@ -99,8 +105,8 @@ class DM_HoLu_loss(eqx.Module):
         """
         Creates DM_HoLu_loss object for use in training.
 
-        Options to compute the RMSE loss with respect to the density matrix, the RMSE homo-lumo gap loss, and the root-integrated-squared loss for the density on the grid.
-
+        Options to compute the RMSE loss with respect to the density matrix, the RMSE homo-lumo gap loss, and the
+        root-integrated-squared loss for the density on the grid.
         """
         super().__init__()
 
@@ -109,7 +115,8 @@ class DM_HoLu_loss(eqx.Module):
         """
         Forward pass to compute the total loss based on the given inputs.
 
-        If more than one loss flag evaluates to True, total loss returned is the rooted sum-of-squares for the individual losses.
+        If more than one loss flag evaluates to True, total loss returned is the rooted sum-of-squares for the
+        individual losses.
         i.e. total_loss = jnp.sqrt( (dmL*dmLv)**2 + (holuL*holuLv)**2 + (dm_to_rho*rhoLv)**2)
 
         :param model: The model for use in generating the Vxc during the DM generation
@@ -128,7 +135,8 @@ class DM_HoLu_loss(eqx.Module):
         :type hc: jax.Array
         :param s: The molecule's overlap matrix
         :type s: jax.Array
-        :param ogd: The original dimensions of this molecule's density matrix, used if padded to constrict the eigendecomposition to a relevant shape
+        :param ogd: The original dimensions of this molecule's density matrix, used if padded to constrict the
+        eigendecomposition to a relevant shape
         :type ogd: jax.Array
         :param holu: The reference HOMO-LUMO bandgap, if doing the corresponding loss, defaults to None
         :type holu: jax.Array, optional
@@ -136,9 +144,11 @@ class DM_HoLu_loss(eqx.Module):
         :type alpha0: float, optional
         :param dmL: Float to evaluate whether or not to include RMSE DM loss, used as the loss weight, defaults to 1.0
         :type dmL: float, optional
-        :param holuL: Float to evaluate whether or not to include RMSE HOMO-LUMO gap loss, used as the loss weight, defaults to 1.0
+        :param holuL: Float to evaluate whether or not to include RMSE HOMO-LUMO gap loss, used as the loss weight,
+        defaults to 1.0
         :type holuL: float, optional
-        :param dm_to_rho: Float to evaluate whether or not to include integrated rho-on-grid loss, used as the loss weight, defaults to 0.0
+        :param dm_to_rho: Float to evaluate whether or not to include integrated rho-on-grid loss, used as the loss
+        weight, defaults to 0.0
         :type dm_to_rho: float, optional
         :return: The root-sum of squares loss
         :rtype: jax.Array
@@ -202,11 +212,13 @@ class Band_gap_1shot_loss(eqx.Module):
         :type hc: jax.Array
         :param s: The molecule's overlap matrix
         :type s: jax.Array
-        :param ogd: The original dimensions of this molecule's density matrix, used if padded to constrict the eigendecomposition to a relevant shape
+        :param ogd: The original dimensions of this molecule's density matrix, used if padded to constrict the
+        eigendecomposition to a relevant shape
         :type ogd: jax.Array
         :param refgap: The reference gap to optimzie against
         :type refgap: jax.Array
-        :param mf: A pyscf(ad) converged calculation kernel if self.level > 3, used for building the CIDER nonlocal descriptors, defaults to None
+        :param mf: A pyscf(ad) converged calculation kernel if self.level > 3, used for building the CIDER nonlocal
+        descriptors, defaults to None
         :type mf: pyscfad.dft.RKS kernel
         :param alpha0: The mixing parameter for the one-shot density matrix generation, defaults to 0.7
         :type alpha0: float, optional
@@ -220,17 +232,14 @@ class Band_gap_1shot_loss(eqx.Module):
         moep -= efermi
         # print(moep)
         moep_gap = jnp.min(moep)
-        # print(moep_gap)
-        loss = jnp.sqrt((moep_gap - refgap)**2)
-        # print(loss)
         return jnp.sqrt((moep_gap - refgap)**2)
 
 
 class DM_Gap_loss(eqx.Module):
     def __init__(self):
         '''
-        Initializer for the DM_Gap_loss, a semi-local loss calculator to optimize the one-shot density matrices and band gaps for 
-        Gamma-Gamma direct transitions for PBC structures.
+        Initializer for the DM_Gap_loss, a semi-local loss calculator to optimize the one-shot density matrices and
+        band gaps for Gamma-Gamma direct transitions for PBC structures.
 
         Band gap optimized is the HOMO-LUMO gap here, hence why specifically Gamma-Gamma
         '''
@@ -256,7 +265,8 @@ class DM_Gap_loss(eqx.Module):
         :type s: jax.Array
         :param gw: Weights for the grid being used
         :type gw: jax.Array
-        :param inp_dm: Initial density matrix guesses, from mf.get_init_guess(), to be used in the one-shot DM generation to produce a mixed DM to optimize against reference
+        :param inp_dm: Initial density matrix guesses, from mf.get_init_guess(), to be used in the one-shot DM
+        generation to produce a mixed DM to optimize against reference
         :type inp_dm: jax.Array
         :param mo_occ: Molecular orbital occupations
         :type mo_occ: jax.Array
@@ -288,12 +298,13 @@ class DM_Gap_loss(eqx.Module):
 class DM_Gap_Loop_loss(eqx.Module):
     def __init__(self):
         '''
-        Initializer for the DM_Gap_Loop_loss, a semi-local loss calculator to optimize the one-shot density matrices and band gaps for 
-        Gamma-Gamma direct transitions for PBC structures.
+        Initializer for the DM_Gap_Loop_loss, a semi-local loss calculator to optimize the one-shot density matrices
+        and band gaps for Gamma-Gamma direct transitions for PBC structures.
 
         Band gap optimized is the HOMO-LUMO gap here, hence why specifically Gamma-Gamma
 
-        This is a BATCH-CUMULATIVE LOSS class -- it will loop over the inputs and accumulate each DM_Gap loss before the loss is returned and used for optimization
+        This is a BATCH-CUMULATIVE LOSS class -- it will loop over the inputs and accumulate each DM_Gap loss before
+        the loss is returned and used for optimization
         '''
         super().__init__()
 
@@ -317,7 +328,8 @@ class DM_Gap_Loop_loss(eqx.Module):
         :type ss: list of jax.Arrays
         :param gws: Weights for the grids being used
         :type gws: list of jax.Arrays
-        :param inp_dms: Initial density matrix guesses, from mf.get_init_guess(), to be used in the one-shot DM generation to produce a mixed DM to optimize against reference
+        :param inp_dms: Initial density matrix guesses, from mf.get_init_guess(), to be used in the one-shot DM
+        generation to produce a mixed DM to optimize against reference
         :type inp_dms: list of jax.Arrays
         :param mo_occs: Molecular orbital occupations
         :type mo_occs: list of jax.Arrays
@@ -370,7 +382,8 @@ class E_PySCFAD_loss(eqx.Module):
 
     def __call__(self, model, mf, inp_dm, ref_en):
         '''
-        Computes the energy loss for a given model and associated input density matrix, atomic orbitals on the grid, and grid weights
+        Computes the energy loss for a given model and associated input density matrix, atomic orbitals on the grid,
+        and grid weights
 
         Loss is the RMSE energy, so predicted energy can potentially be a jax.Array of SCF guesses.
 
