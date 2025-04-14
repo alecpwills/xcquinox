@@ -6,6 +6,7 @@ import equinox as eqx
 from warnings import warn
 import json
 from typing import Union
+import numpy as np
 
 # =====================================================================
 # =====================================================================
@@ -44,7 +45,6 @@ class LOB(eqx.Module):
 # GGA LEVEL NETWORKS
 # =====================================================================
 # =====================================================================
-# base Fx/Fc networks:
 
 # Base Fx/Fc networks:
 # Define the neural network module for Fx
@@ -424,17 +424,19 @@ class GGA_FcNet_sigma(eqx.Module):
 
 
 def save_xcquinox_model(model, path: str = '', fixing: Union[str, None] = None,
-                        tail_info: Union[str, None] = None):
+                        tail_info: Union[str, None] = None, loss: Union[list[float], None] = None):
     """Save our NN model to a file.
 
-    :param model: The model to save
-    :type model: eqx.Module
+    :param model: The model to save.
+    :type model: eqx.Module.
     :param path: The path to save the model to, defaults to .
-    :type path: str, optional
+    :type path: str, optional.
     :param fixing: A string to append to the model name, defaults to None. Useful to determine the type of fixing used in the model.
-    :type fixing: Union[str, None], optional
+    :type fixing: Union[str, None], optional.
     :param tail_info: A string to append to the model name, defaults to None. Useful to determine any additional information about the model.
-    :type tail_info: Union[str, None], optional
+    :type tail_info: Union[str, None], optional.
+    :param loss: A list of loss values to save, defaults to None. Useful to determine the loss values during training. Will be saved in a separate file.
+    :type loss: Union[list[float], None], optional.
     """
     if fixing is None:
         fixing = ''
@@ -453,6 +455,11 @@ def save_xcquinox_model(model, path: str = '', fixing: Union[str, None] = None,
     with open(f"{path}/{save_name}.json", "w") as f:
         json.dump(needen_info, f)
     print(f'Saved {path}/{save_name}.eqx')
+
+    if loss is not None:
+        with open(f"{path}/{save_name}_loss.txt", "w") as f:
+            np.savetxt(f, loss)
+            print(f'Saved the loss values in {path}/{save_name}_loss.txt')
 
 
 def load_xcquinox_model(path: str):
@@ -474,7 +481,12 @@ def load_xcquinox_model(path: str):
         'GGA_FxNet_G': GGA_FxNet_G,
         'GGA_FcNet_G': GGA_FcNet_G,
         'GGA_FxNet_sigma': GGA_FxNet_sigma,
-        'GGA_FcNet_sigma': GGA_FcNet_sigma}.get(name)
+        'GGA_FcNet_sigma': GGA_FcNet_sigma,
+        'MGGA_FxNet_sigma': MGGA_FxNet_sigma,
+        'MGGA_FcNet_sigma': MGGA_FcNet_sigma,
+        'MGGA_FxNet_sigma_tranform': MGGA_FxNet_sigma_transform,
+        'MGGA_FcNet_sigma_tranform': MGGA_FcNet_sigma_transform
+    }.get(name)
 
     dummy_model = Model_Object(depth=metadata["depth"],
                                nodes=metadata["nodes"],
@@ -634,6 +646,7 @@ class MGGA_FxNet_sigma(eqx.Module):
     lower_rho_cutoff: float
     net: eqx.nn.MLP
     lobf: eqx.Module
+    name: str
 
     def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.174, lower_rho_cutoff=1e-12):
         '''
@@ -669,6 +682,7 @@ class MGGA_FxNet_sigma(eqx.Module):
                               activation=jax.nn.gelu,
                               key=jax.random.PRNGKey(self.seed))
         self.lobf = LOB(limit=lob_lim)
+        self.name = 'MGGA_FxNet_sigma'
 
     def __call__(self, inputs):
         '''
@@ -712,6 +726,7 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
     lower_rho_cutoff: float
     net: eqx.nn.MLP
     lobf: eqx.Module
+    name: str
 
     def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.174, lower_rho_cutoff=1e-12):
         '''
@@ -752,6 +767,7 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
                               activation=jax.nn.gelu,
                               key=jax.random.PRNGKey(self.seed))
         self.lobf = LOB(limit=lob_lim)
+        self.name = 'MGGA_FxNet_sigma_transform'
 
     def __call__(self, inputs):
         '''
@@ -800,6 +816,7 @@ class MGGA_FcNet_sigma(eqx.Module):
     lower_rho_cutoff: float
     net: eqx.nn.MLP
     lobf: eqx.Module
+    name: str
 
     def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.174, lower_rho_cutoff=1e-12):
         '''
@@ -833,6 +850,7 @@ class MGGA_FcNet_sigma(eqx.Module):
                               activation=jax.nn.gelu,
                               key=jax.random.PRNGKey(self.seed))
         self.lobf = LOB(limit=lob_lim)
+        self.name = 'MGGA_FcNet_sigma'
 
     def __call__(self, inputs):
         '''
@@ -876,6 +894,7 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
     lower_rho_cutoff: float
     net: eqx.nn.MLP
     lobf: eqx.Module
+    name: str
 
     def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.174, lower_rho_cutoff=1e-12):
         '''
@@ -914,6 +933,7 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
                               activation=jax.nn.gelu,
                               key=jax.random.PRNGKey(self.seed))
         self.lobf = LOB(limit=lob_lim)
+        self.name = 'MGGA_FcNet_sigma_transform'
 
     def __call__(self, inputs):
         '''
