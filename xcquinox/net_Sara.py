@@ -473,6 +473,7 @@ def load_xcquinox_model(path: str):
 
     with open(f"{path}.json", "r") as f:
         metadata = json.load(f)
+        print(metadata)
 
     # Model selection
     name = metadata['name']
@@ -485,9 +486,13 @@ def load_xcquinox_model(path: str):
         'GGA_FcNet_sigma': GGA_FcNet_sigma,
         'MGGA_FxNet_sigma': MGGA_FxNet_sigma,
         'MGGA_FcNet_sigma': MGGA_FcNet_sigma,
-        'MGGA_FxNet_sigma_tranform': MGGA_FxNet_sigma_transform,
-        'MGGA_FcNet_sigma_tranform': MGGA_FcNet_sigma_transform
+        'MGGA_FxNet_sigma_transform': MGGA_FxNet_sigma_transform,
+        'MGGA_FcNet_sigma_transform': MGGA_FcNet_sigma_transform
     }.get(name)
+
+    print(f'Loading {name} model')
+    print(f'depth: {metadata["depth"]}, nodes: {metadata["nodes"]}, seed: {metadata["seed"]}')
+    print(Model_Object)
 
     dummy_model = Model_Object(depth=metadata["depth"],
                                nodes=metadata["nodes"],
