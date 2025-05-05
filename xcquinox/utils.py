@@ -583,9 +583,9 @@ def PBE_Fc(rho, grad_rho,  lower_rho_cutoff=1e-12):
     # Calculate e_heg_c (heterogeneous electron gas correlation energy)
     N = rho.size
     # Initialize the rho_array with the correct shape. Only the first element (rho) matters, so the rest are populated with 0.
-    rho_array = jnp.zeros((6, N))
-    rho_array = rho_array.at[0, :].set(rho)  # Populate first array value with rho
-    e_heg_c = dft.libxc.eval_xc(',LDA_C_PW', rho_array, spin=0, deriv=1)[0]
+    # rho_array = jnp.zeros((6, N))
+    # rho_array = rho_array.at[0, :].set(rho)  # Populate first array value with rho
+    e_heg_c = dft.libxc.eval_xc(',LDA_C_PW', rho, spin=0, deriv=1)[0]
 
     A = (beta / gamma) / (jnp.exp(-e_heg_c / (gamma)) - 1)
 
