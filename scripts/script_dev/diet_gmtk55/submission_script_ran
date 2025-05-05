@@ -13,6 +13,8 @@ cd $HOME
 source .bashrc
 source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
 
+conda activate swxcq
+
 cd /gpfs/scratch/awills/calc_diet
 
-python ./evaluate_dietset.py --diet_traj_path ../../script_data/dietgmtkn55-50/diet50.traj --outfile ./d50out.txt
+python ./evaluate_dietset.py --diet_traj_path ../../script_data/dietgmtkn55-50/diet50.traj --outfile ./d50out_ran.txt
