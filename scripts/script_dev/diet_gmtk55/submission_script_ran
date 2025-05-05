@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
-#SBATCH -p gpu-long
+#SBATCH -p long-40core
 
 cd $HOME
 source .bashrc
