@@ -38,7 +38,7 @@ After the installation, configuration, and patching have been completed, you may
 
 ### Copyright
 
-Copyright (c) 2024, Alec Wills
+Copyright (c) 2024-2025, Alec Wills
 
 #### Acknowledgements
 

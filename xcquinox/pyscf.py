@@ -372,3 +372,156 @@ def eval_xc_gga_j2(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verb
     kxc = None
 
     return exc, vxc, fxc, kxc
+
+
+def eval_xc_gga_pol(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None,
+                    xcmodel=None):
+    # we only expect there to be a rho0 array, but I unpack it as (rho, deriv) here to be in line with the
+    # pyscf example -- the size of the 'rho' array depends on the xc type (LDA, GGA, etc.)
+    # so since LDA calculation, check for size first.
+    try:
+        rhoshape = len(rho.shape)
+        pol = 3
+    except:
+        rhoshape = len(rho)
+        pol = 2
+    # if len of shape == 3, spin polarized so compress to unpolarized for calculation
+    if rhoshape != pol:
+        # SPIN-UNPOLARIZED, ALL ARRAYS PASSED AS IS TO LIBXC
+        try:
+            # print("unpacking rho[:4] into rho0, dx, dy, dz")
+            rho0, dx, dy, dz = rho[:4]
+            sigma = jnp.array(dx**2+dy**2+dz**2)
+        except:
+            print("Unpacking failed...")
+            rho0, drho = rho[:4]
+            sigma = jnp.array(drho**2)
+        rho0 = jnp.array(rho0)
+        rhosig = jnp.stack([rho0, sigma], axis=1)
+        # print('rho/sig/rhosig shapes: ', rho0.shape, sigma.shape, rhosig.shape)
+        # calculate the "custom" energy with rho -- THIS IS e
+        # cast back to np.array since that's what pyscf works with
+        # pass as tuple -- (rho, sigma)
+        exc = jax.vmap(xcmodel)(rhosig)
+        exc = jnp.array(exc)/rho0
+        vrho_f = eqx.filter_grad(xcmodel)
+        vrhosigma = jnp.array(jax.vmap(vrho_f)(rhosig))
+        # vxc = vrho and vsigma, unpolarized, followed by nothing higher order in GGA
+        vxc = (vrhosigma[:, 0], vrhosigma[:, 1], None, None)
+
+        v2_f = jax.hessian(xcmodel)
+        v2 = jnp.array(jax.vmap(v2_f)(rhosig))
+        # print('v2 shape', v2.shape)
+        v2rho2 = v2[:, 0, 0]
+        v2rhosigma = v2[:, 0, 1]
+        v2sigma2 = v2[:, 1, 1]
+        v2lapl2 = None
+        vtau2 = None
+        v2rholapl = None
+        v2rhotau = None
+        v2lapltau = None
+        v2sigmalapl = None
+        v2sigmatau = None
+        # 2nd order functional derivative
+        fxc = (v2rho2, v2rhosigma, v2sigma2, v2lapl2, vtau2, v2rholapl, v2rhotau, v2lapltau, v2sigmalapl, v2sigmatau)
+        # 3rd order
+        kxc = None
+
+    else:
+        # SPIN POLARIZED; RESULT ARRAYS MUST BE RETURNED SPIN POLARIZED
+        # THIS IS HACKY -- THE NETWORK IS NOT ARCHITECTED TO ACCEPT ALL THE POLARIZED PARAMETERS, SO THE GRADIENTS ARE JUST DUPLICATED IN THE RETURN;
+        # GENERATE A FUNCTION THAT COMBINES THEN CALLS
+        def make_epsilon_function(model):
+            # importantly, do not place the vmap here
+            def get_epsilon(arr):
+                rhou, rhod, sigma1, sigma2, sigma3 = arr
+                rho0 = jnp.array(rhou+rhod)
+                # sum the sigma contributions
+                sumsigma = sigma1+sigma2+sigma3
+
+                rhosig = jnp.stack([rho0, sumsigma])
+                # calculate the "custom" energy with rho -- THIS IS e
+                # cast back to np.array since that's what pyscf works with
+                # pass as tuple -- (rho, sigma)
+                exc = model(rhosig)
+                return exc
+            return get_epsilon
+
+        # model_epsilon = partial(get_epsilon, model=xcmodel)
+        model_epsilon = make_epsilon_function(model=xcmodel)
+        rho_u, rho_d = rho
+        # print('rho_u, rho_d shapes:', rho_u.shape, rho_d.shape)
+        rho0u, dxu, dyu, dzu = rho_u[:4]
+        rho0d, dxd, dyd, dzd = rho_d[:4]
+        # up-up
+        dxu2 = dxu*dxu
+        dyu2 = dyu*dyu
+        dzu2 = dzu*dzu
+        # up-down
+        dxud = dxu*dxd
+        dyud = dyu*dyd
+        dzud = dzu*dzd
+        # down-down
+        dxd2 = dxd*dxd
+        dyd2 = dyd*dyd
+        dzd2 = dzd*dzd
+        sigma1 = dxu2+dyu2+dzu2
+        sigma2 = dxud+dyud+dzud
+        sigma3 = dxd2+dyd2+dzd2
+
+        rho0 = jnp.array(rho0u+rho0d)
+        # print('rho0 shape', rho0.shape)
+        # print('sigma1/2/3 shapes', sigma1.shape, sigma2.shape, sigma3.shape)
+        sumsigma = sigma1+sigma2+sigma3
+        # print('sumsigma shape', sumsigma.shape)
+        # sum the sigma contributions
+        rhosig = jnp.stack([rho0, sigma1+sigma2+sigma3], axis=1)
+        # calculate the "custom" energy with rho -- THIS IS e
+        # cast back to np.array since that's what pyscf works with
+        # pass as tuple -- (rho, sigma)
+        # epsilon here
+        input_arr = jnp.stack([rho0u, rho0d, sigma1, sigma2, sigma3], axis=1)
+        exc = jax.vmap(model_epsilon)(input_arr)
+        # print('epsilon shape', exc.shape)
+        # e here
+        exc = jnp.array(exc)/rho0
+        # exc = exc[jnp.newaxis, :]
+        # print('exc shape', exc.shape)
+        v1_f = jax.grad(model_epsilon)
+        v1 = jax.vmap(v1_f)(input_arr)
+        # vrho = vrho_up, vrho_down
+        vrho = jnp.vstack((v1[:, 0], v1[:, 1]))
+        # vsigma = vsigma1, vsigma2, vsigma3
+        vsigma = jnp.vstack((v1[:, 2], v1[:, 3], v1[:, 4]))
+        vxc = (vrho, vsigma)
+        # print('vrho shape', vrho.shape)
+        # print('vsigma shape', vsigma.shape)
+        v2_f = jax.hessian(model_epsilon)
+        v2 = jax.vmap(v2_f)(input_arr)
+        # print('v2 shape', v2.shape)
+        # v2rho2 = (v2rhou2, v2rhoud, v2rhod2)
+        v2rho2 = jnp.vstack((v2[:, 0, 0], v2[:, 0, 1], v2[:, 1, 1]))
+        # v2rhosigma is six-part = (u,1),(u,2),(u,3),(d,1),(d,2),(d,3)
+        v2rhosigma = jnp.vstack((v2[:, 0, 2], v2[:, 0, 3], v2[:, 0, 4], v2[:, 1, 2], v2[:, 1, 3], v2[:, 1, 4]))
+        # v2sigma2 is also six-part
+        v2sigma2 = jnp.vstack((v2[:, 2, 2], v2[:, 2, 3], v2[:, 2, 4], v2[:, 3, 3], v2[:, 3, 4], v2[:, 4, 4]))
+        # print('v2rho2 shape', v2rho2.shape)
+        # print('v2rhosigma shape', v2rhosigma.shape)
+        # print('v2sigma2 shape', v2sigma2.shape)
+        v2lapl2 = None
+        vtau2 = None
+        v2rholapl = None
+        v2rhotau = None
+        v2lapltau = None
+        v2sigmalapl = None
+        v2sigmatau = None
+        # 2nd order functional derivative
+        fxc = (v2rho2, v2rhosigma, v2sigma2, v2lapl2, vtau2, v2rholapl, v2rhotau, v2lapltau, v2sigmalapl, v2sigmatau)
+        # 3rd order
+        kxc = None
+        TRANSPOSE = True
+        if TRANSPOSE:
+            vxc = [i.T for i in vxc]
+            fxc = [i.T for i in fxc if type(i) == type(jnp.array([1]))]
+
+    return exc, vxc, fxc, kxc
