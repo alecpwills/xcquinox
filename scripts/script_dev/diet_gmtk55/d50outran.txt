@@ -1,0 +1,2 @@
+atidx	atsymbols	atformula	subset	subsetind	species	count	refweight	refen	calcen	calcconv
+0	FNH3	H3FN	AHB21	0	1	1	2.53	-17.79	-153.01635270029863	True

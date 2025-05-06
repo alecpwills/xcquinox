@@ -1,8 +1,13 @@
 import equinox as eqx
-import optax, sys, gc, jax, os
+import optax
+import sys
+import gc
+import jax
+import os
 from jax.interpreters import xla
 import jax.numpy as jnp
 from typing import Callable
+
 
 class xcTrainer(eqx.Module):
     model: eqx.Module
@@ -18,8 +23,8 @@ class xcTrainer(eqx.Module):
     serialize_every: int
     logfile: str
     loss_v: float
-    
-    def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True, serialize_every = 1, logfile=''):
+
+    def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True, serialize_every=1, logfile=''):
         '''
         The base xcTrainer class, whose forward pass computes the training loop.
 
@@ -67,7 +72,7 @@ class xcTrainer(eqx.Module):
         I.e., for the E_loss object, these would be [density matrix list], [reference energy list], [ao_eval list], [grid_weight list]
 
         .. todo: Remove model from inputs, not used since retrieved from self at first iteration
-        
+
         :param epoch_batch_len: The number of batches in a given epoch (i.e., the number of molecules one is training on that are looped over)
         :type epoch_batch_len: int
         :param model: The baseline model to update in the training process
@@ -86,7 +91,7 @@ class xcTrainer(eqx.Module):
                     f.write('#Epoch\tBatch\tLoss\tBest\n')
             if step == 0 and self.do_jit:
                 fmake_step = eqx.filter_jit(self.make_step)
-            elif ( (step % self.clear_every) == 0 ) and (step > 0) and self.do_jit:
+            elif ((step % self.clear_every) == 0) and (step > 0) and self.do_jit:
                 fmake_step = eqx.filter_jit(self.make_step)
             else:
                 fmake_step = self.make_step
@@ -95,46 +100,46 @@ class xcTrainer(eqx.Module):
                 inp_model = self.model
                 start_model = self.model
                 inp_opt_state = self.opt_state
-            for idx in range(epoch_batch_len):  
+            for idx in range(epoch_batch_len):
                 jax.debug.print('Epoch {} :: Batch {}/{}'.format(step, idx+1, epoch_batch_len))
 
-                #loops over every iterable in loss_input_lists, selecting one batch's input data
-                #assumes separate lists, each having inputs for multiple cases in the training set
+                # loops over every iterable in loss_input_lists, selecting one batch's input data
+                # assumes separate lists, each having inputs for multiple cases in the training set
                 loss_inputs = [inp[idx] for inp in loss_input_lists]
-                
-                # this_loss = self.loss(inp_model, *loss_inputs).item()                
-                inp_model, inp_opt_state, this_loss = fmake_step(inp_model, inp_opt_state, *loss_inputs) 
-                
+
+                # this_loss = self.loss(inp_model, *loss_inputs).item()
+                inp_model, inp_opt_state, this_loss = fmake_step(inp_model, inp_opt_state, *loss_inputs)
+
                 if self.memory_profile:
                     this_loss.block_until_ready()
                     jax.profiler.save_device_memory_profile(f"memory{step}_{idx}.prof")
-    
+
                 jax.debug.print('Batch Loss = {}'.format(this_loss))
                 if self.logfile:
                     with open(self.logfile+'batch.dat', 'a') as f:
                         f.write(f'{step}\t{idx}\t{this_loss}\t{BEST_LOSS}\n')
                 epoch_loss += this_loss
-                if ( (step % self.clear_every) == 0 ) and ( (step > 0) == 0 ):
+                if ((step % self.clear_every) == 0) and ((step > 0) == 0):
                     eqx.clear_caches()
                     jax.clear_backends()
                     jax.clear_caches()
-            #update self.loss_v to epoch's loss
+            # update self.loss_v to epoch's loss
             object.__setattr__(self, 'loss_v', epoch_loss.item())
 
-            if ( (step % self.serialize_every) == 0) and (epoch_loss.item() < BEST_LOSS):
+            if ((step % self.serialize_every) == 0) and (epoch_loss.item() < BEST_LOSS):
                 eqx.tree_serialise_leaves('xc.eqx.{}'.format(step), start_model)
                 BEST_LOSS = epoch_loss.item()
-            
-            #this will persist until next pass
-            #the inp_model output just now is fed into get the loss next time, so if better we want to save this
-            #not the updated one.
+
+            # this will persist until next pass
+            # the inp_model output just now is fed into get the loss next time, so if better we want to save this
+            # not the updated one.
             start_model = inp_model
 
-            if ( (step % self.print_every) == 0 ) or (step == self.steps - 1):
+            if ((step % self.print_every) == 0) or (step == self.steps - 1):
                 jax.debug.print(
                     f"{step}, epoch_train_loss={epoch_loss}"
                 )
-            if ( (step % self.clear_every) == 0 ) and (step > 0):
+            if ((step % self.clear_every) == 0) and (step > 0):
                 eqx.clear_caches()
                 jax.clear_backends()
                 jax.clear_caches()
@@ -168,7 +173,7 @@ class xcTrainer(eqx.Module):
 
     # def __post_init__(self, attr, value):
     #     object.__setattr__(self, attr, value)
-    
+
     def clear_caches(self):
         '''
         A function that attempts to clear memory associated to jax caching
@@ -185,7 +190,6 @@ class xcTrainer(eqx.Module):
                                 pass
         gc.collect()
 
-
     def vprint(self, output):
         '''
         Custom print function. If self.verbose, will print the called output.
@@ -197,8 +201,7 @@ class xcTrainer(eqx.Module):
             jax.debug.print(output)
 
 
-
-### Pre-trainer
+# Pre-trainer
 class Pretrainer(eqx.Module):
     model: eqx.Module
     optim: optax.GradientTransformation
@@ -280,8 +283,7 @@ class Pretrainer(eqx.Module):
         return loss, model, opt_state
 
 
-
-### Optimizer
+# Optimizer
 class Optimizer(eqx.Module):
     model: eqx.Module
     optim: optax.GradientTransformation

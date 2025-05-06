@@ -5,6 +5,7 @@ import jax
 from pyscf import dft
 import numpy as np
 
+
 def pad_array(arr, max_arr, shape=None, device=jax.devices('cpu')[0]):
     """
     Utility function designed to pad an array to a given maximum size, for use during jitted forward passes.
@@ -33,6 +34,7 @@ def pad_array(arr, max_arr, shape=None, device=jax.devices('cpu')[0]):
     with jax.default_device(device):
         arr = jnp.pad(arr, after_pad)
     return arr
+
 
 def pad_array_list(arrlst, device=jax.devices('cpu')[0]):
     """
@@ -77,21 +79,22 @@ def ase_atoms_to_mol(atoms, basis='6-311++G(3df,2pd)', charge=0, spin=None):
     spec = atoms.get_chemical_symbols()
     name = atoms.get_chemical_formula()
 
-    mol_input = [[ispec, ipos] for ispec,ipos in zip(spec,pos)]
+    mol_input = [[ispec, ipos] for ispec, ipos in zip(spec, pos)]
     c = atoms.info.get('charge', charge)
     s = atoms.info.get('spin', spin)
     mol = gto.Mole(atom=mol_input, basis=basis, spin=s, charge=c)
 
     return name, mol
 
-#spins for single atoms, since pyscf doesn't guess this correctly.
+
+# spins for single atoms, since pyscf doesn't guess this correctly.
 spins_dict = {
     'Al': 1,
-    'B' : 1,
+    'B': 1,
     'Li': 1,
     'Na': 1,
-    'Si': 2 ,
-    'Be':0,
+    'Si': 2,
+    'Be': 0,
     'C': 2,
     'Cl': 1,
     'F': 1,
@@ -100,13 +103,13 @@ spins_dict = {
     'O': 2,
     'P': 3,
     'S': 2,
-    'Ar':0, #noble
-    'Br':1, #one unpaired electron
-    'Ne':0, #noble
-    'Sb':3, #same column as N/P
-    'Bi':3, #same column as N/P/Sb
-    'Te':2, #same column as O/S
-    'I':1 #one unpaired electron
+    'Ar': 0,  # noble
+    'Br': 1,  # one unpaired electron
+    'Ne': 0,  # noble
+    'Sb': 3,  # same column as N/P
+    'Bi': 3,  # same column as N/P/Sb
+    'Te': 2,  # same column as O/S
+    'I': 1  # one unpaired electron
 }
 
 
@@ -121,24 +124,24 @@ def get_spin(at):
     :return: The guessed spin value
     :rtype: int
     """
-    #tries to use information present in the at.info dictionary to guess spin
-    #if single atom and spin is not specified in at.info dictionary, use spins_dict
+    # tries to use information present in the at.info dictionary to guess spin
+    # if single atom and spin is not specified in at.info dictionary, use spins_dict
     print('======================')
     print("GET SPIN: Atoms Info")
     print(at)
     print(at.info)
     print('======================')
-    if ( (len(at.positions) == 1) and not ('spin' in at.info) ):
+    if ((len(at.positions) == 1) and not ('spin' in at.info)):
         print("Single atom and no spin specified in at.info")
         spin = spins_dict[str(at.symbols)]
     else:
         print("Not a single atom, or spin in at.info")
         if type(at.info.get('spin', None)) == type(0):
-            #integer specified in at.info['spin'], so use it
+            # integer specified in at.info['spin'], so use it
             print('Spin specified in atom info.')
             spin = at.info['spin']
         elif 'radical' in at.info.get('name', ''):
-            #radicals are species with a single unpair electron
+            # radicals are species with a single unpair electron
             print('Radical specified in atom.info["name"], assuming spin 1.')
             spin = 1
         elif at.info.get('openshell', None):
@@ -148,6 +151,7 @@ def get_spin(at):
             print("No specifications in atom info to help, assuming no spin.")
             spin = 0
     return spin
+
 
 def get_dm_moe(dm, eri, vxc_grad_func, mo_occ, hc, s, ogd, alpha0=0.7):
     """
@@ -177,9 +181,11 @@ def get_dm_moe(dm, eri, vxc_grad_func, mo_occ, hc, s, ogd, alpha0=0.7):
     L = jnp.eye(dm.shape[-1])
     scaling = jnp.ones([dm.shape[-1]]*2)
     dm_old = dm
+
     def true_func(vxc):
         vxc.at[1].set(jnp.zeros_like(vxc[1]))
         return vxc
+
     def false_func(vxc):
         return vxc
     alpha = jnp.power(alpha0, 0)+0.3
@@ -189,14 +195,14 @@ def get_dm_moe(dm, eri, vxc_grad_func, mo_occ, hc, s, ogd, alpha0=0.7):
     veff = get_veff()(dm, eri)
     vxc = jax.grad(vxc_grad_func)(dm)
     if vxc.ndim > 2:
-        vxc = jnp.einsum('ij,xjk,kl->xil',L,vxc,L.T)
-        vxc = jnp.where(jnp.expand_dims(scaling, 0) > 0 , vxc, jnp.expand_dims(scaling,0))
+        vxc = jnp.einsum('ij,xjk,kl->xil', L, vxc, L.T)
+        vxc = jnp.where(jnp.expand_dims(scaling, 0) > 0, vxc, jnp.expand_dims(scaling, 0))
     else:
-        vxc = jnp.matmul(L,jnp.matmul(vxc ,L.T))
-        vxc = jnp.where(scaling > 0 , vxc, scaling)
-    
+        vxc = jnp.matmul(L, jnp.matmul(vxc, L.T))
+        vxc = jnp.where(scaling > 0, vxc, scaling)
+
     jax.lax.cond(jnp.sum(mo_occ) == 1, true_func, false_func, vxc)
-    
+
     veff += vxc
     f = get_fock()(hc, veff)
     mo_e, mo_c = eig()(f+1e-6*jax.random.uniform(key=jax.random.PRNGKey(92017), shape=f.shape), s, ogd)
@@ -230,21 +236,23 @@ class make_rdm1(eqx.Module):
             print('Spin-polarized make_rdm1()')
             mocc_a = jnp.where(mo_occ[0] > 0, mo_coeff[0], 0)
             mocc_b = jnp.where(mo_occ[1] > 0, mo_coeff[1], 0)
-            
+
             def true_func(mocc_a, mocc_b, mo_occ, mo_coeff):
                 return jnp.stack([jnp.einsum('ij,jk->ik', mocc_a*jnp.where(mo_occ[0] > 0, mo_occ[0], 0), mocc_a.T),
-                                    jnp.einsum('ij,jk->ik', mocc_b*jnp.where(mo_occ[1] > 0, mo_occ[1], 0), mocc_b.T)],axis=0)
+                                  jnp.einsum('ij,jk->ik', mocc_b*jnp.where(mo_occ[1] > 0, mo_occ[1], 0), mocc_b.T)], axis=0)
+
             def false_func(mocc_a, mocc_b, mo_occ, mo_coeff):
                 return jnp.stack([jnp.einsum('ij,jk->ik', mocc_a*jnp.where(mo_occ[0] > 0, mo_occ[0], 0), mocc_a.T),
-                                    jnp.zeros_like(mo_coeff)[0]],axis=0)
+                                  jnp.zeros_like(mo_coeff)[0]], axis=0)
 
             retarr = jax.lax.cond(jnp.sum(mo_occ[1]) > 0, true_func, false_func, mocc_a, mocc_b, mo_occ, mo_coeff)
             return retarr
 
         else:
             print('Spin unpolarized make_rdm1()')
-            mocc = jnp.where(mo_occ>0, mo_coeff, 0)
+            mocc = jnp.where(mo_occ > 0, mo_coeff, 0)
             return jnp.einsum('ij,jk->ik', mocc*jnp.where(mo_occ > 0, mo_occ, 0), mocc.T)
+
 
 class get_rho(eqx.Module):
     def __init__(self):
@@ -253,7 +261,6 @@ class get_rho(eqx.Module):
 
         """
         super().__init__()
-
 
     def __call__(self, dm, ao_eval):
         """
@@ -317,12 +324,13 @@ class get_veff(eqx.Module):
         :return: Effective potential
         :rtype: jax.Array
         """
-        J = jnp.einsum('...ij,ijkl->...kl',dm, eri)
+        J = jnp.einsum('...ij,ijkl->...kl', dm, eri)
 
         if J.ndim == 3:
             return J[0] + J[1]
         else:
-            return J        
+            return J
+
 
 class get_fock(eqx.Module):
     def __init__(self):
@@ -344,6 +352,7 @@ class get_fock(eqx.Module):
         :rtype: jax.Array
         """
         return hc+veff
+
 
 class get_hcore(eqx.Module):
     def __init__(self):
@@ -402,45 +411,44 @@ class eig(eqx.Module):
         :return: The eigenvalues (molecular orbital enegies) and eigenvectors (molecular orbital coefficients)
         :rtype: tuple of jax.Arrays
         """
-        upper=False
+        upper = False
         UPLO = "U" if upper else "L"
         dim = ogdim[0]
         diff = h.shape[0]
         mask_h = h[:dim, :dim]
         mask_s = s_chol[:dim, :dim]
-        e, c = jnp.linalg.eigh(jnp.einsum('ij,...jk,kl->...il',mask_s, mask_h, mask_s.T), UPLO=UPLO)
-        c = jnp.einsum('ij,...jk ->...ik',mask_s.T, c)
+        e, c = jnp.linalg.eigh(jnp.einsum('ij,...jk,kl->...il', mask_s, mask_h, mask_s.T), UPLO=UPLO)
+        c = jnp.einsum('ij,...jk ->...ik', mask_s.T, c)
         e = pad_array(e, e, shape=[diff])
-        c = pad_array(c, c, shape=(diff,diff))
+        c = pad_array(c, c, shape=(diff, diff))
         return e, c
-
 
 
 # Function to calculate statistics
 def calculate_stats(true, pred):
     true_flat = true.flatten()
     pred_flat = pred.flatten()
-    
+
     # R-squared
     ss_res = jnp.sum((true_flat - pred_flat) ** 2)
     ss_tot = jnp.sum((true_flat - jnp.mean(true_flat)) ** 2)
     r2 = 1 - (ss_res / ss_tot)
-    
+
     # Mean Absolute Error
     mae = jnp.mean(jnp.abs(true_flat - pred_flat))
-    
+
     # Root Mean Squared Error
     rmse = jnp.sqrt(jnp.mean((true_flat - pred_flat) ** 2))
-    
+
     # Maximum Absolute Error
     max_error = jnp.max(jnp.abs(true_flat - pred_flat))
-    
+
     return r2, mae, rmse, max_error
 
 
-## Generate grid of rho, grad_rho, s values
-def gen_grid_s(npts=30000, start_stop_rho = (0.01, 5), start_stop_s = (0.01, 5),
-               train_pct = 0.8, ranseed=92017, sigma=False):
+# Generate grid of rho, grad_rho, s values
+def gen_grid_s(npts=30000, start_stop_rho=(0.01, 5), start_stop_s=(0.01, 5),
+               train_pct=0.8, ranseed=92017, sigma=False):
     '''
     Generates a grid of rho, grad_rho, and reduced_density_gradient values. Will generate ~sqrt(npts) sized rho and s arrays, used to generate a grad_rho array. 
 
@@ -474,17 +482,17 @@ def gen_grid_s(npts=30000, start_stop_rho = (0.01, 5), start_stop_s = (0.01, 5),
     grad_rho_values = 2 * s_values * k_F * rho_values
     if sigma:
         grad_rho_values = grad_rho_values**2
-    
+
     ind_sel = np.arange(0, len(s_values))
     np.random.seed(ranseed)
-    val_inds = np.random.choice(ind_sel, size = int(val_pct*len(s_values)), replace=False)
+    val_inds = np.random.choice(ind_sel, size=int(val_pct*len(s_values)), replace=False)
     train_inds = np.array([i for i in ind_sel if i not in val_inds])
-    #randomize training point order
+    # randomize training point order
     np.random.shuffle(train_inds)
 
     trho_values = rho_values[train_inds]
     vrho_values = rho_values[val_inds]
-    
+
     ts_values = s_values[train_inds]
     vs_values = s_values[val_inds]
 
@@ -510,8 +518,10 @@ def gen_grid_s(npts=30000, start_stop_rho = (0.01, 5), start_stop_s = (0.01, 5),
     return [(train_inds, val_inds), (rho_values, grad_rho_values, s_values),
             (trho_flat, tgrad_rho_flat, ts_flat), (vrho_flat, vgrad_rho_flat, vs_flat)]
 
-## PBE Exchange Enhancement Factor
-def PBE_Fx(rho, grad_rho, lower_rho_cutoff = 1e-12):
+# PBE Exchange Enhancement Factor
+
+
+def PBE_Fx(rho, grad_rho, lower_rho_cutoff=1e-12):
     '''
     Given density and density gradient magnitude values, calculates the PBE Exchange Enhancement Factor as denoted in:
 
@@ -526,24 +536,26 @@ def PBE_Fx(rho, grad_rho, lower_rho_cutoff = 1e-12):
     :return: The numerical value(s) of the exchange enhancement factor
     :rtype: float, broadcastable array
     '''
-    #Equation 14 from PBE paper -- DOI: 10.1103/PhysRevLett.77.3865
-    rho = jnp.maximum(lower_rho_cutoff, rho) #Prevents division by 0
+    # Equation 14 from PBE paper -- DOI: 10.1103/PhysRevLett.77.3865
+    rho = jnp.maximum(lower_rho_cutoff, rho)  # Prevents division by 0
     k_F = (3 * jnp.pi**2 * rho)**(1/3)
     s = grad_rho / (2 * k_F * rho)
     kappa, mu = 0.804, 0.21951
 
-    Fx = 1 + kappa - kappa / (1 + mu * s**2 / kappa) #exchange enhancement factor
+    Fx = 1 + kappa - kappa / (1 + mu * s**2 / kappa)  # exchange enhancement factor
 
     return Fx
 
-## NON-POLARIZED PBE Correlation Enhancement Factor
-## i.e., zeta == 0
-def PBE_Fc(rho, grad_rho,  lower_rho_cutoff = 1e-12):
+# NON-POLARIZED PBE Correlation Enhancement Factor
+# i.e., zeta == 0
+
+
+def PBE_Fc(rho, grad_rho,  lower_rho_cutoff=1e-12):
     '''
     Given density and density gradient magnitude values, calculates the PBE Correlation Enhancement Factor as denoted in:
 
     *CRITICALLY*, this function is only valid for the non-spin-polarized case where zeta = 0
-    
+
     Equation 3 from PBE paper -- DOI: 10.1103/PhysRevLett.77.3865
 
     :param rho: the density value on the grid
@@ -555,11 +567,11 @@ def PBE_Fc(rho, grad_rho,  lower_rho_cutoff = 1e-12):
     :return: The numerical value(s) of the correlation enhancement factor
     :rtype: float, broadcastable array
     '''
-    #Equation 3 from PBE paper -- DOI: 10.1103/PhysRevLett.77.3865
-    #Ec = Integral[ rho * (e_C^HEG + H) ]
+    # Equation 3 from PBE paper -- DOI: 10.1103/PhysRevLett.77.3865
+    # Ec = Integral[ rho * (e_C^HEG + H) ]
     # H from equation 7
     # A from equation 8
-    rho = jnp.maximum(lower_rho_cutoff, rho) #Prevents division by 0
+    rho = jnp.maximum(lower_rho_cutoff, rho)  # Prevents division by 0
     pi = jnp.pi
     k_F = (3 * pi**2 * rho)**(1/3)
     s = grad_rho / (2 * k_F * rho)
@@ -568,19 +580,21 @@ def PBE_Fc(rho, grad_rho,  lower_rho_cutoff = 1e-12):
     beta = 0.066725
     gamma = (1 - jnp.log(2)) / (pi**2)
 
-    #Calculate e_heg_c (heterogeneous electron gas correlation energy)
-    N = rho.size 
-    rho_array = jnp.zeros((6, N))  # Initialize the rho_array with the correct shape. Only the first element (rho) matters, so the rest are populated with 0. 
-    rho_array = rho_array.at[0, :].set(rho)  # Populate first array value with rho
-    e_heg_c = dft.libxc.eval_xc(',LDA_C_PW', rho_array, spin=0, deriv=1)[0]
+    # Calculate e_heg_c (heterogeneous electron gas correlation energy)
+    N = rho.size
+    # Initialize the rho_array with the correct shape. Only the first element (rho) matters, so the rest are populated with 0.
+    # rho_array = jnp.zeros((6, N))
+    # rho_array = rho_array.at[0, :].set(rho)  # Populate first array value with rho
+    e_heg_c = dft.libxc.eval_xc(',LDA_C_PW', rho, spin=0, deriv=1)[0]
 
     A = (beta / gamma) / (jnp.exp(-e_heg_c / (gamma)) - 1)
 
     H = gamma * jnp.log(1 + (beta / gamma) * t**2 * ((1 + A * t**2) / (1 + A * t**2 + A**2 * t**4)))
 
-    Fc = 1 + (H / e_heg_c) #correlation enhancement factor
+    Fc = 1 + (H / e_heg_c)  # correlation enhancement factor
 
     return Fc
+
 
 def pw91_correlation_energy_density(rho):
     """
@@ -596,43 +610,45 @@ def pw91_correlation_energy_density(rho):
     A = 0.0311
     B = 0.116
     C = 0.145
-    
+
     # Compute the correlation energy density
     rho_1_3 = jnp.cbrt(rho)  # rho^(1/3)
     term1 = 1 / jnp.sqrt(1 + C / rho_1_3)
     epsilon_c = -A / rho * (1 + B * (term1 - 1))
-    
-    return epsilon_c  
-  
+
+    return epsilon_c
+
+
 def lda_c_pw(rho):
-    params_a_pp     = [1,  1,  1]
-    params_a_a      = [0.031091, 0.015545, 0.016887]
+    params_a_pp = [1,  1,  1]
+    params_a_a = [0.031091, 0.015545, 0.016887]
     params_a_alpha1 = [0.21370,  0.20548,  0.11125]
-    params_a_beta1  = [7.5957, 14.1189, 10.357]
-    params_a_beta2  = [3.5876, 6.1977, 3.6231]
-    params_a_beta3  = [1.6382, 3.3662,  0.88026]
-    params_a_beta4  = [0.49294, 0.62517, 0.49671]
-    params_a_fz20   = 1.709921
+    params_a_beta1 = [7.5957, 14.1189, 10.357]
+    params_a_beta2 = [3.5876, 6.1977, 3.6231]
+    params_a_beta3 = [1.6382, 3.3662,  0.88026]
+    params_a_beta4 = [0.49294, 0.62517, 0.49671]
+    params_a_fz20 = 1.709921
 
     zeta = (rho - rho)/(rho + rho + 1e-8)
     rs = (4*np.pi*(rho + 1e-8)/3)**(-1/3)
 
     def g_aux(k, rs):
         return params_a_beta1[k]*jnp.sqrt(rs) + params_a_beta2[k]*rs\
-      + params_a_beta3[k]*rs**1.5 + params_a_beta4[k]*rs**(params_a_pp[k] + 1)
+            + params_a_beta3[k]*rs**1.5 + params_a_beta4[k]*rs**(params_a_pp[k] + 1)
 
     def g(k, rs):
         return -2*params_a_a[k]*(1 + params_a_alpha1[k]*rs)\
-      * jnp.log(1 +  1/(2*params_a_a[k]*g_aux(k, rs)))
+            * jnp.log(1 + 1/(2*params_a_a[k]*g_aux(k, rs)))
 
     def f_zeta(zeta):
         return ((1+zeta)**(4/3) + (1-zeta)**(4/3) - 2)/(2**(4/3)-2)
 
     def f_pw(rs, zeta):
         return g(0, rs) + zeta**4*f_zeta(zeta)*(g(1, rs) - g(0, rs) + g(2, rs)/params_a_fz20)\
-      - f_zeta(zeta)*g(2, rs)/params_a_fz20
+            - f_zeta(zeta)*g(2, rs)/params_a_fz20
 
     return f_pw(rs, zeta)
+
 
 def lda_x(rho):
     '''
@@ -644,6 +660,7 @@ def lda_x(rho):
     :rtype: jax.numpy array
     '''
     return -3/4*(3/jnp.pi)**(1/3)*rho**(1/3)
+
 
 def pw92c(rho):
     '''
@@ -666,9 +683,9 @@ def pw92c(rho):
     ALPHA1 = jnp.array([0.21370, 0.20548, 0.11125])
     # MVFS test the transpose
     X = jnp.array([[7.5957, 14.1189, 10.357],
-                      [3.5876, 6.1977, 3.6231],
-                      [1.6382, 3.3662, 0.88026],
-                      [0.49294, 0.62517, 0.49671]])
+                   [3.5876, 6.1977, 3.6231],
+                   [1.6382, 3.3662, 0.88026],
+                   [0.49294, 0.62517, 0.49671]])
     BETA = jnp.transpose(X)
     # Calculate rs and zeta
     if nspin == 1:
@@ -692,14 +709,14 @@ def pw92c(rho):
             BETA[IG, 2] * RS ** 1.5 + \
             BETA[IG, 3] * RS ** (P[IG] + 1)
         DBDRS = BETA[IG, 0] * 0.5 / RS ** 0.5 + \
-                BETA[IG, 1] + \
-                BETA[IG, 2] * 1.5 * RS ** 0.5 + \
-                BETA[IG, 3] * (P[IG] + 1) * RS ** P[IG]
+            BETA[IG, 1] + \
+            BETA[IG, 2] * 1.5 * RS ** 0.5 + \
+            BETA[IG, 3] * (P[IG] + 1) * RS ** P[IG]
         C = 1 + 1 / (2 * A[IG] * B)
         DCDRS = - ((C - 1) * DBDRS / B)
         Gtmp = (-2) * A[IG] * (1 + ALPHA1[IG] * RS) * jnp.log(C)
-        DGDRStmp = (-2) * A[IG] * (ALPHA1[IG] * jnp.log(C) + \
-                                    (1 + ALPHA1[IG] * RS) * DCDRS / C)
+        DGDRStmp = (-2) * A[IG] * (ALPHA1[IG] * jnp.log(C) +
+                                   (1 + ALPHA1[IG] * RS) * DCDRS / C)
         G = G.at[IG].set(Gtmp)
         DGDRS = DGDRS.at[IG].set(DGDRStmp)
     # Find f’’(0) and f(zeta)
@@ -709,9 +726,9 @@ def pw92c(rho):
     DFDZ = (4 / 3) * ((ONE + ZETA) ** (1 / 3) - (ONE - ZETA) ** (1 / 3)) * C
     # Compute EC and VC
     EC = G[0] - G[2] * F / FPP0 * (ONE - ZETA ** 4) + \
-         (G[1] - G[0]) * F * ZETA ** 4
+        (G[1] - G[0]) * F * ZETA ** 4
     DECDRS = DGDRS[0] - DGDRS[2] * F / FPP0 * (ONE - ZETA ** 4) + \
-             (DGDRS[1] - DGDRS[0]) * F * ZETA ** 4
+        (DGDRS[1] - DGDRS[0]) * F * ZETA ** 4
     DECDZ = (-G[2]) / FPP0 * (DFDZ * (ONE - ZETA ** 4) - F * 4 * ZETA ** 3) + \
             (G[1] - G[0]) * (DFDZ * ZETA ** 4 + F * 4 * ZETA ** 3)
     # Calculate correlation potential
@@ -724,6 +741,7 @@ def pw92c(rho):
         VC = jnp.array([EC + DTOT * DECDD[0],
                         EC + DTOT * DECDD[1]])
     return EC, VC
+
 
 def pw92c_unpolarized(rho):
     '''
