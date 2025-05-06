@@ -1,0 +1,20 @@
+#!/bin/bash
+#
+#SBATCH --job-name=pt_eval_diet50
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=alec.wills@stonybrook.edu
+#SBATCH --output=output.txt
+#SBATCH --ntasks-per-node=1
+#SBATCH --nodes=1
+#SBATCH --time=48:00:00
+#SBATCH -p long-40core
+
+cd $HOME
+source .bashrc
+source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+
+conda activate swxcq
+
+cd /gpfs/scratch/awills/calc_diet
+
+python ./evaluate_dietset.py --diet_traj_path ../../script_data/dietgmtkn55-50/diet50.traj --outfile ./d50out_pt.txt --load_xnet_path ./GGA_FxNet_sigma_d3_n16_s92017 --load_cnet_path ./GGA_FcNet_sigma_d3_n16_s92017
