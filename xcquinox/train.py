@@ -360,6 +360,6 @@ class Optimizer(eqx.Module):
         :rtype: tuple
         '''
         loss, grad = self.loss(model, self.mols, self.refs)
-        updates, opt_state = self.optim.update(grad, opt_state)
+        updates, opt_sOPTSTEPState = self.optim.update(grad, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
