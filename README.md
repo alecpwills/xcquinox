@@ -31,6 +31,7 @@ To ensure integrability of the [non-local CIDER descriptors](https://github.com/
 pypatch apply ./patch/pyscfad.dft.patch pyscfad.dft
 pypatch apply ./patch/pyscfad.scf.patch pyscfad.scf
 ```
+[pylibxc](https://libxc.gitlab.io/) The package `pylibxc` is required for some utility functions. **This package uses v4.3.4** in our utility functions. Please follow the base package's installation instructions to install this into your environment.
 
 [PySCF-AD](https://github.com/fishjojo/pyscfad) ~~requires a specific set-up for the PySCF configuration file that tells the program to use the JAX backend. Copy `xcquinox/patch/pyscf_conf.py` into your home directory, or wherever you have PySCF looking for this configuration file.~~ no longer requires a separate `~/.pyscf_conf.py` configuration file, for versions > 0.1.4.
 
