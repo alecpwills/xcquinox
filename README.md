@@ -20,6 +20,8 @@ You may find the [documentation here](https://xcquinox.readthedocs.io/en/latest/
 
 ### Installation
 
+PLEASE NOTE: the version of `pip` that has been proven to work correctly in installing this package is `25.0`. `pip` version `22.0.2` (and perhaps others) may not function correctly. This version is reflected in the `requirements.txt` file, but please make sure to upgrade your `pip` version manually before installing, as `pip install -r requirements.txt` will install all packages with your current version of `pip` BEFORE updating `pip` itself. 
+
 To install `xcquinox`, navigate to the root package directory. Install the dependencies first with `pip install -r requirements.txt`. After installation of the dependencies is complete, install the `xcquinox` package with `pip install -e .`.
 
 **WARNING:** Due to the active development of this package, it is possible the below patches will be deprecated or break without warning until the development cycle gets to the point where we will re-incorporate the below functionality.

@@ -789,3 +789,44 @@ def pw92c_unpolarized(rho):
     EC = G[:, 0]
 
     return EC
+
+def pw92c_unpolarized_scalar(rho):
+    """Scalar version of the pw92c_unpolarized function.
+
+    S: I needed this for some concrete cases of the derivatives training.
+    """
+    # Ensure rho is a jax.numpy array
+    rho = jnp.asarray(rho)
+
+    # Parameters from Table I of Perdew & Wang, PRB, 45, 13244 (92)
+    A = jnp.array([0.031091, 0.015545, 0.016887])
+    ALPHA1 = jnp.array([0.21370, 0.20548, 0.11125])
+    BETA1 = jnp.array([7.5957, 14.1189, 10.357])
+    BETA2 = jnp.array([3.5876, 6.1977, 3.6231])
+    BETA3 = jnp.array([1.6382, 3.3662, 0.88026])
+    BETA4 = jnp.array([0.49294, 0.62517, 0.49671])
+
+    # Compute rs (Wigner-Seitz radius) for each grid point
+    rs = (3 / (4 * jnp.pi * rho))**(1/3)
+    # Convert rs to an array if it is a scalar
+    rs = jnp.atleast_1d(rs)
+
+    # Compute G for unpolarized case (zeta = 0) across all grid points
+    def compute_g(rs):
+        G = jnp.zeros((len(rs), 3))
+        for k in range(3):
+            B = (BETA1[k] * jnp.sqrt(rs) +
+                 BETA2[k] * rs +
+                 BETA3[k] * rs**1.5 +
+                 BETA4[k] * rs**2)
+            C = 1 + 1 / (2 * A[k] * B)
+            G = G.at[:, k].set(-2 * A[k] * (1 + ALPHA1[k] * rs) * jnp.log(C))
+        return G if rs.shape[0] > 1 else G[0]
+
+    # Apply compute_g to each grid point
+    G = compute_g(rs)
+
+    # For unpolarized case, correlation energy density is G[0]
+    EC = G[:, 0] if rs.shape[0] > 1 else G[0]
+
+    return EC
