@@ -10,8 +10,8 @@ from xcquinox.net import get_net
 from .utils import lda_x, pw92c_unpolarized
 
 # check if cider is in the environment
-from mldftdat.density import get_exchange_descriptors2
-from mldftdat.analyzers import RKSAnalyzer
+# from mldftdat.density import get_exchange_descriptors2
+# from mldftdat.analyzers import RKSAnalyzer
 
 # =====================================================================
 # =====================================================================
