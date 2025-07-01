@@ -7,6 +7,9 @@ import os
 from jax.interpreters import xla
 import jax.numpy as jnp
 from typing import Callable
+import inspect
+import warnings
+from functools import partial
 
 
 class xcTrainer(eqx.Module):
@@ -201,6 +204,7 @@ class xcTrainer(eqx.Module):
             jax.debug.print(output)
 
 
+
 # Pre-trainer
 class Pretrainer(eqx.Module):
     model: eqx.Module
@@ -278,6 +282,111 @@ class Pretrainer(eqx.Module):
         :rtype: tuple
         '''
         loss, grad = self.loss(model, inputs, ref)
+        updates, opt_state = self.optim.update(grad, opt_state)
+        model = eqx.apply_updates(model, updates)
+        return loss, model, opt_state
+
+
+# Pre-trainer
+class Pretrainer_deriv(eqx.Module):
+    model: eqx.Module
+    optim: optax.GradientTransformation
+    steps: int
+    print_every: int
+    opt_state: tuple
+    inputs: jnp.array
+    ref_v: jnp.array
+    ref_g: tuple
+    loss: Callable
+
+    def __init__(self, model, optim, inputs, ref, loss, steps=1000, print_every=100):
+        '''
+        The Pretrainer object aids in the initial pre-training of enhancement factor networks to have a more physical starting point for further network optimization. This class is meant to pre-train a randomly initialized network to fit the values of a specific XC functional's enhancement factor (either X or C, in principle it could also be a combined XC enhancement facator)
+
+        :param model: The enhancement factor network to be pre-trained
+        :type model: :xcquinox.net: class
+        :param optim: The optimizer than will control the weight updates given a loss and gradient
+        :type optim: optax.GradientTransformation
+        :param inputs: The inputs the network itself is expecting in its forward pass function
+        :type inputs: jnp.array
+        :param ref: The reference values the network is expected to reproduce. If the shape is (N), it is assumed that the network is being trained to reproduce values only. If the
+            shape is (N, 3), it is assumed that the network is being trained to reproduce values and gradients. The first column of the array is the values, the second and third are the gradients. 
+        :type ref: jnp.array
+        :param loss: A function from :xcquinox.loss: that is decorated with @eqx.filter_value_and_grad
+        :type loss: Callable
+        :param steps: Number of epochs to train over, defaults to 1000
+        :type steps: int, optional
+        :param print_every: How often to print loss statistic, defaults to 100
+        :type print_every: int, optional
+        '''
+        super().__init__()
+        self.model = model
+        self.optim = optim
+        self.inputs = inputs
+        if len(ref.shape) == 1:
+            self.ref_v = ref
+            self.ref_g = None
+        elif len(ref.shape) == 2 and ref.shape[1] == 3:
+            self.ref_v = ref[:, 0]
+            self.ref_g = (ref[:, 1], ref[:, 2])
+        else:
+            raise NotImplementedError(f'Invalid reference shape: {ref.shape} - only implemented for training with values and gradients for GGA')
+        self.steps = steps
+        self.print_every = print_every
+        self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array))
+
+        # We see how many imputs does loss need, and fix the references.
+        params_loss = len(inspect.signature(loss).parameters)
+        if params_loss == 3:
+            print('Pretrainer prepared to train using values')
+            if self.ref_g is not None:
+                warnings.warn('Reference values provided with gradients, but loss function only takes values. The gradients will be ignored.')
+            fixed_loss = partial(loss, ref=self.ref_v)
+        elif params_loss == 4:
+            print('Pretrainer prepared to train using values and gradients')
+            if self.ref_g is None:
+                raise ValueError('Reference values provided without gradients, but loss function expects values and gradients.')
+            else:
+                fixed_loss = partial(loss, ref_v=self.ref_v, ref_g=self.ref_g)
+        self.loss = fixed_loss
+
+    def __call__(self):
+        '''
+        The training loop itself. Here, a loop over the specifed epochs takes place to train the network to fit reference values.
+
+        :return: The trained model and an array of the losses during training.
+        :rtype: (:xcquinox.net: class, array)
+        '''
+        losses = []
+        for epoch in range(self.steps):
+            if epoch == 0:
+                this_model = self.model
+                this_opt_state = self.opt_state
+            loss, this_model, this_opt_state = self.make_step(this_model, self.inputs, this_opt_state)
+            lossi = loss.item()
+            losses.append(lossi)
+            if epoch % self.print_every == 0:
+                print(f'Epoch {epoch}: Loss = {lossi}')
+
+        return this_model, losses
+
+    @eqx.filter_jit
+    def make_step(self, model, inputs, opt_state):
+        '''
+        The function that does each epoch's network update. It generates a loss and gradient using the specific :xcquinox.loss: function (that must be decorated with @eqx.filter_value_and_grad and only explicitly returns the loss value inside the function proper) given the specified inputs and reference values and initial optimization state.
+
+        :param model: The enhancement factor network to be pre-trained
+        :type model: :xcquinox.net: class
+        :param inputs: The inputs the network itself is expecting in its forward pass function
+        :type inputs: jnp.array
+        :param ref: The reference values the network is expected to reproduce
+        :type ref: jnp.array
+        :param opt_state: The INITIAL optimization state to work against, typically generated via :self.optim.init(eqx.filter(self.model, eqx.is_array)):
+        :type opt_state: The type of the above
+        :return: The loss value for this step, the updated model after that loss is calculated, and the new optimization state for this step to use next time
+        :rtype: tuple
+        '''
+        loss, grad = self.loss(model, inputs)
         updates, opt_state = self.optim.update(grad, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
