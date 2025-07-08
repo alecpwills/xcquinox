@@ -373,6 +373,36 @@ def eval_xc_gga_j2(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verb
 
     return exc, vxc, fxc, kxc
 
+def eval_xc_gga_grho(xc_code, rho, spin=0, relativity=0, deriv=1,
+                        omega=None, verbose=None,
+                        xcmodel=None):
+    """ With networks that expect rho and grad rho - the derivatives here must still be wrt sigma"""
+    rho0, dx, dy, dz = rho[:4]
+    sigma = (dx ** 2 + dy ** 2 + dz ** 2)
+    if xcmodel is None:
+        raise ValueError("xcmodel must be provided")
+    def xcmodel_sigma(rho0, sigma):
+        grad_rho = jnp.sqrt(sigma)
+        if rho0.ndim == 0:
+            rhogradrho = jnp.array([rho0, grad_rho])
+        else:
+            rhogradrho = jnp.stack([rho0, grad_rho], axis=-1)
+        return xcmodel(rhogradrho)
+
+
+    # Calculate the "custom" energy with rho -- THIS IS e
+    exc = jax.vmap(xcmodel_sigma)(rho0, sigma)
+    exc = jnp.array(exc) / rho0
+
+    vrho, vsigma = jax.vmap(
+        jax.grad(xcmodel_sigma, argnums=(0, 1)))(rho0, sigma)
+
+    vxc = (vrho, vsigma, None, None)
+    fxc = None
+    kxc = None
+
+    return exc, vxc, fxc, kxc
+
 
 def eval_xc_gga_pol(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None,
                     xcmodel=None):
