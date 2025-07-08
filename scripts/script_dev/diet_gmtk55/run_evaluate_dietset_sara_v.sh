@@ -7,6 +7,12 @@
 #SBATCH --mail-type=END
 #SBATCH --mail-user=Sara.Navarro@stonybrook.edu
 
-module load intel/oneAPI/2022.2
-module load compiler mkl mpi
+cd $HOME
+source .bashrc
+source modules.sh
+
+conda activate xcq
+
+cd xcquinox/scripts/script_dev/diet_gmtk55
+
 mpirun -n 28 python ./evaluate_dietset_sara.py --load_xnet_path GGA_FxNet_G_d3_n16_s42_v_10000.eqx --load_cnet_path GGA_FcNet_G_d3_n16_s42_v_10000.eqx --diet_traj_path ../../script_data/dietgmtkn55-50/diet50.traj --outfile ./test_v.txt
