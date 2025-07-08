@@ -15,4 +15,4 @@ conda activate xcq
 
 cd xcquinox/scripts/script_dev/diet_gmtk55
 
-mpirun -n 28 python ./evaluate_dietset_sara.py --load_xnet_path GGA_FxNet_G_d3_n16_s42_v_10000.eqx --load_cnet_path GGA_FcNet_G_d3_n16_s42_v_10000.eqx --diet_traj_path ../../script_data/dietgmtkn55-50/diet50.traj --outfile ./test_v.txt
+python ./evaluate_dietset_sara.py --load_xnet_path GGA_FxNet_G_d3_n16_s42_v_10000 --load_cnet_path GGA_FcNet_G_d3_n16_s42_v_10000 --diet_traj_path ../../script_data/dietgmtkn55-50/diet50.traj --outfile ./test_v.txt
