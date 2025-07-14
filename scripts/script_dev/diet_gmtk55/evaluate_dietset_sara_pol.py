@@ -1,7 +1,7 @@
 import argparse
 import pyscf
 import pyscfad
-from xcquinox.pyscf import eval_xc_gga_grho
+from xcquinox.pyscf import eval_xc_gga_grho_pol
 from xcquinox.utils import gen_grid_s, PBE_Fx, PBE_Fc, calculate_stats, lda_x, pw92c_unpolarized
 from xcquinox.train import Pretrainer, Optimizer
 from xcquinox.loss import compute_loss_mae
@@ -61,7 +61,7 @@ if __name__ == '__main__':
                                seed=args.gennet_seed)
     xc = xc.RXCModel_GGA(xnet=xnet, cnet=cnet)
 
-    OVERWRITE_EVAL_XC = partial(eval_xc_gga_grho, xcmodel=xc)
+    OVERWRITE_EVAL_XC = partial(eval_xc_gga_grho_pol, xcmodel=xc)
     GRID_LEVEL = args.calc_gridlevel
     MAX_SCF_STEPS = args.calc_maxscf
 
