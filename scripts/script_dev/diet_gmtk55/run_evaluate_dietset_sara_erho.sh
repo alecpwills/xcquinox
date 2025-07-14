@@ -1,11 +1,13 @@
 #!/bin/bash 
 #SBATCH --job-name=test_erho
-#SBATCH --ntasks=28
-#SBATCH --time=12:00:00
-#SBATCH -p long-28core
+#SBATCH --ntasks-per-node=1
+#SBATCH --nodes=1
+#SBATCH --time=48:00:00
+#SBATCH -p long-40core
 #SBATCH --mail-type=END
-#SBATCH --output=OUT_Erho_%j.out
+#SBATCH --output=OUT_v_%j.out
 #SBATCH --mail-user=Sara.Navarro@stonybrook.edu
+
 cd $HOME
 source .bashrc
 source modules.sh
