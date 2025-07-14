@@ -4,7 +4,7 @@
 #SBATCH --time=12:00:00
 #SBATCH -p long-28core
 #SBATCH --mail-type=END
-#SBATCH --output=OUT_v_%j.out
+#SBATCH --output=OUT_vp_%j.out
 #SBATCH --mail-user=Sara.Navarro@stonybrook.edu
 
 cd $HOME
