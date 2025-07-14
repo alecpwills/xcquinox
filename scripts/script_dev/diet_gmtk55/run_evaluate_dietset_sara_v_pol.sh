@@ -1,5 +1,5 @@
 #!/bin/bash 
-#SBATCH --job-name=test_v_pol
+#SBATCH --job-name=test_pv
 #SBATCH --ntasks=28
 #SBATCH --time=12:00:00
 #SBATCH -p long-28core
