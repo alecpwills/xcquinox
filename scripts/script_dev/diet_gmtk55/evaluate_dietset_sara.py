@@ -51,14 +51,14 @@ if __name__ == '__main__':
         xnet = net.load_xcquinox_model(args.load_xnet_path)
     else:
         xnet = net.GGA_FxNet_G(depth=args.gennet_depth,
-                                   nodes=args.gennet_nodes,
-                                   seed=args.gennet_seed)
+                               nodes=args.gennet_nodes,
+                               seed=args.gennet_seed)
     if args.load_cnet_path:
         cnet = net.load_xcquinox_model(args.load_cnet_path)
     else:
         cnet = net.GGA_FcNet_G(depth=args.gennet_depth,
-                                   nodes=args.gennet_nodes,
-                                   seed=args.gennet_seed)
+                               nodes=args.gennet_nodes,
+                               seed=args.gennet_seed)
     xc = xc.RXCModel_GGA(xnet=xnet, cnet=cnet)
 
     OVERWRITE_EVAL_XC = partial(eval_xc_gga_grho, xcmodel=xc)

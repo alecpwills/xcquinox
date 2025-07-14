@@ -1,10 +1,10 @@
 #!/bin/bash 
 #SBATCH --job-name=test_v
-#SBATCH --output=res.txt
 #SBATCH --ntasks=28
 #SBATCH --time=12:00:00
 #SBATCH -p long-28core
 #SBATCH --mail-type=END
+#SBATCH --output=OUT_Erho_%j.out
 #SBATCH --mail-user=Sara.Navarro@stonybrook.edu
 cd $HOME
 source .bashrc
