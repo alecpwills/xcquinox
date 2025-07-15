@@ -14,5 +14,5 @@ source modules.sh
 
 conda activate xcq
 
-cd xcquinox/scripts/script_dev/diet_gmtk55
+cd /gpfs/scratch/sarnavarro/xcquinox/scripts/script_dev/diet_gmtk55
 python ./evaluate_dietset_sara_pol.py --load_xnet_path GGA_FxNet_G_d3_n16_s42_erho_10000 --load_cnet_path GGA_FcNet_G_d3_n16_s42_erho_10000 --diet_traj_path ../../script_data/dietgmtkn55-50/diet50.traj --outfile ./test_erho_pol.txt
