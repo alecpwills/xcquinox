@@ -22,6 +22,12 @@ import pyscfad.dft as dftad
 from jax import custom_jvp
 jax.config.update("jax_enable_x64", True)  # Enables 64 bit precision
 
+
+def training_loop():
+    # This function would contain the training loop logic
+    pass
+
+
 if __name__ == '__main__':
     # parse script arguments
     parser = argparse.ArgumentParser(description='')
@@ -84,21 +90,16 @@ if __name__ == '__main__':
             atstr += f"{sysat} {sys.positions[aidx][0]} {sys.positions[aidx][1]} {sys.positions[aidx][2]}\n"
         mol = gto_ad.Mole(atom=atstr, charge=sys.info.get('charge', 0), spin=sys.info.get('spin', 0))
         mol.build()
-        # If the local memory usage reaches this max_memory value, the SCF cycles are broken down into sub-loops over
-        # small sections of the grid that take *forever* to get through
+        # If the local memory usage reaches this max_memory value, the SCF cycles are broken down into sub-loops over small sections of the grid that take *forever* to get through
         mol.max_memory = args.calc_maxmem
         print("Beginning calculation...")
         print(f"{idx} -- {sys.symbols}/{sys.get_chemical_formula()}")
         # if sys.get_chemical_formula() != 'H':
         if sys.info.get('spin', 0) == 0:
             print("SPIN 0 -> RKS")
-            # Sara: t rying to debug the max memory error:
-
             mf = dft_ad.RKS(mol)
             mf.grids.level = GRID_LEVEL
             mf.max_cycle = MAX_SCF_STEPS
-            mf.grids.prune = True
-            mf.grids.small_rho_cutoff = 1e-7
             mf.define_xc_(OVERWRITE_EVAL_XC, 'GGA')
             mf.kernel()
         else:
