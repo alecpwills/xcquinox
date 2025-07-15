@@ -3,7 +3,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
-#SBATCH -p long-28core
+#SBATCH -p long-40core
 #SBATCH --mail-type=END
 #SBATCH --output=OUT_v_%j.out
 #SBATCH --mail-user=Sara.Navarro@stonybrook.edu
