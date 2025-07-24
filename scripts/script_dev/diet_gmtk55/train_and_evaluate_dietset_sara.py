@@ -23,11 +23,6 @@ from jax import custom_jvp
 jax.config.update("jax_enable_x64", True)  # Enables 64 bit precision
 
 
-def training_loop():
-    # This function would contain the training loop logic
-    pass
-
-
 if __name__ == '__main__':
     # parse script arguments
     parser = argparse.ArgumentParser(description='')
