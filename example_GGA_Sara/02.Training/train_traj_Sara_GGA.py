@@ -390,12 +390,9 @@ def loadnet_from_strucdir(path, ninput, use=[], xc_full=False):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='')
-    # parser.add_argument('xyz', action='store', help ='Path to .xyz/.traj file containing list of configurations')
     parser.add_argument('-charge', '-c', action='store', type=int, help='Net charge of the system', default=0)
-    parser.add_argument('-fdf', metavar='fdf', type=str, nargs='?', default='')
     parser.add_argument('-basis', metavar='basis', type=str, nargs='?',
                         default='6-311++G(3df,2pd)', help='basis to use. default 6-311++G(3df,2pd)')
-    parser.add_argument('-nworkers', metavar='nworkers', type=int, nargs='?', default=1)
     parser.add_argument('-cmargin', '-cm', type=float, default=10.0,
                         help='the margin to define extent of cube files generated')
     parser.add_argument('-xc', '--xc', type=str, default='pbe', help='Type of XC calculation. Either pbe or ccsdt.')
@@ -407,9 +404,6 @@ if __name__ == '__main__':
                         help='Pseudopotential choice. Currently either none or pbe')
     parser.add_argument('-r', '--rerun', type=bool, default=False,
                         help='whether or not to continue and skip previously completed calculations or redo all')
-    parser.add_argument('--ghf', default=False, action="store_true",
-                        help='whether to have wrapper guess HF to use or do GHF. if flagged, ')
-    parser.add_argument('--serial', default=False, action="store_true", help="Run in serial, without DASK.")
     parser.add_argument('--overwrite_gcharge', default=False, action="store_true",
                         help='Whether to try to overwrite specified CHARGE -c if atom.info has charge.')
     parser.add_argument('--restart', default=False, action="store_true",
@@ -426,30 +420,12 @@ if __name__ == '__main__':
                         help='If flagged, will generate predictions for the single-atom components present in trajectory molecules.')
     parser.add_argument('--mf_grid_level', type=int, default=3, action='store',
                         help='Grid level for PySCF(AD) calculation')
-    # add arguments for pyscfad network driver
-    parser.add_argument('--xc_x_net_path', type=str, default='', action='store',
-                        help='Path to the trained xcquinox exchange network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. x_3_16_mgga)')
-    parser.add_argument('--xc_x_ninput', type=int, action='store',
-                        help='Number of inputs the exchange network expects')
-    parser.add_argument('--xc_x_use', nargs='+', type=int, action='store', default=[],
-                        help='Specify the desired indices for the exchange network to actually use, if not the full range of descriptors.')
-    parser.add_argument('--xc_c_net_path', type=str, default='', action='store',
-                        help='Path to the trained xcquinox correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. c_3_16_mgga)')
-    parser.add_argument('--xc_c_ninput', type=int, action='store',
-                        help='Number of inputs the correlation network expects')
-    parser.add_argument('--xc_c_use', nargs='+', type=int, action='store', default=[],
-                        help='Specify the desired indices for the correlation network to actually use, if not the full range of descriptors.')
     parser.add_argument('--xc_xc_net_path', type=str, default='', action='store',
                         help='Path to the trained xcquinox exchange-correlation network to use in PySCF(AD) as calculation driver\nParent directory of network assumed to be of form TYPE_MLPDEPTH_NHIDDEN_LEVEL (e.g. xc_3_16_mgga)')
     parser.add_argument('--xc_xc_level', type=str, default='MGGA', action='store',
                         choices=['GGA', 'MGGA', 'NONLOCAL', 'NL'], help='Type of network being loaded (GGA,MGGA,NONLOCAL,NL)')
     parser.add_argument('--xc_xc_ninput', type=int, action='store',
                         help='Number of inputs the exchange-correlation network expects')
-    parser.add_argument('--xc_verbose', default=False, action='store_true',
-                        help='If flagged, sets verbosity on the network.')
-    parser.add_argument('--xc_full', default=False, action='store_true',
-                        help='If flagged, will deserialize a saved XC object, as opposed to individual X/C MLP networks.')
-    # add arguments for training
     parser.add_argument('--n_steps', action='store', type=int, default=200,
                         help='The number training epochs to go through.')
     parser.add_argument('--singles_start', action='store', type=int, default=4,
@@ -460,9 +436,6 @@ if __name__ == '__main__':
                         help='Location of the data file for use during pre-training')
     parser.add_argument('--train_data_dir', action='store', type=str, default='/home/awills/Documents/Research/xcquinox/scripts/script_data/haunschild_g2/g2_97.traj',
                         help='Location of the data file for use during pre-training')
-    parser.add_argument('--debug', action='store_true',
-                        help='If flagged, only selects first in the target list for quick debugging purposes.')
-    parser.add_argument('--verbose', action='store_true', help='If flagged, activates verbosity flag in the network.')
     parser.add_argument('--init_lr', action='store', type=float, default=5e-2,
                         help='The initial learning rate for the network.')
     parser.add_argument('--lr_decay_start', action='store', type=int, default=50,
@@ -479,7 +452,6 @@ if __name__ == '__main__':
     print("ARGS SUMMARY")
     print(args)
     print("==================")
-    # SNR TODO: cambiar esto
     ATOMIZATION = args.atomize
     if ATOMIZATION:
         print('ATOMIZATION CALCULATION FLAGGED -- GETTING ATOMIC CONSTITUENTS.')
