@@ -412,6 +412,7 @@ if __name__ == '__main__':
                         help='If flagged, all calculations are spin polarized.')
     parser.add_argument('--testgen', default=False, action='store_true',
                         help='If flagged, calculation stops after mol generation.')
+    parser.add_argument('--serial', default=False, action="store_true", help="Run in serial, without DASK.")
     parser.add_argument('--startind', default=-1, type=int, action='store',
                         help='SERIAL MODE ONLY. If specified, will skip indices in trajectory before given value')
     parser.add_argument('--endind', default=999999999999, type=int, action='store',
