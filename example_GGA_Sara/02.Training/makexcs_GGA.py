@@ -2,11 +2,12 @@ import argparse
 from typing import Union
 import json
 from xcquinox.net import load_xcquinox_model
-from xcquinox.xc import  RXCModel_GGA
+from xcquinox.xc import RXCModel_GGA
 import equinox as eqx
 
+
 def save_eqx_XC_model(model, path: str = '', fixing: Union[str, None] = None,
-                   tail_info: Union[str, None] = None):
+                      tail_info: Union[str, None] = None):
     if fixing is None:
         fixing = ''
     else:
@@ -20,7 +21,7 @@ def save_eqx_XC_model(model, path: str = '', fixing: Union[str, None] = None,
 {fixing}{tail_info}'
 
     needen_info_x = {'depth': model_x.depth, 'nodes': model_x.nodes,
-                   'seed': model_x.seed, 'name': model_x.name}
+                     'seed': model_x.seed, 'name': model_x.name}
     eqx.tree_serialise_leaves(f'{path}/{save_name_x}.eqx', model_x)
     with open(f"{path}/{save_name_x}.json", "w") as f:
         json.dump(needen_info_x, f)
@@ -28,7 +29,7 @@ def save_eqx_XC_model(model, path: str = '', fixing: Union[str, None] = None,
     save_name_c = f'{model_c.name}_d{model_c.depth}_n{model_c.nodes}_s{model_c.seed}\
 {fixing}{tail_info}'
     needen_info_c = {'depth': model_c.depth, 'nodes': model_c.nodes,
-                   'seed': model_c.seed, 'name': model_c.name}
+                     'seed': model_c.seed, 'name': model_c.name}
     eqx.tree_serialise_leaves(f'{path}/{save_name_c}.eqx', model_c)
     with open(f"{path}/{save_name_c}.json", "w") as f:
         json.dump(needen_info_c, f)
@@ -37,8 +38,9 @@ def save_eqx_XC_model(model, path: str = '', fixing: Union[str, None] = None,
     with open(f"{path}/{save_name_xc}.json", "w") as f:
         json.dump(needen_info, f)
 
+
 def load_eqx_XC_model(model_xc_path):
-    
+
     with open(f"{model_xc_path}.json", "r") as f:
         metadata = json.load(f)
     path = model_xc_path.split('/')
