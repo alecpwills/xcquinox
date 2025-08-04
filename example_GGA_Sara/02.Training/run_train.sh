@@ -17,7 +17,7 @@ conda activate xcq
 cd /gpfs/scratch/sarnavarro/xcquinox/example_GGA_Sara/02.Training
 python train_traj_Sara_GGA.py --train_traj_path ../../scripts/script_data/training_subsets/01/subat_ref.traj \
 --train_data_dir ../../scripts/script_data/training_subsets/01 \
---xc_xc_net_path . \
+--xc_xc_net_path model_xc \
 --serial --xc_xc_level GGA \
 --mf_grid_level 1 \
 --n_steps 100 \

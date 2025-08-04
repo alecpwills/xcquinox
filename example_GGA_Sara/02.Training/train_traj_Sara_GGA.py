@@ -313,6 +313,16 @@ def load_eqx_XC_model(model_xc_path):
 
     with open(f"{model_xc_path}.json", "r") as f:
         metadata = json.load(f)
+    model_x = xce.net.load_xcquinox_model(f'{metadata["xnet"]}')
+    model_c = xce.net.load_xcquinox_model(f'{metadata["cnet"]}')
+    model = xce.xc.RXCModel_GGA(model_x, model_c)
+    return model
+
+
+def load_eqx_XC_model_old(model_xc_path):
+
+    with open(f"{model_xc_path}.json", "r") as f:
+        metadata = json.load(f)
     path = model_xc_path.split('/')
     path = '/'.join(path[:-1])
     model_x = xce.net.load_xcquinox_model(f'{path}/{metadata["xnet"]}')

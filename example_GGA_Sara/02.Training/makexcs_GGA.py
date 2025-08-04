@@ -63,9 +63,9 @@ if __name__ == '__main__':
                         help='Path to .eqx checkpoint file of the desired exchange network to use.', default=None)
     parser.add_argument('--load_cnet_path', action='store',
                         help='Path to .eqx checkpoint file of the desired exchange network to use.', default=None)
-    parser.add_argument('--fixing', action='store', default=None,
+    parser.add_argument('--fixing', action='store', default='',
                         help='Fixing string to append to the model name.')
-    parser.add_argument('--tail_info', action='store', default=None,
+    parser.add_argument('--tail_info', action='store', default='',
                         help='Tail information to append to the model name.')
 
     args = parser.parse_args()
@@ -93,6 +93,6 @@ if __name__ == '__main__':
     print("Output path:", outpath)
     needen_info = {'xnet': args.load_xnet_path, 'cnet': args.load_cnet_path}
     save_name_xc = f'model_xc{args.fixing}{args.tail_info}'
-    # We directly just dump t he paths, because its not trained!
+    # We directly just dump the paths, because its not trained!
     with open(f"{outpath}/{save_name_xc}.json", "w") as f:
         json.dump(needen_info, f)
