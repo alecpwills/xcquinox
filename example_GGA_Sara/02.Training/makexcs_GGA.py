@@ -6,8 +6,8 @@ from xcquinox.xc import RXCModel_GGA
 import equinox as eqx
 
 
-def save_eqx_XC_model(model, path: str = '', fixing: Union[str, None] = None,
-                      tail_info: Union[str, None] = None):
+def save_eqx_XC_model_all(model, path: str = '', fixing: Union[str, None] = None,
+                          tail_info: Union[str, None] = None):
     if fixing is None:
         fixing = ''
     else:
@@ -90,5 +90,9 @@ if __name__ == '__main__':
             print("This may lead to errors when loading models later.")
     else:
         outpath = args.outpath
-
-    save_eqx_XC_model(model, outpath, fixing=args.fixing, tail_info=args.tail_info)
+    print("Output path:", outpath)
+    needen_info = {'xnet': args.load_xnet_path, 'cnet': args.load_cnet_path}
+    save_name_xc = f'model_xc{args.fixing}{args.tail_info}'
+    # We directly just dump t he paths, because its not trained!
+    with open(f"{outpath}/{save_name_xc}.json", "w") as f:
+        json.dump(needen_info, f)
