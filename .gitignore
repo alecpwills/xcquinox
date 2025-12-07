@@ -112,6 +112,8 @@ ENV/
 notebooks/tmp*
 notebooks/xc.eqx*
 notebooks/*.dat
+notebooks/NOSYNC
+notebooks/NOSYNC/*
 
 xcquinox/tests/*.dat
 xcquinox/tests/tmp*
