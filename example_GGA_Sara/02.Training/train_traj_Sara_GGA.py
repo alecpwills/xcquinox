@@ -563,6 +563,7 @@ if __name__ == '__main__':
             # e.g., '3_H2O' -> ['2_H2', '1_O']
             # This dictionary is used to calculate reaction energies, as we have:
             # for subcomp in rxn_part_dct[k]: rxnloss -= e_dct[subcomp]
+            # Note: the reaction components are in order!
             rxn_part_dct = {}
             for k in rxn_e_dct.keys():
                 kidx, ksym = k.split('_')
