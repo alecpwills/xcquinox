@@ -378,7 +378,6 @@ class GGA_FxNet_sigma(eqx.Module):
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
-        print('s shape', s.shape)
         tanhterm = jnp.tanh(s)**2
         netterm = self.net(s)
         lobterm = self.lobf(tanhterm*netterm)
@@ -1103,8 +1102,6 @@ class eX(eqx.Module):
         :return: The exchange energy on the grid
         :rtype: jax.Array
         """
-        print(f"eX.__call__, rho shape: {rho.shape}")
-        print(f"eX.__call__, rho nans: {jnp.isnan(rho).sum()}")
         if self.spin_scaling:
             squeezed = jnp.squeeze(jax.vmap(jax.vmap(self.net), in_axes=1)(rho[..., self.use])).T
         else:
@@ -1213,8 +1210,6 @@ class eC(eqx.Module):
         :return: The exchange energy on the grid
         :rtype: jax.Array
         """
-        print(f"eC.__call__, rho shape: {rho.shape}")
-        print(f"eC.__call__, rho nans: {jnp.isnan(rho).sum()}")
         if self.spin_scaling:
             squeezed = -jnp.squeeze(jax.vmap(jax.vmap(self.net), in_axes=1)(rho[..., self.use])).T
         else:
