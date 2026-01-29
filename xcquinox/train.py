@@ -124,7 +124,6 @@ class xcTrainer(eqx.Module):
                 epoch_loss += this_loss
                 if ((step % self.clear_every) == 0) and (step > 0):
                     eqx.clear_caches()
-                    jax.clear_backends()
                     jax.clear_caches()
             # update self.loss_v to epoch's loss
             object.__setattr__(self, 'loss_v', epoch_loss.item())
@@ -144,7 +143,6 @@ class xcTrainer(eqx.Module):
                 )
             if ((step % self.clear_every) == 0) and (step > 0):
                 eqx.clear_caches()
-                jax.clear_backends()
                 jax.clear_caches()
 
             if self.logfile:
