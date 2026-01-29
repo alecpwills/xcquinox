@@ -172,11 +172,13 @@ class GGA_FcNet_s(eqx.Module):
 
 
 class GGA_FxNet_G(eqx.Module):
-    """S: Exchange enhancementt factor for GGA.
+    '''
+    GGA exchange enhancement factor network using gradient input (G-based).
 
-    It takes rho and grad_rho as input and outputs the exchange enhancement factor, Fx.
-    It transforms the input to the reduced density gradient, s, and then passes it through the network.
-    """
+    Takes rho and grad_rho as input and outputs the exchange enhancement factor Fx.
+    Internally transforms the input to the reduced density gradient s and passes
+    only s through the network to ensure proper uniform scaling behavior.
+    '''
     name: str
     depth: int
     nodes: int
@@ -186,6 +188,18 @@ class GGA_FxNet_G(eqx.Module):
     lobf: eqx.Module
 
     def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804):
+        '''
+        Constructor for the exchange enhancement factor network.
+
+        :param depth: Depth of the neural network
+        :type depth: int
+        :param nodes: Number of nodes in each layer
+        :type nodes: int
+        :param seed: Random seed for weight initialization
+        :type seed: int
+        :param lob_lim: Lieb-Oxford bound limit, defaults to 1.804
+        :type lob_lim: float, optional
+        '''
         self.name = 'GGA_FxNet_G'
         self.depth = depth
         self.nodes = nodes
@@ -201,13 +215,24 @@ class GGA_FxNet_G(eqx.Module):
         self.lobf = LOB(limit=lob_lim)
 
     def __call__(self, inputs):
+        '''
+        Forward pass computing the exchange enhancement factor.
+
+        Transforms (rho, grad_rho) to reduced density gradient s, then
+        applies the neural network with Lieb-Oxford bound enforcement.
+        The UEG limit (Fx=1 when s=0) is respected via the tanh^2 term.
+
+        :param inputs: Array containing [rho, grad_rho] values
+        :type inputs: jax.Array
+        :return: Exchange enhancement factor Fx
+        :rtype: float or jax.Array
+        '''
         # rho = jnp.maximum(1e-12, inputs[0])  # Prevents division by 0
         # rho = rho.flatten()
         # print('WITHOUT RHO MAXIMUM')
         rho = inputs[0].flatten()
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = inputs[1].flatten() / (2 * k_F * rho)
-        s = s.flatten()
         tanhterm = jnp.tanh(s)**2
         netterm = self.net(s)
         lobterm = self.lobf(tanhterm*netterm)
@@ -215,6 +240,12 @@ class GGA_FxNet_G(eqx.Module):
 
 
 class GGA_FcNet_G(eqx.Module):
+    '''
+    GGA correlation enhancement factor network using gradient input (G-based).
+
+    Takes rho and grad_rho as input and outputs the correlation enhancement
+    factor Fc. Internally transforms the input to the reduced density gradient s.
+    '''
     name: str
     depth: int
     nodes: int
@@ -224,7 +255,7 @@ class GGA_FcNet_G(eqx.Module):
     lobf: eqx.Module
 
     def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0):
-        """
+        '''
         Constructor for the correlation enhancement factor object, for the GGA case.
 
         In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's input size is hard-coded to 2 -- both the density and gradient information is passed to the network.
@@ -239,7 +270,7 @@ class GGA_FcNet_G(eqx.Module):
         :type seed: int
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2
         :type lob_lim: float, optional
-        """
+        '''
         self.name = 'GGA_FcNet_G'
         self.depth = depth
         self.nodes = nodes
@@ -254,10 +285,20 @@ class GGA_FcNet_G(eqx.Module):
         self.lobf = LOB(limit=lob_lim)
 
     def __call__(self, inputs):
+        '''
+        Forward pass computing the correlation enhancement factor.
+
+        Transforms (rho, grad_rho) to reduced density gradient s, then
+        applies the neural network with Lieb-Oxford bound enforcement.
+
+        :param inputs: Array containing [rho, grad_rho] values
+        :type inputs: jax.Array
+        :return: Correlation enhancement factor Fc
+        :rtype: float or jax.Array
+        '''
         rho = inputs[0].flatten()
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = inputs[1].flatten() / (2 * k_F * rho)
-        s = s.flatten()
         netinp = jnp.stack([rho, s], axis=0).flatten()
         tanhterm = jnp.tanh(s)**2
         netterm = self.net(netinp)
@@ -337,6 +378,7 @@ class GGA_FxNet_sigma(eqx.Module):
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
+        print('s shape', s.shape)
         tanhterm = jnp.tanh(s)**2
         netterm = self.net(s)
         lobterm = self.lobf(tanhterm*netterm)
@@ -801,7 +843,7 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
         # here we log-transform our descriptors to see if it improves convergence
-        x0 = jnp.log(rho**1/3+1e-5)
+        x0 = jnp.log(rho**(1/3)+1e-5)
         x1 = (1-jnp.exp(-s**2))*jnp.log(s+1)
         x2 = jnp.log((alpha+1)/2)
         # the tanh term here to match xcdiff paper
@@ -967,7 +1009,7 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
         # here we log-transform our descriptors to see if it improves convergence
-        x0 = jnp.log(rho**1/3+1e-5)
+        x0 = jnp.log(rho**(1/3)+1e-5)
         x1 = (1-jnp.exp(-s**2))*jnp.log(s+1)
         x2 = jnp.log((alpha+1)/2)
         # the tanh term here to match xcdiff paper

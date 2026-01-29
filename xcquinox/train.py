@@ -122,7 +122,7 @@ class xcTrainer(eqx.Module):
                     with open(self.logfile+'batch.dat', 'a') as f:
                         f.write(f'{step}\t{idx}\t{this_loss}\t{BEST_LOSS}\n')
                 epoch_loss += this_loss
-                if ((step % self.clear_every) == 0) and ((step > 0) == 0):
+                if ((step % self.clear_every) == 0) and (step > 0):
                     eqx.clear_caches()
                     jax.clear_backends()
                     jax.clear_caches()

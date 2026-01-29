@@ -195,8 +195,9 @@ def generate_network_eval_xc(mf, dm, network):
         Exc, exc = Exc_exc
         print(f'eval_xc Exc = {Exc}')
         if jnp.sum(jnp.isnan(exc[:, 0])):
-            print('NaNs detected in exc. Number of NaNs: {}'.format(jnp.sum(jnp.isnan(exc[:, 0]))))
-            raise
+            nan_count = jnp.sum(jnp.isnan(exc[:, 0]))
+            print('NaNs detected in exc. Number of NaNs: {}'.format(nan_count))
+            raise ValueError(f'NaNs detected in exchange-correlation energy density. Count: {nan_count}')
         else:
             exc = exc[:, 0]
 
@@ -230,7 +231,21 @@ def generate_network_eval_xc(mf, dm, network):
 # updated versions of this
 # GGA
 def custom_pbe_Fx(rho, sigma, XNET=None):
-    # this will be a call to the Fx neural network we want
+    '''
+    Compute the exchange enhancement factor using a neural network.
+
+    This function wraps a neural network call to compute the exchange
+    enhancement factor Fx given density and sigma (squared gradient) inputs.
+
+    :param rho: Electron density value(s) on the grid
+    :type rho: jax.Array or float
+    :param sigma: Squared density gradient (|nabla rho|^2) on the grid
+    :type sigma: jax.Array or float
+    :param XNET: Neural network model for exchange enhancement factor, defaults to None
+    :type XNET: eqx.Module, optional
+    :return: Exchange enhancement factor Fx
+    :rtype: jax.Array or float
+    '''
     # print('DEBUG custom_pbe_Fx, rho/sigma shapes: ', rho.shape, sigma.shape)
     # print('DEBUG custom_pbe_Fx: rho: ', rho)
     # print('DEBUG custom_pbe_Fx: sigma: ', sigma)
@@ -239,13 +254,45 @@ def custom_pbe_Fx(rho, sigma, XNET=None):
     return Fx
 
 
-def custom_pbe_Fc(rho, sigma, CNET=None):  # Assumes zeta = 0
-    # this will be a call to the Fc neural network we want
+def custom_pbe_Fc(rho, sigma, CNET=None):
+    '''
+    Compute the correlation enhancement factor using a neural network.
+
+    This function wraps a neural network call to compute the correlation
+    enhancement factor Fc given density and sigma inputs. Assumes unpolarized
+    case (zeta = 0).
+
+    :param rho: Electron density value(s) on the grid
+    :type rho: jax.Array or float
+    :param sigma: Squared density gradient (|nabla rho|^2) on the grid
+    :type sigma: jax.Array or float
+    :param CNET: Neural network model for correlation enhancement factor, defaults to None
+    :type CNET: eqx.Module, optional
+    :return: Correlation enhancement factor Fc
+    :rtype: jax.Array or float
+    '''
     Fc = CNET([rho, sigma])
     return Fc
 
 
 def custom_pbe_e(rho, sigma, XNET=None, CNET=None):
+    '''
+    Compute the exchange-correlation energy density using neural network enhancement factors.
+
+    Calculates exc = lda_x(rho) * Fx + pw92c(rho) * Fc, where Fx and Fc are
+    obtained from neural networks.
+
+    :param rho: Electron density value(s) on the grid
+    :type rho: jax.Array or float
+    :param sigma: Squared density gradient (|nabla rho|^2) on the grid
+    :type sigma: jax.Array or float
+    :param XNET: Neural network for exchange enhancement factor, defaults to None
+    :type XNET: eqx.Module, optional
+    :param CNET: Neural network for correlation enhancement factor, defaults to None
+    :type CNET: eqx.Module, optional
+    :return: Exchange-correlation energy density (exc)
+    :rtype: jax.Array or float
+    '''
     Fx = custom_pbe_Fx(rho, sigma, XNET=XNET)
     Fc = custom_pbe_Fc(rho, sigma, CNET=CNET)
 
@@ -255,11 +302,41 @@ def custom_pbe_e(rho, sigma, XNET=None, CNET=None):
 
 
 def custom_pbe_epsilon(rho, sigma, XNET=None, CNET=None):
+    '''
+    Compute epsilon (rho * exc) using neural network enhancement factors.
 
+    This is the quantity that libxc expects derivatives of: epsilon = rho * exc.
+
+    :param rho: Electron density value(s) on the grid
+    :type rho: jax.Array or float
+    :param sigma: Squared density gradient (|nabla rho|^2) on the grid
+    :type sigma: jax.Array or float
+    :param XNET: Neural network for exchange enhancement factor, defaults to None
+    :type XNET: eqx.Module, optional
+    :param CNET: Neural network for correlation enhancement factor, defaults to None
+    :type CNET: eqx.Module, optional
+    :return: Epsilon value (rho * exc)
+    :rtype: jax.Array or float
+    '''
     return rho*custom_pbe_e(rho, sigma, XNET=XNET, CNET=CNET)
 
 
 def derivable_custom_pbe_e(rhosigma, XNET=None, CNET=None):
+    '''
+    Wrapper for custom_pbe_e that accepts a tuple input for JAX differentiation.
+
+    This function unpacks (rho, sigma) from a tuple to enable use with jax.grad
+    and similar transformation functions.
+
+    :param rhosigma: Tuple of (rho, sigma) values
+    :type rhosigma: tuple
+    :param XNET: Neural network for exchange enhancement factor, defaults to None
+    :type XNET: eqx.Module, optional
+    :param CNET: Neural network for correlation enhancement factor, defaults to None
+    :type CNET: eqx.Module, optional
+    :return: Exchange-correlation energy density
+    :rtype: jax.Array or float
+    '''
     rho, sigma = rhosigma
     # print('DEBUG derivable_custom_pbe_e: rhosigma len/shapes: ', len(rhosigma), rhosigma)
     # print('DEBUG derivable_custom_pbe_e: rho/sigma shapes: ', rho.shape, sigma.shape)
@@ -269,6 +346,21 @@ def derivable_custom_pbe_e(rhosigma, XNET=None, CNET=None):
 
 
 def derivable_custom_pbe_epsilon(rhosigma, XNET=None, CNET=None):
+    '''
+    Wrapper for custom_pbe_epsilon that accepts a tuple input for JAX differentiation.
+
+    This function unpacks (rho, sigma) from a tuple and returns the first element
+    of epsilon for use with jax.grad and similar transformation functions.
+
+    :param rhosigma: Tuple of (rho, sigma) values
+    :type rhosigma: tuple
+    :param XNET: Neural network for exchange enhancement factor, defaults to None
+    :type XNET: eqx.Module, optional
+    :param CNET: Neural network for correlation enhancement factor, defaults to None
+    :type CNET: eqx.Module, optional
+    :return: Scalar epsilon value
+    :rtype: float
+    '''
     rho = rhosigma[0]
     sigma = rhosigma[1]
     result = custom_pbe_epsilon(rho, sigma, XNET=XNET, CNET=CNET)
@@ -277,6 +369,39 @@ def derivable_custom_pbe_epsilon(rhosigma, XNET=None, CNET=None):
 
 def eval_xc_gga_j(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None,
                   XNET=None, CNET=None):
+    '''
+    Evaluate GGA exchange-correlation functional using neural networks.
+
+    This function serves as a custom eval_xc replacement for PySCF, computing
+    the exchange-correlation energy density, first derivatives (vxc), and
+    second derivatives (fxc) using neural network enhancement factors.
+
+    :param xc_code: XC functional code string (ignored, networks are used instead)
+    :type xc_code: str
+    :param rho: Density and gradient arrays with shape (4, N) containing
+        [rho, grad_x, grad_y, grad_z] for N grid points
+    :type rho: numpy.ndarray or jax.Array
+    :param spin: Spin polarization flag (0 for unpolarized), defaults to 0
+    :type spin: int, optional
+    :param relativity: Relativity flag (unused), defaults to 0
+    :type relativity: int, optional
+    :param deriv: Derivative order to compute, defaults to 1
+    :type deriv: int, optional
+    :param omega: Range-separation parameter (unused), defaults to None
+    :type omega: float, optional
+    :param verbose: Verbosity level (unused), defaults to None
+    :type verbose: int, optional
+    :param XNET: Neural network for exchange enhancement factor
+    :type XNET: eqx.Module
+    :param CNET: Neural network for correlation enhancement factor
+    :type CNET: eqx.Module
+    :return: Tuple of (exc, vxc, fxc, kxc) where:
+        - exc: Exchange-correlation energy density
+        - vxc: First derivatives (vrho, vsigma, None, None)
+        - fxc: Second derivatives tuple
+        - kxc: Third derivatives (None)
+    :rtype: tuple
+    '''
     # we only expect there to be a rho0 array, but I unpack it as (rho, deriv) here to be in line with the
     # pyscf example -- the size of the 'rho' array depends on the xc type (LDA, GGA, etc.)
     # so since LDA calculation, check for size first.
@@ -323,6 +448,31 @@ def eval_xc_gga_j(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbo
 
 def eval_xc_gga_j2(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None,
                    xcmodel=None):
+    '''
+    Evaluate GGA exchange-correlation functional using a combined XC model.
+
+    Similar to eval_xc_gga_j but accepts a combined xcmodel (e.g., RXCModel_GGA)
+    that computes epsilon directly instead of separate X and C networks.
+
+    :param xc_code: XC functional code string (ignored, xcmodel is used instead)
+    :type xc_code: str
+    :param rho: Density and gradient arrays with shape (4, N) or (2, N)
+    :type rho: numpy.ndarray or jax.Array
+    :param spin: Spin polarization flag (0 for unpolarized), defaults to 0
+    :type spin: int, optional
+    :param relativity: Relativity flag (unused), defaults to 0
+    :type relativity: int, optional
+    :param deriv: Derivative order to compute, defaults to 1
+    :type deriv: int, optional
+    :param omega: Range-separation parameter (unused), defaults to None
+    :type omega: float, optional
+    :param verbose: Verbosity level (unused), defaults to None
+    :type verbose: int, optional
+    :param xcmodel: Combined XC model that computes epsilon(rho, sigma)
+    :type xcmodel: eqx.Module
+    :return: Tuple of (exc, vxc, fxc, kxc)
+    :rtype: tuple
+    '''
     # we only expect there to be a rho0 array, but I unpack it as (rho, deriv) here to be in line with the
     # pyscf example -- the size of the 'rho' array depends on the xc type (LDA, GGA, etc.)
     # so since LDA calculation, check for size first.
@@ -376,6 +526,37 @@ def eval_xc_gga_j2(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verb
 
 def eval_xc_gga_pol(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None,
                     xcmodel=None):
+    '''
+    Evaluate GGA exchange-correlation functional with spin polarization support.
+
+    This function handles both spin-polarized and spin-unpolarized cases,
+    returning appropriately shaped output arrays for PySCF compatibility.
+
+    For spin-polarized calculations, the network receives combined density
+    and the gradients are duplicated across spin channels (hacky workaround
+    for networks not architected for full polarized parameters).
+
+    :param xc_code: XC functional code string (ignored, xcmodel is used instead)
+    :type xc_code: str
+    :param rho: Density and gradient arrays. Shape (4, N) for unpolarized,
+        shape (2, 4, N) for polarized with [up, down] spin channels
+    :type rho: numpy.ndarray or jax.Array
+    :param spin: Spin polarization flag (0 for unpolarized), defaults to 0
+    :type spin: int, optional
+    :param relativity: Relativity flag (unused), defaults to 0
+    :type relativity: int, optional
+    :param deriv: Derivative order to compute, defaults to 1
+    :type deriv: int, optional
+    :param omega: Range-separation parameter (unused), defaults to None
+    :type omega: float, optional
+    :param verbose: Verbosity level (unused), defaults to None
+    :type verbose: int, optional
+    :param xcmodel: Combined XC model that computes epsilon(rho, sigma)
+    :type xcmodel: eqx.Module
+    :return: Tuple of (exc, vxc, fxc, kxc) with shapes appropriate
+        for spin-polarized or unpolarized calculations
+    :rtype: tuple
+    '''
     # we only expect there to be a rho0 array, but I unpack it as (rho, deriv) here to be in line with the
     # pyscf example -- the size of the 'rho' array depends on the xc type (LDA, GGA, etc.)
     # so since LDA calculation, check for size first.

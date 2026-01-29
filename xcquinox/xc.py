@@ -577,7 +577,7 @@ class eXC(eqx.Module):
                     f'get_descriptors -> self.level > 1 and spin_scaling\ndescr3a.shape={descr3a.shape}, descr3b.shape={descr3b.shape}')
             else:
                 descr3 = self.l_2(rho0_a + rho0_b, gamma_a + gamma_b + 2*gamma_ab)  # s
-                descr3 = descr3/((1+zeta)**(2/3) + (1-zeta)**2/3)
+                descr3 = descr3/((1+zeta)**(2/3) + (1-zeta)**(2/3))
                 descr3 = jnp.expand_dims(descr3, -1)
                 descr3 = (1-jnp.exp(-descr3**2/self.s_gam))*jnp.log(descr3 + 1)
             self.vprint(f'self.level > 1; descr3 Nans = {jnp.sum(jnp.isnan(descr3))}')
@@ -872,9 +872,9 @@ def make_xcfunc(level, x_net_path, c_net_path, configfile='network.config',
             xparams = pickle.load(f)
         with open(os.path.join(c_net_path, configfile+'.pkl'), 'rb') as f:
             cparams = pickle.load(f)
-    except:
+    except (FileNotFoundError, IOError) as e:
         print('BOTH exchange and correlation networks require a network.config.pkl file to generate the XC functional object.')
-        raise
+        raise FileNotFoundError(f'Missing network configuration file: {e}')
     # create the network to generate the descriptors for saving
     xnet, xparams = get_net(xorc='X', level=level, net_path=x_net_path)
     cnet, cparams = get_net(xorc='C', level=level, net_path=c_net_path)
@@ -922,9 +922,9 @@ def get_xcfunc(level, xc_net_path, configfile='network.config', xcdsfile='xc.eqx
             xparams = pickle.load(f)
         with open(os.path.join(xc_net_path, 'c'+configfile+'.pkl'), 'rb') as f:
             cparams = pickle.load(f)
-    except:
+    except (FileNotFoundError, IOError) as e:
         print('Error in opening separate exchange/correlation configuration files. Both must be present to re-create the network architecture.')
-        raise
+        raise FileNotFoundError(f'Missing exchange/correlation configuration file: {e}')
 
     # create the network to generate the descriptors for saving
     xnet, xparams = get_net(xorc='X', level=level, net_path=xc_net_path, configfile='x'+configfile, netfile=None)

@@ -426,6 +426,19 @@ class eig(eqx.Module):
 
 # Function to calculate statistics
 def calculate_stats(true, pred):
+    '''
+    Calculate statistical metrics comparing true and predicted values.
+
+    Computes R-squared, mean absolute error (MAE), root mean squared error
+    (RMSE), and maximum absolute error between flattened arrays.
+
+    :param true: Ground truth values
+    :type true: jax.Array or numpy.ndarray
+    :param pred: Predicted values (must be same shape as true)
+    :type pred: jax.Array or numpy.ndarray
+    :return: Tuple of (r2, mae, rmse, max_error)
+    :rtype: tuple of floats
+    '''
     true_flat = true.flatten()
     pred_flat = pred.flatten()
 
@@ -597,16 +610,17 @@ def PBE_Fc(rho, grad_rho,  lower_rho_cutoff=1e-12):
 
 
 def pw91_correlation_energy_density(rho):
-    """
+    '''
     Calculate the correlation energy density according to the PW91 functional.
 
-    Parameters:
-    - rho: electron density (numpy array or scalar)
-    - grad_rho: gradient of the electron density (numpy array or scalar)
+    Computes the Perdew-Wang 1991 correlation energy density for a given
+    electron density.
 
-    Returns:
-    - correlation energy density (numpy array or scalar)
-    """
+    :param rho: Electron density value(s) on the grid
+    :type rho: jax.Array, numpy.ndarray, or float
+    :return: Correlation energy density
+    :rtype: jax.Array or float
+    '''
     A = 0.0311
     B = 0.116
     C = 0.145
@@ -620,6 +634,19 @@ def pw91_correlation_energy_density(rho):
 
 
 def lda_c_pw(rho):
+    '''
+    Compute LDA correlation energy density using Perdew-Wang parameterization.
+
+    Implements the Perdew-Wang local correlation for unpolarized electron gas.
+    Note: This function sets zeta = 0 (unpolarized case).
+
+    Reference: J.P. Perdew & Y. Wang, PRB, 45, 13244 (1992)
+
+    :param rho: Electron density value(s) on the grid
+    :type rho: jax.Array or float
+    :return: Correlation energy density
+    :rtype: jax.Array or float
+    '''
     params_a_pp = [1,  1,  1]
     params_a_a = [0.031091, 0.015545, 0.016887]
     params_a_alpha1 = [0.21370,  0.20548,  0.11125]
@@ -771,7 +798,8 @@ def pw92c_unpolarized(rho):
     def compute_g(rs):
         try:
             G = jnp.zeros((len(rs), 3))
-        except:
+        except TypeError:
+            # rs is a scalar, not an array
             G = jnp.zeros((1, 3))
         for k in range(3):
             B = (BETA1[k] * jnp.sqrt(rs) +
