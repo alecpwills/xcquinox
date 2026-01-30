@@ -80,10 +80,11 @@ class xcTrainer(eqx.Module):
         :type epoch_batch_len: int
         :param model: The baseline model to update in the training process
         :type model: xcquinox.xc.eXC
-        :return: The updated model after the training cycle completes
-        :rtype: xcquinox.xc.eXC
+        :return: The updated model after the training cycle completes and list of epoch losses
+        :rtype: tuple(xcquinox.xc.eXC, list[float])
         '''
         BEST_LOSS = 1e10
+        losses = []  # Track epoch losses as Python floats (not JAX arrays)
         for step in range(self.steps):
             jax.debug.print('Epoch {}'.format(step))
             epoch_loss = 0
@@ -126,7 +127,9 @@ class xcTrainer(eqx.Module):
                     eqx.clear_caches()
                     jax.clear_caches()
             # update self.loss_v to epoch's loss
-            object.__setattr__(self, 'loss_v', epoch_loss.item())
+            epoch_loss_val = epoch_loss.item()
+            object.__setattr__(self, 'loss_v', epoch_loss_val)
+            losses.append(epoch_loss_val)  # Append Python float, not JAX array
 
             if ((step % self.serialize_every) == 0) and (epoch_loss.item() < BEST_LOSS):
                 eqx.tree_serialise_leaves('xc.eqx.{}'.format(step), start_model)
@@ -149,7 +152,7 @@ class xcTrainer(eqx.Module):
                 with open(self.logfile+'.dat', 'a') as f:
                     f.write(f'{step}\t{epoch_loss}\t{BEST_LOSS}\n')
 
-        return inp_model
+        return inp_model, losses
 
     def make_step(self, model, opt_state, *args):
         '''

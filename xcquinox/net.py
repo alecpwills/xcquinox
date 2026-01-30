@@ -131,10 +131,13 @@ class GGA_FxNet_s(eqx.Module):
     nodes: int
     seed: int
     lob_lim: float
+    use_self_attention: bool
     net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
     lobf: eqx.Module
 
-    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804):
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804,
+                 use_self_attention: bool = False):
         '''
         Constructor for the exchange enhancement factor object, for the GGA case.
 
@@ -151,19 +154,33 @@ class GGA_FxNet_s(eqx.Module):
         :type seed: int
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
         :type lob_lim: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
         '''
         self.name = 'GGA_FxNet_s'
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
         self.lob_lim = lob_lim
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
         # to constrain this, we require only gradient inputs
         self.net = eqx.nn.MLP(in_size=1,  # Input is ONLY gradient_descriptor
                               out_size=1,  # Output is Fx
                               depth=self.depth,
                               width_size=self.nodes,
                               activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
         self.lobf = LOB(limit=lob_lim)
 
     def __call__(self, inputs):
@@ -179,8 +196,23 @@ class GGA_FxNet_s(eqx.Module):
         :return: The enhancement factor value
         :rtype: float
         '''
-        # takes forever if inputs[1] tanh input has extended shape , i.e. (1,1) as opposed to scalar shape (1,)
-        return 1+self.lobf((jnp.tanh(inputs[1])**2)*self.net(inputs[1, jnp.newaxis]).squeeze())
+        s = inputs[1, jnp.newaxis]
+        tanhterm = jnp.tanh(inputs[1])**2
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = s
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(s)
+
+        return 1 + self.lobf(tanhterm * netterm.squeeze())
 
 
 # Define the neural network module for Fc
@@ -194,10 +226,13 @@ class GGA_FcNet_s(eqx.Module):
     nodes: int
     seed: int
     lob_lim: float
+    use_self_attention: bool
     net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
     lobf: eqx.Module
 
-    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0):
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0,
+                 use_self_attention: bool = False):
         '''
         Constructor for the correlation enhancement factor object, for the GGA case.
 
@@ -213,18 +248,32 @@ class GGA_FcNet_s(eqx.Module):
         :type seed: int
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2
         :type lob_lim: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
         '''
         self.name = 'GGA_FcNet_s'
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
         self.lob_lim = lob_lim
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
         self.net = eqx.nn.MLP(in_size=2,  # Input is rho, gradient_descriptor
                               out_size=1,  # Output is Fc
                               depth=self.depth,
                               width_size=self.nodes,
                               activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
         self.lobf = LOB(limit=lob_lim)
 
     def __call__(self, inputs):
@@ -240,8 +289,22 @@ class GGA_FcNet_s(eqx.Module):
         :return: The enhancement factor value
         :rtype: float
         '''
-        # takes forever if inputs[1] tanh input has extended shape , i.e. (1,1) as opposed to scalar shape (1,)
-        return 1+self.lobf((jnp.tanh(inputs[1])**2)*self.net(inputs).squeeze())
+        tanhterm = jnp.tanh(inputs[1])**2
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = inputs
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(inputs)
+
+        return 1 + self.lobf(tanhterm * netterm.squeeze())
 
 
 class GGA_FxNet_G(eqx.Module):
@@ -257,10 +320,13 @@ class GGA_FxNet_G(eqx.Module):
     nodes: int
     seed: int
     lob_lim: float
+    use_self_attention: bool
     net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
     lobf: eqx.Module
 
-    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804):
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804,
+                 use_self_attention: bool = False):
         '''
         Constructor for the exchange enhancement factor network.
 
@@ -272,19 +338,33 @@ class GGA_FxNet_G(eqx.Module):
         :type seed: int
         :param lob_lim: Lieb-Oxford bound limit, defaults to 1.804
         :type lob_lim: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
         '''
         self.name = 'GGA_FxNet_G'
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
         self.lob_lim = lob_lim
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
         # to constrain this, we require only gradient inputs
         self.net = eqx.nn.MLP(in_size=1,  # Input is ONLY s
                               out_size=1,  # Output is Fx
                               depth=self.depth,
                               width_size=self.nodes,
                               activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
         self.lobf = LOB(limit=lob_lim)
 
     def __call__(self, inputs):
@@ -300,16 +380,26 @@ class GGA_FxNet_G(eqx.Module):
         :return: Exchange enhancement factor Fx
         :rtype: float or jax.Array
         '''
-        # rho = jnp.maximum(1e-12, inputs[0])  # Prevents division by 0
-        # rho = rho.flatten()
-        # print('WITHOUT RHO MAXIMUM')
         rho = inputs[0].flatten()
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = inputs[1].flatten() / (2 * k_F * rho)
         tanhterm = jnp.tanh(s)**2
-        netterm = self.net(s)
-        lobterm = self.lobf(tanhterm*netterm)
-        return 1+lobterm.squeeze()
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = s
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(s)
+
+        lobterm = self.lobf(tanhterm * netterm)
+        return 1 + lobterm.squeeze()
 
 
 class GGA_FcNet_G(eqx.Module):
@@ -324,10 +414,13 @@ class GGA_FcNet_G(eqx.Module):
     nodes: int
     seed: int
     lob_lim: float
+    use_self_attention: bool
     net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
     lobf: eqx.Module
 
-    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0):
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0,
+                 use_self_attention: bool = False):
         '''
         Constructor for the correlation enhancement factor object, for the GGA case.
 
@@ -343,18 +436,32 @@ class GGA_FcNet_G(eqx.Module):
         :type seed: int
         :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2
         :type lob_lim: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
         '''
         self.name = 'GGA_FcNet_G'
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
         self.lob_lim = lob_lim
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
         self.net = eqx.nn.MLP(in_size=2,  # Input is rho, s
                               out_size=1,  # Output is Fx
                               depth=self.depth,
                               width_size=self.nodes,
                               activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
         self.lobf = LOB(limit=lob_lim)
 
     def __call__(self, inputs):
@@ -374,7 +481,20 @@ class GGA_FcNet_G(eqx.Module):
         s = inputs[1].flatten() / (2 * k_F * rho)
         netinp = jnp.stack([rho, s], axis=0).flatten()
         tanhterm = jnp.tanh(s)**2
-        netterm = self.net(netinp)
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
         lobterm = self.lobf(tanhterm*netterm)
         return 1+lobterm.squeeze()
 
@@ -598,6 +718,237 @@ class GGA_FcNet_sigma(eqx.Module):
         lobterm = self.lobf(tanhterm*netterm)
         return 1+lobterm.squeeze()
 
+
+class GGA_FxNet_sigma_transform(eqx.Module):
+    """Exchange enhancement factor for GGA with log-transformed inputs.
+
+    Takes rho and sigma (grad_rho²) as input and outputs the exchange enhancement factor, Fx.
+    Transforms the input to log-space reduced density gradient for improved numerical stability.
+    """
+    name: str
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    lower_rho_cutoff: float
+    use_self_attention: bool
+    net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804, lower_rho_cutoff=1e-12,
+                 use_self_attention: bool = False):
+        '''
+        Constructor for the exchange enhancement factor object, for the GGA case with log-transforms.
+
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's
+        input size is hard-coded to 1 -- just the log-transformed gradient information is passed
+        to the network, to guarantee that the energy yielded from this multiplicative factor
+        behaves correctly under uniform scaling of the electron density and obeys the spin-scaling relation.
+
+        This network transforms function inputs [rho, sigma] to the below input for the network:
+        sigma -> (1-exp(-s**2))*log(s+1)  where s is the reduced density gradient
+
+        :param depth: Depth of the neural network
+        :type depth: int
+        :param nodes: Number of nodes in each layer
+        :type nodes: int
+        :param seed: The random seed to initiate baseline weight values for the network
+        :type seed: int
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 1.804
+        :type lob_lim: float, optional
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
+        :type lower_rho_cutoff: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
+        '''
+        self.name = 'GGA_FxNet_sigma_transform'
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
+        # To maintain exchange scaling constraints, only gradient input is used
+        self.net = eqx.nn.MLP(in_size=1,  # Input is log-transformed gradient descriptor
+                              out_size=1,  # Output is Fx
+                              depth=self.depth,
+                              width_size=self.nodes,
+                              activation=jax.nn.gelu,
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        '''
+        The network's forward pass with log-transformed inputs.
+
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point
+        worth of data. This structure expects the :jax.vmap: call to be coded OUTSIDE of the
+        network class.
+
+        :param inputs: Array of size 2 in order (rho, sigma)
+        :type inputs: tuple, list, array
+        :return: The enhancement factor value
+        :rtype: float
+        '''
+        rho = inputs[0]
+        sigma = inputs[1]
+        k_F = (3 * jnp.pi**2 * rho)**(1/3)
+        s = jnp.sqrt(sigma) / (2 * k_F * rho)
+        s = s.flatten()
+
+        # Log-transform the gradient descriptor
+        x1 = (1 - jnp.exp(-s**2)) * jnp.log(s + 1)
+
+        # The tanhterm for UEG limit behavior (when s=0, x1=0, so Fx=1)
+        tanhterm = x1
+        netinp = jnp.array([x1]).flatten()
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
+        lobterm = self.lobf(tanhterm * netterm)
+        return 1 + lobterm.squeeze()
+
+
+class GGA_FcNet_sigma_transform(eqx.Module):
+    """Correlation enhancement factor for GGA with log-transformed inputs.
+
+    Takes rho and sigma (grad_rho²) as input and outputs the correlation enhancement factor, Fc.
+    Transforms the inputs to log-space for improved numerical stability.
+    """
+    name: str
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    lower_rho_cutoff: float
+    use_self_attention: bool
+    net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0, lower_rho_cutoff=1e-12,
+                 use_self_attention: bool = False):
+        '''
+        Constructor for the correlation enhancement factor object, for the GGA case with log-transforms.
+
+        In a GGA XC functional, the relevant quantities are (rho, grad_rho). Here, the network's
+        input size is hard-coded to 2 -- both the log-transformed density and gradient information
+        are passed to the network.
+
+        This network transforms function inputs [rho, sigma] to the below inputs for the network:
+        rho -> log(rho**1/3 + 1e-5)
+        sigma -> (1-exp(-s**2))*log(s+1)  where s is the reduced density gradient
+
+        The default Lieb-Oxford bound is set to 2.0, to enforce the non-negativity of the
+        correlation energy.
+
+        :param depth: Depth of the neural network
+        :type depth: int
+        :param nodes: Number of nodes in each layer
+        :type nodes: int
+        :param seed: The random seed to initiate baseline weight values for the network
+        :type seed: int
+        :param lob_lim: The Lieb-Oxford bound to respect, defaults to 2.0
+        :type lob_lim: float, optional
+        :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
+        :type lower_rho_cutoff: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
+        '''
+        self.name = 'GGA_FcNet_sigma_transform'
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
+        # Both density and gradient inputs for correlation
+        self.net = eqx.nn.MLP(in_size=2,  # Input is log-transformed rho and gradient descriptors
+                              out_size=1,  # Output is Fc
+                              depth=self.depth,
+                              width_size=self.nodes,
+                              activation=jax.nn.gelu,
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        '''
+        The network's forward pass with log-transformed inputs.
+
+        *NOTE*: This forward pass is explicitly NOT vectorized -- it expects one grid point
+        worth of data. This structure expects the :jax.vmap: call to be coded OUTSIDE of the
+        network class.
+
+        :param inputs: Array of size 2 in order (rho, sigma)
+        :type inputs: tuple, list, array
+        :return: The enhancement factor value
+        :rtype: float
+        '''
+        rho = inputs[0].flatten()
+        sigma = inputs[1]
+        k_F = (3 * jnp.pi**2 * rho)**(1/3)
+        s = jnp.sqrt(sigma) / (2 * k_F * rho)
+        s = s.flatten()
+
+        # Log-transform the descriptors
+        x0 = jnp.log(rho**(1/3) + 1e-5)
+        x1 = (1 - jnp.exp(-s**2)) * jnp.log(s + 1)
+
+        # The tanhterm for UEG limit behavior
+        tanhterm = x1
+        netinp = jnp.array([x0, x1]).flatten()
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
+        lobterm = self.lobf(tanhterm * netterm)
+        return 1 + lobterm.squeeze()
+
+
 # Saving models
 
 
@@ -660,6 +1011,8 @@ def load_xcquinox_model(path: str):
         'GGA_FcNet_G': GGA_FcNet_G,
         'GGA_FxNet_sigma': GGA_FxNet_sigma,
         'GGA_FcNet_sigma': GGA_FcNet_sigma,
+        'GGA_FxNet_sigma_transform': GGA_FxNet_sigma_transform,
+        'GGA_FcNet_sigma_transform': GGA_FcNet_sigma_transform,
         'MGGA_FxNet_sigma': MGGA_FxNet_sigma,
         'MGGA_FcNet_sigma': MGGA_FcNet_sigma,
         'MGGA_FxNet_sigma_transform': MGGA_FxNet_sigma_transform,
@@ -687,9 +1040,12 @@ class GGA_FxNet_sigma_UNC(eqx.Module):
     seed: int
     lob_lim: float
     lower_rho_cutoff: float
+    use_self_attention: bool
     net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
 
-    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804, lower_rho_cutoff=1e-12):
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.804, lower_rho_cutoff=1e-12,
+                 use_self_attention: bool = False):
         '''
         Constructor for the exchange enhancement factor object, for the GGA case.
 
@@ -705,18 +1061,31 @@ class GGA_FxNet_sigma_UNC(eqx.Module):
         :type lob_lim: float, optional
         :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
         :type lower_rho_cutoff: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
         '''
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
         self.lob_lim = lob_lim
         self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
         self.net = eqx.nn.MLP(in_size=2,  # Input is rho, gradient_descriptor
                               out_size=1,  # Output is Fx
                               depth=self.depth,
                               width_size=self.nodes,
                               activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
 
     def __call__(self, inputs):
         '''
@@ -741,7 +1110,20 @@ class GGA_FxNet_sigma_UNC(eqx.Module):
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
         netinp = jnp.stack([rho, s], axis=0).flatten()
-        netterm = self.net(netinp)
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
         return netterm.squeeze()
 
 # Define the neural network module for Fc
@@ -753,9 +1135,12 @@ class GGA_FcNet_sigma_UNC(eqx.Module):
     seed: int
     lob_lim: float
     lower_rho_cutoff: float
+    use_self_attention: bool
     net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
 
-    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0, lower_rho_cutoff=1e-12):
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=2.0, lower_rho_cutoff=1e-12,
+                 use_self_attention: bool = False):
         '''
         Constructor for the correlation enhancement factor object, for the GGA case.
 
@@ -773,18 +1158,31 @@ class GGA_FcNet_sigma_UNC(eqx.Module):
         :type lob_lim: float, optional
         :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
         :type lower_rho_cutoff: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
         '''
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
         self.lob_lim = lob_lim
         self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
         self.net = eqx.nn.MLP(in_size=2,  # Input is rho, gradient_descriptor
                               out_size=1,  # Output is Fc
                               depth=self.depth,
                               width_size=self.nodes,
                               activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
 
     def __call__(self, inputs):
         '''
@@ -809,7 +1207,20 @@ class GGA_FcNet_sigma_UNC(eqx.Module):
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
         netinp = jnp.stack([rho, s], axis=0).flatten()
-        netterm = self.net(netinp)
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
         return netterm.squeeze()
 
 # =====================================================================
@@ -931,18 +1342,21 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
     seed: int
     lob_lim: float
     lower_rho_cutoff: float
+    use_self_attention: bool
     net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
     lobf: eqx.Module
     name: str
 
-    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.174, lower_rho_cutoff=1e-12):
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.174, lower_rho_cutoff=1e-12,
+                 use_self_attention: bool = False):
         '''
         Constructor for the exchange enhancement factor object, for the MGGA case.
 
-        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy density). Here, 
-        the network's input size is hard-coded to 2 -- just the gradient and alpha (related to tau) information 
-        is passed to the network, to guarantee that the energy yielded from this multiplicative 
-        factor behaves correctly under uniform scaling of the electron density and obeys the 
+        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy density). Here,
+        the network's input size is hard-coded to 2 -- just the gradient and alpha (related to tau) information
+        is passed to the network, to guarantee that the energy yielded from this multiplicative
+        factor behaves correctly under uniform scaling of the electron density and obeys the
         spin-scaling relation.
 
         This network transforms function inputs [rho, sigma, lapl, tau] to the below inputs for the network:
@@ -960,19 +1374,33 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         :type lob_lim: float, optional
         :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
         :type lower_rho_cutoff: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
         '''
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
         self.lob_lim = lob_lim
         self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
         # to constrain this, we require only gradient inputs
         self.net = eqx.nn.MLP(in_size=2,  # Input is gradient_descriptor, tau_descriptor
                               out_size=1,  # Output is Fx
                               depth=self.depth,
                               width_size=self.nodes,
                               activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
         self.lobf = LOB(limit=lob_lim)
         self.name = 'MGGA_FxNet_sigma_transform'
 
@@ -1010,7 +1438,21 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         x2 = jnp.log((alpha+1)/2)
         # the tanh term here to match xcdiff paper
         tanhterm = x1 + jnp.tanh(x2)**2
-        netterm = self.net(jnp.array([x1, x2]).flatten())
+        netinp = jnp.array([x1, x2]).flatten()
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
         lobterm = self.lobf(tanhterm*netterm)
         return 1+lobterm.squeeze()
 
@@ -1125,16 +1567,19 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
     seed: int
     lob_lim: float
     lower_rho_cutoff: float
+    use_self_attention: bool
     net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
     lobf: eqx.Module
     name: str
 
-    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.174, lower_rho_cutoff=1e-12):
+    def __init__(self, depth: int, nodes: int, seed: int, lob_lim=1.174, lower_rho_cutoff=1e-12,
+                 use_self_attention: bool = False):
         '''
         Constructor for the correlation enhancement factor object, for the MGGA case.
 
-        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy density). Here, 
-        the network's input size is hard-coded to 3 -- just the density, gradient, and alpha (related to tau) information 
+        In a MGGA XC functional, the relevant quantities are (rho, grad_rho, laplacian_rho, tau=kinetic energy density). Here,
+        the network's input size is hard-coded to 3 -- just the density, gradient, and alpha (related to tau) information
         is passed to the network.
 
         This network transforms function inputs [rho, sigma, lapl, tau] to the below inputs for the network:
@@ -1152,19 +1597,33 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
         :type lob_lim: float, optional
         :param lower_rho_cutoff: a cut-off to bypass potential division by zero in the division by rho, defaults to 1e-12
         :type lower_rho_cutoff: float, optional
+        :param use_self_attention: Whether to include a self-attention layer in the network, defaults to False
+        :type use_self_attention: bool, optional
         '''
         self.depth = depth
         self.nodes = nodes
         self.seed = seed
         self.lob_lim = lob_lim
         self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
         # to constrain this, we require only gradient inputs
         self.net = eqx.nn.MLP(in_size=3,  # Input is all rho, gradient, tau descriptors
                               out_size=1,  # Output is Fx
                               depth=self.depth,
                               width_size=self.nodes,
                               activation=jax.nn.gelu,
-                              key=jax.random.PRNGKey(self.seed))
+                              key=keys[0])
+
+        # Optional self-attention layer
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
         self.lobf = LOB(limit=lob_lim)
         self.name = 'MGGA_FcNet_sigma_transform'
 
@@ -1202,7 +1661,21 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
         x2 = jnp.log((alpha+1)/2)
         # the tanh term here to match xcdiff paper
         tanhterm = x1 + jnp.tanh(x2)**2
-        netterm = self.net(jnp.array([x0, x1, x2]).flatten())
+        netinp = jnp.array([x0, x1, x2]).flatten()
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
         lobterm = self.lobf(tanhterm*netterm)
         return 1+lobterm.squeeze()
 
