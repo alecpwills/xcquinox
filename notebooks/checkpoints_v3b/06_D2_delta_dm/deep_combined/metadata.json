@@ -1,0 +1,13 @@
+{
+  "arch_name": "deep_combined",
+  "approach_name": "D2_delta_dm",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 0.016995033151382306,
+  "min_loss": 0.016964347231637304,
+  "timestamp": "2026-02-03T19:52:07.400465",
+  "duration_seconds": 171.41773080825806
+}

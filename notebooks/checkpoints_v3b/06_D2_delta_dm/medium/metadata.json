@@ -1,0 +1,13 @@
+{
+  "arch_name": "medium",
+  "approach_name": "D2_delta_dm",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 0.012792988200864936,
+  "min_loss": 0.012792988200864936,
+  "timestamp": "2026-02-03T19:43:35.699704",
+  "duration_seconds": 112.66431522369385
+}

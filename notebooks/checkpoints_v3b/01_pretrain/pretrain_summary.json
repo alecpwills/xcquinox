@@ -1,0 +1,129 @@
+{
+  "total_time_seconds": 2935.2776062488556,
+  "successful": 12,
+  "failed": 0,
+  "results": [
+    {
+      "status": "success",
+      "arch": "shallow",
+      "final_loss_x": 7.618381295549735e-05,
+      "final_loss_c": 0.0001456844151745811,
+      "min_loss_x": 7.618381295549735e-05,
+      "min_loss_c": 0.0001456844151745811,
+      "duration": 648.372499704361,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/shallow"
+    },
+    {
+      "status": "success",
+      "arch": "medium",
+      "final_loss_x": 7.057047336810883e-05,
+      "final_loss_c": 0.00011643430068814138,
+      "min_loss_x": 7.057047336810883e-05,
+      "min_loss_c": 0.00011643430068814138,
+      "duration": 767.7925643920898,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/medium"
+    },
+    {
+      "status": "success",
+      "arch": "deep",
+      "final_loss_x": 6.604774357580565e-05,
+      "final_loss_c": 0.0001108887940310743,
+      "min_loss_x": 6.604774357580565e-05,
+      "min_loss_c": 0.0001108887940310743,
+      "duration": 909.8524174690247,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/deep"
+    },
+    {
+      "status": "success",
+      "arch": "shallow_attn",
+      "final_loss_x": 5.9525960532538866e-05,
+      "final_loss_c": 0.00012971183748275027,
+      "min_loss_x": 5.9525960532538866e-05,
+      "min_loss_c": 0.00012971183748275027,
+      "duration": 1012.0231230258942,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/shallow_attn"
+    },
+    {
+      "status": "success",
+      "arch": "medium_attn",
+      "final_loss_x": 1.7765527569748064e-05,
+      "final_loss_c": 0.00010541376758031366,
+      "min_loss_x": 1.7765527569748064e-05,
+      "min_loss_c": 0.00010541376758031366,
+      "duration": 1167.9069182872772,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/medium_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp",
+      "final_loss_x": 0.00010676326302602843,
+      "final_loss_c": 4.249415174466606e-05,
+      "min_loss_x": 0.00010676326302602843,
+      "min_loss_c": 4.249415174466606e-05,
+      "duration": 948.3525848388672,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/deep_cusp"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm",
+      "final_loss_x": 0.014188642840750233,
+      "final_loss_c": 0.00020619526360454653,
+      "min_loss_x": 0.014188642840750233,
+      "min_loss_c": 0.00020619526360454653,
+      "duration": 946.3421251773834,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/deep_dm"
+    },
+    {
+      "status": "success",
+      "arch": "deep_attn",
+      "final_loss_x": 4.9870480334233694e-05,
+      "final_loss_c": 9.651578822143045e-05,
+      "min_loss_x": 4.9870480334233694e-05,
+      "min_loss_c": 9.651578822143045e-05,
+      "duration": 1342.5141806602478,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/deep_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp_attn",
+      "final_loss_x": 7.058786627782396e-06,
+      "final_loss_c": 3.4112130437332523e-06,
+      "min_loss_x": 7.058786627782396e-06,
+      "min_loss_c": 3.4112130437332523e-06,
+      "duration": 1349.5442280769348,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/deep_cusp_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm_attn",
+      "final_loss_x": 0.01455993932615543,
+      "final_loss_c": 7.144421919021911e-06,
+      "min_loss_x": 0.01455993932615543,
+      "min_loss_c": 7.144421919021911e-06,
+      "duration": 1286.2329535484314,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/deep_dm_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined",
+      "final_loss_x": 6.115962931130472e-05,
+      "final_loss_c": 0.00014376787481116198,
+      "min_loss_x": 6.115962931130472e-05,
+      "min_loss_c": 0.00014376787481116198,
+      "duration": 812.8482406139374,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/deep_combined"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined_attn",
+      "final_loss_x": 2.79794383690929e-06,
+      "final_loss_c": 4.509569500437806e-06,
+      "min_loss_x": 2.79794383690929e-06,
+      "min_loss_c": 4.509569500437806e-06,
+      "duration": 975.5768132209778,
+      "checkpoint_dir": "/home/awills/Documents/Research/xcquinox/notebooks/checkpoints_v3b/01_pretrain/deep_combined_attn"
+    }
+  ],
+  "failed_details": [],
+  "timestamp": "2026-02-03T18:58:15.763750"
+}

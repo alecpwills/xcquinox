@@ -446,80 +446,148 @@ def eval_xc_gga_j(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbo
     return exc, vxc, fxc, kxc
 
 
+def _eval_xc_gga_j2_unpol(xcmodel, rhosig):
+    """Helper for unpolarized eval_xc_gga_j2. No JIT - let outer loss handle tracing."""
+    # Get the single-point evaluation function from the model
+    eval_point = xcmodel._eval_single_point
+
+    # Compute epsilon
+    epsilon = jax.vmap(eval_point)(rhosig)
+
+    # Compute gradient per point: d epsilon / d [rho, sigma]
+    grad_fn = jax.grad(eval_point)
+    v1 = jax.vmap(grad_fn)(rhosig)  # Shape (N, 2)
+
+    # Compute Hessian per point
+    hess_fn = jax.hessian(eval_point)
+    v2 = jax.vmap(hess_fn)(rhosig)  # Shape (N, 2, 2)
+
+    return epsilon, v1, v2
+
+
+def _eval_xc_gga_j2_pol(xcmodel, rhosig_pol):
+    """Helper for polarized eval_xc_gga_j2. No JIT - let outer loss handle tracing."""
+    from xcquinox.utils import lda_x
+    from xcquinox.xc import lda_c_pw
+
+    # For polarized, we need a wrapper that handles the 5-input format
+    def eval_point_pol(point):
+        rho_a, rho_b = point[0], point[1]
+        sigma_aa, sigma_ab, sigma_bb = point[2], point[3], point[4]
+
+        rho = rho_a + rho_b
+        sigma = sigma_aa + 2*sigma_ab + sigma_bb
+
+        ex_lda = lda_x(rho)
+        ec_pw92 = lda_c_pw(rho_a, rho_b)
+
+        net_input = jnp.array([rho, sigma])
+        # Force scalar output using sum (works during JAX tracing)
+        Fx = jnp.sum(xcmodel.xnet(net_input))
+        Fc = jnp.sum(xcmodel.cnet(net_input))
+
+        rho_safe = jnp.maximum(rho, 1e-18)
+        epsilon = rho_safe * (ex_lda * Fx + ec_pw92 * Fc)
+        return epsilon
+
+    # Compute epsilon
+    epsilon = jax.vmap(eval_point_pol)(rhosig_pol)
+
+    # Compute gradient per point
+    grad_fn = jax.grad(eval_point_pol)
+    v1 = jax.vmap(grad_fn)(rhosig_pol)  # Shape (N, 5)
+
+    # Compute Hessian per point
+    hess_fn = jax.hessian(eval_point_pol)
+    v2 = jax.vmap(hess_fn)(rhosig_pol)  # Shape (N, 5, 5)
+
+    return epsilon, v1, v2
+
+
 def eval_xc_gga_j2(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None,
                    xcmodel=None):
     '''
     Evaluate GGA exchange-correlation functional using a combined XC model.
 
-    Similar to eval_xc_gga_j but accepts a combined xcmodel (e.g., RXCModel_GGA)
-    that computes epsilon directly instead of separate X and C networks.
+    Handles both spin-polarized and unpolarized cases.
+    Uses vmap internally for per-grid-point evaluation.
 
-    :param xc_code: XC functional code string (ignored, xcmodel is used instead)
-    :type xc_code: str
-    :param rho: Density and gradient arrays with shape (4, N) or (2, N)
-    :type rho: numpy.ndarray or jax.Array
-    :param spin: Spin polarization flag (0 for unpolarized), defaults to 0
-    :type spin: int, optional
-    :param relativity: Relativity flag (unused), defaults to 0
-    :type relativity: int, optional
-    :param deriv: Derivative order to compute, defaults to 1
-    :type deriv: int, optional
-    :param omega: Range-separation parameter (unused), defaults to None
-    :type omega: float, optional
-    :param verbose: Verbosity level (unused), defaults to None
-    :type verbose: int, optional
-    :param xcmodel: Combined XC model that computes epsilon(rho, sigma)
-    :type xcmodel: eqx.Module
-    :return: Tuple of (exc, vxc, fxc, kxc)
-    :rtype: tuple
+    :param xc_code: XC functional code (ignored)
+    :param rho: Density and gradients from PySCF. For unpolarized: (4, N) array.
+                For polarized: tuple of (rho_a, rho_b) each (4, N).
+    :param spin: Spin polarization flag
+    :param xcmodel: Combined XC model (RXCModel_GGA)
+    :return: (exc, vxc, fxc, kxc)
     '''
-    # we only expect there to be a rho0 array, but I unpack it as (rho, deriv) here to be in line with the
-    # pyscf example -- the size of the 'rho' array depends on the xc type (LDA, GGA, etc.)
-    # so since LDA calculation, check for size first.
+    # Detect if spin-polarized by checking if rho is a tuple/list
     try:
+        # Try unpolarized first
         rho0, dx, dy, dz = rho[:4]
-        sigma = jnp.array(dx**2+dy**2+dz**2)
-    except:
-        rho0, drho = rho[:4]
-        sigma = jnp.array(drho**2)
-    rho0 = jnp.array(rho0)
-    # sigma = jnp.array(dx**2+dy**2+dz**2)
-    # print('DEBUG eval_xc_gga_j: rho0/sigma shapes: ', rho0.shape, sigma.shape)
-    # rhosig = (rho0, sigma)
-    rhosig = jnp.stack([rho0, sigma], axis=1)
-    print(rhosig.shape)
-    # calculate the "custom" energy with rho -- THIS IS e
-    # cast back to np.array since that's what pyscf works with
-    # pass as tuple -- (rho, sigma)
-    exc = jax.vmap(xcmodel)(rhosig)
-    exc = jnp.array(exc)/rho0
-    # exc = jnp.array(jax.vmap(xcmodel)( rhosig ) )/rho0
-    # print('exc shape = {}'.format(exc.shape))
-    # first order derivatives w.r.t. rho and sigma
-    vrho_f = eqx.filter_grad(xcmodel)
-    vrhosigma = jnp.array(jax.vmap(vrho_f)(rhosig))
-    # print('vrhosigma shape:', vrhosigma.shape)
-    vxc = (vrhosigma[:, 0], vrhosigma[:, 1], None, None)
+        sigma = jnp.array(dx**2 + dy**2 + dz**2)
+        rho0 = jnp.array(rho0)
+        is_polarized = False
+    except (ValueError, TypeError):
+        # Spin-polarized: rho = [rho_a, rho_b]
+        rho_a, rho_b = rho
+        rho0a, dxa, dya, dza = rho_a[:4]
+        rho0b, dxb, dyb, dzb = rho_b[:4]
 
-    # v2_f = eqx.filter_hessian(derivable_custom_pbe_epsilon)
-    v2_f = jax.hessian(xcmodel)
-    # v2_f = jax.hessian(custom_pbe_epsilon, argnums=[0, 1])
-    v2 = jnp.array(jax.vmap(v2_f)(rhosig))
-    print('v2 shape', v2.shape)
-    v2rho2 = v2[:, 0, 0]
-    v2rhosigma = v2[:, 0, 1]
-    v2sigma2 = v2[:, 1, 1]
-    v2lapl2 = None
-    vtau2 = None
-    v2rholapl = None
-    v2rhotau = None
-    v2lapltau = None
-    v2sigmalapl = None
-    v2sigmatau = None
-    # 2nd order functional derivative
-    fxc = (v2rho2, v2rhosigma, v2sigma2, v2lapl2, vtau2, v2rholapl, v2rhotau, v2lapltau, v2sigmalapl, v2sigmatau)
-    # 3rd order
-    kxc = None
+        rho0 = rho0a + rho0b
+        sigma_aa = dxa**2 + dya**2 + dza**2
+        sigma_ab = dxa*dxb + dya*dyb + dza*dzb
+        sigma_bb = dxb**2 + dyb**2 + dzb**2
+        is_polarized = True
+
+    if not is_polarized:
+        # ============ UNPOLARIZED CASE ============
+        rhosig = jnp.stack([rho0, sigma], axis=1)  # Shape (N, 2)
+
+        epsilon, v1, v2 = _eval_xc_gga_j2_unpol(xcmodel, rhosig)
+        exc = epsilon / (rho0 + 1e-18)
+
+        vrho = v1[:, 0]
+        vsigma = v1[:, 1]
+        vxc = (vrho, vsigma, None, None)
+
+        v2rho2 = v2[:, 0, 0]
+        v2rhosigma = v2[:, 0, 1]
+        v2sigma2 = v2[:, 1, 1]
+
+        fxc = (v2rho2, v2rhosigma, v2sigma2,
+               None, None, None, None, None, None, None)
+        kxc = None
+
+    else:
+        # ============ POLARIZED CASE ============
+        rhosig_pol = jnp.stack([rho0a, rho0b, sigma_aa, sigma_ab, sigma_bb], axis=1)
+
+        epsilon, v1, v2 = _eval_xc_gga_j2_pol(xcmodel, rhosig_pol)
+        exc = epsilon / (rho0 + 1e-18)
+
+        # vrho = [vrho_a, vrho_b]
+        vrho = jnp.stack([v1[:, 0], v1[:, 1]], axis=1)
+        # vsigma = [vsigma_aa, vsigma_ab, vsigma_bb]
+        vsigma = jnp.stack([v1[:, 2], v1[:, 3], v1[:, 4]], axis=1)
+        vxc = (vrho, vsigma, None, None)
+
+        # v2rho2 = [aa, ab, bb]
+        v2rho2 = jnp.stack([v2[:, 0, 0], v2[:, 0, 1], v2[:, 1, 1]], axis=1)
+
+        # v2rhosigma = [a-aa, a-ab, a-bb, b-aa, b-ab, b-bb]
+        v2rhosigma = jnp.stack([
+            v2[:, 0, 2], v2[:, 0, 3], v2[:, 0, 4],
+            v2[:, 1, 2], v2[:, 1, 3], v2[:, 1, 4]
+        ], axis=1)
+
+        # v2sigma2 = [aa-aa, aa-ab, aa-bb, ab-ab, ab-bb, bb-bb]
+        v2sigma2 = jnp.stack([
+            v2[:, 2, 2], v2[:, 2, 3], v2[:, 2, 4],
+            v2[:, 3, 3], v2[:, 3, 4], v2[:, 4, 4]
+        ], axis=1)
+
+        fxc = (v2rho2, v2rhosigma, v2sigma2,
+               None, None, None, None, None, None, None)
+        kxc = None
 
     return exc, vxc, fxc, kxc
 
@@ -706,3 +774,368 @@ def eval_xc_gga_pol(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, ver
             fxc = [i.T for i in fxc if type(i) == type(jnp.array([1]))]
 
     return exc, vxc, fxc, kxc
+
+
+# =============================================================================
+# Extended eval_xc functions with additional feature support
+# =============================================================================
+
+def eval_xc_nn_gga(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None,
+                   xcmodel=None,
+                   dm=None, overlap=None,
+                   grid_coords=None, nuclear_coords=None, nuclear_charges=None,
+                   use_laplacian=False, use_dm_features=False, use_cusp=False):
+    """
+    Evaluate GGA exchange-correlation using a neural network model with extended features.
+
+    This is the primary eval_xc function for use with extended GGA neural network
+    functionals. It supports both spin-polarized and unpolarized calculations,
+    and can optionally include:
+
+    - Reduced Laplacian (q) descriptor
+    - Density matrix features (correlation indicators)
+    - Cusp proximity features (nuclear position information)
+
+    The function computes exc (XC energy density per particle), vxc (first derivatives),
+    and fxc (second derivatives) suitable for use with PySCF's DFT framework.
+
+    :param xc_code: XC functional code string (ignored, xcmodel is used instead)
+    :type xc_code: str
+    :param rho: Density and gradient arrays. For GGA:
+        - Unpolarized: shape (4, N) or (5, N) with laplacian = [rho, dx, dy, dz, (lapl)]
+        - Polarized: shape (2, 4, N) or (2, 5, N) = [[rho_a, dx_a, ...], [rho_b, dx_b, ...]]
+    :type rho: jnp.ndarray
+    :param spin: Spin polarization flag (0 for unpolarized), defaults to 0
+    :type spin: int, optional
+    :param relativity: Relativity flag (unused), defaults to 0
+    :type relativity: int, optional
+    :param deriv: Derivative order to compute, defaults to 1
+    :type deriv: int, optional
+    :param omega: Range-separation parameter (unused), defaults to None
+    :type omega: float, optional
+    :param verbose: Verbosity level, defaults to None
+    :type verbose: int, optional
+    :param xcmodel: Combined XC model (e.g., RXCModel_GGA) that computes epsilon(inputs)
+    :type xcmodel: eqx.Module
+    :param dm: Density matrix for DM feature computation, shape (nao, nao)
+    :type dm: jnp.ndarray, optional
+    :param overlap: Overlap matrix S for DM feature computation, shape (nao, nao)
+    :type overlap: jnp.ndarray, optional
+    :param grid_coords: Grid point coordinates for cusp features, shape (N, 3)
+    :type grid_coords: jnp.ndarray, optional
+    :param nuclear_coords: Nuclear positions for cusp features, shape (M, 3)
+    :type nuclear_coords: jnp.ndarray, optional
+    :param nuclear_charges: Nuclear charges for cusp features, shape (M,)
+    :type nuclear_charges: jnp.ndarray, optional
+    :param use_laplacian: Whether model expects Laplacian input, defaults to False
+    :type use_laplacian: bool, optional
+    :param use_dm_features: Whether model expects DM features, defaults to False
+    :type use_dm_features: bool, optional
+    :param use_cusp: Whether model expects cusp features, defaults to False
+    :type use_cusp: bool, optional
+    :return: Tuple of (exc, vxc, fxc, kxc) where:
+        - exc: XC energy density per particle, shape (N,)
+        - vxc: First derivatives (vrho, vsigma, vlapl, vtau)
+        - fxc: Second derivatives tuple
+        - kxc: Third derivatives (None)
+    :rtype: tuple
+
+    Example usage::
+
+        from functools import partial
+        from xcquinox.pyscf import eval_xc_nn_gga
+
+        # Create custom eval_xc with your model
+        custom_eval_xc = partial(
+            eval_xc_nn_gga,
+            xcmodel=my_xcmodel,
+            use_laplacian=True,
+            use_dm_features=True,
+            dm=dm_matrix,
+            overlap=S_matrix
+        )
+
+        # Use with PySCF
+        mf = dft.RKS(mol)
+        mf.define_xc_(custom_eval_xc, 'GGA')
+        mf.kernel()
+    """
+    # Import features module for DM and cusp computations
+    from xcquinox.features import compute_dm_features_array, compute_cusp_descriptor
+
+    # Determine if spin-polarized based on rho shape
+    rho_shape = rho.shape
+    is_polarized = len(rho_shape) == 3
+
+    if not is_polarized:
+        # =====================================================================
+        # UNPOLARIZED CASE
+        # =====================================================================
+        rho0 = jnp.array(rho[0])
+        dx, dy, dz = rho[1], rho[2], rho[3]
+        sigma = jnp.array(dx**2 + dy**2 + dz**2)
+
+        # Extract Laplacian if available and requested
+        laplacian = None
+        if use_laplacian:
+            if rho.shape[0] >= 5:
+                laplacian = jnp.array(rho[4])
+            else:
+                # Approximate Laplacian as zero if not provided
+                laplacian = jnp.zeros_like(rho0)
+                if verbose:
+                    print("Warning: use_laplacian=True but Laplacian not in rho array, using zeros")
+
+        # Compute DM features if requested
+        dm_features = None
+        if use_dm_features:
+            if dm is not None and overlap is not None:
+                dm_feat_array = compute_dm_features_array(dm, overlap)
+                # Broadcast to all grid points (same global features)
+                n_grid = rho0.shape[0]
+                dm_features = jnp.tile(dm_feat_array, (n_grid, 1))  # (N, 3)
+            else:
+                if verbose:
+                    print("Warning: use_dm_features=True but dm/overlap not provided")
+                dm_features = jnp.zeros((rho0.shape[0], 3))
+
+        # Compute cusp features if requested
+        cusp_features = None
+        if use_cusp:
+            if grid_coords is not None and nuclear_coords is not None and nuclear_charges is not None:
+                cusp_features = compute_cusp_descriptor(grid_coords, nuclear_coords, nuclear_charges)
+            else:
+                if verbose:
+                    print("Warning: use_cusp=True but coordinates not provided")
+                cusp_features = jnp.zeros((rho0.shape[0], 2))
+
+        # Build input array for the model
+        # Base: [rho, sigma] per grid point
+        input_list = [rho0, sigma]
+
+        if use_laplacian:
+            input_list.append(laplacian)
+        if use_dm_features:
+            for i in range(dm_features.shape[1]):
+                input_list.append(dm_features[:, i])
+        if use_cusp:
+            for i in range(cusp_features.shape[1]):
+                input_list.append(cusp_features[:, i])
+
+        # Stack into (N, n_features) array
+        inputs = jnp.stack(input_list, axis=1)
+
+        # Compute epsilon = rho * exc using vmap
+        epsilon = jax.vmap(xcmodel)(inputs)
+        exc = epsilon / (rho0 + 1e-18)
+
+        # Compute first derivatives via autodiff
+        grad_fn = eqx.filter_grad(xcmodel)
+        grads = jax.vmap(grad_fn)(inputs)
+
+        # Extract vrho and vsigma (derivatives w.r.t. rho and sigma)
+        vrho = grads[:, 0]
+        vsigma = grads[:, 1]
+        vxc = (vrho, vsigma, None, None)
+
+        # Compute second derivatives (Hessian)
+        hess_fn = jax.hessian(xcmodel)
+        hess = jax.vmap(hess_fn)(inputs)
+
+        v2rho2 = hess[:, 0, 0]
+        v2rhosigma = hess[:, 0, 1]
+        v2sigma2 = hess[:, 1, 1]
+
+        fxc = (v2rho2, v2rhosigma, v2sigma2, None, None, None, None, None, None, None)
+        kxc = None
+
+    else:
+        # =====================================================================
+        # SPIN-POLARIZED CASE
+        # =====================================================================
+        rho_up, rho_dn = rho[0], rho[1]
+        rho0_up = jnp.array(rho_up[0])
+        rho0_dn = jnp.array(rho_dn[0])
+        rho0 = rho0_up + rho0_dn
+
+        # Gradients
+        dx_up, dy_up, dz_up = rho_up[1], rho_up[2], rho_up[3]
+        dx_dn, dy_dn, dz_dn = rho_dn[1], rho_dn[2], rho_dn[3]
+
+        # Sigma components: sigma_uu, sigma_ud, sigma_dd
+        sigma_uu = dx_up**2 + dy_up**2 + dz_up**2
+        sigma_ud = dx_up*dx_dn + dy_up*dy_dn + dz_up*dz_dn
+        sigma_dd = dx_dn**2 + dy_dn**2 + dz_dn**2
+        sigma_total = sigma_uu + 2*sigma_ud + sigma_dd
+
+        # For networks not designed for spin, use total density and sigma
+        # This is a simplification - proper spin handling requires spin-dependent networks
+
+        # Extract Laplacian if available
+        laplacian = None
+        if use_laplacian:
+            if rho_up.shape[0] >= 5 and rho_dn.shape[0] >= 5:
+                laplacian = jnp.array(rho_up[4] + rho_dn[4])
+            else:
+                laplacian = jnp.zeros_like(rho0)
+
+        # DM features (same for all grid points)
+        dm_features = None
+        if use_dm_features:
+            if dm is not None and overlap is not None:
+                dm_feat_array = compute_dm_features_array(dm, overlap)
+                n_grid = rho0.shape[0]
+                dm_features = jnp.tile(dm_feat_array, (n_grid, 1))
+            else:
+                dm_features = jnp.zeros((rho0.shape[0], 3))
+
+        # Cusp features
+        cusp_features = None
+        if use_cusp:
+            if grid_coords is not None and nuclear_coords is not None and nuclear_charges is not None:
+                cusp_features = compute_cusp_descriptor(grid_coords, nuclear_coords, nuclear_charges)
+            else:
+                cusp_features = jnp.zeros((rho0.shape[0], 2))
+
+        # Build model that takes spin-summed inputs
+        def make_spin_summed_model(model):
+            def wrapped(arr):
+                # arr contains: [rho_up, rho_dn, sigma_uu, sigma_ud, sigma_dd, ...]
+                rho_u, rho_d = arr[0], arr[1]
+                sig_uu, sig_ud, sig_dd = arr[2], arr[3], arr[4]
+
+                rho_total = rho_u + rho_d
+                sigma_total = sig_uu + 2*sig_ud + sig_dd
+
+                # Build input for base model
+                model_input = [rho_total, sigma_total]
+                idx = 5
+
+                # Optional features are appended after spin quantities
+                n_extra = arr.shape[0] - 5
+                if n_extra > 0:
+                    for i in range(n_extra):
+                        model_input.append(arr[5 + i])
+
+                model_input = jnp.array(model_input)
+                return model(model_input)
+            return wrapped
+
+        wrapped_model = make_spin_summed_model(xcmodel)
+
+        # Build input array
+        input_list = [rho0_up, rho0_dn, sigma_uu, sigma_ud, sigma_dd]
+
+        if use_laplacian:
+            input_list.append(laplacian)
+        if use_dm_features:
+            for i in range(dm_features.shape[1]):
+                input_list.append(dm_features[:, i])
+        if use_cusp:
+            for i in range(cusp_features.shape[1]):
+                input_list.append(cusp_features[:, i])
+
+        inputs = jnp.stack(input_list, axis=1)
+
+        # Compute epsilon and exc
+        epsilon = jax.vmap(wrapped_model)(inputs)
+        exc = epsilon / (rho0 + 1e-18)
+
+        # First derivatives
+        grad_fn = jax.grad(wrapped_model)
+        grads = jax.vmap(grad_fn)(inputs)
+
+        # vrho = [vrho_up, vrho_dn]
+        vrho = jnp.stack([grads[:, 0], grads[:, 1]], axis=0)
+        # vsigma = [vsigma_uu, vsigma_ud, vsigma_dd]
+        vsigma = jnp.stack([grads[:, 2], grads[:, 3], grads[:, 4]], axis=0)
+
+        vxc = (vrho.T, vsigma.T)
+
+        # Second derivatives
+        hess_fn = jax.hessian(wrapped_model)
+        hess = jax.vmap(hess_fn)(inputs)
+
+        # v2rho2 = [v2rho_uu, v2rho_ud, v2rho_dd]
+        v2rho2 = jnp.stack([hess[:, 0, 0], hess[:, 0, 1], hess[:, 1, 1]], axis=0)
+
+        # v2rhosigma has 6 components
+        v2rhosigma = jnp.stack([
+            hess[:, 0, 2], hess[:, 0, 3], hess[:, 0, 4],
+            hess[:, 1, 2], hess[:, 1, 3], hess[:, 1, 4]
+        ], axis=0)
+
+        # v2sigma2 has 6 components
+        v2sigma2 = jnp.stack([
+            hess[:, 2, 2], hess[:, 2, 3], hess[:, 2, 4],
+            hess[:, 3, 3], hess[:, 3, 4], hess[:, 4, 4]
+        ], axis=0)
+
+        fxc = (v2rho2.T, v2rhosigma.T, v2sigma2.T, None, None, None, None, None, None, None)
+        kxc = None
+
+    return exc, vxc, fxc, kxc
+
+
+def make_eval_xc_nn_gga(xcmodel,
+                        use_laplacian=False,
+                        use_dm_features=False,
+                        use_cusp=False,
+                        dm=None,
+                        overlap=None,
+                        grid_coords=None,
+                        nuclear_coords=None,
+                        nuclear_charges=None):
+    """
+    Factory function to create a configured eval_xc function for PySCF.
+
+    This is a convenience wrapper that returns a partial function with all
+    the model and feature settings pre-configured, ready to be passed to
+    mf.define_xc_().
+
+    :param xcmodel: Combined XC model (e.g., RXCModel_GGA)
+    :type xcmodel: eqx.Module
+    :param use_laplacian: Whether model expects Laplacian input
+    :type use_laplacian: bool
+    :param use_dm_features: Whether model expects DM features
+    :type use_dm_features: bool
+    :param use_cusp: Whether model expects cusp features
+    :type use_cusp: bool
+    :param dm: Density matrix for DM features (can be updated later)
+    :type dm: jnp.ndarray, optional
+    :param overlap: Overlap matrix for DM features
+    :type overlap: jnp.ndarray, optional
+    :param grid_coords: Grid coordinates for cusp features
+    :type grid_coords: jnp.ndarray, optional
+    :param nuclear_coords: Nuclear positions for cusp features
+    :type nuclear_coords: jnp.ndarray, optional
+    :param nuclear_charges: Nuclear charges for cusp features
+    :type nuclear_charges: jnp.ndarray, optional
+    :return: Configured eval_xc function
+    :rtype: callable
+
+    Example::
+
+        eval_xc_custom = make_eval_xc_nn_gga(
+            xcmodel=my_model,
+            use_laplacian=True,
+            use_cusp=True,
+            nuclear_coords=mol.atom_coords(),
+            nuclear_charges=mol.atom_charges()
+        )
+
+        mf = dft.RKS(mol)
+        mf.define_xc_(eval_xc_custom, 'GGA')
+    """
+    return partial(
+        eval_xc_nn_gga,
+        xcmodel=xcmodel,
+        use_laplacian=use_laplacian,
+        use_dm_features=use_dm_features,
+        use_cusp=use_cusp,
+        dm=dm,
+        overlap=overlap,
+        grid_coords=grid_coords,
+        nuclear_coords=nuclear_coords,
+        nuclear_charges=nuclear_charges
+    )

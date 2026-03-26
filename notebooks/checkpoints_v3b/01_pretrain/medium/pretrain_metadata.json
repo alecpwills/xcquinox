@@ -1,0 +1,16 @@
+{
+  "arch_name": "medium",
+  "pretrain_steps": 1000,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss_x": 7.057047336810883e-05,
+  "final_loss_c": 0.00011643430068814138,
+  "min_loss_x": 7.057047336810883e-05,
+  "min_loss_c": 0.00011643430068814138,
+  "use_cusp": false,
+  "use_dm": false,
+  "timestamp": "2026-02-03T18:22:08.324861",
+  "duration_seconds": 767.7924971580505
+}

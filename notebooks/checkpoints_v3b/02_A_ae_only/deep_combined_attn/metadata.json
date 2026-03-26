@@ -1,0 +1,13 @@
+{
+  "arch_name": "deep_combined_attn",
+  "approach_name": "A_ae_only",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 3.385385123416522e-05,
+  "min_loss": 3.385385123416522e-05,
+  "timestamp": "2026-02-03T19:25:56.210978",
+  "duration_seconds": 96.7317910194397
+}

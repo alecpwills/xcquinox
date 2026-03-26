@@ -6,7 +6,7 @@ import jax
 import os
 from jax.interpreters import xla
 import jax.numpy as jnp
-from typing import Callable
+from typing import Callable, Optional
 import inspect
 import warnings
 from functools import partial
@@ -24,10 +24,12 @@ class xcTrainer(eqx.Module):
     do_jit: bool
     opt_state: tuple
     serialize_every: int
+    checkpoint_dir: str
     logfile: str
     loss_v: float
+    progress_callback: Optional[Callable] = eqx.field(static=True)
 
-    def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True, serialize_every=1, logfile=''):
+    def __init__(self, model, optim, loss, steps=50, print_every=1, clear_every=1, memory_profile=False, verbose=False, do_jit=True, serialize_every=10, checkpoint_dir='', logfile='', progress_callback=None):
         '''
         The base xcTrainer class, whose forward pass computes the training loop.
 
@@ -49,8 +51,12 @@ class xcTrainer(eqx.Module):
         :type verbose: bool, optional
         :param do_jit: Controls whether the update function is jitted or not, useful for debugging if False, defaults to True
         :type do_jit: bool, optional
-        :param serialize_every: Controls how often the checkpoint network is written to disk, defaults to 1
+        :param serialize_every: Controls how often the checkpoint network is written to disk, defaults to 10
         :type serialize_every: int, optional
+        :param checkpoint_dir: Directory to save checkpoints to. If empty, saves to current directory, defaults to ''
+        :type checkpoint_dir: str, optional
+        :param progress_callback: Optional callback function called each epoch with (step, total_steps, loss)
+        :type progress_callback: Callable, optional
         '''
         super().__init__()
         self.model = model
@@ -63,30 +69,29 @@ class xcTrainer(eqx.Module):
         self.verbose = verbose
         self.do_jit = do_jit
         self.serialize_every = serialize_every
+        self.checkpoint_dir = checkpoint_dir
         self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array))
         self.logfile = logfile
         self.loss_v = 0
+        self.progress_callback = progress_callback
 
-    def __call__(self, epoch_batch_len, model, *loss_input_lists):
+    def __call__(self, epoch_batch_len, *loss_input_lists):
         '''
         Forward pass of the xcTrainer object, which goes through the training cycle.
 
         *loss_input_lists are positional arguments, each a list of length [epoch_batch_len elements], corresponding to the proper input order and values for the self.loss function
         I.e., for the E_loss object, these would be [density matrix list], [reference energy list], [ao_eval list], [grid_weight list]
 
-        .. todo: Remove model from inputs, not used since retrieved from self at first iteration
-
         :param epoch_batch_len: The number of batches in a given epoch (i.e., the number of molecules one is training on that are looped over)
         :type epoch_batch_len: int
-        :param model: The baseline model to update in the training process
-        :type model: xcquinox.xc.eXC
         :return: The updated model after the training cycle completes and list of epoch losses
         :rtype: tuple(xcquinox.xc.eXC, list[float])
         '''
         BEST_LOSS = 1e10
         losses = []  # Track epoch losses as Python floats (not JAX arrays)
         for step in range(self.steps):
-            jax.debug.print('Epoch {}'.format(step))
+            if self.verbose:
+                jax.debug.print('Epoch {}'.format(step))
             epoch_loss = 0
             if step == 0 and self.logfile:
                 with open(self.logfile+'.dat', 'w') as f:
@@ -100,12 +105,14 @@ class xcTrainer(eqx.Module):
             else:
                 fmake_step = self.make_step
             if step == 0:
-                print('Step = 0: initializing inp_model and inp_opt_state.')
+                if self.verbose:
+                    print('Step = 0: initializing inp_model and inp_opt_state.', file=sys.stderr)
                 inp_model = self.model
                 start_model = self.model
                 inp_opt_state = self.opt_state
             for idx in range(epoch_batch_len):
-                jax.debug.print('Epoch {} :: Batch {}/{}'.format(step, idx+1, epoch_batch_len))
+                if self.verbose:
+                    jax.debug.print('Epoch {} :: Batch {}/{}'.format(step, idx+1, epoch_batch_len))
 
                 # loops over every iterable in loss_input_lists, selecting one batch's input data
                 # assumes separate lists, each having inputs for multiple cases in the training set
@@ -118,7 +125,8 @@ class xcTrainer(eqx.Module):
                     this_loss.block_until_ready()
                     jax.profiler.save_device_memory_profile(f"memory{step}_{idx}.prof")
 
-                jax.debug.print('Batch Loss = {}'.format(this_loss))
+                if self.verbose:
+                    jax.debug.print('Batch Loss = {}'.format(this_loss))
                 if self.logfile:
                     with open(self.logfile+'batch.dat', 'a') as f:
                         f.write(f'{step}\t{idx}\t{this_loss}\t{BEST_LOSS}\n')
@@ -131,8 +139,16 @@ class xcTrainer(eqx.Module):
             object.__setattr__(self, 'loss_v', epoch_loss_val)
             losses.append(epoch_loss_val)  # Append Python float, not JAX array
 
-            if ((step % self.serialize_every) == 0) and (epoch_loss.item() < BEST_LOSS):
-                eqx.tree_serialise_leaves('xc.eqx.{}'.format(step), start_model)
+            # Call progress callback if provided
+            if self.progress_callback is not None:
+                try:
+                    self.progress_callback(step + 1, self.steps, epoch_loss_val)
+                except Exception:
+                    pass  # Don't let callback errors stop training
+
+            if (self.serialize_every > 0) and (self.serialize_every <= self.steps) and ((step % self.serialize_every) == 0) and (epoch_loss.item() < BEST_LOSS):
+                checkpoint_path = os.path.join(self.checkpoint_dir, 'xc.eqx.{}'.format(step)) if self.checkpoint_dir else 'xc.eqx.{}'.format(step)
+                eqx.tree_serialise_leaves(checkpoint_path, start_model)
                 BEST_LOSS = epoch_loss.item()
 
             # this will persist until next pass
@@ -140,7 +156,7 @@ class xcTrainer(eqx.Module):
             # not the updated one.
             start_model = inp_model
 
-            if ((step % self.print_every) == 0) or (step == self.steps - 1):
+            if self.verbose and (((step % self.print_every) == 0) or (step == self.steps - 1)):
                 jax.debug.print(
                     f"{step}, epoch_train_loss={epoch_loss}"
                 )
@@ -403,8 +419,10 @@ class Optimizer(eqx.Module):
     mols: list
     refs: jnp.array
     loss: Callable
+    verbose: bool
+    progress_callback: Optional[Callable] = eqx.field(static=True)
 
-    def __init__(self, model, optim, mols, refs, loss, steps=1000, print_every=100):
+    def __init__(self, model, optim, mols, refs, loss, steps=1000, print_every=100, verbose=False, progress_callback=None):
         '''
         The Pretrainer object aids in the initial pre-training of enhancement factor networks to have a more physical starting point for further network optimization. This class is meant to pre-train a randomly initialized network to fit the values of a specific XC functional's enhancement factor (either X or C, in principle it could also be a combined XC enhancement facator)
 
@@ -432,6 +450,8 @@ class Optimizer(eqx.Module):
         self.print_every = print_every
         self.opt_state = self.optim.init(eqx.filter(self.model, eqx.is_array))
         self.loss = loss
+        self.verbose = verbose
+        self.progress_callback = progress_callback
 
     def __call__(self):
         '''
@@ -448,8 +468,15 @@ class Optimizer(eqx.Module):
             loss, this_model, this_opt_state = self.make_step(this_model, self.mols, self.refs, this_opt_state)
             lossi = loss.item()
             losses.append(lossi)
-            if epoch % self.print_every == 0:
-                print(f'Epoch {epoch}: Loss = {lossi}')
+            if self.verbose and epoch % self.print_every == 0:
+                print(f'Epoch {epoch}: Loss = {lossi}', file=sys.stderr)
+
+            # Call progress callback if provided
+            if self.progress_callback is not None:
+                try:
+                    self.progress_callback(epoch + 1, self.steps, lossi)
+                except Exception:
+                    pass  # Don't let callback errors stop training
 
         return this_model, losses
 

@@ -1,0 +1,16 @@
+{
+  "arch_name": "deep_attn",
+  "pretrain_steps": 1000,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss_x": 4.9870480334233694e-05,
+  "final_loss_c": 9.651578822143045e-05,
+  "min_loss_x": 4.9870480334233694e-05,
+  "min_loss_c": 9.651578822143045e-05,
+  "use_cusp": false,
+  "use_dm": false,
+  "timestamp": "2026-02-03T18:42:31.760410",
+  "duration_seconds": 1342.5141081809998
+}

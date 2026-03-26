@@ -1,0 +1,13 @@
+{
+  "arch_name": "deep_cusp_attn",
+  "approach_name": "D2_delta_dm",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 0.014640290578708932,
+  "min_loss": 0.014637914250009185,
+  "timestamp": "2026-02-03T19:49:14.916495",
+  "duration_seconds": 200.37746858596802
+}

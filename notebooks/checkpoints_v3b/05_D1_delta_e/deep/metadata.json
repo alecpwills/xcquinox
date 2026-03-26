@@ -1,0 +1,13 @@
+{
+  "arch_name": "deep",
+  "approach_name": "D1_delta_e",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 1.1675744252207863e-06,
+  "min_loss": 1.1675744252207863e-06,
+  "timestamp": "2026-02-03T19:27:27.065996",
+  "duration_seconds": 77.9563341140747
+}

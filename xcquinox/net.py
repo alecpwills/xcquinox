@@ -579,8 +579,10 @@ class GGA_FxNet_sigma(eqx.Module):
         '''
         # here, assume the inputs is [rho, sigma] and select the appropriate input
         # takes forever if inputs[1] tanh input has extended shape , i.e. (1,1) as opposed to scalar shape (1,)
-        rho = inputs[0]
-        sigma = inputs[1]
+        rho = jnp.maximum(self.lower_rho_cutoff, inputs[0])  # Prevents division by 0
+        rho = rho.flatten()
+        sigma = jnp.maximum(self.lower_rho_cutoff, inputs[1])  # Prevents sqrt of negative
+        sigma = sigma.flatten()
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
@@ -804,11 +806,15 @@ class GGA_FxNet_sigma_transform(eqx.Module):
         '''
         rho = inputs[0]
         sigma = inputs[1]
-        k_F = (3 * jnp.pi**2 * rho)**(1/3)
-        s = jnp.sqrt(sigma) / (2 * k_F * rho)
+
+        # Apply cutoff to prevent division by zero and numerical instability
+        rho_safe = jnp.maximum(rho, self.lower_rho_cutoff)
+        k_F = (3 * jnp.pi**2 * rho_safe)**(1/3)
+        s = jnp.sqrt(jnp.maximum(sigma, 0.0)) / (2 * k_F * rho_safe)
         s = s.flatten()
 
-        # Log-transform the gradient descriptor
+        # Log-transform the gradient descriptor for numerical stability
+        # This maps s ∈ [0, ∞) to x1 ∈ [0, ~few] with bounded gradients
         x1 = (1 - jnp.exp(-s**2)) * jnp.log(s + 1)
 
         # The tanhterm for UEG limit behavior (when s=0, x1=0, so Fx=1)
@@ -920,12 +926,15 @@ class GGA_FcNet_sigma_transform(eqx.Module):
         '''
         rho = inputs[0].flatten()
         sigma = inputs[1]
-        k_F = (3 * jnp.pi**2 * rho)**(1/3)
-        s = jnp.sqrt(sigma) / (2 * k_F * rho)
+
+        # Apply cutoff to prevent division by zero and numerical instability
+        rho_safe = jnp.maximum(rho, self.lower_rho_cutoff)
+        k_F = (3 * jnp.pi**2 * rho_safe)**(1/3)
+        s = jnp.sqrt(jnp.maximum(sigma, 0.0)) / (2 * k_F * rho_safe)
         s = s.flatten()
 
-        # Log-transform the descriptors
-        x0 = jnp.log(rho**(1/3) + 1e-5)
+        # Log-transform the descriptors for numerical stability
+        x0 = jnp.log(rho_safe**(1/3) + 1e-5)
         x1 = (1 - jnp.exp(-s**2)) * jnp.log(s + 1)
 
         # The tanhterm for UEG limit behavior
@@ -2031,3 +2040,658 @@ def get_net(xorc, level, net_path, configfile='network.config', netfile='xc.eqx'
             print('NETFILE SPECIFIED BUT NO MATCHING FILE FOUND.')
 
     return net, params
+
+
+# =============================================================================
+# Extended GGA Networks with Optional Features
+# =============================================================================
+
+class GGA_FxNet_extended(eqx.Module):
+    """
+    Extended GGA Exchange Enhancement Factor Network.
+
+    This network extends the standard GGA_FxNet_sigma with optional support for:
+    - Extra local descriptors (reduced Laplacian q)
+    - Density matrix features (correlation indicators)
+    - Cusp information (nuclear proximity)
+
+    The base architecture remains the same (MLP with LOB constraint), but the
+    input dimension is expanded based on which features are enabled.
+
+    Input structure (per grid point):
+    - Base: [rho, sigma] -> transformed to s
+    - With Laplacian: [rho, sigma, laplacian] -> [s, q]
+    - With DM features: [rho, sigma, dm_feat1, dm_feat2, dm_feat3] -> [s, dm_feats...]
+    - With cusp: [rho, sigma, cusp_factor, log_weighted_Z] -> [s, cusp_feats...]
+
+    All combinations are supported.
+    """
+    name: str
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    lower_rho_cutoff: float
+    use_self_attention: bool
+    use_laplacian: bool
+    use_dm_features: bool
+    use_cusp: bool
+    n_dm_features: int
+    net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int,
+                 lob_lim: float = 1.804,
+                 lower_rho_cutoff: float = 1e-12,
+                 use_self_attention: bool = False,
+                 use_laplacian: bool = False,
+                 use_dm_features: bool = False,
+                 use_cusp: bool = False,
+                 n_dm_features: int = 3):
+        """
+        Constructor for extended GGA exchange enhancement factor network.
+
+        :param depth: Depth of the neural network (number of hidden layers)
+        :type depth: int
+        :param nodes: Number of nodes in each hidden layer
+        :type nodes: int
+        :param seed: Random seed for weight initialization
+        :type seed: int
+        :param lob_lim: Lieb-Oxford bound limit, defaults to 1.804
+        :type lob_lim: float, optional
+        :param lower_rho_cutoff: Cutoff to prevent division by zero, defaults to 1e-12
+        :type lower_rho_cutoff: float, optional
+        :param use_self_attention: Include self-attention layer, defaults to False
+        :type use_self_attention: bool, optional
+        :param use_laplacian: Include reduced Laplacian descriptor, defaults to False
+        :type use_laplacian: bool, optional
+        :param use_dm_features: Include density matrix features, defaults to False
+        :type use_dm_features: bool, optional
+        :param use_cusp: Include cusp proximity features, defaults to False
+        :type use_cusp: bool, optional
+        :param n_dm_features: Number of DM features if use_dm_features=True, defaults to 3
+        :type n_dm_features: int, optional
+        """
+        self.name = 'GGA_FxNet_extended'
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+        self.use_laplacian = use_laplacian
+        self.use_dm_features = use_dm_features
+        self.use_cusp = use_cusp
+        self.n_dm_features = n_dm_features
+
+        # Calculate input size based on enabled features
+        # Base: 1 (reduced gradient s)
+        in_size = 1
+        if use_laplacian:
+            in_size += 1  # reduced Laplacian q
+        if use_dm_features:
+            in_size += n_dm_features
+        if use_cusp:
+            in_size += 2  # cusp_factor, log_weighted_Z
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
+        self.net = eqx.nn.MLP(in_size=in_size,
+                              out_size=1,
+                              depth=self.depth,
+                              width_size=self.nodes,
+                              activation=jax.nn.gelu,
+                              key=keys[0])
+
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        """
+        Forward pass computing exchange enhancement factor.
+
+        The inputs array structure depends on which features are enabled:
+        - Base (no extras): [rho, sigma]
+        - With laplacian: [rho, sigma, laplacian]
+        - With DM features: [rho, sigma, (laplacian), dm_feat1, dm_feat2, ...]
+        - With cusp: [rho, sigma, (laplacian), (dm_feats), cusp_factor, log_weighted_Z]
+
+        :param inputs: Input array with density quantities and optional features
+        :type inputs: jax.Array
+        :return: Exchange enhancement factor Fx
+        :rtype: float
+        """
+        # Extract base quantities with cutoffs to prevent division by zero and sqrt of negative
+        rho = jnp.maximum(inputs[0], self.lower_rho_cutoff)
+        sigma = jnp.maximum(inputs[1], 0.0)  # sigma >= 0 for sqrt
+
+        # Compute reduced gradient s
+        k_F = (3 * jnp.pi**2 * rho)**(1/3)
+        s = jnp.sqrt(sigma) / (2 * k_F * rho)
+        s = jnp.atleast_1d(s).flatten()
+
+        # Build feature vector
+        features = [s]
+        idx = 2  # Current index in inputs
+
+        # Add reduced Laplacian if enabled
+        if self.use_laplacian:
+            laplacian = inputs[idx]
+            q = laplacian / (4 * k_F**2 * rho)  # rho already clipped above
+            q = jnp.atleast_1d(q).flatten()
+            features.append(q)
+            idx += 1
+
+        # Add DM features if enabled (these are passed through directly)
+        if self.use_dm_features:
+            dm_feats = inputs[idx:idx + self.n_dm_features]
+            dm_feats = jnp.atleast_1d(jnp.array(dm_feats)).flatten()
+            features.append(dm_feats)
+            idx += self.n_dm_features
+
+        # Add cusp features if enabled (passed through directly)
+        if self.use_cusp:
+            cusp_feats = inputs[idx:idx + 2]
+            cusp_feats = jnp.atleast_1d(jnp.array(cusp_feats)).flatten()
+            features.append(cusp_feats)
+
+        # Concatenate all features
+        netinp = jnp.concatenate(features)
+
+        # Compute tanh term for UEG limit (based on s only)
+        tanhterm = jnp.tanh(s)**2
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
+        # Apply LOB constraint and return 1 + F
+        lobterm = self.lobf(tanhterm * netterm)
+        return 1 + lobterm.squeeze()
+
+
+class GGA_FcNet_extended(eqx.Module):
+    """
+    Extended GGA Correlation Enhancement Factor Network.
+
+    This network extends the standard GGA_FcNet_sigma with optional support for:
+    - Extra local descriptors (reduced Laplacian q)
+    - Density matrix features (correlation indicators)
+    - Cusp information (nuclear proximity)
+
+    The architecture and feature handling mirrors GGA_FxNet_extended.
+    """
+    name: str
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    lower_rho_cutoff: float
+    use_self_attention: bool
+    use_laplacian: bool
+    use_dm_features: bool
+    use_cusp: bool
+    n_dm_features: int
+    net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int,
+                 lob_lim: float = 2.0,
+                 lower_rho_cutoff: float = 1e-12,
+                 use_self_attention: bool = False,
+                 use_laplacian: bool = False,
+                 use_dm_features: bool = False,
+                 use_cusp: bool = False,
+                 n_dm_features: int = 3):
+        """
+        Constructor for extended GGA correlation enhancement factor network.
+
+        :param depth: Depth of the neural network (number of hidden layers)
+        :type depth: int
+        :param nodes: Number of nodes in each hidden layer
+        :type nodes: int
+        :param seed: Random seed for weight initialization
+        :type seed: int
+        :param lob_lim: Lieb-Oxford bound limit for correlation, defaults to 2.0
+        :type lob_lim: float, optional
+        :param lower_rho_cutoff: Cutoff to prevent division by zero, defaults to 1e-12
+        :type lower_rho_cutoff: float, optional
+        :param use_self_attention: Include self-attention layer, defaults to False
+        :type use_self_attention: bool, optional
+        :param use_laplacian: Include reduced Laplacian descriptor, defaults to False
+        :type use_laplacian: bool, optional
+        :param use_dm_features: Include density matrix features, defaults to False
+        :type use_dm_features: bool, optional
+        :param use_cusp: Include cusp proximity features, defaults to False
+        :type use_cusp: bool, optional
+        :param n_dm_features: Number of DM features if use_dm_features=True, defaults to 3
+        :type n_dm_features: int, optional
+        """
+        self.name = 'GGA_FcNet_extended'
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+        self.use_laplacian = use_laplacian
+        self.use_dm_features = use_dm_features
+        self.use_cusp = use_cusp
+        self.n_dm_features = n_dm_features
+
+        # Calculate input size based on enabled features
+        in_size = 2  # Base: rho (for rs) and s
+        if use_laplacian:
+            in_size += 1
+        if use_dm_features:
+            in_size += n_dm_features
+        if use_cusp:
+            in_size += 2
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
+        self.net = eqx.nn.MLP(in_size=in_size,
+                              out_size=1,
+                              depth=self.depth,
+                              width_size=self.nodes,
+                              activation=jax.nn.gelu,
+                              key=keys[0])
+
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        """
+        Forward pass computing correlation enhancement factor.
+
+        :param inputs: Input array with density quantities and optional features
+        :type inputs: jax.Array
+        :return: Correlation enhancement factor Fc
+        :rtype: float
+        """
+        # Extract base quantities with cutoffs to prevent division by zero and sqrt of negative
+        rho = jnp.maximum(inputs[0], self.lower_rho_cutoff)
+        sigma = jnp.maximum(inputs[1], 0.0)  # sigma >= 0 for sqrt
+
+        # Compute descriptors
+        # Wigner-Seitz radius (dimensionless density parameter)
+        rs = (3 / (4 * jnp.pi * rho))**(1/3)
+
+        # Reduced gradient s
+        k_F = (3 * jnp.pi**2 * rho)**(1/3)
+        s = jnp.sqrt(sigma) / (2 * k_F * rho)
+
+        rs = jnp.atleast_1d(rs).flatten()
+        s = jnp.atleast_1d(s).flatten()
+
+        # Build feature vector
+        features = [rs, s]
+        idx = 2
+
+        # Add reduced Laplacian if enabled
+        if self.use_laplacian:
+            laplacian = inputs[idx]
+            q = laplacian / (4 * k_F**2 * rho)  # rho already clipped above
+            q = jnp.atleast_1d(q).flatten()
+            features.append(q)
+            idx += 1
+
+        # Add DM features if enabled
+        if self.use_dm_features:
+            dm_feats = inputs[idx:idx + self.n_dm_features]
+            dm_feats = jnp.atleast_1d(jnp.array(dm_feats)).flatten()
+            features.append(dm_feats)
+            idx += self.n_dm_features
+
+        # Add cusp features if enabled
+        if self.use_cusp:
+            cusp_feats = inputs[idx:idx + 2]
+            cusp_feats = jnp.atleast_1d(jnp.array(cusp_feats)).flatten()
+            features.append(cusp_feats)
+
+        # Concatenate all features
+        netinp = jnp.concatenate(features)
+
+        # Compute tanh term for UEG limit
+        tanhterm = jnp.tanh(s)**2
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
+        # Apply LOB constraint and return 1 + F
+        lobterm = self.lobf(tanhterm * netterm)
+        return 1 + lobterm.squeeze()
+
+
+class GGA_FxNet_extended_transform(eqx.Module):
+    """
+    Extended GGA Exchange Enhancement Factor Network with Log-Transformed Inputs.
+
+    This network combines the log-transformed input approach (like GGA_FxNet_sigma_transform)
+    with the extended feature support (Laplacian, DM features, cusp info).
+
+    The log transform helps with numerical stability and gradient flow for inputs
+    spanning many orders of magnitude.
+    """
+    name: str
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    lower_rho_cutoff: float
+    use_self_attention: bool
+    use_laplacian: bool
+    use_dm_features: bool
+    use_cusp: bool
+    n_dm_features: int
+    net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int,
+                 lob_lim: float = 1.804,
+                 lower_rho_cutoff: float = 1e-12,
+                 use_self_attention: bool = False,
+                 use_laplacian: bool = False,
+                 use_dm_features: bool = False,
+                 use_cusp: bool = False,
+                 n_dm_features: int = 3):
+        """
+        Constructor for extended GGA exchange network with log-transforms.
+
+        :param depth: Depth of the neural network
+        :param nodes: Number of nodes in each hidden layer
+        :param seed: Random seed for weight initialization
+        :param lob_lim: Lieb-Oxford bound limit, defaults to 1.804
+        :param lower_rho_cutoff: Cutoff to prevent division by zero
+        :param use_self_attention: Include self-attention layer
+        :param use_laplacian: Include reduced Laplacian descriptor
+        :param use_dm_features: Include density matrix features
+        :param use_cusp: Include cusp proximity features
+        :param n_dm_features: Number of DM features
+        """
+        self.name = 'GGA_FxNet_extended_transform'
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+        self.use_laplacian = use_laplacian
+        self.use_dm_features = use_dm_features
+        self.use_cusp = use_cusp
+        self.n_dm_features = n_dm_features
+
+        # Calculate input size: log(s) + optional features
+        in_size = 1  # log(s)
+        if use_laplacian:
+            in_size += 1  # log(|q| + eps) or sign(q)*log(|q|+1)
+        if use_dm_features:
+            in_size += n_dm_features
+        if use_cusp:
+            in_size += 2
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
+        self.net = eqx.nn.MLP(in_size=in_size,
+                              out_size=1,
+                              depth=self.depth,
+                              width_size=self.nodes,
+                              activation=jax.nn.gelu,
+                              key=keys[0])
+
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        """
+        Forward pass with log-transformed inputs.
+
+        :param inputs: Input array with density quantities and optional features
+        :return: Exchange enhancement factor Fx
+        """
+        rho = inputs[0]
+        sigma = inputs[1]
+
+        # Compute reduced gradient s with numerical safeguards
+        rho_safe = jnp.maximum(rho, self.lower_rho_cutoff)
+        sigma_safe = jnp.maximum(sigma, 0.0)
+        k_F = (3 * jnp.pi**2 * rho_safe)**(1/3)
+        s = jnp.sqrt(sigma_safe) / (2 * k_F * rho_safe)
+
+        # Bounded log-transform: maps s ∈ [0, ∞) to bounded range with stable gradients
+        # For small s: x1 ≈ 0, for large s: x1 ≈ log(s)
+        s_transformed = (1 - jnp.exp(-s**2)) * jnp.log(s + 1)
+        s_transformed = jnp.atleast_1d(s_transformed).flatten()
+
+        # Build feature vector with transforms
+        features = [s_transformed]
+        idx = 2
+
+        if self.use_laplacian:
+            laplacian = inputs[idx]
+            q = laplacian / (4 * k_F**2 * jnp.maximum(rho, self.lower_rho_cutoff))
+            # Signed log transform for Laplacian (can be negative)
+            log_q = jnp.sign(q) * jnp.log(jnp.abs(q) + 1)
+            log_q = jnp.atleast_1d(log_q).flatten()
+            features.append(log_q)
+            idx += 1
+
+        if self.use_dm_features:
+            dm_feats = inputs[idx:idx + self.n_dm_features]
+            dm_feats = jnp.atleast_1d(jnp.array(dm_feats)).flatten()
+            features.append(dm_feats)
+            idx += self.n_dm_features
+
+        if self.use_cusp:
+            cusp_feats = inputs[idx:idx + 2]
+            cusp_feats = jnp.atleast_1d(jnp.array(cusp_feats)).flatten()
+            features.append(cusp_feats)
+
+        netinp = jnp.concatenate(features)
+
+        # Tanh term for UEG limit
+        tanhterm = jnp.tanh(s)**2
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
+        lobterm = self.lobf(tanhterm * netterm)
+        return 1 + lobterm.squeeze()
+
+
+class GGA_FcNet_extended_transform(eqx.Module):
+    """
+    Extended GGA Correlation Enhancement Factor Network with Log-Transformed Inputs.
+
+    Combines log-transformed inputs with extended feature support for correlation.
+    """
+    name: str
+    depth: int
+    nodes: int
+    seed: int
+    lob_lim: float
+    lower_rho_cutoff: float
+    use_self_attention: bool
+    use_laplacian: bool
+    use_dm_features: bool
+    use_cusp: bool
+    n_dm_features: int
+    net: eqx.nn.MLP
+    attention: Optional[SelfAttentionBlock]
+    lobf: eqx.Module
+
+    def __init__(self, depth: int, nodes: int, seed: int,
+                 lob_lim: float = 2.0,
+                 lower_rho_cutoff: float = 1e-12,
+                 use_self_attention: bool = False,
+                 use_laplacian: bool = False,
+                 use_dm_features: bool = False,
+                 use_cusp: bool = False,
+                 n_dm_features: int = 3):
+        """
+        Constructor for extended GGA correlation network with log-transforms.
+
+        :param depth: Depth of the neural network
+        :param nodes: Number of nodes in each hidden layer
+        :param seed: Random seed for weight initialization
+        :param lob_lim: Lieb-Oxford bound limit for correlation, defaults to 2.0
+        :param lower_rho_cutoff: Cutoff to prevent division by zero
+        :param use_self_attention: Include self-attention layer
+        :param use_laplacian: Include reduced Laplacian descriptor
+        :param use_dm_features: Include density matrix features
+        :param use_cusp: Include cusp proximity features
+        :param n_dm_features: Number of DM features
+        """
+        self.name = 'GGA_FcNet_extended_transform'
+        self.depth = depth
+        self.nodes = nodes
+        self.seed = seed
+        self.lob_lim = lob_lim
+        self.lower_rho_cutoff = lower_rho_cutoff
+        self.use_self_attention = use_self_attention
+        self.use_laplacian = use_laplacian
+        self.use_dm_features = use_dm_features
+        self.use_cusp = use_cusp
+        self.n_dm_features = n_dm_features
+
+        # Calculate input size: log(rs), log(s) + optional features
+        in_size = 2  # log(rs), log(s)
+        if use_laplacian:
+            in_size += 1
+        if use_dm_features:
+            in_size += n_dm_features
+        if use_cusp:
+            in_size += 2
+
+        key = jax.random.PRNGKey(self.seed)
+        keys = jax.random.split(key, 2)
+
+        self.net = eqx.nn.MLP(in_size=in_size,
+                              out_size=1,
+                              depth=self.depth,
+                              width_size=self.nodes,
+                              activation=jax.nn.gelu,
+                              key=keys[0])
+
+        if use_self_attention:
+            self.attention = SelfAttentionBlock(hidden_size=self.nodes, num_heads=1, key=keys[1])
+        else:
+            self.attention = None
+
+        self.lobf = LOB(limit=lob_lim)
+
+    def __call__(self, inputs):
+        """
+        Forward pass with log-transformed inputs.
+
+        :param inputs: Input array with density quantities and optional features
+        :return: Correlation enhancement factor Fc
+        """
+        rho = inputs[0]
+        sigma = inputs[1]
+
+        # Compute descriptors with numerical safeguards
+        rho_safe = jnp.maximum(rho, self.lower_rho_cutoff)
+        sigma_safe = jnp.maximum(sigma, 0.0)
+        rs = (3 / (4 * jnp.pi * rho_safe))**(1/3)
+        k_F = (3 * jnp.pi**2 * rho_safe)**(1/3)
+        s = jnp.sqrt(sigma_safe) / (2 * k_F * rho_safe)
+
+        # Bounded transforms for numerical stability
+        # For rho: log(rho^(1/3) + eps) - same as basic sigma_transform correlation net
+        rho_transformed = jnp.log(rho_safe**(1/3) + 1e-5)
+        # For s: (1 - exp(-s²)) * log(s + 1) - bounded with stable gradients
+        s_transformed = (1 - jnp.exp(-s**2)) * jnp.log(s + 1)
+        rho_transformed = jnp.atleast_1d(rho_transformed).flatten()
+        s_transformed = jnp.atleast_1d(s_transformed).flatten()
+
+        # Build feature vector
+        features = [rho_transformed, s_transformed]
+        idx = 2
+
+        if self.use_laplacian:
+            laplacian = inputs[idx]
+            q = laplacian / (4 * k_F**2 * jnp.maximum(rho, self.lower_rho_cutoff))
+            log_q = jnp.sign(q) * jnp.log(jnp.abs(q) + 1)
+            log_q = jnp.atleast_1d(log_q).flatten()
+            features.append(log_q)
+            idx += 1
+
+        if self.use_dm_features:
+            dm_feats = inputs[idx:idx + self.n_dm_features]
+            dm_feats = jnp.atleast_1d(jnp.array(dm_feats)).flatten()
+            features.append(dm_feats)
+            idx += self.n_dm_features
+
+        if self.use_cusp:
+            cusp_feats = inputs[idx:idx + 2]
+            cusp_feats = jnp.atleast_1d(jnp.array(cusp_feats)).flatten()
+            features.append(cusp_feats)
+
+        netinp = jnp.concatenate(features)
+
+        # Tanh term for UEG limit
+        tanhterm = jnp.tanh(s)**2
+
+        # Apply MLP with optional self-attention
+        if self.attention is not None:
+            x = netinp
+            layers = self.net.layers
+            for i, layer in enumerate(layers[:-1]):
+                x = layer(x)
+                x = jax.nn.gelu(x)
+                if i == 0:
+                    x = self.attention(x)
+            netterm = layers[-1](x)
+        else:
+            netterm = self.net(netinp)
+
+        lobterm = self.lobf(tanhterm * netterm)
+        return 1 + lobterm.squeeze()

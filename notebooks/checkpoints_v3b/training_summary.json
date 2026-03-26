@@ -1,0 +1,656 @@
+{
+  "timestamp": "2026-02-03T20:23:46.497985",
+  "total_successful": 72,
+  "total_failed": 0,
+  "successful_jobs": [
+    {
+      "status": "success",
+      "arch": "shallow",
+      "approach": "A_ae_only",
+      "final_loss": 2.2770711105421356e-06,
+      "min_loss": 2.2770711105421356e-06,
+      "duration": 50.991674184799194,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/shallow"
+    },
+    {
+      "status": "success",
+      "arch": "medium",
+      "approach": "A_ae_only",
+      "final_loss": 1.4447212159732314e-06,
+      "min_loss": 1.4447212159732314e-06,
+      "duration": 58.80582404136658,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/medium"
+    },
+    {
+      "status": "success",
+      "arch": "shallow_attn",
+      "approach": "A_ae_only",
+      "final_loss": 1.622560191425452e-06,
+      "min_loss": 1.622560191425452e-06,
+      "duration": 61.894370555877686,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/shallow_attn"
+    },
+    {
+      "status": "success",
+      "arch": "medium_attn",
+      "approach": "A_ae_only",
+      "final_loss": 1.5830266602103878e-06,
+      "min_loss": 1.5830266602103878e-06,
+      "duration": 68.99885320663452,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/medium_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep",
+      "approach": "A_ae_only",
+      "final_loss": 1.116443971348656e-06,
+      "min_loss": 1.116443971348656e-06,
+      "duration": 83.79451966285706,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/deep"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp",
+      "approach": "A_ae_only",
+      "final_loss": 0.0006602528087335003,
+      "min_loss": 0.0006602528087335003,
+      "duration": 88.11524629592896,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/deep_cusp"
+    },
+    {
+      "status": "success",
+      "arch": "deep_attn",
+      "approach": "A_ae_only",
+      "final_loss": 1.3092889547530788e-06,
+      "min_loss": 1.3092889547530788e-06,
+      "duration": 95.89318919181824,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/deep_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp_attn",
+      "approach": "A_ae_only",
+      "final_loss": 0.00029312317267061376,
+      "min_loss": 0.00029312317267061376,
+      "duration": 99.15928721427917,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/deep_cusp_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm",
+      "approach": "A_ae_only",
+      "final_loss": 0.002835593833886763,
+      "min_loss": 0.0007986730308449595,
+      "duration": 87.05439329147339,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/deep_dm"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined",
+      "approach": "A_ae_only",
+      "final_loss": 3.7676243587969446e-05,
+      "min_loss": 3.7676243587969446e-05,
+      "duration": 87.7368700504303,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/deep_combined"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm_attn",
+      "approach": "A_ae_only",
+      "final_loss": 3.6391468062484073e-05,
+      "min_loss": 3.6391468062484073e-05,
+      "duration": 96.72403168678284,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/deep_dm_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined_attn",
+      "approach": "A_ae_only",
+      "final_loss": 3.385385123416522e-05,
+      "min_loss": 3.385385123416522e-05,
+      "duration": 96.73186802864075,
+      "checkpoint_dir": "checkpoints_v3b/02_A_ae_only/deep_combined_attn"
+    },
+    {
+      "status": "success",
+      "arch": "shallow",
+      "approach": "D1_delta_e",
+      "final_loss": 3.368861099409621e-06,
+      "min_loss": 3.368861099409621e-06,
+      "duration": 54.76142978668213,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/shallow"
+    },
+    {
+      "status": "success",
+      "arch": "shallow_attn",
+      "approach": "D1_delta_e",
+      "final_loss": 1.6380071678883492e-06,
+      "min_loss": 1.6380067195200348e-06,
+      "duration": 62.80493497848511,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/shallow_attn"
+    },
+    {
+      "status": "success",
+      "arch": "medium",
+      "approach": "D1_delta_e",
+      "final_loss": 1.4548782792865001e-06,
+      "min_loss": 1.4548782792865001e-06,
+      "duration": 60.10205912590027,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/medium"
+    },
+    {
+      "status": "success",
+      "arch": "medium_attn",
+      "approach": "D1_delta_e",
+      "final_loss": 1.8142055907655476e-06,
+      "min_loss": 1.8142055907655476e-06,
+      "duration": 73.89520978927612,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/medium_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep",
+      "approach": "D1_delta_e",
+      "final_loss": 1.1675744252207863e-06,
+      "min_loss": 1.1675744252207863e-06,
+      "duration": 77.9564094543457,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/deep"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp",
+      "approach": "D1_delta_e",
+      "final_loss": 0.0013270160441169237,
+      "min_loss": 0.0005262362383964011,
+      "duration": 85.17912316322327,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/deep_cusp"
+    },
+    {
+      "status": "success",
+      "arch": "deep_attn",
+      "approach": "D1_delta_e",
+      "final_loss": 1.4527219203246078e-06,
+      "min_loss": 1.4527219203246078e-06,
+      "duration": 93.77548170089722,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/deep_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp_attn",
+      "approach": "D1_delta_e",
+      "final_loss": 0.00042730628567366264,
+      "min_loss": 0.00042730628567366264,
+      "duration": 98.39154577255249,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/deep_cusp_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm",
+      "approach": "D1_delta_e",
+      "final_loss": 0.0031475824095260744,
+      "min_loss": 0.0029171901785875333,
+      "duration": 87.89780735969543,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/deep_dm"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined",
+      "approach": "D1_delta_e",
+      "final_loss": 0.001086140385710517,
+      "min_loss": 0.0005289078764242547,
+      "duration": 85.5156774520874,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/deep_combined"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm_attn",
+      "approach": "D1_delta_e",
+      "final_loss": 0.0011023813895439977,
+      "min_loss": 0.0007862427890258708,
+      "duration": 94.43349051475525,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/deep_dm_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined_attn",
+      "approach": "D1_delta_e",
+      "final_loss": 0.0002686245535793403,
+      "min_loss": 0.0001960998151627298,
+      "duration": 85.35727310180664,
+      "checkpoint_dir": "checkpoints_v3b/05_D1_delta_e/deep_combined_attn"
+    },
+    {
+      "status": "success",
+      "arch": "shallow",
+      "approach": "B_ae_dm",
+      "final_loss": 0.004763566357656252,
+      "min_loss": 0.004763566357656252,
+      "duration": 92.16398763656616,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/shallow"
+    },
+    {
+      "status": "success",
+      "arch": "medium",
+      "approach": "B_ae_dm",
+      "final_loss": 0.003471913595690145,
+      "min_loss": 0.003471913595690145,
+      "duration": 110.36195969581604,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/medium"
+    },
+    {
+      "status": "success",
+      "arch": "shallow_attn",
+      "approach": "B_ae_dm",
+      "final_loss": 0.004136842613591372,
+      "min_loss": 0.004136842613591372,
+      "duration": 112.05538058280945,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/shallow_attn"
+    },
+    {
+      "status": "success",
+      "arch": "medium_attn",
+      "approach": "B_ae_dm",
+      "final_loss": 0.006144543608769759,
+      "min_loss": 0.00369705891153392,
+      "duration": 154.6750626564026,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/medium_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep",
+      "approach": "B_ae_dm",
+      "final_loss": 0.0034892858892140535,
+      "min_loss": 0.0034892858892140535,
+      "duration": 161.53902745246887,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/deep"
+    },
+    {
+      "status": "success",
+      "arch": "deep_attn",
+      "approach": "B_ae_dm",
+      "final_loss": 0.0033933593097592763,
+      "min_loss": 0.0033933593097592763,
+      "duration": 187.5274477005005,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/deep_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp",
+      "approach": "B_ae_dm",
+      "final_loss": 0.0024782493259062287,
+      "min_loss": 0.0024782493259062287,
+      "duration": 174.16948294639587,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/deep_cusp"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp_attn",
+      "approach": "B_ae_dm",
+      "final_loss": 5.695261174267356e-05,
+      "min_loss": 5.695261174267356e-05,
+      "duration": 200.1322958469391,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/deep_cusp_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm",
+      "approach": "B_ae_dm",
+      "final_loss": 0.003260948377387612,
+      "min_loss": 0.003260948377387612,
+      "duration": 176.2490999698639,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/deep_dm"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm_attn",
+      "approach": "B_ae_dm",
+      "final_loss": 0.012615442047251898,
+      "min_loss": 0.012615442047251898,
+      "duration": 203.55742955207825,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/deep_dm_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined",
+      "approach": "B_ae_dm",
+      "final_loss": 0.016915441302606218,
+      "min_loss": 0.016915441302606218,
+      "duration": 178.7235085964203,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/deep_combined"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined_attn",
+      "approach": "B_ae_dm",
+      "final_loss": 0.016095588994693665,
+      "min_loss": 0.016095588994693665,
+      "duration": 200.99460697174072,
+      "checkpoint_dir": "checkpoints_v3b/03_B_ae_dm/deep_combined_attn"
+    },
+    {
+      "status": "success",
+      "arch": "shallow",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.012662422800116088,
+      "min_loss": 0.012662422800116088,
+      "duration": 98.31670475006104,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/shallow"
+    },
+    {
+      "status": "success",
+      "arch": "shallow_attn",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.012711737128312311,
+      "min_loss": 0.012711737128312311,
+      "duration": 115.95492672920227,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/shallow_attn"
+    },
+    {
+      "status": "success",
+      "arch": "medium",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.012792988200864936,
+      "min_loss": 0.012792988200864936,
+      "duration": 112.66437363624573,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/medium"
+    },
+    {
+      "status": "success",
+      "arch": "medium_attn",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.012699841218399848,
+      "min_loss": 0.012699841218399848,
+      "duration": 145.83374404907227,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/medium_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.012807205575916395,
+      "min_loss": 0.012807205575916395,
+      "duration": 159.6649615764618,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/deep"
+    },
+    {
+      "status": "success",
+      "arch": "deep_attn",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.012682287537802508,
+      "min_loss": 0.012682287537802508,
+      "duration": 189.87840819358826,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/deep_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.026075575908579014,
+      "min_loss": 0.013667584709273867,
+      "duration": 173.14284443855286,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/deep_cusp"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp_attn",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.014640290578708932,
+      "min_loss": 0.014637914250009185,
+      "duration": 200.37756633758545,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/deep_cusp_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.00886777268509403,
+      "min_loss": 0.008862266961912306,
+      "duration": 173.32704329490662,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/deep_dm"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm_attn",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.014991840718798388,
+      "min_loss": 0.014990499315002842,
+      "duration": 200.4609260559082,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/deep_dm_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.016995033151382306,
+      "min_loss": 0.016964347231637304,
+      "duration": 171.41778469085693,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/deep_combined"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined_attn",
+      "approach": "D2_delta_dm",
+      "final_loss": 0.016547285833069757,
+      "min_loss": 0.016538063972833864,
+      "duration": 186.11981987953186,
+      "checkpoint_dir": "checkpoints_v3b/06_D2_delta_dm/deep_combined_attn"
+    },
+    {
+      "status": "success",
+      "arch": "shallow",
+      "approach": "C_ae_grid",
+      "final_loss": 0.038018158806310064,
+      "min_loss": 0.038018158806310064,
+      "duration": 87.71680545806885,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/shallow"
+    },
+    {
+      "status": "success",
+      "arch": "shallow_attn",
+      "approach": "C_ae_grid",
+      "final_loss": 0.035850659138726156,
+      "min_loss": 0.035850659138726156,
+      "duration": 106.68319725990295,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/shallow_attn"
+    },
+    {
+      "status": "success",
+      "arch": "medium",
+      "approach": "C_ae_grid",
+      "final_loss": 0.036620627125360475,
+      "min_loss": 0.036620627125360475,
+      "duration": 108.00177526473999,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/medium"
+    },
+    {
+      "status": "success",
+      "arch": "medium_attn",
+      "approach": "C_ae_grid",
+      "final_loss": 0.03600474290884658,
+      "min_loss": 0.03600474290884658,
+      "duration": 129.93310475349426,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/medium_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep",
+      "approach": "C_ae_grid",
+      "final_loss": 0.0369171720487875,
+      "min_loss": 0.0369171720487875,
+      "duration": 146.30051279067993,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/deep"
+    },
+    {
+      "status": "success",
+      "arch": "deep_attn",
+      "approach": "C_ae_grid",
+      "final_loss": 0.0366602554811642,
+      "min_loss": 0.0366602554811642,
+      "duration": 172.44069290161133,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/deep_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp",
+      "approach": "C_ae_grid",
+      "final_loss": 0.03429844600605202,
+      "min_loss": 0.03429844600605202,
+      "duration": 156.84784531593323,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/deep_cusp"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp_attn",
+      "approach": "C_ae_grid",
+      "final_loss": 0.0024021581805350753,
+      "min_loss": 0.0024021581805350753,
+      "duration": 178.87423753738403,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/deep_cusp_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm",
+      "approach": "C_ae_grid",
+      "final_loss": 0.03659219430922707,
+      "min_loss": 0.03659219430922707,
+      "duration": 157.41885018348694,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/deep_dm"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm_attn",
+      "approach": "C_ae_grid",
+      "final_loss": 0.038935625673140704,
+      "min_loss": 0.038935625673140704,
+      "duration": 181.80595993995667,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/deep_dm_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined",
+      "approach": "C_ae_grid",
+      "final_loss": 0.5323807649727955,
+      "min_loss": 0.5323807649727955,
+      "duration": 160.87242937088013,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/deep_combined"
+    },
+    {
+      "status": "success",
+      "arch": "shallow",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.5033438044231909,
+      "min_loss": 0.5033438044231909,
+      "duration": 98.67051291465759,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/shallow"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined_attn",
+      "approach": "C_ae_grid",
+      "final_loss": 0.5315077791427947,
+      "min_loss": 0.49719421044565815,
+      "duration": 169.61506748199463,
+      "checkpoint_dir": "checkpoints_v3b/04_C_ae_grid/deep_combined_attn"
+    },
+    {
+      "status": "success",
+      "arch": "shallow_attn",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.5009907539168077,
+      "min_loss": 0.5009907539168077,
+      "duration": 111.56526494026184,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/shallow_attn"
+    },
+    {
+      "status": "success",
+      "arch": "medium",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.5028001150472556,
+      "min_loss": 0.5028001150472556,
+      "duration": 109.14890742301941,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/medium"
+    },
+    {
+      "status": "success",
+      "arch": "medium_attn",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.4888486277036012,
+      "min_loss": 0.4888486277036012,
+      "duration": 135.97849321365356,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/medium_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.4990146786948455,
+      "min_loss": 0.4990146786948455,
+      "duration": 138.72868156433105,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/deep"
+    },
+    {
+      "status": "success",
+      "arch": "deep_attn",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.15279531960149267,
+      "min_loss": 0.15279531960149267,
+      "duration": 173.39891719818115,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/deep_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.5126631356323684,
+      "min_loss": 0.5119442099117816,
+      "duration": 156.726304769516,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/deep_cusp"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.4102235833677171,
+      "min_loss": 0.4102235833677171,
+      "duration": 155.5167965888977,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/deep_dm"
+    },
+    {
+      "status": "success",
+      "arch": "deep_cusp_attn",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.5234991176757025,
+      "min_loss": 0.5226361664781797,
+      "duration": 174.99002814292908,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/deep_cusp_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.5351647492674375,
+      "min_loss": 0.5348613151815995,
+      "duration": 158.92033910751343,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/deep_combined"
+    },
+    {
+      "status": "success",
+      "arch": "deep_dm_attn",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.525744965824708,
+      "min_loss": 0.525744965824708,
+      "duration": 176.14664602279663,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/deep_dm_attn"
+    },
+    {
+      "status": "success",
+      "arch": "deep_combined_attn",
+      "approach": "D3_delta_grid",
+      "final_loss": 0.5348126495472968,
+      "min_loss": 0.5348126495472968,
+      "duration": 162.38389611244202,
+      "checkpoint_dir": "checkpoints_v3b/07_D3_delta_grid/deep_combined_attn"
+    }
+  ],
+  "failed_jobs": []
+}

@@ -306,4 +306,4 @@ if __name__ == '__main__':
         inp = [tdrho]
     print(f'inp[0].shape = {inp[0].shape}')
     with jax.default_device(cpus[0]):
-        newm = trainer(1, trainer.model, inp, [tFxc])
+        newm, _ = trainer(1, trainer.model, inp, [tFxc])

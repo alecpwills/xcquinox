@@ -1,0 +1,12 @@
+{
+  "arch_name": "deep",
+  "pretrain_steps": 5,
+  "final_loss_x": 0.07660280954699762,
+  "final_loss_c": 0.42518785110158996,
+  "min_loss_x": 0.07660280954699762,
+  "min_loss_c": 0.42518785110158996,
+  "use_cusp": false,
+  "use_dm": false,
+  "timestamp": "2026-02-03T11:54:05.732091",
+  "duration_seconds": 5.197659492492676
+}

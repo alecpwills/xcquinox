@@ -1,0 +1,16 @@
+{
+  "arch_name": "shallow",
+  "pretrain_steps": 1000,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss_x": 7.618381295549735e-05,
+  "final_loss_c": 0.0001456844151745811,
+  "min_loss_x": 7.618381295549735e-05,
+  "min_loss_c": 0.0001456844151745811,
+  "use_cusp": false,
+  "use_dm": false,
+  "timestamp": "2026-02-03T18:20:08.898441",
+  "duration_seconds": 648.3724277019501
+}

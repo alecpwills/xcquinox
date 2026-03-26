@@ -1,0 +1,13 @@
+{
+  "arch_name": "deep_cusp_attn",
+  "approach_name": "C_ae_grid",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 0.0024021581805350753,
+  "min_loss": 0.0024021581805350753,
+  "timestamp": "2026-02-03T20:02:44.247966",
+  "duration_seconds": 178.8741762638092
+}

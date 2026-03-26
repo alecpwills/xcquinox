@@ -1,0 +1,13 @@
+{
+  "arch_name": "deep_dm_attn",
+  "approach_name": "C_ae_grid",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 0.038935625673140704,
+  "min_loss": 0.038935625673140704,
+  "timestamp": "2026-02-03T20:05:46.970883",
+  "duration_seconds": 181.80590200424194
+}

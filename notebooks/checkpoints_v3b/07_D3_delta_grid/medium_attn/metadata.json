@@ -1,0 +1,13 @@
+{
+  "arch_name": "medium_attn",
+  "approach_name": "D3_delta_grid",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 0.4888486277036012,
+  "min_loss": 0.4888486277036012,
+  "timestamp": "2026-02-03T20:12:23.599602",
+  "duration_seconds": 135.97843408584595
+}

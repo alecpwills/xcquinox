@@ -1,0 +1,13 @@
+{
+  "arch_name": "deep_combined",
+  "approach_name": "C_ae_grid",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 0.5323807649727955,
+  "min_loss": 0.5323807649727955,
+  "timestamp": "2026-02-03T20:06:35.147063",
+  "duration_seconds": 160.87237000465393
+}

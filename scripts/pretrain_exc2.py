@@ -420,7 +420,7 @@ if __name__ == '__main__':
         nlref = refs
     if not data_nlnet:
         with jax.default_device(cpus[0]):
-            newm = trainer(1, trainer.model, inp, [ref])
+            newm, _ = trainer(1, trainer.model, inp, [ref])
     else:
         if nlnet and not xc_pt:
             with jax.default_device(cpus[0]):
@@ -434,7 +434,7 @@ if __name__ == '__main__':
                 # newm = NLtrainer(len(mfs), NLtrainer.model, nlinp, mfs, dms, aos, gws, coors, nlref)
                 #this updates after all molecules calculated and loss generated
                 if not pargs.full_calc:
-                    newm = xc_trainer(1, xc_trainer.model, [nlinp], [mfs], [dms], [aos], [gws], [coors], [nlref])
+                    newm, _ = xc_trainer(1, xc_trainer.model, [nlinp], [mfs], [dms], [aos], [gws], [coors], [nlref])
                 else:
                     newm = xc_trainer2(1, xc_trainer2.model, [nlinp], [mfs], [dms], [aos], [gws], [coors], [nlref])
 

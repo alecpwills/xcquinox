@@ -1,0 +1,16 @@
+{
+  "arch_name": "shallow_attn",
+  "pretrain_steps": 1000,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss_x": 5.9525960532538866e-05,
+  "final_loss_c": 0.00012971183748275027,
+  "min_loss_x": 5.9525960532538866e-05,
+  "min_loss_c": 0.00012971183748275027,
+  "use_cusp": false,
+  "use_dm": false,
+  "timestamp": "2026-02-03T18:26:12.554929",
+  "duration_seconds": 1012.0230011940002
+}

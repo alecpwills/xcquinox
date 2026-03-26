@@ -1,0 +1,13 @@
+{
+  "arch_name": "shallow_attn",
+  "approach_name": "D1_delta_e",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 1.6380071678883492e-06,
+  "min_loss": 1.6380067195200348e-06,
+  "timestamp": "2026-02-03T19:26:37.113498",
+  "duration_seconds": 62.804842710494995
+}

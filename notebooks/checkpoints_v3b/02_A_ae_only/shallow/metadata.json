@@ -1,0 +1,13 @@
+{
+  "arch_name": "shallow",
+  "approach_name": "A_ae_only",
+  "train_steps": 250,
+  "lr_start": 0.01,
+  "lr_end": 1e-05,
+  "lr_decay_start": 0.2,
+  "grad_clip": 1.0,
+  "final_loss": 2.2770711105421356e-06,
+  "min_loss": 2.2770711105421356e-06,
+  "timestamp": "2026-02-03T19:22:20.805480",
+  "duration_seconds": 50.9916045665741
+}

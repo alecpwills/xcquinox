@@ -666,6 +666,6 @@ if __name__ == '__main__':
 
         cpus = jax.devices(backend='cpu')
         with jax.default_device(cpus[0]):
-            newm = trainer(1, trainer.model, [args.train_traj_path], [args.train_data_dir], [args.singles_start])
+            newm, _ = trainer(1, trainer.model, [args.train_traj_path], [args.train_data_dir], [args.singles_start])
 
 # %%
