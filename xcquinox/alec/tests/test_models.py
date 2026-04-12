@@ -1,0 +1,291 @@
+import io
+import dataclasses
+import pytest
+import numpy as np
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+
+from xcquinox.alec.config import ArchitectureConfig, FeatureSpec, _FrozenDict
+from xcquinox.alec.models import AlecGGAModel
+
+
+def _make_arch(**overrides):
+    defaults = dict(name="t", depth=2, nodes=8, attention=False,
+                    descriptors=(), x_constraints=(), c_constraints=(),
+                    double_lob_clamp_allowed=False)
+    defaults.update(overrides)
+    return ArchitectureConfig(**defaults)
+
+
+# §13.2 item (1)
+def test_from_arch_zero_descriptors():
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert len(model.descriptors) == 0
+    assert model.xnet.n_extra_features == 0
+    assert model.cnet.n_extra_features == 0
+
+
+# §13.2 item (2)
+def test_from_arch_one_descriptor():
+    arch = ArchitectureConfig.from_spec("t", 2, 8, descriptors=["cusp"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert model.xnet.n_extra_features == 2
+
+
+# §13.2 item (3)
+def test_from_arch_two_descriptors():
+    arch = ArchitectureConfig.from_spec("t", 2, 8,
+                                        descriptors=["dm_statistics", "cusp"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert model.xnet.n_extra_features == 5
+
+
+# §13.2 item (4)
+def test_from_arch_with_x_constraints():
+    arch = ArchitectureConfig.from_spec("t", 2, 8, x_constraints=["lieb_oxford"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert model.xnet.lob_lim is None  # C-H1
+    assert len(model.x_constraints) == 1
+
+
+# §13.2 item (5)
+def test_from_arch_without_x_constraints():
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert model.xnet.lob_lim == 1.804
+    assert len(model.x_constraints) == 0
+
+
+# §13.2 item (6)
+def test_from_arch_with_c_constraints():
+    arch = ArchitectureConfig.from_spec("t", 2, 8,
+                                        c_constraints=["non_negative_correlation"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert len(model.c_constraints) == 1
+    assert model.cnet.lob_lim == 2.0  # cnet default, NOT from arch
+
+
+# §13.2 item (7)
+def test_from_arch_without_c_constraints():
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert len(model.c_constraints) == 0
+    assert model.cnet.lob_lim == 2.0
+
+
+def _synth_inputs(n=16, n_extra=0):
+    rho = jnp.linspace(0.1, 2.0, n)
+    sigma = jnp.linspace(0.01, 1.0, n)
+    features = jnp.ones((n, n_extra)) * 0.1 if n_extra > 0 else jnp.zeros((n, 0))
+    return rho, sigma, features
+
+
+# §13.2 item (8)
+def test_eval_fx_returns_correct_shape():
+    arch = ArchitectureConfig.from_spec("t", 2, 8, descriptors=["dm_statistics", "cusp"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rho, sigma, features = _synth_inputs(16, 5)
+    assert model.eval_Fx(rho, sigma, features).shape == (16,)
+
+
+# §13.2 item (9)
+def test_eval_fc_returns_correct_shape():
+    arch = ArchitectureConfig.from_spec("t", 2, 8, descriptors=["dm_statistics", "cusp"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rho, sigma, features = _synth_inputs(16, 5)
+    assert model.eval_Fc(rho, sigma, features).shape == (16,)
+
+
+# §13.2 item (10)
+def test_eval_exc_returns_rho_times_ex_fx_plus_ec_fc():
+    from xcquinox.utils import lda_x, pw92c_unpolarized_scalar
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rho, sigma, features = _synth_inputs(16, 0)
+    exc = model.eval_exc(rho, sigma, features)
+    Fx = model.eval_Fx(rho, sigma, features)
+    Fc = model.eval_Fc(rho, sigma, features)
+    rho_safe = jnp.maximum(rho, model.rho_cutoff)
+    expected = rho_safe * (lda_x(rho_safe) * Fx + pw92c_unpolarized_scalar(rho_safe) * Fc)
+    np.testing.assert_array_equal(np.asarray(exc), np.asarray(expected))
+
+
+# §13.2 item (11)
+def test_serialization_roundtrip_preserves_eval_exc_bitwise():
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=7)
+    rho, sigma, features = _synth_inputs(8, 0)
+    out_before = model.eval_exc(rho, sigma, features)
+    buf = io.BytesIO()
+    eqx.tree_serialise_leaves(buf, model)
+    buf.seek(0)
+    skeleton = AlecGGAModel.from_arch(arch, seed=0)
+    loaded = eqx.tree_deserialise_leaves(buf, skeleton)
+    out_after = loaded.eval_exc(rho, sigma, features)
+    np.testing.assert_array_equal(np.asarray(out_before), np.asarray(out_after))
+
+
+# §13.2 item (12)
+def test_constraint_report_returns_nested_dict():
+    arch = ArchitectureConfig.from_spec(
+        "t", 2, 8,
+        x_constraints=["lieb_oxford"],
+        c_constraints=["non_negative_correlation"],
+    )
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rho = jnp.array([0.5, 1.0, 2.0])
+    sigma = jnp.array([0.2, 0.5, 1.5])
+    features = jnp.zeros((3, model.xnet.n_extra_features))
+    report = model.constraint_report(rho, sigma, features)
+    assert "x" in report and "c" in report
+    assert "lieb_oxford" in report["x"]
+    assert set(report["x"]["lieb_oxford"].keys()) == {"max", "mean", "l2"}
+    assert "non_negative_correlation" in report["c"]
+
+
+# §13.2 item (13)
+def test_jax_grad_eval_fx_returns_finite_gradients():
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=42)
+    rho, sigma, features = _synth_inputs(4, 0)
+    trainable, static = eqx.partition(model, eqx.is_array)
+
+    @jax.grad
+    def loss_fn(params):
+        m = eqx.combine(params, static)
+        return m.eval_Fx(rho, sigma, features).sum()
+
+    grads = loss_fn(trainable)
+    leaves = jax.tree_util.tree_leaves(grads)
+    array_leaves = [l for l in leaves if isinstance(l, jnp.ndarray)]
+    assert all(jnp.all(jnp.isfinite(l)) for l in array_leaves)
+    assert any(jnp.any(l != 0) for l in array_leaves)
+
+
+# §13.2 item (14)
+def test_jax_grad_eval_fc_returns_finite_gradients():
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=42)
+    rho, sigma, features = _synth_inputs(4, 0)
+    trainable, static = eqx.partition(model, eqx.is_array)
+
+    @jax.grad
+    def loss_fn(params):
+        m = eqx.combine(params, static)
+        return m.eval_Fc(rho, sigma, features).sum()
+
+    grads = loss_fn(trainable)
+    leaves = jax.tree_util.tree_leaves(grads)
+    array_leaves = [l for l in leaves if isinstance(l, jnp.ndarray)]
+    assert all(jnp.all(jnp.isfinite(l)) for l in array_leaves)
+    assert any(jnp.any(l != 0) for l in array_leaves)
+
+
+# §13.2 item (15)
+def test_jax_grad_eval_exc_returns_finite_nonzero_gradients():
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=42)
+    rho, sigma, features = _synth_inputs(4, 0)
+    trainable, static = eqx.partition(model, eqx.is_array)
+
+    @jax.grad
+    def loss_fn(params):
+        m = eqx.combine(params, static)
+        return m.eval_exc(rho, sigma, features).sum()
+
+    grads = loss_fn(trainable)
+    leaves = jax.tree_util.tree_leaves(grads)
+    array_leaves = [l for l in leaves if isinstance(l, jnp.ndarray)]
+    assert all(jnp.all(jnp.isfinite(l)) for l in array_leaves)
+    assert any(jnp.any(l != 0) for l in array_leaves)
+
+
+# §13.2 item (16)
+def test_jit_retrace_only_on_static_metadata_change():
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rho_a, sigma_a, features = _synth_inputs(4, 0)
+    rho_b = rho_a + 0.01
+    sigma_b = sigma_a + 0.01
+    trace_count = [0]
+
+    @eqx.filter_jit
+    def _jitted_eval_exc(m, r, s, f):
+        trace_count[0] += 1
+        return m.eval_exc(r, s, f)
+
+    _jitted_eval_exc(model, rho_a, sigma_a, features).block_until_ready()
+    _jitted_eval_exc(model, rho_b, sigma_b, features).block_until_ready()
+    assert trace_count[0] == 1, "same model + same-shape inputs must hit cache"
+
+    model2 = AlecGGAModel(
+        xnet=model.xnet, cnet=model.cnet,
+        descriptors=model.descriptors,
+        x_constraints=model.x_constraints,
+        c_constraints=model.c_constraints,
+        rho_cutoff=1e-12,
+    )
+    _jitted_eval_exc(model2, rho_a, sigma_a, features).block_until_ready()
+    assert trace_count[0] == 2, "static-field change must invalidate cache"
+
+
+# §13.2 item (17)
+def test_from_spec_dict_kwargs_roundtrip():
+    arch_a = ArchitectureConfig.from_spec("t", 2, 8, descriptors=[("cusp", {})])
+    arch_b = ArchitectureConfig(
+        name="t", depth=2, nodes=8, attention=False,
+        descriptors=(FeatureSpec.of("cusp"),),
+        x_constraints=(), c_constraints=(), double_lob_clamp_allowed=False,
+    )
+    model_a = AlecGGAModel.from_arch(arch_a, seed=0)
+    model_b = AlecGGAModel.from_arch(arch_b, seed=0)
+    rho, sigma, features = _synth_inputs(4, 2)
+    out_a = model_a.eval_exc(rho, sigma, features)
+    out_b = model_b.eval_exc(rho, sigma, features)
+    np.testing.assert_array_equal(np.asarray(out_a), np.asarray(out_b))
+
+
+# §13.2 item (18)
+def test_rho_cutoff_clamps_not_zeros():
+    from xcquinox.utils import lda_x, pw92c_unpolarized_scalar
+    arch = _make_arch()
+    cutoff = 1e-6
+    model = AlecGGAModel.from_arch(arch, seed=0, rho_cutoff=cutoff)
+    rho = jnp.array([1e-10, 1e-8, 1e-12, 1.0])
+    sigma = jnp.array([0.01, 0.01, 0.01, 0.5])
+    features = jnp.zeros((4, 0))
+    exc = model.eval_exc(rho, sigma, features)
+    rho_safe = jnp.maximum(rho, cutoff)
+    Fx = model.eval_Fx(rho, sigma, features)
+    Fc = model.eval_Fc(rho, sigma, features)
+    expected = rho_safe * (lda_x(rho_safe) * Fx + pw92c_unpolarized_scalar(rho_safe) * Fc)
+    np.testing.assert_array_equal(np.asarray(exc), np.asarray(expected))
+    # The clamped points must be non-zero (small but positive)
+    assert jnp.all(jnp.abs(exc[:3]) > 0), "clamped rho must produce non-zero exc"
+
+
+# §13.2 item (19)
+def test_eval_exc_scalar_matches_constrained_eval_exc():
+    configs = [
+        dict(x_constraints=[], c_constraints=[]),
+        dict(x_constraints=["lieb_oxford"], c_constraints=[]),
+        dict(x_constraints=[], c_constraints=["ueg_limit"]),
+        dict(x_constraints=["lieb_oxford"], c_constraints=["non_negative_correlation"]),
+    ]
+    for cfg in configs:
+        arch = ArchitectureConfig.from_spec("t", 2, 8, **cfg)
+        model = AlecGGAModel.from_arch(arch, seed=0)
+        rho_pts = jnp.array([0.1, 0.5, 1.0, 2.0])
+        sigma_pts = jnp.array([0.01, 0.1, 0.5, 1.0])
+        features = jnp.zeros((4, 0))
+        batched = model.eval_exc(rho_pts, sigma_pts, features)
+        for i in range(4):
+            scalar = model.eval_exc_scalar(
+                rho_pts[i], sigma_pts[i], features[i],
+            )
+            np.testing.assert_array_equal(
+                np.asarray(scalar), np.asarray(batched[i]),
+                err_msg=f"scalar/batched mismatch at point {i} with cfg={cfg}",
+            )

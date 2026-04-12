@@ -326,3 +326,29 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
     )
     assert out["arch"] == "deep_combined"
     json.dumps(out)
+
+
+# --- §13.2 item (16) — Task 2.2 step 6 ----------------------------------------
+
+# §13.2 item (16)
+def test_architectures_all_materialize_via_from_arch():
+    from xcquinox.alec.config import ARCHITECTURES
+    from xcquinox.alec.models import AlecGGAModel
+    assert len(ARCHITECTURES) == 12
+    for arch_name, arch in ARCHITECTURES.items():
+        try:
+            model = AlecGGAModel.from_arch(arch, seed=0)
+        except Exception as exc:
+            raise AssertionError(
+                f"AlecGGAModel.from_arch failed for {arch_name!r}: {exc}"
+            ) from exc
+        assert model is not None
+        assert len(model.descriptors) == len(arch.descriptors), (
+            f"{arch_name!r} descriptor tuple arity drift"
+        )
+        assert len(model.x_constraints) == len(arch.x_constraints), (
+            f"{arch_name!r} x_constraints tuple arity drift"
+        )
+        assert len(model.c_constraints) == len(arch.c_constraints), (
+            f"{arch_name!r} c_constraints tuple arity drift"
+        )

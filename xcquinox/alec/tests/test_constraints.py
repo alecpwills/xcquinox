@@ -423,12 +423,7 @@ def test_constraint_describe_formatting():
     assert UEGLimit().describe() == "UEGLimit(ueg_limit)"
 
 
-# (xv): constraint_report aggregates per-constraint stats (depends on Task 2.2)
-@pytest.mark.xfail(
-    reason="AlecGGAModel.constraint_report lands in Task 2.2",
-    raises=(ImportError, ModuleNotFoundError, AttributeError),
-    strict=False,
-)
+# (xv): constraint_report aggregates per-constraint stats
 def test_constraint_report_aggregates_per_constraint_stats():
     from xcquinox.alec.config import ArchitectureConfig
     from xcquinox.alec.models import AlecGGAModel
@@ -440,7 +435,7 @@ def test_constraint_report_aggregates_per_constraint_stats():
     model = AlecGGAModel.from_arch(arch, seed=0)
     rho = jnp.array([0.5, 1.0, 2.0])
     sigma = jnp.array([0.2, 0.5, 1.5])
-    features = jnp.zeros((3, model.arch.n_extra_features))
+    features = jnp.zeros((3, model.xnet.n_extra_features))
     report = model.constraint_report(rho, sigma, features)
     assert "x" in report and "c" in report
     assert "lieb_oxford" in report["x"]
@@ -481,11 +476,6 @@ def test_constraint_register_rejects_trainable_field():
 
 
 # (xviii): H-E12-5 — no double-clamp when LOB is registered under x_constraints
-@pytest.mark.xfail(
-    reason="AlecGGAModel.from_arch lands in Task 2.2",
-    raises=(ImportError, ModuleNotFoundError, AttributeError),
-    strict=False,
-)
 def test_lieb_oxford_no_double_clamp():
     from xcquinox.alec.config import ArchitectureConfig
     from xcquinox.alec.models import AlecGGAModel
@@ -507,11 +497,6 @@ def test_lieb_oxford_no_double_clamp():
 
 
 # (xix): H-E12-6 — opt-in double clamp narrows F range
-@pytest.mark.xfail(
-    reason="AlecGGAModel.from_arch lands in Task 2.2",
-    raises=(ImportError, ModuleNotFoundError, AttributeError),
-    strict=False,
-)
 def test_lieb_oxford_opt_in_double_clamp():
     from xcquinox.alec.config import ArchitectureConfig
     from xcquinox.alec.models import AlecGGAModel
