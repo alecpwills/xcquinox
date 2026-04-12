@@ -11,3 +11,5 @@ import xcquinox.features
 # from ._version import get_versions
 # __version__ = get_versions()['version']
 from xcquinox._version import __version__
+
+import xcquinox.alec
