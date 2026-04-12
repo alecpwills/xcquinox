@@ -2,8 +2,11 @@
 
 Implements THE SPEC §11.1: FeatureSpec, _FrozenDict, _FrozenTuple, _freeze,
 and the FeatureSpec.as_kwargs thaw round-trip.
+Also implements §6.1 MoleculeSpec, §8.1 PretrainSpec, §8.2 TrainingSpec,
+§9.3 TestSpec.
 """
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, fields
 
 
 def _freeze(value):
@@ -280,3 +283,395 @@ def get_architecture(name: str) -> ArchitectureConfig:
 
 def list_architectures() -> list[str]:
     return sorted(ARCHITECTURES.keys())
+
+
+# ---------------------------------------------------------------------------
+# §6.1: MoleculeSpec
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class MoleculeSpec:
+    """Immutable molecule identity. Hashable (frozen dataclass, tuple-of-pairs
+    composition) so it can serve as a jit-static arg or dict key."""
+    name: str
+    atom: str            # pyscf-format, e.g. "H 0 0 0; H 0 0 0.74"
+    basis: str = "sto-3g"
+    charge: int = 0
+    spin: int = 0
+    # Sorted tuple of (symbol, count) pairs — e.g. (("H", 2),) for H2.
+    # MUST be a tuple-of-tuples (NOT a dict) because MoleculeSpec is frozen
+    # and the auto-generated __hash__ hashes every field.
+    atom_composition: tuple[tuple[str, int], ...] = ()
+
+    @classmethod
+    def from_dict(cls, *, name: str, atom: str,
+                  atom_composition: dict[str, int] | tuple,
+                  basis: str = "sto-3g", charge: int = 0,
+                  spin: int = 0) -> "MoleculeSpec":
+        """Convenience constructor that accepts atom_composition as a dict
+        and canonicalizes it into the sorted tuple-of-pairs form."""
+        if isinstance(atom_composition, dict):
+            comp = tuple(sorted(atom_composition.items()))
+        else:
+            comp = tuple(sorted(tuple(atom_composition)))
+        return cls(name=name, atom=atom, basis=basis, charge=charge,
+                   spin=spin, atom_composition=comp)
+
+    @property
+    def composition_dict(self) -> dict[str, int]:
+        """Dict view of atom_composition."""
+        return dict(self.atom_composition)
+
+
+# ---------------------------------------------------------------------------
+# Spec describe helpers
+# ---------------------------------------------------------------------------
+
+def _json_coerce(value):
+    """Recursively convert tuples to lists so json.dumps accepts the result."""
+    if isinstance(value, tuple):
+        return [_json_coerce(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _json_coerce(v) for k, v in value.items()}
+    return value
+
+
+def _describe_spec(spec) -> dict:
+    """Render a frozen-dataclass spec as a json-serializable dict.
+
+    - Nested ArchitectureConfig -> its .name str.
+    - tuple[MoleculeSpec, ...] -> list of m.name strs.
+    - Everything else -> _json_coerce'd primitive/list form.
+    """
+    out: dict = {}
+    for f in fields(spec):
+        value = getattr(spec, f.name)
+        if isinstance(value, ArchitectureConfig):
+            out[f.name] = value.name
+        elif (
+            isinstance(value, tuple)
+            and value
+            and all(isinstance(v, MoleculeSpec) for v in value)
+        ):
+            out[f.name] = [m.name for m in value]
+        elif isinstance(value, tuple) and not value and f.name in ("molecules",):
+            out[f.name] = []
+        else:
+            out[f.name] = _json_coerce(value)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# §8.1: PretrainSpec
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PretrainSpec:
+    """Pretraining config. Plain frozen dataclass — NOT an eqx.Module, so float
+    fields are ordinary Python float leaves and participate in the auto-generated
+    __eq__ / __hash__."""
+    arch: ArchitectureConfig
+    data_dir: str
+    checkpoint_dir: str
+    n_steps: int = 1000
+    lr_start: float = 1e-2
+    lr_end: float = 1e-5
+    lr_decay_start: float = 0.2   # fraction of steps before decay
+    grad_clip: float = 1.0
+    seed: int = 42
+
+    def validate(self) -> None:
+        """Raise ValueError if spec is inconsistent."""
+        import math
+        if self.n_steps <= 0:
+            raise ValueError(f"n_steps must be > 0, got {self.n_steps}")
+        for field_name in ("lr_start", "lr_end", "lr_decay_start", "grad_clip"):
+            value = getattr(self, field_name)
+            if not math.isfinite(value):
+                raise ValueError(f"{field_name} must be finite, got {value}")
+        if not (0.0 <= self.lr_decay_start <= 1.0):
+            raise ValueError(f"lr_decay_start must be in [0, 1], got {self.lr_decay_start}")
+        if self.lr_start < self.lr_end:
+            raise ValueError(f"lr_start ({self.lr_start}) must be >= lr_end ({self.lr_end})")
+        if self.grad_clip <= 0:
+            raise ValueError(f"grad_clip must be > 0, got {self.grad_clip}")
+        if not os.path.isdir(self.data_dir):
+            raise ValueError(f"data_dir does not exist: {self.data_dir}")
+        if os.path.exists(self.checkpoint_dir) and not os.path.isdir(self.checkpoint_dir):
+            raise ValueError(
+                f"checkpoint_dir exists but is not a directory: {self.checkpoint_dir}"
+            )
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+
+    def describe(self) -> dict:
+        return _describe_spec(self)
+
+
+# ---------------------------------------------------------------------------
+# §8.2: TrainingSpec
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TrainingSpec:
+    """Training config. Same D-H6 float-equality contract as PretrainSpec."""
+    arch: ArchitectureConfig
+    molecules: tuple[MoleculeSpec, ...]
+    targets: tuple[tuple[str, float], ...]
+    atom_energies: tuple[tuple[str, float], ...]
+    loss_name: str
+    loss_kwargs: tuple[tuple[str, object], ...] = ()
+    n_steps: int = 200
+    lr_start: float = 1e-3
+    lr_end: float = 1e-5
+    lr_decay_start: float = 0.0
+    grad_clip: float = 1.0
+    pretrain_checkpoint: str | None = None
+    checkpoint_dir: str = "./checkpoints"
+    seed: int = 42
+
+    @property
+    def targets_dict(self) -> dict[str, float]:
+        return dict(self.targets)
+
+    @property
+    def atom_energies_dict(self) -> dict[str, float]:
+        return dict(self.atom_energies)
+
+    @property
+    def loss_kwargs_dict(self) -> dict:
+        return dict(self.loss_kwargs)
+
+    @classmethod
+    def from_dicts(
+        cls,
+        *,
+        arch: "ArchitectureConfig",
+        molecules: tuple["MoleculeSpec", ...],
+        targets: dict[str, float],
+        atom_energies: dict[str, float],
+        loss_name: str,
+        loss_kwargs: dict | None = None,
+        **kwargs,
+    ) -> "TrainingSpec":
+        """Ergonomic dict-based constructor. Sorts keys for determinism."""
+        return cls(
+            arch=arch,
+            molecules=molecules,
+            targets=tuple(sorted(targets.items())),
+            atom_energies=tuple(sorted(atom_energies.items())),
+            loss_name=loss_name,
+            loss_kwargs=tuple(sorted((loss_kwargs or {}).items())),
+            **kwargs,
+        )
+
+    def validate(self) -> None:
+        """Raise ValueError if spec is inconsistent."""
+        # Deferred local import — xcquinox.alec.losses does not exist until
+        # Task 4.1 ships.
+        from xcquinox.alec.losses import LOSS_REGISTRY, list_losses
+        if self.loss_name not in LOSS_REGISTRY:
+            raise ValueError(
+                f"unknown loss {self.loss_name!r}; known: {list_losses()}"
+            )
+        if not self.molecules:
+            raise ValueError("molecules must be non-empty")
+        targets_dict = self.targets_dict
+        atom_energies_dict = self.atom_energies_dict
+        missing_targets = [m.name for m in self.molecules if m.name not in targets_dict]
+        if missing_targets:
+            raise ValueError(f"targets missing for molecules: {missing_targets}")
+        if not atom_energies_dict:
+            raise ValueError("atom_energies must be non-empty")
+
+        atom_mol_syms = {
+            next(iter(dict(m.atom_composition)))
+            for m in self.molecules
+            if sum(dict(m.atom_composition).values()) == 1
+        }
+        referenced_syms: set[str] = set()
+        for m in self.molecules:
+            referenced_syms.update(dict(m.atom_composition).keys())
+        missing_atoms = sorted(referenced_syms - atom_mol_syms)
+        if missing_atoms:
+            raise ValueError(
+                "Every atomic species referenced by a molecule's composition must "
+                "also appear as a single-atom training molecule. "
+                f"Missing single-atom molecules for: {missing_atoms}. "
+                "Add single-atom MoleculeSpec entries (e.g., MoleculeSpec('H', 'H', ...)) "
+                "for each missing symbol."
+            )
+        missing_atom_energies = sorted(atom_mol_syms - set(atom_energies_dict.keys()))
+        if missing_atom_energies:
+            raise ValueError(
+                "atom_energies is missing literature totals for atomic training molecules: "
+                f"{missing_atom_energies}"
+            )
+
+        n_compounds = sum(
+            1 for m in self.molecules if sum(dict(m.atom_composition).values()) > 1
+        )
+        if n_compounds == 0:
+            raise ValueError(
+                "TrainingSpec requires at least one compound molecule "
+                "(atom_composition summing to > 1); got only atomic molecules."
+            )
+
+        if self.n_steps <= 0:
+            raise ValueError(f"n_steps must be > 0, got {self.n_steps}")
+        import math
+        for field_name in ("lr_start", "lr_end", "lr_decay_start", "grad_clip"):
+            value = getattr(self, field_name)
+            if not math.isfinite(value):
+                raise ValueError(f"{field_name} must be finite, got {value}")
+        for m_name, t_value in targets_dict.items():
+            if not math.isfinite(t_value):
+                raise ValueError(f"targets[{m_name!r}] must be finite, got {t_value}")
+        for sym, ae_value in atom_energies_dict.items():
+            if not math.isfinite(ae_value):
+                raise ValueError(f"atom_energies[{sym!r}] must be finite, got {ae_value}")
+        if not (0.0 <= self.lr_decay_start <= 1.0):
+            raise ValueError(
+                f"lr_decay_start must be in [0, 1], got {self.lr_decay_start}"
+            )
+        if self.lr_start < self.lr_end:
+            raise ValueError(
+                f"lr_start ({self.lr_start}) must be >= lr_end ({self.lr_end})"
+            )
+        if self.grad_clip <= 0:
+            raise ValueError(f"grad_clip must be > 0, got {self.grad_clip}")
+        if self.pretrain_checkpoint is not None and not os.path.isdir(
+            self.pretrain_checkpoint
+        ):
+            raise ValueError(
+                f"pretrain_checkpoint directory not found: {self.pretrain_checkpoint}"
+            )
+        if os.path.exists(self.checkpoint_dir) and not os.path.isdir(self.checkpoint_dir):
+            raise ValueError(
+                f"checkpoint_dir exists but is not a directory: {self.checkpoint_dir}"
+            )
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        if self.loss_kwargs:
+            import inspect
+            loss_cls = LOSS_REGISTRY[self.loss_name]
+            sig = inspect.signature(loss_cls.__init__)
+            allowed = set(sig.parameters.keys()) - {"self", "molecules"}
+            provided_dict = dict(self.loss_kwargs)
+            unknown = set(provided_dict.keys()) - allowed
+            if unknown:
+                raise ValueError(
+                    f"loss_kwargs contains unknown keys for {self.loss_name!r}: "
+                    f"{sorted(unknown)} (allowed: {sorted(allowed)})"
+                )
+            for k, v in provided_dict.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    if not math.isfinite(v):
+                        raise ValueError(
+                            f"loss_kwargs[{k!r}] must be finite, got {v}"
+                        )
+
+    def describe(self) -> dict:
+        return _describe_spec(self)
+
+
+# ---------------------------------------------------------------------------
+# §9.3: TestSpec
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TestSpec:
+    """Test/evaluation config. Same frozen-dataclass/hashable contract."""
+    model_checkpoint: str
+    arch: ArchitectureConfig
+    molecules: tuple[MoleculeSpec, ...]
+    metrics: tuple[str, ...] = ("total_energy",)
+    metric_kwargs: tuple[tuple[str, tuple[tuple[str, object], ...]], ...] = ()
+    atom_energies: tuple[tuple[str, float], ...] = ()
+    output_dir: str = "test_results"
+    save_per_molecule: bool = True
+    save_aggregate: bool = True
+
+    @property
+    def metric_kwargs_dict(self) -> dict[str, dict]:
+        return {name: dict(kw) for name, kw in self.metric_kwargs}
+
+    @property
+    def atom_energies_dict(self) -> dict[str, float]:
+        return dict(self.atom_energies)
+
+    @classmethod
+    def from_dicts(
+        cls,
+        *,
+        model_checkpoint: str,
+        arch: "ArchitectureConfig",
+        molecules: tuple["MoleculeSpec", ...],
+        metrics: tuple[str, ...] = ("total_energy",),
+        metric_kwargs: dict[str, dict] | None = None,
+        atom_energies: dict[str, float] | None = None,
+        **kwargs,
+    ) -> "TestSpec":
+        """Ergonomic dict-based constructor. Sorts keys for determinism."""
+        mk_tuple: tuple[tuple[str, tuple[tuple[str, object], ...]], ...] = tuple(
+            (name, tuple(sorted(kw.items())))
+            for name, kw in sorted((metric_kwargs or {}).items())
+        )
+        return cls(
+            model_checkpoint=model_checkpoint,
+            arch=arch,
+            molecules=molecules,
+            metrics=metrics,
+            metric_kwargs=mk_tuple,
+            atom_energies=tuple(sorted((atom_energies or {}).items())),
+            **kwargs,
+        )
+
+    def validate(self) -> None:
+        """Raise ValueError if any referenced metric name or checkpoint is invalid."""
+        # Deferred local import — xcquinox.alec.evaluation does not exist
+        # until Task 5.3 ships.
+        from xcquinox.alec.evaluation import METRIC_REGISTRY, list_metrics
+        if not os.path.isfile(self.model_checkpoint):
+            raise ValueError(f"model_checkpoint not found: {self.model_checkpoint}")
+        if not self.molecules:
+            raise ValueError("molecules must be non-empty")
+        if not self.metrics:
+            raise ValueError("metrics must be non-empty")
+        unknown = [m for m in self.metrics if m not in METRIC_REGISTRY]
+        if unknown:
+            raise ValueError(f"unknown metrics: {unknown}; known: {list_metrics()}")
+        if "atomization_energy" in self.metrics and not self.atom_energies:
+            raise ValueError("atomization_energy metric requires atom_energies")
+        import math
+        for sym, ae_value in self.atom_energies_dict.items():
+            if not math.isfinite(ae_value):
+                raise ValueError(f"atom_energies[{sym!r}] must be finite, got {ae_value}")
+        import inspect
+        for metric_name, kw in self.metric_kwargs_dict.items():
+            if metric_name not in self.metrics:
+                raise ValueError(
+                    f"metric_kwargs[{metric_name!r}] is set but "
+                    f"{metric_name!r} is not in self.metrics "
+                    f"({list(self.metrics)}). The kwargs would be silently "
+                    "ignored at run_test time — fix the typo or add the "
+                    "metric to self.metrics."
+                )
+            if metric_name not in METRIC_REGISTRY:
+                continue
+            metric_cls = METRIC_REGISTRY[metric_name]
+            sig = inspect.signature(metric_cls.__init__)
+            allowed = set(sig.parameters.keys()) - {"self"}
+            provided = set(kw.keys())
+            unknown_keys = provided - allowed
+            if unknown_keys:
+                raise ValueError(
+                    f"metric_kwargs[{metric_name!r}] contains unknown keys: "
+                    f"{sorted(unknown_keys)} (allowed: {sorted(allowed)})"
+                )
+        if os.path.exists(self.output_dir) and not os.path.isdir(self.output_dir):
+            raise ValueError(
+                f"output_dir exists but is not a directory: {self.output_dir}"
+            )
+        os.makedirs(self.output_dir, exist_ok=True)
+
+    def describe(self) -> dict:
+        return _describe_spec(self)

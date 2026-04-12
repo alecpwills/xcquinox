@@ -245,3 +245,84 @@ def test_architecture_materialize_roundtrip_returns_registry_instances():
     assert isinstance(ccs, tuple) and len(ccs) == 1
     assert isinstance(xcs[0], LiebOxfordBound)
     assert isinstance(ccs[0], UEGLimit)
+
+
+# --- §13.2 items (18)-(19) — Task 1.6 ----------------------------------------
+
+# §13.2 item (18)
+def test_trainingspec_describe_json_serializes_with_all_fields():
+    import json
+    import dataclasses
+    from xcquinox.alec.config import TrainingSpec, MoleculeSpec, get_architecture
+
+    mols = (
+        MoleculeSpec.from_dict(
+            name="H", atom="H 0 0 0",
+            basis="sto-3g", charge=0, spin=1,
+            atom_composition={"H": 1},
+        ),
+        MoleculeSpec.from_dict(
+            name="O", atom="O 0 0 0",
+            basis="sto-3g", charge=0, spin=2,
+            atom_composition={"O": 1},
+        ),
+        MoleculeSpec.from_dict(
+            name="H2O", atom="O 0 0 0; H 0 0 0.96; H 0.93 0 -0.24",
+            basis="sto-3g", charge=0, spin=0,
+            atom_composition={"H": 2, "O": 1},
+        ),
+    )
+    spec = TrainingSpec(
+        arch=get_architecture("deep_combined"),
+        molecules=mols,
+        targets=(("H", 0.0), ("H2O", 232.0), ("O", 0.0)),
+        atom_energies=(("H", -0.5), ("O", -75.0)),
+        loss_name="A_atomization",
+        loss_kwargs=(),
+        n_steps=10,
+        lr_start=1e-3,
+        lr_end=1e-5,
+        lr_decay_start=0.0,
+        grad_clip=1.0,
+        pretrain_checkpoint=None,
+        checkpoint_dir="/tmp/alec_nonexistent_ckpt_dir",
+        seed=0,
+    )
+    out = spec.describe()
+    assert isinstance(out, dict)
+    field_names = {f.name for f in dataclasses.fields(spec)}
+    assert field_names == set(out.keys()), (
+        f"describe() field-set mismatch: missing={field_names - set(out.keys())}, "
+        f"extra={set(out.keys()) - field_names}"
+    )
+    assert out["arch"] == "deep_combined"
+    assert out["molecules"] == ["H", "O", "H2O"]
+    json.dumps(out)
+
+
+# §13.2 item (19)
+def test_pretrainspec_describe_json_serializes_with_all_fields():
+    import json
+    import dataclasses
+    from xcquinox.alec.config import PretrainSpec, get_architecture
+
+    spec = PretrainSpec(
+        arch=get_architecture("deep_combined"),
+        data_dir="/tmp/alec_nonexistent_data_dir",
+        checkpoint_dir="/tmp/alec_nonexistent_pretrain_ckpt",
+        n_steps=100,
+        lr_start=1e-2,
+        lr_end=1e-5,
+        lr_decay_start=0.2,
+        grad_clip=1.0,
+        seed=0,
+    )
+    out = spec.describe()
+    assert isinstance(out, dict)
+    field_names = {f.name for f in dataclasses.fields(spec)}
+    assert field_names == set(out.keys()), (
+        f"describe() field-set mismatch: missing={field_names - set(out.keys())}, "
+        f"extra={set(out.keys()) - field_names}"
+    )
+    assert out["arch"] == "deep_combined"
+    json.dumps(out)
