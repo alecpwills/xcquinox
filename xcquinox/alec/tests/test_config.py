@@ -202,3 +202,46 @@ def test_architecture_config_from_spec_equals_direct_construction():
     )
     assert via_factory == via_direct
     assert via_factory.descriptors == via_direct.descriptors
+
+
+# --- §13.2 items (10)-(11) — Task 1.5 step 6 --------------------------------
+
+# §13.2 item (10)
+def test_architecture_n_input_features_arithmetic():
+    from xcquinox.alec.config import get_architecture
+    zero = get_architecture("shallow")
+    one_cusp = get_architecture("deep_cusp")
+    one_dm = get_architecture("deep_dm")
+    two = get_architecture("deep_combined")
+    assert zero.n_input_features == 2
+    assert one_cusp.n_input_features == 2 + 2
+    assert one_dm.n_input_features == 2 + 3
+    assert two.n_input_features == 2 + 3 + 2
+
+
+# §13.2 item (11)
+def test_architecture_materialize_roundtrip_returns_registry_instances():
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.descriptors import CuspDescriptor, DMStatisticsDescriptor
+    from xcquinox.alec.constraints import LiebOxfordBound, UEGLimit
+
+    deep_combined = get_architecture("deep_combined")
+    descr = deep_combined.materialize_descriptors()
+    assert isinstance(descr, tuple)
+    assert len(descr) == 2
+    assert isinstance(descr[0], DMStatisticsDescriptor)
+    assert isinstance(descr[1], CuspDescriptor)
+
+    arch_with_constraints = ArchitectureConfig.from_spec(
+        "deep_lob_ueg",
+        4, 32,
+        descriptors=["cusp"],
+        x_constraints=["lieb_oxford"],
+        c_constraints=["ueg_limit"],
+    )
+    xcs = arch_with_constraints.materialize_x_constraints()
+    ccs = arch_with_constraints.materialize_c_constraints()
+    assert isinstance(xcs, tuple) and len(xcs) == 1
+    assert isinstance(ccs, tuple) and len(ccs) == 1
+    assert isinstance(xcs[0], LiebOxfordBound)
+    assert isinstance(ccs[0], UEGLimit)
