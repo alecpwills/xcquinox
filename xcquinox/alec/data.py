@@ -1,12 +1,10 @@
-"""xcquinox.alec.data — MoleculeData TypedDict, precompute, and XC helpers.
+"""xcquinox.alec.data — MoleculeData TypedDict and precompute.
 
-Implements THE SPEC §6.1 (MoleculeData), §6.2 (precompute_fixed_density_data),
-§6.3 (compute_exc_nn, compute_vxc_nn).
+Implements THE SPEC §6.1 (MoleculeData), §6.2 (precompute_fixed_density_data).
 """
 from typing import TypedDict
 
 import numpy as np
-import jax
 import jax.numpy as jnp
 
 from xcquinox.alec.config import MoleculeSpec
@@ -187,33 +185,3 @@ def precompute_fixed_density_data(
         dm_features=dm_features,
         atom_composition=mol_spec.atom_composition,
     )
-
-
-def compute_exc_nn(model, rho, sigma, features, grid_weights) -> float:
-    """Integrate NN XC energy density: E_xc^NN = sum(weights * exc).
-
-    model.eval_exc returns rho * epsilon_xc, so NO extra rho factor here.
-    """
-    exc = model.eval_exc(rho, sigma, features)
-    return float(jnp.sum(exc * grid_weights))
-
-
-def compute_vxc_nn(model, rho, sigma, features, ao_grid, grid_weights) -> jnp.ndarray:
-    """Assemble NN XC potential matrix V_xc via per-point forward-mode jvp.
-
-    Returns shape (n_ao, n_ao). LDA-like approximation (v_sigma discarded).
-    """
-    def exc_single_point(r, s, f):
-        return model.eval_exc_scalar(r, s, f)
-
-    # Per-point jvp: tangent on rho only
-    v_rho = jax.vmap(
-        lambda r, s, f: jax.jvp(
-            exc_single_point,
-            (r, s, f),
-            (jnp.ones_like(r), jnp.zeros_like(s), jnp.zeros_like(f)),
-        )[1]
-    )(rho, sigma, features)
-
-    # Assemble Fock-matrix form: V_xc_ij = sum_g v_rho[g] * ao[g,i] * ao[g,j] * w[g]
-    return jnp.einsum("g,gi,gj,g->ij", v_rho, ao_grid, ao_grid, grid_weights)
