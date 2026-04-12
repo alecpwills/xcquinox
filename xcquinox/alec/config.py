@@ -300,7 +300,17 @@ class MoleculeSpec:
     ``dm_pbe``), ``rho_ccsd_grid`` (same shape as ``rho_grid``), and
     ``E_ref_literature`` (scalar). Unknown keys are rejected. Each key is
     optional — a partial ``.npz`` is valid (e.g., only ``E_ref_literature``
-    for atoms where density matching is skipped)."""
+    for atoms where density matching is skipped).
+
+    The optional ``grid_level`` pins the pyscf DFT grid level used by
+    ``precompute_fixed_density_data``. ``None`` (the default) leaves pyscf's
+    default (currently level 3 with ``nwchem_prune``). Setting an explicit
+    integer is required when external reference data was computed on a
+    non-default grid — e.g., the step3b / step 4 experiment uses
+    ``grid_level=1`` so that ``precompute`` rebuilds the same coarse grid
+    the caller used when writing ``rho_ccsd_grid`` to the external ``.npz``.
+    Values accepted: 0..9, matching ``pyscf.dft.gen_grid.Grids.level``.
+    """
     name: str
     atom: str            # pyscf-format, e.g. "H 0 0 0; H 0 0 0.74"
     basis: str = "sto-3g"
@@ -313,13 +323,32 @@ class MoleculeSpec:
     # Optional path to an .npz with reference data. None = no external data
     # (dm_target/rho_ccsd_grid/E_ref_literature stay None in MoleculeData).
     external_data_path: str | None = None
+    # Optional pyscf DFT grid level. None = pyscf default (currently 3).
+    # Must match the grid level used to generate any reference data pointed
+    # at by external_data_path, otherwise the shape validator in
+    # _load_external_data will reject the file.
+    grid_level: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.grid_level is not None:
+            if not isinstance(self.grid_level, int) or isinstance(self.grid_level, bool):
+                raise TypeError(
+                    f"MoleculeSpec.grid_level must be int or None, got "
+                    f"{type(self.grid_level).__name__} = {self.grid_level!r}"
+                )
+            if not (0 <= self.grid_level <= 9):
+                raise ValueError(
+                    f"MoleculeSpec.grid_level must be in [0, 9], got "
+                    f"{self.grid_level}"
+                )
 
     @classmethod
     def from_dict(cls, *, name: str, atom: str,
                   atom_composition: dict[str, int] | tuple,
                   basis: str = "sto-3g", charge: int = 0,
                   spin: int = 0,
-                  external_data_path: str | None = None) -> "MoleculeSpec":
+                  external_data_path: str | None = None,
+                  grid_level: int | None = None) -> "MoleculeSpec":
         """Convenience constructor that accepts atom_composition as a dict
         and canonicalizes it into the sorted tuple-of-pairs form."""
         if isinstance(atom_composition, dict):
@@ -328,7 +357,8 @@ class MoleculeSpec:
             comp = tuple(sorted(tuple(atom_composition)))
         return cls(name=name, atom=atom, basis=basis, charge=charge,
                    spin=spin, atom_composition=comp,
-                   external_data_path=external_data_path)
+                   external_data_path=external_data_path,
+                   grid_level=grid_level)
 
     @property
     def composition_dict(self) -> dict[str, int]:

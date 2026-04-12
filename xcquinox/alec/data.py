@@ -146,6 +146,11 @@ def precompute_fixed_density_data(
     else:
         mf = dft.RKS(mol)
     mf.xc = "pbe"
+    # Pin grid level when the spec requires it (e.g., external rho_ccsd_grid
+    # was generated on a non-default grid). Setting .level must happen before
+    # the first kernel call so .build() picks it up.
+    if mol_spec.grid_level is not None:
+        mf.grids.level = mol_spec.grid_level
     mf.kernel()
 
     # Overlap conditioning gate (E-H4)

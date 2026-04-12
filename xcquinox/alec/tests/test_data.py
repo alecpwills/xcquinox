@@ -397,3 +397,109 @@ def test_molecule_spec_from_dict_accepts_external_data_path(tmp_path):
         basis="sto-3g", spin=1, external_data_path=p,
     )
     assert mol.external_data_path == p
+
+
+# ---------------------------------------------------------------------------
+# §13.2 items (24)-(30) — MoleculeSpec.grid_level
+# ---------------------------------------------------------------------------
+
+
+# §13.2 item (24)
+def test_molecule_spec_grid_level_default_is_none():
+    """grid_level defaults to None so existing constructors keep working."""
+    mol = MoleculeSpec(name="test", atom="H 0 0 0")
+    assert mol.grid_level is None
+
+
+# §13.2 item (25)
+def test_molecule_spec_grid_level_rejects_non_int():
+    """grid_level must be an int or None; floats/strings are rejected."""
+    with pytest.raises(TypeError, match="grid_level must be int or None"):
+        MoleculeSpec(name="H", atom="H 0 0 0", grid_level=1.0)
+    with pytest.raises(TypeError, match="grid_level must be int or None"):
+        MoleculeSpec(name="H", atom="H 0 0 0", grid_level="1")
+
+
+# §13.2 item (26)
+def test_molecule_spec_grid_level_rejects_out_of_range():
+    """grid_level must be in [0, 9] to match pyscf Grids.level."""
+    with pytest.raises(ValueError, match=r"grid_level must be in \[0, 9\]"):
+        MoleculeSpec(name="H", atom="H 0 0 0", grid_level=-1)
+    with pytest.raises(ValueError, match=r"grid_level must be in \[0, 9\]"):
+        MoleculeSpec(name="H", atom="H 0 0 0", grid_level=10)
+
+
+# §13.2 item (27)
+def test_molecule_spec_grid_level_rejects_bool():
+    """bool is a subclass of int in Python; grid_level must reject it."""
+    with pytest.raises(TypeError, match="grid_level must be int or None"):
+        MoleculeSpec(name="H", atom="H 0 0 0", grid_level=True)
+
+
+# §13.2 item (28)
+def test_molecule_spec_from_dict_accepts_grid_level():
+    """MoleculeSpec.from_dict forwards grid_level to the frozen dataclass."""
+    mol = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", spin=1, grid_level=1,
+    )
+    assert mol.grid_level == 1
+
+
+# §13.2 item (29)
+def test_precompute_honors_grid_level_smaller_than_default():
+    """grid_level=1 produces a much smaller grid than the pyscf default (3)."""
+    mol_default = h2_molecule()
+    data_default = precompute_fixed_density_data(mol_default)
+    mol_level1 = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        grid_level=1,
+    )
+    data_level1 = precompute_fixed_density_data(mol_level1)
+    # Level 1 is coarser than level 3 (the pyscf default), so fewer points.
+    assert data_level1["rho_grid"].shape[0] < data_default["rho_grid"].shape[0]
+    # Both should still integrate to approximately 2 electrons (H2).
+    weights_default = data_default["grid_weights"]
+    weights_level1 = data_level1["grid_weights"]
+    n_default = float(jnp.sum(data_default["rho_grid"] * weights_default))
+    n_level1 = float(jnp.sum(data_level1["rho_grid"] * weights_level1))
+    assert abs(n_default - 2.0) < 0.1
+    assert abs(n_level1 - 2.0) < 0.1
+
+
+# §13.2 item (30)
+def test_precompute_grid_level_interacts_with_external_data_shape(tmp_path):
+    """rho_ccsd_grid shape is tied to the active grid_level via shape validation.
+
+    Step 4 writes rho_ccsd_grid at grid_level=1; loading it back through
+    precompute with the default grid (level 3) must fail because the grid
+    point count is different.
+    """
+    mol_level1 = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        grid_level=1,
+    )
+    baseline_level1 = precompute_fixed_density_data(mol_level1)
+    rho_level1 = np.asarray(baseline_level1["rho_grid"]) * 1.1
+    path = str(tmp_path / "h2_level1.npz")
+    np.savez(path, rho_ccsd_grid=rho_level1)
+
+    # Matching spec (grid_level=1) accepts the external data.
+    mol_with_path_ok = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        grid_level=1, external_data_path=path,
+    )
+    data_ok = precompute_fixed_density_data(mol_with_path_ok)
+    assert data_ok["rho_ccsd_grid"] is not None
+
+    # Mismatched spec (default grid) rejects with shape error.
+    mol_with_path_bad = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        grid_level=None, external_data_path=path,
+    )
+    with pytest.raises(ValueError, match="rho_ccsd_grid shape"):
+        precompute_fixed_density_data(mol_with_path_bad)
