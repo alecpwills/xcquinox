@@ -177,3 +177,106 @@ class ArchitectureConfig:
     @property
     def resolved_cnet_lob_lim(self) -> float | None:
         return 2.0
+
+    @property
+    def n_extra_features(self) -> int:
+        from xcquinox.alec.descriptors import make_descriptor
+        return sum(
+            make_descriptor(spec.name, **spec.as_kwargs()).n_features
+            for spec in self.descriptors
+        )
+
+    @property
+    def n_input_features(self) -> int:
+        return 2 + self.n_extra_features
+
+    def materialize_descriptors(self):
+        from xcquinox.alec.descriptors import make_descriptor
+        return tuple(make_descriptor(s.name, **s.as_kwargs()) for s in self.descriptors)
+
+    def materialize_x_constraints(self):
+        from xcquinox.alec.constraints import make_constraint
+        return tuple(make_constraint(s.name, **s.as_kwargs()) for s in self.x_constraints)
+
+    def materialize_c_constraints(self):
+        from xcquinox.alec.constraints import make_constraint
+        return tuple(make_constraint(s.name, **s.as_kwargs()) for s in self.c_constraints)
+
+    @classmethod
+    def from_spec(cls, name, depth, nodes, *, attention=False,
+                  descriptors=(), x_constraints=(), c_constraints=(),
+                  allow_scaling_symmetric_on_c: bool = False,
+                  allow_double_lob_clamp: bool = False):
+        """Factory that accepts str | (str, dict) | FeatureSpec for each entry."""
+        import warnings
+
+        x_spec_tuple = tuple(FeatureSpec.of(x) for x in x_constraints)
+        c_spec_tuple = tuple(FeatureSpec.of(x) for x in c_constraints)
+
+        for s in c_spec_tuple:
+            if s.name == "scaling_symmetric":
+                if not allow_scaling_symmetric_on_c:
+                    raise ValueError(
+                        "ScalingSymmetric is registered under c_constraints, but "
+                        "uniform coordinate scaling is NOT an exact symmetry of "
+                        "the correlation functional (LDA correlation depends on "
+                        "rs = (3/(4\u03c0 \u03c1))^(1/3)). Applying this constraint to the "
+                        "correlation network destroys its density dependence. "
+                        "If you really want this (e.g. research into approximate "
+                        "c-side symmetry), pass allow_scaling_symmetric_on_c=True."
+                    )
+                warnings.warn(
+                    "ScalingSymmetric is applied to AlecGGA_CNet via "
+                    "allow_scaling_symmetric_on_c=True \u2014 this destroys the "
+                    "correlation network's rs dependence. See \u00a74.3 of the spec.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
+        has_lob_constraint = any(s.name == "lieb_oxford" for s in x_spec_tuple)
+        if has_lob_constraint and allow_double_lob_clamp:
+            warnings.warn(
+                "LiebOxfordBound is registered under x_constraints AND "
+                "allow_double_lob_clamp=True \u2014 the network will retain its "
+                "built-in LOB wrap (lob_lim=1.804) in addition to the "
+                "constraint, narrowing the effective F range from [0, 1.804] "
+                "to [0.321, 1.613]. See \u00a74.3 of the spec.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+        return cls(
+            name=name, depth=depth, nodes=nodes, attention=attention,
+            descriptors=tuple(FeatureSpec.of(x) for x in descriptors),
+            x_constraints=x_spec_tuple,
+            c_constraints=c_spec_tuple,
+            double_lob_clamp_allowed=allow_double_lob_clamp,
+        )
+
+
+# ---------------------------------------------------------------------------
+# §11.2: ARCHITECTURES dict — the 12 notebook variants
+# ---------------------------------------------------------------------------
+
+ARCHITECTURES = {
+    "shallow":             ArchitectureConfig(name="shallow",      depth=2, nodes=8),
+    "shallow_attn":        ArchitectureConfig(name="shallow_attn", depth=2, nodes=8,  attention=True),
+    "medium":              ArchitectureConfig(name="medium",       depth=3, nodes=16),
+    "medium_attn":         ArchitectureConfig(name="medium_attn",  depth=3, nodes=16, attention=True),
+    "deep":                ArchitectureConfig(name="deep",         depth=4, nodes=32),
+    "deep_attn":           ArchitectureConfig(name="deep_attn",    depth=4, nodes=32, attention=True),
+    "deep_cusp":           ArchitectureConfig.from_spec("deep_cusp",          4, 32, descriptors=["cusp"]),
+    "deep_cusp_attn":      ArchitectureConfig.from_spec("deep_cusp_attn",     4, 32, attention=True, descriptors=["cusp"]),
+    "deep_dm":             ArchitectureConfig.from_spec("deep_dm",            4, 32, descriptors=["dm_statistics"]),
+    "deep_dm_attn":        ArchitectureConfig.from_spec("deep_dm_attn",       4, 32, attention=True, descriptors=["dm_statistics"]),
+    "deep_combined":       ArchitectureConfig.from_spec("deep_combined",      4, 32, descriptors=["dm_statistics", "cusp"]),
+    "deep_combined_attn":  ArchitectureConfig.from_spec("deep_combined_attn", 4, 32, attention=True, descriptors=["dm_statistics", "cusp"]),
+}
+
+
+def get_architecture(name: str) -> ArchitectureConfig:
+    return ARCHITECTURES[name]
+
+
+def list_architectures() -> list[str]:
+    return sorted(ARCHITECTURES.keys())

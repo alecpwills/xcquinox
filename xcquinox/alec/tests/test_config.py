@@ -134,3 +134,71 @@ def test_architecture_config_field_validation(field, value, exc):
     kwargs[field] = value
     with pytest.raises(exc):
         ArchitectureConfig(**kwargs)
+
+
+# --- §13.2 items (12)-(15), (17) — Task 1.3 --------------------------------
+
+# §13.2 item (12)
+def test_architectures_has_12_keys():
+    from xcquinox.alec.config import ARCHITECTURES
+    assert len(ARCHITECTURES) == 12
+    expected_keys = {
+        "shallow", "shallow_attn", "medium", "medium_attn",
+        "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
+        "deep_dm", "deep_dm_attn", "deep_combined", "deep_combined_attn",
+    }
+    assert set(ARCHITECTURES.keys()) == expected_keys
+
+
+# §13.2 item (13)
+def test_get_architecture_raises_for_unknown():
+    from xcquinox.alec.config import get_architecture
+    with pytest.raises(KeyError):
+        get_architecture("nonexistent")
+
+
+# §13.2 item (14)
+def test_list_architectures_returns_sorted():
+    from xcquinox.alec.config import list_architectures
+    names = list_architectures()
+    assert names == sorted(names)
+    assert len(names) == 12
+
+
+# §13.2 item (15)
+def test_architectures_match_notebook_reference():
+    from xcquinox.alec.config import ARCHITECTURES
+    from xcquinox.alec.tests.fixtures.notebook_reference import NOTEBOOK_ARCHITECTURES
+    assert set(ARCHITECTURES.keys()) == set(NOTEBOOK_ARCHITECTURES.keys())
+    for name, expected in NOTEBOOK_ARCHITECTURES.items():
+        actual = ARCHITECTURES[name]
+        assert actual.name == expected["name"]
+        assert actual.depth == expected["depth"]
+        assert actual.nodes == expected["nodes"]
+        assert actual.attention is expected["attention"]
+        actual_descr_names = [d.name for d in actual.descriptors]
+        assert actual_descr_names == expected["descriptors"]
+
+
+# §13.2 item (17)
+def test_architecture_config_from_spec_equals_direct_construction():
+    via_factory = ArchitectureConfig.from_spec(
+        "deep_combined",
+        4, 32,
+        descriptors=["dm_statistics", "cusp"],
+    )
+    via_direct = ArchitectureConfig(
+        name="deep_combined",
+        depth=4,
+        nodes=32,
+        attention=False,
+        descriptors=(
+            FeatureSpec(name="dm_statistics", kwargs=_FrozenDict(())),
+            FeatureSpec(name="cusp", kwargs=_FrozenDict(())),
+        ),
+        x_constraints=(),
+        c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+    assert via_factory == via_direct
+    assert via_factory.descriptors == via_direct.descriptors
