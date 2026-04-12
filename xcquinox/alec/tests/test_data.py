@@ -203,6 +203,197 @@ def test_precompute_populates_all_required_keys():
     )
     # cusp_features should be populated (descriptor requested it)
     assert data["cusp_features"] is not None
-    # dm_target and rho_ccsd_grid are None (CCSD not implemented in precompute)
+    # dm_target and rho_ccsd_grid are None because no external_data_path
+    # was supplied; precompute only populates them from an external .npz.
     assert data["dm_target"] is None
     assert data["rho_ccsd_grid"] is None
+
+
+# ---------------------------------------------------------------------------
+# §13.2 items (14)-(20) — MoleculeSpec.external_data_path
+# ---------------------------------------------------------------------------
+
+
+def _prepare_h2_external_data(tmp_path, *, keys):
+    """Run PBE on H2 once, then save an .npz with shape-matching reference
+    values so external_data_path tests exercise the real loader.
+
+    Returns (path, reference_values_dict, baseline_data)."""
+    mol = h2_molecule()
+    baseline = precompute_fixed_density_data(mol)
+    dm_shape = tuple(np.asarray(baseline["dm_pbe"]).shape)
+    rho_shape = tuple(np.asarray(baseline["rho_grid"]).shape)
+
+    payload = {}
+    refs = {}
+    if "dm_target" in keys:
+        # Use 1.5 * dm_pbe as a distinctive "reference" so we can assert
+        # precompute actually loaded from disk instead of falling back.
+        dm_arr = np.asarray(baseline["dm_pbe"]) * 1.5
+        payload["dm_target"] = dm_arr
+        refs["dm_target"] = dm_arr
+    if "rho_ccsd_grid" in keys:
+        rho_arr = np.asarray(baseline["rho_grid"]) * 1.1
+        payload["rho_ccsd_grid"] = rho_arr
+        refs["rho_ccsd_grid"] = rho_arr
+    if "E_ref_literature" in keys:
+        payload["E_ref_literature"] = np.float64(-1.17447)
+        refs["E_ref_literature"] = -1.17447
+
+    path = str(tmp_path / "h2_external.npz")
+    np.savez(path, **payload)
+    return path, refs, baseline, dm_shape, rho_shape
+
+
+# §13.2 item (14)
+def test_precompute_loads_external_data_path_all_keys(tmp_path):
+    """External .npz with all three keys populates MoleculeData and shapes match."""
+    path, refs, baseline, dm_shape, rho_shape = _prepare_h2_external_data(
+        tmp_path, keys=("dm_target", "rho_ccsd_grid", "E_ref_literature"),
+    )
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=path,
+    )
+    data = precompute_fixed_density_data(mol)
+    assert data["dm_target"] is not None
+    assert data["rho_ccsd_grid"] is not None
+    assert data["E_ref_literature"] is not None
+    assert tuple(np.asarray(data["dm_target"]).shape) == dm_shape
+    assert tuple(np.asarray(data["rho_ccsd_grid"]).shape) == rho_shape
+    np.testing.assert_allclose(
+        np.asarray(data["dm_target"]), refs["dm_target"], rtol=1e-12,
+    )
+    np.testing.assert_allclose(
+        np.asarray(data["rho_ccsd_grid"]), refs["rho_ccsd_grid"], rtol=1e-12,
+    )
+    assert data["E_ref_literature"] == pytest.approx(-1.17447, rel=1e-10)
+
+
+# §13.2 item (15)
+def test_precompute_external_data_path_partial_npz(tmp_path):
+    """Partial .npz (only E_ref_literature) leaves other fields None."""
+    path, _, _, _, _ = _prepare_h2_external_data(
+        tmp_path, keys=("E_ref_literature",),
+    )
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=path,
+    )
+    data = precompute_fixed_density_data(mol)
+    assert data["dm_target"] is None
+    assert data["rho_ccsd_grid"] is None
+    assert data["E_ref_literature"] == pytest.approx(-1.17447, rel=1e-10)
+
+
+# §13.2 item (16)
+def test_precompute_external_data_path_rejects_unknown_keys(tmp_path):
+    """An .npz with an unrecognized key triggers ValueError."""
+    path = str(tmp_path / "bad_keys.npz")
+    np.savez(path, dm_target=np.zeros((2, 2)), bogus=np.zeros(3))
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=path,
+    )
+    with pytest.raises(ValueError, match="unknown keys"):
+        precompute_fixed_density_data(mol)
+
+
+# §13.2 item (17)
+def test_precompute_external_data_path_rejects_dm_target_shape_mismatch(tmp_path):
+    """dm_target shape must match dm_pbe; mismatch triggers ValueError."""
+    path = str(tmp_path / "bad_dm_shape.npz")
+    np.savez(path, dm_target=np.zeros((5, 5)))  # H2/sto-3g has dm shape (2, 2)
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=path,
+    )
+    with pytest.raises(ValueError, match="dm_target shape"):
+        precompute_fixed_density_data(mol)
+
+
+# §13.2 item (18)
+def test_precompute_external_data_path_rejects_rho_grid_shape_mismatch(tmp_path):
+    """rho_ccsd_grid shape must match rho_grid; mismatch triggers ValueError."""
+    path = str(tmp_path / "bad_rho_shape.npz")
+    np.savez(path, rho_ccsd_grid=np.zeros(7))
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=path,
+    )
+    with pytest.raises(ValueError, match="rho_ccsd_grid shape"):
+        precompute_fixed_density_data(mol)
+
+
+# §13.2 item (19)
+def test_precompute_external_data_path_rejects_nonscalar_E_ref(tmp_path):
+    """E_ref_literature must be scalar; vector triggers ValueError."""
+    path = str(tmp_path / "bad_scalar.npz")
+    np.savez(path, E_ref_literature=np.array([1.0, 2.0]))
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=path,
+    )
+    with pytest.raises(ValueError, match="must be scalar"):
+        precompute_fixed_density_data(mol)
+
+
+# §13.2 item (20)
+def test_precompute_external_data_path_missing_file(tmp_path):
+    """Nonexistent external_data_path triggers FileNotFoundError."""
+    missing = str(tmp_path / "does_not_exist.npz")
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=missing,
+    )
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        precompute_fixed_density_data(mol)
+
+
+# §13.2 item (21)
+def test_precompute_external_data_path_uks_dm_shape(tmp_path):
+    """O (UKS) dm_pbe is 3D; dm_target shape must match the 3D form."""
+    mol_o = o_atom()
+    baseline = precompute_fixed_density_data(mol_o)
+    dm_shape = tuple(np.asarray(baseline["dm_pbe"]).shape)
+    assert len(dm_shape) == 3  # UKS branch: (2, n_ao, n_ao)
+    path = str(tmp_path / "o_external.npz")
+    np.savez(
+        path,
+        dm_target=np.asarray(baseline["dm_pbe"]),
+        E_ref_literature=np.float64(-75.0673),
+    )
+    mol_o_with_path = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),),
+        external_data_path=path,
+    )
+    data = precompute_fixed_density_data(mol_o_with_path)
+    assert data["dm_target"] is not None
+    assert tuple(np.asarray(data["dm_target"]).shape) == dm_shape
+    assert data["E_ref_literature"] == pytest.approx(-75.0673, rel=1e-10)
+
+
+# §13.2 item (22)
+def test_molecule_spec_external_data_path_default_is_none():
+    """external_data_path defaults to None so existing constructors keep working."""
+    mol = MoleculeSpec(name="test", atom="H 0 0 0")
+    assert mol.external_data_path is None
+
+
+# §13.2 item (23)
+def test_molecule_spec_from_dict_accepts_external_data_path(tmp_path):
+    """MoleculeSpec.from_dict forwards external_data_path to the frozen dataclass."""
+    p = str(tmp_path / "x.npz")
+    mol = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", spin=1, external_data_path=p,
+    )
+    assert mol.external_data_path == p

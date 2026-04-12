@@ -292,7 +292,15 @@ def list_architectures() -> list[str]:
 @dataclass(frozen=True)
 class MoleculeSpec:
     """Immutable molecule identity. Hashable (frozen dataclass, tuple-of-pairs
-    composition) so it can serve as a jit-static arg or dict key."""
+    composition) so it can serve as a jit-static arg or dict key.
+
+    The optional ``external_data_path`` points at an ``.npz`` file containing
+    reference data that ``precompute_fixed_density_data`` cannot compute from
+    the PBE SCF alone. Supported keys: ``dm_target`` (same shape as
+    ``dm_pbe``), ``rho_ccsd_grid`` (same shape as ``rho_grid``), and
+    ``E_ref_literature`` (scalar). Unknown keys are rejected. Each key is
+    optional — a partial ``.npz`` is valid (e.g., only ``E_ref_literature``
+    for atoms where density matching is skipped)."""
     name: str
     atom: str            # pyscf-format, e.g. "H 0 0 0; H 0 0 0.74"
     basis: str = "sto-3g"
@@ -302,12 +310,16 @@ class MoleculeSpec:
     # MUST be a tuple-of-tuples (NOT a dict) because MoleculeSpec is frozen
     # and the auto-generated __hash__ hashes every field.
     atom_composition: tuple[tuple[str, int], ...] = ()
+    # Optional path to an .npz with reference data. None = no external data
+    # (dm_target/rho_ccsd_grid/E_ref_literature stay None in MoleculeData).
+    external_data_path: str | None = None
 
     @classmethod
     def from_dict(cls, *, name: str, atom: str,
                   atom_composition: dict[str, int] | tuple,
                   basis: str = "sto-3g", charge: int = 0,
-                  spin: int = 0) -> "MoleculeSpec":
+                  spin: int = 0,
+                  external_data_path: str | None = None) -> "MoleculeSpec":
         """Convenience constructor that accepts atom_composition as a dict
         and canonicalizes it into the sorted tuple-of-pairs form."""
         if isinstance(atom_composition, dict):
@@ -315,7 +327,8 @@ class MoleculeSpec:
         else:
             comp = tuple(sorted(tuple(atom_composition)))
         return cls(name=name, atom=atom, basis=basis, charge=charge,
-                   spin=spin, atom_composition=comp)
+                   spin=spin, atom_composition=comp,
+                   external_data_path=external_data_path)
 
     @property
     def composition_dict(self) -> dict[str, int]:

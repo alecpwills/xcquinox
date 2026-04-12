@@ -2,6 +2,7 @@
 
 Implements THE SPEC §6.1 (MoleculeData), §6.2 (precompute_fixed_density_data).
 """
+import os
 from typing import TypedDict
 
 import numpy as np
@@ -9,6 +10,81 @@ import jax.numpy as jnp
 
 from xcquinox.alec.config import MoleculeSpec
 from xcquinox.alec.descriptors import Descriptor
+
+
+# Keys allowed in MoleculeSpec.external_data_path .npz files. Kept as a
+# module-level constant so tests and documentation can share it.
+_ALLOWED_EXTERNAL_KEYS = frozenset({
+    "dm_target",
+    "rho_ccsd_grid",
+    "E_ref_literature",
+})
+
+
+def _load_external_data(
+    path: str,
+    *,
+    dm_pbe_shape: tuple[int, ...],
+    rho_pbe_shape: tuple[int, ...],
+    mol_name: str,
+) -> tuple[jnp.ndarray | None, jnp.ndarray | None, float | None]:
+    """Load and validate a MoleculeSpec.external_data_path .npz.
+
+    The .npz may contain any subset of ``dm_target``, ``rho_ccsd_grid``,
+    ``E_ref_literature``; unknown keys trigger ``ValueError``. Shape
+    validation matches freshly computed PBE quantities so callers cannot
+    silently mismatch densities/DMs against the PBE grid or basis.
+    """
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"MoleculeSpec.external_data_path does not exist for "
+            f"{mol_name!r}: {path}"
+        )
+
+    with np.load(path) as npz:
+        present = set(npz.files)
+        unknown = present - _ALLOWED_EXTERNAL_KEYS
+        if unknown:
+            raise ValueError(
+                f"external_data .npz for {mol_name!r} contains unknown "
+                f"keys {sorted(unknown)}; allowed keys: "
+                f"{sorted(_ALLOWED_EXTERNAL_KEYS)}"
+            )
+
+        dm_target = None
+        if "dm_target" in present:
+            dm_arr = np.asarray(npz["dm_target"])
+            if tuple(dm_arr.shape) != tuple(dm_pbe_shape):
+                raise ValueError(
+                    f"external dm_target shape {tuple(dm_arr.shape)} does "
+                    f"not match dm_pbe shape {tuple(dm_pbe_shape)} for "
+                    f"{mol_name!r}"
+                )
+            dm_target = jnp.array(dm_arr)
+
+        rho_ccsd_grid = None
+        if "rho_ccsd_grid" in present:
+            rho_arr = np.asarray(npz["rho_ccsd_grid"])
+            if tuple(rho_arr.shape) != tuple(rho_pbe_shape):
+                raise ValueError(
+                    f"external rho_ccsd_grid shape {tuple(rho_arr.shape)} "
+                    f"does not match rho_grid shape {tuple(rho_pbe_shape)} "
+                    f"for {mol_name!r}"
+                )
+            rho_ccsd_grid = jnp.array(rho_arr)
+
+        E_ref_literature = None
+        if "E_ref_literature" in present:
+            val = np.asarray(npz["E_ref_literature"])
+            if val.ndim == 0 or (val.ndim == 1 and val.size == 1):
+                E_ref_literature = float(val.reshape(()).item())
+            else:
+                raise ValueError(
+                    f"external E_ref_literature for {mol_name!r} must be "
+                    f"scalar, got shape {tuple(val.shape)}"
+                )
+
+    return dm_target, rho_ccsd_grid, E_ref_literature
 
 
 class MoleculeData(TypedDict, total=True):
@@ -152,11 +228,21 @@ def precompute_fixed_density_data(
         )
         dm_features = jnp.tile(dm_feat_global, (len(rho_pbe), 1))
 
-    # CCSD reference data (on-demand, None if not requested)
+    # External reference data (dm_target / rho_ccsd_grid / E_ref_literature)
+    # come from an optional .npz pointed to by mol_spec.external_data_path.
+    # precompute only handles SCF-level quantities; CCSD/HF post-SCF
+    # computations are the caller's responsibility and are injected through
+    # this path so run_training / run_test pick them up automatically.
     dm_target = None
     rho_ccsd_grid = None
-    # CCSD computation is deferred to callers who supply the data externally;
-    # precompute only handles SCF-level quantities.
+    E_ref_literature = None
+    if mol_spec.external_data_path is not None:
+        dm_target, rho_ccsd_grid, E_ref_literature = _load_external_data(
+            mol_spec.external_data_path,
+            dm_pbe_shape=tuple(np.asarray(dm_pbe).shape),
+            rho_pbe_shape=tuple(np.asarray(rho_pbe).shape),
+            mol_name=mol_spec.name,
+        )
 
     return MoleculeData(
         name=mol_spec.name,
@@ -173,7 +259,7 @@ def precompute_fixed_density_data(
         E_pbe=E_pbe,
         E_xc_pbe=E_xc_pbe,
         E_non_xc=E_non_xc,
-        E_ref_literature=None,
+        E_ref_literature=E_ref_literature,
         dm_target=dm_target,
         rho_ccsd_grid=rho_ccsd_grid,
         rho_grid=jnp.array(rho_pbe),
