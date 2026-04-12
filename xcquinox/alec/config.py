@@ -96,3 +96,84 @@ class FeatureSpec:
                 return {_thaw(e) for e in v}
             return v
         return {k: _thaw(v) for k, v in self.kwargs}
+
+
+@dataclass(frozen=True)
+class ArchitectureConfig:
+    """Stores descriptor and constraint specifications (registry-name strings
+    plus kwargs dicts) — not live instances. Descriptor and constraint instances
+    are materialized only when a model is constructed."""
+    name: str
+    depth: int
+    nodes: int
+    attention: bool = False
+    descriptors: tuple[FeatureSpec, ...] = ()
+    x_constraints: tuple[FeatureSpec, ...] = ()
+    c_constraints: tuple[FeatureSpec, ...] = ()
+    double_lob_clamp_allowed: bool = False
+
+    def __post_init__(self):
+        if not isinstance(self.name, str):
+            raise TypeError(
+                f"ArchitectureConfig.name must be a plain Python str, "
+                f"got {type(self.name).__name__}"
+            )
+        if not self.name:
+            raise ValueError("ArchitectureConfig.name must be non-empty")
+        if not isinstance(self.depth, int) or isinstance(self.depth, bool):
+            raise TypeError(
+                f"ArchitectureConfig.depth must be a plain Python int, "
+                f"got {type(self.depth).__name__}"
+            )
+        if self.depth < 1:
+            raise ValueError(
+                f"ArchitectureConfig.depth must be >= 1, got {self.depth}"
+            )
+        if not isinstance(self.nodes, int) or isinstance(self.nodes, bool):
+            raise TypeError(
+                f"ArchitectureConfig.nodes must be a plain Python int, "
+                f"got {type(self.nodes).__name__}"
+            )
+        if self.nodes < 1:
+            raise ValueError(
+                f"ArchitectureConfig.nodes must be >= 1, got {self.nodes}"
+            )
+        if not isinstance(self.attention, bool):
+            raise TypeError(
+                f"ArchitectureConfig.attention must be a plain Python bool, "
+                f"got {type(self.attention).__name__}"
+            )
+        if not isinstance(self.double_lob_clamp_allowed, bool):
+            raise TypeError(
+                f"ArchitectureConfig.double_lob_clamp_allowed must be a plain "
+                f"Python bool, got {type(self.double_lob_clamp_allowed).__name__}"
+            )
+        for field_name in ("descriptors", "x_constraints", "c_constraints"):
+            value = getattr(self, field_name)
+            if not isinstance(value, tuple):
+                raise TypeError(
+                    f"ArchitectureConfig.{field_name} must be a tuple of "
+                    f"FeatureSpec, got {type(value).__name__}"
+                )
+            for i, entry in enumerate(value):
+                if not isinstance(entry, FeatureSpec):
+                    raise TypeError(
+                        f"ArchitectureConfig.{field_name}[{i}] must be a "
+                        f"FeatureSpec (use FeatureSpec.of or from_spec for "
+                        f"str/tuple coercion), got {type(entry).__name__} = "
+                        f"{entry!r}"
+                    )
+
+    @property
+    def x_has_lieb_oxford_constraint(self) -> bool:
+        return any(s.name == "lieb_oxford" for s in self.x_constraints)
+
+    @property
+    def resolved_xnet_lob_lim(self) -> float | None:
+        if self.x_has_lieb_oxford_constraint and not self.double_lob_clamp_allowed:
+            return None
+        return 1.804
+
+    @property
+    def resolved_cnet_lob_lim(self) -> float | None:
+        return 2.0

@@ -1,5 +1,5 @@
 import pytest
-from xcquinox.alec.config import FeatureSpec, _FrozenDict
+from xcquinox.alec.config import ArchitectureConfig, FeatureSpec, _FrozenDict
 
 
 # §13.2 item (2)
@@ -58,3 +58,79 @@ def test_feature_spec_equal_hash_insensitive_to_order():
     fs_b = FeatureSpec.of(("x", {"b": 2, "a": 1}))
     assert fs_a == fs_b
     assert hash(fs_a) == hash(fs_b)
+
+
+# --- §13.2 item (1) ---------------------------------------------------------
+
+def _valid_base_kwargs():
+    return dict(
+        name="test_arch",
+        depth=2,
+        nodes=8,
+        attention=False,
+        descriptors=(),
+        x_constraints=(),
+        c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "field, value, exc",
+    [
+        # name
+        ("name", "", ValueError),
+        ("name", 123, TypeError),
+        # depth
+        ("depth", 0, ValueError),
+        ("depth", -1, ValueError),
+        ("depth", True, TypeError),
+        ("depth", 1.0, TypeError),
+        # nodes
+        ("nodes", 0, ValueError),
+        ("nodes", -5, ValueError),
+        ("nodes", True, TypeError),
+        ("nodes", 2.0, TypeError),
+        # attention
+        ("attention", "yes", TypeError),
+        ("attention", 1, TypeError),
+        # double_lob_clamp_allowed
+        ("double_lob_clamp_allowed", "yes", TypeError),
+        # descriptors
+        ("descriptors", ("cusp",), TypeError),
+        ("descriptors", ("cusp", FeatureSpec(name="cusp", kwargs=_FrozenDict(()))), TypeError),
+        ("descriptors", [FeatureSpec(name="cusp", kwargs=_FrozenDict(()))], TypeError),
+        # x_constraints
+        ("x_constraints", ("ueg_limit",), TypeError),
+        ("x_constraints", [FeatureSpec(name="ueg_limit", kwargs=_FrozenDict(()))], TypeError),
+        # c_constraints
+        ("c_constraints", ("ueg_limit",), TypeError),
+        ("c_constraints", [FeatureSpec(name="ueg_limit", kwargs=_FrozenDict(()))], TypeError),
+        # positive path
+        (None, None, None),
+    ],
+)
+def test_architecture_config_field_validation(field, value, exc):
+    """§13.2 item (1): parametrized over every __post_init__ branch."""
+    if field is None:
+        cfg = ArchitectureConfig(
+            name="deep_combined_attn",
+            depth=4,
+            nodes=32,
+            attention=True,
+            descriptors=(
+                FeatureSpec(name="dm_statistics", kwargs=_FrozenDict(())),
+                FeatureSpec(name="cusp", kwargs=_FrozenDict(())),
+            ),
+            x_constraints=(),
+            c_constraints=(),
+            double_lob_clamp_allowed=False,
+        )
+        assert cfg.name == "deep_combined_attn"
+        assert cfg.attention is True
+        assert len(cfg.descriptors) == 2
+        return
+    kwargs = _valid_base_kwargs()
+    kwargs[field] = value
+    with pytest.raises(exc):
+        ArchitectureConfig(**kwargs)
