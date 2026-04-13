@@ -224,39 +224,54 @@ def test_cell_08_passes_step3b_hyperparameters():
         assert literal in source, f"missing hyperparameter literal: {literal}"
 
 
-# Cell 8 parallel-pretrain knob tests
+# Cell 8 runtime parallel-pretrain toggle tests
+#
+# The toggle is a notebook-runtime constant (`PRETRAIN_PARALLEL` set in Cell 3)
+# that Cell 8 reads at execution time to pick between a serial in-process loop
+# and a subprocess+ThreadPoolExecutor dispatch. Both branches live inside the
+# single emitted Cell 8 source.
 
 
-def test_cell_08_serial_default_omits_parallel_markers():
-    """Default (serial) Cell 8 must not contain any parallel-branch markers.
+def test_cell_03_defines_pretrain_parallel_false():
+    """Cell 3 must bind ``PRETRAIN_PARALLEL = False`` so Cell 8 has a default
+    serial path. Users flip this constant in the notebook to opt into parallel
+    pretraining without regenerating the notebook.
+    """
+    gen = load_generator()
+    source = gen.build_cell_03_constants().source
+    assert "PRETRAIN_PARALLEL = False" in source
 
-    Regression guard: if the builder default ever flips to parallel, the smoke
-    test and the committed .ipynb both change behavior.
+
+def test_cell_08_branches_on_pretrain_parallel_runtime_toggle():
+    """Cell 8 must contain a runtime ``if PRETRAIN_PARALLEL:`` branch so flipping
+    the Cell 3 constant switches execution paths without regenerating.
     """
     gen = load_generator()
     source = gen.build_cell_08_pretrain_loop().source
-    assert "ThreadPoolExecutor" not in source
-    assert "subprocess" not in source
-    assert "XLA_FLAGS" not in source
+    assert "if PRETRAIN_PARALLEL:" in source
+    assert "else:" in source
     assert "for arch_name in ARCH_NAMES:" in source
 
 
-def test_cell_08_parallel_uses_thread_pool_and_subprocess():
-    """Parallel Cell 8 must dispatch via ThreadPoolExecutor over subprocesses."""
+def test_cell_08_parallel_branch_uses_thread_pool_and_subprocess():
+    """Cell 8's parallel branch must dispatch via ThreadPoolExecutor over
+    isolated subprocess.run calls.
+    """
     gen = load_generator()
-    source = gen.build_cell_08_pretrain_loop(parallel_pretrain=True).source
+    source = gen.build_cell_08_pretrain_loop().source
     assert "from concurrent.futures import ThreadPoolExecutor" in source
     assert "as_completed" in source
     assert "import subprocess" in source
     assert "ThreadPoolExecutor(max_workers=" in source
 
 
-def test_cell_08_parallel_sets_xla_flags_and_omp_num_threads_in_child_env():
-    """Parallel Cell 8 must set XLA_FLAGS and OMP_NUM_THREADS in the child env
-    BEFORE running the subprocess — prevents per-worker core oversubscription.
+def test_cell_08_parallel_branch_sets_xla_and_omp_env_before_subprocess_run():
+    """Cell 8's parallel branch must set XLA_FLAGS and OMP_NUM_THREADS in the
+    child env BEFORE the subprocess.run call — otherwise N parallel workers
+    all oversubscribe XLA's internal thread pool.
     """
     gen = load_generator()
-    source = gen.build_cell_08_pretrain_loop(parallel_pretrain=True).source
+    source = gen.build_cell_08_pretrain_loop().source
     xla_idx = source.find('XLA_FLAGS')
     omp_idx = source.find('OMP_NUM_THREADS')
     run_idx = source.find('subprocess.run')
@@ -266,78 +281,91 @@ def test_cell_08_parallel_sets_xla_flags_and_omp_num_threads_in_child_env():
     assert xla_idx < run_idx, "XLA_FLAGS must be set before subprocess.run"
     assert omp_idx < run_idx, "OMP_NUM_THREADS must be set before subprocess.run"
     assert '"--xla_cpu_multi_thread_eigen=false"' in source
-    assert '"1"' in source  # OMP_NUM_THREADS=1
 
 
-def test_cell_08_parallel_qualifies_alec_pretrainspec_with_hyperparameters():
-    """Parallel Cell 8's subprocess code must still use `alec.PretrainSpec(` with
-    every step3b hyperparameter — otherwise parallel runs diverge from serial.
+def test_cell_08_parallel_branch_bounds_max_workers_by_cpu_count():
+    """Cell 8's parallel branch must compute ``max_workers`` from
+    ``os.cpu_count()`` and cap at half the CPU count.
     """
     gen = load_generator()
-    source = gen.build_cell_08_pretrain_loop(parallel_pretrain=True).source
-    assert "alec.PretrainSpec(" in source
-    import re
-    bare_refs = re.findall(r"(?<!alec\.)PretrainSpec\(", source)
-    assert bare_refs == [], f"bare PretrainSpec references found: {bare_refs}"
-    for literal in ("n_steps=1000", "lr_start=1e-2", "lr_end=1e-5",
-                    "lr_decay_start=0.2", "grad_clip=1.0"):
-        assert literal in source, f"missing hyperparameter literal: {literal}"
-
-
-def test_cell_08_parallel_bounds_max_workers_by_cpu_count():
-    """Parallel Cell 8 must compute max_workers from `os.cpu_count()` and cap at
-    half the CPU count to avoid oversubscribing XLA's internal thread pool.
-    """
-    gen = load_generator()
-    source = gen.build_cell_08_pretrain_loop(parallel_pretrain=True).source
+    source = gen.build_cell_08_pretrain_loop().source
     assert "cpu_count()" in source
     assert "// 2" in source
     assert "len(ARCH_NAMES)" in source
 
 
-def test_cell_08_parallel_raises_on_subprocess_failure():
-    """Parallel Cell 8 must raise on subprocess failure — silent drops would
+def test_cell_08_parallel_branch_raises_on_subprocess_failure():
+    """Cell 8's parallel branch must raise on subprocess failure — silent drops
     leave missing checkpoints that break downstream cells.
     """
     gen = load_generator()
-    source = gen.build_cell_08_pretrain_loop(parallel_pretrain=True).source
+    source = gen.build_cell_08_pretrain_loop().source
     assert "check=True" in source or "CalledProcessError" in source
 
 
-def test_cell_08_parallel_source_is_valid_python():
-    """Parallel Cell 8 source must parse as valid Python — the emitted code
-    includes a nested f-string used to build a subprocess script, which is
-    easy to get wrong at generator time.
+def test_cell_08_source_is_valid_python():
+    """The unified Cell 8 source (both branches plus the runtime toggle) must
+    parse as valid Python — the parallel branch builds a nested f-string for
+    the subprocess child code, which is easy to get wrong at generator time.
     """
     gen = load_generator()
-    source = gen.build_cell_08_pretrain_loop(parallel_pretrain=True).source
-    compile(source, "<cell_08_parallel>", "exec")
+    source = gen.build_cell_08_pretrain_loop().source
+    compile(source, "<cell_08>", "exec")
 
 
-def test_cell_08_serial_source_is_valid_python():
-    """Serial Cell 8 source must parse as valid Python."""
+def test_cell_08_serial_path_runtime_dispatches_to_alec_run_pretrain(monkeypatch):
+    """With ``PRETRAIN_PARALLEL = False`` at exec time, Cell 8 must call
+    ``alec.run_pretrain`` once per arch in ARCH_NAMES — verifies the runtime
+    branch picker selects the serial path and the serial path actually runs.
+    """
     gen = load_generator()
     source = gen.build_cell_08_pretrain_loop().source
-    compile(source, "<cell_08_serial>", "exec")
+
+    calls = []
+
+    class _FakeArch:
+        pass
+
+    class _FakeSpec:
+        def __init__(self, **kw):
+            self.kw = kw
+
+    class _FakeAlec:
+        PretrainSpec = _FakeSpec
+
+        @staticmethod
+        def get_architecture(name):
+            return _FakeArch()
+
+        @staticmethod
+        def run_pretrain(spec, progress_callback=None):
+            calls.append(spec.kw["arch"])
+            return None
+
+    scope = {
+        "__builtins__": __builtins__,
+        "PRETRAIN_PARALLEL": False,
+        "CHECKPOINT_BASE": "/tmp/fake_ckpt",
+        "ARCH_NAMES": ["shallow", "deep"],
+        "alec": _FakeAlec,
+    }
+    exec(source, scope)
+    assert len(calls) == 2, f"expected 2 run_pretrain calls, got {len(calls)}"
 
 
-def test_cell_08_parallel_emitted_child_code_is_valid_python(monkeypatch):
-    """The child_code f-string inside the parallel Cell 8's worker must itself
-    evaluate to valid Python at cell runtime. `compile()` on the outer cell
-    source does NOT validate the inner f-string's evaluated result — this
-    test runs the cell with subprocess.run mocked so we can capture and
-    compile the child_code that would have been sent to a subprocess.
+def test_cell_08_parallel_path_runtime_dispatches_subprocesses(monkeypatch):
+    """With ``PRETRAIN_PARALLEL = True`` at exec time, Cell 8 must route each
+    arch through ``subprocess.run`` — verifies the runtime branch picker
+    selects the parallel path.
     """
     import subprocess as _real_sp
     gen = load_generator()
-    source = gen.build_cell_08_pretrain_loop(parallel_pretrain=True).source
+    source = gen.build_cell_08_pretrain_loop().source
 
-    captured = {}
+    captured_child_codes = []
 
     def _fake_run(args, env=None, check=None, capture_output=None, text=None):
-        captured["child_code"] = args[2]
-        captured["env_xla"] = env.get("XLA_FLAGS")
-        captured["env_omp"] = env.get("OMP_NUM_THREADS")
+        captured_child_codes.append(args[2])
         class _Result:
             stdout = ""
             stderr = ""
@@ -348,50 +376,55 @@ def test_cell_08_parallel_emitted_child_code_is_valid_python(monkeypatch):
 
     scope = {
         "__builtins__": __builtins__,
+        "PRETRAIN_PARALLEL": True,
         "CHECKPOINT_BASE": "/tmp/fake_ckpt",
         "ARCH_NAMES": ["shallow"],
     }
     exec(source, scope)
 
-    assert "child_code" in captured, "subprocess.run was never called"
-    compile(captured["child_code"], "<child_code>", "exec")
-    assert "alec.PretrainSpec(" in captured["child_code"]
-    assert "'shallow'" in captured["child_code"]
-    assert "/tmp/fake_ckpt/pretrain_data" in captured["child_code"]
-    assert "/tmp/fake_ckpt/pretrain/shallow" in captured["child_code"]
-    assert captured["env_xla"] == "--xla_cpu_multi_thread_eigen=false"
-    assert captured["env_omp"] == "1"
+    assert len(captured_child_codes) == 1, (
+        f"expected 1 subprocess.run call, got {len(captured_child_codes)}"
+    )
+    compile(captured_child_codes[0], "<child_code>", "exec")
+    assert "alec.PretrainSpec(" in captured_child_codes[0]
+    assert "'shallow'" in captured_child_codes[0]
+    assert "/tmp/fake_ckpt/pretrain_data" in captured_child_codes[0]
+    assert "/tmp/fake_ckpt/pretrain/shallow" in captured_child_codes[0]
 
 
-def _find_cell_08_source(nb):
-    """Cell 8 is the pretrain loop; locate it by scanning for the PretrainSpec
-    marker rather than hard-coding a cell index (which would be brittle to
-    layout changes).
+def test_cell_08_parallel_path_sets_child_env_vars_at_runtime(monkeypatch):
+    """With ``PRETRAIN_PARALLEL = True``, the env passed to subprocess.run must
+    contain the XLA and OMP overrides — this is a runtime check, not just
+    a string-match in the source.
     """
-    for cell in nb.cells:
-        if cell.cell_type == "code" and "alec.PretrainSpec(" in cell.source:
-            return cell.source
-    raise AssertionError("could not find Cell 8 (pretrain loop) in notebook")
-
-
-def test_main_parallel_pretrain_kwarg_plumbs_to_cell_08(tmp_path):
-    """main(parallel_pretrain=True) must emit a Cell 8 with the parallel branch."""
+    import subprocess as _real_sp
     gen = load_generator()
-    out_path = tmp_path / "parallel_nb.ipynb"
-    nb = gen.main(str(out_path), parallel_pretrain=True)
-    cell_08_source = _find_cell_08_source(nb)
-    assert "ThreadPoolExecutor" in cell_08_source
-    assert "subprocess" in cell_08_source
+    source = gen.build_cell_08_pretrain_loop().source
 
+    captured_envs = []
 
-def test_main_default_serial_cell_08_stays_serial(tmp_path):
-    """main() with default kwargs must emit the serial Cell 8."""
-    gen = load_generator()
-    out_path = tmp_path / "serial_nb.ipynb"
-    nb = gen.main(str(out_path))
-    cell_08_source = _find_cell_08_source(nb)
-    assert "ThreadPoolExecutor" not in cell_08_source
-    assert "for arch_name in ARCH_NAMES:" in cell_08_source
+    def _fake_run(args, env=None, check=None, capture_output=None, text=None):
+        captured_envs.append(env)
+        class _Result:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+        return _Result()
+
+    monkeypatch.setattr(_real_sp, "run", _fake_run)
+
+    scope = {
+        "__builtins__": __builtins__,
+        "PRETRAIN_PARALLEL": True,
+        "CHECKPOINT_BASE": "/tmp/fake_ckpt",
+        "ARCH_NAMES": ["shallow"],
+    }
+    exec(source, scope)
+
+    assert len(captured_envs) == 1
+    env = captured_envs[0]
+    assert env["XLA_FLAGS"] == "--xla_cpu_multi_thread_eigen=false"
+    assert env["OMP_NUM_THREADS"] == "1"
 
 
 # Task 4 — Cells 9-10 builder tests
