@@ -965,6 +965,132 @@ print(piv.abs().idxmin(axis=0))
     return new_code_cell(source)
 
 
+def build_cell_25_ae_bars():
+    """Section 7 Cell 25 -- AE error grouped bar chart + shared Section 7 bindings.
+
+    Also binds ``best_idx`` and ``pairs`` which are consumed by every
+    downstream Section 7 cell (26-31). These MUST be bound here, not in
+    the Section 7 preamble prose.
+    """
+    source = """# Shared Section 7 bindings (consumed by Cells 26-31).
+best_idx = df["AE_error_kcalmol_mean"].unstack("loss").idxmin(axis=0)
+pairs = [(n, f"{n}_attn") for n in ARCH_NAMES if not n.endswith("_attn") and f"{n}_attn" in ARCH_NAMES]
+
+# Parallel bar-height / error-bar DataFrames.
+bar_heights = df["AE_error_kcalmol_mean"].abs().unstack("loss")
+bar_yerr = df["AE_error_kcalmol_RMSE"].unstack("loss")
+
+# PBE reference line: compute from in-scope mol_data_list, fall back on
+# sidecar metadata JSONs if the kernel was restarted between Cell 15
+# and Cell 25 (requires Cells 2, 3, 12 to have been re-executed).
+try:
+    PBE_AE_Ha = 2 * mol_data_list[0]["E_pbe"] + mol_data_list[1]["E_pbe"] - mol_data_list[2]["E_pbe"]
+except NameError:
+    _E_pbe = {}
+    for _name in ("H", "O", "H2O"):
+        with open(f"{ext_data_dir}/{_name}_metadata.json") as _f:
+            _E_pbe[_name] = json.load(_f)["E_pbe_total"]
+    PBE_AE_Ha = 2 * _E_pbe["H"] + _E_pbe["O"] - _E_pbe["H2O"]
+PBE_AE_kcalmol = PBE_AE_Ha * 627.509
+PBE_AE_err_kcalmol = abs(PBE_AE_kcalmol - 233.016)
+
+# CCSD reference line: load from Cell 13 sidecar JSONs.
+ccsd_totals = {}
+for _name in ("H", "O", "H2O"):
+    with open(f"{ext_data_dir}/{_name}_metadata.json") as _f:
+        ccsd_totals[_name] = json.load(_f)["E_ccsd_total"]
+CCSD_AE_Ha = 2 * ccsd_totals["H"] + ccsd_totals["O"] - ccsd_totals["H2O"]
+CCSD_AE_kcalmol = CCSD_AE_Ha * 627.509
+CCSD_AE_err_kcalmol = abs(CCSD_AE_kcalmol - 233.016)
+
+# Grouped bar chart: 6 loss groups, 12 arch bars per group.
+fig, ax = plt.subplots(figsize=(14, 8))
+n_archs = len(ARCH_NAMES)
+x_positions = np.arange(len(LOSS_NAMES))
+bar_width = 0.8 / n_archs
+for i, arch_name in enumerate(ARCH_NAMES):
+    heights = bar_heights.loc[arch_name, list(LOSS_NAMES)].values
+    yerrs = bar_yerr.loc[arch_name, list(LOSS_NAMES)].values
+    offset = (i - (n_archs - 1) / 2) * bar_width
+    ax.bar(x_positions + offset, heights, width=bar_width, yerr=yerrs,
+           color=arch_colors[arch_name], label=arch_name)
+ax.set_xticks(x_positions)
+ax.set_xticklabels(list(LOSS_NAMES), rotation=30, ha="right")
+ax.set_ylabel("|AE error| (kcal/mol)")
+ax.set_yscale("log")
+
+ax.axhline(PBE_AE_err_kcalmol, linestyle="dotted", color="r", alpha=0.5,
+           label=f"PBE Error ({PBE_AE_err_kcalmol:.2f} kcal/mol)")
+ax.axhline(CCSD_AE_err_kcalmol, linestyle="-.", color="r", alpha=0.5,
+           label=f"CCSD Error ({CCSD_AE_err_kcalmol:.2f} kcal/mol)")
+ax.axhline(1.0, linestyle="--", color="r", alpha=0.5,
+           label="Chemical accuracy (1 kcal/mol)")
+
+ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/ae_error_by_loss.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_26_dm_heatmaps():
+    """Section 7 Cell 26 -- 2x2 DM heatmaps (PBE-HF, best-B, best-D1, best-D2)."""
+    source = """# Per-loop template rebuild: different archs have different PyTree layouts,
+# so the template must match the specific checkpoint being deserialised.
+model_bindings = {}
+for loss_name in ("B_atomization_plus_dm", "D1_delta_ae", "D2_delta_ae_plus_dm"):
+    best_arch = best_idx[loss_name]
+    arch_config = alec.get_architecture(best_arch)
+    model_template = alec.AlecGGAModel.from_arch(arch_config)
+    ckpt_path = f"{CHECKPOINT_BASE}/train/{best_arch}/{loss_name}/model.eqx"
+    model_bindings[loss_name] = eqx.tree_deserialise_leaves(ckpt_path, model_template)
+model_B = model_bindings["B_atomization_plus_dm"]
+model_D1 = model_bindings["D1_delta_ae"]
+model_D2 = model_bindings["D2_delta_ae_plus_dm"]
+
+# DMs for H2O (index 2 in mol_data_list).
+dm_pbe = mol_data_list[2]["dm_pbe"]
+dm_hf = mol_data_list[2]["dm_target"]
+dm_nn_B = alec.oneshot_dm_prediction_fast(model_B, mol_data_list[2])
+dm_nn_D1 = alec.oneshot_dm_prediction_fast(model_D1, mol_data_list[2])
+dm_nn_D2 = alec.oneshot_dm_prediction_fast(model_D2, mol_data_list[2])
+
+# 2x2 panel assignment: top row = (PBE-HF, best-B NN-HF), bottom = (best-D1, best-D2).
+_panel_deltas = [
+    ("PBE \u2212 HF", dm_pbe - dm_hf),
+    ("best-B NN \u2212 HF", dm_nn_B - dm_hf),
+    ("best-D1 NN \u2212 HF", dm_nn_D1 - dm_hf),
+    ("best-D2 NN \u2212 HF", dm_nn_D2 - dm_hf),
+]
+vmax = max(float(jnp.abs(delta).max()) for _, delta in _panel_deltas)
+
+fig, axes = plt.subplots(2, 2, figsize=(10, 9), squeeze=False)
+_axes_flat = axes.flatten()
+for ax, (title, delta) in zip(_axes_flat, _panel_deltas):
+    im = ax.imshow(np.asarray(delta), cmap="RdBu_r", vmin=-vmax, vmax=vmax)
+    ax.set_title(title)
+    fig.colorbar(im, ax=ax, label="\u0394DM element")
+
+# Inline Frobenius RMSE per panel (display-only; not a library metric).
+dm_rmse_pbe_hf = float(jnp.linalg.norm(dm_pbe - dm_hf) / jnp.sqrt(dm_pbe.size))
+dm_rmse_B = float(jnp.linalg.norm(dm_nn_B - dm_hf) / jnp.sqrt(dm_nn_B.size))
+dm_rmse_D1 = float(jnp.linalg.norm(dm_nn_D1 - dm_hf) / jnp.sqrt(dm_nn_D1.size))
+dm_rmse_D2 = float(jnp.linalg.norm(dm_nn_D2 - dm_hf) / jnp.sqrt(dm_nn_D2.size))
+print(f"PBE|HF Frobenius DM RMSE: {dm_rmse_pbe_hf:.4e}")
+print(f"best-B NN|HF Frobenius DM RMSE: {dm_rmse_B:.4e}")
+print(f"best-D1 NN|HF Frobenius DM RMSE: {dm_rmse_D1:.4e}")
+print(f"best-D2 NN|HF Frobenius DM RMSE: {dm_rmse_D2:.4e}")
+
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/dm_heatmaps_h2o.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -1027,6 +1153,8 @@ def main(
         build_cell_22_test_loop(),
         build_cell_23_dataframe(),
         build_cell_24_results_table(),
+        build_cell_25_ae_bars(),
+        build_cell_26_dm_heatmaps(),
     ]
 
     nbformat.validate(nb)

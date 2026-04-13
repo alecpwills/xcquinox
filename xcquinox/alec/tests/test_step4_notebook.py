@@ -617,3 +617,106 @@ def test_cell_23_multiindex_is_arch_loss():
     gen = load_generator()
     source = gen.build_cell_23_dataframe().source
     assert 'set_index(["arch", "loss"])' in source
+
+
+# Task 9 -- Cells 25-26 builder tests
+
+
+def test_cell_25_binds_best_idx():
+    """Cell 25 must bind best_idx from df[AE_error_kcalmol_mean].unstack(loss).idxmin(axis=0)."""
+    gen = load_generator()
+    source = gen.build_cell_25_ae_bars().source
+    assert 'best_idx = df["AE_error_kcalmol_mean"].unstack("loss").idxmin(axis=0)' in source
+
+
+def test_cell_25_binds_pairs():
+    """Cell 25 must bind the attention-pairing list programmatically from ARCH_NAMES."""
+    gen = load_generator()
+    source = gen.build_cell_25_ae_bars().source
+    assert 'pairs = [(n, f"{n}_attn") for n in ARCH_NAMES' in source
+    assert 'not n.endswith("_attn")' in source
+    assert 'f"{n}_attn" in ARCH_NAMES' in source
+
+
+def test_cell_25_reads_both_mean_and_rmse_columns():
+    """Cell 25 must read both mean and RMSE columns (B12-4 regression guard)."""
+    gen = load_generator()
+    source = gen.build_cell_25_ae_bars().source
+    assert 'df["AE_error_kcalmol_mean"]' in source
+    assert 'df["AE_error_kcalmol_RMSE"]' in source
+
+
+def test_cell_25_has_three_reference_lines():
+    """Cell 25 must draw PBE, CCSD, and chemical-accuracy reference lines."""
+    gen = load_generator()
+    source = gen.build_cell_25_ae_bars().source
+    assert "PBE Error" in source
+    assert "CCSD Error" in source
+    assert "Chemical accuracy (1 kcal/mol)" in source
+
+
+def test_cell_25_kernel_restart_fallback_exists():
+    """Cell 25 must have a try/except NameError fallback for mol_data_list (kernel-restart safety)."""
+    gen = load_generator()
+    source = gen.build_cell_25_ae_bars().source
+    assert "except NameError:" in source
+
+
+def test_cell_25_saves_to_figures_dir():
+    """Cell 25 must save ae_error_by_loss.png into the figures directory."""
+    gen = load_generator()
+    source = gen.build_cell_25_ae_bars().source
+    assert "ae_error_by_loss.png" in source
+
+
+def test_cell_26_uses_alec_gga_model_from_arch_not_create_network_pair():
+    """Cell 26 must use alec.AlecGGAModel.from_arch (B11-4 regression guard)."""
+    gen = load_generator()
+    source = gen.build_cell_26_dm_heatmaps().source
+    assert "alec.AlecGGAModel.from_arch(" in source
+    assert "alec.create_network_pair(" not in source
+
+
+def test_cell_26_model_template_rebuilt_inside_loop():
+    """Cell 26 must rebuild model_template inside the loop, not hoisted."""
+    gen = load_generator()
+    source = gen.build_cell_26_dm_heatmaps().source
+    loop_idx = source.find('for loss_name in ("B_atomization_plus_dm",')
+    template_idx = source.find("model_template = alec.AlecGGAModel.from_arch(arch_config)")
+    assert loop_idx != -1, "per-loss loop missing"
+    assert template_idx != -1, "model_template rebuild missing"
+    assert loop_idx < template_idx, "model_template must be rebuilt INSIDE the loop"
+
+
+def test_cell_26_binds_model_b_d1_d2_explicit_names():
+    """Cell 26 must bind model_B, model_D1, model_D2 as explicit named variables."""
+    gen = load_generator()
+    source = gen.build_cell_26_dm_heatmaps().source
+    assert 'model_B = model_bindings["B_atomization_plus_dm"]' in source
+    assert 'model_D1 = model_bindings["D1_delta_ae"]' in source
+    assert 'model_D2 = model_bindings["D2_delta_ae_plus_dm"]' in source
+
+
+def test_cell_26_uses_oneshot_dm_prediction_fast():
+    """Cell 26 must call the _fast variant (the only one alec exports)."""
+    gen = load_generator()
+    source = gen.build_cell_26_dm_heatmaps().source
+    assert "alec.oneshot_dm_prediction_fast(" in source
+    # The bare variant (without _fast) does not exist in alec.__init__ — guard against a rename regression.
+    assert "oneshot_dm_prediction(" not in source.replace("oneshot_dm_prediction_fast(", "")
+
+
+def test_cell_26_reuses_mol_data_list_for_dm_hf():
+    """Cell 26 must reuse mol_data_list[2]['dm_target'] for dm_hf, not reload the .npz."""
+    gen = load_generator()
+    source = gen.build_cell_26_dm_heatmaps().source
+    assert 'dm_hf = mol_data_list[2]["dm_target"]' in source
+    assert ".npz" not in source
+
+
+def test_cell_26_panel_assignment_is_explicit():
+    """Cell 26 must have all four panel subtraction expressions."""
+    gen = load_generator()
+    source = gen.build_cell_26_dm_heatmaps().source
+    for expr in ("dm_pbe - dm_hf", "dm_nn_B - dm_hf", "dm_nn_D1 - dm_hf", "dm_nn_D2 - dm_hf"):
+        assert expr in source, f"panel expression {expr!r} missing"
