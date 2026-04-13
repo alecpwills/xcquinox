@@ -60,6 +60,155 @@ def build_cell_00_smoke_marker():
     return new_markdown_cell("# Step 4 Notebook (generated, do not edit)")
 
 
+def build_cell_01_title():
+    r"""Section 1 Cell 1 — title, methodology table, architecture list."""
+    source = r"""# GGA Network Training - Step 4: Refactored Library-Driven Training
+
+This notebook reproduces the Step 3b experiment (H / O / H2O at def2-svp,
+12 architectures x 6 loss approaches = 72 models) using the refactored
+`xcquinox.alec` subpackage. All loss, network, training, and evaluation
+logic lives in the library -- this notebook is a thin orchestration layer
+that builds `Spec` objects and calls `run_pretrain`, `run_training`, and
+`run_test`.
+
+## Training Methodology
+
+| Approach | Energy Calculation | Density Matching | Description |
+|----------|-------------------|------------------|-------------|
+| **A** | Fixed-density | None | AE only on PBE density |
+| **B** | Fixed-density | One-shot DM -> HF target | AE + DM correction learning |
+| **C** | Fixed-density | One-shot grid rho -> HF target | AE + grid density correction |
+| **D1** | Fixed-density | None | Delta-learning energy only |
+| **D2** | Fixed-density | One-shot DM -> HF target | Delta-E + DM correction |
+| **D3** | Fixed-density | One-shot grid rho -> HF target | Delta-E + grid density correction |
+
+## Key Change from Step 3b
+
+Step 3b inlined the loss, network, training loop, and evaluation code inside
+the notebook. Step 4 delegates every step to `xcquinox.alec`:
+
+- `alec.PretrainSpec` / `alec.run_pretrain` -- pretraining phase
+- `alec.TrainingSpec.from_dicts` / `alec.run_training` -- main training phase
+- `alec.TestSpec.from_dicts` / `alec.run_test` -- evaluation phase
+
+The registry-driven composition means adding a new loss or architecture is a
+single-line library change, not a notebook edit.
+
+## Network Architectures (12 total)
+
+**Standard (2 inputs: rho, sigma):**
+`shallow`, `shallow_attn`, `medium`, `medium_attn`, `deep`, `deep_attn`
+
+**Extended features (deep only):**
+
+| Architecture | Inputs | Dimension |
+|--------------|--------|-----------|
+| `deep_cusp`, `deep_cusp_attn` | $[\rho, \sigma, f_{cusp}, \log Z]$ | 4 |
+| `deep_dm`, `deep_dm_attn` | $[\rho, \sigma, f_{idem}, f_{entropy}, f_{offdiag}]$ | 5 |
+| `deep_combined`, `deep_combined_attn` | $[\rho, \sigma, f_{idem}, f_{entropy}, f_{offdiag}, f_{cusp}, \log Z]$ | 7 |
+
+**Total: 72 models** = 12 architectures x 6 training approaches
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_02_imports():
+    """Section 1 Cell 2 — imports + JAX config.
+
+    The JAX ``x64`` and ``jax_default_device`` config calls must sit between
+    ``import jax`` and ``import jax.numpy as jnp`` — flipping them later
+    produces dtype and device inconsistencies in cached JIT traces (spec
+    Round C10-2 regression guard).
+    """
+    source = """import os
+import json
+import """ + """pickle
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+import jax
+# JAX config: pin x64 dtype and CPU device *before* importing jnp or any
+# library that may trigger JAX tracing. These must not change later in the
+# notebook -- flipping jax_enable_x64 after traces are cached produces
+# inconsistent dtypes.
+jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_default_device", jax.devices("cpu")[0])
+import jax.numpy as jnp
+import equinox as eqx
+
+from pyscf import gto, dft, scf, cc
+
+import xcquinox.alec as alec
+import xcquinox.features
+"""
+    return new_code_cell(source)
+
+
+def build_cell_03_constants(checkpoint_base: str = DEFAULT_CHECKPOINT_BASE):
+    """Section 1 Cell 3 — constants.
+
+    ``checkpoint_base`` is emitted as a Python string literal via ``repr()``
+    so the smoke test can redirect artifacts into a ``tmp_path``-backed
+    directory without the f-string needing to escape special characters.
+    """
+    source = f"""BASIS = 'def2-svp'
+CHECKPOINT_BASE = {checkpoint_base!r}
+GRID_LEVEL = 1
+PRETRAIN_ATOMS = (("H", 1), ("He", 0), ("O", 2), ("N", 3))
+H2O_COORDS = "O 0.0000 0.0000 0.1173; H 0.0000 0.7572 -0.4692; H 0.0000 -0.7572 -0.4692"
+
+os.makedirs(CHECKPOINT_BASE, exist_ok=True)
+print(f"CHECKPOINT_BASE={{CHECKPOINT_BASE}}  BASIS={{BASIS}}  GRID_LEVEL={{GRID_LEVEL}}")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_04_arch_table():
+    """Section 2 Cell 4 — print the 12 architectures from the registry.
+
+    Uses ``print`` instead of pandas so the table renders before any plot
+    cell runs (no cross-cell dependency on ``pd``).
+    """
+    source = """# Print all 12 registered architectures from alec.ARCHITECTURES.
+# Fields printed: name, depth, nodes (hidden size), attention flag, descriptors.
+_header = f"{'arch_name':<22} {'depth':>6} {'nodes':>6} {'attention':>10}  descriptors"
+print(_header)
+print("-" * len(_header))
+for _name in alec.ARCHITECTURES.keys():
+    _cfg = alec.get_architecture(_name)
+    _descs = ", ".join(s.name for s in _cfg.descriptors) or "-"
+    print(f"{_name:<22} {_cfg.depth:>6} {_cfg.nodes:>6} {str(_cfg.attention):>10}  {_descs}")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_05_arch_names(arch_names: tuple[str, ...] | None = None):
+    """Section 2 Cell 5 — bind ``ARCH_NAMES`` and ``arch_colors``.
+
+    ``arch_colors`` MUST be bound here (not in Section 7) because Cell 9's
+    pretrain loss plot references ``arch_colors[arch_name]`` well before
+    Section 7 executes. Leaving the binding in Cell 25 produces a forward
+    reference that fires ``NameError`` on any fresh top-to-bottom run
+    (spec Round B11-1 regression guard).
+    """
+    if arch_names is None:
+        arch_binding = "ARCH_NAMES = list(alec.ARCHITECTURES.keys())"
+    else:
+        arch_binding = f"ARCH_NAMES = {list(arch_names)!r}"
+    source = f"""{arch_binding}
+
+cmap = plt.get_cmap("tab20")
+arch_colors = {{name: cmap(i / max(1, len(ARCH_NAMES) - 1)) for i, name in enumerate(ARCH_NAMES)}}
+
+print(f"Selected {{len(ARCH_NAMES)}} architectures:")
+for _n in ARCH_NAMES:
+    print(f"  {{_n}}")
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -88,16 +237,21 @@ def main(
     nbformat.notebooknode.NotebookNode
         The assembled notebook, already written to disk.
     """
-    if arch_names is None:
-        arch_names = DEFAULT_ARCH_NAMES
-    if loss_names is None:
-        loss_names = DEFAULT_LOSS_NAMES
+    # Resolve defaults only for the values that need to be *injected into the
+    # notebook source*. ``arch_names=None`` and ``loss_names=None`` deliberately
+    # stay as ``None`` so downstream builders emit the dynamic forms
+    # (``ARCH_NAMES = list(alec.ARCHITECTURES.keys())`` / ``LOSS_NAMES = (...)``
+    # literal that traces the library registries at runtime).
     if checkpoint_base is None:
         checkpoint_base = DEFAULT_CHECKPOINT_BASE
 
     nb = new_notebook()
     nb.cells = [
-        build_cell_00_smoke_marker(),
+        build_cell_01_title(),
+        build_cell_02_imports(),
+        build_cell_03_constants(checkpoint_base),
+        build_cell_04_arch_table(),
+        build_cell_05_arch_names(arch_names),
     ]
 
     nbformat.validate(nb)
