@@ -1091,6 +1091,95 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_27_density_histograms():
+    """Section 7 Cell 27 -- grid density difference histograms for C/D3 best models."""
+    source = """_c_d3_losses = ("C_atomization_plus_grid", "D3_delta_ae_plus_grid")
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5), squeeze=False)
+_axes_flat = axes.flatten()
+for ax, loss_name in zip(_axes_flat, _c_d3_losses):
+    best_arch = best_idx[loss_name]
+    arch_config = alec.get_architecture(best_arch)
+    model_template = alec.AlecGGAModel.from_arch(arch_config)
+    ckpt_path = f"{CHECKPOINT_BASE}/train/{best_arch}/{loss_name}/model.eqx"
+    model = eqx.tree_deserialise_leaves(ckpt_path, model_template)
+
+    rho_nn = alec.oneshot_grid_density(model, mol_data_list[2])
+    rho_ref = mol_data_list[2]["rho_ccsd_grid"]
+    w = mol_data_list[2]["grid_weights"]
+
+    # Inline step3b Table 4 |delta rho|_1 metric (display-only, not a library metric).
+    delta_rho_L1 = float(jnp.sum(w * jnp.abs(rho_nn - rho_ref)) / jnp.sum(w))
+    print(f"H2O |drho|_1 ({loss_name}, best={best_arch}): {delta_rho_L1:.4e} e/bohr^3")
+
+    _diff = np.asarray(rho_nn - rho_ref)
+    _w = np.asarray(w)
+    ax.hist(_diff, bins=60, weights=_w)
+    ax.set_yscale("log")
+    ax.axvline(0.0, color="k", linewidth=0.8)
+    _lib_rmse = df.loc[(best_arch, loss_name), "density_rmse_mean"]
+    ax.set_title(f"{loss_name}\\nbest={best_arch}, lib RMSE={_lib_rmse:.2e}, |drho|1={delta_rho_L1:.2e}")
+    ax.set_xlabel("rho_nn - rho_ref")
+    ax.set_ylabel("weighted count (log)")
+
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/grid_density_diffs.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_28_attn_comparison():
+    """Section 7 Cell 28 -- attention vs non-attention paired bar comparison."""
+    source = """fig, axes = plt.subplots(2, 3, figsize=(15, 9), squeeze=False)
+_axes_flat = axes.flatten()
+for ax, loss_name in zip(_axes_flat, LOSS_NAMES):
+    x_positions = np.arange(len(pairs))
+    base_heights = [df.loc[(base, loss_name), "AE_error_kcalmol_mean"] for base, _attn in pairs]
+    attn_heights = [df.loc[(attn, loss_name), "AE_error_kcalmol_mean"] for _base, attn in pairs]
+    bar_width = 0.35
+    ax.bar(x_positions - bar_width / 2, base_heights, width=bar_width, label="no attn")
+    ax.bar(x_positions + bar_width / 2, attn_heights, width=bar_width, hatch="//", label="with attn")
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels([base for base, _ in pairs], rotation=30, ha="right")
+    ax.set_ylabel("AE error (kcal/mol)")
+    ax.set_title(loss_name)
+    ax.legend(fontsize="small")
+
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/attn_vs_no_attn.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_29_feature_comparison():
+    """Section 7 Cell 29 -- extended features impact (deep base variants only)."""
+    source = """feature_variants = [n for n in ARCH_NAMES if n.startswith("deep") and not n.endswith("_attn")]
+
+fig, ax = plt.subplots(figsize=(12, 6))
+n_losses = len(LOSS_NAMES)
+x_positions = np.arange(len(feature_variants))
+bar_width = 0.8 / n_losses
+for j, loss_name in enumerate(LOSS_NAMES):
+    heights = [df.loc[(variant, loss_name), "AE_error_kcalmol_mean"] for variant in feature_variants]
+    offset = (j - (n_losses - 1) / 2) * bar_width
+    ax.bar(x_positions + offset, heights, width=bar_width, label=loss_name)
+ax.set_xticks(x_positions)
+ax.set_xticklabels(feature_variants, rotation=20, ha="right")
+ax.set_ylabel("AE error (kcal/mol)")
+ax.set_title("Extended features impact (deep base variants)")
+ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/extended_features_impact.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -1155,6 +1244,9 @@ def main(
         build_cell_24_results_table(),
         build_cell_25_ae_bars(),
         build_cell_26_dm_heatmaps(),
+        build_cell_27_density_histograms(),
+        build_cell_28_attn_comparison(),
+        build_cell_29_feature_comparison(),
     ]
 
     nbformat.validate(nb)

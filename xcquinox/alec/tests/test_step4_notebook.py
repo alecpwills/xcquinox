@@ -720,3 +720,50 @@ def test_cell_26_panel_assignment_is_explicit():
     source = gen.build_cell_26_dm_heatmaps().source
     for expr in ("dm_pbe - dm_hf", "dm_nn_B - dm_hf", "dm_nn_D1 - dm_hf", "dm_nn_D2 - dm_hf"):
         assert expr in source, f"panel expression {expr!r} missing"
+
+
+# Task 10 -- Cells 27-29 builder tests
+
+
+def test_cell_27_uses_oneshot_grid_density():
+    """Cell 27 must call alec.oneshot_grid_density on mol_data_list[2]."""
+    gen = load_generator()
+    source = gen.build_cell_27_density_histograms().source
+    assert "alec.oneshot_grid_density(" in source
+
+
+def test_cell_27_reads_rho_ccsd_grid_from_mol_data_list():
+    """Cell 27 must read rho_ref from mol_data_list[2]['rho_ccsd_grid']."""
+    gen = load_generator()
+    source = gen.build_cell_27_density_histograms().source
+    assert 'mol_data_list[2]["rho_ccsd_grid"]' in source
+
+
+def test_cell_27_prints_delta_rho_l1():
+    """Cell 27 must compute and print the inline |delta rho|_1 metric."""
+    gen = load_generator()
+    source = gen.build_cell_27_density_histograms().source
+    assert "delta_rho_L1 = float(jnp.sum(w *" in source
+
+
+def test_cell_28_uses_pairs_from_cell_25():
+    """Cell 28 must iterate the pairs list bound in Cell 25."""
+    gen = load_generator()
+    source = gen.build_cell_28_attn_comparison().source
+    # accept either `for base, _attn in pairs` style or an explicit comprehension over `pairs`
+    assert "pairs" in source
+    assert " in pairs" in source
+
+
+def test_cell_29_feature_variants_excludes_attn_suffix():
+    """Cell 29 must exclude attention-suffixed archs from the feature filter."""
+    gen = load_generator()
+    source = gen.build_cell_29_feature_comparison().source
+    assert 'and not n.endswith("_attn")' in source
+
+
+def test_cell_29_filter_startswith_deep():
+    """Cell 29 must filter to deep-prefixed archs."""
+    gen = load_generator()
+    source = gen.build_cell_29_feature_comparison().source
+    assert 'n.startswith("deep")' in source
