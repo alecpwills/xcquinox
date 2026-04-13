@@ -802,3 +802,46 @@ def test_cell_31_atom_energies_merge():
     gen = load_generator()
     source = gen.build_cell_31_new_molecule_template().source
     assert '{**atom_energies, "C":' in source
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — Full-notebook guards
+# ---------------------------------------------------------------------------
+
+
+def test_generator_is_deterministic(tmp_path):
+    """Two back-to-back main() calls must produce byte-identical notebooks.
+
+    A nondeterministic builder (unordered dict, datetime stamp, set iteration)
+    would corrupt git blame and break reproducibility.
+    """
+    gen = load_generator()
+    out1 = tmp_path / "nb1.ipynb"
+    out2 = tmp_path / "nb2.ipynb"
+    gen.main(str(out1))
+    gen.main(str(out2))
+    assert out1.read_bytes() == out2.read_bytes()
+
+
+def test_generator_produces_31_cells(tmp_path):
+    """main() must produce exactly 31 cells (the full step 4 notebook)."""
+    gen = load_generator()
+    out_path = tmp_path / "out.ipynb"
+    gen.main(str(out_path))
+    nb = nbformat.read(str(out_path), as_version=4)
+    assert len(nb.cells) == 31, f"expected 31 cells, got {len(nb.cells)}"
+
+
+def test_generator_cell_types_match_expected(tmp_path):
+    """Markdown cells at section headings (0, 5, 10, 15, 20, 29); code elsewhere."""
+    gen = load_generator()
+    out_path = tmp_path / "out.ipynb"
+    gen.main(str(out_path))
+    nb = nbformat.read(str(out_path), as_version=4)
+
+    markdown_indices = {0, 5, 10, 15, 20, 29}
+    for idx, cell in enumerate(nb.cells):
+        expected = "markdown" if idx in markdown_indices else "code"
+        assert cell.cell_type == expected, (
+            f"cell {idx}: expected {expected!r}, got {cell.cell_type!r}"
+        )

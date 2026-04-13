@@ -50,16 +50,6 @@ DEFAULT_LOSS_NAMES = (
 DEFAULT_CHECKPOINT_BASE = "checkpoints_step4"
 
 
-def build_cell_00_smoke_marker():
-    """Placeholder cell used by Task 1's scaffolding test.
-
-    This builder exists so the ``test_main_produces_valid_notebook`` test can
-    round-trip ``main()`` end-to-end before any real cell builders are added.
-    It is deleted entirely in Task 12.
-    """
-    return new_markdown_cell("# Step 4 Notebook (generated, do not edit)")
-
-
 def build_cell_01_title():
     r"""Section 1 Cell 1 — title, methodology table, architecture list."""
     source = r"""# GGA Network Training - Step 4: Refactored Library-Driven Training
@@ -1329,6 +1319,12 @@ def main(
         build_cell_30_future_md(),
         build_cell_31_new_molecule_template(),
     ]
+
+    # Assign deterministic cell IDs so two back-to-back regenerations produce
+    # byte-identical notebooks. nbformat.v4.new_code_cell / new_markdown_cell
+    # otherwise auto-assign random UUIDs per call.
+    for idx, cell in enumerate(nb.cells):
+        cell.id = f"cell_{idx:02d}"
 
     nbformat.validate(nb)
 
