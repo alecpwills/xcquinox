@@ -1287,6 +1287,447 @@ def test_cell_18_is_serial():
     assert "alec.build_training_jobs(" not in source
 
 
+# Cell 18 tqdm progress-bar tests. Mirrors the Cell 8 tqdm pattern: each
+# training run should drive a per-spec step bar with an ``{loss:.4e}``
+# postfix, and the outer ``for spec in specs`` loop should also carry a
+# spec-level tqdm bar so users see both step progress within a spec and
+# overall (spec X / N) progress.
+
+
+def test_cell_18_callback_uses_tqdm_bar_with_loss_postfix():
+    """Cell 18's ``_train_cb`` must drive a ``tqdm`` bar and attach the
+    current step's loss via ``set_postfix(loss=...)``.
+    """
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+    assert "tqdm(" in source
+    assert "set_postfix(" in source
+    assert "loss=" in source
+
+
+def test_cell_18_replaces_print_callback_with_tqdm():
+    """Cell 18 must NOT use a print-based callback — tqdm bars supersede the
+    old ``print(f"[{arch}]...")`` line-noise.
+    """
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+    # The old pattern was: print(f"[{info['arch']}]...
+    # The new pattern must drive tqdm from the callback.
+    assert 'print(f"[{info[\'arch\']}]' not in source
+
+
+def test_cell_18_has_spec_level_tqdm_bar():
+    """Cell 18 must wrap the outer ``for spec in specs`` loop in a tqdm bar
+    whose total is ``len(specs)`` so users see overall spec progress.
+    """
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+    assert "tqdm(" in source
+    assert "total=len(specs)" in source
+
+
+def test_cell_18_source_is_valid_python():
+    """The tqdm-driven Cell 18 source must parse as valid Python."""
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+    compile(source, "<cell_18>", "exec")
+
+
+def test_cell_18_callback_drives_step_bar_and_sets_loss_postfix():
+    """Runtime: driving ``_train_cb`` for a single spec must update a tqdm
+    bar by ``step`` deltas and attach a scientific-notation ``loss=...``
+    postfix. The bar must close once ``step == total``.
+    """
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+
+    created_bars = []
+
+    class _FakeBar:
+        def __init__(self, total=None, desc=None, leave=True,
+                     dynamic_ncols=False, **kwargs):
+            self.total = total
+            self.desc = desc
+            self.n = 0
+            self.postfix_calls = []
+            self.update_calls = []
+            self.closed = False
+            created_bars.append(self)
+
+        def update(self, delta):
+            self.update_calls.append(delta)
+            self.n += delta
+
+        def set_postfix(self, **kwargs):
+            self.postfix_calls.append(kwargs)
+
+        def refresh(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class _FakeSpec:
+        def __init__(self, arch_name, loss_name):
+            self.arch = type("_A", (), {"name": arch_name})()
+            self.loss_name = loss_name
+
+    class _FakeAlec:
+        @staticmethod
+        def run_training(spec, progress_callback=None):
+            # Drive the callback for every step from 1..total, simulating
+            # a short 3-step training run.
+            total = 3
+            for step in range(1, total + 1):
+                progress_callback({
+                    "arch": spec.arch.name,
+                    "phase": "train",
+                    "step": step,
+                    "total": total,
+                    "loss": 10.0 ** (-step),
+                    "timestamp": 0.0,
+                })
+            return {"arch_name": spec.arch.name, "loss_name": spec.loss_name}
+
+    scope = {
+        "__builtins__": __builtins__,
+        "TRAIN_SKIP_IF_EXISTS": False,
+        "specs": [_FakeSpec("shallow", "A_atomization")],
+        "alec": _FakeAlec,
+        "tqdm": _FakeBar,
+    }
+    exec(source, scope)
+
+    # Must have created at least 2 bars: outer spec bar + inner step bar
+    assert len(created_bars) >= 2, (
+        f"expected >=2 tqdm bars (outer spec + inner step), got {len(created_bars)}"
+    )
+    # Find the spec-level outer bar (total == len(specs) == 1)
+    outer = next((b for b in created_bars if b.total == 1), None)
+    assert outer is not None, "no outer spec-level bar with total=len(specs)"
+    assert outer.closed, "outer spec bar must be closed after the loop finishes"
+    assert outer.n == 1, f"outer bar must advance once per spec; got n={outer.n}"
+
+    # Find an inner step bar (total == 3 from the fake)
+    inner = next((b for b in created_bars if b.total == 3), None)
+    assert inner is not None, "no inner step bar created for the training run"
+    assert inner.closed, "inner step bar must be closed when step==total"
+    assert inner.n == 3, (
+        f"inner bar must reach total=3 after all steps, got n={inner.n}"
+    )
+    # Loss postfix must be scientific notation
+    assert len(inner.postfix_calls) >= 1
+    last_post = inner.postfix_calls[-1]
+    assert "loss" in last_post
+    assert "e-" in last_post["loss"], (
+        f"loss postfix must be scientific notation, got {last_post['loss']!r}"
+    )
+
+
+# Cell 18 TRAIN_SKIP_IF_EXISTS toggle tests. Mirrors PRETRAIN_SKIP_IF_EXISTS:
+# users flip Cell 3's constant to re-use previously trained model.eqx files
+# instead of re-running the main training loop for every (arch, loss) combo.
+
+
+def test_cell_03_defines_train_skip_if_exists_false():
+    """Cell 3 must bind ``TRAIN_SKIP_IF_EXISTS = False`` so Cell 18 defaults
+    to always re-running training. Users flip this constant to skip any
+    (arch, loss) run whose ``model.eqx`` is already on disk.
+
+    The plain substring ``"TRAIN_SKIP_IF_EXISTS = False"`` is also a suffix
+    of ``"PRETRAIN_SKIP_IF_EXISTS = False"``, so anchor with a boundary that
+    excludes the ``PRE`` prefix.
+    """
+    import re
+    gen = load_generator()
+    source = gen.build_cell_03_constants().source
+    # Match TRAIN_SKIP... that is NOT preceded by "PRE".
+    assert re.search(r"(?<!PRE)TRAIN_SKIP_IF_EXISTS\s*=\s*False", source), (
+        "Cell 3 must bind a standalone TRAIN_SKIP_IF_EXISTS (distinct from "
+        "PRETRAIN_SKIP_IF_EXISTS)."
+    )
+
+
+def test_cell_18_references_train_skip_if_exists():
+    """Cell 18 must reference ``TRAIN_SKIP_IF_EXISTS`` so flipping the Cell 3
+    constant actually gates the ``alec.run_training`` call. Use a regex that
+    excludes the ``PRE`` prefix so the assertion is not satisfied by a
+    ``PRETRAIN_SKIP_IF_EXISTS`` reference.
+    """
+    import re
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+    assert re.search(r"(?<!PRE)TRAIN_SKIP_IF_EXISTS", source), (
+        "Cell 18 must reference TRAIN_SKIP_IF_EXISTS (not PRETRAIN_SKIP_IF_EXISTS)."
+    )
+
+
+def test_cell_18_skips_when_model_eqx_exists(tmp_path):
+    """With ``TRAIN_SKIP_IF_EXISTS = True`` and ``model.eqx`` present for a
+    spec's checkpoint_dir, Cell 18 must NOT call ``alec.run_training`` for
+    that spec.
+    """
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+
+    ckpt = tmp_path / "ckpt"
+    # Spec 0: model.eqx already exists (should be skipped)
+    (ckpt / "train" / "shallow" / "A_atomization").mkdir(parents=True)
+    (ckpt / "train" / "shallow" / "A_atomization" / "model.eqx").write_bytes(b"fake")
+    # Spec 1: no checkpoint dir (should run)
+
+    class _FakeSpec:
+        def __init__(self, arch_name, loss_name, checkpoint_dir):
+            self.arch = type("_A", (), {"name": arch_name})()
+            self.loss_name = loss_name
+            self.checkpoint_dir = checkpoint_dir
+
+    train_calls = []
+
+    class _FakeAlec:
+        @staticmethod
+        def run_training(spec, progress_callback=None):
+            train_calls.append((spec.arch.name, spec.loss_name))
+            return {"arch_name": spec.arch.name, "loss_name": spec.loss_name}
+
+    # No-op tqdm so we can exec the cell without the bar interfering.
+    class _FakeBar:
+        def __init__(self, *args, **kwargs):
+            self.n = 0
+        def update(self, delta): self.n += delta
+        def set_postfix(self, **kwargs): pass
+        def refresh(self): pass
+        def close(self): pass
+
+    scope = {
+        "__builtins__": __builtins__,
+        "TRAIN_SKIP_IF_EXISTS": True,
+        "specs": [
+            _FakeSpec("shallow", "A_atomization",
+                      str(ckpt / "train" / "shallow" / "A_atomization")),
+            _FakeSpec("deep", "A_atomization",
+                      str(ckpt / "train" / "deep" / "A_atomization")),
+        ],
+        "alec": _FakeAlec,
+        "tqdm": _FakeBar,
+    }
+    exec(source, scope)
+
+    assert ("shallow", "A_atomization") not in train_calls, (
+        f"(shallow, A_atomization) already has model.eqx; run_training must "
+        f"not be called for it. train_calls={train_calls}"
+    )
+    assert ("deep", "A_atomization") in train_calls, (
+        f"(deep, A_atomization) has no model.eqx; run_training must be called. "
+        f"train_calls={train_calls}"
+    )
+
+
+def test_cell_18_runs_when_skip_is_false_even_if_model_eqx_exists(tmp_path):
+    """With ``TRAIN_SKIP_IF_EXISTS = False``, an existing ``model.eqx`` must
+    NOT cause Cell 18 to skip the ``alec.run_training`` call — the default
+    behavior is always to re-train.
+    """
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+
+    ckpt = tmp_path / "ckpt"
+    (ckpt / "train" / "shallow" / "A_atomization").mkdir(parents=True)
+    (ckpt / "train" / "shallow" / "A_atomization" / "model.eqx").write_bytes(b"fake")
+
+    class _FakeSpec:
+        def __init__(self, arch_name, loss_name, checkpoint_dir):
+            self.arch = type("_A", (), {"name": arch_name})()
+            self.loss_name = loss_name
+            self.checkpoint_dir = checkpoint_dir
+
+    train_calls = []
+
+    class _FakeAlec:
+        @staticmethod
+        def run_training(spec, progress_callback=None):
+            train_calls.append((spec.arch.name, spec.loss_name))
+            return {"arch_name": spec.arch.name, "loss_name": spec.loss_name}
+
+    class _FakeBar:
+        def __init__(self, *args, **kwargs):
+            self.n = 0
+        def update(self, delta): self.n += delta
+        def set_postfix(self, **kwargs): pass
+        def refresh(self): pass
+        def close(self): pass
+
+    scope = {
+        "__builtins__": __builtins__,
+        "TRAIN_SKIP_IF_EXISTS": False,
+        "specs": [
+            _FakeSpec("shallow", "A_atomization",
+                      str(ckpt / "train" / "shallow" / "A_atomization")),
+        ],
+        "alec": _FakeAlec,
+        "tqdm": _FakeBar,
+    }
+    exec(source, scope)
+    assert train_calls == [("shallow", "A_atomization")], (
+        f"with skip=False, (shallow, A_atomization) must be re-trained even "
+        f"if model.eqx exists; got train_calls={train_calls}"
+    )
+
+
+def test_cell_18_spec_bar_total_stays_len_specs_when_skipping(tmp_path):
+    """When Cell 18 skips a spec, the outer tqdm bar total must still equal
+    ``len(specs)`` and the bar must be advanced for the skipped spec too —
+    otherwise the progress display desynchronizes from the spec list.
+    """
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+
+    ckpt = tmp_path / "ckpt"
+    (ckpt / "train" / "shallow" / "A_atomization").mkdir(parents=True)
+    (ckpt / "train" / "shallow" / "A_atomization" / "model.eqx").write_bytes(b"fake")
+
+    created_bars = []
+
+    class _FakeBar:
+        def __init__(self, total=None, desc=None, leave=True,
+                     dynamic_ncols=False, **kwargs):
+            self.total = total
+            self.desc = desc
+            self.n = 0
+            self.update_calls = []
+            self.postfix_calls = []
+            self.closed = False
+            created_bars.append(self)
+        def update(self, delta):
+            self.update_calls.append(delta)
+            self.n += delta
+        def set_postfix(self, **kwargs):
+            self.postfix_calls.append(kwargs)
+        def refresh(self): pass
+        def close(self): self.closed = True
+
+    class _FakeSpec:
+        def __init__(self, arch_name, loss_name, checkpoint_dir):
+            self.arch = type("_A", (), {"name": arch_name})()
+            self.loss_name = loss_name
+            self.checkpoint_dir = checkpoint_dir
+
+    class _FakeAlec:
+        @staticmethod
+        def run_training(spec, progress_callback=None):
+            total = 2
+            for step in range(1, total + 1):
+                progress_callback({
+                    "arch": spec.arch.name, "phase": "train",
+                    "step": step, "total": total,
+                    "loss": 1e-3, "timestamp": 0.0,
+                })
+            return {}
+
+    scope = {
+        "__builtins__": __builtins__,
+        "TRAIN_SKIP_IF_EXISTS": True,
+        "specs": [
+            _FakeSpec("shallow", "A_atomization",
+                      str(ckpt / "train" / "shallow" / "A_atomization")),
+            _FakeSpec("deep", "A_atomization",
+                      str(ckpt / "train" / "deep" / "A_atomization")),
+        ],
+        "alec": _FakeAlec,
+        "tqdm": _FakeBar,
+    }
+    exec(source, scope)
+
+    outer = next((b for b in created_bars if b.total == 2), None)
+    assert outer is not None, "outer spec bar with total=len(specs)=2 not found"
+    assert outer.n == 2, (
+        f"outer bar must advance once per spec (including skipped), got n={outer.n}"
+    )
+    assert outer.closed
+
+
+def test_cell_18_multi_spec_run_updates_outer_bar_per_spec():
+    """Driving Cell 18 with 3 fake specs must advance the outer spec bar by
+    1 per completed spec and produce one closed inner bar per spec.
+    """
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+
+    created_bars = []
+
+    class _FakeBar:
+        def __init__(self, total=None, desc=None, leave=True,
+                     dynamic_ncols=False, **kwargs):
+            self.total = total
+            self.desc = desc
+            self.n = 0
+            self.update_calls = []
+            self.postfix_calls = []
+            self.closed = False
+            created_bars.append(self)
+
+        def update(self, delta):
+            self.update_calls.append(delta)
+            self.n += delta
+
+        def set_postfix(self, **kwargs):
+            self.postfix_calls.append(kwargs)
+
+        def refresh(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class _FakeSpec:
+        def __init__(self, arch_name, loss_name):
+            self.arch = type("_A", (), {"name": arch_name})()
+            self.loss_name = loss_name
+
+    class _FakeAlec:
+        @staticmethod
+        def run_training(spec, progress_callback=None):
+            total = 2
+            for step in range(1, total + 1):
+                progress_callback({
+                    "arch": spec.arch.name,
+                    "phase": "train",
+                    "step": step,
+                    "total": total,
+                    "loss": 1e-3,
+                    "timestamp": 0.0,
+                })
+            return {"arch_name": spec.arch.name, "loss_name": spec.loss_name}
+
+    scope = {
+        "__builtins__": __builtins__,
+        "TRAIN_SKIP_IF_EXISTS": False,
+        "specs": [
+            _FakeSpec("shallow", "A_atomization"),
+            _FakeSpec("shallow", "B_atomization_plus_dm"),
+            _FakeSpec("deep", "A_atomization"),
+        ],
+        "alec": _FakeAlec,
+        "tqdm": _FakeBar,
+    }
+    exec(source, scope)
+
+    # Outer bar: total = len(specs) = 3
+    outer = next((b for b in created_bars if b.total == 3), None)
+    assert outer is not None, "outer spec bar with total=3 not found"
+    assert outer.n == 3, f"outer bar must advance 3 times; got n={outer.n}"
+    assert outer.closed
+
+    # Inner bars: one per spec, each total=2 (from the fake run_training)
+    inner_bars = [b for b in created_bars if b.total == 2]
+    assert len(inner_bars) == 3, (
+        f"expected 3 inner step bars (one per spec), got {len(inner_bars)}"
+    )
+    for b in inner_bars:
+        assert b.closed, "each inner step bar must be closed at end of its run"
+        assert b.n == 2, f"each inner bar must reach total=2; got n={b.n}"
+
+
 def test_cell_19_loads_losses_npy():
     """Cell 19 must load each per-(arch, loss) losses.npy using the
     checkpoint path template Cell 17 wrote to.

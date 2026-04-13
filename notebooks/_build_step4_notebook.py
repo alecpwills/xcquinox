@@ -170,6 +170,14 @@ PRETRAIN_PARALLEL = False
 # step3b-era behaviour.
 PRETRAIN_SKIP_IF_EXISTS = False
 
+# Flip to True to skip the main training loop for any (arch, loss) run that
+# already has a ``model.eqx`` at
+# ``CHECKPOINT_BASE/train/<arch>/<loss_name>/``. Cell 18 re-uses those
+# checkpoints via the Section 6+ evaluation cells, so skipping is safe as
+# long as the existing files match your current ARCH_NAMES * LOSS_NAMES
+# combo. Default is False (always re-train).
+TRAIN_SKIP_IF_EXISTS = False
+
 os.makedirs(CHECKPOINT_BASE, exist_ok=True)
 print(f"CHECKPOINT_BASE={{CHECKPOINT_BASE}}  BASIS={{BASIS}}  GRID_LEVEL={{GRID_LEVEL}}")
 """
@@ -943,15 +951,73 @@ def build_cell_18_training_loop():
     loss) checkpoint_dir from Cell 17, so artifacts route automatically.
     For a parallel variant using alec.build_training_jobs +
     alec.run_workers, see spec line 88 -- not emitted here.
+
+    Progress reporting uses a two-tier ``tqdm`` display:
+      - Outer bar with ``total=len(specs)`` counts completed (arch, loss) runs.
+      - Inner per-spec bar, recreated on the first callback of each spec and
+        closed when ``step == total``, shows per-step progress with a
+        scientific-notation ``loss=...`` postfix.
     """
     source = """# Serial training loop.  Each spec already carries its per-(arch, loss) checkpoint_dir
 # from Cell 17, so artifacts route automatically.  For a parallel variant using
 # alec.build_training_jobs + alec.run_workers, see spec line 88 -- not emitted here.
-def _train_cb(info):
-    print(f"[{info['arch']}][{info['phase']}] step {info['step']}/{info['total']} loss={info['loss']:.4e}")
+#
+# Two-tier tqdm progress display:
+#   - _spec_bar: outer bar counting completed specs out of len(specs)
+#   - _step_bars: dict of per-(arch, phase) inner bars tracking step progress
+#     within the current spec. An inner bar is created on the first callback
+#     for a given key and closed (and removed) when step == total, so the next
+#     spec with the same arch starts a fresh bar.
+_step_bars = {}
+_current_loss = {"name": None}
 
-for spec in specs:
-    alec.run_training(spec, progress_callback=_train_cb)
+def _train_cb(info):
+    key = (info['arch'], info['phase'])
+    if key not in _step_bars:
+        _label = (f"{info['arch']:<20} {_current_loss['name']:<25}"
+                  if _current_loss['name'] is not None
+                  else f"{info['arch']:<20} {info['phase']}")
+        _step_bars[key] = tqdm(
+            total=info['total'],
+            desc=_label,
+            leave=False,
+            dynamic_ncols=True,
+        )
+    bar = _step_bars[key]
+    delta = info['step'] - bar.n
+    if delta > 0:
+        bar.update(delta)
+    bar.set_postfix(loss=f"{info['loss']:.4e}")
+    if info['step'] >= info['total']:
+        bar.close()
+        del _step_bars[key]
+
+def _training_model_exists(spec):
+    import os as _os
+    return _os.path.isfile(_os.path.join(spec.checkpoint_dir, "model.eqx"))
+
+_spec_bar = tqdm(
+    total=len(specs),
+    desc="training (specs)",
+    leave=True,
+    dynamic_ncols=True,
+)
+try:
+    for spec in specs:
+        _current_loss['name'] = spec.loss_name
+        if TRAIN_SKIP_IF_EXISTS and _training_model_exists(spec):
+            print(f"[{spec.arch.name}][{spec.loss_name}] cached model.eqx found — skipping training")
+            _spec_bar.update(1)
+            _spec_bar.set_postfix(arch=spec.arch.name, loss=spec.loss_name, skipped=True)
+            continue
+        alec.run_training(spec, progress_callback=_train_cb)
+        _spec_bar.update(1)
+        _spec_bar.set_postfix(arch=spec.arch.name, loss=spec.loss_name)
+finally:
+    _spec_bar.close()
+    for _b in list(_step_bars.values()):
+        _b.close()
+    _step_bars.clear()
 """
     return new_code_cell(source)
 
