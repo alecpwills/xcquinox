@@ -614,6 +614,89 @@ print(f"Reference data written to {ext_data_dir}")
     return new_code_cell(source)
 
 
+def build_cell_14_mol_specs():
+    """Section 4 Cell 14 — construct three alec.MoleculeSpec objects.
+
+    The list is an explicit three-element literal (NOT a comprehension) so that
+    Cell 17 can reference the individual entries by index and Cell 15 can iterate
+    over them by name. All kwargs match Cell 13's gto.M kwargs exactly so that
+    precompute_fixed_density_data rebuilds the same pyscf grid and
+    _load_external_data accepts the .npz arrays.
+    """
+    source = """mol_specs = [
+    alec.MoleculeSpec(
+        name="H",
+        atom="H 0 0 0",
+        basis=BASIS,
+        charge=0,
+        spin=1,
+        atom_composition=(("H", 1),),
+        external_data_path=f"{ext_data_dir}/H.npz",
+        grid_level=GRID_LEVEL,
+    ),
+    alec.MoleculeSpec(
+        name="O",
+        atom="O 0 0 0",
+        basis=BASIS,
+        charge=0,
+        spin=2,
+        atom_composition=(("O", 1),),
+        external_data_path=f"{ext_data_dir}/O.npz",
+        grid_level=GRID_LEVEL,
+    ),
+    alec.MoleculeSpec(
+        name="H2O",
+        atom=H2O_COORDS,
+        basis=BASIS,
+        charge=0,
+        spin=0,
+        atom_composition=(("H", 2), ("O", 1)),
+        external_data_path=f"{ext_data_dir}/H2O.npz",
+        grid_level=GRID_LEVEL,
+    ),
+]
+print(f"Built {len(mol_specs)} MoleculeSpec objects: {[m.name for m in mol_specs]}")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_15_precompute_sanity():
+    """Section 4 Cell 15 — call precompute_fixed_density_data and assert invariants.
+
+    Prints per-molecule shapes and energies, then asserts the atom-vs-compound
+    invariants: atoms have no dm_target / rho_ccsd_grid; H2O has all three.
+    The negative atom assertions guard against a Cell 13 regression that would
+    accidentally write dm_target / rho_ccsd_grid into the atom .npz.
+    """
+    source = """mol_data_list = [alec.precompute_fixed_density_data(m) for m in mol_specs]
+
+for mol_spec, mol_data in zip(mol_specs, mol_data_list):
+    print(f"\\n=== {mol_spec.name} ===")
+    print(f"  n_grid:            {mol_data['rho_grid'].shape[0]}")
+    print(f"  n_ao:              {mol_data['ao_grid'].shape[1]}")
+    print(f"  E_pbe (Ha):        {mol_data['E_pbe']:.6f}")
+    print(f"  E_non_xc (Ha):     {mol_data['E_non_xc']:.6f}")
+    print(f"  E_ref_literature:  {mol_data['E_ref_literature']}")
+    print(f"  dm_target:         {None if mol_data['dm_target'] is None else mol_data['dm_target'].shape}")
+    print(f"  rho_ccsd_grid:     {None if mol_data['rho_ccsd_grid'] is None else mol_data['rho_ccsd_grid'].shape}")
+
+# Atom-vs-compound invariants: atoms skip density targets, H2O has all three.
+# Negative atom assertions guard against a Cell 13 regression that would accidentally
+# write dm_target / rho_ccsd_grid into the atom .npz.
+assert mol_data_list[0]["E_ref_literature"] is not None  # H
+assert mol_data_list[0]["dm_target"] is None             # H — atoms skip density
+assert mol_data_list[0]["rho_ccsd_grid"] is None         # H — atoms skip density
+assert mol_data_list[1]["E_ref_literature"] is not None  # O
+assert mol_data_list[1]["dm_target"] is None             # O
+assert mol_data_list[1]["rho_ccsd_grid"] is None         # O
+assert mol_data_list[2]["E_ref_literature"] is not None  # H2O
+assert mol_data_list[2]["dm_target"] is not None         # H2O — HF DM target
+assert mol_data_list[2]["rho_ccsd_grid"] is not None     # H2O — HF grid density
+print("\\nAll atom-vs-compound invariants satisfied.")
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -665,6 +748,8 @@ def main(
         build_cell_11_training_md(),
         build_cell_12_reference_dicts(),
         build_cell_13_hf_ccsd_gen(),
+        build_cell_14_mol_specs(),
+        build_cell_15_precompute_sanity(),
     ]
 
     nbformat.validate(nb)

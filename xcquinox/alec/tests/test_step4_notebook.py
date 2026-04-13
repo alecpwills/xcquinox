@@ -410,3 +410,48 @@ def test_cell_13_einsum_is_rho_hf_not_rho_nn():
     assert 'rho_hf = np.einsum("ij,gi,gj->g"' in source
     # `rho_nn` would indicate the wrong name reappeared
     assert "rho_nn = np.einsum" not in source
+
+
+# Task 6 — Cells 14-15 builder tests
+
+
+def test_cell_14_mol_specs_has_three_entries():
+    """Cell 14 must construct exactly three alec.MoleculeSpec instances."""
+    gen = load_generator()
+    source = gen.build_cell_14_mol_specs().source
+    assert source.count("alec.MoleculeSpec(") == 3
+
+
+def test_cell_14_all_specs_carry_grid_level():
+    """All three MoleculeSpec entries must set grid_level=GRID_LEVEL so
+    precompute rebuilds the same grid Cell 13 used.
+    """
+    gen = load_generator()
+    source = gen.build_cell_14_mol_specs().source
+    assert source.count("grid_level=GRID_LEVEL") == 3
+
+
+def test_cell_14_h2o_uses_h2o_coords_constant():
+    """The H2O MoleculeSpec must reference H2O_COORDS (Cell 3), not a re-literal."""
+    gen = load_generator()
+    source = gen.build_cell_14_mol_specs().source
+    assert "atom=H2O_COORDS" in source
+
+
+def test_cell_14_all_specs_carry_external_data_path():
+    """All three MoleculeSpec entries must point at an f-string path derived
+    from ext_data_dir (Cell 12).
+    """
+    gen = load_generator()
+    source = gen.build_cell_14_mol_specs().source
+    assert source.count('external_data_path=f"{ext_data_dir}/') == 3
+
+
+def test_cell_15_asserts_atom_rho_ccsd_is_none():
+    """Cell 15 must assert both the atom-branch negative case and the H2O
+    positive case on rho_ccsd_grid.
+    """
+    gen = load_generator()
+    source = gen.build_cell_15_precompute_sanity().source
+    assert 'mol_data_list[0]["rho_ccsd_grid"] is None' in source
+    assert 'mol_data_list[2]["rho_ccsd_grid"] is not None' in source
