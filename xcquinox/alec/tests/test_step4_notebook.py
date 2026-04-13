@@ -355,6 +355,7 @@ def test_cell_08_serial_path_runtime_dispatches_to_alec_run_pretrain(monkeypatch
     scope = {
         "__builtins__": __builtins__,
         "PRETRAIN_PARALLEL": False,
+        "PRETRAIN_SKIP_IF_EXISTS": False,
         "CHECKPOINT_BASE": "/tmp/fake_ckpt",
         "ARCH_NAMES": ["shallow", "deep"],
         "alec": _FakeAlec,
@@ -388,6 +389,7 @@ def test_cell_08_parallel_path_runtime_dispatches_subprocesses(monkeypatch):
     scope = {
         "__builtins__": __builtins__,
         "PRETRAIN_PARALLEL": True,
+        "PRETRAIN_SKIP_IF_EXISTS": False,
         "CHECKPOINT_BASE": "/tmp/fake_ckpt",
         "ARCH_NAMES": ["shallow"],
         "tqdm": _real_tqdm,
@@ -429,6 +431,7 @@ def test_cell_08_parallel_path_sets_child_env_vars_at_runtime(monkeypatch):
     scope = {
         "__builtins__": __builtins__,
         "PRETRAIN_PARALLEL": True,
+        "PRETRAIN_SKIP_IF_EXISTS": False,
         "CHECKPOINT_BASE": "/tmp/fake_ckpt",
         "ARCH_NAMES": ["shallow"],
         "tqdm": _real_tqdm,
@@ -522,6 +525,7 @@ def test_cell_08_serial_callback_creates_one_bar_per_arch_phase():
     scope = {
         "__builtins__": __builtins__,
         "PRETRAIN_PARALLEL": False,
+        "PRETRAIN_SKIP_IF_EXISTS": False,
         "CHECKPOINT_BASE": "/tmp/fake_ckpt",
         "ARCH_NAMES": [],  # empty so the for loop is a no-op
         "alec": _FakeAlec,
@@ -581,6 +585,7 @@ def test_cell_08_serial_callback_sets_loss_postfix_in_scientific_notation():
     scope = {
         "__builtins__": __builtins__,
         "PRETRAIN_PARALLEL": False,
+        "PRETRAIN_SKIP_IF_EXISTS": False,
         "CHECKPOINT_BASE": "/tmp/fake_ckpt",
         "ARCH_NAMES": [],
         "alec": type("_A", (), {
@@ -652,6 +657,7 @@ def test_cell_08_parallel_path_creates_and_closes_arch_bar(monkeypatch):
     scope = {
         "__builtins__": __builtins__,
         "PRETRAIN_PARALLEL": True,
+        "PRETRAIN_SKIP_IF_EXISTS": False,
         "CHECKPOINT_BASE": "/tmp/fake_ckpt",
         "ARCH_NAMES": ["shallow", "deep"],
         "tqdm": _FakeBar,
@@ -727,6 +733,311 @@ def test_cell_10_is_12x2_or_documented_subset():
     assert any(form in source for form in ok_forms), (
         f"Cell 10 must call subplots with an (n_arch, 2) grid; none of "
         f"{ok_forms} found in source."
+    )
+
+
+# Cell 10 parity plot formula guards.
+# ``networks.py`` returns ``1 + lobterm.squeeze()`` / ``1 + gated.squeeze()``,
+# so ``xnet(p)`` already equals F (not F-1). The pretrain loss confirms this:
+#   pred = net(x); pred = pred - 1.0; loss = (pred - ref_F)^2
+# with ref_F stored as (F - 1). So at convergence net(x) == F.
+# A previous revision of Cell 10 added ``+ 1.0`` to predictions, producing a
+# parity plot shifted by +1 on the y-axis relative to the x-axis.
+
+
+def test_cell_10_predictions_do_not_shift_by_plus_one():
+    """Cell 10 must NOT add ``+ 1.0`` to the network output when computing
+    ``Fx_pred`` / ``Fc_pred``. The network already returns the full enhancement
+    factor F, so ``xnet(p) + 1.0`` shifts predictions by an extra +1 and
+    breaks parity against the x-axis.
+    """
+    gen = load_generator()
+    source = gen.build_cell_10_pretrain_parity().source
+    assert "xnet(p) + 1.0" not in source, (
+        "Cell 10 adds +1.0 to xnet(p); network output is already F, so this "
+        "shifts the y-axis by +1 relative to the x-axis."
+    )
+    assert "cnet(p) + 1.0" not in source, (
+        "Cell 10 adds +1.0 to cnet(p); network output is already F, so this "
+        "shifts the y-axis by +1 relative to the x-axis."
+    )
+
+
+def test_cell_10_predictions_use_raw_network_output():
+    """Cell 10 must compute ``Fx_pred = jax.vmap(lambda p: xnet(p))(...)`` and
+    ``Fc_pred = jax.vmap(lambda p: cnet(p))(...)``. The network already returns F.
+    """
+    gen = load_generator()
+    source = gen.build_cell_10_pretrain_parity().source
+    assert "jax.vmap(lambda p: xnet(p))" in source
+    assert "jax.vmap(lambda p: cnet(p))" in source
+
+
+def test_cell_10_both_axes_in_same_space():
+    """Cell 10 must plot both x-axis (target) and y-axis (prediction) in the
+    same F space. Either:
+      (a) x = Fx_target + 1.0 (F space) AND y = xnet(p) (F space), OR
+      (b) x = Fx_target (F-1 space) AND y = xnet(p) - 1.0 (F-1 space).
+    The current generator uses form (a): ``Fx_target + 1.0`` on the x-axis
+    and raw ``xnet(p)`` on the y-axis.
+    """
+    gen = load_generator()
+    source = gen.build_cell_10_pretrain_parity().source
+    # Form (a): both F-space.
+    x_axis_uses_plus_one = "Fx_target) + 1.0" in source
+    y_axis_is_raw = "jax.vmap(lambda p: xnet(p))" in source
+    assert x_axis_uses_plus_one and y_axis_is_raw, (
+        "Cell 10 must use the F-space plotting form: x-axis should shift "
+        "Fx_target by +1 and y-axis should use raw xnet(p). "
+        f"x_axis_uses_plus_one={x_axis_uses_plus_one}, "
+        f"y_axis_is_raw={y_axis_is_raw}"
+    )
+
+
+def test_cell_10_runtime_predictions_match_target_at_convergence():
+    """End-to-end runtime check: if a fake xnet returns exactly the stored
+    ``1 + Fx_all`` (i.e., perfect convergence), Cell 10's scatter should
+    produce x and y arrays that are elementwise equal. This guards against
+    any residual shift being introduced into Fx_pred.
+    """
+    import numpy as np
+    import jax
+    import jax.numpy as jnp
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    gen = load_generator()
+    source = gen.build_cell_10_pretrain_parity().source
+
+    # Build a fake .npz data file in memory and write it to tmp.
+    # We do not need the full Cell 10 machinery — just the slice that
+    # computes Fx_pred from xnet(p) and the scatter x/y pair.
+    #
+    # Strategy: carve out the two lines that matter and exec them against
+    # a scope where xnet/cnet/_data/etc. are already bound. This avoids
+    # having to mock the full alec API surface.
+    rho = np.array([0.1, 0.2, 0.3])
+    sigma = np.array([0.01, 0.04, 0.09])
+    Fx_all = np.array([0.2, 0.3, 0.4])  # stored as (F - 1)
+    Fc_all = np.array([-0.1, 0.0, 0.1])
+
+    # Perfect convergence: xnet(p) returns 1 + Fx_all[i] = F
+    Fx_full = 1.0 + Fx_all
+    Fc_full = 1.0 + Fc_all
+
+    def _fake_xnet(p):
+        # p shape (n_features,); match by rho (column 0)
+        # We rely on exec-time vmap calling this per row.
+        idx = jnp.argmin(jnp.abs(p[0] - jnp.asarray(rho)))
+        return jnp.asarray(Fx_full)[idx]
+
+    def _fake_cnet(p):
+        idx = jnp.argmin(jnp.abs(p[0] - jnp.asarray(rho)))
+        return jnp.asarray(Fc_full)[idx]
+
+    input_array = jnp.stack([jnp.asarray(rho), jnp.asarray(sigma)], axis=1)
+
+    # Extract the Fx_pred / Fc_pred lines from the generator source so we
+    # exercise the actual formula, not a hand-typed copy.
+    fx_line = next(
+        line for line in source.splitlines()
+        if line.strip().startswith("Fx_pred =")
+    )
+    fc_line = next(
+        line for line in source.splitlines()
+        if line.strip().startswith("Fc_pred =")
+    )
+    local_scope = {
+        "__builtins__": __builtins__,
+        "jax": jax,
+        "jnp": jnp,
+        "xnet": _fake_xnet,
+        "cnet": _fake_cnet,
+        "input_array": input_array,
+    }
+    exec(fx_line.strip(), local_scope)
+    exec(fc_line.strip(), local_scope)
+    Fx_pred = np.asarray(local_scope["Fx_pred"])
+    Fc_pred = np.asarray(local_scope["Fc_pred"])
+
+    # Target (in F space): Fx_target + 1.0 = Fx_all + 1.0 = Fx_full
+    np.testing.assert_allclose(Fx_pred, Fx_full, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(Fc_pred, Fc_full, rtol=0, atol=1e-6)
+
+
+# Cell 8 / Cell 3 PRETRAIN_SKIP_IF_EXISTS toggle tests.
+# Users want the option to load previously pre-trained models instead of
+# re-running pretraining every notebook execution. The toggle is a
+# notebook-runtime constant (`PRETRAIN_SKIP_IF_EXISTS` set in Cell 3) that
+# Cell 8 reads before dispatching ``alec.run_pretrain`` — if True AND both
+# xnet.eqx and cnet.eqx already exist for an arch, that arch is skipped.
+
+
+def test_cell_03_defines_pretrain_skip_if_exists_false():
+    """Cell 3 must bind ``PRETRAIN_SKIP_IF_EXISTS = False`` so Cell 8 defaults
+    to always re-running pretraining. Users flip this constant in the notebook
+    to opt into skipping arches whose checkpoints already exist.
+    """
+    gen = load_generator()
+    source = gen.build_cell_03_constants().source
+    assert "PRETRAIN_SKIP_IF_EXISTS = False" in source
+
+
+def test_cell_08_references_pretrain_skip_if_exists():
+    """Cell 8 must reference ``PRETRAIN_SKIP_IF_EXISTS`` so flipping the Cell 3
+    constant actually gates the pretrain call.
+    """
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+    assert "PRETRAIN_SKIP_IF_EXISTS" in source
+
+
+def test_cell_08_serial_path_skips_when_checkpoints_exist(monkeypatch, tmp_path):
+    """With ``PRETRAIN_SKIP_IF_EXISTS = True`` and both xnet.eqx + cnet.eqx
+    present for an arch, the serial branch must NOT call ``alec.run_pretrain``
+    for that arch.
+    """
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+
+    # Pre-create the checkpoint files for "shallow" but NOT for "deep"
+    ckpt = tmp_path / "ckpt"
+    (ckpt / "pretrain" / "shallow").mkdir(parents=True)
+    (ckpt / "pretrain" / "shallow" / "xnet.eqx").write_bytes(b"fake")
+    (ckpt / "pretrain" / "shallow" / "cnet.eqx").write_bytes(b"fake")
+
+    got_arch_calls = []
+
+    class _FakeSpec:
+        def __init__(self, **kw):
+            self.kw = kw
+
+    class _FakeAlec:
+        PretrainSpec = _FakeSpec
+
+        @staticmethod
+        def get_architecture(name):
+            # Return a named sentinel so run_pretrain can see which arch.
+            got_arch_calls.append(name)
+            return type("_Arch", (), {"name": name})()
+
+        @staticmethod
+        def run_pretrain(spec, progress_callback=None):
+            return None
+
+    scope = {
+        "__builtins__": __builtins__,
+        "PRETRAIN_PARALLEL": False,
+        "PRETRAIN_SKIP_IF_EXISTS": True,
+        "CHECKPOINT_BASE": str(ckpt),
+        "ARCH_NAMES": ["shallow", "deep"],
+        "alec": _FakeAlec,
+    }
+    exec(source, scope)
+    # ``get_architecture`` only runs for non-skipped arches (it is inside the
+    # Cell 8 loop body, after the skip check). "shallow" is pre-cached, so it
+    # must be absent from got_arch_calls; "deep" must be present.
+    assert "shallow" not in got_arch_calls, (
+        f"'shallow' already had checkpoints; get_architecture must not be "
+        f"called for it. got_arch_calls={got_arch_calls}"
+    )
+    assert "deep" in got_arch_calls, (
+        f"'deep' has no checkpoints; get_architecture must be called for it. "
+        f"got_arch_calls={got_arch_calls}"
+    )
+
+
+def test_cell_08_serial_path_runs_when_skip_is_false_even_if_checkpoints_exist(tmp_path):
+    """With ``PRETRAIN_SKIP_IF_EXISTS = False``, existing checkpoints must NOT
+    cause Cell 8 to skip the pretrain call — the default behavior is always
+    to re-run. This guards against the skip logic kicking in unconditionally.
+    """
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+
+    ckpt = tmp_path / "ckpt"
+    (ckpt / "pretrain" / "shallow").mkdir(parents=True)
+    (ckpt / "pretrain" / "shallow" / "xnet.eqx").write_bytes(b"fake")
+    (ckpt / "pretrain" / "shallow" / "cnet.eqx").write_bytes(b"fake")
+
+    got_arch_calls = []
+
+    class _FakeSpec:
+        def __init__(self, **kw):
+            self.kw = kw
+
+    class _FakeAlec:
+        PretrainSpec = _FakeSpec
+
+        @staticmethod
+        def get_architecture(name):
+            got_arch_calls.append(name)
+            return type("_Arch", (), {"name": name})()
+
+        @staticmethod
+        def run_pretrain(spec, progress_callback=None):
+            return None
+
+    scope = {
+        "__builtins__": __builtins__,
+        "PRETRAIN_PARALLEL": False,
+        "PRETRAIN_SKIP_IF_EXISTS": False,
+        "CHECKPOINT_BASE": str(ckpt),
+        "ARCH_NAMES": ["shallow"],
+        "alec": _FakeAlec,
+    }
+    exec(source, scope)
+    assert got_arch_calls == ["shallow"], (
+        f"with skip=False, shallow must be re-trained even if checkpoints exist; "
+        f"got got_arch_calls={got_arch_calls}"
+    )
+
+
+def test_cell_08_parallel_path_skips_when_checkpoints_exist(monkeypatch, tmp_path):
+    """With ``PRETRAIN_PARALLEL = True`` and ``PRETRAIN_SKIP_IF_EXISTS = True``,
+    the parallel branch must not launch a subprocess for arches whose
+    checkpoints already exist.
+    """
+    import subprocess as _real_sp
+    from tqdm.auto import tqdm as _real_tqdm
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+
+    ckpt = tmp_path / "ckpt"
+    (ckpt / "pretrain" / "shallow").mkdir(parents=True)
+    (ckpt / "pretrain" / "shallow" / "xnet.eqx").write_bytes(b"fake")
+    (ckpt / "pretrain" / "shallow" / "cnet.eqx").write_bytes(b"fake")
+
+    captured_args = []
+
+    def _fake_run(args, env=None, check=None, capture_output=None, text=None):
+        captured_args.append(args)
+        class _Result:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+        return _Result()
+
+    monkeypatch.setattr(_real_sp, "run", _fake_run)
+
+    scope = {
+        "__builtins__": __builtins__,
+        "PRETRAIN_PARALLEL": True,
+        "PRETRAIN_SKIP_IF_EXISTS": True,
+        "CHECKPOINT_BASE": str(ckpt),
+        "ARCH_NAMES": ["shallow", "deep"],
+        "tqdm": _real_tqdm,
+    }
+    exec(source, scope)
+
+    # Only "deep" should reach subprocess.run — "shallow" is already cached.
+    assert len(captured_args) == 1, (
+        f"expected 1 subprocess.run call (only for 'deep'), got {len(captured_args)}"
+    )
+    child_code = captured_args[0][2]
+    assert "'deep'" in child_code, (
+        f"the un-skipped arch must be 'deep'; child_code did not reference it: {child_code[:200]}"
     )
 
 

@@ -162,6 +162,14 @@ H2O_COORDS = "O 0.0000 0.0000 0.1173; H 0.0000 0.7572 -0.4692; H 0.0000 -0.7572 
 # back), so output collapses to one "[arch] pretrain complete" line per arch.
 PRETRAIN_PARALLEL = False
 
+# Flip to True to skip pretraining for any arch that already has both
+# ``xnet.eqx`` and ``cnet.eqx`` at ``CHECKPOINT_BASE/pretrain/<arch>/``. Cell 8
+# re-loads those checkpoints downstream (Cell 10 parity / Section 5 training),
+# so skipping is safe as long as the existing files match your current
+# architecture registry. Default is False (always re-pretrain) to match the
+# step3b-era behaviour.
+PRETRAIN_SKIP_IF_EXISTS = False
+
 os.makedirs(CHECKPOINT_BASE, exist_ok=True)
 print(f"CHECKPOINT_BASE={{CHECKPOINT_BASE}}  BASIS={{BASIS}}  GRID_LEVEL={{GRID_LEVEL}}")
 """
@@ -394,6 +402,14 @@ def _cb(info):
         bar.close()
         del _bars[key]
 
+def _pretrain_checkpoints_exist(arch_name):
+    import os as _os
+    _ckdir = f"{CHECKPOINT_BASE}/pretrain/{arch_name}"
+    return (
+        _os.path.isfile(f"{_ckdir}/xnet.eqx")
+        and _os.path.isfile(f"{_ckdir}/cnet.eqx")
+    )
+
 if PRETRAIN_PARALLEL:
     import os
     import subprocess
@@ -436,9 +452,18 @@ alec.run_pretrain(spec)
             ) from exc
         return arch_name
 
+    # Filter out arches whose checkpoints already exist when the skip flag is on.
+    _archs_to_run = [
+        _a for _a in ARCH_NAMES
+        if not (PRETRAIN_SKIP_IF_EXISTS and _pretrain_checkpoints_exist(_a))
+    ]
+    _skipped = [_a for _a in ARCH_NAMES if _a not in _archs_to_run]
+    if _skipped:
+        print(f"Skipping {len(_skipped)} cached arch(es): {_skipped}")
+
     _n_cpus = os.cpu_count() or 2
-    _max_workers = min(len(ARCH_NAMES), max(1, _n_cpus // 2))
-    print(f"Pretraining {len(ARCH_NAMES)} archs in parallel: "
+    _max_workers = max(1, min(len(_archs_to_run) or 1, _n_cpus // 2))
+    print(f"Pretraining {len(_archs_to_run)} archs in parallel: "
           f"{_max_workers} workers on {_n_cpus} CPUs")
 
     # Per-step callbacks do not stream back through subprocesses, so the
@@ -450,17 +475,24 @@ alec.run_pretrain(spec)
         leave=True,
         dynamic_ncols=True,
     )
+    # Count skipped arches against the bar so the total stays at len(ARCH_NAMES).
+    if _skipped:
+        _arch_bar.update(len(_skipped))
     try:
-        with ThreadPoolExecutor(max_workers=_max_workers) as _ex:
-            _futures = {_ex.submit(_pretrain_one_subprocess, _a): _a for _a in ARCH_NAMES}
-            for _future in as_completed(_futures):
-                _arch_done = _future.result()
-                _arch_bar.update(1)
-                _arch_bar.set_postfix(arch=_arch_done)
+        if _archs_to_run:
+            with ThreadPoolExecutor(max_workers=_max_workers) as _ex:
+                _futures = {_ex.submit(_pretrain_one_subprocess, _a): _a for _a in _archs_to_run}
+                for _future in as_completed(_futures):
+                    _arch_done = _future.result()
+                    _arch_bar.update(1)
+                    _arch_bar.set_postfix(arch=_arch_done)
     finally:
         _arch_bar.close()
 else:
     for arch_name in ARCH_NAMES:
+        if PRETRAIN_SKIP_IF_EXISTS and _pretrain_checkpoints_exist(arch_name):
+            print(f"[{arch_name}] cached xnet.eqx + cnet.eqx found — skipping pretrain")
+            continue
         spec = alec.PretrainSpec(
             arch=alec.get_architecture(arch_name),
             data_dir=f"{CHECKPOINT_BASE}/pretrain_data",
@@ -546,8 +578,12 @@ for row, arch_name in enumerate(ARCH_NAMES):
         f"{CHECKPOINT_BASE}/pretrain/{arch_name}/cnet.eqx", skel_cnet
     )
     input_array = _build_input_array(arch)
-    Fx_pred = jax.vmap(lambda p: xnet(p) + 1.0)(input_array)
-    Fc_pred = jax.vmap(lambda p: cnet(p) + 1.0)(input_array)
+    # xnet(p) / cnet(p) already return the full enhancement factor F
+    # (networks.py: ``return 1 + lobterm.squeeze()``), so predictions MUST
+    # NOT be shifted by +1.0 again. Adding +1.0 here would produce a parity
+    # plot with the y-axis offset by +1 relative to the x-axis.
+    Fx_pred = jax.vmap(lambda p: xnet(p))(input_array)
+    Fc_pred = jax.vmap(lambda p: cnet(p))(input_array)
 
     ax_x = axes[row, 0]
     ax_c = axes[row, 1]
