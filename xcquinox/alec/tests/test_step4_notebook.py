@@ -283,3 +283,130 @@ def test_cell_10_is_12x2_or_documented_subset():
         f"Cell 10 must call subplots with an (n_arch, 2) grid; none of "
         f"{ok_forms} found in source."
     )
+
+
+# Task 5 — Cells 11-13 builder tests
+
+
+def test_cell_12_targets_has_all_three_molecules():
+    """`targets` dict must contain H, O, H2O — validator requires entries for
+    every molecule in TrainingSpec.molecules (config.py:523-525).
+    """
+    gen = load_generator()
+    source = gen.build_cell_12_reference_dicts().source
+    # Targets dict should contain literal "H", "O", "H2O" keys
+    assert "targets = {" in source
+    for key in ('"H":', '"O":', '"H2O":'):
+        assert key in source, f"targets dict missing key literal {key}"
+
+
+def test_cell_12_atom_energies_missing_h2o():
+    """`atom_energies` must contain exactly H and O — H2O deliberately absent.
+
+    H2O is a compound, not an atom; placing it here would confuse the
+    AtomizationEnergyMetric accumulator.
+    """
+    gen = load_generator()
+    source = gen.build_cell_12_reference_dicts().source
+    assert 'atom_energies = {"H": -0.5, "O": -75.0673}' in source
+    # H2O must NOT appear as a key inside the atom_energies literal. Scan the
+    # atom_energies literal slice only (to avoid matching the targets dict
+    # above it).
+    ae_start = source.find("atom_energies =")
+    ae_end = source.find("}", ae_start) + 1
+    ae_literal = source[ae_start:ae_end]
+    assert '"H2O"' not in ae_literal
+
+
+def test_cell_12_ext_data_dir_uses_checkpoint_base():
+    """`ext_data_dir` must be derived from CHECKPOINT_BASE so smoke tests can
+    redirect it via the tmp_path harness.
+    """
+    gen = load_generator()
+    source = gen.build_cell_12_reference_dicts().source
+    assert 'ext_data_dir = f"{CHECKPOINT_BASE}/external_data"' in source
+
+
+def test_cell_13_uses_hf_dm_not_ccsd_dm():
+    """Cell 13 must use the HF density matrix (step3b convention) — never the
+    CCSD 1-RDM, despite the misleading `dm_target` key name.
+    """
+    gen = load_generator()
+    source = gen.build_cell_13_hf_ccsd_gen().source
+    assert "mf_hf.make_rdm1()" in source
+    assert "mycc.make_rdm1()" not in source
+
+
+def test_cell_13_atom_branch_writes_only_e_ref():
+    """The atom branch must write ONLY E_ref_literature — not dm_target and
+    not rho_ccsd_grid. Atomic one-shot density targets are unstable due to
+    degenerate HOMOs in open-shell atoms.
+    """
+    gen = load_generator()
+    source = gen.build_cell_13_hf_ccsd_gen().source
+    # Find the atom branch (if name in ("H", "O"): ... else: ...)
+    branch_start = source.find('if name in ("H", "O"):')
+    branch_end = source.find("else:", branch_start)
+    assert branch_start != -1 and branch_end != -1, "atom branch not found"
+    atom_branch = source[branch_start:branch_end]
+    assert "E_ref_literature=" in atom_branch
+    assert "dm_target=" not in atom_branch
+    assert "rho_ccsd_grid=" not in atom_branch
+
+
+def test_cell_13_h2o_branch_writes_three_keys():
+    """The H2O branch must write all three whitelisted keys: dm_target,
+    rho_ccsd_grid, and E_ref_literature. These are the ONLY keys
+    _ALLOWED_EXTERNAL_KEYS accepts (data.py:17-21).
+    """
+    gen = load_generator()
+    source = gen.build_cell_13_hf_ccsd_gen().source
+    branch_start = source.find("else:", source.find('if name in ("H", "O"):'))
+    assert branch_start != -1, "H2O else branch not found"
+    h2o_branch = source[branch_start:]
+    assert "dm_target=dm_hf" in h2o_branch
+    assert "rho_ccsd_grid=rho_hf" in h2o_branch
+    assert "E_ref_literature=float(mf_hf.e_tot)" in h2o_branch
+
+
+def test_cell_13_sidecar_json_for_every_species():
+    """The `_metadata.json` write must run for every species — not inside any
+    branch. Cell 25 reads E_ccsd_total from this file for all three molecules
+    so the CCSD atomization-energy reference line can be computed.
+    """
+    gen = load_generator()
+    source = gen.build_cell_13_hf_ccsd_gen().source
+    # The json.dump call must come AFTER the atom branch's else: block closes.
+    # We check that there is exactly one json.dump and it is at indent level 4
+    # (inside the for loop) but not inside any if/else — a simple heuristic is
+    # to ensure the json.dump occurrence sits at the same indent level as the
+    # `if name in` test, not deeper.
+    assert "json.dump(" in source
+    assert "_metadata.json" in source
+    # The sidecar write should reference the species name via f-string, so it
+    # fires for every iteration of the `for name, atom, spin in _mols:` loop.
+    assert 'f"{name}_metadata.json"' in source
+
+
+def test_cell_13_uses_grid_level_pinned():
+    """`mf.grids.level = GRID_LEVEL` must appear before `mf.kernel()` so the
+    PBE grid matches what Cell 14/15's precompute_fixed_density_data rebuilds.
+    """
+    gen = load_generator()
+    source = gen.build_cell_13_hf_ccsd_gen().source
+    level_idx = source.find("mf.grids.level = GRID_LEVEL")
+    kernel_idx = source.find("mf.kernel()")
+    assert level_idx != -1, "mf.grids.level = GRID_LEVEL missing"
+    assert kernel_idx != -1, "mf.kernel() missing"
+    assert level_idx < kernel_idx, "grid level must be pinned before kernel()"
+
+
+def test_cell_13_einsum_is_rho_hf_not_rho_nn():
+    """The einsum variable must be named `rho_hf`, guarding the step3b-era
+    `rho_nn` naming confusion — `rho_ccsd_grid` is HF in disguise.
+    """
+    gen = load_generator()
+    source = gen.build_cell_13_hf_ccsd_gen().source
+    assert 'rho_hf = np.einsum("ij,gi,gj->g"' in source
+    # `rho_nn` would indicate the wrong name reappeared
+    assert "rho_nn = np.einsum" not in source

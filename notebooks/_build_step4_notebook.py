@@ -469,6 +469,151 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_11_training_md():
+    """Section 4 Cell 11 — training data narrative (markdown).
+
+    Explains the training set composition, reference data split, .npz sidecar
+    convention, and the step3b HF-DM naming quirk.
+    """
+    source = """## Section 4: Training Data
+
+### Training set
+
+Three species are used: **H** (spin=1), **O** (spin=2), and **H2O** (spin=0),
+all computed at the **def2-svp** basis (``BASIS`` from Cell 3).
+
+### Reference data split
+
+- **H / O (atoms):** Reference energies come from literature total energies
+  (H: exact −0.5 Ha; O: ~−75.0673 Ha). Degenerate HOMO eigenvalues in
+  open-shell atoms make one-shot density targets numerically unstable, so
+  **no** ``dm_target`` or ``rho_ccsd_grid`` is stored for atoms.
+- **H2O:** Uses the equilibrium geometry ``H2O_COORDS`` from Cell 3 (NOT a
+  distorted 90-degree box). The HF density matrix is stored as the density
+  target, and the HF grid density is stored as the grid-density target.
+
+### .npz sidecar convention
+
+Each species gets two files:
+1. ``{name}.npz`` — holds **only** the three whitelisted keys that
+   ``xcquinox.alec.data`` accepts: ``dm_target``, ``rho_ccsd_grid``,
+   ``E_ref_literature``. Any extra key causes a ``ValueError`` at load time.
+2. ``{name}_metadata.json`` — holds HF, CCSD, literature, and PBE total
+   energies that cannot be stored in the whitelisted ``.npz``.
+
+### Step 3b naming quirk
+
+Despite the key name ``dm_target``, step3b uses the **HF** density matrix as
+the target (not the CCSD 1-RDM). The same convention is reproduced here so
+the trained models are numerically identical to step3b checkpoints.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_12_reference_dicts():
+    """Section 4 Cell 12 — atom_energies and targets dicts + ext_data_dir setup."""
+    source = """# Atom energies: literature total energies in Hartree (negative, as they should be).
+# H is exact: -0.5 Ha. O is literature total ~ -75.0673 Ha.
+atom_energies = {"H": -0.5, "O": -75.0673}
+
+# targets dict: validator requires an entry for every molecule in TrainingSpec.molecules
+# (config.py:523-525). Atom entries are never dereferenced at training time but must be
+# finite floats — we set them to match atom_energies for future-refactor consistency.
+# The H2O entry is the POSITIVE-for-bound atomization energy in Hartree:
+#   AE = E_atoms_sum - E_mol > 0 for a bound molecule
+# Literature: AE(H2O) ~ 974.94 kJ/mol = 974.94 / 2625.5 Ha.
+targets = {"H": -0.5, "O": -75.0673, "H2O": 974.94 / 2625.5}
+
+ext_data_dir = f"{CHECKPOINT_BASE}/external_data"
+os.makedirs(ext_data_dir, exist_ok=True)
+print(f"ext_data_dir={ext_data_dir}  targets={list(targets.keys())}  atom_energies={list(atom_energies.keys())}")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_13_hf_ccsd_gen():
+    """Section 4 Cell 13 — HF/CCSD reference computation and .npz generation.
+
+    Writes {name}.npz (whitelisted keys only) and {name}_metadata.json
+    (HF/CCSD/PBE totals) for H, O, and H2O.
+    """
+    source = """# HF/CCSD reference computation and external_data .npz generation.
+# H2O uses H2O_COORDS from Cell 3 (equilibrium geometry, NOT a distorted 90-degree box).
+_mols = [
+    ("H", "H 0 0 0", 1),
+    ("O", "O 0 0 0", 2),
+    ("H2O", H2O_COORDS, 0),
+]
+
+for name, atom, spin in _mols:
+    # Identical gto.M kwargs to what precompute_fixed_density_data uses internally.
+    mol = gto.M(atom=atom, basis=BASIS, charge=0, spin=spin, verbose=0)
+
+    # PBE SCF with grid pinned to GRID_LEVEL (must match Cell 14/15 precompute grid).
+    mf = dft.UKS(mol) if mol.spin else dft.RKS(mol)
+    mf.xc = "pbe"
+    mf.grids.level = GRID_LEVEL
+    mf.kernel()
+    E_pbe_total = float(mf.e_tot)
+
+    # HF SCF (spin-branched).
+    mf_hf = scf.UHF(mol) if mol.spin else scf.RHF(mol)
+    mf_hf.kernel()
+    E_hf_total = float(mf_hf.e_tot)
+
+    # CCSD (spin-branched). Runs for every molecule purely for sidecar documentation.
+    mycc = cc.UCCSD(mf_hf) if mol.spin else cc.CCSD(mf_hf)
+    mycc.kernel()
+    E_ccsd_total = float(mf_hf.e_tot + mycc.e_corr)
+
+    if name in ("H", "O"):
+        # Atom branch: degenerate HOMO eigenvalues make one-shot density targets
+        # numerically unstable. Write ONLY E_ref_literature for atoms.
+        np.savez(
+            os.path.join(ext_data_dir, f"{name}.npz"),
+            E_ref_literature=atom_energies[name],
+        )
+    else:
+        # H2O branch: write HF DM as density target (NOT CCSD DM — step3b uses HF).
+        dm_hf = mf_hf.make_rdm1()
+        dm_hf_total = dm_hf[0] + dm_hf[1] if dm_hf.ndim == 3 else dm_hf
+
+        # Grid density from HF DM via einsum on the AO grid.
+        coords = mf.grids.coords
+        ao_grid = mf._numint.eval_ao(mol, coords, deriv=0)
+        rho_hf = np.einsum("ij,gi,gj->g", dm_hf_total, ao_grid, ao_grid)
+
+        # The three keys below are the ONLY keys _ALLOWED_EXTERNAL_KEYS accepts
+        # (data.py:17-21). E_ref_literature is the HF total, not the CCSD total,
+        # because TotalEnergyMetric.E_error_hartree gauges against this scalar and
+        # the density-matching losses (B/C/D2/D3) optimize toward the HF density.
+        np.savez(
+            os.path.join(ext_data_dir, f"{name}.npz"),
+            dm_target=dm_hf,
+            rho_ccsd_grid=rho_hf,
+            E_ref_literature=float(mf_hf.e_tot),
+        )
+
+    # Sidecar JSON for every species — library .npz cannot carry extra keys,
+    # so HF/CCSD/literature/PBE totals live here. Cell 25 reads E_ccsd_total
+    # from this file for the CCSD atomization-energy reference line.
+    with open(os.path.join(ext_data_dir, f"{name}_metadata.json"), "w") as _f:
+        json.dump(
+            {
+                "E_hf_total": E_hf_total,
+                "E_ccsd_total": E_ccsd_total,
+                "E_lit_Ha": atom_energies.get(name, None),
+                "E_pbe_total": E_pbe_total,
+            },
+            _f,
+            indent=2,
+        )
+
+print(f"Reference data written to {ext_data_dir}")
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -517,6 +662,9 @@ def main(
         build_cell_08_pretrain_loop(),
         build_cell_09_pretrain_loss_plot(),
         build_cell_10_pretrain_parity(),
+        build_cell_11_training_md(),
+        build_cell_12_reference_dicts(),
+        build_cell_13_hf_ccsd_gen(),
     ]
 
     nbformat.validate(nb)
