@@ -132,6 +132,11 @@ from pyscf import gto, dft, scf, cc
 
 import xcquinox.alec as alec
 import xcquinox.features
+
+# tqdm.auto picks tqdm.notebook.tqdm (ipywidgets) under JupyterLab and
+# tqdm.std.tqdm in a plain script/terminal, so the same symbol gives a
+# sensible progress bar in either context.
+from tqdm.auto import tqdm
 """
     return new_code_cell(source)
 
@@ -365,8 +370,29 @@ def build_cell_08_pretrain_loop():
     stream back), so parallel output collapses to one "[arch] pretrain
     complete" line per arch instead of per-step loss.
     """
-    source = """def _cb(info):
-    print(f"[{info['arch']}][{info['phase']}] step {info['step']}/{info['total']} loss={info['loss']:.4e}")
+    source = """# Per-(arch, phase) tqdm bars keyed by (arch_name, phase_letter).
+# The bar for a given phase is created on the first callback for that phase
+# and closed when step == total. Scientific-notation postfix ``loss=...``
+# keeps small values readable without losing precision.
+_bars = {}
+
+def _cb(info):
+    key = (info['arch'], info['phase'])
+    if key not in _bars:
+        _bars[key] = tqdm(
+            total=info['total'],
+            desc=f"{info['arch']:<20} {info['phase']}net",
+            leave=True,
+            dynamic_ncols=True,
+        )
+    bar = _bars[key]
+    delta = info['step'] - bar.n
+    if delta > 0:
+        bar.update(delta)
+    bar.set_postfix(loss=f"{info['loss']:.4e}")
+    if info['step'] >= info['total']:
+        bar.close()
+        del _bars[key]
 
 if PRETRAIN_PARALLEL:
     import os
@@ -415,11 +441,24 @@ alec.run_pretrain(spec)
     print(f"Pretraining {len(ARCH_NAMES)} archs in parallel: "
           f"{_max_workers} workers on {_n_cpus} CPUs")
 
-    with ThreadPoolExecutor(max_workers=_max_workers) as _ex:
-        _futures = {_ex.submit(_pretrain_one_subprocess, _a): _a for _a in ARCH_NAMES}
-        for _future in as_completed(_futures):
-            _arch_done = _future.result()
-            print(f"[{_arch_done}] pretrain complete")
+    # Per-step callbacks do not stream back through subprocesses, so the
+    # best-available progress signal in parallel mode is an arch-completion
+    # counter. The postfix shows the most recently completed arch name.
+    _arch_bar = tqdm(
+        total=len(ARCH_NAMES),
+        desc="pretrain (parallel)",
+        leave=True,
+        dynamic_ncols=True,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=_max_workers) as _ex:
+            _futures = {_ex.submit(_pretrain_one_subprocess, _a): _a for _a in ARCH_NAMES}
+            for _future in as_completed(_futures):
+                _arch_done = _future.result()
+                _arch_bar.update(1)
+                _arch_bar.set_postfix(arch=_arch_done)
+    finally:
+        _arch_bar.close()
 else:
     for arch_name in ARCH_NAMES:
         spec = alec.PretrainSpec(

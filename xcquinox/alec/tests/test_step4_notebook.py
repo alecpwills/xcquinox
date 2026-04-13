@@ -91,6 +91,16 @@ def test_cell_02_imports_includes_jax_default_device_cpu():
     )
 
 
+def test_cell_02_imports_tqdm_auto():
+    """Cell 2 must import ``tqdm`` via ``tqdm.auto`` so the same symbol works
+    in JupyterLab (routed to ``tqdm.notebook.tqdm`` + ipywidgets) and in a
+    plain script/terminal context (routed to ``tqdm.std.tqdm``).
+    """
+    gen = load_generator()
+    source = gen.build_cell_02_imports().source
+    assert "from tqdm.auto import tqdm" in source
+
+
 def test_cell_03_constants_match_spec():
     """Cell 3 must bind the exact literal forms frozen by the spec."""
     gen = load_generator()
@@ -359,6 +369,7 @@ def test_cell_08_parallel_path_runtime_dispatches_subprocesses(monkeypatch):
     selects the parallel path.
     """
     import subprocess as _real_sp
+    from tqdm.auto import tqdm as _real_tqdm
     gen = load_generator()
     source = gen.build_cell_08_pretrain_loop().source
 
@@ -379,6 +390,7 @@ def test_cell_08_parallel_path_runtime_dispatches_subprocesses(monkeypatch):
         "PRETRAIN_PARALLEL": True,
         "CHECKPOINT_BASE": "/tmp/fake_ckpt",
         "ARCH_NAMES": ["shallow"],
+        "tqdm": _real_tqdm,
     }
     exec(source, scope)
 
@@ -398,6 +410,7 @@ def test_cell_08_parallel_path_sets_child_env_vars_at_runtime(monkeypatch):
     a string-match in the source.
     """
     import subprocess as _real_sp
+    from tqdm.auto import tqdm as _real_tqdm
     gen = load_generator()
     source = gen.build_cell_08_pretrain_loop().source
 
@@ -418,6 +431,7 @@ def test_cell_08_parallel_path_sets_child_env_vars_at_runtime(monkeypatch):
         "PRETRAIN_PARALLEL": True,
         "CHECKPOINT_BASE": "/tmp/fake_ckpt",
         "ARCH_NAMES": ["shallow"],
+        "tqdm": _real_tqdm,
     }
     exec(source, scope)
 
@@ -425,6 +439,234 @@ def test_cell_08_parallel_path_sets_child_env_vars_at_runtime(monkeypatch):
     env = captured_envs[0]
     assert env["XLA_FLAGS"] == "--xla_cpu_multi_thread_eigen=false"
     assert env["OMP_NUM_THREADS"] == "1"
+
+
+# Cell 8 tqdm progress-bar tests
+
+
+def test_cell_08_serial_path_callback_uses_tqdm_bar_with_loss_postfix():
+    """Cell 8's serial-branch callback must drive a ``tqdm`` bar and attach
+    the current step's loss via ``set_postfix(loss=...)`` so users see a
+    "step X/N loss=..." bar for each pretrain phase.
+    """
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+    # The _cb function must reference tqdm and set_postfix with a loss key
+    assert "tqdm(" in source
+    assert "set_postfix(" in source
+    assert "loss=" in source
+
+
+def test_cell_08_parallel_path_uses_arch_level_tqdm_bar():
+    """Cell 8's parallel branch must wrap the ``as_completed`` loop in a
+    ``tqdm`` bar tracking arch-level completion count — per-step callbacks
+    do not stream back through subprocesses, so an arch-completion bar is
+    the best-available progress signal in parallel mode.
+    """
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+    # The parallel branch contains both ThreadPoolExecutor and a tqdm call
+    # whose total is len(ARCH_NAMES).
+    assert "ThreadPoolExecutor" in source
+    assert "tqdm(" in source
+    assert "total=len(ARCH_NAMES)" in source
+
+
+def test_cell_08_serial_callback_creates_one_bar_per_arch_phase():
+    """Driving ``_cb`` with events across two phases must produce two tqdm
+    bars (one per phase), each closed once its final step is reported.
+    """
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+
+    created_bars = []
+
+    class _FakeBar:
+        def __init__(self, total=None, desc=None, leave=True,
+                     dynamic_ncols=False, **kwargs):
+            self.total = total
+            self.desc = desc
+            self.n = 0
+            self.postfix_calls = []
+            self.update_calls = []
+            self.refresh_calls = 0
+            self.closed = False
+            created_bars.append(self)
+
+        def update(self, delta):
+            self.update_calls.append(delta)
+            self.n += delta
+
+        def set_postfix(self, **kwargs):
+            self.postfix_calls.append(kwargs)
+
+        def refresh(self):
+            self.refresh_calls += 1
+
+        def close(self):
+            self.closed = True
+
+    class _FakeAlec:
+        class PretrainSpec:
+            def __init__(self, **kw):
+                self.kw = kw
+
+        @staticmethod
+        def get_architecture(name):
+            return object()
+
+        @staticmethod
+        def run_pretrain(spec, progress_callback=None):
+            return None  # Do not drive callback — we drive it manually below.
+
+    scope = {
+        "__builtins__": __builtins__,
+        "PRETRAIN_PARALLEL": False,
+        "CHECKPOINT_BASE": "/tmp/fake_ckpt",
+        "ARCH_NAMES": [],  # empty so the for loop is a no-op
+        "alec": _FakeAlec,
+        "tqdm": _FakeBar,
+    }
+    exec(source, scope)
+
+    cb = scope["_cb"]
+    # Drive 2 phases × 2 steps for a single arch
+    cb({"arch": "shallow", "phase": "X", "step": 1, "total": 2,
+        "loss": 1e-2, "timestamp": 0.0})
+    cb({"arch": "shallow", "phase": "X", "step": 2, "total": 2,
+        "loss": 1e-3, "timestamp": 0.0})
+    cb({"arch": "shallow", "phase": "C", "step": 1, "total": 2,
+        "loss": 5e-2, "timestamp": 0.0})
+    cb({"arch": "shallow", "phase": "C", "step": 2, "total": 2,
+        "loss": 5e-3, "timestamp": 0.0})
+
+    assert len(created_bars) == 2, (
+        f"expected 2 bars (one per phase), got {len(created_bars)}"
+    )
+    assert all(bar.closed for bar in created_bars), (
+        "all bars must be closed when their final step is reported"
+    )
+    # Each bar must have reached total=2
+    assert all(bar.n == 2 for bar in created_bars), (
+        f"bar.n must equal total=2 at end of phase, got {[b.n for b in created_bars]}"
+    )
+
+
+def test_cell_08_serial_callback_sets_loss_postfix_in_scientific_notation():
+    """The loss reported in ``set_postfix`` must be formatted as scientific
+    notation (``{loss:.4e}``) so small loss values stay readable.
+    """
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+
+    captured_postfix = []
+
+    class _FakeBar:
+        def __init__(self, total=None, desc=None, leave=True,
+                     dynamic_ncols=False, **kwargs):
+            self.n = 0
+
+        def update(self, delta):
+            self.n += delta
+
+        def set_postfix(self, **kwargs):
+            captured_postfix.append(kwargs)
+
+        def refresh(self):
+            pass
+
+        def close(self):
+            pass
+
+    scope = {
+        "__builtins__": __builtins__,
+        "PRETRAIN_PARALLEL": False,
+        "CHECKPOINT_BASE": "/tmp/fake_ckpt",
+        "ARCH_NAMES": [],
+        "alec": type("_A", (), {
+            "PretrainSpec": type("_S", (), {"__init__": lambda s, **k: None}),
+            "get_architecture": staticmethod(lambda n: None),
+            "run_pretrain": staticmethod(lambda spec, progress_callback=None: None),
+        }),
+        "tqdm": _FakeBar,
+    }
+    exec(source, scope)
+
+    cb = scope["_cb"]
+    cb({"arch": "shallow", "phase": "X", "step": 1, "total": 2,
+        "loss": 1.2345e-3, "timestamp": 0.0})
+
+    assert len(captured_postfix) >= 1
+    loss_str = captured_postfix[-1]["loss"]
+    # {:.4e} format: "1.2345e-03"
+    assert "e-0" in loss_str or "e-" in loss_str, (
+        f"loss postfix must be scientific notation, got {loss_str!r}"
+    )
+    assert "1.2345e" in loss_str
+
+
+def test_cell_08_parallel_path_creates_and_closes_arch_bar(monkeypatch):
+    """With ``PRETRAIN_PARALLEL = True``, the parallel branch must create a
+    single tqdm bar with total=len(ARCH_NAMES), update it as archs finish,
+    and close it after the executor context exits.
+    """
+    import subprocess as _real_sp
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+
+    created_bars = []
+
+    class _FakeBar:
+        def __init__(self, total=None, desc=None, leave=True,
+                     dynamic_ncols=False, **kwargs):
+            self.total = total
+            self.desc = desc
+            self.n = 0
+            self.postfix_calls = []
+            self.update_calls = []
+            self.closed = False
+            created_bars.append(self)
+
+        def update(self, delta):
+            self.update_calls.append(delta)
+            self.n += delta
+
+        def set_postfix(self, **kwargs):
+            self.postfix_calls.append(kwargs)
+
+        def refresh(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    def _fake_run(args, env=None, check=None, capture_output=None, text=None):
+        class _Result:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+        return _Result()
+
+    monkeypatch.setattr(_real_sp, "run", _fake_run)
+
+    scope = {
+        "__builtins__": __builtins__,
+        "PRETRAIN_PARALLEL": True,
+        "CHECKPOINT_BASE": "/tmp/fake_ckpt",
+        "ARCH_NAMES": ["shallow", "deep"],
+        "tqdm": _FakeBar,
+    }
+    exec(source, scope)
+
+    assert len(created_bars) >= 1, "no tqdm bar created in parallel branch"
+    arch_bar = created_bars[0]
+    assert arch_bar.total == 2, (
+        f"parallel arch bar total must be len(ARCH_NAMES)=2, got {arch_bar.total}"
+    )
+    assert sum(arch_bar.update_calls) == 2, (
+        f"arch bar must be updated once per completed arch, got {arch_bar.update_calls}"
+    )
+    assert arch_bar.closed, "arch bar must be closed after dispatch"
 
 
 # Task 4 — Cells 9-10 builder tests
