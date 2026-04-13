@@ -332,13 +332,31 @@ print(f"pretrain_data.npz written with keys: {sorted(save_kwargs.keys())}  total
     return new_code_cell(source)
 
 
-def build_cell_08_pretrain_loop():
+def build_cell_08_pretrain_loop(parallel_pretrain: bool = False):
     """Section 3 Cell 8 — pretrain loop over ARCH_NAMES.
 
     Always qualifies as alec.PretrainSpec and alec.run_pretrain — never bare.
-    Includes an inline progress callback for per-arch feedback during long runs.
+
+    Parameters
+    ----------
+    parallel_pretrain
+        When False (default), emits a serial ``for arch_name in ARCH_NAMES``
+        loop calling ``alec.run_pretrain`` in-process with a live per-step
+        progress callback.
+
+        When True, emits a ``ThreadPoolExecutor`` dispatch that runs each
+        architecture in its own ``subprocess`` — each child sets
+        ``XLA_FLAGS=--xla_cpu_multi_thread_eigen=false`` and
+        ``OMP_NUM_THREADS=1`` BEFORE importing JAX so that N parallel
+        workers on one machine do not oversubscribe XLA's internal thread
+        pool. ``max_workers`` is capped at ``min(len(ARCH_NAMES), cpu_count()//2)``
+        so each worker gets room for its own XLA threads. Trade-off: per-step
+        progress callbacks are lost (subprocesses do not stream back), so
+        output is a single "[arch] pretrain complete" line per arch instead
+        of per-step loss.
     """
-    source = """def _cb(info):
+    if not parallel_pretrain:
+        source = """def _cb(info):
     print(f"[{info['arch']}][{info['phase']}] step {info['step']}/{info['total']} loss={info['loss']:.4e}")
 
 for arch_name in ARCH_NAMES:
@@ -353,6 +371,62 @@ for arch_name in ARCH_NAMES:
         grad_clip=1.0,
     )
     alec.run_pretrain(spec, progress_callback=_cb)
+"""
+        return new_code_cell(source)
+
+    source = """import os
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def _pretrain_one_subprocess(arch_name):
+    # Each worker gets its own Python interpreter, so XLA_FLAGS and
+    # OMP_NUM_THREADS are applied BEFORE JAX is imported in the child.
+    # This is what prevents N parallel workers from each trying to use
+    # all CPUs for XLA's matmul thread pool.
+    child_env = dict(os.environ)
+    child_env["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false"
+    child_env["OMP_NUM_THREADS"] = "1"
+    child_code = f'''
+import xcquinox.alec as alec
+spec = alec.PretrainSpec(
+    arch=alec.get_architecture({arch_name!r}),
+    data_dir={CHECKPOINT_BASE + '/pretrain_data'!r},
+    checkpoint_dir={CHECKPOINT_BASE + '/pretrain/' + arch_name!r},
+    n_steps=1000,
+    lr_start=1e-2,
+    lr_end=1e-5,
+    lr_decay_start=0.2,
+    grad_clip=1.0,
+)
+alec.run_pretrain(spec)
+'''
+    try:
+        subprocess.run(
+            ["python", "-c", child_code],
+            env=child_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"[{arch_name}] pretrain subprocess failed:\\n"
+            f"stdout:\\n{exc.stdout}\\nstderr:\\n{exc.stderr}"
+        ) from exc
+    return arch_name
+
+
+_n_cpus = os.cpu_count() or 2
+_max_workers = min(len(ARCH_NAMES), max(1, _n_cpus // 2))
+print(f"Pretraining {len(ARCH_NAMES)} archs in parallel: "
+      f"{_max_workers} workers on {_n_cpus} CPUs")
+
+with ThreadPoolExecutor(max_workers=_max_workers) as _ex:
+    _futures = {_ex.submit(_pretrain_one_subprocess, _a): _a for _a in ARCH_NAMES}
+    for _future in as_completed(_futures):
+        _arch_done = _future.result()
+        print(f"[{_arch_done}] pretrain complete")
 """
     return new_code_cell(source)
 
@@ -1282,6 +1356,7 @@ def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
     checkpoint_base: str | None = None,
+    parallel_pretrain: bool = False,
 ):
     """Assemble the step 4 notebook, validate it, write it to ``output_path``.
 
@@ -1298,6 +1373,12 @@ def main(
     checkpoint_base
         Optional override for ``DEFAULT_CHECKPOINT_BASE``. Used by the smoke
         test to redirect artifacts into a ``tmp_path``-backed directory.
+    parallel_pretrain
+        When True, Cell 8 dispatches per-architecture pretraining via a
+        ``ThreadPoolExecutor`` over isolated subprocesses. See
+        ``build_cell_08_pretrain_loop`` for the trade-offs. Default False
+        preserves the original serial loop used by the committed notebook
+        and the smoke test.
 
     Returns
     -------
@@ -1321,7 +1402,7 @@ def main(
         build_cell_05_arch_names(arch_names),
         build_cell_06_pretrain_md(),
         build_cell_07_pretrain_data_gen(),
-        build_cell_08_pretrain_loop(),
+        build_cell_08_pretrain_loop(parallel_pretrain=parallel_pretrain),
         build_cell_09_pretrain_loss_plot(),
         build_cell_10_pretrain_parity(),
         build_cell_11_training_md(),
