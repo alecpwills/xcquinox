@@ -551,3 +551,69 @@ def test_cell_20_binds_arch_name_before_loop():
     assert bind_idx != -1, 'arch_name = "shallow" missing'
     assert loop_idx != -1, "loss_name loop missing"
     assert bind_idx < loop_idx, "arch_name binding must precede the loss loop"
+
+
+# Task 8 -- Cells 21-24 builder tests
+
+
+def test_cell_22_metrics_tuple_is_four():
+    """Cell 22 must pass all four metrics explicitly (not rely on default)."""
+    gen = load_generator()
+    source = gen.build_cell_22_test_loop().source
+    for metric in ("total_energy", "atomization_energy", "density_rmse", "constraint_violations"):
+        assert f'"{metric}"' in source, f"metric {metric!r} missing from Cell 22 metrics tuple"
+
+
+def test_cell_22_metric_kwargs_reference_ae_kcalmol():
+    """Cell 22 must pass the full-precision step3b H2O AE (233.016 kcal/mol)."""
+    gen = load_generator()
+    source = gen.build_cell_22_test_loop().source
+    assert '"reference_ae_kcalmol"' in source
+    assert '"H2O": 233.016' in source
+
+
+def test_cell_22_model_checkpoint_points_to_file():
+    """Cell 22 must point model_checkpoint at the .eqx file, not the dir."""
+    gen = load_generator()
+    source = gen.build_cell_22_test_loop().source
+    assert 'model_checkpoint=f"{ckpt_dir}/model.eqx"' in source
+
+
+def test_cell_22_loop_order_matches_cell_17():
+    """Cell 22's loop order must match Cell 17 (arch outer, loss inner)."""
+    gen = load_generator()
+    source = gen.build_cell_22_test_loop().source
+    arch_idx = source.find("for arch_name in ARCH_NAMES:")
+    loss_idx = source.find("for loss_name in LOSS_NAMES:")
+    assert arch_idx != -1, "outer arch loop missing"
+    assert loss_idx != -1, "inner loss loop missing"
+    assert arch_idx < loss_idx, "arch loop must precede loss loop"
+
+
+def test_cell_23_ae_error_column_reads_rmse():
+    """Cell 23 must populate both AE_error_kcalmol_mean and AE_error_kcalmol_RMSE (B12-4 guard)."""
+    gen = load_generator()
+    source = gen.build_cell_23_dataframe().source
+    assert '"AE_error_kcalmol_mean"' in source
+    assert '"AE_error_kcalmol_RMSE"' in source
+
+
+def test_cell_23_no_constraint_violations_column():
+    """Cell 23 must NOT have a constraint_violations column -- key is absent from default-arch aggregate.json."""
+    gen = load_generator()
+    source = gen.build_cell_23_dataframe().source
+    assert "constraint_violations" not in source
+
+
+def test_cell_23_uses_get_with_nan_fallback():
+    """Cell 23 must use the defensive .get(..., np.nan) pattern (B10-12 guard)."""
+    gen = load_generator()
+    source = gen.build_cell_23_dataframe().source
+    assert 'agg.get("AE_error_kcalmol", {}).get("mean", np.nan)' in source
+
+
+def test_cell_23_multiindex_is_arch_loss():
+    """Cell 23 must set the MultiIndex to [arch, loss]."""
+    gen = load_generator()
+    source = gen.build_cell_23_dataframe().source
+    assert 'set_index(["arch", "loss"])' in source

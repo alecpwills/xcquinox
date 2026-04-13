@@ -880,6 +880,91 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_21_eval_md():
+    """Section 6 Cell 21 -- evaluation metrics narrative."""
+    source = """## Section 6: Evaluation
+
+Each trained model is scored on the same `mol_specs` used for training via
+`alec.TestSpec.from_dicts(...)` + `alec.run_test(spec)`. Four metrics are
+computed for every molecule:
+
+- **`total_energy`** -- NN total energy vs. PBE reference, reported as
+  `E_error_kcalmol` (kcal/mol).
+- **`atomization_energy`** -- `AE_nn = sum(E_atoms) - E_mol` (positive for
+  a bound molecule), compared against the literature AE of 233.016 kcal/mol
+  for H2O. Reported as `AE_error_kcalmol`.
+- **`density_rmse`** -- RMSE of the NN grid density against the CCSD
+  reference density. Atoms are auto-skipped (single-atom systems return
+  `None`), so H2O is the sole contributor in this experiment.
+- **`constraint_violations`** -- flattens `x_constraints` / `c_constraints`
+  from the arch config. Every default architecture ships with empty
+  constraint tuples, so the `aggregate.json` files contain **no**
+  `constraint_violations` top-level key at all -- this is expected for
+  step3b parity, not a bug.
+
+Cell 22 below runs `alec.run_test` over the same `(arch, loss)` product as
+Cell 17, so every trained model is paired with a `TestSpec` and writes its
+own `aggregate.json` under `{CHECKPOINT_BASE}/test/{arch}/{loss}/`.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_22_test_loop():
+    """Section 6 Cell 22 -- build TestSpec + run_test per trained model."""
+    source = """for arch_name in ARCH_NAMES:
+    for loss_name in LOSS_NAMES:
+        ckpt_dir = f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}"
+        test_spec = alec.TestSpec.from_dicts(
+            arch=alec.get_architecture(arch_name),
+            model_checkpoint=f"{ckpt_dir}/model.eqx",
+            molecules=tuple(mol_specs),
+            metrics=("total_energy", "atomization_energy", "density_rmse", "constraint_violations"),
+            metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {"H2O": 233.016}}},
+            atom_energies=atom_energies,
+            output_dir=f"{CHECKPOINT_BASE}/test/{arch_name}/{loss_name}",
+        )
+        alec.run_test(test_spec)
+"""
+    return new_code_cell(source)
+
+
+def build_cell_23_dataframe():
+    """Section 6 Cell 23 -- aggregate results into pandas DataFrame."""
+    source = """rows = []
+for arch_name in ARCH_NAMES:
+    for loss_name in LOSS_NAMES:
+        output_dir = f"{CHECKPOINT_BASE}/test/{arch_name}/{loss_name}"
+        try:
+            with open(f"{output_dir}/aggregate.json") as _f:
+                agg = json.load(_f)
+        except FileNotFoundError:
+            agg = {}
+        rows.append({
+            "arch": arch_name,
+            "loss": loss_name,
+            "AE_error_kcalmol_mean": agg.get("AE_error_kcalmol", {}).get("mean", np.nan),
+            "AE_error_kcalmol_RMSE": agg.get("AE_error_kcalmol", {}).get("RMSE", np.nan),
+            "E_error_kcalmol_mean": agg.get("E_error_kcalmol", {}).get("mean", np.nan),
+            "density_rmse_mean": agg.get("density_rmse", {}).get("mean", np.nan),
+        })
+df = pd.DataFrame(rows).set_index(["arch", "loss"])
+print(f"Built results DataFrame: {df.shape[0]} rows x {df.shape[1]} cols")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_24_results_table():
+    """Section 6 Cell 24 -- print results table + best arch per loss."""
+    source = """piv = df["AE_error_kcalmol_mean"].unstack(level="loss")
+print("AE error (kcal/mol), arch x loss:")
+print(piv.round(3))
+print()
+print("Best architecture per loss family (minimum |AE error|):")
+print(piv.abs().idxmin(axis=0))
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -938,6 +1023,10 @@ def main(
         build_cell_18_training_loop(),
         build_cell_19_training_loss_plot(),
         build_cell_20_aux_inspection(),
+        build_cell_21_eval_md(),
+        build_cell_22_test_loop(),
+        build_cell_23_dataframe(),
+        build_cell_24_results_table(),
     ]
 
     nbformat.validate(nb)
