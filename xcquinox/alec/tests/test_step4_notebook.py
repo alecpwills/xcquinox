@@ -689,7 +689,11 @@ def test_cell_26_model_template_rebuilt_inside_loop():
 
 
 def test_cell_26_binds_model_b_d1_d2_explicit_names():
-    """Cell 26 must bind model_B, model_D1, model_D2 as explicit named variables."""
+    """Cell 26 must bind model_B, model_D1, model_D2 as explicit named variables.
+
+    The bindings use a narrow-config-tolerant conditional form so the cell
+    also works in smoke tests that only train one loss family.
+    """
     gen = load_generator()
     source = gen.build_cell_26_dm_heatmaps().source
     assert 'model_B = model_bindings["B_atomization_plus_dm"]' in source
@@ -791,10 +795,11 @@ def test_cell_31_scf_lines_are_commented():
 
 
 def test_cell_31_best_arch_binds_from_best_idx():
-    """Cell 31 must bind best_arch = best_idx['D2_delta_ae_plus_dm']."""
+    """Cell 31 must prefer D2_delta_ae_plus_dm from best_idx (with narrow-config fallback)."""
     gen = load_generator()
     source = gen.build_cell_31_new_molecule_template().source
-    assert 'best_arch = best_idx["D2_delta_ae_plus_dm"]' in source
+    assert '_d2_key = "D2_delta_ae_plus_dm"' in source
+    assert "best_arch = best_idx[_d2_key]" in source
 
 
 def test_cell_31_atom_energies_merge():
@@ -845,3 +850,52 @@ def test_generator_cell_types_match_expected(tmp_path):
         assert cell.cell_type == expected, (
             f"cell {idx}: expected {expected!r}, got {cell.cell_type!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 13 — End-to-end smoke test (slow, opt-in)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_step4_notebook_smoke_runs_end_to_end(tmp_path):
+    """Run the regenerated notebook end-to-end on a 1-arch × 1-loss config.
+
+    Proves that every cell executes without raising. Does NOT validate
+    numerical correctness (a 250-step training run is not converged) —
+    the assertion surface is purely "files exist at expected paths".
+    """
+    pytest.importorskip("nbclient")
+    from nbclient import NotebookClient
+
+    gen = load_generator()
+    nb_path = tmp_path / "step4_smoke.ipynb"
+    checkpoint_base = str(tmp_path / "ckpt")
+    gen.main(
+        str(nb_path),
+        arch_names=("shallow",),
+        loss_names=("A_atomization",),
+        checkpoint_base=checkpoint_base,
+    )
+
+    nb = nbformat.read(str(nb_path), as_version=4)
+    client = NotebookClient(
+        nb,
+        timeout=900,
+        kernel_name="python3",
+        resources={"metadata": {"path": str(tmp_path)}},
+    )
+    client.execute()
+
+    import os
+    assert os.path.isfile(f"{checkpoint_base}/pretrain_data/pretrain_data.npz")
+    assert os.path.isfile(f"{checkpoint_base}/pretrain/shallow/xnet.eqx")
+    assert os.path.isfile(f"{checkpoint_base}/pretrain/shallow/cnet.eqx")
+    assert os.path.isfile(f"{checkpoint_base}/external_data/H.npz")
+    assert os.path.isfile(f"{checkpoint_base}/external_data/O.npz")
+    assert os.path.isfile(f"{checkpoint_base}/external_data/H2O.npz")
+    assert os.path.isfile(f"{checkpoint_base}/external_data/H_metadata.json")
+    assert os.path.isfile(f"{checkpoint_base}/external_data/O_metadata.json")
+    assert os.path.isfile(f"{checkpoint_base}/external_data/H2O_metadata.json")
+    assert os.path.isfile(f"{checkpoint_base}/train/shallow/A_atomization/model.eqx")
+    assert os.path.isfile(f"{checkpoint_base}/test/shallow/A_atomization/aggregate.json")

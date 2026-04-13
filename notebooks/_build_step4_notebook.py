@@ -1031,52 +1031,67 @@ def build_cell_26_dm_heatmaps():
 # so the template must match the specific checkpoint being deserialised.
 model_bindings = {}
 for loss_name in ("B_atomization_plus_dm", "D1_delta_ae", "D2_delta_ae_plus_dm"):
+    if loss_name not in best_idx.index:
+        print(f"[Cell 26] skipping {loss_name}: not in narrow config")
+        continue
     best_arch = best_idx[loss_name]
     arch_config = alec.get_architecture(best_arch)
     model_template = alec.AlecGGAModel.from_arch(arch_config)
     ckpt_path = f"{CHECKPOINT_BASE}/train/{best_arch}/{loss_name}/model.eqx"
     model_bindings[loss_name] = eqx.tree_deserialise_leaves(ckpt_path, model_template)
-model_B = model_bindings["B_atomization_plus_dm"]
-model_D1 = model_bindings["D1_delta_ae"]
-model_D2 = model_bindings["D2_delta_ae_plus_dm"]
+model_B = model_bindings["B_atomization_plus_dm"] if "B_atomization_plus_dm" in model_bindings else None
+model_D1 = model_bindings["D1_delta_ae"] if "D1_delta_ae" in model_bindings else None
+model_D2 = model_bindings["D2_delta_ae_plus_dm"] if "D2_delta_ae_plus_dm" in model_bindings else None
 
-# DMs for H2O (index 2 in mol_data_list).
-dm_pbe = mol_data_list[2]["dm_pbe"]
-dm_hf = mol_data_list[2]["dm_target"]
-dm_nn_B = alec.oneshot_dm_prediction_fast(model_B, mol_data_list[2])
-dm_nn_D1 = alec.oneshot_dm_prediction_fast(model_D1, mol_data_list[2])
-dm_nn_D2 = alec.oneshot_dm_prediction_fast(model_D2, mol_data_list[2])
+if not model_bindings:
+    print("[Cell 26] no DM-loss models in this configuration; skipping heatmaps")
+else:
+    # DMs for H2O (index 2 in mol_data_list).
+    dm_pbe = mol_data_list[2]["dm_pbe"]
+    dm_hf = mol_data_list[2]["dm_target"]
+    dm_nn_B = alec.oneshot_dm_prediction_fast(model_B, mol_data_list[2]) if model_B is not None else None
+    dm_nn_D1 = alec.oneshot_dm_prediction_fast(model_D1, mol_data_list[2]) if model_D1 is not None else None
+    dm_nn_D2 = alec.oneshot_dm_prediction_fast(model_D2, mol_data_list[2]) if model_D2 is not None else None
 
-# 2x2 panel assignment: top row = (PBE-HF, best-B NN-HF), bottom = (best-D1, best-D2).
-_panel_deltas = [
-    ("PBE \u2212 HF", dm_pbe - dm_hf),
-    ("best-B NN \u2212 HF", dm_nn_B - dm_hf),
-    ("best-D1 NN \u2212 HF", dm_nn_D1 - dm_hf),
-    ("best-D2 NN \u2212 HF", dm_nn_D2 - dm_hf),
-]
-vmax = max(float(jnp.abs(delta).max()) for _, delta in _panel_deltas)
+    # 2x2 panel assignment: top row = (PBE-HF, best-B NN-HF), bottom = (best-D1, best-D2).
+    _panel_deltas = [("PBE \u2212 HF", dm_pbe - dm_hf)]
+    if dm_nn_B is not None:
+        _panel_deltas.append(("best-B NN \u2212 HF", dm_nn_B - dm_hf))
+    if dm_nn_D1 is not None:
+        _panel_deltas.append(("best-D1 NN \u2212 HF", dm_nn_D1 - dm_hf))
+    if dm_nn_D2 is not None:
+        _panel_deltas.append(("best-D2 NN \u2212 HF", dm_nn_D2 - dm_hf))
+    vmax = max(float(jnp.abs(delta).max()) for _, delta in _panel_deltas)
 
-fig, axes = plt.subplots(2, 2, figsize=(10, 9), squeeze=False)
-_axes_flat = axes.flatten()
-for ax, (title, delta) in zip(_axes_flat, _panel_deltas):
-    im = ax.imshow(np.asarray(delta), cmap="RdBu_r", vmin=-vmax, vmax=vmax)
-    ax.set_title(title)
-    fig.colorbar(im, ax=ax, label="\u0394DM element")
+    _n_panels = len(_panel_deltas)
+    _ncols = min(_n_panels, 2)
+    _nrows = (_n_panels + _ncols - 1) // _ncols
+    fig, axes = plt.subplots(_nrows, _ncols, figsize=(10, 9), squeeze=False)
+    _axes_flat = axes.flatten()
+    for ax, (title, delta) in zip(_axes_flat, _panel_deltas):
+        im = ax.imshow(np.asarray(delta), cmap="RdBu_r", vmin=-vmax, vmax=vmax)
+        ax.set_title(title)
+        fig.colorbar(im, ax=ax, label="\u0394DM element")
+    for ax in _axes_flat[_n_panels:]:
+        ax.set_visible(False)
 
-# Inline Frobenius RMSE per panel (display-only; not a library metric).
-dm_rmse_pbe_hf = float(jnp.linalg.norm(dm_pbe - dm_hf) / jnp.sqrt(dm_pbe.size))
-dm_rmse_B = float(jnp.linalg.norm(dm_nn_B - dm_hf) / jnp.sqrt(dm_nn_B.size))
-dm_rmse_D1 = float(jnp.linalg.norm(dm_nn_D1 - dm_hf) / jnp.sqrt(dm_nn_D1.size))
-dm_rmse_D2 = float(jnp.linalg.norm(dm_nn_D2 - dm_hf) / jnp.sqrt(dm_nn_D2.size))
-print(f"PBE|HF Frobenius DM RMSE: {dm_rmse_pbe_hf:.4e}")
-print(f"best-B NN|HF Frobenius DM RMSE: {dm_rmse_B:.4e}")
-print(f"best-D1 NN|HF Frobenius DM RMSE: {dm_rmse_D1:.4e}")
-print(f"best-D2 NN|HF Frobenius DM RMSE: {dm_rmse_D2:.4e}")
+    # Inline Frobenius RMSE per panel (display-only; not a library metric).
+    dm_rmse_pbe_hf = float(jnp.linalg.norm(dm_pbe - dm_hf) / jnp.sqrt(dm_pbe.size))
+    print(f"PBE|HF Frobenius DM RMSE: {dm_rmse_pbe_hf:.4e}")
+    if dm_nn_B is not None:
+        dm_rmse_B = float(jnp.linalg.norm(dm_nn_B - dm_hf) / jnp.sqrt(dm_nn_B.size))
+        print(f"best-B NN|HF Frobenius DM RMSE: {dm_rmse_B:.4e}")
+    if dm_nn_D1 is not None:
+        dm_rmse_D1 = float(jnp.linalg.norm(dm_nn_D1 - dm_hf) / jnp.sqrt(dm_nn_D1.size))
+        print(f"best-D1 NN|HF Frobenius DM RMSE: {dm_rmse_D1:.4e}")
+    if dm_nn_D2 is not None:
+        dm_rmse_D2 = float(jnp.linalg.norm(dm_nn_D2 - dm_hf) / jnp.sqrt(dm_nn_D2.size))
+        print(f"best-D2 NN|HF Frobenius DM RMSE: {dm_rmse_D2:.4e}")
 
-fig.tight_layout()
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/dm_heatmaps_h2o.png", dpi=150, bbox_inches="tight")
-plt.show()
+    fig.tight_layout()
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/dm_heatmaps_h2o.png", dpi=150, bbox_inches="tight")
+    plt.show()
 """
     return new_code_cell(source)
 
@@ -1084,63 +1099,70 @@ plt.show()
 def build_cell_27_density_histograms():
     """Section 7 Cell 27 -- grid density difference histograms for C/D3 best models."""
     source = """_c_d3_losses = ("C_atomization_plus_grid", "D3_delta_ae_plus_grid")
+_c_d3_losses_present = [ln for ln in _c_d3_losses if ln in best_idx.index]
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5), squeeze=False)
-_axes_flat = axes.flatten()
-for ax, loss_name in zip(_axes_flat, _c_d3_losses):
-    best_arch = best_idx[loss_name]
-    arch_config = alec.get_architecture(best_arch)
-    model_template = alec.AlecGGAModel.from_arch(arch_config)
-    ckpt_path = f"{CHECKPOINT_BASE}/train/{best_arch}/{loss_name}/model.eqx"
-    model = eqx.tree_deserialise_leaves(ckpt_path, model_template)
+if not _c_d3_losses_present:
+    print("[Cell 27] no grid-density-loss models in this configuration; skipping density histograms")
+else:
+    fig, axes = plt.subplots(1, len(_c_d3_losses_present), figsize=(14, 5), squeeze=False)
+    _axes_flat = axes.flatten()
+    for ax, loss_name in zip(_axes_flat, _c_d3_losses_present):
+        best_arch = best_idx[loss_name]
+        arch_config = alec.get_architecture(best_arch)
+        model_template = alec.AlecGGAModel.from_arch(arch_config)
+        ckpt_path = f"{CHECKPOINT_BASE}/train/{best_arch}/{loss_name}/model.eqx"
+        model = eqx.tree_deserialise_leaves(ckpt_path, model_template)
 
-    rho_nn = alec.oneshot_grid_density(model, mol_data_list[2])
-    rho_ref = mol_data_list[2]["rho_ccsd_grid"]
-    w = mol_data_list[2]["grid_weights"]
+        rho_nn = alec.oneshot_grid_density(model, mol_data_list[2])
+        rho_ref = mol_data_list[2]["rho_ccsd_grid"]
+        w = mol_data_list[2]["grid_weights"]
 
-    # Inline step3b Table 4 |delta rho|_1 metric (display-only, not a library metric).
-    delta_rho_L1 = float(jnp.sum(w * jnp.abs(rho_nn - rho_ref)) / jnp.sum(w))
-    print(f"H2O |drho|_1 ({loss_name}, best={best_arch}): {delta_rho_L1:.4e} e/bohr^3")
+        # Inline step3b Table 4 |delta rho|_1 metric (display-only, not a library metric).
+        delta_rho_L1 = float(jnp.sum(w * jnp.abs(rho_nn - rho_ref)) / jnp.sum(w))
+        print(f"H2O |drho|_1 ({loss_name}, best={best_arch}): {delta_rho_L1:.4e} e/bohr^3")
 
-    _diff = np.asarray(rho_nn - rho_ref)
-    _w = np.asarray(w)
-    ax.hist(_diff, bins=60, weights=_w)
-    ax.set_yscale("log")
-    ax.axvline(0.0, color="k", linewidth=0.8)
-    _lib_rmse = df.loc[(best_arch, loss_name), "density_rmse_mean"]
-    ax.set_title(f"{loss_name}\\nbest={best_arch}, lib RMSE={_lib_rmse:.2e}, |drho|1={delta_rho_L1:.2e}")
-    ax.set_xlabel("rho_nn - rho_ref")
-    ax.set_ylabel("weighted count (log)")
+        _diff = np.asarray(rho_nn - rho_ref)
+        _w = np.asarray(w)
+        ax.hist(_diff, bins=60, weights=_w)
+        ax.set_yscale("log")
+        ax.axvline(0.0, color="k", linewidth=0.8)
+        _lib_rmse = df.loc[(best_arch, loss_name), "density_rmse_mean"]
+        ax.set_title(f"{loss_name}\\nbest={best_arch}, lib RMSE={_lib_rmse:.2e}, |drho|1={delta_rho_L1:.2e}")
+        ax.set_xlabel("rho_nn - rho_ref")
+        ax.set_ylabel("weighted count (log)")
 
-fig.tight_layout()
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/grid_density_diffs.png", dpi=150, bbox_inches="tight")
-plt.show()
+    fig.tight_layout()
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/grid_density_diffs.png", dpi=150, bbox_inches="tight")
+    plt.show()
 """
     return new_code_cell(source)
 
 
 def build_cell_28_attn_comparison():
     """Section 7 Cell 28 -- attention vs non-attention paired bar comparison."""
-    source = """fig, axes = plt.subplots(2, 3, figsize=(15, 9), squeeze=False)
-_axes_flat = axes.flatten()
-for ax, loss_name in zip(_axes_flat, LOSS_NAMES):
-    x_positions = np.arange(len(pairs))
-    base_heights = [df.loc[(base, loss_name), "AE_error_kcalmol_mean"] for base, _attn in pairs]
-    attn_heights = [df.loc[(attn, loss_name), "AE_error_kcalmol_mean"] for _base, attn in pairs]
-    bar_width = 0.35
-    ax.bar(x_positions - bar_width / 2, base_heights, width=bar_width, label="no attn")
-    ax.bar(x_positions + bar_width / 2, attn_heights, width=bar_width, hatch="//", label="with attn")
-    ax.set_xticks(x_positions)
-    ax.set_xticklabels([base for base, _ in pairs], rotation=30, ha="right")
-    ax.set_ylabel("AE error (kcal/mol)")
-    ax.set_title(loss_name)
-    ax.legend(fontsize="small")
+    source = """if not pairs:
+    print("[Cell 28] no attention pairs in this configuration")
+else:
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9), squeeze=False)
+    _axes_flat = axes.flatten()
+    for ax, loss_name in zip(_axes_flat, LOSS_NAMES):
+        x_positions = np.arange(len(pairs))
+        base_heights = [df.loc[(base, loss_name), "AE_error_kcalmol_mean"] for base, _attn in pairs]
+        attn_heights = [df.loc[(attn, loss_name), "AE_error_kcalmol_mean"] for _base, attn in pairs]
+        bar_width = 0.35
+        ax.bar(x_positions - bar_width / 2, base_heights, width=bar_width, label="no attn")
+        ax.bar(x_positions + bar_width / 2, attn_heights, width=bar_width, hatch="//", label="with attn")
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels([base for base, _ in pairs], rotation=30, ha="right")
+        ax.set_ylabel("AE error (kcal/mol)")
+        ax.set_title(loss_name)
+        ax.legend(fontsize="small")
 
-fig.tight_layout()
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/attn_vs_no_attn.png", dpi=150, bbox_inches="tight")
-plt.show()
+    fig.tight_layout()
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/attn_vs_no_attn.png", dpi=150, bbox_inches="tight")
+    plt.show()
 """
     return new_code_cell(source)
 
@@ -1149,23 +1171,26 @@ def build_cell_29_feature_comparison():
     """Section 7 Cell 29 -- extended features impact (deep base variants only)."""
     source = """feature_variants = [n for n in ARCH_NAMES if n.startswith("deep") and not n.endswith("_attn")]
 
-fig, ax = plt.subplots(figsize=(12, 6))
-n_losses = len(LOSS_NAMES)
-x_positions = np.arange(len(feature_variants))
-bar_width = 0.8 / n_losses
-for j, loss_name in enumerate(LOSS_NAMES):
-    heights = [df.loc[(variant, loss_name), "AE_error_kcalmol_mean"] for variant in feature_variants]
-    offset = (j - (n_losses - 1) / 2) * bar_width
-    ax.bar(x_positions + offset, heights, width=bar_width, label=loss_name)
-ax.set_xticks(x_positions)
-ax.set_xticklabels(feature_variants, rotation=20, ha="right")
-ax.set_ylabel("AE error (kcal/mol)")
-ax.set_title("Extended features impact (deep base variants)")
-ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
-fig.tight_layout()
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/extended_features_impact.png", dpi=150, bbox_inches="tight")
-plt.show()
+if not feature_variants:
+    print("[Cell 29] no deep-feature variants in this configuration; skipping feature comparison plot")
+else:
+    fig, ax = plt.subplots(figsize=(12, 6))
+    n_losses = len(LOSS_NAMES)
+    x_positions = np.arange(len(feature_variants))
+    bar_width = 0.8 / n_losses
+    for j, loss_name in enumerate(LOSS_NAMES):
+        heights = [df.loc[(variant, loss_name), "AE_error_kcalmol_mean"] for variant in feature_variants]
+        offset = (j - (n_losses - 1) / 2) * bar_width
+        ax.bar(x_positions + offset, heights, width=bar_width, label=loss_name)
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(feature_variants, rotation=20, ha="right")
+    ax.set_ylabel("AE error (kcal/mol)")
+    ax.set_title("Extended features impact (deep base variants)")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    fig.tight_layout()
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/extended_features_impact.png", dpi=150, bbox_inches="tight")
+    plt.show()
 """
     return new_code_cell(source)
 
@@ -1229,8 +1254,10 @@ new_mol_spec = alec.MoleculeSpec(
 # rho_hf = np.einsum("ij,gi,gj->g", dm_hf_total, ao_grid, ao_grid)
 # np.savez(new_mol_spec.external_data_path, dm_target=dm_hf, rho_ccsd_grid=rho_hf, E_ref_literature=-40.5)
 
-# 3. Pick a trained model (best D2 for DM-aware prediction).
-best_arch = best_idx["D2_delta_ae_plus_dm"]
+# 3. Pick a trained model (best D2 for DM-aware prediction; fall back to first
+#    available loss family when running a narrow-config smoke test).
+_d2_key = "D2_delta_ae_plus_dm"
+best_arch = best_idx[_d2_key] if _d2_key in best_idx.index else best_idx.iloc[0]
 
 # 4. Build the TestSpec.
 new_test_spec = alec.TestSpec.from_dicts(
