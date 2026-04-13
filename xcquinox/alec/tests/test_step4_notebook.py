@@ -222,3 +222,64 @@ def test_cell_08_passes_step3b_hyperparameters():
     for literal in ("n_steps=1000", "lr_start=1e-2", "lr_end=1e-5",
                     "lr_decay_start=0.2", "grad_clip=1.0"):
         assert literal in source, f"missing hyperparameter literal: {literal}"
+
+
+# Task 4 — Cells 9-10 builder tests
+
+
+def test_cell_09_loads_losses_x_and_losses_c():
+    """Cell 9 must load both xnet and cnet loss arrays by the path template
+    Cell 8 writes to.
+    """
+    gen = load_generator()
+    source = gen.build_cell_09_pretrain_loss_plot().source
+    assert 'losses_x.npy' in source
+    assert 'losses_c.npy' in source
+
+
+def test_cell_09_uses_log_scale():
+    """Cell 9 must use log y-scale so order-of-magnitude loss decay is visible."""
+    gen = load_generator()
+    source = gen.build_cell_09_pretrain_loss_plot().source
+    assert "semilogy(" in source or 'set_yscale("log")' in source
+
+
+def test_cell_09_saves_to_figures_dir():
+    """Cell 9 must save the plot under `{CHECKPOINT_BASE}/figures/`."""
+    gen = load_generator()
+    source = gen.build_cell_09_pretrain_loss_plot().source
+    assert '{CHECKPOINT_BASE}/figures/pretrain_losses.png' in source
+
+
+def test_cell_10_uses_create_network_pair_skeleton():
+    """Cell 10 must construct (xnet, cnet) skeletons via `alec.create_network_pair`.
+
+    This is the pretrain-layout skeleton path; Cell 26 (full-model load) uses a
+    different entry point (`AlecGGAModel.from_arch`), so the difference matters.
+    """
+    gen = load_generator()
+    source = gen.build_cell_10_pretrain_parity().source
+    assert "alec.create_network_pair(" in source
+
+
+def test_cell_10_uses_tree_deserialise_leaves():
+    """Cell 10 must deserialise the saved .eqx weights via eqx.tree_deserialise_leaves."""
+    gen = load_generator()
+    source = gen.build_cell_10_pretrain_parity().source
+    assert "eqx.tree_deserialise_leaves(" in source
+
+
+def test_cell_10_is_12x2_or_documented_subset():
+    """Cell 10 must build a (n_arch x 2) subplots grid — 12 rows for the full
+    default ARCH_NAMES or a narrower grid when the test harness passes a subset.
+
+    Accept either an explicit `subplots(12, 2` literal OR a dynamic
+    `subplots(n_arch, 2` / `subplots(len(ARCH_NAMES), 2` form.
+    """
+    gen = load_generator()
+    source = gen.build_cell_10_pretrain_parity().source
+    ok_forms = ("subplots(12, 2", "subplots(n_arch, 2", "subplots(len(ARCH_NAMES), 2")
+    assert any(form in source for form in ok_forms), (
+        f"Cell 10 must call subplots with an (n_arch, 2) grid; none of "
+        f"{ok_forms} found in source."
+    )

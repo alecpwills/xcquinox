@@ -367,6 +367,108 @@ for arch_name in ARCH_NAMES:
     return new_code_cell(source)
 
 
+def build_cell_09_pretrain_loss_plot():
+    """Section 3 Cell 9 — pretrain loss curves (xnet / cnet) on log-y axes."""
+    source = """fig, (ax_x, ax_c) = plt.subplots(1, 2, figsize=(12, 4))
+for arch_name in ARCH_NAMES:
+    losses_x = np.load(f"{CHECKPOINT_BASE}/pretrain/{arch_name}/losses_x.npy")
+    losses_c = np.load(f"{CHECKPOINT_BASE}/pretrain/{arch_name}/losses_c.npy")
+    ax_x.semilogy(losses_x, color=arch_colors[arch_name], label=arch_name)
+    ax_c.semilogy(losses_c, color=arch_colors[arch_name], label=arch_name)
+
+ax_x.set_title("xnet pretrain loss")
+ax_x.set_xlabel("step")
+ax_x.set_ylabel("MSE loss")
+ax_c.set_title("cnet pretrain loss")
+ax_c.set_xlabel("step")
+ax_c.set_ylabel("MSE loss")
+# Legend outside right on the right subplot only (avoids cluttering both)
+ax_c.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize="small")
+
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/pretrain_losses.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_10_pretrain_parity():
+    """Section 3 Cell 10 — parity plots for pretrained xnet / cnet.
+
+    Descriptor column order MUST match ``_assemble_pretrain_descriptors``
+    (``xcquinox/alec/pretrain.py:69-88``): rho, sigma, dm columns (if any),
+    cusp_0 / cusp_1 (if any).  dm comes BEFORE cusp — swapping is a silent
+    off-by-column bug.
+    """
+    source = """# Load pretrain data (same .npz Cell 7 wrote)
+_data = np.load(f"{CHECKPOINT_BASE}/pretrain_data/pretrain_data.npz")
+_rho = _data["rho_all"]
+_sigma = _data["sigma_all"]
+Fx_target = _data["Fx_all"]
+Fc_target = _data["Fc_all"]
+
+# Build per-architecture descriptor input inline. Column order MUST match
+# the library's private _assemble_pretrain_descriptors helper:
+#   [rho, sigma, dm_all columns (if use_dm), cusp_all[:, 0:2] (if use_cusp)]
+# dm comes BEFORE cusp. The helper is private — we reproduce the logic here.
+def _build_input_array(arch):
+    cols = [_rho, _sigma]
+    _use_dm = any(s.name == "dm_statistics" for s in arch.descriptors)
+    _use_cusp = any(s.name == "cusp" for s in arch.descriptors)
+    if _use_dm:
+        _dm = _data["dm_all"]
+        for _i in range(_dm.shape[1]):
+            cols.append(_dm[:, _i])
+    if _use_cusp:
+        cols.append(_data["cusp_all"][:, 0])
+        cols.append(_data["cusp_all"][:, 1])
+    return jnp.stack([jnp.asarray(c) for c in cols], axis=1)
+
+n_arch = len(ARCH_NAMES)
+fig, axes = plt.subplots(n_arch, 2, figsize=(10, 3 * n_arch), squeeze=False)
+for row, arch_name in enumerate(ARCH_NAMES):
+    arch = alec.get_architecture(arch_name)
+    skel_xnet, skel_cnet = alec.create_network_pair(arch)
+    xnet = eqx.tree_deserialise_leaves(
+        f"{CHECKPOINT_BASE}/pretrain/{arch_name}/xnet.eqx", skel_xnet
+    )
+    cnet = eqx.tree_deserialise_leaves(
+        f"{CHECKPOINT_BASE}/pretrain/{arch_name}/cnet.eqx", skel_cnet
+    )
+    input_array = _build_input_array(arch)
+    Fx_pred = jax.vmap(lambda p: xnet(p) + 1.0)(input_array)
+    Fc_pred = jax.vmap(lambda p: cnet(p) + 1.0)(input_array)
+
+    ax_x = axes[row, 0]
+    ax_c = axes[row, 1]
+    # Plot in F space (add 1.0 to target to match the prediction)
+    ax_x.scatter(np.asarray(Fx_target) + 1.0, np.asarray(Fx_pred), s=2,
+                 c=[arch_colors[arch_name]])
+    _lo_x = float(min(np.min(Fx_target) + 1.0, np.min(Fx_pred)))
+    _hi_x = float(max(np.max(Fx_target) + 1.0, np.max(Fx_pred)))
+    ax_x.plot([_lo_x, _hi_x], [_lo_x, _hi_x], "k--", lw=0.8)
+    ax_x.set_title(f"{arch_name} Fx parity")
+    ax_x.set_xlabel("Fx target")
+    ax_x.set_ylabel("Fx predicted")
+
+    ax_c.scatter(np.asarray(Fc_target) + 1.0, np.asarray(Fc_pred), s=2,
+                 c=[arch_colors[arch_name]])
+    _lo_c = float(min(np.min(Fc_target) + 1.0, np.min(Fc_pred)))
+    _hi_c = float(max(np.max(Fc_target) + 1.0, np.max(Fc_pred)))
+    ax_c.plot([_lo_c, _hi_c], [_lo_c, _hi_c], "k--", lw=0.8)
+    ax_c.set_title(f"{arch_name} Fc parity")
+    ax_c.set_xlabel("Fc target")
+    ax_c.set_ylabel("Fc predicted")
+
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/pretrain_parity.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -413,6 +515,8 @@ def main(
         build_cell_06_pretrain_md(),
         build_cell_07_pretrain_data_gen(),
         build_cell_08_pretrain_loop(),
+        build_cell_09_pretrain_loss_plot(),
+        build_cell_10_pretrain_parity(),
     ]
 
     nbformat.validate(nb)
