@@ -767,3 +767,38 @@ def test_cell_29_filter_startswith_deep():
     gen = load_generator()
     source = gen.build_cell_29_feature_comparison().source
     assert 'n.startswith("deep")' in source
+
+
+# Task 11 -- Cells 30-31 builder tests
+
+
+def test_cell_31_uses_qualified_alec_names():
+    """Cell 31 must use qualified alec.MoleculeSpec / alec.TestSpec.from_dicts / alec.run_test."""
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    assert "alec.MoleculeSpec(" in source
+    assert "alec.TestSpec.from_dicts(" in source
+    assert "alec.run_test(" in source
+
+
+def test_cell_31_scf_lines_are_commented():
+    """Cell 31's SCF template lines must start with '# ' so the template is safe to run."""
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    for line in source.splitlines():
+        if "scf.RHF(" in line or "dft.RKS(" in line:
+            assert line.lstrip().startswith("# "), f"SCF line must be commented: {line!r}"
+
+
+def test_cell_31_best_arch_binds_from_best_idx():
+    """Cell 31 must bind best_arch = best_idx['D2_delta_ae_plus_dm']."""
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    assert 'best_arch = best_idx["D2_delta_ae_plus_dm"]' in source
+
+
+def test_cell_31_atom_energies_merge():
+    """Cell 31 must use dict-merge to add new element, not replace atom_energies."""
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    assert '{**atom_energies, "C":' in source

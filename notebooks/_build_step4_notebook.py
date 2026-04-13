@@ -1180,6 +1180,85 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_30_future_md():
+    """Section 8 Cell 30 -- future testing markdown."""
+    source = """## Section 8: Test on New Molecules
+
+This section is a **template** for extending step 4 to new molecules. It does
+not run end-to-end because it relies on an external `.npz` reference file that
+does not yet exist for the new species.
+
+To extend step 4 to a new molecule:
+
+1. **Define the `MoleculeSpec`** with `name`, `atom`, `basis=BASIS`,
+   `charge`, `spin`, `atom_composition`, `grid_level=GRID_LEVEL`, and an
+   `external_data_path` pointing to a `.npz` in `{ext_data_dir}`.
+
+2. **Generate the `.npz`** following Cell 13's HF+grid pattern. The file
+   must carry `dm_target` (the HF density matrix) and, if the model was
+   trained with a density-loss family, `rho_ccsd_grid` (the reference
+   density on the molecular grid). Without `rho_ccsd_grid`,
+   `DensityRMSEMetric.compute` raises `AttributeError` for non-atomic
+   species (evaluation.py:141). Atoms auto-skip the metric.
+
+3. **Add any new elements to `atom_energies`** via a dict-merge
+   `{**atom_energies, "NewElement": -X.XX}`. `AtomizationEnergyMetric`
+   raises `KeyError` for missing symbols at evaluation time.
+
+4. **Build the `TestSpec`** against a trained step 4 model (the D2 loss
+   family is a reasonable DM-aware default via
+   `best_arch = best_idx["D2_delta_ae_plus_dm"]`).
+
+5. **Run `alec.run_test(new_test_spec)`** once the `.npz` is in place.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_31_new_molecule_template():
+    """Section 8 Cell 31 -- new molecule template (SCF lines commented)."""
+    source = """# 1. Define the new molecule (CH4 example).
+new_mol_spec = alec.MoleculeSpec(
+    name="CH4",
+    atom="C 0 0 0; H 0.63 0.63 0.63; H -0.63 -0.63 0.63; H -0.63 0.63 -0.63; H 0.63 -0.63 -0.63",
+    basis=BASIS,
+    charge=0,
+    spin=0,
+    atom_composition=(("C", 1), ("H", 4)),
+    grid_level=GRID_LEVEL,
+    external_data_path=f"{ext_data_dir}/CH4.npz",
+)
+
+# 2. Generate the .npz -- follow Cell 13's HF+grid pattern.
+#    The lines below are commented because the template does not actually run SCF.
+# mol_ch4 = gto.M(atom=new_mol_spec.atom, basis=BASIS, charge=0, spin=0, verbose=0)
+# mf_pbe = dft.RKS(mol_ch4); mf_pbe.xc = "pbe"; mf_pbe.grids.level = GRID_LEVEL; mf_pbe.kernel()
+# mf_hf = scf.RHF(mol_ch4); mf_hf.kernel()
+# dm_hf = mf_hf.make_rdm1()
+# dm_hf_total = dm_hf[0] + dm_hf[1] if dm_hf.ndim == 3 else dm_hf
+# ao_grid = mf_pbe._numint.eval_ao(mol_ch4, mf_pbe.grids.coords, deriv=0)
+# rho_hf = np.einsum("ij,gi,gj->g", dm_hf_total, ao_grid, ao_grid)
+# np.savez(new_mol_spec.external_data_path, dm_target=dm_hf, rho_ccsd_grid=rho_hf, E_ref_literature=-40.5)
+
+# 3. Pick a trained model (best D2 for DM-aware prediction).
+best_arch = best_idx["D2_delta_ae_plus_dm"]
+
+# 4. Build the TestSpec.
+new_test_spec = alec.TestSpec.from_dicts(
+    arch=alec.get_architecture(best_arch),
+    model_checkpoint=f"{CHECKPOINT_BASE}/train/{best_arch}/D2_delta_ae_plus_dm/model.eqx",
+    molecules=(new_mol_spec,),
+    metrics=("total_energy", "atomization_energy", "density_rmse"),
+    metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {"CH4": 420.0}}},
+    atom_energies={**atom_energies, "C": -37.84},
+    output_dir=f"{CHECKPOINT_BASE}/test_new/CH4",
+)
+
+# 5. Run it (commented out -- requires the .npz from step 2 to exist).
+# alec.run_test(new_test_spec)
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -1247,6 +1326,8 @@ def main(
         build_cell_27_density_histograms(),
         build_cell_28_attn_comparison(),
         build_cell_29_feature_comparison(),
+        build_cell_30_future_md(),
+        build_cell_31_new_molecule_template(),
     ]
 
     nbformat.validate(nb)
