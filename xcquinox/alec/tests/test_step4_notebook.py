@@ -136,3 +136,89 @@ def test_main_cells_1_to_5_validate(tmp_path):
     assert actual_types == expected_types, (
         f"first 5 cell types {actual_types} != expected {expected_types}"
     )
+
+
+# Task 3 — Cells 6-8 builder tests
+
+
+def test_cell_07_uses_rho_cutoff_1e_minus_10():
+    """Cell 7's low-density mask must use `valid = rho > 1e-10`.
+
+    Strict `>` not `>=`, threshold 1e-10 not 1e-6 — guards the off-by-threshold
+    regression from spec B-review rounds 8-10. Step3b uses the looser cutoff
+    to keep the atomic tail.
+    """
+    gen = load_generator()
+    source = gen.build_cell_07_pretrain_data_gen().source
+    assert "valid = rho > 1e-10" in source
+
+
+def test_cell_07_uses_np_where_safe_division():
+    """Cell 7 must use np.where-based safe division, NOT a boolean mask.
+
+    Boolean masks drop points step3b keeps; np.where keeps shape parity so
+    the downstream `valid` filter is the only mask applied.
+    """
+    gen = load_generator()
+    source = gen.build_cell_07_pretrain_data_gen().source
+    assert "np.where(np.abs(ex_lda)" in source
+
+
+def test_cell_07_lists_initialised_unconditionally():
+    """`cusp_list, dm_list = [], []` must appear before the PRETRAIN_ATOMS loop.
+
+    Unconditional init makes the `if cusp_list:` / `if dm_list:` truthy-check
+    at save time safe even when `ARCH_NAMES` contains no extended-feature archs.
+    """
+    gen = load_generator()
+    source = gen.build_cell_07_pretrain_data_gen().source
+    init_idx = source.find("cusp_list, dm_list = [], []")
+    loop_idx = source.find("for atom_symbol, spin in PRETRAIN_ATOMS:")
+    assert init_idx != -1, "cusp/dm list init missing"
+    assert loop_idx != -1, "PRETRAIN_ATOMS loop missing"
+    assert init_idx < loop_idx, "list init must precede the loop"
+
+
+def test_cell_07_uses_libxc_strings_not_helpers():
+    """Cell 7 must call libxc functional strings, NOT xcquinox helpers.
+
+    Step3b Cell 10 uses pyscf's `eval_xc("LDA_X,", ...)` / `eval_xc(",LDA_C_PW", ...)`
+    for exact numerical parity; the xcquinox helpers must NOT be imported here.
+    """
+    gen = load_generator()
+    source = gen.build_cell_07_pretrain_data_gen().source
+    assert '"LDA_X,"' in source
+    assert '",LDA_C_PW"' in source
+    assert "from xcquinox.utils import lda_x" not in source
+
+
+def test_cell_07_need_flags_gate_extended_features():
+    """`need_cusp`/`need_dm` must be derived via `any(...)` and gate the
+    descriptor computation branches."""
+    gen = load_generator()
+    source = gen.build_cell_07_pretrain_data_gen().source
+    assert "need_cusp = any(" in source
+    assert "need_dm = any(" in source
+    assert "if need_cusp:" in source
+    assert "if need_dm:" in source
+
+
+def test_cell_08_qualifies_alec_pretrainspec():
+    """Cell 8 must use `alec.PretrainSpec(`, never bare `PretrainSpec(`."""
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+    assert "alec.PretrainSpec(" in source
+    # Ensure no bare PretrainSpec usage — check that every PretrainSpec
+    # occurrence is preceded by "alec."
+    import re
+    bare_refs = re.findall(r"(?<!alec\.)PretrainSpec\(", source)
+    assert bare_refs == [], f"bare PretrainSpec references found: {bare_refs}"
+
+
+def test_cell_08_passes_step3b_hyperparameters():
+    """Cell 8's PretrainSpec must pass the step3b hyperparameters."""
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_loop().source
+    for literal in ("n_steps=1000", "lr_start=1e-2", "lr_end=1e-5",
+                    "lr_decay_start=0.2", "grad_clip=1.0"):
+        assert literal in source, f"missing hyperparameter literal: {literal}"

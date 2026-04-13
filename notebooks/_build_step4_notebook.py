@@ -209,6 +209,164 @@ for _n in ARCH_NAMES:
     return new_code_cell(source)
 
 
+def build_cell_06_pretrain_md():
+    """Section 3 Cell 6 — pretrain phase narrative (markdown)."""
+    source = """## Section 3: Pretraining
+
+Before the main training loop, each network (xnet / cnet) is **pretrained** on
+atomic PBE enhancement factors so the weights start near a meaningful baseline
+instead of a cold random initialisation. Starting from random weights causes the
+main training loss to diverge; pretraining on known-good PBE targets avoids this.
+
+### Pretrain atoms
+
+Four atoms are used: **H** (spin=1), **He** (spin=0), **O** (spin=2), **N**
+(spin=3). Their DFT grids cover a wide range of densities and gradient norms,
+giving xnet / cnet a representative sample of the `(rho, sigma)` input space.
+
+### Target: PBE enhancement factors
+
+For each atom the PBE exchange and correlation enhancement factors are computed
+via `pyscf`'s `eval_xc` with the exact libxc functional strings (`"PBE,"` /
+`",PBE"` for GGA, `"LDA_X,"` / `",LDA_C_PW"` for the LDA baseline). The
+network targets are `F_x - 1` and `F_c - 1` (shift by 1 so the loss near PBE
+is near zero).
+
+### Low-density cutoff and clipping
+
+Grid points with `rho <= 1e-10` are dropped at write time — below this threshold
+the density is numerically zero and the enhancement factor is undefined. The
+targets are clipped to `[-5, 5]` to suppress outliers in the atomic core and
+tail regions that would otherwise dominate the loss.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_07_pretrain_data_gen():
+    """Section 3 Cell 7 — pretrain data generation (inline pyscf).
+
+    Reproduces the spec §2 Cell 7 block verbatim. Critical details:
+    - Lists initialised unconditionally before the loop.
+    - np.where-based safe division (not a boolean mask).
+    - valid = rho > 1e-10 (strict >, threshold 1e-10 not 1e-6).
+    - libxc functional strings, not xcquinox helpers.
+    - need_cusp / need_dm compute gate derived from ARCH_NAMES.
+    """
+    source = """# Pretrain data generation (inline pyscf) — matches step3b Cell 10.
+rho_list, sigma_list, Fx_list, Fc_list = [], [], [], []
+cusp_list, dm_list = [], []
+
+# Compute gate: only compute extended features iff ARCH_NAMES contains
+# architectures that actually declare the corresponding descriptor.
+_arch_objs = [alec.get_architecture(n) for n in ARCH_NAMES]
+need_cusp = any(s.name == "cusp" for a in _arch_objs for s in a.descriptors)
+need_dm = any(s.name == "dm_statistics" for a in _arch_objs for s in a.descriptors)
+
+for atom_symbol, spin in PRETRAIN_ATOMS:
+    mol = gto.M(atom=f"{atom_symbol} 0 0 0", basis=BASIS, charge=0, spin=spin, verbose=0)
+    mf = dft.UKS(mol) if spin else dft.RKS(mol)
+    mf.xc = "pbe"
+    mf.grids.level = GRID_LEVEL
+    mf.kernel()
+
+    ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=1)
+    dm_ab = mf.make_rdm1()
+    dm_total = dm_ab[0] + dm_ab[1] if dm_ab.ndim == 3 else dm_ab
+    rho_gga = mf._numint.eval_rho(mol, ao, dm_total, xctype="GGA", hermi=True)
+
+    rho = rho_gga[0]
+    sigma = rho_gga[1]**2 + rho_gga[2]**2 + rho_gga[3]**2
+
+    # PBE enhancement factors from libxc (pyscf functional strings, NOT xcquinox helpers)
+    ex_pbe = mf._numint.eval_xc("PBE,", rho_gga, spin=0)[0]
+    ec_pbe = mf._numint.eval_xc(",PBE", rho_gga, spin=0)[0]
+    # LDA baselines on the 1-D total density
+    ex_lda = mf._numint.eval_xc("LDA_X,", rho, spin=0)[0]
+    ec_lda = mf._numint.eval_xc(",LDA_C_PW", rho, spin=0)[0]
+
+    # np.where-based safe division (NOT a boolean mask — boolean masks drop points
+    # step3b keeps; spec Rounds 8-10 regression guard)
+    ex_lda_safe = np.where(np.abs(ex_lda) > 1e-12, ex_lda, 1e-12)
+    ec_lda_safe = np.where(np.abs(ec_lda) > 1e-12, ec_lda, 1e-12)
+    Fx_minus_1 = ex_pbe / ex_lda_safe - 1.0
+    Fc_minus_1 = ec_pbe / ec_lda_safe - 1.0
+
+    Fx_minus_1 = np.clip(Fx_minus_1, -5.0, 5.0)
+    Fc_minus_1 = np.clip(Fc_minus_1, -5.0, 5.0)
+
+    # Low-density mask at write time — threshold is 1e-10 (NOT 1e-6),
+    # strictly > (NOT >=). Step3b uses the looser cutoff to keep the atomic tail.
+    valid = rho > 1e-10
+    rho_write = rho[valid]
+    sigma_write = sigma[valid]
+    Fx_write = Fx_minus_1[valid]
+    Fc_write = Fc_minus_1[valid]
+
+    rho_list.append(rho_write)
+    sigma_list.append(sigma_write)
+    Fx_list.append(Fx_write)
+    Fc_list.append(Fc_write)
+
+    if need_cusp:
+        coords_v = mf.grids.coords[valid]
+        cusp_feat = xcquinox.features.compute_cusp_descriptor(
+            jnp.asarray(coords_v),
+            jnp.asarray(mol.atom_coords()),
+            jnp.asarray(mol.atom_charges()),
+        )
+        cusp_list.append(np.asarray(cusp_feat))
+
+    if need_dm:
+        S = mol.intor("int1e_ovlp")
+        dm_feat_global = xcquinox.features.compute_dm_features_array(
+            jnp.asarray(dm_total), jnp.asarray(S)
+        )
+        dm_feat_tiled = jnp.tile(dm_feat_global, (len(rho_write), 1))
+        dm_list.append(np.asarray(dm_feat_tiled))
+
+rho_all   = np.concatenate(rho_list)
+sigma_all = np.concatenate(sigma_list)
+Fx_all    = np.concatenate(Fx_list)
+Fc_all    = np.concatenate(Fc_list)
+
+save_kwargs = dict(rho_all=rho_all, sigma_all=sigma_all, Fx_all=Fx_all, Fc_all=Fc_all)
+if cusp_list:
+    save_kwargs["cusp_all"] = np.concatenate(cusp_list)
+if dm_list:
+    save_kwargs["dm_all"] = np.concatenate(dm_list)
+
+os.makedirs(os.path.join(CHECKPOINT_BASE, "pretrain_data"), exist_ok=True)
+np.savez(os.path.join(CHECKPOINT_BASE, "pretrain_data", "pretrain_data.npz"), **save_kwargs)
+print(f"pretrain_data.npz written with keys: {sorted(save_kwargs.keys())}  total_points={len(rho_all)}")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_08_pretrain_loop():
+    """Section 3 Cell 8 — pretrain loop over ARCH_NAMES.
+
+    Always qualifies as alec.PretrainSpec and alec.run_pretrain — never bare.
+    Includes an inline progress callback for per-arch feedback during long runs.
+    """
+    source = """def _cb(info):
+    print(f"[{info['arch']}][{info['phase']}] step {info['step']}/{info['total']} loss={info['loss']:.4e}")
+
+for arch_name in ARCH_NAMES:
+    spec = alec.PretrainSpec(
+        arch=alec.get_architecture(arch_name),
+        data_dir=f"{CHECKPOINT_BASE}/pretrain_data",
+        checkpoint_dir=f"{CHECKPOINT_BASE}/pretrain/{arch_name}",
+        n_steps=1000,
+        lr_start=1e-2,
+        lr_end=1e-5,
+        lr_decay_start=0.2,
+        grad_clip=1.0,
+    )
+    alec.run_pretrain(spec, progress_callback=_cb)
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -252,6 +410,9 @@ def main(
         build_cell_03_constants(checkpoint_base),
         build_cell_04_arch_table(),
         build_cell_05_arch_names(arch_names),
+        build_cell_06_pretrain_md(),
+        build_cell_07_pretrain_data_gen(),
+        build_cell_08_pretrain_loop(),
     ]
 
     nbformat.validate(nb)
