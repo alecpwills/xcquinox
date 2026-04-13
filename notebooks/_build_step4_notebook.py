@@ -697,6 +697,189 @@ print("\\nAll atom-vs-compound invariants satisfied.")
     return new_code_cell(source)
 
 
+
+def build_cell_16_training_md():
+    """Section 5 Cell 16 -- training section overview narrative (markdown)."""
+    source = """## Section 5: Main Training Loop
+
+72 models are trained: **12 architectures x 6 loss approaches**.
+
+### Loss Approaches
+
+| Label | Loss family | Energy term | Density term | Weights |
+|-------|------------|-------------|-------------|---------|
+| A | `A_atomization` | AE (fixed-density PBE) | -- | defaults |
+| B | `B_atomization_plus_dm` | AE | DM -> HF target | dm_weight=0.1 |
+| C | `C_atomization_plus_grid` | AE | grid rho -> HF target | density_weight=0.1 |
+| D1 | `D1_delta_ae` | delta-AE | -- | defaults |
+| D2 | `D2_delta_ae_plus_dm` | delta-AE | DM -> HF target | dm_weight=0.1 |
+| D3 | `D3_delta_ae_plus_grid` | delta-AE | grid rho -> HF target | density_weight=0.1 |
+
+### Shared Hyperparameter Schedule
+
+`n_steps=250`, `lr_start=1e-2`, `lr_end=1e-5`, `lr_decay_start=0.2`, `grad_clip=1.0`
+
+### Artifact Layout
+
+Each run writes four files to its own subdirectory:
+
+```
+{CHECKPOINT_BASE}/train/{arch}/{loss}/model.eqx
+{CHECKPOINT_BASE}/train/{arch}/{loss}/losses.npy
+{CHECKPOINT_BASE}/train/{arch}/{loss}/aux_log.pkl
+{CHECKPOINT_BASE}/train/{arch}/{loss}/train_metadata.json
+```
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_17_training_specs(loss_names=None):
+    """Section 5 Cell 17 -- build 72 alec.TrainingSpec objects.
+
+    loss_names is an optional override for the loss-name tuple. When
+    None, the cell emits the dynamic form
+    LOSS_NAMES = ("A_atomization", ...). When a tuple is provided, a
+    literal list form is emitted (mirroring build_cell_05_arch_names).
+
+    Each spec carries a per-(arch, loss) checkpoint_dir so that all 72
+    runs route their artifacts without overwriting each other.
+    """
+    if loss_names is None:
+        loss_names_binding = (
+            'LOSS_NAMES = (\n'
+            '    "A_atomization",\n'
+            '    "B_atomization_plus_dm",\n'
+            '    "C_atomization_plus_grid",\n'
+            '    "D1_delta_ae",\n'
+            '    "D2_delta_ae_plus_dm",\n'
+            '    "D3_delta_ae_plus_grid",\n'
+            ')'
+        )
+    else:
+        loss_names_binding = f"LOSS_NAMES = {tuple(loss_names)!r}"
+    source = f"""{loss_names_binding}
+
+LOSS_KWARGS = {{
+    "A_atomization": {{}},
+    "B_atomization_plus_dm": {{"dm_weight": 0.1}},
+    "C_atomization_plus_grid": {{"density_weight": 0.1}},
+    "D1_delta_ae": {{}},
+    "D2_delta_ae_plus_dm": {{"dm_weight": 0.1}},
+    "D3_delta_ae_plus_grid": {{"density_weight": 0.1}},
+}}
+
+specs = []
+for arch_name in ARCH_NAMES:
+    for loss_name in LOSS_NAMES:
+        specs.append(alec.TrainingSpec.from_dicts(
+            arch=alec.get_architecture(arch_name),
+            loss_name=loss_name,
+            molecules=tuple(mol_specs),
+            targets=targets,
+            atom_energies=atom_energies,
+            loss_kwargs=LOSS_KWARGS[loss_name],
+            pretrain_checkpoint=f"{{CHECKPOINT_BASE}}/pretrain/{{arch_name}}",
+            checkpoint_dir=f"{{CHECKPOINT_BASE}}/train/{{arch_name}}/{{loss_name}}",
+            n_steps=250,
+            lr_start=1e-2,
+            lr_end=1e-5,
+            lr_decay_start=0.2,
+            grad_clip=1.0,
+        ))
+print(f"Built {{len(specs)}} training specs")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_18_training_loop():
+    """Section 5 Cell 18 -- serial training loop over all 72 specs.
+
+    Implements the serial path only. Each spec already carries its per-(arch,
+    loss) checkpoint_dir from Cell 17, so artifacts route automatically.
+    For a parallel variant using alec.build_training_jobs +
+    alec.run_workers, see spec line 88 -- not emitted here.
+    """
+    source = """# Serial training loop.  Each spec already carries its per-(arch, loss) checkpoint_dir
+# from Cell 17, so artifacts route automatically.  For a parallel variant using
+# alec.build_training_jobs + alec.run_workers, see spec line 88 -- not emitted here.
+def _train_cb(info):
+    print(f"[{info['arch']}][{info['phase']}] step {info['step']}/{info['total']} loss={info['loss']:.4e}")
+
+for spec in specs:
+    alec.run_training(spec, progress_callback=_train_cb)
+"""
+    return new_code_cell(source)
+
+
+def build_cell_19_training_loss_plot():
+    """Section 5 Cell 19 -- 2x3 training loss curves grid (log y, one per loss family).
+
+    Loads losses.npy from each per-(arch, loss) checkpoint directory and
+    plots 12 arch curves per subplot with a shared legend on the top-right.
+    """
+    source = """fig, axes = plt.subplots(2, 3, figsize=(15, 8), squeeze=False)
+_axes_flat = axes.flatten()
+for idx, loss_name in enumerate(LOSS_NAMES):
+    ax = _axes_flat[idx]
+    for arch_name in ARCH_NAMES:
+        losses = np.load(f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}/losses.npy")
+        ax.semilogy(losses, color=arch_colors[arch_name], label=arch_name)
+    ax.set_title(loss_name)
+    ax.set_xlabel("step")
+    ax.set_ylabel("loss")
+
+# Shared legend outside right on the rightmost top subplot only
+axes[0, 2].legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize="small")
+
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/training_losses.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_20_aux_inspection():
+    """Section 5 Cell 20 -- aux_log inspection for a sample arch.
+
+    Loads aux_log.pkl for arch_name = "shallow" across all loss
+    families and plots per-family component losses in a 2x3 grid.
+    """
+    source = '''arch_name = "shallow"
+_aux_keys_per_family = {
+    "A_atomization": ("loss_energy", "atomic_reg"),
+    "B_atomization_plus_dm": ("loss_energy", "loss_dm"),
+    "C_atomization_plus_grid": ("loss_energy", "loss_grid"),
+    "D1_delta_ae": ("loss_delta", "atomic_reg"),
+    "D2_delta_ae_plus_dm": ("loss_delta", "loss_dm"),
+    "D3_delta_ae_plus_grid": ("loss_delta", "loss_grid"),
+}
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 8), squeeze=False)
+_ax_by_loss = dict(zip(LOSS_NAMES, axes.flatten()))
+for loss_name in LOSS_NAMES:
+    ax = _ax_by_loss[loss_name]
+    ckpt_dir = f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}"
+    with open(f"{ckpt_dir}/aux_log.pkl", "rb") as _f:
+        aux_log = pickle.load(_f)
+
+    _steps = [entry["step"] for entry in aux_log]
+    for key in _aux_keys_per_family[loss_name]:
+        _vals = [entry["aux"][key] for entry in aux_log]
+        ax.semilogy(_steps, _vals, label=key)
+    ax.set_title(f"{arch_name} / {loss_name}")
+    ax.set_xlabel("step")
+    ax.set_ylabel("aux component loss")
+    ax.legend(fontsize="small")
+
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/aux_components_{arch_name}.png", dpi=150, bbox_inches="tight")
+plt.show()
+'''
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -750,6 +933,11 @@ def main(
         build_cell_13_hf_ccsd_gen(),
         build_cell_14_mol_specs(),
         build_cell_15_precompute_sanity(),
+        build_cell_16_training_md(),
+        build_cell_17_training_specs(loss_names),
+        build_cell_18_training_loop(),
+        build_cell_19_training_loss_plot(),
+        build_cell_20_aux_inspection(),
     ]
 
     nbformat.validate(nb)

@@ -455,3 +455,99 @@ def test_cell_15_asserts_atom_rho_ccsd_is_none():
     source = gen.build_cell_15_precompute_sanity().source
     assert 'mol_data_list[0]["rho_ccsd_grid"] is None' in source
     assert 'mol_data_list[2]["rho_ccsd_grid"] is not None' in source
+
+
+# Task 7 -- Cells 16-20 builder tests
+
+
+def test_cell_17_builds_specs_list():
+    """Cell 17 must bind `specs = []` before the nested loop."""
+    gen = load_generator()
+    source = gen.build_cell_17_training_specs().source
+    init_idx = source.find("specs = []")
+    loop_idx = source.find("for arch_name in ARCH_NAMES:")
+    assert init_idx != -1, "specs accumulator missing"
+    assert loop_idx != -1, "outer arch loop missing"
+    assert init_idx < loop_idx, "specs = [] must precede the loop"
+
+
+def test_cell_17_loop_is_arch_then_loss_order():
+    """Outer loop must iterate arch_name, inner loop must iterate loss_name."""
+    gen = load_generator()
+    source = gen.build_cell_17_training_specs().source
+    arch_idx = source.find("for arch_name in ARCH_NAMES:")
+    loss_idx = source.find("for loss_name in LOSS_NAMES:")
+    assert arch_idx != -1 and loss_idx != -1
+    assert arch_idx < loss_idx, "arch loop must enclose loss loop"
+
+
+def test_cell_17_sets_checkpoint_dir_per_pair():
+    """Each spec must carry a per-(arch, loss) checkpoint_dir -- without this,
+    all 72 runs overwrite each other in a single directory.
+    """
+    gen = load_generator()
+    source = gen.build_cell_17_training_specs().source
+    assert 'checkpoint_dir=f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}"' in source
+
+
+def test_cell_17_passes_step3b_hyperparameters():
+    """Cell 17 must pass n_steps=250, lr_start=1e-2, lr_decay_start=0.2 --
+    the TrainingSpec defaults differ from step3b and silently produce wrong
+    training curves if left alone.
+    """
+    gen = load_generator()
+    source = gen.build_cell_17_training_specs().source
+    for literal in ("n_steps=250", "lr_start=1e-2", "lr_decay_start=0.2"):
+        assert literal in source, f"missing hyperparameter literal: {literal}"
+
+
+def test_cell_17_uses_qualified_alec_trainingspec():
+    """Cell 17 must use `alec.TrainingSpec.from_dicts(` -- never bare."""
+    gen = load_generator()
+    source = gen.build_cell_17_training_specs().source
+    assert "alec.TrainingSpec.from_dicts(" in source
+    import re
+    bare_refs = re.findall(r"(?<!alec\.)TrainingSpec\.from_dicts\(", source)
+    assert bare_refs == [], f"bare TrainingSpec references found: {bare_refs}"
+
+
+def test_cell_17_loss_kwargs_weight_values():
+    """LOSS_KWARGS must use 0.1 weights for dm and density -- not 1.0 or 0.01."""
+    gen = load_generator()
+    source = gen.build_cell_17_training_specs().source
+    assert '"dm_weight": 0.1' in source
+    assert '"density_weight": 0.1' in source
+    # Guard against wrong weight magnitudes
+    assert '"dm_weight": 1.0' not in source
+    assert '"density_weight": 0.01' not in source
+
+
+def test_cell_18_is_serial():
+    """Cell 18 must implement the serial path only -- no parallel build_training_jobs."""
+    gen = load_generator()
+    source = gen.build_cell_18_training_loop().source
+    assert "for spec in specs:" in source
+    assert "alec.run_training(spec" in source
+    assert "alec.build_training_jobs(" not in source
+
+
+def test_cell_19_loads_losses_npy():
+    """Cell 19 must load each per-(arch, loss) losses.npy using the
+    checkpoint path template Cell 17 wrote to.
+    """
+    gen = load_generator()
+    source = gen.build_cell_19_training_loss_plot().source
+    assert "/train/{arch_name}/{loss_name}/losses.npy" in source
+
+
+def test_cell_20_binds_arch_name_before_loop():
+    """Cell 20 must bind arch_name = "shallow" before the for loss_name loop
+    so the f-string checkpoint path is unambiguous.
+    """
+    gen = load_generator()
+    source = gen.build_cell_20_aux_inspection().source
+    bind_idx = source.find('arch_name = "shallow"')
+    loop_idx = source.find("for loss_name in LOSS_NAMES:")
+    assert bind_idx != -1, 'arch_name = "shallow" missing'
+    assert loop_idx != -1, "loss_name loop missing"
+    assert bind_idx < loop_idx, "arch_name binding must precede the loss loop"
