@@ -688,14 +688,23 @@ the trained models are numerically identical to step3b checkpoints.
 
 
 def build_cell_12_reference_dicts():
-    """Section 4 Cell 12 — atom_energies and targets dicts + ext_data_dir setup."""
-    source = """# Atom energies: literature total energies in Hartree (negative, as they should be).
+    """Section 4 Cell 12 — atom_energies_literature + targets dicts + ext_data_dir setup.
+
+    The literature-value dict (H: -0.5 Ha, O: -75.0673 Ha) is stored under
+    `atom_energies_literature` and is consumed ONLY by Cell 13's atom-branch
+    `E_ref_literature` sidecar write (which TotalEnergyMetric compares against).
+    The NAME `atom_energies` that the training loss and AtomizationEnergyMetric
+    consume is bound later — at the end of Cell 13 — to a PBE-consistent dict.
+    """
+    source = """# Literature atomic total energies in Hartree (negative, as they should be).
+# Used ONLY by Cell 13 to write each atom's E_ref_literature sidecar value
+# (TotalEnergyMetric compares NN atomic totals against this scalar).
 # H is exact: -0.5 Ha. O is literature total ~ -75.0673 Ha.
-atom_energies = {"H": -0.5, "O": -75.0673}
+atom_energies_literature = {"H": -0.5, "O": -75.0673}
 
 # targets dict: validator requires an entry for every molecule in TrainingSpec.molecules
 # (config.py:523-525). Atom entries are never dereferenced at training time but must be
-# finite floats — we set them to match atom_energies for future-refactor consistency.
+# finite floats — we set them to the literature atomic totals for consistency.
 # The H2O entry is the POSITIVE-for-bound atomization energy in Hartree:
 #   AE = E_atoms_sum - E_mol > 0 for a bound molecule
 # Literature: AE(H2O) ~ 974.94 kJ/mol = 974.94 / 2625.5 Ha.
@@ -703,7 +712,14 @@ targets = {"H": -0.5, "O": -75.0673, "H2O": 974.94 / 2625.5}
 
 ext_data_dir = f"{CHECKPOINT_BASE}/external_data"
 os.makedirs(ext_data_dir, exist_ok=True)
-print(f"ext_data_dir={ext_data_dir}  targets={list(targets.keys())}  atom_energies={list(atom_energies.keys())}")
+print(
+    f"ext_data_dir={ext_data_dir}  "
+    f"targets={list(targets.keys())}  "
+    f"atom_energies_literature={list(atom_energies_literature.keys())}"
+)
+# NOTE: The runtime name `atom_energies` (consumed by the training loss and
+# AtomizationEnergyMetric) is defined at the end of Cell 13 from the PBE
+# atomic totals computed there. Do not reference `atom_energies` before Cell 13.
 """
     return new_code_cell(source)
 
