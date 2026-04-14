@@ -725,10 +725,15 @@ print(
 
 
 def build_cell_13_hf_ccsd_gen():
-    """Section 4 Cell 13 — HF/CCSD reference computation and .npz generation.
+    """Section 4 Cell 13 — HF/CCSD/PBE reference computation + npz + sidecars.
 
-    Writes {name}.npz (whitelisted keys only) and {name}_metadata.json
-    (HF/CCSD/PBE totals) for H, O, and H2O.
+    Writes `{name}.npz` (whitelisted keys only) and `{name}_metadata.json`
+    (HF/CCSD/PBE/literature totals) for H, O, and H2O. As a side effect,
+    binds the runtime name `atom_energies` to a PBE-consistent dict
+    {"H": E_pbe[H], "O": E_pbe[O]} that the training loss and
+    AtomizationEnergyMetric both consume downstream. The literature dict
+    from Cell 12 is preserved as `atom_energies_literature` and is used
+    ONLY for the atom-branch `E_ref_literature` sidecar write.
     """
     source = """# HF/CCSD reference computation and external_data .npz generation.
 # H2O uses H2O_COORDS from Cell 3 (equilibrium geometry, NOT a distorted 90-degree box).
@@ -737,6 +742,14 @@ _mols = [
     ("O", "O 0 0 0", 2),
     ("H2O", H2O_COORDS, 0),
 ]
+
+# Accumulates PBE atomic total energies (one entry per element symbol) so
+# that at the end of this cell we can bind `atom_energies` to a
+# PBE-consistent dict. Using PBE here rather than literature values keeps
+# the NN's required XC correction on the order of single kcal/mol in the
+# post-hoc fixed-density framework; literature anchors would demand a
+# ~100 kcal/mol correction which the NN cannot produce on a frozen density.
+atom_energies_pbe = {}
 
 for name, atom, spin in _mols:
     # Identical gto.M kwargs to what precompute_fixed_density_data uses internally.
@@ -762,10 +775,15 @@ for name, atom, spin in _mols:
     if name in ("H", "O"):
         # Atom branch: degenerate HOMO eigenvalues make one-shot density targets
         # numerically unstable. Write ONLY E_ref_literature for atoms.
+        # E_ref_literature is the LITERATURE atomic total (TotalEnergyMetric
+        # compares against this).
         np.savez(
             os.path.join(ext_data_dir, f"{name}.npz"),
-            E_ref_literature=atom_energies[name],
+            E_ref_literature=atom_energies_literature[name],
         )
+        # Record the PBE total for this atom — consumed by the AE anchor dict
+        # at the end of this cell.
+        atom_energies_pbe[name] = E_pbe_total
     else:
         # H2O branch: write HF DM as density target (NOT CCSD DM — step3b uses HF).
         dm_hf = mf_hf.make_rdm1()
@@ -777,7 +795,7 @@ for name, atom, spin in _mols:
         rho_hf = np.einsum("ij,gi,gj->g", dm_hf_total, ao_grid, ao_grid)
 
         # The three keys below are the ONLY keys _ALLOWED_EXTERNAL_KEYS accepts
-        # (data.py:17-21). E_ref_literature is the HF total, not the CCSD total,
+        # (data.py:17-21). E_ref_literature is the HF total (not the CCSD total),
         # because TotalEnergyMetric.E_error_hartree gauges against this scalar and
         # the density-matching losses (B/C/D2/D3) optimize toward the HF density.
         np.savez(
@@ -795,14 +813,22 @@ for name, atom, spin in _mols:
             {
                 "E_hf_total": E_hf_total,
                 "E_ccsd_total": E_ccsd_total,
-                "E_lit_Ha": atom_energies.get(name, None),
+                "E_lit_Ha": atom_energies_literature.get(name, None),
                 "E_pbe_total": E_pbe_total,
             },
             _f,
             indent=2,
         )
 
+# Bind the runtime name `atom_energies` to the PBE-consistent dict. This is
+# the dict that flows into TrainingSpec.atom_energies (Cell 17) and
+# TestSpec.atom_energies (Cell 22 + 31 + 32). After the losses.py fix, both
+# the training loss and AtomizationEnergyMetric compute atomization energy
+# as `sum(atom_energies[Z] * n_Z) - E_mol`, so the training loss and
+# evaluation metric agree exactly on every compound.
+atom_energies = dict(atom_energies_pbe)
 print(f"Reference data written to {ext_data_dir}")
+print(f"atom_energies (PBE-consistent) = {atom_energies}")
 """
     return new_code_cell(source)
 
