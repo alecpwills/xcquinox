@@ -1609,12 +1609,12 @@ To re-parameterise this section for a different molecule:
    and an `external_data_path` under `{ext_data_dir}`.
 
 2. **Update `new_atom_specs`** (Cell 31) to list every element in the new
-   composition that is NOT already in Cell 12's `atom_energies` dict
+   composition that is NOT already in Cell 13's `atom_energies` dict
    (`"H"`, `"O"`). Each entry is `(name, atom, spin)`; Cell 31 runs
    PBE+HF+CCSD for each, writes a `.npz` (atom branch only `E_ref_literature`,
    molecule branch also `dm_target` + `rho_ccsd_grid` + `rho_pbe_hf_rmse`),
    and a `{name}_metadata.json` sidecar with all three reference totals.
-   `new_atom_energies` is then built from Cell 12 plus each sidecar's HF total.
+   `new_atom_energies` is then built from Cell 13's PBE dict plus each sidecar's PBE total.
 
 3. **Update the literature AE reference** in `metric_kwargs` (Cell 31's
    `new_test_spec` — also propagated to Cell 32's per-combo specs).

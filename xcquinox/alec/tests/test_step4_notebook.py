@@ -2120,22 +2120,24 @@ def test_cell_31_best_arch_binds_from_best_idx():
 
 
 def test_cell_31_atom_energies_merge():
-    """Cell 31 must build ``new_atom_energies`` on top of the Cell 12 dict
-    (never replace it) and source the new element's reference from its sidecar
-    JSON, not a hardcoded ``-37.84`` placeholder. Preserving the Cell 12 dict
-    keeps H / O reference energies in sync across the notebook."""
+    """Cell 31 must build ``new_atom_energies`` on top of the Cell 13 PBE dict
+    (never replace it) and source each new element's PBE total from its sidecar
+    JSON, not a hardcoded placeholder. Preserving the Cell 13 dict keeps H / O
+    reference energies in sync with the training-loss atom anchor."""
     gen = load_generator()
     source = gen.build_cell_31_new_molecule_template().source
     assert "new_atom_energies" in source
-    # Must preserve existing Cell 12 atom_energies via an {**..} spread or
+    # Must preserve existing Cell 13 atom_energies via an {**..} spread or
     # dict(..) copy rather than re-declaring the H / O values.
     assert ("{**atom_energies}" in source) or ("dict(atom_energies)" in source)
-    # Source the new atom's reference from its Cell 31 sidecar.
+    # Source each new atom's reference from its Cell 31 sidecar via the PBE
+    # total, matching Cell 13's PBE-consistent anchor convention.
     assert "_metadata.json" in source
-    assert "E_hf_total" in source
-    # No hardcoded -37.84 placeholder for C — Task #29 removed it in favour of
-    # the sidecar-sourced value so re-parameterising to a new atom does not
-    # require the user to look up a literature total.
+    assert 'json.load(_f)["E_pbe_total"]' in source, (
+        "Cell 31 must read E_pbe_total for new_atom_energies, not E_hf_total, "
+        "to stay consistent with Cell 13's PBE-anchored atom_energies dict."
+    )
+    # No hardcoded -37.84 placeholder for C.
     assert "-37.84" not in source
 
 
