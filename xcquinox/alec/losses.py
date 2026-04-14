@@ -115,16 +115,17 @@ def _compute_energies(model, mol_data, N):
     return jnp.stack([fixed_density_total_energy(model, mol_data[i]) for i in range(N)])
 
 
-def _atomization_nn(E_nn, i, comp_dict_i, atom_mol_idx_dict):
-    """C-B12-1: positive-for-bound atomization energy."""
-    return sum(comp_dict_i[Z] * E_nn[atom_mol_idx_dict[Z]] for Z in comp_dict_i) - E_nn[i]
+def _ae_from_atoms(E_mol, comp_dict, atom_energies):
+    """Positive-for-bound atomization energy from a fixed atomic anchor dict.
 
+    AE = Σ n_Z · atom_energies[Z] − E_mol
 
-def _atomization_pbe(mol_data, i, comp_dict_i, atom_mol_idx_dict):
-    """PBE atomization energy (positive-for-bound)."""
-    return sum(
-        comp_dict_i[Z] * mol_data[atom_mol_idx_dict[Z]]["E_pbe"] for Z in comp_dict_i
-    ) - mol_data[i]["E_pbe"]
+    The atom anchor is a caller-supplied dict (typically PBE-consistent
+    atomic totals for a post-hoc NN XC on a frozen PBE density). Using a
+    fixed anchor rather than NN-predicted atomic totals is what lets the
+    training loss and AtomizationEnergyMetric measure the same quantity.
+    """
+    return sum(n * atom_energies[Z] for Z, n in comp_dict.items()) - E_mol
 
 
 def _atomic_reg(E_nn, atom_mol_idx_dict, atom_energies):
@@ -136,22 +137,34 @@ def _atomic_reg(E_nn, atom_mol_idx_dict, atom_energies):
     )
 
 
-def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_mol_idx_dict):
-    """A-family: relative squared AE error per compound."""
+def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies):
+    """A-family: relative squared AE error per compound.
+
+    AE is computed via `_ae_from_atoms` so the anchor dict is the same
+    one that AtomizationEnergyMetric consumes at evaluation time.
+    """
     terms = []
     for i in compound_idx:
-        ae = _atomization_nn(E_nn, i, comp_dicts[i], atom_mol_idx_dict)
+        ae = _ae_from_atoms(E_nn[i], comp_dicts[i], atom_energies)
         tgt = targets[mol_names[i]]
         terms.append((ae - tgt) ** 2 / (tgt ** 2 + 1e-8))
     return jnp.mean(jnp.stack(terms))
 
 
-def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets, atom_mol_idx_dict):
-    """D-family: relative squared delta-AE error per compound."""
+def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets, atom_energies):
+    """D-family: relative squared delta-AE error per compound.
+
+    Both the NN and PBE atomization energies are computed from the same
+    `atom_energies` anchor dict via `_ae_from_atoms`, so the atom-sum
+    term cancels in `delta_nn = ae_nn - ae_pbe = E_pbe[mol] - E_nn[mol]`.
+    The anchor dict still appears in `delta_tgt = target_AE - ae_pbe`,
+    so the D-family target is a function of the anchor dict even though
+    the NN/PBE delta itself is not.
+    """
     terms = []
     for i in compound_idx:
-        ae_nn = _atomization_nn(E_nn, i, comp_dicts[i], atom_mol_idx_dict)
-        ae_pbe = _atomization_pbe(mol_data, i, comp_dicts[i], atom_mol_idx_dict)
+        ae_nn = _ae_from_atoms(E_nn[i], comp_dicts[i], atom_energies)
+        ae_pbe = _ae_from_atoms(mol_data[i]["E_pbe"], comp_dicts[i], atom_energies)
         delta_nn = ae_nn - ae_pbe
         delta_tgt = targets[mol_names[i]] - ae_pbe
         terms.append((delta_nn - delta_tgt) ** 2 / (delta_tgt ** 2 + 1e-8))
