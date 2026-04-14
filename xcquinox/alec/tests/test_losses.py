@@ -635,14 +635,46 @@ def test_atomizationloss_sign_convention(batch_h_o_h2o, model):
 
 
 # ---------------------------------------------------------------------------
-# Test 42: xfail — training targets sign matches test reference
+# Test 42: training loss and evaluation metric compute the same AE
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="xcquinox.alec.evaluation module not yet implemented")
-def test_training_targets_sign_matches_test_reference():
-    """Test 42: atomization targets and evaluation.py use the same sign convention."""
-    from xcquinox.alec.evaluation import compute_atomization_energy  # noqa: F401
-    raise NotImplementedError("evaluation.py not yet implemented")
+def test_training_loss_and_eval_metric_agree_on_atomization_energy(
+    batch_h_o_h2o, model
+):
+    """Test 42: AtomizationLoss and AtomizationEnergyMetric measure the
+    same physical quantity given the same model, mol_data, and atom_energies.
+
+    Regression guard for the training-vs-eval AE semantic mismatch that
+    caused trained models to score ~113 kcal/mol off on evaluation while
+    appearing to converge during training. The loss and the metric MUST
+    compute atomization energy from the same fixed atom_energies dict.
+    """
+    from xcquinox.alec.evaluation import AtomizationEnergyMetric
+    from xcquinox.alec.losses import _ae_from_atoms, _compute_energies
+
+    mols = batch_h_o_h2o["mols"]
+    mol_data = batch_h_o_h2o["mol_data"]
+    atom_energies = batch_h_o_h2o["atom_energies"]
+
+    h2o_idx = 2
+    h2o_data = mol_data[h2o_idx]
+    comp_dict = dict(mols[h2o_idx].atom_composition)
+
+    E_nn = _compute_energies(model, mol_data, len(mols))
+    ae_loss = float(_ae_from_atoms(E_nn[h2o_idx], comp_dict, atom_energies))
+
+    metric = AtomizationEnergyMetric(atom_energies=atom_energies)
+    ae_eval = float(metric.compute(model, h2o_data)["AE_nn"])
+
+    np.testing.assert_allclose(
+        ae_loss, ae_eval, rtol=1e-6, atol=1e-8,
+        err_msg=(
+            "Training-loss AE and evaluation-metric AE diverged: "
+            f"loss={ae_loss!r}, eval={ae_eval!r}. "
+            "Both MUST use the batch['atom_energies'] dict as the fixed "
+            "atomic anchor — do not use NN-predicted atomic totals."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
