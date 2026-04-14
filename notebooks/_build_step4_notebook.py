@@ -517,24 +517,41 @@ else:
 
 
 def build_cell_09_pretrain_loss_plot():
-    """Section 3 Cell 9 — pretrain loss curves (xnet / cnet) on log-y axes."""
-    source = """fig, (ax_x, ax_c) = plt.subplots(1, 2, figsize=(12, 4))
+    """Section 3 Cell 9 — pretrain loss curves (xnet / cnet) on log-y axes.
+
+    Adds a shared suptitle, LaTeX-aware subtitle labels, and an explicit
+    "optimizer step" xlabel so the figure is self-describing when exported as
+    a standalone PNG.
+    """
+    source = r"""fig, (ax_x, ax_c) = plt.subplots(1, 2, figsize=(12, 4.5))
 for arch_name in ARCH_NAMES:
     losses_x = np.load(f"{CHECKPOINT_BASE}/pretrain/{arch_name}/losses_x.npy")
     losses_c = np.load(f"{CHECKPOINT_BASE}/pretrain/{arch_name}/losses_c.npy")
     ax_x.semilogy(losses_x, color=arch_colors[arch_name], label=arch_name)
     ax_c.semilogy(losses_c, color=arch_colors[arch_name], label=arch_name)
 
-ax_x.set_title("xnet pretrain loss")
-ax_x.set_xlabel("step")
-ax_x.set_ylabel("MSE loss")
-ax_c.set_title("cnet pretrain loss")
-ax_c.set_xlabel("step")
-ax_c.set_ylabel("MSE loss")
+ax_x.set_title(r"xnet: target $F_x - 1$ (PBE exchange enhancement)")
+ax_x.set_xlabel("optimizer step")
+ax_x.set_ylabel("MSE loss (log scale)")
+ax_x.grid(True, which="both", ls=":", alpha=0.4)
+ax_c.set_title(r"cnet: target $F_c - 1$ (PBE correlation enhancement)")
+ax_c.set_xlabel("optimizer step")
+ax_c.set_ylabel("MSE loss (log scale)")
+ax_c.grid(True, which="both", ls=":", alpha=0.4)
 # Legend outside right on the right subplot only (avoids cluttering both)
-ax_c.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize="small")
+ax_c.legend(
+    loc="center left",
+    bbox_to_anchor=(1.02, 0.5),
+    fontsize="small",
+    title="architecture",
+)
 
-fig.tight_layout()
+fig.suptitle(
+    "Pretraining loss vs step -- one curve per architecture "
+    "(atoms: H, He, O, N at def2-svp)",
+    fontsize=12,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.95))
 os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
 fig.savefig(f"{CHECKPOINT_BASE}/figures/pretrain_losses.png", dpi=150, bbox_inches="tight")
 plt.show()
@@ -600,21 +617,28 @@ for row, arch_name in enumerate(ARCH_NAMES):
                  c=[arch_colors[arch_name]])
     _lo_x = float(min(np.min(Fx_target) + 1.0, np.min(Fx_pred)))
     _hi_x = float(max(np.max(Fx_target) + 1.0, np.max(Fx_pred)))
-    ax_x.plot([_lo_x, _hi_x], [_lo_x, _hi_x], "k--", lw=0.8)
-    ax_x.set_title(f"{arch_name} Fx parity")
-    ax_x.set_xlabel("Fx target")
-    ax_x.set_ylabel("Fx predicted")
+    ax_x.plot([_lo_x, _hi_x], [_lo_x, _hi_x], "k--", lw=0.8, label="y = x")
+    ax_x.set_title(rf"{arch_name} -- $F_x$ parity")
+    ax_x.set_xlabel(r"$F_x$ target (PBE exchange enhancement)")
+    ax_x.set_ylabel(r"$F_x$ predicted (xnet)")
+    ax_x.grid(True, ls=":", alpha=0.4)
 
     ax_c.scatter(np.asarray(Fc_target) + 1.0, np.asarray(Fc_pred), s=2,
                  c=[arch_colors[arch_name]])
     _lo_c = float(min(np.min(Fc_target) + 1.0, np.min(Fc_pred)))
     _hi_c = float(max(np.max(Fc_target) + 1.0, np.max(Fc_pred)))
-    ax_c.plot([_lo_c, _hi_c], [_lo_c, _hi_c], "k--", lw=0.8)
-    ax_c.set_title(f"{arch_name} Fc parity")
-    ax_c.set_xlabel("Fc target")
-    ax_c.set_ylabel("Fc predicted")
+    ax_c.plot([_lo_c, _hi_c], [_lo_c, _hi_c], "k--", lw=0.8, label="y = x")
+    ax_c.set_title(rf"{arch_name} -- $F_c$ parity")
+    ax_c.set_xlabel(r"$F_c$ target (PBE correlation enhancement)")
+    ax_c.set_ylabel(r"$F_c$ predicted (cnet)")
+    ax_c.grid(True, ls=":", alpha=0.4)
 
-fig.tight_layout()
+fig.suptitle(
+    "Pretrain parity: per-architecture prediction vs PBE enhancement target "
+    "(points on y=x are perfectly matched)",
+    fontsize=12,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.985))
 os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
 fig.savefig(f"{CHECKPOINT_BASE}/figures/pretrain_parity.png", dpi=150, bbox_inches="tight")
 plt.show()
@@ -816,12 +840,39 @@ print(f"Built {len(mol_specs)} MoleculeSpec objects: {[m.name for m in mol_specs
 def build_cell_15_precompute_sanity():
     """Section 4 Cell 15 — call precompute_fixed_density_data and assert invariants.
 
+    Builds ``mol_data_list`` with the union of descriptor ``required_mol_keys``
+    across every arch in ``ARCH_NAMES``, so the Section 7 visualization cells
+    (26 dm_heatmaps, 27 density_histograms) can call descriptor-demanding
+    APIs like ``oneshot_dm_prediction_fast`` / ``oneshot_grid_density`` on
+    ``mol_data_list[2]`` regardless of which arch Cell 25's ``best_idx``
+    selects as best-per-loss. A bare precompute call would leave
+    ``cusp_features`` / ``dm_features`` as ``None`` and break descriptor archs
+    (``deep_cusp``, ``deep_dm``, ``deep_combined``, and their ``_attn``
+    variants) with ``TypeError: concatenate requires ndarray or scalar
+    arguments, got <class 'NoneType'>`` inside
+    ``assemble_descriptor_features``.
+
     Prints per-molecule shapes and energies, then asserts the atom-vs-compound
     invariants: atoms have no dm_target / rho_ccsd_grid; H2O has all three.
     The negative atom assertions guard against a Cell 13 regression that would
     accidentally write dm_target / rho_ccsd_grid into the atom .npz.
     """
-    source = """mol_data_list = [alec.precompute_fixed_density_data(m) for m in mol_specs]
+    source = """# Union of descriptor required_mol_keys across every arch we will train.
+# Ensures mol_data_list carries cusp_features / dm_features for any arch the
+# downstream Section 7 visualization cells (26, 27) may later pass to
+# oneshot_dm_prediction_fast / oneshot_grid_density. Derive from ARCH_NAMES
+# (Cell 5) rather than hardcoding so a custom arch list stays correct.
+_mol_data_required_keys = set()
+for _arch_name in ARCH_NAMES:
+    for _desc in alec.get_architecture(_arch_name).materialize_descriptors():
+        _mol_data_required_keys.update(_desc.required_mol_keys)
+_mol_data_required_keys = tuple(sorted(_mol_data_required_keys))
+print(f"mol_data_list required_keys union: {_mol_data_required_keys}")
+
+mol_data_list = [
+    alec.precompute_fixed_density_data(m, required_keys=_mol_data_required_keys)
+    for m in mol_specs
+]
 
 for mol_spec, mol_data in zip(mol_specs, mol_data_list):
     print(f"\\n=== {mol_spec.name} ===")
@@ -1028,21 +1079,32 @@ def build_cell_19_training_loss_plot():
     Loads losses.npy from each per-(arch, loss) checkpoint directory and
     plots 12 arch curves per subplot with a shared legend on the top-right.
     """
-    source = """fig, axes = plt.subplots(2, 3, figsize=(15, 8), squeeze=False)
+    source = """fig, axes = plt.subplots(2, 3, figsize=(15, 9), squeeze=False)
 _axes_flat = axes.flatten()
 for idx, loss_name in enumerate(LOSS_NAMES):
     ax = _axes_flat[idx]
     for arch_name in ARCH_NAMES:
         losses = np.load(f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}/losses.npy")
         ax.semilogy(losses, color=arch_colors[arch_name], label=arch_name)
-    ax.set_title(loss_name)
-    ax.set_xlabel("step")
-    ax.set_ylabel("loss")
+    ax.set_title(f"loss family: {loss_name}")
+    ax.set_xlabel("training step")
+    ax.set_ylabel("total loss (log scale)")
+    ax.grid(True, which="both", ls=":", alpha=0.4)
 
 # Shared legend outside right on the rightmost top subplot only
-axes[0, 2].legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize="small")
+axes[0, 2].legend(
+    loc="center left",
+    bbox_to_anchor=(1.02, 0.5),
+    fontsize="small",
+    title="architecture",
+)
 
-fig.tight_layout()
+fig.suptitle(
+    "Main training loss curves -- 12 architectures x 6 loss families "
+    "(one subplot per loss, one trace per architecture)",
+    fontsize=13,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.95))
 os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
 fig.savefig(f"{CHECKPOINT_BASE}/figures/training_losses.png", dpi=150, bbox_inches="tight")
 plt.show()
@@ -1066,7 +1128,7 @@ _aux_keys_per_family = {
     "D3_delta_ae_plus_grid": ("loss_delta", "loss_grid"),
 }
 
-fig, axes = plt.subplots(2, 3, figsize=(15, 8), squeeze=False)
+fig, axes = plt.subplots(2, 3, figsize=(15, 9), squeeze=False)
 _ax_by_loss = dict(zip(LOSS_NAMES, axes.flatten()))
 for loss_name in LOSS_NAMES:
     ax = _ax_by_loss[loss_name]
@@ -1078,12 +1140,18 @@ for loss_name in LOSS_NAMES:
     for key in _aux_keys_per_family[loss_name]:
         _vals = [entry["aux"][key] for entry in aux_log]
         ax.semilogy(_steps, _vals, label=key)
-    ax.set_title(f"{arch_name} / {loss_name}")
-    ax.set_xlabel("step")
-    ax.set_ylabel("aux component loss")
-    ax.legend(fontsize="small")
+    ax.set_title(f"loss family: {loss_name}")
+    ax.set_xlabel("training step")
+    ax.set_ylabel("aux component value (log scale)")
+    ax.grid(True, which="both", ls=":", alpha=0.4)
+    ax.legend(fontsize="small", title="aux key")
 
-fig.tight_layout()
+fig.suptitle(
+    f"Aux loss components for arch = {arch_name!r} -- per-family breakdown "
+    f"(single architecture, 6 loss families)",
+    fontsize=13,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.95))
 os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
 fig.savefig(f"{CHECKPOINT_BASE}/figures/aux_components_{arch_name}.png", dpi=150, bbox_inches="tight")
 plt.show()
@@ -1227,17 +1295,29 @@ for i, arch_name in enumerate(ARCH_NAMES):
            color=arch_colors[arch_name], label=arch_name)
 ax.set_xticks(x_positions)
 ax.set_xticklabels(list(LOSS_NAMES), rotation=30, ha="right")
-ax.set_ylabel("|AE error| (kcal/mol)")
+ax.set_xlabel("loss family (training objective)")
+ax.set_ylabel("|AE error| vs literature (kcal/mol, log scale)")
 ax.set_yscale("log")
+ax.set_title(
+    "H2O atomization-energy error by architecture x loss family\\n"
+    "(literature AE = 233.016 kcal/mol; error bars = per-molecule RMSE)",
+    fontsize=12,
+)
+ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
 
-ax.axhline(PBE_AE_err_kcalmol, linestyle="dotted", color="r", alpha=0.5,
+ax.axhline(PBE_AE_err_kcalmol, linestyle="dotted", color="r", alpha=0.7,
            label=f"PBE Error ({PBE_AE_err_kcalmol:.2f} kcal/mol)")
-ax.axhline(CCSD_AE_err_kcalmol, linestyle="-.", color="r", alpha=0.5,
+ax.axhline(CCSD_AE_err_kcalmol, linestyle="-.", color="r", alpha=0.7,
            label=f"CCSD Error ({CCSD_AE_err_kcalmol:.2f} kcal/mol)")
-ax.axhline(1.0, linestyle="--", color="r", alpha=0.5,
+ax.axhline(1.0, linestyle="--", color="r", alpha=0.7,
            label="Chemical accuracy (1 kcal/mol)")
 
-ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+ax.legend(
+    bbox_to_anchor=(1.02, 1),
+    loc="upper left",
+    fontsize=8,
+    title="architecture / reference",
+)
 fig.tight_layout()
 os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
 fig.savefig(f"{CHECKPOINT_BASE}/figures/ae_error_by_loss.png", dpi=150, bbox_inches="tight")
@@ -1287,14 +1367,27 @@ else:
     _n_panels = len(_panel_deltas)
     _ncols = min(_n_panels, 2)
     _nrows = (_n_panels + _ncols - 1) // _ncols
-    fig, axes = plt.subplots(_nrows, _ncols, figsize=(10, 9), squeeze=False)
+    fig, axes = plt.subplots(_nrows, _ncols, figsize=(11, 10), squeeze=False)
     _axes_flat = axes.flatten()
     for ax, (title, delta) in zip(_axes_flat, _panel_deltas):
         im = ax.imshow(np.asarray(delta), cmap="RdBu_r", vmin=-vmax, vmax=vmax)
-        ax.set_title(title)
-        fig.colorbar(im, ax=ax, label="\u0394DM element")
+        ax.set_title(title, fontsize=11)
+        ax.set_xlabel("AO basis index $j$")
+        ax.set_ylabel("AO basis index $i$")
+        fig.colorbar(
+            im,
+            ax=ax,
+            label=r"$\\Delta \\mathrm{DM}_{ij}$ (residual vs HF target)",
+        )
     for ax in _axes_flat[_n_panels:]:
         ax.set_visible(False)
+
+    fig.suptitle(
+        "H2O density-matrix residuals vs HF target -- PBE baseline "
+        "and best NN per DM-loss family\\n"
+        "(RdBu_r diverging colormap, shared symmetric vmax across panels)",
+        fontsize=12,
+    )
 
     # Inline Frobenius RMSE per panel (display-only; not a library metric).
     dm_rmse_pbe_hf = float(jnp.linalg.norm(dm_pbe - dm_hf) / jnp.sqrt(dm_pbe.size))
@@ -1309,7 +1402,7 @@ else:
         dm_rmse_D2 = float(jnp.linalg.norm(dm_nn_D2 - dm_hf) / jnp.sqrt(dm_nn_D2.size))
         print(f"best-D2 NN|HF Frobenius DM RMSE: {dm_rmse_D2:.4e}")
 
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
     fig.savefig(f"{CHECKPOINT_BASE}/figures/dm_heatmaps_h2o.png", dpi=150, bbox_inches="tight")
     plt.show()
@@ -1325,7 +1418,7 @@ _c_d3_losses_present = [ln for ln in _c_d3_losses if ln in best_idx.index]
 if not _c_d3_losses_present:
     print("[Cell 27] no grid-density-loss models in this configuration; skipping density histograms")
 else:
-    fig, axes = plt.subplots(1, len(_c_d3_losses_present), figsize=(14, 5), squeeze=False)
+    fig, axes = plt.subplots(1, len(_c_d3_losses_present), figsize=(14, 5.5), squeeze=False)
     _axes_flat = axes.flatten()
     for ax, loss_name in zip(_axes_flat, _c_d3_losses_present):
         best_arch = best_idx[loss_name]
@@ -1346,13 +1439,25 @@ else:
         _w = np.asarray(w)
         ax.hist(_diff, bins=60, weights=_w)
         ax.set_yscale("log")
-        ax.axvline(0.0, color="k", linewidth=0.8)
+        ax.axvline(0.0, color="k", linewidth=0.8, label=r"perfect match ($\\Delta\\rho = 0$)")
         _lib_rmse = df.loc[(best_arch, loss_name), "density_rmse_mean"]
-        ax.set_title(f"{loss_name}\\nbest={best_arch}, lib RMSE={_lib_rmse:.2e}, |drho|1={delta_rho_L1:.2e}")
-        ax.set_xlabel("rho_nn - rho_ref")
-        ax.set_ylabel("weighted count (log)")
+        ax.set_title(
+            f"loss family {loss_name}\\n"
+            f"best arch = {best_arch}  |  lib density RMSE = {_lib_rmse:.2e}  |  "
+            rf"$|\\Delta\\rho|_1$ = {delta_rho_L1:.2e}"
+        )
+        ax.set_xlabel(r"$\\rho_{\\mathrm{NN}} - \\rho_{\\mathrm{HF}}$  (a.u., electron/bohr$^3$)")
+        ax.set_ylabel("grid-weighted point count (log scale)")
+        ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
+        ax.legend(loc="upper right", fontsize="small")
 
-    fig.tight_layout()
+    fig.suptitle(
+        "H2O grid-density residual histograms -- best architecture per "
+        "density-aware loss family\\n"
+        "(reference density is the HF target stored in mol_data_list[2][\\"rho_ccsd_grid\\"])",
+        fontsize=12,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
     os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
     fig.savefig(f"{CHECKPOINT_BASE}/figures/grid_density_diffs.png", dpi=150, bbox_inches="tight")
     plt.show()
@@ -1365,22 +1470,31 @@ def build_cell_28_attn_comparison():
     source = """if not pairs:
     print("[Cell 28] no attention pairs in this configuration")
 else:
-    fig, axes = plt.subplots(2, 3, figsize=(15, 9), squeeze=False)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10), squeeze=False)
     _axes_flat = axes.flatten()
     for ax, loss_name in zip(_axes_flat, LOSS_NAMES):
         x_positions = np.arange(len(pairs))
         base_heights = [df.loc[(base, loss_name), "AE_error_kcalmol_mean"] for base, _attn in pairs]
         attn_heights = [df.loc[(attn, loss_name), "AE_error_kcalmol_mean"] for _base, attn in pairs]
         bar_width = 0.35
-        ax.bar(x_positions - bar_width / 2, base_heights, width=bar_width, label="no attn")
-        ax.bar(x_positions + bar_width / 2, attn_heights, width=bar_width, hatch="//", label="with attn")
+        ax.bar(x_positions - bar_width / 2, base_heights, width=bar_width, label="no attention")
+        ax.bar(x_positions + bar_width / 2, attn_heights, width=bar_width, hatch="//", label="with attention")
         ax.set_xticks(x_positions)
         ax.set_xticklabels([base for base, _ in pairs], rotation=30, ha="right")
-        ax.set_ylabel("AE error (kcal/mol)")
-        ax.set_title(loss_name)
+        ax.set_xlabel("base architecture")
+        ax.set_ylabel("signed AE error (kcal/mol)")
+        ax.set_title(f"loss family: {loss_name}")
+        ax.axhline(0.0, color="k", lw=0.6, alpha=0.6)
+        ax.grid(True, axis="y", ls=":", alpha=0.4)
         ax.legend(fontsize="small")
 
-    fig.tight_layout()
+    fig.suptitle(
+        "Attention vs non-attention comparison -- H2O signed AE error "
+        "per loss family\\n"
+        "(signed so positive = NN over-predicts AE; closer-to-zero bar = more accurate)",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
     fig.savefig(f"{CHECKPOINT_BASE}/figures/attn_vs_no_attn.png", dpi=150, bbox_inches="tight")
     plt.show()
@@ -1395,7 +1509,7 @@ def build_cell_29_feature_comparison():
 if not feature_variants:
     print("[Cell 29] no deep-feature variants in this configuration; skipping feature comparison plot")
 else:
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(12, 6.5))
     n_losses = len(LOSS_NAMES)
     x_positions = np.arange(len(feature_variants))
     bar_width = 0.8 / n_losses
@@ -1405,9 +1519,21 @@ else:
         ax.bar(x_positions + offset, heights, width=bar_width, label=loss_name)
     ax.set_xticks(x_positions)
     ax.set_xticklabels(feature_variants, rotation=20, ha="right")
-    ax.set_ylabel("AE error (kcal/mol)")
-    ax.set_title("Extended features impact (deep base variants)")
-    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    ax.set_xlabel("architecture (deep base variants: rho/sigma + descriptor set)")
+    ax.set_ylabel("signed AE error (kcal/mol)")
+    ax.set_title(
+        "Extended-feature impact on H2O AE error -- deep base variants x loss family\\n"
+        "(signed error; bars closer to zero = more accurate)",
+        fontsize=12,
+    )
+    ax.axhline(0.0, color="k", lw=0.6, alpha=0.6)
+    ax.grid(True, axis="y", ls=":", alpha=0.4)
+    ax.legend(
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+        fontsize=8,
+        title="loss family",
+    )
     fig.tight_layout()
     os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
     fig.savefig(f"{CHECKPOINT_BASE}/figures/extended_features_impact.png", dpi=150, bbox_inches="tight")
@@ -1420,39 +1546,53 @@ def build_cell_30_future_md():
     """Section 8 Cell 30 -- future testing markdown."""
     source = """## Section 8: Test on New Molecules
 
-This section is a **template** for extending step 4 to new molecules. It does
-not run end-to-end because it relies on an external `.npz` reference file that
-does not yet exist for the new species.
+Cell 31 is a self-contained template for extending step 4 to a new molecule:
+it generates its own PBE/HF/CCSD reference data (`.npz` + metadata sidecar)
+on first run and caches it under `ext_data_dir` for subsequent runs. Cell 32
+then sweeps every trained `(arch, loss)` checkpoint and renders a 3-panel
+comparison against PBE / CCSD / HF / chemical-accuracy reference lines.
 
-To extend step 4 to a new molecule:
+To re-parameterise this section for a different molecule:
 
-1. **Define the `MoleculeSpec`** with `name`, `atom`, `basis=BASIS`,
-   `charge`, `spin`, `atom_composition`, `grid_level=GRID_LEVEL`, and an
-   `external_data_path` pointing to a `.npz` in `{ext_data_dir}`.
+1. **Update `new_mol_spec`** (Cell 31) with your target's `name`, `atom`,
+   `basis=BASIS`, `charge`, `spin`, `atom_composition`, `grid_level=GRID_LEVEL`,
+   and an `external_data_path` under `{ext_data_dir}`.
 
-2. **Generate the `.npz`** following Cell 13's HF+grid pattern. The file
-   must carry `dm_target` (the HF density matrix) and, if the model was
-   trained with a density-loss family, `rho_ccsd_grid` (the reference
-   density on the molecular grid). Without `rho_ccsd_grid`,
-   `DensityRMSEMetric.compute` raises `AttributeError` for non-atomic
-   species (evaluation.py:141). Atoms auto-skip the metric.
+2. **Update `new_atom_specs`** (Cell 31) to list every element in the new
+   composition that is NOT already in Cell 12's `atom_energies` dict
+   (`"H"`, `"O"`). Each entry is `(name, atom, spin)`; Cell 31 runs
+   PBE+HF+CCSD for each, writes a `.npz` (atom branch only `E_ref_literature`,
+   molecule branch also `dm_target` + `rho_ccsd_grid` + `rho_pbe_hf_rmse`),
+   and a `{name}_metadata.json` sidecar with all three reference totals.
+   `new_atom_energies` is then built from Cell 12 plus each sidecar's HF total.
 
-3. **Add any new elements to `atom_energies`** via a dict-merge
-   `{**atom_energies, "NewElement": -X.XX}`. `AtomizationEnergyMetric`
-   raises `KeyError` for missing symbols at evaluation time.
+3. **Update the literature AE reference** in `metric_kwargs` (Cell 31's
+   `new_test_spec` — also propagated to Cell 32's per-combo specs).
 
-4. **Build the `TestSpec`** against a trained step 4 model (the D2 loss
-   family is a reasonable DM-aware default via
-   `best_arch = best_idx["D2_delta_ae_plus_dm"]`).
-
-5. **Run `alec.run_test(new_test_spec)`** once the `.npz` is in place.
+4. **Cell 31 step 6 is commented** so a bare re-run of the notebook does not
+   train/test on the new molecule. Cell 32 is the end-to-end sweep: uncomment
+   Cell 31 step 6 only if you want a single best-D2 model run outside the
+   full sweep.
 """
     return new_markdown_cell(source)
 
 
 def build_cell_31_new_molecule_template():
-    """Section 8 Cell 31 -- new molecule template (SCF lines commented)."""
-    source = """# 1. Define the new molecule (CH4 example).
+    """Section 8 Cell 31 -- new-molecule template with reference data generation.
+
+    Step 2 runs PBE / HF / CCSD for the new molecule AND every atom in
+    ``new_atom_specs``, writing per-species ``.npz`` files and
+    ``{name}_metadata.json`` sidecars (PBE/HF/CCSD totals, plus
+    ``rho_pbe_hf_rmse`` for the molecule). Cell 32 then consumes those sidecars
+    to draw PBE/CCSD/HF reference lines on the comparison plot.
+
+    ``new_atom_energies`` is built from the Cell 12 dict and updated from each
+    new atom's sidecar JSON (HF total) so adding another element only requires
+    appending to ``new_atom_specs`` -- no hardcoded literature value lookup.
+    """
+    source = """# 1. Define the new molecule and any new atomic species its composition
+#    requires that are NOT already in Cell 12's atom_energies dict (H, O).
+#    Carbon ground state is 3P triplet => spin=2 in pyscf.
 new_mol_spec = alec.MoleculeSpec(
     name="CH4",
     atom="C 0 0 0; H 0.63 0.63 0.63; H -0.63 -0.63 0.63; H -0.63 0.63 -0.63; H 0.63 -0.63 -0.63",
@@ -1463,38 +1603,458 @@ new_mol_spec = alec.MoleculeSpec(
     grid_level=GRID_LEVEL,
     external_data_path=f"{ext_data_dir}/CH4.npz",
 )
+new_atom_specs = [("C", "C 0 0 0", 2)]  # (name, atom, spin) -- extend as needed
 
-# 2. Generate the .npz -- follow Cell 13's HF+grid pattern.
-#    The lines below are commented because the template does not actually run SCF.
-# mol_ch4 = gto.M(atom=new_mol_spec.atom, basis=BASIS, charge=0, spin=0, verbose=0)
-# mf_pbe = dft.RKS(mol_ch4); mf_pbe.xc = "pbe"; mf_pbe.grids.level = GRID_LEVEL; mf_pbe.kernel()
-# mf_hf = scf.RHF(mol_ch4); mf_hf.kernel()
-# dm_hf = mf_hf.make_rdm1()
-# dm_hf_total = dm_hf[0] + dm_hf[1] if dm_hf.ndim == 3 else dm_hf
-# ao_grid = mf_pbe._numint.eval_ao(mol_ch4, mf_pbe.grids.coords, deriv=0)
-# rho_hf = np.einsum("ij,gi,gj->g", dm_hf_total, ao_grid, ao_grid)
-# np.savez(new_mol_spec.external_data_path, dm_target=dm_hf, rho_ccsd_grid=rho_hf, E_ref_literature=-40.5)
+# 2. Generate PBE/HF/CCSD reference data + metadata sidecar for the molecule
+#    and every atom in new_atom_specs. Each iteration is guarded on both the
+#    .npz and the metadata JSON so reruns are cheap. Mirrors Cell 13's
+#    H/O/H2O pattern (atom-branch writes only E_ref_literature; molecule-branch
+#    writes dm_target + rho_ccsd_grid + E_ref_literature).
+_atom_names = {s[0] for s in new_atom_specs}
+_entities = [(new_mol_spec.name, new_mol_spec.atom, new_mol_spec.spin)] + new_atom_specs
+os.makedirs(ext_data_dir, exist_ok=True)
 
-# 3. Pick a trained model (best D2 for DM-aware prediction; fall back to first
+for _name, _atom, _spin in _entities:
+    _npz_path = f"{ext_data_dir}/{_name}.npz"
+    _meta_path = f"{ext_data_dir}/{_name}_metadata.json"
+    if os.path.isfile(_npz_path) and os.path.isfile(_meta_path):
+        print(f"Using cached {_name} reference data")
+        continue
+
+    _mol = gto.M(atom=_atom, basis=BASIS, charge=0, spin=_spin, verbose=0)
+
+    # PBE SCF (spin-branched, grid pinned to GRID_LEVEL to match Cell 14/15).
+    _mf_pbe = dft.UKS(_mol) if _spin else dft.RKS(_mol)
+    _mf_pbe.xc = "pbe"
+    _mf_pbe.grids.level = GRID_LEVEL
+    _mf_pbe.kernel()
+    _E_pbe_total = float(_mf_pbe.e_tot)
+
+    # HF SCF (spin-branched).
+    _mf_hf = scf.UHF(_mol) if _spin else scf.RHF(_mol)
+    _mf_hf.kernel()
+    _E_hf_total = float(_mf_hf.e_tot)
+
+    # CCSD (spin-branched).
+    _mycc = cc.UCCSD(_mf_hf) if _spin else cc.CCSD(_mf_hf)
+    _mycc.kernel()
+    _E_ccsd_total = float(_mf_hf.e_tot + _mycc.e_corr)
+
+    _sidecar = {
+        "E_hf_total": _E_hf_total,
+        "E_ccsd_total": _E_ccsd_total,
+        "E_pbe_total": _E_pbe_total,
+        "E_lit_Ha": None,
+    }
+
+    _is_atom = _name in _atom_names
+    if _is_atom:
+        # Atom branch: degenerate HOMO eigenvalues make density targets
+        # unstable; write only a scalar reference energy (HF total).
+        np.savez(_npz_path, E_ref_literature=_E_hf_total)
+    else:
+        # Molecule branch: HF DM as density target + HF density on the PBE grid.
+        _dm_hf = _mf_hf.make_rdm1()
+        _dm_hf_total = _dm_hf[0] + _dm_hf[1] if _dm_hf.ndim == 3 else _dm_hf
+        _coords = _mf_pbe.grids.coords
+        _weights = _mf_pbe.grids.weights
+        _ao = _mf_pbe._numint.eval_ao(_mol, _coords, deriv=0)
+        _rho_hf = np.einsum("ij,gi,gj->g", _dm_hf_total, _ao, _ao)
+
+        # PBE density on the same grid (mf_pbe already converged) so we can
+        # report the PBE|HF weighted-RMSE reference for Cell 32's density panel.
+        _dm_pbe = _mf_pbe.make_rdm1()
+        _dm_pbe_total = _dm_pbe[0] + _dm_pbe[1] if _dm_pbe.ndim == 3 else _dm_pbe
+        _rho_pbe = np.einsum("ij,gi,gj->g", _dm_pbe_total, _ao, _ao)
+        _rho_pbe_hf_rmse = float(
+            np.sqrt(np.sum(_weights * (_rho_pbe - _rho_hf) ** 2) / np.sum(_weights))
+        )
+
+        np.savez(
+            _npz_path,
+            dm_target=_dm_hf,
+            rho_ccsd_grid=_rho_hf,
+            E_ref_literature=float(_mf_hf.e_tot),
+        )
+        _sidecar["rho_pbe_hf_rmse"] = _rho_pbe_hf_rmse
+
+    with open(_meta_path, "w") as _f:
+        json.dump(_sidecar, _f, indent=2)
+    print(f"Generated {_name} reference data -> {_npz_path}")
+
+# 3. Build new_atom_energies from the Cell 12 dict + each new atom's HF total
+#    (read from its sidecar, not hardcoded). Using HF here keeps the molecule's
+#    E_ref_literature (also HF) and new_atom_energies self-consistent so the
+#    AtomizationEnergyMetric's HF-baseline AE error panel line is clean.
+new_atom_energies = {**atom_energies}
+for _name, _atom, _spin in new_atom_specs:
+    with open(f"{ext_data_dir}/{_name}_metadata.json") as _f:
+        new_atom_energies[_name] = json.load(_f)["E_hf_total"]
+print(f"new_atom_energies: {new_atom_energies}")
+
+# 4. Pick a trained model (best D2 for DM-aware prediction; fall back to first
 #    available loss family when running a narrow-config smoke test).
 _d2_key = "D2_delta_ae_plus_dm"
 best_arch = best_idx[_d2_key] if _d2_key in best_idx.index else best_idx.iloc[0]
+_chosen_loss = _d2_key if _d2_key in best_idx.index else best_idx.index[0]
 
-# 4. Build the TestSpec.
+# 5. Build the TestSpec.
 new_test_spec = alec.TestSpec.from_dicts(
     arch=alec.get_architecture(best_arch),
-    model_checkpoint=f"{CHECKPOINT_BASE}/train/{best_arch}/D2_delta_ae_plus_dm/model.eqx",
+    model_checkpoint=f"{CHECKPOINT_BASE}/train/{best_arch}/{_chosen_loss}/model.eqx",
     molecules=(new_mol_spec,),
     metrics=("total_energy", "atomization_energy", "density_rmse"),
     metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {"CH4": 420.0}}},
-    atom_energies={**atom_energies, "C": -37.84},
+    atom_energies=new_atom_energies,
     output_dir=f"{CHECKPOINT_BASE}/test_new/CH4",
 )
 
-# 5. Run it (commented out -- requires the .npz from step 2 to exist).
+# 6. Run it (commented out -- uncomment once you trust the template). Cell 32
+#    runs the full sweep over every trained (arch, loss) combination to
+#    produce the comparison plot.
 # alec.run_test(new_test_spec)
 """
     return new_code_cell(source)
+
+
+def build_cell_32_new_mol_comparison():
+    """Section 8 Cell 32 -- new-molecule comparison sweep + 3-panel plot.
+
+    Sweeps every trained (arch, loss) checkpoint for the new molecule defined
+    in Cell 31, runs ``alec.run_test`` per combination, and renders a 1x3
+    panel comparison against PBE / CCSD / HF reference values (sourced from
+    the sidecar JSONs written by Cell 13 and Cell 31).
+
+    Panels:
+
+    * |AE error| (kcal/mol, log scale) with PBE / CCSD / HF / 1-kcal chemical
+      accuracy reference lines. AE references are computed from the per-atom
+      HF/CCSD/PBE totals in each species' sidecar versus the literature AE.
+    * |E error| (kcal/mol, log scale) with PBE / CCSD reference lines. The
+      molecule's .npz uses HF as ``E_ref_literature`` so the HF error line is
+      trivially zero and is suppressed.
+    * Density RMSE with the PBE-vs-HF density RMSE reference line from the
+      molecule sidecar.
+
+    Narrow-config tolerant: skips ``(arch, loss)`` pairs whose checkpoint
+    does not exist (the smoke test only trains a single arch x loss combo).
+    """
+    source = """# Sweep every (arch, loss) combination, run alec.run_test on the new molecule,
+# and collect the per-molecule AE / E / density error triples for plotting.
+_mol_name = new_mol_spec.name
+_sweep_rows = []
+for _arch in ARCH_NAMES:
+    for _loss in LOSS_NAMES:
+        _ckpt = f"{CHECKPOINT_BASE}/train/{_arch}/{_loss}/model.eqx"
+        if not os.path.isfile(_ckpt):
+            continue
+        _out_dir = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/{_arch}/{_loss}"
+        _spec = alec.TestSpec.from_dicts(
+            arch=alec.get_architecture(_arch),
+            model_checkpoint=_ckpt,
+            molecules=(new_mol_spec,),
+            metrics=("total_energy", "atomization_energy", "density_rmse"),
+            metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {_mol_name: 420.0}}},
+            atom_energies=new_atom_energies,
+            output_dir=_out_dir,
+        )
+        _res = alec.run_test(_spec)
+        _pm = _res["per_molecule"][0]
+        _sweep_rows.append({
+            "arch": _arch,
+            "loss": _loss,
+            "AE_error_kcalmol": float(abs(_pm.get("AE_error_kcalmol", float("nan")))),
+            "E_error_kcalmol": float(abs(_pm.get("E_error_kcalmol", float("nan")))),
+            "density_rmse": float(_pm.get("density_rmse", float("nan"))),
+        })
+
+if not _sweep_rows:
+    print(f"[Cell 32] no checkpoints found under {CHECKPOINT_BASE}/train/ -- skipping plot")
+else:
+    _sweep_df = pd.DataFrame(_sweep_rows).set_index(["arch", "loss"])
+
+    # Load reference totals from Cell 13 (H/O sidecars) and Cell 31
+    # (CH4 + C sidecars) for the PBE / CCSD / HF comparison lines.
+    _ref_totals = {"PBE": {}, "HF": {}, "CCSD": {}}
+    _ref_species = [_mol_name] + [s[0] for s in new_atom_specs] + ["H"]
+    for _sp in _ref_species:
+        with open(f"{ext_data_dir}/{_sp}_metadata.json") as _f:
+            _meta = json.load(_f)
+        _ref_totals["PBE"][_sp] = _meta["E_pbe_total"]
+        _ref_totals["HF"][_sp] = _meta["E_hf_total"]
+        _ref_totals["CCSD"][_sp] = _meta["E_ccsd_total"]
+
+    # The PBE|HF grid density RMSE lives in the molecule sidecar -- read it
+    # for the density panel's PBE reference line. HF is the density target,
+    # so HF / CCSD reference RMSEs on this grid are 0 / unavailable.
+    with open(f"{ext_data_dir}/{_mol_name}_metadata.json") as _f:
+        _rho_pbe_hf_rmse = json.load(_f)["rho_pbe_hf_rmse"]
+
+    # Compute the reference AE and reference total-energy errors per method.
+    _HA_TO_KCAL = 627.509
+    _CH4_AE_LIT_KCAL = 420.0
+    _comp = dict(new_mol_spec.atom_composition)
+    _ref_ae_err_kcal = {}
+    _ref_e_err_kcal = {}
+    _hf_mol_total = _ref_totals["HF"][_mol_name]
+    for _method, _totals in _ref_totals.items():
+        _E_mol = _totals[_mol_name]
+        _E_atoms = sum(_totals[_sym] * _n for _sym, _n in _comp.items())
+        _AE_kcal = (_E_atoms - _E_mol) * _HA_TO_KCAL
+        _ref_ae_err_kcal[_method] = abs(_AE_kcal - _CH4_AE_LIT_KCAL)
+        _ref_e_err_kcal[_method] = abs((_E_mol - _hf_mol_total) * _HA_TO_KCAL)
+
+    # 1x3 subplot grid: AE error / E error / density RMSE.
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    _ax_ae, _ax_e, _ax_rho = axes
+
+    _x = np.arange(len(_sweep_df))
+    _labels = [f"{a}/{l}" for a, l in _sweep_df.index]
+
+    _ax_ae.bar(_x, _sweep_df["AE_error_kcalmol"].values, color="C0")
+    _ax_ae.set_xticks(_x)
+    _ax_ae.set_xticklabels(_labels, rotation=75, ha="right", fontsize=7)
+    _ax_ae.set_ylabel("|AE error| (kcal/mol)")
+    _ax_ae.set_yscale("log")
+    _ax_ae.set_title(f"{_mol_name} atomization energy error")
+    _ax_ae.axhline(_ref_ae_err_kcal["PBE"], linestyle="dotted", color="r", alpha=0.7,
+                   label=f"PBE Error ({_ref_ae_err_kcal['PBE']:.2f} kcal/mol)")
+    _ax_ae.axhline(_ref_ae_err_kcal["CCSD"], linestyle="-.", color="g", alpha=0.7,
+                   label=f"CCSD Error ({_ref_ae_err_kcal['CCSD']:.2f} kcal/mol)")
+    _ax_ae.axhline(_ref_ae_err_kcal["HF"], linestyle=":", color="b", alpha=0.7,
+                   label=f"HF Error ({_ref_ae_err_kcal['HF']:.2f} kcal/mol)")
+    _ax_ae.axhline(1.0, linestyle="--", color="k", alpha=0.7,
+                   label="Chemical accuracy (1 kcal/mol)")
+    _ax_ae.legend(fontsize=7, loc="best")
+
+    _ax_e.bar(_x, _sweep_df["E_error_kcalmol"].values, color="C1")
+    _ax_e.set_xticks(_x)
+    _ax_e.set_xticklabels(_labels, rotation=75, ha="right", fontsize=7)
+    _ax_e.set_ylabel("|E error vs HF| (kcal/mol)")
+    _ax_e.set_yscale("log")
+    _ax_e.set_title(f"{_mol_name} total energy error")
+    _ax_e.axhline(_ref_e_err_kcal["PBE"], linestyle="dotted", color="r", alpha=0.7,
+                  label=f"PBE vs HF ({_ref_e_err_kcal['PBE']:.2f} kcal/mol)")
+    _ax_e.axhline(_ref_e_err_kcal["CCSD"], linestyle="-.", color="g", alpha=0.7,
+                  label=f"CCSD vs HF ({_ref_e_err_kcal['CCSD']:.2f} kcal/mol)")
+    _ax_e.legend(fontsize=7, loc="best")
+
+    _ax_rho.bar(_x, _sweep_df["density_rmse"].values, color="C2")
+    _ax_rho.set_xticks(_x)
+    _ax_rho.set_xticklabels(_labels, rotation=75, ha="right", fontsize=7)
+    _ax_rho.set_xlabel("(architecture / loss family)")
+    _ax_rho.set_ylabel(r"density RMSE vs HF (a.u., log scale)")
+    _ax_rho.set_yscale("log")
+    _ax_rho.set_title(f"{_mol_name} grid-density RMSE vs HF target")
+    _ax_rho.axhline(_rho_pbe_hf_rmse, linestyle="dotted", color="r", alpha=0.7,
+                    label=f"PBE vs HF ({_rho_pbe_hf_rmse:.2e})")
+    _ax_rho.grid(True, which="both", axis="y", ls=":", alpha=0.4)
+    _ax_rho.legend(fontsize=7, loc="best")
+
+    _ax_ae.set_xlabel("(architecture / loss family)")
+    _ax_e.set_xlabel("(architecture / loss family)")
+    _ax_ae.grid(True, which="both", axis="y", ls=":", alpha=0.4)
+    _ax_e.grid(True, which="both", axis="y", ls=":", alpha=0.4)
+
+    fig.suptitle(
+        f"Transfer evaluation -- {_mol_name} errors across every "
+        f"(arch, loss) checkpoint\\n"
+        f"(one bar per trained combination; red / green / blue lines = "
+        f"PBE / CCSD / HF references)",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/new_mol_{_mol_name}_comparison.png",
+                dpi=150, bbox_inches="tight")
+    plt.show()
+    print(_sweep_df.round(4))
+"""
+    return new_code_cell(source)
+
+
+# ---------------------------------------------------------------------------
+# Figure-description markdown builders.
+#
+# These cells are inserted into ``main()`` immediately BEFORE each comparison
+# plot so the reader sees a prose explanation of what is being compared above
+# the figure. Every helper returns a ``new_markdown_cell`` so the notebook's
+# narrative stays adjacent to the plot it describes.
+# ---------------------------------------------------------------------------
+
+
+def build_section7_overview_md():
+    """Section 7 header + Cell 25 description.
+
+    This is the only markdown cell that introduces a whole section (Section 7
+    -- Visualization of Results). It also describes the grouped-bar AE error
+    chart rendered by the next code cell, so readers have context both for the
+    section and the headline plot before the figure renders.
+    """
+    source = """## Section 7: Visualization of Results
+
+This section compares every trained `(arch, loss)` combination against
+physical reference lines (PBE, CCSD, chemical accuracy) and against each
+other. The plots below are the primary results figures for the step 4
+experiment -- each visualization is preceded by a short description of
+what is being compared and how to read it.
+
+### Figure: H2O atomization-energy error by architecture x loss family
+
+The next cell renders a **grouped bar chart** of `|AE error|` (kcal/mol, log
+scale). Each of the 6 loss families (A, B, C, D1, D2, D3) forms an x-axis
+group; each of the 12 architectures contributes one coloured bar inside
+every group. Error bars are the per-molecule RMSE from the evaluation set
+(currently a single H2O geometry, so they're small).
+
+Three horizontal reference lines are overlaid:
+
+- **PBE Error** -- AE error of plain PBE (no neural correction).
+- **CCSD Error** -- AE error of the CCSD baseline (effectively the best any
+  fit-to-HF-target can achieve on this basis).
+- **Chemical accuracy (1 kcal/mol)** -- the standard threshold for
+  benchmark-quality DFT.
+
+**How to read it:** bars *below* the chemical-accuracy line have reached the
+target accuracy on H2O. Bars below the PBE line show net improvement over
+the PBE baseline. The y-axis is log-scale so even sub-kcal/mol differences
+are visible.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_26_dm_heatmaps_md():
+    """Cell 26 description -- H2O density-matrix residuals vs HF target."""
+    source = """### Figure: H2O density-matrix residuals vs HF target
+
+The next cell compares the **H2O density matrix error** (NN prediction
+minus HF reference) against the PBE baseline error in a grid of heatmaps.
+Only loss families that actually optimize the density matrix are shown:
+
+- **PBE - HF** -- fixed-density baseline (what every NN model starts from).
+- **best-B NN - HF** -- best architecture under loss B
+  (atomization energy + DM matching).
+- **best-D1 NN - HF** -- best under loss D1
+  (delta-learning energy only -- no density term, shown as a control).
+- **best-D2 NN - HF** -- best under loss D2
+  (delta-learning energy + DM matching).
+
+All panels use a shared symmetric diverging colormap (`RdBu_r`) with a
+common `vmax`, so bar magnitudes across panels are directly comparable.
+Panels also report the Frobenius density-matrix RMSE below the figure as a
+quantitative summary of each residual.
+
+**How to read it:** panels whose colours are mostly white (near-zero) match
+HF better than the PBE baseline. Diverging blue/red patches show where the
+network systematically over- or under-predicts a density-matrix element.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_27_density_histograms_md():
+    """Cell 27 description -- grid-density residual histograms."""
+    source = """### Figure: H2O grid-density residual histograms
+
+The next cell compares the two **density-grid-matching** loss families (C
+and D3) by selecting the best-performing architecture for each and plotting
+a weighted histogram of per-grid-point density residuals
+$\\rho_{\\mathrm{NN}} - \\rho_{\\mathrm{HF}}$.
+
+- **x-axis:** density residual in atomic units (electron / bohr$^{3}$).
+  The vertical line at 0 marks perfect density agreement.
+- **y-axis:** grid-weighted point count on a log scale
+  (weights come from the molecular integration grid).
+- Each panel title reports the library density RMSE and the step3b
+  $|\\Delta\\rho|_1$ metric as a quantitative summary.
+
+**How to read it:** a tight, centred distribution means the NN grid density
+matches HF closely on the grid used for evaluation. A distribution that
+leans left or right indicates a systematic over- or under-prediction of
+density across the molecule.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_28_attn_comparison_md():
+    """Cell 28 description -- attention vs non-attention pairs."""
+    source = """### Figure: Attention vs non-attention architecture comparison
+
+For each of the 6 loss families, the next cell compares every base
+architecture (`shallow`, `medium`, `deep`, and their extended-feature
+variants) against its attention-augmented counterpart (`*_attn`). Each
+subplot shows:
+
+- **Blue (solid) bars:** non-attention base architectures.
+- **Orange (hatched) bars:** attention-augmented counterparts.
+- **x-axis:** base architecture name (the pair is implicit).
+- **y-axis:** *signed* AE error in kcal/mol -- positive means the NN
+  over-predicts atomization energy, negative means it under-predicts.
+
+**How to read it:** attention improves accuracy whenever the attention bar
+is closer to the zero line than its non-attention neighbour. If both bars
+sit on the same side of zero the attention variant is merely a different
+amount of the same bias; if they straddle zero the attention module is
+changing the sign of the bias.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_29_feature_comparison_md():
+    """Cell 29 description -- extended-feature impact on deep base variants."""
+    source = """### Figure: Extended-feature impact on deep base variants
+
+The next cell isolates the four **deep base variants** and compares them
+across every loss family so the reader can see how much each extended
+descriptor set helps:
+
+- `deep` -- bare `(rho, sigma)` inputs (no extended features).
+- `deep_cusp` -- adds the cusp descriptor $[f_{cusp}, \\log Z]$.
+- `deep_dm` -- adds the DM-statistics descriptor
+  $[f_{idem}, f_{entropy}, f_{offdiag}]$.
+- `deep_combined` -- adds both extended descriptor sets.
+
+Each subplot group is one architecture on the x-axis; coloured bars within
+a group are the 6 loss families. The y-axis is **signed** AE error in
+kcal/mol, so positive and negative biases are directly comparable. A
+horizontal line at zero marks perfect agreement with the literature AE.
+
+**How to read it:** the descriptor set helps a loss family when the `deep`
+bar is farther from zero than the corresponding `deep_cusp` / `deep_dm` /
+`deep_combined` bar. The attention-augmented variants are deliberately
+excluded here so the descriptor effect is not confounded with attention.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_32_new_mol_comparison_md():
+    """Cell 32 description -- transfer sweep comparison on a new molecule."""
+    source = """### Figure: Transfer evaluation on the new molecule
+
+The next cell sweeps **every trained `(arch, loss)` checkpoint** that
+exists on disk, runs `alec.run_test` on the new molecule from Cell 31, and
+renders a three-panel comparison so the reader can see which combination
+generalises best.
+
+- **Panel 1 -- `|AE error|` (kcal/mol, log scale):** atomization-energy
+  error vs literature. Reference lines show the PBE / CCSD / HF method
+  errors against the same literature value, plus the 1 kcal/mol chemical
+  accuracy target.
+- **Panel 2 -- `|E error vs HF|` (kcal/mol, log scale):** total-energy
+  error against the HF reference. PBE and CCSD reference lines show each
+  wavefunction method's error vs HF. The HF self-error is trivially zero
+  and is suppressed.
+- **Panel 3 -- density RMSE vs HF (log scale):** grid density residual
+  against the HF density target. The reference line is the PBE-vs-HF grid
+  RMSE stored in the molecule sidecar (there is no CCSD grid density on
+  this grid, so PBE is the only reference).
+
+**How to read it:** within each panel the x-axis enumerates `(arch, loss)`
+combinations, so you can spot which checkpoint transfers best for AE,
+total energy, and density simultaneously. Bars below the coloured
+reference lines show genuine improvement over the corresponding reference
+method on the new molecule.
+"""
+    return new_markdown_cell(source)
 
 
 def main(
@@ -1565,13 +2125,22 @@ def main(
         build_cell_22_test_loop(),
         build_cell_23_dataframe(),
         build_cell_24_results_table(),
+        # Section 7 header + Cell 25 (AE bars) description.
+        build_section7_overview_md(),
         build_cell_25_ae_bars(),
+        # Per-comparison description markdown precedes each comparison plot.
+        build_cell_26_dm_heatmaps_md(),
         build_cell_26_dm_heatmaps(),
+        build_cell_27_density_histograms_md(),
         build_cell_27_density_histograms(),
+        build_cell_28_attn_comparison_md(),
         build_cell_28_attn_comparison(),
+        build_cell_29_feature_comparison_md(),
         build_cell_29_feature_comparison(),
         build_cell_30_future_md(),
         build_cell_31_new_molecule_template(),
+        build_cell_32_new_mol_comparison_md(),
+        build_cell_32_new_mol_comparison(),
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce

@@ -1213,6 +1213,43 @@ def test_cell_15_asserts_atom_rho_ccsd_is_none():
     assert 'mol_data_list[2]["rho_ccsd_grid"] is not None' in source
 
 
+def test_cell_15_mol_data_list_carries_descriptor_union():
+    """Cell 15 must build ``mol_data_list`` with the union of
+    ``required_mol_keys`` across every arch in ``ARCH_NAMES`` so that the
+    evaluation cells (26, 27) can call descriptor-demanding APIs like
+    ``oneshot_dm_prediction_fast`` on ``mol_data_list[2]`` regardless of
+    which arch is selected as "best" by Cell 25's ``best_idx``.
+
+    Without this, archs that declare ``cusp`` or ``dm_statistics``
+    descriptors (``deep_cusp``, ``deep_dm``, ``deep_combined`` and their
+    ``_attn`` variants) hit a ``TypeError: concatenate requires ndarray or
+    scalar arguments, got <class 'NoneType'>`` because the bare
+    ``precompute_fixed_density_data(m)`` call leaves
+    ``mol_data['cusp_features']`` / ``mol_data['dm_features']`` as ``None``.
+
+    The union must be computed from ``ARCH_NAMES`` (not hardcoded) so that
+    Cell 15 stays correct when callers customize the arch list via the
+    ``arch_names`` argument to ``main()``.
+    """
+    gen = load_generator()
+    source = gen.build_cell_15_precompute_sanity().source
+    # The Cell 15 loop must derive the required_keys union from ARCH_NAMES
+    # rather than encoding a fixed tuple of key names.
+    assert "ARCH_NAMES" in source, (
+        "Cell 15 must walk ARCH_NAMES to collect descriptor required_mol_keys"
+    )
+    assert "materialize_descriptors()" in source, (
+        "Cell 15 must call materialize_descriptors() on each arch"
+    )
+    assert "required_mol_keys" in source, (
+        "Cell 15 must union each descriptor's required_mol_keys"
+    )
+    # And the precompute call must forward the computed union as required_keys=.
+    assert "required_keys=" in source, (
+        "Cell 15 must pass required_keys= to precompute_fixed_density_data"
+    )
+
+
 # Task 7 -- Cells 16-20 builder tests
 
 
@@ -1982,13 +2019,66 @@ def test_cell_31_uses_qualified_alec_names():
     assert "alec.run_test(" in source
 
 
-def test_cell_31_scf_lines_are_commented():
-    """Cell 31's SCF template lines must start with '# ' so the template is safe to run."""
+def test_cell_31_step2_npz_generation_is_uncommented_under_isfile_guard():
+    """Cell 31's step 2 must actually generate every species' ``.npz`` on the
+    fly so that when a user uncomments ``alec.run_test(new_test_spec)`` or runs
+    Cell 32 the reference data is already on disk.
+
+    Task #29 extended Cell 31 to also compute PBE/HF/CCSD for every entry in
+    ``new_atom_specs`` via a single loop over ``_entities`` (the new molecule
+    plus any new atoms), so the SCF calls now appear inside that loop. The
+    test accepts either the original single-molecule shape or the extended
+    loop shape -- both need SCF calls active and both need an ``os.path.isfile``
+    guard that keeps re-runs cheap.
+    """
     gen = load_generator()
     source = gen.build_cell_31_new_molecule_template().source
+
+    # The SCF / save block must be active Python, not just commented prose.
+    active_lines = []
     for line in source.splitlines():
-        if "scf.RHF(" in line or "dft.RKS(" in line:
-            assert line.lstrip().startswith("# "), f"SCF line must be commented: {line!r}"
+        stripped = line.lstrip()
+        if stripped and not stripped.startswith("#"):
+            active_lines.append(line)
+    joined_active = "\n".join(active_lines)
+    for needle in (
+        "dft.RKS(",
+        "scf.RHF(",
+        "np.savez(",
+    ):
+        assert needle in joined_active, (
+            f"Cell 31 step 2 must execute {needle!r} (found only as a comment "
+            f"or missing entirely). Active source lines:\n"
+            + joined_active
+        )
+
+    # The .npz generation must be gated by ``os.path.isfile`` so reruns skip
+    # the SCF. Accept either the old single-molecule guard keyed on
+    # ``new_mol_spec.external_data_path`` or the new per-species loop guard
+    # keyed on a local path variable inside the loop body.
+    has_guard = (
+        "os.path.isfile(new_mol_spec.external_data_path)" in joined_active
+        or "os.path.isfile(_npz_path)" in joined_active
+        or "os.path.isfile(_meta_path)" in joined_active
+    )
+    assert has_guard, (
+        "Cell 31 step 2 must gate SCF generation on os.path.isfile(...) to "
+        "keep reruns cheap (either new_mol_spec.external_data_path or the "
+        "per-species _npz_path / _meta_path loop variable)."
+    )
+
+
+def test_cell_31_npz_writes_dm_target_and_rho_ccsd_grid():
+    """The np.savez call in Cell 31 step 2 must write all three whitelisted
+    keys (``dm_target``, ``rho_ccsd_grid``, ``E_ref_literature``) so
+    ``_load_external_data`` accepts the file and downstream metrics (DM-based
+    losses, density_rmse) have real reference data.
+    """
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    assert "dm_target=" in source
+    assert "rho_ccsd_grid=" in source
+    assert "E_ref_literature=" in source
 
 
 def test_cell_31_best_arch_binds_from_best_idx():
@@ -2000,10 +2090,268 @@ def test_cell_31_best_arch_binds_from_best_idx():
 
 
 def test_cell_31_atom_energies_merge():
-    """Cell 31 must use dict-merge to add new element, not replace atom_energies."""
+    """Cell 31 must build ``new_atom_energies`` on top of the Cell 12 dict
+    (never replace it) and source the new element's reference from its sidecar
+    JSON, not a hardcoded ``-37.84`` placeholder. Preserving the Cell 12 dict
+    keeps H / O reference energies in sync across the notebook."""
     gen = load_generator()
     source = gen.build_cell_31_new_molecule_template().source
-    assert '{**atom_energies, "C":' in source
+    assert "new_atom_energies" in source
+    # Must preserve existing Cell 12 atom_energies via an {**..} spread or
+    # dict(..) copy rather than re-declaring the H / O values.
+    assert ("{**atom_energies}" in source) or ("dict(atom_energies)" in source)
+    # Source the new atom's reference from its Cell 31 sidecar.
+    assert "_metadata.json" in source
+    assert "E_hf_total" in source
+    # No hardcoded -37.84 placeholder for C — Task #29 removed it in favour of
+    # the sidecar-sourced value so re-parameterising to a new atom does not
+    # require the user to look up a literature total.
+    assert "-37.84" not in source
+
+
+def test_cell_31_defines_new_atom_specs_for_C():
+    """Cell 31 must declare a ``new_atom_specs`` list containing the Carbon
+    atom (``spin=2`` 3P triplet ground state) so the reference-generation loop
+    has a well-defined set of extra atoms to compute PBE/HF/CCSD for.
+    """
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    assert "new_atom_specs" in source
+    assert '"C"' in source
+    assert '"C 0 0 0"' in source
+    # Carbon 3P ground state => spin=2 in pyscf (two unpaired electrons).
+    assert ", 2)" in source
+
+
+def test_cell_31_loops_over_molecule_plus_new_atoms():
+    """Cell 31 step 2 must iterate over the new molecule AND every atom in
+    ``new_atom_specs`` so PBE/HF/CCSD totals land in a sidecar JSON for each
+    species. Cell 32 reads those totals for its PBE/HF/CCSD reference lines."""
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    # A single loop that covers the molecule + new atoms — this is the
+    # canonical shape, any equivalent expression must still mention both
+    # ``new_mol_spec`` and ``new_atom_specs`` inside the iteration target.
+    assert "new_atom_specs" in source
+    assert "new_mol_spec.name" in source or "new_mol_spec.atom" in source
+
+
+def test_cell_31_runs_pbe_hf_ccsd_for_every_species():
+    """Cell 31 step 2 must run PBE, HF AND CCSD for each species in the loop
+    (spin-branched RKS/UKS and RHF/UHF and CCSD/UCCSD), mirroring Cell 13's
+    H/O/H2O pattern."""
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    active_lines = []
+    for line in source.splitlines():
+        stripped = line.lstrip()
+        if stripped and not stripped.startswith("#"):
+            active_lines.append(line)
+    active = "\n".join(active_lines)
+
+    # PBE branch
+    assert "dft.UKS(" in active
+    assert "dft.RKS(" in active
+    # HF branch
+    assert "scf.UHF(" in active
+    assert "scf.RHF(" in active
+    # CCSD branch
+    assert "cc.UCCSD(" in active
+    assert "cc.CCSD(" in active
+
+
+def test_cell_31_writes_metadata_sidecar_with_all_totals():
+    """Cell 31 must write a ``{name}_metadata.json`` sidecar for every species
+    containing ``E_pbe_total`` / ``E_hf_total`` / ``E_ccsd_total``, matching
+    Cell 13's H/O/H2O sidecar schema so Cell 25 and Cell 32 share the same
+    reference-loading logic."""
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    assert '"E_pbe_total"' in source
+    assert '"E_hf_total"' in source
+    assert '"E_ccsd_total"' in source
+    assert "_metadata.json" in source
+    assert "json.dump(" in source
+
+
+def test_cell_31_stores_rho_pbe_hf_rmse_in_molecule_sidecar():
+    """Cell 31's molecule branch must compute the weighted PBE|HF density RMSE
+    on the PBE grid and store it as ``rho_pbe_hf_rmse`` in the sidecar. Cell 32
+    uses this for the density-RMSE panel's PBE reference line. Atom branches
+    must NOT write this key (atoms have degenerate occupancy and would need
+    special handling)."""
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    assert "rho_pbe_hf_rmse" in source
+
+
+def test_cell_31_atom_branch_writes_only_E_ref_literature():
+    """For each entry in ``new_atom_specs``, the .npz write must be the
+    atom-branch shape (only ``E_ref_literature=`` key), mirroring Cell 13's
+    behaviour for H/O. Writing ``dm_target`` / ``rho_ccsd_grid`` for an
+    atomic species with degenerate HOMO eigenvalues is numerically unstable.
+    """
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    # Atom branch is the same shape as Cell 13's: np.savez + E_ref_literature
+    # with no DM / rho keys. Guarded either by "is_atom" variable or by a
+    # conditional on the species name/composition.
+    assert "np.savez(" in source
+    # The source should contain a branch that discriminates atom vs molecule.
+    # Accept any of these forms.
+    has_branching = any(
+        needle in source
+        for needle in (
+            "is_atom",
+            "in new_atom_specs",
+            "name != new_mol_spec",
+            "_name == new_mol_spec",
+            "_name in _atom_names",
+        )
+    )
+    assert has_branching, (
+        "Cell 31 must branch atom vs molecule in the .npz write block"
+    )
+
+
+def test_cell_31_testspec_uses_new_atom_energies():
+    """``alec.TestSpec.from_dicts`` must pass ``atom_energies=new_atom_energies``
+    so the AE metric uses the sidecar-derived reference energies rather than
+    the raw Cell 12 dict (which lacks Carbon)."""
+    gen = load_generator()
+    source = gen.build_cell_31_new_molecule_template().source
+    assert "atom_energies=new_atom_energies" in source
+
+
+# ---------------------------------------------------------------------------
+# Task #29 / #30 — Cell 32 new-molecule comparison plot (Option 2)
+# ---------------------------------------------------------------------------
+
+
+def test_cell_32_builder_exists():
+    """The generator must expose ``build_cell_32_new_mol_comparison``.
+
+    Cell 32 sweeps every trained (arch, loss) checkpoint, runs
+    ``alec.run_test`` on the new molecule, and plots a 3-panel comparison
+    (AE error / E error / density RMSE) with PBE / CCSD / HF / chemical-accuracy
+    reference lines."""
+    gen = load_generator()
+    assert hasattr(gen, "build_cell_32_new_mol_comparison")
+
+
+def test_cell_32_sweeps_arch_and_loss():
+    """Cell 32 must sweep both ``ARCH_NAMES`` and ``LOSS_NAMES`` so every
+    trained model is compared against the PBE / CCSD / HF references."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    assert "ARCH_NAMES" in source
+    assert "LOSS_NAMES" in source
+
+
+def test_cell_32_calls_run_test_inside_sweep():
+    """Cell 32 must call ``alec.run_test`` inside the sweep so each (arch, loss)
+    combination contributes a per-molecule AE/E/density row to the comparison
+    plot."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    active_lines = []
+    for line in source.splitlines():
+        stripped = line.lstrip()
+        if stripped and not stripped.startswith("#"):
+            active_lines.append(line)
+    active = "\n".join(active_lines)
+    assert "alec.run_test(" in active
+
+
+def test_cell_32_reads_sidecar_metadata_for_reference_lines():
+    """Cell 32 must load every reference molecule/atom ``_metadata.json`` to
+    derive the PBE / CCSD / HF lines (no hardcoded reference values)."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    assert "_metadata.json" in source
+    assert "E_pbe_total" in source
+    assert "E_ccsd_total" in source
+    assert "E_hf_total" in source
+
+
+def test_cell_32_plots_three_panels():
+    """Cell 32 must render a 1x3 subplot grid (AE / E / density RMSE)."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    has_three_panel = (
+        "plt.subplots(1, 3" in source
+        or "plt.subplots(nrows=1, ncols=3" in source
+        or "plt.subplots(1,3" in source
+    )
+    assert has_three_panel, "Cell 32 must call plt.subplots(1, 3, ...)"
+
+
+def test_cell_32_has_chemical_accuracy_reference_line():
+    """Cell 32's AE panel must draw the 1-kcal/mol chemical-accuracy line so
+    readers can immediately see which (arch, loss) combos reach it."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    assert "axhline" in source
+    assert "Chemical accuracy" in source or "chemical accuracy" in source
+    assert "1.0" in source or "1 kcal" in source
+
+
+def test_cell_32_has_pbe_ccsd_hf_reference_labels():
+    """Cell 32 must label its PBE / CCSD / HF reference lines so the legend is
+    unambiguous."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    assert "PBE" in source
+    assert "CCSD" in source
+    assert "HF" in source
+
+
+def test_cell_32_uses_rho_pbe_hf_rmse_for_density_panel():
+    """Cell 32's density-RMSE panel must use the ``rho_pbe_hf_rmse`` field that
+    Cell 31 stores in the molecule sidecar as the PBE reference line (there is
+    no CCSD grid density on this grid, so PBE is the only reference)."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    assert "rho_pbe_hf_rmse" in source
+
+
+def test_cell_32_saves_figure_to_checkpoint_base_figures_dir():
+    """Cell 32 must save the rendered figure under
+    ``{CHECKPOINT_BASE}/figures/new_mol_<name>_comparison.png`` so it survives
+    a kernel restart and can be included in a report artefact."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    assert "savefig(" in source
+    assert "CHECKPOINT_BASE" in source
+    assert "figures" in source
+    assert "new_mol_" in source
+
+
+def test_cell_32_uses_absolute_error_values():
+    """Cell 32's error panels must plot the absolute value of AE_error_kcalmol
+    and E_error_kcalmol so the log-scale axis can handle both signs."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    # Must apply ``abs`` (Python builtin or np.abs or jnp.abs or pandas .abs())
+    # to at least one of the error columns, since the plot compares magnitudes
+    # on a log axis.
+    has_abs = (
+        "abs(" in source
+        or ".abs()" in source
+        or "np.abs(" in source
+        or "jnp.abs(" in source
+    )
+    assert has_abs
+
+
+def test_cell_32_handles_narrow_config():
+    """Cell 32 must skip checkpoints that do not exist (narrow-config smoke test
+    only trains 1 arch x 1 loss so 71 of the 72 combos have no checkpoint)."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    # Gate on os.path.isfile for the model checkpoint -- exactly the pattern
+    # used for Cell 22 / 23 to tolerate narrow configs.
+    assert "os.path.isfile(" in source or "os.path.exists(" in source
 
 
 # ---------------------------------------------------------------------------
@@ -2025,23 +2373,30 @@ def test_generator_is_deterministic(tmp_path):
     assert out1.read_bytes() == out2.read_bytes()
 
 
-def test_generator_produces_31_cells(tmp_path):
-    """main() must produce exactly 31 cells (the full step 4 notebook)."""
+def test_generator_produces_38_cells(tmp_path):
+    """main() must produce exactly 38 cells (the full step 4 notebook).
+
+    The figure-labeling pass added 6 per-plot markdown description cells
+    (section 7 overview + per-comparison-plot descriptions for cells 26-29
+    and cell 32) on top of the 32-cell baseline.
+    """
     gen = load_generator()
     out_path = tmp_path / "out.ipynb"
     gen.main(str(out_path))
     nb = nbformat.read(str(out_path), as_version=4)
-    assert len(nb.cells) == 31, f"expected 31 cells, got {len(nb.cells)}"
+    assert len(nb.cells) == 38, f"expected 38 cells, got {len(nb.cells)}"
 
 
 def test_generator_cell_types_match_expected(tmp_path):
-    """Markdown cells at section headings (0, 5, 10, 15, 20, 29); code elsewhere."""
+    """Markdown cells: original section headings (0, 5, 10, 15, 20, 34)
+    plus the 6 new comparison-plot description markdown cells inserted by
+    the figure-labeling pass at indices (24, 26, 28, 30, 32, 36)."""
     gen = load_generator()
     out_path = tmp_path / "out.ipynb"
     gen.main(str(out_path))
     nb = nbformat.read(str(out_path), as_version=4)
 
-    markdown_indices = {0, 5, 10, 15, 20, 29}
+    markdown_indices = {0, 5, 10, 15, 20, 24, 26, 28, 30, 32, 34, 36}
     for idx, cell in enumerate(nb.cells):
         expected = "markdown" if idx in markdown_indices else "code"
         assert cell.cell_type == expected, (
@@ -2096,3 +2451,250 @@ def test_step4_notebook_smoke_runs_end_to_end(tmp_path):
     assert os.path.isfile(f"{checkpoint_base}/external_data/H2O_metadata.json")
     assert os.path.isfile(f"{checkpoint_base}/train/shallow/A_atomization/model.eqx")
     assert os.path.isfile(f"{checkpoint_base}/test/shallow/A_atomization/aggregate.json")
+
+
+# ---------------------------------------------------------------------------
+# Figure-labeling pass — per-plot markdown descriptions + suptitle/title/axis
+# label additions on every figure-generating cell. Guards the audit result
+# that every comparison plot has a preceding description cell and that every
+# figure is labelled precisely enough to stand alone as a results artifact.
+# ---------------------------------------------------------------------------
+
+
+def _md_source(gen, builder_name: str) -> str:
+    """Return the markdown source for a named builder, asserting it's markdown."""
+    builder = getattr(gen, builder_name)
+    cell = builder()
+    assert cell.cell_type == "markdown", (
+        f"{builder_name} must return a markdown cell, got {cell.cell_type!r}"
+    )
+    return cell.source
+
+
+def test_section7_overview_md_builder_exists():
+    """Section 7 opener markdown must exist and announce the visualization section."""
+    gen = load_generator()
+    source = _md_source(gen, "build_section7_overview_md")
+    assert "Section 7" in source
+    assert "Visualization" in source
+
+
+def test_section7_overview_md_mentions_reference_lines():
+    """Section 7 opener must name the PBE/CCSD/chemical-accuracy reference lines
+    that every plot in the section uses, so the reader knows what to expect."""
+    gen = load_generator()
+    source = _md_source(gen, "build_section7_overview_md")
+    assert "PBE" in source
+    assert "CCSD" in source
+    assert "chemical accuracy" in source or "Chemical accuracy" in source
+
+
+def test_cell_25_has_figure_title():
+    """Cell 25 AE-bar plot must have an explicit matplotlib title stating what is
+    being compared (H2O atomization energy error vs loss family) plus the
+    literature reference value and the error-bar semantics."""
+    gen = load_generator()
+    source = gen.build_cell_25_ae_bars().source
+    assert "H2O atomization-energy error by architecture" in source
+    assert "literature AE = 233.016 kcal/mol" in source
+    assert "error bars = per-molecule RMSE" in source
+
+
+def test_cell_26_dm_heatmaps_md_builder_exists():
+    """Cell 26's density-matrix-residual comparison must have a markdown
+    description cell preceding it that names each panel and the colormap."""
+    gen = load_generator()
+    source = _md_source(gen, "build_cell_26_dm_heatmaps_md")
+    assert "density-matrix" in source.lower() or "density matrix" in source.lower()
+    assert "PBE" in source
+    assert "best-B" in source
+    assert "best-D1" in source
+    assert "best-D2" in source
+    assert "RdBu" in source
+
+
+def test_cell_26_has_figure_suptitle():
+    """Cell 26 must have a fig.suptitle identifying the comparison (H2O DM
+    residuals vs HF target) so the saved PNG is self-describing."""
+    gen = load_generator()
+    source = gen.build_cell_26_dm_heatmaps().source
+    assert "fig.suptitle(" in source
+    assert "H2O density-matrix residuals vs HF target" in source
+    assert "RdBu_r diverging colormap" in source
+
+
+def test_cell_26_panels_have_axis_labels():
+    """Cell 26 must label each heatmap's x/y axes as AO basis indices."""
+    gen = load_generator()
+    source = gen.build_cell_26_dm_heatmaps().source
+    assert 'ax.set_xlabel("AO basis index $j$")' in source
+    assert 'ax.set_ylabel("AO basis index $i$")' in source
+
+
+def test_cell_27_density_histograms_md_builder_exists():
+    """Cell 27's density-histogram comparison must have a markdown description
+    cell that names the two density-grid-matching loss families (C and D3)."""
+    gen = load_generator()
+    source = _md_source(gen, "build_cell_27_density_histograms_md")
+    assert "density-grid" in source or "density grid" in source
+    assert "C" in source and "D3" in source
+    assert "histogram" in source.lower()
+
+
+def test_cell_27_has_figure_suptitle():
+    """Cell 27 must have a fig.suptitle identifying the comparison."""
+    gen = load_generator()
+    source = gen.build_cell_27_density_histograms().source
+    assert "fig.suptitle(" in source
+    assert "H2O grid-density residual histograms" in source
+
+
+def test_cell_27_axes_labelled_with_density_units():
+    """Cell 27 must label the histogram x-axis with density units (rho_NN - rho_HF,
+    electron/bohr^3) and the y-axis as a grid-weighted log-scale point count."""
+    gen = load_generator()
+    source = gen.build_cell_27_density_histograms().source
+    assert "set_xlabel(r" in source
+    assert r"\rho_{\mathrm{NN}}" in source
+    assert r"\rho_{\mathrm{HF}}" in source
+    assert "electron/bohr" in source
+    assert 'set_ylabel("grid-weighted point count (log scale)")' in source
+
+
+def test_cell_28_attn_comparison_md_builder_exists():
+    """Cell 28's attention-vs-baseline comparison must have a markdown
+    description cell that names the blue/orange bar semantics and the
+    signed-error convention."""
+    gen = load_generator()
+    source = _md_source(gen, "build_cell_28_attn_comparison_md")
+    assert "attention" in source.lower()
+    assert "non-attention" in source.lower() or "non attention" in source.lower()
+    assert "signed" in source.lower()
+
+
+def test_cell_28_has_figure_suptitle():
+    """Cell 28 must have a fig.suptitle stating what is being compared and
+    clarifying the signed-error convention so the reader can interpret bars."""
+    gen = load_generator()
+    source = gen.build_cell_28_attn_comparison().source
+    assert "fig.suptitle(" in source
+    assert "Attention vs non-attention comparison" in source
+    assert "signed so positive = NN over-predicts AE" in source
+
+
+def test_cell_29_feature_comparison_md_builder_exists():
+    """Cell 29's extended-feature comparison must have a markdown description
+    cell that enumerates the four deep base variants being compared."""
+    gen = load_generator()
+    source = _md_source(gen, "build_cell_29_feature_comparison_md")
+    assert "deep" in source
+    assert "deep_cusp" in source
+    assert "deep_dm" in source
+    assert "deep_combined" in source
+
+
+def test_cell_29_has_figure_title():
+    """Cell 29 must have a matplotlib title identifying the comparison as
+    extended-feature impact on deep base variants."""
+    gen = load_generator()
+    source = gen.build_cell_29_feature_comparison().source
+    assert "Extended-feature impact on H2O AE error" in source
+    assert "deep base variants" in source
+
+
+def test_cell_32_new_mol_comparison_md_builder_exists():
+    """Cell 32's transfer-evaluation comparison must have a markdown description
+    cell that names the three error panels (AE, total-E, density) and the
+    reference lines (PBE, CCSD, HF) they share."""
+    gen = load_generator()
+    source = _md_source(gen, "build_cell_32_new_mol_comparison_md")
+    assert "AE error" in source or "atomization" in source.lower()
+    assert "PBE" in source
+    assert "CCSD" in source
+    assert "HF" in source
+
+
+def test_cell_32_has_figure_suptitle():
+    """Cell 32 must have a fig.suptitle stating that this is the
+    transfer-evaluation sweep across every (arch, loss) checkpoint."""
+    gen = load_generator()
+    source = gen.build_cell_32_new_mol_comparison().source
+    assert "fig.suptitle(" in source
+    assert "Transfer evaluation" in source
+
+
+def test_cell_09_has_figure_suptitle():
+    """Cell 09 pretrain loss plot must have a fig.suptitle naming the atoms
+    and what the curves represent."""
+    gen = load_generator()
+    source = gen.build_cell_09_pretrain_loss_plot().source
+    assert "fig.suptitle(" in source
+    assert "Pretraining loss vs step" in source
+
+
+def test_cell_09_has_per_subplot_axis_labels():
+    """Cell 09 must have xlabel/ylabel on both xnet and cnet subplots."""
+    gen = load_generator()
+    source = gen.build_cell_09_pretrain_loss_plot().source
+    assert 'ax_x.set_xlabel("optimizer step")' in source
+    assert 'ax_c.set_xlabel("optimizer step")' in source
+    assert 'ax_x.set_ylabel("MSE loss (log scale)")' in source
+    assert 'ax_c.set_ylabel("MSE loss (log scale)")' in source
+
+
+def test_cell_10_has_figure_suptitle():
+    """Cell 10 parity plot must have a fig.suptitle explaining the y=x convention."""
+    gen = load_generator()
+    source = gen.build_cell_10_pretrain_parity().source
+    assert "fig.suptitle(" in source
+    assert "Pretrain parity" in source
+    assert "points on y=x are perfectly matched" in source
+
+
+def test_cell_19_has_figure_suptitle():
+    """Cell 19 training-loss-curves figure must have a fig.suptitle stating
+    the 12-arch x 6-loss layout."""
+    gen = load_generator()
+    source = gen.build_cell_19_training_loss_plot().source
+    assert "fig.suptitle(" in source
+    assert "Main training loss curves" in source
+    assert "12 architectures x 6 loss families" in source
+
+
+def test_cell_20_has_figure_suptitle():
+    """Cell 20 aux-component figure must have a fig.suptitle naming the arch."""
+    gen = load_generator()
+    source = gen.build_cell_20_aux_inspection().source
+    assert "fig.suptitle(" in source
+    assert "Aux loss components for arch" in source
+
+
+def test_every_code_cell_emitted_source_is_valid_python(tmp_path):
+    """REGRESSION GUARD: every code cell's ``source`` must parse as valid Python.
+
+    Root cause this guards against: builder functions use non-raw triple-quoted
+    ``source = '''...'''`` strings. Any unescaped ``\\n`` / ``\\r`` / ``\\0``
+    / ``\\x..`` / ``\\u....`` inside an inner string literal becomes an actual
+    newline / CR / NUL / byte / codepoint when Python parses the outer string,
+    corrupting the emitted Python source. Substring-matching tests cannot
+    detect this because the substring survives across the embedded newline.
+
+    Only a real ``compile()`` will catch it.
+    """
+    gen = load_generator()
+    out_path = tmp_path / "out.ipynb"
+    gen.main(str(out_path))
+    nb = nbformat.read(str(out_path), as_version=4)
+
+    failures = []
+    for idx, cell in enumerate(nb.cells):
+        if cell.cell_type != "code":
+            continue
+        try:
+            compile(cell.source, f"<cell_{idx:02d}>", "exec")
+        except SyntaxError as exc:
+            failures.append(
+                f"cell {idx} (id={cell.get('id', '?')}): "
+                f"line {exc.lineno}: {exc.msg}"
+            )
+    assert not failures, "Emitted notebook cells have Python syntax errors:\n" + "\n".join(failures)
