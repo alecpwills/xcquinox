@@ -1732,15 +1732,16 @@ for _name, _atom, _spin in _entities:
         json.dump(_sidecar, _f, indent=2)
     print(f"Generated {_name} reference data -> {_npz_path}")
 
-# 3. Build new_atom_energies from the Cell 12 dict + each new atom's HF total
-#    (read from its sidecar, not hardcoded). Using HF here keeps the molecule's
-#    E_ref_literature (also HF) and new_atom_energies self-consistent so the
-#    AtomizationEnergyMetric's HF-baseline AE error panel line is clean.
+# 3. Build new_atom_energies from the Cell 13 PBE dict + each new atom's PBE total
+#    (read from its sidecar, not hardcoded). Using PBE here keeps the anchor
+#    dict consistent with Cell 13's atom_energies convention so the training
+#    loss and AtomizationEnergyMetric agree on the AE definition for both
+#    H/O and any extension atom.
 new_atom_energies = {**atom_energies}
 for _name, _atom, _spin in new_atom_specs:
     with open(f"{ext_data_dir}/{_name}_metadata.json") as _f:
-        new_atom_energies[_name] = json.load(_f)["E_hf_total"]
-print(f"new_atom_energies: {new_atom_energies}")
+        new_atom_energies[_name] = json.load(_f)["E_pbe_total"]
+print(f"new_atom_energies (PBE-consistent): {new_atom_energies}")
 
 # 4. Pick a trained model (best D2 for DM-aware prediction; fall back to first
 #    available loss family when running a narrow-config smoke test).
