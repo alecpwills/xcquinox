@@ -1056,19 +1056,23 @@ def test_cell_12_targets_has_all_three_molecules():
         assert key in source, f"targets dict missing key literal {key}"
 
 
-def test_cell_12_atom_energies_missing_h2o():
-    """`atom_energies` must contain exactly H and O — H2O deliberately absent.
+def test_cell_12_atom_energies_literature_missing_h2o():
+    """`atom_energies_literature` must contain exactly H and O — H2O
+    deliberately absent.
 
-    H2O is a compound, not an atom; placing it here would confuse the
+    Cell 12 holds the literature-value anchor dict under the name
+    `atom_energies_literature` (the runtime `atom_energies` name is bound
+    later, at the end of Cell 13, to a PBE-consistent dict). H2O is a
+    compound, not an atom; placing it in either dict would confuse the
     AtomizationEnergyMetric accumulator.
     """
     gen = load_generator()
     source = gen.build_cell_12_reference_dicts().source
-    assert 'atom_energies = {"H": -0.5, "O": -75.0673}' in source
-    # H2O must NOT appear as a key inside the atom_energies literal. Scan the
-    # atom_energies literal slice only (to avoid matching the targets dict
-    # above it).
-    ae_start = source.find("atom_energies =")
+    assert 'atom_energies_literature = {"H": -0.5, "O": -75.0673}' in source
+    # H2O must NOT appear as a key inside the atom_energies_literature
+    # literal. Scan only the atom_energies_literature literal slice (to
+    # avoid matching the targets dict below it).
+    ae_start = source.find("atom_energies_literature =")
     ae_end = source.find("}", ae_start) + 1
     ae_literal = source[ae_start:ae_end]
     assert '"H2O"' not in ae_literal
@@ -1166,6 +1170,32 @@ def test_cell_13_einsum_is_rho_hf_not_rho_nn():
     assert 'rho_hf = np.einsum("ij,gi,gj->g"' in source
     # `rho_nn` would indicate the wrong name reappeared
     assert "rho_nn = np.einsum" not in source
+
+
+def test_cell_13_binds_atom_energies_to_pbe_dict():
+    """Cell 13 must define `atom_energies` as a PBE-consistent dict at the
+    end of its source so downstream Cell 17/22/31 pick up the right anchor.
+
+    Regression guard for the training-vs-eval AE semantic bug: if this
+    binding ever disappears, the training loss and AtomizationEnergyMetric
+    will once again use different atom anchors.
+    """
+    gen = load_generator()
+    source = gen.build_cell_13_hf_ccsd_gen().source
+    assert "atom_energies_pbe = {}" in source, (
+        "Cell 13 must initialize atom_energies_pbe dict before the atom loop"
+    )
+    assert "atom_energies_pbe[name] = E_pbe_total" in source, (
+        "Cell 13 must accumulate PBE totals into atom_energies_pbe per atom"
+    )
+    assert "atom_energies = dict(atom_energies_pbe)" in source, (
+        "Cell 13 must bind `atom_energies` to the PBE-consistent dict so "
+        "training and evaluation use the same atomic anchor"
+    )
+    assert "atom_energies_literature[name]" in source, (
+        "Cell 13 atom-branch E_ref_literature must read from "
+        "atom_energies_literature, not the runtime atom_energies"
+    )
 
 
 # Task 6 — Cells 14-15 builder tests
