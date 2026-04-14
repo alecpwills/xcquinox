@@ -728,10 +728,10 @@ def build_cell_13_hf_ccsd_gen():
     """Section 4 Cell 13 — HF/CCSD/PBE reference computation + npz + sidecars.
 
     Writes `{name}.npz` (whitelisted keys only) and `{name}_metadata.json`
-    (HF/CCSD/PBE/literature totals) for H, O, and H2O. As a side effect,
-    binds the runtime name `atom_energies` to a PBE-consistent dict
-    {"H": E_pbe[H], "O": E_pbe[O]} that the training loss and
-    AtomizationEnergyMetric both consume downstream. The literature dict
+    (HF/CCSD/PBE/literature totals) for H, O, and H2O. Binds the runtime
+    name `atom_energies` (the authoritative AE anchor dict consumed by
+    TrainingSpec, TestSpec, and AtomizationEnergyMetric) to a
+    PBE-consistent {"H": E_pbe[H], "O": E_pbe[O]}. The literature dict
     from Cell 12 is preserved as `atom_energies_literature` and is used
     ONLY for the atom-branch `E_ref_literature` sidecar write.
     """
@@ -749,6 +749,11 @@ _mols = [
 # the NN's required XC correction on the order of single kcal/mol in the
 # post-hoc fixed-density framework; literature anchors would demand a
 # ~100 kcal/mol correction which the NN cannot produce on a frozen density.
+# Concretely: PBE/6-31G** gives ~-0.500 Ha for H and ~-74.87 Ha for O,
+# vs literature -0.5 / -75.0673 Ha. The ~0.2 Ha (~125 kcal/mol) O gap is
+# exactly the correction the NN would otherwise have to conjure on a
+# frozen density. Using PBE anchors makes this gap vanish for isolated
+# atoms and leaves only the molecular correlation/exchange gap for the NN.
 atom_energies_pbe = {}
 
 for name, atom, spin in _mols:
@@ -822,13 +827,16 @@ for name, atom, spin in _mols:
 
 # Bind the runtime name `atom_energies` to the PBE-consistent dict. This is
 # the dict that flows into TrainingSpec.atom_energies (Cell 17) and
-# TestSpec.atom_energies (Cell 22 + 31 + 32). After the losses.py fix, both
-# the training loss and AtomizationEnergyMetric compute atomization energy
-# as `sum(atom_energies[Z] * n_Z) - E_mol`, so the training loss and
-# evaluation metric agree exactly on every compound.
+# TestSpec.atom_energies (Cell 22). Cells 31/32 derive their per-extension
+# `new_atom_energies` dict from this one by copying and adding any extra
+# element totals (C, N, ...). After the losses.py fix, both the training
+# loss and AtomizationEnergyMetric compute atomization energy as
+# `sum(atom_energies[Z] * n_Z) - E_mol`, so the training loss and evaluation
+# metric agree exactly on every compound.
 atom_energies = dict(atom_energies_pbe)
 print(f"Reference data written to {ext_data_dir}")
-print(f"atom_energies (PBE-consistent) = {atom_energies}")
+_ae_str = {k: round(v, 6) for k, v in atom_energies.items()}
+print(f"atom_energies (PBE-consistent) = {_ae_str}")
 """
     return new_code_cell(source)
 
