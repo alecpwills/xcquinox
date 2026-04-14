@@ -197,18 +197,6 @@ def _grid_term(model, mol_data, iter_idx):
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
 
 
-def _unpack_loss_state(loss, batch):
-    """Common unpacking for all 6 losses."""
-    atom_mol_idx_dict = dict(loss.atom_mol_idx)
-    mol_data = batch["mol_data"]
-    targets = batch["targets"]
-    atom_energies = batch["atom_energies"]
-    N = len(loss.mol_names)
-    comp_dicts = tuple(dict(c) for c in loss.compositions)
-    E_nn = _compute_energies(batch.get("_model_override", None) or None, mol_data, N)
-    return atom_mol_idx_dict, mol_data, targets, atom_energies, N, comp_dicts, E_nn
-
-
 # ---------------------------------------------------------------------------
 # Concrete losses
 # ---------------------------------------------------------------------------
