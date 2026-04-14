@@ -237,7 +237,7 @@ class AtomizationLoss(AlecLoss):
         comp_dicts = tuple(dict(c) for c in self.compositions)
         E_nn = _compute_energies(model, mol_data, N)
         loss_energy = _ae_losses(E_nn, self.compound_idx, comp_dicts,
-                                 self.mol_names, targets, atom_idx)
+                                 self.mol_names, targets, atom_energies)
         atomic_reg = _atomic_reg(E_nn, atom_idx, atom_energies)
         total = loss_energy + self.w_atomic * atomic_reg
         return total, {"loss_energy": loss_energy, "atomic_reg": atomic_reg}
@@ -266,14 +266,14 @@ class AtomizationPlusDMLoss(AlecLoss):
         self.molecules_only = molecules_only
 
     def __call__(self, model, batch):
-        atom_idx = dict(self.atom_mol_idx)
         mol_data = batch["mol_data"]
         targets = batch["targets"]
+        atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
         E_nn = _compute_energies(model, mol_data, N)
         loss_energy = _ae_losses(E_nn, self.compound_idx, comp_dicts,
-                                 self.mol_names, targets, atom_idx)
+                                 self.mol_names, targets, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
         dm_loss = _dm_term(model, mol_data, iter_idx)
         total = loss_energy + self.dm_weight * dm_loss
@@ -303,14 +303,14 @@ class AtomizationPlusGridLoss(AlecLoss):
         self.molecules_only = molecules_only
 
     def __call__(self, model, batch):
-        atom_idx = dict(self.atom_mol_idx)
         mol_data = batch["mol_data"]
         targets = batch["targets"]
+        atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
         E_nn = _compute_energies(model, mol_data, N)
         loss_energy = _ae_losses(E_nn, self.compound_idx, comp_dicts,
-                                 self.mol_names, targets, atom_idx)
+                                 self.mol_names, targets, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
         grid_loss = _grid_term(model, mol_data, iter_idx)
         total = loss_energy + self.density_weight * grid_loss
@@ -341,7 +341,7 @@ class DeltaAELoss(AlecLoss):
         comp_dicts = tuple(dict(c) for c in self.compositions)
         E_nn = _compute_energies(model, mol_data, N)
         loss_delta = _delta_losses(E_nn, mol_data, self.compound_idx, comp_dicts,
-                                   self.mol_names, targets, atom_idx)
+                                   self.mol_names, targets, atom_energies)
         atomic_reg = _atomic_reg(E_nn, atom_idx, atom_energies)
         total = loss_delta + self.w_atomic * atomic_reg
         return total, {"loss_delta": loss_delta, "atomic_reg": atomic_reg}
@@ -370,14 +370,14 @@ class DeltaAEPlusDMLoss(AlecLoss):
         self.molecules_only = molecules_only
 
     def __call__(self, model, batch):
-        atom_idx = dict(self.atom_mol_idx)
         mol_data = batch["mol_data"]
         targets = batch["targets"]
+        atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
         E_nn = _compute_energies(model, mol_data, N)
         loss_delta = _delta_losses(E_nn, mol_data, self.compound_idx, comp_dicts,
-                                   self.mol_names, targets, atom_idx)
+                                   self.mol_names, targets, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
         dm_loss = _dm_term(model, mol_data, iter_idx)
         total = loss_delta + self.dm_weight * dm_loss
@@ -407,14 +407,14 @@ class DeltaAEPlusGridLoss(AlecLoss):
         self.molecules_only = molecules_only
 
     def __call__(self, model, batch):
-        atom_idx = dict(self.atom_mol_idx)
         mol_data = batch["mol_data"]
         targets = batch["targets"]
+        atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
         E_nn = _compute_energies(model, mol_data, N)
         loss_delta = _delta_losses(E_nn, mol_data, self.compound_idx, comp_dicts,
-                                   self.mol_names, targets, atom_idx)
+                                   self.mol_names, targets, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
         grid_loss = _grid_term(model, mol_data, iter_idx)
         total = loss_delta + self.density_weight * grid_loss
