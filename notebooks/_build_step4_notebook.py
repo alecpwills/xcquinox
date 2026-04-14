@@ -1636,12 +1636,12 @@ def build_cell_31_new_molecule_template():
     ``rho_pbe_hf_rmse`` for the molecule). Cell 32 then consumes those sidecars
     to draw PBE/CCSD/HF reference lines on the comparison plot.
 
-    ``new_atom_energies`` is built from the Cell 12 dict and updated from each
-    new atom's sidecar JSON (HF total) so adding another element only requires
+    ``new_atom_energies`` is built from the Cell 13 PBE dict and updated from each
+    new atom's sidecar JSON (PBE total) so adding another element only requires
     appending to ``new_atom_specs`` -- no hardcoded literature value lookup.
     """
     source = """# 1. Define the new molecule and any new atomic species its composition
-#    requires that are NOT already in Cell 12's atom_energies dict (H, O).
+#    requires that are NOT already in Cell 13's atom_energies dict (H, O).
 #    Carbon ground state is 3P triplet => spin=2 in pyscf.
 new_mol_spec = alec.MoleculeSpec(
     name="CH4",
