@@ -129,7 +129,7 @@ def _ae_from_atoms(E_mol, comp_dict, atom_energies):
 
 
 def _atomic_reg(E_nn, atom_mol_idx_dict, atom_energies):
-    """Weak atomic regularization toward literature atomic totals."""
+    """Weak atomic regularization toward the caller-supplied atom anchor dict."""
     return sum(
         (E_nn[atom_mol_idx_dict[Z]] - atom_energies[Z]) ** 2
         / (atom_energies[Z] ** 2 + 1e-8)

@@ -591,7 +591,7 @@ def test_validate_missing_atom_energy_key():
         molecules=(h, o, h2o),
         atom_energies=(("H", -0.5),),
     )
-    with pytest.raises(ValueError, match="atom_energies is missing"):
+    with pytest.raises(ValueError, match="atom_energies dict is missing"):
         spec.validate()
 
 

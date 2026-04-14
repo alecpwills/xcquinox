@@ -546,7 +546,7 @@ class TrainingSpec:
         missing_atom_energies = sorted(atom_mol_syms - set(atom_energies_dict.keys()))
         if missing_atom_energies:
             raise ValueError(
-                "atom_energies is missing literature totals for atomic training molecules: "
+                "atom_energies dict is missing entries for atomic training molecules: "
                 f"{missing_atom_energies}"
             )
 
