@@ -83,6 +83,18 @@ class DMStatisticsDescriptor(Descriptor):
     n_features: int = eqx.field(default=3, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)
 
+    @staticmethod
+    def compute_from_dm(dm: jnp.ndarray, s_matrix: jnp.ndarray,
+                        n_grid: int) -> jnp.ndarray:
+        """Pure kernel: compute 3-feature vector from (dm, S) and tile to grid.
+
+        Mirrors the precompute path in data.py:229-234 but accepts a live DM
+        so the SCF REASSEMBLE policy can recompute features per cycle.
+        """
+        from xcquinox.features import compute_dm_features_array
+        global_features = compute_dm_features_array(dm, s_matrix)
+        return jnp.tile(global_features, (n_grid, 1))
+
     def compute(self, mol_data):
         return mol_data["dm_features"]
 

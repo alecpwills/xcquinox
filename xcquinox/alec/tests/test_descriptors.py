@@ -157,3 +157,40 @@ def test_register_descriptor_rejects_non_static_field():
                     return jnp.zeros((1, 2))
     finally:
         DESCRIPTOR_REGISTRY.pop("bad", None)
+
+
+def test_dm_statistics_compute_from_dm_matches_precomputed():
+    """compute_from_dm should produce the same tiled features as the
+    precompute path for identical (dm, S) inputs."""
+    import numpy as np
+    from xcquinox.alec.descriptors import DMStatisticsDescriptor
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+
+    desc = DMStatisticsDescriptor()
+    data = precompute_fixed_density_data(
+        h2_molecule(), descriptors=(desc,),
+    )
+    n_grid = data["rho_grid"].shape[0]
+
+    features_kernel = desc.compute_from_dm(
+        dm=data["dm_pbe"], s_matrix=data["s_matrix"], n_grid=n_grid,
+    )
+    features_precomp = data["dm_features"]
+    assert features_kernel.shape == features_precomp.shape
+    np.testing.assert_allclose(
+        np.asarray(features_kernel),
+        np.asarray(features_precomp),
+        atol=1e-12, rtol=0.0,
+    )
+
+
+def test_dm_statistics_compute_from_dm_output_shape():
+    """compute_from_dm returns (n_grid, 3) tiled features."""
+    from xcquinox.alec.descriptors import DMStatisticsDescriptor
+
+    desc = DMStatisticsDescriptor()
+    dm = jnp.eye(2) * 0.5
+    s = jnp.eye(2)
+    features = desc.compute_from_dm(dm=dm, s_matrix=s, n_grid=17)
+    assert features.shape == (17, 3)
