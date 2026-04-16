@@ -152,6 +152,23 @@ class SCFResult:
     features_used: jnp.ndarray      # (n_grid, n_features) final cycle features
 
 
+def _contract_dm_to_grid(D: jnp.ndarray, ao_deriv: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return (rho, sigma) on-grid from a restricted-spin DM.
+
+    ao_deriv matches the pyscf `eval_ao(..., deriv=1)` layout:
+      shape (4, n_grid, nao): [value, d/dx, d/dy, d/dz]
+
+    This is the layout stashed as mol_data['ao_grid_deriv'] by
+    precompute_fixed_density_data.
+    """
+    ao = ao_deriv[0]                        # (n_grid, nao)
+    ao_grad = ao_deriv[1:4]                 # (3, n_grid, nao)
+    rho = jnp.einsum("ij,gi,gj->g", D, ao, ao)
+    nabla_rho = 2.0 * jnp.einsum("ij,dgi,gj->gd", D, ao_grad, ao)
+    sigma = jnp.einsum("gd,gd->g", nabla_rho, nabla_rho)
+    return rho, sigma
+
+
 def run_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
     """Dispatch to the selected backend. Backends are imported lazily."""
     if config.backend == SolverBackend.MANUAL:

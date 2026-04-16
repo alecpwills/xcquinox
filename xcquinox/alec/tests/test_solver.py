@@ -204,3 +204,25 @@ def test_effective_feature_policy_honors_explicit_override():
         feature_policy=FeaturePolicy.REASSEMBLE,
     )
     assert cfg.effective_feature_policy == FeaturePolicy.REASSEMBLE
+
+
+def test_contract_dm_to_grid_matches_precompute():
+    """_contract_dm_to_grid(D_PBE, ao_deriv) should reproduce the (rho, sigma)
+    stored by precompute_fixed_density_data for the same DM."""
+    import numpy as np
+    from xcquinox.alec.solver import _contract_dm_to_grid
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+
+    data = precompute_fixed_density_data(h2_molecule())
+    rho, sigma = _contract_dm_to_grid(
+        data["dm_pbe"], data["ao_grid_deriv"],
+    )
+    np.testing.assert_allclose(
+        np.asarray(rho), np.asarray(data["rho_grid"]),
+        atol=1e-10, rtol=0.0,
+    )
+    np.testing.assert_allclose(
+        np.asarray(sigma), np.asarray(data["sigma_grid"]),
+        atol=1e-10, rtol=0.0,
+    )
