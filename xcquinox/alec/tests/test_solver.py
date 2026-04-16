@@ -226,3 +226,32 @@ def test_contract_dm_to_grid_matches_precompute():
         np.asarray(sigma), np.asarray(data["sigma_grid"]),
         atol=1e-10, rtol=0.0,
     )
+
+
+def test_reassemble_features_matches_precompute_for_cusp_and_dm():
+    """_reassemble_features run at D=D_PBE should match the frozen features
+    produced by assemble_descriptor_features(mol_data)."""
+    import numpy as np
+    from xcquinox.alec.solver import _reassemble_features
+    from xcquinox.alec.descriptors import (
+        CuspDescriptor, DMStatisticsDescriptor, assemble_descriptor_features,
+    )
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+
+    descriptors = (CuspDescriptor(), DMStatisticsDescriptor())
+    data = precompute_fixed_density_data(h2_molecule(), descriptors=descriptors)
+
+    features_frozen = assemble_descriptor_features(descriptors, data)
+    features_reassembled = _reassemble_features(
+        descriptors=descriptors,
+        dm=data["dm_pbe"],
+        s_matrix=data["s_matrix"],
+        cusp_features=data["cusp_features"],
+    )
+    assert features_reassembled.shape == features_frozen.shape
+    np.testing.assert_allclose(
+        np.asarray(features_reassembled),
+        np.asarray(features_frozen),
+        atol=1e-10, rtol=0.0,
+    )

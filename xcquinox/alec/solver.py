@@ -169,6 +169,47 @@ def _contract_dm_to_grid(D: jnp.ndarray, ao_deriv: jnp.ndarray) -> tuple[jnp.nda
     return rho, sigma
 
 
+def _reassemble_features(
+    descriptors: tuple,
+    dm: jnp.ndarray,
+    s_matrix: jnp.ndarray,
+    cusp_features: jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    """Recompute descriptor features from the live (dm, S) + cached cusp.
+
+    Used by REASSEMBLE policy. CuspDescriptor features are geometry-only
+    (not DM-dependent) so they are passed in as the frozen precompute value.
+    DMStatisticsDescriptor features use the live DM via compute_from_dm.
+    """
+    from xcquinox.alec.descriptors import CuspDescriptor, DMStatisticsDescriptor
+    if not descriptors:
+        # Match the shape used by assemble_descriptor_features for empty case
+        n_grid = cusp_features.shape[0] if cusp_features is not None else 0
+        return jnp.zeros((n_grid, 0))
+    cols = []
+    n_grid_hint = cusp_features.shape[0] if cusp_features is not None else None
+    for d in descriptors:
+        if isinstance(d, CuspDescriptor):
+            if cusp_features is None:
+                raise ValueError(
+                    "cusp_features must be provided when descriptors include CuspDescriptor"
+                )
+            cols.append(cusp_features)
+            n_grid_hint = cusp_features.shape[0]
+        elif isinstance(d, DMStatisticsDescriptor):
+            if n_grid_hint is None:
+                raise ValueError(
+                    "_reassemble_features needs a grid-size hint; include "
+                    "CuspDescriptor or pass cusp_features=<array with correct n_grid>"
+                )
+            cols.append(d.compute_from_dm(dm=dm, s_matrix=s_matrix, n_grid=n_grid_hint))
+        else:
+            raise NotImplementedError(
+                f"_reassemble_features does not yet know how to recompute {type(d).__name__}"
+            )
+    return jnp.concatenate(cols, axis=1)
+
+
 def run_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
     """Dispatch to the selected backend. Backends are imported lazily."""
     if config.backend == SolverBackend.MANUAL:
