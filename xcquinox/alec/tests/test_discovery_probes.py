@@ -114,3 +114,50 @@ def test_p03_pyscfad_get_fock_sees_current_dm_per_cycle():
         "get_fock was never invoked with a DM argument; "
         "REASSEMBLE policy cannot read the current DM from this hook"
     )
+
+
+def test_p04_pyscfad_get_j_monkey_patch_propagates():
+    """P0.4: monkey-patching mf.get_j must actually intercept J in the Fock
+    build. Use a sentinel offset that, if bypassed, leaves the total energy
+    indistinguishable from the baseline."""
+    import pyscfad.gto
+    import pyscfad.dft
+    import numpy as np
+
+    mol = pyscfad.gto.Mole()
+    mol.atom = "H 0 0 0; H 0 0 0.74"
+    mol.basis = "sto-3g"
+    mol.charge = 0
+    mol.spin = 0
+    mol.verbose = 0
+    mol.build()
+
+    # Baseline: unpatched PBE SCF
+    mf_ref = pyscfad.dft.RKS(mol)
+    mf_ref.xc = "pbe"
+    mf_ref.max_cycle = 30
+    mf_ref.kernel()
+    e_ref = float(mf_ref.e_tot)
+
+    # Patched: get_j returns a clearly-offset matrix
+    mf_patched = pyscfad.dft.RKS(mol)
+    mf_patched.xc = "pbe"
+    mf_patched.max_cycle = 30
+    nao = mol.nao
+    sentinel = 1e-3 * np.eye(nao)
+    original_get_j = mf_patched.get_j
+
+    def patched_get_j(*args, **kwargs):
+        j_real = original_get_j(*args, **kwargs)
+        return np.asarray(j_real) + sentinel
+
+    mf_patched.get_j = patched_get_j
+    mf_patched.kernel()
+    e_patched = float(mf_patched.e_tot)
+
+    assert abs(e_patched - e_ref) > 1e-6, (
+        f"get_j monkey-patch did not propagate: "
+        f"e_patched={e_patched} e_ref={e_ref} |Δ|={abs(e_patched - e_ref):.2e}. "
+        f"Pyscfad bypasses the overridden get_j — fixed_j pyscfad mode "
+        f"must fall back to manual backend."
+    )
