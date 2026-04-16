@@ -210,6 +210,28 @@ def _reassemble_features(
     return jnp.concatenate(cols, axis=1)
 
 
+def _oneshot_result(model, mol_data: dict) -> "SCFResult":
+    """Fast path for ONESHOT mode: calls the existing pure one-shot helpers
+    and wraps their output in an SCFResult.
+
+    Byte-identical to pre-SCF behavior — regression tests pin this.
+    """
+    from xcquinox.alec.oneshot import (
+        oneshot_dm_prediction_fast, fixed_density_total_energy,
+    )
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+    D = oneshot_dm_prediction_fast(model, mol_data)
+    E = fixed_density_total_energy(model, mol_data)
+    features = assemble_descriptor_features(model.descriptors, mol_data)
+    return SCFResult(
+        density_matrix=D,
+        total_energy=E,
+        cycles_run=jnp.int32(0),
+        converged=jnp.bool_(True),
+        features_used=features,
+    )
+
+
 def run_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
     """Dispatch to the selected backend. Backends are imported lazily."""
     if config.backend == SolverBackend.MANUAL:

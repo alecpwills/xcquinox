@@ -255,3 +255,28 @@ def test_reassemble_features_matches_precompute_for_cusp_and_dm():
         np.asarray(features_frozen),
         atol=1e-10, rtol=0.0,
     )
+
+
+def test_oneshot_result_matches_legacy_total_energy():
+    """_oneshot_result(model, mol_data) should produce total_energy identical
+    to fixed_density_total_energy(model, mol_data)."""
+    import numpy as np
+    from xcquinox.alec.solver import _oneshot_result
+    from xcquinox.alec.oneshot import fixed_density_total_energy
+    from xcquinox.alec.config import ArchitectureConfig
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+
+    arch = ArchitectureConfig(
+        name="t", depth=2, nodes=8, attention=False,
+        descriptors=(), x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    data = precompute_fixed_density_data(h2_molecule())
+    result = _oneshot_result(model, data)
+    e_legacy = float(fixed_density_total_energy(model, data))
+    assert float(result.total_energy) == pytest.approx(e_legacy, abs=1e-12)
+    assert int(result.cycles_run) == 0
+    assert bool(result.converged) is True
