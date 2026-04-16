@@ -30,6 +30,7 @@ from xcquinox.alec.config import (
     get_architecture,
 )
 from xcquinox.alec.losses import list_losses
+from xcquinox.alec.solver import SolverConfig
 from xcquinox.alec.tests.fixtures.molecules import (
     h_atom,
     h2o_molecule,
@@ -306,8 +307,8 @@ def test_artifact_roundtrip(training_batch_info):
 
         # train_metadata.json has all required fields
         required_fields = {
-            "arch_name", "loss_name", "loss_kwargs", "n_steps",
-            "lr_start", "lr_end", "lr_decay_start", "grad_clip",
+            "arch_name", "loss_name", "loss_kwargs", "solver_config",
+            "n_steps", "lr_start", "lr_end", "lr_decay_start", "grad_clip",
             "pretrain_checkpoint", "molecules", "targets", "atom_energies",
             "final_loss", "min_loss", "timestamp", "duration_seconds",
         }
@@ -696,3 +697,36 @@ def test_validate_loss_kwargs_nonfinite_numeric(key, bad_value):
     )
     with pytest.raises(ValueError, match="must be finite"):
         spec.validate()
+
+
+# ---------------------------------------------------------------------------
+# Test 32: SolverConfig in loss_kwargs is serialized to JSON
+# ---------------------------------------------------------------------------
+
+def test_solver_config_in_loss_kwargs_is_json_serializable():
+    """Test 32: SolverConfig objects in loss_kwargs are serialized via describe()."""
+    cfg = SolverConfig()
+    spec = _make_training_spec(
+        loss_kwargs=(("solver_config", cfg),),
+        solver_config=cfg,
+    )
+    # Simulate the serialization logic from run_training
+    loss_kwargs_ser = {
+        k: v.describe() if isinstance(v, SolverConfig) else v
+        for k, v in spec.loss_kwargs_dict.items()
+    }
+    metadata = {
+        "loss_kwargs": loss_kwargs_ser,
+        "solver_config": (
+            spec.solver_config.describe()
+            if spec.solver_config is not None
+            else None
+        ),
+    }
+    # Must not raise
+    dumped = json.dumps(metadata)
+    roundtrip = json.loads(dumped)
+    assert isinstance(roundtrip["loss_kwargs"]["solver_config"], dict)
+    assert roundtrip["loss_kwargs"]["solver_config"]["backend"] == cfg.backend.value
+    assert isinstance(roundtrip["solver_config"], dict)
+    assert roundtrip["solver_config"]["mode"] == cfg.mode.value

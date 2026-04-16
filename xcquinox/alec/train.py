@@ -23,6 +23,7 @@ import numpy as np
 import optax
 
 from xcquinox.alec.config import TrainingSpec, ArchitectureConfig
+from xcquinox.alec.solver import SolverConfig
 from xcquinox.alec.data import precompute_fixed_density_data
 from xcquinox.alec.losses import make_loss
 from xcquinox.alec.models import AlecGGAModel
@@ -241,10 +242,19 @@ def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
     with open(os.path.join(spec.checkpoint_dir, "aux_log.pkl"), "wb") as f:
         pickle.dump(aux_log, f, protocol=4)
 
+    loss_kwargs_ser = {
+        k: v.describe() if isinstance(v, SolverConfig) else v
+        for k, v in spec.loss_kwargs_dict.items()
+    }
     metadata = {
         "arch_name": spec.arch.name,
         "loss_name": spec.loss_name,
-        "loss_kwargs": spec.loss_kwargs_dict,
+        "loss_kwargs": loss_kwargs_ser,
+        "solver_config": (
+            spec.solver_config.describe()
+            if spec.solver_config is not None
+            else None
+        ),
         "n_steps": spec.n_steps,
         "lr_start": spec.lr_start,
         "lr_end": spec.lr_end,
