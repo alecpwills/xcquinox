@@ -79,3 +79,43 @@ class SolverConfig:
             "mixer_kwargs": dict(self.mixer_kwargs),
             "convergence_name": self.convergence_name,
         }
+
+
+import abc
+from typing import NamedTuple
+import jax.numpy as jnp
+
+
+class MixerState(NamedTuple):
+    """Base mixer state. Subclasses may extend via their own NamedTuple."""
+    step_index: jnp.ndarray  # int32 scalar
+
+
+class Mixer(abc.ABC):
+    registry_name: str = ""
+
+    @abc.abstractmethod
+    def init_state(self, nao: int) -> MixerState:
+        ...
+
+    @abc.abstractmethod
+    def step(self, state: MixerState, D_in: jnp.ndarray,
+             D_out: jnp.ndarray) -> tuple[MixerState, jnp.ndarray]:
+        """Returns (new_state, D_mixed)."""
+
+
+class LinearMixer(Mixer):
+    registry_name = "linear"
+
+    def __init__(self, alpha: float = 0.5):
+        if not (0.0 <= alpha <= 1.0):
+            raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+        self.alpha = alpha
+
+    def init_state(self, nao: int) -> MixerState:
+        return MixerState(step_index=jnp.int32(0))
+
+    def step(self, state, D_in, D_out):
+        D_mixed = self.alpha * D_out + (1.0 - self.alpha) * D_in
+        new_state = MixerState(step_index=state.step_index + jnp.int32(1))
+        return new_state, D_mixed

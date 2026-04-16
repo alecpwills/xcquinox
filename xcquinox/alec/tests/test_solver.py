@@ -86,6 +86,62 @@ def test_effective_feature_policy_full_is_reassemble():
     assert cfg.effective_feature_policy == FeaturePolicy.REASSEMBLE
 
 
+from xcquinox.alec.solver import Mixer, LinearMixer, MixerState
+
+
+def test_mixer_abc_is_abstract():
+    with pytest.raises(TypeError):
+        Mixer()
+
+
+def test_linear_mixer_alpha_1_is_identity():
+    mixer = LinearMixer(alpha=1.0)
+    state = mixer.init_state(nao=3)
+    D_in = jnp.eye(3) * 2.0
+    D_out = jnp.eye(3) * 3.0
+    _, D_mixed = mixer.step(state, D_in, D_out)
+    assert jnp.allclose(D_mixed, D_out)
+
+
+def test_linear_mixer_alpha_0_pins_D_in():
+    mixer = LinearMixer(alpha=0.0)
+    state = mixer.init_state(nao=3)
+    D_in = jnp.eye(3) * 2.0
+    D_out = jnp.eye(3) * 3.0
+    _, D_mixed = mixer.step(state, D_in, D_out)
+    assert jnp.allclose(D_mixed, D_in)
+
+
+def test_linear_mixer_alpha_half_averages():
+    mixer = LinearMixer(alpha=0.5)
+    state = mixer.init_state(nao=3)
+    D_in = jnp.eye(3) * 2.0
+    D_out = jnp.eye(3) * 4.0
+    _, D_mixed = mixer.step(state, D_in, D_out)
+    expected = 0.5 * (D_in + D_out)
+    assert jnp.allclose(D_mixed, expected)
+
+
+def test_linear_mixer_rejects_out_of_range_alpha():
+    with pytest.raises(ValueError, match="alpha must be in"):
+        LinearMixer(alpha=-0.1)
+    with pytest.raises(ValueError, match="alpha must be in"):
+        LinearMixer(alpha=1.5)
+
+
+def test_linear_mixer_step_increments_state():
+    mixer = LinearMixer(alpha=0.5)
+    state = mixer.init_state(nao=3)
+    assert int(state.step_index) == 0
+    D = jnp.eye(3)
+    new_state, _ = mixer.step(state, D, D)
+    assert int(new_state.step_index) == 1
+
+
+def test_linear_mixer_registry_name():
+    assert LinearMixer.registry_name == "linear"
+
+
 def test_effective_feature_policy_honors_explicit_override():
     cfg = SolverConfig(
         mode=SolverMode.FIXED_J, max_cycles=5,
