@@ -206,8 +206,9 @@ class AtomizationLoss(AlecLoss):
     registry_name: ClassVar[str] = "A_atomization"
     required_mol_keys: ClassVar[tuple[str, ...]] = ()
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
+    solver_config: object | None = eqx.field(default=None, static=True)
 
-    def __init__(self, *, molecules, w_atomic: float = 0.01):
+    def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None):
         self._validate_static_float("w_atomic", w_atomic)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
@@ -215,6 +216,7 @@ class AtomizationLoss(AlecLoss):
         self.mol_names = mn
         self.compositions = comp
         self.w_atomic = w_atomic
+        self.solver_config = solver_config
 
     def __call__(self, model, batch):
         atom_idx = dict(self.atom_mol_idx)
@@ -238,9 +240,11 @@ class AtomizationPlusDMLoss(AlecLoss):
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     dm_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
+    solver_config: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
-                 dm_weight: float = 0.1, molecules_only: bool = True):
+                 dm_weight: float = 0.1, molecules_only: bool = True,
+                 solver_config=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("dm_weight", dm_weight)
         self._validate_static_bool("molecules_only", molecules_only)
@@ -252,6 +256,7 @@ class AtomizationPlusDMLoss(AlecLoss):
         self.w_atomic = w_atomic
         self.dm_weight = dm_weight
         self.molecules_only = molecules_only
+        self.solver_config = solver_config
 
     def __call__(self, model, batch):
         mol_data = batch["mol_data"]
@@ -263,7 +268,7 @@ class AtomizationPlusDMLoss(AlecLoss):
         loss_energy = _ae_losses(E_nn, self.compound_idx, comp_dicts,
                                  self.mol_names, targets, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
-        dm_loss = _dm_term(model, mol_data, iter_idx)
+        dm_loss = _dm_term(model, mol_data, iter_idx, solver_config=self.solver_config)
         total = loss_energy + self.dm_weight * dm_loss
         return total, {"loss_energy": loss_energy, "loss_dm": dm_loss}
 
@@ -275,9 +280,11 @@ class AtomizationPlusGridLoss(AlecLoss):
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     density_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
+    solver_config: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
-                 density_weight: float = 0.1, molecules_only: bool = True):
+                 density_weight: float = 0.1, molecules_only: bool = True,
+                 solver_config=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("density_weight", density_weight)
         self._validate_static_bool("molecules_only", molecules_only)
@@ -289,6 +296,7 @@ class AtomizationPlusGridLoss(AlecLoss):
         self.w_atomic = w_atomic
         self.density_weight = density_weight
         self.molecules_only = molecules_only
+        self.solver_config = solver_config
 
     def __call__(self, model, batch):
         mol_data = batch["mol_data"]
@@ -300,7 +308,7 @@ class AtomizationPlusGridLoss(AlecLoss):
         loss_energy = _ae_losses(E_nn, self.compound_idx, comp_dicts,
                                  self.mol_names, targets, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
-        grid_loss = _grid_term(model, mol_data, iter_idx)
+        grid_loss = _grid_term(model, mol_data, iter_idx, solver_config=self.solver_config)
         total = loss_energy + self.density_weight * grid_loss
         return total, {"loss_energy": loss_energy, "loss_grid": grid_loss}
 
@@ -310,8 +318,9 @@ class DeltaAELoss(AlecLoss):
     registry_name: ClassVar[str] = "D1_delta_ae"
     required_mol_keys: ClassVar[tuple[str, ...]] = ("E_pbe",)
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
+    solver_config: object | None = eqx.field(default=None, static=True)
 
-    def __init__(self, *, molecules, w_atomic: float = 0.01):
+    def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None):
         self._validate_static_float("w_atomic", w_atomic)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
@@ -319,6 +328,7 @@ class DeltaAELoss(AlecLoss):
         self.mol_names = mn
         self.compositions = comp
         self.w_atomic = w_atomic
+        self.solver_config = solver_config
 
     def __call__(self, model, batch):
         atom_idx = dict(self.atom_mol_idx)
@@ -342,9 +352,11 @@ class DeltaAEPlusDMLoss(AlecLoss):
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     dm_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
+    solver_config: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
-                 dm_weight: float = 0.1, molecules_only: bool = True):
+                 dm_weight: float = 0.1, molecules_only: bool = True,
+                 solver_config=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("dm_weight", dm_weight)
         self._validate_static_bool("molecules_only", molecules_only)
@@ -356,6 +368,7 @@ class DeltaAEPlusDMLoss(AlecLoss):
         self.w_atomic = w_atomic
         self.dm_weight = dm_weight
         self.molecules_only = molecules_only
+        self.solver_config = solver_config
 
     def __call__(self, model, batch):
         mol_data = batch["mol_data"]
@@ -367,7 +380,7 @@ class DeltaAEPlusDMLoss(AlecLoss):
         loss_delta = _delta_losses(E_nn, mol_data, self.compound_idx, comp_dicts,
                                    self.mol_names, targets, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
-        dm_loss = _dm_term(model, mol_data, iter_idx)
+        dm_loss = _dm_term(model, mol_data, iter_idx, solver_config=self.solver_config)
         total = loss_delta + self.dm_weight * dm_loss
         return total, {"loss_delta": loss_delta, "loss_dm": dm_loss}
 
@@ -379,9 +392,11 @@ class DeltaAEPlusGridLoss(AlecLoss):
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     density_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
+    solver_config: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
-                 density_weight: float = 0.1, molecules_only: bool = True):
+                 density_weight: float = 0.1, molecules_only: bool = True,
+                 solver_config=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("density_weight", density_weight)
         self._validate_static_bool("molecules_only", molecules_only)
@@ -393,6 +408,7 @@ class DeltaAEPlusGridLoss(AlecLoss):
         self.w_atomic = w_atomic
         self.density_weight = density_weight
         self.molecules_only = molecules_only
+        self.solver_config = solver_config
 
     def __call__(self, model, batch):
         mol_data = batch["mol_data"]
@@ -404,6 +420,6 @@ class DeltaAEPlusGridLoss(AlecLoss):
         loss_delta = _delta_losses(E_nn, mol_data, self.compound_idx, comp_dicts,
                                    self.mol_names, targets, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
-        grid_loss = _grid_term(model, mol_data, iter_idx)
+        grid_loss = _grid_term(model, mol_data, iter_idx, solver_config=self.solver_config)
         total = loss_delta + self.density_weight * grid_loss
         return total, {"loss_delta": loss_delta, "loss_grid": grid_loss}

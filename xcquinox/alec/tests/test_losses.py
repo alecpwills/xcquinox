@@ -688,3 +688,29 @@ def test_molecules_only_bool_type_validation(batch_h_o_h2o):
         with pytest.raises(TypeError):
             make_loss("B_atomization_plus_dm", molecules=mols,
                       molecules_only=bad_value)
+
+
+# ---------------------------------------------------------------------------
+# Task 7.4: solver_config=None regression — all 6 losses
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("loss_name", LOSS_NAMES)
+def test_loss_solver_config_none_matches_legacy(loss_name, batch_h_o_h2o, model):
+    """solver_config=None must produce byte-identical output to legacy (no kwarg)."""
+    mols = batch_h_o_h2o["mols"]
+    batch = {
+        "mol_data": batch_h_o_h2o["mol_data"],
+        "targets": batch_h_o_h2o["targets"],
+        "atom_energies": batch_h_o_h2o["atom_energies"],
+    }
+    loss_legacy = make_loss(loss_name, molecules=mols)
+    loss_explicit = make_loss(loss_name, molecules=mols, solver_config=None)
+    total_legacy, aux_legacy = loss_legacy(model, batch)
+    total_explicit, aux_explicit = loss_explicit(model, batch)
+    np.testing.assert_allclose(
+        float(total_legacy), float(total_explicit), rtol=0, atol=1e-12,
+    )
+    for key in aux_legacy:
+        np.testing.assert_allclose(
+            float(aux_legacy[key]), float(aux_explicit[key]), rtol=0, atol=1e-12,
+        )
