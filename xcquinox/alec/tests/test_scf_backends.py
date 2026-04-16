@@ -35,3 +35,17 @@ def test_manual_oneshot_matches_legacy():
     assert float(result.total_energy) == pytest.approx(e_legacy, abs=1e-12)
     assert int(result.cycles_run) == 0
     assert bool(result.converged) is True
+
+
+def test_manual_fixed_j_converges_on_h2():
+    """H2/STO-3G fixed_j should converge in <=10 cycles at default tol."""
+    model, data = _make_h2()
+    cfg = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
+        max_cycles=10, conv_tol=1e-8,
+    )
+    result = run_scf(cfg, model, data)
+    assert bool(result.converged) is True
+    assert int(result.cycles_run) <= 10
+    assert int(result.cycles_run) >= 1
+    assert jnp.isfinite(result.total_energy)
