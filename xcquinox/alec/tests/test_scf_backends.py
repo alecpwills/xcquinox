@@ -119,3 +119,95 @@ def test_pyscfad_oneshot_matches_legacy():
     e_legacy = float(fixed_density_total_energy(model, data))
     assert float(result.total_energy) == pytest.approx(e_legacy, abs=1e-12)
     assert int(result.cycles_run) == 0
+
+
+def test_pyscfad_fixed_j_converges_on_h2():
+    """pyscfad backend, FIXED_J mode, FROZEN features. 10 cycles on H2."""
+    model, data = _make_h2()
+    cfg = SolverConfig(
+        backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+        max_cycles=10, conv_tol=1e-6,
+    )
+    result = run_scf(cfg, model, data)
+    assert bool(result.converged) is True
+    assert jnp.isfinite(result.total_energy)
+
+
+def test_pyscfad_full_converges_on_h2():
+    model, data = _make_h2()
+    cfg = SolverConfig(
+        backend=SolverBackend.PYSCFAD, mode=SolverMode.FULL,
+        max_cycles=15, conv_tol=1e-6,
+    )
+    result = run_scf(cfg, model, data)
+    assert bool(result.converged) is True
+    assert jnp.isfinite(result.total_energy)
+
+
+def test_backends_agree_fixed_j_on_h2():
+    model, data = _make_h2()
+    cfg_m = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
+        max_cycles=20, conv_tol=1e-8,
+    )
+    cfg_p = SolverConfig(
+        backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+        max_cycles=20, conv_tol=1e-8,
+    )
+    e_m = float(run_scf(cfg_m, model, data).total_energy)
+    e_p = float(run_scf(cfg_p, model, data).total_energy)
+    assert abs(e_m - e_p) < 1e-4, f"manual={e_m} pyscfad={e_p}"
+
+
+def test_backends_agree_full_on_h2():
+    model, data = _make_h2()
+    data_with_eri = dict(data)
+    if data_with_eri.get("eri") is None:
+        from xcquinox.alec.data import precompute_fixed_density_data
+        data_with_eri = precompute_fixed_density_data(
+            h2_molecule(), required_keys=("eri",),
+        )
+    cfg_m = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+        max_cycles=30, conv_tol=1e-8,
+    )
+    cfg_p = SolverConfig(
+        backend=SolverBackend.PYSCFAD, mode=SolverMode.FULL,
+        max_cycles=30, conv_tol=1e-8,
+    )
+    e_m = float(run_scf(cfg_m, model, data_with_eri).total_energy)
+    e_p = float(run_scf(cfg_p, model, data_with_eri).total_energy)
+    assert abs(e_m - e_p) < 1e-3, f"manual={e_m} pyscfad={e_p}"
+
+
+def test_pyscfad_fixed_j_monkey_patched_get_j_is_called():
+    """Fragility guard (spec Section 6.6): verify the monkey-patched get_j
+    is actually used by pyscfad's Fock build, via sentinel propagation.
+    If this test fails silently (e.g., by passing without the sentinel
+    changing the energy), fixed_j pyscfad must fall back to manual."""
+    import pyscfad.dft
+    from xcquinox.alec.solver_pyscfad import _rebuild_mol_from_mol_data, _make_alec_eval_xc
+    model, data = _make_h2()
+
+    mol = _rebuild_mol_from_mol_data(data)
+    mf = pyscfad.dft.RKS(mol)
+    mf.define_xc_(
+        _make_alec_eval_xc(model, model.descriptors, data, FeaturePolicy.FROZEN),
+        "GGA",
+    )
+    mf.max_cycle = 5
+    mf.conv_tol = 1e-4
+
+    J_pinned = data["j_matrix"]
+    called = {"flag": False}
+
+    def fixed_get_j(*args, **kwargs):
+        called["flag"] = True
+        return J_pinned
+
+    mf.get_j = fixed_get_j
+    mf.kernel(dm0=data["dm_pbe"])
+    assert called["flag"], (
+        "pyscfad SCF driver bypassed the overridden get_j — "
+        "fixed_j pyscfad mode cannot guarantee J pinning"
+    )

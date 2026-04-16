@@ -22,16 +22,21 @@ from xcquinox.alec.solver import (
 
 
 def _rebuild_mol_from_mol_data(mol_data: dict):
-    """Rebuild a pyscf gto.Mole from the metadata stashed by precompute."""
-    from pyscf import gto
+    """Rebuild a pyscfad gto.Mole from the metadata stashed by precompute.
+
+    Must use pyscfad.gto.Mole (not pyscf.gto.Mole) because
+    pyscfad.dft.RKS requires a pyscfad-wrapped molecule object.
+    """
+    import pyscfad.gto
     md = mol_data["mol_metadata"]
-    return gto.M(
-        atom=md["atom"],
-        basis=md["basis"],
-        charge=md["charge"],
-        spin=md["spin"],
-        verbose=0,
-    )
+    mol = pyscfad.gto.Mole()
+    mol.atom = md["atom"]
+    mol.basis = md["basis"]
+    mol.charge = md["charge"]
+    mol.spin = md["spin"]
+    mol.verbose = 0
+    mol.build()
+    return mol
 
 
 def _make_alec_eval_xc(model, descriptors, mol_data, policy):
@@ -72,8 +77,58 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy):
 
 
 def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+
     if config.mode == SolverMode.ONESHOT:
         return _oneshot_result(model, mol_data)
-    raise NotImplementedError(
-        "pyscfad non-ONESHOT modes are added in Tasks 6.2-6.3"
+
+    import pyscfad.dft  # noqa: F401 — lazy import
+
+    policy = config.effective_feature_policy
+    descriptors = model.descriptors
+
+    if policy == FeaturePolicy.REASSEMBLE:
+        warnings.warn(
+            "REASSEMBLE policy on pyscfad backend is not yet implemented; "
+            "falling back to FROZEN features.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        policy = FeaturePolicy.FROZEN
+
+    eval_xc_callback = _make_alec_eval_xc(
+        model=model,
+        descriptors=descriptors,
+        mol_data=mol_data,
+        policy=policy,
+    )
+
+    mol = _rebuild_mol_from_mol_data(mol_data)
+    mf = pyscfad.dft.RKS(mol)
+    mf.define_xc_(eval_xc_callback, "GGA")
+    mf.max_cycle = int(config.max_cycles)
+    mf.conv_tol = float(config.conv_tol)
+
+    if config.mode == SolverMode.FIXED_J:
+        J_pinned = mol_data["j_matrix"]
+
+        def fixed_get_j(mol_=None, dm=None, hermi=1, **kwargs):
+            return J_pinned
+
+        mf.get_j = fixed_get_j
+
+    mf.kernel(dm0=mol_data["dm_pbe"])
+
+    D_final = jnp.asarray(mf.make_rdm1())
+    E_final = jnp.asarray(mf.e_tot)
+    cycles_run = jnp.int32(getattr(mf, "cycles", config.max_cycles))
+    converged = jnp.bool_(bool(mf.converged))
+    features_used = assemble_descriptor_features(descriptors, mol_data)
+
+    return SCFResult(
+        density_matrix=D_final,
+        total_energy=E_final,
+        cycles_run=cycles_run,
+        converged=converged,
+        features_used=features_used,
     )
