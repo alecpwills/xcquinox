@@ -393,3 +393,62 @@ def test_cell_31_density_histograms():
     gen = load_generator()
     source = gen.build_cell_31_density_histograms().source
     assert "grid_density_scf.png" in source
+
+
+# ---------------------------------------------------------------------------
+# Task 7 -- Advanced Visualization + Extension Cells 32-39
+# ---------------------------------------------------------------------------
+
+
+def test_cell_32_convergence_md():
+    gen = load_generator()
+    cell = gen.build_cell_32_convergence_md()
+    assert cell.cell_type == "markdown"
+
+
+def test_cell_33_convergence_diagnostic():
+    """Convergence plot must run SCF at higher max_cycles for diagnostic."""
+    gen = load_generator()
+    source = gen.build_cell_33_convergence_diagnostic().source
+    assert "scf_convergence.png" in source
+    assert "max_cycles=10" in source or "max_cycles" in source
+
+
+def test_cell_34_feature_impact_md():
+    gen = load_generator()
+    cell = gen.build_cell_34_feature_impact_md()
+    assert cell.cell_type == "markdown"
+
+
+def test_cell_35_feature_impact():
+    gen = load_generator()
+    source = gen.build_cell_35_feature_impact().source
+    assert "feature_impact_scf.png" in source
+    assert "deep_cusp" in source or "non-attention" in source.lower()
+
+
+def test_cell_36_extension_md():
+    gen = load_generator()
+    cell = gen.build_cell_36_extension_md()
+    assert cell.cell_type == "markdown"
+
+
+def test_cell_37_new_molecule_template():
+    gen = load_generator()
+    source = gen.build_cell_37_new_molecule_template().source
+    assert "CH4" in source
+    assert "alec.MoleculeSpec(" in source
+    assert "new_atom_energies" in source
+
+
+def test_cell_38_new_mol_comparison_md():
+    gen = load_generator()
+    cell = gen.build_cell_38_new_mol_comparison_md()
+    assert cell.cell_type == "markdown"
+
+
+def test_cell_39_new_mol_comparison():
+    gen = load_generator()
+    source = gen.build_cell_39_new_mol_comparison().source
+    assert "SOLVER_LABELS" in source
+    assert "solver_colors" in source

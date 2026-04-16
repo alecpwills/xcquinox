@@ -1375,6 +1375,337 @@ else:
     return new_code_cell(source)
 
 
+def build_cell_32_convergence_md():
+    """Section 6 Cell 32 -- convergence analysis description."""
+    source = """### Figure: SCF Convergence Diagnostic
+
+This plot runs the SCF solver with increased `max_cycles=10` on a trained
+model (deep_combined, loss A) and plots |E(n) - E(n-1)| vs cycle number for
+both FIXED_J and FULL modes. This shows the convergence rate under
+self-consistency -- how quickly the energy settles.
+
+Note: this is evaluation-only (no training through the loop). The trained
+model was trained with the solver config in its checkpoint path; here we
+just observe how it behaves under extended iteration.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_33_convergence_diagnostic():
+    """Section 6 Cell 33 -- SCF convergence rate plot."""
+    source = """from xcquinox.alec.solver import run_scf
+
+_diag_arch = "deep_combined" if "deep_combined" in ARCH_NAMES else ARCH_NAMES[0]
+_diag_loss = LOSS_NAMES[0]
+_diag_solver = SOLVER_LABELS[0]
+_ckpt = f"{CHECKPOINT_BASE}/train/{_diag_arch}/{_diag_loss}/{_diag_solver}/model.eqx"
+
+if not os.path.isfile(_ckpt):
+    print(f"[Cell 33] checkpoint not found: {_ckpt} -- skipping convergence plot")
+else:
+    _arch_config = alec.get_architecture(_diag_arch)
+    _model = eqx.tree_deserialise_leaves(_ckpt, alec.AlecGGAModel.from_arch(_arch_config))
+    _h2o_data = mol_data_list[2]  # H2O
+
+    _diag_configs = {
+        "FIXED_J(10)": SolverConfig(
+            backend=SolverBackend.MANUAL,
+            mode=SolverMode.FIXED_J,
+            max_cycles=10,
+            conv_tol=1e-10,
+        ),
+        "FULL(10)": SolverConfig(
+            backend=SolverBackend.MANUAL,
+            mode=SolverMode.FULL,
+            max_cycles=10,
+            conv_tol=1e-10,
+        ),
+    }
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for label, cfg in _diag_configs.items():
+        result = run_scf(cfg, _model, _h2o_data)
+        if hasattr(result, "energy_trace") and result.energy_trace is not None:
+            _trace = np.array(result.energy_trace)
+            _deltas = np.abs(np.diff(_trace))
+            ax.semilogy(range(1, len(_deltas) + 1), _deltas, "o-", label=label)
+
+    ax.set_xlabel("SCF cycle")
+    ax.set_ylabel("|E(n) - E(n-1)| (Hartree, log)")
+    ax.set_title(
+        f"SCF convergence diagnostic -- arch={_diag_arch}, loss={_diag_loss}\\n"
+        f"(eval-only: trained model run through extended SCF cycles)"
+    )
+    ax.legend(title="mode (max_cycles=10)")
+    ax.grid(True, which="both", ls=":", alpha=0.4)
+    fig.tight_layout()
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/scf_convergence.png", dpi=150, bbox_inches="tight")
+    plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_34_feature_impact_md():
+    """Section 6 Cell 34 -- feature impact description."""
+    source = """### Figure: Feature Impact Across Solver Configs
+
+This plot compares the 4 non-attention deep variants (`deep`, `deep_cusp`,
+`deep_dm`, `deep_combined`) across the 3 solver configs. One subplot per loss
+family (A, B, C). Using non-attention variants only provides a clean comparison
+of descriptor impact without attention confounds.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_35_feature_impact():
+    """Section 6 Cell 35 -- feature impact across solver configs."""
+    source = """_feature_archs = ["deep", "deep_cusp", "deep_dm", "deep_combined"]
+_feature_archs = [a for a in _feature_archs if a in ARCH_NAMES]
+
+if not _feature_archs:
+    print("[Cell 35] no non-attention deep variants in config -- skipping")
+else:
+    fig, axes = plt.subplots(1, len(LOSS_NAMES), figsize=(6 * len(LOSS_NAMES), 6),
+                             squeeze=False)
+    n_archs = len(_feature_archs)
+    n_solvers = len(SOLVER_LABELS)
+    x_positions = np.arange(n_archs)
+    bar_width = 0.8 / max(n_solvers, 1)
+
+    for col_idx, loss_name in enumerate(LOSS_NAMES):
+        ax = axes[0, col_idx]
+        for s_idx, solver_label in enumerate(SOLVER_LABELS):
+            heights = []
+            for arch_name in _feature_archs:
+                try:
+                    val = df.loc[(arch_name, loss_name, solver_label), "AE_error_kcalmol_mean"]
+                    heights.append(abs(val) if not np.isnan(val) else np.nan)
+                except KeyError:
+                    heights.append(np.nan)
+            offset = (s_idx - (n_solvers - 1) / 2) * bar_width
+            ax.bar(x_positions + offset, heights, width=bar_width,
+                   color=solver_colors[solver_label], label=solver_label)
+
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(_feature_archs, rotation=30, ha="right", fontsize=9)
+        ax.set_ylabel("|AE error| (kcal/mol, log)")
+        ax.set_yscale("log")
+        ax.set_title(f"Loss: {loss_name}", fontsize=11)
+        ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
+        ax.axhline(1.0, linestyle="--", color="k", alpha=0.5)
+
+    axes[0, -1].legend(
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        fontsize="small",
+        title="solver config",
+    )
+
+    fig.suptitle(
+        "Feature impact: non-attention deep variants x solver config\\n"
+        "(descriptor dimension increases left to right: 2, 4, 5, 7)",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/feature_impact_scf.png", dpi=150, bbox_inches="tight")
+    plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_36_extension_md():
+    """Section 7 Cell 36 -- new molecule extension narrative."""
+    source = """## Section 7: New Molecule Extension
+
+This section demonstrates how to test a new molecule across all 72 trained
+models. The pattern:
+
+1. Define a `MoleculeSpec` for the new molecule and any new atomic species.
+2. Generate PBE/HF/CCSD reference data and metadata sidecars.
+3. Build `atom_energies` from PBE sidecars (PBE-consistent anchoring).
+4. Sweep all 72 checkpoints with `alec.run_test`, collecting errors.
+5. Plot errors grouped by solver config.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_37_new_molecule_template():
+    """Section 7 Cell 37 -- new molecule template with solver sweep."""
+    source = """ext_data_dir = f"{CHECKPOINT_BASE}/external_data"
+
+new_mol_spec = alec.MoleculeSpec(
+    name="CH4",
+    atom="C 0 0 0; H 0.63 0.63 0.63; H -0.63 -0.63 0.63; H -0.63 0.63 -0.63; H 0.63 -0.63 -0.63",
+    basis=BASIS,
+    charge=0,
+    spin=0,
+    atom_composition=(("C", 1), ("H", 4)),
+    grid_level=GRID_LEVEL,
+    external_data_path=f"{ext_data_dir}/CH4.npz",
+)
+new_atom_specs = [("C", "C 0 0 0", 2)]
+
+_atom_names = {s[0] for s in new_atom_specs}
+_entities = [(new_mol_spec.name, new_mol_spec.atom, new_mol_spec.spin)] + new_atom_specs
+os.makedirs(ext_data_dir, exist_ok=True)
+
+for _name, _atom, _spin in _entities:
+    _npz_path = f"{ext_data_dir}/{_name}.npz"
+    _meta_path = f"{ext_data_dir}/{_name}_metadata.json"
+    if os.path.isfile(_npz_path) and os.path.isfile(_meta_path):
+        print(f"Using cached {_name} reference data")
+        continue
+
+    _mol = gto.M(atom=_atom, basis=BASIS, charge=0, spin=_spin, verbose=0)
+
+    _mf_pbe = dft.UKS(_mol) if _spin else dft.RKS(_mol)
+    _mf_pbe.xc = "pbe"
+    _mf_pbe.grids.level = GRID_LEVEL
+    _mf_pbe.kernel()
+    _E_pbe_total = float(_mf_pbe.e_tot)
+
+    _mf_hf = scf.UHF(_mol) if _spin else scf.RHF(_mol)
+    _mf_hf.kernel()
+    _E_hf_total = float(_mf_hf.e_tot)
+
+    _mycc = cc.UCCSD(_mf_hf) if _spin else cc.CCSD(_mf_hf)
+    _mycc.kernel()
+    _E_ccsd_total = float(_mf_hf.e_tot + _mycc.e_corr)
+
+    _sidecar = {
+        "E_hf_total": _E_hf_total,
+        "E_ccsd_total": _E_ccsd_total,
+        "E_pbe_total": _E_pbe_total,
+        "E_lit_Ha": None,
+    }
+
+    _is_atom = _name in _atom_names
+    if _is_atom:
+        np.savez(_npz_path, E_ref_literature=_E_hf_total)
+    else:
+        _dm_hf = _mf_hf.make_rdm1()
+        _dm_hf_total = _dm_hf[0] + _dm_hf[1] if _dm_hf.ndim == 3 else _dm_hf
+        _coords = _mf_pbe.grids.coords
+        _weights = _mf_pbe.grids.weights
+        _ao = _mf_pbe._numint.eval_ao(_mol, _coords, deriv=0)
+        _rho_hf = np.einsum("ij,gi,gj->g", _dm_hf_total, _ao, _ao)
+
+        _dm_pbe = _mf_pbe.make_rdm1()
+        _dm_pbe_total = _dm_pbe[0] + _dm_pbe[1] if _dm_pbe.ndim == 3 else _dm_pbe
+        _rho_pbe = np.einsum("ij,gi,gj->g", _dm_pbe_total, _ao, _ao)
+        _rho_pbe_hf_rmse = float(
+            np.sqrt(np.sum(_weights * (_rho_pbe - _rho_hf) ** 2) / np.sum(_weights))
+        )
+
+        np.savez(
+            _npz_path,
+            dm_target=_dm_hf,
+            rho_ref_grid=_rho_hf,
+            ref_density_method="hf",
+            E_ref_literature=float(_mf_hf.e_tot),
+        )
+        _sidecar["rho_pbe_hf_rmse"] = _rho_pbe_hf_rmse
+
+    with open(_meta_path, "w") as _f:
+        json.dump(_sidecar, _f, indent=2)
+    print(f"Generated {_name} reference data -> {_npz_path}")
+
+# Build new_atom_energies from PBE sidecars
+new_atom_energies = {**atom_energies}
+for _name, _atom, _spin in new_atom_specs:
+    with open(f"{ext_data_dir}/{_name}_metadata.json") as _f:
+        new_atom_energies[_name] = json.load(_f)["E_pbe_total"]
+print(f"new_atom_energies (PBE-consistent): {new_atom_energies}")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_38_new_mol_comparison_md():
+    """Section 7 Cell 38 -- new molecule comparison description."""
+    source = """### Figure: New Molecule Transfer -- SCF Comparison
+
+The next cell sweeps all 72 trained checkpoints on the new molecule (CH4) and
+renders a 1x3 panel comparison: AE error, E error, and density RMSE. Each
+panel groups bars by solver config and colors by solver, showing whether SCF
+self-consistency during training transfers to improved predictions on unseen
+molecules.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_39_new_mol_comparison():
+    """Section 7 Cell 39 -- sweep all 72 checkpoints on new molecule."""
+    source = """_mol_name = new_mol_spec.name
+_sweep_rows = []
+for _arch in ARCH_NAMES:
+    for _loss in LOSS_NAMES:
+        for _solver in SOLVER_LABELS:
+            _ckpt = f"{CHECKPOINT_BASE}/train/{_arch}/{_loss}/{_solver}/model.eqx"
+            if not os.path.isfile(_ckpt):
+                continue
+            _out_dir = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/{_arch}/{_loss}/{_solver}"
+            _spec = alec.TestSpec.from_dicts(
+                arch=alec.get_architecture(_arch),
+                model_checkpoint=_ckpt,
+                molecules=(new_mol_spec,),
+                metrics=("total_energy", "atomization_energy", "density_rmse"),
+                metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {_mol_name: 420.0}}},
+                atom_energies=new_atom_energies,
+                output_dir=_out_dir,
+                solver_config=SCF_CONFIGS[_solver],
+            )
+            _res = alec.run_test(_spec)
+            _pm = _res["per_molecule"][0]
+            _sweep_rows.append({
+                "arch": _arch,
+                "loss": _loss,
+                "solver": _solver,
+                "AE_error_kcalmol": float(abs(_pm.get("AE_error_kcalmol", float("nan")))),
+                "E_error_kcalmol": float(abs(_pm.get("E_error_kcalmol", float("nan")))),
+                "density_rmse": float(_pm.get("density_rmse", float("nan"))),
+            })
+
+if not _sweep_rows:
+    print(f"[Cell 39] no checkpoints found -- skipping plot")
+else:
+    _sweep_df = pd.DataFrame(_sweep_rows)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    _metrics = [
+        ("AE_error_kcalmol", "|AE error| (kcal/mol)", f"{_mol_name} AE error"),
+        ("E_error_kcalmol", "|E error| (kcal/mol)", f"{_mol_name} E error"),
+        ("density_rmse", "density RMSE", f"{_mol_name} density RMSE"),
+    ]
+
+    for ax, (col, ylabel, title) in zip(axes, _metrics):
+        for s_idx, solver_label in enumerate(SOLVER_LABELS):
+            _sub = _sweep_df[_sweep_df["solver"] == solver_label]
+            _x = np.arange(len(_sub))
+            _labels = [f"{a}/{l}" for a, l in zip(_sub["arch"], _sub["loss"])]
+            ax.bar(_x + s_idx * 0.25, _sub[col].values, width=0.25,
+                   color=solver_colors[solver_label], label=solver_label, alpha=0.8)
+        ax.set_ylabel(ylabel)
+        ax.set_yscale("log")
+        ax.set_title(title)
+        ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
+        ax.legend(fontsize=8, title="solver")
+
+    fig.suptitle(
+        f"Transfer evaluation -- {_mol_name} across all 72 checkpoints\\n"
+        f"(grouped by solver config, colored by solver)",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/{_mol_name}_scf_comparison.png",
+                dpi=150, bbox_inches="tight")
+    plt.show()
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -1443,6 +1774,14 @@ def main(
         build_cell_29_dm_heatmaps(),
         build_cell_30_density_histograms_md(),
         build_cell_31_density_histograms(),
+        build_cell_32_convergence_md(),
+        build_cell_33_convergence_diagnostic(),
+        build_cell_34_feature_impact_md(),
+        build_cell_35_feature_impact(),
+        build_cell_36_extension_md(),
+        build_cell_37_new_molecule_template(),
+        build_cell_38_new_mol_comparison_md(),
+        build_cell_39_new_mol_comparison(),
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce
