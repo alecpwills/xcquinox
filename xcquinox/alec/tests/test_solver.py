@@ -175,6 +175,29 @@ def test_energy_convergence_registry_name():
     assert EnergyConvergence.registry_name == "energy"
 
 
+from xcquinox.alec.solver import SCFResult, run_scf
+
+
+def test_scf_result_is_dataclass():
+    import dataclasses as dc
+    assert dc.is_dataclass(SCFResult)
+
+
+def test_run_scf_unknown_backend_raises():
+    from unittest.mock import MagicMock
+    cfg = SolverConfig.__new__(SolverConfig)
+    object.__setattr__(cfg, "backend", "bogus")
+    object.__setattr__(cfg, "mode", SolverMode.ONESHOT)
+    object.__setattr__(cfg, "max_cycles", 0)
+    object.__setattr__(cfg, "conv_tol", 1e-6)
+    object.__setattr__(cfg, "feature_policy", None)
+    object.__setattr__(cfg, "mixer_name", "linear")
+    object.__setattr__(cfg, "mixer_kwargs", (("alpha", 0.5),))
+    object.__setattr__(cfg, "convergence_name", "energy")
+    with pytest.raises(ValueError, match="unknown solver backend"):
+        run_scf(cfg, MagicMock(), {})
+
+
 def test_effective_feature_policy_honors_explicit_override():
     cfg = SolverConfig(
         mode=SolverMode.FIXED_J, max_cycles=5,

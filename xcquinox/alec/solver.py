@@ -140,3 +140,24 @@ class EnergyConvergence(ConvergenceCriterion):
 
     def is_converged_from_energies(self, e_prev, e_curr):
         return jnp.abs(e_curr - e_prev) < self.tol
+
+
+@dataclass(frozen=True)
+class SCFResult:
+    """Result bundle returned by all SCF backend implementations."""
+    density_matrix: jnp.ndarray     # (nao, nao)
+    total_energy: jnp.ndarray       # scalar
+    cycles_run: jnp.ndarray         # int32 scalar
+    converged: jnp.ndarray          # bool scalar
+    features_used: jnp.ndarray      # (n_grid, n_features) final cycle features
+
+
+def run_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+    """Dispatch to the selected backend. Backends are imported lazily."""
+    if config.backend == SolverBackend.MANUAL:
+        from xcquinox.alec.solver_manual import run_manual_scf
+        return run_manual_scf(config, model, mol_data)
+    if config.backend == SolverBackend.PYSCFAD:
+        from xcquinox.alec.solver_pyscfad import run_pyscfad_scf
+        return run_pyscfad_scf(config, model, mol_data)
+    raise ValueError(f"unknown solver backend: {config.backend}")
