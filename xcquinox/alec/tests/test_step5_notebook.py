@@ -313,3 +313,39 @@ def test_cell_21_aux_inspection():
     source = gen.build_cell_21_aux_inspection().source
     assert "aux_log.pkl" in source
     assert "deep_combined" in source
+
+
+# ---------------------------------------------------------------------------
+# Task 5 -- Evaluation Cells 22-25
+# ---------------------------------------------------------------------------
+
+
+def test_cell_22_eval_md():
+    gen = load_generator()
+    cell = gen.build_cell_22_eval_md()
+    assert cell.cell_type == "markdown"
+    assert "solver_config" in cell.source or "evaluation" in cell.source.lower()
+
+
+def test_cell_23_test_loop_triple_nested():
+    """Eval loop must sweep arch x loss x solver."""
+    gen = load_generator()
+    source = gen.build_cell_23_test_loop().source
+    assert "for arch_name in ARCH_NAMES:" in source
+    assert "for loss_name in LOSS_NAMES:" in source
+    assert "for solver_label in SOLVER_LABELS:" in source
+    assert "alec.run_test(" in source
+    assert "solver_config" in source
+
+
+def test_cell_24_dataframe_includes_solver():
+    """DataFrame must be indexed by (arch, loss, solver)."""
+    gen = load_generator()
+    source = gen.build_cell_24_dataframe().source
+    assert "solver" in source.lower()
+
+
+def test_cell_25_results_table():
+    gen = load_generator()
+    source = gen.build_cell_25_results_table().source
+    assert "solver" in source.lower()

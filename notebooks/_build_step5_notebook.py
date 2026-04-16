@@ -1085,6 +1085,93 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_22_eval_md():
+    """Section 5 Cell 22 -- evaluation narrative."""
+    source = """## Section 5: Evaluation
+
+Each trained model is scored on the same molecules used for training. Four
+metrics are computed per molecule:
+
+- **`total_energy`** -- NN total energy vs PBE/HF reference.
+- **`atomization_energy`** -- AE_nn vs literature (233.016 kcal/mol for H2O).
+- **`density_rmse`** -- RMSE of grid density vs HF target (molecules only).
+- **`constraint_violations`** -- flattened constraint report.
+
+The evaluation loop sweeps all 72 (arch, loss, solver_config) combinations.
+Each TestSpec carries the solver_config for metadata logging.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_23_test_loop():
+    """Section 5 Cell 23 -- build TestSpec + run_test per trained model."""
+    source = """for arch_name in ARCH_NAMES:
+    for loss_name in LOSS_NAMES:
+        for solver_label in SOLVER_LABELS:
+            cfg = SCF_CONFIGS[solver_label]
+            ckpt_dir = f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}/{solver_label}"
+            model_path = f"{ckpt_dir}/model.eqx"
+            if not os.path.isfile(model_path):
+                continue
+            test_spec = alec.TestSpec.from_dicts(
+                arch=alec.get_architecture(arch_name),
+                model_checkpoint=model_path,
+                molecules=tuple(mol_specs),
+                metrics=("total_energy", "atomization_energy", "density_rmse", "constraint_violations"),
+                metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {"H2O": 233.016}}},
+                atom_energies=atom_energies,
+                output_dir=f"{CHECKPOINT_BASE}/eval/{arch_name}/{loss_name}/{solver_label}",
+                solver_config=cfg,
+            )
+            alec.run_test(test_spec)
+"""
+    return new_code_cell(source)
+
+
+def build_cell_24_dataframe():
+    """Section 5 Cell 24 -- aggregate results into pandas DataFrame."""
+    source = """rows = []
+for arch_name in ARCH_NAMES:
+    for loss_name in LOSS_NAMES:
+        for solver_label in SOLVER_LABELS:
+            output_dir = f"{CHECKPOINT_BASE}/eval/{arch_name}/{loss_name}/{solver_label}"
+            try:
+                with open(f"{output_dir}/aggregate.json") as _f:
+                    agg = json.load(_f)
+            except FileNotFoundError:
+                agg = {}
+            rows.append({
+                "arch": arch_name,
+                "loss": loss_name,
+                "solver": solver_label,
+                "AE_error_kcalmol_mean": agg.get("AE_error_kcalmol", {}).get("mean", np.nan),
+                "AE_error_kcalmol_RMSE": agg.get("AE_error_kcalmol", {}).get("RMSE", np.nan),
+                "E_error_kcalmol_mean": agg.get("E_error_kcalmol", {}).get("mean", np.nan),
+                "density_rmse_mean": agg.get("density_rmse", {}).get("mean", np.nan),
+            })
+df = pd.DataFrame(rows).set_index(["arch", "loss", "solver"])
+print(f"Built results DataFrame: {df.shape[0]} rows x {df.shape[1]} cols")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_25_results_table():
+    """Section 5 Cell 25 -- pivot table showing mean |AE error| per solver."""
+    source = """# Pivot: mean |AE error| per (arch, loss) x solver
+piv = df["AE_error_kcalmol_mean"].abs().unstack(level="solver")
+print("Mean |AE error| (kcal/mol), (arch, loss) x solver:")
+print(piv.round(3))
+print()
+# Best config per loss
+for loss_name in LOSS_NAMES:
+    _sub = df.xs(loss_name, level="loss")["AE_error_kcalmol_mean"].abs()
+    _best = _sub.idxmin()
+    print(f"Best config for {loss_name}: arch={_best[0]}, solver={_best[1]}, "
+          f"|AE err|={_sub[_best]:.3f} kcal/mol")
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -1143,6 +1230,10 @@ def main(
         build_cell_19_training_loop(),
         build_cell_20_training_loss_plot(),
         build_cell_21_aux_inspection(),
+        build_cell_22_eval_md(),
+        build_cell_23_test_loop(),
+        build_cell_24_dataframe(),
+        build_cell_25_results_table(),
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce
