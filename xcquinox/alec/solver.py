@@ -119,3 +119,24 @@ class LinearMixer(Mixer):
         D_mixed = self.alpha * D_out + (1.0 - self.alpha) * D_in
         new_state = MixerState(step_index=state.step_index + jnp.int32(1))
         return new_state, D_mixed
+
+
+class ConvergenceCriterion(abc.ABC):
+    registry_name: str = ""
+
+    @abc.abstractmethod
+    def is_converged_from_energies(self, e_prev: jnp.ndarray,
+                                   e_curr: jnp.ndarray) -> jnp.ndarray:
+        """Return scalar JAX bool. Pure — safe inside jit'd scan body."""
+
+
+class EnergyConvergence(ConvergenceCriterion):
+    registry_name = "energy"
+
+    def __init__(self, tol: float):
+        if tol <= 0:
+            raise ValueError(f"tol must be > 0, got {tol}")
+        self.tol = tol
+
+    def is_converged_from_energies(self, e_prev, e_curr):
+        return jnp.abs(e_curr - e_prev) < self.tol

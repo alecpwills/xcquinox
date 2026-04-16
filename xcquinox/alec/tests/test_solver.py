@@ -142,6 +142,39 @@ def test_linear_mixer_registry_name():
     assert LinearMixer.registry_name == "linear"
 
 
+from xcquinox.alec.solver import ConvergenceCriterion, EnergyConvergence
+
+
+def test_convergence_criterion_abc_is_abstract():
+    with pytest.raises(TypeError):
+        ConvergenceCriterion()
+
+
+def test_energy_convergence_small_delta_converges():
+    crit = EnergyConvergence(tol=1e-6)
+    e_prev = jnp.float64(1.0)
+    e_curr = jnp.float64(1.0 + 1e-8)
+    assert bool(crit.is_converged_from_energies(e_prev, e_curr))
+
+
+def test_energy_convergence_large_delta_not_converged():
+    crit = EnergyConvergence(tol=1e-6)
+    e_prev = jnp.float64(1.0)
+    e_curr = jnp.float64(1.0 + 1e-3)
+    assert not bool(crit.is_converged_from_energies(e_prev, e_curr))
+
+
+def test_energy_convergence_rejects_nonpositive_tol():
+    with pytest.raises(ValueError, match="tol must be > 0"):
+        EnergyConvergence(tol=-1.0)
+    with pytest.raises(ValueError, match="tol must be > 0"):
+        EnergyConvergence(tol=0.0)
+
+
+def test_energy_convergence_registry_name():
+    assert EnergyConvergence.registry_name == "energy"
+
+
 def test_effective_feature_policy_honors_explicit_override():
     cfg = SolverConfig(
         mode=SolverMode.FIXED_J, max_cycles=5,
