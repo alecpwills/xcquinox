@@ -406,3 +406,20 @@ def test_compute_vxc_nn_v_rho_matches_analytic_lda():
     vxc = compute_vxc_nn(model, rho, sigma, features, ao, weights)
     assert vxc.shape == (n_ao, n_ao)
     assert jnp.all(jnp.isfinite(vxc))
+
+
+def test_oneshot_dm_prediction_fast_solver_config_none_matches_legacy(h2o_data):
+    """Passing solver_config=None explicitly must reproduce the legacy path."""
+    model = _make_model(seed=0, descriptors=())
+    dm_legacy = oneshot_dm_prediction_fast(model, h2o_data)
+    dm_new = oneshot_dm_prediction_fast(model, h2o_data, solver_config=None)
+    import numpy as np
+    np.testing.assert_allclose(np.asarray(dm_legacy), np.asarray(dm_new), atol=1e-12)
+
+
+def test_oneshot_grid_density_solver_config_none_matches_legacy(h2o_data):
+    model = _make_model(seed=0, descriptors=())
+    rho_legacy = oneshot_grid_density(model, h2o_data)
+    rho_new = oneshot_grid_density(model, h2o_data, solver_config=None)
+    import numpy as np
+    np.testing.assert_allclose(np.asarray(rho_legacy), np.asarray(rho_new), atol=1e-12)

@@ -65,7 +65,7 @@ def fixed_density_total_energy(model, mol_data) -> float:
     return mol_data["E_non_xc"] + exc_integrated
 
 
-def oneshot_dm_prediction_fast(model, mol_data) -> jnp.ndarray:
+def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarray:
     """Fixed-J Roothaan one-shot DM prediction.
 
     Builds F_NN = h_core + J[D_PBE] + V_xc^NN(rho_PBE), solves the
@@ -76,6 +76,9 @@ def oneshot_dm_prediction_fast(model, mol_data) -> jnp.ndarray:
       RKS: shape (n_ao, n_ao)
       UKS: shape (2, n_ao, n_ao)
     """
+    if solver_config is not None:
+        from xcquinox.alec.solver import run_scf
+        return run_scf(solver_config, model, mol_data).density_matrix
     features = assemble_descriptor_features(model.descriptors, mol_data)
     vxc_nn = compute_vxc_nn(
         model,
@@ -145,11 +148,18 @@ def oneshot_dm_prediction_fast(model, mol_data) -> jnp.ndarray:
     return dm_pred
 
 
-def oneshot_grid_density(model, mol_data) -> jnp.ndarray:
+def oneshot_grid_density(model, mol_data, solver_config=None) -> jnp.ndarray:
     """Run oneshot DM prediction, then compute grid density.
 
     Returns spin-summed density of shape (n_points,) for both RKS and UKS.
     """
+    if solver_config is not None:
+        from xcquinox.alec.solver import run_scf
+        D_total = run_scf(solver_config, model, mol_data).density_matrix
+        if mol_data["is_unrestricted"]:
+            D_total = D_total[0] + D_total[1]
+        ao = mol_data["ao_grid"]
+        return jnp.einsum("ij,gi,gj->g", D_total, ao, ao)
     D_NN = oneshot_dm_prediction_fast(model, mol_data)
     ao = mol_data["ao_grid"]
 
