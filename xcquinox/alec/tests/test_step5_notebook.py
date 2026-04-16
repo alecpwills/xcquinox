@@ -148,3 +148,56 @@ def test_cell_06_solver_labels_honors_override():
     # Must only contain the overridden labels, not the full set
     assert "oneshot" in source
     assert "full_3" in source
+
+
+# ---------------------------------------------------------------------------
+# Task 2 -- Pretraining Cells 7-11
+# ---------------------------------------------------------------------------
+
+
+def test_cell_07_pretrain_md_exists():
+    gen = load_generator()
+    cell = gen.build_cell_07_pretrain_md()
+    assert cell.cell_type == "markdown"
+    assert "Pretraining" in cell.source
+
+
+def test_cell_08_pretrain_data_gen_uses_rho_cutoff():
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_data_gen().source
+    assert "valid = rho > 1e-10" in source
+    assert "cusp_list, dm_list = [], []" in source
+
+
+def test_cell_08_pretrain_data_gen_uses_np_where():
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_data_gen().source
+    assert "np.where(np.abs(ex_lda)" in source
+
+
+def test_cell_08_pretrain_data_gen_need_flags():
+    gen = load_generator()
+    source = gen.build_cell_08_pretrain_data_gen().source
+    assert "need_cusp = any(" in source
+    assert "need_dm = any(" in source
+
+
+def test_cell_09_pretrain_loop_qualifies_alec():
+    gen = load_generator()
+    source = gen.build_cell_09_pretrain_loop().source
+    assert "alec.PretrainSpec(" in source
+    assert "alec.run_pretrain(" in source
+
+
+def test_cell_10_pretrain_loss_plot():
+    gen = load_generator()
+    source = gen.build_cell_10_pretrain_loss_plot().source
+    assert "arch_colors[arch_name]" in source
+    assert "pretrain_losses.png" in source
+
+
+def test_cell_11_pretrain_parity():
+    gen = load_generator()
+    source = gen.build_cell_11_pretrain_parity().source
+    assert "rho_all" in source
+    assert "sigma_all" in source
