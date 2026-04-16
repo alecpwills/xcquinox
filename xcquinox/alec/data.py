@@ -121,6 +121,7 @@ class MoleculeData(TypedDict, total=True):
     ao_grid_deriv: jnp.ndarray
     cusp_features: jnp.ndarray | None
     dm_features: jnp.ndarray | None
+    eri: jnp.ndarray | None
     atom_composition: tuple[tuple[str, int], ...]
     mol_metadata: dict
 
@@ -241,6 +242,10 @@ def precompute_fixed_density_data(
         )
         dm_features = jnp.tile(dm_feat_global, (len(rho_pbe), 1))
 
+    eri = None
+    if "eri" in all_needed:
+        eri = jnp.array(mol.intor("int2e", aosym="s1"))
+
     # External reference data (dm_target / rho_ref_grid / E_ref_literature)
     # come from an optional .npz pointed to by mol_spec.external_data_path.
     # precompute only handles SCF-level quantities; CCSD/HF post-SCF
@@ -284,6 +289,7 @@ def precompute_fixed_density_data(
         ao_grid_deriv=jnp.array(ao),
         cusp_features=cusp_features,
         dm_features=dm_features,
+        eri=eri,
         atom_composition=mol_spec.atom_composition,
         mol_metadata={
             "atom": mol_spec.atom,

@@ -527,3 +527,23 @@ def test_precompute_populates_ref_density_method_when_external_provides_it(tmp_p
     data = precompute_fixed_density_data(spec)
     assert data["ref_density_method"] == "hf"
     assert data["rho_ref_grid"] is not None
+
+
+def test_precompute_populates_eri_when_requested():
+    """When required_keys includes 'eri', precompute stashes the 4-index ERI tensor."""
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+
+    data = precompute_fixed_density_data(h2_molecule(), required_keys=("eri",))
+    assert "eri" in data
+    nao = data["h_core"].shape[0]
+    assert data["eri"].shape == (nao, nao, nao, nao)
+
+
+def test_precompute_eri_absent_by_default():
+    """Without 'eri' in required_keys, data['eri'] is None."""
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+
+    data = precompute_fixed_density_data(h2_molecule())
+    assert data.get("eri") is None
