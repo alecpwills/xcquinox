@@ -586,6 +586,268 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_12_training_md():
+    """Section 4 Cell 12 -- training data narrative with ERI note (markdown).
+
+    Explains the training set (H, O, H2O at def2-svp), reference generation
+    (PBE/HF/CCSD refs), and the ERI precompute step required by FULL SCF mode.
+    """
+    source = """## Section 3: Training Data
+
+The training molecules are the same as step4: **H** (atom, spin=1), **O**
+(atom, spin=2), and **H2O** (molecule, spin=0) at the def2-svp basis.
+
+### Reference Generation
+
+Three levels of reference data are computed for each species:
+
+- **PBE** total energies — used as the atom-energy anchors (`atom_energies` dict)
+  so the NN's required XC correction stays on the order of single kcal/mol.
+- **HF** density matrix and grid density — stored as density targets for H2O
+  (`dm_target`, `rho_ref_grid`). Atoms skip density targets because degenerate
+  HOMO eigenvalues make one-shot density numerically unstable.
+- **CCSD** total energies — recorded in the sidecar JSON for post-training
+  atomization-energy comparison.
+
+### ERI Precompute
+
+The **FULL** SCF mode rebuilds the Fock matrix at each cycle, which requires
+the electron-repulsion integrals (ERI). Cell 16 calls
+`precompute_fixed_density_data` with `required_keys=("eri",)` to ensure the
+ERI tensor is cached in the molecule data dictionaries.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_13_reference_dicts():
+    """Section 4 Cell 13 — atom_energies_literature + targets dicts + ext_data_dir setup.
+
+    The literature-value dict (H: -0.5 Ha, O: -75.0673 Ha) is stored under
+    `atom_energies_literature` and is consumed ONLY by Cell 14's atom-branch
+    `E_ref_literature` sidecar write (which TotalEnergyMetric compares against).
+    The NAME `atom_energies` that the training loss and AtomizationEnergyMetric
+    consume is bound later — at the end of Cell 14 — to a PBE-consistent dict.
+    """
+    source = """# Literature atomic total energies in Hartree (negative, as they should be).
+# Used ONLY by Cell 14 to write each atom's E_ref_literature sidecar value
+# (TotalEnergyMetric compares against this scalar).
+# H is exact: -0.5 Ha. O is literature total ~ -75.0673 Ha.
+atom_energies_literature = {"H": -0.5, "O": -75.0673}
+
+# targets dict: validator requires an entry for every molecule in TrainingSpec.molecules
+# (config.py:523-525). Atom entries are never dereferenced at training time but must be
+# finite floats — we set them to the literature atomic totals for consistency.
+# The H2O entry is the POSITIVE-for-bound atomization energy in Hartree:
+#   AE = E_atoms_sum - E_mol > 0 for a bound molecule
+# Literature: AE(H2O) ~ 974.94 kJ/mol = 974.94 / 2625.5 Ha.
+targets = {"H": -0.5, "O": -75.0673, "H2O": 974.94 / 2625.5}
+
+ext_data_dir = f"{CHECKPOINT_BASE}/external_data"
+os.makedirs(ext_data_dir, exist_ok=True)
+print(
+    f"ext_data_dir={ext_data_dir}  "
+    f"targets={list(targets.keys())}  "
+    f"atom_energies_literature={list(atom_energies_literature.keys())}"
+)
+# NOTE: The runtime name `atom_energies` (consumed by the training loss and
+# AtomizationEnergyMetric) is defined at the end of Cell 14 from the PBE
+# atomic totals computed there. Do not reference `atom_energies` before Cell 14.
+"""
+    return new_code_cell(source)
+
+
+def build_cell_14_hf_ccsd_gen():
+    """Section 4 Cell 14 — HF/CCSD/PBE reference computation + npz + sidecars.
+
+    Writes `{name}.npz` (whitelisted keys only) and `{name}_metadata.json`
+    (HF/CCSD/PBE/literature totals) for H, O, and H2O. Binds the runtime
+    name `atom_energies` (the authoritative AE anchor dict consumed by
+    TrainingSpec, TestSpec, and AtomizationEnergyMetric) to a
+    PBE-consistent {"H": E_pbe[H], "O": E_pbe[O]}. The literature dict
+    from Cell 13 is preserved as `atom_energies_literature` and is used
+    ONLY for the atom-branch `E_ref_literature` sidecar write.
+    """
+    source = """# HF/CCSD reference computation and external_data .npz generation.
+# H2O uses H2O_COORDS from Cell 3 (equilibrium geometry, NOT a distorted 90-degree box).
+_mols = [
+    ("H", "H 0 0 0", 1),
+    ("O", "O 0 0 0", 2),
+    ("H2O", H2O_COORDS, 0),
+]
+
+# Accumulates PBE atomic total energies (one entry per element symbol) so
+# that at the end of this cell we can bind `atom_energies` to a
+# PBE-consistent dict. Using PBE here rather than literature values keeps
+# the NN's required XC correction on the order of single kcal/mol in the
+# post-hoc fixed-density framework; literature anchors would demand a
+# ~100 kcal/mol correction which the NN cannot produce on a frozen density.
+# Concretely: PBE/6-31G** gives ~-0.500 Ha for H and ~-74.87 Ha for O,
+# vs literature -0.5 / -75.0673 Ha. The ~0.2 Ha (~125 kcal/mol) O gap is
+# exactly the correction the NN would otherwise have to conjure on a
+# frozen density. Using PBE anchors makes this gap vanish for isolated
+# atoms and leaves only the molecular correlation/exchange gap for the NN.
+atom_energies_pbe = {}
+
+for name, atom, spin in _mols:
+    # Identical gto.M kwargs to what precompute_fixed_density_data uses internally.
+    mol = gto.M(atom=atom, basis=BASIS, charge=0, spin=spin, verbose=0)
+
+    # PBE SCF with grid pinned to GRID_LEVEL (must match Cell 15/16 precompute grid).
+    mf = dft.UKS(mol) if mol.spin else dft.RKS(mol)
+    mf.xc = "pbe"
+    mf.grids.level = GRID_LEVEL
+    mf.kernel()
+    E_pbe_total = float(mf.e_tot)
+
+    # HF SCF (spin-branched).
+    mf_hf = scf.UHF(mol) if mol.spin else scf.RHF(mol)
+    mf_hf.kernel()
+    E_hf_total = float(mf_hf.e_tot)
+
+    # CCSD (spin-branched). Runs for every molecule purely for sidecar documentation.
+    mycc = cc.UCCSD(mf_hf) if mol.spin else cc.CCSD(mf_hf)
+    mycc.kernel()
+    E_ccsd_total = float(mf_hf.e_tot + mycc.e_corr)
+
+    if name in ("H", "O"):
+        # Atom branch: degenerate HOMO eigenvalues make one-shot density targets
+        # numerically unstable. Write ONLY E_ref_literature for atoms.
+        # E_ref_literature is the LITERATURE atomic total (TotalEnergyMetric
+        # compares against this).
+        np.savez(
+            os.path.join(ext_data_dir, f"{name}.npz"),
+            E_ref_literature=atom_energies_literature[name],
+        )
+        # Record the PBE total for this atom — consumed by the AE anchor dict
+        # at the end of this cell.
+        atom_energies_pbe[name] = E_pbe_total
+    else:
+        # H2O branch: write HF DM as density target (NOT CCSD DM — step3b uses HF).
+        dm_hf = mf_hf.make_rdm1()
+        dm_hf_total = dm_hf[0] + dm_hf[1] if dm_hf.ndim == 3 else dm_hf
+
+        # Grid density from HF DM via einsum on the AO grid.
+        coords = mf.grids.coords
+        ao_grid = mf._numint.eval_ao(mol, coords, deriv=0)
+        rho_hf = np.einsum("ij,gi,gj->g", dm_hf_total, ao_grid, ao_grid)
+
+        # The three keys below are the ONLY keys _ALLOWED_EXTERNAL_KEYS accepts
+        # (data.py:17-21). E_ref_literature is the HF total (not the CCSD total),
+        # because TotalEnergyMetric.E_error_hartree gauges against this scalar and
+        # the density-matching losses (B/C/D2/D3) optimize toward the HF density.
+        np.savez(
+            os.path.join(ext_data_dir, f"{name}.npz"),
+            dm_target=dm_hf,
+            rho_ref_grid=rho_hf,
+            ref_density_method="hf",
+            E_ref_literature=float(mf_hf.e_tot),
+        )
+
+    # Sidecar JSON for every species — library .npz cannot carry extra keys,
+    # so HF/CCSD/literature/PBE totals live here. Cell 25 reads E_ccsd_total
+    # from this file for the CCSD atomization-energy reference line.
+    with open(os.path.join(ext_data_dir, f"{name}_metadata.json"), "w") as _f:
+        json.dump(
+            {
+                "E_hf_total": E_hf_total,
+                "E_ccsd_total": E_ccsd_total,
+                "E_lit_Ha": atom_energies_literature.get(name, None),
+                "E_pbe_total": E_pbe_total,
+            },
+            _f,
+            indent=2,
+        )
+
+# Bind the runtime name `atom_energies` to the PBE-consistent dict. This is
+# the dict that flows into TrainingSpec.atom_energies and
+# TestSpec.atom_energies. After the losses.py fix, both the training
+# loss and AtomizationEnergyMetric compute atomization energy as
+# `sum(atom_energies[Z] * n_Z) - E_mol`, so the training loss and evaluation
+# metric agree exactly on every compound.
+atom_energies = dict(atom_energies_pbe)
+print(f"Reference data written to {ext_data_dir}")
+_ae_str = {k: round(v, 6) for k, v in atom_energies.items()}
+print(f"atom_energies (PBE-consistent) = {_ae_str}")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_15_mol_specs():
+    """Section 4 Cell 15 — construct three alec.MoleculeSpec objects.
+
+    The list is an explicit three-element literal (NOT a comprehension) so that
+    downstream cells can reference the individual entries by index and Cell 16
+    can iterate over them by name. All kwargs match Cell 14's gto.M kwargs
+    exactly so that precompute_fixed_density_data rebuilds the same pyscf grid
+    and _load_external_data accepts the .npz arrays.
+    """
+    source = """mol_specs = [
+    alec.MoleculeSpec(
+        name="H",
+        atom="H 0 0 0",
+        basis=BASIS,
+        charge=0,
+        spin=1,
+        atom_composition=(("H", 1),),
+        external_data_path=f"{ext_data_dir}/H.npz",
+        grid_level=GRID_LEVEL,
+    ),
+    alec.MoleculeSpec(
+        name="O",
+        atom="O 0 0 0",
+        basis=BASIS,
+        charge=0,
+        spin=2,
+        atom_composition=(("O", 1),),
+        external_data_path=f"{ext_data_dir}/O.npz",
+        grid_level=GRID_LEVEL,
+    ),
+    alec.MoleculeSpec(
+        name="H2O",
+        atom=H2O_COORDS,
+        basis=BASIS,
+        charge=0,
+        spin=0,
+        atom_composition=(("H", 2), ("O", 1)),
+        external_data_path=f"{ext_data_dir}/H2O.npz",
+        grid_level=GRID_LEVEL,
+    ),
+]
+print(f"Built {len(mol_specs)} MoleculeSpec objects: {[m.name for m in mol_specs]}")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_16_precompute():
+    """Section 4 Cell 16 -- precompute fixed-density data with ERI for FULL mode."""
+    source = """# Precompute mol_data for all molecules. required_keys includes "eri"
+# because FULL SCF mode rebuilds the Fock matrix and needs the 4-center integrals.
+_arch_objs = [alec.get_architecture(n) for n in ARCH_NAMES]
+_desc_keys = set()
+for _a in _arch_objs:
+    for _d in _a.materialize_descriptors():
+        _desc_keys.update(_d.required_mol_keys)
+
+mol_data_list = []
+for ms in mol_specs:
+    md = alec.precompute_fixed_density_data(
+        ms,
+        required_keys=tuple(_desc_keys | {"eri"}),
+        descriptors=sum((_a.materialize_descriptors() for _a in _arch_objs), ()),
+    )
+    mol_data_list.append(md)
+
+# Sanity: atoms have 1-element composition, molecules have > 1
+for md in mol_data_list:
+    _n_atoms = sum(n for _, n in md["atom_composition"])
+    _kind = "atom" if _n_atoms == 1 else "molecule"
+    print(f"  {md['name']:5s}  ({_kind})  grid_pts={len(md['rho_grid'])}  keys={sorted(md.keys())[:8]}...")
+    if "eri" in md:
+        print(f"         ERI shape: {md['eri'].shape}")
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -634,6 +896,11 @@ def main(
         build_cell_09_pretrain_loop(),
         build_cell_10_pretrain_loss_plot(),
         build_cell_11_pretrain_parity(),
+        build_cell_12_training_md(),
+        build_cell_13_reference_dicts(),
+        build_cell_14_hf_ccsd_gen(),
+        build_cell_15_mol_specs(),
+        build_cell_16_precompute(),
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce

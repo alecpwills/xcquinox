@@ -201,3 +201,43 @@ def test_cell_11_pretrain_parity():
     source = gen.build_cell_11_pretrain_parity().source
     assert "rho_all" in source
     assert "sigma_all" in source
+
+
+# ---------------------------------------------------------------------------
+# Task 3 -- Training Data Cells 12-16
+# ---------------------------------------------------------------------------
+
+
+def test_cell_12_training_md():
+    gen = load_generator()
+    cell = gen.build_cell_12_training_md()
+    assert cell.cell_type == "markdown"
+    assert "ERI" in cell.source or "FULL" in cell.source
+
+
+def test_cell_13_reference_dicts():
+    gen = load_generator()
+    source = gen.build_cell_13_reference_dicts().source
+    assert "atom_energies_literature" in source
+    assert "targets" in source
+
+
+def test_cell_14_hf_ccsd_gen():
+    gen = load_generator()
+    source = gen.build_cell_14_hf_ccsd_gen().source
+    assert "atom_energies" in source
+    assert "E_pbe_total" in source
+
+
+def test_cell_15_mol_specs():
+    gen = load_generator()
+    source = gen.build_cell_15_mol_specs().source
+    assert "alec.MoleculeSpec(" in source
+    assert "mol_specs" in source
+
+
+def test_cell_16_precompute_requires_eri():
+    gen = load_generator()
+    source = gen.build_cell_16_precompute().source
+    assert '"eri"' in source
+    assert "precompute_fixed_density_data" in source or "alec.precompute_fixed_density_data" in source
