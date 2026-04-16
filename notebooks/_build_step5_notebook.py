@@ -1743,45 +1743,52 @@ def main(
 
     nb = new_notebook()
     nb.cells = [
-        build_cell_01_title(),
-        build_cell_02_imports(),
-        build_cell_03_constants(checkpoint_base),
-        build_cell_04_arch_table(),
-        build_cell_05_arch_names(arch_names),
-        build_cell_06_scf_configs(solver_labels),
-        build_cell_07_pretrain_md(),
-        build_cell_08_pretrain_data_gen(),
-        build_cell_09_pretrain_loop(),
-        build_cell_10_pretrain_loss_plot(),
-        build_cell_11_pretrain_parity(),
-        build_cell_12_training_md(),
-        build_cell_13_reference_dicts(),
-        build_cell_14_hf_ccsd_gen(),
-        build_cell_15_mol_specs(),
-        build_cell_16_precompute(),
-        build_cell_17_training_md(),
-        build_cell_18_training_specs(loss_names),
-        build_cell_19_training_loop(),
-        build_cell_20_training_loss_plot(),
-        build_cell_21_aux_inspection(),
-        build_cell_22_eval_md(),
-        build_cell_23_test_loop(),
-        build_cell_24_dataframe(),
-        build_cell_25_results_table(),
-        build_cell_26_scf_impact_md(),
-        build_cell_27_scf_comparison_bars(),
-        build_cell_28_dm_heatmaps_md(),
-        build_cell_29_dm_heatmaps(),
-        build_cell_30_density_histograms_md(),
-        build_cell_31_density_histograms(),
-        build_cell_32_convergence_md(),
-        build_cell_33_convergence_diagnostic(),
-        build_cell_34_feature_impact_md(),
-        build_cell_35_feature_impact(),
-        build_cell_36_extension_md(),
-        build_cell_37_new_molecule_template(),
-        build_cell_38_new_mol_comparison_md(),
-        build_cell_39_new_mol_comparison(),
+        # Section 1: Setup (Cells 1-6)
+        build_cell_01_title(),                          # 0
+        build_cell_02_imports(),                         # 1
+        build_cell_03_constants(checkpoint_base),        # 2
+        build_cell_04_arch_table(),                      # 3
+        build_cell_05_arch_names(arch_names),            # 4
+        build_cell_06_scf_configs(solver_labels),        # 5
+        # Section 2: Pretraining (Cells 7-11)
+        build_cell_07_pretrain_md(),                     # 6
+        build_cell_08_pretrain_data_gen(),                # 7
+        build_cell_09_pretrain_loop(),                    # 8
+        build_cell_10_pretrain_loss_plot(),               # 9
+        build_cell_11_pretrain_parity(),                  # 10
+        # Section 3: Training Data (Cells 12-16)
+        build_cell_12_training_md(),                     # 11
+        build_cell_13_reference_dicts(),                  # 12
+        build_cell_14_hf_ccsd_gen(),                      # 13
+        build_cell_15_mol_specs(),                        # 14
+        build_cell_16_precompute(),                       # 15
+        # Section 4: SCF-Varied Training (Cells 17-21)
+        build_cell_17_training_md(),                     # 16
+        build_cell_18_training_specs(loss_names),         # 17
+        build_cell_19_training_loop(),                    # 18
+        build_cell_20_training_loss_plot(),                # 19
+        build_cell_21_aux_inspection(),                   # 20
+        # Section 5: Evaluation (Cells 22-25)
+        build_cell_22_eval_md(),                         # 21
+        build_cell_23_test_loop(),                        # 22
+        build_cell_24_dataframe(),                        # 23
+        build_cell_25_results_table(),                    # 24
+        # Section 6: Visualizations (Cells 26-35)
+        build_cell_26_scf_impact_md(),                   # 25
+        build_cell_27_scf_comparison_bars(),              # 26
+        build_cell_28_dm_heatmaps_md(),                   # 27
+        build_cell_29_dm_heatmaps(),                      # 28
+        build_cell_30_density_histograms_md(),             # 29
+        build_cell_31_density_histograms(),                # 30
+        build_cell_32_convergence_md(),                   # 31
+        build_cell_33_convergence_diagnostic(),            # 32
+        build_cell_34_feature_impact_md(),                 # 33
+        build_cell_35_feature_impact(),                    # 34
+        # Section 7: Extension (Cells 36-39)
+        build_cell_36_extension_md(),                    # 35
+        build_cell_37_new_molecule_template(),             # 36
+        build_cell_38_new_mol_comparison_md(),             # 37
+        build_cell_39_new_mol_comparison(),                # 38
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce
