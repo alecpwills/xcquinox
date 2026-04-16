@@ -115,6 +115,7 @@ class MoleculeData(TypedDict, total=True):
     cusp_features: jnp.ndarray | None
     dm_features: jnp.ndarray | None
     atom_composition: tuple[tuple[str, int], ...]
+    mol_metadata: dict
 
 
 def precompute_fixed_density_data(
@@ -275,4 +276,10 @@ def precompute_fixed_density_data(
         cusp_features=cusp_features,
         dm_features=dm_features,
         atom_composition=mol_spec.atom_composition,
+        mol_metadata={
+            "atom": mol_spec.atom,
+            "basis": mol_spec.basis,
+            "charge": mol_spec.charge,
+            "spin": mol_spec.spin,
+        },
     )

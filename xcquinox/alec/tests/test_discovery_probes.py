@@ -55,3 +55,20 @@ def test_p01_compute_vxc_nn_flows_grad_through_dynamic_rho():
     assert jnp.all(jnp.isfinite(grad_sigma))
     assert grad_rho.shape == rho0.shape
     assert grad_sigma.shape == sigma0.shape
+
+
+def test_p02_mol_data_has_metadata_for_pyscfad_rebuild():
+    """P0.2: mol_data must contain enough metadata to rebuild a pyscf.gto.Mole
+    object. Required: atom spec, basis, charge, spin."""
+    _, data = _make_h2_model_and_data()
+    assert "mol_metadata" in data, (
+        "mol_data lacks 'mol_metadata' — extend precompute_fixed_density_data "
+        "to stash atom/basis/charge/spin for pyscfad backend rebuild."
+    )
+    md = data["mol_metadata"]
+    for k in ("atom", "basis", "charge", "spin"):
+        assert k in md, f"mol_metadata missing required key {k!r}"
+    assert isinstance(md["atom"], str)
+    assert isinstance(md["basis"], str)
+    assert isinstance(md["charge"], int)
+    assert isinstance(md["spin"], int)
