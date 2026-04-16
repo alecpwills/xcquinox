@@ -574,6 +574,8 @@ def test_field_assignment_completeness(batch_h_o_h2o):
     # w_atomic: plain Python float or int
     assert isinstance(loss.w_atomic, (int, float))
     assert not isinstance(loss.w_atomic, bool)
+    # solver_config: None by default
+    assert loss.solver_config is None
 
 
 # ---------------------------------------------------------------------------
