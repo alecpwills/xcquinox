@@ -25,3 +25,33 @@ def _make_h2_model_and_data(seed: int = 0):
     model = AlecGGAModel.from_arch(arch, seed=seed)
     data = precompute_fixed_density_data(h2_molecule())
     return model, data
+
+
+def test_p01_compute_vxc_nn_flows_grad_through_dynamic_rho():
+    """P0.1: compute_vxc_nn must accept dynamic rho/sigma and let jax.grad
+    flow through. Otherwise the manual SCF backend's D → rho → F → D' loop
+    is not differentiable."""
+    from xcquinox.alec.oneshot import compute_vxc_nn
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+
+    model, data = _make_h2_model_and_data()
+    features = assemble_descriptor_features(model.descriptors, data)
+    ao_grid = data["ao_grid"]
+    grid_weights = data["grid_weights"]
+
+    def scalar_from_vxc(rho_dyn, sigma_dyn):
+        vxc = compute_vxc_nn(
+            model, rho_dyn, sigma_dyn, features, ao_grid, grid_weights,
+        )
+        return jnp.sum(vxc ** 2)
+
+    rho0 = data["rho_grid"]
+    sigma0 = data["sigma_grid"]
+
+    grad_rho = jax.grad(scalar_from_vxc, argnums=0)(rho0, sigma0)
+    grad_sigma = jax.grad(scalar_from_vxc, argnums=1)(rho0, sigma0)
+
+    assert jnp.all(jnp.isfinite(grad_rho))
+    assert jnp.all(jnp.isfinite(grad_sigma))
+    assert grad_rho.shape == rho0.shape
+    assert grad_sigma.shape == sigma0.shape
