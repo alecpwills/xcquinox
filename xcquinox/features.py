@@ -76,10 +76,10 @@ def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
     off_diag_norm = jnp.linalg.norm(off_diag, 'fro') / (jnp.trace(dm) + 1e-12)
 
     return {
-        'idempotency_error': float(idempotency_error),
-        'dm_entropy': float(dm_entropy),
-        'off_diag_norm': float(off_diag_norm),
-        'trace': float(n_elec),
+        'idempotency_error': idempotency_error,
+        'dm_entropy': dm_entropy,
+        'off_diag_norm': off_diag_norm,
+        'trace': n_elec,
     }
 
 

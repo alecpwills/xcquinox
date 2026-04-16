@@ -49,3 +49,30 @@ def test_manual_fixed_j_converges_on_h2():
     assert int(result.cycles_run) <= 10
     assert int(result.cycles_run) >= 1
     assert jnp.isfinite(result.total_energy)
+
+
+def test_manual_full_converges_on_h2_with_eri():
+    """FULL mode requires the eri tensor in mol_data; test converges in <=15 cycles."""
+    from xcquinox.alec.config import ArchitectureConfig, FeatureSpec
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.data import precompute_fixed_density_data
+
+    arch = ArchitectureConfig(
+        name="t", depth=2, nodes=8, attention=False,
+        descriptors=(FeatureSpec.of("cusp"), FeatureSpec.of("dm_statistics")),
+        x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    data = precompute_fixed_density_data(
+        h2_molecule(),
+        descriptors=arch.materialize_descriptors(),
+        required_keys=("eri",),
+    )
+    cfg = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+        max_cycles=15, conv_tol=1e-6,
+    )
+    result = run_scf(cfg, model, data)
+    assert bool(result.converged) is True
+    assert jnp.isfinite(result.total_energy)
