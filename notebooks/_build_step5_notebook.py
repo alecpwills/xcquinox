@@ -1172,6 +1172,209 @@ for loss_name in LOSS_NAMES:
     return new_code_cell(source)
 
 
+def build_cell_26_scf_impact_md():
+    """Section 6 Cell 26 -- SCF impact analysis header."""
+    source = """## Section 6: SCF Impact Analysis
+
+This section compares trained models across the three solver configurations to
+answer the central question: does training through an iterative SCF loop
+produce better density functionals than one-shot prediction?
+
+### Figure: SCF Comparison -- AE Error by Architecture
+
+The next cell renders the **headline figure**: grouped bars showing |AE error|
+for each architecture, with 3 bars per arch (oneshot / fixed_j / full). One
+subplot per loss family (A, B, C). PBE error and 1 kcal/mol chemical accuracy
+lines are overlaid as references.
+
+**How to read it:** For loss A (energy only), all 3 solver configs should produce
+nearly identical bars (control). For losses B and C, differences between solver
+configs reveal the impact of SCF self-consistency on the learned functional.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_27_scf_comparison_bars():
+    """Section 6 Cell 27 -- SCF comparison grouped bar chart."""
+    source = """# PBE reference line
+ext_data_dir = f"{CHECKPOINT_BASE}/external_data"
+_E_pbe = {}
+for _name in ("H", "O", "H2O"):
+    with open(f"{ext_data_dir}/{_name}_metadata.json") as _f:
+        _E_pbe[_name] = json.load(_f)["E_pbe_total"]
+PBE_AE_Ha = 2 * _E_pbe["H"] + _E_pbe["O"] - _E_pbe["H2O"]
+PBE_AE_err_kcalmol = abs(PBE_AE_Ha * 627.509 - 233.016)
+
+fig, axes = plt.subplots(1, len(LOSS_NAMES), figsize=(6 * len(LOSS_NAMES), 7), squeeze=False)
+for col_idx, loss_name in enumerate(LOSS_NAMES):
+    ax = axes[0, col_idx]
+    n_archs = len(ARCH_NAMES)
+    n_solvers = len(SOLVER_LABELS)
+    x_positions = np.arange(n_archs)
+    bar_width = 0.8 / max(n_solvers, 1)
+
+    for s_idx, solver_label in enumerate(SOLVER_LABELS):
+        heights = []
+        for arch_name in ARCH_NAMES:
+            try:
+                val = df.loc[(arch_name, loss_name, solver_label), "AE_error_kcalmol_mean"]
+                heights.append(abs(val) if not np.isnan(val) else np.nan)
+            except KeyError:
+                heights.append(np.nan)
+        offset = (s_idx - (n_solvers - 1) / 2) * bar_width
+        ax.bar(x_positions + offset, heights, width=bar_width,
+               color=solver_colors[solver_label], label=solver_label)
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(ARCH_NAMES, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("|AE error| (kcal/mol, log scale)")
+    ax.set_yscale("log")
+    ax.set_title(f"Loss: {loss_name}", fontsize=11)
+    ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
+
+    ax.axhline(PBE_AE_err_kcalmol, linestyle="dotted", color="r", alpha=0.7,
+               label=f"PBE Error ({PBE_AE_err_kcalmol:.2f})")
+    ax.axhline(1.0, linestyle="--", color="k", alpha=0.7,
+               label="Chemical accuracy (1 kcal/mol)")
+
+axes[0, -1].legend(
+    loc="center left",
+    bbox_to_anchor=(1.02, 0.5),
+    fontsize="small",
+    title="solver / reference",
+)
+
+fig.suptitle(
+    "H2O atomization-energy error by architecture and solver config\\n"
+    "(one subplot per loss family, grouped bars = solver configs)",
+    fontsize=13,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.95))
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/scf_comparison_ae.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_28_dm_heatmaps_md():
+    """Section 6 Cell 28 -- DM heatmaps description."""
+    source = """### Figure: Density Matrix Residuals -- SCF Comparison
+
+For loss B (energy + DM), this plot compares the density-matrix residuals
+(NN - HF target) across the 3 solver configurations for the best-performing
+architecture. A 1x3 panel with shared colorbar shows how self-consistency
+affects the learned density matrix.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_29_dm_heatmaps():
+    """Section 6 Cell 29 -- DM heatmaps: loss B, best arch, 3 solver configs."""
+    source = """_loss_b = "B_atomization_plus_dm"
+if _loss_b not in LOSS_NAMES:
+    print("[Cell 29] loss B not in config -- skipping DM heatmaps")
+else:
+    # Find best arch for loss B across all solvers
+    _sub = df.xs(_loss_b, level="loss")["AE_error_kcalmol_mean"].abs()
+    _best_arch, _best_solver = _sub.idxmin()
+
+    dm_hf = mol_data_list[2]["dm_target"]  # H2O is index 2
+
+    fig, axes = plt.subplots(1, len(SOLVER_LABELS), figsize=(5 * len(SOLVER_LABELS), 4.5),
+                             squeeze=False)
+    _vmax = 0
+    _dm_panels = []
+    for solver_label in SOLVER_LABELS:
+        ckpt = f"{CHECKPOINT_BASE}/train/{_best_arch}/{_loss_b}/{solver_label}/model.eqx"
+        if not os.path.isfile(ckpt):
+            _dm_panels.append(None)
+            continue
+        _arch_config = alec.get_architecture(_best_arch)
+        _model = eqx.tree_deserialise_leaves(ckpt, alec.AlecGGAModel.from_arch(_arch_config))
+        _dm_nn = alec.oneshot_dm_prediction_fast(_model, mol_data_list[2])
+        _delta = _dm_nn - dm_hf
+        _dm_panels.append(_delta)
+        _vmax = max(_vmax, float(jnp.abs(_delta).max()))
+
+    for i, (solver_label, delta) in enumerate(zip(SOLVER_LABELS, _dm_panels)):
+        ax = axes[0, i]
+        if delta is None:
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
+        else:
+            _rmse = float(jnp.sqrt(jnp.mean(delta ** 2)))
+            im = ax.imshow(np.asarray(delta), cmap="RdBu_r", vmin=-_vmax, vmax=_vmax)
+            ax.set_title(f"{solver_label}\\nFrob RMSE={_rmse:.4e}", fontsize=10)
+            ax.set_xlabel("AO index j")
+            ax.set_ylabel("AO index i")
+            fig.colorbar(im, ax=ax, shrink=0.8)
+
+    fig.suptitle(
+        f"H2O DM residuals (NN - HF) for loss B, arch={_best_arch}\\n"
+        f"(shared colorscale, one panel per solver config)",
+        fontsize=12,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/dm_heatmaps_scf.png", dpi=150, bbox_inches="tight")
+    plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_30_density_histograms_md():
+    """Section 6 Cell 30 -- density histograms description."""
+    source = """### Figure: Grid Density Residuals -- SCF Comparison
+
+For loss C (energy + grid density), this plot overlays histograms of the
+grid-weighted density residual (delta-rho) across the 3 solver configurations
+for the best-performing architecture. Tighter distributions indicate better
+density prediction.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_31_density_histograms():
+    """Section 6 Cell 31 -- overlaid density residual histograms."""
+    source = """_loss_c = "C_atomization_plus_grid"
+if _loss_c not in LOSS_NAMES:
+    print("[Cell 31] loss C not in config -- skipping density histograms")
+else:
+    _sub = df.xs(_loss_c, level="loss")["AE_error_kcalmol_mean"].abs()
+    _best_arch, _best_solver = _sub.idxmin()
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    rho_ref = mol_data_list[2]["rho_ref_grid"]
+    weights = mol_data_list[2]["grid_weights"]
+
+    for solver_label in SOLVER_LABELS:
+        ckpt = f"{CHECKPOINT_BASE}/train/{_best_arch}/{_loss_c}/{solver_label}/model.eqx"
+        if not os.path.isfile(ckpt):
+            continue
+        _arch_config = alec.get_architecture(_best_arch)
+        _model = eqx.tree_deserialise_leaves(ckpt, alec.AlecGGAModel.from_arch(_arch_config))
+        _rho_nn = alec.oneshot_grid_density(_model, mol_data_list[2])
+        _delta = np.asarray(_rho_nn - rho_ref)
+        ax.hist(_delta, bins=100, alpha=0.5, color=solver_colors[solver_label],
+                label=solver_label, weights=np.asarray(weights), density=True)
+
+    ax.set_xlabel(r"$\\Delta\\rho$ (grid-weighted)")
+    ax.set_ylabel("density (log)")
+    ax.set_yscale("log")
+    ax.set_title(
+        f"Grid density residuals for loss C, arch={_best_arch}\\n"
+        f"(3 overlaid histograms, one per solver config)",
+    )
+    ax.legend(title="solver config")
+    ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
+    fig.tight_layout()
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/grid_density_scf.png", dpi=150, bbox_inches="tight")
+    plt.show()
+"""
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -1234,6 +1437,12 @@ def main(
         build_cell_23_test_loop(),
         build_cell_24_dataframe(),
         build_cell_25_results_table(),
+        build_cell_26_scf_impact_md(),
+        build_cell_27_scf_comparison_bars(),
+        build_cell_28_dm_heatmaps_md(),
+        build_cell_29_dm_heatmaps(),
+        build_cell_30_density_histograms_md(),
+        build_cell_31_density_histograms(),
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce

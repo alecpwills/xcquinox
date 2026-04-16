@@ -349,3 +349,47 @@ def test_cell_25_results_table():
     gen = load_generator()
     source = gen.build_cell_25_results_table().source
     assert "solver" in source.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 6 -- Primary Visualization Cells 26-31
+# ---------------------------------------------------------------------------
+
+
+def test_cell_26_scf_impact_md():
+    gen = load_generator()
+    cell = gen.build_cell_26_scf_impact_md()
+    assert cell.cell_type == "markdown"
+
+
+def test_cell_27_scf_comparison_bars():
+    """Headline figure: grouped bars by solver config per loss."""
+    gen = load_generator()
+    source = gen.build_cell_27_scf_comparison_bars().source
+    assert "solver_colors" in source
+    assert "scf_comparison_ae.png" in source
+    assert "SOLVER_LABELS" in source
+
+
+def test_cell_28_dm_heatmaps_md():
+    gen = load_generator()
+    cell = gen.build_cell_28_dm_heatmaps_md()
+    assert cell.cell_type == "markdown"
+
+
+def test_cell_29_dm_heatmaps():
+    gen = load_generator()
+    source = gen.build_cell_29_dm_heatmaps().source
+    assert "dm_heatmaps_scf.png" in source
+
+
+def test_cell_30_density_histograms_md():
+    gen = load_generator()
+    cell = gen.build_cell_30_density_histograms_md()
+    assert cell.cell_type == "markdown"
+
+
+def test_cell_31_density_histograms():
+    gen = load_generator()
+    source = gen.build_cell_31_density_histograms().source
+    assert "grid_density_scf.png" in source
