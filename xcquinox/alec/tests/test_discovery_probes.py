@@ -81,6 +81,17 @@ def test_p03_pyscfad_get_fock_sees_current_dm_per_cycle():
     import pyscfad.gto
     import pyscfad.dft
 
+    # Force CPU — pyscfad's custom eigh_gen primitive lacks a CUDA impl,
+    # so this test fails when JAX defaults to GPU in the full suite.
+    cpu = jax.devices("cpu")[0]
+    with jax.default_device(cpu):
+        return _run_p03_get_fock_probe()
+
+
+def _run_p03_get_fock_probe():
+    import pyscfad.gto
+    import pyscfad.dft
+
     mol = pyscfad.gto.Mole()
     mol.atom = "H 0 0 0; H 0 0 0.74"
     mol.basis = "sto-3g"
@@ -120,6 +131,13 @@ def test_p04_pyscfad_get_j_monkey_patch_propagates():
     """P0.4: monkey-patching mf.get_j must actually intercept J in the Fock
     build. Use a sentinel offset that, if bypassed, leaves the total energy
     indistinguishable from the baseline."""
+    # Force CPU — pyscfad's custom eigh_gen primitive lacks a CUDA impl.
+    cpu = jax.devices("cpu")[0]
+    with jax.default_device(cpu):
+        return _run_p04_get_j_probe()
+
+
+def _run_p04_get_j_probe():
     import pyscfad.gto
     import pyscfad.dft
     import numpy as np
