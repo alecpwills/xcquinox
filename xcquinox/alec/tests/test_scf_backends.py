@@ -109,3 +109,13 @@ def test_oneshot_and_scf_total_energy_agree_at_D_PBE():
         f"one-shot and SCF total-energy code paths diverged at D=D_PBE: "
         f"|delta|={abs(e_oneshot - e_scf):.3e} Ha"
     )
+
+
+def test_pyscfad_oneshot_matches_legacy():
+    """pyscfad backend, ONESHOT mode — same byte-identical fast path."""
+    model, data = _make_h2()
+    cfg = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.ONESHOT)
+    result = run_scf(cfg, model, data)
+    e_legacy = float(fixed_density_total_energy(model, data))
+    assert float(result.total_energy) == pytest.approx(e_legacy, abs=1e-12)
+    assert int(result.cycles_run) == 0
