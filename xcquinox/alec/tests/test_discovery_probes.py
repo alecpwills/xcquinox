@@ -72,3 +72,45 @@ def test_p02_mol_data_has_metadata_for_pyscfad_rebuild():
     assert isinstance(md["basis"], str)
     assert isinstance(md["charge"], int)
     assert isinstance(md["spin"], int)
+
+
+def test_p03_pyscfad_get_fock_sees_current_dm_per_cycle():
+    """P0.3: pyscfad's SCF driver must invoke mf.get_fock with a DM kwarg
+    at the start of each SCF cycle, so the REASSEMBLE closure can read
+    the DM before the XC callback runs."""
+    import pyscfad.gto
+    import pyscfad.dft
+
+    mol = pyscfad.gto.Mole()
+    mol.atom = "H 0 0 0; H 0 0 0.74"
+    mol.basis = "sto-3g"
+    mol.charge = 0
+    mol.spin = 0
+    mol.verbose = 0
+    mol.build()
+    mf = pyscfad.dft.RKS(mol)
+    mf.xc = "pbe"
+    mf.max_cycle = 3
+    mf.conv_tol = 1e-6
+
+    dm_observations = []
+    original_get_fock = mf.get_fock
+
+    def patched(*args, **kwargs):
+        dm_arg = kwargs.get("dm", None)
+        if dm_arg is None and len(args) >= 4:
+            dm_arg = args[3]
+        dm_observations.append(dm_arg is not None)
+        return original_get_fock(*args, **kwargs)
+
+    mf.get_fock = patched
+    mf.kernel()
+
+    assert len(dm_observations) >= 2, (
+        f"get_fock invoked {len(dm_observations)} times — expected ≥2 "
+        f"across an SCF with max_cycle=3"
+    )
+    assert any(dm_observations), (
+        "get_fock was never invoked with a DM argument; "
+        "REASSEMBLE policy cannot read the current DM from this hook"
+    )
