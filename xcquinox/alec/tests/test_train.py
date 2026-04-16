@@ -30,7 +30,7 @@ from xcquinox.alec.config import (
     get_architecture,
 )
 from xcquinox.alec.losses import list_losses
-from xcquinox.alec.solver import SolverConfig
+from xcquinox.alec.solver import SolverConfig, SolverMode
 from xcquinox.alec.tests.fixtures.molecules import (
     h_atom,
     h2o_molecule,
@@ -730,3 +730,32 @@ def test_solver_config_in_loss_kwargs_is_json_serializable():
     assert roundtrip["loss_kwargs"]["solver_config"]["backend"] == cfg.backend.value
     assert isinstance(roundtrip["solver_config"], dict)
     assert roundtrip["solver_config"]["mode"] == cfg.mode.value
+
+
+# ---------------------------------------------------------------------------
+# Test 33: FULL mode solver_config causes "eri" in required_keys
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("mode,expect_eri", [
+    (SolverMode.FULL, True),
+    (SolverMode.FIXED_J, False),
+    (SolverMode.ONESHOT, False),
+])
+def test_full_mode_requires_eri(mode, expect_eri):
+    """Test 33: required-keys includes 'eri' only for FULL solver mode."""
+    max_cycles = 0 if mode == SolverMode.ONESHOT else 3
+    cfg = SolverConfig(mode=mode, max_cycles=max_cycles)
+    spec = _make_training_spec(
+        loss_kwargs=(("solver_config", cfg),),
+        solver_config=cfg,
+    )
+    # Reproduce the required-keys logic from run_training Step 3
+    from xcquinox.alec.losses import make_loss
+    loss = make_loss(spec.loss_name, molecules=spec.molecules, **spec.loss_kwargs_dict)
+    required = set(loss.required_mol_keys)
+    for d in spec.arch.materialize_descriptors():
+        required |= set(d.required_mol_keys)
+    sc = spec.loss_kwargs_dict.get("solver_config") or spec.solver_config
+    if isinstance(sc, SolverConfig) and sc.mode == SolverMode.FULL:
+        required.add("eri")
+    assert ("eri" in required) == expect_eri

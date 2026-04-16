@@ -23,7 +23,7 @@ import numpy as np
 import optax
 
 from xcquinox.alec.config import TrainingSpec, ArchitectureConfig
-from xcquinox.alec.solver import SolverConfig
+from xcquinox.alec.solver import SolverConfig, SolverMode
 from xcquinox.alec.data import precompute_fixed_density_data
 from xcquinox.alec.losses import make_loss
 from xcquinox.alec.models import AlecGGAModel
@@ -184,6 +184,12 @@ def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
     required |= set(loss.required_mol_keys)
     for d in spec.arch.materialize_descriptors():
         required |= set(d.required_mol_keys)
+
+    # FULL mode SCF needs the 4-index ERI tensor for J-matrix recomputation.
+    sc = spec.loss_kwargs_dict.get("solver_config") or spec.solver_config
+    if isinstance(sc, SolverConfig) and sc.mode == SolverMode.FULL:
+        required.add("eri")
+
     required_keys = tuple(required)
 
     mol_data_list = [
