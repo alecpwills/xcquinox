@@ -2730,3 +2730,14 @@ def test_every_code_cell_emitted_source_is_valid_python(tmp_path):
                 f"line {exc.lineno}: {exc.msg}"
             )
     assert not failures, "Emitted notebook cells have Python syntax errors:\n" + "\n".join(failures)
+
+
+# ---------------------------------------------------------------------------
+# Task 8.1: SolverConfig example cell presence
+# ---------------------------------------------------------------------------
+
+def test_notebook_contains_scf_config_example():
+    from pathlib import Path
+    src = Path("notebooks/gga_training_example-step4.ipynb").read_text()
+    assert "SolverConfig(" in src
+    assert "SolverBackend.MANUAL" in src

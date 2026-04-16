@@ -228,6 +228,28 @@ for _n in ARCH_NAMES:
     return new_code_cell(source)
 
 
+def build_cell_scf_config_example():
+    """Code cell that demonstrates SolverConfig usage.
+
+    The cell only documents the API; it does not rewire the training
+    pipeline. Running the cell has no side effect on the rest of the
+    notebook unless the user plugs `_scf_config` into a training/test spec.
+    """
+    source = """# Example SolverConfig — replace the default ONESHOT path with a real SCF loop.
+# To use, pass this as solver_config=... to TrainingSpec or TestSpec.
+from xcquinox.alec.solver import SolverConfig, SolverBackend, SolverMode
+
+_scf_config = SolverConfig(
+    backend=SolverBackend.MANUAL,    # or PYSCFAD
+    mode=SolverMode.FIXED_J,          # ONESHOT | FIXED_J | FULL
+    max_cycles=10,
+    conv_tol=1e-6,
+)
+print(_scf_config.describe())
+"""
+    return new_code_cell(source)
+
+
 def build_cell_06_pretrain_md():
     """Section 3 Cell 6 — pretrain phase narrative (markdown)."""
     source = """## Section 3: Pretraining
@@ -2159,6 +2181,7 @@ def main(
         build_cell_03_constants(checkpoint_base),
         build_cell_04_arch_table(),
         build_cell_05_arch_names(arch_names),
+        build_cell_scf_config_example(),
         build_cell_06_pretrain_md(),
         build_cell_07_pretrain_data_gen(),
         build_cell_08_pretrain_loop(),
