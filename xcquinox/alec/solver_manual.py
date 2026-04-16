@@ -78,3 +78,13 @@ def _build_criterion(config: SolverConfig):
     if config.convergence_name == "energy":
         return EnergyConvergence(tol=config.conv_tol)
     raise NotImplementedError(f"criterion {config.convergence_name!r} not yet implemented")
+
+
+def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+    """Entry point for the manual backend."""
+    if config.mode == SolverMode.ONESHOT:
+        return _oneshot_result(model, mol_data)
+    raise NotImplementedError(
+        f"run_manual_scf only implements ONESHOT in this task; "
+        f"FIXED_J/FULL are added in Task 5.3-5.4"
+    )
