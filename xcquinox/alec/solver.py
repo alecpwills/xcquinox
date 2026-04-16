@@ -174,20 +174,23 @@ def _reassemble_features(
     dm: jnp.ndarray,
     s_matrix: jnp.ndarray,
     cusp_features: jnp.ndarray | None = None,
+    n_grid: int | None = None,
 ) -> jnp.ndarray:
     """Recompute descriptor features from the live (dm, S) + cached cusp.
 
     Used by REASSEMBLE policy. CuspDescriptor features are geometry-only
     (not DM-dependent) so they are passed in as the frozen precompute value.
     DMStatisticsDescriptor features use the live DM via compute_from_dm.
+
+    ``n_grid`` supplies the grid size for DMStatisticsDescriptor when no
+    CuspDescriptor (and therefore no cusp_features) is present.
     """
     from xcquinox.alec.descriptors import CuspDescriptor, DMStatisticsDescriptor
     if not descriptors:
-        # Match the shape used by assemble_descriptor_features for empty case
-        n_grid = cusp_features.shape[0] if cusp_features is not None else 0
-        return jnp.zeros((n_grid, 0))
+        _ng = cusp_features.shape[0] if cusp_features is not None else (n_grid or 0)
+        return jnp.zeros((_ng, 0))
     cols = []
-    n_grid_hint = cusp_features.shape[0] if cusp_features is not None else None
+    n_grid_hint = cusp_features.shape[0] if cusp_features is not None else n_grid
     for d in descriptors:
         if isinstance(d, CuspDescriptor):
             if cusp_features is None:
@@ -199,8 +202,8 @@ def _reassemble_features(
         elif isinstance(d, DMStatisticsDescriptor):
             if n_grid_hint is None:
                 raise ValueError(
-                    "_reassemble_features needs a grid-size hint; include "
-                    "CuspDescriptor or pass cusp_features=<array with correct n_grid>"
+                    "_reassemble_features needs a grid-size hint; pass "
+                    "cusp_features or n_grid"
                 )
             cols.append(d.compute_from_dm(dm=dm, s_matrix=s_matrix, n_grid=n_grid_hint))
         else:

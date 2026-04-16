@@ -257,6 +257,37 @@ def test_reassemble_features_matches_precompute_for_cusp_and_dm():
     )
 
 
+def test_reassemble_features_dm_only_uses_n_grid():
+    """_reassemble_features with DMStatisticsDescriptor only (no cusp) uses
+    the n_grid parameter instead of cusp_features for the grid-size hint."""
+    import numpy as np
+    from xcquinox.alec.solver import _reassemble_features
+    from xcquinox.alec.descriptors import (
+        DMStatisticsDescriptor, assemble_descriptor_features,
+    )
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+
+    descriptors = (DMStatisticsDescriptor(),)
+    data = precompute_fixed_density_data(h2_molecule(), descriptors=descriptors)
+    n_grid = data["grid_weights"].shape[0]
+
+    features_frozen = assemble_descriptor_features(descriptors, data)
+    features_reassembled = _reassemble_features(
+        descriptors=descriptors,
+        dm=data["dm_pbe"],
+        s_matrix=data["s_matrix"],
+        cusp_features=None,
+        n_grid=n_grid,
+    )
+    assert features_reassembled.shape == features_frozen.shape
+    np.testing.assert_allclose(
+        np.asarray(features_reassembled),
+        np.asarray(features_frozen),
+        atol=1e-10, rtol=0.0,
+    )
+
+
 def test_oneshot_result_matches_legacy_total_energy():
     """_oneshot_result(model, mol_data) should produce total_energy identical
     to fixed_density_total_energy(model, mol_data)."""

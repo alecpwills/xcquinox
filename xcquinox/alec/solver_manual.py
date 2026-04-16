@@ -129,6 +129,7 @@ def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
             dm=D,
             s_matrix=s_matrix,
             cusp_features=cusp_cached,
+            n_grid=grid_weights.shape[0],
         )
         return feats, rho_d, sigma_d
 
