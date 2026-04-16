@@ -121,7 +121,8 @@ class AtomizationEnergyMetric(Metric):
 @register_metric("density_rmse")
 class DensityRMSEMetric(Metric):
     required_mol_keys: ClassVar[tuple[str, ...]] = (
-        "rho_grid", "sigma_grid", "ao_grid", "grid_weights", "rho_ccsd_grid",
+        "rho_grid", "sigma_grid", "ao_grid", "grid_weights", "rho_ref_grid",
+        "ref_density_method",
         "s_matrix", "h_core", "j_matrix", "nocc", "nocc_a", "nocc_b",
         "is_unrestricted", "atom_composition",
     )
@@ -135,9 +136,10 @@ class DensityRMSEMetric(Metric):
                 "density_l1": None,
                 "skipped": True,
                 "skip_reason": "atomic_system",
+                "ref_density_method": mol_data.get("ref_density_method"),
             }
         rho_nn = oneshot_grid_density(model, mol_data)
-        rho_ref = mol_data["rho_ccsd_grid"]
+        rho_ref = mol_data["rho_ref_grid"]
         if rho_nn.shape != rho_ref.shape:
             raise ValueError(
                 f"density shape mismatch: rho_nn {rho_nn.shape} vs "
@@ -147,7 +149,11 @@ class DensityRMSEMetric(Metric):
         diff = rho_nn - rho_ref
         rmse = float(jnp.sqrt(jnp.sum(w * diff ** 2) / jnp.sum(w)))
         l1 = float(jnp.sum(w * jnp.abs(diff)) / jnp.sum(w))
-        return {"density_rmse": rmse, "density_l1": l1}
+        return {
+            "density_rmse": rmse,
+            "density_l1": l1,
+            "ref_density_method": mol_data.get("ref_density_method"),
+        }
 
 
 # ---------------------------------------------------------------------------

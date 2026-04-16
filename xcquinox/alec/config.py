@@ -297,8 +297,9 @@ class MoleculeSpec:
     The optional ``external_data_path`` points at an ``.npz`` file containing
     reference data that ``precompute_fixed_density_data`` cannot compute from
     the PBE SCF alone. Supported keys: ``dm_target`` (same shape as
-    ``dm_pbe``), ``rho_ccsd_grid`` (same shape as ``rho_grid``), and
-    ``E_ref_literature`` (scalar). Unknown keys are rejected. Each key is
+    ``dm_pbe``), ``rho_ref_grid`` (same shape as ``rho_grid``),
+    ``ref_density_method`` (string), and ``E_ref_literature`` (scalar).
+    Unknown keys are rejected. Each key is
     optional — a partial ``.npz`` is valid (e.g., only ``E_ref_literature``
     for atoms where density matching is skipped).
 
@@ -308,7 +309,7 @@ class MoleculeSpec:
     integer is required when external reference data was computed on a
     non-default grid — e.g., the step3b / step 4 experiment uses
     ``grid_level=1`` so that ``precompute`` rebuilds the same coarse grid
-    the caller used when writing ``rho_ccsd_grid`` to the external ``.npz``.
+    the caller used when writing ``rho_ref_grid`` to the external ``.npz``.
     Values accepted: 0..9, matching ``pyscf.dft.gen_grid.Grids.level``.
     """
     name: str
@@ -321,7 +322,7 @@ class MoleculeSpec:
     # and the auto-generated __hash__ hashes every field.
     atom_composition: tuple[tuple[str, int], ...] = ()
     # Optional path to an .npz with reference data. None = no external data
-    # (dm_target/rho_ccsd_grid/E_ref_literature stay None in MoleculeData).
+    # (dm_target/rho_ref_grid/E_ref_literature stay None in MoleculeData).
     external_data_path: str | None = None
     # Optional pyscf DFT grid level. None = pyscf default (currently 3).
     # Must match the grid level used to generate any reference data pointed

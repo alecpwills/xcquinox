@@ -39,7 +39,7 @@ def test_precompute_baseline_keys_populated_with_no_descriptors():
     assert data["dm_features"] is None
     # CCSD keys not requested
     assert data["dm_target"] is None
-    assert data["rho_ccsd_grid"] is None
+    assert data["rho_ref_grid"] is None
 
 
 # §13.2 item (2)
@@ -82,7 +82,7 @@ def test_precompute_d1_skips_ccsd():
     d1_keys = ("E_pbe",)
     data = precompute_fixed_density_data(mol, required_keys=d1_keys)
     assert data["dm_target"] is None
-    assert data["rho_ccsd_grid"] is None
+    assert data["rho_ref_grid"] is None
 
 
 # §13.2 item (6)
@@ -190,7 +190,7 @@ def test_precompute_populates_all_required_keys():
     mol = h2_molecule()
     cusp = CuspDescriptor()
     # Simulate a loss that requires CCSD keys
-    required = ("dm_target", "rho_ccsd_grid", "cusp_features")
+    required = ("dm_target", "rho_ref_grid", "cusp_features")
     data = precompute_fixed_density_data(
         mol, required_keys=required, descriptors=(cusp,),
     )
@@ -203,10 +203,10 @@ def test_precompute_populates_all_required_keys():
     )
     # cusp_features should be populated (descriptor requested it)
     assert data["cusp_features"] is not None
-    # dm_target and rho_ccsd_grid are None because no external_data_path
+    # dm_target and rho_ref_grid are None because no external_data_path
     # was supplied; precompute only populates them from an external .npz.
     assert data["dm_target"] is None
-    assert data["rho_ccsd_grid"] is None
+    assert data["rho_ref_grid"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +232,10 @@ def _prepare_h2_external_data(tmp_path, *, keys):
         dm_arr = np.asarray(baseline["dm_pbe"]) * 1.5
         payload["dm_target"] = dm_arr
         refs["dm_target"] = dm_arr
-    if "rho_ccsd_grid" in keys:
+    if "rho_ref_grid" in keys:
         rho_arr = np.asarray(baseline["rho_grid"]) * 1.1
-        payload["rho_ccsd_grid"] = rho_arr
-        refs["rho_ccsd_grid"] = rho_arr
+        payload["rho_ref_grid"] = rho_arr
+        refs["rho_ref_grid"] = rho_arr
     if "E_ref_literature" in keys:
         payload["E_ref_literature"] = np.float64(-1.17447)
         refs["E_ref_literature"] = -1.17447
@@ -249,7 +249,7 @@ def _prepare_h2_external_data(tmp_path, *, keys):
 def test_precompute_loads_external_data_path_all_keys(tmp_path):
     """External .npz with all three keys populates MoleculeData and shapes match."""
     path, refs, baseline, dm_shape, rho_shape = _prepare_h2_external_data(
-        tmp_path, keys=("dm_target", "rho_ccsd_grid", "E_ref_literature"),
+        tmp_path, keys=("dm_target", "rho_ref_grid", "E_ref_literature"),
     )
     mol = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
@@ -258,15 +258,15 @@ def test_precompute_loads_external_data_path_all_keys(tmp_path):
     )
     data = precompute_fixed_density_data(mol)
     assert data["dm_target"] is not None
-    assert data["rho_ccsd_grid"] is not None
+    assert data["rho_ref_grid"] is not None
     assert data["E_ref_literature"] is not None
     assert tuple(np.asarray(data["dm_target"]).shape) == dm_shape
-    assert tuple(np.asarray(data["rho_ccsd_grid"]).shape) == rho_shape
+    assert tuple(np.asarray(data["rho_ref_grid"]).shape) == rho_shape
     np.testing.assert_allclose(
         np.asarray(data["dm_target"]), refs["dm_target"], rtol=1e-12,
     )
     np.testing.assert_allclose(
-        np.asarray(data["rho_ccsd_grid"]), refs["rho_ccsd_grid"], rtol=1e-12,
+        np.asarray(data["rho_ref_grid"]), refs["rho_ref_grid"], rtol=1e-12,
     )
     assert data["E_ref_literature"] == pytest.approx(-1.17447, rel=1e-10)
 
@@ -284,7 +284,7 @@ def test_precompute_external_data_path_partial_npz(tmp_path):
     )
     data = precompute_fixed_density_data(mol)
     assert data["dm_target"] is None
-    assert data["rho_ccsd_grid"] is None
+    assert data["rho_ref_grid"] is None
     assert data["E_ref_literature"] == pytest.approx(-1.17447, rel=1e-10)
 
 
@@ -318,15 +318,15 @@ def test_precompute_external_data_path_rejects_dm_target_shape_mismatch(tmp_path
 
 # §13.2 item (18)
 def test_precompute_external_data_path_rejects_rho_grid_shape_mismatch(tmp_path):
-    """rho_ccsd_grid shape must match rho_grid; mismatch triggers ValueError."""
+    """rho_ref_grid shape must match rho_grid; mismatch triggers ValueError."""
     path = str(tmp_path / "bad_rho_shape.npz")
-    np.savez(path, rho_ccsd_grid=np.zeros(7))
+    np.savez(path, rho_ref_grid=np.zeros(7))
     mol = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
         charge=0, spin=0, atom_composition=(("H", 2),),
         external_data_path=path,
     )
-    with pytest.raises(ValueError, match="rho_ccsd_grid shape"):
+    with pytest.raises(ValueError, match="rho_ref_grid shape"):
         precompute_fixed_density_data(mol)
 
 
@@ -470,9 +470,9 @@ def test_precompute_honors_grid_level_smaller_than_default():
 
 # §13.2 item (30)
 def test_precompute_grid_level_interacts_with_external_data_shape(tmp_path):
-    """rho_ccsd_grid shape is tied to the active grid_level via shape validation.
+    """rho_ref_grid shape is tied to the active grid_level via shape validation.
 
-    Step 4 writes rho_ccsd_grid at grid_level=1; loading it back through
+    Step 4 writes rho_ref_grid at grid_level=1; loading it back through
     precompute with the default grid (level 3) must fail because the grid
     point count is different.
     """
@@ -484,7 +484,7 @@ def test_precompute_grid_level_interacts_with_external_data_shape(tmp_path):
     baseline_level1 = precompute_fixed_density_data(mol_level1)
     rho_level1 = np.asarray(baseline_level1["rho_grid"]) * 1.1
     path = str(tmp_path / "h2_level1.npz")
-    np.savez(path, rho_ccsd_grid=rho_level1)
+    np.savez(path, rho_ref_grid=rho_level1)
 
     # Matching spec (grid_level=1) accepts the external data.
     mol_with_path_ok = MoleculeSpec(
@@ -493,7 +493,7 @@ def test_precompute_grid_level_interacts_with_external_data_shape(tmp_path):
         grid_level=1, external_data_path=path,
     )
     data_ok = precompute_fixed_density_data(mol_with_path_ok)
-    assert data_ok["rho_ccsd_grid"] is not None
+    assert data_ok["rho_ref_grid"] is not None
 
     # Mismatched spec (default grid) rejects with shape error.
     mol_with_path_bad = MoleculeSpec(
@@ -501,5 +501,29 @@ def test_precompute_grid_level_interacts_with_external_data_shape(tmp_path):
         charge=0, spin=0, atom_composition=(("H", 2),),
         grid_level=None, external_data_path=path,
     )
-    with pytest.raises(ValueError, match="rho_ccsd_grid shape"):
+    with pytest.raises(ValueError, match="rho_ref_grid shape"):
         precompute_fixed_density_data(mol_with_path_bad)
+
+
+def test_precompute_populates_ref_density_method_when_external_provides_it(tmp_path):
+    """When the external .npz provides ref_density_method, mol_data echoes it."""
+    import numpy as np
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+
+    base = precompute_fixed_density_data(h2_molecule())
+    npz_path = tmp_path / "ext.npz"
+    np.savez(
+        npz_path,
+        rho_ref_grid=np.asarray(base["rho_grid"]),
+        ref_density_method=np.array("hf"),
+    )
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=str(npz_path),
+    )
+    data = precompute_fixed_density_data(spec)
+    assert data["ref_density_method"] == "hf"
+    assert data["rho_ref_grid"] is not None

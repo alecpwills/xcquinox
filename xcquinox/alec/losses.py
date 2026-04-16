@@ -188,7 +188,7 @@ def _grid_term(model, mol_data, iter_idx):
     """Grid density matching: weighted L2, averaged over molecules."""
     terms = []
     for i in iter_idx:
-        rho_ref = mol_data[i]["rho_ccsd_grid"]
+        rho_ref = mol_data[i]["rho_ref_grid"]
         if rho_ref is None:
             continue
         rho_nn = oneshot_grid_density(model, mol_data[i])
@@ -271,7 +271,7 @@ class AtomizationPlusDMLoss(AlecLoss):
 @register_loss("C_atomization_plus_grid")
 class AtomizationPlusGridLoss(AlecLoss):
     registry_name: ClassVar[str] = "C_atomization_plus_grid"
-    required_mol_keys: ClassVar[tuple[str, ...]] = ("rho_ccsd_grid",)
+    required_mol_keys: ClassVar[tuple[str, ...]] = ("rho_ref_grid",)
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     density_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
@@ -375,7 +375,7 @@ class DeltaAEPlusDMLoss(AlecLoss):
 @register_loss("D3_delta_ae_plus_grid")
 class DeltaAEPlusGridLoss(AlecLoss):
     registry_name: ClassVar[str] = "D3_delta_ae_plus_grid"
-    required_mol_keys: ClassVar[tuple[str, ...]] = ("E_pbe", "rho_ccsd_grid")
+    required_mol_keys: ClassVar[tuple[str, ...]] = ("E_pbe", "rho_ref_grid")
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     density_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)

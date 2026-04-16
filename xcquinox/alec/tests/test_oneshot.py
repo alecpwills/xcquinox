@@ -347,8 +347,8 @@ def test_compute_exc_nn_constant_model(h2o_data):
     assert np.isfinite(E_xc)
 
 
-# §13.2 item (25) — E-H2: rho_ccsd_grid spin-summed
-def test_rho_ccsd_grid_spin_summed(o_data):
+# §13.2 item (25) — E-H2: rho_ref_grid spin-summed
+def test_rho_ref_grid_spin_summed(o_data):
     """For O (UKS), rho_grid should be 1-D (spin-summed)."""
     assert o_data["rho_grid"].ndim == 1
     integrated = float(jnp.sum(o_data["rho_grid"] * o_data["grid_weights"]))

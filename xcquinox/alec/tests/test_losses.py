@@ -132,7 +132,7 @@ LOSS_PARAMS = [
         id="B_atomization_plus_dm",
     ),
     pytest.param(
-        "C_atomization_plus_grid", AtomizationPlusGridLoss, ("rho_ccsd_grid",),
+        "C_atomization_plus_grid", AtomizationPlusGridLoss, ("rho_ref_grid",),
         {"loss_energy", "loss_grid"},
         id="C_atomization_plus_grid",
     ),
@@ -147,7 +147,7 @@ LOSS_PARAMS = [
         id="D2_delta_ae_plus_dm",
     ),
     pytest.param(
-        "D3_delta_ae_plus_grid", DeltaAEPlusGridLoss, ("E_pbe", "rho_ccsd_grid"),
+        "D3_delta_ae_plus_grid", DeltaAEPlusGridLoss, ("E_pbe", "rho_ref_grid"),
         {"loss_delta", "loss_grid"},
         id="D3_delta_ae_plus_grid",
     ),
@@ -509,7 +509,7 @@ def test_density_weight_scales_grid_term(batch_h_o_h2o, model):
     total, aux = loss(model, batch)
     assert total.shape == ()
     assert jnp.isfinite(total)
-    # total = loss_energy + 0.3 * loss_grid (rho_ccsd_grid is None so loss_grid=0)
+    # total = loss_energy + 0.3 * loss_grid (rho_ref_grid is None so loss_grid=0)
     expected = aux["loss_energy"] + 0.3 * aux["loss_grid"]
     np.testing.assert_allclose(float(total), float(expected), rtol=1e-6)
 

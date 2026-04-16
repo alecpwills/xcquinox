@@ -1099,7 +1099,7 @@ def test_cell_13_uses_hf_dm_not_ccsd_dm():
 
 def test_cell_13_atom_branch_writes_only_e_ref():
     """The atom branch must write ONLY E_ref_literature — not dm_target and
-    not rho_ccsd_grid. Atomic one-shot density targets are unstable due to
+    not rho_ref_grid. Atomic one-shot density targets are unstable due to
     degenerate HOMOs in open-shell atoms.
     """
     gen = load_generator()
@@ -1111,12 +1111,12 @@ def test_cell_13_atom_branch_writes_only_e_ref():
     atom_branch = source[branch_start:branch_end]
     assert "E_ref_literature=" in atom_branch
     assert "dm_target=" not in atom_branch
-    assert "rho_ccsd_grid=" not in atom_branch
+    assert "rho_ref_grid=" not in atom_branch
 
 
 def test_cell_13_h2o_branch_writes_three_keys():
     """The H2O branch must write all three whitelisted keys: dm_target,
-    rho_ccsd_grid, and E_ref_literature. These are the ONLY keys
+    rho_ref_grid, and E_ref_literature. These are the ONLY keys
     _ALLOWED_EXTERNAL_KEYS accepts (data.py:17-21).
     """
     gen = load_generator()
@@ -1125,7 +1125,7 @@ def test_cell_13_h2o_branch_writes_three_keys():
     assert branch_start != -1, "H2O else branch not found"
     h2o_branch = source[branch_start:]
     assert "dm_target=dm_hf" in h2o_branch
-    assert "rho_ccsd_grid=rho_hf" in h2o_branch
+    assert "rho_ref_grid=rho_hf" in h2o_branch
     assert "E_ref_literature=float(mf_hf.e_tot)" in h2o_branch
 
 
@@ -1163,7 +1163,7 @@ def test_cell_13_uses_grid_level_pinned():
 
 def test_cell_13_einsum_is_rho_hf_not_rho_nn():
     """The einsum variable must be named `rho_hf`, guarding the step3b-era
-    `rho_nn` naming confusion — `rho_ccsd_grid` is HF in disguise.
+    `rho_nn` naming confusion — `rho_ref_grid` is HF in disguise.
     """
     gen = load_generator()
     source = gen.build_cell_13_hf_ccsd_gen().source
@@ -1235,12 +1235,12 @@ def test_cell_14_all_specs_carry_external_data_path():
 
 def test_cell_15_asserts_atom_rho_ccsd_is_none():
     """Cell 15 must assert both the atom-branch negative case and the H2O
-    positive case on rho_ccsd_grid.
+    positive case on rho_ref_grid.
     """
     gen = load_generator()
     source = gen.build_cell_15_precompute_sanity().source
-    assert 'mol_data_list[0]["rho_ccsd_grid"] is None' in source
-    assert 'mol_data_list[2]["rho_ccsd_grid"] is not None' in source
+    assert 'mol_data_list[0]["rho_ref_grid"] is None' in source
+    assert 'mol_data_list[2]["rho_ref_grid"] is not None' in source
 
 
 def test_cell_15_mol_data_list_carries_descriptor_union():
@@ -2000,11 +2000,11 @@ def test_cell_27_uses_oneshot_grid_density():
     assert "alec.oneshot_grid_density(" in source
 
 
-def test_cell_27_reads_rho_ccsd_grid_from_mol_data_list():
-    """Cell 27 must read rho_ref from mol_data_list[2]['rho_ccsd_grid']."""
+def test_cell_27_reads_rho_ref_grid_from_mol_data_list():
+    """Cell 27 must read rho_ref from mol_data_list[2]['rho_ref_grid']."""
     gen = load_generator()
     source = gen.build_cell_27_density_histograms().source
-    assert 'mol_data_list[2]["rho_ccsd_grid"]' in source
+    assert 'mol_data_list[2]["rho_ref_grid"]' in source
 
 
 def test_cell_27_prints_delta_rho_l1():
@@ -2098,16 +2098,16 @@ def test_cell_31_step2_npz_generation_is_uncommented_under_isfile_guard():
     )
 
 
-def test_cell_31_npz_writes_dm_target_and_rho_ccsd_grid():
+def test_cell_31_npz_writes_dm_target_and_rho_ref_grid():
     """The np.savez call in Cell 31 step 2 must write all three whitelisted
-    keys (``dm_target``, ``rho_ccsd_grid``, ``E_ref_literature``) so
+    keys (``dm_target``, ``rho_ref_grid``, ``E_ref_literature``) so
     ``_load_external_data`` accepts the file and downstream metrics (DM-based
     losses, density_rmse) have real reference data.
     """
     gen = load_generator()
     source = gen.build_cell_31_new_molecule_template().source
     assert "dm_target=" in source
-    assert "rho_ccsd_grid=" in source
+    assert "rho_ref_grid=" in source
     assert "E_ref_literature=" in source
 
 
@@ -2220,7 +2220,7 @@ def test_cell_31_stores_rho_pbe_hf_rmse_in_molecule_sidecar():
 def test_cell_31_atom_branch_writes_only_E_ref_literature():
     """For each entry in ``new_atom_specs``, the .npz write must be the
     atom-branch shape (only ``E_ref_literature=`` key), mirroring Cell 13's
-    behaviour for H/O. Writing ``dm_target`` / ``rho_ccsd_grid`` for an
+    behaviour for H/O. Writing ``dm_target`` / ``rho_ref_grid`` for an
     atomic species with degenerate HOMO eigenvalues is numerically unstable.
     """
     gen = load_generator()

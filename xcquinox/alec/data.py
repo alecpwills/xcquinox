@@ -16,7 +16,8 @@ from xcquinox.alec.descriptors import Descriptor
 # module-level constant so tests and documentation can share it.
 _ALLOWED_EXTERNAL_KEYS = frozenset({
     "dm_target",
-    "rho_ccsd_grid",
+    "rho_ref_grid",
+    "ref_density_method",
     "E_ref_literature",
 })
 
@@ -27,13 +28,14 @@ def _load_external_data(
     dm_pbe_shape: tuple[int, ...],
     rho_pbe_shape: tuple[int, ...],
     mol_name: str,
-) -> tuple[jnp.ndarray | None, jnp.ndarray | None, float | None]:
+) -> tuple[jnp.ndarray | None, jnp.ndarray | None, str | None, float | None]:
     """Load and validate a MoleculeSpec.external_data_path .npz.
 
-    The .npz may contain any subset of ``dm_target``, ``rho_ccsd_grid``,
-    ``E_ref_literature``; unknown keys trigger ``ValueError``. Shape
-    validation matches freshly computed PBE quantities so callers cannot
-    silently mismatch densities/DMs against the PBE grid or basis.
+    The .npz may contain any subset of ``dm_target``, ``rho_ref_grid``,
+    ``ref_density_method``, ``E_ref_literature``; unknown keys trigger
+    ``ValueError``. Shape validation matches freshly computed PBE quantities
+    so callers cannot silently mismatch densities/DMs against the PBE grid
+    or basis.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(
@@ -62,16 +64,20 @@ def _load_external_data(
                 )
             dm_target = jnp.array(dm_arr)
 
-        rho_ccsd_grid = None
-        if "rho_ccsd_grid" in present:
-            rho_arr = np.asarray(npz["rho_ccsd_grid"])
+        rho_ref_grid = None
+        ref_density_method = None
+        if "rho_ref_grid" in present:
+            rho_arr = np.asarray(npz["rho_ref_grid"])
             if tuple(rho_arr.shape) != tuple(rho_pbe_shape):
                 raise ValueError(
-                    f"external rho_ccsd_grid shape {tuple(rho_arr.shape)} "
+                    f"external rho_ref_grid shape {tuple(rho_arr.shape)} "
                     f"does not match rho_grid shape {tuple(rho_pbe_shape)} "
                     f"for {mol_name!r}"
                 )
-            rho_ccsd_grid = jnp.array(rho_arr)
+            rho_ref_grid = jnp.array(rho_arr)
+        if "ref_density_method" in present:
+            method_arr = np.asarray(npz["ref_density_method"])
+            ref_density_method = str(method_arr.item())
 
         E_ref_literature = None
         if "E_ref_literature" in present:
@@ -84,7 +90,7 @@ def _load_external_data(
                     f"scalar, got shape {tuple(val.shape)}"
                 )
 
-    return dm_target, rho_ccsd_grid, E_ref_literature
+    return dm_target, rho_ref_grid, ref_density_method, E_ref_literature
 
 
 class MoleculeData(TypedDict, total=True):
@@ -106,7 +112,8 @@ class MoleculeData(TypedDict, total=True):
     E_non_xc: float
     E_ref_literature: float | None
     dm_target: jnp.ndarray | None
-    rho_ccsd_grid: jnp.ndarray | None
+    rho_ref_grid: jnp.ndarray | None
+    ref_density_method: str | None
     rho_grid: jnp.ndarray
     sigma_grid: jnp.ndarray
     grid_weights: jnp.ndarray
@@ -125,7 +132,7 @@ def precompute_fixed_density_data(
 ) -> MoleculeData:
     """Run PBE SCF, extract grid data, return a MoleculeData dict.
 
-    Baseline keys are always populated. CCSD/descriptor keys are computed
+    Baseline keys are always populated. Reference/descriptor keys are computed
     on-demand based on required_keys and descriptor.required_mol_keys.
     Unused keys are set to None (D-M4/C-M3 treedef-homogeneity).
     """
@@ -147,7 +154,7 @@ def precompute_fixed_density_data(
     else:
         mf = dft.RKS(mol)
     mf.xc = "pbe"
-    # Pin grid level when the spec requires it (e.g., external rho_ccsd_grid
+    # Pin grid level when the spec requires it (e.g., external rho_ref_grid
     # was generated on a non-default grid). Setting .level must happen before
     # the first kernel call so .build() picks it up.
     if mol_spec.grid_level is not None:
@@ -234,16 +241,17 @@ def precompute_fixed_density_data(
         )
         dm_features = jnp.tile(dm_feat_global, (len(rho_pbe), 1))
 
-    # External reference data (dm_target / rho_ccsd_grid / E_ref_literature)
+    # External reference data (dm_target / rho_ref_grid / E_ref_literature)
     # come from an optional .npz pointed to by mol_spec.external_data_path.
     # precompute only handles SCF-level quantities; CCSD/HF post-SCF
     # computations are the caller's responsibility and are injected through
     # this path so run_training / run_test pick them up automatically.
     dm_target = None
-    rho_ccsd_grid = None
+    rho_ref_grid = None
+    ref_density_method = None
     E_ref_literature = None
     if mol_spec.external_data_path is not None:
-        dm_target, rho_ccsd_grid, E_ref_literature = _load_external_data(
+        dm_target, rho_ref_grid, ref_density_method, E_ref_literature = _load_external_data(
             mol_spec.external_data_path,
             dm_pbe_shape=tuple(np.asarray(dm_pbe).shape),
             rho_pbe_shape=tuple(np.asarray(rho_pbe).shape),
@@ -267,7 +275,8 @@ def precompute_fixed_density_data(
         E_non_xc=E_non_xc,
         E_ref_literature=E_ref_literature,
         dm_target=dm_target,
-        rho_ccsd_grid=rho_ccsd_grid,
+        rho_ref_grid=rho_ref_grid,
+        ref_density_method=ref_density_method,
         rho_grid=jnp.array(rho_pbe),
         sigma_grid=jnp.array(sigma_pbe),
         grid_weights=jnp.array(weights),

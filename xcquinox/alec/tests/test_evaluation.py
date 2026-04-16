@@ -213,9 +213,10 @@ def test_density_rmse_registry_roundtrip():
 # (7b) Compute on tiny model returns dict
 def test_density_rmse_compute(tiny_model, h2o_data):
     mol_data = dict(h2o_data)
-    mol_data["rho_ccsd_grid"] = mol_data["rho_grid"] + 0.001 * jnp.ones_like(
+    mol_data["rho_ref_grid"] = mol_data["rho_grid"] + 0.001 * jnp.ones_like(
         mol_data["rho_grid"]
     )
+    mol_data["ref_density_method"] = "hf"
     m = DensityRMSEMetric()
     result = m.compute(tiny_model, mol_data)
     assert isinstance(result, dict)
@@ -227,9 +228,10 @@ def test_density_rmse_compute(tiny_model, h2o_data):
 # (7c) Output keys match schema
 def test_density_rmse_schema(tiny_model, h2o_data):
     mol_data = dict(h2o_data)
-    mol_data["rho_ccsd_grid"] = mol_data["rho_grid"] + 0.001 * jnp.ones_like(
+    mol_data["rho_ref_grid"] = mol_data["rho_grid"] + 0.001 * jnp.ones_like(
         mol_data["rho_grid"]
     )
+    mol_data["ref_density_method"] = "hf"
     m = DensityRMSEMetric()
     result = m.compute(tiny_model, mol_data)
     assert "density_rmse" in result
@@ -652,15 +654,38 @@ def test_density_rmse_uks_compound(o_data):
     # Actually use o_data but mark it as a compound
     mol_data = dict(o_data)
     mol_data["atom_composition"] = (("O", 2),)
-    mol_data["rho_ccsd_grid"] = mol_data["rho_grid"] + 0.001 * jnp.ones_like(
+    mol_data["rho_ref_grid"] = mol_data["rho_grid"] + 0.001 * jnp.ones_like(
         mol_data["rho_grid"]
     )
+    mol_data["ref_density_method"] = "hf"
 
     m = DensityRMSEMetric()
     result = m.compute(model, mol_data)
     assert result["density_rmse"] is not None
     assert result["density_rmse"] > 0.0
     assert math.isfinite(result["density_rmse"])
+
+
+def test_density_rmse_carries_ref_method():
+    """DensityRMSEMetric.compute output echoes mol_data['ref_density_method']."""
+    from xcquinox.alec.evaluation import DensityRMSEMetric
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.config import ArchitectureConfig
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+
+    arch = ArchitectureConfig(
+        name="t", depth=2, nodes=8, attention=False,
+        descriptors=(), x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    data = dict(precompute_fixed_density_data(h2_molecule()))
+    data["rho_ref_grid"] = data["rho_grid"]
+    data["ref_density_method"] = "hf"
+    metric = DensityRMSEMetric()
+    out = metric.compute(model, data)
+    assert out["ref_density_method"] == "hf"
 
 
 # (36) E-M6: DensityRMSEMetric on atom returns skip schema

@@ -664,7 +664,7 @@ all computed at the **def2-svp** basis (``BASIS`` from Cell 3).
 - **H / O (atoms):** Reference energies come from literature total energies
   (H: exact −0.5 Ha; O: ~−75.0673 Ha). Degenerate HOMO eigenvalues in
   open-shell atoms make one-shot density targets numerically unstable, so
-  **no** ``dm_target`` or ``rho_ccsd_grid`` is stored for atoms.
+  **no** ``dm_target`` or ``rho_ref_grid`` is stored for atoms.
 - **H2O:** Uses the equilibrium geometry ``H2O_COORDS`` from Cell 3 (NOT a
   distorted 90-degree box). The HF density matrix is stored as the density
   target, and the HF grid density is stored as the grid-density target.
@@ -673,7 +673,7 @@ all computed at the **def2-svp** basis (``BASIS`` from Cell 3).
 
 Each species gets two files:
 1. ``{name}.npz`` — holds **only** the three whitelisted keys that
-   ``xcquinox.alec.data`` accepts: ``dm_target``, ``rho_ccsd_grid``,
+   ``xcquinox.alec.data`` accepts: ``dm_target``, ``rho_ref_grid``,
    ``E_ref_literature``. Any extra key causes a ``ValueError`` at load time.
 2. ``{name}_metadata.json`` — holds HF, CCSD, literature, and PBE total
    energies that cannot be stored in the whitelisted ``.npz``.
@@ -806,7 +806,8 @@ for name, atom, spin in _mols:
         np.savez(
             os.path.join(ext_data_dir, f"{name}.npz"),
             dm_target=dm_hf,
-            rho_ccsd_grid=rho_hf,
+            rho_ref_grid=rho_hf,
+            ref_density_method="hf",
             E_ref_literature=float(mf_hf.e_tot),
         )
 
@@ -903,9 +904,9 @@ def build_cell_15_precompute_sanity():
     ``assemble_descriptor_features``.
 
     Prints per-molecule shapes and energies, then asserts the atom-vs-compound
-    invariants: atoms have no dm_target / rho_ccsd_grid; H2O has all three.
+    invariants: atoms have no dm_target / rho_ref_grid; H2O has all three.
     The negative atom assertions guard against a Cell 13 regression that would
-    accidentally write dm_target / rho_ccsd_grid into the atom .npz.
+    accidentally write dm_target / rho_ref_grid into the atom .npz.
     """
     source = """# Union of descriptor required_mol_keys across every arch we will train.
 # Ensures mol_data_list carries cusp_features / dm_features for any arch the
@@ -932,20 +933,20 @@ for mol_spec, mol_data in zip(mol_specs, mol_data_list):
     print(f"  E_non_xc (Ha):     {mol_data['E_non_xc']:.6f}")
     print(f"  E_ref_literature:  {mol_data['E_ref_literature']}")
     print(f"  dm_target:         {None if mol_data['dm_target'] is None else mol_data['dm_target'].shape}")
-    print(f"  rho_ccsd_grid:     {None if mol_data['rho_ccsd_grid'] is None else mol_data['rho_ccsd_grid'].shape}")
+    print(f"  rho_ref_grid:     {None if mol_data['rho_ref_grid'] is None else mol_data['rho_ref_grid'].shape}")
 
 # Atom-vs-compound invariants: atoms skip density targets, H2O has all three.
 # Negative atom assertions guard against a Cell 13 regression that would accidentally
-# write dm_target / rho_ccsd_grid into the atom .npz.
+# write dm_target / rho_ref_grid into the atom .npz.
 assert mol_data_list[0]["E_ref_literature"] is not None  # H
 assert mol_data_list[0]["dm_target"] is None             # H — atoms skip density
-assert mol_data_list[0]["rho_ccsd_grid"] is None         # H — atoms skip density
+assert mol_data_list[0]["rho_ref_grid"] is None         # H — atoms skip density
 assert mol_data_list[1]["E_ref_literature"] is not None  # O
 assert mol_data_list[1]["dm_target"] is None             # O
-assert mol_data_list[1]["rho_ccsd_grid"] is None         # O
+assert mol_data_list[1]["rho_ref_grid"] is None         # O
 assert mol_data_list[2]["E_ref_literature"] is not None  # H2O
 assert mol_data_list[2]["dm_target"] is not None         # H2O — HF DM target
-assert mol_data_list[2]["rho_ccsd_grid"] is not None     # H2O — HF grid density
+assert mol_data_list[2]["rho_ref_grid"] is not None     # H2O — HF grid density
 print("\\nAll atom-vs-compound invariants satisfied.")
 """
     return new_code_cell(source)
@@ -1478,7 +1479,7 @@ else:
         model = eqx.tree_deserialise_leaves(ckpt_path, model_template)
 
         rho_nn = alec.oneshot_grid_density(model, mol_data_list[2])
-        rho_ref = mol_data_list[2]["rho_ccsd_grid"]
+        rho_ref = mol_data_list[2]["rho_ref_grid"]
         w = mol_data_list[2]["grid_weights"]
 
         # Inline step3b Table 4 |delta rho|_1 metric (display-only, not a library metric).
@@ -1504,7 +1505,7 @@ else:
     fig.suptitle(
         "H2O grid-density residual histograms -- best architecture per "
         "density-aware loss family\\n"
-        "(reference density is the HF target stored in mol_data_list[2][\\"rho_ccsd_grid\\"])",
+        "(reference density is the HF target stored in mol_data_list[2][\\"rho_ref_grid\\"])",
         fontsize=12,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.90))
@@ -1612,7 +1613,7 @@ To re-parameterise this section for a different molecule:
    composition that is NOT already in Cell 13's `atom_energies` dict
    (`"H"`, `"O"`). Each entry is `(name, atom, spin)`; Cell 31 runs
    PBE+HF+CCSD for each, writes a `.npz` (atom branch only `E_ref_literature`,
-   molecule branch also `dm_target` + `rho_ccsd_grid` + `rho_pbe_hf_rmse`),
+   molecule branch also `dm_target` + `rho_ref_grid` + `rho_pbe_hf_rmse`),
    and a `{name}_metadata.json` sidecar with all three reference totals.
    `new_atom_energies` is then built from Cell 13's PBE dict plus each sidecar's PBE total.
 
@@ -1659,7 +1660,7 @@ new_atom_specs = [("C", "C 0 0 0", 2)]  # (name, atom, spin) -- extend as needed
 #    and every atom in new_atom_specs. Each iteration is guarded on both the
 #    .npz and the metadata JSON so reruns are cheap. Mirrors Cell 13's
 #    H/O/H2O pattern (atom-branch writes only E_ref_literature; molecule-branch
-#    writes dm_target + rho_ccsd_grid + E_ref_literature).
+#    writes dm_target + rho_ref_grid + E_ref_literature).
 _atom_names = {s[0] for s in new_atom_specs}
 _entities = [(new_mol_spec.name, new_mol_spec.atom, new_mol_spec.spin)] + new_atom_specs
 os.makedirs(ext_data_dir, exist_ok=True)
@@ -1723,7 +1724,8 @@ for _name, _atom, _spin in _entities:
         np.savez(
             _npz_path,
             dm_target=_dm_hf,
-            rho_ccsd_grid=_rho_hf,
+            rho_ref_grid=_rho_hf,
+            ref_density_method="hf",
             E_ref_literature=float(_mf_hf.e_tot),
         )
         _sidecar["rho_pbe_hf_rmse"] = _rho_pbe_hf_rmse
