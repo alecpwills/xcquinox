@@ -241,3 +241,75 @@ def test_cell_16_precompute_requires_eri():
     source = gen.build_cell_16_precompute().source
     assert '"eri"' in source
     assert "precompute_fixed_density_data" in source or "alec.precompute_fixed_density_data" in source
+
+
+# ---------------------------------------------------------------------------
+# Task 4 -- SCF-Varied Training Cells 17-21
+# ---------------------------------------------------------------------------
+
+
+def test_cell_17_training_md():
+    gen = load_generator()
+    cell = gen.build_cell_17_training_md()
+    assert cell.cell_type == "markdown"
+    assert "72" in cell.source or "solver" in cell.source.lower()
+
+
+def test_cell_18_training_specs_triple_loop():
+    """Cell 18 must build specs with a triple-nested loop over arch/loss/solver."""
+    gen = load_generator()
+    source = gen.build_cell_18_training_specs().source
+    assert "for arch_name in ARCH_NAMES:" in source
+    assert "for loss_name in LOSS_NAMES:" in source
+    assert "for solver_label" in source
+    assert "solver_config" in source
+    assert "SCF_CONFIGS" in source
+
+
+def test_cell_18_training_specs_solver_in_loss_kwargs():
+    """solver_config must flow through loss_kwargs for B/C losses."""
+    gen = load_generator()
+    source = gen.build_cell_18_training_specs().source
+    assert "solver_config" in source
+
+
+def test_cell_18_training_specs_checkpoint_path_has_solver():
+    """Checkpoint dir must include solver_label tier."""
+    gen = load_generator()
+    source = gen.build_cell_18_training_specs().source
+    assert "{solver_label}" in source or "solver_label" in source
+
+
+def test_cell_18_training_specs_loss_kwargs_abc():
+    """Only losses A, B, C are used in step5."""
+    gen = load_generator()
+    source = gen.build_cell_18_training_specs().source
+    assert '"A_atomization"' in source
+    assert '"B_atomization_plus_dm"' in source
+    assert '"C_atomization_plus_grid"' in source
+    assert "D1_delta_ae" not in source
+
+
+def test_cell_19_training_loop_three_tier_tqdm():
+    """Training loop must have three-tier progress display."""
+    gen = load_generator()
+    source = gen.build_cell_19_training_loop().source
+    assert "tqdm(" in source
+    assert "alec.run_training(" in source
+
+
+def test_cell_20_training_loss_plot_3x3():
+    """Training loss plot must be a 3x3 grid: rows=solver, cols=loss."""
+    gen = load_generator()
+    source = gen.build_cell_20_training_loss_plot().source
+    assert "3, 3" in source or "3,3" in source
+    assert "SOLVER_LABELS" in source
+    assert "LOSS_NAMES" in source
+    assert "training_losses.png" in source
+
+
+def test_cell_21_aux_inspection():
+    gen = load_generator()
+    source = gen.build_cell_21_aux_inspection().source
+    assert "aux_log.pkl" in source
+    assert "deep_combined" in source

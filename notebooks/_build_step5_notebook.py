@@ -848,6 +848,243 @@ for md in mol_data_list:
     return new_code_cell(source)
 
 
+def build_cell_17_training_md():
+    """Section 4 Cell 17 -- training narrative."""
+    source = """## Section 4: SCF-Varied Training
+
+This is the core experiment: **72 training runs** = 8 architectures x 3 loss
+families x 3 solver configurations.
+
+### Solver Impact by Loss Family
+
+- **Loss A** (`A_atomization`): Energy-only. Uses `fixed_density_total_energy`
+  which does NOT route through the SCF solver -- it always computes a one-shot
+  energy on the PBE density. This is the **control experiment**: all 3 solver
+  configs produce identical models for loss A.
+
+- **Loss B** (`B_atomization_plus_dm`): Energy + density matrix term. The DM
+  term (`_dm_term`) uses the solver to compute a self-consistent density matrix
+  when solver_config is non-ONESHOT. With FIXED_J, the Coulomb operator is
+  frozen during SCF cycles; with FULL, the full Fock matrix is rebuilt.
+
+- **Loss C** (`C_atomization_plus_grid`): Energy + grid density term. Same SCF
+  routing as loss B but applied to the grid-space density comparison.
+
+### Expected Compute Cost
+
+ONESHOT is fastest (single forward pass). FIXED_J(3 cycles) is ~3x slower.
+FULL(3 cycles) is the most expensive due to ERI contraction at each cycle.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_18_training_specs(loss_names=None):
+    """Section 4 Cell 18 -- build 72 TrainingSpec objects.
+
+    Triple-nested loop: arch x loss x solver. solver_config flows through
+    BOTH loss_kwargs (for actual training use by make_loss) AND
+    TrainingSpec.solver_config (for metadata logging).
+    """
+    if loss_names is None:
+        loss_names_binding = (
+            'LOSS_NAMES = (\n'
+            '    "A_atomization",\n'
+            '    "B_atomization_plus_dm",\n'
+            '    "C_atomization_plus_grid",\n'
+            ')'
+        )
+    else:
+        loss_names_binding = f"LOSS_NAMES = {tuple(loss_names)!r}"
+    source = f"""{loss_names_binding}
+
+LOSS_KWARGS_BASE = {{
+    "A_atomization": {{}},
+    "B_atomization_plus_dm": {{"dm_weight": 0.1}},
+    "C_atomization_plus_grid": {{"density_weight": 0.1}},
+}}
+
+specs = []
+for arch_name in ARCH_NAMES:
+    for loss_name in LOSS_NAMES:
+        for solver_label in SOLVER_LABELS:
+            cfg = SCF_CONFIGS[solver_label]
+            # solver_config flows through loss_kwargs to make_loss -> loss ctor.
+            # For loss A (energy-only), solver_config is accepted but ignored.
+            _lkw = {{**LOSS_KWARGS_BASE[loss_name], "solver_config": cfg}}
+            specs.append(alec.TrainingSpec.from_dicts(
+                arch=alec.get_architecture(arch_name),
+                loss_name=loss_name,
+                molecules=tuple(mol_specs),
+                targets=targets,
+                atom_energies=atom_energies,
+                loss_kwargs=_lkw,
+                solver_config=cfg,
+                pretrain_checkpoint=f"{{CHECKPOINT_BASE}}/pretrain/{{arch_name}}",
+                checkpoint_dir=f"{{CHECKPOINT_BASE}}/train/{{arch_name}}/{{loss_name}}/{{solver_label}}",
+                n_steps=250,
+                lr_start=1e-2,
+                lr_end=1e-5,
+                lr_decay_start=0.2,
+                grad_clip=1.0,
+            ))
+print(f"Built {{len(specs)}} training specs "
+      f"({{len(ARCH_NAMES)}} archs x {{len(LOSS_NAMES)}} losses x {{len(SOLVER_LABELS)}} solvers)")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_19_training_loop():
+    """Section 4 Cell 19 -- serial training loop over all 72 specs.
+
+    Three-tier tqdm: outer spec counter, inner per-step bars.
+    """
+    source = """_step_bars = {}
+_current_info = {"loss": None, "solver": None}
+
+def _train_cb(info):
+    key = (info['arch'], info['phase'])
+    if key not in _step_bars:
+        _label = (f"{info['arch']:<20} {_current_info['loss']:<25} {_current_info['solver']}"
+                  if _current_info['loss'] is not None
+                  else f"{info['arch']:<20} {info['phase']}")
+        _step_bars[key] = tqdm(
+            total=info['total'],
+            desc=_label,
+            leave=False,
+            dynamic_ncols=True,
+        )
+    bar = _step_bars[key]
+    delta = info['step'] - bar.n
+    if delta > 0:
+        bar.update(delta)
+    bar.set_postfix(loss=f"{info['loss']:.4e}")
+    if info['step'] >= info['total']:
+        bar.close()
+        del _step_bars[key]
+
+def _training_model_exists(spec):
+    import os as _os
+    return _os.path.isfile(_os.path.join(spec.checkpoint_dir, "model.eqx"))
+
+_spec_bar = tqdm(
+    total=len(specs),
+    desc="training (specs)",
+    leave=True,
+    dynamic_ncols=True,
+)
+try:
+    for spec in specs:
+        _current_info['loss'] = spec.loss_name
+        _current_info['solver'] = spec.checkpoint_dir.split('/')[-1]
+        if TRAIN_SKIP_IF_EXISTS and _training_model_exists(spec):
+            print(f"[{spec.arch.name}][{spec.loss_name}][{_current_info['solver']}] "
+                  f"cached model.eqx found -- skipping training")
+            _spec_bar.update(1)
+            continue
+        alec.run_training(spec, progress_callback=_train_cb)
+        _spec_bar.update(1)
+        _spec_bar.set_postfix(
+            arch=spec.arch.name, loss=spec.loss_name,
+            solver=_current_info['solver'])
+finally:
+    _spec_bar.close()
+    for _b in list(_step_bars.values()):
+        _b.close()
+    _step_bars.clear()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_20_training_loss_plot():
+    """Section 4 Cell 20 -- 3x3 training loss curves grid.
+
+    Rows = solver config (oneshot, fixed_j, full).
+    Columns = loss family (A, B, C).
+    Each subplot: 8 arch traces (semilogy).
+    """
+    source = """fig, axes = plt.subplots(3, 3, figsize=(15, 13), squeeze=False)
+for row_idx, solver_label in enumerate(SOLVER_LABELS):
+    for col_idx, loss_name in enumerate(LOSS_NAMES):
+        ax = axes[row_idx, col_idx]
+        for arch_name in ARCH_NAMES:
+            ckpt_dir = f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}/{solver_label}"
+            losses_path = f"{ckpt_dir}/losses.npy"
+            if not os.path.isfile(losses_path):
+                continue
+            losses = np.load(losses_path)
+            ax.semilogy(losses, color=arch_colors[arch_name], label=arch_name)
+        ax.set_title(f"{solver_label} / {loss_name}", fontsize=10)
+        ax.set_xlabel("training step")
+        ax.set_ylabel("total loss (log)")
+        ax.grid(True, which="both", ls=":", alpha=0.4)
+
+# Shared legend from top-right subplot
+axes[0, 2].legend(
+    loc="center left",
+    bbox_to_anchor=(1.02, 0.5),
+    fontsize="small",
+    title="architecture",
+)
+
+fig.suptitle(
+    "Training loss curves -- rows: solver config, columns: loss family\\n"
+    "(8 deep architectures per subplot, one trace per arch)",
+    fontsize=13,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.95))
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/training_losses.png", dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_21_aux_inspection():
+    """Section 4 Cell 21 -- aux loss component inspection."""
+    source = '''arch_name = "deep_combined"
+_aux_keys_per_family = {
+    "A_atomization": ("loss_energy", "atomic_reg"),
+    "B_atomization_plus_dm": ("loss_energy", "loss_dm"),
+    "C_atomization_plus_grid": ("loss_energy", "loss_grid"),
+}
+
+fig, axes = plt.subplots(len(SOLVER_LABELS), len(LOSS_NAMES),
+                         figsize=(15, 4 * len(SOLVER_LABELS)), squeeze=False)
+for row_idx, solver_label in enumerate(SOLVER_LABELS):
+    for col_idx, loss_name in enumerate(LOSS_NAMES):
+        ax = axes[row_idx, col_idx]
+        ckpt_dir = f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}/{solver_label}"
+        aux_path = f"{ckpt_dir}/aux_log.pkl"
+        if not os.path.isfile(aux_path):
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
+            ax.set_title(f"{solver_label} / {loss_name}", fontsize=10)
+            continue
+        with open(aux_path, "rb") as _f:
+            aux_log = pickle.load(_f)
+
+        _steps = [entry["step"] for entry in aux_log]
+        for key in _aux_keys_per_family.get(loss_name, ("loss_energy",)):
+            _vals = [entry["aux"].get(key, float("nan")) for entry in aux_log]
+            ax.semilogy(_steps, _vals, label=key)
+        ax.set_title(f"{solver_label} / {loss_name}", fontsize=10)
+        ax.set_xlabel("training step")
+        ax.set_ylabel("aux value (log)")
+        ax.grid(True, which="both", ls=":", alpha=0.4)
+        ax.legend(fontsize="small")
+
+fig.suptitle(
+    f"Aux loss components for arch = {arch_name!r}\\n"
+    f"rows: solver config, columns: loss family",
+    fontsize=13,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.95))
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/aux_components_{arch_name}.png", dpi=150, bbox_inches="tight")
+plt.show()
+'''
+    return new_code_cell(source)
+
+
 def main(
     output_path: str,
     *,
@@ -901,6 +1138,11 @@ def main(
         build_cell_14_hf_ccsd_gen(),
         build_cell_15_mol_specs(),
         build_cell_16_precompute(),
+        build_cell_17_training_md(),
+        build_cell_18_training_specs(loss_names),
+        build_cell_19_training_loop(),
+        build_cell_20_training_loss_plot(),
+        build_cell_21_aux_inspection(),
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce
