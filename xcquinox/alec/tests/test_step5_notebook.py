@@ -452,3 +452,87 @@ def test_cell_39_new_mol_comparison():
     source = gen.build_cell_39_new_mol_comparison().source
     assert "SOLVER_LABELS" in source
     assert "solver_colors" in source
+
+
+# ---------------------------------------------------------------------------
+# Task 9 -- structural validation tests
+# ---------------------------------------------------------------------------
+
+
+def test_generator_produces_39_cells(tmp_path):
+    """Step 5 notebook must contain exactly 39 cells."""
+    gen = load_generator()
+    nb = gen.main(str(tmp_path / "step5.ipynb"))
+    assert len(nb.cells) == 39, f"expected 39 cells, got {len(nb.cells)}"
+
+
+def test_generator_cell_types_match_expected(tmp_path):
+    """Markdown cells must appear at the expected indices."""
+    gen = load_generator()
+    nb = gen.main(str(tmp_path / "step5.ipynb"))
+    markdown_indices = set()
+    for i, cell in enumerate(nb.cells):
+        if cell.cell_type == "markdown":
+            markdown_indices.add(i)
+    # Cells 0 (title), 6 (pretrain md), 11 (training data md),
+    # 16 (training md), 21 (eval md), 25 (scf impact md),
+    # 27 (dm heatmaps md), 29 (density hist md), 31 (convergence md),
+    # 33 (feature impact md), 35 (extension md), 37 (new mol comparison md)
+    expected = {0, 6, 11, 16, 21, 25, 27, 29, 31, 33, 35, 37}
+    assert markdown_indices == expected, (
+        f"markdown indices {markdown_indices} != expected {expected}"
+    )
+
+
+def test_generator_deterministic_ids(tmp_path):
+    """Cell IDs must be deterministic (cell_00, cell_01, ...)."""
+    gen = load_generator()
+    nb = gen.main(str(tmp_path / "step5.ipynb"))
+    for idx, cell in enumerate(nb.cells):
+        assert cell.id == f"cell_{idx:02d}", (
+            f"cell {idx} has id {cell.id!r}, expected 'cell_{idx:02d}'"
+        )
+
+
+def test_generator_byte_identical_on_rerun(tmp_path):
+    """Two back-to-back runs must produce byte-identical notebooks."""
+    gen = load_generator()
+    path_a = tmp_path / "a.ipynb"
+    path_b = tmp_path / "b.ipynb"
+    gen.main(str(path_a))
+    gen.main(str(path_b))
+    assert path_a.read_bytes() == path_b.read_bytes()
+
+
+def test_narrow_config_smoke(tmp_path):
+    """Smoke: single arch, single loss, single solver must produce valid notebook."""
+    gen = load_generator()
+    nb = gen.main(
+        str(tmp_path / "step5_narrow.ipynb"),
+        arch_names=("deep",),
+        loss_names=("A_atomization",),
+        solver_labels=("oneshot",),
+        checkpoint_base=str(tmp_path / "ckpt"),
+    )
+    assert len(nb.cells) == 39
+    nbformat.validate(nb)
+
+
+def test_main_cells_1_to_6_types(tmp_path):
+    """First 6 cells must have expected types: markdown, code, code, code, code, code."""
+    gen = load_generator()
+    nb = gen.main(str(tmp_path / "step5.ipynb"))
+    expected = ["markdown", "code", "code", "code", "code", "code"]
+    actual = [c.cell_type for c in nb.cells[:6]]
+    assert actual == expected
+
+
+def test_notebook_contains_solver_config_definitions(tmp_path):
+    """Generated notebook must contain SolverConfig definitions."""
+    gen = load_generator()
+    nb = gen.main(str(tmp_path / "step5.ipynb"))
+    all_source = "\n".join(c.source for c in nb.cells)
+    assert "SolverConfig(" in all_source
+    assert "SolverMode.ONESHOT" in all_source
+    assert "SolverMode.FIXED_J" in all_source
+    assert "SolverMode.FULL" in all_source
