@@ -76,3 +76,36 @@ def test_manual_full_converges_on_h2_with_eri():
     result = run_scf(cfg, model, data)
     assert bool(result.converged) is True
     assert jnp.isfinite(result.total_energy)
+
+
+def test_oneshot_and_scf_total_energy_agree_at_D_PBE():
+    """Contract test: the ONESHOT fast-path (via fixed_density_total_energy)
+    and the SCF code path (via _compute_total_energy) must produce the
+    same number when D=D_PBE and J=J[D_PBE]. Spec Section 5.2 "One-shot
+    regression guarantee" — this test enforces the algebraic equivalence.
+    """
+    import numpy as np
+    from xcquinox.alec.oneshot import fixed_density_total_energy
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+    from xcquinox.alec.solver_manual import _compute_total_energy
+
+    model, data = _make_h2()
+    e_oneshot = float(fixed_density_total_energy(model, data))
+
+    features = assemble_descriptor_features(model.descriptors, data)
+    e_scf = float(_compute_total_energy(
+        model=model,
+        D=data["dm_pbe"],
+        rho=data["rho_grid"],
+        sigma=data["sigma_grid"],
+        features=features,
+        grid_weights=data["grid_weights"],
+        h_core=data["h_core"],
+        J=data["j_matrix"],
+        e_nuc=jnp.asarray(data["e_nuc"]),
+    ))
+
+    assert abs(e_oneshot - e_scf) < 1e-12, (
+        f"one-shot and SCF total-energy code paths diverged at D=D_PBE: "
+        f"|delta|={abs(e_oneshot - e_scf):.3e} Ha"
+    )
