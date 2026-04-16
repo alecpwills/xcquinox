@@ -352,3 +352,48 @@ def test_architectures_all_materialize_via_from_arch():
         assert len(model.c_constraints) == len(arch.c_constraints), (
             f"{arch_name!r} c_constraints tuple arity drift"
         )
+
+
+def test_training_spec_default_solver_config_is_none():
+    from xcquinox.alec.config import TrainingSpec, ArchitectureConfig, MoleculeSpec
+
+    arch = ArchitectureConfig(
+        name="t", depth=2, nodes=8, attention=False,
+        descriptors=(), x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+    mols = (MoleculeSpec(
+        name="H", atom="H 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("H", 1),),
+    ),)
+    spec = TrainingSpec(
+        arch=arch, molecules=mols,
+        targets=(("H", 0.0),), atom_energies=(("H", -0.5),),
+        loss_name="A_atomization",
+    )
+    assert spec.solver_config is None
+
+
+def test_test_spec_default_solver_config_is_none():
+    from xcquinox.alec.config import TestSpec, ArchitectureConfig, MoleculeSpec
+
+    arch = ArchitectureConfig(
+        name="t", depth=2, nodes=8, attention=False,
+        descriptors=(), x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+    mols = (MoleculeSpec(
+        name="H", atom="H 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("H", 1),),
+    ),)
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".eqx") as f:
+        f.write(b"stub")
+        path = f.name
+    try:
+        spec = TestSpec(
+            model_checkpoint=path, arch=arch, molecules=mols,
+        )
+        assert spec.solver_config is None
+    finally:
+        os.unlink(path)

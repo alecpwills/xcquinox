@@ -472,6 +472,7 @@ class TrainingSpec:
     pretrain_checkpoint: str | None = None
     checkpoint_dir: str = "./checkpoints"
     seed: int = 42
+    solver_config: object | None = None
 
     @property
     def targets_dict(self) -> dict[str, float]:
@@ -633,6 +634,7 @@ class TestSpec:
     output_dir: str = "test_results"
     save_per_molecule: bool = True
     save_aggregate: bool = True
+    solver_config: object | None = None
 
     @property
     def metric_kwargs_dict(self) -> dict[str, dict]:
