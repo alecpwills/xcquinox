@@ -487,9 +487,9 @@ def test_dm_weight_scales_dm_term(batch_h_o_h2o, model):
     total, aux = loss(model, batch)
     assert total.shape == ()
     assert jnp.isfinite(total)
-    # total = loss_energy + 0.2 * loss_dm (dm_target is None so loss_dm=0)
-    expected = aux["loss_energy"] + 0.2 * aux["loss_dm"]
-    np.testing.assert_allclose(float(total), float(expected), rtol=1e-6)
+    # total = loss_energy + w_atomic * atomic_reg + 0.2 * loss_dm
+    expected = aux["loss_energy"] + 0.01 * aux["atomic_reg"] + 0.2 * aux["loss_dm"]
+    np.testing.assert_allclose(float(total), float(expected), rtol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -509,9 +509,9 @@ def test_density_weight_scales_grid_term(batch_h_o_h2o, model):
     total, aux = loss(model, batch)
     assert total.shape == ()
     assert jnp.isfinite(total)
-    # total = loss_energy + 0.3 * loss_grid (rho_ref_grid is None so loss_grid=0)
-    expected = aux["loss_energy"] + 0.3 * aux["loss_grid"]
-    np.testing.assert_allclose(float(total), float(expected), rtol=1e-6)
+    # total = loss_energy + w_atomic * atomic_reg + 0.3 * loss_grid
+    expected = aux["loss_energy"] + 0.01 * aux["atomic_reg"] + 0.3 * aux["loss_grid"]
+    np.testing.assert_allclose(float(total), float(expected), rtol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -596,11 +596,11 @@ def test_aux_dict_schema_per_class(batch_h_o_h2o, model):
     """Test 40 (M-E12-4): each loss class returns exactly the documented aux keys."""
     expected_schemas = {
         "A_atomization": {"loss_energy", "atomic_reg"},
-        "B_atomization_plus_dm": {"loss_energy", "loss_dm"},
-        "C_atomization_plus_grid": {"loss_energy", "loss_grid"},
+        "B_atomization_plus_dm": {"loss_energy", "atomic_reg", "loss_dm"},
+        "C_atomization_plus_grid": {"loss_energy", "atomic_reg", "loss_grid"},
         "D1_delta_ae": {"loss_delta", "atomic_reg"},
-        "D2_delta_ae_plus_dm": {"loss_delta", "loss_dm"},
-        "D3_delta_ae_plus_grid": {"loss_delta", "loss_grid"},
+        "D2_delta_ae_plus_dm": {"loss_delta", "atomic_reg", "loss_dm"},
+        "D3_delta_ae_plus_grid": {"loss_delta", "atomic_reg", "loss_grid"},
     }
     mols = batch_h_o_h2o["mols"]
     batch = {

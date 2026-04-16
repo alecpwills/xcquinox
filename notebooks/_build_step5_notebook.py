@@ -1044,8 +1044,8 @@ def build_cell_21_aux_inspection():
     source = '''arch_name = "deep_combined"
 _aux_keys_per_family = {
     "A_atomization": ("loss_energy", "atomic_reg"),
-    "B_atomization_plus_dm": ("loss_energy", "loss_dm"),
-    "C_atomization_plus_grid": ("loss_energy", "loss_grid"),
+    "B_atomization_plus_dm": ("loss_energy", "atomic_reg", "loss_dm"),
+    "C_atomization_plus_grid": ("loss_energy", "atomic_reg", "loss_grid"),
 }
 
 fig, axes = plt.subplots(len(SOLVER_LABELS), len(LOSS_NAMES),
