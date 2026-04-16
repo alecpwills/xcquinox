@@ -120,6 +120,10 @@ def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
                 mol_data["sigma_grid"],
             )
         rho_d, sigma_d = _contract_dm_to_grid(D, ao_grid_deriv)
+        if not model.descriptors:
+            # No descriptors to reassemble; reuse the correctly-shaped
+            # empty features from the initial precompute.
+            return features_initial, rho_d, sigma_d
         feats = _reassemble_features(
             descriptors=model.descriptors,
             dm=D,
