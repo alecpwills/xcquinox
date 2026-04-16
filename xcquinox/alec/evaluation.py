@@ -297,6 +297,11 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
         "output_dir": spec.output_dir,
         "save_per_molecule": spec.save_per_molecule,
         "save_aggregate": spec.save_aggregate,
+        "solver_config": (
+            spec.solver_config.describe()
+            if spec.solver_config is not None
+            else None
+        ),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }

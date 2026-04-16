@@ -2405,30 +2405,32 @@ def test_generator_is_deterministic(tmp_path):
     assert out1.read_bytes() == out2.read_bytes()
 
 
-def test_generator_produces_38_cells(tmp_path):
-    """main() must produce exactly 38 cells (the full step 4 notebook).
+def test_generator_produces_39_cells(tmp_path):
+    """main() must produce exactly 39 cells (the full step 4 notebook).
 
     The figure-labeling pass added 6 per-plot markdown description cells
     (section 7 overview + per-comparison-plot descriptions for cells 26-29
-    and cell 32) on top of the 32-cell baseline.
+    and cell 32) on top of the 32-cell baseline, plus the SolverConfig
+    example cell added in Task 8.1.
     """
     gen = load_generator()
     out_path = tmp_path / "out.ipynb"
     gen.main(str(out_path))
     nb = nbformat.read(str(out_path), as_version=4)
-    assert len(nb.cells) == 38, f"expected 38 cells, got {len(nb.cells)}"
+    assert len(nb.cells) == 39, f"expected 39 cells, got {len(nb.cells)}"
 
 
 def test_generator_cell_types_match_expected(tmp_path):
-    """Markdown cells: original section headings (0, 5, 10, 15, 20, 34)
+    """Markdown cells: original section headings (0, 6, 11, 16, 21, 35)
     plus the 6 new comparison-plot description markdown cells inserted by
-    the figure-labeling pass at indices (24, 26, 28, 30, 32, 36)."""
+    the figure-labeling pass at indices (25, 27, 29, 31, 33, 37).
+    Cell 5 is the SolverConfig example (code) added in Task 8.1."""
     gen = load_generator()
     out_path = tmp_path / "out.ipynb"
     gen.main(str(out_path))
     nb = nbformat.read(str(out_path), as_version=4)
 
-    markdown_indices = {0, 5, 10, 15, 20, 24, 26, 28, 30, 32, 34, 36}
+    markdown_indices = {0, 6, 11, 16, 21, 25, 27, 29, 31, 33, 35, 37}
     for idx, cell in enumerate(nb.cells):
         expected = "markdown" if idx in markdown_indices else "code"
         assert cell.cell_type == expected, (
