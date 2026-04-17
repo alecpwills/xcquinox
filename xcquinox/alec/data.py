@@ -34,10 +34,10 @@ def _load_external_data(
     """Load and validate a MoleculeSpec.external_data_path .npz.
 
     The .npz may contain any subset of ``dm_target``, ``rho_ref_grid``,
-    ``ref_density_method``, ``E_ref_literature``; unknown keys trigger
-    ``ValueError``. Shape validation matches freshly computed PBE quantities
-    so callers cannot silently mismatch densities/DMs against the PBE grid
-    or basis.
+    ``ref_density_method``, ``E_ref_literature``, ``vxc_ref``; unknown
+    keys trigger ``ValueError``. Shape validation matches freshly computed
+    PBE quantities so callers cannot silently mismatch densities/DMs/V_xc
+    against the PBE grid or basis.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(
