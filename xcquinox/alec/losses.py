@@ -171,21 +171,26 @@ def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets, 
     return jnp.mean(jnp.stack(terms))
 
 
-def _dm_term(model, mol_data, iter_idx, solver_config=None):
-    """DM matching: Frobenius^2 / n_ao^2, averaged over molecules."""
+def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
+    """DM matching: Frobenius^2 normalized by n_ao^2 (absolute) or ||D_ref||^2 (relative)."""
     terms = []
     for i in iter_idx:
         dm_ref = mol_data[i]["dm_target"]
         if dm_ref is None:
             continue
         dm_nn = oneshot_dm_prediction_fast(model, mol_data[i], solver_config=solver_config)
-        n_ao = dm_ref.shape[-1]
-        terms.append(jnp.sum((dm_nn - dm_ref) ** 2) / (n_ao * n_ao))
+        err = jnp.sum((dm_nn - dm_ref) ** 2)
+        if relative:
+            err = err / (jnp.sum(dm_ref ** 2) + 1e-8)
+        else:
+            n_ao = dm_ref.shape[-1]
+            err = err / (n_ao * n_ao)
+        terms.append(err)
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
 
 
-def _grid_term(model, mol_data, iter_idx, solver_config=None):
-    """Grid density matching: weighted L2, averaged over molecules."""
+def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False):
+    """Grid density matching: weighted L2, normalized absolutely or relatively."""
     terms = []
     for i in iter_idx:
         rho_ref = mol_data[i]["rho_ref_grid"]
@@ -193,7 +198,10 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None):
             continue
         rho_nn = oneshot_grid_density(model, mol_data[i], solver_config=solver_config)
         w = mol_data[i]["grid_weights"]
-        terms.append(jnp.sum(w * (rho_nn - rho_ref) ** 2))
+        err = jnp.sum(w * (rho_nn - rho_ref) ** 2)
+        if relative:
+            err = err / (jnp.sum(w * rho_ref ** 2) + 1e-8)
+        terms.append(err)
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
 
 

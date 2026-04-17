@@ -716,3 +716,41 @@ def test_loss_solver_config_none_matches_legacy(loss_name, batch_h_o_h2o, model)
         np.testing.assert_allclose(
             float(aux_legacy[key]), float(aux_explicit[key]), rtol=0, atol=1e-12,
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 44: RELATIVE dm_term divides by ||D_ref||_F^2 + eps
+# ---------------------------------------------------------------------------
+
+def test_dm_term_relative(h_mol_data, o_mol_data, h2o_mol_data):
+    """RELATIVE dm_term divides by ||D_ref||_F^2 + eps."""
+    model = AlecGGAModel.from_arch(_make_arch(), seed=0)
+    # Inject dm_pbe as dm_target so _dm_term doesn't skip (fixture has dm_target=None)
+    h2o_with_dm = dict(h2o_mol_data)
+    h2o_with_dm["dm_target"] = h2o_mol_data["dm_pbe"]
+    mol_data = (h_mol_data, o_mol_data, h2o_with_dm)
+    from xcquinox.alec.losses import _dm_term
+    abs_val = _dm_term(model, mol_data, (2,))
+    rel_val = _dm_term(model, mol_data, (2,), relative=True)
+    assert not jnp.allclose(abs_val, rel_val, atol=1e-15)
+    assert float(abs_val) > 0
+    assert float(rel_val) > 0
+
+
+# ---------------------------------------------------------------------------
+# Test 45: RELATIVE grid_term divides by sum(w * rho_ref^2) + eps
+# ---------------------------------------------------------------------------
+
+def test_grid_term_relative(h_mol_data, o_mol_data, h2o_mol_data):
+    """RELATIVE grid_term divides by sum(w * rho_ref^2) + eps."""
+    model = AlecGGAModel.from_arch(_make_arch(), seed=0)
+    # Inject rho_grid as rho_ref_grid so _grid_term doesn't skip (fixture has rho_ref_grid=None)
+    h2o_with_rho = dict(h2o_mol_data)
+    h2o_with_rho["rho_ref_grid"] = h2o_mol_data["rho_grid"]
+    mol_data = (h_mol_data, o_mol_data, h2o_with_rho)
+    from xcquinox.alec.losses import _grid_term
+    abs_val = _grid_term(model, mol_data, (2,))
+    rel_val = _grid_term(model, mol_data, (2,), relative=True)
+    assert not jnp.allclose(abs_val, rel_val, atol=1e-15)
+    assert float(abs_val) > 0
+    assert float(rel_val) > 0
