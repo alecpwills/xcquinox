@@ -16,7 +16,7 @@ Internal:
   _run_static_loop         -- static-weight training loop (default)
   _run_lossnorm_loop       -- loss normalization balancing loop
   _run_twophase_loop       -- two-phase balancing loop
-  _run_gradnorm_loop       -- stub for Task 8
+  _run_gradnorm_loop       -- GradNorm balancing loop (Chen et al. 2018)
 """
 import json
 import os
@@ -385,7 +385,106 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
 
 
 def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
-    raise NotImplementedError("GradNorm loop -- implemented in Task 8")
+    """GradNorm (Chen et al. 2018): learned per-task weights via gradient norm equalization."""
+    t0 = time.time()
+    balancing = spec.balancing
+    relative = spec.loss_metric == "relative"
+    optimizer = build_optimizer(
+        lr_start=spec.lr_start, lr_end=spec.lr_end,
+        n_steps=spec.n_steps, lr_decay_start=spec.lr_decay_start,
+        grad_clip=spec.grad_clip,
+    )
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    progress_hook = _adapt_progress_callback(
+        progress_callback, arch=spec.arch.name, phase="train"
+    )
+
+    component_keys = tuple(sorted(
+        loss.compute_components(model, batch, relative=relative).keys()
+    ))
+    n_tasks = len(component_keys)
+
+    log_weights = jnp.zeros(n_tasks)
+    weight_optimizer = optax.adam(balancing.weight_lr)
+    weight_opt_state = weight_optimizer.init(log_weights)
+
+    L0 = loss.compute_components(model, batch, relative=relative)
+    L0_values = jnp.stack([L0[k] for k in component_keys])
+
+    def _gradnorm_step(model, opt_state, log_weights, weight_opt_state,
+                       batch, L0_values):
+        weights = jax.nn.softmax(log_weights) * n_tasks
+
+        components = loss.compute_components(model, batch, relative=relative)
+        comp_values = jnp.stack([components[k] for k in component_keys])
+
+        def weighted_loss(m, b):
+            c = loss.compute_components(m, b, relative=relative)
+            cv = jnp.stack([c[k] for k in component_keys])
+            return jnp.sum(weights * cv)
+        _, model_grads = eqx.filter_value_and_grad(weighted_loss)(model, batch)
+
+        per_task_gnorms = []
+        for i in range(n_tasks):
+            g_i = eqx.filter_grad(
+                lambda m, b, _i=i: (
+                    weights[_i] * jnp.stack(
+                        [loss.compute_components(m, b, relative=relative)[k]
+                         for k in component_keys]
+                    )[_i]
+                )
+            )(model, batch)
+            gnorm_i = optax.global_norm(eqx.filter(g_i, eqx.is_array))
+            per_task_gnorms.append(gnorm_i)
+        G = jnp.stack(per_task_gnorms)
+
+        r = comp_values / (L0_values + 1e-12)
+        r_mean = jnp.mean(r)
+        r_relative = r / (r_mean + 1e-12)
+
+        G_mean = jnp.mean(G)
+        targets = G_mean * (r_relative ** balancing.alpha)
+
+        weight_grads = jax.grad(
+            lambda lw: jnp.sum(
+                (G * (jax.nn.softmax(lw) * n_tasks / (weights + 1e-12))
+                 - jax.lax.stop_gradient(targets)) ** 2
+            )
+        )(log_weights)
+        w_updates, new_weight_opt_state = weight_optimizer.update(
+            weight_grads, weight_opt_state)
+        new_log_weights = log_weights + w_updates
+
+        updates, new_opt_state = optimizer.update(model_grads, opt_state, model)
+        new_model = eqx.apply_updates(model, updates)
+
+        total = jnp.sum(weights * comp_values)
+        return (new_model, new_opt_state, new_log_weights, new_weight_opt_state,
+                total, components, weights, G)
+
+    losses_list = []
+    aux_log = []
+    for step in range(spec.n_steps):
+        (model, opt_state, log_weights, weight_opt_state,
+         loss_value, components, weights, gnorms) = _gradnorm_step(
+            model, opt_state, log_weights, weight_opt_state, batch, L0_values)
+        loss_py = float(loss_value)
+        losses_list.append(loss_py)
+        eff = {k: float(weights[i]) for i, k in enumerate(component_keys)}
+        gn = {k: float(gnorms[i]) for i, k in enumerate(component_keys)}
+        aux_log.append({
+            "step": step, "loss": loss_py, "aux": components,
+            "balancing_info": {
+                "strategy": "gradnorm",
+                "effective_weights": eff,
+                "gradient_norms": gn,
+            },
+        })
+        if progress_hook is not None:
+            progress_hook(step + 1, spec.n_steps, loss_py)
+
+    duration = time.time() - t0
+    return _save_artifacts(spec, model, losses_list, aux_log, duration)
 
 
 # ---------------------------------------------------------------------------

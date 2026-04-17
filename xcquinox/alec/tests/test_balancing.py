@@ -175,3 +175,34 @@ def test_twophase_phase_transition_in_aux_log():
     assert len(aux_log) == 5
     phases = [e["balancing_info"]["phase"] for e in aux_log]
     assert phases == [1, 1, 2, 2, 2]
+
+
+@pytest.mark.slow
+def test_gradnorm_runs_and_produces_artifacts():
+    """GradNorm training runs and produces standard artifacts."""
+    from xcquinox.alec.balancing import GradNormConfig
+    from xcquinox.alec.train import run_training
+    spec = _make_balancing_spec(GradNormConfig(), n_steps=3)
+    metadata = run_training(spec)
+    assert os.path.isfile(os.path.join(spec.checkpoint_dir, "model.eqx"))
+    assert metadata["balancing"]["strategy"] == "gradnorm"
+
+
+@pytest.mark.slow
+def test_gradnorm_weights_adapt():
+    """After training, GradNorm learned weights differ from initial equal weights."""
+    from xcquinox.alec.balancing import GradNormConfig
+    from xcquinox.alec.train import run_training
+    import pickle as pkl  # noqa: S403
+    spec = _make_balancing_spec(GradNormConfig(alpha=1.5, weight_lr=0.025), n_steps=5)
+    run_training(spec)
+    aux_path = os.path.join(spec.checkpoint_dir, "aux_log.pkl")
+    with open(aux_path, "rb") as f:
+        aux_log = pkl.load(f)  # noqa: S301
+    first_weights = aux_log[0]["balancing_info"]["effective_weights"]
+    last_weights = aux_log[-1]["balancing_info"]["effective_weights"]
+    changed = any(
+        abs(first_weights[k] - last_weights[k]) > 1e-6
+        for k in first_weights
+    )
+    assert changed, "GradNorm weights did not adapt during training"
