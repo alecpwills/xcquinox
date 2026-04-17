@@ -206,3 +206,44 @@ def test_gradnorm_weights_adapt():
         for k in first_weights
     )
     assert changed, "GradNorm weights did not adapt during training"
+
+
+def test_balancing_exports_from_init():
+    """All balancing types are importable from xcquinox.alec."""
+    from xcquinox.alec import (
+        LossMetric,
+        BalancingConfig,
+        LossNormConfig,
+        TwoPhaseConfig,
+        GradNormConfig,
+    )
+    assert LossMetric.ABSOLUTE.value == "absolute"
+    assert BalancingConfig().describe()["strategy"] == "static"
+
+
+@pytest.mark.slow
+def test_metadata_records_balancing_none():
+    """balancing=None records null in metadata."""
+    import json
+    from xcquinox.alec.train import run_training
+    spec = _make_balancing_spec(None, n_steps=3)
+    run_training(spec)
+    md_path = os.path.join(spec.checkpoint_dir, "train_metadata.json")
+    with open(md_path) as f:
+        md = json.load(f)
+    assert md["balancing"] is None
+    assert md["loss_metric"] == "absolute"
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("loss_metric", ["absolute", "relative"])
+def test_metadata_records_loss_metric(loss_metric):
+    """train_metadata.json includes correct loss_metric field."""
+    import json
+    from xcquinox.alec.train import run_training
+    spec = _make_balancing_spec(None, n_steps=3, loss_metric=loss_metric)
+    run_training(spec)
+    md_path = os.path.join(spec.checkpoint_dir, "train_metadata.json")
+    with open(md_path) as f:
+        md = json.load(f)
+    assert md["loss_metric"] == loss_metric

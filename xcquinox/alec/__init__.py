@@ -16,6 +16,13 @@ from xcquinox.alec.losses import (
     AtomizationLoss, AtomizationPlusDMLoss, AtomizationPlusGridLoss,
     DeltaAELoss, DeltaAEPlusDMLoss, DeltaAEPlusGridLoss,
 )
+from xcquinox.alec.balancing import (
+    LossMetric,
+    BalancingConfig,
+    LossNormConfig,
+    TwoPhaseConfig,
+    GradNormConfig,
+)
 from xcquinox.alec.evaluation import (
     METRIC_REGISTRY, register_metric, make_metric, list_metrics,
     Metric,
