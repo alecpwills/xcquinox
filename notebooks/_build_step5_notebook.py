@@ -1068,9 +1068,9 @@ for row_idx, solver_label in enumerate(SOLVER_LABELS):
             ax.semilogy(_steps, _vals, label=key)
         ax.set_title(f"{solver_label} / {loss_name}", fontsize=10)
         ax.set_xlabel("training step")
-        ax.set_ylabel("aux value (log)")
+        ax.set_ylabel("loss component (log scale)")
         ax.grid(True, which="both", ls=":", alpha=0.4)
-        ax.legend(fontsize="small")
+        ax.legend(fontsize="small", loc="best")
 
 fig.suptitle(
     f"Aux loss components for arch = {arch_name!r}\\n"
@@ -1196,14 +1196,19 @@ configs reveal the impact of SCF self-consistency on the learned functional.
 
 def build_cell_27_scf_comparison_bars():
     """Section 6 Cell 27 -- SCF comparison grouped bar chart."""
-    source = """# PBE reference line
+    source = """# Reference lines: PBE and CCSD atomization energy errors vs experiment
 ext_data_dir = f"{CHECKPOINT_BASE}/external_data"
-_E_pbe = {}
+_E_ref = {}
 for _name in ("H", "O", "H2O"):
     with open(f"{ext_data_dir}/{_name}_metadata.json") as _f:
-        _E_pbe[_name] = json.load(_f)["E_pbe_total"]
-PBE_AE_Ha = 2 * _E_pbe["H"] + _E_pbe["O"] - _E_pbe["H2O"]
-PBE_AE_err_kcalmol = abs(PBE_AE_Ha * 627.509 - 233.016)
+        _E_ref[_name] = json.load(_f)
+_AE_expt_kcalmol = 233.016  # experimental H2O atomization energy
+
+_ae_pbe_Ha = 2 * _E_ref["H"]["E_pbe_total"] + _E_ref["O"]["E_pbe_total"] - _E_ref["H2O"]["E_pbe_total"]
+PBE_AE_err_kcalmol = abs(_ae_pbe_Ha * 627.509 - _AE_expt_kcalmol)
+
+_ae_ccsd_Ha = 2 * _E_ref["H"]["E_ccsd_total"] + _E_ref["O"]["E_ccsd_total"] - _E_ref["H2O"]["E_ccsd_total"]
+CCSD_AE_err_kcalmol = abs(_ae_ccsd_Ha * 627.509 - _AE_expt_kcalmol)
 
 fig, axes = plt.subplots(1, len(LOSS_NAMES), figsize=(6 * len(LOSS_NAMES), 7), squeeze=False)
 for col_idx, loss_name in enumerate(LOSS_NAMES):
@@ -1227,13 +1232,15 @@ for col_idx, loss_name in enumerate(LOSS_NAMES):
 
     ax.set_xticks(x_positions)
     ax.set_xticklabels(ARCH_NAMES, rotation=45, ha="right", fontsize=8)
-    ax.set_ylabel("|AE error| (kcal/mol, log scale)")
+    ax.set_ylabel("|AE error| (kcal/mol)")
     ax.set_yscale("log")
     ax.set_title(f"Loss: {loss_name}", fontsize=11)
     ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
 
-    ax.axhline(PBE_AE_err_kcalmol, linestyle="dotted", color="r", alpha=0.7,
-               label=f"PBE Error ({PBE_AE_err_kcalmol:.2f})")
+    ax.axhline(PBE_AE_err_kcalmol, linestyle=":", color="r", linewidth=1.5,
+               label=f"PBE ({PBE_AE_err_kcalmol:.2f} kcal/mol)")
+    ax.axhline(CCSD_AE_err_kcalmol, linestyle=":", color="b", linewidth=1.5,
+               label=f"CCSD ({CCSD_AE_err_kcalmol:.2f} kcal/mol)")
     ax.axhline(1.0, linestyle="--", color="k", alpha=0.7,
                label="Chemical accuracy (1 kcal/mol)")
 
@@ -1343,9 +1350,18 @@ else:
     _sub = df.xs(_loss_c, level="loss")["AE_error_kcalmol_mean"].abs()
     _best_arch, _best_solver = _sub.idxmin()
 
-    fig, ax = plt.subplots(figsize=(8, 5))
     rho_ref = mol_data_list[2]["rho_ref_grid"]
     weights = mol_data_list[2]["grid_weights"]
+    _bins = np.linspace(-0.15, 0.15, 81)
+
+    # PBE baseline density residuals
+    _rho_pbe = mol_data_list[2]["rho_grid"]
+    _delta_pbe = np.asarray(_rho_pbe - rho_ref)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.hist(_delta_pbe, bins=_bins, alpha=0.3, color="red", edgecolor="red",
+            linewidth=0.5, label="PBE baseline",
+            weights=np.asarray(weights), density=True)
 
     for solver_label in SOLVER_LABELS:
         ckpt = f"{CHECKPOINT_BASE}/train/{_best_arch}/{_loss_c}/{solver_label}/model.eqx"
@@ -1355,17 +1371,18 @@ else:
         _model = eqx.tree_deserialise_leaves(ckpt, alec.AlecGGAModel.from_arch(_arch_config))
         _rho_nn = alec.oneshot_grid_density(_model, mol_data_list[2])
         _delta = np.asarray(_rho_nn - rho_ref)
-        ax.hist(_delta, bins=100, alpha=0.5, color=solver_colors[solver_label],
+        ax.hist(_delta, bins=_bins, alpha=0.4, color=solver_colors[solver_label],
+                edgecolor=solver_colors[solver_label], linewidth=0.5,
                 label=solver_label, weights=np.asarray(weights), density=True)
 
-    ax.set_xlabel(r"$\\Delta\\rho$ (grid-weighted)")
-    ax.set_ylabel("density (log)")
+    ax.set_xlabel(r"$\\rho_{\\mathrm{NN}} - \\rho_{\\mathrm{HF}}$  (grid-weighted residual)")
+    ax.set_ylabel("probability density (log scale)")
     ax.set_yscale("log")
     ax.set_title(
-        f"Grid density residuals for loss C, arch={_best_arch}\\n"
-        f"(3 overlaid histograms, one per solver config)",
+        f"Grid density residuals vs HF reference for loss C, arch={_best_arch}\\n"
+        f"(PBE baseline in red, NN models by solver config)",
     )
-    ax.legend(title="solver config")
+    ax.legend(title="model / baseline", fontsize="small")
     ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
     fig.tight_layout()
     os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
@@ -1489,17 +1506,22 @@ else:
 
         ax.set_xticks(x_positions)
         ax.set_xticklabels(_feature_archs, rotation=30, ha="right", fontsize=9)
-        ax.set_ylabel("|AE error| (kcal/mol, log)")
+        ax.set_ylabel("|AE error| (kcal/mol)")
         ax.set_yscale("log")
         ax.set_title(f"Loss: {loss_name}", fontsize=11)
         ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
-        ax.axhline(1.0, linestyle="--", color="k", alpha=0.5)
+        ax.axhline(PBE_AE_err_kcalmol, linestyle=":", color="r", linewidth=1.5,
+                   label=f"PBE ({PBE_AE_err_kcalmol:.2f} kcal/mol)")
+        ax.axhline(CCSD_AE_err_kcalmol, linestyle=":", color="b", linewidth=1.5,
+                   label=f"CCSD ({CCSD_AE_err_kcalmol:.2f} kcal/mol)")
+        ax.axhline(1.0, linestyle="--", color="k", alpha=0.7,
+                   label="Chemical accuracy (1 kcal/mol)")
 
     axes[0, -1].legend(
         loc="center left",
         bbox_to_anchor=(1.02, 0.5),
         fontsize="small",
-        title="solver config",
+        title="solver / reference",
     )
 
     fig.suptitle(
@@ -1672,29 +1694,87 @@ if not _sweep_rows:
 else:
     _sweep_df = pd.DataFrame(_sweep_rows)
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    # PBE/CCSD reference values for the new molecule
+    _new_meta = {}
+    for _nm in list(new_atom_energies.keys()) + [_mol_name]:
+        _mp = f"{ext_data_dir}/{_nm}_metadata.json"
+        if os.path.isfile(_mp):
+            with open(_mp) as _f:
+                _new_meta[_nm] = json.load(_f)
+
+    _new_pbe_ae = None
+    _new_ccsd_ae = None
+    _new_pbe_E_err = None
+    _new_ccsd_E_err = None
+    _ae_ref = 420.0  # experimental AE kcal/mol for CH4
+    if _mol_name in _new_meta:
+        _comp = dict(new_mol_spec.atom_composition)
+        _pbe_atoms = sum(
+            _new_meta[Z]["E_pbe_total"] * cnt
+            for Z, cnt in _comp.items()
+            if Z in _new_meta
+        )
+        _new_pbe_ae = abs((_pbe_atoms - _new_meta[_mol_name]["E_pbe_total"]) * 627.509 - _ae_ref)
+        _ccsd_atoms = sum(
+            _new_meta[Z]["E_ccsd_total"] * cnt
+            for Z, cnt in _comp.items()
+            if Z in _new_meta
+        )
+        _new_ccsd_ae = abs((_ccsd_atoms - _new_meta[_mol_name]["E_ccsd_total"]) * 627.509 - _ae_ref)
+        _hf_total = _new_meta[_mol_name].get("E_hf_total")
+        if _hf_total is not None:
+            _new_pbe_E_err = abs((_new_meta[_mol_name]["E_pbe_total"] - _hf_total) * 627.509)
+            _new_ccsd_E_err = abs((_new_meta[_mol_name]["E_ccsd_total"] - _hf_total) * 627.509)
+
+    # Build sensible x-axis labels from arch/loss
+    _unique_combos = _sweep_df[_sweep_df["solver"] == SOLVER_LABELS[0]][["arch", "loss"]].values
+    _x_labels = [f"{a}\\n{l}" for a, l in _unique_combos]
+
+    fig, axes = plt.subplots(1, 3, figsize=(20, 7))
     _metrics = [
-        ("AE_error_kcalmol", "|AE error| (kcal/mol)", f"{_mol_name} AE error"),
-        ("E_error_kcalmol", "|E error| (kcal/mol)", f"{_mol_name} E error"),
-        ("density_rmse", "density RMSE", f"{_mol_name} density RMSE"),
+        ("AE_error_kcalmol", f"|AE error| (kcal/mol)", f"{_mol_name} AE error vs experiment"),
+        ("E_error_kcalmol", f"|E error| vs HF (kcal/mol)", f"{_mol_name} total energy error vs HF ref"),
+        ("density_rmse", "density RMSE vs HF", f"{_mol_name} density RMSE vs HF ref"),
     ]
 
     for ax, (col, ylabel, title) in zip(axes, _metrics):
+        n_combos = len(_unique_combos)
         for s_idx, solver_label in enumerate(SOLVER_LABELS):
             _sub = _sweep_df[_sweep_df["solver"] == solver_label]
             _x = np.arange(len(_sub))
-            _labels = [f"{a}/{l}" for a, l in zip(_sub["arch"], _sub["loss"])]
             ax.bar(_x + s_idx * 0.25, _sub[col].values, width=0.25,
                    color=solver_colors[solver_label], label=solver_label, alpha=0.8)
+        ax.set_xticks(np.arange(n_combos) + 0.25)
+        ax.set_xticklabels(_x_labels, rotation=60, ha="right", fontsize=6)
         ax.set_ylabel(ylabel)
         ax.set_yscale("log")
-        ax.set_title(title)
+        ax.set_title(title, fontsize=10)
         ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
-        ax.legend(fontsize=8, title="solver")
+
+    # Add reference lines to AE error subplot
+    if _new_pbe_ae is not None:
+        axes[0].axhline(_new_pbe_ae, linestyle=":", color="r", linewidth=1.5,
+                        label=f"PBE ({_new_pbe_ae:.2f})")
+    if _new_ccsd_ae is not None:
+        axes[0].axhline(_new_ccsd_ae, linestyle=":", color="b", linewidth=1.5,
+                        label=f"CCSD ({_new_ccsd_ae:.2f})")
+    axes[0].axhline(1.0, linestyle="--", color="k", alpha=0.7,
+                    label="Chemical accuracy (1 kcal/mol)")
+
+    # Add reference lines to E error subplot
+    if _new_pbe_E_err is not None:
+        axes[1].axhline(_new_pbe_E_err, linestyle=":", color="r", linewidth=1.5,
+                        label=f"PBE ({_new_pbe_E_err:.1f})")
+    if _new_ccsd_E_err is not None:
+        axes[1].axhline(_new_ccsd_E_err, linestyle=":", color="b", linewidth=1.5,
+                        label=f"CCSD ({_new_ccsd_E_err:.1f})")
+
+    for ax in axes:
+        ax.legend(fontsize=7, title="solver / reference", title_fontsize=7)
 
     fig.suptitle(
         f"Transfer evaluation -- {_mol_name} across all 72 checkpoints\\n"
-        f"(grouped by solver config, colored by solver)",
+        f"(x-axis = architecture / loss, bars grouped by solver config)",
         fontsize=13,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.93))
