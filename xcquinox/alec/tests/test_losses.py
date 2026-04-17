@@ -487,8 +487,8 @@ def test_dm_weight_scales_dm_term(batch_h_o_h2o, model):
     total, aux = loss(model, batch)
     assert total.shape == ()
     assert jnp.isfinite(total)
-    # total = loss_energy + w_atomic * atomic_reg + 0.2 * loss_dm
-    expected = aux["loss_energy"] + 0.01 * aux["atomic_reg"] + 0.2 * aux["loss_dm"]
+    # total = sum of pre-weighted components
+    expected = sum(aux.values())
     np.testing.assert_allclose(float(total), float(expected), rtol=1e-5)
 
 
@@ -509,8 +509,8 @@ def test_density_weight_scales_grid_term(batch_h_o_h2o, model):
     total, aux = loss(model, batch)
     assert total.shape == ()
     assert jnp.isfinite(total)
-    # total = loss_energy + w_atomic * atomic_reg + 0.3 * loss_grid
-    expected = aux["loss_energy"] + 0.01 * aux["atomic_reg"] + 0.3 * aux["loss_grid"]
+    # total = sum of pre-weighted components
+    expected = sum(aux.values())
     np.testing.assert_allclose(float(total), float(expected), rtol=1e-5)
 
 
@@ -754,3 +754,53 @@ def test_grid_term_relative(h_mol_data, o_mol_data, h2o_mol_data):
     assert not jnp.allclose(abs_val, rel_val, atol=1e-15)
     assert float(abs_val) > 0
     assert float(rel_val) > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests 46-51: compute_components keys match __call__ aux dict
+# ---------------------------------------------------------------------------
+
+LOSS_PARAMS_KEYS = {
+    "A_atomization": {"loss_energy", "atomic_reg"},
+    "B_atomization_plus_dm": {"loss_energy", "atomic_reg", "loss_dm"},
+    "C_atomization_plus_grid": {"loss_energy", "atomic_reg", "loss_grid"},
+    "D1_delta_ae": {"loss_delta", "atomic_reg"},
+    "D2_delta_ae_plus_dm": {"loss_delta", "atomic_reg", "loss_dm"},
+    "D3_delta_ae_plus_grid": {"loss_delta", "atomic_reg", "loss_grid"},
+}
+
+
+@pytest.mark.parametrize("loss_name", list(LOSS_PARAMS_KEYS.keys()))
+def test_compute_components_keys_match_call(loss_name, batch_h_o_h2o, model):
+    """compute_components returns same keys as __call__ aux dict."""
+    mols = batch_h_o_h2o["mols"]
+    batch = {
+        "mol_data": batch_h_o_h2o["mol_data"],
+        "targets": batch_h_o_h2o["targets"],
+        "atom_energies": batch_h_o_h2o["atom_energies"],
+    }
+    loss = make_loss(loss_name, molecules=mols)
+    _, aux = loss(model, batch)
+    components = loss.compute_components(model, batch)
+    assert set(components.keys()) == set(aux.keys())
+    assert set(components.keys()) == LOSS_PARAMS_KEYS[loss_name]
+
+
+# ---------------------------------------------------------------------------
+# Tests 52-57: compute_components call consistency
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("loss_name", list(LOSS_PARAMS_KEYS.keys()))
+def test_compute_components_call_consistency(loss_name, batch_h_o_h2o, model):
+    """__call__ total equals sum of compute_components values."""
+    mols = batch_h_o_h2o["mols"]
+    batch = {
+        "mol_data": batch_h_o_h2o["mol_data"],
+        "targets": batch_h_o_h2o["targets"],
+        "atom_energies": batch_h_o_h2o["atom_energies"],
+    }
+    loss = make_loss(loss_name, molecules=mols)
+    total_call, _ = loss(model, batch)
+    components = loss.compute_components(model, batch)
+    total_components = sum(components.values())
+    assert jnp.allclose(total_call, total_components, atol=1e-12)
