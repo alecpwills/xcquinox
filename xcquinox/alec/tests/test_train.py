@@ -148,6 +148,54 @@ def test_validate_missing_pretrain_checkpoint():
 
 
 # ---------------------------------------------------------------------------
+# Tests: loss_metric and balancing fields
+# ---------------------------------------------------------------------------
+
+def test_training_spec_backward_compat_defaults():
+    """balancing=None and loss_metric='absolute' are backward-compatible defaults."""
+    spec = _make_training_spec()
+    assert spec.loss_metric == "absolute"
+    assert spec.balancing is None
+
+
+def test_validate_invalid_loss_metric():
+    spec = _make_training_spec(loss_metric="invalid_metric")
+    with pytest.raises(ValueError, match="loss_metric must be"):
+        spec.validate()
+
+
+def test_validate_twophase_phase1_steps_exceeds_n_steps():
+    from xcquinox.alec.balancing import TwoPhaseConfig
+    spec = _make_training_spec(
+        balancing=TwoPhaseConfig(phase1_steps=100),
+        n_steps=50,
+    )
+    with pytest.raises(ValueError, match="phase1_steps.*must be < n_steps"):
+        spec.validate()
+
+
+def test_validate_twophase_unknown_phase1_loss():
+    from xcquinox.alec.balancing import TwoPhaseConfig
+    spec = _make_training_spec(
+        balancing=TwoPhaseConfig(phase1_steps=2, phase1_loss="nonexistent"),
+        n_steps=5,
+    )
+    with pytest.raises(ValueError, match="phase1_loss.*not in"):
+        spec.validate()
+
+
+def test_validate_valid_balancing_configs():
+    """All balancing config types pass validation when valid."""
+    from xcquinox.alec.balancing import (
+        BalancingConfig, LossNormConfig, TwoPhaseConfig, GradNormConfig,
+    )
+    for bal in [None, BalancingConfig(), LossNormConfig(),
+                TwoPhaseConfig(phase1_steps=1), GradNormConfig()]:
+        spec = _make_training_spec(balancing=bal, n_steps=5)
+        spec.validate()  # should not raise
+
+
+# ---------------------------------------------------------------------------
 # Module-scoped fixtures (PySCF -- expensive, computed once per module)
 # ---------------------------------------------------------------------------
 

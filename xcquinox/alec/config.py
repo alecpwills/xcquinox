@@ -400,6 +400,8 @@ def _describe_spec(spec) -> dict:
             out[f.name] = [m.name for m in value]
         elif isinstance(value, tuple) and not value and f.name in ("molecules",):
             out[f.name] = []
+        elif value is not None and hasattr(value, "describe"):
+            out[f.name] = value.describe()
         else:
             out[f.name] = _json_coerce(value)
     return out
@@ -473,6 +475,8 @@ class TrainingSpec:
     checkpoint_dir: str = "./checkpoints"
     seed: int = 42
     solver_config: object | None = None
+    loss_metric: str = "absolute"
+    balancing: object | None = None
 
     @property
     def targets_dict(self) -> dict[str, float]:
@@ -595,6 +599,23 @@ class TrainingSpec:
                 f"checkpoint_dir exists but is not a directory: {self.checkpoint_dir}"
             )
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+        if self.loss_metric not in ("absolute", "relative"):
+            raise ValueError(
+                f"loss_metric must be 'absolute' or 'relative', got {self.loss_metric!r}"
+            )
+        if self.balancing is not None:
+            from xcquinox.alec.balancing import TwoPhaseConfig
+            if isinstance(self.balancing, TwoPhaseConfig):
+                if self.balancing.phase1_steps >= self.n_steps:
+                    raise ValueError(
+                        f"phase1_steps ({self.balancing.phase1_steps}) must be < "
+                        f"n_steps ({self.n_steps})"
+                    )
+                if self.balancing.phase1_loss not in LOSS_REGISTRY:
+                    raise ValueError(
+                        f"phase1_loss {self.balancing.phase1_loss!r} not in "
+                        f"LOSS_REGISTRY; known: {list_losses()}"
+                    )
         if self.loss_kwargs:
             import inspect
             loss_cls = LOSS_REGISTRY[self.loss_name]
