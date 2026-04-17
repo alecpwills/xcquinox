@@ -804,3 +804,50 @@ def test_compute_components_call_consistency(loss_name, batch_h_o_h2o, model):
     components = loss.compute_components(model, batch)
     total_components = sum(components.values())
     assert jnp.allclose(total_call, total_components, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# V_xc matching tests
+# ---------------------------------------------------------------------------
+
+def test_vxc_term_returns_zero_when_all_vxc_ref_none(batch_h_o_h2o, model):
+    """_vxc_term returns 0.0 when all mol_data entries have vxc_ref=None."""
+    from xcquinox.alec.losses import _vxc_term
+    mol_data = batch_h_o_h2o["mol_data"]
+    result = _vxc_term(model, mol_data, tuple(range(len(mol_data))))
+    assert float(result) == 0.0
+
+
+def test_vxc_term_finite_with_synthetic_vxc_ref(batch_h_o_h2o, model):
+    """_vxc_term returns a finite positive scalar when vxc_ref is provided."""
+    from xcquinox.alec.losses import _vxc_term
+    mol_data_list = list(batch_h_o_h2o["mol_data"])
+    # Inject a synthetic vxc_ref into H2O (index 2)
+    h2o = dict(mol_data_list[2])
+    nao = h2o["vxc_pbe"].shape[-1]
+    h2o["vxc_ref"] = jnp.zeros((nao, nao))  # zero reference
+    mol_data_list[2] = h2o
+    result = _vxc_term(model, tuple(mol_data_list), (2,))
+    assert result.shape == ()
+    assert jnp.isfinite(result)
+    assert float(result) > 0.0  # V_xc^NN is not zero for a random model
+
+
+def test_vxc_term_relative_divides_by_ref_norm(batch_h_o_h2o, model):
+    """_vxc_term with relative=True normalizes by ||V_xc^ref||_F^2."""
+    from xcquinox.alec.losses import _vxc_term
+    mol_data_list = list(batch_h_o_h2o["mol_data"])
+    h2o = dict(mol_data_list[2])
+    nao = h2o["vxc_pbe"].shape[-1]
+    h2o["vxc_ref"] = h2o["vxc_pbe"]  # use PBE as reference
+    mol_data_list[2] = h2o
+    mol_data_t = tuple(mol_data_list)
+
+    abs_val = float(_vxc_term(model, mol_data_t, (2,), relative=False))
+    rel_val = float(_vxc_term(model, mol_data_t, (2,), relative=True))
+
+    # Both should be finite and positive
+    assert abs_val > 0.0
+    assert rel_val > 0.0
+    # Relative and absolute should differ (different denominators)
+    assert abs(abs_val - rel_val) > 1e-12

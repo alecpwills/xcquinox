@@ -12,7 +12,9 @@ from xcquinox.alec.oneshot import (
     fixed_density_total_energy,
     oneshot_dm_prediction_fast,
     oneshot_grid_density,
+    compute_vxc_nn,
 )
+from xcquinox.alec.descriptors import assemble_descriptor_features
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +214,36 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False):
         err = jnp.sum(w * (rho_nn - rho_ref) ** 2)
         if relative:
             err = err / (jnp.sum(w * rho_ref ** 2) + 1e-8)
+        terms.append(err)
+    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
+
+
+def _vxc_term(model, mol_data, iter_idx, relative=False):
+    """V_xc matching: Frobenius^2 of (V_xc^NN - V_xc^ref).
+
+    Normalized by n_ao^2 (absolute) or ||V_xc^ref||_F^2 (relative).
+    Skips molecules where vxc_ref is None.
+    """
+    terms = []
+    for i in iter_idx:
+        vxc_ref = mol_data[i]["vxc_ref"]
+        if vxc_ref is None:
+            continue
+        features = assemble_descriptor_features(model.descriptors, mol_data[i])
+        vxc_nn = compute_vxc_nn(
+            model,
+            mol_data[i]["rho_grid"],
+            mol_data[i]["sigma_grid"],
+            features,
+            mol_data[i]["ao_grid"],
+            mol_data[i]["grid_weights"],
+        )
+        err = jnp.sum((vxc_nn - vxc_ref) ** 2)
+        if relative:
+            err = err / (jnp.sum(vxc_ref ** 2) + 1e-8)
+        else:
+            n_ao = vxc_ref.shape[-1]
+            err = err / (n_ao * n_ao)
         terms.append(err)
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
 
