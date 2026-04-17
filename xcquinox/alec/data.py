@@ -19,6 +19,7 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     "rho_ref_grid",
     "ref_density_method",
     "E_ref_literature",
+    "vxc_ref",
 })
 
 
@@ -27,8 +28,9 @@ def _load_external_data(
     *,
     dm_pbe_shape: tuple[int, ...],
     rho_pbe_shape: tuple[int, ...],
+    vxc_pbe_shape: tuple[int, ...],
     mol_name: str,
-) -> tuple[jnp.ndarray | None, jnp.ndarray | None, str | None, float | None]:
+) -> tuple[jnp.ndarray | None, jnp.ndarray | None, str | None, float | None, jnp.ndarray | None]:
     """Load and validate a MoleculeSpec.external_data_path .npz.
 
     The .npz may contain any subset of ``dm_target``, ``rho_ref_grid``,
@@ -90,7 +92,18 @@ def _load_external_data(
                     f"scalar, got shape {tuple(val.shape)}"
                 )
 
-    return dm_target, rho_ref_grid, ref_density_method, E_ref_literature
+        vxc_ref = None
+        if "vxc_ref" in present:
+            vxc_arr = np.asarray(npz["vxc_ref"])
+            if tuple(vxc_arr.shape) != tuple(vxc_pbe_shape):
+                raise ValueError(
+                    f"external vxc_ref shape {tuple(vxc_arr.shape)} does not "
+                    f"match vxc_pbe shape {tuple(vxc_pbe_shape)} for "
+                    f"{mol_name!r}"
+                )
+            vxc_ref = jnp.array(vxc_arr)
+
+    return dm_target, rho_ref_grid, ref_density_method, E_ref_literature, vxc_ref
 
 
 class MoleculeData(TypedDict, total=True):
@@ -114,6 +127,7 @@ class MoleculeData(TypedDict, total=True):
     dm_target: jnp.ndarray | None
     rho_ref_grid: jnp.ndarray | None
     ref_density_method: str | None
+    vxc_ref: jnp.ndarray | None
     rho_grid: jnp.ndarray
     sigma_grid: jnp.ndarray
     grid_weights: jnp.ndarray
@@ -255,11 +269,13 @@ def precompute_fixed_density_data(
     rho_ref_grid = None
     ref_density_method = None
     E_ref_literature = None
+    vxc_ref = None
     if mol_spec.external_data_path is not None:
-        dm_target, rho_ref_grid, ref_density_method, E_ref_literature = _load_external_data(
+        dm_target, rho_ref_grid, ref_density_method, E_ref_literature, vxc_ref = _load_external_data(
             mol_spec.external_data_path,
             dm_pbe_shape=tuple(np.asarray(dm_pbe).shape),
             rho_pbe_shape=tuple(np.asarray(rho_pbe).shape),
+            vxc_pbe_shape=tuple(np.asarray(vxc_pbe).shape),
             mol_name=mol_spec.name,
         )
 
@@ -282,6 +298,7 @@ def precompute_fixed_density_data(
         dm_target=dm_target,
         rho_ref_grid=rho_ref_grid,
         ref_density_method=ref_density_method,
+        vxc_ref=vxc_ref,
         rho_grid=jnp.array(rho_pbe),
         sigma_grid=jnp.array(sigma_pbe),
         grid_weights=jnp.array(weights),

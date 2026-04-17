@@ -547,3 +547,43 @@ def test_precompute_eri_absent_by_default():
 
     data = precompute_fixed_density_data(h2_molecule())
     assert data.get("eri") is None
+
+
+def test_precompute_loads_vxc_ref_from_external_npz(tmp_path):
+    """vxc_ref in external .npz is loaded and shape-validated against vxc_pbe."""
+    mol = h2_molecule()
+    baseline = precompute_fixed_density_data(mol)
+    vxc_shape = tuple(np.asarray(baseline["vxc_pbe"]).shape)
+    vxc_ref_arr = np.random.default_rng(0).standard_normal(vxc_shape)
+    path = str(tmp_path / "with_vxc_ref.npz")
+    np.savez(path, vxc_ref=vxc_ref_arr)
+    mol_with_path = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=path,
+    )
+    data = precompute_fixed_density_data(mol_with_path)
+    assert data["vxc_ref"] is not None
+    np.testing.assert_allclose(
+        np.asarray(data["vxc_ref"]), vxc_ref_arr, rtol=1e-10,
+    )
+
+
+def test_precompute_rejects_vxc_ref_shape_mismatch(tmp_path):
+    """vxc_ref shape must match vxc_pbe; mismatch triggers ValueError."""
+    path = str(tmp_path / "bad_vxc_shape.npz")
+    np.savez(path, vxc_ref=np.zeros((5, 5)))
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+        external_data_path=path,
+    )
+    with pytest.raises(ValueError, match="vxc_ref shape"):
+        precompute_fixed_density_data(mol)
+
+
+def test_precompute_vxc_ref_none_when_absent():
+    """Without external_data_path, vxc_ref is None."""
+    mol = h2_molecule()
+    data = precompute_fixed_density_data(mol)
+    assert data["vxc_ref"] is None
