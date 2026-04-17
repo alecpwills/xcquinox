@@ -14,7 +14,7 @@ Internal:
   _build_batch             -- batch precomputation helper
   _save_artifacts          -- checkpoint/metadata saving helper
   _run_static_loop         -- static-weight training loop (default)
-  _run_lossnorm_loop       -- stub for Task 6
+  _run_lossnorm_loop       -- loss normalization balancing loop
   _run_twophase_loop       -- stub for Task 7
   _run_gradnorm_loop       -- stub for Task 8
 """
@@ -266,7 +266,52 @@ def _run_static_loop(spec, model, batch, loss, progress_callback):
 
 
 def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
-    raise NotImplementedError("LossNorm loop -- implemented in Task 6")
+    """Loss normalization: divide each component by its step-0 magnitude."""
+    t0 = time.time()
+    optimizer = build_optimizer(
+        lr_start=spec.lr_start, lr_end=spec.lr_end,
+        n_steps=spec.n_steps, lr_decay_start=spec.lr_decay_start,
+        grad_clip=spec.grad_clip,
+    )
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    relative = spec.loss_metric == "relative"
+    progress_hook = _adapt_progress_callback(
+        progress_callback, arch=spec.arch.name, phase="train"
+    )
+
+    components_0 = loss.compute_components(model, batch, relative=relative)
+    norms = {k: jnp.maximum(jnp.abs(v), 1e-12) for k, v in components_0.items()}
+    component_keys = tuple(sorted(norms.keys()))
+
+    @eqx.filter_jit
+    def _normed_step(model, opt_state, batch):
+        def normed_loss_fn(model, batch):
+            components = loss.compute_components(model, batch, relative=relative)
+            total = sum(components[k] / norms[k] for k in component_keys)
+            return total, components
+        (loss_val, components), grads = eqx.filter_value_and_grad(
+            normed_loss_fn, has_aux=True)(model, batch)
+        updates, new_opt_state = optimizer.update(grads, opt_state, model)
+        new_model = eqx.apply_updates(model, updates)
+        return new_model, new_opt_state, loss_val, components
+
+    losses = []
+    aux_log = []
+    for step in range(spec.n_steps):
+        model, opt_state, loss_value, components = _normed_step(
+            model, opt_state, batch)
+        loss_py = float(loss_value)
+        losses.append(loss_py)
+        eff_weights = {k: float(1.0 / norms[k]) for k in component_keys}
+        aux_log.append({
+            "step": step, "loss": loss_py, "aux": components,
+            "balancing_info": {"strategy": "loss_norm", "effective_weights": eff_weights},
+        })
+        if progress_hook is not None:
+            progress_hook(step + 1, spec.n_steps, loss_py)
+
+    duration = time.time() - t0
+    return _save_artifacts(spec, model, losses, aux_log, duration)
 
 
 def _run_twophase_loop(spec, model, batch, loss, progress_callback):
