@@ -15,7 +15,7 @@ Internal:
   _save_artifacts          -- checkpoint/metadata saving helper
   _run_static_loop         -- static-weight training loop (default)
   _run_lossnorm_loop       -- loss normalization balancing loop
-  _run_twophase_loop       -- stub for Task 7
+  _run_twophase_loop       -- two-phase balancing loop
   _run_gradnorm_loop       -- stub for Task 8
 """
 import json
@@ -314,8 +314,74 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
     return _save_artifacts(spec, model, losses, aux_log, duration)
 
 
+def _filter_loss_kwargs(loss_kwargs_dict, target_loss_name):
+    """Return only kwargs accepted by target_loss_name's __init__."""
+    import inspect
+    from xcquinox.alec.losses import LOSS_REGISTRY
+    loss_cls = LOSS_REGISTRY[target_loss_name]
+    sig = inspect.signature(loss_cls.__init__)
+    allowed = set(sig.parameters.keys()) - {"self", "molecules"}
+    return {k: v for k, v in loss_kwargs_dict.items() if k in allowed}
+
+
 def _run_twophase_loop(spec, model, batch, loss, progress_callback):
-    raise NotImplementedError("TwoPhase loop -- implemented in Task 7")
+    """Two-phase training: energy-only then compound loss with fresh optimizer."""
+    t0 = time.time()
+    balancing = spec.balancing
+    phase2_steps = spec.n_steps - balancing.phase1_steps
+    progress_hook = _adapt_progress_callback(
+        progress_callback, arch=spec.arch.name, phase="train"
+    )
+
+    losses = []
+    aux_log = []
+
+    # Phase 1: energy-only loss
+    phase1_kwargs = _filter_loss_kwargs(spec.loss_kwargs_dict, balancing.phase1_loss)
+    phase1_loss = make_loss(
+        balancing.phase1_loss, molecules=spec.molecules, **phase1_kwargs)
+    phase1_optimizer = build_optimizer(
+        lr_start=spec.lr_start, lr_end=spec.lr_end,
+        n_steps=balancing.phase1_steps,
+        lr_decay_start=spec.lr_decay_start, grad_clip=spec.grad_clip,
+    )
+    opt_state = phase1_optimizer.init(eqx.filter(model, eqx.is_array))
+
+    for step in range(balancing.phase1_steps):
+        model, opt_state, loss_value, aux = _train_step(
+            model, opt_state, batch, phase1_loss, phase1_optimizer)
+        loss_py = float(loss_value)
+        losses.append(loss_py)
+        aux_log.append({
+            "step": step, "loss": loss_py, "aux": aux,
+            "balancing_info": {"strategy": "two_phase", "phase": 1},
+        })
+        if progress_hook is not None:
+            progress_hook(step + 1, spec.n_steps, loss_py)
+
+    # Phase 2: compound loss with FRESH optimizer
+    phase2_optimizer = build_optimizer(
+        lr_start=spec.lr_start, lr_end=spec.lr_end,
+        n_steps=phase2_steps,
+        lr_decay_start=spec.lr_decay_start, grad_clip=spec.grad_clip,
+    )
+    opt_state = phase2_optimizer.init(eqx.filter(model, eqx.is_array))
+
+    for step in range(phase2_steps):
+        global_step = balancing.phase1_steps + step
+        model, opt_state, loss_value, aux = _train_step(
+            model, opt_state, batch, loss, phase2_optimizer)
+        loss_py = float(loss_value)
+        losses.append(loss_py)
+        aux_log.append({
+            "step": global_step, "loss": loss_py, "aux": aux,
+            "balancing_info": {"strategy": "two_phase", "phase": 2},
+        })
+        if progress_hook is not None:
+            progress_hook(global_step + 1, spec.n_steps, loss_py)
+
+    duration = time.time() - t0
+    return _save_artifacts(spec, model, losses, aux_log, duration)
 
 
 def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):

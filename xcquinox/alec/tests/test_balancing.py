@@ -146,3 +146,32 @@ def test_lossnorm_balancing_info_in_aux_log():
         assert "balancing_info" in entry
         assert entry["balancing_info"]["strategy"] == "loss_norm"
         assert "effective_weights" in entry["balancing_info"]
+
+
+@pytest.mark.slow
+def test_twophase_runs_and_produces_artifacts():
+    """TwoPhase training runs and produces standard artifacts."""
+    from xcquinox.alec.balancing import TwoPhaseConfig
+    from xcquinox.alec.train import run_training
+    spec = _make_balancing_spec(
+        TwoPhaseConfig(phase1_steps=2), n_steps=5)
+    metadata = run_training(spec)
+    assert os.path.isfile(os.path.join(spec.checkpoint_dir, "model.eqx"))
+    assert metadata["balancing"]["strategy"] == "two_phase"
+
+
+@pytest.mark.slow
+def test_twophase_phase_transition_in_aux_log():
+    """TwoPhase aux_log shows phase=1 then phase=2."""
+    from xcquinox.alec.balancing import TwoPhaseConfig
+    from xcquinox.alec.train import run_training
+    import pickle as pkl  # noqa: S403
+    spec = _make_balancing_spec(
+        TwoPhaseConfig(phase1_steps=2), n_steps=5)
+    run_training(spec)
+    aux_path = os.path.join(spec.checkpoint_dir, "aux_log.pkl")
+    with open(aux_path, "rb") as f:
+        aux_log = pkl.load(f)  # noqa: S301
+    assert len(aux_log) == 5
+    phases = [e["balancing_info"]["phase"] for e in aux_log]
+    assert phases == [1, 1, 2, 2, 2]
