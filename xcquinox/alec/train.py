@@ -5,11 +5,18 @@ with has_aux=True (xcTrainer does not support aux dicts).
 
 Public API:
   build_optimizer  -- canonical optimizer chain (shared with pretrain)
-  run_training     -- full training loop with checkpoint saving
+  run_training     -- dispatcher that selects strategy-specific loop
 
 Internal:
   _adapt_progress_callback -- wraps user callback for 3-arg xcTrainer form
   _train_step              -- JIT-compiled single training step
+  _build_model             -- model construction helper
+  _build_batch             -- batch precomputation helper
+  _save_artifacts          -- checkpoint/metadata saving helper
+  _run_static_loop         -- static-weight training loop (default)
+  _run_lossnorm_loop       -- stub for Task 6
+  _run_twophase_loop       -- stub for Task 7
+  _run_gradnorm_loop       -- stub for Task 8
 """
 import json
 import os
@@ -131,67 +138,35 @@ def _train_step(model, opt_state, batch, loss_fn, optimizer):
 
 
 # ---------------------------------------------------------------------------
-# run_training
+# Helpers
 # ---------------------------------------------------------------------------
 
-def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
-    """Train AlecGGAModel end-to-end on molecular data.
-
-    Steps:
-    1. Validate spec
-    2. Build model (from scratch or pretrain checkpoint)
-    3. Precompute mol_data with full required-keys union
-    4. Build batch dict
-    5. Build optimizer
-    6. Training loop via _train_step
-    7. Save artifacts (model.eqx, losses.npy, aux_log.pkl, train_metadata.json)
-    8. Return metadata dict
-
-    Parameters
-    ----------
-    spec : TrainingSpec
-        Full training configuration.
-    progress_callback : callable, optional
-        Called with a dict payload at each step.
-
-    Returns
-    -------
-    dict
-        Metadata dict (also saved as train_metadata.json).
-    """
-    t0 = time.time()
-
-    # Step 1: validate
-    spec.validate()
-
-    # Step 2: build model
+def _build_model(spec: TrainingSpec) -> AlecGGAModel:
+    """Build model from scratch or pretrain checkpoint."""
     if spec.pretrain_checkpoint is None:
-        model = AlecGGAModel.from_arch(spec.arch, seed=spec.seed)
-    else:
-        xnet_skeleton, cnet_skeleton = create_network_pair(spec.arch, seed=spec.seed)
-        loaded_xnet = eqx.tree_deserialise_leaves(
-            os.path.join(spec.pretrain_checkpoint, "xnet.eqx"), xnet_skeleton
-        )
-        loaded_cnet = eqx.tree_deserialise_leaves(
-            os.path.join(spec.pretrain_checkpoint, "cnet.eqx"), cnet_skeleton
-        )
-        model = AlecGGAModel.from_arch(spec.arch, xnet=loaded_xnet, cnet=loaded_cnet)
+        return AlecGGAModel.from_arch(spec.arch, seed=spec.seed)
+    xnet_skeleton, cnet_skeleton = create_network_pair(spec.arch, seed=spec.seed)
+    loaded_xnet = eqx.tree_deserialise_leaves(
+        os.path.join(spec.pretrain_checkpoint, "xnet.eqx"), xnet_skeleton
+    )
+    loaded_cnet = eqx.tree_deserialise_leaves(
+        os.path.join(spec.pretrain_checkpoint, "cnet.eqx"), cnet_skeleton
+    )
+    return AlecGGAModel.from_arch(spec.arch, xnet=loaded_xnet, cnet=loaded_cnet)
 
-    # Step 3: precompute mol_data with full required-keys union
-    loss = make_loss(spec.loss_name, molecules=spec.molecules, **spec.loss_kwargs_dict)
 
+def _build_batch(spec: TrainingSpec, loss) -> dict:
+    """Precompute mol_data and build batch dict."""
     required = set()
     required |= set(loss.required_mol_keys)
     for d in spec.arch.materialize_descriptors():
         required |= set(d.required_mol_keys)
 
-    # FULL mode SCF needs the 4-index ERI tensor for J-matrix recomputation.
     sc = spec.loss_kwargs_dict.get("solver_config") or spec.solver_config
     if isinstance(sc, SolverConfig) and sc.mode == SolverMode.FULL:
         required.add("eri")
 
     required_keys = tuple(required)
-
     mol_data_list = [
         precompute_fixed_density_data(
             m, required_keys=required_keys,
@@ -199,44 +174,15 @@ def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
         )
         for m in spec.molecules
     ]
-
-    # Step 4: build batch dict
-    batch = {
+    return {
         "mol_data": tuple(mol_data_list),
         "targets": spec.targets_dict,
         "atom_energies": spec.atom_energies_dict,
     }
 
-    # Step 5: build optimizer
-    optimizer = build_optimizer(
-        lr_start=spec.lr_start,
-        lr_end=spec.lr_end,
-        n_steps=spec.n_steps,
-        lr_decay_start=spec.lr_decay_start,
-        grad_clip=spec.grad_clip,
-    )
 
-    # Step 6: training loop
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
-    losses = []
-    aux_log = []
-    progress_hook = _adapt_progress_callback(
-        progress_callback, arch=spec.arch.name, phase="train"
-    )
-
-    for step in range(spec.n_steps):
-        model, opt_state, loss_value, aux = _train_step(
-            model, opt_state, batch, loss, optimizer
-        )
-        loss_py = float(loss_value)
-        losses.append(loss_py)
-        aux_log.append({"step": step, "loss": loss_py, "aux": aux})
-        if progress_hook is not None:
-            progress_hook(step + 1, spec.n_steps, loss_py)  # 1-based
-
-    duration = time.time() - t0
-
-    # Step 7: save artifacts
+def _save_artifacts(spec, model, losses, aux_log, duration) -> dict:
+    """Save model.eqx, losses.npy, aux_log data, train_metadata.json."""
     os.makedirs(spec.checkpoint_dir, exist_ok=True)
 
     model_path = os.path.join(spec.checkpoint_dir, "model.eqx")
@@ -245,7 +191,8 @@ def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
     losses_np = np.array(losses, dtype=np.float64)
     np.save(os.path.join(spec.checkpoint_dir, "losses.npy"), losses_np)
 
-    with open(os.path.join(spec.checkpoint_dir, "aux_log.pkl"), "wb") as f:
+    aux_path = os.path.join(spec.checkpoint_dir, "aux_log.pkl")
+    with open(aux_path, "wb") as f:
         pickle.dump(aux_log, f, protocol=4)
 
     loss_kwargs_ser = {
@@ -270,6 +217,8 @@ def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
         "molecules": [m.name for m in spec.molecules],
         "targets": spec.targets_dict,
         "atom_energies": spec.atom_energies_dict,
+        "loss_metric": spec.loss_metric,
+        "balancing": spec.balancing.describe() if spec.balancing is not None else None,
         "final_loss": float(losses_np[-1]) if len(losses_np) > 0 else float("nan"),
         "min_loss": float(np.min(losses_np)) if len(losses_np) > 0 else float("nan"),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
@@ -280,5 +229,77 @@ def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
     with open(md_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    # Step 8: return metadata
     return metadata
+
+
+# ---------------------------------------------------------------------------
+# Training loop strategies
+# ---------------------------------------------------------------------------
+
+def _run_static_loop(spec, model, batch, loss, progress_callback):
+    """Static weighting loop -- unchanged behavior from original run_training."""
+    t0 = time.time()
+    optimizer = build_optimizer(
+        lr_start=spec.lr_start, lr_end=spec.lr_end,
+        n_steps=spec.n_steps, lr_decay_start=spec.lr_decay_start,
+        grad_clip=spec.grad_clip,
+    )
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    losses = []
+    aux_log = []
+    progress_hook = _adapt_progress_callback(
+        progress_callback, arch=spec.arch.name, phase="train"
+    )
+
+    for step in range(spec.n_steps):
+        model, opt_state, loss_value, aux = _train_step(
+            model, opt_state, batch, loss, optimizer
+        )
+        loss_py = float(loss_value)
+        losses.append(loss_py)
+        aux_log.append({"step": step, "loss": loss_py, "aux": aux})
+        if progress_hook is not None:
+            progress_hook(step + 1, spec.n_steps, loss_py)
+
+    duration = time.time() - t0
+    return _save_artifacts(spec, model, losses, aux_log, duration)
+
+
+def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
+    raise NotImplementedError("LossNorm loop -- implemented in Task 6")
+
+
+def _run_twophase_loop(spec, model, batch, loss, progress_callback):
+    raise NotImplementedError("TwoPhase loop -- implemented in Task 7")
+
+
+def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
+    raise NotImplementedError("GradNorm loop -- implemented in Task 8")
+
+
+# ---------------------------------------------------------------------------
+# run_training -- dispatcher
+# ---------------------------------------------------------------------------
+
+def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
+    """Train AlecGGAModel end-to-end. Dispatches to strategy-specific loop."""
+    spec.validate()
+    model = _build_model(spec)
+    loss = make_loss(spec.loss_name, molecules=spec.molecules, **spec.loss_kwargs_dict)
+    batch = _build_batch(spec, loss)
+    balancing = spec.balancing
+
+    if balancing is None or type(balancing).__name__ == "BalancingConfig":
+        return _run_static_loop(spec, model, batch, loss, progress_callback)
+
+    from xcquinox.alec.balancing import (
+        LossNormConfig, TwoPhaseConfig, GradNormConfig,
+    )
+    if isinstance(balancing, LossNormConfig):
+        return _run_lossnorm_loop(spec, model, batch, loss, progress_callback)
+    elif isinstance(balancing, TwoPhaseConfig):
+        return _run_twophase_loop(spec, model, batch, loss, progress_callback)
+    elif isinstance(balancing, GradNormConfig):
+        return _run_gradnorm_loop(spec, model, batch, loss, progress_callback)
+    else:
+        raise TypeError(f"Unknown balancing config type: {type(balancing)}")
