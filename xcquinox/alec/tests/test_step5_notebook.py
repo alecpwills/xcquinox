@@ -332,6 +332,28 @@ def test_cell_21_balancing_md():
     assert "Section 4b" in cell.source
 
 
+def test_cell_22_balancing_configs_has_base_and_vxc():
+    gen = load_generator()
+    source = gen.build_cell_22_balancing_configs().source
+    # Base balancing sweep
+    assert "BALANCING_CONFIGS" in source
+    assert "LossNormConfig" in source
+    assert "TwoPhaseConfig(phase1_steps=100)" in source
+    assert "GradNormConfig" in source
+    assert "BAL_LOSS_NAMES" in source
+    # V_xc variants
+    assert "VXC_VARIANTS" in source
+    assert '"static_vxc"' in source
+    assert '"two_phase_dfirst"' in source
+    assert '"static_vxc_A"' in source
+    assert '"vxc_weight"' in source
+    assert "phase1_loss_kwargs" in source
+    # V_xc sweep spans all solvers
+    assert "for solver_label in SOLVER_LABELS" in source
+    # Checkpoint path scheme for V_xc
+    assert "train_balancing/vxc/" in source
+
+
 # ---------------------------------------------------------------------------
 # Task 5 -- Evaluation Cells 22-25
 # ---------------------------------------------------------------------------

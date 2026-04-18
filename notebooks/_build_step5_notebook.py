@@ -1128,6 +1128,109 @@ main differentiator.
     return new_markdown_cell(source)
 
 
+def build_cell_22_balancing_configs():
+    """Section 4b Cell 22 -- balancing configs + V_xc variants spec list.
+
+    Emits both the existing 8-strategy sweep on oneshot solver and the 9 new
+    V_xc variants (3 variants x 3 solvers on deep_combined arch).
+    """
+    source = """BALANCING_CONFIGS = {
+    "static": None,
+    "loss_norm": LossNormConfig(),
+    "two_phase": TwoPhaseConfig(phase1_steps=100),
+    "gradnorm": GradNormConfig(alpha=1.5, weight_lr=0.025),
+}
+
+BAL_LOSS_NAMES = (
+    "B_atomization_plus_dm",
+    "C_atomization_plus_grid",
+)
+BAL_SOLVER = "oneshot"
+BAL_ARCH = "deep_combined"
+
+# V_xc matching variants. Each variant is swept across SOLVER_LABELS so we can
+# observe how SCF depth interacts with V_xc-based supervision.
+VXC_VARIANTS = {
+    "static_vxc": (
+        "B_atomization_plus_dm",
+        None,
+        (("vxc_weight", 1.0),),
+    ),
+    "two_phase_dfirst": (
+        "B_atomization_plus_dm",
+        TwoPhaseConfig(
+            phase1_steps=100,
+            phase1_loss="B_atomization_plus_dm",
+            phase1_loss_kwargs=(("vxc_weight", 1.0), ("dm_weight", 0.5)),
+        ),
+        (),
+    ),
+    "static_vxc_A": (
+        "A_atomization",
+        None,
+        (("vxc_weight", 1.0),),
+    ),
+}
+
+bal_specs = []
+
+# Existing 4-strategy sweep on oneshot solver.
+for loss_name in BAL_LOSS_NAMES:
+    for bal_label, bal_cfg in BALANCING_CONFIGS.items():
+        cfg = SCF_CONFIGS[BAL_SOLVER]
+        _lkw = {**LOSS_KWARGS_BASE[loss_name], "solver_config": cfg}
+        bal_specs.append(alec.TrainingSpec.from_dicts(
+            arch=alec.get_architecture(BAL_ARCH),
+            loss_name=loss_name,
+            molecules=tuple(mol_specs),
+            targets=targets,
+            atom_energies=atom_energies,
+            loss_kwargs=_lkw,
+            solver_config=cfg,
+            pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{BAL_ARCH}",
+            checkpoint_dir=f"{CHECKPOINT_BASE}/train_balancing/{loss_name}/{bal_label}",
+            n_steps=250,
+            lr_start=1e-2,
+            lr_end=1e-5,
+            lr_decay_start=0.2,
+            grad_clip=1.0,
+            balancing=bal_cfg,
+        ))
+
+# V_xc-augmented sweep: 3 variants x 3 solvers = 9 specs on deep_combined.
+for variant_label, (loss_name, bal_cfg, extra_kwargs) in VXC_VARIANTS.items():
+    for solver_label in SOLVER_LABELS:
+        cfg = SCF_CONFIGS[solver_label]
+        _lkw = {
+            **LOSS_KWARGS_BASE[loss_name],
+            **dict(extra_kwargs),
+            "solver_config": cfg,
+        }
+        bal_specs.append(alec.TrainingSpec.from_dicts(
+            arch=alec.get_architecture(BAL_ARCH),
+            loss_name=loss_name,
+            molecules=tuple(mol_specs),
+            targets=targets,
+            atom_energies=atom_energies,
+            loss_kwargs=_lkw,
+            solver_config=cfg,
+            pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{BAL_ARCH}",
+            checkpoint_dir=f"{CHECKPOINT_BASE}/train_balancing/vxc/{variant_label}/{solver_label}",
+            n_steps=250,
+            lr_start=1e-2,
+            lr_end=1e-5,
+            lr_decay_start=0.2,
+            grad_clip=1.0,
+            balancing=bal_cfg,
+        ))
+
+print(f"Built {len(bal_specs)} balancing specs "
+      f"({len(BAL_LOSS_NAMES)}x{len(BALANCING_CONFIGS)} base "
+      f"+ {len(VXC_VARIANTS)}x{len(SOLVER_LABELS)} vxc)")
+"""
+    return new_code_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation
