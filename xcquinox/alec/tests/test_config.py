@@ -397,3 +397,57 @@ def test_test_spec_default_solver_config_is_none():
         assert spec.solver_config is None
     finally:
         os.unlink(path)
+
+
+# --- PretrainSpec.loss_weighting (physics-fixes Task 1) -----------------------
+
+def test_pretrain_spec_loss_weighting_default_unweighted():
+    from xcquinox.alec.config import PretrainSpec
+    import xcquinox.alec as alec
+    spec = PretrainSpec(
+        arch=alec.get_architecture("deep"),
+        data_dir="/tmp/x",
+        checkpoint_dir="/tmp/y",
+        n_steps=10,
+    )
+    assert spec.loss_weighting == "unweighted"
+
+
+def test_pretrain_spec_loss_weighting_integration_accepted():
+    from xcquinox.alec.config import PretrainSpec
+    import xcquinox.alec as alec
+    spec = PretrainSpec(
+        arch=alec.get_architecture("deep"),
+        data_dir="/tmp/x",
+        checkpoint_dir="/tmp/y",
+        n_steps=10,
+        loss_weighting="integration",
+    )
+    assert spec.loss_weighting == "integration"
+
+
+def test_pretrain_spec_loss_weighting_invalid_raises():
+    from xcquinox.alec.config import PretrainSpec
+    import xcquinox.alec as alec
+    with pytest.raises((ValueError, TypeError)):
+        PretrainSpec(
+            arch=alec.get_architecture("deep"),
+            data_dir="/tmp/x",
+            checkpoint_dir="/tmp/y",
+            n_steps=10,
+            loss_weighting="foo",
+        )
+
+
+def test_pretrain_spec_loss_weighting_in_describe():
+    from xcquinox.alec.config import PretrainSpec
+    import xcquinox.alec as alec
+    spec = PretrainSpec(
+        arch=alec.get_architecture("deep"),
+        data_dir="/tmp/x",
+        checkpoint_dir="/tmp/y",
+        n_steps=10,
+        loss_weighting="integration",
+    )
+    out = spec.describe()
+    assert out["loss_weighting"] == "integration"

@@ -425,6 +425,16 @@ class PretrainSpec:
     lr_decay_start: float = 0.2   # fraction of steps before decay
     grad_clip: float = 1.0
     seed: int = 42
+    # Loss weighting scheme used by the pretraining loop. Validated at
+    # construction so mistypes surface immediately rather than deep in training.
+    loss_weighting: str = "unweighted"
+
+    def __post_init__(self) -> None:
+        if self.loss_weighting not in ("unweighted", "integration"):
+            raise ValueError(
+                f"loss_weighting must be 'unweighted' or 'integration', "
+                f"got {self.loss_weighting!r}"
+            )
 
     def validate(self) -> None:
         """Raise ValueError if spec is inconsistent."""
