@@ -61,6 +61,9 @@ from xcquinox.alec.models import AlecGGAModel
 from xcquinox.alec.pretrain import run_pretrain, from_legacy_step3b
 from xcquinox.alec.train import run_training
 
+# OEP utility
+from xcquinox.alec.oep import OEPResult, run_oep_inversion, save_vxc_ref
+
 # Parallel orchestration
 from xcquinox.alec.parallel import (
     WorkerJob, WorkerResult, run_workers,
