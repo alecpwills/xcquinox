@@ -324,6 +324,14 @@ def test_cell_21_aux_inspection():
     assert "deep_combined" in source
 
 
+def test_cell_21_balancing_md():
+    gen = load_generator()
+    cell = gen.build_cell_21_balancing_md()
+    assert cell.cell_type == "markdown"
+    assert "Balancing" in cell.source or "balancing" in cell.source
+    assert "Section 4b" in cell.source
+
+
 # ---------------------------------------------------------------------------
 # Task 5 -- Evaluation Cells 22-25
 # ---------------------------------------------------------------------------

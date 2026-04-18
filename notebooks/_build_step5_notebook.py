@@ -1112,6 +1112,22 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_21_balancing_md():
+    """Section 4b -- Multi-task loss balancing sweep header (markdown)."""
+    source = """### Section 4b: Multi-Task Loss Balancing Comparison
+
+This section compares four balancing strategies against the static baseline
+on the deep_combined architecture, showing how weight schedules affect
+convergence for density-matching losses (B, C).
+
+Variants are restricted to one architecture (`deep_combined`) and one solver
+(`oneshot`) to keep the sweep tractable; the V_xc-augmented group below
+additionally sweeps the three solver configs since V_xc matching is the
+main differentiator.
+"""
+    return new_markdown_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation
