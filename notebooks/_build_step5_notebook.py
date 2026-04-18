@@ -1703,6 +1703,153 @@ test molecule. Results plotted as grouped bars:
     return new_markdown_cell(source)
 
 
+def build_cell_45_transfer_eval_loop():
+    """Section 7 Cell 45 -- transfer evaluation loop over test_molecules (incl. V_xc variants)."""
+    source = '''_transfer_pkl = f"{CHECKPOINT_BASE}/transfer_results.pkl"
+
+def _eval_model_on_mol(arch_name, model_path, mol_spec, ae_ref, mol_name,
+                        out_dir, solver_config, atom_energies_dict):
+    """Run evaluation and return result row dict."""
+    _is_atom = (len(mol_spec.atom_composition) == 1
+                and mol_spec.atom_composition[0][1] == 1)
+    if _is_atom:
+        _metrics = ("total_energy", "density_rmse")
+        _mk = {}
+    else:
+        _metrics = ("total_energy", "atomization_energy", "density_rmse")
+        _mk = ({"atomization_energy": {"reference_ae_kcalmol": {mol_name: ae_ref}}}
+               if ae_ref else {})
+    _spec = alec.TestSpec.from_dicts(
+        arch=alec.get_architecture(arch_name),
+        model_checkpoint=model_path,
+        molecules=(mol_spec,),
+        metrics=_metrics,
+        metric_kwargs=_mk,
+        atom_energies=atom_energies_dict,
+        output_dir=out_dir,
+        solver_config=solver_config,
+    )
+    _res = alec.run_test(_spec)
+    _pm = _res["per_molecule"][0]
+    return {
+        "AE_error_kcalmol": float(abs(_pm.get("AE_error_kcalmol", float("nan")))),
+        "E_error_kcalmol": float(abs(_pm.get("E_error_kcalmol", float("nan")))),
+        "density_rmse": float(_pm["density_rmse"]) if _pm.get("density_rmse") is not None else float("nan"),
+    }
+
+if RERUN_EVAL or not os.path.isfile(_transfer_pkl):
+    transfer_results = {}
+    for tm in test_molecules:
+        _mol_name = tm["name"]
+        _mol_spec = tm["spec"]
+        _ae_ref = tm["ae_ref_kcalmol"]
+        _rows = []
+
+        # Trained models
+        for _arch in ARCH_NAMES:
+            for _loss in LOSS_NAMES:
+                for _solver in SOLVER_LABELS:
+                    _ckpt = f"{CHECKPOINT_BASE}/train/{_arch}/{_loss}/{_solver}/model.eqx"
+                    if not os.path.isfile(_ckpt):
+                        continue
+                    _out = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/{_arch}/{_loss}/{_solver}"
+                    row = _eval_model_on_mol(
+                        _arch, _ckpt, _mol_spec, _ae_ref, _mol_name,
+                        _out, SCF_CONFIGS[_solver], transfer_atom_energies)
+                    row.update({"arch": _arch, "loss": _loss, "solver": _solver})
+                    _rows.append(row)
+
+        # Balancing sweep
+        for _loss in BAL_LOSS_NAMES:
+            for _bl in BALANCING_CONFIGS:
+                _ckpt = f"{CHECKPOINT_BASE}/train_balancing/{_loss}/{_bl}/model.eqx"
+                if not os.path.isfile(_ckpt):
+                    continue
+                _out = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/balancing/{_loss}/{_bl}"
+                row = _eval_model_on_mol(
+                    BAL_ARCH, _ckpt, _mol_spec, _ae_ref, _mol_name,
+                    _out, SCF_CONFIGS[BAL_SOLVER], transfer_atom_energies)
+                row.update({"arch": BAL_ARCH, "loss": _loss, "solver": f"bal:{_bl}"})
+                _rows.append(row)
+
+        # V_xc variants transfer eval (9 runs on deep_combined)
+        for variant_label, (loss_name, _, _) in VXC_VARIANTS.items():
+            for solver_label in SOLVER_LABELS:
+                _ckpt = f"{CHECKPOINT_BASE}/train_balancing/vxc/{variant_label}/{solver_label}/model.eqx"
+                if not os.path.isfile(_ckpt):
+                    continue
+                _out = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/balancing_vxc/{variant_label}/{solver_label}"
+                row = _eval_model_on_mol(
+                    BAL_ARCH, _ckpt, _mol_spec, _ae_ref, _mol_name,
+                    _out, SCF_CONFIGS[solver_label], transfer_atom_energies)
+                row.update({
+                    "arch": BAL_ARCH,
+                    "loss": loss_name,
+                    "solver": f"bal_vxc:{variant_label}/{solver_label}",
+                })
+                _rows.append(row)
+
+        # Baselines (pretrained + random)
+        for _arch in ARCH_NAMES:
+            for _bl in BASELINE_LABELS:
+                _ckpt = f"{CHECKPOINT_BASE}/baseline_{_bl}/{_arch}/model.eqx"
+                if not os.path.isfile(_ckpt):
+                    continue
+                _out = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/baseline/{_arch}/{_bl}"
+                row = _eval_model_on_mol(
+                    _arch, _ckpt, _mol_spec, _ae_ref, _mol_name,
+                    _out, None, transfer_atom_energies)
+                row.update({"arch": _arch, "loss": "baseline", "solver": _bl})
+                _rows.append(row)
+
+        if _rows:
+            transfer_results[_mol_name] = pd.DataFrame(_rows)
+            print(f"{_mol_name}: {len(_rows)} evaluations")
+        else:
+            print(f"{_mol_name}: no checkpoints found")
+
+    with open(_transfer_pkl, "wb") as _f:
+        pickle.dump(transfer_results, _f, protocol=4)
+    print(f"\\nSaved to {_transfer_pkl}")
+else:
+    with open(_transfer_pkl, "rb") as _f:
+        transfer_results = pickle.load(_f)
+    print(f"Loaded cached results from {_transfer_pkl}")
+    for mol_name, tdf in transfer_results.items():
+        print(f"  {mol_name}: {len(tdf)} rows")
+
+# ---- Reference energies for each test molecule ----
+transfer_refs = {}
+for tm in test_molecules:
+    _mol_name = tm["name"]
+    _ae_ref = tm["ae_ref_kcalmol"]
+    _meta_path = f"{ext_data_dir}/{_mol_name}_metadata.json"
+    refs = {}
+    if os.path.isfile(_meta_path):
+        with open(_meta_path) as _f:
+            _meta = json.load(_f)
+        if _ae_ref is not None:
+            _comp = dict(tm["spec"].atom_composition)
+            for method in ('pbe', 'ccsd'):
+                _key = f"E_{method}_total"
+                _atom_E = sum(
+                    transfer_refs.get(Z, {}).get(_key,
+                        json.load(open(f"{ext_data_dir}/{Z}_metadata.json")).get(_key, 0)
+                    ) * cnt for Z, cnt in _comp.items()
+                )
+                _mol_E = _meta.get(_key, 0)
+                refs[f'{method}_ae_err'] = abs((_atom_E - _mol_E) * 627.509 - _ae_ref)
+    transfer_refs[_mol_name] = refs
+    if os.path.isfile(_meta_path):
+        with open(_meta_path) as _f:
+            for k, v in json.load(_f).items():
+                transfer_refs.setdefault(_mol_name, {})[k] = v
+
+print(f"\\nTransfer evaluation ready: {list(transfer_results.keys())}")
+'''
+    return new_code_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation

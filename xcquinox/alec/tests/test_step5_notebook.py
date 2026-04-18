@@ -657,3 +657,16 @@ def test_cell_44_transfer_plot_md():
     assert cell.cell_type == "markdown"
     assert "Transfer Evaluation" in cell.source or "transfer" in cell.source.lower()
 
+
+def test_cell_45_transfer_eval_loop():
+    gen = load_generator()
+    source = gen.build_cell_45_transfer_eval_loop().source
+    assert "_eval_model_on_mol" in source
+    assert "transfer_results" in source
+    assert "test_molecules" in source
+    assert "VXC_VARIANTS" in source
+    assert "train_balancing/vxc/" in source
+    assert "balancing_vxc" in source
+    assert "BASELINE_LABELS" in source
+    assert "bal:" in source
+
