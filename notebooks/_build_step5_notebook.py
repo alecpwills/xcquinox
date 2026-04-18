@@ -1542,14 +1542,24 @@ Each TestSpec carries the solver_config for metadata logging.
 
 
 def build_cell_23_test_loop():
-    """Section 5 Cell 23 -- build TestSpec + run_test per trained model."""
-    source = """for arch_name in ARCH_NAMES:
+    """Section 5 Cell 29 (old name cell_23) -- main sweep + baseline eval loop.
+
+    Covers main sweep (arch x loss x solver) and baseline models
+    (BASELINE_LABELS). Balancing-sweep eval (BAL_LOSS_NAMES x
+    BALANCING_CONFIGS) and V_xc-variant eval live in
+    ``build_cell_26_balancing_eval``.
+    """
+    source = """# --- Trained model evaluations ---
+for arch_name in ARCH_NAMES:
     for loss_name in LOSS_NAMES:
         for solver_label in SOLVER_LABELS:
             cfg = SCF_CONFIGS[solver_label]
             ckpt_dir = f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}/{solver_label}"
             model_path = f"{ckpt_dir}/model.eqx"
+            out_dir = f"{CHECKPOINT_BASE}/eval/{arch_name}/{loss_name}/{solver_label}"
             if not os.path.isfile(model_path):
+                continue
+            if not RERUN_EVAL and os.path.isfile(f"{out_dir}/aggregate.json"):
                 continue
             test_spec = alec.TestSpec.from_dicts(
                 arch=alec.get_architecture(arch_name),
@@ -1558,10 +1568,37 @@ def build_cell_23_test_loop():
                 metrics=("total_energy", "atomization_energy", "density_rmse", "constraint_violations"),
                 metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {"H2O": 233.016}}},
                 atom_energies=atom_energies,
-                output_dir=f"{CHECKPOINT_BASE}/eval/{arch_name}/{loss_name}/{solver_label}",
+                output_dir=out_dir,
                 solver_config=cfg,
             )
             alec.run_test(test_spec)
+
+# --- Baseline evaluations (pretrained + random) ---
+for arch_name in ARCH_NAMES:
+    for bl in BASELINE_LABELS:
+        bl_path = f"{CHECKPOINT_BASE}/baseline_{bl}/{arch_name}/model.eqx"
+        out_dir = f"{CHECKPOINT_BASE}/eval_baseline/{arch_name}/{bl}"
+        if not os.path.isfile(bl_path):
+            continue
+        if not RERUN_EVAL and os.path.isfile(f"{out_dir}/aggregate.json"):
+            continue
+        test_spec = alec.TestSpec.from_dicts(
+            arch=alec.get_architecture(arch_name),
+            model_checkpoint=bl_path,
+            molecules=tuple(mol_specs),
+            metrics=("total_energy", "atomization_energy", "density_rmse", "constraint_violations"),
+            metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {"H2O": 233.016}}},
+            atom_energies=atom_energies,
+            output_dir=out_dir,
+            solver_config=None,
+        )
+        alec.run_test(test_spec)
+
+_n_trained = sum(1 for a in ARCH_NAMES for l in LOSS_NAMES for s in SOLVER_LABELS
+                 if os.path.isfile(f"{CHECKPOINT_BASE}/eval/{a}/{l}/{s}/aggregate.json"))
+_n_baseline = sum(1 for a in ARCH_NAMES for bl in BASELINE_LABELS
+                  if os.path.isfile(f"{CHECKPOINT_BASE}/eval_baseline/{a}/{bl}/aggregate.json"))
+print(f"Evaluation complete: {_n_trained} trained + {_n_baseline} baseline results on disk")
 """
     return new_code_cell(source)
 

@@ -384,14 +384,15 @@ def test_cell_22_eval_md():
 
 
 def test_cell_23_test_loop_triple_nested():
-    """Eval loop must sweep arch x loss x solver."""
     gen = load_generator()
     source = gen.build_cell_23_test_loop().source
+    # Main sweep
     assert "for arch_name in ARCH_NAMES:" in source
     assert "for loss_name in LOSS_NAMES:" in source
     assert "for solver_label in SOLVER_LABELS:" in source
-    assert "alec.run_test(" in source
-    assert "solver_config" in source
+    # Baseline eval
+    assert "BASELINE_LABELS" in source
+    assert "alec.run_test" in source
 
 
 def test_cell_24_dataframe_includes_solver():
