@@ -24,6 +24,43 @@ import xcquinox.train
 
 from xcquinox.alec.config import ArchitectureConfig, PretrainSpec
 from xcquinox.alec.networks import AlecGGA_XNet, AlecGGA_CNet, create_network_pair
+from xcquinox.utils import lda_x, pw92c_unpolarized_scalar
+
+
+_RHO_FLOOR_INTEGRATION = 1e-18
+
+
+def _compute_integration_weights(rho):
+    """Return ``(w_x, w_c)`` integration weights for pretraining.
+
+    Weights are ``|rho * eps^LDA|`` evaluated at each grid point. High-rho
+    points dominate the ``E_xc`` integral, so pointwise fits weighted by
+    these quantities directly minimize the residual in the *integrated* XC
+    energy (rather than pointwise ``F`` error).
+
+    The density is clamped to ``_RHO_FLOOR_INTEGRATION`` before being fed
+    into the LDA kernels to avoid divide-by-zero in ``rs = (3 / (4 pi rho))^(1/3)``.
+    Returned weights are broadcast to ``rho.shape`` so the helper composes
+    uniformly regardless of input length (``pw92c_unpolarized_scalar``
+    collapses to a 0-D output for length-1 inputs).
+
+    Parameters
+    ----------
+    rho : jnp.ndarray
+        Electron density at grid points, shape ``(N,)``.
+
+    Returns
+    -------
+    (w_x, w_c) : tuple of jnp.ndarray, each shape ``(N,)``
+        Non-negative integration weights for the exchange and correlation
+        networks respectively.
+    """
+    rho_safe = jnp.maximum(rho, _RHO_FLOOR_INTEGRATION)
+    eps_x_lda = lda_x(rho_safe)
+    eps_c_lda = pw92c_unpolarized_scalar(rho_safe)
+    w_x = jnp.broadcast_to(jnp.abs(rho_safe * eps_x_lda), rho_safe.shape)
+    w_c = jnp.broadcast_to(jnp.abs(rho_safe * eps_c_lda), rho_safe.shape)
+    return w_x, w_c
 
 
 # === B-H-R15 Round 15 fix: legacy lob_lim constants ===
