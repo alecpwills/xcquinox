@@ -137,6 +137,59 @@ def fixed_density_total_energy(model, mol_data) -> float:
     return mol_data["E_non_xc"] + exc_integrated
 
 
+def _uks_spin_resolved_vxc(model, mol_data, features):
+    """Build spin-resolved V_xc^NN_a, V_xc^NN_b via the spin-scaled approximation.
+
+    Spin-scaling relation (widely used with RKS XC functionals):
+        E_xc^UKS[rho_a, rho_b] ~= (E_xc^RKS[2*rho_a] + E_xc^RKS[2*rho_b]) / 2
+
+    Taking the functional derivative w.r.t. the alpha DM gives (for a GGA)
+        V_xc_a_ij = v_rho^RKS(2 rho_a, 4 sigma_aa) integral phi_i phi_j dr
+                  + 4 v_sigma^RKS(2 rho_a, 4 sigma_aa) integral
+                        nabla_rho_a . nabla(phi_i phi_j) dr
+    which is exactly what ``compute_vxc_nn`` produces when called with
+    (2 rho_a, 4 sigma_aa, 2 nabla_rho_a) — the factor-of-2 in the sigma term
+    absorbs the 2*nabla_rho_a scaling and the remaining factor of 2 from the
+    scaled sigma. The beta channel is symmetric. This keeps alpha != beta V_xc
+    for open-shell systems so the NN can learn spin polarization.
+    """
+    dm_pbe = mol_data["dm_pbe"]  # (2, nao, nao)
+    ao_grid = mol_data["ao_grid"]
+    ao_grid_deriv = mol_data["ao_grid_deriv"]
+    grid_weights = mol_data["grid_weights"]
+
+    # Per-spin rho and nabla_rho from spin-resolved PBE DM.
+    ao_xyz = ao_grid_deriv[1:4]  # (3, n_grid, n_ao)
+    rho_a = jnp.einsum("ij,gi,gj->g", dm_pbe[0], ao_grid, ao_grid)
+    rho_b = jnp.einsum("ij,gi,gj->g", dm_pbe[1], ao_grid, ao_grid)
+    nabla_rho_a = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_pbe[0], ao_xyz, ao_grid)
+    nabla_rho_b = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_pbe[1], ao_xyz, ao_grid)
+    sigma_aa = jnp.sum(nabla_rho_a * nabla_rho_a, axis=1)
+    sigma_bb = jnp.sum(nabla_rho_b * nabla_rho_b, axis=1)
+
+    vxc_nn_a = compute_vxc_nn(
+        model,
+        2.0 * rho_a,
+        4.0 * sigma_aa,
+        features,
+        ao_grid,
+        grid_weights,
+        nabla_rho=2.0 * nabla_rho_a,
+        ao_grad=ao_grid_deriv,
+    )
+    vxc_nn_b = compute_vxc_nn(
+        model,
+        2.0 * rho_b,
+        4.0 * sigma_bb,
+        features,
+        ao_grid,
+        grid_weights,
+        nabla_rho=2.0 * nabla_rho_b,
+        ao_grad=ao_grid_deriv,
+    )
+    return vxc_nn_a, vxc_nn_b
+
+
 def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarray:
     """Fixed-J Roothaan one-shot DM prediction.
 
@@ -152,16 +205,6 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         from xcquinox.alec.solver import run_scf
         return run_scf(solver_config, model, mol_data).density_matrix
     features = assemble_descriptor_features(model.descriptors, mol_data)
-    vxc_nn = compute_vxc_nn(
-        model,
-        mol_data["rho_grid"],
-        mol_data["sigma_grid"],
-        features,
-        mol_data["ao_grid"],
-        mol_data["grid_weights"],
-        nabla_rho=mol_data.get("nabla_rho_grid"),
-        ao_grad=mol_data.get("ao_grid_deriv"),
-    )
 
     h_core = mol_data["h_core"]
     j_pbe = mol_data["j_matrix"]
@@ -177,16 +220,20 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         nocc_a = mol_data["nocc_a"]
         nocc_b = mol_data["nocc_b"]
 
-        # UKS: j_pbe has shape (2, n_ao, n_ao)
-        # Build per-spin Fock matrices
-        fock_a = h_core + j_pbe[0] + j_pbe[1] + vxc_nn
-        fock_b = h_core + j_pbe[0] + j_pbe[1] + vxc_nn
+        # Spin-resolved V_xc^NN (spin-scaled approximation; see helper docstring).
+        vxc_nn_a, vxc_nn_b = _uks_spin_resolved_vxc(model, mol_data, features)
+
+        # UKS: j_pbe has shape (2, n_ao, n_ao); J_total = J[dm_a] + J[dm_b]
+        # enters both spin Fock matrices identically (Coulomb is spin-blind).
+        j_total = j_pbe[0] + j_pbe[1]
+        fock_a = h_core + j_total + vxc_nn_a
+        fock_b = h_core + j_total + vxc_nn_b
 
         # Transform to orthogonal basis
         fock_orth_a = L_inv @ fock_a @ L_inv.T + DEGENERACY_REG * jnp.eye(nao)
         fock_orth_b = L_inv @ fock_b @ L_inv.T + DEGENERACY_REG * jnp.eye(nao)
 
-        # Eigendecomposition
+        # Eigendecomposition (JAX-native: preserves grad flow through the solver).
         _, mo_coeff_orth_a = jnp.linalg.eigh(fock_orth_a)
         _, mo_coeff_orth_b = jnp.linalg.eigh(fock_orth_b)
 
@@ -202,6 +249,18 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         dm_pred = jnp.stack([dm_a, dm_b])
     else:
         nocc = mol_data["nocc"]
+
+        # RKS path: single spin-blind V_xc^NN evaluated on the total density.
+        vxc_nn = compute_vxc_nn(
+            model,
+            mol_data["rho_grid"],
+            mol_data["sigma_grid"],
+            features,
+            mol_data["ao_grid"],
+            mol_data["grid_weights"],
+            nabla_rho=mol_data.get("nabla_rho_grid"),
+            ao_grad=mol_data.get("ao_grid_deriv"),
+        )
 
         # RKS: j_pbe has shape (n_ao, n_ao)
         fock = h_core + j_pbe + vxc_nn
