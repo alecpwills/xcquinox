@@ -161,6 +161,10 @@ PRETRAIN_SKIP_IF_EXISTS = False
 # ``CHECKPOINT_BASE/train/<arch>/<loss_name>/<solver_label>/``.
 TRAIN_SKIP_IF_EXISTS = False
 
+# Flip to True to force re-evaluation of models even when cached
+# ``aggregate.json`` / ``transfer_results.pkl`` artifacts already exist.
+RERUN_EVAL = False
+
 os.makedirs(CHECKPOINT_BASE, exist_ok=True)
 print(f"CHECKPOINT_BASE={{CHECKPOINT_BASE}}  BASIS={{BASIS}}  GRID_LEVEL={{GRID_LEVEL}}")
 """

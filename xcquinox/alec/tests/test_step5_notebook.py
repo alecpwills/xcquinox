@@ -105,6 +105,14 @@ def test_cell_03_constants_checkpoint_base_honors_override():
     assert "CHECKPOINT_BASE = 'smoke_ckpt'" in source
 
 
+def test_cell_03_constants_declares_rerun_eval():
+    """RERUN_EVAL must be declared so eval cells don't NameError."""
+    gen = load_generator()
+    source = gen.build_cell_03_constants().source
+    assert "RERUN_EVAL = False" in source
+    assert "force re-evaluation" in source
+
+
 def test_cell_04_filters_to_deep_archs():
     """Cell 4 must filter the architecture table to deep-only archs."""
     gen = load_generator()
