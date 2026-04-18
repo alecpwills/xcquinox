@@ -354,6 +354,15 @@ def test_cell_22_balancing_configs_has_base_and_vxc():
     assert "train_balancing/vxc/" in source
 
 
+def test_cell_23_balancing_loop():
+    gen = load_generator()
+    source = gen.build_cell_23_balancing_loop().source
+    assert "bal_specs" in source
+    assert "alec.run_training" in source or "run_training" in source
+    assert "tqdm" in source
+    assert "TRAIN_SKIP_IF_EXISTS" in source
+
+
 # ---------------------------------------------------------------------------
 # Task 5 -- Evaluation Cells 22-25
 # ---------------------------------------------------------------------------

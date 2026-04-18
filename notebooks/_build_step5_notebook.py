@@ -1231,6 +1231,57 @@ print(f"Built {len(bal_specs)} balancing specs "
     return new_code_cell(source)
 
 
+def build_cell_23_balancing_loop():
+    """Section 4b Cell 23 -- training loop over bal_specs (includes V_xc variants)."""
+    source = """_bal_bars = {}
+_bal_info = {"loss": None, "solver": None}
+
+def _bal_cb(info):
+    key = (info['arch'], info['phase'])
+    if key not in _bal_bars:
+        _label = f"{info['arch']:<20} {_bal_info['loss']:<25} {_bal_info['solver']}"
+        _bal_bars[key] = tqdm(
+            total=info['total'],
+            desc=_label,
+            leave=False,
+            dynamic_ncols=True,
+        )
+    bar = _bal_bars[key]
+    delta = info['step'] - bar.n
+    if delta > 0:
+        bar.update(delta)
+    bar.set_postfix(loss=f"{info['loss']:.4e}")
+    if info['step'] >= info['total']:
+        bar.close()
+        del _bal_bars[key]
+
+_bal_spec_bar = tqdm(
+    total=len(bal_specs),
+    desc="balancing sweep",
+    leave=True,
+    dynamic_ncols=True,
+)
+try:
+    for spec in bal_specs:
+        _bal_info['loss'] = spec.loss_name
+        _bal_info['solver'] = spec.checkpoint_dir.split('/')[-1]
+        if TRAIN_SKIP_IF_EXISTS and _training_model_exists(spec):
+            print(f"[{spec.loss_name}][{_bal_info['solver']}] cached -- skipping")
+            _bal_spec_bar.update(1)
+            continue
+        alec.run_training(spec, progress_callback=_bal_cb)
+        _bal_spec_bar.update(1)
+        _bal_spec_bar.set_postfix(
+            loss=spec.loss_name, strategy=_bal_info['solver'])
+finally:
+    _bal_spec_bar.close()
+    for _b in list(_bal_bars.values()):
+        _b.close()
+    _bal_bars.clear()
+"""
+    return new_code_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation
