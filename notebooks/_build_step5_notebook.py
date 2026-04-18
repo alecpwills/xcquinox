@@ -1482,6 +1482,47 @@ print(f"V_xc eval complete (RERUN_EVAL={RERUN_EVAL})")
     return new_code_cell(source)
 
 
+def build_cell_27_baseline_gen():
+    """Section 5 Cell 27 -- generate pretrained + random baseline model.eqx files."""
+    source = """# Generate pretrained and random baseline model.eqx for all architectures
+from xcquinox.alec.networks import create_network_pair
+
+BASELINE_LABELS = []  # populated below
+
+for arch_name in ARCH_NAMES:
+    arch = alec.get_architecture(arch_name)
+
+    # --- Pretrained baseline ---
+    pretrain_src = f"{CHECKPOINT_BASE}/pretrain/{arch_name}"
+    pretrain_dst = f"{CHECKPOINT_BASE}/baseline_pretrained/{arch_name}"
+    pretrain_model_path = f"{pretrain_dst}/model.eqx"
+    if (os.path.isfile(f"{pretrain_src}/xnet.eqx")
+            and not os.path.isfile(pretrain_model_path)):
+        os.makedirs(pretrain_dst, exist_ok=True)
+        xnet_skel, cnet_skel = create_network_pair(arch, seed=42)
+        loaded_xnet = eqx.tree_deserialise_leaves(
+            f"{pretrain_src}/xnet.eqx", xnet_skel)
+        loaded_cnet = eqx.tree_deserialise_leaves(
+            f"{pretrain_src}/cnet.eqx", cnet_skel)
+        model = alec.AlecGGAModel.from_arch(
+            arch, xnet=loaded_xnet, cnet=loaded_cnet)
+        eqx.tree_serialise_leaves(pretrain_model_path, model)
+
+    # --- Random baseline ---
+    random_dst = f"{CHECKPOINT_BASE}/baseline_random/{arch_name}"
+    random_model_path = f"{random_dst}/model.eqx"
+    if not os.path.isfile(random_model_path):
+        os.makedirs(random_dst, exist_ok=True)
+        model = alec.AlecGGAModel.from_arch(arch, seed=42)
+        eqx.tree_serialise_leaves(random_model_path, model)
+
+BASELINE_LABELS = ['pretrained', 'random']
+baseline_colors = {'pretrained': '#888888', 'random': '#CCCCCC'}
+print(f"Baselines ready for {len(ARCH_NAMES)} architectures: {BASELINE_LABELS}")
+"""
+    return new_code_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation

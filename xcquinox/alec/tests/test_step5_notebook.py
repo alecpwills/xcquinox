@@ -614,3 +614,13 @@ def test_cell_26_balancing_eval():
     assert "train_balancing/vxc/" in source
     assert "eval_balancing/vxc/" in source
 
+
+def test_cell_27_baseline_gen():
+    gen = load_generator()
+    source = gen.build_cell_27_baseline_gen().source
+    assert "BASELINE_LABELS" in source
+    assert "baseline_pretrained" in source
+    assert "baseline_random" in source
+    assert "create_network_pair" in source
+    assert "baseline_colors" in source
+
