@@ -2564,6 +2564,12 @@ else:
     return new_code_cell(source)
 
 
+# NOTE on function names: some build_cell_XX_* function names retain their
+# original numeric suffix (e.g. build_cell_22_eval_md produces cell at index 27
+# in the final notebook) because renaming during the balancing+transfer
+# backfill would create unnecessary diff churn. The symbolic portion of each
+# name still identifies the cell semantically. See plan
+# docs/superpowers/plans/2026-04-18-step5-vxc-training-integration.md.
 def main(
     output_path: str,
     *,
@@ -2601,52 +2607,61 @@ def main(
 
     nb = new_notebook()
     nb.cells = [
-        # Section 1: Setup (Cells 1-6)
+        # Section 1: Setup (cells 0-5)
         build_cell_01_title(),                          # 0
         build_cell_02_imports(),                         # 1
         build_cell_03_constants(checkpoint_base),        # 2
         build_cell_04_arch_table(),                      # 3
         build_cell_05_arch_names(arch_names),            # 4
         build_cell_06_scf_configs(solver_labels),        # 5
-        # Section 2: Pretraining (Cells 7-11)
+        # Section 2: Pretraining (cells 6-10)
         build_cell_07_pretrain_md(),                     # 6
         build_cell_08_pretrain_data_gen(),                # 7
         build_cell_09_pretrain_loop(),                    # 8
         build_cell_10_pretrain_loss_plot(),               # 9
         build_cell_11_pretrain_parity(),                  # 10
-        # Section 3: Training Data (Cells 12-16)
+        # Section 3: Training Data (cells 11-15)
         build_cell_12_training_md(),                     # 11
         build_cell_13_reference_dicts(),                  # 12
         build_cell_14_hf_ccsd_gen(),                      # 13
         build_cell_15_mol_specs(),                        # 14
         build_cell_16_precompute(),                       # 15
-        # Section 4: SCF-Varied Training (Cells 17-21)
+        # Section 4: SCF-Varied Training (cells 16-20)
         build_cell_17_training_md(),                     # 16
         build_cell_18_training_specs(loss_names),         # 17
         build_cell_19_training_loop(),                    # 18
         build_cell_20_training_loss_plot(),                # 19
         build_cell_21_aux_inspection(),                   # 20
-        # Section 5: Evaluation (Cells 22-25)
-        build_cell_22_eval_md(),                         # 21
-        build_cell_23_test_loop(),                        # 22
-        build_cell_24_dataframe(),                        # 23
-        build_cell_25_results_table(),                    # 24
-        # Section 6: Visualizations (Cells 26-35)
-        build_cell_26_scf_impact_md(),                   # 25
-        build_cell_27_scf_comparison_bars(),              # 26
-        build_cell_28_dm_heatmaps_md(),                   # 27
-        build_cell_29_dm_heatmaps(),                      # 28
-        build_cell_30_density_histograms_md(),             # 29
-        build_cell_31_density_histograms(),                # 30
-        build_cell_32_convergence_md(),                   # 31
-        build_cell_33_convergence_diagnostic(),            # 32
-        build_cell_34_feature_impact_md(),                 # 33
-        build_cell_35_feature_impact(),                    # 34
-        # Section 7: Extension (Cells 36-39)
-        build_cell_36_extension_md(),                    # 35
-        build_cell_37_new_molecule_template(),             # 36
-        build_cell_38_new_mol_comparison_md(),             # 37
-        build_cell_39_new_mol_comparison(),                # 38
+        # Section 4b: Balancing + V_xc variants (cells 21-26)
+        build_cell_21_balancing_md(),                     # 21
+        build_cell_22_balancing_configs(),                # 22
+        build_cell_23_balancing_loop(),                   # 23
+        build_cell_24_balancing_aux_inspection(),         # 24
+        build_cell_25_balancing_loss_plot(),              # 25
+        build_cell_26_balancing_eval(),                   # 26
+        # Section 5: Evaluation (cells 27-31)
+        build_cell_22_eval_md(),                          # 27 (old function name kept)
+        build_cell_27_baseline_gen(),                     # 28
+        build_cell_23_test_loop(),                        # 29 (old name, expanded body)
+        build_cell_24_dataframe(),                        # 30 (old name, expanded body)
+        build_cell_25_results_table(),                    # 31 (old name kept)
+        # Section 6: SCF Impact Analysis (cells 32-41)
+        build_cell_26_scf_impact_md(),                    # 32
+        build_cell_27_scf_comparison_bars(),              # 33
+        build_cell_28_dm_heatmaps_md(),                   # 34
+        build_cell_29_dm_heatmaps(),                      # 35
+        build_cell_30_density_histograms_md(),             # 36
+        build_cell_31_density_histograms(),                # 37
+        build_cell_32_convergence_md(),                   # 38
+        build_cell_33_convergence_diagnostic(),            # 39
+        build_cell_34_feature_impact_md(),                 # 40
+        build_cell_35_feature_impact(),                    # 41
+        # Section 7: Transfer Evaluation (cells 42-46)
+        build_cell_42_transfer_md(),                      # 42
+        build_cell_43_transfer_data_gen(),                # 43
+        build_cell_44_transfer_plot_md(),                 # 44
+        build_cell_45_transfer_eval_loop(),               # 45
+        build_cell_46_transfer_plots(),                   # 46
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce
