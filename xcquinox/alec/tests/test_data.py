@@ -614,33 +614,36 @@ def test_vxc_pbe_uks_oxygen_atom_magnitude_reasonable():
 
 
 def test_vxc_pbe_uks_matches_direct_pyscf_vxc():
-    """UKS vxc_pbe should match mf.get_veff - J_total within SCF tolerance.
+    """UKS vxc_pbe should equal veff - J_total when evaluated at the same DM.
 
-    Tolerance 5e-2 Ha accounts for independent SCF runs converging to
-    slightly different DMs on open-shell systems. The old J-per-spin bug
-    produced ~7 Ha errors, so this tolerance is still strict enough to
-    detect any regression.
+    Uses the DM from precompute_fixed_density_data to avoid SCF-convergence
+    drift between independent pyscf runs. Tests the J-handling formula,
+    not the SCF algorithm.
     """
     import numpy as np
     from pyscf import gto, dft
     from xcquinox.alec.data import precompute_fixed_density_data
     from xcquinox.alec.config import MoleculeSpec
 
-    mol = gto.M(atom="O 0 0 0", basis="sto-3g", spin=2, verbose=0)
-    mf = dft.UKS(mol); mf.xc = "pbe"; mf.grids.level = 1; mf.kernel()
-    dm = mf.make_rdm1()
-    veff = np.asarray(mf.get_veff(mol, dm))
-    j_per_spin = np.asarray(mf.get_j(mol, dm))
-    j_total = j_per_spin.sum(axis=0)  # (nao, nao)
-    vxc_direct = veff - j_total[np.newaxis, ...]  # broadcast to (2, nao, nao)
-
     spec = MoleculeSpec(
         name="O", atom="O 0 0 0", basis="sto-3g",
         charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
     )
     md = precompute_fixed_density_data(spec, required_keys=("vxc_pbe",))
+    # Use the UKS DM actually stored by precompute (shape (2, nao, nao))
+    dm = np.asarray(md["dm_pbe"])
+    assert dm.shape == (2, 5, 5), f"expected UKS dm_pbe, got {dm.shape}"
+
+    # Now evaluate V_xc directly at this same DM
+    mol = gto.M(atom="O 0 0 0", basis="sto-3g", spin=2, verbose=0)
+    mf = dft.UKS(mol); mf.xc = "pbe"; mf.grids.level = 1; mf.build()
+    veff = np.asarray(mf.get_veff(mol, dm))
+    j_per_spin = np.asarray(mf.get_j(mol, dm))
+    j_total = j_per_spin.sum(axis=0)
+    vxc_direct = veff - j_total[np.newaxis, ...]
+
     max_diff = float(np.max(np.abs(np.asarray(md["vxc_pbe"]) - vxc_direct)))
-    assert max_diff < 5e-2, (
-        f"vxc_pbe does not match direct PySCF V_xc within SCF tolerance: "
+    assert max_diff < 1e-8, (
+        f"vxc_pbe does not match veff - J_total at the same DM: "
         f"max diff = {max_diff:.3e}"
     )
