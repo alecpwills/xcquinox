@@ -17,7 +17,7 @@ from xcquinox.alec.solver import (
     EnergyConvergence,
     MixerState,
     _oneshot_result,
-    _contract_dm_to_grid,
+    _contract_dm_to_grid_with_nabla,
     _reassemble_features,
 )
 
@@ -118,12 +118,15 @@ def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
                 features_initial,
                 mol_data["rho_grid"],
                 mol_data["sigma_grid"],
+                mol_data["nabla_rho_grid"],
             )
-        rho_d, sigma_d = _contract_dm_to_grid(D, ao_grid_deriv)
+        rho_d, nabla_rho_d, sigma_d = _contract_dm_to_grid_with_nabla(
+            D, ao_grid_deriv,
+        )
         if not model.descriptors:
             # No descriptors to reassemble; reuse the correctly-shaped
             # empty features from the initial precompute.
-            return features_initial, rho_d, sigma_d
+            return features_initial, rho_d, sigma_d, nabla_rho_d
         feats = _reassemble_features(
             descriptors=model.descriptors,
             dm=D,
@@ -131,14 +134,14 @@ def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
             cusp_features=cusp_cached,
             n_grid=grid_weights.shape[0],
         )
-        return feats, rho_d, sigma_d
+        return feats, rho_d, sigma_d, nabla_rho_d
 
     def _j_for_cycle(D):
         if mode == SolverMode.FIXED_J:
             return J_pinned
         return _compute_j_matrix(D, mol_data["eri"])
 
-    features_0, rho_0, sigma_0 = _features_and_rho(D0)
+    features_0, rho_0, sigma_0, _nabla_rho_0 = _features_and_rho(D0)
     J_0 = _j_for_cycle(D0)
     E0 = _compute_total_energy(
         model, D0, rho_0, sigma_0, features_0,
@@ -158,9 +161,10 @@ def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
 
     def body(state, _):
         D_cur = state.density_matrix
-        features, rho_cur, sigma_cur = _features_and_rho(D_cur)
+        features, rho_cur, sigma_cur, nabla_rho_cur = _features_and_rho(D_cur)
         vxc_nn = compute_vxc_nn(
             model, rho_cur, sigma_cur, features, ao_grid, grid_weights,
+            nabla_rho=nabla_rho_cur, ao_grad=ao_grid_deriv,
         )
         J_cycle = _j_for_cycle(D_cur)
         F = h_core + J_cycle + vxc_nn
@@ -182,14 +186,14 @@ def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
             converged=already | is_conv,
             cycles_run=cycles_inc,
         )
-        return next_state, None
+        return next_state, E_out
 
-    final_state, _ = jax.lax.scan(body, init_state, None, length=config.max_cycles)
+    final_state, energy_trace = jax.lax.scan(body, init_state, None, length=config.max_cycles)
 
     if policy == FeaturePolicy.FROZEN:
         features_final = features_initial
     else:
-        features_final, _, _ = _features_and_rho(final_state.density_matrix)
+        features_final, _, _, _ = _features_and_rho(final_state.density_matrix)
 
     return SCFResult(
         density_matrix=final_state.density_matrix,
@@ -197,4 +201,5 @@ def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
         cycles_run=final_state.cycles_run,
         converged=final_state.converged,
         features_used=features_final,
+        energy_trace=energy_trace,
     )

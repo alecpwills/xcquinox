@@ -27,25 +27,97 @@ def compute_exc_nn(model, rho, sigma, features, grid_weights):
     return jnp.sum(exc * grid_weights)
 
 
-def compute_vxc_nn(model, rho, sigma, features, ao_grid, grid_weights) -> jnp.ndarray:
+def compute_vxc_nn(
+    model,
+    rho,
+    sigma,
+    features,
+    ao_grid,
+    grid_weights,
+    nabla_rho=None,
+    ao_grad=None,
+) -> jnp.ndarray:
     """Assemble NN XC potential matrix V_xc via per-point forward-mode jvp.
 
-    Returns shape (n_ao, n_ao). LDA-like approximation (v_sigma discarded).
+    For a GGA E_xc[rho, sigma = |nabla rho|^2], the V_xc matrix element is
+        V_xc_ij = integral phi_i v_rho phi_j dr
+                + 2 * integral v_sigma nabla_rho . nabla(phi_i phi_j) dr
+    The factor of 2 comes from dE_xc/d(nabla_rho) = 2 v_sigma * nabla_rho
+    (because sigma = |nabla rho|^2). Expanding nabla(phi_i phi_j) =
+    phi_j nabla(phi_i) + phi_i nabla(phi_j) and defining
+        A_ij = sum_g w_g v_sigma(g) [nabla_rho(g) . nabla(phi_i)(g)] phi_j(g)
+    gives the symmetric form
+        V_sigma = 2 * (A + A.T).
+
+    Parameters
+    ----------
+    rho : (n_grid,)
+    sigma : (n_grid,)
+    features : (n_grid, n_features) or (n_grid, 0)
+    ao_grid : (n_grid, n_ao)
+    grid_weights : (n_grid,)
+    nabla_rho : (n_grid, 3), optional. If ``None``, the v_sigma term is
+        omitted and a warning is issued — this is correct only for LDA NNs.
+    ao_grad : (3, n_grid, n_ao) or (4, n_grid, n_ao), optional. If 4 leading
+        dims, interpreted as ``eval_ao(..., deriv=1)`` and ``ao_grad[1:4]``
+        is used. If ``None``, the v_sigma term is omitted.
+
+    Returns
+    -------
+    V_xc : (n_ao, n_ao), symmetric.
     """
     def exc_single_point(r, s, f):
         return model.eval_exc_scalar(r, s, f)
 
-    # Per-point jvp: tangent on rho only
-    v_rho = jax.vmap(
-        lambda r, s, f: jax.jvp(
-            exc_single_point,
-            (r, s, f),
-            (jnp.ones_like(r), jnp.zeros_like(s), jnp.zeros_like(f)),
-        )[1]
+    # Per-point JVPs: tangent on rho and then on sigma
+    v_rho, v_sigma = jax.vmap(
+        lambda r, s, f: (
+            jax.jvp(
+                exc_single_point,
+                (r, s, f),
+                (jnp.ones_like(r), jnp.zeros_like(s), jnp.zeros_like(f)),
+            )[1],
+            jax.jvp(
+                exc_single_point,
+                (r, s, f),
+                (jnp.zeros_like(r), jnp.ones_like(s), jnp.zeros_like(f)),
+            )[1],
+        )
     )(rho, sigma, features)
 
-    # Assemble Fock-matrix form: V_xc_ij = sum_g v_rho[g] * ao[g,i] * ao[g,j] * w[g]
-    return jnp.einsum("g,gi,gj,g->ij", v_rho, ao_grid, ao_grid, grid_weights)
+    # LDA-like contribution: V_rho_ij = sum_g w_g v_rho(g) phi_i(g) phi_j(g).
+    V_rho = jnp.einsum("g,gi,gj->ij", grid_weights * v_rho, ao_grid, ao_grid)
+
+    if nabla_rho is None or ao_grad is None:
+        import warnings
+        warnings.warn(
+            "compute_vxc_nn called without nabla_rho/ao_grad: returning "
+            "LDA-only V_xc (v_sigma term dropped). Correct only for LDA NNs.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return V_rho
+
+    # Accept either the (4, n_grid, n_ao) eval_ao(deriv=1) layout or the
+    # (3, n_grid, n_ao) "derivatives-only" layout. This keeps callers
+    # flexible: run_manual_scf/_vxc_term can pass mol_data["ao_grid_deriv"]
+    # directly without an extra slice step.
+    ao_grad_xyz = ao_grad[1:4] if ao_grad.shape[0] == 4 else ao_grad
+
+    # (nabla_rho . nabla phi_i)(g) contracting cartesian axis d.
+    # nabla_rho: (n_grid, 3); ao_grad_xyz: (3, n_grid, n_ao) -> (n_grid, n_ao).
+    nabla_rho_dot_ao_grad = jnp.einsum("gd,dgi->gi", nabla_rho, ao_grad_xyz)
+
+    # A_ij = sum_g w_g v_sigma(g) [nabla_rho . nabla phi_i](g) phi_j(g)
+    A_matrix = jnp.einsum(
+        "g,gi,gj->ij",
+        grid_weights * v_sigma,
+        nabla_rho_dot_ao_grad,
+        ao_grid,
+    )
+    # V_sigma from d/dD_ij integral v_sigma |nabla rho|^2 dr = 2 v_sigma nabla_rho . nabla(phi_i phi_j).
+    V_sigma = 2.0 * (A_matrix + A_matrix.T)
+    return V_rho + V_sigma
 
 
 def fixed_density_total_energy(model, mol_data) -> float:
@@ -87,6 +159,8 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         features,
         mol_data["ao_grid"],
         mol_data["grid_weights"],
+        nabla_rho=mol_data.get("nabla_rho_grid"),
+        ao_grad=mol_data.get("ao_grid_deriv"),
     )
 
     h_core = mol_data["h_core"]

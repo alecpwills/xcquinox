@@ -150,6 +150,7 @@ class SCFResult:
     cycles_run: jnp.ndarray         # int32 scalar
     converged: jnp.ndarray          # bool scalar
     features_used: jnp.ndarray      # (n_grid, n_features) final cycle features
+    energy_trace: jnp.ndarray | None = None  # (max_cycles,) per-cycle energies
 
 
 def _contract_dm_to_grid(D: jnp.ndarray, ao_deriv: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -161,12 +162,25 @@ def _contract_dm_to_grid(D: jnp.ndarray, ao_deriv: jnp.ndarray) -> tuple[jnp.nda
     This is the layout stashed as mol_data['ao_grid_deriv'] by
     precompute_fixed_density_data.
     """
-    ao = ao_deriv[0]                        # (n_grid, nao)
-    ao_grad = ao_deriv[1:4]                 # (3, n_grid, nao)
+    rho, _, sigma = _contract_dm_to_grid_with_nabla(D, ao_deriv)
+    return rho, sigma
+
+
+def _contract_dm_to_grid_with_nabla(
+    D: jnp.ndarray, ao_deriv: jnp.ndarray
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Return (rho, nabla_rho, sigma) on-grid from a restricted-spin DM.
+
+    Same layout convention as ``_contract_dm_to_grid``; the extra return
+    is ``nabla_rho`` with shape ``(n_grid, 3)`` so callers can feed the
+    GGA v_sigma term of ``compute_vxc_nn`` without recomputing it.
+    """
+    ao = ao_deriv[0]
+    ao_grad = ao_deriv[1:4]
     rho = jnp.einsum("ij,gi,gj->g", D, ao, ao)
     nabla_rho = 2.0 * jnp.einsum("ij,dgi,gj->gd", D, ao_grad, ao)
     sigma = jnp.einsum("gd,gd->g", nabla_rho, nabla_rho)
-    return rho, sigma
+    return rho, nabla_rho, sigma
 
 
 def _reassemble_features(

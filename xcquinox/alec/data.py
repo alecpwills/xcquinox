@@ -130,6 +130,7 @@ class MoleculeData(TypedDict, total=True):
     vxc_ref: jnp.ndarray | None
     rho_grid: jnp.ndarray
     sigma_grid: jnp.ndarray
+    nabla_rho_grid: jnp.ndarray
     grid_weights: jnp.ndarray
     ao_grid: jnp.ndarray
     ao_grid_deriv: jnp.ndarray
@@ -215,6 +216,9 @@ def precompute_fixed_density_data(
     drho_y = 2 * np.einsum("pi,ij,pj->p", ao[2], dm_pbe_tot, ao[0])
     drho_z = 2 * np.einsum("pi,ij,pj->p", ao[3], dm_pbe_tot, ao[0])
     sigma_pbe = drho_x ** 2 + drho_y ** 2 + drho_z ** 2
+    # Store nabla_rho as (n_grid, 3) so compute_vxc_nn can assemble the GGA
+    # v_sigma term V_xc_ij += 2 * integral v_sigma nabla_rho . nabla(phi_i phi_j) dr.
+    nabla_rho_pbe = np.stack([drho_x, drho_y, drho_z], axis=-1)
 
     # PBE XC energy and E_non_xc
     rho_for_xc = mf._numint.eval_rho(mol, ao, dm_pbe_tot, xctype="GGA")
@@ -301,6 +305,7 @@ def precompute_fixed_density_data(
         vxc_ref=vxc_ref,
         rho_grid=jnp.array(rho_pbe),
         sigma_grid=jnp.array(sigma_pbe),
+        nabla_rho_grid=jnp.array(nabla_rho_pbe),
         grid_weights=jnp.array(weights),
         ao_grid=jnp.array(ao_no_deriv),
         ao_grid_deriv=jnp.array(ao),

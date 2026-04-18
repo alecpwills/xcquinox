@@ -237,6 +237,8 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
             features,
             mol_data[i]["ao_grid"],
             mol_data[i]["grid_weights"],
+            nabla_rho=mol_data[i].get("nabla_rho_grid"),
+            ao_grad=mol_data[i].get("ao_grid_deriv"),
         )
         err = jnp.sum((vxc_nn - vxc_ref) ** 2)
         if relative:

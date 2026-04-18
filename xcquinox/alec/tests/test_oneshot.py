@@ -423,3 +423,112 @@ def test_oneshot_grid_density_solver_config_none_matches_legacy(h2o_data):
     rho_new = oneshot_grid_density(model, h2o_data, solver_config=None)
     import numpy as np
     np.testing.assert_allclose(np.asarray(rho_legacy), np.asarray(rho_new), atol=1e-12)
+
+
+# Phase 2 — Task 6: GGA v_sigma term in compute_vxc_nn
+def test_compute_vxc_nn_is_symmetric_with_gga_sigma(h2o_data):
+    """V_xc is Hermitian — and that must hold once the v_sigma GGA term is
+    assembled as 2*(A + A.T). Regression against accidental asymmetry."""
+    model = _make_model(seed=0)
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+    features = assemble_descriptor_features(model.descriptors, h2o_data)
+    vxc = compute_vxc_nn(
+        model,
+        h2o_data["rho_grid"],
+        h2o_data["sigma_grid"],
+        features,
+        h2o_data["ao_grid"],
+        h2o_data["grid_weights"],
+        nabla_rho=h2o_data["nabla_rho_grid"],
+        ao_grad=h2o_data["ao_grid_deriv"],
+    )
+    vxc = np.asarray(vxc)
+    assert np.all(np.isfinite(vxc))
+    max_asym = float(np.max(np.abs(vxc - vxc.T)))
+    assert max_asym < 1e-10, f"V_xc not symmetric: max|V - V.T| = {max_asym}"
+
+
+def test_compute_vxc_nn_v_sigma_term_contributes(h2o_data):
+    """The v_sigma term must make a non-trivial contribution relative to the
+    LDA v_rho term. Dropping v_sigma was the Task 6 bug — this test catches
+    a regression that silently returns V_rho only."""
+    model = _make_model(seed=0)
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+    features = assemble_descriptor_features(model.descriptors, h2o_data)
+
+    # LDA-only path (omits nabla_rho/ao_grad; warns)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        vxc_lda = compute_vxc_nn(
+            model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
+            features, h2o_data["ao_grid"], h2o_data["grid_weights"],
+        )
+    vxc_full = compute_vxc_nn(
+        model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
+        features, h2o_data["ao_grid"], h2o_data["grid_weights"],
+        nabla_rho=h2o_data["nabla_rho_grid"],
+        ao_grad=h2o_data["ao_grid_deriv"],
+    )
+
+    delta = np.asarray(vxc_full) - np.asarray(vxc_lda)
+    assert np.max(np.abs(delta)) > 1e-8, (
+        "v_sigma contribution is negligible — compute_vxc_nn likely dropped it"
+    )
+
+
+def test_compute_vxc_nn_warns_without_gga_inputs(h2o_data):
+    """Missing nabla_rho or ao_grad must raise a RuntimeWarning so callers
+    discover the silent LDA fallback."""
+    model = _make_model(seed=0)
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+    features = assemble_descriptor_features(model.descriptors, h2o_data)
+
+    with pytest.warns(RuntimeWarning, match="nabla_rho"):
+        _ = compute_vxc_nn(
+            model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
+            features, h2o_data["ao_grid"], h2o_data["grid_weights"],
+        )
+
+
+def test_compute_vxc_nn_matches_pyscf_pbe_vxc_shape_and_magnitude(h2o_data):
+    """For H2O/STO-3G, compute_vxc_nn with a random-init NN must produce a
+    matrix of the same shape and comparable order of magnitude as PySCF's
+    PBE V_xc. This is a coarse sanity check — a tight reference match would
+    need an NN with Fx/Fc exactly equal to PBE's enhancement factors.
+    """
+    model = _make_model(seed=0)
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+    features = assemble_descriptor_features(model.descriptors, h2o_data)
+
+    vxc_nn = compute_vxc_nn(
+        model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
+        features, h2o_data["ao_grid"], h2o_data["grid_weights"],
+        nabla_rho=h2o_data["nabla_rho_grid"],
+        ao_grad=h2o_data["ao_grid_deriv"],
+    )
+    vxc_pbe = np.asarray(h2o_data["vxc_pbe"])
+    vxc_nn = np.asarray(vxc_nn)
+    assert vxc_nn.shape == vxc_pbe.shape
+    # Both should be finite and bounded. NN initialization varies, but
+    # |V_xc| shouldn't explode compared to PBE.
+    assert np.all(np.isfinite(vxc_nn))
+    max_nn = float(np.max(np.abs(vxc_nn)))
+    max_pbe = float(np.max(np.abs(vxc_pbe)))
+    assert max_nn < 100.0 * max(max_pbe, 1.0)
+
+
+def test_mol_data_has_nabla_rho_grid(h2o_data):
+    """Precompute must expose nabla_rho_grid (n_grid, 3) so compute_vxc_nn
+    can assemble the GGA v_sigma term. Shape and finite-value check."""
+    nabla_rho = h2o_data["nabla_rho_grid"]
+    n_grid = h2o_data["rho_grid"].shape[0]
+    assert nabla_rho.shape == (n_grid, 3)
+    assert jnp.all(jnp.isfinite(nabla_rho))
+    # Consistency: sigma == |nabla_rho|^2
+    sigma_from_nabla = jnp.sum(nabla_rho ** 2, axis=-1)
+    np.testing.assert_allclose(
+        np.asarray(sigma_from_nabla),
+        np.asarray(h2o_data["sigma_grid"]),
+        atol=1e-10,
+    )
