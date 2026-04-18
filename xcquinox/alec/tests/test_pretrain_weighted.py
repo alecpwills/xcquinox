@@ -106,3 +106,64 @@ def test_run_pretrain_integration_mode_runs_without_error(tmp_path):
     # Losses should be finite.
     assert np.isfinite(result["final_loss_x"])
     assert np.isfinite(result["final_loss_c"])
+
+
+def test_integration_mode_yields_smaller_e_xc_residual_than_unweighted():
+    """On a toy dataset with heavy low-rho tail + target function with varying
+    complexity across rho, integration-weighted SGD should produce a smaller
+    integrated E_xc residual than unweighted SGD after equal training steps.
+
+    This is the core reason for the integration-weighting design: unweighted MSE
+    over-fits low-rho tail points that dominate the dataset but contribute
+    negligibly to E_xc, while integration-weighting focuses on the high-rho
+    region that actually integrates.
+    """
+    import jax
+    import jax.numpy as jnp
+    from xcquinox.alec.pretrain import _compute_integration_weights
+
+    # Dataset: heavy tail at low rho + small cluster at high rho.
+    rho = jnp.concatenate([
+        jnp.logspace(-10, -3, 200),   # 200 points in low-rho tail
+        jnp.linspace(0.01, 10.0, 50),  # 50 points in high-rho regime
+    ])
+    # Target: F = 1 + 0.2 * tanh(rho). 1-parameter model: F_pred = p * tanh(rho) + 1.
+    target_F_minus_1 = 0.2 * jnp.tanh(rho)
+    w, _ = _compute_integration_weights(rho)
+
+    def loss_unweighted(p):
+        pred_minus_1 = p * jnp.tanh(rho)
+        return jnp.mean((pred_minus_1 - target_F_minus_1) ** 2)
+
+    def loss_weighted(p):
+        pred_minus_1 = p * jnp.tanh(rho)
+        residual = pred_minus_1 - target_F_minus_1
+        return jnp.sum(w * residual ** 2) / (jnp.sum(w) + 1e-12)
+
+    # E_xc-weighted residual — the quantity that actually matters for AE.
+    def e_xc_residual(p):
+        pred_minus_1 = p * jnp.tanh(rho)
+        return jnp.sum(w * (pred_minus_1 - target_F_minus_1) ** 2)
+
+    p_unw = 0.0
+    p_wtd = 0.0
+    lr = 0.05
+    n_steps = 500
+    for _ in range(n_steps):
+        p_unw = p_unw - lr * jax.grad(loss_unweighted)(p_unw)
+        p_wtd = p_wtd - lr * jax.grad(loss_weighted)(p_wtd)
+
+    e_unw = float(e_xc_residual(p_unw))
+    e_wtd = float(e_xc_residual(p_wtd))
+
+    # Integration-weighted training should produce a smaller E_xc residual
+    # (typically by several orders of magnitude on a well-separated problem).
+    assert e_wtd < e_unw, (
+        f"Integration mode did not beat unweighted: "
+        f"e_wtd={e_wtd:.3e}, e_unw={e_unw:.3e}"
+    )
+    # Stronger: integration should be at least 2x better.
+    assert e_wtd < 0.5 * e_unw, (
+        f"Integration advantage smaller than expected 2x: "
+        f"ratio={e_wtd / e_unw:.3e}"
+    )
