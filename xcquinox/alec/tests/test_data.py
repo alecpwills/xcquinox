@@ -587,3 +587,60 @@ def test_precompute_vxc_ref_none_when_absent():
     mol = h2_molecule()
     data = precompute_fixed_density_data(mol)
     assert data["vxc_ref"] is None
+
+
+def test_vxc_pbe_uks_oxygen_atom_magnitude_reasonable():
+    """For UKS O atom, vxc_pbe magnitude should be O(1) Hartree, not O(10).
+    The old bug (subtracting per-spin J instead of J_total) gave ~7 Ha errors
+    from J[dm_other] leakage into the supposedly-V_xc matrix.
+    """
+    import numpy as np
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.config import MoleculeSpec
+    spec = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec, required_keys=("vxc_pbe",))
+    vxc = md["vxc_pbe"]
+    assert vxc.shape == (2, 5, 5), f"unexpected shape: {vxc.shape}"
+    # UKS V_xc matrix magnitude should be < 5 Hartree (O atom in sto-3g),
+    # after correct J_total subtraction.
+    max_abs = float(np.max(np.abs(vxc)))
+    assert max_abs < 5.0, (
+        f"|vxc_pbe|_max = {max_abs:.3f} Ha -- too large; "
+        f"likely the old J-per-spin bug is back"
+    )
+
+
+def test_vxc_pbe_uks_matches_direct_pyscf_vxc():
+    """UKS vxc_pbe should match mf.get_veff - J_total within SCF tolerance.
+
+    Tolerance 5e-2 Ha accounts for independent SCF runs converging to
+    slightly different DMs on open-shell systems. The old J-per-spin bug
+    produced ~7 Ha errors, so this tolerance is still strict enough to
+    detect any regression.
+    """
+    import numpy as np
+    from pyscf import gto, dft
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.config import MoleculeSpec
+
+    mol = gto.M(atom="O 0 0 0", basis="sto-3g", spin=2, verbose=0)
+    mf = dft.UKS(mol); mf.xc = "pbe"; mf.grids.level = 1; mf.kernel()
+    dm = mf.make_rdm1()
+    veff = np.asarray(mf.get_veff(mol, dm))
+    j_per_spin = np.asarray(mf.get_j(mol, dm))
+    j_total = j_per_spin.sum(axis=0)  # (nao, nao)
+    vxc_direct = veff - j_total[np.newaxis, ...]  # broadcast to (2, nao, nao)
+
+    spec = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec, required_keys=("vxc_pbe",))
+    max_diff = float(np.max(np.abs(np.asarray(md["vxc_pbe"]) - vxc_direct)))
+    assert max_diff < 5e-2, (
+        f"vxc_pbe does not match direct PySCF V_xc within SCF tolerance: "
+        f"max diff = {max_diff:.3e}"
+    )

@@ -195,8 +195,14 @@ def precompute_fixed_density_data(
     E_pbe = float(mf.e_tot)
 
     # V_xc^PBE = V_eff - J
+    # For UKS, mf.get_j returns per-spin J[dm_s]; veff[s] = V_xc[s] + J_total.
+    # For RKS, mf.get_j returns J[dm_total].
     veff = mf.get_veff(mol, dm_pbe)
-    vxc_pbe = np.asarray(veff) - np.asarray(j_matrix)
+    if np.asarray(j_matrix).ndim == 3:  # UKS
+        j_total = np.asarray(j_matrix).sum(axis=0)  # (nao, nao)
+        vxc_pbe = np.asarray(veff) - j_total[np.newaxis, ...]  # (2, nao, nao)
+    else:  # RKS
+        vxc_pbe = np.asarray(veff) - np.asarray(j_matrix)
 
     # Grid quantities
     coords = mf.grids.coords
