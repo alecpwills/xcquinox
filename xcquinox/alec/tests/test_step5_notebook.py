@@ -493,11 +493,11 @@ def test_cell_35_feature_impact():
 # ---------------------------------------------------------------------------
 
 
-def test_generator_produces_39_cells(tmp_path):
-    """Step 5 notebook must contain exactly 39 cells."""
+def test_generator_produces_47_cells(tmp_path):
+    """Step 5 notebook must contain exactly 47 cells (after balancing + transfer backfill)."""
     gen = load_generator()
     nb = gen.main(str(tmp_path / "step5.ipynb"))
-    assert len(nb.cells) == 39, f"expected 39 cells, got {len(nb.cells)}"
+    assert len(nb.cells) == 47, f"expected 47 cells, got {len(nb.cells)}"
 
 
 def test_generator_cell_types_match_expected(tmp_path):
@@ -508,11 +508,11 @@ def test_generator_cell_types_match_expected(tmp_path):
     for i, cell in enumerate(nb.cells):
         if cell.cell_type == "markdown":
             markdown_indices.add(i)
-    # Cells 0 (title), 6 (pretrain md), 11 (training data md),
-    # 16 (training md), 21 (eval md), 25 (scf impact md),
-    # 27 (dm heatmaps md), 29 (density hist md), 31 (convergence md),
-    # 33 (feature impact md), 35 (extension md), 37 (new mol comparison md)
-    expected = {0, 6, 11, 16, 21, 25, 27, 29, 31, 33, 35, 37}
+    # Markdown cells: 0 (title), 6 (pretrain), 11 (training data), 16 (SCF-varied
+    # training), 21 (balancing), 27 (eval), 32 (scf impact), 34 (dm heatmaps),
+    # 36 (density hist), 38 (convergence), 40 (feature impact), 42 (transfer),
+    # 44 (transfer plot)
+    expected = {0, 6, 11, 16, 21, 27, 32, 34, 36, 38, 40, 42, 44}
     assert markdown_indices == expected, (
         f"markdown indices {markdown_indices} != expected {expected}"
     )
@@ -548,7 +548,7 @@ def test_narrow_config_smoke(tmp_path):
         solver_labels=("oneshot",),
         checkpoint_base=str(tmp_path / "ckpt"),
     )
-    assert len(nb.cells) == 39
+    assert len(nb.cells) == 47
     nbformat.validate(nb)
 
 
