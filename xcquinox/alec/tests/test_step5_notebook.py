@@ -670,3 +670,12 @@ def test_cell_45_transfer_eval_loop():
     assert "BASELINE_LABELS" in source
     assert "bal:" in source
 
+
+def test_cell_46_transfer_plots():
+    gen = load_generator()
+    source = gen.build_cell_46_transfer_plots().source
+    assert "Transfer evaluation" in source or "transfer" in source.lower()
+    assert "transfer_{mol_name}.png" in source
+    assert "Density RMSE vs CCSD" in source
+    assert "Density RMSE vs HF" not in source
+
