@@ -1690,6 +1690,19 @@ print(f"Test molecules: {[tm['name'] for tm in test_molecules]}")
     return new_code_cell(source)
 
 
+def build_cell_44_transfer_plot_md():
+    """Section 7 Cell 44 -- transfer evaluation figure narrative."""
+    source = """### Figure: Transfer Evaluation -- H2, OH, CH4
+
+The next cell sweeps all trained checkpoints (72 main + 8 balancing) on each
+test molecule. Results plotted as grouped bars:
+
+- **H2:** AE error and density RMSE (known element, new geometry)
+- **OH:** Total energy error and density RMSE (unseen element)
+- **CH4:** AE error and density RMSE (unseen element C, larger molecule)"""
+    return new_markdown_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation

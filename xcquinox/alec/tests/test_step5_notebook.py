@@ -650,3 +650,10 @@ def test_cell_43_transfer_data_gen():
     assert "rho_pbe_ccsd_rmse" in source
     assert "rho_pbe_hf_rmse" not in source
 
+
+def test_cell_44_transfer_plot_md():
+    gen = load_generator()
+    cell = gen.build_cell_44_transfer_plot_md()
+    assert cell.cell_type == "markdown"
+    assert "Transfer Evaluation" in cell.source or "transfer" in cell.source.lower()
+
