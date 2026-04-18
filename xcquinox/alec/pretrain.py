@@ -226,18 +226,49 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
     xnet, cnet = create_network_pair(spec.arch, seed=spec.seed)
 
     # --- PretrainLoss (scalar MSE, compatible with xcTrainer) ---
+    #
+    # Loss weighting is controlled by `spec.loss_weighting`:
+    #   "unweighted" (default): plain mean of squared residuals.
+    #   "integration":          integration-weighted sum-of-squared residuals,
+    #                           with per-component weights |rho * eps^LDA|
+    #                           computed once from pretrain_data["rho_all"]
+    #                           (see _compute_integration_weights).
+    #
+    # The xnet and cnet are trained in separate trainer calls using different
+    # weight arrays (w_x vs w_c). Each is baked into its own closure-like
+    # eqx.Module instance so that xcTrainer can call `loss(model, descriptors,
+    # ref_F)` with the familiar 3-arg API. Weights are carried as a static
+    # array field on the module (eqx handles the pytree correctly).
     class _PretrainLoss(eqx.Module):
-        """Stateless MSE loss for pretraining enhancement networks.
+        """Scalar MSE loss for pretraining enhancement networks.
 
         Networks return 1 + F_enhancement; targets are stored as (F - 1),
-        so pred - 1.0 aligns with ref_F.
+        so pred - 1.0 aligns with ref_F. When ``weights`` is None (the
+        ``"unweighted"`` branch) the reduction is a plain mean of squared
+        residuals — preserving the exact prior behavior byte-for-byte. When
+        ``weights`` is a 1-D array aligned with the descriptor rows
+        (``"integration"`` branch) the reduction is
+        ``sum(w * residual ** 2) / (sum(w) + 1e-12)``.
         """
+        weights: jnp.ndarray | None = None
+
         def __call__(self, model, descriptors, ref_F):
             pred = jax.vmap(model)(descriptors).squeeze()
             pred = pred - 1.0
-            return jnp.mean((pred - ref_F) ** 2)
+            residual_sq = (pred - ref_F) ** 2
+            if self.weights is None:
+                return jnp.mean(residual_sq)
+            w = self.weights
+            return jnp.sum(w * residual_sq) / (jnp.sum(w) + 1e-12)
 
-    loss_fn = _PretrainLoss()
+    if spec.loss_weighting == "integration":
+        rho_all = pretrain_data["rho_all"]
+        w_x, w_c = _compute_integration_weights(rho_all)
+        loss_fn_x = _PretrainLoss(weights=w_x)
+        loss_fn_c = _PretrainLoss(weights=w_c)
+    else:  # "unweighted" — validated at construction
+        loss_fn_x = _PretrainLoss()
+        loss_fn_c = _PretrainLoss()
 
     checkpoint_dir = spec.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -277,7 +308,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
     trainer_x = xcquinox.train.xcTrainer(
         model=xnet,
         optim=optimizer_x,
-        loss=loss_fn,
+        loss=loss_fn_x,
         steps=spec.n_steps,
         do_jit=True,
         serialize_every=max(50, spec.n_steps // 10),
@@ -297,7 +328,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
     trainer_c = xcquinox.train.xcTrainer(
         model=cnet,
         optim=optimizer_c,
-        loss=loss_fn,
+        loss=loss_fn_c,
         steps=spec.n_steps,
         do_jit=True,
         serialize_every=max(50, spec.n_steps // 10),
@@ -330,6 +361,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
         "lr_end": spec.lr_end,
         "lr_decay_start": spec.lr_decay_start,
         "grad_clip": spec.grad_clip,
+        "loss_weighting": spec.loss_weighting,
         "final_loss_x": float(losses_x_np[-1]) if len(losses_x_np) > 0 else float("nan"),
         "final_loss_c": float(losses_c_np[-1]) if len(losses_c_np) > 0 else float("nan"),
         "min_loss_x": float(np.min(losses_x_np)) if len(losses_x_np) > 0 else float("nan"),
