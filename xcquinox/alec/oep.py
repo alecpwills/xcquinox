@@ -90,20 +90,20 @@ def _ks_from_vxc_matrix(mol, mf, vxc_matrix):
     dm_init = mf.make_rdm1()
     nocc = mol.nelectron // 2
 
+    from scipy.linalg import eigh as gen_eigh
+
     for _ in range(50):
         j_matrix = mf.get_j(mol, dm_init)
         fock = h_core + j_matrix + vxc_matrix
-        e_vals, e_vecs = np.linalg.eigh(
-            np.linalg.solve(s_matrix, fock)
-        )
-        idx = np.argsort(e_vals)
-        C_occ = e_vecs[:, idx[:nocc]]
+        e_vals, e_vecs = gen_eigh(fock, s_matrix)
+        C_occ = e_vecs[:, :nocc]
         dm_new = 2.0 * C_occ @ C_occ.T
         if np.linalg.norm(dm_new - dm_init) < 1e-10:
             break
         dm_init = dm_new
 
-    ts = 0.5 * np.einsum("ij,ij->", mf.get_hcore(), dm_init)
+    t_matrix = mol.intor("int1e_kin")
+    ts = np.einsum("ij,ij->", t_matrix, dm_init)
     return dm_init, ts
 
 
@@ -112,7 +112,7 @@ def run_oep_inversion(
     dm_target: np.ndarray,
     *,
     basis: str | None = None,
-    aux_basis: str = "sto-3g",
+    aux_basis: str = "def2-svp-jkfit",
     max_iter: int = 200,
     conv_tol: float = 1e-6,
     regularization: float = 1e-4,
