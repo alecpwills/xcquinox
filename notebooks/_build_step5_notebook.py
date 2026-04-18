@@ -667,7 +667,9 @@ def build_cell_14_hf_ccsd_gen():
     from Cell 13 is preserved as `atom_energies_literature` and is used
     ONLY for the atom-branch `E_ref_literature` sidecar write.
     """
-    source = """# HF/CCSD reference computation and external_data .npz generation.
+    source = """print("DATA VERSION: ccsd (HF-era checkpoints_step5/{train*,eval*,test_new} "
+      "must be deleted manually to retrain)")
+# HF/CCSD reference computation and external_data .npz generation.
 # H2O uses H2O_COORDS from Cell 3 (equilibrium geometry, NOT a distorted 90-degree box).
 _mols = [
     ("H", "H 0 0 0", 1),
@@ -722,26 +724,51 @@ for name, atom, spin in _mols:
         # at the end of this cell.
         atom_energies_pbe[name] = E_pbe_total
     else:
-        # H2O branch: write HF DM as density target (NOT CCSD DM — step3b uses HF).
-        dm_hf = mf_hf.make_rdm1()
-        dm_hf_total = dm_hf[0] + dm_hf[1] if dm_hf.ndim == 3 else dm_hf
+        # H2O branch: CCSD AO-basis DM via MO-basis -> AO-basis transform.
+        dm_mo_ccsd = mycc.make_rdm1()            # (nmo, nmo), MO basis
+        C = mf_hf.mo_coeff                        # (nao, nmo)
+        dm_ao_ccsd = C @ dm_mo_ccsd @ C.T         # (nao, nao), AO basis
 
-        # Grid density from HF DM via einsum on the AO grid.
+        # CCSD rho on the DFT grid (same grid as PBE mean-field).
         coords = mf.grids.coords
         ao_grid = mf._numint.eval_ao(mol, coords, deriv=0)
-        rho_hf = np.einsum("ij,gi,gj->g", dm_hf_total, ao_grid, ao_grid)
+        rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao_ccsd, ao_grid, ao_grid)
 
-        # The three keys below are the ONLY keys _ALLOWED_EXTERNAL_KEYS accepts
-        # (data.py:17-21). E_ref_literature is the HF total (not the CCSD total),
-        # because TotalEnergyMetric.E_error_hartree gauges against this scalar and
-        # the density-matching losses (B/C/D2/D3) optimize toward the HF density.
+        # Save base .npz with CCSD-consistent keys. vxc_ref is appended below.
+        _npz_path = os.path.join(ext_data_dir, f"{name}.npz")
         np.savez(
-            os.path.join(ext_data_dir, f"{name}.npz"),
-            dm_target=dm_hf,
-            rho_ref_grid=rho_hf,
-            ref_density_method="hf",
-            E_ref_literature=float(mf_hf.e_tot),
+            _npz_path,
+            dm_target=dm_ao_ccsd,
+            rho_ref_grid=rho_ccsd,
+            ref_density_method="ccsd",
+            E_ref_literature=float(E_ccsd_total),
         )
+
+        # OEP inversion -> vxc_ref, appended to the .npz via save_vxc_ref merge.
+        _oep_spec = alec.MoleculeSpec(
+            name="H2O", atom=H2O_COORDS, basis=BASIS,
+            charge=0, spin=0,
+            atom_composition=(("H", 2), ("O", 1)),
+            grid_level=GRID_LEVEL,
+        )
+        _oep = alec.run_oep_inversion(
+            _oep_spec, dm_ao_ccsd,
+            aux_basis="def2-svp-jkfit",
+            max_iter=200,
+            conv_tol=1e-6,
+            regularization=1e-4,
+        )
+        print(f"OEP(H2O): converged={_oep.converged} "
+              f"n_iter={_oep.n_iter} density_error={_oep.density_error:.3e}")
+        if _oep.converged:
+            alec.save_vxc_ref(
+                _oep,
+                _npz_path,
+                dm_target=dm_ao_ccsd,
+                method="ccsd",
+            )
+        else:
+            print(f"WARNING: OEP did not converge; vxc_ref NOT written to {_npz_path}")
 
     # Sidecar JSON for every species — library .npz cannot carry extra keys,
     # so HF/CCSD/literature/PBE totals live here. Cell 25 reads E_ccsd_total

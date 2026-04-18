@@ -227,6 +227,15 @@ def test_cell_14_hf_ccsd_gen():
     source = gen.build_cell_14_hf_ccsd_gen().source
     assert "atom_energies" in source
     assert "E_pbe_total" in source
+    # CCSD-era requirements:
+    assert "dm_mo_ccsd = mycc.make_rdm1()" in source
+    assert "mf_hf.mo_coeff" in source
+    assert 'ref_density_method="ccsd"' in source
+    assert "E_ref_literature=float(E_ccsd_total)" in source
+    assert "alec.run_oep_inversion" in source
+    assert "alec.save_vxc_ref" in source
+    assert 'aux_basis="def2-svp-jkfit"' in source
+    assert "DATA VERSION: ccsd" in source
 
 
 def test_cell_15_mol_specs():
