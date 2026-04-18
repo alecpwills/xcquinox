@@ -227,9 +227,14 @@ def precompute_fixed_density_data(
     nabla_rho_pbe = np.stack([drho_x, drho_y, drho_z], axis=-1)
 
     # PBE XC energy and E_non_xc
-    rho_for_xc = mf._numint.eval_rho(mol, ao, dm_pbe_tot, xctype="GGA")
-    exc_pbe, _, _, _ = mf._numint.eval_xc("pbe", rho_for_xc, spin=0)
-    E_xc_pbe = float(np.sum(rho_pbe * exc_pbe * weights))
+    if dm_pbe.ndim == 3:  # UKS
+        # Use pyscf's veff.exc which already has correct spin-resolved PBE evaluation.
+        # The `veff` object was computed above (mf.get_veff(mol, dm_pbe)); reuse its .exc.
+        E_xc_pbe = float(veff.exc)
+    else:  # RKS
+        rho_for_xc = mf._numint.eval_rho(mol, ao, dm_pbe_tot, xctype="GGA")
+        exc_pbe, _, _, _ = mf._numint.eval_xc("pbe", rho_for_xc, spin=0)
+        E_xc_pbe = float(np.sum(rho_pbe * exc_pbe * weights))
     E_non_xc = E_pbe - E_xc_pbe
 
     # Occupancies

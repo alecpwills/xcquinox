@@ -647,3 +647,30 @@ def test_vxc_pbe_uks_matches_direct_pyscf_vxc():
         f"vxc_pbe does not match veff - J_total at the same DM: "
         f"max diff = {max_diff:.3e}"
     )
+
+
+def test_e_xc_pbe_uks_matches_pyscf_veff_exc():
+    """E_xc_pbe for UKS O atom should match mf.get_veff(...).exc."""
+    import numpy as np
+    from pyscf import gto, dft
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.config import MoleculeSpec
+
+    spec = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(
+        spec, required_keys=("E_xc_pbe", "vxc_pbe"))
+
+    # Use same DM precompute used
+    dm = np.asarray(md["dm_pbe"])
+    mol = gto.M(atom="O 0 0 0", basis="sto-3g", spin=2, verbose=0)
+    mf = dft.UKS(mol); mf.xc = "pbe"; mf.grids.level = 1; mf.build()
+    veff = mf.get_veff(mol, dm)
+    e_xc_pyscf = float(veff.exc)
+
+    assert abs(float(md["E_xc_pbe"]) - e_xc_pyscf) < 1e-6, (
+        f"E_xc_pbe mismatch: md={md['E_xc_pbe']:.6f}, pyscf={e_xc_pyscf:.6f}, "
+        f"diff={abs(md['E_xc_pbe'] - e_xc_pyscf):.3e}"
+    )
