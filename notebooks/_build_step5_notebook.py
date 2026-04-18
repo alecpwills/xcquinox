@@ -1523,6 +1523,24 @@ print(f"Baselines ready for {len(ARCH_NAMES)} architectures: {BASELINE_LABELS}")
     return new_code_cell(source)
 
 
+def build_cell_42_transfer_md():
+    """Section 7 Cell 42 -- transfer evaluation narrative."""
+    source = """## Section 7: Transfer Evaluation on New Molecules
+
+This section tests all trained models (72 main + 8 balancing) on molecules
+not seen during training:
+
+| Molecule | Why | Key metric |
+|----------|-----|------------|
+| **H2** | Simplest diatomic; only H atoms (in training set) | AE error, density RMSE |
+| **OH** | New element, never seen during training | Total energy error, density RMSE |
+| **CH4** | New element (C), 5 atoms, tetrahedral geometry | AE error, density RMSE |
+
+For each, we compute PBE/HF/CCSD reference data, then sweep all checkpoints.
+"""
+    return new_markdown_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation

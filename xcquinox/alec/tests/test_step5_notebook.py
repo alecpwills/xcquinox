@@ -629,3 +629,10 @@ def test_cell_27_baseline_gen():
     assert "create_network_pair" in source
     assert "baseline_colors" in source
 
+
+def test_cell_42_transfer_md():
+    gen = load_generator()
+    cell = gen.build_cell_42_transfer_md()
+    assert cell.cell_type == "markdown"
+    assert "Transfer" in cell.source or "Section 7" in cell.source
+
