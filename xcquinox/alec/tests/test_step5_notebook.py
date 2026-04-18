@@ -111,6 +111,9 @@ def test_cell_03_constants_declares_rerun_eval():
     source = gen.build_cell_03_constants().source
     assert "RERUN_EVAL = False" in source
     assert "force re-evaluation" in source
+    # Pretraining loss weighting (new)
+    assert "PRETRAIN_LOSS_WEIGHTING" in source
+    assert '"integration"' in source or "'integration'" in source
 
 
 def test_cell_04_filters_to_deep_archs():
@@ -195,6 +198,7 @@ def test_cell_09_pretrain_loop_qualifies_alec():
     source = gen.build_cell_09_pretrain_loop().source
     assert "alec.PretrainSpec(" in source
     assert "alec.run_pretrain(" in source
+    assert "loss_weighting=PRETRAIN_LOSS_WEIGHTING" in source
 
 
 def test_cell_10_pretrain_loss_plot():

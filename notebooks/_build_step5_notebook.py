@@ -165,6 +165,11 @@ TRAIN_SKIP_IF_EXISTS = False
 # ``aggregate.json`` / ``transfer_results.pkl`` artifacts already exist.
 RERUN_EVAL = False
 
+# Pretraining loss weighting: "unweighted" matches old behavior;
+# "integration" weights pointwise MSE by |rho * eps^LDA| to directly
+# minimize E_xc integrated error (recommended for PBE reproduction).
+PRETRAIN_LOSS_WEIGHTING = "integration"
+
 os.makedirs(CHECKPOINT_BASE, exist_ok=True)
 print(f"CHECKPOINT_BASE={{CHECKPOINT_BASE}}  BASIS={{BASIS}}  GRID_LEVEL={{GRID_LEVEL}}")
 """
@@ -454,6 +459,7 @@ for arch_name in ARCH_NAMES:
         lr_end=1e-5,
         lr_decay_start=0.2,
         grad_clip=1.0,
+        loss_weighting=PRETRAIN_LOSS_WEIGHTING,
     )
     alec.run_pretrain(spec, progress_callback=_cb)
 """
