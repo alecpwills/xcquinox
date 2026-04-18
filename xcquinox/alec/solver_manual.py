@@ -170,9 +170,14 @@ def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
         F = h_core + J_cycle + vxc_nn
         D_new = _diagonalize_roothaan(F, S, nocc)
         new_mixer_state, D_mixed = mixer.step(state.mixer_state, D_cur, D_new)
+        # Compute E_new as a consistent functional of D_mixed: recompute
+        # features / rho / sigma from D_mixed, and rebuild J from D_mixed
+        # (FIXED_J mode preserves J_pinned via _j_for_cycle).
+        features_mix, rho_mix, sigma_mix, _nabla_rho_mix = _features_and_rho(D_mixed)
+        J_mix = _j_for_cycle(D_mixed)
         E_new = _compute_total_energy(
-            model, D_mixed, rho_cur, sigma_cur, features,
-            grid_weights, h_core, J_cycle, e_nuc,
+            model, D_mixed, rho_mix, sigma_mix, features_mix,
+            grid_weights, h_core, J_mix, e_nuc,
         )
         is_conv = criterion.is_converged_from_energies(state.energy, E_new)
         already = state.converged
