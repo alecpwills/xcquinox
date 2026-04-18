@@ -592,3 +592,14 @@ def test_notebook_contains_solver_config_definitions(tmp_path):
     assert "SolverMode.ONESHOT" in all_source
     assert "SolverMode.FIXED_J" in all_source
     assert "SolverMode.FULL" in all_source
+
+
+def test_cell_25_balancing_loss_plot():
+    gen = load_generator()
+    source = gen.build_cell_25_balancing_loss_plot().source
+    assert "fig" in source
+    assert "BAL_LOSS_NAMES" in source
+    # V_xc second figure
+    assert "fig_vxc" in source
+    assert "VXC_VARIANTS" in source
+    assert "loss_vxc" in source

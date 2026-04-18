@@ -1341,6 +1341,94 @@ print(f"_bal_aux_keys_vxc: {len(_bal_aux_keys_vxc)} vxc variants")
     return new_code_cell(source)
 
 
+def build_cell_25_balancing_loss_plot():
+    """Section 4b Cell 25 -- gradnorm loss plot + V_xc variants sub-figure."""
+    source = """fig, axes = plt.subplots(1, len(BAL_LOSS_NAMES), figsize=(7 * len(BAL_LOSS_NAMES), 5))
+if len(BAL_LOSS_NAMES) == 1:
+    axes = [axes]
+
+for ax, loss_name in zip(axes, BAL_LOSS_NAMES):
+    ckpt = f"{CHECKPOINT_BASE}/train_balancing/{loss_name}/gradnorm"
+    aux_path = f"{ckpt}/aux_log.pkl"
+    if not os.path.isfile(aux_path):
+        ax.text(0.5, 0.5, "no gradnorm data", transform=ax.transAxes, ha="center")
+        ax.set_title(loss_name)
+        continue
+    with open(aux_path, "rb") as _f:
+        aux_log = pickle.load(_f)
+
+    _steps = [e["step"] for e in aux_log]
+    bal_info_list = [
+        e.get("balancing_info", {}) for e in aux_log
+    ]
+    ew = [bi.get('effective_weights', {}) for bi in bal_info_list]
+    if not any(ew):
+        ax.text(0.5, 0.5, "no weight data", transform=ax.transAxes, ha="center")
+        ax.set_title(loss_name)
+        continue
+
+    weight_keys = sorted(ew[-1].keys()) if ew[-1] else []
+    for wk in weight_keys:
+        _wvals = [w.get(wk, float('nan')) for w in ew]
+        ax.plot(_steps, _wvals, label=wk)
+
+    ax.set_title(f"GradNorm weights: {loss_name}", fontsize=11)
+    ax.set_xlabel("Training step")
+    ax.set_ylabel("Effective weight")
+    ax.legend(fontsize="small", loc="best")
+    ax.grid(True, ls=":", alpha=0.4)
+
+fig.suptitle(
+    f"GradNorm learned task weights (arch={BAL_ARCH}, solver={BAL_SOLVER})",
+    fontsize=13,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.93))
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(
+    f"{CHECKPOINT_BASE}/figures/gradnorm_weight_evolution.png",
+    dpi=150, bbox_inches='tight',
+)
+plt.show()
+
+# --- Second figure: V_xc variants x solvers ---
+fig_vxc, axes_vxc = plt.subplots(
+    len(VXC_VARIANTS), len(SOLVER_LABELS),
+    figsize=(5 * len(SOLVER_LABELS), 4 * len(VXC_VARIANTS)),
+    squeeze=False,
+)
+for row_idx, (variant_label, _) in enumerate(VXC_VARIANTS.items()):
+    for col_idx, solver_label in enumerate(SOLVER_LABELS):
+        ax = axes_vxc[row_idx, col_idx]
+        ckpt_dir = f"{CHECKPOINT_BASE}/train_balancing/vxc/{variant_label}/{solver_label}"
+        aux_path = f"{ckpt_dir}/aux_log.pkl"
+        if not os.path.isfile(aux_path):
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
+            ax.set_title(f"{variant_label} / {solver_label}", fontsize=10)
+            continue
+        with open(aux_path, "rb") as _f:
+            aux_log = pickle.load(_f)
+        _steps = [entry["step"] for entry in aux_log]
+        # Plots per-variant aux keys including loss_vxc (from _bal_aux_keys_vxc).
+        for key in _bal_aux_keys_vxc.get(variant_label, ("loss_energy", "loss_vxc")):
+            _vals = [entry["aux"].get(key, float("nan")) for entry in aux_log]
+            ax.semilogy(_steps, _vals, label=key)
+        ax.set_title(f"{variant_label} / {solver_label}", fontsize=10)
+        ax.set_xlabel("training step")
+        if col_idx == 0:
+            ax.set_ylabel("loss component (log scale)")
+        ax.grid(True, which="both", ls=":", alpha=0.4)
+        ax.legend(fontsize="small", loc="best")
+fig_vxc.suptitle("V_xc variants -- loss components (rows: variant, cols: solver)",
+                 fontsize=13)
+fig_vxc.tight_layout(rect=(0, 0, 1, 0.96))
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig_vxc.savefig(f"{CHECKPOINT_BASE}/figures/bal_loss_plot_vxc.png",
+                dpi=150, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation
