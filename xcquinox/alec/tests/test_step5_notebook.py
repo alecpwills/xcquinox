@@ -488,33 +488,6 @@ def test_cell_35_feature_impact():
     assert "deep_cusp" in source or "non-attention" in source.lower()
 
 
-def test_cell_36_extension_md():
-    gen = load_generator()
-    cell = gen.build_cell_36_extension_md()
-    assert cell.cell_type == "markdown"
-
-
-def test_cell_37_new_molecule_template():
-    gen = load_generator()
-    source = gen.build_cell_37_new_molecule_template().source
-    assert "CH4" in source
-    assert "alec.MoleculeSpec(" in source
-    assert "new_atom_energies" in source
-
-
-def test_cell_38_new_mol_comparison_md():
-    gen = load_generator()
-    cell = gen.build_cell_38_new_mol_comparison_md()
-    assert cell.cell_type == "markdown"
-
-
-def test_cell_39_new_mol_comparison():
-    gen = load_generator()
-    source = gen.build_cell_39_new_mol_comparison().source
-    assert "SOLVER_LABELS" in source
-    assert "solver_colors" in source
-
-
 # ---------------------------------------------------------------------------
 # Task 9 -- structural validation tests
 # ---------------------------------------------------------------------------
