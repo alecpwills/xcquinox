@@ -396,10 +396,14 @@ def test_cell_23_test_loop_triple_nested():
 
 
 def test_cell_24_dataframe_includes_solver():
-    """DataFrame must be indexed by (arch, loss, solver)."""
     gen = load_generator()
     source = gen.build_cell_24_dataframe().source
     assert "solver" in source.lower()
+    assert "BAL_LOSS_NAMES" in source
+    assert "BALANCING_CONFIGS" in source
+    assert "BASELINE_LABELS" in source
+    assert "VXC_VARIANTS" in source
+    assert "bal_vxc:" in source
 
 
 def test_cell_25_results_table():

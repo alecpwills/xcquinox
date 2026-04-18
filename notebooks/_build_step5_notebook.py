@@ -1604,8 +1604,10 @@ print(f"Evaluation complete: {_n_trained} trained + {_n_baseline} baseline resul
 
 
 def build_cell_24_dataframe():
-    """Section 5 Cell 24 -- aggregate results into pandas DataFrame."""
+    """Section 5 Cell 24 -- aggregate results (main sweep + balancing + baselines + V_xc) into DataFrame."""
     source = """rows = []
+
+# Trained model results
 for arch_name in ARCH_NAMES:
     for loss_name in LOSS_NAMES:
         for solver_label in SOLVER_LABELS:
@@ -1624,8 +1626,70 @@ for arch_name in ARCH_NAMES:
                 "E_error_kcalmol_mean": agg.get("E_error_kcalmol", {}).get("mean", np.nan),
                 "density_rmse_mean": agg.get("density_rmse", {}).get("mean", np.nan),
             })
+
+# Balancing sweep results
+for loss_name in BAL_LOSS_NAMES:
+    for bal_label in BALANCING_CONFIGS:
+        output_dir = f"{CHECKPOINT_BASE}/eval_balancing/{loss_name}/{bal_label}"
+        try:
+            with open(f"{output_dir}/aggregate.json") as _f:
+                agg = json.load(_f)
+        except FileNotFoundError:
+            agg = {}
+        rows.append({
+            "arch": BAL_ARCH,
+            "loss": loss_name,
+            "solver": f"bal:{bal_label}",
+            "AE_error_kcalmol_mean": agg.get("AE_error_kcalmol", {}).get("mean", np.nan),
+            "AE_error_kcalmol_RMSE": agg.get("AE_error_kcalmol", {}).get("RMSE", np.nan),
+            "E_error_kcalmol_mean": agg.get("E_error_kcalmol", {}).get("mean", np.nan),
+            "density_rmse_mean": agg.get("density_rmse", {}).get("mean", np.nan),
+        })
+
+# Baseline results (pretrained + random)
+for arch_name in ARCH_NAMES:
+    for bl in BASELINE_LABELS:
+        output_dir = f"{CHECKPOINT_BASE}/eval_baseline/{arch_name}/{bl}"
+        try:
+            with open(f"{output_dir}/aggregate.json") as _f:
+                agg = json.load(_f)
+        except FileNotFoundError:
+            agg = {}
+        rows.append({
+            "arch": arch_name,
+            "loss": "baseline",
+            "solver": bl,
+            "AE_error_kcalmol_mean": agg.get("AE_error_kcalmol", {}).get("mean", np.nan),
+            "AE_error_kcalmol_RMSE": agg.get("AE_error_kcalmol", {}).get("RMSE", np.nan),
+            "E_error_kcalmol_mean": agg.get("E_error_kcalmol", {}).get("mean", np.nan),
+            "density_rmse_mean": agg.get("density_rmse", {}).get("mean", np.nan),
+        })
+
+# V_xc variants ingestion (eval_balancing/vxc/...)
+for variant_label, (loss_name, _, _) in VXC_VARIANTS.items():
+    for solver_label in SOLVER_LABELS:
+        output_dir = f"{CHECKPOINT_BASE}/eval_balancing/vxc/{variant_label}/{solver_label}"
+        try:
+            with open(f"{output_dir}/aggregate.json") as _f:
+                agg = json.load(_f)
+        except FileNotFoundError:
+            agg = {}
+        rows.append({
+            "arch": BAL_ARCH,
+            "loss": loss_name,
+            "solver": f"bal_vxc:{variant_label}/{solver_label}",
+            "AE_error_kcalmol_mean": agg.get("AE_error_kcalmol", {}).get("mean", np.nan),
+            "AE_error_kcalmol_RMSE": agg.get("AE_error_kcalmol", {}).get("RMSE", np.nan),
+            "E_error_kcalmol_mean": agg.get("E_error_kcalmol", {}).get("mean", np.nan),
+            "density_rmse_mean": agg.get("density_rmse", {}).get("mean", np.nan),
+        })
+
 df = pd.DataFrame(rows).set_index(["arch", "loss", "solver"])
 print(f"Built results DataFrame: {df.shape[0]} rows x {df.shape[1]} cols")
+_n_bal = len(BAL_LOSS_NAMES) * len(BALANCING_CONFIGS)
+_n_bl = len(ARCH_NAMES) * len(BASELINE_LABELS)
+_n_vxc = len(VXC_VARIANTS) * len(SOLVER_LABELS)
+print(f"  ({_n_bal} balancing + {_n_bl} baseline + {_n_vxc} vxc entries)")
 """
     return new_code_cell(source)
 
