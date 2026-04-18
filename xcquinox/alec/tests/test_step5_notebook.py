@@ -636,3 +636,17 @@ def test_cell_42_transfer_md():
     assert cell.cell_type == "markdown"
     assert "Transfer" in cell.source or "Section 7" in cell.source
 
+
+def test_cell_43_transfer_data_gen():
+    gen = load_generator()
+    source = gen.build_cell_43_transfer_data_gen().source
+    assert "H2" in source
+    assert "OH" in source
+    assert "CH4" in source
+    assert "mycc.make_rdm1()" in source
+    assert 'ref_density_method="ccsd"' in source
+    assert "E_ref_literature=float(_E_ccsd_total)" in source
+    assert "UCCSD" in source
+    assert "rho_pbe_ccsd_rmse" in source
+    assert "rho_pbe_hf_rmse" not in source
+

@@ -1541,6 +1541,155 @@ For each, we compute PBE/HF/CCSD reference data, then sweep all checkpoints.
     return new_markdown_cell(source)
 
 
+def build_cell_43_transfer_data_gen():
+    """Section 7 Cell 43 -- transfer reference data (H2/OH/CH4/C) with CCSD DM targets."""
+    source = """ext_data_dir = f"{CHECKPOINT_BASE}/external_data"
+os.makedirs(ext_data_dir, exist_ok=True)
+
+# Define test molecules with their reference AE values
+test_molecules = [
+    {
+        "name": "H2",
+        "spec": alec.MoleculeSpec(
+            name="H2",
+            atom="H 0 0 0; H 0 0 0.74",
+            basis=BASIS, charge=0, spin=0,
+            atom_composition=(("H", 2),),
+            grid_level=GRID_LEVEL,
+            external_data_path=f"{ext_data_dir}/H2.npz",
+        ),
+        "new_atoms": [],
+        "ae_ref_kcalmol": 109.493,
+    },
+    {
+        "name": "OH",
+        "spec": alec.MoleculeSpec(
+            name="OH",
+            atom="O 0 0 0.10785; H 0 0 -0.86281",
+            basis=BASIS, charge=0, spin=1,
+            atom_composition=(("O", 1), ("H", 1)),
+            grid_level=GRID_LEVEL,
+            external_data_path=f"{ext_data_dir}/OH.npz",
+        ),
+        "new_atoms": [],
+        "ae_ref_kcalmol": 107.208,
+    },
+    {
+        "name": "CH4",
+        "spec": alec.MoleculeSpec(
+            name="CH4",
+            atom="C 0 0 0; H 0.63 0.63 0.63; H -0.63 -0.63 0.63; H -0.63 0.63 -0.63; H 0.63 -0.63 -0.63",
+            basis=BASIS, charge=0, spin=0,
+            atom_composition=(("C", 1), ("H", 4)),
+            grid_level=GRID_LEVEL,
+            external_data_path=f"{ext_data_dir}/CH4.npz",
+        ),
+        "new_atoms": [("C", "C 0 0 0", 2)],
+        "ae_ref_kcalmol": 420.421,
+    },
+]
+
+# Collect all new atom species across test molecules
+all_new_atoms = []
+_seen_atoms = set()
+for tm in test_molecules:
+    for a_name, a_atom, a_spin in tm["new_atoms"]:
+        if a_name not in _seen_atoms:
+            all_new_atoms.append((a_name, a_atom, a_spin))
+            _seen_atoms.add(a_name)
+
+# Generate reference data for all test molecules and new atoms
+_all_entities = []
+for tm in test_molecules:
+    spec = tm["spec"]
+    _all_entities.append((spec.name, spec.atom, spec.spin, False))
+for a_name, a_atom, a_spin in all_new_atoms:
+    _all_entities.append((a_name, a_atom, a_spin, True))
+
+for _name, _atom, _spin, _is_atom in _all_entities:
+    _npz_path = f"{ext_data_dir}/{_name}.npz"
+    _meta_path = f"{ext_data_dir}/{_name}_metadata.json"
+    if os.path.isfile(_npz_path) and os.path.isfile(_meta_path):
+        print(f"Using cached {_name} reference data")
+        continue
+
+    _mol = gto.M(atom=_atom, basis=BASIS, charge=0, spin=_spin, verbose=0)
+
+    _mf_pbe = dft.UKS(_mol) if _spin else dft.RKS(_mol)
+    _mf_pbe.xc = "pbe"
+    _mf_pbe.grids.level = GRID_LEVEL
+    _mf_pbe.kernel()
+    _E_pbe_total = float(_mf_pbe.e_tot)
+
+    _mf_hf = scf.UHF(_mol) if _spin else scf.RHF(_mol)
+    _mf_hf.kernel()
+    _E_hf_total = float(_mf_hf.e_tot)
+
+    _mycc = cc.UCCSD(_mf_hf) if _spin else cc.CCSD(_mf_hf)
+    _mycc.kernel()
+    _E_ccsd_total = float(_mf_hf.e_tot + _mycc.e_corr)
+
+    _sidecar = {
+        "E_hf_total": _E_hf_total,
+        "E_ccsd_total": _E_ccsd_total,
+        "E_pbe_total": _E_pbe_total,
+        "E_lit_Ha": None,
+    }
+
+    if _is_atom:
+        np.savez(_npz_path, E_ref_literature=_E_ccsd_total)
+    else:
+        # CCSD AO-basis DM via MO->AO transform. Closed-shell uses RCCSD;
+        # open-shell (e.g. OH, spin=1) uses UCCSD with spin-branched mo_coeff.
+        if _spin == 0:
+            _dm_mo_ccsd = _mycc.make_rdm1()
+            _C = _mf_hf.mo_coeff
+            _dm_ao_ccsd = _C @ _dm_mo_ccsd @ _C.T
+        else:
+            _dm_mo_a, _dm_mo_b = _mycc.make_rdm1()
+            _Ca, _Cb = _mf_hf.mo_coeff[0], _mf_hf.mo_coeff[1]
+            _dm_ao_a = _Ca @ _dm_mo_a @ _Ca.T
+            _dm_ao_b = _Cb @ _dm_mo_b @ _Cb.T
+            _dm_ao_ccsd = np.stack([_dm_ao_a, _dm_ao_b], axis=0)
+        _dm_total = (
+            _dm_ao_ccsd[0] + _dm_ao_ccsd[1]
+            if _dm_ao_ccsd.ndim == 3
+            else _dm_ao_ccsd
+        )
+        _coords = _mf_pbe.grids.coords
+        _weights = _mf_pbe.grids.weights
+        _ao = _mf_pbe._numint.eval_ao(_mol, _coords, deriv=0)
+        _rho_ccsd = np.einsum("ij,gi,gj->g", _dm_total, _ao, _ao)
+        _dm_pbe = _mf_pbe.make_rdm1()
+        _dm_pbe_total = _dm_pbe[0] + _dm_pbe[1] if _dm_pbe.ndim == 3 else _dm_pbe
+        _rho_pbe = np.einsum("ij,gi,gj->g", _dm_pbe_total, _ao, _ao)
+        _rho_pbe_ccsd_rmse = float(
+            np.sqrt(np.sum(_weights * (_rho_pbe - _rho_ccsd) ** 2) / np.sum(_weights))
+        )
+        np.savez(
+            _npz_path,
+            dm_target=_dm_ao_ccsd,
+            rho_ref_grid=_rho_ccsd,
+            ref_density_method="ccsd",
+            E_ref_literature=float(_E_ccsd_total),
+        )
+        _sidecar["rho_pbe_ccsd_rmse"] = _rho_pbe_ccsd_rmse
+
+    with open(_meta_path, "w") as _f:
+        json.dump(_sidecar, _f, indent=2)
+    print(f"Generated {_name} reference data -> {_npz_path}")
+
+# Build atom_energies for transfer eval (PBE-consistent)
+transfer_atom_energies = {**atom_energies}
+for a_name, _, _ in all_new_atoms:
+    with open(f"{ext_data_dir}/{a_name}_metadata.json") as _f:
+        transfer_atom_energies[a_name] = json.load(_f)["E_pbe_total"]
+print(f"transfer_atom_energies: {list(transfer_atom_energies.keys())}")
+print(f"Test molecules: {[tm['name'] for tm in test_molecules]}")
+"""
+    return new_code_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation
