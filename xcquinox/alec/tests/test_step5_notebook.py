@@ -375,8 +375,9 @@ def test_cell_24_balancing_aux_inspection():
     gen = load_generator()
     source = gen.build_cell_24_balancing_aux_inspection().source
     assert "_bal_aux_keys" in source
-    assert "loss_vxc" in source   # V_xc aux key
-    assert "static_vxc" in source  # V_xc variant label
+    assert "BAL_LOSS_NAMES" in source
+    # V_xc content was moved to the dedicated V_xc plot cell.
+    assert "_bal_aux_keys_vxc" not in source
 
 
 # ---------------------------------------------------------------------------
@@ -501,11 +502,11 @@ def test_cell_35_feature_impact():
 # ---------------------------------------------------------------------------
 
 
-def test_generator_produces_47_cells(tmp_path):
-    """Step 5 notebook must contain exactly 47 cells (after balancing + transfer backfill)."""
+def test_generator_produces_49_cells(tmp_path):
+    """Step 5 notebook must contain exactly 49 cells (after separated V_xc cells)."""
     gen = load_generator()
     nb = gen.main(str(tmp_path / "step5.ipynb"))
-    assert len(nb.cells) == 47, f"expected 47 cells, got {len(nb.cells)}"
+    assert len(nb.cells) == 49, f"expected 49 cells, got {len(nb.cells)}"
 
 
 def test_generator_cell_types_match_expected(tmp_path):
@@ -517,10 +518,10 @@ def test_generator_cell_types_match_expected(tmp_path):
         if cell.cell_type == "markdown":
             markdown_indices.add(i)
     # Markdown cells: 0 (title), 6 (pretrain), 11 (training data), 16 (SCF-varied
-    # training), 21 (balancing), 27 (eval), 32 (scf impact), 34 (dm heatmaps),
-    # 36 (density hist), 38 (convergence), 40 (feature impact), 42 (transfer),
-    # 44 (transfer plot)
-    expected = {0, 6, 11, 16, 21, 27, 32, 34, 36, 38, 40, 42, 44}
+    # training), 21 (balancing), 29 (eval), 34 (scf impact), 36 (dm heatmaps),
+    # 38 (density hist), 40 (convergence), 42 (feature impact), 44 (transfer),
+    # 46 (transfer plot)
+    expected = {0, 6, 11, 16, 21, 29, 34, 36, 38, 40, 42, 44, 46}
     assert markdown_indices == expected, (
         f"markdown indices {markdown_indices} != expected {expected}"
     )
@@ -556,7 +557,7 @@ def test_narrow_config_smoke(tmp_path):
         solver_labels=("oneshot",),
         checkpoint_base=str(tmp_path / "ckpt"),
     )
-    assert len(nb.cells) == 47
+    assert len(nb.cells) == 49
     nbformat.validate(nb)
 
 
@@ -585,9 +586,19 @@ def test_cell_25_balancing_loss_plot():
     source = gen.build_cell_25_balancing_loss_plot().source
     assert "fig" in source
     assert "BAL_LOSS_NAMES" in source
-    # V_xc second figure
-    assert "fig_vxc" in source
+    assert "gradnorm_weight_evolution.png" in source
+    # V_xc content moved to its own cell.
+    assert "fig_vxc" not in source
+    assert "VXC_VARIANTS" not in source
+
+
+def test_cell_26_vxc_loss_plot():
+    gen = load_generator()
+    source = gen.build_cell_26_vxc_loss_plot().source
+    assert "_bal_aux_keys_vxc" in source
     assert "VXC_VARIANTS" in source
+    assert "fig_vxc" in source
+    assert "bal_loss_plot_vxc.png" in source
     assert "loss_vxc" in source
 
 
@@ -596,9 +607,20 @@ def test_cell_26_balancing_eval():
     source = gen.build_cell_26_balancing_eval().source
     assert "alec.run_test" in source or "run_test" in source
     assert "BALANCING_CONFIGS" in source
+    # V_xc eval moved to its own cell.
+    assert "VXC_VARIANTS" not in source
+    assert "train_balancing/vxc/" not in source
+    assert "eval_balancing/vxc/" not in source
+
+
+def test_cell_28_vxc_eval():
+    gen = load_generator()
+    source = gen.build_cell_28_vxc_eval().source
     assert "VXC_VARIANTS" in source
     assert "train_balancing/vxc/" in source
     assert "eval_balancing/vxc/" in source
+    assert "alec.run_test" in source
+    assert "RERUN_EVAL" in source
 
 
 def test_cell_27_baseline_gen():
