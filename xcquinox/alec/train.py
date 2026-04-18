@@ -336,8 +336,10 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
     losses = []
     aux_log = []
 
-    # Phase 1: energy-only loss
+    # Phase 1: loss with optional kwarg overrides from TwoPhaseConfig
     phase1_kwargs = _filter_loss_kwargs(spec.loss_kwargs_dict, balancing.phase1_loss)
+    if balancing.phase1_loss_kwargs:
+        phase1_kwargs.update(dict(balancing.phase1_loss_kwargs))
     phase1_loss = make_loss(
         balancing.phase1_loss, molecules=spec.molecules, **phase1_kwargs)
     phase1_optimizer = build_optimizer(
@@ -411,6 +413,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
     L0 = loss.compute_components(model, batch, relative=relative)
     L0_values = jnp.stack([L0[k] for k in component_keys])
 
+    @eqx.filter_jit
     def _gradnorm_step(model, opt_state, log_weights, weight_opt_state,
                        batch, L0_values):
         weights = jax.nn.softmax(log_weights) * n_tasks

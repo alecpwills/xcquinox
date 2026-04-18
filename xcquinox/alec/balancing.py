@@ -32,17 +32,21 @@ class TwoPhaseConfig(BalancingConfig):
     """Phase 1: energy-only. Phase 2: compound loss with fresh optimizer."""
     phase1_steps: int
     phase1_loss: str = "A_atomization"
+    phase1_loss_kwargs: tuple[tuple[str, object], ...] = ()
 
     def __post_init__(self):
         if self.phase1_steps < 1:
             raise ValueError(f"phase1_steps must be >= 1, got {self.phase1_steps}")
 
     def describe(self) -> dict:
-        return {
+        d = {
             "strategy": "two_phase",
             "phase1_steps": self.phase1_steps,
             "phase1_loss": self.phase1_loss,
         }
+        if self.phase1_loss_kwargs:
+            d["phase1_loss_kwargs"] = dict(self.phase1_loss_kwargs)
+        return d
 
 
 @dataclass(frozen=True)

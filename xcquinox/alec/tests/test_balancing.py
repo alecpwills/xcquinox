@@ -247,3 +247,38 @@ def test_metadata_records_loss_metric(loss_metric):
     with open(md_path) as f:
         md = json.load(f)
     assert md["loss_metric"] == loss_metric
+
+
+def test_twophase_phase1_loss_kwargs_default_empty():
+    """phase1_loss_kwargs defaults to empty tuple."""
+    from xcquinox.alec.balancing import TwoPhaseConfig
+    cfg = TwoPhaseConfig(phase1_steps=100)
+    assert cfg.phase1_loss_kwargs == ()
+
+
+def test_twophase_describe_includes_phase1_loss_kwargs():
+    """describe() includes phase1_loss_kwargs when non-empty."""
+    from xcquinox.alec.balancing import TwoPhaseConfig
+    cfg = TwoPhaseConfig(
+        phase1_steps=100,
+        phase1_loss="B_atomization_plus_dm",
+        phase1_loss_kwargs=(("vxc_weight", 1.0), ("dm_weight", 0.5)),
+    )
+    d = cfg.describe()
+    assert d["strategy"] == "two_phase"
+    assert d["phase1_loss_kwargs"] == {"vxc_weight": 1.0, "dm_weight": 0.5}
+
+
+def test_twophase_phase1_loss_kwargs_hashable():
+    """TwoPhaseConfig with phase1_loss_kwargs is hashable (frozen dataclass)."""
+    from xcquinox.alec.balancing import TwoPhaseConfig
+    cfg = TwoPhaseConfig(
+        phase1_steps=100,
+        phase1_loss_kwargs=(("vxc_weight", 1.0),),
+    )
+    assert hash(cfg)  # Should not raise
+    cfg2 = TwoPhaseConfig(
+        phase1_steps=100,
+        phase1_loss_kwargs=(("vxc_weight", 1.0),),
+    )
+    assert hash(cfg) == hash(cfg2)
