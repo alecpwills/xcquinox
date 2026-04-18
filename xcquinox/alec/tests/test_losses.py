@@ -851,3 +851,97 @@ def test_vxc_term_relative_divides_by_ref_norm(batch_h_o_h2o, model):
     assert rel_val > 0.0
     # Relative and absolute should differ (different denominators)
     assert abs(abs_val - rel_val) > 1e-12
+
+
+# ---------------------------------------------------------------------------
+# V_xc weight integration tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("loss_name", LOSS_NAMES)
+def test_vxc_weight_zero_is_backward_compatible(loss_name, batch_h_o_h2o, model):
+    """vxc_weight=0 (default) produces identical results to current behavior."""
+    mols = batch_h_o_h2o["mols"]
+    loss_default = make_loss(loss_name, molecules=mols)
+    loss_explicit = make_loss(loss_name, molecules=mols, vxc_weight=0.0)
+    batch = {
+        "mol_data": batch_h_o_h2o["mol_data"],
+        "targets": batch_h_o_h2o["targets"],
+        "atom_energies": batch_h_o_h2o["atom_energies"],
+    }
+    total_default, aux_default = loss_default(model, batch)
+    total_explicit, aux_explicit = loss_explicit(model, batch)
+    np.testing.assert_allclose(float(total_default), float(total_explicit), rtol=1e-10)
+    assert "loss_vxc" not in aux_default
+    assert "loss_vxc" not in aux_explicit
+
+
+@pytest.mark.parametrize("loss_name", LOSS_NAMES)
+def test_vxc_weight_positive_adds_loss_vxc_component(loss_name, batch_h_o_h2o, model):
+    """vxc_weight > 0 adds 'loss_vxc' to compute_components output."""
+    mols = batch_h_o_h2o["mols"]
+    loss = make_loss(loss_name, molecules=mols, vxc_weight=0.5)
+    assert loss.vxc_weight == 0.5
+    mol_data_list = list(batch_h_o_h2o["mol_data"])
+    h2o = dict(mol_data_list[2])
+    nao = h2o["vxc_pbe"].shape[-1]
+    h2o["vxc_ref"] = jnp.zeros((nao, nao))
+    mol_data_list[2] = h2o
+    batch = {
+        "mol_data": tuple(mol_data_list),
+        "targets": batch_h_o_h2o["targets"],
+        "atom_energies": batch_h_o_h2o["atom_energies"],
+    }
+    total, aux = loss(model, batch)
+    assert "loss_vxc" in aux
+    assert jnp.isfinite(aux["loss_vxc"])
+    assert float(aux["loss_vxc"]) > 0.0
+
+
+def test_vxc_gradient_is_finite_and_nonzero(batch_h_o_h2o, model):
+    """jax.grad through _vxc_term produces finite, non-zero gradients."""
+    from xcquinox.alec.losses import _vxc_term
+    mol_data_list = list(batch_h_o_h2o["mol_data"])
+    h2o = dict(mol_data_list[2])
+    nao = h2o["vxc_pbe"].shape[-1]
+    h2o["vxc_ref"] = jnp.zeros((nao, nao))
+    mol_data_list[2] = h2o
+    mol_data_t = tuple(mol_data_list)
+
+    @eqx.filter_value_and_grad
+    def loss_fn(m):
+        return _vxc_term(m, mol_data_t, (2,))
+
+    val, grads = loss_fn(model)
+    assert jnp.isfinite(val)
+    flat_grads = jax.tree.leaves(grads)
+    any_nonzero = any(jnp.any(jnp.abs(g) > 0).item() for g in flat_grads if g is not None)
+    assert any_nonzero, "All gradients are zero — V_xc gradient path may be broken"
+
+
+def test_vxc_weight_type_validation(batch_h_o_h2o):
+    """vxc_weight must be plain int/float, not bool/str/None."""
+    mols = batch_h_o_h2o["mols"]
+    for bad_value in (True, False, "0.5", None):
+        with pytest.raises(TypeError):
+            make_loss("A_atomization", molecules=mols, vxc_weight=bad_value)
+
+
+def test_vxc_compute_components_relative_mode(batch_h_o_h2o, model):
+    """compute_components(relative=True) passes relative=True to _vxc_term."""
+    mols = batch_h_o_h2o["mols"]
+    loss = make_loss("B_atomization_plus_dm", molecules=mols, vxc_weight=0.5)
+    mol_data_list = list(batch_h_o_h2o["mol_data"])
+    h2o = dict(mol_data_list[2])
+    nao = h2o["vxc_pbe"].shape[-1]
+    h2o["vxc_ref"] = h2o["vxc_pbe"]
+    mol_data_list[2] = h2o
+    batch = {
+        "mol_data": tuple(mol_data_list),
+        "targets": batch_h_o_h2o["targets"],
+        "atom_energies": batch_h_o_h2o["atom_energies"],
+    }
+    comps_abs = loss.compute_components(model, batch, relative=False)
+    comps_rel = loss.compute_components(model, batch, relative=True)
+    assert "loss_vxc" in comps_abs
+    assert "loss_vxc" in comps_rel
+    assert abs(float(comps_abs["loss_vxc"]) - float(comps_rel["loss_vxc"])) > 1e-12

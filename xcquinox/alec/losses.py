@@ -258,9 +258,12 @@ class AtomizationLoss(AlecLoss):
     required_mol_keys: ClassVar[tuple[str, ...]] = ()
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     solver_config: object | None = eqx.field(default=None, static=True)
+    vxc_weight: float = eqx.field(default=0.0, static=True)
 
-    def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None):
+    def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None,
+                 vxc_weight: float = 0.0):
         self._validate_static_float("w_atomic", w_atomic)
+        self._validate_static_float("vxc_weight", vxc_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -268,6 +271,7 @@ class AtomizationLoss(AlecLoss):
         self.compositions = comp
         self.w_atomic = w_atomic
         self.solver_config = solver_config
+        self.vxc_weight = vxc_weight
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -280,7 +284,13 @@ class AtomizationLoss(AlecLoss):
         loss_energy = _ae_losses(E_nn, self.compound_idx, comp_dicts,
                                  self.mol_names, targets, atom_energies)
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
-        return {"loss_energy": loss_energy, "atomic_reg": atomic_reg}
+        components = {"loss_energy": loss_energy, "atomic_reg": atomic_reg}
+        if self.vxc_weight > 0:
+            vxc_idx = tuple(range(N))
+            components["loss_vxc"] = self.vxc_weight * _vxc_term(
+                model, mol_data, vxc_idx, relative=relative,
+            )
+        return components
 
     def __call__(self, model, batch):
         components = self.compute_components(model, batch)
@@ -296,13 +306,15 @@ class AtomizationPlusDMLoss(AlecLoss):
     dm_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
+    vxc_weight: float = eqx.field(default=0.0, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
                  dm_weight: float = 0.1, molecules_only: bool = True,
-                 solver_config=None):
+                 solver_config=None, vxc_weight: float = 0.0):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("dm_weight", dm_weight)
         self._validate_static_bool("molecules_only", molecules_only)
+        self._validate_static_float("vxc_weight", vxc_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -312,6 +324,7 @@ class AtomizationPlusDMLoss(AlecLoss):
         self.dm_weight = dm_weight
         self.molecules_only = molecules_only
         self.solver_config = solver_config
+        self.vxc_weight = vxc_weight
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -326,7 +339,13 @@ class AtomizationPlusDMLoss(AlecLoss):
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
         dm_loss = self.dm_weight * _dm_term(model, mol_data, iter_idx, solver_config=self.solver_config, relative=relative)
-        return {"loss_energy": loss_energy, "atomic_reg": atomic_reg, "loss_dm": dm_loss}
+        components = {"loss_energy": loss_energy, "atomic_reg": atomic_reg, "loss_dm": dm_loss}
+        if self.vxc_weight > 0:
+            vxc_idx = self.compound_idx if self.molecules_only else tuple(range(N))
+            components["loss_vxc"] = self.vxc_weight * _vxc_term(
+                model, mol_data, vxc_idx, relative=relative,
+            )
+        return components
 
     def __call__(self, model, batch):
         components = self.compute_components(model, batch)
@@ -342,13 +361,15 @@ class AtomizationPlusGridLoss(AlecLoss):
     density_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
+    vxc_weight: float = eqx.field(default=0.0, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
                  density_weight: float = 0.1, molecules_only: bool = True,
-                 solver_config=None):
+                 solver_config=None, vxc_weight: float = 0.0):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("density_weight", density_weight)
         self._validate_static_bool("molecules_only", molecules_only)
+        self._validate_static_float("vxc_weight", vxc_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -358,6 +379,7 @@ class AtomizationPlusGridLoss(AlecLoss):
         self.density_weight = density_weight
         self.molecules_only = molecules_only
         self.solver_config = solver_config
+        self.vxc_weight = vxc_weight
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -372,7 +394,13 @@ class AtomizationPlusGridLoss(AlecLoss):
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
         grid_loss = self.density_weight * _grid_term(model, mol_data, iter_idx, solver_config=self.solver_config, relative=relative)
-        return {"loss_energy": loss_energy, "atomic_reg": atomic_reg, "loss_grid": grid_loss}
+        components = {"loss_energy": loss_energy, "atomic_reg": atomic_reg, "loss_grid": grid_loss}
+        if self.vxc_weight > 0:
+            vxc_idx = self.compound_idx if self.molecules_only else tuple(range(N))
+            components["loss_vxc"] = self.vxc_weight * _vxc_term(
+                model, mol_data, vxc_idx, relative=relative,
+            )
+        return components
 
     def __call__(self, model, batch):
         components = self.compute_components(model, batch)
@@ -386,9 +414,12 @@ class DeltaAELoss(AlecLoss):
     required_mol_keys: ClassVar[tuple[str, ...]] = ("E_pbe",)
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     solver_config: object | None = eqx.field(default=None, static=True)
+    vxc_weight: float = eqx.field(default=0.0, static=True)
 
-    def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None):
+    def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None,
+                 vxc_weight: float = 0.0):
         self._validate_static_float("w_atomic", w_atomic)
+        self._validate_static_float("vxc_weight", vxc_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -396,6 +427,7 @@ class DeltaAELoss(AlecLoss):
         self.compositions = comp
         self.w_atomic = w_atomic
         self.solver_config = solver_config
+        self.vxc_weight = vxc_weight
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -408,7 +440,13 @@ class DeltaAELoss(AlecLoss):
         loss_delta = _delta_losses(E_nn, mol_data, self.compound_idx, comp_dicts,
                                    self.mol_names, targets, atom_energies)
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
-        return {"loss_delta": loss_delta, "atomic_reg": atomic_reg}
+        components = {"loss_delta": loss_delta, "atomic_reg": atomic_reg}
+        if self.vxc_weight > 0:
+            vxc_idx = tuple(range(N))
+            components["loss_vxc"] = self.vxc_weight * _vxc_term(
+                model, mol_data, vxc_idx, relative=relative,
+            )
+        return components
 
     def __call__(self, model, batch):
         components = self.compute_components(model, batch)
@@ -424,13 +462,15 @@ class DeltaAEPlusDMLoss(AlecLoss):
     dm_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
+    vxc_weight: float = eqx.field(default=0.0, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
                  dm_weight: float = 0.1, molecules_only: bool = True,
-                 solver_config=None):
+                 solver_config=None, vxc_weight: float = 0.0):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("dm_weight", dm_weight)
         self._validate_static_bool("molecules_only", molecules_only)
+        self._validate_static_float("vxc_weight", vxc_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -440,6 +480,7 @@ class DeltaAEPlusDMLoss(AlecLoss):
         self.dm_weight = dm_weight
         self.molecules_only = molecules_only
         self.solver_config = solver_config
+        self.vxc_weight = vxc_weight
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -454,7 +495,13 @@ class DeltaAEPlusDMLoss(AlecLoss):
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
         dm_loss = self.dm_weight * _dm_term(model, mol_data, iter_idx, solver_config=self.solver_config, relative=relative)
-        return {"loss_delta": loss_delta, "atomic_reg": atomic_reg, "loss_dm": dm_loss}
+        components = {"loss_delta": loss_delta, "atomic_reg": atomic_reg, "loss_dm": dm_loss}
+        if self.vxc_weight > 0:
+            vxc_idx = self.compound_idx if self.molecules_only else tuple(range(N))
+            components["loss_vxc"] = self.vxc_weight * _vxc_term(
+                model, mol_data, vxc_idx, relative=relative,
+            )
+        return components
 
     def __call__(self, model, batch):
         components = self.compute_components(model, batch)
@@ -470,13 +517,15 @@ class DeltaAEPlusGridLoss(AlecLoss):
     density_weight: float = eqx.field(default=0.1, static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
+    vxc_weight: float = eqx.field(default=0.0, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
                  density_weight: float = 0.1, molecules_only: bool = True,
-                 solver_config=None):
+                 solver_config=None, vxc_weight: float = 0.0):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("density_weight", density_weight)
         self._validate_static_bool("molecules_only", molecules_only)
+        self._validate_static_float("vxc_weight", vxc_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -486,6 +535,7 @@ class DeltaAEPlusGridLoss(AlecLoss):
         self.density_weight = density_weight
         self.molecules_only = molecules_only
         self.solver_config = solver_config
+        self.vxc_weight = vxc_weight
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -500,7 +550,13 @@ class DeltaAEPlusGridLoss(AlecLoss):
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
         iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
         grid_loss = self.density_weight * _grid_term(model, mol_data, iter_idx, solver_config=self.solver_config, relative=relative)
-        return {"loss_delta": loss_delta, "atomic_reg": atomic_reg, "loss_grid": grid_loss}
+        components = {"loss_delta": loss_delta, "atomic_reg": atomic_reg, "loss_grid": grid_loss}
+        if self.vxc_weight > 0:
+            vxc_idx = self.compound_idx if self.molecules_only else tuple(range(N))
+            components["loss_vxc"] = self.vxc_weight * _vxc_term(
+                model, mol_data, vxc_idx, relative=relative,
+            )
+        return components
 
     def __call__(self, model, batch):
         components = self.compute_components(model, batch)
