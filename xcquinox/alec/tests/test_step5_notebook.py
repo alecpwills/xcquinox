@@ -603,3 +603,14 @@ def test_cell_25_balancing_loss_plot():
     assert "fig_vxc" in source
     assert "VXC_VARIANTS" in source
     assert "loss_vxc" in source
+
+
+def test_cell_26_balancing_eval():
+    gen = load_generator()
+    source = gen.build_cell_26_balancing_eval().source
+    assert "alec.run_test" in source or "run_test" in source
+    assert "BALANCING_CONFIGS" in source
+    assert "VXC_VARIANTS" in source
+    assert "train_balancing/vxc/" in source
+    assert "eval_balancing/vxc/" in source
+

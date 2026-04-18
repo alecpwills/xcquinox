@@ -1429,6 +1429,59 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_26_balancing_eval():
+    """Section 4b Cell 26 -- evaluate balancing models (base + V_xc variants)."""
+    source = """# Evaluate the balancing sweep models (same metrics as main eval)
+for loss_name in BAL_LOSS_NAMES:
+    for bal_label in BALANCING_CONFIGS:
+        ckpt_dir = f"{CHECKPOINT_BASE}/train_balancing/{loss_name}/{bal_label}"
+        model_path = f"{ckpt_dir}/model.eqx"
+        out_dir = f"{CHECKPOINT_BASE}/eval_balancing/{loss_name}/{bal_label}"
+        if not os.path.isfile(model_path):
+            continue
+        if not RERUN_EVAL and os.path.isfile(f"{out_dir}/aggregate.json"):
+            continue
+        cfg = SCF_CONFIGS[BAL_SOLVER]
+        test_spec = alec.TestSpec.from_dicts(
+            arch=alec.get_architecture(BAL_ARCH),
+            model_checkpoint=model_path,
+            molecules=tuple(mol_specs),
+            metrics=("total_energy", "atomization_energy", "density_rmse", "constraint_violations"),
+            metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {"H2O": 233.016}}},
+            atom_energies=atom_energies,
+            output_dir=out_dir,
+            solver_config=cfg,
+        )
+        alec.run_test(test_spec)
+print(f"Balancing eval complete (RERUN_EVAL={RERUN_EVAL})")
+
+# V_xc variants eval (9 runs: 3 variants x 3 solvers)
+for variant_label, (loss_name, _, _) in VXC_VARIANTS.items():
+    for solver_label in SOLVER_LABELS:
+        ckpt_dir = f"{CHECKPOINT_BASE}/train_balancing/vxc/{variant_label}/{solver_label}"
+        model_path = f"{ckpt_dir}/model.eqx"
+        out_dir = f"{CHECKPOINT_BASE}/eval_balancing/vxc/{variant_label}/{solver_label}"
+        if not os.path.isfile(model_path):
+            continue
+        if not RERUN_EVAL and os.path.isfile(f"{out_dir}/aggregate.json"):
+            continue
+        cfg = SCF_CONFIGS[solver_label]
+        test_spec = alec.TestSpec.from_dicts(
+            arch=alec.get_architecture(BAL_ARCH),
+            model_checkpoint=model_path,
+            molecules=tuple(mol_specs),
+            metrics=("total_energy", "atomization_energy", "density_rmse", "constraint_violations"),
+            metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": {"H2O": 233.016}}},
+            atom_energies=atom_energies,
+            output_dir=out_dir,
+            solver_config=cfg,
+        )
+        alec.run_test(test_spec)
+print(f"V_xc eval complete (RERUN_EVAL={RERUN_EVAL})")
+"""
+    return new_code_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation
