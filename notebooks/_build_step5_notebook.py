@@ -1282,6 +1282,65 @@ finally:
     return new_code_cell(source)
 
 
+def build_cell_24_balancing_aux_inspection():
+    """Section 4b Cell 24 -- aux_log inspection (base + V_xc variant keys)."""
+    source = """_bal_aux_keys = {
+    "B_atomization_plus_dm": ("loss_energy", "atomic_reg", "loss_dm"),
+    "C_atomization_plus_grid": ("loss_energy", "atomic_reg", "loss_grid"),
+}
+
+bal_labels = list(BALANCING_CONFIGS.keys())
+cmap_bal = plt.get_cmap('tab10')
+bal_colors = {label: cmap_bal(i) for i, label in enumerate(bal_labels)}
+
+fig, axes = plt.subplots(
+    len(BAL_LOSS_NAMES), 3, figsize=(16, 4 * len(BAL_LOSS_NAMES)), squeeze=False,
+)
+for row_idx, loss_name in enumerate(BAL_LOSS_NAMES):
+    aux_keys = _bal_aux_keys[loss_name]
+    for col_idx, key in enumerate(aux_keys):
+        ax = axes[row_idx, col_idx]
+        for bal_label in bal_labels:
+            ckpt = f"{CHECKPOINT_BASE}/train_balancing/{loss_name}/{bal_label}"
+            aux_path = f"{ckpt}/aux_log.pkl"
+            if not os.path.isfile(aux_path):
+                continue
+            with open(aux_path, "rb") as _f:
+                aux_log = pickle.load(_f)
+            _steps = [e["step"] for e in aux_log]
+            _vals = [e["aux"].get(key, float("nan")) for e in aux_log]
+            ax.semilogy(_steps, _vals, label=bal_label,
+                        color=bal_colors[bal_label], alpha=0.85)
+        ax.set_title(f"{loss_name} / {key}", fontsize=10)
+        ax.set_xlabel("Training step")
+        ax.set_ylabel("Component value (log scale)")
+        ax.grid(True, which="both", ls=":", alpha=0.4)
+        ax.legend(fontsize="small", loc="best")
+
+fig.suptitle(
+    f"Aux loss components by balancing strategy (arch={BAL_ARCH}, solver={BAL_SOLVER})\\n"
+    f"rows: loss family, columns: component",
+    fontsize=13,
+)
+fig.tight_layout(rect=(0, 0, 1, 0.93))
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(
+    f"{CHECKPOINT_BASE}/figures/balancing_aux_comparison.png",
+    dpi=150, bbox_inches='tight',
+)
+plt.show()
+
+# V_xc aux keys -- additive to the loss's existing components.
+_bal_aux_keys_vxc = {
+    "static_vxc":       ("loss_energy", "atomic_reg", "loss_dm", "loss_vxc"),
+    "two_phase_dfirst": ("loss_energy", "atomic_reg", "loss_dm", "loss_vxc"),
+    "static_vxc_A":     ("loss_energy", "atomic_reg", "loss_vxc"),
+}
+print(f"_bal_aux_keys_vxc: {len(_bal_aux_keys_vxc)} vxc variants")
+"""
+    return new_code_cell(source)
+
+
 def build_cell_22_eval_md():
     """Section 5 Cell 22 -- evaluation narrative."""
     source = """## Section 5: Evaluation

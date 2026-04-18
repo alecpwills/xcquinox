@@ -363,6 +363,14 @@ def test_cell_23_balancing_loop():
     assert "TRAIN_SKIP_IF_EXISTS" in source
 
 
+def test_cell_24_balancing_aux_inspection():
+    gen = load_generator()
+    source = gen.build_cell_24_balancing_aux_inspection().source
+    assert "_bal_aux_keys" in source
+    assert "loss_vxc" in source   # V_xc aux key
+    assert "static_vxc" in source  # V_xc variant label
+
+
 # ---------------------------------------------------------------------------
 # Task 5 -- Evaluation Cells 22-25
 # ---------------------------------------------------------------------------
