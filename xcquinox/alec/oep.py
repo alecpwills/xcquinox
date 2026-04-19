@@ -83,28 +83,33 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
 def _ks_from_vxc_matrix(mol, mf, vxc_matrix):
     """Run a KS-SCF with a fixed V_xc matrix replacing the XC potential.
 
-    Returns (dm, kinetic_energy).
+    Uses PySCF's robust SCF driver (DIIS + damping) by overriding get_veff
+    to return the fixed V_xc + J. This is essential: plain fixed-point
+    iteration diverges for many molecules (e.g. H2O) without damping/DIIS.
+
+    Returns (dm, kinetic_energy, j_matrix) where kinetic_energy = Tr(D T_kin)
+    and j_matrix is the Coulomb matrix at the final density.
     """
-    h_core = mf.get_hcore()
-    s_matrix = mf.get_ovlp()
-    dm_init = mf.make_rdm1()
-    nocc = mol.nelectron // 2
+    from pyscf import scf
 
-    from scipy.linalg import eigh as gen_eigh
+    mf_fixed = scf.RHF(mol)
+    mf_fixed.verbose = 0
+    mf_fixed.max_cycle = 200
+    mf_fixed.conv_tol = 1e-12
 
-    for _ in range(50):
-        j_matrix = mf.get_j(mol, dm_init)
-        fock = h_core + j_matrix + vxc_matrix
-        e_vals, e_vecs = gen_eigh(fock, s_matrix)
-        C_occ = e_vecs[:, :nocc]
-        dm_new = 2.0 * C_occ @ C_occ.T
-        if np.linalg.norm(dm_new - dm_init) < 1e-10:
-            break
-        dm_init = dm_new
+    def get_veff_fixed(mol_, dm_, *args, **kwargs):
+        j_mat = mf_fixed.get_j(mol_, dm_)
+        # Total effective potential (beyond h_core) = J + V_xc_matrix
+        return j_mat + vxc_matrix
 
+    mf_fixed.get_veff = get_veff_fixed
+    mf_fixed.kernel(dm0=mf.make_rdm1())
+
+    dm_final = mf_fixed.make_rdm1()
+    j_matrix = mf_fixed.get_j(mol, dm_final)
     t_matrix = mol.intor("int1e_kin")
-    ts = np.einsum("ij,ij->", t_matrix, dm_init)
-    return dm_init, ts
+    ts = np.einsum("ij,ij->", t_matrix, dm_final)
+    return dm_final, ts, j_matrix
 
 
 def run_oep_inversion(
@@ -128,14 +133,50 @@ def run_oep_inversion(
     weights = mf.grids.weights
     rho_target = _dm_to_rho_on_grid(mol, mf, dm_target)
 
+    # Precompute target-density integrals against the aux basis and h_core.
+    rhotarget_integrals = np.einsum("gp,g->p", aux_on_grid, rho_target)
+    h_core = mf.get_hcore()
+
     def objective_and_grad(b):
+        """Wu-Yang functional in minimization form with consistent obj/grad.
+
+        Wu-Yang variational principle: define
+
+            F(b) = E_KS[v(b)] - int v(b) * rho_target dr
+
+        where E_KS is the total KS energy at self-consistent D[v(b)]:
+
+            E_KS[v] = Tr(D[v] * h_core) + 0.5 * Tr(D[v] * J[D[v]]) + Tr(D[v] * v)
+
+        By the Hellmann-Feynman theorem (valid because D[v] minimizes E_KS at
+        fixed v), dF/db_t = int g_t * (rho[v] - rho_target) dr = int g_t * Delta_rho.
+
+        F is concave in b (second derivative involves the non-interacting
+        density response chi, which is negative-semidefinite), so we MAXIMIZE F.
+        Equivalently, L-BFGS-B minimizes G = -F + 0.5 * reg * |b|^2, whose
+        gradient is:
+
+            dG/db_t = -int g_t * Delta_rho dr + reg * b_t.
+
+        This obj and grad are consistent derivatives of the same function, so
+        L-BFGS-B line search (Wolfe conditions) works correctly.
+        """
         vxc_matrix = np.einsum("t,tij->ij", b, three_center)
-        dm_scf, _ = _ks_from_vxc_matrix(mol, mf, vxc_matrix)
+        dm_scf, _, j_matrix = _ks_from_vxc_matrix(mol, mf, vxc_matrix)
         rho_scf = _dm_to_rho_on_grid(mol, mf, dm_scf)
-        delta_rho = rho_target - rho_scf
-        grad = -np.einsum("gp,g->p", aux_on_grid, delta_rho)
-        grad += regularization * b
-        obj = 0.5 * np.sum(weights * delta_rho ** 2) + 0.5 * regularization * np.sum(b ** 2)
+        delta_rho = rho_scf - rho_target
+
+        # E_KS[v] = Tr(D h_core) + 0.5 Tr(D J) + Tr(D V_xc_matrix)
+        e_ks = (
+            float(np.einsum("ij,ij->", dm_scf, h_core))
+            + 0.5 * float(np.einsum("ij,ij->", dm_scf, j_matrix))
+            + float(np.einsum("ij,ij->", dm_scf, vxc_matrix))
+        )
+        # F(b) = E_KS - sum_t b_t * I_t^target  (to be maximized)
+        F_val = e_ks - float(np.dot(b, rhotarget_integrals))
+        # G = -F + 0.5 * reg * |b|^2   (to be minimized)
+        obj = -F_val + 0.5 * regularization * float(np.sum(b ** 2))
+        grad = -np.einsum("gp,g->p", aux_on_grid, delta_rho) + regularization * b
         return obj, grad
 
     b0 = np.zeros(n_aux)
@@ -150,7 +191,7 @@ def run_oep_inversion(
 
     b_final = result.x
     vxc_final = np.einsum("t,tij->ij", b_final, three_center)
-    dm_final, _ = _ks_from_vxc_matrix(mol, mf, vxc_final)
+    dm_final, _, _ = _ks_from_vxc_matrix(mol, mf, vxc_final)
     rho_final = _dm_to_rho_on_grid(mol, mf, dm_final)
     final_error = float(np.sqrt(np.sum(weights * (rho_target - rho_final) ** 2)))
     n_iter = min(result.nit, max_iter)
