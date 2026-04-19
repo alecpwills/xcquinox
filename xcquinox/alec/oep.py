@@ -39,17 +39,26 @@ def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None):
     return mol, mf
 
 
-def _dm_to_rho_on_grid(mol, mf, dm):
-    """Evaluate density on the DFT grid from a density matrix."""
+def _dm_to_rho_on_grid(mol, mf, dm, *, per_spin: bool = False):
+    """Evaluate density on the DFT grid from a density matrix.
+
+    If ``dm`` is 3D (UKS) and ``per_spin`` is True, returns (rho_a, rho_b);
+    otherwise returns the total density (sum over spins for UKS).
+    """
     coords = mf.grids.coords
     ao = mf._numint.eval_ao(mol, coords)
-    if dm.ndim == 2:
-        rho = np.einsum("pi,ij,pj->p", ao, dm, ao)
-    else:
-        rho_a = np.einsum("pi,ij,pj->p", ao, dm[0], ao)
-        rho_b = np.einsum("pi,ij,pj->p", ao, dm[1], ao)
-        rho = rho_a + rho_b
-    return rho
+    dm_arr = np.asarray(dm)
+    if dm_arr.ndim == 2:
+        rho = np.einsum("pi,ij,pj->p", ao, dm_arr, ao)
+        if per_spin:
+            # For an RHF DM, split evenly between spin channels
+            return 0.5 * rho, 0.5 * rho
+        return rho
+    rho_a = np.einsum("pi,ij,pj->p", ao, dm_arr[0], ao)
+    rho_b = np.einsum("pi,ij,pj->p", ao, dm_arr[1], ao)
+    if per_spin:
+        return rho_a, rho_b
+    return rho_a + rho_b
 
 
 def _build_aux_basis_matrices(mol, mf, aux_basis: str):
@@ -80,16 +89,30 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
     return aux_mol, three_center, aux_on_grid
 
 
-def _ks_from_vxc_matrix(mol, mf, vxc_matrix):
+def _ks_from_vxc_matrix(mol, mf, vxc_matrix, *, dm0=None):
     """Run a KS-SCF with a fixed V_xc matrix replacing the XC potential.
 
+    Dispatches to an RHF or UHF SCF driver based on the shape of vxc_matrix
+    (2D = RHF, 3D = UKS) and on mol.spin.
+
+    RHF path returns (dm (nao, nao), kinetic, j_matrix (nao, nao)).
+    UKS path returns (dm (2, nao, nao), kinetic, j_matrix (2, nao, nao)).
     Uses PySCF's robust SCF driver (DIIS + damping) by overriding get_veff
     to return the fixed V_xc + J. This is essential: plain fixed-point
     iteration diverges for many molecules (e.g. H2O) without damping/DIIS.
 
-    Returns (dm, kinetic_energy, j_matrix) where kinetic_energy = Tr(D T_kin)
-    and j_matrix is the Coulomb matrix at the final density.
+    Pass ``dm0`` to warm-start the SCF; this is essential for open-shell
+    Wu-Yang inversion where nearby V_xc perturbations can land on different
+    near-degenerate UHF solutions unless seeded consistently.
     """
+    v = np.asarray(vxc_matrix)
+    if v.ndim == 3 or mol.spin != 0:
+        return _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, dm0=dm0)
+    return _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, dm0=dm0)
+
+
+def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None):
+    """RHF path: closed-shell, single-DM, J built on RHF object."""
     from pyscf import scf
 
     mf_fixed = scf.RHF(mol)
@@ -103,12 +126,69 @@ def _ks_from_vxc_matrix(mol, mf, vxc_matrix):
         return j_mat + vxc_matrix
 
     mf_fixed.get_veff = get_veff_fixed
-    mf_fixed.kernel(dm0=mf.make_rdm1())
+    if dm0 is None:
+        dm0 = mf.make_rdm1()
+    dm0 = np.asarray(dm0)
+    # If caller passed a UKS-shaped DM into the RHF path, sum spins.
+    if dm0.ndim == 3:
+        dm0 = dm0.sum(axis=0)
+    mf_fixed.kernel(dm0=dm0)
 
     dm_final = mf_fixed.make_rdm1()
     j_matrix = mf_fixed.get_j(mol, dm_final)
     t_matrix = mol.intor("int1e_kin")
-    ts = np.einsum("ij,ij->", t_matrix, dm_final)
+    ts = float(np.einsum("ij,ij->", t_matrix, dm_final))
+    return dm_final, ts, j_matrix
+
+
+def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None):
+    """UKS path: spin-resolved Fock, (2, nao, nao) DM and J.
+
+    vxc_matrix has shape (2, nao, nao). get_veff returns
+    veff[s] = J_total + V_xc[s], because the Hartree potential couples
+    both spins to the total density.
+    """
+    from pyscf import scf
+
+    v = np.asarray(vxc_matrix)
+    if v.ndim != 3 or v.shape[0] != 2:
+        raise ValueError(
+            f"_ks_from_vxc_matrix_uhf expects vxc_matrix shape (2, nao, nao), "
+            f"got {v.shape}"
+        )
+
+    mf_fixed = scf.UHF(mol)
+    mf_fixed.verbose = 0
+    mf_fixed.max_cycle = 200
+    mf_fixed.conv_tol = 1e-12
+
+    def get_veff_fixed(mol_, dm_, *args, **kwargs):
+        dm_arr = np.asarray(dm_)
+        if dm_arr.ndim == 2:
+            # Shouldn't happen for UHF, but guard it: split evenly.
+            dm_arr = np.stack([0.5 * dm_arr, 0.5 * dm_arr], axis=0)
+        j = mf_fixed.get_j(mol_, dm_arr)  # per-spin J
+        j_total = j[0] + j[1]
+        return np.stack(
+            [j_total + vxc_matrix[0], j_total + vxc_matrix[1]], axis=0,
+        )
+
+    mf_fixed.get_veff = get_veff_fixed
+    if dm0 is None:
+        dm0 = mf.make_rdm1()
+    dm0 = np.asarray(dm0)
+    if dm0.ndim == 2:
+        # Reference was closed-shell; split into alpha/beta
+        dm0 = np.stack([0.5 * dm0, 0.5 * dm0], axis=0)
+    mf_fixed.kernel(dm0=dm0)
+
+    dm_final = mf_fixed.make_rdm1()  # (2, nao, nao)
+    j_matrix = mf_fixed.get_j(mol, dm_final)  # (2, nao, nao)
+    t_matrix = mol.intor("int1e_kin")
+    ts = float(
+        np.einsum("ij,ij->", t_matrix, dm_final[0])
+        + np.einsum("ij,ij->", t_matrix, dm_final[1])
+    )
     return dm_final, ts, j_matrix
 
 
@@ -131,16 +211,42 @@ def run_oep_inversion(
     _, three_center, aux_on_grid = _build_aux_basis_matrices(mol, mf, aux_basis)
     n_aux = three_center.shape[0]
     weights = mf.grids.weights
-    rho_target = _dm_to_rho_on_grid(mol, mf, dm_target)
-
-    # Precompute target-density integrals against the aux basis and h_core.
-    rhotarget_integrals = np.einsum("gp,g->p", aux_on_grid, rho_target)
     h_core = mf.get_hcore()
+
+    is_uks = (mol.spin != 0) or (np.asarray(dm_target).ndim == 3)
+
+    if is_uks:
+        # Target density per spin channel
+        rho_target_a, rho_target_b = _dm_to_rho_on_grid(
+            mol, mf, dm_target, per_spin=True,
+        )
+        rho_target_total = rho_target_a + rho_target_b
+        rhotarget_a_integrals = np.einsum("gp,g->p", aux_on_grid, rho_target_a)
+        rhotarget_b_integrals = np.einsum("gp,g->p", aux_on_grid, rho_target_b)
+    else:
+        rho_target_total = _dm_to_rho_on_grid(mol, mf, dm_target)
+        rhotarget_integrals = np.einsum("gp,g->p", aux_on_grid, rho_target_total)
+
+    def _vxc_from_b(b):
+        """Build V_xc matrix (RHF: (nao, nao); UKS: (2, nao, nao))."""
+        if is_uks:
+            b_a = b[:n_aux]
+            b_b = b[n_aux:]
+            vxc_a = np.einsum("t,tij->ij", b_a, three_center)
+            vxc_b = np.einsum("t,tij->ij", b_b, three_center)
+            return np.stack([vxc_a, vxc_b], axis=0)
+        return np.einsum("t,tij->ij", b, three_center)
+
+    # Warm-start cache: seed each SCF with the previous converged DM. Without
+    # this, small b perturbations may land on different spin-broken minima
+    # (UHF) or different near-degenerate SCF solutions, breaking the smooth
+    # dependence of F(b) on b that the Hellmann-Feynman gradient relies on.
+    scf_state = {"dm0": None}
 
     def objective_and_grad(b):
         """Wu-Yang functional in minimization form with consistent obj/grad.
 
-        Wu-Yang variational principle: define
+        Wu-Yang variational principle (RHF): define
 
             F(b) = E_KS[v(b)] - int v(b) * rho_target dr
 
@@ -150,6 +256,13 @@ def run_oep_inversion(
 
         By the Hellmann-Feynman theorem (valid because D[v] minimizes E_KS at
         fixed v), dF/db_t = int g_t * (rho[v] - rho_target) dr = int g_t * Delta_rho.
+
+        For UKS, the functional generalizes to
+
+            F(b_a, b_b) = E_KS[v_a, v_b] - sum_s int v_s * rho_target_s dr
+            E_KS = Tr(D_tot * h_core) + 0.5 Tr(D_tot * J_tot) + sum_s Tr(D_s * v_s)
+
+        with per-spin gradient dF/db_s_t = int g_t * (rho_s[v] - rho_target_s).
 
         F is concave in b (second derivative involves the non-interacting
         density response chi, which is negative-semidefinite), so we MAXIMIZE F.
@@ -161,25 +274,54 @@ def run_oep_inversion(
         This obj and grad are consistent derivatives of the same function, so
         L-BFGS-B line search (Wolfe conditions) works correctly.
         """
-        vxc_matrix = np.einsum("t,tij->ij", b, three_center)
-        dm_scf, _, j_matrix = _ks_from_vxc_matrix(mol, mf, vxc_matrix)
-        rho_scf = _dm_to_rho_on_grid(mol, mf, dm_scf)
-        delta_rho = rho_scf - rho_target
+        vxc_matrix = _vxc_from_b(b)
+        dm_scf, _, j_matrix = _ks_from_vxc_matrix(
+            mol, mf, vxc_matrix, dm0=scf_state["dm0"],
+        )
+        scf_state["dm0"] = dm_scf
 
+        if is_uks:
+            rho_scf_a, rho_scf_b = _dm_to_rho_on_grid(
+                mol, mf, dm_scf, per_spin=True,
+            )
+            delta_a = rho_scf_a - rho_target_a
+            delta_b = rho_scf_b - rho_target_b
+            # j_matrix is (2, nao, nao); J_total = j[0] + j[1]
+            j_total = j_matrix[0] + j_matrix[1]
+            dm_total = dm_scf[0] + dm_scf[1]
+            e_ks = (
+                float(np.einsum("ij,ij->", dm_total, h_core))
+                + 0.5 * float(np.einsum("ij,ij->", dm_total, j_total))
+                + float(np.einsum("ij,ij->", dm_scf[0], vxc_matrix[0]))
+                + float(np.einsum("ij,ij->", dm_scf[1], vxc_matrix[1]))
+            )
+            b_a = b[:n_aux]
+            b_b = b[n_aux:]
+            F_val = (
+                e_ks
+                - float(np.dot(b_a, rhotarget_a_integrals))
+                - float(np.dot(b_b, rhotarget_b_integrals))
+            )
+            obj = -F_val + 0.5 * regularization * float(np.sum(b ** 2))
+            grad_a = -np.einsum("gp,g->p", aux_on_grid, delta_a) + regularization * b_a
+            grad_b = -np.einsum("gp,g->p", aux_on_grid, delta_b) + regularization * b_b
+            grad = np.concatenate([grad_a, grad_b])
+            return obj, grad
+
+        rho_scf = _dm_to_rho_on_grid(mol, mf, dm_scf)
+        delta_rho = rho_scf - rho_target_total
         # E_KS[v] = Tr(D h_core) + 0.5 Tr(D J) + Tr(D V_xc_matrix)
         e_ks = (
             float(np.einsum("ij,ij->", dm_scf, h_core))
             + 0.5 * float(np.einsum("ij,ij->", dm_scf, j_matrix))
             + float(np.einsum("ij,ij->", dm_scf, vxc_matrix))
         )
-        # F(b) = E_KS - sum_t b_t * I_t^target  (to be maximized)
         F_val = e_ks - float(np.dot(b, rhotarget_integrals))
-        # G = -F + 0.5 * reg * |b|^2   (to be minimized)
         obj = -F_val + 0.5 * regularization * float(np.sum(b ** 2))
         grad = -np.einsum("gp,g->p", aux_on_grid, delta_rho) + regularization * b
         return obj, grad
 
-    b0 = np.zeros(n_aux)
+    b0 = np.zeros(2 * n_aux if is_uks else n_aux)
 
     result = minimize(
         objective_and_grad,
@@ -190,10 +332,14 @@ def run_oep_inversion(
     )
 
     b_final = result.x
-    vxc_final = np.einsum("t,tij->ij", b_final, three_center)
-    dm_final, _, _ = _ks_from_vxc_matrix(mol, mf, vxc_final)
+    vxc_final = _vxc_from_b(b_final)
+    dm_final, _, _ = _ks_from_vxc_matrix(
+        mol, mf, vxc_final, dm0=scf_state["dm0"],
+    )
     rho_final = _dm_to_rho_on_grid(mol, mf, dm_final)
-    final_error = float(np.sqrt(np.sum(weights * (rho_target - rho_final) ** 2)))
+    final_error = float(
+        np.sqrt(np.sum(weights * (rho_target_total - rho_final) ** 2))
+    )
     n_iter = min(result.nit, max_iter)
     converged = final_error < conv_tol
 
