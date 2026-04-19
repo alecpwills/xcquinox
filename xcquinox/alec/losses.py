@@ -13,6 +13,7 @@ from xcquinox.alec.oneshot import (
     oneshot_dm_prediction_fast,
     oneshot_grid_density,
     compute_vxc_nn,
+    _uks_spin_resolved_vxc,
 )
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
@@ -223,29 +224,49 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
 
     Normalized by n_ao^2 (absolute) or ||V_xc^ref||_F^2 (relative).
     Skips molecules where vxc_ref is None.
+
+    Supports both RKS references (shape ``(n_ao, n_ao)``) and UKS references
+    (shape ``(2, n_ao, n_ao)``). For UKS, the NN's spin-resolved V_xc is
+    constructed via :func:`_uks_spin_resolved_vxc` (spin-scaled approximation)
+    and the squared error is summed across both spin channels.
     """
     terms = []
     for i in iter_idx:
         vxc_ref = mol_data[i]["vxc_ref"]
         if vxc_ref is None:
             continue
+        vxc_ref_arr = jnp.asarray(vxc_ref)
         features = assemble_descriptor_features(model.descriptors, mol_data[i])
-        vxc_nn = compute_vxc_nn(
-            model,
-            mol_data[i]["rho_grid"],
-            mol_data[i]["sigma_grid"],
-            features,
-            mol_data[i]["ao_grid"],
-            mol_data[i]["grid_weights"],
-            nabla_rho=mol_data[i].get("nabla_rho_grid"),
-            ao_grad=mol_data[i].get("ao_grid_deriv"),
-        )
-        err = jnp.sum((vxc_nn - vxc_ref) ** 2)
-        if relative:
-            err = err / (jnp.sum(vxc_ref ** 2) + 1e-8)
-        else:
-            n_ao = vxc_ref.shape[-1]
-            err = err / (n_ao * n_ao)
+
+        if vxc_ref_arr.ndim == 3:  # UKS: (2, n_ao, n_ao)
+            vxc_nn_a, vxc_nn_b = _uks_spin_resolved_vxc(
+                model, mol_data[i], features
+            )
+            err = jnp.sum((vxc_nn_a - vxc_ref_arr[0]) ** 2) \
+                + jnp.sum((vxc_nn_b - vxc_ref_arr[1]) ** 2)
+            if relative:
+                err = err / (jnp.sum(vxc_ref_arr ** 2) + 1e-8)
+            else:
+                n_ao = vxc_ref_arr.shape[-1]
+                # Two spin channels -> normalize by 2 * n_ao^2.
+                err = err / (2 * n_ao * n_ao)
+        else:  # RKS: (n_ao, n_ao)
+            vxc_nn = compute_vxc_nn(
+                model,
+                mol_data[i]["rho_grid"],
+                mol_data[i]["sigma_grid"],
+                features,
+                mol_data[i]["ao_grid"],
+                mol_data[i]["grid_weights"],
+                nabla_rho=mol_data[i].get("nabla_rho_grid"),
+                ao_grad=mol_data[i].get("ao_grid_deriv"),
+            )
+            err = jnp.sum((vxc_nn - vxc_ref_arr) ** 2)
+            if relative:
+                err = err / (jnp.sum(vxc_ref_arr ** 2) + 1e-8)
+            else:
+                n_ao = vxc_ref_arr.shape[-1]
+                err = err / (n_ao * n_ao)
         terms.append(err)
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
 

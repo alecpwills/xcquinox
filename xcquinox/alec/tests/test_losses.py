@@ -945,3 +945,67 @@ def test_vxc_compute_components_relative_mode(batch_h_o_h2o, model):
     assert "loss_vxc" in comps_abs
     assert "loss_vxc" in comps_rel
     assert abs(float(comps_abs["loss_vxc"]) - float(comps_rel["loss_vxc"])) > 1e-12
+
+
+def test_vxc_term_handles_uks_reference():
+    """_vxc_term with UKS vxc_ref (shape (2, nao, nao)) returns finite loss."""
+    import jax.numpy as jnp
+    import numpy as np
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.losses import _vxc_term
+
+    spec = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec)
+    # Inject a synthetic vxc_ref of shape (2, nao, nao)
+    md = dict(md)
+    nao = np.asarray(md["s_matrix"]).shape[-1]
+    md["vxc_ref"] = jnp.zeros((2, nao, nao), dtype=jnp.float64)
+
+    arch = alec.get_architecture("deep")
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+    # _vxc_term takes model, mol_data_list, iter_idx
+    mol_data_list = [md]
+    iter_idx = [0]
+    val = _vxc_term(model, mol_data_list, iter_idx)
+    assert jnp.isfinite(val), f"vxc term not finite: {val}"
+    # With vxc_ref=0 and random NN, loss should be > 0
+    assert float(val) > 0, f"vxc term should be > 0 with nonzero NN vxc, got {val}"
+
+
+def test_vxc_term_uks_zero_when_nn_equals_ref():
+    """When vxc_ref equals the NN's spin-resolved V_xc, loss is zero."""
+    import jax.numpy as jnp
+    import numpy as np
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.losses import _vxc_term
+    from xcquinox.alec.oneshot import _uks_spin_resolved_vxc
+
+    spec = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec)
+    md = dict(md)
+
+    arch = alec.get_architecture("deep")
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+    # Build the exact V_xc the NN would produce
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+    features = assemble_descriptor_features(model.descriptors, md)
+    vxc_a, vxc_b = _uks_spin_resolved_vxc(model, md, features)
+    md["vxc_ref"] = jnp.stack([vxc_a, vxc_b], axis=0)
+
+    val = _vxc_term(model, [md], [0])
+    # Should be very close to 0 (modulo floating-point noise)
+    assert float(val) < 1e-10, f"expected near-zero loss, got {val}"
