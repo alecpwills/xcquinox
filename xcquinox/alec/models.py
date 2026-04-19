@@ -14,6 +14,14 @@ from xcquinox.alec.constraints import Constraint, _compose_constraints
 from xcquinox.alec.descriptors import Descriptor
 
 
+# Threshold below which NN inputs are sanitized to avoid sqrt(sigma)-derivative
+# divergence in the networks' reduced-gradient transform. At these tail points
+# Fx, Fc are masked to the LDA/PW92 limit (=1) — the physical limit as rho -> 0
+# anyway — and the rho_safe * eps_xc prefactor vanishes, so energy contribution
+# is negligible while gradients remain finite.
+_NN_TAIL_THRESHOLD = 1e-10
+
+
 def _pack_row(rho_scalar, sigma_scalar, features_row):
     """Assemble single-row feature vector [rho, sigma, *extras] for the network."""
     return jnp.concatenate([jnp.atleast_1d(rho_scalar),
@@ -74,9 +82,25 @@ class AlecGGAModel(eqx.Module):
 
     def eval_exc(self, rho, sigma, features):
         """Returns rho * epsilon_xc (energy density), shape (N,).
-        Fx/Fc use raw rho; lda_x/pw92c and prefactor use rho_safe."""
-        Fx = self.eval_Fx(rho, sigma, features)
-        Fc = self.eval_Fc(rho, sigma, features)
+        Fx/Fc use raw rho; lda_x/pw92c and prefactor use rho_safe.
+
+        At tail points (rho < ``_NN_TAIL_THRESHOLD``) the network inputs are
+        sanitized to (rho=1, sigma=1) to avoid the sqrt(sigma)-derivative
+        divergence in the networks' reduced-gradient transform; the network
+        outputs at these points are then masked to the LDA/PW92 limit
+        (Fx=Fc=1), and since ``rho_safe`` -> 0 at the tail, the energy
+        contribution is negligible. This keeps both forward and backward
+        (jax.grad) values finite for open-shell atoms where one spin channel
+        has rho=sigma=0 identically (e.g., beta channel of H spin=1).
+        """
+        tail_mask = rho > _NN_TAIL_THRESHOLD
+        safe_rho = jnp.where(tail_mask, rho, jnp.ones_like(rho))
+        safe_sigma = jnp.where(tail_mask, sigma, jnp.ones_like(sigma))
+        Fx = self.eval_Fx(safe_rho, safe_sigma, features)
+        Fc = self.eval_Fc(safe_rho, safe_sigma, features)
+        # Mask Fx, Fc at tail to LDA/PW92 limit (F -> 1 as rho -> 0).
+        Fx = jnp.where(tail_mask, Fx, jnp.ones_like(Fx))
+        Fc = jnp.where(tail_mask, Fc, jnp.ones_like(Fc))
         rho_safe = jnp.maximum(rho, self.rho_cutoff)
         ex_lda = lda_x(rho_safe)
         ec_pw92 = pw92c_unpolarized_scalar(rho_safe)
@@ -87,10 +111,18 @@ class AlecGGAModel(eqx.Module):
 
         E-H1: applies same constraint chain as eval_Fx/eval_Fc.
         M-C13-1: network inputs use raw rho (no pre-clip via rho_cutoff).
+
+        Tail-point sanitization matches ``eval_exc``: at rho < threshold,
+        network inputs are replaced with safe defaults and outputs masked
+        to Fx=Fc=1 to keep gradients finite.
         """
         rho_safe = jnp.maximum(rho_scalar, self.rho_cutoff)
         ex_lda = lda_x(rho_safe)
         ec_pw92 = pw92c_unpolarized_scalar(rho_safe)
+
+        tail_mask = rho_scalar > _NN_TAIL_THRESHOLD
+        safe_rho_scalar = jnp.where(tail_mask, rho_scalar, jnp.ones_like(rho_scalar))
+        safe_sigma_scalar = jnp.where(tail_mask, sigma_scalar, jnp.ones_like(sigma_scalar))
 
         def x_base_scalar(r, s, f):
             row = jnp.concatenate([jnp.atleast_1d(r), jnp.atleast_1d(s), f])
@@ -102,8 +134,10 @@ class AlecGGAModel(eqx.Module):
 
         x_chain = _compose_constraints(x_base_scalar, self.x_constraints)
         c_chain = _compose_constraints(c_base_scalar, self.c_constraints)
-        Fx_scalar = x_chain(rho_scalar, sigma_scalar, features_scalar)
-        Fc_scalar = c_chain(rho_scalar, sigma_scalar, features_scalar)
+        Fx_scalar = x_chain(safe_rho_scalar, safe_sigma_scalar, features_scalar)
+        Fc_scalar = c_chain(safe_rho_scalar, safe_sigma_scalar, features_scalar)
+        Fx_scalar = jnp.where(tail_mask, Fx_scalar, jnp.ones_like(Fx_scalar))
+        Fc_scalar = jnp.where(tail_mask, Fc_scalar, jnp.ones_like(Fc_scalar))
         return rho_safe * (ex_lda * Fx_scalar + ec_pw92 * Fc_scalar)
 
     def constraint_report(self, rho, sigma, features) -> dict:

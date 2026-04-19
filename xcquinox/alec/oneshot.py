@@ -69,6 +69,19 @@ def compute_vxc_nn(
     def exc_single_point(r, s, f):
         return model.eval_exc_scalar(r, s, f)
 
+    # Sanitize JVP inputs at low-density points. The networks' reduced-gradient
+    # transform uses sqrt(sigma) whose derivative diverges at sigma=0, and a
+    # spin channel with zero occupations (e.g., beta channel of an H atom with
+    # spin=1) produces rho=sigma=0 everywhere. The forward value is fine (all
+    # bounded networks), but JVP through sqrt(0) gives NaN, which propagates
+    # through the SCF Fock matrix and produces NaN total_energy after training
+    # perturbs the NN into that regime. Replace the JVP inputs at tail points
+    # with safe (rho=1, sigma=1) defaults; the output is masked to zero below,
+    # so the V_xc matrix contribution from these points is exactly zero.
+    _V_RHO_THRESHOLD = 1e-10
+    safe_rho = jnp.where(rho > _V_RHO_THRESHOLD, rho, jnp.ones_like(rho))
+    safe_sigma = jnp.where(rho > _V_RHO_THRESHOLD, sigma, jnp.ones_like(sigma))
+
     # Per-point JVPs: tangent on rho and then on sigma
     v_rho, v_sigma = jax.vmap(
         lambda r, s, f: (
@@ -83,7 +96,12 @@ def compute_vxc_nn(
                 (jnp.zeros_like(r), jnp.ones_like(s), jnp.zeros_like(f)),
             )[1],
         )
-    )(rho, sigma, features)
+    )(safe_rho, safe_sigma, features)
+
+    # Mask JVP outputs to zero at tail points (physically negligible
+    # contribution AND keeps gradients finite at rho/sigma = 0).
+    v_rho = jnp.where(rho > _V_RHO_THRESHOLD, v_rho, 0.0)
+    v_sigma = jnp.where(rho > _V_RHO_THRESHOLD, v_sigma, 0.0)
 
     # LDA-like contribution: V_rho_ij = sum_g w_g v_rho(g) phi_i(g) phi_j(g).
     V_rho = jnp.einsum("g,gi,gj->ij", grid_weights * v_rho, ao_grid, ao_grid)
@@ -108,7 +126,9 @@ def compute_vxc_nn(
     # nabla_rho: (n_grid, 3); ao_grad_xyz: (3, n_grid, n_ao) -> (n_grid, n_ao).
     nabla_rho_dot_ao_grad = jnp.einsum("gd,dgi->gi", nabla_rho, ao_grad_xyz)
 
-    # A_ij = sum_g w_g v_sigma(g) [nabla_rho . nabla phi_i](g) phi_j(g)
+    # A_ij = sum_g w_g v_sigma(g) [nabla_rho . nabla phi_i](g) phi_j(g).
+    # v_sigma already masked above at rho < threshold, so tail contribution
+    # is exactly zero.
     A_matrix = jnp.einsum(
         "g,gi,gj->ij",
         grid_weights * v_sigma,

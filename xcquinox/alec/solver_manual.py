@@ -24,13 +24,23 @@ from xcquinox.alec.solver import (
 DEGENERACY_REG = 1e-10
 
 
+def _symmetry_breaking_perturbation(nao: int, dtype) -> jnp.ndarray:
+    """Small non-uniform diagonal shift that breaks symmetry-induced
+    eigenvalue degeneracies. Needed because ``jnp.linalg.eigh``'s JVP is
+    ill-defined at exactly degenerate eigenvalues, producing NaN gradients
+    that then propagate through the scan. Used on atomic systems where
+    p_x/p_y/p_z orbitals have exactly equal eigenvalues by construction.
+    """
+    return DEGENERACY_REG * jnp.arange(nao, dtype=dtype)
+
+
 def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndarray:
     """Cholesky-transform Fock, eigh, rebuild DM. Restricted (factor of 2)."""
     nao = S.shape[0]
     S_reg = S + DEGENERACY_REG * jnp.eye(nao)
     L = jnp.linalg.cholesky(S_reg)
     L_inv = jnp.linalg.inv(L)
-    F_orth = L_inv @ F @ L_inv.T + DEGENERACY_REG * jnp.eye(nao)
+    F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
     _, C_orth = jnp.linalg.eigh(F_orth)
     C = L_inv.T @ C_orth
     C_occ = C[:, :nocc]
@@ -40,16 +50,29 @@ def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndar
 def _diagonalize_roothaan_unrestricted(
     F: jnp.ndarray, S: jnp.ndarray, nocc: int,
 ) -> jnp.ndarray:
-    """Cholesky-transform Fock, eigh, rebuild one-spin DM. No factor of 2."""
+    """Cholesky-transform Fock, eigh, rebuild one-spin DM. No factor of 2.
+
+    When ``nocc == 0`` (beta channel of a UKS atom with one unpaired electron,
+    e.g., H spin=1) we bypass eigh entirely and return a zero DM. Otherwise
+    use an occupation-mask ``(C * occ) @ C.T`` instead of ``C[:, :nocc] @
+    C[:, :nocc].T``. The slice form is algebraically equivalent but its
+    reverse-mode gradient through multi-cycle ``lax.scan`` (multi-cycle
+    eigh on a Fock with degenerate p-orbital eigenvalues) produces NaN
+    that then pollutes everything via ``0 * NaN = NaN`` in IEEE arithmetic.
+    """
     nao = S.shape[0]
+    # Static Python branch (nocc is a Python int, traced once at jit time).
+    if nocc == 0:
+        return jnp.zeros((nao, nao), dtype=jnp.result_type(F, S))
     S_reg = S + DEGENERACY_REG * jnp.eye(nao)
     L = jnp.linalg.cholesky(S_reg)
     L_inv = jnp.linalg.inv(L)
-    F_orth = L_inv @ F @ L_inv.T + DEGENERACY_REG * jnp.eye(nao)
+    F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
     _, C_orth = jnp.linalg.eigh(F_orth)
     C = L_inv.T @ C_orth
-    C_occ = C[:, :nocc]
-    return C_occ @ C_occ.T
+    # Occupation-mask rebuild (diag(occ) weights each orbital by 1 or 0).
+    occ = (jnp.arange(nao) < nocc).astype(F.dtype)
+    return (C * occ) @ C.T
 
 
 def _compute_j_matrix(D: jnp.ndarray, eri: jnp.ndarray) -> jnp.ndarray:
