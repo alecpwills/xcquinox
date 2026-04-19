@@ -285,3 +285,30 @@ def test_precompute_caches_pyscfad_mol():
             "cached _pyscfad_mol is not a pyscfad.gto.Mole instance"
         )
 
+
+def test_pyscfad_cycles_run_tracks_actual_iterations(monkeypatch):
+    """pyscfad backend SCFResult.cycles_run must reflect actual SCF cycles,
+    not always return config.max_cycles."""
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.solver import SolverConfig, SolverBackend, SolverMode, run_scf
+
+    spec = MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74",
+                       basis="sto-3g", charge=0, spin=0,
+                       atom_composition=(("H", 2),), grid_level=1)
+    md = precompute_fixed_density_data(spec, required_keys=("eri",))
+    arch = alec.get_architecture("deep")
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+    # Set max_cycles high so SCF converges before hitting cap
+    cfg = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+                      max_cycles=50, conv_tol=1e-6)
+    result = run_scf(cfg, model, md)
+    # Should converge well under max_cycles
+    assert int(result.cycles_run) < 50, (
+        f"cycles_run = {int(result.cycles_run)}; expected < 50 if pyscfad converged"
+    )
+    assert int(result.cycles_run) > 0
+

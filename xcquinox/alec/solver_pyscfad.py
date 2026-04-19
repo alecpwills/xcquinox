@@ -324,11 +324,25 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
 
         mf.get_j = fixed_get_j
 
+    # pyscfad's SCF kernel does not persist the actual iteration count on
+    # the mean-field object (``mf.cycles`` is the *input* parameter that
+    # pyscfad reads as an upper bound, not a tracker — it stays at its
+    # initial value 0 after kernel()). We install a callback into pyscfad's
+    # inner _scf loop to count iterations directly. The callback runs once
+    # per cycle and sees the loop-local ``cycle`` index in its ``envs`` dict.
+    cycle_counter = [0]
+
+    def _count_cycles_cb(envs):
+        # ``cycle`` in pyscfad's _scf loop is 0-based; record the 1-based
+        # count so that a successful single-iteration convergence reports 1.
+        cycle_counter[0] = int(envs.get("cycle", cycle_counter[0] - 1)) + 1
+
+    mf.callback = _count_cycles_cb
     mf.kernel(dm0=mol_data["dm_pbe"])
 
     D_final = jnp.asarray(mf.make_rdm1())
     E_final = jnp.asarray(mf.e_tot)
-    cycles_run = jnp.int32(getattr(mf, "cycles", config.max_cycles))
+    cycles_run = jnp.int32(cycle_counter[0])
     converged = jnp.bool_(bool(mf.converged))
     features_used = assemble_descriptor_features(descriptors, mol_data)
 
