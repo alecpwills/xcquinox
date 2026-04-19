@@ -165,10 +165,22 @@ TRAIN_SKIP_IF_EXISTS = False
 # ``aggregate.json`` / ``transfer_results.pkl`` artifacts already exist.
 RERUN_EVAL = False
 
-# Pretraining loss weighting: "unweighted" matches old behavior;
-# "integration" weights pointwise MSE by |rho * eps^LDA| to directly
-# minimize E_xc integrated error (recommended for PBE reproduction).
-PRETRAIN_LOSS_WEIGHTING = "integration"
+# Pretraining loss weighting. "unweighted" is the default and is what the
+# parity plots in step3b/step4 were tuned for — it fits PBE enhancement
+# factors pointwise across all (rho, sigma) regimes.
+#
+# "integration" weights pointwise MSE by |rho * eps^LDA| so the loss
+# directly minimizes integrated E_xc error. This is theoretically motivated
+# (the toy regression in test_pretrain_weighted.py shows integration mode
+# beats unweighted by >20 orders of magnitude on a smooth 1-parameter
+# target), BUT in practice it aggressively down-weights low-rho points by
+# ~1e6x, which is where PBE F_x approaches the Lieb-Oxford bound (~1.804).
+# The result: NN saturates around F_x ~ 1.3 at target F_x = 1.8, producing
+# visible parity-plot under-fitting for descriptor-rich architectures
+# (deep_cusp, deep_combined, and their attn variants). Set to
+# "integration" only if you understand this trade-off and have enough
+# training steps / network capacity to compensate.
+PRETRAIN_LOSS_WEIGHTING = "unweighted"
 
 os.makedirs(CHECKPOINT_BASE, exist_ok=True)
 print(f"CHECKPOINT_BASE={{CHECKPOINT_BASE}}  BASIS={{BASIS}}  GRID_LEVEL={{GRID_LEVEL}}")
