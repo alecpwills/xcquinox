@@ -312,3 +312,91 @@ def test_pyscfad_cycles_run_tracks_actual_iterations(monkeypatch):
     )
     assert int(result.cycles_run) > 0
 
+
+def test_pyscfad_reassemble_policy_no_warning(monkeypatch):
+    """REASSEMBLE policy on pyscfad must NOT emit the 'not yet implemented'
+    warning anymore."""
+    import warnings
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.solver import (SolverConfig, SolverBackend, SolverMode,
+                                      FeaturePolicy, run_scf)
+    spec = MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74",
+                       basis="sto-3g", charge=0, spin=0,
+                       atom_composition=(("H", 2),), grid_level=1)
+    arch = alec.get_architecture("deep_cusp")
+    md = precompute_fixed_density_data(
+        spec, required_keys=("eri",),
+        descriptors=arch.materialize_descriptors(),
+    )
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+    cfg = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+                      feature_policy=FeaturePolicy.REASSEMBLE,
+                      max_cycles=3, conv_tol=1e-4)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        run_scf(cfg, model, md)
+    # Filter for the specific warning — it should NOT be present
+    for w in recorded:
+        assert "REASSEMBLE policy on pyscfad backend is not yet implemented" \
+               not in str(w.message), (
+            f"REASSEMBLE downgrade warning still emitted: {w.message}"
+        )
+
+
+def test_pyscfad_reassemble_policy_differs_from_frozen(monkeypatch):
+    """REASSEMBLE and FROZEN should produce different DMs for a descriptor-ful
+    architecture when the SCF is still iterating.
+
+    Setup:
+      - Use 6-31g so the DM has enough degrees of freedom to distinguish
+        the two feature policies (sto-3g H2 collapses to the same
+        converged DM regardless of features).
+      - Perturb dm_pbe so SCF starts away from self-consistency.
+      - Cap at max_cycles=2 with conv_tol=1e-12 to prevent convergence
+        erasing the feature-policy difference.
+    """
+    import numpy as np
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.solver import (SolverConfig, SolverBackend, SolverMode,
+                                      FeaturePolicy, run_scf)
+    spec = MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74",
+                       basis="6-31g", charge=0, spin=0,
+                       atom_composition=(("H", 2),), grid_level=1)
+    arch = alec.get_architecture("deep_dm")
+    md = precompute_fixed_density_data(
+        spec, required_keys=("eri",),
+        descriptors=arch.materialize_descriptors(),
+    )
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+    # Perturb dm_pbe so SCF actually iterates — REASSEMBLE vs FROZEN
+    # must diverge when features are recomputed from an evolving DM.
+    rng = np.random.default_rng(42)
+    dm0 = np.asarray(md["dm_pbe"])
+    perturb = 0.2 * rng.standard_normal(dm0.shape)
+    perturb = 0.5 * (perturb + perturb.T)  # keep DM symmetric
+    md_perturbed = dict(md)
+    md_perturbed["dm_pbe"] = dm0 + perturb
+
+    cfg_frozen = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+                             feature_policy=FeaturePolicy.FROZEN, max_cycles=2,
+                             conv_tol=1e-12)
+    cfg_reass = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+                            feature_policy=FeaturePolicy.REASSEMBLE, max_cycles=2,
+                            conv_tol=1e-12)
+
+    dm_frozen = np.asarray(run_scf(cfg_frozen, model, md_perturbed).density_matrix)
+    dm_reass = np.asarray(run_scf(cfg_reass, model, md_perturbed).density_matrix)
+
+    # The two DMs should differ because REASSEMBLE updates features per cycle
+    diff = float(np.max(np.abs(dm_frozen - dm_reass)))
+    assert diff > 1e-8, f"REASSEMBLE gives same DM as FROZEN: diff={diff}"
+

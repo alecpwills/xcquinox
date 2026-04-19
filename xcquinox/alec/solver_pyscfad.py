@@ -92,12 +92,77 @@ def _build_pyscfad_mf(mol, mol_data: dict):
     return mf
 
 
-def _make_alec_eval_xc(model, descriptors, mol_data, policy):
+def _reassemble_features_on_grid(
+    descriptors: tuple,
+    dm: "jnp.ndarray",
+    s_matrix: "jnp.ndarray",
+    grid_coords: "jnp.ndarray",
+    mol,
+) -> "jnp.ndarray":
+    """Compute descriptor features from (dm, S) on a specific grid.
+
+    Used by the REASSEMBLE policy in the pyscfad backend: pyscfad's grid
+    may not match the precompute grid (pyscfad applies its own
+    small_rho_cutoff pruning), so cusp features must be recomputed on
+    pyscfad's actual grid coords. DM-statistics features are grid-
+    agnostic (tiled), so they are recomputed at ``len(grid_coords)``.
+
+    For UKS, ``dm`` may have shape ``(2, nao, nao)``; we use the total
+    DM (sum over spin) since the cusp descriptor is geometry-only and
+    DMStatisticsDescriptor operates on the total DM (see
+    ``solver_manual._run_manual_scf_uks._features_for``).
+    """
+    from xcquinox.alec.descriptors import CuspDescriptor, DMStatisticsDescriptor
+    from xcquinox.features import compute_cusp_descriptor
+
+    dm_arr = jnp.asarray(dm)
+    if dm_arr.ndim == 3 and dm_arr.shape[0] == 2:
+        dm_total = dm_arr[0] + dm_arr[1]
+    else:
+        dm_total = dm_arr
+
+    n_grid = int(grid_coords.shape[0])
+    if not descriptors:
+        return jnp.zeros((n_grid, 0))
+
+    nuclear_coords = jnp.asarray(mol.atom_coords())
+    nuclear_charges = jnp.asarray(mol.atom_charges())
+
+    cols = []
+    for d in descriptors:
+        if isinstance(d, CuspDescriptor):
+            cols.append(compute_cusp_descriptor(
+                grid_coords, nuclear_coords, nuclear_charges,
+            ))
+        elif isinstance(d, DMStatisticsDescriptor):
+            cols.append(d.compute_from_dm(
+                dm=dm_total, s_matrix=s_matrix, n_grid=n_grid,
+            ))
+        else:
+            raise NotImplementedError(
+                f"_reassemble_features_on_grid does not yet know how to "
+                f"recompute {type(d).__name__}"
+            )
+    return jnp.concatenate(cols, axis=1)
+
+
+def _make_alec_eval_xc(model, descriptors, mol_data, policy,
+                       feature_holder=None):
     """Return a libxc-compatible eval_xc callback that uses alec's XC NN.
 
-    Only FROZEN policy is supported in this task; REASSEMBLE support with
-    a _current_dm_holder closure is added in Task 6.3. For FROZEN,
-    features are captured at construction time and reused every cycle.
+    For FROZEN policy, features are captured at construction time and
+    reused every cycle.
+
+    For REASSEMBLE policy, features are recomputed from the current DM
+    each SCF cycle. The caller must pass a mutable ``feature_holder``
+    dict that the outer SCF loop updates before each ``get_veff`` call.
+    The holder carries:
+      - ``"features_full"``: jnp.ndarray of shape (n_grid, n_features),
+        the descriptor features on pyscfad's actual grid assembled from
+        the current DM.
+      - ``"offset"``: int, running offset into the full-grid feature
+        array. Reset to 0 at the start of each ``get_veff`` call and
+        advanced by ``block_size`` each time ``eval_xc`` is invoked.
 
     The callback handles both RKS (spin=0) and UKS (spin=1) pyscf/pyscfad
     numint conventions:
@@ -115,31 +180,47 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy):
     """
     from xcquinox.alec.descriptors import assemble_descriptor_features
 
-    if policy != FeaturePolicy.FROZEN:
-        raise NotImplementedError(
-            "REASSEMBLE policy in pyscfad backend is added in Task 6.3"
-        )
-
     features_frozen = assemble_descriptor_features(descriptors, mol_data)
     n_features = features_frozen.shape[1]
 
     def _features_for_block(block_size: int) -> jnp.ndarray:
         """Return features sized for a single block of ``block_size`` points.
 
-        pyscfad's ``block_loop`` keeps the whole grid as one block under
-        eager execution but splits it (into 224-point chunks by default)
-        under ``jax.grad`` / traced execution. The frozen precompute
-        features live on the full grid, so when ``block_size`` differs
-        from the full grid size we must resize.
+        pyscfad's ``block_loop`` splits the grid into chunks (default
+        ~224 points) under ``jax.grad`` / traced execution, and may keep
+        the whole grid as one block under eager execution. The block
+        loop iterates sequentially through the grid.
 
-        For descriptor architectures with zero columns (``n_features ==
-        0``) we can simply allocate a ``(block_size, 0)`` placeholder.
-        Descriptor-ful architectures (e.g. cusp, dm_statistics) currently
-        require the block to span the full grid — this is a known
-        limitation that Task 6.3 (REASSEMBLE on pyscfad) will address.
+        When a ``feature_holder`` is supplied (descriptor-ful
+        architecture on pyscfad's actual grid), we slice
+        ``features_full`` at the current offset and advance the counter.
+        The holder is refreshed per-cycle under REASSEMBLE and stays at
+        the dm_pbe features under FROZEN.
+
+        When no holder is supplied (empty descriptors or legacy
+        FROZEN-on-precompute-grid), we fall back to the precompute
+        features.
         """
         if n_features == 0:
             return jnp.zeros((block_size, 0), dtype=features_frozen.dtype)
+
+        if feature_holder is not None:
+            features_full = feature_holder["features_full"]
+            offset = int(feature_holder["offset"])
+            features_slice = features_full[offset:offset + block_size]
+            if features_slice.shape[0] != block_size:
+                raise ValueError(
+                    "Feature slice size mismatch: offset="
+                    f"{offset}, block_size={block_size}, full grid="
+                    f"{features_full.shape[0]}. This usually means pyscfad's "
+                    "grid size changed between get_veff calls."
+                )
+            feature_holder["offset"] = offset + block_size
+            return features_slice
+
+        # Legacy path: use precompute features directly. Works only when
+        # the block loop returns the whole grid as one block AND
+        # pyscfad's grid matches the precompute grid.
         if block_size == features_frozen.shape[0]:
             return features_frozen
         raise ValueError(
@@ -147,7 +228,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy):
             "return the full grid as one block, but got block_size="
             f"{block_size} != full grid {features_frozen.shape[0]}. This "
             "happens under jax.grad/jit tracing with descriptor-ful "
-            "architectures; REASSEMBLE on pyscfad (Task 6.3) is the fix."
+            "architectures; use REASSEMBLE policy to resolve."
         )
 
     def eval_single(r, s, f):
@@ -269,22 +350,6 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     policy = config.effective_feature_policy
     descriptors = model.descriptors
 
-    if policy == FeaturePolicy.REASSEMBLE:
-        warnings.warn(
-            "REASSEMBLE policy on pyscfad backend is not yet implemented; "
-            "falling back to FROZEN features.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        policy = FeaturePolicy.FROZEN
-
-    eval_xc_callback = _make_alec_eval_xc(
-        model=model,
-        descriptors=descriptors,
-        mol_data=mol_data,
-        policy=policy,
-    )
-
     # Prefer the Mole cached in mol_data by precompute (avoids Mole.build()
     # inside any jit-traced hot path). Fall back to rebuilding from metadata
     # when the cache is absent (e.g., older mol_data dicts).
@@ -302,9 +367,70 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         )
         mol = _rebuild_mol_from_mol_data(mol_data)
     mf = _build_pyscfad_mf(mol, mol_data)
+
+    # When descriptors are present, pyscfad's grid may differ from the
+    # precompute grid (pyscfad applies its own small_rho_cutoff pruning),
+    # so descriptor features must live on pyscfad's actual grid. We
+    # install a ``feature_holder`` closure shared with the eval_xc
+    # callback. For UKS, _build_pyscfad_mf already built + pruned
+    # mf.grids. For RKS we eagerly call initialize_grids here so
+    # mf.grids.coords is populated before we wrap get_veff.
+    #
+    # FROZEN: features are computed once from dm_pbe on pyscfad's grid
+    #         and never updated.
+    # REASSEMBLE: get_veff wrapper (below) refreshes features from the
+    #         current DM on every cycle.
+    feature_holder = None
+    if descriptors:
+        is_uks = bool(mol_data.get("is_unrestricted", False)) or int(getattr(mol, "spin", 0)) != 0
+        if not is_uks:
+            mf.initialize_grids(mol, mol_data["dm_pbe"])
+        feature_holder = {
+            "features_full": _reassemble_features_on_grid(
+                descriptors=descriptors,
+                dm=mol_data["dm_pbe"],
+                s_matrix=jnp.asarray(mol_data["s_matrix"]),
+                grid_coords=jnp.asarray(mf.grids.coords),
+                mol=mol,
+            ),
+            "offset": 0,
+        }
+
+    eval_xc_callback = _make_alec_eval_xc(
+        model=model,
+        descriptors=descriptors,
+        mol_data=mol_data,
+        policy=policy,
+        feature_holder=feature_holder,
+    )
+
     mf.define_xc_(eval_xc_callback, "GGA")
     mf.max_cycle = int(config.max_cycles)
     mf.conv_tol = float(config.conv_tol)
+
+    # Wrap get_veff so the block offset is reset to 0 before pyscfad's
+    # numint enters block_loop (each get_veff call == one full pass over
+    # the grid). For REASSEMBLE, additionally refresh features_full from
+    # the current DM. For FROZEN with a holder, only the offset reset
+    # runs; features_full stays at its initial (dm_pbe) value.
+    if feature_holder is not None:
+        original_get_veff = mf.get_veff
+        _s_matrix = jnp.asarray(mol_data["s_matrix"])
+        _grid_coords = jnp.asarray(mf.grids.coords)
+
+        def _holder_get_veff(mol_=None, dm=None, *args, **kwargs):
+            if policy == FeaturePolicy.REASSEMBLE and dm is not None:
+                feature_holder["features_full"] = _reassemble_features_on_grid(
+                    descriptors=descriptors,
+                    dm=dm,
+                    s_matrix=_s_matrix,
+                    grid_coords=_grid_coords,
+                    mol=mol,
+                )
+            feature_holder["offset"] = 0
+            return original_get_veff(mol_, dm, *args, **kwargs)
+
+        mf.get_veff = _holder_get_veff
 
     if config.mode == SolverMode.FIXED_J:
         # pyscfad UKS get_veff calls ks.get_j(mol, dm_total_2d, hermi) — the
