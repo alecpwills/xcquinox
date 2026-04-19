@@ -180,6 +180,49 @@ def test_backends_agree_full_on_h2():
     assert abs(e_m - e_p) < 1e-3, f"manual={e_m} pyscfad={e_p}"
 
 
+def test_pyscfad_uks_oneshot_o_atom():
+    """pyscfad backend ONESHOT UKS on O atom — returns (2, nao, nao) DM."""
+    import numpy as np
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec
+
+    spec = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec)
+    arch = alec.get_architecture("deep")
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+    cfg = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.ONESHOT)
+    result = run_scf(cfg, model, md)
+    dm = np.asarray(result.density_matrix)
+    assert dm.ndim == 3 and dm.shape[0] == 2
+
+
+def test_pyscfad_uks_fixed_j_runs():
+    """pyscfad backend FIXED_J UKS on O atom runs without error."""
+    import numpy as np
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec
+
+    spec = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec, required_keys=("eri",))
+    arch = alec.get_architecture("deep")
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+    cfg = SolverConfig(
+        backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+        max_cycles=3, conv_tol=1e-4,
+    )
+    result = run_scf(cfg, model, md)
+    dm = np.asarray(result.density_matrix)
+    assert dm.ndim == 3 and dm.shape[0] == 2
+
+
 def test_pyscfad_fixed_j_monkey_patched_get_j_is_called():
     """Fragility guard (spec Section 6.6): verify the monkey-patched get_j
     is actually used by pyscfad's Fock build, via sentinel propagation.

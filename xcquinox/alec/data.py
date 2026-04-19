@@ -329,5 +329,6 @@ def precompute_fixed_density_data(
             "basis": mol_spec.basis,
             "charge": mol_spec.charge,
             "spin": mol_spec.spin,
+            "grid_level": mol_spec.grid_level,
         },
     )
