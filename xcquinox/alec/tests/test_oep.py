@@ -182,3 +182,39 @@ def test_oep_objective_gradient_consistent():
             f"Obj/grad inconsistent at t={t}: "
             f"fd={g_fd:.3e} analytic={g_analytic[t]:.3e} rel_err={rel_err:.3e}"
         )
+
+
+def test_oep_h2o_ccsd_does_not_crash_with_pathological_bfgs_step():
+    """Regression: L-BFGS-B line-search on H2O/def2-svp CCSD-target OEP
+    previously crashed inside PySCF's DIIS subspace eigendecomposition
+    (scipy.linalg.LinAlgError: Internal Error). The inner SCF is now
+    hardened with guarded DIIS + try/except so pathological b-steps
+    produce a penalty instead of an exception.
+    """
+    import numpy as np
+    from pyscf import gto, scf, cc
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+
+    H2O = "O 0.0000 0.0000 0.1173; H 0.0000 0.7572 -0.4692; H 0.0000 -0.7572 -0.4692"
+    mol = gto.M(atom=H2O, basis="def2-svp", charge=0, spin=0, verbose=0)
+    mf_hf = scf.RHF(mol); mf_hf.kernel()
+    mycc = cc.CCSD(mf_hf); mycc.kernel()
+    C = mf_hf.mo_coeff
+    dm_ao_ccsd = C @ mycc.make_rdm1() @ C.T
+
+    spec = MoleculeSpec(
+        name="H2O", atom=H2O, basis="def2-svp", charge=0, spin=0,
+        atom_composition=(("H", 2), ("O", 1)), grid_level=1,
+    )
+    result = run_oep_inversion(
+        spec, dm_ao_ccsd,
+        aux_basis="def2-svp-jkfit", max_iter=30, conv_tol=1e-6,
+        regularization=1e-4,
+    )
+    # Must complete without exception; vxc_matrix is finite.
+    assert np.all(np.isfinite(result.vxc_matrix))
+    assert result.density_error < 1.0, (
+        f"density_error = {result.density_error:.3e} — L-BFGS-B should "
+        "still make meaningful progress even with guarded inner SCF"
+    )

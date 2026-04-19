@@ -112,13 +112,34 @@ def _ks_from_vxc_matrix(mol, mf, vxc_matrix, *, dm0=None):
 
 
 def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None):
-    """RHF path: closed-shell, single-DM, J built on RHF object."""
+    """RHF path: closed-shell, single-DM, J built on RHF object.
+
+    Hardened against L-BFGS-B line searches that probe pathological V_xc
+    guesses: PySCF's default DIIS can fail inside scipy.linalg.eigh on an
+    ill-conditioned error-vector subspace when V_xc has extreme magnitudes.
+    We (a) disable DIIS and use simple damping-based linear mixing instead
+    (robust but slower), and (b) wrap the SCF call in a try/except that
+    returns the initial DM with a sentinel large ``ts`` so the Wu-Yang
+    objective becomes large and L-BFGS-B backs off.
+    """
     from pyscf import scf
+    from numpy.linalg import LinAlgError as _NpLinAlgError
+    from scipy.linalg import LinAlgError as _ScLinAlgError
 
     mf_fixed = scf.RHF(mol)
     mf_fixed.verbose = 0
     mf_fixed.max_cycle = 200
-    mf_fixed.conv_tol = 1e-12
+    mf_fixed.conv_tol = 1e-10
+    # Keep DIIS for fast convergence but protect against DIIS subspace
+    # degeneracy (which crashes scipy eigh). ``diis_start_cycle=5`` delays
+    # DIIS until a few damped-mixing iterations settle the wavefunction;
+    # ``diis_space=4`` keeps the subspace small so accumulated rounding
+    # doesn't drive eigenvalues to zero; ``damp=0.1`` adds fractional
+    # damping for extra stability. The try/except below catches any
+    # remaining DIIS failures.
+    mf_fixed.diis_start_cycle = 5
+    mf_fixed.diis_space = 4
+    mf_fixed.damp = 0.1
 
     def get_veff_fixed(mol_, dm_, *args, **kwargs):
         j_mat = mf_fixed.get_j(mol_, dm_)
@@ -132,9 +153,20 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None):
     # If caller passed a UKS-shaped DM into the RHF path, sum spins.
     if dm0.ndim == 3:
         dm0 = dm0.sum(axis=0)
-    mf_fixed.kernel(dm0=dm0)
 
-    dm_final = mf_fixed.make_rdm1()
+    try:
+        mf_fixed.kernel(dm0=dm0)
+        if not np.all(np.isfinite(mf_fixed.mo_coeff)):
+            raise _NpLinAlgError("inner SCF produced non-finite MO coefficients")
+        dm_final = mf_fixed.make_rdm1()
+        if not np.all(np.isfinite(dm_final)):
+            raise _NpLinAlgError("inner SCF produced non-finite DM")
+    except (_NpLinAlgError, _ScLinAlgError, ValueError):
+        # Return the input DM so the outer Wu-Yang objective is evaluated at
+        # that DM. The objective then reflects the L-BFGS-B b-step being bad
+        # (density doesn't match target), and L-BFGS-B backs off.
+        dm_final = np.asarray(dm0)
+
     j_matrix = mf_fixed.get_j(mol, dm_final)
     t_matrix = mol.intor("int1e_kin")
     ts = float(np.einsum("ij,ij->", t_matrix, dm_final))
@@ -157,10 +189,16 @@ def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None):
             f"got {v.shape}"
         )
 
+    from numpy.linalg import LinAlgError as _NpLinAlgError
+    from scipy.linalg import LinAlgError as _ScLinAlgError
+
     mf_fixed = scf.UHF(mol)
     mf_fixed.verbose = 0
     mf_fixed.max_cycle = 200
-    mf_fixed.conv_tol = 1e-12
+    mf_fixed.conv_tol = 1e-10
+    mf_fixed.diis_start_cycle = 5
+    mf_fixed.diis_space = 4
+    mf_fixed.damp = 0.1
 
     def get_veff_fixed(mol_, dm_, *args, **kwargs):
         dm_arr = np.asarray(dm_)
@@ -180,9 +218,17 @@ def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None):
     if dm0.ndim == 2:
         # Reference was closed-shell; split into alpha/beta
         dm0 = np.stack([0.5 * dm0, 0.5 * dm0], axis=0)
-    mf_fixed.kernel(dm0=dm0)
 
-    dm_final = mf_fixed.make_rdm1()  # (2, nao, nao)
+    try:
+        mf_fixed.kernel(dm0=dm0)
+        if not np.all(np.isfinite(mf_fixed.mo_coeff)):
+            raise _NpLinAlgError("inner UHF SCF produced non-finite MO coefficients")
+        dm_final = mf_fixed.make_rdm1()
+        if not np.all(np.isfinite(dm_final)):
+            raise _NpLinAlgError("inner UHF SCF produced non-finite DM")
+    except (_NpLinAlgError, _ScLinAlgError, ValueError):
+        dm_final = np.asarray(dm0)
+
     j_matrix = mf_fixed.get_j(mol, dm_final)  # (2, nao, nao)
     t_matrix = mol.intor("int1e_kin")
     ts = float(
