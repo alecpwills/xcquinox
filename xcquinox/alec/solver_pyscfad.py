@@ -59,8 +59,17 @@ def _build_pyscfad_mf(mol, mol_data: dict):
     ``mf.kernel`` runs. The RKS path is left untouched so pyscfad's usual
     initialization flow (including ``non0tab`` bookkeeping inside
     ``initialize_grids``) runs exactly as before.
+
+    When ``mol_data`` carries a cached ``_pyscfad_mol`` (built once at
+    precompute time), that pre-built Mole is used in preference to the
+    ``mol`` argument — this avoids ``Mole.build()`` inside any jit-traced
+    hot path (it invokes ``numpy.__array__`` and raises
+    ``TracerArrayConversionError`` under ``filter_jit``).
     """
     import pyscfad.dft
+    cached = mol_data.get("_pyscfad_mol")
+    if cached is not None:
+        mol = cached
     is_uks = bool(mol_data.get("is_unrestricted", False)) or int(getattr(mol, "spin", 0)) != 0
     if is_uks:
         mf = pyscfad.dft.UKS(mol)
@@ -213,7 +222,22 @@ def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
         policy=policy,
     )
 
-    mol = _rebuild_mol_from_mol_data(mol_data)
+    # Prefer the Mole cached in mol_data by precompute (avoids Mole.build()
+    # inside any jit-traced hot path). Fall back to rebuilding from metadata
+    # when the cache is absent (e.g., older mol_data dicts).
+    cached_mol = mol_data.get("_pyscfad_mol")
+    if cached_mol is not None:
+        mol = cached_mol
+    else:
+        warnings.warn(
+            "mol_data does not carry a cached _pyscfad_mol; rebuilding "
+            "pyscfad.gto.Mole inside run_pyscfad_scf. This will fail under "
+            "@eqx.filter_jit. Re-run precompute_fixed_density_data to cache "
+            "the Mole.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        mol = _rebuild_mol_from_mol_data(mol_data)
     mf = _build_pyscfad_mf(mol, mol_data)
     mf.define_xc_(eval_xc_callback, "GGA")
     mf.max_cycle = int(config.max_cycles)

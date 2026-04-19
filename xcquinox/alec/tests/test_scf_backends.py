@@ -254,3 +254,34 @@ def test_pyscfad_fixed_j_monkey_patched_get_j_is_called():
         "pyscfad SCF driver bypassed the overridden get_j — "
         "fixed_j pyscfad mode cannot guarantee J pinning"
     )
+
+
+def test_precompute_caches_pyscfad_mol():
+    """precompute_fixed_density_data caches a pyscfad Mole in mol_data.
+
+    The pyscfad SCF backend uses this cached Mole to avoid calling
+    Mole.build() inside filter_jit'd training steps (Mole.build() invokes
+    numpy.__array__ which raises TracerArrayConversionError under jit).
+    """
+    import importlib
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74",
+        basis="sto-3g", charge=0, spin=0,
+        atom_composition=(("H", 2),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec)
+    # _pyscfad_mol key must always be present; value is either a Mole or None.
+    assert "_pyscfad_mol" in md, "pyscfad Mole slot missing from mol_data"
+    # pyscfad is installed on the dev machine; cache must be populated.
+    if importlib.util.find_spec("pyscfad") is not None:
+        assert md["_pyscfad_mol"] is not None, (
+            "pyscfad installed but cached Mole is None"
+        )
+        import pyscfad.gto as pyscfad_gto
+        assert isinstance(md["_pyscfad_mol"], pyscfad_gto.Mole), (
+            "cached _pyscfad_mol is not a pyscfad.gto.Mole instance"
+        )
+

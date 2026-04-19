@@ -139,6 +139,12 @@ class MoleculeData(TypedDict, total=True):
     eri: jnp.ndarray | None
     atom_composition: tuple[tuple[str, int], ...]
     mol_metadata: dict
+    # Cached pyscfad.gto.Mole built once at precompute time so that hot-path
+    # training (pyscfad backend, filter_jit'd) does not call Mole.build()
+    # inside the traced region — Mole.build() invokes numpy.__array__ and
+    # raises TracerArrayConversionError under jit. Always present; may be
+    # None if pyscfad is unavailable or Mole construction failed.
+    _pyscfad_mol: object | None
 
 
 def precompute_fixed_density_data(
@@ -294,6 +300,24 @@ def precompute_fixed_density_data(
             mol_name=mol_spec.name,
         )
 
+    # Cache pyscfad Mole for hot-path training (avoids Mole.build() inside
+    # jit; see MoleculeData._pyscfad_mol docstring). pyscfad is optional,
+    # so swallow any import/build failure and leave the slot as None — the
+    # pyscfad backend's _build_pyscfad_mf will fall back to rebuilding.
+    pyscfad_mol: object | None = None
+    try:
+        import pyscfad.gto as pyscfad_gto
+        mol_ad = pyscfad_gto.Mole()
+        mol_ad.atom = mol_spec.atom
+        mol_ad.basis = mol_spec.basis
+        mol_ad.charge = mol_spec.charge
+        mol_ad.spin = mol_spec.spin
+        mol_ad.verbose = 0
+        mol_ad.build()
+        pyscfad_mol = mol_ad
+    except Exception:
+        pyscfad_mol = None
+
     return MoleculeData(
         name=mol_spec.name,
         is_unrestricted=is_unrestricted,
@@ -331,4 +355,5 @@ def precompute_fixed_density_data(
             "spin": mol_spec.spin,
             "grid_level": mol_spec.grid_level,
         },
+        _pyscfad_mol=pyscfad_mol,
     )
