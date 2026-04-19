@@ -1009,3 +1009,66 @@ def test_vxc_term_uks_zero_when_nn_equals_ref():
     val = _vxc_term(model, [md], [0])
     # Should be very close to 0 (modulo floating-point noise)
     assert float(val) < 1e-10, f"expected near-zero loss, got {val}"
+
+
+# ---------------------------------------------------------------------------
+# Task 19: A/D1 losses honor solver_config via run_scf total_energy
+# ---------------------------------------------------------------------------
+
+def test_loss_a_with_fixed_j_solver_uses_scf_energy():
+    """A_atomization loss with solver_config=FIXED_J MUST use run_scf(...).total_energy
+    not fixed_density_total_energy. Different values should result for a random NN.
+    """
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.losses import make_loss
+    from xcquinox.alec.solver import SolverConfig, SolverBackend, SolverMode
+
+    # H2O (spin-0 RKS) is used because its density deviates measurably from
+    # PBE under a random deep-architecture NN, giving the SCF path a large
+    # enough signal to distinguish from one-shot (H2/sto-3g converged too
+    # close to PBE to be a reliable regression target).
+    spec = MoleculeSpec(
+        name="H2O", atom="O 0 0 0; H 0 1 0; H 0 0 1",
+        basis="sto-3g", charge=0, spin=0,
+        atom_composition=(("O", 1), ("H", 2)), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec, required_keys=("eri",))
+    arch = alec.get_architecture("deep")
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+    atom_energies = {"H": -0.5, "O": -75.0}
+    targets = {"H2O": 0.3}
+    batch = {
+        "mol_data": [md],
+        "targets": targets,
+        "atom_energies": atom_energies,
+    }
+
+    # Loss with no solver_config -> one-shot (fixed_density_total_energy)
+    loss_a_oneshot = make_loss(
+        "A_atomization",
+        molecules=(spec,),
+    )
+    val_oneshot = float(loss_a_oneshot(model, batch)[0])
+
+    # Loss with FIXED_J solver_config — should differ
+    cfg = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
+        max_cycles=5, conv_tol=1e-8,
+        mixer_kwargs=(("alpha", 1.0),),
+    )
+    loss_a_fixed_j = make_loss(
+        "A_atomization",
+        molecules=(spec,),
+        solver_config=cfg,
+    )
+    val_fixed_j = float(loss_a_fixed_j(model, batch)[0])
+
+    # The two loss values should differ (unless SCF converged to exactly PBE,
+    # which won't happen for a random NN).
+    assert abs(val_oneshot - val_fixed_j) > 1e-6, (
+        f"A loss values should differ: oneshot={val_oneshot}, fixed_j={val_fixed_j}"
+    )

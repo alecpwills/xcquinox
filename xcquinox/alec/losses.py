@@ -124,9 +124,31 @@ class AlecLoss(eqx.Module, abc.ABC):
 # Shared helpers (used inside loss __call__ bodies)
 # ---------------------------------------------------------------------------
 
-def _compute_energies(model, mol_data, N):
-    """Compute per-molecule NN total energies."""
-    return jnp.stack([fixed_density_total_energy(model, mol_data[i]) for i in range(N)])
+def _compute_energies(model, mol_data, N, solver_config=None):
+    """Compute per-molecule NN total energies.
+
+    When ``solver_config`` is None or its mode is ``SolverMode.ONESHOT``, the
+    energies are taken from :func:`fixed_density_total_energy` on the frozen
+    reference density (pre-Task-19 behavior). Otherwise, each molecule's
+    energy is drawn from :func:`run_scf`'s converged ``total_energy`` so that
+    A/D1 training loss sees the same SCF total that the training loop's
+    other terms (DM, grid, vxc) already consume via ``solver_config``.
+    """
+    if solver_config is None:
+        return jnp.stack([
+            fixed_density_total_energy(model, mol_data[i]) for i in range(N)
+        ])
+    # Import lazily to avoid a top-level dependency on the solver module
+    # (which pulls backend-specific imports on first touch).
+    from xcquinox.alec.solver import SolverMode, run_scf
+    if solver_config.mode == SolverMode.ONESHOT:
+        return jnp.stack([
+            fixed_density_total_energy(model, mol_data[i]) for i in range(N)
+        ])
+    return jnp.stack([
+        run_scf(solver_config, model, mol_data[i]).total_energy
+        for i in range(N)
+    ])
 
 
 def _ae_from_atoms(E_mol, comp_dict, atom_energies):
@@ -303,7 +325,7 @@ class AtomizationLoss(AlecLoss):
         atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
-        E_nn = _compute_energies(model, mol_data, N)
+        E_nn = _compute_energies(model, mol_data, N, solver_config=self.solver_config)
         loss_energy = _ae_losses(E_nn, self.compound_idx, comp_dicts,
                                  self.mol_names, targets, atom_energies)
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
@@ -356,7 +378,7 @@ class AtomizationPlusDMLoss(AlecLoss):
         atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
-        E_nn = _compute_energies(model, mol_data, N)
+        E_nn = _compute_energies(model, mol_data, N, solver_config=self.solver_config)
         loss_energy = _ae_losses(E_nn, self.compound_idx, comp_dicts,
                                  self.mol_names, targets, atom_energies)
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
@@ -411,7 +433,7 @@ class AtomizationPlusGridLoss(AlecLoss):
         atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
-        E_nn = _compute_energies(model, mol_data, N)
+        E_nn = _compute_energies(model, mol_data, N, solver_config=self.solver_config)
         loss_energy = _ae_losses(E_nn, self.compound_idx, comp_dicts,
                                  self.mol_names, targets, atom_energies)
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
@@ -459,7 +481,7 @@ class DeltaAELoss(AlecLoss):
         atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
-        E_nn = _compute_energies(model, mol_data, N)
+        E_nn = _compute_energies(model, mol_data, N, solver_config=self.solver_config)
         loss_delta = _delta_losses(E_nn, mol_data, self.compound_idx, comp_dicts,
                                    self.mol_names, targets, atom_energies)
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
@@ -512,7 +534,7 @@ class DeltaAEPlusDMLoss(AlecLoss):
         atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
-        E_nn = _compute_energies(model, mol_data, N)
+        E_nn = _compute_energies(model, mol_data, N, solver_config=self.solver_config)
         loss_delta = _delta_losses(E_nn, mol_data, self.compound_idx, comp_dicts,
                                    self.mol_names, targets, atom_energies)
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
@@ -567,7 +589,7 @@ class DeltaAEPlusGridLoss(AlecLoss):
         atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
-        E_nn = _compute_energies(model, mol_data, N)
+        E_nn = _compute_energies(model, mol_data, N, solver_config=self.solver_config)
         loss_delta = _delta_losses(E_nn, mol_data, self.compound_idx, comp_dicts,
                                    self.mol_names, targets, atom_energies)
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
