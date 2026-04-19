@@ -121,6 +121,34 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy):
         )
 
     features_frozen = assemble_descriptor_features(descriptors, mol_data)
+    n_features = features_frozen.shape[1]
+
+    def _features_for_block(block_size: int) -> jnp.ndarray:
+        """Return features sized for a single block of ``block_size`` points.
+
+        pyscfad's ``block_loop`` keeps the whole grid as one block under
+        eager execution but splits it (into 224-point chunks by default)
+        under ``jax.grad`` / traced execution. The frozen precompute
+        features live on the full grid, so when ``block_size`` differs
+        from the full grid size we must resize.
+
+        For descriptor architectures with zero columns (``n_features ==
+        0``) we can simply allocate a ``(block_size, 0)`` placeholder.
+        Descriptor-ful architectures (e.g. cusp, dm_statistics) currently
+        require the block to span the full grid — this is a known
+        limitation that Task 6.3 (REASSEMBLE on pyscfad) will address.
+        """
+        if n_features == 0:
+            return jnp.zeros((block_size, 0), dtype=features_frozen.dtype)
+        if block_size == features_frozen.shape[0]:
+            return features_frozen
+        raise ValueError(
+            "pyscfad backend with FROZEN features requires block_loop to "
+            "return the full grid as one block, but got block_size="
+            f"{block_size} != full grid {features_frozen.shape[0]}. This "
+            "happens under jax.grad/jit tracing with descriptor-ful "
+            "architectures; REASSEMBLE on pyscfad (Task 6.3) is the fix."
+        )
 
     def eval_single(r, s, f):
         return model.eval_exc_scalar(r, s, f)
@@ -155,12 +183,15 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy):
             sigma_aa = dxa * dxa + dya * dya + dza * dza
             sigma_bb = dxb * dxb + dyb * dyb + dzb * dzb
 
-            # Spin-scaled RKS evaluation for each channel.
+            # Spin-scaled RKS evaluation for each channel. Use a
+            # block-sized features slice since pyscfad chunks the grid
+            # under jax.grad / jit tracing.
+            features_blk = _features_for_block(int(rho_a.shape[0]))
             exc_a_density, vrho_a, vsigma_a = _eval_rks(
-                2.0 * rho_a, 4.0 * sigma_aa, features_frozen,
+                2.0 * rho_a, 4.0 * sigma_aa, features_blk,
             )
             exc_b_density, vrho_b, vsigma_b = _eval_rks(
-                2.0 * rho_b, 4.0 * sigma_bb, features_frozen,
+                2.0 * rho_b, 4.0 * sigma_bb, features_blk,
             )
 
             # libxc convention: E_xc = integral (rho_a + rho_b) * eps_uks(r) dr,
@@ -187,7 +218,10 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy):
         rho0 = jnp.asarray(rho[0])
         dx, dy, dz = jnp.asarray(rho[1]), jnp.asarray(rho[2]), jnp.asarray(rho[3])
         sigma = dx * dx + dy * dy + dz * dz
-        exc_density, vrho, vsigma = _eval_rks(rho0, sigma, features_frozen)
+        # Pyscfad splits the grid into blocks under jax.grad / jit
+        # tracing, so size the features slice to the current block.
+        features_blk = _features_for_block(int(rho0.shape[0]))
+        exc_density, vrho, vsigma = _eval_rks(rho0, sigma, features_blk)
         exc = exc_density / (rho0 + 1e-18)
         vxc = (vrho, vsigma, None, None)
         return exc, vxc, None, None
@@ -195,11 +229,40 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy):
     return eval_xc_alec_gga
 
 
-def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
-    from xcquinox.alec.descriptors import assemble_descriptor_features
+def _cpu_device_context():
+    """Return a ``jax.default_device`` context manager pinned to the first
+    CPU device, or a no-op context when no CPU device is available.
 
+    Motivation: pyscfad's ``eigh_gen_p`` custom primitive has no CUDA
+    kernel (as of pyscfad 0.x), so ``jax.grad`` through pyscfad on GPU
+    raises ``UNIMPLEMENTED: No registered implementation for custom
+    call to cusolver_sygvd_ffi``. Wrapping the pyscfad subgraph in a
+    CPU default-device context routes all XLA lowerings to CPU, which
+    has a working kernel. Forward-only pyscfad calls that don't invoke
+    ``eigh_gen_p`` are unaffected but get pinned to CPU for consistency.
+    """
+    import contextlib
+
+    cpu_devices = jax.devices("cpu")
+    if not cpu_devices:
+        return contextlib.nullcontext()
+    return jax.default_device(cpu_devices[0])
+
+
+def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+    # ONESHOT doesn't enter pyscfad at all — skip the CPU pin.
     if config.mode == SolverMode.ONESHOT:
         return _oneshot_result(model, mol_data)
+    # Pin the whole pyscfad subgraph (including eval_xc_callback
+    # construction, which captures jnp arrays) to CPU so that jax.grad
+    # through the pyscfad-specific eigh_gen primitive works. See
+    # `_cpu_device_context` for the rationale.
+    with _cpu_device_context():
+        return _run_pyscfad_scf_impl(config, model, mol_data)
+
+
+def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+    from xcquinox.alec.descriptors import assemble_descriptor_features
 
     import pyscfad.dft  # noqa: F401 — lazy import
 
