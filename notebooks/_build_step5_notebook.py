@@ -2122,22 +2122,27 @@ else:
                 ax = axes[metric_row, col]
                 _seen = set()
 
-                for ai, arch in enumerate(ARCH_NAMES):
+                # Variable x-slot allocation: BAL_ARCH gets 3 slots so its
+                # ~20 bars (3 main solvers + 4 balancing + 9 V_xc +
+                # 2 baselines) are actually visible. Other archs get 1 slot.
+                _arch_layout = []  # (arch_name, x_cursor, slots)
+                _x_cursor = 0.0
+                for arch in ARCH_NAMES:
+                    _slots = 3.0 if arch == BAL_ARCH else 1.0
+                    _arch_layout.append((arch, _x_cursor, _slots))
+                    _x_cursor += _slots
+
+                for arch, x_cursor, slots in _arch_layout:
+                    x_center = x_cursor + (slots - 1) / 2.0
                     labels_here = list(_main_slvrs)
-                    # V_xc variants and base balancing variants apply only
-                    # to BAL_ARCH (deep_combined). V_xc variants use their
-                    # own loss names (e.g. static_vxc_A uses A_atomization)
-                    # so the `loss in BAL_LOSS_NAMES` guard is too narrow.
-                    # Add all V_xc labels on BAL_ARCH regardless of loss;
-                    # the tdf filter below will hide combinations that
-                    # weren't actually trained.
                     if arch == BAL_ARCH:
                         if loss in BAL_LOSS_NAMES:
                             labels_here += _bal_slvrs
                         labels_here += _bal_vxc_slvrs
                     labels_here += _base_slvrs
                     n_bars = len(labels_here)
-                    bw = 0.8 / max(n_bars, 1)
+                    # 0.9 * slots of horizontal space used for bars.
+                    bw = (0.9 * slots) / max(n_bars, 1)
 
                     for si, sl in enumerate(labels_here):
                         if sl in _bl_set:
@@ -2156,12 +2161,21 @@ else:
                         off = (si - (n_bars - 1) / 2) * bw
                         lbl = sl if sl not in _seen else ''
                         _seen.add(sl)
-                        ax.bar(ai + off, val, width=bw,
+                        ax.bar(x_center + off, val, width=bw,
                                color=_tc.get(sl, 'gray'), label=lbl,
                                edgecolor='black', linewidth=0.4, alpha=0.9)
 
-                ax.set_xticks(range(len(ARCH_NAMES)))
+                _tick_xs = [x + (s - 1) / 2.0 for _, x, s in _arch_layout]
+                ax.set_xticks(_tick_xs)
                 ax.set_xticklabels(ARCH_NAMES, rotation=45, ha='right', fontsize=9)
+                # Light shading behind the deep_combined block so reviewers
+                # can visually locate the extra-wide region.
+                for arch, x_cursor, slots in _arch_layout:
+                    if slots > 1:
+                        ax.axvspan(
+                            x_cursor - 0.5, x_cursor + slots - 0.5,
+                            color='#f0f0f0', alpha=0.5, zorder=0,
+                        )
                 if ax.patches:
                     ax.set_yscale('log')
                 else:
@@ -2225,6 +2239,149 @@ else:
 
     print(f"Transfer plots complete for {n_mols} molecules across {n_loss} losses")
 '''
+    return new_code_cell(source)
+
+
+def build_cell_47_transfer_aggregate():
+    """Section 7 Cell 47 -- cross-molecule MAE/RMSE per (arch, treatment).
+
+    Per-molecule bars (cell 46) tell us how each treatment performs on a
+    specific transfer target. But the more interesting scientific question
+    is transferability across the set: for each (arch, loss, treatment)
+    combination, aggregate AE error across the 3 test molecules (H2, OH,
+    CH4) into a single MAE and a single RMSE. This cell produces two
+    subplot grids:
+
+    1. AE error aggregation (MAE across molecules vs RMSE across molecules)
+       per loss family -- same x-axis layout as cell 46 (BAL_ARCH wider).
+    2. A top-10 ranked-table text print per loss family so the user can
+       immediately see which treatments transfer best.
+    """
+    source = (
+        "import pandas as _pd\n"
+        "\n"
+        "# Concatenate per-molecule dataframes and compute aggregate metrics.\n"
+        "_concat_rows = []\n"
+        "for _mol_name, _tdf in transfer_results.items():\n"
+        "    _t2 = _tdf.copy()\n"
+        "    _t2['mol'] = _mol_name\n"
+        "    _concat_rows.append(_t2)\n"
+        "if not _concat_rows:\n"
+        "    print('No transfer results to aggregate'); raise SystemExit()\n"
+        "_tall = _pd.concat(_concat_rows, ignore_index=True)\n"
+        "\n"
+        "# Group by (arch, loss, solver) and compute MAE, RMSE across mols.\n"
+        "def _rmse(x):\n"
+        "    x = _pd.Series(x).dropna()\n"
+        "    return float(np.sqrt(np.mean(x ** 2))) if len(x) else float('nan')\n"
+        "\n"
+        "_agg = (_tall.groupby(['arch', 'loss', 'solver'])\n"
+        "              .agg(n=('AE_error_kcalmol', 'count'),\n"
+        "                   mae=('AE_error_kcalmol', 'mean'),\n"
+        "                   rmse=('AE_error_kcalmol', _rmse))\n"
+        "              .reset_index())\n"
+        "\n"
+        "# -- Plot: one figure with 2 rows (MAE, RMSE) x n_loss cols --\n"
+        "_losses_agg = sorted(set(_agg['loss'].unique()) - {'baseline'})\n"
+        "_n_loss_agg = len(_losses_agg)\n"
+        "_loss_abbrev_agg = {l: l.split('_')[0] for l in _losses_agg}\n"
+        "\n"
+        "fig, axes = plt.subplots(\n"
+        "    2, max(_n_loss_agg, 1),\n"
+        "    figsize=(6 * max(_n_loss_agg, 1), 10), squeeze=False,\n"
+        ")\n"
+        "\n"
+        "# Variable x-slot layout: deep_combined gets 3x.\n"
+        "def _arch_layout_agg():\n"
+        "    out = []; cur = 0.0\n"
+        "    for a in ARCH_NAMES:\n"
+        "        s = 3.0 if a == BAL_ARCH else 1.0\n"
+        "        out.append((a, cur, s)); cur += s\n"
+        "    return out\n"
+        "\n"
+        "for row, (col_name, y_label) in enumerate([\n"
+        "    ('mae', 'MAE across test mols (kcal/mol)'),\n"
+        "    ('rmse', 'RMSE across test mols (kcal/mol)'),\n"
+        "]):\n"
+        "    for col, loss in enumerate(_losses_agg):\n"
+        "        ax = axes[row, col]\n"
+        "        _seen_lbl = set()\n"
+        "        for arch, x_cursor, slots in _arch_layout_agg():\n"
+        "            x_center = x_cursor + (slots - 1) / 2.0\n"
+        "            labels_here = list(_main_slvrs)\n"
+        "            if arch == BAL_ARCH:\n"
+        "                if loss in BAL_LOSS_NAMES:\n"
+        "                    labels_here += _bal_slvrs\n"
+        "                labels_here += _bal_vxc_slvrs\n"
+        "            labels_here += _base_slvrs\n"
+        "            n_bars = len(labels_here)\n"
+        "            bw = (0.9 * slots) / max(n_bars, 1)\n"
+        "            for si, sl in enumerate(labels_here):\n"
+        "                if sl in _bl_set:\n"
+        "                    _sub = _agg[(_agg['arch'] == arch)\n"
+        "                              & (_agg['loss'] == 'baseline')\n"
+        "                              & (_agg['solver'] == sl)]\n"
+        "                else:\n"
+        "                    _sub = _agg[(_agg['arch'] == arch)\n"
+        "                              & (_agg['loss'] == loss)\n"
+        "                              & (_agg['solver'] == sl)]\n"
+        "                if len(_sub) == 0:\n"
+        "                    continue\n"
+        "                val = abs(_sub.iloc[0][col_name])\n"
+        "                if not (np.isfinite(val) and val > 0):\n"
+        "                    continue\n"
+        "                off = (si - (n_bars - 1) / 2) * bw\n"
+        "                _lbl = sl if sl not in _seen_lbl else ''\n"
+        "                _seen_lbl.add(sl)\n"
+        "                ax.bar(x_center + off, val, width=bw,\n"
+        "                       color=_tc.get(sl, 'gray'), label=_lbl,\n"
+        "                       edgecolor='black', linewidth=0.4, alpha=0.9)\n"
+        "            if slots > 1:\n"
+        "                ax.axvspan(x_cursor - 0.5, x_cursor + slots - 0.5,\n"
+        "                           color='#f0f0f0', alpha=0.5, zorder=0)\n"
+        "        ax.set_xticks([x + (s - 1) / 2.0 for _, x, s in _arch_layout_agg()])\n"
+        "        ax.set_xticklabels(ARCH_NAMES, rotation=45, ha='right', fontsize=9)\n"
+        "        if ax.patches:\n"
+        "            ax.set_yscale('log')\n"
+        "        ax.grid(True, which='major', axis='y', ls=':', alpha=0.4)\n"
+        "        if col == 0:\n"
+        "            ax.set_ylabel(y_label, fontsize=10)\n"
+        "        if row == 0:\n"
+        "            ax.set_title(f\"Loss {_loss_abbrev_agg[loss]}\", fontsize=11, fontweight='bold')\n"
+        "\n"
+        "# Shared legend\n"
+        "_all_h, _all_l = [], []\n"
+        "for ax in axes.flat:\n"
+        "    h, l = ax.get_legend_handles_labels()\n"
+        "    _all_h.extend(h); _all_l.extend(l)\n"
+        "_by_label = {k: v for k, v in dict(zip(_all_l, _all_h)).items() if k}\n"
+        "fig.legend(_by_label.values(), _by_label.keys(),\n"
+        "           loc='lower center', bbox_to_anchor=(0.5, -0.02),\n"
+        "           ncol=min(len(_by_label), 6), fontsize=9,\n"
+        "           title='Treatment', title_fontsize=10,\n"
+        "           frameon=True, fancybox=True)\n"
+        "fig.suptitle(\n"
+        "    f\"Transfer-set aggregate: MAE (top) and RMSE (bottom) across \"\n"
+        "    f\"{len(transfer_results)} test molecules ({', '.join(transfer_results.keys())})\\n\"\n"
+        "    f\"One subplot per loss family; bars per treatment; deep_combined widened for balancing + V_xc visibility\",\n"
+        "    fontsize=13,\n"
+        ")\n"
+        "fig.tight_layout(rect=(0, 0.06, 1, 0.95))\n"
+        "os.makedirs(f\"{CHECKPOINT_BASE}/figures\", exist_ok=True)\n"
+        "fig.savefig(f\"{CHECKPOINT_BASE}/figures/transfer_aggregate.png\",\n"
+        "            dpi=150, bbox_inches='tight')\n"
+        "plt.show()\n"
+        "\n"
+        "# Ranked top-10 table per loss family (by MAE, then by RMSE).\n"
+        "print(\"\\n=== Top 10 treatments by cross-molecule MAE ===\")\n"
+        "for loss in _losses_agg + ['baseline']:\n"
+        "    _sub = _agg[_agg['loss'] == loss].copy()\n"
+        "    if len(_sub) == 0:\n"
+        "        continue\n"
+        "    _sub = _sub.sort_values('mae').head(10)\n"
+        "    print(f\"\\n-- Loss: {loss} --\")\n"
+        "    print(_sub[['arch', 'solver', 'n', 'mae', 'rmse']].to_string(index=False))\n"
+    )
     return new_code_cell(source)
 
 
@@ -2443,42 +2600,114 @@ configs reveal the impact of SCF self-consistency on the learned functional.
 
 
 def build_cell_27_scf_comparison_bars():
-    """Section 6 Cell 27 -- SCF comparison grouped bar chart."""
+    """Section 6 Cell 27 -- H2O AE error comparison, includes balancing/V_xc."""
     source = """# Reference lines: PBE and CCSD atomization energy errors vs experiment
 ext_data_dir = f"{CHECKPOINT_BASE}/external_data"
 _E_ref = {}
 for _name in ("H", "O", "H2O"):
     with open(f"{ext_data_dir}/{_name}_metadata.json") as _f:
         _E_ref[_name] = json.load(_f)
-_AE_expt_kcalmol = 233.016  # experimental H2O atomization energy
+_AE_expt_kcalmol = 233.016
 
 _ae_pbe_Ha = 2 * _E_ref["H"]["E_pbe_total"] + _E_ref["O"]["E_pbe_total"] - _E_ref["H2O"]["E_pbe_total"]
 PBE_AE_err_kcalmol = abs(_ae_pbe_Ha * 627.509 - _AE_expt_kcalmol)
-
 _ae_ccsd_Ha = 2 * _E_ref["H"]["E_ccsd_total"] + _E_ref["O"]["E_ccsd_total"] - _E_ref["H2O"]["E_ccsd_total"]
 CCSD_AE_err_kcalmol = abs(_ae_ccsd_Ha * 627.509 - _AE_expt_kcalmol)
 
-fig, axes = plt.subplots(1, len(LOSS_NAMES), figsize=(6 * len(LOSS_NAMES), 7), squeeze=False)
+# Layout: one subplot per loss family. Within each subplot, per arch, we show
+# 3 base solvers (oneshot, fixed_j_3, full_3). For deep_combined (BAL_ARCH),
+# we ALSO show the balancing and V_xc variants that share this loss family.
+# deep_combined therefore gets visibly more horizontal space (2x) than other
+# archs because it has more bars; this is done by assigning it two x-slots.
+
+def _bal_bars_for_loss(loss_name):
+    \"\"\"Balancing-sweep treatments applicable to this loss family.\"\"\"
+    treatments = []
+    if loss_name in BAL_LOSS_NAMES:
+        for bal_label in BALANCING_CONFIGS:
+            treatments.append(("bal:" + bal_label,
+                              f"{CHECKPOINT_BASE}/eval_balancing/{loss_name}/{bal_label}"))
+    return treatments
+
+def _vxc_bars_for_loss(loss_name):
+    \"\"\"V_xc-variant treatments whose ``loss_name`` matches this loss family.\"\"\"
+    treatments = []
+    for variant_label, (vxc_loss, _, _) in VXC_VARIANTS.items():
+        if vxc_loss != loss_name:
+            continue
+        for solver_label in SOLVER_LABELS:
+            key = f"bal_vxc:{variant_label}/{solver_label}"
+            out_dir = f"{CHECKPOINT_BASE}/eval_balancing/vxc/{variant_label}/{solver_label}"
+            treatments.append((key, out_dir))
+    return treatments
+
+def _load_ae_err(out_dir):
+    _p = f"{out_dir}/aggregate.json"
+    if not os.path.isfile(_p):
+        return np.nan
+    with open(_p) as _f:
+        _ag = json.load(_f)
+    v = _ag.get("AE_error_kcalmol", {}).get("mean", np.nan)
+    return abs(v) if not np.isnan(v) else np.nan
+
+# Palettes: main solvers keep solver_colors; balancing get Set2; V_xc get tab10.
+_bal_cmap = plt.get_cmap("Set2")
+_vxc_cmap = plt.get_cmap("tab10")
+
+fig, axes = plt.subplots(1, len(LOSS_NAMES), figsize=(10 * len(LOSS_NAMES), 7), squeeze=False)
 for col_idx, loss_name in enumerate(LOSS_NAMES):
     ax = axes[0, col_idx]
-    n_archs = len(ARCH_NAMES)
-    n_solvers = len(SOLVER_LABELS)
-    x_positions = np.arange(n_archs)
-    bar_width = 0.8 / max(n_solvers, 1)
+    # Build list of (x_slot, arch, treatments) — deep_combined gets 2 x-slots
+    # so its bars are visible; other archs get 1 slot each.
+    _bal_trs = _bal_bars_for_loss(loss_name)
+    _vxc_trs = _vxc_bars_for_loss(loss_name)
+    _n_bal_extras = len(_bal_trs) + len(_vxc_trs)
 
-    for s_idx, solver_label in enumerate(SOLVER_LABELS):
-        heights = []
-        for arch_name in ARCH_NAMES:
-            try:
-                val = df.loc[(arch_name, loss_name, solver_label), "AE_error_kcalmol_mean"]
-                heights.append(abs(val) if not np.isnan(val) else np.nan)
-            except KeyError:
-                heights.append(np.nan)
-        offset = (s_idx - (n_solvers - 1) / 2) * bar_width
-        ax.bar(x_positions + offset, heights, width=bar_width,
-               color=solver_colors[solver_label], label=solver_label)
+    # Build the per-arch layout: list of (label, x_slot_count, treatments).
+    arch_rows = []
+    x_slot = 0
+    for arch_name in ARCH_NAMES:
+        is_bal = (arch_name == BAL_ARCH) and _n_bal_extras > 0
+        slots = 2 if is_bal else 1
+        # Base treatments: 3 solvers
+        base_trs = [(s, f"{CHECKPOINT_BASE}/eval/{arch_name}/{loss_name}/{s}")
+                    for s in SOLVER_LABELS]
+        trs = base_trs + (_bal_trs + _vxc_trs if is_bal else [])
+        arch_rows.append((arch_name, x_slot, slots, trs))
+        x_slot += slots
 
-    ax.set_xticks(x_positions)
+    total_x = x_slot  # total x slots across all archs
+    for arch_name, x0, slots, trs in arch_rows:
+        n_bars = len(trs)
+        span = slots * 0.8  # fraction of x-slot used for bars (leave 0.2 gap)
+        bar_width = span / max(n_bars, 1)
+        for bi, (label, out_dir) in enumerate(trs):
+            val = _load_ae_err(out_dir)
+            if np.isnan(val) or val <= 0:
+                continue
+            # Center bars on the arch's x-slot range
+            xc = x0 + slots / 2.0 - 0.5
+            offset = (bi - (n_bars - 1) / 2) * bar_width
+            if label in SOLVER_LABELS:
+                _color = solver_colors[label]
+                _lbl = label if arch_name == ARCH_NAMES[0] else ""
+            elif label.startswith("bal:"):
+                _color = _bal_cmap(list(BALANCING_CONFIGS).index(label[4:]) % _bal_cmap.N)
+                _lbl = label if arch_name == BAL_ARCH else ""
+            elif label.startswith("bal_vxc:"):
+                _vxc_keys = [
+                    f"bal_vxc:{v}/{s}" for v in VXC_VARIANTS for s in SOLVER_LABELS
+                ]
+                _color = _vxc_cmap(_vxc_keys.index(label) % _vxc_cmap.N)
+                _lbl = label if arch_name == BAL_ARCH else ""
+            else:
+                _color = "gray"; _lbl = ""
+            ax.bar(xc + offset, val, width=bar_width, color=_color,
+                   edgecolor="black", linewidth=0.3, label=_lbl, alpha=0.9)
+
+    # X-axis ticks: one per arch, positioned at center of arch's x-slot range
+    tick_positions = [x0 + slots / 2.0 - 0.5 for _, x0, slots, _ in arch_rows]
+    ax.set_xticks(tick_positions)
     ax.set_xticklabels(ARCH_NAMES, rotation=45, ha="right", fontsize=8)
     ax.set_ylabel("|AE error| (kcal/mol)")
     ax.set_yscale("log")
@@ -2490,18 +2719,23 @@ for col_idx, loss_name in enumerate(LOSS_NAMES):
     ax.axhline(CCSD_AE_err_kcalmol, linestyle=":", color="b", linewidth=1.5,
                label=f"CCSD ({CCSD_AE_err_kcalmol:.2f} kcal/mol)")
     ax.axhline(1.0, linestyle="--", color="k", alpha=0.7,
-               label="Chemical accuracy (1 kcal/mol)")
+               label="Chem. accuracy (1 kcal/mol)")
 
+# Dedup legend, move outside
+_h, _l = axes[0, -1].get_legend_handles_labels()
+_seen = {}
+for _hh, _ll in zip(_h, _l):
+    if _ll and _ll not in _seen:
+        _seen[_ll] = _hh
 axes[0, -1].legend(
-    loc="center left",
-    bbox_to_anchor=(1.02, 0.5),
-    fontsize="small",
-    title="solver / reference",
+    _seen.values(), _seen.keys(),
+    loc="center left", bbox_to_anchor=(1.02, 0.5),
+    fontsize="small", title="treatment / reference",
 )
 
 fig.suptitle(
-    "H2O atomization-energy error by architecture and solver config\\n"
-    "(one subplot per loss family, grouped bars = solver configs)",
+    "H2O atomization-energy error by architecture, solver, and balancing strategy\\n"
+    "(one subplot per loss family; deep_combined gets wider x-slot for balancing + V_xc bars)",
     fontsize=13,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.95))
@@ -2657,56 +2891,120 @@ just observe how it behaves under extended iteration.
 
 
 def build_cell_33_convergence_diagnostic():
-    """Section 6 Cell 33 -- SCF convergence rate plot."""
+    """Section 6 Cell 33 -- aggregated SCF convergence diagnostic.
+
+    Runs extended SCF (max_cycles=10) on every trained model in the main
+    sweep and aggregates the per-cycle ``|E(n) - E(n-1)|`` traces by solver
+    mode (FIXED_J, FULL). Plots mean +/- std across all (arch, loss)
+    combinations so the convergence signature of each mode is visible with
+    uncertainty bands rather than a single representative curve.
+    """
     source = """from xcquinox.alec.solver import run_scf
 
-_diag_arch = "deep_combined" if "deep_combined" in ARCH_NAMES else ARCH_NAMES[0]
-_diag_loss = LOSS_NAMES[0]
-_diag_solver = SOLVER_LABELS[0]
-_ckpt = f"{CHECKPOINT_BASE}/train/{_diag_arch}/{_diag_loss}/{_diag_solver}/model.eqx"
+_DIAG_MAX_CYCLES = 10
+_diag_configs = {
+    "FIXED_J": SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
+        max_cycles=_DIAG_MAX_CYCLES, conv_tol=1e-10,
+    ),
+    "FULL": SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+        max_cycles=_DIAG_MAX_CYCLES, conv_tol=1e-10,
+    ),
+}
+_h2o_data = next((m for m in mol_data_list if m.get('name') == 'H2O'), mol_data_list[-1])
 
-if not os.path.isfile(_ckpt):
-    print(f"[Cell 33] checkpoint not found: {_ckpt} -- skipping convergence plot")
-else:
-    _arch_config = alec.get_architecture(_diag_arch)
-    _model = eqx.tree_deserialise_leaves(_ckpt, alec.AlecGGAModel.from_arch(_arch_config))
-    _h2o_data = mol_data_list[2]  # H2O
+# Collect per-cycle deltas for every trained (arch, loss) combination,
+# stratified by solver mode. ``_deltas_by_mode[mode_name]`` is a list of
+# 1-D arrays, one per (arch, loss) combination that successfully ran.
+_deltas_by_mode = {name: [] for name in _diag_configs}
+_n_attempted = 0
+_n_completed = 0
 
-    _diag_configs = {
-        "FIXED_J(10)": SolverConfig(
-            backend=SolverBackend.MANUAL,
-            mode=SolverMode.FIXED_J,
-            max_cycles=10,
-            conv_tol=1e-10,
-        ),
-        "FULL(10)": SolverConfig(
-            backend=SolverBackend.MANUAL,
-            mode=SolverMode.FULL,
-            max_cycles=10,
-            conv_tol=1e-10,
-        ),
-    }
+for _arch_name in ARCH_NAMES:
+    _arch_cfg = alec.get_architecture(_arch_name)
+    for _loss_name in LOSS_NAMES:
+        # Use oneshot-trained model for both FIXED_J and FULL diagnostics;
+        # oneshot is the fastest training regime and gives the cleanest
+        # convergence signature of the trained NN's V_xc.
+        _ckpt = f"{CHECKPOINT_BASE}/train/{_arch_name}/{_loss_name}/oneshot/model.eqx"
+        if not os.path.isfile(_ckpt):
+            continue
+        _n_attempted += 1
+        try:
+            _model = eqx.tree_deserialise_leaves(_ckpt, alec.AlecGGAModel.from_arch(_arch_cfg))
+        except Exception as _e:
+            print(f"  skip {_arch_name}/{_loss_name}: could not load ({_e})")
+            continue
+        for _mode_name, _cfg in _diag_configs.items():
+            try:
+                _res = run_scf(_cfg, _model, _h2o_data)
+            except Exception as _e:
+                print(f"  skip {_arch_name}/{_loss_name} {_mode_name}: {_e}")
+                continue
+            if not hasattr(_res, 'energy_trace') or _res.energy_trace is None:
+                continue
+            _trace = np.asarray(_res.energy_trace)
+            _trace = _trace[np.isfinite(_trace)]
+            if len(_trace) < 2:
+                continue
+            _deltas_by_mode[_mode_name].append(np.abs(np.diff(_trace)))
+        _n_completed += 1
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for label, cfg in _diag_configs.items():
-        result = run_scf(cfg, _model, _h2o_data)
-        if hasattr(result, "energy_trace") and result.energy_trace is not None:
-            _trace = np.array(result.energy_trace)
-            _deltas = np.abs(np.diff(_trace))
-            ax.semilogy(range(1, len(_deltas) + 1), _deltas, "o-", label=label)
+# Aggregate to mean/std per cycle. Different runs may have different
+# energy_trace lengths (e.g. if SCF converged early), so we align by cycle
+# index and take cycle-wise statistics only over runs that have data at
+# that cycle.
+def _aggregate_deltas(list_of_arrays, n_cycles):
+    if not list_of_arrays:
+        return None
+    stacked = np.full((len(list_of_arrays), n_cycles), np.nan)
+    for i, arr in enumerate(list_of_arrays):
+        k = min(len(arr), n_cycles)
+        stacked[i, :k] = arr[:k]
+    means = np.nanmean(stacked, axis=0)
+    stds = np.nanstd(stacked, axis=0)
+    counts = np.sum(np.isfinite(stacked), axis=0)
+    return means, stds, counts
 
-    ax.set_xlabel("SCF cycle")
-    ax.set_ylabel("|E(n) - E(n-1)| (Hartree, log)")
-    ax.set_title(
-        f"SCF convergence diagnostic -- arch={_diag_arch}, loss={_diag_loss}\\n"
-        f"(eval-only: trained model run through extended SCF cycles)"
-    )
-    ax.legend(title="mode (max_cycles=10)")
-    ax.grid(True, which="both", ls=":", alpha=0.4)
-    fig.tight_layout()
-    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-    fig.savefig(f"{CHECKPOINT_BASE}/figures/scf_convergence.png", dpi=150, bbox_inches="tight")
-    plt.show()
+fig, ax = plt.subplots(figsize=(10, 6))
+_mode_colors = {'FIXED_J': '#1f77b4', 'FULL': '#ff7f0e'}
+_n_cycles = _DIAG_MAX_CYCLES - 1  # n-1 deltas for n energies
+for _mode_name, _deltas_list in _deltas_by_mode.items():
+    _agg = _aggregate_deltas(_deltas_list, _n_cycles)
+    if _agg is None:
+        print(f"[Cell 33] no runs for {_mode_name} -- skipping")
+        continue
+    _means, _stds, _counts = _agg
+    _x = np.arange(1, _n_cycles + 1)
+    _color = _mode_colors[_mode_name]
+    # Main line: mean
+    ax.semilogy(_x, _means, 'o-', color=_color, linewidth=2,
+                label=f"{_mode_name} mean (n={len(_deltas_list)} models)")
+    # Error band: mean +/- std (clipped to positive for log scale)
+    _low = np.maximum(_means - _stds, _means * 0.1)
+    _high = _means + _stds
+    ax.fill_between(_x, _low, _high, color=_color, alpha=0.2)
+    # Individual traces faintly for inspection
+    for _d in _deltas_list:
+        _k = min(len(_d), _n_cycles)
+        ax.semilogy(np.arange(1, _k + 1), _d[:_k], '-',
+                   color=_color, alpha=0.08, linewidth=0.6)
+
+ax.set_xlabel("SCF cycle")
+ax.set_ylabel("|E(n) - E(n-1)| (Hartree, log scale)")
+ax.set_title(
+    f"SCF convergence across {_n_completed} trained models (of {_n_attempted} attempted)\\n"
+    f"lines = mean per mode, bands = +/- 1 stddev, thin traces = individual (arch, loss) combos"
+)
+ax.legend(title=f"mode (max_cycles={_DIAG_MAX_CYCLES})", loc='best')
+ax.grid(True, which='both', ls=':', alpha=0.4)
+fig.tight_layout()
+os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+fig.savefig(f"{CHECKPOINT_BASE}/figures/scf_convergence.png", dpi=150, bbox_inches='tight')
+plt.show()
+print(f"\\n[Cell 33] aggregated {_n_completed} models; "
+      f"per-mode traces: {[(m, len(l)) for m, l in _deltas_by_mode.items()]}")
 """
     return new_code_cell(source)
 
@@ -2879,12 +3177,13 @@ def main(
         build_cell_33_convergence_diagnostic(),            # 41
         build_cell_34_feature_impact_md(),                 # 42
         build_cell_35_feature_impact(),                    # 43
-        # Section 7: Transfer Evaluation (cells 44-48)
+        # Section 7: Transfer Evaluation (cells 44-49)
         build_cell_42_transfer_md(),                      # 44
         build_cell_43_transfer_data_gen(),                # 45
         build_cell_44_transfer_plot_md(),                 # 46
         build_cell_45_transfer_eval_loop(),               # 47
         build_cell_46_transfer_plots(),                   # 48
+        build_cell_47_transfer_aggregate(),               # 49
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce

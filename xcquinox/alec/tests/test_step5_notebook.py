@@ -523,11 +523,11 @@ def test_cell_35_feature_impact():
 # ---------------------------------------------------------------------------
 
 
-def test_generator_produces_49_cells(tmp_path):
+def test_generator_produces_50_cells(tmp_path):
     """Step 5 notebook must contain exactly 49 cells (after separated V_xc cells)."""
     gen = load_generator()
     nb = gen.main(str(tmp_path / "step5.ipynb"))
-    assert len(nb.cells) == 49, f"expected 49 cells, got {len(nb.cells)}"
+    assert len(nb.cells) == 50, f"expected 50 cells, got {len(nb.cells)}"
 
 
 def test_generator_cell_types_match_expected(tmp_path):
@@ -578,7 +578,7 @@ def test_narrow_config_smoke(tmp_path):
         solver_labels=("oneshot",),
         checkpoint_base=str(tmp_path / "ckpt"),
     )
-    assert len(nb.cells) == 49
+    assert len(nb.cells) == 50
     nbformat.validate(nb)
 
 
