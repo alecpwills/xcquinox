@@ -167,22 +167,41 @@ def compute_cusp_descriptor(grid_coords: jnp.ndarray,
     Returns a single descriptor combining nuclear proximity information
     in a form suitable for network input.
 
+    Each column is bounded in a network-friendly range:
+    * column 0 ``cusp_factor = exp(-2 Z r)`` lives in [0, 1] natively.
+    * column 1 ``tanh(log_weighted_Z / 5)`` lives in (-1, 1). The raw
+      ``log_weighted_Z = log(sum_A Z_A / r_A)`` has a dynamic range of
+      ~14 units on physical grids (tail values ~ -2, near-nucleus values
+      ~ 12), which previously dominated the MLP's first-layer activation
+      for the exchange network and caused F_x predictions to saturate at
+      ~1.4 on architectures using this descriptor (deep_cusp,
+      deep_cusp_attn, deep_combined, deep_combined_attn). Dividing by 5
+      before tanh keeps the transform ~linear for the typical
+      ``log_weighted_Z`` range (~0..3) while smoothly compressing extreme
+      near-nucleus values.
+
     :param grid_coords: Grid point coordinates, shape (N, 3)
     :type grid_coords: jnp.ndarray
     :param nuclear_coords: Nuclear positions, shape (M, 3)
     :type nuclear_coords: jnp.ndarray
     :param nuclear_charges: Nuclear charges, shape (M,)
     :type nuclear_charges: jnp.ndarray
-    :return: Cusp descriptors, shape (N, 2) containing [cusp_factor, log(weighted_Z_sum)]
+    :return: Cusp descriptors, shape (N, 2) containing
+        [cusp_factor, tanh(log_weighted_Z / 5)] — both in a bounded
+        range suitable for direct MLP input.
     :rtype: jnp.ndarray
     """
     features = compute_cusp_distances(grid_coords, nuclear_coords, nuclear_charges)
 
-    # Combine into descriptor: [cusp_factor, log(weighted_Z)]
-    # Log transform for numerical stability
+    # Bounded form of the Coulomb-like weighted_Z feature. Division by 5
+    # chosen so that typical mid-range log_weighted_Z values (~0-3) remain
+    # in the ~linear region of tanh, while near-nucleus outliers
+    # (log_weighted_Z >> 5) smoothly saturate at +1 rather than entering
+    # the MLP as large unnormalized features.
     log_weighted_Z = jnp.log(features['weighted_Z_sum'] + 1e-12)
+    log_weighted_Z_bounded = jnp.tanh(log_weighted_Z / 5.0)
 
-    return jnp.stack([features['cusp_factor'], log_weighted_Z], axis=1)
+    return jnp.stack([features['cusp_factor'], log_weighted_Z_bounded], axis=1)
 
 
 # =============================================================================

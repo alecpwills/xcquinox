@@ -697,11 +697,13 @@ def build_cell_14_hf_ccsd_gen():
     from Cell 13 is preserved as `atom_energies_literature` and is used
     ONLY for the atom-branch `E_ref_literature` sidecar write.
     """
-    source = """print("DATA VERSION: ccsd-v2 (HF-era AND ccsd-v1-era checkpoints_step5/"
-      "{train*,eval*,test_new} must be deleted manually to retrain. "
-      "v2 picks up fixes: compute_vxc_nn v_sigma GGA term, UKS Fock / "
-      "data / oneshot / OEP, Wu-Yang obj/grad, A-family solver_config, "
-      "integration-weighted pretraining.)")
+    source = """print("DATA VERSION: ccsd-v3 (older checkpoints_step5/"
+      "{pretrain_data,pretrain,train*,eval*,test_new} must be deleted. "
+      "v3 bounds the log_weighted_Z column of cusp_features via "
+      "tanh(log_Z / 5), which fixes F_x saturation at ~1.4 for deep_cusp* "
+      "and deep_combined* architectures by keeping the MLP's first-layer "
+      "input in a well-normalized range. This changes pretrain_data.npz "
+      "contents, so pretraining MUST be re-run.)")
 # HF/CCSD reference computation and external_data .npz generation.
 # H2O uses H2O_COORDS from Cell 3 (equilibrium geometry, NOT a distorted 90-degree box).
 _mols = [
