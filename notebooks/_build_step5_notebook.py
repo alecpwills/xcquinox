@@ -2054,18 +2054,25 @@ else:
     mol_items = list(transfer_results.items())
     _bl_set = set(BASELINE_LABELS)
 
-    # Gather unique treatments across all molecules
-    _solvers_set, _bal_set = set(), set()
+    # Gather unique treatments across all molecules. Three classes:
+    #   - base solvers: "oneshot", "fixed_j_3", "full_3" (main sweep)
+    #   - bal:<strategy>: from balancing sweep base specs
+    #   - bal_vxc:<variant>/<solver>: from V_xc-augmented balancing sweep
+    #   - baseline labels: "pretrained", "random"
+    _solvers_set, _bal_set, _bal_vxc_set = set(), set(), set()
     for tdf in transfer_results.values():
         for s in tdf['solver'].unique():
             if s in _bl_set:
                 continue
+            elif s.startswith('bal_vxc:'):
+                _bal_vxc_set.add(s)
             elif s.startswith('bal:'):
                 _bal_set.add(s)
             else:
                 _solvers_set.add(s)
     _main_slvrs = sorted(_solvers_set)
     _bal_slvrs = sorted(_bal_set)
+    _bal_vxc_slvrs = sorted(_bal_vxc_set)
     _base_slvrs = sorted(_bl_set)
 
     # Unique non-baseline losses
@@ -2076,12 +2083,19 @@ else:
     n_loss = len(_losses)
     _loss_abbrev = {l: l.split('_')[0] for l in _losses}
 
-    # Treatment colors (strong, distinct)
+    # Build a self-contained color palette so this cell doesn't depend on
+    # variables defined in cell 24 (bal_colors) that may not exist if the
+    # user ran cells out of order. One cmap per class keeps treatments
+    # visually distinguishable.
+    _bal_cmap = plt.get_cmap('Set2')
+    _bal_vxc_cmap = plt.get_cmap('tab10')
     _tc = {}
     for sl in _main_slvrs:
         _tc[sl] = solver_colors.get(sl, 'gray')
-    for sl in _bal_slvrs:
-        _tc[sl] = all_colors.get(sl, 'gray')
+    for i, sl in enumerate(_bal_slvrs):
+        _tc[sl] = _bal_cmap(i % _bal_cmap.N)
+    for i, sl in enumerate(_bal_vxc_slvrs):
+        _tc[sl] = _bal_vxc_cmap(i % _bal_vxc_cmap.N)
     for sl in _base_slvrs:
         _tc[sl] = baseline_colors.get(sl, '#AAAAAA')
 
@@ -2110,8 +2124,17 @@ else:
 
                 for ai, arch in enumerate(ARCH_NAMES):
                     labels_here = list(_main_slvrs)
-                    if arch == BAL_ARCH and loss in BAL_LOSS_NAMES:
-                        labels_here += _bal_slvrs
+                    # V_xc variants and base balancing variants apply only
+                    # to BAL_ARCH (deep_combined). V_xc variants use their
+                    # own loss names (e.g. static_vxc_A uses A_atomization)
+                    # so the `loss in BAL_LOSS_NAMES` guard is too narrow.
+                    # Add all V_xc labels on BAL_ARCH regardless of loss;
+                    # the tdf filter below will hide combinations that
+                    # weren't actually trained.
+                    if arch == BAL_ARCH:
+                        if loss in BAL_LOSS_NAMES:
+                            labels_here += _bal_slvrs
+                        labels_here += _bal_vxc_slvrs
                     labels_here += _base_slvrs
                     n_bars = len(labels_here)
                     bw = 0.8 / max(n_bars, 1)
