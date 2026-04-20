@@ -91,6 +91,17 @@ def test_cell_02_imports_solver_symbols():
         assert symbol in source, f"missing import of {symbol}"
 
 
+def test_cell_02_imports_balancing_symbols():
+    """Cell 2 must import LossNormConfig, TwoPhaseConfig, GradNormConfig
+    from xcquinox.alec.balancing so the Section-4b balancing cell doesn't
+    NameError when referencing these classes."""
+    gen = load_generator()
+    source = gen.build_cell_02_imports().source
+    assert "from xcquinox.alec.balancing import" in source
+    for symbol in ("LossNormConfig", "TwoPhaseConfig", "GradNormConfig"):
+        assert symbol in source, f"missing import of {symbol}"
+
+
 def test_cell_03_constants_checkpoint_base_default():
     """Cell 3 must use DEFAULT_CHECKPOINT_BASE when no override is given."""
     gen = load_generator()
