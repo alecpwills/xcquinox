@@ -109,6 +109,7 @@ def build_cell_02_imports():
     source = (
         "import os\n"
         "import json\n"
+        "import gc\n"
         "import " + "pickle\n"
         "\n"
         "import numpy as np\n"
@@ -1052,7 +1053,7 @@ try:
         # forcing a fresh LLVM compilation. Without clearing between specs,
         # 89 compiled functions accumulate and LLVM OOMs with
         # "Cannot allocate memory" around the 20-30th spec.
-        jax.clear_caches()
+        jax.clear_caches(); gc.collect()
         _spec_bar.update(1)
         _spec_bar.set_postfix(
             arch=spec.arch.name, loss=spec.loss_name,
@@ -1178,7 +1179,19 @@ def build_cell_22_balancing_configs():
     Emits both the existing 8-strategy sweep on oneshot solver and the 9 new
     V_xc variants (3 variants x 3 solvers on deep_combined arch).
     """
-    source = """BALANCING_CONFIGS = {
+    source = """# Section 4b preamble: force aggressive memory reclamation before the
+# balancing sweep starts. After 72 main-sweep training specs, Python still
+# holds references to jit-compiled closures, opt_state arrays, and callback
+# state. jax.clear_caches() clears the jit cache mapping but doesn't run
+# Python GC -- without an explicit gc.collect() here, the kernel can be
+# OOM-killed when cell 22 or cell 23 first allocates. Three GC passes catch
+# cross-referenced cycles that a single pass misses.
+import gc, jax
+jax.clear_caches()
+for _ in range(3):
+    gc.collect()
+
+BALANCING_CONFIGS = {
     "static": None,
     "loss_norm": LossNormConfig(),
     "two_phase": TwoPhaseConfig(phase1_steps=100),
@@ -1315,7 +1328,7 @@ try:
             continue
         alec.run_training(spec, progress_callback=_bal_cb)
         # Release JAX JIT cache between specs (see cell 19 for rationale).
-        jax.clear_caches()
+        jax.clear_caches(); gc.collect()
         _bal_spec_bar.update(1)
         _bal_spec_bar.set_postfix(
             loss=spec.loss_name, strategy=_bal_info['solver'])
@@ -1504,7 +1517,7 @@ for loss_name in BAL_LOSS_NAMES:
         alec.run_test(test_spec)
         # Release JAX JIT cache between eval runs (each has a unique static
         # config and accumulates LLVM IR otherwise).
-        jax.clear_caches()
+        jax.clear_caches(); gc.collect()
 print(f"Balancing eval complete (RERUN_EVAL={RERUN_EVAL})")
 """
     return new_code_cell(source)
@@ -1535,7 +1548,7 @@ for variant_label, (loss_name, _, _) in VXC_VARIANTS.items():
         )
         alec.run_test(test_spec)
         # Release JAX JIT cache between eval runs (see balancing eval).
-        jax.clear_caches()
+        jax.clear_caches(); gc.collect()
 print(f"V_xc eval complete (RERUN_EVAL={RERUN_EVAL})")
 """
     return new_code_cell(source)
@@ -1793,7 +1806,7 @@ def _eval_model_on_mol(arch_name, model_path, mol_spec, ae_ref, mol_name,
     # Release JAX JIT cache between transfer eval calls. Transfer sweeps
     # ~250+ checkpoints (72 main + 17 balancing + 16 baseline) x 3 test
     # molecules x ... — without clearing, LLVM IR accumulates and OOMs.
-    jax.clear_caches()
+    jax.clear_caches(); gc.collect()
     return {
         "AE_error_kcalmol": float(abs(_pm.get("AE_error_kcalmol", float("nan")))),
         "E_error_kcalmol": float(abs(_pm.get("E_error_kcalmol", float("nan")))),
@@ -2124,7 +2137,7 @@ for arch_name in ARCH_NAMES:
             )
             alec.run_test(test_spec)
             # Release JAX JIT cache between eval runs to prevent LLVM OOM.
-            jax.clear_caches()
+            jax.clear_caches(); gc.collect()
 
 # --- Baseline evaluations (pretrained + random) ---
 for arch_name in ARCH_NAMES:
@@ -2147,7 +2160,7 @@ for arch_name in ARCH_NAMES:
         )
         alec.run_test(test_spec)
         # Release JAX JIT cache between baseline evals.
-        jax.clear_caches()
+        jax.clear_caches(); gc.collect()
 
 _n_trained = sum(1 for a in ARCH_NAMES for l in LOSS_NAMES for s in SOLVER_LABELS
                  if os.path.isfile(f"{CHECKPOINT_BASE}/eval/{a}/{l}/{s}/aggregate.json"))
