@@ -323,11 +323,17 @@ def test_cell_18_training_specs_loss_kwargs_abc():
 
 
 def test_cell_19_training_loop_three_tier_tqdm():
-    """Training loop must have three-tier progress display."""
+    """Training loop must have three-tier progress display and run each
+    spec in an isolated subprocess (for memory hard-reclamation)."""
     gen = load_generator()
     source = gen.build_cell_19_training_loop().source
     assert "tqdm(" in source
-    assert "alec.run_training(" in source
+    # Subprocess isolation is critical: a single heavy-weight compile can
+    # OOM the kernel. The loop must use _run_training_isolated which spawns
+    # xcquinox.alec._train_one_spec in a subprocess.
+    assert "_run_training_isolated" in source
+    assert "xcquinox.alec._train_one_spec" in source
+    assert "subprocess.Popen" in source
 
 
 def test_cell_20_training_loss_plot_3x3():
