@@ -38,12 +38,6 @@ def test_generator_has_default_constants():
     assert gen.DEFAULT_CHECKPOINT_BASE == "checkpoints_step6"
 
 
-def test_main_produces_5_cells_after_phase4():
-    gen = load_generator()
-    nb = gen.main(output_path="/tmp/_step6_smoke.ipynb")
-    assert len(nb.cells) == 5
-
-
 def test_cell_01_is_markdown_title():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6_smoke.ipynb")
@@ -71,3 +65,54 @@ def test_main_output_is_deterministic_byte_identical():
     h1 = hashlib.sha256(open("/tmp/_step6_det_1.ipynb", "rb").read()).hexdigest()
     h2 = hashlib.sha256(open("/tmp/_step6_det_2.ipynb", "rb").read()).hexdigest()
     assert h1 == h2
+
+
+# ---------------------------------------------------------------------------
+# Phase 5.1 tests: pretrain cells 6-9
+# ---------------------------------------------------------------------------
+
+
+def test_main_produces_9_cells_after_phase5():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    assert len(nb.cells) == 9
+
+
+def test_pretrain_loop_cell_uses_skip_flag():
+    """Cell 8 (pretrain loop) respects PRETRAIN_SKIP_IF_EXISTS + checks both xnet+cnet ckpts."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[7].source) if isinstance(nb.cells[7].source, list) else nb.cells[7].source
+    assert "PRETRAIN_SKIP_IF_EXISTS" in src
+    assert "xnet.eqx" in src and "cnet.eqx" in src
+    assert "PretrainSpec" in src
+    assert "run_pretrain" in src
+    assert "PRETRAIN_N_STEPS" in src
+
+
+def test_pretrain_data_gen_cell_uses_pretrain_atoms():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[6].source) if isinstance(nb.cells[6].source, list) else nb.cells[6].source
+    assert "PRETRAIN_ATOMS" in src
+    assert "pretrain_data.npz" in src
+
+
+def test_constants_cell_has_pretrain_atoms_and_weighting():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[2].source) if isinstance(nb.cells[2].source, list) else nb.cells[2].source
+    assert "PRETRAIN_ATOMS" in src
+    assert 'PRETRAIN_LOSS_WEIGHTING' in src
+    assert "unweighted" in src  # default value
+
+
+def test_imports_cell_has_tqdm_and_features():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[1].source) if isinstance(nb.cells[1].source, list) else nb.cells[1].source
+    assert "from tqdm.auto import tqdm" in src
+    assert "xcquinox.features" in src
+    assert "import equinox as eqx" in src
+    # JAX config
+    assert "jax_enable_x64" in src
