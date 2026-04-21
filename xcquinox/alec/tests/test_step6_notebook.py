@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_28_cells_after_phase8():
+def test_main_produces_35_cells_after_phase9():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 28
+    assert len(nb.cells) == 35
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -366,3 +366,49 @@ def test_anchor_effect_cell():
     src = "".join(nb.cells[27].source) if isinstance(nb.cells[27].source, list) else nb.cells[27].source
     assert "L3_balanced_vxc" in src and "L4_balanced_vxc_anchor" in src
     assert "anchor" in src.lower() and "anchor_effect.png" in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 tests: transfer-learning md + data gen + eval loops + aggregate plots
+# (cells 29-35)
+# ---------------------------------------------------------------------------
+
+
+def test_transfer_primary_cell_has_w411_geometries():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[29].source) if isinstance(nb.cells[29].source, list) else nb.cells[29].source
+    for v in ("0.370946", "0.107851", "-0.862809", "0.628099", "109.493", "107.208", "420.420"):
+        assert v in src, f"missing {v}"
+
+
+def test_transfer_secondary_cell_has_uks_nh2():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[30].source) if isinstance(nb.cells[30].source, list) else nb.cells[30].source
+    # NH2 (UKS) must be present with its W4-11 geom + AE
+    assert "NH2" in src
+    assert "0.142235" in src and "0.800646" in src
+    assert "182.591" in src
+    # Other secondary molecules
+    for v in ("NH3", "HF", "CO2", "298.018", "141.640", "390.141"):
+        assert v in src, f"missing {v}"
+
+
+def test_transfer_eval_cells_build_dataframes():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src32 = "".join(nb.cells[31].source) if isinstance(nb.cells[31].source, list) else nb.cells[31].source
+    src33 = "".join(nb.cells[32].source) if isinstance(nb.cells[32].source, list) else nb.cells[32].source
+    assert "transfer_primary_df" in src32
+    assert "transfer_secondary_df" in src33
+    assert "run_test" in src32 and "run_test" in src33
+
+
+def test_transfer_aggregate_plot_cells_exist():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src34 = "".join(nb.cells[33].source) if isinstance(nb.cells[33].source, list) else nb.cells[33].source
+    src35 = "".join(nb.cells[34].source) if isinstance(nb.cells[34].source, list) else nb.cells[34].source
+    assert "transfer_primary_df" in src34
+    assert "transfer_secondary_df" in src35

@@ -1484,6 +1484,363 @@ fig.savefig(os.path.join(figures_dir, "anchor_effect.png"), dpi=120); plt.show()
     return new_code_cell(source)
 
 
+def build_cell_29_transfer_md():
+    """Section 6 Cell 29 -- transfer-learning section header (markdown)."""
+    source = r"""## Section 6 -- Transfer-learning Evaluation
+
+Evaluates every trained spec on W4-11 molecules held out from training.
+Primary set is small and chemically close (H2 / OH / CH4); secondary set
+spans a broader chemistry (NH3 / HF / CO2 / NH2). NH2 is a UKS doublet.
+
+Geometries + AE references: W4-11. No OEP on transfer molecules -- V_xc
+matching is a training-only regularizer.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_30_transfer_primary():
+    """Section 6 Cell 30 -- primary transfer data generation (H2 / OH / CH4)."""
+    source = r"""# Primary transfer set: {H2, OH, CH4} on W4-11 geometries.
+# OH is UKS (doublet); H2 and CH4 are RKS closed shell.
+TRANSFER_PRIMARY = (
+    {
+        "name": "H2",
+        "atom": "H  0.000000  0.000000  0.370946; H  0.000000  0.000000 -0.370946",
+        "spin": 0,
+        "ae_ref_kcalmol": 109.493,
+        "comp": (("H", 2),),
+    },
+    {
+        "name": "OH",
+        "atom": "O  0.000000  0.000000  0.107851; H  0.000000  0.000000 -0.862809",
+        "spin": 1,
+        "ae_ref_kcalmol": 107.208,
+        "comp": (("O", 1), ("H", 1)),
+    },
+    {
+        "name": "CH4",
+        "atom": ("H 0.628099 0.628099 0.628099; C 0 0 0; "
+                 "H -0.628099 -0.628099 0.628099; "
+                 "H -0.628099 0.628099 -0.628099; "
+                 "H 0.628099 -0.628099 -0.628099"),
+        "spin": 0,
+        "ae_ref_kcalmol": 420.420,
+        "comp": (("C", 1), ("H", 4)),
+    },
+)
+
+
+def _gen_transfer_npz(m, out_dir):
+    # Generate {name}.npz + {name}_metadata.json for a transfer molecule.
+    # Runs PBE + HF + CCSD on the W4-11 geometry, extracts AO-basis CCSD DM
+    # (spin-resolved for UKS), computes rho_ccsd on the PBE grid. No OEP.
+    # Guard: skip if both artifacts already exist.
+    _npz = os.path.join(out_dir, f"{m['name']}.npz")
+    _meta = os.path.join(out_dir, f"{m['name']}_metadata.json")
+    if os.path.isfile(_npz) and os.path.isfile(_meta):
+        print(f"Using cached {_npz}")
+        return
+    _mol = gto.M(atom=m["atom"], basis=BASIS, charge=0, spin=m["spin"], verbose=0)
+    if m["spin"]:
+        _mf_pbe = dft.UKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
+        _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
+        _mf_hf = scf.UHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
+        _cc = cc.UCCSD(_mf_hf); _cc.kernel()
+        E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
+        dm_mo_ab = _cc.make_rdm1()
+        Ca, Cb = _mf_hf.mo_coeff
+        dm_ao_a = Ca @ dm_mo_ab[0] @ Ca.T
+        dm_ao_b = Cb @ dm_mo_ab[1] @ Cb.T
+        dm_ao = np.stack([dm_ao_a, dm_ao_b], axis=0)   # (2, nao, nao)
+        _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
+        rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao_a + dm_ao_b, _ao, _ao)
+    else:
+        _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
+        _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
+        _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
+        _cc = cc.CCSD(_mf_hf); _cc.kernel()
+        E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
+        dm_mo = _cc.make_rdm1()
+        C = _mf_hf.mo_coeff
+        dm_ao = C @ dm_mo @ C.T
+        _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
+        rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
+    np.savez(_npz,
+             dm_target=dm_ao,
+             rho_ref_grid=rho_ccsd,
+             ref_density_method="ccsd",
+             E_ref_literature=E_ccsd)
+    with open(_meta, "w") as _f:
+        json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
+                   "E_pbe_total": E_pbe,
+                   "ae_ref_kcalmol": m["ae_ref_kcalmol"]}, _f, indent=2)
+    print(f"Wrote {_npz}  E_ccsd={E_ccsd:+.4f}  AE_ref={m['ae_ref_kcalmol']:.3f} kcal/mol")
+
+
+for _m in TRANSFER_PRIMARY:
+    _gen_transfer_npz(_m, transfer_primary)
+"""
+    return new_code_cell(source)
+
+
+def build_cell_31_transfer_secondary():
+    """Section 6 Cell 31 -- secondary transfer data generation.
+
+    Reuses ``_gen_transfer_npz`` from cell 30 (cells execute sequentially
+    in the notebook, so the helper is in scope).
+    """
+    source = r"""# Secondary transfer set: {NH3, HF, CO2, NH2} on W4-11 geometries.
+# NH2 is a UKS doublet radical; the rest are closed-shell RKS.
+TRANSFER_SECONDARY = (
+    {
+        "name": "NH3",
+        "atom": ("N 0 0 0.116671; H 0 0.934724 -0.272232; "
+                 "H 0.809495 -0.467362 -0.272232; "
+                 "H -0.809495 -0.467362 -0.272232"),
+        "spin": 0,
+        "ae_ref_kcalmol": 298.018,
+        "comp": (("N", 1), ("H", 3)),
+    },
+    {
+        "name": "HF",
+        "atom": "F 0 0 0.091577; H 0 0 -0.824192",
+        "spin": 0,
+        "ae_ref_kcalmol": 141.640,
+        "comp": (("H", 1), ("F", 1)),
+    },
+    {
+        "name": "CO2",
+        "atom": "C 0 0 0; O 0 0 1.162600; O 0 0 -1.162600",
+        "spin": 0,
+        "ae_ref_kcalmol": 390.141,
+        "comp": (("C", 1), ("O", 2)),
+    },
+    {
+        "name": "NH2",
+        "atom": ("N 0 0 0.142235; H 0 0.800646 -0.497821; "
+                 "H 0 -0.800646 -0.497821"),
+        "spin": 1,
+        "ae_ref_kcalmol": 182.591,
+        "comp": (("N", 1), ("H", 2)),
+    },
+)
+
+for _m in TRANSFER_SECONDARY:
+    _gen_transfer_npz(_m, transfer_secondary)
+"""
+    return new_code_cell(source)
+
+
+def build_cell_32_transfer_primary_eval():
+    """Section 6 Cell 32 -- primary transfer test loop.
+
+    For each of the 72 trained specs crossed with the 3 primary transfer
+    molecules, constructs a TestSpec with the trained model's checkpoint
+    and the transfer molecule's ``.npz`` as external data, runs
+    ``alec.run_test``, and aggregates the ``per_molecule.json`` outputs
+    into a tidy DataFrame ``transfer_primary_df``.
+
+    Defines the helper ``_run_transfer_eval(mols_list, out_dir, parquet_name)``
+    that cell 33 reuses for the secondary set.
+    """
+    source = r"""# Primary transfer test loop. Reads trained checkpoint for each of the 72
+# specs, runs alec.run_test on each transfer molecule, aggregates to tidy
+# DataFrame. pbe_anchor_weight=0 / pbe_anchor_sample=None for transfer
+# (anchor is a training regularizer only).
+def _run_transfer_eval(mols_list, out_dir, parquet_name):
+    _parq = os.path.join(CHECKPOINT_BASE, parquet_name)
+    if not RERUN_EVAL and os.path.isfile(_parq):
+        _df = pd.read_parquet(_parq)
+        print(f"Using cached {_parq} ({len(_df)} rows)")
+        return _df
+    _ae_ref = {_m["name"]: _m["ae_ref_kcalmol"] for _m in mols_list}
+    _mol_specs = tuple(
+        alec.MoleculeSpec(
+            name=_m["name"], atom=_m["atom"], basis=BASIS,
+            charge=0, spin=_m["spin"], grid_level=GRID_LEVEL,
+            atom_composition=_m["comp"],
+            external_data_path=os.path.join(out_dir, f"{_m['name']}.npz"),
+        )
+        for _m in mols_list
+    )
+    _rows = []
+    for _spec in _all_specs:
+        _ckpt = os.path.join(_spec.checkpoint_dir, "model.eqx")
+        if not os.path.isfile(_ckpt):
+            continue
+        _tail = _spec.checkpoint_dir.rstrip("/").split("/")
+        _solver = _tail[-1]
+        _loss_label = _tail[-2]
+        _arch = _tail[-3]
+        _group = (
+            "group1" if _spec in _specs_group1
+            else "group2" if _spec in _specs_group2
+            else "group3"
+        )
+        _out = os.path.join(CHECKPOINT_BASE, "transfer_eval",
+                            parquet_name.replace(".parquet", ""),
+                            _group, _arch, _loss_label, _solver)
+        _agg_path = os.path.join(_out, "aggregate.json")
+        _pm_path = os.path.join(_out, "per_molecule.json")
+        if RERUN_EVAL or not os.path.isfile(_agg_path):
+            _test_spec = alec.TestSpec.from_dicts(
+                arch=alec.get_architecture(_arch),
+                model_checkpoint=_ckpt,
+                molecules=_mol_specs,
+                metrics=("total_energy", "atomization_energy", "density_rmse"),
+                metric_kwargs={"atomization_energy":
+                               {"reference_ae_kcalmol": _ae_ref}},
+                atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
+                output_dir=_out,
+                solver_config=SOLVER_CONFIGS[_solver],
+                pbe_anchor_weight=0.0,
+                pbe_anchor_sample=None,
+            )
+            alec.run_test(_test_spec)
+            jax.clear_caches(); gc.collect()
+        if not os.path.isfile(_pm_path):
+            continue
+        with open(_pm_path) as _f:
+            _pm = json.load(_f)
+        for _row in _pm:
+            _mol = _row.get("name") or _row.get("molecule")
+            for _k, _v in _row.items():
+                if _k in ("name", "molecule"):
+                    continue
+                if isinstance(_v, bool):
+                    continue
+                if isinstance(_v, (int, float)):
+                    _rows.append({
+                        "group":      _group,
+                        "arch":       _arch,
+                        "loss":       _loss_label,
+                        "solver":     _solver,
+                        "molecule":   _mol,
+                        "value_name": _k,
+                        "value":      float(_v),
+                    })
+    _df = pd.DataFrame(_rows)
+    _df.to_parquet(_parq)
+    print(f"Wrote {_parq} ({len(_df)} rows)")
+    return _df
+
+
+transfer_primary_df = _run_transfer_eval(
+    TRANSFER_PRIMARY, transfer_primary, "transfer_primary_df.parquet",
+)
+print(f"transfer_primary_df: {len(transfer_primary_df)} rows")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_33_transfer_secondary_eval():
+    """Section 6 Cell 33 -- secondary transfer test loop.
+
+    Reuses ``_run_transfer_eval`` defined in cell 32 (cells execute
+    sequentially in the notebook). Produces ``transfer_secondary_df``.
+    """
+    source = r"""# Secondary transfer test loop. Same shape as primary; reuses the helper
+# _run_transfer_eval (which calls alec.run_test under the hood) defined
+# in the previous cell.
+transfer_secondary_df = _run_transfer_eval(
+    TRANSFER_SECONDARY, transfer_secondary, "transfer_secondary_df.parquet",
+)
+print(f"transfer_secondary_df: {len(transfer_secondary_df)} rows")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_34_transfer_primary_plot():
+    """Section 6 Cell 34 -- primary transfer aggregate MAE plot.
+
+    Cross-mol MAE bar chart on ``abs_ae_error`` aggregated over the primary
+    transfer molecules, grouped by (group, arch) with 4 loss bars each and
+    log-y scale. Writes ``{figures_dir}/transfer_primary_mae.png``.
+    """
+    source = r"""# Cross-mol MAE (kcal/mol) bar chart on primary transfer set. Aggregated
+# over molecules, grouped by (group, arch); 4 loss bars each, log-y.
+fig, axes = plt.subplots(
+    len(ARCH_NAMES), 3, figsize=(14, 4 * len(ARCH_NAMES)), squeeze=False,
+)
+_x = np.arange(len(LOSS_NAMES))
+_w = 0.22
+for _ri, _arch in enumerate(ARCH_NAMES):
+    for _ci, _grp in enumerate(["group1", "group2", "group3"]):
+        _ax = axes[_ri][_ci]
+        _slice = transfer_primary_df[
+            (transfer_primary_df.group == _grp)
+            & (transfer_primary_df.arch == _arch)
+            & (transfer_primary_df.value_name == "abs_ae_error")
+        ]
+        for _si, _solver in enumerate(SOLVER_LABELS):
+            _vals = []
+            for _loss in LOSS_NAMES:
+                _d = _slice[(_slice.solver == _solver) & (_slice.loss == _loss)]
+                _mae = _d["value"].mean() if len(_d) else 0.0
+                _vals.append(_mae if pd.notna(_mae) else 0.0)
+            _ax.bar(_x + (_si - 1) * _w, _vals, width=_w, label=_solver)
+        _ax.set_xticks(_x)
+        _ax.set_xticklabels(LOSS_NAMES, rotation=25, fontsize=7)
+        _ax.set_yscale("log")
+        _ax.set_title(f"{_arch} | {_grp}", fontsize=9)
+        _ax.grid(True, which="both", ls=":", alpha=0.4)
+        if _ci == 0:
+            _ax.set_ylabel("MAE abs_ae_error (kcal/mol, log)")
+            _ax.legend(fontsize=7, title="solver")
+fig.suptitle("Primary transfer: cross-mol MAE on {H2, OH, CH4}")
+fig.tight_layout(rect=(0, 0, 1, 0.96))
+fig.savefig(os.path.join(figures_dir, "transfer_primary_mae.png"),
+            dpi=120, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_35_transfer_secondary_plot():
+    """Section 6 Cell 35 -- secondary transfer aggregate MAE plot.
+
+    Same layout as cell 34 but for ``transfer_secondary_df`` over the
+    four secondary transfer molecules.
+    """
+    source = r"""# Cross-mol MAE (kcal/mol) bar chart on secondary transfer set. Aggregated
+# over molecules, grouped by (group, arch); 4 loss bars each, log-y.
+fig, axes = plt.subplots(
+    len(ARCH_NAMES), 3, figsize=(14, 4 * len(ARCH_NAMES)), squeeze=False,
+)
+_x = np.arange(len(LOSS_NAMES))
+_w = 0.22
+for _ri, _arch in enumerate(ARCH_NAMES):
+    for _ci, _grp in enumerate(["group1", "group2", "group3"]):
+        _ax = axes[_ri][_ci]
+        _slice = transfer_secondary_df[
+            (transfer_secondary_df.group == _grp)
+            & (transfer_secondary_df.arch == _arch)
+            & (transfer_secondary_df.value_name == "abs_ae_error")
+        ]
+        for _si, _solver in enumerate(SOLVER_LABELS):
+            _vals = []
+            for _loss in LOSS_NAMES:
+                _d = _slice[(_slice.solver == _solver) & (_slice.loss == _loss)]
+                _mae = _d["value"].mean() if len(_d) else 0.0
+                _vals.append(_mae if pd.notna(_mae) else 0.0)
+            _ax.bar(_x + (_si - 1) * _w, _vals, width=_w, label=_solver)
+        _ax.set_xticks(_x)
+        _ax.set_xticklabels(LOSS_NAMES, rotation=25, fontsize=7)
+        _ax.set_yscale("log")
+        _ax.set_title(f"{_arch} | {_grp}", fontsize=9)
+        _ax.grid(True, which="both", ls=":", alpha=0.4)
+        if _ci == 0:
+            _ax.set_ylabel("MAE abs_ae_error (kcal/mol, log)")
+            _ax.legend(fontsize=7, title="solver")
+fig.suptitle("Secondary transfer: cross-mol MAE on {NH3, HF, CO2, NH2}")
+fig.tight_layout(rect=(0, 0, 1, 0.96))
+fig.savefig(os.path.join(figures_dir, "transfer_secondary_mae.png"),
+            dpi=120, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
 def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
@@ -1527,6 +1884,13 @@ def main(
         build_cell_26_eval_preview(),
         build_cell_27_vxc_efficacy(),
         build_cell_28_anchor_effect(),
+        build_cell_29_transfer_md(),
+        build_cell_30_transfer_primary(),
+        build_cell_31_transfer_secondary(),
+        build_cell_32_transfer_primary_eval(),
+        build_cell_33_transfer_secondary_eval(),
+        build_cell_34_transfer_primary_plot(),
+        build_cell_35_transfer_secondary_plot(),
     ]
     for idx, cell in enumerate(cells):
         cell.id = f"cell_{idx:02d}"
