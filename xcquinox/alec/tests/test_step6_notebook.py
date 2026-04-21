@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_20_cells_after_phase7_1():
+def test_main_produces_21_cells_after_phase7_2():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 20
+    assert len(nb.cells) == 21
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -248,3 +248,26 @@ def test_group3_uses_long_steps():
     src = "".join(nb.cells[19].source) if isinstance(nb.cells[19].source, list) else nb.cells[19].source
     assert "TRAIN_N_STEPS_LONG" in src
     assert "group3_dir" in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 7.2 tests: subprocess-isolated training loop (cell 21)
+# ---------------------------------------------------------------------------
+
+
+def test_training_loop_cell_uses_subprocess_pattern():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[20].source) if isinstance(nb.cells[20].source, list) else nb.cells[20].source
+    # Subprocess isolation pattern
+    assert "subprocess" in src
+    assert "_train_one_spec" in src
+    assert "TRAIN_SKIP_IF_EXISTS" in src
+    # Combines all three groups
+    assert "_specs_group1" in src
+    assert "_specs_group2" in src
+    assert "_specs_group3" in src
+    # Post-save teardown tolerance
+    assert "model.eqx" in src
+    # Cache/GC between specs
+    assert "jax.clear_caches" in src
