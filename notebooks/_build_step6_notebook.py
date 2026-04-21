@@ -667,6 +667,86 @@ for _name, _atom_str, _spin in ATOM_SPECS:
     return new_code_cell(source)
 
 
+def build_cell_15_pbe_anchor_sample():
+    source = r"""# PBE-anchor sample: joint (rho_alpha, rho_beta, s) over log10(rho_tot) in
+# [-6, -1], zeta in [0, 1], s in [0.5, 15]. Target F_x_PBE precomputed via
+# libxc (spin-scaling approximation matching the NN SCF convention).
+pbe_anchor = build_pbe_anchor_sample(
+    n_points=PBE_ANCHOR_N_POINTS,
+    log_rho_range=(-6.0, -1.0),
+    s_range=(0.5, 15.0),
+    zeta_range=(0.0, 1.0),
+    seed=PBE_ANCHOR_SEED,
+)
+print(f"PBE-anchor sample: N={PBE_ANCHOR_N_POINTS}, seed={PBE_ANCHOR_SEED}")
+_rt = np.asarray(pbe_anchor.rho_alpha + pbe_anchor.rho_beta)
+_lr = np.log10(np.clip(_rt, 1e-30, None))
+print(f"  log10(rho_total) in [{_lr.min():.2f}, {_lr.max():.2f}]")
+print(f"  s              in [{float(pbe_anchor.s.min()):.2f}, "
+      f"{float(pbe_anchor.s.max()):.2f}]")
+print(f"  F_x_PBE target in [{float(pbe_anchor.Fx_target.min()):.3f}, "
+      f"{float(pbe_anchor.Fx_target.max()):.3f}]")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_16_specs_and_precompute():
+    source = r"""# Build MoleculeSpec for all five training entities (H2O, C2H2, H, O, C).
+# Geometries come from: H2O/C2H2 -- W4-11 (cells 12, 13); atoms at origin.
+# External-data paths point at the .npz files produced in cells 12-14.
+H2O_spec = alec.MoleculeSpec(
+    name="H2O", atom=H2O_ATOM, basis=BASIS, charge=0, spin=0,
+    grid_level=GRID_LEVEL,
+    atom_composition=(("O", 1), ("H", 2)),
+    external_data_path=os.path.join(ext_data_dir, "H2O.npz"),
+)
+C2H2_spec = alec.MoleculeSpec(
+    name="C2H2", atom=C2H2_ATOM, basis=BASIS, charge=0, spin=0,
+    grid_level=GRID_LEVEL,
+    atom_composition=(("C", 2), ("H", 2)),
+    external_data_path=os.path.join(ext_data_dir, "C2H2.npz"),
+)
+H_spec = alec.MoleculeSpec(
+    name="H", atom="H 0 0 0", basis=BASIS, charge=0, spin=1,
+    grid_level=GRID_LEVEL, atom_composition=(("H", 1),),
+    external_data_path=os.path.join(ext_data_dir, "H.npz"),
+)
+O_spec = alec.MoleculeSpec(
+    name="O", atom="O 0 0 0", basis=BASIS, charge=0, spin=2,
+    grid_level=GRID_LEVEL, atom_composition=(("O", 1),),
+    external_data_path=os.path.join(ext_data_dir, "O.npz"),
+)
+C_spec = alec.MoleculeSpec(
+    name="C", atom="C 0 0 0", basis=BASIS, charge=0, spin=2,
+    grid_level=GRID_LEVEL, atom_composition=(("C", 1),),
+    external_data_path=os.path.join(ext_data_dir, "C.npz"),
+)
+
+# Precompute fixed-density data for ALL five entities once. The union of
+# required descriptor keys across ARCH_NAMES drives the precompute; ERI is
+# added for FULL SCF mode. Subset this dict in cells 18-20 per-group.
+_arch_objs = [alec.get_architecture(_n) for _n in ARCH_NAMES]
+_desc_keys = set()
+for _a in _arch_objs:
+    for _d in _a.materialize_descriptors():
+        _desc_keys.update(_d.required_mol_keys)
+_all_descs = sum((_a.materialize_descriptors() for _a in _arch_objs), ())
+
+mol_data_by_name = {}
+for _ms in (H2O_spec, C2H2_spec, H_spec, O_spec, C_spec):
+    mol_data_by_name[_ms.name] = alec.precompute_fixed_density_data(
+        _ms,
+        required_keys=tuple(_desc_keys | {"eri"}),
+        descriptors=_all_descs,
+    )
+    _md = mol_data_by_name[_ms.name]
+    _n = sum(_count for _, _count in _md["atom_composition"])
+    print(f"  {_ms.name:5s}  grid_pts={len(_md['rho_grid'])}  "
+          f"{'atom' if _n == 1 else 'molecule'}")
+"""
+    return new_code_cell(source)
+
+
 def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
@@ -696,6 +776,8 @@ def main(
         build_cell_12_h2o_data(),
         build_cell_13_c2h2_data(),
         build_cell_14_atoms(),
+        build_cell_15_pbe_anchor_sample(),
+        build_cell_16_specs_and_precompute(),
     ]
     for idx, cell in enumerate(cells):
         cell.id = f"cell_{idx:02d}"

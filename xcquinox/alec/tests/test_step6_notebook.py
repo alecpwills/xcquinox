@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_14_cells_after_phase6_4():
+def test_main_produces_16_cells_after_phase6():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 14
+    assert len(nb.cells) == 16
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -191,3 +191,31 @@ def test_atoms_cell_includes_carbon_uks():
     assert "np.stack" in src
     # Chakravorty consumption
     assert "ATOMIC_ENERGIES_CHAKRAVORTY" in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.5 + 6.6 tests: PBE-anchor sample (cell 15) + MoleculeSpec/precompute (cell 16)
+# ---------------------------------------------------------------------------
+
+
+def test_pbe_anchor_build_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[14].source) if isinstance(nb.cells[14].source, list) else nb.cells[14].source
+    assert "build_pbe_anchor_sample" in src
+    assert "PBE_ANCHOR_N_POINTS" in src
+    assert "PBE_ANCHOR_SEED" in src
+
+
+def test_mol_specs_and_precompute_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[15].source) if isinstance(nb.cells[15].source, list) else nb.cells[15].source
+    # Five entities
+    for _ent in ("H2O_spec", "C2H2_spec", "H_spec", "O_spec", "C_spec"):
+        assert _ent in src, f"missing {_ent}"
+    # precompute iterates per-spec (not list)
+    assert "precompute_fixed_density_data" in src
+    assert "materialize_descriptors" in src
+    # mol_data_by_name dict
+    assert "mol_data_by_name" in src
