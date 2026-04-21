@@ -614,6 +614,59 @@ else:
     return new_code_cell(source)
 
 
+def build_cell_14_atoms():
+    """Section 2 Cell 14 -- atoms H / O / C (UKS / UHF / UCCSD).
+
+    Unlike step-5's atom branch (which writes only ``E_ref_literature``),
+    step 6 persists a spin-resolved CCSD DM ``dm_target`` of shape
+    ``(2, nao, nao)`` plus a spin-summed ``rho_ref_grid`` so the training
+    pipeline can consume the same ``.npz`` schema as molecules. No OEP is
+    run on atoms: degenerate HOMO eigenvalues make a one-shot DM inversion
+    numerically ill-conditioned (see step-5 generator comment ~line 754).
+    Training uses ``ATOMIC_ENERGIES_CHAKRAVORTY`` (not CCSD totals) for the
+    atomization-energy references.
+    """
+    source = r"""# Atoms H/O/C (UKS). Training uses Chakravorty E for AE; CCSD is diagnostic.
+# No OEP on atoms -- degenerate HOMO eigenvalues make one-shot inversion
+# numerically ill-conditioned. dm_target is spin-resolved (2, nao, nao).
+ATOM_SPECS = [
+    ("H", "H 0 0 0", 1),
+    ("O", "O 0 0 0", 2),
+    ("C", "C 0 0 0", 2),
+]
+
+for _name, _atom_str, _spin in ATOM_SPECS:
+    _npz = os.path.join(ext_data_dir, f"{_name}.npz")
+    _meta = os.path.join(ext_data_dir, f"{_name}_metadata.json")
+    if os.path.isfile(_npz) and os.path.isfile(_meta):
+        print(f"Using cached {_name}")
+        continue
+    _mol = gto.M(atom=_atom_str, basis=BASIS, charge=0, spin=_spin, verbose=0)
+    _mf_pbe = dft.UKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
+    _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
+    _mf_hf = scf.UHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
+    _cc = cc.UCCSD(_mf_hf); _cc.kernel()
+    E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
+    dm_mo_ab = _cc.make_rdm1()        # (dm_a, dm_b) in MO basis
+    Ca, Cb = _mf_hf.mo_coeff
+    dm_ao_a = Ca @ dm_mo_ab[0] @ Ca.T
+    dm_ao_b = Cb @ dm_mo_ab[1] @ Cb.T
+    dm_ao = np.stack([dm_ao_a, dm_ao_b], axis=0)   # (2, nao, nao)
+    _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
+    rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao_a + dm_ao_b, _ao, _ao)
+    np.savez(_npz, dm_target=dm_ao,
+             rho_ref_grid=rho_ccsd,
+             ref_density_method="ccsd",
+             E_ref_literature=E_ccsd)
+    with open(_meta, "w") as _f:
+        json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
+                   "E_pbe_total": E_pbe,
+                   "E_lit_Ha": ATOMIC_ENERGIES_CHAKRAVORTY[_name]}, _f, indent=2)
+    print(f"Wrote {_name}: E_ccsd={E_ccsd:+.4f} vs Chakravorty={ATOMIC_ENERGIES_CHAKRAVORTY[_name]:+.4f}")
+"""
+    return new_code_cell(source)
+
+
 def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
@@ -642,6 +695,7 @@ def main(
         build_cell_11_chakravorty(),
         build_cell_12_h2o_data(),
         build_cell_13_c2h2_data(),
+        build_cell_14_atoms(),
     ]
     for idx, cell in enumerate(cells):
         cell.id = f"cell_{idx:02d}"

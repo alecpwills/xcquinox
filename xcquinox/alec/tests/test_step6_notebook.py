@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_13_cells_after_phase6_3():
+def test_main_produces_14_cells_after_phase6_4():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 13
+    assert len(nb.cells) == 14
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -170,3 +170,24 @@ def test_c2h2_cell_uses_w411_geometry():
     assert "405.525" in src
     assert "def2-tzvp-jkfit" in src
     assert "save_vxc_ref(_oep" in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.4 tests: atoms cell (cell 14)
+# ---------------------------------------------------------------------------
+
+
+def test_atoms_cell_includes_carbon_uks():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[13].source) if isinstance(nb.cells[13].source, list) else nb.cells[13].source
+    # H, O, C present
+    assert "(\"H\", \"H 0 0 0\", 1)" in src or "('H', 'H 0 0 0', 1)" in src
+    assert "(\"O\", \"O 0 0 0\", 2)" in src or "('O', 'O 0 0 0', 2)" in src
+    assert "(\"C\", \"C 0 0 0\", 2)" in src or "('C', 'C 0 0 0', 2)" in src
+    # UKS / UHF / UCCSD branches
+    assert "UKS" in src and "UHF" in src and "UCCSD" in src
+    # spin-resolved stacked DM
+    assert "np.stack" in src
+    # Chakravorty consumption
+    assert "ATOMIC_ENERGIES_CHAKRAVORTY" in src
