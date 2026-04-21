@@ -1072,3 +1072,97 @@ def test_loss_a_with_fixed_j_solver_uses_scf_energy():
     assert abs(val_oneshot - val_fixed_j) > 1e-6, (
         f"A loss values should differ: oneshot={val_oneshot}, fixed_j={val_fixed_j}"
     )
+
+
+# ---------------------------------------------------------------------------
+# PBE-anchor integration (2026-04-21 step 6)
+# ---------------------------------------------------------------------------
+
+class TestPBEAnchorIntegration:
+    """Integration tests for pbe_anchor_weight / pbe_anchor_sample plumbing.
+
+    Uses the existing test_losses.py fixtures `batch_h_o_h2o` (dict with keys
+    `mols`, `mol_data`, `targets`, `atom_energies`) and `model` (an
+    AlecGGAModel). D-family registry names are `D1_delta_ae`, `D2_delta_ae_plus_dm`,
+    `D3_delta_ae_plus_grid` (not `D1_delta_atomization` etc).
+    """
+
+    def _make_anchor(self, n=20):
+        from xcquinox.alec import build_pbe_anchor_sample
+        return build_pbe_anchor_sample(n_points=n, seed=1)
+
+    def _batch(self, batch_h_o_h2o):
+        return {
+            "mol_data": batch_h_o_h2o["mol_data"],
+            "targets": batch_h_o_h2o["targets"],
+            "atom_energies": batch_h_o_h2o["atom_energies"],
+        }
+
+    def test_A_loss_anchor_defaults_to_zero(self, batch_h_o_h2o):
+        from xcquinox.alec import make_loss
+        loss = make_loss("A_atomization", molecules=batch_h_o_h2o["mols"])
+        assert loss.pbe_anchor_weight == 0.0
+        assert loss.pbe_anchor_sample is None
+
+    def test_B_loss_anchor_defaults_to_zero(self, batch_h_o_h2o):
+        from xcquinox.alec import make_loss
+        loss = make_loss("B_atomization_plus_dm", molecules=batch_h_o_h2o["mols"])
+        assert loss.pbe_anchor_weight == 0.0
+
+    def test_C_loss_anchor_defaults_to_zero(self, batch_h_o_h2o):
+        from xcquinox.alec import make_loss
+        loss = make_loss("C_atomization_plus_grid", molecules=batch_h_o_h2o["mols"])
+        assert loss.pbe_anchor_weight == 0.0
+
+    def test_D1_loss_anchor_defaults_to_zero(self, batch_h_o_h2o):
+        from xcquinox.alec import make_loss
+        loss = make_loss("D1_delta_ae", molecules=batch_h_o_h2o["mols"])
+        assert loss.pbe_anchor_weight == 0.0
+
+    def test_D2_loss_anchor_defaults_to_zero(self, batch_h_o_h2o):
+        from xcquinox.alec import make_loss
+        loss = make_loss("D2_delta_ae_plus_dm", molecules=batch_h_o_h2o["mols"])
+        assert loss.pbe_anchor_weight == 0.0
+
+    def test_D3_loss_anchor_defaults_to_zero(self, batch_h_o_h2o):
+        from xcquinox.alec import make_loss
+        loss = make_loss("D3_delta_ae_plus_grid", molecules=batch_h_o_h2o["mols"])
+        assert loss.pbe_anchor_weight == 0.0
+
+    def test_B_loss_anchor_contributes_positive_at_random_init(
+        self, batch_h_o_h2o, model,
+    ):
+        from xcquinox.alec import make_loss
+        sample = self._make_anchor()
+        batch = self._batch(batch_h_o_h2o)
+        loss_off = make_loss("B_atomization_plus_dm",
+                             molecules=batch_h_o_h2o["mols"])
+        loss_on = make_loss("B_atomization_plus_dm",
+                            molecules=batch_h_o_h2o["mols"],
+                            pbe_anchor_weight=1.0,
+                            pbe_anchor_sample=sample)
+        total_off, _ = loss_off(model, batch)
+        total_on, _ = loss_on(model, batch)
+        assert float(total_on) > float(total_off)
+
+    def test_B_loss_anchor_gradient_flows(
+        self, batch_h_o_h2o, model,
+    ):
+        import jax
+        import jax.numpy as jnp
+        from xcquinox.alec import make_loss
+        sample = self._make_anchor()
+        batch = self._batch(batch_h_o_h2o)
+        loss = make_loss("B_atomization_plus_dm",
+                         molecules=batch_h_o_h2o["mols"],
+                         pbe_anchor_weight=1e-2,
+                         pbe_anchor_sample=sample)
+        grad_fn = eqx_grad_filter = __import__("equinox").filter_grad(
+            lambda m: loss(m, batch)[0]
+        )
+        g = grad_fn(model)
+        leaves = jax.tree_util.tree_leaves(g)
+        # Drop non-inexact leaves (integers, etc.) before .isfinite check:
+        numeric = [l for l in leaves if hasattr(l, "dtype") and jnp.issubdtype(l.dtype, jnp.floating)]
+        assert any(float(jnp.sum(jnp.abs(l))) > 0 for l in numeric)
+        assert all(bool(jnp.all(jnp.isfinite(l))) for l in numeric)

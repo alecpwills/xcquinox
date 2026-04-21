@@ -293,6 +293,17 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
 
 
+def _anchor_term(model, sample, weight: float) -> jnp.ndarray:
+    """PBE-anchor loss: weight * mean((F_x_nn - F_x_PBE)^2) on a fixed sample."""
+    if sample is None or weight == 0.0:
+        return jnp.array(0.0, dtype=jnp.float64)
+    from xcquinox.alec.pbe_anchor import pbe_anchor_loss
+    from xcquinox.alec.oneshot import _nn_fx_local_uks
+    def _nn_fx(m, rho_alpha, rho_beta, s_vals):
+        return _nn_fx_local_uks(m, rho_alpha, rho_beta, s_vals)
+    return pbe_anchor_loss(model, sample, weight, _nn_fx)
+
+
 # ---------------------------------------------------------------------------
 # Concrete losses
 # ---------------------------------------------------------------------------
@@ -304,11 +315,16 @@ class AtomizationLoss(AlecLoss):
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_sample: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None,
-                 vxc_weight: float = 0.0):
+                 vxc_weight: float = 0.0,
+                 pbe_anchor_weight: float = 0.0,
+                 pbe_anchor_sample=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("vxc_weight", vxc_weight)
+        self._validate_static_float("pbe_anchor_weight", pbe_anchor_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -317,6 +333,8 @@ class AtomizationLoss(AlecLoss):
         self.w_atomic = w_atomic
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
+        self.pbe_anchor_weight = pbe_anchor_weight
+        self.pbe_anchor_sample = pbe_anchor_sample
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -335,6 +353,10 @@ class AtomizationLoss(AlecLoss):
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
             )
+        if self.pbe_anchor_weight > 0.0 and self.pbe_anchor_sample is not None:
+            components["loss_anchor"] = _anchor_term(
+                model, self.pbe_anchor_sample, self.pbe_anchor_weight,
+            )
         return components
 
     def __call__(self, model, batch):
@@ -352,14 +374,19 @@ class AtomizationPlusDMLoss(AlecLoss):
     molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_sample: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
                  dm_weight: float = 0.1, molecules_only: bool = True,
-                 solver_config=None, vxc_weight: float = 0.0):
+                 solver_config=None, vxc_weight: float = 0.0,
+                 pbe_anchor_weight: float = 0.0,
+                 pbe_anchor_sample=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("dm_weight", dm_weight)
         self._validate_static_bool("molecules_only", molecules_only)
         self._validate_static_float("vxc_weight", vxc_weight)
+        self._validate_static_float("pbe_anchor_weight", pbe_anchor_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -370,6 +397,8 @@ class AtomizationPlusDMLoss(AlecLoss):
         self.molecules_only = molecules_only
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
+        self.pbe_anchor_weight = pbe_anchor_weight
+        self.pbe_anchor_sample = pbe_anchor_sample
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -390,6 +419,10 @@ class AtomizationPlusDMLoss(AlecLoss):
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
             )
+        if self.pbe_anchor_weight > 0.0 and self.pbe_anchor_sample is not None:
+            components["loss_anchor"] = _anchor_term(
+                model, self.pbe_anchor_sample, self.pbe_anchor_weight,
+            )
         return components
 
     def __call__(self, model, batch):
@@ -407,14 +440,19 @@ class AtomizationPlusGridLoss(AlecLoss):
     molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_sample: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
                  density_weight: float = 0.1, molecules_only: bool = True,
-                 solver_config=None, vxc_weight: float = 0.0):
+                 solver_config=None, vxc_weight: float = 0.0,
+                 pbe_anchor_weight: float = 0.0,
+                 pbe_anchor_sample=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("density_weight", density_weight)
         self._validate_static_bool("molecules_only", molecules_only)
         self._validate_static_float("vxc_weight", vxc_weight)
+        self._validate_static_float("pbe_anchor_weight", pbe_anchor_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -425,6 +463,8 @@ class AtomizationPlusGridLoss(AlecLoss):
         self.molecules_only = molecules_only
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
+        self.pbe_anchor_weight = pbe_anchor_weight
+        self.pbe_anchor_sample = pbe_anchor_sample
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -445,6 +485,10 @@ class AtomizationPlusGridLoss(AlecLoss):
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
             )
+        if self.pbe_anchor_weight > 0.0 and self.pbe_anchor_sample is not None:
+            components["loss_anchor"] = _anchor_term(
+                model, self.pbe_anchor_sample, self.pbe_anchor_weight,
+            )
         return components
 
     def __call__(self, model, batch):
@@ -460,11 +504,16 @@ class DeltaAELoss(AlecLoss):
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_sample: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None,
-                 vxc_weight: float = 0.0):
+                 vxc_weight: float = 0.0,
+                 pbe_anchor_weight: float = 0.0,
+                 pbe_anchor_sample=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("vxc_weight", vxc_weight)
+        self._validate_static_float("pbe_anchor_weight", pbe_anchor_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -473,6 +522,8 @@ class DeltaAELoss(AlecLoss):
         self.w_atomic = w_atomic
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
+        self.pbe_anchor_weight = pbe_anchor_weight
+        self.pbe_anchor_sample = pbe_anchor_sample
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -491,6 +542,10 @@ class DeltaAELoss(AlecLoss):
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
             )
+        if self.pbe_anchor_weight > 0.0 and self.pbe_anchor_sample is not None:
+            components["loss_anchor"] = _anchor_term(
+                model, self.pbe_anchor_sample, self.pbe_anchor_weight,
+            )
         return components
 
     def __call__(self, model, batch):
@@ -508,14 +563,19 @@ class DeltaAEPlusDMLoss(AlecLoss):
     molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_sample: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
                  dm_weight: float = 0.1, molecules_only: bool = True,
-                 solver_config=None, vxc_weight: float = 0.0):
+                 solver_config=None, vxc_weight: float = 0.0,
+                 pbe_anchor_weight: float = 0.0,
+                 pbe_anchor_sample=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("dm_weight", dm_weight)
         self._validate_static_bool("molecules_only", molecules_only)
         self._validate_static_float("vxc_weight", vxc_weight)
+        self._validate_static_float("pbe_anchor_weight", pbe_anchor_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -526,6 +586,8 @@ class DeltaAEPlusDMLoss(AlecLoss):
         self.molecules_only = molecules_only
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
+        self.pbe_anchor_weight = pbe_anchor_weight
+        self.pbe_anchor_sample = pbe_anchor_sample
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -546,6 +608,10 @@ class DeltaAEPlusDMLoss(AlecLoss):
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
             )
+        if self.pbe_anchor_weight > 0.0 and self.pbe_anchor_sample is not None:
+            components["loss_anchor"] = _anchor_term(
+                model, self.pbe_anchor_sample, self.pbe_anchor_weight,
+            )
         return components
 
     def __call__(self, model, batch):
@@ -563,14 +629,19 @@ class DeltaAEPlusGridLoss(AlecLoss):
     molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_weight: float = eqx.field(default=0.0, static=True)
+    pbe_anchor_sample: object | None = eqx.field(default=None, static=True)
 
     def __init__(self, *, molecules, w_atomic: float = 0.01,
                  density_weight: float = 0.1, molecules_only: bool = True,
-                 solver_config=None, vxc_weight: float = 0.0):
+                 solver_config=None, vxc_weight: float = 0.0,
+                 pbe_anchor_weight: float = 0.0,
+                 pbe_anchor_sample=None):
         self._validate_static_float("w_atomic", w_atomic)
         self._validate_static_float("density_weight", density_weight)
         self._validate_static_bool("molecules_only", molecules_only)
         self._validate_static_float("vxc_weight", vxc_weight)
+        self._validate_static_float("pbe_anchor_weight", pbe_anchor_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
         self.atom_mol_idx = ami
         self.compound_idx = ci
@@ -581,6 +652,8 @@ class DeltaAEPlusGridLoss(AlecLoss):
         self.molecules_only = molecules_only
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
+        self.pbe_anchor_weight = pbe_anchor_weight
+        self.pbe_anchor_sample = pbe_anchor_sample
 
     def compute_components(self, model, batch, relative=False):
         atom_idx = dict(self.atom_mol_idx)
@@ -600,6 +673,10 @@ class DeltaAEPlusGridLoss(AlecLoss):
             vxc_idx = self.compound_idx if self.molecules_only else tuple(range(N))
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
+            )
+        if self.pbe_anchor_weight > 0.0 and self.pbe_anchor_sample is not None:
+            components["loss_anchor"] = _anchor_term(
+                model, self.pbe_anchor_sample, self.pbe_anchor_weight,
             )
         return components
 

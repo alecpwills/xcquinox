@@ -367,3 +367,46 @@ def oneshot_total_energy(model, mol_data) -> float:
         term3 = jnp.trace(dm_pbe @ vxc_pbe) - E_xc_pbe
 
     return term1 - term2 - term3 + e_nuc
+
+
+def _nn_fx_local_uks(model, rho_alpha: jnp.ndarray,
+                    rho_beta: jnp.ndarray,
+                    s: jnp.ndarray) -> jnp.ndarray:
+    """Evaluate model.xnet as UKS F_x on synthetic (rho_alpha, rho_beta, s) points.
+
+    Step-6 PBE-anchor helper. AlecGGA_XNet.__call__ is a single-grid-point
+    evaluator taking a 1-D input tensor ``[rho, sigma, *extras]`` and
+    returning a scalar F_x. We therefore vmap over N sample points.
+
+    Spin-scaling identity (Oliver-Perdew): for F_x evaluated against the
+    unpolarized LDA reference at total density (which is how
+    pbe_anchor.Fx_target is computed),
+
+        F_x_UKS(ra, rb, s) = 0.5 * (F_x_RKS(2*ra, s) + F_x_RKS(2*rb, s))
+
+    where s is the reduced gradient of the TOTAL density — same s on both
+    spins because the anchor sample fixes a single s per point.
+
+    Uses zero extras (no descriptor features). The anchor probes the bare
+    functional form at synthetic (rho, s) points — no molecular grid
+    visits them, so there is no physical descriptor value to feed in.
+    """
+    n_extra = model.xnet.n_extra_features
+    kF = (3.0 * jnp.pi ** 2) ** (1.0 / 3.0)
+
+    def _fx_one(rho_spin_doubled, s_val):
+        sigma_doubled = (
+            2.0 * kF * s_val
+            * jnp.clip(rho_spin_doubled, 1e-30, None) ** (4.0 / 3.0)
+        ) ** 2
+        extras = jnp.zeros(n_extra, dtype=rho_spin_doubled.dtype)
+        inputs = jnp.concatenate([
+            jnp.atleast_1d(rho_spin_doubled),
+            jnp.atleast_1d(sigma_doubled),
+            extras,
+        ])
+        return model.xnet(inputs)
+
+    fx_a = jax.vmap(_fx_one)(2.0 * rho_alpha, s)
+    fx_b = jax.vmap(_fx_one)(2.0 * rho_beta, s)
+    return 0.5 * (fx_a + fx_b)
