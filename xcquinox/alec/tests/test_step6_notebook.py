@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_9_cells_after_phase5():
+def test_main_produces_11_cells_after_phase6_1():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 9
+    assert len(nb.cells) == 11
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -116,3 +116,19 @@ def test_imports_cell_has_tqdm_and_features():
     assert "import equinox as eqx" in src
     # JAX config
     assert "jax_enable_x64" in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 tests: data md + Chakravorty dict (cells 10-11)
+# ---------------------------------------------------------------------------
+
+
+def test_chakravorty_cell_has_all_five_atoms():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[10].source) if isinstance(nb.cells[10].source, list) else nb.cells[10].source
+    assert "ATOMIC_ENERGIES_CHAKRAVORTY" in src
+    for atom, value in (("H", "-0.5"), ("C", "-37.845"),
+                        ("N", "-54.5892"), ("O", "-75.0673"), ("F", "-99.7339")):
+        assert f'"{atom}"' in src, f"missing atom key {atom}"
+        assert value in src, f"missing value {value}"

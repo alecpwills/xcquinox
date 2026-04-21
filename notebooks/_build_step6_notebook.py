@@ -425,6 +425,30 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_10_data_md():
+    return new_markdown_cell(r"""## Section 2 -- Data Layer
+
+All molecular geometries + atomization-energy references from W4-11
+(Karton, Daon, Martin, Ruscic 2011). Atomic references from Chakravorty
+1993 (exact non-relativistic).
+""")
+
+
+def build_cell_11_chakravorty():
+    source = r"""# Chakravorty 1993 exact non-relativistic atomic energies (Ha).
+ATOMIC_ENERGIES_CHAKRAVORTY = {
+    "H": -0.5,
+    "C": -37.845,
+    "N": -54.5892,
+    "O": -75.0673,
+    "F": -99.7339,
+}
+for _z, _e in ATOMIC_ENERGIES_CHAKRAVORTY.items():
+    print(f"  E({_z}) = {_e:+10.4f} Ha")
+"""
+    return new_code_cell(source)
+
+
 def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
@@ -449,6 +473,8 @@ def main(
         build_cell_07_pretrain_data_gen(),
         build_cell_08_pretrain_loop(),
         build_cell_09_pretrain_loss_plot(),
+        build_cell_10_data_md(),
+        build_cell_11_chakravorty(),
     ]
     for idx, cell in enumerate(cells):
         cell.id = f"cell_{idx:02d}"
