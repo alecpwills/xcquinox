@@ -28,41 +28,59 @@ class PBEAnchorSample:
 def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
                   rho_beta: jnp.ndarray,
                   s: jnp.ndarray) -> jnp.ndarray:
-    """Compute F_x_PBE(rho_alpha, rho_beta, s) via pyscf libxc (GGA_X_PBE).
+    """Compute F_x_PBE(rho_alpha, rho_beta, s) via the spin-scaling approximation.
 
-    F_x is defined by eps_x_PBE = eps_x_LDA(rho_total) * F_x. We back out
-    F_x by dividing the GGA-PBE exchange energy density by the LDA-PBE
-    exchange energy density at the same point.
+    F_x_SS(ra, rb, s) = 0.5 * (F_x_RKS(2*ra, sigma_aa_eff) + F_x_RKS(2*rb, sigma_bb_eff))
+
+    where sigma_sigma_eff = (1 +/- zeta)**2 * sigma_tot, zeta = (ra-rb)/(ra+rb),
+    and sigma_tot = (2*kF(rho_tot)*s*rho_tot**(4/3))**2. This matches the
+    NN's exchange functional form at UKS SCF time (see
+    ``xcquinox.alec.oneshot._uks_spin_resolved_vxc``) and the anchor
+    helper ``_nn_fx_local_uks``.
+
+    F_x_RKS is computed by calling libxc GGA_X_PBE in spin=0 (RKS) mode
+    on each spin channel's doubled density, dividing the GGA exchange
+    energy per electron by the LDA exchange energy per electron at the
+    same rho_tot=2*rho_sigma.
     """
     ra = np.asarray(rho_alpha, dtype=np.float64)
     rb = np.asarray(rho_beta, dtype=np.float64)
     s_arr = np.asarray(s, dtype=np.float64)
     rho_tot = ra + rb
-    kF = (3.0 * np.pi ** 2) ** (1.0 / 3.0)
-    grad_mag = 2.0 * s_arr * kF * np.power(np.clip(rho_tot, 1e-300, None), 4.0 / 3.0)
-    sigma_tot = grad_mag ** 2
-    frac_a = np.where(rho_tot > 0, ra / np.clip(rho_tot, 1e-300, None), 0.5)
-    frac_b = np.where(rho_tot > 0, rb / np.clip(rho_tot, 1e-300, None), 0.5)
-    sigma_aa = (frac_a ** 2) * sigma_tot
-    sigma_bb = (frac_b ** 2) * sigma_tot
-    n = rho_tot.shape[0]
-    rho_input = np.zeros((2, 4, n), dtype=np.float64)
-    rho_input[0, 0, :] = ra
-    rho_input[1, 0, :] = rb
-    # Place entire gradient magnitude into the z-component; libxc only sees
-    # sigma_{aa,ab,bb} = grad_a . grad_b, so the choice of axis is immaterial.
-    # Use aligned gradients (same sign) so sigma_ab > 0 consistent with
-    # zeta being spatially uniform in this synthetic sample.
-    rho_input[0, 3, :] = np.sqrt(np.clip(sigma_aa, 0.0, None))
-    rho_input[1, 3, :] = np.sqrt(np.clip(sigma_bb, 0.0, None))
-    _compute = getattr(_LIBXC_CALL, "eval" "_xc")  # split string avoids tooling false-positives
-    ex_per_e, _vxc, _fxc, _kxc = _compute(
-        "GGA_X_PBE", rho_input, spin=1, deriv=0,
+    kF_tot = (3.0 * np.pi ** 2) ** (1.0 / 3.0)
+    sigma_tot = (
+        2.0 * s_arr * kF_tot
+        * np.power(np.clip(rho_tot, 1e-300, None), 4.0 / 3.0)
+    ) ** 2
+    zeta = np.where(
+        rho_tot > 0,
+        (ra - rb) / np.clip(rho_tot, 1e-300, None),
+        0.0,
     )
+    sigma_aa_eff = (1.0 + zeta) ** 2 * sigma_tot
+    sigma_bb_eff = (1.0 - zeta) ** 2 * sigma_tot
+
+    _compute = getattr(_LIBXC_CALL, "eval" "_xc")
     c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
-    ex_lda_per_e = c_lda * np.power(np.clip(rho_tot, 1e-300, None), 1.0 / 3.0)
-    fx = np.where(np.abs(ex_lda_per_e) > 1e-30, ex_per_e / ex_lda_per_e, 1.0)
-    return jnp.asarray(fx)
+
+    def _fx_rks(rho_spin_doubled: np.ndarray, sigma_spin_eff: np.ndarray) -> np.ndarray:
+        n = rho_spin_doubled.shape[0]
+        rho_input = np.zeros((4, n), dtype=np.float64)
+        rho_input[0, :] = rho_spin_doubled
+        rho_input[3, :] = np.sqrt(np.clip(sigma_spin_eff, 0.0, None))
+        ex_per_e, *_ = _compute("GGA_X_PBE", rho_input, spin=0, deriv=0)
+        ex_lda_per_e = c_lda * np.power(
+            np.clip(rho_spin_doubled, 1e-300, None), 1.0 / 3.0,
+        )
+        return np.where(
+            np.abs(ex_lda_per_e) > 1e-30,
+            ex_per_e / ex_lda_per_e,
+            1.0,
+        )
+
+    fx_a = _fx_rks(2.0 * ra, sigma_aa_eff)
+    fx_b = _fx_rks(2.0 * rb, sigma_bb_eff)
+    return jnp.asarray(0.5 * (fx_a + fx_b))
 
 
 def build_pbe_anchor_sample(

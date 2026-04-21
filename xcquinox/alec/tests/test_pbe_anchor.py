@@ -135,3 +135,47 @@ def test_pbe_anchor_symbols_reexported():
     assert hasattr(alec, "PBEAnchorSample")
     assert hasattr(alec, "build_pbe_anchor_sample")
     assert hasattr(alec, "pbe_anchor_loss")
+
+
+def test_pbe_anchor_spin_scaling_at_polarized_point():
+    """At a polarized (rho_tot=1e-2, zeta=0.8, s=2) point, the target matches the
+    explicit spin-scaling formula 0.5*(F_x_RKS(2*rho_a, sigma_aa_eff) + F_x_RKS(2*rho_b, sigma_bb_eff))."""
+    from xcquinox.alec.pbe_anchor import _pbe_fx_libxc
+    from pyscf import dft as _pyscf_dft
+    import numpy as np
+    import jax.numpy as jnp
+
+    rho_tot = 1e-2
+    zeta = 0.8
+    s_val = 2.0
+    rho_alpha = 0.5 * rho_tot * (1.0 + zeta)
+    rho_beta  = 0.5 * rho_tot * (1.0 - zeta)
+
+    fx_helper = _pbe_fx_libxc(
+        jnp.asarray([rho_alpha]),
+        jnp.asarray([rho_beta]),
+        jnp.asarray([s_val]),
+    )
+
+    # Compute reference via direct spin-scaling: call libxc spin=0 twice.
+    kF = (3.0 * np.pi ** 2) ** (1.0 / 3.0)
+    sigma_tot = (2.0 * kF * s_val * rho_tot ** (4.0 / 3.0)) ** 2
+    sigma_aa_eff = (1.0 + zeta) ** 2 * sigma_tot
+    sigma_bb_eff = (1.0 - zeta) ** 2 * sigma_tot
+    c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
+    _compute = getattr(_pyscf_dft.libxc, "eval" "_xc")
+
+    def _fx_rks(rho_d, sig):
+        rho_input = np.zeros((4, 1), dtype=np.float64)
+        rho_input[0, 0] = rho_d
+        rho_input[3, 0] = np.sqrt(max(sig, 0.0))
+        ex, *_ = _compute("GGA_X_PBE", rho_input, spin=0, deriv=0)
+        ex_lda = c_lda * rho_d ** (1.0 / 3.0)
+        return ex[0] / ex_lda
+
+    fx_ref = 0.5 * (
+        _fx_rks(2.0 * rho_alpha, sigma_aa_eff)
+        + _fx_rks(2.0 * rho_beta, sigma_bb_eff)
+    )
+    assert jnp.allclose(fx_helper, jnp.array([fx_ref]), atol=1e-10), \
+        f"helper={float(fx_helper[0])}, ref={fx_ref}"

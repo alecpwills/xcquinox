@@ -378,35 +378,49 @@ def _nn_fx_local_uks(model, rho_alpha: jnp.ndarray,
     evaluator taking a 1-D input tensor ``[rho, sigma, *extras]`` and
     returning a scalar F_x. We therefore vmap over N sample points.
 
-    Spin-scaling identity (Oliver-Perdew): for F_x evaluated against the
-    unpolarized LDA reference at total density (which is how
-    pbe_anchor.Fx_target is computed),
+    Spin-scaled UKS approximation (matches ``_uks_spin_resolved_vxc`` at
+    SCF time):
 
-        F_x_UKS(ra, rb, s) = 0.5 * (F_x_RKS(2*ra, s) + F_x_RKS(2*rb, s))
+        F_x_UKS(ra, rb, s) = 0.5 * (F_x_RKS(2*ra, sigma_aa_eff)
+                                   + F_x_RKS(2*rb, sigma_bb_eff))
 
-    where s is the reduced gradient of the TOTAL density — same s on both
-    spins because the anchor sample fixes a single s per point.
+    where ``sigma_sigma_eff = (1 +/- zeta)**2 * sigma_tot``,
+    ``zeta = (ra-rb)/(ra+rb)``, and ``sigma_tot = (2*kF(rho_tot)*s*rho_tot^(4/3))^2``.
+    This is the SAME per-spin effective sigma that
+    ``_uks_spin_resolved_vxc`` feeds into ``compute_vxc_nn`` during SCF:
+    nabla_rho_sigma = (1 +/- zeta)/2 * nabla_rho_tot spatially, so
+    ``4 * sigma_sigma_sigma = (1 +/- zeta)**2 * sigma_tot`` — exactly
+    ``sigma_sigma_eff`` above.
 
     Uses zero extras (no descriptor features). The anchor probes the bare
     functional form at synthetic (rho, s) points — no molecular grid
     visits them, so there is no physical descriptor value to feed in.
     """
     n_extra = model.xnet.n_extra_features
-    kF = (3.0 * jnp.pi ** 2) ** (1.0 / 3.0)
+    kF_tot = (3.0 * jnp.pi ** 2) ** (1.0 / 3.0)
 
-    def _fx_one(rho_spin_doubled, s_val):
-        sigma_doubled = (
-            2.0 * kF * s_val
-            * jnp.clip(rho_spin_doubled, 1e-30, None) ** (4.0 / 3.0)
-        ) ** 2
+    rho_tot = rho_alpha + rho_beta
+    sigma_tot = (
+        2.0 * kF_tot * s
+        * jnp.clip(rho_tot, 1e-30, None) ** (4.0 / 3.0)
+    ) ** 2
+    zeta = jnp.where(
+        rho_tot > 0,
+        (rho_alpha - rho_beta) / jnp.clip(rho_tot, 1e-30, None),
+        0.0,
+    )
+    sigma_aa_eff = (1.0 + zeta) ** 2 * sigma_tot
+    sigma_bb_eff = (1.0 - zeta) ** 2 * sigma_tot
+
+    def _fx_one(rho_spin_doubled, sigma_spin_eff):
         extras = jnp.zeros(n_extra, dtype=rho_spin_doubled.dtype)
         inputs = jnp.concatenate([
             jnp.atleast_1d(rho_spin_doubled),
-            jnp.atleast_1d(sigma_doubled),
+            jnp.atleast_1d(sigma_spin_eff),
             extras,
         ])
         return model.xnet(inputs)
 
-    fx_a = jax.vmap(_fx_one)(2.0 * rho_alpha, s)
-    fx_b = jax.vmap(_fx_one)(2.0 * rho_beta, s)
+    fx_a = jax.vmap(_fx_one)(2.0 * rho_alpha, sigma_aa_eff)
+    fx_b = jax.vmap(_fx_one)(2.0 * rho_beta, sigma_bb_eff)
     return 0.5 * (fx_a + fx_b)
