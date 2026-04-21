@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_26_cells_after_phase8_1():
+def test_main_produces_28_cells_after_phase8():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 26
+    assert len(nb.cells) == 28
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -350,3 +350,19 @@ def test_eval_df_cell():
     assert "eval_df" in src
     assert "per_molecule.json" in src
     assert "eval_df.parquet" in src
+
+
+def test_vxc_efficacy_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[26].source) if isinstance(nb.cells[26].source, list) else nb.cells[26].source
+    assert "L1_B" in src and "L3_balanced_vxc" in src
+    assert "vxc_efficacy.png" in src
+
+
+def test_anchor_effect_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[27].source) if isinstance(nb.cells[27].source, list) else nb.cells[27].source
+    assert "L3_balanced_vxc" in src and "L4_balanced_vxc_anchor" in src
+    assert "anchor" in src.lower() and "anchor_effect.png" in src

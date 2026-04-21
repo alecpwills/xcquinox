@@ -1408,6 +1408,82 @@ else:
     return new_code_cell(source)
 
 
+def build_cell_27_vxc_efficacy():
+    """Section 5 Cell 27 -- V_xc efficacy (L1 vs L3) on Group 2 short.
+
+    Plots 3 solvers x 2 archs x 3 metrics (abs_ae_error, density_rmse,
+    loss_vxc) as paired bars comparing L1_B (no V_xc) vs L3_balanced_vxc
+    (with V_xc). Writes ``{figures_dir}/vxc_efficacy.png``.
+    """
+    source = r"""# V_xc efficacy: L1 vs L3 on Group 2 short. Answers "is V_xc doing anything?"
+_g2 = eval_df[eval_df.group == "group2"]
+_g2_l1 = _g2[_g2.loss == "L1_B"]
+_g2_l3 = _g2[_g2.loss == "L3_balanced_vxc"]
+
+fig, axes = plt.subplots(len(ARCH_NAMES), 3, figsize=(12, 4 * len(ARCH_NAMES)),
+                         squeeze=False)
+for _ri, _arch in enumerate(ARCH_NAMES):
+    for _ci, _metric in enumerate(["abs_ae_error", "density_rmse", "loss_vxc"]):
+        _d1 = _g2_l1[(_g2_l1.arch == _arch) & (_g2_l1.value_name == _metric)]
+        _d3 = _g2_l3[(_g2_l3.arch == _arch) & (_g2_l3.value_name == _metric)]
+        _x = np.arange(len(SOLVER_LABELS)); _w = 0.4
+        _vals1 = (_d1.groupby("solver")["value"].mean()
+                    .reindex(SOLVER_LABELS).fillna(0.0).values)
+        _vals3 = (_d3.groupby("solver")["value"].mean()
+                    .reindex(SOLVER_LABELS).fillna(0.0).values)
+        axes[_ri][_ci].bar(_x - _w/2, _vals1, width=_w, label="L1 (no V_xc)")
+        axes[_ri][_ci].bar(_x + _w/2, _vals3, width=_w, label="L3 (V_xc)")
+        axes[_ri][_ci].set_xticks(_x)
+        axes[_ri][_ci].set_xticklabels(SOLVER_LABELS, rotation=30, fontsize=7)
+        axes[_ri][_ci].set_title(f"{_arch} | {_metric}", fontsize=9)
+        if _ci == 0: axes[_ri][_ci].legend(fontsize=7)
+fig.suptitle("V_xc efficacy (L1 vs L3, Group 2 short)")
+fig.tight_layout()
+fig.savefig(os.path.join(figures_dir, "vxc_efficacy.png"), dpi=120); plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_28_anchor_effect():
+    """Section 5 Cell 28 -- anchor-effect paired bars (L3 -> L4).
+
+    For each (arch, group) panel, plots per-solver DeltaAE = AE(L3_balanced_vxc)
+    - AE(L4_balanced_vxc_anchor). Positive bars (green) indicate anchor
+    helps; negative (red) indicate anchor hurts. Writes
+    ``{figures_dir}/anchor_effect.png``.
+    """
+    source = r"""# Anchor-effect: L3 -> L4 ΔAE across (arch, solver, group).
+fig, axes = plt.subplots(len(ARCH_NAMES), 3, figsize=(14, 4 * len(ARCH_NAMES)),
+                         squeeze=False)
+for _ri, _arch in enumerate(ARCH_NAMES):
+    for _ci, _grp in enumerate(["group1", "group2", "group3"]):
+        _slice = eval_df[
+            (eval_df.group == _grp) & (eval_df.arch == _arch)
+            & (eval_df.value_name == "abs_ae_error")
+        ]
+        _deltas = []; _labels = []
+        for _s in SOLVER_LABELS:
+            _off = _slice[(_slice.loss == "L3_balanced_vxc")
+                          & (_slice.solver == _s)]["value"].mean()
+            _on = _slice[(_slice.loss == "L4_balanced_vxc_anchor")
+                         & (_slice.solver == _s)]["value"].mean()
+            _deltas.append((_off if pd.notna(_off) else 0.0)
+                           - (_on if pd.notna(_on) else 0.0))
+            _labels.append(_s)
+        _x = np.arange(len(_deltas))
+        axes[_ri][_ci].bar(_x, _deltas,
+                           color=["green" if _d > 0 else "red" for _d in _deltas])
+        axes[_ri][_ci].axhline(0, color="k", lw=0.5)
+        axes[_ri][_ci].set_xticks(_x); axes[_ri][_ci].set_xticklabels(_labels, fontsize=7)
+        axes[_ri][_ci].set_title(f"{_arch} | {_grp}", fontsize=9)
+        axes[_ri][_ci].set_ylabel("ΔAE (L3 − L4; + = anchor helps)")
+fig.suptitle("Anchor effect: AE(L3 V_xc) − AE(L4 V_xc+anchor)")
+fig.tight_layout()
+fig.savefig(os.path.join(figures_dir, "anchor_effect.png"), dpi=120); plt.show()
+"""
+    return new_code_cell(source)
+
+
 def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
@@ -1449,6 +1525,8 @@ def main(
         build_cell_24_eval_md(),
         build_cell_25_main_sweep(),
         build_cell_26_eval_preview(),
+        build_cell_27_vxc_efficacy(),
+        build_cell_28_anchor_effect(),
     ]
     for idx, cell in enumerate(cells):
         cell.id = f"cell_{idx:02d}"
