@@ -36,3 +36,38 @@ def test_generator_has_default_constants():
     )
     assert gen.DEFAULT_SOLVER_LABELS == ("oneshot", "fixed_j_3", "full_3")
     assert gen.DEFAULT_CHECKPOINT_BASE == "checkpoints_step6"
+
+
+def test_main_produces_5_cells_after_phase4():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6_smoke.ipynb")
+    assert len(nb.cells) == 5
+
+
+def test_cell_01_is_markdown_title():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6_smoke.ipynb")
+    assert nb.cells[0].cell_type == "markdown"
+    src = "".join(nb.cells[0].source) if isinstance(nb.cells[0].source, list) else nb.cells[0].source
+    assert "Step 6" in src
+    assert "C2H2" in src or "C₂H₂" in src
+
+
+def test_cell_03_contains_step6_constants():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6_smoke.ipynb")
+    src = "".join(nb.cells[2].source) if isinstance(nb.cells[2].source, list) else nb.cells[2].source
+    for tok in ("CHECKPOINT_BASE", "PRETRAIN_SKIP_IF_EXISTS",
+                "PRETRAIN_N_STEPS", "TRAIN_N_STEPS_SHORT", "TRAIN_N_STEPS_LONG",
+                "PBE_ANCHOR_WEIGHT", "PBE_ANCHOR_N_POINTS", "PBE_ANCHOR_SEED"):
+        assert tok in src, f"expected {tok!r} in constants cell"
+
+
+def test_main_output_is_deterministic_byte_identical():
+    import hashlib
+    gen = load_generator()
+    gen.main(output_path="/tmp/_step6_det_1.ipynb")
+    gen.main(output_path="/tmp/_step6_det_2.ipynb")
+    h1 = hashlib.sha256(open("/tmp/_step6_det_1.ipynb", "rb").read()).hexdigest()
+    h2 = hashlib.sha256(open("/tmp/_step6_det_2.ipynb", "rb").read()).hexdigest()
+    assert h1 == h2
