@@ -487,6 +487,12 @@ class TrainingSpec:
     solver_config: object | None = None
     loss_metric: str = "absolute"
     balancing: object | None = None
+    # PBE-anchor regularization (step 6, 2026-04-21). Direct fields rather
+    # than loss_kwargs because PBEAnchorSample contains jnp.ndarrays that
+    # `_freeze` refuses. `object | None` matches the `solver_config` /
+    # `balancing` precedent.
+    pbe_anchor_weight: float = 0.0
+    pbe_anchor_sample: object | None = None
 
     @property
     def targets_dict(self) -> dict[str, float]:
@@ -666,6 +672,12 @@ class TestSpec:
     save_per_molecule: bool = True
     save_aggregate: bool = True
     solver_config: object | None = None
+    # PBE-anchor regularization (step 6, 2026-04-21). Direct fields rather
+    # than loss_kwargs because PBEAnchorSample contains jnp.ndarrays that
+    # `_freeze` refuses. `object | None` matches the `solver_config` /
+    # `balancing` precedent.
+    pbe_anchor_weight: float = 0.0
+    pbe_anchor_sample: object | None = None
 
     @property
     def metric_kwargs_dict(self) -> dict[str, dict]:

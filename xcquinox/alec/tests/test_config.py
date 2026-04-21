@@ -451,3 +451,43 @@ def test_pretrain_spec_loss_weighting_in_describe():
     )
     out = spec.describe()
     assert out["loss_weighting"] == "integration"
+
+
+# ---------------------------------------------------------------------------
+# Step-6 Task 3.1: PBE-anchor pass-through fields on TrainingSpec / TestSpec
+# ---------------------------------------------------------------------------
+
+def test_training_spec_accepts_pbe_anchor_fields():
+    """TrainingSpec.pbe_anchor_weight + pbe_anchor_sample are declared fields."""
+    from xcquinox.alec.config import TrainingSpec
+    import dataclasses
+    field_names = {f.name for f in dataclasses.fields(TrainingSpec)}
+    assert "pbe_anchor_weight" in field_names
+    assert "pbe_anchor_sample" in field_names
+
+
+def test_training_spec_defaults_anchor_to_zero_and_none():
+    """Constructing a TrainingSpec without anchor kwargs yields (0.0, None)."""
+    from xcquinox.alec.config import TrainingSpec, ArchitectureConfig
+    from xcquinox.alec.tests.fixtures.molecules import h_atom
+    arch = ArchitectureConfig(
+        name="tiny", depth=2, nodes=8, attention=False,
+        descriptors=(), x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+    spec = TrainingSpec(
+        arch=arch, molecules=(h_atom(),),
+        targets=(("H", 0.0),),
+        atom_energies=(("H", -0.5),),
+        loss_name="A_atomization",
+    )
+    assert spec.pbe_anchor_weight == 0.0
+    assert spec.pbe_anchor_sample is None
+
+
+def test_test_spec_accepts_pbe_anchor_fields():
+    from xcquinox.alec.config import TestSpec
+    import dataclasses
+    field_names = {f.name for f in dataclasses.fields(TestSpec)}
+    assert "pbe_anchor_weight" in field_names
+    assert "pbe_anchor_sample" in field_names

@@ -340,6 +340,9 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
     phase1_kwargs = _filter_loss_kwargs(spec.loss_kwargs_dict, balancing.phase1_loss)
     if balancing.phase1_loss_kwargs:
         phase1_kwargs.update(dict(balancing.phase1_loss_kwargs))
+    # Inject step-6 anchor fields unless explicitly overridden above.
+    phase1_kwargs.setdefault("pbe_anchor_weight", spec.pbe_anchor_weight)
+    phase1_kwargs.setdefault("pbe_anchor_sample", spec.pbe_anchor_sample)
     phase1_loss = make_loss(
         balancing.phase1_loss, molecules=spec.molecules, **phase1_kwargs)
     phase1_optimizer = build_optimizer(
@@ -498,7 +501,13 @@ def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
     """Train AlecGGAModel end-to-end. Dispatches to strategy-specific loop."""
     spec.validate()
     model = _build_model(spec)
-    loss = make_loss(spec.loss_name, molecules=spec.molecules, **spec.loss_kwargs_dict)
+    loss = make_loss(
+        spec.loss_name,
+        molecules=spec.molecules,
+        pbe_anchor_weight=spec.pbe_anchor_weight,
+        pbe_anchor_sample=spec.pbe_anchor_sample,
+        **spec.loss_kwargs_dict,
+    )
     batch = _build_batch(spec, loss)
     balancing = spec.balancing
 
