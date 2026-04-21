@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_12_cells_after_phase6_2():
+def test_main_produces_13_cells_after_phase6_3():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 12
+    assert len(nb.cells) == 13
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -154,3 +154,19 @@ def test_h2o_cell_uses_w411_geometry_and_hardened_oep():
     # Real save_vxc_ref signature (OEPResult first, not vxc_matrix)
     assert "save_vxc_ref(_oep" in src
     assert "method=\"ccsd\"" in src or "method='ccsd'" in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.3 tests: C2H2 data cell (cell 13)
+# ---------------------------------------------------------------------------
+
+
+def test_c2h2_cell_uses_w411_geometry():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[12].source) if isinstance(nb.cells[12].source, list) else nb.cells[12].source
+    assert "C2H2" in src
+    assert "1.666650" in src and "0.603250" in src
+    assert "405.525" in src
+    assert "def2-tzvp-jkfit" in src
+    assert "save_vxc_ref(_oep" in src
