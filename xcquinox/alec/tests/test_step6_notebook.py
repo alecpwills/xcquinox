@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_11_cells_after_phase6_1():
+def test_main_produces_12_cells_after_phase6_2():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 11
+    assert len(nb.cells) == 12
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -132,3 +132,25 @@ def test_chakravorty_cell_has_all_five_atoms():
                         ("N", "-54.5892"), ("O", "-75.0673"), ("F", "-99.7339")):
         assert f'"{atom}"' in src, f"missing atom key {atom}"
         assert value in src, f"missing value {value}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.2 tests: H2O data cell (cell 12)
+# ---------------------------------------------------------------------------
+
+
+def test_h2o_cell_uses_w411_geometry_and_hardened_oep():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[11].source) if isinstance(nb.cells[11].source, list) else nb.cells[11].source
+    # W4-11 canonical H2O geometry
+    assert "0.117790" in src and "0.755453" in src and "-0.471161" in src
+    # W4-11 AE reference
+    assert "232.974" in src
+    # Hardened OEP primary + fallback
+    assert "def2-tzvp-jkfit" in src
+    assert "max_iter=500" in src and "max_iter=1000" in src
+    assert "regularization=1e-3" in src and "regularization=1e-2" in src
+    # Real save_vxc_ref signature (OEPResult first, not vxc_matrix)
+    assert "save_vxc_ref(_oep" in src
+    assert "method=\"ccsd\"" in src or "method='ccsd'" in src

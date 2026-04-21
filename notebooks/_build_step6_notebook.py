@@ -449,6 +449,88 @@ for _z, _e in ATOMIC_ENERGIES_CHAKRAVORTY.items():
     return new_code_cell(source)
 
 
+def build_cell_12_h2o_data():
+    """Section 2 Cell 12 -- H2O reference data (W4-11 geometry) + OEP inversion.
+
+    Generates cached PBE/HF/CCSD totals, CCSD AO density matrix and ρ_ccsd on
+    the PBE grid, then runs ``run_oep_inversion`` with hardened settings and a
+    single fallback. On OEP failure, ``save_vxc_ref`` is skipped so that
+    V_xc-aware losses degrade to no-op instead of crashing the notebook.
+
+    Hardened settings (revisable post-run, see spec §8):
+      * primary:  aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=1e-5, reg=1e-3
+      * fallback: aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=1e-5, reg=1e-2
+    """
+    source = r"""# H2O training data (W4-11 geometry, AE=232.974 kcal/mol, spin=0).
+H2O_ATOM = (
+    "O  0.000000  0.000000   0.117790; "
+    "H  0.000000  0.755453  -0.471161; "
+    "H  0.000000 -0.755453  -0.471161"
+)
+H2O_AE_REF_KCALMOL = 232.974
+
+_npz = os.path.join(ext_data_dir, "H2O.npz")
+_meta = os.path.join(ext_data_dir, "H2O_metadata.json")
+if os.path.isfile(_npz) and os.path.isfile(_meta):
+    print(f"Using cached {_npz}")
+else:
+    _mol = gto.M(atom=H2O_ATOM, basis=BASIS, charge=0, spin=0, verbose=0)
+    _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
+    _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
+    _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
+    _cc = cc.CCSD(_mf_hf); _cc.kernel()
+    # Use HF total + CCSD correlation (numerically more stable than _cc.e_tot).
+    E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
+
+    # CCSD DM is built in the MO basis; transform to AO via C @ dm_mo @ C.T
+    # (standard PySCF closed-shell convention).
+    dm_mo = _cc.make_rdm1()
+    C = _mf_hf.mo_coeff
+    dm_ao = C @ dm_mo @ C.T
+
+    _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
+    rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
+
+    np.savez(_npz,
+             dm_target=dm_ao,
+             rho_ref_grid=rho_ccsd,
+             ref_density_method="ccsd",
+             E_ref_literature=E_ccsd)
+    with open(_meta, "w") as _f:
+        json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
+                   "E_pbe_total": E_pbe, "E_lit_Ha": None,
+                   "ae_ref_kcalmol": H2O_AE_REF_KCALMOL}, _f, indent=2)
+    print(f"Wrote {_npz}")
+
+    _oep_spec = alec.MoleculeSpec(
+        name="H2O", atom=H2O_ATOM, basis=BASIS,
+        charge=0, spin=0, grid_level=GRID_LEVEL,
+        atom_composition=(("O", 1), ("H", 2)),
+    )
+    # Hardened OEP settings; see spec §8. Primary run with tighter regularization,
+    # fallback to a looser regularization + more iterations before giving up.
+    _oep = alec.run_oep_inversion(
+        _oep_spec, dm_ao,
+        aux_basis="def2-tzvp-jkfit",
+        max_iter=500, conv_tol=1e-5, regularization=1e-3,
+    )
+    if not _oep.converged:
+        print("[OEP WARN] H2O primary failed; fallback")
+        _oep = alec.run_oep_inversion(
+            _oep_spec, dm_ao,
+            aux_basis="def2-tzvp-jkfit",
+            max_iter=1000, conv_tol=1e-5, regularization=1e-2,
+        )
+    if _oep.converged:
+        # save_vxc_ref takes the OEPResult OBJECT first, NOT oep_result.vxc_matrix.
+        alec.save_vxc_ref(_oep, _npz, dm_target=dm_ao, method="ccsd")
+        print(f"[OEP OK] H2O n_iter={_oep.n_iter} density_error={_oep.density_error:.2e}")
+    else:
+        print("[OEP FAIL] H2O: skipping save_vxc_ref")
+"""
+    return new_code_cell(source)
+
+
 def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
@@ -475,6 +557,7 @@ def main(
         build_cell_09_pretrain_loss_plot(),
         build_cell_10_data_md(),
         build_cell_11_chakravorty(),
+        build_cell_12_h2o_data(),
     ]
     for idx, cell in enumerate(cells):
         cell.id = f"cell_{idx:02d}"
