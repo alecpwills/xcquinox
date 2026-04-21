@@ -72,10 +72,26 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_39_cells_after_phase10():
+def test_main_produces_42_cells_after_phase11():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 39
+    assert len(nb.cells) == 42
+
+
+def test_every_code_cell_is_ast_parseable():
+    import ast
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6_ast.ipynb")
+    for i, cell in enumerate(nb.cells):
+        if cell.cell_type != "code":
+            continue
+        src = "".join(cell.source) if isinstance(cell.source, list) else cell.source
+        if not src.strip():
+            continue
+        try:
+            ast.parse(src)
+        except SyntaxError as e:
+            pytest.fail(f"Cell {i} fails to parse: {e}")
 
 
 def test_pretrain_loop_cell_uses_skip_flag():

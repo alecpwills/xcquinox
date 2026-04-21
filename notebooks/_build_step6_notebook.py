@@ -2222,6 +2222,36 @@ plt.show()
     return new_code_cell(source)
 
 
+def build_cell_40_findings_md():
+    return new_markdown_cell(r"""## Section 7 -- Findings
+
+Populate post-run. Template:
+- H1 (data fix): ...
+- H2 (regularization fix): ...
+- H3 (interaction): ...
+- H4 (overfitting): ...
+- H5 (V_xc necessity): ...
+""")
+
+
+def build_cell_41_step7_roadmap_md():
+    return new_markdown_cell(r"""## Section 8 -- Step 7 Roadmap
+
+Skeleton -- body depends on step-6 results. Candidate directions:
+1. If data fix works: widen training to W4-11 subset.
+2. If PBE-anchor works: sweep w_anchor in {1e-4, 1e-3, 1e-2}.
+3. If overfitting confirmed: test early-stopping criteria.
+""")
+
+
+def build_cell_42_closing_md():
+    return new_markdown_cell(r"""## Closing
+
+End of step-6 notebook. Regenerate from
+`notebooks/_build_step6_notebook.py` -- never hand-edit.
+""")
+
+
 def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
@@ -2276,6 +2306,9 @@ def main(
         build_cell_37_drift_panel_b(),
         build_cell_38_drift_panel_c(),
         build_cell_39_scf_convergence(),
+        build_cell_40_findings_md(),
+        build_cell_41_step7_roadmap_md(),
+        build_cell_42_closing_md(),
     ]
     for idx, cell in enumerate(cells):
         cell.id = f"cell_{idx:02d}"
