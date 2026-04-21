@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_16_cells_after_phase6():
+def test_main_produces_20_cells_after_phase7_1():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 16
+    assert len(nb.cells) == 20
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -219,3 +219,32 @@ def test_mol_specs_and_precompute_cell():
     assert "materialize_descriptors" in src
     # mol_data_by_name dict
     assert "mol_data_by_name" in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 7.1 tests: training section header + three training spec groups
+# (cells 17-20)
+# ---------------------------------------------------------------------------
+
+
+def test_three_training_groups_present():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src_all = "\n".join(
+        ("".join(c.source) if isinstance(c.source, list) else c.source)
+        for c in nb.cells
+    )
+    for tok in ("_specs_group1", "_specs_group2", "_specs_group3",
+                "L1_B", "L2_C_anchor", "L3_balanced_vxc", "L4_balanced_vxc_anchor",
+                "LossNormConfig", "pbe_anchor_weight", "pbe_anchor_sample",
+                "ATOMIC_ENERGIES_CHAKRAVORTY", "SOLVER_CONFIGS",
+                "from_dicts"):
+        assert tok in src_all, f"missing {tok}"
+
+
+def test_group3_uses_long_steps():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[19].source) if isinstance(nb.cells[19].source, list) else nb.cells[19].source
+    assert "TRAIN_N_STEPS_LONG" in src
+    assert "group3_dir" in src

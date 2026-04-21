@@ -747,6 +747,226 @@ for _ms in (H2O_spec, C2H2_spec, H_spec, O_spec, C_spec):
     return new_code_cell(source)
 
 
+def build_cell_17_training_md():
+    """Section 3 Cell 17 -- markdown header for the three training groups."""
+    source = r"""## Section 3 -- Training
+
+72 specs split into 3 groups. Each group: 2 archs x 4 losses x 3 solvers.
+
+| # | Data | Phase | Runs |
+|---|---|---|---|
+| 1 | H2O only | short=TRAIN_N_STEPS_SHORT | 24 |
+| 2 | H2O + C2H2 | short=TRAIN_N_STEPS_SHORT | 24 |
+| 3 | H2O + C2H2 | long=TRAIN_N_STEPS_LONG | 24 |
+
+Losses:
+- L1_B: B_atomization_plus_dm (control)
+- L2_C_anchor: C_atomization_plus_grid + PBE-anchor
+- L3_balanced_vxc: B_atomization_plus_dm + V_xc, LossNormConfig balancing
+- L4_balanced_vxc_anchor: L3 + PBE-anchor
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_18_group1_specs():
+    """Section 3 Cell 18 -- Group 1 (H2O only, short). 24 TrainingSpecs.
+
+    Loss LABELS ``L1_B`` / ``L2_C_anchor`` / ``L3_balanced_vxc`` /
+    ``L4_balanced_vxc_anchor`` each map to a concrete registry ``loss_name``
+    plus a loss-kwargs / balancing / PBE-anchor triple. ``pbe_anchor_weight``
+    and ``pbe_anchor_sample`` are direct ``TrainingSpec`` fields (see Task
+    3.1), NOT loss_kwargs entries.
+    """
+    source = r"""# Group 1: H2O only, short=TRAIN_N_STEPS_SHORT. 24 specs.
+KCAL_PER_HA = 627.5094740631
+LOSS_NAMES = ("L1_B", "L2_C_anchor", "L3_balanced_vxc", "L4_balanced_vxc_anchor")
+_targets_group1 = {"H2O": H2O_AE_REF_KCALMOL / KCAL_PER_HA}
+_mol_specs_group1 = (H2O_spec,)
+_atom_specs_group1 = (H_spec, O_spec)
+
+_specs_group1 = []
+for _arch in ARCH_NAMES:
+    for _loss in LOSS_NAMES:
+        for _solver in SOLVER_LABELS:
+            _cfg = SOLVER_CONFIGS[_solver]
+            if _loss == "L1_B":
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "solver_config": _cfg}
+                _bal = None
+                _anchor_w = 0.0
+                _anchor_s = None
+            elif _loss == "L2_C_anchor":
+                _lname = "C_atomization_plus_grid"
+                _lkw = {"density_weight": 0.1, "solver_config": _cfg}
+                _bal = None
+                _anchor_w = PBE_ANCHOR_WEIGHT
+                _anchor_s = pbe_anchor
+            elif _loss == "L3_balanced_vxc":
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "vxc_weight": 0.01, "solver_config": _cfg}
+                _bal = LossNormConfig()
+                _anchor_w = 0.0
+                _anchor_s = None
+            elif _loss == "L4_balanced_vxc_anchor":
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "vxc_weight": 0.01, "solver_config": _cfg}
+                _bal = LossNormConfig()
+                _anchor_w = PBE_ANCHOR_WEIGHT
+                _anchor_s = pbe_anchor
+            else:
+                raise ValueError(f"unknown loss label: {_loss!r}")
+            _specs_group1.append(alec.TrainingSpec.from_dicts(
+                arch=alec.get_architecture(_arch),
+                loss_name=_lname,
+                molecules=_mol_specs_group1 + _atom_specs_group1,
+                targets=_targets_group1,
+                atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
+                loss_kwargs=_lkw,
+                solver_config=_cfg,
+                pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{_arch}",
+                checkpoint_dir=f"{group1_dir}/{_arch}/{_loss}/{_solver}",
+                n_steps=TRAIN_N_STEPS_SHORT,
+                lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.2, grad_clip=1.0,
+                balancing=_bal,
+                pbe_anchor_weight=_anchor_w,
+                pbe_anchor_sample=_anchor_s,
+            ))
+print(f"Group 1 (H2O-only short): {len(_specs_group1)} specs")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_19_group2_specs():
+    """Section 3 Cell 19 -- Group 2 (H2O + C2H2, short). 24 TrainingSpecs.
+
+    Mirrors Cell 18 but targets/molecules include C2H2 and atom C.
+    """
+    source = r"""# Group 2: H2O + C2H2, short=TRAIN_N_STEPS_SHORT. 24 specs.
+_targets_group2 = {
+    "H2O":  H2O_AE_REF_KCALMOL  / KCAL_PER_HA,
+    "C2H2": C2H2_AE_REF_KCALMOL / KCAL_PER_HA,
+}
+_mol_specs_group2 = (H2O_spec, C2H2_spec)
+_atom_specs_group2 = (H_spec, O_spec, C_spec)
+
+_specs_group2 = []
+for _arch in ARCH_NAMES:
+    for _loss in LOSS_NAMES:
+        for _solver in SOLVER_LABELS:
+            _cfg = SOLVER_CONFIGS[_solver]
+            if _loss == "L1_B":
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "solver_config": _cfg}
+                _bal = None
+                _anchor_w = 0.0
+                _anchor_s = None
+            elif _loss == "L2_C_anchor":
+                _lname = "C_atomization_plus_grid"
+                _lkw = {"density_weight": 0.1, "solver_config": _cfg}
+                _bal = None
+                _anchor_w = PBE_ANCHOR_WEIGHT
+                _anchor_s = pbe_anchor
+            elif _loss == "L3_balanced_vxc":
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "vxc_weight": 0.01, "solver_config": _cfg}
+                _bal = LossNormConfig()
+                _anchor_w = 0.0
+                _anchor_s = None
+            elif _loss == "L4_balanced_vxc_anchor":
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "vxc_weight": 0.01, "solver_config": _cfg}
+                _bal = LossNormConfig()
+                _anchor_w = PBE_ANCHOR_WEIGHT
+                _anchor_s = pbe_anchor
+            else:
+                raise ValueError(f"unknown loss label: {_loss!r}")
+            _specs_group2.append(alec.TrainingSpec.from_dicts(
+                arch=alec.get_architecture(_arch),
+                loss_name=_lname,
+                molecules=_mol_specs_group2 + _atom_specs_group2,
+                targets=_targets_group2,
+                atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
+                loss_kwargs=_lkw,
+                solver_config=_cfg,
+                pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{_arch}",
+                checkpoint_dir=f"{group2_dir}/{_arch}/{_loss}/{_solver}",
+                n_steps=TRAIN_N_STEPS_SHORT,
+                lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.2, grad_clip=1.0,
+                balancing=_bal,
+                pbe_anchor_weight=_anchor_w,
+                pbe_anchor_sample=_anchor_s,
+            ))
+print(f"Group 2 (H2O+C2H2 short): {len(_specs_group2)} specs")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_20_group3_specs():
+    """Section 3 Cell 20 -- Group 3 (H2O + C2H2, long). 24 TrainingSpecs.
+
+    Identical to Cell 19 except ``checkpoint_dir`` uses ``group3_dir`` and
+    ``n_steps=TRAIN_N_STEPS_LONG``.
+    """
+    source = r"""# Group 3: H2O + C2H2, long=TRAIN_N_STEPS_LONG. 24 specs.
+_targets_group3 = {
+    "H2O":  H2O_AE_REF_KCALMOL  / KCAL_PER_HA,
+    "C2H2": C2H2_AE_REF_KCALMOL / KCAL_PER_HA,
+}
+_mol_specs_group3 = (H2O_spec, C2H2_spec)
+_atom_specs_group3 = (H_spec, O_spec, C_spec)
+
+_specs_group3 = []
+for _arch in ARCH_NAMES:
+    for _loss in LOSS_NAMES:
+        for _solver in SOLVER_LABELS:
+            _cfg = SOLVER_CONFIGS[_solver]
+            if _loss == "L1_B":
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "solver_config": _cfg}
+                _bal = None
+                _anchor_w = 0.0
+                _anchor_s = None
+            elif _loss == "L2_C_anchor":
+                _lname = "C_atomization_plus_grid"
+                _lkw = {"density_weight": 0.1, "solver_config": _cfg}
+                _bal = None
+                _anchor_w = PBE_ANCHOR_WEIGHT
+                _anchor_s = pbe_anchor
+            elif _loss == "L3_balanced_vxc":
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "vxc_weight": 0.01, "solver_config": _cfg}
+                _bal = LossNormConfig()
+                _anchor_w = 0.0
+                _anchor_s = None
+            elif _loss == "L4_balanced_vxc_anchor":
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "vxc_weight": 0.01, "solver_config": _cfg}
+                _bal = LossNormConfig()
+                _anchor_w = PBE_ANCHOR_WEIGHT
+                _anchor_s = pbe_anchor
+            else:
+                raise ValueError(f"unknown loss label: {_loss!r}")
+            _specs_group3.append(alec.TrainingSpec.from_dicts(
+                arch=alec.get_architecture(_arch),
+                loss_name=_lname,
+                molecules=_mol_specs_group3 + _atom_specs_group3,
+                targets=_targets_group3,
+                atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
+                loss_kwargs=_lkw,
+                solver_config=_cfg,
+                pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{_arch}",
+                checkpoint_dir=f"{group3_dir}/{_arch}/{_loss}/{_solver}",
+                n_steps=TRAIN_N_STEPS_LONG,
+                lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.2, grad_clip=1.0,
+                balancing=_bal,
+                pbe_anchor_weight=_anchor_w,
+                pbe_anchor_sample=_anchor_s,
+            ))
+print(f"Group 3 (H2O+C2H2 long): {len(_specs_group3)} specs")
+"""
+    return new_code_cell(source)
+
+
 def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
@@ -778,6 +998,10 @@ def main(
         build_cell_14_atoms(),
         build_cell_15_pbe_anchor_sample(),
         build_cell_16_specs_and_precompute(),
+        build_cell_17_training_md(),
+        build_cell_18_group1_specs(),
+        build_cell_19_group2_specs(),
+        build_cell_20_group3_specs(),
     ]
     for idx, cell in enumerate(cells):
         cell.id = f"cell_{idx:02d}"
