@@ -73,6 +73,10 @@ def build_pbe_anchor_sample(
     seed: int = 20260421,
 ) -> PBEAnchorSample:
     """Build (rho_alpha, rho_beta, s) sample with precomputed PBE F_x targets."""
+    if not (-1.0 <= zeta_range[0] <= zeta_range[1] <= 1.0):
+        raise ValueError(
+            f"zeta_range must lie in [-1, 1] with low <= high; got {zeta_range!r}"
+        )
     rng = np.random.default_rng(seed)
     log_rho = rng.uniform(log_rho_range[0], log_rho_range[1], size=n_points)
     zeta = rng.uniform(zeta_range[0], zeta_range[1], size=n_points)
@@ -95,7 +99,16 @@ def pbe_anchor_loss(params,
                     sample: PBEAnchorSample,
                     weight: float,
                     nn_fx_fn: Callable) -> jnp.ndarray:
-    """Mean-squared anchor loss weighted by `weight`."""
+    """Mean-squared anchor loss weighted by `weight`.
+
+    Short-circuits to 0.0 when `weight == 0.0`. Otherwise returns:
+        weight * mean((F_x_nn - sample.Fx_target) ** 2)
+
+    The caller's `nn_fx_fn(params, rho_alpha, rho_beta, s) -> (N,) array`
+    must return NN-predicted F_x at the N sample points, using the same
+    UKS forward-pass convention the loss class uses (spin-scaling:
+    F_x_UKS(rho/2, rho/2, s) = F_x_RKS(rho, s)).
+    """
     if weight == 0.0:
         return jnp.array(0.0, dtype=jnp.float64)
     fx_nn = nn_fx_fn(params, sample.rho_alpha, sample.rho_beta, sample.s)

@@ -85,3 +85,46 @@ def test_pbe_anchor_loss_gradient_finite():
     grad_fn = jax.grad(pbe_anchor_loss, argnums=0)
     g = grad_fn(params, sample, 1e-3, linear_nn)
     assert jnp.all(jnp.isfinite(g["scale"]))
+
+
+def test_build_pbe_anchor_sample_rejects_out_of_range_zeta():
+    with pytest.raises(ValueError, match="zeta_range"):
+        build_pbe_anchor_sample(n_points=10, zeta_range=(0.0, 1.5), seed=0)
+    with pytest.raises(ValueError, match="zeta_range"):
+        build_pbe_anchor_sample(n_points=10, zeta_range=(-1.5, 0.0), seed=0)
+    with pytest.raises(ValueError, match="zeta_range"):
+        build_pbe_anchor_sample(n_points=10, zeta_range=(0.5, 0.1), seed=0)
+
+
+def test_pbe_anchor_rks_reduction_via_spin_scaling():
+    """F_x_UKS(rho/2, rho/2, s) must equal F_x_RKS(rho, s) by spin-scaling."""
+    from xcquinox.alec.pbe_anchor import _pbe_fx_libxc
+    from pyscf import dft as _pyscf_dft
+    import numpy as np
+    import jax.numpy as jnp
+
+    rho_total = np.array([0.01, 0.1, 0.5, 1.0])
+    s_vals    = np.array([0.5, 1.0, 5.0, 10.0])
+
+    # UKS path via _pbe_fx_libxc at rho/2, rho/2.
+    fx_uks = _pbe_fx_libxc(
+        jnp.asarray(rho_total / 2.0),
+        jnp.asarray(rho_total / 2.0),
+        jnp.asarray(s_vals),
+    )
+
+    # Reference RKS path: call libxc in spin-unpolarized mode.
+    kF = (3.0 * np.pi ** 2) ** (1.0 / 3.0)
+    grad_mag = 2.0 * s_vals * kF * rho_total ** (4.0 / 3.0)
+    sigma = grad_mag ** 2
+    rho_input_rks = np.zeros((4, rho_total.shape[0]), dtype=np.float64)
+    rho_input_rks[0, :] = rho_total
+    rho_input_rks[3, :] = np.sqrt(sigma)
+    _compute = getattr(_pyscf_dft.libxc, "eval" "_xc")
+    ex_per_e_rks, *_ = _compute("GGA_X_PBE", rho_input_rks, spin=0, deriv=0)
+    c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
+    ex_lda_per_e = c_lda * rho_total ** (1.0 / 3.0)
+    fx_rks = ex_per_e_rks / ex_lda_per_e
+
+    assert jnp.allclose(fx_uks, jnp.asarray(fx_rks), atol=1e-10), \
+        f"spin-scaling identity broken: UKS={fx_uks}, RKS={fx_rks}"
