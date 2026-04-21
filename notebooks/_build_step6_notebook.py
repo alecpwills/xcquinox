@@ -457,13 +457,20 @@ def build_cell_12_h2o_data():
     """Section 2 Cell 12 -- H2O reference data (W4-11 geometry) + OEP inversion.
 
     Generates cached PBE/HF/CCSD totals, CCSD AO density matrix and ρ_ccsd on
-    the PBE grid, then runs ``run_oep_inversion`` with hardened settings and a
-    single fallback. On OEP failure, ``save_vxc_ref`` is skipped so that
-    V_xc-aware losses degrade to no-op instead of crashing the notebook.
+    the PBE grid, then runs ``run_oep_inversion`` through a three-tier
+    cascade. On OEP failure at all tiers, ``save_vxc_ref`` is skipped so
+    V_xc-aware losses degrade to no-op rather than crashing the notebook.
 
-    Hardened settings (revisable post-run, see spec §8):
-      * primary:  aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=1e-5, reg=1e-3
-      * fallback: aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=1e-5, reg=1e-2
+    OEP cascade (revised 2026-04-21 after first-run failure on the hardened
+    tzvp-jkfit settings; spec §8 auth'd revise-after-run):
+      * primary:   aux_basis="def2-svp-jkfit",  max_iter=200,  conv_tol=1e-6, reg=1e-4
+                   (step-5-proven; known to converge on H2O)
+      * fallback1: aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=1e-5, reg=1e-3
+      * fallback2: aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=1e-5, reg=1e-2
+
+    Re-run behavior: if H2O.npz exists but lacks vxc_ref (e.g. prior OEP
+    failed), reload dm_target from the cached .npz and retry the cascade
+    without recomputing CCSD.
     """
     source = r"""# H2O training data (W4-11 geometry, AE=232.974 kcal/mol, spin=0).
 H2O_ATOM = (
@@ -475,62 +482,77 @@ H2O_AE_REF_KCALMOL = 232.974
 
 _npz = os.path.join(ext_data_dir, "H2O.npz")
 _meta = os.path.join(ext_data_dir, "H2O_metadata.json")
-if os.path.isfile(_npz) and os.path.isfile(_meta):
-    print(f"Using cached {_npz}")
+
+def _npz_has_vxc_ref(_p):
+    if not os.path.isfile(_p): return False
+    with np.load(_p) as _f:
+        return "vxc_ref" in _f.files
+
+if os.path.isfile(_npz) and os.path.isfile(_meta) and _npz_has_vxc_ref(_npz):
+    print(f"Using cached {_npz} (vxc_ref present)")
 else:
-    _mol = gto.M(atom=H2O_ATOM, basis=BASIS, charge=0, spin=0, verbose=0)
-    _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
-    _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
-    _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
-    _cc = cc.CCSD(_mf_hf); _cc.kernel()
-    # Use HF total + CCSD correlation (numerically more stable than _cc.e_tot).
-    E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
+    if os.path.isfile(_npz) and os.path.isfile(_meta):
+        # CCSD data exists but OEP was skipped previously. Reload dm_target
+        # and jump straight to the OEP cascade.
+        print(f"Cached {_npz} missing vxc_ref; retrying OEP cascade")
+        with np.load(_npz) as _f:
+            dm_ao = np.asarray(_f["dm_target"])
+    else:
+        _mol = gto.M(atom=H2O_ATOM, basis=BASIS, charge=0, spin=0, verbose=0)
+        _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
+        _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
+        _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
+        _cc = cc.CCSD(_mf_hf); _cc.kernel()
+        # Use HF total + CCSD correlation (numerically more stable than _cc.e_tot).
+        E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
 
-    # CCSD DM is built in the MO basis; transform to AO via C @ dm_mo @ C.T
-    # (standard PySCF closed-shell convention).
-    dm_mo = _cc.make_rdm1()
-    C = _mf_hf.mo_coeff
-    dm_ao = C @ dm_mo @ C.T
+        # CCSD DM is built in the MO basis; transform to AO via C @ dm_mo @ C.T
+        # (standard PySCF closed-shell convention).
+        dm_mo = _cc.make_rdm1()
+        C = _mf_hf.mo_coeff
+        dm_ao = C @ dm_mo @ C.T
 
-    _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
-    rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
+        _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
+        rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
 
-    np.savez(_npz,
-             dm_target=dm_ao,
-             rho_ref_grid=rho_ccsd,
-             ref_density_method="ccsd",
-             E_ref_literature=E_ccsd)
-    with open(_meta, "w") as _f:
-        json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
-                   "E_pbe_total": E_pbe, "E_lit_Ha": None,
-                   "ae_ref_kcalmol": H2O_AE_REF_KCALMOL}, _f, indent=2)
-    print(f"Wrote {_npz}")
+        np.savez(_npz,
+                 dm_target=dm_ao,
+                 rho_ref_grid=rho_ccsd,
+                 ref_density_method="ccsd",
+                 E_ref_literature=E_ccsd)
+        with open(_meta, "w") as _f:
+            json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
+                       "E_pbe_total": E_pbe, "E_lit_Ha": None,
+                       "ae_ref_kcalmol": H2O_AE_REF_KCALMOL}, _f, indent=2)
+        print(f"Wrote {_npz}")
 
     _oep_spec = alec.MoleculeSpec(
         name="H2O", atom=H2O_ATOM, basis=BASIS,
         charge=0, spin=0, grid_level=GRID_LEVEL,
         atom_composition=(("O", 1), ("H", 2)),
     )
-    # Hardened OEP settings; see spec §8. Primary run with tighter regularization,
-    # fallback to a looser regularization + more iterations before giving up.
-    _oep = alec.run_oep_inversion(
-        _oep_spec, dm_ao,
-        aux_basis="def2-tzvp-jkfit",
-        max_iter=500, conv_tol=1e-5, regularization=1e-3,
-    )
-    if not _oep.converged:
-        print("[OEP WARN] H2O primary failed; fallback")
-        _oep = alec.run_oep_inversion(
-            _oep_spec, dm_ao,
-            aux_basis="def2-tzvp-jkfit",
-            max_iter=1000, conv_tol=1e-5, regularization=1e-2,
-        )
-    if _oep.converged:
+    # Three-tier OEP cascade. Primary uses step-5-proven settings (known to
+    # converge on H2O). Fallbacks escalate aux basis + regularization for
+    # harder cases.
+    _OEP_TIERS = [
+        ("primary",   dict(aux_basis="def2-svp-jkfit",  max_iter=200,  conv_tol=1e-6, regularization=1e-4)),
+        ("fallback1", dict(aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=1e-5, regularization=1e-3)),
+        ("fallback2", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=1e-5, regularization=1e-2)),
+    ]
+    _oep = None
+    for _tier_name, _tier_kw in _OEP_TIERS:
+        _oep = alec.run_oep_inversion(_oep_spec, dm_ao, **_tier_kw)
+        if _oep.converged:
+            print(f"[OEP OK] H2O ({_tier_name}): n_iter={_oep.n_iter} "
+                  f"density_error={_oep.density_error:.2e}")
+            break
+        print(f"[OEP WARN] H2O {_tier_name} failed; trying next tier")
+    if _oep is not None and _oep.converged:
         # save_vxc_ref takes the OEPResult OBJECT first, NOT oep_result.vxc_matrix.
         alec.save_vxc_ref(_oep, _npz, dm_target=dm_ao, method="ccsd")
-        print(f"[OEP OK] H2O n_iter={_oep.n_iter} density_error={_oep.density_error:.2e}")
     else:
-        print("[OEP FAIL] H2O: skipping save_vxc_ref")
+        print("[OEP FAIL] H2O: all tiers failed; skipping save_vxc_ref "
+              "(V_xc losses become no-op on H2O)")
 """
     return new_code_cell(source)
 
@@ -538,14 +560,9 @@ else:
 def build_cell_13_c2h2_data():
     """Section 2 Cell 13 -- C2H2 reference data (W4-11 geometry) + OEP inversion.
 
-    Generates cached PBE/HF/CCSD totals, CCSD AO density matrix and ρ_ccsd on
-    the PBE grid, then runs ``run_oep_inversion`` with hardened settings and a
-    single fallback. On OEP failure, ``save_vxc_ref`` is skipped so that
-    V_xc-aware losses degrade to no-op instead of crashing the notebook.
-
-    Hardened settings (revisable post-run, see spec §8):
-      * primary:  aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=1e-5, reg=1e-3
-      * fallback: aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=1e-5, reg=1e-2
+    Same three-tier cascade as cell 12 (H2O). See that docstring for the
+    cascade rationale. Re-run behavior: if C2H2.npz lacks vxc_ref, reload
+    dm_target from cache and retry OEP without recomputing CCSD.
     """
     source = r"""# C2H2 training data (W4-11 linear D∞h geometry, AE=405.525 kcal/mol, spin=0).
 C2H2_ATOM = (
@@ -558,62 +575,69 @@ C2H2_AE_REF_KCALMOL = 405.525
 
 _npz = os.path.join(ext_data_dir, "C2H2.npz")
 _meta = os.path.join(ext_data_dir, "C2H2_metadata.json")
-if os.path.isfile(_npz) and os.path.isfile(_meta):
-    print(f"Using cached {_npz}")
+
+# _npz_has_vxc_ref is defined earlier in cell 12 and reusable in the
+# notebook namespace.
+if os.path.isfile(_npz) and os.path.isfile(_meta) and _npz_has_vxc_ref(_npz):
+    print(f"Using cached {_npz} (vxc_ref present)")
 else:
-    _mol = gto.M(atom=C2H2_ATOM, basis=BASIS, charge=0, spin=0, verbose=0)
-    _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
-    _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
-    _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
-    _cc = cc.CCSD(_mf_hf); _cc.kernel()
-    # Use HF total + CCSD correlation (numerically more stable than _cc.e_tot).
-    E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
+    if os.path.isfile(_npz) and os.path.isfile(_meta):
+        print(f"Cached {_npz} missing vxc_ref; retrying OEP cascade")
+        with np.load(_npz) as _f:
+            dm_ao = np.asarray(_f["dm_target"])
+    else:
+        _mol = gto.M(atom=C2H2_ATOM, basis=BASIS, charge=0, spin=0, verbose=0)
+        _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
+        _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
+        _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
+        _cc = cc.CCSD(_mf_hf); _cc.kernel()
+        # Use HF total + CCSD correlation (numerically more stable than _cc.e_tot).
+        E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
 
-    # CCSD DM is built in the MO basis; transform to AO via C @ dm_mo @ C.T
-    # (standard PySCF closed-shell convention).
-    dm_mo = _cc.make_rdm1()
-    C = _mf_hf.mo_coeff
-    dm_ao = C @ dm_mo @ C.T
+        # CCSD DM is built in the MO basis; transform to AO via C @ dm_mo @ C.T
+        # (standard PySCF closed-shell convention).
+        dm_mo = _cc.make_rdm1()
+        C = _mf_hf.mo_coeff
+        dm_ao = C @ dm_mo @ C.T
 
-    _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
-    rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
+        _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
+        rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
 
-    np.savez(_npz,
-             dm_target=dm_ao,
-             rho_ref_grid=rho_ccsd,
-             ref_density_method="ccsd",
-             E_ref_literature=E_ccsd)
-    with open(_meta, "w") as _f:
-        json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
-                   "E_pbe_total": E_pbe, "E_lit_Ha": None,
-                   "ae_ref_kcalmol": C2H2_AE_REF_KCALMOL}, _f, indent=2)
-    print(f"Wrote {_npz}")
+        np.savez(_npz,
+                 dm_target=dm_ao,
+                 rho_ref_grid=rho_ccsd,
+                 ref_density_method="ccsd",
+                 E_ref_literature=E_ccsd)
+        with open(_meta, "w") as _f:
+            json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
+                       "E_pbe_total": E_pbe, "E_lit_Ha": None,
+                       "ae_ref_kcalmol": C2H2_AE_REF_KCALMOL}, _f, indent=2)
+        print(f"Wrote {_npz}")
 
     _oep_spec = alec.MoleculeSpec(
         name="C2H2", atom=C2H2_ATOM, basis=BASIS,
         charge=0, spin=0, grid_level=GRID_LEVEL,
         atom_composition=(("C", 2), ("H", 2)),
     )
-    # Hardened OEP settings; see spec §8. Primary run with tighter regularization,
-    # fallback to a looser regularization + more iterations before giving up.
-    _oep = alec.run_oep_inversion(
-        _oep_spec, dm_ao,
-        aux_basis="def2-tzvp-jkfit",
-        max_iter=500, conv_tol=1e-5, regularization=1e-3,
-    )
-    if not _oep.converged:
-        print("[OEP WARN] C2H2 primary failed; fallback")
-        _oep = alec.run_oep_inversion(
-            _oep_spec, dm_ao,
-            aux_basis="def2-tzvp-jkfit",
-            max_iter=1000, conv_tol=1e-5, regularization=1e-2,
-        )
-    if _oep.converged:
-        # save_vxc_ref takes the OEPResult OBJECT first, NOT oep_result.vxc_matrix.
+    # Three-tier OEP cascade; see cell 12 docstring for rationale.
+    _OEP_TIERS = [
+        ("primary",   dict(aux_basis="def2-svp-jkfit",  max_iter=200,  conv_tol=1e-6, regularization=1e-4)),
+        ("fallback1", dict(aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=1e-5, regularization=1e-3)),
+        ("fallback2", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=1e-5, regularization=1e-2)),
+    ]
+    _oep = None
+    for _tier_name, _tier_kw in _OEP_TIERS:
+        _oep = alec.run_oep_inversion(_oep_spec, dm_ao, **_tier_kw)
+        if _oep.converged:
+            print(f"[OEP OK] C2H2 ({_tier_name}): n_iter={_oep.n_iter} "
+                  f"density_error={_oep.density_error:.2e}")
+            break
+        print(f"[OEP WARN] C2H2 {_tier_name} failed; trying next tier")
+    if _oep is not None and _oep.converged:
         alec.save_vxc_ref(_oep, _npz, dm_target=dm_ao, method="ccsd")
-        print(f"[OEP OK] C2H2 n_iter={_oep.n_iter} density_error={_oep.density_error:.2e}")
     else:
-        print("[OEP FAIL] C2H2: skipping save_vxc_ref")
+        print("[OEP FAIL] C2H2: all tiers failed; skipping save_vxc_ref "
+              "(V_xc losses become no-op on C2H2)")
 """
     return new_code_cell(source)
 

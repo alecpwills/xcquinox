@@ -155,7 +155,7 @@ def test_chakravorty_cell_has_all_five_atoms():
 # ---------------------------------------------------------------------------
 
 
-def test_h2o_cell_uses_w411_geometry_and_hardened_oep():
+def test_h2o_cell_uses_w411_geometry_and_three_tier_oep_cascade():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[11].source) if isinstance(nb.cells[11].source, list) else nb.cells[11].source
@@ -163,10 +163,17 @@ def test_h2o_cell_uses_w411_geometry_and_hardened_oep():
     assert "0.117790" in src and "0.755453" in src and "-0.471161" in src
     # W4-11 AE reference
     assert "232.974" in src
-    # Hardened OEP primary + fallback
+    # Three-tier OEP cascade: primary svp-jkfit, fallback tzvp-jkfit (2 tiers).
+    # Primary: step-5-proven settings (empirically known to converge on H2O).
+    assert "def2-svp-jkfit" in src
+    assert "max_iter=200" in src and "conv_tol=1e-6" in src and "regularization=1e-4" in src
+    # Fallback tiers: denser aux basis + stronger regularization.
     assert "def2-tzvp-jkfit" in src
     assert "max_iter=500" in src and "max_iter=1000" in src
     assert "regularization=1e-3" in src and "regularization=1e-2" in src
+    # Graceful retry: if vxc_ref missing from cached .npz, retry OEP without
+    # redoing CCSD.
+    assert "_npz_has_vxc_ref" in src
     # Real save_vxc_ref signature (OEPResult first, not vxc_matrix)
     assert "save_vxc_ref(_oep" in src
     assert "method=\"ccsd\"" in src or "method='ccsd'" in src
@@ -177,14 +184,17 @@ def test_h2o_cell_uses_w411_geometry_and_hardened_oep():
 # ---------------------------------------------------------------------------
 
 
-def test_c2h2_cell_uses_w411_geometry():
+def test_c2h2_cell_uses_w411_geometry_and_three_tier_oep_cascade():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[12].source) if isinstance(nb.cells[12].source, list) else nb.cells[12].source
     assert "C2H2" in src
     assert "1.666650" in src and "0.603250" in src
     assert "405.525" in src
-    assert "def2-tzvp-jkfit" in src
+    # Same three-tier cascade as H2O (primary svp + two tzvp fallbacks).
+    assert "def2-svp-jkfit" in src and "def2-tzvp-jkfit" in src
+    # Graceful retry via shared _npz_has_vxc_ref helper from cell 12.
+    assert "_npz_has_vxc_ref" in src
     assert "save_vxc_ref(_oep" in src
 
 
