@@ -1244,6 +1244,170 @@ else:
     return new_code_cell(source)
 
 
+def build_cell_24_eval_md():
+    """Section 5 Cell 24 -- eval-section markdown header."""
+    source = r"""## Section 5 -- Evaluation
+
+Per-spec evaluation sweep. For each of the 72 trained specs (3 groups x 2
+archs x 4 losses x 3 solvers), the model checkpoint is re-run on its
+training molecules with ``alec.run_test`` to produce per-molecule metrics
+and a scalar aggregate. The metrics are:
+
+- ``total_energy`` -- absolute E (Ha) + error-from-CCSD
+- ``atomization_energy`` -- AE (kcal/mol) using the Chakravorty atomic
+  references; AE reference values come from W4-11 (H2O=232.974,
+  C2H2=405.525)
+- ``density_rmse`` -- L2 norm of (rho_NN - rho_CCSD)
+- ``constraint_violations`` -- count of negativity / Lieb-Oxford violations
+
+Artifacts are written under ``{CHECKPOINT_BASE}/eval/{group}/{arch}/{loss}/{solver}/``
+(``aggregate.json`` + ``per_molecule.json`` + ``test_metadata.json``),
+mirroring the training directory layout. A per-spec aggregate existing on
+disk causes the sweep to skip (unless ``RERUN_EVAL=True``).
+
+After the sweep, the per-molecule JSON outputs are ingested into a single
+long-form / tidy ``eval_df`` DataFrame with one row per
+``(group, arch, loss, solver, phase_length, molecule, value_name)``
+combination; this is the canonical substrate for all Section 6 plots.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_25_main_sweep():
+    """Section 5 Cell 25 -- main evaluation sweep.
+
+    For each spec in the combined 72-spec list, if the training checkpoint
+    exists and ``aggregate.json`` is missing (or ``RERUN_EVAL`` is set),
+    build a ``TestSpec`` and call ``alec.run_test``. Artifacts land under
+    ``{CHECKPOINT_BASE}/eval/{group}/{arch}/{loss}/{solver}/``.
+
+    Group membership is derived by object identity against
+    ``_specs_group1 / _specs_group2 / _specs_group3``; the AE reference
+    dict narrows to just H2O for group 1 and H2O+C2H2 for groups 2/3.
+    ``jax.clear_caches() + gc.collect()`` runs between specs so the
+    XLA-compiled eval graphs do not accumulate and OOM the kernel.
+    """
+    source = r"""# Per-spec evaluation sweep. Iterates the same concatenated _all_specs list
+# as the training loop; per-spec outputs under
+# {CHECKPOINT_BASE}/eval/{group}/{arch}/{loss}/{solver}/.
+_eval_base = os.path.join(CHECKPOINT_BASE, "eval")
+os.makedirs(_eval_base, exist_ok=True)
+
+for _spec in _all_specs:
+    _ckpt = os.path.join(_spec.checkpoint_dir, "model.eqx")
+    if not os.path.isfile(_ckpt):
+        continue
+    _tail = _spec.checkpoint_dir.rstrip("/").split("/")
+    _solver = _tail[-1]
+    _loss_label = _tail[-2]
+    _arch = _tail[-3]
+    _group = (
+        "group1" if _spec in _specs_group1
+        else "group2" if _spec in _specs_group2
+        else "group3"
+    )
+    _out = os.path.join(_eval_base, _group, _arch, _loss_label, _solver)
+    if not RERUN_EVAL and os.path.isfile(os.path.join(_out, "aggregate.json")):
+        continue
+    _ae_ref = {"H2O": H2O_AE_REF_KCALMOL}
+    if _group != "group1":
+        _ae_ref["C2H2"] = C2H2_AE_REF_KCALMOL
+    _test_spec = alec.TestSpec.from_dicts(
+        arch=alec.get_architecture(_arch),
+        model_checkpoint=_ckpt,
+        molecules=tuple(_spec.molecules),
+        metrics=("total_energy", "atomization_energy", "density_rmse", "constraint_violations"),
+        metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": _ae_ref}},
+        atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
+        output_dir=_out,
+        solver_config=SOLVER_CONFIGS[_solver],
+        pbe_anchor_weight=_spec.pbe_anchor_weight,
+        pbe_anchor_sample=_spec.pbe_anchor_sample,
+    )
+    alec.run_test(_test_spec)
+    # Release compiled XLA artifacts between eval runs to prevent LLVM OOM.
+    jax.clear_caches(); gc.collect()
+
+_n_done = sum(
+    1 for _s in _all_specs
+    if os.path.isfile(os.path.join(
+        _eval_base,
+        "group1" if _s in _specs_group1 else "group2" if _s in _specs_group2 else "group3",
+        _s.checkpoint_dir.rstrip("/").split("/")[-3],
+        _s.checkpoint_dir.rstrip("/").split("/")[-2],
+        _s.checkpoint_dir.rstrip("/").split("/")[-1],
+        "aggregate.json",
+    ))
+)
+print(f"Evaluation complete: {_n_done} / {len(_all_specs)} aggregates on disk")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_26_eval_preview():
+    """Section 5 Cell 26 -- tidy DataFrame of per-molecule eval results.
+
+    Aggregates the per-spec ``per_molecule.json`` outputs into a single
+    long-form DataFrame with columns
+    ``group / arch / loss / solver / phase_length / molecule / value_name / value``.
+    All numeric scalars in each per-molecule record are folded into rows
+    keyed by ``value_name`` (non-numeric fields like ``molecule`` / ``name``
+    are skipped). Persists to ``{CHECKPOINT_BASE}/eval_df.parquet`` and
+    reuses the cache on subsequent runs unless ``RERUN_EVAL`` is set.
+    """
+    source = r"""# Build eval_df: one row per (group, arch, loss, solver, phase_length,
+# molecule, value_name). Numeric scalars from per_molecule.json become
+# rows; non-numeric fields (molecule/name) are skipped.
+_rows = []
+_parq = os.path.join(CHECKPOINT_BASE, "eval_df.parquet")
+if not RERUN_EVAL and os.path.isfile(_parq):
+    eval_df = pd.read_parquet(_parq)
+    print(f"Using cached {_parq} ({len(eval_df)} rows)")
+else:
+    for _spec in _all_specs:
+        _tail = _spec.checkpoint_dir.rstrip("/").split("/")
+        _solver = _tail[-1]
+        _loss_label = _tail[-2]
+        _arch = _tail[-3]
+        _group = (
+            "group1" if _spec in _specs_group1
+            else "group2" if _spec in _specs_group2
+            else "group3"
+        )
+        _phase = "short" if _spec.n_steps == TRAIN_N_STEPS_SHORT else "long"
+        _out = os.path.join(CHECKPOINT_BASE, "eval", _group, _arch, _loss_label, _solver)
+        _pm_path = os.path.join(_out, "per_molecule.json")
+        if not os.path.isfile(_pm_path):
+            continue
+        with open(_pm_path) as _f:
+            _pm = json.load(_f)
+        for _row in _pm:
+            _mol = _row.get("name") or _row.get("molecule")
+            for _k, _v in _row.items():
+                if _k in ("name", "molecule"):
+                    continue
+                if isinstance(_v, bool):
+                    # bool is a subtype of int; skip so boolean flags don't
+                    # leak into the numeric value column.
+                    continue
+                if isinstance(_v, (int, float)):
+                    _rows.append({
+                        "group":        _group,
+                        "arch":         _arch,
+                        "loss":         _loss_label,
+                        "solver":       _solver,
+                        "phase_length": _phase,
+                        "molecule":     _mol,
+                        "value_name":   _k,
+                        "value":        float(_v),
+                    })
+    eval_df = pd.DataFrame(_rows)
+    eval_df.to_parquet(_parq)
+    print(f"Wrote {_parq} ({len(eval_df)} rows)")
+"""
+    return new_code_cell(source)
+
+
 def main(
     arch_names: tuple[str, ...] | None = None,
     loss_names: tuple[str, ...] | None = None,
@@ -1282,6 +1446,9 @@ def main(
         build_cell_21_training_loop(),
         build_cell_22_loss_curves(),
         build_cell_23_aux_inspection(),
+        build_cell_24_eval_md(),
+        build_cell_25_main_sweep(),
+        build_cell_26_eval_preview(),
     ]
     for idx, cell in enumerate(cells):
         cell.id = f"cell_{idx:02d}"

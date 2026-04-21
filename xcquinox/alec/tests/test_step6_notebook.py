@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_23_cells_after_phase7_3():
+def test_main_produces_26_cells_after_phase8_1():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 23
+    assert len(nb.cells) == 26
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -325,3 +325,28 @@ def test_imports_cell_has_pickle_for_aux_reading():
     src = "".join(nb.cells[1].source) if isinstance(nb.cells[1].source, list) else nb.cells[1].source
     _tok = "import " + "pickle"
     assert _tok in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 8.1 tests: eval md + main sweep (run_test loop) + tidy DataFrame
+# (cells 24-26)
+# ---------------------------------------------------------------------------
+
+
+def test_main_eval_loop_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[24].source) if isinstance(nb.cells[24].source, list) else nb.cells[24].source
+    assert "run_test" in src
+    assert "RERUN_EVAL" in src
+    assert "ATOMIC_ENERGIES_CHAKRAVORTY" in src
+    assert "jax.clear_caches" in src
+
+
+def test_eval_df_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[25].source) if isinstance(nb.cells[25].source, list) else nb.cells[25].source
+    assert "eval_df" in src
+    assert "per_molecule.json" in src
+    assert "eval_df.parquet" in src
