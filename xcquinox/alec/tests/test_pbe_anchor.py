@@ -128,3 +128,10 @@ def test_pbe_anchor_rks_reduction_via_spin_scaling():
 
     assert jnp.allclose(fx_uks, jnp.asarray(fx_rks), atol=1e-10), \
         f"spin-scaling identity broken: UKS={fx_uks}, RKS={fx_rks}"
+
+
+def test_pbe_anchor_symbols_reexported():
+    import xcquinox.alec as alec
+    assert hasattr(alec, "PBEAnchorSample")
+    assert hasattr(alec, "build_pbe_anchor_sample")
+    assert hasattr(alec, "pbe_anchor_loss")
