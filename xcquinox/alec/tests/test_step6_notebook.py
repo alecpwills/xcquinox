@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_35_cells_after_phase9():
+def test_main_produces_39_cells_after_phase10():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 35
+    assert len(nb.cells) == 39
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -412,3 +412,42 @@ def test_transfer_aggregate_plot_cells_exist():
     src35 = "".join(nb.cells[34].source) if isinstance(nb.cells[34].source, list) else nb.cells[34].source
     assert "transfer_primary_df" in src34
     assert "transfer_secondary_df" in src35
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 tests: F_x drift diagnostic header + Panel B (CH4 + C2H2)
+# + Panel C (C2H4) + SCF convergence aggregate (cells 36-39)
+# ---------------------------------------------------------------------------
+
+
+def test_drift_md_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[35].source) if isinstance(nb.cells[35].source, list) else nb.cells[35].source
+    assert "drift" in src.lower() or "F_x" in src
+
+
+def test_drift_panel_b_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[36].source) if isinstance(nb.cells[36].source, list) else nb.cells[36].source
+    assert "CH4" in src and "C2H2" in src
+    assert "_nn_fx_local_uks" in src
+    assert "tree_deserialise_leaves" in src
+    assert "fx_drift_panel_B.png" in src
+
+
+def test_drift_panel_c_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[37].source) if isinstance(nb.cells[37].source, list) else nb.cells[37].source
+    assert "C2H4" in src
+    assert "0.667100" in src
+    assert "fx_drift_panel_C.png" in src
+
+
+def test_scf_convergence_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[38].source) if isinstance(nb.cells[38].source, list) else nb.cells[38].source
+    assert "SCF" in src or "cycles_run" in src or "convergence" in src.lower()
