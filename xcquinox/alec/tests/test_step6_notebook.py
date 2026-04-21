@@ -467,3 +467,21 @@ def test_scf_convergence_cell():
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[38].source) if isinstance(nb.cells[38].source, list) else nb.cells[38].source
     assert "SCF" in src or "cycles_run" in src or "convergence" in src.lower()
+
+
+@pytest.mark.slow
+def test_notebook_executes_end_to_end(tmp_path):
+    """Narrow-config smoke: 1 arch x 1 loss x 1 solver, reduced n_steps.
+    Verifies the generated notebook runs without exception."""
+    import nbclient
+    gen = load_generator()
+    _ipynb = tmp_path / "smoke.ipynb"
+    nb = gen.main(
+        arch_names=("deep_combined",),
+        loss_names=("L1_B",),
+        solver_labels=("oneshot",),
+        checkpoint_base=str(tmp_path / "checkpoints_step6_smoke"),
+        output_path=str(_ipynb),
+    )
+    client = nbclient.NotebookClient(nb, timeout=600, kernel_name="python3")
+    client.execute()
