@@ -72,10 +72,10 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_21_cells_after_phase7_2():
+def test_main_produces_23_cells_after_phase7_3():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 21
+    assert len(nb.cells) == 23
 
 
 def test_pretrain_loop_cell_uses_skip_flag():
@@ -271,3 +271,57 @@ def test_training_loop_cell_uses_subprocess_pattern():
     assert "model.eqx" in src
     # Cache/GC between specs
     assert "jax.clear_caches" in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 7.3 tests: per-group loss-curve grids (cell 22) + aux inspection
+# DataFrame (cell 23)
+# ---------------------------------------------------------------------------
+
+
+def test_loss_curves_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[21].source) if isinstance(nb.cells[21].source, list) else nb.cells[21].source
+    # All three groups plotted
+    assert "_specs_group1" in src
+    assert "_specs_group2" in src
+    assert "_specs_group3" in src
+    # Helper abstraction is present
+    assert "_plot_group" in src
+    # Per-group figure is saved
+    assert "loss_curves_group1_h2o_short" in src or "loss_curves_" in src
+    # Reads per-spec loss history from losses.npy
+    assert "losses.npy" in src
+    # Log-y scale used (semilogy, matches training-loss idiom)
+    assert "semilogy" in src
+
+
+def test_aux_inspection_cell():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[22].source) if isinstance(nb.cells[22].source, list) else nb.cells[22].source
+    # Spans every spec across all three groups
+    assert "_all_specs" in src
+    assert "_specs_group1" in src
+    assert "_specs_group2" in src
+    assert "_specs_group3" in src
+    # DataFrame construction + expected columns
+    assert "DataFrame" in src or "pd.DataFrame" in src
+    assert "loss_total_final" in src
+    assert "loss_vxc_final" in src
+    assert "loss_anchor_final" in src
+    # Reads the aux-log artifact (the canonical per-step record -- NOT
+    # train_metadata.json for history; metadata is scalar-only).
+    _artifact = "aux_log" + ".pkl"
+    assert _artifact in src
+
+
+def test_imports_cell_has_pickle_for_aux_reading():
+    """Phase 7.3 prerequisite: imports cell must bring in the serializer so
+    cell 23 can deserialize {spec.checkpoint_dir}/aux_log artifact."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[1].source) if isinstance(nb.cells[1].source, list) else nb.cells[1].source
+    _tok = "import " + "pickle"
+    assert _tok in src
