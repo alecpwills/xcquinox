@@ -311,3 +311,68 @@ def test_oneshot_result_matches_legacy_total_energy():
     assert float(result.total_energy) == pytest.approx(e_legacy, abs=1e-12)
     assert int(result.cycles_run) == 0
     assert bool(result.converged) is True
+
+
+# ---------------------------------------------------------------------------
+# H1 audit fix: mixer registry
+# ---------------------------------------------------------------------------
+
+def test_mixer_registry_resolves_linear_via_class_lookup():
+    """_build_mixer must resolve config.mixer_name through MIXER_REGISTRY,
+    not a hard-coded 'linear' branch (H1 audit fix). The default
+    'linear' name maps to LinearMixer with the kwargs from
+    config.mixer_kwargs."""
+    from xcquinox.alec.solver import (
+        SolverConfig, SolverBackend, SolverMode, LinearMixer, MIXER_REGISTRY
+    )
+    from xcquinox.alec.solver_manual import _build_mixer
+    assert "linear" in MIXER_REGISTRY
+    assert MIXER_REGISTRY["linear"] is LinearMixer
+    cfg = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
+        max_cycles=2,
+        mixer_name="linear", mixer_kwargs=(("alpha", 0.3),),
+    )
+    m = _build_mixer(cfg)
+    assert isinstance(m, LinearMixer)
+    assert abs(m.alpha - 0.3) < 1e-12
+
+
+def test_mixer_registry_unknown_name_raises_with_available_list():
+    """Unknown mixer name must raise NotImplementedError listing
+    available mixers (so users see what they can pick)."""
+    import pytest
+    from xcquinox.alec.solver import SolverConfig, SolverBackend, SolverMode
+    from xcquinox.alec.solver_manual import _build_mixer
+    cfg = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
+        max_cycles=2, mixer_name="bogus_mixer_xyz",
+    )
+    with pytest.raises(NotImplementedError, match="available:"):
+        _build_mixer(cfg)
+
+
+def test_full_mode_rejects_frozen_feature_policy():
+    """M2/M7 audit fix: (FULL, FROZEN) is incoherent; constructor
+    must reject it with a clear message."""
+    import pytest
+    from xcquinox.alec.solver import (
+        SolverConfig, SolverBackend, SolverMode, FeaturePolicy
+    )
+    with pytest.raises(ValueError, match="incoherent"):
+        SolverConfig(
+            backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+            max_cycles=3,
+            feature_policy=FeaturePolicy.FROZEN,
+        )
+    # FULL with REASSEMBLE explicit is fine.
+    cfg = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=3,
+        feature_policy=FeaturePolicy.REASSEMBLE,
+    )
+    assert cfg.feature_policy == FeaturePolicy.REASSEMBLE
+    # FULL with feature_policy=None auto-resolves to REASSEMBLE.
+    cfg2 = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=3,
+    )
+    assert cfg2.effective_feature_policy == FeaturePolicy.REASSEMBLE

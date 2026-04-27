@@ -373,15 +373,13 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         # RKS: j_pbe has shape (n_ao, n_ao)
         fock = h_core + j_pbe + vxc_nn
 
-        # Transform to orthogonal basis. The uniform DEGENERACY_REG * I
-        # shift alone does NOT resolve eigenvalue degeneracies (every
-        # eigenvalue moves by the same amount), which breaks the eigh VJP
-        # on linear-symmetry molecules (C2H2 π MOs). Adding a small
-        # non-uniform diag (_sym_break_diag) resolves exact degeneracies
-        # so 1/(λ_i - λ_j) in the reverse-mode derivative stays finite.
-        # See SYM_BREAK_SHIFT block comment for full rationale.
+        # Transform to orthogonal basis. Only the non-uniform
+        # _sym_break_diag perturbation does work — a uniform
+        # DEGENERACY_REG * I shift commutes through eigh and leaves
+        # eigenvalue gaps unchanged (M4 audit fix: dropped uniform
+        # term as dead weight). See SYM_BREAK_SHIFT block comment for
+        # full rationale on the non-uniform shift.
         fock_orth = (L_inv @ fock @ L_inv.T
-                     + DEGENERACY_REG * jnp.eye(nao)
                      + jnp.diag(_sym_break_diag(nao, fock.dtype)))
 
         # Eigendecomposition
@@ -390,9 +388,12 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         # Back-transform
         mo_coeff = L_inv.T @ mo_coeff_orth
 
-        # Density matrix (factor of 2 for RKS double occupation)
-        C_occ = mo_coeff[:, :nocc]
-        dm_pred = 2.0 * C_occ @ C_occ.T
+        # Density matrix (factor of 2 for RKS double occupation).
+        # Use occupation-mask form to match the UKS path's gradient
+        # stability under multi-cycle eigh on degenerate-eigenvalue
+        # Fock matrices (H2 audit fix).
+        occ = (jnp.arange(nao) < nocc).astype(mo_coeff.dtype)
+        dm_pred = 2.0 * (mo_coeff * occ) @ mo_coeff.T
 
     return dm_pred
 

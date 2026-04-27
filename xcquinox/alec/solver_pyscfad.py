@@ -282,7 +282,17 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             # (NN output at the scaled inputs). Dividing by (rho_a + rho_b)
             # yields eps_uks.
             rho_tot = rho_a + rho_b
-            exc = 0.5 * (exc_a_density + exc_b_density) / (rho_tot + 1e-18)
+            # H3 audit fix: 1/(rho_tot + 1e-18) gives O(1/eps^2) JVP at
+            # tail points (rho ≈ 0). Use jnp.where with a higher floor
+            # that masks tail contributions to 0 instead of letting the
+            # autodiff propagate amplified noise.
+            _RHO_EPS = 1e-12
+            rho_safe = jnp.maximum(rho_tot, _RHO_EPS)
+            exc = jnp.where(
+                rho_tot > _RHO_EPS,
+                0.5 * (exc_a_density + exc_b_density) / rho_safe,
+                0.0,
+            )
 
             # vrho: (n_grid, 2) in (u, d) order.
             vrho_stack = jnp.stack([vrho_a, vrho_b], axis=-1)
@@ -303,7 +313,14 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
         # tracing, so size the features slice to the current block.
         features_blk = _features_for_block(int(rho0.shape[0]))
         exc_density, vrho, vsigma = _eval_rks(rho0, sigma, features_blk)
-        exc = exc_density / (rho0 + 1e-18)
+        # H3 audit fix: same low-rho JVP guard as the UKS path above.
+        _RHO_EPS = 1e-12
+        rho_safe = jnp.maximum(rho0, _RHO_EPS)
+        exc = jnp.where(
+            rho0 > _RHO_EPS,
+            exc_density / rho_safe,
+            0.0,
+        )
         vxc = (vrho, vsigma, None, None)
         return exc, vxc, None, None
 

@@ -58,6 +58,25 @@ class SolverConfig:
             raise ValueError(
                 f"non-oneshot modes require max_cycles > 0, got 0 with mode={self.mode}"
             )
+        # M2/M7 audit fix: (FULL, FROZEN) is incoherent. FULL mode rebuilds
+        # the Fock from D every cycle (J[D] explicit dependence on D), so
+        # the descriptor features that condition the NN's V_xc must also
+        # be reassembled with the current D — otherwise the NN sees stale
+        # features that disagree with the J term, producing a Fock that
+        # has no fixed point for the NN's actual functional. Allow only
+        # ``feature_policy is None`` (auto-resolve to REASSEMBLE) or an
+        # explicit REASSEMBLE.
+        if (
+            self.mode == SolverMode.FULL
+            and self.feature_policy == FeaturePolicy.FROZEN
+        ):
+            raise ValueError(
+                "feature_policy=FROZEN with mode=FULL is incoherent: FULL "
+                "rebuilds the Fock per cycle so descriptor features must "
+                "also be reassembled (FeaturePolicy.REASSEMBLE). Pass "
+                "feature_policy=None for auto-resolution or REASSEMBLE "
+                "explicitly."
+            )
 
     @property
     def effective_feature_policy(self) -> FeaturePolicy:
@@ -91,6 +110,31 @@ class MixerState(NamedTuple):
     step_index: jnp.ndarray  # int32 scalar
 
 
+# Mixer subclass registry — keyed by ``registry_name``. Populated via the
+# ``register_mixer`` decorator below; ``_build_mixer`` in solver_manual.py
+# consults this map instead of hard-coding the 'linear' branch (H1 audit
+# fix). New mixers (e.g. DIIS, Pulay) only need to subclass ``Mixer`` with
+# a unique ``registry_name`` and use ``@register_mixer``.
+MIXER_REGISTRY: "dict[str, type[Mixer]]" = {}
+
+
+def register_mixer(cls):
+    """Decorator: register a Mixer subclass under its ``registry_name``."""
+    name = getattr(cls, "registry_name", "") or ""
+    if not name:
+        raise ValueError(
+            f"{cls.__name__} must set ``registry_name`` to a non-empty string "
+            f"to use @register_mixer."
+        )
+    if name in MIXER_REGISTRY and MIXER_REGISTRY[name] is not cls:
+        raise ValueError(
+            f"mixer registry collision: {name!r} already maps to "
+            f"{MIXER_REGISTRY[name].__name__}"
+        )
+    MIXER_REGISTRY[name] = cls
+    return cls
+
+
 class Mixer(abc.ABC):
     registry_name: str = ""
 
@@ -104,6 +148,7 @@ class Mixer(abc.ABC):
         """Returns (new_state, D_mixed)."""
 
 
+@register_mixer
 class LinearMixer(Mixer):
     registry_name = "linear"
 

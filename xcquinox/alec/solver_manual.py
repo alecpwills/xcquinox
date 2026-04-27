@@ -22,6 +22,7 @@ from xcquinox.alec.solver import (
 )
 
 DEGENERACY_REG = 1e-10
+SYM_BREAK_SHIFT = 1e-8
 
 
 def _symmetry_breaking_perturbation(nao: int, dtype) -> jnp.ndarray:
@@ -29,13 +30,32 @@ def _symmetry_breaking_perturbation(nao: int, dtype) -> jnp.ndarray:
     eigenvalue degeneracies. Needed because ``jnp.linalg.eigh``'s JVP is
     ill-defined at exactly degenerate eigenvalues, producing NaN gradients
     that then propagate through the scan. Used on atomic systems where
-    p_x/p_y/p_z orbitals have exactly equal eigenvalues by construction.
+    p_x/p_y/p_z orbitals have exactly equal eigenvalues by construction,
+    and on linear-symmetry molecules (D∞h, e.g. C2H2/HCN/C2H4) whose π
+    MOs are exactly degenerate.
+
+    Uses ``SYM_BREAK_SHIFT * sin(idx * φ)`` (φ = golden ratio) — quasi-
+    random spacing so no two indices give bit-equal values, deterministic
+    in nao alone (no PRNG state needed). Matches the form used by
+    ``oneshot._sym_break_diag`` (M3 audit fix: was previously a linear
+    ``arange``-based form which had monotone bias and used a different
+    magnitude than oneshot, yielding non-identical DMs for the same
+    one-shot SCF).
     """
-    return DEGENERACY_REG * jnp.arange(nao, dtype=dtype)
+    idx = jnp.arange(nao, dtype=dtype)
+    return SYM_BREAK_SHIFT * jnp.sin(idx * 1.618033988749895)
 
 
 def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndarray:
-    """Cholesky-transform Fock, eigh, rebuild DM. Restricted (factor of 2)."""
+    """Cholesky-transform Fock, eigh, rebuild DM. Restricted (factor of 2).
+
+    Uses the occupation-mask form ``(C * occ) @ C.T`` rather than slicing
+    ``C[:, :nocc] @ C[:, :nocc].T``. Both are algebraically equivalent
+    but the slice form's reverse-mode gradient through multi-cycle
+    ``lax.scan`` (eigh on Fock with degenerate p-orbital eigenvalues)
+    can produce NaN that propagates via 0*NaN=NaN. The mask form avoids
+    that pathway and matches the UKS path's convention (H2 audit fix).
+    """
     nao = S.shape[0]
     S_reg = S + DEGENERACY_REG * jnp.eye(nao)
     L = jnp.linalg.cholesky(S_reg)
@@ -43,8 +63,8 @@ def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndar
     F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
     _, C_orth = jnp.linalg.eigh(F_orth)
     C = L_inv.T @ C_orth
-    C_occ = C[:, :nocc]
-    return 2.0 * C_occ @ C_occ.T
+    occ = (jnp.arange(nao) < nocc).astype(F.dtype)
+    return 2.0 * (C * occ) @ C.T
 
 
 def _diagonalize_roothaan_unrestricted(
@@ -137,11 +157,27 @@ def _compute_total_energy_uks(
 
 
 def _build_mixer(config: SolverConfig):
-    """Instantiate mixer from config. Currently only 'linear' is supported."""
-    if config.mixer_name == "linear":
-        kwargs = dict(config.mixer_kwargs)
-        return LinearMixer(alpha=float(kwargs.get("alpha", 0.5)))
-    raise NotImplementedError(f"mixer {config.mixer_name!r} not yet implemented")
+    """Instantiate mixer from config via the MIXER_REGISTRY (H1 audit fix).
+
+    Looks up ``config.mixer_name`` in ``MIXER_REGISTRY`` and instantiates
+    the class with kwargs from ``config.mixer_kwargs``. New mixer types
+    only need to subclass ``Mixer`` with a unique ``registry_name`` and
+    use ``@register_mixer`` — no edits to this function are required.
+
+    Note: ``config.mixer_kwargs`` is typed as ``tuple[tuple[str, float],
+    ...]`` (frozen + hashable for jit cache keys); kwargs are converted
+    to a dict and passed to ``__init__``. Mixers that need non-float
+    kwargs should validate types in their own ``__init__``.
+    """
+    from xcquinox.alec.solver import MIXER_REGISTRY
+    cls = MIXER_REGISTRY.get(config.mixer_name)
+    if cls is None:
+        raise NotImplementedError(
+            f"mixer {config.mixer_name!r} not registered; available: "
+            f"{sorted(MIXER_REGISTRY)}"
+        )
+    kwargs = {k: v for k, v in config.mixer_kwargs}
+    return cls(**kwargs)
 
 
 def _build_criterion(config: SolverConfig):
