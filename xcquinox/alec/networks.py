@@ -225,6 +225,7 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
     cnet = AlecGGA_CNet(
         n_extra_features=n_extra_features, depth=arch.depth, nodes=arch.nodes,
         use_self_attention=arch.attention, seed=seed + 1,
+        lob_lim=arch.resolved_cnet_lob_lim,        # B-LOW audit fix
         lower_rho_cutoff=lower_rho_cutoff,
         num_heads=arch.num_heads,
     )

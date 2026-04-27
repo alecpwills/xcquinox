@@ -211,19 +211,30 @@ def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets, 
 
 
 def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
-    """DM matching: Frobenius^2 normalized by n_ao^2 (absolute) or ||D_ref||^2 (relative)."""
+    """DM matching: Frobenius^2 mean-squared error per element.
+
+    Absolute mode normalizes by the total number of DM elements
+    (``n_ao^2`` for RKS; ``2 * n_ao^2`` for UKS — both spin channels).
+    This yields a per-element scale invariant under RKS↔UKS, matching
+    ``_vxc_term``'s convention (D5-loss audit fix: pre-fix UKS branch
+    divided by n_ao^2 only, off by a factor of 2 vs RKS and inconsistent
+    with _vxc_term).
+    """
     terms = []
     for i in iter_idx:
         dm_ref = mol_data[i]["dm_target"]
         if dm_ref is None:
             continue
         dm_nn = oneshot_dm_prediction_fast(model, mol_data[i], solver_config=solver_config)
-        err = jnp.sum((dm_nn - dm_ref) ** 2)
+        dm_ref_arr = jnp.asarray(dm_ref)
+        err = jnp.sum((dm_nn - dm_ref_arr) ** 2)
         if relative:
-            err = err / (jnp.sum(dm_ref ** 2) + 1e-8)
+            err = err / (jnp.sum(dm_ref_arr ** 2) + 1e-8)
         else:
-            n_ao = dm_ref.shape[-1]
-            err = err / (n_ao * n_ao)
+            # Per-element MSE: divide by total element count of dm_ref.
+            # RKS: n_ao*n_ao; UKS (shape (2, n_ao, n_ao)): 2*n_ao*n_ao.
+            n_elems = int(jnp.prod(jnp.array(dm_ref_arr.shape)))
+            err = err / float(n_elems)
         terms.append(err)
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
 
@@ -316,16 +327,20 @@ class AtomizationLoss(AlecLoss):
     registry_name: ClassVar[str] = "A_atomization"
     required_mol_keys: ClassVar[tuple[str, ...]] = ()
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
+    molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.0, static=True)
     pbe_anchor_weight: float = eqx.field(default=0.0, static=True)
     pbe_anchor_sample: object | None = eqx.field(default=None, static=True)
 
-    def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None,
+    def __init__(self, *, molecules, w_atomic: float = 0.01,
+                 molecules_only: bool = True,
+                 solver_config=None,
                  vxc_weight: float = 0.0,
                  pbe_anchor_weight: float = 0.0,
                  pbe_anchor_sample=None):
         self._validate_static_float("w_atomic", w_atomic)
+        self._validate_static_bool("molecules_only", molecules_only)
         self._validate_static_float("vxc_weight", vxc_weight)
         self._validate_static_float("pbe_anchor_weight", pbe_anchor_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
@@ -334,6 +349,7 @@ class AtomizationLoss(AlecLoss):
         self.mol_names = mn
         self.compositions = comp
         self.w_atomic = w_atomic
+        self.molecules_only = molecules_only
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
         self.pbe_anchor_weight = pbe_anchor_weight
@@ -352,7 +368,11 @@ class AtomizationLoss(AlecLoss):
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
         components = {"loss_energy": loss_energy, "atomic_reg": atomic_reg}
         if self.vxc_weight > 0:
-            vxc_idx = tuple(range(N))
+            # D10-loss audit fix: gate on molecules_only (default True)
+            # for consistency with B/C/D2/D3. Atoms typically have
+            # vxc_ref=None and are skipped inside _vxc_term anyway, but
+            # the explicit gate makes the API uniform across all 6 losses.
+            vxc_idx = self.compound_idx if self.molecules_only else tuple(range(N))
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
             )
@@ -505,16 +525,20 @@ class DeltaAELoss(AlecLoss):
     registry_name: ClassVar[str] = "D1_delta_ae"
     required_mol_keys: ClassVar[tuple[str, ...]] = ("E_pbe",)
     required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
+    molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.0, static=True)
     pbe_anchor_weight: float = eqx.field(default=0.0, static=True)
     pbe_anchor_sample: object | None = eqx.field(default=None, static=True)
 
-    def __init__(self, *, molecules, w_atomic: float = 0.01, solver_config=None,
+    def __init__(self, *, molecules, w_atomic: float = 0.01,
+                 molecules_only: bool = True,
+                 solver_config=None,
                  vxc_weight: float = 0.0,
                  pbe_anchor_weight: float = 0.0,
                  pbe_anchor_sample=None):
         self._validate_static_float("w_atomic", w_atomic)
+        self._validate_static_bool("molecules_only", molecules_only)
         self._validate_static_float("vxc_weight", vxc_weight)
         self._validate_static_float("pbe_anchor_weight", pbe_anchor_weight)
         ami, ci, mn, comp = self.build_indices(molecules)
@@ -523,6 +547,7 @@ class DeltaAELoss(AlecLoss):
         self.mol_names = mn
         self.compositions = comp
         self.w_atomic = w_atomic
+        self.molecules_only = molecules_only
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
         self.pbe_anchor_weight = pbe_anchor_weight
@@ -541,7 +566,8 @@ class DeltaAELoss(AlecLoss):
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
         components = {"loss_delta": loss_delta, "atomic_reg": atomic_reg}
         if self.vxc_weight > 0:
-            vxc_idx = tuple(range(N))
+            # D10-loss audit fix: gate on molecules_only, matching B/C/D2/D3.
+            vxc_idx = self.compound_idx if self.molecules_only else tuple(range(N))
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
             )
