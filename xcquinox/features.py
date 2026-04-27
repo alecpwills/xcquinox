@@ -36,23 +36,41 @@ def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
     :param S: Overlap matrix in AO basis, shape (nao, nao)
     :type S: jnp.ndarray
     :return: Dictionary of density matrix features:
-        - 'idempotency_error': Tr(DM - DM @ S @ DM) / Tr(DM), measures deviation from HF
-        - 'dm_entropy': -Tr(DM/N * log(DM/N + eps)), von Neumann-like entropy
-        - 'off_diag_norm': Frobenius norm of off-diagonal elements / trace
-        - 'trace': Tr(DM @ S) = number of electrons
+        - 'idempotency_error': mean(|D_norm @ S @ D_norm - D_norm|_F) / Tr(DS),
+          where D_norm is the spin-orbital projector form: D/2 for closed-shell
+          RKS (Szabo & Ostlund 1996 §3.4.2 eq. (3.144) gives D = 2P with PSP=P
+          and DSD = 2D), D_α + D_β separately for UKS (Pople-Nesbet 1954,
+          spin-orbital DM satisfies D_σ S D_σ = D_σ). Zero for any single-
+          determinant (HF or KS) reference; nonzero for correlated natural-
+          orbital DMs.
+        - 'dm_entropy': von Neumann-like entropy of natural-orbital occupations.
+        - 'off_diag_norm': Frobenius norm of off-diagonal elements / trace.
+        - 'trace': Tr(DM @ S) = number of electrons.
     :rtype: Dict[str, float]
     """
-    # Handle UKS case: sum alpha and beta density matrices
+    # Compute idempotency error in the spin-orbital-projector form.
+    #   - RKS: D = 2P where PSP = P (Szabo & Ostlund §3.4.2 eq. (3.144)).
+    #     Use D_norm = D/2.
+    #   - UKS: each spin DM is its own spin-orbital projector (Pople-Nesbet
+    #     1954); D_σ S D_σ = D_σ. Use spin-resolved DMs separately and average.
     if dm.ndim == 3:
-        dm = dm[0] + dm[1]
-
-    # Number of electrons
-    n_elec = jnp.trace(dm @ S)
-
-    # Idempotency error: for HF, DM @ S @ DM = DM
-    # Deviation indicates correlation
-    dm_s_dm = dm @ S @ dm
-    idempotency_error = jnp.trace(dm - dm_s_dm) / (n_elec + 1e-12)
+        d_a, d_b = dm[0], dm[1]
+        n_a = jnp.trace(d_a @ S)
+        n_b = jnp.trace(d_b @ S)
+        err_a = jnp.linalg.norm(d_a @ S @ d_a - d_a, "fro") / (n_a + 1e-12)
+        err_b = jnp.linalg.norm(d_b @ S @ d_b - d_b, "fro") / (n_b + 1e-12)
+        idempotency_error = 0.5 * (err_a + err_b)
+        # Aggregate to total density for the remaining features.
+        dm = d_a + d_b
+        n_elec = n_a + n_b
+    else:
+        # Closed-shell RKS: normalize D → P = D/2 to match PSP = P.
+        n_elec = jnp.trace(dm @ S)
+        d_norm = 0.5 * dm
+        n_norm = 0.5 * n_elec  # = Tr(P S) = N_e/2
+        idempotency_error = jnp.linalg.norm(
+            d_norm @ S @ d_norm - d_norm, "fro"
+        ) / (n_norm + 1e-12)
 
     # Compute natural orbital occupations via generalized eigenvalue problem
     # DM @ S @ C = C @ diag(n_i) where n_i are occupations

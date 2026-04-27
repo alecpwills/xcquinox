@@ -67,7 +67,21 @@ class Constraint(eqx.Module, abc.ABC):
 
 @register_constraint("lieb_oxford")
 class LiebOxfordBound(Constraint):
-    """Smooth upper bound on the exchange enhancement factor: F <= mu = 1.804."""
+    """Smooth two-sided clamp on the exchange enhancement factor.
+
+    Functional form ``F = 1 + (mu - 1) * tanh((F_raw - 1)/(mu - 1))``,
+    range ``[2 - mu, mu] = [0.196, 1.804]`` for the default mu=1.804.
+
+    The upper bound mu = 1 + kappa is the Lieb-Oxford bound on F_x
+    (Lieb & Oxford, *Int. J. Quantum Chem.* **19**, 427 (1981); PBE
+    convention with kappa = 0.804 — Perdew, Burke, Ernzerhof, *Phys.
+    Rev. Lett.* **77**, 3865 (1996), §3 eq. (14)).
+
+    The incidental lower bound 2 - mu = 0.196 is a side effect of the
+    symmetric tanh smoothing. It is physically reasonable because F_x
+    must be non-negative (ε_x^total = ε_x^LDA · F_x ≤ 0 with
+    ε_x^LDA ≤ 0 demands F_x ≥ 0); 0.196 is well above 0.
+    """
     registry_name: ClassVar[str] = "lieb_oxford"
     mu: float = eqx.field(default=1.804, static=True)
 
@@ -121,12 +135,26 @@ class UEGLimit(Constraint):
 
 @register_constraint("non_negative_correlation")
 class NonNegativeCorrelation(Constraint):
-    """Softplus-clamped Fc, enforcing Fc >= 0 while preserving the PBE fixed point."""
+    """Softplus-clamped Fc, enforcing Fc >= 0 with PBE fixed point F=1.
+
+    The shifted-softplus form ``softplus(x + log(e - 1))`` satisfies
+    f(0) = log(1 + e^{log(e-1)}) = log(1 + (e-1)) = log(e) = 1. After
+    subtracting 1 and re-adding 1 we get a function g with g(1) = 1 and
+    g(F_raw → -∞) → 0 (true zero, not 1 - log 2 ≈ 0.307).
+
+    This enforces the Levy-Perdew non-positive correlation energy
+    constraint (E_c[ρ] ≤ 0): since ε_c^LDA(ρ) ≤ 0 for all ρ in the
+    PW92 parametrization (Perdew & Wang 1992 Phys. Rev. B 45 13244),
+    F_c ≥ 0 ensures ε_c^total = ε_c^LDA · F_c ≤ 0 pointwise.
+    """
     registry_name: ClassVar[str] = "non_negative_correlation"
 
     def __call__(self, inner_fn, rho, sigma, features):
         F_raw = inner_fn(rho, sigma, features)
-        return jax.nn.softplus(F_raw - 1.0) + (1.0 - jnp.log(2.0))
+        # softplus(x + log(e - 1)) maps 0 -> 1 and -∞ -> 0, so the +1
+        # offset preserves PBE fixed point and the floor is exactly 0.
+        shift = jnp.log(jnp.expm1(1.0))  # log(e - 1)
+        return jax.nn.softplus((F_raw - 1.0) + shift)
 
 
 @register_constraint("scaling_symmetric")

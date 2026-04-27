@@ -69,7 +69,20 @@ def list_descriptors() -> list[str]:
 
 @register_descriptor("cusp")
 class CuspDescriptor(Descriptor):
-    """Nuclear cusp proximity. 2 features: proximity weight, log distance."""
+    """Nuclear cusp proximity (2 features per grid point).
+
+    Both features are bounded for network-friendly inputs:
+      * Column 0 ``cusp_factor = exp(-2 Z_max r_min)`` ∈ [0, 1], where
+        Z_max is the largest nuclear charge and r_min is the distance to
+        the nearest nucleus. Encodes the Kato cusp condition magnitude
+        (Kato, *Commun. Pure Appl. Math.* **10**, 151 (1957)):
+        (∂ρ/∂r)|_{r=0} = -2Z·ρ(0).
+      * Column 1 ``tanh(log(Σ_A Z_A / r_A) / 5)`` ∈ (-1, 1). Encodes a
+        scaled log of the total nuclear-attraction-like weight.
+
+    See ``xcquinox.features.compute_cusp_descriptor`` for the precise
+    definitions and the dynamic-range argument for the /5 scaling.
+    """
     n_features: int = eqx.field(default=2, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("cusp_features",)
 

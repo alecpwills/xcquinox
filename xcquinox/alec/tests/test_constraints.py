@@ -157,16 +157,37 @@ def test_non_negative_correlation_grad_finite():
     assert jnp.isfinite(g)
 
 
-# NonNegativeCorrelation (d) — composition with trivial inner_fn
+# NonNegativeCorrelation (d) — composition + asymptotic / fixed-point checks
 def test_non_negative_correlation_composes_with_trivial_inner_fn():
+    """The corrected NonNegativeCorrelation uses
+    `softplus(F_raw - 1 + log(e - 1))` so that:
+      * F_raw =  1 → F_c = 1 (PBE fixed point preserved)
+      * F_raw = -10 → F_c → 0 (Levy-Perdew non-positive correlation:
+        E_c = ε_c^LDA · F_c ≤ 0 with ε_c^LDA ≤ 0 demands F_c ≥ 0)
+      * monotone increasing in F_raw
+    """
     from xcquinox.alec.constraints import NonNegativeCorrelation
     c = NonNegativeCorrelation()
 
-    def inner(r, s, f):
-        return -10.0 * jnp.ones_like(r)
-    out = c(inner, jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
-    assert jnp.all(out > 0.0)
-    assert jnp.allclose(out, 1.0 - jnp.log(2.0), atol=1e-4)
+    def inner_raw(F_raw_value):
+        return lambda r, s, f: F_raw_value * jnp.ones_like(r)
+
+    # Floor at 0 (not 1 - log 2): F_raw = -10 should give a value
+    # very close to 0 (≪ 1e-3) — the prior broken implementation
+    # asymptoted at 1 - log(2) ≈ 0.307.
+    out_floor = c(inner_raw(-10.0), jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
+    assert jnp.all(out_floor >= 0.0), out_floor
+    assert jnp.all(out_floor < 1e-3), (
+        f"floor must be near zero (Levy-Perdew F_c >= 0); got {out_floor}"
+    )
+
+    # Fixed point: F_raw = 1 → F_c = 1 (PBE preserved).
+    out_fixed = c(inner_raw(1.0), jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
+    assert jnp.allclose(out_fixed, 1.0, atol=1e-5), out_fixed
+
+    # Monotone: F_raw = 5 should give a value > F_raw = 1.
+    out_high = c(inner_raw(5.0), jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
+    assert jnp.all(out_high > out_fixed), (out_high, out_fixed)
 
 
 # ScalingSymmetric (a) — registry roundtrip

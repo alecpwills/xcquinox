@@ -106,22 +106,35 @@ _legacy_cnet_lob_lim: float = 2.0    # `xcquinox/net.py:2228` default
 def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict) -> jnp.ndarray:
     """Assemble the (N, F) input array for pretraining from pretrain_data.
 
-    Column order: [rho_all, sigma_all, dm_all[:,0..n-1], cusp_all[:,0], cusp_all[:,1]]
-    — dm BEFORE cusp, columns included only if the arch declares the descriptor.
+    Column order: [rho_all, sigma_all, *(per-descriptor columns)] where
+    the per-descriptor columns follow ``arch.descriptors`` declaration
+    order (matching `descriptors.assemble_descriptor_features`'s
+    runtime contract). Each descriptor's columns are pulled from a
+    pretrain_data key derived by stripping ``_statistics`` and
+    appending ``_all`` (e.g. ``dm_statistics`` → ``dm_all``,
+    ``cusp`` → ``cusp_all``).
 
-    Raises KeyError if a needed key (dm_all / cusp_all) is absent from
-    pretrain_data — there is NO zero-array fallback (L-B14-2 Round 14).
+    Raises KeyError if any declared descriptor's pretrain key is
+    absent from pretrain_data — there is NO zero-array fallback
+    (L-B14-2 Round 14).
     """
-    use_cusp = any(s.name == "cusp" for s in arch.descriptors)
-    use_dm = any(s.name == "dm_statistics" for s in arch.descriptors)
     cols = [pretrain_data["rho_all"], pretrain_data["sigma_all"]]
-    if use_dm:
-        dm_all = pretrain_data["dm_all"]
-        for i in range(dm_all.shape[1]):
-            cols.append(dm_all[:, i])
-    if use_cusp:
-        cols.append(pretrain_data["cusp_all"][:, 0])
-        cols.append(pretrain_data["cusp_all"][:, 1])
+    # Map descriptor.name -> key in pretrain_data.
+    _key_map = {"dm_statistics": "dm_all", "cusp": "cusp_all"}
+    for spec in arch.descriptors:
+        key = _key_map.get(spec.name)
+        if key is None:
+            raise KeyError(
+                f"_assemble_pretrain_descriptors: no pretrain_data key "
+                f"mapping registered for descriptor {spec.name!r}; update "
+                f"_key_map in pretrain.py"
+            )
+        arr = pretrain_data[key]
+        if arr.ndim == 1:
+            cols.append(arr)
+        else:
+            for i in range(arr.shape[1]):
+                cols.append(arr[:, i])
     return jnp.stack(cols, axis=1)
 
 
