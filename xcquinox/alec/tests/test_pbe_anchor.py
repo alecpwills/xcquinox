@@ -241,3 +241,52 @@ def test_fx_pbe_analytic_matches_canonical_values():
     assert abs(_fx_pbe_analytic(np.array([0.0]))[0] - 1.0) < 1e-12
     # F_x(s -> infty) = 1 + kappa = 1.804 (Lieb-Oxford bound)
     assert abs(_fx_pbe_analytic(np.array([1e6]))[0] - 1.804) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Physics pin: PBE F_x(s) at canonical s values (against PBE 1996 §3 eq. (14))
+# ---------------------------------------------------------------------------
+
+def test_pbe_anchor_libxc_matches_analytic_at_high_density_low_polarization():
+    """Sanity-pin _pbe_fx_libxc against the analytic PBE formula at a
+    nearly-closed-shell, high-density point. At zeta=0 + sigma_aa = sigma_bb,
+    the spin-scaling F_x_SS(rho/2, rho/2, s) reduces to F_x_RKS(rho, s),
+    which equals the analytic PBE formula at fixed s. PBE 1996 §III
+    spin-scaling: F_x_UKS(zeta=0) = F_x_RKS.
+    """
+    import jax.numpy as jnp
+    import numpy as np
+    from xcquinox.alec.pbe_anchor import _pbe_fx_libxc, _fx_pbe_analytic
+    s_vals = jnp.array([0.5, 1.0, 1.5, 2.0])
+    rho_tot = jnp.array([0.3, 0.3, 0.3, 0.3])  # dense (no rho-floor effect)
+    rho_a = 0.5 * rho_tot
+    rho_b = 0.5 * rho_tot
+    fx_libxc = _pbe_fx_libxc(rho_a, rho_b, s_vals)
+    fx_analytic = _fx_pbe_analytic(np.asarray(s_vals))
+    np.testing.assert_allclose(
+        np.asarray(fx_libxc), fx_analytic, atol=1e-5,
+        err_msg="At zeta=0 high-density, libxc UKS PBE F_x should match "
+                "the analytic PBE formula F_x(s) = 1 + κ - κ/(1 + μs²/κ)",
+    )
+
+
+def test_pbe_anchor_canonical_values():
+    """Canonical PBE F_x values pinned against PBE 1996 §3 eq. (14):
+        F_x(0)   = 1
+        F_x(1)   = 1 + 0.804 - 0.804/(1 + 0.21951/0.804) ≈ 1.171
+        F_x(2)   = 1 + 0.804 - 0.804/(1 + 4*0.21951/0.804) ≈ 1.426
+        F_x(∞)   = 1 + κ = 1.804  (Lieb-Oxford bound)
+    """
+    import numpy as np
+    from xcquinox.alec.pbe_anchor import _fx_pbe_analytic
+    fx0 = float(_fx_pbe_analytic(np.array([0.0]))[0])
+    fx1 = float(_fx_pbe_analytic(np.array([1.0]))[0])
+    fx2 = float(_fx_pbe_analytic(np.array([2.0]))[0])
+    fx_inf = float(_fx_pbe_analytic(np.array([1e6]))[0])
+    # Pinned numerical values (computed by hand from PBE 1996 §3 eq. (14)):
+    assert abs(fx0 - 1.0) < 1e-12, fx0
+    expected_1 = 1.0 + 0.804 - 0.804 / (1.0 + 0.21951 * 1.0 / 0.804)
+    assert abs(fx1 - expected_1) < 1e-12, (fx1, expected_1)
+    expected_2 = 1.0 + 0.804 - 0.804 / (1.0 + 0.21951 * 4.0 / 0.804)
+    assert abs(fx2 - expected_2) < 1e-12, (fx2, expected_2)
+    assert abs(fx_inf - 1.804) < 1e-6, fx_inf

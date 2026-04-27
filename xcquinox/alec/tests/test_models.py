@@ -249,11 +249,22 @@ def test_from_spec_dict_kwargs_roundtrip():
 
 # §13.2 item (18)
 def test_rho_cutoff_clamps_not_zeros():
+    """``rho_cutoff`` clamps the LDA pre-factor without zeroing it out
+    (so V_xc tail evaluations stay numerically well-behaved). The test
+    uses inputs above ``_NN_TAIL_THRESHOLD`` (1e-10) so the explicit
+    rho_cutoff is the only clamp in play; below that threshold,
+    ``eval_exc`` masks F_x = F_c = 1 to keep gradients finite on
+    open-shell atoms (F-H test-quality audit fix: pre-fix test put
+    inputs at the threshold and called eval_Fx/eval_Fc directly which
+    bypass the mask, causing index-by-index disagreement)."""
     from xcquinox.utils import lda_x, pw92c_unpolarized_scalar
     arch = _make_arch()
     cutoff = 1e-6
     model = AlecGGAModel.from_arch(arch, seed=0, rho_cutoff=cutoff)
-    rho = jnp.array([1e-10, 1e-8, 1e-12, 1.0])
+    # All values strictly > 1e-10 so the tail-mask in eval_exc never
+    # fires; the only clamp is rho_cutoff = 1e-6 (clamps 2e-10, 1e-8,
+    # 1e-7 up to 1e-6).
+    rho = jnp.array([2e-10, 1e-8, 1e-7, 1.0])
     sigma = jnp.array([0.01, 0.01, 0.01, 0.5])
     features = jnp.zeros((4, 0))
     exc = model.eval_exc(rho, sigma, features)
@@ -262,7 +273,7 @@ def test_rho_cutoff_clamps_not_zeros():
     Fc = model.eval_Fc(rho, sigma, features)
     expected = rho_safe * (lda_x(rho_safe) * Fx + pw92c_unpolarized_scalar(rho_safe) * Fc)
     np.testing.assert_array_equal(np.asarray(exc), np.asarray(expected))
-    # The clamped points must be non-zero (small but positive)
+    # The clamped points must be non-zero (small but positive).
     assert jnp.all(jnp.abs(exc[:3]) > 0), "clamped rho must produce non-zero exc"
 
 
