@@ -36,13 +36,18 @@ def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
     :param S: Overlap matrix in AO basis, shape (nao, nao)
     :type S: jnp.ndarray
     :return: Dictionary of density matrix features:
-        - 'idempotency_error': mean(|D_norm @ S @ D_norm - D_norm|_F) / Tr(DS),
-          where D_norm is the spin-orbital projector form: D/2 for closed-shell
-          RKS (Szabo & Ostlund 1996 §3.4.2 eq. (3.144) gives D = 2P with PSP=P
-          and DSD = 2D), D_α + D_β separately for UKS (Pople-Nesbet 1954,
-          spin-orbital DM satisfies D_σ S D_σ = D_σ). Zero for any single-
-          determinant (HF or KS) reference; nonzero for correlated natural-
-          orbital DMs.
+        - 'idempotency_error': normalized Frobenius distance from the
+          spin-orbital-projector idempotency condition, with denominator
+          chosen per-branch:
+            * RKS (D ndim=2): ``||D_norm S D_norm - D_norm||_F / Tr(D_norm S)``
+              with ``D_norm = D/2`` (Szabo & Ostlund 1996 §3.4.2 eq. (3.144)
+              gives D = 2P with PSP = P, hence DSD = 2D).
+            * UKS (D ndim=3): mean over alpha/beta of
+              ``||D_sigma S D_sigma - D_sigma||_F / Tr(D_sigma S)`` —
+              spin-orbital DMs satisfy D_sigma S D_sigma = D_sigma directly
+              (Pople-Nesbet 1954).
+          Zero for any single-determinant (HF or KS) reference; nonzero
+          for correlated natural-orbital DMs.
         - 'dm_entropy': von Neumann-like entropy of natural-orbital occupations.
         - 'off_diag_norm': Frobenius norm of off-diagonal elements / trace.
         - 'trace': Tr(DM @ S) = number of electrons.

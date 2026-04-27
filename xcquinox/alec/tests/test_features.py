@@ -111,3 +111,48 @@ def test_n_elec_trace_matches_density_matrix():
     out = compute_dm_features(D, S)
     n_elec = float(out["trace"])
     assert abs(n_elec - 2 * nocc) < 1e-6, n_elec
+
+
+# ---------------------------------------------------------------------------
+# R2 audit fix: precompute_fixed_density_data passes spin-resolved DM
+# ---------------------------------------------------------------------------
+
+def test_precompute_passes_spin_resolved_dm_for_uks():
+    """precompute_fixed_density_data must route the 3-D spin-resolved
+    DM (not the spin-summed total) into compute_dm_features for UKS
+    molecules so the per-spin idempotency-projector branch fires
+    (Pople-Nesbet 1954: D_sigma S D_sigma = D_sigma).
+
+    R2-A/R2-E audit fix: pre-fix `precompute_fixed_density_data` summed
+    alpha+beta into `dm_pbe_tot` and forced UKS molecules through the
+    RKS branch, producing a non-zero physically-meaningless
+    idempotency_error on every open-shell molecule.
+    """
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.descriptors import DMStatisticsDescriptor
+
+    # Open-shell radical (CH triplet — spin=2 on a small basis is fast).
+    mol = MoleculeSpec.from_dict(
+        name="CH", atom="C 0 0 0; H 0 0 1.12",
+        basis="sto-3g", charge=0, spin=1,
+        atom_composition={"C": 1, "H": 1},
+    )
+    descriptors = (DMStatisticsDescriptor(),)
+    data = precompute_fixed_density_data(
+        mol, descriptors=descriptors,
+        required_keys=("dm_features",),
+    )
+    dm_features = data.get("dm_features")
+    assert dm_features is not None
+    # idempotency_error column should be ~0 for a clean UKS DM (the
+    # SCF-converged PBE DM for CH triplet IS a single-determinant KS
+    # reference for which D_sigma S D_sigma = D_sigma per spin holds
+    # exactly). Pre-fix code gave |err| ~ 1; post-fix gives < 1e-6.
+    import jax.numpy as jnp
+    idem_err = float(jnp.asarray(dm_features)[0, 0])
+    assert abs(idem_err) < 1e-5, (
+        f"clean UKS CH triplet should give idempotency_error ~ 0; "
+        f"got {idem_err}. Pre-fix code routes UKS through the RKS "
+        f"branch and gives |err| ~ 1."
+    )

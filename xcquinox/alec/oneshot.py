@@ -337,9 +337,12 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         # (_sym_break_diag) resolves exact degeneracies so 1/(λ_i - λ_j)
         # in the reverse-mode derivative stays finite. See SYM_BREAK_SHIFT
         # block comment for full rationale.
+        # R2-C M4 audit fix: dropped dead `+ DEGENERACY_REG * jnp.eye(nao)`
+        # uniform shift (commutes through eigh; doesn't break degeneracies).
+        # Only the non-uniform _sym_break_diag does work.
         _sb = jnp.diag(_sym_break_diag(nao, fock_a.dtype))
-        fock_orth_a = L_inv @ fock_a @ L_inv.T + DEGENERACY_REG * jnp.eye(nao) + _sb
-        fock_orth_b = L_inv @ fock_b @ L_inv.T + DEGENERACY_REG * jnp.eye(nao) + _sb
+        fock_orth_a = L_inv @ fock_a @ L_inv.T + _sb
+        fock_orth_b = L_inv @ fock_b @ L_inv.T + _sb
 
         # Eigendecomposition (JAX-native: preserves grad flow through the solver).
         _, mo_coeff_orth_a = jnp.linalg.eigh(fock_orth_a)
@@ -349,11 +352,17 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         mo_coeff_a = L_inv.T @ mo_coeff_orth_a
         mo_coeff_b = L_inv.T @ mo_coeff_orth_b
 
-        # Density matrices (no factor of 2 for UKS)
-        C_occ_a = mo_coeff_a[:, :nocc_a]
-        C_occ_b = mo_coeff_b[:, :nocc_b]
-        dm_a = C_occ_a @ C_occ_a.T
-        dm_b = C_occ_b @ C_occ_b.T
+        # Density matrices (no factor of 2 for UKS).
+        # R2-C N1 audit fix: occupation-mask form (C * occ) @ C.T matches
+        # the RKS path's gradient stability under multi-cycle eigh on
+        # degenerate-eigenvalue Fock matrices (e.g. linear-symmetry mols
+        # C2H2 / HCN / C2H4). Pre-fix slice form C[:, :nocc] @ C[:, :nocc].T
+        # produced 0*NaN=NaN through reverse-mode at exact p-orbital
+        # degeneracies.
+        occ_a = (jnp.arange(nao) < nocc_a).astype(mo_coeff_a.dtype)
+        occ_b = (jnp.arange(nao) < nocc_b).astype(mo_coeff_b.dtype)
+        dm_a = (mo_coeff_a * occ_a) @ mo_coeff_a.T
+        dm_b = (mo_coeff_b * occ_b) @ mo_coeff_b.T
         dm_pred = jnp.stack([dm_a, dm_b])
     else:
         nocc = mol_data["nocc"]

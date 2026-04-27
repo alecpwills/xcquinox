@@ -107,19 +107,19 @@ def _reassemble_features_on_grid(
     pyscfad's actual grid coords. DM-statistics features are grid-
     agnostic (tiled), so they are recomputed at ``len(grid_coords)``.
 
-    For UKS, ``dm`` may have shape ``(2, nao, nao)``; we use the total
-    DM (sum over spin) since the cusp descriptor is geometry-only and
-    DMStatisticsDescriptor operates on the total DM (see
-    ``solver_manual._run_manual_scf_uks._features_for``).
+    For UKS, ``dm`` may have shape ``(2, nao, nao)``. We pass the
+    spin-resolved DM unchanged to ``DMStatisticsDescriptor.compute_from_dm``
+    so the underlying ``compute_dm_features`` picks its UKS branch
+    (Pople-Nesbet 1954: D_sigma S D_sigma = D_sigma per spin). R2-A/R2-E
+    audit fix: pre-fix code summed alpha+beta into a 2-D total DM and
+    routed UKS through the RKS idempotency branch, producing a non-zero
+    physically-meaningless idempotency_error.
     """
     from xcquinox.alec.descriptors import CuspDescriptor, DMStatisticsDescriptor
     from xcquinox.features import compute_cusp_descriptor
 
     dm_arr = jnp.asarray(dm)
-    if dm_arr.ndim == 3 and dm_arr.shape[0] == 2:
-        dm_total = dm_arr[0] + dm_arr[1]
-    else:
-        dm_total = dm_arr
+    # Keep dm_arr's ndim intact; compute_dm_features dispatches on it.
 
     n_grid = int(grid_coords.shape[0])
     if not descriptors:
@@ -136,7 +136,7 @@ def _reassemble_features_on_grid(
             ))
         elif isinstance(d, DMStatisticsDescriptor):
             cols.append(d.compute_from_dm(
-                dm=dm_total, s_matrix=s_matrix, n_grid=n_grid,
+                dm=dm_arr, s_matrix=s_matrix, n_grid=n_grid,
             ))
         else:
             raise NotImplementedError(
@@ -348,6 +348,26 @@ def _cpu_device_context():
 
 
 def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+    # M6 audit fix: pyscfad's SCF driver depends on CONCRETE numpy arrays
+    # for h_core / S / J construction (it goes through libcint via pyscf
+    # backends that do not accept JAX tracers). Calling this from inside
+    # @jit / @eqx.filter_jit produces a confusing TracerArrayConversion
+    # error deep in pyscfad. Detect tracers early and raise a clear
+    # message explaining the constraint.
+    import jax
+    sample_arrays = []
+    for key in ("rho_grid", "ao_grid", "s_matrix", "h_core"):
+        if key in mol_data:
+            sample_arrays.append(mol_data[key])
+            break
+    if sample_arrays and isinstance(sample_arrays[0], jax.core.Tracer):
+        raise RuntimeError(
+            "run_pyscfad_scf cannot be called from inside @jit / "
+            "@eqx.filter_jit — pyscfad's SCF driver requires concrete "
+            "numpy/jnp arrays for libcint integral construction. Wrap "
+            "the caller without JIT, or use SolverMode.ONESHOT (which is "
+            "fully traceable)."
+        )
     # ONESHOT doesn't enter pyscfad at all — skip the CPU pin.
     if config.mode == SolverMode.ONESHOT:
         return _oneshot_result(model, mol_data)

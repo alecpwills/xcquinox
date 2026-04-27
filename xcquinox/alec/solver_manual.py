@@ -372,18 +372,21 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
     def _features_for(D_ab):
         """Assemble descriptor features from the current DM pair.
 
-        Descriptors are spin-blind in this codebase: CuspDescriptor is
-        geometry-only, DMStatisticsDescriptor operates on the total DM.
-        FROZEN policy reuses the initial features.
+        CuspDescriptor is geometry-only. DMStatisticsDescriptor receives
+        the SPIN-RESOLVED 3-D DM (Pople-Nesbet 1954: D_sigma S D_sigma =
+        D_sigma per spin) so the per-spin idempotency-projector branch
+        of compute_dm_features fires. R2-A/R2-E audit fix: pre-fix code
+        summed alpha+beta into a 2-D total DM, routing UKS through the
+        RKS branch and producing a non-zero physically-meaningless
+        idempotency_error. FROZEN policy reuses the initial features.
         """
         if policy == FeaturePolicy.FROZEN:
             return features_initial
         if not model.descriptors:
             return features_initial
-        D_tot = D_ab[0] + D_ab[1]
         return _reassemble_features(
             descriptors=model.descriptors,
-            dm=D_tot,
+            dm=D_ab,                        # 3-D spin-resolved
             s_matrix=s_matrix,
             cusp_features=cusp_cached,
             n_grid=grid_weights.shape[0],

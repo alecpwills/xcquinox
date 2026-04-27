@@ -329,9 +329,19 @@ def run_oep_inversion(
     baseline_xc : str | None
         XC functional string for the displacement baseline. Any
         pyscf-compatible string: ``"lda"``, ``"pbe"`` (default),
-        ``"blyp"``, ``"scan"``, ``"b3lyp"``, ``"hf"``, etc. Pass
-        ``None`` for Hartree-only baseline (NOT recommended; see Wu &
-        Yang §II.B).
+        ``"blyp"``, ``"scan"``, ``"hf"``, etc. Pass ``None`` for
+        Hartree-only baseline (NOT recommended; see Wu & Yang §II.B).
+
+        **Hybrid functionals (e.g. ``"b3lyp"``):** the baseline V_xc
+        matrix captures the *local* exchange-correlation portion at the
+        baseline-XC SCF DM, but the non-local exact-exchange (HF-K) piece
+        is frozen at the baseline DM rather than recomputed from the
+        evolving inner-SCF DM. This means at b=0 the inner SCF does
+        NOT exactly reproduce the hybrid baseline DM (the K piece
+        becomes inconsistent with the new D). Hybrid baselines work in
+        practice but do not enjoy the "b=0 = baseline answer" property
+        that pure-DFT baselines do; expect slightly more L-BFGS-B
+        iterations to compensate. R2-D NEW-M1 audit note.
     aux_basis : str
         Auxiliary basis for V_xc expansion. Default
         ``"def2-svp-jkfit"`` (matches step6 notebook). Larger bases
@@ -364,7 +374,19 @@ def run_oep_inversion(
     weights = mf.grids.weights
     h_core = mf.get_hcore()
 
-    is_uks = (mol.spin != 0) or (np.asarray(dm_target).ndim == 3)
+    # R2-D NEW-M2 audit fix: spin=0 mol with 3-D dm_target is incoherent.
+    # RKS mol means mf=RKS and vxc_baseline is 2-D; coercing the path to
+    # UKS (because dm_target.ndim==3) silently broadcasts 1-D rows through
+    # the 3-D vxc construction. Reject up-front with a clear error.
+    dm_target_arr_check = np.asarray(dm_target)
+    if mol.spin == 0 and dm_target_arr_check.ndim == 3:
+        raise ValueError(
+            f"OEP target DM has shape {dm_target_arr_check.shape} "
+            f"(spin-resolved UKS) but mol_spec.spin = 0 (closed-shell). "
+            f"Either pass a 2-D RKS dm_target (sum of alpha + beta) or "
+            f"set mol_spec.spin > 0 for an open-shell inversion."
+        )
+    is_uks = (mol.spin != 0) or (dm_target_arr_check.ndim == 3)
 
     # D10 audit: shape + nelectron sanity check on the target DM. If
     # Tr(S * D_target) is far from the actual electron count OR the

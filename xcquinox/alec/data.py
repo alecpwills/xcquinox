@@ -345,8 +345,18 @@ def precompute_fixed_density_data(
 
     if "dm_features" in all_needed:
         from xcquinox.features import compute_dm_features_array
+        # R2-A/R2-E audit fix: pass the SPIN-RESOLVED 3-D DM for UKS
+        # molecules so compute_dm_features picks the per-spin
+        # idempotency-projector branch (Pople-Nesbet 1954: D_sigma S
+        # D_sigma = D_sigma per spin). The pre-fix code passed dm_pbe_tot
+        # (the spin-summed total) which forces the RKS branch and
+        # produces a non-zero, physically-meaningless idempotency_error
+        # on every open-shell molecule because (D_a + D_b)/2 · S ·
+        # (D_a + D_b)/2 != (D_a + D_b)/2 (cross terms D_a S D_b survive).
+        dm_for_features = jnp.array(dm_pbe) if dm_pbe.ndim == 3 \
+                         else jnp.array(dm_pbe_tot)
         dm_feat_global = compute_dm_features_array(
-            jnp.array(dm_pbe_tot), jnp.array(s_matrix),
+            dm_for_features, jnp.array(s_matrix),
         )
         dm_features = jnp.tile(dm_feat_global, (len(rho_pbe), 1))
 

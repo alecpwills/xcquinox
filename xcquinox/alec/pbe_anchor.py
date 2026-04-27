@@ -167,6 +167,11 @@ def pbe_anchor_loss(params,
     F_x_UKS(rho/2, rho/2, s) = F_x_RKS(rho, s)).
     """
     if weight == 0.0:
-        return jnp.array(0.0, dtype=jnp.float64)
+        # R2-A N6 audit fix: match the dtype of the sample arrays
+        # rather than hardcoding float64 (caller may have x32-only JAX
+        # configured, in which case the hardcoded f64 zero gets cast
+        # back to f32 and the cast itself shows up as a small
+        # discontinuity at the weight=0 boundary).
+        return jnp.zeros((), dtype=sample.Fx_target.dtype)
     fx_nn = nn_fx_fn(params, sample.rho_alpha, sample.rho_beta, sample.s)
     return weight * jnp.mean((fx_nn - sample.Fx_target) ** 2)
