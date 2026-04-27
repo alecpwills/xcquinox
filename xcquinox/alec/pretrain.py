@@ -30,24 +30,35 @@ from xcquinox.utils import lda_x, pw92c_unpolarized_scalar
 _RHO_FLOOR_INTEGRATION = 1e-18
 
 
-def _compute_integration_weights(rho):
+def _compute_integration_weights(rho, grid_weights=None):
     """Return ``(w_x, w_c)`` integration weights for pretraining.
 
-    Weights are ``|rho * eps^LDA|`` evaluated at each grid point. High-rho
-    points dominate the ``E_xc`` integral, so pointwise fits weighted by
-    these quantities directly minimize the residual in the *integrated* XC
-    energy (rather than pointwise ``F`` error).
+    The integrated XC energy is
 
-    The density is clamped to ``_RHO_FLOOR_INTEGRATION`` before being fed
-    into the LDA kernels to avoid divide-by-zero in ``rs = (3 / (4 pi rho))^(1/3)``.
-    Returned weights are broadcast to ``rho.shape`` so the helper composes
-    uniformly regardless of input length (``pw92c_unpolarized_scalar``
-    collapses to a 0-D output for length-1 inputs).
+        E_xc = ∫ ρ(r) ε_xc(ρ, ∇ρ; r) d³r
+             ≈ Σ_i  w_grid_i · ρ_i · ε_xc_i ,
+
+    so a pretraining loss that minimizes the *integrated* XC-energy
+    residual must weight pointwise residuals by ``w_grid_i · |ρ_i ·
+    ε_LDA_i|``. The Becke quadrature weights ``w_grid_i = dr_i`` vary
+    by 6+ orders of magnitude on atomic grids; omitting them
+    de-calibrates the loss into "unweighted in r-space, but weighted by
+    ρ ε_LDA per-sample" — which is what the pre-2026-04-27 implementation
+    actually did, despite the name "integration".
 
     Parameters
     ----------
     rho : jnp.ndarray
         Electron density at grid points, shape ``(N,)``.
+    grid_weights : jnp.ndarray | None
+        Becke-Lebedev quadrature weights ``dr_i`` per grid point, shape
+        ``(N,)``. **Required for genuine integrated-energy weighting.**
+        If ``None`` (legacy / pre-fix behavior), the per-sample weights
+        ``|ρ ε_LDA|`` are returned without the ``dr_i`` factor — the
+        loss then optimizes the |ρ ε_LDA|-weighted *mean* per-sample
+        residual, NOT the integrated-energy residual. Callers that
+        cannot supply ``grid_weights`` should expect the warning at
+        ``run_pretrain`` (a ``RuntimeWarning`` is emitted).
 
     Returns
     -------
@@ -58,9 +69,14 @@ def _compute_integration_weights(rho):
     rho_safe = jnp.maximum(rho, _RHO_FLOOR_INTEGRATION)
     eps_x_lda = lda_x(rho_safe)
     eps_c_lda = pw92c_unpolarized_scalar(rho_safe)
-    w_x = jnp.broadcast_to(jnp.abs(rho_safe * eps_x_lda), rho_safe.shape)
-    w_c = jnp.broadcast_to(jnp.abs(rho_safe * eps_c_lda), rho_safe.shape)
-    return w_x, w_c
+    w_x = jnp.abs(rho_safe * eps_x_lda)
+    w_c = jnp.abs(rho_safe * eps_c_lda)
+    if grid_weights is not None:
+        gw = jnp.asarray(grid_weights)
+        w_x = w_x * gw
+        w_c = w_c * gw
+    return jnp.broadcast_to(w_x, rho_safe.shape), \
+           jnp.broadcast_to(w_c, rho_safe.shape)
 
 
 # === B-H-R15 Round 15 fix: legacy lob_lim constants ===
@@ -276,7 +292,21 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
 
     if spec.loss_weighting == "integration":
         rho_all = pretrain_data["rho_all"]
-        w_x, w_c = _compute_integration_weights(rho_all)
+        # Becke-Lebedev quadrature weights ``dr_i`` make the loss a true
+        # integrated-XC-energy residual; older pretrain_data files don't
+        # carry them — fall back with a warning.
+        grid_weights = pretrain_data.get("weights_all")
+        if grid_weights is None:
+            import warnings as _warn
+            _warn.warn(
+                "pretrain_data.npz lacks 'weights_all'; integration-mode "
+                "loss is missing Becke quadrature weights and approximates "
+                "a |rho*eps_LDA|-weighted mean rather than the integrated "
+                "XC-energy residual. Regenerate pretrain_data.npz from a "
+                "post-2026-04-27 notebook generator to get correct weights.",
+                RuntimeWarning, stacklevel=2,
+            )
+        w_x, w_c = _compute_integration_weights(rho_all, grid_weights)
         loss_fn_x = _PretrainLoss(weights=w_x)
         loss_fn_c = _PretrainLoss(weights=w_c)
     else:  # "unweighted" — validated at construction

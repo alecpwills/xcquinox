@@ -352,6 +352,7 @@ def build_cell_07_pretrain_data_gen():
     """Section 3 Cell 7 -- pretrain data generation (inline pyscf, ported from step5)."""
     source = """# Pretrain data generation (inline pyscf) -- matches step5 Cell 8.
 rho_list, sigma_list, Fx_list, Fc_list = [], [], [], []
+weights_list = []  # Becke-Lebedev quadrature dr_i — needed by integration mode
 cusp_list, dm_list = [], []
 
 # Compute gate: only compute extended features iff ARCH_NAMES contains
@@ -369,18 +370,38 @@ for atom_symbol, spin in PRETRAIN_ATOMS:
 
     ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=1)
     dm_ab = mf.make_rdm1()
-    dm_total = dm_ab[0] + dm_ab[1] if dm_ab.ndim == 3 else dm_ab
-    rho_gga = mf._numint.eval_rho(mol, ao, dm_total, xctype="GGA", hermi=True)
+    is_uks = (dm_ab.ndim == 3)
 
-    rho = rho_gga[0]
-    sigma = rho_gga[1]**2 + rho_gga[2]**2 + rho_gga[3]**2
-
-    # PBE enhancement factors from libxc (pyscf functional strings, NOT xcquinox helpers)
-    ex_pbe = mf._numint.eval_xc("PBE,", rho_gga, spin=0)[0]
-    ec_pbe = mf._numint.eval_xc(",PBE", rho_gga, spin=0)[0]
-    # LDA baselines on the 1-D total density
-    ex_lda = mf._numint.eval_xc("LDA_X,", rho, spin=0)[0]
-    ec_lda = mf._numint.eval_xc(",LDA_C_PW", rho, spin=0)[0]
+    if is_uks:
+        # Open-shell: spin-resolve rho_gga and call libxc with spin=1 for
+        # correct UKS PBE F_x / F_c targets. The closed-shell-on-total-density
+        # call (spin=0) is wrong for Li/N/O/etc. (PBE 1996 §III spin-scaling
+        # gives F_x_UKS != F_x_RKS(rho_total) for any nonzero polarization).
+        dm_total = dm_ab[0] + dm_ab[1]
+        rho_a_gga = mf._numint.eval_rho(mol, ao, dm_ab[0], xctype="GGA", hermi=True)
+        rho_b_gga = mf._numint.eval_rho(mol, ao, dm_ab[1], xctype="GGA", hermi=True)
+        rho_gga_uks = np.stack([rho_a_gga, rho_b_gga], axis=0)
+        rho = rho_a_gga[0] + rho_b_gga[0]
+        # UKS sigma = sigma_aa + 2 sigma_ab + sigma_bb (total ∇ρ squared)
+        nabla_a = rho_a_gga[1:4]
+        nabla_b = rho_b_gga[1:4]
+        nabla_total = nabla_a + nabla_b
+        sigma = (nabla_total ** 2).sum(axis=0)
+        ex_pbe = mf._numint.eval_xc("PBE,", rho_gga_uks, spin=1)[0]
+        ec_pbe = mf._numint.eval_xc(",PBE", rho_gga_uks, spin=1)[0]
+        # UKS LDA baselines: pass (rho_a, rho_b) as 2-tuple of 1-D densities.
+        ex_lda = mf._numint.eval_xc("LDA_X,", (rho_a_gga[0], rho_b_gga[0]), spin=1)[0]
+        ec_lda = mf._numint.eval_xc(",LDA_C_PW", (rho_a_gga[0], rho_b_gga[0]), spin=1)[0]
+    else:
+        dm_total = dm_ab
+        rho_gga = mf._numint.eval_rho(mol, ao, dm_total, xctype="GGA", hermi=True)
+        rho = rho_gga[0]
+        sigma = rho_gga[1]**2 + rho_gga[2]**2 + rho_gga[3]**2
+        # Closed-shell: spin=0 calls correct.
+        ex_pbe = mf._numint.eval_xc("PBE,", rho_gga, spin=0)[0]
+        ec_pbe = mf._numint.eval_xc(",PBE", rho_gga, spin=0)[0]
+        ex_lda = mf._numint.eval_xc("LDA_X,", rho, spin=0)[0]
+        ec_lda = mf._numint.eval_xc(",LDA_C_PW", rho, spin=0)[0]
 
     # np.where-based safe division (NOT a boolean mask -- boolean masks drop points
     # we want to keep)
@@ -399,11 +420,13 @@ for atom_symbol, spin in PRETRAIN_ATOMS:
     sigma_write = sigma[valid]
     Fx_write = Fx_minus_1[valid]
     Fc_write = Fc_minus_1[valid]
+    weights_write = np.asarray(mf.grids.weights)[valid]
 
     rho_list.append(rho_write)
     sigma_list.append(sigma_write)
     Fx_list.append(Fx_write)
     Fc_list.append(Fc_write)
+    weights_list.append(weights_write)
 
     if need_cusp:
         coords_v = mf.grids.coords[valid]
@@ -416,18 +439,26 @@ for atom_symbol, spin in PRETRAIN_ATOMS:
 
     if need_dm:
         S = mol.intor("int1e_ovlp")
+        # For UKS, pass spin-resolved DM (3-D) so compute_dm_features picks
+        # the correct UKS branch (D_sigma S D_sigma = D_sigma per spin —
+        # Pople-Nesbet 1954). Pre-fix code summed to dm_total which gives
+        # meaningless idempotency_error for open-shell (E3 audit).
+        dm_for_features = jnp.asarray(dm_ab) if is_uks else jnp.asarray(dm_total)
         dm_feat_global = xcquinox.features.compute_dm_features_array(
-            jnp.asarray(dm_total), jnp.asarray(S)
+            dm_for_features, jnp.asarray(S)
         )
         dm_feat_tiled = jnp.tile(dm_feat_global, (len(rho_write), 1))
         dm_list.append(np.asarray(dm_feat_tiled))
 
-rho_all   = np.concatenate(rho_list)
-sigma_all = np.concatenate(sigma_list)
-Fx_all    = np.concatenate(Fx_list)
-Fc_all    = np.concatenate(Fc_list)
+rho_all     = np.concatenate(rho_list)
+sigma_all   = np.concatenate(sigma_list)
+Fx_all      = np.concatenate(Fx_list)
+Fc_all      = np.concatenate(Fc_list)
+weights_all = np.concatenate(weights_list)
 
-save_kwargs = dict(rho_all=rho_all, sigma_all=sigma_all, Fx_all=Fx_all, Fc_all=Fc_all)
+save_kwargs = dict(rho_all=rho_all, sigma_all=sigma_all,
+                   Fx_all=Fx_all, Fc_all=Fc_all,
+                   weights_all=weights_all)
 if cusp_list:
     save_kwargs["cusp_all"] = np.concatenate(cusp_list)
 if dm_list:

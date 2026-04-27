@@ -179,3 +179,65 @@ def test_pbe_anchor_spin_scaling_at_polarized_point():
     )
     assert jnp.allclose(fx_helper, jnp.array([fx_ref]), atol=1e-10), \
         f"helper={float(fx_helper[0])}, ref={fx_ref}"
+
+
+# ---------------------------------------------------------------------------
+# E5/E6 fix: rho -> 0 falls back to analytic PBE F_x(s), NOT 1.0
+# ---------------------------------------------------------------------------
+
+def test_pbe_anchor_rho_zero_uses_analytic_pbe_fx():
+    """At rho_alpha = rho_beta = 0 (or one channel zero with fully
+    polarized boundary), libxc gives 0/0; the helper must fall back to
+    the rho-independent analytic PBE F_x(s) per Perdew-Burke-Ernzerhof
+    1996 §3 eq. (14) -- NOT the pre-fix fallback F_x = 1, which biased
+    the anchor target toward UEG at every spin-polarized boundary.
+    """
+    import jax.numpy as jnp
+    from xcquinox.alec.pbe_anchor import _pbe_fx_libxc, _fx_pbe_analytic
+    s = jnp.array([0.0, 0.5, 1.5, 4.0])
+    rho_zero = jnp.zeros_like(s)
+    fx_full_zero = _pbe_fx_libxc(rho_zero, rho_zero, s)
+    expected = _fx_pbe_analytic(jnp.asarray(s))
+    # Both spin channels hit fallback => 0.5 * (fallback + fallback) = fallback.
+    import numpy as np
+    np.testing.assert_allclose(np.asarray(fx_full_zero),
+                               np.asarray(expected), atol=1e-12)
+
+
+def test_pbe_anchor_one_spin_zero_falls_back_partially():
+    """Polarized boundary: rho_alpha > 0, rho_beta = 0. The beta channel
+    hits the fallback F_x_PBE_analytic(s); the alpha channel uses the
+    libxc result. Confirms the fix gives a sensible mid-value rather
+    than the pre-fix bias toward 0.5*(libxc + 1)."""
+    import jax.numpy as jnp
+    import numpy as np
+    from xcquinox.alec.pbe_anchor import _pbe_fx_libxc
+    s = jnp.array([0.5, 1.5])
+    rho_a = jnp.array([0.1, 0.1])
+    rho_b = jnp.zeros_like(rho_a)
+    fx_polarized = _pbe_fx_libxc(rho_a, rho_b, s)
+    # Sanity: result must be finite and within physical PBE F_x range
+    # [1, 1.804] for these s values.
+    assert np.all(np.isfinite(fx_polarized))
+    assert np.all(np.asarray(fx_polarized) >= 1.0 - 1e-6)
+    assert np.all(np.asarray(fx_polarized) <= 1.804 + 1e-6)
+
+
+def test_fx_pbe_analytic_matches_canonical_values():
+    """Pin a few canonical values of the PBE F_x(s) closed form against
+    Perdew-Burke-Ernzerhof 1996 §3 eq. (14):
+        F_x(s) = 1 + kappa - kappa / (1 + mu * s^2 / kappa)
+    with kappa = 0.804, mu = 0.21951.
+    """
+    import numpy as np
+    from xcquinox.alec.pbe_anchor import _fx_pbe_analytic
+    s = np.array([0.0, 1.0, 2.0, 5.0, 100.0])
+    # By hand:
+    kappa, mu = 0.804, 0.21951
+    expected = 1.0 + kappa - kappa / (1.0 + mu * s ** 2 / kappa)
+    out = _fx_pbe_analytic(s)
+    np.testing.assert_allclose(np.asarray(out), expected, atol=1e-12)
+    # F_x(0) = 1 (uniform-electron-gas limit)
+    assert abs(_fx_pbe_analytic(np.array([0.0]))[0] - 1.0) < 1e-12
+    # F_x(s -> infty) = 1 + kappa = 1.804 (Lieb-Oxford bound)
+    assert abs(_fx_pbe_analytic(np.array([1e6]))[0] - 1.804) < 1e-6

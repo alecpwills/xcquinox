@@ -25,6 +25,23 @@ class PBEAnchorSample:
     Fx_target: jnp.ndarray
 
 
+def _fx_pbe_analytic(s: np.ndarray) -> np.ndarray:
+    """PBE F_x(s) closed form — Perdew-Burke-Ernzerhof 1996 §3 eq. (14):
+
+        F_x(s) = 1 + kappa - kappa / (1 + mu * s^2 / kappa)
+
+    with kappa = 0.804 (Lieb-Oxford) and mu = 0.21951 (gradient
+    expansion). Used as the rho->0 / spin-polarized-boundary limit
+    where the libxc rho/sigma division is 0/0; the analytic formula is
+    rho-independent at fixed s, making it the correct limit (in
+    contrast to the pre-fix fallback F_x=1, which biased the anchor
+    target toward UEG).
+    """
+    kappa = 0.804
+    mu = 0.21951
+    return 1.0 + kappa - kappa / (1.0 + mu * s ** 2 / kappa)
+
+
 def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
                   rho_beta: jnp.ndarray,
                   s: jnp.ndarray) -> jnp.ndarray:
@@ -38,10 +55,19 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
     ``xcquinox.alec.oneshot._uks_spin_resolved_vxc``) and the anchor
     helper ``_nn_fx_local_uks``.
 
+    The implementation note that ``zeta`` is treated as spatially
+    constant (per-sample): each (rho_alpha, rho_beta, s) row is scalar,
+    so this assumption is automatic for the anchor sample. It would
+    NOT be correct for a spatially-varying grid where the rows live on
+    different spatial regions.
+
     F_x_RKS is computed by calling libxc GGA_X_PBE in spin=0 (RKS) mode
     on each spin channel's doubled density, dividing the GGA exchange
     energy per electron by the LDA exchange energy per electron at the
-    same rho_tot=2*rho_sigma.
+    same rho_tot=2*rho_sigma. At rho_sigma -> 0 (spin-polarized
+    boundary or rho_tot -> 0), the libxc / LDA ratio is 0/0; we fall
+    back to the analytic PBE F_x(s) formula since F_x is rho-
+    independent at fixed s.
     """
     ra = np.asarray(rho_alpha, dtype=np.float64)
     rb = np.asarray(rho_beta, dtype=np.float64)
@@ -62,24 +88,37 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
 
     _compute = getattr(_LIBXC_CALL, "eval" "_xc")
     c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
+    fx_pbe_at_s = _fx_pbe_analytic(s_arr)
 
-    def _fx_rks(rho_spin_doubled: np.ndarray, sigma_spin_eff: np.ndarray) -> np.ndarray:
+    def _fx_rks(rho_spin_doubled: np.ndarray,
+                sigma_spin_eff: np.ndarray,
+                fallback_fx: np.ndarray) -> np.ndarray:
+        # libxc GGA spin=0 input is shape (n_components, n_grid). Components
+        # are (rho, drho_x, drho_y, drho_z, [lapl, tau]); we only need the
+        # first 4 for GGA. To pass a known sigma value, we set
+        # drho_x = sqrt(sigma) and drho_y = drho_z = 0, so that
+        # sigma_libxc = drho_x^2 + drho_y^2 + drho_z^2 = sigma. Slot 1 is
+        # less ambiguous than slot 3 (gradient_z) for this magnitude-only
+        # encoding.
         n = rho_spin_doubled.shape[0]
         rho_input = np.zeros((4, n), dtype=np.float64)
         rho_input[0, :] = rho_spin_doubled
-        rho_input[3, :] = np.sqrt(np.clip(sigma_spin_eff, 0.0, None))
+        rho_input[1, :] = np.sqrt(np.clip(sigma_spin_eff, 0.0, None))
         ex_per_e, *_ = _compute("GGA_X_PBE", rho_input, spin=0, deriv=0)
         ex_lda_per_e = c_lda * np.power(
             np.clip(rho_spin_doubled, 1e-300, None), 1.0 / 3.0,
         )
+        # rho -> 0: 0/0 limit becomes the rho-independent F_x_PBE(s) (NOT
+        # the pre-fix fallback F_x = 1, which biased the target toward UEG
+        # at every spin-polarized boundary).
         return np.where(
             np.abs(ex_lda_per_e) > 1e-30,
             ex_per_e / ex_lda_per_e,
-            1.0,
+            fallback_fx,
         )
 
-    fx_a = _fx_rks(2.0 * ra, sigma_aa_eff)
-    fx_b = _fx_rks(2.0 * rb, sigma_bb_eff)
+    fx_a = _fx_rks(2.0 * ra, sigma_aa_eff, fx_pbe_at_s)
+    fx_b = _fx_rks(2.0 * rb, sigma_bb_eff, fx_pbe_at_s)
     return jnp.asarray(0.5 * (fx_a + fx_b))
 
 

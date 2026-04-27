@@ -167,3 +167,40 @@ def test_integration_mode_yields_smaller_e_xc_residual_than_unweighted():
         f"Integration advantage smaller than expected 2x: "
         f"ratio={e_wtd / e_unw:.3e}"
     )
+
+
+# ---------------------------------------------------------------------------
+# E1 fix: integration weighting must include Becke quadrature weights w_grid
+# ---------------------------------------------------------------------------
+
+def test_integration_weights_apply_grid_weights():
+    """When grid_weights is supplied, the per-sample integration weight
+    must be multiplied by w_grid_i. Becke-Lebedev quadrature gives dr_i
+    per grid point; without it, the loss is "rho-eps_LDA-weighted mean
+    per sample" rather than the integrated XC-energy residual it claims
+    to be (E1 audit, 2026-04-27)."""
+    from xcquinox.alec.pretrain import _compute_integration_weights
+    rho = jnp.array([1.0, 0.5, 0.1])
+    gw = jnp.array([2.0, 4.0, 0.5])
+    w_x_no_gw, w_c_no_gw = _compute_integration_weights(rho)
+    w_x_gw, w_c_gw = _compute_integration_weights(rho, gw)
+    # With grid_weights, per-point weight = |rho * eps_LDA| * w_grid.
+    assert jnp.allclose(w_x_gw, w_x_no_gw * gw), (w_x_gw, w_x_no_gw, gw)
+    assert jnp.allclose(w_c_gw, w_c_no_gw * gw), (w_c_gw, w_c_no_gw, gw)
+
+
+def test_integration_weights_grid_weights_none_matches_legacy():
+    """Backward-compat: when grid_weights=None, the new
+    _compute_integration_weights must match the pre-fix output exactly
+    (so older pretrain_data.npz files without 'weights_all' continue to
+    train, with a warning, but produce bit-identical losses to before)."""
+    from xcquinox.alec.pretrain import _compute_integration_weights
+    rho = jnp.array([1e-5, 0.1, 1.0, 5.0])
+    w_x_new, w_c_new = _compute_integration_weights(rho, None)
+    # Legacy formula (verbatim of pre-fix code, modulo broadcast shape):
+    from xcquinox.utils import lda_x, pw92c_unpolarized_scalar
+    rho_safe = jnp.maximum(rho, 1e-18)
+    w_x_legacy = jnp.abs(rho_safe * lda_x(rho_safe))
+    w_c_legacy = jnp.abs(rho_safe * pw92c_unpolarized_scalar(rho_safe))
+    assert jnp.allclose(w_x_new, w_x_legacy)
+    assert jnp.allclose(w_c_new, w_c_legacy)

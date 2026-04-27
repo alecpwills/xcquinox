@@ -160,10 +160,19 @@ def _precompute_cache_key(
     # required_keys are sorted to canonicalize set-equivalence.
     # Descriptors are keyed by class name + n_features so different
     # parameterizations of the same descriptor type don't collide.
+    # The external_data_path file's (mtime_ns, size) is part of the key
+    # so that re-running a notebook after vxc_ref regeneration (e.g.
+    # step6's mid-notebook OEP rerun) invalidates stale cache entries.
     desc_key = tuple(
         (type(d).__name__, getattr(d, "n_features", None)) for d in descriptors
     )
-    return (mol_spec, tuple(sorted(required_keys)), desc_key)
+    ext_path = getattr(mol_spec, "external_data_path", None)
+    if ext_path and os.path.isfile(ext_path):
+        st = os.stat(ext_path)
+        ext_key = (ext_path, int(st.st_mtime_ns), int(st.st_size))
+    else:
+        ext_key = (ext_path, None, None)
+    return (mol_spec, tuple(sorted(required_keys)), desc_key, ext_key)
 
 
 def clear_precompute_cache() -> None:
