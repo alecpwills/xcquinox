@@ -178,3 +178,97 @@ def test_alec_xnet_matches_library():
         np.asarray(alec_out), np.asarray(lib_out),
         err_msg="AlecGGA_XNet must match GGA_FxNet_extended bit-exactly",
     )
+
+
+# ---------------------------------------------------------------------------
+# Self-attention integration tests (spec §Tests 15-19)
+# ---------------------------------------------------------------------------
+
+def test_alec_xnet_uses_real_attention():
+    """Test 15: outputs differ AND grads on the FIRST MLP layer differ
+    when use_self_attention is toggled — not just attention weights.
+    """
+    from xcquinox.alec.networks import AlecGGA_XNet
+
+    no_attn = AlecGGA_XNet(
+        n_extra_features=0, depth=2, nodes=8, num_heads=1,
+        use_self_attention=False, seed=42,
+    )
+    yes_attn = AlecGGA_XNet(
+        n_extra_features=0, depth=2, nodes=8, num_heads=2,
+        use_self_attention=True, seed=42,
+    )
+    x = jnp.array([1.0, 0.5])
+    target = jnp.array(1.2)
+
+    out_no = no_attn(x)
+    out_yes = yes_attn(x)
+    assert not jnp.allclose(out_no, out_yes), (
+        "attention toggle must change output"
+    )
+
+    def loss(m, x, t):
+        return (m(x) - t) ** 2
+    g_no = eqx.filter_grad(loss)(no_attn, x, target)
+    g_yes = eqx.filter_grad(loss)(yes_attn, x, target)
+
+    # First MLP layer weights should receive measurably different grads
+    # because the residual flow through attention changes upstream signal.
+    g_no_l0 = jnp.asarray(g_no.net.layers[0].weight)
+    g_yes_l0 = jnp.asarray(g_yes.net.layers[0].weight)
+    assert not jnp.allclose(g_no_l0, g_yes_l0, atol=1e-6), (
+        "MLP layer 0 grads should differ between attn-on and attn-off"
+    )
+
+
+def test_alec_xnet_num_heads_propagates():
+    """Test 16: AlecGGA_XNet(num_heads=4) -> xnet.attention.num_heads==4,
+    head_dim == nodes // 4.
+    """
+    from xcquinox.alec.networks import AlecGGA_XNet
+    xnet = AlecGGA_XNet(
+        n_extra_features=0, depth=2, nodes=32, num_heads=4,
+        use_self_attention=True, seed=0,
+    )
+    assert xnet.num_heads == 4
+    assert xnet.attention.num_heads == 4
+    assert xnet.attention.head_dim == 32 // 4
+
+
+def test_alec_create_network_pair_reads_arch_num_heads():
+    """Test 17: create_network_pair reads arch.num_heads and forwards."""
+    from xcquinox.alec.config import ArchitectureConfig
+    from xcquinox.alec.networks import create_network_pair
+    arch = ArchitectureConfig(
+        name="t", depth=2, nodes=8, attention=True, num_heads=2,
+    )
+    xnet, cnet = create_network_pair(arch, seed=0)
+    assert xnet.attention.num_heads == 2
+    assert cnet.attention.num_heads == 2
+
+
+def test_alec_arch_validation_rejects_bad_divisibility():
+    """Test 18: nodes=8 + num_heads=3 raises in __post_init__."""
+    from xcquinox.alec.config import ArchitectureConfig
+    with pytest.raises(ValueError, match="divisible by num_heads"):
+        ArchitectureConfig(
+            name="bad", depth=2, nodes=8, attention=True, num_heads=3,
+        )
+
+
+def test_alec_xnet_attention_grad_end_to_end():
+    """Test 19: full-network grad reaches grad.attention.query_proj.weight."""
+    from xcquinox.alec.networks import AlecGGA_XNet
+    xnet = AlecGGA_XNet(
+        n_extra_features=0, depth=2, nodes=8, num_heads=2,
+        use_self_attention=True, seed=0,
+    )
+    x = jnp.array([1.0, 0.5])
+    target = jnp.array(1.2)
+
+    def loss(m, x, t):
+        return (m(x) - t) ** 2
+    grad = eqx.filter_grad(loss)(xnet, x, target)
+    g_q = jnp.asarray(grad.attention.query_proj.weight)
+    assert jnp.all(jnp.isfinite(g_q))
+    assert jnp.linalg.norm(g_q) > 0.0

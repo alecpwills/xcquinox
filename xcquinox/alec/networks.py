@@ -54,6 +54,7 @@ class AlecGGA_XNet(eqx.Module):
     lob_lim: float | None = eqx.field(static=True)
     lower_rho_cutoff: float = eqx.field(static=True)
     use_self_attention: bool = eqx.field(static=True)
+    num_heads: int = eqx.field(static=True)
     net: eqx.nn.MLP
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
@@ -61,11 +62,18 @@ class AlecGGA_XNet(eqx.Module):
     def __init__(self, *, n_extra_features: int, depth: int, nodes: int,
                  use_self_attention: bool = False, seed: int = 42,
                  lob_lim: float | None = 1.804,
-                 lower_rho_cutoff: float = 1e-12):
+                 lower_rho_cutoff: float = 1e-12,
+                 num_heads: int = 1):
+        if use_self_attention and nodes % num_heads != 0:
+            raise ValueError(
+                f"AlecGGA_XNet: use_self_attention=True requires "
+                f"nodes ({nodes}) divisible by num_heads ({num_heads})"
+            )
         self.n_extra_features = n_extra_features
         self.lob_lim = lob_lim
         self.lower_rho_cutoff = lower_rho_cutoff
         self.use_self_attention = use_self_attention
+        self.num_heads = num_heads
 
         in_size = 1 + n_extra_features
 
@@ -76,7 +84,7 @@ class AlecGGA_XNet(eqx.Module):
             activation=jax.nn.gelu, key=keys[0],
         )
         self.attention = (
-            _xnet.SelfAttentionBlock(hidden_size=nodes, num_heads=1, key=keys[1])
+            _xnet.SelfAttentionBlock(hidden_size=nodes, num_heads=num_heads, key=keys[1])
             if use_self_attention else None
         )
         self.lobf = _AlecLOB(limit=lob_lim) if lob_lim is not None else None
@@ -126,6 +134,7 @@ class AlecGGA_CNet(eqx.Module):
     lob_lim: float | None = eqx.field(static=True)
     lower_rho_cutoff: float = eqx.field(static=True)
     use_self_attention: bool = eqx.field(static=True)
+    num_heads: int = eqx.field(static=True)
     net: eqx.nn.MLP
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
@@ -133,11 +142,18 @@ class AlecGGA_CNet(eqx.Module):
     def __init__(self, *, n_extra_features: int, depth: int, nodes: int,
                  use_self_attention: bool = False, seed: int = 42,
                  lob_lim: float | None = 2.0,
-                 lower_rho_cutoff: float = 1e-12):
+                 lower_rho_cutoff: float = 1e-12,
+                 num_heads: int = 1):
+        if use_self_attention and nodes % num_heads != 0:
+            raise ValueError(
+                f"AlecGGA_CNet: use_self_attention=True requires "
+                f"nodes ({nodes}) divisible by num_heads ({num_heads})"
+            )
         self.n_extra_features = n_extra_features
         self.lob_lim = lob_lim
         self.lower_rho_cutoff = lower_rho_cutoff
         self.use_self_attention = use_self_attention
+        self.num_heads = num_heads
 
         in_size = 2 + n_extra_features
 
@@ -148,7 +164,7 @@ class AlecGGA_CNet(eqx.Module):
             activation=jax.nn.gelu, key=keys[0],
         )
         self.attention = (
-            _xnet.SelfAttentionBlock(hidden_size=nodes, num_heads=1, key=keys[1])
+            _xnet.SelfAttentionBlock(hidden_size=nodes, num_heads=num_heads, key=keys[1])
             if use_self_attention else None
         )
         self.lobf = _AlecLOB(limit=lob_lim) if lob_lim is not None else None
@@ -204,10 +220,12 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         use_self_attention=arch.attention, seed=seed,
         lob_lim=arch.resolved_xnet_lob_lim,
         lower_rho_cutoff=lower_rho_cutoff,
+        num_heads=arch.num_heads,
     )
     cnet = AlecGGA_CNet(
         n_extra_features=n_extra_features, depth=arch.depth, nodes=arch.nodes,
         use_self_attention=arch.attention, seed=seed + 1,
         lower_rho_cutoff=lower_rho_cutoff,
+        num_heads=arch.num_heads,
     )
     return xnet, cnet

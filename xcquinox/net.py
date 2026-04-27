@@ -48,69 +48,92 @@ class LOB(eqx.Module):
 
 
 class SelfAttentionBlock(eqx.Module):
-    """A self-attention block that operates on hidden features.
+    """Scaled dot-product multi-head self-attention, Pre-LN.
 
-    This module applies scaled dot-product self-attention on the hidden
-    dimension, treating each hidden unit as a "token". This allows the
-    network to learn feature interactions dynamically.
+    The input is a single hidden vector x in R^H produced by an MLP layer
+    (single grid point; sequence length = 1). The block treats the H
+    hidden units as `num_heads` tokens of dim `head_dim = H // num_heads`
+    and performs attention ACROSS THE HEAD AXIS. The (H_h, H_h) attention
+    matrix is the canonical scaled dot product Q @ K.T / sqrt(head_dim)
+    softmaxed along the key axis.
+
+    Math: Vaswani et al. 2017 (https://arxiv.org/abs/1706.03762)
+        §3.2.1 eq. (1):  Attention(Q, K, V) = softmax(QK^T / sqrt(d_k)) V
+        §3.2.2 eq. (2):  MultiHead(Q, K, V) = Concat(head_1,...,head_h) W^O
+    Pre-LN convention: Xiong et al. 2020 (https://arxiv.org/abs/2002.04745)
+        §3 eq. (3):       x_{l+1} = x_l + F(LN(x_l))   (where F is the entire
+                                                       attention sublayer
+                                                       including W^O).
+
+    Implementation note: the packed `Linear(H, H)` + reshape-to-heads
+    factorization is mathematically equivalent to per-head Linear(H, head_dim)
+    plus concat (Vaswani §3.2.2). Reshape order is C-order (numpy default),
+    so head `i` occupies channels `[i*head_dim, (i+1)*head_dim)` of the
+    post-projection vector; the back-reshape after `attn @ v` inverts the
+    same permutation.
+
+    IMPORTANT: do NOT override `head_dim` directly via `eqx.tree_at`. It
+    is derived from `hidden_size // num_heads` and the reshape arithmetic
+    in `_compute_scores` and `__call__` depends on this invariant. To
+    change attention dimensionality, construct a new block with the
+    desired `(hidden_size, num_heads)` pair.
     """
-    query_proj: eqx.nn.Linear
-    key_proj: eqx.nn.Linear
-    value_proj: eqx.nn.Linear
+    query_proj:  eqx.nn.Linear
+    key_proj:    eqx.nn.Linear
+    value_proj:  eqx.nn.Linear
     output_proj: eqx.nn.Linear
-    num_heads: int
-    hidden_size: int
+    norm:        eqx.nn.LayerNorm
+    num_heads:   int = eqx.field(static=True)
+    head_dim:    int = eqx.field(static=True)
+    hidden_size: int = eqx.field(static=True)
 
-    def __init__(self, hidden_size: int, num_heads: int = 1, key: jax.random.PRNGKey = None):
-        """Initialize the self-attention block.
-
-        :param hidden_size: The size of the hidden dimension
-        :type hidden_size: int
-        :param num_heads: Number of attention heads (default: 1)
-        :type num_heads: int
-        :param key: JAX random key for initialization
-        :type key: jax.random.PRNGKey
-        """
+    def __init__(self, hidden_size: int, num_heads: int = 1,
+                 key: jax.random.PRNGKey = None):
         if key is None:
             key = jax.random.PRNGKey(0)
-
+        if hidden_size % num_heads != 0:
+            raise ValueError(
+                f"hidden_size ({hidden_size}) must be divisible by "
+                f"num_heads ({num_heads})"
+            )
+        head_dim = hidden_size // num_heads
         self.hidden_size = hidden_size
         self.num_heads = num_heads
-
+        self.head_dim = head_dim
         keys = jax.random.split(key, 4)
-        self.query_proj = eqx.nn.Linear(hidden_size, hidden_size, key=keys[0])
-        self.key_proj = eqx.nn.Linear(hidden_size, hidden_size, key=keys[1])
-        self.value_proj = eqx.nn.Linear(hidden_size, hidden_size, key=keys[2])
+        self.query_proj  = eqx.nn.Linear(hidden_size, hidden_size, key=keys[0])
+        self.key_proj    = eqx.nn.Linear(hidden_size, hidden_size, key=keys[1])
+        self.value_proj  = eqx.nn.Linear(hidden_size, hidden_size, key=keys[2])
         self.output_proj = eqx.nn.Linear(hidden_size, hidden_size, key=keys[3])
+        self.norm        = eqx.nn.LayerNorm(hidden_size)
+
+    def _compute_scores(self, x):
+        """Return (q, k, v, scores) for direct unit-test inspection.
+
+        Factored out so tests can verify shapes / scale / softmax-axis
+        without monkeypatching `jax.nn.softmax` (which is JIT-unsafe).
+        """
+        x_n = self.norm(x)
+        q = self.query_proj(x_n).reshape(self.num_heads, self.head_dim)
+        k = self.key_proj(x_n).reshape(self.num_heads, self.head_dim)
+        v = self.value_proj(x_n).reshape(self.num_heads, self.head_dim)
+        scores = (q @ k.T) / jnp.sqrt(self.head_dim)
+        return q, k, v, scores
 
     def __call__(self, x):
-        """Apply self-attention to the input features.
+        """Apply Pre-LN multi-head scaled-dot-product self-attention.
 
         :param x: Input features of shape (hidden_size,)
         :type x: jnp.ndarray
         :return: Attention-transformed features of shape (hidden_size,)
         :rtype: jnp.ndarray
         """
-        # Reshape to (1, hidden_size) for attention computation
-        x = x.reshape(1, -1)
-
-        # Compute Q, K, V projections
-        q = self.query_proj(x.squeeze())  # (hidden_size,)
-        k = self.key_proj(x.squeeze())    # (hidden_size,)
-        v = self.value_proj(x.squeeze())  # (hidden_size,)
-
-        # Compute attention scores (scaled dot-product)
-        # For single-point attention, this becomes a weighted sum
-        scale = jnp.sqrt(self.hidden_size).astype(x.dtype)
-        attn_weights = jax.nn.softmax(q * k / scale)  # Element-wise attention
-
-        # Apply attention weights to values
-        attended = attn_weights * v
-
-        # Output projection with residual connection
-        output = self.output_proj(attended) + x.squeeze()
-
-        return output
+        residual = x
+        _, _, v, scores = self._compute_scores(x)
+        attn = jax.nn.softmax(scores, axis=-1)
+        out = (attn @ v).reshape(self.hidden_size)
+        out = self.output_proj(out)
+        return out + residual
 
 
 # =====================================================================

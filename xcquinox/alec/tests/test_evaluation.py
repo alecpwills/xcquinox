@@ -225,6 +225,122 @@ def test_density_rmse_compute(tiny_model, h2o_data):
     assert result["density_rmse"] > 0.0
 
 
+# Solver-aware density metric: the value must depend on solver_config so
+# that training's DM/density loss (which uses the spec's solver_config) and
+# evaluation's density_rmse measure the same quantity. Without this plumbing,
+# training with FIXED_J / FULL optimizes one density (SCF-iterated) while
+# eval measures another (oneshot 1-Roothaan-step), exactly analogous to the
+# 2026-04-24 energy-functional bug.
+def test_run_test_with_full_solver_config_passes_eri_to_precompute(
+    trained_checkpoint, h2o_data,
+):
+    """Regression: eval with TestSpec(solver_config=FULL) requires the
+    4-index ERI tensor in mol_data because run_scf(FULL) builds J[D]
+    every cycle. run_test must include ``eri`` in required_keys whenever
+    spec.solver_config.mode == FULL; without this guard the eval crashes
+    inside opt_einsum with 'Cannot determine the shape of None'."""
+    import numpy as np
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+
+    model_path, arch, atom_energies = trained_checkpoint
+    rho_ref = np.asarray(h2o_data["rho_grid"])
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ext_path = os.path.join(tmpdir, "H2O.npz")
+        np.savez(
+            ext_path, rho_ref_grid=rho_ref, ref_density_method="pbe",
+            dm_target=np.asarray(h2o_data["dm_pbe"]),
+            E_ref_literature=float(h2o_data["E_pbe"]),
+        )
+        h2o = MoleculeSpec(
+            name="H2O",
+            atom="O 0 0 0; H 0 0 0.96; H 0.96 0 0",
+            basis="sto-3g", charge=0, spin=0,
+            atom_composition=(("H", 2), ("O", 1)),
+            external_data_path=ext_path,
+        )
+        spec = TestSpec.from_dicts(
+            model_checkpoint=model_path, arch=arch, molecules=(h2o,),
+            metrics=("density_rmse",),
+            output_dir=os.path.join(tmpdir, "out"),
+            solver_config=SolverConfig(
+                mode=SolverMode.FULL, max_cycles=2, conv_tol=1e-4,
+            ),
+        )
+        # Must not raise.
+        result = run_test(spec)
+        rmse = result["per_molecule"][0]["density_rmse"]
+        assert rmse is not None and math.isfinite(rmse)
+
+
+def test_pbe_reference_metric_computes_pbe_ae_error(tiny_model, h_data, o_data, h2o_data):
+    """PBEReferenceMetric reports the PBE-level atomization energy and its
+    error vs literature reference, using ONLY E_pbe from mol_data + an
+    ``atom_energies`` dict (PBE-consistent atomic totals). Zero
+    NN forward pass. This is the 'what if we just used PBE?' baseline
+    shown alongside trained-NN results on the notebook's comparison plots."""
+    from xcquinox.alec.evaluation import PBEReferenceMetric
+    # PBE-consistent atom anchors (same convention as AtomizationEnergyMetric).
+    atom_energies = {"H": float(h_data["E_pbe"]), "O": float(o_data["E_pbe"])}
+    # Literature reference in kcal/mol; we use the PBE-derived AE itself
+    # as the "reference" so the error should come out near zero.
+    ae_h2o_ha = float(h_data["E_pbe"] * 2 + o_data["E_pbe"] - h2o_data["E_pbe"])
+    HA_TO_KCAL = 627.5094740631
+    ref_ae_kcalmol = {"H2O": ae_h2o_ha * HA_TO_KCAL}
+    m = PBEReferenceMetric(
+        atom_energies=atom_energies, reference_ae_kcalmol=ref_ae_kcalmol,
+    )
+    # h2o_data must have mol name so reference lookup works.
+    mol_data = dict(h2o_data); mol_data["name"] = "H2O"
+    result = m.compute(tiny_model, mol_data)
+    assert "AE_pbe" in result
+    assert "AE_error_pbe_kcalmol" in result
+    # Because ref_ae == AE_pbe computed the same way, error should be ~0.
+    assert abs(result["AE_error_pbe_kcalmol"]) < 1e-6, (
+        f"PBE error vs self-reference should be ~0, got "
+        f"{result['AE_error_pbe_kcalmol']}"
+    )
+
+
+def test_pbe_reference_metric_is_model_independent(tiny_model, h_data, o_data, h2o_data):
+    """PBEReferenceMetric must not depend on the NN model — it's a
+    hardware-free baseline. Calling with two different models on the
+    same mol_data must produce identical output."""
+    from xcquinox.alec.evaluation import PBEReferenceMetric
+    atom_energies = {"H": float(h_data["E_pbe"]), "O": float(o_data["E_pbe"])}
+    m = PBEReferenceMetric(atom_energies=atom_energies)
+    mol_data = dict(h2o_data); mol_data["name"] = "H2O"
+    out1 = m.compute(tiny_model, mol_data)
+    # Any other "model" object — PBEReferenceMetric should ignore it.
+    out2 = m.compute(None, mol_data)
+    for k, v in out1.items():
+        if isinstance(v, float):
+            assert math.isclose(v, out2[k]), f"{k}: {v} vs {out2[k]}"
+
+
+def test_density_rmse_honors_solver_config(tiny_model, h2o_data):
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+    mol_data = dict(h2o_data)
+    mol_data["rho_ref_grid"] = mol_data["rho_grid"]
+    mol_data["ref_density_method"] = "hf"
+    m = DensityRMSEMetric()
+    # Oneshot path (no SCF) vs FIXED_J path (3 SCF cycles with J pinned).
+    r_oneshot = m.compute(tiny_model, mol_data)
+    r_fixed_j = m.compute(
+        tiny_model, mol_data,
+        solver_config=SolverConfig(mode=SolverMode.FIXED_J, max_cycles=3),
+    )
+    # Both must produce a finite RMSE.
+    assert r_oneshot["density_rmse"] is not None and math.isfinite(r_oneshot["density_rmse"])
+    assert r_fixed_j["density_rmse"] is not None and math.isfinite(r_fixed_j["density_rmse"])
+    # And they must differ (SCF iteration changes the density for a random NN).
+    assert abs(r_oneshot["density_rmse"] - r_fixed_j["density_rmse"]) > 1e-10, (
+        f"DensityRMSEMetric must consume solver_config; oneshot and FIXED_J "
+        f"produced the same RMSE ({r_oneshot['density_rmse']} == {r_fixed_j['density_rmse']})"
+    )
+
+
 # (7c) Output keys match schema
 def test_density_rmse_schema(tiny_model, h2o_data):
     mol_data = dict(h2o_data)
@@ -281,16 +397,21 @@ def test_constraint_violations_schema(h2o_data):
 # Tests 13-15: Registry-level
 # ---------------------------------------------------------------------------
 
-# (13) METRIC_REGISTRY has exactly 4 entries
-def test_metric_registry_has_4_entries():
-    assert len(METRIC_REGISTRY) == 4
+# (13) METRIC_REGISTRY has exactly 5 entries
+# (was 4 prior to the 2026-04-24 addition of PBEReferenceMetric, the
+# model-independent PBE-baseline metric used by the notebook's comparison plots)
+def test_metric_registry_has_6_entries():
+    assert len(METRIC_REGISTRY) == 6
 
 
 # (14) list_metrics returns sorted names
 def test_list_metrics_sorted():
     names = list_metrics()
     assert names == sorted(names)
-    assert set(names) == {"total_energy", "atomization_energy", "density_rmse", "constraint_violations"}
+    assert set(names) == {
+        "total_energy", "atomization_energy", "density_rmse",
+        "constraint_violations", "pbe_reference", "scf_convergence",
+    }
 
 
 # (15) make_metric("not_a_metric") raises KeyError
@@ -416,8 +537,67 @@ def test_validate_empty_metrics():
 # Tests 25-36: run_test integration + misc
 # ---------------------------------------------------------------------------
 
+def test_run_test_forwards_solver_config_to_density_metric(
+    trained_checkpoint, h2o_data,
+):
+    """End-to-end: TestSpec.solver_config must reach DensityRMSEMetric.
+    Equivalent specs that differ only in ``solver_config`` (None vs
+    FIXED_J) must produce different ``density_rmse`` values for the same
+    trained model — otherwise run_test is silently ignoring the solver
+    distinction that training used."""
+    import numpy as np
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+
+    model_path, arch, atom_energies = trained_checkpoint
+    rho_ref = np.asarray(h2o_data["rho_grid"])  # use PBE rho as the reference
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Write a minimal external_data npz so DensityRMSEMetric has
+        # rho_ref_grid available during eval.
+        ext_path = os.path.join(tmpdir, "H2O.npz")
+        np.savez(
+            ext_path,
+            rho_ref_grid=rho_ref,
+            ref_density_method="pbe",
+            dm_target=np.asarray(h2o_data["dm_pbe"]),
+            E_ref_literature=float(h2o_data["E_pbe"]),
+        )
+        h2o = MoleculeSpec(
+            name="H2O",
+            atom="O 0 0 0; H 0 0 0.96; H 0.96 0 0",
+            basis="sto-3g", charge=0, spin=0,
+            atom_composition=(("H", 2), ("O", 1)),
+            external_data_path=ext_path,
+        )
+
+        spec_oneshot = TestSpec.from_dicts(
+            model_checkpoint=model_path, arch=arch, molecules=(h2o,),
+            metrics=("density_rmse",),
+            output_dir=os.path.join(tmpdir, "oneshot"),
+            solver_config=None,
+        )
+        result_oneshot = run_test(spec_oneshot)
+
+        spec_fixedj = TestSpec.from_dicts(
+            model_checkpoint=model_path, arch=arch, molecules=(h2o,),
+            metrics=("density_rmse",),
+            output_dir=os.path.join(tmpdir, "fixedj"),
+            solver_config=SolverConfig(mode=SolverMode.FIXED_J, max_cycles=3),
+        )
+        result_fixedj = run_test(spec_fixedj)
+
+    rmse_oneshot = result_oneshot["per_molecule"][0]["density_rmse"]
+    rmse_fixedj = result_fixedj["per_molecule"][0]["density_rmse"]
+    assert rmse_oneshot is not None and math.isfinite(rmse_oneshot)
+    assert rmse_fixedj is not None and math.isfinite(rmse_fixedj)
+    assert abs(rmse_oneshot - rmse_fixedj) > 1e-10, (
+        f"TestSpec.solver_config must propagate into DensityRMSEMetric; "
+        f"oneshot={rmse_oneshot!r} fixed_j={rmse_fixedj!r}"
+    )
+
+
 # (25) run_test on 2-molecule spec returns {per_molecule, aggregate}
-@pytest.mark.slow
 def test_run_test_basic(trained_checkpoint):
     model_path, arch, atom_energies = trained_checkpoint
     h = h_atom()
@@ -696,3 +876,54 @@ def test_density_rmse_atom_skip(tiny_model, h_data):
     assert result["density_l1"] is None
     assert result["skipped"] is True
     assert result["skip_reason"] == "atomic_system"
+
+
+# (37) SCFConvergenceMetric returns sentinel for ONESHOT / no solver_config
+def test_scf_convergence_metric_oneshot_sentinel(tiny_model, h2o_data):
+    """ONESHOT (and solver_config=None) skip the SCF loop, so the metric
+    must emit cycles_run=0 + scf_converged=True without raising."""
+    from xcquinox.alec.evaluation import SCFConvergenceMetric
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+    m = SCFConvergenceMetric()
+    out_none = m.compute(tiny_model, h2o_data, solver_config=None)
+    assert out_none == {"cycles_run": 0, "scf_converged": True}
+    out_oneshot = m.compute(
+        tiny_model, h2o_data,
+        solver_config=SolverConfig(mode=SolverMode.ONESHOT),
+    )
+    assert out_oneshot == {"cycles_run": 0, "scf_converged": True}
+
+
+# (38) SCFConvergenceMetric records per-cycle |E_n - E_final| trace under FIXED_J
+def test_scf_convergence_metric_records_residual_trace(tiny_model, h2o_data):
+    """Under a real SCF backend (FIXED_J via pyscfad), the metric must
+    emit ``scf_energy_residual_<i>`` keys for each executed cycle.
+
+    Each residual is |E_n - E_final| -- so the residual at the final
+    cycle should be much smaller than at cycle 0 (energy decay during
+    SCF). This catches both (a) the pyscfad backend forgetting to
+    populate energy_trace and (b) the metric forgetting to surface it.
+    """
+    from xcquinox.alec.evaluation import SCFConvergenceMetric
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+    m = SCFConvergenceMetric()
+    cfg = SolverConfig(mode=SolverMode.FIXED_J, max_cycles=4, conv_tol=1e-6)
+    out = m.compute(tiny_model, h2o_data, solver_config=cfg)
+    # Core fields always present
+    assert "cycles_run" in out
+    assert "scf_converged" in out
+    assert "scf_total_energy" in out
+    # Per-cycle residual fields when the backend recorded a trace
+    residual_keys = [k for k in out if k.startswith("scf_energy_residual_")]
+    assert residual_keys, (
+        "SCFConvergenceMetric did not surface scf_energy_residual_<i> rows; "
+        "energy_trace likely not populated by the pyscfad backend."
+    )
+    # All residuals are non-negative finite floats; final cycle residual
+    # is the smallest (decay toward convergence).
+    indices = sorted(int(k.split("_")[-1]) for k in residual_keys)
+    residuals = [out[f"scf_energy_residual_{i}"] for i in indices]
+    for r in residuals:
+        assert math.isfinite(r) and r >= 0.0
+    # The trace must show actual decay from the first to the last cycle.
+    assert residuals[-1] <= residuals[0] + 1e-12

@@ -491,11 +491,22 @@ def _load_one_network(
 
     dst_array_count = sum(1 for l in dst_leaves_all if eqx.is_array(l))
     if len(src_array_leaves) != dst_array_count:
+        schema_hint = ""
+        if "_attn" in path or "/attention" in path:
+            schema_hint = (
+                "\n\nThis path includes an attention checkpoint. The "
+                "self-attention block was rewritten 2026-04-27 to real "
+                "multi-head scaled-dot-product attention; old `_attn` "
+                "checkpoints are NOT loadable under the new schema. "
+                "Delete the old checkpoint and retrain."
+            )
         raise ValueError(
-            f"legacy→alec graft leaf mismatch at {path}: library has "
+            f"legacy->alec graft leaf mismatch at {path}: library has "
             f"{len(src_array_leaves)} eqx.is_array leaves, alec skeleton "
-            f"expects {dst_array_count}. Likely cause: arch.depth or "
-            f"arch.nodes differs from the pretrained checkpoint."
+            f"expects {dst_array_count}. Likely causes: arch.depth or "
+            f"arch.nodes differs from the pretrained checkpoint, or the "
+            f"checkpoint predates the 2026-04-27 attention rewrite."
+            f"{schema_hint}"
         )
 
     # Per-leaf shape/dtype sanity before the graft

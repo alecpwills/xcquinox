@@ -8,26 +8,112 @@ Implements THE SPEC §6.3:
   - compute_exc_nn, compute_vxc_nn (internal helpers)
 """
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
-# §6.3: module-level constant for numerical regularization
+# §6.3: module-level constants for numerical regularization.
+#
+# DEGENERACY_REG: uniform shift. Used on the overlap matrix before Cholesky
+# decomposition (conditions S so L = cholesky(S + εI) is stable for
+# near-singular basis sets).
 DEGENERACY_REG = 1e-10
 
+# SYM_BREAK_SHIFT: magnitude of the NON-UNIFORM diagonal perturbation added
+# to the transformed Fock matrix before ``jnp.linalg.eigh``. A uniform
+# shift (DEGENERACY_REG * I) does NOT break eigenvalue degeneracies — it
+# raises every eigenvalue by the same amount. For molecules with linear
+# symmetry (D∞h, e.g. C2H2, HCN, C2H4) the π MO pairs have exactly equal
+# energies, and ``eigh``'s reverse-mode derivative uses 1 / (λ_i - λ_j)
+# which returns NaN at exact degeneracies. Without this non-uniform
+# shift, any loss that differentiates through ``oneshot_dm_prediction_fast``
+# (e.g. B_atomization_plus_dm) produces an all-NaN gradient on these
+# systems, poisoning the optimizer at step 0.
+#
+# Size: 1e-8 is comfortably above float64 accumulation noise (~1e-13
+# relative) and thousands of orders of magnitude below any physical
+# energy scale. Forward output of eigh is shifted by ≤ 1e-8 per MO
+# energy — negligible for DM / density predictions.
+SYM_BREAK_SHIFT = 1e-8
 
+
+def _sym_break_diag(nao: int, dtype) -> jnp.ndarray:
+    """Small deterministic non-uniform diagonal to break eigenvalue degeneracies.
+
+    Uses sin(i * φ) where φ is the golden ratio — irrational, so no two
+    rows collide by periodicity. Values span roughly [-1, 1] scaled by
+    SYM_BREAK_SHIFT. Output is fully deterministic in ``nao`` alone, so
+    forward results are reproducible across runs (no PRNG state needed).
+    """
+    idx = jnp.arange(nao, dtype=dtype)
+    return SYM_BREAK_SHIFT * jnp.sin(idx * 1.618033988749895)
+
+
+@eqx.filter_jit
 def compute_exc_nn(model, rho, sigma, features, grid_weights):
     """Integrate NN XC energy density: E_xc^NN = sum(weights * exc).
 
     model.eval_exc returns rho * epsilon_xc, so NO extra rho factor here.
     Returns a JAX scalar (jit/grad-safe).
+
+    JIT-cached: keyed on (model architecture pytree structure, input shapes).
+    Calling this with a different model instance of the same architecture
+    skips re-tracing — critical for the eval sweep that loads 72
+    checkpoints sharing two architectures.
     """
     exc = model.eval_exc(rho, sigma, features)
     return jnp.sum(exc * grid_weights)
 
 
 def compute_vxc_nn(
+    model,
+    rho,
+    sigma,
+    features,
+    ao_grid,
+    grid_weights,
+    nabla_rho=None,
+    ao_grad=None,
+) -> jnp.ndarray:
+    """Wrapper: issue the LDA-fallback warning at call time (so it fires on
+    every misuse, not just the first JIT trace), then dispatch to the
+    JIT-compiled core. The split keeps the warning side-effect outside
+    the cached trace boundary -- otherwise eqx.filter_jit suppresses it
+    after the first call."""
+    if nabla_rho is None or ao_grad is None:
+        import warnings
+        warnings.warn(
+            "compute_vxc_nn called without nabla_rho/ao_grad: returning "
+            "LDA-only V_xc (v_sigma term dropped). Correct only for LDA NNs.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return _compute_vxc_nn_lda(model, rho, sigma, features, ao_grid, grid_weights)
+    return _compute_vxc_nn_gga(
+        model, rho, sigma, features, ao_grid, grid_weights, nabla_rho, ao_grad,
+    )
+
+
+@eqx.filter_jit
+def _compute_vxc_nn_lda(model, rho, sigma, features, ao_grid, grid_weights):
+    return _compute_vxc_nn_core(
+        model, rho, sigma, features, ao_grid, grid_weights,
+        nabla_rho=None, ao_grad=None,
+    )
+
+
+@eqx.filter_jit
+def _compute_vxc_nn_gga(model, rho, sigma, features, ao_grid, grid_weights,
+                        nabla_rho, ao_grad):
+    return _compute_vxc_nn_core(
+        model, rho, sigma, features, ao_grid, grid_weights,
+        nabla_rho=nabla_rho, ao_grad=ao_grad,
+    )
+
+
+def _compute_vxc_nn_core(
     model,
     rho,
     sigma,
@@ -107,13 +193,8 @@ def compute_vxc_nn(
     V_rho = jnp.einsum("g,gi,gj->ij", grid_weights * v_rho, ao_grid, ao_grid)
 
     if nabla_rho is None or ao_grad is None:
-        import warnings
-        warnings.warn(
-            "compute_vxc_nn called without nabla_rho/ao_grad: returning "
-            "LDA-only V_xc (v_sigma term dropped). Correct only for LDA NNs.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        # LDA-only fallback: warning is issued at the wrapper boundary so
+        # it fires on every misuse rather than only on first JIT trace.
         return V_rho
 
     # Accept either the (4, n_grid, n_ao) eval_ao(deriv=1) layout or the
@@ -249,9 +330,16 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         fock_a = h_core + j_total + vxc_nn_a
         fock_b = h_core + j_total + vxc_nn_b
 
-        # Transform to orthogonal basis
-        fock_orth_a = L_inv @ fock_a @ L_inv.T + DEGENERACY_REG * jnp.eye(nao)
-        fock_orth_b = L_inv @ fock_b @ L_inv.T + DEGENERACY_REG * jnp.eye(nao)
+        # Transform to orthogonal basis. The uniform DEGENERACY_REG * I
+        # shift alone does NOT resolve eigenvalue degeneracies (every
+        # eigenvalue moves by the same amount), which breaks the eigh VJP
+        # on linear-symmetry molecules. Adding a small non-uniform diag
+        # (_sym_break_diag) resolves exact degeneracies so 1/(λ_i - λ_j)
+        # in the reverse-mode derivative stays finite. See SYM_BREAK_SHIFT
+        # block comment for full rationale.
+        _sb = jnp.diag(_sym_break_diag(nao, fock_a.dtype))
+        fock_orth_a = L_inv @ fock_a @ L_inv.T + DEGENERACY_REG * jnp.eye(nao) + _sb
+        fock_orth_b = L_inv @ fock_b @ L_inv.T + DEGENERACY_REG * jnp.eye(nao) + _sb
 
         # Eigendecomposition (JAX-native: preserves grad flow through the solver).
         _, mo_coeff_orth_a = jnp.linalg.eigh(fock_orth_a)
@@ -285,8 +373,16 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         # RKS: j_pbe has shape (n_ao, n_ao)
         fock = h_core + j_pbe + vxc_nn
 
-        # Transform to orthogonal basis
-        fock_orth = L_inv @ fock @ L_inv.T + DEGENERACY_REG * jnp.eye(nao)
+        # Transform to orthogonal basis. The uniform DEGENERACY_REG * I
+        # shift alone does NOT resolve eigenvalue degeneracies (every
+        # eigenvalue moves by the same amount), which breaks the eigh VJP
+        # on linear-symmetry molecules (C2H2 π MOs). Adding a small
+        # non-uniform diag (_sym_break_diag) resolves exact degeneracies
+        # so 1/(λ_i - λ_j) in the reverse-mode derivative stays finite.
+        # See SYM_BREAK_SHIFT block comment for full rationale.
+        fock_orth = (L_inv @ fock @ L_inv.T
+                     + DEGENERACY_REG * jnp.eye(nao)
+                     + jnp.diag(_sym_break_diag(nao, fock.dtype)))
 
         # Eigendecomposition
         _, mo_coeff_orth = jnp.linalg.eigh(fock_orth)

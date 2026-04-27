@@ -1012,23 +1012,30 @@ def test_vxc_term_uks_zero_when_nn_equals_ref():
 
 
 # ---------------------------------------------------------------------------
-# Task 19: A/D1 losses honor solver_config via run_scf total_energy
+# A/D1 energy loss is solver-invariant.
+#
+# Supersedes the Task-19 test that asserted the opposite (run_scf total_energy
+# under FIXED_J). That assertion codified a bug: training's FIXED_J
+# run_scf(...).total_energy is a J-pinned hybrid that is NOT a valid energy
+# functional of any single density, and it diverges from what evaluation's
+# TotalEnergyMetric measures (fixed_density_total_energy at ρ_PBE). The fix
+# on 2026-04-24 made _compute_energies solver-invariant so training
+# optimizes what evaluation measures.
 # ---------------------------------------------------------------------------
 
-def test_loss_a_with_fixed_j_solver_uses_scf_energy():
-    """A_atomization loss with solver_config=FIXED_J MUST use run_scf(...).total_energy
-    not fixed_density_total_energy. Different values should result for a random NN.
-    """
+def test_loss_a_with_fixed_j_solver_matches_oneshot_energy():
+    """A_atomization loss is solver-invariant in its energy term:
+    ``solver_config=FIXED_J`` and ``solver_config=None`` (→ oneshot) MUST
+    produce identical loss values when the only difference is the solver.
+    The post-hoc fixed-density framework defines E_total as a functional
+    of ρ_PBE with NN's V_xc; solver choice governs DM / density / V_xc
+    matching terms, not the energy functional."""
     import xcquinox.alec as alec
     from xcquinox.alec.config import MoleculeSpec
     from xcquinox.alec.data import precompute_fixed_density_data
     from xcquinox.alec.losses import make_loss
     from xcquinox.alec.solver import SolverConfig, SolverBackend, SolverMode
 
-    # H2O (spin-0 RKS) is used because its density deviates measurably from
-    # PBE under a random deep-architecture NN, giving the SCF path a large
-    # enough signal to distinguish from one-shot (H2/sto-3g converged too
-    # close to PBE to be a reliable regression target).
     spec = MoleculeSpec(
         name="H2O", atom="O 0 0 0; H 0 1 0; H 0 0 1",
         basis="sto-3g", charge=0, spin=0,
@@ -1047,30 +1054,22 @@ def test_loss_a_with_fixed_j_solver_uses_scf_energy():
         "atom_energies": atom_energies,
     }
 
-    # Loss with no solver_config -> one-shot (fixed_density_total_energy)
-    loss_a_oneshot = make_loss(
-        "A_atomization",
-        molecules=(spec,),
-    )
+    loss_a_oneshot = make_loss("A_atomization", molecules=(spec,))
     val_oneshot = float(loss_a_oneshot(model, batch)[0])
 
-    # Loss with FIXED_J solver_config — should differ
     cfg = SolverConfig(
         backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
         max_cycles=5, conv_tol=1e-8,
         mixer_kwargs=(("alpha", 1.0),),
     )
     loss_a_fixed_j = make_loss(
-        "A_atomization",
-        molecules=(spec,),
-        solver_config=cfg,
+        "A_atomization", molecules=(spec,), solver_config=cfg,
     )
     val_fixed_j = float(loss_a_fixed_j(model, batch)[0])
 
-    # The two loss values should differ (unless SCF converged to exactly PBE,
-    # which won't happen for a random NN).
-    assert abs(val_oneshot - val_fixed_j) > 1e-6, (
-        f"A loss values should differ: oneshot={val_oneshot}, fixed_j={val_fixed_j}"
+    assert abs(val_oneshot - val_fixed_j) < 1e-12, (
+        f"A_atomization loss must be solver-invariant in its energy term; "
+        f"oneshot={val_oneshot!r} fixed_j={val_fixed_j!r}"
     )
 
 
@@ -1166,3 +1165,55 @@ class TestPBEAnchorIntegration:
         numeric = [l for l in leaves if hasattr(l, "dtype") and jnp.issubdtype(l.dtype, jnp.floating)]
         assert any(float(jnp.sum(jnp.abs(l))) > 0 for l in numeric)
         assert all(bool(jnp.all(jnp.isfinite(l))) for l in numeric)
+
+
+# ---------------------------------------------------------------------------
+# Regression: _compute_energies must return the same value across all solver
+# modes so that training (A/D1 energy loss) optimizes what evaluation
+# (TotalEnergyMetric / AtomizationEnergyMetric) measures. Before the 2026-04-24
+# fix, FIXED_J training used run_scf(...).total_energy with J pinned to
+# J[ρ_PBE] against the SCF-evolved ρ_scf — not a valid energy functional of
+# any single density. This drove fixed_j_3 specs to lowest train loss + highest
+# eval error (51+ kcal/mol AE).
+# ---------------------------------------------------------------------------
+
+
+def test_compute_energies_solver_invariant(h2o_mol_data):
+    """Training energy must be solver-agnostic and equal to the evaluation
+    energy (fixed_density_total_energy). The post-hoc fixed-density NN-XC
+    framework defines E_total as a functional of ρ_PBE with NN's V_xc;
+    solver choice governs DM/density/V_xc matching terms, not the energy
+    functional."""
+    from xcquinox.alec.losses import _compute_energies
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+    from xcquinox.alec.oneshot import fixed_density_total_energy
+
+    model = _make_model()
+    mol_data = (h2o_mol_data,)
+
+    E_ref = float(fixed_density_total_energy(model, h2o_mol_data))
+
+    E_none = float(_compute_energies(model, mol_data, 1, solver_config=None)[0])
+    E_oneshot = float(_compute_energies(
+        model, mol_data, 1,
+        solver_config=SolverConfig(mode=SolverMode.ONESHOT, max_cycles=0),
+    )[0])
+    E_fixedj = float(_compute_energies(
+        model, mol_data, 1,
+        solver_config=SolverConfig(mode=SolverMode.FIXED_J, max_cycles=3),
+    )[0])
+    E_full = float(_compute_energies(
+        model, mol_data, 1,
+        solver_config=SolverConfig(mode=SolverMode.FULL, max_cycles=3),
+    )[0])
+
+    # All four paths must produce the SAME energy -- the post-hoc
+    # fixed-density functional evaluated at ρ_PBE with NN's V_xc.
+    for label, E in [("solver=None", E_none), ("ONESHOT", E_oneshot),
+                     ("FIXED_J", E_fixedj), ("FULL", E_full)]:
+        assert abs(E - E_ref) < 1e-10, (
+            f"training energy under {label} = {E:.10f} differs from "
+            f"fixed_density_total_energy = {E_ref:.10f}. "
+            f"Training and evaluation must optimize/measure the same "
+            f"quantity in the post-hoc fixed-density framework."
+        )

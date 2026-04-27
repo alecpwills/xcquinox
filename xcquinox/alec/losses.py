@@ -125,29 +125,32 @@ class AlecLoss(eqx.Module, abc.ABC):
 # ---------------------------------------------------------------------------
 
 def _compute_energies(model, mol_data, N, solver_config=None):
-    """Compute per-molecule NN total energies.
+    """Compute per-molecule NN total energies for the energy-loss term.
 
-    When ``solver_config`` is None or its mode is ``SolverMode.ONESHOT``, the
-    energies are taken from :func:`fixed_density_total_energy` on the frozen
-    reference density (pre-Task-19 behavior). Otherwise, each molecule's
-    energy is drawn from :func:`run_scf`'s converged ``total_energy`` so that
-    A/D1 training loss sees the same SCF total that the training loop's
-    other terms (DM, grid, vxc) already consume via ``solver_config``.
+    The post-hoc fixed-density framework defines the total energy as a
+    functional of the frozen reference density (``ρ_PBE``) with the NN's
+    V_xc:
+
+        E_total = e_nuc + Tr[h·ρ_PBE] + ½·Tr[J[ρ_PBE]·ρ_PBE] + E_xc^NN[ρ_PBE]
+
+    This is what :class:`xcquinox.alec.evaluation.TotalEnergyMetric` measures
+    at evaluation time. For training to *optimize* what evaluation
+    *measures*, this function returns the same quantity regardless of
+    ``solver_config`` — the solver governs DM / density / V_xc matching
+    terms (``_dm_term``, ``_grid_term``, ``_vxc_term``), not the energy
+    functional itself.
+
+    (Prior to 2026-04-24 this function branched on ``solver_config`` and,
+    for FIXED_J mode, returned ``run_scf(...).total_energy`` — a hybrid
+    with ``J[ρ_PBE]`` acting on an SCF-evolved ``ρ_scf ≠ ρ_PBE`` that is
+    not a valid energy functional of any single density. Training could
+    drive that pseudo-energy to near-zero while producing a V_xc with a
+    50+ kcal/mol atomization-energy error at evaluation. ``solver_config``
+    is kept in the signature for callers; it is deliberately unused here.)
     """
-    if solver_config is None:
-        return jnp.stack([
-            fixed_density_total_energy(model, mol_data[i]) for i in range(N)
-        ])
-    # Import lazily to avoid a top-level dependency on the solver module
-    # (which pulls backend-specific imports on first touch).
-    from xcquinox.alec.solver import SolverMode, run_scf
-    if solver_config.mode == SolverMode.ONESHOT:
-        return jnp.stack([
-            fixed_density_total_energy(model, mol_data[i]) for i in range(N)
-        ])
+    del solver_config  # energy functional is solver-invariant.
     return jnp.stack([
-        run_scf(solver_config, model, mol_data[i]).total_energy
-        for i in range(N)
+        fixed_density_total_energy(model, mol_data[i]) for i in range(N)
     ])
 
 

@@ -27,6 +27,7 @@ from xcquinox.alec.evaluation import (
     METRIC_REGISTRY, register_metric, make_metric, list_metrics,
     Metric,
     TotalEnergyMetric, AtomizationEnergyMetric, DensityRMSEMetric, ConstraintViolationsMetric,
+    PBEReferenceMetric, SCFConvergenceMetric,
     run_test,
 )
 

@@ -147,6 +147,40 @@ class MoleculeData(TypedDict, total=True):
     _pyscfad_mol: object | None
 
 
+_PRECOMPUTE_CACHE: dict = {}
+_PRECOMPUTE_CACHE_ENABLED: bool = True
+
+
+def _precompute_cache_key(
+    mol_spec: MoleculeSpec,
+    required_keys: tuple[str, ...],
+    descriptors: tuple[Descriptor, ...],
+) -> tuple:
+    # MoleculeSpec is a frozen dataclass and hashes by structural identity.
+    # required_keys are sorted to canonicalize set-equivalence.
+    # Descriptors are keyed by class name + n_features so different
+    # parameterizations of the same descriptor type don't collide.
+    desc_key = tuple(
+        (type(d).__name__, getattr(d, "n_features", None)) for d in descriptors
+    )
+    return (mol_spec, tuple(sorted(required_keys)), desc_key)
+
+
+def clear_precompute_cache() -> None:
+    """Wipe the in-memory precompute cache. Tests use this to isolate runs."""
+    _PRECOMPUTE_CACHE.clear()
+
+
+def set_precompute_cache_enabled(enabled: bool) -> None:
+    """Toggle the in-memory precompute cache (default: enabled).
+
+    Disable when calling precompute on streaming / changing inputs where the
+    same MoleculeSpec object is reused with mutated external_data on disk.
+    """
+    global _PRECOMPUTE_CACHE_ENABLED
+    _PRECOMPUTE_CACHE_ENABLED = bool(enabled)
+
+
 def precompute_fixed_density_data(
     mol_spec: MoleculeSpec,
     required_keys: tuple[str, ...] = (),
@@ -157,7 +191,24 @@ def precompute_fixed_density_data(
     Baseline keys are always populated. Reference/descriptor keys are computed
     on-demand based on required_keys and descriptor.required_mol_keys.
     Unused keys are set to None (D-M4/C-M3 treedef-homogeneity).
+
+    Results are memoized in a process-level dict keyed on
+    ``(mol_spec, sorted(required_keys), descriptor_classes)``. The
+    precompute is pure (PBE SCF on a frozen geometry), so caching is
+    correctness-preserving and gives O(N_specs) speedup when the notebook
+    sweep evaluates the same molecule under many trained models.
+    Disable via :func:`set_precompute_cache_enabled` if external_data on
+    disk changes between calls.
     """
+    cache_key = None
+    if _PRECOMPUTE_CACHE_ENABLED:
+        try:
+            cache_key = _precompute_cache_key(mol_spec, required_keys, descriptors)
+        except TypeError:
+            cache_key = None  # mol_spec or descriptors not hashable
+        if cache_key is not None and cache_key in _PRECOMPUTE_CACHE:
+            return _PRECOMPUTE_CACHE[cache_key]
+
     from pyscf import dft, gto
 
     # Build pyscf molecule
@@ -318,7 +369,7 @@ def precompute_fixed_density_data(
     except Exception:
         pyscfad_mol = None
 
-    return MoleculeData(
+    result = MoleculeData(
         name=mol_spec.name,
         is_unrestricted=is_unrestricted,
         nocc=nocc,
@@ -357,3 +408,6 @@ def precompute_fixed_density_data(
         },
         _pyscfad_mol=pyscfad_mol,
     )
+    if cache_key is not None and _PRECOMPUTE_CACHE_ENABLED:
+        _PRECOMPUTE_CACHE[cache_key] = result
+    return result

@@ -21,6 +21,7 @@ Internal:
 import json
 import os
 import pickle  # noqa: S403 — saving trusted aux_log data only
+import struct
 import time
 
 import equinox as eqx
@@ -146,12 +147,27 @@ def _build_model(spec: TrainingSpec) -> AlecGGAModel:
     if spec.pretrain_checkpoint is None:
         return AlecGGAModel.from_arch(spec.arch, seed=spec.seed)
     xnet_skeleton, cnet_skeleton = create_network_pair(spec.arch, seed=spec.seed)
-    loaded_xnet = eqx.tree_deserialise_leaves(
-        os.path.join(spec.pretrain_checkpoint, "xnet.eqx"), xnet_skeleton
-    )
-    loaded_cnet = eqx.tree_deserialise_leaves(
-        os.path.join(spec.pretrain_checkpoint, "cnet.eqx"), cnet_skeleton
-    )
+    xnet_path = os.path.join(spec.pretrain_checkpoint, "xnet.eqx")
+    cnet_path = os.path.join(spec.pretrain_checkpoint, "cnet.eqx")
+    try:
+        loaded_xnet = eqx.tree_deserialise_leaves(xnet_path, xnet_skeleton)
+        loaded_cnet = eqx.tree_deserialise_leaves(cnet_path, cnet_skeleton)
+    except (ValueError, EOFError, struct.error) as e:
+        _path_for_hint = (
+            xnet_path
+            if ("_attn" in xnet_path or "/attention" in xnet_path)
+            else cnet_path
+        )
+        if "_attn" in _path_for_hint or "/attention" in _path_for_hint:
+            raise ValueError(
+                f"Failed to deserialise {_path_for_hint}: {e}\n\n"
+                "This path includes an attention checkpoint. The "
+                "self-attention block was rewritten 2026-04-27 to real "
+                "multi-head scaled-dot-product attention; old `_attn` "
+                "checkpoints are NOT loadable under the new schema. "
+                "Delete the old checkpoint and retrain."
+            ) from e
+        raise
     return AlecGGAModel.from_arch(spec.arch, xnet=loaded_xnet, cnet=loaded_cnet)
 
 

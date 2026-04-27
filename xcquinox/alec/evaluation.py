@@ -4,6 +4,7 @@ import os
 import csv
 import json
 import math
+import struct
 import time
 from typing import ClassVar
 
@@ -58,7 +59,23 @@ class Metric(abc.ABC):
     required_mol_keys: ClassVar[tuple[str, ...]] = ()
 
     @abc.abstractmethod
-    def compute(self, model: "AlecGGAModel", mol_data: dict) -> dict[str, float | None | bool | str]:
+    def compute(
+        self,
+        model: "AlecGGAModel",
+        mol_data: dict,
+        solver_config: object | None = None,
+    ) -> dict[str, float | None | bool | str]:
+        """Compute this metric on one molecule.
+
+        ``solver_config`` lets the metric evaluate the model under the
+        same SCF protocol that trained it. Solver-invariant metrics
+        (e.g. ``TotalEnergyMetric`` / ``AtomizationEnergyMetric``
+        evaluate the post-hoc ``E[rho_PBE, V_xc^NN]`` functional) ignore
+        it; metrics that depend on the predicted density
+        (``DensityRMSEMetric``, ``SCFConvergenceMetric``) consume it.
+        Default ``None`` is back-compat with callers that ran metrics
+        without an SCF context.
+        """
         ...
 
 
@@ -72,7 +89,11 @@ class TotalEnergyMetric(Metric):
         "rho_grid", "sigma_grid", "grid_weights", "E_non_xc", "E_pbe", "E_ref_literature",
     )
 
-    def compute(self, model, mol_data):
+    def compute(self, model, mol_data, solver_config=None):
+        # Solver-invariant by framework design: the post-hoc fixed-density
+        # total energy is a functional of rho_PBE with NN's V_xc, not of
+        # the SCF-iterated density.
+        del solver_config
         E_nn = float(fixed_density_total_energy(model, mol_data))
         E_pbe = float(mol_data["E_pbe"])
         result = {"E_total_nn": E_nn, "E_pbe": E_pbe}
@@ -99,7 +120,10 @@ class AtomizationEnergyMetric(Metric):
         self.atom_energies = atom_energies
         self.reference_ae_kcalmol = reference_ae_kcalmol or {}
 
-    def compute(self, model, mol_data):
+    def compute(self, model, mol_data, solver_config=None):
+        # Same rationale as TotalEnergyMetric: AE is a difference of
+        # fixed-density functionals, so it is solver-invariant by design.
+        del solver_config
         E_mol = float(fixed_density_total_energy(model, mol_data))
         comp = mol_data["atom_composition"]
         E_atoms_sum = sum(self.atom_energies[sym] * n for sym, n in comp)
@@ -127,7 +151,7 @@ class DensityRMSEMetric(Metric):
         "is_unrestricted", "atom_composition",
     )
 
-    def compute(self, model, mol_data):
+    def compute(self, model, mol_data, solver_config=None):
         comp = mol_data["atom_composition"]
         total_atoms = sum(n for _, n in comp)
         if total_atoms == 1:
@@ -138,7 +162,11 @@ class DensityRMSEMetric(Metric):
                 "skip_reason": "atomic_system",
                 "ref_density_method": mol_data.get("ref_density_method"),
             }
-        rho_nn = oneshot_grid_density(model, mol_data)
+        # Solver-aware: when ``solver_config`` is supplied, the density is
+        # the SCF-iterated density (FIXED_J / FULL) rather than the
+        # 1-Roothaan-step oneshot density. ``oneshot_grid_density`` already
+        # accepts ``solver_config=None`` for the back-compat oneshot path.
+        rho_nn = oneshot_grid_density(model, mol_data, solver_config=solver_config)
         rho_ref = mol_data["rho_ref_grid"]
         if rho_nn.shape != rho_ref.shape:
             raise ValueError(
@@ -157,6 +185,93 @@ class DensityRMSEMetric(Metric):
 
 
 # ---------------------------------------------------------------------------
+# PBEReferenceMetric
+# ---------------------------------------------------------------------------
+
+@register_metric("pbe_reference")
+class PBEReferenceMetric(Metric):
+    """Emit PBE's predicted total / atomization energy and its error vs
+    literature reference.
+
+    Model-independent baseline: reads ``mol_data['E_pbe']`` (stashed by
+    ``precompute_fixed_density_data``) and combines with the
+    caller-supplied ``atom_energies`` dict (PBE-consistent atomic totals)
+    to produce ``AE_pbe = sum n_Z * atom_energies[Z] - E_pbe_total``.
+    Bookkeeping layer that gives comparison plots a "what if we just used
+    PBE" line next to trained-NN bars.
+
+    The ``model`` argument is accepted for API uniformity and IGNORED.
+    """
+    required_mol_keys: ClassVar[tuple[str, ...]] = ("E_pbe", "atom_composition")
+
+    def __init__(self, atom_energies: dict[str, float],
+                 reference_ae_kcalmol: dict[str, float] | None = None):
+        self.atom_energies = atom_energies
+        self.reference_ae_kcalmol = reference_ae_kcalmol or {}
+
+    def compute(self, model, mol_data, solver_config=None):
+        del model, solver_config  # baseline is model- and solver-independent.
+        E_pbe = float(mol_data["E_pbe"])
+        comp = mol_data["atom_composition"]
+        E_atoms_sum = sum(self.atom_energies[sym] * n for sym, n in comp)
+        AE_pbe = E_atoms_sum - E_pbe  # positive for bound molecule
+        result = {"E_pbe_total": E_pbe, "AE_pbe": AE_pbe}
+        mol_name = mol_data.get("name", "")
+        if mol_name in self.reference_ae_kcalmol:
+            ae_ref = self.reference_ae_kcalmol[mol_name]
+            result["AE_ref_kcalmol"] = ae_ref
+            result["AE_error_pbe_hartree"] = AE_pbe - ae_ref / HA_TO_KCAL
+            result["AE_error_pbe_kcalmol"] = AE_pbe * HA_TO_KCAL - ae_ref
+        return result
+
+
+# ---------------------------------------------------------------------------
+# SCFConvergenceMetric
+# ---------------------------------------------------------------------------
+
+@register_metric("scf_convergence")
+class SCFConvergenceMetric(Metric):
+    """Run one SCF solve and report the cycles taken + converged flag.
+
+    Solver-aware by construction. When ``solver_config`` is None or
+    ONESHOT, the metric emits sentinel values (cycles_run=0,
+    converged=True) since there is no SCF loop. Useful for the notebook's
+    SCF convergence aggregate plot.
+
+    Per-cycle |E_n - E_final| residuals (when the backend records an
+    energy_trace) are emitted as ``scf_energy_residual_<i>`` keys for
+    cycles that actually ran.
+    """
+    required_mol_keys: ClassVar[tuple[str, ...]] = (
+        "rho_grid", "sigma_grid", "ao_grid", "grid_weights",
+        "s_matrix", "h_core", "j_matrix", "nocc", "nocc_a", "nocc_b",
+        "is_unrestricted",
+    )
+
+    def compute(self, model, mol_data, solver_config=None):
+        if solver_config is None:
+            return {"cycles_run": 0, "scf_converged": True}
+        from xcquinox.alec.solver import SolverMode, run_scf
+        if getattr(solver_config, "mode", None) == SolverMode.ONESHOT:
+            return {"cycles_run": 0, "scf_converged": True}
+        result = run_scf(solver_config, model, mol_data)
+        out = {
+            "cycles_run": int(result.cycles_run),
+            "scf_converged": bool(result.converged),
+            "scf_total_energy": float(result.total_energy),
+        }
+        if getattr(result, "energy_trace", None) is not None:
+            import numpy as _np
+            trace = _np.asarray(result.energy_trace)
+            e_final = float(result.total_energy)
+            for i, e_step in enumerate(trace):
+                if math.isnan(float(e_step)):
+                    continue
+                out[f"scf_energy_residual_{i}"] = abs(float(e_step) - e_final)
+        return out
+
+
+# ---------------------------------------------------------------------------
 # ConstraintViolationsMetric
 # ---------------------------------------------------------------------------
 
@@ -166,7 +281,10 @@ class ConstraintViolationsMetric(Metric):
         "rho_grid", "sigma_grid",
     )
 
-    def compute(self, model, mol_data):
+    def compute(self, model, mol_data, solver_config=None):
+        # Constraints are intrinsic to the model's F_x(rho, sigma) surface,
+        # independent of how the model is run within an SCF loop.
+        del solver_config
         features = assemble_descriptor_features(model.descriptors, mol_data)
         rho = mol_data["rho_grid"]
         sigma = mol_data["sigma_grid"]
@@ -215,7 +333,20 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
     skeleton = AlecGGAModel.from_arch(spec.arch, seed=0)
 
     # 3. Deserialize trained weights
-    model = eqx.tree_deserialise_leaves(spec.model_checkpoint, skeleton)
+    try:
+        model = eqx.tree_deserialise_leaves(spec.model_checkpoint, skeleton)
+    except (ValueError, EOFError, struct.error) as e:
+        _path_for_hint = spec.model_checkpoint
+        if "_attn" in _path_for_hint or "/attention" in _path_for_hint:
+            raise ValueError(
+                f"Failed to deserialise {_path_for_hint}: {e}\n\n"
+                "This path includes an attention checkpoint. The "
+                "self-attention block was rewritten 2026-04-27 to real "
+                "multi-head scaled-dot-product attention; old `_attn` "
+                "checkpoints are NOT loadable under the new schema. "
+                "Delete the old checkpoint and retrain."
+            ) from e
+        raise
 
     # 4. Instantiate metrics
     mk_dict = spec.metric_kwargs_dict
@@ -230,7 +361,18 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
     # 5. Determine required mol_data keys
     metric_keys = set().union(*(m.required_mol_keys for m in metrics))
     descriptor_keys = set().union(*(d.required_mol_keys for d in spec.arch.materialize_descriptors()))
-    required_keys = tuple(metric_keys | descriptor_keys)
+    # When the solver runs with FULL Fock rebuilds, run_scf needs the
+    # 4-index ERI tensor in mol_data; precompute_fixed_density_data must
+    # be told to include it via required_keys. ONESHOT and FIXED_J reuse
+    # mol_data["j_matrix"] (already in DensityRMSEMetric.required_mol_keys),
+    # so they don't need this branch.
+    solver_keys: set[str] = set()
+    if spec.solver_config is not None:
+        from xcquinox.alec.solver import SolverMode
+        if getattr(spec.solver_config, "mode", None) == SolverMode.FULL:
+            solver_keys.add("eri")
+            solver_keys.add("ao_grid_deriv")
+    required_keys = tuple(metric_keys | descriptor_keys | solver_keys)
 
     # 6. Evaluate each molecule
     per_molecule = []
@@ -242,7 +384,8 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
         )
         mol_result = {"molecule": mol_spec.name}
         for metric in metrics:
-            metric_out = metric.compute(model, mol_data)
+            metric_out = metric.compute(model, mol_data,
+                                       solver_config=spec.solver_config)
             mol_result.update(metric_out)
         per_molecule.append(mol_result)
         if progress_callback is not None:

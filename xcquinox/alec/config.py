@@ -110,6 +110,7 @@ class ArchitectureConfig:
     depth: int
     nodes: int
     attention: bool = False
+    num_heads: int = 1
     descriptors: tuple[FeatureSpec, ...] = ()
     x_constraints: tuple[FeatureSpec, ...] = ()
     c_constraints: tuple[FeatureSpec, ...] = ()
@@ -145,6 +146,20 @@ class ArchitectureConfig:
             raise TypeError(
                 f"ArchitectureConfig.attention must be a plain Python bool, "
                 f"got {type(self.attention).__name__}"
+            )
+        if not isinstance(self.num_heads, int) or isinstance(self.num_heads, bool):
+            raise TypeError(
+                f"ArchitectureConfig.num_heads must be a plain Python int, "
+                f"got {type(self.num_heads).__name__}"
+            )
+        if self.num_heads < 1:
+            raise ValueError(
+                f"ArchitectureConfig.num_heads must be >= 1, got {self.num_heads}"
+            )
+        if self.attention and self.nodes % self.num_heads != 0:
+            raise ValueError(
+                f"ArchitectureConfig: attention=True requires "
+                f"nodes ({self.nodes}) divisible by num_heads ({self.num_heads})"
             )
         if not isinstance(self.double_lob_clamp_allowed, bool):
             raise TypeError(
@@ -207,10 +222,24 @@ class ArchitectureConfig:
 
     @classmethod
     def from_spec(cls, name, depth, nodes, *, attention=False,
+                  num_heads=None,
                   descriptors=(), x_constraints=(), c_constraints=(),
                   allow_scaling_symmetric_on_c: bool = False,
                   allow_double_lob_clamp: bool = False):
-        """Factory that accepts str | (str, dict) | FeatureSpec for each entry."""
+        """Factory that accepts str | (str, dict) | FeatureSpec for each entry.
+
+        ``num_heads`` is required when ``attention=True`` (no silent default —
+        callers must specify the head count explicitly so per-architecture
+        defaults are visible at the call site). When ``attention=False``, the
+        value is ignored and stored as 1.
+        """
+        if attention and num_heads is None:
+            raise ValueError(
+                "ArchitectureConfig.from_spec: attention=True requires "
+                "explicit num_heads (no silent default — see spec "
+                "§Implementation surface for per-arch defaults)."
+            )
+        resolved_heads = num_heads if num_heads is not None else 1
         import warnings
 
         x_spec_tuple = tuple(FeatureSpec.of(x) for x in x_constraints)
@@ -250,6 +279,7 @@ class ArchitectureConfig:
 
         return cls(
             name=name, depth=depth, nodes=nodes, attention=attention,
+            num_heads=resolved_heads,
             descriptors=tuple(FeatureSpec.of(x) for x in descriptors),
             x_constraints=x_spec_tuple,
             c_constraints=c_spec_tuple,
@@ -263,17 +293,17 @@ class ArchitectureConfig:
 
 ARCHITECTURES = {
     "shallow":             ArchitectureConfig(name="shallow",      depth=2, nodes=8),
-    "shallow_attn":        ArchitectureConfig(name="shallow_attn", depth=2, nodes=8,  attention=True),
+    "shallow_attn":        ArchitectureConfig(name="shallow_attn", depth=2, nodes=8,  attention=True, num_heads=2),
     "medium":              ArchitectureConfig(name="medium",       depth=3, nodes=16),
-    "medium_attn":         ArchitectureConfig(name="medium_attn",  depth=3, nodes=16, attention=True),
+    "medium_attn":         ArchitectureConfig(name="medium_attn",  depth=3, nodes=16, attention=True, num_heads=4),
     "deep":                ArchitectureConfig(name="deep",         depth=4, nodes=32),
-    "deep_attn":           ArchitectureConfig(name="deep_attn",    depth=4, nodes=32, attention=True),
+    "deep_attn":           ArchitectureConfig(name="deep_attn",    depth=4, nodes=32, attention=True, num_heads=4),
     "deep_cusp":           ArchitectureConfig.from_spec("deep_cusp",          4, 32, descriptors=["cusp"]),
-    "deep_cusp_attn":      ArchitectureConfig.from_spec("deep_cusp_attn",     4, 32, attention=True, descriptors=["cusp"]),
+    "deep_cusp_attn":      ArchitectureConfig.from_spec("deep_cusp_attn",     4, 32, attention=True, num_heads=4, descriptors=["cusp"]),
     "deep_dm":             ArchitectureConfig.from_spec("deep_dm",            4, 32, descriptors=["dm_statistics"]),
-    "deep_dm_attn":        ArchitectureConfig.from_spec("deep_dm_attn",       4, 32, attention=True, descriptors=["dm_statistics"]),
+    "deep_dm_attn":        ArchitectureConfig.from_spec("deep_dm_attn",       4, 32, attention=True, num_heads=4, descriptors=["dm_statistics"]),
     "deep_combined":       ArchitectureConfig.from_spec("deep_combined",      4, 32, descriptors=["dm_statistics", "cusp"]),
-    "deep_combined_attn":  ArchitectureConfig.from_spec("deep_combined_attn", 4, 32, attention=True, descriptors=["dm_statistics", "cusp"]),
+    "deep_combined_attn":  ArchitectureConfig.from_spec("deep_combined_attn", 4, 32, attention=True, num_heads=4, descriptors=["dm_statistics", "cusp"]),
 }
 
 

@@ -457,11 +457,26 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     # inner _scf loop to count iterations directly. The callback runs once
     # per cycle and sees the loop-local ``cycle`` index in its ``envs`` dict.
     cycle_counter = [0]
+    energy_history: list[float] = []
 
     def _count_cycles_cb(envs):
         # ``cycle`` in pyscfad's _scf loop is 0-based; record the 1-based
         # count so that a successful single-iteration convergence reports 1.
         cycle_counter[0] = int(envs.get("cycle", cycle_counter[0] - 1)) + 1
+        # Capture per-cycle total energy when pyscfad exposes it. Different
+        # pyscfad/pyscf versions key this as ``e_tot`` or ``etot``; we accept
+        # either and silently skip if neither is present (the metric falls
+        # back to a degenerate trace in that case).
+        e_step = envs.get("e_tot", envs.get("etot"))
+        if e_step is None:
+            mf_local = envs.get("mf")
+            if mf_local is not None:
+                e_step = getattr(mf_local, "e_tot", None)
+        if e_step is not None:
+            try:
+                energy_history.append(float(e_step))
+            except (TypeError, ValueError):
+                pass
 
     mf.callback = _count_cycles_cb
     mf.kernel(dm0=mol_data["dm_pbe"])
@@ -471,6 +486,17 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     cycles_run = jnp.int32(cycle_counter[0])
     converged = jnp.bool_(bool(mf.converged))
     features_used = assemble_descriptor_features(descriptors, mol_data)
+    # Pad the history to ``max_cycles`` with NaNs so callers can stack
+    # traces from different SCFs into a fixed-shape array. The length of
+    # ``energy_history`` corresponds to the actual cycles executed; trailing
+    # NaNs mark cycles that never ran (early convergence).
+    max_cyc = int(getattr(config, "max_cycles", max(len(energy_history), 1)))
+    pad_len = max(max_cyc, len(energy_history))
+    if energy_history:
+        trace_arr = jnp.full((pad_len,), jnp.nan, dtype=jnp.float64)
+        trace_arr = trace_arr.at[: len(energy_history)].set(jnp.asarray(energy_history))
+    else:
+        trace_arr = None
 
     return SCFResult(
         density_matrix=D_final,
@@ -478,4 +504,5 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         cycles_run=cycles_run,
         converged=converged,
         features_used=features_used,
+        energy_trace=trace_arr,
     )

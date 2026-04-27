@@ -38,6 +38,60 @@ def test_oep_pbe_identity():
         )
 
 
+def test_oep_progress_callback_fires_each_iteration():
+    """run_oep_inversion(progress_callback=fn) must call fn(iter, density_error)
+    once per L-BFGS iteration, with iter monotonically increasing from 1 and
+    the final call reporting iter == result.n_iter. Needed so notebook cells
+    can drive a tqdm bar during long (500-1000 iter) OEP cascades.
+
+    Uses a perturbed dm_target (scaled PBE DM) so L-BFGS-B actually takes
+    iterations instead of terminating at nit=0 when b=0 already matches."""
+    from xcquinox.alec.oep import run_oep_inversion
+    from xcquinox.alec.data import precompute_fixed_density_data
+    mol = h2_molecule()
+    data = precompute_fixed_density_data(mol)
+    # Perturb the target so b=0 does NOT already satisfy it.
+    dm_target = np.asarray(data["dm_pbe"]) * 0.95
+
+    calls = []
+
+    def _cb(it, density_error):
+        calls.append((int(it), float(density_error)))
+
+    result = run_oep_inversion(
+        mol, dm_target, max_iter=5, aux_basis="sto-3g",
+        progress_callback=_cb,
+    )
+
+    assert result.n_iter >= 1, (
+        f"test precondition: L-BFGS-B took no iterations ({result.n_iter}); "
+        "callback test cannot distinguish 'not wired' from 'no iterations'."
+    )
+    assert len(calls) >= 1, "progress_callback was never invoked"
+    iters = [c[0] for c in calls]
+    assert iters == sorted(iters), f"iter counter not monotonic: {iters}"
+    assert iters[0] == 1, f"first iter should be 1, got {iters[0]}"
+    assert iters[-1] == result.n_iter, (
+        f"last progress iter {iters[-1]} != result.n_iter {result.n_iter}"
+    )
+    for _, err in calls:
+        assert np.isfinite(err) and err >= 0.0, (
+            f"density_error reported to callback must be finite and >=0, got {err}"
+        )
+
+
+def test_oep_progress_callback_optional_backwards_compatible():
+    """Omitting progress_callback must not change any behavior or raise."""
+    from xcquinox.alec.oep import run_oep_inversion
+    from xcquinox.alec.data import precompute_fixed_density_data
+    mol = h2_molecule()
+    data = precompute_fixed_density_data(mol)
+    dm_target = np.asarray(data["dm_pbe"])
+    # No callback -- must still return a valid OEPResult.
+    result = run_oep_inversion(mol, dm_target, max_iter=3, aux_basis="sto-3g")
+    assert np.all(np.isfinite(result.vxc_matrix))
+
+
 def test_oep_nonconvergence_flagged():
     """max_iter=1 should report converged=False."""
     from xcquinox.alec.oep import run_oep_inversion

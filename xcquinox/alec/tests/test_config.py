@@ -491,3 +491,45 @@ def test_test_spec_accepts_pbe_anchor_fields():
     field_names = {f.name for f in dataclasses.fields(TestSpec)}
     assert "pbe_anchor_weight" in field_names
     assert "pbe_anchor_sample" in field_names
+
+
+# ---------------------------------------------------------------------------
+# Self-attention registry tests (spec §Tests 20-21)
+# ---------------------------------------------------------------------------
+
+def test_attn_registry_entries_have_valid_num_heads():
+    """Test 20: each *_attn arch satisfies divisibility + head_dim >= 4."""
+    from xcquinox.alec.config import ARCHITECTURES
+    attn_keys = [k for k in ARCHITECTURES if k.endswith("_attn")]
+    assert len(attn_keys) == 6, f"expected 6 attn archs, got {len(attn_keys)}"
+    for k in attn_keys:
+        arch = ARCHITECTURES[k]
+        assert arch.attention is True, k
+        assert arch.num_heads >= 1, k
+        assert arch.nodes % arch.num_heads == 0, (
+            f"{k}: nodes={arch.nodes} not divisible by num_heads="
+            f"{arch.num_heads}"
+        )
+        head_dim = arch.nodes // arch.num_heads
+        assert head_dim >= 4, (
+            f"{k}: head_dim={head_dim} < 4 (registry value violates spec)"
+        )
+
+
+def test_registry_smoke_forward_each_attn_arch():
+    """Test 21: every *_attn arch builds and runs a forward pass."""
+    import jax.numpy as jnp
+    from xcquinox.alec.config import ARCHITECTURES
+    from xcquinox.alec.networks import create_network_pair
+
+    attn_keys = [k for k in ARCHITECTURES if k.endswith("_attn")]
+    for k in attn_keys:
+        arch = ARCHITECTURES[k]
+        xnet, cnet = create_network_pair(arch, seed=0)
+        n_extra = sum(d.n_features for d in arch.materialize_descriptors())
+        # input layout: rho, sigma, then n_extra zeros
+        inputs = jnp.array([1.0, 1.0] + [0.0] * n_extra)
+        out_x = xnet(inputs)
+        out_c = cnet(inputs)
+        assert jnp.isfinite(out_x), f"{k}: xnet produced non-finite"
+        assert jnp.isfinite(out_c), f"{k}: cnet produced non-finite"

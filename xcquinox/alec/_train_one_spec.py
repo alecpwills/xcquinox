@@ -35,6 +35,7 @@ signalled with ``{"kind": "done", ...}``.
 import argparse
 import importlib
 import json
+import os
 import sys
 import time
 
@@ -70,12 +71,36 @@ def main(argv=None) -> int:
         "--no-progress", action="store_true",
         help="Suppress per-step JSON progress lines on stdout.",
     )
+    parser.add_argument(
+        "--device", choices=("gpu", "cpu", "auto"), default="auto",
+        help=(
+            "Route JAX to the named device. 'cpu' forces JAX_PLATFORMS=cpu "
+            "BEFORE any JAX import so small-GPU OOMs can be avoided by a "
+            "parent-driven retry. 'auto' leaves JAX_PLATFORMS untouched so "
+            "JAX picks the best available backend (usually GPU)."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    # Route JAX before ANY import that pulls it in. This MUST run before the
+    # xcquinox.alec import below (which transitively imports jax).
+    if args.device == "cpu":
+        os.environ["JAX_PLATFORMS"] = "cpu"
+
+    # Now safe to import JAX; report the actual backend so the parent can
+    # verify routing. Emitted as the first stdout line for test observability.
+    import jax  # noqa: E402
+    sys.stdout.write(json.dumps({
+        "kind": "init",
+        "requested_device": args.device,
+        "jax_platform": jax.default_backend(),
+    }) + "\n")
+    sys.stdout.flush()
 
     spec = _load_spec(args.spec_path)
 
     # Lazy import keeps startup fast if anything fails before we need alec.
-    import xcquinox.alec as alec
+    import xcquinox.alec as alec  # noqa: E402
 
     cb = None if args.no_progress else _progress_callback
     t0 = time.time()

@@ -247,11 +247,20 @@ def run_oep_inversion(
     max_iter: int = 200,
     conv_tol: float = 1e-6,
     regularization: float = 1e-4,
+    progress_callback=None,
 ) -> OEPResult:
     """Wu-Yang OEP inversion: find V_xc such that KS(V_xc) reproduces dm_target.
 
     Minimizes the Wu-Yang functional W[v] via L-BFGS. The V_xc potential is
     expanded in the auxiliary basis: V_xc = sum_t b_t <i|g_t|j>.
+
+    Parameters
+    ----------
+    progress_callback : callable or None
+        Optional ``fn(iter_int, density_error_float)`` invoked once per
+        L-BFGS outer iteration. Lets callers (e.g. the step 6 notebook)
+        drive a tqdm progress bar during long cascades without adding any
+        tqdm dependency here.
     """
     mol, mf = _build_mol_and_mf(mol_spec, basis)
     _, three_center, aux_on_grid = _build_aux_basis_matrices(mol, mf, aux_basis)
@@ -288,6 +297,11 @@ def run_oep_inversion(
     # (UHF) or different near-degenerate SCF solutions, breaking the smooth
     # dependence of F(b) on b that the Hellmann-Feynman gradient relies on.
     scf_state = {"dm0": None}
+    # Shared state so the scipy callback can report the density error
+    # computed during the most recent objective evaluation without
+    # redoing the SCF. L-BFGS-B calls callback(xk) AFTER each accepted
+    # iterate; objective_and_grad has already run for that xk.
+    _progress_state = {"iter": 0, "density_error_l2": float("inf")}
 
     def objective_and_grad(b):
         """Wu-Yang functional in minimization form with consistent obj/grad.
@@ -352,6 +366,10 @@ def run_oep_inversion(
             grad_a = -np.einsum("gp,g->p", aux_on_grid, delta_a) + regularization * b_a
             grad_b = -np.einsum("gp,g->p", aux_on_grid, delta_b) + regularization * b_b
             grad = np.concatenate([grad_a, grad_b])
+            _delta_tot = (rho_scf_a + rho_scf_b) - rho_target_total
+            _progress_state["density_error_l2"] = float(
+                np.sqrt(np.sum(weights * _delta_tot ** 2))
+            )
             return obj, grad
 
         rho_scf = _dm_to_rho_on_grid(mol, mf, dm_scf)
@@ -365,7 +383,18 @@ def run_oep_inversion(
         F_val = e_ks - float(np.dot(b, rhotarget_integrals))
         obj = -F_val + 0.5 * regularization * float(np.sum(b ** 2))
         grad = -np.einsum("gp,g->p", aux_on_grid, delta_rho) + regularization * b
+        _progress_state["density_error_l2"] = float(
+            np.sqrt(np.sum(weights * delta_rho ** 2))
+        )
         return obj, grad
+
+    def _scipy_iter_callback(_xk):
+        _progress_state["iter"] += 1
+        if progress_callback is not None:
+            progress_callback(
+                _progress_state["iter"],
+                _progress_state["density_error_l2"],
+            )
 
     b0 = np.zeros(2 * n_aux if is_uks else n_aux)
 
@@ -375,6 +404,7 @@ def run_oep_inversion(
         method="L-BFGS-B",
         jac=True,
         options={"maxiter": max_iter, "ftol": 1e-15, "gtol": 1e-12},
+        callback=_scipy_iter_callback,
     )
 
     b_final = result.x

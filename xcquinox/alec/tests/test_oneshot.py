@@ -20,7 +20,7 @@ from xcquinox.alec.oneshot import (
     oneshot_total_energy,
 )
 from xcquinox.alec.tests.fixtures.molecules import (
-    h_atom, h2_molecule, o_atom, h2o_molecule,
+    h_atom, h2_molecule, o_atom, h2o_molecule, c2h2_molecule,
 )
 
 
@@ -52,6 +52,13 @@ def o_data():
     return precompute_fixed_density_data(o_atom())
 
 
+@pytest.fixture(scope="module")
+def c2h2_data():
+    """Acetylene precomputed data — built for the D∞h symmetry regression
+    in test_oneshot_dm_differentiable_on_linear_symmetry_molecule."""
+    return precompute_fixed_density_data(c2h2_molecule())
+
+
 # §13.2 item (1)
 def test_oneshot_dm_rks_shape_and_trace(h2o_data):
     model = _make_model()
@@ -79,6 +86,41 @@ def test_oneshot_dm_differentiable(h2o_data):
     array_leaves = [l for l in leaves if isinstance(l, jnp.ndarray)]
     assert all(jnp.all(jnp.isfinite(l)) for l in array_leaves)
     assert any(jnp.any(l != 0) for l in array_leaves)
+
+
+def test_oneshot_dm_differentiable_on_linear_symmetry_molecule(c2h2_data):
+    """Regression test for NaN gradients through oneshot_dm_prediction_fast
+    when the Fock matrix has (near-)degenerate eigenvalues.
+
+    Linear molecules with D∞h symmetry (here C2H2) have exactly-degenerate
+    π MO pairs. jnp.linalg.eigh's reverse-mode derivative uses
+    1 / (λ_i - λ_j) for i != j, which is NaN at exact degeneracy. Without
+    an explicit symmetry-breaking shift before the eigh call, the
+    gradient of any loss that goes through the predicted DM (e.g.
+    B_atomization_plus_dm) is all-NaN on these systems.
+
+    This test freezes the fix: verifies that across 8 random model
+    seeds the gradient of sum(DM) wrt model parameters has no NaN / Inf.
+    Before the fix, a fraction of seeds would hit NaN (the tie is
+    float-accumulation-order-dependent). After the fix, all seeds are
+    finite."""
+    for seed in range(8):
+        model = _make_model(seed=seed)
+        trainable, static = eqx.partition(model, eqx.is_array)
+
+        @jax.grad
+        def loss_fn(params):
+            m = eqx.combine(params, static)
+            dm = oneshot_dm_prediction_fast(m, c2h2_data)
+            return jnp.sum(dm)
+
+        grads = loss_fn(trainable)
+        leaves = jax.tree_util.tree_leaves(grads)
+        array_leaves = [l for l in leaves if isinstance(l, jnp.ndarray)]
+        assert all(jnp.all(jnp.isfinite(l)) for l in array_leaves), (
+            f"seed={seed}: NaN/Inf gradient through oneshot_dm_prediction_fast on "
+            f"C2H2 (linear D∞h). eigh backward hit degenerate π-MO pair."
+        )
 
 
 # §13.2 item (3)

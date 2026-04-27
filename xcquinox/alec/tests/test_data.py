@@ -674,3 +674,66 @@ def test_e_xc_pbe_uks_matches_pyscf_veff_exc():
         f"E_xc_pbe mismatch: md={md['E_xc_pbe']:.6f}, pyscf={e_xc_pyscf:.6f}, "
         f"diff={abs(md['E_xc_pbe'] - e_xc_pyscf):.3e}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Precompute cache (2026-04-26 perf fix)
+# ---------------------------------------------------------------------------
+
+def test_precompute_cache_returns_same_object_on_second_call():
+    """The process-level precompute cache must short-circuit a second call
+    on the same MoleculeSpec. Without caching, a 72-spec eval sweep over
+    5 molecules pays the full PBE SCF cost 72 times per molecule -- the
+    primary cause of multi-hour eval runs the cache fixes.
+    """
+    from xcquinox.alec.data import (
+        clear_precompute_cache, precompute_fixed_density_data,
+    )
+    clear_precompute_cache()
+    mol = h2o_molecule()
+    a = precompute_fixed_density_data(mol)
+    b = precompute_fixed_density_data(mol)
+    # Identity check: cache hit returns the SAME MoleculeData object,
+    # not a structurally-equal recomputed copy.
+    assert a is b
+
+
+def test_precompute_cache_skip_when_disabled():
+    """Disabling the cache must produce a fresh result on every call so
+    callers that mutate external_data on disk get the latest precompute.
+    """
+    from xcquinox.alec.data import (
+        clear_precompute_cache, precompute_fixed_density_data,
+        set_precompute_cache_enabled,
+    )
+    clear_precompute_cache()
+    set_precompute_cache_enabled(False)
+    try:
+        mol = h2o_molecule()
+        a = precompute_fixed_density_data(mol)
+        b = precompute_fixed_density_data(mol)
+        assert a is not b
+    finally:
+        set_precompute_cache_enabled(True)
+        clear_precompute_cache()
+
+
+def test_precompute_cache_keys_on_required_keys_and_descriptors():
+    """Different required_keys / descriptor sets must NOT collide in the
+    cache -- a precompute requested with descriptors must have those
+    descriptor outputs populated."""
+    from xcquinox.alec.data import (
+        clear_precompute_cache, precompute_fixed_density_data,
+    )
+    from xcquinox.alec.descriptors import CuspDescriptor
+    clear_precompute_cache()
+    mol = h2o_molecule()
+    bare = precompute_fixed_density_data(mol)
+    with_cusp = precompute_fixed_density_data(
+        mol,
+        required_keys=("cusp_features",),
+        descriptors=(CuspDescriptor(),),
+    )
+    assert bare["cusp_features"] is None
+    assert with_cusp["cusp_features"] is not None
+    assert bare is not with_cusp

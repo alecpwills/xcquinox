@@ -69,6 +69,12 @@ jobs:
         run: |
           pytest -v --cov=xcquinox --cov-report=xml --color=yes xcquinox/tests/
 
+      - name: Run tests (alec subpackage)
+        # conda setup requires this special shell
+        shell: bash -l {0}
+        run: |
+          pytest -v --cov=xcquinox --cov-report=xml --color=yes --cov-append xcquinox/alec/tests/
+
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4.0.1
         with:
