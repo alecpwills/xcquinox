@@ -14,12 +14,25 @@ from xcquinox.alec.descriptors import Descriptor
 
 # Keys allowed in MoleculeSpec.external_data_path .npz files. Kept as a
 # module-level constant so tests and documentation can share it.
+# OEP provenance keys (oep_*) are written by save_vxc_ref (D7 audit fix)
+# so downstream loaders can validate baseline / aux_basis / regularization
+# / convergence consistency against what produced the V_xc.
 _ALLOWED_EXTERNAL_KEYS = frozenset({
     "dm_target",
     "rho_ref_grid",
     "ref_density_method",
     "E_ref_literature",
     "vxc_ref",
+    # OEP provenance (D7 audit fix; informational only — not validated
+    # against the consumer's runtime config in this loader, but available
+    # for callers that want to assert agreement).
+    "oep_baseline_xc",
+    "oep_aux_basis",
+    "oep_regularization",
+    "oep_density_error",
+    "oep_converged",
+    "oep_lbfgs_status",
+    "oep_n_electrons",
 })
 
 
