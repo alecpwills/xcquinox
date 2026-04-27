@@ -52,6 +52,14 @@ on CH4) plus an overfitting diagnostic.
 Geometries + AE refs: W4-11 (Karton et al. 2011). Atomic refs: Chakravorty 1993.
 
 Spec: docs/superpowers/specs/2026-04-21-step6-notebook-design.md
+
+---
+
+> **Note (2026-04-27):** Step-6 attention runs prior to this date used a
+> broken `SelfAttentionBlock` (softmax channel-gate, not self-attention).
+> The block has been rewritten to canonical multi-head scaled-dot-product
+> attention; the previous `*_attn` checkpoints have been deleted and must
+> be regenerated.
 """
     return new_markdown_cell(source)
 
@@ -113,6 +121,85 @@ def build_cell_02_imports():
         "# tqdm.std.tqdm in a plain script/terminal, so the same symbol gives a\n"
         "# sensible progress bar in either context.\n"
         "from tqdm.auto import tqdm\n"
+        "\n"
+        "# -- BLAS thread-cap for OEP inversions --------------------------------\n"
+        "# Wu-Yang OEP (cell 12 + 13) is CPU-bound via PySCF's inner SCF, which\n"
+        "# uses OpenMP-threaded BLAS. Because this kernel ALSO imports JAX (which\n"
+        "# maintains its own thread pool), leaving PySCF at its default thread\n"
+        "# count (N-cores) causes oversubscription and 5-10x slowdowns on every\n"
+        "# L-BFGS-B iteration. Capping to a modest N via pyscf.lib.num_threads\n"
+        "# for the duration of the call keeps the two pools out of each other's\n"
+        "# way and recovers the subprocess-clean throughput.\n"
+        "from contextlib import contextmanager as _contextmanager\n"
+        "from pyscf import lib as _pyscf_lib\n"
+        "\n"
+        "@_contextmanager\n"
+        "def _capped_blas_threads(n=4):\n"
+        "    \"\"\"Temporarily cap PySCF's BLAS thread count to `n`.\"\"\"\n"
+        "    _prev = _pyscf_lib.num_threads()\n"
+        "    _pyscf_lib.num_threads(min(_prev, int(n)))\n"
+        "    try:\n"
+        "        yield\n"
+        "    finally:\n"
+        "        _pyscf_lib.num_threads(_prev)\n"
+        "\n"
+        "# -- DataFrame save/load helpers --------------------------------------\n"
+        "# pandas.DataFrame.to_parquet requires pyarrow or fastparquet, which\n"
+        "# are NOT in this environment's baseline. A hard ImportError at the\n"
+        "# eval-df / transfer-df write step would kill the notebook. These\n"
+        "# helpers prefer parquet when a backend is importable, and fall back\n"
+        "# to CSV (pandas stdlib) otherwise -- CSV is safe (no code execution\n"
+        "# risk) and portable. _df_load auto-detects which extension exists,\n"
+        "# so runs with different backends can cohabit.\n"
+        "def _parquet_engine_available():\n"
+        "    try:\n"
+        "        import pyarrow  # noqa: F401\n"
+        "        return 'pyarrow'\n"
+        "    except ImportError:\n"
+        "        pass\n"
+        "    try:\n"
+        "        import fastparquet  # noqa: F401\n"
+        "        return 'fastparquet'\n"
+        "    except ImportError:\n"
+        "        return None\n"
+        "\n"
+        "def _df_save(df, path):\n"
+        "    \"\"\"Save a DataFrame to `path`. If the requested extension is\n"
+        "    .parquet and no engine is available, writes a sibling .csv\n"
+        "    instead. Returns the actual path written.\"\"\"\n"
+        "    _base, _ext = os.path.splitext(path)\n"
+        "    if _ext == '.parquet' and _parquet_engine_available() is None:\n"
+        "        _actual = _base + '.csv'\n"
+        "        df.to_csv(_actual, index=False)\n"
+        "        return _actual\n"
+        "    if _ext == '.parquet':\n"
+        "        df.to_parquet(path)\n"
+        "    elif _ext == '.csv':\n"
+        "        df.to_csv(path, index=False)\n"
+        "    else:\n"
+        "        raise ValueError(f'_df_save: unsupported extension {_ext!r}')\n"
+        "    return path\n"
+        "\n"
+        "def _df_load(path):\n"
+        "    \"\"\"Load a DataFrame. If the requested .parquet file is missing\n"
+        "    but a sibling .csv exists, load the .csv (and vice versa).\"\"\"\n"
+        "    _base, _ext = os.path.splitext(path)\n"
+        "    _parq = _base + '.parquet'\n"
+        "    _csv  = _base + '.csv'\n"
+        "    if os.path.isfile(_parq) and _parquet_engine_available() is not None:\n"
+        "        return pd.read_parquet(_parq)\n"
+        "    if os.path.isfile(_csv):\n"
+        "        return pd.read_csv(_csv)\n"
+        "    # Fall back to whatever was requested, letting pandas raise.\n"
+        "    if _ext == '.parquet':\n"
+        "        return pd.read_parquet(path)\n"
+        "    return pd.read_csv(path)\n"
+        "\n"
+        "def _df_exists(path):\n"
+        "    \"\"\"True if `path` -- or its sibling with the other extension --\n"
+        "    exists on disk.\"\"\"\n"
+        "    _base, _ = os.path.splitext(path)\n"
+        "    return os.path.isfile(_base + '.parquet') or os.path.isfile(_base + '.csv')\n"
     )
     return new_code_cell(source)
 
@@ -129,8 +216,12 @@ RERUN_EVAL               = False
 PBE_ANCHOR_WEIGHT        = 1e-3
 PBE_ANCHOR_N_POINTS      = 200
 PBE_ANCHOR_SEED          = 20260421
-BASIS                    = "def2-tzvp"
-GRID_LEVEL               = 3
+# Case-study memory budget: a heavier (def2-tzvp, GRID_LEVEL=3) pairing
+# OOMs the first training step on an 8 GB GPU (~11 GB peak per-step
+# tape). Step 6 keeps step 5's lighter (def2-svp, GRID_LEVEL=1) so the
+# whole 72-spec sweep stays runnable on a modest workstation.
+BASIS                    = "def2-svp"
+GRID_LEVEL               = 1
 
 # Pretrain atoms (atom_symbol, spin) -- supply ground-state (rho, sigma) samples
 # spanning H, He, O, N so xnet/cnet see a representative input range before the
@@ -144,23 +235,41 @@ PRETRAIN_ATOMS = (("H", 1), ("He", 0), ("O", 2), ("N", 3))
 # you want that trade-off.
 PRETRAIN_LOSS_WEIGHTING = "unweighted"
 
-ext_data_dir       = os.path.join(CHECKPOINT_BASE, "external_data")
-pretrain_dir       = os.path.join(CHECKPOINT_BASE, "pretrain")
-group1_dir         = os.path.join(CHECKPOINT_BASE, "group1_h2o_short")
-group2_dir         = os.path.join(CHECKPOINT_BASE, "group2_h2o_c2h2_short")
-group3_dir         = os.path.join(CHECKPOINT_BASE, "group3_h2o_c2h2_long")
-figures_dir        = os.path.join(CHECKPOINT_BASE, "figures")
-transfer_primary   = os.path.join(CHECKPOINT_BASE, "transfer_data", "primary")
-transfer_secondary = os.path.join(CHECKPOINT_BASE, "transfer_data", "secondary")
-for _d in (ext_data_dir, pretrain_dir, group1_dir, group2_dir, group3_dir,
-           figures_dir, transfer_primary, transfer_secondary):
+# RUN_DIR namespaces every pretraining-dependent artifact under
+# CHECKPOINT_BASE/PRETRAIN_LOSS_WEIGHTING/, so back-to-back runs of this
+# notebook with different PRETRAIN_LOSS_WEIGHTING values produce side-by-side
+# output trees that are directly comparable. Pretrain-run-INVARIANT
+# artifacts (CCSD reference data, raw pretrain (rho, sigma) samples,
+# precomputed transfer-set mol_data) stay under CHECKPOINT_BASE so they
+# are reused across runs rather than recomputed.
+RUN_DIR              = os.path.join(CHECKPOINT_BASE, PRETRAIN_LOSS_WEIGHTING)
+ext_data_dir         = os.path.join(CHECKPOINT_BASE, "external_data")
+pretrain_data_dir    = os.path.join(CHECKPOINT_BASE, "pretrain_data")
+transfer_primary     = os.path.join(CHECKPOINT_BASE, "transfer_data", "primary")
+transfer_secondary   = os.path.join(CHECKPOINT_BASE, "transfer_data", "secondary")
+pretrain_dir         = os.path.join(RUN_DIR, "pretrain")
+group1_dir           = os.path.join(RUN_DIR, "group1_h2o_short")
+group2_dir           = os.path.join(RUN_DIR, "group2_h2o_c2h2_short")
+group3_dir           = os.path.join(RUN_DIR, "group3_h2o_c2h2_long")
+figures_dir          = os.path.join(RUN_DIR, "figures")
+eval_dir             = os.path.join(RUN_DIR, "eval")
+transfer_eval_dir    = os.path.join(RUN_DIR, "transfer_eval")
+eval_baseline_root   = RUN_DIR  # eval_baseline_<kind>/ subdirs land here
+for _d in (ext_data_dir, pretrain_data_dir, RUN_DIR, pretrain_dir,
+           group1_dir, group2_dir, group3_dir, figures_dir, eval_dir,
+           transfer_eval_dir, transfer_primary, transfer_secondary):
     os.makedirs(_d, exist_ok=True)
 
-print("DATA VERSION: step6-v1")
+import pathlib
+pathlib.Path(CHECKPOINT_BASE, "VERSION").write_text("step6-v2\\n")
+print("DATA VERSION: step6-v2 (real-attention)")
+print(f"  PRETRAIN_LOSS_WEIGHTING = {{PRETRAIN_LOSS_WEIGHTING!r}}")
+print(f"  RUN_DIR        = {{RUN_DIR}}")
 print("  Training:   {{H2O, C2H2}} + atoms {{H, O, C}}")
 print("  Transfer P: {{H2, OH, CH4}} (W4-11)")
 print("  Transfer S: {{NH3, HF, CO2, NH2}} (W4-11)")
-print(f"  Wipe {{CHECKPOINT_BASE}}/ to regenerate")
+print(f"  Wipe {{RUN_DIR}}/ to regenerate this pretraining variant only;")
+print(f"  wipe {{CHECKPOINT_BASE}}/ to also discard CCSD/transfer data.")
 """
     return new_code_cell(source)
 
@@ -180,7 +289,8 @@ print(f"Architectures ({{len(ARCH_NAMES)}}):")
 for _n in ARCH_NAMES:
     _cfg = ARCHITECTURES[_n]
     print(f"  {{_n:30s}} depth={{_cfg.depth}} nodes={{_cfg.nodes}} "
-          f"attention={{_cfg.attention}} descriptors={{len(_cfg.descriptors)}}")
+          f"attention={{_cfg.attention}} num_heads={{_cfg.num_heads}} "
+          f"descriptors={{len(_cfg.descriptors)}}")
 """
     return new_code_cell(source)
 
@@ -323,8 +433,8 @@ if cusp_list:
 if dm_list:
     save_kwargs["dm_all"] = np.concatenate(dm_list)
 
-os.makedirs(os.path.join(CHECKPOINT_BASE, "pretrain_data"), exist_ok=True)
-np.savez(os.path.join(CHECKPOINT_BASE, "pretrain_data", "pretrain_data.npz"), **save_kwargs)
+os.makedirs(pretrain_data_dir, exist_ok=True)
+np.savez(os.path.join(pretrain_data_dir, "pretrain_data.npz"), **save_kwargs)
 print(f"pretrain_data.npz written with keys: {sorted(save_kwargs.keys())}  total_points={len(rho_all)}")
 """
     return new_code_cell(source)
@@ -362,10 +472,10 @@ def _cb(info):
 
 def _pretrain_checkpoints_exist(arch_name):
     import os as _os
-    _ckdir = f"{CHECKPOINT_BASE}/pretrain/{arch_name}"
+    _ckdir = os.path.join(pretrain_dir, arch_name)
     return (
-        _os.path.isfile(f"{_ckdir}/xnet.eqx")
-        and _os.path.isfile(f"{_ckdir}/cnet.eqx")
+        _os.path.isfile(_os.path.join(_ckdir, "xnet.eqx"))
+        and _os.path.isfile(_os.path.join(_ckdir, "cnet.eqx"))
     )
 
 for arch_name in ARCH_NAMES:
@@ -374,8 +484,8 @@ for arch_name in ARCH_NAMES:
         continue
     spec = alec.PretrainSpec(
         arch=alec.get_architecture(arch_name),
-        data_dir=f"{CHECKPOINT_BASE}/pretrain_data",
-        checkpoint_dir=f"{CHECKPOINT_BASE}/pretrain/{arch_name}",
+        data_dir=pretrain_data_dir,
+        checkpoint_dir=os.path.join(pretrain_dir, arch_name),
         n_steps=PRETRAIN_N_STEPS,
         lr_start=1e-2,
         lr_end=1e-5,
@@ -395,8 +505,8 @@ def build_cell_09_pretrain_loss_plot():
     """
     source = r"""fig, (ax_x, ax_c) = plt.subplots(1, 2, figsize=(12, 4.5))
 for arch_name in ARCH_NAMES:
-    losses_x = np.load(f"{CHECKPOINT_BASE}/pretrain/{arch_name}/losses_x.npy")
-    losses_c = np.load(f"{CHECKPOINT_BASE}/pretrain/{arch_name}/losses_c.npy")
+    losses_x = np.load(os.path.join(pretrain_dir, arch_name, "losses_x.npy"))
+    losses_c = np.load(os.path.join(pretrain_dir, arch_name, "losses_c.npy"))
     ax_x.semilogy(losses_x, color=arch_colors[arch_name], label=arch_name)
     ax_c.semilogy(losses_c, color=arch_colors[arch_name], label=arch_name)
 
@@ -422,8 +532,8 @@ fig.suptitle(
     fontsize=12,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.95))
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/pretrain_losses.png", dpi=150, bbox_inches="tight")
+os.makedirs(figures_dir, exist_ok=True)
+fig.savefig(os.path.join(figures_dir, "pretrain_losses.png"), dpi=150, bbox_inches="tight")
 plt.show()
 """
     return new_code_cell(source)
@@ -457,16 +567,34 @@ def build_cell_12_h2o_data():
     """Section 2 Cell 12 -- H2O reference data (W4-11 geometry) + OEP inversion.
 
     Generates cached PBE/HF/CCSD totals, CCSD AO density matrix and ρ_ccsd on
-    the PBE grid, then runs ``run_oep_inversion`` through a three-tier
-    cascade. On OEP failure at all tiers, ``save_vxc_ref`` is skipped so
+    the PBE grid, then runs ``run_oep_inversion`` through a two-tier
+    cascade. On OEP failure at both tiers, ``save_vxc_ref`` is skipped so
     V_xc-aware losses degrade to no-op rather than crashing the notebook.
 
-    OEP cascade (revised 2026-04-21 after first-run failure on the hardened
-    tzvp-jkfit settings; spec §8 auth'd revise-after-run):
-      * primary:   aux_basis="def2-svp-jkfit",  max_iter=200,  conv_tol=1e-6, reg=1e-4
-                   (step-5-proven; known to converge on H2O)
-      * fallback1: aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=1e-5, reg=1e-3
-      * fallback2: aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=1e-5, reg=1e-2
+    OEP cascade (redesigned 2026-04-23 after measurement-driven audit). The
+    previous "step-5-proven" primary (def2-svp-jkfit, conv_tol=1e-6,
+    reg=1e-4) was built on a false premise: step 5's H2O OEP never
+    converged either -- it silently fell through to ``vxc_ref=None``. With
+    a finite jkfit aux basis, Wu-Yang + L-BFGS-B + Tikhonov has an
+    asymptotic density-error floor around ~1e-3 for H2O; a conv_tol of
+    1e-6 is unreachable. Measurements (H2O, aux=def2-tzvp-jkfit):
+
+        AO=def2-tzvp, reg=1e-4 -> density_error 2.6e-3
+        AO=def2-tzvp, reg=1e-5 -> density_error 1.3e-3
+        AO=def2-tzvp, reg=1e-6 -> density_error 9.6e-4 (@800 iters)
+        AO=def2-svp,  reg=1e-5 -> density_error 9.8e-4 (the case-study default)
+
+    Higher regularization makes density_error WORSE (Tikhonov pulls the
+    V_xc expansion toward zero), so the new cascade LOWERS reg across
+    tiers rather than raising it:
+
+      * primary:  aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=2e-3, reg=1e-5
+      * fallback: aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=2e-3, reg=1e-6
+
+    conv_tol=2e-3 gives a ~2x margin over the primary density_error
+    floor measured on H2O at both AO bases. Step 6's V_xc efficacy
+    experiment (Cell 27, L1 vs L3) depends on vxc_ref being present;
+    silent failure is NOT an acceptable outcome here.
 
     Re-run behavior: if H2O.npz exists but lacks vxc_ref (e.g. prior OEP
     failed), reload dm_target from the cached .npz and retry the cascade
@@ -491,68 +619,98 @@ def _npz_has_vxc_ref(_p):
 if os.path.isfile(_npz) and os.path.isfile(_meta) and _npz_has_vxc_ref(_npz):
     print(f"Using cached {_npz} (vxc_ref present)")
 else:
-    if os.path.isfile(_npz) and os.path.isfile(_meta):
-        # CCSD data exists but OEP was skipped previously. Reload dm_target
-        # and jump straight to the OEP cascade.
-        print(f"Cached {_npz} missing vxc_ref; retrying OEP cascade")
-        with np.load(_npz) as _f:
-            dm_ao = np.asarray(_f["dm_target"])
-    else:
-        _mol = gto.M(atom=H2O_ATOM, basis=BASIS, charge=0, spin=0, verbose=0)
-        _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
-        _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
-        _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
-        _cc = cc.CCSD(_mf_hf); _cc.kernel()
-        # Use HF total + CCSD correlation (numerically more stable than _cc.e_tot).
-        E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
+    # Thread-cap wraps BOTH the CCSD branch and the OEP cascade. CCSD at
+    # PySCF's default thread count (one-per-core) fights JAX's thread
+    # pool and pays ~30x overhead on C2H2 in a JAX-loaded kernel
+    # (measured 73s vs 2.6s in a clean subprocess). The cap recovers
+    # that in the same motion that it fixes OEP throughput.
+    with _capped_blas_threads(4):
+        if os.path.isfile(_npz) and os.path.isfile(_meta):
+            # CCSD data exists but OEP was skipped previously. Reload
+            # dm_target and jump straight to the OEP cascade.
+            print(f"Cached {_npz} missing vxc_ref; retrying OEP cascade")
+            with np.load(_npz) as _f:
+                dm_ao = np.asarray(_f["dm_target"])
+        else:
+            _mol = gto.M(atom=H2O_ATOM, basis=BASIS, charge=0, spin=0, verbose=0)
+            _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
+            _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
+            _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
+            _cc = cc.CCSD(_mf_hf); _cc.kernel()
+            # Use HF total + CCSD correlation (numerically more stable
+            # than _cc.e_tot).
+            E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
 
-        # CCSD DM is built in the MO basis; transform to AO via C @ dm_mo @ C.T
-        # (standard PySCF closed-shell convention).
-        dm_mo = _cc.make_rdm1()
-        C = _mf_hf.mo_coeff
-        dm_ao = C @ dm_mo @ C.T
+            # CCSD DM is built in the MO basis; transform to AO via
+            # C @ dm_mo @ C.T (standard PySCF closed-shell convention).
+            dm_mo = _cc.make_rdm1()
+            C = _mf_hf.mo_coeff
+            dm_ao = C @ dm_mo @ C.T
 
-        _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
-        rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
+            _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
+            rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
 
-        np.savez(_npz,
-                 dm_target=dm_ao,
-                 rho_ref_grid=rho_ccsd,
-                 ref_density_method="ccsd",
-                 E_ref_literature=E_ccsd)
-        with open(_meta, "w") as _f:
-            json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
-                       "E_pbe_total": E_pbe, "E_lit_Ha": None,
-                       "ae_ref_kcalmol": H2O_AE_REF_KCALMOL}, _f, indent=2)
-        print(f"Wrote {_npz}")
+            np.savez(_npz,
+                     dm_target=dm_ao,
+                     rho_ref_grid=rho_ccsd,
+                     ref_density_method="ccsd",
+                     E_ref_literature=E_ccsd)
+            with open(_meta, "w") as _f:
+                json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
+                           "E_pbe_total": E_pbe, "E_lit_Ha": None,
+                           "ae_ref_kcalmol": H2O_AE_REF_KCALMOL}, _f, indent=2)
+            print(f"Wrote {_npz}")
 
-    _oep_spec = alec.MoleculeSpec(
-        name="H2O", atom=H2O_ATOM, basis=BASIS,
-        charge=0, spin=0, grid_level=GRID_LEVEL,
-        atom_composition=(("O", 1), ("H", 2)),
-    )
-    # Three-tier OEP cascade. Primary uses step-5-proven settings (known to
-    # converge on H2O). Fallbacks escalate aux basis + regularization for
-    # harder cases.
-    _OEP_TIERS = [
-        ("primary",   dict(aux_basis="def2-svp-jkfit",  max_iter=200,  conv_tol=1e-6, regularization=1e-4)),
-        ("fallback1", dict(aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=1e-5, regularization=1e-3)),
-        ("fallback2", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=1e-5, regularization=1e-2)),
-    ]
-    _oep = None
-    for _tier_name, _tier_kw in _OEP_TIERS:
-        _oep = alec.run_oep_inversion(_oep_spec, dm_ao, **_tier_kw)
-        if _oep.converged:
-            print(f"[OEP OK] H2O ({_tier_name}): n_iter={_oep.n_iter} "
-                  f"density_error={_oep.density_error:.2e}")
-            break
-        print(f"[OEP WARN] H2O {_tier_name} failed; trying next tier")
-    if _oep is not None and _oep.converged:
-        # save_vxc_ref takes the OEPResult OBJECT first, NOT oep_result.vxc_matrix.
-        alec.save_vxc_ref(_oep, _npz, dm_target=dm_ao, method="ccsd")
-    else:
-        print("[OEP FAIL] H2O: all tiers failed; skipping save_vxc_ref "
-              "(V_xc losses become no-op on H2O)")
+        _oep_spec = alec.MoleculeSpec(
+            name="H2O", atom=H2O_ATOM, basis=BASIS,
+            charge=0, spin=0, grid_level=GRID_LEVEL,
+            atom_composition=(("O", 1), ("H", 2)),
+        )
+        # Two-tier OEP cascade (measurement-driven 2026-04-23). Primary
+        # reaches density_error ~1.25e-3 on H2O/def2-tzvp; fallback
+        # lowers regularization for marginally harder inversions. See
+        # cell docstring for the measurement rationale and why the old
+        # svp-jkfit/reg=1e-4 primary was abandoned.
+        _OEP_TIERS = [
+            ("primary",  dict(aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=2e-3, regularization=1e-5)),
+            ("fallback", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=2e-3, regularization=1e-6)),
+        ]
+        _oep = None
+        for _tier_name, _tier_kw in _OEP_TIERS:
+            # Per-tier tqdm bar so dozens-of-minutes inversions stop
+            # being silent. The scipy L-BFGS-B callback fires once per
+            # iteration; run_oep_inversion forwards (iter, density_error)
+            # to our cb.
+            _pbar = tqdm(
+                total=_tier_kw["max_iter"],
+                desc=f"OEP H2O {_tier_name}",
+                leave=False, dynamic_ncols=True,
+            )
+            def _oep_progress(_it, _err, _bar=_pbar):
+                _delta = _it - _bar.n
+                if _delta > 0:
+                    _bar.update(_delta)
+                _bar.set_postfix(density_err=f"{_err:.2e}")
+            try:
+                _oep = alec.run_oep_inversion(
+                    _oep_spec, dm_ao, **_tier_kw,
+                    progress_callback=_oep_progress,
+                )
+            finally:
+                _pbar.close()
+            if _oep.converged:
+                print(f"[OEP OK] H2O ({_tier_name}): n_iter={_oep.n_iter} "
+                      f"density_error={_oep.density_error:.2e}")
+                break
+            print(f"[OEP WARN] H2O {_tier_name} failed (density_error="
+                  f"{_oep.density_error:.2e}); trying next tier")
+        if _oep is not None and _oep.converged:
+            # save_vxc_ref takes the OEPResult OBJECT first, NOT
+            # oep_result.vxc_matrix.
+            alec.save_vxc_ref(_oep, _npz, dm_target=dm_ao, method="ccsd")
+        else:
+            print("[OEP FAIL] H2O: all tiers failed; skipping save_vxc_ref "
+                  "(V_xc losses become no-op on H2O)")
 """
     return new_code_cell(source)
 
@@ -560,9 +718,11 @@ else:
 def build_cell_13_c2h2_data():
     """Section 2 Cell 13 -- C2H2 reference data (W4-11 geometry) + OEP inversion.
 
-    Same three-tier cascade as cell 12 (H2O). See that docstring for the
-    cascade rationale. Re-run behavior: if C2H2.npz lacks vxc_ref, reload
-    dm_target from cache and retry OEP without recomputing CCSD.
+    Same measurement-driven two-tier cascade as cell 12 (H2O):
+    tzvp-jkfit aux at reg=1e-5 (primary) / reg=1e-6 (fallback), both at
+    conv_tol=2e-3. See cell 12 docstring for the full rationale.
+    Re-run behavior: if C2H2.npz lacks vxc_ref, reload dm_target from
+    cache and retry OEP without recomputing CCSD.
     """
     source = r"""# C2H2 training data (W4-11 linear D∞h geometry, AE=405.525 kcal/mol, spin=0).
 C2H2_ATOM = (
@@ -581,63 +741,84 @@ _meta = os.path.join(ext_data_dir, "C2H2_metadata.json")
 if os.path.isfile(_npz) and os.path.isfile(_meta) and _npz_has_vxc_ref(_npz):
     print(f"Using cached {_npz} (vxc_ref present)")
 else:
-    if os.path.isfile(_npz) and os.path.isfile(_meta):
-        print(f"Cached {_npz} missing vxc_ref; retrying OEP cascade")
-        with np.load(_npz) as _f:
-            dm_ao = np.asarray(_f["dm_target"])
-    else:
-        _mol = gto.M(atom=C2H2_ATOM, basis=BASIS, charge=0, spin=0, verbose=0)
-        _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
-        _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
-        _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
-        _cc = cc.CCSD(_mf_hf); _cc.kernel()
-        # Use HF total + CCSD correlation (numerically more stable than _cc.e_tot).
-        E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
+    # Same hoisted thread-cap rationale as cell 12 -- CCSD and the OEP
+    # cascade both run under the cap so kernel-local JAX contention
+    # doesn't turn C2H2 into a dozens-of-minutes wait.
+    with _capped_blas_threads(4):
+        if os.path.isfile(_npz) and os.path.isfile(_meta):
+            print(f"Cached {_npz} missing vxc_ref; retrying OEP cascade")
+            with np.load(_npz) as _f:
+                dm_ao = np.asarray(_f["dm_target"])
+        else:
+            _mol = gto.M(atom=C2H2_ATOM, basis=BASIS, charge=0, spin=0, verbose=0)
+            _mf_pbe = dft.RKS(_mol); _mf_pbe.xc = "pbe"; _mf_pbe.grids.level = GRID_LEVEL
+            _mf_pbe.kernel(); E_pbe = float(_mf_pbe.e_tot)
+            _mf_hf = scf.RHF(_mol); _mf_hf.kernel(); E_hf = float(_mf_hf.e_tot)
+            _cc = cc.CCSD(_mf_hf); _cc.kernel()
+            # Use HF total + CCSD correlation (numerically more stable
+            # than _cc.e_tot).
+            E_ccsd = float(_mf_hf.e_tot + _cc.e_corr)
 
-        # CCSD DM is built in the MO basis; transform to AO via C @ dm_mo @ C.T
-        # (standard PySCF closed-shell convention).
-        dm_mo = _cc.make_rdm1()
-        C = _mf_hf.mo_coeff
-        dm_ao = C @ dm_mo @ C.T
+            # CCSD DM is built in the MO basis; transform to AO via
+            # C @ dm_mo @ C.T (standard PySCF closed-shell convention).
+            dm_mo = _cc.make_rdm1()
+            C = _mf_hf.mo_coeff
+            dm_ao = C @ dm_mo @ C.T
 
-        _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
-        rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
+            _ao = _mf_pbe._numint.eval_ao(_mol, _mf_pbe.grids.coords, deriv=0)
+            rho_ccsd = np.einsum("ij,gi,gj->g", dm_ao, _ao, _ao)
 
-        np.savez(_npz,
-                 dm_target=dm_ao,
-                 rho_ref_grid=rho_ccsd,
-                 ref_density_method="ccsd",
-                 E_ref_literature=E_ccsd)
-        with open(_meta, "w") as _f:
-            json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
-                       "E_pbe_total": E_pbe, "E_lit_Ha": None,
-                       "ae_ref_kcalmol": C2H2_AE_REF_KCALMOL}, _f, indent=2)
-        print(f"Wrote {_npz}")
+            np.savez(_npz,
+                     dm_target=dm_ao,
+                     rho_ref_grid=rho_ccsd,
+                     ref_density_method="ccsd",
+                     E_ref_literature=E_ccsd)
+            with open(_meta, "w") as _f:
+                json.dump({"E_hf_total": E_hf, "E_ccsd_total": E_ccsd,
+                           "E_pbe_total": E_pbe, "E_lit_Ha": None,
+                           "ae_ref_kcalmol": C2H2_AE_REF_KCALMOL}, _f, indent=2)
+            print(f"Wrote {_npz}")
 
-    _oep_spec = alec.MoleculeSpec(
-        name="C2H2", atom=C2H2_ATOM, basis=BASIS,
-        charge=0, spin=0, grid_level=GRID_LEVEL,
-        atom_composition=(("C", 2), ("H", 2)),
-    )
-    # Three-tier OEP cascade; see cell 12 docstring for rationale.
-    _OEP_TIERS = [
-        ("primary",   dict(aux_basis="def2-svp-jkfit",  max_iter=200,  conv_tol=1e-6, regularization=1e-4)),
-        ("fallback1", dict(aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=1e-5, regularization=1e-3)),
-        ("fallback2", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=1e-5, regularization=1e-2)),
-    ]
-    _oep = None
-    for _tier_name, _tier_kw in _OEP_TIERS:
-        _oep = alec.run_oep_inversion(_oep_spec, dm_ao, **_tier_kw)
-        if _oep.converged:
-            print(f"[OEP OK] C2H2 ({_tier_name}): n_iter={_oep.n_iter} "
-                  f"density_error={_oep.density_error:.2e}")
-            break
-        print(f"[OEP WARN] C2H2 {_tier_name} failed; trying next tier")
-    if _oep is not None and _oep.converged:
-        alec.save_vxc_ref(_oep, _npz, dm_target=dm_ao, method="ccsd")
-    else:
-        print("[OEP FAIL] C2H2: all tiers failed; skipping save_vxc_ref "
-              "(V_xc losses become no-op on C2H2)")
+        _oep_spec = alec.MoleculeSpec(
+            name="C2H2", atom=C2H2_ATOM, basis=BASIS,
+            charge=0, spin=0, grid_level=GRID_LEVEL,
+            atom_composition=(("C", 2), ("H", 2)),
+        )
+        # Two-tier OEP cascade; see cell 12 docstring for rationale.
+        _OEP_TIERS = [
+            ("primary",  dict(aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=2e-3, regularization=1e-5)),
+            ("fallback", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=2e-3, regularization=1e-6)),
+        ]
+        _oep = None
+        for _tier_name, _tier_kw in _OEP_TIERS:
+            _pbar = tqdm(
+                total=_tier_kw["max_iter"],
+                desc=f"OEP C2H2 {_tier_name}",
+                leave=False, dynamic_ncols=True,
+            )
+            def _oep_progress(_it, _err, _bar=_pbar):
+                _delta = _it - _bar.n
+                if _delta > 0:
+                    _bar.update(_delta)
+                _bar.set_postfix(density_err=f"{_err:.2e}")
+            try:
+                _oep = alec.run_oep_inversion(
+                    _oep_spec, dm_ao, **_tier_kw,
+                    progress_callback=_oep_progress,
+                )
+            finally:
+                _pbar.close()
+            if _oep.converged:
+                print(f"[OEP OK] C2H2 ({_tier_name}): n_iter={_oep.n_iter} "
+                      f"density_error={_oep.density_error:.2e}")
+                break
+            print(f"[OEP WARN] C2H2 {_tier_name} failed (density_error="
+                  f"{_oep.density_error:.2e}); trying next tier")
+        if _oep is not None and _oep.converged:
+            alec.save_vxc_ref(_oep, _npz, dm_target=dm_ao, method="ccsd")
+        else:
+            print("[OEP FAIL] C2H2: all tiers failed; skipping save_vxc_ref "
+                  "(V_xc losses become no-op on C2H2)")
 """
     return new_code_cell(source)
 
@@ -808,7 +989,16 @@ def build_cell_18_group1_specs():
     source = r"""# Group 1: H2O only, short=TRAIN_N_STEPS_SHORT. 24 specs.
 KCAL_PER_HA = 627.5094740631
 LOSS_NAMES = ("L1_B", "L2_C_anchor", "L3_balanced_vxc", "L4_balanced_vxc_anchor")
-_targets_group1 = {"H2O": H2O_AE_REF_KCALMOL / KCAL_PER_HA}
+# TrainingSpec.validate() requires a targets entry for every molecule in the
+# molecules tuple (config.py:545-547). Atom targets are never dereferenced at
+# training time but must be finite floats -- we use the Chakravorty atomic
+# totals (same anchor as atom_energies) so the placeholder values are
+# semantically consistent with the rest of the spec.
+_targets_group1 = {
+    "H2O": H2O_AE_REF_KCALMOL / KCAL_PER_HA,
+    "H":   ATOMIC_ENERGIES_CHAKRAVORTY["H"],
+    "O":   ATOMIC_ENERGIES_CHAKRAVORTY["O"],
+}
 _mol_specs_group1 = (H2O_spec,)
 _atom_specs_group1 = (H_spec, O_spec)
 
@@ -851,7 +1041,7 @@ for _arch in ARCH_NAMES:
                 atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
                 loss_kwargs=_lkw,
                 solver_config=_cfg,
-                pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{_arch}",
+                pretrain_checkpoint=f"{pretrain_dir}/{_arch}",
                 checkpoint_dir=f"{group1_dir}/{_arch}/{_loss}/{_solver}",
                 n_steps=TRAIN_N_STEPS_SHORT,
                 lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.2, grad_clip=1.0,
@@ -870,9 +1060,14 @@ def build_cell_19_group2_specs():
     Mirrors Cell 18 but targets/molecules include C2H2 and atom C.
     """
     source = r"""# Group 2: H2O + C2H2, short=TRAIN_N_STEPS_SHORT. 24 specs.
+# Atom targets are placeholders required by TrainingSpec.validate(); see
+# cell 18 for the rationale.
 _targets_group2 = {
     "H2O":  H2O_AE_REF_KCALMOL  / KCAL_PER_HA,
     "C2H2": C2H2_AE_REF_KCALMOL / KCAL_PER_HA,
+    "H":    ATOMIC_ENERGIES_CHAKRAVORTY["H"],
+    "O":    ATOMIC_ENERGIES_CHAKRAVORTY["O"],
+    "C":    ATOMIC_ENERGIES_CHAKRAVORTY["C"],
 }
 _mol_specs_group2 = (H2O_spec, C2H2_spec)
 _atom_specs_group2 = (H_spec, O_spec, C_spec)
@@ -916,7 +1111,7 @@ for _arch in ARCH_NAMES:
                 atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
                 loss_kwargs=_lkw,
                 solver_config=_cfg,
-                pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{_arch}",
+                pretrain_checkpoint=f"{pretrain_dir}/{_arch}",
                 checkpoint_dir=f"{group2_dir}/{_arch}/{_loss}/{_solver}",
                 n_steps=TRAIN_N_STEPS_SHORT,
                 lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.2, grad_clip=1.0,
@@ -936,9 +1131,14 @@ def build_cell_20_group3_specs():
     ``n_steps=TRAIN_N_STEPS_LONG``.
     """
     source = r"""# Group 3: H2O + C2H2, long=TRAIN_N_STEPS_LONG. 24 specs.
+# Atom targets are placeholders required by TrainingSpec.validate(); see
+# cell 18 for the rationale.
 _targets_group3 = {
     "H2O":  H2O_AE_REF_KCALMOL  / KCAL_PER_HA,
     "C2H2": C2H2_AE_REF_KCALMOL / KCAL_PER_HA,
+    "H":    ATOMIC_ENERGIES_CHAKRAVORTY["H"],
+    "O":    ATOMIC_ENERGIES_CHAKRAVORTY["O"],
+    "C":    ATOMIC_ENERGIES_CHAKRAVORTY["C"],
 }
 _mol_specs_group3 = (H2O_spec, C2H2_spec)
 _atom_specs_group3 = (H_spec, O_spec, C_spec)
@@ -982,7 +1182,7 @@ for _arch in ARCH_NAMES:
                 atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
                 loss_kwargs=_lkw,
                 solver_config=_cfg,
-                pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{_arch}",
+                pretrain_checkpoint=f"{pretrain_dir}/{_arch}",
                 checkpoint_dir=f"{group3_dir}/{_arch}/{_loss}/{_solver}",
                 n_steps=TRAIN_N_STEPS_LONG,
                 lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.2, grad_clip=1.0,
@@ -1048,48 +1248,98 @@ def build_cell_21_training_loop():
         "        bar.close()\n"
         "        del _step_bars[key]\n"
         "\n"
+        "# OOM signatures we recognize as 'retry this spec on CPU'. Kept loose\n"
+        "# so both XLA and CUDA-driver messages are caught.\n"
+        "_GPU_OOM_MARKERS = (\n"
+        "    'RESOURCE_EXHAUSTED',\n"
+        "    'Out of memory',\n"
+        "    'CUDA_ERROR_OUT_OF_MEMORY',\n"
+        "    'cuMemAlloc',\n"
+        ")\n"
+        "\n"
+        "def _looks_like_gpu_oom(text):\n"
+        "    return any(m in text for m in _GPU_OOM_MARKERS)\n"
+        "\n"
+        "def _invoke_training_worker(spec_path, device=None):\n"
+        "    \"\"\"Run _train_one_spec for one spec. Returns (rc, captured_text).\n"
+        "\n"
+        "    `device` is either None (let the worker default to 'auto') or the\n"
+        "    explicit value 'cpu' used by the OOM retry path. The captured text\n"
+        "    is stdout+stderr merged, needed for post-mortem OOM classification.\n"
+        "\n"
+        "    When device='cpu' the parent sets JAX_PLATFORMS=cpu in the spawned\n"
+        "    process's environment. This matters: `python -m\n"
+        "    xcquinox.alec._train_one_spec` imports the xcquinox.alec package\n"
+        "    before main() runs, which transitively imports jax.numpy via\n"
+        "    descriptors.py, so JAX initializes on GPU BEFORE any in-process\n"
+        "    env fiddling can take effect. The --device=cpu CLI flag alone is\n"
+        "    therefore insufficient on a GPU host; the env override is the\n"
+        "    only reliable switch.\n"
+        "    \"\"\"\n"
+        "    cmd = [sys.executable, '-m', 'xcquinox.alec._train_one_spec', spec_path]\n"
+        "    env = None\n"
+        "    if device is not None:\n"
+        "        cmd.append(f'--device={device}')\n"
+        "        if device == 'cpu':\n"
+        "            env = dict(os.environ)\n"
+        "            env['JAX_PLATFORMS'] = 'cpu'\n"
+        "    proc = subprocess.Popen(\n"
+        "        cmd,\n"
+        "        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,\n"
+        "        bufsize=1, text=True, env=env,\n"
+        "    )\n"
+        "    captured = []\n"
+        "    for line in proc.stdout:\n"
+        "        line = line.rstrip('\\n')\n"
+        "        captured.append(line)\n"
+        "        if not line:\n"
+        "            continue\n"
+        "        if line.startswith('{'):\n"
+        "            try:\n"
+        "                msg = _json.loads(line)\n"
+        "            except _json.JSONDecodeError:\n"
+        "                print(line); continue\n"
+        "            if msg.get('kind') == 'step':\n"
+        "                _train_cb_from_info(msg)\n"
+        "            elif msg.get('kind') in ('init', 'done'):\n"
+        "                pass\n"
+        "            else:\n"
+        "                print(line)\n"
+        "        else:\n"
+        "            print(line)\n"
+        "    rc = proc.wait()\n"
+        "    return rc, '\\n'.join(captured)\n"
+        "\n"
         "def _run_training_isolated(spec):\n"
-        "    \"\"\"Run one TrainingSpec in a subprocess so the OS can hard-reclaim memory.\"\"\"\n"
+        "    \"\"\"Run one TrainingSpec in a subprocess so the OS can hard-reclaim memory.\n"
+        "\n"
+        "    On GPU OOM (subprocess exits non-zero AND no model.eqx saved AND the\n"
+        "    captured output matches a GPU-OOM signature), automatically re-invoke\n"
+        "    the worker with --device=cpu. Training on CPU is slower but always fits,\n"
+        "    so the sweep finishes instead of bailing out on a 7-11 GB peak tape.\n"
+        "    \"\"\"\n"
         "    _ser = __import__('pi' + 'ckle')\n"
         "    with tempfile.NamedTemporaryFile(suffix='.spec', delete=False) as _f:\n"
         "        _ser.dump(spec, _f)\n"
         "        _spec_path = _f.name\n"
         "    try:\n"
-        "        proc = subprocess.Popen(\n"
-        "            [sys.executable, '-m', 'xcquinox.alec._train_one_spec', _spec_path],\n"
-        "            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,\n"
-        "            bufsize=1, text=True,\n"
-        "        )\n"
-        "        for line in proc.stdout:\n"
-        "            line = line.rstrip('\\n')\n"
-        "            if not line:\n"
-        "                continue\n"
-        "            if line.startswith('{'):\n"
-        "                try:\n"
-        "                    msg = _json.loads(line)\n"
-        "                except _json.JSONDecodeError:\n"
-        "                    print(line); continue\n"
-        "                if msg.get('kind') == 'step':\n"
-        "                    _train_cb_from_info(msg)\n"
-        "                elif msg.get('kind') == 'done':\n"
-        "                    pass\n"
-        "                else:\n"
-        "                    print(line)\n"
-        "            else:\n"
-        "                print(line)\n"
-        "        rc = proc.wait()\n"
-        "        # Check whether model.eqx was saved successfully before the\n"
-        "        # subprocess exited. A crash *after* the checkpoint is written\n"
-        "        # (e.g. SIGABRT from glibc heap corruption during JAX/PySCF\n"
-        "        # teardown -- a long-standing C-extension cleanup issue) is\n"
-        "        # benign: the training iterations all ran and the model is\n"
-        "        # safely on disk. We only raise if the checkpoint is missing.\n"
         "        _model_path = os.path.join(spec.checkpoint_dir, \"model.eqx\")\n"
+        "        rc, captured = _invoke_training_worker(_spec_path, device=None)\n"
+        "        # First failure mode: no checkpoint AND GPU OOM -> retry on CPU.\n"
         "        if rc != 0 and not os.path.isfile(_model_path):\n"
-        "            raise RuntimeError(\n"
-        "                f\"training subprocess for {spec.arch.name}/{spec.loss_name} \"\n"
-        "                f\"exited with code {rc} AND no checkpoint was saved\"\n"
-        "            )\n"
+        "            if _looks_like_gpu_oom(captured):\n"
+        "                print(f\"  [GPU OOM on {spec.arch.name}/{spec.loss_name} -- \"\n"
+        "                      f\"retrying subprocess with --device=cpu]\")\n"
+        "                rc, captured = _invoke_training_worker(_spec_path, device='cpu')\n"
+        "            if rc != 0 and not os.path.isfile(_model_path):\n"
+        "                raise RuntimeError(\n"
+        "                    f\"training subprocess for {spec.arch.name}/{spec.loss_name} \"\n"
+        "                    f\"exited with code {rc} AND no checkpoint was saved \"\n"
+        "                    f\"(CPU retry {'also failed' if _looks_like_gpu_oom(captured) else 'not attempted'})\"\n"
+        "                )\n"
+        "        # Second failure mode: non-zero exit AFTER model.eqx saved. This is\n"
+        "        # a glibc/JAX/PySCF C-extension teardown crash; the training work is\n"
+        "        # complete and on disk, so it is safe to continue.\n"
         "        if rc != 0:\n"
         "            print(f\"  [NOTE] subprocess exited {rc} after saving model.eqx -- \"\n"
         "                  f\"treating as success (benign teardown crash).\")\n"
@@ -1313,13 +1563,58 @@ def build_cell_25_main_sweep():
     """
     source = r"""# Per-spec evaluation sweep. Iterates the same concatenated _all_specs list
 # as the training loop; per-spec outputs under
-# {CHECKPOINT_BASE}/eval/{group}/{arch}/{loss}/{solver}/.
-_eval_base = os.path.join(CHECKPOINT_BASE, "eval")
+# {RUN_DIR}/eval/{group}/{arch}/{loss}/{solver}/.
+_eval_base = eval_dir
 os.makedirs(_eval_base, exist_ok=True)
 
-for _spec in _all_specs:
+# PBE-consistent atomic totals for the PBEReferenceMetric baseline.
+# Cell 14 wrote {H,O,C}_metadata.json with PBE totals; transfer molecules
+# also reference N and F (NH3, NH2, HF), so we lazily compute and cache
+# any missing element here. Using these (rather than Chakravorty
+# literature anchors) gives a *fair* PBE baseline:
+#   AE_pbe = sum_Z n_Z * E_Z^PBE - E_mol^PBE
+_atom_energies_pbe = {}
+for _Z in ("H", "O", "C"):
+    _meta_path = os.path.join(ext_data_dir, f"{_Z}_metadata.json")
+    if os.path.isfile(_meta_path):
+        with open(_meta_path) as _f:
+            _atom_energies_pbe[_Z] = json.load(_f)["E_pbe_total"]
+
+# UHF spin multiplicity for atoms with an open-shell ground-state electron count.
+_ATOM_SPIN = {"H": 1, "He": 0, "Li": 1, "Be": 0, "B": 1, "C": 2,
+              "N": 3, "O": 2, "F": 1, "Ne": 0}
+
+def _ensure_pbe_atom_total(Z):
+    if Z in _atom_energies_pbe:
+        return
+    _spin = _ATOM_SPIN.get(Z, 0)
+    _mol = gto.M(atom=f"{Z} 0 0 0", basis=BASIS, charge=0, spin=_spin, verbose=0)
+    _mf = dft.UKS(_mol) if _spin else dft.RKS(_mol)
+    _mf.xc = "pbe"; _mf.grids.level = GRID_LEVEL
+    _mf.kernel()
+    _atom_energies_pbe[Z] = float(_mf.e_tot)
+    print(f"  computed PBE total for {Z}: {_atom_energies_pbe[Z]:+.6f} Ha")
+
+# Pre-populate any element that appears in transfer sets so PBEReferenceMetric
+# never sees a KeyError mid-eval.
+for _Z in ("N", "F"):
+    _ensure_pbe_atom_total(_Z)
+
+import time as _time
+_N_specs = len(_all_specs)
+_t_eval_start = _time.time()
+_n_eval_done = 0; _n_eval_cached = 0; _n_eval_no_ckpt = 0
+print(f"[main eval] {_N_specs} specs to evaluate "
+      f"(metrics: total_energy, atomization_energy, density_rmse, "
+      f"constraint_violations, pbe_reference, scf_convergence)", flush=True)
+# Hold JIT cache through CACHE_FLUSH_EVERY specs so per-(arch, mol)
+# compiled XLA artifacts are reused across spec invocations. Clearing
+# every spec turns a few-minute sweep into many hours of recompile.
+_EVAL_CACHE_FLUSH_EVERY = 16
+for _idx, _spec in enumerate(_all_specs):
     _ckpt = os.path.join(_spec.checkpoint_dir, "model.eqx")
     if not os.path.isfile(_ckpt):
+        _n_eval_no_ckpt += 1
         continue
     _tail = _spec.checkpoint_dir.rstrip("/").split("/")
     _solver = _tail[-1]
@@ -1332,6 +1627,7 @@ for _spec in _all_specs:
     )
     _out = os.path.join(_eval_base, _group, _arch, _loss_label, _solver)
     if not RERUN_EVAL and os.path.isfile(os.path.join(_out, "aggregate.json")):
+        _n_eval_cached += 1
         continue
     _ae_ref = {"H2O": H2O_AE_REF_KCALMOL}
     if _group != "group1":
@@ -1340,17 +1636,35 @@ for _spec in _all_specs:
         arch=alec.get_architecture(_arch),
         model_checkpoint=_ckpt,
         molecules=tuple(_spec.molecules),
-        metrics=("total_energy", "atomization_energy", "density_rmse", "constraint_violations"),
-        metric_kwargs={"atomization_energy": {"reference_ae_kcalmol": _ae_ref}},
+        metrics=("total_energy", "atomization_energy", "density_rmse",
+                 "constraint_violations", "pbe_reference", "scf_convergence"),
+        metric_kwargs={
+            "atomization_energy": {"reference_ae_kcalmol": _ae_ref},
+            "pbe_reference": {
+                "atom_energies": _atom_energies_pbe,
+                "reference_ae_kcalmol": _ae_ref,
+            },
+        },
         atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
         output_dir=_out,
         solver_config=SOLVER_CONFIGS[_solver],
         pbe_anchor_weight=_spec.pbe_anchor_weight,
         pbe_anchor_sample=_spec.pbe_anchor_sample,
     )
+    _t0 = _time.time()
     alec.run_test(_test_spec)
-    # Release compiled XLA artifacts between eval runs to prevent LLVM OOM.
-    jax.clear_caches(); gc.collect()
+    _n_eval_done += 1
+    _dt = _time.time() - _t0
+    _elapsed = _time.time() - _t_eval_start
+    _eta = _elapsed / max(_n_eval_done, 1) * max(_N_specs - (_idx + 1), 0)
+    print(f"  [{_idx+1:>3d}/{_N_specs}] {_group}/{_arch}/{_loss_label}/{_solver:9s} "
+          f"  dt={_dt:5.1f}s  elapsed={_elapsed/60:5.1f}min  "
+          f"eta={_eta/60:5.1f}min", flush=True)
+    if _n_eval_done % _EVAL_CACHE_FLUSH_EVERY == 0:
+        jax.clear_caches(); gc.collect()
+print(f"[main eval] done={_n_eval_done} cached={_n_eval_cached} "
+      f"no_ckpt={_n_eval_no_ckpt}  total={(_time.time()-_t_eval_start)/60:.1f}min",
+      flush=True)
 
 _n_done = sum(
     1 for _s in _all_specs
@@ -1383,10 +1697,10 @@ def build_cell_26_eval_preview():
 # molecule, value_name). Numeric scalars from per_molecule.json become
 # rows; non-numeric fields (molecule/name) are skipped.
 _rows = []
-_parq = os.path.join(CHECKPOINT_BASE, "eval_df.parquet")
-if not RERUN_EVAL and os.path.isfile(_parq):
-    eval_df = pd.read_parquet(_parq)
-    print(f"Using cached {_parq} ({len(eval_df)} rows)")
+_parq = os.path.join(RUN_DIR, "eval_df.parquet")
+if not RERUN_EVAL and _df_exists(_parq):
+    eval_df = _df_load(_parq)
+    print(f"Using cached eval_df ({len(eval_df)} rows)")
 else:
     for _spec in _all_specs:
         _tail = _spec.checkpoint_dir.rstrip("/").split("/")
@@ -1399,7 +1713,7 @@ else:
             else "group3"
         )
         _phase = "short" if _spec.n_steps == TRAIN_N_STEPS_SHORT else "long"
-        _out = os.path.join(CHECKPOINT_BASE, "eval", _group, _arch, _loss_label, _solver)
+        _out = os.path.join(eval_dir, _group, _arch, _loss_label, _solver)
         _pm_path = os.path.join(_out, "per_molecule.json")
         if not os.path.isfile(_pm_path):
             continue
@@ -1426,8 +1740,126 @@ else:
                         "value":        float(_v),
                     })
     eval_df = pd.DataFrame(_rows)
-    eval_df.to_parquet(_parq)
-    print(f"Wrote {_parq} ({len(eval_df)} rows)")
+    _written = _df_save(eval_df, _parq)
+    print(f"Wrote {_written} ({len(eval_df)} rows)")
+"""
+    return new_code_cell(source)
+
+
+def build_cell_26b_baseline_evals():
+    """Section 5 Cell 26b -- evaluate pretrained-only and random-init models.
+
+    These two baselines are what the trained NNs are competing against:
+
+      * ``pretrained``: the network after pretraining on F_x(rho, sigma)
+        samples but BEFORE any fine-tuning against atomization energies.
+        Per arch (one evaluation pass across all reference + transfer
+        molecules).
+
+      * ``random``: a fresh random-init model per arch. Shows what
+        "untrained NN XC" produces — i.e., the error floor before any
+        training at all.
+
+    Both are solver-invariant for the energy metrics; DensityRMSEMetric
+    evaluates under solver_config=None (oneshot) for consistency across
+    the baseline panels.
+
+    Artifacts land under ``{CHECKPOINT_BASE}/eval_baseline_{kind}/{arch}/``.
+    """
+    source = r"""# Baseline evaluations: pretrained-only (xnet/cnet from pretrain/) and
+# random-init. Both are per-arch; neither depends on a TrainingSpec.
+# Produces per_molecule.json aligned with the main eval schema so the
+# plot cells can overlay baselines on trained-NN bars.
+_baseline_mol_specs = (H2O_spec, C2H2_spec, H_spec, O_spec, C_spec)
+_baseline_ae_ref = {"H2O": H2O_AE_REF_KCALMOL, "C2H2": C2H2_AE_REF_KCALMOL}
+_baseline_metrics = ("total_energy", "atomization_energy", "density_rmse",
+                     "pbe_reference")
+_baseline_metric_kwargs = {
+    "atomization_energy": {"reference_ae_kcalmol": _baseline_ae_ref},
+    "pbe_reference": {
+        "atom_energies": _atom_energies_pbe,
+        "reference_ae_kcalmol": _baseline_ae_ref,
+    },
+}
+
+def _eval_baseline_model(model, arch_name, kind):
+    # Run eval with a caller-provided model (not loaded from checkpoint).
+    # Serializes the model to a scratch file, builds a TestSpec that points
+    # at it, then calls run_test. Output dir is
+    # {CHECKPOINT_BASE}/eval_baseline_{kind}/{arch_name}/.
+    _out = os.path.join(RUN_DIR, f"eval_baseline_{kind}", arch_name)
+    _agg = os.path.join(_out, "aggregate.json")
+    if not RERUN_EVAL and os.path.isfile(_agg):
+        return
+    os.makedirs(_out, exist_ok=True)
+    _ckpt_path = os.path.join(_out, "_baseline_model.eqx")
+    eqx.tree_serialise_leaves(_ckpt_path, model)
+    _spec = alec.TestSpec.from_dicts(
+        arch=alec.get_architecture(arch_name),
+        model_checkpoint=_ckpt_path,
+        molecules=_baseline_mol_specs,
+        metrics=_baseline_metrics,
+        metric_kwargs=_baseline_metric_kwargs,
+        atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
+        output_dir=_out,
+        solver_config=None,      # oneshot baseline — no SCF
+        pbe_anchor_weight=0.0, pbe_anchor_sample=None,
+    )
+    alec.run_test(_spec)
+    jax.clear_caches(); gc.collect()
+
+for _arch in ARCH_NAMES:
+    # (1) pretrained: load xnet/cnet from pretrain/ but skip training.
+    _arch_cfg = alec.get_architecture(_arch)
+    _xnet_sk, _cnet_sk = alec.create_network_pair(_arch_cfg, seed=0)
+    _xnet = eqx.tree_deserialise_leaves(
+        os.path.join(pretrain_dir, _arch, "xnet.eqx"), _xnet_sk,
+    )
+    _cnet = eqx.tree_deserialise_leaves(
+        os.path.join(pretrain_dir, _arch, "cnet.eqx"), _cnet_sk,
+    )
+    _pretrained_model = alec.AlecGGAModel.from_arch(
+        _arch_cfg, xnet=_xnet, cnet=_cnet,
+    )
+    _eval_baseline_model(_pretrained_model, _arch, "pretrained")
+
+    # (2) random: fresh-init model with a deterministic seed.
+    _random_model = alec.AlecGGAModel.from_arch(_arch_cfg, seed=12345)
+    _eval_baseline_model(_random_model, _arch, "random")
+
+print(f"Baseline evals done for {len(ARCH_NAMES)} archs")
+
+# Aggregate baselines into a tidy DataFrame mirroring eval_df's schema
+# (group='_baseline_*', loss/solver='_baseline', molecule, value_name, value).
+_baseline_rows = []
+for _kind in ("pretrained", "random"):
+    for _arch in ARCH_NAMES:
+        _pm_path = os.path.join(
+            RUN_DIR, f"eval_baseline_{_kind}", _arch, "per_molecule.json",
+        )
+        if not os.path.isfile(_pm_path):
+            continue
+        with open(_pm_path) as _f:
+            _pm = json.load(_f)
+        for _row in _pm:
+            _mol = _row.get("name") or _row.get("molecule")
+            for _k, _v in _row.items():
+                if _k in ("name", "molecule"):
+                    continue
+                if isinstance(_v, bool):
+                    continue
+                if isinstance(_v, (int, float)):
+                    _baseline_rows.append({
+                        "baseline":   _kind,
+                        "arch":       _arch,
+                        "molecule":   _mol,
+                        "value_name": _k,
+                        "value":      float(_v),
+                    })
+baseline_df = pd.DataFrame(_baseline_rows)
+_bparq = os.path.join(RUN_DIR, "baseline_df.parquet")
+_written = _df_save(baseline_df, _bparq)
+print(f"Wrote {_written} ({len(baseline_df)} rows)")
 """
     return new_code_cell(source)
 
@@ -1435,35 +1867,165 @@ else:
 def build_cell_27_vxc_efficacy():
     """Section 5 Cell 27 -- V_xc efficacy (L1 vs L3) on Group 2 short.
 
-    Plots 3 solvers x 2 archs x 3 metrics (abs_ae_error, density_rmse,
-    loss_vxc) as paired bars comparing L1_B (no V_xc) vs L3_balanced_vxc
-    (with V_xc). Writes ``{figures_dir}/vxc_efficacy.png``.
+    Restructured (2026-04-26): one bar group for the baseline (random +
+    pretrained, both archs); one bar group per treatment (L1, L3) with one
+    bar per architecture. Solver becomes the row dimension. PBE-vs-W4-11
+    and CCSD-vs-W4-11 errors drawn as horizontal lines on the AE panel.
+    Density panels keep PBE-vs-CCSD as the only meaningful baseline (no
+    W4-11 analog for density).
     """
-    source = r"""# V_xc efficacy: L1 vs L3 on Group 2 short. Answers "is V_xc doing anything?"
-_g2 = eval_df[eval_df.group == "group2"]
-_g2_l1 = _g2[_g2.loss == "L1_B"]
-_g2_l3 = _g2[_g2.loss == "L3_balanced_vxc"]
+    source = r"""# V_xc efficacy on group 2 (H2O+C2H2 short). Bar groups:
+#   "baseline" -- random NN + pretrained-only NN, both archs
+#   "L1_B"     -- atomization-only fine-tune, per arch
+#   "L3_balanced_vxc" -- atomization + V_xc fine-tune, per arch
+# Rows = solver mode. Cols = (AE_error, density_rmse, density_l1).
+# AE panel: PBE / CCSD vs W4-11 horizontal reference lines.
 
-fig, axes = plt.subplots(len(ARCH_NAMES), 3, figsize=(12, 4 * len(ARCH_NAMES)),
-                         squeeze=False)
-for _ri, _arch in enumerate(ARCH_NAMES):
-    for _ci, _metric in enumerate(["abs_ae_error", "density_rmse", "loss_vxc"]):
-        _d1 = _g2_l1[(_g2_l1.arch == _arch) & (_g2_l1.value_name == _metric)]
-        _d3 = _g2_l3[(_g2_l3.arch == _arch) & (_g2_l3.value_name == _metric)]
-        _x = np.arange(len(SOLVER_LABELS)); _w = 0.4
-        _vals1 = (_d1.groupby("solver")["value"].mean()
-                    .reindex(SOLVER_LABELS).fillna(0.0).values)
-        _vals3 = (_d3.groupby("solver")["value"].mean()
-                    .reindex(SOLVER_LABELS).fillna(0.0).values)
-        axes[_ri][_ci].bar(_x - _w/2, _vals1, width=_w, label="L1 (no V_xc)")
-        axes[_ri][_ci].bar(_x + _w/2, _vals3, width=_w, label="L3 (V_xc)")
-        axes[_ri][_ci].set_xticks(_x)
-        axes[_ri][_ci].set_xticklabels(SOLVER_LABELS, rotation=30, fontsize=7)
-        axes[_ri][_ci].set_title(f"{_arch} | {_metric}", fontsize=9)
-        if _ci == 0: axes[_ri][_ci].legend(fontsize=7)
-fig.suptitle("V_xc efficacy (L1 vs L3, Group 2 short)")
-fig.tight_layout()
-fig.savefig(os.path.join(figures_dir, "vxc_efficacy.png"), dpi=120); plt.show()
+# --- Baseline error helpers ------------------------------------------
+# PBE/CCSD AE error vs W4-11 lit per molecule, computed from the
+# precomputed metadata files written by cells 12/13/30/31.
+def _read_meta(_dir, _name):
+    _p = os.path.join(_dir, f"{_name}_metadata.json")
+    if not os.path.isfile(_p):
+        return None
+    with open(_p) as _f:
+        return json.load(_f)
+
+def _ae_baseline_kcalmol(_meta_dirs, _mol_name, _comp, _ref_kcalmol, _kind):
+    # _kind in {"pbe","ccsd"}: returns AE error vs W4-11 lit (kcal/mol).
+    _key = "E_pbe_total" if _kind == "pbe" else "E_ccsd_total"
+    _mol_meta = None
+    for _d in _meta_dirs:
+        _mol_meta = _read_meta(_d, _mol_name)
+        if _mol_meta is not None: break
+    if _mol_meta is None or _key not in _mol_meta: return None
+    _E_mol = float(_mol_meta[_key])
+    _E_atoms = 0.0
+    for _Z, _n in _comp:
+        _atom_meta = None
+        for _d in _meta_dirs:
+            _atom_meta = _read_meta(_d, _Z)
+            if _atom_meta is not None: break
+        if _atom_meta is None or _key not in _atom_meta: return None
+        _E_atoms += float(_atom_meta[_key]) * _n
+    _AE_Ha = _E_atoms - _E_mol
+    return _AE_Ha * KCAL_PER_HA - _ref_kcalmol
+
+# Training-set composition for group2: H2O + C2H2. AE refs from cell 11.
+_TRAIN_MOLS_G2 = (
+    ("H2O",  (("O",1),("H",2)), H2O_AE_REF_KCALMOL),
+    ("C2H2", (("C",2),("H",2)), C2H2_AE_REF_KCALMOL),
+)
+_META_DIRS = (ext_data_dir,)
+def _ae_mae_baseline(_kind):
+    _vals = [
+        _ae_baseline_kcalmol(_META_DIRS, _n, _c, _ref, _kind)
+        for _n, _c, _ref in _TRAIN_MOLS_G2
+    ]
+    _vals = [abs(_v) for _v in _vals if _v is not None]
+    return float(np.mean(_vals)) if _vals else None
+
+_pbe_ae_mae  = _ae_mae_baseline("pbe")
+_ccsd_ae_mae = _ae_mae_baseline("ccsd")
+
+# Density RMSE/L1 baselines from baseline_df (random / pretrained NN).
+def _density_baseline(_arch, _value_name, _kind, _mols=("H2O","C2H2")):
+    if 'baseline_df' not in globals() or baseline_df is None:
+        return None
+    _sub = baseline_df[(baseline_df.arch == _arch)
+                       & (baseline_df.baseline == _kind)
+                       & (baseline_df.value_name == _value_name)
+                       & (baseline_df.molecule.isin(_mols))]
+    if _sub.empty: return None
+    return float(_sub["value"].abs().mean())
+
+_g2 = eval_df[eval_df.group == "group2"]
+_LOSSES_HERE = ("L1_B", "L3_balanced_vxc")
+_GROUP_ORDER = ("baseline",) + _LOSSES_HERE
+_METRICS = ("AE_error_kcalmol", "density_rmse", "density_l1")
+_LOG_PANELS = {"AE_error_kcalmol"}
+
+# Each "baseline" bar group has 2*len(ARCH_NAMES) bars (random + pretrained
+# per arch); each treatment bar group has len(ARCH_NAMES) bars. Layout
+# bar positions so groups are visually separated.
+_arch_colors = {arch: cmap(_i / max(len(ARCH_NAMES) - 1, 1))
+                for _i, arch in enumerate(ARCH_NAMES)}
+_BASE_KIND_ALPHA = {"random": 0.45, "pretrained": 0.85}
+
+fig, axes = plt.subplots(
+    len(SOLVER_LABELS), len(_METRICS),
+    figsize=(5.2 * len(_METRICS), 3.6 * len(SOLVER_LABELS)),
+    squeeze=False,
+)
+for _ri, _solver in enumerate(SOLVER_LABELS):
+    for _ci, _metric in enumerate(_METRICS):
+        _ax = axes[_ri][_ci]
+        _slice = _g2[(_g2.solver == _solver) & (_g2.value_name == _metric)]
+        _xticks = []; _xlabels = []
+        _bar_idx = 0; _gap_within = 0.22; _gap_between = 0.6
+        # Baseline group
+        for _kind in ("random", "pretrained"):
+            for _arch in ARCH_NAMES:
+                _v = _density_baseline(_arch, _metric, _kind) \
+                    if _metric != "AE_error_kcalmol" else _density_baseline(
+                        _arch, "AE_error_kcalmol", _kind)
+                _vv = abs(_v) if _v is not None else 0.0
+                _ax.bar(_bar_idx, _vv, width=0.6,
+                        color=_arch_colors[_arch],
+                        alpha=_BASE_KIND_ALPHA[_kind],
+                        edgecolor="k", linewidth=0.5,
+                        label=f"baseline · {_kind} · {_arch}"
+                              if _ri == 0 and _ci == 0 else None)
+                _xticks.append(_bar_idx)
+                _xlabels.append(f"{_kind[:3]}\n{_arch}")
+                _bar_idx += 1
+        _bar_idx += _gap_between
+        # Treatment groups
+        for _loss in _LOSSES_HERE:
+            for _arch in ARCH_NAMES:
+                _d = _slice[(_slice.loss == _loss) & (_slice.arch == _arch)]
+                _val = float(_d["value"].abs().mean()) if len(_d) else 0.0
+                _ax.bar(_bar_idx, _val, width=0.6,
+                        color=_arch_colors[_arch],
+                        edgecolor="k", linewidth=0.5,
+                        hatch="//" if _loss == "L3_balanced_vxc" else None,
+                        label=f"{_loss} · {_arch}"
+                              if _ri == 0 and _ci == 0 else None)
+                _xticks.append(_bar_idx)
+                _xlabels.append(f"{_loss}\n{_arch}")
+                _bar_idx += 1
+            _bar_idx += _gap_between
+        # Horizontal reference lines (AE panel only)
+        if _metric == "AE_error_kcalmol":
+            if _pbe_ae_mae is not None and _pbe_ae_mae > 0:
+                _ax.axhline(_pbe_ae_mae, ls="--", lw=1.6, color="k",
+                            label=f"PBE vs W4-11 ({_pbe_ae_mae:.1f})"
+                                  if _ri == 0 and _ci == 0 else None)
+            if _ccsd_ae_mae is not None and _ccsd_ae_mae > 0:
+                _ax.axhline(_ccsd_ae_mae, ls="-.", lw=1.6, color="purple",
+                            label=f"CCSD vs W4-11 ({_ccsd_ae_mae:.2f})"
+                                  if _ri == 0 and _ci == 0 else None)
+        if _metric in _LOG_PANELS:
+            _ax.set_yscale("log")
+        _ax.set_xticks(_xticks)
+        _ax.set_xticklabels(_xlabels, rotation=70, fontsize=6)
+        _ylabel = {
+            "AE_error_kcalmol": "MAE |AE error| vs W4-11 (kcal/mol, log)",
+            "density_rmse":     "density RMSE (e/bohr³)",
+            "density_l1":       "density L1 (e/bohr³)",
+        }[_metric]
+        _ax.set_ylabel(_ylabel, fontsize=8)
+        _ax.set_title(f"solver={_solver} | {_metric}", fontsize=9)
+        _ax.grid(True, axis="y", which="both", ls=":", alpha=0.4)
+fig.legend(*axes[0][0].get_legend_handles_labels(),
+           loc="lower center", ncol=4, fontsize=7,
+           bbox_to_anchor=(0.5, -0.02))
+fig.suptitle("V_xc efficacy on group 2 (H₂O+C₂H₂): "
+             "baseline (random/pretrained) vs L1 vs L3, per arch",
+             fontsize=11)
+fig.tight_layout(rect=(0, 0.04, 1, 0.96))
+fig.savefig(os.path.join(figures_dir, "vxc_efficacy.png"), dpi=120, bbox_inches="tight")
+plt.show()
 """
     return new_code_cell(source)
 
@@ -1476,34 +2038,49 @@ def build_cell_28_anchor_effect():
     helps; negative (red) indicate anchor hurts. Writes
     ``{figures_dir}/anchor_effect.png``.
     """
-    source = r"""# Anchor-effect: L3 -> L4 ΔAE across (arch, solver, group).
+    source = r"""# Anchor-effect: ΔAE = |L3 atomization-error| - |L4 atomization-error|
+# per (arch, solver, group). Positive (green) -> anchor regularizer
+# helps; negative (red) -> anchor hurts. Single proxy legend below
+# explains the colors.
+import matplotlib.patches as _mpatches
 fig, axes = plt.subplots(len(ARCH_NAMES), 3, figsize=(14, 4 * len(ARCH_NAMES)),
                          squeeze=False)
 for _ri, _arch in enumerate(ARCH_NAMES):
     for _ci, _grp in enumerate(["group1", "group2", "group3"]):
+        _ax = axes[_ri][_ci]
         _slice = eval_df[
             (eval_df.group == _grp) & (eval_df.arch == _arch)
-            & (eval_df.value_name == "abs_ae_error")
+            & (eval_df.value_name == "AE_error_kcalmol")
         ]
         _deltas = []; _labels = []
         for _s in SOLVER_LABELS:
             _off = _slice[(_slice.loss == "L3_balanced_vxc")
-                          & (_slice.solver == _s)]["value"].mean()
+                          & (_slice.solver == _s)]["value"].abs().mean()
             _on = _slice[(_slice.loss == "L4_balanced_vxc_anchor")
-                         & (_slice.solver == _s)]["value"].mean()
+                         & (_slice.solver == _s)]["value"].abs().mean()
             _deltas.append((_off if pd.notna(_off) else 0.0)
                            - (_on if pd.notna(_on) else 0.0))
             _labels.append(_s)
         _x = np.arange(len(_deltas))
-        axes[_ri][_ci].bar(_x, _deltas,
-                           color=["green" if _d > 0 else "red" for _d in _deltas])
-        axes[_ri][_ci].axhline(0, color="k", lw=0.5)
-        axes[_ri][_ci].set_xticks(_x); axes[_ri][_ci].set_xticklabels(_labels, fontsize=7)
-        axes[_ri][_ci].set_title(f"{_arch} | {_grp}", fontsize=9)
-        axes[_ri][_ci].set_ylabel("ΔAE (L3 − L4; + = anchor helps)")
-fig.suptitle("Anchor effect: AE(L3 V_xc) − AE(L4 V_xc+anchor)")
-fig.tight_layout()
-fig.savefig(os.path.join(figures_dir, "anchor_effect.png"), dpi=120); plt.show()
+        _ax.bar(_x, _deltas,
+                color=["seagreen" if _d > 0 else "indianred" for _d in _deltas],
+                edgecolor="k", linewidth=0.5)
+        _ax.axhline(0, color="k", lw=1.0)
+        _ax.set_xticks(_x); _ax.set_xticklabels(_labels, fontsize=8)
+        _ax.set_xlabel("solver mode")
+        _ax.set_title(f"{_arch} — trained on {_grp}", fontsize=9)
+        _ax.set_ylabel("Δ|AE error|  (kcal/mol)")
+        _ax.grid(True, axis="y", ls=":", alpha=0.4)
+        if _ci == 0:
+            _ax.legend(handles=[
+                _mpatches.Patch(color="seagreen", label="Δ > 0  (anchor helps: |L4| < |L3|)"),
+                _mpatches.Patch(color="indianred", label="Δ < 0  (anchor hurts: |L4| > |L3|)"),
+            ], fontsize=7, loc="best", framealpha=0.85)
+fig.suptitle("PBE-anchor effect: |L3 (V_xc only)| − |L4 (V_xc + PBE anchor)|  on training molecules",
+             fontsize=11)
+fig.tight_layout(rect=(0, 0, 1, 0.96))
+fig.savefig(os.path.join(figures_dir, "anchor_effect.png"), dpi=120, bbox_inches="tight")
+plt.show()
 """
     return new_code_cell(source)
 
@@ -1671,11 +2248,12 @@ def build_cell_32_transfer_primary_eval():
 # specs, runs alec.run_test on each transfer molecule, aggregates to tidy
 # DataFrame. pbe_anchor_weight=0 / pbe_anchor_sample=None for transfer
 # (anchor is a training regularizer only).
+import time as _time
 def _run_transfer_eval(mols_list, out_dir, parquet_name):
-    _parq = os.path.join(CHECKPOINT_BASE, parquet_name)
-    if not RERUN_EVAL and os.path.isfile(_parq):
-        _df = pd.read_parquet(_parq)
-        print(f"Using cached {_parq} ({len(_df)} rows)")
+    _parq = os.path.join(RUN_DIR, parquet_name)
+    if not RERUN_EVAL and _df_exists(_parq):
+        _df = _df_load(_parq)
+        print(f"[transfer eval] cached: {parquet_name} ({len(_df)} rows)")
         return _df
     _ae_ref = {_m["name"]: _m["ae_ref_kcalmol"] for _m in mols_list}
     _mol_specs = tuple(
@@ -1688,9 +2266,22 @@ def _run_transfer_eval(mols_list, out_dir, parquet_name):
         for _m in mols_list
     )
     _rows = []
-    for _spec in _all_specs:
+    _N = len(_all_specs)
+    _mol_names = ", ".join(m["name"] for m in mols_list)
+    print(f"[transfer eval] {parquet_name}: {_N} specs x {len(mols_list)} "
+          f"transfer mols ({_mol_names})", flush=True)
+    _t_start = _time.time()
+    _n_done = 0; _n_skipped_cache = 0; _n_skipped_no_ckpt = 0
+    # JIT-cache pressure mitigation: clearing every spec forced full
+    # XLA retracing for every (arch, mol, metric) combination on every
+    # spec, ballooning a few-hundred-spec sweep into many hours. Hold the
+    # cache through CACHE_FLUSH_EVERY specs so common shape signatures
+    # (per-arch, per-molecule) reuse compiled XLA across spec invocations.
+    CACHE_FLUSH_EVERY = 16
+    for _idx, _spec in enumerate(_all_specs):
         _ckpt = os.path.join(_spec.checkpoint_dir, "model.eqx")
         if not os.path.isfile(_ckpt):
+            _n_skipped_no_ckpt += 1
             continue
         _tail = _spec.checkpoint_dir.rstrip("/").split("/")
         _solver = _tail[-1]
@@ -1701,19 +2292,28 @@ def _run_transfer_eval(mols_list, out_dir, parquet_name):
             else "group2" if _spec in _specs_group2
             else "group3"
         )
-        _out = os.path.join(CHECKPOINT_BASE, "transfer_eval",
+        _out = os.path.join(transfer_eval_dir,
                             parquet_name.replace(".parquet", ""),
                             _group, _arch, _loss_label, _solver)
         _agg_path = os.path.join(_out, "aggregate.json")
         _pm_path = os.path.join(_out, "per_molecule.json")
-        if RERUN_EVAL or not os.path.isfile(_agg_path):
+        if not RERUN_EVAL and os.path.isfile(_agg_path):
+            _n_skipped_cache += 1
+        else:
+            _t0 = _time.time()
             _test_spec = alec.TestSpec.from_dicts(
                 arch=alec.get_architecture(_arch),
                 model_checkpoint=_ckpt,
                 molecules=_mol_specs,
-                metrics=("total_energy", "atomization_energy", "density_rmse"),
-                metric_kwargs={"atomization_energy":
-                               {"reference_ae_kcalmol": _ae_ref}},
+                metrics=("total_energy", "atomization_energy", "density_rmse",
+                         "pbe_reference"),
+                metric_kwargs={
+                    "atomization_energy": {"reference_ae_kcalmol": _ae_ref},
+                    "pbe_reference": {
+                        "atom_energies": _atom_energies_pbe,
+                        "reference_ae_kcalmol": _ae_ref,
+                    },
+                },
                 atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,
                 output_dir=_out,
                 solver_config=SOLVER_CONFIGS[_solver],
@@ -1721,7 +2321,15 @@ def _run_transfer_eval(mols_list, out_dir, parquet_name):
                 pbe_anchor_sample=None,
             )
             alec.run_test(_test_spec)
-            jax.clear_caches(); gc.collect()
+            _n_done += 1
+            _dt = _time.time() - _t0
+            _elapsed = _time.time() - _t_start
+            _eta = _elapsed / max(_n_done, 1) * max(_N - (_idx + 1), 0)
+            print(f"  [{_idx+1:>3d}/{_N}] {_group}/{_arch}/{_loss_label}/{_solver:9s} "
+                  f"  dt={_dt:5.1f}s  elapsed={_elapsed/60:5.1f}min  "
+                  f"eta={_eta/60:5.1f}min", flush=True)
+            if _n_done % CACHE_FLUSH_EVERY == 0:
+                jax.clear_caches(); gc.collect()
         if not os.path.isfile(_pm_path):
             continue
         with open(_pm_path) as _f:
@@ -1744,8 +2352,11 @@ def _run_transfer_eval(mols_list, out_dir, parquet_name):
                         "value":      float(_v),
                     })
     _df = pd.DataFrame(_rows)
-    _df.to_parquet(_parq)
-    print(f"Wrote {_parq} ({len(_df)} rows)")
+    _written = _df_save(_df, _parq)
+    _total_min = (_time.time() - _t_start) / 60
+    print(f"[transfer eval] {parquet_name}: ran={_n_done} cached={_n_skipped_cache} "
+          f"no_ckpt={_n_skipped_no_ckpt}  total={_total_min:.1f}min", flush=True)
+    print(f"[transfer eval] wrote {_written} ({len(_df)} rows)", flush=True)
     return _df
 
 
@@ -1777,45 +2388,154 @@ print(f"transfer_secondary_df: {len(transfer_secondary_df)} rows")
 def build_cell_34_transfer_primary_plot():
     """Section 6 Cell 34 -- primary transfer aggregate MAE plot.
 
-    Cross-mol MAE bar chart on ``abs_ae_error`` aggregated over the primary
-    transfer molecules, grouped by (group, arch) with 4 loss bars each and
-    log-y scale. Writes ``{figures_dir}/transfer_primary_mae.png``.
+    Restructured 2026-04-26: bar groups = (baseline; treatment x arch),
+    PBE-vs-W4-11 and CCSD-vs-W4-11 horizontal reference lines, panels by
+    (solver, group). Defines the runtime helper ``_render_transfer_plot``
+    that cell 35 reuses for the secondary transfer set.
+    Writes ``{figures_dir}/transfer_primary_mae.png``.
     """
-    source = r"""# Cross-mol MAE (kcal/mol) bar chart on primary transfer set. Aggregated
-# over molecules, grouped by (group, arch); 4 loss bars each, log-y.
-fig, axes = plt.subplots(
-    len(ARCH_NAMES), 3, figsize=(14, 4 * len(ARCH_NAMES)), squeeze=False,
-)
-_x = np.arange(len(LOSS_NAMES))
-_w = 0.22
-for _ri, _arch in enumerate(ARCH_NAMES):
-    for _ci, _grp in enumerate(["group1", "group2", "group3"]):
-        _ax = axes[_ri][_ci]
-        _slice = transfer_primary_df[
-            (transfer_primary_df.group == _grp)
-            & (transfer_primary_df.arch == _arch)
-            & (transfer_primary_df.value_name == "abs_ae_error")
-        ]
-        for _si, _solver in enumerate(SOLVER_LABELS):
-            _vals = []
+    source = r"""# Transfer-plot helper. Bar groups per panel:
+#   "baseline"    -- random + pretrained NN (both archs)
+#   one per loss  -- LOSS_NAMES, one bar per arch
+# Rows = solver, cols = trained-on group. PBE / CCSD MAE vs W4-11
+# horizontal reference lines on every panel. Cell 35 calls the same
+# helper with the secondary df + dataset.
+
+def _read_mol_meta(_d, _name):
+    _p = os.path.join(_d, f"{_name}_metadata.json")
+    if not os.path.isfile(_p): return None
+    with open(_p) as _f:
+        return json.load(_f)
+
+def _ae_kind_error_kcalmol(_meta_dirs, _name, _comp, _ref_kcalmol, _kind):
+    _key = "E_pbe_total" if _kind == "pbe" else "E_ccsd_total"
+    _mol_meta = None
+    for _d in _meta_dirs:
+        _mol_meta = _read_mol_meta(_d, _name)
+        if _mol_meta is not None: break
+    if _mol_meta is None or _key not in _mol_meta: return None
+    _E_mol = float(_mol_meta[_key])
+    _E_atoms = 0.0
+    for _Z, _n in _comp:
+        _atom_meta = None
+        for _d in _meta_dirs:
+            _atom_meta = _read_mol_meta(_d, _Z)
+            if _atom_meta is not None: break
+        if _atom_meta is None or _key not in _atom_meta: return None
+        _E_atoms += float(_atom_meta[_key]) * _n
+    return (_E_atoms - _E_mol) * KCAL_PER_HA - _ref_kcalmol
+
+def _baseline_ae_nn(_arch, _kind):
+    if 'baseline_df' not in globals() or baseline_df is None:
+        return None
+    _sub = baseline_df[(baseline_df.arch == _arch)
+                       & (baseline_df.baseline == _kind)
+                       & (baseline_df.value_name == "AE_error_kcalmol")]
+    if _sub.empty: return None
+    return float(_sub["value"].abs().mean())
+
+_arch_colors_tr = {arch: cmap(_i / max(len(ARCH_NAMES) - 1, 1))
+                   for _i, arch in enumerate(ARCH_NAMES)}
+_BASE_KIND_ALPHA = {"random": 0.45, "pretrained": 0.85}
+_HATCHED_LOSSES = {"L3_balanced_vxc", "L4_balanced_vxc_anchor"}
+
+def _render_transfer_plot(target_df, transfer_mols, data_dir, png_name,
+                          dataset_label, suptitle):
+    _meta_dirs = (data_dir, ext_data_dir)
+    _pbe_vals = [
+        _ae_kind_error_kcalmol(_meta_dirs, m["name"], m["comp"],
+                               m["ae_ref_kcalmol"], "pbe")
+        for m in transfer_mols
+    ]
+    _ccsd_vals = [
+        _ae_kind_error_kcalmol(_meta_dirs, m["name"], m["comp"],
+                               m["ae_ref_kcalmol"], "ccsd")
+        for m in transfer_mols
+    ]
+    _pbe_mae  = float(np.mean([abs(_v) for _v in _pbe_vals  if _v is not None])) \
+                if any(_v is not None for _v in _pbe_vals)  else None
+    _ccsd_mae = float(np.mean([abs(_v) for _v in _ccsd_vals if _v is not None])) \
+                if any(_v is not None for _v in _ccsd_vals) else None
+    print(f"[{dataset_label} transfer baselines vs W4-11]  "
+          f"PBE_MAE={_pbe_mae}  CCSD_MAE={_ccsd_mae}")
+    _GROUP_ORDER = ("group1", "group2", "group3")
+    fig, axes = plt.subplots(
+        len(SOLVER_LABELS), len(_GROUP_ORDER),
+        figsize=(5.2 * len(_GROUP_ORDER), 3.6 * len(SOLVER_LABELS)),
+        squeeze=False,
+    )
+    for _ri, _solver in enumerate(SOLVER_LABELS):
+        for _ci, _grp in enumerate(_GROUP_ORDER):
+            _ax = axes[_ri][_ci]
+            _slice = target_df[
+                (target_df.group == _grp)
+                & (target_df.solver == _solver)
+                & (target_df.value_name == "AE_error_kcalmol")
+            ]
+            _xticks = []; _xlabels = []
+            _bar_idx = 0; _gap = 0.6
+            for _kind in ("random", "pretrained"):
+                for _arch in ARCH_NAMES:
+                    _v = _baseline_ae_nn(_arch, _kind)
+                    _vv = abs(_v) if _v is not None else 0.0
+                    _ax.bar(_bar_idx, _vv, width=0.6,
+                            color=_arch_colors_tr[_arch],
+                            alpha=_BASE_KIND_ALPHA[_kind],
+                            edgecolor="k", linewidth=0.5,
+                            label=f"baseline · {_kind} · {_arch}"
+                                  if _ri == 0 and _ci == 0 else None)
+                    _xticks.append(_bar_idx)
+                    _xlabels.append(f"{_kind[:3]}\n{_arch}")
+                    _bar_idx += 1
+            _bar_idx += _gap
             for _loss in LOSS_NAMES:
-                _d = _slice[(_slice.solver == _solver) & (_slice.loss == _loss)]
-                _mae = _d["value"].mean() if len(_d) else 0.0
-                _vals.append(_mae if pd.notna(_mae) else 0.0)
-            _ax.bar(_x + (_si - 1) * _w, _vals, width=_w, label=_solver)
-        _ax.set_xticks(_x)
-        _ax.set_xticklabels(LOSS_NAMES, rotation=25, fontsize=7)
-        _ax.set_yscale("log")
-        _ax.set_title(f"{_arch} | {_grp}", fontsize=9)
-        _ax.grid(True, which="both", ls=":", alpha=0.4)
-        if _ci == 0:
-            _ax.set_ylabel("MAE abs_ae_error (kcal/mol, log)")
-            _ax.legend(fontsize=7, title="solver")
-fig.suptitle("Primary transfer: cross-mol MAE on {H2, OH, CH4}")
-fig.tight_layout(rect=(0, 0, 1, 0.96))
-fig.savefig(os.path.join(figures_dir, "transfer_primary_mae.png"),
-            dpi=120, bbox_inches="tight")
-plt.show()
+                for _arch in ARCH_NAMES:
+                    _d = _slice[(_slice.loss == _loss) & (_slice.arch == _arch)]
+                    _v = _d["value"].abs()
+                    _mae = float(_v.dropna().mean()) if len(_v.dropna()) else 0.0
+                    _ax.bar(_bar_idx, _mae if _mae > 0 else 0.0, width=0.6,
+                            color=_arch_colors_tr[_arch],
+                            edgecolor="k", linewidth=0.5,
+                            hatch="//" if _loss in _HATCHED_LOSSES else None,
+                            label=f"{_loss} · {_arch}"
+                                  if _ri == 0 and _ci == 0 else None)
+                    _xticks.append(_bar_idx)
+                    _xlabels.append(f"{_loss}\n{_arch}")
+                    _bar_idx += 1
+                _bar_idx += _gap
+            if _pbe_mae is not None and _pbe_mae > 0:
+                _ax.axhline(_pbe_mae, ls="--", lw=1.6, color="k",
+                            label=f"PBE vs W4-11 ({_pbe_mae:.1f})"
+                                  if _ri == 0 and _ci == 0 else None)
+            if _ccsd_mae is not None and _ccsd_mae > 0:
+                _ax.axhline(_ccsd_mae, ls="-.", lw=1.6, color="purple",
+                            label=f"CCSD vs W4-11 ({_ccsd_mae:.2f})"
+                                  if _ri == 0 and _ci == 0 else None)
+            _ax.set_yscale("log")
+            _ax.set_xticks(_xticks)
+            _ax.set_xticklabels(_xlabels, rotation=70, fontsize=5)
+            _ax.set_title(f"solver={_solver} | trained on {_grp}", fontsize=9)
+            _ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
+            if _ci == 0:
+                _ax.set_ylabel("MAE |AE error| (kcal/mol, log)", fontsize=8)
+    fig.legend(*axes[0][0].get_legend_handles_labels(),
+               loc="lower center", ncol=4, fontsize=6,
+               bbox_to_anchor=(0.5, -0.04))
+    fig.suptitle(suptitle, fontsize=11)
+    fig.tight_layout(rect=(0, 0.05, 1, 0.96))
+    fig.savefig(os.path.join(figures_dir, png_name),
+                dpi=120, bbox_inches="tight")
+    plt.show()
+
+_render_transfer_plot(
+    target_df=transfer_primary_df,
+    transfer_mols=TRANSFER_PRIMARY,
+    data_dir=transfer_primary,
+    png_name="transfer_primary_mae.png",
+    dataset_label="primary",
+    suptitle=("Primary transfer ({H₂, OH, CH₄}): "
+              "MAE |AE error| vs W4-11 with PBE/CCSD horizontal references"),
+)
 """
     return new_code_cell(source)
 
@@ -1823,44 +2543,18 @@ plt.show()
 def build_cell_35_transfer_secondary_plot():
     """Section 6 Cell 35 -- secondary transfer aggregate MAE plot.
 
-    Same layout as cell 34 but for ``transfer_secondary_df`` over the
-    four secondary transfer molecules.
+    Reuses ``_render_transfer_plot`` defined in cell 34.
     """
-    source = r"""# Cross-mol MAE (kcal/mol) bar chart on secondary transfer set. Aggregated
-# over molecules, grouped by (group, arch); 4 loss bars each, log-y.
-fig, axes = plt.subplots(
-    len(ARCH_NAMES), 3, figsize=(14, 4 * len(ARCH_NAMES)), squeeze=False,
+    source = r"""# Reuses _render_transfer_plot defined in cell 34.
+_render_transfer_plot(
+    target_df=transfer_secondary_df,
+    transfer_mols=TRANSFER_SECONDARY,
+    data_dir=transfer_secondary,
+    png_name="transfer_secondary_mae.png",
+    dataset_label="secondary",
+    suptitle=("Secondary transfer ({NH₃, HF, CO₂, NH₂}): "
+              "MAE |AE error| vs W4-11 with PBE/CCSD horizontal references"),
 )
-_x = np.arange(len(LOSS_NAMES))
-_w = 0.22
-for _ri, _arch in enumerate(ARCH_NAMES):
-    for _ci, _grp in enumerate(["group1", "group2", "group3"]):
-        _ax = axes[_ri][_ci]
-        _slice = transfer_secondary_df[
-            (transfer_secondary_df.group == _grp)
-            & (transfer_secondary_df.arch == _arch)
-            & (transfer_secondary_df.value_name == "abs_ae_error")
-        ]
-        for _si, _solver in enumerate(SOLVER_LABELS):
-            _vals = []
-            for _loss in LOSS_NAMES:
-                _d = _slice[(_slice.solver == _solver) & (_slice.loss == _loss)]
-                _mae = _d["value"].mean() if len(_d) else 0.0
-                _vals.append(_mae if pd.notna(_mae) else 0.0)
-            _ax.bar(_x + (_si - 1) * _w, _vals, width=_w, label=_solver)
-        _ax.set_xticks(_x)
-        _ax.set_xticklabels(LOSS_NAMES, rotation=25, fontsize=7)
-        _ax.set_yscale("log")
-        _ax.set_title(f"{_arch} | {_grp}", fontsize=9)
-        _ax.grid(True, which="both", ls=":", alpha=0.4)
-        if _ci == 0:
-            _ax.set_ylabel("MAE abs_ae_error (kcal/mol, log)")
-            _ax.legend(fontsize=7, title="solver")
-fig.suptitle("Secondary transfer: cross-mol MAE on {NH3, HF, CO2, NH2}")
-fig.tight_layout(rect=(0, 0, 1, 0.96))
-fig.savefig(os.path.join(figures_dir, "transfer_secondary_mae.png"),
-            dpi=120, bbox_inches="tight")
-plt.show()
 """
     return new_code_cell(source)
 
@@ -1919,10 +2613,13 @@ def build_cell_37_drift_panel_b():
     """
     source = r"""# F_x(s) drift Panel B: CH4 (transfer ref) + C2H2 (in-training). Samples
 # F_x on each molecule's PBE grid for all 72 trained models + per-arch
-# pretrained baselines + the analytic PBE reference.
-from xcquinox.alec.oneshot import _nn_fx_local_uks
+# pretrained baselines + the analytic PBE reference. F_x is evaluated on
+# the molecule using the SAME descriptor features (cusp + dm_statistics)
+# the network sees during a real SCF -- evaluating with zero-extras gives
+# fictional curves for archs whose F_x depends on the descriptors.
 from xcquinox.alec.models import AlecGGAModel
 from xcquinox.alec.networks import create_network_pair
+from xcquinox.alec.descriptors import assemble_descriptor_features
 
 
 def _load_full_model_from_ckpt(_ckpt_path, _arch_name):
@@ -1946,30 +2643,70 @@ def _load_pretrain_model(_pretrain_dir, _arch_name):
     return AlecGGAModel.from_arch(_arch_cfg, xnet=_xnet, cnet=_cnet)
 
 
-def _sample_fx_on_molecule(_model, _atom_str, _spin):
-    # Runs PBE on the molecule, extracts density + its gradient on the PBE
-    # grid, computes reduced gradient s, then evaluates the NN F_x via the
-    # spin-scaled UKS helper (matches SCF-time convention).
-    _mol = gto.M(atom=_atom_str, basis=BASIS, charge=0, spin=_spin, verbose=0)
-    _mf = dft.UKS(_mol) if _spin else dft.RKS(_mol)
-    _mf.xc = "pbe"
-    _mf.grids.level = GRID_LEVEL
-    _mf.kernel()
-    _dm = _mf.make_rdm1()
-    if _spin:
-        _dm = _dm[0] + _dm[1]
-    _coords = _mf.grids.coords
-    _ao_deriv = _mf._numint.eval_ao(_mol, _coords, deriv=1)
-    _ao = _ao_deriv[0]
-    _ao_xyz = _ao_deriv[1:4]
-    _rho = jnp.einsum("ij,gi,gj->g", _dm, _ao, _ao)
-    # grad_rho_k = 2 * sum_{ij} D_ij * (d_k phi_i) * phi_j  (hermitian D).
-    _grad_rho = 2.0 * jnp.einsum("ij,dgi,gj->gd", _dm, _ao_xyz, _ao)
-    _grad_mag = jnp.linalg.norm(_grad_rho, axis=1)
-    _kF = (3.0 * jnp.pi ** 2) ** (1.0 / 3.0)
-    _s = _grad_mag / (2.0 * _kF * jnp.clip(_rho, 1e-12, None) ** (4.0 / 3.0))
-    _fx_nn = _nn_fx_local_uks(_model, _rho / 2.0, _rho / 2.0, _s)
-    return np.asarray(_s), np.asarray(_fx_nn)
+# Per-(arch, molecule) cache: stores (rho, s, features_per_grid_row,
+# spin) where features_per_grid_row is the (n_grid, n_extra) array of
+# real descriptor features (cusp + dm_statistics) the network expects.
+# Shared across all checkpoints with the same architecture so the heavy
+# PBE SCF + descriptor precompute runs once per (arch, molecule).
+_grid_cache = {}
+
+def _compute_grid_for_molecule(_atom_str, _spin, _arch_name, _mol_name):
+    _arch_cfg = alec.get_architecture(_arch_name)
+    _key = (_atom_str, int(_spin), BASIS, int(GRID_LEVEL), _arch_name)
+    if _key in _grid_cache:
+        return _grid_cache[_key]
+    _skel = AlecGGAModel.from_arch(_arch_cfg, seed=0)
+    _required = tuple(set(
+        _k for _d in _skel.descriptors for _k in _d.required_mol_keys
+    ))
+    _mol_spec = alec.MoleculeSpec(
+        name=_mol_name, atom=_atom_str, basis=BASIS,
+        charge=0, spin=int(_spin), grid_level=int(GRID_LEVEL),
+        atom_composition=(),
+    )
+    _mol_data = alec.precompute_fixed_density_data(
+        _mol_spec,
+        required_keys=_required,
+        descriptors=_skel.descriptors,
+    )
+    _rho = np.asarray(_mol_data["rho_grid"])
+    _sigma = np.asarray(_mol_data["sigma_grid"])
+    _kF = (3.0 * np.pi ** 2) ** (1.0 / 3.0)
+    _s = np.sqrt(np.clip(_sigma, 0.0, None)) / (
+        2.0 * _kF * np.clip(_rho, 1e-12, None) ** (4.0 / 3.0)
+    )
+    _features = np.asarray(
+        assemble_descriptor_features(_skel.descriptors, _mol_data)
+    )  # (n_grid, n_extra)
+    _grid_cache[_key] = (_rho, _s, _sigma, _features)
+    return _grid_cache[_key]
+
+
+def _sample_fx_on_molecule(_model, _atom_str, _spin, _arch_name, _mol_name):
+    # Evaluate F_x at every molecular grid point using the network's
+    # actual input layout: [rho, sigma_eff, *features]. Returns (s, F_x).
+    # For the closed-shell test mols (CH4, C2H2, C2H4) the spin-scaled
+    # UKS formula collapses to the RKS evaluation since
+    # rho_alpha = rho_beta = rho/2 and zeta = 0; we therefore evaluate
+    # model.xnet at (rho, sigma_tot, features_g) per grid point.
+    _rho, _s, _sigma, _features = _compute_grid_for_molecule(
+        _atom_str, _spin, _arch_name, _mol_name,
+    )
+    _rho_j = jnp.asarray(_rho)
+    _sigma_j = jnp.asarray(_sigma)
+    _features_j = jnp.asarray(_features)
+    _xnet = _model.xnet
+
+    def _fx_one(_rho_g, _sigma_g, _features_g):
+        _inputs = jnp.concatenate([
+            jnp.atleast_1d(_rho_g),
+            jnp.atleast_1d(_sigma_g),
+            _features_g,
+        ])
+        return _xnet(_inputs)
+
+    _fx = jax.vmap(_fx_one)(_rho_j, _sigma_j, _features_j)
+    return _s, np.asarray(_fx)
 
 
 def _fx_pbe_analytic(_s):
@@ -1992,8 +2729,19 @@ _GROUP_COLORS = {"group1": "tab:blue", "group2": "tab:orange", "group3": "tab:re
 _s_ref = np.linspace(0.01, 15.0, 200)
 _fx_ref = _fx_pbe_analytic(_s_ref)
 
+import time as _time
 fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+_PANEL_FLUSH_EVERY = 16
 for _ax, (_nm, _atom, _spin) in zip(axes, _PROBE_MOLS):
+    print(f"[Panel B / {_nm}] precomputing PBE grid + descriptor features…",
+          flush=True)
+    _t_grid = _time.time()
+    for _arch in ARCH_NAMES:
+        _compute_grid_for_molecule(_atom, _spin, _arch, _nm)
+    print(f"[Panel B / {_nm}] grids ready ({_time.time()-_t_grid:.1f}s); "
+          f"sampling F_x for pretrained + {len(_all_specs)} fine-tuned models",
+          flush=True)
+    _t_loop = _time.time()
     # Analytic PBE reference.
     _ax.plot(_s_ref, _fx_ref, "k-", lw=2, label="PBE (analytic)")
 
@@ -2005,17 +2753,19 @@ for _ax, (_nm, _atom, _spin) in zip(axes, _PROBE_MOLS):
             continue
         try:
             _m = _load_pretrain_model(pretrain_dir, _arch)
-            _sv, _fx = _sample_fx_on_molecule(_m, _atom, _spin)
+            _sv, _fx = _sample_fx_on_molecule(_m, _atom, _spin, _arch, _nm)
         except Exception as _e:
-            print(f"[Panel B {_nm}] pretrain {_arch} skipped: {_e}")
+            print(f"  [pretrain {_arch}] skipped: {_e}", flush=True)
             continue
         _ax.scatter(_sv, _fx, s=2, alpha=0.3, color="green",
                     label="pretrained" if _arch == ARCH_NAMES[0] else None)
-        jax.clear_caches(); gc.collect()
 
     # Fine-tuned models.
     _seen_groups = set()
-    for _spec in _all_specs:
+    _n_done = 0
+    _N = sum(1 for _s in _all_specs
+             if os.path.isfile(os.path.join(_s.checkpoint_dir, "model.eqx")))
+    for _idx, _spec in enumerate(_all_specs):
         _ckpt = os.path.join(_spec.checkpoint_dir, "model.eqx")
         if not os.path.isfile(_ckpt):
             continue
@@ -2026,15 +2776,26 @@ for _ax, (_nm, _atom, _spin) in zip(axes, _PROBE_MOLS):
         )
         try:
             _m = _load_full_model_from_ckpt(_ckpt, _spec.arch.name)
-            _sv, _fx = _sample_fx_on_molecule(_m, _atom, _spin)
+            _sv, _fx = _sample_fx_on_molecule(_m, _atom, _spin,
+                                              _spec.arch.name, _nm)
         except Exception as _e:
-            print(f"[Panel B {_nm}] {_spec.checkpoint_dir} skipped: {_e}")
+            print(f"  [{_spec.checkpoint_dir}] skipped: {_e}", flush=True)
             continue
         _lbl = _group if _group not in _seen_groups else None
         _seen_groups.add(_group)
         _ax.scatter(_sv, _fx, s=2, alpha=0.15,
                     color=_GROUP_COLORS[_group], label=_lbl)
-        jax.clear_caches(); gc.collect()
+        _n_done += 1
+        # Hold JIT cache through batches; print a progress beat each flush.
+        if _n_done % _PANEL_FLUSH_EVERY == 0:
+            _el = _time.time() - _t_loop
+            _eta = _el / max(_n_done, 1) * max(_N - _n_done, 0)
+            print(f"  [{_nm}] {_n_done:>3d}/{_N} sampled  "
+                  f"elapsed={_el/60:.1f}min  eta={_eta/60:.1f}min", flush=True)
+            jax.clear_caches(); gc.collect()
+    print(f"[Panel B / {_nm}] done in {(_time.time()-_t_loop)/60:.1f}min "
+          f"({_n_done} fine-tuned models sampled)", flush=True)
+    jax.clear_caches(); gc.collect()
 
     _ax.set_xscale("log")
     _ax.set_xlim(0.01, 15)
@@ -2081,8 +2842,17 @@ C2H4_ATOM = (
 _s_ref_c = np.linspace(0.01, 15.0, 200)
 _fx_ref_c = _fx_pbe_analytic(_s_ref_c)
 
+import time as _time
 fig, ax = plt.subplots(figsize=(8, 5))
 ax.plot(_s_ref_c, _fx_ref_c, "k-", lw=2, label="PBE (analytic)")
+print(f"[Panel C / C2H4] precomputing PBE grid + descriptor features…",
+      flush=True)
+_tg = _time.time()
+for _arch in ARCH_NAMES:
+    _compute_grid_for_molecule(C2H4_ATOM, 0, _arch, "C2H4")
+print(f"[Panel C / C2H4] grid ready ({_time.time()-_tg:.1f}s); sampling F_x for "
+      f"pretrained + {len(_all_specs)} fine-tuned models", flush=True)
+_tloop_c = _time.time()
 
 # Per-arch pretrained baselines.
 for _arch in ARCH_NAMES:
@@ -2092,17 +2862,20 @@ for _arch in ARCH_NAMES:
         continue
     try:
         _m = _load_pretrain_model(pretrain_dir, _arch)
-        _sv, _fx = _sample_fx_on_molecule(_m, C2H4_ATOM, 0)
+        _sv, _fx = _sample_fx_on_molecule(_m, C2H4_ATOM, 0, _arch, "C2H4")
     except Exception as _e:
-        print(f"[Panel C] pretrain {_arch} skipped: {_e}")
+        print(f"  [pretrain {_arch}] skipped: {_e}", flush=True)
         continue
     ax.scatter(_sv, _fx, s=2, alpha=0.3, color="green",
                label="pretrained" if _arch == ARCH_NAMES[0] else None)
-    jax.clear_caches(); gc.collect()
 
 # Fine-tuned models.
+_PANEL_FLUSH_EVERY = 16
 _seen_groups_c = set()
-for _spec in _all_specs:
+_n_done_c = 0
+_N_c = sum(1 for _s in _all_specs
+           if os.path.isfile(os.path.join(_s.checkpoint_dir, "model.eqx")))
+for _idx, _spec in enumerate(_all_specs):
     _ckpt = os.path.join(_spec.checkpoint_dir, "model.eqx")
     if not os.path.isfile(_ckpt):
         continue
@@ -2113,15 +2886,25 @@ for _spec in _all_specs:
     )
     try:
         _m = _load_full_model_from_ckpt(_ckpt, _spec.arch.name)
-        _sv, _fx = _sample_fx_on_molecule(_m, C2H4_ATOM, 0)
+        _sv, _fx = _sample_fx_on_molecule(_m, C2H4_ATOM, 0,
+                                          _spec.arch.name, "C2H4")
     except Exception as _e:
-        print(f"[Panel C] {_spec.checkpoint_dir} skipped: {_e}")
+        print(f"  [{_spec.checkpoint_dir}] skipped: {_e}", flush=True)
         continue
     _lbl = _group if _group not in _seen_groups_c else None
     _seen_groups_c.add(_group)
     ax.scatter(_sv, _fx, s=2, alpha=0.15,
                color=_GROUP_COLORS[_group], label=_lbl)
-    jax.clear_caches(); gc.collect()
+    _n_done_c += 1
+    if _n_done_c % _PANEL_FLUSH_EVERY == 0:
+        _el = _time.time() - _tloop_c
+        _eta = _el / max(_n_done_c, 1) * max(_N_c - _n_done_c, 0)
+        print(f"  [C2H4] {_n_done_c:>3d}/{_N_c} sampled  "
+              f"elapsed={_el/60:.1f}min  eta={_eta/60:.1f}min", flush=True)
+        jax.clear_caches(); gc.collect()
+print(f"[Panel C / C2H4] done in {(_time.time()-_tloop_c)/60:.1f}min "
+      f"({_n_done_c} fine-tuned models sampled)", flush=True)
+jax.clear_caches(); gc.collect()
 
 ax.set_xscale("log")
 ax.set_xlim(0.01, 15)
@@ -2139,104 +2922,75 @@ plt.show()
 
 
 def build_cell_39_scf_convergence():
-    """Section 7 Cell 39 -- SCF convergence aggregate bar chart.
+    """Section 7 Cell 39 -- SCF convergence trace plot.
 
-    Attempts to extract per-spec ``cycles_run`` (the canonical SCF
-    convergence metric on ``SCFResult``; see solver.py / solver_manual.py
-    / solver_pyscfad.py) from each spec's ``aux_log.pkl``. The training
-    aux dict is the per-step ``compute_components`` output (no SCF stats)
-    and ``train_metadata.json`` is scalar-only, so in the default
-    xcquinox build there is no per-run ``cycles_run`` record and the
-    cell falls back to a "no convergence data" placeholder plot. When a
-    future training loop does record ``cycles_run`` under
-    ``aux_log[*]['aux']['cycles_run']``, the aggregate bar chart
-    (mean +/- stddev by solver label) populates automatically.
+    Plots the per-cycle |E_n - E_final| convergence trace, averaged across
+    every (arch, loss, solver, molecule) combination that ran an SCF loop
+    (FIXED_J + FULL only — ONESHOT has no SCF and is sentinel-zero in
+    cycles_run). The trace is recorded by ``SCFConvergenceMetric`` in
+    ``evaluation.py`` (per-cycle ``e_tot`` captured via a pyscfad SCF
+    callback) and ingested into ``eval_df`` as
+    ``scf_energy_residual_<i>`` rows. The plot draws one line per solver
+    (mean over cycles), with a shaded ± stddev band so the user sees both
+    the average decay rate AND the spread across runs.
     """
-    # Using "aux_log" + ".pkl" split avoids security-hook false positives
-    # for a generator source string that mentions the pickle artifact.
-    source = r"""# SCF convergence aggregate. Reads each spec's aux_log.pkl and tries to
-# extract a per-step cycles_run field (canonical SCF convergence metric;
-# see SCFResult @ solver.py:147-152). The default xcquinox training loop
-# does NOT record cycles_run in aux (the aux dict is the loss components
-# returned by compute_components), and train_metadata.json is scalar-only
-# -- so on the default build this cell produces a "no convergence data"
-# placeholder. Once a future training loop records cycles_run per step
-# under aux_log[*]['aux']['cycles_run'], the bar chart populates.
-_conv_rows = []
-for _spec in _all_specs:
-    _ckpt = os.path.join(_spec.checkpoint_dir, "model.eqx")
-    if not os.path.isfile(_ckpt):
-        continue
-    _md_path = os.path.join(_spec.checkpoint_dir, "train_metadata.json")
-    _aux_path = os.path.join(_spec.checkpoint_dir, "aux" + "_log" + ".pkl")
-    # Derive the solver label from the checkpoint_dir trailing segment
-    # (matches the layout in cells 18-20).
-    _solver_label = os.path.basename(_spec.checkpoint_dir.rstrip("/"))
-    _cycles_vals = []
-    # First try train_metadata.json -- scalar-only today but cheap to probe.
-    if os.path.isfile(_md_path):
-        try:
-            with open(_md_path) as _f:
-                _md = json.load(_f)
-            if "cycles_run" in _md and _md["cycles_run"] is not None:
-                _cycles_vals.append(float(_md["cycles_run"]))
-        except Exception:
-            pass
-    # Then try aux_log.pkl -- the canonical per-step record.
-    if not _cycles_vals and os.path.isfile(_aux_path):
-        try:
-            with open(_aux_path, "rb") as _f:
-                _log = pickle.load(_f)
-            for _entry in _log:
-                _aux = _entry.get("aux") if isinstance(_entry, dict) else None
-                if isinstance(_aux, dict) and "cycles_run" in _aux:
-                    _cv = _aux["cycles_run"]
-                    try:
-                        _cycles_vals.append(float(_cv))
-                    except (TypeError, ValueError):
-                        continue
-        except Exception:
-            pass
-    if _cycles_vals:
-        _conv_rows.append({
-            "solver": _solver_label,
-            "cycles_run": float(np.mean(_cycles_vals)),
-        })
+    source = r"""# SCF convergence trace: per-cycle |E_n - E_final| averaged across all
+# specs that actually ran SCF (FIXED_J + FULL). Reads
+# scf_energy_residual_<i> rows produced by SCFConvergenceMetric in
+# cell 25's run_test sweep. The plot draws one line per solver +
+# shaded ± stddev band; ONESHOT specs are skipped (no SCF).
+import re as _re
+_RES_RE = _re.compile(r"^scf_energy_residual_(\d+)$")
+_res_rows = eval_df[eval_df.value_name.str.match(_RES_RE)].copy()
 
-_conv_df = pd.DataFrame(_conv_rows)
-fig, ax = plt.subplots(figsize=(7, 4))
-if len(_conv_df) == 0:
-    # No convergence data captured on this build. Emit a placeholder so
-    # the notebook does not hard-fail when aux_log doesn't record
-    # cycles_run (the default today).
+fig, ax = plt.subplots(figsize=(8, 5))
+if len(_res_rows) == 0:
     ax.text(0.5, 0.5,
-            "no convergence data\\n"
-            "(cycles_run not recorded in aux_log / train_metadata on this build)",
+            "no SCF energy traces\n"
+            "(re-run cell 25 with scf_convergence metric on a build "
+            "that records SCFConvergenceMetric energy_trace)",
             ha="center", va="center", fontsize=11,
             transform=ax.transAxes, color="gray")
     ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title("SCF convergence across training specs")
-    print("[Cell 39] no cycles_run recorded -- placeholder plot")
+    ax.set_title("SCF convergence trace across training specs")
+    print("[scf_convergence] no per-cycle traces recorded -- placeholder plot")
 else:
-    _grp = _conv_df.groupby("solver")["cycles_run"]
-    _mean = _grp.mean()
-    _std = _grp.std().fillna(0.0)
-    # Preserve SOLVER_LABELS order when possible, else fall back to
-    # whatever solver labels showed up.
-    _ordered = [_s for _s in SOLVER_LABELS if _s in _mean.index]
-    _extras = [_s for _s in _mean.index if _s not in SOLVER_LABELS]
-    _ordered.extend(_extras)
-    _mean = _mean.reindex(_ordered)
-    _std = _std.reindex(_ordered)
-    _x = np.arange(len(_mean))
-    ax.bar(_x, _mean.values, yerr=_std.values, capsize=6,
-           color="tab:steelblue", edgecolor="k", linewidth=0.5)
-    ax.set_xticks(_x)
-    ax.set_xticklabels(list(_mean.index), rotation=20, fontsize=9)
-    ax.set_ylabel("cycles_run (mean +/- stddev)")
-    ax.set_title("SCF convergence across training specs")
-    ax.grid(True, axis="y", ls=":", alpha=0.4)
-    print(f"[Cell 39] plotted SCF convergence over {len(_conv_df)} specs")
+    _res_rows["cycle"] = _res_rows["value_name"].map(
+        lambda _v: int(_RES_RE.match(_v).group(1))
+    )
+    _res_rows["residual"] = _res_rows["value"].astype(float)
+    _solver_colors = {"oneshot": "tab:blue",
+                      "fixed_j_3": "tab:orange",
+                      "full_3": "tab:green"}
+    _ordered_solvers = [_s for _s in SOLVER_LABELS
+                        if _s in _res_rows.solver.unique()]
+    for _solver in _ordered_solvers:
+        _sub = _res_rows[_res_rows.solver == _solver]
+        if _sub.empty:
+            continue
+        _agg = _sub.groupby("cycle")["residual"].agg(["mean", "std", "count"])
+        _agg = _agg.sort_index()
+        _x = _agg.index.values
+        _mean = _agg["mean"].values
+        _std = _agg["std"].fillna(0.0).values
+        _color = _solver_colors.get(_solver, "tab:gray")
+        ax.plot(_x, _mean, "o-", color=_color, lw=1.6, ms=4,
+                label=f"{_solver} (n_runs at cycle 0 = {int(_agg['count'].iloc[0])})")
+        # Lower band can dip below zero on a log axis; clip to a tiny
+        # positive floor so the fill is well-defined.
+        _lo = np.maximum(_mean - _std, 1e-14)
+        _hi = _mean + _std
+        ax.fill_between(_x, _lo, _hi, color=_color, alpha=0.18,
+                        linewidth=0)
+    ax.set_yscale("log")
+    ax.set_xlabel("SCF cycle index n")
+    ax.set_ylabel(r"average $|E_n - E_{\rm final}|$  (Ha, log scale)")
+    ax.set_title("SCF convergence trace by solver "
+                 "(per-cycle residual to converged energy)")
+    ax.grid(True, which="both", ls=":", alpha=0.4)
+    ax.legend(fontsize=8, loc="best")
+    print(f"[scf_convergence] {len(_res_rows)} per-cycle residual rows "
+          f"across solvers={_ordered_solvers}")
 
 fig.tight_layout()
 fig.savefig(os.path.join(figures_dir, "scf_convergence.png"),
@@ -2317,6 +3071,7 @@ def main(
         build_cell_24_eval_md(),
         build_cell_25_main_sweep(),
         build_cell_26_eval_preview(),
+        build_cell_26b_baseline_evals(),
         build_cell_27_vxc_efficacy(),
         build_cell_28_anchor_effect(),
         build_cell_29_transfer_md(),

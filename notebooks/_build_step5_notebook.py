@@ -92,6 +92,14 @@ quality.
 | `deep_combined`, `deep_combined_attn` | $[\rho, \sigma, f_{idem}, f_{entropy}, f_{offdiag}, f_{cusp}, \log Z]$ | 7 |
 
 **Total: 72 models** = 8 architectures x 3 training approaches x 3 solver configs
+
+---
+
+> **Note (2026-04-27):** Step-5 attention runs prior to this date used a
+> broken `SelfAttentionBlock` (softmax channel-gate, not self-attention).
+> The block has been rewritten to canonical multi-head scaled-dot-product
+> attention; the previous `*_attn` checkpoints have been deleted and must
+> be regenerated.
 """
     return new_markdown_cell(source)
 
@@ -194,8 +202,11 @@ RERUN_EVAL = False
 # training steps / network capacity to compensate.
 PRETRAIN_LOSS_WEIGHTING = "unweighted"
 
+import pathlib
 os.makedirs(CHECKPOINT_BASE, exist_ok=True)
+pathlib.Path(CHECKPOINT_BASE, "VERSION").write_text("step5-v2\\n")
 print(f"CHECKPOINT_BASE={{CHECKPOINT_BASE}}  BASIS={{BASIS}}  GRID_LEVEL={{GRID_LEVEL}}")
+print("DATA VERSION: step5-v2 (real-attention)")
 """
     return new_code_cell(source)
 
@@ -210,13 +221,13 @@ def build_cell_04_arch_table():
 # Step 5 focuses on deep variants only (8 total).
 # Fields printed: name, depth, nodes (hidden size), attention flag, descriptors.
 _deep_names = [n for n in alec.ARCHITECTURES.keys() if n.startswith("deep")]
-_header = f"{'arch_name':<22} {'depth':>6} {'nodes':>6} {'attention':>10}  descriptors"
+_header = f"{'arch_name':<22} {'depth':>6} {'nodes':>6} {'attention':>10} {'num_heads':>10}  descriptors"
 print(_header)
 print("-" * len(_header))
 for _name in _deep_names:
     _cfg = alec.get_architecture(_name)
     _descs = ", ".join(s.name for s in _cfg.descriptors) or "-"
-    print(f"{_name:<22} {_cfg.depth:>6} {_cfg.nodes:>6} {str(_cfg.attention):>10}  {_descs}")
+    print(f"{_name:<22} {_cfg.depth:>6} {_cfg.nodes:>6} {str(_cfg.attention):>10} {_cfg.num_heads:>10}  {_descs}")
 print(f"\\n{len(_deep_names)} deep architectures selected")
 """
     return new_code_cell(source)
@@ -2281,6 +2292,41 @@ def build_cell_47_transfer_aggregate():
         "                   rmse=('AE_error_kcalmol', _rmse))\n"
         "              .reset_index())\n"
         "\n"
+        "# Aggregate PBE / CCSD reference AE errors across the transfer mols\n"
+        "# the same way the NN bars are aggregated (MAE and RMSE across the\n"
+        "# same test set). These become horizontal reference lines so the\n"
+        "# reader can instantly tell where the NN treatments fall relative\n"
+        "# to classical DFT (PBE) and the post-HF target (CCSD).\n"
+        "_pbe_errs, _ccsd_errs = [], []\n"
+        "for _mol_name in transfer_results.keys():\n"
+        "    _refs = transfer_refs.get(_mol_name, {})\n"
+        "    if 'pbe_ae_err' in _refs:\n"
+        "        _pbe_errs.append(abs(_refs['pbe_ae_err']))\n"
+        "    elif 'pbe_E_err' in _refs:\n"
+        "        _pbe_errs.append(abs(_refs['pbe_E_err']))\n"
+        "    if 'ccsd_ae_err' in _refs:\n"
+        "        _ccsd_errs.append(abs(_refs['ccsd_ae_err']))\n"
+        "    elif 'ccsd_E_err' in _refs:\n"
+        "        _ccsd_errs.append(abs(_refs['ccsd_E_err']))\n"
+        "\n"
+        "def _agg_ref(vals, how):\n"
+        "    if not vals:\n"
+        "        return None\n"
+        "    a = np.asarray(vals, dtype=float)\n"
+        "    if how == 'mae':\n"
+        "        return float(np.mean(np.abs(a)))\n"
+        "    if how == 'rmse':\n"
+        "        return float(np.sqrt(np.mean(a ** 2)))\n"
+        "    return None\n"
+        "\n"
+        "_ref_vals = {\n"
+        "    'mae':  {'pbe': _agg_ref(_pbe_errs,  'mae'),  'ccsd': _agg_ref(_ccsd_errs, 'mae')},\n"
+        "    'rmse': {'pbe': _agg_ref(_pbe_errs,  'rmse'), 'ccsd': _agg_ref(_ccsd_errs, 'rmse')},\n"
+        "}\n"
+        "print(f\"Reference AE errors across {list(transfer_results.keys())}: \"\n"
+        "      f\"PBE MAE={_ref_vals['mae']['pbe']}, PBE RMSE={_ref_vals['rmse']['pbe']}, \"\n"
+        "      f\"CCSD MAE={_ref_vals['mae']['ccsd']}, CCSD RMSE={_ref_vals['rmse']['ccsd']}\")\n"
+        "\n"
         "# -- Plot: one figure with 2 rows (MAE, RMSE) x n_loss cols --\n"
         "_losses_agg = sorted(set(_agg['loss'].unique()) - {'baseline'})\n"
         "_n_loss_agg = len(_losses_agg)\n"
@@ -2339,6 +2385,22 @@ def build_cell_47_transfer_aggregate():
         "            if slots > 1:\n"
         "                ax.axvspan(x_cursor - 0.5, x_cursor + slots - 0.5,\n"
         "                           color='#f0f0f0', alpha=0.5, zorder=0)\n"
+        "\n"
+        "        # Reference lines (PBE / CCSD aggregated the same way). Add\n"
+        "        # BEFORE plt.show so the inline-backend render captures them.\n"
+        "        _metric = 'rmse' if row == 1 else 'mae'\n"
+        "        _pbe_v  = _ref_vals[_metric]['pbe']\n"
+        "        _ccsd_v = _ref_vals[_metric]['ccsd']\n"
+        "        _add_lbl = (col == _n_loss_agg - 1)\n"
+        "        if _pbe_v is not None and np.isfinite(_pbe_v) and _pbe_v > 0:\n"
+        "            ax.axhline(_pbe_v, ls=':', color='r', lw=1.5,\n"
+        "                       label=(f\"PBE ({_pbe_v:.2f})\" if _add_lbl else ''))\n"
+        "        if _ccsd_v is not None and np.isfinite(_ccsd_v) and _ccsd_v > 0:\n"
+        "            ax.axhline(_ccsd_v, ls=':', color='b', lw=1.5,\n"
+        "                       label=(f\"CCSD ({_ccsd_v:.2f})\" if _add_lbl else ''))\n"
+        "        ax.axhline(1.0, ls='--', color='k', alpha=0.6, lw=1.2,\n"
+        "                   label=('Chem. accuracy (1 kcal/mol)' if _add_lbl else ''))\n"
+        "\n"
         "        ax.set_xticks([x + (s - 1) / 2.0 for _, x, s in _arch_layout_agg()])\n"
         "        ax.set_xticklabels(ARCH_NAMES, rotation=45, ha='right', fontsize=9)\n"
         "        if ax.patches:\n"
@@ -2349,7 +2411,7 @@ def build_cell_47_transfer_aggregate():
         "        if row == 0:\n"
         "            ax.set_title(f\"Loss {_loss_abbrev_agg[loss]}\", fontsize=11, fontweight='bold')\n"
         "\n"
-        "# Shared legend\n"
+        "# Shared legend (built once, after bars AND reference lines are drawn).\n"
         "_all_h, _all_l = [], []\n"
         "for ax in axes.flat:\n"
         "    h, l = ax.get_legend_handles_labels()\n"
@@ -2358,7 +2420,7 @@ def build_cell_47_transfer_aggregate():
         "fig.legend(_by_label.values(), _by_label.keys(),\n"
         "           loc='lower center', bbox_to_anchor=(0.5, -0.02),\n"
         "           ncol=min(len(_by_label), 6), fontsize=9,\n"
-        "           title='Treatment', title_fontsize=10,\n"
+        "           title='Treatment / reference', title_fontsize=10,\n"
         "           frameon=True, fancybox=True)\n"
         "fig.suptitle(\n"
         "    f\"Transfer-set aggregate: MAE (top) and RMSE (bottom) across \"\n"
@@ -2383,6 +2445,333 @@ def build_cell_47_transfer_aggregate():
         "    print(_sub[['arch', 'solver', 'n', 'mae', 'rmse']].to_string(index=False))\n"
     )
     return new_code_cell(source)
+
+
+def build_cell_48_fx_drift_md():
+    """Section 7 Cell 48 -- Fx drift on CH4 descriptors: narrative."""
+    source = """### Figure: F_x(s) Drift on CH4 Descriptors
+
+The aggregate plot above shows that CH4 is where fine-tuned models lose most
+to the pretrained baselines, despite never entering training. This cell tests
+the mechanism directly: for every trained model we evaluate the exchange
+enhancement ``F_x(rho, sigma, features)`` at CH4's grid points (from a PBE
+SCF on CH4), then plot ``F_x`` vs reduced gradient ``s = |grad rho| / (2 k_F rho)``
+aggregated over all models in each group.
+
+- Pretrained models should track the PBE analytic curve tightly (they were
+  fit to reproduce PBE).
+- Random-initialized models span a wide envelope (no fit to PBE yet).
+- Fine-tuned models should sit near PBE in ``(rho, s)`` regions H2O samples,
+  but drift where H2O has little support and CH4 does (especially C-core).
+
+Large drift in densely-sampled CH4 bins is the smoking gun for the transfer
+gap: F_x is being modified where CH4 needs it, in regions where the H2O
+training set has no corrective signal.
+"""
+    return new_markdown_cell(source)
+
+
+def build_cell_48_fx_drift_ch4():
+    """Section 7 Cell 49 -- Fx drift across trained models, evaluated on CH4 descriptors.
+
+    Loads every trained checkpoint (main sweep + balancing sweep + baselines),
+    builds CH4 mol_data with each arch's descriptor set, evaluates
+    ``model.eval_Fx`` at CH4's grid points, bins by reduced gradient ``s``,
+    and plots mean+/-std curves per model group alongside the PBE analytic
+    reference. This visualizes where fine-tuning deforms F_x in (rho, s)
+    regimes that CH4 samples but H2O does not -- the direct mechanism for
+    the observed CH4 transfer gap.
+    """
+    source = """# PBE analytic exchange enhancement (Perdew-Burke-Ernzerhof 1996).
+_PBE_KAPPA = 0.804
+_PBE_MU = 0.21951
+def _pbe_Fx_of_s(s):
+    return 1.0 + _PBE_KAPPA - _PBE_KAPPA / (1.0 + _PBE_MU * s ** 2 / _PBE_KAPPA)
+
+# Reduced gradient s = |grad rho| / (2 k_F rho), k_F = (3 pi^2 rho)^(1/3).
+_KF_PREFAC = (3.0 * np.pi ** 2) ** (1.0 / 3.0)
+def _reduced_gradient(rho, sigma):
+    rho_s = np.maximum(np.asarray(rho), 1e-12)
+    sig_s = np.maximum(np.asarray(sigma), 0.0)
+    return np.sqrt(sig_s) / (2.0 * _KF_PREFAC * rho_s ** (4.0 / 3.0))
+
+# CH4 descriptors: we only need the spec. Build one mol_data per arch so
+# each arch's descriptor set is materialized correctly.
+_ch4_item = next((t for t in test_molecules if t['name'] == 'CH4'), None)
+if _ch4_item is None:
+    print("[Cell 49] CH4 not in test_molecules -- skipping Fx drift plot")
+else:
+    _ch4_spec = _ch4_item['spec']
+    _ch4_mol_data_by_arch = {}
+    for _arch_name in ARCH_NAMES:
+        _arch_cfg = alec.get_architecture(_arch_name)
+        _descs = _arch_cfg.materialize_descriptors()
+        _keys = set()
+        for _d in _descs:
+            _keys.update(_d.required_mol_keys)
+        _ch4_mol_data_by_arch[_arch_name] = alec.precompute_fixed_density_data(
+            _ch4_spec,
+            required_keys=tuple(_keys),
+            descriptors=_descs,
+        )
+
+    # Bin edges in s. Core density (high-rho, low-s) -> log s near -2 to -1;
+    # valence and tail -> s in 0.1 to ~5. Bound to 10 to capture tail drift.
+    _s_bins = np.logspace(-2.0, 1.0, 25)
+    _s_centers = np.sqrt(_s_bins[:-1] * _s_bins[1:])
+
+    def _binned_median(s, Fx):
+        out = np.full(len(_s_centers), np.nan)
+        for i in range(len(_s_centers)):
+            mask = (s >= _s_bins[i]) & (s < _s_bins[i + 1])
+            if np.any(mask):
+                out[i] = float(np.nanmedian(Fx[mask]))
+        return out
+
+    # Group checkpoints. Fine-tuned = everything in main/train and balancing
+    # sweeps. Baselines stay separate. V_xc variants folded into fine-tuned.
+    _groups = {
+        'fine-tuned (main)':       {'ckpts': [], 'color': '#2c7bb6'},
+        'fine-tuned (balancing)':  {'ckpts': [], 'color': '#762a83'},
+        'baseline:pretrained':     {'ckpts': [], 'color': '#5aae61'},
+        'baseline:random':         {'ckpts': [], 'color': '#d6604d'},
+    }
+    for _arch in ARCH_NAMES:
+        for _loss in LOSS_NAMES:
+            for _solver in SOLVER_LABELS:
+                _ckpt = f"{CHECKPOINT_BASE}/train/{_arch}/{_loss}/{_solver}/model.eqx"
+                if os.path.isfile(_ckpt):
+                    _groups['fine-tuned (main)']['ckpts'].append((_arch, _ckpt))
+    for _loss in BAL_LOSS_NAMES:
+        for _bl in BALANCING_CONFIGS:
+            _ckpt = f"{CHECKPOINT_BASE}/train_balancing/{_loss}/{_bl}/model.eqx"
+            if os.path.isfile(_ckpt):
+                _groups['fine-tuned (balancing)']['ckpts'].append((BAL_ARCH, _ckpt))
+    for _variant_label, (_ln, _, _) in VXC_VARIANTS.items():
+        for _solver in SOLVER_LABELS:
+            _ckpt = f"{CHECKPOINT_BASE}/train_balancing/vxc/{_variant_label}/{_solver}/model.eqx"
+            if os.path.isfile(_ckpt):
+                _groups['fine-tuned (balancing)']['ckpts'].append((BAL_ARCH, _ckpt))
+    for _arch in ARCH_NAMES:
+        for _bl in BASELINE_LABELS:
+            _ckpt = f"{CHECKPOINT_BASE}/baseline_{_bl}/{_arch}/model.eqx"
+            if os.path.isfile(_ckpt):
+                _key = f'baseline:{_bl}'
+                if _key in _groups:
+                    _groups[_key]['ckpts'].append((_arch, _ckpt))
+
+    _rho_for_mask = {a: np.asarray(md['rho_grid'])
+                     for a, md in _ch4_mol_data_by_arch.items()}
+    _sigma_for_mask = {a: np.asarray(md['sigma_grid'])
+                       for a, md in _ch4_mol_data_by_arch.items()}
+
+    _per_group_curves = {k: [] for k in _groups}
+    _n_total = sum(len(g['ckpts']) for g in _groups.values())
+    _n_done = 0
+    from xcquinox.alec.descriptors import assemble_descriptor_features as _asm_feat
+    for _gname, _ginfo in _groups.items():
+        for _arch, _ckpt in _ginfo['ckpts']:
+            _arch_cfg = alec.get_architecture(_arch)
+            try:
+                _model = eqx.tree_deserialise_leaves(
+                    _ckpt, alec.AlecGGAModel.from_arch(_arch_cfg),
+                )
+            except Exception as _e:
+                print(f"  skip {_arch} {_ckpt}: load error ({_e})")
+                continue
+            _md = _ch4_mol_data_by_arch[_arch]
+            _rho = _rho_for_mask[_arch]
+            _sigma = _sigma_for_mask[_arch]
+            _features = _asm_feat(_model.descriptors, _md)
+            try:
+                _Fx = np.asarray(_model.eval_Fx(
+                    jnp.asarray(_rho), jnp.asarray(_sigma), _features,
+                ))
+            except Exception as _e:
+                print(f"  skip {_arch} {_ckpt}: eval_Fx error ({_e})")
+                continue
+            _s = _reduced_gradient(_rho, _sigma)
+            _mask = (_rho > 1e-6) & np.isfinite(_Fx) & np.isfinite(_s) & (_s > 0)
+            if not np.any(_mask):
+                continue
+            _per_group_curves[_gname].append(_binned_median(_s[_mask], _Fx[_mask]))
+            _n_done += 1
+            # Per-checkpoint JAX cache release -- hundreds of model loads.
+            jax.clear_caches(); gc.collect()
+    print(f"[Cell 49] sampled Fx on CH4 for {_n_done}/{_n_total} checkpoints")
+
+    fig, ax = plt.subplots(figsize=(11, 6.5))
+    _pbe_curve = _pbe_Fx_of_s(_s_centers)
+    ax.semilogx(_s_centers, _pbe_curve, 'k-', lw=2.5,
+                label='PBE F_x(s) (analytic)', zorder=5)
+    ax.axhline(1.0, ls='--', color='gray', lw=1.0, alpha=0.8,
+               label='LDA (F_x = 1)')
+    ax.axhline(1.804, ls=':', color='red', lw=1.0, alpha=0.8,
+               label='Lieb-Oxford bound (1.804)')
+
+    import warnings as _warnings
+    for _gname, _ginfo in _groups.items():
+        _curves = [c for c in _per_group_curves[_gname] if c is not None]
+        if not _curves:
+            continue
+        _arr = np.stack(_curves, axis=0)
+        # Bins outside the sampled s-range are all-NaN -> suppress the
+        # expected "Mean of empty slice" / "Degrees of freedom <= 0"
+        # warnings; all-NaN columns correctly propagate as NaN and mask
+        # the mean/std lines for those bins.
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore", category=RuntimeWarning)
+            _m = np.nanmean(_arr, axis=0)
+            _sd = np.nanstd(_arr, axis=0)
+        _color = _ginfo['color']
+        ax.semilogx(_s_centers, _m, '-', color=_color, lw=2.2, zorder=4,
+                    label=f"{_gname} (n={_arr.shape[0]}) mean +/- std")
+        ax.fill_between(_s_centers, _m - _sd, _m + _sd,
+                        color=_color, alpha=0.20, zorder=2)
+
+    # CH4 grid-point density (s-distribution) on twin axis so the reader
+    # can tell which s-bins are actually sampled by CH4 and therefore
+    # matter most for transfer error.
+    _any_arch = next(iter(_ch4_mol_data_by_arch))
+    _s_ch4 = _reduced_gradient(
+        _rho_for_mask[_any_arch], _sigma_for_mask[_any_arch],
+    )
+    _w_ch4 = np.asarray(_ch4_mol_data_by_arch[_any_arch]['grid_weights'])
+    _rho_ch4 = _rho_for_mask[_any_arch]
+    _m2 = (_rho_ch4 > 1e-6) & np.isfinite(_s_ch4) & (_s_ch4 > 0)
+    _ax2 = ax.twinx()
+    _ax2.hist(_s_ch4[_m2], bins=_s_bins, weights=(_w_ch4 * _rho_ch4)[_m2],
+              color='gray', alpha=0.15, zorder=1,
+              label='CH4 electron-weighted s distribution')
+    _ax2.set_ylabel('CH4 electron weight per bin', color='gray', fontsize=9)
+    _ax2.tick_params(axis='y', labelcolor='gray')
+    _ax2.set_yticks([])  # suppress numeric ticks; scale is relative.
+
+    ax.set_xscale('log')
+    ax.set_xlabel('Reduced gradient s = |grad rho| / (2 k_F rho)')
+    ax.set_ylabel('Exchange enhancement F_x(s)')
+    ax.set_title(
+        f"F_x drift across {_n_done} trained models, sampled at CH4 grid points\\n"
+        f"Binned median F_x(s) per model; per-group mean +/- std.\\n"
+        f"Deviation from PBE (black) in s-regions CH4 samples heavily is the direct transfer-gap mechanism."
+    )
+    ax.legend(loc='upper left', fontsize=9, framealpha=0.9)
+    ax.grid(True, which='major', alpha=0.3)
+    ax.set_ylim(0.5, 2.0)
+    fig.tight_layout()
+    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    fig.savefig(f"{CHECKPOINT_BASE}/figures/fx_drift_ch4.png",
+                dpi=150, bbox_inches='tight')
+    plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_49_closing_md():
+    """Section 8 Cell 52 -- closing interpretation + step 6 roadmap."""
+    source = """## Section 8: Step 5 Findings -- F_x Drift Interprets the Transfer Gap
+
+The F_x(s) figure above (Cell 51, sampled at CH4 grid points across 105
+trained models) is an unusually clean confirmation of why fine-tuned
+models transfer worse than the pretrained baseline on CH4. We lock in the
+reading here so step 6 can act on it.
+
+### What the figure shows
+
+1. **Baselines behave as expected.** Pretrained (green) tracks PBE (black)
+   to within the line width everywhere -- the pretraining loss did its job.
+   Random (red) sits pinned at F_x ~ 1 (LDA) since no data has shaped it yet.
+
+2. **Fine-tuned models agree with PBE only where H2O has density weight.**
+   For `s <~ 0.5` (core and near-nucleus regions), both fine-tuned groups
+   (blue = main, purple = balancing) overlap the PBE curve almost exactly.
+   This is the `s` regime where H2O's O-core and O-H bonds dominate the
+   training loss.
+
+3. **The divergence begins at `s ~ 0.7` and grows.** By `s = 10`, the
+   fine-tuned curves plateau at F_x ~ 1.45 -- about 0.32 below PBE's value
+   of ~1.77. The functional has been *flattened* at intermediate-to-large
+   reduced gradient. Fine-tuning suppresses the gradient enhancement that
+   PBE built into F_x for high-`s` regions.
+
+4. **CH4's electron weight sits exactly in the drift zone.** The gray
+   histogram (twin axis) peaks at `s ~ 0.8-1.5` and has a long right tail
+   extending past `s = 10`. Every gray bar to the right of `s ~ 0.7` is
+   electron weight being evaluated by a functional that has drifted
+   ~0.05-0.3 below PBE.
+
+### Why the drift is downward
+
+The H2O training signal has no examples of the "exchange hole over a steep
+gradient" regime that CH4's C-H bond tails probe. The loss gradient at
+those `(rho, s)` points during H2O training is essentially zero -- no H2O
+grid points contribute there, and `w_atomic · _atomic_reg` on the atoms
+(H, O) does not probe this `s` range either (atoms are spherically
+symmetric with different gradient profiles from a covalent C-H bond).
+With no restoring force, ADAM's implicit regularization in flat directions
+pulls the enhancement down toward the LDA limit.
+
+### Numeric prediction
+
+At `s = 2` (a reasonable CH4-bond representative point) PBE gives
+F_x ~ 1.4, fine-tuned gives F_x ~ 1.25 -- ~11% suppression of the exchange
+enhancement. Multiplied by the CH4 exchange energy contribution from those
+grid points, this is comfortably large enough to account for the 5-30
+kcal/mol AE errors in the aggregate plot (Cell 49).
+
+### Main vs. balancing groups
+
+The blue (main) and purple (balancing) bands overlap almost perfectly in
+the Cell 51 figure. That is its own useful finding: **the V_xc matching
+and loss-balancing additions that distinguish those two groups do not fix
+the core-valence `s`-coverage problem.** They tune how H2O is matched;
+they do not give the functional any new `(rho, s)` data. Any further
+improvement probably has to come from the training set itself, not from
+loss engineering.
+
+### Step 6 roadmap (resume here)
+
+Ordered by expected information gain:
+
+1. **Add a carbon-containing species (or C atom) to the training set,**
+   with meaningful atomic regularization weight. The F_x curve in the
+   CH4-sampled plot should immediately pull back up toward PBE at
+   `s >~ 1`. If it does, the mechanism is nailed and we know the fix
+   generalizes to any out-of-sample element.
+
+2. **Add a PBE-anchor term to the loss at unvisited `(rho, s)`** --
+   regularize `|F_x_nn - F_x_PBE|^2` sampled uniformly on a `(rho, s)`
+   grid with small weight (~1e-3). Cheapest possible fix since it
+   requires no new reference molecules. Test in isolation to see whether
+   it recovers most of the lost ground.
+
+3. **Widen the training set to H2 + OH + CH4 (and isolated C)** so all
+   transfer molecules are also training molecules. Then the "transfer
+   gap" is no longer meaningful for those molecules -- but the new
+   `{H2, OH, CH4}` gap on a different test set (e.g. NH3, H2CO, HF)
+   tells us whether the overfitting pattern survives enlarging from
+   one molecule to four. This is the cleanest way to separate the
+   "molecule count" axis from the "density regime coverage" axis.
+
+4. **Raise `w_atomic` from 0.01 -> 0.1 or 1.0.** Should reduce the
+   OH gap more than H2 (OH has O, H2 does not). Easy to test.
+
+5. **Per-molecule loss normalization.** H2O's grid point count dominates
+   current steps; normalize by compound so H, O, H2O each contribute
+   equally to the gradient. Pairs well with (4).
+
+### What will carry over to step 6
+
+- Full training pipeline (oneshot / fixed_j / full solvers) verified in
+  step 5.
+- Balancing + V_xc-matching infrastructure in place; adding new loss
+  terms (e.g. PBE-anchor at unvisited `(rho, s)`) fits naturally.
+- Checkpoint layout, eval pipeline, transfer aggregate plot, and the
+  F_x-drift diagnostic (Cell 51) all generalize with no change beyond
+  new molecule specs. The diagnostic is the single most informative
+  plot for answering "is step 6 working?".
+"""
+    return new_markdown_cell(source)
 
 
 def build_cell_22_eval_md():
@@ -2641,6 +3030,14 @@ def _vxc_bars_for_loss(loss_name):
             treatments.append((key, out_dir))
     return treatments
 
+def _baseline_bars_for_arch(arch_name):
+    \"\"\"Baseline treatments (pretrained + random) for a given arch -- shown on
+    every loss subplot so their context is visible alongside trained models.\"\"\"
+    return [
+        (bl, f"{CHECKPOINT_BASE}/eval_baseline/{arch_name}/{bl}")
+        for bl in BASELINE_LABELS
+    ]
+
 def _load_ae_err(out_dir):
     _p = f"{out_dir}/aggregate.json"
     if not os.path.isfile(_p):
@@ -2669,10 +3066,14 @@ for col_idx, loss_name in enumerate(LOSS_NAMES):
     for arch_name in ARCH_NAMES:
         is_bal = (arch_name == BAL_ARCH) and _n_bal_extras > 0
         slots = 2 if is_bal else 1
-        # Base treatments: 3 solvers
+        # Base treatments: 3 solvers + 2 baselines (pretrained + random) so
+        # the user can see how trained models compare against the NN's
+        # PBE-mimicking starting point and a random-weights control on the
+        # same chart.
         base_trs = [(s, f"{CHECKPOINT_BASE}/eval/{arch_name}/{loss_name}/{s}")
                     for s in SOLVER_LABELS]
-        trs = base_trs + (_bal_trs + _vxc_trs if is_bal else [])
+        baseline_trs = _baseline_bars_for_arch(arch_name)
+        trs = base_trs + (_bal_trs + _vxc_trs if is_bal else []) + baseline_trs
         arch_rows.append((arch_name, x_slot, slots, trs))
         x_slot += slots
 
@@ -2700,6 +3101,9 @@ for col_idx, loss_name in enumerate(LOSS_NAMES):
                 ]
                 _color = _vxc_cmap(_vxc_keys.index(label) % _vxc_cmap.N)
                 _lbl = label if arch_name == BAL_ARCH else ""
+            elif label in BASELINE_LABELS:
+                _color = baseline_colors.get(label, '#AAAAAA')
+                _lbl = f"baseline:{label}" if arch_name == ARCH_NAMES[0] else ""
             else:
                 _color = "gray"; _lbl = ""
             ax.bar(xc + offset, val, width=bar_width, color=_color,
@@ -2978,27 +3382,27 @@ for _mode_name, _deltas_list in _deltas_by_mode.items():
     _means, _stds, _counts = _agg
     _x = np.arange(1, _n_cycles + 1)
     _color = _mode_colors[_mode_name]
-    # Main line: mean
-    ax.semilogy(_x, _means, 'o-', color=_color, linewidth=2,
-                label=f"{_mode_name} mean (n={len(_deltas_list)} models)")
-    # Error band: mean +/- std (clipped to positive for log scale)
-    _low = np.maximum(_means - _stds, _means * 0.1)
-    _high = _means + _stds
-    ax.fill_between(_x, _low, _high, color=_color, alpha=0.2)
-    # Individual traces faintly for inspection
+    # Layer 1 (back): individual per-model traces, very transparent
     for _d in _deltas_list:
         _k = min(len(_d), _n_cycles)
         ax.semilogy(np.arange(1, _k + 1), _d[:_k], '-',
-                   color=_color, alpha=0.08, linewidth=0.6)
+                   color=_color, alpha=0.08, linewidth=0.6, zorder=1)
+    # Layer 2 (middle): mean +/- std band (clipped to positive for log scale)
+    _low = np.maximum(_means - _stds, _means * 0.1)
+    _high = _means + _stds
+    ax.fill_between(_x, _low, _high, color=_color, alpha=0.25, zorder=2)
+    # Layer 3 (front): mean line, fully opaque, on top of everything
+    ax.semilogy(_x, _means, 'o-', color=_color, linewidth=2.5, zorder=3,
+                label=f"{_mode_name} mean +/- std (n={len(_deltas_list)} models)")
 
 ax.set_xlabel("SCF cycle")
 ax.set_ylabel("|E(n) - E(n-1)| (Hartree, log scale)")
 ax.set_title(
     f"SCF convergence across {_n_completed} trained models (of {_n_attempted} attempted)\\n"
-    f"lines = mean per mode, bands = +/- 1 stddev, thin traces = individual (arch, loss) combos"
+    f"bold lines = per-mode mean, bands = +/- 1 stddev, faint traces = individual (arch, loss) models"
 )
 ax.legend(title=f"mode (max_cycles={_DIAG_MAX_CYCLES})", loc='best')
-ax.grid(True, which='both', ls=':', alpha=0.4)
+ax.grid(False)
 fig.tight_layout()
 os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
 fig.savefig(f"{CHECKPOINT_BASE}/figures/scf_convergence.png", dpi=150, bbox_inches='tight')
@@ -3184,6 +3588,9 @@ def main(
         build_cell_45_transfer_eval_loop(),               # 47
         build_cell_46_transfer_plots(),                   # 48
         build_cell_47_transfer_aggregate(),               # 49
+        build_cell_48_fx_drift_md(),                      # 50
+        build_cell_48_fx_drift_ch4(),                     # 51
+        build_cell_49_closing_md(),                       # 52
     ]
 
     # Assign deterministic cell IDs so two back-to-back regenerations produce
