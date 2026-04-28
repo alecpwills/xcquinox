@@ -317,26 +317,58 @@ def test_oep_baseline_xc_parameter_accepts_arbitrary_xc():
     all run without error and record baseline_xc in the OEPResult.
     Wu & Yang JCP 118, 2498 (2003) §II.B uses the displacement form
     V_xc = V_xc^baseline + sum_t b_t g_t; the baseline is user-choosable
-    so the inversion is generalizable to any starting XC functional."""
+    so the inversion is generalizable to any starting XC functional.
+
+    R3-F audit strengthening: the prior assertion only checked the
+    attribute round-trip (``result.baseline_xc == xc``), which a
+    silently-ignored ``baseline_xc`` arg would still satisfy. Add a
+    behavioral discriminator: ``vxc_matrix`` must differ between LDA
+    and PBE baselines on the same target (V_xc^LDA != V_xc^PBE for any
+    physical density), proving the baseline is actually consumed.
+    Includes ``'hf'`` per docstring (routes through ``mf.xc = 'hf'``).
+    """
     from xcquinox.alec.oep import run_oep_inversion
     from xcquinox.alec.data import precompute_fixed_density_data
     mol = h2_molecule()
     data = precompute_fixed_density_data(mol)
     dm_target = np.asarray(data["dm_pbe"])
-    for xc in ("lda", "pbe", "blyp", None):
+    vxc_by_xc: dict[str | None, np.ndarray] = {}
+    for xc in ("lda", "pbe", "blyp", "hf", None):
         result = run_oep_inversion(
             mol, dm_target, max_iter=3, aux_basis="sto-3g",
             baseline_xc=xc,
         )
         assert result.baseline_xc == xc, (xc, result.baseline_xc)
         assert np.all(np.isfinite(result.vxc_matrix))
+        vxc_by_xc[xc] = np.asarray(result.vxc_matrix)
+    # Behavioral check: distinct baselines must produce distinct V_xc
+    # matrices. LDA vs PBE on H2 in sto-3g differ by ~10^-2 in Frobenius
+    # norm at the converged baseline DM; require at least 1e-4 to be
+    # robust against max_iter=3 truncation noise.
+    diff_lda_pbe = np.linalg.norm(vxc_by_xc["lda"] - vxc_by_xc["pbe"])
+    assert diff_lda_pbe > 1e-4, (
+        f"V_xc(LDA baseline) and V_xc(PBE baseline) should differ; got "
+        f"||ΔV_xc||_F = {diff_lda_pbe:.3e}. A near-zero difference "
+        f"indicates baseline_xc is being silently ignored."
+    )
+    diff_pbe_blyp = np.linalg.norm(vxc_by_xc["pbe"] - vxc_by_xc["blyp"])
+    assert diff_pbe_blyp > 1e-4, (
+        f"V_xc(PBE) and V_xc(BLYP) should differ; got "
+        f"||ΔV_xc||_F = {diff_pbe_blyp:.3e}."
+    )
 
 
-def test_oep_v_space_regularization_basis_independent():
+def test_oep_v_space_regularization_uses_aux_overlap():
     """D2 audit fix: V-space regularization 0.5*lambda*b^T S_aux b is
     aux-basis independent in meaning. Pre-fix coefficient-space
     0.5*lambda*|b|^2 silently changed regularization strength when
     aux_basis was swapped. Heaton-Burgess et al. PRL 98, 256401 (2007).
+
+    R3-F audit rename: prior name ``..._basis_independent`` implied a
+    cross-basis comparison; this test only verifies S_aux is constructed
+    correctly (symmetric + PSD + positive diagonal) for one aux basis.
+    The basis-independence property follows from the math; a numerical
+    test would require running the full inversion in two bases.
     """
     from xcquinox.alec.oep import _build_aux_basis_matrices
     from pyscf import gto, dft

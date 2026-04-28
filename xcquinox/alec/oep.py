@@ -37,6 +37,23 @@ from xcquinox.alec.config import MoleculeSpec
 
 
 class OEPResult(NamedTuple):
+    """Wu-Yang OEP inversion result.
+
+    Fields
+    ------
+    n_iter
+        L-BFGS-B iteration count clipped at ``max_iter`` (R3-D L3 audit
+        note): ``min(scipy.result.nit, max_iter)``. Some scipy builds
+        report ``nit == max_iter + 1`` when the optimizer exits at the
+        iteration cap; the clip ensures ``n_iter`` matches the user-
+        requested cap exactly.
+    lbfgs_status
+        Scipy's L-BFGS-B termination message. R3-D L6 audit: when the
+        post-optimization final SCF fails (the SCF whose DM determines
+        ``density_error``), ``" + final_scf_failed"`` is appended so a
+        consumer can distinguish scipy failure from final-SCF failure
+        without inspecting ``converged`` alone.
+    """
     vxc_matrix: np.ndarray
     converged: bool
     n_iter: int
@@ -109,7 +126,6 @@ def _baseline_vxc_matrix(mol, mf, dm) -> np.ndarray:
     For UKS, returns shape ``(2, nao, nao)``.
     """
     veff = mf.get_veff(mol, dm)
-    h = mf.get_hcore()  # included in veff for some pyscf versions? veff is XC+J only
     # PySCF convention: get_veff returns J + V_xc (no h_core).
     j = mf.get_j(mol, dm)
     veff_arr = np.asarray(veff)
@@ -152,6 +168,11 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
     three_center = np.einsum(
         "gt,gi,gj,g->tij", ao_aux, ao_orb, ao_orb, weights, optimize=True,
     )
+    # Symmetrize against AO-quadrature noise so V_xc = V_xc^baseline +
+    # Σ b_t · three_center[t] is exactly Hermitian in (i, j) — analytically
+    # three_center[t,i,j] == three_center[t,j,i] from φ_iφ_j = φ_jφ_i, but
+    # finite-grid quadrature breaks symmetry at ε_machine·N_grid (R3-D L5).
+    three_center = 0.5 * (three_center + three_center.transpose(0, 2, 1))
     aux_on_grid = ao_aux * weights[:, None]
     # Auxiliary-basis overlap matrix from grid quadrature.
     S_aux = np.einsum("gt,gu,g->tu", ao_aux, ao_aux, weights, optimize=True)
@@ -284,6 +305,13 @@ def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None):
         success = False
 
     j_matrix = mf_fixed.get_j(mol, dm_final)
+    # R3-D L7: PySCF version-defensive normalization. UHF + 3-D DM in
+    # PySCF ≥ 2.0 returns spin-resolved (2, nao, nao); older versions
+    # may return spin-summed (nao, nao). Downstream callers index
+    # j_matrix[0]/j_matrix[1] unconditionally — guarantee 3-D here.
+    j_matrix = np.asarray(j_matrix)
+    if j_matrix.ndim == 2:
+        j_matrix = np.stack([0.5 * j_matrix, 0.5 * j_matrix], axis=0)
     t_matrix = mol.intor("int1e_kin")
     ts = float(
         np.einsum("ij,ij->", t_matrix, dm_final[0])
@@ -585,6 +613,9 @@ def run_oep_inversion(
     final_error = float(
         np.sqrt(np.sum(weights * (rho_target_total - rho_final) ** 2))
     )
+    # R3-D L3: clip scipy's reported nit at our requested max_iter so
+    # n_iter never exceeds what the user asked for; documented in the
+    # OEPResult.n_iter docstring above.
     n_iter = min(int(result.nit), max_iter)
     # D5 audit fix: converged requires BOTH density error AND L-BFGS-B
     # success status (not just the density-error tolerance).
@@ -594,6 +625,11 @@ def run_oep_inversion(
         and getattr(result, "success", False)
     )
     lbfgs_status = str(getattr(result, "message", "no message"))
+    # R3-D L6: surface final-SCF failure in lbfgs_status so a consumer
+    # reading converged=False can distinguish "scipy failed" (its message)
+    # from "scipy succeeded but the post-optimization SCF blew up".
+    if not final_success:
+        lbfgs_status = lbfgs_status + " + final_scf_failed"
 
     return OEPResult(
         vxc_matrix=vxc_final,

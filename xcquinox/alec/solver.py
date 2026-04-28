@@ -105,6 +105,44 @@ from typing import NamedTuple
 import jax.numpy as jnp
 
 
+# Shared numerical-regularization constants used by every SCF backend
+# (R2-C N4 audit fix). Pre-fix these were duplicated as module-level
+# constants in both ``oneshot.py`` and ``solver_manual.py``; a future
+# adjustment in one site silently diverged the two paths. Defined once
+# here so all backends import the same value.
+#
+# DEGENERACY_REG: uniform shift on the overlap matrix before Cholesky
+# decomposition (S + ε·I). Conditions S so ``cholesky`` is stable for
+# near-singular basis sets.
+DEGENERACY_REG = 1e-10
+
+# SYM_BREAK_SHIFT: magnitude of the NON-UNIFORM diagonal perturbation
+# added to the transformed Fock matrix before ``jnp.linalg.eigh``.
+# Required because eigh's reverse-mode JVP uses 1/(λ_i - λ_j) which
+# returns NaN at exact degeneracies (linear-symmetry π MOs, atomic
+# p_x/p_y/p_z). Size: 1e-8 is comfortably above float64 accumulation
+# noise (~1e-13 relative) and orders of magnitude below any physical
+# energy scale. See oneshot.py docstring for full discussion.
+SYM_BREAK_SHIFT = 1e-8
+
+# Golden-ratio constant used by the symmetry-breaking diagonal
+# (R2-C M3 audit fix). Irrational so ``sin(idx · φ)`` produces a
+# quasi-random spacing — no two indices give bit-equal values.
+_GOLDEN_RATIO = 1.618033988749895
+
+
+def _sym_break_diag(nao: int, dtype) -> jnp.ndarray:
+    """Deterministic non-uniform diagonal that breaks eigh-degeneracy.
+
+    Returns ``SYM_BREAK_SHIFT * sin(idx · φ)`` for ``idx ∈ [0, nao)``.
+    Fully deterministic in ``nao`` alone (no PRNG), so forward results
+    are reproducible across runs. Defined once here and re-exported by
+    ``oneshot`` and ``solver_manual`` (R2-C N4 audit fix).
+    """
+    idx = jnp.arange(nao, dtype=dtype)
+    return SYM_BREAK_SHIFT * jnp.sin(idx * _GOLDEN_RATIO)
+
+
 class MixerState(NamedTuple):
     """Base mixer state. Subclasses may extend via their own NamedTuple."""
     step_index: jnp.ndarray  # int32 scalar
@@ -166,6 +204,32 @@ class LinearMixer(Mixer):
         return new_state, D_mixed
 
 
+# Convergence-criterion registry — keyed by ``registry_name``. Mirrors
+# the ``MIXER_REGISTRY`` pattern (R2-C N3 audit fix): pre-fix
+# ``_build_criterion`` in solver_manual.py was hard-coded to the
+# 'energy' branch, so any new criterion (e.g. density-RMS, Fock-error)
+# would require editing the dispatch as well as defining the class.
+CRITERION_REGISTRY: "dict[str, type['ConvergenceCriterion']]" = {}
+
+
+def register_criterion(cls):
+    """Decorator: register a ConvergenceCriterion subclass under its
+    ``registry_name``."""
+    name = getattr(cls, "registry_name", "") or ""
+    if not name:
+        raise ValueError(
+            f"{cls.__name__} must set ``registry_name`` to a non-empty string "
+            f"to use @register_criterion."
+        )
+    if name in CRITERION_REGISTRY and CRITERION_REGISTRY[name] is not cls:
+        raise ValueError(
+            f"criterion registry collision: {name!r} already maps to "
+            f"{CRITERION_REGISTRY[name].__name__}"
+        )
+    CRITERION_REGISTRY[name] = cls
+    return cls
+
+
 class ConvergenceCriterion(abc.ABC):
     registry_name: str = ""
 
@@ -175,6 +239,7 @@ class ConvergenceCriterion(abc.ABC):
         """Return scalar JAX bool. Pure — safe inside jit'd scan body."""
 
 
+@register_criterion
 class EnergyConvergence(ConvergenceCriterion):
     registry_name = "energy"
 

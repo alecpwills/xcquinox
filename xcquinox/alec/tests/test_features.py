@@ -117,6 +117,10 @@ def test_n_elec_trace_matches_density_matrix():
 # R2 audit fix: precompute_fixed_density_data passes spin-resolved DM
 # ---------------------------------------------------------------------------
 
+import pytest
+
+
+@pytest.mark.slow
 def test_precompute_passes_spin_resolved_dm_for_uks():
     """precompute_fixed_density_data must route the 3-D spin-resolved
     DM (not the spin-summed total) into compute_dm_features for UKS

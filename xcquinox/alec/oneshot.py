@@ -14,41 +14,16 @@ import jax.numpy as jnp
 
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
-# §6.3: module-level constants for numerical regularization.
-#
-# DEGENERACY_REG: uniform shift. Used on the overlap matrix before Cholesky
-# decomposition (conditions S so L = cholesky(S + εI) is stable for
-# near-singular basis sets).
-DEGENERACY_REG = 1e-10
-
-# SYM_BREAK_SHIFT: magnitude of the NON-UNIFORM diagonal perturbation added
-# to the transformed Fock matrix before ``jnp.linalg.eigh``. A uniform
-# shift (DEGENERACY_REG * I) does NOT break eigenvalue degeneracies — it
-# raises every eigenvalue by the same amount. For molecules with linear
-# symmetry (D∞h, e.g. C2H2, HCN, C2H4) the π MO pairs have exactly equal
-# energies, and ``eigh``'s reverse-mode derivative uses 1 / (λ_i - λ_j)
-# which returns NaN at exact degeneracies. Without this non-uniform
-# shift, any loss that differentiates through ``oneshot_dm_prediction_fast``
-# (e.g. B_atomization_plus_dm) produces an all-NaN gradient on these
-# systems, poisoning the optimizer at step 0.
-#
-# Size: 1e-8 is comfortably above float64 accumulation noise (~1e-13
-# relative) and thousands of orders of magnitude below any physical
-# energy scale. Forward output of eigh is shifted by ≤ 1e-8 per MO
-# energy — negligible for DM / density predictions.
-SYM_BREAK_SHIFT = 1e-8
-
-
-def _sym_break_diag(nao: int, dtype) -> jnp.ndarray:
-    """Small deterministic non-uniform diagonal to break eigenvalue degeneracies.
-
-    Uses sin(i * φ) where φ is the golden ratio — irrational, so no two
-    rows collide by periodicity. Values span roughly [-1, 1] scaled by
-    SYM_BREAK_SHIFT. Output is fully deterministic in ``nao`` alone, so
-    forward results are reproducible across runs (no PRNG state needed).
-    """
-    idx = jnp.arange(nao, dtype=dtype)
-    return SYM_BREAK_SHIFT * jnp.sin(idx * 1.618033988749895)
+# R2-C N4 audit fix: shared numerical-regularization constants live in
+# ``solver`` (single source of truth across all SCF backends). Pre-fix
+# duplicated copies in oneshot.py and solver_manual.py could silently
+# diverge. Re-exported here for backwards compatibility with
+# ``from xcquinox.alec.oneshot import DEGENERACY_REG`` callers.
+from xcquinox.alec.solver import (
+    DEGENERACY_REG,
+    SYM_BREAK_SHIFT,
+    _sym_break_diag,
+)
 
 
 @eqx.filter_jit

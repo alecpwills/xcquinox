@@ -208,12 +208,34 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             features_full = feature_holder["features_full"]
             offset = int(feature_holder["offset"])
             features_slice = features_full[offset:offset + block_size]
-            if features_slice.shape[0] != block_size:
+            # R1 H4 audit fix: pyscfad's block_loop may emit non-uniform
+            # block sizes — the last block of an unpadded grid is smaller
+            # than NBLK, and `non0tab` pruning can skip blocks entirely
+            # while still advancing block_loop's internal cursor. Both
+            # cases produce ``features_slice.shape[0] != block_size``.
+            #
+            # When the slice is shorter than the requested block (last-
+            # block tail / pruned overshoot), zero-pad the trailing rows.
+            # Those grid points have zero weight in pyscfad's downstream
+            # numint summation (the corresponding ``rho``/``weights``
+            # arrays are zero), so padded feature rows contribute nothing
+            # to the energy/Fock — the value of the padding is irrelevant
+            # so long as the shape contract is satisfied.
+            slice_n = features_slice.shape[0]
+            if slice_n < block_size:
+                pad_n = block_size - slice_n
+                pad = jnp.zeros(
+                    (pad_n, features_slice.shape[1]),
+                    dtype=features_slice.dtype,
+                )
+                features_slice = jnp.concatenate([features_slice, pad], axis=0)
+            elif slice_n > block_size:
+                # Cannot happen from a Python slice; defensive only.
                 raise ValueError(
-                    "Feature slice size mismatch: offset="
-                    f"{offset}, block_size={block_size}, full grid="
-                    f"{features_full.shape[0]}. This usually means pyscfad's "
-                    "grid size changed between get_veff calls."
+                    "Feature slice oversized: offset="
+                    f"{offset}, block_size={block_size}, slice="
+                    f"{slice_n}, full grid={features_full.shape[0]}. "
+                    "This indicates a bug in the slicing logic."
                 )
             feature_holder["offset"] = offset + block_size
             return features_slice
@@ -355,12 +377,16 @@ def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
     # error deep in pyscfad. Detect tracers early and raise a clear
     # message explaining the constraint.
     import jax
-    sample_arrays = []
-    for key in ("rho_grid", "ao_grid", "s_matrix", "h_core"):
-        if key in mol_data:
-            sample_arrays.append(mol_data[key])
-            break
-    if sample_arrays and isinstance(sample_arrays[0], jax.core.Tracer):
+    # R3-C N1 audit fix: scan ALL likely-traced keys, not just the first
+    # present one. Pre-fix code `break`ed after the first hit, missing
+    # tracers in dm_pbe/j_matrix when rho_grid (concrete) preceded them.
+    candidate_keys = (
+        "dm_pbe", "j_matrix", "rho_grid", "ao_grid", "s_matrix", "h_core",
+    )
+    if any(
+        key in mol_data and isinstance(mol_data[key], jax.core.Tracer)
+        for key in candidate_keys
+    ):
         raise RuntimeError(
             "run_pyscfad_scf cannot be called from inside @jit / "
             "@eqx.filter_jit — pyscfad's SCF driver requires concrete "
@@ -456,16 +482,26 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         _grid_coords = jnp.asarray(mf.grids.coords)
 
         def _holder_get_veff(mol_=None, dm=None, *args, **kwargs):
+            # R1-L5 audit fix: pass the caller-supplied ``mol_`` through
+            # to ``_reassemble_features_on_grid`` and the original
+            # ``get_veff`` rather than substituting the closed-over
+            # ``mol``. Pyscfad's SCF driver passes the live ``mol``
+            # explicitly; using the closure variable would silently
+            # ignore any geometry/basis change pyscfad introduces (e.g.
+            # mol updates inside its scan). Fall back to the closed-over
+            # ``mol`` only when the caller passes ``None`` (matches the
+            # pre-fix behavior for that path).
+            mol_eff = mol_ if mol_ is not None else mol
             if policy == FeaturePolicy.REASSEMBLE and dm is not None:
                 feature_holder["features_full"] = _reassemble_features_on_grid(
                     descriptors=descriptors,
                     dm=dm,
                     s_matrix=_s_matrix,
                     grid_coords=_grid_coords,
-                    mol=mol,
+                    mol=mol_eff,
                 )
             feature_holder["offset"] = 0
-            return original_get_veff(mol_, dm, *args, **kwargs)
+            return original_get_veff(mol_eff, dm, *args, **kwargs)
 
         mf.get_veff = _holder_get_veff
 
@@ -527,10 +563,18 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     # traces from different SCFs into a fixed-shape array. The length of
     # ``energy_history`` corresponds to the actual cycles executed; trailing
     # NaNs mark cycles that never ran (early convergence).
-    max_cyc = int(getattr(config, "max_cycles", max(len(energy_history), 1)))
+    # R1-M9 audit fix: SolverConfig always defines ``max_cycles``; the
+    # prior ``getattr(config, "max_cycles", ...)`` default branch was
+    # unreachable. Use the field directly so a missing attribute fails
+    # loudly instead of silently substituting ``len(energy_history)``.
+    max_cyc = int(config.max_cycles)
     pad_len = max(max_cyc, len(energy_history))
     if energy_history:
-        trace_arr = jnp.full((pad_len,), jnp.nan, dtype=jnp.float64)
+        # R2-C N5 audit fix: drop the ``dtype=jnp.float64`` pin. Under
+        # the suite's ``jax_enable_x64=True`` default this changes
+        # nothing, but under x32 the hardcode forces a silent dtype
+        # promotion that breaks downstream metric reductions.
+        trace_arr = jnp.full((pad_len,), jnp.nan)
         trace_arr = trace_arr.at[: len(energy_history)].set(jnp.asarray(energy_history))
     else:
         trace_arr = None

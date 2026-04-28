@@ -21,29 +21,13 @@ from xcquinox.alec.solver import (
     _reassemble_features,
 )
 
-DEGENERACY_REG = 1e-10
-SYM_BREAK_SHIFT = 1e-8
-
-
-def _symmetry_breaking_perturbation(nao: int, dtype) -> jnp.ndarray:
-    """Small non-uniform diagonal shift that breaks symmetry-induced
-    eigenvalue degeneracies. Needed because ``jnp.linalg.eigh``'s JVP is
-    ill-defined at exactly degenerate eigenvalues, producing NaN gradients
-    that then propagate through the scan. Used on atomic systems where
-    p_x/p_y/p_z orbitals have exactly equal eigenvalues by construction,
-    and on linear-symmetry molecules (D∞h, e.g. C2H2/HCN/C2H4) whose π
-    MOs are exactly degenerate.
-
-    Uses ``SYM_BREAK_SHIFT * sin(idx * φ)`` (φ = golden ratio) — quasi-
-    random spacing so no two indices give bit-equal values, deterministic
-    in nao alone (no PRNG state needed). Matches the form used by
-    ``oneshot._sym_break_diag`` (M3 audit fix: was previously a linear
-    ``arange``-based form which had monotone bias and used a different
-    magnitude than oneshot, yielding non-identical DMs for the same
-    one-shot SCF).
-    """
-    idx = jnp.arange(nao, dtype=dtype)
-    return SYM_BREAK_SHIFT * jnp.sin(idx * 1.618033988749895)
+# R2-C N4 audit fix: shared regularization constants live in
+# ``solver`` so manual + oneshot paths cannot silently diverge.
+from xcquinox.alec.solver import (
+    DEGENERACY_REG,
+    SYM_BREAK_SHIFT,
+    _sym_break_diag as _symmetry_breaking_perturbation,
+)
 
 
 def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndarray:
@@ -181,10 +165,23 @@ def _build_mixer(config: SolverConfig):
 
 
 def _build_criterion(config: SolverConfig):
-    """Instantiate convergence criterion from config."""
-    if config.convergence_name == "energy":
-        return EnergyConvergence(tol=config.conv_tol)
-    raise NotImplementedError(f"criterion {config.convergence_name!r} not yet implemented")
+    """Instantiate convergence criterion from config via CRITERION_REGISTRY.
+
+    R2-C N3 audit fix: pre-fix code hard-coded the 'energy' branch and
+    raised NotImplementedError for everything else, requiring this
+    function to be edited each time a new criterion was added. Now
+    mirrors the ``_build_mixer`` registry-driven pattern: any subclass
+    of ``ConvergenceCriterion`` decorated with ``@register_criterion``
+    is dispatched here automatically.
+    """
+    from xcquinox.alec.solver import CRITERION_REGISTRY
+    cls = CRITERION_REGISTRY.get(config.convergence_name)
+    if cls is None:
+        raise NotImplementedError(
+            f"criterion {config.convergence_name!r} not registered; "
+            f"available: {sorted(CRITERION_REGISTRY)}"
+        )
+    return cls(tol=config.conv_tol)
 
 
 class SCFCycleState(NamedTuple):
@@ -296,10 +293,20 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         D_out = jnp.where(already, state.density_matrix, D_mixed)
         E_out = jnp.where(already, state.energy, E_new)
         cycles_inc = jnp.where(already, state.cycles_run, state.cycles_run + jnp.int32(1))
+        # R1-M8 audit fix: freeze the mixer state once the scan has
+        # entered the ``already`` branch. Pre-fix code always emitted
+        # ``new_mixer_state``, advancing ``step_index`` (and any future
+        # history-tracking fields, e.g. DIIS Fock buffers) on every
+        # post-convergence cycle. The leaf-wise ``where`` keeps the
+        # frozen mixer state pytree-shape-compatible with the new one.
+        frozen_mixer_state = jax.tree_util.tree_map(
+            lambda old, new: jnp.where(already, old, new),
+            state.mixer_state, new_mixer_state,
+        )
         next_state = SCFCycleState(
             density_matrix=D_out,
             energy=E_out,
-            mixer_state=new_mixer_state,
+            mixer_state=frozen_mixer_state,
             converged=already | is_conv,
             cycles_run=cycles_inc,
         )
@@ -460,10 +467,16 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         D_out = jnp.where(already, state.density_matrix, D_mixed)
         E_out = jnp.where(already, state.energy, E_new)
         cycles_inc = jnp.where(already, state.cycles_run, state.cycles_run + jnp.int32(1))
+        # R1-M8 audit fix: freeze mixer state on ``already`` (see
+        # _run_manual_scf_rks for full rationale).
+        frozen_mixer_state = jax.tree_util.tree_map(
+            lambda old, new: jnp.where(already, old, new),
+            state.mixer_state, new_mixer_state,
+        )
         next_state = SCFCycleState(
             density_matrix=D_out,
             energy=E_out,
-            mixer_state=new_mixer_state,
+            mixer_state=frozen_mixer_state,
             converged=already | is_conv,
             cycles_run=cycles_inc,
         )

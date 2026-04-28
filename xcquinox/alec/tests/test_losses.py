@@ -1223,30 +1223,56 @@ def test_compute_energies_solver_invariant(h2o_mol_data):
 # D5-loss audit fix: _dm_term per-element normalization
 # ---------------------------------------------------------------------------
 
-def test_dm_term_normalizes_per_element_for_uks():
+def test_dm_term_normalizes_per_element_for_uks(monkeypatch):
     """_dm_term must normalize the squared error by the total element
     count of dm_ref (n_ao^2 for RKS, 2*n_ao^2 for UKS). Pre-fix UKS
     branch divided by n_ao^2 only — off by factor of 2 vs RKS and
-    inconsistent with _vxc_term."""
-    import jax.numpy as jnp
-    from xcquinox.alec.losses import _dm_term
-    # Synthetic mol_data: replace oneshot_dm_prediction_fast via a model
-    # that produces dm_nn = 0 for any input. We can't fully mock that
-    # here without a real AlecGGAModel; instead test the normalization
-    # directly via the per-element scaling identity:
-    # If err_uks = sum_{spin} ||D_nn - D_ref||^2 over (2, n_ao, n_ao)
-    # then per-element MSE = err_uks / (2 * n_ao * n_ao).
-    rng = jnp.array([1.0, 2.0, 3.0])
-    n_ao = 4
-    dm_uks = jnp.ones((2, n_ao, n_ao))
-    n_elems = int(jnp.prod(jnp.array(dm_uks.shape)))
-    assert n_elems == 2 * n_ao * n_ao, n_elems
+    inconsistent with _vxc_term.
 
-    # Direct synthetic check via the same formula in _dm_term.
-    err = jnp.sum(dm_uks ** 2)
-    per_element = err / float(n_elems)
-    expected = 1.0  # all-ones DM, squared, mean = 1
-    assert abs(float(per_element) - expected) < 1e-12
+    R3-F audit strengthening: the prior version of this test never
+    called ``_dm_term`` — it just re-derived the arithmetic identity
+    ``sum(ones**2) / n_elems == 1.0``, which would still pass if the
+    UKS divisor regressed to ``n_ao**2``. This version monkey-patches
+    ``oneshot_dm_prediction_fast`` to a fixed stub and calls the real
+    ``_dm_term`` with a known prediction-target gap, then asserts the
+    returned per-element MSE matches the analytical expectation under
+    the (2 * n_ao * n_ao) UKS divisor. A regression to ``n_ao**2``
+    would double the returned value and fail this test.
+    """
+    import jax.numpy as jnp
+    from xcquinox.alec import losses as losses_mod
+
+    n_ao = 4
+    # UKS dm_target: shape (2, n_ao, n_ao); fill with 0.5 so per-element
+    # squared error vs the prediction stub is 0.25 everywhere. With
+    # n_elems = 2 * n_ao * n_ao the per-element MSE equals 0.25.
+    dm_target = jnp.full((2, n_ao, n_ao), 0.5)
+    # Stub the prediction to be all-zeros so error per element = 0.25.
+    def _stub_predict(model, mol_data, solver_config=None):
+        del model, mol_data, solver_config
+        return jnp.zeros_like(dm_target)
+    monkeypatch.setattr(
+        losses_mod, "oneshot_dm_prediction_fast", _stub_predict,
+    )
+    mol_data = [{"dm_target": dm_target}]
+    # model is unused by the stub; pass any object.
+    out = losses_mod._dm_term(model=object(), mol_data=mol_data, iter_idx=[0])
+    expected_per_element = 0.25
+    expected_uks_divisor = 2 * n_ao * n_ao
+    assert abs(float(out) - expected_per_element) < 1e-12, (
+        f"UKS _dm_term should give err/(2*n_ao^2) = {expected_per_element}; "
+        f"got {float(out)}. A regression to err/n_ao^2 would give "
+        f"{2 * expected_per_element} (twice as large)."
+    )
+    # Sanity: confirm the divisor is exactly 2*n_ao^2 by checking the
+    # raw error vs returned value.
+    raw_err = float(jnp.sum(dm_target ** 2))
+    derived_divisor = raw_err / float(out)
+    assert abs(derived_divisor - expected_uks_divisor) < 1e-9, (
+        f"derived divisor = {derived_divisor}, expected "
+        f"{expected_uks_divisor} (2 * n_ao^2). A pre-fix n_ao^2 divisor "
+        f"would give {n_ao * n_ao}."
+    )
 
 
 # ---------------------------------------------------------------------------

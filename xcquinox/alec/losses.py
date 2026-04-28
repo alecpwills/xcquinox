@@ -236,7 +236,7 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
             n_elems = int(jnp.prod(jnp.array(dm_ref_arr.shape)))
             err = err / float(n_elems)
         terms.append(err)
-    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
+    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
 
 
 def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False):
@@ -252,7 +252,7 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False):
         if relative:
             err = err / (jnp.sum(w * rho_ref ** 2) + 1e-8)
         terms.append(err)
-    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
+    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
 
 
 def _vxc_term(model, mol_data, iter_idx, relative=False):
@@ -304,13 +304,13 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
                 n_ao = vxc_ref_arr.shape[-1]
                 err = err / (n_ao * n_ao)
         terms.append(err)
-    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0, dtype=jnp.float64)
+    return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
 
 
 def _anchor_term(model, sample, weight: float) -> jnp.ndarray:
     """PBE-anchor loss: weight * mean((F_x_nn - F_x_PBE)^2) on a fixed sample."""
     if sample is None or weight == 0.0:
-        return jnp.array(0.0, dtype=jnp.float64)
+        return jnp.array(0.0)
     from xcquinox.alec.pbe_anchor import pbe_anchor_loss
     from xcquinox.alec.oneshot import _nn_fx_local_uks
     def _nn_fx(m, rho_alpha, rho_beta, s_vals):
