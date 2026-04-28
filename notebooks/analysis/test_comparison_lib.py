@@ -136,6 +136,75 @@ class TestLiveData:
         assert max(m["L1_B"], m["L2_C_anchor"], m["L5_gradnorm_vxc"]) < \
                min(m["L3_balanced_vxc"], m["L4_balanced_vxc_anchor"])
 
+    def test_medvedev_tradeoff_signs_per_family(self, art):
+        """Pin the per-loss-family medians the report claims:
+
+          - V_xc-LossNorm has LOWER density-RMSE than no-V_xc (Medvedev)
+            AND HIGHER AE-MAE (the price)
+          - V_xc-GradNorm under vxc_weight=0.01 ends up at the no-V_xc
+            density-RMSE cluster, NOT the V_xc-LossNorm cluster -- the
+            dynamic balancer effectively suppresses the V_xc term.
+
+        These signs are the report's headline physical claims (§2 fig2,
+        §4 conclusion 3); regression here means the qualitative report
+        narrative no longer matches the data.
+        """
+        from comparison_lib import LOSS_FAMILY, mae_of, trained_molecules_only
+        eval_df = art["eval_df"]
+        ae = mae_of(trained_molecules_only(eval_df), "AE_error_kcalmol",
+                    group_keys=["group","arch","loss","solver"])
+        rho = mae_of(trained_molecules_only(eval_df), "density_rmse",
+                     group_keys=["group","arch","loss","solver"]).rename(columns={"mae":"rmse"})
+        m = ae.merge(rho, on=["group","arch","loss","solver"])
+        m["family"] = m["loss"].map(LOSS_FAMILY)
+        med = m.groupby("family")[["mae","rmse"]].median()
+        # Medvedev tradeoff: V_xc-LossNorm has lower density error.
+        assert med.loc["Vxc-LossNorm","rmse"] < med.loc["no-Vxc","rmse"], (
+            "V_xc-LossNorm should give LOWER density-RMSE than no-V_xc "
+            "(Medvedev tradeoff); a regression here breaks fig2's narrative."
+        )
+        # Medvedev tradeoff: V_xc-LossNorm pays in AE.
+        assert med.loc["Vxc-LossNorm","mae"]  > med.loc["no-Vxc","mae"], (
+            "V_xc-LossNorm should give HIGHER AE-MAE than no-V_xc "
+            "(the price of better density)."
+        )
+        # GradNorm at vxc_weight=0.01 sits at no-V_xc density level.
+        # We do not require an exact tie -- just that the Vxc-GradNorm
+        # density advantage over no-V_xc is smaller than 25% in absolute
+        # value (i.e. NOT a real density advantage like LossNorm's 56%).
+        no_med   = med.loc["no-Vxc","rmse"]
+        gn_med   = med.loc["Vxc-GradNorm","rmse"]
+        rel_diff = abs(no_med - gn_med) / no_med
+        assert rel_diff < 0.25, (
+            f"V_xc-GradNorm density-RMSE differs from no-V_xc by "
+            f"{rel_diff*100:.1f}% (expected < 25%, i.e. effectively "
+            f"tied). A large advantage here would mean GradNorm is "
+            f"actually fitting V_xc, contradicting the report claim "
+            f"that vxc_weight=0.01 suppresses V_xc under dynamic balancing."
+        )
+
+    def test_arch_per_loss_winners_match_report(self, art):
+        """The report claims (§2 fig5):
+          On TRAINED mols, attn wins on L1, L2, L4; loses on L3, L5.
+
+        Pin those signs so a future regeneration can't silently flip
+        the architecture story.
+        """
+        from comparison_lib import mae_of, trained_molecules_only
+        eval_df = art["eval_df"]
+        g = mae_of(trained_molecules_only(eval_df), "AE_error_kcalmol",
+                   group_keys=["loss","arch"])
+        pv = g.pivot(index="loss", columns="arch", values="mae")
+        # winners: True if attn beats deep_combined
+        attn_wins = pv["deep_combined_attn"] < pv["deep_combined"]
+        assert attn_wins.loc["L1_B"]                   == True
+        assert attn_wins.loc["L2_C_anchor"]            == True
+        assert attn_wins.loc["L3_balanced_vxc"]        == False, (
+            "deep_combined should beat attn on L3_balanced_vxc on trained mols")
+        assert attn_wins.loc["L4_balanced_vxc_anchor"] == True
+        assert attn_wins.loc["L5_gradnorm_vxc"]        == False, (
+            "deep_combined should beat attn on L5_gradnorm_vxc on trained mols")
+
     def test_all_plots_run(self, art, tmp_path):
         """Every plot function must produce a non-empty PNG without raising."""
         for fn, name in [
