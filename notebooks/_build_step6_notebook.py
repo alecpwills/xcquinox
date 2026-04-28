@@ -21,6 +21,13 @@ DEFAULT_LOSS_NAMES = (
     "L2_C_anchor",
     "L3_balanced_vxc",
     "L4_balanced_vxc_anchor",
+    # L5: GradNorm balancing (Chen et al. 2018, ICML) keeps the V_xc loss
+    # gradient magnitude on par with AE/DM/atomic_reg DURING training, not
+    # just at step 0. L3's LossNormConfig equalizes step-0 magnitudes but
+    # AE drops 5+ orders within ~50 steps while V_xc residual stays flat
+    # (network bottleneck on V_xc fitting); GradNorm's dynamic per-task
+    # weights restore balance and let V_xc keep moving.
+    "L5_gradnorm_vxc",
 )
 
 DEFAULT_SOLVER_LABELS = ("oneshot", "fixed_j_3", "full_3")
@@ -34,20 +41,21 @@ def build_cell_01_title():
 Tests two hypothesized fixes for the F_x(s) drift at s > 0.7 (step-5 finding
 on CH4) plus an overfitting diagnostic.
 
-## Training Matrix: 2 archs x 4 losses x 3 solvers x 3 groups = 72 runs
+## Training Matrix: 2 archs x 5 losses x 3 solvers x 3 groups = 90 runs
 
-| Loss | Kind | V_xc? | PBE-anchor? |
-|---|---|---|---|
-| L1 | B_atomization_plus_dm | -- | -- |
-| L2 | C_atomization_plus_grid | -- | yes |
-| L3 | balanced + V_xc | yes | -- |
-| L4 | balanced + V_xc + anchor | yes | yes |
+| Loss | Kind | V_xc? | PBE-anchor? | Balancing |
+|---|---|---|---|---|
+| L1 | B_atomization_plus_dm | -- | -- | static |
+| L2 | C_atomization_plus_grid | -- | yes | static |
+| L3 | balanced + V_xc | yes | -- | LossNorm (step-0) |
+| L4 | balanced + V_xc + anchor | yes | yes | LossNorm (step-0) |
+| L5 | gradnorm + V_xc | yes | -- | GradNorm (dynamic) |
 
 | Group | Data | Phase length |
 |---|---|---|
-| 1 | H2O only | 45 steps (short) |
-| 2 | H2O + C2H2 | 45 steps (short) |
-| 3 | H2O + C2H2 | 125 steps (long) |
+| 1 | H2O only | 100 steps (short) |
+| 2 | H2O + C2H2 | 100 steps (short) |
+| 3 | H2O + C2H2 | 250 steps (long) |
 
 Geometries + AE refs: W4-11 (Karton et al. 2011). Atomic refs: Chakravorty 1993.
 
@@ -109,7 +117,7 @@ def build_cell_02_imports():
         "    ARCHITECTURES,\n"
         "    MoleculeSpec,\n"
         "    PretrainSpec, TrainingSpec, TestSpec,\n"
-        "    TwoPhaseConfig, LossNormConfig,\n"
+        "    TwoPhaseConfig, LossNormConfig, GradNormConfig,\n"
         "    build_pbe_anchor_sample, PBEAnchorSample,\n"
         "    run_pretrain, run_training, run_test, run_oep_inversion, save_vxc_ref,\n"
         "    precompute_fixed_density_data,\n"
@@ -207,10 +215,10 @@ def build_cell_02_imports():
 def build_cell_03_constants(checkpoint_base: str = DEFAULT_CHECKPOINT_BASE):
     source = f"""# Step-6 knobs. All training / eval cells read from these.
 CHECKPOINT_BASE          = {checkpoint_base!r}
-PRETRAIN_N_STEPS         = 200
+PRETRAIN_N_STEPS         = 1000
 PRETRAIN_SKIP_IF_EXISTS  = True
-TRAIN_N_STEPS_SHORT      = 45
-TRAIN_N_STEPS_LONG       = 125
+TRAIN_N_STEPS_SHORT      = 100
+TRAIN_N_STEPS_LONG       = 250
 TRAIN_SKIP_IF_EXISTS     = True
 RERUN_EVAL               = False
 PBE_ANCHOR_WEIGHT        = 1e-3
@@ -1007,19 +1015,22 @@ def build_cell_17_training_md():
     """Section 3 Cell 17 -- markdown header for the three training groups."""
     source = r"""## Section 3 -- Training
 
-72 specs split into 3 groups. Each group: 2 archs x 4 losses x 3 solvers.
+90 specs split into 3 groups. Each group: 2 archs x 5 losses x 3 solvers.
 
 | # | Data | Phase | Runs |
 |---|---|---|---|
-| 1 | H2O only | short=TRAIN_N_STEPS_SHORT | 24 |
-| 2 | H2O + C2H2 | short=TRAIN_N_STEPS_SHORT | 24 |
-| 3 | H2O + C2H2 | long=TRAIN_N_STEPS_LONG | 24 |
+| 1 | H2O only | short=TRAIN_N_STEPS_SHORT | 30 |
+| 2 | H2O + C2H2 | short=TRAIN_N_STEPS_SHORT | 30 |
+| 3 | H2O + C2H2 | long=TRAIN_N_STEPS_LONG | 30 |
 
 Losses:
 - L1_B: B_atomization_plus_dm (control)
 - L2_C_anchor: C_atomization_plus_grid + PBE-anchor
-- L3_balanced_vxc: B_atomization_plus_dm + V_xc, LossNormConfig balancing
+- L3_balanced_vxc: B_atomization_plus_dm + V_xc, LossNormConfig balancing (step-0)
 - L4_balanced_vxc_anchor: L3 + PBE-anchor
+- L5_gradnorm_vxc: B_atomization_plus_dm + V_xc, GradNormConfig (Chen 2018)
+                   keeps V_xc gradient-magnitude on par with AE/DM during
+                   training, not just at step 0
 """
     return new_markdown_cell(source)
 
@@ -1035,7 +1046,7 @@ def build_cell_18_group1_specs():
     """
     source = r"""# Group 1: H2O only, short=TRAIN_N_STEPS_SHORT. 24 specs.
 KCAL_PER_HA = 627.5094740631
-LOSS_NAMES = ("L1_B", "L2_C_anchor", "L3_balanced_vxc", "L4_balanced_vxc_anchor")
+LOSS_NAMES = ("L1_B", "L2_C_anchor", "L3_balanced_vxc", "L4_balanced_vxc_anchor", "L5_gradnorm_vxc")
 # TrainingSpec.validate() requires a targets entry for every molecule in the
 # molecules tuple (config.py:545-547). Atom targets are never dereferenced at
 # training time but must be finite floats -- we use the Chakravorty atomic
@@ -1078,6 +1089,21 @@ for _arch in ARCH_NAMES:
                 _bal = LossNormConfig()
                 _anchor_w = PBE_ANCHOR_WEIGHT
                 _anchor_s = pbe_anchor
+            elif _loss == "L5_gradnorm_vxc":
+                # Same B_atomization_plus_dm + V_xc loss as L3, but with
+                # GradNormConfig (Chen et al. 2018 ICML) replacing
+                # LossNormConfig. GradNorm dynamically tunes per-task
+                # weights so each task's gradient magnitude tracks
+                # ``G_mean * (relative_loss_rate ** alpha)``, keeping
+                # under-trained tasks (V_xc, in step-6 H2O+C2H2 measurements)
+                # on par with fast-falling ones (AE, atomic_reg) DURING
+                # training, not just at step 0. alpha=1.5 is the value Chen
+                # et al. report works robustly on multi-task benchmarks.
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "vxc_weight": 0.01, "solver_config": _cfg}
+                _bal = GradNormConfig(alpha=1.5)
+                _anchor_w = 0.0
+                _anchor_s = None
             else:
                 raise ValueError(f"unknown loss label: {_loss!r}")
             _specs_group1.append(alec.TrainingSpec.from_dicts(
@@ -1148,6 +1174,21 @@ for _arch in ARCH_NAMES:
                 _bal = LossNormConfig()
                 _anchor_w = PBE_ANCHOR_WEIGHT
                 _anchor_s = pbe_anchor
+            elif _loss == "L5_gradnorm_vxc":
+                # Same B_atomization_plus_dm + V_xc loss as L3, but with
+                # GradNormConfig (Chen et al. 2018 ICML) replacing
+                # LossNormConfig. GradNorm dynamically tunes per-task
+                # weights so each task's gradient magnitude tracks
+                # ``G_mean * (relative_loss_rate ** alpha)``, keeping
+                # under-trained tasks (V_xc, in step-6 H2O+C2H2 measurements)
+                # on par with fast-falling ones (AE, atomic_reg) DURING
+                # training, not just at step 0. alpha=1.5 is the value Chen
+                # et al. report works robustly on multi-task benchmarks.
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "vxc_weight": 0.01, "solver_config": _cfg}
+                _bal = GradNormConfig(alpha=1.5)
+                _anchor_w = 0.0
+                _anchor_s = None
             else:
                 raise ValueError(f"unknown loss label: {_loss!r}")
             _specs_group2.append(alec.TrainingSpec.from_dicts(
@@ -1219,6 +1260,21 @@ for _arch in ARCH_NAMES:
                 _bal = LossNormConfig()
                 _anchor_w = PBE_ANCHOR_WEIGHT
                 _anchor_s = pbe_anchor
+            elif _loss == "L5_gradnorm_vxc":
+                # Same B_atomization_plus_dm + V_xc loss as L3, but with
+                # GradNormConfig (Chen et al. 2018 ICML) replacing
+                # LossNormConfig. GradNorm dynamically tunes per-task
+                # weights so each task's gradient magnitude tracks
+                # ``G_mean * (relative_loss_rate ** alpha)``, keeping
+                # under-trained tasks (V_xc, in step-6 H2O+C2H2 measurements)
+                # on par with fast-falling ones (AE, atomic_reg) DURING
+                # training, not just at step 0. alpha=1.5 is the value Chen
+                # et al. report works robustly on multi-task benchmarks.
+                _lname = "B_atomization_plus_dm"
+                _lkw = {"dm_weight": 0.1, "vxc_weight": 0.01, "solver_config": _cfg}
+                _bal = GradNormConfig(alpha=1.5)
+                _anchor_w = 0.0
+                _anchor_s = None
             else:
                 raise ValueError(f"unknown loss label: {_loss!r}")
             _specs_group3.append(alec.TrainingSpec.from_dicts(

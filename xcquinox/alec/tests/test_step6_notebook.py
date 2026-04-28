@@ -33,6 +33,7 @@ def test_generator_has_default_constants():
     assert gen.DEFAULT_ARCH_NAMES == ("deep_combined", "deep_combined_attn")
     assert gen.DEFAULT_LOSS_NAMES == (
         "L1_B", "L2_C_anchor", "L3_balanced_vxc", "L4_balanced_vxc_anchor",
+        "L5_gradnorm_vxc",
     )
     assert gen.DEFAULT_SOLVER_LABELS == ("oneshot", "fixed_j_3", "full_3")
     assert gen.DEFAULT_CHECKPOINT_BASE == "checkpoints_step6"
@@ -72,10 +73,13 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_42_cells_after_phase11():
+def test_main_produces_43_cells_after_baseline_insertion():
+    """Cell count is 43 (42 post-phase11 + 1 baseline_evals cell inserted
+    between eval_preview (25) and vxc_efficacy (now 27) in the 2026-04-24
+    plot-baseline pass)."""
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 42
+    assert len(nb.cells) == 43
 
 
 def test_every_code_cell_is_ast_parseable():
@@ -155,7 +159,7 @@ def test_chakravorty_cell_has_all_five_atoms():
 # ---------------------------------------------------------------------------
 
 
-def test_h2o_cell_uses_w411_geometry_and_three_tier_oep_cascade():
+def test_h2o_cell_uses_w411_geometry_and_two_tier_oep_cascade():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[11].source) if isinstance(nb.cells[11].source, list) else nb.cells[11].source
@@ -163,14 +167,26 @@ def test_h2o_cell_uses_w411_geometry_and_three_tier_oep_cascade():
     assert "0.117790" in src and "0.755453" in src and "-0.471161" in src
     # W4-11 AE reference
     assert "232.974" in src
-    # Three-tier OEP cascade: primary svp-jkfit, fallback tzvp-jkfit (2 tiers).
-    # Primary: step-5-proven settings (empirically known to converge on H2O).
+    # Re-tuned OEP cascade (2026-04-28) for the Wu-Yang displacement-form
+    # inversion (commit 4b2b58ba9). The pre-rewrite cascade
+    # (tzvp-jkfit/reg=1e-5/conv_tol=2e-3 primary, reg=1e-6 fallback)
+    # exits L-BFGS-B prematurely with density_error ~2-7e-2 under the
+    # displacement form. Measurement on H2O/def2-svp/grid_level=1 with
+    # max_iter=500: aux=def2-{svp,tzvp}-jkfit at reg=1e-4 both reach
+    # density_error ~1.17e-3 and continue to improve; higher reg values
+    # produce worse outcomes. Primary: small aux for speed; fallback:
+    # tzvp aux + double iter budget for genuinely harder cases.
     assert "def2-svp-jkfit" in src
-    assert "max_iter=200" in src and "conv_tol=1e-6" in src and "regularization=1e-4" in src
-    # Fallback tiers: denser aux basis + stronger regularization.
     assert "def2-tzvp-jkfit" in src
-    assert "max_iter=500" in src and "max_iter=1000" in src
-    assert "regularization=1e-3" in src and "regularization=1e-2" in src
+    # Primary: svp-jkfit, max_iter=500, conv_tol=2e-3, reg=1e-4.
+    assert "max_iter=500" in src and "conv_tol=2e-3" in src
+    assert "regularization=1e-4" in src
+    # Fallback: tzvp-jkfit + max_iter=1000.
+    assert "max_iter=1000" in src
+    # The pre-rewrite cascade settings must NOT remain.
+    assert "regularization=1e-5" not in src
+    assert "regularization=1e-6" not in src
+    assert "conv_tol=1e-6" not in src
     # Graceful retry: if vxc_ref missing from cached .npz, retry OEP without
     # redoing CCSD.
     assert "_npz_has_vxc_ref" in src
@@ -184,15 +200,23 @@ def test_h2o_cell_uses_w411_geometry_and_three_tier_oep_cascade():
 # ---------------------------------------------------------------------------
 
 
-def test_c2h2_cell_uses_w411_geometry_and_three_tier_oep_cascade():
+def test_c2h2_cell_uses_w411_geometry_and_two_tier_oep_cascade():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[12].source) if isinstance(nb.cells[12].source, list) else nb.cells[12].source
     assert "C2H2" in src
     assert "1.666650" in src and "0.603250" in src
     assert "405.525" in src
-    # Same three-tier cascade as H2O (primary svp + two tzvp fallbacks).
-    assert "def2-svp-jkfit" in src and "def2-tzvp-jkfit" in src
+    # Same re-tuned cascade as H2O (svp-jkfit primary, tzvp-jkfit fallback,
+    # both at reg=1e-4 conv_tol=2e-3). See test_h2o_cell_... for measurement
+    # rationale post-displacement-form OEP rewrite (4b2b58ba9).
+    assert "def2-svp-jkfit" in src
+    assert "def2-tzvp-jkfit" in src
+    assert "max_iter=500" in src and "conv_tol=2e-3" in src
+    assert "regularization=1e-4" in src
+    assert "max_iter=1000" in src
+    assert "regularization=1e-5" not in src
+    assert "regularization=1e-6" not in src
     # Graceful retry via shared _npz_has_vxc_ref helper from cell 12.
     assert "_npz_has_vxc_ref" in src
     assert "save_vxc_ref(_oep" in src
@@ -268,12 +292,119 @@ def test_three_training_groups_present():
         assert tok in src_all, f"missing {tok}"
 
 
+def test_constants_cell_uses_case_study_basis_and_grid():
+    """Case-study constraint: step6 runs on a modest GPU. Must use
+    BASIS='def2-svp' and GRID_LEVEL=1 (step5 settings); the heavier
+    ('def2-tzvp', 3) combination OOMed at the first training step on
+    an 8 GB GPU."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[2].source) if isinstance(nb.cells[2].source, list) else nb.cells[2].source
+    assert 'BASIS                    = "def2-svp"' in src, (
+        "expected BASIS='def2-svp' in constants cell"
+    )
+    assert "GRID_LEVEL               = 1" in src, (
+        "expected GRID_LEVEL=1 in constants cell"
+    )
+    # Heavier settings must not reappear.
+    assert 'BASIS                    = "def2-tzvp"' not in src
+    assert "GRID_LEVEL               = 3" not in src
+
+
 def test_group3_uses_long_steps():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[19].source) if isinstance(nb.cells[19].source, list) else nb.cells[19].source
     assert "TRAIN_N_STEPS_LONG" in src
     assert "group3_dir" in src
+
+
+def test_constants_cell_has_updated_step_counts():
+    """Constants cell must declare PRETRAIN_N_STEPS=1000, SHORT=100, LONG=250.
+    Updated 2026-04-28 from 200 / 45 / 125 (the prior values were too short
+    for the V_xc residual to drop visibly under L3/L5 gradient signal).
+    """
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[2].source) if isinstance(nb.cells[2].source, list) else nb.cells[2].source
+    assert "PRETRAIN_N_STEPS         = 1000" in src
+    assert "TRAIN_N_STEPS_SHORT      = 100" in src
+    assert "TRAIN_N_STEPS_LONG       = 250" in src
+
+
+def test_each_group_has_l5_gradnorm_vxc_branch():
+    """Each of the three group spec-construction cells must include the
+    L5_gradnorm_vxc branch, mapping it to ``B_atomization_plus_dm`` +
+    ``GradNormConfig(alpha=1.5)``.
+
+    GradNormConfig (Chen et al. 2018, ICML) replaces L3's LossNormConfig
+    so the V_xc loss gradient magnitude tracks AE / DM / atomic_reg
+    DURING training, not just at step 0. The static-weighting +
+    LossNorm-at-step-0 strategies (L3, L4) leave V_xc essentially flat
+    once AE drops 5+ orders within the first ~50 steps; GradNorm's
+    dynamic per-task weights restore balance and let V_xc keep moving.
+
+    Pins the contract that all three groups carry the L5 branch and
+    each uses the same alpha.
+    """
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    for cell_idx, group_name in ((17, "group1"), (18, "group2"), (19, "group3")):
+        src = nb.cells[cell_idx].source
+        if isinstance(src, list):
+            src = "".join(src)
+        assert "L5_gradnorm_vxc" in src, (
+            f"cell {cell_idx} ({group_name}) missing L5_gradnorm_vxc branch"
+        )
+        assert "GradNormConfig(alpha=1.5)" in src, (
+            f"cell {cell_idx} ({group_name}) L5 branch must use "
+            f"GradNormConfig(alpha=1.5)"
+        )
+        # And L5 carries the same loss + V_xc weighting as L3 — only the
+        # balancing strategy differs.
+        assert 'vxc_weight": 0.01' in src or "vxc_weight\\\": 0.01" in src or "vxc_weight': 0.01" in src or "'vxc_weight': 0.01" in src or 'vxc_weight=0.01' in src or '"vxc_weight": 0.01' in src
+
+
+def _assert_atom_target(src: str, symbol: str) -> None:
+    import re
+    pattern = rf'"{symbol}":\s+ATOMIC_ENERGIES_CHAKRAVORTY\["{symbol}"\]'
+    assert re.search(pattern, src), (
+        f"expected {symbol!r} atom placeholder target in source"
+    )
+
+
+def test_group1_targets_include_atom_placeholders():
+    """TrainingSpec.validate() requires an entry in ``targets`` for every
+    molecule in ``molecules``. Group 1's molecules tuple is
+    ``(H2O_spec, H_spec, O_spec)`` so its targets dict must include keys
+    for "H" and "O" too (matches step5's idiom; values are placeholders
+    since atom entries are never dereferenced at training time)."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[17].source) if isinstance(nb.cells[17].source, list) else nb.cells[17].source
+    assert "_targets_group1" in src
+    _assert_atom_target(src, "H")
+    _assert_atom_target(src, "O")
+
+
+def test_group2_targets_include_atom_placeholders():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[18].source) if isinstance(nb.cells[18].source, list) else nb.cells[18].source
+    assert "_targets_group2" in src
+    _assert_atom_target(src, "H")
+    _assert_atom_target(src, "O")
+    _assert_atom_target(src, "C")
+
+
+def test_group3_targets_include_atom_placeholders():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[19].source) if isinstance(nb.cells[19].source, list) else nb.cells[19].source
+    assert "_targets_group3" in src
+    _assert_atom_target(src, "H")
+    _assert_atom_target(src, "O")
+    _assert_atom_target(src, "C")
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +428,181 @@ def test_training_loop_cell_uses_subprocess_pattern():
     assert "model.eqx" in src
     # Cache/GC between specs
     assert "jax.clear_caches" in src
+
+
+def test_imports_cell_defines_dataframe_save_load_helpers():
+    """The notebook uses `df.to_parquet`/`pd.read_parquet` to persist eval
+    and transfer DataFrames. pyarrow / fastparquet may not be installed
+    on every environment; a hard ImportError there breaks the whole
+    notebook. Imports cell must expose `_df_save` / `_df_load` helpers
+    that try parquet and fall back to CSV (stdlib-only)."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[1].source) if isinstance(nb.cells[1].source, list) else nb.cells[1].source
+    assert "_df_save" in src
+    assert "_df_load" in src
+    assert "to_csv" in src and "read_csv" in src
+
+
+def test_eval_df_cell_uses_robust_save_load():
+    """Cell 26 (builds eval_df) must route through _df_save / _df_load so a
+    missing pyarrow install doesn't kill the cell at the write step."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    target = None
+    for c in nb.cells:
+        if c.cell_type != "code":
+            continue
+        src = "".join(c.source) if isinstance(c.source, list) else c.source
+        if "eval_df = pd.DataFrame" in src:
+            target = src
+            break
+    assert target is not None, "eval_df builder cell not found"
+    assert "_df_save(eval_df" in target or "_df_save(\n    eval_df" in target
+    assert ".to_parquet(" not in target, (
+        "cell must use _df_save helper, not raw df.to_parquet (no pyarrow)"
+    )
+
+
+def test_imports_cell_defines_blas_thread_cap_helper():
+    """OEP (Wu-Yang inversion) is CPU-bound via PySCF/BLAS. When the same
+    kernel already imported JAX, the two OMP pools fight over cores and
+    throughput drops ~5-10x. Imports cell must expose a scoped helper
+    `_capped_blas_threads(n)` that caps PySCF threads for the duration
+    of the OEP call."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[1].source) if isinstance(nb.cells[1].source, list) else nb.cells[1].source
+    assert "_capped_blas_threads" in src
+    # Must use pyscf.lib.num_threads (stdlib-only: no new deps like
+    # threadpoolctl).
+    assert "pyscf" in src and "num_threads" in src
+
+
+def test_h2o_oep_cell_uses_blas_thread_cap():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[11].source) if isinstance(nb.cells[11].source, list) else nb.cells[11].source
+    assert "_capped_blas_threads" in src
+
+
+def test_c2h2_oep_cell_uses_blas_thread_cap():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[12].source) if isinstance(nb.cells[12].source, list) else nb.cells[12].source
+    assert "_capped_blas_threads" in src
+
+
+def _cap_wraps_ccsd(src: str) -> bool:
+    """Return True if `_capped_blas_threads(...)` appears textually before the
+    first CCSD call (cc.CCSD). Ensures the CCSD step is run under the same
+    thread cap as the OEP cascade -- without this, CCSD on C2H2 takes 70+
+    seconds contending with JAX's thread pool."""
+    cap_idx = src.find("_capped_blas_threads(")
+    ccsd_idx = src.find("cc.CCSD(")
+    if cap_idx == -1 or ccsd_idx == -1:
+        return False
+    return cap_idx < ccsd_idx
+
+
+def test_h2o_cell_thread_cap_wraps_ccsd():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[11].source) if isinstance(nb.cells[11].source, list) else nb.cells[11].source
+    assert _cap_wraps_ccsd(src), (
+        "thread cap must open BEFORE cc.CCSD() in the H2O cell so CCSD is "
+        "not run uncapped when JAX is already loaded in the kernel"
+    )
+
+
+def test_c2h2_cell_thread_cap_wraps_ccsd():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[12].source) if isinstance(nb.cells[12].source, list) else nb.cells[12].source
+    assert _cap_wraps_ccsd(src), (
+        "thread cap must open BEFORE cc.CCSD() in the C2H2 cell"
+    )
+
+
+def test_h2o_oep_cell_shows_tqdm_progress():
+    """User asked for visibility into long OEP runs; the cell must attach a
+    tqdm-backed progress_callback to each tier invocation so dozens-of-
+    minutes C2H2 inversions are no longer silent."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[11].source) if isinstance(nb.cells[11].source, list) else nb.cells[11].source
+    assert "progress_callback=" in src
+    # A tqdm bar is used to render progress.
+    assert "tqdm(" in src
+    # The tier label identifies the molecule so bars are distinguishable.
+    assert "OEP H2O" in src or 'f"OEP H2O' in src or "H2O" in src
+    # Bar must be closed explicitly (try/finally) so a failed tier doesn't
+    # leak a stale bar into the fallback tier's output.
+    assert ".close()" in src
+
+
+def test_c2h2_oep_cell_shows_tqdm_progress():
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[12].source) if isinstance(nb.cells[12].source, list) else nb.cells[12].source
+    assert "progress_callback=" in src
+    assert "tqdm(" in src
+    assert "OEP C2H2" in src or "C2H2" in src
+    assert ".close()" in src
+
+
+def test_plot_cells_use_canonical_value_name():
+    """Regression: plot cells (27, 28, 31, 32) must filter eval_df / transfer
+    dfs on ``AE_error_kcalmol`` (the canonical key emitted by
+    ``xcquinox.alec.evaluation.AtomizationEnergyMetric``), not
+    ``abs_ae_error`` (which does not exist). Using the wrong key silently
+    returns empty slices, producing bar charts with visible axes but no
+    bars. Audit 2026-04-24."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    all_src = "\n".join(
+        ("".join(c.source) if isinstance(c.source, list) else c.source)
+        for c in nb.cells
+    )
+    assert "abs_ae_error" not in all_src, (
+        "plot cells must use 'AE_error_kcalmol' (canonical emit from "
+        "AtomizationEnergyMetric), not the phantom 'abs_ae_error'."
+    )
+    # The canonical name should appear at least in the 4 plot cells that
+    # previously mis-referenced it.
+    assert all_src.count("AE_error_kcalmol") >= 4
+
+
+def test_training_loop_cell_cpu_retry_passes_jax_platforms_env():
+    """The CPU retry path MUST pass JAX_PLATFORMS=cpu in the subprocess env.
+    --device=cpu alone is insufficient because `python -m
+    xcquinox.alec._train_one_spec` transitively imports jax via the package's
+    __init__ before the CLI flag can act. Regression test for the bug where
+    the retry subprocess still OOMed on GPU despite --device=cpu."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[20].source) if isinstance(nb.cells[20].source, list) else nb.cells[20].source
+    # The env override must be present when device='cpu'.
+    assert "JAX_PLATFORMS" in src and "'cpu'" in src
+    # And the env dict must be passed to subprocess.Popen.
+    assert "env=env" in src
+
+
+def test_training_loop_cell_has_gpu_oom_cpu_retry():
+    """Small-GPU support: when a subprocess exits non-zero with no
+    model.eqx saved AND the captured output matches a GPU-OOM signature,
+    cell 17 must re-invoke the worker with --device=cpu before raising."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[20].source) if isinstance(nb.cells[20].source, list) else nb.cells[20].source
+    # OOM detection signatures
+    assert "RESOURCE_EXHAUSTED" in src
+    # Retry on CPU via the worker's new device flag
+    assert "--device=cpu" in src
+    # A helper (or inline predicate) classifies OOM from the captured
+    # subprocess text; the essential invariant is that retry logic
+    # references both the OOM string and the cpu retry.
+    assert "OOM" in src or "out of memory" in src.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +687,7 @@ def test_eval_df_cell():
 def test_vxc_efficacy_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[26].source) if isinstance(nb.cells[26].source, list) else nb.cells[26].source
+    src = "".join(nb.cells[27].source) if isinstance(nb.cells[27].source, list) else nb.cells[27].source
     assert "L1_B" in src and "L3_balanced_vxc" in src
     assert "vxc_efficacy.png" in src
 
@@ -389,7 +695,7 @@ def test_vxc_efficacy_cell():
 def test_anchor_effect_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[27].source) if isinstance(nb.cells[27].source, list) else nb.cells[27].source
+    src = "".join(nb.cells[28].source) if isinstance(nb.cells[28].source, list) else nb.cells[28].source
     assert "L3_balanced_vxc" in src and "L4_balanced_vxc_anchor" in src
     assert "anchor" in src.lower() and "anchor_effect.png" in src
 
@@ -403,7 +709,7 @@ def test_anchor_effect_cell():
 def test_transfer_primary_cell_has_w411_geometries():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[29].source) if isinstance(nb.cells[29].source, list) else nb.cells[29].source
+    src = "".join(nb.cells[30].source) if isinstance(nb.cells[30].source, list) else nb.cells[30].source
     for v in ("0.370946", "0.107851", "-0.862809", "0.628099", "109.493", "107.208", "420.420"):
         assert v in src, f"missing {v}"
 
@@ -411,7 +717,7 @@ def test_transfer_primary_cell_has_w411_geometries():
 def test_transfer_secondary_cell_has_uks_nh2():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[30].source) if isinstance(nb.cells[30].source, list) else nb.cells[30].source
+    src = "".join(nb.cells[31].source) if isinstance(nb.cells[31].source, list) else nb.cells[31].source
     # NH2 (UKS) must be present with its W4-11 geom + AE
     assert "NH2" in src
     assert "0.142235" in src and "0.800646" in src
@@ -424,8 +730,8 @@ def test_transfer_secondary_cell_has_uks_nh2():
 def test_transfer_eval_cells_build_dataframes():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src32 = "".join(nb.cells[31].source) if isinstance(nb.cells[31].source, list) else nb.cells[31].source
-    src33 = "".join(nb.cells[32].source) if isinstance(nb.cells[32].source, list) else nb.cells[32].source
+    src32 = "".join(nb.cells[32].source) if isinstance(nb.cells[32].source, list) else nb.cells[32].source
+    src33 = "".join(nb.cells[33].source) if isinstance(nb.cells[33].source, list) else nb.cells[33].source
     assert "transfer_primary_df" in src32
     assert "transfer_secondary_df" in src33
     assert "run_test" in src32 and "run_test" in src33
@@ -434,8 +740,8 @@ def test_transfer_eval_cells_build_dataframes():
 def test_transfer_aggregate_plot_cells_exist():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src34 = "".join(nb.cells[33].source) if isinstance(nb.cells[33].source, list) else nb.cells[33].source
-    src35 = "".join(nb.cells[34].source) if isinstance(nb.cells[34].source, list) else nb.cells[34].source
+    src34 = "".join(nb.cells[34].source) if isinstance(nb.cells[34].source, list) else nb.cells[34].source
+    src35 = "".join(nb.cells[35].source) if isinstance(nb.cells[35].source, list) else nb.cells[35].source
     assert "transfer_primary_df" in src34
     assert "transfer_secondary_df" in src35
 
@@ -449,16 +755,23 @@ def test_transfer_aggregate_plot_cells_exist():
 def test_drift_md_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[35].source) if isinstance(nb.cells[35].source, list) else nb.cells[35].source
+    src = "".join(nb.cells[36].source) if isinstance(nb.cells[36].source, list) else nb.cells[36].source
     assert "drift" in src.lower() or "F_x" in src
 
 
 def test_drift_panel_b_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[36].source) if isinstance(nb.cells[36].source, list) else nb.cells[36].source
+    src = "".join(nb.cells[37].source) if isinstance(nb.cells[37].source, list) else nb.cells[37].source
     assert "CH4" in src and "C2H2" in src
-    assert "_nn_fx_local_uks" in src
+    # Panel B evaluates F_x at real molecular grid points using the
+    # network's actual descriptor features (cusp + dm_statistics) -- not
+    # zero extras -- so the curves reflect what the network produces
+    # during a real SCF on each molecule. The 2026-04-26 fix replaced
+    # `_nn_fx_local_uks` (zero-extras) with assemble_descriptor_features
+    # over a precomputed mol_data.
+    assert "assemble_descriptor_features" in src
+    assert "precompute_fixed_density_data" in src
     assert "tree_deserialise_leaves" in src
     assert "fx_drift_panel_B.png" in src
 
@@ -466,7 +779,7 @@ def test_drift_panel_b_cell():
 def test_drift_panel_c_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[37].source) if isinstance(nb.cells[37].source, list) else nb.cells[37].source
+    src = "".join(nb.cells[38].source) if isinstance(nb.cells[38].source, list) else nb.cells[38].source
     assert "C2H4" in src
     assert "0.667100" in src
     assert "fx_drift_panel_C.png" in src
@@ -475,7 +788,7 @@ def test_drift_panel_c_cell():
 def test_scf_convergence_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[38].source) if isinstance(nb.cells[38].source, list) else nb.cells[38].source
+    src = "".join(nb.cells[39].source) if isinstance(nb.cells[39].source, list) else nb.cells[39].source
     assert "SCF" in src or "cycles_run" in src or "convergence" in src.lower()
 
 
