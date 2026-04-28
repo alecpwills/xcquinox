@@ -73,13 +73,13 @@ def test_main_output_is_deterministic_byte_identical():
 # ---------------------------------------------------------------------------
 
 
-def test_main_produces_43_cells_after_baseline_insertion():
-    """Cell count is 43 (42 post-phase11 + 1 baseline_evals cell inserted
-    between eval_preview (25) and vxc_efficacy (now 27) in the 2026-04-24
-    plot-baseline pass)."""
+def test_main_produces_44_cells_after_balancing_effect_insertion():
+    """Cell count is 44 (43 after the 2026-04-24 baseline_evals insertion
+    + 1 balancing_effect cell 28b inserted between anchor_effect (28) and
+    transfer_md (now 30) in the 2026-04-28 L5_gradnorm_vxc pass)."""
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    assert len(nb.cells) == 43
+    assert len(nb.cells) == 44
 
 
 def test_every_code_cell_is_ast_parseable():
@@ -688,7 +688,9 @@ def test_vxc_efficacy_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[27].source) if isinstance(nb.cells[27].source, list) else nb.cells[27].source
-    assert "L1_B" in src and "L3_balanced_vxc" in src
+    # Three V_xc-comparison families: L1 (no V_xc control), L3
+    # (LossNorm-step-0 V_xc), L5 (GradNorm dynamic V_xc).
+    assert "L1_B" in src and "L3_balanced_vxc" in src and "L5_gradnorm_vxc" in src
     assert "vxc_efficacy.png" in src
 
 
@@ -700,16 +702,31 @@ def test_anchor_effect_cell():
     assert "anchor" in src.lower() and "anchor_effect.png" in src
 
 
+def test_balancing_effect_cell_compares_l3_vs_l5():
+    """Cell 28b (balancing-strategy effect) plots ΔAE = |L3| - |L5| per
+    (arch, group, solver). L3 = LossNormConfig step-0; L5 =
+    GradNormConfig dynamic. Positive bars indicate GradNorm beats
+    LossNorm-step-0 on the V_xc-bottlenecked configurations (the
+    expected sign for V_xc-aware training)."""
+    gen = load_generator()
+    nb = gen.main(output_path="/tmp/_step6.ipynb")
+    src = "".join(nb.cells[29].source) if isinstance(nb.cells[29].source, list) else nb.cells[29].source
+    assert "L3_balanced_vxc" in src and "L5_gradnorm_vxc" in src
+    assert "balancing_effect.png" in src
+    assert "GradNorm" in src or "gradnorm" in src.lower()
+    assert "LossNorm" in src or "lossnorm" in src.lower()
+
+
 # ---------------------------------------------------------------------------
 # Phase 9 tests: transfer-learning md + data gen + eval loops + aggregate plots
-# (cells 29-35)
+# (cells 30-36 after 2026-04-28 balancing_effect insertion at 29)
 # ---------------------------------------------------------------------------
 
 
 def test_transfer_primary_cell_has_w411_geometries():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[30].source) if isinstance(nb.cells[30].source, list) else nb.cells[30].source
+    src = "".join(nb.cells[31].source) if isinstance(nb.cells[31].source, list) else nb.cells[31].source
     for v in ("0.370946", "0.107851", "-0.862809", "0.628099", "109.493", "107.208", "420.420"):
         assert v in src, f"missing {v}"
 
@@ -717,7 +734,7 @@ def test_transfer_primary_cell_has_w411_geometries():
 def test_transfer_secondary_cell_has_uks_nh2():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[31].source) if isinstance(nb.cells[31].source, list) else nb.cells[31].source
+    src = "".join(nb.cells[32].source) if isinstance(nb.cells[32].source, list) else nb.cells[32].source
     # NH2 (UKS) must be present with its W4-11 geom + AE
     assert "NH2" in src
     assert "0.142235" in src and "0.800646" in src
@@ -730,8 +747,8 @@ def test_transfer_secondary_cell_has_uks_nh2():
 def test_transfer_eval_cells_build_dataframes():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src32 = "".join(nb.cells[32].source) if isinstance(nb.cells[32].source, list) else nb.cells[32].source
-    src33 = "".join(nb.cells[33].source) if isinstance(nb.cells[33].source, list) else nb.cells[33].source
+    src32 = "".join(nb.cells[33].source) if isinstance(nb.cells[33].source, list) else nb.cells[33].source
+    src33 = "".join(nb.cells[34].source) if isinstance(nb.cells[34].source, list) else nb.cells[34].source
     assert "transfer_primary_df" in src32
     assert "transfer_secondary_df" in src33
     assert "run_test" in src32 and "run_test" in src33
@@ -740,29 +757,30 @@ def test_transfer_eval_cells_build_dataframes():
 def test_transfer_aggregate_plot_cells_exist():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src34 = "".join(nb.cells[34].source) if isinstance(nb.cells[34].source, list) else nb.cells[34].source
-    src35 = "".join(nb.cells[35].source) if isinstance(nb.cells[35].source, list) else nb.cells[35].source
+    src34 = "".join(nb.cells[35].source) if isinstance(nb.cells[35].source, list) else nb.cells[35].source
+    src35 = "".join(nb.cells[36].source) if isinstance(nb.cells[36].source, list) else nb.cells[36].source
     assert "transfer_primary_df" in src34
     assert "transfer_secondary_df" in src35
 
 
 # ---------------------------------------------------------------------------
 # Phase 10 tests: F_x drift diagnostic header + Panel B (CH4 + C2H2)
-# + Panel C (C2H4) + SCF convergence aggregate (cells 36-39)
+# + Panel C (C2H4) + SCF convergence aggregate (cells 37-40 after 2026-04-28
+# balancing_effect insertion at 29)
 # ---------------------------------------------------------------------------
 
 
 def test_drift_md_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[36].source) if isinstance(nb.cells[36].source, list) else nb.cells[36].source
+    src = "".join(nb.cells[37].source) if isinstance(nb.cells[37].source, list) else nb.cells[37].source
     assert "drift" in src.lower() or "F_x" in src
 
 
 def test_drift_panel_b_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[37].source) if isinstance(nb.cells[37].source, list) else nb.cells[37].source
+    src = "".join(nb.cells[38].source) if isinstance(nb.cells[38].source, list) else nb.cells[38].source
     assert "CH4" in src and "C2H2" in src
     # Panel B evaluates F_x at real molecular grid points using the
     # network's actual descriptor features (cusp + dm_statistics) -- not
@@ -779,7 +797,7 @@ def test_drift_panel_b_cell():
 def test_drift_panel_c_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[38].source) if isinstance(nb.cells[38].source, list) else nb.cells[38].source
+    src = "".join(nb.cells[39].source) if isinstance(nb.cells[39].source, list) else nb.cells[39].source
     assert "C2H4" in src
     assert "0.667100" in src
     assert "fx_drift_panel_C.png" in src
@@ -788,7 +806,7 @@ def test_drift_panel_c_cell():
 def test_scf_convergence_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
-    src = "".join(nb.cells[39].source) if isinstance(nb.cells[39].source, list) else nb.cells[39].source
+    src = "".join(nb.cells[40].source) if isinstance(nb.cells[40].source, list) else nb.cells[40].source
     assert "SCF" in src or "cycles_run" in src or "convergence" in src.lower()
 
 

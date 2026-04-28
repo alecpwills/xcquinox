@@ -1490,9 +1490,11 @@ def build_cell_22_loss_curves():
     """Section 4 Cell 22 -- per-group loss-curve grids.
 
     Three figures (one per data/phase group). Each figure is an
-    ``ARCH_NAMES x LOSS_NAMES`` grid (2 rows x 4 cols for the step-6 default
-    config); within each subplot the 3 solver configs are overlaid as
-    separate traces. Reads per-spec total-loss history from
+    ``ARCH_NAMES x LOSS_NAMES`` grid (2 rows x 5 cols for the step-6 default
+    config — one column per loss in
+    ``(L1_B, L2_C_anchor, L3_balanced_vxc, L4_balanced_vxc_anchor,
+    L5_gradnorm_vxc)``); within each subplot the 3 solver configs are
+    overlaid as separate traces. Reads per-spec total-loss history from
     ``{spec.checkpoint_dir}/losses.npy`` (the canonical artifact written by
     ``xcquinox.alec.train._save_artifacts`` -- NOT from
     ``train_metadata.json``, which only carries scalar summaries).
@@ -1968,19 +1970,27 @@ print(f"Wrote {_written} ({len(baseline_df)} rows)")
 
 
 def build_cell_27_vxc_efficacy():
-    """Section 5 Cell 27 -- V_xc efficacy (L1 vs L3) on Group 2 short.
+    """Section 5 Cell 27 -- V_xc efficacy (L1 vs L3 vs L5) on Group 2 short.
 
     Restructured (2026-04-26): one bar group for the baseline (random +
-    pretrained, both archs); one bar group per treatment (L1, L3) with one
-    bar per architecture. Solver becomes the row dimension. PBE-vs-W4-11
+    pretrained, both archs); one bar group per treatment (L1, L3, L5) with
+    one bar per architecture. Solver becomes the row dimension. PBE-vs-W4-11
     and CCSD-vs-W4-11 errors drawn as horizontal lines on the AE panel.
     Density panels keep PBE-vs-CCSD as the only meaningful baseline (no
     W4-11 analog for density).
+
+    Extended (2026-04-28) to include L5_gradnorm_vxc alongside L3 — this
+    isolates the V_xc-balancing-strategy axis: same loss kwargs, only the
+    balancer differs (LossNormConfig step-0 normalization vs Chen-2018
+    GradNormConfig dynamic per-task weights). The bar hatching uses ``//``
+    for L3 and ``xx`` for L5 so the reader can read the V_xc-treatment
+    family at a glance; L1 stays unhatched as the no-V_xc control.
     """
     source = r"""# V_xc efficacy on group 2 (H2O+C2H2 short). Bar groups:
-#   "baseline" -- random NN + pretrained-only NN, both archs
-#   "L1_B"     -- atomization-only fine-tune, per arch
-#   "L3_balanced_vxc" -- atomization + V_xc fine-tune, per arch
+#   "baseline"          -- random NN + pretrained-only NN, both archs
+#   "L1_B"              -- atomization-only fine-tune, per arch
+#   "L3_balanced_vxc"   -- atomization + V_xc fine-tune, LossNorm-step-0, per arch
+#   "L5_gradnorm_vxc"   -- atomization + V_xc fine-tune, GradNorm dynamic, per arch
 # Rows = solver mode. Cols = (AE_error, density_rmse, density_l1).
 # AE panel: PBE / CCSD vs W4-11 horizontal reference lines.
 
@@ -2043,7 +2053,15 @@ def _density_baseline(_arch, _value_name, _kind, _mols=("H2O","C2H2")):
     return float(_sub["value"].abs().mean())
 
 _g2 = eval_df[eval_df.group == "group2"]
-_LOSSES_HERE = ("L1_B", "L3_balanced_vxc")
+# V_xc-aware comparison: include L1 (no V_xc) as a control plus the two
+# V_xc-aware losses (L3 = LossNorm-step-0, L5 = GradNorm-dynamic). L2/L4
+# are anchor-treatment variants and live in their own anchor-effect plot
+# (cell 28); they would clutter this V_xc-vs-no-V_xc comparison.
+_LOSSES_HERE = ("L1_B", "L3_balanced_vxc", "L5_gradnorm_vxc")
+# Hatch keys distinguish V_xc-treatment families visually. L3 (//) =
+# step-0 LossNorm, L5 (xx) = dynamic GradNorm. L1 (no hatch) is the
+# no-V_xc control.
+_HATCH_HERE = {"L3_balanced_vxc": "//", "L5_gradnorm_vxc": "xx"}
 _GROUP_ORDER = ("baseline",) + _LOSSES_HERE
 _METRICS = ("AE_error_kcalmol", "density_rmse", "density_l1")
 _LOG_PANELS = {"AE_error_kcalmol"}
@@ -2091,7 +2109,7 @@ for _ri, _solver in enumerate(SOLVER_LABELS):
                 _ax.bar(_bar_idx, _val, width=0.6,
                         color=_arch_colors[_arch],
                         edgecolor="k", linewidth=0.5,
-                        hatch="//" if _loss == "L3_balanced_vxc" else None,
+                        hatch=_HATCH_HERE.get(_loss),
                         label=f"{_loss} · {_arch}"
                               if _ri == 0 and _ci == 0 else None)
                 _xticks.append(_bar_idx)
@@ -2124,7 +2142,7 @@ fig.legend(*axes[0][0].get_legend_handles_labels(),
            loc="lower center", ncol=4, fontsize=7,
            bbox_to_anchor=(0.5, -0.02))
 fig.suptitle("V_xc efficacy on group 2 (H₂O+C₂H₂): "
-             "baseline (random/pretrained) vs L1 vs L3, per arch",
+             "baseline (random/pretrained) vs L1 vs L3 (LossNorm) vs L5 (GradNorm), per arch",
              fontsize=11)
 fig.tight_layout(rect=(0, 0.04, 1, 0.96))
 fig.savefig(os.path.join(figures_dir, "vxc_efficacy.png"), dpi=120, bbox_inches="tight")
@@ -2140,6 +2158,11 @@ def build_cell_28_anchor_effect():
     - AE(L4_balanced_vxc_anchor). Positive bars (green) indicate anchor
     helps; negative (red) indicate anchor hurts. Writes
     ``{figures_dir}/anchor_effect.png``.
+
+    Intentionally a 2-loss (L3 vs L4) comparison isolating the PBE-anchor
+    treatment axis. The companion cell 28b (``balancing_effect``) does
+    the equivalent isolation for the balancer-strategy axis (L3 LossNorm
+    vs L5 GradNorm).
     """
     source = r"""# Anchor-effect: ΔAE = |L3 atomization-error| - |L4 atomization-error|
 # per (arch, solver, group). Positive (green) -> anchor regularizer
@@ -2183,6 +2206,79 @@ fig.suptitle("PBE-anchor effect: |L3 (V_xc only)| − |L4 (V_xc + PBE anchor)|  
              fontsize=11)
 fig.tight_layout(rect=(0, 0, 1, 0.96))
 fig.savefig(os.path.join(figures_dir, "anchor_effect.png"), dpi=120, bbox_inches="tight")
+plt.show()
+"""
+    return new_code_cell(source)
+
+
+def build_cell_28b_balancing_effect():
+    """Section 5 Cell 28b -- balancing-strategy paired bars (L3 -> L5).
+
+    Companion to cell 28 (anchor effect). Both L3 and L5 carry the same
+    underlying loss (B_atomization_plus_dm + dm_weight=0.1 + vxc_weight=0.01)
+    — the ONLY difference is the multi-task balancer:
+
+      * L3_balanced_vxc:   LossNormConfig (Chen et al. 2018 NOT used;
+                            divides each component by its STEP-0 magnitude
+                            so all components contribute equally at iter 0,
+                            then the balance drifts as components evolve)
+      * L5_gradnorm_vxc:   GradNormConfig with alpha=1.5 (Chen et al. 2018,
+                            ICML; dynamically tunes per-task weights so each
+                            task's gradient magnitude tracks
+                            ``G_mean * (relative_loss_rate ** alpha)``,
+                            keeping under-trained tasks like V_xc on par
+                            with fast-falling AE during training)
+
+    For each (arch, group) panel, plots per-solver DeltaAE = AE(L3) - AE(L5).
+    Positive bars (green) = GradNorm trains a better-AE model than
+    LossNorm-step-0; negative (red) = LossNorm-step-0 wins. The expected
+    sign for V_xc-bottlenecked configurations is positive — GradNorm should
+    let V_xc keep moving once AE has fallen, so the final model has lower
+    overall error. Writes ``{figures_dir}/balancing_effect.png``.
+    """
+    source = r"""# Balancing-strategy effect: ΔAE = |L3 atomization-error| - |L5 atomization-error|
+# per (arch, solver, group). L3 = LossNormConfig step-0; L5 = GradNormConfig
+# alpha=1.5. Positive (green) -> GradNorm beats LossNorm-step-0;
+# negative (red) -> LossNorm-step-0 wins. Single proxy legend below
+# explains the colors. Mirrors the anchor-effect plot's structure.
+import matplotlib.patches as _mpatches
+fig, axes = plt.subplots(len(ARCH_NAMES), 3, figsize=(14, 4 * len(ARCH_NAMES)),
+                         squeeze=False)
+for _ri, _arch in enumerate(ARCH_NAMES):
+    for _ci, _grp in enumerate(["group1", "group2", "group3"]):
+        _ax = axes[_ri][_ci]
+        _slice = eval_df[
+            (eval_df.group == _grp) & (eval_df.arch == _arch)
+            & (eval_df.value_name == "AE_error_kcalmol")
+        ]
+        _deltas = []; _labels = []
+        for _s in SOLVER_LABELS:
+            _lossnorm = _slice[(_slice.loss == "L3_balanced_vxc")
+                               & (_slice.solver == _s)]["value"].abs().mean()
+            _gradnorm = _slice[(_slice.loss == "L5_gradnorm_vxc")
+                               & (_slice.solver == _s)]["value"].abs().mean()
+            _deltas.append((_lossnorm if pd.notna(_lossnorm) else 0.0)
+                           - (_gradnorm if pd.notna(_gradnorm) else 0.0))
+            _labels.append(_s)
+        _x = np.arange(len(_deltas))
+        _ax.bar(_x, _deltas,
+                color=["seagreen" if _d > 0 else "indianred" for _d in _deltas],
+                edgecolor="k", linewidth=0.5)
+        _ax.axhline(0, color="k", lw=1.0)
+        _ax.set_xticks(_x); _ax.set_xticklabels(_labels, fontsize=8)
+        _ax.set_xlabel("solver mode")
+        _ax.set_title(f"{_arch} — trained on {_grp}", fontsize=9)
+        _ax.set_ylabel("Δ|AE error|  (kcal/mol)")
+        _ax.grid(True, axis="y", ls=":", alpha=0.4)
+        if _ci == 0:
+            _ax.legend(handles=[
+                _mpatches.Patch(color="seagreen", label="Δ > 0  (GradNorm wins: |L5| < |L3|)"),
+                _mpatches.Patch(color="indianred", label="Δ < 0  (LossNorm-step-0 wins: |L5| > |L3|)"),
+            ], fontsize=7, loc="best", framealpha=0.85)
+fig.suptitle("Balancing-strategy effect: |L3 (LossNorm step-0)| − |L5 (GradNorm dynamic)|  on training molecules",
+             fontsize=11)
+fig.tight_layout(rect=(0, 0, 1, 0.96))
+fig.savefig(os.path.join(figures_dir, "balancing_effect.png"), dpi=120, bbox_inches="tight")
 plt.show()
 """
     return new_code_cell(source)
@@ -2496,6 +2592,13 @@ def build_cell_34_transfer_primary_plot():
     (solver, group). Defines the runtime helper ``_render_transfer_plot``
     that cell 35 reuses for the secondary transfer set.
     Writes ``{figures_dir}/transfer_primary_mae.png``.
+
+    Bar set iterates over the full ``LOSS_NAMES`` tuple so the L5
+    GradNorm-balanced V_xc spec appears alongside L1-L4 automatically.
+    Hatch keys (set in ``_LOSS_HATCH``) distinguish V_xc-treatment
+    families visually: ``//`` for L3/L4 (LossNorm-step-0 balancing) and
+    ``xx`` for L5 (GradNorm dynamic balancing); L1/L2 carry no hatch as
+    the no-V_xc controls.
     """
     source = r"""# Transfer-plot helper. Bar groups per panel:
 #   "baseline"    -- random + pretrained NN (both archs)
@@ -2540,7 +2643,16 @@ def _baseline_ae_nn(_arch, _kind):
 _arch_colors_tr = {arch: cmap(_i / max(len(ARCH_NAMES) - 1, 1))
                    for _i, arch in enumerate(ARCH_NAMES)}
 _BASE_KIND_ALPHA = {"random": 0.45, "pretrained": 0.85}
-_HATCHED_LOSSES = {"L3_balanced_vxc", "L4_balanced_vxc_anchor"}
+# Hatch-key dict so V_xc-aware losses are visually distinct from the
+# AE/DM-only ones. Different hatches separate the V_xc-treatment families:
+#   L3 (LossNorm-step-0) and L4 (LossNorm + anchor) -> "//"
+#   L5 (GradNorm dynamic)                            -> "xx"
+# L1/L2 (no V_xc) carry no hatch.
+_LOSS_HATCH = {
+    "L3_balanced_vxc": "//",
+    "L4_balanced_vxc_anchor": "//",
+    "L5_gradnorm_vxc": "xx",
+}
 
 def _render_transfer_plot(target_df, transfer_mols, data_dir, png_name,
                           dataset_label, suptitle):
@@ -2599,7 +2711,7 @@ def _render_transfer_plot(target_df, transfer_mols, data_dir, png_name,
                     _ax.bar(_bar_idx, _mae if _mae > 0 else 0.0, width=0.6,
                             color=_arch_colors_tr[_arch],
                             edgecolor="k", linewidth=0.5,
-                            hatch="//" if _loss in _HATCHED_LOSSES else None,
+                            hatch=_LOSS_HATCH.get(_loss),
                             label=f"{_loss} · {_arch}"
                                   if _ri == 0 and _ci == 0 else None)
                     _xticks.append(_bar_idx)
@@ -3177,6 +3289,7 @@ def main(
         build_cell_26b_baseline_evals(),
         build_cell_27_vxc_efficacy(),
         build_cell_28_anchor_effect(),
+        build_cell_28b_balancing_effect(),
         build_cell_29_transfer_md(),
         build_cell_30_transfer_primary(),
         build_cell_31_transfer_secondary(),
