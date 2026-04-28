@@ -22,6 +22,7 @@ from comparison_lib import (  # noqa: E402
     load_run_artifacts,
     headline_stats,
     plot_baseline_reduction,
+    plot_baseline_reduction_transfer,
     plot_density_vs_energy_tradeoff,
     plot_in_dist_vs_transfer,
     plot_loss_strategy_heatmap,
@@ -51,8 +52,9 @@ def main() -> int:
         print(f"  {k}: {None if v is None else v.shape}")
 
     print(f"\nGenerating figures into {FIG_DIR} ...")
-    plot_baseline_reduction(art,           FIG_DIR / "fig1_baseline_reduction.png",         RUN_LABEL)
-    plot_density_vs_energy_tradeoff(art,   FIG_DIR / "fig2_density_vs_energy_tradeoff.png", RUN_LABEL)
+    plot_baseline_reduction(art,           FIG_DIR / "fig1_baseline_reduction.png",          RUN_LABEL)
+    plot_baseline_reduction_transfer(art,  FIG_DIR / "fig1b_baseline_reduction_transfer.png", RUN_LABEL)
+    plot_density_vs_energy_tradeoff(art,   FIG_DIR / "fig2_density_vs_energy_tradeoff.png",  RUN_LABEL)
     plot_in_dist_vs_transfer(art,          FIG_DIR / "fig3_in_dist_vs_transfer.png",        RUN_LABEL)
     plot_loss_strategy_heatmap(art,        FIG_DIR / "fig4_loss_strategy_heatmap.png",      RUN_LABEL)
     plot_arch_comparison(art,              FIG_DIR / "fig5_arch_comparison.png",            RUN_LABEL)

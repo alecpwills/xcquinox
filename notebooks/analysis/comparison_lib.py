@@ -282,6 +282,131 @@ def plot_baseline_reduction(art: dict, out_path: Path, run_label: str = "unweigh
 
 
 # ---------------------------------------------------------------------------
+# Plot 1b — multi-decade baseline reduction on TRANSFER sets
+# ---------------------------------------------------------------------------
+
+def plot_baseline_reduction_transfer(art: dict, out_path: Path, run_label: str = "unweighted") -> None:
+    """Same layout as ``plot_baseline_reduction`` but evaluated on the
+    held-out transfer molecules:
+
+      - top row:   primary   = {CH₄, H₂, OH}        (W4-11 light hydrides)
+      - bottom row: secondary = {CO₂, HF, NH₂, NH₃} (W4-11 mixed)
+
+    Each row has 3 panels (one per training-data group), bars are the
+    trained NN's MAE on the held-out set, and the horizontal references
+    are the PBE-vs-W4-11 MAE computed on the same transfer set (so the
+    "did training beat PBE on this molecule set?" comparison is fair).
+
+    Why a separate plot
+    -------------------
+    The training-set version (``plot_baseline_reduction``) tells you
+    whether the model fit the data it was trained on; the transfer-set
+    version is the only way to tell whether the trained XC functional
+    is a useful general-purpose functional. Behler & Parrinello (2007)
+    §II make exactly this distinction for NN potentials. PBE itself
+    sits at ~3.4 kcal/mol on the primary set and ~11.0 kcal/mol on the
+    secondary set; a successfully transferable model must beat those
+    horizontal lines.
+
+    References
+    ----------
+    - Karton, Daon, Martin, *CPL* **510**, 165 (2011): primary set
+      {CH₄, H₂, OH} and secondary set {CO₂, HF, NH₂, NH₃} are W4-11
+      subsets.
+    - Behler, Parrinello, *PRL* **98**, 146401 (2007) §II: in-distribution
+      vs holdout MAE distinction for neural-network XC / potentials.
+    - Pople, *RMP* **71**, 1267 (1999): chemical accuracy = 1 kcal/mol.
+    - Perdew, Burke, Ernzerhof, *PRL* **77**, 3865 (1996): PBE GGA.
+    """
+    t1 = art["transfer_primary_df"]
+    t2 = art["transfer_secondary_df"]
+    if t1 is None and t2 is None:
+        return
+
+    sets = []
+    if t1 is not None:
+        sets.append(("primary {CH₄, H₂, OH}", t1))
+    if t2 is not None:
+        sets.append(("secondary {CO₂, HF, NH₂, NH₃}", t2))
+
+    fig, axes = plt.subplots(
+        len(sets), 3,
+        figsize=(16, 4.6 * len(sets)),
+        sharey="row",
+        squeeze=False,
+    )
+
+    losses = list(LOSS_DISPLAY_ORDER)
+    width = 0.13
+    arch_offsets = {"deep_combined": -0.18, "deep_combined_attn": +0.18}
+    arch_colors = {"deep_combined": "#1f77b4", "deep_combined_attn": "#ff7f0e"}
+
+    for ri, (set_name, df_set) in enumerate(sets):
+        # PBE reference MAE on this transfer set (over molecules):
+        ae_pbe = float(np.abs(df_set.loc[
+            df_set.value_name == "AE_error_pbe_kcalmol", "value"
+        ]).mean())
+
+        # Per-spec MAE (over the transfer set's molecules):
+        spec_mae = mae_of(df_set, "AE_error_kcalmol",
+                          group_keys=["group", "arch", "loss", "solver"])
+
+        for ci, group in enumerate(GROUP_DISPLAY_ORDER):
+            ax = axes[ri][ci]
+            sub = spec_mae[spec_mae.group == group]
+            for ai, arch in enumerate(ARCH_DISPLAY_ORDER):
+                for si, solver in enumerate(SOLVER_DISPLAY_ORDER):
+                    row = sub[(sub.arch == arch) & (sub.solver == solver)]
+                    if row.empty:
+                        continue
+                    xs = np.array([losses.index(l) for l in row["loss"]])
+                    xs = xs + arch_offsets[arch] + (si - 1) * width
+                    ax.bar(
+                        xs, row["mae"].values, width=width,
+                        color=arch_colors[arch],
+                        edgecolor="k", linewidth=0.4,
+                        alpha=0.55 + 0.18 * si,
+                        label=(f"{arch} · {solver}"
+                               if ri == 0 and ci == 0 else None),
+                    )
+            ax.axhline(
+                ae_pbe, ls="-", color="black", lw=1.5,
+                label=(f"PBE vs W4-11 ({ae_pbe:.2f})"
+                       if ri == 0 and ci == 0 else None),
+            )
+            ax.axhline(
+                CHEMICAL_ACCURACY_KCALMOL, ls="-.", color="purple", lw=1.6,
+                label=(f"chem. acc. ({CHEMICAL_ACCURACY_KCALMOL})"
+                       if ri == 0 and ci == 0 else None),
+            )
+            ax.set_yscale("log")
+            ax.set_xticks(range(len(losses)))
+            ax.set_xticklabels([LOSS_DISPLAY_LABELS[l] for l in losses],
+                               rotation=22, ha="right", fontsize=7)
+            if ri == 0:
+                ax.set_title(GROUP_DISPLAY_LABELS[group], fontsize=10)
+            if ci == 0:
+                ax.set_ylabel(
+                    f"MAE on {set_name}\n(kcal/mol, log)",
+                    fontsize=9,
+                )
+            ax.grid(True, axis="y", which="both", ls=":", alpha=0.35)
+
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=5,
+               fontsize=7, bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle(
+        f"Baseline reduction (transfer sets) — {run_label} pretrain-origin\n"
+        "log-y bars: trained NN MAE on held-out molecules; horizontal lines = PBE on the same set\n"
+        "primary {CH₄, H₂, OH} · secondary {CO₂, HF, NH₂, NH₃}  (W4-11 subsets)",
+        fontsize=11,
+    )
+    fig.tight_layout(rect=(0, 0.04, 1, 0.94))
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Plot 2 — density vs energy tradeoff scatter (Medvedev et al. 2017)
 # ---------------------------------------------------------------------------
 

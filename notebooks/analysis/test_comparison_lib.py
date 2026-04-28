@@ -28,6 +28,7 @@ from comparison_lib import (  # noqa: E402
     mae_of,
     headline_stats,
     plot_baseline_reduction,
+    plot_baseline_reduction_transfer,
     plot_density_vs_energy_tradeoff,
     plot_in_dist_vs_transfer,
     plot_loss_strategy_heatmap,
@@ -138,11 +139,12 @@ class TestLiveData:
     def test_all_plots_run(self, art, tmp_path):
         """Every plot function must produce a non-empty PNG without raising."""
         for fn, name in [
-            (plot_baseline_reduction,         "f1.png"),
-            (plot_density_vs_energy_tradeoff, "f2.png"),
-            (plot_in_dist_vs_transfer,        "f3.png"),
-            (plot_loss_strategy_heatmap,      "f4.png"),
-            (plot_arch_comparison,            "f5.png"),
+            (plot_baseline_reduction,           "f1.png"),
+            (plot_baseline_reduction_transfer,  "f1b.png"),
+            (plot_density_vs_energy_tradeoff,   "f2.png"),
+            (plot_in_dist_vs_transfer,          "f3.png"),
+            (plot_loss_strategy_heatmap,        "f4.png"),
+            (plot_arch_comparison,              "f5.png"),
         ]:
             out = tmp_path / name
             fn(art, out, run_label="test")
