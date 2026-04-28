@@ -87,13 +87,32 @@ def main(argv=None) -> int:
     if args.device == "cpu":
         os.environ["JAX_PLATFORMS"] = "cpu"
 
+    # Enable float64 BEFORE jax is imported. JAX defaults to float32; setting
+    # ``jax_enable_x64`` after ``import jax`` works in some configurations but
+    # is unreliable because equinox / pyscfad / other importers may capture
+    # the default dtype before our update runs. The env-var approach is the
+    # only universally reliable switch.
+    #
+    # Every other entry point in the codebase enables x64 (notebook cell 0,
+    # conftest.py, workers/{pretrain,train,test}_worker.py). This worker was
+    # the only entry point still inheriting JAX's float32 default, which
+    # produced silently degraded convergence on long training runs (loss
+    # values legitimately below 1e-7 lose precision in fp32; gradients of
+    # such small losses are at machine epsilon).
+    os.environ.setdefault("JAX_ENABLE_X64", "1")
+
     # Now safe to import JAX; report the actual backend so the parent can
     # verify routing. Emitted as the first stdout line for test observability.
     import jax  # noqa: E402
+    # Defensive belt-and-suspenders: if for any reason JAX_ENABLE_X64 was not
+    # honored at import time, force it via the runtime config. This is a
+    # no-op when the env var was respected.
+    jax.config.update("jax_enable_x64", True)
     sys.stdout.write(json.dumps({
         "kind": "init",
         "requested_device": args.device,
         "jax_platform": jax.default_backend(),
+        "jax_enable_x64": bool(jax.config.read("jax_enable_x64")),
     }) + "\n")
     sys.stdout.flush()
 

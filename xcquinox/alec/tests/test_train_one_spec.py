@@ -126,3 +126,51 @@ def test_device_invalid_value_is_rejected(tmp_path):
     rc, stdout = _run_worker([str(bogus), "--device=tpu"], timeout=30)
     # argparse exits with code 2 on invalid choice.
     assert rc == 2, f"expected rc=2 for invalid --device, got {rc}"
+
+
+def test_worker_enables_jax_x64_by_default(tmp_path):
+    """The training subprocess MUST run with ``jax_enable_x64=True``.
+
+    Every other entry point in the codebase enables float64 (notebook
+    cell 0, conftest.py, workers/{pretrain,train,test}_worker.py); this
+    worker was the only entry point that silently inherited JAX's
+    float32 default, producing degraded convergence on long training
+    runs (loss values legitimately below 1e-7 lose precision in fp32,
+    and gradients of such small losses are at machine epsilon).
+
+    The fix sets ``JAX_ENABLE_X64=1`` as an env var BEFORE the first
+    ``import jax`` (the only universally reliable switch — the
+    ``jax.config.update`` path can be too late when third-party
+    importers like equinox or pyscfad have already cached defaults),
+    plus a defensive ``jax.config.update("jax_enable_x64", True)``
+    after the import.
+
+    This test verifies the contract end-to-end: launch the worker WITH
+    NO x64 hint in the parent environment and assert the init JSON
+    payload reports ``jax_enable_x64=True``. A regression of either
+    the env-var setdefault or the post-import update would fail this
+    test even on systems where one of the two paths works alone.
+    """
+    bogus = tmp_path / "no_such.spec"
+    env_overrides = {}
+    # Scrub any inherited JAX_ENABLE_X64 so we test the worker's own
+    # default-setting logic, not parent-process leakage.
+    env = _base_env()
+    env.pop("JAX_ENABLE_X64", None)
+    proc = subprocess.run(
+        [sys.executable, "-m", "xcquinox.alec._train_one_spec",
+         str(bogus), "--no-progress"],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    init = _parse_init_line(proc.stdout)
+    assert init is not None, (
+        f"worker did not emit init JSON line; stdout={proc.stdout!r}"
+    )
+    assert init.get("jax_enable_x64") is True, (
+        f"worker MUST enable float64 by default; init={init!r}. "
+        f"A regression in _train_one_spec.main() to drop the "
+        f"``os.environ.setdefault('JAX_ENABLE_X64', '1')`` line OR the "
+        f"post-import ``jax.config.update('jax_enable_x64', True)`` "
+        f"call would let JAX fall back to float32, silently degrading "
+        f"convergence on long training runs."
+    )
