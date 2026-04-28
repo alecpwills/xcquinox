@@ -81,7 +81,7 @@ def test_scf_energy_uses_post_mix_density():
         mode=SolverMode.FULL,
         max_cycles=30,
         conv_tol=1e-10,
-        mixer_kwargs={"alpha": 0.5},
+        mixer_kwargs=(("alpha", 0.5),),
     )
     result = run_scf(cfg, model, md)
     assert bool(result.converged)

@@ -81,7 +81,7 @@ def test_oep_uks_objective_gradient_consistent():
     mf_pbe.kernel()
     dm_target = mf_pbe.make_rdm1()  # (2, nao, nao)
 
-    _, three_center, aux_on_grid = _build_aux_basis_matrices(mol, mf_pbe, "sto-3g")
+    _, three_center, aux_on_grid, _S_aux = _build_aux_basis_matrices(mol, mf_pbe, "sto-3g")
     n_aux = three_center.shape[0]
     ao = mf_pbe._numint.eval_ao(mol, mf_pbe.grids.coords)
     rho_target_a = np.einsum("pi,ij,pj->p", ao, dm_target[0], ao)
@@ -101,7 +101,7 @@ def test_oep_uks_objective_gradient_consistent():
         vxc_a = np.einsum("t,tij->ij", b_a, three_center)
         vxc_b = np.einsum("t,tij->ij", b_b, three_center)
         vxc_matrix = np.stack([vxc_a, vxc_b], axis=0)
-        dm_scf, _, j_matrix = _ks_from_vxc_matrix(
+        dm_scf, _, j_matrix, _ = _ks_from_vxc_matrix(
             mol, mf_pbe, vxc_matrix, dm0=dm_seed,
         )
         rho_scf_a = np.einsum("pi,ij,pj->p", ao, dm_scf[0], ao)
