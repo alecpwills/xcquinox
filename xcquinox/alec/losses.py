@@ -3,6 +3,7 @@
 Implements THE SPEC §7.1 (base class) and §7.2 (A, B, C, D1, D2, D3).
 """
 import abc
+import math
 from typing import ClassVar
 
 import jax.numpy as jnp
@@ -233,7 +234,14 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
         else:
             # Per-element MSE: divide by total element count of dm_ref.
             # RKS: n_ao*n_ao; UKS (shape (2, n_ao, n_ao)): 2*n_ao*n_ao.
-            n_elems = int(jnp.prod(jnp.array(dm_ref_arr.shape)))
+            #
+            # Use ``math.prod`` over the static shape tuple instead of
+            # ``int(jnp.prod(jnp.array(dm_ref_arr.shape)))``: under
+            # ``eqx.filter_jit`` the latter returns a traced scalar and
+            # ``int(...)`` raises ``ConcretizationTypeError``. ``shape``
+            # is always a tuple of concrete Python ints (jit does not
+            # trace shapes), so ``math.prod`` is both jit-safe and faster.
+            n_elems = math.prod(dm_ref_arr.shape)
             err = err / float(n_elems)
         terms.append(err)
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)

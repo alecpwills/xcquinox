@@ -1275,6 +1275,57 @@ def test_dm_term_normalizes_per_element_for_uks(monkeypatch):
     )
 
 
+def test_dm_term_n_elems_is_jit_safe(monkeypatch):
+    """``_dm_term`` must compute ``n_elems`` from a static shape tuple,
+    not via ``int(jnp.prod(jnp.array(shape)))``. The jnp-prod path works
+    eagerly but raises ``ConcretizationTypeError`` under jit because
+    ``int(...)`` cannot be applied to a traced scalar.
+
+    Pre-fix code:
+        ``n_elems = int(jnp.prod(jnp.array(dm_ref_arr.shape)))``
+    blew up the live training subprocess on
+    ``deep_combined/B_atomization_plus_dm`` after the loss factory
+    started running through ``eqx.filter_value_and_grad`` -> jit.
+
+    Post-fix uses ``math.prod(dm_ref_arr.shape)``: shape is always a
+    tuple of concrete Python ints (jit does not trace shapes), so the
+    multiplication stays in plain Python and is safe to call from
+    inside any jit-traced function.
+
+    This regression test wraps ``_dm_term`` in ``eqx.filter_jit`` and
+    invokes it with a stub prediction; a regression to the jnp-prod
+    pattern would raise ``ConcretizationTypeError`` and fail this test.
+    """
+    import jax.numpy as jnp
+    import equinox as eqx
+    from xcquinox.alec import losses as losses_mod
+
+    n_ao = 4
+    dm_target = jnp.full((2, n_ao, n_ao), 0.5)
+
+    def _stub_predict(model, mol_data, solver_config=None):
+        del model, mol_data, solver_config
+        return jnp.zeros_like(dm_target)
+    monkeypatch.setattr(
+        losses_mod, "oneshot_dm_prediction_fast", _stub_predict,
+    )
+
+    @eqx.filter_jit
+    def jitted_dm_term(model, mol_data_tuple):
+        return losses_mod._dm_term(
+            model=model,
+            mol_data=list(mol_data_tuple),
+            iter_idx=[0],
+        )
+
+    # equinox's filter_jit traces eagerly; this must not raise.
+    out = jitted_dm_term(object(), tuple([{"dm_target": dm_target}]))
+    assert abs(float(out) - 0.25) < 1e-12, (
+        f"jit-traced _dm_term should give 0.25 (per-element MSE for "
+        f"all-ones target vs zeros prediction); got {float(out)}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # D10-loss audit fix: A and D1 now have molecules_only flag
 # ---------------------------------------------------------------------------
