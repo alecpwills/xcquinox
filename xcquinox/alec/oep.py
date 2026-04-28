@@ -617,12 +617,27 @@ def run_oep_inversion(
     # n_iter never exceeds what the user asked for; documented in the
     # OEPResult.n_iter docstring above.
     n_iter = min(int(result.nit), max_iter)
-    # D5 audit fix: converged requires BOTH density error AND L-BFGS-B
-    # success status (not just the density-error tolerance).
+    # Convergence semantics (R3.5 audit refinement of the original D5 fix).
+    # The user's contract is: "the V_xc that ``run_oep_inversion`` returns
+    # produces a KS density that matches ``dm_target`` to within
+    # ``conv_tol``." That depends on:
+    #   1. final_success — the post-optimization SCF actually solved
+    #   2. final_error < conv_tol — the density matches to tolerance
+    #   3. final_error is finite (rules out NaN from a blown-up SCF)
+    #
+    # Pre-fix code ALSO required ``result.success``, but that flag is
+    # False whenever scipy exits at ``max_iter`` even if density_error
+    # already passed conv_tol — conflating "L-BFGS-B optimizer converged"
+    # with "OEP inversion converged". For our purposes, hitting max_iter
+    # at a tight density_error is a successful inversion: the V_xc at
+    # iteration N is mathematically a valid Wu-Yang displacement
+    # (V_xc^baseline + Σ b_t^(N) g_t) regardless of whether the gradient
+    # had reached scipy's pgtol/factr threshold. Drop the scipy-success
+    # requirement so genuinely good inversions are reported as such.
     converged = bool(
         final_success
+        and np.isfinite(final_error)
         and (final_error < conv_tol)
-        and getattr(result, "success", False)
     )
     lbfgs_status = str(getattr(result, "message", "no message"))
     # R3-D L6: surface final-SCF failure in lbfgs_status so a consumer

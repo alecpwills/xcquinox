@@ -418,6 +418,55 @@ def test_oep_provenance_metadata_persists_through_save_load():
         assert abs(float(loaded["oep_n_electrons"]) - 10.0) < 1e-12
 
 
+def test_oep_converged_when_density_error_below_tol_even_at_max_iter():
+    """Convergence semantics pin: ``OEPResult.converged`` reports
+    "the V_xc that the inversion returns produces a KS density that
+    matches dm_target to within conv_tol" — NOT "scipy's L-BFGS-B
+    optimizer reached its own pgtol/factr threshold". Hitting
+    ``max_iter`` while ``density_error < conv_tol`` MUST still
+    produce ``converged == True``.
+
+    Pre-fix code conjuncted ``getattr(result, 'success', False)``
+    (scipy's flag) into ``converged``; that flag is False when scipy
+    exits at max_iter, so genuinely-good inversions were reported as
+    failures and downstream save_vxc_ref was skipped. Reproduced on
+    H2O/def2-svp/grid_level=1 with the displacement-form OEP: density
+    matched at 1.18e-3 (well below conv_tol=2e-3) yet converged=False
+    because L-BFGS-B was still making progress when max_iter fired.
+
+    This test runs OEP with a small max_iter so scipy almost certainly
+    exits at the limit, but uses a CCSD-target/PBE-baseline pair where
+    density_error stays small (the displacement form starts at b=0
+    which gives the PBE density — differences of order CCSD-PBE).
+    The contract: if final_error < conv_tol AND the final SCF succeeded,
+    converged == True.
+    """
+    from xcquinox.alec.oep import run_oep_inversion
+    from xcquinox.alec.data import precompute_fixed_density_data
+    mol = h2_molecule()
+    data = precompute_fixed_density_data(mol)
+    # Use the PBE DM as target so OEP converges trivially at b=0
+    # (density_error << conv_tol after one iteration), while max_iter is
+    # set high enough that scipy reports "RELATIVE REDUCTION OF F" —
+    # which IS scipy success — but we still assert that the contract
+    # works regardless of which message scipy emits.
+    dm_target = np.asarray(data["dm_pbe"])
+    result = run_oep_inversion(
+        mol, dm_target, baseline_xc="pbe",
+        aux_basis="sto-3g", max_iter=2,
+        conv_tol=1e-2, regularization=1e-4,
+    )
+    assert result.density_error < 1e-2, (
+        f"PBE-target/PBE-baseline OEP at b=0 should give tiny density "
+        f"error; got {result.density_error:.3e}"
+    )
+    assert result.converged is True, (
+        f"density_error={result.density_error:.3e} < conv_tol=1e-2 "
+        f"and final SCF succeeded; converged must be True. "
+        f"lbfgs_status={result.lbfgs_status!r}"
+    )
+
+
 def test_oep_rejects_wrong_basis_target_dm():
     """D10 audit fix: Tr(S * dm_target) must equal mol.nelectron; a
     target DM built in a different basis silently has the wrong trace

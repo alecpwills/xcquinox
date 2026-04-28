@@ -602,30 +602,35 @@ def build_cell_12_h2o_data():
     cascade. On OEP failure at both tiers, ``save_vxc_ref`` is skipped so
     V_xc-aware losses degrade to no-op rather than crashing the notebook.
 
-    OEP cascade (redesigned 2026-04-23 after measurement-driven audit). The
-    previous "step-5-proven" primary (def2-svp-jkfit, conv_tol=1e-6,
-    reg=1e-4) was built on a false premise: step 5's H2O OEP never
-    converged either -- it silently fell through to ``vxc_ref=None``. With
-    a finite jkfit aux basis, Wu-Yang + L-BFGS-B + Tikhonov has an
-    asymptotic density-error floor around ~1e-3 for H2O; a conv_tol of
-    1e-6 is unreachable. Measurements (H2O, aux=def2-tzvp-jkfit):
+    OEP cascade (re-tuned 2026-04-28 against the Wu-Yang displacement-
+    form OEP introduced by `4b2b58ba9`). The pre-rewrite cascade
+    (tzvp-jkfit, reg=1e-5/1e-6) was tuned against the prior coefficient-
+    space-regularized OEP and produces premature L-BFGS-B exits with
+    density_error ~2-7e-2 under the displacement form: the "relative
+    reduction of F" criterion fires before the inversion approaches the
+    target, and pushing reg lower (1e-6) compounds the ill-conditioning.
 
-        AO=def2-tzvp, reg=1e-4 -> density_error 2.6e-3
-        AO=def2-tzvp, reg=1e-5 -> density_error 1.3e-3
-        AO=def2-tzvp, reg=1e-6 -> density_error 9.6e-4 (@800 iters)
-        AO=def2-svp,  reg=1e-5 -> density_error 9.8e-4 (the case-study default)
+    Measurements (H2O, def2-svp/grid_level=1, max_iter=500, displacement
+    form OEP):
 
-    Higher regularization makes density_error WORSE (Tikhonov pulls the
-    V_xc expansion toward zero), so the new cascade LOWERS reg across
-    tiers rather than raising it:
+        aux=def2-svp-jkfit,  reg=1e-4 -> density_error 1.17e-3
+        aux=def2-tzvp-jkfit, reg=1e-4 -> density_error 1.16e-3
+        aux=def2-svp-jkfit,  reg=5e-4 -> density_error 1.98e-3 (worse)
+        aux=def2-tzvp-jkfit, reg=1e-3 -> density_error 2.40e-3 (worse)
 
-      * primary:  aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=2e-3, reg=1e-5
-      * fallback: aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=2e-3, reg=1e-6
+    All four still improving at iter 500 (status: TOTAL NO. OF ITERATIONS
+    REACHED LIMIT, not "relative reduction of F"). reg=1e-4 is the sweet
+    spot where the V-space Tikhonov term stabilizes the inversion without
+    over-biasing toward b=0.
 
-    conv_tol=2e-3 gives a ~2x margin over the primary density_error
-    floor measured on H2O at both AO bases. Step 6's V_xc efficacy
-    experiment (Cell 27, L1 vs L3) depends on vxc_ref being present;
-    silent failure is NOT an acceptable outcome here.
+      * primary:  aux_basis="def2-svp-jkfit",  max_iter=500,  conv_tol=2e-3, reg=1e-4
+      * fallback: aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=2e-3, reg=1e-4
+
+    conv_tol=2e-3 gives a ~1.7x margin over the primary density_error
+    floor. Primary uses the smaller aux for speed; fallback escalates to
+    tzvp-jkfit + double the iteration budget for genuinely harder cases.
+    Step 6's V_xc efficacy experiment (Cell 27, L1 vs L3) depends on
+    vxc_ref being present; silent failure is NOT an acceptable outcome.
 
     Re-run behavior: if H2O.npz exists but lacks vxc_ref (e.g. prior OEP
     failed), reload dm_target from the cached .npz and retry the cascade
@@ -697,14 +702,24 @@ else:
             charge=0, spin=0, grid_level=GRID_LEVEL,
             atom_composition=(("O", 1), ("H", 2)),
         )
-        # Two-tier OEP cascade (measurement-driven 2026-04-23). Primary
-        # reaches density_error ~1.25e-3 on H2O/def2-tzvp; fallback
-        # lowers regularization for marginally harder inversions. See
-        # cell docstring for the measurement rationale and why the old
-        # svp-jkfit/reg=1e-4 primary was abandoned.
+        # Two-tier OEP cascade (re-tuned 2026-04-28 against the Wu-Yang
+        # displacement-form OEP introduced by `4b2b58ba9`). The previous
+        # tzvp-jkfit/reg=1e-5/conv_tol=2e-3 cascade was tuned against the
+        # pre-rewrite OEP and exits prematurely with density_error
+        # ~2-7e-2 because L-BFGS-B's "relative reduction of F" criterion
+        # fires on the under-regularized (reg≤1e-5) Lagrangian before
+        # the inversion approaches the target. Lowering reg further
+        # (1e-6) compounds the problem.
+        #
+        # Measurement-driven re-tune: at reg=1e-4, both svp-jkfit and
+        # tzvp-jkfit on H2O/def2-svp/grid_level=1 reach
+        # density_error ~1.17e-3 by iter 500 and continue to improve.
+        # conv_tol=2e-3 gives a ~1.7x margin over the achievable floor.
+        # Primary uses the smaller aux basis for speed; fallback escalates
+        # to tzvp-jkfit + double iteration budget for harder cases.
         _OEP_TIERS = [
-            ("primary",  dict(aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=2e-3, regularization=1e-5)),
-            ("fallback", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=2e-3, regularization=1e-6)),
+            ("primary",  dict(aux_basis="def2-svp-jkfit",  max_iter=500,  conv_tol=2e-3, regularization=1e-4)),
+            ("fallback", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=2e-3, regularization=1e-4)),
         ]
         _oep = None
         for _tier_name, _tier_kw in _OEP_TIERS:
@@ -815,10 +830,11 @@ else:
             charge=0, spin=0, grid_level=GRID_LEVEL,
             atom_composition=(("C", 2), ("H", 2)),
         )
-        # Two-tier OEP cascade; see cell 12 docstring for rationale.
+        # Two-tier OEP cascade (re-tuned 2026-04-28 against Wu-Yang
+        # displacement-form OEP); see cell 12 docstring for rationale.
         _OEP_TIERS = [
-            ("primary",  dict(aux_basis="def2-tzvp-jkfit", max_iter=500,  conv_tol=2e-3, regularization=1e-5)),
-            ("fallback", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=2e-3, regularization=1e-6)),
+            ("primary",  dict(aux_basis="def2-svp-jkfit",  max_iter=500,  conv_tol=2e-3, regularization=1e-4)),
+            ("fallback", dict(aux_basis="def2-tzvp-jkfit", max_iter=1000, conv_tol=2e-3, regularization=1e-4)),
         ]
         _oep = None
         for _tier_name, _tier_kw in _OEP_TIERS:
