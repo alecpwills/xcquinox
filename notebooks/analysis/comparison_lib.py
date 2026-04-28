@@ -138,8 +138,16 @@ def load_run_artifacts(run_dir: Path) -> dict:
     Returns
     -------
     dict with keys ``eval_df``, ``baseline_df``, ``transfer_primary_df``,
-    ``transfer_secondary_df`` (each a pandas DataFrame; ``None`` when the
-    file is absent so callers can skip downstream sections cleanly).
+    ``transfer_secondary_df``, ``baseline_transfer_primary_df``,
+    ``baseline_transfer_secondary_df`` (each a pandas DataFrame; ``None``
+    when the file is absent so callers can skip downstream sections cleanly).
+
+    The two ``baseline_transfer_*_df`` entries are produced by
+    ``notebooks/analysis/compute_baseline_transfer.py`` (a separate
+    script because the in-notebook cell 26b only evaluates random +
+    pretrained baselines on TRAINED molecules; transfer-set baselines
+    require additional run_test calls). They follow the same schema as
+    ``baseline_df`` but with ``molecule`` drawn from the transfer set.
     """
     run_dir = Path(run_dir)
 
@@ -151,10 +159,12 @@ def load_run_artifacts(run_dir: Path) -> dict:
         return None
 
     return {
-        "eval_df":              _maybe_read("eval_df"),
-        "baseline_df":          _maybe_read("baseline_df"),
-        "transfer_primary_df":  _maybe_read("transfer_primary_df"),
-        "transfer_secondary_df":_maybe_read("transfer_secondary_df"),
+        "eval_df":                       _maybe_read("eval_df"),
+        "baseline_df":                   _maybe_read("baseline_df"),
+        "transfer_primary_df":           _maybe_read("transfer_primary_df"),
+        "transfer_secondary_df":         _maybe_read("transfer_secondary_df"),
+        "baseline_transfer_primary_df":  _maybe_read("baseline_transfer_primary_df"),
+        "baseline_transfer_secondary_df":_maybe_read("baseline_transfer_secondary_df"),
     }
 
 
@@ -184,21 +194,118 @@ def mae_of(df: pd.DataFrame, value_name: str, *, group_keys: list[str]) -> pd.Da
 # Plot 1 — multi-decade baseline reduction (log-y bar chart)
 # ---------------------------------------------------------------------------
 
-def plot_baseline_reduction(art: dict, out_path: Path, run_label: str = "unweighted") -> None:
-    """Bar chart on log-y showing mean |AE error| (kcal/mol) per (loss, group),
-    with horizontal reference lines for random NN, pretrained-only NN, and
-    PBE vs W4-11 baselines.
+def _per_arch_baseline_mae(baseline_df: pd.DataFrame,
+                           value_name: str = "AE_error_kcalmol") -> dict:
+    """Return ``{(kind, arch): mean|value|}`` from a baseline-style df.
 
-    Why this plot
-    -------------
-    The single most important finding of any DFT-functional training run is
-    "how many orders of magnitude does fine-tuning buy you over the
-    starting point?". Random init for these networks gives AE errors of
-    several hundred kcal/mol; PBE itself sits at ~7-8 kcal/mol on
-    H₂O/C₂H₂; the W4-11 chemical-accuracy threshold is 1 kcal/mol.
-    Plotting all three reference levels alongside the trained-model error
-    on a log axis exposes whether the training reached chemical accuracy
-    AND whether it pushed past PBE.
+    Works on both the trained-mols ``baseline_df`` (cell 26b output) and
+    the new ``baseline_transfer_*_df`` files written by
+    ``compute_baseline_transfer.py``.
+    """
+    if baseline_df is None:
+        return {}
+    sub = baseline_df[baseline_df.value_name == value_name]
+    sub = sub.assign(absv=sub["value"].abs())
+    g = sub.groupby(["baseline", "arch"])["absv"].mean()
+    return {(k[0], k[1]): float(v) for k, v in g.items()}
+
+
+def _draw_one_baseline_panel(
+    ax,
+    spec_mae: pd.DataFrame,           # one (group)'s rows from mae_of(...)
+    baselines: dict,                   # {(kind, arch): mae}
+    pbe_ref: float,
+    *,
+    show_legend: bool,
+    panel_title: str,
+):
+    """Draw one panel of the baseline-reduction figure (used by both the
+    training-set and transfer-set variants).
+
+    The x-axis has TWO regions separated by a gap:
+
+      * region 0: a "baseline" bar group (random + pretrained per arch)
+      * region 1+: one bar group per loss strategy (5 groups, 6 bars each:
+                   2 archs × 3 solvers)
+
+    PBE-on-this-set is a horizontal solid line; chemical accuracy is
+    horizontal dash-dot. Random NN bars are intentionally drawn at
+    half-saturation so they read as "background reference" rather than
+    competing with the trained bars visually.
+    """
+    losses = list(LOSS_DISPLAY_ORDER)
+    width = 0.13
+    arch_offsets = {"deep_combined": -0.18, "deep_combined_attn": +0.18}
+    arch_colors = {"deep_combined": "#1f77b4", "deep_combined_attn": "#ff7f0e"}
+    base_alpha = {"random": 0.45, "pretrained": 0.85}
+
+    # x = -1 reserved for the baseline group; losses occupy x = 0 .. n-1.
+    base_x = -1.4
+
+    for ki, kind in enumerate(("random", "pretrained")):
+        for ai, arch in enumerate(ARCH_DISPLAY_ORDER):
+            v = baselines.get((kind, arch))
+            if v is None:
+                continue
+            xc = base_x + (ki - 0.5) * 0.55 + arch_offsets[arch] * 0.6
+            ax.bar(
+                xc, v, width=width * 1.4,
+                color=arch_colors[arch],
+                alpha=base_alpha[kind],
+                edgecolor="k", linewidth=0.4,
+                label=(f"{kind} · {arch}" if show_legend else None),
+            )
+
+    for ai, arch in enumerate(ARCH_DISPLAY_ORDER):
+        for si, solver in enumerate(SOLVER_DISPLAY_ORDER):
+            row = spec_mae[(spec_mae.arch == arch) & (spec_mae.solver == solver)]
+            if row.empty:
+                continue
+            xs = np.array([losses.index(l) for l in row["loss"]])
+            xs = xs + arch_offsets[arch] + (si - 1) * width
+            ax.bar(
+                xs, row["mae"].values, width=width,
+                color=arch_colors[arch],
+                edgecolor="k", linewidth=0.4,
+                alpha=0.55 + 0.18 * si,
+                label=(f"trained · {arch} · {solver}" if show_legend else None),
+            )
+
+    ax.axvline(-0.5, color="lightgrey", lw=1.0, ls="-")
+    ax.axhline(pbe_ref, ls="-",  color="black",  lw=1.5,
+               label=(f"PBE on this set ({pbe_ref:.2f})" if show_legend else None))
+    ax.axhline(CHEMICAL_ACCURACY_KCALMOL, ls="-.", color="purple", lw=1.6,
+               label=(f"chem. accuracy ({CHEMICAL_ACCURACY_KCALMOL})" if show_legend else None))
+
+    ax.set_yscale("log")
+    xticks = [base_x] + list(range(len(losses)))
+    xlabels = ["baselines\n(rand · pretrn)"] + [LOSS_DISPLAY_LABELS[l] for l in losses]
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(xlabels, rotation=22, ha="right", fontsize=7)
+    ax.set_title(panel_title, fontsize=10)
+    ax.grid(True, axis="y", which="both", ls=":", alpha=0.35)
+
+
+def plot_baseline_reduction(art: dict, out_path: Path, run_label: str = "unweighted") -> None:
+    """Bar chart on log-y showing mean |AE error| (kcal/mol) per spec,
+    with the random-init NN and pretrained-only NN baselines plotted as
+    BAR GROUPS (per arch) on the left of each panel — not just as
+    horizontal reference lines. PBE-vs-W4-11 and chemical accuracy
+    remain as horizontal references.
+
+    Layout
+    ------
+    Each of the three group panels has two zones:
+
+      * Left: a "baselines" bar group with 4 bars (2 archs × 2 baseline
+        kinds: random, pretrained); random bars are drawn at lower
+        alpha so they read as background.
+      * Right: one bar group per loss strategy (5 strategies × 6 bars
+        each: 2 archs × 3 solvers).
+
+    Log-y handles the 5-decade dynamic range (~500 kcal/mol random
+    down to ~0.008 kcal/mol best trained) without compressing the
+    trained-bar detail.
 
     References
     ----------
@@ -219,64 +326,29 @@ def plot_baseline_reduction(art: dict, out_path: Path, run_label: str = "unweigh
         (eval_df.value_name == "AE_error_pbe_kcalmol") &
         (eval_df.molecule.isin(["H2O", "C2H2"])), "value"
     ].dropna()).mean())
+    baselines = _per_arch_baseline_mae(baseline_df)
 
-    rand_b = baseline_df[(baseline_df.baseline == "random") &
-                          (baseline_df.value_name == "AE_error_kcalmol")]["value"].abs().mean()
-    pre_b  = baseline_df[(baseline_df.baseline == "pretrained") &
-                          (baseline_df.value_name == "AE_error_kcalmol")]["value"].abs().mean()
-
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6), sharey=True)
-    losses = list(LOSS_DISPLAY_ORDER)
-    # Bar layout: per-group panel; within panel, x=loss; per-loss, 6 bars
-    # = 2 archs * 3 solvers (3 hatches per arch).
-    width = 0.13
-    arch_offsets = {"deep_combined": -0.18, "deep_combined_attn": +0.18}
-    solver_marks = {"oneshot": "o", "fixed_j_3": "s", "full_3": "D"}
-    arch_colors = {"deep_combined": "#1f77b4", "deep_combined_attn": "#ff7f0e"}
-
+    fig, axes = plt.subplots(1, 3, figsize=(17, 4.8), sharey=True)
     for ax, group in zip(axes, GROUP_DISPLAY_ORDER):
         sub = ae[ae.group == group]
-        for ai, arch in enumerate(ARCH_DISPLAY_ORDER):
-            for si, solver in enumerate(SOLVER_DISPLAY_ORDER):
-                row = sub[(sub.arch == arch) & (sub.solver == solver)]
-                if row.empty:
-                    continue
-                xs = np.array([losses.index(l) for l in row["loss"]])
-                xs = xs + arch_offsets[arch] + (si - 1) * width
-                ax.bar(
-                    xs, row["mae"].values, width=width,
-                    color=arch_colors[arch],
-                    edgecolor="k", linewidth=0.4,
-                    alpha=0.55 + 0.18 * si,
-                    label=f"{arch} · {solver}" if group == "group1" else None,
-                )
-        # Reference horizontal lines.
-        ax.axhline(rand_b,           ls=":",  color="grey",   lw=1.4,
-                   label=f"random NN ({rand_b:.0f})"      if group == "group1" else None)
-        ax.axhline(pre_b,            ls="--", color="grey",   lw=1.4,
-                   label=f"pretrained ({pre_b:.0f})"       if group == "group1" else None)
-        ax.axhline(ae_pbe_vs_w411,   ls="-",  color="black",  lw=1.5,
-                   label=f"PBE vs W4-11 ({ae_pbe_vs_w411:.1f})" if group == "group1" else None)
-        ax.axhline(CHEMICAL_ACCURACY_KCALMOL, ls="-.", color="purple", lw=1.6,
-                   label=f"chemical accuracy ({CHEMICAL_ACCURACY_KCALMOL})" if group == "group1" else None)
+        _draw_one_baseline_panel(
+            ax, sub, baselines,
+            pbe_ref=ae_pbe_vs_w411,
+            show_legend=(group == "group1"),
+            panel_title=GROUP_DISPLAY_LABELS[group],
+        )
 
-        ax.set_yscale("log")
-        ax.set_xticks(range(len(losses)))
-        ax.set_xticklabels([LOSS_DISPLAY_LABELS[l] for l in losses],
-                           rotation=22, ha="right", fontsize=7)
-        ax.set_title(GROUP_DISPLAY_LABELS[group], fontsize=10)
-        ax.grid(True, axis="y", which="both", ls=":", alpha=0.35)
-
-    axes[0].set_ylabel("mean |AE error|  vs W4-11 (kcal/mol, log)")
+    axes[0].set_ylabel("mean |AE error|  vs W4-11  (kcal/mol, log)")
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=5,
-               fontsize=7, bbox_to_anchor=(0.5, -0.04))
+               fontsize=7, bbox_to_anchor=(0.5, -0.05))
     fig.suptitle(
         f"Baseline reduction — {run_label} pretrain-origin · trained mols (H₂O+C₂H₂)\n"
-        "log-y bars vs reference levels: random NN > pretrained > PBE > chemical accuracy",
+        "log-y bars: per-spec NN MAE; left bar-group = random + pretrained baselines; "
+        "horizontal lines = PBE on this set + chemical accuracy",
         fontsize=11,
     )
-    fig.tight_layout(rect=(0, 0.07, 1, 0.95))
+    fig.tight_layout(rect=(0, 0.08, 1, 0.95))
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
 
@@ -320,88 +392,63 @@ def plot_baseline_reduction_transfer(art: dict, out_path: Path, run_label: str =
     """
     t1 = art["transfer_primary_df"]
     t2 = art["transfer_secondary_df"]
+    bt1 = art.get("baseline_transfer_primary_df")
+    bt2 = art.get("baseline_transfer_secondary_df")
     if t1 is None and t2 is None:
         return
 
     sets = []
     if t1 is not None:
-        sets.append(("primary {CH₄, H₂, OH}", t1))
+        sets.append(("primary {CH₄, H₂, OH}", t1, bt1))
     if t2 is not None:
-        sets.append(("secondary {CO₂, HF, NH₂, NH₃}", t2))
+        sets.append(("secondary {CO₂, HF, NH₂, NH₃}", t2, bt2))
 
     fig, axes = plt.subplots(
         len(sets), 3,
-        figsize=(16, 4.6 * len(sets)),
+        figsize=(17, 4.8 * len(sets)),
         sharey="row",
         squeeze=False,
     )
 
-    losses = list(LOSS_DISPLAY_ORDER)
-    width = 0.13
-    arch_offsets = {"deep_combined": -0.18, "deep_combined_attn": +0.18}
-    arch_colors = {"deep_combined": "#1f77b4", "deep_combined_attn": "#ff7f0e"}
-
-    for ri, (set_name, df_set) in enumerate(sets):
-        # PBE reference MAE on this transfer set (over molecules):
+    for ri, (set_name, df_set, baseline_set_df) in enumerate(sets):
         ae_pbe = float(np.abs(df_set.loc[
             df_set.value_name == "AE_error_pbe_kcalmol", "value"
         ]).mean())
 
-        # Per-spec MAE (over the transfer set's molecules):
         spec_mae = mae_of(df_set, "AE_error_kcalmol",
                           group_keys=["group", "arch", "loss", "solver"])
+        baselines = _per_arch_baseline_mae(baseline_set_df)
 
         for ci, group in enumerate(GROUP_DISPLAY_ORDER):
             ax = axes[ri][ci]
             sub = spec_mae[spec_mae.group == group]
-            for ai, arch in enumerate(ARCH_DISPLAY_ORDER):
-                for si, solver in enumerate(SOLVER_DISPLAY_ORDER):
-                    row = sub[(sub.arch == arch) & (sub.solver == solver)]
-                    if row.empty:
-                        continue
-                    xs = np.array([losses.index(l) for l in row["loss"]])
-                    xs = xs + arch_offsets[arch] + (si - 1) * width
-                    ax.bar(
-                        xs, row["mae"].values, width=width,
-                        color=arch_colors[arch],
-                        edgecolor="k", linewidth=0.4,
-                        alpha=0.55 + 0.18 * si,
-                        label=(f"{arch} · {solver}"
-                               if ri == 0 and ci == 0 else None),
-                    )
-            ax.axhline(
-                ae_pbe, ls="-", color="black", lw=1.5,
-                label=(f"PBE vs W4-11 ({ae_pbe:.2f})"
-                       if ri == 0 and ci == 0 else None),
+            _draw_one_baseline_panel(
+                ax, sub, baselines,
+                pbe_ref=ae_pbe,
+                show_legend=(ri == 0 and ci == 0),
+                panel_title=(GROUP_DISPLAY_LABELS[group] if ri == 0 else ""),
             )
-            ax.axhline(
-                CHEMICAL_ACCURACY_KCALMOL, ls="-.", color="purple", lw=1.6,
-                label=(f"chem. acc. ({CHEMICAL_ACCURACY_KCALMOL})"
-                       if ri == 0 and ci == 0 else None),
-            )
-            ax.set_yscale("log")
-            ax.set_xticks(range(len(losses)))
-            ax.set_xticklabels([LOSS_DISPLAY_LABELS[l] for l in losses],
-                               rotation=22, ha="right", fontsize=7)
-            if ri == 0:
-                ax.set_title(GROUP_DISPLAY_LABELS[group], fontsize=10)
             if ci == 0:
                 ax.set_ylabel(
                     f"MAE on {set_name}\n(kcal/mol, log)",
                     fontsize=9,
                 )
-            ax.grid(True, axis="y", which="both", ls=":", alpha=0.35)
 
     handles, labels = axes[0][0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=5,
                fontsize=7, bbox_to_anchor=(0.5, -0.02))
+    have_baselines = (bt1 is not None) or (bt2 is not None)
+    sub = ("left bar-group = random + pretrained baselines on the SAME transfer set"
+           if have_baselines
+           else "(transfer-set baselines not computed; run notebooks/analysis/compute_baseline_transfer.py)")
     fig.suptitle(
         f"Baseline reduction (transfer sets) — {run_label} pretrain-origin\n"
-        "log-y bars: trained NN MAE on held-out molecules; horizontal lines = PBE on the same set\n"
-        "primary {CH₄, H₂, OH} · secondary {CO₂, HF, NH₂, NH₃}  (W4-11 subsets)",
+        "log-y bars: per-spec NN MAE on held-out molecules; "
+        "horizontal lines = PBE on this transfer set + chemical accuracy\n"
+        f"{sub}",
         fontsize=11,
     )
-    fig.tight_layout(rect=(0, 0.04, 1, 0.94))
+    fig.tight_layout(rect=(0, 0.04, 1, 0.93))
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
 
