@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import pytest
@@ -33,6 +34,10 @@ from comparison_lib import (  # noqa: E402
     plot_in_dist_vs_transfer,
     plot_loss_strategy_heatmap,
     plot_arch_comparison,
+    plot_origin_comparison_per_loss_per_group,
+    plot_origin_ratio_heatmap,
+    plot_origin_pareto_density_vs_energy,
+    plot_origin_fx_asymptote_vs_pbe,
 )
 
 
@@ -219,3 +224,75 @@ class TestLiveData:
             fn(art, out, run_label="test")
             assert out.is_file(), f"{name} not written"
             assert out.stat().st_size > 1024, f"{name} too small to be a real plot"
+
+
+_INT_RUN_DIR = REPO / "notebooks" / "checkpoints_step6" / "integration"
+
+
+@pytest.mark.skipif(
+    not (UNWEIGHTED_RUN_DIR.is_dir() and _INT_RUN_DIR.is_dir()),
+    reason="needs both unweighted and integration runs present",
+)
+class TestOriginComparison:
+    """Comparison helpers (unweighted vs integration pretrain origin)."""
+
+    @pytest.fixture(scope="class")
+    def arts(self):
+        return (load_run_artifacts(UNWEIGHTED_RUN_DIR),
+                load_run_artifacts(_INT_RUN_DIR))
+
+    def test_comparison_plots_run(self, arts, tmp_path):
+        art_a, art_b = arts
+        # Tiny stub asymptote dicts (covers the only loss the function
+        # iterates over); the real comparison runner uses measured numbers.
+        fxa = {l: {"mean": 1.5, "min": 1.4, "max": 1.6} for l in LOSS_DISPLAY_ORDER}
+        fxb = {l: {"mean": 1.55, "min": 1.45, "max": 1.65} for l in LOSS_DISPLAY_ORDER}
+        cases = [
+            (plot_origin_comparison_per_loss_per_group, "c1.png", (art_a, art_b, "A", "B")),
+            (plot_origin_ratio_heatmap,                 "c2.png", (art_a, art_b, "A", "B")),
+            (plot_origin_pareto_density_vs_energy,      "c3.png", (art_a, art_b, "A", "B")),
+        ]
+        for fn, name, args in cases:
+            out = tmp_path / name
+            fn(*args, out)
+            assert out.is_file()
+            assert out.stat().st_size > 1024
+        # f4 has a different signature (extra fx_audit dicts).
+        out = tmp_path / "c4.png"
+        plot_origin_fx_asymptote_vs_pbe(
+            art_a, art_b, "A", "B", fxa, fxb, out,
+        )
+        assert out.is_file()
+        assert out.stat().st_size > 1024
+
+    def test_int_better_ae_than_unw(self, arts):
+        """The headline finding from §1 of the comparison report:
+        integration pretrain produces a ~2.86x tighter best AE-MAE."""
+        unw, integ = arts
+        s_unw = headline_stats(unw)
+        s_int = headline_stats(integ)
+        ratio = s_unw["best_ae_mae"] / s_int["best_ae_mae"]
+        assert ratio > 1.5, (
+            f"integration's best AE-MAE ({s_int['best_ae_mae']:.5f}) should be "
+            f"meaningfully tighter than unweighted's ({s_unw['best_ae_mae']:.5f}); "
+            f"observed ratio = {ratio:.2f}x. A regression here means the "
+            f"reported 'integration is 2.86x tighter' headline no longer holds."
+        )
+
+    def test_lob_identically_enforced_per_origin(self, arts):
+        """Both origins must respect F_x <= 1.804 (Lieb & Oxford 1981);
+        the architectural _AlecLOB clamp is pretrain-origin-independent.
+
+        Smoke test only -- the heavy 90-spec sweep lives in the
+        audit_lob_enforcement.py driver; this test just verifies
+        the contract by computing F_x on a fresh model with extreme
+        pre-clamp activations.
+        """
+        from xcquinox.alec.networks import _AlecLOB
+        lob = _AlecLOB(limit=1.804)
+        for x in [-1e9, -10.0, 0.0, 10.0, 1e9]:
+            fx = 1.0 + float(lob(jnp.array(float(x))))
+            assert 0.0 <= fx <= 1.804 + 1e-9, (
+                f"_AlecLOB returned F_x = {fx} for input {x}; "
+                f"Lieb-Oxford bound says F_x in [0, 1.804] always"
+            )

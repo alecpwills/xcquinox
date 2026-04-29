@@ -753,6 +753,272 @@ def plot_arch_comparison(art: dict, out_path: Path, run_label: str = "unweighted
 
 
 # ---------------------------------------------------------------------------
+# Pretrain-origin COMPARISON plots (unweighted vs integration)
+# ---------------------------------------------------------------------------
+
+def plot_origin_comparison_per_loss_per_group(
+    art_a: dict, art_b: dict, label_a: str, label_b: str,
+    out_path: Path,
+) -> None:
+    """Side-by-side per-(group, loss) AE-MAE bar comparison between two
+    pretrain-origin runs.
+
+    Why this plot
+    -------------
+    The notebook constant ``PRETRAIN_LOSS_WEIGHTING`` toggles the
+    pretrain loss between two physically-distinct objectives:
+
+      * ``unweighted``: pre-train minimizes mean per-grid-point
+        ``(F_x_NN(s_g) - F_x_PBE(s_g))^2``, treating every grid point
+        equally.
+      * ``integration``: pre-train minimizes
+        ``sum_g w_g * (F_x_NN - F_x_PBE)^2`` with Becke quadrature
+        weights ``w_g`` (Becke *JCP* 88, 2547, 1988), so high-density
+        regions where F_x contributes most to E_x dominate the loss.
+
+    The two starting points feed different downstream training
+    behaviors. This plot shows the resulting AE-MAE on trained mols
+    for each (group, loss) cell side-by-side; ratio < 1 means
+    integration won, > 1 means unweighted won.
+
+    References
+    ----------
+    - Becke, *J. Chem. Phys.* **88**, 2547 (1988): atom-centered
+      multiexponential quadrature (the basis for the integration-
+      weighted pretrain loss).
+    - Levy, Perdew, *Phys. Rev. A* **32**, 2010 (1985): coordinate
+      scaling — F_x[ρ_λ] uniformly scales with the density, so a
+      density-weighted F_x fitting loss is the physically natural
+      objective for an XC functional.
+    """
+    if art_a["eval_df"] is None or art_b["eval_df"] is None:
+        return
+
+    mae_a = mae_of(trained_molecules_only(art_a["eval_df"]),
+                   "AE_error_kcalmol",
+                   group_keys=["group", "loss"])
+    mae_b = mae_of(trained_molecules_only(art_b["eval_df"]),
+                   "AE_error_kcalmol",
+                   group_keys=["group", "loss"])
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6), sharey=True)
+    losses = list(LOSS_DISPLAY_ORDER)
+    width = 0.35
+
+    for ax, group in zip(axes, GROUP_DISPLAY_ORDER):
+        sub_a = mae_a[mae_a.group == group].set_index("loss")["mae"]
+        sub_b = mae_b[mae_b.group == group].set_index("loss")["mae"]
+        x = np.arange(len(losses))
+        vals_a = [sub_a.get(l, np.nan) for l in losses]
+        vals_b = [sub_b.get(l, np.nan) for l in losses]
+        ax.bar(x - width/2, vals_a, width=width,
+               label=label_a, color="#1f77b4", edgecolor="k", linewidth=0.4)
+        ax.bar(x + width/2, vals_b, width=width,
+               label=label_b, color="#2ca02c", edgecolor="k", linewidth=0.4)
+        ax.axhline(CHEMICAL_ACCURACY_KCALMOL, ls="-.", color="purple", lw=1.4,
+                   label=("chem. acc. (1)" if group == "group1" else None))
+        ax.set_yscale("log")
+        ax.set_xticks(x)
+        ax.set_xticklabels([LOSS_DISPLAY_LABELS[l] for l in losses],
+                           rotation=22, ha="right", fontsize=7)
+        ax.set_title(GROUP_DISPLAY_LABELS[group], fontsize=10)
+        ax.grid(True, axis="y", which="both", ls=":", alpha=0.35)
+        if group == "group1":
+            ax.legend(loc="best", fontsize=8)
+    axes[0].set_ylabel("mean |AE error| on trained mols  (kcal/mol, log)")
+    fig.suptitle(
+        f"Pretrain-origin comparison — trained mols (H₂O+C₂H₂) per (group, loss)\n"
+        f"{label_a} (blue) vs {label_b} (green); chemical accuracy = 1 kcal/mol",
+        fontsize=11,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_origin_ratio_heatmap(
+    art_a: dict, art_b: dict, label_a: str, label_b: str,
+    out_path: Path,
+) -> None:
+    """Heatmap of ``log10(MAE_b / MAE_a)`` per (loss, group×arch×solver).
+
+    Cells colored green (``MAE_b < MAE_a``: B wins) or red
+    (``MAE_b > MAE_a``: A wins). Reads as: "for each spec, which
+    pretrain origin produces a better-AE model?"
+    """
+    if art_a["eval_df"] is None or art_b["eval_df"] is None:
+        return
+
+    keys = ["group", "arch", "loss", "solver"]
+    mae_a = mae_of(trained_molecules_only(art_a["eval_df"]),
+                   "AE_error_kcalmol", group_keys=keys).rename(columns={"mae": "a"})
+    mae_b = mae_of(trained_molecules_only(art_b["eval_df"]),
+                   "AE_error_kcalmol", group_keys=keys).rename(columns={"mae": "b"})
+    m = mae_a.merge(mae_b, on=keys)
+    m["log_ratio"] = np.log10(m["b"] / m["a"])
+    m["col"] = (m["group"]
+                + "·" + m["arch"].str.replace("deep_combined", "dc")
+                + "·" + m["solver"])
+
+    pv = m.pivot(index="loss", columns="col", values="log_ratio")
+    pv = pv.reindex(index=LOSS_DISPLAY_ORDER)
+    cols_sorted = sorted(pv.columns)
+    pv = pv[cols_sorted]
+    text_pv = m.pivot(index="loss", columns="col", values="b").reindex(
+        index=LOSS_DISPLAY_ORDER)[cols_sorted]
+
+    vmax = float(np.nanmax(np.abs(pv.values)))
+    fig, ax = plt.subplots(figsize=(13, 4.8))
+    im = ax.imshow(pv.values, aspect="auto", cmap="RdYlGn_r",
+                   vmin=-vmax, vmax=vmax)
+    ax.set_yticks(range(len(LOSS_DISPLAY_ORDER)))
+    ax.set_yticklabels([LOSS_DISPLAY_LABELS[l] for l in LOSS_DISPLAY_ORDER],
+                       fontsize=8)
+    ax.set_xticks(range(len(cols_sorted)))
+    ax.set_xticklabels(cols_sorted, rotation=80, fontsize=6)
+    cb = fig.colorbar(im, ax=ax, fraction=0.038, pad=0.02)
+    cb.set_label(
+        f"log₁₀(MAE[{label_b}] / MAE[{label_a}])\n"
+        f"green = {label_b} wins; red = {label_a} wins"
+    )
+    for i in range(pv.shape[0]):
+        for j in range(pv.shape[1]):
+            v = pv.values[i, j]
+            mae_b_val = text_pv.values[i, j]
+            if np.isnan(v):
+                continue
+            ax.text(j, i, f"{mae_b_val:.2g}", ha="center", va="center",
+                    fontsize=5,
+                    color="black" if abs(v) < 0.4 else "white")
+    ax.set_title(
+        f"Per-spec AE-MAE comparison: {label_b} vs {label_a}\n"
+        f"cell text = MAE[{label_b}] (kcal/mol); color = log₁₀ ratio (green = {label_b} better)",
+        fontsize=10,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_origin_pareto_density_vs_energy(
+    art_a: dict, art_b: dict, label_a: str, label_b: str,
+    out_path: Path,
+) -> None:
+    """Two-color Medvedev-style scatter (AE-MAE vs density-RMSE) with
+    ``label_a`` and ``label_b`` superimposed. Lets the reader compare
+    the two pretrain origins on the same density-vs-energy plane.
+
+    References (carried from ``plot_density_vs_energy_tradeoff``):
+    - Medvedev et al. *Science* 355, 49 (2017): density vs energy
+      tradeoff in trained DFT functionals.
+    """
+    if art_a["eval_df"] is None or art_b["eval_df"] is None:
+        return
+
+    def _scatter_data(art):
+        ae = mae_of(trained_molecules_only(art["eval_df"]),
+                    "AE_error_kcalmol",
+                    group_keys=["group","arch","loss","solver"])
+        rho = mae_of(trained_molecules_only(art["eval_df"]),
+                     "density_rmse",
+                     group_keys=["group","arch","loss","solver"]).rename(columns={"mae":"rmse"})
+        return ae.merge(rho, on=["group","arch","loss","solver"])
+
+    da = _scatter_data(art_a)
+    db = _scatter_data(art_b)
+
+    fig, ax = plt.subplots(figsize=(8.4, 6.4))
+    arch_marker = {"deep_combined": "o", "deep_combined_attn": "^"}
+    for label, df, color in [(label_a, da, "#1f77b4"), (label_b, db, "#2ca02c")]:
+        for _, r in df.iterrows():
+            ax.scatter(r.mae, r.rmse,
+                       facecolor=color, edgecolor="k",
+                       marker=arch_marker[r.arch],
+                       alpha=0.65, s=60, linewidths=0.5)
+    ax.axvline(CHEMICAL_ACCURACY_KCALMOL, ls="-.", color="purple", lw=1.4)
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.set_xlabel("mean |AE error|  (kcal/mol, log)")
+    ax.set_ylabel("density-RMSE  (e/bohr³, log)")
+    ax.grid(True, which="both", ls=":", alpha=0.35)
+    ax.set_title(
+        f"Density-vs-energy plane — {label_a} (blue) vs {label_b} (green)\n"
+        "after Medvedev et al. *Science* 355, 49 (2017); chem. acc. = 1 kcal/mol (purple)",
+        fontsize=10,
+    )
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([0],[0], marker="s", color="w", markerfacecolor="#1f77b4",
+               markeredgecolor="k", markersize=10, label=label_a),
+        Line2D([0],[0], marker="s", color="w", markerfacecolor="#2ca02c",
+               markeredgecolor="k", markersize=10, label=label_b),
+        Line2D([0],[0], marker="o", color="w", markerfacecolor="lightgrey",
+               markeredgecolor="k", markersize=10, label="deep_combined"),
+        Line2D([0],[0], marker="^", color="w", markerfacecolor="lightgrey",
+               markeredgecolor="k", markersize=10, label="deep_combined_attn"),
+    ]
+    ax.legend(handles=handles, loc="lower right", fontsize=8, framealpha=0.92)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_origin_fx_asymptote_vs_pbe(
+    art_a: dict, art_b: dict, label_a: str, label_b: str,
+    fx_audit_a: dict, fx_audit_b: dict,
+    out_path: Path,
+) -> None:
+    """Bar chart of asymptotic mean F_x(s>5) per (loss, origin), with the
+    PBE asymptote drawn as a horizontal reference line.
+
+    Inputs ``fx_audit_a / b`` are dicts {loss: {"mean": float,
+    "min": float, "max": float}} produced by parsing the
+    ``audit_lob_enforcement.py`` output for each origin (caller
+    populates these).
+
+    References
+    ----------
+    - Lieb, Oxford, *Int. J. Quantum Chem.* **19**, 427 (1981):
+      F_x(s) <= 1 + kappa = 1.804 globally.
+    - Perdew, Burke, Ernzerhof, *PRL* **77**, 3865 (1996), eq. 14:
+      F_x(s -> inf) = 1 + kappa = 1.804 (PBE asymptote).
+    """
+    losses = list(LOSS_DISPLAY_ORDER)
+    width = 0.35
+    PBE_ASYMPTOTE = 1.804  # 1 + kappa, Perdew/Burke/Ernzerhof 1996 eq. 14
+    LOB_CEILING = 1.804     # Lieb-Oxford 1981
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    x = np.arange(len(losses))
+    vals_a = [fx_audit_a.get(l, {}).get("mean", np.nan) for l in losses]
+    vals_b = [fx_audit_b.get(l, {}).get("mean", np.nan) for l in losses]
+    ax.bar(x - width/2, vals_a, width=width,
+           color="#1f77b4", edgecolor="k", linewidth=0.4, label=label_a)
+    ax.bar(x + width/2, vals_b, width=width,
+           color="#2ca02c", edgecolor="k", linewidth=0.4, label=label_b)
+    ax.axhline(PBE_ASYMPTOTE, ls="-", color="black", lw=1.4,
+               label=f"PBE asymptote = LOB ceiling = {PBE_ASYMPTOTE}")
+    ax.axhline(1.0, ls="-.", color="grey", lw=1.0,
+               label="UEG limit (F_x(s=0) = 1)")
+    ax.set_xticks(x)
+    ax.set_xticklabels([LOSS_DISPLAY_LABELS[l] for l in losses],
+                       rotation=22, ha="right", fontsize=8)
+    ax.set_ylabel("mean F_x at s > 5  on CH₄ grid")
+    ax.set_ylim(0.5, 2.0)
+    ax.legend(loc="lower right", fontsize=8)
+    ax.grid(True, axis="y", ls=":", alpha=0.35)
+    ax.set_title(
+        f"Asymptotic F_x(s>5) by loss strategy — {label_a} vs {label_b}\n"
+        "Lieb-Oxford theorem (Lieb & Oxford IJQC 19, 427, 1981) sets F_x ≤ 1.804;\n"
+        "PBE chooses F_x(s→∞) = 1.804 (Perdew/Burke/Ernzerhof PRL 77, 3865, 1996, eq. 14).\n"
+        "Bars below 1.804 reflect a softer asymptote, NOT a LOB violation.",
+        fontsize=9,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Summary statistics for the markdown report
 # ---------------------------------------------------------------------------
 
