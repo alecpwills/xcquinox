@@ -142,6 +142,85 @@ def test_cnet_grad_finite_nonzero():
     assert any(jnp.any(l != 0) for l in array_leaves), "at least one grad must be nonzero"
 
 
+# Lieb-Oxford bound: F_x(s) <= 1 + kappa = 1.804 globally
+# (Lieb & Oxford IJQC 19, 427, 1981; Perdew/Burke/Ernzerhof PRL 77,
+# 3865, 1996, eq. 14). The _AlecLOB clamp is the architectural
+# enforcement; gradient descent must NOT be able to lift F_x above
+# 1.804 regardless of input or network parameters.
+def test_lob_ceiling_holds_for_extreme_pre_clamp_inputs():
+    """``1 + _AlecLOB(x) = 1.804 * sigmoid(x - log(0.804))`` is bounded
+    in [0, 1.804] by the sigmoid range. Pin this contract: even with
+    arbitrarily large positive pre-clamp activations the output stays
+    at or below 1.804.
+
+    This is the LOB enforcement that lets every trained ``model.eqx``
+    in the unweighted sweep respect F_x <= 1.804 (verified empirically
+    across 90 / 90 specs by
+    ``notebooks/analysis/audit_lob_enforcement.py``). A regression of
+    the clamp form (e.g. accidentally dropping the sigmoid) would
+    fail this test.
+    """
+    from xcquinox.alec.networks import _AlecLOB
+    lob = _AlecLOB(limit=1.804)
+    huge_positive = jnp.array([10.0, 100.0, 1e6, 1e9])
+    huge_negative = jnp.array([-10.0, -100.0, -1e6, -1e9])
+    fx_pos = 1.0 + jax.vmap(lob)(huge_positive)  # F_x = 1 + lobf(gated)
+    fx_neg = 1.0 + jax.vmap(lob)(huge_negative)
+    assert float(fx_pos.max()) <= 1.804 + 1e-9, (
+        f"LOB UPPER bound violated: 1 + lobf(huge_positive) reached "
+        f"{float(fx_pos.max())}, expected <= 1.804. The Lieb-Oxford "
+        f"theorem (Lieb & Oxford 1981; PBE 1996 eq. 14) sets F_x(s) "
+        f"<= 1.804 globally; a regression here breaks the central "
+        f"physical guarantee of the alec exchange network."
+    )
+    assert float(fx_pos.min()) >= 1.0 - 1e-9, (
+        f"At very large positive pre-clamp activation, sigmoid -> 1, "
+        f"so 1 + lobf(x) = 1 + 0.804 = 1.804; got {float(fx_pos.min())}."
+    )
+    # Lower bound from the symmetric sigmoid: 1 + lobf(-inf) -> 0.
+    assert float(fx_neg.min()) >= 0.0 - 1e-9
+    assert float(fx_neg.max()) <= 1.0 + 1e-9
+
+
+def test_lob_limit_is_static_field_not_trainable():
+    """The Lieb-Oxford ceiling 1.804 is a physical constant; it must
+    NOT be a JAX leaf that gradient descent could mutate.
+    ``_AlecLOB.limit`` is declared ``eqx.field(static=True)`` so
+    eqx.partition / eqx.is_array filters out the limit from the
+    trainable pytree.
+    """
+    from xcquinox.alec.networks import _AlecLOB
+    lob = _AlecLOB(limit=1.804)
+    arrays, _static = eqx.partition(lob, eqx.is_array)
+    # arrays should have no leaves (limit is static, not an array).
+    leaves = jax.tree_util.tree_leaves(arrays)
+    assert len(leaves) == 0, (
+        f"_AlecLOB.limit must be eqx.field(static=True); found "
+        f"{len(leaves)} trainable leaves. Gradient descent would "
+        f"otherwise be able to relax the LOB ceiling."
+    )
+
+
+def test_xnet_fx_at_s_zero_equals_one():
+    """UEG limit (Slater 1951; PBE 1996 §3): F_x(s=0) = 1 exactly.
+    The tanh(s)^2 gate in AlecGGA_XNet ensures this regardless of
+    network parameters.
+    """
+    from xcquinox.alec.networks import AlecGGA_XNet
+    xnet = AlecGGA_XNet(
+        n_extra_features=0, depth=3, nodes=16, seed=42,
+        use_self_attention=False, lob_lim=1.804,
+    )
+    # Inputs: rho > 0, sigma = 0 implies s = 0.
+    # The network input layout is [rho, sigma, *extras] for n_extra_features=0.
+    fx = xnet(jnp.array([1.0, 0.0]))
+    assert abs(float(fx) - 1.0) < 1e-10, (
+        f"F_x(s=0) must equal 1 (UEG limit, Slater 1951; PBE 1996 §3); "
+        f"got {float(fx)}. The tanh(s)^2 gate is supposed to zero out "
+        f"any deviation at s=0; a regression here breaks the UEG limit."
+    )
+
+
 # §13.2 item (13): E-H2 _AlecLOB matches library LOB bit-exactly
 def test_alec_lob_matches_library_lob():
     from xcquinox.alec.networks import _AlecLOB
