@@ -127,6 +127,37 @@ def test_cell_03_constants_declares_rerun_eval():
     assert '"integration"' in source or "'integration'" in source
 
 
+def test_cell_03_namespaces_outputs_under_run_dir():
+    """Step 5 must namespace pretrain-DEPENDENT artifacts under
+    RUN_DIR = CHECKPOINT_BASE/<PRETRAIN_LOSS_WEIGHTING>/, mirroring the
+    step 6 generator's branching layout (commit 92b9dc342). Without
+    this, running step 5 with PRETRAIN_LOSS_WEIGHTING="unweighted" then
+    re-running with "integration" would overwrite the unweighted
+    checkpoints/figures/eval outputs.
+
+    Pins the seven RUN_DIR-derived directories that step 5 must define
+    plus the two shared inputs (external_data and pretrain_data) that
+    intentionally stay at CHECKPOINT_BASE.
+    """
+    gen = load_generator()
+    source = gen.build_cell_03_constants().source
+    # RUN_DIR namespacing
+    assert ('RUN_DIR              = os.path.join(CHECKPOINT_BASE, '
+            'PRETRAIN_LOSS_WEIGHTING)') in source
+    # Per-origin directories (must reside under RUN_DIR)
+    for var in ("pretrain_dir", "train_dir", "train_balancing_dir",
+                "eval_dir", "eval_baseline_dir", "eval_balancing_dir",
+                "figures_dir", "baseline_dir", "test_new_dir",
+                "transfer_results_path"):
+        assert var in source, f"step5 cell 3 missing {var}"
+        assert f'os.path.join(RUN_DIR' in source, (
+            "RUN_DIR-derived dirs must be built via os.path.join(RUN_DIR, ...)"
+        )
+    # Shared inputs (NOT pretrain-dependent) stay at CHECKPOINT_BASE
+    assert 'os.path.join(CHECKPOINT_BASE, "external_data")' in source
+    assert 'os.path.join(CHECKPOINT_BASE, "pretrain_data")' in source
+
+
 def test_cell_04_filters_to_deep_archs():
     """Cell 4 must filter the architecture table to deep-only archs."""
     gen = load_generator()
@@ -379,8 +410,11 @@ def test_cell_22_balancing_configs_has_base_and_vxc():
     assert "phase1_loss_kwargs" in source
     # V_xc sweep spans all solvers
     assert "for solver_label in SOLVER_LABELS" in source
-    # Checkpoint path scheme for V_xc
-    assert "train_balancing/vxc/" in source
+    # Checkpoint path scheme for V_xc — uses RUN_DIR-namespaced var
+    # train_balancing_dir, with the "vxc/{variant_label}/{solver_label}"
+    # subpath nested inside it. Refactored 2026-04-28 to mirror step 6.
+    assert "train_balancing_dir" in source
+    assert "vxc/" in source
 
 
 def test_cell_23_balancing_loop():
@@ -524,10 +558,10 @@ def test_cell_35_feature_impact():
 
 
 def test_generator_produces_50_cells(tmp_path):
-    """Step 5 notebook must contain exactly 49 cells (after separated V_xc cells)."""
+    """Step 5 notebook must contain exactly 53 cells (52 + closing interpretation MD)."""
     gen = load_generator()
     nb = gen.main(str(tmp_path / "step5.ipynb"))
-    assert len(nb.cells) == 50, f"expected 50 cells, got {len(nb.cells)}"
+    assert len(nb.cells) == 53, f"expected 53 cells, got {len(nb.cells)}"
 
 
 def test_generator_cell_types_match_expected(tmp_path):
@@ -541,8 +575,8 @@ def test_generator_cell_types_match_expected(tmp_path):
     # Markdown cells: 0 (title), 6 (pretrain), 11 (training data), 16 (SCF-varied
     # training), 21 (balancing), 29 (eval), 34 (scf impact), 36 (dm heatmaps),
     # 38 (density hist), 40 (convergence), 42 (feature impact), 44 (transfer),
-    # 46 (transfer plot)
-    expected = {0, 6, 11, 16, 21, 29, 34, 36, 38, 40, 42, 44, 46}
+    # 46 (transfer plot), 50 (Fx drift on CH4), 52 (closing findings + step 6 plan)
+    expected = {0, 6, 11, 16, 21, 29, 34, 36, 38, 40, 42, 44, 46, 50, 52}
     assert markdown_indices == expected, (
         f"markdown indices {markdown_indices} != expected {expected}"
     )
@@ -578,7 +612,7 @@ def test_narrow_config_smoke(tmp_path):
         solver_labels=("oneshot",),
         checkpoint_base=str(tmp_path / "ckpt"),
     )
-    assert len(nb.cells) == 50
+    assert len(nb.cells) == 53
     nbformat.validate(nb)
 
 
@@ -628,18 +662,20 @@ def test_cell_26_balancing_eval():
     source = gen.build_cell_26_balancing_eval().source
     assert "alec.run_test" in source or "run_test" in source
     assert "BALANCING_CONFIGS" in source
-    # V_xc eval moved to its own cell.
+    # V_xc-specific paths stay in cell 28; the base balancing cell has none.
     assert "VXC_VARIANTS" not in source
-    assert "train_balancing/vxc/" not in source
-    assert "eval_balancing/vxc/" not in source
+    assert "vxc/{variant_label}" not in source
 
 
 def test_cell_28_vxc_eval():
     gen = load_generator()
     source = gen.build_cell_28_vxc_eval().source
     assert "VXC_VARIANTS" in source
-    assert "train_balancing/vxc/" in source
-    assert "eval_balancing/vxc/" in source
+    # V_xc paths use the RUN_DIR-namespaced variables (refactored
+    # 2026-04-28 to mirror step 6's per-pretrain-origin branching).
+    assert "train_balancing_dir" in source
+    assert "eval_balancing_dir" in source
+    assert "vxc/" in source
     assert "alec.run_test" in source
     assert "RERUN_EVAL" in source
 
@@ -648,8 +684,11 @@ def test_cell_27_baseline_gen():
     gen = load_generator()
     source = gen.build_cell_27_baseline_gen().source
     assert "BASELINE_LABELS" in source
-    assert "baseline_pretrained" in source
-    assert "baseline_random" in source
+    # Baselines now live under RUN_DIR/baseline/{pretrained,random}/...
+    # (renamed 2026-04-28 from CHECKPOINT_BASE/baseline_{pretrained,random}/).
+    assert "baseline_dir" in source
+    assert "/pretrained/" in source or "{baseline_dir}/pretrained" in source
+    assert "/random/" in source or "{baseline_dir}/random" in source
     assert "create_network_pair" in source
     assert "baseline_colors" in source
 
@@ -686,10 +725,15 @@ def test_cell_45_transfer_eval_loop():
     gen = load_generator()
     source = gen.build_cell_45_transfer_eval_loop().source
     assert "_eval_model_on_mol" in source
+    # transfer_results.pkl is now `transfer_results_path` (RUN_DIR-namespaced)
+    # so it can co-exist with the integration variant's results.
     assert "transfer_results" in source
     assert "test_molecules" in source
     assert "VXC_VARIANTS" in source
-    assert "train_balancing/vxc/" in source
+    # V_xc training-checkpoint reads use the RUN_DIR-namespaced
+    # train_balancing_dir variable; the "vxc/" subpath is still present.
+    assert "train_balancing_dir" in source
+    assert "vxc/" in source
     assert "balancing_vxc" in source
     assert "BASELINE_LABELS" in source
     assert "bal:" in source
@@ -702,4 +746,62 @@ def test_cell_46_transfer_plots():
     assert "transfer_{mol_name}.png" in source
     assert "Density RMSE vs CCSD" in source
     assert "Density RMSE vs HF" not in source
+
+
+def test_cell_48_fx_drift_md():
+    """Cell 50 markdown must introduce the CH4 Fx-drift figure."""
+    gen = load_generator()
+    source = gen.build_cell_48_fx_drift_md().source
+    assert "F_x" in source
+    assert "CH4" in source
+    assert "drift" in source.lower()
+
+
+def test_cell_48_fx_drift_ch4():
+    """Cell 51 must sample Fx on CH4 per arch, bin by reduced gradient s,
+    and plot per-group mean+/-std against the PBE analytic curve."""
+    gen = load_generator()
+    source = gen.build_cell_48_fx_drift_ch4().source
+    # PBE analytic Fx(s) reference curve.
+    assert "_PBE_KAPPA" in source
+    assert "_PBE_MU" in source
+    assert "_pbe_Fx_of_s" in source
+    # Reduced gradient formula uses k_F prefactor.
+    assert "_KF_PREFAC" in source
+    assert "_reduced_gradient" in source
+    # Must evaluate per-arch CH4 mol_data and call eval_Fx.
+    assert "precompute_fixed_density_data" in source
+    assert "eval_Fx" in source
+    assert "assemble_descriptor_features" in source
+    # Groups covered: main, balancing, baselines.
+    assert "fine-tuned (main)" in source
+    assert "fine-tuned (balancing)" in source
+    assert "baseline:pretrained" in source
+    assert "baseline:random" in source
+    # Per-group mean+/-std visualization.
+    assert "fill_between" in source
+    assert "nanmean" in source
+    assert "nanstd" in source
+    # Saves to the figures directory.
+    assert "fx_drift_ch4.png" in source
+
+
+def test_cell_49_closing_md():
+    """Final markdown cell must document the Fx-drift findings and the
+    step-6 roadmap (baselines behave as expected, fine-tuned drift,
+    CH4 s-distribution, and concrete next experiments)."""
+    gen = load_generator()
+    source = gen.build_cell_49_closing_md().source
+    # Section framing.
+    assert "Step 5 Findings" in source
+    assert "F_x Drift" in source
+    # Key interpretive points.
+    assert "Baselines behave as expected" in source
+    assert "divergence" in source.lower()
+    assert "s ~ 0.7" in source or "s ~ 0.5" in source
+    # Step 6 roadmap.
+    assert "Step 6 roadmap" in source
+    assert "carbon" in source.lower() or "C atom" in source
+    assert "PBE-anchor" in source or "PBE anchor" in source
+    assert "w_atomic" in source
 

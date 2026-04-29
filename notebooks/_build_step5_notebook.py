@@ -202,11 +202,47 @@ RERUN_EVAL = False
 # training steps / network capacity to compensate.
 PRETRAIN_LOSS_WEIGHTING = "unweighted"
 
+# RUN_DIR namespaces every pretrain-loss-weighting-DEPENDENT artifact under
+# CHECKPOINT_BASE/<weighting>/, so back-to-back runs of this notebook with
+# PRETRAIN_LOSS_WEIGHTING set to "unweighted" then "integration" do NOT
+# overwrite each other's checkpoints / figures / eval outputs. Mirrors the
+# step-6 generator's branching layout (commit 92b9dc342 introduced the
+# pattern in step 6; step 5 was missing it until this commit).
+#
+# Pretrain-INDEPENDENT shared inputs (external CCSD reference data,
+# pretrain_data.npz which carries grid coords + densities + Becke weights,
+# but is the SAME across both weightings -- only its USE in the loss
+# differs) live directly under CHECKPOINT_BASE so both runs share them.
+RUN_DIR              = os.path.join(CHECKPOINT_BASE, PRETRAIN_LOSS_WEIGHTING)
+pretrain_dir         = os.path.join(RUN_DIR, "pretrain")
+train_dir            = os.path.join(RUN_DIR, "train")
+train_balancing_dir  = os.path.join(RUN_DIR, "train_balancing")
+eval_dir             = os.path.join(RUN_DIR, "eval")
+eval_baseline_dir    = os.path.join(RUN_DIR, "eval_baseline")
+eval_balancing_dir   = os.path.join(RUN_DIR, "eval_balancing")
+figures_dir          = os.path.join(RUN_DIR, "figures")
+baseline_dir         = os.path.join(RUN_DIR, "baseline")
+test_new_dir         = os.path.join(RUN_DIR, "test_new")
+transfer_results_path = os.path.join(RUN_DIR, "transfer_results.pkl")
+ext_data_dir         = os.path.join(CHECKPOINT_BASE, "external_data")
+pretrain_data_dir    = os.path.join(CHECKPOINT_BASE, "pretrain_data")
+
 import pathlib
-os.makedirs(CHECKPOINT_BASE, exist_ok=True)
+for _d in (CHECKPOINT_BASE, RUN_DIR, pretrain_dir, train_dir, train_balancing_dir,
+           eval_dir, eval_baseline_dir, eval_balancing_dir, figures_dir,
+           baseline_dir, test_new_dir,
+           ext_data_dir, pretrain_data_dir):
+    os.makedirs(_d, exist_ok=True)
 pathlib.Path(CHECKPOINT_BASE, "VERSION").write_text("step5-v2\\n")
 print(f"CHECKPOINT_BASE={{CHECKPOINT_BASE}}  BASIS={{BASIS}}  GRID_LEVEL={{GRID_LEVEL}}")
+print(f"  PRETRAIN_LOSS_WEIGHTING = {{PRETRAIN_LOSS_WEIGHTING!r}}")
+print(f"  RUN_DIR        = {{RUN_DIR}}")
+print(f"  pretrain_dir   = {{pretrain_dir}}")
+print(f"  train_dir      = {{train_dir}}")
+print(f"  figures_dir    = {{figures_dir}}")
 print("DATA VERSION: step5-v2 (real-attention)")
+print(f"  Wipe {{RUN_DIR}}/ to regenerate this pretraining variant only;")
+print(f"  ext_data_dir + pretrain_data_dir are shared across both variants.")
 """
     return new_code_cell(source)
 
@@ -458,8 +494,8 @@ if cusp_list:
 if dm_list:
     save_kwargs["dm_all"] = np.concatenate(dm_list)
 
-os.makedirs(os.path.join(CHECKPOINT_BASE, "pretrain_data"), exist_ok=True)
-np.savez(os.path.join(CHECKPOINT_BASE, "pretrain_data", "pretrain_data.npz"), **save_kwargs)
+os.makedirs(pretrain_data_dir, exist_ok=True)
+np.savez(os.path.join(pretrain_data_dir, "pretrain_data.npz"), **save_kwargs)
 print(f"pretrain_data.npz written with keys: {sorted(save_kwargs.keys())}  total_points={len(rho_all)}")
 """
     return new_code_cell(source)
@@ -500,7 +536,7 @@ def _cb(info):
 
 def _pretrain_checkpoints_exist(arch_name):
     import os as _os
-    _ckdir = f"{CHECKPOINT_BASE}/pretrain/{arch_name}"
+    _ckdir = f"{pretrain_dir}/{arch_name}"
     return (
         _os.path.isfile(f"{_ckdir}/xnet.eqx")
         and _os.path.isfile(f"{_ckdir}/cnet.eqx")
@@ -512,8 +548,8 @@ for arch_name in ARCH_NAMES:
         continue
     spec = alec.PretrainSpec(
         arch=alec.get_architecture(arch_name),
-        data_dir=f"{CHECKPOINT_BASE}/pretrain_data",
-        checkpoint_dir=f"{CHECKPOINT_BASE}/pretrain/{arch_name}",
+        data_dir=pretrain_data_dir,
+        checkpoint_dir=f"{pretrain_dir}/{arch_name}",
         n_steps=1000,
         lr_start=1e-2,
         lr_end=1e-5,
@@ -535,8 +571,8 @@ def build_cell_10_pretrain_loss_plot():
     """
     source = r"""fig, (ax_x, ax_c) = plt.subplots(1, 2, figsize=(12, 4.5))
 for arch_name in ARCH_NAMES:
-    losses_x = np.load(f"{CHECKPOINT_BASE}/pretrain/{arch_name}/losses_x.npy")
-    losses_c = np.load(f"{CHECKPOINT_BASE}/pretrain/{arch_name}/losses_c.npy")
+    losses_x = np.load(f"{pretrain_dir}/{arch_name}/losses_x.npy")
+    losses_c = np.load(f"{pretrain_dir}/{arch_name}/losses_c.npy")
     ax_x.semilogy(losses_x, color=arch_colors[arch_name], label=arch_name)
     ax_c.semilogy(losses_c, color=arch_colors[arch_name], label=arch_name)
 
@@ -562,8 +598,8 @@ fig.suptitle(
     fontsize=12,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.95))
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/pretrain_losses.png", dpi=150, bbox_inches="tight")
+os.makedirs(f"{figures_dir}", exist_ok=True)
+fig.savefig(f"{figures_dir}/pretrain_losses.png", dpi=150, bbox_inches="tight")
 plt.show()
 """
     return new_code_cell(source)
@@ -578,7 +614,7 @@ def build_cell_11_pretrain_parity():
     off-by-column bug.
     """
     source = """# Load pretrain data (same .npz Cell 8 wrote)
-_data = np.load(f"{CHECKPOINT_BASE}/pretrain_data/pretrain_data.npz")
+_data = np.load(f"{pretrain_data_dir}/pretrain_data.npz")
 _rho = _data["rho_all"]
 _sigma = _data["sigma_all"]
 Fx_target = _data["Fx_all"]
@@ -607,10 +643,10 @@ for row, arch_name in enumerate(ARCH_NAMES):
     arch = alec.get_architecture(arch_name)
     skel_xnet, skel_cnet = alec.create_network_pair(arch)
     xnet = eqx.tree_deserialise_leaves(
-        f"{CHECKPOINT_BASE}/pretrain/{arch_name}/xnet.eqx", skel_xnet
+        f"{pretrain_dir}/{arch_name}/xnet.eqx", skel_xnet
     )
     cnet = eqx.tree_deserialise_leaves(
-        f"{CHECKPOINT_BASE}/pretrain/{arch_name}/cnet.eqx", skel_cnet
+        f"{pretrain_dir}/{arch_name}/cnet.eqx", skel_cnet
     )
     input_array = _build_input_array(arch)
     # xnet(p) / cnet(p) already return the full enhancement factor F
@@ -649,8 +685,8 @@ fig.suptitle(
     fontsize=12,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.985))
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/pretrain_parity.png", dpi=150, bbox_inches="tight")
+os.makedirs(f"{figures_dir}", exist_ok=True)
+fig.savefig(f"{figures_dir}/pretrain_parity.png", dpi=150, bbox_inches="tight")
 plt.show()
 """
     return new_code_cell(source)
@@ -1021,8 +1057,8 @@ for arch_name in ARCH_NAMES:
                 atom_energies=atom_energies,
                 loss_kwargs=_lkw,
                 solver_config=cfg,
-                pretrain_checkpoint=f"{{CHECKPOINT_BASE}}/pretrain/{{arch_name}}",
-                checkpoint_dir=f"{{CHECKPOINT_BASE}}/train/{{arch_name}}/{{loss_name}}/{{solver_label}}",
+                pretrain_checkpoint=f"{{pretrain_dir}}/{{arch_name}}",
+                checkpoint_dir=f"{{train_dir}}/{{arch_name}}/{{loss_name}}/{{solver_label}}",
                 n_steps=250,
                 lr_start=1e-2,
                 lr_end=1e-5,
@@ -1178,7 +1214,7 @@ for row_idx, solver_label in enumerate(SOLVER_LABELS):
     for col_idx, loss_name in enumerate(LOSS_NAMES):
         ax = axes[row_idx, col_idx]
         for arch_name in ARCH_NAMES:
-            ckpt_dir = f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}/{solver_label}"
+            ckpt_dir = f"{train_dir}/{arch_name}/{loss_name}/{solver_label}"
             losses_path = f"{ckpt_dir}/losses.npy"
             if not os.path.isfile(losses_path):
                 continue
@@ -1203,8 +1239,8 @@ fig.suptitle(
     fontsize=13,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.95))
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/training_losses.png", dpi=150, bbox_inches="tight")
+os.makedirs(f"{figures_dir}", exist_ok=True)
+fig.savefig(f"{figures_dir}/training_losses.png", dpi=150, bbox_inches="tight")
 plt.show()
 """
     return new_code_cell(source)
@@ -1224,7 +1260,7 @@ fig, axes = plt.subplots(len(SOLVER_LABELS), len(LOSS_NAMES),
 for row_idx, solver_label in enumerate(SOLVER_LABELS):
     for col_idx, loss_name in enumerate(LOSS_NAMES):
         ax = axes[row_idx, col_idx]
-        ckpt_dir = f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}/{solver_label}"
+        ckpt_dir = f"{train_dir}/{arch_name}/{loss_name}/{solver_label}"
         aux_path = f"{ckpt_dir}/aux_log.pkl"
         if not os.path.isfile(aux_path):
             ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
@@ -1249,8 +1285,8 @@ fig.suptitle(
     fontsize=13,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.95))
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/aux_components_{arch_name}.png", dpi=150, bbox_inches="tight")
+os.makedirs(f"{figures_dir}", exist_ok=True)
+fig.savefig(f"{figures_dir}/aux_components_{arch_name}.png", dpi=150, bbox_inches="tight")
 plt.show()
 '''
     return new_code_cell(source)
@@ -1343,8 +1379,8 @@ for loss_name in BAL_LOSS_NAMES:
             atom_energies=atom_energies,
             loss_kwargs=_lkw,
             solver_config=cfg,
-            pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{BAL_ARCH}",
-            checkpoint_dir=f"{CHECKPOINT_BASE}/train_balancing/{loss_name}/{bal_label}",
+            pretrain_checkpoint=f"{pretrain_dir}/{BAL_ARCH}",
+            checkpoint_dir=f"{train_balancing_dir}/{loss_name}/{bal_label}",
             n_steps=250,
             lr_start=1e-2,
             lr_end=1e-5,
@@ -1370,8 +1406,8 @@ for variant_label, (loss_name, bal_cfg, extra_kwargs) in VXC_VARIANTS.items():
             atom_energies=atom_energies,
             loss_kwargs=_lkw,
             solver_config=cfg,
-            pretrain_checkpoint=f"{CHECKPOINT_BASE}/pretrain/{BAL_ARCH}",
-            checkpoint_dir=f"{CHECKPOINT_BASE}/train_balancing/vxc/{variant_label}/{solver_label}",
+            pretrain_checkpoint=f"{pretrain_dir}/{BAL_ARCH}",
+            checkpoint_dir=f"{train_balancing_dir}/vxc/{variant_label}/{solver_label}",
             n_steps=250,
             lr_start=1e-2,
             lr_end=1e-5,
@@ -1514,7 +1550,7 @@ for row_idx, loss_name in enumerate(BAL_LOSS_NAMES):
     for col_idx, key in enumerate(aux_keys):
         ax = axes[row_idx, col_idx]
         for bal_label in bal_labels:
-            ckpt = f"{CHECKPOINT_BASE}/train_balancing/{loss_name}/{bal_label}"
+            ckpt = f"{train_balancing_dir}/{loss_name}/{bal_label}"
             aux_path = f"{ckpt}/aux_log.pkl"
             if not os.path.isfile(aux_path):
                 continue
@@ -1536,9 +1572,9 @@ fig.suptitle(
     fontsize=13,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.93))
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+os.makedirs(f"{figures_dir}", exist_ok=True)
 fig.savefig(
-    f"{CHECKPOINT_BASE}/figures/balancing_aux_comparison.png",
+    f"{figures_dir}/balancing_aux_comparison.png",
     dpi=150, bbox_inches='tight',
 )
 plt.show()
@@ -1553,7 +1589,7 @@ if len(BAL_LOSS_NAMES) == 1:
     axes = [axes]
 
 for ax, loss_name in zip(axes, BAL_LOSS_NAMES):
-    ckpt = f"{CHECKPOINT_BASE}/train_balancing/{loss_name}/gradnorm"
+    ckpt = f"{train_balancing_dir}/{loss_name}/gradnorm"
     aux_path = f"{ckpt}/aux_log.pkl"
     if not os.path.isfile(aux_path):
         ax.text(0.5, 0.5, "no gradnorm data", transform=ax.transAxes, ha="center")
@@ -1588,9 +1624,9 @@ fig.suptitle(
     fontsize=13,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.93))
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+os.makedirs(f"{figures_dir}", exist_ok=True)
 fig.savefig(
-    f"{CHECKPOINT_BASE}/figures/gradnorm_weight_evolution.png",
+    f"{figures_dir}/gradnorm_weight_evolution.png",
     dpi=150, bbox_inches='tight',
 )
 plt.show()
@@ -1615,7 +1651,7 @@ fig_vxc, axes_vxc = plt.subplots(
 for row_idx, (variant_label, _) in enumerate(VXC_VARIANTS.items()):
     for col_idx, solver_label in enumerate(SOLVER_LABELS):
         ax = axes_vxc[row_idx, col_idx]
-        ckpt_dir = f"{CHECKPOINT_BASE}/train_balancing/vxc/{variant_label}/{solver_label}"
+        ckpt_dir = f"{train_balancing_dir}/vxc/{variant_label}/{solver_label}"
         aux_path = f"{ckpt_dir}/aux_log.pkl"
         if not os.path.isfile(aux_path):
             ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center")
@@ -1637,8 +1673,8 @@ for row_idx, (variant_label, _) in enumerate(VXC_VARIANTS.items()):
 fig_vxc.suptitle("V_xc variants -- loss components (rows: variant, cols: solver)",
                  fontsize=13)
 fig_vxc.tight_layout(rect=(0, 0, 1, 0.96))
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig_vxc.savefig(f"{CHECKPOINT_BASE}/figures/bal_loss_plot_vxc.png",
+os.makedirs(f"{figures_dir}", exist_ok=True)
+fig_vxc.savefig(f"{figures_dir}/bal_loss_plot_vxc.png",
                 dpi=150, bbox_inches="tight")
 plt.show()
 """
@@ -1650,9 +1686,9 @@ def build_cell_26_balancing_eval():
     source = """# Evaluate the balancing sweep models (same metrics as main eval)
 for loss_name in BAL_LOSS_NAMES:
     for bal_label in BALANCING_CONFIGS:
-        ckpt_dir = f"{CHECKPOINT_BASE}/train_balancing/{loss_name}/{bal_label}"
+        ckpt_dir = f"{train_balancing_dir}/{loss_name}/{bal_label}"
         model_path = f"{ckpt_dir}/model.eqx"
-        out_dir = f"{CHECKPOINT_BASE}/eval_balancing/{loss_name}/{bal_label}"
+        out_dir = f"{eval_balancing_dir}/{loss_name}/{bal_label}"
         if not os.path.isfile(model_path):
             continue
         if not RERUN_EVAL and os.path.isfile(f"{out_dir}/aggregate.json"):
@@ -1682,9 +1718,9 @@ def build_cell_28_vxc_eval():
     source = """# V_xc variants eval (9 runs: 3 variants x 3 solvers)
 for variant_label, (loss_name, _, _) in VXC_VARIANTS.items():
     for solver_label in SOLVER_LABELS:
-        ckpt_dir = f"{CHECKPOINT_BASE}/train_balancing/vxc/{variant_label}/{solver_label}"
+        ckpt_dir = f"{train_balancing_dir}/vxc/{variant_label}/{solver_label}"
         model_path = f"{ckpt_dir}/model.eqx"
-        out_dir = f"{CHECKPOINT_BASE}/eval_balancing/vxc/{variant_label}/{solver_label}"
+        out_dir = f"{eval_balancing_dir}/vxc/{variant_label}/{solver_label}"
         if not os.path.isfile(model_path):
             continue
         if not RERUN_EVAL and os.path.isfile(f"{out_dir}/aggregate.json"):
@@ -1719,8 +1755,8 @@ for arch_name in ARCH_NAMES:
     arch = alec.get_architecture(arch_name)
 
     # --- Pretrained baseline ---
-    pretrain_src = f"{CHECKPOINT_BASE}/pretrain/{arch_name}"
-    pretrain_dst = f"{CHECKPOINT_BASE}/baseline_pretrained/{arch_name}"
+    pretrain_src = f"{pretrain_dir}/{arch_name}"
+    pretrain_dst = f"{baseline_dir}/pretrained/{arch_name}"
     pretrain_model_path = f"{pretrain_dst}/model.eqx"
     if (os.path.isfile(f"{pretrain_src}/xnet.eqx")
             and not os.path.isfile(pretrain_model_path)):
@@ -1735,7 +1771,7 @@ for arch_name in ARCH_NAMES:
         eqx.tree_serialise_leaves(pretrain_model_path, model)
 
     # --- Random baseline ---
-    random_dst = f"{CHECKPOINT_BASE}/baseline_random/{arch_name}"
+    random_dst = f"{baseline_dir}/random/{arch_name}"
     random_model_path = f"{random_dst}/model.eqx"
     if not os.path.isfile(random_model_path):
         os.makedirs(random_dst, exist_ok=True)
@@ -1931,7 +1967,7 @@ test molecule. Results plotted as grouped bars:
 
 def build_cell_45_transfer_eval_loop():
     """Section 7 Cell 45 -- transfer evaluation loop over test_molecules (incl. V_xc variants)."""
-    source = '''_transfer_pkl = f"{CHECKPOINT_BASE}/transfer_results.pkl"
+    source = '''_transfer_pkl = transfer_results_path
 
 def _eval_model_on_mol(arch_name, model_path, mol_spec, ae_ref, mol_name,
                         out_dir, solver_config, atom_energies_dict):
@@ -1979,10 +2015,10 @@ if RERUN_EVAL or not os.path.isfile(_transfer_pkl):
         for _arch in ARCH_NAMES:
             for _loss in LOSS_NAMES:
                 for _solver in SOLVER_LABELS:
-                    _ckpt = f"{CHECKPOINT_BASE}/train/{_arch}/{_loss}/{_solver}/model.eqx"
+                    _ckpt = f"{train_dir}/{_arch}/{_loss}/{_solver}/model.eqx"
                     if not os.path.isfile(_ckpt):
                         continue
-                    _out = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/{_arch}/{_loss}/{_solver}"
+                    _out = f"{test_new_dir}/{_mol_name}/{_arch}/{_loss}/{_solver}"
                     row = _eval_model_on_mol(
                         _arch, _ckpt, _mol_spec, _ae_ref, _mol_name,
                         _out, SCF_CONFIGS[_solver], transfer_atom_energies)
@@ -1992,10 +2028,10 @@ if RERUN_EVAL or not os.path.isfile(_transfer_pkl):
         # Balancing sweep
         for _loss in BAL_LOSS_NAMES:
             for _bl in BALANCING_CONFIGS:
-                _ckpt = f"{CHECKPOINT_BASE}/train_balancing/{_loss}/{_bl}/model.eqx"
+                _ckpt = f"{train_balancing_dir}/{_loss}/{_bl}/model.eqx"
                 if not os.path.isfile(_ckpt):
                     continue
-                _out = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/balancing/{_loss}/{_bl}"
+                _out = f"{test_new_dir}/{_mol_name}/balancing/{_loss}/{_bl}"
                 row = _eval_model_on_mol(
                     BAL_ARCH, _ckpt, _mol_spec, _ae_ref, _mol_name,
                     _out, SCF_CONFIGS[BAL_SOLVER], transfer_atom_energies)
@@ -2005,10 +2041,10 @@ if RERUN_EVAL or not os.path.isfile(_transfer_pkl):
         # V_xc variants transfer eval (9 runs on deep_combined)
         for variant_label, (loss_name, _, _) in VXC_VARIANTS.items():
             for solver_label in SOLVER_LABELS:
-                _ckpt = f"{CHECKPOINT_BASE}/train_balancing/vxc/{variant_label}/{solver_label}/model.eqx"
+                _ckpt = f"{train_balancing_dir}/vxc/{variant_label}/{solver_label}/model.eqx"
                 if not os.path.isfile(_ckpt):
                     continue
-                _out = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/balancing_vxc/{variant_label}/{solver_label}"
+                _out = f"{test_new_dir}/{_mol_name}/balancing_vxc/{variant_label}/{solver_label}"
                 row = _eval_model_on_mol(
                     BAL_ARCH, _ckpt, _mol_spec, _ae_ref, _mol_name,
                     _out, SCF_CONFIGS[solver_label], transfer_atom_energies)
@@ -2022,10 +2058,10 @@ if RERUN_EVAL or not os.path.isfile(_transfer_pkl):
         # Baselines (pretrained + random)
         for _arch in ARCH_NAMES:
             for _bl in BASELINE_LABELS:
-                _ckpt = f"{CHECKPOINT_BASE}/baseline_{_bl}/{_arch}/model.eqx"
+                _ckpt = f"{baseline_dir}/{_bl}/{_arch}/model.eqx"
                 if not os.path.isfile(_ckpt):
                     continue
-                _out = f"{CHECKPOINT_BASE}/test_new/{_mol_name}/baseline/{_arch}/{_bl}"
+                _out = f"{test_new_dir}/{_mol_name}/baseline/{_arch}/{_bl}"
                 row = _eval_model_on_mol(
                     _arch, _ckpt, _mol_spec, _ae_ref, _mol_name,
                     _out, None, transfer_atom_energies)
@@ -2135,7 +2171,7 @@ else:
     for sl in _base_slvrs:
         _tc[sl] = baseline_colors.get(sl, '#AAAAAA')
 
-    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
+    os.makedirs(f"{figures_dir}", exist_ok=True)
 
     for mol_name, tdf in mol_items:
         tm = next(t for t in test_molecules if t['name'] == mol_name)
@@ -2268,7 +2304,7 @@ else:
             fontsize=14, fontweight='bold',
         )
         fig.tight_layout(rect=(0, 0.06, 1, 0.95))
-        fig.savefig(f"{CHECKPOINT_BASE}/figures/transfer_{mol_name}.png",
+        fig.savefig(f"{figures_dir}/transfer_{mol_name}.png",
                     dpi=150, bbox_inches='tight')
         plt.show()
         print(f"  Saved transfer_{mol_name}.png")
@@ -2454,8 +2490,8 @@ def build_cell_47_transfer_aggregate():
         "    fontsize=13,\n"
         ")\n"
         "fig.tight_layout(rect=(0, 0.06, 1, 0.95))\n"
-        "os.makedirs(f\"{CHECKPOINT_BASE}/figures\", exist_ok=True)\n"
-        "fig.savefig(f\"{CHECKPOINT_BASE}/figures/transfer_aggregate.png\",\n"
+        "os.makedirs(f\"{figures_dir}\", exist_ok=True)\n"
+        "fig.savefig(f\"{figures_dir}/transfer_aggregate.png\",\n"
         "            dpi=150, bbox_inches='tight')\n"
         "plt.show()\n"
         "\n"
@@ -2564,22 +2600,22 @@ else:
     for _arch in ARCH_NAMES:
         for _loss in LOSS_NAMES:
             for _solver in SOLVER_LABELS:
-                _ckpt = f"{CHECKPOINT_BASE}/train/{_arch}/{_loss}/{_solver}/model.eqx"
+                _ckpt = f"{train_dir}/{_arch}/{_loss}/{_solver}/model.eqx"
                 if os.path.isfile(_ckpt):
                     _groups['fine-tuned (main)']['ckpts'].append((_arch, _ckpt))
     for _loss in BAL_LOSS_NAMES:
         for _bl in BALANCING_CONFIGS:
-            _ckpt = f"{CHECKPOINT_BASE}/train_balancing/{_loss}/{_bl}/model.eqx"
+            _ckpt = f"{train_balancing_dir}/{_loss}/{_bl}/model.eqx"
             if os.path.isfile(_ckpt):
                 _groups['fine-tuned (balancing)']['ckpts'].append((BAL_ARCH, _ckpt))
     for _variant_label, (_ln, _, _) in VXC_VARIANTS.items():
         for _solver in SOLVER_LABELS:
-            _ckpt = f"{CHECKPOINT_BASE}/train_balancing/vxc/{_variant_label}/{_solver}/model.eqx"
+            _ckpt = f"{train_balancing_dir}/vxc/{_variant_label}/{_solver}/model.eqx"
             if os.path.isfile(_ckpt):
                 _groups['fine-tuned (balancing)']['ckpts'].append((BAL_ARCH, _ckpt))
     for _arch in ARCH_NAMES:
         for _bl in BASELINE_LABELS:
-            _ckpt = f"{CHECKPOINT_BASE}/baseline_{_bl}/{_arch}/model.eqx"
+            _ckpt = f"{baseline_dir}/{_bl}/{_arch}/model.eqx"
             if os.path.isfile(_ckpt):
                 _key = f'baseline:{_bl}'
                 if _key in _groups:
@@ -2684,8 +2720,8 @@ else:
     ax.grid(True, which='major', alpha=0.3)
     ax.set_ylim(0.5, 2.0)
     fig.tight_layout()
-    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-    fig.savefig(f"{CHECKPOINT_BASE}/figures/fx_drift_ch4.png",
+    os.makedirs(f"{figures_dir}", exist_ok=True)
+    fig.savefig(f"{figures_dir}/fx_drift_ch4.png",
                 dpi=150, bbox_inches='tight')
     plt.show()
 """
@@ -2830,9 +2866,9 @@ for arch_name in ARCH_NAMES:
     for loss_name in LOSS_NAMES:
         for solver_label in SOLVER_LABELS:
             cfg = SCF_CONFIGS[solver_label]
-            ckpt_dir = f"{CHECKPOINT_BASE}/train/{arch_name}/{loss_name}/{solver_label}"
+            ckpt_dir = f"{train_dir}/{arch_name}/{loss_name}/{solver_label}"
             model_path = f"{ckpt_dir}/model.eqx"
-            out_dir = f"{CHECKPOINT_BASE}/eval/{arch_name}/{loss_name}/{solver_label}"
+            out_dir = f"{eval_dir}/{arch_name}/{loss_name}/{solver_label}"
             if not os.path.isfile(model_path):
                 continue
             if not RERUN_EVAL and os.path.isfile(f"{out_dir}/aggregate.json"):
@@ -2854,8 +2890,8 @@ for arch_name in ARCH_NAMES:
 # --- Baseline evaluations (pretrained + random) ---
 for arch_name in ARCH_NAMES:
     for bl in BASELINE_LABELS:
-        bl_path = f"{CHECKPOINT_BASE}/baseline_{bl}/{arch_name}/model.eqx"
-        out_dir = f"{CHECKPOINT_BASE}/eval_baseline/{arch_name}/{bl}"
+        bl_path = f"{baseline_dir}/{bl}/{arch_name}/model.eqx"
+        out_dir = f"{eval_baseline_dir}/{arch_name}/{bl}"
         if not os.path.isfile(bl_path):
             continue
         if not RERUN_EVAL and os.path.isfile(f"{out_dir}/aggregate.json"):
@@ -2875,9 +2911,9 @@ for arch_name in ARCH_NAMES:
         jax.clear_caches(); gc.collect()
 
 _n_trained = sum(1 for a in ARCH_NAMES for l in LOSS_NAMES for s in SOLVER_LABELS
-                 if os.path.isfile(f"{CHECKPOINT_BASE}/eval/{a}/{l}/{s}/aggregate.json"))
+                 if os.path.isfile(f"{eval_dir}/{a}/{l}/{s}/aggregate.json"))
 _n_baseline = sum(1 for a in ARCH_NAMES for bl in BASELINE_LABELS
-                  if os.path.isfile(f"{CHECKPOINT_BASE}/eval_baseline/{a}/{bl}/aggregate.json"))
+                  if os.path.isfile(f"{eval_baseline_dir}/{a}/{bl}/aggregate.json"))
 print(f"Evaluation complete: {_n_trained} trained + {_n_baseline} baseline results on disk")
 """
     return new_code_cell(source)
@@ -2891,7 +2927,7 @@ def build_cell_24_dataframe():
 for arch_name in ARCH_NAMES:
     for loss_name in LOSS_NAMES:
         for solver_label in SOLVER_LABELS:
-            output_dir = f"{CHECKPOINT_BASE}/eval/{arch_name}/{loss_name}/{solver_label}"
+            output_dir = f"{eval_dir}/{arch_name}/{loss_name}/{solver_label}"
             try:
                 with open(f"{output_dir}/aggregate.json") as _f:
                     agg = json.load(_f)
@@ -2910,7 +2946,7 @@ for arch_name in ARCH_NAMES:
 # Balancing sweep results
 for loss_name in BAL_LOSS_NAMES:
     for bal_label in BALANCING_CONFIGS:
-        output_dir = f"{CHECKPOINT_BASE}/eval_balancing/{loss_name}/{bal_label}"
+        output_dir = f"{eval_balancing_dir}/{loss_name}/{bal_label}"
         try:
             with open(f"{output_dir}/aggregate.json") as _f:
                 agg = json.load(_f)
@@ -2929,7 +2965,7 @@ for loss_name in BAL_LOSS_NAMES:
 # Baseline results (pretrained + random)
 for arch_name in ARCH_NAMES:
     for bl in BASELINE_LABELS:
-        output_dir = f"{CHECKPOINT_BASE}/eval_baseline/{arch_name}/{bl}"
+        output_dir = f"{eval_baseline_dir}/{arch_name}/{bl}"
         try:
             with open(f"{output_dir}/aggregate.json") as _f:
                 agg = json.load(_f)
@@ -2948,7 +2984,7 @@ for arch_name in ARCH_NAMES:
 # V_xc variants ingestion (eval_balancing/vxc/...)
 for variant_label, (loss_name, _, _) in VXC_VARIANTS.items():
     for solver_label in SOLVER_LABELS:
-        output_dir = f"{CHECKPOINT_BASE}/eval_balancing/vxc/{variant_label}/{solver_label}"
+        output_dir = f"{eval_balancing_dir}/vxc/{variant_label}/{solver_label}"
         try:
             with open(f"{output_dir}/aggregate.json") as _f:
                 agg = json.load(_f)
@@ -3040,7 +3076,7 @@ def _bal_bars_for_loss(loss_name):
     if loss_name in BAL_LOSS_NAMES:
         for bal_label in BALANCING_CONFIGS:
             treatments.append(("bal:" + bal_label,
-                              f"{CHECKPOINT_BASE}/eval_balancing/{loss_name}/{bal_label}"))
+                              f"{eval_balancing_dir}/{loss_name}/{bal_label}"))
     return treatments
 
 def _vxc_bars_for_loss(loss_name):
@@ -3051,7 +3087,7 @@ def _vxc_bars_for_loss(loss_name):
             continue
         for solver_label in SOLVER_LABELS:
             key = f"bal_vxc:{variant_label}/{solver_label}"
-            out_dir = f"{CHECKPOINT_BASE}/eval_balancing/vxc/{variant_label}/{solver_label}"
+            out_dir = f"{eval_balancing_dir}/vxc/{variant_label}/{solver_label}"
             treatments.append((key, out_dir))
     return treatments
 
@@ -3059,7 +3095,7 @@ def _baseline_bars_for_arch(arch_name):
     \"\"\"Baseline treatments (pretrained + random) for a given arch -- shown on
     every loss subplot so their context is visible alongside trained models.\"\"\"
     return [
-        (bl, f"{CHECKPOINT_BASE}/eval_baseline/{arch_name}/{bl}")
+        (bl, f"{eval_baseline_dir}/{arch_name}/{bl}")
         for bl in BASELINE_LABELS
     ]
 
@@ -3095,7 +3131,7 @@ for col_idx, loss_name in enumerate(LOSS_NAMES):
         # the user can see how trained models compare against the NN's
         # PBE-mimicking starting point and a random-weights control on the
         # same chart.
-        base_trs = [(s, f"{CHECKPOINT_BASE}/eval/{arch_name}/{loss_name}/{s}")
+        base_trs = [(s, f"{eval_dir}/{arch_name}/{loss_name}/{s}")
                     for s in SOLVER_LABELS]
         baseline_trs = _baseline_bars_for_arch(arch_name)
         trs = base_trs + (_bal_trs + _vxc_trs if is_bal else []) + baseline_trs
@@ -3168,8 +3204,8 @@ fig.suptitle(
     fontsize=13,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.95))
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/scf_comparison_ae.png", dpi=150, bbox_inches="tight")
+os.makedirs(f"{figures_dir}", exist_ok=True)
+fig.savefig(f"{figures_dir}/scf_comparison_ae.png", dpi=150, bbox_inches="tight")
 plt.show()
 """
     return new_code_cell(source)
@@ -3204,7 +3240,7 @@ else:
     _vmax = 0
     _dm_panels = []
     for solver_label in SOLVER_LABELS:
-        ckpt = f"{CHECKPOINT_BASE}/train/{_best_arch}/{_loss_b}/{solver_label}/model.eqx"
+        ckpt = f"{train_dir}/{_best_arch}/{_loss_b}/{solver_label}/model.eqx"
         if not os.path.isfile(ckpt):
             _dm_panels.append(None)
             continue
@@ -3233,8 +3269,8 @@ else:
         fontsize=12,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-    fig.savefig(f"{CHECKPOINT_BASE}/figures/dm_heatmaps_scf.png", dpi=150, bbox_inches="tight")
+    os.makedirs(f"{figures_dir}", exist_ok=True)
+    fig.savefig(f"{figures_dir}/dm_heatmaps_scf.png", dpi=150, bbox_inches="tight")
     plt.show()
 """
     return new_code_cell(source)
@@ -3275,7 +3311,7 @@ else:
             weights=np.asarray(weights), density=True)
 
     for solver_label in SOLVER_LABELS:
-        ckpt = f"{CHECKPOINT_BASE}/train/{_best_arch}/{_loss_c}/{solver_label}/model.eqx"
+        ckpt = f"{train_dir}/{_best_arch}/{_loss_c}/{solver_label}/model.eqx"
         if not os.path.isfile(ckpt):
             continue
         _arch_config = alec.get_architecture(_best_arch)
@@ -3296,8 +3332,8 @@ else:
     ax.legend(title="model / baseline", fontsize="small")
     ax.grid(True, which="both", axis="y", ls=":", alpha=0.4)
     fig.tight_layout()
-    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-    fig.savefig(f"{CHECKPOINT_BASE}/figures/grid_density_scf.png", dpi=150, bbox_inches="tight")
+    os.makedirs(f"{figures_dir}", exist_ok=True)
+    fig.savefig(f"{figures_dir}/grid_density_scf.png", dpi=150, bbox_inches="tight")
     plt.show()
 """
     return new_code_cell(source)
@@ -3356,7 +3392,7 @@ for _arch_name in ARCH_NAMES:
         # Use oneshot-trained model for both FIXED_J and FULL diagnostics;
         # oneshot is the fastest training regime and gives the cleanest
         # convergence signature of the trained NN's V_xc.
-        _ckpt = f"{CHECKPOINT_BASE}/train/{_arch_name}/{_loss_name}/oneshot/model.eqx"
+        _ckpt = f"{train_dir}/{_arch_name}/{_loss_name}/oneshot/model.eqx"
         if not os.path.isfile(_ckpt):
             continue
         _n_attempted += 1
@@ -3429,8 +3465,8 @@ ax.set_title(
 ax.legend(title=f"mode (max_cycles={_DIAG_MAX_CYCLES})", loc='best')
 ax.grid(False)
 fig.tight_layout()
-os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-fig.savefig(f"{CHECKPOINT_BASE}/figures/scf_convergence.png", dpi=150, bbox_inches='tight')
+os.makedirs(f"{figures_dir}", exist_ok=True)
+fig.savefig(f"{figures_dir}/scf_convergence.png", dpi=150, bbox_inches='tight')
 plt.show()
 print(f"\\n[Cell 33] aggregated {_n_completed} models; "
       f"per-mode traces: {[(m, len(l)) for m, l in _deltas_by_mode.items()]}")
@@ -3505,8 +3541,8 @@ else:
         fontsize=13,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
-    fig.savefig(f"{CHECKPOINT_BASE}/figures/feature_impact_scf.png", dpi=150, bbox_inches="tight")
+    os.makedirs(f"{figures_dir}", exist_ok=True)
+    fig.savefig(f"{figures_dir}/feature_impact_scf.png", dpi=150, bbox_inches="tight")
     plt.show()
 """
     return new_code_cell(source)
