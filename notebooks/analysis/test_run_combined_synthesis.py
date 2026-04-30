@@ -113,3 +113,42 @@ class TestCombinedSynthesis:
                     assert field in stats[key], (
                         f"combined_headline[{key}] missing {field}"
                     )
+
+    def test_transfer_plot_uses_restricted_loss_subset(self):
+        """Pin the third-pass fairness restriction on figcomb_4.
+
+        The earlier draft of plot_transfer_overlap took medians across
+        ALL specs in each workflow, which made step 6 look worse on
+        transfer because its V_xc-aware losses (L3, L4, L5) over-fit and
+        produce 30-40 kcal/mol AE on transfer mols. Those losses have
+        no step-5 analog, so including them is apples-vs-oranges.
+
+        The corrected restriction picks only the cross-step common-loss
+        analogs:
+          step5 -> {B_atomization_plus_dm, C_atomization_plus_grid}
+          step6 -> {L1_B, L2_C_anchor}
+
+        A future regression that drops or renames this restriction would
+        produce a different (and incorrect) bar height pattern. This test
+        pins the contract by reading the source of plot_transfer_overlap
+        and asserting both the comment and the actual loss-set literals
+        appear; without parsing the AST we use a conservative substring
+        check.
+        """
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent / "run_combined_synthesis.py").read_text()
+        # Marker keywords that must appear in the function body.
+        assert "LOSS_RESTRICT" in src, (
+            "plot_transfer_overlap must declare a LOSS_RESTRICT dict to "
+            "limit step 5 to {B, C} and step 6 to {L1_B, L2_C_anchor}"
+        )
+        assert "B_atomization_plus_dm" in src and "C_atomization_plus_grid" in src
+        assert "L1_B" in src and "L2_C_anchor" in src
+        # The L3/L4/L5 V_xc-aware losses must be MENTIONED in the
+        # docstring (as the reason for the restriction) but must NOT
+        # appear in any tuple/list that fetches data, so a regression
+        # that re-includes them would change the LOSS_RESTRICT lines.
+        assert "L3_balanced_vxc" in src, (
+            "docstring must mention the V_xc-aware losses being excluded "
+            "(L3/L4/L5) so future maintainers understand the restriction"
+        )

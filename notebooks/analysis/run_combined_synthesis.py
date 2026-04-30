@@ -291,10 +291,42 @@ def plot_density_vs_ae_unified(arts: dict, out_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def plot_transfer_overlap(arts: dict, out_path: Path) -> None:
-    """Three panels (CH4, H2, OH); each panel: median AE-MAE per
-    workflow as a single bar. PBE reference (per-mol) drawn as horizontal.
+    """Restricted-loss-set transfer comparison.
+
+    **Fairness caveat.** A naive median across ALL specs in each
+    workflow is NOT apples-to-apples across steps:
+
+      step 5 loss set: {A_atomization, B_atomization_plus_dm,
+                        C_atomization_plus_grid}    -- NO V_xc fitting
+      step 6 loss set: {L1_B, L2_C_anchor, L3_balanced_vxc,
+                        L4_balanced_vxc_anchor, L5_gradnorm_vxc}
+                                                    -- L3/L4/L5 ARE V_xc-aware
+
+    Step 6's V_xc-aware losses (L3, L4, L5) produce 30-40 kcal/mol AE
+    on the transfer set because they over-fit V_xc shape to H2O+C2H2.
+    Their medians inflate step 6's overall transfer median, making
+    step 6 look worse than step 5 on transfer when in reality it is a
+    DIFFERENT LOSS-STRATEGY MIXTURE.
+
+    The fair cross-step comparison restricts to losses with direct
+    cross-step analogs:
+
+      step 5 loss B (B_atomization_plus_dm) ≈ step 6 loss L1_B
+      step 5 loss C (C_atomization_plus_grid) ≈ step 6 loss L2_C_anchor
+
+    Step 5's loss A (atomization-only) has no step-6 analog and is
+    excluded. Step 6's loss L3/L4/L5 (V_xc-aware) have no step-5 analog
+    and are excluded.
+
+    This restriction is the ONLY way to claim "step 5 vs step 6 on
+    transfer" honestly.
     """
     PBE_REF = {"CH4": 0.91, "H2": 7.31, "OH": 1.84}
+    # Restricted loss sets per step (apples-to-apples).
+    LOSS_RESTRICT = {
+        "step5": {"B_atomization_plus_dm", "C_atomization_plus_grid"},
+        "step6": {"L1_B", "L2_C_anchor"},
+    }
     fig, axes = plt.subplots(1, 3, figsize=(13, 4.4), sharey=True)
     x = np.arange(len(WORKFLOWS))
     colors = [c for (_, _, c) in WORKFLOWS]
@@ -310,7 +342,8 @@ def plot_transfer_overlap(arts: dict, out_path: Path) -> None:
             else:
                 df = art["transfer_primary_df"]
             ae = df[(df["value_name"] == "AE_error_kcalmol") &
-                    (df["molecule"] == mol)]
+                    (df["molecule"] == mol) &
+                    (df["loss"].isin(LOSS_RESTRICT[step]))]
             bars.append(float(ae["value"].abs().median())
                         if not ae.empty else np.nan)
         ax.bar(x, bars, color=colors, edgecolor="k", linewidth=0.4)
@@ -329,10 +362,12 @@ def plot_transfer_overlap(arts: dict, out_path: Path) -> None:
             ax.legend(loc="upper right", fontsize=7)
     axes[0].set_ylabel("median |AE error|  on transfer mol  (kcal/mol, log)")
     fig.suptitle(
-        "Combined transfer comparison — {CH₄, H₂, OH} per workflow (the 3 mols common to step 5 and step 6)",
-        fontsize=11,
+        "Combined transfer comparison — restricted to common-loss-strategy specs\n"
+        "step 5: {B, C} only · step 6: {L1_B, L2_C_anchor} only · L3/L4/L5 V_xc-aware excluded\n"
+        "(without this restriction, step 6's median is inflated by V_xc-aware losses with no step-5 analog)",
+        fontsize=10,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.tight_layout(rect=(0, 0, 1, 0.91))
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
 
