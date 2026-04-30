@@ -1,0 +1,304 @@
+% =============================================================================
+% Master supplement for the pretrain-loss-weighting NN-XC manuscript.
+% Build BEFORE main.tex — main.tex reads supplement.aux for xr-hyper cross-refs.
+%
+% Local build:
+%   mkdir -p build_supp
+%   pdflatex -output-directory=build_supp supplement.tex
+%   (cd build_supp && BIBINPUTS=.. bibtex supplement)
+%   pdflatex -output-directory=build_supp supplement.tex
+%   pdflatex -output-directory=build_supp supplement.tex
+%
+% Overleaf:
+%   - Set supplement.tex as the main document, compile.
+%   - Then set main.tex as the main document; xr-hyper resolves cross-refs.
+% =============================================================================
+\documentclass[11pt,letterpaper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx, booktabs, amsmath, amssymb}
+\usepackage[hidelinks]{hyperref}
+\usepackage{natbib, xcolor, microtype, caption}
+\captionsetup{font=small, labelfont=bf}
+
+% Renumber figures/tables as S1, S2, ... so cross-refs from main.tex
+% render as "Fig. S<n>" / "Tab. S<n>" automatically.
+\renewcommand{\thefigure}{S\arabic{figure}}
+\renewcommand{\thetable}{S\arabic{table}}
+
+\graphicspath{
+  {step5_pretrain_origin_comparison/figures/}
+  {step6_unweighted_analysis/figures/}
+  {step6_integration_analysis/figures/}
+  {step6_pretrain_origin_comparison/figures/}
+  {step56_combined_synthesis/figures/}
+  {../step5_pretrain_origin_comparison/figures/}
+  {../step6_unweighted_analysis/figures/}
+  {../step6_integration_analysis/figures/}
+  {../step6_pretrain_origin_comparison/figures/}
+  {../step56_combined_synthesis/figures/}
+  {../../notebooks/checkpoints_step5/unweighted/figures/}
+  {../../notebooks/checkpoints_step5/integration/figures/}
+  {../../notebooks/checkpoints_step6/unweighted/figures/}
+  {../../notebooks/checkpoints_step6/integration/figures/}
+}
+
+\title{Supplementary Material: Pretrain-Loss-Weighting Choice for
+       Neural-Network Density Functionals}
+\author{Alec P.\ Wills}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+\bigskip\hrule\bigskip
+
+\section{Pretraining diagnostics}
+\label{S:sec:pretraining}
+
+This section documents the pretraining phase across all four workflow
+combinations (step 5 unweighted, step 5 integration, step 6 unweighted,
+step 6 integration). Headline numbers are reproduced in the main paper;
+this supplement adds the per-architecture and diagnostic depth.
+
+\subsection{Per-architecture $F_x$ and $F_c$ pretrain MSE}
+\label{S:sec:pretrain_per_arch}
+
+\begin{table}[h]
+\centering
+\caption{Step-5 per-architecture pretrain final-step MSE for $F_x$ and
+$F_c$, both origins. Ratios $>$ 1 indicate integration tighter.
+Source: \texttt{notebooks/checkpoints\_step5/\{unweighted,integration\}/pretrain/<arch>/pretrain\_metadata.json}.}
+\label{S:tab:pretrain_per_arch}
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+arch & $F_x$ uw & $F_x$ int & $F_x$ ratio & $F_c$ uw & $F_c$ int & $F_c$ ratio \\
+\midrule
+deep                & $2.88\!\times\!10^{-4}$ & $6.07\!\times\!10^{-5}$ & 4.74 & $1.15\!\times\!10^{-4}$ & $7.03\!\times\!10^{-5}$ & 1.63 \\
+deep\_attn          & $2.83\!\times\!10^{-4}$ & $5.97\!\times\!10^{-5}$ & 4.74 & $9.99\!\times\!10^{-5}$ & $7.66\!\times\!10^{-5}$ & 1.30 \\
+deep\_dm            & $2.30\!\times\!10^{-4}$ & $5.65\!\times\!10^{-5}$ & 4.06 & $2.40\!\times\!10^{-5}$ & $3.95\!\times\!10^{-5}$ & 0.61 \\
+deep\_dm\_attn      & $2.18\!\times\!10^{-4}$ & $5.41\!\times\!10^{-5}$ & 4.03 & $1.98\!\times\!10^{-5}$ & $2.32\!\times\!10^{-5}$ & 0.85 \\
+deep\_cusp          & $5.79\!\times\!10^{-5}$ & $1.52\!\times\!10^{-5}$ & 3.82 & $3.79\!\times\!10^{-5}$ & $2.47\!\times\!10^{-5}$ & 1.53 \\
+deep\_cusp\_attn    & $4.56\!\times\!10^{-5}$ & $1.01\!\times\!10^{-5}$ & 4.51 & $3.32\!\times\!10^{-5}$ & $3.78\!\times\!10^{-5}$ & 0.88 \\
+deep\_combined      & $3.93\!\times\!10^{-5}$ & $1.33\!\times\!10^{-5}$ & 2.95 & $4.47\!\times\!10^{-5}$ & $8.66\!\times\!10^{-5}$ & 0.51 \\
+deep\_combined\_attn& $3.51\!\times\!10^{-5}$ & $1.17\!\times\!10^{-5}$ & 3.01 & $1.83\!\times\!10^{-5}$ & $2.07\!\times\!10^{-5}$ & 0.88 \\
+\midrule
+mean (per-arch ratio) & & & 3.98 & & & 1.02 \\
+ratio of population means & & & 4.25 & & & 1.03 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{$F_c$/$F_x$ asymmetry.} While integration tightens $F_x$ on every
+architecture (8/8 step-5 + 2/2 step-6 = 10/10), $F_c$ is mixed: 5 of 8
+architectures (\texttt{deep\_dm}, \texttt{deep\_dm\_attn},
+\texttt{deep\_cusp\_attn}, \texttt{deep\_combined},
+\texttt{deep\_combined\_attn}) are \emph{worse} under integration on $F_c$.
+The 3 that benefit (\texttt{deep}, \texttt{deep\_attn}, \texttt{deep\_cusp})
+include the two architectures with the largest absolute unweighted $F_c$
+baselines ($1.15\!\times\!10^{-4}$ and $9.99\!\times\!10^{-5}$); their
+ratios (1.63 and 1.30 in favour of integration) dominate the population mean.
+Likely causes: (a) PW92 $\varepsilon_c$ is roughly an order of magnitude
+smaller in magnitude than $\varepsilon_x^{\mathrm{LDA}}$ at typical bonding
+densities, narrowing the $F_c$-weighted residual's dynamic range, and (b)
+PBE's $F_c$ functional form is closer to the LDA limit than $F_x$ is in the
+GGA regime, leaving less ``room to move'' under any re-weighting.
+
+\subsection{Pretrain loss curves and parity plots}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{pretrain_losses.png}
+\caption{Step-5 pretrain loss curves per architecture, both origins
+(in-notebook output). $x$-axis: optimizer step.}
+\label{S:fig:pretrain_losses_step5}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{pretrain_parity.png}
+\caption{Step-5 pretrain parity plots per architecture
+(predicted vs.\ analytic-PBE $F_x$).}
+\label{S:fig:pretrain_parity_step5}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.6\textwidth]{aux_components_deep_combined.png}
+\caption{Auxiliary loss components on the \texttt{deep\_combined}
+architecture, step 5.}
+\label{S:fig:aux_components_step5}
+\end{figure}
+
+\section{Optimization step 5: H$_2$O training}
+\label{S:sec:step5}
+
+\subsection{Headline numbers}
+\label{S:sec:step5_headline}
+
+\begin{table}[h]
+\centering
+\caption{Step-5 paired headline (verified against
+\texttt{combined\_headline.json} and per-arch
+\texttt{pretrain\_metadata.json}). Ratio columns: integration~$\div$~unweighted
+where ``tighter'' means smaller MSE / smaller AE-MAE.}
+\label{S:tab:step5_headline}
+\small
+\begin{tabular}{lrrr}
+\toprule
+metric & unweighted & integration & ratio \\
+\midrule
+best AE-MAE on H$_2$O (kcal/mol) & 0.001402 & \textbf{0.000118} & 11.9$\times$ tighter \\
+best AE spec & deep\_dm/C/fixed\_j\_3 & deep\_dm\_attn/C/fixed\_j\_3 & adds attention \\
+best $\rho$-RMSE on H$_2$O (e/bohr$^3$) & $4.41\!\times\!10^{-4}$ & $\mathbf{3.72\!\times\!10^{-4}}$ & 1.19$\times$ tighter \\
+pretrain $F_x$ mean (8 archs) & $1.50\!\times\!10^{-4}$ & $\mathbf{3.52\!\times\!10^{-5}}$ & 4.25$\times$ tighter \\
+pretrain $F_c$ mean (8 archs) & $4.80\!\times\!10^{-5}$ & $4.66\!\times\!10^{-5}$ & 1.03$\times$ (tied) \\
+pretrained-only NN AE on H$_2$O (kcal/mol) & 27.2 & \textbf{17.1} & 1.59$\times$ tighter (37.1\%) \\
+random-init NN AE on H$_2$O (kcal/mol) & 434.6 & 434.6 & tied \\
+reduction vs.\ PBE on H$_2$O ($\sim$7.03 kcal/mol) & 5,014$\times$ & 59,500$\times$ & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Post-processing figures}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{figs5_1_pretrain_loss.png}
+\caption{Pretrain final $F_x$ (a) and $F_c$ (b) MSE per architecture, paired
+bars (unweighted blue / integration green); see Tab.~\ref{S:tab:pretrain_per_arch}
+for the numerics.}
+\label{S:fig:s5_pretrain_bars}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{figs5_2_baseline_reduction.png}
+\caption{H$_2$O AE-error baseline reduction. Trained-NN AE for all 72 specs
+per origin; horizontal references are random-NN ($\sim$434~kcal/mol),
+pretrained-only NN (27.2 vs.\ 17.1 kcal/mol), PBE-on-H$_2$O
+($\sim$7.03~kcal/mol; this run's def2-svp / grid\_level=1 H$_2$O
+configuration; \emph{not} a Karton 2011 literature value), and chemical
+accuracy 1~kcal/mol \citep{Pople1999}.}
+\label{S:fig:s5_baseline_reduction}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{figs5_3_pareto_density_vs_AE.png}
+\caption{Density-vs-energy plane. Each point is one spec; colour = origin;
+marker = architecture family. Integration green sits below-left of unweighted
+blue --- a Pareto improvement on both axes simultaneously for most
+architectures. Both clusters share the same density-RMSE floor at
+$\sim 3.7\!\times\!10^{-4}$~e/bohr$^3$ (set by network expressive capacity
+and quadrature-grid resolution, not by pretrain origin).}
+\label{S:fig:s5_pareto}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{figs5_4_arch_landscape.png}
+\caption{Full AE-MAE landscape: 8 archs $\times$ 9 (loss $\times$ solver) cells
+per origin, log colour scale. Integration's lower-right (descriptor-rich
+attention archs $\times$ \texttt{C\_atomization\_plus\_grid} loss) reaches
+deep green (sub-millihartree), unmatched in the unweighted heatmap.}
+\label{S:fig:s5_landscape}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{figs5_5_transfer.png}
+\caption{Transfer-mol AE per architecture and origin on the primary transfer
+set $\{$CH$_4$, H$_2$, OH$\}$. PBE references are hardcoded for our specific
+def2-svp / grid\_level=1 configuration: CH$_4$ 0.91, H$_2$ 7.31, OH 1.84
+kcal/mol. These are \emph{not} W4-11 literature values ---
+\citet{KartonDaonMartin2011} tabulates CCSD(T)-quality reference atomization
+energies, not PBE errors. No spec on any architecture or origin reaches
+chemical accuracy on any of CH$_4$, H$_2$, OH: H$_2$O-only training is
+insufficient for the closed-shell light-hydride class. OH is additionally
+open-shell ($^2\Pi$, $S{=}1/2$); the pretrain atom set $\{$H, He, O, N$\}$
+includes open-shell atoms, so the OH mismatch is on the molecular
+spin-density profile, not on atomic open-shell character.}
+\label{S:fig:s5_transfer}
+\end{figure}
+
+\subsection{In-notebook diagnostics}
+
+The step-5 notebook (\texttt{notebooks/\_build\_step5\_notebook.py}) produces
+the following diagnostics directly. They cover training-phase loss curves,
+auxiliary-loss component breakdowns
+(\texttt{aux\_components\_deep\_combined.png}, included in
+\S\ref{S:sec:pretrain_per_arch} above), an exploratory loss-balancing pilot
+(\texttt{balancing\_aux\_comparison.png},
+\texttt{bal\_loss\_plot\_vxc.png} --- the latter motivated step 6's
+$V_{xc}$-aware losses but is not part of step 5's production
+$\{A, B, C\}$ loss family), GradNorm task-weight evolution, SCF convergence
+aggregates, density-matrix and grid-density diagnostics, $F_x(s)$ drift on
+the CH$_4$ molecular grid, transfer aggregate and per-mol breakdowns, and a
+feature-impact analysis.
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{training_losses.png}
+\caption{Training-phase loss curves per architecture, loss, and solver.}
+\label{S:fig:s5_training_losses}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{balancing_aux_comparison.png}
+\caption{Loss-balancing comparison aux plot.}
+\label{S:fig:s5_balancing_aux}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.6\textwidth]{bal_loss_plot_vxc.png}
+\caption{Loss-balancing experiment loss curves on \texttt{deep\_combined}
+(in-notebook). Exploratory pilot that motivated step-6 $V_{xc}$-aware loss
+families; step 5's actual production losses $\{A, B, C\}$ are
+exchange-and-density only.}
+\label{S:fig:s5_bal_vxc}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{gradnorm_weight_evolution.png}
+\caption{GradNorm task-weight evolution \citep{ChenGradNorm2018}.}
+\label{S:fig:s5_gradnorm}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{scf_comparison_ae.png}
+\caption{SCF-mode AE comparison.}
+\label{S:fig:s5_scf_ae}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.6\textwidth]{scf_convergence.png}
+\caption{SCF convergence aggregate (step 5).}
+\label{S:fig:s5_scf_conv}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{dm_heatmaps_scf.png}
+\caption{DM heatmaps after final SCF.}
+\label{S:fig:s5_dm_heatmaps}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{grid_density_scf.png}
+\caption{Grid-density profile after final SCF.}
+\label{S:fig:s5_grid_density}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.6\textwidth]{fx_drift_ch4.png}
+\caption{$F_x(s)$ drift sampled on the CH$_4$ molecular grid.}
+\label{S:fig:s5_fx_drift_ch4}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{transfer_aggregate.png}
+\caption{Transfer aggregate plot.}
+\label{S:fig:s5_transfer_aggregate}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.6\textwidth]{transfer_CH4.png}
+\caption{CH$_4$ transfer detail.}
+\label{S:fig:s5_transfer_ch4}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.6\textwidth]{transfer_H2.png}
+\caption{H$_2$ transfer detail.}
+\label{S:fig:s5_transfer_h2}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.6\textwidth]{transfer_OH.png}
+\caption{OH transfer detail.}
+\label{S:fig:s5_transfer_oh}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{feature_impact_scf.png}
+\caption{Feature-impact analysis (in-notebook).}
+\label{S:fig:s5_feature_impact}\end{figure}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
