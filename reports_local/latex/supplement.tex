@@ -522,6 +522,87 @@ step-6 unweighted. C$_2$H$_4$ is in neither training nor transfer set.}
 \caption{$V_{xc}$ efficacy diagnostic, step-6 integration.}
 \label{S:fig:s6i_vxc}\end{figure}
 
+\clearpage
+\section{Pretrain-origin comparison (step 6)}
+\label{S:sec:origin_comparison}
+
+\subsection{Direct comparison}
+\label{S:sec:origin_comparison_direct}
+
+The two step-6 origins differ only in the pretrain-loss weighting:
+\begin{itemize}
+\item \textbf{unweighted}: $w_x \!=\! w_c \!=\! 1$ in
+  \texttt{xcquinox/alec/pretrain.py}.
+\item \textbf{integration}: $w_x \!=\! |\rho \varepsilon_x^{\text{LDA}}|$
+  with the Dirac--Slater LDA exchange energy density
+  \citep{Dirac1930, Slater1951}; $w_c \!=\! |\rho \varepsilon_c^{\text{PW92}}|$
+  \citep{PerdewWang1992}.
+\end{itemize}
+The paired headline numbers are in Tab.~\ref{S:tab:step6_paired}.
+
+\subsection{Comparison figures}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_pretrain_origin_comparison/figures/figc1_per_loss_per_group.png}
+\caption{Per-loss per-group MAE side-by-side.}
+\label{S:fig:figc1}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_pretrain_origin_comparison/figures/figc2_ratio_heatmap.png}
+\caption{Ratio heatmap (uw / int).}
+\label{S:fig:figc2}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_pretrain_origin_comparison/figures/figc3_pareto_overlay.png}
+\caption{Pareto overlay on the density-vs-energy plane.}
+\label{S:fig:figc3}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_pretrain_origin_comparison/figures/figc4_fx_asymptote.png}
+\caption{$F_x$ behaviour at large $s$ for each origin. Bars: mean of
+trained-model $F_x$ over every CH$_4$-grid point with $s > 5$.
+Black horizontal line: PBE 1996 \citep{PerdewBurkeErnzerhof1996} design
+ceiling $1+\kappa = 1.804$. The audit script also prints, for context, the
+analytic PBE mean at $s\in\{5,10,15\}$: $F_x(5)=1.701$, $F_x(10)=1.776$,
+$F_x(15)=1.791$, mean 1.756.}
+\label{S:fig:figc4}\end{figure}
+
+\clearpage
+\section{Lieb--Oxford / PBE-design ceiling enforcement audit}
+\label{S:sec:lo_audit}
+
+The architectural \texttt{\_AlecLOB} clamp at
+\texttt{xcquinox/alec/networks.py:42--44} guarantees
+$F_x \in [0, 1.804]$ at every grid point regardless of training history.
+We verify this empirically by post-processing every step-6 checkpoint
+with \texttt{notebooks/analysis/audit\_lob\_enforcement.py}.
+
+\begin{table}[h]
+\centering
+\caption{Lieb--Oxford / PBE-design ceiling enforcement audit. Across the 90
+step-6 specs in each pretrain origin (180 total checkpoints), the global
+maximum $F_x$ is exactly 1.804000 to six decimals --- the design ceiling,
+never exceeded. Zero specs in either origin produce any $F_x > 1.804$ at
+any grid point. The minimum-$F_x$ value hits the lower sigmoid floor in
+low-density tail regions.}
+\label{S:tab:lo_audit}
+\small
+\begin{tabular}{lrr}
+\toprule
+quantity & unweighted & integration \\
+\midrule
+\# checkpoints scanned & 90 & 90 \\
+global $\max_g F_x$ & 1.804000 & 1.804000 \\
+global $\min_g F_x$ & 0.000 & 0.0335 \\
+specs with $F_x > 1.804$ & 0 / 90 & 0 / 90 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The \texttt{\_AlecLOB.limit} field is declared
+\texttt{eqx.field(static=True)} at \texttt{xcquinox/alec/networks.py:21},
+so gradient descent has no path to mutate the ceiling --- the bound is
+enforced at the level of the computation graph, not by post-hoc projection.
+Recall (main \S1) that 1.804 is PBE's stricter design choice; the bare
+Lieb--Oxford bound permits $F_x \le 2.273$
+\citep{LiebOxford1981, PerdewBurkeErnzerhof1996}.
+
 \bibliographystyle{plainnat}
 \bibliography{references}
 
