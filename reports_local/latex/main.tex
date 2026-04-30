@@ -48,6 +48,10 @@
 % No [prefix] argument: supplement.tex already authors labels with the
 % literal "S:" prefix (e.g. \label{S:sec:pretraining}), so we import them
 % verbatim and reference them in main as \ref{S:...}.
+% Note: natbib emits "Citation X multiply defined" warnings during the
+% xr-hyper aux import for cite keys that appear in both main and supplement.
+% These are cosmetic — the bibliography deduplicates and renders one entry
+% per key. Compile output is correct.
 \externaldocument{supplement}
 
 \graphicspath{
