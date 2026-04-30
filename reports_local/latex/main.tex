@@ -146,11 +146,38 @@ architecturally via a sigmoid clamp whose ceiling is an immutable static field; 
 descent cannot relax it. The Lieb--Oxford theorem is therefore satisfied at every grid
 point regardless of pretrain weighting, training loss, or architecture choice.
 
-The integration-weighted pretrain loss is motivated by Eq.~\ref{eq:Ex_integrand} directly:
-the integrand $\varepsilon_X^{\text{unif}}(n)\, F_x(s) \propto \rho^{4/3}\, F_x$ is biggest
-at high-density bonding-region grid points, so pretrain-error reduction concentrated there
-should produce a network whose $F_x$ is tighter exactly where it matters for downstream
-energy predictions. We test this hypothesis empirically.
+The integration-weighted pretrain loss is motivated by Eq.~\ref{eq:Ex_integrand}
+directly: the integrand $\varepsilon_X^{\text{unif}}(n)\, F_x(s) \propto
+\rho^{4/3}\, F_x$ is biggest at high-density bonding-region grid points, so
+pretrain-error reduction concentrated there should produce a network whose
+$F_x$ is tighter exactly where it matters for downstream energy predictions.
+This is the central hypothesis of the present work.
+
+Why does this matter? Neural-network exchange--correlation functionals are a
+candidate route to higher-rung accuracy without giving up the
+constraint-satisfaction structure that makes traditional
+GGA/meta-GGA/hybrid functionals reliable. The PBE form
+\citep{PerdewBurkeErnzerhof1996} is the simplest GGA satisfying every
+known nonempirical constraint a GGA can satisfy; it is therefore a
+natural starting point for a NN $F_x$. Whether a learned $F_x$ that has
+been pretrained against PBE on a curated set of atoms and molecules
+inherits PBE's behaviour --- and whether the way that pretrain loss is
+weighted across grid points materially affects downstream task
+performance --- has not been settled.
+
+Our experimental design isolates exactly that question. Two pretrain
+loss-weighting schemes (unweighted MSE vs.\ integration-weighted MSE)
+share every other choice: same network, same atomic and molecular
+pretrain set, same downstream-training molecules, same Lieb--Oxford
+clamp, same optimizer, same evaluation protocol. The only thing that
+changes is whether $|\rho\,\varepsilon_x^{\mathrm{LDA}}|$ multiplies the
+pointwise residual. In the data-restricted regime of step 5
+(H$_2$O alone), this matters substantially; in the broader regime of
+step 6 (H$_2$O+C$_2$H$_2$, with $V_{xc}$-aware losses), the pretrain
+advantage saturates while a different question --- $V_{xc}$-aware loss
+necessity for tight density --- becomes the dominant signal. Our results
+quantify both regimes and identify the conditions under which each
+matters.
 
 \section{Methods}
 \label{sec:methods}
