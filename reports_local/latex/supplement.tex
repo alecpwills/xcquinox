@@ -41,6 +41,7 @@
   {../../notebooks/checkpoints_step5/integration/figures/}
   {../../notebooks/checkpoints_step6/unweighted/figures/}
   {../../notebooks/checkpoints_step6/integration/figures/}
+  {../}
 }
 
 \title{Supplementary Material: Pretrain-Loss-Weighting Choice for
@@ -297,6 +298,224 @@ exchange-and-density only.}
 \begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{feature_impact_scf.png}
 \caption{Feature-impact analysis (in-notebook).}
 \label{S:fig:s5_feature_impact}\end{figure}
+
+\section{Optimization step 6: H$_2$O+C$_2$H$_2$ training, paired origins}
+\label{S:sec:step6}
+
+\subsection{Step-6 paired headline}
+\label{S:sec:step6_headline}
+
+\begin{table}[h]
+\centering
+\caption{Step-6 paired comparison verified against
+\texttt{step6\_pretrain\_origin\_comparison/headline\_diff.json}. Ratio
+column: unweighted~$\div$~integration where applicable.}
+\label{S:tab:step6_paired}
+\small
+\begin{tabular}{lrrr}
+\toprule
+metric & unweighted & integration & ratio (uw/int) \\
+\midrule
+\# specs & 90 & 90 & --- \\
+best AE-MAE (kcal/mol) & 0.00793 & \textbf{0.00277} & 2.86$\times$ tighter \\
+best AE spec & dca/L2/oneshot & dca/L5/full\_3 & --- \\
+best $\rho$-RMSE (e/bohr$^3$) & $1.32\!\times\!10^{-4}$ & $\mathbf{1.23\!\times\!10^{-4}}$ & 1.07$\times$ tighter \\
+random-init NN AE (kcal/mol) & 461.5 & 461.5 & tied \\
+pretrained-only NN AE (kcal/mol) & 121.4 & \textbf{119.0} & 1.02$\times$ tighter \\
+PBE AE-MAE on H$_2$O+C$_2$H$_2$ (kcal/mol) & 8.17 & 8.17 & tied (def2-svp/lvl1) \\
+\midrule
+g3 MAE \texttt{L1\_B} & 0.344 & 0.376 & 0.91$\times$ \\
+g3 MAE \texttt{L2\_C\_anchor} & 0.337 & \textbf{0.099} & 3.39$\times$ tighter \\
+g3 MAE \texttt{L3\_balanced\_vxc} & 1.616 & 2.418 & 0.67$\times$ \\
+g3 MAE \texttt{L4\_balanced\_vxc\_anchor} & 2.150 & 2.747 & 0.78$\times$ \\
+g3 MAE \texttt{L5\_gradnorm\_vxc} & 0.426 & 0.520 & 0.82$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Per-mol PBE references.} 7.03~kcal/mol on H$_2$O alone,
+9.89~kcal/mol on C$_2$H$_2$ alone (mean magnitude over the training set:
+8.17~kcal/mol).
+
+\clearpage
+\subsection{Step-6 post-processing figures (paired by name)}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_unweighted_analysis/figures/fig1_baseline_reduction.png}
+\caption{Baseline AE reduction ladder, step-6 unweighted origin.}
+\label{S:fig:s6u_fig1}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_integration_analysis/figures/fig1_baseline_reduction.png}
+\caption{Baseline AE reduction ladder, step-6 integration origin.}
+\label{S:fig:s6i_fig1}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_unweighted_analysis/figures/fig1b_baseline_reduction_transfer.png}
+\caption{Same ladder evaluated on the two transfer sets, step-6 unweighted.
+Top row = primary $\{$CH$_4$, H$_2$, OH$\}$; bottom row = secondary
+$\{$CO$_2$, HF, NH$_2$, NH$_3\}$.}
+\label{S:fig:s6u_fig1b}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_integration_analysis/figures/fig1b_baseline_reduction_transfer.png}
+\caption{Transfer ladder, step-6 integration.}
+\label{S:fig:s6i_fig1b}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_unweighted_analysis/figures/fig2_density_vs_energy_tradeoff.png}
+\caption{Density-vs-energy tradeoff, step-6 unweighted.}
+\label{S:fig:s6u_fig2}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_integration_analysis/figures/fig2_density_vs_energy_tradeoff.png}
+\caption{Density-vs-energy tradeoff, step-6 integration. The L3/L4 cluster
+sits to the right (worse AE) but downward (tighter $\rho$-RMSE), exhibiting
+the classic Burke--Perdew energy-vs-density tradeoff (paraphrased in
+\citealp{Kepp2017}).}
+\label{S:fig:s6i_fig2}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_unweighted_analysis/figures/fig3_in_dist_vs_transfer.png}
+\caption{In-distribution vs.\ transfer-mol AE per spec, step-6 unweighted.}
+\label{S:fig:s6u_fig3}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_integration_analysis/figures/fig3_in_dist_vs_transfer.png}
+\caption{In-distribution vs.\ transfer-mol AE, step-6 integration.}
+\label{S:fig:s6i_fig3}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_unweighted_analysis/figures/fig4_loss_strategy_heatmap.png}
+\caption{Loss-strategy AE-MAE heatmap, step-6 unweighted. Rows = loss family;
+columns = the 18 (group, arch, solver) cells on training mols (H$_2$O+C$_2$H$_2$).
+Cell value = mean $|\!$AE error$|\!$; colour = $\log_{10}$ of that mean
+(\texttt{notebooks/analysis/comparison\_lib.py:636--674}).}
+\label{S:fig:s6u_fig4}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_integration_analysis/figures/fig4_loss_strategy_heatmap.png}
+\caption{Loss-strategy heatmap, step-6 integration.}
+\label{S:fig:s6i_fig4}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_unweighted_analysis/figures/fig5_arch_comparison.png}
+\caption{Architecture comparison, step-6 unweighted. Bars (panel a, ``trained
+mols'') plot the mean $|\!$AE error$|\!$ over all 9 (group, solver) cells per
+(loss, arch). Group-3 medians (deep vs.\ attn): L1\_B 0.65/0.04,
+L2\_C\_anchor 0.65/0.01, L3 2.51/1.23, L4 2.58/1.53, L5 0.83/0.02
+(recomputed from \texttt{eval\_df.csv}).}
+\label{S:fig:s6u_fig5}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_integration_analysis/figures/fig5_arch_comparison.png}
+\caption{Architecture comparison, step-6 integration. Group-3 medians
+(deep vs.\ attn): L1\_B 0.74/0.01, L2 0.15/0.02, L3 0.58/2.25,
+L4 4.74/0.65, L5 1.03/0.003.}
+\label{S:fig:s6i_fig5}\end{figure}
+
+\clearpage
+\subsection{Step-6 in-notebook diagnostics}
+
+The step-6 notebook (\texttt{notebooks/\_build\_step6\_notebook.py})
+produces these diagnostics during the run, independent of the
+post-processing analysis. They cover pretrain dynamics, anchor and
+balancing-loss sensitivity, $F_x(s)$ profiles on probe-molecule grids
+(panel B = CH$_4$ + C$_2$H$_2$; panel C = held-out C$_2$H$_4$),
+per-group training-loss curves, SCF convergence, transfer-set MAE
+breakdowns, and a $V_{xc}$-loss efficacy diagnostic. Captions describe
+each plot's semantics.
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/pretrain_losses.png}
+\caption{Pretrain loss curves, step-6 unweighted.}
+\label{S:fig:s6u_pretrain_losses}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/pretrain_losses.png}
+\caption{Pretrain loss curves, step-6 integration.}
+\label{S:fig:s6i_pretrain_losses}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/anchor_effect.png}
+\caption{Anchor-loss effect on AE/density tradeoff, step-6 unweighted.}
+\label{S:fig:s6u_anchor}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/anchor_effect.png}
+\caption{Anchor-loss effect, step-6 integration.}
+\label{S:fig:s6i_anchor}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/balancing_effect.png}
+\caption{Balancing-loss effect, step-6 unweighted.}
+\label{S:fig:s6u_balancing}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/balancing_effect.png}
+\caption{Balancing-loss effect, step-6 integration.}
+\label{S:fig:s6i_balancing}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/fx_drift_panel_B.png}
+\caption{$F_x(s)$ on (CH$_4$, C$_2$H$_2$) probe grids (panel B),
+step-6 unweighted. All 90 trained models overlaid.}
+\label{S:fig:s6u_fx_drift_B}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/fx_drift_panel_B.png}
+\caption{$F_x(s)$ on (CH$_4$, C$_2$H$_2$) probe grids (panel B),
+step-6 integration.}
+\label{S:fig:s6i_fx_drift_B}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/fx_drift_panel_C.png}
+\caption{$F_x(s)$ on the C$_2$H$_4$ held-out probe (panel C),
+step-6 unweighted. C$_2$H$_4$ is in neither training nor transfer set.}
+\label{S:fig:s6u_fx_drift_C}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/fx_drift_panel_C.png}
+\caption{$F_x(s)$ on C$_2$H$_4$ held-out probe (panel C), step-6 integration.}
+\label{S:fig:s6i_fx_drift_C}\end{figure}
+
+\clearpage
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/loss_curves_group1_h2o_short.png}
+\caption{Loss curves, group~1 (H$_2$O, short schedule), step-6 unweighted.}
+\label{S:fig:s6u_loss_g1}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/loss_curves_group2_h2o_c2h2_short.png}
+\caption{Loss curves, group~2 (H$_2$O + C$_2$H$_2$, short), step-6 unweighted.}
+\label{S:fig:s6u_loss_g2}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/loss_curves_group3_h2o_c2h2_long.png}
+\caption{Loss curves, group~3 (H$_2$O + C$_2$H$_2$, long), step-6 unweighted.}
+\label{S:fig:s6u_loss_g3}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/loss_curves_group1_h2o_short.png}
+\caption{Loss curves, group~1, step-6 integration.}
+\label{S:fig:s6i_loss_g1}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/loss_curves_group2_h2o_c2h2_short.png}
+\caption{Loss curves, group~2, step-6 integration.}
+\label{S:fig:s6i_loss_g2}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/loss_curves_group3_h2o_c2h2_long.png}
+\caption{Loss curves, group~3, step-6 integration.}
+\label{S:fig:s6i_loss_g3}\end{figure}
+
+\clearpage
+
+\begin{figure}[h!]\centering\includegraphics[width=0.6\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/scf_convergence.png}
+\caption{SCF-mode convergence, step-6 unweighted.}
+\label{S:fig:s6u_scf}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.6\textwidth]{../../notebooks/checkpoints_step6/integration/figures/scf_convergence.png}
+\caption{SCF-mode convergence, step-6 integration.}
+\label{S:fig:s6i_scf}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/transfer_primary_mae.png}
+\caption{Primary transfer-set MAE per spec, step-6 unweighted.}
+\label{S:fig:s6u_transfer_primary}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/transfer_primary_mae.png}
+\caption{Primary transfer-set MAE, step-6 integration.}
+\label{S:fig:s6i_transfer_primary}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/transfer_secondary_mae.png}
+\caption{Secondary transfer-set MAE per spec, step-6 unweighted.}
+\label{S:fig:s6u_transfer_secondary}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/transfer_secondary_mae.png}
+\caption{Secondary transfer-set MAE, step-6 integration.}
+\label{S:fig:s6i_transfer_secondary}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/unweighted/figures/vxc_efficacy.png}
+\caption{$V_{xc}$ efficacy diagnostic, step-6 unweighted.}
+\label{S:fig:s6u_vxc}\end{figure}
+
+\begin{figure}[h!]\centering\includegraphics[width=0.92\textwidth]{../../notebooks/checkpoints_step6/integration/figures/vxc_efficacy.png}
+\caption{$V_{xc}$ efficacy diagnostic, step-6 integration.}
+\label{S:fig:s6i_vxc}\end{figure}
 
 \bibliographystyle{plainnat}
 \bibliography{references}
