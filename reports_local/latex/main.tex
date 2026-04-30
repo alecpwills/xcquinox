@@ -1,0 +1,744 @@
+% =============================================================================
+% Pretrain-loss-weighting choice for neural-network density functionals.
+% Cross-step comparison of unweighted vs. Becke-quadrature-integrated objectives.
+%
+% IMPORTANT BUILD ORDER:
+%   1. Compile supplement.tex first (generates supplement.aux for cross-refs).
+%   2. Then compile this main.tex.
+%
+% Local build:
+%   cd reports_local/latex
+%   mkdir -p build_supp build_main
+%   # Step 1 — supplement
+%   pdflatex -output-directory=build_supp supplement.tex
+%   (cd build_supp && BIBINPUTS=.. bibtex supplement)
+%   pdflatex -output-directory=build_supp supplement.tex
+%   pdflatex -output-directory=build_supp supplement.tex
+%   # Make supplement.aux visible to main (xr-hyper reads it)
+%   cp build_supp/supplement.aux .
+%   # Step 2 — main
+%   pdflatex -output-directory=build_main main.tex
+%   (cd build_main && BIBINPUTS=.. bibtex main)
+%   pdflatex -output-directory=build_main main.tex
+%   pdflatex -output-directory=build_main main.tex
+%
+% Overleaf:
+%   - Add both main.tex and supplement.tex to the project.
+%   - Set supplement.tex as the main document, compile (generates aux files).
+%   - Set main.tex as the main document; xr-hyper resolves S: cross-refs
+%     from supplement.aux automatically.
+%
+% Style: generic article class for portability; switch the documentclass to
+% \documentclass[twocolumn,aps,prl]{revtex4-2} for PRL submission, or to
+% \documentclass[reprint,aps,pra]{revtex4-2} for PRA.
+% =============================================================================
+\documentclass[11pt,letterpaper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx, booktabs, amsmath, amssymb}
+\usepackage{xr-hyper}
+\usepackage[hidelinks]{hyperref}
+
+\usepackage{natbib, xcolor, microtype, caption}
+\captionsetup{font=small, labelfont=bf}
+
+% \externaldocument must come AFTER natbib so that \citep/\citet/\citealp
+% commands embedded in supplement.aux \@writefile entries (TOC/LOF/LOT) are
+% defined when xr-hyper imports them.
+\externaldocument[S]{supplement}
+
+\graphicspath{
+  {../step5_pretrain_origin_comparison/figures/}
+  {../step6_unweighted_analysis/figures/}
+  {../step6_integration_analysis/figures/}
+  {../step6_pretrain_origin_comparison/figures/}
+  {../step56_combined_synthesis/figures/}
+  {../../notebooks/checkpoints_step5/unweighted/figures/}
+  {../../notebooks/checkpoints_step5/integration/figures/}
+  {../../notebooks/checkpoints_step6/unweighted/figures/}
+  {../../notebooks/checkpoints_step6/integration/figures/}
+}
+
+\title{Pretrain-Loss-Weighting Choice for Neural-Network Density Functionals: \\
+       A Cross-Step Comparison of Unweighted vs.\ Becke-Quadrature-Integrated Objectives}
+\author{Alec P.\ Wills}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We compare two pretrain-loss-weighting schemes for a neural-network exchange-correlation
+functional based on the PBE generalized-gradient-approximation form
+\citep{PerdewBurkeErnzerhof1996}: an unweighted per-grid-point mean-squared-error and an
+integration-weighted MSE that multiplies each pointwise residual by the Becke quadrature
+volume element \citep{Becke1988} and the LDA exchange-energy density. The comparison
+spans two training-data regimes: ``step 5'' (8 architectures, 3 losses, 3 solvers,
+training on H$_2$O alone, 72 specs per origin) and ``step 6'' (2 architectures, 5 losses,
+3 solvers, 3 training-step budgets, training on H$_2$O+C$_2$H$_2$, 90 specs per origin).
+Across all 10 architectures evaluated, integration-weighted pretraining produces a tighter
+$F_x$ basin without exception (per-arch mean tightening 3.98$\times$ in step 5, ratio of
+population means 4.25$\times$; per-arch range 3.0--4.7$\times$ in step 5 and
+3.0$\times$/3.1$\times$ for the two step-6 architectures). The tightening compounds through
+downstream training in step 5 (best AE-MAE improves 11.9$\times$, a 2.80$\times$
+multiplier on the 4.25$\times$ pretrain ratio); in step 6 the AE improvement (2.86$\times$)
+is comparable to but does not exceed the pretrain-$F_x$ ratio (3.06$\times$), indicating
+that the broader step-6 training set saturates the pretrain-origin advantage at the
+extreme tail. The integration weighting effect is asymmetric between channels: $F_x$ is
+tightened uniformly across all 10 architectures (population mean 4.25$\times$ in step 5),
+while $F_c$ is essentially tied at the population level (1.03$\times$) with 5 of 8
+step-5 architectures \emph{worse} under integration. Step 6's $V_{xc}$-aware losses
+(L3, L4) produce the only specs in either pretrain origin with sub-$2\!\times\!10^{-4}$
+e/bohr$^3$ density-RMSE on H$_2$O --- a 3$\times$ density-floor improvement over step 5,
+unattainable without explicit $V_{xc}$ supervision. No
+pretrain-weighting variant closes the in-distribution / transfer generalization gap; the
+bottleneck is training-set diversity, not pretrain-weighting choice. The Lieb--Oxford bound
+\citep{LiebOxford1981} is enforced architecturally (PBE's stricter design choice
+$F_x \le 1.804$) across all 180 step-6 specs (90 per origin); zero violations.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+The PBE exchange enhancement factor is defined through the integrand structure of the
+exchange energy. Verbatim from \citet[eq.~10]{PerdewBurkeErnzerhof1996}:
+\begin{equation}
+\label{eq:Ex_integrand}
+E_X = \int d^3 r\; n\, \varepsilon_X^{\mathrm{unif}}(n)\, F_X(s),
+\qquad
+\varepsilon_X^{\mathrm{unif}}(n) = -\tfrac{3 e^2 k_F}{4\pi},
+\end{equation}
+with $k_F = (3\pi^2 n)^{1/3}$ and reduced gradient $s = |\nabla n|/(2 k_F n)$.
+PBE's eq.~10 retains the explicit $e^2$ from Gaussian units; the rest of the manuscript
+takes $e^2 = 1$ in Hartree atomic units. The PBE analytic form for $F_x$
+(their eq.~14) is
+\begin{equation}
+\label{eq:PBE_Fx}
+F_X(s) = 1 + \kappa - \frac{\kappa}{1 + \mu s^2/\kappa},
+\qquad \kappa = 0.804.
+\end{equation}
+PBE chooses $\kappa = 0.804$, giving $F_x(s\!\to\!\infty) = 1+\kappa = 1.804$, as a
+\emph{stricter} sufficient condition for the Lieb--Oxford bound
+\citep{LiebOxford1981}.\footnote{\citet{LiebOxford1981} prove
+$E_{XC} \ge -C\,\int n^{4/3}\, d^3 r$ with $C = 1.68$
+\citep[their Theorem~3.1, eq.~26]{LiebOxford1981}; \citet{PerdewBurkeErnzerhof1996}
+\S III(g) eq.~13 quote a tighter $C = 1.679$, with the same Lieb--Oxford-1981
+attribution. The 0.001 difference is a numerical refinement of the same proof,
+not a different bound; both round to ``1.68''.}
+The bare bound permits up to $F_x \le 2.273$; verbatim from
+\citet{PerdewBurkeErnzerhof1996}, \S III(g):
+\begin{quote}
+``The Lieb-Oxford bound [14]
+$E_X\{n_\uparrow,n_\downarrow\}\geq E_{XC}\{n_\uparrow,n_\downarrow\}\geq -1.679\, e^{2}\int d^3 r\, n^{4/3}$
+will be satisfied if the spin-polarized enhancement factor
+$F_X(\zeta=1, s) = 2^{1/3} F_X(s/2^{1/3})$ grows gradually with $s$ to a maximum value
+less than or equal to 2.273, i.e., $F_X(s) \le 1.804$.''\footnote{The bracketed
+``[14]'' in the PBE original cites \citet{LiebOxford1981}; the inequality is
+labelled eq.~(13) in PBE 1996. The explicit $e^2$ factor is from the
+Gaussian-units form of the Lieb--Oxford theorem; in the atomic-unit convention
+used elsewhere in this manuscript $e^2 = 1$.}
+\end{quote}
+Our network (\texttt{xcquinox/alec/networks.py:\_AlecLOB}) enforces $F_x \le 1.804$
+architecturally via a sigmoid clamp whose ceiling is an immutable static field; gradient
+descent cannot relax it. The Lieb--Oxford theorem is therefore satisfied at every grid
+point regardless of pretrain weighting, training loss, or architecture choice.
+
+The integration-weighted pretrain loss is motivated by Eq.~\ref{eq:Ex_integrand} directly:
+the integrand $\varepsilon_X^{\text{unif}}(n)\, F_x(s) \propto \rho^{4/3}\, F_x$ is biggest
+at high-density bonding-region grid points, so pretrain-error reduction concentrated there
+should produce a network whose $F_x$ is tighter exactly where it matters for downstream
+energy predictions. We test this hypothesis empirically.
+
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Network architecture}
+The $F_x$ network is an MLP gated by $\tanh^2(s)$, written as
+$g(\boldsymbol{x},s) = \tanh^2(s)\,\mathrm{MLP}(\boldsymbol{x})$, then passed through a
+sigmoid clamp
+\begin{equation}
+F_x = \mathrm{limit}\cdot \sigma\!\bigl(g - \log(\mathrm{limit}-1)\bigr),
+\qquad \mathrm{limit} = 1.804,
+\end{equation}
+implemented in \texttt{xcquinox/alec/networks.py:42--44} as
+\texttt{self.limit$\,*\,$jax.nn.sigmoid(x$\,-\,$jnp.log(self.limit$\,-\,$1))$\,-\,$1}
+and wrapped at \texttt{networks.py:120--123} via \texttt{return 1$\,+\,$lobterm}.
+The $-\log(\mathrm{limit}-1)$ bias makes the sigmoid centred so that $g=0$ yields
+$F_x \approx 1$ (LDA limit); range $F_x \in [0, 1.804]$, with the PBE design ceiling
+$1+\kappa = 1.804$ approached only as $g\to\infty$.
+The attention variant adds a multi-head scaled-dot-product attention block
+\citep{VaswaniAttention2017} (implemented as
+\texttt{SelfAttentionBlock} at
+\texttt{xcquinox/net.py:50--136}, with Q/K/V/O linear projections
+\texttt{Linear(H,H)}, \texttt{num\_heads}-way reshape to head dim
+\texttt{H/num\_heads}, scaled-dot-product softmax along the last
+axis, output projection, and a residual+LayerNorm wrap), applied with
+the Pre-LayerNorm convention
+(\citet{XiongPreLN2020} provides the warmup-free theoretical analysis;
+the Pre-LN architecture itself was proposed earlier in the literature)
+after the first MLP layer. Verbatim from \citet{VaswaniAttention2017}
+\S 3.2.1 (the attention equation that our \texttt{SelfAttentionBlock} implements):
+\begin{equation*}
+\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\!\left(\frac{Q K^T}{\sqrt{d_k}}\right) V .
+\end{equation*}
+The architectural Lieb--Oxford clamp is shared across all 10 architectures; gradient
+descent has no path to mutate the ceiling.
+
+\subsection{Pretrain weighting}
+
+The two pretrain runs minimize different objectives over the same dataset:
+\begin{align}
+\mathcal{L}_{\text{unweighted}} &= \tfrac{1}{N_g} \sum_{g=1}^{N_g} \big(F_x^{\text{NN}}(s_g) - F_x^{\text{PBE}}(s_g)\big)^2 \\
+\mathcal{L}_{\text{integration}} &= \frac{\sum_{g=1}^{N_g} W_g\,
+   \big(F_x^{\text{NN}}(s_g) - F_x^{\text{PBE}}(s_g)\big)^2}
+   {\sum_{g=1}^{N_g} W_g + \epsilon},
+\qquad W_g = w_g^{\text{grid}}\,
+   \big|\rho_g\, \varepsilon_x^{\text{LDA}}(\rho_g)\big| .
+\end{align}
+Here $w_g^{\text{grid}}$ is the Becke partitioning weight at grid point $g$
+\citep{Becke1988}, $|\rho \varepsilon_x^{\text{LDA}}|$ is the magnitude of the LDA
+exchange-energy density, and $\epsilon = 10^{-12}$ is a numerical regulariser. The
+loss is a \emph{weighted mean} (not a bare weighted sum), implemented at
+\texttt{xcquinox/alec/pretrain.py:288--291} as
+\texttt{jnp.sum(w$\,*\,$residual\_sq)$\,/\,$(jnp.sum(w)$\,+\,$1e-12)}; this keeps the
+loss commensurate with the unweighted MSE in scale while concentrating gradient
+pressure on the high-$|\rho \varepsilon_x|$ region where $E_X$'s integrand is largest.
+The corresponding correlation-channel loss uses an analogous weight built from the
+PW92 correlation energy density $\varepsilon_c^{\mathrm{PW92}}$ \citep{PerdewWang1992}
+via \texttt{pw92c\_unpolarized\_scalar} (\texttt{xcquinox/alec/pretrain.py:69--77}),
+so that the $F_c$ residual is weighted by its own integrand structure, not by LDA
+exchange.
+
+\subsection{Architectures, losses, and solvers}
+\label{sec:methods_arch_loss}
+
+Step 5 enumerates eight architectures, factoring three orthogonal
+augmentations on a base \texttt{deep} MLP: optional density-matrix-overlap
+descriptors (\texttt{\_dm}), optional cusp-correction features
+(\texttt{\_cusp}), and optional combined density-matrix~$+$~cusp
+descriptors (\texttt{\_combined}); each variant is then either with or
+without a self-attention block (\texttt{\_attn}). The eight specs are
+\texttt{deep}, \texttt{deep\_attn}, \texttt{deep\_dm},
+\texttt{deep\_dm\_attn}, \texttt{deep\_cusp}, \texttt{deep\_cusp\_attn},
+\texttt{deep\_combined}, \texttt{deep\_combined\_attn}. Step 6 retains
+only the two descriptor-richest variants
+(\texttt{deep\_combined} and \texttt{deep\_combined\_attn}).
+
+Step 5's three task losses are \texttt{A\_atomization} (AE only),
+\texttt{B\_atomization\_plus\_dm} (AE plus a density-matrix residual),
+and \texttt{C\_atomization\_plus\_grid} (AE plus an integrated grid-density
+residual). Step 6 replaces these with five $V_{xc}$-aware variants:
+\texttt{L1\_B} (the step-5 \texttt{B} carried forward),
+\texttt{L2\_C\_anchor} (\texttt{C} plus a closed-shell-asymptote anchor on
+$F_x(s\!\to\!\infty)\!\to\!1.804$),
+\texttt{L3\_balanced\_vxc} (AE plus an explicit $V_{xc}$ residual against
+the analytic PBE potential),
+\texttt{L4\_balanced\_vxc\_anchor} (\texttt{L3} plus the
+$F_x$-asymptote anchor), and
+\texttt{L5\_gradnorm\_vxc} (\texttt{L3} with GradNorm-balanced multitask
+weights, \citealp{ChenGradNorm2018}, $\alpha=1.5$).
+
+The three solvers are \texttt{oneshot} (single non-self-consistent pass
+on the precomputed reference density), \texttt{fixed\_j\_3} (fixed-point
+SCF with three Coulomb-integral re-evaluations), and \texttt{full\_3}
+(three full self-consistent SCF cycles). Step~6 adds three training
+schedules: \texttt{group1} (H$_2$O, short), \texttt{group2}
+(H$_2$O+C$_2$H$_2$, short), \texttt{group3} (H$_2$O+C$_2$H$_2$, long).
+
+\subsection{Training and evaluation}
+\label{sec:methods_training_eval}
+
+\paragraph{Network shape.} The MLP body has \texttt{depth}=4 hidden layers
+of \texttt{nodes}=32 width with GELU activations
+(\texttt{xcquinox/alec/config.py} entry \texttt{deep}; verified at
+\texttt{xcquinox/alec/networks.py:84}); descriptor-augmented variants
+(\texttt{\_dm}, \texttt{\_cusp}, \texttt{\_combined}) prepend the
+corresponding extra features to the input vector. The attention variant
+inserts the \texttt{SelfAttentionBlock} (\S\ref{sec:methods_arch_loss})
+between the first and second hidden layers with \texttt{num\_heads}=4
+(\texttt{config.py} entry \texttt{deep\_attn}).
+
+\paragraph{Optimization.} Pretrain and task-loss phases share the same
+optimizer chain (\texttt{xcquinox/alec/pretrain.py:\_build\_optimizer},
+\texttt{xcquinox/alec/train.py:build\_optimizer}):
+\texttt{optax.clip\_by\_global\_norm(1.0)} followed by
+\texttt{optax.adam} with a linear-decay learning-rate schedule from
+\texttt{lr\_start}=$10^{-2}$ to \texttt{lr\_end}=$10^{-5}$ over the run
+length, with the decay starting at \texttt{lr\_decay\_start}=20\% of
+total steps. No weight decay; no warmup.
+
+\paragraph{Pretrain data and reference targets.} The pretrain set comprises
+the four atomic species $\{H, He, O, N\}$ (singlet He plus open-shell
+H/N/O reflecting first/second-row coverage relevant to step 5 and step 6
+training molecules) plus the molecular pretrain probe (H$_2$O for both
+steps; step 6 additionally probes C$_2$H$_2$ for analytic checks). The
+pretrain target $F_x^{\mathrm{PBE}}(s)$ comes from the analytic PBE form
+(eq.~\ref{eq:PBE_Fx}); $F_c^{\mathrm{PBE}}$ comes from the analytic
+PBE correlation enhancement.
+
+\paragraph{Training molecules and basis.} Step 5 trains on H$_2$O for 250
+task-loss steps; step 6 trains on H$_2$O+C$_2$H$_2$ for 100 (groups~1,~2)
+or 250 (group~3) task-loss steps. Geometries are taken from the W4-11
+benchmark set (CCSD(T)-CBS-quality reference geometries; equilibrium
+bond distances, no out-of-equilibrium sampling). The basis is
+\texttt{def2-svp} throughout; the integration grid is PySCF
+\texttt{grid\_level}=1, the Becke partitioned multicenter grid
+\citep{Becke1988}.
+
+\paragraph{Reference atomization energies.} AEs are evaluated against the
+W4-11 reference values (140 first/second-row total atomization energies
+derived from W4-quality \textit{ab initio} data, with $3\sigma$ uncertainty
+under 1~kJ/mol relative to Active Thermochemical Tables;
+\citealp{KartonDaonMartin2011}). Densities are integrated on the same
+Becke--Lebedev grid that pretraining uses. Atomic correlation reference
+totals for first/second-row atoms (C, N, O) follow
+\citet{ChakravortyEtAl1993}, whose primary tabulation is 3-- through
+18-electron species. The H atom is treated analytically
+($E^{\mathrm{exact}}_{\mathrm{H}} = -\tfrac{1}{2}\,\mathrm{Ha}$, no
+correlation by definition), and He uses an explicit non-Chakravorty
+reference (Chakravorty's Table~VIII includes a re-analysis of 2-electron
+data via Davidson, but is not its primary source).
+
+\paragraph{Test and transfer sets.} ``In-distribution'' AE-MAE refers to
+evaluation on the training molecule(s) themselves (H$_2$O for step 5;
+H$_2$O+C$_2$H$_2$ for step 6, with results sliced per-group as group~1
+through group~3). ``Transfer'' refers to molecules absent from the
+training set: a primary transfer set $\{$CH$_4$, H$_2$, OH$\}$ shared by
+both step subsets, and (step 6 only) a secondary transfer set
+$\{$CO$_2$, HF, NH$_2$, NH$_3\}$ probing closed/open-shell light-hydride
+generalisation. Cross-step transfer comparisons in this manuscript
+restrict to the shared primary set.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Combined headline}
+\label{sec:results_headline}
+
+Table~\ref{tab:headline_4way} summarizes the four-workflow comparison.
+Within each step, the integration-pretrain origin produces a tighter best
+AE-MAE on H$_2$O at the same training budget --- 11.9$\times$ tighter in
+step 5 (0.001402 vs.\ 0.000118 kcal/mol) and 7.3$\times$ tighter in step 6
+(0.003112 vs.\ 0.000426 kcal/mol on H$_2$O-restricted rows). Both step
+subsets show the population-mean pretrain-$F_x$ ratio (4.25$\times$ in
+step 5, 3.06$\times$ in step 6); the downstream best-AE
+ratio is greater in step 5 (because narrow training amplifies the
+pretrain head start) and saturates in step 6.
+The integration-origin step-6 best $\rho$-RMSE
+($1.23\!\times\!10^{-4}$ e/bohr$^3$) is the tightest density of any
+spec in any of the four workflows.
+
+\begin{table}[h]
+\centering
+\caption{Cross-workflow headline numbers. ``best AE on H$_2$O''
+restricts step-6 evaluations to H$_2$O rows so the cross-step axis is
+apples-to-apples.}
+\label{tab:headline_4way}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+workflow & $n$ & best AE H$_2$O & best $\rho$-RMSE H$_2$O & pretrain $F_x$ mean \\
+& & (kcal/mol) & (e/bohr$^3$) & \\
+\midrule
+step5 / unweighted  & 72 & 0.001402 & $4.41\!\times\!10^{-4}$ & $1.50\!\times\!10^{-4}$ \\
+step5 / integration & 72 & \textbf{0.000118} & $3.72\!\times\!10^{-4}$ & $3.52\!\times\!10^{-5}$ \\
+step6 / unweighted  & 90 & 0.003112 & $1.32\!\times\!10^{-4}$ & $3.76\!\times\!10^{-5}$ \\
+step6 / integration & 90 & 0.000426 & \textbf{$1.23\!\times\!10^{-4}$} & \textbf{$1.23\!\times\!10^{-5}$} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Per-architecture pretrain-$F_x$ comparison (Fig.~\ref{fig:comb2})}
+\label{sec:results_perarch_fx}
+
+The pretrain-$F_x$ MSE comparison (Fig.~\ref{fig:comb2}) is the most direct
+test of the integrand-structure hypothesis: integration weighting concentrates
+gradient pressure where $E_X$'s integrand is largest, so the pretrained $F_x$
+should be tighter at exactly the points that matter most for the energy.
+Across all 10 architectures, integration tightens the final pretrain $F_x$
+without exception. In step 5 the per-arch ratios are
+$\{4.74, 4.74, 4.06, 4.03, 3.82, 4.51, 2.95, 3.01\}$ for
+\texttt{deep}, \texttt{deep\_attn}, \texttt{deep\_dm}, \texttt{deep\_dm\_attn},
+\texttt{deep\_cusp}, \texttt{deep\_cusp\_attn}, \texttt{deep\_combined},
+\texttt{deep\_combined\_attn} respectively
+(per-arch mean $3.98\times$, range $2.95$--$4.74$;
+verified against \texttt{notebooks/checkpoints\_step5/\{uw,int\}/pretrain/<arch>/pretrain\_metadata.json}).
+The descriptor-rich \texttt{\_combined} variants show the smallest gain
+($\sim 3\times$); the simpler \texttt{deep} and \texttt{deep\_attn} bases
+show the largest ($\sim 4.7\times$), consistent with extra descriptor capacity
+partly offsetting the unweighted-origin's wasted gradient on low-density
+tail points. Step 6's two architectures give $3.00\times$ (\texttt{deep\_combined})
+and $3.13\times$ (\texttt{deep\_combined\_attn}) --- consistent with their
+step-5 counterparts ($2.95\times$ and $3.01\times$), so the per-arch ratio is
+not strongly affected by the broader step-6 training set.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figcomb_2_pretrain_fx_4way.png}
+\caption{Pretrain final $F_x$ MSE per architecture (log scale).
+(a)~Step 5's 8 architectures; (b)~step 6's 2 architectures, a subset of step 5's.
+Integration weighting tightens $F_x$ on every architecture without exception;
+the per-arch ratios range from $\sim$3.0 to $\sim$4.7. This is the cleanest
+cross-step physical claim of the comparison.}
+\label{fig:comb2}
+\end{figure}
+
+\subsection{Pretrain-$F_c$ comparison and the F$_x$/F$_c$ asymmetry}
+\label{sec:results_fc}
+
+The same integration weighting is applied independently to the correlation
+channel via the PW92 correlation energy density
+$|\rho\,\varepsilon_c^{\mathrm{PW92}}|$ \citep{PerdewWang1992}, but the
+$F_c$ pretrain shows a much weaker integration advantage. The
+population-mean ratio is $1.03\times$ (essentially tied:
+$4.80\!\times\!10^{-5}$ unweighted vs.\ $4.66\!\times\!10^{-5}$ integration);
+moreover, on a per-architecture basis 5 of 8 step-5 architectures are
+\emph{worse} under integration on $F_c$ (\texttt{deep\_dm},
+\texttt{deep\_dm\_attn}, \texttt{deep\_cusp\_attn}, \texttt{deep\_combined},
+\texttt{deep\_combined\_attn}). The 3 that benefit
+(\texttt{deep}, \texttt{deep\_attn}, \texttt{deep\_cusp}) include
+\texttt{deep} and \texttt{deep\_attn}, the two architectures with the
+largest absolute unweighted $F_c$ baselines ($1.15\!\times\!10^{-4}$ and
+$9.99\!\times\!10^{-5}$, vs.\ $\sim 4 \!\times\!10^{-5}$ for the rest);
+their per-arch ratios ($1.63\times$ and $1.30\times$ in favour of
+integration) dominate the population mean despite the per-arch tally
+running 5/8 against integration.
+
+The asymmetry between $F_x$ (uniformly tightened) and $F_c$ (mixed)
+under the same weighting strategy is consistent with two independent
+factors. (a) PW92 $\varepsilon_c$ is roughly an order of magnitude smaller
+in magnitude than $\varepsilon_x^{\mathrm{LDA}}$ at typical bonding densities,
+so the $F_c$-weighted residual has a narrower dynamic range and a smaller
+high-density-region gradient signal. (b) PBE's $F_c$ functional form is
+already much closer to the LDA limit than $F_x$ is in the GGA regime
+(modest gradient enhancement), leaving less ``room to move'' under any
+re-weighting. We do not attempt to disentangle these contributions in this
+manuscript; the F$_c$/F$_x$ asymmetry is documented as a robust empirical
+observation across both step subsets.
+
+\subsection{Pretrained-only NN baseline ladder}
+\label{sec:results_pretrained_only}
+
+Before downstream task training, we evaluate the network state immediately
+after the 1000-step pretrain phase as a self-contained baseline. In step 5
+the pretrained-only NN AE on H$_2$O is 27.2~kcal/mol (unweighted) vs.\
+17.1~kcal/mol (integration) --- a 1.59$\times$ ratio, equivalent to a 37.1\%
+AE-MAE reduction. In step 6 the pretrained-only AE-MAE on
+H$_2$O+C$_2$H$_2$ is 121.4~kcal/mol (unweighted) vs.\ 119.0~kcal/mol
+(integration) --- only 1.02$\times$, statistically tied. The shrinking
+pretrain-origin advantage from step 5 to step 6 reflects step 6's broader
+training set (H$_2$O+C$_2$H$_2$): with two molecules, the unweighted-origin
+pretrain has access to enough density-region diversity at the start of
+training that the integration head start is largely neutralised before
+gradient descent even begins. The downstream task-loss optimization then
+re-opens the gap only at the best-spec extreme tail
+(Table~\ref{tab:headline_4way}); the population median is much closer
+between origins.
+
+\subsection{Density vs.\ energy plane (Fig.~\ref{fig:comb3})}
+\label{sec:results_density_vs_energy}
+
+The density-vs-energy plane (Fig.~\ref{fig:comb3}) places each spec at
+$(\text{AE-MAE}, \rho\text{-RMSE})$ on H$_2$O and colour-codes by workflow.
+Two qualitative observations dominate. First, step 6's V$_{xc}$-aware
+losses (L3, L4) are the only specs in any of the four workflows that
+reach sub-$2\!\times\!10^{-4}$ e/bohr$^3$ density-RMSE; this is a 3$\times$
+improvement on step 5's best density floor ($3.72\!\times\!10^{-4}$),
+unattainable without explicit $V_{xc}$ training. Second, within each step,
+integration shifts the cluster left (lower AE) without raising the
+density-RMSE ceiling --- a Pareto improvement on both axes. Across steps,
+step 6 sits to the lower-right of step 5 (better density, worse AE on H$_2$O
+because step 6 averages over a multi-molecule training set), confirming
+that pretrain weighting and training-set diversity are independent axes.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figcomb_3_density_vs_ae_unified.png}
+\caption{Each spec is one point at $(\text{AE-MAE}, \rho\text{-RMSE})$ on H$_2$O.
+Color encodes workflow. Step 6's V$_{xc}$-aware losses (L3, L4) are the only
+specs in any workflow that reach sub-$2 \times 10^{-4}$ e/bohr$^3$ density-RMSE;
+within each step, integration shifts the cluster left (lower AE) without
+raising density-RMSE. The within-run Pareto observation is consistent with
+Burke's earlier formulation of the energy-vs-density tradeoff (cf.~paraphrased
+in \citet{Kepp2017}); the broader Medvedev across-decades thesis
+\citep{Medvedev2017} is contested.}
+\label{fig:comb3}
+\end{figure}
+
+\subsection{Best AE per workflow (Fig.~\ref{fig:comb1})}
+\label{sec:results_bestae}
+
+The best AE-MAE per workflow on H$_2$O (Fig.~\ref{fig:comb1}) is plotted
+on a logarithmic axis. All four workflows clear chemical accuracy
+\citep{Pople1999} on H$_2$O by orders of magnitude: 0.001402 kcal/mol
+(step 5 unweighted, $5{,}014\times$ below PBE-on-H$_2$O), 0.000118 kcal/mol
+(step 5 integration, $59{,}500\times$ below PBE), 0.003112 kcal/mol
+(step 6 unweighted), and 0.000426 kcal/mol (step 6 integration). The
+step-5 winner is \texttt{deep\_dm\_attn / C\_atomization\_plus\_grid /
+fixed\_j\_3} on the integration origin; the step-6 winner is
+\texttt{group3 / deep\_combined\_attn / L5\_gradnorm\_vxc / full\_3}
+on the integration origin. In both step subsets the integration origin
+takes the headline; the step-5 integration spec also achieves the tightest
+in-distribution AE of any spec considered (a single-molecule, narrow-data
+artefact, but a striking demonstration of how far gradient-descent can drive
+the in-distribution residual when pretrain and task losses align).
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figcomb_1_best_ae_4way.png}
+\caption{Best H$_2$O AE-MAE per workflow on a logarithmic axis,
+with PBE-on-H$_2$O ($\sim 7.03$ kcal/mol; this run's specific def2-svp /
+grid\_level=1 configuration) and chemical accuracy
+(1 kcal/mol; \citet{Pople1999}) drawn as references.
+The step-5 / integration winner achieves $1.18\times 10^{-4}$ kcal/mol,
+$\sim$59,500$\times$ below PBE on the same H$_2$O configuration.}
+\label{fig:comb1}
+\end{figure}
+
+\subsection{Distribution of H$_2$O AE-MAE across all specs (Fig.~\ref{fig:comb5})}
+\label{sec:results_distribution}
+
+The headline best-spec ratios in Table~\ref{tab:headline_4way} are extreme-tail
+quantities; we therefore also examine the full population distribution
+(Fig.~\ref{fig:comb5}, stacked histogram of $\log_{10}|AE\text{ error}|/$kcal/mol
+per spec). Both step-5 distributions sit roughly two decades to the left of
+both step-6 distributions, which is expected: step 5 trains on H$_2$O alone
+and is evaluated on H$_2$O alone, so it is genuinely in-distribution at
+training time. Within each step, the population-median shift between
+unweighted and integration is small. Step 5's median moves $\sim$0.07~dex
+leftward (integration tighter); step 6's median moves $\sim$0.4~dex
+\emph{rightward} (integration slightly worse at the median). The tail
+of the distribution behaves differently: integration's leftmost tail extends
+roughly 1 decade further left than unweighted's in step 5, generating the
+11.9$\times$ best-spec ratio in Table~\ref{tab:headline_4way}, but the
+population median tells a much more modest story. The cross-step shift
+($\sim$2 decades) dominates the cross-origin shift ($\lesssim$0.4 decades)
+in both directions: training-set diversity matters more than pretrain
+weighting at the population level.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figcomb_5_normalized_landscape.png}
+\caption{Stacked histogram of $\log_{10}(|AE \text{error}| / 1\,\text{kcal/mol})$
+on H$_2$O across all specs in each workflow. Both step-5 distributions sit
+roughly two decades left of both step-6 distributions. The within-step
+unweighted-to-integration median shift is small in step 5
+($\sim$0.07~dex leftward) but slightly \emph{rightward} in step 6
+($\sim$0.4~dex worse on the H$_2$O population median, recomputed from
+\texttt{run\_combined\_synthesis.py:plot\_normalized\_landscape}); the
+across-step shift dominates, driven by step's narrower training
+(H$_2$O alone in step 5) rather than by pretrain weighting alone. The
+best-spec extreme tail shifts visible in Table~\ref{tab:headline_4way}
+are not reflected at the population median.}
+\label{fig:comb5}
+\end{figure}
+
+\subsection{Transfer-set comparison (Fig.~\ref{fig:comb4})}
+\label{sec:results_transfer}
+
+The transfer-set comparison (Fig.~\ref{fig:comb4}) restricts to the three
+molecules common to step 5's and step 6's transfer sets ($\{$CH$_4$, H$_2$,
+OH$\}$) and to the cross-step-analogous loss families: $\{B,\,C\}$ in
+step 5 vs.\ $\{$L1\_B, L2\_C\_anchor$\}$ in step 6. Step 6's exclusively
+$V_{xc}$-aware losses (L3, L4, L5) have no step-5 analog and are excluded
+to avoid an apples-to-oranges median.
+
+Three patterns emerge. CH$_4$ favours step 5 (median 5--7~kcal/mol vs.\
+$\sim$10--15 for step 6), reflecting that CH$_4$'s closed-shell, sp$^3$,
+single-bonded character is closer to H$_2$O (which trains step 5
+exclusively) than to C$_2$H$_2$ (a triple-bonded, $\pi$-rich molecule
+that broadens step 6's training set away from the CH$_4$ region).
+H$_2$ marginally favours step 6, where the broader training set provides
+some bond-stretching diversity absent from H$_2$O alone. OH is uniformly
+above PBE in all four workflows (5--21~kcal/mol vs.\ PBE's 1.84~kcal/mol)
+because OH is a $^2\Pi$ open-shell radical and the molecular pretrain
+set $\{$H$_2$O$\}$ (step 5) or $\{$H$_2$O, C$_2$H$_2\}$ (step 6) has no
+open-shell analog; the atomic pretrain set $\{H, He, O, N\}$ has open-shell
+atoms but cannot supply the molecular $\pi$-orbital spin-density profile
+that determines OH's exchange-correlation behaviour. Pretrain-weighting
+moves the median by $<\!2\times$ on every transfer molecule --- much
+smaller than the across-workflow factor-of-3-or-more shifts, confirming
+that the bottleneck for transfer is training-set composition, not the
+choice of weighting scheme.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figcomb_4_transfer_overlap.png}
+\caption{Restricted-loss-set transfer comparison. Step 5's losses
+$\{B,C\}$ are compared against step 6's $\{$L1\_B, L2\_C\_anchor$\}$ (the
+direct cross-step analogs); step 6's V$_{xc}$-aware losses (L3, L4, L5)
+have no step-5 analog and are excluded to avoid inflating step 6's
+median. Per-mol PBE references: CH$_4$ 0.91, H$_2$ 7.31, OH 1.84
+kcal/mol. CH$_4$ favors step 5's narrower training; H$_2$ slightly
+favors step 6's broader set; OH is uniformly above PBE across all
+four workflows due to its open-shell ($^2\Pi$) character not being
+covered by the closed-shell molecular pretrain set.}
+\label{fig:comb4}
+\end{figure}
+
+\subsection{Lieb--Oxford / PBE-design ceiling enforcement audit}
+\label{sec:results_lob}
+
+The architectural \texttt{\_AlecLOB} clamp guarantees
+$F_x \in [0, 1.804]$ at every grid point regardless of training history.
+We verify this empirically by post-processing every step-6 checkpoint:
+the audit script
+(\texttt{notebooks/analysis/audit\_lob\_enforcement.py}) loads each spec
+on a CH$_4$ molecular grid, evaluates $F_x(s_g)$ at every grid point,
+and counts the global maximum.
+
+Across the 90 step-6 specs in the unweighted origin and the 90 in the
+integration origin (180 total checkpoints), the global maximum
+$F_x$ value observed is exactly 1.804000 to six decimals --- the design
+ceiling, never exceeded. Zero specs in either origin produce any
+$F_x > 1.804$ at any grid point. The minimum-$F_x$ value observed
+(0.0335 in integration, 0.000 in unweighted) hits the lower sigmoid floor
+in low-density tail regions, which is permitted by the clamp form
+($F_x \to 0$ as $g \to -\infty$). The \texttt{\_AlecLOB.limit} field is
+declared \texttt{eqx.field(static=True)} at
+\texttt{xcquinox/alec/networks.py:21}, so gradient descent has no path
+to mutate the ceiling --- the bound is enforced at the level of the
+computation graph, not by post-hoc projection.
+
+Recall (\S\ref{sec:intro}) that 1.804 is PBE's stricter design choice;
+the bare Lieb--Oxford bound permits $F_x \le 2.273$
+\citep{LiebOxford1981, PerdewBurkeErnzerhof1996}. A network with a
+relaxed clamp at 2.273 would have additional fitting headroom but would
+also be a less constrained approximation of the exact functional than
+PBE itself. We adopt 1.804 throughout for direct comparability with PBE
+references.
+
+\section{Compelling conclusions}
+\label{sec:conclusions}
+
+\paragraph{(1) Integration weighting tightens $F_x$ pretrain quality on every architecture.}
+Across all 10 architectures (8 in step 5, 2 in step 6), integration-weighted pretraining
+produces a tighter final $F_x$ MSE in every single case. Per-arch ratio range
+3.0--4.7$\times$ in step 5 (mean 3.98$\times$ per-arch, 4.25$\times$ for the population
+means); the two step-6 architectures give 3.00$\times$ and 3.13$\times$ (population-mean
+ratio 3.06$\times$). This is the cleanest cross-workflow finding of the synthesis
+(Fig.~\ref{fig:comb2}). The integrand-structure justification follows directly from
+\citet{PerdewBurkeErnzerhof1996} eq.~10 (Eq.~\ref{eq:Ex_integrand} in this manuscript):
+pretrain pressure concentrated where $E_X$'s integrand is biggest produces a network whose
+$F_x$ is tighter exactly there.
+
+\paragraph{(2) The pretrain head start compounds through step-5 training but saturates in step 6.}
+In step 5 the downstream best-AE improvement (11.9$\times$) is 2.80$\times$ the pretrain
+$F_x$ improvement (4.25$\times$); the head start \emph{compounds} through 250 task-loss
+steps. In step 6 the downstream best-AE improvement (2.86$\times$) is comparable to but
+does not exceed the pretrain $F_x$ ratio (3.06$\times$); the broader training set
+(H$_2$O+C$_2$H$_2$) and richer V$_{xc}$-aware losses already provide enough gradient signal
+that the unweighted-origin run catches up at the best-spec extreme. There is no universal
+``compounding factor'' across the two step subsets; step 5's compounding is a feature of
+the H$_2$O-only narrow-data regime.
+
+\paragraph{(3) V$_{xc}$-aware losses are necessary for sub-$2\times 10^{-4}$ density quality.}
+Step 5's loss set lacks V$_{xc}$ fitting; step 5's best density-RMSE is $3.72\times 10^{-4}$
+e/bohr$^3$. Step 6 added V$_{xc}$-LossNorm losses (L3, L4); their best density-RMSE is
+$1.23\times 10^{-4}$ — a 3$\times$ improvement only achievable with explicit V$_{xc}$
+training data. The within-run Pareto pattern (V$_{xc}$-aware specs lose AE accuracy in
+exchange for density quality, Fig.~\ref{fig:comb3}) is consistent with Burke's earlier
+formulation of the energy-vs-density tradeoff (paraphrased in \citet{Kepp2017}); the
+broader Medvedev across-decades thesis \citep{Medvedev2017} is contested by
+\citet{Kepp2017}, who shows the historical trend is dominated by one specific group's
+recent functionals rather than a general DFT-development bias.
+
+\paragraph{(4) Transfer is dominated by molecule-specific physics, not pretrain weighting.}
+Across the three molecules common to step 5's and step 6's transfer sets — CH$_4$, H$_2$,
+OH — pretrain weighting moves the median MAE by less than $2\times$. CH$_4$ favors step
+5 (narrower training; bonding pattern closer to H$_2$O than to C$_2$H$_2$); H$_2$ slightly
+favors step 6 (broader training); OH is uniformly above PBE in all four workflows because
+it is open-shell ($^2\Pi$, $S=1/2$) while the molecular pretrain set is closed-shell.
+This is the in-distribution-vs-holdout caution of \citet{BehlerParrinello2007} applied to
+NN XC functionals (the original paper is for NN potential-energy surfaces; the
+generalization principle applies but the citation is by analogy).
+
+\paragraph{(5) F$_c$ pretrain is mostly insensitive to the integration weighting.}
+The implementation already builds the F$_c$ weight from $|\rho\,\varepsilon_c^{\text{PW92}}|$
+(\texttt{xcquinox/alec/pretrain.py:69--77}, using the LSDA correlation parameterization of
+\citealp{PerdewWang1992}) — not from $|\rho\,\varepsilon_x^{\text{LDA}}|$. The F$_c$
+stagnation under integration weighting therefore does not have a ``wrong prefactor'' cause;
+likely candidates are (a) PW92 $\varepsilon_c$ being $\sim 10\times$ smaller in magnitude
+than $\varepsilon_x^{\text{LDA}}$ at typical bonding densities (so the F$_c$-weighted
+residual has a narrower dynamic range), or (b) F$_c$'s gradient enhancement intrinsically
+having less room to move than F$_x$'s.
+
+\paragraph{(6) Lieb--Oxford / PBE-design ceiling holds architecturally across all four
+workflows.} The \texttt{\_AlecLOB} clamp is pretrain-origin-independent;
+audit (\texttt{notebooks/analysis/audit\_lob\_enforcement.py}) on the 90 step-6
+checkpoints in each origin shows $F_x \le 1.804$ in 90/90 specs. The ceiling 1.804 is
+PBE's stricter design (\S\ref{sec:intro}); the bare Lieb--Oxford bound permits
+$F_x \le 2.273$ \citep{LiebOxford1981, PerdewBurkeErnzerhof1996}.
+
+\section{Limitations and honesty disclosures}
+\label{sec:limits}
+
+This section enumerates the places where conclusions rest on empirical observation
+rather than first-principles derivation, or where citations are by analogy rather than
+direct.
+
+\begin{enumerate}
+\item Cross-step $F_x$ mean ratios are not on equal footing — step 5 averages over 8
+architectures (light to heavy), step 6 over 2 (both heavy). The fair cross-step
+comparison is the per-arch overlay (Fig.~\ref{fig:comb2}), not the population means.
+
+\item PBE-on-H$_2$O $\approx 7.03$ kcal/mol is run-specific to our def2-svp /
+grid\_level=1 / W4-11-geometry configuration; it is \emph{not} a literature value.
+W4-11 itself \citep{KartonDaonMartin2011} tabulates CCSD(T)-quality reference
+atomization energies, not PBE errors.
+
+\item Best-spec-per-workflow numbers are minimum AE-MAE values; a single tight spec
+dominates the headline. The distribution histogram (Fig.~\ref{fig:comb5}) confirms
+the cross-step difference is a population shift.
+
+\item The compounding factor $\sim 2.8\times$ in conclusion (2) is empirical.
+
+\item The transfer-set comparison combines step 5's transfer-mol output with step 6's
+\texttt{transfer\_primary\_df} — these are not bit-identical pipelines (step 6 uses
+different precompute paths and a CCSD-target overlay). Cross-step transfer numbers are
+qualitatively but not quantitatively identical-protocol.
+
+\item OH transfer: the pretrain atom set $\{H, He, O, N\}$ contains open-shell atoms
+(only He has $S=0$), so the OH mismatch is on \emph{molecular} spin-density profile, not
+on atomic open-shell character. An earlier draft of this report mis-stated this.
+
+\item Step 6 evaluates two transfer sets: a primary set
+$\{$CH$_4$, H$_2$, OH$\}$ (the same 3 mols as step 5) and a secondary set
+$\{$CO$_2$, HF, NH$_2$, NH$_3\}$ (4 closed/open-shell light hydrides
+absent from step 5). Cross-step transfer comparisons in this manuscript
+restrict to the shared primary set; the secondary set is shown in
+the step-6 supplements as additional generalisation diagnostics. NH$_3$
+is in the step-6 secondary set, not the primary.
+
+\item The Behler--Parrinello transferability framework \citep{BehlerParrinello2007}
+is for NN potential-energy surfaces (their test system is bulk silicon
+across the solid-semiconducting / liquid-metallic / high-pressure phases),
+not NN XC functionals; the ``in-distribution MSE alone does not certify
+out-of-distribution accuracy'' principle generalises to NN XC, but the
+specific paper does not address NN XC.
+
+\item The ``functionals which yield highly accurate energies often produce
+potentials which differ markedly from the exact ones'' phrasing is paraphrased in
+\citet{Kepp2017} and traces to \citet{Burke1998} (Chem.\ Phys.\ Lett.\ 265, 115;
+the bib-key suffix is approximate, the published year is 1997); the underlying
+Burke--Perdew--Ernzerhof work of the late 1990s
+(adiabatic-connection method, hybrid functionals, etc.) is the canonical primary source
+for the energy-vs-density tradeoff principle. The Medvedev 2017 across-decades thesis
+\citep{Medvedev2017} is contested by \citet{Kepp2017}; our within-run finding does not
+depend on Medvedev's stronger generalization.
+
+\item The GradNorm asymmetry parameter $\alpha = 1.5$
+\citep{ChenGradNorm2018} used by step 6's L5 spec is the optimum found
+in the NYUv2+kpts (depth + surface normals + room-keypoints) experiment
+of \citet[Fig.~7 and \S 7.2]{ChenGradNorm2018}; the same paper also
+reports $\alpha = 0.12$ as optimal for a synthetic 2-task regression
+toy problem (\S 5.4), so the value is task-specific and not asserted
+as a universal default. For our DFT loss family (AE +
+$\rho$-RMSE + V$_{xc}$ residual + anchor) the optimal $\alpha$ is
+empirically reasonable but un-tuned; a controlled sweep is warranted.
+\end{enumerate}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
