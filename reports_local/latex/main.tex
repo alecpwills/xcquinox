@@ -179,7 +179,7 @@ necessity for tight density --- becomes the dominant signal. Our results
 quantify both regimes and identify the conditions under which each
 matters.
 
-\section{Methods}
+\section{Theory}
 \label{sec:methods}
 
 \subsection{Network architecture}
@@ -275,7 +275,53 @@ SCF with three Coulomb-integral re-evaluations), and \texttt{full\_3}
 schedules: \texttt{group1} (H$_2$O, short), \texttt{group2}
 (H$_2$O+C$_2$H$_2$, short), \texttt{group3} (H$_2$O+C$_2$H$_2$, long).
 
-\subsection{Training and evaluation}
+\subsection{Molecule choice and rationale}
+\label{sec:methods_molecule_rationale}
+
+The training and transfer molecule sets were chosen to provide graded
+difficulty along well-defined chemical axes while keeping the atomic
+pretrain set small.
+
+\paragraph{Step 5: H$_2$O.} A closed-shell singlet built from open-shell
+H ($^2S$) and O ($^3P$) atoms in the pretrain set. H$_2$O probes
+single $\sigma$-bonding plus a lone-pair-bearing heavy atom. Choosing
+H$_2$O alone for step 5 isolates the pretrain-weighting effect from
+training-set diversity confounds.
+
+\paragraph{Step 6: H$_2$O + C$_2$H$_2$.} Adding C$_2$H$_2$ (acetylene,
+closed-shell singlet, sp-hybridized C, $\pi$-bonds) probes whether the
+NN $F_x$ generalizes to a qualitatively different bonding type. C$_2$H$_2$
+introduces only one additional pretrain atom (C, $^3P$) on top of step
+5's $\{$H, He, O, N$\}$ set, so the cost of the broader training set is
+small but the chemical coverage gain is large.
+
+\paragraph{Primary transfer set: $\{$CH$_4$, H$_2$, OH$\}$.} The same set is
+used for both step 5 and step 6 to make the cross-step transfer comparison
+apples-to-apples. The three molecules span graded difficulty:
+\begin{itemize}
+\item CH$_4$ --- closed-shell singlet, sp$^3$ C, single C--H bonds. The
+  closest in bonding character to H$_2$O (single bonds, sp$^3$-like) but
+  with a different heavy atom; tests heavy-atom transfer at fixed bonding
+  type.
+\item H$_2$ --- closed-shell singlet, single H--H bond, two-electron system
+  (no heavy atom). Tests the small-system limit and the
+  H-atom contribution in isolation.
+\item OH --- open-shell radical, $^2\Pi$, $S{=}1/2$. Tests open-shell
+  generalisation given that the molecular pretrain set is closed-shell
+  even though the atomic pretrain set $\{$H, He, O, N$\}$ contains
+  open-shell atoms.
+\end{itemize}
+
+\paragraph{Secondary transfer set (step 6 only): $\{$CO$_2$, HF, NH$_2$, NH$_3\}$.}
+Adds further closed-shell light-hydride coverage (HF, NH$_3$), an
+oxygen-rich double-bonded molecule (CO$_2$, two C=O bonds), and a second
+open-shell radical (NH$_2$, $^2B_1$, $S{=}1/2$). Cross-step transfer
+comparisons in this manuscript restrict to the shared primary set; the
+secondary set is shown in the supplement (Figs.~\ref{S:fig:s6u_transfer_secondary}
+and \ref{S:fig:s6i_transfer_secondary}) as additional generalisation
+diagnostics.
+
+\subsection{Training and evaluation protocol}
 \label{sec:methods_training_eval}
 
 \paragraph{Network shape.} The MLP body has \texttt{depth}=4 hidden layers
