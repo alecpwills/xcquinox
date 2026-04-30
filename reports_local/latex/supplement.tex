@@ -334,8 +334,11 @@ g3 MAE \texttt{L5\_gradnorm\_vxc} & 0.426 & 0.520 & 0.82$\times$ \\
 \end{table}
 
 \paragraph{Per-mol PBE references.} 7.03~kcal/mol on H$_2$O alone,
-9.89~kcal/mol on C$_2$H$_2$ alone (mean magnitude over the training set:
-8.17~kcal/mol).
+9.89~kcal/mol on C$_2$H$_2$ alone. The 8.17~kcal/mol value above is the
+spec-row-weighted mean over the training set (90 H$_2$O rows~$+$~60
+C$_2$H$_2$ rows: $(90 \cdot 7.027 + 60 \cdot 9.888)/150 = 8.171$); group~1
+trains on H$_2$O only, so H$_2$O is over-represented in the row count
+relative to a simple per-molecule mean.
 
 \clearpage
 \subsection{Step-6 post-processing figures (paired by name)}
