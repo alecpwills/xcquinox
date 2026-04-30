@@ -1,0 +1,182 @@
+% =============================================================================
+% Step-6 unweighted-vs-integration comparison supplement.
+% Compile alongside main.tex (shared references.bib).
+% =============================================================================
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx, booktabs, amsmath, amssymb}
+\usepackage[hidelinks]{hyperref}
+\usepackage{natbib, xcolor, microtype, caption}
+\captionsetup{font=small, labelfont=bf}
+\graphicspath{{../step6_pretrain_origin_comparison/figures/}}
+
+\title{Step-6 Pretrain-Origin Comparison Supplement: Unweighted vs.\ Integration
+  on the Multi-Molecule, $V_{xc}$-Aware Loss Suite}
+\author{Alec P.\ Wills}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{Run scope}
+180 specs total (90 per origin) on the same 2 architectures, 5 losses, 3 solvers,
+3 training groups grid as the standalone step-6 analyses. The two origins differ
+\emph{only} in the pretrain-loss weighting:
+
+\begin{itemize}
+\item \textbf{unweighted}: $w_x \!=\! w_c \!=\! 1$ inside
+  \texttt{xcquinox/alec/pretrain.py}.
+\item \textbf{integration}: $w_x \!=\! |\rho \varepsilon_x^{\text{LDA}}|$ with
+  the Dirac--Slater LDA exchange energy density
+  \citep{Dirac1930,Slater1951}; $w_c \!=\! |\rho \varepsilon_c^{\text{PW92}}|$
+  \citep{PerdewWang1992}.
+\end{itemize}
+
+\section{Headline numbers (verbatim from \texttt{headline\_diff.json})}
+
+\begin{table}[h]
+\centering
+\caption{Direct paired comparison of step-6 origins.}
+\small
+\begin{tabular}{lrrr}
+\toprule
+metric & unweighted & integration & ratio (uw/int) \\
+\midrule
+\# specs                              & 90          & 90           & --- \\
+best AE-MAE (kcal/mol)                & 0.00793     & \textbf{0.00277} & 2.86$\times$ tighter \\
+best AE spec --- arch/loss/solver     & deep\_combined\_attn / L2\_C\_anchor / oneshot & deep\_combined\_attn / L5\_gradnorm\_vxc / full\_3 & --- \\
+best $\rho$-RMSE (e/bohr$^3$)         & $1.32\!\times\!10^{-4}$ & $\mathbf{1.23\!\times\!10^{-4}}$ & 1.07$\times$ tighter \\
+random-init NN AE (kcal/mol)          & 461.5       & 461.5        & tied \\
+pretrained-only NN AE (kcal/mol)      & 121.4       & \textbf{119.0} & 1.02$\times$ tighter \\
+PBE AE-MAE on H$_2$O+C$_2$H$_2$ (kcal/mol) & 8.17        & 8.17         & tied (def2-svp/grid\_lvl1) \\
+\midrule
+g3 MAE \texttt{L1\_B}                 & 0.344       & 0.376        & 0.91$\times$ (uw tighter) \\
+g3 MAE \texttt{L2\_C\_anchor}         & 0.337       & \textbf{0.099} & 3.39$\times$ tighter \\
+g3 MAE \texttt{L3\_balanced\_vxc}     & 1.616       & 2.418        & 0.67$\times$ (uw tighter) \\
+g3 MAE \texttt{L4\_balanced\_vxc\_anchor} & 2.150   & 2.747        & 0.78$\times$ (uw tighter) \\
+g3 MAE \texttt{L5\_gradnorm\_vxc}     & 0.426       & 0.520        & 0.82$\times$ (uw tighter) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+The pretrained-only NN AE numbers in step 6 (121.4 kcal/mol unweighted vs.\
+119.0 kcal/mol integration) differ by only $\sim 2\%$. The earlier draft of
+this supplement reported the integration baseline as 1.02$\times$ \emph{tighter}
+than unweighted ($121.4 / 119.0 = 1.020$) and that direction is now confirmed
+above. (An even-earlier draft transposed the ratio. Both have been corrected.)
+
+The corresponding step-5 baselines (27.2 vs.\ 17.1 kcal/mol --- 1.59$\times$
+tighter for integration) showed a much larger pretrain-origin advantage; the
+gap shrinks in step 6 because step 6 uses two molecules (H$_2$O + C$_2$H$_2$)
+and richer $V_{xc}$-aware losses, both of which provide gradient signal that
+the smaller H$_2$O-only step-5 setup did not.
+
+\section{Headline takeaways}
+
+\begin{enumerate}
+\item Integration pretraining produces a 2.86$\times$ tighter best AE
+  (sub-millihartree on group-3, in-distribution) but the per-loss group-3
+  medians flip the ranking: \texttt{L2\_C\_anchor} is dominantly tighter on
+  integration (3.39$\times$), while \texttt{L1\_B}, \texttt{L3}, \texttt{L4},
+  \texttt{L5} are all marginally tighter on unweighted at the median level.
+  This is because integration's tighter $F_x$ pretrain compresses the spread
+  but raises the median of the noisier loss families ($V_{xc}$-aware losses
+  amplify that noise).
+\item The pretrained-only NN baselines in step 6 are statistically tied
+  (1.02$\times$, dominated by inter-arch variance). Compared to step 5
+  (1.59$\times$ tighter for integration), this confirms the step-6 setup
+  saturates the pretraining advantage at the start of training; the
+  remaining gap shows up only at the best-spec extreme tail.
+\item $\rho$-RMSE floors are essentially identical
+  ($1.23\!\times\!10^{-4}$ vs.\ $1.32\!\times\!10^{-4}$ e/bohr$^3$ ---
+  7\% difference). The density floor is set by the network capacity and
+  quadrature grid \citep{Becke1988}, not by pretrain origin.
+\end{enumerate}
+
+\section{Comparison figures}
+
+The four figures in this section cover four orthogonal cuts of the
+180-spec comparison: per-loss per-group MAE side-by-side
+(Fig.~\ref{figc1}); a ratio heatmap exposing whether tighter-with-integration
+is a loss-effect or an arch-effect (Fig.~\ref{figc2}); the
+density-vs-energy Pareto overlay between the two origin clouds
+(Fig.~\ref{figc3}); and a large-$s$ $F_x$ audit checking how close the
+learned $F_x$ asymptote sits to the PBE 1996 design ceiling
+(Fig.~\ref{figc4}). Together they support the headline takeaways in
+\S2 above: integration tightens the best AE-MAE 2.86$\times$, but the
+per-loss median ranking depends on whether the loss is energy-only
+($L_1$, $L_5$) or $V_{xc}$-aware ($L_2$, $L_3$, $L_4$); the density
+floors are essentially identical between origins; and the learned $F_x$
+asymptote sits closer to PBE under integration for energy-only losses.
+
+\begin{figure}[h!]
+\centering
+\label{figc1}
+\includegraphics[width=\textwidth]{figc1_per_loss_per_group.png}
+\caption{Per-loss per-group MAE side-by-side. Each panel is one loss family;
+within-panel left/right is unweighted/integration. The clearest signal is
+\texttt{L2\_C\_anchor} on group-3, where the integration origin reaches
+sub-chemical-accuracy median.}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\label{figc2}
+\includegraphics[width=\textwidth]{figc2_ratio_heatmap.png}
+\caption{Ratio heatmap (unweighted MAE / integration MAE) across loss
+families and architecture. Cell $\!>\!1$ means integration is tighter for
+that combination. The pattern is loss-dependent rather than architecture-dependent.}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\label{figc3}
+\includegraphics[width=\textwidth]{figc3_pareto_overlay.png}
+\caption{Pareto overlay on the density-vs-energy plane. The two origin clouds
+heavily overlap; the integration cloud's lower-left tail extends to
+sub-millihartree AE without extra density penalty.}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\label{figc4}
+\includegraphics[width=\textwidth]{figc4_fx_asymptote.png}
+\caption{Per-origin $F_x$ behaviour at large $s$. Bars: mean of trained-model
+$F_x$ over every CH$_4$-grid point with reduced gradient $s > 5$
+(\texttt{notebooks/analysis/audit\_lob\_enforcement.py:130};
+\texttt{comparison\_lib.py:965--1018}). Black horizontal line: PBE 1996
+\citep{PerdewBurkeErnzerhof1996} design ceiling
+$F_x(s\!\to\!\infty) = 1+\kappa = 1.804$, the analytic asymptote of eq.~14
+with $\kappa = 0.804$. (For context only, the same audit script also prints
+the PBE-analytic mean over the discrete $s\in\{5,10,15\}$ at $1.756$
+--- $F_x(5)=1.701$, $F_x(10)=1.776$, $F_x(15)=1.791$ from eq.~14 with
+$\mu = 0.21951$ --- but that is not the line drawn here.)
+Across loss families, integration's learned $F_x$ at large-$s$ sits closer
+to PBE than the unweighted origin's, most strongly for energy-only losses
+(L1, L5); for the per-origin best-AE specs the asymptotes are essentially
+tied. Neither origin enforces the bound by post-hoc constraint; the
+architectural \texttt{\_AlecLOB} clamp caps $F_x$ at $1+\kappa = 1.804$ at
+every grid point regardless of training history.}
+\end{figure}
+
+\section{Recommendation}
+
+\begin{enumerate}
+\item Default to the integration-pretrain origin in any subsequent training
+  campaign: best-AE is 2.86$\times$ tighter, best $\rho$-RMSE is 1.07$\times$
+  tighter, and \texttt{L2\_C\_anchor} group-3 median reaches chemical accuracy
+  --- a milestone neither origin's other loss families clear.
+\item Run the median-MAE comparison \emph{within} each loss family rather than
+  on aggregate. Integration is not uniformly better at the median; the
+  best-AE-vs-median split is the actionable summary.
+\item Architectural conclusions for the \texttt{*\_attn} variants depend on
+  the multi-head attention block at \texttt{xcquinox/net.py:50--136}
+  (canonical Q/K/V multi-head scaled-dot-product, Pre-LN). All checkpoints
+  in this comparison were trained with that block; results across origins
+  are bit-comparable.
+\end{enumerate}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+\end{document}

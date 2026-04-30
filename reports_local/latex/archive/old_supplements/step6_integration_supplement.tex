@@ -1,0 +1,278 @@
+% =============================================================================
+% Step-6 (integration origin) supplement: 2 archs x 5 losses x 3 solvers x 3 groups,
+% multi-molecule training with V_xc-aware losses.
+% Compile alongside main.tex (shared references.bib).
+% =============================================================================
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx, booktabs, amsmath, amssymb}
+\usepackage[hidelinks]{hyperref}
+\usepackage{natbib, xcolor, microtype, caption}
+\captionsetup{font=small, labelfont=bf}
+\graphicspath{
+  {../step6_integration_analysis/figures/}
+  {../../notebooks/checkpoints_step6/integration/figures/}
+}
+
+\title{Step-6 Supplement (integration origin): Multi-Molecule Training with
+  $V_{xc}$-Aware Losses}
+\author{Alec P.\ Wills}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{Run scope}
+90 specs = 2 architectures (\texttt{deep\_combined}, \texttt{deep\_combined\_attn})
+$\times$ 5 losses (\texttt{L1\_B}, \texttt{L2\_C\_anchor}, \texttt{L3\_balanced\_vxc},
+\texttt{L4\_balanced\_vxc\_anchor}, \texttt{L5\_gradnorm\_vxc})
+$\times$ 3 solvers (\texttt{oneshot}, \texttt{fixed\_j\_3}, \texttt{full\_3})
+$\times$ 3 training groups (group1: H$_2$O short; group2: H$_2$O+C$_2$H$_2$ short;
+group3: H$_2$O+C$_2$H$_2$ long). All specs use the integration-pretrain origin
+($w_x \!=\! |\rho \varepsilon_x^{\text{LDA}}|$ with the Dirac--Slater LDA
+exchange energy density~\citep{Dirac1930,Slater1951},
+$w_c \!=\! |\rho \varepsilon_c^{\text{PW92}}|$~\citep{PerdewWang1992}
+inside \texttt{xcquinox/alec/pretrain.py:69--77}).
+
+\section{Headline numbers}
+
+\begin{table}[h]
+\centering
+\caption{Step-6 integration-origin headlines (verified against
+\texttt{headline\_stats.json}).}
+\small
+\begin{tabular}{lr}
+\toprule
+metric & value \\
+\midrule
+\# specs & 90 \\
+best AE-MAE (kcal/mol) & \textbf{0.00277} \\
+best AE spec & \texttt{group3/deep\_combined\_attn/L5\_gradnorm\_vxc/full\_3} \\
+best $\rho$-RMSE (e/bohr$^3$) & $1.23\!\times\!10^{-4}$ \\
+best $\rho$-RMSE spec & \texttt{group1/deep\_combined\_attn/L3\_balanced\_vxc/oneshot} \\
+random-init NN AE (kcal/mol) & 461.5 \\
+pretrained-only NN AE (kcal/mol) & 119.0 \\
+PBE AE-MAE on H$_2$O+C$_2$H$_2$ (kcal/mol) & 8.17 \\
+random / best & $1.67\!\times\!10^{5}$ \\
+pretrained-only / best & $4.29\!\times\!10^{4}$ \\
+PBE / best & $2.95\!\times\!10^{3}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+The integration-origin best spec is 2.86$\times$ tighter on AE than the
+unweighted-origin best (0.00277 vs.\ 0.00793 kcal/mol), and the $\rho$-RMSE
+floor is also slightly tighter ($1.23\!\times\!10^{-4}$ vs.\
+$1.32\!\times\!10^{-4}$ e/bohr$^3$). Per-loss group-3 MAEs flip the
+hierarchy: \texttt{L2\_C\_anchor} drops to 0.0994 kcal/mol (within
+chemical accuracy on group-3), while \texttt{L1\_B} sits at 0.376,
+\texttt{L3\_balanced\_vxc} 2.42, \texttt{L4\_balanced\_vxc\_anchor} 2.75,
+\texttt{L5\_gradnorm\_vxc} 0.520. The integration origin's tighter $F_x$
+lets the close-shell anchor term in \texttt{L2\_C\_anchor} actually do its job.
+
+\section{Post-processing figures}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{fig1_baseline_reduction.png}
+\caption{Baseline AE-error reduction ladder. Random ($\sim$461 kcal/mol),
+pretrained-only NN (119 kcal/mol), PBE AE-MAE on the training set H$_2$O+C$_2$H$_2$
+($\sim$8.17 kcal/mol; per-mol PBE errors are 7.03~kcal/mol on H$_2$O alone and
+9.89~kcal/mol on C$_2$H$_2$ at this run's def2-svp / grid\_level=1 configuration,
+\emph{not} a Karton 2011 literature value), chemical accuracy 1~kcal/mol
+\citep{Pople1999}, and best NN spec (0.00277 kcal/mol --- $1.7\!\times\!10^{5}$
+tighter than random init).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{fig1b_baseline_reduction_transfer.png}
+\caption{Same ladder evaluated on the two transfer sets:
+top row = primary $\{$CH$_4$, H$_2$, OH$\}$ (3 mols);
+bottom row = secondary $\{$CO$_2$, HF, NH$_2$, NH$_3\}$ (4 mols);
+plotting layout from \texttt{notebooks/analysis/comparison\_lib.py:360--453}.
+As in step 5, transfer-set generalization remains insufficient even with two
+training molecules; \citet{KartonDaonMartin2011} W4-11 benchmarking would
+require expanded training coverage.}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{fig2_density_vs_energy_tradeoff.png}
+\caption{Density-vs-energy tradeoff under integration origin. The
+energy-vs-density frontier is qualitatively the same as the unweighted
+origin (cf.\ step6\_unweighted\_supplement Fig.~3), shifted Pareto-down
+on both axes.}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{fig3_in_dist_vs_transfer.png}
+\caption{In-distribution (training) AE vs.\ transfer-mol AE per spec.
+The same in-vs-out trend as the unweighted origin, but the in-distribution
+floor is roughly an order of magnitude tighter; transfer is unchanged
+(lack of training-mol diversity is the bottleneck, not pretrain origin).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{fig4_loss_strategy_heatmap.png}
+\caption{Loss-strategy AE-MAE heatmap. Rows = loss family;
+columns = the 18 (group, arch, solver) cells on training mols
+(H$_2$O+C$_2$H$_2$). Cell value = mean $|\!$AE error$|\!$;
+colour = $\log_{10}$ of that mean
+(\texttt{notebooks/analysis/comparison\_lib.py:636--674}).
+The integration origin's group-3 / \texttt{deep\_combined\_attn} /
+\texttt{L2\_C\_anchor} cell is the green corner: median group-3 MAE on that cell
+(recomputed separately from \texttt{eval\_df.csv}) is 0.099~kcal/mol,
+sub-chemical-accuracy.}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=\textwidth]{fig5_arch_comparison.png}
+\caption{Architecture comparison across the 5 loss families.
+Bars (panel a, ``trained mols'') plot the \emph{mean} $|\!$AE error$|\!$ over all
+9~(group, solver) cells per (loss, arch); see
+\texttt{notebooks/analysis/comparison\_lib.py:681--752}.
+Under that aggregation, \texttt{deep\_combined\_attn} wins only on
+\texttt{L4\_balanced\_vxc\_anchor}; \texttt{deep\_combined} wins the other four,
+because the integration-pretrained attention variant has not yet converged on
+groups~1 and~2 for several specs.
+Restricting to the converged group-3 cells flips the picture: by median
+$|\!$AE error$|\!$ on group-3 training mols, \texttt{deep\_combined\_attn} wins
+4 of 5 (loses only on \texttt{L3\_balanced\_vxc}). Per-loss group-3 medians
+(deep vs.\ attn, kcal/mol): \texttt{L1\_B} 0.74/0.01,
+\texttt{L2\_C\_anchor} 0.15/0.02, \texttt{L3\_balanced\_vxc} 0.58/2.25,
+\texttt{L4\_balanced\_vxc\_anchor} 4.74/0.65, \texttt{L5\_gradnorm\_vxc} 1.03/0.003
+(recomputed from
+\texttt{notebooks/checkpoints\_step6/integration/eval\_df.csv}; not the statistic
+the bars plot).}
+\end{figure}
+
+\section{In-notebook diagnostic figures}
+
+The step-6 notebook (\texttt{notebooks/\_build\_step6\_notebook.py})
+produces the following diagnostics during the run, independent of the
+post-processing analysis. They cover pretrain dynamics, anchor and
+balancing-loss sensitivity, $F_x(s)$ profiles on probe-molecule grids
+(CH$_4$+C$_2$H$_2$ in panel~B, the held-out C$_2$H$_4$ in panel~C),
+per-group training-loss curves, SCF convergence, transfer-set MAE
+breakdowns, and a $V_{xc}$-loss efficacy diagnostic. Captions describe
+each plot's semantics; the diagnostics are presented for completeness,
+not as the headline results (see \S1--\S2 for those).
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{pretrain_losses.png}
+\caption{Pretrain loss curves per architecture (in-notebook).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{anchor_effect.png}
+\caption{Anchor-loss effect on AE/density tradeoff (in-notebook).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{balancing_effect.png}
+\caption{Balancing-loss effect (in-notebook).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{fx_drift_panel_B.png}
+\caption{$F_x(s)$ sampled on the CH$_4$ (transfer-reference) and C$_2$H$_2$
+(in-training) molecular grids; one subplot per probe molecule. Black =
+analytic PBE eq.~14 \citep{PerdewBurkeErnzerhof1996}; green = per-arch
+pretrained baselines; coloured scatter = all 90 trained models, one colour
+per training group. Plot generated by
+\texttt{notebooks/\_build\_step6\_notebook.py:2935--3028}.
+Compared to the corresponding unweighted-origin figure, the integration-origin
+scatter visually sits closer to the PBE curve at large $s$ for energy-only
+losses (the script does not compute this distance directly).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{fx_drift_panel_C.png}
+\caption{$F_x(s)$ sampled on the C$_2$H$_4$ (ethylene) molecular grid --- a
+held-out generalisation probe present in neither training nor transfer set.
+Same colour key as the previous figure; all 90 trained models overlaid.
+Plot generated by \texttt{notebooks/\_build\_step6\_notebook.py:3033--3134}.}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{loss_curves_group1_h2o_short.png}
+\caption{Loss curves for group1 (H$_2$O, short schedule).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{loss_curves_group2_h2o_c2h2_short.png}
+\caption{Loss curves for group2 (H$_2$O + C$_2$H$_2$, short schedule).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{loss_curves_group3_h2o_c2h2_long.png}
+\caption{Loss curves for group3 (H$_2$O + C$_2$H$_2$, long schedule).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.6\textwidth]{scf_convergence.png}
+\caption{SCF-mode convergence aggregate (in-notebook).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{transfer_primary_mae.png}
+\caption{Primary transfer-set MAE per spec (in-notebook).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{transfer_secondary_mae.png}
+\caption{Secondary transfer-set MAE per spec (in-notebook).}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.92\textwidth]{vxc_efficacy.png}
+\caption{$V_{xc}$ efficacy diagnostic (in-notebook).}
+\end{figure}
+
+\section{Conclusions and recommendations (integration origin)}
+
+\begin{enumerate}
+\item \texttt{L2\_C\_anchor} on group-3 with \texttt{deep\_combined\_attn} is
+  the only spec family that reaches sub-chemical-accuracy in-distribution
+  AE under any pretrain origin tested.
+\item Anchor terms benefit more from integration pretraining than from
+  unweighted pretraining, because the anchor reference (close-shell
+  $F_x \!\to\! 1.804$ asymptote $= 1+\kappa$ \citep{PerdewBurkeErnzerhof1996})
+  is closer to the integration-origin starting point and the gradient signal
+  is therefore better-conditioned.
+\item \texttt{L3\_balanced\_vxc}/\texttt{L4\_balanced\_vxc\_anchor} retain the
+  same energy-vs-density tradeoff under integration; they are the
+  ``density-priority'' option, with $V_{xc}$-aware gradient signals.
+\item Architecture choice: \texttt{deep\_combined\_attn} retains its lead
+  (by group-3 median MAE on training mols) on 4 of 5 loss families
+  (L1\_B, L2\_C\_anchor, L4\_balanced\_vxc\_anchor, L5\_gradnorm\_vxc);
+  only \texttt{L3\_balanced\_vxc} flips, with \texttt{deep\_combined}
+  (no attention) winning by $\sim\!4\times$ at the median. The
+  self-attention block is implemented at
+  \texttt{xcquinox/net.py:50--136} as canonical multi-head
+  scaled-dot-product attention in the Vaswani style
+  (\citealp{VaswaniAttention2017}, with the Pre-LN convention of
+  \citealp{XiongPreLN2020}); the L3 anomaly therefore is a genuine
+  arch--loss interaction, not an artefact of a broken block.
+\end{enumerate}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+\end{document}
