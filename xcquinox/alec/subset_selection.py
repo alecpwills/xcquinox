@@ -197,6 +197,8 @@ def select_subset(
     r: int,
     metric: str,
     fixed_indices: tuple = (),
+    progress: bool = True,
+    progress_desc: str | None = None,
 ):
     """Exhaustively enumerate all C(npool, r) subsets and return the
     indices of the size-r combination that minimizes the chosen metric.
@@ -211,6 +213,12 @@ def select_subset(
     fixed_indices : pool indices that must be present in every candidate
         subset. The chosen subset has exactly r entries TOTAL including
         the fixed ones.
+    progress : when True (default), wraps the combinatorial enumeration in
+        a tqdm.auto progress bar so long-running r (e.g. r=14 over 28
+        gives ~40M combinations) gives the operator live ETA / it/s.
+        Set False for unit tests or callers that handle their own bar.
+    progress_desc : optional override for the tqdm description label.
+        Defaults to ``"select_subset r={r} {metric}"``.
     """
     if metric == "l2":
         m = metric_l2
@@ -229,9 +237,25 @@ def select_subset(
     free_indices = [i for i in range(npool) if i not in fixed_set]
     free_r = r - len(fixed_indices)
 
+    from math import comb as _comb
+    n_combos = _comb(len(free_indices), free_r)
+
+    combo_iter = combinations(free_indices, free_r)
+    if progress:
+        from tqdm.auto import tqdm
+        combo_iter = tqdm(
+            combo_iter,
+            total=n_combos,
+            desc=progress_desc or f"select_subset r={r} {metric}",
+            leave=False,
+            dynamic_ncols=True,
+            mininterval=0.5,
+            unit="combo",
+        )
+
     best_val = float("inf")
     best_combo: tuple = ()
-    for combo in combinations(free_indices, free_r):
+    for combo in combo_iter:
         full = tuple(sorted(set(combo) | fixed_set))
         cat = {k: np.concatenate([pool[i][k] for i in full]) for k in _DESCRIPTOR_KEYS}
         cat["weights"] = np.concatenate(
