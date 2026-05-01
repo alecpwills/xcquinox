@@ -253,3 +253,48 @@ def compute_atom_set(ae_subset) -> set:
     for a in ae_subset:
         out.update(a.get_chemical_symbols())
     return out
+
+
+def _make_hb_atoms() -> Atoms:
+    """H-bonded water-dimer reference. Geometry from data_binning2.ipynb cell 20.
+    Basis/grid-level overrides applied here: def2-svp / grid_level=1, NOT the
+    legacy 6-311++G(3df,2pd) / level=4."""
+    a = Atoms(_HB_SYMBOLS, positions=list(_HB_POSITIONS))
+    a.info.update({
+        "charge": 1, "spin": 1, "name": "HBWD", "openshell": True,
+        "sc": False, "sym": False, "reaction": "reactant",
+        "grid_level": 1, "basis": "def2-svp", "pol": True,
+    })
+    return a
+
+
+def _make_pt_atoms() -> Atoms:
+    """Proton-transfer water-dimer reference. Geometry from data_binning2.ipynb cell 20.
+    Basis/grid override: def2-svp / grid_level=1."""
+    a = Atoms(_PT_SYMBOLS, positions=list(_PT_POSITIONS))
+    a.info.update({
+        "charge": 1, "spin": 1, "name": "PTWD", "openshell": True,
+        "sc": False, "sym": False, "reaction": 1,
+        "grid_level": 1, "basis": "def2-svp", "pol": True,
+    })
+    return a
+
+
+def augment_with_hbpt(
+    ae_subset,
+    atom_refs,
+    *,
+    with_hbpt: bool,
+):
+    """Build the final list of Atoms objects to write to subset.traj.
+
+    Composition: AE-subset entries + atomic-reference entries + (optionally)
+    the HB and PT water-dimer pair. Atom-refs are added unconditionally and
+    are determined by `compute_atom_set` upstream. HBPT geometries are
+    overridden to def2-svp / grid_level=1 so descriptor histograms remain
+    commensurate with the rest of the candidate pool."""
+    out = list(ae_subset) + list(atom_refs)
+    if with_hbpt:
+        out.append(_make_hb_atoms())
+        out.append(_make_pt_atoms())
+    return out

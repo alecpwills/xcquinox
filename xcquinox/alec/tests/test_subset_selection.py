@@ -223,3 +223,62 @@ def test_compute_atom_set_full_dick_pool_yields_seven():
         mocks.append(a)
     atom_set = ss.compute_atom_set(mocks)
     assert atom_set == {"H", "Li", "C", "N", "O", "F", "Na"}
+
+
+def test_make_hb_atoms_geometry():
+    from ase import Atoms
+    hb = ss._make_hb_atoms()
+    assert isinstance(hb, Atoms)
+    assert hb.get_chemical_formula() == "H4O2"
+    assert hb.info["name"] == "HBWD"
+
+
+def test_make_pt_atoms_geometry():
+    from ase import Atoms
+    pt = ss._make_pt_atoms()
+    assert isinstance(pt, Atoms)
+    assert pt.get_chemical_formula() == "H4O2"
+    assert pt.info["name"] == "PTWD"
+
+
+def test_augment_with_hbpt_no_water_omits_hbpt():
+    from ase import Atoms
+    a = Atoms("H2O", positions=[(0,0,0),(1,0,0),(0,1,0)])
+    refs = [Atoms("H", positions=[(0,0,0)]), Atoms("O", positions=[(0,0,0)])]
+    out = ss.augment_with_hbpt([a], refs, with_hbpt=False)
+    assert len(out) == 1 + 2
+    assert all(at.info.get("name") not in ("HBWD", "PTWD") for at in out)
+
+
+def test_augment_with_hbpt_water_adds_two_entries():
+    from ase import Atoms
+    a = Atoms("H2O", positions=[(0,0,0),(1,0,0),(0,1,0)])
+    refs = [Atoms("H", positions=[(0,0,0)]), Atoms("O", positions=[(0,0,0)])]
+    out = ss.augment_with_hbpt([a], refs, with_hbpt=True)
+    assert len(out) == 5
+    names = [at.info.get("name") for at in out]
+    assert names.count("HBWD") == 1
+    assert names.count("PTWD") == 1
+
+
+def test_augment_with_hbpt_idempotent():
+    from ase import Atoms
+    a = Atoms("H2O", positions=[(0,0,0),(1,0,0),(0,1,0)])
+    refs = [Atoms("H", positions=[(0,0,0)]), Atoms("O", positions=[(0,0,0)])]
+    out1 = ss.augment_with_hbpt([a], refs, with_hbpt=True)
+    out2 = ss.augment_with_hbpt([a], refs, with_hbpt=True)
+    assert len(out1) == len(out2)
+    for a1, a2 in zip(out1, out2):
+        assert a1.get_chemical_formula() == a2.get_chemical_formula()
+
+
+def test_atom_set_regularizer_independent_of_HBPT_variant():
+    """spec §5c: HBPT augmentation only adds H/O which are present in
+    practical subsets; atom-set is invariant of with_hbpt."""
+    from ase import Atoms
+    a = Atoms("H2O", positions=[(0,0,0),(1,0,0),(0,1,0)])
+    s1 = ss.compute_atom_set([a])
+    a_hb = ss._make_hb_atoms()
+    a_pt = ss._make_pt_atoms()
+    s2 = ss.compute_atom_set([a, a_hb, a_pt])
+    assert s1 == s2 == {"H", "O"}
