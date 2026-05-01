@@ -36,7 +36,7 @@ def _code(text: str) -> nbf.NotebookNode:
 
 
 # Constants -------------------------------------------------------------
-SUBSET_SIZES = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 21)
+SUBSET_SIZES = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18)  # excludes r=21 (full pool, no selection)
 METRICS = ("l2", "jsd")
 SOLVERS = ("oneshot", "full_3")
 AUGMENTATIONS = (False, True)  # with_hbpt False/True
@@ -261,7 +261,7 @@ def build_cells() -> list:
         "print(f'Wrote {len(subset_index_log)} (metric, r, aug) entries to {ledger_path}')\n"
         "print(f'Total subset.traj files written: {n_specs}')\n"
         "if not _SMOKE:\n"
-        "    assert n_specs == 88, f'Expected 88 specs, got {n_specs}'\n"
+        "    assert n_specs == 80, f'Expected 80 specs (10 sizes x 2 metrics x 2 augs x 2 solvers), got {n_specs}'\n"
     ))
     cells.append(_md(
         "## 4. Smoke Test (r=2, l2, no-w, oneshot)\n\n"
@@ -575,7 +575,7 @@ def build_cells() -> list:
         "                _all_specs.append(spec)\n\n"
         "print(f'Built {len(_all_specs)} TrainingSpecs ')\n"
         "if not _SMOKE:\n"
-        "    assert len(_all_specs) == 88, f'Expected 88, got {len(_all_specs)}'\n"
+        "    assert len(_all_specs) == 80, f'Expected 80, got {len(_all_specs)}'\n"
     ))
     # --- Cell B: training-grid execution (verbatim from step-6 cell 21) ------
     _ser_name = "pi" + "ckle"

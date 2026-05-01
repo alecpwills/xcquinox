@@ -1,4 +1,4 @@
-"""Step-7 post-processing: 6+1 figures + headline.json from 88 eval_df.csv files."""
+"""Step-7 post-processing: 8 figures + headline.json from 80 eval_df.csv files (10 sizes x 2 metrics x 2 augs x 2 solvers; r=21 excluded as full pool)."""
 from __future__ import annotations
 
 import json
@@ -14,7 +14,9 @@ FIGS_DIR = REPO / "reports_local" / "step7_subset_selection" / "figures"
 HEADLINE_PATH = REPO / "reports_local" / "step7_subset_selection" / "headline.json"
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
-SUBSET_SIZES = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 21)
+SUBSET_SIZES = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18)  # r=21 excluded (full pool, no selection)
+R_MAX = max(SUBSET_SIZES)  # largest *selected* subset size — used for "best subset"
+                            # overlay (Plot 5) and probe-comparison reference (Plot 7).
 METRICS = ("l2", "jsd")
 SOLVERS = ("oneshot", "full_3")
 AUGMENTATIONS = (False, True)
@@ -140,18 +142,20 @@ def main():
     fig.savefig(FIGS_DIR / "plot4_metric_vs_r.png", dpi=150)
     plt.close(fig)
 
-    # ---- Plot 5: descriptor distribution overlay (full pool vs r=21 subsets) ----
+    # ---- Plot 5: descriptor overlay (full pool vs largest-r subsets) -----------
+    # Uses R_MAX (largest *selected* subset size), not the full pool size — the
+    # full pool reference and an r=N_pool subset would be identical.
     ref_npz = np.load(STEP7_ROOT / "dfs_pool_full_hist" / "reference.npz")
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
     # Full-pool reference (black)
     axes[0].plot(ref_npz["e_rho"][:-1], ref_npz["h_ref_rho"], "k-", label="full pool")
     axes[1].plot(ref_npz["e_s"][:-1], ref_npz["h_ref_s"], "k-", label="full pool")
     axes[2].plot(ref_npz["e_alpha"][:-1], ref_npz["h_ref_alpha"], "k-", label="full pool")
-    # r=21, aug=False overlay per metric (colored)
+    # r=R_MAX, aug=False overlay per metric (colored)
     plot5_colors = {"l2": "tab:blue", "jsd": "tab:orange"}
     desc_cache = STEP7_ROOT / "subset_descriptors"
     for metric in METRICS:
-        key = f"{metric}/21/False"
+        key = f"{metric}/{R_MAX}/False"
         if key not in ledger:
             continue
         chosen = ledger[key]["chosen_indices"]
@@ -176,17 +180,17 @@ def main():
             h_sub[k] = h
         color = plot5_colors[metric]
         axes[0].plot(ref_npz["e_rho"][:-1], h_sub["rho_third"],
-                     color=color, label=f"{metric} r=21")
+                     color=color, label=f"{metric} r={R_MAX}")
         axes[1].plot(ref_npz["e_s"][:-1], h_sub["s"],
-                     color=color, label=f"{metric} r=21")
+                     color=color, label=f"{metric} r={R_MAX}")
         axes[2].plot(ref_npz["e_alpha"][:-1], h_sub["alpha"],
-                     color=color, label=f"{metric} r=21")
+                     color=color, label=f"{metric} r={R_MAX}")
     for ax, lab in zip(axes, (r"$\rho^{1/3}$", "s", r"$\alpha$")):
         ax.set_xlabel(f"log10 {lab}")
         ax.set_ylabel("density")
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
-    axes[1].set_title("Plot 5: Descriptor histograms (full pool vs r=21 subsets)")
+    axes[1].set_title(f"Plot 5: Descriptor histograms (full pool vs r={R_MAX} subsets)")
     fig.tight_layout()
     fig.savefig(FIGS_DIR / "plot5_descriptor_overlay.png", dpi=150)
     plt.close(fig)
@@ -299,27 +303,27 @@ def main():
     err_frames = [_probe_signed_errors(df, p) for p in PROBE_NAMES]
     df_err = pd.concat(err_frames, ignore_index=True) if err_frames else pd.DataFrame()
 
-    # ---- Plot 7: probe-set MAE comparison (grouped bar) ----
+    # ---- Plot 7: probe-set MAE comparison at r=R_MAX (grouped bar) ----
     if not df_err.empty:
-        # MAE per (set, metric, solver, aug, r=21)
-        mae_r21 = (
-            df_err[df_err["r"] == 21]
+        # MAE per (set, metric, solver, aug) at the largest selected r.
+        mae_rmax = (
+            df_err[df_err["r"] == R_MAX]
             .assign(abs_err=lambda x: x["err_kcalmol"].abs())
             .groupby(["set", "metric", "solver", "aug"])["abs_err"].mean()
             .reset_index(name="mae")
         )
-        if not mae_r21.empty:
+        if not mae_rmax.empty:
             fig, ax = plt.subplots(figsize=(12, 5))
-            mae_r21["spec_label"] = mae_r21.apply(
+            mae_rmax["spec_label"] = mae_rmax.apply(
                 lambda x: f"{x['metric']}/{x['solver']}/{x['aug']}", axis=1)
-            pivot = mae_r21.pivot(index="set", columns="spec_label", values="mae")
+            pivot = mae_rmax.pivot(index="set", columns="spec_label", values="mae")
             pivot = pivot.reindex(index=PROBE_NAMES)
             pivot.plot(kind="bar", ax=ax, width=0.85)
             ax.axhline(1.0, color="r", linestyle="--",
                        label="chemical accuracy 1 kcal/mol")
             ax.set_ylabel("MAE (kcal/mol)")
             ax.set_xlabel("probe set")
-            ax.set_title("Plot 7: Held-out probe-set MAE comparison (r=21)")
+            ax.set_title(f"Plot 7: Held-out probe-set MAE comparison (r={R_MAX})")
             ax.set_yscale("log")
             ax.legend(fontsize=7, ncol=2, loc="upper right")
             ax.grid(alpha=0.3, axis="y")
@@ -410,9 +414,9 @@ def main():
         # headline['probe_summary'] = best (probe, metric) row records
         headline["probe_summary"] = best_rows.to_dict(orient="records")
 
-    # ---- Table 2: per-molecule errors at r=21 (CSV) ----
+    # ---- Table 2: per-molecule errors at r=R_MAX (CSV) ----
     if not df_err.empty:
-        per_mol = df_err[df_err["r"] == 21].copy()
+        per_mol = df_err[df_err["r"] == R_MAX].copy()
         if not per_mol.empty:
             # Reference value: refer to eval_probes for AE/IP refs.
             # To keep the CSV self-contained, we attach probe-level
@@ -452,7 +456,7 @@ def main():
                 per_mol["E_NN_kcalmol"] = np.nan
                 per_mol["hill"] = ""
                 per_mol["source"] = ""
-            # Pick the best (metric, solver, aug) per probe (lowest MAE at r=21)
+            # Pick the best (metric, solver, aug) per probe (lowest MAE at r=R_MAX)
             mae_per_spec = (
                 per_mol.assign(abs_err=lambda x: x["err_kcalmol"].abs())
                 .groupby(["set", "metric", "solver", "aug"])["abs_err"].mean()
@@ -471,7 +475,7 @@ def main():
                     "E_NN_kcalmol", "err_kcalmol", "metric", "solver", "aug"]
             cols = [c for c in cols if c in best_per_mol.columns]
             csv_path = (REPO / "reports_local" / "step7_subset_selection" /
-                        "per_molecule_errors_r21.csv")
+                        f"per_molecule_errors_r{R_MAX}.csv")
             best_per_mol[cols].to_csv(csv_path, index=False)
             print(f"Wrote per-molecule errors CSV to {csv_path}")
 
