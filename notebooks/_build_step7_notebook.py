@@ -174,6 +174,34 @@ def build_cells() -> list:
         "print(f'Total subset.traj files written: {n_specs}')\n"
         "assert n_specs == 88, f'Expected 88 specs, got {n_specs}'\n"
     ))
+    cells.append(_md(
+        "## 4. Smoke Test (r=2, l2, no-w, oneshot)\n\n"
+        "Verify the wiring with a single training spec before launching the\n"
+        "full 88-run grid. Reads the generated subset.traj and confirms the\n"
+        "step-6 integration pretrain checkpoint is loadable.\n"
+    ))
+    cells.append(_code(
+        "smoke_metric, smoke_r, smoke_aug, smoke_solver = 'l2', 2, False, 'oneshot'\n"
+        "tag = f'bin{smoke_r:02d}{\"w\" if smoke_aug else \"\"}'\n"
+        "smoke_spec_dir = (STEP7_ROOT / smoke_metric / tag /\n"
+        "                  f'{ARCH_NAME}/{LOSS_NAME}/{smoke_solver}')\n"
+        "subset_path = smoke_spec_dir / 'subset.traj'\n"
+        "from ase.io import read as ase_read\n"
+        "smoke_traj = ase_read(str(subset_path), ':')\n"
+        "print(f'Smoke spec: {smoke_metric}/{tag}/{smoke_solver}')\n"
+        "print(f'  subset.traj entries: {len(smoke_traj)}')\n"
+        "for i, at in enumerate(smoke_traj):\n"
+        "    name = at.info.get('name', at.info.get('dick_hill', at.get_chemical_formula()))\n"
+        "    print(f'    {i:2d} {at.get_chemical_formula():10s} ({name})')\n\n"
+        "# Verify the step-6 integration pretrain checkpoint files exist:\n"
+        "smoke_pretrain = (REPO / 'notebooks' / 'checkpoints_step6' /\n"
+        "                  'integration' / 'pretrain' / ARCH_NAME)\n"
+        "for fname in ('xnet.eqx', 'cnet.eqx'):\n"
+        "    fp = smoke_pretrain / fname\n"
+        "    assert fp.exists(), f'Missing pretrain checkpoint {fp}'\n"
+        "    print(f'  pretrain checkpoint OK: {fp.name}')\n"
+        "print('Smoke wiring verified.')\n"
+    ))
     return cells
 
 
