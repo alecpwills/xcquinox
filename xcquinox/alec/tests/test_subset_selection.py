@@ -487,3 +487,145 @@ def test_dfs_pool_ae_kcalmol_lookup_matches_data():
     assert set(DFS_AE_KCALMOL.keys()) == {d["hill"] for d in DFS_AE_DATA}
     for d in DFS_AE_DATA:
         assert DFS_AE_KCALMOL[d["hill"]] == d["ae_kcalmol"]
+
+
+# ----------------------------------------------------------------------
+# Spin / charge metadata invariants (2026-05-01 NO-spin-bug fix)
+# ----------------------------------------------------------------------
+#
+# Background: a step-7 smoke run (2026-05-01) failed on entry #10 (NO,
+# 15 electrons) with PySCF "Electron number 15 and spin 0 are not
+# consistent".  Root cause: ASE Atoms loaded from g2_97.traj have no
+# spin/charge in info{}, so _ase_atoms_to_pyscf_mol defaulted spin=0 for
+# every species — wrong for the 7 open-shell molecules in the AE pool
+# (NO, CH, OH, NO2, NH, CH3, CH2-triplet) and the atomic refs (H, Li).
+#
+# These tests enforce the (nelec - spin) % 2 == 0 invariant PySCF
+# requires for every Atoms returned by build_dfs_pool().
+
+_HILL_TO_NELEC = {
+    # Atomic numbers used to compute electron counts.  Only the elements
+    # that appear in the Dick pool need to be listed here.
+    "H": 1, "Li": 3, "C": 6, "N": 7, "O": 8, "F": 9, "Na": 11,
+}
+
+
+def _atoms_nelec(at):
+    """Compute total electron count from chemical symbols + at.info['charge']."""
+    n = sum(_HILL_TO_NELEC[s] for s in at.get_chemical_symbols())
+    return n - int(at.info.get("charge", 0))
+
+
+def test_dfs_ae_data_every_entry_has_spin_field():
+    """Every DFS_AE_DATA entry must carry an explicit `spin` field
+    (PySCF 2S convention) plus a `spin_source` citation."""
+    from xcquinox.alec.dfs_pool import DFS_AE_DATA
+    for d in DFS_AE_DATA:
+        assert "spin" in d, f"{d['hill']}: missing spin field"
+        assert isinstance(d["spin"], int)
+        assert d["spin"] >= 0
+        assert "spin_source" in d
+        assert isinstance(d["spin_source"], str)
+        assert len(d["spin_source"].strip()) > 0
+
+
+def test_dfs_ae_data_open_shell_spins_match_published_ground_states():
+    """Spot-check the published ground-state spins for the 7 open-shell
+    AE molecules + the special triplet-singlet cases (NH, CH2)."""
+    from xcquinox.alec.dfs_pool import DFS_AE_SPIN
+    expected = {
+        "NO":  1,  # X²Π doublet
+        "CH":  1,  # X²Π doublet
+        "HO":  1,  # X²Π doublet
+        "NO2": 1,  # X²A1 doublet
+        "HN":  2,  # X³Σ⁻ TRIPLET (Herzberg I §VI; load-bearing)
+        "CH3": 1,  # X²A2'' doublet
+        "CH2": 2,  # X³B1 TRIPLET (Bunker & Sears 1985; load-bearing)
+        "O3":  0,  # X¹A1 closed-shell singlet (despite multireference)
+        "H2":  0, "N2": 0, "FLi": 0, "CHN": 0, "CO2": 0, "F2": 0,
+        "C2H2": 0, "CO": 0, "HLi": 0, "Na2": 0, "N2O": 0, "H2O": 0,
+        "H3N": 0,
+    }
+    for hill, exp_spin in expected.items():
+        assert DFS_AE_SPIN[hill] == exp_spin, (
+            f"{hill}: spin mismatch (got {DFS_AE_SPIN[hill]}, "
+            f"expected {exp_spin})")
+
+
+def test_dfs_pool_every_ae_atoms_satisfies_pyscf_spin_invariant():
+    """Every Atoms in pool['ae_molecules'] must satisfy
+    (nelec - spin) % 2 == 0 — the invariant PySCF enforces.  This is
+    the regression test for the 2026-05-01 NO smoke-run failure."""
+    from xcquinox.alec.dfs_pool import build_dfs_pool
+    pool = build_dfs_pool()
+    for at in pool["ae_molecules"]:
+        nelec = _atoms_nelec(at)
+        spin = int(at.info["spin"])
+        assert (nelec - spin) % 2 == 0, (
+            f"{at.info['dfs_hill']}: nelec={nelec}, spin={spin} — "
+            f"(nelec - spin) is odd; PySCF will reject this SCF.")
+
+
+def test_dfs_pool_every_atom_ref_satisfies_pyscf_spin_invariant():
+    """Every Atoms in pool['atom_refs'] (H, Li) must satisfy the
+    spin/electron-count invariant and carry the NIST ASD ground-state
+    spin (²S → spin=1)."""
+    from xcquinox.alec.dfs_pool import build_dfs_pool
+    pool = build_dfs_pool()
+    by_sym = {a.get_chemical_formula(): a for a in pool["atom_refs"]}
+    for sym in ("H", "Li"):
+        a = by_sym[sym]
+        # NIST ASD: H I and Li I are both ²S — spin=1 (one unpaired e⁻).
+        assert a.info["spin"] == 1, (
+            f"{sym}: atom-ref spin must be 1 (²S ground state, NIST ASD)")
+        assert a.info["charge"] == 0
+        nelec = _atoms_nelec(a)
+        assert (nelec - a.info["spin"]) % 2 == 0
+
+
+def test_dfs_bh76_every_reaction_has_species_spins():
+    """Every BH76 reaction must carry species_spins / species_charges
+    dicts covering every reactant + product."""
+    from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
+    for rxn in DFS_BH76_REACTIONS:
+        assert "species_spins" in rxn, (
+            f"{rxn['name']}: missing species_spins dict")
+        assert "species_charges" in rxn, (
+            f"{rxn['name']}: missing species_charges dict")
+        for sp in (*rxn["reactants"], *rxn["products"]):
+            assert sp in rxn["species_spins"], (
+                f"{rxn['name']}: species_spins missing {sp!r}")
+            assert sp in rxn["species_charges"], (
+                f"{rxn['name']}: species_charges missing {sp!r}")
+            assert isinstance(rxn["species_spins"][sp], int)
+            assert isinstance(rxn["species_charges"][sp], int)
+
+
+def test_dfs_ip13_every_pair_has_neutral_and_cation_spin():
+    """Every IP13 pair must carry neutral_spin/cation_spin and
+    cation_charge=+1.  Spot-check Li (²S→¹S, spins 1→0) and C (³P→²P°,
+    spins 2→1) from NIST ASD."""
+    from xcquinox.alec.dfs_pool import DFS_IP13_PAIRS
+    expected = {
+        "Li_IP": {"neutral_spin": 1, "cation_spin": 0},
+        "C_IP":  {"neutral_spin": 2, "cation_spin": 1},
+    }
+    for pair in DFS_IP13_PAIRS:
+        for k in ("neutral_spin", "cation_spin", "cation_charge"):
+            assert k in pair, f"{pair['name']}: missing {k}"
+        assert pair["cation_charge"] == 1
+        assert pair["neutral_charge"] == 0
+        exp = expected[pair["name"]]
+        assert pair["neutral_spin"] == exp["neutral_spin"]
+        assert pair["cation_spin"] == exp["cation_spin"]
+
+
+def test_dfs_atom_refs_carry_spin_metadata():
+    """DFS_ATOM_REFS is a list of dicts with sym/spin/charge."""
+    from xcquinox.alec.dfs_pool import DFS_ATOM_REFS
+    syms = [r["sym"] for r in DFS_ATOM_REFS]
+    assert syms == ["H", "Li"]
+    for r in DFS_ATOM_REFS:
+        assert r["spin"] == 1   # NIST ASD ²S ground state
+        assert r["charge"] == 0
+        assert isinstance(r.get("spin_source", ""), str)

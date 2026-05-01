@@ -107,7 +107,9 @@ def test_bh76_probe_has_finite_e_rxn_refs():
 def test_ae_probes_disjoint_from_dfs_training_pool():
     """No probe-A/B/D Hill formula may appear in Dick training (21 AE
     molecules + 2 atom refs)."""
-    training_hills = set(DFS_AE_HILL) | set(DFS_ATOM_REFS)
+    # DFS_ATOM_REFS is a list of dicts (per 2026-05-01 spin-metadata
+    # refactor); pull the bare element symbol off each entry.
+    training_hills = set(DFS_AE_HILL) | {r["sym"] for r in DFS_ATOM_REFS}
     for probe_name in ("probe_a_chemical_similarity",
                        "probe_b_heteroatom",
                        "probe_d_multireference"):
@@ -155,7 +157,8 @@ def test_ip13_probe_atoms_distinct_from_training():
     diatomic should be a 'Li' or 'C' atom (which are training-pool atoms
     via DFS_IP13_PAIRS / atom_refs).  This is mostly a no-op tripwire
     given probe-D contains diatomics, but it documents the constraint."""
-    ip_atoms = {p["neutral"] for p in DFS_IP13_PAIRS} | set(DFS_ATOM_REFS)
+    ip_atoms = ({p["neutral"] for p in DFS_IP13_PAIRS}
+                | {r["sym"] for r in DFS_ATOM_REFS})
     for entry in ep.PROBE_D_MULTIREFERENCE:
         # A multireference probe should not be a single atom.
         assert entry["hill"] not in ip_atoms, (
@@ -308,3 +311,91 @@ def test_build_probe_pool_bh76_reactions_reference_total_atom_count():
         for sym, val in elem_balance.items():
             assert abs(val) < 1e-9, (
                 f"{rxn['name']}: {sym} balance = {val} (should be 0)")
+
+
+# ---------------------------------------------------------------------------
+# 6. Spin / charge metadata invariants (2026-05-01 NO-spin-bug fix)
+# ---------------------------------------------------------------------------
+#
+# Every probe Atoms returned by build_probe_pool() must carry spin and
+# charge fields satisfying (nelec - spin) % 2 == 0, the invariant that
+# PySCF enforces.  Failures of this invariant are exactly what triggered
+# the 2026-05-01 NO-spin smoke-run bug.
+
+_HILL_TO_NELEC = {
+    "H": 1, "Be": 4, "C": 6, "N": 7, "O": 8, "F": 9,
+    "Si": 14, "P": 15, "S": 16, "Cl": 17, "Li": 3, "Na": 11,
+}
+
+
+def _atoms_nelec(at):
+    n = sum(_HILL_TO_NELEC[s] for s in at.get_chemical_symbols())
+    return n - int(at.info.get("charge", 0))
+
+
+def test_every_ae_probe_entry_has_spin_field():
+    """Probes A/B/D entries must carry an explicit `spin` field in
+    PySCF 2S convention (already part of the eval_probes module schema,
+    but assert its presence per-entry for the regression tripwire)."""
+    for probe_name in ("probe_a_chemical_similarity",
+                       "probe_b_heteroatom",
+                       "probe_d_multireference"):
+        for entry in ep.ALL_PROBES[probe_name]:
+            assert "spin" in entry, (
+                f"{probe_name}: {entry['hill']}: missing spin field")
+            assert isinstance(entry["spin"], int)
+            assert entry["spin"] >= 0
+            assert "charge" in entry
+            assert isinstance(entry["charge"], int)
+
+
+@pytest.mark.parametrize("probe_name",
+                         ["probe_a_chemical_similarity",
+                          "probe_b_heteroatom",
+                          "probe_d_multireference"])
+def test_build_probe_pool_ae_atoms_satisfy_pyscf_spin_invariant(probe_name):
+    """For probes A, B, D: every Atoms must satisfy
+    (nelec - spin) % 2 == 0, the PySCF mol-construction invariant."""
+    pool = ep.build_probe_pool(probe_name)
+    for at in pool["molecules"]:
+        nelec = _atoms_nelec(at)
+        spin = int(at.info["spin"])
+        assert (nelec - spin) % 2 == 0, (
+            f"{probe_name}: {at.info.get('probe_hill', at.get_chemical_formula())} "
+            f"nelec={nelec} spin={spin} — PySCF will reject SCF.")
+
+
+def test_probe_c_every_reaction_has_species_spins():
+    """Every PROBE_C reaction must carry species_spins / species_charges
+    dicts covering every reactant + product."""
+    for rxn in ep.PROBE_C_BH76_OUT_OF_TRAINING:
+        assert "species_spins" in rxn, (
+            f"{rxn['name']}: missing species_spins")
+        assert "species_charges" in rxn, (
+            f"{rxn['name']}: missing species_charges")
+        for sp in (*rxn["reactants"], *rxn["products"]):
+            assert sp in rxn["species_spins"], (
+                f"{rxn['name']}: species_spins missing {sp!r}")
+            assert sp in rxn["species_charges"], (
+                f"{rxn['name']}: species_charges missing {sp!r}")
+
+
+def test_build_probe_pool_bh76_atoms_satisfy_pyscf_spin_invariant():
+    """For probe C (BH76): every species Atoms must satisfy the spin
+    invariant (the 2026-05-01 NO regression test, generalized)."""
+    pool = ep.build_probe_pool("probe_c_bh76_transfer")
+    for at in pool["molecules"]:
+        nelec = _atoms_nelec(at)
+        spin = int(at.info["spin"])
+        assert (nelec - spin) % 2 == 0, (
+            f"BH76 species {at.get_chemical_formula()}: "
+            f"nelec={nelec} spin={spin}")
+
+
+def test_probe_d_o2_is_triplet_and_so_is_oxygen_so():
+    """Two famously-triplet species in the multireference / heteroatom
+    probes must carry spin=2: O2 (³Σg⁻) and SO (³Σ⁻)."""
+    o2 = next(d for d in ep.PROBE_D_MULTIREFERENCE if d["hill"] == "O2")
+    so = next(d for d in ep.PROBE_B_HETEROATOM_EXTRAPOLATION if d["hill"] == "OS")
+    assert o2["spin"] == 2, "O2 ground state is X³Σg⁻ — spin must be 2"
+    assert so["spin"] == 2, "SO ground state is X³Σ⁻ — spin must be 2"

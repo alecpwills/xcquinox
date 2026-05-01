@@ -213,6 +213,11 @@ PROBE_B_HETEROATOM_EXTRAPOLATION = [
 # that build_probe_pool() will create.  The convention matches
 # DFS_BH76_REACTIONS: signed coefficients line up with
 # (*reactants, *products) in order.
+#
+# Each entry carries per-species ``species_spins`` and ``species_charges``
+# dicts (Hill formula → ground-state 2S / charge in PySCF convention).
+# Sources for atomic spins: NIST ASD ground-state term symbols.
+# Sources for molecular spins: NIST CCCBDB / Herzberg I.
 PROBE_C_BH76_OUT_OF_TRAINING = [
     {
         "name": "OH+H2_to_H2O+H",
@@ -220,9 +225,15 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "products":  ["H2O", "H"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
         "e_rxn_ref": 4.90,  # kcal/mol
+        "species_spins":   {"HO": 1, "H2": 0, "H2O": 0, "H": 1},
+        "species_charges": {"HO": 0, "H2": 0, "H2O": 0, "H": 0},
         "source": (
             "HTBH38/08 entry 2 (OH+H2 → H2O+H), Vf (REF1) = 4.90 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+        ),
+        "spin_source": (
+            "NIST ASD H I (²S, spin=1); NIST CCCBDB OH (X²Π, 1), "
+            "H2 (X¹Σg+, 0), H2O (X¹A1, 0)."
         ),
         "rationale": (
             "Classic combustion-relevant H-abstraction with low barrier. "
@@ -237,9 +248,15 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "products":  ["H2", "Cl"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
         "e_rxn_ref": 5.70,  # kcal/mol
+        "species_spins":   {"H": 1, "HCl": 0, "H2": 0, "Cl": 1},
+        "species_charges": {"H": 0, "HCl": 0, "H2": 0, "Cl": 0},
         "source": (
             "HTBH38/08 entry 1 (H+HCl → H2+Cl), Vf (REF1) = 5.70 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+        ),
+        "spin_source": (
+            "NIST ASD H I (²S, spin=1), Cl I (²P°, spin=1); "
+            "NIST CCCBDB HCl (X¹Σ+, 0), H2 (X¹Σg+, 0)."
         ),
         "rationale": (
             "H-transfer involving a 3rd-period halogen.  Probes BH76 "
@@ -252,9 +269,15 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "products":  ["CH4", "H"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
         "e_rxn_ref": 12.10,  # kcal/mol
+        "species_spins":   {"CH3": 1, "H2": 0, "CH4": 0, "H": 1},
+        "species_charges": {"CH3": 0, "H2": 0, "CH4": 0, "H": 0},
         "source": (
             "HTBH38/08 entry 3 (CH3+H2 → CH4+H), Vf (REF1) = 12.10 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+        ),
+        "spin_source": (
+            "NIST ASD H I (²S, spin=1); NIST CCCBDB CH3 (X²A2'', 1), "
+            "H2 (X¹Σg+, 0), CH4 (X¹A1, 0)."
         ),
         "rationale": (
             "Methyl + H2 → methane.  Training has CH3 species but no "
@@ -268,9 +291,15 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "products":  ["H2O", "H2N"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
         "e_rxn_ref": 3.00,  # kcal/mol
+        "species_spins":   {"HO": 1, "H3N": 0, "H2O": 0, "H2N": 1},
+        "species_charges": {"HO": 0, "H3N": 0, "H2O": 0, "H2N": 0},
         "source": (
             "HTBH38/08 entry 6 (OH+NH3 → H2O+NH2), Vf (REF1) = 3.00 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+        ),
+        "spin_source": (
+            "NIST CCCBDB OH (X²Π, 1), NH3 (X¹A1, 0), H2O (X¹A1, 0), "
+            "NH2 (X²B1, 1)."
         ),
         "rationale": (
             "Atmospheric H-abstraction with very low barrier.  "
@@ -284,9 +313,15 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "products":  ["HO", "N2"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
         "e_rxn_ref": 17.13,  # kcal/mol
+        "species_spins":   {"H": 1, "N2O": 0, "HO": 1, "N2": 0},
+        "species_charges": {"H": 0, "N2O": 0, "HO": 0, "N2": 0},
         "source": (
             "NHTBH38/08 entry 1 (H+N2O → OH+N2), Vf (REF1) = 17.13 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+        ),
+        "spin_source": (
+            "NIST ASD H I (²S, spin=1); NIST CCCBDB OH (X²Π, 1), "
+            "N2 (X¹Σg+, 0), N2O (X¹Σ+, 0)."
         ),
         "rationale": (
             "FORWARD direction of the Dick training reaction (training "
@@ -301,9 +336,15 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "products":  ["H2", "HS"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
         "e_rxn_ref": 3.50,  # kcal/mol
+        "species_spins":   {"H": 1, "H2S": 0, "H2": 0, "HS": 1},
+        "species_charges": {"H": 0, "H2S": 0, "H2": 0, "HS": 0},
         "source": (
             "HTBH38/08 entry 13 (H+H2S → H2+HS), Vf (REF1) = 3.50 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+        ),
+        "spin_source": (
+            "NIST ASD H I (²S, spin=1); NIST CCCBDB H2 (X¹Σg+, 0), "
+            "H2S (X¹A1, 0), HS (X²Π, 1)."
         ),
         "rationale": (
             "Low-barrier H-transfer with sulfur.  Combines BH76 "
@@ -547,33 +588,53 @@ def build_probe_pool(probe_name: str) -> dict:
         }
 
     # kind == "bh76"
+    #
+    # Spin/charge propagation: read every species' ground-state spin and
+    # charge from the per-reaction ``species_spins`` / ``species_charges``
+    # dicts on each PROBE_C entry.  This is load-bearing — without it,
+    # PySCF will reject the SCF call for any open-shell radical (e.g. NO,
+    # OH, CH3, HS) because g2_97.traj carries no spin info and PySCF's
+    # default of spin=0 violates the (nelec - spin) % 2 == 0 invariant
+    # for odd-electron molecules.  See docstring of dfs_pool.py for the
+    # original incident report (NO, 15 electrons, smoke run 2026-05-01).
     traj = read(str(_g297_traj_path()), ":")
     by_hill: dict = {a.get_chemical_formula(): a for a in traj}
     extras = _bh76_extra_geometries()
     seen_species: dict = {}    # species_hill -> Atoms (deduplicated)
     atom_set: set = set()
     for rxn in entries:
+        species_spins = rxn.get("species_spins", {})
+        species_charges = rxn.get("species_charges", {})
         for sp in (*rxn["reactants"], *rxn["products"]):
             if sp in seen_species:
                 continue
             if sp in by_hill:
                 a = by_hill[sp].copy()
                 a.info.setdefault("name", sp)
-                # Default open-shell spins for radicals from g2_97 that
-                # lack an explicit info["spin"] entry. These come from
-                # standard NIST/CCCBDB term symbols; same convention as
-                # dfs_pool (which sets spin via the step-7 driver).
-                _spin_defaults = {
-                    "HO": 1, "CH3": 1, "H2N": 1, "NO": 1,
-                    "CN": 1, "NH": 2,
-                }
-                if "spin" not in a.info:
-                    a.info["spin"] = _spin_defaults.get(sp, 0)
-                a.info.setdefault("charge", 0)
+                # Use the per-reaction ground-state spin if provided
+                # (authoritative).  No fallback — every PROBE_C entry
+                # MUST carry species_spins per the design above.
+                if sp not in species_spins:
+                    raise RuntimeError(
+                        f"{probe_name}: reaction {rxn['name']!r} is missing "
+                        f"species_spins[{sp!r}].  Every BH76 reactant/product "
+                        f"requires an explicit ground-state spin (PySCF 2S) "
+                        f"so the SCF call satisfies (nelec - spin) % 2 == 0."
+                    )
+                a.info["spin"] = int(species_spins[sp])
+                a.info["charge"] = int(species_charges.get(sp, 0))
                 seen_species[sp] = a
                 atom_set.update(a.get_chemical_symbols())
             elif sp in extras:
                 a = extras[sp].copy()
+                # Allow per-reaction override of the bare-atom spin
+                # (e.g. if a probe used a non-ground-state ionic state),
+                # but ground-state spin remains the default from
+                # _bh76_extra_geometries.
+                if sp in species_spins:
+                    a.info["spin"] = int(species_spins[sp])
+                if sp in species_charges:
+                    a.info["charge"] = int(species_charges[sp])
                 seen_species[sp] = a
                 atom_set.update(a.get_chemical_symbols())
             else:
