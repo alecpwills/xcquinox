@@ -187,3 +187,59 @@ def build_reference_histograms(pool):
         edges[k] = np.linspace(lo, hi, NBINS + 1)
     h_ref = _bin_with_edges(full, edges)
     return h_ref, edges
+
+
+def select_subset(
+    pool,
+    edges: dict,
+    h_ref: dict,
+    *,
+    r: int,
+    metric: str,
+    fixed_indices: tuple = (),
+):
+    """Exhaustively enumerate all C(npool, r) subsets and return the
+    indices of the size-r combination that minimizes the chosen metric.
+
+    Parameters
+    ----------
+    pool : list of per-species descriptor-array dicts
+    edges : pre-built bin edges from build_reference_histograms
+    h_ref : reference 3-histogram tuple from build_reference_histograms
+    r : target subset size
+    metric : "l2" or "jsd"
+    fixed_indices : pool indices that must be present in every candidate
+        subset. The chosen subset has exactly r entries TOTAL including
+        the fixed ones.
+    """
+    if metric == "l2":
+        m = metric_l2
+    elif metric == "jsd":
+        m = metric_jsd
+    else:
+        raise ValueError(f"unknown metric: {metric!r}")
+
+    npool = len(pool)
+    if r > npool:
+        raise ValueError(f"r={r} exceeds pool size {npool}")
+    if r < len(fixed_indices):
+        raise ValueError(f"r={r} smaller than fixed_indices count {len(fixed_indices)}")
+
+    fixed_set = set(fixed_indices)
+    free_indices = [i for i in range(npool) if i not in fixed_set]
+    free_r = r - len(fixed_indices)
+
+    best_val = float("inf")
+    best_combo: tuple = ()
+    for combo in combinations(free_indices, free_r):
+        full = tuple(sorted(set(combo) | fixed_set))
+        cat = {k: np.concatenate([pool[i][k] for i in full]) for k in _DESCRIPTOR_KEYS}
+        cat["weights"] = np.concatenate(
+            [pool[i].get("weights", np.ones_like(pool[i]["rho_third"])) for i in full]
+        )
+        h_cand = _bin_with_edges(cat, edges)
+        v = m(h_ref, h_cand)
+        if v < best_val:
+            best_val = v
+            best_combo = full
+    return best_combo, best_val

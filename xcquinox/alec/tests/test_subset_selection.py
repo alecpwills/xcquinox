@@ -155,3 +155,41 @@ def test_build_reference_histograms_concats_pool():
     for k in ("rho_third", "s", "alpha"):
         assert h_ref[k].shape == (ss.NBINS,)
         assert edges[k].shape == (ss.NBINS + 1,)
+
+
+def _build_toy_pool(npool=8, seed=0):
+    """Build a synthetic 8-entry pool with consistent log10 edges."""
+    pool = [_toy_descriptor_arrays(seed=seed + i) for i in range(npool)]
+    h_ref, edges = ss.build_reference_histograms(pool)
+    return pool, h_ref, edges
+
+
+def test_select_subset_recovers_pool_when_r_eq_n_l2():
+    pool, h_ref, edges = _build_toy_pool(npool=5)
+    chosen, val = ss.select_subset(pool, edges, h_ref, r=5, metric="l2")
+    assert sorted(chosen) == [0, 1, 2, 3, 4]
+    assert val == pytest.approx(0.0, abs=1e-12)
+
+
+def test_select_subset_recovers_pool_when_r_eq_n_jsd():
+    pool, h_ref, edges = _build_toy_pool(npool=5)
+    chosen, val = ss.select_subset(pool, edges, h_ref, r=5, metric="jsd")
+    assert sorted(chosen) == [0, 1, 2, 3, 4]
+    assert val == pytest.approx(0.0, abs=1e-12)
+
+
+def test_select_subset_exhaustive_for_small_r():
+    pool, h_ref, edges = _build_toy_pool(npool=6)
+    chosen, val = ss.select_subset(pool, edges, h_ref, r=2, metric="l2")
+    assert len(chosen) == 2
+    from itertools import combinations as _C
+    best_val, best_pair = float("inf"), None
+    for pair in _C(range(6), 2):
+        cat = {k: np.concatenate([pool[i][k] for i in pair]) for k in ss._DESCRIPTOR_KEYS}
+        cat["weights"] = np.concatenate([pool[i].get("weights", np.ones_like(pool[i]["rho_third"])) for i in pair])
+        h_cand = ss._bin_with_edges(cat, edges)
+        v = ss.metric_l2(h_ref, h_cand)
+        if v < best_val:
+            best_val, best_pair = v, pair
+    assert sorted(chosen) == sorted(best_pair)
+    assert val == pytest.approx(best_val, rel=1e-12)
