@@ -12,8 +12,8 @@ Pool composition (28 distinct training points):
 
 All published reference values (AE in kcal/mol for the 21 AE molecules;
 e_rxn_ref for BH76; ip_ref for IP13) come from authoritative benchmarks
-and are attached to the build_dick_pool() output via Atoms.info /
-reaction-spec dict entries — never fabricated.  See DICK_AE_DATA for AE
+and are attached to the build_dfs_pool() output via Atoms.info /
+reaction-spec dict entries — never fabricated.  See DFS_AE_DATA for AE
 sources (W4-11 anchors via step-6 for H2O+C2H2; Haunschild & Klopper
 J. Chem. Phys. 136, 164102 (2012) for the other 19).
 """
@@ -64,7 +64,7 @@ from ase.io import read
 #
 # Notes:
 #   - CH2 in g2_97.traj contains both singlet (idx 105) and triplet
-#     (idx 106) entries with identical Hill formula "CH2"; build_dick_pool
+#     (idx 106) entries with identical Hill formula "CH2"; build_dfs_pool
 #     selects the triplet (last in iteration), matching W4-17 ch2-trip
 #     (TAE_e = 190.53) and Haunschild "Triplet carbene" (797.23 kJ/mol →
 #     190.541 kcal/mol).
@@ -72,7 +72,7 @@ from ase.io import read
 #     their published reference AEs at the appropriate ground-state
 #     spin; spin/multiplicity is set by the step-7 driver via
 #     `at.info['spin']`.
-DICK_AE_DATA = [
+DFS_AE_DATA = [
     # --- 10 linear closed-shell ---
     {"hill": "H2",   "name": "Dihydrogen",
      "ae_kcalmol": 457.73 / 4.184,
@@ -143,10 +143,10 @@ DICK_AE_DATA = [
 
 # Backward-compatible Hill list (used by select_subset / step-7 driver
 # that already iterates pool["ae_molecules"]).
-DICK_AE_HILL = [d["hill"] for d in DICK_AE_DATA]
+DFS_AE_HILL = [d["hill"] for d in DFS_AE_DATA]
 
 # Quick-lookup map by Hill formula → AE in kcal/mol.
-DICK_AE_KCALMOL = {d["hill"]: d["ae_kcalmol"] for d in DICK_AE_DATA}
+DFS_AE_KCALMOL = {d["hill"]: d["ae_kcalmol"] for d in DFS_AE_DATA}
 
 # 3 BH76 reactions per Dick SI §II:
 #   OH + N2 → H + N2O,   OH + CH3 → O + CH4,   HF + F → H + F2
@@ -160,7 +160,7 @@ DICK_AE_KCALMOL = {d["hill"]: d["ae_kcalmol"] for d in DICK_AE_DATA}
 # These are the values that Goerigk & Grimme (PCCP 19, 32184, 2017)
 # adopt verbatim for the GMTKN55-BH76 subset. We use REF1 (the value
 # directly comparable to non-relativistic calculations) for each.
-DICK_BH76_REACTIONS = [
+DFS_BH76_REACTIONS = [
     {
         "name": "OH+N2_to_H+N2O",
         "reactants": ["HO", "N2"],
@@ -214,7 +214,7 @@ DICK_BH76_REACTIONS = [
 #   - C  I → C  II: 11.26030 eV (90820.45 cm⁻¹) → 259.668148 kcal/mol
 #       NIST atomic spectra database, Atomic Data for Carbon,
 #       https://www.physics.nist.gov/PhysRefData/Handbook/Tables/carbontable1.htm
-DICK_IP13_PAIRS = [
+DFS_IP13_PAIRS = [
     {
         "name": "Li_IP",
         "neutral": "Li",
@@ -242,7 +242,7 @@ DICK_IP13_PAIRS = [
 ]
 
 # 2 atomic-density references
-DICK_ATOM_REFS = ["H", "Li"]
+DFS_ATOM_REFS = ["H", "Li"]
 
 
 def _g297_traj_path() -> Path:
@@ -251,7 +251,7 @@ def _g297_traj_path() -> Path:
         "haunschild_g2" / "g2_97.traj"
 
 
-def build_dick_pool() -> dict:
+def build_dfs_pool() -> dict:
     """Assemble the 28-entry Dick 2021 training pool.
 
     Returns dict with keys:
@@ -259,11 +259,11 @@ def build_dick_pool() -> dict:
                             this is the SELECTION POOL for select_subset).
                            Each Atoms carries the following info-dict
                            entries used by step-7's training driver:
-                             - "dick_hill"   : Hill formula key (str)
+                             - "dfs_hill"   : Hill formula key (str)
                              - "ae_kcalmol"  : AE reference (float, kcal/mol)
                              - "ae_source"   : citation string (str)
                              - "ae_name"     : human-readable name (str)
-                           See module-level DICK_AE_DATA for sources.
+                           See module-level DFS_AE_DATA for sources.
       bh76_reactions     : 3 reaction-spec dicts
       ip13_pairs         : 2 IP-spec dicts
       atom_refs          : 2 ASE Atoms (H, Li)
@@ -276,11 +276,11 @@ def build_dick_pool() -> dict:
 
     ae_atoms: list = []
     missing: list = []
-    for entry in DICK_AE_DATA:
+    for entry in DFS_AE_DATA:
         hill = entry["hill"]
         if hill in by_hill:
             a = by_hill[hill].copy()
-            a.info["dick_hill"] = hill
+            a.info["dfs_hill"] = hill
             # Attach the published AE reference (kcal/mol) plus the
             # human-readable name and source citation.  Step-7's loss
             # driver reads `at.info["ae_kcalmol"]`; the source string is
@@ -298,7 +298,7 @@ def build_dick_pool() -> dict:
         )
 
     atom_refs: list = []
-    for sym in DICK_ATOM_REFS:
+    for sym in DFS_ATOM_REFS:
         if sym in by_hill:
             atom_refs.append(by_hill[sym].copy())
         else:
@@ -306,11 +306,11 @@ def build_dick_pool() -> dict:
 
     return {
         "ae_molecules": ae_atoms,
-        "bh76_reactions": DICK_BH76_REACTIONS,
-        "ip13_pairs": DICK_IP13_PAIRS,
+        "bh76_reactions": DFS_BH76_REACTIONS,
+        "ip13_pairs": DFS_IP13_PAIRS,
         "atom_refs": atom_refs,
         "n_total": (
-            len(ae_atoms) + len(DICK_BH76_REACTIONS)
-            + len(DICK_IP13_PAIRS) + len(atom_refs)
+            len(ae_atoms) + len(DFS_BH76_REACTIONS)
+            + len(DFS_IP13_PAIRS) + len(atom_refs)
         ),
     }

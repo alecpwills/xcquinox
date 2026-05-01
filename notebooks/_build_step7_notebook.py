@@ -5,7 +5,7 @@ into nbformat structure, write .ipynb, optionally execute end-to-end.
 
 Step-7 plan:
   - Build Dick 2021 SI II training pool (28 entries) via
-    xcquinox.alec.dick_pool.build_dick_pool
+    xcquinox.alec.dfs_pool.build_dfs_pool
   - Extract (rho^{1/3}, s, alpha) per species, cache to disk
   - Build reference 3-histogram via build_reference_histograms
   - Sweep r in {1,2,3,4,5,6,7,12,15,18,21} x {l2,jsd} x {oneshot,full_3}
@@ -68,17 +68,17 @@ def build_cells() -> list:
     ))
     cells.append(_code(
         "from xcquinox.alec import subset_selection as ss\n"
-        "from xcquinox.alec import dick_pool\n"
+        "from xcquinox.alec import dfs_pool\n"
         "from xcquinox.alec import losses\n"
         "import numpy as np\n"
         "from pathlib import Path\n\n"
         "REPO = Path('/home/awills/Documents/Research/xcquinox')\n"
         "STEP7_ROOT = REPO / 'notebooks' / 'checkpoints_step7'\n"
         "DESCRIPTOR_CACHE = STEP7_ROOT / 'subset_descriptors'\n"
-        "REF_HIST_CACHE = STEP7_ROOT / 'dick_pool_full_hist'\n"
+        "REF_HIST_CACHE = STEP7_ROOT / 'dfs_pool_full_hist'\n"
         "DESCRIPTOR_CACHE.mkdir(parents=True, exist_ok=True)\n"
         "REF_HIST_CACHE.mkdir(parents=True, exist_ok=True)\n\n"
-        "pool = dick_pool.build_dick_pool()\n"
+        "pool = dfs_pool.build_dfs_pool()\n"
         "print(f'Dick 2021 SI II training pool: {pool[\"n_total\"]} entries')\n"
         "print(f'  AE molecules: {len(pool[\"ae_molecules\"])}')\n"
         "print(f'  BH76 reactions: {len(pool[\"bh76_reactions\"])}')\n"
@@ -97,7 +97,7 @@ def build_cells() -> list:
         "for idx, at in enumerate(pool['ae_molecules']):\n"
         "    arrs = ss.extract_descriptors(at, idx=idx, cache_dir=DESCRIPTOR_CACHE)\n"
         "    ae_descriptors.append(arrs)\n"
-        "    name = at.info.get('dick_hill', at.get_chemical_formula())\n"
+        "    name = at.info.get('dfs_hill', at.get_chemical_formula())\n"
         "    print(f'  {idx:2d} {name:8s} ngrid={arrs[\"rho_third\"].size}')\n"
         "print(f'Total AE descriptors cached: {len(ae_descriptors)}')\n"
     ))
@@ -191,7 +191,7 @@ def build_cells() -> list:
         "print(f'Smoke spec: {smoke_metric}/{tag}/{smoke_solver}')\n"
         "print(f'  subset.traj entries: {len(smoke_traj)}')\n"
         "for i, at in enumerate(smoke_traj):\n"
-        "    name = at.info.get('name', at.info.get('dick_hill', at.get_chemical_formula()))\n"
+        "    name = at.info.get('name', at.info.get('dfs_hill', at.get_chemical_formula()))\n"
         "    print(f'    {i:2d} {at.get_chemical_formula():10s} ({name})')\n\n"
         "# Verify the step-6 integration pretrain checkpoint files exist:\n"
         "smoke_pretrain = (REPO / 'notebooks' / 'checkpoints_step6' /\n"
@@ -254,12 +254,12 @@ def build_cells() -> list:
         "                   'integration' / 'pretrain' / ARCH_NAME)\n\n"
         "# AE reference values (kcal/mol) for each Dick pool AE molecule.\n"
         "# Loaded from the pool's Atoms.info['ae_kcalmol'] (attached by\n"
-        "# build_dick_pool() from DICK_AE_DATA — see xcquinox/alec/dick_pool.py\n"
+        "# build_dfs_pool() from DFS_AE_DATA — see xcquinox/alec/dfs_pool.py\n"
         "# for the per-molecule citations: H2O & C2H2 are step-6 anchors,\n"
         "# the other 19 are Haunschild & Klopper J. Chem. Phys. 136, 164102\n"
         "# (2012) frozen-core non-relativistic AEs).\n"
         "# The loss uses _ae_from_atoms so these targets must be in Ha.\n"
-        "_ae_ref_kcalmol = {at.info.get('dick_hill',\n"
+        "_ae_ref_kcalmol = {at.info.get('dfs_hill',\n"
         "                               at.get_chemical_formula()): at.info.get('ae_kcalmol')\n"
         "                   for at in pool['ae_molecules']}\n\n"
         "def _atoms_to_pyscf_str(at):\n"
@@ -272,12 +272,12 @@ def build_cells() -> list:
         "def _atoms_to_mol_spec(at, basis='def2-svp', grid_level=1):\n"
         "    \"\"\"Convert an ASE Atoms entry to a MoleculeSpec.\n\n"
         "    Name is taken from at.info['name'] (G2/97 full name), falling back\n"
-        "    to at.info['dick_hill'] then to Hill formula. Charge/spin default\n"
+        "    to at.info['dfs_hill'] then to Hill formula. Charge/spin default\n"
         "    to 0 if not set in at.info (appropriate for closed-shell atoms\n"
         "    and most G2/97 molecules; open-shell spin is set if at.info has it).\n"
         "    \"\"\"\n"
         "    name = at.info.get('name',\n"
-        "           at.info.get('dick_hill', at.get_chemical_formula()))\n"
+        "           at.info.get('dfs_hill', at.get_chemical_formula()))\n"
         "    charge = int(at.info.get('charge', 0))\n"
         "    spin   = int(at.info.get('spin',   0))\n"
         "    atom_str = _atoms_to_pyscf_str(at)\n"
@@ -322,7 +322,7 @@ def build_cells() -> list:
         "                #   molecules  -> used by AlecLoss.build_indices (internal)\n"
         "                #   bh76_reactions / ip13_pairs -> BH76/IP13 channels\n"
         "                #     (skip pairs/reactions with missing e_rxn_ref/ip_ref;\n"
-        "                #      dick_pool does not include reference values so\n"
+        "                #      dfs_pool does not include reference values so\n"
         "                #      these channels return 0.0 under GradNorm gracefully)\n"
         "                #   solver_config -> passed to energy/DM/grid sub-terms\n"
         "                _cfg = SOLVER_CONFIGS[solver]\n"

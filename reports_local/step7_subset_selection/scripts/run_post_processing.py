@@ -141,7 +141,7 @@ def main():
     plt.close(fig)
 
     # ---- Plot 5: descriptor distribution overlay (full pool vs r=21 subsets) ----
-    ref_npz = np.load(STEP7_ROOT / "dick_pool_full_hist" / "reference.npz")
+    ref_npz = np.load(STEP7_ROOT / "dfs_pool_full_hist" / "reference.npz")
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
     # Full-pool reference (black)
     axes[0].plot(ref_npz["e_rho"][:-1], ref_npz["h_ref_rho"], "k-", label="full pool")

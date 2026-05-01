@@ -57,9 +57,9 @@ def test_step7_loss_target_kinds():
 def test_step7_loss_smoke_constructor_with_dict_inputs():
     """Construct via dict inputs (no training context); verify field accessors."""
     from xcquinox.alec import losses as alec_losses
-    from xcquinox.alec import dick_pool
+    from xcquinox.alec import dfs_pool
 
-    pool = dick_pool.build_dick_pool()
+    pool = dfs_pool.build_dfs_pool()
     inst = alec_losses.make_loss(
         "L5_gradnorm_vxc_step7",
         bh76_reactions=pool["bh76_reactions"],

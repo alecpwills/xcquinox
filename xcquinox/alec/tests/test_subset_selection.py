@@ -212,7 +212,7 @@ def test_compute_atom_set_single_molecule():
     assert atom_set == {"N", "H"}
 
 
-def test_compute_atom_set_full_dick_pool_yields_seven():
+def test_compute_atom_set_full_dfs_pool_yields_seven():
     """For the full 21-AE-molecule Dick pool, the union of elements is
     {H, Li, C, N, O, F, Na} — 7 atomic refs."""
     from ase import Atoms
@@ -309,10 +309,10 @@ def test_extract_descriptors_returns_finite_arrays(tmp_path):
         assert arrs[k].size > 0
 
 
-def test_dick_pool_has_28_distinct_training_points():
+def test_dfs_pool_has_28_distinct_training_points():
     """Per Dick 2021 SI §II: 21 AE + 3 BH76 + 2 IP13 + 2 atom = 28."""
-    from xcquinox.alec.dick_pool import build_dick_pool
-    pool = build_dick_pool()
+    from xcquinox.alec.dfs_pool import build_dfs_pool
+    pool = build_dfs_pool()
     assert pool["n_total"] == 28
     assert len(pool["ae_molecules"]) == 21
     assert len(pool["bh76_reactions"]) == 3
@@ -320,26 +320,26 @@ def test_dick_pool_has_28_distinct_training_points():
     assert len(pool["atom_refs"]) == 2
 
 
-def test_dick_pool_ae_molecule_set_matches_si_section_ii():
+def test_dfs_pool_ae_molecule_set_matches_si_section_ii():
     """Hill-formula equality with Dick SI §II text."""
-    from xcquinox.alec.dick_pool import build_dick_pool, DICK_AE_HILL
-    pool = build_dick_pool()
+    from xcquinox.alec.dfs_pool import build_dfs_pool, DFS_AE_HILL
+    pool = build_dfs_pool()
     found = {a.get_chemical_formula() for a in pool["ae_molecules"]}
-    assert found == set(DICK_AE_HILL)
+    assert found == set(DFS_AE_HILL)
 
 
-def test_dick_pool_atom_refs_are_h_and_li():
-    from xcquinox.alec.dick_pool import build_dick_pool
-    pool = build_dick_pool()
+def test_dfs_pool_atom_refs_are_h_and_li():
+    from xcquinox.alec.dfs_pool import build_dfs_pool
+    pool = build_dfs_pool()
     formulas = {a.get_chemical_formula() for a in pool["atom_refs"]}
     assert formulas == {"H", "Li"}
 
 
-def test_dick_bh76_references_present():
+def test_dfs_bh76_references_present():
     """All 3 BH76 reactions must have a finite e_rxn_ref in kcal/mol."""
-    from xcquinox.alec.dick_pool import DICK_BH76_REACTIONS
-    assert len(DICK_BH76_REACTIONS) == 3
-    for rxn in DICK_BH76_REACTIONS:
+    from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
+    assert len(DFS_BH76_REACTIONS) == 3
+    for rxn in DFS_BH76_REACTIONS:
         assert "e_rxn_ref" in rxn
         assert isinstance(rxn["e_rxn_ref"], float)
         assert math.isfinite(rxn["e_rxn_ref"])
@@ -348,11 +348,11 @@ def test_dick_bh76_references_present():
         assert "source" in rxn
 
 
-def test_dick_ip13_references_present():
+def test_dfs_ip13_references_present():
     """Both IP13 pairs must have a finite ip_ref in kcal/mol."""
-    from xcquinox.alec.dick_pool import DICK_IP13_PAIRS
-    assert len(DICK_IP13_PAIRS) == 2
-    for ip in DICK_IP13_PAIRS:
+    from xcquinox.alec.dfs_pool import DFS_IP13_PAIRS
+    assert len(DFS_IP13_PAIRS) == 2
+    for ip in DFS_IP13_PAIRS:
         assert "ip_ref" in ip
         assert isinstance(ip["ip_ref"], float)
         assert math.isfinite(ip["ip_ref"])
@@ -361,57 +361,57 @@ def test_dick_ip13_references_present():
         assert "source" in ip
 
 
-def test_dick_ip13_li_matches_nist():
+def test_dfs_ip13_li_matches_nist():
     """Li IE_1 = 5.391719 eV from NIST → 124.336 kcal/mol."""
-    from xcquinox.alec.dick_pool import DICK_IP13_PAIRS
-    li = next(p for p in DICK_IP13_PAIRS if p["name"] == "Li_IP")
+    from xcquinox.alec.dfs_pool import DFS_IP13_PAIRS
+    li = next(p for p in DFS_IP13_PAIRS if p["name"] == "Li_IP")
     expected = 5.391719 * 23.0605  # NIST eV × CODATA conversion
     assert li["ip_ref"] == pytest.approx(expected, abs=0.01)
 
 
-def test_dick_ip13_c_matches_nist():
+def test_dfs_ip13_c_matches_nist():
     """C IE_1 = 11.26030 eV from NIST → 259.668 kcal/mol."""
-    from xcquinox.alec.dick_pool import DICK_IP13_PAIRS
-    c = next(p for p in DICK_IP13_PAIRS if p["name"] == "C_IP")
+    from xcquinox.alec.dfs_pool import DFS_IP13_PAIRS
+    c = next(p for p in DFS_IP13_PAIRS if p["name"] == "C_IP")
     expected = 11.26030 * 23.0605
     assert c["ip_ref"] == pytest.approx(expected, abs=0.05)
 
 
-def test_dick_bh76_oh_n2_to_h_n2o_value():
+def test_dfs_bh76_oh_n2_to_h_n2o_value():
     """OH+N2 → H+N2O barrier is the reverse of NHTBH38 #1: 82.27 kcal/mol REF1."""
-    from xcquinox.alec.dick_pool import DICK_BH76_REACTIONS
-    rxn = next(r for r in DICK_BH76_REACTIONS if r["name"] == "OH+N2_to_H+N2O")
+    from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
+    rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "OH+N2_to_H+N2O")
     assert rxn["e_rxn_ref"] == pytest.approx(82.27, abs=0.01)
 
 
-def test_dick_bh76_oh_ch3_to_o_ch4_value():
+def test_dfs_bh76_oh_ch3_to_o_ch4_value():
     """OH+CH3 → O+CH4 barrier is the reverse of HTBH38 #19-20: 7.90 kcal/mol REF1."""
-    from xcquinox.alec.dick_pool import DICK_BH76_REACTIONS
-    rxn = next(r for r in DICK_BH76_REACTIONS if r["name"] == "OH+CH3_to_O+CH4")
+    from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
+    rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "OH+CH3_to_O+CH4")
     assert rxn["e_rxn_ref"] == pytest.approx(7.90, abs=0.01)
 
 
-def test_dick_bh76_hf_f_to_h_f2_value():
+def test_dfs_bh76_hf_f_to_h_f2_value():
     """HF+F → H+F2 barrier is the reverse of NHTBH38 #5: 105.80 kcal/mol REF1."""
-    from xcquinox.alec.dick_pool import DICK_BH76_REACTIONS
-    rxn = next(r for r in DICK_BH76_REACTIONS if r["name"] == "HF+F_to_H+F2")
+    from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
+    rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "HF+F_to_H+F2")
     assert rxn["e_rxn_ref"] == pytest.approx(105.80, abs=0.01)
 
 
 # ----------------------------------------------------------------------
-# DICK_AE_DATA / build_dick_pool() AE-reference attachment tests
+# DFS_AE_DATA / build_dfs_pool() AE-reference attachment tests
 # ----------------------------------------------------------------------
 
-def test_dick_ae_data_complete_21_molecules():
-    """DICK_AE_DATA must list exactly 21 molecules with finite AE refs."""
-    from xcquinox.alec.dick_pool import DICK_AE_DATA, DICK_AE_HILL
-    assert len(DICK_AE_DATA) == 21
-    # DICK_AE_HILL is now derived from DICK_AE_DATA — must agree.
-    assert [d["hill"] for d in DICK_AE_DATA] == DICK_AE_HILL
+def test_dfs_ae_data_complete_21_molecules():
+    """DFS_AE_DATA must list exactly 21 molecules with finite AE refs."""
+    from xcquinox.alec.dfs_pool import DFS_AE_DATA, DFS_AE_HILL
+    assert len(DFS_AE_DATA) == 21
+    # DFS_AE_HILL is now derived from DFS_AE_DATA — must agree.
+    assert [d["hill"] for d in DFS_AE_DATA] == DFS_AE_HILL
     seen_hills = set()
-    for d in DICK_AE_DATA:
+    for d in DFS_AE_DATA:
         for key in ("hill", "name", "ae_kcalmol", "source"):
-            assert key in d, f"DICK_AE_DATA entry missing {key}: {d}"
+            assert key in d, f"DFS_AE_DATA entry missing {key}: {d}"
         ae = d["ae_kcalmol"]
         assert isinstance(ae, float)
         assert math.isfinite(ae)
@@ -425,13 +425,13 @@ def test_dick_ae_data_complete_21_molecules():
         seen_hills.add(d["hill"])
 
 
-def test_dick_pool_ae_references_complete():
-    """Every AE molecule built by build_dick_pool must have ae_kcalmol."""
-    from xcquinox.alec.dick_pool import build_dick_pool
-    pool = build_dick_pool()
+def test_dfs_pool_ae_references_complete():
+    """Every AE molecule built by build_dfs_pool must have ae_kcalmol."""
+    from xcquinox.alec.dfs_pool import build_dfs_pool
+    pool = build_dfs_pool()
     assert len(pool["ae_molecules"]) == 21
     for a in pool["ae_molecules"]:
-        hill = a.info.get("dick_hill")
+        hill = a.info.get("dfs_hill")
         assert "ae_kcalmol" in a.info, f"{hill}: missing ae_kcalmol"
         ae = a.info["ae_kcalmol"]
         assert isinstance(ae, float)
@@ -442,23 +442,23 @@ def test_dick_pool_ae_references_complete():
         assert "ae_name" in a.info
 
 
-def test_dick_pool_ae_anchor_consistency_with_step6():
+def test_dfs_pool_ae_anchor_consistency_with_step6():
     """H2O and C2H2 AE refs must match step-6's published anchor values
     (W4-11; tested in xcquinox/alec/tests/test_step6_notebook.py at the
     string level — here we enforce the numeric equality)."""
-    from xcquinox.alec.dick_pool import build_dick_pool
-    pool = build_dick_pool()
-    by_hill = {a.info["dick_hill"]: a for a in pool["ae_molecules"]}
+    from xcquinox.alec.dfs_pool import build_dfs_pool
+    pool = build_dfs_pool()
+    by_hill = {a.info["dfs_hill"]: a for a in pool["ae_molecules"]}
     assert by_hill["H2O"].info["ae_kcalmol"] == pytest.approx(232.974, abs=1e-3)
     assert by_hill["C2H2"].info["ae_kcalmol"] == pytest.approx(405.525, abs=1e-3)
 
 
-def test_dick_pool_ae_haunschild_lif_lih_na2():
+def test_dfs_pool_ae_haunschild_lif_lih_na2():
     """LiF, LiH, Na2 are not in W4-17 — Haunschild Table I (kJ/mol/4.184)
     is the authoritative non-relativistic source."""
-    from xcquinox.alec.dick_pool import build_dick_pool
-    pool = build_dick_pool()
-    by_hill = {a.info["dick_hill"]: a for a in pool["ae_molecules"]}
+    from xcquinox.alec.dfs_pool import build_dfs_pool
+    pool = build_dfs_pool()
+    by_hill = {a.info["dfs_hill"]: a for a in pool["ae_molecules"]}
     # Haunschild 2012 Table I "E_ref,non-rel" (kJ/mol)
     expected = {
         "FLi": 583.99 / 4.184,   # LiF
@@ -471,19 +471,19 @@ def test_dick_pool_ae_haunschild_lif_lih_na2():
         ), f"{hill}: expected {ae_expected:.3f}"
 
 
-def test_dick_pool_ae_h2_consistent_with_haunschild():
+def test_dfs_pool_ae_h2_consistent_with_haunschild():
     """H2 spot-check: 457.73 kJ/mol → 109.401 kcal/mol (Haunschild 2012)."""
-    from xcquinox.alec.dick_pool import build_dick_pool
-    pool = build_dick_pool()
-    by_hill = {a.info["dick_hill"]: a for a in pool["ae_molecules"]}
+    from xcquinox.alec.dfs_pool import build_dfs_pool
+    pool = build_dfs_pool()
+    by_hill = {a.info["dfs_hill"]: a for a in pool["ae_molecules"]}
     assert by_hill["H2"].info["ae_kcalmol"] == pytest.approx(
         457.73 / 4.184, abs=1e-3
     )
 
 
-def test_dick_pool_ae_kcalmol_lookup_matches_data():
-    """DICK_AE_KCALMOL must mirror DICK_AE_DATA exactly."""
-    from xcquinox.alec.dick_pool import DICK_AE_DATA, DICK_AE_KCALMOL
-    assert set(DICK_AE_KCALMOL.keys()) == {d["hill"] for d in DICK_AE_DATA}
-    for d in DICK_AE_DATA:
-        assert DICK_AE_KCALMOL[d["hill"]] == d["ae_kcalmol"]
+def test_dfs_pool_ae_kcalmol_lookup_matches_data():
+    """DFS_AE_KCALMOL must mirror DFS_AE_DATA exactly."""
+    from xcquinox.alec.dfs_pool import DFS_AE_DATA, DFS_AE_KCALMOL
+    assert set(DFS_AE_KCALMOL.keys()) == {d["hill"] for d in DFS_AE_DATA}
+    for d in DFS_AE_DATA:
+        assert DFS_AE_KCALMOL[d["hill"]] == d["ae_kcalmol"]
