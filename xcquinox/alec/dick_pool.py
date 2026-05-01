@@ -9,6 +9,13 @@ Pool composition (28 distinct training points):
 - 3 BH76 reaction barriers
 - 2 IP13 ionization potentials
 - 2 atomic-density references (H, Li)
+
+All published reference values (AE in kcal/mol for the 21 AE molecules;
+e_rxn_ref for BH76; ip_ref for IP13) come from authoritative benchmarks
+and are attached to the build_dick_pool() output via Atoms.info /
+reaction-spec dict entries — never fabricated.  See DICK_AE_DATA for AE
+sources (W4-11 anchors via step-6 for H2O+C2H2; Haunschild & Klopper
+J. Chem. Phys. 136, 164102 (2012) for the other 19).
 """
 from __future__ import annotations
 
@@ -16,22 +23,130 @@ from pathlib import Path
 from ase import Atoms
 from ase.io import read
 
-# Dick 2021 SI §II AE molecule list, in ASE Hill formula. Names are
-# Dick's verbatim (e.g. CNH) but ASE Hill formulas may be different
-# (CHN). The list below uses the ASE Hill formula form so that
-# `at.get_chemical_formula()` matches.
-DICK_AE_HILL = [
-    # 10 linear closed-shell:
-    # H2, N2, LiF, CNH (=HCN), CO2, F2, C2H2, OC (=CO), LiH, Na2
-    "H2", "N2", "FLi", "CHN", "CO2", "F2", "C2H2", "CO", "HLi", "Na2",
-    # 3 linear open-shell:
-    # NO, CH, OH
-    "NO", "CH", "HO",
-    # 8 non-linear (Dick labels these "closed-shell"; several actually
-    # open-shell at multireference level — transcribed faithfully):
-    # NO2, NH, O3, N2O, CH3, CH2, H2O, NH3
-    "NO2", "HN", "O3", "N2O", "CH3", "CH2", "H2O", "H3N",
+# Dick 2021 SI §II AE molecule list, in ASE Hill formula, with
+# authoritative non-relativistic, zero-point-exclusive (TAE_e) reference
+# atomization energies in kcal/mol.
+#
+# Sources:
+#
+# - "step6":
+#       H2O = 232.974 and C2H2 = 405.525 kcal/mol are the W4-11 reference
+#       values anchored by the step-6 notebook
+#       (`notebooks/_build_step6_notebook.py`,
+#        constants H2O_AE_REF_KCALMOL / C2H2_AE_REF_KCALMOL).
+#       These are the canonical anchors for cross-notebook
+#       reproducibility (step 5 / step 6 / step 7 must all use the same
+#       AE reference for a given molecule).  See step-6 design spec
+#       §17.1 and §17.3 (Δ from W4-17 < 0.5 kcal/mol — well within the
+#       1 kJ/mol confidence interval of the W4 family).
+#
+# - "Haunschild2012":
+#       Haunschild & Klopper, "New accurate reference energies for the
+#       G2/97 test set", J. Chem. Phys. **136**, 164102 (2012),
+#       DOI 10.1063/1.4704796.  Table I, column "E_ref,non-rel"
+#       (frozen-core, all-electron-corrected, non-relativistic
+#       atomization energies obtained from CCSD(T)(F12)/cc-pVQZ-F12
+#       with higher-excitation and core/core-valence corrections;
+#       reported in kJ/mol — converted here via 1 kcal = 4.184 kJ).
+#       This dataset has a 0.1 kJ/mol per valence electron error
+#       budget (see Haunschild 2012 §III) and a published mean
+#       deviation of −0.75 kJ/mol vs ATcT.
+#       Local copy of the paper:
+#       scripts/script_data/haunschild_g2/haunschild2012.pdf
+#       Local CSV (kJ/mol; column E):
+#       scripts/script_data/haunschild_g2/g2_97.csv
+#
+# Cross-checked against W4-17 (Karton, Sylvetsky, Martin J. Comp. Chem.
+# 38, 2063 (2017), DOI 10.1002/jcc.24854) Table S2, TAE_e column,
+# for first/second-row species; agreement is sub-0.5 kcal/mol on every
+# Dick-pool molecule that appears in W4-17.  Li/Na species (LiF, LiH,
+# Na2) are not in W4-17 and are sourced exclusively from Haunschild2012.
+#
+# Notes:
+#   - CH2 in g2_97.traj contains both singlet (idx 105) and triplet
+#     (idx 106) entries with identical Hill formula "CH2"; build_dick_pool
+#     selects the triplet (last in iteration), matching W4-17 ch2-trip
+#     (TAE_e = 190.53) and Haunschild "Triplet carbene" (797.23 kJ/mol →
+#     190.541 kcal/mol).
+#   - Open-shell molecules (NO, CH, OH, NO2, NH, CH3, CH2-triplet) carry
+#     their published reference AEs at the appropriate ground-state
+#     spin; spin/multiplicity is set by the step-7 driver via
+#     `at.info['spin']`.
+DICK_AE_DATA = [
+    # --- 10 linear closed-shell ---
+    {"hill": "H2",   "name": "Dihydrogen",
+     "ae_kcalmol": 457.73 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 457.73 kJ/mol"},
+    {"hill": "N2",   "name": "Dinitrogen",
+     "ae_kcalmol": 955.82 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 955.82 kJ/mol"},
+    {"hill": "FLi",  "name": "Lithium fluoride",
+     "ae_kcalmol": 583.99 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 583.99 kJ/mol"},
+    {"hill": "CHN",  "name": "Hydrogen cyanide",
+     "ae_kcalmol": 1310.97 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 1310.97 kJ/mol"},
+    {"hill": "CO2",  "name": "Carbon dioxide",
+     "ae_kcalmol": 1633.95 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 1633.95 kJ/mol"},
+    {"hill": "F2",   "name": "Difluorine",
+     "ae_kcalmol": 162.31 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 162.31 kJ/mol"},
+    {"hill": "C2H2", "name": "Acetylene",
+     "ae_kcalmol": 405.525,  # step-6 anchor (W4-11)
+     "source": "step6 (W4-11 anchor; H2O+C2H2 must match step-6)"},
+    {"hill": "CO",   "name": "Carbon monoxide",
+     "ae_kcalmol": 1087.57 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 1087.57 kJ/mol"},
+    {"hill": "HLi",  "name": "Lithium hydride",
+     "ae_kcalmol": 242.27 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 242.27 kJ/mol"},
+    {"hill": "Na2",  "name": "Disodium",
+     "ae_kcalmol": 71.78 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 71.78 kJ/mol"},
+    # --- 3 linear open-shell ---
+    {"hill": "NO",   "name": "Nitric oxide",
+     "ae_kcalmol": 639.28 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 639.28 kJ/mol"},
+    {"hill": "CH",   "name": "Methylidyne radical",
+     "ae_kcalmol": 351.60 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 351.60 kJ/mol"},
+    {"hill": "HO",   "name": "Hydroxyl radical",
+     "ae_kcalmol": 448.30 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 448.30 kJ/mol"},
+    # --- 8 non-linear (Dick labels closed-shell; several open-shell) ---
+    {"hill": "NO2",  "name": "Nitrogen dioxide",
+     "ae_kcalmol": 954.10 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 954.10 kJ/mol"},
+    {"hill": "HN",   "name": "Imidogen",
+     "ae_kcalmol": 347.02 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 347.02 kJ/mol"},
+    {"hill": "O3",   "name": "Ozone",
+     "ae_kcalmol": 615.78 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 615.78 kJ/mol"},
+    {"hill": "N2O",  "name": "Nitrous oxide",
+     "ae_kcalmol": 1133.70 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 1133.70 kJ/mol"},
+    {"hill": "CH3",  "name": "Methyl radical",
+     "ae_kcalmol": 1287.21 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 1287.21 kJ/mol"},
+    {"hill": "CH2",  "name": "Methylene (triplet, X 3B1)",
+     "ae_kcalmol": 797.23 / 4.184,  # triplet wins in g2_97.traj
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 797.23 kJ/mol (Triplet carbene)"},
+    {"hill": "H2O",  "name": "Water",
+     "ae_kcalmol": 232.974,  # step-6 anchor (W4-11)
+     "source": "step6 (W4-11 anchor; H2O+C2H2 must match step-6)"},
+    {"hill": "H3N",  "name": "Ammonia",
+     "ae_kcalmol": 1245.99 / 4.184,
+     "source": "Haunschild2012 Table I, E_ref,non-rel = 1245.99 kJ/mol"},
 ]
+
+# Backward-compatible Hill list (used by select_subset / step-7 driver
+# that already iterates pool["ae_molecules"]).
+DICK_AE_HILL = [d["hill"] for d in DICK_AE_DATA]
+
+# Quick-lookup map by Hill formula → AE in kcal/mol.
+DICK_AE_KCALMOL = {d["hill"]: d["ae_kcalmol"] for d in DICK_AE_DATA}
 
 # 3 BH76 reactions per Dick SI §II:
 #   OH + N2 → H + N2O,   OH + CH3 → O + CH4,   HF + F → H + F2
@@ -141,7 +256,14 @@ def build_dick_pool() -> dict:
 
     Returns dict with keys:
       ae_molecules       : 21 ASE Atoms (the AE-residual targets;
-                            this is the SELECTION POOL for select_subset)
+                            this is the SELECTION POOL for select_subset).
+                           Each Atoms carries the following info-dict
+                           entries used by step-7's training driver:
+                             - "dick_hill"   : Hill formula key (str)
+                             - "ae_kcalmol"  : AE reference (float, kcal/mol)
+                             - "ae_source"   : citation string (str)
+                             - "ae_name"     : human-readable name (str)
+                           See module-level DICK_AE_DATA for sources.
       bh76_reactions     : 3 reaction-spec dicts
       ip13_pairs         : 2 IP-spec dicts
       atom_refs          : 2 ASE Atoms (H, Li)
@@ -154,10 +276,18 @@ def build_dick_pool() -> dict:
 
     ae_atoms: list = []
     missing: list = []
-    for hill in DICK_AE_HILL:
+    for entry in DICK_AE_DATA:
+        hill = entry["hill"]
         if hill in by_hill:
             a = by_hill[hill].copy()
             a.info["dick_hill"] = hill
+            # Attach the published AE reference (kcal/mol) plus the
+            # human-readable name and source citation.  Step-7's loss
+            # driver reads `at.info["ae_kcalmol"]`; the source string is
+            # for downstream provenance / sanity-check tests.
+            a.info["ae_kcalmol"] = float(entry["ae_kcalmol"])
+            a.info["ae_source"] = entry["source"]
+            a.info["ae_name"] = entry["name"]
             ae_atoms.append(a)
         else:
             missing.append(hill)

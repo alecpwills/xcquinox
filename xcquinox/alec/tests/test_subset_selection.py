@@ -396,3 +396,94 @@ def test_dick_bh76_hf_f_to_h_f2_value():
     from xcquinox.alec.dick_pool import DICK_BH76_REACTIONS
     rxn = next(r for r in DICK_BH76_REACTIONS if r["name"] == "HF+F_to_H+F2")
     assert rxn["e_rxn_ref"] == pytest.approx(105.80, abs=0.01)
+
+
+# ----------------------------------------------------------------------
+# DICK_AE_DATA / build_dick_pool() AE-reference attachment tests
+# ----------------------------------------------------------------------
+
+def test_dick_ae_data_complete_21_molecules():
+    """DICK_AE_DATA must list exactly 21 molecules with finite AE refs."""
+    from xcquinox.alec.dick_pool import DICK_AE_DATA, DICK_AE_HILL
+    assert len(DICK_AE_DATA) == 21
+    # DICK_AE_HILL is now derived from DICK_AE_DATA — must agree.
+    assert [d["hill"] for d in DICK_AE_DATA] == DICK_AE_HILL
+    seen_hills = set()
+    for d in DICK_AE_DATA:
+        for key in ("hill", "name", "ae_kcalmol", "source"):
+            assert key in d, f"DICK_AE_DATA entry missing {key}: {d}"
+        ae = d["ae_kcalmol"]
+        assert isinstance(ae, float)
+        assert math.isfinite(ae)
+        # All 21 Dick molecules sit between Na2 (~17 kcal/mol) and
+        # C2H2 (~406 kcal/mol); pad generously to avoid false alarms
+        # if a future re-citation shifts a value by < 1 kcal/mol.
+        assert 0.0 < ae < 2000.0, f"{d['hill']}: AE out of range {ae}"
+        assert isinstance(d["source"], str) and len(d["source"]) > 0
+        # Each Hill formula must appear exactly once.
+        assert d["hill"] not in seen_hills
+        seen_hills.add(d["hill"])
+
+
+def test_dick_pool_ae_references_complete():
+    """Every AE molecule built by build_dick_pool must have ae_kcalmol."""
+    from xcquinox.alec.dick_pool import build_dick_pool
+    pool = build_dick_pool()
+    assert len(pool["ae_molecules"]) == 21
+    for a in pool["ae_molecules"]:
+        hill = a.info.get("dick_hill")
+        assert "ae_kcalmol" in a.info, f"{hill}: missing ae_kcalmol"
+        ae = a.info["ae_kcalmol"]
+        assert isinstance(ae, float)
+        assert math.isfinite(ae)
+        assert 0.0 < ae < 2000.0, f"{hill}: AE out of physical range {ae}"
+        # provenance fields
+        assert "ae_source" in a.info
+        assert "ae_name" in a.info
+
+
+def test_dick_pool_ae_anchor_consistency_with_step6():
+    """H2O and C2H2 AE refs must match step-6's published anchor values
+    (W4-11; tested in xcquinox/alec/tests/test_step6_notebook.py at the
+    string level — here we enforce the numeric equality)."""
+    from xcquinox.alec.dick_pool import build_dick_pool
+    pool = build_dick_pool()
+    by_hill = {a.info["dick_hill"]: a for a in pool["ae_molecules"]}
+    assert by_hill["H2O"].info["ae_kcalmol"] == pytest.approx(232.974, abs=1e-3)
+    assert by_hill["C2H2"].info["ae_kcalmol"] == pytest.approx(405.525, abs=1e-3)
+
+
+def test_dick_pool_ae_haunschild_lif_lih_na2():
+    """LiF, LiH, Na2 are not in W4-17 — Haunschild Table I (kJ/mol/4.184)
+    is the authoritative non-relativistic source."""
+    from xcquinox.alec.dick_pool import build_dick_pool
+    pool = build_dick_pool()
+    by_hill = {a.info["dick_hill"]: a for a in pool["ae_molecules"]}
+    # Haunschild 2012 Table I "E_ref,non-rel" (kJ/mol)
+    expected = {
+        "FLi": 583.99 / 4.184,   # LiF
+        "HLi": 242.27 / 4.184,   # LiH
+        "Na2":  71.78 / 4.184,
+    }
+    for hill, ae_expected in expected.items():
+        assert by_hill[hill].info["ae_kcalmol"] == pytest.approx(
+            ae_expected, abs=1e-3
+        ), f"{hill}: expected {ae_expected:.3f}"
+
+
+def test_dick_pool_ae_h2_consistent_with_haunschild():
+    """H2 spot-check: 457.73 kJ/mol → 109.401 kcal/mol (Haunschild 2012)."""
+    from xcquinox.alec.dick_pool import build_dick_pool
+    pool = build_dick_pool()
+    by_hill = {a.info["dick_hill"]: a for a in pool["ae_molecules"]}
+    assert by_hill["H2"].info["ae_kcalmol"] == pytest.approx(
+        457.73 / 4.184, abs=1e-3
+    )
+
+
+def test_dick_pool_ae_kcalmol_lookup_matches_data():
+    """DICK_AE_KCALMOL must mirror DICK_AE_DATA exactly."""
+    from xcquinox.alec.dick_pool import DICK_AE_DATA, DICK_AE_KCALMOL
+    assert set(DICK_AE_KCALMOL.keys()) == {d["hill"] for d in DICK_AE_DATA}
+    for d in DICK_AE_DATA:
+        assert DICK_AE_KCALMOL[d["hill"]] == d["ae_kcalmol"]
