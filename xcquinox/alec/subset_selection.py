@@ -1,0 +1,67 @@
+"""Step-7 histogram-matched subset selection from Dick 2021 training pool.
+
+This module ports the legacy data_binning2.ipynb cell-17 algorithm into
+the alec subpackage and extends it with a Jensen-Shannon divergence
+metric in addition to the original Euclidean L2-on-bins metric.
+
+Three-descriptor objective: histograms over (ρ^{1/3}, s, α) where
+- s is the PBE-1996 reduced gradient (Perdew, Burke, Ernzerhof, PRL 77, 3865, 1996)
+- α is the SCAN-2015 iso-orbital indicator (Sun, Ruzsinszky, Perdew,
+  PRL 115, 036402, 2015, eq. 4); used for subset selection only,
+  NOT consumed by the trained GGA network.
+
+Candidate pool is Dick & Fernandez-Serra 2021 SI §II training data:
+21 G2/97 atomization-energy entries + 3 BH76 reactions + 2 IP13 IPs
++ 2 atomic-density references = 28 distinct training points. Selection
+varies the 21 AE entries; auxiliaries are fixed per Dick's protocol.
+
+Public API:
+- extract_descriptors(atoms_obj, *, basis="def2-svp", grid_level=1, cache_dir)
+- build_reference_histograms(descriptor_arrays, *, nbins=200)
+- metric_l2(h_ref, h_cand) -> float       # 3-histogram sum
+- metric_jsd(h_ref, h_cand) -> float      # 3-histogram sum, nats
+- select_subset(pool, r, metric, fixed_indices=())
+- compute_atom_set(ae_subset_atoms_list)
+- augment_with_hbpt(ae_subset_atoms_list, atom_refs, *, with_hbpt: bool)
+"""
+from __future__ import annotations
+
+import os
+import json
+from pathlib import Path
+from itertools import combinations
+from typing import Callable, Iterable
+
+import numpy as np
+import ase
+from ase import Atoms
+from ase.io import read, write
+
+# Constants ---------------------------------------------------------------
+NBINS = 200
+LOG_REGULARIZER = 1e-10
+KL_PROB_CLIP = 1e-12
+
+# HB and PT water-dimer geometries verbatim from
+# /home/awills/Documents/Research/Python/jup/data_binning2.ipynb cell 20.
+# Original at.info: basis='6-311++G(3df,2pd)', grid_level=4. Step-7
+# overrides these to def2-svp / grid_level=1 to keep histograms commensurate
+# with the rest of the candidate pool.
+_HB_POSITIONS = (
+    (1.317021, -0.128356, 0.006258),
+    (1.527437, 0.387478, -0.795622),
+    (1.505382, 0.474880, 0.750724),
+    (-1.017021, 0.128356, 0.006258),
+    (-1.227437, -0.387478, -0.795622),
+    (-1.205382, -0.474880, 0.750724),
+)
+_PT_POSITIONS = (
+    (1.310944, -0.092374, 0.053983),
+    (1.955110, 0.571413, -0.263648),
+    (-0.101366, 0.045774, -0.012031),
+    (-1.149037, 0.029559, -0.084434),
+    (-1.608104, 0.722348, 0.414070),
+    (-1.540923, -0.836961, 0.105186),
+)
+_HB_SYMBOLS = "OHHOHH"
+_PT_SYMBOLS = "OHHOHH"
