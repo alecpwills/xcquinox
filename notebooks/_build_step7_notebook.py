@@ -129,7 +129,7 @@ def build_cells() -> list:
         "GRID_LEVEL = 1\n\n"
         "pool = dfs_pool.build_dfs_pool()\n"
         "print(f'JAX x64: {jax.config.read(\"jax_enable_x64\")}; '\n"
-        "      f'default device: {jax.config.read(\"jax_default_device\")}')\n"
+        "      f'default device: {jax.config.jax_default_device}')\n"
         "print(f'Dick 2021 SI II training pool: {pool[\"n_total\"]} entries')\n"
         "print(f'  AE molecules: {len(pool[\"ae_molecules\"])}')\n"
         "print(f'  BH76 reactions: {len(pool[\"bh76_reactions\"])}')\n"
