@@ -138,6 +138,21 @@ architecture, step 5.}
 \section{Optimization step 5: H$_2$O training}
 \label{S:sec:step5}
 
+Step 5 trains the $F_x$ network on H$_2$O alone for 250 task-loss steps
+across the full 8-architecture~$\times$~3-loss~$\times$~3-solver factorial
+(72 specs per pretrain origin; 144 specs total). The headline numbers
+(Tab.~\ref{S:tab:step5_headline}) pair unweighted and integration origins
+on every metric the manuscript discusses; the post-processing figures
+(figs5\_1 through figs5\_5) drill into per-architecture pretrain quality,
+the AE-baseline reduction ladder, the density-vs-AE Pareto cloud, the
+full architecture~$\times$~loss~$\times$~solver landscape, and the
+transfer-mol breakdown on $\{$CH$_4$, H$_2$, OH$\}$. The in-notebook
+diagnostics (\S\ref{S:sec:step5} subsection \emph{In-notebook diagnostics})
+add training-loss curves, GradNorm weight-evolution traces, SCF
+convergence aggregates, density-matrix and grid-density heatmaps,
+$F_x(s)$ drift on the CH$_4$ probe grid, per-mol transfer detail, and a
+feature-impact analysis.
+
 \subsection{Headline numbers}
 \label{S:sec:step5_headline}
 
@@ -304,6 +319,19 @@ exchange-and-density only.}
 \section{Optimization step 6: H$_2$O+C$_2$H$_2$ training, paired origins}
 \label{S:sec:step6}
 
+Step 6 expands step 5 along three axes simultaneously: (i) two molecules
+in the training set (H$_2$O + C$_2$H$_2$, adding sp~hybridization and
+$\pi$-bonding), (ii) five $V_{xc}$-aware loss families instead of the
+three exchange-and-density-only families of step 5, and (iii) three
+training-step schedules (group~1: H$_2$O short; group~2: H$_2$O+C$_2$H$_2$
+short; group~3: H$_2$O+C$_2$H$_2$ long), giving 90 specs per pretrain
+origin. This section presents the unweighted and integration origins
+side-by-side: the headline table at \S\ref{S:sec:step6_headline}, the six
+post-processing figures (\texttt{fig1}--\texttt{fig5} plus the secondary
+transfer-set ladder \texttt{fig1b}) paired by origin in
+\S\ref{S:sec:step6_post_processing}, and the in-notebook diagnostics in
+\S\ref{S:sec:step6_in_notebook}.
+
 \subsection{Step-6 paired headline}
 \label{S:sec:step6_headline}
 
@@ -344,6 +372,7 @@ relative to a simple per-molecule mean.
 
 \clearpage
 \subsection{Step-6 post-processing figures (paired by name)}
+\label{S:sec:step6_post_processing}
 
 \begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_unweighted_analysis/figures/fig1_baseline_reduction.png}
 \caption{Baseline AE reduction ladder, step-6 unweighted origin.}
@@ -409,6 +438,7 @@ L4 4.74/0.65, L5 1.03/0.003.}
 
 \clearpage
 \subsection{Step-6 in-notebook diagnostics}
+\label{S:sec:step6_in_notebook}
 
 The step-6 notebook (\texttt{notebooks/\_build\_step6\_notebook.py})
 produces these diagnostics during the run, independent of the
@@ -525,6 +555,15 @@ step-6 unweighted. C$_2$H$_4$ is in neither training nor transfer set.}
 \clearpage
 \section{Pretrain-origin comparison (step 6)}
 \label{S:sec:origin_comparison}
+
+This section pairs the two step-6 pretrain origins
+(\S\ref{S:sec:origin_comparison_direct}) and presents four cross-cutting
+figures that quantify where integration weighting wins, where it loses,
+and how the learned $F_x$ asymptote behaves at large reduced gradient.
+\S\ref{S:sec:new_diagnostics} adds two newly-derived diagnostics
+(F$_x$/F$_c$ tightening correlation across step-5 architectures, and
+the per-loss g3 MAE ratio bar chart) that clarify two load-bearing
+claims of the main paper.
 
 \subsection{Direct comparison}
 \label{S:sec:origin_comparison_direct}

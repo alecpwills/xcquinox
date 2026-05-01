@@ -186,6 +186,16 @@ matters.
 \section{Theory}
 \label{sec:methods}
 
+This section specifies the experimental apparatus exactly as it would be
+needed to reproduce the runs: \S\ref{sec:methods}--\S\ref{sec:methods_arch_loss}
+define the network architecture, the Lieb--Oxford clamp, the unweighted vs.\
+integration-weighted pretrain loss, and the architecture / loss / solver
+enumeration shared by both step subsets;
+\S\ref{sec:methods_molecule_rationale} explains the chemical reasoning
+behind the training and transfer molecule sets;
+\S\ref{sec:methods_training_eval} fixes the optimizer, learning-rate
+schedule, basis set, integration grid, and reference data sources.
+
 \subsection{Network architecture}
 The $F_x$ network is an MLP gated by $\tanh^2(s)$, written as
 $g(\boldsymbol{x},s) = \tanh^2(s)\,\mathrm{MLP}(\boldsymbol{x})$, then passed through a
