@@ -85,7 +85,7 @@ training on H$_2$O alone, 72 specs per origin) and ``step 6'' (2 architectures, 
 3 solvers, 3 training-step budgets, training on H$_2$O+C$_2$H$_2$, 90 specs per origin).
 Across all 10 architectures evaluated, integration-weighted pretraining produces a tighter
 $F_x$ basin without exception (per-arch mean tightening 3.98$\times$ in step 5, ratio of
-population means 4.25$\times$; per-arch range 3.0--4.7$\times$ in step 5 and
+population means 4.25$\times$; per-arch range 2.95--4.74$\times$ in step 5 and
 3.0$\times$/3.1$\times$ for the two step-6 architectures). The tightening compounds through
 downstream training in step 5 (best AE-MAE improves 11.9$\times$, a 2.80$\times$
 multiplier on the 4.25$\times$ pretrain ratio); in step 6 the AE improvement (2.86$\times$)
@@ -128,7 +128,7 @@ PBE chooses $\kappa = 0.804$, giving $F_x(s\!\to\!\infty) = 1+\kappa = 1.804$, a
 \emph{stricter} sufficient condition for the Lieb--Oxford bound
 \citep{LiebOxford1981}.\footnote{\citet{LiebOxford1981} prove
 $E_{XC} \ge -C\,\int n^{4/3}\, d^3 r$ with $C = 1.68$
-\citep[their Theorem~3.1, eq.~26]{LiebOxford1981}; \citet{PerdewBurkeErnzerhof1996}
+\citep[their Theorem~3.1, eqs.~26--27]{LiebOxford1981}; \citet{PerdewBurkeErnzerhof1996}
 \S III(g) eq.~13 quote a tighter $C = 1.679$, with the same Lieb--Oxford-1981
 attribution. The 0.001 difference is a numerical refinement of the same proof,
 not a different bound; both round to ``1.68''.}
@@ -145,13 +145,14 @@ labelled eq.~(13) in PBE 1996. The explicit $e^2$ factor is from the
 Gaussian-units form of the Lieb--Oxford theorem; in the atomic-unit convention
 used elsewhere in this manuscript $e^2 = 1$.}
 \end{quote}
-Our network (\texttt{xcquinox/alec/networks.py:\_AlecLOB}) enforces $F_x \le 1.804$
+Our network (\texttt{xcquinox/alec/networks.py:16--44}, the
+\texttt{\_AlecLOB} class) enforces $F_x \le 1.804$
 architecturally via a sigmoid clamp whose ceiling is an immutable static field; gradient
 descent cannot relax it. The Lieb--Oxford theorem is therefore satisfied at every grid
 point regardless of pretrain weighting, training loss, or architecture choice.
 
 The integration-weighted pretrain loss is motivated by Eq.~\ref{eq:Ex_integrand}
-directly: the integrand $\varepsilon_X^{\text{unif}}(n)\, F_x(s) \propto
+directly: the per-volume integrand $n\,\varepsilon_X^{\text{unif}}(n)\, F_x(s) \propto
 \rho^{4/3}\, F_x$ is biggest at high-density bonding-region grid points, so
 pretrain-error reduction concentrated there should produce a network whose
 $F_x$ is tighter exactly where it matters for downstream energy predictions.
@@ -257,8 +258,9 @@ exchange.
 \label{sec:methods_arch_loss}
 
 Step 5 enumerates eight architectures, factoring three orthogonal
-augmentations on a base \texttt{deep} MLP: optional density-matrix-overlap
-descriptors (\texttt{\_dm}), optional cusp-correction features
+augmentations on a base \texttt{deep} MLP: optional
+density-matrix-statistics descriptors (\texttt{dm\_statistics};
+correlation-indicator features) (\texttt{\_dm}), optional cusp-correction features
 (\texttt{\_cusp}), and optional combined density-matrix~$+$~cusp
 descriptors (\texttt{\_combined}); each variant is then either with or
 without a self-attention block (\texttt{\_attn}). The eight specs are
@@ -377,17 +379,22 @@ bond distances, no out-of-equilibrium sampling). The basis is
 
 \paragraph{Reference atomization energies.} AEs are evaluated against the
 W4-11 reference values (140 first/second-row total atomization energies
-derived from W4-quality \textit{ab initio} data, with $3\sigma$ uncertainty
-under 1~kJ/mol relative to Active Thermochemical Tables;
+computed at the W4-or-higher \textit{ab initio} level; the underlying W4
+method reproduces Active Thermochemical Tables atomization energies for
+35 benchmark species with $3\sigma < 1$~kJ/mol;
 \citealp{KartonDaonMartin2011}). Densities are integrated on the same
 Becke--Lebedev grid that pretraining uses. Atomic correlation reference
 totals for first/second-row atoms (C, N, O) follow
 \citet{ChakravortyEtAl1993}, whose primary tabulation is 3-- through
 18-electron species. The H atom is treated analytically
 ($E^{\mathrm{exact}}_{\mathrm{H}} = -\tfrac{1}{2}\,\mathrm{Ha}$, no
-correlation by definition), and He uses an explicit non-Chakravorty
-reference (Chakravorty's Table~VIII includes a re-analysis of 2-electron
-data via Davidson, but is not its primary source).
+correlation by definition). He uses an explicit non-Chakravorty
+reference: Chakravorty 1993's Table~VIII covers 3- through
+10-electron CAS-IP correlation energies (extended to 11--18 electrons
+in Table~IX), and the 2-electron correlation energy is taken from a
+separate theoretical determination (\citealp{ChakravortyEtAl1993}
+ref.~[1]; based on Davidson \emph{et al.}\ 1991, Phys.~Rev.~A
+\textbf{44}, 7071).
 
 \paragraph{Test and transfer sets.} ``In-distribution'' AE-MAE refers to
 evaluation on the training molecule(s) themselves (H$_2$O for step 5;
@@ -498,7 +505,7 @@ The integration-origin best spec on H$_2$O is
 \texttt{deep\_dm\_attn / C\_atomization\_plus\_grid / fixed\_j\_3} with
 AE-MAE 0.000118~kcal/mol --- 11.9$\times$ tighter than the unweighted
 origin's best (0.001402~kcal/mol; same H$_2$O configuration), and
-$\sim$59,500$\times$ below PBE on H$_2$O. The $11.9 / 4.25 = 2.80\times$
+$\sim$59,500$\times$ below PBE on H$_2$O. The $11.9 / 4.25 \approx 2.80\times$
 ratio is the empirical compounding factor: the downstream best-AE
 improvement exceeds the pretrain $F_x$ improvement by a factor of
 $\sim\!2.8$.
@@ -566,7 +573,7 @@ The downstream best-AE ratio on the full training set
 exceed the pretrain-$F_x$ ratio (3.06$\times$), so there is no
 aggregate compounding factor analogous to step 5's 2.80$\times$.
 However, restricting the step-6 evaluation to H$_2$O alone (the same
-metric step 5 uses) gives a best-AE ratio of $0.003112 / 0.000426 =
+metric step 5 uses) gives a best-AE ratio of $0.003112 / 0.000426 \approx
 7.3\times$, a 2.4$\times$ multiplier on top of the pretrain ratio --- so
 the head start \emph{does} still compound on the per-molecule axis;
 the apparent saturation is an averaging artifact of including
@@ -606,7 +613,7 @@ mutate the ceiling.
 \paragraph{(1) Integration weighting tightens $F_x$ pretrain quality on every architecture.}
 Across all 10 architectures (8 in step 5, 2 in step 6), integration-weighted pretraining
 produces a tighter final $F_x$ MSE in every single case. Per-arch ratio range
-3.0--4.7$\times$ in step 5 (mean 3.98$\times$ per-arch, 4.25$\times$ for the population
+2.95--4.74$\times$ in step 5 (mean 3.98$\times$ per-arch, 4.25$\times$ for the population
 means); the two step-6 architectures give 3.00$\times$ and 3.13$\times$ (population-mean
 ratio 3.06$\times$). This is the cleanest cross-workflow finding of the synthesis
 (Fig.~\ref{fig:headline_pretrain_fx}). The integrand-structure justification follows directly from
@@ -711,21 +718,20 @@ out-of-distribution accuracy'' principle generalises to NN XC, but the
 specific paper does not address NN XC.
 
 \item The ``functionals which yield highly accurate energies often produce
-potentials which differ markedly from the exact ones'' phrasing is paraphrased in
-\citet{Kepp2017} and traces to \citet{Burke1998} (Chem.\ Phys.\ Lett.\ 265, 115;
-the bib-key suffix is approximate, the published year is 1997); the underlying
-Burke--Perdew--Ernzerhof work of the late 1990s
-(adiabatic-connection method, hybrid functionals, etc.) is the canonical primary source
-for the energy-vs-density tradeoff principle. The Medvedev 2017 across-decades thesis
+potentials which differ markedly from the exact ones'' phrasing is quoted by
+\citet{Kepp2017} (footnote~2) and traces to \citet{CruzLamBurke1998}; the broader
+Burke--Perdew--Ernzerhof body of work of the late 1990s
+(adiabatic-connection method, hybrid functionals, etc.) provides the wider
+context for the energy-vs-density tradeoff principle. The Medvedev 2017 across-decades thesis
 \citep{Medvedev2017} is contested by \citet{Kepp2017}; our within-run finding does not
 depend on Medvedev's stronger generalization.
 
 \item The GradNorm asymmetry parameter $\alpha = 1.5$
 \citep{ChenGradNorm2018} used by step 6's L5 spec is the optimum found
 in the NYUv2+kpts (depth + surface normals + room-keypoints) experiment
-of \citet[Table~1 and \S 5.2]{ChenGradNorm2018}; the same paper also
-reports $\alpha = 0.12$ as optimal for a synthetic 2-task regression
-toy problem (\S 5.4), so the value is task-specific and not asserted
+of \citet[Table~2 and \S 5.2]{ChenGradNorm2018}; the same paper also
+uses $\alpha = 0.12$ for a synthetic 2-task regression toy problem
+(\S 4 / Fig.~2), so the value is task-specific and not asserted
 as a universal default. For our DFT loss family (AE +
 $\rho$-RMSE + V$_{xc}$ residual + anchor) the optimal $\alpha$ is
 empirically reasonable but un-tuned; a controlled sweep is warranted.

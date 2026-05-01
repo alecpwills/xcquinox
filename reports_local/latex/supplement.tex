@@ -160,8 +160,8 @@ feature-impact analysis.
 \centering
 \caption{Step-5 paired headline (verified against
 \texttt{combined\_headline.json} and per-arch
-\texttt{pretrain\_metadata.json}). Ratio columns: integration~$\div$~unweighted
-where ``tighter'' means smaller MSE / smaller AE-MAE.}
+\texttt{pretrain\_metadata.json}). Ratio columns: unweighted~$\div$~integration
+(values $>1$ indicate integration tighter, i.e.\ smaller MSE / smaller AE-MAE).}
 \label{S:tab:step5_headline}
 \small
 \begin{tabular}{lrrr}
@@ -175,7 +175,7 @@ pretrain $F_x$ mean (8 archs) & $1.50\!\times\!10^{-4}$ & $\mathbf{3.52\!\times\
 pretrain $F_c$ mean (8 archs) & $4.80\!\times\!10^{-5}$ & $4.66\!\times\!10^{-5}$ & 1.03$\times$ (tied) \\
 pretrained-only NN AE on H$_2$O (kcal/mol) & 27.2 & \textbf{17.1} & 1.59$\times$ tighter (37.1\%) \\
 random-init NN AE on H$_2$O (kcal/mol) & 434.6 & 434.6 & tied \\
-reduction vs.\ PBE on H$_2$O ($\sim$7.03 kcal/mol) & 5,014$\times$ & 59,500$\times$ & --- \\
+reduction vs.\ PBE on H$_2$O ($\sim$7.03 kcal/mol) & $\sim 5{,}014\!\times$ & $\sim 59{,}500\!\times$ & --- \\
 \bottomrule
 \end{tabular}
 \end{table}
