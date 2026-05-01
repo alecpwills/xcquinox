@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-REPO = Path("/home/awills/Documents/Research/xcquinox")
+REPO = Path(__file__).resolve().parents[3]  # scripts/ -> step7_subset_selection/ -> reports_local/ -> repo root
 STEP7_ROOT = REPO / "notebooks" / "checkpoints_step7"
 FIGS_DIR = REPO / "reports_local" / "step7_subset_selection" / "figures"
 HEADLINE_PATH = REPO / "reports_local" / "step7_subset_selection" / "headline.json"
@@ -18,6 +18,7 @@ SUBSET_SIZES = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 21)
 METRICS = ("l2", "jsd")
 SOLVERS = ("oneshot", "full_3")
 AUGMENTATIONS = (False, True)
+LOG_REGULARIZER = 1e-10
 
 
 def _load_specs() -> pd.DataFrame:
@@ -97,6 +98,8 @@ def main():
     overlap = np.zeros((len(SUBSET_SIZES), len(AUGMENTATIONS)))
     for i, r in enumerate(SUBSET_SIZES):
         for j, aug in enumerate(AUGMENTATIONS):
+            if f"l2/{r}/{aug}" not in ledger or f"jsd/{r}/{aug}" not in ledger:
+                continue
             l2_idx = set(ledger[f"l2/{r}/{aug}"]["chosen_indices"])
             jsd_idx = set(ledger[f"jsd/{r}/{aug}"]["chosen_indices"])
             jaccard = (len(l2_idx & jsd_idx) /
@@ -121,9 +124,11 @@ def main():
     for metric in METRICS:
         xs, ys = [], []
         for r in SUBSET_SIZES:
-            entry = ledger[f"{metric}/{r}/False"]  # no_w default
+            key = f"{metric}/{r}/False"
+            if key not in ledger:
+                continue
             xs.append(r)
-            ys.append(entry["metric_value"])
+            ys.append(ledger[key]["metric_value"])
         ax.plot(xs, ys, marker="o", label=metric)
     ax.set_xlabel("subset size r")
     ax.set_ylabel("metric value (lower is closer to full pool)")
@@ -143,40 +148,39 @@ def main():
     axes[1].plot(ref_npz["e_s"][:-1], ref_npz["h_ref_s"], "k-", label="full pool")
     axes[2].plot(ref_npz["e_alpha"][:-1], ref_npz["h_ref_alpha"], "k-", label="full pool")
     # r=21, aug=False overlay per metric (colored)
-    _plot5_colors = {"l2": "tab:blue", "jsd": "tab:orange"}
-    _desc_cache = STEP7_ROOT / "subset_descriptors"
-    for _metric in METRICS:
-        _key = f"{_metric}/21/False"
-        if _key not in ledger:
+    plot5_colors = {"l2": "tab:blue", "jsd": "tab:orange"}
+    desc_cache = STEP7_ROOT / "subset_descriptors"
+    for metric in METRICS:
+        key = f"{metric}/21/False"
+        if key not in ledger:
             continue
-        _chosen = ledger[_key]["chosen_indices"]
+        chosen = ledger[key]["chosen_indices"]
         # Load and concatenate descriptor arrays for the chosen pool entries
-        _arrs: dict = {"rho_third": [], "s": [], "alpha": [], "weights": []}
-        for _idx in _chosen:
-            _matches = sorted(_desc_cache.glob(f"{_idx}_*.npz"))
-            if not _matches:
+        arrs: dict = {"rho_third": [], "s": [], "alpha": [], "weights": []}
+        for idx in chosen:
+            matches = sorted(desc_cache.glob(f"{idx}_*.npz"))
+            if not matches:
                 continue
-            _z = np.load(_matches[0])
-            for _k in ("rho_third", "s", "alpha", "weights"):
-                _arrs[_k].append(_z[_k])
-        if not _arrs["rho_third"]:
+            z = np.load(matches[0])
+            for k in ("rho_third", "s", "alpha", "weights"):
+                arrs[k].append(z[k])
+        if not arrs["rho_third"]:
             continue
-        _cat = {_k: np.concatenate(_arrs[_k]) for _k in ("rho_third", "s", "alpha", "weights")}
+        cat = {k: np.concatenate(arrs[k]) for k in ("rho_third", "s", "alpha", "weights")}
         # Rebin using the reference edges so histograms are aligned
-        _LOG_REG = 1e-10
-        _h_sub = {}
-        for _k, _ek in (("rho_third", "e_rho"), ("s", "e_s"), ("alpha", "e_alpha")):
-            _log_x = np.log10(_cat[_k] + _LOG_REG)
-            _h, _ = np.histogram(_log_x, bins=ref_npz[_ek], weights=_cat["weights"],
-                                 density=True)
-            _h_sub[_k] = _h
-        _color = _plot5_colors[_metric]
-        axes[0].plot(ref_npz["e_rho"][:-1], _h_sub["rho_third"],
-                     color=_color, label=f"{_metric} r=21")
-        axes[1].plot(ref_npz["e_s"][:-1], _h_sub["s"],
-                     color=_color, label=f"{_metric} r=21")
-        axes[2].plot(ref_npz["e_alpha"][:-1], _h_sub["alpha"],
-                     color=_color, label=f"{_metric} r=21")
+        h_sub = {}
+        for k, ek in (("rho_third", "e_rho"), ("s", "e_s"), ("alpha", "e_alpha")):
+            log_x = np.log10(cat[k] + LOG_REGULARIZER)
+            h, _ = np.histogram(log_x, bins=ref_npz[ek], weights=cat["weights"],
+                                density=True)
+            h_sub[k] = h
+        color = plot5_colors[metric]
+        axes[0].plot(ref_npz["e_rho"][:-1], h_sub["rho_third"],
+                     color=color, label=f"{metric} r=21")
+        axes[1].plot(ref_npz["e_s"][:-1], h_sub["s"],
+                     color=color, label=f"{metric} r=21")
+        axes[2].plot(ref_npz["e_alpha"][:-1], h_sub["alpha"],
+                     color=color, label=f"{metric} r=21")
     for ax, lab in zip(axes, (r"$\rho^{1/3}$", "s", r"$\alpha$")):
         ax.set_xlabel(f"log10 {lab}")
         ax.set_ylabel("density")
