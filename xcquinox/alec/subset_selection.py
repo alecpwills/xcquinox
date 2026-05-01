@@ -65,3 +65,39 @@ _PT_POSITIONS = (
 )
 _HB_SYMBOLS = "OHHOHH"
 _PT_SYMBOLS = "OHHOHH"
+
+
+def compute_descriptor_triple(
+    rho: np.ndarray,
+    sigma: np.ndarray,
+    tau: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Compute (ρ^{1/3}, s, α) from SCF outputs on the integration grid.
+
+    Parameters
+    ----------
+    rho : (N,) electron density on grid points
+    sigma : (N,) |∇ρ|² (gradient squared)
+    tau : (N,) kinetic-energy density
+
+    Returns
+    -------
+    dict with keys "rho_third", "s", "alpha", each (N,) ndarray. α is
+    clipped at 0 to handle grid noise in low-density tails.
+
+    Formulas:
+    - s = |∇ρ| / [2 (3π²)^{1/3} ρ^{4/3}]   (PBE 1996, before eq. 12)
+    - τ_W = |∇ρ|²/(8ρ),  τ_unif = (3/10)(3π²)^{2/3} ρ^{5/3}
+    - α = (τ - τ_W) / τ_unif               (SCAN 2015, eq. 4)
+    """
+    rho_safe = np.maximum(rho, 1e-30)
+    grad_rho = np.sqrt(np.maximum(sigma, 0.0))
+    rho_third = rho_safe ** (1.0 / 3.0)
+    kf_factor = 2.0 * (3.0 * np.pi**2) ** (1.0 / 3.0)
+    s = grad_rho / (kf_factor * rho_safe ** (4.0 / 3.0))
+    tau_w = sigma / (8.0 * rho_safe)
+    tau_unif = (
+        (3.0 / 10.0) * (3.0 * np.pi**2) ** (2.0 / 3.0) * rho_safe ** (5.0 / 3.0)
+    )
+    alpha = np.maximum((tau - tau_w) / np.maximum(tau_unif, 1e-30), 0.0)
+    return {"rho_third": rho_third, "s": s, "alpha": alpha}
