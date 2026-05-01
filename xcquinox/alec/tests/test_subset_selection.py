@@ -125,3 +125,33 @@ def test_metric_jsd_uses_natural_log():
     q["alpha"][1] = 1.0
     err = ss.metric_jsd(p, q)
     assert err == pytest.approx(3.0 * np.log(2.0), rel=1e-6)
+
+
+def _toy_descriptor_arrays(seed):
+    rng = np.random.default_rng(seed)
+    n = 5000
+    return {
+        "rho_third": np.abs(rng.normal(loc=0.5, scale=0.2, size=n)) + 1e-6,
+        "s": np.abs(rng.normal(loc=1.0, scale=0.5, size=n)) + 1e-6,
+        "alpha": np.abs(rng.normal(loc=1.0, scale=0.3, size=n)) + 1e-6,
+        "weights": np.ones(n) / n,
+    }
+
+
+def test_bin_descriptors_returns_three_normalized_marginals():
+    arrs = _toy_descriptor_arrays(seed=0)
+    hist = ss.bin_descriptors(arrs)
+    for k in ("rho_third", "s", "alpha"):
+        assert hist[k].shape == (ss.NBINS,)
+        assert hist[k].min() >= 0.0
+        assert hist[k].sum() > 0.0
+
+
+def test_build_reference_histograms_concats_pool():
+    pool = [_toy_descriptor_arrays(seed=i) for i in range(3)]
+    h_ref, edges = ss.build_reference_histograms(pool)
+    assert set(h_ref.keys()) == {"rho_third", "s", "alpha"}
+    assert set(edges.keys()) == {"rho_third", "s", "alpha"}
+    for k in ("rho_third", "s", "alpha"):
+        assert h_ref[k].shape == (ss.NBINS,)
+        assert edges[k].shape == (ss.NBINS + 1,)

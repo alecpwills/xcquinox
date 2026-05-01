@@ -145,3 +145,45 @@ def metric_jsd(h_ref: dict, h_cand: dict) -> float:
         m = 0.5 * (p + q)
         total += 0.5 * (_kl(p, m) + _kl(q, m))
     return float(total)
+
+
+def _bin_with_edges(arrs: dict, edges: dict) -> dict:
+    """Bin descriptors using fixed pre-computed log10 edges; returns 3 histograms."""
+    out = {}
+    w = arrs.get("weights")
+    for k in _DESCRIPTOR_KEYS:
+        log_x = np.log10(arrs[k] + LOG_REGULARIZER)
+        h, _ = np.histogram(log_x, bins=edges[k], weights=w, density=True)
+        out[k] = h
+    return out
+
+
+def bin_descriptors(arrs: dict) -> dict:
+    """Bin a single descriptor-array set with auto-computed log10 edges."""
+    edges = {}
+    for k in _DESCRIPTOR_KEYS:
+        log_x = np.log10(arrs[k] + LOG_REGULARIZER)
+        lo, hi = np.percentile(log_x, [0.1, 99.9])
+        edges[k] = np.linspace(lo, hi, NBINS + 1)
+    return _bin_with_edges(arrs, edges)
+
+
+def build_reference_histograms(pool):
+    """Concatenate descriptor arrays across the full candidate pool, build
+    the 3 reference 200-bin log10 density-normalized histograms, and return
+    the edges used so that candidate-subset histograms align."""
+    cat: dict = {k: [] for k in _DESCRIPTOR_KEYS}
+    cat_w: list = []
+    for arrs in pool:
+        for k in _DESCRIPTOR_KEYS:
+            cat[k].append(arrs[k])
+        cat_w.append(arrs.get("weights", np.ones_like(arrs["rho_third"])))
+    full = {k: np.concatenate(cat[k]) for k in _DESCRIPTOR_KEYS}
+    full["weights"] = np.concatenate(cat_w)
+    edges = {}
+    for k in _DESCRIPTOR_KEYS:
+        log_x = np.log10(full[k] + LOG_REGULARIZER)
+        lo, hi = np.percentile(log_x, [0.1, 99.9])
+        edges[k] = np.linspace(lo, hi, NBINS + 1)
+    h_ref = _bin_with_edges(full, edges)
+    return h_ref, edges
