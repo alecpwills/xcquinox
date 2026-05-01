@@ -79,6 +79,40 @@ def build_cells() -> list:
         "print(f'  IP13 pairs: {len(pool[\"ip13_pairs\"])}')\n"
         "print(f'  Atom refs: {len(pool[\"atom_refs\"])}')\n"
     ))
+    cells.append(_md(
+        "## 1. Descriptor Extraction (cached)\n\n"
+        "For each unique species in the candidate pool, run a single PBE SCF\n"
+        "at def2-svp / grid_level=1 (matching step-5/6 conventions) and extract\n"
+        "$(\\rho^{1/3}, s, \\alpha)$ on the molecular grid. Cached as\n"
+        "`subset_descriptors/<idx>_<species>.npz`.\n"
+    ))
+    cells.append(_code(
+        "ae_descriptors = []\n"
+        "for idx, at in enumerate(pool['ae_molecules']):\n"
+        "    arrs = ss.extract_descriptors(at, idx=idx, cache_dir=DESCRIPTOR_CACHE)\n"
+        "    ae_descriptors.append(arrs)\n"
+        "    name = at.info.get('dick_hill', at.get_chemical_formula())\n"
+        "    print(f'  {idx:2d} {name:8s} ngrid={arrs[\"rho_third\"].size}')\n"
+        "print(f'Total AE descriptors cached: {len(ae_descriptors)}')\n"
+    ))
+    cells.append(_md(
+        "## 2. Reference-Histogram Builder\n\n"
+        "Concatenate descriptors across the full 21-AE pool and build 3 200-bin\n"
+        "log10 density-normalized histograms over $(\\rho^{1/3}, s, \\alpha)$.\n"
+        "Same edges are reused for every candidate-subset histogram.\n"
+    ))
+    cells.append(_code(
+        "import numpy as np\n"
+        "h_ref, edges = ss.build_reference_histograms(ae_descriptors)\n"
+        "ref_path = REF_HIST_CACHE / 'reference.npz'\n"
+        "np.savez(ref_path,\n"
+        "         h_ref_rho=h_ref['rho_third'], e_rho=edges['rho_third'],\n"
+        "         h_ref_s=h_ref['s'],         e_s=edges['s'],\n"
+        "         h_ref_alpha=h_ref['alpha'], e_alpha=edges['alpha'])\n"
+        "print(f'Wrote reference histograms to {ref_path}')\n"
+        "for k in ('rho_third', 's', 'alpha'):\n"
+        "    print(f'  {k:10s} histogram: shape={h_ref[k].shape}, sum={h_ref[k].sum():.4f}')\n"
+    ))
     return cells
 
 
