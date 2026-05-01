@@ -42,8 +42,14 @@ SOLVERS = ("oneshot", "full_3")
 AUGMENTATIONS = (False, True)  # with_hbpt False/True
 ARCH_NAME = "deep_combined_attn"
 LOSS_NAME = "L5_gradnorm_vxc_step7"
-PRETRAIN_ORIGIN = "integration"
-TRAIN_N_STEPS = 250
+PRETRAIN_ORIGIN = "integration"  # ONLY origin — unweighted is out of scope per step-6 verdict.
+# Pretrain phase: 1000 steps already baked into step-6 integration
+# checkpoint (loaded from notebooks/checkpoints_step6/integration/pretrain/
+# deep_combined_attn/{xnet.eqx, cnet.eqx}); no re-pretraining in step-7.
+# Task-loss phase: 100 steps (matches step-6 group1/group2 short schedule;
+# step-6 group3 used 250 but at 88 runs the additional convergence gain
+# does not justify the 2.5x cost given step-6 evidence).
+TRAIN_N_STEPS = 100
 LR_START, LR_END = 1e-2, 1e-5
 LR_DECAY_START = 0.2
 GRAD_CLIP = 1.0
