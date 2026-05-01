@@ -759,16 +759,60 @@ class DeltaAEPlusGridLoss(AlecLoss):
         return total, components
 
 
+def _freeze_rxn_specs(rxns) -> tuple:
+    """Convert a list of BH76 reaction-spec dicts to a hashable tuple-of-tuples.
+
+    Each reaction is normalized to:
+      (name, reactants_tuple, products_tuple, coeffs_tuple, e_rxn_ref_or_None)
+
+    Stored as eqx static field so jit cache keys remain stable.
+    """
+    out = []
+    for r in rxns:
+        name = r.get("name", "")
+        reactants = tuple(r.get("reactants", ()))
+        products = tuple(r.get("products", ()))
+        coeffs = tuple(float(c) for c in r.get("coeffs", ()))
+        e_ref = r.get("e_rxn_ref", None)
+        if e_ref is not None:
+            e_ref = float(e_ref)
+        out.append((name, reactants, products, coeffs, e_ref))
+    return tuple(out)
+
+
+def _freeze_ip_specs(pairs) -> tuple:
+    """Convert a list of IP13 spec dicts to a hashable tuple-of-tuples.
+
+    Each pair is normalized to:
+      (name, neutral_label, cation_label, ip_ref_or_None)
+    """
+    out = []
+    for p in pairs:
+        name = p.get("name", "")
+        neutral = p.get("neutral", "")
+        cation = p.get("cation", "")
+        ip_ref = p.get("ip_ref", None)
+        if ip_ref is not None:
+            ip_ref = float(ip_ref)
+        out.append((name, neutral, cation, ip_ref))
+    return tuple(out)
+
+
 @register_loss("L5_gradnorm_vxc_step7")
 class L5GradnormVxcStep7(AlecLoss):
     """Step-7 extension of L5_gradnorm_vxc with BH76 + IP13 task channels.
 
     Five GradNorm task channels (per spec §5b):
-      AE   - atomization-energy residuals (existing alec mechanism)
-      BH76 - reaction-energy / barrier-height residuals via _rxn_residual_term
-      IP13 - ionization-potential residuals via _ip_residual_term
-      vxc  - V_xc residual (existing L3/L4/L5 mechanism)
-      rho  - rho-RMSE residual (existing)
+      loss_AE   - atomization-energy residuals (existing alec mechanism)
+      loss_BH76 - reaction-energy / barrier-height residuals via _rxn_residual_term
+      loss_IP13 - ionization-potential residuals via _ip_residual_term
+      loss_vxc  - V_xc residual (existing L3/L4/L5 mechanism)
+      loss_rho  - grid-density residual (existing)
+
+    These five keys correspond to the five GradNorm task channels. Each
+    appears as a key in ``compute_components`` so the GradNorm balancer
+    in ``train._run_gradnorm_loop`` (xcquinox/alec/train.py:408) treats
+    them as five independent tasks.
 
     Per Dick 2021 SI II, BH76 + IP13 residuals were down-weighted by
     0.01 in the original Dick training. Step-7 lets GradNorm (Chen et
@@ -776,31 +820,222 @@ class L5GradnormVxcStep7(AlecLoss):
     xcquinox/alec/balancing.py:55) discover task weights adaptively
     rather than hard-coding the 0.01 factor.
 
-    The full implementation lands in Task 16; this scaffold registers
-    the class and exposes target_kinds for the spec-compliance test.
+    Constructor arguments
+    ---------------------
+    molecules : sequence of MoleculeSpec
+        The full species set referenced by AE, BH76, and IP13 channels.
+        Names must include all reactants/products for BH76 reactions and
+        both neutral/cation labels for IP13 pairs.
+    bh76_reactions : list[dict] | None
+        Each dict has keys ``name``, ``reactants``, ``products``,
+        ``coeffs`` (signed coefficients aligned with ``reactants +
+        products``), and ``e_rxn_ref``. Empty list disables the channel
+        (BH76 contribution becomes 0).
+    ip13_pairs : list[dict] | None
+        Each dict has keys ``name``, ``neutral`` (species name),
+        ``cation`` (species name), and ``ip_ref``. Empty list disables
+        the channel.
+    dm_weight, vxc_weight, density_weight : float
+        Per-channel scaling factors applied INSIDE the channel's residual
+        before GradNorm reweighting. Channel weight tuning is GradNorm's
+        job; these are pre-balancer scale factors only.
     """
     registry_name: ClassVar[str] = "L5_gradnorm_vxc_step7"
+    required_mol_keys: ClassVar[tuple[str, ...]] = ()
+    required_batch_keys: ClassVar[tuple[str, ...]] = ("targets", "atom_energies")
     target_kinds: ClassVar[tuple[str, ...]] = ("AE", "BH76", "IP13", "vxc", "rho")
 
-    def __init__(self, *, _smoke_test: bool = False, **kwargs):
-        # _smoke_test path lets the registry test instantiate without a
-        # real training context; full constructor wiring lives in Task 16.
-        # AlecLoss is an eqx.Module with required fields, so even the
-        # smoke path must initialize them to empty placeholders.
+    bh76_reactions: tuple = eqx.field(default=(), static=True)
+    ip13_pairs: tuple = eqx.field(default=(), static=True)
+    molecules_only: bool = eqx.field(default=True, static=True)
+    solver_config: object | None = eqx.field(default=None, static=True)
+    vxc_weight: float = eqx.field(default=0.01, static=True)
+    density_weight: float = eqx.field(default=0.1, static=True)
+
+    def __init__(
+        self,
+        *,
+        molecules=None,
+        bh76_reactions=None,
+        ip13_pairs=None,
+        w_atomic: float = 0.01,
+        molecules_only: bool = True,
+        solver_config=None,
+        vxc_weight: float = 0.01,
+        density_weight: float = 0.1,
+        _smoke_test: bool = False,
+        **_unused_kwargs,
+    ):
+        # The smoke path is used by registry/contract tests where there is
+        # no real training context (no molecules, no batch). It must still
+        # initialize all required AlecLoss fields plus the new BH76/IP13
+        # fields so eqx.Module field validation passes.
+        bh76_frozen = _freeze_rxn_specs(bh76_reactions or ())
+        ip13_frozen = _freeze_ip_specs(ip13_pairs or ())
+
         if _smoke_test:
             self.atom_mol_idx = ()
             self.compound_idx = ()
             self.mol_names = ()
             self.compositions = ()
-            self.w_atomic = 0.01
+            self.w_atomic = w_atomic
+            self.bh76_reactions = bh76_frozen
+            self.ip13_pairs = ip13_frozen
+            self.molecules_only = molecules_only
+            self.solver_config = solver_config
+            self.vxc_weight = vxc_weight
+            self.density_weight = density_weight
             return
-        raise NotImplementedError(
-            "L5GradnormVxcStep7 full constructor lands in Task 16. "
-            "Use _smoke_test=True for early-stage registry/contract tests."
+
+        if molecules is None:
+            raise ValueError(
+                "L5GradnormVxcStep7 requires `molecules` (or use _smoke_test=True "
+                "for registry/contract tests)."
+            )
+        self._validate_static_float("w_atomic", w_atomic)
+        self._validate_static_bool("molecules_only", molecules_only)
+        self._validate_static_float("vxc_weight", vxc_weight)
+        self._validate_static_float("density_weight", density_weight)
+        ami, ci, mn, comp = self.build_indices(molecules)
+        self.atom_mol_idx = ami
+        self.compound_idx = ci
+        self.mol_names = mn
+        self.compositions = comp
+        self.w_atomic = w_atomic
+        self.bh76_reactions = bh76_frozen
+        self.ip13_pairs = ip13_frozen
+        self.molecules_only = molecules_only
+        self.solver_config = solver_config
+        self.vxc_weight = vxc_weight
+        self.density_weight = density_weight
+
+        # Validate that every BH76 species and every IP13 species is
+        # present in the `molecules` set. A missing species would cause
+        # silent zeros at compute time.
+        mol_name_set = set(self.mol_names)
+        for (rname, reactants, products, coeffs, _eref) in self.bh76_reactions:
+            for s in (*reactants, *products):
+                if s not in mol_name_set:
+                    raise ValueError(
+                        f"BH76 reaction {rname!r}: species {s!r} not in "
+                        f"`molecules` (have {sorted(mol_name_set)})"
+                    )
+            if len(coeffs) != len(reactants) + len(products):
+                raise ValueError(
+                    f"BH76 reaction {rname!r}: len(coeffs)={len(coeffs)} "
+                    f"!= len(reactants)+len(products)="
+                    f"{len(reactants) + len(products)}"
+                )
+        for (pname, neutral, cation, _ipref) in self.ip13_pairs:
+            for s in (neutral, cation):
+                if s not in mol_name_set:
+                    raise ValueError(
+                        f"IP13 pair {pname!r}: species {s!r} not in "
+                        f"`molecules` (have {sorted(mol_name_set)})"
+                    )
+
+    def _bh76_channel(self, E_nn) -> jnp.ndarray:
+        """Mean of squared reaction-energy residuals across BH76 reactions.
+
+        E_NN_total values are looked up from the all-species `E_nn` vector
+        by name via `mol_names`. A reaction with `e_rxn_ref=None` is
+        skipped (treated as missing reference). If no usable reactions
+        remain, returns 0.0 (so the channel contributes nothing under
+        GradNorm without crashing).
+        """
+        if not self.bh76_reactions:
+            return jnp.array(0.0)
+        name_to_idx = {n: i for i, n in enumerate(self.mol_names)}
+        terms = []
+        for (_rname, reactants, products, coeffs, e_ref) in self.bh76_reactions:
+            if e_ref is None:
+                continue
+            species = (*reactants, *products)
+            idx = jnp.array([name_to_idx[s] for s in species])
+            e_species = E_nn[idx]
+            coeffs_arr = jnp.array(coeffs)
+            terms.append(_rxn_residual_term(
+                e_species, coeffs_arr, jnp.array(e_ref),
+            ))
+        if not terms:
+            return jnp.array(0.0)
+        return jnp.mean(jnp.stack(terms))
+
+    def _ip13_channel(self, E_nn) -> jnp.ndarray:
+        """Mean of squared IP residuals across IP13 pairs.
+
+        Pairs with `ip_ref=None` are skipped.
+        """
+        if not self.ip13_pairs:
+            return jnp.array(0.0)
+        name_to_idx = {n: i for i, n in enumerate(self.mol_names)}
+        terms = []
+        for (_pname, neutral, cation, ip_ref) in self.ip13_pairs:
+            if ip_ref is None:
+                continue
+            e_neutral = E_nn[name_to_idx[neutral]]
+            e_cation = E_nn[name_to_idx[cation]]
+            terms.append(_ip_residual_term(
+                e_cation, e_neutral, jnp.array(ip_ref),
+            ))
+        if not terms:
+            return jnp.array(0.0)
+        return jnp.mean(jnp.stack(terms))
+
+    def compute_components(self, model, batch, relative=False):
+        """Return the 5 GradNorm task channels as a dict.
+
+        Keys are the GradNorm task channels:
+          loss_AE, loss_BH76, loss_IP13, loss_vxc, loss_rho
+        """
+        if not self.mol_names:
+            raise RuntimeError(
+                "L5GradnormVxcStep7 was constructed in smoke-test mode; "
+                "compute_components requires a real `molecules` set."
+            )
+        atom_idx = dict(self.atom_mol_idx)
+        mol_data = batch["mol_data"]
+        targets = batch["targets"]
+        atom_energies = batch["atom_energies"]
+        N = len(self.mol_names)
+        comp_dicts = tuple(dict(c) for c in self.compositions)
+        E_nn = _compute_energies(
+            model, mol_data, N, solver_config=self.solver_config
+        )
+        # AE channel: relative squared AE residual + atomic regularization,
+        # mirroring AtomizationLoss but bundled into a single channel for
+        # GradNorm. atomic_reg is folded into the AE channel because it is
+        # a regularizer of the AE quantity, not an independent task.
+        loss_ae = _ae_losses(
+            E_nn, self.compound_idx, comp_dicts,
+            self.mol_names, targets, atom_energies,
+        )
+        atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
+        loss_ae_total = loss_ae + atomic_reg
+
+        # BH76 + IP13 channels: reaction / IP residuals (Dick 2021 SI II).
+        loss_bh76 = self._bh76_channel(E_nn)
+        loss_ip13 = self._ip13_channel(E_nn)
+
+        # vxc + rho channels: existing alec mechanisms.
+        iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
+        loss_vxc = self.vxc_weight * _vxc_term(
+            model, mol_data, iter_idx, relative=relative,
+        )
+        loss_rho = self.density_weight * _grid_term(
+            model, mol_data, iter_idx, solver_config=self.solver_config,
+            relative=relative,
         )
 
-    def __call__(self, *args, **kwargs):  # pragma: no cover - filled in Task 16
-        raise NotImplementedError("Task 16 wiring pending")
+        return {
+            "loss_AE": loss_ae_total,
+            "loss_BH76": loss_bh76,
+            "loss_IP13": loss_ip13,
+            "loss_vxc": loss_vxc,
+            "loss_rho": loss_rho,
+        }
 
-    def compute_components(self, *args, **kwargs):  # pragma: no cover - filled in Task 16
-        raise NotImplementedError("Task 16 wiring pending")
+    def __call__(self, model, batch):
+        components = self.compute_components(model, batch)
+        total = sum(components.values())
+        return total, components
