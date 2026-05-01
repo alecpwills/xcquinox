@@ -101,3 +101,47 @@ def compute_descriptor_triple(
     )
     alpha = np.maximum((tau - tau_w) / np.maximum(tau_unif, 1e-30), 0.0)
     return {"rho_third": rho_third, "s": s, "alpha": alpha}
+
+
+_DESCRIPTOR_KEYS = ("rho_third", "s", "alpha")
+
+
+def metric_l2(h_ref: dict, h_cand: dict) -> float:
+    """Per-bin Euclidean distance summed across the 3 marginals.
+
+    err = sum_b sqrt( (h^ref_rho - h^cand_rho)^2_b
+                    + (h^ref_s   - h^cand_s)^2_b
+                    + (h^ref_a   - h^cand_a)^2_b )
+
+    This is the verbatim form from data_binning2.ipynb cell 17.
+    """
+    diffs_sq = np.zeros(NBINS)
+    for k in _DESCRIPTOR_KEYS:
+        diffs_sq += (h_ref[k] - h_cand[k]) ** 2
+    return float(np.sum(np.sqrt(diffs_sq)))
+
+
+def _kl(p: np.ndarray, q: np.ndarray) -> float:
+    """Kullback-Leibler divergence in nats. Probabilities clipped at KL_PROB_CLIP."""
+    p_c = np.clip(p, KL_PROB_CLIP, 1.0)
+    q_c = np.clip(q, KL_PROB_CLIP, 1.0)
+    return float(np.sum(p_c * (np.log(p_c) - np.log(q_c))))
+
+
+def metric_jsd(h_ref: dict, h_cand: dict) -> float:
+    """Jensen-Shannon divergence summed across the 3 marginals (nats).
+
+    JSD(P||Q) = 0.5 [ KL(P||M) + KL(Q||M) ],   M = (P+Q)/2.
+
+    Reference: Lin, IEEE Trans. Inf. Theory 37 (1991) eq. (4.1).
+
+    NOTE: do NOT use scipy.spatial.distance.jensenshannon — that returns
+    the JS distance (sqrt of the divergence), not the divergence itself.
+    """
+    total = 0.0
+    for k in _DESCRIPTOR_KEYS:
+        p = h_ref[k]
+        q = h_cand[k]
+        m = 0.5 * (p + q)
+        total += 0.5 * (_kl(p, m) + _kl(q, m))
+    return float(total)

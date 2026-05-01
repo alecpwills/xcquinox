@@ -60,3 +60,68 @@ def test_compute_descriptor_triple_no_negative_alpha_under_clip():
     tau = 0.5 * tau_W
     desc = ss.compute_descriptor_triple(rho, sigma, tau)
     assert (desc["alpha"] >= 0.0).all(), "α must be clipped to non-negative"
+
+
+def _mock_three_histograms(seed=0):
+    rng = np.random.default_rng(seed)
+    h1 = rng.uniform(size=ss.NBINS)
+    h2 = rng.uniform(size=ss.NBINS)
+    h3 = rng.uniform(size=ss.NBINS)
+    return {
+        "rho_third": h1 / h1.sum(),
+        "s": h2 / h2.sum(),
+        "alpha": h3 / h3.sum(),
+    }
+
+
+def test_metric_l2_self_zero():
+    h = _mock_three_histograms(seed=42)
+    assert ss.metric_l2(h, h) == pytest.approx(0.0, abs=1e-15)
+
+
+def test_metric_jsd_self_zero():
+    h = _mock_three_histograms(seed=42)
+    assert ss.metric_jsd(h, h) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_metric_jsd_symmetric():
+    p = _mock_three_histograms(seed=1)
+    q = _mock_three_histograms(seed=2)
+    assert ss.metric_jsd(p, q) == pytest.approx(ss.metric_jsd(q, p), abs=1e-15)
+
+
+def test_metric_l2_three_histogram_sum():
+    """The L2 error sums sqrt over all 3 histograms per bin (matching
+    data_binning2.ipynb cell 17). Constructed input where only h1 differs
+    in a single bin should yield exactly the displacement magnitude."""
+    p = _mock_three_histograms(seed=3)
+    q = {k: v.copy() for k, v in p.items()}
+    q["rho_third"] = q["rho_third"].copy()
+    q["rho_third"][0] += 0.5
+    err = ss.metric_l2(p, q)
+    # Only one bin differs; sqrt(0.25 + 0 + 0) = 0.5; sum over 200 bins of
+    # sqrt of the per-bin sum-of-squared-diffs => 0.5 + sum(sqrt(0)) = 0.5
+    assert err == pytest.approx(0.5, abs=1e-12)
+
+
+def test_metric_jsd_three_histogram_sum():
+    """JSD totals over the 3 marginals."""
+    p = _mock_three_histograms(seed=4)
+    q = _mock_three_histograms(seed=5)
+    err = ss.metric_jsd(p, q)
+    assert err > 0.0
+    assert err <= 3.0 * np.log(2.0) + 1e-12
+
+
+def test_metric_jsd_uses_natural_log():
+    """JSD with natural log: max value per marginal is ln(2)."""
+    p = {"rho_third": np.zeros(ss.NBINS), "s": np.zeros(ss.NBINS), "alpha": np.zeros(ss.NBINS)}
+    q = {"rho_third": np.zeros(ss.NBINS), "s": np.zeros(ss.NBINS), "alpha": np.zeros(ss.NBINS)}
+    p["rho_third"][0] = 1.0
+    q["rho_third"][1] = 1.0
+    p["s"][0] = 1.0
+    q["s"][1] = 1.0
+    p["alpha"][0] = 1.0
+    q["alpha"][1] = 1.0
+    err = ss.metric_jsd(p, q)
+    assert err == pytest.approx(3.0 * np.log(2.0), rel=1e-6)
