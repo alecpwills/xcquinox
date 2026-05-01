@@ -243,3 +243,13 @@ def select_subset(
             best_val = v
             best_combo = full
     return best_combo, best_val
+
+
+def compute_atom_set(ae_subset) -> set:
+    """Return the union of chemical-element symbols across the given AE
+    molecules. Used to determine which atomic-energy references must
+    appear in `subset.traj` for total-energy regularization (§5c)."""
+    out: set = set()
+    for a in ae_subset:
+        out.update(a.get_chemical_symbols())
+    return out

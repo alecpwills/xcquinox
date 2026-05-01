@@ -193,3 +193,33 @@ def test_select_subset_exhaustive_for_small_r():
             best_val, best_pair = v, pair
     assert sorted(chosen) == sorted(best_pair)
     assert val == pytest.approx(best_val, rel=1e-12)
+
+
+def test_compute_atom_set_for_simple_subset():
+    from ase import Atoms
+    a1 = Atoms("H2O", positions=[(0,0,0),(1,0,0),(0,1,0)])
+    a2 = Atoms("LiF", positions=[(0,0,0),(1,0,0)])
+    atom_set = ss.compute_atom_set([a1, a2])
+    assert atom_set == {"H", "O", "Li", "F"}
+
+
+def test_compute_atom_set_single_molecule():
+    from ase import Atoms
+    a = Atoms("NH3", positions=[(0,0,0),(1,0,0),(0,1,0),(0,0,1)])
+    atom_set = ss.compute_atom_set([a])
+    assert atom_set == {"N", "H"}
+
+
+def test_compute_atom_set_full_dick_pool_yields_seven():
+    """For the full 21-AE-molecule Dick pool, the union of elements is
+    {H, Li, C, N, O, F, Na} — 7 atomic refs."""
+    from ase import Atoms
+    formulas = ["H2", "N2", "LiF", "CHN", "CO2", "F2", "C2H2", "CO", "LiH", "Na2",
+                "NO", "CH", "OH",
+                "NO2", "HN", "O3", "N2O", "CH3", "CH2", "H2O", "H3N"]
+    mocks = []
+    for f in formulas:
+        a = Atoms(f, positions=np.zeros((len(Atoms(f)), 3)))
+        mocks.append(a)
+    atom_set = ss.compute_atom_set(mocks)
+    assert atom_set == {"H", "Li", "C", "N", "O", "F", "Na"}
