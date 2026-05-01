@@ -257,8 +257,9 @@ def test_differentiability(loss_name, _cls, _rmk, _aux_keys,
 # Test 25: LOSS_REGISTRY has exactly 6 builtins
 # ---------------------------------------------------------------------------
 
-def test_loss_registry_has_exactly_6_builtins():
-    """Test 25: LOSS_REGISTRY contains exactly the 6 documented loss names."""
+def test_loss_registry_has_exactly_7_builtins():
+    """Test 25: LOSS_REGISTRY contains exactly the 7 documented loss names
+    (6 step-4/5/6 originals + L5_gradnorm_vxc_step7 added in step 7)."""
     expected = {
         "A_atomization",
         "B_atomization_plus_dm",
@@ -266,12 +267,13 @@ def test_loss_registry_has_exactly_6_builtins():
         "D1_delta_ae",
         "D2_delta_ae_plus_dm",
         "D3_delta_ae_plus_grid",
+        "L5_gradnorm_vxc_step7",
     }
     assert set(LOSS_REGISTRY.keys()) == expected, (
         f"LOSS_REGISTRY keys = {sorted(LOSS_REGISTRY.keys())}, "
         f"expected {sorted(expected)}"
     )
-    assert len(LOSS_REGISTRY) == 6
+    assert len(LOSS_REGISTRY) == 7
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +284,7 @@ def test_list_losses_returns_sorted():
     """Test 26: list_losses() returns a sorted list of loss names."""
     names = list_losses()
     assert names == sorted(names), f"list_losses() must be sorted, got {names}"
-    assert len(names) == 6
+    assert len(names) == 7
 
 
 # ---------------------------------------------------------------------------
