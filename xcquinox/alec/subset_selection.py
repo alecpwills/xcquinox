@@ -298,3 +298,81 @@ def augment_with_hbpt(
         out.append(_make_hb_atoms())
         out.append(_make_pt_atoms())
     return out
+
+
+def _ase_atoms_to_pyscf_mol(at: Atoms, *, basis: str, charge: int = 0, spin: int = 0):
+    """Build a PySCF gto.M from an ASE Atoms object. Mirrors the inline
+    builder in xcquinox/alec/data.py:precompute_fixed_density_data line 237."""
+    from pyscf import gto
+
+    coords = at.get_positions()
+    atom_lines = [
+        (sym, tuple(coords[i])) for i, sym in enumerate(at.get_chemical_symbols())
+    ]
+    return gto.M(
+        atom=atom_lines,
+        basis=basis,
+        charge=int(at.info.get("charge", charge)),
+        spin=int(at.info.get("spin", spin)),
+        unit="angstrom",
+        verbose=0,
+    )
+
+
+def extract_descriptors(
+    at: Atoms,
+    *,
+    idx: int,
+    cache_dir,
+    basis: str = "def2-svp",
+    grid_level: int = 1,
+) -> dict:
+    """Run a single PBE SCF and extract (ρ^{1/3}, s, α) on the molecular grid.
+
+    Returns dict with keys rho_third, s, alpha, weights. Caches as
+    <cache_dir>/<idx>_<species>.npz; second call hits the cache.
+
+    Conventions match step-5/step-6 (def2-svp, grid_level=1) per
+    _build_step6_notebook.py:528-532.
+    """
+    from pyscf import dft
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    species = at.info.get("species", at.get_chemical_formula())
+    safe = species.replace("/", "_").replace(" ", "_")
+    cache_path = cache_dir / f"{idx}_{safe}.npz"
+    if cache_path.exists():
+        z = np.load(cache_path)
+        return {k: z[k] for k in ("rho_third", "s", "alpha", "weights")}
+
+    mol = _ase_atoms_to_pyscf_mol(at, basis=basis)
+    is_uhf = (mol.spin or 0) != 0
+    if is_uhf:
+        mf = dft.UKS(mol, xc="PBE,PBE")
+    else:
+        mf = dft.RKS(mol, xc="PBE,PBE")
+    mf.grids.level = grid_level
+    mf.grids.build()
+    mf.kernel()
+    dm = mf.make_rdm1()
+    ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=2)
+    if is_uhf:
+        dm_total = dm[0] + dm[1]
+    else:
+        dm_total = dm
+    rho_full = mf._numint.eval_rho(mol, ao, dm_total, xctype="MGGA")
+    # rho_full shape (6, ngrid): [rho, rho_x, rho_y, rho_z, lapl, tau]
+    rho = rho_full[0]
+    sigma = rho_full[1] ** 2 + rho_full[2] ** 2 + rho_full[3] ** 2
+    tau = rho_full[5]
+    descriptors = compute_descriptor_triple(rho, sigma, tau)
+    weights = mf.grids.weights
+    out = {
+        "rho_third": descriptors["rho_third"],
+        "s": descriptors["s"],
+        "alpha": descriptors["alpha"],
+        "weights": weights,
+    }
+    np.savez(cache_path, **out)
+    return out

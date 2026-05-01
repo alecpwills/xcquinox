@@ -282,3 +282,26 @@ def test_atom_set_regularizer_independent_of_HBPT_variant():
     a_pt = ss._make_pt_atoms()
     s2 = ss.compute_atom_set([a, a_hb, a_pt])
     assert s1 == s2 == {"H", "O"}
+
+
+def test_extract_descriptors_caches_to_disk(tmp_path):
+    """Second call for the same species hits the cache (no SCF re-run)."""
+    from ase import Atoms
+    a = Atoms("H2", positions=[(0,0,0),(0.74,0,0)])
+    a.info["species"] = "H2"
+    cache_dir = tmp_path / "subset_descriptors"
+    arrs1 = ss.extract_descriptors(a, idx=0, cache_dir=cache_dir)
+    assert (cache_dir / "0_H2.npz").exists()
+    arrs2 = ss.extract_descriptors(a, idx=0, cache_dir=cache_dir)
+    for k in ("rho_third", "s", "alpha", "weights"):
+        np.testing.assert_array_equal(arrs1[k], arrs2[k])
+
+
+def test_extract_descriptors_returns_finite_arrays(tmp_path):
+    from ase import Atoms
+    a = Atoms("H2", positions=[(0,0,0),(0.74,0,0)])
+    a.info["species"] = "H2"
+    arrs = ss.extract_descriptors(a, idx=0, cache_dir=tmp_path)
+    for k in ("rho_third", "s", "alpha", "weights"):
+        assert np.isfinite(arrs[k]).all()
+        assert arrs[k].size > 0
