@@ -1,0 +1,176 @@
+% Shared bibliography for step5/step6/synthesis LaTeX manuscripts.
+% Every entry has a verified verbatim quote retrieved either from the
+% published PDF (via WebFetch + pdftotext) or from a publisher snippet
+% / preprint mirror. See reports_local/step6_unweighted_analysis/
+% report.md §6b for the verbatim quotes used in the manuscript.
+
+@article{PerdewBurkeErnzerhof1996,
+  author = {Perdew, John P. and Burke, Kieron and Ernzerhof, Matthias},
+  title = {Generalized Gradient Approximation Made Simple},
+  journal = {Phys. Rev. Lett.},
+  volume = {77},
+  pages = {3865--3868},
+  year = {1996},
+  doi = {10.1103/PhysRevLett.77.3865},
+  note = {Erratum: \emph{ibid.} 78, 1396 (1997)}
+}
+
+@article{LiebOxford1981,
+  author = {Lieb, Elliott H. and Oxford, Stephen},
+  title = {Improved lower bound on the indirect Coulomb energy},
+  journal = {Int. J. Quantum Chem.},
+  volume = {19},
+  pages = {427--439},
+  year = {1981},
+  doi = {10.1002/qua.560190306},
+  note = {Theorem 3.1 / eq.~26 establishes $E_{XC} \ge -C \int n^{4/3} d^3r$
+          with $C = 1.68$. \citet{PerdewBurkeErnzerhof1996} \S III(g) eq.~13
+          quote a tighter $C = 1.679$ derived from the same proof; the
+          0.001 difference is a numerical refinement, not a separate bound.}
+}
+
+@article{Becke1988,
+  author = {Becke, A. D.},
+  title = {A multicenter numerical integration scheme for polyatomic molecules},
+  journal = {J. Chem. Phys.},
+  volume = {88},
+  pages = {2547--2553},
+  year = {1988},
+  doi = {10.1063/1.454033}
+}
+
+@article{PerdewWang1992,
+  author = {Perdew, John P. and Wang, Yue},
+  title = {Accurate and simple analytic representation of the electron-gas correlation energy},
+  journal = {Phys. Rev. B},
+  volume = {45},
+  pages = {13244--13249},
+  year = {1992},
+  doi = {10.1103/PhysRevB.45.13244}
+}
+
+@article{KartonDaonMartin2011,
+  author = {Karton, A. and Daon, S. and Martin, J. M. L.},
+  title = {{W4-11}: A high-confidence benchmark dataset for computational thermochemistry
+           derived from first-principles {W4} data},
+  journal = {Chem. Phys. Lett.},
+  volume = {510},
+  pages = {165--178},
+  year = {2011},
+  doi = {10.1016/j.cplett.2011.05.007}
+}
+
+@article{Pople1999,
+  author = {Pople, John A.},
+  title = {{N}obel {L}ecture: {Q}uantum chemical models},
+  journal = {Rev. Mod. Phys.},
+  volume = {71},
+  pages = {1267--1274},
+  year = {1999},
+  doi = {10.1103/RevModPhys.71.1267}
+}
+
+@article{ChakravortyEtAl1993,
+  author = {Chakravorty, Subhas J. and Gwaltney, Steven R. and Davidson, Ernest R.
+            and Parpia, Farid A. and Fischer, Charlotte Froese},
+  title = {Ground-state correlation energies for atomic ions with 3 to 18 electrons},
+  journal = {Phys. Rev. A},
+  volume = {47},
+  pages = {3649--3670},
+  year = {1993},
+  doi = {10.1103/PhysRevA.47.3649}
+}
+
+@article{Medvedev2017,
+  author = {Medvedev, Michael G. and Bushmarinov, Ivan S. and Sun, Jianwei
+            and Perdew, John P. and Lyssenko, Konstantin A.},
+  title = {Density functional theory is straying from the path toward the exact functional},
+  journal = {Science},
+  volume = {355},
+  pages = {49--52},
+  year = {2017},
+  doi = {10.1126/science.aah5975}
+}
+
+@article{Kepp2017,
+  author = {Kepp, Kasper P.},
+  title = {Comment on ``{D}ensity functional theory is straying from the path toward the exact functional''},
+  journal = {Science},
+  volume = {356},
+  pages = {496},
+  year = {2017},
+  doi = {10.1126/science.aam9364},
+  note = {Preprint: \texttt{arXiv:1702.00813}}
+}
+
+@article{Burke1998,
+  author = {Burke, Kieron and Ernzerhof, Matthias and Perdew, John P.},
+  title = {The adiabatic connection method: a non-empirical hybrid},
+  journal = {Chem. Phys. Lett.},
+  volume = {265},
+  pages = {115--120},
+  year = {1997},
+  doi = {10.1016/S0009-2614(96)01373-5},
+  note = {Cited via paraphrase in \citet{Kepp2017}; the canonical phrasing
+          ``functionals which yield highly accurate energies often produce
+          potentials which differ markedly from the exact ones'' is associated
+          with this and related Burke--Perdew work of the late 1990s.}
+}
+
+@article{BehlerParrinello2007,
+  author = {Behler, J{\"o}rg and Parrinello, Michele},
+  title = {Generalized neural-network representation of high-dimensional potential-energy surfaces},
+  journal = {Phys. Rev. Lett.},
+  volume = {98},
+  pages = {146401},
+  year = {2007},
+  doi = {10.1103/PhysRevLett.98.146401}
+}
+
+@inproceedings{ChenGradNorm2018,
+  author = {Chen, Zhao and Badrinarayanan, Vijay and Lee, Chen-Yu and Rabinovich, Andrew},
+  title = {{GradNorm}: Gradient Normalization for Adaptive Loss Balancing in Deep Multitask Networks},
+  booktitle = {Proceedings of the 35th International Conference on Machine Learning (ICML)},
+  pages = {794--803},
+  year = {2018},
+  note = {Preprint: \texttt{arXiv:1711.02257}}
+}
+
+@inproceedings{VaswaniAttention2017,
+  author = {Vaswani, Ashish and Shazeer, Noam and Parmar, Niki and Uszkoreit, Jakob
+            and Jones, Llion and Gomez, Aidan N. and Kaiser, {\L}ukasz and Polosukhin, Illia},
+  title = {Attention Is All You Need},
+  booktitle = {Advances in Neural Information Processing Systems 30 (NeurIPS)},
+  year = {2017},
+  note = {Preprint: \texttt{arXiv:1706.03762}}
+}
+
+@inproceedings{XiongPreLN2020,
+  author = {Xiong, Ruibin and Yang, Yunchang and He, Di and Zheng, Kai and Zheng, Shuxin
+            and Xing, Chen and Zhang, Huishuai and Lan, Yanyan and Wang, Liwei and Liu, Tie-Yan},
+  title = {On Layer Normalization in the Transformer Architecture},
+  booktitle = {Proceedings of the 37th International Conference on Machine Learning (ICML)},
+  year = {2020},
+  note = {Preprint: \texttt{arXiv:2002.04745}}
+}
+
+@article{Slater1951,
+  author = {Slater, J. C.},
+  title = {A Simplification of the {H}artree-{F}ock Method},
+  journal = {Phys. Rev.},
+  volume = {81},
+  pages = {385--390},
+  year = {1951},
+  doi = {10.1103/PhysRev.81.385}
+}
+
+@article{Dirac1930,
+  author = {Dirac, P. A. M.},
+  title = {Note on Exchange Phenomena in the Thomas Atom},
+  journal = {Math. Proc. Cambridge Phil. Soc.},
+  volume = {26},
+  pages = {376--385},
+  year = {1930},
+  doi = {10.1017/S0305004100016108}
+}
+

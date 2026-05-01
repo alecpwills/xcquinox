@@ -564,6 +564,56 @@ $F_x(15)=1.791$, mean 1.756.}
 \label{S:fig:figc4}\end{figure}
 
 \clearpage
+
+\subsection{New cross-cutting diagnostics}
+\label{S:sec:new_diagnostics}
+
+Two additional diagnostics derived from the existing data clarify two
+load-bearing claims of the main paper.
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.78\textwidth]{../step56_combined_synthesis/figures/figcomb_fx_fc_anticorrelation.png}
+\caption{Per-architecture $F_x$ vs $F_c$ pretrain-tightening, 8 step-5
+architectures. Each point is one architecture; $x$ = unweighted $F_x$
+MSE $\div$ integration $F_x$ MSE (so $x>1$ means integration tighter),
+$y$ = same ratio for $F_c$. Bubble size encodes the unweighted $F_x$
+baseline (larger bubble = larger absolute MSE). The Pearson correlation
+is weak positive ($r = +0.56$): architectures whose $F_x$ benefits most
+from integration also tend to have a larger $F_c$ benefit, but the
+scatter is substantial and 5 of 8 architectures cross the $y=1$ line
+into the ``integration worse on $F_c$'' regime. The simplest
+architectures (\texttt{deep}, \texttt{deep\_attn}) sit in the
+upper-right quadrant (both channels benefit); descriptor-rich variants
+(\texttt{deep\_dm}, \texttt{deep\_combined}, etc.) sit in the
+lower-right quadrant ($F_x$ tighter, $F_c$ worse). Mechanism: descriptor
+augmentation already concentrates correlation-channel gradient on the
+high-density regions, so an extra $|\rho \varepsilon_c^{\text{PW92}}|$
+weight provides little new signal and amplifies the lower-density
+mismatch.}
+\label{S:fig:fx_fc_correlation}
+\end{figure}
+
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.85\textwidth]{../step56_combined_synthesis/figures/figcomb_step6_per_loss_ratio.png}
+\caption{Step-6 group-3 MAE ratio (unweighted $\div$ integration) per
+loss family (top panel) and underlying values on a log axis (bottom
+panel). The 2.86$\times$ best-AE win of the integration origin in step 6
+is \emph{driven entirely by} \texttt{L2\_C\_anchor} (3.39$\times$);
+the other four loss families (\texttt{L1\_B},
+\texttt{L3\_balanced\_vxc}, \texttt{L4\_balanced\_vxc\_anchor},
+\texttt{L5\_gradnorm\_vxc}) all favour the unweighted origin at the
+median (0.67$\times$ to 0.91$\times$). The bottom panel shows that
+\texttt{L2\_C\_anchor} on the integration origin is the only spec
+family that clears chemical accuracy (0.099~kcal/mol vs.\ the
+1~kcal/mol red line). The integration origin's headline win is
+therefore loss-family-specific, not a uniform improvement.}
+\label{S:fig:step6_per_loss_ratio}
+\end{figure}
+
+\clearpage
+
 \section{Lieb--Oxford / PBE-design ceiling enforcement audit}
 \label{S:sec:lo_audit}
 

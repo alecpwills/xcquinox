@@ -195,7 +195,7 @@ F_x = \mathrm{limit}\cdot \sigma\!\bigl(g - \log(\mathrm{limit}-1)\bigr),
 \qquad \mathrm{limit} = 1.804,
 \end{equation}
 implemented in \texttt{xcquinox/alec/networks.py:42--44} as
-\texttt{self.limit$\,*\,$jax.nn.sigmoid(x$\,-\,$jnp.log(self.limit$\,-\,$1))$\,-\,$1}
+\texttt{self.limit$\,*\,$jax.nn.sigmoid(x$\,-\,$jnp.log(self.limit$\,-\,$1.0))$\,-\,$1.0}
 and wrapped at \texttt{networks.py:120--123} via \texttt{return 1$\,+\,$lobterm}.
 The $-\log(\mathrm{limit}-1)$ bias makes the sigmoid centred so that $g=0$ yields
 $F_x \approx 1$ (LDA limit); range $F_x \in [0, 1.804]$, with the PBE design ceiling
@@ -464,7 +464,11 @@ $\varepsilon_c^{\mathrm{PW92}}$ is roughly an order of magnitude smaller
 in magnitude than $\varepsilon_x^{\mathrm{LDA}}$ at typical bonding
 densities, narrowing the $F_c$-weighted residual's dynamic range; (b)
 PBE's $F_c$ is closer to its LDA limit than $F_x$ is, leaving less room
-to move under any re-weighting.
+to move under any re-weighting. The per-architecture $F_x$ vs $F_c$
+ratio scatter (Fig.~\ref{S:fig:fx_fc_correlation}) shows a weak positive
+correlation ($r = +0.56$) with substantial spread: simpler architectures
+land in the both-channels-benefit quadrant while descriptor-rich
+variants land in the $F_x$-tighter-but-$F_c$-worse quadrant.
 
 \subsection{Optimization step 5: H$_2$O training}
 \label{sec:results_step5}
@@ -529,7 +533,7 @@ g3 MAE \texttt{L5\_gradnorm\_vxc} & 0.426 & 0.520 & 0.82$\times$ \\
 
 \begin{figure}[h]
 \centering
-\includegraphics[width=\textwidth]{fig2_density_vs_energy_tradeoff.png}
+\includegraphics[width=\textwidth]{../step6_integration_analysis/figures/fig2_density_vs_energy_tradeoff.png}
 \caption{Density-vs-energy tradeoff, step-6 integration origin. Each spec
 is one point; colour = loss family. The L3/L4 cluster sits to the right
 (worse AE) but downward (tighter $\rho$-RMSE), exhibiting the classic
@@ -547,16 +551,32 @@ same specs (Fig.~\ref{fig:headline_step6}); this is the
 energy-vs-density tradeoff in the within-run data.
 
 The integration origin's pretrain advantage saturates in step 6.
-The downstream best-AE ratio (2.86$\times$) is comparable to but does
-\emph{not} exceed the pretrain-$F_x$ ratio (3.06$\times$), so there is
-no compounding factor analogous to step 5's 2.80$\times$. The broader
-training set (H$_2$O+C$_2$H$_2$) and richer $V_{xc}$-aware losses
-provide enough gradient signal that the unweighted-origin run catches
-up at the best-spec extreme. Per-loss group-3 MAEs flip the
-ranking: \texttt{L2\_C\_anchor} drops to 0.099~kcal/mol on the
-integration origin (the only spec family that clears chemical accuracy
-in-distribution), while energy-only \texttt{L1\_B} is marginally tighter
-under unweighted at the median (0.344 vs.\ 0.376). The per-loss
+The downstream best-AE ratio on the full training set
+(H$_2$O+C$_2$H$_2$, 2.86$\times$) is comparable to but does \emph{not}
+exceed the pretrain-$F_x$ ratio (3.06$\times$), so there is no
+aggregate compounding factor analogous to step 5's 2.80$\times$.
+However, restricting the step-6 evaluation to H$_2$O alone (the same
+metric step 5 uses) gives a best-AE ratio of $0.003112 / 0.000426 =
+7.3\times$, a 2.4$\times$ multiplier on top of the pretrain ratio --- so
+the head start \emph{does} still compound on the per-molecule axis;
+the apparent saturation is an averaging artifact of including
+C$_2$H$_2$. In addition, the best $\rho$-RMSE of $1.23\!\times\!10^{-4}$
+e/bohr$^3$ is achieved by \emph{group-1} (H$_2$O-only training)
+\texttt{deep\_combined\_attn} with \texttt{L3\_balanced\_vxc} and
+\texttt{oneshot} solver --- the narrowest training set + an explicit
+$V_{xc}$ residual --- not by the broader group-3 training data.
+
+A second nuance: per-loss group-3 MAE ratios reveal that the integration
+win is loss-family-specific, not uniform. \texttt{L2\_C\_anchor} drops
+to 0.099~kcal/mol on the integration origin (the only spec family that
+clears chemical accuracy in-distribution; 3.39$\times$ tighter than
+unweighted), while the four other loss families
+(\texttt{L1\_B} 0.91$\times$, \texttt{L3\_balanced\_vxc} 0.67$\times$,
+\texttt{L4\_balanced\_vxc\_anchor} 0.78$\times$,
+\texttt{L5\_gradnorm\_vxc} 0.82$\times$) all favour the unweighted
+origin at the median. The 2.86$\times$ best-AE win is therefore driven
+essentially by L2 alone; the per-loss bar chart is
+Fig.~\ref{S:fig:step6_per_loss_ratio}. The per-loss
 per-group breakdown is in Fig.~\ref{S:fig:figc1}; the ratio heatmap
 in Fig.~\ref{S:fig:figc2}; the Pareto overlay in Fig.~\ref{S:fig:figc3};
 and the $F_x$-asymptote audit at large $s$ in Fig.~\ref{S:fig:figc4}.
@@ -596,14 +616,15 @@ the H$_2$O-only narrow-data regime.
 
 \paragraph{(3) V$_{xc}$-aware losses are necessary for sub-$2\times 10^{-4}$ density quality.}
 Step 5's loss set lacks V$_{xc}$ fitting; step 5's best density-RMSE is $3.72\times 10^{-4}$
-e/bohr$^3$. Step 6 added V$_{xc}$-LossNorm losses (L3, L4); their best density-RMSE is
+e/bohr$^3$. Step 6 added $V_{xc}$-aware losses (L3, L4); their best density-RMSE is
 $1.23\times 10^{-4}$ — a 3$\times$ improvement only achievable with explicit V$_{xc}$
 training data. The within-run Pareto pattern (V$_{xc}$-aware specs lose AE accuracy in
 exchange for density quality, Fig.~\ref{fig:headline_step6}) is consistent with Burke's earlier
 formulation of the energy-vs-density tradeoff (paraphrased in \citet{Kepp2017}); the
 broader Medvedev across-decades thesis \citep{Medvedev2017} is contested by
-\citet{Kepp2017}, who shows the historical trend is dominated by one specific group's
-recent functionals rather than a general DFT-development bias.
+\citet{Kepp2017}, who shows the trend Medvedev highlighted is specific to compact
+$1s^2$ and $1s^2 2s^2$ atomic systems and is not chemically relevant for typical
+bonding regimes.
 
 \paragraph{(4) Transfer is dominated by molecule-specific physics, not pretrain weighting.}
 Across the three molecules common to step 5's and step 6's transfer sets — CH$_4$, H$_2$,
@@ -692,7 +713,7 @@ depend on Medvedev's stronger generalization.
 \item The GradNorm asymmetry parameter $\alpha = 1.5$
 \citep{ChenGradNorm2018} used by step 6's L5 spec is the optimum found
 in the NYUv2+kpts (depth + surface normals + room-keypoints) experiment
-of \citet[Fig.~7 and \S 7.2]{ChenGradNorm2018}; the same paper also
+of \citet[Table~1 and \S 5.2]{ChenGradNorm2018}; the same paper also
 reports $\alpha = 0.12$ as optimal for a synthetic 2-task regression
 toy problem (\S 5.4), so the value is task-specific and not asserted
 as a universal default. For our DFT loss family (AE +
