@@ -326,6 +326,42 @@ def _anchor_term(model, sample, weight: float) -> jnp.ndarray:
     return pbe_anchor_loss(model, sample, weight, _nn_fx)
 
 
+def _rxn_residual_term(
+    e_nn: jnp.ndarray,
+    coeffs: jnp.ndarray,
+    e_rxn_ref: jnp.ndarray,
+) -> jnp.ndarray:
+    """Squared residual of a generic reaction energy / barrier height.
+
+    e_nn   : (n_species,) NN total energies for each species in the reaction
+    coeffs : (n_species,) signed stoichiometric coefficients (negative for
+             reactants, positive for products)
+    e_rxn_ref : scalar reference reaction-energy or barrier-height value
+
+    Returns: scalar squared residual (E_rxn_NN - E_rxn_ref)^2.
+
+    Used by the BH76 task channel of L5_gradnorm_vxc_step7. Per Dick 2021
+    SI II, BH76 residuals were down-weighted by 0.01 in the original
+    work; step-7 either reproduces that scaling explicitly or lets
+    GradNorm (alpha=1.5; Chen et al. 2018, arXiv:1711.02257) discover the
+    weight adaptively.
+    """
+    e_rxn = jnp.sum(coeffs * e_nn)
+    return (e_rxn - e_rxn_ref) ** 2
+
+
+def _ip_residual_term(
+    e_cation: jnp.ndarray,
+    e_neutral: jnp.ndarray,
+    ip_ref: jnp.ndarray,
+) -> jnp.ndarray:
+    """Squared residual of an ionization potential. IP = E_cation - E_neutral.
+
+    Used by the IP13 task channel of L5_gradnorm_vxc_step7.
+    """
+    return (e_cation - e_neutral - ip_ref) ** 2
+
+
 # ---------------------------------------------------------------------------
 # Concrete losses
 # ---------------------------------------------------------------------------
