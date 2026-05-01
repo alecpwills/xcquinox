@@ -339,7 +339,11 @@ transfer-set ladder \texttt{fig1b}) paired by origin in
 \centering
 \caption{Step-6 paired comparison verified against
 \texttt{step6\_pretrain\_origin\_comparison/headline\_diff.json}. Ratio
-column: unweighted~$\div$~integration where applicable.}
+column: unweighted~$\div$~integration where applicable. The g3 MAE
+rows are means over the 6 (arch, solver) cells per loss on the
+multi-mol training set (per
+\texttt{notebooks/analysis/comparison\_lib.py:1066}); they are not
+medians.}
 \label{S:tab:step6_paired}
 \small
 \begin{tabular}{lrrr}
@@ -587,7 +591,8 @@ The paired headline numbers are in Tab.~\ref{S:tab:step6_paired}.
 
 \begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_pretrain_origin_comparison/figures/figc2_ratio_heatmap.png}
 \caption{Ratio heatmap, $\log_{10}(\mathrm{integration} / \mathrm{unweighted})$
-per-cell (architecture $\times$ loss). Green cells $\Rightarrow$ integration
+per spec; rows are loss families, columns are
+(group~$\cdot$~arch~$\cdot$~solver) tuples. Green cells $\Rightarrow$ integration
 wins (smaller MAE under integration); red cells $\Rightarrow$ unweighted wins.
 The figure's own colorbar labelling matches this convention; the underlying
 script (\texttt{notebooks/analysis/comparison\_lib.py:843--900}, called from

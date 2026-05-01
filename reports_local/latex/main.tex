@@ -82,7 +82,8 @@ integration-weighted MSE that multiplies each pointwise residual by the Becke qu
 volume element \citep{Becke1988} and the LDA exchange-energy density. The comparison
 spans two training-data regimes: ``step 5'' (8 architectures, 3 losses, 3 solvers,
 training on H$_2$O alone, 72 specs per origin) and ``step 6'' (2 architectures, 5 losses,
-3 solvers, 3 training-step budgets, training on H$_2$O+C$_2$H$_2$, 90 specs per origin).
+3 solvers, 3 training-step budgets, training on H$_2$O alone (group 1) or
+H$_2$O+C$_2$H$_2$ (groups 2--3), 90 specs per origin).
 Across all 10 architectures evaluated, integration-weighted pretraining produces a tighter
 $F_x$ basin without exception (per-arch mean tightening 3.98$\times$ in step 5, ratio of
 population means 4.25$\times$; per-arch range 2.95--4.74$\times$ in step 5 and
@@ -419,7 +420,9 @@ covers the pretraining phase (relevant to all four workflows);
 (2 archs $\times$ 5 losses $\times$ 3 solvers $\times$ 3 group schedules,
 90 specs per origin). Each subsection presents one headline figure or
 table; the supporting diagnostic depth is in the supplement (\S\ref{S:sec:pretraining}
-through \S\ref{S:sec:lo_audit}).
+through \S\ref{S:sec:lo_audit}). The cross-workflow headline numbers
+referenced throughout this section are summarised in
+Tab.~\ref{tab:headline_4way}.
 
 \subsection{Pretraining}
 \label{sec:results_pretrain}
@@ -532,7 +535,10 @@ closed-shell light-hydride class.
 \centering
 \caption{Step-6 paired comparison; verified against
 \texttt{step6\_pretrain\_origin\_comparison/headline\_diff.json}.
-Group-3 MAE rows: median over (arch, solver) for the multi-mol training set.}
+Group-3 MAE rows: mean over the 6 (arch, solver) cells per loss on the
+multi-mol training set (computed in
+\texttt{notebooks/analysis/comparison\_lib.py:1066} as
+\texttt{ae[ae.group=="group3"].groupby("loss")["mae"].mean()}).}
 \label{tab:step6_paired}
 \small
 \begin{tabular}{lrrr}
@@ -563,7 +569,7 @@ energy-vs-density tradeoff (paraphrased in \citealp{Kepp2017}).}
 
 Step 6 introduces $V_{xc}$-aware losses (L3, L4) and finds them
 \emph{necessary} for sub-$2\!\times\!10^{-4}$~e/bohr$^3$ density-RMSE on
-H$_2$O: step 5's loss set (no $V_{xc}$ residual) cannot reach below
+H$_2$O (paired comparison in Tab.~\ref{tab:step6_paired}): step 5's loss set (no $V_{xc}$ residual) cannot reach below
 $3.7\!\times\!10^{-4}$, while step 6's L3/L4 specs reach
 $1.23\!\times\!10^{-4}$ --- a 3$\times$ density-floor improvement. The
 tradeoff for this density-floor improvement is a worse AE-MAE on those
