@@ -295,14 +295,18 @@ DFS_BH76_REACTIONS = [
     },
     {
         "name": "HF+F_to_H+F2",
-        "reactants": ["FH", "F"],
+        # NOTE: ASE's get_chemical_formula() / Atoms.get_chemical_formula()
+        # returns "HF" for H-F (not "FH") despite Hill ordering.  The
+        # MoleculeSpec.name set by the step-7 notebook builder uses Hill
+        # formula consistently, so reactant species are keyed as "HF".
+        "reactants": ["HF", "F"],
         "products": ["H", "F2"],
         "coeffs": [-1.0, -1.0, +1.0, +1.0],
         # Forward barrier of HF+F→H+F2 = REVERSE barrier of NHTBH38
         # entry #5 (H+F2 → HF+F, Vf=2.27, Vr=105.80 kcal/mol REF1).
         "e_rxn_ref": 105.80,  # kcal/mol
-        "species_spins":   {"FH": 0, "F": 1, "H": 1, "F2": 0},
-        "species_charges": {"FH": 0, "F": 0, "H": 0, "F2": 0},
+        "species_spins":   {"HF": 0, "F": 1, "H": 1, "F2": 0},
+        "species_charges": {"HF": 0, "F": 0, "H": 0, "F2": 0},
         "source": (
             "NHTBH38/08 entry 5 (H+F2 → HF+F), Vr (REF1) = 105.80 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
@@ -332,11 +336,21 @@ DFS_BH76_REACTIONS = [
 #   - Li II (2 e⁻): ¹S       → spin=0
 #   - C  I  (6 e⁻): ³P       → spin=2
 #   - C  II (5 e⁻): ²P°      → spin=1
+# Naming convention: the IP13 loss channel looks up neutral and cation
+# total energies by separate MoleculeSpec.name keys (see
+# xcquinox/alec/losses.py::L5GradnormVxcStep7._ip13_channel which reads
+# ``E_nn[name_to_idx[neutral]]`` and ``E_nn[name_to_idx[cation]]``
+# independently).  Therefore neutral and cation must be DIFFERENT
+# MoleculeSpec.name strings.  The training-pool builder constructs the
+# cation MoleculeSpec as a separate single-atom entry with a "+" suffix
+# and charge=+1 / cation_spin.  The neutral keeps the bare element
+# symbol ("Li", "C") which matches the bare-atom MoleculeSpec used as
+# atom_energies anchor.
 DFS_IP13_PAIRS = [
     {
         "name": "Li_IP",
-        "neutral": "Li",
-        "cation": "Li",
+        "neutral": "Li",      # MoleculeSpec.name (Hill formula, charge=0)
+        "cation":  "Li+",     # MoleculeSpec.name (charge=+1, separate spec)
         "neutral_spin": 1,    # NIST ASD Li I (²S)
         "cation_spin":  0,    # NIST ASD Li II (¹S)
         "neutral_charge": 0,
@@ -354,8 +368,8 @@ DFS_IP13_PAIRS = [
     },
     {
         "name": "C_IP",
-        "neutral": "C",
-        "cation": "C",
+        "neutral": "C",       # MoleculeSpec.name (Hill formula, charge=0)
+        "cation":  "C+",      # MoleculeSpec.name (charge=+1, separate spec)
         "neutral_spin": 2,    # NIST ASD C I (³P)
         "cation_spin":  1,    # NIST ASD C II (²P°)
         "neutral_charge": 0,
@@ -383,6 +397,67 @@ DFS_ATOM_REFS = [
     {"sym": "Li", "spin": 1, "charge": 0,
      "spin_source": "NIST ASD Li I (²S) ground state"},
 ]
+
+
+# Atomic ground-state spins (PySCF 2S = N_α − N_β convention) for every
+# element that appears in the DFS training pool, BH76 reactions, IP13
+# pairs, AND the held-out probe sets.  Sources:
+#   - NIST Atomic Spectra Database, ground-state term symbols
+#     (https://physics.nist.gov/PhysRefData/ASD/levels_form.html)
+#   - Hund's rule for half-filled subshells (e.g., N ⁴S°, P ⁴S°)
+# Used by the step-7 notebook subset-generation cell to attach
+# at.info["spin"] when constructing on-the-fly atom MoleculeSpecs for
+# elements not in DFS_ATOM_REFS (which only covers H and Li).  Without
+# this lookup, atomic Atoms enter SCF with spin=0 and PySCF rejects with
+# "Electron number N and spin 0 are not consistent" for any open-shell
+# element (C, N, O, F, P, S, Cl, ...).
+ATOMIC_GROUND_STATE_SPIN: dict[str, int] = {
+    "H":  1,   # ²S    NIST ASD H I
+    "He": 0,   # ¹S    NIST ASD He I
+    "Li": 1,   # ²S    NIST ASD Li I
+    "Be": 0,   # ¹S    NIST ASD Be I
+    "B":  1,   # ²P°   NIST ASD B I
+    "C":  2,   # ³P    NIST ASD C I
+    "N":  3,   # ⁴S°   NIST ASD N I (Hund: half-filled 2p³)
+    "O":  2,   # ³P    NIST ASD O I
+    "F":  1,   # ²P°   NIST ASD F I
+    "Ne": 0,   # ¹S    NIST ASD Ne I
+    "Na": 1,   # ²S    NIST ASD Na I
+    "Mg": 0,   # ¹S    NIST ASD Mg I
+    "Al": 1,   # ²P°   NIST ASD Al I
+    "Si": 2,   # ³P    NIST ASD Si I
+    "P":  3,   # ⁴S°   NIST ASD P I (Hund: half-filled 3p³)
+    "S":  2,   # ³P    NIST ASD S I
+    "Cl": 1,   # ²P°   NIST ASD Cl I
+    "Ar": 0,   # ¹S    NIST ASD Ar I
+}
+
+
+def make_atom_atoms(sym: str, *, charge: int = 0, spin: int | None = None) -> Atoms:
+    """Build an ASE Atoms object for a single atom at the origin with
+    the correct ground-state spin attached to ``info``.
+
+    If ``spin`` is None, looks up the neutral atom's NIST ASD ground-state
+    2S from ATOMIC_GROUND_STATE_SPIN. Caller must pass an explicit spin
+    for cations or non-neutral charges (which have a different occupation).
+
+    Returned Atoms has ``info`` populated with ``spin``, ``charge``, and
+    ``name`` so downstream PySCF builders can read them verbatim.
+    """
+    if spin is None:
+        try:
+            spin = ATOMIC_GROUND_STATE_SPIN[sym]
+        except KeyError:
+            raise KeyError(
+                f"Atomic ground-state spin for {sym!r} is not in "
+                f"ATOMIC_GROUND_STATE_SPIN. Add it (with NIST ASD "
+                f"citation) before constructing this atom."
+            )
+    a = Atoms(sym, positions=[(0.0, 0.0, 0.0)])
+    a.info["spin"] = int(spin)
+    a.info["charge"] = int(charge)
+    a.info["name"] = sym if charge == 0 else f"{sym}{'+' * charge if charge > 0 else '-' * (-charge)}"
+    return a
 
 
 def _g297_traj_path() -> Path:

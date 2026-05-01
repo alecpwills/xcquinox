@@ -245,28 +245,55 @@ def main():
         "probe_d_multireference",
     )
 
-    def _probe_signed_errors(df_long: pd.DataFrame, probe_name: str) -> pd.DataFrame:
-        """Extract the signed-error column for a probe, handling both AE
-        (value_name='atomization_energy_error_kcalmol') and BH76
-        (value_name='rxn_error_kcalmol') schemas.
+    def _probe_signed_errors(_df_unused: pd.DataFrame, probe_name: str) -> pd.DataFrame:
+        """Walk eval_probes/<probe>/per_molecule.json across all specs and
+        extract per-molecule signed errors. Replaces the old long-form
+        eval_df.csv read — eval_df.csv is now wide-form (one row per
+        spec×set with aggregated mae), so per-molecule detail comes
+        directly from the per_molecule.json files written by alec.run_test.
 
-        Returns a per-row dataframe with columns
-        [metric, r, aug, solver, set, molecule, err_kcalmol].
-        Skipped rows: any value not in the recognized error columns.
+        Returns columns [metric, r, aug, solver, set, molecule, err_kcalmol].
         """
-        sub = df_long[df_long["set"] == probe_name]
-        if sub.empty:
+        rows = []
+        err_keys = ("atomization_energy_error_kcalmol",
+                    "ae_error_kcalmol",
+                    "AE_error_kcalmol")
+        for metric in METRICS:
+            for r in SUBSET_SIZES:
+                for aug in AUGMENTATIONS:
+                    tag = f"bin{r:02d}{'w' if aug else ''}"
+                    aug_label = "w" if aug else "nw"
+                    for solver in SOLVERS:
+                        pm_path = (STEP7_ROOT / metric / tag /
+                                   "deep_combined_attn" /
+                                   "L5_gradnorm_vxc_step7" / solver /
+                                   "eval_probes" / probe_name /
+                                   "per_molecule.json")
+                        if not pm_path.exists():
+                            continue
+                        try:
+                            pm = json.loads(pm_path.read_text())
+                        except (json.JSONDecodeError, OSError):
+                            continue
+                        for entry in pm:
+                            mol = entry.get("name") or entry.get("molecule")
+                            err_val = next(
+                                (entry[k] for k in err_keys if k in entry
+                                 and isinstance(entry[k], (int, float))),
+                                None)
+                            if err_val is None:
+                                continue
+                            rows.append({
+                                "metric": metric, "r": r, "aug": aug_label,
+                                "solver": solver, "set": probe_name,
+                                "molecule": mol,
+                                "err_kcalmol": float(err_val),
+                            })
+        if not rows:
             return pd.DataFrame(
                 columns=["metric", "r", "aug", "solver", "set",
                          "molecule", "err_kcalmol"])
-        # Recognized signed-error columns (any probe might emit either).
-        err_names = ("atomization_energy_error_kcalmol",
-                     "ae_error_kcalmol",
-                     "rxn_error_kcalmol")
-        sub = sub[sub["value_name"].isin(err_names)].copy()
-        sub = sub.rename(columns={"value": "err_kcalmol"})
-        return sub[["metric", "r", "aug", "solver", "set",
-                    "molecule", "err_kcalmol"]]
+        return pd.DataFrame(rows)
 
     # Build a tidy errors-frame across all probes.
     err_frames = [_probe_signed_errors(df, p) for p in PROBE_NAMES]
