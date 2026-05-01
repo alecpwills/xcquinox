@@ -272,9 +272,10 @@ def build_cells() -> list:
         "Generates 6 figures + headline.json from the 88 eval_df.csv files.\n"
     ))
     cells.append(_code(
+        "import sys\n"
         "import subprocess\n"
         "result = subprocess.run([\n"
-        "    'python',\n"
+        "    sys.executable,\n"
         "    str(REPO / 'reports_local' / 'step7_subset_selection' / 'scripts' / 'run_post_processing.py'),\n"
         "], capture_output=True, text=True)\n"
         "print(result.stdout)\n"
