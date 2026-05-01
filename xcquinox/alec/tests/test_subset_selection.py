@@ -305,3 +305,29 @@ def test_extract_descriptors_returns_finite_arrays(tmp_path):
     for k in ("rho_third", "s", "alpha", "weights"):
         assert np.isfinite(arrs[k]).all()
         assert arrs[k].size > 0
+
+
+def test_dick_pool_has_28_distinct_training_points():
+    """Per Dick 2021 SI §II: 21 AE + 3 BH76 + 2 IP13 + 2 atom = 28."""
+    from xcquinox.alec.dick_pool import build_dick_pool
+    pool = build_dick_pool()
+    assert pool["n_total"] == 28
+    assert len(pool["ae_molecules"]) == 21
+    assert len(pool["bh76_reactions"]) == 3
+    assert len(pool["ip13_pairs"]) == 2
+    assert len(pool["atom_refs"]) == 2
+
+
+def test_dick_pool_ae_molecule_set_matches_si_section_ii():
+    """Hill-formula equality with Dick SI §II text."""
+    from xcquinox.alec.dick_pool import build_dick_pool, DICK_AE_HILL
+    pool = build_dick_pool()
+    found = {a.get_chemical_formula() for a in pool["ae_molecules"]}
+    assert found == set(DICK_AE_HILL)
+
+
+def test_dick_pool_atom_refs_are_h_and_li():
+    from xcquinox.alec.dick_pool import build_dick_pool
+    pool = build_dick_pool()
+    formulas = {a.get_chemical_formula() for a in pool["atom_refs"]}
+    assert formulas == {"H", "Li"}
