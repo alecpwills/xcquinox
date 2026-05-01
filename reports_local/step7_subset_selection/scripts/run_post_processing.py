@@ -138,15 +138,51 @@ def main():
     # ---- Plot 5: descriptor distribution overlay (full pool vs r=21 subsets) ----
     ref_npz = np.load(STEP7_ROOT / "dick_pool_full_hist" / "reference.npz")
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    # Full-pool reference (black)
     axes[0].plot(ref_npz["e_rho"][:-1], ref_npz["h_ref_rho"], "k-", label="full pool")
     axes[1].plot(ref_npz["e_s"][:-1], ref_npz["h_ref_s"], "k-", label="full pool")
     axes[2].plot(ref_npz["e_alpha"][:-1], ref_npz["h_ref_alpha"], "k-", label="full pool")
-    for ax, lab in zip(axes, ("ρ^{1/3}", "s", "α")):
+    # r=21, aug=False overlay per metric (colored)
+    _plot5_colors = {"l2": "tab:blue", "jsd": "tab:orange"}
+    _desc_cache = STEP7_ROOT / "subset_descriptors"
+    for _metric in METRICS:
+        _key = f"{_metric}/21/False"
+        if _key not in ledger:
+            continue
+        _chosen = ledger[_key]["chosen_indices"]
+        # Load and concatenate descriptor arrays for the chosen pool entries
+        _arrs: dict = {"rho_third": [], "s": [], "alpha": [], "weights": []}
+        for _idx in _chosen:
+            _matches = sorted(_desc_cache.glob(f"{_idx}_*.npz"))
+            if not _matches:
+                continue
+            _z = np.load(_matches[0])
+            for _k in ("rho_third", "s", "alpha", "weights"):
+                _arrs[_k].append(_z[_k])
+        if not _arrs["rho_third"]:
+            continue
+        _cat = {_k: np.concatenate(_arrs[_k]) for _k in ("rho_third", "s", "alpha", "weights")}
+        # Rebin using the reference edges so histograms are aligned
+        _LOG_REG = 1e-10
+        _h_sub = {}
+        for _k, _ek in (("rho_third", "e_rho"), ("s", "e_s"), ("alpha", "e_alpha")):
+            _log_x = np.log10(_cat[_k] + _LOG_REG)
+            _h, _ = np.histogram(_log_x, bins=ref_npz[_ek], weights=_cat["weights"],
+                                 density=True)
+            _h_sub[_k] = _h
+        _color = _plot5_colors[_metric]
+        axes[0].plot(ref_npz["e_rho"][:-1], _h_sub["rho_third"],
+                     color=_color, label=f"{_metric} r=21")
+        axes[1].plot(ref_npz["e_s"][:-1], _h_sub["s"],
+                     color=_color, label=f"{_metric} r=21")
+        axes[2].plot(ref_npz["e_alpha"][:-1], _h_sub["alpha"],
+                     color=_color, label=f"{_metric} r=21")
+    for ax, lab in zip(axes, (r"$\rho^{1/3}$", "s", r"$\alpha$")):
         ax.set_xlabel(f"log10 {lab}")
         ax.set_ylabel("density")
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
-    axes[1].set_title("Plot 5: Descriptor histograms (full pool reference)")
+    axes[1].set_title("Plot 5: Descriptor histograms (full pool vs r=21 subsets)")
     fig.tight_layout()
     fig.savefig(FIGS_DIR / "plot5_descriptor_overlay.png", dpi=150)
     plt.close(fig)
@@ -176,12 +212,16 @@ def main():
     plt.close(fig)
 
     # ---- Headline table ----
-    headline["best_per_metric_solver_aug"] = (
-        df[df["set"] == "w4_11"]
-        .loc[df.groupby(["metric", "solver", "aug"])["mae"].idxmin()]
-        [["metric", "solver", "aug", "r", "mae", "rho_rmse"]]
-        .to_dict(orient="records")
-    )
+    w411 = df[df["set"] == "w4_11"]
+    if not w411.empty:
+        headline["best_per_metric_solver_aug"] = (
+            w411
+            .loc[w411.groupby(["metric", "solver", "aug"])["mae"].idxmin()]
+            [["metric", "solver", "aug", "r", "mae", "rho_rmse"]]
+            .to_dict(orient="records")
+        )
+    else:
+        headline["best_per_metric_solver_aug"] = []
     HEADLINE_PATH.write_text(json.dumps(headline, indent=2))
     print(f"Wrote 6 figures + headline to {HEADLINE_PATH}")
 
