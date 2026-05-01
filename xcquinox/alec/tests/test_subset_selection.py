@@ -1,6 +1,8 @@
 """Unit tests for xcquinox.alec.subset_selection."""
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -331,3 +333,66 @@ def test_dick_pool_atom_refs_are_h_and_li():
     pool = build_dick_pool()
     formulas = {a.get_chemical_formula() for a in pool["atom_refs"]}
     assert formulas == {"H", "Li"}
+
+
+def test_dick_bh76_references_present():
+    """All 3 BH76 reactions must have a finite e_rxn_ref in kcal/mol."""
+    from xcquinox.alec.dick_pool import DICK_BH76_REACTIONS
+    assert len(DICK_BH76_REACTIONS) == 3
+    for rxn in DICK_BH76_REACTIONS:
+        assert "e_rxn_ref" in rxn
+        assert isinstance(rxn["e_rxn_ref"], float)
+        assert math.isfinite(rxn["e_rxn_ref"])
+        # Barrier heights are positive and < 200 kcal/mol typically
+        assert 0.0 < rxn["e_rxn_ref"] < 200.0
+        assert "source" in rxn
+
+
+def test_dick_ip13_references_present():
+    """Both IP13 pairs must have a finite ip_ref in kcal/mol."""
+    from xcquinox.alec.dick_pool import DICK_IP13_PAIRS
+    assert len(DICK_IP13_PAIRS) == 2
+    for ip in DICK_IP13_PAIRS:
+        assert "ip_ref" in ip
+        assert isinstance(ip["ip_ref"], float)
+        assert math.isfinite(ip["ip_ref"])
+        # IP1 of Li~124, C~260, He~570 kcal/mol
+        assert 50.0 < ip["ip_ref"] < 600.0
+        assert "source" in ip
+
+
+def test_dick_ip13_li_matches_nist():
+    """Li IE_1 = 5.391719 eV from NIST → 124.336 kcal/mol."""
+    from xcquinox.alec.dick_pool import DICK_IP13_PAIRS
+    li = next(p for p in DICK_IP13_PAIRS if p["name"] == "Li_IP")
+    expected = 5.391719 * 23.0605  # NIST eV × CODATA conversion
+    assert li["ip_ref"] == pytest.approx(expected, abs=0.01)
+
+
+def test_dick_ip13_c_matches_nist():
+    """C IE_1 = 11.26030 eV from NIST → 259.668 kcal/mol."""
+    from xcquinox.alec.dick_pool import DICK_IP13_PAIRS
+    c = next(p for p in DICK_IP13_PAIRS if p["name"] == "C_IP")
+    expected = 11.26030 * 23.0605
+    assert c["ip_ref"] == pytest.approx(expected, abs=0.05)
+
+
+def test_dick_bh76_oh_n2_to_h_n2o_value():
+    """OH+N2 → H+N2O barrier is the reverse of NHTBH38 #1: 82.27 kcal/mol REF1."""
+    from xcquinox.alec.dick_pool import DICK_BH76_REACTIONS
+    rxn = next(r for r in DICK_BH76_REACTIONS if r["name"] == "OH+N2_to_H+N2O")
+    assert rxn["e_rxn_ref"] == pytest.approx(82.27, abs=0.01)
+
+
+def test_dick_bh76_oh_ch3_to_o_ch4_value():
+    """OH+CH3 → O+CH4 barrier is the reverse of HTBH38 #19-20: 7.90 kcal/mol REF1."""
+    from xcquinox.alec.dick_pool import DICK_BH76_REACTIONS
+    rxn = next(r for r in DICK_BH76_REACTIONS if r["name"] == "OH+CH3_to_O+CH4")
+    assert rxn["e_rxn_ref"] == pytest.approx(7.90, abs=0.01)
+
+
+def test_dick_bh76_hf_f_to_h_f2_value():
+    """HF+F → H+F2 barrier is the reverse of NHTBH38 #5: 105.80 kcal/mol REF1."""
+    from xcquinox.alec.dick_pool import DICK_BH76_REACTIONS
+    rxn = next(r for r in DICK_BH76_REACTIONS if r["name"] == "HF+F_to_H+F2")
+    assert rxn["e_rxn_ref"] == pytest.approx(105.80, abs=0.01)
