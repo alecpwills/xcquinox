@@ -267,6 +267,21 @@ def build_cells() -> list:
         "                    n_failed += 1\n"
         "print(f'Done: {n_done}; Failed/pending: {n_failed}; Skipped: {n_skipped}')\n"
     ))
+    cells.append(_md(
+        "## 6. Post-Processing Analysis\n\n"
+        "Generates 6 figures + headline.json from the 88 eval_df.csv files.\n"
+    ))
+    cells.append(_code(
+        "import subprocess\n"
+        "result = subprocess.run([\n"
+        "    'python',\n"
+        "    str(REPO / 'reports_local' / 'step7_subset_selection' / 'scripts' / 'run_post_processing.py'),\n"
+        "], capture_output=True, text=True)\n"
+        "print(result.stdout)\n"
+        "if result.returncode != 0:\n"
+        "    print('STDERR:', result.stderr)\n"
+        "    raise RuntimeError(f'post-processing failed: exit {result.returncode}')\n"
+    ))
     return cells
 
 
