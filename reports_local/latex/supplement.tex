@@ -586,7 +586,13 @@ The paired headline numbers are in Tab.~\ref{S:tab:step6_paired}.
 \label{S:fig:figc1}\end{figure}
 
 \begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_pretrain_origin_comparison/figures/figc2_ratio_heatmap.png}
-\caption{Ratio heatmap (uw / int).}
+\caption{Ratio heatmap, $\log_{10}(\mathrm{integration} / \mathrm{unweighted})$
+per-cell (architecture $\times$ loss). Green cells $\Rightarrow$ integration
+wins (smaller MAE under integration); red cells $\Rightarrow$ unweighted wins.
+The figure's own colorbar labelling matches this convention; the underlying
+script (\texttt{notebooks/analysis/comparison\_lib.py:843--900}, called from
+\texttt{run\_origin\_comparison.py:85--88}) computes
+$\log_{10}(\mathrm{MAE_b} / \mathrm{MAE_a})$ with $a$=unweighted, $b$=integration.}
 \label{S:fig:figc2}\end{figure}
 
 \begin{figure}[h!]\centering\includegraphics[width=\textwidth]{step6_pretrain_origin_comparison/figures/figc3_pareto_overlay.png}

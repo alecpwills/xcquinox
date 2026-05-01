@@ -128,7 +128,7 @@ PBE chooses $\kappa = 0.804$, giving $F_x(s\!\to\!\infty) = 1+\kappa = 1.804$, a
 \emph{stricter} sufficient condition for the Lieb--Oxford bound
 \citep{LiebOxford1981}.\footnote{\citet{LiebOxford1981} prove
 $E_{XC} \ge -C\,\int n^{4/3}\, d^3 r$ with $C = 1.68$
-\citep[their Theorem~3.1, eqs.~26--27]{LiebOxford1981}; \citet{PerdewBurkeErnzerhof1996}
+\citep[their \S 2, eqs.~(26)--(27)]{LiebOxford1981}; \citet{PerdewBurkeErnzerhof1996}
 \S III(g) eq.~13 quote a tighter $C = 1.679$, with the same Lieb--Oxford-1981
 attribution. The 0.001 difference is a numerical refinement of the same proof,
 not a different bound; both round to ``1.68''.}
@@ -369,7 +369,8 @@ pretrain target $F_x^{\mathrm{PBE}}(s)$ comes from the analytic PBE form
 PBE correlation enhancement.
 
 \paragraph{Training molecules and basis.} Step 5 trains on H$_2$O for 250
-task-loss steps; step 6 trains on H$_2$O+C$_2$H$_2$ for 100 (groups~1,~2)
+task-loss steps; step 6 trains on H$_2$O alone (group~1) or
+H$_2$O+C$_2$H$_2$ (groups~2,~3) for 100 (groups~1,~2)
 or 250 (group~3) task-loss steps. Geometries are taken from the W4-11
 benchmark set (CCSD(T)-CBS-quality reference geometries; equilibrium
 bond distances, no out-of-equilibrium sampling). The basis is
@@ -389,9 +390,10 @@ totals for first/second-row atoms (C, N, O) follow
 18-electron species. The H atom is treated analytically
 ($E^{\mathrm{exact}}_{\mathrm{H}} = -\tfrac{1}{2}\,\mathrm{Ha}$, no
 correlation by definition). He uses an explicit non-Chakravorty
-reference: Chakravorty 1993's Table~VIII covers 3- through
-10-electron CAS-IP correlation energies (extended to 11--18 electrons
-in Table~IX), and the 2-electron correlation energy is taken from a
+reference: Chakravorty 1993's Table~VIII reports 3- through
+10-electron CAS-IP correlation increments $\Delta E_c'(N,Z)$, and their
+Table~X provides the corresponding total correlation energies for
+$N=3$--$18$. The 2-electron correlation energy is taken from a
 separate theoretical determination (\citealp{ChakravortyEtAl1993}
 ref.~[1]; based on Davidson \emph{et al.}\ 1991, Phys.~Rev.~A
 \textbf{44}, 7071).
@@ -500,8 +502,9 @@ chemical accuracy (1~kcal/mol; \citealp{Pople1999}) drawn as references.}
 \label{fig:headline_bestae}
 \end{figure}
 
-The pretrain head start compounds through 250 task-loss steps in step 5.
-The integration-origin best spec on H$_2$O is
+The pretrain head start compounds through 250 task-loss steps in step 5
+(Fig.~\ref{fig:headline_bestae}). The integration-origin best spec on
+H$_2$O is
 \texttt{deep\_dm\_attn / C\_atomization\_plus\_grid / fixed\_j\_3} with
 AE-MAE 0.000118~kcal/mol --- 11.9$\times$ tighter than the unweighted
 origin's best (0.001402~kcal/mol; same H$_2$O configuration), and
@@ -719,7 +722,7 @@ specific paper does not address NN XC.
 
 \item The ``functionals which yield highly accurate energies often produce
 potentials which differ markedly from the exact ones'' phrasing is quoted by
-\citet{Kepp2017} (footnote~2) and traces to \citet{CruzLamBurke1998}; the broader
+\citet{Kepp2017} (his ref.~2) and traces to \citet{CruzLamBurke1998}; the broader
 Burke--Perdew--Ernzerhof body of work of the late 1990s
 (adiabatic-connection method, hybrid functionals, etc.) provides the wider
 context for the energy-vs-density tradeoff principle. The Medvedev 2017 across-decades thesis
@@ -729,9 +732,9 @@ depend on Medvedev's stronger generalization.
 \item The GradNorm asymmetry parameter $\alpha = 1.5$
 \citep{ChenGradNorm2018} used by step 6's L5 spec is the optimum found
 in the NYUv2+kpts (depth + surface normals + room-keypoints) experiment
-of \citet[Table~2 and \S 5.2]{ChenGradNorm2018}; the same paper also
-uses $\alpha = 0.12$ for a synthetic 2-task regression toy problem
-(\S 4 / Fig.~2), so the value is task-specific and not asserted
+of \citet[Table~2 and \S\S 5.2--5.4]{ChenGradNorm2018}; the same paper
+also uses $\alpha = 0.12$ for synthetic regression toy problems with
+$T = 2$ and $T = 10$ tasks (\S 4, Fig.~2), so the value is task-specific and not asserted
 as a universal default. For our DFT loss family (AE +
 $\rho$-RMSE + V$_{xc}$ residual + anchor) the optimal $\alpha$ is
 empirically reasonable but un-tuned; a controlled sweep is warranted.
