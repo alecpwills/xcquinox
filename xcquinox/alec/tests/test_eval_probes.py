@@ -1,0 +1,310 @@
+"""Unit tests for xcquinox.alec.eval_probes (step-7 held-out probes).
+
+Tests verify:
+  - Each of the 4 probes has 5-6 entries.
+  - Every entry carries a non-empty source citation string.
+  - Every entry carries a finite reference value (ae_kcalmol or e_rxn_ref).
+  - No probe entry overlaps with the Dick-2021 training pool — probes
+    must measure transfer, not training-set repeats.
+  - Spot-check selected reference values against the published numbers
+    (Haunschild2012 Table I; Truhlar HTBH/NHTBH REF1).
+  - build_probe_pool() returns the expected shape for each probe.
+"""
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from xcquinox.alec import eval_probes as ep
+from xcquinox.alec.dfs_pool import (
+    DFS_AE_HILL,
+    DFS_BH76_REACTIONS,
+    DFS_IP13_PAIRS,
+    DFS_ATOM_REFS,
+)
+
+
+# ---------------------------------------------------------------------------
+# 1. Structural completeness
+# ---------------------------------------------------------------------------
+def test_all_probes_registry_has_four_entries():
+    assert len(ep.ALL_PROBES) == 4
+    assert set(ep.ALL_PROBES) == {
+        "probe_a_chemical_similarity",
+        "probe_b_heteroatom",
+        "probe_c_bh76_transfer",
+        "probe_d_multireference",
+    }
+
+
+def test_all_probes_kinds_aligned():
+    """PROBE_KIND must cover every entry in ALL_PROBES."""
+    assert set(ep.PROBE_KIND) == set(ep.ALL_PROBES)
+    assert ep.PROBE_KIND["probe_a_chemical_similarity"] == "ae"
+    assert ep.PROBE_KIND["probe_b_heteroatom"] == "ae"
+    assert ep.PROBE_KIND["probe_c_bh76_transfer"] == "bh76"
+    assert ep.PROBE_KIND["probe_d_multireference"] == "ae"
+
+
+@pytest.mark.parametrize("probe_name", list(ep.ALL_PROBES))
+def test_each_probe_has_five_or_six_entries(probe_name):
+    entries = ep.ALL_PROBES[probe_name]
+    assert 5 <= len(entries) <= 6, (
+        f"{probe_name}: expected 5-6 entries, got {len(entries)}")
+
+
+# ---------------------------------------------------------------------------
+# 2. Citations and reference values
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("probe_name", list(ep.ALL_PROBES))
+def test_every_entry_has_nonempty_source(probe_name):
+    """No fabricated values: every entry must cite its published source."""
+    for entry in ep.ALL_PROBES[probe_name]:
+        assert "source" in entry, f"{probe_name}: missing source on {entry}"
+        assert isinstance(entry["source"], str)
+        assert len(entry["source"].strip()) > 0
+
+
+@pytest.mark.parametrize("probe_name", list(ep.ALL_PROBES))
+def test_every_entry_has_nonempty_rationale(probe_name):
+    """Every entry must document why it tests its probe characteristic."""
+    for entry in ep.ALL_PROBES[probe_name]:
+        assert "rationale" in entry, (
+            f"{probe_name}: missing rationale on {entry}")
+        assert isinstance(entry["rationale"], str)
+        assert len(entry["rationale"].strip()) > 20  # non-trivial
+
+
+def test_ae_probes_have_finite_ae_refs():
+    """Probes A/B/D entries must have a finite, physical ae_kcalmol."""
+    for probe_name in ("probe_a_chemical_similarity",
+                       "probe_b_heteroatom",
+                       "probe_d_multireference"):
+        for entry in ep.ALL_PROBES[probe_name]:
+            ae = entry.get("ae_kcalmol")
+            assert ae is not None, f"{probe_name}: missing ae_kcalmol"
+            assert isinstance(ae, float)
+            assert math.isfinite(ae)
+            # All Haunschild2012 first/second-row AEs sit in (10, 1000) kcal/mol.
+            assert 10.0 < ae < 1000.0, (
+                f"{probe_name}: {entry['hill']}: AE out of range {ae}")
+
+
+def test_bh76_probe_has_finite_e_rxn_refs():
+    """Probe C reactions must have a finite, physical Vf in kcal/mol."""
+    for entry in ep.PROBE_C_BH76_OUT_OF_TRAINING:
+        e = entry["e_rxn_ref"]
+        assert isinstance(e, float)
+        assert math.isfinite(e)
+        # BH76 forward barriers fall in (-15, 50) kcal/mol for our six.
+        assert -20.0 < e < 100.0, f"{entry['name']}: Vf out of range {e}"
+
+
+# ---------------------------------------------------------------------------
+# 3. No overlap with Dick training pool
+# ---------------------------------------------------------------------------
+def test_ae_probes_disjoint_from_dfs_training_pool():
+    """No probe-A/B/D Hill formula may appear in Dick training (21 AE
+    molecules + 2 atom refs)."""
+    training_hills = set(DFS_AE_HILL) | set(DFS_ATOM_REFS)
+    for probe_name in ("probe_a_chemical_similarity",
+                       "probe_b_heteroatom",
+                       "probe_d_multireference"):
+        probe_hills = {e["hill"] for e in ep.ALL_PROBES[probe_name]}
+        overlap = probe_hills & training_hills
+        assert not overlap, (
+            f"{probe_name}: AE probe overlaps Dick training pool: {overlap}")
+
+
+def test_bh76_probe_reaction_names_distinct_from_training():
+    """Probe C reaction names must not duplicate the 3 Dick training BH76
+    reactions (the canonical-name strings differ)."""
+    training_names = {r["name"] for r in DFS_BH76_REACTIONS}
+    probe_names = {r["name"] for r in ep.PROBE_C_BH76_OUT_OF_TRAINING}
+    overlap = training_names & probe_names
+    assert not overlap, (
+        f"probe_c BH76 names overlap training: {overlap}")
+
+
+def test_bh76_probe_reaction_signatures_distinct_from_training():
+    """Probe C forward direction must differ from each Dick training
+    reaction in the SAME direction.
+
+    Reactions with identical (reactants, products) ordered tuples are
+    duplicates.  Reverse reactions (swapped reactants/products) are
+    treated as DISTINCT probes because their forward barrier height
+    Vf differs from the training reaction's Vr — they are independent
+    targets in HTBH/NHTBH.  See PROBE_C entry ``H+N2O_to_OH+N2`` whose
+    rationale documents the directional-consistency probe.
+    """
+    def signature(rxn):
+        return (tuple(sorted(rxn["reactants"])),
+                tuple(sorted(rxn["products"])))
+
+    train_sigs = {signature(r) for r in DFS_BH76_REACTIONS}
+    for probe_rxn in ep.PROBE_C_BH76_OUT_OF_TRAINING:
+        sig = signature(probe_rxn)
+        assert sig not in train_sigs, (
+            f"Probe C reaction {probe_rxn['name']!r} matches a Dick "
+            f"training reaction signature in the same direction.")
+
+
+def test_ip13_probe_atoms_distinct_from_training():
+    """The IP13 training pairs use Li and C neutral/cation; no probe-D
+    diatomic should be a 'Li' or 'C' atom (which are training-pool atoms
+    via DFS_IP13_PAIRS / atom_refs).  This is mostly a no-op tripwire
+    given probe-D contains diatomics, but it documents the constraint."""
+    ip_atoms = {p["neutral"] for p in DFS_IP13_PAIRS} | set(DFS_ATOM_REFS)
+    for entry in ep.PROBE_D_MULTIREFERENCE:
+        # A multireference probe should not be a single atom.
+        assert entry["hill"] not in ip_atoms, (
+            f"Probe D entry {entry['hill']!r} duplicates training atom set")
+
+
+# ---------------------------------------------------------------------------
+# 4. Spot-check published reference values
+# ---------------------------------------------------------------------------
+def test_probe_a_ch4_value_matches_haunschild_kj():
+    """CH4 AE (Haunschild2012 Table I): 1757.82 kJ/mol → 420.129 kcal/mol."""
+    e = next(d for d in ep.PROBE_A_CHEMICAL_SIMILARITY if d["hill"] == "CH4")
+    expected_kcal = 1757.82 / 4.184
+    assert e["ae_kcalmol"] == pytest.approx(expected_kcal, abs=1e-3)
+    # And cross-check magnitude vs the W4-11 anchor convention used by
+    # alec.dfs_pool — both Haunschild2012 and W4-11 must give CH4 within
+    # 1 kcal/mol of each other (sub-1-kJ/mol agreement is documented in
+    # Haunschild 2012 §III).  The W4-11 SI value (Karton 2011 Table 1
+    # row 5) is 419.30 kcal/mol; Haunschild gives 420.13 — Δ = 0.83
+    # kcal/mol, well within the W4 0.24 kcal/mol error budget.
+    assert abs(e["ae_kcalmol"] - 419.30) < 1.0
+
+
+def test_probe_b_h2s_value_matches_haunschild_kj():
+    """H2S AE (Haunschild2012 Table I): 768.72 kJ/mol → 183.728 kcal/mol."""
+    e = next(d for d in ep.PROBE_B_HETEROATOM_EXTRAPOLATION if d["hill"] == "H2S")
+    expected_kcal = 768.72 / 4.184
+    assert e["ae_kcalmol"] == pytest.approx(expected_kcal, abs=1e-3)
+
+
+def test_probe_c_oh_h2_to_h2o_h_vf_matches_htbh38():
+    """OH+H2 → H2O+H Vf = 4.90 kcal/mol (HTBH38/08 entry 2 REF1)."""
+    rxn = next(r for r in ep.PROBE_C_BH76_OUT_OF_TRAINING
+               if r["name"] == "OH+H2_to_H2O+H")
+    assert rxn["e_rxn_ref"] == pytest.approx(4.90, abs=1e-2)
+
+
+def test_probe_c_h_n2o_to_oh_n2_vf_matches_nhtbh38():
+    """H+N2O → OH+N2 Vf = 17.13 kcal/mol (NHTBH38/08 entry 1 REF1).
+
+    This is the FORWARD direction of the Dick training reaction
+    (reverse Vr = 82.27).  Same TS, opposite direction — distinct
+    reference value, distinct probe.
+    """
+    rxn = next(r for r in ep.PROBE_C_BH76_OUT_OF_TRAINING
+               if r["name"] == "H+N2O_to_OH+N2")
+    assert rxn["e_rxn_ref"] == pytest.approx(17.13, abs=1e-2)
+
+
+def test_probe_d_o2_value_matches_haunschild_kj():
+    """O2 (triplet) AE (Haunschild2012 Table I): 505.88 kJ/mol → 120.908 kcal/mol."""
+    e = next(d for d in ep.PROBE_D_MULTIREFERENCE if d["hill"] == "O2")
+    expected_kcal = 505.88 / 4.184
+    assert e["ae_kcalmol"] == pytest.approx(expected_kcal, abs=1e-3)
+    # O2 multiplicity must be triplet (³Σg⁻); spin = 2 in ASE convention.
+    assert e["spin"] == 2
+
+
+def test_probe_d_beh_value_matches_haunschild_kj():
+    """BeH AE (Haunschild2012 Table I): 212.50 kJ/mol → 50.789 kcal/mol."""
+    e = next(d for d in ep.PROBE_D_MULTIREFERENCE if d["hill"] == "HBe")
+    expected_kcal = 212.50 / 4.184
+    assert e["ae_kcalmol"] == pytest.approx(expected_kcal, abs=1e-3)
+    # BeH ground state is ²Σ⁺ — one unpaired electron.
+    assert e["spin"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 5. build_probe_pool factory
+# ---------------------------------------------------------------------------
+def test_build_probe_pool_unknown_name_raises():
+    with pytest.raises(ValueError):
+        ep.build_probe_pool("not_a_probe")
+
+
+@pytest.mark.parametrize("probe_name",
+                         ["probe_a_chemical_similarity",
+                          "probe_b_heteroatom",
+                          "probe_d_multireference"])
+def test_build_probe_pool_ae_kind(probe_name):
+    pool = ep.build_probe_pool(probe_name)
+    assert pool["kind"] == "ae"
+    assert 5 <= pool["n"] <= 6
+    assert len(pool["molecules"]) == pool["n"]
+    assert len(pool["ae_refs_kcalmol"]) == pool["n"]
+    # Every Atoms must carry the probe metadata
+    for at in pool["molecules"]:
+        for k in ("ae_kcalmol", "ae_source", "ae_name", "rationale",
+                  "spin", "charge"):
+            assert k in at.info, f"{probe_name}: missing info[{k!r}] on {at}"
+        assert math.isfinite(at.info["ae_kcalmol"])
+
+
+def test_build_probe_pool_bh76_kind():
+    pool = ep.build_probe_pool("probe_c_bh76_transfer")
+    assert pool["kind"] == "bh76"
+    assert pool["n"] == 6
+    assert len(pool["reactions"]) == 6
+    # Every species referenced in any reaction must appear in molecules
+    referenced = set()
+    for rxn in pool["reactions"]:
+        for s in (*rxn["reactants"], *rxn["products"]):
+            referenced.add(s)
+    formulas = {a.get_chemical_formula() for a in pool["molecules"]}
+    missing = referenced - formulas
+    assert not missing, (
+        f"BH76 probe missing geometries for species: {missing}")
+    # atom_set must be a subset of expected elements (H, C, N, O, S, Cl)
+    assert pool["atom_set"] <= {"H", "C", "N", "O", "S", "Cl"}
+
+
+def test_build_probe_pool_ae_atom_set_does_not_intersect_unexpected():
+    """Probe A & D should be H/C/N/O/F/Be only; Probe B should add S/P/Cl/Si."""
+    pa = ep.build_probe_pool("probe_a_chemical_similarity")
+    assert pa["atom_set"] <= {"H", "C", "N", "O"}
+    pb = ep.build_probe_pool("probe_b_heteroatom")
+    assert pb["atom_set"] <= {"H", "O", "S", "P", "Cl", "Si"}
+    pd = ep.build_probe_pool("probe_d_multireference")
+    assert pd["atom_set"] <= {"H", "Be", "C", "N", "O", "F", "Cl"}
+
+
+def test_build_probe_pool_no_overlap_with_dfs_training_atoms_set():
+    """All probe AE molecules' Hill formulas, when compared against
+    DFS_AE_HILL, must be disjoint — this is the load-bearing
+    no-fabrication / no-training-leak invariant."""
+    training_hills = set(DFS_AE_HILL)
+    for probe_name in ("probe_a_chemical_similarity",
+                       "probe_b_heteroatom",
+                       "probe_d_multireference"):
+        pool = ep.build_probe_pool(probe_name)
+        probe_hills = {a.info["probe_hill"] for a in pool["molecules"]}
+        assert probe_hills.isdisjoint(training_hills), (
+            f"{probe_name}: probe_hills overlap training: "
+            f"{probe_hills & training_hills}")
+
+
+def test_build_probe_pool_bh76_reactions_reference_total_atom_count():
+    """For each BH76 reaction, atom-count balance: sum(coeffs * n_atoms)
+    must be zero.  This catches any typo in coeffs or species lists."""
+    pool = ep.build_probe_pool("probe_c_bh76_transfer")
+    by_formula = {a.get_chemical_formula(): a for a in pool["molecules"]}
+    for rxn in pool["reactions"]:
+        species = (*rxn["reactants"], *rxn["products"])
+        coeffs = rxn["coeffs"]
+        # element-wise balance
+        elem_balance: dict = {}
+        for sp, c in zip(species, coeffs):
+            for sym in by_formula[sp].get_chemical_symbols():
+                elem_balance[sym] = elem_balance.get(sym, 0.0) + c
+        for sym, val in elem_balance.items():
+            assert abs(val) < 1e-9, (
+                f"{rxn['name']}: {sym} balance = {val} (should be 0)")

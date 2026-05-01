@@ -226,8 +226,230 @@ def main():
         )
     else:
         headline["best_per_metric_solver_aug"] = []
-    HEADLINE_PATH.write_text(json.dumps(headline, indent=2))
-    print(f"Wrote 6 figures + headline to {HEADLINE_PATH}")
+
+    # ----------------------------------------------------------------------
+    # T23 — Held-out probe-set comprehensive analysis
+    #
+    # Reads the per-spec eval_df.csv files in long-form schema:
+    #   columns = metric / tag / solver / set / molecule / value_name / value
+    # where `set` ∈ {training_subset, probe_a_chemical_similarity,
+    #                probe_b_heteroatom, probe_c_bh76_transfer,
+    #                probe_d_multireference}.
+    #
+    # Two figures + two tables + headline['probe_summary'].
+    # ----------------------------------------------------------------------
+    PROBE_NAMES = (
+        "probe_a_chemical_similarity",
+        "probe_b_heteroatom",
+        "probe_c_bh76_transfer",
+        "probe_d_multireference",
+    )
+
+    def _probe_signed_errors(df_long: pd.DataFrame, probe_name: str) -> pd.DataFrame:
+        """Extract the signed-error column for a probe, handling both AE
+        (value_name='atomization_energy_error_kcalmol') and BH76
+        (value_name='rxn_error_kcalmol') schemas.
+
+        Returns a per-row dataframe with columns
+        [metric, r, aug, solver, set, molecule, err_kcalmol].
+        Skipped rows: any value not in the recognized error columns.
+        """
+        sub = df_long[df_long["set"] == probe_name]
+        if sub.empty:
+            return pd.DataFrame(
+                columns=["metric", "r", "aug", "solver", "set",
+                         "molecule", "err_kcalmol"])
+        # Recognized signed-error columns (any probe might emit either).
+        err_names = ("atomization_energy_error_kcalmol",
+                     "ae_error_kcalmol",
+                     "rxn_error_kcalmol")
+        sub = sub[sub["value_name"].isin(err_names)].copy()
+        sub = sub.rename(columns={"value": "err_kcalmol"})
+        return sub[["metric", "r", "aug", "solver", "set",
+                    "molecule", "err_kcalmol"]]
+
+    # Build a tidy errors-frame across all probes.
+    err_frames = [_probe_signed_errors(df, p) for p in PROBE_NAMES]
+    df_err = pd.concat(err_frames, ignore_index=True) if err_frames else pd.DataFrame()
+
+    # ---- Plot 7: probe-set MAE comparison (grouped bar) ----
+    if not df_err.empty:
+        # MAE per (set, metric, solver, aug, r=21)
+        mae_r21 = (
+            df_err[df_err["r"] == 21]
+            .assign(abs_err=lambda x: x["err_kcalmol"].abs())
+            .groupby(["set", "metric", "solver", "aug"])["abs_err"].mean()
+            .reset_index(name="mae")
+        )
+        if not mae_r21.empty:
+            fig, ax = plt.subplots(figsize=(12, 5))
+            mae_r21["spec_label"] = mae_r21.apply(
+                lambda x: f"{x['metric']}/{x['solver']}/{x['aug']}", axis=1)
+            pivot = mae_r21.pivot(index="set", columns="spec_label", values="mae")
+            pivot = pivot.reindex(index=PROBE_NAMES)
+            pivot.plot(kind="bar", ax=ax, width=0.85)
+            ax.axhline(1.0, color="r", linestyle="--",
+                       label="chemical accuracy 1 kcal/mol")
+            ax.set_ylabel("MAE (kcal/mol)")
+            ax.set_xlabel("probe set")
+            ax.set_title("Plot 7: Held-out probe-set MAE comparison (r=21)")
+            ax.set_yscale("log")
+            ax.legend(fontsize=7, ncol=2, loc="upper right")
+            ax.grid(alpha=0.3, axis="y")
+            for tick in ax.get_xticklabels():
+                tick.set_rotation(20)
+                tick.set_ha("right")
+            fig.tight_layout()
+            fig.savefig(FIGS_DIR / "plot7_probe_comparison.png", dpi=150)
+            plt.close(fig)
+
+    # ---- Plot 8: cross-probe heatmap (probes × specs) ----
+    if not df_err.empty:
+        mae_all_r = (
+            df_err
+            .assign(abs_err=lambda x: x["err_kcalmol"].abs())
+            .groupby(["set", "metric", "solver", "aug", "r"])["abs_err"].mean()
+            .reset_index(name="mae")
+        )
+        # Pick the BEST r for each (probe, metric, solver, aug)
+        best = (
+            mae_all_r
+            .loc[mae_all_r.groupby(["set", "metric", "solver", "aug"])["mae"].idxmin()]
+        )
+        if not best.empty:
+            best["spec_label"] = best.apply(
+                lambda x: f"{x['metric']}/{x['solver']}/{x['aug']}", axis=1)
+            heat = best.pivot(index="set", columns="spec_label", values="mae")
+            heat = heat.reindex(index=PROBE_NAMES)
+            fig, ax = plt.subplots(figsize=(12, 5))
+            log_heat = np.log10(heat.values + 1e-6)
+            im = ax.imshow(log_heat, aspect="auto", cmap="viridis")
+            ax.set_xticks(range(heat.shape[1]))
+            ax.set_xticklabels(heat.columns, rotation=45, ha="right", fontsize=7)
+            ax.set_yticks(range(heat.shape[0]))
+            ax.set_yticklabels(heat.index, fontsize=8)
+            for i in range(heat.shape[0]):
+                for j in range(heat.shape[1]):
+                    val = heat.values[i, j]
+                    if not np.isnan(val):
+                        ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                                color="white" if log_heat[i, j] > log_heat.mean() else "black",
+                                fontsize=6)
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.set_label("log10 MAE (kcal/mol)")
+            ax.set_title("Plot 8: Cross-probe MAE heatmap (best r per spec)")
+            fig.tight_layout()
+            fig.savefig(FIGS_DIR / "plot8_probe_heatmap.png", dpi=150)
+            plt.close(fig)
+
+    # ---- Table 1: comprehensive markdown table (probe × metric × solver × aug) ----
+    if not df_err.empty:
+        agg = (
+            df_err
+            .assign(abs_err=lambda x: x["err_kcalmol"].abs(),
+                    sq_err=lambda x: x["err_kcalmol"] ** 2)
+            .groupby(["set", "metric", "solver", "aug", "r"])
+            .agg(MAE=("abs_err", "mean"),
+                 RMSE=("sq_err", lambda x: float(np.sqrt(x.mean()))),
+                 N_eval=("err_kcalmol", "size"))
+            .reset_index()
+        )
+        # For each (set, metric, solver, aug) pick the best r (lowest MAE).
+        best_rows = (
+            agg.loc[agg.groupby(["set", "metric", "solver", "aug"])["MAE"].idxmin()]
+        )
+        # Sort for readability: probe -> metric -> solver -> aug.
+        best_rows = best_rows.sort_values(
+            by=["set", "metric", "solver", "aug"]).reset_index(drop=True)
+        md_lines = [
+            "# Step-7 Probe Summary (T23)",
+            "",
+            "Comprehensive across-probe table.  For each (probe, metric, "
+            "solver, aug) the row shows the best subset-size r and the "
+            "corresponding MAE/RMSE on the held-out probe set.",
+            "",
+            "| probe | metric | solver | aug | r | MAE (kcal/mol) | RMSE (kcal/mol) | N_eval |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for _, row in best_rows.iterrows():
+            md_lines.append(
+                f"| {row['set']} | {row['metric']} | {row['solver']} | "
+                f"{row['aug']} | {int(row['r'])} | "
+                f"{row['MAE']:.3f} | {row['RMSE']:.3f} | {int(row['N_eval'])} |"
+            )
+        out_md = (REPO / "reports_local" / "step7_subset_selection" /
+                  "probe_summary.md")
+        out_md.write_text("\n".join(md_lines) + "\n")
+        # headline['probe_summary'] = best (probe, metric) row records
+        headline["probe_summary"] = best_rows.to_dict(orient="records")
+
+    # ---- Table 2: per-molecule errors at r=21 (CSV) ----
+    if not df_err.empty:
+        per_mol = df_err[df_err["r"] == 21].copy()
+        if not per_mol.empty:
+            # Reference value: refer to eval_probes for AE/IP refs.
+            # To keep the CSV self-contained, we attach probe-level
+            # provenance by joining against ALL_PROBES from eval_probes.
+            try:
+                from xcquinox.alec import eval_probes
+                ref_records: list = []
+                for pn in PROBE_NAMES:
+                    pp = eval_probes.ALL_PROBES[pn]
+                    if eval_probes.PROBE_KIND[pn] == "ae":
+                        for entry in pp:
+                            ref_records.append({
+                                "set": pn,
+                                "molecule": entry["name"],
+                                "E_ref_kcalmol": float(entry["ae_kcalmol"]),
+                                "hill": entry["hill"],
+                                "source": entry["source"],
+                            })
+                    else:  # bh76
+                        for rxn in pp:
+                            ref_records.append({
+                                "set": pn,
+                                "molecule": rxn["name"],
+                                "E_ref_kcalmol": float(rxn["e_rxn_ref"]),
+                                "hill": rxn["name"],
+                                "source": rxn["source"],
+                            })
+                ref_df = pd.DataFrame(ref_records)
+                per_mol = per_mol.merge(
+                    ref_df, on=["set", "molecule"], how="left")
+                per_mol["E_NN_kcalmol"] = (
+                    per_mol["E_ref_kcalmol"] + per_mol["err_kcalmol"])
+            except ImportError:
+                # eval_probes not importable from this script context;
+                # leave reference columns blank.
+                per_mol["E_ref_kcalmol"] = np.nan
+                per_mol["E_NN_kcalmol"] = np.nan
+                per_mol["hill"] = ""
+                per_mol["source"] = ""
+            # Pick the best (metric, solver, aug) per probe (lowest MAE at r=21)
+            mae_per_spec = (
+                per_mol.assign(abs_err=lambda x: x["err_kcalmol"].abs())
+                .groupby(["set", "metric", "solver", "aug"])["abs_err"].mean()
+                .reset_index(name="mae")
+            )
+            best_spec_per_probe = (
+                mae_per_spec
+                .loc[mae_per_spec.groupby("set")["mae"].idxmin()]
+                [["set", "metric", "solver", "aug"]]
+            )
+            best_per_mol = per_mol.merge(
+                best_spec_per_probe,
+                on=["set", "metric", "solver", "aug"], how="inner"
+            )
+            cols = ["set", "molecule", "hill", "E_ref_kcalmol",
+                    "E_NN_kcalmol", "err_kcalmol", "metric", "solver", "aug"]
+            cols = [c for c in cols if c in best_per_mol.columns]
+            csv_path = (REPO / "reports_local" / "step7_subset_selection" /
+                        "per_molecule_errors_r21.csv")
+            best_per_mol[cols].to_csv(csv_path, index=False)
+            print(f"Wrote per-molecule errors CSV to {csv_path}")
+
+    HEADLINE_PATH.write_text(json.dumps(headline, indent=2, default=str))
+    print(f"Wrote 6 + 2 figures + 2 tables + headline to {HEADLINE_PATH}")
 
 
 if __name__ == "__main__":
