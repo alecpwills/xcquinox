@@ -39,3 +39,16 @@ def test_ip_residual_squared_displacement():
     ip_ref = jnp.array(2.0)  # actual = 3.0; residual^2 = 1.0
     res = losses._ip_residual_term(e_cation, e_neutral, ip_ref)
     assert float(res) == pytest.approx(1.0, abs=1e-12)
+
+
+def test_step7_loss_class_registered():
+    """The step-7 loss family registers under the alec loss registry."""
+    from xcquinox.alec import losses as alec_losses
+    assert "L5_gradnorm_vxc_step7" in alec_losses.list_losses()
+
+
+def test_step7_loss_target_kinds():
+    """Per spec §5b: 5 GradNorm channels (AE, BH76, IP13, vxc, rho)."""
+    from xcquinox.alec import losses as alec_losses
+    cls = alec_losses.make_loss("L5_gradnorm_vxc_step7", _smoke_test=True)
+    assert sorted(cls.target_kinds) == sorted(["AE", "BH76", "IP13", "vxc", "rho"])

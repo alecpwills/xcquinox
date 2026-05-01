@@ -757,3 +757,50 @@ class DeltaAEPlusGridLoss(AlecLoss):
         components = self.compute_components(model, batch)
         total = sum(components.values())
         return total, components
+
+
+@register_loss("L5_gradnorm_vxc_step7")
+class L5GradnormVxcStep7(AlecLoss):
+    """Step-7 extension of L5_gradnorm_vxc with BH76 + IP13 task channels.
+
+    Five GradNorm task channels (per spec §5b):
+      AE   - atomization-energy residuals (existing alec mechanism)
+      BH76 - reaction-energy / barrier-height residuals via _rxn_residual_term
+      IP13 - ionization-potential residuals via _ip_residual_term
+      vxc  - V_xc residual (existing L3/L4/L5 mechanism)
+      rho  - rho-RMSE residual (existing)
+
+    Per Dick 2021 SI II, BH76 + IP13 residuals were down-weighted by
+    0.01 in the original Dick training. Step-7 lets GradNorm (Chen et
+    al. 2018, arXiv:1711.02257; alpha=1.5 default at
+    xcquinox/alec/balancing.py:55) discover task weights adaptively
+    rather than hard-coding the 0.01 factor.
+
+    The full implementation lands in Task 16; this scaffold registers
+    the class and exposes target_kinds for the spec-compliance test.
+    """
+    registry_name: ClassVar[str] = "L5_gradnorm_vxc_step7"
+    target_kinds: ClassVar[tuple[str, ...]] = ("AE", "BH76", "IP13", "vxc", "rho")
+
+    def __init__(self, *, _smoke_test: bool = False, **kwargs):
+        # _smoke_test path lets the registry test instantiate without a
+        # real training context; full constructor wiring lives in Task 16.
+        # AlecLoss is an eqx.Module with required fields, so even the
+        # smoke path must initialize them to empty placeholders.
+        if _smoke_test:
+            self.atom_mol_idx = ()
+            self.compound_idx = ()
+            self.mol_names = ()
+            self.compositions = ()
+            self.w_atomic = 0.01
+            return
+        raise NotImplementedError(
+            "L5GradnormVxcStep7 full constructor lands in Task 16. "
+            "Use _smoke_test=True for early-stage registry/contract tests."
+        )
+
+    def __call__(self, *args, **kwargs):  # pragma: no cover - filled in Task 16
+        raise NotImplementedError("Task 16 wiring pending")
+
+    def compute_components(self, *args, **kwargs):  # pragma: no cover - filled in Task 16
+        raise NotImplementedError("Task 16 wiring pending")
