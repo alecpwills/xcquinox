@@ -1,4 +1,5 @@
 """Tests for xcquinox.alec.external_refs species union + pipeline."""
+import pytest
 from xcquinox.alec.external_refs import (
     SpeciesEntry,
     build_species_union,
@@ -230,3 +231,53 @@ def test_oep_cascade_skip_if_cached(tmp_path):
                          basis="def2-svp", grid_level=1)
     assert p2 == p1
     assert p2.stat().st_mtime == mtime, "OEP npz rewritten on cache hit"
+
+
+def test_preflight_uks_oep_signature_and_imports(tmp_path):
+    """Fast structural test: preflight_uks_oep is importable, kw-only, and
+    its smoke_specs use SpeciesEntry(name, charge, spin, source) order
+    with the documented HO doublet + HN triplet pair.
+
+    This test does NOT execute the function -- execution is covered by
+    scripts/smoke_preflight_uks_oep.py (run manually) and by the
+    @pytest.mark.slow integration test below (deselected by default per
+    setup.cfg addopts='-m "not slow"').
+    """
+    import inspect
+    from xcquinox.alec.external_refs import preflight_uks_oep, SpeciesEntry
+
+    sig = inspect.signature(preflight_uks_oep)
+    params = sig.parameters
+
+    assert list(params) == ["cache_dir", "basis", "grid_level"], (
+        f"signature drift: got {list(params)}"
+    )
+    for name in ("cache_dir", "basis", "grid_level"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, (
+            f"{name} must be keyword-only (matches T3/T4/T5 contract)"
+        )
+    assert params["basis"].default == "def2-svp"
+    assert params["grid_level"].default == 1
+
+    src = inspect.getsource(preflight_uks_oep)
+    assert 'SpeciesEntry("HO", 0, 1, "dfs_ae")' in src, (
+        "HO smoke spec must be (name='HO', charge=0, spin=1, source='dfs_ae')"
+    )
+    assert 'SpeciesEntry("HN", 0, 2, "dfs_ae")' in src, (
+        "HN smoke spec must be (name='HN', charge=0, spin=2, source='dfs_ae')"
+    )
+
+
+@pytest.mark.slow
+def test_preflight_uks_runs_ho_and_hn(tmp_path):
+    """SLOW: runs full HO+HN SCF->CCSD->2-tier OEP cascade (~10-30 min).
+
+    Deselected by default via setup.cfg `addopts = -m "not slow"`. Run
+    explicitly with `pytest -m slow` if you want pytest to drive it; for
+    a more diagnostic run with progress heartbeat use:
+        python scripts/smoke_preflight_uks_oep.py --cache-dir /tmp/smoke
+    """
+    from xcquinox.alec.external_refs import preflight_uks_oep
+    preflight_uks_oep(cache_dir=tmp_path, basis="def2-svp", grid_level=1)
+    assert (tmp_path / "HO.npz").is_file()
+    assert (tmp_path / "HN.npz").is_file()

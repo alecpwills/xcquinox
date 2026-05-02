@@ -498,3 +498,56 @@ def run_oep_cascade(
         method="ccsd",
     )
     return npz_path
+
+
+def preflight_uks_oep(
+    *,
+    cache_dir,
+    basis: str = "def2-svp",
+    grid_level: int = 1,
+) -> None:
+    """Smoke-test UKS OEP on HO (doublet, 2Pi) and HN (triplet, 3Sigma-)
+    BEFORE running the full ~58-species pre-compute.
+
+    HO: 9 e-, smallest meaningful UKS doublet.
+    HN: 8 e-, smallest UKS triplet (NIST CCCBDB cited at
+    dfs_pool.py:175-182 -- Herzberg I VI 3Sigma-).
+
+    Aborts (raises RuntimeError) if either OEP fails or returns
+    wrong-shape vxc_ref. Catches the UKS-OEP unknown before burning
+    ~hour of CPU on the full set.
+    """
+    import numpy as np
+    smoke_specs = [
+        SpeciesEntry("HO", 0, 1, "dfs_ae"),  # doublet
+        SpeciesEntry("HN", 0, 2, "dfs_ae"),  # triplet
+    ]
+    for spec in smoke_specs:
+        atoms = resolve_geometry(spec)
+        scf = run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
+                                 basis=basis, grid_level=grid_level)
+        if not scf["spin_unrestricted"]:
+            raise RuntimeError(
+                f"Pre-flight failure: {spec.name} should be UKS but "
+                f"SCF dispatched RKS (spin={spec.spin})"
+            )
+        cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
+                                 cache_dir=cache_dir,
+                                 basis=basis, grid_level=grid_level)
+        npz_path = run_oep_cascade(spec, atoms, ccsd_payload=cc,
+                                   cache_dir=cache_dir,
+                                   basis=basis, grid_level=grid_level)
+        # Verify shape contract
+        with np.load(npz_path, allow_pickle=False) as z:
+            vxc = np.asarray(z["vxc_ref"])
+            rho = np.asarray(z["rho_ref_grid"])
+        if vxc.ndim != 3 or vxc.shape[0] != 2:
+            raise RuntimeError(
+                f"Pre-flight UKS shape mismatch for {spec.name}: "
+                f"vxc_ref.shape={vxc.shape}, expected (2, n_ao, n_ao)"
+            )
+        if rho.ndim != 1:
+            raise RuntimeError(
+                f"Pre-flight UKS rho_ref_grid shape for {spec.name} "
+                f"is {rho.shape}; must be 1D spin-summed (data.py:296-299)"
+            )
