@@ -160,7 +160,13 @@ def resolve_geometry(spec: SpeciesEntry):
         atoms.info["spin"] = spec.spin
         return atoms
 
-    # Probe species not in g2_97: pull from eval_probes.build_probe_pool
+    # Probe species not in g2_97: pull from eval_probes.build_probe_pool.
+    # ``pool["entries"]`` is list[dict] (raw PROBE_* entries); ``pool["molecules"]``
+    # is the corresponding list[ASE Atoms] with at.info["name"] set by
+    # eval_probes._attach_info.  Match by the dict's "name" against
+    # at.info["name"] (T2 spec-review fix — earlier draft iterated entries
+    # as if they were Atoms, which is unreachable today but would crash
+    # if a probe AE molecule were ever absent from g2_97.traj).
     from xcquinox.alec import eval_probes
     for probe_name in eval_probes.ALL_PROBES:
         if eval_probes.PROBE_KIND[probe_name] != "ae":
@@ -168,7 +174,7 @@ def resolve_geometry(spec: SpeciesEntry):
         for entry in eval_probes.ALL_PROBES[probe_name]:
             if entry["hill"] == spec.name:
                 pool = eval_probes.build_probe_pool(probe_name)
-                for at in pool["entries"]:
+                for at in pool["molecules"]:
                     if at.info.get("name") == entry["name"]:
                         a = at.copy()
                         a.info["charge"] = spec.charge
