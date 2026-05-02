@@ -139,6 +139,36 @@ def build_cells() -> list:
         "print(f'  Atom refs: {len(pool[\"atom_refs\"])}')\n"
     ))
     cells.append(_md(
+        "## 0.5. CCSD Reference Pre-Compute (Cell 0.5)\n\n"
+        "For every species in the union of (DFS pool, BH76 reactants/products,\n"
+        "IP13 neutrals/cations, atom refs, Probe A/B/C/D, HBPT pairs), run\n"
+        "RHF/UHF + RCCSD/UCCSD at def2-svp / grid_level=1 and OEP-invert via\n"
+        "the step-6 2-tier cascade.  Writes per-species `<name>.npz` to\n"
+        "`notebooks/checkpoints_step7/external_refs/`.  Idempotent: skips\n"
+        "species whose `.npz` is already complete.\n\n"
+        "Pre-flight smoke tests UKS-OEP on HO (2-Pi doublet) and HN (3-Sigma-\n"
+        "triplet) before bulk pre-compute -- aborts early on UKS shape\n"
+        "mismatch.\n\n"
+        "Wall-clock estimate: ~1-3 hr first run; <1 min cached re-run.\n"
+    ))
+    cells.append(_code(
+        "from xcquinox.alec.external_refs import (\n"
+        "    build_species_union, precompute_all,\n"
+        ")\n\n"
+        "_species = build_species_union()\n"
+        "print(f'Cell 0.5: pre-computing CCSD references for {len(_species)} species')\n"
+        "for _s in _species:\n"
+        "    print(f'  {_s.name:8s}  charge={_s.charge}  spin={_s.spin}  '\n"
+        "          f'source={_s.source}')\n"
+        "precompute_all(\n"
+        "    _species,\n"
+        "    cache_dir=EXTERNAL_REFS_DIR,\n"
+        "    basis=BASIS,\n"
+        "    grid_level=GRID_LEVEL,\n"
+        "    run_preflight=True,\n"
+        ")\n"
+    ))
+    cells.append(_md(
         "## 1. Descriptor Extraction (cached)\n\n"
         "For each unique species in the candidate pool, run a single PBE SCF\n"
         "at def2-svp / grid_level=1 (matching step-5/6 conventions) and extract\n"
