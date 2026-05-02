@@ -69,3 +69,66 @@ def test_step7_loss_smoke_constructor_with_dict_inputs():
     assert len(inst.bh76_reactions) == 3
     assert len(inst.ip13_pairs) == 2
     assert sorted(inst.target_kinds) == sorted(["AE", "BH76", "IP13", "vxc", "rho"])
+
+
+def test_aux_only_names_excludes_from_compound_idx():
+    """Species in aux_only_names are filtered out of compound_idx."""
+    from xcquinox.alec.losses import L5GradnormVxcStep7
+    from xcquinox.alec.config import MoleculeSpec
+    h2o = MoleculeSpec.from_dict(
+        name="H2O", atom="O 0 0 0; H 0 0 1; H 0 1 0",
+        atom_composition={"O": 1, "H": 2},
+        basis="sto-3g", charge=0, spin=0,
+    )
+    h_atom = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    o_atom = MoleculeSpec.from_dict(
+        name="O", atom="O 0 0 0", atom_composition={"O": 1},
+        basis="sto-3g", charge=0, spin=2,
+    )
+    hbwd = MoleculeSpec.from_dict(
+        name="HBWD", atom="O 0 0 0; H 0 0 1; H 0 1 0; "
+                          "O 3 0 0; H 3 0 1; H 3 1 0",
+        atom_composition={"O": 2, "H": 4},
+        basis="sto-3g", charge=1, spin=1,
+    )
+    loss = L5GradnormVxcStep7(
+        molecules=(h2o, h_atom, o_atom, hbwd),
+        bh76_reactions=(),
+        ip13_pairs=(),
+        aux_only_names=("HBWD",),
+    )
+    name_idx = {n: i for i, n in enumerate(loss.mol_names)}
+    assert name_idx["H2O"] in loss.compound_idx
+    assert name_idx["HBWD"] not in loss.compound_idx, (
+        "HBWD should be excluded from compound_idx via aux_only_names")
+    iter_idx = loss._iter_idx_for_aux_channels()
+    assert name_idx["HBWD"] in iter_idx
+
+
+def test_aux_only_names_default_empty_tuple():
+    """Default aux_only_names=() doesn't change behavior."""
+    from xcquinox.alec.losses import L5GradnormVxcStep7
+    from xcquinox.alec.config import MoleculeSpec
+    h2o = MoleculeSpec.from_dict(
+        name="H2O", atom="O 0 0 0; H 0 0 1; H 0 1 0",
+        atom_composition={"O": 1, "H": 2},
+        basis="sto-3g", charge=0, spin=0,
+    )
+    h_atom = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    o_atom = MoleculeSpec.from_dict(
+        name="O", atom="O 0 0 0", atom_composition={"O": 1},
+        basis="sto-3g", charge=0, spin=2,
+    )
+    loss = L5GradnormVxcStep7(
+        molecules=(h2o, h_atom, o_atom),
+        bh76_reactions=(),
+        ip13_pairs=(),
+    )
+    name_idx = {n: i for i, n in enumerate(loss.mol_names)}
+    assert name_idx["H2O"] in loss.compound_idx

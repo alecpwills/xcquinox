@@ -847,6 +847,7 @@ class L5GradnormVxcStep7(AlecLoss):
 
     bh76_reactions: tuple = eqx.field(default=(), static=True)
     ip13_pairs: tuple = eqx.field(default=(), static=True)
+    aux_only_names: tuple = eqx.field(default=(), static=True)
     molecules_only: bool = eqx.field(default=True, static=True)
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.01, static=True)
@@ -858,6 +859,7 @@ class L5GradnormVxcStep7(AlecLoss):
         molecules=None,
         bh76_reactions=None,
         ip13_pairs=None,
+        aux_only_names=(),
         w_atomic: float = 0.01,
         molecules_only: bool = True,
         solver_config=None,
@@ -881,6 +883,7 @@ class L5GradnormVxcStep7(AlecLoss):
             self.w_atomic = w_atomic
             self.bh76_reactions = bh76_frozen
             self.ip13_pairs = ip13_frozen
+            self.aux_only_names = tuple(aux_only_names)
             self.molecules_only = molecules_only
             self.solver_config = solver_config
             self.vxc_weight = vxc_weight
@@ -901,6 +904,12 @@ class L5GradnormVxcStep7(AlecLoss):
         self.compound_idx = ci
         self.mol_names = mn
         self.compositions = comp
+        self.aux_only_names = tuple(aux_only_names)
+        aux_set = set(self.aux_only_names)
+        self.compound_idx = tuple(
+            i for i in self.compound_idx
+            if self.mol_names[i] not in aux_set
+        )
         self.w_atomic = w_atomic
         self.bh76_reactions = bh76_frozen
         self.ip13_pairs = ip13_frozen
@@ -1018,7 +1027,7 @@ class L5GradnormVxcStep7(AlecLoss):
         loss_ip13 = self._ip13_channel(E_nn)
 
         # vxc + rho channels: existing alec mechanisms.
-        iter_idx = self.compound_idx if self.molecules_only else tuple(range(N))
+        iter_idx = self._iter_idx_for_aux_channels()
         loss_vxc = self.vxc_weight * _vxc_term(
             model, mol_data, iter_idx, relative=relative,
         )
@@ -1034,6 +1043,19 @@ class L5GradnormVxcStep7(AlecLoss):
             "loss_vxc": loss_vxc,
             "loss_rho": loss_rho,
         }
+
+    def _iter_idx_for_aux_channels(self) -> tuple:
+        """Indices used by V_xc / rho channels.  Includes aux_only_names
+        species (HBPT) which the AE channel excludes via compound_idx.
+        """
+        N = len(self.mol_names)
+        if not self.molecules_only:
+            return tuple(range(N))
+        aux_idx = tuple(
+            i for i, n in enumerate(self.mol_names)
+            if n in set(self.aux_only_names)
+        )
+        return tuple(sorted(set(self.compound_idx) | set(aux_idx)))
 
     def __call__(self, model, batch):
         components = self.compute_components(model, batch)
