@@ -42,6 +42,14 @@ SHAPE_CONTRACT_RC = 2
 CACHE_REPLAY_RC = 3
 
 
+class ShapeContractError(Exception):
+    """Raised when an npz output violates the UKS shape contract.
+
+    Caught by main() so heartbeat.stop() and _print_summary() can run
+    before exiting with SHAPE_CONTRACT_RC.
+    """
+
+
 def rss_mb() -> float:
     """Resident set size in MB (Linux ru_maxrss is in KB)."""
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
@@ -133,7 +141,7 @@ def dump_npz(npz_path: Path) -> tuple[np.ndarray, np.ndarray]:
     # Safe-load contract: verbatim from xcquinox/alec/external_refs.py:215
     # np.load(..., allow_pickle=False) -- pickle disabled to prevent
     # arbitrary code execution from untrusted npz files.
-    with np.load(npz_path, allow_pickle=False) as z:  # noqa: S301
+    with np.load(npz_path, allow_pickle=False) as z:
         keys = sorted(z.files)
         print(f"    npz keys: {keys}", flush=True)
         for k in keys:
@@ -169,19 +177,14 @@ def check_shape_contract(name: str, vxc: np.ndarray, rho: np.ndarray) -> None:
     distinct exit code so the user can tell shape violation apart from
     species computation failure."""
     if vxc.ndim != 3 or vxc.shape[0] != 2:
-        print(
-            f"\n  [SHAPE FAIL] {name}: vxc_ref.shape={vxc.shape} "
-            "(expected (2, n_ao, n_ao))",
-            flush=True,
+        raise ShapeContractError(
+            f"{name}: vxc_ref.shape={vxc.shape} (expected (2, n_ao, n_ao))"
         )
-        sys.exit(SHAPE_CONTRACT_RC)
     if rho.ndim != 1:
-        print(
-            f"\n  [SHAPE FAIL] {name}: rho_ref_grid.shape={rho.shape} "
-            "(expected 1D spin-summed per data.py:296-299)",
-            flush=True,
+        raise ShapeContractError(
+            f"{name}: rho_ref_grid.shape={rho.shape} "
+            "(expected 1D spin-summed per data.py:296-299)"
         )
-        sys.exit(SHAPE_CONTRACT_RC)
     print(
         f"    [OK] {name} shape contract: vxc_ref={vxc.shape}, "
         f"rho_ref_grid={rho.shape}",
@@ -207,7 +210,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    args.cache_dir.mkdir(parents=True, exist_ok=True)
 
     print_environment(args)
 
@@ -217,6 +219,8 @@ def main() -> int:
         print(f"  Resolved symbol: {preflight_uks_oep!r}", flush=True)
         print("  (no SCF/CCSD/OEP executed; cache_dir untouched)", flush=True)
         return 0
+
+    args.cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Imports kept inside main() so --dry-run errors surface above without
     # the user seeing a benign "import succeeded" line they might mistake
@@ -333,6 +337,12 @@ def main() -> int:
                 flush=True,
             )
 
+    except ShapeContractError as e:
+        heartbeat.stop()
+        print(f"\n  [SHAPE FAIL] {e}", flush=True)
+        if timings:
+            _print_summary(timings, time.time() - overall_start)
+        return SHAPE_CONTRACT_RC
     except Exception:
         heartbeat.stop()
         print("\n!!! SMOKE RUN FAILED !!!", flush=True)
