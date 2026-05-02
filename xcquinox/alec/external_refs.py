@@ -398,6 +398,13 @@ _OEP_TIERS: tuple[dict, ...] = (
      "max_iter": 1000, "conv_tol": 2e-3},
 )
 
+# Required keys in the per-species cache npz; checked by both
+# run_oep_cascade's recover-corrupt-cache path and precompute_all's
+# skip-if-cached predicate. Keep these two sites in lockstep.
+_REQUIRED_NPZ_KEYS: frozenset[str] = frozenset({
+    "vxc_ref", "dm_target", "rho_ref_grid", "ref_density_method",
+})
+
 
 def run_oep_cascade(
     spec: SpeciesEntry,
@@ -433,9 +440,7 @@ def run_oep_cascade(
         # Verify completeness — must have all required keys
         try:
             with np.load(npz_path, allow_pickle=False) as z:
-                required = {"vxc_ref", "dm_target", "rho_ref_grid",
-                            "ref_density_method"}
-                if required.issubset(set(z.files)):
+                if _REQUIRED_NPZ_KEYS.issubset(set(z.files)):
                     return npz_path
         except (OSError, ValueError):
             pass  # Corrupt cache — recompute
@@ -630,7 +635,7 @@ class RunLog:
 
 
 def precompute_all(
-    species,
+    species: list["SpeciesEntry"],
     *,
     cache_dir,
     basis: str = "def2-svp",
@@ -659,7 +664,16 @@ def precompute_all(
     import time
     import traceback
     from pathlib import Path
-    from tqdm.auto import tqdm
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        def tqdm(iterable, **_kw):
+            class _Noop:
+                def __iter__(self_inner):
+                    return iter(iterable)
+                def set_postfix(self_inner, **kw):
+                    pass
+            return _Noop()
 
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -700,7 +714,7 @@ def precompute_all(
             )
         except Exception as e:
             dt = time.time() - t0
-            tb = "".join(traceback.format_exception_only(type(e), e)).strip()
+            tb = traceback.format_exc()
             log.record_result(
                 name=spec.name, charge=spec.charge, spin=spec.spin,
                 status="FAIL", wall_clock_s=dt, error_msg=tb,
@@ -720,9 +734,8 @@ def _npz_is_complete(npz_path) -> bool:
     import numpy as np
     if not npz_path.is_file():
         return False
-    required = {"vxc_ref", "dm_target", "rho_ref_grid", "ref_density_method"}
     try:
         with np.load(npz_path, allow_pickle=False) as z:
-            return required.issubset(set(z.files))
+            return _REQUIRED_NPZ_KEYS.issubset(set(z.files))
     except (OSError, ValueError):
         return False
