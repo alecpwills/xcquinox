@@ -8,8 +8,9 @@ Step-7 plan:
     xcquinox.alec.dfs_pool.build_dfs_pool
   - Extract (rho^{1/3}, s, alpha) per species, cache to disk
   - Build reference 3-histogram via build_reference_histograms
-  - Sweep r in {1,2,3,4,5,6,7,12,15,18,21} x {l2,jsd} x {oneshot,full_3}
-    x {with_hbpt, no_hbpt} = 88 training runs
+  - Sweep r in {1,2,3,4,5,6,7,12,15,18} x {l2,jsd} x {oneshot,full_3}
+    x {with_hbpt, no_hbpt} = 80 training runs (r=21 excluded: full pool,
+    no selection)
   - Post-process: 6+1 figures + headline.json
 
 Citations:
@@ -47,7 +48,7 @@ PRETRAIN_ORIGIN = "integration"  # ONLY origin — unweighted is out of scope pe
 # checkpoint (loaded from notebooks/checkpoints_step6/integration/pretrain/
 # deep_combined_attn/{xnet.eqx, cnet.eqx}); no re-pretraining in step-7.
 # Task-loss phase: 100 steps (matches step-6 group1/group2 short schedule;
-# step-6 group3 used 250 but at 88 runs the additional convergence gain
+# step-6 group3 used 250 but at 80 runs the additional convergence gain
 # does not justify the 2.5x cost given step-6 evidence).
 TRAIN_N_STEPS = 100
 LR_START, LR_END = 1e-2, 1e-5
@@ -85,7 +86,7 @@ def build_cells() -> list:
         'jax.config.update(\"jax_default_device\", jax.devices(\"cpu\")[0])\n'
         "# Persistent compilation cache: writes compiled XLA HLO/LLVM to disk\n"
         "# so that kernel restarts (e.g. after a crash) and across-spec calls\n"
-        "# in the 88-spec grid don't re-pay the full compile cost.\n"
+        "# in the 80-spec grid don't re-pay the full compile cost.\n"
         'os.makedirs(\".jax_compilation_cache\", exist_ok=True)\n'
         'jax.config.update(\"jax_compilation_cache_dir\", \".jax_compilation_cache\")\n'
         'jax.config.update(\"jax_persistent_cache_min_entry_size_bytes\", -1)\n'
@@ -336,9 +337,9 @@ def build_cells() -> list:
         "print('Smoke wiring verified.')\n"
     ))
     cells.append(_md(
-        "## 5. Full Training Grid (88 runs)\n\n"
+        "## 5. Full Training Grid (80 runs)\n\n"
         "$11~\\text{sizes} \\times 2~\\text{metrics} \\times 2~\\text{solvers}\n"
-        " \\times 2~\\text{augmentations} = 88$ training runs. Each loads the\n"
+        " \\times 2~\\text{augmentations} = 80$ training runs. Each loads the\n"
         "step-6 integration pretrain checkpoint and trains for $100$ task-loss\n"
         "steps with `L5_gradnorm_vxc_step7` (5 task channels: AE+BH76+IP13+vxc+ρ).\n\n"
         "### 5a. Build TrainingSpec list (`_all_specs`)\n\n"
@@ -841,7 +842,7 @@ def build_cells() -> list:
         "`per_molecule.json` under `spec_dir/eval/`. Skip if cached.\n\n"
         "> **Note:** held-out diet150 + W4-11 evaluation requires loading\n"
         "> those datasets and building MoleculeSpecs — that is a separate\n"
-        "> extension cell to be added after the 88-run grid completes.\n"
+        "> extension cell to be added after the 80-run grid completes.\n"
     ))
     cells.append(_code(
         "import time as _time\n"
@@ -879,12 +880,12 @@ def build_cells() -> list:
         "    # Use _spec.targets_dict (Ha) rather than the loop-local `targets`\n"
         "    # variable which would only hold the last spec's values.\n"
         "    _spec_targets = _spec.targets_dict\n"
-        "    _ae_ref_ha = {}\n"
+        "    _ae_ref_kcalmol_local = {}\n"
         "    for _ms in _eval_molecules:\n"
         "        _csum = sum(dict(_ms.atom_composition).values())\n"
         "        if _csum > 1 and _ms.name in _spec_targets:\n"
         "            # targets stored in Ha; convert to kcal/mol for the metric.\n"
-        "            _ae_ref_ha[_ms.name] = _spec_targets[_ms.name] * KCAL_PER_HA\n\n"
+        "            _ae_ref_kcalmol_local[_ms.name] = _spec_targets[_ms.name] * KCAL_PER_HA\n\n"
         "    _solver_label = _spec.checkpoint_dir.rstrip('/').split('/')[-1]\n"
         "    _test_spec = alec.TestSpec.from_dicts(\n"
         "        arch=alec.get_architecture(ARCH_NAME),\n"
@@ -893,7 +894,7 @@ def build_cells() -> list:
         "        metrics=('total_energy', 'atomization_energy',\n"
         "                 'density_rmse', 'scf_convergence'),\n"
         "        metric_kwargs={\n"
-        "            'atomization_energy': {'reference_ae_kcalmol': _ae_ref_ha},\n"
+        "            'atomization_energy': {'reference_ae_kcalmol': _ae_ref_kcalmol_local},\n"
         "        },\n"
         "        atom_energies=ATOMIC_ENERGIES_CHAKRAVORTY,\n"
         "        output_dir=_eval_out,\n"
@@ -1199,7 +1200,7 @@ def build_cells() -> list:
     ))
     cells.append(_md(
         "## 6. Post-Processing Analysis\n\n"
-        "Generates 6 figures + headline.json from the 88 eval_df.csv files.\n"
+        "Generates 6 figures + headline.json from the 80 eval_df.csv files.\n"
     ))
     cells.append(_code(
         "import sys\n"

@@ -168,6 +168,19 @@ class DensityRMSEMetric(Metric):
         # accepts ``solver_config=None`` for the back-compat oneshot path.
         rho_nn = oneshot_grid_density(model, mol_data, solver_config=solver_config)
         rho_ref = mol_data["rho_ref_grid"]
+        if rho_ref is None:
+            # External CCSD reference density not loaded for this species
+            # (e.g. spec.external_data_path was None, or the .npz file
+            # didn't carry rho_ref_grid).  Skip gracefully — matches the
+            # existing pattern in losses._grid_term which skips when
+            # rho_ref is None.
+            return {
+                "density_rmse": None,
+                "density_l1": None,
+                "skipped": True,
+                "skip_reason": "no_rho_ref_grid",
+                "ref_density_method": mol_data.get("ref_density_method"),
+            }
         if rho_nn.shape != rho_ref.shape:
             raise ValueError(
                 f"density shape mismatch: rho_nn {rho_nn.shape} vs "
