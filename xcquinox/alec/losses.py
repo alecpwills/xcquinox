@@ -910,6 +910,12 @@ class L5GradnormVxcStep7(AlecLoss):
             i for i in self.compound_idx
             if self.mol_names[i] not in aux_set
         )
+        if not self.compound_idx:
+            raise ValueError(
+                "aux_only_names filtered out all compound molecules from "
+                f"compound_idx. aux_only_names={list(aux_only_names)!r}. "
+                "Ensure at least one compound molecule is not in aux_only_names."
+            )
         self.w_atomic = w_atomic
         self.bh76_reactions = bh76_frozen
         self.ip13_pairs = ip13_frozen
@@ -1051,9 +1057,10 @@ class L5GradnormVxcStep7(AlecLoss):
         N = len(self.mol_names)
         if not self.molecules_only:
             return tuple(range(N))
+        aux_set = set(self.aux_only_names)
         aux_idx = tuple(
             i for i, n in enumerate(self.mol_names)
-            if n in set(self.aux_only_names)
+            if n in aux_set
         )
         return tuple(sorted(set(self.compound_idx) | set(aux_idx)))
 

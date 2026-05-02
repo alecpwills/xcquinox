@@ -132,3 +132,50 @@ def test_aux_only_names_default_empty_tuple():
     )
     name_idx = {n: i for i, n in enumerate(loss.mol_names)}
     assert name_idx["H2O"] in loss.compound_idx
+
+
+def test_iter_idx_default_equals_compound_idx():
+    """With aux_only_names=(), iter_idx must equal compound_idx exactly."""
+    from xcquinox.alec.losses import L5GradnormVxcStep7
+    from xcquinox.alec.config import MoleculeSpec
+    h2o = MoleculeSpec.from_dict(
+        name="H2O", atom="O 0 0 0; H 0 0 1; H 0 1 0",
+        atom_composition={"O": 1, "H": 2},
+        basis="sto-3g", charge=0, spin=0,
+    )
+    h_atom = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    o_atom = MoleculeSpec.from_dict(
+        name="O", atom="O 0 0 0", atom_composition={"O": 1},
+        basis="sto-3g", charge=0, spin=2,
+    )
+    loss = L5GradnormVxcStep7(
+        molecules=(h2o, h_atom, o_atom),
+        bh76_reactions=(),
+        ip13_pairs=(),
+    )
+    assert loss._iter_idx_for_aux_channels() == loss.compound_idx
+
+
+def test_aux_only_names_filtering_all_compounds_raises():
+    """If aux_only_names removes every compound, __init__ raises ValueError."""
+    from xcquinox.alec.losses import L5GradnormVxcStep7
+    from xcquinox.alec.config import MoleculeSpec
+    h2o = MoleculeSpec.from_dict(
+        name="H2O", atom="O 0 0 0; H 0 0 1; H 0 1 0",
+        atom_composition={"O": 1, "H": 2},
+        basis="sto-3g", charge=0, spin=0,
+    )
+    h_atom = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    with pytest.raises(ValueError, match="aux_only_names filtered out all"):
+        L5GradnormVxcStep7(
+            molecules=(h2o, h_atom),
+            bh76_reactions=(),
+            ip13_pairs=(),
+            aux_only_names=("H2O",),
+        )
