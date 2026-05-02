@@ -627,3 +627,102 @@ class RunLog:
             if os.path.exists(tmp_name):
                 os.unlink(tmp_name)
             raise
+
+
+def precompute_all(
+    species,
+    *,
+    cache_dir,
+    basis: str = "def2-svp",
+    grid_level: int = 1,
+    run_preflight: bool = True,
+) -> None:
+    """Top-level Cell 0.5 driver.
+
+    Iterates the species union, runs SCF + CCSD + OEP per species (each
+    stage cached). Skip-if-cached for species whose final .npz already
+    has all required keys. Logs every result via RunLog. On any
+    species-level failure, raises RuntimeError with the failed-species
+    list -- does NOT silently skip.
+
+    Parameters
+    ----------
+    species : list[SpeciesEntry]
+    cache_dir : path
+        Root for external_refs/. Cell 0.5 passes
+        STEP7_ROOT / "external_refs".
+    basis, grid_level : floor at def2-svp / 1 to match descriptor
+        extraction (data.py shape contract).
+    run_preflight : run preflight_uks_oep first (default True). Set
+        False in tests that pre-populate caches.
+    """
+    import time
+    import traceback
+    from pathlib import Path
+    from tqdm.auto import tqdm
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    log = RunLog(cache_dir=cache_dir)
+    log.start([s.name for s in species])
+
+    if run_preflight:
+        preflight_uks_oep(cache_dir=cache_dir,
+                          basis=basis, grid_level=grid_level)
+
+    failures: list[str] = []
+    bar = tqdm(species, desc="Cell 0.5 CCSD refs", leave=True,
+               dynamic_ncols=True)
+    for spec in bar:
+        bar.set_postfix(name=spec.name, charge=spec.charge, spin=spec.spin)
+        npz_path = cache_dir / f"{spec.name}.npz"
+        if _npz_is_complete(npz_path):
+            log.record_result(
+                name=spec.name, charge=spec.charge, spin=spec.spin,
+                status="SKIPPED_CACHED", wall_clock_s=0.0, error_msg=None,
+            )
+            continue
+        t0 = time.time()
+        try:
+            atoms = resolve_geometry(spec)
+            scf = run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
+                                     basis=basis, grid_level=grid_level)
+            cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
+                                     cache_dir=cache_dir,
+                                     basis=basis, grid_level=grid_level)
+            run_oep_cascade(spec, atoms, ccsd_payload=cc,
+                            cache_dir=cache_dir,
+                            basis=basis, grid_level=grid_level)
+            dt = time.time() - t0
+            log.record_result(
+                name=spec.name, charge=spec.charge, spin=spec.spin,
+                status="OK", wall_clock_s=dt, error_msg=None,
+            )
+        except Exception as e:
+            dt = time.time() - t0
+            tb = "".join(traceback.format_exception_only(type(e), e)).strip()
+            log.record_result(
+                name=spec.name, charge=spec.charge, spin=spec.spin,
+                status="FAIL", wall_clock_s=dt, error_msg=tb,
+            )
+            failures.append(spec.name)
+
+    log.finalize()
+    if failures:
+        raise RuntimeError(
+            f"Cell 0.5 pre-compute failed for {len(failures)} species: "
+            f"{failures}. Inspect _run_log_*.json for details."
+        )
+
+
+def _npz_is_complete(npz_path) -> bool:
+    """True if the npz exists and carries every key the loss expects."""
+    import numpy as np
+    if not npz_path.is_file():
+        return False
+    required = {"vxc_ref", "dm_target", "rho_ref_grid", "ref_density_method"}
+    try:
+        with np.load(npz_path, allow_pickle=False) as z:
+            return required.issubset(set(z.files))
+    except (OSError, ValueError):
+        return False

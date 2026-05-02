@@ -322,3 +322,33 @@ def test_run_log_finalize_archives(tmp_path):
     assert final_path.is_file()
     assert "_run_log_" in final_path.name
     assert not (tmp_path / "_run_log_partial.json").is_file()
+
+
+def test_precompute_all_skips_cached_species(tmp_path):
+    """precompute_all skips species whose npz already has all required keys."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, precompute_all,
+    )
+    import numpy as np
+    npz = tmp_path / "H2.npz"
+    nao = 4
+    np.savez(npz,
+             vxc_ref=np.zeros((nao, nao)),
+             dm_target=np.zeros((nao, nao)),
+             rho_ref_grid=np.zeros(100),
+             ref_density_method=np.array("ccsd"),
+             oep_baseline_xc=np.array("pbe"),
+             oep_aux_basis=np.array("def2-svp-jkfit"),
+             oep_regularization=np.array(1e-4),
+             oep_density_error=np.array(1e-5),
+             oep_converged=np.array(True),
+             oep_lbfgs_status=np.array("converged"),
+             oep_n_electrons=np.array(2.0))
+    species = [SpeciesEntry("H2", 0, 0, "dfs_ae")]
+    precompute_all(species, cache_dir=tmp_path,
+                   basis="def2-svp", grid_level=1, run_preflight=False)
+    log_files = list(tmp_path.glob("_run_log_*.json"))
+    assert len(log_files) == 1
+    import json
+    payload = json.loads(log_files[0].read_text())
+    assert payload["results"][0]["status"] == "SKIPPED_CACHED"
