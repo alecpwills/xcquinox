@@ -235,18 +235,11 @@ def run_scf_with_cache(
     mf.grids.level = grid_level
     mf.kernel()
 
-    np.savez_compressed(
-        cache_path,
-        dm=np.asarray(mf.make_rdm1()),
-        mo_coeff=np.asarray(mf.mo_coeff),
-        mo_occ=np.asarray(mf.mo_occ),
-        mo_energy=np.asarray(mf.mo_energy),
-        S=np.asarray(mf.get_ovlp()),
-        spin_unrestricted=np.array(is_uks),
-        n_ao=np.array(mol.nao),
-        n_grid=np.array(mf.grids.weights.size),
-    )
-    return {
+    # Build the result dict ONCE — used both for the cache write and the
+    # return value.  Avoids redundant PySCF calls (make_rdm1/get_ovlp
+    # were called twice in the earlier draft) and removes a DRY violation
+    # (T3 code-quality review).
+    result = {
         "dm": np.asarray(mf.make_rdm1()),
         "mo_coeff": np.asarray(mf.mo_coeff),
         "mo_occ": np.asarray(mf.mo_occ),
@@ -256,3 +249,19 @@ def run_scf_with_cache(
         "n_ao": int(mol.nao),
         "n_grid": int(mf.grids.weights.size),
     }
+
+    # Atomic write: temp file + os.replace so an interrupted SCF cannot
+    # leave a corrupt partial .npz that future runs read as a cache hit
+    # (T3 code-quality review).
+    import os
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(dir=str(inter), suffix=".npz")
+    os.close(fd)
+    try:
+        np.savez_compressed(tmp_name, **result)
+        os.replace(tmp_name, cache_path)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
+    return result
