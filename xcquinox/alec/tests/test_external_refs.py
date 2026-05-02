@@ -95,3 +95,47 @@ def test_resolve_geometry_hbpt():
     # Distinct positions
     import numpy as np
     assert not np.allclose(hb.get_positions(), pt.get_positions())
+
+
+def test_run_scf_rks_for_closed_shell(tmp_path):
+    """Closed-shell H2O dispatches to RKS; produces (n_ao, n_ao) DM."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache,
+    )
+    spec = SpeciesEntry("H2O", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    payload = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                                 basis="def2-svp", grid_level=1)
+    assert payload["spin_unrestricted"] is False
+    assert payload["dm"].ndim == 2
+    assert payload["dm"].shape[0] == payload["dm"].shape[1]
+
+
+def test_run_scf_uks_for_doublet(tmp_path):
+    """Doublet H atom dispatches to UKS; produces (2, n_ao, n_ao) DM."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache,
+    )
+    spec = SpeciesEntry("H", 0, 1, "dfs_atom")
+    atoms = resolve_geometry(spec)
+    payload = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                                 basis="def2-svp", grid_level=1)
+    assert payload["spin_unrestricted"] is True
+    assert payload["dm"].shape[0] == 2  # (2, n_ao, n_ao)
+
+
+def test_run_scf_cache_hit(tmp_path):
+    """Second call with same cache_dir reads from cache, no second SCF."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache,
+    )
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    p1 = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                            basis="def2-svp", grid_level=1)
+    cache_path = tmp_path / "_intermediates" / "H2_scf.npz"
+    assert cache_path.is_file(), "SCF cache not written"
+    mtime = cache_path.stat().st_mtime
+    p2 = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                            basis="def2-svp", grid_level=1)
+    assert cache_path.stat().st_mtime == mtime, "cache rewritten on hit"

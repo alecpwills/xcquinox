@@ -184,3 +184,75 @@ def resolve_geometry(spec: SpeciesEntry):
         f"Could not resolve geometry for SpeciesEntry(name={spec.name!r}, "
         f"charge={spec.charge}, spin={spec.spin}, source={spec.source!r})"
     )
+
+
+def run_scf_with_cache(
+    spec: SpeciesEntry,
+    atoms,
+    *,
+    cache_dir,
+    basis: str = "def2-svp",
+    grid_level: int = 1,
+) -> dict:
+    """Stage 1: PBE SCF with on-disk cache (np.savez_compressed).
+
+    Returns dict with keys: dm, mo_coeff, mo_occ, mo_energy, S,
+    spin_unrestricted, n_ao, n_grid.
+
+    Cache layout:
+      <cache_dir>/_intermediates/<name>_scf.npz
+    """
+    import numpy as np
+    from pathlib import Path
+    from pyscf import dft, gto
+
+    inter = Path(cache_dir) / "_intermediates"
+    inter.mkdir(parents=True, exist_ok=True)
+    cache_path = inter / f"{spec.name}_scf.npz"
+
+    if cache_path.is_file():
+        with np.load(cache_path, allow_pickle=False) as z:
+            return {
+                "dm": np.asarray(z["dm"]),
+                "mo_coeff": np.asarray(z["mo_coeff"]),
+                "mo_occ": np.asarray(z["mo_occ"]),
+                "mo_energy": np.asarray(z["mo_energy"]),
+                "S": np.asarray(z["S"]),
+                "spin_unrestricted": bool(z["spin_unrestricted"]),
+                "n_ao": int(z["n_ao"]),
+                "n_grid": int(z["n_grid"]),
+            }
+
+    coords = atoms.get_positions()
+    syms = atoms.get_chemical_symbols()
+    atom_lines = [(s, tuple(coords[i])) for i, s in enumerate(syms)]
+    mol = gto.M(atom=atom_lines, basis=basis, charge=spec.charge,
+                spin=spec.spin, unit="angstrom", verbose=0)
+
+    is_uks = spec.spin > 0
+    mf = dft.UKS(mol) if is_uks else dft.RKS(mol)
+    mf.xc = "pbe"
+    mf.grids.level = grid_level
+    mf.kernel()
+
+    np.savez_compressed(
+        cache_path,
+        dm=np.asarray(mf.make_rdm1()),
+        mo_coeff=np.asarray(mf.mo_coeff),
+        mo_occ=np.asarray(mf.mo_occ),
+        mo_energy=np.asarray(mf.mo_energy),
+        S=np.asarray(mf.get_ovlp()),
+        spin_unrestricted=np.array(is_uks),
+        n_ao=np.array(mol.nao),
+        n_grid=np.array(mf.grids.weights.size),
+    )
+    return {
+        "dm": np.asarray(mf.make_rdm1()),
+        "mo_coeff": np.asarray(mf.mo_coeff),
+        "mo_occ": np.asarray(mf.mo_occ),
+        "mo_energy": np.asarray(mf.mo_energy),
+        "S": np.asarray(mf.get_ovlp()),
+        "spin_unrestricted": bool(is_uks),
+        "n_ao": int(mol.nao),
+        "n_grid": int(mf.grids.weights.size),
+    }
