@@ -233,7 +233,7 @@ def test_oep_cascade_skip_if_cached(tmp_path):
     assert p2.stat().st_mtime == mtime, "OEP npz rewritten on cache hit"
 
 
-def test_preflight_uks_oep_signature_and_imports(tmp_path):
+def test_preflight_uks_oep_signature_and_imports():
     """Fast structural test: preflight_uks_oep is importable, kw-only, and
     its smoke_specs use SpeciesEntry(name, charge, spin, source) order
     with the documented HO doublet + HN triplet pair.
@@ -242,6 +242,8 @@ def test_preflight_uks_oep_signature_and_imports(tmp_path):
     scripts/smoke_preflight_uks_oep.py (run manually) and by the
     @pytest.mark.slow integration test below (deselected by default per
     setup.cfg addopts='-m "not slow"').
+
+    Note: assertions are whitespace- and quote-style-sensitive against the literal source text; if a code formatter is applied to external_refs.py, update these strings to match.
     """
     import inspect
     from xcquinox.alec.external_refs import preflight_uks_oep, SpeciesEntry
