@@ -8,6 +8,12 @@ Notes on open-shell tests:
     perturbations, so density-error and FD gradient tests use the Li atom
     instead (spin=1, 1s^2 alpha / 1s^1 beta, no p-shell degeneracy). The
     shape/runs smoke test still exercises the O atom per the task plan.
+
+    For real production species in the dfs_ae pool (HO X²Π, CN X²Π,
+    NO X²Π, NO2 X²A1), the basin-hopping problem is dealt with via the
+    ``level_shift`` kwarg on ``run_oep_inversion``. ``run_oep_cascade``
+    in ``external_refs.py`` automatically sets ``level_shift=0.5`` for
+    UKS species (``spec.spin > 0``).
 """
 import numpy as np
 import pytest
@@ -146,3 +152,91 @@ def test_oep_uks_objective_gradient_consistent():
             f"Obj/grad inconsistent at t={t}: "
             f"fd={g_fd:.3e} analytic={g_analytic[t]:.3e} rel_err={rel_err:.3e}"
         )
+
+
+def test_run_oep_inversion_accepts_level_shift_kwarg():
+    """Fast structural test: ``level_shift`` kwarg accepted and threads
+    through to the inner SCF without raising. Uses Li/sto-3g (the
+    non-degenerate UKS testbed already validated above) so this test
+    does not gate on absolute density_error -- only that the kwarg is
+    accepted, the result has finite density_error, and the kwarg
+    forwarding is wired correctly through ``run_oep_inversion`` ->
+    ``_ks_from_vxc_matrix`` -> ``_ks_from_vxc_matrix_uhf``.
+
+    The actual basin-stabilizing effect of ``level_shift`` is verified
+    end-to-end via ``scripts/smoke_preflight_uks_oep.py`` on HO
+    (the X²Π radical that drove the fix).
+    """
+    mol = gto.M(atom="Li 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    mf = scf.UHF(mol)
+    mf.kernel()
+    dm_target = mf.make_rdm1()
+
+    spec = MoleculeSpec(
+        name="Li", atom="Li 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("Li", 1),), grid_level=1,
+    )
+    result = run_oep_inversion(
+        spec, dm_target, max_iter=20, conv_tol=1e-3, level_shift=0.5,
+    )
+    assert np.isfinite(result.density_error), (
+        f"density_error={result.density_error} not finite with level_shift=0.5"
+    )
+    # vxc_matrix has the right UKS shape regardless of convergence
+    assert result.vxc_matrix.ndim == 3 and result.vxc_matrix.shape[0] == 2
+
+
+def test_ks_from_vxc_matrix_uhf_sets_level_shift_attr():
+    """Fast unit test: ``_ks_from_vxc_matrix_uhf(level_shift=X)`` sets the
+    attribute on the inner ``mf_fixed`` object. Exercises the kwarg
+    plumbing without running the full L-BFGS-B optimization.
+
+    Verifies the wiring by monkey-patching ``pyscf.scf.UHF`` (a factory
+    function, not a class) with a wrapper that captures
+    ``mf.level_shift`` at ``kernel()`` time.
+    """
+    from pyscf import scf as _scf
+    from xcquinox.alec.oep import _ks_from_vxc_matrix_uhf
+
+    mol = gto.M(atom="Li 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    mf_outer = _scf.UHF(mol)
+    mf_outer.kernel()
+
+    captured = {"level_shift_seen": None}
+    real_UHF = _scf.UHF
+
+    def _spy_UHF(*args, **kwargs):
+        mf = real_UHF(*args, **kwargs)
+        original_kernel = mf.kernel
+        def _spy_kernel(*a, **kw):
+            captured["level_shift_seen"] = mf.level_shift
+            return original_kernel(*a, **kw)
+        mf.kernel = _spy_kernel
+        return mf
+
+    nao = mol.nao
+    vxc_matrix = np.zeros((2, nao, nao))
+    try:
+        _scf.UHF = _spy_UHF
+        _ks_from_vxc_matrix_uhf(
+            mol, mf_outer, vxc_matrix, level_shift=0.5,
+        )
+    finally:
+        _scf.UHF = real_UHF
+    assert captured["level_shift_seen"] == 0.5, (
+        f"expected mf_fixed.level_shift=0.5, "
+        f"got {captured['level_shift_seen']!r}"
+    )
+
+    # Default (level_shift=0.0) must NOT touch the attribute (preserve
+    # pre-fix behavior where mf_fixed.level_shift stays at PySCF default 0).
+    captured["level_shift_seen"] = None
+    try:
+        _scf.UHF = _spy_UHF
+        _ks_from_vxc_matrix_uhf(mol, mf_outer, vxc_matrix)
+    finally:
+        _scf.UHF = real_UHF
+    assert captured["level_shift_seen"] == 0.0, (
+        f"default level_shift must remain PySCF default 0.0, "
+        f"got {captured['level_shift_seen']!r}"
+    )

@@ -459,6 +459,16 @@ def run_oep_cascade(
         atom_composition=comp, grid_level=grid_level,
     )
 
+    # UKS species with orbital degeneracy (X²Π radicals like HO/CN/NO,
+    # near-degenerate X²A1 like NO2) need a level shift on the inner SCF
+    # to keep DIIS in a single broken-symmetry basin under L-BFGS-B
+    # perturbations of the OEP coefficients. Without this, density_error
+    # plateaus far from conv_tol (HO at def2-svp/grid_level=1 stalls at
+    # ~0.17). Closed-shell RKS is unaffected, so level_shift=0 there.
+    # See xcquinox/alec/tests/test_oep_uks.py module docstring for
+    # background on the basin-hopping failure mode.
+    level_shift = 0.5 if spec.spin > 0 else 0.0
+
     last_err = None
     oep_result = None
     for tier_idx, tier in enumerate(_OEP_TIERS):
@@ -470,6 +480,7 @@ def run_oep_cascade(
                 regularization=tier["regularization"],
                 max_iter=tier["max_iter"],
                 conv_tol=tier["conv_tol"],
+                level_shift=level_shift,
             )
             if oep_result.converged:
                 break

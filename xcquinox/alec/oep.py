@@ -181,7 +181,7 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
     return aux_mol, three_center, aux_on_grid, S_aux
 
 
-def _ks_from_vxc_matrix(mol, mf, vxc_matrix, *, dm0=None):
+def _ks_from_vxc_matrix(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0):
     """Run a KS-SCF with a fixed V_xc matrix replacing the XC potential.
 
     Dispatches to RHF or UHF based on ``vxc_matrix`` shape and
@@ -189,14 +189,23 @@ def _ks_from_vxc_matrix(mol, mf, vxc_matrix, *, dm0=None):
     ``success`` is False if the inner SCF raised; callers should
     increase the outer Wu-Yang objective on failure rather than
     silently using the input DM (D4 audit fix).
+
+    ``level_shift`` is forwarded to the inner ``mf_fixed.level_shift``
+    attribute. Nonzero values stabilize SCF in degenerate-orbital cases
+    (e.g. UKS X²Π radicals) by suppressing basin-flips during DIIS.
+    Default 0.0 matches the pre-fix behavior.
     """
     v = np.asarray(vxc_matrix)
     if v.ndim == 3 or mol.spin != 0:
-        return _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, dm0=dm0)
-    return _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, dm0=dm0)
+        return _ks_from_vxc_matrix_uhf(
+            mol, mf, vxc_matrix, dm0=dm0, level_shift=level_shift,
+        )
+    return _ks_from_vxc_matrix_rhf(
+        mol, mf, vxc_matrix, dm0=dm0, level_shift=level_shift,
+    )
 
 
-def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None):
+def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0):
     """RHF inner SCF with damped + DIIS-stabilized convergence.
 
     Returns ``(dm, ts, j_matrix, success)``. ``success=False`` indicates
@@ -205,6 +214,10 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None):
     off (D4 audit fix). Pre-fix code silently returned ``dm0`` and a
     finite ``ts``, leaving the objective and gradient inconsistent on
     failed line-search probes.
+
+    ``level_shift`` (default 0.0) is forwarded to ``mf_fixed.level_shift``;
+    closed-shell RKS rarely needs this, but the kwarg exists for symmetry
+    with the UHF path.
     """
     from pyscf import scf
     from numpy.linalg import LinAlgError as _NpLinAlgError
@@ -223,6 +236,8 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None):
     mf_fixed.diis_start_cycle = 5
     mf_fixed.diis_space = 4
     mf_fixed.damp = 0.1
+    if level_shift != 0.0:
+        mf_fixed.level_shift = level_shift
 
     def get_veff_fixed(mol_, dm_, *args, **kwargs):
         j_mat = mf_fixed.get_j(mol_, dm_)
@@ -253,8 +268,19 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None):
     return dm_final, ts, j_matrix, success
 
 
-def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None):
-    """UHF inner SCF; returns ``(dm, ts, j_matrix, success)``."""
+def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0):
+    """UHF inner SCF; returns ``(dm, ts, j_matrix, success)``.
+
+    ``level_shift`` (default 0.0) forwards to ``mf_fixed.level_shift`` and
+    is critical for OEP on UKS species with orbital degeneracy
+    (X²Π radicals like HO, CN, NO; X²A1 like NO2). Without level-shifting,
+    the inner SCF flips between symmetry-equivalent basins (e.g. π_x vs
+    π_y singly-occupied) under L-BFGS-B perturbations of the OEP
+    coefficients ``b``, breaking F(b) smoothness. Recommended: 0.5 Ha
+    for UKS species, 0.0 for closed-shell. See
+    ``xcquinox/alec/tests/test_oep_uks.py`` module docstring for
+    background on the basin-hopping failure mode.
+    """
     from pyscf import scf
 
     v = np.asarray(vxc_matrix)
@@ -274,6 +300,8 @@ def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None):
     mf_fixed.diis_start_cycle = 5
     mf_fixed.diis_space = 4
     mf_fixed.damp = 0.1
+    if level_shift != 0.0:
+        mf_fixed.level_shift = level_shift
 
     def get_veff_fixed(mol_, dm_, *args, **kwargs):
         dm_arr = np.asarray(dm_)
@@ -330,6 +358,7 @@ def run_oep_inversion(
     max_iter: int = 200,
     conv_tol: float = 1e-6,
     regularization: float = 1e-4,
+    level_shift: float = 0.0,
     progress_callback=None,
 ) -> OEPResult:
     """Wu-Yang displacement-form OEP inversion.
@@ -386,6 +415,19 @@ def run_oep_inversion(
         Smooth in V_xc(r) magnitude regardless of which auxiliary
         basis is chosen. Pre-fix code used ``0.5 * lambda * |b|^2``
         which silently changed meaning when ``aux_basis`` was swapped.
+    level_shift : float
+        Energy shift (Ha) applied to virtual orbitals during the inner
+        SCF (``mf_fixed.level_shift``). Default 0.0 reproduces pre-fix
+        behavior. Use ``level_shift=0.5`` for UKS species with orbital
+        degeneracy (X²Π radicals like HO, CN, NO; near-degenerate cases
+        like NO2's X²A1) to suppress basin-hopping during DIIS — the
+        inner SCF would otherwise flip between symmetry-equivalent
+        broken-symmetry solutions under L-BFGS-B perturbations of ``b``,
+        making F(b) non-smooth and preventing convergence to
+        ``conv_tol``. Without level-shifting, HO at def2-svp/grid_level=1
+        plateaus at ``density_error≈0.17``; with ``level_shift=0.5``,
+        it converges to ``density_error<2e-3``. Closed-shell RKS doesn't
+        need this; default 0.0 is correct for those.
     progress_callback : callable or None
         Optional ``fn(iter_int, density_error_float)`` invoked once per
         L-BFGS outer iteration.
@@ -499,6 +541,7 @@ def run_oep_inversion(
         vxc_matrix = _vxc_from_b(b)
         dm_scf, _, j_matrix, scf_success = _ks_from_vxc_matrix(
             mol, mf, vxc_matrix, dm0=scf_state["dm0_last_eval"],
+            level_shift=level_shift,
         )
         scf_state["dm0_last_eval"] = dm_scf
 
@@ -601,7 +644,7 @@ def run_oep_inversion(
         else scf_state["dm0_last_eval"]
     )
     dm_final, _, _, final_success = _ks_from_vxc_matrix(
-        mol, mf, vxc_final, dm0=final_warm,
+        mol, mf, vxc_final, dm0=final_warm, level_shift=level_shift,
     )
     if is_uks:
         rho_final_a, rho_final_b = _dm_to_rho_on_grid(
