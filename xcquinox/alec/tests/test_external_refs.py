@@ -283,3 +283,42 @@ def test_preflight_uks_runs_ho_and_hn(tmp_path):
     preflight_uks_oep(cache_dir=tmp_path, basis="def2-svp", grid_level=1)
     assert (tmp_path / "HO.npz").is_file()
     assert (tmp_path / "HN.npz").is_file()
+
+
+def test_run_log_partial_atomic(tmp_path):
+    """Each species-result append produces a self-consistent partial JSON."""
+    from xcquinox.alec.external_refs import RunLog
+    log = RunLog(cache_dir=tmp_path)
+    log.start(["H2O", "C2H2"])
+    log.record_result(
+        name="H2O", charge=0, spin=0, status="OK",
+        wall_clock_s=12.3, error_msg=None,
+    )
+    import json
+    partial = tmp_path / "_run_log_partial.json"
+    assert partial.is_file()
+    payload = json.loads(partial.read_text())
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["name"] == "H2O"
+    assert payload["results"][0]["status"] == "OK"
+    log.record_result(
+        name="C2H2", charge=0, spin=0, status="FAIL_OEP",
+        wall_clock_s=58.0, error_msg="OEP both tiers failed",
+    )
+    payload = json.loads(partial.read_text())
+    assert len(payload["results"]) == 2
+
+
+def test_run_log_finalize_archives(tmp_path):
+    """Finalize renames partial -> run_log_<ts>.json and removes partial."""
+    from xcquinox.alec.external_refs import RunLog
+    log = RunLog(cache_dir=tmp_path)
+    log.start(["H2O"])
+    log.record_result(
+        name="H2O", charge=0, spin=0, status="OK",
+        wall_clock_s=12.3, error_msg=None,
+    )
+    final_path = log.finalize()
+    assert final_path.is_file()
+    assert "_run_log_" in final_path.name
+    assert not (tmp_path / "_run_log_partial.json").is_file()

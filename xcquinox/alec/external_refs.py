@@ -551,3 +551,82 @@ def preflight_uks_oep(
                 f"Pre-flight UKS rho_ref_grid shape for {spec.name} "
                 f"is {rho.shape}; must be 1D spin-summed (data.py:296-299)"
             )
+
+
+class RunLog:
+    """Atomic JSON log for the Cell 0.5 pipeline.
+
+    Writes _run_log_partial.json after every species (kill-safe via
+    tempfile.mkstemp + os.replace, matching the T3 atomic-write precedent
+    at external_refs.py:261-274). On finalize, renames to
+    _run_log_<UTC-timestamp>.json so each run's log is preserved for
+    later debugging.
+    """
+
+    def __init__(self, *, cache_dir):
+        from pathlib import Path
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.partial_path = self.cache_dir / "_run_log_partial.json"
+        self._payload: dict = {
+            "started_at_utc": None,
+            "ended_at_utc": None,
+            "species_count": 0,
+            "results": [],
+        }
+
+    def start(self, species_names) -> None:
+        import datetime
+        self._payload["started_at_utc"] = (
+            datetime.datetime.now(datetime.timezone.utc).isoformat()
+        )
+        self._payload["species_count"] = len(list(species_names))
+        self._flush()
+
+    def record_result(
+        self, *, name, charge, spin, status,
+        wall_clock_s, error_msg, **extra,
+    ) -> None:
+        self._payload["results"].append({
+            "name": name, "charge": int(charge), "spin": int(spin),
+            "status": status, "wall_clock_s": float(wall_clock_s),
+            "error_msg": error_msg, **extra,
+        })
+        self._flush()
+
+    def finalize(self):
+        import datetime
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
+        self._payload["ended_at_utc"] = (
+            datetime.datetime.now(datetime.timezone.utc).isoformat()
+        )
+        final_path = self.cache_dir / f"_run_log_{ts}.json"
+        self._flush(path=final_path)
+        if self.partial_path.is_file():
+            self.partial_path.unlink()
+        return final_path
+
+    def _flush(self, *, path=None):
+        """Atomic JSON write: tempfile.mkstemp -> write -> os.replace.
+
+        Matches the T3 atomic-write pattern at external_refs.py:261-274
+        so a kill mid-flush cannot leave a corrupt partial JSON that the
+        next run would mis-parse.
+        """
+        import json
+        import os
+        import tempfile
+        target = path if path is not None else self.partial_path
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(self.cache_dir), suffix=".json"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(self._payload, f, indent=2)
+            os.replace(tmp_name, target)
+        except Exception:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
