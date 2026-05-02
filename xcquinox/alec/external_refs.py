@@ -596,12 +596,9 @@ class RunLog:
 
     def finalize(self):
         import datetime
-        ts = datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y%m%dT%H%M%SZ"
-        )
-        self._payload["ended_at_utc"] = (
-            datetime.datetime.now(datetime.timezone.utc).isoformat()
-        )
+        now = datetime.datetime.now(datetime.timezone.utc)
+        ts = now.strftime("%Y%m%dT%H%M%SZ")
+        self._payload["ended_at_utc"] = now.isoformat()
         final_path = self.cache_dir / f"_run_log_{ts}.json"
         self._flush(path=final_path)
         if self.partial_path.is_file():
