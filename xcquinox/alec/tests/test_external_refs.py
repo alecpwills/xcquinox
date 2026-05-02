@@ -181,3 +181,52 @@ def test_run_ccsd_uccsd_h_atom_spin_summed_rho(tmp_path):
     # H atom has 1 electron total — integrated rho must equal 1.0
     integ = float(np.sum(cc["grid_weights"] * cc["rho_ref_grid"]))
     assert abs(integ - 1.0) < 0.05, f"integrated rho={integ} != 1 for H atom"
+
+
+def test_oep_cascade_writes_npz_with_required_keys(tmp_path):
+    """Stage 3 OEP for H2 produces npz with vxc_ref, dm_target, rho_ref_grid."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry,
+        run_scf_with_cache, run_ccsd_with_cache, run_oep_cascade,
+    )
+    import numpy as np
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    scf = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
+                             cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    npz_path = run_oep_cascade(spec, atoms, ccsd_payload=cc,
+                               cache_dir=tmp_path,
+                               basis="def2-svp", grid_level=1)
+    assert npz_path.is_file()
+    with np.load(npz_path, allow_pickle=False) as z:
+        for key in ("vxc_ref", "dm_target", "rho_ref_grid",
+                    "ref_density_method", "oep_baseline_xc",
+                    "oep_aux_basis"):
+            assert key in z.files, f"missing {key} in {npz_path}"
+
+
+def test_oep_cascade_skip_if_cached(tmp_path):
+    """Re-invocation with full cache: skip-if-cached returns existing path."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry,
+        run_scf_with_cache, run_ccsd_with_cache, run_oep_cascade,
+    )
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    scf = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
+                             cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    p1 = run_oep_cascade(spec, atoms, ccsd_payload=cc,
+                         cache_dir=tmp_path,
+                         basis="def2-svp", grid_level=1)
+    mtime = p1.stat().st_mtime
+    p2 = run_oep_cascade(spec, atoms, ccsd_payload=cc,
+                         cache_dir=tmp_path,
+                         basis="def2-svp", grid_level=1)
+    assert p2 == p1
+    assert p2.stat().st_mtime == mtime, "OEP npz rewritten on cache hit"

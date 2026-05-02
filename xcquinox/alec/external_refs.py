@@ -8,12 +8,13 @@ Pipeline stages (each individually cached via np.savez_compressed):
   1. SCF  → _intermediates/<name>_scf.npz   (MO coeffs, DM, S)
   2. CCSD → _intermediates/<name>_ccsd.npz  (CC density matrix + rho)
   3. OEP  → <name>.npz                       (vxc_ref + dm_target +
-                                              rho_ref_grid + provenance)
+                                             rho_ref_grid + provenance)
 
 Reuses step-6 cells 12-13 OEP-cascade pattern verbatim
 (_build_step6_notebook.py:728-768, 843-877). 2-tier: svp-jkfit primary
-(reg=1e-4, max_iter=500), def2-tzvp-jkfit fallback (reg=1e-4,
-max_iter=1000). On both-tier failure raises RuntimeError.
+(reg=1e-4, conv_tol=2e-3, max_iter=500), def2-tzvp-jkfit fallback
+(reg=1e-4, conv_tol=2e-3, max_iter=1000). On both-tier failure raises
+RuntimeError.
 """
 from __future__ import annotations
 
@@ -384,3 +385,114 @@ def run_ccsd_with_cache(
             os.unlink(tmp_name)
         raise
     return result
+
+
+# OEP cascade tiers — mirrors step-6 _build_step6_notebook.py:729-730, 844-845.
+# conv_tol=2e-3 is tuned against the achievable density_error floor for
+# def2-svp with grid_level=1 (~1.17e-3); gives ~1.7x margin (step-6 cell 12).
+# 2-tier cascade verified by R-A in Round-1 review.
+_OEP_TIERS: tuple[dict, ...] = (
+    {"aux_basis": "def2-svp-jkfit",  "regularization": 1e-4,
+     "max_iter": 500,  "conv_tol": 2e-3},
+    {"aux_basis": "def2-tzvp-jkfit", "regularization": 1e-4,
+     "max_iter": 1000, "conv_tol": 2e-3},
+)
+
+
+def run_oep_cascade(
+    spec: SpeciesEntry,
+    atoms,
+    *,
+    ccsd_payload: dict,
+    cache_dir,
+    basis: str = "def2-svp",
+    grid_level: int = 1,
+):
+    """Stage 3: OEP inversion with 2-tier cascade + skip-if-cached.
+
+    Tries svp-jkfit primary; on RuntimeError or non-converged inversion
+    falls back to def2-tzvp-jkfit. On both-tier failure raises
+    RuntimeError listing the species.
+
+    Output: <cache_dir>/<name>.npz with vxc_ref + dm_target +
+    rho_ref_grid + ref_density_method + oep_* provenance. Two-phase
+    write exploits save_vxc_ref's merge semantics
+    (xcquinox/alec/oep.py:696-700).
+    """
+    from collections import Counter
+    from pathlib import Path
+    import numpy as np
+    from xcquinox.alec import oep as alec_oep
+    from xcquinox.alec.config import MoleculeSpec
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    npz_path = cache_dir / f"{spec.name}.npz"
+
+    if npz_path.is_file():
+        # Verify completeness — must have all required keys
+        try:
+            with np.load(npz_path, allow_pickle=False) as z:
+                required = {"vxc_ref", "dm_target", "rho_ref_grid",
+                            "ref_density_method"}
+                if required.issubset(set(z.files)):
+                    return npz_path
+        except (OSError, ValueError):
+            pass  # Corrupt cache — recompute
+
+    # Build a MoleculeSpec for run_oep_inversion
+    coords = atoms.get_positions()
+    syms = atoms.get_chemical_symbols()
+    atom_lines = "; ".join(
+        f"{s} {coords[i,0]:.6f} {coords[i,1]:.6f} {coords[i,2]:.6f}"
+        for i, s in enumerate(syms)
+    )
+    comp = dict(Counter(syms))
+    mol_spec = MoleculeSpec.from_dict(
+        name=spec.name, atom=atom_lines, basis=basis,
+        charge=spec.charge, spin=spec.spin,
+        atom_composition=comp, grid_level=grid_level,
+    )
+
+    last_err = None
+    oep_result = None
+    for tier_idx, tier in enumerate(_OEP_TIERS):
+        try:
+            oep_result = alec_oep.run_oep_inversion(
+                mol_spec,
+                ccsd_payload["dm_ao"],
+                aux_basis=tier["aux_basis"],
+                regularization=tier["regularization"],
+                max_iter=tier["max_iter"],
+                conv_tol=tier["conv_tol"],
+            )
+            if oep_result.converged:
+                break
+            last_err = (
+                f"OEP not converged at tier {tier_idx} "
+                f"({tier['aux_basis']}); "
+                f"density_error={oep_result.density_error:.3e}"
+            )
+        except (RuntimeError, ValueError) as e:
+            last_err = f"tier {tier_idx} ({tier['aux_basis']}) raised: {e}"
+            oep_result = None
+
+    if oep_result is None or not oep_result.converged:
+        raise RuntimeError(
+            f"OEP cascade failed for {spec.name!r} (charge={spec.charge}, "
+            f"spin={spec.spin}, source={spec.source}): {last_err}"
+        )
+
+    # Two-phase write: phase 1 stores rho_ref_grid; phase 2's
+    # save_vxc_ref merges in vxc_ref + dm_target + provenance.
+    np.savez(
+        npz_path,
+        rho_ref_grid=ccsd_payload["rho_ref_grid"],
+        ref_density_method=np.array("ccsd"),
+    )
+    alec_oep.save_vxc_ref(
+        oep_result, str(npz_path),
+        dm_target=ccsd_payload["dm_ao"],
+        method="ccsd",
+    )
+    return npz_path
