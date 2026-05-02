@@ -629,3 +629,60 @@ def test_dfs_atom_refs_carry_spin_metadata():
         assert r["spin"] == 1   # NIST ASD ²S ground state
         assert r["charge"] == 0
         assert isinstance(r.get("spin_source", ""), str)
+
+
+def test_select_subset_return_all_returns_full_distribution():
+    """return_all=True returns vals array with C(n, r) entries."""
+    import math
+    import numpy as np
+    from xcquinox.alec.subset_selection import (
+        build_reference_histograms, select_subset,
+    )
+    rng = np.random.default_rng(0)
+    pool = []
+    for _ in range(6):
+        pool.append({
+            "rho_third": rng.uniform(0.1, 1.0, size=(50,)),
+            "s": rng.uniform(0.0, 2.0, size=(50,)),
+            "alpha": rng.uniform(0.0, 5.0, size=(50,)),
+            "weights": np.ones(50),
+        })
+    h_ref, edges = build_reference_histograms(pool)
+    chosen, best_val, vals, idx_array = select_subset(
+        pool, edges, h_ref, r=3, metric="l2",
+        progress=False, return_all=True,
+    )
+    n_combos = math.comb(6, 3)
+    assert vals.shape == (n_combos,)
+    assert idx_array.shape == (n_combos, 3)
+    assert vals.min() == best_val
+    assert vals.dtype == np.float64
+
+
+def test_select_subset_return_all_distribution_path(tmp_path):
+    """return_all=True with distribution_path persists vals + indices to npz."""
+    import math
+    import numpy as np
+    from xcquinox.alec.subset_selection import (
+        build_reference_histograms, select_subset,
+    )
+    rng = np.random.default_rng(1)
+    pool = [{
+        "rho_third": rng.uniform(0.1, 1.0, size=(40,)),
+        "s": rng.uniform(0.0, 2.0, size=(40,)),
+        "alpha": rng.uniform(0.0, 5.0, size=(40,)),
+        "weights": np.ones(40),
+    } for _ in range(5)]
+    h_ref, edges = build_reference_histograms(pool)
+    out_npz = tmp_path / "dist.npz"
+    select_subset(
+        pool, edges, h_ref, r=2, metric="jsd",
+        progress=False, return_all=True,
+        distribution_path=str(out_npz),
+    )
+    assert out_npz.is_file()
+    npz_safe = np.load(out_npz, allow_pickle=False)
+    assert "vals" in npz_safe.files
+    assert "indices" in npz_safe.files
+    assert npz_safe["vals"].size == math.comb(5, 2)
+    npz_safe.close()

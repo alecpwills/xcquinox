@@ -199,6 +199,8 @@ def select_subset(
     fixed_indices: tuple = (),
     progress: bool = True,
     progress_desc: str | None = None,
+    return_all: bool = False,
+    distribution_path: str | None = None,
 ):
     """Exhaustively enumerate all C(npool, r) subsets and return the
     indices of the size-r combination that minimizes the chosen metric.
@@ -240,6 +242,10 @@ def select_subset(
     from math import comb as _comb
     n_combos = _comb(len(free_indices), free_r)
 
+    if return_all:
+        vals = np.empty(n_combos, dtype=np.float64)
+        idx_array = np.empty((n_combos, r), dtype=np.int64)
+
     combo_iter = combinations(free_indices, free_r)
     if progress:
         from tqdm.auto import tqdm
@@ -255,17 +261,32 @@ def select_subset(
 
     best_val = float("inf")
     best_combo: tuple = ()
-    for combo in combo_iter:
+    for k, combo in enumerate(combo_iter):
         full = tuple(sorted(set(combo) | fixed_set))
-        cat = {k: np.concatenate([pool[i][k] for i in full]) for k in _DESCRIPTOR_KEYS}
+        cat = {key: np.concatenate([pool[i][key] for i in full]) for key in _DESCRIPTOR_KEYS}
         cat["weights"] = np.concatenate(
             [pool[i].get("weights", np.ones_like(pool[i]["rho_third"])) for i in full]
         )
         h_cand = _bin_with_edges(cat, edges)
         v = m(h_ref, h_cand)
+        if return_all:
+            vals[k] = v
+            idx_array[k, :] = full
         if v < best_val:
             best_val = v
             best_combo = full
+
+    if return_all and distribution_path is not None:
+        np.savez_compressed(
+            distribution_path,
+            vals=vals, indices=idx_array,
+            best_combo=np.array(best_combo),
+            best_val=np.array(best_val),
+        )
+
+    if return_all:
+        return best_combo, best_val, vals, idx_array
+
     return best_combo, best_val
 
 
