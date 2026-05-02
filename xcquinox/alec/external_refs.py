@@ -114,3 +114,67 @@ def build_species_union() -> list[SpeciesEntry]:
          int(pt.info["spin"]), "hbpt")
 
     return sorted(seen.values(), key=lambda s: (s.name, s.charge, s.spin))
+
+
+def resolve_geometry(spec: SpeciesEntry):
+    """Build an ASE Atoms object for a SpeciesEntry.
+
+    Strategy by source:
+      - dfs_ae: lookup by Hill formula in g2_97.traj
+      - dfs_atom / bh76 (single-letter or two-letter symbol):
+        bare atom at origin
+      - ip13: bare atom (cation = bare atom with charge+1)
+      - probe_a / probe_b / probe_d (compound):
+        lookup by Hill formula in g2_97.traj OR pull from
+        eval_probes.build_probe_pool's output entries
+      - probe_c (BH76 species): same dispatch as bh76
+      - hbpt: call _make_hb_atoms / _make_pt_atoms
+    """
+    from ase import Atoms
+    from xcquinox.alec.dfs_pool import _g297_traj_path
+    from xcquinox.alec.subset_selection import _make_hb_atoms, _make_pt_atoms
+    from ase.io import read as ase_read
+
+    if spec.source == "hbpt":
+        atoms = _make_hb_atoms() if spec.name == "HBWD" else _make_pt_atoms()
+        return atoms
+
+    # Atomic species: name is a 1-2 letter symbol (or symbol+"+" for cations)
+    sym = spec.name.rstrip("+")
+    if len(sym) <= 2 and sym.isalpha() and spec.source in (
+        "dfs_atom", "bh76", "ip13", "probe_atom_ref", "probe_c",
+    ):
+        atoms = Atoms(sym, positions=[(0.0, 0.0, 0.0)])
+        atoms.info["name"] = spec.name
+        atoms.info["charge"] = spec.charge
+        atoms.info["spin"] = spec.spin
+        return atoms
+
+    # Compound species: try g2_97.traj first
+    traj = ase_read(str(_g297_traj_path()), ":")
+    by_hill = {a.get_chemical_formula(): a for a in traj}
+    if spec.name in by_hill:
+        atoms = by_hill[spec.name].copy()
+        atoms.info["dfs_hill"] = spec.name
+        atoms.info["charge"] = spec.charge
+        atoms.info["spin"] = spec.spin
+        return atoms
+
+    # Probe species not in g2_97: pull from eval_probes.build_probe_pool
+    from xcquinox.alec import eval_probes
+    for probe_name in eval_probes.ALL_PROBES:
+        if eval_probes.PROBE_KIND[probe_name] != "ae":
+            continue
+        for entry in eval_probes.ALL_PROBES[probe_name]:
+            if entry["hill"] == spec.name:
+                pool = eval_probes.build_probe_pool(probe_name)
+                for at in pool["entries"]:
+                    if at.info.get("name") == entry["name"]:
+                        a = at.copy()
+                        a.info["charge"] = spec.charge
+                        a.info["spin"] = spec.spin
+                        return a
+    raise KeyError(
+        f"Could not resolve geometry for SpeciesEntry(name={spec.name!r}, "
+        f"charge={spec.charge}, spin={spec.spin}, source={spec.source!r})"
+    )

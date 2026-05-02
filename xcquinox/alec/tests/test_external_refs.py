@@ -40,3 +40,58 @@ def test_species_union_open_shell_dispatch():
     assert by_name["HN"].spin == 2  # ³Σ⁻ NH per dfs_pool.py
     assert by_name["CH2"].spin == 2  # ³B₁ methylene
     assert by_name["O2"].spin == 2  # ³Σg⁻ from Probe D
+
+
+def test_resolve_geometry_dfs_ae():
+    """DFS AE molecules resolved from g2_97.traj by Hill formula."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry,
+        resolve_geometry,
+    )
+    spec = SpeciesEntry(name="H2O", charge=0, spin=0, source="dfs_ae")
+    atoms = resolve_geometry(spec)
+    assert len(atoms) == 3, "H2O should have 3 atoms"
+    assert atoms.info.get("spin") == 0
+    assert atoms.info.get("charge") == 0
+
+
+def test_resolve_geometry_atom():
+    """Atomic species resolved as bare atom at origin with NIST spin."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry,
+        resolve_geometry,
+    )
+    spec = SpeciesEntry(name="N", charge=0, spin=3, source="bh76")
+    atoms = resolve_geometry(spec)
+    assert len(atoms) == 1
+    assert atoms.get_chemical_symbols() == ["N"]
+    assert atoms.info["spin"] == 3
+    assert atoms.info["charge"] == 0
+
+
+def test_resolve_geometry_cation():
+    """IP13 cation: bare atom with charge=+1 and cation_spin."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry,
+        resolve_geometry,
+    )
+    spec = SpeciesEntry(name="C+", charge=1, spin=1, source="ip13")
+    atoms = resolve_geometry(spec)
+    assert len(atoms) == 1
+    assert atoms.get_chemical_symbols() == ["C"]
+    assert atoms.info["charge"] == 1
+    assert atoms.info["spin"] == 1
+
+
+def test_resolve_geometry_hbpt():
+    """HBPT pairs return the 6-atom water-dimer geometries."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry,
+        resolve_geometry,
+    )
+    hb = resolve_geometry(SpeciesEntry("HBWD", 1, 1, "hbpt"))
+    pt = resolve_geometry(SpeciesEntry("PTWD", 1, 1, "hbpt"))
+    assert len(hb) == 6 and len(pt) == 6
+    # Distinct positions
+    import numpy as np
+    assert not np.allclose(hb.get_positions(), pt.get_positions())
