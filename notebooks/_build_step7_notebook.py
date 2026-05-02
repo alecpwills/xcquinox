@@ -629,6 +629,7 @@ def build_cells() -> list:
         "                _loss_kw = {\n"
         "                    'bh76_reactions': _bh76_ha,\n"
         "                    'ip13_pairs':     _ip13_ha,\n"
+        "                    'aux_only_names': ('HBWD', 'PTWD'),\n"
         "                    'solver_config':  _cfg,\n"
         "                    'vxc_weight':     0.01,\n"
         "                    'density_weight': 0.1,\n"
