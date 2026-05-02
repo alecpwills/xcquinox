@@ -285,7 +285,12 @@ def _make_hb_atoms() -> Atoms:
     legacy 6-311++G(3df,2pd) / level=4."""
     a = Atoms(_HB_SYMBOLS, positions=list(_HB_POSITIONS))
     a.info.update({
-        "charge": 1, "spin": 1, "name": "HBWD", "openshell": True,
+        # dfs_hill must be unique per HBPT pair so the step-7 notebook
+        # builder's _atoms_to_mol_spec produces distinct MoleculeSpec.name
+        # values; both pairs share Hill formula H4O2 so falling through to
+        # ASE's get_chemical_formula() would collide.
+        "charge": 1, "spin": 1, "dfs_hill": "HBWD", "name": "HBWD",
+        "openshell": True,
         "sc": False, "sym": False, "reaction": "reactant",
         "grid_level": 1, "basis": "def2-svp", "pol": True,
     })
@@ -297,7 +302,9 @@ def _make_pt_atoms() -> Atoms:
     Basis/grid override: def2-svp / grid_level=1."""
     a = Atoms(_PT_SYMBOLS, positions=list(_PT_POSITIONS))
     a.info.update({
-        "charge": 1, "spin": 1, "name": "PTWD", "openshell": True,
+        # See _make_hb_atoms re: dfs_hill disambiguation.
+        "charge": 1, "spin": 1, "dfs_hill": "PTWD", "name": "PTWD",
+        "openshell": True,
         "sc": False, "sym": False, "reaction": 1,
         "grid_level": 1, "basis": "def2-svp", "pol": True,
     })
