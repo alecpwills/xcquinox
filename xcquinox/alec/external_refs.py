@@ -221,6 +221,8 @@ def run_scf_with_cache(
                 "spin_unrestricted": bool(z["spin_unrestricted"]),
                 "n_ao": int(z["n_ao"]),
                 "n_grid": int(z["n_grid"]),
+                "grid_coords": np.asarray(z["grid_coords"]),
+                "grid_weights": np.asarray(z["grid_weights"]),
             }
 
     coords = atoms.get_positions()
@@ -239,6 +241,9 @@ def run_scf_with_cache(
     # return value.  Avoids redundant PySCF calls (make_rdm1/get_ovlp
     # were called twice in the earlier draft) and removes a DRY violation
     # (T3 code-quality review).
+    # grid_coords/grid_weights are stored so Stage 2 (CCSD) can reuse the
+    # exact pruned grid from the SCF run without rebuilding (which would
+    # give a different grid size due to pruning).
     result = {
         "dm": np.asarray(mf.make_rdm1()),
         "mo_coeff": np.asarray(mf.mo_coeff),
@@ -248,11 +253,125 @@ def run_scf_with_cache(
         "spin_unrestricted": bool(is_uks),
         "n_ao": int(mol.nao),
         "n_grid": int(mf.grids.weights.size),
+        "grid_coords": np.asarray(mf.grids.coords),
+        "grid_weights": np.asarray(mf.grids.weights),
     }
 
     # Atomic write: temp file + os.replace so an interrupted SCF cannot
     # leave a corrupt partial .npz that future runs read as a cache hit
     # (T3 code-quality review).
+    import os
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(dir=str(inter), suffix=".npz")
+    os.close(fd)
+    try:
+        np.savez_compressed(tmp_name, **result)
+        os.replace(tmp_name, cache_path)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
+    return result
+
+
+def run_ccsd_with_cache(
+    spec: SpeciesEntry,
+    atoms,
+    *,
+    scf_payload: dict,
+    cache_dir,
+    basis: str = "def2-svp",
+    grid_level: int = 1,
+) -> dict:
+    """Stage 2: CCSD + spin-summed grid density, with on-disk cache.
+
+    Returns dict with keys: dm_ao, rho_ref_grid (1D spin-summed),
+    grid_weights, ao_grid.
+
+    The rho_ref_grid spin-summing is REQUIRED for UKS species — the
+    data.py loader expects shape (N_grid,), NOT (2, N_grid). See
+    xcquinox/alec/data.py:296-299 for the canonical spin-summing
+    pattern (`dm_pbe_tot = dm_pbe[0] + dm_pbe[1]` then einsum).
+
+    Cache layout:
+      <cache_dir>/_intermediates/<name>_ccsd.npz  (np.savez_compressed)
+    """
+    import numpy as np
+    from pathlib import Path
+    from pyscf import dft, gto
+
+    inter = Path(cache_dir) / "_intermediates"
+    inter.mkdir(parents=True, exist_ok=True)
+    cache_path = inter / f"{spec.name}_ccsd.npz"
+
+    if cache_path.is_file():
+        with np.load(cache_path, allow_pickle=False) as z:
+            return {
+                "dm_ao": np.asarray(z["dm_ao"]),
+                "rho_ref_grid": np.asarray(z["rho_ref_grid"]),
+                "grid_weights": np.asarray(z["grid_weights"]),
+                "ao_grid": np.asarray(z["ao_grid"]),
+            }
+
+    # Build mol for AO evaluation; grid coords/weights are taken directly
+    # from the SCF payload so the CCSD grid is identical to the SCF grid
+    # (PySCF prunes the grid during kernel(), so rebuilding from scratch
+    # yields a different number of points).
+    coords = atoms.get_positions()
+    syms = atoms.get_chemical_symbols()
+    atom_lines = [(s, tuple(coords[i])) for i, s in enumerate(syms)]
+    mol = gto.M(atom=atom_lines, basis=basis, charge=spec.charge,
+                spin=spec.spin, unit="angstrom", verbose=0)
+    is_uks = bool(scf_payload["spin_unrestricted"])
+
+    # Build a DFT mean-field object to carry MOs, then convert to HF for
+    # CCSD (PySCF CCSD requires an HF object, not a DFT object).
+    mf = dft.UKS(mol) if is_uks else dft.RKS(mol)
+    mf.xc = "pbe"
+    mf.mo_coeff = scf_payload["mo_coeff"]
+    mf.mo_occ = scf_payload["mo_occ"]
+    mf.mo_energy = scf_payload["mo_energy"]
+    if hasattr(mf, "converged"):
+        mf.converged = True
+
+    mf_hf = mf.to_hf()
+    mf_hf.mo_coeff = mf.mo_coeff
+    mf_hf.mo_occ = mf.mo_occ
+    mf_hf.mo_energy = mf.mo_energy
+    if hasattr(mf_hf, "converged"):
+        mf_hf.converged = True
+
+    if is_uks:
+        from pyscf.cc import uccsd
+        mycc = uccsd.UCCSD(mf_hf)
+    else:
+        from pyscf.cc import ccsd
+        mycc = ccsd.RCCSD(mf_hf)
+    mycc.kernel()
+    dm_cc = np.asarray(mycc.make_rdm1(ao_repr=True))
+
+    # Spin-sum the AO-basis DM for grid evaluation.  The unrestricted DM
+    # may be (2, n_ao, n_ao); we keep both spin channels in dm_ao for
+    # the V_xc shape contract but build a SCALAR grid density via the
+    # spin-summed total (data.py:296-299 pattern).
+    if is_uks and dm_cc.ndim == 3:
+        dm_total = dm_cc[0] + dm_cc[1]
+    else:
+        dm_total = dm_cc
+
+    # Reuse the exact SCF grid (pruned during kernel()) to keep n_grid consistent.
+    grid_coords = scf_payload["grid_coords"]
+    grid_weights = scf_payload["grid_weights"]
+    ao_grid = dft.numint.eval_ao(mol, grid_coords, deriv=0)
+    rho_ref_grid = np.einsum("ij,gj,gi->g", dm_total, ao_grid, ao_grid)
+
+    result = {
+        "dm_ao": dm_cc,
+        "rho_ref_grid": rho_ref_grid,
+        "grid_weights": grid_weights,
+        "ao_grid": ao_grid,
+    }
+    # Atomic write (matches T3 pattern): temp file + os.replace.
     import os
     import tempfile
     fd, tmp_name = tempfile.mkstemp(dir=str(inter), suffix=".npz")

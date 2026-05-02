@@ -139,3 +139,45 @@ def test_run_scf_cache_hit(tmp_path):
     p2 = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
                             basis="def2-svp", grid_level=1)
     assert cache_path.stat().st_mtime == mtime, "cache rewritten on hit"
+
+
+def test_run_ccsd_rccsd_h2(tmp_path):
+    """RCCSD on H2 produces dm_ao shape (n_ao, n_ao) and rho_ref_grid (N_grid,)."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry,
+        run_scf_with_cache, run_ccsd_with_cache,
+    )
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    scf = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
+                             cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    assert cc["dm_ao"].ndim == 2
+    assert cc["rho_ref_grid"].ndim == 1, (
+        "rho_ref_grid must be spin-summed 1D shape (N_grid,)")
+    assert cc["rho_ref_grid"].size == scf["n_grid"]
+
+
+def test_run_ccsd_uccsd_h_atom_spin_summed_rho(tmp_path):
+    """UCCSD on H atom: dm_ao spin-resolved (2, n_ao, n_ao); rho is SUMMED 1D."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry,
+        run_scf_with_cache, run_ccsd_with_cache,
+    )
+    import numpy as np
+    spec = SpeciesEntry("H", 0, 1, "dfs_atom")
+    atoms = resolve_geometry(spec)
+    scf = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
+                             cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    assert cc["dm_ao"].ndim == 3 and cc["dm_ao"].shape[0] == 2
+    assert cc["rho_ref_grid"].ndim == 1, (
+        "rho_ref_grid must be spin-summed 1D not (2, N_grid) — see "
+        "data.py:296-299 for the canonical spin-summing pattern")
+    # H atom has 1 electron total — integrated rho must equal 1.0
+    integ = float(np.sum(cc["grid_weights"] * cc["rho_ref_grid"]))
+    assert abs(integ - 1.0) < 0.05, f"integrated rho={integ} != 1 for H atom"
