@@ -91,14 +91,14 @@ def build_species_union() -> list[SpeciesEntry]:
         if kind == "ae":
             for entry in entries:
                 _add(entry["hill"], int(entry.get("charge", 0)),
-                     int(entry["spin"]), f"probe_{probe_name[6]}")
+                     int(entry["spin"]), f"probe_{probe_name.split('_')[1]}")
         else:  # bh76
             for rxn in entries:
                 spins = rxn.get("species_spins", {})
                 charges = rxn.get("species_charges", {})
                 for sp in (*rxn["reactants"], *rxn["products"]):
                     _add(sp, int(charges.get(sp, 0)),
-                         int(spins.get(sp, 0)), f"probe_{probe_name[6]}")
+                         int(spins.get(sp, 0)), f"probe_{probe_name.split('_')[1]}")
 
     # Probe-induced atom refs (S, Cl, P, Si, Be) for atom_energies anchor
     from xcquinox.alec.dfs_pool import ATOMIC_GROUND_STATE_SPIN
