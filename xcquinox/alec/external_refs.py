@@ -485,7 +485,9 @@ def run_oep_cascade(
 
     # Two-phase write: phase 1 stores rho_ref_grid; phase 2's
     # save_vxc_ref merges in vxc_ref + dm_target + provenance.
-    np.savez(
+    # Use np.savez_compressed for consistency with stages 1+2 caches
+    # (T5 code-quality nit).
+    np.savez_compressed(
         npz_path,
         rho_ref_grid=ccsd_payload["rho_ref_grid"],
         ref_density_method=np.array("ccsd"),
