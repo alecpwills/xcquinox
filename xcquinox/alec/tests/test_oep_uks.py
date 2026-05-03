@@ -240,3 +240,64 @@ def test_ks_from_vxc_matrix_uhf_sets_level_shift_attr():
         f"default level_shift must remain PySCF default 0.0, "
         f"got {captured['level_shift_seen']!r}"
     )
+
+
+def test_run_oep_inversion_early_stops_when_density_error_below_conv_tol():
+    """L-BFGS-B aborts via the _OEPEarlyStop sentinel as soon as the
+    accepted-iterate density_error_l2 drops below conv_tol, instead of
+    running the full max_iter at the noise floor. Verified with a very
+    loose conv_tol (10.0) that the first iteration must satisfy.
+
+    Required behavior:
+      * ``n_iter`` is small (<= a few iterations)
+      * ``converged`` is True
+      * ``lbfgs_status`` starts with ``"early_stopped"`` so consumers can
+        distinguish early-stop from scipy's own convergence
+    """
+    mol = gto.M(atom="Li 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    mf = scf.UHF(mol)
+    mf.kernel()
+    dm_target = mf.make_rdm1()
+
+    spec = MoleculeSpec(
+        name="Li", atom="Li 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("Li", 1),), grid_level=1,
+    )
+    result = run_oep_inversion(
+        spec, dm_target, max_iter=100, conv_tol=10.0, level_shift=0.5,
+    )
+    assert result.converged, (
+        f"expected converged=True with conv_tol=10.0; "
+        f"got density_error={result.density_error:.3e}"
+    )
+    assert result.n_iter <= 5, (
+        f"expected early-stop within ~5 iters; got n_iter={result.n_iter}"
+    )
+    assert result.lbfgs_status.startswith("early_stopped"), (
+        f"expected lbfgs_status to start with 'early_stopped'; "
+        f"got {result.lbfgs_status!r}"
+    )
+
+
+def test_run_oep_inversion_no_early_stop_when_conv_tol_unreachable():
+    """When ``conv_tol`` is below the achievable noise floor, the
+    early-stop sentinel must NOT fire and the optimizer runs to its own
+    ftol/gtol/maxiter. ``lbfgs_status`` must NOT start with
+    ``"early_stopped"`` in that path.
+    """
+    mol = gto.M(atom="Li 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    mf = scf.UHF(mol)
+    mf.kernel()
+    dm_target = mf.make_rdm1()
+
+    spec = MoleculeSpec(
+        name="Li", atom="Li 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("Li", 1),), grid_level=1,
+    )
+    result = run_oep_inversion(
+        spec, dm_target, max_iter=10, conv_tol=1e-30, level_shift=0.5,
+    )
+    assert not result.lbfgs_status.startswith("early_stopped"), (
+        f"early-stop must not fire when conv_tol is unreachable; "
+        f"got status={result.lbfgs_status!r}"
+    )

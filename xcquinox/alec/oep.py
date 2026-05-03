@@ -66,6 +66,23 @@ class OEPResult(NamedTuple):
     lbfgs_status: str           # "success" / message from scipy result (D5)
 
 
+class _OEPEarlyStop(Exception):
+    """Sentinel raised by the L-BFGS-B iter callback inside
+    ``run_oep_inversion`` when ``density_error_l2`` at the accepted
+    iterate has dropped below ``conv_tol``. Caught immediately after
+    ``scipy.optimize.minimize(...)`` returns; the most-recent accepted
+    parameter vector is carried out via the ``b`` attribute so the OEP
+    can finalize using that iterate rather than running L-BFGS-B all the
+    way to its own ftol/gtol/maxiter (which would burn hundreds of extra
+    iterations of basin oscillation at the noise floor for UKS Π-state
+    inversions).
+    """
+
+    def __init__(self, b: np.ndarray) -> None:
+        super().__init__("OEP early stop: density_error < conv_tol")
+        self.b = b
+
+
 def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
                       baseline_xc: str | None = "pbe"):
     """Build PySCF molecule and run baseline-XC SCF. Returns ``(mol, mf)``.
@@ -622,19 +639,35 @@ def run_oep_inversion(
                 _progress_state["iter"],
                 _progress_state["density_error_l2"],
             )
+        # Early-stop: when the density-L2 at the accepted iterate satisfies
+        # the user's conv_tol, abort minimize() rather than running the
+        # full max_iter. L-BFGS-B's own stopping criteria (ftol, gtol)
+        # don't react to density_error directly, so without this check
+        # UKS Π-state cases plateau at the noise floor for hundreds of
+        # extra iterations even after density_error has dropped below
+        # conv_tol. The sentinel exception is caught immediately after
+        # minimize() returns; the most-recent accepted iterate (_xk) is
+        # carried out via the sentinel payload.
+        if _progress_state["density_error_l2"] < conv_tol:
+            raise _OEPEarlyStop(np.asarray(_xk).copy())
 
     b0 = np.zeros(2 * n_aux if is_uks else n_aux)
 
-    result = minimize(
-        objective_and_grad,
-        b0,
-        method="L-BFGS-B",
-        jac=True,
-        options={"maxiter": max_iter, "ftol": 1e-15, "gtol": 1e-12},
-        callback=_scipy_iter_callback,
-    )
+    early_stopped_b = None
+    try:
+        result = minimize(
+            objective_and_grad,
+            b0,
+            method="L-BFGS-B",
+            jac=True,
+            options={"maxiter": max_iter, "ftol": 1e-15, "gtol": 1e-12},
+            callback=_scipy_iter_callback,
+        )
+    except _OEPEarlyStop as _es:
+        early_stopped_b = _es.b
+        result = None  # not used in early-stop path
 
-    b_final = result.x
+    b_final = early_stopped_b if early_stopped_b is not None else result.x
     vxc_final = _vxc_from_b(b_final)
     # Run the final SCF from the most recently ACCEPTED warm-start (D11),
     # not from a possibly-rejected trial DM.
@@ -659,7 +692,10 @@ def run_oep_inversion(
     # R3-D L3: clip scipy's reported nit at our requested max_iter so
     # n_iter never exceeds what the user asked for; documented in the
     # OEPResult.n_iter docstring above.
-    n_iter = min(int(result.nit), max_iter)
+    if early_stopped_b is not None:
+        n_iter = min(_progress_state["iter"], max_iter)
+    else:
+        n_iter = min(int(result.nit), max_iter)
     # Convergence semantics (R3.5 audit refinement of the original D5 fix).
     # The user's contract is: "the V_xc that ``run_oep_inversion`` returns
     # produces a KS density that matches ``dm_target`` to within
@@ -682,7 +718,13 @@ def run_oep_inversion(
         and np.isfinite(final_error)
         and (final_error < conv_tol)
     )
-    lbfgs_status = str(getattr(result, "message", "no message"))
+    if early_stopped_b is not None:
+        lbfgs_status = (
+            f"early_stopped (density_error<{conv_tol:.2e} "
+            f"at iter {n_iter}/{max_iter})"
+        )
+    else:
+        lbfgs_status = str(getattr(result, "message", "no message"))
     # R3-D L6: surface final-SCF failure in lbfgs_status so a consumer
     # reading converged=False can distinguish "scipy failed" (its message)
     # from "scipy succeeded but the post-optimization SCF blew up".
