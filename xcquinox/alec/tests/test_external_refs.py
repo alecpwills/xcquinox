@@ -233,6 +233,124 @@ def test_oep_cascade_skip_if_cached(tmp_path):
     assert p2.stat().st_mtime == mtime, "OEP npz rewritten on cache hit"
 
 
+def test_oep_tiers_rks_and_uks_constants_split():
+    """RKS and UKS tier constants exist with documented conv_tol values.
+
+    RKS conv_tol=2e-3 is mirrored from step-6 closed-shell H2O/C2H2 floor.
+    UKS conv_tol=1e-2 is set against the empirical UKS floor (~6e-3 on HO
+    at def2-svp/grid_level=1 with level_shift=0.5) — see _OEP_TIERS_UKS
+    docstring in xcquinox/alec/external_refs.py for the full rationale.
+
+    This test pins the values so a future edit cannot silently regress
+    the cascade quality contract.
+    """
+    from xcquinox.alec.external_refs import _OEP_TIERS_RKS, _OEP_TIERS_UKS
+
+    assert len(_OEP_TIERS_RKS) == 2
+    assert len(_OEP_TIERS_UKS) == 2
+    rks_aux = [t["aux_basis"] for t in _OEP_TIERS_RKS]
+    uks_aux = [t["aux_basis"] for t in _OEP_TIERS_UKS]
+    assert rks_aux == ["def2-svp-jkfit", "def2-tzvp-jkfit"]
+    assert uks_aux == ["def2-svp-jkfit", "def2-tzvp-jkfit"]
+
+    assert all(t["conv_tol"] == 2e-3 for t in _OEP_TIERS_RKS), (
+        "RKS conv_tol must be 2e-3 (step-6 closed-shell floor parity)"
+    )
+    assert all(t["conv_tol"] == 1e-2 for t in _OEP_TIERS_UKS), (
+        "UKS conv_tol must be 1e-2 (empirical UKS floor + 1.7x margin)"
+    )
+
+    assert all(t["regularization"] == 1e-4 for t in _OEP_TIERS_RKS)
+    assert all(t["regularization"] == 1e-4 for t in _OEP_TIERS_UKS)
+    assert [t["max_iter"] for t in _OEP_TIERS_RKS] == [500, 1000]
+    assert [t["max_iter"] for t in _OEP_TIERS_UKS] == [500, 1000]
+
+
+def test_run_oep_cascade_dispatches_per_spin_tier_set(tmp_path, monkeypatch):
+    """run_oep_cascade picks _OEP_TIERS_UKS for spin>0, _OEP_TIERS_RKS
+    otherwise. Verified by intercepting run_oep_inversion and reading the
+    conv_tol kwarg the cascade passes; saver is also stubbed so no real
+    PySCF SCF runs.
+    """
+    import numpy as np
+    from collections import namedtuple
+    from xcquinox.alec import external_refs as er
+    from xcquinox.alec import oep as alec_oep
+
+    captured = {"conv_tols": []}
+    StubOEP = namedtuple("StubOEPResult", [
+        "vxc_matrix", "converged", "n_iter", "density_error",
+        "baseline_xc", "aux_basis", "regularization", "n_electrons",
+        "lbfgs_status",
+    ])
+
+    def stub_run_oep_inversion(mol_spec, dm_target, **kwargs):
+        captured["conv_tols"].append(kwargs["conv_tol"])
+        nao = 4
+        if np.asarray(dm_target).ndim == 3:
+            vxc = np.zeros((2, nao, nao))
+        else:
+            vxc = np.zeros((nao, nao))
+        return StubOEP(
+            vxc_matrix=vxc, converged=True, n_iter=1,
+            density_error=1e-5, baseline_xc="pbe",
+            aux_basis=kwargs["aux_basis"],
+            regularization=kwargs["regularization"], n_electrons=1.0,
+            lbfgs_status="ok",
+        )
+
+    monkeypatch.setattr(alec_oep, "run_oep_inversion",
+                        stub_run_oep_inversion)
+
+    # Stub save_vxc_ref so no real SCF runs. The cascade's phase-1 write
+    # already creates the file with rho_ref_grid + ref_density_method;
+    # this stub just appends the OEP fields the completeness check
+    # expects (vxc_ref, dm_target).
+    def stub_save_vxc_ref(oep_result, output_path, *, dm_target=None,
+                          method="ccsd"):
+        existing = dict(np.load(str(output_path)))
+        existing["vxc_ref"] = np.asarray(oep_result.vxc_matrix)
+        existing["dm_target"] = (
+            np.asarray(dm_target) if dm_target is not None
+            else np.zeros((4, 4))
+        )
+        np.savez_compressed(str(output_path), **existing)
+
+    monkeypatch.setattr(alec_oep, "save_vxc_ref", stub_save_vxc_ref)
+
+    from ase import Atoms
+    nao = 4
+    n_grid = 5
+
+    def make_payload(spin):
+        if spin > 0:
+            dm = np.zeros((2, nao, nao))
+        else:
+            dm = np.zeros((nao, nao))
+        return {
+            "dm_ao": dm,
+            "rho_ref_grid": np.zeros(n_grid),
+            "grid_weights": np.ones(n_grid),
+            "ao_grid": np.zeros((n_grid, nao)),
+        }
+
+    h2 = er.SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms_h2 = Atoms("HH", positions=[[0, 0, 0], [0, 0, 0.74]])
+    er.run_oep_cascade(h2, atoms_h2, ccsd_payload=make_payload(0),
+                       cache_dir=tmp_path / "rks",
+                       basis="def2-svp", grid_level=1)
+
+    h_atom = er.SpeciesEntry("H", 0, 1, "atom")
+    atoms_h = Atoms("H", positions=[[0, 0, 0]])
+    er.run_oep_cascade(h_atom, atoms_h, ccsd_payload=make_payload(1),
+                       cache_dir=tmp_path / "uks",
+                       basis="def2-svp", grid_level=1)
+
+    assert captured["conv_tols"] == [2e-3, 1e-2], (
+        f"expected RKS->2e-3 then UKS->1e-2; got {captured['conv_tols']}"
+    )
+
+
 def test_preflight_uks_oep_signature_and_imports():
     """Fast structural test: preflight_uks_oep is importable, kw-only, and
     its smoke_specs use SpeciesEntry(name, charge, spin, source) order

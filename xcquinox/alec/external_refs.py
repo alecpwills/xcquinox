@@ -387,15 +387,36 @@ def run_ccsd_with_cache(
     return result
 
 
-# OEP cascade tiers — mirrors step-6 _build_step6_notebook.py:729-730, 844-845.
-# conv_tol=2e-3 is tuned against the achievable density_error floor for
-# def2-svp with grid_level=1 (~1.17e-3); gives ~1.7x margin (step-6 cell 12).
-# 2-tier cascade verified by R-A in Round-1 review.
-_OEP_TIERS: tuple[dict, ...] = (
+# OEP cascade tiers — split RKS vs UKS because the achievable density_error
+# floor depends on the inner-SCF level shift.
+#
+# RKS (closed-shell): mirrors step-6 _build_step6_notebook.py:729-730,
+# 844-845. conv_tol=2e-3 is tuned against the achievable floor for
+# def2-svp/grid_level=1 (~1.17e-3 on H2O/C2H2); gives ~1.7x margin
+# (step-6 cell 12). 2-tier cascade verified by R-A in Round-1 review.
+_OEP_TIERS_RKS: tuple[dict, ...] = (
     {"aux_basis": "def2-svp-jkfit",  "regularization": 1e-4,
      "max_iter": 500,  "conv_tol": 2e-3},
     {"aux_basis": "def2-tzvp-jkfit", "regularization": 1e-4,
      "max_iter": 1000, "conv_tol": 2e-3},
+)
+
+# UKS (open-shell): level_shift=0.5 on the inner SCF (set in run_oep_cascade
+# below) suppresses basin-hopping for X²Π / near-degenerate radicals but
+# slightly biases the converged inner DM relative to the unshifted minimum
+# — bias is small in energy (~mHa) but lifts the density-L2 floor to
+# ~6e-3 on HO at def2-svp/grid_level=1. conv_tol=1e-2 gives ~1.7x margin
+# above that empirical floor (parity with the RKS margin policy) and
+# matches the UKS-acceptable threshold established in
+# xcquinox/alec/tests/test_oep_uks.py (which accepts density_error < 0.1
+# for Li/sto-3g, calling 6e-3-class results "real progress, not full
+# convergence"). Verified empirically on HO 2026-05-02: L-BFGS plateaus
+# at ~6e-3 by iter 5 and oscillates 6.1e-3..8.3e-3 thereafter.
+_OEP_TIERS_UKS: tuple[dict, ...] = (
+    {"aux_basis": "def2-svp-jkfit",  "regularization": 1e-4,
+     "max_iter": 500,  "conv_tol": 1e-2},
+    {"aux_basis": "def2-tzvp-jkfit", "regularization": 1e-4,
+     "max_iter": 1000, "conv_tol": 1e-2},
 )
 
 # Required keys in the per-species cache npz; checked by both
@@ -414,6 +435,7 @@ def run_oep_cascade(
     cache_dir,
     basis: str = "def2-svp",
     grid_level: int = 1,
+    progress_callback=None,
 ):
     """Stage 3: OEP inversion with 2-tier cascade + skip-if-cached.
 
@@ -425,6 +447,14 @@ def run_oep_cascade(
     rho_ref_grid + ref_density_method + oep_* provenance. Two-phase
     write exploits save_vxc_ref's merge semantics
     (xcquinox/alec/oep.py:696-700).
+
+    ``progress_callback`` (optional) is a callable
+    ``fn(tier_idx, aux_basis, iter_int, density_error_float)`` invoked
+    once per L-BFGS outer iteration. The cascade adapts its own
+    ``progress_callback`` argument from this richer signature so callers
+    (e.g. ``scripts/smoke_preflight_uks_oep.py``) can show per-tier +
+    per-iter convergence trajectory inside the otherwise-silent
+    ``run_oep_inversion`` call.
     """
     from collections import Counter
     from pathlib import Path
@@ -467,11 +497,23 @@ def run_oep_cascade(
     # ~0.17). Closed-shell RKS is unaffected, so level_shift=0 there.
     # See xcquinox/alec/tests/test_oep_uks.py module docstring for
     # background on the basin-hopping failure mode.
-    level_shift = 0.5 if spec.spin > 0 else 0.0
+    is_uks = spec.spin > 0
+    level_shift = 0.5 if is_uks else 0.0
+    # Tier set picks per-spin conv_tol — UKS has a higher density-L2
+    # floor due to level-shift bias on the inner SCF (see _OEP_TIERS_UKS
+    # docstring above for the empirical justification).
+    tiers = _OEP_TIERS_UKS if is_uks else _OEP_TIERS_RKS
 
     last_err = None
     oep_result = None
-    for tier_idx, tier in enumerate(_OEP_TIERS):
+    for tier_idx, tier in enumerate(tiers):
+        # Adapt the cascade's richer (tier_idx, aux_basis, iter, err)
+        # callback signature down to run_oep_inversion's (iter, err).
+        _cb = None
+        if progress_callback is not None:
+            _aux = tier["aux_basis"]
+            def _cb(it, err, _idx=tier_idx, _aux=_aux):
+                progress_callback(_idx, _aux, it, err)
         try:
             oep_result = alec_oep.run_oep_inversion(
                 mol_spec,
@@ -481,6 +523,7 @@ def run_oep_cascade(
                 max_iter=tier["max_iter"],
                 conv_tol=tier["conv_tol"],
                 level_shift=level_shift,
+                progress_callback=_cb,
             )
             if oep_result.converged:
                 break

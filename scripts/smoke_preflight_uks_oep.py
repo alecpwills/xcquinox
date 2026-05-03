@@ -309,13 +309,31 @@ def main() -> int:
 
             subbanner(f"{spec.name} | OEP cascade (svp-jkfit -> tzvp-jkfit)")
             heartbeat.start_stage(
-                f"{spec.name} OEP cascade (silent inside run_oep_inversion -- "
-                "heartbeats prove progress)"
+                f"{spec.name} OEP cascade (per-iter density_error printed below)"
             )
             t0 = time.time()
+            # Per-iter visibility into the L-BFGS-B optimization. The
+            # heartbeat thread keeps showing RSS; this callback prints
+            # iter + density_error every PROGRESS_EVERY iterations and
+            # always on iter 1 + on iters within 5x of conv_tol.
+            PROGRESS_EVERY = 25
+            _last_print = {"iter": 0}
+            def _oep_progress(tier_idx, aux_basis, it, density_error):
+                # Print first iter, every PROGRESS_EVERY, and any iter
+                # with density_error suggesting near-convergence.
+                close = density_error < 1e-2
+                if (it == 1 or (it - _last_print["iter"]) >= PROGRESS_EVERY
+                        or close):
+                    print(
+                        f"    [oep tier{tier_idx} {aux_basis:<18s}] "
+                        f"iter={it:4d}  density_error={density_error:.3e}",
+                        flush=True,
+                    )
+                    _last_print["iter"] = it
             npz_path = run_oep_cascade(
                 spec, atoms, ccsd_payload=cc, cache_dir=args.cache_dir,
                 basis=args.basis, grid_level=args.grid_level,
+                progress_callback=_oep_progress,
             )
             stage_t["oep"] = time.time() - t0
             oep_size = Path(npz_path).stat().st_size / 1e6
