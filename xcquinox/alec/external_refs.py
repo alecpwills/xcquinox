@@ -140,9 +140,16 @@ def resolve_geometry(spec: SpeciesEntry):
         atoms = _make_hb_atoms() if spec.name == "HBWD" else _make_pt_atoms()
         return atoms
 
-    # Atomic species: name is a 1-2 letter symbol (or symbol+"+" for cations)
+    # Atomic species: name is a single chemical symbol (or symbol+"+" for
+    # cations). Use ase.data.chemical_symbols as the authoritative element
+    # list — the prior `len(sym) <= 2 and sym.isalpha()` check incorrectly
+    # treated diatomic Hill formulas like "HF", "HS", "NO" as single atoms
+    # (they're 2 chars and alphabetic but NOT elements), causing
+    # `Atoms(sym, positions=[(0,0,0)])` to crash with
+    # "positions wrong length: 1 != 2" since ASE expands "HF" to 2 atoms.
+    from ase.data import chemical_symbols
     sym = spec.name.rstrip("+")
-    if len(sym) <= 2 and sym.isalpha() and spec.source in (
+    if sym in chemical_symbols and spec.source in (
         "dfs_atom", "bh76", "ip13", "probe_atom_ref", "probe_c",
     ):
         atoms = Atoms(sym, positions=[(0.0, 0.0, 0.0)])
