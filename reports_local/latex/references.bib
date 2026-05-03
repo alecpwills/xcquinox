@@ -173,3 +173,59 @@
   doi = {10.1017/S0305004100016108}
 }
 
+% =============================================================================
+% TO DOWNLOAD --- OEP per-species override methodology (added 2026-05-03).
+% These sources motivate the per-species OEP cascade overrides in
+% xcquinox/alec/external_refs.py:_PER_SPECIES_OEP_OVERRIDES (Be, C+, F2 +
+% any further species flagged by Cell 0.5).
+%
+% IMPORTANT: bibliographic details below are AUTHOR-RECALLED at the time of
+% the design discussion; they have NOT been verified against the publisher
+% PDF.  Per the convention at the top of this file ("Every entry has a
+% verified verbatim quote retrieved either from the published PDF (via
+% WebFetch + pdftotext) or from a publisher snippet / preprint mirror"),
+% these MUST be downloaded and verified before being promoted to @article
+% entries.  Do not cite from the comments below.
+% =============================================================================
+%
+% [oep-tdl-1] Heaton-Burgess, T.; Bulat, F. A.; Yang, W.
+%     "Optimized Effective Potentials in Finite Basis Sets."
+%     Phys. Rev. Lett. (2007).
+%     Used for: aux-basis sizing rationale (Be 2s tail, F2 lone-pair
+%     resolution); reports atomic OEP density errors ~10x larger with
+%     svp-jkfit than tzvp-jkfit.
+%
+% [oep-tdl-2] Bulat, F. A.; Heaton-Burgess, T.; Cohen, A. J.; Yang, W.
+%     "Optimized Effective Potentials from Electron Densities in
+%      Finite Basis Sets."
+%     J. Chem. Phys. 127, 174101 (2007).  [volume/page recalled, verify]
+%     Used for: V-space regularization rationale; basis of the
+%     ``regularization`` knob in xcquinox/alec/oep.py:run_oep_inversion.
+%
+% [oep-tdl-3] Hsu, J.; Yang, W.  (full author list to verify)
+%     OEP atomic auxiliary-basis recommendation (even-tempered aux).
+%     J. Chem. Phys. (2007).  [exact citation to verify]
+%     Used for: Be aux-basis choice rationale.
+%
+% [oep-tdl-4] Bulat, F. A.; Yang, W.
+%     Atomic open-shell OEP / orbital-occupation paper.
+%     J. Chem. Phys. (2007).  [exact citation to verify]
+%     Used for: C+ basin-hopping mitigation rationale (level_shift,
+%     damping for degenerate atomic configurations).
+%
+% [oep-tdl-5] Ryabinkin, I. G.; Kohut, S. V.; Staroverov, V. N.
+%     "Reduction of Electronic Wave Functions to Kohn--Sham Effective
+%      Potentials."
+%     Phys. Rev. Lett. 115, 083001 (2015).
+%     Used for: open-shell atomic OEP failure mode for degenerate ground
+%     configurations; supports the level_shift mitigation for C+.
+%
+% [oep-tdl-6] Kohut, S. V.; Ryabinkin, I. G.; Staroverov, V. N.
+%     "Hierarchy of model Kohn--Sham potentials for orbital-dependent
+%      functionals."
+%     J. Chem. Phys. 145, 204101 (2016).  [volume/page recalled, verify]
+%     Used for: small-primary-basis diatomic Wu-Yang regularization
+%     guidance (1e-3 to 1e-2 range) for F2.
+%
+% =============================================================================
+
