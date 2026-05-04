@@ -53,6 +53,22 @@ class OEPResult(NamedTuple):
         ``density_error``), ``" + final_scf_failed"`` is appended so a
         consumer can distinguish scipy failure from final-SCF failure
         without inspecting ``converged`` alone.
+    terminated_by
+        How the optimization terminated: ``"conv_tol"`` (early-stop
+        sentinel fired on density-L2 below conv_tol), ``"plateau"``
+        (plateau sentinel fired - both density_error and F_val flat
+        for plateau_window iterations), or ``"max_iter"`` (neither
+        sentinel fired; L-BFGS-B exhausted max_iter). In-memory only;
+        not persisted to ``<name>.npz`` by ``save_vxc_ref``. Default
+        ``"max_iter"`` for NamedTuple back-compat with existing
+        constructions.
+    dm_final
+        Post-finalization inner-SCF DM corresponding to ``vxc_matrix``.
+        Shape ``(n_ao, n_ao)`` for RKS, ``(2, n_ao, n_ao)`` for UKS.
+        Set to ``None`` if final-SCF failed. Default ``None`` for
+        back-compat. Consumers wanting expectation values must
+        spin-sum: ``dm.sum(axis=0) if dm.ndim == 3 else dm``.
+        In-memory only; not persisted by ``save_vxc_ref``.
     """
     vxc_matrix: np.ndarray
     converged: bool
@@ -62,8 +78,10 @@ class OEPResult(NamedTuple):
     baseline_xc: str | None
     aux_basis: str
     regularization: float
-    n_electrons: float          # Tr(S · D_target) sanity check (D10 audit)
-    lbfgs_status: str           # "success" / message from scipy result (D5)
+    n_electrons: float          # Tr(S . D_target) sanity check (D10 audit)
+    lbfgs_status: str           # success / message from scipy result (D5)
+    terminated_by: str = "max_iter"            # Spec sec. 5.5 (Pass 6)
+    dm_final: np.ndarray | None = None         # Spec sec. 5.5/6.1 (Pass 6/8)
 
 
 class _OEPEarlyStop(Exception):

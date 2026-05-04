@@ -481,3 +481,78 @@ def test_oep_rejects_wrong_basis_target_dm():
     mol = h2_molecule()  # uses sto-3g
     with pytest.raises(ValueError, match="different basis"):
         run_oep_inversion(mol, dm_wrong_basis, max_iter=2, aux_basis="sto-3g")
+
+
+def test_oep_result_default_terminated_by_is_max_iter():
+    """OEPResult.terminated_by defaults to 'max_iter' for back-compat."""
+    import numpy as np
+    from xcquinox.alec.oep import OEPResult
+    r = OEPResult(
+        vxc_matrix=np.zeros((2, 2)),
+        converged=False,
+        n_iter=10,
+        density_error=1e-3,
+        baseline_xc="pbe",
+        aux_basis="def2-svp-jkfit",
+        regularization=1e-4,
+        n_electrons=2.0,
+        lbfgs_status="ok",
+    )
+    assert r.terminated_by == "max_iter"
+
+
+def test_oep_result_default_dm_final_is_none():
+    """OEPResult.dm_final defaults to None for back-compat."""
+    import numpy as np
+    from xcquinox.alec.oep import OEPResult
+    r = OEPResult(
+        vxc_matrix=np.zeros((2, 2)),
+        converged=False,
+        n_iter=10,
+        density_error=1e-3,
+        baseline_xc="pbe",
+        aux_basis="def2-svp-jkfit",
+        regularization=1e-4,
+        n_electrons=2.0,
+        lbfgs_status="ok",
+    )
+    assert r.dm_final is None
+
+
+def test_oep_result_accepts_terminated_by_kwarg():
+    """OEPResult accepts terminated_by as a kwarg with the listed values."""
+    import numpy as np
+    from xcquinox.alec.oep import OEPResult
+    r = OEPResult(
+        vxc_matrix=np.zeros((2, 2)),
+        converged=True,
+        n_iter=5,
+        density_error=1e-4,
+        baseline_xc="pbe",
+        aux_basis="def2-svp-jkfit",
+        regularization=1e-4,
+        n_electrons=2.0,
+        lbfgs_status="ok",
+        terminated_by="conv_tol",
+    )
+    assert r.terminated_by == "conv_tol"
+
+
+def test_oep_result_accepts_dm_final_kwarg():
+    """OEPResult accepts dm_final as a kwarg."""
+    import numpy as np
+    from xcquinox.alec.oep import OEPResult
+    dm = np.eye(3)
+    r = OEPResult(
+        vxc_matrix=np.zeros((2, 2)),
+        converged=True,
+        n_iter=5,
+        density_error=1e-4,
+        baseline_xc="pbe",
+        aux_basis="def2-svp-jkfit",
+        regularization=1e-4,
+        n_electrons=2.0,
+        lbfgs_status="ok",
+        dm_final=dm,
+    )
+    np.testing.assert_array_equal(r.dm_final, dm)
