@@ -18,6 +18,7 @@ RuntimeError.
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 
@@ -758,42 +759,64 @@ def run_oep_cascade(
     # See xcquinox/alec/tests/test_oep_uks.py module docstring for
     # background on the basin-hopping failure mode.
     is_uks = spec.spin > 0
-    level_shift = 0.5 if is_uks else 0.0
-    # Tier set picks per-spin conv_tol — UKS has a higher density-L2
-    # floor due to level-shift bias on the inner SCF (see _OEP_TIERS_UKS
-    # docstring above for the empirical justification).
-    tiers = _OEP_TIERS_UKS if is_uks else _OEP_TIERS_RKS
+    spin_default_level_shift = 0.5 if is_uks else 0.0
+    tiers = _resolve_tiers_for_species(
+        spec.name, spec.charge, spec.spin, is_uks=is_uks,
+    )
 
     last_err = None
     oep_result = None
     for tier_idx, tier in enumerate(tiers):
+        aux_basis = tier["aux_basis"]
+        regularization = tier["regularization"]
+        max_iter = tier["max_iter"]
+        conv_tol = tier["conv_tol"]
+        # New per-tier knobs, all with safe defaults that preserve
+        # pre-Plan-2 behavior for non-override species:
+        tier_grid_level = tier.get("grid_level", grid_level)
+        tier_level_shift = tier.get("level_shift", spin_default_level_shift)
+        tier_inner_damp = tier.get("inner_damp", 0.1)
+        tier_inner_diis = tier.get("inner_diis_start_cycle", 5)
+
+        # grid_level travels through mol_spec (canonical source per
+        # spec sec. 5.4). dataclasses.replace returns a NEW frozen
+        # instance; the original mol_spec is unchanged.
+        if tier_grid_level == mol_spec.grid_level:
+            tier_mol_spec = mol_spec
+        else:
+            tier_mol_spec = dataclasses.replace(
+                mol_spec, grid_level=tier_grid_level,
+            )
+
         # Adapt the cascade's richer (tier_idx, aux_basis, iter, err)
         # callback signature down to run_oep_inversion's (iter, err).
         _cb = None
         if progress_callback is not None:
-            _aux = tier["aux_basis"]
+            _aux = aux_basis
             def _cb(it, err, _idx=tier_idx, _aux=_aux):
                 progress_callback(_idx, _aux, it, err)
+
         try:
             oep_result = alec_oep.run_oep_inversion(
-                mol_spec,
+                tier_mol_spec,
                 ccsd_payload["dm_ao"],
-                aux_basis=tier["aux_basis"],
-                regularization=tier["regularization"],
-                max_iter=tier["max_iter"],
-                conv_tol=tier["conv_tol"],
-                level_shift=level_shift,
+                aux_basis=aux_basis,
+                regularization=regularization,
+                max_iter=max_iter,
+                conv_tol=conv_tol,
+                level_shift=tier_level_shift,
+                inner_damp=tier_inner_damp,
+                inner_diis_start_cycle=tier_inner_diis,
                 progress_callback=_cb,
             )
             if oep_result.converged:
                 break
             last_err = (
-                f"OEP not converged at tier {tier_idx} "
-                f"({tier['aux_basis']}); "
+                f"OEP not converged at tier {tier_idx} ({aux_basis}); "
                 f"density_error={oep_result.density_error:.3e}"
             )
         except (RuntimeError, ValueError) as e:
-            last_err = f"tier {tier_idx} ({tier['aux_basis']}) raised: {e}"
+            last_err = f"tier {tier_idx} ({aux_basis}) raised: {e}"
             oep_result = None
 
     if oep_result is None or not oep_result.converged:

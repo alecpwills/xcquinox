@@ -905,3 +905,186 @@ def test_migration_preserves_already_grid_suffixed_g2_cache(tmp_path):
     assert (inter / "Foo_g2_scf.npz").is_file()        # untouched
     assert (inter / "Bar_g1_scf.npz").is_file()
     assert not (inter / "Foo_g2_g1_scf.npz").exists()  # NOT corrupted
+
+
+def test_cascade_threads_grid_level_via_dataclasses_replace(monkeypatch):
+    """Override tier with grid_level=2 produces a tier_mol_spec with
+    grid_level=2 passed to run_oep_inversion (mol_spec stays unchanged
+    because `dataclasses.replace` returns a NEW frozen instance)."""
+    from xcquinox.alec.external_refs import (
+        run_oep_cascade, SpeciesEntry, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    captured_specs = []
+    # Monkeypatch run_oep_inversion to capture the mol_spec it sees:
+    import xcquinox.alec.oep as alec_oep
+    real_run = alec_oep.run_oep_inversion
+    def stub_run(mol_spec, dm_target, **kwargs):
+        captured_specs.append(mol_spec)
+        from collections import namedtuple
+        Stub = namedtuple("Stub", ["converged", "density_error"])
+        return Stub(converged=True, density_error=1e-4)
+    monkeypatch.setattr(alec_oep, "run_oep_inversion", stub_run)
+    # Add an override forcing grid_level=2 in tier 0:
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
+        {"aux_basis": "def2-tzvp-jkfit", "regularization": 1e-3,
+         "grid_level": 2},
+    )
+    try:
+        # Build minimal stub inputs:
+        from ase import Atoms
+        atoms = Atoms("Be", positions=[(0, 0, 0)])
+        spec = SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")
+        # ccsd_payload requires dm_ao + rho_ref_grid; provide minimum:
+        import numpy as np
+        ccsd_payload = {"dm_ao": np.eye(5), "rho_ref_grid": np.zeros(10)}
+        # The cascade may call _build_mol_and_mf etc — for this test we
+        # only care about what's passed to run_oep_inversion. Use a
+        # cache_dir that doesn't exist so save_vxc_ref can't be called:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                                cache_dir=td, basis="sto-3g", grid_level=1)
+            except Exception:
+                pass  # save_vxc_ref will fail; we only care about captured
+        # First call's mol_spec must have grid_level=2:
+        assert captured_specs[0].grid_level == 2
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_cascade_threads_inner_damp_and_diis_from_resolved_tier(monkeypatch):
+    """Override tier with inner_damp=0.3 and inner_diis_start_cycle=10
+    are passed to run_oep_inversion."""
+    from xcquinox.alec.external_refs import (
+        run_oep_cascade, SpeciesEntry, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    captured_kwargs = []
+    import xcquinox.alec.oep as alec_oep
+    def stub_run(mol_spec, dm_target, **kwargs):
+        captured_kwargs.append(kwargs)
+        from collections import namedtuple
+        Stub = namedtuple("Stub", ["converged", "density_error"])
+        return Stub(converged=True, density_error=1e-4)
+    monkeypatch.setattr(alec_oep, "run_oep_inversion", stub_run)
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
+        {"aux_basis": "def2-tzvp-jkfit", "regularization": 1e-3,
+         "inner_damp": 0.3, "inner_diis_start_cycle": 10},
+    )
+    try:
+        from ase import Atoms
+        atoms = Atoms("Be", positions=[(0, 0, 0)])
+        spec = SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")
+        import numpy as np, tempfile
+        ccsd_payload = {"dm_ao": np.eye(5), "rho_ref_grid": np.zeros(10)}
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                                cache_dir=td, basis="sto-3g", grid_level=1)
+            except Exception:
+                pass
+        assert captured_kwargs[0]["inner_damp"] == 0.3
+        assert captured_kwargs[0]["inner_diis_start_cycle"] == 10
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_cascade_level_shift_resolution_override_takes_precedence(monkeypatch):
+    """UKS override with explicit level_shift=1.0 reaches run_oep_inversion
+    (not the spin-default 0.5). Spec §9.2 / Plan-2 review fix."""
+    from xcquinox.alec.external_refs import (
+        run_oep_cascade, SpeciesEntry, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    captured_kwargs = []
+    import xcquinox.alec.oep as alec_oep
+    def stub_run(mol_spec, dm_target, **kwargs):
+        captured_kwargs.append(kwargs)
+        from collections import namedtuple
+        Stub = namedtuple("Stub", ["converged", "density_error"])
+        return Stub(converged=True, density_error=1e-4)
+    monkeypatch.setattr(alec_oep, "run_oep_inversion", stub_run)
+    _PER_SPECIES_OEP_OVERRIDES[("HO", 0, 1)] = (
+        {"aux_basis": "def2-tzvp-jkfit", "level_shift": 1.0},
+    )
+    try:
+        from ase import Atoms
+        atoms = Atoms("OH", positions=[(0, 0, 0), (0, 0, 1.0)])
+        spec = SpeciesEntry(name="HO", charge=0, spin=1, source="dfs_ae")
+        import numpy as np, tempfile
+        ccsd_payload = {"dm_ao": np.zeros((2, 5, 5)), "rho_ref_grid": np.zeros(10)}
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                                cache_dir=td, basis="sto-3g", grid_level=1)
+            except Exception:
+                pass
+        assert captured_kwargs[0]["level_shift"] == 1.0
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("HO", 0, 1), None)
+
+
+def test_cascade_level_shift_falls_back_to_spin_default_rks(monkeypatch):
+    """RKS species with no level_shift override → 0.0 reaches the call.
+    Spec §9.2 / Plan-2 review fix."""
+    from xcquinox.alec.external_refs import (
+        run_oep_cascade, SpeciesEntry, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    captured_kwargs = []
+    import xcquinox.alec.oep as alec_oep
+    def stub_run(mol_spec, dm_target, **kwargs):
+        captured_kwargs.append(kwargs)
+        from collections import namedtuple
+        Stub = namedtuple("Stub", ["converged", "density_error"])
+        return Stub(converged=True, density_error=1e-4)
+    monkeypatch.setattr(alec_oep, "run_oep_inversion", stub_run)
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
+        {"aux_basis": "def2-tzvp-jkfit"},   # no level_shift
+    )
+    try:
+        from ase import Atoms
+        atoms = Atoms("Be", positions=[(0, 0, 0)])
+        spec = SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")
+        import numpy as np, tempfile
+        ccsd_payload = {"dm_ao": np.eye(5), "rho_ref_grid": np.zeros(10)}
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                                cache_dir=td, basis="sto-3g", grid_level=1)
+            except Exception:
+                pass
+        assert captured_kwargs[0]["level_shift"] == 0.0
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_cascade_level_shift_falls_back_to_spin_default_uks(monkeypatch):
+    """No level_shift in override on UKS species → 0.5 reaches the call."""
+    from xcquinox.alec.external_refs import (
+        run_oep_cascade, SpeciesEntry, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    captured_kwargs = []
+    import xcquinox.alec.oep as alec_oep
+    def stub_run(mol_spec, dm_target, **kwargs):
+        captured_kwargs.append(kwargs)
+        from collections import namedtuple
+        Stub = namedtuple("Stub", ["converged", "density_error"])
+        return Stub(converged=True, density_error=1e-4)
+    monkeypatch.setattr(alec_oep, "run_oep_inversion", stub_run)
+    _PER_SPECIES_OEP_OVERRIDES[("HO", 0, 1)] = (
+        {"aux_basis": "def2-tzvp-jkfit"},   # no level_shift specified
+    )
+    try:
+        from ase import Atoms
+        atoms = Atoms("OH", positions=[(0, 0, 0), (0, 0, 1.0)])
+        spec = SpeciesEntry(name="HO", charge=0, spin=1, source="dfs_ae")
+        import numpy as np, tempfile
+        ccsd_payload = {"dm_ao": np.zeros((2, 5, 5)), "rho_ref_grid": np.zeros(10)}
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                                cache_dir=td, basis="sto-3g", grid_level=1)
+            except Exception:
+                pass
+        assert captured_kwargs[0]["level_shift"] == 0.5
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("HO", 0, 1), None)
