@@ -463,6 +463,96 @@ _OVERRIDE_TIER_KNOB_ALLOWLIST: frozenset[str] = frozenset({
 })
 
 
+def _validate_overrides(species_union: list[SpeciesEntry]) -> None:
+    """Sanity-check the populated _PER_SPECIES_OEP_OVERRIDES.
+
+    Raises ValueError on any violation. Per spec sec. 5.2 (Pass-8 pin),
+    canonical call site is `precompute_all` immediately after
+    `build_species_union()` is computed for the run, BEFORE any
+    cache-dir migration or preflight. Module import does NOT call this
+    (avoids brittling pytest collection on test-mutated dicts) and the
+    harness does NOT call it (covered transitively by precompute_all).
+    Tests bypassing precompute_all may import this helper directly.
+
+    Validation rules:
+    1. Every key is a 3-tuple ``(str, int, int)``; bool excluded.
+    2. Every key matches a SpeciesEntry in `species_union`.
+    3. Every value is a non-empty tuple of dicts.
+    4. Every dict's keys lie within `_OVERRIDE_TIER_KNOB_ALLOWLIST`.
+    5. Per-knob bounds: regularization>0, max_iter>=1, conv_tol>0,
+       grid_level>=0, inner_damp in [0,1), inner_diis_start_cycle>=1,
+       |level_shift|<=5 (Pass-7: negatives allowed; Ziegler-VSO).
+    """
+    valid_keys = {(s.name, s.charge, s.spin) for s in species_union}
+    for key, ovr_tiers in _PER_SPECIES_OEP_OVERRIDES.items():
+        # 1. Type-shape check on the key
+        if (not isinstance(key, tuple) or len(key) != 3
+                or not isinstance(key[0], str)
+                or not isinstance(key[1], int) or isinstance(key[1], bool)
+                or not isinstance(key[2], int) or isinstance(key[2], bool)):
+            raise ValueError(
+                f"override key {key!r} must be (str, int, int)"
+            )
+        # 2. Species existence
+        if key not in valid_keys:
+            raise ValueError(
+                f"override key {key} does not match any species in "
+                f"build_species_union(); orphan override"
+            )
+        # 3. Tier list shape
+        if not isinstance(ovr_tiers, tuple) or len(ovr_tiers) == 0:
+            raise ValueError(
+                f"override for {key}: tier list must be non-empty tuple"
+            )
+        # 4. Per-tier dict + key allowlist
+        for i, tier in enumerate(ovr_tiers):
+            if not isinstance(tier, dict):
+                raise ValueError(
+                    f"override for {key} tier {i}: must be dict"
+                )
+            unknown = set(tier) - _OVERRIDE_TIER_KNOB_ALLOWLIST
+            if unknown:
+                raise ValueError(
+                    f"override for {key} tier {i}: unknown knobs "
+                    f"{sorted(unknown)}; allowed: "
+                    f"{sorted(_OVERRIDE_TIER_KNOB_ALLOWLIST)}"
+                )
+            # 5. Per-knob bounds
+            if "regularization" in tier and not (tier["regularization"] > 0):
+                raise ValueError(
+                    f"override for {key} tier {i}: regularization must be > 0"
+                )
+            if "max_iter" in tier and not (tier["max_iter"] >= 1):
+                raise ValueError(
+                    f"override for {key} tier {i}: max_iter must be >= 1"
+                )
+            if "conv_tol" in tier and not (tier["conv_tol"] > 0):
+                raise ValueError(
+                    f"override for {key} tier {i}: conv_tol must be > 0"
+                )
+            if "grid_level" in tier and not (tier["grid_level"] >= 0):
+                raise ValueError(
+                    f"override for {key} tier {i}: grid_level must be >= 0"
+                )
+            if ("inner_damp" in tier
+                    and not (0.0 <= tier["inner_damp"] < 1.0)):
+                raise ValueError(
+                    f"override for {key} tier {i}: inner_damp must be "
+                    f"in [0, 1)"
+                )
+            if ("inner_diis_start_cycle" in tier
+                    and not (tier["inner_diis_start_cycle"] >= 1)):
+                raise ValueError(
+                    f"override for {key} tier {i}: "
+                    f"inner_diis_start_cycle must be >= 1"
+                )
+            if "level_shift" in tier and abs(tier["level_shift"]) > 5.0:
+                raise ValueError(
+                    f"override for {key} tier {i}: "
+                    f"|level_shift| > 5 Ha is implausible; check unit/typo"
+                )
+
+
 def run_oep_cascade(
     spec: SpeciesEntry,
     atoms,

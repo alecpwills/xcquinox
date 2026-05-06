@@ -505,3 +505,124 @@ def test_per_species_overrides_key_shape_is_name_charge_spin():
         assert isinstance(key[0], str)
         assert isinstance(key[1], int) and not isinstance(key[1], bool)
         assert isinstance(key[2], int) and not isinstance(key[2], bool)
+
+
+def test_validate_overrides_accepts_well_formed_override():
+    """A well-formed override with valid key + tier knobs passes."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    species = [SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")]
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
+        {"aux_basis": "def2-tzvp-jkfit", "regularization": 1e-3},
+    )
+    try:
+        _validate_overrides(species)  # should not raise
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_validate_overrides_rejects_unknown_knob():
+    """Typo in override-tier dict key is rejected with a clear error."""
+    import pytest
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    species = [SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")]
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
+        {"aux_bais": "def2-tzvp-jkfit"},   # typo
+    )
+    try:
+        with pytest.raises(ValueError, match="unknown knobs"):
+            _validate_overrides(species)
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_validate_overrides_rejects_orphan_species():
+    """Override key not matching any species in the union raises."""
+    import pytest
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    species = [SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")]
+    _PER_SPECIES_OEP_OVERRIDES[("UnknownSpecies", 0, 0)] = (
+        {"aux_basis": "def2-tzvp-jkfit"},
+    )
+    try:
+        with pytest.raises(ValueError, match="orphan"):
+            _validate_overrides(species)
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("UnknownSpecies", 0, 0), None)
+
+
+def test_validate_overrides_rejects_wrong_key_types():
+    """Override key with bool spin (instead of int) is rejected."""
+    import pytest
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    species = [SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")]
+    # bool is technically int in Python, but the validator must reject:
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, True)] = (
+        {"aux_basis": "def2-tzvp-jkfit"},
+    )
+    try:
+        with pytest.raises(ValueError, match="must be"):
+            _validate_overrides(species)
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, True), None)
+
+
+def test_validate_overrides_rejects_empty_tier_tuple():
+    """Empty override-tier tuple is a configuration error."""
+    import pytest
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    species = [SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")]
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = ()
+    try:
+        with pytest.raises(ValueError, match="non-empty tuple"):
+            _validate_overrides(species)
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_validate_overrides_rejects_out_of_range_values():
+    """Negative regularization, max_iter=0, level_shift=10 — all rejected."""
+    import pytest
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    species = [SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")]
+    for bad, expected_match in [
+        ({"regularization": -1.0}, "regularization must be"),
+        ({"max_iter": 0}, "max_iter must be"),
+        ({"conv_tol": 0.0}, "conv_tol must be"),
+        ({"grid_level": -1}, "grid_level must be"),
+        ({"inner_damp": 1.5}, "inner_damp must be"),
+        ({"inner_diis_start_cycle": 0}, "inner_diis_start_cycle must be"),
+        ({"level_shift": 10.0}, "level_shift"),  # |x| > 5
+    ]:
+        _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (bad,)
+        try:
+            with pytest.raises(ValueError, match=expected_match):
+                _validate_overrides(species)
+        finally:
+            _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_validate_overrides_accepts_negative_level_shift():
+    """level_shift=-0.5 is allowed (Ziegler VSO usage). Pass-7 fix."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    species = [SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")]
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
+        {"level_shift": -0.5},
+    )
+    try:
+        _validate_overrides(species)  # should not raise
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
