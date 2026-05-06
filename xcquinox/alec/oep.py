@@ -126,6 +126,54 @@ class _OEPPlateau(Exception):
         self.plateau_density_error = float(plateau_density_error)
 
 
+def _detect_plateau(
+    d_e: list[float] | np.ndarray,
+    F_val: list[float] | np.ndarray,
+    *,
+    plateau_window: int,
+    plateau_rtol: float,
+) -> tuple[bool, float]:
+    """Pure plateau-detection rule (spec sec. 5.5).
+
+    Returns ``(fired, plateau_density_error)``. Used by the inline
+    detector in `_scipy_iter_callback` and the unit-test suite.
+
+    Fires iff ALL of:
+    - ``plateau_window > 0`` AND ``plateau_rtol > 0.0`` (gate kwargs).
+    - ``len(d_e) == plateau_window`` AND ``len(F_val) == plateau_window``.
+    - ``(max(d_e) - min(d_e)) / max(|median(d_e)|, 1e-30) < plateau_rtol``.
+    - ``(max(F_val) - min(F_val)) / max(|median(F_val)|, 1e-30) < plateau_rtol``.
+    - ``last-half median(d_e) >= first-half median(d_e) - plateau_rtol * |median|``
+      (sign-of-trend with slack).
+
+    Returns ``(True, median(d_e))`` when fired; ``(False, 0.0)`` otherwise.
+    """
+    if plateau_window <= 0 or plateau_rtol <= 0.0:
+        return False, 0.0
+    d_e_arr = np.asarray(d_e)
+    F_arr = np.asarray(F_val)
+    if len(d_e_arr) != plateau_window or len(F_arr) != plateau_window:
+        return False, 0.0
+    d_e_med = float(np.median(d_e_arr))
+    F_med = float(np.median(F_arr))
+    d_e_rel = (
+        (float(np.max(d_e_arr)) - float(np.min(d_e_arr)))
+        / max(abs(d_e_med), 1e-30)
+    )
+    F_rel = (
+        (float(np.max(F_arr)) - float(np.min(F_arr)))
+        / max(abs(F_med), 1e-30)
+    )
+    half = plateau_window // 2
+    first_half_med = float(np.median(d_e_arr[:half]))
+    last_half_med = float(np.median(d_e_arr[half:]))
+    slack = plateau_rtol * abs(d_e_med)
+    non_descending = last_half_med >= first_half_med - slack
+    if d_e_rel < plateau_rtol and F_rel < plateau_rtol and non_descending:
+        return True, d_e_med
+    return False, 0.0
+
+
 def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
                       baseline_xc: str | None = "pbe"):
     """Build PySCF molecule and run baseline-XC SCF. Returns ``(mol, mf)``.
@@ -760,29 +808,16 @@ def run_oep_inversion(
             _plateau_F_val_deque.append(scf_state["F_val_accepted"])
             if (len(_plateau_d_e_deque) == plateau_window
                     and len(_plateau_F_val_deque) == plateau_window):
-                d_e_arr = np.asarray(_plateau_d_e_deque)
-                F_arr = np.asarray(_plateau_F_val_deque)
-                d_e_med = float(np.median(d_e_arr))
-                F_med = float(np.median(F_arr))
-                d_e_rel = (
-                    (float(np.max(d_e_arr)) - float(np.min(d_e_arr)))
-                    / max(abs(d_e_med), 1e-30)
+                _fired, _d_e_med = _detect_plateau(
+                    d_e=list(_plateau_d_e_deque),
+                    F_val=list(_plateau_F_val_deque),
+                    plateau_window=plateau_window,
+                    plateau_rtol=plateau_rtol,
                 )
-                F_rel = (
-                    (float(np.max(F_arr)) - float(np.min(F_arr)))
-                    / max(abs(F_med), 1e-30)
-                )
-                half = plateau_window // 2
-                first_half_med = float(np.median(d_e_arr[:half]))
-                last_half_med = float(np.median(d_e_arr[half:]))
-                slack = plateau_rtol * abs(d_e_med)
-                non_descending = last_half_med >= first_half_med - slack
-                if (d_e_rel < plateau_rtol
-                        and F_rel < plateau_rtol
-                        and non_descending):
+                if _fired:
                     raise _OEPPlateau(
                         b=np.asarray(_xk).copy(),
-                        plateau_density_error=d_e_med,
+                        plateau_density_error=_d_e_med,
                     )
 
         # Early-stop: when the density-L2 at the accepted iterate

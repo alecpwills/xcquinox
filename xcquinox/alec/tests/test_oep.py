@@ -801,3 +801,78 @@ def test_run_oep_inversion_returns_terminated_by_max_iter_on_default_path():
     assert result.terminated_by == "max_iter"
     assert result.dm_final is not None
     assert result.dm_final.shape == (mol.nao, mol.nao)
+
+
+def test_detect_plateau_fires_on_flat_history():
+    """Both deques flat within rtol after iter >= min_iter -> fires."""
+    from xcquinox.alec.oep import _detect_plateau
+    d_e = [3.1e-3] * 20
+    F_val = [-0.998] * 20
+    fired, plateau_d_e = _detect_plateau(
+        d_e=d_e, F_val=F_val,
+        plateau_window=20, plateau_rtol=0.02,
+    )
+    assert fired
+    assert abs(plateau_d_e - 3.1e-3) < 1e-12
+
+
+def test_detect_plateau_does_not_fire_on_descending_history():
+    """Density-error descending 20% per step -> does not fire."""
+    from xcquinox.alec.oep import _detect_plateau
+    d_e = [(0.8 ** k) for k in range(20)]
+    F_val = [-(0.8 ** k) for k in range(20)]
+    fired, _ = _detect_plateau(
+        d_e=d_e, F_val=F_val,
+        plateau_window=20, plateau_rtol=0.02,
+    )
+    assert not fired
+
+
+def test_detect_plateau_does_not_fire_when_F_val_still_descending():
+    """density flat but F_val still descending -> does not fire.
+    Pins the Pass-7 watch-surface correction (F_val, not obj)."""
+    import numpy as np
+    from xcquinox.alec.oep import _detect_plateau
+    d_e = [3.1e-3] * 20
+    F_val = list(np.linspace(-0.90, -0.998, 20))
+    fired, _ = _detect_plateau(
+        d_e=d_e, F_val=F_val,
+        plateau_window=20, plateau_rtol=0.02,
+    )
+    assert not fired
+
+
+def test_detect_plateau_disabled_when_window_zero():
+    """plateau_window=0 disables; should never fire."""
+    from xcquinox.alec.oep import _detect_plateau
+    d_e = [3.1e-3] * 20
+    F_val = [-0.998] * 20
+    fired, _ = _detect_plateau(
+        d_e=d_e, F_val=F_val,
+        plateau_window=0, plateau_rtol=0.02,
+    )
+    assert not fired
+
+
+def test_detect_plateau_disabled_when_rtol_zero():
+    """plateau_rtol=0 disables (no spread is small enough)."""
+    from xcquinox.alec.oep import _detect_plateau
+    d_e = [3.1e-3] * 20
+    F_val = [-0.998] * 20
+    fired, _ = _detect_plateau(
+        d_e=d_e, F_val=F_val,
+        plateau_window=20, plateau_rtol=0.0,
+    )
+    assert not fired
+
+
+def test_detect_plateau_partial_window_does_not_fire():
+    """Fewer than plateau_window samples in the deque -> does not fire."""
+    from xcquinox.alec.oep import _detect_plateau
+    d_e = [3.1e-3] * 5
+    F_val = [-0.998] * 5
+    fired, _ = _detect_plateau(
+        d_e=d_e, F_val=F_val,
+        plateau_window=20, plateau_rtol=0.02,
+    )
+    assert not fired
