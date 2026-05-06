@@ -1014,6 +1014,15 @@ def precompute_all(
 
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    # Spec sec. 5.2 (Pass-8 canonical call site, Plan-2-review-corrected
+    # ordering): validate the per-species override table BEFORE any
+    # disk mutation. Orphan keys / typo'd knobs / out-of-range values
+    # raise here, fail-fast before migration touches anything.
+    _validate_overrides(species)
+    # Spec sec. 5.6: migrate any pre-2026-05-03 unsuffixed cache
+    # filenames BEFORE preflight reads from _intermediates/. Idempotent
+    # no-op once migration has run.
+    _migrate_intermediates_to_grid_suffixed(cache_dir)
     log = RunLog(cache_dir=cache_dir)
     log.start([s.name for s in species])
 

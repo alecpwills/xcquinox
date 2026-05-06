@@ -1088,3 +1088,27 @@ def test_cascade_level_shift_falls_back_to_spin_default_uks(monkeypatch):
         assert captured_kwargs[0]["level_shift"] == 0.5
     finally:
         _PER_SPECIES_OEP_OVERRIDES.pop(("HO", 0, 1), None)
+
+
+def test_precompute_all_invokes_migration_before_preflight(tmp_path, monkeypatch):
+    """Migration helper must run BEFORE preflight_uks_oep is invoked."""
+    call_order = []
+    from xcquinox.alec import external_refs as ext
+    real_migrate = ext._migrate_intermediates_to_grid_suffixed
+    real_preflight = ext.preflight_uks_oep
+    def spy_migrate(cache_dir):
+        call_order.append("migrate")
+        return real_migrate(cache_dir)
+    def spy_preflight(*args, **kwargs):
+        call_order.append("preflight")
+        # Don't actually run preflight in the test:
+        return None
+    monkeypatch.setattr(ext, "_migrate_intermediates_to_grid_suffixed", spy_migrate)
+    monkeypatch.setattr(ext, "preflight_uks_oep", spy_preflight)
+    # Empty species list to short-circuit precompute_all's main loop:
+    try:
+        ext.precompute_all([], cache_dir=tmp_path,
+                           basis="sto-3g", grid_level=1, run_preflight=True)
+    except Exception:
+        pass
+    assert call_order.index("migrate") < call_order.index("preflight")
