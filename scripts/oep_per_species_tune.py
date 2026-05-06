@@ -121,6 +121,40 @@ def _enumerate_trials(species_name: str, block: dict) -> list[dict]:
     return trials
 
 
+class _HarnessWallCap(Exception):
+    """Raised by the SIGALRM handler when a trial exceeds its wall cap.
+    Caught in the per-trial loop; partial trial record is finalized
+    from the harness-owned history accumulator (spec sec. 6.1 Pass-8).
+    """
+
+
+def _wall_cap_handler(signum, frame):
+    raise _HarnessWallCap()
+
+
+def _install_wall_cap_handler():
+    """Install SIGALRM handler ONCE at harness startup. Idempotent."""
+    import signal
+    try:
+        signal.signal(signal.SIGALRM, _wall_cap_handler)
+    except (ValueError, AttributeError):
+        # Windows or test environment without SIGALRM
+        pass
+
+
+def _append_jsonl(path, record: dict) -> None:
+    """Append a JSONL record to `path`. Spec sec. 6.1 (Pass 5):
+    open(path, 'a') + write + fsync. Line-atomic on POSIX since
+    typical record size << PIPE_BUF=4096."""
+    import os
+    import json
+    line = json.dumps(record) + "\n"
+    with open(path, "a") as f:
+        f.write(line)
+        f.flush()
+        os.fsync(f.fileno())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Per-species OEP override harness (spec sec. 6.1)."

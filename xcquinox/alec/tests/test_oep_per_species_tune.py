@@ -128,3 +128,27 @@ def test_parse_species_triple_with_overrides():
     import oep_per_species_tune as harness
     out = harness._parse_species_arg(["C+,1,1", "Be,0,0"])
     assert out == [("C+", 1, 1), ("Be", 0, 0)]
+
+
+def test_jsonl_writer_appends_with_fsync(tmp_path, monkeypatch):
+    """JSONL writer uses open(path, 'a') + os.fsync per spec sec. 6.1."""
+    import os
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import oep_per_species_tune as harness
+    fsync_calls = []
+    real_fsync = os.fsync
+    def spy_fsync(fd):
+        fsync_calls.append(fd)
+        return real_fsync(fd)
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    path = tmp_path / "Be.jsonl"
+    record = {"trial_idx": 0, "species": {"name": "Be"}, "result": {}}
+    harness._append_jsonl(path, record)
+    harness._append_jsonl(path, record)
+    assert len(fsync_calls) == 2
+    # File contains 2 lines:
+    lines = path.read_text().strip().split("\n")
+    assert len(lines) == 2
+    import json
+    for ln in lines:
+        json.loads(ln)   # parses cleanly
