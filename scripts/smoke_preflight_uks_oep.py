@@ -273,7 +273,8 @@ def main() -> int:
                 basis=args.basis, grid_level=args.grid_level,
             )
             stage_t["scf"] = time.time() - t0
-            scf_path = args.cache_dir / "_intermediates" / f"{spec.name}_scf.npz"
+            # Post-2026-05-03 cache layout (spec sec. 5.6): grid_level baked into name.
+            scf_path = args.cache_dir / "_intermediates" / f"{spec.name}_g{args.grid_level}_scf.npz"
             scf_size = scf_path.stat().st_size / 1e6 if scf_path.is_file() else float("nan")
             print(
                 f"    spin_unrestricted={scf['spin_unrestricted']}, "
@@ -296,7 +297,7 @@ def main() -> int:
                 basis=args.basis, grid_level=args.grid_level,
             )
             stage_t["ccsd"] = time.time() - t0
-            cc_path = args.cache_dir / "_intermediates" / f"{spec.name}_ccsd.npz"
+            cc_path = args.cache_dir / "_intermediates" / f"{spec.name}_g{args.grid_level}_ccsd.npz"
             cc_size = cc_path.stat().st_size / 1e6 if cc_path.is_file() else float("nan")
             rho_grid = np.asarray(cc["rho_ref_grid"])
             print(
