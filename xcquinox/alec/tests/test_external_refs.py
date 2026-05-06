@@ -6,6 +6,25 @@ from xcquinox.alec.external_refs import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_per_species_oep_overrides():
+    """Snapshot, empty, then restore _PER_SPECIES_OEP_OVERRIDES around every
+    test. Without this, tests that mutate the dict (validator, resolver,
+    precompute_all-orchestration tests) collide with the production
+    overrides pasted in 2026-05-06: their `species_union=[Be]` test
+    fixtures would see all 8 production override keys as orphans and
+    raise spuriously. Snapshot+clear+restore (rather than
+    monkeypatch.setattr of a fresh dict) preserves the same dict
+    OBJECT identity so tests that import the dict by name at module
+    level still see the same binding before and after."""
+    from xcquinox.alec import external_refs as ext
+    snapshot = dict(ext._PER_SPECIES_OEP_OVERRIDES)
+    ext._PER_SPECIES_OEP_OVERRIDES.clear()
+    yield
+    ext._PER_SPECIES_OEP_OVERRIDES.clear()
+    ext._PER_SPECIES_OEP_OVERRIDES.update(snapshot)
+
+
 def test_species_union_dedup_count():
     """Total unique (name, charge, spin) triples ≈ 58 across DFS+probes+HBPT."""
     species = build_species_union()
