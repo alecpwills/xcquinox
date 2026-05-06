@@ -623,3 +623,91 @@ def test_build_mol_and_mf_grid_level_zero_is_legitimate_coarsest():
     )
     mol, mf = _build_mol_and_mf(spec, baseline_xc="pbe")
     assert mf.grids.level == 0
+
+
+def test_ks_from_vxc_matrix_rhf_default_damp_is_0_1():
+    """Default damp=0.1 (preserves the pre-Pass-1 hardcoded oep.py:255)."""
+    from pyscf import gto, dft, scf as _scf
+    import numpy as np
+    from xcquinox.alec.oep import _ks_from_vxc_matrix_rhf
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    mf = dft.RKS(mol); mf.xc = "pbe"; mf.kernel()
+    vxc = np.zeros((mol.nao, mol.nao))
+    captured = {}
+    real_RHF = _scf.RHF
+    def spy_RHF(m):
+        instance = real_RHF(m)
+        captured["instance"] = instance
+        return instance
+    _scf.RHF = spy_RHF
+    try:
+        _ks_from_vxc_matrix_rhf(mol, mf, vxc, dm0=mf.make_rdm1())
+    finally:
+        _scf.RHF = real_RHF
+    assert captured["instance"].damp == 0.1
+
+
+def test_ks_from_vxc_matrix_rhf_default_diis_start_cycle_is_5():
+    """Default diis_start_cycle=5 (preserves oep.py:253)."""
+    from pyscf import gto, dft, scf as _scf
+    import numpy as np
+    from xcquinox.alec.oep import _ks_from_vxc_matrix_rhf
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    mf = dft.RKS(mol); mf.xc = "pbe"; mf.kernel()
+    vxc = np.zeros((mol.nao, mol.nao))
+    captured = {}
+    real_RHF = _scf.RHF
+    def spy_RHF(m):
+        instance = real_RHF(m)
+        captured["instance"] = instance
+        return instance
+    _scf.RHF = spy_RHF
+    try:
+        _ks_from_vxc_matrix_rhf(mol, mf, vxc, dm0=mf.make_rdm1())
+    finally:
+        _scf.RHF = real_RHF
+    assert captured["instance"].diis_start_cycle == 5
+
+
+def test_ks_from_vxc_matrix_rhf_custom_damp():
+    """Caller-supplied damp=0.3 reaches mf_fixed.damp."""
+    from pyscf import gto, dft, scf as _scf
+    import numpy as np
+    from xcquinox.alec.oep import _ks_from_vxc_matrix_rhf
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    mf = dft.RKS(mol); mf.xc = "pbe"; mf.kernel()
+    vxc = np.zeros((mol.nao, mol.nao))
+    captured = {}
+    real_RHF = _scf.RHF
+    def spy_RHF(m):
+        instance = real_RHF(m)
+        captured["instance"] = instance
+        return instance
+    _scf.RHF = spy_RHF
+    try:
+        _ks_from_vxc_matrix_rhf(mol, mf, vxc, dm0=mf.make_rdm1(), damp=0.3)
+    finally:
+        _scf.RHF = real_RHF
+    assert captured["instance"].damp == 0.3
+
+
+def test_ks_from_vxc_matrix_rhf_custom_diis_start_cycle():
+    """Caller-supplied diis_start_cycle=10 reaches mf_fixed.diis_start_cycle."""
+    from pyscf import gto, dft, scf as _scf
+    import numpy as np
+    from xcquinox.alec.oep import _ks_from_vxc_matrix_rhf
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    mf = dft.RKS(mol); mf.xc = "pbe"; mf.kernel()
+    vxc = np.zeros((mol.nao, mol.nao))
+    captured = {}
+    real_RHF = _scf.RHF
+    def spy_RHF(m):
+        instance = real_RHF(m)
+        captured["instance"] = instance
+        return instance
+    _scf.RHF = spy_RHF
+    try:
+        _ks_from_vxc_matrix_rhf(mol, mf, vxc, dm0=mf.make_rdm1(), diis_start_cycle=10)
+    finally:
+        _scf.RHF = real_RHF
+    assert captured["instance"].diis_start_cycle == 10

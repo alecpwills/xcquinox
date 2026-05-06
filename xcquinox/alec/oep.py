@@ -276,7 +276,8 @@ def _ks_from_vxc_matrix(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0):
     )
 
 
-def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0):
+def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
+                             damp: float = 0.1, diis_start_cycle: int = 5):
     """RHF inner SCF with damped + DIIS-stabilized convergence.
 
     Returns ``(dm, ts, j_matrix, success)``. ``success=False`` indicates
@@ -304,9 +305,9 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0):
     # the wavefunction). D3 audit fix: prior comments contradicted code
     # by claiming "disable DIIS" while leaving DIIS on; comments now
     # match behavior.
-    mf_fixed.diis_start_cycle = 5
+    mf_fixed.diis_start_cycle = diis_start_cycle
     mf_fixed.diis_space = 4
-    mf_fixed.damp = 0.1
+    mf_fixed.damp = damp
     if level_shift != 0.0:
         mf_fixed.level_shift = level_shift
 
