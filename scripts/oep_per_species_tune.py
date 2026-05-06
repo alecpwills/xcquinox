@@ -155,6 +155,71 @@ def _append_jsonl(path, record: dict) -> None:
         os.fsync(f.fileno())
 
 
+def _compute_dm_observables(mol, dm, *, is_atomic: bool) -> dict:
+    """Compute <r^2>, <3z^2 - r^2> (quadrupole anisotropy), and dipole
+    magnitude on a DM. Per spec sec. 6.1 / sec. 7.1 Pass-7 fix:
+    quadrupole anisotropy is the load-bearing observable for atomic
+    Cartesian-bias detection; <r^2> is a coarser radial-extent
+    diagnostic; dipole is null for atomic species (zero by parity)
+    and computed for molecular species.
+
+    Uses mol.intor('int1e_rr') -> shape (9, n_ao, n_ao) with diagonal
+    indices 0=xx, 4=yy, 8=zz. Verified Pass 7/8 against
+    pyscf/scf/hf.py::traceless_quadrupole_tensor.
+    """
+    import numpy as np
+    rr = mol.intor("int1e_rr")           # (9, n_ao, n_ao)
+    dm_total = dm.sum(axis=0) if dm.ndim == 3 else dm
+    def _expect(op):
+        return float(np.einsum("ij,ij->", op, dm_total))
+    r2 = _expect(rr[0]) + _expect(rr[4]) + _expect(rr[8])
+    quad_aniso = 2 * _expect(rr[8]) - _expect(rr[0]) - _expect(rr[4])
+    if is_atomic:
+        dipole = None
+    else:
+        r_op = mol.intor("int1e_r")      # (3, n_ao, n_ao)
+        dip_xyz = [_expect(r_op[k]) for k in range(3)]
+        dipole = float(np.linalg.norm(dip_xyz))
+    return {"r_squared": r2,
+            "quad_aniso": quad_aniso,
+            "dipole": dipole}
+
+
+def _is_stably_converged_inline(history: list[float], *,
+                                  plateau_window: int,
+                                  plateau_rtol: float,
+                                  terminated_by: str) -> bool:
+    """Spec §7.1 + carve-out: final plateau_window iters within
+    plateau_rtol relative range. Carve-out: terminated_by ==
+    'early_stop_conv_tol' AND len(history) < plateau_window → stable
+    (the early-stop sentinel certifies cleanly hitting the goal).
+    Plan-3-review fix: harness now populates `converged_stably` rather
+    than always-False (was a JSONL schema contract drift)."""
+    import statistics
+    if not history:
+        return False
+    if (terminated_by == "early_stop_conv_tol"
+            and len(history) < plateau_window):
+        return True
+    if len(history) < plateau_window:
+        return False
+    tail = history[-plateau_window:]
+    tail_med = statistics.median(tail)
+    if abs(tail_med) < 1e-30:
+        return False
+    rel_range = (max(tail) - min(tail)) / abs(tail_med)
+    return rel_range < plateau_rtol
+
+
+def _is_atomic_species(name: str) -> bool:
+    """A species is 'atomic' when its name is a single chemical symbol
+    (or symbol+'+' for cations). Mirrors the post-Pass-1 fix in
+    xcquinox/alec/external_refs.py:resolve_geometry."""
+    from ase.data import chemical_symbols
+    sym = name.rstrip("+")
+    return sym in chemical_symbols
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Per-species OEP override harness (spec sec. 6.1)."
@@ -216,10 +281,222 @@ def main() -> int:
 
 
 def _run_harness(args, grid, species_parsed, wall_caps_min) -> int:
-    """Real harness execution path — populated in Task 4 + 5."""
-    raise NotImplementedError(
-        "Harness execution not yet implemented (Plan 3 Task 4 + 5)."
+    """Per-species, per-trial sweep loop. Spec sec. 6.1 / 6.2."""
+    import datetime
+    import json
+    import signal
+    import time
+    import traceback
+    # Heavy imports deferred from --dry-run path:
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, build_species_union, resolve_geometry,
+        run_scf_with_cache, run_ccsd_with_cache,
+        _migrate_intermediates_to_grid_suffixed,
     )
+    from xcquinox.alec.oep import run_oep_inversion
+
+    # Migrate cache_dir defensively (idempotent if precompute_all has run):
+    _migrate_intermediates_to_grid_suffixed(args.cache_dir)
+    # Install SIGALRM handler ONCE at harness startup:
+    _install_wall_cap_handler()
+
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    union = {(s.name, s.charge, s.spin): s for s in build_species_union()}
+    summary = {
+        "started_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "ended_at_utc": None,
+        "best_per_species": {},
+        "n_trials_run": {},
+        "short_circuited": [],
+        "failed_target_floor": [],
+    }
+    overall_exit = 0
+
+    for (name, charge_arg, spin_arg), cap_min in zip(species_parsed, wall_caps_min):
+        if name not in grid:
+            print(f"[skip] {name}: not in YAML grid", file=sys.stderr)
+            continue
+        block = grid[name]
+        charge = charge_arg if charge_arg is not None else int(block["charge"])
+        spin = spin_arg if spin_arg is not None else int(block["spin"])
+        target_floor = float(block["target_floor"])
+        trials = _enumerate_trials(name, block)[:args.max_trials_per_species]
+        species_jsonl = args.out_dir / f"{name}.jsonl"
+
+        # Build SpeciesEntry + atoms ONCE per species:
+        key = (name, charge, spin)
+        if key in union:
+            spec_entry = union[key]
+        else:
+            spec_entry = SpeciesEntry(name=name, charge=charge, spin=spin,
+                                      source="harness")
+        atoms = resolve_geometry(spec_entry)
+        scf = run_scf_with_cache(spec_entry, atoms, cache_dir=args.cache_dir,
+                                  basis="def2-svp", grid_level=1)
+        cc = run_ccsd_with_cache(spec_entry, atoms, scf_payload=scf,
+                                  cache_dir=args.cache_dir,
+                                  basis="def2-svp", grid_level=1)
+        is_atomic = _is_atomic_species(name)
+
+        best_density_error_min = float("inf")
+        best_record = None
+        n_run = 0
+
+        for trial_idx, trial_settings in enumerate(trials):
+            n_run += 1
+            density_error_history: list[float] = []
+            def _trial_progress_cb(it, density_error_l2):
+                density_error_history.append(float(density_error_l2))
+
+            tier_grid_level = trial_settings.get("grid_level", 1)
+            tier_mol_spec = MoleculeSpec.from_dict(
+                name=name, atom="; ".join(
+                    f"{s} {atoms.get_positions()[i,0]:.6f} "
+                    f"{atoms.get_positions()[i,1]:.6f} "
+                    f"{atoms.get_positions()[i,2]:.6f}"
+                    for i, s in enumerate(atoms.get_chemical_symbols())
+                ),
+                basis="def2-svp", charge=charge, spin=spin,
+                atom_composition={s: atoms.get_chemical_symbols().count(s)
+                                  for s in set(atoms.get_chemical_symbols())},
+                grid_level=tier_grid_level,
+            )
+
+            t0 = time.time()
+            cap_sec = cap_min * 60
+            signal.alarm(cap_sec)
+            wall_capped = False
+            exception_msg = None
+            oep_result = None
+            try:
+                oep_result = run_oep_inversion(
+                    tier_mol_spec, cc["dm_ao"],
+                    aux_basis=trial_settings.get("aux_basis", "def2-svp-jkfit"),
+                    regularization=trial_settings.get("regularization", 1e-4),
+                    max_iter=trial_settings.get("max_iter", 500),
+                    conv_tol=target_floor,
+                    level_shift=trial_settings.get("level_shift",
+                                                    0.5 if spin > 0 else 0.0),
+                    inner_damp=trial_settings.get("inner_damp", 0.1),
+                    inner_diis_start_cycle=trial_settings.get(
+                        "inner_diis_start_cycle", 5),
+                    progress_callback=_trial_progress_cb,
+                )
+            except _HarnessWallCap:
+                wall_capped = True
+            except Exception:
+                exception_msg = traceback.format_exc()
+            finally:
+                signal.alarm(0)
+            wall_clock_s = time.time() - t0
+
+            # Compute observables only when oep_result is available:
+            obs = {"r_squared": None, "quad_aniso": None, "dipole": None}
+            target_obs = {"r_squared": None, "quad_aniso": None, "dipole": None}
+            density_error_min = (
+                float(min(density_error_history))
+                if density_error_history else None
+            )
+            density_error_final = (
+                float(density_error_history[-1])
+                if density_error_history else None
+            )
+            converged = bool(oep_result.converged) if oep_result else False
+            n_iter = len(density_error_history)
+            if oep_result is not None and oep_result.dm_final is not None:
+                from pyscf import gto
+                _coords = atoms.get_positions()
+                _syms = atoms.get_chemical_symbols()
+                _atom_lines = [(s, tuple(_coords[i])) for i, s in enumerate(_syms)]
+                mol = gto.M(atom=_atom_lines, basis="def2-svp",
+                            charge=charge, spin=spin, verbose=0)
+                obs = _compute_dm_observables(mol, oep_result.dm_final,
+                                              is_atomic=is_atomic)
+                target_obs = _compute_dm_observables(mol, cc["dm_ao"],
+                                                    is_atomic=is_atomic)
+
+            if exception_msg is not None:
+                termination = "exception"
+            elif wall_capped:
+                termination = "wall_capped"
+            elif oep_result is not None:
+                terminated_by = getattr(oep_result, "terminated_by", "max_iter")
+                termination = ("early_stop_conv_tol"
+                               if terminated_by == "conv_tol"
+                               else terminated_by)
+            else:
+                termination = "exception"
+
+            record = {
+                "trial_idx": trial_idx,
+                "species": {"name": name, "charge": charge, "spin": spin},
+                "settings": {
+                    **trial_settings,
+                    "conv_tol": target_floor,
+                    "target_floor": target_floor,
+                },
+                "result": {
+                    "density_error_history": density_error_history,
+                    "F_val_history": [],   # v1: empty for wall-capped trials
+                    "density_error_min": density_error_min,
+                    "density_error_final": density_error_final,
+                    "n_iter": n_iter,
+                    "converged_stably": _is_stably_converged_inline(
+                        density_error_history,
+                        plateau_window=20,
+                        plateau_rtol=0.02,
+                        terminated_by=termination,
+                    ),
+                    "converged_to_target_floor": (
+                        density_error_min is not None
+                        and density_error_min <= target_floor
+                    ),
+                    "wall_clock_s": wall_clock_s,
+                    "wall_capped": wall_capped,
+                    "termination": termination,
+                    "plateau_density_error": (
+                        oep_result.density_error
+                        if oep_result is not None
+                        and getattr(oep_result, "terminated_by", None) == "plateau"
+                        else None
+                    ),
+                    "plateau_window_iters": 20,
+                    "inner_dm_r_squared": obs["r_squared"],
+                    "target_dm_r_squared": target_obs["r_squared"],
+                    "inner_dm_quad_aniso": obs["quad_aniso"],
+                    "target_dm_quad_aniso": target_obs["quad_aniso"],
+                    "inner_dm_dipole": obs["dipole"],
+                    "target_dm_dipole": target_obs["dipole"],
+                    "rss_mb_peak": None,
+                    "error_msg": exception_msg,
+                },
+            }
+            _append_jsonl(species_jsonl, record)
+
+            if (record["result"]["converged_to_target_floor"]
+                    and density_error_min is not None
+                    and density_error_min < best_density_error_min):
+                best_density_error_min = density_error_min
+                best_record = record
+                summary["short_circuited"].append(name)
+                break    # short-circuit: hit target_floor
+
+        summary["n_trials_run"][name] = n_run
+        if best_record is not None:
+            summary["best_per_species"][name] = {
+                "trial_idx": best_record["trial_idx"],
+                "settings": best_record["settings"],
+                "density_error_min": best_record["result"]["density_error_min"],
+                "wall_clock_s": best_record["result"]["wall_clock_s"],
+            }
+        else:
+            summary["failed_target_floor"].append(name)
+            overall_exit = 4
+
+    summary["ended_at_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (args.out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    return overall_exit
 
 
 if __name__ == "__main__":

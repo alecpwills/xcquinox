@@ -152,3 +152,36 @@ def test_jsonl_writer_appends_with_fsync(tmp_path, monkeypatch):
     import json
     for ln in lines:
         json.loads(ln)   # parses cleanly
+
+
+def test_compute_inner_dm_observables_uses_int1e_rr():
+    """Inner-DM observable computation: <r^2>, <3z^2-r^2>, dipole.
+    Uses mol.intor('int1e_rr') per spec sec. 6.1 (Pass 7)."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import oep_per_species_tune as harness
+    from pyscf import gto
+    import numpy as np
+    mol = gto.M(atom="H 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    dm = np.eye(mol.nao) * 0.5
+    obs = harness._compute_dm_observables(mol, dm, is_atomic=True)
+    # Atomic species: dipole is null
+    assert obs["dipole"] is None
+    # r_squared and quad_aniso are floats
+    assert isinstance(obs["r_squared"], float)
+    assert isinstance(obs["quad_aniso"], float)
+
+
+def test_compute_inner_dm_observables_uks_3d_dm_spin_summed():
+    """UKS 3D DM (2, n_ao, n_ao) is spin-summed before contraction."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import oep_per_species_tune as harness
+    from pyscf import gto
+    import numpy as np
+    mol = gto.M(atom="H 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    n = mol.nao
+    dm = np.zeros((2, n, n))
+    dm[0] = np.eye(n) * 0.3
+    dm[1] = np.eye(n) * 0.2
+    obs = harness._compute_dm_observables(mol, dm, is_atomic=True)
+    # Spin-summed total = eye * 0.5; same as the RKS test above
+    assert obs["r_squared"] > 0   # finite
