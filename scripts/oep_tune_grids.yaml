@@ -1,0 +1,96 @@
+# Per-species OEP-tune grids (spec sec. 4).
+#
+# Citation tags [oep-tdl-1..6] are AUTHOR-RECALLED, UNVERIFIED and
+# resolve to the TO-DOWNLOAD comment block at the end of
+# reports_local/latex/references.bib. All numeric values labeled
+# "engineering" are calibrated against the codebase's own _OEP_TIERS
+# defaults at xcquinox/alec/external_refs.py:393-420; nothing here
+# depends on the unverified literature claims.
+#
+# Schema (per spec sec. 9.3):
+#   <species>:
+#     charge:        int
+#     spin:          int (PySCF 2S = N_alpha - N_beta convention)
+#     hypothesis:    free-text dominant-pathology summary
+#     target_floor:  float (engineering choice; spec sec. 4 per-species)
+#     sweep:         dict of knob -> list of values
+
+Be:
+  charge: 0
+  spin: 0
+  hypothesis: "Wu-Yang basis-set imbalance + 2s/2p MR character [oep-tdl-1, oep-tdl-2 unverified]."
+  target_floor: 5.0e-3
+  sweep:
+    aux_basis: ["def2-svp-jkfit", "def2-tzvp-jkfit", "def2-qzvp-jkfit"]
+    regularization: [1.0e-4, 1.0e-3, 1.0e-2]
+    grid_level: [1, 2]
+
+"C+":
+  charge: 1
+  spin: 1
+  hypothesis: "UKS basin-hopping among p_x/p_y/p_z singly-occupied [oep-tdl-4, oep-tdl-5 unverified]."
+  target_floor: 1.5e-2
+  sweep:
+    level_shift: [0.5, 0.75, 1.0]
+    inner_damp: [0.1, 0.3]
+    aux_basis: ["def2-tzvp-jkfit", "def2-qzvp-jkfit"]
+    grid_level: [1, 2]
+
+F2:
+  charge: 0
+  spin: 0
+  hypothesis: "sec. 5.4 grid bug + Wu-Yang ill-conditioning + sigma_g/sigma_u* MR [oep-tdl-1, oep-tdl-6 unverified]."
+  target_floor: 1.0e-2
+  sweep:
+    grid_level: [1, 2]
+    aux_basis: ["def2-svp-jkfit", "def2-tzvp-jkfit", "def2-qzvp-jkfit"]
+    regularization: [1.0e-4, 1.0e-3, 1.0e-2]
+
+F2O:
+  charge: 0
+  spin: 0
+  hypothesis: "Plateau just above RKS conv_tol=2e-3; F lone-pair Wu-Yang imbalance [oep-tdl-1 unverified]."
+  target_floor: 5.0e-3
+  sweep:
+    aux_basis: ["def2-tzvp-jkfit", "def2-qzvp-jkfit"]
+    regularization: [1.0e-3, 1.0e-2]
+    grid_level: [1, 2]
+
+HF:
+  charge: 0
+  spin: 0
+  hypothesis: "Pre-emptive: F lone-pair Wu-Yang imbalance (geom-bug fixed in commit f34883dd9)."
+  target_floor: 5.0e-3
+  sweep:
+    aux_basis: ["def2-svp-jkfit", "def2-tzvp-jkfit", "def2-qzvp-jkfit"]
+    regularization: [1.0e-4, 1.0e-3]
+
+HS:
+  charge: 0
+  spin: 1
+  hypothesis: "Pre-emptive: UKS basin-hopping (HO analog; geom-bug fixed in commit f34883dd9)."
+  target_floor: 1.5e-2
+  sweep:
+    level_shift: [0.5, 0.75, 1.0]
+    inner_damp: [0.1, 0.3]
+    aux_basis: ["def2-tzvp-jkfit", "def2-qzvp-jkfit"]
+
+N2O:
+  charge: 0
+  spin: 0
+  hypothesis: "Plateau just above RKS conv_tol=2e-3; resonance MR character."
+  target_floor: 5.0e-3
+  sweep:
+    aux_basis: ["def2-tzvp-jkfit", "def2-qzvp-jkfit"]
+    regularization: [1.0e-3, 1.0e-2]
+    grid_level: [1, 2]
+
+O3:
+  charge: 0
+  spin: 0
+  hypothesis: "Textbook MR biradical; CCSD-density ceiling [oep-tdl-1, oep-tdl-6 unverified]."
+  target_floor: 1.0e-2
+  sweep:
+    grid_level: [1, 2]
+    aux_basis: ["def2-tzvp-jkfit", "def2-qzvp-jkfit"]
+    regularization: [1.0e-3, 1.0e-2]
