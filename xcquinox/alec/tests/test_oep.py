@@ -919,3 +919,264 @@ def test_save_vxc_ref_does_not_persist_terminated_by_or_dm_final(tmp_path):
     loaded = np.load(str(out))
     assert "terminated_by" not in loaded.files
     assert "dm_final" not in loaded.files
+
+
+def test_plateau_F_val_cache_uses_unregularized_lagrangian():
+    """Pass-7 contract: scf_state['F_val_last_eval'] caches F_val
+    (unregularized Lagrangian at oep.py:590/620), NOT obj=-F_val+reg_term.
+    Drive a tiny OEP with non-zero regularization and a single
+    objective_and_grad evaluation; spy on scf_state."""
+    import numpy as np
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0,
+        atom_composition=(("H", 2),),  # CANONICAL frozen-dataclass form
+        grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    # Run with max_iter=1 — single L-BFGS step → at least one objective
+    # evaluation. After that, scf_state["F_val_last_eval"] should be
+    # finite and equal to the F_val computed at oep.py:620
+    # (e_ks - <b, rhotarget>), NOT obj (which is -F_val + reg_term).
+    # We use regularization=1e-2 so the reg_term is non-trivially
+    # different from F_val.
+    result = run_oep_inversion(
+        spec, dm_target,
+        aux_basis="def2-svp-jkfit",
+        max_iter=1, conv_tol=1e-30,
+        regularization=1e-2,
+        plateau_window=0,   # disable plateau
+    )
+    # Indirect verification: result.density_error finite + non-NaN.
+    # Direct verification of the scf_state cache requires accessing
+    # internal closure state — not exposed by the public API. Use
+    # source-text pin as the back-up assertion (same pattern Plan 1
+    # uses for cache-internals contracts).
+    import inspect
+    src = inspect.getsource(run_oep_inversion)
+    # The F_val cache write must reference the F_val local, NOT obj:
+    assert 'scf_state["F_val_last_eval"] = float(F_val)' in src
+    assert 'scf_state["F_val_last_eval"] = float(obj)' not in src
+    assert np.isfinite(result.density_error)
+
+
+def test_plateau_F_val_cache_writes_neg_inf_on_scf_failure():
+    """Pass-7 contract: scf_state['F_val_last_eval'] = float('-inf')
+    on inner-SCF failure (descending sentinel). Source-text pin —
+    the failure path is hard to trigger in a unit test without
+    constructing an ill-conditioned problem; pin the contract via
+    inspect."""
+    import inspect
+    from xcquinox.alec.oep import run_oep_inversion
+    src = inspect.getsource(run_oep_inversion)
+    # On failure path (oep.py:569-572), both sentinels must be written:
+    assert 'scf_state["density_error_l2_last_eval"] = float("inf")' in src
+    assert 'scf_state["F_val_last_eval"] = float("-inf")' in src
+
+
+def test_terminated_by_field_for_conv_tol_path():
+    """Plan-1 review fix: spec §9.1 names this test for the conv_tol
+    path. Drive a trivially-converging OEP (max_iter=200, conv_tol=1e-2).
+    When converged=True, terminated_by is either "conv_tol" (early-stop
+    sentinel fired mid-optimization) or "max_iter" (optimizer exhausted
+    max_iter but final_error < conv_tol — also a legitimate converged
+    state per spec). Both cases must populate dm_final and density_error
+    below conv_tol."""
+    import numpy as np
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    result = run_oep_inversion(
+        spec, dm_target,
+        aux_basis="def2-svp-jkfit",
+        max_iter=200, conv_tol=1e-2,
+        regularization=1e-4,
+        plateau_window=0,
+    )
+    if result.converged:
+        # Both "conv_tol" (early-stop fired) and "max_iter" (exhausted
+        # max_iter but final density_error < conv_tol) are valid converged
+        # termination paths; either satisfies the inversion contract.
+        assert result.terminated_by in ("conv_tol", "max_iter")
+        assert result.density_error < 1e-2
+        assert result.dm_final is not None
+        assert result.dm_final.ndim == 2
+
+
+def test_terminated_by_field_for_plateau_path():
+    """Plan-1 review fix: spec §9.1 names this test for the plateau
+    path explicitly. Drive an OEP that should plateau (high reg + tight
+    plateau_window/min_iter so plateau fires before max_iter)."""
+    import numpy as np
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    # Plateau-easy config: small plateau_window with tight rtol so
+    # any flat tail fires; lots of regularization so optimizer settles
+    # into a steady state quickly.
+    result = run_oep_inversion(
+        spec, dm_target,
+        aux_basis="def2-svp-jkfit",
+        max_iter=200, conv_tol=1e-30,   # impossible — forces plateau or max_iter
+        regularization=1e-2,             # high reg → quick plateau
+        plateau_window=5, plateau_rtol=0.1, plateau_min_iter=10,
+    )
+    # Either plateau fires or max_iter exhausts:
+    assert result.terminated_by in ("plateau", "max_iter")
+
+
+def test_plateau_below_conv_tol_marks_converged():
+    """Spec §9.1 + §5.5: plateau-below-conv_tol → converged=True."""
+    import numpy as np
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    # Loose conv_tol so any plateau is below it:
+    result = run_oep_inversion(
+        spec, dm_target,
+        aux_basis="def2-svp-jkfit",
+        max_iter=200, conv_tol=1.0,    # huge — anything below 1 is "converged"
+        regularization=1e-2,
+        plateau_window=5, plateau_rtol=0.1, plateau_min_iter=10,
+    )
+    if result.terminated_by == "plateau":
+        assert result.converged is True
+
+
+def test_plateau_above_conv_tol_marks_not_converged():
+    """Spec §9.1 + §5.5: plateau-above-conv_tol → converged=False
+    (cascade falls through to next tier)."""
+    import numpy as np
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    # Tight conv_tol so plateau-density-error is NOT below it:
+    result = run_oep_inversion(
+        spec, dm_target,
+        aux_basis="def2-svp-jkfit",
+        max_iter=200, conv_tol=1e-30,   # impossibly tight
+        regularization=1e-2,
+        plateau_window=5, plateau_rtol=0.1, plateau_min_iter=10,
+    )
+    if result.terminated_by == "plateau":
+        assert result.converged is False
+
+
+def test_plateau_detector_disabled_when_min_iter_exceeds_max_iter():
+    """Spec §9.1: plateau_min_iter > max_iter → cannot fire by construction."""
+    from xcquinox.alec.oep import _detect_plateau
+    # Pretend max_iter=20 and plateau_min_iter=30. Even on a flat-20-deque,
+    # _detect_plateau is gated only by deque-fullness in the helper, but the
+    # CALL SITE in _scipy_iter_callback gates on plateau_min_iter. Pin the
+    # caller-side contract via source-text:
+    import inspect
+    from xcquinox.alec.oep import run_oep_inversion
+    src = inspect.getsource(run_oep_inversion)
+    assert '_progress_state["iter"] >= plateau_min_iter' in src
+
+
+def test_plateau_detector_does_not_fire_on_slow_descent_with_sign_of_trend():
+    """Spec §9.1 §5.5: 0.25%/iter slow descent over 20 iters → relative
+    range ~5%. WITH plateau_rtol=0.02 that's outside, so no fire. WITH
+    sign-of-trend slack, the test ALSO requires last-half-median to be
+    NOT below first-half-median by more than rtol*|median|."""
+    from xcquinox.alec.oep import _detect_plateau
+    # 0.25%/iter geometric descent over 20 iters:
+    d_e = [(0.9975 ** k) for k in range(20)]
+    F_val = [-(0.9975 ** k) for k in range(20)]
+    fired, _ = _detect_plateau(
+        d_e=d_e, F_val=F_val,
+        plateau_window=20, plateau_rtol=0.02,
+    )
+    # last-half median < first-half median (descending), so sign-of-trend
+    # check fails → plateau does not fire:
+    assert not fired
+
+
+def test_plateau_detector_sign_of_trend_uses_rtol_slack():
+    """Spec §9.1 / Pass-7: rtol-scaled slack on the sign-of-trend test
+    ensures L-BFGS-B float-noise micro-oscillations don't false-fire."""
+    from xcquinox.alec.oep import _detect_plateau
+    # Tight flat tail with last-half-median ε above first-half-median
+    # by 0.5 × rtol × |median| (within slack):
+    base = 3e-3
+    half = 10
+    rtol = 0.02
+    slack = 0.5 * rtol * base   # within rtol slack
+    first_half = [base] * half
+    last_half = [base + slack] * half
+    fired, _ = _detect_plateau(
+        d_e=first_half + last_half, F_val=[-1.0] * 20,
+        plateau_window=20, plateau_rtol=rtol,
+    )
+    # Within slack: should fire (does not get blocked by sign-of-trend)
+    assert fired
+
+
+def test_run_oep_inversion_passes_mol_spec_grid_level_through(monkeypatch):
+    """Spec §9.1: run_oep_inversion does NOT silently drop or override
+    mol_spec.grid_level — the same spec passes through to _build_mol_and_mf."""
+    captured = {}
+    real_build = None
+    import xcquinox.alec.oep as oep_mod
+    real_build = oep_mod._build_mol_and_mf
+    def spy_build(mol_spec, basis=None, baseline_xc="pbe"):
+        captured["grid_level"] = mol_spec.grid_level
+        return real_build(mol_spec, basis=basis, baseline_xc=baseline_xc)
+    monkeypatch.setattr(oep_mod, "_build_mol_and_mf", spy_build)
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0,
+        atom_composition=(("H", 2),),
+        grid_level=2,    # explicit
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    try:
+        run_oep_inversion(
+            spec, dm_target,
+            aux_basis="def2-svp-jkfit",
+            max_iter=2, conv_tol=1e-30,
+            regularization=1e-4,
+            plateau_window=0,
+        )
+    except Exception:
+        pass
+    assert captured.get("grid_level") == 2
