@@ -1188,3 +1188,60 @@ def test_run_oep_inversion_passes_mol_spec_grid_level_through(monkeypatch):
     except Exception:
         pass
     assert captured.get("grid_level") == 2
+
+
+def test_run_oep_inversion_plateau_catch_path_behavioral(monkeypatch):
+    """Behavioral end-to-end test for the plateau catch path: force
+    a `_OEPPlateau` raise via monkey-patched scipy.minimize and verify
+    the OEPResult carries terminated_by='plateau', lbfgs_status starts
+    with 'plateau', and density_error equals the plateau median (NOT
+    the post-finalization final_error). Closes the deferred behavioral-
+    coverage gap from Plan 1 Task 9 + Task 10 reviews.
+
+    Why monkey-patch minimize rather than _detect_plateau: on tiny
+    H2/sto-3g RHF, L-BFGS-B converges before the plateau deque fills,
+    so a _detect_plateau monkey-patch never gets called. We want to
+    test the catch+wiring path, not the detector's deque math (the
+    latter is covered by the 6 synthetic-history tests in Task 12)."""
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion, _OEPPlateau
+    import xcquinox.alec.oep as oep_mod
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    # Stub minimize: run fun(x0) once so scf_state is populated (the
+    # finalization SCF after catch reads scf_state["dm0_accepted"]),
+    # then raise _OEPPlateau as if the iter-callback's detector fired.
+    plateau_value = 1.5e-3
+    def fake_minimize(fun, x0, **kwargs):
+        # Populate scf_state via one objective evaluation:
+        fun(x0)
+        # Also tickle the iter callback once so dm0_accepted is set:
+        cb = kwargs.get("callback")
+        if cb is not None:
+            try:
+                cb(x0)
+            except _OEPPlateau:
+                pass
+        raise _OEPPlateau(b=x0, plateau_density_error=plateau_value)
+    monkeypatch.setattr(oep_mod, "minimize", fake_minimize)
+    result = run_oep_inversion(
+        spec, dm_target,
+        aux_basis="def2-svp-jkfit",
+        max_iter=200,
+        conv_tol=1e-30,
+        regularization=1e-4,
+        plateau_window=0,            # disable real detector; we force-raise
+    )
+    # Behavioral assertions on the catch+wiring path:
+    assert result.terminated_by == "plateau"
+    assert result.lbfgs_status.startswith("plateau")
+    assert abs(result.density_error - plateau_value) < 1e-12
+    # Plateau-below-conv_tol logic: plateau_value=1.5e-3 vs conv_tol=1e-30
+    # → False (1.5e-3 is NOT below 1e-30):
+    assert result.converged is False
