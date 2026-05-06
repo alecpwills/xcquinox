@@ -770,3 +770,23 @@ def test_run_scf_with_cache_grid_level_2_creates_g2_file(tmp_path):
                        basis="sto-3g", grid_level=2)
     expected = cache_dir / "_intermediates" / "H2test_g2_scf.npz"
     assert expected.is_file()
+
+
+def test_run_ccsd_with_cache_uses_grid_suffixed_filename(tmp_path):
+    """CCSD cache file name embeds grid_level: <name>_g{N}_ccsd.npz."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        run_scf_with_cache, run_ccsd_with_cache, SpeciesEntry,
+    )
+    from ase import Atoms
+    spec = SpeciesEntry(name="H2test", charge=0, spin=0, source="dfs_ae")
+    atoms = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74)])
+    cache_dir = tmp_path / "external_refs"
+    scf = run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
+                              basis="sto-3g", grid_level=1)
+    run_ccsd_with_cache(spec, atoms, scf_payload=scf, cache_dir=cache_dir,
+                         basis="sto-3g", grid_level=1)
+    expected = cache_dir / "_intermediates" / "H2test_g1_ccsd.npz"
+    assert expected.is_file()
+    legacy = cache_dir / "_intermediates" / "H2test_ccsd.npz"
+    assert not legacy.exists()

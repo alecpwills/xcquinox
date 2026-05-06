@@ -307,7 +307,12 @@ def run_ccsd_with_cache(
     pattern (`dm_pbe_tot = dm_pbe[0] + dm_pbe[1]` then einsum).
 
     Cache layout:
-      <cache_dir>/_intermediates/<name>_ccsd.npz  (np.savez_compressed)
+      <cache_dir>/_intermediates/<name>_g{grid_level}_ccsd.npz  (np.savez_compressed)
+    (Spec sec. 5.6: the `_g{N}_` infix lets the same `cache_dir` host
+    multiple grid_levels of the same species without collision; legacy
+    pre-2026-05-03 caches are migrated by
+    `_migrate_intermediates_to_grid_suffixed` at top of `precompute_all`
+    / `preflight_uks_oep`.)
     """
     import numpy as np
     from pathlib import Path
@@ -315,7 +320,7 @@ def run_ccsd_with_cache(
 
     inter = Path(cache_dir) / "_intermediates"
     inter.mkdir(parents=True, exist_ok=True)
-    cache_path = inter / f"{spec.name}_ccsd.npz"
+    cache_path = inter / f"{spec.name}_g{int(grid_level)}_ccsd.npz"
 
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
