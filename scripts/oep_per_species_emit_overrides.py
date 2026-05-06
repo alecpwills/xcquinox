@@ -158,6 +158,37 @@ def _emit_snippet(winner: dict) -> str:
     )
 
 
+def _emit_history_plot(name: str, records: list[dict],
+                        winner: dict | None, target_floor: float,
+                        out_path: Path) -> None:
+    """Save <species>_history.png with all trials' density_error trajectories
+    (faint, lw=0.5) and the winner highlighted (bold, lw=3.0). Uses Agg
+    backend per spec sec. 7.4 for headless environments."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for rec in records:
+        h = rec["result"].get("density_error_history") or []
+        if not h:
+            continue
+        ax.semilogy(range(1, len(h) + 1), h, lw=0.5, alpha=0.5, color="grey")
+    if winner is not None:
+        h = winner["result"].get("density_error_history") or []
+        if h:
+            ax.semilogy(range(1, len(h) + 1), h, lw=3.0, alpha=1.0,
+                        color="C0", label=f"winner (trial {winner['trial_idx']})")
+    ax.axhline(target_floor, color="C3", lw=1.0, linestyle="--",
+               label=f"target_floor={target_floor:.1e}")
+    ax.set_xlabel("L-BFGS-B iteration")
+    ax.set_ylabel("density_error_l2")
+    ax.set_title(f"{name} — OEP convergence history")
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify harness JSONL and emit override snippet."
@@ -194,6 +225,10 @@ def main() -> int:
             "target_floor", records[0]["settings"].get("conv_tol", 1e-3)
         ))
         winner = _select_winner(records, target_floor)
+        # Emit per-species history plot regardless of winner (failed
+        # species also produce a plot showing the floor that wasn't met):
+        plot_path = out_dir / f"{name}_history.png"
+        _emit_history_plot(name, records, winner, target_floor, plot_path)
         if winner is None:
             failed.append(name)
             continue

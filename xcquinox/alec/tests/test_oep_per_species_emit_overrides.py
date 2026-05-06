@@ -185,3 +185,18 @@ def test_round_2sigfig():
     # Use approx for float-representation tolerance (e.g. 0.001*2.1 = 0.0021000000000000003)
     assert ver._round_2sigfig(1.7 * 1.234e-3) == pytest.approx(2.1e-3, rel=1e-9)
     assert ver._round_2sigfig(1.7 * 1.0e-3) == pytest.approx(1.7e-3, rel=1e-9)
+
+
+def test_verifier_emits_history_png_per_species(tmp_path):
+    """Verifier writes <species>_history.png with winner highlighted."""
+    summary_path = _make_synthetic_summary(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT),
+         "--summary-path", str(summary_path),
+         "--out-dir", str(tmp_path)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, f"stderr:\n{proc.stderr}"
+    png = tmp_path / "Be_history.png"
+    assert png.is_file()
+    assert png.stat().st_size > 0
