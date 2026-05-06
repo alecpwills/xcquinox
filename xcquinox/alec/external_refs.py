@@ -860,6 +860,11 @@ def preflight_uks_oep(
     ~hour of CPU on the full set.
     """
     import numpy as np
+    # Spec sec. 5.6: migrate pre-2026-05-03 unsuffixed cache filenames
+    # for direct callers that bypass precompute_all (e.g.,
+    # smoke_preflight_uks_oep.py, tests). Idempotent no-op when
+    # already migrated.
+    _migrate_intermediates_to_grid_suffixed(cache_dir)
     smoke_specs = [
         SpeciesEntry("HO", 0, 1, "dfs_ae"),  # doublet
         SpeciesEntry("HN", 0, 2, "dfs_ae"),  # triplet

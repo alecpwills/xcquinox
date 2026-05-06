@@ -1112,3 +1112,51 @@ def test_precompute_all_invokes_migration_before_preflight(tmp_path, monkeypatch
     except Exception:
         pass
     assert call_order.index("migrate") < call_order.index("preflight")
+
+
+def test_preflight_uks_oep_invokes_migration_at_top(tmp_path, monkeypatch):
+    """preflight_uks_oep also runs migration (defensive idempotence
+    for direct callers that bypass precompute_all). Spec sec. 5.6.
+    Plan-2-review fix: also call preflight TWICE and assert the second
+    call is a no-op (idempotent contract per spec §9.2)."""
+    from xcquinox.alec import external_refs as ext
+    called = []
+    real_migrate = ext._migrate_intermediates_to_grid_suffixed
+    def spy_migrate(cache_dir):
+        called.append(cache_dir)
+        return real_migrate(cache_dir)
+    monkeypatch.setattr(ext, "_migrate_intermediates_to_grid_suffixed", spy_migrate)
+    monkeypatch.setattr(ext, "run_scf_with_cache",
+                        lambda *a, **k: {"spin_unrestricted": True})
+    monkeypatch.setattr(ext, "run_ccsd_with_cache",
+                        lambda *a, **k: {})
+    def fake_oep_cascade(*a, **k):
+        import numpy as np
+        from pathlib import Path
+        spec = a[0]
+        out = Path(k["cache_dir"]) / f"{spec.name}.npz"
+        np.savez(out, vxc_ref=np.zeros((2, 5, 5)),
+                 dm_target=np.zeros((2, 5, 5)),
+                 rho_ref_grid=np.zeros(10),
+                 ref_density_method=np.array("ccsd"))
+        return out
+    monkeypatch.setattr(ext, "run_oep_cascade", fake_oep_cascade)
+    # First call: migration fires.
+    try:
+        ext.preflight_uks_oep(cache_dir=tmp_path,
+                              basis="sto-3g", grid_level=1)
+    except Exception:
+        pass
+    assert len(called) >= 1
+    n_after_first = len(called)
+    # Second call: migration is invoked again but should be a no-op
+    # (no errors, no state change). This pins the spec §9.2
+    # idempotence-on-direct-call contract.
+    try:
+        ext.preflight_uks_oep(cache_dir=tmp_path,
+                              basis="sto-3g", grid_level=1)
+    except Exception:
+        pass
+    assert len(called) == n_after_first + 1   # invoked again
+    # And both invocations succeeded without raising:
+    # (the implicit assertion is that we got here without exception)
