@@ -902,16 +902,39 @@ def run_oep_inversion(
     if not final_success:
         lbfgs_status = lbfgs_status + " + final_scf_failed"
 
+    # Determine terminated_by and the appropriate density_error to report.
+    if early_stopped_b is not None:
+        terminated_by = "conv_tol"
+        density_error_reported = final_error
+    elif plateau_terminated:
+        terminated_by = "plateau"
+        # Spec sec. 5.5: report the plateau median as the trial's
+        # density_error (the achievable floor at this setting).
+        density_error_reported = float(plateau_d_e)
+        # Plateau-below-conv_tol counts as converged (spec sec. 5.5).
+        converged = bool(
+            np.isfinite(density_error_reported)
+            and (density_error_reported < conv_tol)
+        )
+    else:
+        terminated_by = "max_iter"
+        density_error_reported = final_error
+    # Pass-8: dm_final = post-finalization SCF DM. On final-SCF
+    # failure, set None so the harness's bias check can skip safely.
+    dm_final_returned = dm_final if final_success else None
+
     return OEPResult(
         vxc_matrix=vxc_final,
         converged=converged,
         n_iter=n_iter,
-        density_error=final_error,
+        density_error=density_error_reported,
         baseline_xc=baseline_xc,
         aux_basis=aux_basis,
         regularization=regularization,
         n_electrons=n_elec_target,
         lbfgs_status=lbfgs_status,
+        terminated_by=terminated_by,
+        dm_final=dm_final_returned,
     )
 
 

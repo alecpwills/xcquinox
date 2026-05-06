@@ -774,3 +774,30 @@ def test_run_oep_inversion_handles_oep_plateau_sentinel():
     assert "except _OEPPlateau" in src
     assert ".plateau_density_error" in src
     assert "plateau_terminated" in src
+
+
+def test_run_oep_inversion_returns_terminated_by_max_iter_on_default_path():
+    """When neither sentinel fires (max_iter exhausted),
+    terminated_by='max_iter' and dm_final is populated."""
+    import numpy as np
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    result = run_oep_inversion(
+        spec, dm_target,
+        aux_basis="def2-svp-jkfit",
+        max_iter=2,
+        conv_tol=1e-30,
+        regularization=1e-4,
+        plateau_window=0,
+    )
+    assert result.terminated_by == "max_iter"
+    assert result.dm_final is not None
+    assert result.dm_final.shape == (mol.nao, mol.nao)
