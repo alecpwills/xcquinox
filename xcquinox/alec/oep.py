@@ -800,6 +800,8 @@ def run_oep_inversion(
     b0 = np.zeros(2 * n_aux if is_uks else n_aux)
 
     early_stopped_b = None
+    plateau_b = None
+    plateau_d_e = None
     try:
         result = minimize(
             objective_and_grad,
@@ -812,8 +814,21 @@ def run_oep_inversion(
     except _OEPEarlyStop as _es:
         early_stopped_b = _es.b
         result = None  # not used in early-stop path
+    except _OEPPlateau as _pl:
+        # Pass-7: plateau handler, parallel to early-stop. The b is used
+        # for vxc_final reconstruction; the plateau_density_error is
+        # carried separately for the OEPResult.density_error override
+        # below.
+        plateau_b = _pl.b
+        plateau_d_e = _pl.plateau_density_error
+        result = None
 
-    b_final = early_stopped_b if early_stopped_b is not None else result.x
+    if early_stopped_b is not None:
+        b_final = early_stopped_b
+    elif plateau_b is not None:
+        b_final = plateau_b
+    else:
+        b_final = result.x
     vxc_final = _vxc_from_b(b_final)
     # Run the final SCF from the most recently ACCEPTED warm-start (D11),
     # not from a possibly-rejected trial DM.
@@ -840,7 +855,7 @@ def run_oep_inversion(
     # R3-D L3: clip scipy's reported nit at our requested max_iter so
     # n_iter never exceeds what the user asked for; documented in the
     # OEPResult.n_iter docstring above.
-    if early_stopped_b is not None:
+    if early_stopped_b is not None or plateau_b is not None:
         n_iter = min(_progress_state["iter"], max_iter)
     else:
         n_iter = min(int(result.nit), max_iter)
@@ -871,8 +886,16 @@ def run_oep_inversion(
             f"early_stopped (density_error<{conv_tol:.2e} "
             f"at iter {n_iter}/{max_iter})"
         )
+        plateau_terminated = False
+    elif plateau_b is not None:
+        lbfgs_status = (
+            f"plateau (density_error~{plateau_d_e:.2e} "
+            f"at iter {n_iter}/{max_iter})"
+        )
+        plateau_terminated = True
     else:
         lbfgs_status = str(getattr(result, "message", "no message"))
+        plateau_terminated = False
     # R3-D L6: surface final-SCF failure in lbfgs_status so a consumer
     # reading converged=False can distinguish "scipy failed" (its message)
     # from "scipy succeeded but the post-optimization SCF blew up".

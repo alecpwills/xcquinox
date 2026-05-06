@@ -764,3 +764,13 @@ def test_run_oep_inversion_accepts_inner_scf_kwargs():
     sig = inspect.signature(run_oep_inversion)
     assert sig.parameters["inner_damp"].default == 0.1
     assert sig.parameters["inner_diis_start_cycle"].default == 5
+
+
+def test_run_oep_inversion_handles_oep_plateau_sentinel():
+    """run_oep_inversion catches _OEPPlateau parallel to _OEPEarlyStop."""
+    import inspect
+    from xcquinox.alec.oep import run_oep_inversion
+    src = inspect.getsource(run_oep_inversion)
+    assert "except _OEPPlateau" in src
+    assert ".plateau_density_error" in src
+    assert "plateau_terminated" in src
