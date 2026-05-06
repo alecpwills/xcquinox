@@ -433,6 +433,11 @@ def run_oep_inversion(
     regularization: float = 1e-4,
     level_shift: float = 0.0,
     progress_callback=None,
+    plateau_window: int = 20,
+    plateau_rtol: float = 0.02,
+    plateau_min_iter: int = 30,
+    inner_damp: float = 0.1,
+    inner_diis_start_cycle: int = 5,
 ) -> OEPResult:
     """Wu-Yang displacement-form OEP inversion.
 
@@ -617,11 +622,28 @@ def run_oep_inversion(
     }
     _progress_state = {"iter": 0, "density_error_l2": float("inf")}
 
+    # Plateau detector setup (spec sec. 5.5). Two deques tracking the
+    # last `plateau_window` accepted-iterate snapshots of
+    # density_error_l2 and F_val. Plateau fires when both are flat
+    # within `plateau_rtol` AND density_error_l2 is non-descending
+    # (last-half median >= first-half median, with rtol-scaled slack).
+    # Pass plateau_window=0 / plateau_rtol=0 / plateau_min_iter > max_iter
+    # to disable.
+    from collections import deque
+    _plateau_d_e_deque: deque = deque(
+        maxlen=plateau_window if plateau_window > 0 else 1
+    )
+    _plateau_F_val_deque: deque = deque(
+        maxlen=plateau_window if plateau_window > 0 else 1
+    )
+
     def objective_and_grad(b):
         vxc_matrix = _vxc_from_b(b)
         dm_scf, _, j_matrix, scf_success = _ks_from_vxc_matrix(
             mol, mf, vxc_matrix, dm0=scf_state["dm0_last_eval"],
             level_shift=level_shift,
+            damp=inner_damp,
+            diis_start_cycle=inner_diis_start_cycle,
         )
         scf_state["dm0_last_eval"] = dm_scf
 
@@ -725,10 +747,43 @@ def run_oep_inversion(
                 _progress_state["density_error_l2"],
             )
 
-        # Plateau detector inserted by Task 9 (replaces this marker).
-        # Order: plateau check BEFORE early-stop so a plateau-below-
-        # conv_tol convergence outranks a luck-of-line-search early-stop.
-        # PLATEAU_DETECTOR_INSERTION_POINT
+        # Plateau detector (spec sec. 5.5). Append accepted-iterate
+        # snapshots to both deques; check plateau BEFORE early-stop
+        # so a plateau-below-conv_tol convergence outranks an
+        # early-stop on the same iterate.
+        if (plateau_window > 0
+                and plateau_rtol > 0.0
+                and _progress_state["iter"] >= plateau_min_iter):
+            _plateau_d_e_deque.append(
+                scf_state["density_error_l2_accepted"]
+            )
+            _plateau_F_val_deque.append(scf_state["F_val_accepted"])
+            if (len(_plateau_d_e_deque) == plateau_window
+                    and len(_plateau_F_val_deque) == plateau_window):
+                d_e_arr = np.asarray(_plateau_d_e_deque)
+                F_arr = np.asarray(_plateau_F_val_deque)
+                d_e_med = float(np.median(d_e_arr))
+                F_med = float(np.median(F_arr))
+                d_e_rel = (
+                    (float(np.max(d_e_arr)) - float(np.min(d_e_arr)))
+                    / max(abs(d_e_med), 1e-30)
+                )
+                F_rel = (
+                    (float(np.max(F_arr)) - float(np.min(F_arr)))
+                    / max(abs(F_med), 1e-30)
+                )
+                half = plateau_window // 2
+                first_half_med = float(np.median(d_e_arr[:half]))
+                last_half_med = float(np.median(d_e_arr[half:]))
+                slack = plateau_rtol * abs(d_e_med)
+                non_descending = last_half_med >= first_half_med - slack
+                if (d_e_rel < plateau_rtol
+                        and F_rel < plateau_rtol
+                        and non_descending):
+                    raise _OEPPlateau(
+                        b=np.asarray(_xk).copy(),
+                        plateau_density_error=d_e_med,
+                    )
 
         # Early-stop: when the density-L2 at the accepted iterate
         # satisfies the user's conv_tol, abort minimize() rather than
@@ -769,6 +824,8 @@ def run_oep_inversion(
     )
     dm_final, _, _, final_success = _ks_from_vxc_matrix(
         mol, mf, vxc_final, dm0=final_warm, level_shift=level_shift,
+        damp=inner_damp,
+        diis_start_cycle=inner_diis_start_cycle,
     )
     if is_uks:
         rho_final_a, rho_final_b = _dm_to_rho_on_grid(

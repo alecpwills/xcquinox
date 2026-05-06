@@ -744,3 +744,23 @@ def test_scipy_iter_callback_snapshots_density_error_and_F_val_on_accept():
     src = inspect.getsource(run_oep_inversion)
     assert 'scf_state["density_error_l2_accepted"] = scf_state["density_error_l2_last_eval"]' in src
     assert 'scf_state["F_val_accepted"] = scf_state["F_val_last_eval"]' in src
+
+
+def test_run_oep_inversion_accepts_plateau_kwargs():
+    """run_oep_inversion accepts plateau_window, plateau_rtol,
+    plateau_min_iter kwargs with the documented defaults."""
+    import inspect
+    from xcquinox.alec.oep import run_oep_inversion
+    sig = inspect.signature(run_oep_inversion)
+    assert sig.parameters["plateau_window"].default == 20
+    assert sig.parameters["plateau_rtol"].default == 0.02
+    assert sig.parameters["plateau_min_iter"].default == 30
+
+
+def test_run_oep_inversion_accepts_inner_scf_kwargs():
+    """run_oep_inversion accepts inner_damp + inner_diis_start_cycle."""
+    import inspect
+    from xcquinox.alec.oep import run_oep_inversion
+    sig = inspect.signature(run_oep_inversion)
+    assert sig.parameters["inner_damp"].default == 0.1
+    assert sig.parameters["inner_diis_start_cycle"].default == 5
