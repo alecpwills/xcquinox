@@ -553,6 +553,47 @@ def _validate_overrides(species_union: list[SpeciesEntry]) -> None:
                 )
 
 
+def _resolve_tiers_for_species(
+    name: str, charge: int, spin: int, is_uks: bool,
+) -> tuple[dict, ...]:
+    """Resolve the cascade tier list for a species.
+
+    Returns the per-spin default tiers verbatim (`is`-equality with
+    `_OEP_TIERS_UKS` / `_OEP_TIERS_RKS`) if the species is not in
+    `_PER_SPECIES_OEP_OVERRIDES`. Otherwise produces a tier list whose
+    i-th entry merges the i-th override-tier dict onto the i-th
+    default tier (clamped to the last default tier when the override
+    has more tiers than the default). When the override has FEWER
+    tiers than the default, the resolved cascade is TRUNCATED to the
+    override's length — the override is the authoritative cascade for
+    that species, not a per-tier patch on top of the full default
+    cascade.
+
+    The merged tier dict is a *partial* merge: it carries default-tier
+    knobs (aux_basis, regularization, max_iter, conv_tol) plus any
+    override-set new knobs (grid_level, level_shift, inner_damp,
+    inner_diis_start_cycle). The cascade-loop caller fills spin-
+    default values for any new knob the override didn't set.
+
+    Empty override tuple is normally rejected upstream by
+    `_validate_overrides`; this function defensively re-checks and
+    raises ValueError if it ever sees one.
+    """
+    ovr_tiers = _PER_SPECIES_OEP_OVERRIDES.get((name, charge, spin))
+    base_tiers = _OEP_TIERS_UKS if is_uks else _OEP_TIERS_RKS
+    if ovr_tiers is None:
+        return base_tiers
+    if len(ovr_tiers) == 0:
+        raise ValueError(
+            f"override for ({name!r}, {charge}, {spin}) is empty "
+            f"— _validate_overrides should have rejected this earlier"
+        )
+    return tuple(
+        {**base_tiers[min(i, len(base_tiers) - 1)], **ovr}
+        for i, ovr in enumerate(ovr_tiers)
+    )
+
+
 def run_oep_cascade(
     spec: SpeciesEntry,
     atoms,

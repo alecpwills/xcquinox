@@ -626,3 +626,112 @@ def test_validate_overrides_accepts_negative_level_shift():
         _validate_overrides(species)  # should not raise
     finally:
         _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_per_species_overrides_empty_dict_uses_defaults_for_all_species():
+    """Spec §9.2 / Plan-2 review fix: empty override table → identity
+    return of `_OEP_TIERS_RKS` / `_OEP_TIERS_UKS` for all species
+    types. Pin the no-op-empty-dict invariant."""
+    from xcquinox.alec.external_refs import (
+        _resolve_tiers_for_species, _OEP_TIERS_RKS, _OEP_TIERS_UKS,
+        _PER_SPECIES_OEP_OVERRIDES,
+    )
+    # Sanity: dict is empty (test isolation):
+    assert len(_PER_SPECIES_OEP_OVERRIDES) == 0
+    rks = _resolve_tiers_for_species("AnyRKS", 0, 0, is_uks=False)
+    uks = _resolve_tiers_for_species("AnyUKS", 0, 1, is_uks=True)
+    assert rks is _OEP_TIERS_RKS
+    assert uks is _OEP_TIERS_UKS
+
+
+def test_resolve_tiers_no_override_returns_default_rks_by_identity():
+    """RKS species not in override table: returns _OEP_TIERS_RKS by `is`."""
+    from xcquinox.alec.external_refs import (
+        _resolve_tiers_for_species, _OEP_TIERS_RKS,
+    )
+    out = _resolve_tiers_for_species("UnknownRKS", 0, 0, is_uks=False)
+    assert out is _OEP_TIERS_RKS
+
+
+def test_resolve_tiers_no_override_returns_default_uks_by_identity():
+    """UKS species not in override table: returns _OEP_TIERS_UKS by `is`."""
+    from xcquinox.alec.external_refs import (
+        _resolve_tiers_for_species, _OEP_TIERS_UKS,
+    )
+    out = _resolve_tiers_for_species("UnknownUKS", 0, 1, is_uks=True)
+    assert out is _OEP_TIERS_UKS
+
+
+def test_resolve_tiers_override_merges_onto_default():
+    """Single-knob override keeps default max_iter / conv_tol; aux_basis swaps."""
+    from xcquinox.alec.external_refs import (
+        _resolve_tiers_for_species, _OEP_TIERS_RKS,
+        _PER_SPECIES_OEP_OVERRIDES,
+    )
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
+        {"aux_basis": "def2-tzvp-jkfit"},
+    )
+    try:
+        out = _resolve_tiers_for_species("Be", 0, 0, is_uks=False)
+        # Override truncates cascade to its own length (1 tier here)
+        assert len(out) == 1
+        assert out[0]["aux_basis"] == "def2-tzvp-jkfit"
+        # max_iter and conv_tol inherit from default tier 0
+        assert out[0]["max_iter"] == _OEP_TIERS_RKS[0]["max_iter"]
+        assert out[0]["conv_tol"] == _OEP_TIERS_RKS[0]["conv_tol"]
+        assert out[0]["regularization"] == _OEP_TIERS_RKS[0]["regularization"]
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_resolve_tiers_override_more_tiers_than_default_clamps_to_last():
+    """3-tier override on a 2-tier default: tier 2 merges onto default tier 1."""
+    from xcquinox.alec.external_refs import (
+        _resolve_tiers_for_species, _OEP_TIERS_RKS,
+        _PER_SPECIES_OEP_OVERRIDES,
+    )
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
+        {"aux_basis": "A1"},
+        {"aux_basis": "A2"},
+        {"aux_basis": "A3"},
+    )
+    try:
+        out = _resolve_tiers_for_species("Be", 0, 0, is_uks=False)
+        assert len(out) == 3
+        assert out[0]["max_iter"] == _OEP_TIERS_RKS[0]["max_iter"]
+        assert out[1]["max_iter"] == _OEP_TIERS_RKS[1]["max_iter"]
+        # Tier 2 of override merges onto last default tier (index 1)
+        assert out[2]["max_iter"] == _OEP_TIERS_RKS[1]["max_iter"]
+        assert out[2]["aux_basis"] == "A3"
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_resolve_tiers_override_fewer_tiers_truncates_cascade():
+    """1-tier override on a 2-tier default: cascade truncates to 1 tier."""
+    from xcquinox.alec.external_refs import (
+        _resolve_tiers_for_species, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
+        {"aux_basis": "single-tier-only"},
+    )
+    try:
+        out = _resolve_tiers_for_species("Be", 0, 0, is_uks=False)
+        assert len(out) == 1
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_resolve_tiers_override_empty_tuple_raises():
+    """Defensive double-check: empty tuple at lookup time raises ValueError.
+    (Normal path is _validate_overrides catching it earlier.)"""
+    import pytest
+    from xcquinox.alec.external_refs import (
+        _resolve_tiers_for_species, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = ()
+    try:
+        with pytest.raises(ValueError, match="empty"):
+            _resolve_tiers_for_species("Be", 0, 0, is_uks=False)
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
