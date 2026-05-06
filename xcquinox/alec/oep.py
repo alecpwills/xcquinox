@@ -607,7 +607,14 @@ def run_oep_inversion(
     # D11 audit fix: keep the most recent ACCEPTED iterate's DM, not the
     # last objective-evaluation's DM (which may correspond to a rejected
     # line-search trial).
-    scf_state: dict[str, Any] = {"dm0_accepted": None, "dm0_last_eval": None}
+    scf_state: dict[str, Any] = {
+        "dm0_accepted": None,
+        "dm0_last_eval": None,
+        "density_error_l2_accepted": float("inf"),
+        "density_error_l2_last_eval": float("inf"),
+        "F_val_accepted": float("-inf"),
+        "F_val_last_eval": float("-inf"),
+    }
     _progress_state = {"iter": 0, "density_error_l2": float("inf")}
 
     def objective_and_grad(b):
@@ -625,6 +632,12 @@ def run_oep_inversion(
         if not scf_success:
             obj = 1e20
             grad = np.zeros_like(b)
+            # Pass-7 cache contract: on inner-SCF failure, write
+            # +inf for density_error and -inf for F_val. The plateau
+            # detector reads these as descending sentinels (won't
+            # contribute to a flat-window judgement).
+            scf_state["density_error_l2_last_eval"] = float("inf")
+            scf_state["F_val_last_eval"] = float("-inf")
             return obj, grad
 
         if is_uks:
@@ -664,6 +677,13 @@ def run_oep_inversion(
             _progress_state["density_error_l2"] = float(
                 np.sqrt(np.sum(weights * _delta_tot ** 2))
             )
+            # Pass-7 cache: snapshot density_error_l2 and F_val (the
+            # *unregularized* Lagrangian, NOT obj=-F_val+reg_term)
+            # for the plateau detector. F_val computed above.
+            scf_state["density_error_l2_last_eval"] = (
+                _progress_state["density_error_l2"]
+            )
+            scf_state["F_val_last_eval"] = float(F_val)
             return obj, grad
 
         rho_scf = _dm_to_rho_on_grid(mol, mf, dm_scf)
@@ -682,6 +702,12 @@ def run_oep_inversion(
         _progress_state["density_error_l2"] = float(
             np.sqrt(np.sum(weights * delta_rho ** 2))
         )
+        # Pass-7 cache: snapshot density_error_l2 and F_val (the
+        # *unregularized* Lagrangian, computed above).
+        scf_state["density_error_l2_last_eval"] = (
+            _progress_state["density_error_l2"]
+        )
+        scf_state["F_val_last_eval"] = float(F_val)
         return obj, grad
 
     def _scipy_iter_callback(_xk):

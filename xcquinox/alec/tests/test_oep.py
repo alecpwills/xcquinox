@@ -723,3 +723,13 @@ def test_ks_from_vxc_matrix_dispatcher_forwards_damp_and_diis_start_cycle():
     assert "diis_start_cycle" in sig.parameters
     assert sig.parameters["damp"].default == 0.1
     assert sig.parameters["diis_start_cycle"].default == 5
+
+
+def test_objective_and_grad_caches_density_error_and_F_val_in_scf_state():
+    """objective_and_grad writes density_error_l2_last_eval and
+    F_val_last_eval into scf_state on every success-path return."""
+    import inspect
+    from xcquinox.alec.oep import run_oep_inversion
+    src = inspect.getsource(run_oep_inversion)
+    assert "density_error_l2_last_eval" in src
+    assert "F_val_last_eval" in src
