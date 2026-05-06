@@ -121,6 +121,55 @@ def _enumerate_trials(species_name: str, block: dict) -> list[dict]:
     return trials
 
 
+class _Heartbeat:
+    """Background heartbeat thread mirroring
+    scripts/smoke_preflight_uks_oep.py:73-110. Daemon thread prints a
+    one-line status every `interval_sec` (default 15s) showing current
+    species + trial_idx + elapsed wall-clock + RSS (Linux only).
+    Spec §6.6 + user MEMORY directive on progress reporting."""
+
+    def __init__(self, interval_sec: float = 15.0) -> None:
+        import threading
+        self.interval_sec = interval_sec
+        self.stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._stage = "init"
+        self._t0 = None
+
+    def set_stage(self, stage: str) -> None:
+        self._stage = stage
+
+    def start(self) -> None:
+        import threading, time
+        self._t0 = time.time()
+        self.stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="harness-heartbeat",
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 1.0) -> None:
+        self.stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+
+    def _run(self) -> None:
+        import time, sys
+        while not self.stop_event.wait(self.interval_sec):
+            elapsed = time.time() - (self._t0 or time.time())
+            try:
+                import resource
+                rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+            except (ImportError, AttributeError):
+                rss_mb = -1.0
+            print(
+                f"[heartbeat] stage={self._stage}  "
+                f"elapsed={elapsed:7.1f}s  rss={rss_mb:7.1f}MB",
+                file=sys.stderr, flush=True,
+            )
+
+
 class _HarnessWallCap(Exception):
     """Raised by the SIGALRM handler when a trial exceeds its wall cap.
     Caught in the per-trial loop; partial trial record is finalized
@@ -284,6 +333,7 @@ def _run_harness(args, grid, species_parsed, wall_caps_min) -> int:
     """Per-species, per-trial sweep loop. Spec sec. 6.1 / 6.2."""
     import datetime
     import json
+    import resource
     import signal
     import time
     import traceback
@@ -300,6 +350,8 @@ def _run_harness(args, grid, species_parsed, wall_caps_min) -> int:
     _migrate_intermediates_to_grid_suffixed(args.cache_dir)
     # Install SIGALRM handler ONCE at harness startup:
     _install_wall_cap_handler()
+    heartbeat = _Heartbeat(interval_sec=15.0)
+    heartbeat.start()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     union = {(s.name, s.charge, s.spin): s for s in build_species_union()}
@@ -323,6 +375,7 @@ def _run_harness(args, grid, species_parsed, wall_caps_min) -> int:
         target_floor = float(block["target_floor"])
         trials = _enumerate_trials(name, block)[:args.max_trials_per_species]
         species_jsonl = args.out_dir / f"{name}.jsonl"
+        heartbeat.set_stage(f"{name} setup")
 
         # Build SpeciesEntry + atoms ONCE per species:
         key = (name, charge, spin)
@@ -345,6 +398,7 @@ def _run_harness(args, grid, species_parsed, wall_caps_min) -> int:
 
         for trial_idx, trial_settings in enumerate(trials):
             n_run += 1
+            heartbeat.set_stage(f"{name} trial={trial_idx}/{len(trials)}")
             density_error_history: list[float] = []
             def _trial_progress_cb(it, density_error_l2):
                 density_error_history.append(float(density_error_l2))
@@ -468,7 +522,10 @@ def _run_harness(args, grid, species_parsed, wall_caps_min) -> int:
                     "target_dm_quad_aniso": target_obs["quad_aniso"],
                     "inner_dm_dipole": obs["dipole"],
                     "target_dm_dipole": target_obs["dipole"],
-                    "rss_mb_peak": None,
+                    "rss_mb_peak": (
+                        float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0)
+                        if hasattr(__import__("resource"), "getrusage") else None
+                    ),
                     "error_msg": exception_msg,
                 },
             }
@@ -494,6 +551,7 @@ def _run_harness(args, grid, species_parsed, wall_caps_min) -> int:
             summary["failed_target_floor"].append(name)
             overall_exit = 4
 
+    heartbeat.stop()
     summary["ended_at_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     (args.out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     return overall_exit
