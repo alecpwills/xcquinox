@@ -101,6 +101,31 @@ class _OEPEarlyStop(Exception):
         self.b = b
 
 
+class _OEPPlateau(Exception):
+    """Sentinel raised by the L-BFGS-B iter callback inside
+    ``run_oep_inversion`` when the accepted-iterate
+    ``density_error_l2`` AND ``F_val`` (unregularized Lagrangian) have
+    BOTH plateaued for ``plateau_window`` consecutive accepted iterates
+    (after at least ``plateau_min_iter`` iterations have completed).
+    Caught immediately after ``scipy.optimize.minimize(...)`` returns;
+    the most-recent accepted parameter vector is carried out via the
+    ``b`` attribute (mirroring ``_OEPEarlyStop``) so the OEP can
+    finalize using that iterate. The plateau density-error value is
+    carried separately so consumers can record it as the achievable
+    floor for that setting (used by the per-species harness verifier
+    in scripts/oep_per_species_emit_overrides.py).
+
+    See spec sec. 5.5 (Pass 7 correction: watches F_val not obj).
+    """
+
+    def __init__(self, b: np.ndarray, plateau_density_error: float) -> None:
+        super().__init__(
+            f"OEP plateau: density_error_l2 ~ {float(plateau_density_error):.3e}"
+        )
+        self.b = b
+        self.plateau_density_error = float(plateau_density_error)
+
+
 def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
                       baseline_xc: str | None = "pbe"):
     """Build PySCF molecule and run baseline-XC SCF. Returns ``(mol, mf)``.

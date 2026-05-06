@@ -556,3 +556,15 @@ def test_oep_result_accepts_dm_final_kwarg():
         dm_final=dm,
     )
     np.testing.assert_array_equal(r.dm_final, dm)
+
+
+def test_oep_plateau_sentinel_carries_b_and_density_error():
+    """_OEPPlateau sentinel carries the L-BFGS-B coefficient vector b
+    and the plateau density_error value, mirroring _OEPEarlyStop."""
+    import numpy as np
+    from xcquinox.alec.oep import _OEPPlateau
+    b = np.array([0.1, 0.2, 0.3])
+    sentinel = _OEPPlateau(b=b, plateau_density_error=1.5e-3)
+    assert isinstance(sentinel, Exception)
+    np.testing.assert_array_equal(sentinel.b, b)
+    assert sentinel.plateau_density_error == 1.5e-3
