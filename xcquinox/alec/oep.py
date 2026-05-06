@@ -340,7 +340,8 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
     return dm_final, ts, j_matrix, success
 
 
-def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0):
+def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
+                             damp: float = 0.1, diis_start_cycle: int = 5):
     """UHF inner SCF; returns ``(dm, ts, j_matrix, success)``.
 
     ``level_shift`` (default 0.0) forwards to ``mf_fixed.level_shift`` and
@@ -369,9 +370,9 @@ def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0):
     mf_fixed.verbose = 0
     mf_fixed.max_cycle = 200
     mf_fixed.conv_tol = 1e-10
-    mf_fixed.diis_start_cycle = 5
+    mf_fixed.diis_start_cycle = diis_start_cycle
     mf_fixed.diis_space = 4
-    mf_fixed.damp = 0.1
+    mf_fixed.damp = damp
     if level_shift != 0.0:
         mf_fixed.level_shift = level_shift
 

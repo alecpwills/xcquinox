@@ -301,3 +301,91 @@ def test_run_oep_inversion_no_early_stop_when_conv_tol_unreachable():
         f"early-stop must not fire when conv_tol is unreachable; "
         f"got status={result.lbfgs_status!r}"
     )
+
+
+def test_ks_from_vxc_matrix_uhf_default_damp_is_0_1():
+    """Default damp=0.1 reaches mf_fixed.damp on UHF path."""
+    from pyscf import gto, dft, scf as _scf
+    import numpy as np
+    from xcquinox.alec.oep import _ks_from_vxc_matrix_uhf
+    mol = gto.M(atom="H 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    mf = dft.UKS(mol); mf.xc = "pbe"; mf.kernel()
+    vxc = np.zeros((2, mol.nao, mol.nao))
+    captured = {}
+    real_UHF = _scf.UHF
+    def spy_UHF(m):
+        instance = real_UHF(m)
+        captured["instance"] = instance
+        return instance
+    _scf.UHF = spy_UHF
+    try:
+        _ks_from_vxc_matrix_uhf(mol, mf, vxc, dm0=mf.make_rdm1())
+    finally:
+        _scf.UHF = real_UHF
+    assert captured["instance"].damp == 0.1
+
+
+def test_ks_from_vxc_matrix_uhf_default_diis_start_cycle_is_5():
+    """Default diis_start_cycle=5 reaches mf_fixed on UHF path."""
+    from pyscf import gto, dft, scf as _scf
+    import numpy as np
+    from xcquinox.alec.oep import _ks_from_vxc_matrix_uhf
+    mol = gto.M(atom="H 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    mf = dft.UKS(mol); mf.xc = "pbe"; mf.kernel()
+    vxc = np.zeros((2, mol.nao, mol.nao))
+    captured = {}
+    real_UHF = _scf.UHF
+    def spy_UHF(m):
+        instance = real_UHF(m)
+        captured["instance"] = instance
+        return instance
+    _scf.UHF = spy_UHF
+    try:
+        _ks_from_vxc_matrix_uhf(mol, mf, vxc, dm0=mf.make_rdm1())
+    finally:
+        _scf.UHF = real_UHF
+    assert captured["instance"].diis_start_cycle == 5
+
+
+def test_ks_from_vxc_matrix_uhf_custom_damp():
+    """Caller-supplied damp=0.3 reaches mf_fixed.damp on UHF path."""
+    from pyscf import gto, dft, scf as _scf
+    import numpy as np
+    from xcquinox.alec.oep import _ks_from_vxc_matrix_uhf
+    mol = gto.M(atom="H 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    mf = dft.UKS(mol); mf.xc = "pbe"; mf.kernel()
+    vxc = np.zeros((2, mol.nao, mol.nao))
+    captured = {}
+    real_UHF = _scf.UHF
+    def spy_UHF(m):
+        instance = real_UHF(m)
+        captured["instance"] = instance
+        return instance
+    _scf.UHF = spy_UHF
+    try:
+        _ks_from_vxc_matrix_uhf(mol, mf, vxc, dm0=mf.make_rdm1(), damp=0.3)
+    finally:
+        _scf.UHF = real_UHF
+    assert captured["instance"].damp == 0.3
+
+
+def test_ks_from_vxc_matrix_uhf_custom_diis_start_cycle():
+    """Caller-supplied diis_start_cycle=10 reaches mf_fixed."""
+    from pyscf import gto, dft, scf as _scf
+    import numpy as np
+    from xcquinox.alec.oep import _ks_from_vxc_matrix_uhf
+    mol = gto.M(atom="H 0 0 0", basis="sto-3g", spin=1, verbose=0)
+    mf = dft.UKS(mol); mf.xc = "pbe"; mf.kernel()
+    vxc = np.zeros((2, mol.nao, mol.nao))
+    captured = {}
+    real_UHF = _scf.UHF
+    def spy_UHF(m):
+        instance = real_UHF(m)
+        captured["instance"] = instance
+        return instance
+    _scf.UHF = spy_UHF
+    try:
+        _ks_from_vxc_matrix_uhf(mol, mf, vxc, dm0=mf.make_rdm1(), diis_start_cycle=10)
+    finally:
+        _scf.UHF = real_UHF
+    assert captured["instance"].diis_start_cycle == 10
