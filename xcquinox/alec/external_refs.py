@@ -604,6 +604,89 @@ def _resolve_tiers_for_species(
     )
 
 
+def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
+    """Rename pre-2026-05-03 intermediates to grid-suffixed names.
+
+    Scans `_intermediates/` shallow (NOT recursive); renames every
+    `<name>_scf.npz` to `<name>_g1_scf.npz` and every `<name>_ccsd.npz`
+    to `<name>_g1_ccsd.npz` independently — `_scf` and `_ccsd` are
+    scanned in two separate passes so a crash mid-migration leaves
+    the remaining files visible to the next migration pass (spec
+    sec. 5.6 partial-state recovery).
+
+    Pre-2026-05-03 caches were built at the global default
+    grid_level=1 (run_scf_with_cache and run_ccsd_with_cache default
+    grid_level=1), so the `_g1_` rename is correct by construction.
+
+    Returns the number of files renamed (0 on second / idempotent
+    call, > 0 on first call against a legacy cache).
+
+    Pass-8 single-writer assumption: callers must not invoke this
+    helper concurrently against the same `cache_dir` from multiple
+    processes. Sane callers (`precompute_all`, `preflight_uks_oep`,
+    the harness's startup precaution) all run sequentially.
+
+    Raises:
+      FileExistsError if `<name>_g1_scf.npz` already exists alongside
+          an unsuffixed `<name>_scf.npz` (refuses to silently overwrite;
+          user must resolve the conflict manually).
+      OSError (let bubble) if the directory is read-only.
+    """
+    from pathlib import Path
+    import os
+    inter = Path(cache_dir) / "_intermediates"
+    if not inter.is_dir():
+        return 0
+    import re
+    # Pre-compile patterns that match ANY `_g{N}_<stage>.npz` for N in [0,9]
+    # (MoleculeSpec.grid_level range per config.py:370). Used to skip
+    # already-grid-suffixed files of any grid_level — not just _g1_.
+    # Pass-9 fix (Plan-2 review): the earlier `name.endswith(suffix_new)`
+    # only-skipped `_g1_*` files, which would have corrupted future
+    # `_g2_*` / `_g3_*` caches written by override species (spec §5.6
+    # explicitly says "Override species at grid_level=2 get fresh _g2_*
+    # files; their _g1_* caches are retained").
+    _re_already_g_scf  = re.compile(r"_g\d+_scf\.npz$")
+    _re_already_g_ccsd = re.compile(r"_g\d+_ccsd\.npz$")
+    n_renamed = 0
+    for suffix_old, suffix_new, already_re in (
+        ("_scf.npz",  "_g1_scf.npz",  _re_already_g_scf),
+        ("_ccsd.npz", "_g1_ccsd.npz", _re_already_g_ccsd),
+    ):
+        for p in inter.iterdir():     # SHALLOW: iterdir, not rglob
+            name = p.name
+            # Pass-8 fix: use regex/endswith — NOT `"_g" in name`
+            # substring test (would corrupt Mg/Hg/Ag).
+            # Pass-9 fix: skip ANY `_g{N}_<stage>.npz` for any N
+            # (Plan-2 review caught that `_g2_scf.npz` would otherwise
+            # be re-renamed to `_g2_g1_scf.npz`).
+            if already_re.search(name):
+                continue              # already migrated at any g{N}
+            if name.endswith(suffix_old):
+                base = name[:-len(suffix_old)]
+                target = inter / f"{base}{suffix_new}"
+                if target.exists():
+                    raise FileExistsError(
+                        f"migration conflict: {p} would overwrite "
+                        f"{target}; user must resolve manually"
+                    )
+                os.replace(str(p), str(target))
+                n_renamed += 1
+    # Parent-directory fsync for durability across power loss
+    # (POSIX rename is atomic per-file but not durable until parent fsync).
+    # Plan-2-review fix: only catch AttributeError (Windows lacks
+    # O_DIRECTORY); let real OSErrors (ENOSPC, EIO) bubble — durability
+    # failures should fail loudly so the user can intervene before SCF
+    # results land in a broken filesystem state.
+    if hasattr(os, "O_DIRECTORY"):
+        dir_fd = os.open(str(inter), os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    return n_renamed
+
+
 def run_oep_cascade(
     spec: SpeciesEntry,
     atoms,

@@ -790,3 +790,118 @@ def test_run_ccsd_with_cache_uses_grid_suffixed_filename(tmp_path):
     assert expected.is_file()
     legacy = cache_dir / "_intermediates" / "H2test_ccsd.npz"
     assert not legacy.exists()
+
+
+def test_migration_renames_unsuffixed_intermediates_to_g1(tmp_path):
+    """Pre-2026-05-03 caches (no grid suffix) get renamed to _g1_."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        _migrate_intermediates_to_grid_suffixed,
+    )
+    inter = tmp_path / "_intermediates"
+    inter.mkdir()
+    np.savez(inter / "Foo_scf.npz", x=np.zeros(3))
+    np.savez(inter / "Foo_ccsd.npz", x=np.zeros(3))
+    n = _migrate_intermediates_to_grid_suffixed(tmp_path)
+    assert n == 2
+    assert (inter / "Foo_g1_scf.npz").is_file()
+    assert (inter / "Foo_g1_ccsd.npz").is_file()
+    assert not (inter / "Foo_scf.npz").exists()
+    assert not (inter / "Foo_ccsd.npz").exists()
+
+
+def test_migration_idempotent_returns_zero_on_second_call(tmp_path):
+    """Second invocation finds nothing to rename, returns 0."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        _migrate_intermediates_to_grid_suffixed,
+    )
+    inter = tmp_path / "_intermediates"
+    inter.mkdir()
+    np.savez(inter / "Foo_scf.npz", x=np.zeros(3))
+    _migrate_intermediates_to_grid_suffixed(tmp_path)
+    n_second = _migrate_intermediates_to_grid_suffixed(tmp_path)
+    assert n_second == 0
+
+
+def test_migration_raises_when_target_name_already_exists(tmp_path):
+    """Conflict (target _g1_ file present alongside unsuffixed): raises."""
+    import pytest
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        _migrate_intermediates_to_grid_suffixed,
+    )
+    inter = tmp_path / "_intermediates"
+    inter.mkdir()
+    np.savez(inter / "Foo_scf.npz", x=np.zeros(3))
+    np.savez(inter / "Foo_g1_scf.npz", x=np.zeros(3))   # pre-existing target
+    with pytest.raises(FileExistsError):
+        _migrate_intermediates_to_grid_suffixed(tmp_path)
+
+
+def test_migration_handles_mg_hg_ag_correctly(tmp_path):
+    """The substring `_g` appears in Mg, Hg, Ag — must NOT corrupt them.
+    Pass-8 fix: was `if "_g" in name and name.endswith(...)`; now
+    `if name.endswith(suffix_new)` only."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        _migrate_intermediates_to_grid_suffixed,
+    )
+    inter = tmp_path / "_intermediates"
+    inter.mkdir()
+    # Mg2H is a Hill-formula species with `_g` not in the filename;
+    # but a hypothetical `_g_in_name` test species exercises the fix.
+    np.savez(inter / "Mg_scf.npz", x=np.zeros(3))
+    np.savez(inter / "Hg_scf.npz", x=np.zeros(3))
+    n = _migrate_intermediates_to_grid_suffixed(tmp_path)
+    assert n == 2
+    assert (inter / "Mg_g1_scf.npz").is_file()
+    assert (inter / "Hg_g1_scf.npz").is_file()
+    assert not (inter / "Mg_scf.npz").exists()
+    assert not (inter / "Hg_scf.npz").exists()
+
+
+def test_migration_handles_partial_state_from_crash_recovery(tmp_path):
+    """Mixed state: Foo_g1_scf.npz already migrated AND Foo_ccsd.npz
+    not yet. Second run migrates only the ccsd half."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        _migrate_intermediates_to_grid_suffixed,
+    )
+    inter = tmp_path / "_intermediates"
+    inter.mkdir()
+    np.savez(inter / "Foo_g1_scf.npz", x=np.zeros(3))   # already migrated
+    np.savez(inter / "Foo_ccsd.npz", x=np.zeros(3))     # not yet
+    n = _migrate_intermediates_to_grid_suffixed(tmp_path)
+    assert n == 1
+    assert (inter / "Foo_g1_scf.npz").is_file()
+    assert (inter / "Foo_g1_ccsd.npz").is_file()
+    assert not (inter / "Foo_ccsd.npz").exists()
+
+
+def test_migration_no_intermediates_dir_returns_zero(tmp_path):
+    """Migration on a cache_dir with no _intermediates/ returns 0."""
+    from xcquinox.alec.external_refs import (
+        _migrate_intermediates_to_grid_suffixed,
+    )
+    n = _migrate_intermediates_to_grid_suffixed(tmp_path)
+    assert n == 0
+
+
+def test_migration_preserves_already_grid_suffixed_g2_cache(tmp_path):
+    """Plan-2-review CRITICAL: pre-existing _g2_scf.npz must NOT be
+    re-renamed to _g2_g1_scf.npz. Spec §5.6 (line 1389) explicitly
+    promises future _g{N>1}_* caches will be retained."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        _migrate_intermediates_to_grid_suffixed,
+    )
+    inter = tmp_path / "_intermediates"
+    inter.mkdir()
+    np.savez(inter / "Foo_g2_scf.npz", x=np.zeros(3))   # already a g2 cache
+    np.savez(inter / "Bar_scf.npz", x=np.zeros(3))      # legacy unsuffixed
+    n = _migrate_intermediates_to_grid_suffixed(tmp_path)
+    assert n == 1   # only Bar_scf -> Bar_g1_scf
+    assert (inter / "Foo_g2_scf.npz").is_file()        # untouched
+    assert (inter / "Bar_g1_scf.npz").is_file()
+    assert not (inter / "Foo_g2_g1_scf.npz").exists()  # NOT corrupted
