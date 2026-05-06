@@ -790,6 +790,11 @@ def run_oep_inversion(
         scf_state["F_val_accepted"] = scf_state["F_val_last_eval"]
         _progress_state["iter"] += 1
         if progress_callback is not None:
+            # NOTE: deliberately reads _progress_state["density_error_l2"]
+            # (last-eval) rather than scf_state["density_error_l2_accepted"]
+            # — progress reporting reflects the most recent evaluation for
+            # liveness, while the early-stop and plateau checks below read
+            # the accepted-iterate snapshot for correctness.
             progress_callback(
                 _progress_state["iter"],
                 _progress_state["density_error_l2"],
