@@ -157,6 +157,31 @@ def test_select_winner_short_history_with_conv_tol_marks_stable():
     assert winner is not None
 
 
+def test_select_winner_long_history_with_early_stop_marks_stable():
+    """Long oscillatory history with terminated_by=='early_stop_conv_tol'
+    → still accepted as stable. The early-stop sentinel certifies an
+    accepted iterate hit conv_tol; L-BFGS-B is deterministic, so the
+    trajectory reproduces and the override is reliable. Pins the
+    relaxed carve-out fix (2026-05-06 F2O/HF observation: long oscillatory
+    tails were over-rejected even though target_floor was hit cleanly)."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import oep_per_species_emit_overrides as ver
+    # 29 iters (> plateau_window=20), oscillating tail, final iterate
+    # cleared conv_tol (mirrors the real HF trajectory):
+    history = [1.30e-2, 9.20e-3, 7.13e-3, 8.49e-3, 1.05e-2,
+               9.50e-3, 1.10e-2, 8.00e-3, 9.50e-3, 1.10e-2,
+               8.50e-3, 1.05e-2, 9.20e-3, 1.15e-2, 8.30e-3,
+               1.05e-2, 9.50e-3, 1.10e-2, 8.50e-3, 1.05e-2,
+               9.20e-3, 1.05e-2, 8.10e-3, 1.12e-2, 1.20e-2,
+               1.44e-2, 1.20e-2, 4.10e-3, 4.12e-3]
+    rec = _stub_record(density_error_min=4.12e-3, wall_clock_s=44,
+                       termination="early_stop_conv_tol",
+                       history=history)
+    winner = ver._select_winner([rec], target_floor=5e-3)
+    assert winner is not None
+    assert winner["result"]["density_error_min"] == 4.12e-3
+
+
 def test_dm_bias_check_skipped_at_level_shift_le_0_5():
     """At level_shift <= 0.5 the DM-bias check does not fire."""
     sys.path.insert(0, str(REPO_ROOT / "scripts"))

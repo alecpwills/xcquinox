@@ -108,8 +108,19 @@ def _select_winner(records: list[dict], target_floor: float,
         history = res.get("density_error_history", []) or []
         terminated_by = res.get("termination", "max_iter")
         # Stability via plateau-shared metric, with carve-out:
-        if terminated_by == "early_stop_conv_tol" \
-                and len(history) < plateau_window:
+        # `terminated_by == "early_stop_conv_tol"` certifies that an
+        # accepted L-BFGS-B iterate satisfied conv_tol — the early-stop
+        # sentinel only fires from `_scipy_iter_callback` when
+        # `scf_state["density_error_l2_accepted"] < conv_tol`. L-BFGS-B
+        # is deterministic given the same starting point + gradient
+        # evaluations, so re-running with these settings reproduces the
+        # same trajectory and hits the same accepted iterate. Treat
+        # early-stop trials as stable regardless of history length —
+        # the older `len(history) < plateau_window` gate over-rejected
+        # long oscillatory trajectories whose final accepted iterate
+        # nonetheless cleared conv_tol (observed on F2O / HF in the
+        # 2026-05-06 sweep).
+        if terminated_by == "early_stop_conv_tol":
             stably = True
         else:
             stably = _is_stably_converged(history, plateau_window, plateau_rtol)
