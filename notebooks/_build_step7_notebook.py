@@ -143,6 +143,24 @@ def build_cells() -> list:
         "print(f'  Atom refs: {len(pool[\"atom_refs\"])}')\n"
     ))
     cells.append(_md(
+        "## Per-species OEP cascade overrides\n\n"
+        "Species in `xcquinox.alec.external_refs._PER_SPECIES_OEP_OVERRIDES`\n"
+        "use tuned cascade settings keyed by `(name, charge, spin)`. The\n"
+        "override mechanism is motivated by literature on basis-set-sensitive\n"
+        "Wu-Yang inversion: Heaton-Burgess–Bulat–Yang [oep-tdl-1];\n"
+        "Bulat–Heaton-Burgess–Cohen–Yang [oep-tdl-2]; Bulat–Yang [oep-tdl-4];\n"
+        "Ryabinkin–Kohut–Staroverov [oep-tdl-5]; Kohut–Ryabinkin–Staroverov\n"
+        "[oep-tdl-6]. Forward-looking reference [oep-tdl-3] (Hsu–Yang,\n"
+        "even-tempered aux for atomic OEP) is retained in the bibliography\n"
+        "as a fallback option for future v2 sweeps if the v1 jkfit-family\n"
+        "sweep fails to converge a species. Tune logs live under\n"
+        "`reports_local/oep_tune/<date>/`. **All citation tags resolve to\n"
+        "TO-DOWNLOAD entries at the end of `reports_local/latex/references.bib`\n"
+        "and are AUTHOR-RECALLED, UNVERIFIED** — verify each via WebFetch +\n"
+        "pdftotext before paper write-up; do not promote to `@article`\n"
+        "entries until verified.\n"
+    ))
+    cells.append(_md(
         "## 0.5. CCSD Reference Pre-Compute (Cell 0.5)\n\n"
         "For every species in the union of (DFS pool, BH76 reactants/products,\n"
         "IP13 neutrals/cations, atom refs, Probe A/B/C/D, HBPT pairs), run\n"
