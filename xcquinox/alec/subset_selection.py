@@ -242,6 +242,35 @@ def select_subset(
     from math import comb as _comb
     n_combos = _comb(len(free_indices), free_r)
 
+    # Cache-read-back: when return_all=True and distribution_path is set
+    # AND the file already exists, trust it and return without re-running
+    # the C(npool, r) enumeration (which can be ~40M combinations for
+    # r=14 over npool=28). The caller invalidates by deleting the file
+    # (same pattern as the SCF/CCSD caches in external_refs.py).
+    # We sanity-check the cache's shape against the requested (r, n_combos)
+    # so a mismatch (e.g., pool size or r changed) raises loudly rather
+    # than returning stale results silently.
+    if return_all and distribution_path is not None:
+        from pathlib import Path as _Path
+        _dp = _Path(distribution_path)
+        if _dp.is_file():
+            with np.load(_dp) as z:
+                vals = np.asarray(z["vals"])
+                idx_array = np.asarray(z["indices"])
+                best_combo_arr = np.asarray(z["best_combo"])
+                best_val_arr = np.asarray(z["best_val"])
+            if vals.shape != (n_combos,) or idx_array.shape != (n_combos, r):
+                raise ValueError(
+                    f"select_subset: cached distribution at {_dp} has shape "
+                    f"vals={vals.shape}, indices={idx_array.shape} but the "
+                    f"requested r={r} with this pool gives n_combos={n_combos} "
+                    f"and per-row width={r}. Pool size, r, or fixed_indices "
+                    f"likely changed — delete the cache file to force a re-run."
+                )
+            best_combo = tuple(int(i) for i in best_combo_arr)
+            best_val = float(best_val_arr)
+            return best_combo, best_val, vals, idx_array
+
     if return_all:
         vals = np.empty(n_combos, dtype=np.float64)
         idx_array = np.empty((n_combos, r), dtype=np.int64)

@@ -686,3 +686,91 @@ def test_select_subset_return_all_distribution_path(tmp_path):
     assert "indices" in npz_safe.files
     assert npz_safe["vals"].size == math.comb(5, 2)
     npz_safe.close()
+
+
+def test_select_subset_return_all_distribution_path_hits_cache_on_second_call(tmp_path):
+    """Second call with the same distribution_path returns immediately
+    from the cached .npz without re-enumerating C(npool, r) combinations.
+    Verified by tampering with the cached vals: if cache-read-back works,
+    the tampered values are returned verbatim. If the function were
+    re-running, fresh (untampered) values would come back instead."""
+    import math
+    import numpy as np
+    from xcquinox.alec.subset_selection import (
+        build_reference_histograms, select_subset,
+    )
+    rng = np.random.default_rng(7)
+    pool = [{
+        "rho_third": rng.uniform(0.1, 1.0, size=(40,)),
+        "s": rng.uniform(0.0, 2.0, size=(40,)),
+        "alpha": rng.uniform(0.0, 5.0, size=(40,)),
+        "weights": np.ones(40),
+    } for _ in range(5)]
+    h_ref, edges = build_reference_histograms(pool)
+    out_npz = tmp_path / "dist.npz"
+
+    # First call: populates the cache.
+    select_subset(
+        pool, edges, h_ref, r=2, metric="jsd",
+        progress=False, return_all=True,
+        distribution_path=str(out_npz),
+    )
+    assert out_npz.is_file()
+
+    # Overwrite the cache with sentinel values that cannot be the output
+    # of the real enumeration. If cache-read-back works, these values
+    # come back verbatim on the second call.
+    n_combos = math.comb(5, 2)
+    sentinel_vals = np.full(n_combos, -42.0, dtype=np.float64)
+    sentinel_idx = np.zeros((n_combos, 2), dtype=np.int64)
+    np.savez_compressed(
+        out_npz,
+        vals=sentinel_vals,
+        indices=sentinel_idx,
+        best_combo=np.array([99, 99]),
+        best_val=np.array(-42.0),
+    )
+
+    # Second call: must read from cache and return the sentinel values.
+    best2, val2, vals2, idx2 = select_subset(
+        pool, edges, h_ref, r=2, metric="jsd",
+        progress=False, return_all=True,
+        distribution_path=str(out_npz),
+    )
+    np.testing.assert_array_equal(vals2, sentinel_vals)
+    np.testing.assert_array_equal(idx2, sentinel_idx)
+    assert best2 == (99, 99)
+    assert val2 == -42.0
+
+
+def test_select_subset_return_all_cache_shape_mismatch_raises(tmp_path):
+    """Cached .npz from r=2 cannot be reused for an r=3 call — the
+    shape sanity check raises ValueError pointing to the cache path."""
+    import numpy as np
+    import pytest
+    from xcquinox.alec.subset_selection import (
+        build_reference_histograms, select_subset,
+    )
+    rng = np.random.default_rng(9)
+    pool = [{
+        "rho_third": rng.uniform(0.1, 1.0, size=(40,)),
+        "s": rng.uniform(0.0, 2.0, size=(40,)),
+        "alpha": rng.uniform(0.0, 5.0, size=(40,)),
+        "weights": np.ones(40),
+    } for _ in range(5)]
+    h_ref, edges = build_reference_histograms(pool)
+    out_npz = tmp_path / "dist.npz"
+
+    # Populate the cache with r=2 data:
+    select_subset(
+        pool, edges, h_ref, r=2, metric="jsd",
+        progress=False, return_all=True,
+        distribution_path=str(out_npz),
+    )
+    # Re-invoke with r=3; shape mismatch (n_combos differs, idx width differs):
+    with pytest.raises(ValueError, match="delete the cache file"):
+        select_subset(
+            pool, edges, h_ref, r=3, metric="jsd",
+            progress=False, return_all=True,
+            distribution_path=str(out_npz),
+        )
