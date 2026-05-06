@@ -133,8 +133,17 @@ def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
     ``baseline_xc`` is forwarded as ``mf.xc``. Any pyscf-compatible XC
     string works (case-insensitive): ``"lda"``, ``"pbe"``, ``"blyp"``,
     ``"scan"``, ``"b3lyp"``, ``"hf"``, etc. Pass ``None`` to set
-    ``mf.xc = ""`` (Hartree-only baseline) — not recommended for
+    ``mf.xc = ""`` (Hartree-only baseline) -- not recommended for
     Wu-Yang; only included so callers can opt out explicitly.
+
+    Honors ``mol_spec.grid_level`` (canonical source per spec sec. 5.4):
+    when non-None, sets ``mf.grids.level = mol_spec.grid_level`` and
+    calls ``mf.grids.build()`` BEFORE ``mf.kernel()`` to guarantee the
+    SCF (and any downstream consumer of ``mf.grids.coords``) uses the
+    requested mesh. When ``None``, PySCF's own default (level 3)
+    applies. Pass-2 review found the prior version silently ignored
+    ``mol_spec.grid_level``, producing a two-grid mismatch with cached
+    SCF/CCSD intermediates built at xcquinox's default grid_level=1.
     """
     from pyscf import dft, gto
     mol = gto.M(
@@ -149,10 +158,12 @@ def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
     else:
         mf = dft.RKS(mol)
     if baseline_xc is None:
-        # Hartree-only baseline; pyscf accepts empty xc string.
         mf.xc = ""
     else:
         mf.xc = str(baseline_xc)
+    if mol_spec.grid_level is not None:
+        mf.grids.level = int(mol_spec.grid_level)
+        mf.grids.build()
     mf.kernel()
     return mol, mf
 

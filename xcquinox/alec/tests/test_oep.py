@@ -568,3 +568,58 @@ def test_oep_plateau_sentinel_carries_b_and_density_error():
     assert isinstance(sentinel, Exception)
     np.testing.assert_array_equal(sentinel.b, b)
     assert sentinel.plateau_density_error == 1.5e-3
+
+
+def test_build_mol_and_mf_uses_grid_level_from_mol_spec():
+    """When mol_spec.grid_level is set, _build_mol_and_mf must set
+    mf.grids.level to that value and call mf.grids.build()."""
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import _build_mol_and_mf
+    spec = MoleculeSpec(
+        name="H2",
+        atom="H 0 0 0; H 0 0 0.74",
+        basis="def2-svp",
+        charge=0,
+        spin=0,
+        atom_composition=(("H", 2),),
+        grid_level=2,
+    )
+    mol, mf = _build_mol_and_mf(spec, baseline_xc="pbe")
+    assert mf.grids.level == 2
+    assert mf.grids.coords is not None
+
+
+def test_build_mol_and_mf_grid_level_none_uses_pyscf_default():
+    """When mol_spec.grid_level is None, _build_mol_and_mf must NOT
+    set mf.grids.level - PySCF's default (level 3) applies."""
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import _build_mol_and_mf
+    spec = MoleculeSpec(
+        name="H2",
+        atom="H 0 0 0; H 0 0 0.74",
+        basis="def2-svp",
+        charge=0,
+        spin=0,
+        atom_composition=(("H", 2),),
+        grid_level=None,
+    )
+    mol, mf = _build_mol_and_mf(spec, baseline_xc="pbe")
+    assert mf.grids.level == 3
+
+
+def test_build_mol_and_mf_grid_level_zero_is_legitimate_coarsest():
+    """grid_level=0 is the legitimate PySCF coarsest mesh (NOT a
+    sentinel for use default); must be honored."""
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import _build_mol_and_mf
+    spec = MoleculeSpec(
+        name="H2",
+        atom="H 0 0 0; H 0 0 0.74",
+        basis="def2-svp",
+        charge=0,
+        spin=0,
+        atom_composition=(("H", 2),),
+        grid_level=0,
+    )
+    mol, mf = _build_mol_and_mf(spec, baseline_xc="pbe")
+    assert mf.grids.level == 0
