@@ -1019,9 +1019,11 @@ def test_terminated_by_field_for_plateau_path():
     """Plan-1 review fix: spec §9.1 names this test for the plateau
     path explicitly. Drive an OEP that should plateau (high reg + tight
     plateau_window/min_iter so plateau fires before max_iter)."""
-    import numpy as np
-    from xcquinox.alec.config import MoleculeSpec
+    import inspect
     from xcquinox.alec.oep import run_oep_inversion
+    src = inspect.getsource(run_oep_inversion)
+    assert 'terminated_by = "plateau"' in src
+    from xcquinox.alec.config import MoleculeSpec
     from pyscf import gto, scf as _scf
     spec = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
@@ -1046,9 +1048,13 @@ def test_terminated_by_field_for_plateau_path():
 
 def test_plateau_below_conv_tol_marks_converged():
     """Spec §9.1 + §5.5: plateau-below-conv_tol → converged=True."""
-    import numpy as np
-    from xcquinox.alec.config import MoleculeSpec
+    import inspect
     from xcquinox.alec.oep import run_oep_inversion
+    src = inspect.getsource(run_oep_inversion)
+    # Plateau branch recomputes converged based on isfinite + below conv_tol
+    assert 'np.isfinite(density_error_reported)' in src
+    assert '(density_error_reported < conv_tol)' in src
+    from xcquinox.alec.config import MoleculeSpec
     from pyscf import gto, scf as _scf
     spec = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
@@ -1072,9 +1078,12 @@ def test_plateau_below_conv_tol_marks_converged():
 def test_plateau_above_conv_tol_marks_not_converged():
     """Spec §9.1 + §5.5: plateau-above-conv_tol → converged=False
     (cascade falls through to next tier)."""
-    import numpy as np
-    from xcquinox.alec.config import MoleculeSpec
+    import inspect
     from xcquinox.alec.oep import run_oep_inversion
+    src = inspect.getsource(run_oep_inversion)
+    # The bool() wrap means False propagates correctly when plateau is above conv_tol
+    assert 'converged = bool(' in src
+    from xcquinox.alec.config import MoleculeSpec
     from pyscf import gto, scf as _scf
     spec = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
@@ -1150,7 +1159,6 @@ def test_run_oep_inversion_passes_mol_spec_grid_level_through(monkeypatch):
     """Spec §9.1: run_oep_inversion does NOT silently drop or override
     mol_spec.grid_level — the same spec passes through to _build_mol_and_mf."""
     captured = {}
-    real_build = None
     import xcquinox.alec.oep as oep_mod
     real_build = oep_mod._build_mol_and_mf
     def spy_build(mol_spec, basis=None, baseline_xc="pbe"):
