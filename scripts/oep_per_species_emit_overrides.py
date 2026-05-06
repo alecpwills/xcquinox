@@ -127,14 +127,15 @@ def _select_winner(records: list[dict], target_floor: float,
     return candidates[0]
 
 
-def _emit_snippet(winner: dict) -> str:
-    """Build the Python source snippet for one species' override entry."""
+def _emit_snippet(winner: dict, tune_log_path: Path) -> str:
+    """Build the Python source snippet for one species' override entry.
+    Plan-3-review fix: includes the JSONL tune-log path + trial index
+    for audit trail per spec §7.3."""
     spec = winner["species"]
     settings = winner["settings"]
     res = winner["result"]
     floor = res["density_error_min"]
     conv_tol = _round_2sigfig(1.7 * floor)
-    # Build the tier dict:
     tier_keys = sorted(set(settings) - {"conv_tol", "target_floor"})
     tier_lines = []
     for k in tier_keys:
@@ -145,11 +146,16 @@ def _emit_snippet(winner: dict) -> str:
             tier_lines.append(f'         "{k}": {v:.4g},')
         else:
             tier_lines.append(f'         "{k}": {v!r},')
-    tier_lines.append(f'         "conv_tol": {conv_tol:.2g},  # 1.7 * density_error_min')
+    tier_lines.append(
+        f'         "conv_tol": {conv_tol:.2g},  # 1.7 * density_error_min'
+    )
     name = spec["name"]; charge = spec["charge"]; spin = spec["spin"]
     return (
         f'    # {name} winner: density_error_min={floor:.2e}, '
         f'n_iter={res["n_iter"]}, wall={res["wall_clock_s"]:.1f}s\n'
+        f'    # Tune log: {tune_log_path} trial_idx={winner["trial_idx"]}\n'
+        f'    # Per-species pathology: see scripts/oep_tune_grids.yaml\n'
+        f'    # Citations [oep-tdl-1..6] AUTHOR-RECALLED, UNVERIFIED.\n'
         f'    ("{name}", {charge}, {spin}): (\n'
         f'        {{\n'
         + "\n".join(tier_lines) + "\n"
@@ -232,7 +238,7 @@ def main() -> int:
         if winner is None:
             failed.append(name)
             continue
-        snippets.append(_emit_snippet(winner))
+        snippets.append(_emit_snippet(winner, jsonl_path))
         snippets.append("# References: [oep-tdl-1..6] AUTHOR-RECALLED, UNVERIFIED.\n")
 
     snippet_text = "".join(snippets)
