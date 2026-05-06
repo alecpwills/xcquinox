@@ -876,3 +876,46 @@ def test_detect_plateau_partial_window_does_not_fire():
         plateau_window=20, plateau_rtol=0.02,
     )
     assert not fired
+
+
+def test_oep_result_dm_final_rks_is_2d():
+    """RKS run returns dm_final with shape (n_ao, n_ao)."""
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    result = run_oep_inversion(
+        spec, dm_target,
+        aux_basis="def2-svp-jkfit",
+        max_iter=5, conv_tol=1e-30, regularization=1e-4,
+        plateau_window=0,
+    )
+    assert result.dm_final is not None
+    assert result.dm_final.ndim == 2
+    assert result.dm_final.shape == (mol.nao, mol.nao)
+
+
+def test_save_vxc_ref_does_not_persist_terminated_by_or_dm_final(tmp_path):
+    """save_vxc_ref accesses an explicit allowlist of oep_* keys; the
+    new terminated_by and dm_final fields must NOT appear in the npz."""
+    import numpy as np
+    from xcquinox.alec.oep import OEPResult, save_vxc_ref
+    r = OEPResult(
+        vxc_matrix=np.zeros((3, 3)),
+        converged=True, n_iter=5, density_error=1e-4,
+        baseline_xc="pbe", aux_basis="def2-svp-jkfit",
+        regularization=1e-4, n_electrons=2.0, lbfgs_status="ok",
+        terminated_by="plateau",
+        dm_final=np.eye(3),
+    )
+    out = tmp_path / "vxc.npz"
+    save_vxc_ref(r, str(out), dm_target=np.eye(3), method="ccsd")
+    loaded = np.load(str(out))
+    assert "terminated_by" not in loaded.files
+    assert "dm_final" not in loaded.files

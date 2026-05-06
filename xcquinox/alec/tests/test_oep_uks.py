@@ -389,3 +389,26 @@ def test_ks_from_vxc_matrix_uhf_custom_diis_start_cycle():
     finally:
         _scf.UHF = real_UHF
     assert captured["instance"].diis_start_cycle == 10
+
+
+def test_oep_result_dm_final_uks_is_3d():
+    """UKS run returns dm_final with shape (2, n_ao, n_ao)."""
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H", atom="H 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("H", 1),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=1, verbose=0)
+    mf = _scf.UHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    result = run_oep_inversion(
+        spec, dm_target,
+        aux_basis="def2-svp-jkfit",
+        max_iter=5, conv_tol=1e-30, regularization=1e-4,
+        plateau_window=0,
+    )
+    assert result.dm_final is not None
+    assert result.dm_final.ndim == 3
+    assert result.dm_final.shape == (2, mol.nao, mol.nao)
