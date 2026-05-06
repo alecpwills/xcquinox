@@ -434,6 +434,35 @@ _REQUIRED_NPZ_KEYS: frozenset[str] = frozenset({
 })
 
 
+# Per-species OEP cascade overrides — populated by the verifier in
+# scripts/oep_per_species_emit_overrides.py after the harness sweep.
+# Key: (name, charge, spin) tuple matching SpeciesEntry fields.
+# Value: tuple of override-tier dicts; each MERGES onto the
+# corresponding default per-spin tier (or the last default tier when
+# the override has more tiers than the default; see
+# `_resolve_tiers_for_species` below).
+#
+# Override-tier dicts may carry any subset of the keys in
+# `_OVERRIDE_TIER_KNOB_ALLOWLIST` below. Per spec sec. 5.1 / 5.2.
+_PER_SPECIES_OEP_OVERRIDES: dict[tuple[str, int, int], tuple[dict, ...]] = {}
+
+
+# Closed set of recognized override-tier knob names (spec sec. 5.2).
+# `_validate_overrides` rejects any override-tier dict containing keys
+# outside this allowlist (catches typos like `aux_bais` that would
+# otherwise silently no-op via the merge-then-tier.get pattern).
+_OVERRIDE_TIER_KNOB_ALLOWLIST: frozenset[str] = frozenset({
+    "aux_basis",                     # str
+    "regularization",                # float, > 0
+    "max_iter",                      # int, >= 1
+    "conv_tol",                      # float, > 0
+    "grid_level",                    # int, >= 0
+    "level_shift",                   # float, |x| <= 5 (Pass-7)
+    "inner_damp",                    # float, in [0, 1)
+    "inner_diis_start_cycle",        # int, >= 1
+})
+
+
 def run_oep_cascade(
     spec: SpeciesEntry,
     atoms,

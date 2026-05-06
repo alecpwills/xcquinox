@@ -470,3 +470,38 @@ def test_precompute_all_skips_cached_species(tmp_path):
     import json
     payload = json.loads(log_files[0].read_text())
     assert payload["results"][0]["status"] == "SKIPPED_CACHED"
+
+
+def test_override_tier_knob_allowlist_contents():
+    """The 8-knob allowlist matches the spec sec. 5.1 schema exactly."""
+    from xcquinox.alec.external_refs import _OVERRIDE_TIER_KNOB_ALLOWLIST
+    assert _OVERRIDE_TIER_KNOB_ALLOWLIST == frozenset({
+        "aux_basis",
+        "regularization",
+        "max_iter",
+        "conv_tol",
+        "grid_level",
+        "level_shift",
+        "inner_damp",
+        "inner_diis_start_cycle",
+    })
+
+
+def test_per_species_oep_overrides_default_is_empty_dict():
+    """The override table ships empty; populated only after harness run."""
+    from xcquinox.alec.external_refs import _PER_SPECIES_OEP_OVERRIDES
+    assert _PER_SPECIES_OEP_OVERRIDES == {}
+    assert isinstance(_PER_SPECIES_OEP_OVERRIDES, dict)
+
+
+def test_per_species_overrides_key_shape_is_name_charge_spin():
+    """Spec §9.2 / Plan-2 review fix: every populated key must be a
+    3-tuple of (str, int, int). Pins against accidental 4-tuple
+    (e.g., a maintainer adding `source` to the key)."""
+    from xcquinox.alec.external_refs import _PER_SPECIES_OEP_OVERRIDES
+    for key in _PER_SPECIES_OEP_OVERRIDES.keys():
+        assert isinstance(key, tuple)
+        assert len(key) == 3
+        assert isinstance(key[0], str)
+        assert isinstance(key[1], int) and not isinstance(key[1], bool)
+        assert isinstance(key[2], int) and not isinstance(key[2], bool)
