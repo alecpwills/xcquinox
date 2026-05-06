@@ -5,10 +5,15 @@ reference density matrix, grid density, and OEP-inverted V_xc for the
 union of training + held-out probe + HBPT species.
 
 Pipeline stages (each individually cached via np.savez_compressed):
-  1. SCF  → _intermediates/<name>_scf.npz   (MO coeffs, DM, S)
-  2. CCSD → _intermediates/<name>_ccsd.npz  (CC density matrix + rho)
-  3. OEP  → <name>.npz                       (vxc_ref + dm_target +
-                                             rho_ref_grid + provenance)
+  1. SCF  → _intermediates/<name>_g{grid_level}_scf.npz   (MO coeffs, DM, S)
+  2. CCSD → _intermediates/<name>_g{grid_level}_ccsd.npz  (CC density matrix + rho)
+  3. OEP  → <name>.npz                                    (vxc_ref + dm_target +
+                                                          rho_ref_grid + provenance)
+
+Cache layout was changed in 2026-05-03 (spec sec. 5.6) to bake
+grid_level into intermediate filenames; legacy unsuffixed names are
+migrated by `_migrate_intermediates_to_grid_suffixed` invoked from the
+top of both `precompute_all` and `preflight_uks_oep`.
 
 Reuses step-6 cells 12-13 OEP-cascade pattern verbatim
 (_build_step6_notebook.py:728-768, 843-877). 2-tier: svp-jkfit primary
@@ -905,7 +910,7 @@ class RunLog:
 
     Writes _run_log_partial.json after every species (kill-safe via
     tempfile.mkstemp + os.replace, matching the T3 atomic-write precedent
-    at external_refs.py:261-274). On finalize, renames to
+    at external_refs.py:264-274). On finalize, renames to
     _run_log_<UTC-timestamp>.json so each run's log is preserved for
     later debugging.
     """
@@ -955,7 +960,7 @@ class RunLog:
     def _flush(self, *, path=None):
         """Atomic JSON write: tempfile.mkstemp -> write -> os.replace.
 
-        Matches the T3 atomic-write pattern at external_refs.py:261-274
+        Matches the T3 atomic-write pattern at external_refs.py:264-274
         so a kill mid-flush cannot leave a corrupt partial JSON that the
         next run would mis-parse.
         """
