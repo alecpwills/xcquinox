@@ -711,3 +711,15 @@ def test_ks_from_vxc_matrix_rhf_custom_diis_start_cycle():
     finally:
         _scf.RHF = real_RHF
     assert captured["instance"].diis_start_cycle == 10
+
+
+def test_ks_from_vxc_matrix_dispatcher_forwards_damp_and_diis_start_cycle():
+    """The _ks_from_vxc_matrix dispatcher forwards damp / diis_start_cycle
+    to whichever spin-specific helper it dispatches to."""
+    from xcquinox.alec.oep import _ks_from_vxc_matrix
+    import inspect
+    sig = inspect.signature(_ks_from_vxc_matrix)
+    assert "damp" in sig.parameters
+    assert "diis_start_cycle" in sig.parameters
+    assert sig.parameters["damp"].default == 0.1
+    assert sig.parameters["diis_start_cycle"].default == 5

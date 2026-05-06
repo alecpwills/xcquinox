@@ -252,27 +252,27 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
     return aux_mol, three_center, aux_on_grid, S_aux
 
 
-def _ks_from_vxc_matrix(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0):
-    """Run a KS-SCF with a fixed V_xc matrix replacing the XC potential.
-
-    Dispatches to RHF or UHF based on ``vxc_matrix`` shape and
-    ``mol.spin``. Returns ``(dm, kinetic, j_matrix, success)`` where
-    ``success`` is False if the inner SCF raised; callers should
-    increase the outer Wu-Yang objective on failure rather than
-    silently using the input DM (D4 audit fix).
+def _ks_from_vxc_matrix(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
+                         damp: float = 0.1, diis_start_cycle: int = 5):
+    """Dispatch RHF or UHF inner SCF based on vxc_matrix dimensionality
+    OR mol.spin (a 2-D vxc with mol.spin>0 still routes to UHF).
 
     ``level_shift`` is forwarded to the inner ``mf_fixed.level_shift``
-    attribute. Nonzero values stabilize SCF in degenerate-orbital cases
-    (e.g. UKS X²Π radicals) by suppressing basin-flips during DIIS.
-    Default 0.0 matches the pre-fix behavior.
+    attribute (PySCF SCF stabilization). ``damp`` and
+    ``diis_start_cycle`` are forwarded to the inner ``mf_fixed.damp`` /
+    ``mf_fixed.diis_start_cycle`` (defaults preserve oep.py's
+    pre-Pass-1 hardcoded values 0.1 and 5; PySCF ship defaults are 0.0
+    and 1, respectively).
     """
     v = np.asarray(vxc_matrix)
     if v.ndim == 3 or mol.spin != 0:
         return _ks_from_vxc_matrix_uhf(
             mol, mf, vxc_matrix, dm0=dm0, level_shift=level_shift,
+            damp=damp, diis_start_cycle=diis_start_cycle,
         )
     return _ks_from_vxc_matrix_rhf(
         mol, mf, vxc_matrix, dm0=dm0, level_shift=level_shift,
+        damp=damp, diis_start_cycle=diis_start_cycle,
     )
 
 
