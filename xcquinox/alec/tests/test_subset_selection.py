@@ -774,3 +774,47 @@ def test_select_subset_return_all_cache_shape_mismatch_raises(tmp_path):
             progress=False, return_all=True,
             distribution_path=str(out_npz),
         )
+
+
+def test_extract_descriptors_write_is_atomic_no_tmp_leftover(tmp_path):
+    """After extract_descriptors completes, cache_dir contains exactly
+    the cache file — no .tmp leftovers from the atomic-write tempfile.
+    Pins the tempfile + os.replace pattern."""
+    import os
+    from ase import Atoms
+    from xcquinox.alec import subset_selection as ss
+    a = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74)])
+    ss.extract_descriptors(a, idx=0, cache_dir=tmp_path)
+    files = sorted(p.name for p in tmp_path.iterdir())
+    # exactly one file: 0_H2.npz; no tempfile-mkstemp leftover with
+    # `tmp` prefix or `.npz` suffix.
+    assert any(name == "0_H2.npz" for name in files), files
+    assert not any(name.startswith("tmp") for name in files), files
+
+
+def test_select_subset_distribution_write_is_atomic_no_tmp_leftover(tmp_path):
+    """After select_subset(return_all=True, distribution_path) completes,
+    only the destination .npz exists (no tempfile leftover)."""
+    import math
+    import numpy as np
+    from xcquinox.alec.subset_selection import (
+        build_reference_histograms, select_subset,
+    )
+    rng = np.random.default_rng(11)
+    pool = [{
+        "rho_third": rng.uniform(0.1, 1.0, size=(40,)),
+        "s": rng.uniform(0.0, 2.0, size=(40,)),
+        "alpha": rng.uniform(0.0, 5.0, size=(40,)),
+        "weights": np.ones(40),
+    } for _ in range(5)]
+    h_ref, edges = build_reference_histograms(pool)
+    out_npz = tmp_path / "dist.npz"
+    select_subset(
+        pool, edges, h_ref, r=2, metric="jsd",
+        progress=False, return_all=True,
+        distribution_path=str(out_npz),
+    )
+    files = sorted(p.name for p in tmp_path.iterdir())
+    assert "dist.npz" in files, files
+    assert not any(n.startswith("tmp") and n.endswith(".npz")
+                    for n in files if n != "dist.npz"), files

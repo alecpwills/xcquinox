@@ -306,12 +306,29 @@ def select_subset(
             best_combo = full
 
     if return_all and distribution_path is not None:
-        np.savez_compressed(
-            distribution_path,
-            vals=vals, indices=idx_array,
-            best_combo=np.array(best_combo),
-            best_val=np.array(best_val),
-        )
+        # Atomic write: tempfile + os.replace so an interrupted enumeration
+        # cannot leave a half-written cache. Long enumerations (~40M
+        # combos for r=14, npool=28) are precisely the case where Ctrl-C
+        # is likely; a partial write would be silently mis-loaded by the
+        # cache-read-back path on a subsequent invocation.
+        import os as _os
+        import tempfile as _tf
+        from pathlib import Path as _Path
+        _dp = _Path(distribution_path)
+        out_dir = str(_dp.parent if _dp.parent != _Path("") else _Path("."))
+        fd, tmp_name = _tf.mkstemp(dir=out_dir, suffix=".npz")
+        try:
+            _os.close(fd)
+            np.savez_compressed(
+                tmp_name,
+                vals=vals, indices=idx_array,
+                best_combo=np.array(best_combo),
+                best_val=np.array(best_val),
+            )
+            _os.replace(tmp_name, str(_dp))
+        finally:
+            if _os.path.exists(tmp_name):
+                _os.unlink(tmp_name)
 
     if return_all:
         return best_combo, best_val, vals, idx_array
@@ -455,5 +472,16 @@ def extract_descriptors(
         "alpha": descriptors["alpha"],
         "weights": weights,
     }
-    np.savez(cache_path, **out)
+    # Atomic write: tempfile + os.replace so an interrupted extraction
+    # cannot leave a half-written cache that future runs would mis-load.
+    import os as _os
+    import tempfile as _tf
+    fd, tmp_name = _tf.mkstemp(dir=str(cache_dir), suffix=".npz")
+    try:
+        _os.close(fd)
+        np.savez(tmp_name, **out)
+        _os.replace(tmp_name, cache_path)
+    finally:
+        if _os.path.exists(tmp_name):
+            _os.unlink(tmp_name)
     return out

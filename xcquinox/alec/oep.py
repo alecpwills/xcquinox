@@ -1018,4 +1018,17 @@ def save_vxc_ref(
                 if key not in payload:
                     payload[key] = existing[key]
 
-    np.savez(output_path, **payload)
+    # Atomic write: tempfile + os.replace so an interrupted save_vxc_ref
+    # cannot leave a half-written or empty .npz that future runs would
+    # mis-load. Mirrors the run_scf_with_cache / run_ccsd_with_cache
+    # pattern at external_refs.py:264-274.
+    import tempfile
+    out_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+    fd, tmp_name = tempfile.mkstemp(dir=out_dir, suffix=".npz")
+    try:
+        os.close(fd)
+        np.savez(tmp_name, **payload)
+        os.replace(tmp_name, output_path)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)

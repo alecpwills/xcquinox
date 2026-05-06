@@ -1245,3 +1245,54 @@ def test_run_oep_inversion_plateau_catch_path_behavioral(monkeypatch):
     # Plateau-below-conv_tol logic: plateau_value=1.5e-3 vs conv_tol=1e-30
     # → False (1.5e-3 is NOT below 1e-30):
     assert result.converged is False
+
+
+def test_save_vxc_ref_write_is_atomic_no_tmp_leftover(tmp_path):
+    """After save_vxc_ref completes, output_dir contains exactly the
+    target .npz — no tempfile-mkstemp leftover. Pins the atomic-write
+    pattern (tempfile + os.replace) introduced 2026-05-06 to match
+    the run_scf_with_cache / run_ccsd_with_cache precedent."""
+    import numpy as np
+    from xcquinox.alec.oep import OEPResult, save_vxc_ref
+    r = OEPResult(
+        vxc_matrix=np.zeros((3, 3)),
+        converged=True, n_iter=5, density_error=1e-4,
+        baseline_xc="pbe", aux_basis="def2-svp-jkfit",
+        regularization=1e-4, n_electrons=2.0, lbfgs_status="ok",
+    )
+    out = tmp_path / "vxc.npz"
+    save_vxc_ref(r, str(out), dm_target=np.eye(3), method="ccsd")
+    files = sorted(p.name for p in tmp_path.iterdir())
+    assert "vxc.npz" in files, files
+    # No tempfile leftover (mkstemp default prefix is "tmp"):
+    assert not any(n.startswith("tmp") and n.endswith(".npz")
+                    for n in files if n != "vxc.npz"), files
+
+
+def test_save_vxc_ref_atomic_write_preserves_file_on_overwrite(tmp_path):
+    """Calling save_vxc_ref twice on the same path leaves a single
+    valid .npz at every observable moment (no race with a deleted
+    target during the write). Verified by reading after each call."""
+    import numpy as np
+    from xcquinox.alec.oep import OEPResult, save_vxc_ref
+    r1 = OEPResult(
+        vxc_matrix=np.ones((3, 3)),
+        converged=True, n_iter=1, density_error=1e-3,
+        baseline_xc="pbe", aux_basis="def2-svp-jkfit",
+        regularization=1e-4, n_electrons=2.0, lbfgs_status="first",
+    )
+    out = tmp_path / "vxc.npz"
+    save_vxc_ref(r1, str(out), dm_target=np.eye(3), method="ccsd")
+    with np.load(out) as z:
+        assert str(z["oep_lbfgs_status"]) == "first"
+    # Second call replaces:
+    r2 = OEPResult(
+        vxc_matrix=np.full((3, 3), 2.0),
+        converged=True, n_iter=2, density_error=2e-3,
+        baseline_xc="pbe", aux_basis="def2-svp-jkfit",
+        regularization=1e-4, n_electrons=2.0, lbfgs_status="second",
+    )
+    save_vxc_ref(r2, str(out), dm_target=np.eye(3), method="ccsd")
+    with np.load(out) as z:
+        assert str(z["oep_lbfgs_status"]) == "second"
+        np.testing.assert_array_equal(z["vxc_ref"], np.full((3, 3), 2.0))
