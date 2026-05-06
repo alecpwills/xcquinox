@@ -678,7 +678,7 @@ def run_oep_inversion(
     # Pass plateau_window=0 / plateau_rtol=0 / plateau_min_iter > max_iter
     # to disable.
     from collections import deque
-    _plateau_d_e_deque: deque = deque(
+    _plateau_density_error_deque: deque = deque(
         maxlen=plateau_window if plateau_window > 0 else 1
     )
     _plateau_F_val_deque: deque = deque(
@@ -802,14 +802,14 @@ def run_oep_inversion(
         if (plateau_window > 0
                 and plateau_rtol > 0.0
                 and _progress_state["iter"] >= plateau_min_iter):
-            _plateau_d_e_deque.append(
+            _plateau_density_error_deque.append(
                 scf_state["density_error_l2_accepted"]
             )
             _plateau_F_val_deque.append(scf_state["F_val_accepted"])
-            if (len(_plateau_d_e_deque) == plateau_window
+            if (len(_plateau_density_error_deque) == plateau_window
                     and len(_plateau_F_val_deque) == plateau_window):
                 _fired, _d_e_med = _detect_plateau(
-                    d_e=list(_plateau_d_e_deque),
+                    d_e=list(_plateau_density_error_deque),
                     F_val=list(_plateau_F_val_deque),
                     plateau_window=plateau_window,
                     plateau_rtol=plateau_rtol,
@@ -836,7 +836,7 @@ def run_oep_inversion(
 
     early_stopped_b = None
     plateau_b = None
-    plateau_d_e = None
+    plateau_density_error = None
     try:
         result = minimize(
             objective_and_grad,
@@ -850,12 +850,12 @@ def run_oep_inversion(
         early_stopped_b = _es.b
         result = None  # not used in early-stop path
     except _OEPPlateau as _pl:
-        # Pass-7: plateau handler, parallel to early-stop. The b is used
-        # for vxc_final reconstruction; the plateau_density_error is
-        # carried separately for the OEPResult.density_error override
-        # below.
+        # Plateau handler (spec sec. 5.5), parallel to early-stop.
+        # The b is used for vxc_final reconstruction; the
+        # plateau_density_error is carried separately for the
+        # OEPResult.density_error override below.
         plateau_b = _pl.b
-        plateau_d_e = _pl.plateau_density_error
+        plateau_density_error = _pl.plateau_density_error
         result = None
 
     if early_stopped_b is not None:
@@ -924,7 +924,7 @@ def run_oep_inversion(
         plateau_terminated = False
     elif plateau_b is not None:
         lbfgs_status = (
-            f"plateau (density_error~{plateau_d_e:.2e} "
+            f"plateau (density_error~{plateau_density_error:.2e} "
             f"at iter {n_iter}/{max_iter})"
         )
         plateau_terminated = True
@@ -945,7 +945,7 @@ def run_oep_inversion(
         terminated_by = "plateau"
         # Spec sec. 5.5: report the plateau median as the trial's
         # density_error (the achievable floor at this setting).
-        density_error_reported = float(plateau_d_e)
+        density_error_reported = float(plateau_density_error)
         # Plateau-below-conv_tol counts as converged (spec sec. 5.5).
         converged = bool(
             np.isfinite(density_error_reported)
