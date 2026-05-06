@@ -134,7 +134,7 @@ def test_run_scf_cache_hit(tmp_path):
     atoms = resolve_geometry(spec)
     p1 = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
                             basis="def2-svp", grid_level=1)
-    cache_path = tmp_path / "_intermediates" / "H2_scf.npz"
+    cache_path = tmp_path / "_intermediates" / "H2_g1_scf.npz"
     assert cache_path.is_file(), "SCF cache not written"
     mtime = cache_path.stat().st_mtime
     p2 = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
@@ -735,3 +735,38 @@ def test_resolve_tiers_override_empty_tuple_raises():
             _resolve_tiers_for_species("Be", 0, 0, is_uks=False)
     finally:
         _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
+
+
+def test_run_scf_with_cache_uses_grid_suffixed_filename(tmp_path):
+    """Cache file name embeds grid_level: <name>_g{N}_scf.npz."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        run_scf_with_cache, SpeciesEntry,
+    )
+    from ase import Atoms
+    spec = SpeciesEntry(name="H2test", charge=0, spin=0, source="dfs_ae")
+    atoms = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74)])
+    cache_dir = tmp_path / "external_refs"
+    run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
+                       basis="sto-3g", grid_level=1)
+    # Post-Plan-2: the file MUST be named <name>_g1_scf.npz
+    expected = cache_dir / "_intermediates" / "H2test_g1_scf.npz"
+    assert expected.is_file()
+    # The unsuffixed name MUST NOT exist
+    legacy = cache_dir / "_intermediates" / "H2test_scf.npz"
+    assert not legacy.exists()
+
+
+def test_run_scf_with_cache_grid_level_2_creates_g2_file(tmp_path):
+    """grid_level=2 produces a _g2_scf.npz cache file."""
+    from xcquinox.alec.external_refs import (
+        run_scf_with_cache, SpeciesEntry,
+    )
+    from ase import Atoms
+    spec = SpeciesEntry(name="H2test", charge=0, spin=0, source="dfs_ae")
+    atoms = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74)])
+    cache_dir = tmp_path / "external_refs"
+    run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
+                       basis="sto-3g", grid_level=2)
+    expected = cache_dir / "_intermediates" / "H2test_g2_scf.npz"
+    assert expected.is_file()
