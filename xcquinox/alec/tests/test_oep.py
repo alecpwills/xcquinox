@@ -733,3 +733,14 @@ def test_objective_and_grad_caches_density_error_and_F_val_in_scf_state():
     src = inspect.getsource(run_oep_inversion)
     assert "density_error_l2_last_eval" in src
     assert "F_val_last_eval" in src
+
+
+def test_scipy_iter_callback_snapshots_density_error_and_F_val_on_accept():
+    """_scipy_iter_callback copies *_last_eval into *_accepted on each
+    accepted L-BFGS-B step (so the plateau detector reads only
+    accepted-iterate values, not rejected line-search probes)."""
+    import inspect
+    from xcquinox.alec.oep import run_oep_inversion
+    src = inspect.getsource(run_oep_inversion)
+    assert 'scf_state["density_error_l2_accepted"] = scf_state["density_error_l2_last_eval"]' in src
+    assert 'scf_state["F_val_accepted"] = scf_state["F_val_last_eval"]' in src

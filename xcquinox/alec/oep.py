@@ -711,26 +711,35 @@ def run_oep_inversion(
         return obj, grad
 
     def _scipy_iter_callback(_xk):
-        # D11 audit fix: SCF DM at the accepted iterate is the one cached
-        # by the most-recent ACCEPTED objective_and_grad call. Update
-        # accepted-DM cache here (after L-BFGS-B accepts the step).
+        # D11 audit fix + Pass-7 extension: snapshot the most-recent
+        # ACCEPTED objective_and_grad's outputs so the plateau detector
+        # reads only accepted iterates (not rejected line-search probes,
+        # which can leave stale +inf / 1e20 values from SCF failures).
         scf_state["dm0_accepted"] = scf_state["dm0_last_eval"]
+        scf_state["density_error_l2_accepted"] = scf_state["density_error_l2_last_eval"]
+        scf_state["F_val_accepted"] = scf_state["F_val_last_eval"]
         _progress_state["iter"] += 1
         if progress_callback is not None:
             progress_callback(
                 _progress_state["iter"],
                 _progress_state["density_error_l2"],
             )
-        # Early-stop: when the density-L2 at the accepted iterate satisfies
-        # the user's conv_tol, abort minimize() rather than running the
-        # full max_iter. L-BFGS-B's own stopping criteria (ftol, gtol)
-        # don't react to density_error directly, so without this check
-        # UKS Π-state cases plateau at the noise floor for hundreds of
-        # extra iterations even after density_error has dropped below
-        # conv_tol. The sentinel exception is caught immediately after
-        # minimize() returns; the most-recent accepted iterate (_xk) is
-        # carried out via the sentinel payload.
-        if _progress_state["density_error_l2"] < conv_tol:
+
+        # Plateau detector inserted by Task 9 (replaces this marker).
+        # Order: plateau check BEFORE early-stop so a plateau-below-
+        # conv_tol convergence outranks a luck-of-line-search early-stop.
+        # PLATEAU_DETECTOR_INSERTION_POINT
+
+        # Early-stop: when the density-L2 at the accepted iterate
+        # satisfies the user's conv_tol, abort minimize() rather than
+        # running the full max_iter. L-BFGS-B's own stopping criteria
+        # (ftol, gtol) don't react to density_error directly, so without
+        # this check UKS Π-state cases plateau at the noise floor for
+        # hundreds of extra iterations even after density_error has
+        # dropped below conv_tol. The sentinel exception is caught
+        # immediately after minimize() returns; the most-recent accepted
+        # iterate (_xk) is carried out via the sentinel payload.
+        if scf_state["density_error_l2_accepted"] < conv_tol:
             raise _OEPEarlyStop(np.asarray(_xk).copy())
 
     b0 = np.zeros(2 * n_aux if is_uks else n_aux)
