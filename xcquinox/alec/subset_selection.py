@@ -168,6 +168,79 @@ def bin_descriptors(arrs: dict) -> dict:
     return _bin_with_edges(arrs, edges)
 
 
+def extract_descriptors_for_species(
+    species,
+    *,
+    basis: str = "def2-svp",
+    grid_level: int = 1,
+    cache_dir,
+) -> dict[tuple, dict]:
+    """Extract per-species descriptors and cache by ``(name, charge, spin)``.
+
+    Returns a dict keyed by ``(name, charge, spin)`` whose values are the
+    same descriptor dicts produced by :func:`extract_descriptors`. Used as
+    the building block for multi-species TrainingPoints — each point's
+    candidate descriptors are then assembled by concatenating its
+    species' entries from this dict.
+    """
+    out: dict[tuple, dict] = {}
+    seen: set[tuple] = set()
+    for at in species:
+        name = at.info.get("name") or at.info.get("dfs_hill") or at.get_chemical_formula()
+        charge = int(at.info.get("charge", 0))
+        spin = int(at.info.get("spin", 0))
+        key = (name, charge, spin)
+        if key in seen:
+            continue
+        seen.add(key)
+        # Use a name+charge+spin-stable cache filename: dedupes across
+        # points that share an atom anchor.
+        idx = f"{name.replace('+','plus').replace('/', '_')}_c{charge}_s{spin}"
+        out[key] = extract_descriptors(
+            at, idx=idx, basis=basis, grid_level=grid_level, cache_dir=cache_dir
+        )
+    return out
+
+
+def concatenate_point_descriptors(points, species_descriptors: dict[tuple, dict]) -> list[dict]:
+    """For each TrainingPoint, concatenate descriptors across its species
+    (design choice "a" — full union of grid points across participating
+    species; reactions weigh more proportional to grid-point count).
+
+    Returns a list parallel to ``points`` whose i-th entry is the same
+    shape as one ``extract_descriptors`` output (rho_third / s / alpha /
+    weights), ready to feed into :func:`build_reference_histograms` /
+    :func:`select_subset`.
+    """
+    out: list[dict] = []
+    for tp in points:
+        cat = {k: [] for k in _DESCRIPTOR_KEYS}
+        cat_w: list = []
+        for sp in tp.species:
+            name = sp.info.get("name") or sp.info.get("dfs_hill") or sp.get_chemical_formula()
+            charge = int(sp.info.get("charge", 0))
+            spin = int(sp.info.get("spin", 0))
+            key = (name, charge, spin)
+            if key not in species_descriptors:
+                raise KeyError(
+                    f"concatenate_point_descriptors: TrainingPoint {tp.name!r} "
+                    f"references species {key} not in species_descriptors. Run "
+                    f"extract_descriptors_for_species() over the union of "
+                    f"every point's species first."
+                )
+            d = species_descriptors[key]
+            for k in _DESCRIPTOR_KEYS:
+                cat[k].append(d[k])
+            cat_w.append(d.get("weights", np.ones_like(d["rho_third"])))
+        out.append({
+            "rho_third": np.concatenate(cat["rho_third"]),
+            "s":         np.concatenate(cat["s"]),
+            "alpha":     np.concatenate(cat["alpha"]),
+            "weights":   np.concatenate(cat_w),
+        })
+    return out
+
+
 def build_reference_histograms(pool):
     """Concatenate descriptor arrays across the full candidate pool, build
     the 3 reference 200-bin log10 density-normalized histograms, and return

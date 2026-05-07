@@ -818,3 +818,83 @@ def test_select_subset_distribution_write_is_atomic_no_tmp_leftover(tmp_path):
     assert "dist.npz" in files, files
     assert not any(n.startswith("tmp") and n.endswith(".npz")
                     for n in files if n != "dist.npz"), files
+
+
+def test_concatenate_point_descriptors_concats_all_species():
+    """concatenate_point_descriptors stacks per-species descriptors across
+    every species in a TrainingPoint (design choice "a" — full union)."""
+    import numpy as np
+    from ase import Atoms
+    from xcquinox.alec.subset_selection import concatenate_point_descriptors
+    from xcquinox.alec.training_points import TrainingPoint
+    # Synthetic descriptor dicts for two species:
+    desc_h2 = {"rho_third": np.array([1., 2., 3.]),
+               "s":         np.array([0.1, 0.2, 0.3]),
+               "alpha":     np.array([0.5, 0.6, 0.7]),
+               "weights":   np.array([1., 1., 1.])}
+    desc_h = {"rho_third": np.array([4., 5.]),
+              "s":         np.array([0.4, 0.5]),
+              "alpha":     np.array([0.8, 0.9]),
+              "weights":   np.array([1., 1.])}
+    species_desc = {("H2", 0, 0): desc_h2, ("H", 0, 1): desc_h}
+    h2_atoms = Atoms("H2", positions=[(0, 0, 0), (0, 0, 0.74)],
+                     info={"name": "H2", "charge": 0, "spin": 0})
+    h_atoms = Atoms("H", positions=[(0, 0, 0)],
+                    info={"name": "H", "charge": 0, "spin": 1})
+    point = TrainingPoint(kind="ae", name="H2", species=(h2_atoms, h_atoms))
+    out = concatenate_point_descriptors([point], species_desc)
+    assert len(out) == 1
+    np.testing.assert_array_equal(
+        out[0]["rho_third"], np.array([1., 2., 3., 4., 5.]),
+    )
+    np.testing.assert_array_equal(
+        out[0]["s"], np.array([0.1, 0.2, 0.3, 0.4, 0.5]),
+    )
+    np.testing.assert_array_equal(out[0]["weights"], np.ones(5))
+
+
+def test_concatenate_point_descriptors_dedupe_by_key_lookup():
+    """When two points share an atom anchor (e.g. AE 'CH4' and BH76 OH+CH3),
+    the species_descriptors dict has it once, but each point still gets the
+    H atom's descriptors stacked into its own concatenation. Verifies the
+    helper looks up by (name, charge, spin) — no accidental sharing of
+    array refs across points."""
+    import numpy as np
+    from ase import Atoms
+    from xcquinox.alec.subset_selection import concatenate_point_descriptors
+    from xcquinox.alec.training_points import TrainingPoint
+    desc_a = {"rho_third": np.array([1., 2.]),
+              "s": np.array([0.1, 0.2]), "alpha": np.array([0.5, 0.6]),
+              "weights": np.array([1., 1.])}
+    desc_h = {"rho_third": np.array([10., 20.]),
+              "s": np.array([0.9, 1.0]), "alpha": np.array([1.5, 1.6]),
+              "weights": np.array([2., 2.])}
+    species_desc = {("CompA", 0, 0): desc_a, ("H", 0, 1): desc_h}
+    a_atoms = Atoms("H", positions=[(0, 0, 0)],
+                    info={"name": "CompA", "charge": 0, "spin": 0})
+    h_atoms = Atoms("H", positions=[(0, 0, 0)],
+                    info={"name": "H", "charge": 0, "spin": 1})
+    p1 = TrainingPoint(kind="ae", name="P1", species=(a_atoms, h_atoms))
+    p2 = TrainingPoint(kind="bh76", name="P2", species=(h_atoms,))
+    out = concatenate_point_descriptors([p1, p2], species_desc)
+    # P1 = CompA + H; P2 = H only:
+    np.testing.assert_array_equal(out[0]["rho_third"], np.array([1., 2., 10., 20.]))
+    np.testing.assert_array_equal(out[1]["rho_third"], np.array([10., 20.]))
+    # weights propagate (H has weight=2):
+    np.testing.assert_array_equal(out[0]["weights"], np.array([1., 1., 2., 2.]))
+
+
+def test_concatenate_point_descriptors_missing_species_raises():
+    """If a point references a species not in the cache dict, raise
+    KeyError pointing at the missing key."""
+    import numpy as np
+    import pytest
+    from ase import Atoms
+    from xcquinox.alec.subset_selection import concatenate_point_descriptors
+    from xcquinox.alec.training_points import TrainingPoint
+    species_desc = {}   # empty cache
+    h_atoms = Atoms("H", positions=[(0, 0, 0)],
+                    info={"name": "H", "charge": 0, "spin": 1})
+    point = TrainingPoint(kind="ae", name="just_H", species=(h_atoms,))
+    with pytest.raises(KeyError, match="just_H"):
+        concatenate_point_descriptors([point], species_desc)
