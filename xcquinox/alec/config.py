@@ -523,6 +523,15 @@ class TrainingSpec:
     # `balancing` precedent.
     pbe_anchor_weight: float = 0.0
     pbe_anchor_sample: object | None = None
+    # When True (default), validate() requires every element symbol
+    # appearing in any compound's composition to ALSO appear as a
+    # single-atom training molecule (so `_atomic_reg` and the AE-anchor
+    # bookkeeping have a place to point). With the 2026-05-07 mixed-pool
+    # subset design, atom anchors are restricted to the Dick H/Li set
+    # by construction; setting this False disables the enforcement so
+    # specs can carry C/N/O/F/... compounds without forcing single-atom
+    # MoleculeSpecs for those elements.
+    require_atom_anchors: bool = True
 
     @property
     def targets_dict(self) -> dict[str, float]:
@@ -587,13 +596,16 @@ class TrainingSpec:
         for m in self.molecules:
             referenced_syms.update(dict(m.atom_composition).keys())
         missing_atoms = sorted(referenced_syms - atom_mol_syms)
-        if missing_atoms:
+        if missing_atoms and self.require_atom_anchors:
             raise ValueError(
                 "Every atomic species referenced by a molecule's composition must "
                 "also appear as a single-atom training molecule. "
                 f"Missing single-atom molecules for: {missing_atoms}. "
                 "Add single-atom MoleculeSpec entries (e.g., MoleculeSpec('H', 'H', ...)) "
-                "for each missing symbol."
+                "for each missing symbol, OR construct the TrainingSpec with "
+                "`require_atom_anchors=False` if your loss config does not need "
+                "single-atom MoleculeSpecs for these elements (e.g., the 2026-05-07 "
+                "mixed-pool subset design which restricts atom anchors to H/Li only)."
             )
         missing_atom_energies = sorted(atom_mol_syms - set(atom_energies_dict.keys()))
         if missing_atom_energies:

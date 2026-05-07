@@ -852,6 +852,14 @@ class L5GradnormVxcStep7(AlecLoss):
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.01, static=True)
     density_weight: float = eqx.field(default=0.1, static=True)
+    # Atom-symbol allowlist for `_atomic_reg`. None (default) regularizes
+    # every single-atom MoleculeSpec in the spec — the pre-2026-05-07
+    # behavior, kept for back-compat. Set to ("H", "Li") to mirror the
+    # Dick & Fernandez-Serra 2021 SI §II atomic-density references; in
+    # that case `_atomic_reg` ignores any other atomic species (C, N,
+    # O, F, ...) that happen to appear in the spec via IP13 pairs or
+    # mixed-pool TrainingPoint constructions.
+    regularize_atom_syms: tuple | None = eqx.field(default=None, static=True)
 
     def __init__(
         self,
@@ -865,6 +873,7 @@ class L5GradnormVxcStep7(AlecLoss):
         solver_config=None,
         vxc_weight: float = 0.01,
         density_weight: float = 0.1,
+        regularize_atom_syms=None,
         _smoke_test: bool = False,
         **_unused_kwargs,
     ):
@@ -874,6 +883,9 @@ class L5GradnormVxcStep7(AlecLoss):
         # fields so eqx.Module field validation passes.
         bh76_frozen = _freeze_rxn_specs(bh76_reactions or ())
         ip13_frozen = _freeze_ip_specs(ip13_pairs or ())
+        reg_syms_frozen = (
+            tuple(regularize_atom_syms) if regularize_atom_syms is not None else None
+        )
 
         if _smoke_test:
             self.atom_mol_idx = ()
@@ -888,6 +900,7 @@ class L5GradnormVxcStep7(AlecLoss):
             self.solver_config = solver_config
             self.vxc_weight = vxc_weight
             self.density_weight = density_weight
+            self.regularize_atom_syms = reg_syms_frozen
             return
 
         if molecules is None:
@@ -923,6 +936,7 @@ class L5GradnormVxcStep7(AlecLoss):
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
         self.density_weight = density_weight
+        self.regularize_atom_syms = reg_syms_frozen
 
         # Validate that every BH76 species and every IP13 species is
         # present in the `molecules` set. A missing species would cause
@@ -1009,6 +1023,13 @@ class L5GradnormVxcStep7(AlecLoss):
                 "compute_components requires a real `molecules` set."
             )
         atom_idx = dict(self.atom_mol_idx)
+        # Restrict `_atomic_reg` to the user-specified atom set when
+        # `regularize_atom_syms` is configured (e.g., the Dick 2021 SI §II
+        # H/Li set). When None, regularize every single-atom MoleculeSpec
+        # (pre-2026-05-07 behavior, kept for back-compat).
+        if self.regularize_atom_syms is not None:
+            allowed = set(self.regularize_atom_syms)
+            atom_idx = {sym: i for sym, i in atom_idx.items() if sym in allowed}
         mol_data = batch["mol_data"]
         targets = batch["targets"]
         atom_energies = batch["atom_energies"]
