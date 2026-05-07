@@ -31,3 +31,24 @@ def test_step7_notebook_builder_emits_override_markdown_cell(tmp_path):
     assert len(matches) >= 1, (
         "Notebook missing the per-species-OEP-overrides markdown cell"
     )
+
+
+def test_step7_notebook_oom_detection_handles_sigkill_exit_code():
+    """Regression pin (2026-05-07): _looks_like_gpu_oom must accept an `rc`
+    arg and treat rc in {-9, 137} as OOM evidence regardless of captured
+    stderr. The OS OOM-killer dispatches SIGKILL with no time for the
+    process to print JAX/CUDA OOM markers, so a marker-only check would
+    leave `_run_training_isolated` raising 'CPU retry not attempted' on
+    every kernel-OOM kill instead of falling back to CPU."""
+    nb_path = REPO_ROOT / "notebooks" / "gga_training_example-step7.ipynb"
+    nb = json.loads(nb_path.read_text())
+    code_cells_src = "\n".join(
+        "".join(c.get("source", []))
+        for c in nb["cells"] if c.get("cell_type") == "code"
+    )
+    # New signature: rc=None default kwarg accepted:
+    assert "def _looks_like_gpu_oom(text, rc=None):" in code_cells_src
+    # SIGKILL exit-code branch present:
+    assert "rc in (-9, 137)" in code_cells_src
+    # _run_training_isolated must call the helper with rc passed through:
+    assert "_looks_like_gpu_oom(captured, rc=rc)" in code_cells_src
