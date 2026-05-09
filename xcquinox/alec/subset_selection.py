@@ -158,6 +158,78 @@ def _bin_with_edges(arrs: dict, edges: dict) -> dict:
     return out
 
 
+def _prebin_pool(pool, edges: dict) -> tuple[dict, dict]:
+    """Pre-compute per-pool-entry weight-counts per bin and per-descriptor
+    in-range total weight.
+
+    Density-normalized histograms are additive over disjoint samples:
+    for a union of pool entries (i1, ..., ik), descriptor key k,
+    ``np.histogram(..., density=True)`` returns
+    ``sum(weight_counts_i_k) / (sum(W_in_range_i_k) * bin_width_k)``
+    where ``W_in_range_i_k = per_key_counts[k][i, :].sum()`` is the
+    weight of grid points from pool entry i whose log10-descriptor
+    fell INSIDE the histogram range (samples outside the range are
+    dropped by ``np.histogram`` and excluded from its normalization).
+    The in-range weight differs across descriptors because the (rho^1/3,
+    s, alpha) ranges are picked independently from the [0.1, 99.9]
+    percentiles in ``build_reference_histograms`` — so we must store
+    a separate W_in_range[k] vector per descriptor.
+
+    Returns (per_key_counts, W_in_range) where:
+      - per_key_counts[k] has shape (npool, NBINS): unnormalized
+        weight-counts per pool entry, descriptor k.
+      - W_in_range[k] has shape (npool,): in-range total weight per
+        pool entry, descriptor k.
+    """
+    npool = len(pool)
+    per_key_counts = {k: np.zeros((npool, NBINS), dtype=np.float64)
+                      for k in _DESCRIPTOR_KEYS}
+    W_in_range = {k: np.zeros(npool, dtype=np.float64) for k in _DESCRIPTOR_KEYS}
+    for i, arrs in enumerate(pool):
+        w = arrs.get("weights")
+        if w is None:
+            w = np.ones_like(arrs["rho_third"])
+        for k in _DESCRIPTOR_KEYS:
+            log_x = np.log10(arrs[k] + LOG_REGULARIZER)
+            h, _ = np.histogram(log_x, bins=edges[k], weights=w, density=False)
+            per_key_counts[k][i, :] = h
+            W_in_range[k][i] = float(h.sum())
+    return per_key_counts, W_in_range
+
+
+def _metric_l2_batch(h_ref: dict, h_cand_batch: dict) -> np.ndarray:
+    """Vectorized L2 metric across a batch of candidate histograms.
+
+    Equivalent to ``[metric_l2(h_ref, {k: h_cand_batch[k][b] ...}) for b in batch]``
+    but computed in a single numpy expression.  Returns shape ``(batch,)``.
+    """
+    diffs_sq = np.zeros_like(next(iter(h_cand_batch.values())))
+    for k in _DESCRIPTOR_KEYS:
+        diffs_sq += (h_ref[k][None, :] - h_cand_batch[k]) ** 2
+    return np.sqrt(diffs_sq).sum(axis=1)
+
+
+def _metric_jsd_batch(h_ref: dict, h_cand_batch: dict) -> np.ndarray:
+    """Vectorized JSD metric across a batch of candidate histograms.
+
+    Equivalent to ``[metric_jsd(h_ref, {k: h_cand_batch[k][b] ...}) for b in batch]``
+    but computed in a single numpy expression. Returns shape ``(batch,)``.
+    """
+    batch_size = next(iter(h_cand_batch.values())).shape[0]
+    total = np.zeros(batch_size, dtype=np.float64)
+    for k in _DESCRIPTOR_KEYS:
+        p = h_ref[k][None, :]                  # (1, NBINS)
+        q = h_cand_batch[k]                    # (batch, NBINS)
+        m = 0.5 * (p + q)
+        p_c = np.clip(p, KL_PROB_CLIP, 1.0)
+        q_c = np.clip(q, KL_PROB_CLIP, 1.0)
+        m_c = np.clip(m, KL_PROB_CLIP, 1.0)
+        kl_pm = np.sum(p_c * (np.log(p_c) - np.log(m_c)), axis=1)
+        kl_qm = np.sum(q_c * (np.log(q_c) - np.log(m_c)), axis=1)
+        total += 0.5 * (kl_pm + kl_qm)
+    return total
+
+
 def bin_descriptors(arrs: dict) -> dict:
     """Bin a single descriptor-array set with auto-computed log10 edges."""
     edges = {}
@@ -296,9 +368,9 @@ def select_subset(
         Defaults to ``"select_subset r={r} {metric}"``.
     """
     if metric == "l2":
-        m = metric_l2
+        m_batch = _metric_l2_batch
     elif metric == "jsd":
-        m = metric_jsd
+        m_batch = _metric_jsd_batch
     else:
         raise ValueError(f"unknown metric: {metric!r}")
 
@@ -348,11 +420,27 @@ def select_subset(
         vals = np.empty(n_combos, dtype=np.float64)
         idx_array = np.empty((n_combos, r), dtype=np.int64)
 
-    combo_iter = combinations(free_indices, free_r)
+    # Pre-bin pool entries ONCE so the inner combo loop only has to sum
+    # weight-counts across r entries (cheap) rather than re-binning the
+    # concatenation of r descriptor arrays per combo (expensive).  At
+    # r=12 over npool=26 this drops the per-combo cost from ~µs of bin
+    # work + Python overhead to a vectorized fancy-index + sum, taking
+    # the C(26,12)=9.66M-combo enumeration from ~hours to ~seconds.
+    per_key_counts, W_in_range = _prebin_pool(pool, edges)
+    bin_widths = {k: np.diff(edges[k]) for k in _DESCRIPTOR_KEYS}
+
+    fixed_arr = np.asarray(sorted(fixed_set), dtype=np.int64)
+    has_fixed = fixed_arr.size > 0
+
+    # Batch size: trades Python overhead vs peak memory.  Each batch
+    # allocates ~(BATCH * NBINS * 8 * 3 keys) bytes of float64 = ~150 MB
+    # at BATCH=32768 with NBINS=200.  Tunable via STEP7_SUBSET_BATCH env.
+    _batch_size = int(os.environ.get("STEP7_SUBSET_BATCH", "32768"))
+    _batch_size = max(1, min(_batch_size, max(1, n_combos)))
+
     if progress:
         from tqdm.auto import tqdm
-        combo_iter = tqdm(
-            combo_iter,
+        pbar = tqdm(
             total=n_combos,
             desc=progress_desc or f"select_subset r={r} {metric}",
             leave=False,
@@ -360,23 +448,61 @@ def select_subset(
             mininterval=0.5,
             unit="combo",
         )
+    else:
+        pbar = None
 
     best_val = float("inf")
     best_combo: tuple = ()
-    for k, combo in enumerate(combo_iter):
-        full = tuple(sorted(set(combo) | fixed_set))
-        cat = {key: np.concatenate([pool[i][key] for i in full]) for key in _DESCRIPTOR_KEYS}
-        cat["weights"] = np.concatenate(
-            [pool[i].get("weights", np.ones_like(pool[i]["rho_third"])) for i in full]
-        )
-        h_cand = _bin_with_edges(cat, edges)
-        v = m(h_ref, h_cand)
+    combo_iter = combinations(free_indices, free_r)
+    base_idx = 0
+    from itertools import islice as _islice
+    while True:
+        batch = list(_islice(combo_iter, _batch_size))
+        if not batch:
+            break
+        # Build full-combo array of shape (b, r): prepend fixed indices,
+        # then keep them sorted (downstream consumers expect sorted tuples).
+        free_batch = np.asarray(batch, dtype=np.int64)            # (b, free_r)
+        b = free_batch.shape[0]
+        if has_fixed:
+            full_batch = np.empty((b, r), dtype=np.int64)
+            full_batch[:, : fixed_arr.size] = fixed_arr[None, :]
+            full_batch[:, fixed_arr.size:] = free_batch
+            full_batch.sort(axis=1)
+        else:
+            full_batch = free_batch                               # already sorted ascending
+        # Build candidate density histograms via BLAS matmul.  A naive
+        # fancy index ``per_key_counts[k][full_batch, :]`` materializes
+        # a (b, r, NBINS) intermediate (≈630 MB at b=32k, r=12, NBINS=200)
+        # whose sum-over-r is bandwidth-bound.  Replace it with a dense
+        # one-hot indicator ``M[i, j] = 1 if j in combo_i`` (shape
+        # (b, npool)) and a matrix multiply ``M @ per_key_counts[k]``
+        # (shape (b, NBINS)).  np.matmul dispatches to BLAS gemm, hitting
+        # 50–100× the throughput of the fancy-index path.
+        M = np.zeros((b, npool), dtype=np.float64)
+        np.put_along_axis(M, full_batch, 1.0, axis=1)
+        h_cand_batch = {}
+        for key in _DESCRIPTOR_KEYS:
+            counts_combo = M @ per_key_counts[key]                # (b, NBINS)
+            W_combo_k = M @ W_in_range[key]                       # (b,)
+            # Guard against the empty-in-range edge case (all grid points
+            # fell outside the histogram range for this descriptor).
+            W_safe = np.where(W_combo_k > 0.0, W_combo_k, 1.0)
+            h_cand_batch[key] = counts_combo / (W_safe[:, None] * bin_widths[key][None, :])
+        vals_batch = m_batch(h_ref, h_cand_batch)                 # (b,)
         if return_all:
-            vals[k] = v
-            idx_array[k, :] = full
-        if v < best_val:
-            best_val = v
-            best_combo = full
+            vals[base_idx: base_idx + b] = vals_batch
+            idx_array[base_idx: base_idx + b, :] = full_batch
+        # Best update: pick the argmin within the batch and compare.
+        local_best = int(np.argmin(vals_batch))
+        if vals_batch[local_best] < best_val:
+            best_val = float(vals_batch[local_best])
+            best_combo = tuple(int(x) for x in full_batch[local_best])
+        base_idx += b
+        if pbar is not None:
+            pbar.update(b)
+    if pbar is not None:
+        pbar.close()
 
     if return_all and distribution_path is not None:
         # Atomic write: tempfile + os.replace so an interrupted enumeration

@@ -170,13 +170,19 @@ def test_select_subset_recovers_pool_when_r_eq_n_l2():
     pool, h_ref, edges = _build_toy_pool(npool=5)
     chosen, val = ss.select_subset(pool, edges, h_ref, r=5, metric="l2")
     assert sorted(chosen) == [0, 1, 2, 3, 4]
-    assert val == pytest.approx(0.0, abs=1e-12)
+    # The vectorized prebin-then-sum path uses a different summation order
+    # than the concatenate-then-bin path used to construct h_ref, so the
+    # r=npool case is algorithmically identical but not bit-identical;
+    # roundoff is bounded by ~NBINS * float64-eps per descriptor.
+    assert val == pytest.approx(0.0, abs=1e-9)
 
 
 def test_select_subset_recovers_pool_when_r_eq_n_jsd():
     pool, h_ref, edges = _build_toy_pool(npool=5)
     chosen, val = ss.select_subset(pool, edges, h_ref, r=5, metric="jsd")
     assert sorted(chosen) == [0, 1, 2, 3, 4]
+    # JSD is roughly quadratic near zero, so its roundoff is bounded by
+    # the square of the L2 case's roundoff; 1e-15 in practice.
     assert val == pytest.approx(0.0, abs=1e-12)
 
 
@@ -194,7 +200,41 @@ def test_select_subset_exhaustive_for_small_r():
         if v < best_val:
             best_val, best_pair = v, pair
     assert sorted(chosen) == sorted(best_pair)
-    assert val == pytest.approx(best_val, rel=1e-12)
+    # Slow path bins concatenated arrays; fast path bins per pool entry then
+    # sums.  Equivalent up to summation-order roundoff (~NBINS * float64-eps).
+    assert val == pytest.approx(best_val, rel=1e-9, abs=1e-12)
+
+
+def test_select_subset_fast_matches_slow_per_combo():
+    """Pin the prebin-then-batch fast path against an explicit slow
+    concatenate-then-bin recompute for EVERY combo on a moderately
+    large toy pool (C(10, 4) = 210 combos).  Catches regressions where
+    the in-range-weight normalization or batching logic drift away from
+    the original ``_bin_with_edges`` semantics."""
+    from itertools import combinations as _C
+    pool, h_ref, edges = _build_toy_pool(npool=10, seed=42)
+    # Fast path with return_all=True so we can compare every combo's value.
+    _, _, vals_fast, idx_fast = ss.select_subset(
+        pool, edges, h_ref, r=4, metric="l2",
+        return_all=True, progress=False,
+    )
+    # Slow path: explicit concatenate-then-bin, in iteration order.
+    vals_slow = np.empty_like(vals_fast)
+    idx_slow = np.empty_like(idx_fast)
+    for k, combo in enumerate(_C(range(10), 4)):
+        cat = {key: np.concatenate([pool[i][key] for i in combo])
+               for key in ss._DESCRIPTOR_KEYS}
+        cat["weights"] = np.concatenate(
+            [pool[i].get("weights", np.ones_like(pool[i]["rho_third"]))
+             for i in combo]
+        )
+        h_cand = ss._bin_with_edges(cat, edges)
+        vals_slow[k] = ss.metric_l2(h_ref, h_cand)
+        idx_slow[k, :] = combo
+    np.testing.assert_array_equal(idx_fast, idx_slow)
+    # Element-wise comparison: fast and slow paths agree up to summation-
+    # order float roundoff bounded by ~NBINS * float64-eps.
+    np.testing.assert_allclose(vals_fast, vals_slow, rtol=1e-9, atol=1e-12)
 
 
 def test_compute_atom_set_for_simple_subset():
