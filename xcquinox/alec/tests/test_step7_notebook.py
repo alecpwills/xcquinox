@@ -52,3 +52,43 @@ def test_step7_notebook_oom_detection_handles_sigkill_exit_code():
     assert "rc in (-9, 137)" in code_cells_src
     # _run_training_isolated must call the helper with rc passed through:
     assert "_looks_like_gpu_oom(captured, rc=rc)" in code_cells_src
+
+
+def test_step7_spec_builder_excludes_bh76_compounds_from_ae_channel():
+    """Regression pin (2026-05-10): mixed-pool spec assembly must derive
+    `aux_only_names` from the polyatomic species that did NOT come from an
+    AE TrainingPoint (i.e. BH76 reactant/product compounds like HO, CH3,
+    CH4, N2, N2O, F2).  Without this, ``_ae_losses`` includes those
+    species in ``compound_idx`` with target=0.0, the relative-error
+    denominator collapses to (0² + 1e-8) = 1e-8, and a ~0.5 Ha NN-vs-anchor
+    AE prediction blows up to ~2.5e+7 — driving the trained NN to make
+    `compound energy = sum-of-atom-energies` for those compounds, an
+    unphysical objective.
+
+    bin01 (single AE point) trained correctly through this bug because
+    no BH76 species were chosen.  bin02+ specs with BH76 reactions all
+    learned the wrong objective.
+    """
+    nb_path = REPO_ROOT / "notebooks" / "gga_training_example-step7.ipynb"
+    nb = json.loads(nb_path.read_text())
+    code_cells_src = "\n".join(
+        "".join(c.get("source", []))
+        for c in nb["cells"] if c.get("cell_type") == "code"
+    )
+    # The spec builder must compute the aux-polyatomic name tuple by
+    # excluding species with an _ae_ref_kcalmol entry (= AE TrainingPoint
+    # compounds).
+    assert "_aux_polyatomic_names" in code_cells_src, (
+        "spec-builder cell missing the _aux_polyatomic_names derivation "
+        "(BH76 species would otherwise pollute the AE channel)"
+    )
+    assert "ms.name not in _ae_ref_kcalmol" in code_cells_src, (
+        "_aux_polyatomic_names derivation must exclude AE-reference "
+        "compounds; otherwise BH76 species (without AE targets) would "
+        "be misclassified as AE compounds"
+    )
+    # And it must be wired into loss_kwargs:
+    assert "'aux_only_names': _aux_polyatomic_names" in code_cells_src, (
+        "loss_kwargs missing aux_only_names — BH76 compounds will enter "
+        "the AE channel with target=0.0 placeholders"
+    )
