@@ -432,41 +432,64 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
     L0 = loss.compute_components(model, batch, relative=relative)
     L0_values = jnp.stack([L0[k] for k in component_keys])
 
+    # GradNorm step is deliberately split into 1 + n_tasks + 1 small JITs
+    # rather than one monolithic graph.  L5_gradnorm_vxc_step7 has 5 task
+    # channels and the full_3 solver differentiates through 3 SCF cycles
+    # per molecule; a single jit that contains the weighted-loss grad +
+    # 5 per-task grads forces XLA to keep activations from 6 forward
+    # passes alive simultaneously (~31 GiB peak observed at 7 species,
+    # OOMs both GPU and a 32 GiB CPU box).  Splitting drops peak memory
+    # to one forward+backward at a time (~5 GiB) and replaces the single
+    # 11+ minute compile with several ~30 s compiles.
     @eqx.filter_jit
-    def _gradnorm_step(model, opt_state, log_weights, weight_opt_state,
-                       batch, L0_values):
-        weights = jax.nn.softmax(log_weights) * n_tasks
+    def _model_grad_step(model, batch, weights):
+        """Forward pass + weighted-loss gradient.
 
+        Returns (components_dict, comp_values, model_grads).  This is
+        the SHARED forward pass; per-task gnorms below re-execute the
+        forward (they need their own backward graph with a different
+        upstream grad) but each runs in its own JIT and frees its
+        intermediates before the next one starts.
+        """
         components = loss.compute_components(model, batch, relative=relative)
         comp_values = jnp.stack([components[k] for k in component_keys])
 
-        def weighted_loss(m, b):
-            c = loss.compute_components(m, b, relative=relative)
+        def weighted_loss(m):
+            c = loss.compute_components(m, batch, relative=relative)
             cv = jnp.stack([c[k] for k in component_keys])
             return jnp.sum(weights * cv)
-        _, model_grads = eqx.filter_value_and_grad(weighted_loss)(model, batch)
+        _, model_grads = eqx.filter_value_and_grad(weighted_loss)(model)
+        return components, comp_values, model_grads
 
-        per_task_gnorms = []
-        for i in range(n_tasks):
-            g_i = eqx.filter_grad(
-                lambda m, b, _i=i: (
-                    weights[_i] * jnp.stack(
-                        [loss.compute_components(m, b, relative=relative)[k]
-                         for k in component_keys]
-                    )[_i]
-                )
-            )(model, batch)
-            gnorm_i = optax.global_norm(eqx.filter(g_i, eqx.is_array))
-            per_task_gnorms.append(gnorm_i)
-        G = jnp.stack(per_task_gnorms)
+    def _make_task_gnorm_jit(task_key):
+        """Compile one ``filter_jit`` per task channel.
 
+        ``task_key`` is captured Python-side so each kernel is a small,
+        single-output forward+backward graph.  XLA caches the compile by
+        function identity; we get exactly ``n_tasks`` cached kernels,
+        amortized across all training steps.
+        """
+        @eqx.filter_jit
+        def _task_gnorm(model, batch, weight_i):
+            def task_loss(m):
+                c = loss.compute_components(m, batch, relative=relative)
+                return weight_i * c[task_key]
+            g = eqx.filter_grad(task_loss)(model)
+            return optax.global_norm(eqx.filter(g, eqx.is_array))
+        return _task_gnorm
+    _task_gnorm_jits = {k: _make_task_gnorm_jit(k) for k in component_keys}
+
+    @eqx.filter_jit
+    def _apply_updates(model, opt_state, log_weights, weight_opt_state,
+                       comp_values, model_grads, G, L0_values, weights):
+        """Optimizer update (weights + model).  Pure jnp/optax math —
+        compiles in <1 s and uses negligible memory.
+        """
         r = comp_values / (L0_values + 1e-12)
         r_mean = jnp.mean(r)
         r_relative = r / (r_mean + 1e-12)
-
         G_mean = jnp.mean(G)
         targets = G_mean * (r_relative ** balancing.alpha)
-
         weight_grads = jax.grad(
             lambda lw: jnp.sum(
                 (G * (jax.nn.softmax(lw) * n_tasks / (weights + 1e-12))
@@ -476,24 +499,35 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
         w_updates, new_weight_opt_state = weight_optimizer.update(
             weight_grads, weight_opt_state)
         new_log_weights = log_weights + w_updates
-
         updates, new_opt_state = optimizer.update(model_grads, opt_state, model)
         new_model = eqx.apply_updates(model, updates)
-
         total = jnp.sum(weights * comp_values)
-        return (new_model, new_opt_state, new_log_weights, new_weight_opt_state,
-                total, components, weights, G)
+        return (new_model, new_opt_state, new_log_weights,
+                new_weight_opt_state, total)
 
     losses_list = []
     aux_log = []
     for step in range(spec.n_steps):
-        (model, opt_state, log_weights, weight_opt_state,
-         loss_value, components, weights, gnorms) = _gradnorm_step(
-            model, opt_state, log_weights, weight_opt_state, batch, L0_values)
+        weights = jax.nn.softmax(log_weights) * n_tasks
+        components, comp_values, model_grads = _model_grad_step(
+            model, batch, weights)
+        # Per-task gnorms: each call is its own JIT.  XLA frees
+        # intermediates between calls so peak memory ≈ ONE forward+
+        # backward at a time, not n_tasks of them simultaneously.
+        per_task_gnorms = []
+        for i, k in enumerate(component_keys):
+            per_task_gnorms.append(
+                _task_gnorm_jits[k](model, batch, weights[i])
+            )
+        G = jnp.stack(per_task_gnorms)
+        (model, opt_state, log_weights,
+         weight_opt_state, loss_value) = _apply_updates(
+            model, opt_state, log_weights, weight_opt_state,
+            comp_values, model_grads, G, L0_values, weights)
         loss_py = float(loss_value)
         losses_list.append(loss_py)
         eff = {k: float(weights[i]) for i, k in enumerate(component_keys)}
-        gn = {k: float(gnorms[i]) for i, k in enumerate(component_keys)}
+        gn = {k: float(G[i]) for i, k in enumerate(component_keys)}
         aux_log.append({
             "step": step, "loss": loss_py, "aux": components,
             "balancing_info": {
