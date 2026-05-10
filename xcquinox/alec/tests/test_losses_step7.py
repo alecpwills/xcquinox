@@ -159,8 +159,12 @@ def test_iter_idx_default_equals_compound_idx():
     assert loss._iter_idx_for_aux_channels() == loss.compound_idx
 
 
-def test_aux_only_names_filtering_all_compounds_raises():
-    """If aux_only_names removes every compound, __init__ raises ValueError."""
+def test_aux_only_names_filtering_all_compounds_is_permitted():
+    """When aux_only_names removes every compound, __init__ no longer
+    raises (2026-05-10 mixed-pool relaxation): a BH76- or IP13-only
+    subset is a legitimate L5 configuration where the AE channel
+    contributes 0 and BH76 / IP13 carry the loss.  Verify compound_idx
+    is empty after the filter and loss object still builds."""
     from xcquinox.alec.losses import L5GradnormVxcStep7
     from xcquinox.alec.config import MoleculeSpec
     h2o = MoleculeSpec.from_dict(
@@ -172,10 +176,109 @@ def test_aux_only_names_filtering_all_compounds_raises():
         name="H", atom="H 0 0 0", atom_composition={"H": 1},
         basis="sto-3g", charge=0, spin=1,
     )
-    with pytest.raises(ValueError, match="aux_only_names filtered out all"):
-        L5GradnormVxcStep7(
-            molecules=(h2o, h_atom),
-            bh76_reactions=(),
-            ip13_pairs=(),
-            aux_only_names=("H2O",),
-        )
+    loss = L5GradnormVxcStep7(
+        molecules=(h2o, h_atom),
+        bh76_reactions=(),
+        ip13_pairs=(),
+        aux_only_names=("H2O",),
+    )
+    assert loss.compound_idx == ()
+    # H atom remains in atom_mol_idx; H2O is filtered out of compound_idx.
+    assert dict(loss.atom_mol_idx) == {"H": 1}
+
+
+def test_build_indices_prefers_neutral_atom_over_cation():
+    """When a spec contains both neutral Li (charge=0) AND Li+ (charge=1)
+    as single-atom MoleculeSpecs, atom_mol_idx['Li'] must point at the
+    NEUTRAL entry — _atomic_reg compares E_NN[atom_mol_idx[Z]] against
+    atom_energies[Z] (neutral Chakravorty value), so pointing at the
+    cation would train the *cation* energy toward the *neutral* anchor,
+    biasing the loss by the IP magnitude (~5 eV for Li).  Mixed-pool
+    specs combining HLi (Li anchor) + Li_IP (neutral Li and Li+) hit
+    this exact case (jsd/r=5 onward, l2/r=7 onward)."""
+    from xcquinox.alec.losses import AlecLoss
+    from xcquinox.alec.config import MoleculeSpec
+    li = MoleculeSpec.from_dict(
+        name="Li", atom="Li 0 0 0", atom_composition={"Li": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    li_plus = MoleculeSpec.from_dict(
+        name="Li+", atom="Li 0 0 0", atom_composition={"Li": 1},
+        basis="sto-3g", charge=1, spin=0,
+    )
+    h_atom = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    h_li = MoleculeSpec.from_dict(
+        name="HLi", atom="H 0 0 0; Li 0 0 1",
+        atom_composition={"H": 1, "Li": 1},
+        basis="sto-3g", charge=0, spin=0,
+    )
+    # Order with cation FIRST (would be the failing case under the old
+    # last-wins logic).  build_indices must still pick neutral Li.
+    molecules = (li_plus, h_atom, h_li, li)
+    ami, ci, mn, _ = AlecLoss.build_indices(molecules)
+    ami_dict = dict(ami)
+    assert "Li" in ami_dict and "H" in ami_dict
+    li_idx = ami_dict["Li"]
+    assert int(molecules[li_idx].charge) == 0, (
+        f"atom_mol_idx['Li'] = idx {li_idx} -> "
+        f"{mn[li_idx]} (charge={molecules[li_idx].charge}); "
+        f"expected neutral Li (charge=0)"
+    )
+    # And the reverse order (neutral first, cation later) — neutral
+    # should still win.
+    molecules2 = (li, h_atom, h_li, li_plus)
+    ami2, _, _, _ = AlecLoss.build_indices(molecules2)
+    li_idx2 = dict(ami2)["Li"]
+    assert int(molecules2[li_idx2].charge) == 0
+
+
+def test_build_indices_require_compound_false_permits_atomic_only():
+    """build_indices(require_compound=False) does NOT raise when every
+    molecule is single-atom — supports L5GradnormVxcStep7 specs that
+    contain only IP13 species (Li, Li+) with no compound molecules."""
+    from xcquinox.alec.losses import AlecLoss
+    from xcquinox.alec.config import MoleculeSpec
+    li = MoleculeSpec.from_dict(
+        name="Li", atom="Li 0 0 0", atom_composition={"Li": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    li_plus = MoleculeSpec.from_dict(
+        name="Li+", atom="Li 0 0 0", atom_composition={"Li": 1},
+        basis="sto-3g", charge=1, spin=0,
+    )
+    # Default require_compound=True still raises.
+    with pytest.raises(ValueError, match="at least one compound molecule"):
+        AlecLoss.build_indices((li, li_plus))
+    # require_compound=False permits empty compound_idx.
+    ami, ci, mn, _ = AlecLoss.build_indices(
+        (li, li_plus), require_compound=False)
+    assert ci == ()
+    assert dict(ami) == {"Li": 0}  # neutral Li
+
+
+def test_l5_handles_ip13_only_spec_with_no_compound():
+    """L5GradnormVxcStep7 must accept a pure-IP13 spec (Li + Li+ only)
+    without any polyatomic compounds.  The AE-fitting term is 0; the
+    IP13 channel and atomic_reg carry the loss."""
+    from xcquinox.alec.losses import L5GradnormVxcStep7
+    from xcquinox.alec.config import MoleculeSpec
+    li = MoleculeSpec.from_dict(
+        name="Li", atom="Li 0 0 0", atom_composition={"Li": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    li_plus = MoleculeSpec.from_dict(
+        name="Li+", atom="Li 0 0 0", atom_composition={"Li": 1},
+        basis="sto-3g", charge=1, spin=0,
+    )
+    loss = L5GradnormVxcStep7(
+        molecules=(li, li_plus),
+        bh76_reactions=(),
+        ip13_pairs=({"name": "Li_IP", "neutral": "Li", "cation": "Li+",
+                     "ip_ref": 0.198},),
+        regularize_atom_syms=("Li",),
+    )
+    assert loss.compound_idx == ()
+    assert dict(loss.atom_mol_idx) == {"Li": 0}

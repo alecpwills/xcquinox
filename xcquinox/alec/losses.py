@@ -77,23 +77,46 @@ class AlecLoss(eqx.Module, abc.ABC):
         ...
 
     @staticmethod
-    def build_indices(molecules):
+    def build_indices(molecules, *, require_compound: bool = True):
         """Build hashable (atom_mol_idx, compound_idx, mol_names, compositions).
 
-        Raises ValueError if no compound molecules are present.
+        ``atom_mol_idx`` is keyed by element symbol and PREFERS neutral
+        (charge=0) single-atom MoleculeSpecs over cations/anions. The
+        downstream consumer (``_atomic_reg``) compares ``E_NN[idx]``
+        against the neutral atom anchor in ``atom_energies[Z]``; pointing
+        ``atom_map['Li']`` at a Li+ cation would train the network's
+        *cation* energy toward the *neutral* Chakravorty value, biasing
+        by the ionization-potential magnitude (~5 eV for Li). Mixed-pool
+        specs that combine an IP13 pair with the species' neutral atom
+        (e.g., HLi's Li anchor + Li_IP's neutral Li and Li+) hit this
+        case at every step ≥ jsd/r=5 / l2/r=7.
+
+        ``require_compound=False`` permits L5GradnormVxcStep7 to operate
+        on specs containing no polyatomic species (BH76- or IP13-only
+        subsets), where the AE channel sensibly contributes zero and the
+        BH76/IP13 channels carry the loss.
         """
-        atom_map = {}
+        atom_map: dict[str, int] = {}
         for i, m in enumerate(molecules):
             comp = dict(m.atom_composition)
-            if sum(comp.values()) == 1:
-                symbol = next(iter(comp))
+            if sum(comp.values()) != 1:
+                continue
+            symbol = next(iter(comp))
+            charge_i = int(m.charge)
+            if symbol not in atom_map:
                 atom_map[symbol] = i
+            elif charge_i == 0 and int(molecules[atom_map[symbol]].charge) != 0:
+                # Replace a non-neutral entry with the neutral one.
+                atom_map[symbol] = i
+            # Else: keep existing (already neutral, or both non-neutral —
+            # in which case the first one observed wins, which is harmless
+            # because dedup-by-(name, charge, spin) prevents duplicates).
         atom_mol_idx = tuple(sorted(atom_map.items()))
         compound_idx = tuple(
             i for i, m in enumerate(molecules)
             if sum(dict(m.atom_composition).values()) > 1
         )
-        if not compound_idx:
+        if not compound_idx and require_compound:
             raise ValueError(
                 "Loss requires at least one compound molecule (atom_composition "
                 f"sum > 1); got only atomic molecules: {[m.name for m in molecules]}"
@@ -912,7 +935,12 @@ class L5GradnormVxcStep7(AlecLoss):
         self._validate_static_bool("molecules_only", molecules_only)
         self._validate_static_float("vxc_weight", vxc_weight)
         self._validate_static_float("density_weight", density_weight)
-        ami, ci, mn, comp = self.build_indices(molecules)
+        # require_compound=False: a BH76-only or IP13-only subset (no
+        # polyatomic species) is a legitimate L5 configuration; the AE
+        # channel returns 0 in compute_components and the BH76/IP13
+        # channels carry the loss.  Aux filter applied below.
+        ami, ci, mn, comp = self.build_indices(
+            molecules, require_compound=False)
         self.atom_mol_idx = ami
         self.compound_idx = ci
         self.mol_names = mn
@@ -923,12 +951,14 @@ class L5GradnormVxcStep7(AlecLoss):
             i for i in self.compound_idx
             if self.mol_names[i] not in aux_set
         )
-        if not self.compound_idx:
-            raise ValueError(
-                "aux_only_names filtered out all compound molecules from "
-                f"compound_idx. aux_only_names={list(aux_only_names)!r}. "
-                "Ensure at least one compound molecule is not in aux_only_names."
-            )
+        # Empty compound_idx (after aux filter) is permitted: the AE
+        # channel evaluates to 0 in compute_components and the loss
+        # remains well-formed via BH76 + IP13 + atomic_reg + vxc + rho.
+        # Validation that at least ONE channel has signal happens
+        # implicitly — a spec with no compounds, no BH76 reactions, no
+        # IP13 pairs, and no Dick atoms would yield a constant zero loss
+        # which the GradNorm rebalance step would surface as NaN/Inf
+        # gnorms — caller is expected to choose a non-degenerate subset.
         self.w_atomic = w_atomic
         self.bh76_reactions = bh76_frozen
         self.ip13_pairs = ip13_frozen
@@ -1042,10 +1072,16 @@ class L5GradnormVxcStep7(AlecLoss):
         # mirroring AtomizationLoss but bundled into a single channel for
         # GradNorm. atomic_reg is folded into the AE channel because it is
         # a regularizer of the AE quantity, not an independent task.
-        loss_ae = _ae_losses(
-            E_nn, self.compound_idx, comp_dicts,
-            self.mol_names, targets, atom_energies,
-        )
+        # Empty compound_idx → AE-fitting term is 0 (BH76- / IP13-only
+        # subsets); atomic_reg may still be nonzero if any Dick atom is
+        # in atom_idx.
+        if self.compound_idx:
+            loss_ae = _ae_losses(
+                E_nn, self.compound_idx, comp_dicts,
+                self.mol_names, targets, atom_energies,
+            )
+        else:
+            loss_ae = jnp.array(0.0)
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
         loss_ae_total = loss_ae + atomic_reg
 
