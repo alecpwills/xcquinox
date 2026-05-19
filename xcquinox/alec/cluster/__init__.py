@@ -34,7 +34,6 @@ from xcquinox.alec.cluster.materialize import (
 from xcquinox.alec.cluster.spec_builder import (
     build_training_specs,
     build_test_spec,
-    pool_fingerprint,
     atoms_to_pyscf_str,
     atoms_to_mol_spec,
     build_targets,
@@ -93,7 +92,6 @@ __all__ = [
     "write_manifest",
     "build_training_specs",
     "build_test_spec",
-    "pool_fingerprint",
     "atoms_to_pyscf_str",
     "atoms_to_mol_spec",
     "build_targets",

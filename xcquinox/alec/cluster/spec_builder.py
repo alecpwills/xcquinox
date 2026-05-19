@@ -10,85 +10,44 @@ It deliberately carries no ``step7`` / notebook-stage naming: a
 table (atomic energies, kcal/Ha, BH76/IP13 extractors), a
 :class:`~xcquinox.alec.cluster.grid_config.GridConfig` supplies the swept axes
 + hyperparameters, and the caller supplies the full ``TrainingPoint`` pool plus
-a *name-based* subset ledger.
+the EXISTING subset ledger.
 
-The subset_ledger schema (canonical — the later ``inputs.py`` writer MUST match)
-----------------------------------------------------------------------------
-``build_training_specs`` expects ``subset_ledger`` to be a dict of the form::
+The subset_ledger schema
+------------------------
+``build_training_specs`` consumes the EXISTING ``subset_index_log.json`` dict
+produced by the (already-finished) subset-selection pre-process — handed
+through verbatim by :func:`xcquinox.alec.cluster.inputs.prepare_inputs`. Its
+schema is::
 
     {
-        "pool_fingerprint": "<hex sha256 digest>",
-        "entries": {
-            (metric, subset_size): {
-                "metric": metric,                 # str, e.g. "l2"
-                "subset_size": subset_size,        # int
-                "point_names": [name, name, ...],  # chosen TrainingPoint names
-            },
-            ...
+        "<metric>/<subset_size>": {            # e.g. "l2/3"
+            "chosen_indices": [<int>, ...],    # provenance only
+            "metric_value": <float>,           # provenance only
+            "point_kinds": [<kind>, ...],      # provenance only
+            "point_names": [<name>, ...],      # the chosen TrainingPoint names
+            "tag": "bin<NN>"                   # provenance only
         },
+        ...
     }
 
 Notes:
-- The ledger is **NAME-BASED**: each entry stores the chosen training points by
-  their ``TrainingPoint.name`` (NOT by index into the pool). Names are resolved
-  back to ``TrainingPoint`` objects by identity lookup in ``points``.
-- ``pool_fingerprint`` is a stable :func:`pool_fingerprint` digest of the pool
-  the subsets were selected from. ``build_training_specs`` asserts it matches
-  the fingerprint of the ``points`` it is given, and fails loudly on mismatch.
-- The ``entries`` keys MAY be ``(metric, subset_size)`` tuples (the in-memory
-  form) or the JSON-string form ``"<metric>:<subset_size>"`` — the lookup
-  helper accepts both so a JSON-loaded ledger works without re-keying.
+- The harness resolves a cell's training points **by name** from
+  ``entry["point_names"]`` against the supplied ``points`` pool. It does NOT
+  use ``chosen_indices`` — those are positional into a pool list and are not
+  robust to pool reordering; ``point_names`` is the stable key.
+- There is NO ``pool_fingerprint`` and NO top-level wrapper — the ledger is a
+  bare dict of ``"<metric>/<r>"`` entries. The safety net against a stale
+  ledger is name resolution itself: if the pool genuinely differs, a
+  ``point_name`` will not resolve and ``build_training_specs`` fails loudly.
 - An entry's ``point_names`` MAY be empty (a valid degenerate subset); the
   resulting spec will simply have whatever ``species_union_from_points`` yields.
 """
-import hashlib
 import os
 
 from xcquinox.alec.config import MoleculeSpec, TrainingSpec, TestSpec
 from xcquinox.alec.training_points import species_union_from_points
 from xcquinox.alec.solver import SolverConfig, SolverMode, FeaturePolicy
 from xcquinox.alec import get_architecture
-
-
-# ---------------------------------------------------------------------------
-# Pool fingerprinting
-# ---------------------------------------------------------------------------
-
-def pool_fingerprint(points) -> str:
-    """Stable SHA-256 digest of a ``TrainingPoint`` pool.
-
-    The digest is computed over the *sorted* list of per-point
-    ``(name, kind, sorted-species-names)`` triples, so it is independent of
-    the order in which the points are presented (a permuted pool hashes the
-    same) and depends only on the identity of the points and the species they
-    carry.
-
-    Parameters
-    ----------
-    points : Sequence[TrainingPoint]
-        The training-point pool.
-
-    Returns
-    -------
-    str
-        Lower-case hex SHA-256 digest.
-    """
-    triples = []
-    for tp in points:
-        species_names = tuple(sorted(s.info["name"] for s in tp.species))
-        triples.append((str(tp.name), str(tp.kind), species_names))
-    triples.sort()
-    h = hashlib.sha256()
-    for name, kind, species_names in triples:
-        h.update(name.encode("utf-8"))
-        h.update(b"\x00")
-        h.update(kind.encode("utf-8"))
-        h.update(b"\x00")
-        for sn in species_names:
-            h.update(sn.encode("utf-8"))
-            h.update(b"\x01")
-        h.update(b"\x02")
-    return h.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -236,34 +195,9 @@ def build_targets(mol_specs, ae_ref_kcalmol, domain) -> dict:
 # Ledger lookup + solver-config materialization
 # ---------------------------------------------------------------------------
 
-def _ledger_entries(subset_ledger) -> dict:
-    """Return the ``entries`` mapping out of a subset ledger.
-
-    Accepts either the documented ``{"pool_fingerprint": ..., "entries": {...}}``
-    form, or — defensively — a bare entries dict (no ``entries`` key).
-    """
-    if "entries" in subset_ledger:
-        return subset_ledger["entries"]
-    return {
-        k: v for k, v in subset_ledger.items()
-        if k != "pool_fingerprint"
-    }
-
-
-def _lookup_entry(entries, metric, subset_size):
-    """Look up a ledger entry for ``(metric, subset_size)``.
-
-    Accepts both the in-memory tuple key ``(metric, subset_size)`` and the
-    JSON-string key ``"<metric>:<subset_size>"`` so a JSON-loaded ledger works
-    without re-keying.
-    """
-    tuple_key = (metric, subset_size)
-    if tuple_key in entries:
-        return entries[tuple_key]
-    str_key = f"{metric}:{subset_size}"
-    if str_key in entries:
-        return entries[str_key]
-    return None
+def _ledger_key(metric: str, subset_size: int) -> str:
+    """The ``subset_index_log.json`` entry key for a ``(metric, r)`` pair."""
+    return f"{metric}/{int(subset_size)}"
 
 
 def _solver_config_from_named(named) -> SolverConfig:
@@ -306,12 +240,12 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
     points : Sequence[TrainingPoint]
         The full training-point pool (e.g. from ``build_dfs_pool_points``).
     subset_ledger : dict
-        Name-based subset ledger — see the module docstring for the schema.
-        Its ``pool_fingerprint`` MUST match :func:`pool_fingerprint` of
-        ``points`` (a mismatch raises :class:`ValueError`).
+        The EXISTING ``subset_index_log.json`` dict — see the module docstring
+        for the schema. Keys are ``"<metric>/<subset_size>"`` strings; the
+        cell's training points are resolved by name from ``point_names``.
     cfg : GridConfig
-        Harness config — supplies the swept axes, hyperparameters, and named
-        solver configs.
+        Harness config — supplies the swept axes, hyperparameters, named
+        solver configs, and the ``pretrain`` stage config.
     domain : DomainProfile
         Physics tables (atom energies, kcal/Ha, BH76/IP13 extractors,
         regularizer atom symbols).
@@ -330,31 +264,11 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
     Raises
     ------
     ValueError
-        If the ledger's ``pool_fingerprint`` does not match ``points``, or if
-        a ``(metric, subset_size)`` grid cell has no ledger entry.
+        If a ``(metric, subset_size)`` grid cell has no ledger entry, or if a
+        ledger entry names a training point absent from the ``points`` pool.
     """
     from xcquinox.alec.cluster.grid_config import expand_grid
     from xcquinox.alec.balancing import GradNormConfig
-
-    # --- fingerprint guard --------------------------------------------------
-    actual_fp = pool_fingerprint(points)
-    ledger_fp = subset_ledger.get("pool_fingerprint")
-    if ledger_fp is None:
-        raise ValueError(
-            "subset_ledger is missing the required 'pool_fingerprint' key; "
-            "the ledger writer must record pool_fingerprint(points) so the "
-            "spec builder can verify the ledger matches the pool it is given."
-        )
-    if ledger_fp != actual_fp:
-        raise ValueError(
-            "subset_ledger pool_fingerprint mismatch: the ledger was built "
-            f"against a pool with fingerprint {ledger_fp!r}, but the `points` "
-            f"passed to build_training_specs fingerprint to {actual_fp!r}. "
-            "The ledger and the training-point pool are out of sync — "
-            "regenerate the subset ledger against the current pool."
-        )
-
-    entries = _ledger_entries(subset_ledger)
 
     # --- name -> TrainingPoint resolution ----------------------------------
     points_by_name: dict = {}
@@ -381,20 +295,24 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
     hp = cfg.hyperparams
     out: list = []
     for idx, cell in enumerate(cells):
-        entry = _lookup_entry(entries, cell.metric, cell.subset_size)
-        if entry is None:
+        ledger_key = _ledger_key(cell.metric, cell.subset_size)
+        if ledger_key not in subset_ledger:
             raise ValueError(
                 f"subset_ledger has no entry for (metric={cell.metric!r}, "
-                f"subset_size={cell.subset_size}); every grid cell's "
-                "(metric, subset_size) pair must be present in the ledger."
+                f"subset_size={cell.subset_size}) — key {ledger_key!r} is "
+                "absent. Every grid cell's (metric, subset_size) pair must be "
+                "present in the existing subset_index_log.json ledger."
             )
+        entry = subset_ledger[ledger_key]
         point_names = entry.get("point_names", [])
         missing = [pn for pn in point_names if pn not in points_by_name]
         if missing:
             raise ValueError(
-                f"subset_ledger entry for (metric={cell.metric!r}, "
-                f"subset_size={cell.subset_size}) names training points not "
-                f"present in the pool: {missing}."
+                f"subset_ledger entry {ledger_key!r} names training points "
+                f"not present in the pool: {missing}. The ledger and the "
+                "training-point pool are out of sync — the ledger was "
+                "selected against a different pool; regenerate it (or pass "
+                "the matching pool)."
             )
         chosen_points = [points_by_name[pn] for pn in point_names]
 
@@ -445,7 +363,14 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             loss_name=cell.loss,
             loss_kwargs=loss_kwargs,
             solver_config=solver_cfg,
-            pretrain_checkpoint=cfg.inputs.pretrain_checkpoint,
+            # The pretrain stage writes one checkpoint per architecture to
+            # ``<pretrain_root>/<arch>/``; that directory IS this cell's
+            # pretrained checkpoint. validate() only checks the path when the
+            # dir exists, so building specs before the pretrain stage runs is
+            # fine — the downstream preflight runs pretrain-then-validate.
+            pretrain_checkpoint=os.path.join(
+                cfg.pretrain.pretrain_root, cell.arch
+            ),
             checkpoint_dir=_checkpoint_dir(run_dir, idx, n),
             n_steps=hp.n_steps,
             lr_start=hp.lr_start,

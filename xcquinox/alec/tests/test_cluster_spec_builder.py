@@ -1,9 +1,12 @@
 """Tests for xcquinox.alec.cluster.spec_builder — generic spec assembly.
 
-These tests use a small synthetic ``TrainingPoint`` pool and a stub name-based
-``subset_ledger`` so they stay focused on the spec-assembly logic (fingerprint
-guard, targets / aux-only classification, BH76 filtering, checkpoint-dir
-padding, TestSpec wiring) without depending on the heavy DFS pool builder.
+These tests use a small synthetic ``TrainingPoint`` pool and a stub
+``subset_ledger`` in the EXISTING ``subset_index_log.json`` format
+(``"<metric>/<r>"`` keys carrying ``point_names``) so they stay focused on the
+spec-assembly logic (name resolution, fail-fast on missing cells / unresolved
+names, targets / aux-only classification, BH76 filtering, checkpoint-dir
+padding, pretrain-checkpoint derivation, TestSpec wiring) without depending on
+the heavy DFS pool builder.
 """
 import os
 
@@ -17,13 +20,13 @@ from xcquinox.alec.cluster.grid_config import (
     SolverNamed,
     HyperParams,
     InputPaths,
+    PretrainConfig,
     ClusterResources,
     expand_grid,
 )
 from xcquinox.alec.cluster.spec_builder import (
     build_training_specs,
     build_test_spec,
-    pool_fingerprint,
     atoms_to_pyscf_str,
     atoms_to_mol_spec,
     build_targets,
@@ -117,25 +120,28 @@ def _make_pool():
     return [ae_h2, ae_h2o, bh, ip]
 
 
-def _make_ledger(points, fingerprint=None):
-    """Stub name-based ledger with two (metric, r) entries."""
-    if fingerprint is None:
-        fingerprint = pool_fingerprint(points)
+def _make_ledger():
+    """Stub ledger in the EXISTING subset_index_log.json format.
+
+    Top-level keys are ``"<metric>/<r>"``; each entry carries ``point_names``
+    (the stable selection key) plus provenance-only fields.
+    """
     return {
-        "pool_fingerprint": fingerprint,
-        "entries": {
-            # l2 / r=2 -> the two AE points only.
-            ("l2", 2): {
-                "metric": "l2",
-                "subset_size": 2,
-                "point_names": ["H2", "H2O"],
-            },
-            # l2 / r=3 -> AE + BH76 + IP13.
-            ("l2", 3): {
-                "metric": "l2",
-                "subset_size": 3,
-                "point_names": ["H2O", "N2_NO_rxn", "Li_IP"],
-            },
+        # l2 / r=2 -> the two AE points only.
+        "l2/2": {
+            "chosen_indices": [0, 1],
+            "metric_value": 12.5,
+            "point_kinds": ["ae", "ae"],
+            "point_names": ["H2", "H2O"],
+            "tag": "bin02",
+        },
+        # l2 / r=3 -> AE + BH76 + IP13.
+        "l2/3": {
+            "chosen_indices": [1, 2, 3],
+            "metric_value": 8.1,
+            "point_kinds": ["ae", "bh76", "ip13"],
+            "point_names": ["H2O", "N2_NO_rxn", "Li_IP"],
+            "tag": "bin03",
         },
     }
 
@@ -164,13 +170,14 @@ def _make_cfg(tmp_path):
     )
     inputs = InputPaths(
         external_refs_dir=str(tmp_path / "refs"),
-        descriptor_cache=str(tmp_path / "desc"),
-        refhist_cache=str(tmp_path / "refhist"),
         subset_ledger_path=str(tmp_path / "ledger.json"),
         basis="def2-svp",
         grid_level=1,
         output_root=str(tmp_path / "out"),
-        pretrain_checkpoint=None,
+    )
+    pretrain = PretrainConfig(
+        data_dir=str(tmp_path / "data"),
+        pretrain_root=str(tmp_path / "pretrain"),
     )
     cluster = ClusterResources(
         partition="short",
@@ -186,32 +193,10 @@ def _make_cfg(tmp_path):
         solvers=solvers,
         hyperparams=hp,
         inputs=inputs,
+        pretrain=pretrain,
         cluster=cluster,
         domain_profile="dfs_step7",
     )
-
-
-# ---------------------------------------------------------------------------
-# pool_fingerprint
-# ---------------------------------------------------------------------------
-
-def test_pool_fingerprint_is_order_independent():
-    pool = _make_pool()
-    permuted = [pool[2], pool[0], pool[3], pool[1]]
-    assert pool_fingerprint(pool) == pool_fingerprint(permuted)
-
-
-def test_pool_fingerprint_changes_with_pool_contents():
-    pool = _make_pool()
-    fp_full = pool_fingerprint(pool)
-    fp_trimmed = pool_fingerprint(pool[:-1])
-    assert fp_full != fp_trimmed
-
-
-def test_pool_fingerprint_is_hex_sha256():
-    fp = pool_fingerprint(_make_pool())
-    assert len(fp) == 64
-    int(fp, 16)  # raises ValueError if not hex
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +282,7 @@ def test_build_targets_and_aux_only_classification(tmp_path):
 def test_build_training_specs_produces_one_spec_per_cell(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)
+    ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
 
@@ -308,10 +293,31 @@ def test_build_training_specs_produces_one_spec_per_cell(tmp_path):
         assert cell == expected_cell
 
 
+def test_build_training_specs_resolves_points_by_name(tmp_path):
+    """The chosen training points come from ``point_names``, not indices."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+
+    # Cell 0 = (l2, 2): point_names ["H2", "H2O"] -> both AE compounds present.
+    _cell0, spec0 = out[0]
+    names0 = {m.name for m in spec0.molecules}
+    assert {"H2", "H2O"} <= names0
+
+    # Cell 1 = (l2, 3): point_names ["H2O", "N2_NO_rxn", "Li_IP"].
+    _cell1, spec1 = out[1]
+    names1 = {m.name for m in spec1.molecules}
+    assert {"H2O", "N2", "NO", "Li", "Li+"} <= names1
+    # H2 was NOT chosen for cell 1 -> absent from its molecules.
+    assert "H2" not in names1
+
+
 def test_build_training_specs_targets_and_aux_only(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)
+    ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
     out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
 
@@ -346,7 +352,7 @@ def test_build_training_specs_targets_and_aux_only(tmp_path):
 def test_build_training_specs_sets_require_atom_anchors_false(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)
+    ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
     out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
     for _cell, spec in out:
@@ -356,7 +362,7 @@ def test_build_training_specs_sets_require_atom_anchors_false(tmp_path):
 def test_build_training_specs_checkpoint_dir_is_absolute_padded(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)
+    ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
     out = build_training_specs(pool, ledger, cfg, domain, run_dir)
@@ -368,10 +374,27 @@ def test_build_training_specs_checkpoint_dir_is_absolute_padded(tmp_path):
         assert os.path.isabs(spec.checkpoint_dir)
 
 
+def test_build_training_specs_pretrain_checkpoint_is_per_arch(tmp_path):
+    """pretrain_checkpoint is ``<pretrain_root>/<arch>/`` — the dir the
+    pretrain stage writes for that architecture."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    for cell, spec in out:
+        expected = os.path.join(cfg.pretrain.pretrain_root, cell.arch)
+        assert spec.pretrain_checkpoint == expected
+        # The synthetic grid sweeps only arch="shallow".
+        assert spec.pretrain_checkpoint == os.path.join(
+            str(tmp_path / "pretrain"), "shallow"
+        )
+
+
 def test_build_training_specs_hyperparams_wired(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)
+    ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
     out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
     _cell, spec = out[0]
@@ -385,63 +408,33 @@ def test_build_training_specs_hyperparams_wired(tmp_path):
     assert lk["regularize_atom_syms"] == ("H", "Li")
 
 
-def test_build_training_specs_matching_fingerprint_resolves(tmp_path):
+def test_build_training_specs_missing_cell_raises(tmp_path):
+    """A grid cell with no ledger entry fails fast, naming the missing key."""
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)  # fingerprint = pool_fingerprint(pool)
+    ledger = _make_ledger()
+    del ledger["l2/3"]
     cfg = _make_cfg(tmp_path)
-    # Should not raise.
-    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
-    assert len(out) == 2
-
-
-def test_build_training_specs_fingerprint_mismatch_raises(tmp_path):
-    domain = get_domain_profile("dfs_step7")
-    pool = _make_pool()
-    ledger = _make_ledger(pool, fingerprint="deadbeef" * 8)
-    cfg = _make_cfg(tmp_path)
-    with pytest.raises(ValueError, match="pool_fingerprint mismatch"):
+    with pytest.raises(ValueError, match=r"no entry for.*l2/3"):
         build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
 
 
-def test_build_training_specs_missing_fingerprint_raises(tmp_path):
+def test_build_training_specs_unresolved_point_name_raises(tmp_path):
+    """A ledger point_name absent from the pool fails fast, naming it."""
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)
-    del ledger["pool_fingerprint"]
+    ledger = _make_ledger()
+    # Replace a real point name with one not in the pool.
+    ledger["l2/2"]["point_names"] = ["H2", "NOT_IN_POOL"]
     cfg = _make_cfg(tmp_path)
-    with pytest.raises(ValueError, match="missing the required 'pool_fingerprint'"):
+    with pytest.raises(ValueError, match="NOT_IN_POOL"):
         build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
-
-
-def test_build_training_specs_missing_entry_raises(tmp_path):
-    domain = get_domain_profile("dfs_step7")
-    pool = _make_pool()
-    ledger = _make_ledger(pool)
-    del ledger["entries"][("l2", 3)]
-    cfg = _make_cfg(tmp_path)
-    with pytest.raises(ValueError, match="no entry for"):
-        build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
-
-
-def test_build_training_specs_accepts_json_string_keys(tmp_path):
-    """A JSON-loaded ledger uses '<metric>:<subset_size>' string keys."""
-    domain = get_domain_profile("dfs_step7")
-    pool = _make_pool()
-    ledger = _make_ledger(pool)
-    # Re-key entries to the JSON-string form.
-    ledger["entries"] = {
-        f"{m}:{r}": v for (m, r), v in ledger["entries"].items()
-    }
-    cfg = _make_cfg(tmp_path)
-    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
-    assert len(out) == 2
 
 
 def test_build_training_specs_cells_subset(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)
+    ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
     cells = expand_grid(cfg)
     out = build_training_specs(
@@ -458,7 +451,7 @@ def test_build_training_specs_cells_subset(tmp_path):
 def test_build_test_spec_absolute_output_dir_and_ref_kcalmol(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)
+    ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
     out = build_training_specs(pool, ledger, cfg, domain, run_dir)
@@ -486,7 +479,7 @@ def test_build_test_spec_absolute_output_dir_and_ref_kcalmol(tmp_path):
 def test_build_test_spec_metrics_and_eval_molecules(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
-    ledger = _make_ledger(pool)
+    ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
     out = build_training_specs(pool, ledger, cfg, domain, run_dir)
