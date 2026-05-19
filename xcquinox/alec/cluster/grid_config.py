@@ -118,14 +118,61 @@ class InputPaths:
     must live on a shared filesystem). Relative paths or login-node-only
     scratch paths will break compute-node tasks.
     """
+    # ``external_refs_dir`` holds the per-species CCSD ``external_refs`` .npz
+    # files. These ARE (re)computable by the harness (skip-if-cached), so the
+    # directory is both a consumed input and a possible harness output.
     external_refs_dir: str
-    descriptor_cache: str
-    refhist_cache: str
+    # ``subset_ledger_path`` points at the EXISTING ``subset_index_log.json``
+    # produced by the (already-finished) subset-selection pre-process. The
+    # harness CONSUMES this ledger (and the per-spec ``subset.traj`` files
+    # alongside it) — it does NOT run subset selection, descriptor extraction,
+    # or reference-histogram building. The ledger schema is
+    # ``{"<metric>/<r>": {"chosen_indices": [...], "metric_value": float,
+    # "point_kinds": [...], "point_names": [...], "tag": "bin01"}}``.
     subset_ledger_path: str
     basis: str
     grid_level: int
     output_root: str
-    pretrain_checkpoint: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Pretrain stage config
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PretrainConfig:
+    """Config for the pretraining workflow stage.
+
+    Pretraining is now a harness STAGE: one ``run_pretrain`` job per distinct
+    architecture, submitted up front, feeding every downstream train task. The
+    stage builds a :class:`xcquinox.alec.config.PretrainSpec` per architecture
+    from these parameters, runs it, and writes the resulting checkpoint to
+    ``<pretrain_root>/<arch>/``. Each train task then references that
+    directory as its ``pretrain_checkpoint`` — so the checkpoint is a harness
+    PRODUCT, not a pre-staged input.
+
+    Defaults below mirror what the step-7 notebook's pretraining cell uses
+    (see ``notebooks/_build_step7_notebook.py`` / ``_build_step6_notebook.py``):
+    1000 pretraining steps, lr 1e-2 -> 1e-5, decay starting at 0.2 of the
+    schedule, grad-clip 1.0, ``integration`` loss weighting (step-7's only
+    pretrain origin — ``PRETRAIN_ORIGIN = "integration"``).
+
+    ``data_dir`` and ``pretrain_root`` have no sensible cross-cluster default
+    and MUST be supplied; both must be ABSOLUTE shared-filesystem paths.
+    """
+    data_dir: str
+    pretrain_root: str
+    n_steps: int = 1000              # (E) step-7 pretrain schedule length
+    lr_start: float = 1e-2           # (E) step-7 pretrain lr start
+    lr_end: float = 1e-5             # (E) step-7 pretrain lr floor
+    # lr_decay_start is a FRACTION of n_steps, in [0, 1] — matches the
+    # PretrainSpec convention in xcquinox.alec.config.
+    lr_decay_start: float = 0.2      # (E) step-7 pretrain decay onset
+    grad_clip: float = 1.0           # (E) step-7 pretrain grad-clip
+    seed: int = 42
+    # PretrainSpec.loss_weighting is a str validated to {"unweighted",
+    # "integration"}. Step-7 uses "integration" exclusively.
+    loss_weighting: str = "integration"
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +225,7 @@ class GridConfig:
     solvers: dict[str, SolverNamed]
     hyperparams: HyperParams
     inputs: InputPaths
+    pretrain: PretrainConfig
     cluster: ClusterResources
     domain_profile: str
     on_precompute_failure: str = "abort"   # {"abort","drop_failed_species"}
@@ -253,13 +301,25 @@ def _build_inputs(d: dict) -> InputPaths:
     ctx = "inputs"
     return InputPaths(
         external_refs_dir=_require(d, "external_refs_dir", ctx),
-        descriptor_cache=_require(d, "descriptor_cache", ctx),
-        refhist_cache=_require(d, "refhist_cache", ctx),
         subset_ledger_path=_require(d, "subset_ledger_path", ctx),
         basis=_require(d, "basis", ctx),
         grid_level=_require(d, "grid_level", ctx),
         output_root=_require(d, "output_root", ctx),
-        pretrain_checkpoint=d.get("pretrain_checkpoint"),
+    )
+
+
+def _build_pretrain(d: dict) -> PretrainConfig:
+    ctx = "pretrain"
+    return PretrainConfig(
+        data_dir=_require(d, "data_dir", ctx),
+        pretrain_root=_require(d, "pretrain_root", ctx),
+        n_steps=d.get("n_steps", 1000),
+        lr_start=d.get("lr_start", 1e-2),
+        lr_end=d.get("lr_end", 1e-5),
+        lr_decay_start=d.get("lr_decay_start", 0.2),
+        grad_clip=d.get("grad_clip", 1.0),
+        seed=d.get("seed", 42),
+        loss_weighting=d.get("loss_weighting", "integration"),
     )
 
 
@@ -337,6 +397,7 @@ def load_grid_config(path: str) -> GridConfig:
         solvers=_build_solvers(_require(raw, "solvers", "<root>")),
         hyperparams=_build_hyperparams(_require(raw, "hyperparams", "<root>")),
         inputs=_build_inputs(_require(raw, "inputs", "<root>")),
+        pretrain=_build_pretrain(_require(raw, "pretrain", "<root>")),
         cluster=_build_cluster(_require(raw, "cluster", "<root>")),
         domain_profile=_require(raw, "domain_profile", "<root>"),
         on_precompute_failure=raw.get("on_precompute_failure", "abort"),
@@ -473,6 +534,36 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"hyperparams.grad_clip must be > 0, got {hp.grad_clip}"
         )
 
+    # --- pretrain stage bounds ---------------------------------------------
+    pt = cfg.pretrain
+    if pt.n_steps <= 0:
+        raise ValueError(
+            f"pretrain.n_steps must be > 0, got {pt.n_steps}"
+        )
+    if not pt.data_dir:
+        raise ValueError("pretrain.data_dir must be a non-empty path")
+    if not pt.pretrain_root:
+        raise ValueError("pretrain.pretrain_root must be a non-empty path")
+    if not (0.0 <= pt.lr_decay_start <= 1.0):
+        raise ValueError(
+            f"pretrain.lr_decay_start must be in [0, 1], got "
+            f"{pt.lr_decay_start}"
+        )
+    if pt.lr_start < pt.lr_end:
+        raise ValueError(
+            f"pretrain.lr_start ({pt.lr_start}) must be >= lr_end "
+            f"({pt.lr_end})"
+        )
+    if pt.grad_clip <= 0:
+        raise ValueError(
+            f"pretrain.grad_clip must be > 0, got {pt.grad_clip}"
+        )
+    if pt.loss_weighting not in ("unweighted", "integration"):
+        raise ValueError(
+            f"pretrain.loss_weighting must be 'unweighted' or "
+            f"'integration', got {pt.loss_weighting!r}"
+        )
+
     # --- resource bounds ----------------------------------------------------
     cl = cfg.cluster
     if cl.array_throttle < 1:
@@ -528,13 +619,11 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # These are login-node-local and therefore only advisory; the preflight
     # job (a later task) running on a compute node is authoritative.
     import os
-    if cfg.inputs.pretrain_checkpoint is not None and not os.path.exists(
-        cfg.inputs.pretrain_checkpoint
-    ):
+    if not os.path.isdir(cfg.pretrain.data_dir):
         warnings.warn(
-            f"inputs.pretrain_checkpoint {cfg.inputs.pretrain_checkpoint!r} "
-            "not found on the login node — this is advisory; the preflight "
-            "job is authoritative for compute-node path resolution",
+            f"pretrain.data_dir {cfg.pretrain.data_dir!r} not found on the "
+            "login node — this is advisory; the preflight job is "
+            "authoritative for compute-node path resolution",
             stacklevel=2,
         )
     out_parent = os.path.dirname(cfg.inputs.output_root.rstrip("/")) or "."

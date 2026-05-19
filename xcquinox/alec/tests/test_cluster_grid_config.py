@@ -10,6 +10,7 @@ from xcquinox.alec.cluster.grid_config import (
     SolverNamed,
     HyperParams,
     InputPaths,
+    PretrainConfig,
     ClusterResources,
     load_grid_config,
     expand_grid,
@@ -59,12 +60,20 @@ def _base_config_dict():
         },
         "inputs": {
             "external_refs_dir": "/shared/refs",
-            "descriptor_cache": "/shared/desc_cache",
-            "refhist_cache": "/shared/refhist_cache",
-            "subset_ledger_path": "/shared/ledger.json",
+            "subset_ledger_path": "/shared/subset_index_log.json",
             "basis": "def2-tzvp",
             "grid_level": 3,
             "output_root": "/shared/runs",
+        },
+        "pretrain": {
+            "data_dir": "/shared/pretrain_data",
+            "pretrain_root": "/shared/pretrain",
+            "n_steps": 1000,
+            "lr_start": 1e-2,
+            "lr_end": 1e-5,
+            "lr_decay_start": 0.2,
+            "grad_clip": 1.0,
+            "loss_weighting": "integration",
         },
         "cluster": {
             "partition": "long-40core",
@@ -99,6 +108,7 @@ def _assert_well_formed(cfg):
     assert isinstance(cfg.sweep, SweepAxes)
     assert isinstance(cfg.hyperparams, HyperParams)
     assert isinstance(cfg.inputs, InputPaths)
+    assert isinstance(cfg.pretrain, PretrainConfig)
     assert isinstance(cfg.cluster, ClusterResources)
     assert isinstance(cfg.solvers, dict)
     assert all(isinstance(v, SolverNamed) for v in cfg.solvers.values())
@@ -113,6 +123,11 @@ def _assert_well_formed(cfg):
     # enum defaults
     assert cfg.on_precompute_failure == "abort"
     assert cfg.bh76_mode == "reaction_energy"
+    # pretrain section round-trips
+    assert cfg.pretrain.data_dir == "/shared/pretrain_data"
+    assert cfg.pretrain.pretrain_root == "/shared/pretrain"
+    assert cfg.pretrain.n_steps == 1000
+    assert cfg.pretrain.loss_weighting == "integration"
 
 
 def test_yaml_round_trip(tmp_path):
@@ -177,10 +192,12 @@ def _cfg(**sweep_overrides):
         ),
         inputs=InputPaths(
             external_refs_dir="/shared/refs",
-            descriptor_cache="/shared/desc",
-            refhist_cache="/shared/refhist",
-            subset_ledger_path="/shared/ledger.json",
+            subset_ledger_path="/shared/subset_index_log.json",
             basis="def2-tzvp", grid_level=3, output_root="/shared/runs",
+        ),
+        pretrain=PretrainConfig(
+            data_dir="/shared/pretrain_data",
+            pretrain_root="/shared/pretrain",
         ),
         cluster=ClusterResources(
             partition="long-40core", time="12:00:00", mem="32G",
@@ -292,7 +309,8 @@ def test_validate_grid_too_large():
     )
     cfg = GridConfig(
         sweep=cfg.sweep, solvers=cfg.solvers, hyperparams=cfg.hyperparams,
-        inputs=cfg.inputs, cluster=small, domain_profile=cfg.domain_profile,
+        inputs=cfg.inputs, pretrain=cfg.pretrain, cluster=small,
+        domain_profile=cfg.domain_profile,
     )
     with pytest.raises(ValueError, match="max_array_size"):
         validate_grid_semantics(cfg, _StubDomain(pool_size=40))
@@ -306,7 +324,8 @@ def test_validate_array_throttle_too_small():
     )
     cfg = GridConfig(
         sweep=cfg.sweep, solvers=cfg.solvers, hyperparams=cfg.hyperparams,
-        inputs=cfg.inputs, cluster=bad, domain_profile=cfg.domain_profile,
+        inputs=cfg.inputs, pretrain=cfg.pretrain, cluster=bad,
+        domain_profile=cfg.domain_profile,
     )
     with pytest.raises(ValueError, match="array_throttle must be >= 1"):
         validate_grid_semantics(cfg, _StubDomain(pool_size=40))
@@ -320,7 +339,7 @@ def test_validate_n_steps_nonpositive():
     )
     cfg = GridConfig(
         sweep=cfg.sweep, solvers=cfg.solvers, hyperparams=bad_hp,
-        inputs=cfg.inputs, cluster=cfg.cluster,
+        inputs=cfg.inputs, pretrain=cfg.pretrain, cluster=cfg.cluster,
         domain_profile=cfg.domain_profile,
     )
     with pytest.raises(ValueError, match="n_steps must be > 0"):
@@ -335,7 +354,7 @@ def test_validate_lr_decay_start_out_of_range():
     )
     cfg = GridConfig(
         sweep=cfg.sweep, solvers=cfg.solvers, hyperparams=bad_hp,
-        inputs=cfg.inputs, cluster=cfg.cluster,
+        inputs=cfg.inputs, pretrain=cfg.pretrain, cluster=cfg.cluster,
         domain_profile=cfg.domain_profile,
     )
     with pytest.raises(ValueError, match="lr_decay_start must be in"):
@@ -352,7 +371,8 @@ def test_validate_shared_partition_throttle_overflow():
     )
     cfg = GridConfig(
         sweep=cfg.sweep, solvers=cfg.solvers, hyperparams=cfg.hyperparams,
-        inputs=cfg.inputs, cluster=bad, domain_profile=cfg.domain_profile,
+        inputs=cfg.inputs, pretrain=cfg.pretrain, cluster=bad,
+        domain_profile=cfg.domain_profile,
     )
     with pytest.warns(UserWarning, match="exceeds max_concurrent_tasks"):
         validate_grid_semantics(cfg, _StubDomain(pool_size=40))
@@ -363,3 +383,103 @@ def test_validate_missing_pool_size():
         pass
     with pytest.raises(ValueError, match="pool_size"):
         validate_grid_semantics(_cfg(), _Empty())
+
+
+# ---------------------------------------------------------------------------
+# PretrainConfig
+# ---------------------------------------------------------------------------
+
+def test_pretrain_config_round_trip(tmp_path):
+    """The pretrain section round-trips through load_grid_config."""
+    path = _write(tmp_path, "grid.json", _base_config_dict())
+    cfg = load_grid_config(path)
+    pt = cfg.pretrain
+    assert isinstance(pt, PretrainConfig)
+    assert pt.data_dir == "/shared/pretrain_data"
+    assert pt.pretrain_root == "/shared/pretrain"
+    assert pt.n_steps == 1000
+    assert pt.lr_start == 1e-2
+    assert pt.lr_end == 1e-5
+    assert pt.lr_decay_start == 0.2
+    assert pt.grad_clip == 1.0
+    assert pt.loss_weighting == "integration"
+
+
+def test_pretrain_config_defaults(tmp_path):
+    """Optional pretrain keys fall back to step-7 defaults."""
+    data = _base_config_dict()
+    data["pretrain"] = {
+        "data_dir": "/shared/pretrain_data",
+        "pretrain_root": "/shared/pretrain",
+    }
+    path = _write(tmp_path, "grid.json", data)
+    cfg = load_grid_config(path)
+    pt = cfg.pretrain
+    assert pt.n_steps == 1000
+    assert pt.lr_start == 1e-2
+    assert pt.lr_end == 1e-5
+    assert pt.lr_decay_start == 0.2
+    assert pt.grad_clip == 1.0
+    assert pt.seed == 42
+    assert pt.loss_weighting == "integration"
+
+
+def test_load_missing_pretrain_section(tmp_path):
+    data = _base_config_dict()
+    del data["pretrain"]
+    path = _write(tmp_path, "grid.json", data)
+    with pytest.raises(ValueError, match="pretrain"):
+        load_grid_config(path)
+
+
+def test_load_missing_pretrain_required_key(tmp_path):
+    data = _base_config_dict()
+    del data["pretrain"]["data_dir"]
+    path = _write(tmp_path, "grid.json", data)
+    with pytest.raises(ValueError, match="pretrain.data_dir"):
+        load_grid_config(path)
+
+
+def _cfg_with_pretrain(pt: PretrainConfig) -> GridConfig:
+    """Build a GridConfig from the _cfg() base with a substituted pretrain."""
+    base = _cfg()
+    return GridConfig(
+        sweep=base.sweep, solvers=base.solvers, hyperparams=base.hyperparams,
+        inputs=base.inputs, pretrain=pt, cluster=base.cluster,
+        domain_profile=base.domain_profile,
+    )
+
+
+def test_validate_pretrain_n_steps_nonpositive():
+    cfg = _cfg_with_pretrain(PretrainConfig(
+        data_dir="/shared/pretrain_data", pretrain_root="/shared/pretrain",
+        n_steps=0,
+    ))
+    with pytest.raises(ValueError, match="pretrain.n_steps must be > 0"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_pretrain_empty_data_dir():
+    cfg = _cfg_with_pretrain(PretrainConfig(
+        data_dir="", pretrain_root="/shared/pretrain",
+    ))
+    with pytest.raises(ValueError, match="pretrain.data_dir"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_pretrain_bad_loss_weighting():
+    cfg = _cfg_with_pretrain(PretrainConfig(
+        data_dir="/shared/pretrain_data", pretrain_root="/shared/pretrain",
+        loss_weighting="bogus",
+    ))
+    with pytest.raises(ValueError, match="pretrain.loss_weighting"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_pretrain_lr_decay_out_of_range():
+    cfg = _cfg_with_pretrain(PretrainConfig(
+        data_dir="/shared/pretrain_data", pretrain_root="/shared/pretrain",
+        lr_decay_start=1.5,
+    ))
+    with pytest.raises(ValueError, match="pretrain.lr_decay_start"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
