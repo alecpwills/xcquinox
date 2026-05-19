@@ -59,6 +59,9 @@ from xcquinox.alec.cluster.submit import (
 from xcquinox.alec.cluster._preflight import (
     main as preflight_main,
 )
+from xcquinox.alec.cluster._train_task import (
+    main as train_task_main,
+)
 
 __all__ = [
     "GridConfig",
@@ -100,4 +103,5 @@ __all__ = [
     "render_sbatch",
     "submit_jobs",
     "preflight_main",
+    "train_task_main",
 ]
