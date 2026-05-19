@@ -31,6 +31,15 @@ from xcquinox.alec.cluster.materialize import (
     materialize_specs,
     write_manifest,
 )
+from xcquinox.alec.cluster.spec_builder import (
+    build_training_specs,
+    build_test_spec,
+    pool_fingerprint,
+    atoms_to_pyscf_str,
+    atoms_to_mol_spec,
+    build_targets,
+    classify_aux_only,
+)
 
 __all__ = [
     "GridConfig",
@@ -54,4 +63,11 @@ __all__ = [
     "write_spec_atomic",
     "materialize_specs",
     "write_manifest",
+    "build_training_specs",
+    "build_test_spec",
+    "pool_fingerprint",
+    "atoms_to_pyscf_str",
+    "atoms_to_mol_spec",
+    "build_targets",
+    "classify_aux_only",
 ]

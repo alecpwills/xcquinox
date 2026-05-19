@@ -1,0 +1,502 @@
+"""Tests for xcquinox.alec.cluster.spec_builder — generic spec assembly.
+
+These tests use a small synthetic ``TrainingPoint`` pool and a stub name-based
+``subset_ledger`` so they stay focused on the spec-assembly logic (fingerprint
+guard, targets / aux-only classification, BH76 filtering, checkpoint-dir
+padding, TestSpec wiring) without depending on the heavy DFS pool builder.
+"""
+import os
+
+import pytest
+from ase import Atoms
+
+from xcquinox.alec.cluster.domain import get_domain_profile
+from xcquinox.alec.cluster.grid_config import (
+    GridConfig,
+    SweepAxes,
+    SolverNamed,
+    HyperParams,
+    InputPaths,
+    ClusterResources,
+    expand_grid,
+)
+from xcquinox.alec.cluster.spec_builder import (
+    build_training_specs,
+    build_test_spec,
+    pool_fingerprint,
+    atoms_to_pyscf_str,
+    atoms_to_mol_spec,
+    build_targets,
+    classify_aux_only,
+)
+from xcquinox.alec.training_points import TrainingPoint
+
+
+# ---------------------------------------------------------------------------
+# Synthetic pool helpers
+# ---------------------------------------------------------------------------
+
+def _named_atoms(symbol_positions, name, charge=0, spin=0):
+    """Build an ASE Atoms with the info keys TrainingPoint / spec-builder need."""
+    syms = [s for s, _ in symbol_positions]
+    pos = [p for _, p in symbol_positions]
+    a = Atoms(syms, positions=pos)
+    a.info["name"] = name
+    a.info["charge"] = charge
+    a.info["spin"] = spin
+    return a
+
+
+def _ae_point(name, compound_atoms, ae_kcalmol):
+    """AE TrainingPoint: compound + an H atom anchor."""
+    h_anchor = _named_atoms([("H", (0.0, 0.0, 0.0))], "H")
+    return TrainingPoint(
+        kind="ae",
+        name=name,
+        species=(compound_atoms, h_anchor),
+        metadata={"ae_kcalmol": ae_kcalmol},
+    )
+
+
+def _bh76_point(name, species_atoms, reactants, products, coeffs, e_rxn_ref):
+    return TrainingPoint(
+        kind="bh76",
+        name=name,
+        species=tuple(species_atoms),
+        metadata={
+            "reactants": tuple(reactants),
+            "products": tuple(products),
+            "coeffs": tuple(coeffs),
+            "e_rxn_ref": e_rxn_ref,
+        },
+    )
+
+
+def _ip13_point(name, neutral_atoms, cation_atoms, ip_ref):
+    return TrainingPoint(
+        kind="ip13",
+        name=name,
+        species=(neutral_atoms, cation_atoms),
+        metadata={
+            "neutral": neutral_atoms.info["name"],
+            "cation": cation_atoms.info["name"],
+            "ip_ref": ip_ref,
+        },
+    )
+
+
+def _make_pool():
+    """A 4-point synthetic pool: 2 AE + 1 BH76 + 1 IP13."""
+    h2 = _named_atoms(
+        [("H", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 0.74))], "H2"
+    )
+    h2o = _named_atoms(
+        [("O", (0.0, 0.0, 0.0)),
+         ("H", (0.0, 0.757, 0.587)),
+         ("H", (0.0, -0.757, 0.587))],
+        "H2O",
+    )
+    # BH76 reaction species — a polyatomic NOT present as an AE point.
+    n2 = _named_atoms(
+        [("N", (0.0, 0.0, 0.0)), ("N", (0.0, 0.0, 1.10))], "N2"
+    )
+    no = _named_atoms(
+        [("N", (0.0, 0.0, 0.0)), ("O", (0.0, 0.0, 1.15))], "NO"
+    )
+    li_neutral = _named_atoms([("Li", (0.0, 0.0, 0.0))], "Li", spin=1)
+    li_cation = _named_atoms([("Li", (0.0, 0.0, 0.0))], "Li+", charge=1, spin=0)
+
+    ae_h2 = _ae_point("H2", h2, ae_kcalmol=109.5)
+    ae_h2o = _ae_point("H2O", h2o, ae_kcalmol=232.2)
+    bh = _bh76_point(
+        "N2_NO_rxn", [n2, no],
+        reactants=("N2",), products=("NO",),
+        coeffs=(-1.0, 1.0), e_rxn_ref=42.0,
+    )
+    ip = _ip13_point("Li_IP", li_neutral, li_cation, ip_ref=124.3)
+    return [ae_h2, ae_h2o, bh, ip]
+
+
+def _make_ledger(points, fingerprint=None):
+    """Stub name-based ledger with two (metric, r) entries."""
+    if fingerprint is None:
+        fingerprint = pool_fingerprint(points)
+    return {
+        "pool_fingerprint": fingerprint,
+        "entries": {
+            # l2 / r=2 -> the two AE points only.
+            ("l2", 2): {
+                "metric": "l2",
+                "subset_size": 2,
+                "point_names": ["H2", "H2O"],
+            },
+            # l2 / r=3 -> AE + BH76 + IP13.
+            ("l2", 3): {
+                "metric": "l2",
+                "subset_size": 3,
+                "point_names": ["H2O", "N2_NO_rxn", "Li_IP"],
+            },
+        },
+    }
+
+
+def _make_cfg(tmp_path):
+    """A GridConfig whose grid is metric=l2 x subset_size={2,3} (2 cells)."""
+    sweep = SweepAxes(
+        arch=("shallow",),
+        loss=("L5_gradnorm_vxc_step7",),
+        metric=("l2",),
+        subset_size=(2, 3),
+        solver=("oneshot",),
+    )
+    solvers = {
+        "oneshot": SolverNamed(mode="oneshot", max_cycles=0),
+    }
+    hp = HyperParams(
+        n_steps=100,
+        lr_start=1e-3,
+        lr_end=1e-5,
+        lr_decay_start=0.0,
+        grad_clip=1.0,
+        gradnorm_alpha=1.5,
+        vxc_weight=0.01,
+        density_weight=0.1,
+    )
+    inputs = InputPaths(
+        external_refs_dir=str(tmp_path / "refs"),
+        descriptor_cache=str(tmp_path / "desc"),
+        refhist_cache=str(tmp_path / "refhist"),
+        subset_ledger_path=str(tmp_path / "ledger.json"),
+        basis="def2-svp",
+        grid_level=1,
+        output_root=str(tmp_path / "out"),
+        pretrain_checkpoint=None,
+    )
+    cluster = ClusterResources(
+        partition="short",
+        time="04:00:00",
+        mem="16G",
+        cpus_per_task=4,
+        array_throttle=8,
+        eval_array_throttle=4,
+        max_concurrent_tasks=16,
+    )
+    return GridConfig(
+        sweep=sweep,
+        solvers=solvers,
+        hyperparams=hp,
+        inputs=inputs,
+        cluster=cluster,
+        domain_profile="dfs_step7",
+    )
+
+
+# ---------------------------------------------------------------------------
+# pool_fingerprint
+# ---------------------------------------------------------------------------
+
+def test_pool_fingerprint_is_order_independent():
+    pool = _make_pool()
+    permuted = [pool[2], pool[0], pool[3], pool[1]]
+    assert pool_fingerprint(pool) == pool_fingerprint(permuted)
+
+
+def test_pool_fingerprint_changes_with_pool_contents():
+    pool = _make_pool()
+    fp_full = pool_fingerprint(pool)
+    fp_trimmed = pool_fingerprint(pool[:-1])
+    assert fp_full != fp_trimmed
+
+
+def test_pool_fingerprint_is_hex_sha256():
+    fp = pool_fingerprint(_make_pool())
+    assert len(fp) == 64
+    int(fp, 16)  # raises ValueError if not hex
+
+
+# ---------------------------------------------------------------------------
+# atoms_to_pyscf_str / atoms_to_mol_spec
+# ---------------------------------------------------------------------------
+
+def test_atoms_to_pyscf_str_format():
+    a = _named_atoms(
+        [("H", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 0.74))], "H2"
+    )
+    s = atoms_to_pyscf_str(a)
+    assert s == "H 0.000000 0.000000 0.000000; H 0.000000 0.000000 0.740000"
+
+
+def test_atoms_to_mol_spec_no_external_ref(tmp_path):
+    a = _named_atoms(
+        [("H", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 0.74))], "H2"
+    )
+    ms = atoms_to_mol_spec(
+        a, basis="def2-svp", grid_level=1,
+        external_refs_dir=str(tmp_path / "refs"),
+    )
+    assert ms.name == "H2"
+    assert ms.basis == "def2-svp"
+    assert ms.grid_level == 1
+    assert ms.external_data_path is None
+    assert dict(ms.atom_composition) == {"H": 2}
+
+
+def test_atoms_to_mol_spec_wires_external_ref(tmp_path):
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    (refs / "H2.npz").write_bytes(b"stub")
+    a = _named_atoms(
+        [("H", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 0.74))], "H2"
+    )
+    ms = atoms_to_mol_spec(
+        a, basis="def2-svp", grid_level=1, external_refs_dir=str(refs)
+    )
+    assert ms.external_data_path == str(refs / "H2.npz")
+
+
+# ---------------------------------------------------------------------------
+# build_targets / classify_aux_only
+# ---------------------------------------------------------------------------
+
+def test_build_targets_and_aux_only_classification(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    # mol_specs spanning an AE compound (H2O), an aux polyatomic (N2),
+    # and a single atom (H).
+    h2o = atoms_to_mol_spec(
+        pool[1].species[0], basis="def2-svp", grid_level=1,
+        external_refs_dir=str(tmp_path),
+    )
+    n2 = atoms_to_mol_spec(
+        pool[2].species[0], basis="def2-svp", grid_level=1,
+        external_refs_dir=str(tmp_path),
+    )
+    h_atom = atoms_to_mol_spec(
+        pool[0].species[1], basis="def2-svp", grid_level=1,
+        external_refs_dir=str(tmp_path),
+    )
+    mol_specs = (h2o, n2, h_atom)
+    ae_ref = {"H2O": 232.2}  # N2 absent -> aux-only
+
+    aux = classify_aux_only(mol_specs, ae_ref)
+    assert aux == ("N2",)
+
+    targets = build_targets(mol_specs, ae_ref, domain)
+    # AE compound: kcal -> Ha
+    assert targets["H2O"] == pytest.approx(232.2 / domain.kcal_per_ha)
+    # aux polyatomic: 0.0 placeholder
+    assert targets["N2"] == 0.0
+    # single atom: Chakravorty anchor
+    assert targets["H"] == pytest.approx(domain.atom_energies["H"])
+
+
+# ---------------------------------------------------------------------------
+# build_training_specs
+# ---------------------------------------------------------------------------
+
+def test_build_training_specs_produces_one_spec_per_cell(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+    cells = expand_grid(cfg)
+    assert len(out) == len(cells) == 2
+    for (cell, _spec), expected_cell in zip(out, cells):
+        assert cell == expected_cell
+
+
+def test_build_training_specs_targets_and_aux_only(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    cfg = _make_cfg(tmp_path)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+
+    # Cell 0: (l2, 2) -> H2 + H2O AE points only. No BH76/IP13.
+    cell0, spec0 = out[0]
+    assert cell0.subset_size == 2
+    t0 = spec0.targets_dict
+    assert t0["H2O"] == pytest.approx(232.2 / domain.kcal_per_ha)
+    assert t0["H2"] == pytest.approx(109.5 / domain.kcal_per_ha)
+    lk0 = spec0.loss_kwargs_dict
+    assert lk0["bh76_reactions"] == []
+    assert lk0["ip13_pairs"] == []
+    assert lk0["aux_only_names"] == ()
+
+    # Cell 1: (l2, 3) -> H2O AE + N2_NO_rxn BH76 + Li_IP IP13.
+    cell1, spec1 = out[1]
+    assert cell1.subset_size == 3
+    lk1 = spec1.loss_kwargs_dict
+    assert len(lk1["bh76_reactions"]) == 1
+    assert len(lk1["ip13_pairs"]) == 1
+    # N2 and NO are BH76 species absent from any AE point -> aux-only.
+    assert set(lk1["aux_only_names"]) == {"N2", "NO"}
+    # BH76 e_rxn_ref converted kcal -> Ha.
+    assert lk1["bh76_reactions"][0]["e_rxn_ref"] == pytest.approx(
+        42.0 / domain.kcal_per_ha
+    )
+    assert lk1["ip13_pairs"][0]["ip_ref"] == pytest.approx(
+        124.3 / domain.kcal_per_ha
+    )
+
+
+def test_build_training_specs_sets_require_atom_anchors_false(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    cfg = _make_cfg(tmp_path)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    for _cell, spec in out:
+        assert spec.require_atom_anchors is False
+
+
+def test_build_training_specs_checkpoint_dir_is_absolute_padded(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+    for idx, (_cell, spec) in enumerate(out):
+        expected = os.path.join(
+            os.path.abspath(run_dir), "checkpoints", f"spec_{idx:04d}"
+        )
+        assert spec.checkpoint_dir == expected
+        assert os.path.isabs(spec.checkpoint_dir)
+
+
+def test_build_training_specs_hyperparams_wired(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    cfg = _make_cfg(tmp_path)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    _cell, spec = out[0]
+    assert spec.n_steps == 100
+    assert spec.lr_start == pytest.approx(1e-3)
+    assert spec.lr_end == pytest.approx(1e-5)
+    assert spec.grad_clip == pytest.approx(1.0)
+    lk = spec.loss_kwargs_dict
+    assert lk["vxc_weight"] == pytest.approx(0.01)
+    assert lk["density_weight"] == pytest.approx(0.1)
+    assert lk["regularize_atom_syms"] == ("H", "Li")
+
+
+def test_build_training_specs_matching_fingerprint_resolves(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)  # fingerprint = pool_fingerprint(pool)
+    cfg = _make_cfg(tmp_path)
+    # Should not raise.
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    assert len(out) == 2
+
+
+def test_build_training_specs_fingerprint_mismatch_raises(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool, fingerprint="deadbeef" * 8)
+    cfg = _make_cfg(tmp_path)
+    with pytest.raises(ValueError, match="pool_fingerprint mismatch"):
+        build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+
+
+def test_build_training_specs_missing_fingerprint_raises(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    del ledger["pool_fingerprint"]
+    cfg = _make_cfg(tmp_path)
+    with pytest.raises(ValueError, match="missing the required 'pool_fingerprint'"):
+        build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+
+
+def test_build_training_specs_missing_entry_raises(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    del ledger["entries"][("l2", 3)]
+    cfg = _make_cfg(tmp_path)
+    with pytest.raises(ValueError, match="no entry for"):
+        build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+
+
+def test_build_training_specs_accepts_json_string_keys(tmp_path):
+    """A JSON-loaded ledger uses '<metric>:<subset_size>' string keys."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    # Re-key entries to the JSON-string form.
+    ledger["entries"] = {
+        f"{m}:{r}": v for (m, r), v in ledger["entries"].items()
+    }
+    cfg = _make_cfg(tmp_path)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    assert len(out) == 2
+
+
+def test_build_training_specs_cells_subset(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    cfg = _make_cfg(tmp_path)
+    cells = expand_grid(cfg)
+    out = build_training_specs(
+        pool, ledger, cfg, domain, str(tmp_path / "run"), cells=cells[:1]
+    )
+    assert len(out) == 1
+    assert out[0][0] == cells[0]
+
+
+# ---------------------------------------------------------------------------
+# build_test_spec
+# ---------------------------------------------------------------------------
+
+def test_build_test_spec_absolute_output_dir_and_ref_kcalmol(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+
+    _cell, training_spec = out[0]
+    test_spec = build_test_spec(training_spec, run_dir, 0, domain)
+
+    expected_dir = os.path.join(
+        os.path.abspath(run_dir), "checkpoints", "spec_0000"
+    )
+    assert test_spec.output_dir == os.path.join(expected_dir, "eval")
+    assert os.path.isabs(test_spec.output_dir)
+    assert test_spec.model_checkpoint == os.path.join(expected_dir, "model.eqx")
+
+    mk = test_spec.metric_kwargs_dict
+    assert "atomization_energy" in mk
+    ref = mk["atomization_energy"]["reference_ae_kcalmol"]
+    # Compound molecules only; Ha -> kcal round-trip.
+    assert ref["H2O"] == pytest.approx(232.2)
+    assert ref["H2"] == pytest.approx(109.5)
+    # Single-atom H must NOT appear in the AE reference dict.
+    assert "H" not in ref
+
+
+def test_build_test_spec_metrics_and_eval_molecules(tmp_path):
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger(pool)
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+    _cell, training_spec = out[0]
+    test_spec = build_test_spec(training_spec, run_dir, 0, domain)
+
+    assert test_spec.metrics == (
+        "total_energy", "atomization_energy",
+        "density_rmse", "scf_convergence",
+    )
+    # Eval molecules come straight from training_spec.molecules.
+    assert test_spec.molecules == training_spec.molecules
+    assert test_spec.atom_energies_dict == dict(domain.atom_energies)
