@@ -83,6 +83,22 @@ def _optional_sbatch_line(directive: str, value: str) -> str:
     return f"#SBATCH --{directive}={value}\n"
 
 
+def _conda_activation_block(conda_profile: str, conda_env: str) -> str:
+    """Render the conda-activation block as a single whole-line placeholder.
+
+    A blank ``conda_profile`` must NEVER emit a bare ``source`` line — under the
+    template's ``set -euo pipefail`` that is broken bash. When ``conda_profile``
+    is set we ``source`` it before ``conda activate``; when it is empty we skip
+    the ``source`` entirely and assume ``conda`` is already on ``PATH``.
+    """
+    conda_profile = (conda_profile or "").strip()
+    conda_env = (conda_env or "").strip()
+    activate = f"conda activate {conda_env}"
+    if conda_profile:
+        return f"source {conda_profile}\n{activate}"
+    return activate
+
+
 def _train_template_kind(cfg) -> str:
     """'train_gpu' if cfg requests a GPU device, else 'train_cpu'."""
     device = (cfg.cluster.device or "cpu").strip().lower()
@@ -138,8 +154,9 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         "MEM": cl.mem,
         "CPUS_PER_TASK": cl.cpus_per_task,
         "RUN_DIR": run_dir,
-        "CONDA_PROFILE": cl.conda_profile,
-        "CONDA_ENV": cl.conda_env,
+        "CONDA_ACTIVATION": _conda_activation_block(
+            cl.conda_profile, cl.conda_env
+        ),
         "MAIL_USER_LINE": _optional_sbatch_line("mail-user", cl.mail_user),
         "MAIL_TYPE_LINE": _optional_sbatch_line("mail-type", cl.mail_type),
         "ACCOUNT_LINE": _optional_sbatch_line("account", cl.account),

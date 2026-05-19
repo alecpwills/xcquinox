@@ -200,6 +200,48 @@ def test_render_optional_directives_emitted_and_omitted(tmp_path):
     assert "--mail-user=" not in text2
 
 
+def _has_bare_source_line(text):
+    """True iff the script has a ``source`` token with no argument after it."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "source" or stripped.startswith("source "):
+            arg = stripped[len("source"):].strip()
+            if not arg:
+                return True
+    return False
+
+
+def test_render_conda_block_with_profile_sources_then_activates(tmp_path):
+    # _base_config_dict sets conda_profile=/opt/conda/etc/profile.d/conda.sh.
+    for kind, kw in (("preflight", {}), ("train", {"array_max": 39}),
+                     ("eval", {"array_max": 39})):
+        text = render_sbatch(kind, _make_cfg(tmp_path), str(tmp_path / "run"),
+                             **kw)
+        assert "source /opt/conda/etc/profile.d/conda.sh" in text, kind
+        assert "conda activate xcq" in text, kind
+        assert not _has_bare_source_line(text), kind
+        # source must come before conda activate.
+        assert (text.index("source /opt/conda/etc/profile.d/conda.sh")
+                < text.index("conda activate xcq")), kind
+
+
+def test_render_conda_block_empty_profile_no_bare_source(tmp_path):
+    # An empty conda_profile must NEVER emit a bare ``source`` line — under
+    # ``set -euo pipefail`` that is broken bash.
+    d = _base_config_dict()
+    d["cluster"]["conda_profile"] = ""
+    p = tmp_path / "g_noprofile.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))
+
+    for kind, kw in (("preflight", {}), ("train", {"array_max": 39}),
+                     ("eval", {"array_max": 39})):
+        text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
+        assert "conda activate xcq" in text, kind
+        assert not _has_bare_source_line(text), kind
+        assert "set -euo pipefail" in text, kind
+
+
 # ---------------------------------------------------------------------------
 # submit_jobs — dry run
 # ---------------------------------------------------------------------------

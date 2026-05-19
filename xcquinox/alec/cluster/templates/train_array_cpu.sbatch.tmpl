@@ -11,8 +11,7 @@ ${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
 set -euo pipefail
 
 # --- conda activation ------------------------------------------------------
-source ${CONDA_PROFILE}
-conda activate ${CONDA_ENV}
+${CONDA_ACTIVATION}
 
 # --- thread caps -----------------------------------------------------------
 export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK

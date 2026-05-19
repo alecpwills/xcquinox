@@ -1,0 +1,7 @@
+# HPC harness run outputs — large (model.eqx, checkpoints, logs); never commit.
+runs/
+!runs/.gitkeep
+
+# Personal/cluster-specific filled-in configs: keep these out of git.
+# Commit the placeholder configs/step7.yaml; keep your filled copies as *.local.yaml.
+configs/*.local.yaml
