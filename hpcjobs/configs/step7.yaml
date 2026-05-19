@@ -1,11 +1,12 @@
 # =============================================================================
-# grid_step7.yaml — example HPC training-harness grid config (COPY-ME TEMPLATE)
+# step7.yaml — HPC training-harness grid config (COPY-ME TEMPLATE)
 # =============================================================================
 #
 # This file reproduces the step-7 40-spec sweep
 # (10 subset sizes x 2 metrics x 2 solvers) that the notebook
 # ``notebooks/_build_step7_notebook.py`` builds in-process. It is a TEMPLATE:
-# copy it, then fill in the placeholders before submitting to a cluster.
+# copy it to ``configs/step7.local.yaml`` (git-ignored), then fill in the
+# placeholders before submitting to a cluster.
 #
 # It is loaded by ``xcquinox.alec.cluster.grid_config.load_grid_config`` and
 # expands (via ``expand_grid``) to exactly 40 GridCells.
@@ -19,14 +20,19 @@
 #   cluster.mail_type   - SLURM mail events (NONE | BEGIN | END | FAIL | ALL)
 #   cluster.account     - your SLURM allocation/account name
 #   inputs.external_refs_dir   - shared dir of per-species CCSD <name>.npz refs
-#   inputs.descriptor_cache    - shared descriptor cache dir
-#   inputs.refhist_cache       - shared reference-histogram cache dir
-#   inputs.subset_ledger_path  - shared path to the subset-selection ledger JSON
+#   inputs.subset_ledger_path  - shared path to the EXISTING subset-selection
+#                                ledger JSON (a consumed, read-only input —
+#                                see the comment on the field below)
 #   inputs.output_root         - shared run-output root directory
-#   inputs.pretrain_checkpoint - shared dir holding the pretrained xnet/cnet
+#   pretrain.data_dir          - shared dir of training data the pretrain
+#                                stage builds its PretrainSpec from
+#   pretrain.pretrain_root     - shared root the pretrain stage writes each
+#                                arch's xnet/cnet checkpoint into
+#                                (<pretrain_root>/<arch>/)
 #
-# Every ``inputs.*`` path MUST be an ABSOLUTE path on a SHARED filesystem that
-# resolves identically on the SLURM login node and on every compute node.
+# Every ``inputs.*`` / ``pretrain.*`` path MUST be an ABSOLUTE path on a SHARED
+# filesystem that resolves identically on the SLURM login node and every
+# compute node.
 # The ``/gpfs/.../CHANGE_ME/...`` placeholders below are intentionally
 # non-existent so a copy used unedited fails fast in ``validate_grid_semantics``.
 #
@@ -71,13 +77,32 @@ hyperparams:
 # --- filesystem inputs (ABSOLUTE, SHARED-FS paths) -------------------------
 inputs:
   external_refs_dir: /gpfs/projects/CHANGE_ME/xcquinox/step7/external_refs
-  descriptor_cache: /gpfs/projects/CHANGE_ME/xcquinox/step7/descriptor_cache
-  refhist_cache: /gpfs/projects/CHANGE_ME/xcquinox/step7/refhist_cache
+  # subset_ledger_path: the EXISTING ``subset_index_log.json`` produced by the
+  # (already-finished) offline subset-selection pre-process. The harness
+  # CONSUMES this ledger read-only — it does NOT run subset selection,
+  # descriptor extraction, or reference-histogram building. Stage a copy of
+  # ``notebooks/checkpoints_step7/subset_index_log.json`` (and the per-spec
+  # ``subset.traj`` files alongside it) onto shared storage BEFORE submitting.
   subset_ledger_path: /gpfs/projects/CHANGE_ME/xcquinox/step7/subset_index_log.json
-  basis: def2-svp
-  grid_level: 1
+  basis: def2-svp           # (L) step-7 basis set
+  grid_level: 1             # (L) step-7 DFT integration-grid level
   output_root: /gpfs/projects/CHANGE_ME/xcquinox/step7/runs
-  pretrain_checkpoint: /gpfs/projects/CHANGE_ME/xcquinox/step7/pretrain/deep_combined_attn
+
+# --- pretrain stage: one run_pretrain job per distinct architecture --------
+# The pretrain stage builds a PretrainSpec per arch and writes the resulting
+# xnet/cnet checkpoint into <pretrain_root>/<arch>/. Each train spec then uses
+# that directory as its pretrained checkpoint. The defaults below mirror the
+# step-7 notebook's pretraining cell; only the two paths must be filled.
+pretrain:
+  data_dir: /gpfs/projects/CHANGE_ME/xcquinox/step7/pretrain_data
+  pretrain_root: /gpfs/projects/CHANGE_ME/xcquinox/step7/pretrain
+  n_steps: 1000             # (E) step-7 pretrain schedule length
+  lr_start: 0.01            # (E) step-7 pretrain lr start (1e-2)
+  lr_end: 0.00001           # (E) step-7 pretrain lr floor (1e-5)
+  lr_decay_start: 0.2       # (E) step-7 pretrain decay onset (fraction of n_steps)
+  grad_clip: 1.0            # (E) step-7 pretrain grad-clip
+  seed: 42
+  loss_weighting: integration   # (E) step-7's only pretrain origin
 
 # --- SLURM resource requests + submission knobs (SeaWulf defaults) ---------
 cluster:
@@ -104,6 +129,11 @@ cluster:
   # Eval runs on a CPU partition after training completes.
   eval_partition: short-96core-shared
   eval_time: "02:00:00"
+  # Pretrain runs once per distinct architecture, up front. Each knob falls
+  # back to the train-array resource when unset; pretrain_throttle unset means
+  # all distinct architectures pretrain concurrently.
+  pretrain_partition: long-96core-shared
+  pretrain_time: "08:00:00"
 
 # --- domain profile: physics tables (atom energies, kcal/Ha, extractors) ---
 # ``dfs_step7`` is the only profile registered in cluster/domain.py.
