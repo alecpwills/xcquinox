@@ -1,0 +1,354 @@
+"""Tests for xcquinox.alec.cluster.submit — sbatch rendering + job-graph submit.
+
+These tests NEVER shell out to a real SLURM controller: ``job_tracking._run_slurm``
+is monkeypatched with canned behavior. A grid config is built from an in-memory
+dict via ``load_grid_config`` (JSON, so no PyYAML dependency), and ``run_dir`` is
+a tmp directory.
+"""
+import json
+import os
+import shutil
+import subprocess
+
+import pytest
+
+from xcquinox.alec.cluster import job_tracking as jt
+from xcquinox.alec.cluster.grid_config import load_grid_config
+from xcquinox.alec.cluster.submit import render_sbatch, submit_jobs
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _base_config_dict(*, device="cpu", gpus_per_task=0):
+    """A complete, valid raw config dict. ``subset_size`` has 10 values and the
+    other axes 1/2/2/.../2 so the grid expands to a controllable size."""
+    return {
+        "sweep": {
+            "arch": ["medium"],
+            "loss": ["delta_ae", "delta_de"],
+            "metric": ["l2", "jsd"],
+            "subset_size": [4, 8, 12, 16, 20, 24, 28, 32, 36, 40],
+            "solver": ["fast"],
+        },
+        "solvers": {
+            "fast": {"mode": "fixed_density", "max_cycles": 1},
+        },
+        "hyperparams": {
+            "n_steps": 200,
+            "lr_start": 1e-3,
+            "lr_end": 1e-5,
+            "lr_decay_start": 0.2,
+            "grad_clip": 1.0,
+            "gradnorm_alpha": 1.5,
+            "vxc_weight": 1.0,
+            "density_weight": 0.5,
+        },
+        "inputs": {
+            "external_refs_dir": "/shared/refs",
+            "descriptor_cache": "/shared/desc_cache",
+            "refhist_cache": "/shared/refhist_cache",
+            "subset_ledger_path": "/shared/ledger.json",
+            "basis": "def2-tzvp",
+            "grid_level": 3,
+            "output_root": "/shared/runs",
+        },
+        "cluster": {
+            "partition": "long-40core",
+            "time": "12:00:00",
+            "mem": "32G",
+            "cpus_per_task": 4,
+            "array_throttle": 4,
+            "eval_array_throttle": 8,
+            "max_concurrent_tasks": 40,
+            "device": device,
+            "gpus_per_task": gpus_per_task,
+            "conda_profile": "/opt/conda/etc/profile.d/conda.sh",
+            "conda_env": "xcq",
+            "mail_user": "alec@example.com",
+            "mail_type": "END,FAIL",
+            "account": "xcq-acct",
+        },
+        "domain_profile": "gmtkn55_subset",
+    }
+
+
+def _make_cfg(tmp_path, **kw):
+    """Build a GridConfig from a dict by round-tripping through a JSON file."""
+    p = tmp_path / "grid.json"
+    p.write_text(json.dumps(_base_config_dict(**kw)))
+    return load_grid_config(str(p))
+
+
+# The base config grid: arch(1) x loss(2) x metric(2) x subset_size(10) x
+# solver(1) = 40 cells -> array indices 0..39.
+_EXPECTED_N = 40
+_EXPECTED_ARRAY_MAX = 39
+
+
+class _FakeProc:
+    """Minimal stand-in for subprocess.CompletedProcess (just ``stdout``)."""
+    def __init__(self, stdout=""):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = 0
+
+
+def _fake_slurm_factory(ids=None, fail_on_index=None):
+    """Build a fake ``_run_slurm``.
+
+    ``ids``: the sequence of array-job ids returned for successive ``sbatch``
+    calls. ``fail_on_index``: if set, the Nth (0-based) ``sbatch`` call raises
+    CalledProcessError instead of returning. ``scancel`` calls always succeed.
+    The list of every cmd seen is recorded on ``.calls``.
+    """
+    ids = list(ids or ["1001", "1002", "1003"])
+    state = {"sbatch_n": 0}
+    calls = []
+
+    def _fake(cmd, *, retries=3):
+        calls.append(list(cmd))
+        verb = os.path.basename(cmd[0])
+        if verb == "sbatch":
+            i = state["sbatch_n"]
+            state["sbatch_n"] += 1
+            if fail_on_index is not None and i == fail_on_index:
+                raise subprocess.CalledProcessError(1, cmd, stderr="rejected")
+            return _FakeProc(stdout=ids[i] + "\n")
+        if verb == "scancel":
+            return _FakeProc(stdout="")
+        raise AssertionError(f"unexpected SLURM verb in test: {verb}")
+
+    _fake.calls = calls
+    return _fake
+
+
+# ---------------------------------------------------------------------------
+# render_sbatch — CPU vs GPU template selection
+# ---------------------------------------------------------------------------
+
+def test_render_train_cpu_has_xla_flags_no_gres(tmp_path):
+    cfg = _make_cfg(tmp_path, device="cpu")
+    text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
+    assert "xla_cpu_multi_thread_eigen=true" in text
+    assert "--xla_force_host_platform_device_count=1" in text
+    assert "--gres=gpu" not in text
+    assert "CUDA_VISIBLE_DEVICES" not in text
+    assert "#SBATCH --signal=B:TERM@" in text
+
+
+def test_render_train_gpu_has_gres_no_xla_cpu(tmp_path):
+    cfg = _make_cfg(tmp_path, device="gpu", gpus_per_task=2)
+    text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
+    assert "#SBATCH --gres=gpu:2" in text
+    assert "xla_cpu_" not in text
+    # SLURM's --gres binding sets CUDA_VISIBLE_DEVICES; the script must not.
+    assert "CUDA_VISIBLE_DEVICES" not in text
+    assert "#SBATCH --signal=B:TERM@" in text
+
+
+def test_render_train_array_range_and_throttle(tmp_path):
+    cfg = _make_cfg(tmp_path)  # array_throttle=4
+    text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
+    assert "#SBATCH --array=0-39%4" in text
+
+
+def test_render_eval_is_cpu_only_with_eval_throttle(tmp_path):
+    cfg = _make_cfg(tmp_path, device="gpu", gpus_per_task=2)
+    text = render_sbatch("eval", cfg, str(tmp_path / "run"), array_max=39)
+    # eval is always CPU even when the train device is gpu.
+    assert "--gres=gpu" not in text
+    assert "#SBATCH --array=0-39%8" in text  # eval_array_throttle=8
+    assert "_eval_one_spec" in text
+
+
+def test_render_thread_caps_present_every_template(tmp_path):
+    cfg = _make_cfg(tmp_path)
+    for kind, kw in (("preflight", {}), ("train", {"array_max": 39}),
+                     ("eval", {"array_max": 39})):
+        text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
+        assert "export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
+        assert "export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
+        assert "export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
+
+
+def test_render_preflight_has_no_array_directive(tmp_path):
+    cfg = _make_cfg(tmp_path)
+    text = render_sbatch("preflight", cfg, str(tmp_path / "run"))
+    assert "#SBATCH --array" not in text
+    assert "_preflight" in text
+    assert "preflight_%j.out" in text
+
+
+def test_render_optional_directives_emitted_and_omitted(tmp_path):
+    cfg = _make_cfg(tmp_path)
+    text = render_sbatch("preflight", cfg, str(tmp_path / "run"))
+    assert "#SBATCH --mail-user=alec@example.com" in text
+    assert "#SBATCH --account=xcq-acct" in text
+
+    # With blank account/mail, no dangling #SBATCH directive should appear.
+    d = _base_config_dict()
+    d["cluster"]["account"] = ""
+    d["cluster"]["mail_user"] = ""
+    d["cluster"]["mail_type"] = ""
+    p = tmp_path / "g2.json"
+    p.write_text(json.dumps(d))
+    cfg2 = load_grid_config(str(p))
+    text2 = render_sbatch("preflight", cfg2, str(tmp_path / "run"))
+    assert "--account=" not in text2
+    assert "--mail-user=" not in text2
+
+
+# ---------------------------------------------------------------------------
+# submit_jobs — dry run
+# ---------------------------------------------------------------------------
+
+def test_dry_run_calls_no_sbatch_and_writes_no_jobs_json(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=False)
+
+    assert result["dry_run"] is True
+    assert result["n_specs"] == _EXPECTED_N
+    assert result["array_max"] == _EXPECTED_ARRAY_MAX
+    # No SLURM call whatsoever in a dry run.
+    assert fake.calls == []
+    # No jobs.json written.
+    assert not os.path.exists(os.path.join(run_dir, "jobs.json"))
+    # Scripts + the audit file ARE written.
+    for name in ("preflight.sbatch", "train_array.sbatch", "eval_array.sbatch"):
+        assert os.path.exists(os.path.join(run_dir, "scripts", name))
+    cmds_path = os.path.join(run_dir, "submit_commands.txt")
+    assert os.path.exists(cmds_path)
+    assert "[dry-run]" in open(cmds_path).read()
+    assert os.path.isdir(os.path.join(run_dir, "logs"))
+
+
+def test_dry_run_train_eval_array_ranges_identical(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    monkeypatch.setattr(jt, "_run_slurm", _fake_slurm_factory())
+    submit_jobs(cfg, run_dir, submit=False)
+
+    train = open(os.path.join(run_dir, "scripts", "train_array.sbatch")).read()
+    ev = open(os.path.join(run_dir, "scripts", "eval_array.sbatch")).read()
+
+    def _range(txt):
+        for line in txt.splitlines():
+            if line.strip().startswith("#SBATCH --array="):
+                return line.split("=", 1)[1].split("%", 1)[0]
+        raise AssertionError("no --array directive")
+
+    assert _range(train) == _range(ev) == "0-39"
+
+
+# ---------------------------------------------------------------------------
+# submit_jobs — real submission
+# ---------------------------------------------------------------------------
+
+def test_real_submit_dependency_directives(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory(ids=["5000", "5001", "5002"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=True)
+
+    assert result["dry_run"] is False
+    assert result["job_ids"] == {
+        "preflight": "5000", "train": "5001", "eval": "5002",
+    }
+    sbatch_calls = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch_calls) == 3
+    joined = [" ".join(c) for c in sbatch_calls]
+    # preflight: no dependency.
+    assert not any("--dependency" in j for j in [joined[0]])
+    # train: afterok on the preflight id.
+    assert "--dependency=afterok:5000" in joined[1]
+    # eval: aftercorr on the train array id.
+    assert "--dependency=aftercorr:5001" in joined[2]
+
+    # jobs.json now records all three.
+    records = jt.read_job_records(run_dir)
+    kinds = sorted(r["kind"] for r in records)
+    assert kinds == ["eval", "preflight", "train"]
+    cmds = open(os.path.join(run_dir, "submit_commands.txt")).read()
+    assert "[submit]" in cmds
+
+
+def test_double_submit_guard_requires_force(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    monkeypatch.setattr(jt, "_run_slurm",
+                        _fake_slurm_factory(ids=["7000", "7001", "7002"]))
+    submit_jobs(cfg, run_dir, submit=True)
+
+    # A second submit without force must be rejected.
+    monkeypatch.setattr(jt, "_run_slurm",
+                        _fake_slurm_factory(ids=["8000", "8001", "8002"]))
+    with pytest.raises(RuntimeError, match="force"):
+        submit_jobs(cfg, run_dir, submit=True)
+
+    # With force=True it goes through.
+    result = submit_jobs(cfg, run_dir, submit=True, force=True)
+    assert result["dry_run"] is False
+
+
+def test_rollback_scancels_on_midgraph_failure(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    # Fail on the 2nd sbatch (index 1 = the train array): preflight succeeded,
+    # so the rollback must scancel the preflight id.
+    fake = _fake_slurm_factory(ids=["9000", "9001", "9002"], fail_on_index=1)
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    with pytest.raises(RuntimeError, match="rolled back"):
+        submit_jobs(cfg, run_dir, submit=True)
+
+    scancels = [c for c in fake.calls if os.path.basename(c[0]) == "scancel"]
+    # The one already-submitted job (preflight 9000) must be cancelled.
+    assert scancels == [["scancel", "9000"]]
+    # No partial records written.
+    assert not os.path.exists(os.path.join(run_dir, "jobs.json"))
+
+
+def test_rollback_on_first_job_failure_no_scancel(tmp_path, monkeypatch):
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    # Fail on the very first sbatch: nothing to roll back.
+    fake = _fake_slurm_factory(fail_on_index=0)
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    with pytest.raises(RuntimeError, match="rolled back"):
+        submit_jobs(cfg, run_dir, submit=True)
+
+    assert [c for c in fake.calls if os.path.basename(c[0]) == "scancel"] == []
+    assert not os.path.exists(os.path.join(run_dir, "jobs.json"))
+
+
+# ---------------------------------------------------------------------------
+# shellcheck — lint the rendered scripts if shellcheck is available
+# ---------------------------------------------------------------------------
+
+def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):
+    if shutil.which("shellcheck") is None:
+        pytest.skip("shellcheck not on PATH")
+
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    monkeypatch.setattr(jt, "_run_slurm", _fake_slurm_factory())
+    submit_jobs(cfg, run_dir, submit=False)
+
+    for name in ("preflight.sbatch", "train_array.sbatch", "eval_array.sbatch"):
+        path = os.path.join(run_dir, "scripts", name)
+        proc = subprocess.run(
+            ["shellcheck", "--severity=warning", path],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, (
+            f"shellcheck flagged {name}:\n{proc.stdout}\n{proc.stderr}"
+        )

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=${JOB_NAME}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
+#SBATCH --mem=${MEM}
+#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --gres=gpu:${GPUS_PER_TASK}
+#SBATCH --array=0-${ARRAY_MAX}%${THROTTLE}
+#SBATCH --signal=B:TERM@${SIGTERM_GRACE}
+#SBATCH --output=${RUN_DIR}/logs/train_%A_%a.out
+${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
+set -euo pipefail
+
+# --- conda activation ------------------------------------------------------
+source ${CONDA_PROFILE}
+conda activate ${CONDA_ENV}
+
+# --- thread caps -----------------------------------------------------------
+export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+
+# NOTE: the GPU visibility env var is intentionally NOT set here — SLURM's
+# --gres binding scopes the GPU(s) for this task automatically.
+
+# --- train task ------------------------------------------------------------
+python -m xcquinox.alec.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID}

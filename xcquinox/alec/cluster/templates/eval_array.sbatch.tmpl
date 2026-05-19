@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=${JOB_NAME}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
+#SBATCH --mem=${MEM}
+#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --array=0-${ARRAY_MAX}%${THROTTLE}
+#SBATCH --output=${RUN_DIR}/logs/eval_%A_%a.out
+${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
+set -euo pipefail
+
+# --- conda activation ------------------------------------------------------
+source ${CONDA_PROFILE}
+conda activate ${CONDA_ENV}
+
+# --- thread caps -----------------------------------------------------------
+export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+
+# --- JAX/XLA CPU backend (eval is CPU-only) --------------------------------
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=$$SLURM_CPUS_PER_TASK --xla_force_host_platform_device_count=1"
+
+# --- eval task -------------------------------------------------------------
+python -m xcquinox.alec.cluster._eval_one_spec ${RUN_DIR} $${SLURM_ARRAY_TASK_ID}

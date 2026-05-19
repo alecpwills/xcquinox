@@ -67,6 +67,9 @@ where = ["."]
 xcquinox = [
     "py.typed"
 ]
+"xcquinox.alec.cluster" = [
+    "templates/*.sbatch.tmpl"
+]
 
 [tool.versioningit]
 default-version = "1+unknown"

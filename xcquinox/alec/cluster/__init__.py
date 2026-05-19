@@ -52,6 +52,10 @@ from xcquinox.alec.cluster.job_tracking import (
     SlurmTransientError,
     _run_slurm,
 )
+from xcquinox.alec.cluster.submit import (
+    render_sbatch,
+    submit_jobs,
+)
 
 __all__ = [
     "GridConfig",
@@ -90,4 +94,6 @@ __all__ = [
     "mark_superseded",
     "SlurmTransientError",
     "_run_slurm",
+    "render_sbatch",
+    "submit_jobs",
 ]
