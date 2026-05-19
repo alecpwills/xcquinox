@@ -538,7 +538,7 @@ def cmd_prepare(args) -> int:
     mode = "validate-only" if args.no_recompute_refs else "with refs precompute"
     _log(f"prepare: staging inputs ({mode}) from {args.grid}")
     staged = prepare_inputs(cfg, recompute_refs=recompute_refs)
-    n_entries = len(staged.subset_ledger.get("entries", {}))
+    n_entries = len(staged.subset_ledger)
     _log(
         f"prepare: OK — pool of {len(staged.points)} training points, "
         f"{n_entries} subset-ledger entr{'y' if n_entries == 1 else 'ies'}; "
@@ -1160,7 +1160,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_prepare.set_defaults(func=cmd_prepare)
 
     p_submit = sub.add_parser(
-        "submit", help="create a run dir and submit the 3-stage job graph")
+        "submit", help="create a run dir and submit the 4-stage job graph")
     p_submit.add_argument("grid", help="path to the grid config (.yaml/.json)")
     p_submit.add_argument(
         "--submit", action="store_true",

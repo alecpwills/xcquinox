@@ -5,7 +5,7 @@ The HPC harness submits a four-stage job graph (see ``submit.py``):
     pretrain (one job per architecture)
         |  --dependency=afterok:<pretrain>
     preflight (single job)
-        |  --dependency=afterok:<pretrain>,<preflight>
+        |  --dependency=afterok:<pretrain>:<preflight>
     train (array job)  --->  eval (array job)   (aftercorr)
 
 This module is the body of the **preflight job**. The rendered

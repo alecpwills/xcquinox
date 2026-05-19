@@ -246,7 +246,7 @@ def test_prepare_no_recompute_refs_runs_on_login_node(tmp_path, monkeypatch):
 
         class _S:
             points = [1, 2, 3]
-            subset_ledger = {"entries": {"l2:4": {}}}
+            subset_ledger = {"l2/4": {"chosen_indices": [0], "metric_value": 0.0, "point_kinds": ["ae"], "point_names": ["H2"], "tag": "bin04"}}
         return _S()
 
     monkeypatch.setattr(cli, "prepare_inputs", _fake_prepare)
@@ -265,7 +265,7 @@ def test_prepare_default_recompute_refs_inside_allocation(tmp_path, monkeypatch)
     def _fake_prepare(cfg, *, recompute_refs=True):
         called["recompute_refs"] = recompute_refs
         return type("S", (), {"points": [1],
-                              "subset_ledger": {"entries": {}}})()
+                              "subset_ledger": {}})()
 
     monkeypatch.setattr(cli, "prepare_inputs", _fake_prepare)
     rc = main(["prepare", grid])
