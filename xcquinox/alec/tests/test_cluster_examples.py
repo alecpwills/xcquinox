@@ -18,6 +18,7 @@ from xcquinox.alec.cluster.grid_config import (
     SolverNamed,
     HyperParams,
     InputPaths,
+    PretrainConfig,
     ClusterResources,
     load_grid_config,
     expand_grid,
@@ -152,6 +153,7 @@ def test_example_structural_completeness():
     _assert_fields_covered(SweepAxes, raw.get("sweep"), "sweep")
     _assert_fields_covered(HyperParams, raw.get("hyperparams"), "hyperparams")
     _assert_fields_covered(InputPaths, raw.get("inputs"), "inputs")
+    _assert_fields_covered(PretrainConfig, raw.get("pretrain"), "pretrain")
     _assert_fields_covered(ClusterResources, raw.get("cluster"), "cluster")
     # every named solver covers SolverNamed's fields
     solvers = raw.get("solvers") or {}
@@ -182,9 +184,10 @@ def test_example_validate_raises_on_placeholder_paths():
     # The placeholder paths must genuinely not exist on this machine.
     for p in (
         cfg.inputs.external_refs_dir,
-        cfg.inputs.descriptor_cache,
+        cfg.inputs.subset_ledger_path,
         cfg.inputs.output_root,
-        cfg.inputs.pretrain_checkpoint,
+        cfg.pretrain.data_dir,
+        cfg.pretrain.pretrain_root,
     ):
         assert p is not None and not os.path.exists(p), (
             f"example placeholder path {p!r} unexpectedly exists — the "

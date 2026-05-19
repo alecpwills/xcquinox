@@ -385,6 +385,86 @@ def test_validate_missing_pool_size():
         validate_grid_semantics(_cfg(), _Empty())
 
 
+def test_validate_rejects_unknown_arch_name():
+    """Every arch-axis value must resolve via get_architecture; an unknown
+    name is rejected on the login node, not deferred to the pretrain worker."""
+    with pytest.raises(ValueError, match="not a known architecture"):
+        validate_grid_semantics(
+            _cfg(arch=("medium", "no_such_arch")), _StubDomain(pool_size=40)
+        )
+
+
+def test_validate_known_arch_names_accepted():
+    """A grid using only registered architecture names validates cleanly."""
+    validate_grid_semantics(
+        _cfg(arch=("medium", "deep_combined_attn")),
+        _StubDomain(pool_size=40),
+    )
+
+
+def test_validate_bad_pretrain_throttle():
+    cfg = _cfg()
+    bad = ClusterResources(
+        partition="p", time="1:00:00", mem="8G", cpus_per_task=1,
+        array_throttle=1, eval_array_throttle=1, max_concurrent_tasks=40,
+        pretrain_throttle=0,
+    )
+    cfg = GridConfig(
+        sweep=cfg.sweep, solvers=cfg.solvers, hyperparams=cfg.hyperparams,
+        inputs=cfg.inputs, pretrain=cfg.pretrain, cluster=bad,
+        domain_profile=cfg.domain_profile,
+    )
+    with pytest.raises(ValueError, match="pretrain_throttle must be >= 1"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_bad_pretrain_cpus_per_task():
+    cfg = _cfg()
+    bad = ClusterResources(
+        partition="p", time="1:00:00", mem="8G", cpus_per_task=1,
+        array_throttle=1, eval_array_throttle=1, max_concurrent_tasks=40,
+        pretrain_cpus_per_task=0,
+    )
+    cfg = GridConfig(
+        sweep=cfg.sweep, solvers=cfg.solvers, hyperparams=cfg.hyperparams,
+        inputs=cfg.inputs, pretrain=cfg.pretrain, cluster=bad,
+        domain_profile=cfg.domain_profile,
+    )
+    with pytest.raises(ValueError, match="pretrain_cpus_per_task must be >= 1"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_pretrain_resource_knobs_none_default_ok():
+    """The pretrain resource knobs are None-by-default and fall back to the
+    train-array values — an unset config validates cleanly."""
+    cfg = _cfg()
+    assert cfg.cluster.pretrain_partition is None
+    assert cfg.cluster.pretrain_time is None
+    assert cfg.cluster.pretrain_mem is None
+    assert cfg.cluster.pretrain_cpus_per_task is None
+    assert cfg.cluster.pretrain_throttle is None
+    validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_load_parses_pretrain_resource_knobs(tmp_path):
+    """load_grid_config parses the optional cluster.pretrain_* resource knobs."""
+    d = _base_config_dict()
+    d["cluster"].update({
+        "pretrain_partition": "long-96core",
+        "pretrain_time": "08:00:00",
+        "pretrain_mem": "64G",
+        "pretrain_cpus_per_task": 12,
+        "pretrain_throttle": 3,
+    })
+    cfg = load_grid_config(_write(tmp_path, "grid.json", d))
+    cl = cfg.cluster
+    assert cl.pretrain_partition == "long-96core"
+    assert cl.pretrain_time == "08:00:00"
+    assert cl.pretrain_mem == "64G"
+    assert cl.pretrain_cpus_per_task == 12
+    assert cl.pretrain_throttle == 3
+
+
 # ---------------------------------------------------------------------------
 # PretrainConfig
 # ---------------------------------------------------------------------------

@@ -47,12 +47,14 @@ def _base_config_dict(*, device="cpu", gpus_per_task=0):
         },
         "inputs": {
             "external_refs_dir": "/shared/refs",
-            "descriptor_cache": "/shared/desc_cache",
-            "refhist_cache": "/shared/refhist_cache",
             "subset_ledger_path": "/shared/ledger.json",
             "basis": "def2-tzvp",
             "grid_level": 3,
             "output_root": "/shared/runs",
+        },
+        "pretrain": {
+            "data_dir": "/shared/pretrain_data",
+            "pretrain_root": "/shared/pretrain",
         },
         "cluster": {
             "partition": "long-40core",
@@ -86,6 +88,23 @@ def _make_cfg(tmp_path, **kw):
 _EXPECTED_N = 40
 _EXPECTED_ARRAY_MAX = 39
 
+# Template placeholders render_sbatch fills via string.Template.substitute.
+_PLACEHOLDER_TOKENS = (
+    "JOB_NAME", "PARTITION", "TIME", "MEM", "CPUS_PER_TASK", "ARRAY_MAX",
+    "THROTTLE", "RUN_DIR", "CONDA_ACTIVATION", "MAIL_USER_LINE",
+    "MAIL_TYPE_LINE", "ACCOUNT_LINE", "SIGTERM_GRACE", "GPUS_PER_TASK",
+)
+
+
+def _assert_no_unrendered_placeholders(text):
+    """Fail if any ${PLACEHOLDER} template token survived substitution.
+
+    A legitimate rendered bash variable such as ``${SLURM_ARRAY_TASK_ID}`` is
+    NOT a placeholder — only the tokens in _PLACEHOLDER_TOKENS are.
+    """
+    for tok in _PLACEHOLDER_TOKENS:
+        assert ("${" + tok + "}") not in text, f"unrendered placeholder ${tok}"
+
 
 class _FakeProc:
     """Minimal stand-in for subprocess.CompletedProcess (just ``stdout``)."""
@@ -103,7 +122,7 @@ def _fake_slurm_factory(ids=None, fail_on_index=None):
     CalledProcessError instead of returning. ``scancel`` calls always succeed.
     The list of every cmd seen is recorded on ``.calls``.
     """
-    ids = list(ids or ["1001", "1002", "1003"])
+    ids = list(ids or ["1001", "1002", "1003", "1004"])
     state = {"sbatch_n": 0}
     calls = []
 
@@ -163,9 +182,48 @@ def test_render_eval_is_cpu_only_with_eval_throttle(tmp_path):
     assert "_eval_one_spec" in text
 
 
+def test_render_pretrain_array_max_and_throttle(tmp_path):
+    """pretrain: ARRAY_MAX = A-1; throttle defaults to the arch count (A);
+    no leftover ${...} placeholder."""
+    cfg = _make_cfg(tmp_path)  # 1 distinct arch -> array_max 0
+    text = render_sbatch("pretrain", cfg, str(tmp_path / "run"), array_max=0)
+    # 1 arch -> 0-0; default throttle = array_max + 1 = 1.
+    assert "#SBATCH --array=0-0%1" in text
+    assert "xcquinox.alec.cluster._pretrain" in text
+    assert "pretrain_%A_%a.out" in text
+    # No unsubstituted template placeholder survived (the rendered bash var
+    # ${SLURM_ARRAY_TASK_ID} is legitimate — placeholders are the ones in
+    # _PLACEHOLDER_TOKENS below).
+    _assert_no_unrendered_placeholders(text)
+
+
+def test_render_pretrain_explicit_throttle_and_multi_arch(tmp_path):
+    """A multi-arch grid + explicit pretrain_throttle render the right range."""
+    d = _base_config_dict()
+    d["sweep"]["arch"] = ["medium", "shallow", "deep"]  # 3 distinct archs
+    d["cluster"]["pretrain_throttle"] = 2
+    p = tmp_path / "g_multi.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))
+    text = render_sbatch("pretrain", cfg, str(tmp_path / "run"), array_max=2)
+    assert "#SBATCH --array=0-2%2" in text
+    _assert_no_unrendered_placeholders(text)
+
+
+def test_render_pretrain_resource_fallback(tmp_path):
+    """Unset pretrain_* resource knobs fall back to the train-array values."""
+    cfg = _make_cfg(tmp_path)  # no pretrain_* knobs set
+    text = render_sbatch("pretrain", cfg, str(tmp_path / "run"), array_max=0)
+    # train-array partition/time/mem are inherited.
+    assert "#SBATCH --partition=long-40core" in text
+    assert "#SBATCH --time=12:00:00" in text
+    assert "#SBATCH --mem=32G" in text
+
+
 def test_render_thread_caps_present_every_template(tmp_path):
     cfg = _make_cfg(tmp_path)
-    for kind, kw in (("preflight", {}), ("train", {"array_max": 39}),
+    for kind, kw in (("pretrain", {"array_max": 0}), ("preflight", {}),
+                     ("train", {"array_max": 39}),
                      ("eval", {"array_max": 39})):
         text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
         assert "export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
@@ -257,16 +315,23 @@ def test_dry_run_calls_no_sbatch_and_writes_no_jobs_json(tmp_path, monkeypatch):
     assert result["dry_run"] is True
     assert result["n_specs"] == _EXPECTED_N
     assert result["array_max"] == _EXPECTED_ARRAY_MAX
+    # The base config has a single distinct arch -> pretrain array 0-0.
+    assert result["n_archs"] == 1
+    assert result["pretrain_array_max"] == 0
     # No SLURM call whatsoever in a dry run.
     assert fake.calls == []
     # No jobs.json written.
     assert not os.path.exists(os.path.join(run_dir, "jobs.json"))
     # Scripts + the audit file ARE written.
-    for name in ("preflight.sbatch", "train_array.sbatch", "eval_array.sbatch"):
+    for name in ("pretrain.sbatch", "preflight.sbatch", "train_array.sbatch",
+                 "eval_array.sbatch"):
         assert os.path.exists(os.path.join(run_dir, "scripts", name))
     cmds_path = os.path.join(run_dir, "submit_commands.txt")
     assert os.path.exists(cmds_path)
-    assert "[dry-run]" in open(cmds_path).read()
+    cmds_text = open(cmds_path).read()
+    assert "[dry-run]" in cmds_text
+    # The pretrain sbatch invocation is listed in the audit trail.
+    assert "scripts/pretrain.sbatch" in cmds_text
     assert os.path.isdir(os.path.join(run_dir, "logs"))
 
 
@@ -295,29 +360,32 @@ def test_dry_run_train_eval_array_ranges_identical(tmp_path, monkeypatch):
 def test_real_submit_dependency_directives(tmp_path, monkeypatch):
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
-    fake = _fake_slurm_factory(ids=["5000", "5001", "5002"])
+    fake = _fake_slurm_factory(ids=["5000", "5001", "5002", "5003"])
     monkeypatch.setattr(jt, "_run_slurm", fake)
 
     result = submit_jobs(cfg, run_dir, submit=True)
 
     assert result["dry_run"] is False
     assert result["job_ids"] == {
-        "preflight": "5000", "train": "5001", "eval": "5002",
+        "pretrain": "5000", "preflight": "5001",
+        "train": "5002", "eval": "5003",
     }
     sbatch_calls = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
-    assert len(sbatch_calls) == 3
+    assert len(sbatch_calls) == 4
     joined = [" ".join(c) for c in sbatch_calls]
-    # preflight: no dependency.
-    assert not any("--dependency" in j for j in [joined[0]])
-    # train: afterok on the preflight id.
+    # pretrain: no dependency.
+    assert "--dependency" not in joined[0]
+    # preflight: afterok on the pretrain id.
     assert "--dependency=afterok:5000" in joined[1]
+    # train: afterok on BOTH the pretrain and the preflight ids.
+    assert "--dependency=afterok:5000:5001" in joined[2]
     # eval: aftercorr on the train array id.
-    assert "--dependency=aftercorr:5001" in joined[2]
+    assert "--dependency=aftercorr:5002" in joined[3]
 
-    # jobs.json now records all three.
+    # jobs.json now records all four stages.
     records = jt.read_job_records(run_dir)
     kinds = sorted(r["kind"] for r in records)
-    assert kinds == ["eval", "preflight", "train"]
+    assert kinds == ["eval", "preflight", "pretrain", "train"]
     cmds = open(os.path.join(run_dir, "submit_commands.txt")).read()
     assert "[submit]" in cmds
 
@@ -326,12 +394,14 @@ def test_double_submit_guard_requires_force(tmp_path, monkeypatch):
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
     monkeypatch.setattr(jt, "_run_slurm",
-                        _fake_slurm_factory(ids=["7000", "7001", "7002"]))
+                        _fake_slurm_factory(ids=["7000", "7001", "7002",
+                                                 "7003"]))
     submit_jobs(cfg, run_dir, submit=True)
 
     # A second submit without force must be rejected.
     monkeypatch.setattr(jt, "_run_slurm",
-                        _fake_slurm_factory(ids=["8000", "8001", "8002"]))
+                        _fake_slurm_factory(ids=["8000", "8001", "8002",
+                                                 "8003"]))
     with pytest.raises(RuntimeError, match="force"):
         submit_jobs(cfg, run_dir, submit=True)
 
@@ -340,20 +410,28 @@ def test_double_submit_guard_requires_force(tmp_path, monkeypatch):
     assert result["dry_run"] is False
 
 
-def test_rollback_scancels_on_midgraph_failure(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "fail_idx,expected_scancels",
+    [
+        (0, []),                              # pretrain rejected — nothing prior
+        (1, ["9000"]),                        # preflight rejected — cancel pretrain
+        (2, ["9000", "9001"]),                # train rejected — cancel both prior
+        (3, ["9000", "9001", "9002"]),        # eval rejected — cancel all three
+    ],
+)
+def test_rollback_scancels_on_midgraph_failure(tmp_path, monkeypatch,
+                                               fail_idx, expected_scancels):
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
-    # Fail on the 2nd sbatch (index 1 = the train array): preflight succeeded,
-    # so the rollback must scancel the preflight id.
-    fake = _fake_slurm_factory(ids=["9000", "9001", "9002"], fail_on_index=1)
+    fake = _fake_slurm_factory(ids=["9000", "9001", "9002", "9003"],
+                               fail_on_index=fail_idx)
     monkeypatch.setattr(jt, "_run_slurm", fake)
 
     with pytest.raises(RuntimeError, match="rolled back"):
         submit_jobs(cfg, run_dir, submit=True)
 
     scancels = [c for c in fake.calls if os.path.basename(c[0]) == "scancel"]
-    # The one already-submitted job (preflight 9000) must be cancelled.
-    assert scancels == [["scancel", "9000"]]
+    assert scancels == [["scancel", j] for j in expected_scancels]
     # No partial records written.
     assert not os.path.exists(os.path.join(run_dir, "jobs.json"))
 
@@ -385,7 +463,8 @@ def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):
     monkeypatch.setattr(jt, "_run_slurm", _fake_slurm_factory())
     submit_jobs(cfg, run_dir, submit=False)
 
-    for name in ("preflight.sbatch", "train_array.sbatch", "eval_array.sbatch"):
+    for name in ("pretrain.sbatch", "preflight.sbatch", "train_array.sbatch",
+                 "eval_array.sbatch"):
         path = os.path.join(run_dir, "scripts", name)
         proc = subprocess.run(
             ["shellcheck", "--severity=warning", path],

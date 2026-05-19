@@ -1,19 +1,26 @@
 """xcquinox.alec.cluster.submit — render sbatch scripts + submit the job graph.
 
-The HPC harness submits a **3-stage SLURM job graph**:
+The HPC harness submits a **4-stage SLURM job graph**:
 
+    pretrain array  (--array=0-A-1%pretrain_throttle, A = distinct archs)
+        |  --dependency=afterok:<pretrain>
+        v
     preflight (single job)
-        |  --dependency=afterok:<preflight>
+        |  --dependency=afterok:<pretrain>:<preflight>  (train gated on BOTH)
         v
     train array  (--array=0-N-1%train_throttle)
         |  --dependency=aftercorr:<train_array>
         v
     eval  array  (--array=0-N-1%eval_throttle)
 
-The array size ``N = len(expand_grid(cfg))`` is known at submit time from the
-config alone — no preflight result is needed to size the arrays. ``aftercorr``
-requires the train and eval arrays to share an *identical index range* (only
-the ``%throttle`` suffix may differ); :func:`submit_jobs` asserts that.
+The train/eval array size ``N = len(expand_grid(cfg))`` is known at submit
+time from the config alone — no preflight result is needed to size the arrays.
+The pretrain array size ``A = len(_canon_axis(cfg.sweep.arch))`` is the distinct
+architecture count (the same de-dup ``expand_grid`` applies to the arch axis).
+``aftercorr`` requires the train and eval arrays to share an *identical index
+range* (only the ``%throttle`` suffix may differ); :func:`submit_jobs` asserts
+that. The pretrain array's range is independent (over archs) and is NOT part
+of that assertion.
 
 This module owns two things:
 
@@ -34,7 +41,7 @@ from string import Template
 import importlib.resources
 import os
 
-from xcquinox.alec.cluster.grid_config import expand_grid
+from xcquinox.alec.cluster.grid_config import expand_grid, _canon_axis
 from xcquinox.alec.cluster import job_tracking
 
 
@@ -44,6 +51,7 @@ _SIGTERM_GRACE_S = 120
 
 # kind -> template filename (the GPU train variant is resolved separately).
 _TEMPLATE_FILES = {
+    "pretrain": "pretrain.sbatch.tmpl",
     "preflight": "preflight.sbatch.tmpl",
     "train_cpu": "train_array_cpu.sbatch.tmpl",
     "train_gpu": "train_array_gpu.sbatch.tmpl",
@@ -106,15 +114,18 @@ def _train_template_kind(cfg) -> str:
 
 
 def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
-    """Render the sbatch script for ``kind`` ∈ {preflight, train, eval}.
+    """Render the sbatch script for ``kind`` ∈ {pretrain, preflight, train, eval}.
 
     Args:
-        kind: ``"preflight"``, ``"train"`` or ``"eval"``. For ``"train"`` the
-            CPU-vs-GPU template is chosen from ``cfg.cluster.device``.
+        kind: ``"pretrain"``, ``"preflight"``, ``"train"`` or ``"eval"``. For
+            ``"train"`` the CPU-vs-GPU template is chosen from
+            ``cfg.cluster.device``.
         cfg: a :class:`~xcquinox.alec.cluster.grid_config.GridConfig`.
         run_dir: the run directory (absolute; ``logs/`` lives under it).
-        array_max: the largest array index (``N-1``). Required for the array
-            kinds (``train``/``eval``); ignored for ``preflight``.
+        array_max: the largest array index. Required for the array kinds
+            (``pretrain``/``train``/``eval``) — for ``pretrain`` it is
+            ``A-1`` (A = distinct architecture count); for ``train``/``eval``
+            it is ``N-1`` (N = grid cell count). Ignored for ``preflight``.
 
     Returns:
         The fully substituted sbatch script text.
@@ -122,7 +133,9 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
     cl = cfg.cluster
     run_dir = os.path.abspath(run_dir)
 
-    if kind == "preflight":
+    if kind == "pretrain":
+        template_kind = "pretrain"
+    elif kind == "preflight":
         template_kind = "preflight"
     elif kind == "train":
         template_kind = _train_template_kind(cfg)
@@ -130,29 +143,41 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         template_kind = "eval"
     else:
         raise ValueError(
-            f"render_sbatch: kind must be 'preflight', 'train' or 'eval', "
-            f"got {kind!r}"
+            f"render_sbatch: kind must be 'pretrain', 'preflight', 'train' or "
+            f"'eval', got {kind!r}"
         )
 
     text = _load_template_text(_TEMPLATE_FILES[template_kind])
 
-    # Per-kind partition / time fall back to the main cluster values.
-    if kind == "preflight":
+    # Per-kind partition / time / mem / cpus fall back to the train-array
+    # cluster values when the per-stage knob is unset.
+    if kind == "pretrain":
+        partition = cl.pretrain_partition or cl.partition
+        time = cl.pretrain_time or cl.time
+        mem = cl.pretrain_mem or cl.mem
+        cpus = cl.pretrain_cpus_per_task or cl.cpus_per_task
+    elif kind == "preflight":
         partition = cl.preflight_partition or cl.partition
         time = cl.preflight_time or cl.time
+        mem = cl.mem
+        cpus = cl.cpus_per_task
     elif kind == "eval":
         partition = cl.eval_partition or cl.partition
         time = cl.eval_time or cl.time
+        mem = cl.mem
+        cpus = cl.cpus_per_task
     else:  # train
         partition = cl.partition
         time = cl.time
+        mem = cl.mem
+        cpus = cl.cpus_per_task
 
     mapping = {
         "JOB_NAME": f"xcq_{kind}",
         "PARTITION": partition,
         "TIME": time,
-        "MEM": cl.mem,
-        "CPUS_PER_TASK": cl.cpus_per_task,
+        "MEM": mem,
+        "CPUS_PER_TASK": cpus,
         "RUN_DIR": run_dir,
         "CONDA_ACTIVATION": _conda_activation_block(
             cl.conda_profile, cl.conda_env
@@ -162,14 +187,22 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         "ACCOUNT_LINE": _optional_sbatch_line("account", cl.account),
     }
 
-    if kind in ("train", "eval"):
+    if kind in ("pretrain", "train", "eval"):
         if array_max is None:
             raise ValueError(
                 f"render_sbatch: array_max is required for kind {kind!r}"
             )
-        throttle = (
-            cl.array_throttle if kind == "train" else cl.eval_array_throttle
-        )
+        if kind == "train":
+            throttle = cl.array_throttle
+        elif kind == "eval":
+            throttle = cl.eval_array_throttle
+        else:  # pretrain
+            # (E) pretrain_throttle None -> run every distinct arch
+            # concurrently (the pretrain array is a handful of jobs).
+            throttle = (
+                cl.pretrain_throttle if cl.pretrain_throttle is not None
+                else int(array_max) + 1
+            )
         mapping["ARRAY_MAX"] = int(array_max)
         mapping["THROTTLE"] = int(throttle)
 
@@ -236,32 +269,36 @@ def _has_live_jobs(run_dir: str) -> bool:
 
 def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
                 force: bool = False) -> dict:
-    """Render the 3-stage sbatch graph and (optionally) submit it.
+    """Render the 4-stage sbatch graph and (optionally) submit it.
 
     **Defaults to dry-run** (``submit=False``): writes the rendered scripts and
     a ``submit_commands.txt`` audit record, but calls neither ``sbatch`` nor
     writes ``jobs.json``.
 
     Control flow:
-      1. ``N = len(expand_grid(cfg))``; ``array_max = N-1``.
+      1. ``N = len(expand_grid(cfg))``; train/eval ``array_max = N-1``.
+         ``A = len(_canon_axis(cfg.sweep.arch))``; pretrain ``array_max = A-1``.
       2. Ensure ``run_dir`` + its ``logs/`` and ``scripts/`` subdirs exist.
-      3. Render preflight, train (cpu or gpu) and eval scripts into
+      3. Render pretrain, preflight, train (cpu or gpu) and eval scripts into
          ``<run_dir>/scripts/``.
       4. Assert the train and eval ``--array`` index ranges are identical
-         (``aftercorr`` requires it).
+         (``aftercorr`` requires it). The pretrain array range is independent
+         (over archs) and is NOT part of that assertion.
       5. Dry-run: write scripts + ``submit_commands.txt`` (``[dry-run]`` tag);
          return a descriptor dict; do NOT touch SLURM or ``jobs.json``.
       6. Real run (``submit=True``): a double-submit guard requires ``force``
-         if ``jobs.json`` already has live records. Submit preflight → train
-         (``afterok``) → eval (``aftercorr``); record each via
-         ``append_job_record``. If any ``sbatch`` is rejected mid-graph,
-         ``scancel`` the ids already returned in THIS call, append no partial
-         records, and re-raise.
+         if ``jobs.json`` already has live records. Submit pretrain → preflight
+         (``afterok:pretrain``) → train (``afterok:pretrain:preflight`` — the
+         train array is gated on BOTH) → eval (``aftercorr:train``); record
+         each via ``append_job_record``. If any ``sbatch`` is rejected
+         mid-graph, ``scancel`` the ids already returned in THIS call, append
+         no partial records, and re-raise.
 
     Returns:
         A dict describing what was (or would be) submitted: ``n_specs``,
-        ``array_max``, ``device``, the script paths, the ``sbatch`` command
-        lines, ``dry_run`` flag, and (real runs only) the job ids.
+        ``n_archs``, ``array_max``, ``pretrain_array_max``, ``device``, the
+        script paths, the ``sbatch`` command lines, ``dry_run`` flag, and
+        (real runs only) the job ids.
     """
     run_dir = os.path.abspath(run_dir)
     cells = expand_grid(cfg)
@@ -272,6 +309,13 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         )
     array_max = n_specs - 1
 
+    n_archs = len(_canon_axis(cfg.sweep.arch))
+    if n_archs == 0:
+        raise ValueError(
+            "submit_jobs: arch sweep axis is empty — nothing to pretrain"
+        )
+    pretrain_array_max = n_archs - 1
+
     scripts_dir = os.path.join(run_dir, "scripts")
     logs_dir = os.path.join(run_dir, "logs")
     os.makedirs(run_dir, exist_ok=True)
@@ -279,11 +323,14 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     os.makedirs(logs_dir, exist_ok=True)
 
     # --- render --------------------------------------------------------------
+    pretrain_text = render_sbatch("pretrain", cfg, run_dir,
+                                  array_max=pretrain_array_max)
     preflight_text = render_sbatch("preflight", cfg, run_dir)
     train_text = render_sbatch("train", cfg, run_dir, array_max=array_max)
     eval_text = render_sbatch("eval", cfg, run_dir, array_max=array_max)
 
-    # aftercorr requires identical index ranges (throttle may differ).
+    # aftercorr requires identical index ranges (throttle may differ). The
+    # pretrain array range is independent (over archs) — NOT checked here.
     train_range = _array_range(train_text)
     eval_range = _array_range(eval_text)
     if train_range != eval_range:
@@ -293,10 +340,12 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             "index ranges"
         )
 
+    pretrain_path = os.path.join(scripts_dir, "pretrain.sbatch")
     preflight_path = os.path.join(scripts_dir, "preflight.sbatch")
     train_path = os.path.join(scripts_dir, "train_array.sbatch")
     eval_path = os.path.join(scripts_dir, "eval_array.sbatch")
     for path, text in (
+        (pretrain_path, pretrain_text),
         (preflight_path, preflight_text),
         (train_path, train_text),
         (eval_path, eval_text),
@@ -308,9 +357,12 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     result = {
         "run_dir": run_dir,
         "n_specs": n_specs,
+        "n_archs": n_archs,
         "array_max": array_max,
+        "pretrain_array_max": pretrain_array_max,
         "device": device,
         "scripts": {
+            "pretrain": pretrain_path,
             "preflight": preflight_path,
             "train": train_path,
             "eval": eval_path,
@@ -320,8 +372,11 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     # --- dry-run -------------------------------------------------------------
     if not submit:
         cmds = [
-            f"sbatch --parsable {preflight_path}",
-            f"sbatch --parsable --dependency=afterok:<PREFLIGHT_ID> {train_path}",
+            f"sbatch --parsable {pretrain_path}",
+            f"sbatch --parsable --dependency=afterok:<PRETRAIN_ID> "
+            f"{preflight_path}",
+            f"sbatch --parsable "
+            f"--dependency=afterok:<PRETRAIN_ID>:<PREFLIGHT_ID> {train_path}",
             f"sbatch --parsable --dependency=aftercorr:<TRAIN_ID> {eval_path}",
         ]
         _append_commands(run_dir, "dry-run", cmds)
@@ -341,24 +396,35 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     submitted_ids: list[str] = []  # ids returned in THIS call — for rollback.
     issued_cmds: list[str] = []
     try:
-        # 1. preflight
-        preflight_cmd = ["sbatch", "--parsable", preflight_path]
+        # 1. pretrain array (one task per distinct architecture)
+        pretrain_cmd = ["sbatch", "--parsable", pretrain_path]
+        issued_cmds.append(" ".join(pretrain_cmd))
+        proc = job_tracking._run_slurm(pretrain_cmd)
+        pretrain_id = proc.stdout.strip().split(";")[0].split()[0]
+        submitted_ids.append(pretrain_id)
+
+        # 2. preflight — afterok on pretrain
+        preflight_cmd = [
+            "sbatch", "--parsable",
+            f"--dependency=afterok:{pretrain_id}", preflight_path,
+        ]
         issued_cmds.append(" ".join(preflight_cmd))
         proc = job_tracking._run_slurm(preflight_cmd)
         preflight_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(preflight_id)
 
-        # 2. train array — afterok on preflight
+        # 3. train array — afterok on BOTH pretrain and preflight (the colon-
+        # list is valid SLURM afterok syntax: every listed job must succeed).
         train_cmd = [
             "sbatch", "--parsable",
-            f"--dependency=afterok:{preflight_id}", train_path,
+            f"--dependency=afterok:{pretrain_id}:{preflight_id}", train_path,
         ]
         issued_cmds.append(" ".join(train_cmd))
         proc = job_tracking._run_slurm(train_cmd)
         train_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(train_id)
 
-        # 3. eval array — aftercorr on the train array
+        # 4. eval array — aftercorr on the train array
         eval_cmd = [
             "sbatch", "--parsable",
             f"--dependency=aftercorr:{train_id}", eval_path,
@@ -369,21 +435,33 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         submitted_ids.append(eval_id)
     except Exception as exc:
         # Best-effort rollback: cancel everything submitted in THIS call.
+        rollback_failed: list[str] = []
         for jid in submitted_ids:
             try:
                 job_tracking._run_slurm(["scancel", str(jid)])
             except Exception:
                 # Rollback is best-effort: a failed scancel must not mask the
-                # original submission error.
-                pass
+                # original submission error — but a surviving orphan must be
+                # logged prominently so the operator can cancel it manually.
+                rollback_failed.append(str(jid))
+        if rollback_failed:
+            print(
+                "submit_jobs: WARNING — scancel FAILED for job id(s) "
+                f"{rollback_failed}; these arrays may be ORPHANED and must be "
+                "cancelled manually (scancel <id>).",
+                flush=True,
+            )
         raise RuntimeError(
             f"submit_jobs: SLURM rejected a job mid-graph ({exc}); rolled back "
             f"{len(submitted_ids)} already-submitted job(s) via scancel. No "
             "records were written to jobs.json."
         ) from exc
 
-    # All three accepted — now (and only now) write the append-only records.
+    # All four accepted — now (and only now) write the append-only records.
     indices = list(range(n_specs))
+    arch_indices = list(range(n_archs))
+    job_tracking.append_job_record(run_dir, "pretrain", pretrain_id,
+                                   arch_indices)
     job_tracking.append_job_record(run_dir, "preflight", preflight_id, [0])
     job_tracking.append_job_record(run_dir, "train", train_id, indices)
     job_tracking.append_job_record(run_dir, "eval", eval_id, indices)
@@ -393,6 +471,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     result["dry_run"] = False
     result["commands"] = issued_cmds
     result["job_ids"] = {
+        "pretrain": pretrain_id,
         "preflight": preflight_id,
         "train": train_id,
         "eval": eval_id,

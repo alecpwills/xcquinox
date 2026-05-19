@@ -1,9 +1,10 @@
 """xcquinox.alec.cluster.job_tracking — SLURM job submission log + outcome reduction.
 
-The HPC harness submits SLURM job arrays (a preflight job, then a train array,
-then an eval array) and must be able to *recover* from partial failure: the
-``resubmit`` / ``status`` commands need to know, per grid index, whether the
-training/eval task succeeded or failed and — if it failed — *why*.
+The HPC harness submits SLURM job arrays (a pretrain array, then a preflight
+job, then a train array, then an eval array) and must be able to *recover*
+from partial failure: the ``resubmit`` / ``status`` commands need to know, per
+grid index, whether the training/eval task succeeded or failed and — if it
+failed — *why*.
 
 This module owns three things:
 
@@ -49,7 +50,7 @@ _SLURM_TIMEOUT_S = 30.0
 _QUERY_VERBS = frozenset({"sacct", "squeue"})
 _MUTATING_VERBS = frozenset({"sbatch", "scancel"})
 
-_VALID_KINDS = frozenset({"preflight", "train", "eval"})
+_VALID_KINDS = frozenset({"pretrain", "preflight", "train", "eval"})
 
 _JOBS_FILENAME = "jobs.json"
 _MANIFEST_FILENAME = "manifest.json"
@@ -221,7 +222,7 @@ def append_job_record(
 
     Args:
         run_dir: the run directory (created if absent).
-        kind: one of ``preflight`` / ``train`` / ``eval``.
+        kind: one of ``pretrain`` / ``preflight`` / ``train`` / ``eval``.
         array_job_id: the SLURM array-job id ``sbatch`` returned. Must be a
             real non-empty value — an empty/None id is rejected because a
             record carrying it could never be recovered via ``sacct``.

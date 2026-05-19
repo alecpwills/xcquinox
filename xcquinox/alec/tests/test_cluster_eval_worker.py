@@ -70,12 +70,14 @@ def _write_resolved_config(run_dir):
         },
         "inputs": {
             "external_refs_dir": "/tmp/refs",
-            "descriptor_cache": "/tmp/desc",
-            "refhist_cache": "/tmp/refhist",
             "subset_ledger_path": "/tmp/ledger.json",
             "basis": "def2-svp",
             "grid_level": 1,
             "output_root": "/tmp/out",
+        },
+        "pretrain": {
+            "data_dir": "/tmp/pretrain_data",
+            "pretrain_root": "/tmp/pretrain",
         },
         "cluster": {
             "partition": "short",

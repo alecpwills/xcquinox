@@ -48,12 +48,14 @@ def _base_config_dict():
         },
         "inputs": {
             "external_refs_dir": "/shared/refs",
-            "descriptor_cache": "/shared/desc_cache",
-            "refhist_cache": "/shared/refhist_cache",
             "subset_ledger_path": "/shared/ledger.json",
             "basis": "def2-tzvp",
             "grid_level": 3,
             "output_root": "/shared/runs",
+        },
+        "pretrain": {
+            "data_dir": "/shared/pretrain_data",
+            "pretrain_root": "/shared/pretrain",
         },
         "cluster": {
             "partition": "long-40core",
@@ -159,7 +161,8 @@ def _fake_slurm(ids=None, sacct_rows=None, fail_sbatch_index=None,
     ``transient``         — every ``sacct`` raises SlurmTransientError.
     Every cmd seen is recorded on ``.calls``.
     """
-    ids = list(ids or ["1001", "1002", "1003", "1004", "1005", "1006"])
+    ids = list(ids or ["1001", "1002", "1003", "1004", "1005", "1006",
+                       "1007", "1008"])
     sacct_rows = sacct_rows or {}
     state = {"sbatch_n": 0}
     calls = []
@@ -222,20 +225,24 @@ def test_dispatch_all_six_subcommands_are_registered():
 # prepare
 # ===========================================================================
 
-def test_prepare_regenerate_refused_on_login_node(tmp_path, monkeypatch):
+def test_prepare_refused_on_login_node(tmp_path, monkeypatch):
+    """`prepare` runs the heavy CCSD precompute by default — refused on a
+    login node (no $SLURM_JOB_ID)."""
     grid = _write_grid(tmp_path)
     monkeypatch.delenv("SLURM_JOB_ID", raising=False)  # simulate login node
-    rc = main(["prepare", grid, "--regenerate"])
+    rc = main(["prepare", grid])
     assert rc == 2
 
 
-def test_prepare_reuse_mode_runs_without_slurm_alloc(tmp_path, monkeypatch):
+def test_prepare_no_recompute_refs_runs_on_login_node(tmp_path, monkeypatch):
+    """`--no-recompute-refs` skips the precompute, so `prepare` is allowed on
+    a login node and calls prepare_inputs with recompute_refs=False."""
     grid = _write_grid(tmp_path)
     monkeypatch.delenv("SLURM_JOB_ID", raising=False)
     called = {}
 
-    def _fake_prepare(cfg, regenerate):
-        called["regenerate"] = regenerate
+    def _fake_prepare(cfg, *, recompute_refs=True):
+        called["recompute_refs"] = recompute_refs
 
         class _S:
             points = [1, 2, 3]
@@ -243,18 +250,34 @@ def test_prepare_reuse_mode_runs_without_slurm_alloc(tmp_path, monkeypatch):
         return _S()
 
     monkeypatch.setattr(cli, "prepare_inputs", _fake_prepare)
-    rc = main(["prepare", grid])  # reuse mode — no --regenerate
+    rc = main(["prepare", grid, "--no-recompute-refs"])
     assert rc == 0
-    assert called["regenerate"] is False
+    assert called["recompute_refs"] is False
 
 
-def test_prepare_regenerate_allowed_inside_allocation(tmp_path, monkeypatch):
+def test_prepare_default_recompute_refs_inside_allocation(tmp_path, monkeypatch):
+    """Inside a SLURM allocation `prepare` runs the precompute (recompute_refs
+    defaults True)."""
     grid = _write_grid(tmp_path)
     monkeypatch.setenv("SLURM_JOB_ID", "987654")  # simulate compute node
-    monkeypatch.setattr(cli, "prepare_inputs", lambda cfg, regen: type(
-        "S", (), {"points": [1], "subset_ledger": {"entries": {}}})())
-    rc = main(["prepare", grid, "--regenerate"])
+    called = {}
+
+    def _fake_prepare(cfg, *, recompute_refs=True):
+        called["recompute_refs"] = recompute_refs
+        return type("S", (), {"points": [1],
+                              "subset_ledger": {"entries": {}}})()
+
+    monkeypatch.setattr(cli, "prepare_inputs", _fake_prepare)
+    rc = main(["prepare", grid])
     assert rc == 0
+    assert called["recompute_refs"] is True
+
+
+def test_prepare_has_no_regenerate_flag(tmp_path):
+    """The removed `--regenerate` flag must no longer be accepted."""
+    grid = _write_grid(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["prepare", grid, "--regenerate"])
 
 
 # ===========================================================================
@@ -290,7 +313,7 @@ def test_submit_creates_run_dir_and_resolved_config_dry_run(tmp_path,
 
 def test_submit_with_flag_calls_sbatch(tmp_path, monkeypatch):
     grid = _write_grid(tmp_path)
-    fake = _fake_slurm(ids=["5000", "5001", "5002"])
+    fake = _fake_slurm(ids=["5000", "5001", "5002", "5003"])
     monkeypatch.setattr(jt, "_run_slurm", fake)
     run_root = tmp_path / "out"
     run_root.mkdir()
@@ -298,7 +321,13 @@ def test_submit_with_flag_calls_sbatch(tmp_path, monkeypatch):
     rc = main(["submit", grid, "--run-root", str(run_root), "--submit"])
     assert rc == 0
     sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
-    assert len(sbatch) == 3
+    # 4-stage graph: pretrain + preflight + train + eval.
+    assert len(sbatch) == 4
+    # jobs.json records the pretrain stage.
+    runs = os.listdir(run_root / "runs")
+    run_dir = str(run_root / "runs" / runs[0])
+    kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
+    assert kinds == ["eval", "preflight", "pretrain", "train"]
 
 
 def test_submit_run_dir_collision_gets_counter_suffix(tmp_path, monkeypatch):
@@ -549,27 +578,28 @@ def test_resubmit_preflight_refuses_when_manifest_complete(tmp_path):
 
 
 def test_resubmit_preflight_resubmits_and_supersedes(tmp_path, monkeypatch):
-    """Genuinely preflight-stuck run: no manifest, no train evidence.
+    """Genuinely pretrain/preflight-stuck run: no manifest, no train evidence.
     Re-submits then scancels + marks the old arrays superseded."""
     run_dir = _make_run_dir(tmp_path, manifest=False)
-    # Old train/eval arrays recorded from the failed first submit.
+    # Old pretrain/train/eval arrays recorded from the failed first submit.
+    jt.append_job_record(run_dir, "pretrain", "50", [0])
     jt.append_job_record(run_dir, "preflight", "100", [0])
     jt.append_job_record(run_dir, "train", "200", list(range(_N)))
     jt.append_job_record(run_dir, "eval", "300", list(range(_N)))
 
-    fake = _fake_slurm(ids=["400", "401", "402"])
+    fake = _fake_slurm(ids=["400", "401", "402", "403"])
     monkeypatch.setattr(jt, "_run_slurm", fake)
     rc = main(["resubmit-preflight", run_dir, "--submit"])
     assert rc == 0
-    # Three new sbatch calls + two scancels (old train + old eval).
+    # Four new sbatch calls + three scancels (old pretrain + train + eval).
     sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
     scancel = [c for c in fake.calls if os.path.basename(c[0]) == "scancel"]
-    assert len(sbatch) == 3
-    assert sorted(c[1] for c in scancel) == ["200", "300"]
-    # Old train/eval gen-0 records are now superseded.
+    assert len(sbatch) == 4
+    assert sorted(c[1] for c in scancel) == ["200", "300", "50"]
+    # Old pretrain/train/eval gen-0 records are now superseded.
     records = jt.read_job_records(run_dir)
     old = [r for r in records
-           if r["array_job_id"] in ("200", "300")]
+           if r["array_job_id"] in ("50", "200", "300")]
     assert all(r["superseded"] for r in old)
 
 
@@ -579,8 +609,8 @@ def test_resubmit_preflight_scancel_failure_skips_supersede(tmp_path,
     jt.append_job_record(run_dir, "train", "200", list(range(_N)))
     jt.append_job_record(run_dir, "eval", "300", list(range(_N)))
 
-    # All three new sbatch succeed; scancel fails.
-    fake = _fake_slurm(ids=["400", "401", "402"], fail_scancel=True)
+    # All four new sbatch succeed; scancel fails.
+    fake = _fake_slurm(ids=["400", "401", "402", "403"], fail_scancel=True)
     monkeypatch.setattr(jt, "_run_slurm", fake)
     rc = main(["resubmit-preflight", run_dir, "--submit"])
     assert rc == 1

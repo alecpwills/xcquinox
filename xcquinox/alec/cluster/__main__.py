@@ -6,10 +6,10 @@ lock, and wires the already-built ``cluster/`` modules together. Six
 subcommands:
 
   - ``prepare``             — stage input artifacts (CCSD refs, ledger, ...).
-  - ``submit``              — create a fresh run dir + submit the 3-stage graph.
+  - ``submit``              — create a fresh run dir + submit the 4-stage graph.
   - ``status``              — read-only per-index outcome report.
   - ``resubmit``            — recover FAILED TRAIN tasks (preflight succeeded).
-  - ``resubmit-preflight``  — recover a FAILED/timed-out preflight.
+  - ``resubmit-preflight``  — recover a FAILED/timed-out pretrain/preflight.
   - ``repair-manifest``     — rebuild a corrupt/missing ``manifest.json``.
 
 Design rules (enforced below at their use sites):
@@ -22,8 +22,9 @@ Design rules (enforced below at their use sites):
   - ``main`` only dispatches; each subcommand's logic is in its own function;
     small shared helpers (lock, failed-index scan, artifact archive, sparse
     array string) are factored out.
-  - **Login-node guard**: ``prepare --regenerate`` runs heavy CCSD precompute
-    and is refused on a login node (absent ``$SLURM_JOB_ID``).
+  - **Login-node guard**: ``prepare`` runs the heavy CCSD external-refs
+    precompute and is refused on a login node (absent ``$SLURM_JOB_ID``)
+    unless ``--no-recompute-refs`` is passed.
 """
 from __future__ import annotations
 
@@ -133,6 +134,7 @@ def _config_to_raw_dict(cfg) -> dict:
         },
         "hyperparams": dataclasses.asdict(cfg.hyperparams),
         "inputs": dataclasses.asdict(cfg.inputs),
+        "pretrain": dataclasses.asdict(cfg.pretrain),
         "cluster": dataclasses.asdict(cfg.cluster),
         "domain_profile": cfg.domain_profile,
         "on_precompute_failure": cfg.on_precompute_failure,
@@ -508,26 +510,34 @@ def _parse_job_id(proc) -> str:
 def cmd_prepare(args) -> int:
     """``prepare`` — stage harness input artifacts.
 
-    Regenerate mode runs heavy CCSD precompute; it is refused on a login node
-    (the user must use ``submit`` whose preflight runs on a compute node, or an
-    interactive ``salloc``). Reuse mode is light and unrestricted.
+    ``prepare`` builds the training-point pool, validates the existing subset
+    ledger, and (by default) pre-warms the per-species CCSD external refs via
+    ``prepare_inputs`` (skip-if-cached). The CCSD precompute is heavy compute,
+    so it is refused on a login node (absent ``$SLURM_JOB_ID``): the operator
+    should either use ``submit`` (whose preflight runs the precompute on a
+    compute node) or an interactive ``salloc``. ``--no-recompute-refs`` skips
+    the precompute entirely so ``prepare`` can validate the ledger cheaply on a
+    login node.
     """
     cfg = load_grid_config(args.grid)
+    recompute_refs = not args.no_recompute_refs
 
-    if args.regenerate and _on_login_node():
+    if recompute_refs and _on_login_node():
         _log(
-            "ERROR: `prepare --regenerate` runs heavy CCSD precompute and must "
-            "NOT run on a login node (no $SLURM_JOB_ID detected).\n"
+            "ERROR: `prepare` runs the heavy CCSD external-refs precompute and "
+            "must NOT run on a login node (no $SLURM_JOB_ID detected).\n"
             "  - Use `python -m xcquinox.alec.cluster submit <grid>` — its "
             "preflight job runs the precompute on a compute node, or\n"
             "  - request an interactive node with `salloc` first, then re-run "
-            "this command inside the allocation."
+            "this command inside the allocation, or\n"
+            "  - pass `--no-recompute-refs` to validate the ledger only "
+            "(no precompute) — use this only when the refs are already staged."
         )
         return 2
 
-    mode = "regenerate" if args.regenerate else "reuse"
-    _log(f"prepare: staging inputs ({mode} mode) from {args.grid}")
-    staged = prepare_inputs(cfg, args.regenerate)
+    mode = "validate-only" if args.no_recompute_refs else "with refs precompute"
+    _log(f"prepare: staging inputs ({mode}) from {args.grid}")
+    staged = prepare_inputs(cfg, recompute_refs=recompute_refs)
     n_entries = len(staged.subset_ledger.get("entries", {}))
     _log(
         f"prepare: OK — pool of {len(staged.points)} training points, "
@@ -567,7 +577,8 @@ def cmd_submit(args) -> int:
 
     Loads + semantically validates the grid, creates a timestamped run dir,
     writes ``resolved_config.yaml`` + ``scripts/`` + ``logs/``, then calls
-    ``submit_jobs`` (dry-run unless ``--submit``).
+    ``submit_jobs`` (dry-run unless ``--submit``) which renders + submits the
+    4-stage pretrain → preflight → train → eval graph.
     """
     cfg = load_grid_config(args.grid)
     domain = get_domain_profile(cfg.domain_profile)
@@ -584,13 +595,17 @@ def cmd_submit(args) -> int:
 
     if result.get("dry_run", True):
         _log(f"submit: DRY-RUN ({result['n_specs']} specs, array "
-             f"0-{result['array_max']}, device={result['device']}). "
+             f"0-{result['array_max']}, {result['n_archs']} distinct arch(s), "
+             f"pretrain array 0-{result['pretrain_array_max']}, "
+             f"device={result['device']}). "
              "No SLURM call was made; pass --submit to submit for real.")
         for line in result.get("commands", []):
             _log(f"  would run: {line}")
     else:
         ids = result.get("job_ids", {})
-        _log(f"submit: SUBMITTED ({result['n_specs']} specs) — "
+        _log(f"submit: SUBMITTED ({result['n_specs']} specs, "
+             f"{result['n_archs']} distinct arch(s)) — "
+             f"pretrain={ids.get('pretrain')} "
              f"preflight={ids.get('preflight')} train={ids.get('train')} "
              f"eval={ids.get('eval')}")
     _log(f"submit: run dir = {run_dir}")
@@ -601,12 +616,41 @@ def cmd_submit(args) -> int:
 # Subcommand: status
 # ===========================================================================
 
+def _pretrain_status(run_dir: str) -> str | None:
+    """Lightweight pretrain-stage status line, or None if it cannot be checked.
+
+    Pretrain is a small up-front stage — it gets no per-index
+    ``reduce_outcomes``. The check is purely on-disk: for each distinct
+    architecture in the resolved config, the pretrain worker writes
+    ``xnet.eqx`` + ``cnet.eqx`` into ``<pretrain_root>/<arch>/``. We report how
+    many of those checkpoint pairs are present.
+    """
+    cfg_path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
+    if not os.path.exists(cfg_path):
+        return None
+    try:
+        cfg = load_grid_config(cfg_path)
+    except Exception:
+        return None
+    archs = sorted(set(cfg.sweep.arch))
+    root = cfg.pretrain.pretrain_root
+    done = 0
+    for arch in archs:
+        d = os.path.join(root, arch)
+        if (os.path.exists(os.path.join(d, "xnet.eqx"))
+                and os.path.exists(os.path.join(d, "cnet.eqx"))):
+            done += 1
+    return f"{done}/{len(archs)} architecture checkpoint pair(s) present"
+
+
 def cmd_status(args) -> int:
     """``status`` — read-only per-index outcome report (no lock taken).
 
     Aggregates ``train`` and ``eval`` outcomes via ``reduce_outcomes`` across
     all non-superseded ``jobs.json`` generations, diffs against the manifest's
-    ``n_specs``, and prints counts + an actionable remedy line. A
+    ``n_specs``, and prints counts + an actionable remedy line. The pretrain
+    stage gets a lightweight on-disk checkpoint-presence check (no per-index
+    reduction — pretrain is a handful of jobs). A
     :class:`SlurmTransientError` is reported, not crashed on.
     """
     run_dir = os.path.abspath(args.run_dir)
@@ -618,6 +662,10 @@ def cmd_status(args) -> int:
 
     n_specs = int(manifest["n_specs"])
     _log(f"status: run dir {run_dir} — manifest records {n_specs} spec(s).")
+
+    pt_status = _pretrain_status(run_dir)
+    if pt_status is not None:
+        _log(f"  pretrain: {pt_status}")
 
     try:
         train = job_tracking.reduce_outcomes(run_dir, "train")
@@ -853,13 +901,14 @@ def cmd_resubmit(args) -> int:
 # ===========================================================================
 
 def cmd_resubmit_preflight(args) -> int:
-    """``resubmit-preflight`` — recover a FAILED/timed-out preflight job.
+    """``resubmit-preflight`` — recover a FAILED/timed-out pretrain/preflight.
 
-    Refuses unless the run is genuinely preflight-stuck (see the plan): a
-    complete manifest from a non-superseded preflight generation, OR any
-    on-disk train evidence, both block the recovery. Re-submits the whole
-    preflight->train->eval graph; only after all three new ``sbatch`` calls
-    succeed does it ``scancel`` the old train/eval arrays and ``mark_superseded``.
+    Refuses unless the run is genuinely pretrain/preflight-stuck (see the
+    plan): a complete manifest from a non-superseded preflight generation, OR
+    any on-disk train evidence, both block the recovery. Re-submits the whole
+    pretrain->preflight->train->eval graph; only after all four new ``sbatch``
+    calls succeed does it ``scancel`` the old pretrain/train/eval arrays and
+    ``mark_superseded``.
     """
     run_dir = os.path.abspath(args.run_dir)
 
@@ -925,13 +974,18 @@ def cmd_resubmit_preflight(args) -> int:
                 return None
             return max(live, key=lambda r: r["generation"])
 
+        old_pretrain = _newest_live("pretrain")
         old_train = _newest_live("train")
         old_eval = _newest_live("eval")
 
         if not args.submit:
             _log("resubmit-preflight: DRY-RUN — would re-submit the full "
-                 "preflight->train->eval graph via submit_jobs(force=True), "
-                 "then scancel + mark_superseded the old train/eval arrays.")
+                 "pretrain->preflight->train->eval graph via "
+                 "submit_jobs(force=True), then scancel + mark_superseded the "
+                 "old pretrain/train/eval arrays.")
+            if old_pretrain:
+                _log(f"  old pretrain array {old_pretrain['array_job_id']} "
+                     f"(gen {old_pretrain['generation']}) would be cancelled.")
             if old_train:
                 _log(f"  old train array {old_train['array_job_id']} "
                      f"(gen {old_train['generation']}) would be cancelled.")
@@ -943,21 +997,22 @@ def cmd_resubmit_preflight(args) -> int:
 
         # --- real re-submission ----------------------------------------------
         # submit_jobs does its own best-effort scancel rollback if any of its
-        # three sbatch calls is rejected; force=True bypasses the live-jobs
+        # four sbatch calls is rejected; force=True bypasses the live-jobs
         # guard (the old graph is intentionally still recorded here).
         result = submit_jobs(cfg, run_dir, submit=True, force=True)
         new_ids = result.get("job_ids", {})
         _log(f"resubmit-preflight: re-submitted graph — "
+             f"pretrain={new_ids.get('pretrain')} "
              f"preflight={new_ids.get('preflight')} "
              f"train={new_ids.get('train')} eval={new_ids.get('eval')}.")
 
-        # All three new sbatch calls succeeded (submit_jobs would have raised
-        # otherwise). NOW, and only now: scancel old train -> scancel old eval
-        # -> mark_superseded. A scancel failure aborts before mark_superseded
+        # All four new sbatch calls succeeded (submit_jobs would have raised
+        # otherwise). NOW, and only now: scancel old pretrain/train/eval ->
+        # mark_superseded. A scancel failure aborts before mark_superseded
         # so a superseded generation always has a live successor.
         scancel_ok = True
         orphans = []
-        for rec in (old_train, old_eval):
+        for rec in (old_pretrain, old_train, old_eval):
             if rec is None:
                 continue
             try:
@@ -977,13 +1032,13 @@ def cmd_resubmit_preflight(args) -> int:
             return 1
 
         # scancel succeeded for every old array — mark them superseded.
-        for rec in (old_train, old_eval):
+        for rec in (old_pretrain, old_train, old_eval):
             if rec is None:
                 continue
             job_tracking.mark_superseded(run_dir, rec["kind"],
                                          rec["generation"])
-        _log("resubmit-preflight: old train/eval arrays cancelled and marked "
-             "superseded.")
+        _log("resubmit-preflight: old pretrain/train/eval arrays cancelled "
+             "and marked superseded.")
         return 0
     finally:
         if lock_path is not None:
@@ -1099,8 +1154,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "prepare", help="stage harness input artifacts (CCSD refs, ledger)")
     p_prepare.add_argument("grid", help="path to the grid config (.yaml/.json)")
     p_prepare.add_argument(
-        "--regenerate", action="store_true",
-        help="run heavy CCSD precompute (refused on a login node)")
+        "--no-recompute-refs", action="store_true",
+        help="skip the heavy CCSD external-refs precompute and only validate "
+             "the subset ledger (cheap; safe on a login node)")
     p_prepare.set_defaults(func=cmd_prepare)
 
     p_submit = sub.add_parser(

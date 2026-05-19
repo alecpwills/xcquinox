@@ -205,6 +205,19 @@ class ClusterResources:
     preflight_time: str = ""
     eval_partition: str = ""
     eval_time: str = ""
+    # Pretrain-stage resources. The pretrain stage is a small up-front array
+    # (one task per distinct architecture). Each knob is None-by-default and
+    # falls back to the train-array resource when unset — the same None-
+    # fallback pattern ``oom_retry_*`` / ``timeout_retry_*`` use, resolved at
+    # render time in submit.render_sbatch.
+    pretrain_partition: str | None = None      # None -> cluster.partition
+    pretrain_time: str | None = None           # None -> cluster.time
+    pretrain_mem: str | None = None            # None -> cluster.mem
+    pretrain_cpus_per_task: int | None = None  # None -> cluster.cpus_per_task
+    # (E) pretrain_throttle: None means "run every distinct architecture
+    # concurrently" — the pretrain array is a handful of jobs, so the default
+    # is the arch count (resolved in submit.render_sbatch as ARRAY_MAX + 1).
+    pretrain_throttle: int | None = None
     # Optional retry knobs — used when re-submitting a task that died from
     # OOM or wall-clock timeout. None = no dedicated retry config.
     oom_retry_partition: str | None = None
@@ -345,6 +358,11 @@ def _build_cluster(d: dict) -> ClusterResources:
         preflight_time=d.get("preflight_time", ""),
         eval_partition=d.get("eval_partition", ""),
         eval_time=d.get("eval_time", ""),
+        pretrain_partition=d.get("pretrain_partition"),
+        pretrain_time=d.get("pretrain_time"),
+        pretrain_mem=d.get("pretrain_mem"),
+        pretrain_cpus_per_task=d.get("pretrain_cpus_per_task"),
+        pretrain_throttle=d.get("pretrain_throttle"),
         oom_retry_partition=d.get("oom_retry_partition"),
         oom_retry_mem=d.get("oom_retry_mem"),
         timeout_retry_partition=d.get("timeout_retry_partition"),
@@ -501,6 +519,20 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                 f"valid metrics: {sorted(VALID_METRICS)}"
             )
 
+    # --- arch-name resolvability -------------------------------------------
+    # Every value on the arch axis must resolve via get_architecture. Catching
+    # an unknown arch on the login node gives a clear error instead of letting
+    # the pretrain worker (_pretrain.py) fail at runtime on a compute node.
+    from xcquinox.alec.config import get_architecture, list_architectures
+    for a in cfg.sweep.arch:
+        try:
+            get_architecture(a)
+        except KeyError:
+            raise ValueError(
+                f"sweep arch {a!r} is not a known architecture; valid "
+                f"architectures: {list_architectures()}"
+            ) from None
+
     # --- subset_size bounds -------------------------------------------------
     pool_size = getattr(domain, "pool_size", None)
     if pool_size is None:
@@ -583,6 +615,18 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         raise ValueError(
             f"cluster.device is 'gpu' but gpus_per_task is "
             f"{cl.gpus_per_task}; must be >= 1"
+        )
+    # Pretrain-stage resource knobs (all None-defaulted; bound-check only the
+    # numeric ones when explicitly set).
+    if cl.pretrain_throttle is not None and cl.pretrain_throttle < 1:
+        raise ValueError(
+            f"cluster.pretrain_throttle must be >= 1 when set, got "
+            f"{cl.pretrain_throttle}"
+        )
+    if cl.pretrain_cpus_per_task is not None and cl.pretrain_cpus_per_task < 1:
+        raise ValueError(
+            f"cluster.pretrain_cpus_per_task must be >= 1 when set, got "
+            f"{cl.pretrain_cpus_per_task}"
         )
 
     # --- SeaWulf throttle etiquette ----------------------------------------

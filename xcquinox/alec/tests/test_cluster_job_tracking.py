@@ -82,6 +82,26 @@ def test_append_job_record_per_kind_monotonic_generation(run_dir):
     assert "submitted_utc" in r0
 
 
+def test_append_job_record_accepts_pretrain_kind(run_dir):
+    """The pretrain stage is a first-class record kind."""
+    rec = append_job_record(run_dir, "pretrain", "9100", [0, 1])
+    assert rec["kind"] == "pretrain"
+    assert rec["generation"] == 0
+    assert rec["array_job_id"] == "9100"
+    assert rec["indices"] == [0, 1]
+    # It round-trips through read_job_records.
+    records = read_job_records(run_dir)
+    assert records[0]["kind"] == "pretrain"
+    # pretrain generation counter is independent of train/eval.
+    rec2 = append_job_record(run_dir, "pretrain", "9101", [0, 1])
+    assert rec2["generation"] == 1
+
+
+def test_append_job_record_rejects_unknown_kind(run_dir):
+    with pytest.raises(ValueError, match="kind"):
+        append_job_record(run_dir, "not-a-stage", "1", [0])
+
+
 def test_jobs_json_is_append_only(run_dir):
     append_job_record(run_dir, "train", "1001", [0])
     append_job_record(run_dir, "eval", "2001", [0])
