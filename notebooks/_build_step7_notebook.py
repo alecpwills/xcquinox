@@ -475,7 +475,7 @@ def build_cells() -> list:
         "    'N':  -54.5892,\n"
         "    'O':  -75.0673,\n"
         "    'F':  -99.7339,\n"
-        "    'Li': -7.4327,\n"
+        "    'Li': -7.4781,  # exact non-relativistic total (was -7.4327, the HF limit)\n"
         "    'Na': -162.2546,\n"
         "    'S':  -398.0,\n"  # fallback for any S atoms in pool
         "}\n\n"
