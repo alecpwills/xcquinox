@@ -1,10 +1,11 @@
 """Tests for xcquinox.alec.cluster.inputs — input-artifact staging.
 
-The fast reuse-mode tests stub ``build_dfs_pool_points`` / ``pool_fingerprint``
-(via the names ``inputs.py`` imported) so they exercise the ledger-validation
-logic without building the real DFS pool or doing any SCF / CCSD work. The
-slow regen-mode test monkeypatches every heavy seam so the orchestration runs
-end-to-end without real compute.
+``prepare_inputs`` is consume-only for subsets: it builds the training-point
+pool, loads the EXISTING ``subset_index_log.json`` ledger, and ensures CCSD
+external references are staged. These tests stub ``build_dfs_pool_points`` and
+the ``_build_species_union`` / ``_precompute_all`` heavy seams (via the names
+``inputs.py`` imported) so the orchestration runs without building the real
+DFS pool or doing any SCF / CCSD work.
 """
 import json
 
@@ -15,8 +16,6 @@ from xcquinox.alec.cluster import inputs as inputs_mod
 from xcquinox.alec.cluster.inputs import (
     prepare_inputs,
     StagedInputs,
-    _survivor_pool,
-    _point_species_names,
 )
 from xcquinox.alec.cluster.grid_config import (
     GridConfig,
@@ -24,6 +23,7 @@ from xcquinox.alec.cluster.grid_config import (
     SolverNamed,
     HyperParams,
     InputPaths,
+    PretrainConfig,
     ClusterResources,
 )
 from xcquinox.alec.training_points import TrainingPoint
@@ -51,23 +51,9 @@ def _ae_point(name):
     )
 
 
-def _multi_species_point(name, species_names, kind="ae"):
-    """A TrainingPoint whose ``species`` carries several distinctly-named
-    ASE Atoms — used to exercise survivor-pool membership."""
-    return TrainingPoint(
-        kind=kind,
-        name=name,
-        species=tuple(_named_atoms("H", sn) for sn in species_names),
-        metadata={"ae_kcalmol": 100.0},
-    )
-
-
 def _make_pool():
-    """A 4-point synthetic pool — enough for subset sizes 2 and 3."""
+    """A 4-point synthetic pool."""
     return [_ae_point(n) for n in ("P0", "P1", "P2", "P3")]
-
-
-_FAKE_FP = "deadbeef" * 8  # fixed stub fingerprint
 
 
 def _make_cfg(tmp_path, bh76_mode="reaction_energy", basis="def2-svp",
@@ -93,13 +79,14 @@ def _make_cfg(tmp_path, bh76_mode="reaction_energy", basis="def2-svp",
     )
     inputs = InputPaths(
         external_refs_dir=str(tmp_path / "refs"),
-        descriptor_cache=str(tmp_path / "desc"),
-        refhist_cache=str(tmp_path / "refhist"),
-        subset_ledger_path=str(tmp_path / "ledger.json"),
+        subset_ledger_path=str(tmp_path / "subset_index_log.json"),
         basis=basis,
         grid_level=grid_level,
         output_root=str(tmp_path / "out"),
-        pretrain_checkpoint=None,
+    )
+    pretrain = PretrainConfig(
+        data_dir=str(tmp_path / "data"),
+        pretrain_root=str(tmp_path / "pretrain"),
     )
     cluster = ClusterResources(
         partition="short",
@@ -115,42 +102,38 @@ def _make_cfg(tmp_path, bh76_mode="reaction_energy", basis="def2-svp",
         solvers=solvers,
         hyperparams=hp,
         inputs=inputs,
+        pretrain=pretrain,
         cluster=cluster,
         domain_profile="dfs_step7",
         bh76_mode=bh76_mode,
     )
 
 
-def _make_ledger(basis="def2-svp", grid_level=1, bh76_mode="reaction_energy",
-                 fingerprint=_FAKE_FP, entries=None):
-    """A consistent stub ledger matching ``_make_cfg``'s 2-cell grid."""
+def _make_ledger(entries=None):
+    """A stub subset_index_log.json covering ``_make_cfg``'s 2-cell grid.
+
+    Schema matches the existing notebook ledger: ``"<metric>/<r>"`` keys with
+    ``chosen_indices`` / ``metric_value`` / ``point_kinds`` / ``point_names``
+    / ``tag`` fields.
+    """
     if entries is None:
         entries = {
-            "l2:2": {"metric": "l2", "subset_size": 2,
-                     "point_names": ["P0", "P1"]},
-            "l2:3": {"metric": "l2", "subset_size": 3,
-                     "point_names": ["P0", "P1", "P2"]},
+            "l2/2": {
+                "chosen_indices": [0, 1],
+                "metric_value": 26.2,
+                "point_kinds": ["ae", "ae"],
+                "point_names": ["P0", "P1"],
+                "tag": "bin02",
+            },
+            "l2/3": {
+                "chosen_indices": [0, 1, 2],
+                "metric_value": 20.3,
+                "point_kinds": ["ae", "ae", "ae"],
+                "point_names": ["P0", "P1", "P2"],
+                "tag": "bin03",
+            },
         }
-    return {
-        "pool_fingerprint": fingerprint,
-        "basis": basis,
-        "grid_level": grid_level,
-        "bh76_mode": bh76_mode,
-        "pool_was_shrunk": False,
-        "dropped_species": [],
-        "entries": entries,
-    }
-
-
-@pytest.fixture
-def stub_pool(monkeypatch):
-    """Stub ``build_dfs_pool_points`` / ``pool_fingerprint`` inside inputs.py
-    so reuse-mode tests need neither the real pool nor the traj files."""
-    pool = _make_pool()
-    monkeypatch.setattr(inputs_mod, "build_dfs_pool_points",
-                        lambda bh76_mode="reaction_energy": pool)
-    monkeypatch.setattr(inputs_mod, "pool_fingerprint", lambda pts: _FAKE_FP)
-    return pool
+    return entries
 
 
 def _write_ledger(path, ledger):
@@ -158,109 +141,22 @@ def _write_ledger(path, ledger):
         json.dump(ledger, f)
 
 
-# ---------------------------------------------------------------------------
-# Reuse mode — happy path
-# ---------------------------------------------------------------------------
-
-def test_reuse_consistent_ledger_succeeds(tmp_path, stub_pool):
-    cfg = _make_cfg(tmp_path)
-    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
-    staged = prepare_inputs(cfg, regenerate=False)
-    assert isinstance(staged, StagedInputs)
-    assert staged.points is stub_pool
-    assert staged.subset_ledger["pool_fingerprint"] == _FAKE_FP
-    assert set(staged.subset_ledger["entries"]) == {"l2:2", "l2:3"}
-
-
-# ---------------------------------------------------------------------------
-# Reuse mode — fail-fast cases
-# ---------------------------------------------------------------------------
-
-def test_reuse_missing_ledger_fails(tmp_path, stub_pool):
-    cfg = _make_cfg(tmp_path)  # ledger never written
-    with pytest.raises(ValueError, match="not found"):
-        prepare_inputs(cfg, regenerate=False)
-
-
-def test_reuse_unparseable_ledger_fails(tmp_path, stub_pool):
-    cfg = _make_cfg(tmp_path)
-    with open(cfg.inputs.subset_ledger_path, "w") as f:
-        f.write("{ this is not valid json")
-    with pytest.raises(ValueError, match="unparseable"):
-        prepare_inputs(cfg, regenerate=False)
-
-
-def test_reuse_basis_mismatch_fails(tmp_path, stub_pool):
-    cfg = _make_cfg(tmp_path, basis="def2-svp")
-    _write_ledger(cfg.inputs.subset_ledger_path,
-                  _make_ledger(basis="def2-tzvp"))
-    with pytest.raises(ValueError, match="basis mismatch"):
-        prepare_inputs(cfg, regenerate=False)
-
-
-def test_reuse_grid_level_mismatch_fails(tmp_path, stub_pool):
-    cfg = _make_cfg(tmp_path, grid_level=1)
-    _write_ledger(cfg.inputs.subset_ledger_path,
-                  _make_ledger(grid_level=3))
-    with pytest.raises(ValueError, match="grid_level mismatch"):
-        prepare_inputs(cfg, regenerate=False)
-
-
-def test_reuse_bh76_mode_mismatch_fails(tmp_path, stub_pool):
-    cfg = _make_cfg(tmp_path, bh76_mode="reaction_energy")
-    _write_ledger(cfg.inputs.subset_ledger_path,
-                  _make_ledger(bh76_mode="barrier_height"))
-    with pytest.raises(ValueError, match="bh76_mode mismatch"):
-        prepare_inputs(cfg, regenerate=False)
-
-
-def test_reuse_pool_fingerprint_mismatch_fails(tmp_path, stub_pool):
-    cfg = _make_cfg(tmp_path)
-    _write_ledger(cfg.inputs.subset_ledger_path,
-                  _make_ledger(fingerprint="0" * 64))
-    with pytest.raises(ValueError, match="pool_fingerprint mismatch"):
-        prepare_inputs(cfg, regenerate=False)
-
-
-def test_reuse_missing_metric_size_entry_fails(tmp_path, stub_pool):
-    cfg = _make_cfg(tmp_path)  # grid needs l2:2 AND l2:3
-    # Ledger only has l2:2 — l2:3 cell has no entry.
-    ledger = _make_ledger(entries={
-        "l2:2": {"metric": "l2", "subset_size": 2,
-                 "point_names": ["P0", "P1"]},
-    })
-    _write_ledger(cfg.inputs.subset_ledger_path, ledger)
-    with pytest.raises(ValueError, match="missing entries"):
-        prepare_inputs(cfg, regenerate=False)
-
-
-def test_reuse_no_entries_mapping_fails(tmp_path, stub_pool):
-    """A ledger with no 'entries' mapping fails fast."""
-    cfg = _make_cfg(tmp_path)
-    ledger = _make_ledger()
-    del ledger["entries"]
-    _write_ledger(cfg.inputs.subset_ledger_path, ledger)
-    with pytest.raises(ValueError, match="no 'entries'"):
-        prepare_inputs(cfg, regenerate=False)
-
-
-# ---------------------------------------------------------------------------
-# Regenerate mode (slow — heavy seams monkeypatched, deselected by default)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.slow
-def test_regenerate_writes_ledger_with_monkeypatched_seams(
-    tmp_path, monkeypatch
-):
-    cfg = _make_cfg(tmp_path)
+@pytest.fixture
+def stub_pool(monkeypatch):
+    """Stub ``build_dfs_pool_points`` inside inputs.py so tests need neither
+    the real pool nor the traj files."""
     pool = _make_pool()
+    monkeypatch.setattr(inputs_mod, "build_dfs_pool_points",
+                        lambda bh76_mode="reaction_energy": pool)
+    return pool
 
-    calls = {"precompute": 0, "union": 0, "descriptors": 0,
-             "histograms": 0, "select": []}
 
-    def fake_build_pool(bh76_mode="reaction_energy"):
-        assert bh76_mode == cfg.bh76_mode
-        return pool
+@pytest.fixture
+def stub_refs(monkeypatch):
+    """Stub the CCSD external-reference seams so no real SCF / CCSD runs.
+
+    Returns a ``calls`` dict tests assert against."""
+    calls = {"union": 0, "precompute": 0, "precompute_kwargs": None}
 
     def fake_build_species_union():
         calls["union"] += 1
@@ -268,225 +164,143 @@ def test_regenerate_writes_ledger_with_monkeypatched_seams(
 
     def fake_precompute_all(species, *, cache_dir, basis, grid_level):
         calls["precompute"] += 1
-        assert species == ["species-union-sentinel"]
-        assert basis == cfg.inputs.basis
-        assert grid_level == cfg.inputs.grid_level
+        calls["precompute_kwargs"] = {
+            "species": species,
+            "cache_dir": cache_dir,
+            "basis": basis,
+            "grid_level": grid_level,
+        }
 
-    def fake_extract(species, *, basis, grid_level, cache_dir):
-        calls["descriptors"] += 1
-        return {"species-descriptors": True}
-
-    def fake_concat(points, species_descriptors):
-        assert points is pool
-        # one descriptor dict per point
-        return [{"i": i} for i in range(len(points))]
-
-    def fake_build_histograms(pool_descriptors):
-        calls["histograms"] += 1
-        return ("h_ref-sentinel", "edges-sentinel")
-
-    def fake_select_subset(pool_descriptors, edges, h_ref, *, r, metric):
-        calls["select"].append((metric, r))
-        assert h_ref == "h_ref-sentinel"
-        assert edges == "edges-sentinel"
-        # Return integer POSITIONS into the pool (first r positions).
-        return tuple(range(r)), 0.123
-
-    monkeypatch.setattr(inputs_mod, "build_dfs_pool_points", fake_build_pool)
     monkeypatch.setattr(inputs_mod, "_build_species_union",
                         fake_build_species_union)
     monkeypatch.setattr(inputs_mod, "_precompute_all", fake_precompute_all)
-    monkeypatch.setattr(inputs_mod, "_extract_descriptors", fake_extract)
-    monkeypatch.setattr(inputs_mod, "_concatenate_point_descriptors",
-                        fake_concat)
-    monkeypatch.setattr(inputs_mod, "_build_reference_histograms",
-                        fake_build_histograms)
-    monkeypatch.setattr(inputs_mod, "_select_subset", fake_select_subset)
+    return calls
 
-    staged = prepare_inputs(cfg, regenerate=True)
 
-    # --- pipeline ran the heavy seams the expected number of times ---------
-    assert calls["precompute"] == 1
-    assert calls["union"] == 1
-    assert calls["descriptors"] == 1
-    assert calls["histograms"] == 1
-    # one select_subset per distinct (metric, subset_size) pair
-    assert sorted(calls["select"]) == [("l2", 2), ("l2", 3)]
+# ---------------------------------------------------------------------------
+# Happy path — ledger loaded + returned, refs ensured
+# ---------------------------------------------------------------------------
 
-    # --- ledger written atomically in the exact schema ---------------------
-    ledger_path = cfg.inputs.subset_ledger_path
-    import os
-    assert os.path.isfile(ledger_path)
-    with open(ledger_path) as f:
-        on_disk = json.load(f)
+def test_prepare_inputs_loads_ledger_and_returns_it(tmp_path, stub_pool,
+                                                    stub_refs):
+    cfg = _make_cfg(tmp_path)
+    ledger = _make_ledger()
+    _write_ledger(cfg.inputs.subset_ledger_path, ledger)
 
-    from xcquinox.alec.cluster.spec_builder import pool_fingerprint
-    assert on_disk["pool_fingerprint"] == pool_fingerprint(pool)
-    assert on_disk["basis"] == cfg.inputs.basis
-    assert on_disk["grid_level"] == cfg.inputs.grid_level
-    assert on_disk["bh76_mode"] == cfg.bh76_mode
-    assert on_disk["pool_was_shrunk"] is False
-    assert on_disk["dropped_species"] == []
+    staged = prepare_inputs(cfg)
 
-    entries = on_disk["entries"]
-    assert set(entries) == {"l2:2", "l2:3"}
-    # point_names stored — NOT positional indices.
-    assert entries["l2:2"]["point_names"] == ["P0", "P1"]
-    assert entries["l2:3"]["point_names"] == ["P0", "P1", "P2"]
-    assert entries["l2:2"]["metric"] == "l2"
-    assert entries["l2:2"]["subset_size"] == 2
-
-    # --- returned StagedInputs matches the on-disk ledger ------------------
     assert isinstance(staged, StagedInputs)
-    assert staged.points is pool
-    assert staged.subset_ledger == on_disk
+    assert staged.points is stub_pool
+    # subset_ledger is the raw notebook-format dict, returned verbatim.
+    assert staged.subset_ledger == ledger
+    assert set(staged.subset_ledger) == {"l2/2", "l2/3"}
+    assert staged.subset_ledger["l2/2"]["point_names"] == ["P0", "P1"]
 
 
-# ---------------------------------------------------------------------------
-# Survivor-pool membership — fast, no compute
-# ---------------------------------------------------------------------------
-
-def test_point_species_names_collects_all_species():
-    tp = _multi_species_point("rxn", ("HF", "F", "H"))
-    assert _point_species_names(tp) == {"HF", "F", "H"}
-
-
-def test_survivor_pool_drops_points_referencing_a_dropped_species():
-    """A point is dropped iff its species set intersects drop_species — that
-    catches an AE compound, an H/Li anchor, or a BH76/IP13 referenced
-    species."""
-    pool = [
-        _multi_species_point("CH4", ("CH4",)),          # survives
-        _multi_species_point("HF", ("HF", "H")),        # dropped via 'HF'
-        _multi_species_point("F_rxn", ("CH4", "F"), kind="bh76"),  # via 'F'
-        _multi_species_point("H2O", ("H2O", "H")),      # survives
-    ]
-    survivors = _survivor_pool(pool, ("HF", "F"))
-    assert [tp.name for tp in survivors] == ["CH4", "H2O"]
-
-
-def test_survivor_pool_empty_drop_returns_pool_unchanged():
-    pool = _make_pool()
-    survivors = _survivor_pool(pool, ())
-    assert [tp.name for tp in survivors] == ["P0", "P1", "P2", "P3"]
-
-
-# ---------------------------------------------------------------------------
-# Regenerate mode with drop_species (slow — heavy seams monkeypatched)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.slow
-def test_regenerate_drop_species_builds_survivor_pool_and_shrunk_ledger(
-    tmp_path, monkeypatch
+def test_prepare_inputs_calls_precompute_all_for_external_refs(
+    tmp_path, stub_pool, stub_refs
 ):
-    """prepare_inputs(..., drop_species=('F',)) removes every F-referencing
-    point before descriptors / select_subset, writes a ledger with
-    pool_was_shrunk=True / dropped_species=['F'], and a pool_fingerprint
-    computed from the survivor pool."""
     cfg = _make_cfg(tmp_path)
-    # 4-point pool: P0/P3 survive, P1/P2 reference 'F'.
-    pool = [
-        _multi_species_point("P0", ("P0",)),
-        _multi_species_point("P1", ("P1", "F")),
-        _multi_species_point("P2", ("P2", "F"), kind="bh76"),
-        _multi_species_point("P3", ("P3",)),
-    ]
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
 
-    seen = {"concat_points": None, "select": []}
+    prepare_inputs(cfg)
 
-    def fake_build_pool(bh76_mode="reaction_energy"):
-        return pool
-
-    def fake_build_species_union():
-        return ["species-union-sentinel"]
-
-    def fake_precompute_all(species, *, cache_dir, basis, grid_level):
-        pass
-
-    def fake_extract(species, *, basis, grid_level, cache_dir):
-        return {"species-descriptors": True}
-
-    def fake_concat(points, species_descriptors):
-        # the survivor pool — F-referencing points already removed
-        seen["concat_points"] = list(points)
-        return [{"i": i} for i in range(len(points))]
-
-    def fake_build_histograms(pool_descriptors):
-        return ("h_ref-sentinel", "edges-sentinel")
-
-    def fake_select_subset(pool_descriptors, edges, h_ref, *, r, metric):
-        seen["select"].append((metric, r))
-        # pick min(r, survivor-pool-size) positions into the SURVIVOR pool —
-        # with only 2 survivors an r=3 cell still resolves to valid positions.
-        n_survivors = len(pool_descriptors)
-        return tuple(range(min(r, n_survivors))), 0.123
-
-    monkeypatch.setattr(inputs_mod, "build_dfs_pool_points", fake_build_pool)
-    monkeypatch.setattr(inputs_mod, "_build_species_union",
-                        fake_build_species_union)
-    monkeypatch.setattr(inputs_mod, "_precompute_all", fake_precompute_all)
-    monkeypatch.setattr(inputs_mod, "_extract_descriptors", fake_extract)
-    monkeypatch.setattr(inputs_mod, "_concatenate_point_descriptors",
-                        fake_concat)
-    monkeypatch.setattr(inputs_mod, "_build_reference_histograms",
-                        fake_build_histograms)
-    monkeypatch.setattr(inputs_mod, "_select_subset", fake_select_subset)
-
-    staged = prepare_inputs(cfg, regenerate=True, drop_species=("F",))
-
-    # --- the survivor pool reached descriptors / select_subset -------------
-    survivor_names = [tp.name for tp in seen["concat_points"]]
-    assert survivor_names == ["P0", "P3"]
-    assert [tp.name for tp in staged.points] == ["P0", "P3"]
-
-    # --- ledger truthfully records the shrink ------------------------------
-    import os
-    with open(cfg.inputs.subset_ledger_path) as f:
-        on_disk = json.load(f)
-    assert os.path.isfile(cfg.inputs.subset_ledger_path)
-    assert on_disk["pool_was_shrunk"] is True
-    assert on_disk["dropped_species"] == ["F"]
-
-    from xcquinox.alec.cluster.spec_builder import pool_fingerprint
-    # fingerprint matches the SURVIVOR pool, not the full 4-point pool
-    assert on_disk["pool_fingerprint"] == pool_fingerprint(staged.points)
-    assert on_disk["pool_fingerprint"] != pool_fingerprint(pool)
-
-    # --- subsets selected over the survivor pool ---------------------------
-    # select_subset ran once per (metric, subset_size) pair, over the survivor
-    # pool — point names resolve from survivor positions only.
-    assert sorted(seen["select"]) == [("l2", 2), ("l2", 3)]
-    entries = on_disk["entries"]
-    assert set(entries) == {"l2:2", "l2:3"}
-    assert entries["l2:2"]["point_names"] == ["P0", "P3"]
-    assert staged.subset_ledger == on_disk
+    # external refs ensured via build_species_union -> precompute_all
+    assert stub_refs["union"] == 1
+    assert stub_refs["precompute"] == 1
+    kw = stub_refs["precompute_kwargs"]
+    assert kw["species"] == ["species-union-sentinel"]
+    assert kw["cache_dir"] == cfg.inputs.external_refs_dir
+    assert kw["basis"] == cfg.inputs.basis
+    assert kw["grid_level"] == cfg.inputs.grid_level
 
 
-@pytest.mark.slow
-def test_regenerate_drop_species_empty_matches_no_shrink_default(
-    tmp_path, monkeypatch
+def test_prepare_inputs_precompute_is_skip_if_cached_noop_friendly(
+    tmp_path, stub_pool, monkeypatch
 ):
-    """drop_species=() is exactly the no-shrink path: pool_was_shrunk=False,
-    dropped_species=[]."""
+    """precompute_all is skip-if-cached / idempotent: a no-op precompute (all
+    refs already staged) lets prepare_inputs succeed cleanly."""
     cfg = _make_cfg(tmp_path)
-    pool = _make_pool()
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
 
-    monkeypatch.setattr(inputs_mod, "build_dfs_pool_points",
-                        lambda bh76_mode="reaction_energy": pool)
-    monkeypatch.setattr(inputs_mod, "_build_species_union",
-                        lambda: ["u"])
-    monkeypatch.setattr(inputs_mod, "_precompute_all",
-                        lambda species, *, cache_dir, basis, grid_level: None)
-    monkeypatch.setattr(inputs_mod, "_extract_descriptors",
-                        lambda species, *, basis, grid_level, cache_dir: {"d": 1})
-    monkeypatch.setattr(inputs_mod, "_concatenate_point_descriptors",
-                        lambda points, sd: [{"i": i} for i in range(len(points))])
-    monkeypatch.setattr(inputs_mod, "_build_reference_histograms",
-                        lambda pd: ("h", "e"))
-    monkeypatch.setattr(inputs_mod, "_select_subset",
-                        lambda pd, e, h, *, r, metric: (tuple(range(r)), 0.0))
+    monkeypatch.setattr(inputs_mod, "_build_species_union", lambda: ["u"])
+    # a precompute that does nothing — every ref already cached
+    monkeypatch.setattr(
+        inputs_mod, "_precompute_all",
+        lambda species, *, cache_dir, basis, grid_level: None,
+    )
 
-    staged = prepare_inputs(cfg, regenerate=True, drop_species=())
-    assert staged.subset_ledger["pool_was_shrunk"] is False
-    assert staged.subset_ledger["dropped_species"] == []
-    assert [tp.name for tp in staged.points] == ["P0", "P1", "P2", "P3"]
+    staged = prepare_inputs(cfg)
+    assert isinstance(staged, StagedInputs)
+    assert staged.subset_ledger == _make_ledger()
+
+
+def test_prepare_inputs_recompute_refs_false_skips_precompute(
+    tmp_path, stub_pool, stub_refs
+):
+    cfg = _make_cfg(tmp_path)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+
+    staged = prepare_inputs(cfg, recompute_refs=False)
+
+    # neither seam touched when refs are known-staged
+    assert stub_refs["union"] == 0
+    assert stub_refs["precompute"] == 0
+    assert isinstance(staged, StagedInputs)
+    assert staged.subset_ledger == _make_ledger()
+
+
+# ---------------------------------------------------------------------------
+# Fail-fast cases — ledger problems
+# ---------------------------------------------------------------------------
+
+def test_prepare_inputs_missing_ledger_fails(tmp_path, stub_pool, stub_refs):
+    cfg = _make_cfg(tmp_path)  # ledger never written
+    with pytest.raises(ValueError, match="not found"):
+        prepare_inputs(cfg)
+
+
+def test_prepare_inputs_unparseable_ledger_fails(tmp_path, stub_pool,
+                                                 stub_refs):
+    cfg = _make_cfg(tmp_path)
+    with open(cfg.inputs.subset_ledger_path, "w") as f:
+        f.write("{ this is not valid json")
+    with pytest.raises(ValueError, match="unparseable"):
+        prepare_inputs(cfg)
+
+
+def test_prepare_inputs_non_object_ledger_fails(tmp_path, stub_pool,
+                                                stub_refs):
+    cfg = _make_cfg(tmp_path)
+    with open(cfg.inputs.subset_ledger_path, "w") as f:
+        json.dump(["not", "an", "object"], f)
+    with pytest.raises(ValueError, match="not a JSON object"):
+        prepare_inputs(cfg)
+
+
+def test_prepare_inputs_missing_metric_size_cell_fails(tmp_path, stub_pool,
+                                                       stub_refs):
+    """The grid sweeps l2/2 AND l2/3; a ledger missing l2/3 fails fast."""
+    cfg = _make_cfg(tmp_path)
+    ledger = _make_ledger(entries={
+        "l2/2": {
+            "chosen_indices": [0, 1],
+            "metric_value": 26.2,
+            "point_kinds": ["ae", "ae"],
+            "point_names": ["P0", "P1"],
+            "tag": "bin02",
+        },
+    })
+    _write_ledger(cfg.inputs.subset_ledger_path, ledger)
+    with pytest.raises(ValueError, match="missing entries"):
+        prepare_inputs(cfg)
+
+
+def test_prepare_inputs_does_not_precompute_when_ledger_invalid(
+    tmp_path, stub_pool, stub_refs
+):
+    """A missing ledger fails fast BEFORE any CCSD precompute is attempted."""
+    cfg = _make_cfg(tmp_path)  # no ledger
+    with pytest.raises(ValueError):
+        prepare_inputs(cfg)
+    assert stub_refs["precompute"] == 0
