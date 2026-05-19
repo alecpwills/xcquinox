@@ -206,11 +206,12 @@ def _bh76_point_from_dict(
             seen_names.add(sym)
     # Mode selects which reference the loss is trained against. The
     # loss reads only metadata["e_rxn_ref"]; barrier_ref /
-    # reaction_energy_ref are kept alongside for provenance.
+    # reaction_energy_ref are kept alongside for provenance. A missing
+    # source key must KeyError loudly rather than silently fall back.
     if bh76_mode == "reaction_energy":
-        e_rxn_ref = rxn.get("reaction_energy_ref", rxn.get("e_rxn_ref"))
+        e_rxn_ref = rxn["reaction_energy_ref"]
     else:  # "barrier_height" — already validated above (TS present)
-        e_rxn_ref = rxn.get("barrier_ref", rxn.get("e_rxn_ref"))
+        e_rxn_ref = rxn["barrier_ref"]
     return TrainingPoint(
         kind="bh76",
         name=rxn["name"],
@@ -221,8 +222,8 @@ def _bh76_point_from_dict(
             "coeffs": tuple(rxn["coeffs"]),
             "e_rxn_ref": e_rxn_ref,
             "bh76_mode": bh76_mode,
-            "barrier_ref": rxn.get("barrier_ref"),
-            "reaction_energy_ref": rxn.get("reaction_energy_ref"),
+            "barrier_ref": rxn["barrier_ref"],
+            "reaction_energy_ref": rxn["reaction_energy_ref"],
             "source": rxn.get("source"),
         },
     )

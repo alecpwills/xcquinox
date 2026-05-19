@@ -11,8 +11,9 @@ Pool composition (28 distinct training points):
 - 2 atomic-density references (H, Li)
 
 All published reference values (AE in kcal/mol for the 21 AE molecules;
-e_rxn_ref for BH76; ip_ref for IP13) come from authoritative benchmarks
-and are attached to the build_dfs_pool() output via Atoms.info /
+barrier_ref / reaction_energy_ref for BH76; ip_ref for IP13) come from
+authoritative benchmarks and are attached to the build_dfs_pool() output
+via Atoms.info /
 reaction-spec dict entries — never fabricated.  See DFS_AE_DATA for AE
 sources (W4-11 anchors via step-6 for H2O+C2H2; Haunschild & Klopper
 J. Chem. Phys. 136, 164102 (2012) for the other 19).
@@ -259,10 +260,8 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 #                              ``bh76_mode="barrier_height"`` path).
 #   - ``reaction_energy_ref``— the true reaction energy ΔE of the
 #                              reactant→product direction below.
-#   - ``e_rxn_ref``          — kept for backward compatibility; equals
-#                              ``barrier_ref`` here. The mode-aware
-#                              builder in training_points.py selects the
-#                              correct value per ``bh76_mode``.
+# The mode-aware builder in training_points.py selects which of the two
+# the loss is trained against per ``bh76_mode``.
 # For an elementary reaction ΔE = Vr − Vf exactly. Using the in-code
 # Vf/Vr below, the reaction energies for the pool's reaction directions
 # (GMTKN55-BH76RC) are:
@@ -302,9 +301,6 @@ DFS_BH76_REACTIONS = [
         # Reaction energy ΔE of OH+N2 → H+N2O (GMTKN55-BH76RC):
         #   ΔE = Vr − Vf = 82.27 − 17.13 = +65.14 kcal/mol.
         "reaction_energy_ref": 65.14,  # kcal/mol
-        # Backward-compat alias (equals barrier_ref); the mode-aware
-        # builder selects barrier_ref vs reaction_energy_ref.
-        "e_rxn_ref": 82.27,  # kcal/mol
         # Optional TS geometry for bh76_mode="barrier_height" (not staged).
         "ts_species": None,
         "species_spins":   {"HO": 1, "N2": 0, "H": 1, "N2O": 0},
@@ -329,8 +325,6 @@ DFS_BH76_REACTIONS = [
         # Reaction energy ΔE of OH+CH3 → O+CH4 (GMTKN55-BH76RC):
         #   ΔE = Vr − Vf = 7.90 − 13.47 = −5.57 kcal/mol.
         "reaction_energy_ref": -5.57,  # kcal/mol
-        # Backward-compat alias (equals barrier_ref).
-        "e_rxn_ref": 7.90,  # kcal/mol
         # Optional TS geometry for bh76_mode="barrier_height" (not staged).
         "ts_species": None,
         "species_spins":   {"HO": 1, "CH3": 1, "O": 2, "CH4": 0},
@@ -359,8 +353,6 @@ DFS_BH76_REACTIONS = [
         # Reaction energy ΔE of HF+F → H+F2 (GMTKN55-BH76RC):
         #   ΔE = Vr − Vf = 105.80 − 2.27 = +103.53 kcal/mol.
         "reaction_energy_ref": 103.53,  # kcal/mol
-        # Backward-compat alias (equals barrier_ref).
-        "e_rxn_ref": 105.80,  # kcal/mol
         # Optional TS geometry for bh76_mode="barrier_height" (not staged).
         "ts_species": None,
         "species_spins":   {"HF": 0, "F": 1, "H": 1, "F2": 0},

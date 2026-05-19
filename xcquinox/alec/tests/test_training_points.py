@@ -227,9 +227,10 @@ def test_bh76_reactions_carry_both_reference_values():
             _EXPECTED_BARRIERS[name], abs=0.01)
         assert rxn["reaction_energy_ref"] == pytest.approx(
             _EXPECTED_REACTION_ENERGIES[name], abs=0.01)
-        # Backward-compat alias still equals the barrier value.
-        assert rxn["e_rxn_ref"] == pytest.approx(
-            _EXPECTED_BARRIERS[name], abs=0.01)
+        # The legacy e_rxn_ref alias has been removed from the source
+        # dict: it held the barrier height under a name the metadata
+        # uses for the mode-selected value, which is misleading.
+        assert "e_rxn_ref" not in rxn
         # TS geometry slot exists and is not yet staged.
         assert "ts_species" in rxn
         assert rxn["ts_species"] is None

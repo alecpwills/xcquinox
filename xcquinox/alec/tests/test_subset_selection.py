@@ -376,15 +376,23 @@ def test_dfs_pool_atom_refs_are_h_and_li():
 
 
 def test_dfs_bh76_references_present():
-    """All 3 BH76 reactions must have a finite e_rxn_ref in kcal/mol."""
+    """All 3 BH76 reactions carry finite barrier_ref + reaction_energy_ref."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     assert len(DFS_BH76_REACTIONS) == 3
     for rxn in DFS_BH76_REACTIONS:
-        assert "e_rxn_ref" in rxn
-        assert isinstance(rxn["e_rxn_ref"], float)
-        assert math.isfinite(rxn["e_rxn_ref"])
-        # Barrier heights are positive and < 200 kcal/mol typically
-        assert 0.0 < rxn["e_rxn_ref"] < 200.0
+        # The legacy e_rxn_ref key must NOT be in the source dict: it
+        # held the barrier height and silently mislabeled it as a
+        # reaction energy. The builder selects barrier_ref vs
+        # reaction_energy_ref per bh76_mode.
+        assert "e_rxn_ref" not in rxn
+        for key in ("barrier_ref", "reaction_energy_ref"):
+            assert key in rxn
+            assert isinstance(rxn[key], float)
+            assert math.isfinite(rxn[key])
+        # Forward barrier heights are positive and < 200 kcal/mol.
+        assert 0.0 < rxn["barrier_ref"] < 200.0
+        # Reaction energies may be positive or negative; bounded.
+        assert -200.0 < rxn["reaction_energy_ref"] < 200.0
         assert "source" in rxn
 
 
@@ -418,24 +426,30 @@ def test_dfs_ip13_c_matches_nist():
 
 
 def test_dfs_bh76_oh_n2_to_h_n2o_value():
-    """OH+N2 → H+N2O barrier is the reverse of NHTBH38 #1: 82.27 kcal/mol REF1."""
+    """OH+N2 → H+N2O: forward barrier 82.27 (rev. NHTBH38 #1, REF1),
+    reaction energy ΔE = Vr − Vf = 82.27 − 17.13 = +65.14 kcal/mol."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "OH+N2_to_H+N2O")
-    assert rxn["e_rxn_ref"] == pytest.approx(82.27, abs=0.01)
+    assert rxn["barrier_ref"] == pytest.approx(82.27, abs=0.01)
+    assert rxn["reaction_energy_ref"] == pytest.approx(65.14, abs=0.01)
 
 
 def test_dfs_bh76_oh_ch3_to_o_ch4_value():
-    """OH+CH3 → O+CH4 barrier is the reverse of HTBH38 #19-20: 7.90 kcal/mol REF1."""
+    """OH+CH3 → O+CH4: forward barrier 7.90 (rev. HTBH38 #19-20, REF1),
+    reaction energy ΔE = Vr − Vf = 7.90 − 13.47 = −5.57 kcal/mol."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "OH+CH3_to_O+CH4")
-    assert rxn["e_rxn_ref"] == pytest.approx(7.90, abs=0.01)
+    assert rxn["barrier_ref"] == pytest.approx(7.90, abs=0.01)
+    assert rxn["reaction_energy_ref"] == pytest.approx(-5.57, abs=0.01)
 
 
 def test_dfs_bh76_hf_f_to_h_f2_value():
-    """HF+F → H+F2 barrier is the reverse of NHTBH38 #5: 105.80 kcal/mol REF1."""
+    """HF+F → H+F2: forward barrier 105.80 (rev. NHTBH38 #5, REF1),
+    reaction energy ΔE = Vr − Vf = 105.80 − 2.27 = +103.53 kcal/mol."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "HF+F_to_H+F2")
-    assert rxn["e_rxn_ref"] == pytest.approx(105.80, abs=0.01)
+    assert rxn["barrier_ref"] == pytest.approx(105.80, abs=0.01)
+    assert rxn["reaction_energy_ref"] == pytest.approx(103.53, abs=0.01)
 
 
 # ----------------------------------------------------------------------
