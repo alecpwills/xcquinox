@@ -431,6 +431,30 @@ def test_build_training_specs_unresolved_point_name_raises(tmp_path):
         build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
 
 
+def test_build_training_specs_missing_point_names_key_raises(tmp_path):
+    """A ledger entry with no 'point_names' key fails fast, naming the cell key."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    # Remove point_names entirely from one entry.
+    del ledger["l2/2"]["point_names"]
+    cfg = _make_cfg(tmp_path)
+    with pytest.raises(ValueError, match=r"l2/2.*malformed|malformed.*l2/2"):
+        build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+
+
+def test_build_training_specs_empty_point_names_raises(tmp_path):
+    """A ledger entry with point_names=[] fails fast, naming the cell key."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    # Set point_names to an empty list.
+    ledger["l2/2"]["point_names"] = []
+    cfg = _make_cfg(tmp_path)
+    with pytest.raises(ValueError, match=r"l2/2.*malformed|malformed.*l2/2"):
+        build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+
+
 def test_build_training_specs_cells_subset(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()

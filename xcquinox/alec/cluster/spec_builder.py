@@ -39,8 +39,9 @@ Notes:
   bare dict of ``"<metric>/<r>"`` entries. The safety net against a stale
   ledger is name resolution itself: if the pool genuinely differs, a
   ``point_name`` will not resolve and ``build_training_specs`` fails loudly.
-- An entry's ``point_names`` MAY be empty (a valid degenerate subset); the
-  resulting spec will simply have whatever ``species_union_from_points`` yields.
+- An entry's ``point_names`` MUST be present and non-empty. A missing key or
+  an empty list is treated as a malformed ledger entry and raises ``ValueError``
+  immediately — a real subset always has ≥1 point.
 """
 import os
 
@@ -304,7 +305,14 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
                 "present in the existing subset_index_log.json ledger."
             )
         entry = subset_ledger[ledger_key]
-        point_names = entry.get("point_names", [])
+        if "point_names" not in entry or not entry["point_names"]:
+            raise ValueError(
+                f"subset_ledger entry {ledger_key!r} is malformed: "
+                "'point_names' key is absent or empty. Every ledger entry "
+                "must carry a non-empty 'point_names' list — a real subset "
+                "always has ≥1 point."
+            )
+        point_names = entry["point_names"]
         missing = [pn for pn in point_names if pn not in points_by_name]
         if missing:
             raise ValueError(
