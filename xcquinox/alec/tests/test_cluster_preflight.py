@@ -142,9 +142,12 @@ def patched(monkeypatch):
     """
     state = {}
 
-    def fake_prepare_inputs(cfg, regenerate):
+    def fake_prepare_inputs(cfg, regenerate, *, drop_species=()):
         state["regenerate_seen"] = regenerate
         state["prepare_calls"] = state.get("prepare_calls", 0) + 1
+        # Record the drop_species kwarg seen on EACH call so a test can assert
+        # the survivor-pool re-stage was invoked with the parsed failed list.
+        state.setdefault("drop_species_seen", []).append(tuple(drop_species))
         hook = state.get("prepare_hook")
         if hook is not None:
             return hook(cfg, regenerate, state["prepare_calls"])
@@ -340,6 +343,30 @@ def test_precompute_failure_drop_species_marks_specs_exit_0(tmp_path, patched):
     assert not fj1.exists()
     # both prepare_inputs calls happened (initial + re-stage)
     assert patched["prepare_calls"] == 2
+    # the first call is the no-shrink attempt; the re-stage is the deliberate
+    # survivor-pool path called with the parsed failed-species list.
+    assert patched["drop_species_seen"] == [(), ("C+", "O3")]
+
+
+def test_precompute_failure_drop_species_unparseable_aborts(tmp_path, patched):
+    """drop_failed_species but the precompute error carries no parseable
+    species list -> a survivor pool cannot be built -> exit 1, no re-stage."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_resolved_config(
+        run_dir, extra={"on_precompute_failure": "drop_failed_species"}
+    )
+
+    def raising(cfg, regenerate, call_n):
+        # message with no "species: [" marker -> _failed_species_from_error
+        # returns [] -> deliberate re-stage is impossible.
+        raise RuntimeError("Cell 0.5 pre-compute failed catastrophically.")
+
+    patched["prepare_hook"] = raising
+    assert main([str(run_dir)]) == 1
+    # only the initial call happened; no survivor-pool re-stage
+    assert patched["prepare_calls"] == 1
+    assert patched["drop_species_seen"] == [()]
 
 
 # ---------------------------------------------------------------------------

@@ -48,9 +48,20 @@ The ``entries`` keys are JSON-string ``"<metric>:<subset_size>"`` keys (the
 spec-builder's ``_lookup_entry`` accepts both that and the in-memory tuple
 form). The ``basis`` / ``grid_level`` / ``bh76_mode`` / ``pool_was_shrunk`` /
 ``dropped_species`` top-level fields exist so reuse-mode can validate the
-ledger against the current config. ``pool_was_shrunk`` / ``dropped_species``
-are always ``False`` / ``[]`` here — the ``drop_failed_species`` precompute
-path is a later task; this module only records the fields.
+ledger against the current config.
+
+The ``drop_failed_species`` path
+--------------------------------
+``prepare_inputs(cfg, regenerate=True, drop_species=("F2", "O3"))`` runs the
+**deliberate survivor-pool** path: it builds the pool, removes every
+:class:`~xcquinox.alec.training_points.TrainingPoint` whose species set
+intersects ``drop_species`` (an AE point with a dropped compound/anchor, a
+BH76/IP13 point referencing a dropped species — all get dropped), re-runs
+descriptors / reference histograms / ``select_subset`` over the *survivor*
+pool, and writes a ledger whose ``pool_fingerprint`` is computed from the
+survivor pool, with ``pool_was_shrunk = True`` and
+``dropped_species = sorted(drop_species)``. When ``drop_species`` is empty
+(the default) the no-shrink path runs and those fields stay ``False`` / ``[]``.
 
 Mockable seams
 --------------
@@ -108,7 +119,9 @@ class StagedInputs:
     Attributes
     ----------
     points : list[TrainingPoint]
-        The full training-point pool (from ``build_dfs_pool_points``).
+        The training-point pool — the full pool from ``build_dfs_pool_points``
+        in the no-drop path, or the *survivor* pool (dropped-species points
+        removed) when ``prepare_inputs`` was called with ``drop_species``.
     subset_ledger : dict
         The name-based subset ledger — see the module docstring for the
         canonical schema. Ready to hand to
@@ -138,6 +151,31 @@ def _metric_size_pairs(cfg: GridConfig) -> list[tuple[str, int]]:
     return sorted(pairs)
 
 
+def _point_species_names(tp) -> set:
+    """The set of species ``info['name']`` carried by a TrainingPoint.
+
+    Each entry of ``TrainingPoint.species`` is an ASE ``Atoms`` whose
+    ``info['name']`` is the species' canonical name — the same naming
+    ``external_refs.build_species_union`` / ``SpeciesEntry.name`` use (Hill
+    formula for compounds, atomic symbol or ``symbol+"+"`` for atoms /
+    cations). ``TrainingPoint.__post_init__`` guarantees every species has
+    ``info['name']``, so this is total.
+    """
+    return {s.info["name"] for s in tp.species}
+
+
+def _survivor_pool(points, drop_species: tuple) -> list:
+    """Return ``points`` with every TrainingPoint that references a dropped
+    species removed.
+
+    A point is dropped when its species-name set intersects ``drop_species``
+    — that covers an AE point whose compound (or H/Li anchor) was a failed
+    CCSD species and a BH76/IP13 point referencing any failed species.
+    """
+    drop = set(drop_species)
+    return [tp for tp in points if not (_point_species_names(tp) & drop)]
+
+
 def _write_ledger_atomic(ledger: dict, path: str) -> None:
     """Whole-file atomic write of the ledger JSON.
 
@@ -164,8 +202,15 @@ def _write_ledger_atomic(ledger: dict, path: str) -> None:
 # Regenerate mode
 # ---------------------------------------------------------------------------
 
-def _prepare_inputs_regenerate(cfg: GridConfig) -> StagedInputs:
-    """Heavy-precompute path of :func:`prepare_inputs` — see its docstring."""
+def _prepare_inputs_regenerate(
+    cfg: GridConfig, drop_species: tuple = ()
+) -> StagedInputs:
+    """Heavy-precompute path of :func:`prepare_inputs` — see its docstring.
+
+    When ``drop_species`` is non-empty the pool is shrunk to the survivor
+    pool (dropped-species points removed) BEFORE descriptors / histograms /
+    ``select_subset`` run, and the ledger records the shrink truthfully.
+    """
     points = build_dfs_pool_points(bh76_mode=cfg.bh76_mode)
 
     # --- CCSD external references ------------------------------------------
@@ -179,6 +224,12 @@ def _prepare_inputs_regenerate(cfg: GridConfig) -> StagedInputs:
         basis=cfg.inputs.basis,
         grid_level=cfg.inputs.grid_level,
     )
+
+    # --- survivor-pool shrink (drop_failed_species path) -------------------
+    # Remove every point referencing a failed CCSD species so descriptors,
+    # reference histograms, and select_subset all run over the survivor pool.
+    if drop_species:
+        points = _survivor_pool(points, drop_species)
 
     # --- descriptors + reference histograms --------------------------------
     # Extract per-species descriptors over the union of every point's species,
@@ -217,13 +268,14 @@ def _prepare_inputs_regenerate(cfg: GridConfig) -> StagedInputs:
         }
 
     ledger = {
+        # pool_fingerprint is computed from the (possibly survivor) pool, so
+        # reuse-mode validates against exactly the pool the ledger describes.
         "pool_fingerprint": pool_fingerprint(points),
         "basis": cfg.inputs.basis,
         "grid_level": int(cfg.inputs.grid_level),
         "bh76_mode": cfg.bh76_mode,
-        # The drop_failed_species path is a later task; record no-shrink.
-        "pool_was_shrunk": False,
-        "dropped_species": [],
+        "pool_was_shrunk": bool(drop_species),
+        "dropped_species": sorted(drop_species),
         "entries": entries,
     }
     _write_ledger_atomic(ledger, cfg.inputs.subset_ledger_path)
@@ -326,7 +378,12 @@ def _prepare_inputs_reuse(cfg: GridConfig) -> StagedInputs:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def prepare_inputs(cfg: GridConfig, regenerate: bool) -> StagedInputs:
+def prepare_inputs(
+    cfg: GridConfig,
+    regenerate: bool,
+    *,
+    drop_species: tuple = (),
+) -> StagedInputs:
     """Stage the harness's input artifacts.
 
     Parameters
@@ -341,12 +398,22 @@ def prepare_inputs(cfg: GridConfig, regenerate: bool) -> StagedInputs:
         pair) and write the subset ledger atomically.
         ``False`` — reuse pre-staged artifacts: load the previously-written
         ledger and fail fast on any inconsistency with ``cfg`` / the pool.
+    drop_species : tuple[str, ...], keyword-only, default ``()``
+        The ``drop_failed_species`` survivor-pool path (regenerate mode only).
+        When non-empty, every ``TrainingPoint`` whose species set intersects
+        ``drop_species`` is removed from the pool *before* descriptors /
+        histograms / ``select_subset`` run, and the written ledger carries
+        ``pool_was_shrunk=True`` / ``dropped_species=sorted(drop_species)``.
+        Empty (the default) — the no-shrink path; the ledger records
+        ``pool_was_shrunk=False`` / ``dropped_species=[]``. Ignored in reuse
+        mode (a reuse-mode ledger was already shrunk when written).
 
     Returns
     -------
     StagedInputs
-        ``points`` (the ``TrainingPoint`` pool) + ``subset_ledger`` (the dict
-        consumed by ``spec_builder.build_training_specs``).
+        ``points`` (the ``TrainingPoint`` pool — the survivor pool when
+        ``drop_species`` was given) + ``subset_ledger`` (the dict consumed by
+        ``spec_builder.build_training_specs``).
 
     Raises
     ------
@@ -360,5 +427,5 @@ def prepare_inputs(cfg: GridConfig, regenerate: bool) -> StagedInputs:
         (it raises with the failed-species list).
     """
     if regenerate:
-        return _prepare_inputs_regenerate(cfg)
+        return _prepare_inputs_regenerate(cfg, drop_species=tuple(drop_species))
     return _prepare_inputs_reuse(cfg)

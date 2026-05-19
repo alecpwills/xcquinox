@@ -169,13 +169,20 @@ def _resolve_regenerate(raw_cfg: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 def _failed_species_from_error(exc: Exception) -> list[str]:
-    """Best-effort extraction of the failed-species list from a precompute
-    ``RuntimeError``.
+    """Extract the failed-species list from a precompute ``RuntimeError``.
 
-    ``external_refs.precompute_all`` raises with a message of the form
-    ``"... failed for N species: ['A', 'B']. ..."``. The list is parsed back
-    out for legible logging; on any parse failure an empty list is returned
-    (the message itself is still logged verbatim by the caller).
+    ``external_refs.precompute_all`` raises (see its body) with a message of
+    the exact form::
+
+        Cell 0.5 pre-compute failed for N species: ['A', 'B']. Inspect ...
+
+    where ``['A', 'B']`` is the Python ``repr`` of the ``failures`` list of
+    ``SpeciesEntry.name`` strings. This parses the bracketed portion back to a
+    list of names; on any parse failure an empty list is returned (the message
+    itself is still logged verbatim by the caller). The names match
+    ``TrainingPoint`` species ``info['name']`` (both use Hill formula for
+    compounds, atomic symbol / ``symbol+"+"`` for atoms), so they can be
+    handed straight to ``prepare_inputs(drop_species=...)``.
     """
     msg = str(exc)
     marker = "species: ["
@@ -255,8 +262,13 @@ def _stage_inputs(cfg, regenerate):
     Returns ``(staged, dropped_species)``. ``dropped_species`` is the list of
     species dropped under the ``drop_failed_species`` policy (empty otherwise).
 
-    A precompute failure under the ``abort`` policy re-raises the
-    ``RuntimeError`` for :func:`main` to turn into exit code 1.
+    Under the ``drop_failed_species`` policy a precompute ``RuntimeError`` is
+    parsed for its failed-species list, then ``prepare_inputs`` is re-invoked
+    with ``drop_species=<failed>`` — the deliberate survivor-pool path that
+    rebuilds the ledger over the shrunk pool. A precompute failure under the
+    ``abort`` policy (or a ``drop_failed_species`` failure whose species list
+    cannot be parsed) re-raises the ``RuntimeError`` for :func:`main` to turn
+    into exit code 1.
     """
     try:
         staged = _prepare_inputs(cfg, regenerate)
@@ -265,20 +277,33 @@ def _stage_inputs(cfg, regenerate):
         failed = _failed_species_from_error(exc)
         policy = cfg.on_precompute_failure
         if policy == "drop_failed_species":
+            if not failed:
+                # Could not parse the failed-species list, so a deliberate
+                # survivor-pool re-stage is impossible — treat as abort.
+                _log(
+                    "PRECOMPUTE FAILURE — on_precompute_failure='drop_failed_"
+                    "species' but the failed-species list could not be parsed "
+                    "from the precompute error; cannot build a survivor pool. "
+                    "Aborting the grid."
+                )
+                _log(f"precompute error detail: {exc}")
+                raise
             _log(
                 "PRECOMPUTE FAILURE — on_precompute_failure='drop_failed_"
                 f"species'; dropping failed species and re-staging. "
-                f"Failed species: {failed or '<unparsed>'}"
+                f"Failed species: {failed}"
             )
             _log(f"precompute error detail: {exc}")
-            # Re-stage. inputs.prepare_inputs re-runs precompute_all, which is
-            # skip-if-cached / idempotent for the species that DID succeed;
-            # the survivors' shrunk pool yields a smaller ledger. A test
-            # monkeypatches _prepare_inputs to succeed on this second call.
-            staged = _prepare_inputs(cfg, regenerate)
+            # Re-stage deliberately: prepare_inputs(drop_species=...) builds
+            # the survivor pool (every TrainingPoint referencing a failed
+            # species removed), re-runs select_subset over it, and writes a
+            # ledger with pool_was_shrunk=True / dropped_species=sorted(failed).
+            staged = _prepare_inputs(
+                cfg, regenerate, drop_species=tuple(failed)
+            )
             _log(
                 f"re-stage after drop succeeded; {len(failed)} species "
-                "dropped from the candidate pool."
+                f"dropped from the candidate pool: {sorted(failed)}"
             )
             return staged, failed
         # policy == "abort" (the default) — one bad species blocks the grid.

@@ -12,7 +12,12 @@ import pytest
 from ase import Atoms
 
 from xcquinox.alec.cluster import inputs as inputs_mod
-from xcquinox.alec.cluster.inputs import prepare_inputs, StagedInputs
+from xcquinox.alec.cluster.inputs import (
+    prepare_inputs,
+    StagedInputs,
+    _survivor_pool,
+    _point_species_names,
+)
 from xcquinox.alec.cluster.grid_config import (
     GridConfig,
     SweepAxes,
@@ -42,6 +47,17 @@ def _ae_point(name):
         kind="ae",
         name=name,
         species=(_named_atoms("H", name),),
+        metadata={"ae_kcalmol": 100.0},
+    )
+
+
+def _multi_species_point(name, species_names, kind="ae"):
+    """A TrainingPoint whose ``species`` carries several distinctly-named
+    ASE Atoms — used to exercise survivor-pool membership."""
+    return TrainingPoint(
+        kind=kind,
+        name=name,
+        species=tuple(_named_atoms("H", sn) for sn in species_names),
         metadata={"ae_kcalmol": 100.0},
     )
 
@@ -324,3 +340,153 @@ def test_regenerate_writes_ledger_with_monkeypatched_seams(
     assert isinstance(staged, StagedInputs)
     assert staged.points is pool
     assert staged.subset_ledger == on_disk
+
+
+# ---------------------------------------------------------------------------
+# Survivor-pool membership — fast, no compute
+# ---------------------------------------------------------------------------
+
+def test_point_species_names_collects_all_species():
+    tp = _multi_species_point("rxn", ("HF", "F", "H"))
+    assert _point_species_names(tp) == {"HF", "F", "H"}
+
+
+def test_survivor_pool_drops_points_referencing_a_dropped_species():
+    """A point is dropped iff its species set intersects drop_species — that
+    catches an AE compound, an H/Li anchor, or a BH76/IP13 referenced
+    species."""
+    pool = [
+        _multi_species_point("CH4", ("CH4",)),          # survives
+        _multi_species_point("HF", ("HF", "H")),        # dropped via 'HF'
+        _multi_species_point("F_rxn", ("CH4", "F"), kind="bh76"),  # via 'F'
+        _multi_species_point("H2O", ("H2O", "H")),      # survives
+    ]
+    survivors = _survivor_pool(pool, ("HF", "F"))
+    assert [tp.name for tp in survivors] == ["CH4", "H2O"]
+
+
+def test_survivor_pool_empty_drop_returns_pool_unchanged():
+    pool = _make_pool()
+    survivors = _survivor_pool(pool, ())
+    assert [tp.name for tp in survivors] == ["P0", "P1", "P2", "P3"]
+
+
+# ---------------------------------------------------------------------------
+# Regenerate mode with drop_species (slow — heavy seams monkeypatched)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_regenerate_drop_species_builds_survivor_pool_and_shrunk_ledger(
+    tmp_path, monkeypatch
+):
+    """prepare_inputs(..., drop_species=('F',)) removes every F-referencing
+    point before descriptors / select_subset, writes a ledger with
+    pool_was_shrunk=True / dropped_species=['F'], and a pool_fingerprint
+    computed from the survivor pool."""
+    cfg = _make_cfg(tmp_path)
+    # 4-point pool: P0/P3 survive, P1/P2 reference 'F'.
+    pool = [
+        _multi_species_point("P0", ("P0",)),
+        _multi_species_point("P1", ("P1", "F")),
+        _multi_species_point("P2", ("P2", "F"), kind="bh76"),
+        _multi_species_point("P3", ("P3",)),
+    ]
+
+    seen = {"concat_points": None, "select": []}
+
+    def fake_build_pool(bh76_mode="reaction_energy"):
+        return pool
+
+    def fake_build_species_union():
+        return ["species-union-sentinel"]
+
+    def fake_precompute_all(species, *, cache_dir, basis, grid_level):
+        pass
+
+    def fake_extract(species, *, basis, grid_level, cache_dir):
+        return {"species-descriptors": True}
+
+    def fake_concat(points, species_descriptors):
+        # the survivor pool — F-referencing points already removed
+        seen["concat_points"] = list(points)
+        return [{"i": i} for i in range(len(points))]
+
+    def fake_build_histograms(pool_descriptors):
+        return ("h_ref-sentinel", "edges-sentinel")
+
+    def fake_select_subset(pool_descriptors, edges, h_ref, *, r, metric):
+        seen["select"].append((metric, r))
+        # pick min(r, survivor-pool-size) positions into the SURVIVOR pool —
+        # with only 2 survivors an r=3 cell still resolves to valid positions.
+        n_survivors = len(pool_descriptors)
+        return tuple(range(min(r, n_survivors))), 0.123
+
+    monkeypatch.setattr(inputs_mod, "build_dfs_pool_points", fake_build_pool)
+    monkeypatch.setattr(inputs_mod, "_build_species_union",
+                        fake_build_species_union)
+    monkeypatch.setattr(inputs_mod, "_precompute_all", fake_precompute_all)
+    monkeypatch.setattr(inputs_mod, "_extract_descriptors", fake_extract)
+    monkeypatch.setattr(inputs_mod, "_concatenate_point_descriptors",
+                        fake_concat)
+    monkeypatch.setattr(inputs_mod, "_build_reference_histograms",
+                        fake_build_histograms)
+    monkeypatch.setattr(inputs_mod, "_select_subset", fake_select_subset)
+
+    staged = prepare_inputs(cfg, regenerate=True, drop_species=("F",))
+
+    # --- the survivor pool reached descriptors / select_subset -------------
+    survivor_names = [tp.name for tp in seen["concat_points"]]
+    assert survivor_names == ["P0", "P3"]
+    assert [tp.name for tp in staged.points] == ["P0", "P3"]
+
+    # --- ledger truthfully records the shrink ------------------------------
+    import os
+    with open(cfg.inputs.subset_ledger_path) as f:
+        on_disk = json.load(f)
+    assert os.path.isfile(cfg.inputs.subset_ledger_path)
+    assert on_disk["pool_was_shrunk"] is True
+    assert on_disk["dropped_species"] == ["F"]
+
+    from xcquinox.alec.cluster.spec_builder import pool_fingerprint
+    # fingerprint matches the SURVIVOR pool, not the full 4-point pool
+    assert on_disk["pool_fingerprint"] == pool_fingerprint(staged.points)
+    assert on_disk["pool_fingerprint"] != pool_fingerprint(pool)
+
+    # --- subsets selected over the survivor pool ---------------------------
+    # select_subset ran once per (metric, subset_size) pair, over the survivor
+    # pool — point names resolve from survivor positions only.
+    assert sorted(seen["select"]) == [("l2", 2), ("l2", 3)]
+    entries = on_disk["entries"]
+    assert set(entries) == {"l2:2", "l2:3"}
+    assert entries["l2:2"]["point_names"] == ["P0", "P3"]
+    assert staged.subset_ledger == on_disk
+
+
+@pytest.mark.slow
+def test_regenerate_drop_species_empty_matches_no_shrink_default(
+    tmp_path, monkeypatch
+):
+    """drop_species=() is exactly the no-shrink path: pool_was_shrunk=False,
+    dropped_species=[]."""
+    cfg = _make_cfg(tmp_path)
+    pool = _make_pool()
+
+    monkeypatch.setattr(inputs_mod, "build_dfs_pool_points",
+                        lambda bh76_mode="reaction_energy": pool)
+    monkeypatch.setattr(inputs_mod, "_build_species_union",
+                        lambda: ["u"])
+    monkeypatch.setattr(inputs_mod, "_precompute_all",
+                        lambda species, *, cache_dir, basis, grid_level: None)
+    monkeypatch.setattr(inputs_mod, "_extract_descriptors",
+                        lambda species, *, basis, grid_level, cache_dir: {"d": 1})
+    monkeypatch.setattr(inputs_mod, "_concatenate_point_descriptors",
+                        lambda points, sd: [{"i": i} for i in range(len(points))])
+    monkeypatch.setattr(inputs_mod, "_build_reference_histograms",
+                        lambda pd: ("h", "e"))
+    monkeypatch.setattr(inputs_mod, "_select_subset",
+                        lambda pd, e, h, *, r, metric: (tuple(range(r)), 0.0))
+
+    staged = prepare_inputs(cfg, regenerate=True, drop_species=())
+    assert staged.subset_ledger["pool_was_shrunk"] is False
+    assert staged.subset_ledger["dropped_species"] == []
+    assert [tp.name for tp in staged.points] == ["P0", "P1", "P2", "P3"]
