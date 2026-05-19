@@ -40,6 +40,10 @@ from xcquinox.alec.cluster.spec_builder import (
     build_targets,
     classify_aux_only,
 )
+from xcquinox.alec.cluster.inputs import (
+    prepare_inputs,
+    StagedInputs,
+)
 
 __all__ = [
     "GridConfig",
@@ -70,4 +74,6 @@ __all__ = [
     "atoms_to_mol_spec",
     "build_targets",
     "classify_aux_only",
+    "prepare_inputs",
+    "StagedInputs",
 ]
