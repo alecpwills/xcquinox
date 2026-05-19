@@ -62,6 +62,9 @@ from xcquinox.alec.cluster._preflight import (
 from xcquinox.alec.cluster._train_task import (
     main as train_task_main,
 )
+from xcquinox.alec.cluster._eval_one_spec import (
+    main as eval_one_spec_main,
+)
 
 __all__ = [
     "GridConfig",
@@ -104,4 +107,5 @@ __all__ = [
     "submit_jobs",
     "preflight_main",
     "train_task_main",
+    "eval_one_spec_main",
 ]
