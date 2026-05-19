@@ -56,6 +56,9 @@ from xcquinox.alec.cluster.submit import (
     render_sbatch,
     submit_jobs,
 )
+from xcquinox.alec.cluster._preflight import (
+    main as preflight_main,
+)
 
 __all__ = [
     "GridConfig",
@@ -96,4 +99,5 @@ __all__ = [
     "_run_slurm",
     "render_sbatch",
     "submit_jobs",
+    "preflight_main",
 ]
