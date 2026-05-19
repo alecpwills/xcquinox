@@ -24,6 +24,7 @@ from typing import Sequence
 from ase import Atoms
 
 from .dfs_pool import (
+    BH76_MODES,
     DFS_BH76_REACTIONS,
     DFS_IP13_PAIRS,
     ATOMIC_GROUND_STATE_SPIN,
@@ -124,12 +125,49 @@ def _ae_point_from_atoms(compound: Atoms) -> TrainingPoint:
     )
 
 
-def _bh76_point_from_dict(rxn: dict, *, atoms_by_name: dict) -> TrainingPoint:
+def _bh76_point_from_dict(
+    rxn: dict,
+    *,
+    atoms_by_name: dict,
+    bh76_mode: str = "reaction_energy",
+) -> TrainingPoint:
     """Build a BH76 TrainingPoint from one DFS_BH76_REACTIONS dict.
 
     species = (every reactant + every product, deduped by name) +
               atom anchors for every element appearing in any species.
+
+    ``bh76_mode`` selects which reference value is attached as the
+    point's ``e_rxn_ref`` metadata (consumed mode-agnostically by
+    ``losses._rxn_residual_term`` as ``Σ coeffs·E``):
+
+    - ``"reaction_energy"`` (DEFAULT) — the true reaction energy ΔE
+      (GMTKN55-BH76RC). The loss is trained against E(products) −
+      E(reactants), matching Dick & Fernandez-Serra 2021 (their
+      training set had no transition-state geometries). This is the
+      bug fix: the historical ``e_rxn_ref`` values were barrier
+      heights, which the reactant→product stoichiometry cannot
+      reproduce.
+    - ``"barrier_height"`` (opt-in) — the forward barrier height. A
+      true forward barrier is ``E(TS) − E(reactants)``, so each
+      reaction must additionally supply a transition-state geometry
+      (``rxn["ts_species"]``). Those geometries are not yet staged in
+      the repo; this path raises a clear, actionable error until they
+      are (the toggle is fully wired — only the data is missing).
     """
+    if bh76_mode not in BH76_MODES:
+        raise ValueError(
+            f"Unknown bh76_mode {bh76_mode!r}; expected one of {BH76_MODES}."
+        )
+    if bh76_mode == "barrier_height":
+        if rxn.get("ts_species") is None:
+            raise NotImplementedError(
+                "bh76_mode='barrier_height' requires transition-state "
+                "geometries for the 3 BH76 reactions, which are not yet "
+                "staged in dfs_pool.py (every DFS_BH76_REACTIONS entry has "
+                "ts_species=None). Supply the transition-state geometries "
+                "(populate the 'ts_species' slot) or use the default "
+                "bh76_mode='reaction_energy'."
+            )
     species_names: list[str] = list(rxn["reactants"]) + list(rxn["products"])
     species: list = []
     seen_names: set[str] = set()
@@ -166,6 +204,13 @@ def _bh76_point_from_dict(rxn: dict, *, atoms_by_name: dict) -> TrainingPoint:
         if sym in DICK_ATOM_REGULARIZER_SYMS and sym not in seen_names:
             species.append(_atom_anchor_atoms(sym))
             seen_names.add(sym)
+    # Mode selects which reference the loss is trained against. The
+    # loss reads only metadata["e_rxn_ref"]; barrier_ref /
+    # reaction_energy_ref are kept alongside for provenance.
+    if bh76_mode == "reaction_energy":
+        e_rxn_ref = rxn.get("reaction_energy_ref", rxn.get("e_rxn_ref"))
+    else:  # "barrier_height" — already validated above (TS present)
+        e_rxn_ref = rxn.get("barrier_ref", rxn.get("e_rxn_ref"))
     return TrainingPoint(
         kind="bh76",
         name=rxn["name"],
@@ -174,7 +219,10 @@ def _bh76_point_from_dict(rxn: dict, *, atoms_by_name: dict) -> TrainingPoint:
             "reactants": tuple(rxn["reactants"]),
             "products": tuple(rxn["products"]),
             "coeffs": tuple(rxn["coeffs"]),
-            "e_rxn_ref": rxn.get("e_rxn_ref"),
+            "e_rxn_ref": e_rxn_ref,
+            "bh76_mode": bh76_mode,
+            "barrier_ref": rxn.get("barrier_ref"),
+            "reaction_energy_ref": rxn.get("reaction_energy_ref"),
             "source": rxn.get("source"),
         },
     )
@@ -207,14 +255,46 @@ def _ip13_point_from_dict(pair: dict) -> TrainingPoint:
     )
 
 
-def build_dfs_pool_points() -> list[TrainingPoint]:
+def build_dfs_pool_points(
+    bh76_mode: str = "reaction_energy",
+) -> list[TrainingPoint]:
     """Return the flat list of 26 = 21 AE + 3 BH76 + 2 IP13 training points
     that ``select_subset`` should pick from.
 
     Each point carries (a) its participating species INCLUDING atom anchors
     needed for that point (design choice b), and (b) its kind-specific
     metadata for the corresponding loss channel.
+
+    Parameters
+    ----------
+    bh76_mode : {'reaction_energy', 'barrier_height'}, default 'reaction_energy'
+        Selects what the 3 BH76 training points are trained against.
+
+        - ``'reaction_energy'`` (DEFAULT, "dick default") — BH76 points
+          carry the true reaction energy ΔE (GMTKN55-BH76RC) as
+          ``e_rxn_ref``. The BH76 loss term computes
+          ``Σ coeffs·E = E(products) − E(reactants)``, so the reference
+          MUST be a reaction energy — this is the correct, bug-fixed
+          behaviour and matches Dick & Fernandez-Serra 2021.
+        - ``'barrier_height'`` (opt-in) — BH76 points carry the forward
+          barrier height as ``e_rxn_ref``. A true forward barrier is
+          ``E(TS) − E(reactants)``, which requires a transition-state
+          geometry per reaction. Those geometries are NOT yet staged in
+          dfs_pool.py, so selecting this mode raises NotImplementedError
+          until they are supplied.
+
+    Raises
+    ------
+    ValueError
+        If ``bh76_mode`` is not a recognized value.
+    NotImplementedError
+        If ``bh76_mode='barrier_height'`` is selected while the BH76
+        transition-state geometries are not yet staged.
     """
+    if bh76_mode not in BH76_MODES:
+        raise ValueError(
+            f"Unknown bh76_mode {bh76_mode!r}; expected one of {BH76_MODES}."
+        )
     from ase.io import read as _ase_read
     from .dfs_pool import _g297_traj_path
     pool = build_dfs_pool()
@@ -229,7 +309,11 @@ def build_dfs_pool_points() -> list[TrainingPoint]:
     for compound in pool["ae_molecules"]:
         points.append(_ae_point_from_atoms(compound))
     for rxn in DFS_BH76_REACTIONS:
-        points.append(_bh76_point_from_dict(rxn, atoms_by_name=atoms_by_name))
+        points.append(
+            _bh76_point_from_dict(
+                rxn, atoms_by_name=atoms_by_name, bh76_mode=bh76_mode
+            )
+        )
     for pair in DFS_IP13_PAIRS:
         points.append(_ip13_point_from_dict(pair))
     return points

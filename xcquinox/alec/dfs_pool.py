@@ -236,8 +236,8 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 # 3 BH76 reactions per Dick SI §II:
 #   OH + N2 → H + N2O,   OH + CH3 → O + CH4,   HF + F → H + F2
 #
-# Reference forward-barrier heights (Vf) in kcal/mol come from the
-# Truhlar Minnesota-database BH76 subset entries:
+# Reference forward-barrier heights (Vf) and reverse-barrier heights (Vr)
+# in kcal/mol come from the Truhlar Minnesota-database BH76 subset entries:
 #   - NHTBH38/08 (heavy-atom transfer / non-H-transfer barriers):
 #       https://comp.chem.umn.edu/db/dbs/nhtbh38.html
 #   - HTBH38/08  (hydrogen-transfer barriers):
@@ -245,6 +245,30 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 # These are the values that Goerigk & Grimme (PCCP 19, 32184, 2017)
 # adopt verbatim for the GMTKN55-BH76 subset. We use REF1 (the value
 # directly comparable to non-relativistic calculations) for each.
+#
+# bh76_mode toggle (added 2026-05-19)
+# -----------------------------------
+# The loss term ``_rxn_residual_term`` (losses.py) computes
+# ``e_rxn = Σ(coeffs · e_nn) = E(products) − E(reactants)`` — a true
+# *reaction energy* ΔE, NOT a barrier height. Dick & Fernandez-Serra
+# 2021 trained against reaction energies (their training set had no
+# transition-state geometries; SI §II). Therefore each entry below
+# carries BOTH numbers:
+#   - ``barrier_ref``        — the forward barrier height (kept for
+#                              provenance and for the opt-in
+#                              ``bh76_mode="barrier_height"`` path).
+#   - ``reaction_energy_ref``— the true reaction energy ΔE of the
+#                              reactant→product direction below.
+#   - ``e_rxn_ref``          — kept for backward compatibility; equals
+#                              ``barrier_ref`` here. The mode-aware
+#                              builder in training_points.py selects the
+#                              correct value per ``bh76_mode``.
+# For an elementary reaction ΔE = Vr − Vf exactly. Using the in-code
+# Vf/Vr below, the reaction energies for the pool's reaction directions
+# (GMTKN55-BH76RC) are:
+#   - OH+N2 → H+N2O:  Vr 82.27 − Vf 17.13 =  +65.14 kcal/mol
+#   - OH+CH3 → O+CH4: Vr  7.90 − Vf 13.47 =   −5.57 kcal/mol
+#   - HF+F → H+F2:    Vr 105.80 − Vf 2.27 = +103.53 kcal/mol
 #
 # Per-reaction ``species_spins`` and ``species_charges`` dicts hold the
 # ground-state spin (2S, PySCF convention) and charge (default 0) for
@@ -254,6 +278,18 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 #   - Molecular ground states from NIST CCCBDB / Herzberg I:
 #       OH (X²Π, 1), N2 (X¹Σg+, 0), N2O (X¹Σ+, 0), CH3 (X²A2'', 1),
 #       CH4 (X¹A1, 0), HF (X¹Σ+, 0), F2 (X¹Σg+, 0)
+#
+# ``ts_species`` is an optional transition-state-species slot (default
+# None). It is required ONLY for ``bh76_mode="barrier_height"``: the
+# barrier-height path needs a TS geometry so that
+# ``Σ coeffs·E = E(TS) − E(reactants)`` is a true forward barrier. The
+# 3 BH76 transition-state geometries are NOT yet staged in this repo;
+# until they are, ``bh76_mode="barrier_height"`` raises a clear error
+# (see training_points.build_dfs_pool_points).
+#
+# Valid bh76_mode values, exported for validation by the builder.
+BH76_MODES: tuple[str, ...] = ("reaction_energy", "barrier_height")
+
 DFS_BH76_REACTIONS = [
     {
         "name": "OH+N2_to_H+N2O",
@@ -262,7 +298,15 @@ DFS_BH76_REACTIONS = [
         "coeffs": [-1.0, -1.0, +1.0, +1.0],
         # Forward barrier of OH+N2→H+N2O = REVERSE barrier of NHTBH38
         # entry #1 (H+N2O → OH+N2, Vf=17.13, Vr=82.27 kcal/mol REF1).
+        "barrier_ref": 82.27,  # kcal/mol — forward barrier (Vr of NHTBH38 #1)
+        # Reaction energy ΔE of OH+N2 → H+N2O (GMTKN55-BH76RC):
+        #   ΔE = Vr − Vf = 82.27 − 17.13 = +65.14 kcal/mol.
+        "reaction_energy_ref": 65.14,  # kcal/mol
+        # Backward-compat alias (equals barrier_ref); the mode-aware
+        # builder selects barrier_ref vs reaction_energy_ref.
         "e_rxn_ref": 82.27,  # kcal/mol
+        # Optional TS geometry for bh76_mode="barrier_height" (not staged).
+        "ts_species": None,
         "species_spins":   {"HO": 1, "N2": 0, "H": 1, "N2O": 0},
         "species_charges": {"HO": 0, "N2": 0, "H": 0, "N2O": 0},
         "source": (
@@ -281,7 +325,14 @@ DFS_BH76_REACTIONS = [
         "coeffs": [-1.0, -1.0, +1.0, +1.0],
         # Forward barrier of OH+CH3→O+CH4 = REVERSE barrier of HTBH38
         # entry 19/20 (O+CH4 → OH+CH3, Vf=13.47, Vr=7.90 kcal/mol REF1).
+        "barrier_ref": 7.90,  # kcal/mol — forward barrier (Vr of HTBH38 19-20)
+        # Reaction energy ΔE of OH+CH3 → O+CH4 (GMTKN55-BH76RC):
+        #   ΔE = Vr − Vf = 7.90 − 13.47 = −5.57 kcal/mol.
+        "reaction_energy_ref": -5.57,  # kcal/mol
+        # Backward-compat alias (equals barrier_ref).
         "e_rxn_ref": 7.90,  # kcal/mol
+        # Optional TS geometry for bh76_mode="barrier_height" (not staged).
+        "ts_species": None,
         "species_spins":   {"HO": 1, "CH3": 1, "O": 2, "CH4": 0},
         "species_charges": {"HO": 0, "CH3": 0, "O": 0, "CH4": 0},
         "source": (
@@ -304,7 +355,14 @@ DFS_BH76_REACTIONS = [
         "coeffs": [-1.0, -1.0, +1.0, +1.0],
         # Forward barrier of HF+F→H+F2 = REVERSE barrier of NHTBH38
         # entry #5 (H+F2 → HF+F, Vf=2.27, Vr=105.80 kcal/mol REF1).
+        "barrier_ref": 105.80,  # kcal/mol — forward barrier (Vr of NHTBH38 #5)
+        # Reaction energy ΔE of HF+F → H+F2 (GMTKN55-BH76RC):
+        #   ΔE = Vr − Vf = 105.80 − 2.27 = +103.53 kcal/mol.
+        "reaction_energy_ref": 103.53,  # kcal/mol
+        # Backward-compat alias (equals barrier_ref).
         "e_rxn_ref": 105.80,  # kcal/mol
+        # Optional TS geometry for bh76_mode="barrier_height" (not staged).
+        "ts_species": None,
         "species_spins":   {"HF": 0, "F": 1, "H": 1, "F2": 0},
         "species_charges": {"HF": 0, "F": 0, "H": 0, "F2": 0},
         "source": (
