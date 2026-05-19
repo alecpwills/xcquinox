@@ -44,6 +44,14 @@ from xcquinox.alec.cluster.inputs import (
     prepare_inputs,
     StagedInputs,
 )
+from xcquinox.alec.cluster.job_tracking import (
+    reduce_outcomes,
+    append_job_record,
+    read_job_records,
+    mark_superseded,
+    SlurmTransientError,
+    _run_slurm,
+)
 
 __all__ = [
     "GridConfig",
@@ -76,4 +84,10 @@ __all__ = [
     "classify_aux_only",
     "prepare_inputs",
     "StagedInputs",
+    "reduce_outcomes",
+    "append_job_record",
+    "read_job_records",
+    "mark_superseded",
+    "SlurmTransientError",
+    "_run_slurm",
 ]
