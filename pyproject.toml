@@ -68,7 +68,8 @@ xcquinox = [
     "py.typed"
 ]
 "xcquinox.alec.cluster" = [
-    "templates/*.sbatch.tmpl"
+    "templates/*.sbatch.tmpl",
+    "examples/*.yaml"
 ]
 
 [tool.versioningit]

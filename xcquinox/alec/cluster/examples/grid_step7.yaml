@@ -1,0 +1,107 @@
+# =============================================================================
+# grid_step7.yaml — example HPC training-harness grid config (COPY-ME TEMPLATE)
+# =============================================================================
+#
+# This file reproduces the step-7 40-spec sweep
+# (10 subset sizes x 2 metrics x 2 solvers) that the notebook
+# ``notebooks/_build_step7_notebook.py`` builds in-process. It is a TEMPLATE:
+# copy it, then fill in the placeholders before submitting to a cluster.
+#
+# It is loaded by ``xcquinox.alec.cluster.grid_config.load_grid_config`` and
+# expands (via ``expand_grid``) to exactly 40 GridCells.
+#
+# FIELDS YOU MUST EDIT BEFORE USE (all marked ``CHANGE_ME``):
+#   cluster.mail_user   - your email for SLURM job-status mail
+#   cluster.mail_type   - SLURM mail events (NONE | BEGIN | END | FAIL | ALL)
+#   cluster.account     - your SLURM allocation/account name
+#   inputs.external_refs_dir   - shared dir of per-species CCSD <name>.npz refs
+#   inputs.descriptor_cache    - shared descriptor cache dir
+#   inputs.refhist_cache       - shared reference-histogram cache dir
+#   inputs.subset_ledger_path  - shared path to the subset-selection ledger JSON
+#   inputs.output_root         - shared run-output root directory
+#   inputs.pretrain_checkpoint - shared dir holding the pretrained xnet/cnet
+#
+# Every ``inputs.*`` path MUST be an ABSOLUTE path on a SHARED filesystem that
+# resolves identically on the SLURM login node and on every compute node.
+# The ``/gpfs/.../CHANGE_ME/...`` placeholders below are intentionally
+# non-existent so a copy used unedited fails fast in ``validate_grid_semantics``.
+#
+# ``conda_env`` defaults to ``xcquinox`` — change it if your environment differs.
+# =============================================================================
+
+# --- swept axes: Cartesian product = the grid ------------------------------
+# arch(1) x loss(1) x metric(2) x subset_size(10) x solver(2) = 40 cells.
+sweep:
+  arch: [deep_combined_attn]
+  loss: [L5_gradnorm_vxc_step7]
+  metric: [l2, jsd]
+  subset_size: [1, 2, 3, 4, 5, 6, 7, 12, 15, 18]
+  solver: [oneshot, full_3]
+
+# --- named solver configs referenced by the ``solver`` sweep axis ----------
+# oneshot: a single non-self-consistent pass (mode ONESHOT, 0 SCF cycles).
+# full_3:  a 3-cycle full SCF with feature reassembly between cycles.
+solvers:
+  oneshot:
+    mode: ONESHOT
+    max_cycles: 0
+  full_3:
+    mode: FULL
+    max_cycles: 3
+    feature_policy: REASSEMBLE
+
+# --- training hyperparameters shared by every grid cell --------------------
+hyperparams:
+  n_steps: 100
+  lr_start: 0.01            # 1e-2
+  lr_end: 0.00001           # 1e-5
+  lr_decay_start: 0.2       # fraction of n_steps
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  seed: 42
+
+# --- filesystem inputs (ABSOLUTE, SHARED-FS paths) -------------------------
+inputs:
+  external_refs_dir: /gpfs/projects/CHANGE_ME/xcquinox/step7/external_refs
+  descriptor_cache: /gpfs/projects/CHANGE_ME/xcquinox/step7/descriptor_cache
+  refhist_cache: /gpfs/projects/CHANGE_ME/xcquinox/step7/refhist_cache
+  subset_ledger_path: /gpfs/projects/CHANGE_ME/xcquinox/step7/subset_index_log.json
+  basis: def2-svp
+  grid_level: 1
+  output_root: /gpfs/projects/CHANGE_ME/xcquinox/step7/runs
+  pretrain_checkpoint: /gpfs/projects/CHANGE_ME/xcquinox/step7/pretrain/deep_combined_attn
+
+# --- SLURM resource requests + submission knobs (SeaWulf defaults) ---------
+cluster:
+  partition: short-96core-shared
+  time: "02:00:00"
+  mem: 96G
+  cpus_per_task: 24
+  array_throttle: 4
+  eval_array_throttle: 4
+  max_concurrent_tasks: 8
+  max_array_size: 1000
+  device: cpu
+  conda_env: xcquinox
+  mail_user: CHANGE_ME@example.com
+  mail_type: NONE
+  account: CHANGE_ME
+  # Preflight runs once on a longer-wall-clock partition (CCSD pre-compute
+  # for the full species union can take well over the train wall clock).
+  preflight_partition: long-96core-shared
+  preflight_time: "08:00:00"
+  # Eval runs on a CPU partition after training completes.
+  eval_partition: short-96core-shared
+  eval_time: "02:00:00"
+
+# --- domain profile: physics tables (atom energies, kcal/Ha, extractors) ---
+# ``dfs_step7`` is the only profile registered in cluster/domain.py.
+domain_profile: dfs_step7
+
+# --- grid-level behaviour knobs --------------------------------------------
+on_precompute_failure: abort
+bh76_mode: reaction_energy
