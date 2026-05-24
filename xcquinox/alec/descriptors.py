@@ -102,17 +102,22 @@ class DMStatisticsDescriptor(Descriptor):
       0. ``idempotency_error`` — normalized Frobenius deviation from the
          single-determinant idempotency condition; ~0 for an HF/KS reference,
          growing with correlation.
-      1. ``dm_entropy`` — fractional-occupation (idempotency-deviation) entropy
-         of the natural-orbital occupations: per-spin-orbital binary entropy
-         summed over natural orbitals. ~0 for a single determinant
-         (occupations in {0, 2}) and larger for fractional natural occupations,
-         so larger => more correlated. (DESC-07: this is *not* a size-dependent
-         Shannon entropy of normalized occupations.)
+      1. ``dm_entropy`` — Shannon (von-Neumann-like) entropy of the natural-
+         orbital occupations normalized to a probability distribution
+         (``-sum_i p_i ln p_i`` with ``p_i = n_i / sum_j n_j``; the occupations
+         ``n_i`` are the eigenvalues of ``D S`` — Löwdin, Phys. Rev. 97, 1474
+         (1955)). NOTE (P5-04): this quantity is *size-dependent* (it scales
+         roughly like ``ln N_occ``) and is nonzero even for a single
+         determinant, so it is NOT a clean electron-correlation indicator —
+         ``idempotency_error`` is the quantity that vanishes for a single
+         determinant. See ``xcquinox.features.compute_dm_features`` for the
+         full discussion.
       2. ``off_diag_norm`` — Frobenius norm of the off-diagonal AO density-matrix
          block, normalized by the trace.
 
-    All three are designed so larger magnitude indicates stronger departure
-    from a single Slater determinant.
+    ``idempotency_error`` and ``off_diag_norm`` grow with departure from a single
+    Slater determinant; ``dm_entropy`` is a size-dependent natural-occupation
+    entropy (see the caveat above), not a clean correlation indicator.
     """
     n_features: int = eqx.field(default=3, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)

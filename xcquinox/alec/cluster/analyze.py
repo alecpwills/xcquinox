@@ -17,6 +17,7 @@ subcommand is a thin wrapper. Per-spec status precedence:
 """
 import csv
 import json
+import math
 import os
 import statistics
 
@@ -236,10 +237,14 @@ def load_per_molecule(run_dir, idx):
 
 
 def _abs_ae_err(r):
-    """|AE_error_kcalmol| for sorting; rows without the key sink to the bottom."""
+    """|AE_error_kcalmol| for sorting; rows without a finite key sink to the
+    bottom. C5-07: a NaN/inf value passes isinstance(...,(int,float)) and would
+    become a NaN sort key (NaN comparisons are all False), letting it rank
+    arbitrarily — including above the real worst cases under reverse=True. Treat
+    non-finite as 'no AE' so it sinks."""
     e = r.get("AE_error_kcalmol")
-    return abs(e) if isinstance(e, (int, float)) and not isinstance(e, bool) \
-        else -1.0
+    return abs(e) if (isinstance(e, (int, float)) and not isinstance(e, bool)
+                      and math.isfinite(e)) else -1.0
 
 
 def format_per_molecule_table(pm_rows):
@@ -287,7 +292,10 @@ def worst_molecules(run_dir, n=20):
             continue
         for r in rows:
             e = r.get("AE_error_kcalmol")
-            if not isinstance(e, (int, float)) or isinstance(e, bool):
+            # C5-07: skip non-finite errors — a NaN/inf would corrupt the
+            # reverse-sorted ranking and surface as a spurious "worst" molecule.
+            if (not isinstance(e, (int, float)) or isinstance(e, bool)
+                    or not math.isfinite(e)):
                 continue
             out.append({
                 "molecule": r.get("molecule", "?"),

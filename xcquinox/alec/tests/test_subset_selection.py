@@ -1063,3 +1063,20 @@ def test_concatenate_point_descriptors_missing_species_raises():
     point = TrainingPoint(kind="ae", name="just_H", species=(h_atoms,))
     with pytest.raises(KeyError, match="just_H"):
         concatenate_point_descriptors([point], species_desc)
+
+
+def test_metric_jsd_scalar_empty_candidate_is_inf():
+    """C4-04: the scalar metric_jsd must disqualify (return +inf) a candidate
+    whose in-range mass is zero for any descriptor marginal — matching the batch
+    path's SUBSET-05 guard. Previously it returned a small finite value (a
+    spurious near-perfect match)."""
+    rng = np.random.default_rng(7)
+    h_ref = {k: rng.uniform(0.1, 5.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    # candidate: 's' marginal has no in-range mass (all zeros)
+    h_cand = {k: rng.uniform(0.1, 5.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    h_cand["s"] = np.zeros(ss.NBINS)
+    assert ss.metric_jsd(h_ref, h_cand) == float("inf")
+    # a fully-populated candidate stays finite and bounded by 3*ln2
+    h_ok = {k: rng.uniform(0.1, 5.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    val = ss.metric_jsd(h_ref, h_ok)
+    assert np.isfinite(val) and 0.0 <= val <= 3.0 * np.log(2.0) + 1e-9

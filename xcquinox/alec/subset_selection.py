@@ -131,8 +131,10 @@ def _to_pmf(h: np.ndarray) -> np.ndarray:
     result sums to 1; this also makes the divergence invariant to a
     uniform rescale (e.g. differing per-descriptor bin widths). A
     descriptor whose grid points all fall outside the histogram range has
-    zero total mass; we return an all-zero vector for it and let
-    :func:`_kl` flag the degenerate case.
+    zero total mass; we return an all-zero vector for it. Callers
+    (:func:`metric_jsd`, :func:`_metric_jsd_batch`) detect a zero-mass
+    CANDIDATE marginal directly and treat it as maximally divergent
+    (``+inf``) so it is never selected — ``_kl`` itself does not flag it.
     """
     total = float(np.sum(h))
     if total <= 0.0:
@@ -174,6 +176,15 @@ def metric_jsd(h_ref: dict, h_cand: dict) -> float:
     """
     total = 0.0
     for k in _DESCRIPTOR_KEYS:
+        # SUBSET-05 / C4-04: a candidate marginal with zero in-range mass has no
+        # grid points in this descriptor's range — it cannot represent the
+        # reference distribution at all, so it is MAXIMALLY divergent and must
+        # never be selected. Without this guard _to_pmf -> all-zeros makes
+        # M = 0.5*p, KL(p||M)=0, and KL(0||M) stays small, so the candidate
+        # would score ~0 (a spurious "perfect match"). The batch path
+        # (_metric_jsd_batch) already disqualifies such rows; mirror it here.
+        if float(np.sum(h_cand[k])) <= 0.0:
+            return float("inf")
         p = _to_pmf(h_ref[k])
         q = _to_pmf(h_cand[k])
         m = 0.5 * (p + q)

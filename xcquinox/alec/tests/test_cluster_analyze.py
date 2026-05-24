@@ -352,3 +352,20 @@ def test_worst_molecules_ranks_across_complete_specs(tmp_path):
     assert worst[0]["molecule"] == "F2O"
     assert worst[0]["idx"] == 0
     assert abs(worst[0]["ae_error_kcalmol"]) > abs(worst[1]["ae_error_kcalmol"])
+
+
+# C5-07: non-finite AE errors must sink in the ranking, never rank as "worst"
+def test_abs_ae_err_sinks_nonfinite():
+    assert analyze._abs_ae_err({"AE_error_kcalmol": -5.0}) == 5.0
+    assert analyze._abs_ae_err({"AE_error_kcalmol": float("nan")}) == -1.0
+    assert analyze._abs_ae_err({"AE_error_kcalmol": float("inf")}) == -1.0
+    assert analyze._abs_ae_err({}) == -1.0
+    # a NaN row must NOT sort above a real worst case under reverse=True
+    rows = [
+        {"AE_error_kcalmol": float("nan"), "molecule": "bad"},
+        {"AE_error_kcalmol": -10.0, "molecule": "worst"},
+        {"AE_error_kcalmol": 2.0, "molecule": "ok"},
+    ]
+    ordered = sorted(rows, key=analyze._abs_ae_err, reverse=True)
+    assert ordered[0]["molecule"] == "worst"
+    assert ordered[-1]["molecule"] == "bad"

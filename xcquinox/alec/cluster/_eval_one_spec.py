@@ -37,6 +37,7 @@ consumed by the same trusted codebase, never read from an untrusted source.
 import argparse
 import importlib
 import json
+import math
 import os
 import sys
 import time
@@ -157,10 +158,16 @@ def _aggregate_per_molecule(pm_rows, ae_key="AE_error_kcalmol",
         to the MAE average; reporting total row count (``len(pm_rows)``) would
         be misleading when the subset contains BH76/IP13-only entries.
     """
+    # C5-06: a non-finite per-molecule value (NaN/inf from a pathological V_xc
+    # or a diverged density) passes isinstance(...,(int,float)) and would poison
+    # the spec MAE — which then makes the summary layer (analyze.summarize)
+    # drop the ENTIRE spec instead of just the bad molecule. Exclude non-finite
+    # values so a single bad molecule does not discard a spec's good ones.
     ae_errs = [
         float(r[ae_key]) for r in pm_rows
         if isinstance(r.get(ae_key), (int, float))
         and not isinstance(r.get(ae_key), bool)
+        and math.isfinite(r[ae_key])
     ]
     if ae_errs:
         mae = sum(abs(v) for v in ae_errs) / len(ae_errs)
@@ -170,6 +177,7 @@ def _aggregate_per_molecule(pm_rows, ae_key="AE_error_kcalmol",
         float(r[rho_key]) for r in pm_rows
         if isinstance(r.get(rho_key), (int, float))
         and not isinstance(r.get(rho_key), bool)
+        and math.isfinite(r[rho_key])
     ]
     if rho_vals:
         rho_rmse = sum(rho_vals) / len(rho_vals)
