@@ -294,6 +294,123 @@ def test_fd_energy_potential_consistency():
 
 
 # ---------------------------------------------------------------------------
+# P2-03: per-spin correlation potential for a spin-polarization-aware cnet.
+# When the cnet carries the zeta input feature and the model uses the
+# zeta-dependent PW92 baseline (Dick & Fernandez-Serra, PRB 104 L161109
+# (2021)), E_c depends on rho_a/rho_b through BOTH rho_tot AND
+# zeta = (rho_a-rho_b)/rho_tot, so V_c is PER-SPIN. These guard that
+# ``compute_vc_polarized_per_spin`` is the true functional derivative of the
+# polarized correlation energy, and reduces to a shared potential at zeta=0.
+# ---------------------------------------------------------------------------
+def _build_polarized_model(seed=0):
+    """A model whose cnet consumes the spin-polarization (x1) feature and whose
+    correlation baseline is the zeta-dependent PW92 form."""
+    arch = alec.ArchitectureConfig.from_spec(
+        "polc_test", 4, 32, use_polarized_correlation=True)
+    xnet, cnet = alec.create_network_pair(arch, seed=seed)
+    assert cnet.use_spin_polarization is True
+    return alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+
+def _ec_energy_polarized(model, D_a, D_b, features, ao_grid, ao_xyz,
+                         grid_weights):
+    """Polarized correlation energy E_c = sum_g w_g eps_c(rho_tot, sigma_tot,
+    f; zeta) from a spin-DM pair (the zeta-dependent piece only)."""
+    rho_a, nra, _ = _grid_quantities(D_a, ao_grid, ao_xyz)
+    rho_b, nrb, _ = _grid_quantities(D_b, ao_grid, ao_xyz)
+    rho_tot = rho_a + rho_b
+    nr_tot = nra + nrb
+    sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
+    zeta = jnp.clip((rho_a - rho_b) / jnp.maximum(rho_tot, 1e-300), -1.0, 1.0)
+    return jnp.sum(grid_weights * model.eval_ec(rho_tot, sig_tot, features,
+                                                zeta=zeta))
+
+
+def test_polarized_vc_fd_energy_potential_consistency():
+    from xcquinox.alec.oneshot import compute_vc_polarized_per_spin
+
+    model = _build_polarized_model()
+    md = _li_uks_md()
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_grad = jnp.asarray(md["ao_grid_deriv"])
+    ao_xyz = ao_grad[1:4]
+    grid_weights = jnp.asarray(md["grid_weights"])
+    features = assemble_descriptor_features(model.descriptors, md)
+
+    dm = jnp.asarray(md["dm_pbe"])
+    D_a, D_b = dm[0], dm[1]
+    nao = D_a.shape[0]
+
+    rho_a, nra, _ = _grid_quantities(D_a, ao_grid, ao_xyz)
+    rho_b, nrb, _ = _grid_quantities(D_b, ao_grid, ao_xyz)
+    nr_tot = nra + nrb
+    sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
+
+    vc_a, vc_b = compute_vc_polarized_per_spin(
+        model, rho_a, rho_b, sig_tot, features, ao_grid, grid_weights,
+        nr_tot, ao_grad)
+
+    # Symmetric DM perturbations (the only physical case).
+    rng = np.random.default_rng(20260524)
+    Ma = rng.standard_normal((nao, nao))
+    dDa = jnp.asarray(Ma + Ma.T)
+    Mb = rng.standard_normal((nao, nao))
+    dDb = jnp.asarray(Mb + Mb.T)
+
+    def Ec(Da, Db):
+        return _ec_energy_polarized(
+            model, Da, Db, features, ao_grid, ao_xyz, grid_weights)
+
+    eps = 1e-6
+    fd = float((Ec(D_a + eps * dDa, D_b + eps * dDb)
+                - Ec(D_a - eps * dDa, D_b - eps * dDb)) / (2.0 * eps))
+    contract = float(jnp.einsum("ij,ij->", vc_a, dDa)
+                     + jnp.einsum("ij,ij->", vc_b, dDb))
+    rel_fd = abs(fd - contract) / max(abs(contract), 1e-12)
+    print(f"\n[polarized V_c] FD={fd:.10e} contract={contract:.10e} "
+          f"rel={rel_fd:.3e}")
+    assert rel_fd < 1e-5, (
+        f"per-spin V_c is not FD-consistent with the polarized E_c "
+        f"(rel={rel_fd:.3e})")
+
+    # Tight cross-check against reverse-mode autodiff of E_c (symmetric
+    # contraction removes the antisymmetric gauge ambiguity).
+    ga, gb = jax.grad(Ec, argnums=(0, 1))(D_a, D_b)
+    grad_contract = float(jnp.einsum("ij,ij->", ga, dDa)
+                          + jnp.einsum("ij,ij->", gb, dDb))
+    grad_resid = abs(grad_contract - contract) / max(abs(grad_contract), 1e-12)
+    assert grad_resid < 1e-10, (
+        f"per-spin V_c disagrees with autodiff grad of E_c: {grad_resid:.3e}")
+
+
+def test_polarized_vc_closed_shell_reduces_to_shared():
+    from xcquinox.alec.oneshot import compute_vc_polarized_per_spin
+
+    model = _build_polarized_model()
+    md = _li_uks_md()
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_grad = jnp.asarray(md["ao_grid_deriv"])
+    ao_xyz = ao_grad[1:4]
+    grid_weights = jnp.asarray(md["grid_weights"])
+    features = assemble_descriptor_features(model.descriptors, md)
+
+    dm = jnp.asarray(md["dm_pbe"])
+    # Force a closed-shell (zeta=0) density by averaging the spin DMs.
+    D_c = 0.5 * (dm[0] + dm[1])
+    rho_c, nrc, _ = _grid_quantities(D_c, ao_grid, ao_xyz)
+    nr_tot = 2.0 * nrc
+    sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
+
+    vc_a, vc_b = compute_vc_polarized_per_spin(
+        model, rho_c, rho_c, sig_tot, features, ao_grid, grid_weights,
+        nr_tot, ao_grad)
+    max_diff = float(jnp.max(jnp.abs(vc_a - vc_b)))
+    print(f"\n[polarized V_c] closed-shell max|vc_a-vc_b|={max_diff:.2e}")
+    assert max_diff < 1e-12, (
+        f"at zeta=0 the per-spin V_c must coincide: max|vc_a-vc_b|={max_diff:.2e}")
+
+
+# ---------------------------------------------------------------------------
 # pyscfad callback: closed-shell reduction of the libxc eval_xc convention.
 # The UKS callback fed rho_a = rho_b must return the SAME per-particle exc as
 # the RKS callback, and per-spin vrho/vsigma consistent with RKS.

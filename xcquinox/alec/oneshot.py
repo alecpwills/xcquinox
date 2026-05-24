@@ -367,6 +367,67 @@ def fixed_density_total_energy(model, mol_data) -> float:
     return mol_data["E_non_xc"] + exc_integrated
 
 
+def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
+                                  ao_grid, grid_weights, nabla_rho_tot, ao_grad):
+    """Per-spin correlation potential V_c^a, V_c^b for a spin-polarization-aware
+    cnet (P2-03). E_c depends on rho_a/rho_b through BOTH rho_tot = rho_a+rho_b
+    AND zeta = (rho_a-rho_b)/rho_tot, so V_c^s = dE_c/drho_s is NOT shared.
+
+    The per-spin rho COEFFICIENTS are obtained EXACTLY by JVP'ing the
+    correlation energy density through a helper that forms rho_tot and zeta
+    INTERNALLY w.r.t. rho_a / rho_b — so jax performs the full (clip-aware)
+    zeta chain rule and the result is byte-consistent with autodiff of the
+    energy (verified to ~1e-10), avoiding a hand-coded d zeta/d rho.
+
+    The SIGMA term is SHARED: sigma_tot = |nabla rho_a + nabla rho_b|^2 gives
+    d sigma_tot/d(nabla rho_a) = d sigma_tot/d(nabla rho_b) = 2 nabla rho_tot,
+    and zeta has no gradient dependence. Only the sigma tangent hits the
+    sqrt(sigma)-derivative singularity, so it alone uses the denormal sigma
+    guard (the rho_a/rho_b tangents are finite at the real sigma).
+    """
+    # eps_c density as a function of the SPIN densities (rho_tot + zeta formed
+    # internally with the SAME clip/floor the UKS energy uses).
+    def ec_spin(ra, rb, s, f):
+        rt = ra + rb
+        z = jnp.clip((ra - rb) / jnp.maximum(rt, 1e-300), -1.0, 1.0)
+        return model.eval_ec_scalar(rt, s, f, zeta=z)
+
+    _V_SIGMA_THRESHOLD = 1e-30
+    sigma_ok = sigma_tot > _V_SIGMA_THRESHOLD
+    safe_sigma = jnp.where(sigma_ok, sigma_tot, jnp.ones_like(sigma_tot))
+
+    # Per-spin rho coefficients = d eps_c / d rho_{a,b} (real sigma; the rho
+    # tangents do not hit the sqrt(sigma) singularity).
+    coeff_a, coeff_b = jax.vmap(
+        lambda ra, rb, s, f: (
+            jax.jvp(ec_spin, (ra, rb, s, f),
+                    (jnp.ones_like(ra), jnp.zeros_like(rb),
+                     jnp.zeros_like(s), jnp.zeros_like(f)))[1],
+            jax.jvp(ec_spin, (ra, rb, s, f),
+                    (jnp.zeros_like(ra), jnp.ones_like(rb),
+                     jnp.zeros_like(s), jnp.zeros_like(f)))[1],
+        )
+    )(rho_a, rho_b, sigma_tot, features)
+
+    # Shared sigma coefficient = d eps_c / d sigma_tot (safe sigma guard).
+    v_sigma = jax.vmap(
+        lambda ra, rb, s, f: jax.jvp(
+            ec_spin, (ra, rb, s, f),
+            (jnp.zeros_like(ra), jnp.zeros_like(rb),
+             jnp.ones_like(s), jnp.zeros_like(f)))[1]
+    )(rho_a, rho_b, safe_sigma, features)
+    v_sigma = jnp.where(sigma_ok, v_sigma, 0.0)
+
+    V_rho_a = jnp.einsum("g,gi,gj->ij", grid_weights * coeff_a, ao_grid, ao_grid)
+    V_rho_b = jnp.einsum("g,gi,gj->ij", grid_weights * coeff_b, ao_grid, ao_grid)
+
+    ao_grad_xyz = ao_grad[1:4] if ao_grad.shape[0] == 4 else ao_grad
+    ndphi = jnp.einsum("gd,dgi->gi", nabla_rho_tot, ao_grad_xyz)
+    A = jnp.einsum("g,gi,gj->ij", grid_weights * v_sigma, ndphi, ao_grid)
+    V_sigma = 2.0 * (A + A.T)   # shared by both spins (zeta has no grad dep.)
+    return V_rho_a + V_sigma, V_rho_b + V_sigma
+
+
 def _uks_spin_resolved_vxc(model, mol_data, features):
     """Build spin-resolved V_xc^NN_a, V_xc^NN_b for the SOLV-01 split energy.
 
@@ -383,17 +444,27 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
 
       * CORRELATION does NOT obey the exchange spin-scaling relation; it is
         spin-interpolated (von Barth & Hedin, J. Phys. C 5, 1629 (1972);
-        PW92, Phys. Rev. B 45, 13244 (1992)). The model's correlation
-        baseline ``pw92c_unpolarized_scalar`` is zeta-independent, so the
-        correct treatment of the EXISTING correlation model is to evaluate it
-        ONCE on the TOTAL density (the zeta=0 approximation). Since the
-        correlation energy depends only on rho_tot, delta rho_tot / delta
-        rho_a = delta rho_tot / delta rho_b = 1, so the SAME correlation
-        matrix V_c[rho_tot, sigma_tot] enters BOTH spin channels.
+        PW92, Phys. Rev. B 45, 13244 (1992)). Two paths exist, gated on the
+        cnet's ``use_spin_polarization`` flag:
 
-    Therefore V_xc^a = vx[2 rho_a, 4 sigma_aa; 2 nabla_rho_a] + vc[rho_tot]
-    and V_xc^b = vx[2 rho_b, 4 sigma_bb; 2 nabla_rho_b] + vc[rho_tot], with
-    vc computed exactly ONCE.
+        - flag FALSE (default / RKS-era checkpoints): the correlation baseline
+          ``pw92c_unpolarized_scalar`` is zeta-independent, so correlation is
+          evaluated ONCE on the TOTAL density (the zeta=0 approximation). Since
+          E_c depends only on rho_tot, delta rho_tot/delta rho_a =
+          delta rho_tot/delta rho_b = 1, so the SAME matrix V_c[rho_tot,
+          sigma_tot] enters BOTH spin channels (the fast path).
+
+        - flag TRUE (P2-03, Dick & Fernandez-Serra PRB 104 L161109 (2021)):
+          correlation uses the zeta-dependent PW92 baseline
+          ``pw92c_polarized_scalar`` plus a spin-polarization input feature, so
+          E_c depends on rho_a/rho_b through BOTH rho_tot AND zeta. Then
+          delta zeta/delta rho_a != delta zeta/delta rho_b and V_c is PER-SPIN;
+          ``compute_vc_polarized_per_spin`` builds V_c^a, V_c^b exactly.
+
+    Therefore (flag FALSE) V_xc^a = vx[2 rho_a, 4 sigma_aa; 2 nabla_rho_a] +
+    vc[rho_tot] and V_xc^b = vx[2 rho_b, 4 sigma_bb; 2 nabla_rho_b] + vc[rho_tot],
+    with vc computed exactly ONCE; (flag TRUE) vc is replaced by the per-spin
+    vc_a, vc_b.
 
     LIMITATION (descriptor features) — P2-02: the exchange spin-scaling is EXACT
     only for a feature-free (rho, sigma) F_x. With descriptor features active the
@@ -402,8 +473,6 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
     See ``split_exc_energy_uks`` for the full discussion; the V_xc here is the
     exact functional derivative of that (approximate-for-open-shell) energy.
 
-    FUTURE WORK: a zeta-dependent PW92 correlation baseline (proper spin
-    interpolation) does not exist in this codebase; do NOT add it here.
     """
     dm_pbe = mol_data["dm_pbe"]  # (2, nao, nao)
     ao_grid = mol_data["ao_grid"]
@@ -433,7 +502,15 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
         model, 2.0 * rho_b, 4.0 * sigma_bb, features, ao_grid, grid_weights,
         nabla_rho=2.0 * nabla_rho_b, ao_grad=ao_grid_deriv, part="x",
     )
-    # Correlation: evaluated ONCE on the total density; shared by both spins.
+    # Correlation. P2-03: a spin-polarization-aware cnet makes V_c PER-SPIN
+    # (zeta = (rho_a-rho_b)/rho_tot couples the spins); otherwise V_c is the
+    # zeta=0 total-density potential, shared by both spins (the fast path).
+    if getattr(model.cnet, "use_spin_polarization", False):
+        vc_a, vc_b = compute_vc_polarized_per_spin(
+            model, rho_a, rho_b, sigma_tot, features, ao_grid, grid_weights,
+            nabla_rho_tot, ao_grid_deriv,
+        )
+        return vx_a + vc_a, vx_b + vc_b
     vc = compute_vxc_nn(
         model, rho_tot, sigma_tot, features, ao_grid, grid_weights,
         nabla_rho=nabla_rho_tot, ao_grad=ao_grid_deriv, part="c",
