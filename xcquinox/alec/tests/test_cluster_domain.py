@@ -45,7 +45,7 @@ def test_kcal_per_ha_value():
         ("F", -99.7339),
         ("Li", -7.4781),
         ("Na", -162.2546),
-        ("S", -398.0),
+        ("S", -398.1095),
     ],
 )
 def test_atomic_energies_values(sym, expected):
@@ -67,11 +67,12 @@ def test_lithium_is_corrected_value():
     assert ATOMIC_ENERGIES_CHAKRAVORTY["Li"] != -7.4327
 
 
-def test_sulfur_is_placeholder_value():
-    """S is an (E) placeholder fallback (-398.0), distinct from the genuine
-    Chakravorty Table-I S total (-398.1095)."""
-    assert ATOMIC_ENERGIES_CHAKRAVORTY["S"] == -398.0
-    assert ATOMIC_ENERGIES_CHAKRAVORTY["S"] != -398.1095
+def test_sulfur_is_chakravorty_value():
+    """S MUST be the genuine Chakravorty 1993 (PRA 47, 3649) Table-I exact
+    non-relativistic total -398.1095, NOT the prior -398.0 placeholder
+    (the value was corrected in the Round-3 GMTKN55 realignment)."""
+    assert ATOMIC_ENERGIES_CHAKRAVORTY["S"] == -398.1095
+    assert ATOMIC_ENERGIES_CHAKRAVORTY["S"] != -398.0
 
 
 def test_dick_atom_regularizer_syms():
