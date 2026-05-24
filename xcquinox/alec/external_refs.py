@@ -950,6 +950,7 @@ def run_oep_cascade(
 
     last_err = None
     oep_result = None
+    winning_grid_level = None
     for tier_idx, tier in enumerate(tiers):
         aux_basis = tier["aux_basis"]
         regularization = tier["regularization"]
@@ -994,6 +995,7 @@ def run_oep_cascade(
                 progress_callback=_cb,
             )
             if oep_result.converged:
+                winning_grid_level = tier_grid_level
                 break
             last_err = (
                 f"OEP not converged at tier {tier_idx} ({aux_basis}); "
@@ -1017,11 +1019,25 @@ def run_oep_cascade(
     # (T5 code-quality nit).
     # CFG-03: record the generating grid_level so data.py can assert the
     # consumer's resolved grid_level matches what produced this reference.
+    # PHYS-4/CW6 round-4: record the WINNING tier's grid_level (an override tier
+    # may set its own), not the function arg. ccsd_payload['rho_ref_grid'] was
+    # computed at the function-arg grid_level, so if the winning tier ran the
+    # OEP on a DIFFERENT grid the stored rho_ref_grid and vxc_ref would live on
+    # mismatched grids — raise loudly rather than mislabel (no current override
+    # does this; all use grid_level=1).
+    if winning_grid_level != grid_level:
+        raise RuntimeError(
+            f"OEP cascade for {spec.name!r} converged on a tier with "
+            f"grid_level={winning_grid_level}, but the CCSD rho_ref_grid was "
+            f"computed at grid_level={grid_level}; the reference would mix "
+            f"grids. Recompute the CCSD density at the tier grid_level, or keep "
+            f"override tiers at the cascade grid_level."
+        )
     np.savez_compressed(
         npz_path,
         rho_ref_grid=ccsd_payload["rho_ref_grid"],
         ref_density_method=np.array("ccsd"),
-        grid_level_used=np.array(int(grid_level)),
+        grid_level_used=np.array(int(winning_grid_level)),
     )
     # P4-03: save_vxc_ref records the achieved OEP density error as the
     # ``oep_density_error`` key (a real noise floor on this species' vxc_ref:
