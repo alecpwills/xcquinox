@@ -699,8 +699,9 @@ def pw92c(rho):
     :return: Correlation energy density and potential arrays.
     :rtype: tuple of (jax.numpy array, jax.numpy array)
     '''
-    # Constants
-    nspin = 1
+    # Constants. This routine is UNPOLARIZED (zeta=0); the dead spin-polarized
+    # branches (gated on a literal nspin=1) were removed 2026-05-24 — the
+    # spin-polarized correlation baseline is xcquinox.utils.pw92c_polarized_scalar.
     DENMIN = 1.e-12
     ONE = 1 + 1.e-12
     PI = jnp.pi
@@ -714,19 +715,11 @@ def pw92c(rho):
                    [1.6382, 3.3662, 0.88026],
                    [0.49294, 0.62517, 0.49671]])
     BETA = jnp.transpose(X)
-    # Calculate rs and zeta
-    if nspin == 1:
-        DTOT = jnp.maximum(DENMIN, rho[0])
-        ZETA = 0
-        RS = (3 / (4 * PI * DTOT)) ** (1 / 3)
-        DRSDD = -RS / DTOT / 3
-        DZDD = jnp.array([0.0])
-    else:
-        DTOT = jnp.maximum(DENMIN, rho[0] + rho[1])
-        ZETA = (rho[0] - rho[1]) / DTOT
-        RS = (3 / (4 * PI * DTOT)) ** (1 / 3)
-        DRSDD = -RS / DTOT / 3
-        DZDD = jnp.array([(ONE - ZETA) / DTOT, - (ONE + ZETA) / DTOT])
+    # Calculate rs and zeta (unpolarized: zeta = 0)
+    DTOT = jnp.maximum(DENMIN, rho[0])
+    ZETA = 0
+    RS = (3 / (4 * PI * DTOT)) ** (1 / 3)
+    DRSDD = -RS / DTOT / 3
     # Compute G and its derivatives
     G = jnp.zeros(3)
     DGDRS = jnp.zeros(3)
@@ -756,17 +749,9 @@ def pw92c(rho):
         (G[1] - G[0]) * F * ZETA ** 4
     DECDRS = DGDRS[0] - DGDRS[2] * F / FPP0 * (ONE - ZETA ** 4) + \
         (DGDRS[1] - DGDRS[0]) * F * ZETA ** 4
-    DECDZ = (-G[2]) / FPP0 * (DFDZ * (ONE - ZETA ** 4) - F * 4 * ZETA ** 3) + \
-            (G[1] - G[0]) * (DFDZ * ZETA ** 4 + F * 4 * ZETA ** 3)
-    # Calculate correlation potential
-    if nspin == 1:
-        DECDD = DECDRS * DRSDD
-        VC = jnp.array([EC + DTOT * DECDD])
-    else:
-        DECDD = jnp.array([DECDRS * DRSDD + DECDZ * DZDD[0],
-                           DECDRS * DRSDD + DECDZ * DZDD[1]])
-        VC = jnp.array([EC + DTOT * DECDD[0],
-                        EC + DTOT * DECDD[1]])
+    # Calculate correlation potential (unpolarized)
+    DECDD = DECDRS * DRSDD
+    VC = jnp.array([EC + DTOT * DECDD])
     return EC, VC
 
 
