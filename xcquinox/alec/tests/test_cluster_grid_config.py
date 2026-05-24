@@ -263,6 +263,21 @@ def test_validate_ok():
     validate_grid_semantics(_cfg(), _StubDomain(pool_size=40))
 
 
+def test_validate_rejects_positive_pbe_anchor_weight():
+    """CW2/CODE-4 round-4: the harness builds no pbe_anchor_sample, so a
+    positive hyperparams.pbe_anchor_weight is a no-op (A/B/C/D) or a hard error
+    (L5) — reject it at submit time for all losses."""
+    import dataclasses
+    cfg = _cfg()
+    cfg = dataclasses.replace(
+        cfg, hyperparams=dataclasses.replace(
+            cfg.hyperparams, pbe_anchor_weight=0.5))
+    with pytest.raises(ValueError, match="pbe_anchor_weight"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+    # weight 0.0 (the default) validates fine.
+    validate_grid_semantics(_cfg(), _StubDomain(pool_size=40))
+
+
 def test_validate_dedup_warns():
     with pytest.warns(UserWarning, match="duplicate"):
         validate_grid_semantics(

@@ -592,6 +592,19 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         raise ValueError(
             f"hyperparams.grad_clip must be > 0, got {hp.grad_clip}"
         )
+    # The harness NEVER builds a PBE-anchor sample (spec_builder hardcodes
+    # pbe_anchor_sample=None), so a positive pbe_anchor_weight is a silent
+    # no-op for the A/B/C/D losses and a hard error for L5_gradnorm_vxc_step7
+    # (its round-3 fail-fast). Reject it at submit time for ALL losses rather
+    # than let it mislead (CW2/CODE-2 round-4). Anchoring is a pretrain-stage
+    # concern; step-7 freezes pretraining from step-6.
+    if hp.pbe_anchor_weight and hp.pbe_anchor_weight > 0.0:
+        raise ValueError(
+            f"hyperparams.pbe_anchor_weight={hp.pbe_anchor_weight} > 0 but the "
+            f"harness builds no pbe_anchor_sample, so the PBE anchor cannot be "
+            f"applied (it would be silently dropped, or raise for "
+            f"L5_gradnorm_vxc_step7). Set pbe_anchor_weight=0."
+        )
 
     # --- pretrain stage bounds ---------------------------------------------
     pt = cfg.pretrain
