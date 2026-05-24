@@ -391,9 +391,18 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
 
     The SIGMA term is SHARED: sigma_tot = |nabla rho_a + nabla rho_b|^2 gives
     d sigma_tot/d(nabla rho_a) = d sigma_tot/d(nabla rho_b) = 2 nabla rho_tot,
-    and zeta has no gradient dependence. Only the sigma tangent hits the
-    sqrt(sigma)-derivative singularity, so it alone uses the denormal sigma
-    guard (the rho_a/rho_b tangents are finite at the real sigma).
+    and zeta has no gradient dependence.
+
+    ALL THREE tangents (rho_a, rho_b, sigma) are evaluated at the denormal-
+    guarded ``safe_sigma`` rather than the raw ``sigma_tot``: the cnet's shared
+    ``s = sqrt(sigma)/(...)`` node has a 1/(2 sqrt(sigma)) derivative that is
+    +inf at sigma == 0 EXACTLY, and JAX's JVP forms ``(d/dsigma)*sigma_tangent``
+    for that node on EVERY tangent — so even the rho-only tangents (whose
+    sigma-tangent is 0) hit ``0 * inf = NaN`` at a genuine sigma == 0 grid
+    point. Standard atom-centered Lebedev grids have no sigma == 0 points, but
+    high-symmetry / custom grids do; using ``safe_sigma`` matches the sibling
+    ``compute_vxc_nn`` (which also evaluates v_rho at safe_sigma) and is
+    byte-identical at every physical sigma > 1e-30 (PHYS-2 review, 2026-05-24).
     """
     # eps_c density as a function of the SPIN densities (rho_tot + zeta formed
     # internally with the SAME clip/floor the UKS energy uses).
@@ -406,8 +415,10 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
     sigma_ok = sigma_tot > _V_SIGMA_THRESHOLD
     safe_sigma = jnp.where(sigma_ok, sigma_tot, jnp.ones_like(sigma_tot))
 
-    # Per-spin rho coefficients = d eps_c / d rho_{a,b} (real sigma; the rho
-    # tangents do not hit the sqrt(sigma) singularity).
+    # Per-spin rho coefficients = d eps_c / d rho_{a,b}, evaluated at safe_sigma
+    # (NOT raw sigma_tot): the rho-only tangents still propagate through the
+    # cnet's sqrt(sigma) node, whose +inf derivative at sigma==0 gives
+    # 0*inf=NaN. safe_sigma is byte-identical at every sigma>1e-30.
     coeff_a, coeff_b = jax.vmap(
         lambda ra, rb, s, f: (
             jax.jvp(ec_spin, (ra, rb, s, f),
@@ -417,7 +428,7 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
                     (jnp.zeros_like(ra), jnp.ones_like(rb),
                      jnp.zeros_like(s), jnp.zeros_like(f)))[1],
         )
-    )(rho_a, rho_b, sigma_tot, features)
+    )(rho_a, rho_b, safe_sigma, features)
 
     # Shared sigma coefficient = d eps_c / d sigma_tot (safe sigma guard).
     v_sigma = jax.vmap(

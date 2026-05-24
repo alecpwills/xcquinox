@@ -464,6 +464,39 @@ def test_polarized_vc_closed_shell_reduces_to_shared():
         f"at zeta=0 the per-spin V_c must coincide: max|vc_a-vc_b|={max_diff:.2e}")
 
 
+def test_polarized_vc_finite_at_zero_sigma():
+    """PHYS-2 (round-4) guard: a grid point with sigma_tot == 0 EXACTLY (uniform
+    density / high-symmetry grid) must NOT produce NaN. The per-spin rho-tangent
+    JVPs propagate through the cnet's sqrt(sigma) node whose +inf derivative at
+    sigma=0 gives 0*inf=NaN unless evaluated at the denormal-guarded safe_sigma.
+    """
+    from xcquinox.alec.oneshot import compute_vc_polarized_per_spin
+
+    model = _build_polarized_model()
+    md = _li_uks_md()
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_grad = jnp.asarray(md["ao_grid_deriv"])
+    ao_xyz = ao_grad[1:4]
+    grid_weights = jnp.asarray(md["grid_weights"])
+    features = assemble_descriptor_features(model.descriptors, md)
+
+    dm = jnp.asarray(md["dm_pbe"])
+    D_a, D_b = dm[0], dm[1]
+    rho_a, nra, _ = _grid_quantities(D_a, ao_grid, ao_xyz)
+    rho_b, nrb, _ = _grid_quantities(D_b, ao_grid, ao_xyz)
+    nr_tot = nra + nrb
+    sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
+    # Inject an EXACT sigma=0 point (zero the gradient at grid point 0).
+    nr_tot = nr_tot.at[0].set(0.0)
+    sig_tot = sig_tot.at[0].set(0.0)
+
+    vc_a, vc_b = compute_vc_polarized_per_spin(
+        model, rho_a, rho_b, sig_tot, features, ao_grid, grid_weights,
+        nr_tot, ao_grad)
+    assert jnp.all(jnp.isfinite(vc_a)), "vc_a has NaN/inf at a sigma=0 grid point"
+    assert jnp.all(jnp.isfinite(vc_b)), "vc_b has NaN/inf at a sigma=0 grid point"
+
+
 # ---------------------------------------------------------------------------
 # pyscfad callback: closed-shell reduction of the libxc eval_xc convention.
 # The UKS callback fed rho_a = rho_b must return the SAME per-particle exc as
