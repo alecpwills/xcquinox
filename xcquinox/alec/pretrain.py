@@ -331,14 +331,18 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
         if grid_weights is None:
             integration_weights_complete = False
             import warnings as _warn
-            _warn.warn(
+            _msg = (
                 "pretrain_data.npz lacks 'weights_all'; integration-mode "
                 "loss is missing Becke quadrature weights and approximates "
                 "a |rho*eps_LDA|-weighted mean rather than the integrated "
                 "XC-energy residual. Regenerate pretrain_data.npz from a "
-                "post-2026-04-27 notebook generator to get correct weights.",
-                RuntimeWarning, stacklevel=2,
+                "post-2026-04-27 notebook generator to get correct weights."
             )
+            _warn.warn(_msg, RuntimeWarning, stacklevel=2)
+            # RuntimeWarnings are easy to miss in a SLURM .out log; also emit a
+            # flushed banner so the degradation is unmissable there (CW1-M1).
+            print(f"\n{'!' * 72}\n[PRETRAIN WARNING] {_msg}\n{'!' * 72}\n",
+                  flush=True)
         else:
             integration_weights_complete = True
         w_x, w_c = _compute_integration_weights(rho_all, grid_weights)

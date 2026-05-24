@@ -138,6 +138,15 @@ def metric_l2(h_ref: dict, h_cand: dict, weights=None) -> float:
 
     This is the verbatim form from data_binning2.ipynb cell 17. ``weights``
     (C4-03) scales each descriptor's squared contribution; None = equal.
+
+    NOTE (CW5-M1): unlike ``metric_jsd``, this L2 acts on the histograms AS
+    BUILT (``build_reference_histograms`` uses ``density=True``), NOT on PMFs.
+    Because the three descriptors (rho^(1/3), s, alpha) span different ranges,
+    their density magnitudes scale as 1/bin_width, so a narrower-range
+    descriptor is implicitly up-weighted even at equal C4-03 ``weights``. This
+    is intentional-as-ported (matches the legacy cell-17 objective); L2 and JSD
+    therefore answer different questions. If you need bin-width-independent L2,
+    normalize each marginal with ``_to_pmf`` first.
     """
     w = _resolve_descriptor_weights(weights)
     diffs_sq = np.zeros(NBINS)

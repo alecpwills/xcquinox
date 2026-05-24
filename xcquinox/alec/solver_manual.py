@@ -44,6 +44,14 @@ def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndar
     S_reg = S + DEGENERACY_REG * jnp.eye(nao)
     L = jnp.linalg.cholesky(S_reg)
     L_inv = jnp.linalg.inv(L)
+    # The tiny diagonal perturbation lifts forward eigenvalue degeneracy so the
+    # reverse-mode eigh gradient (which carries 1/(lambda_i - lambda_j)) stays
+    # finite at degenerate p-orbital shells — the NaN-gradient bug this guards.
+    # It is intentionally in the FORWARD eigh (that is what lifts the
+    # degeneracy); it therefore biases the converged DM/energy, but only by
+    # O(1e-8), measured ~2e-10 in E worst-case — far below the default
+    # conv_tol=1e-6. A "gradient-only" form would not lift the forward
+    # degeneracy and so would not fix the gradient (CW6 review, 2026-05-24).
     F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
     _, C_orth = jnp.linalg.eigh(F_orth)
     C = L_inv.T @ C_orth
@@ -71,6 +79,14 @@ def _diagonalize_roothaan_unrestricted(
     S_reg = S + DEGENERACY_REG * jnp.eye(nao)
     L = jnp.linalg.cholesky(S_reg)
     L_inv = jnp.linalg.inv(L)
+    # The tiny diagonal perturbation lifts forward eigenvalue degeneracy so the
+    # reverse-mode eigh gradient (which carries 1/(lambda_i - lambda_j)) stays
+    # finite at degenerate p-orbital shells — the NaN-gradient bug this guards.
+    # It is intentionally in the FORWARD eigh (that is what lifts the
+    # degeneracy); it therefore biases the converged DM/energy, but only by
+    # O(1e-8), measured ~2e-10 in E worst-case — far below the default
+    # conv_tol=1e-6. A "gradient-only" form would not lift the forward
+    # degeneracy and so would not fix the gradient (CW6 review, 2026-05-24).
     F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
     _, C_orth = jnp.linalg.eigh(F_orth)
     C = L_inv.T @ C_orth
