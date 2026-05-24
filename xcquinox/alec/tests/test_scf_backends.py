@@ -180,6 +180,44 @@ def test_backends_agree_full_on_h2():
     assert abs(e_m - e_p) < 1e-3, f"manual={e_m} pyscfad={e_p}"
 
 
+def test_backends_agree_fixed_j_uks_on_o_atom():
+    """Open-shell UKS manual-vs-pyscfad energy agreement (SP4 review).
+
+    A multi-cycle FIXED_J UKS SCF builds the per-spin Fock from V_xc on BOTH
+    backends, but via different assemblers: the manual solver uses the explicit
+    spin-resolved V_xc (oneshot._uks_spin_resolved_vxc), while pyscfad routes
+    the callback's libxc-convention (vrho, vsigma=(uu,ud,dd)) through pyscf's
+    nr_uks numint. If the (uu,ud,dd) vsigma convention (esp. the ud cross term)
+    were wrong, the two SCFs would converge to different energies. Agreement
+    here is the regression guard the matrix-level tests in
+    test_solv01_split_xc.py explicitly punt on.
+    """
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec
+
+    spec = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec, required_keys=("eri",))
+    arch = alec.get_architecture("deep")
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+    cfg_m = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
+        max_cycles=20, conv_tol=1e-8,
+    )
+    cfg_p = SolverConfig(
+        backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+        max_cycles=20, conv_tol=1e-8,
+    )
+    e_m = float(run_scf(cfg_m, model, md).total_energy)
+    e_p = float(run_scf(cfg_p, model, md).total_energy)
+    assert abs(e_m - e_p) < 1e-4, (
+        f"open-shell UKS backends disagree (vsigma uu/ud/dd convention?): "
+        f"manual={e_m} pyscfad={e_p}")
+
+
 def test_pyscfad_uks_oneshot_o_atom():
     """pyscfad backend ONESHOT UKS on O atom — returns (2, nao, nao) DM."""
     import numpy as np
