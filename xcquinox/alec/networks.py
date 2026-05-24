@@ -154,6 +154,7 @@ class AlecGGA_CNet(eqx.Module):
     lower_rho_cutoff: float = eqx.field(static=True)
     use_self_attention: bool = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
+    use_spin_polarization: bool = eqx.field(static=True)
     net: eqx.nn.MLP
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
@@ -162,7 +163,8 @@ class AlecGGA_CNet(eqx.Module):
                  use_self_attention: bool = False, seed: int = 42,
                  lob_lim: float | None = 2.0,
                  lower_rho_cutoff: float = 1e-12,
-                 num_heads: int = 1):
+                 num_heads: int = 1,
+                 use_spin_polarization: bool = False):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_CNet: use_self_attention=True requires "
@@ -173,8 +175,13 @@ class AlecGGA_CNet(eqx.Module):
         self.lower_rho_cutoff = lower_rho_cutoff
         self.use_self_attention = use_self_attention
         self.num_heads = num_heads
+        # P2-03: when True, the cnet takes a spin-polarization input feature
+        # x1 = 1/2[(1+zeta)^{4/3}+(1-zeta)^{4/3}] (Dick & Fernández-Serra 2021,
+        # input feature x1 / eq. (13)) inserted after [rs, s]. The model packs
+        # zeta at inputs[2] and shifts descriptor extras to inputs[3:].
+        self.use_spin_polarization = use_spin_polarization
 
-        in_size = 2 + n_extra_features
+        in_size = 2 + (1 if use_spin_polarization else 0) + n_extra_features
 
         key = jax.random.PRNGKey(seed)
         keys = jax.random.split(key, 2)
@@ -199,7 +206,23 @@ class AlecGGA_CNet(eqx.Module):
         rs = jnp.atleast_1d(rs).flatten()
         s = jnp.atleast_1d(s).flatten()
 
-        if self.n_extra_features > 0:
+        if self.use_spin_polarization:
+            # P2-03: inputs[2] is zeta = (rho_a - rho_b)/rho_tot; descriptor
+            # extras (if any) follow at inputs[3:]. Feed the bounded Dick
+            # feature x1 = 1/2[(1+zeta)^{4/3}+(1-zeta)^{4/3}] (in [1, 2^{1/3}]
+            # for zeta in [-1,1]; x1=1 at zeta=0, recovering the unpolarized
+            # input so an RKS (zeta=0) call sees [rs, s, 1, extras]).
+            zeta = jnp.clip(inputs[2], -1.0, 1.0)
+            x1 = jnp.atleast_1d(
+                0.5 * ((1.0 + zeta) ** (4 / 3) + (1.0 - zeta) ** (4 / 3))
+            ).flatten()
+            if self.n_extra_features > 0:
+                extras = jnp.atleast_1d(
+                    inputs[3:3 + self.n_extra_features]).flatten()
+                netinp = jnp.concatenate([rs, s, x1, extras])
+            else:
+                netinp = jnp.concatenate([rs, s, x1])
+        elif self.n_extra_features > 0:
             extras = jnp.atleast_1d(inputs[2:2 + self.n_extra_features]).flatten()
             netinp = jnp.concatenate([rs, s, extras])
         else:
@@ -249,5 +272,7 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         lob_lim=arch.resolved_cnet_lob_lim,        # B-LOW audit fix
         lower_rho_cutoff=lower_rho_cutoff,
         num_heads=arch.num_heads,
+        # P2-03: zeta-aware correlation network when the arch opts in.
+        use_spin_polarization=arch.use_polarized_correlation,
     )
     return xnet, cnet

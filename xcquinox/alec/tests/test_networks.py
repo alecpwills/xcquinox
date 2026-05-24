@@ -351,3 +351,40 @@ def test_alec_xnet_attention_grad_end_to_end():
     g_q = jnp.asarray(grad.attention.query_proj.weight)
     assert jnp.all(jnp.isfinite(g_q))
     assert jnp.linalg.norm(g_q) > 0.0
+
+
+# P2-03: gated spin-polarization (zeta) input on the correlation network
+def test_cnet_spin_polarization_input_width_and_sensitivity():
+    import jax.numpy as jnp
+    from xcquinox.alec.networks import AlecGGA_CNet
+    # flag off (default): in_size = 2 + n_extra, byte-identical behavior
+    c_off = AlecGGA_CNet(n_extra_features=3, depth=2, nodes=8, seed=0)
+    assert c_off.use_spin_polarization is False
+    assert c_off.net.in_size == 2 + 3
+    # flag on: in_size = 3 + n_extra (extra slot for x1)
+    c_on = AlecGGA_CNet(n_extra_features=3, depth=2, nodes=8, seed=0,
+                        use_spin_polarization=True)
+    assert c_on.use_spin_polarization is True
+    assert c_on.net.in_size == 3 + 3
+    # zeta (inputs[2]) must change the polarized output; extras shift to [3:]
+    base = jnp.array([0.7, 0.2, 0.0, 0.1, 0.2, 0.3])   # [rho, sigma, zeta, *3 extras]
+    f0 = float(c_on(base))
+    fz = float(c_on(base.at[2].set(0.8)))
+    assert abs(f0 - fz) > 1e-7, (f0, fz)
+
+
+def test_arch_polarized_correlation_flag_and_width():
+    from xcquinox.alec.config import get_architecture, ArchitectureConfig
+    import xcquinox.alec as alec
+    a0 = get_architecture("deep_combined_attn")
+    # Polarized arch is built via from_spec (kept OUT of the canonical registry).
+    a1 = ArchitectureConfig.from_spec(
+        "deep_combined_attn_polc", 4, 32, attention=True, num_heads=4,
+        descriptors=["dm_statistics", "cusp"], use_polarized_correlation=True)
+    assert a0.use_polarized_correlation is False
+    assert a1.use_polarized_correlation is True
+    assert a1.n_input_features == a0.n_input_features + 1
+    _, c0 = alec.create_network_pair(a0, seed=0)
+    _, c1 = alec.create_network_pair(a1, seed=0)
+    assert c0.use_spin_polarization is False and c1.use_spin_polarization is True
+    assert c1.net.in_size == c0.net.in_size + 1

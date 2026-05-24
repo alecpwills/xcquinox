@@ -115,6 +115,12 @@ class ArchitectureConfig:
     x_constraints: tuple[FeatureSpec, ...] = ()
     c_constraints: tuple[FeatureSpec, ...] = ()
     double_lob_clamp_allowed: bool = False
+    # P2-03: when True, the correlation network takes a spin-polarization input
+    # feature (x1) and the model uses the zeta-dependent PW92 baseline (Dick &
+    # Fernández-Serra 2021). Default False = unpolarized correlation (existing
+    # behavior; checkpoints compatible). True is a NEW checkpoint family (cnet
+    # input width +1) requiring retrain + re-pretrain.
+    use_polarized_correlation: bool = False
 
     def __post_init__(self):
         if not isinstance(self.name, str):
@@ -146,6 +152,11 @@ class ArchitectureConfig:
             raise TypeError(
                 f"ArchitectureConfig.attention must be a plain Python bool, "
                 f"got {type(self.attention).__name__}"
+            )
+        if not isinstance(self.use_polarized_correlation, bool):
+            raise TypeError(
+                f"ArchitectureConfig.use_polarized_correlation must be a plain "
+                f"Python bool, got {type(self.use_polarized_correlation).__name__}"
             )
         if not isinstance(self.num_heads, int) or isinstance(self.num_heads, bool):
             raise TypeError(
@@ -206,7 +217,8 @@ class ArchitectureConfig:
 
     @property
     def n_input_features(self) -> int:
-        return 2 + self.n_extra_features
+        # P2-03: +1 for the spin-polarization (x1) input on the correlation net.
+        return 2 + (1 if self.use_polarized_correlation else 0) + self.n_extra_features
 
     def materialize_descriptors(self):
         from xcquinox.alec.descriptors import make_descriptor
@@ -225,7 +237,8 @@ class ArchitectureConfig:
                   num_heads=None,
                   descriptors=(), x_constraints=(), c_constraints=(),
                   allow_scaling_symmetric_on_c: bool = False,
-                  allow_double_lob_clamp: bool = False):
+                  allow_double_lob_clamp: bool = False,
+                  use_polarized_correlation: bool = False):
         """Factory that accepts str | (str, dict) | FeatureSpec for each entry.
 
         ``num_heads`` is required when ``attention=True`` (no silent default —
@@ -284,6 +297,7 @@ class ArchitectureConfig:
             x_constraints=x_spec_tuple,
             c_constraints=c_spec_tuple,
             double_lob_clamp_allowed=allow_double_lob_clamp,
+            use_polarized_correlation=use_polarized_correlation,
         )
 
 
@@ -305,6 +319,12 @@ ARCHITECTURES = {
     "deep_combined":       ArchitectureConfig.from_spec("deep_combined",      4, 32, descriptors=["dm_statistics", "cusp"]),
     "deep_combined_attn":  ArchitectureConfig.from_spec("deep_combined_attn", 4, 32, attention=True, num_heads=4, descriptors=["dm_statistics", "cusp"]),
 }
+# P2-03 NOTE: spin-polarization-aware correlation is NOT a separate entry in
+# this registry (which mirrors the notebook's canonical 12 variants). Build one
+# via ``ArchitectureConfig.from_spec(..., use_polarized_correlation=True)`` (or
+# set the flag on any arch). Wiring it into the step7 grid sweep + the notebook
+# ARCHITECTURES cell is handled in the step7-config step so code and notebook
+# stay in sync (a NEW checkpoint family: cnet input width +1, retrain required).
 
 
 def get_architecture(name: str) -> ArchitectureConfig:
