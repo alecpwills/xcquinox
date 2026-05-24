@@ -56,6 +56,24 @@ def test_step7_loss_target_kinds():
     assert sorted(cls.target_kinds) == sorted(["AE", "BH76", "IP13", "vxc", "rho"])
 
 
+def test_step7_loss_rejects_dead_pbe_anchor_knob():
+    """CW2 fix: L5 has no PBE-anchor channel, so a positive pbe_anchor_weight
+    (or a non-None pbe_anchor_sample) must fail loudly instead of being
+    silently swallowed by **_unused_kwargs."""
+    import pytest
+    from xcquinox.alec import losses as alec_losses
+    with pytest.raises(ValueError, match="no PBE-anchor channel"):
+        alec_losses.make_loss(
+            "L5_gradnorm_vxc_step7", _smoke_test=True, pbe_anchor_weight=0.1)
+    with pytest.raises(ValueError, match="no PBE-anchor channel"):
+        alec_losses.make_loss(
+            "L5_gradnorm_vxc_step7", _smoke_test=True,
+            pbe_anchor_sample=object())
+    # weight=0 (the default) must NOT raise.
+    alec_losses.make_loss(
+        "L5_gradnorm_vxc_step7", _smoke_test=True, pbe_anchor_weight=0.0)
+
+
 def test_step7_loss_smoke_constructor_with_dict_inputs():
     """Construct via dict inputs (no training context); verify field accessors."""
     from xcquinox.alec import losses as alec_losses

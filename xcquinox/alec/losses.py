@@ -944,6 +944,18 @@ class L5GradnormVxcStep7(AlecLoss):
         _smoke_test: bool = False,
         **_unused_kwargs,
     ):
+        # Fail-fast on the dead PBE-anchor knob: L5 has NO anchor channel
+        # (target_kinds = AE/BH76/IP13/vxc/rho) and step-7 freezes pretraining
+        # from step-6, so a positive pbe_anchor_weight would be silently
+        # swallowed by **_unused_kwargs and do nothing (CW2 review finding).
+        _anchor_w = _unused_kwargs.get("pbe_anchor_weight", 0.0) or 0.0
+        if float(_anchor_w) > 0.0 or _unused_kwargs.get("pbe_anchor_sample") is not None:
+            raise ValueError(
+                "L5_gradnorm_vxc_step7 has no PBE-anchor channel; "
+                "pbe_anchor_weight>0 / pbe_anchor_sample would be silently "
+                "ignored. Step-7 freezes pretraining from step-6, so the PBE "
+                "anchor is not used here — set pbe_anchor_weight=0."
+            )
         # The smoke path is used by registry/contract tests where there is
         # no real training context (no molecules, no batch). It must still
         # initialize all required AlecLoss fields plus the new BH76/IP13
