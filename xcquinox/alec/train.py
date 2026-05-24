@@ -23,6 +23,7 @@ import os
 import pickle  # noqa: S403 — saving trusted aux_log data only
 import struct
 import time
+import warnings
 
 import equinox as eqx
 import jax
@@ -405,6 +406,33 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
     return _save_artifacts(spec, model, losses, aux_log, duration)
 
 
+# Channels whose step-0 loss L_i(0) is at or below this floor have no
+# meaningful inverse-training-rate r_i = L_i(t)/L_i(0) (GradNorm, Chen et al.
+# 2018 arXiv:1711.02257, assumes L_i(0) > 0). Such channels arise in the
+# small-subset sweep (e.g. a BH76-only/IP13-only subset has a zero AE channel,
+# an all-None vxc/rho channel is constant 0, or a well-pretrained delta-AE
+# channel starts at exactly 0). Without guarding, a 0 -> nonzero excursion makes
+# r_i ~ comp/floor ~ 1e10 and the softmax target corrupts ALL task weights.
+_GRADNORM_L0_FLOOR = 1e-8
+
+
+def _gradnorm_relative_rates(comp_values, L0_values, floor=_GRADNORM_L0_FLOOR):
+    """GradNorm relative inverse-training-rates r_i / mean(r), robust to L0~=0.
+
+    For valid channels (L0 > floor) returns r_i / mean_valid(r) exactly as
+    Chen et al. 2018. Channels with L0 <= floor are NEUTRALIZED: their relative
+    rate is set to 1 (so the GradNorm target reduces to the mean gradient norm,
+    i.e. no rebalancing pressure) and they are excluded from the mean, so they
+    can neither spike nor distort the valid channels' rates.
+    """
+    valid = L0_values > floor
+    safe_L0 = jnp.where(valid, L0_values, 1.0)
+    r = jnp.where(valid, comp_values / safe_L0, 1.0)
+    n_valid = jnp.maximum(jnp.sum(valid), 1.0)
+    r_mean = jnp.sum(jnp.where(valid, r, 0.0)) / n_valid
+    return jnp.where(valid, r / (r_mean + 1e-12), 1.0)
+
+
 def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
     """GradNorm (Chen et al. 2018): learned per-task weights via gradient norm equalization."""
     t0 = time.time()
@@ -431,6 +459,19 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
 
     L0 = loss.compute_components(model, batch, relative=relative)
     L0_values = jnp.stack([L0[k] for k in component_keys])
+    # C3-07: warn (once, at setup) about channels with ~0 step-0 loss; these are
+    # neutralized in the GradNorm rebalancing (see _gradnorm_relative_rates).
+    # Predicate identical to _gradnorm_relative_rates' `L0 > floor` (loss
+    # components are non-negative by construction, so no abs() needed).
+    _zero_L0 = [k for k in component_keys if float(L0[k]) <= _GRADNORM_L0_FLOOR]
+    if _zero_L0:
+        warnings.warn(
+            f"GradNorm: task channel(s) {_zero_L0} have ~0 step-0 loss "
+            f"(<= {_GRADNORM_L0_FLOOR:g}); their inverse-training-rate is "
+            f"neutralized (relative rate 1) so they cannot distort the learned "
+            f"task weights.",
+            RuntimeWarning, stacklevel=2,
+        )
 
     # GradNorm step is deliberately split into 1 + n_tasks + 1 small JITs
     # rather than one monolithic graph.  L5_gradnorm_vxc_step7 has 5 task
@@ -485,11 +526,17 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
         """Optimizer update (weights + model).  Pure jnp/optax math —
         compiles in <1 s and uses negligible memory.
         """
-        r = comp_values / (L0_values + 1e-12)
-        r_mean = jnp.mean(r)
-        r_relative = r / (r_mean + 1e-12)
+        # C3-07: robust relative inverse-training-rates (neutralizes L0~=0
+        # channels instead of letting r ~ comp/1e-12 spike to ~1e10).
+        r_relative = _gradnorm_relative_rates(comp_values, L0_values)
         G_mean = jnp.mean(G)
         targets = G_mean * (r_relative ** balancing.alpha)
+        # C3-08: the GradNorm loss is minimized w.r.t. log_weights via the
+        # reparameterization w = softmax(lw)*T (which keeps sum(w)=T exactly),
+        # rather than Chen et al.'s direct grad w.r.t. w. Both share the same
+        # stationary point (targets are stop_gradient'd); this form is stable
+        # and avoids a separate renormalization step. The L2 surrogate of their
+        # L1 |G_i - target_i| residual likewise shares the fixed point.
         weight_grads = jax.grad(
             lambda lw: jnp.sum(
                 (G * (jax.nn.softmax(lw) * n_tasks / (weights + 1e-12))

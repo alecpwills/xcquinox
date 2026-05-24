@@ -807,3 +807,31 @@ def test_full_mode_requires_eri(mode, expect_eri):
     if isinstance(sc, SolverConfig) and sc.mode == SolverMode.FULL:
         required.add("eri")
     assert ("eri" in required) == expect_eri
+
+
+# C3-07: GradNorm robustness to zero step-0 loss channels
+def test_gradnorm_relative_rates_neutralizes_zero_L0():
+    """A task channel with ~0 step-0 loss must be neutralized (relative rate 1)
+    and excluded from the mean, so a later 0->nonzero excursion cannot inject a
+    ~1/floor spike into the GradNorm targets (Chen et al. 2018 assume L_i(0)>0)."""
+    import jax.numpy as jnp
+    from xcquinox.alec.train import _gradnorm_relative_rates
+    comp = jnp.array([0.01, 1.0, 2.0])   # channel 0 grew from 0
+    L0 = jnp.array([0.0, 1.0, 2.0])      # channel 0 had zero step-0 loss
+    r_rel = _gradnorm_relative_rates(comp, L0)
+    assert bool(jnp.all(jnp.isfinite(r_rel)))
+    assert float(r_rel[0]) == 1.0                  # neutralized
+    assert float(jnp.max(jnp.abs(r_rel))) < 1e3    # no 1e10 spike
+    assert bool(jnp.allclose(r_rel[1:], 1.0))      # valid channels: r=1 -> 1
+
+
+def test_gradnorm_relative_rates_matches_plain_when_all_valid():
+    """When all L0 are above the floor, rates equal plain GradNorm r_i/mean(r)."""
+    import jax.numpy as jnp
+    from xcquinox.alec.train import _gradnorm_relative_rates
+    comp = jnp.array([2.0, 1.0, 0.5])
+    L0 = jnp.array([1.0, 2.0, 1.0])
+    r = comp / L0
+    expected = r / jnp.mean(r)
+    got = _gradnorm_relative_rates(comp, L0)
+    assert bool(jnp.allclose(got, expected, atol=1e-6))
