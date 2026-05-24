@@ -132,4 +132,5 @@ reports_local/
 notebooks/checkpoints_step4/
 notebooks/checkpoints_step5/
 notebooks/checkpoints_step6/
+notebooks/checkpoints_step7/
 notebooks/.jax_compilation_cache/
