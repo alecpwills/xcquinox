@@ -657,6 +657,37 @@ def test_resubmit_archives_stale_artifacts(tmp_path, monkeypatch):
     assert os.path.exists(os.path.join(spec1, "failure.json.gen0"))
 
 
+def test_retry_resource_flags_oom_force_cpu():
+    """oom_retry_force_cpu adds the GPU-release + JAX-cpu flags so the retry
+    actually runs on the CPU instead of re-OOMing on the GPU (CW2-M1)."""
+    from types import SimpleNamespace
+
+    def _cl(**kw):
+        base = dict(oom_retry_partition=None, oom_retry_mem=None,
+                    oom_retry_force_cpu=False, timeout_retry_partition=None,
+                    timeout_retry_time=None)
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    # Default (force_cpu False): no CPU-route flags.
+    flags = cli._retry_resource_flags(
+        "oom", _cl(oom_retry_partition="hbm-96core", oom_retry_mem="512G"))
+    assert "--partition=hbm-96core" in flags and "--mem=512G" in flags
+    assert not any("gpu:0" in f for f in flags)
+    assert not any("JAX_PLATFORMS" in f for f in flags)
+
+    # force_cpu True: GPU released + JAX pinned to CPU.
+    flags_cpu = cli._retry_resource_flags(
+        "oom", _cl(oom_retry_mem="512G", oom_retry_force_cpu=True))
+    assert "--gres=gpu:0" in flags_cpu
+    assert "--export=ALL,JAX_PLATFORMS=cpu" in flags_cpu
+
+    # timeout class is unaffected by the cpu knob.
+    assert cli._retry_resource_flags(
+        "timeout", _cl(timeout_retry_time="24:00:00",
+                       oom_retry_force_cpu=True)) == ["--time=24:00:00"]
+
+
 def test_resubmit_oom_retry_knob_none_fallback(tmp_path, monkeypatch):
     """With no oom_retry_partition/mem set, the retried index uses defaults
     and the run still submits."""

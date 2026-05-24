@@ -400,6 +400,12 @@ def _retry_resource_flags(cls: str, cl) -> list[str]:
             flags.append(f"--partition={cl.oom_retry_partition}")
         if cl.oom_retry_mem:
             flags.append(f"--mem={cl.oom_retry_mem}")
+        if getattr(cl, "oom_retry_force_cpu", False):
+            # Force the retry onto the CPU: release the GPU and make JAX ignore
+            # any still-visible device. Without this the retry resubmits the
+            # gpu-rendered script and re-OOMs on the same GPU (CW2-M1).
+            flags.append("--gres=gpu:0")
+            flags.append("--export=ALL,JAX_PLATFORMS=cpu")
     elif cls == "timeout":
         if cl.timeout_retry_partition:
             flags.append(f"--partition={cl.timeout_retry_partition}")

@@ -225,6 +225,12 @@ class ClusterResources:
     # OOM or wall-clock timeout. None = no dedicated retry config.
     oom_retry_partition: str | None = None
     oom_retry_mem: str | None = None
+    # When True, an OOM retry is forced onto the CPU (``--gres=gpu:0`` releases
+    # the GPU and ``JAX_PLATFORMS=cpu`` makes JAX ignore any still-visible GPU).
+    # Without this, the retry resubmits the SAME gpu-rendered train script and
+    # re-runs on a GPU — so a GPU-memory-bound spec just re-OOMs (CW2-M1). CPU
+    # has far more RAM, so this is the real recovery path for GPU OOM.
+    oom_retry_force_cpu: bool = False
     timeout_retry_partition: str | None = None
     timeout_retry_time: str | None = None
     # Per-stage node-allocation mode: "exclusive" books a whole node per array
@@ -381,6 +387,7 @@ def _build_cluster(d: dict) -> ClusterResources:
         pretrain_throttle=d.get("pretrain_throttle"),
         oom_retry_partition=d.get("oom_retry_partition"),
         oom_retry_mem=d.get("oom_retry_mem"),
+        oom_retry_force_cpu=bool(d.get("oom_retry_force_cpu", False)),
         timeout_retry_partition=d.get("timeout_retry_partition"),
         timeout_retry_time=d.get("timeout_retry_time"),
         train_allocation=d.get("train_allocation", "exclusive"),
