@@ -148,8 +148,10 @@ def _compute_total_energy_uks(
     so the open-shell relation is an approximation (closed-shell -> RKS stays
     exact). See ``oneshot.split_exc_energy_uks`` for the full discussion.
 
-    FUTURE WORK: zeta-dependent PW92 correlation does not exist here; do NOT
-    add it.
+    P2-03: ``split_exc_energy_uks`` evaluates correlation with the real
+    zeta-dependent PW92 baseline when ``cnet.use_spin_polarization`` is set
+    (Dick & Fernandez-Serra, PRB 104 L161109 (2021)); flag False keeps the
+    zeta=0 total-density correlation. The SCF Fock build below matches.
     """
     from xcquinox.alec.oneshot import split_exc_energy_uks
 
@@ -366,7 +368,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
       7. Energy from D_mixed using ``_compute_total_energy_uks`` (spin-scaled XC)
     """
     from xcquinox.alec.descriptors import assemble_descriptor_features
-    from xcquinox.alec.oneshot import compute_vxc_nn
+    from xcquinox.alec.oneshot import compute_vxc_nn, compute_vc_polarized_per_spin
 
     policy = config.effective_feature_policy
     mode = config.mode
@@ -456,9 +458,9 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         ``pw92c_unpolarized_scalar`` is spin-unpolarized — von Barth & Hedin,
         J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45, 13244 (1992)).
         Because delta rho_tot / delta rho_a = delta rho_tot / delta rho_b = 1,
-        this SAME matrix enters BOTH spin Fock matrices.
-
-        FUTURE WORK: zeta-dependent PW92 correlation does not exist here.
+        this SAME matrix enters BOTH spin Fock matrices. This is the
+        ``use_spin_polarization=False`` fast path; the zeta-dependent per-spin
+        path (P2-03) uses ``compute_vc_polarized_per_spin`` in the SCF body.
         """
         return compute_vxc_nn(
             model,
@@ -504,13 +506,22 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         (rho_a, rho_b, nabla_rho_a, nabla_rho_b,
          sigma_aa, sigma_bb, nabla_rho_tot, sigma_tot) = _spin_resolved_rho(D_cur)
         features = _features_for(D_cur)
-        # SOLV-01: V_xc^s = vx_s (exchange spin-scaled) + vc (shared, on the
-        # total density, computed ONCE per cycle).
+        # SOLV-01: V_xc^s = vx_s (exchange spin-scaled) + correlation.
+        # P2-03: a spin-polarization-aware cnet makes correlation PER-SPIN
+        # (zeta couples the channels); otherwise vc is shared (the fast path).
         vx_a = _vx_nn_spin(features, rho_a, sigma_aa, nabla_rho_a)
         vx_b = _vx_nn_spin(features, rho_b, sigma_bb, nabla_rho_b)
-        vc = _vc_nn_total(features, rho_a + rho_b, sigma_tot, nabla_rho_tot)
-        vxc_nn_a = vx_a + vc
-        vxc_nn_b = vx_b + vc
+        if getattr(model.cnet, "use_spin_polarization", False):
+            vc_a, vc_b = compute_vc_polarized_per_spin(
+                model, rho_a, rho_b, sigma_tot, features, ao_grid,
+                grid_weights, nabla_rho_tot, ao_grid_deriv,
+            )
+            vxc_nn_a = vx_a + vc_a
+            vxc_nn_b = vx_b + vc_b
+        else:
+            vc = _vc_nn_total(features, rho_a + rho_b, sigma_tot, nabla_rho_tot)
+            vxc_nn_a = vx_a + vc
+            vxc_nn_b = vx_b + vc
         j_total = _j_total_for_cycle(D_cur)
         fock_a = h_core + j_total + vxc_nn_a
         fock_b = h_core + j_total + vxc_nn_b

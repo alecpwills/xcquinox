@@ -68,3 +68,37 @@ def test_uks_manual_full_dms_distinct(o_atom_uks):
     result = run_scf(cfg, model, md)
     dm = np.asarray(result.density_matrix)
     assert float(np.max(np.abs(dm[0] - dm[1]))) > 0.1
+
+
+@pytest.fixture
+def o_atom_uks_polarized():
+    """Same open-shell O atom but with a spin-polarization-aware cnet (P2-03)."""
+    spec = MoleculeSpec(
+        name="O", atom="O 0 0 0", basis="sto-3g",
+        charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec, required_keys=("eri",))
+    arch = alec.ArchitectureConfig.from_spec(
+        "polc_uks", 4, 32, use_polarized_correlation=True)
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    assert cnet.use_spin_polarization is True
+    model = alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+    return spec, md, model
+
+
+def test_uks_manual_polarized_full_runs_and_conserves_electrons(
+        o_atom_uks_polarized):
+    """The per-spin correlation path (P2-03) must run end-to-end in the manual
+    UKS SCF and conserve n_alpha=5, n_beta=3 with a finite energy."""
+    spec, md, model = o_atom_uks_polarized
+    cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                       max_cycles=5, conv_tol=1e-5)
+    result = run_scf(cfg, model, md)
+    dm = np.asarray(result.density_matrix)
+    assert dm.ndim == 3 and dm.shape[0] == 2
+    assert np.isfinite(float(result.total_energy))
+    s = np.asarray(md["s_matrix"])
+    assert abs(float(np.trace(s @ dm[0])) - 5.0) < 0.1
+    assert abs(float(np.trace(s @ dm[1])) - 3.0) < 0.1
+    # Open-shell: per-spin correlation must keep the channels distinct.
+    assert float(np.max(np.abs(dm[0] - dm[1]))) > 0.1
