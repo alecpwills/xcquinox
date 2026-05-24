@@ -41,6 +41,7 @@ smoothness).
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -247,6 +248,24 @@ def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
         mf.xc = ""
     else:
         mf.xc = str(baseline_xc)
+        # P3-07: a HYBRID baseline carries non-local HF exchange (K). The inner
+        # SCF here freezes that K at the baseline DM, so the recovered local
+        # V_xc^ref bakes in the frozen non-local piece and is NOT a pure
+        # local-multiplier target — using it as a local-V_xc training reference
+        # is inconsistent. Warn loudly; prefer a semilocal baseline (e.g. 'pbe').
+        try:
+            _hyb = float(dft.libxc.hybrid_coeff(mf.xc, spin=mol.spin))
+        except (AttributeError, KeyError, ValueError, TypeError):
+            _hyb = 0.0
+        if abs(_hyb) > 0.0:
+            warnings.warn(
+                f"OEP baseline_xc={baseline_xc!r} is a hybrid (HF-exchange "
+                f"fraction {_hyb:.3g}); the recovered vxc_ref bakes in the "
+                f"non-local HF-K frozen at the baseline DM and is NOT a pure "
+                f"local-potential target. Prefer a semilocal baseline "
+                f"(e.g. 'pbe') for a consistent local-V_xc reference.",
+                RuntimeWarning, stacklevel=2,
+            )
     if mol_spec.grid_level is not None:
         mf.grids.level = int(mol_spec.grid_level)
         mf.grids.build()

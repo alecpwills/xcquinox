@@ -1446,3 +1446,20 @@ def test_plateau_stop_below_conv_tol_is_converged_with_plateau_stop_reason(monke
     # median (which would have been reported by the buggy code). The
     # real residual is many orders of magnitude larger than 1e-30.
     assert result.density_error > 1e-30 * 1e6
+
+
+# P3-07: a hybrid OEP baseline must warn (its vxc_ref bakes in frozen non-local K)
+def test_oep_hybrid_baseline_warns():
+    import warnings as _w
+    import pytest
+    from xcquinox.alec.oep import _build_mol_and_mf
+    from xcquinox.alec.config import MoleculeSpec
+    h = MoleculeSpec(name="H", atom="H 0 0 0", basis="sto-3g",
+                     charge=0, spin=1, atom_composition=(("H", 1),))
+    # Hybrid baseline (b3lyp) -> RuntimeWarning about frozen non-local HF-K.
+    with pytest.warns(RuntimeWarning, match="hybrid"):
+        _build_mol_and_mf(h, baseline_xc="b3lyp")
+    # Semilocal baseline (pbe) -> no hybrid warning.
+    with _w.catch_warnings():
+        _w.simplefilter("error", RuntimeWarning)
+        _build_mol_and_mf(h, baseline_xc="pbe")  # must not raise

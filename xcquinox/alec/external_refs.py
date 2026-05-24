@@ -61,6 +61,24 @@ def _fsync_dir(dir_path) -> None:
         os.close(dir_fd)
 
 
+def _fsync_file(path) -> None:
+    """fsync a file's CONTENTS to disk (EXTREF-04).
+
+    ``os.replace`` makes the rename atomic, but the renamed file's *contents*
+    are not durable across power loss unless the data was fsync'd first — a
+    crash between write and the OS flush can leave the cache path pointing at a
+    zero-length/partial file. Call this on the temp file BEFORE ``os.replace``.
+    Real OSErrors (ENOSPC, EIO) bubble so durability failures fail loudly,
+    matching :func:`_fsync_dir`.
+    """
+    import os
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _build_hf_meanfield(mol, is_uks: bool):
     """Construct an (unconverged) HF mean-field object for ``mol``.
 
@@ -351,7 +369,11 @@ def run_scf_with_cache(
     os.close(fd)
     try:
         np.savez_compressed(tmp_name, **result)
+        # EXTREF-04: fsync content THEN dir so stages 2/3 ("parity with stage 1")
+        # are accurate — stage 1 previously had neither.
+        _fsync_file(tmp_name)
         os.replace(tmp_name, cache_path)
+        _fsync_dir(inter)
     except Exception:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
@@ -469,8 +491,9 @@ def run_ccsd_with_cache(
     os.close(fd)
     try:
         np.savez_compressed(tmp_name, **result)
+        # EXTREF-04: fsync content THEN dir (durability parity with stage 1).
+        _fsync_file(tmp_name)
         os.replace(tmp_name, cache_path)
-        # EXTREF-04: fsync the parent dir for durability parity with stage 1.
         _fsync_dir(inter)
     except Exception:
         if os.path.exists(tmp_name):
@@ -1000,6 +1023,13 @@ def run_oep_cascade(
         ref_density_method=np.array("ccsd"),
         grid_level_used=np.array(int(grid_level)),
     )
+    # P4-03: save_vxc_ref records the achieved OEP density error as the
+    # ``oep_density_error`` key (a real noise floor on this species' vxc_ref:
+    # OEP inversion is ill-posed, so the V_xc-channel error is unbounded by the
+    # density-error tolerance). It is already in data._ALLOWED_EXTERNAL_KEYS, so
+    # downstream can read it to WEIGHT the per-species vxc loss by the achieved
+    # floor (recommended; the weighting itself is a training-design choice not
+    # yet wired into losses.L5GradnormVxcStep7 — see review P4-03).
     alec_oep.save_vxc_ref(
         oep_result, str(npz_path),
         dm_target=ccsd_payload["dm_ao"],
