@@ -64,9 +64,10 @@ documents the mechanism / training-type analog the probe tests.
 
 Convention
 ----------
-``ae_kcalmol`` and ``e_rxn_ref`` are stored in kcal/mol throughout, to
-match ``dfs_pool.py``.  ``spin`` follows ASE convention (number of
-unpaired electrons; e.g., O2 triplet has spin=2).
+``ae_kcalmol`` and ``reaction_energy_ref`` (the BH76RC reaction energy ΔE used
+by the probe metric) and ``barrier_vf_ref`` (forward-barrier provenance) are
+stored in kcal/mol throughout, to match ``dfs_pool.py``.  ``spin`` follows ASE
+convention (number of unpaired electrons; e.g., O2 triplet has spin=2).
 """
 from __future__ import annotations
 
@@ -200,14 +201,23 @@ PROBE_B_HETEROATOM_EXTRAPOLATION = [
 
 
 # ---------------------------------------------------------------------------
-# Probe C — BH76 reactions outside the Dick training set
+# Probe C — BH76 REACTION ENERGIES outside the Dick training set
 # ---------------------------------------------------------------------------
 #
-# All forward barrier heights (Vf) are the REF1 values from the Truhlar
-# Minnesota database (HTBH38/08 + NHTBH38/08), which constitute the
-# GMTKN55-BH76 subset.  None of these reactions overlap the 3 BH76
-# reactions used in Dick training:
-#   OH+N2 → H+N2O,   OH+CH3 → O+CH4,   HF+F → H+F2.
+# The probe metric is the REACTION ENERGY ΔE = Σ coeffs·E = E(products) −
+# E(reactants), matching the BH76 TRAINING channel (losses._rxn_residual_term;
+# dfs_pool.py). The reference ``reaction_energy_ref`` is the GMTKN55-BH76RC
+# (W2-F12) value (Goerigk et al. PCCP 19, 32184 (2017); subset file
+# ``BH76/.resRC`` — see scripts/script_data/GMTKN55_BH76RC_PROVENANCE.md). A
+# barrier height (Vf) is NOT comparable to a reaction energy and could not be
+# computed here anyway (no transition-state species are carried). The forward
+# barrier ``barrier_vf_ref`` (Truhlar HTBH38/08 + NHTBH38/08 REF1; Zheng-Zhao-
+# Truhlar JCTC 5, 808 (2009)) is retained for provenance only.
+#
+# Five reactions are outside Dick training; entry 5 (H+N2O→OH+N2) is the
+# INTENTIONAL REVERSE of training reaction 1 (OH+N2→H+N2O) — a directional-
+# consistency probe (its ΔE is −1× the training reaction's), NOT accidental
+# leakage.
 #
 # Reactant/product names in this dict refer to MoleculeSpec.name strings
 # that build_probe_pool() will create.  The convention matches
@@ -224,12 +234,14 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "reactants": ["HO", "H2"],
         "products":  ["H2O", "H"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
-        "e_rxn_ref": 4.90,  # kcal/mol
+        "reaction_energy_ref": -16.39,  # kcal/mol, GMTKN55-BH76RC (W2-F12)
+        "barrier_vf_ref": 4.90,         # kcal/mol, HTBH38/08 REF1 (provenance)
         "species_spins":   {"HO": 1, "H2": 0, "H2O": 0, "H": 1},
         "species_charges": {"HO": 0, "H2": 0, "H2O": 0, "H": 0},
         "source": (
-            "HTBH38/08 entry 2 (OH+H2 → H2O+H), Vf (REF1) = 4.90 kcal/mol; "
-            "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+            "ΔE = -16.39 kcal/mol, GMTKN55-BH76RC (W2-F12; Goerigk et al. PCCP "
+            "19, 32184 (2017), BH76/.resRC). Forward barrier Vf (REF1) = 4.90 "
+            "kcal/mol, HTBH38/08 entry 2; Zheng, Zhao, Truhlar JCTC 5, 808 (2009)."
         ),
         "spin_source": (
             "NIST ASD H I (²S, spin=1); NIST CCCBDB OH (X²Π, 1), "
@@ -247,12 +259,14 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "reactants": ["H", "HCl"],
         "products":  ["H2", "Cl"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
-        "e_rxn_ref": 5.70,  # kcal/mol
+        "reaction_energy_ref": -1.90,  # kcal/mol, GMTKN55-BH76RC (W2-F12)
+        "barrier_vf_ref": 5.70,        # kcal/mol, HTBH38/08 REF1 (provenance)
         "species_spins":   {"H": 1, "HCl": 0, "H2": 0, "Cl": 1},
         "species_charges": {"H": 0, "HCl": 0, "H2": 0, "Cl": 0},
         "source": (
-            "HTBH38/08 entry 1 (H+HCl → H2+Cl), Vf (REF1) = 5.70 kcal/mol; "
-            "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+            "ΔE = -1.90 kcal/mol, GMTKN55-BH76RC (W2-F12; BH76/.resRC). Forward "
+            "barrier Vf (REF1) = 5.70 kcal/mol, HTBH38/08 entry 1; Zheng, Zhao, "
+            "Truhlar JCTC 5, 808 (2009)."
         ),
         "spin_source": (
             "NIST ASD H I (²S, spin=1), Cl I (²P°, spin=1); "
@@ -268,12 +282,14 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "reactants": ["CH3", "H2"],
         "products":  ["CH4", "H"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
-        "e_rxn_ref": 12.10,  # kcal/mol
+        "reaction_energy_ref": -3.11,  # kcal/mol, GMTKN55-BH76RC (W2-F12)
+        "barrier_vf_ref": 12.10,       # kcal/mol, HTBH38/08 REF1 (provenance)
         "species_spins":   {"CH3": 1, "H2": 0, "CH4": 0, "H": 1},
         "species_charges": {"CH3": 0, "H2": 0, "CH4": 0, "H": 0},
         "source": (
-            "HTBH38/08 entry 3 (CH3+H2 → CH4+H), Vf (REF1) = 12.10 kcal/mol; "
-            "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+            "ΔE = -3.11 kcal/mol, GMTKN55-BH76RC (W2-F12; BH76/.resRC). Forward "
+            "barrier Vf (REF1) = 12.10 kcal/mol, HTBH38/08 entry 3; Zheng, Zhao, "
+            "Truhlar JCTC 5, 808 (2009)."
         ),
         "spin_source": (
             "NIST ASD H I (²S, spin=1); NIST CCCBDB CH3 (X²A2'', 1), "
@@ -290,12 +306,14 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "reactants": ["HO", "H3N"],
         "products":  ["H2O", "H2N"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
-        "e_rxn_ref": 3.00,  # kcal/mol
+        "reaction_energy_ref": -10.32,  # kcal/mol, GMTKN55-BH76RC (W2-F12)
+        "barrier_vf_ref": 3.00,         # kcal/mol, HTBH38/08 REF1 (provenance)
         "species_spins":   {"HO": 1, "H3N": 0, "H2O": 0, "H2N": 1},
         "species_charges": {"HO": 0, "H3N": 0, "H2O": 0, "H2N": 0},
         "source": (
-            "HTBH38/08 entry 6 (OH+NH3 → H2O+NH2), Vf (REF1) = 3.00 kcal/mol; "
-            "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+            "ΔE = -10.32 kcal/mol, GMTKN55-BH76RC (W2-F12; BH76/.resRC). Forward "
+            "barrier Vf (REF1) = 3.00 kcal/mol, HTBH38/08 entry 6; Zheng, Zhao, "
+            "Truhlar JCTC 5, 808 (2009)."
         ),
         "spin_source": (
             "NIST CCCBDB OH (X²Π, 1), NH3 (X¹A1, 0), H2O (X¹A1, 0), "
@@ -312,22 +330,26 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "reactants": ["H", "N2O"],
         "products":  ["HO", "N2"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
-        "e_rxn_ref": 17.13,  # kcal/mol
+        "reaction_energy_ref": -64.91,  # kcal/mol, GMTKN55-BH76RC (W2-F12)
+        "barrier_vf_ref": 17.13,        # kcal/mol, NHTBH38/08 REF1 (provenance)
         "species_spins":   {"H": 1, "N2O": 0, "HO": 1, "N2": 0},
         "species_charges": {"H": 0, "N2O": 0, "HO": 0, "N2": 0},
         "source": (
-            "NHTBH38/08 entry 1 (H+N2O → OH+N2), Vf (REF1) = 17.13 kcal/mol; "
-            "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+            "ΔE = -64.91 kcal/mol, GMTKN55-BH76RC (W2-F12; BH76/.resRC, "
+            "'h n2o -> oh n2'). This is the REVERSE of Dick training reaction 1 "
+            "(OH+N2 -> H+N2O, +64.91), so ΔE here is exactly its negative. "
+            "Forward barrier Vf (REF1) = 17.13 kcal/mol, NHTBH38/08 entry 1; "
+            "Zheng, Zhao, Truhlar JCTC 5, 808 (2009)."
         ),
         "spin_source": (
             "NIST ASD H I (²S, spin=1); NIST CCCBDB OH (X²Π, 1), "
             "N2 (X¹Σg+, 0), N2O (X¹Σ+, 0)."
         ),
         "rationale": (
-            "FORWARD direction of the Dick training reaction (training "
-            "uses the reverse, OH+N2 → H+N2O, Vr=82.27 kcal/mol).  "
-            "Probes directional consistency: a network whose error "
-            "cancels in one direction may not cancel in the other."
+            "REVERSE direction of Dick training reaction 1 (training uses "
+            "OH+N2 → H+N2O). Intentional directional-consistency probe: a "
+            "network whose reaction-energy error cancels in one direction may "
+            "not cancel in the other. ΔE = -(training ΔE) by construction."
         ),
     },
     {
@@ -335,12 +357,14 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "reactants": ["H", "H2S"],
         "products":  ["H2", "HS"],
         "coeffs":    [-1.0, -1.0, +1.0, +1.0],
-        "e_rxn_ref": 3.50,  # kcal/mol
+        "reaction_energy_ref": -13.26,  # kcal/mol, GMTKN55-BH76RC (W2-F12)
+        "barrier_vf_ref": 3.50,         # kcal/mol, HTBH38/08 REF1 (provenance)
         "species_spins":   {"H": 1, "H2S": 0, "H2": 0, "HS": 1},
         "species_charges": {"H": 0, "H2S": 0, "H2": 0, "HS": 0},
         "source": (
-            "HTBH38/08 entry 13 (H+H2S → H2+HS), Vf (REF1) = 3.50 kcal/mol; "
-            "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
+            "ΔE = -13.26 kcal/mol, GMTKN55-BH76RC (W2-F12; BH76/.resRC). Forward "
+            "barrier Vf (REF1) = 3.50 kcal/mol, HTBH38/08 entry 13; Zheng, Zhao, "
+            "Truhlar JCTC 5, 808 (2009)."
         ),
         "spin_source": (
             "NIST ASD H I (²S, spin=1); NIST CCCBDB H2 (X¹Σg+, 0), "

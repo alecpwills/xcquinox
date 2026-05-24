@@ -3,11 +3,13 @@
 Tests verify:
   - Each of the 4 probes has 5-6 entries.
   - Every entry carries a non-empty source citation string.
-  - Every entry carries a finite reference value (ae_kcalmol or e_rxn_ref).
-  - No probe entry overlaps with the Dick-2021 training pool — probes
-    must measure transfer, not training-set repeats.
+  - Every entry carries a finite reference value (ae_kcalmol, or for probe_c
+    the GMTKN55-BH76RC reaction_energy_ref + barrier_vf_ref provenance).
+  - probe_c measures BH76 reaction-energy transfer; entry 5 (H+N2O→OH+N2) is
+    the intentional REVERSE of training reaction 1 (a directional-consistency
+    probe), not accidental overlap.
   - Spot-check selected reference values against the published numbers
-    (Haunschild2012 Table I; Truhlar HTBH/NHTBH REF1).
+    (Haunschild2012 Table I; GMTKN55-BH76RC W2-F12; Truhlar HTBH/NHTBH REF1).
   - build_probe_pool() returns the expected shape for each probe.
 """
 from __future__ import annotations
@@ -91,14 +93,48 @@ def test_ae_probes_have_finite_ae_refs():
                 f"{probe_name}: {entry['hill']}: AE out of range {ae}")
 
 
-def test_bh76_probe_has_finite_e_rxn_refs():
-    """Probe C reactions must have a finite, physical Vf in kcal/mol."""
+def test_bh76_probe_has_finite_reaction_energies():
+    """Probe C reactions carry a finite GMTKN55-BH76RC reaction energy (the
+    metric reference) and a forward-barrier provenance value, both kcal/mol."""
     for entry in ep.PROBE_C_BH76_OUT_OF_TRAINING:
-        e = entry["e_rxn_ref"]
-        assert isinstance(e, float)
-        assert math.isfinite(e)
-        # BH76 forward barriers fall in (-15, 50) kcal/mol for our six.
-        assert -20.0 < e < 100.0, f"{entry['name']}: Vf out of range {e}"
+        de = entry["reaction_energy_ref"]
+        vf = entry["barrier_vf_ref"]
+        assert isinstance(de, float) and math.isfinite(de)
+        assert isinstance(vf, float) and math.isfinite(vf)
+        assert -100.0 < de < 100.0, f"{entry['name']}: ΔE out of range {de}"
+        # The legacy barrier key must be gone (it was a category error to
+        # compare a reaction energy against it).
+        assert "e_rxn_ref" not in entry, (
+            f"{entry['name']}: stale 'e_rxn_ref' (barrier) key still present")
+
+
+# GMTKN55-BH76RC (W2-F12) reaction energies, kcal/mol — source of truth
+# (grimme-lab/GMTKN55 BH76/.resRC; see GMTKN55_BH76RC_PROVENANCE.md).
+_GMTKN55_BH76RC = {
+    "OH+H2_to_H2O+H":   -16.39,
+    "H+HCl_to_H2+Cl":    -1.90,
+    "CH3+H2_to_CH4+H":   -3.11,
+    "OH+NH3_to_H2O+NH2": -10.32,
+    "H+N2O_to_OH+N2":   -64.91,
+    "H+H2S_to_H2+HS":   -13.26,
+}
+
+
+def test_probe_c_reaction_energies_match_gmtkn55():
+    """Each probe_c reaction_energy_ref equals its GMTKN55-BH76RC value."""
+    by_name = {e["name"]: e for e in ep.PROBE_C_BH76_OUT_OF_TRAINING}
+    assert set(by_name) == set(_GMTKN55_BH76RC), "probe_c reaction set drifted"
+    for name, ref in _GMTKN55_BH76RC.items():
+        assert by_name[name]["reaction_energy_ref"] == pytest.approx(ref, abs=1e-9)
+
+
+def test_probe_c_directional_consistency_entry_is_reverse_of_training():
+    """Entry 5 (H+N2O->OH+N2) is the intentional reverse of Dick training
+    reaction 1 (OH+N2->H+N2O), so its ΔE == -(training rxn ΔE) using the SAME
+    GMTKN55 source of truth (the reverse direction, +64.91)."""
+    by_name = {e["name"]: e for e in ep.PROBE_C_BH76_OUT_OF_TRAINING}
+    assert by_name["H+N2O_to_OH+N2"]["reaction_energy_ref"] == pytest.approx(
+        -64.91, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -189,23 +225,23 @@ def test_probe_b_h2s_value_matches_haunschild_kj():
     assert e["ae_kcalmol"] == pytest.approx(expected_kcal, abs=1e-3)
 
 
-def test_probe_c_oh_h2_to_h2o_h_vf_matches_htbh38():
-    """OH+H2 → H2O+H Vf = 4.90 kcal/mol (HTBH38/08 entry 2 REF1)."""
+def test_probe_c_oh_h2_to_h2o_h_provenance_and_dE():
+    """OH+H2 → H2O+H: GMTKN55-BH76RC ΔE = -16.39; forward barrier provenance
+    Vf = 4.90 kcal/mol (HTBH38/08 entry 2 REF1)."""
     rxn = next(r for r in ep.PROBE_C_BH76_OUT_OF_TRAINING
                if r["name"] == "OH+H2_to_H2O+H")
-    assert rxn["e_rxn_ref"] == pytest.approx(4.90, abs=1e-2)
+    assert rxn["reaction_energy_ref"] == pytest.approx(-16.39, abs=1e-2)
+    assert rxn["barrier_vf_ref"] == pytest.approx(4.90, abs=1e-2)
 
 
-def test_probe_c_h_n2o_to_oh_n2_vf_matches_nhtbh38():
-    """H+N2O → OH+N2 Vf = 17.13 kcal/mol (NHTBH38/08 entry 1 REF1).
-
-    This is the FORWARD direction of the Dick training reaction
-    (reverse Vr = 82.27).  Same TS, opposite direction — distinct
-    reference value, distinct probe.
-    """
+def test_probe_c_h_n2o_to_oh_n2_provenance_and_dE():
+    """H+N2O → OH+N2: GMTKN55-BH76RC ΔE = -64.91 (the REVERSE of Dick training
+    reaction 1, OH+N2→H+N2O = +64.91); forward barrier provenance Vf = 17.13
+    kcal/mol (NHTBH38/08 entry 1 REF1)."""
     rxn = next(r for r in ep.PROBE_C_BH76_OUT_OF_TRAINING
                if r["name"] == "H+N2O_to_OH+N2")
-    assert rxn["e_rxn_ref"] == pytest.approx(17.13, abs=1e-2)
+    assert rxn["reaction_energy_ref"] == pytest.approx(-64.91, abs=1e-2)
+    assert rxn["barrier_vf_ref"] == pytest.approx(17.13, abs=1e-2)
 
 
 def test_probe_d_o2_value_matches_haunschild_kj():

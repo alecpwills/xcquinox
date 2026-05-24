@@ -134,3 +134,9 @@ notebooks/checkpoints_step5/
 notebooks/checkpoints_step6/
 notebooks/checkpoints_step7/
 notebooks/.jax_compilation_cache/
+
+# Upstream GMTKN55 benchmark clone (190M external dataset, source of truth for
+# BH76/BH76RC references). Fetched, not committed — provenance (URL + pinned
+# commit) + the extracted reference values live in
+# scripts/script_data/GMTKN55_BH76RC_PROVENANCE.md.
+scripts/script_data/gmtkn55/
