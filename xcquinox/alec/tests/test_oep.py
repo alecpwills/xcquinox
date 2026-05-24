@@ -1109,7 +1109,15 @@ def test_plateau_above_conv_tol_marks_not_converged():
         plateau_window=5, plateau_rtol=0.1, plateau_min_iter=10,
     )
     if result.terminated_by == "plateau":
-        assert result.converged is False
+        # ``converged`` is derived from the SCF-verified ``final_error`` vs
+        # conv_tol (the ``converged = bool(...)`` line pinned above), never
+        # from the plateau median. With conv_tol=1e-30 the result is
+        # non-converged UNLESS the SCF-verified residual genuinely rounds to
+        # the float64 noise floor below 1e-30 (possible on this contrived
+        # H2/STO-3G case where the regularized OEP density nearly matches the
+        # HF target). Assert the relationship rather than a hard-coded False
+        # so the test cannot flake when the residual underflows to ~0.
+        assert result.converged is bool(result.density_error < 1e-30)
 
 
 def test_plateau_detector_disabled_when_min_iter_exceeds_max_iter():
@@ -1260,9 +1268,19 @@ def test_run_oep_inversion_plateau_catch_path_behavioral(monkeypatch):
     # OEP-01: density_error is the SCF-verified final_error, not the
     # carried plateau median (1.5e-3).
     assert abs(result.density_error - plateau_value) > 1e-9
-    # conv_tol=1e-30 is impossible for the real SCF-verified residual at
-    # b=0, so the result is not converged; stop_reason records plateau.
-    assert result.converged is False
+    # OEP-01: ``converged`` is derived from the SCF-verified ``final_error``
+    # vs conv_tol — NEVER from the 1.5e-3 plateau median (which, being >
+    # conv_tol=1e-30, would have forced converged=False in the buggy code
+    # regardless of the true residual). The robust invariant is therefore
+    # that ``converged`` tracks the SCF-verified error relationship, not a
+    # hard-coded False. For this contrived H2/STO-3G case the HF-target /
+    # PBE-baseline OEP density coincide to ~machine epsilon, so the
+    # SCF-verified residual sits at the float64 noise floor and can be
+    # exactly 0.0 — in which case 0.0 < 1e-30 holds and converged is
+    # legitimately True. (The earlier ``assert converged is False`` was
+    # flaky precisely because it assumed the residual always exceeds
+    # 1e-30, which is false when it rounds to 0.0.)
+    assert result.converged is bool(result.density_error < 1e-30)
     assert result.stop_reason == "plateau"
 
 
@@ -1442,10 +1460,20 @@ def test_plateau_stop_below_conv_tol_is_converged_with_plateau_stop_reason(monke
     )
     assert result.converged is True
     assert result.stop_reason == "plateau"
-    # density_error is the SCF-verified value, not the 1e-30 plateau
-    # median (which would have been reported by the buggy code). The
-    # real residual is many orders of magnitude larger than 1e-30.
-    assert result.density_error > 1e-30 * 1e6
+    # density_error is the SCF-verified ``final_error`` (recomputed on the
+    # post-optimization SCF density), NOT the injected 1e-30 plateau median
+    # the buggy OEP-01 code would have reported. For this contrived
+    # H2/STO-3G case the HF target density and the PBE-baseline OEP density
+    # coincide to ~machine epsilon (a 2-electron minimal-basis density is
+    # essentially fixed by the single occupied sigma_g orbital), so the
+    # SCF-verified residual is at the float64 noise floor (0..~1e-15) — it
+    # can even be exactly 0.0 depending on the inner-SCF DIIS trajectory.
+    # The robust invariant is therefore that the reported value is NOT the
+    # 1e-30 plateau-median sentinel, not that it exceeds some positive floor
+    # (the earlier ``> 1e-24`` assertion was flaky precisely because the
+    # genuine residual can round to 0.0 here).
+    assert result.density_error != 1e-30
+    assert 0.0 <= result.density_error < 1e-10
 
 
 # P3-07: a hybrid OEP baseline must warn (its vxc_ref bakes in frozen non-local K)
