@@ -14,10 +14,22 @@ from xcquinox.alec.config import ArchitectureConfig
 
 
 class _AlecLOB(eqx.Module):
-    """Lieb-Oxford bound squash with limit marked static (D-H2 fix).
+    """Output-range squash with limit marked static (D-H2 fix).
 
     Re-implements library xcquinox.net.LOB with limit as eqx.field(static=True)
-    so gradient descent cannot modify the physical constant."""
+    so gradient descent cannot modify the physical constant.
+
+    When used for the exchange path (limit=1.804 = 1 + kappa_PBE) the
+    functional form coincides with a local Lieb-Oxford-style ceiling on F_x
+    (Lieb & Oxford 1981; PBE 1996 eq. 14).  Dick & Fernández-Serra (PRB 104
+    L161109, 2021) use 1.174 for the exchange ceiling.
+
+    When used for the correlation path (limit=2.0) the purpose is
+    NON-NEGATIVITY of F_c, not a Lieb-Oxford bound.  The I₂(x) transform in
+    Dick (2021) eq. (13) maps the network pre-activation through a symmetric
+    sigmoid so that F_c ∈ [0, 2]; the upper value 2 is an incidental
+    byproduct of the symmetric form, NOT a Lieb-Oxford constraint (the
+    Lieb-Oxford theorem bounds the total E_xc, never F_c alone)."""
     limit: float = eqx.field(static=True)
 
     def __init__(self, limit: float):
@@ -129,6 +141,13 @@ class AlecGGA_CNet(eqx.Module):
 
     Differs from AlecGGA_XNet: feature base is [rs, s] (MLP in_size = 2 + extras),
     lob_lim defaults to 2.0.
+
+    The default lob_lim=2.0 is NOT a Lieb-Oxford bound on F_c.  It implements
+    the I₂(x) non-negativity squash from Dick & Fernández-Serra (PRB 104
+    L161109, 2021) eq. (13): a symmetric sigmoid maps the pre-activation to
+    F_c ∈ [0, 2], ensuring the correlation enhancement factor is non-negative.
+    The value 2.0 is an artefact of the symmetric form; the Lieb-Oxford
+    theorem constrains the total E_xc, not F_c individually.
     """
     n_extra_features: int = eqx.field(static=True)
     lob_lim: float | None = eqx.field(static=True)
@@ -212,7 +231,9 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
     """Build a fresh (xnet, cnet) pair for the architecture.
 
     C-H1: xnet lob_lim resolved via arch.resolved_xnet_lob_lim (None when
-    LiebOxfordBound constraint is active). Cnet uses its default lob_lim=2.0.
+    LiebOxfordBound constraint is active).  Cnet lob_lim resolved via
+    arch.resolved_cnet_lob_lim (default 2.0, a non-negativity squash on F_c
+    per Dick & Fernández-Serra 2021 eq. (13) — not a Lieb-Oxford bound).
     """
     n_extra_features = sum(d.n_features for d in arch.materialize_descriptors())
     xnet = AlecGGA_XNet(

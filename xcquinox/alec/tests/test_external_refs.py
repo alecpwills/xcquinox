@@ -1179,3 +1179,176 @@ def test_preflight_uks_oep_invokes_migration_at_top(tmp_path, monkeypatch):
     assert len(called) == n_after_first + 1   # invoked again
     # And both invocations succeeded without raising:
     # (the implicit assertion is that we got here without exception)
+
+
+# ---------------------------------------------------------------------------
+# EXTREF-01: CCSD must run on a CONVERGED HF reference, not grafted PBE MOs.
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_converged_hf_runs_real_scf_and_checks_convergence():
+    """_prepare_converged_hf builds an HF mean-field, runs kernel(dm0=...),
+    and returns a CONVERGED object. Uses H2 in sto-3g (sub-second SCF).
+
+    This is the unit-testable contract for the EXTREF-01 fix: CCSD must
+    sit on a self-consistent HF determinant, not on grafted PBE orbitals.
+    """
+    from pyscf import dft, gto
+    from xcquinox.alec.external_refs import _prepare_converged_hf
+
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    pbe = dft.RKS(mol)
+    pbe.xc = "pbe"
+    pbe.kernel()
+    pbe_dm = pbe.make_rdm1()
+
+    mf_hf = _prepare_converged_hf(mol, dm0=pbe_dm, is_uks=False)
+    assert mf_hf.converged is True, "HF must be self-consistent before CCSD"
+    # The HF energy must NOT equal the PBE energy (proves a real HF SCF ran,
+    # not a fake converged=True flag on a grafted PBE determinant).
+    assert abs(float(mf_hf.e_tot) - float(pbe.e_tot)) > 1e-4, (
+        "HF energy equals PBE energy -> no real HF SCF was performed"
+    )
+    # Brillouin: at the converged HF determinant the occ-virt Fock block is
+    # ~0. We assert the object exposes converged MOs (sanity, not the full
+    # Brillouin check which is implicit in PySCF convergence).
+    assert mf_hf.mo_coeff is not None
+
+
+def test_prepare_converged_hf_uses_dm0_as_initial_guess(monkeypatch):
+    """_prepare_converged_hf must pass the PBE dm0 to kernel() (initial
+    guess) and check the .converged flag. Verified without a real SCF by
+    monkeypatching the HF object's kernel."""
+    from pyscf import gto
+    from xcquinox.alec import external_refs as ext
+
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    sentinel_dm = object()
+    calls = {}
+
+    class _FakeHF:
+        converged = True
+        mo_coeff = "coeffs"
+        mo_occ = "occ"
+        mo_energy = "energy"
+
+        def kernel(self, dm0=None):
+            calls["dm0"] = dm0
+            return -1.0
+
+    def _fake_build_hf(mol_arg, is_uks):
+        calls["is_uks"] = is_uks
+        return _FakeHF()
+
+    monkeypatch.setattr(ext, "_build_hf_meanfield", _fake_build_hf)
+    mf = ext._prepare_converged_hf(mol, dm0=sentinel_dm, is_uks=False)
+    assert calls["dm0"] is sentinel_dm, "PBE dm must be passed as kernel dm0"
+    assert calls["is_uks"] is False
+    assert mf.converged is True
+
+
+def test_prepare_converged_hf_raises_when_not_converged(monkeypatch):
+    """If HF SCF does not converge, _prepare_converged_hf raises rather than
+    silently feeding a non-self-consistent determinant to CCSD."""
+    from pyscf import gto
+    from xcquinox.alec import external_refs as ext
+
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+
+    class _NonConvHF:
+        converged = False
+        mo_coeff = None
+        mo_occ = None
+        mo_energy = None
+
+        def kernel(self, dm0=None):
+            return -1.0
+
+    monkeypatch.setattr(
+        ext, "_build_hf_meanfield", lambda mol_arg, is_uks: _NonConvHF()
+    )
+    with pytest.raises(RuntimeError, match="HF SCF did not converge"):
+        ext._prepare_converged_hf(mol, dm0=None, is_uks=False)
+
+
+# ---------------------------------------------------------------------------
+# EXTREF-04: stages 2 (CCSD) and 3 (OEP) must fsync the parent dir for
+# durability, matching stage 1 (SCF).
+# ---------------------------------------------------------------------------
+
+
+def test_run_ccsd_fsyncs_parent_dir(tmp_path, monkeypatch):
+    """run_ccsd_with_cache must fsync the _intermediates dir after the
+    atomic os.replace (durability parity with stage 1)."""
+    from xcquinox.alec import external_refs as ext
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache,
+        run_ccsd_with_cache,
+    )
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    scf = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    fsync_calls = {"n": 0}
+    real_fsync = ext._fsync_dir
+
+    def _spy(path):
+        fsync_calls["n"] += 1
+        return real_fsync(path)
+
+    monkeypatch.setattr(ext, "_fsync_dir", _spy)
+    run_ccsd_with_cache(spec, atoms, scf_payload=scf, cache_dir=tmp_path,
+                        basis="def2-svp", grid_level=1)
+    assert fsync_calls["n"] >= 1, "stage 2 (CCSD) must fsync parent dir"
+
+
+def test_run_oep_cascade_fsyncs_parent_dir(tmp_path, monkeypatch):
+    """run_oep_cascade must fsync the cache dir after writing the npz."""
+    from xcquinox.alec import external_refs as ext
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache,
+        run_ccsd_with_cache, run_oep_cascade,
+    )
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    scf = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    fsync_calls = {"n": 0}
+    real_fsync = ext._fsync_dir
+
+    def _spy(path):
+        fsync_calls["n"] += 1
+        return real_fsync(path)
+
+    monkeypatch.setattr(ext, "_fsync_dir", _spy)
+    run_oep_cascade(spec, atoms, ccsd_payload=cc, cache_dir=tmp_path,
+                    basis="def2-svp", grid_level=1)
+    assert fsync_calls["n"] >= 1, "stage 3 (OEP) must fsync cache dir"
+
+
+# ---------------------------------------------------------------------------
+# CFG-03: the reference npz must carry grid_level_used provenance.
+# ---------------------------------------------------------------------------
+
+
+def test_oep_cascade_writes_grid_level_used(tmp_path):
+    """Stage 3 OEP npz records the generating grid_level as grid_level_used
+    so data.py can assert consumer/producer grid agreement (CFG-03)."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache,
+        run_ccsd_with_cache, run_oep_cascade,
+    )
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    scf = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1)
+    npz_path = run_oep_cascade(spec, atoms, ccsd_payload=cc, cache_dir=tmp_path,
+                               basis="def2-svp", grid_level=1)
+    with np.load(npz_path, allow_pickle=False) as z:
+        assert "grid_level_used" in z.files, "missing grid_level_used"
+        assert int(z["grid_level_used"]) == 1

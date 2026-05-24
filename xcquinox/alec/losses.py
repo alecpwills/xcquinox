@@ -4,6 +4,7 @@ Implements THE SPEC §7.1 (base class) and §7.2 (A, B, C, D1, D2, D3).
 """
 import abc
 import math
+import warnings
 from typing import ClassVar
 
 import jax.numpy as jnp
@@ -245,9 +246,13 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
     with _vxc_term).
     """
     terms = []
+    n_skipped = 0
+    n_total = 0
     for i in iter_idx:
+        n_total += 1
         dm_ref = mol_data[i]["dm_target"]
         if dm_ref is None:
+            n_skipped += 1
             continue
         dm_nn = oneshot_dm_prediction_fast(model, mol_data[i], solver_config=solver_config)
         dm_ref_arr = jnp.asarray(dm_ref)
@@ -267,15 +272,26 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
             n_elems = math.prod(dm_ref_arr.shape)
             err = err / float(n_elems)
         terms.append(err)
+    if n_skipped:
+        warnings.warn(
+            f"_dm_term: {n_skipped} of {n_total} mol(s) had "
+            f"dm_target=None and were skipped; dm channel may be zero.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
 
 
 def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False):
     """Grid density matching: weighted L2, normalized absolutely or relatively."""
     terms = []
+    n_skipped = 0
+    n_total = 0
     for i in iter_idx:
+        n_total += 1
         rho_ref = mol_data[i]["rho_ref_grid"]
         if rho_ref is None:
+            n_skipped += 1
             continue
         rho_nn = oneshot_grid_density(model, mol_data[i], solver_config=solver_config)
         w = mol_data[i]["grid_weights"]
@@ -283,6 +299,13 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False):
         if relative:
             err = err / (jnp.sum(w * rho_ref ** 2) + 1e-8)
         terms.append(err)
+    if n_skipped:
+        warnings.warn(
+            f"_grid_term: {n_skipped} of {n_total} mol(s) had "
+            f"rho_ref_grid=None and were skipped; rho channel may be zero.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
 
 
@@ -298,9 +321,13 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
     and the squared error is summed across both spin channels.
     """
     terms = []
+    n_skipped = 0
+    n_total = 0
     for i in iter_idx:
+        n_total += 1
         vxc_ref = mol_data[i]["vxc_ref"]
         if vxc_ref is None:
+            n_skipped += 1
             continue
         vxc_ref_arr = jnp.asarray(vxc_ref)
         features = assemble_descriptor_features(model.descriptors, mol_data[i])
@@ -335,6 +362,13 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
                 n_ao = vxc_ref_arr.shape[-1]
                 err = err / (n_ao * n_ao)
         terms.append(err)
+    if n_skipped:
+        warnings.warn(
+            f"_vxc_term: {n_skipped} of {n_total} mol(s) had "
+            f"vxc_ref=None and were skipped; vxc channel may be zero.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
 
 
@@ -363,11 +397,12 @@ def _rxn_residual_term(
 
     Returns: scalar squared residual (E_rxn_NN - E_rxn_ref)^2.
 
-    Used by the BH76 task channel of L5_gradnorm_vxc_step7. Per Dick 2021
-    SI II, BH76 residuals were down-weighted by 0.01 in the original
-    work; step-7 either reproduces that scaling explicitly or lets
-    GradNorm (alpha=1.5; Chen et al. 2018, arXiv:1711.02257) discover the
-    weight adaptively.
+    Used by the BH76 task channel of L5_gradnorm_vxc_step7. In Dick &
+    Fernandez-Serra PRB 104 L161109 (2021) the 0.01 factor is lambda_E,
+    the weight on total energies L_E; BH76/atomization energies enter L_RE
+    at weight 1 and density L_n at weight 20. Step-7 lets GradNorm (Chen et
+    al. 2018, arXiv:1711.02257; alpha=1.5 default) discover task weights
+    adaptively rather than hard-coding any fixed scaling.
     """
     e_rxn = jnp.sum(coeffs * e_nn)
     return (e_rxn - e_rxn_ref) ** 2
@@ -837,11 +872,12 @@ class L5GradnormVxcStep7(AlecLoss):
     in ``train._run_gradnorm_loop`` (xcquinox/alec/train.py:408) treats
     them as five independent tasks.
 
-    Per Dick 2021 SI II, BH76 + IP13 residuals were down-weighted by
-    0.01 in the original Dick training. Step-7 lets GradNorm (Chen et
-    al. 2018, arXiv:1711.02257; alpha=1.5 default at
+    In Dick & Fernandez-Serra PRB 104 L161109 (2021) the 0.01 factor is
+    lambda_E, the weight on total energies L_E; BH76/atomization energies
+    enter L_RE at weight 1 and density L_n at weight 20. Step-7 lets
+    GradNorm (Chen et al. 2018, arXiv:1711.02257; alpha=1.5 default at
     xcquinox/alec/balancing.py:55) discover task weights adaptively
-    rather than hard-coding the 0.01 factor.
+    rather than hard-coding any fixed scaling.
 
     Constructor arguments
     ---------------------
@@ -967,6 +1003,21 @@ class L5GradnormVxcStep7(AlecLoss):
         self.vxc_weight = vxc_weight
         self.density_weight = density_weight
         self.regularize_atom_syms = reg_syms_frozen
+
+        # CFG-02: validate that regularize_atom_syms is a subset of the
+        # single-atom anchors actually present in atom_mol_idx.  An
+        # unmatched symbol would be silently dropped in compute_components,
+        # producing zero regularization for that species with no feedback.
+        if reg_syms_frozen is not None:
+            atom_map_keys = set(dict(ami).keys())
+            missing = set(reg_syms_frozen) - atom_map_keys
+            if missing:
+                raise ValueError(
+                    f"regularize_atom_syms contains symbols not present as "
+                    f"single-atom MoleculeSpecs in `molecules`: "
+                    f"{sorted(missing)}.  "
+                    f"Available single-atom symbols: {sorted(atom_map_keys)}"
+                )
 
         # Validate that every BH76 species and every IP13 species is
         # present in the `molecules` set. A missing species would cause

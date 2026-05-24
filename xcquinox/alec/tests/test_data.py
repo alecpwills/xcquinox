@@ -737,3 +737,73 @@ def test_precompute_cache_keys_on_required_keys_and_descriptors():
     assert bare["cusp_features"] is None
     assert with_cusp["cusp_features"] is not None
     assert bare is not with_cusp
+
+
+# ---------------------------------------------------------------------------
+# CFG-03: grid_level_used provenance in external .npz is asserted against the
+# resolved grid_level in _load_external_data.
+# ---------------------------------------------------------------------------
+
+
+def test_load_external_data_accepts_grid_level_used_key():
+    """grid_level_used is an allowed key (CFG-03 provenance)."""
+    from xcquinox.alec.data import _ALLOWED_EXTERNAL_KEYS
+    assert "grid_level_used" in _ALLOWED_EXTERNAL_KEYS
+
+
+def test_precompute_external_grid_level_match_ok(tmp_path):
+    """When grid_level_used matches the resolved grid_level, load succeeds."""
+    mol0 = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    baseline = precompute_fixed_density_data(mol0)
+    rho_arr = np.asarray(baseline["rho_grid"])
+    path = str(tmp_path / "h2_glm.npz")
+    np.savez(path, rho_ref_grid=rho_arr, grid_level_used=np.array(1))
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+        external_data_path=path,
+    )
+    data = precompute_fixed_density_data(mol)
+    assert data["rho_ref_grid"] is not None
+
+
+def test_precompute_external_grid_level_mismatch_raises(tmp_path):
+    """grid_level_used != resolved grid_level raises (CFG-03)."""
+    mol0 = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    baseline = precompute_fixed_density_data(mol0)
+    rho_arr = np.asarray(baseline["rho_grid"])
+    path = str(tmp_path / "h2_glmis.npz")
+    # File claims it was generated at grid_level=3 but consumer resolves to 1.
+    np.savez(path, rho_ref_grid=rho_arr, grid_level_used=np.array(3))
+    mol = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+        external_data_path=path,
+    )
+    with pytest.raises(ValueError, match="grid_level"):
+        precompute_fixed_density_data(mol)
+
+
+def test_load_external_data_grid_level_used_function_direct(tmp_path):
+    """Direct _load_external_data call: matching grid_level passes, mismatch
+    raises. Exercises the loader contract without a full precompute."""
+    from xcquinox.alec.data import _load_external_data
+    path = str(tmp_path / "direct.npz")
+    np.savez(path, grid_level_used=np.array(2))
+    # Match: no raise.
+    _load_external_data(
+        path, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
+        vxc_pbe_shape=(2, 2), mol_name="H2", grid_level=2,
+    )
+    # Mismatch: raise.
+    with pytest.raises(ValueError, match="grid_level"):
+        _load_external_data(
+            path, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
+            vxc_pbe_shape=(2, 2), mol_name="H2", grid_level=1,
+        )

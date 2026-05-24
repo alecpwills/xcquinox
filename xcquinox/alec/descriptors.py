@@ -72,11 +72,14 @@ class CuspDescriptor(Descriptor):
     """Nuclear cusp proximity (2 features per grid point).
 
     Both features are bounded for network-friendly inputs:
-      * Column 0 ``cusp_factor = exp(-2 Z_max r_min)`` ∈ [0, 1], where
-        Z_max is the largest nuclear charge and r_min is the distance to
-        the nearest nucleus. Encodes the Kato cusp condition magnitude
-        (Kato, *Commun. Pure Appl. Math.* **10**, 151 (1957)):
-        (∂ρ/∂r)|_{r=0} = -2Z·ρ(0).
+      * Column 0 ``cusp_factor = exp(-2 Z_nearest r_min)`` ∈ [0, 1], where
+        Z_nearest is the charge of the nearest nucleus and r_min is the
+        distance to it. This is a heuristic proximity feature *motivated by*
+        the Kato electron-nucleus cusp condition (Kato, *Commun. Pure Appl.
+        Math.* **10**, 151 (1957)), whose exact statement is
+        ``(∂⟨ρ⟩/∂r)|_{r=0} = -2Z·ρ(0)`` on the spherically-averaged density;
+        the exponential decay here approximates the resulting Slater-like
+        ``exp(-Z r)`` envelope rather than enforcing the condition exactly.
       * Column 1 ``tanh(log(Σ_A Z_A / r_A) / 5)`` ∈ (-1, 1). Encodes a
         scaled log of the total nuclear-attraction-like weight.
 
@@ -92,7 +95,25 @@ class CuspDescriptor(Descriptor):
 
 @register_descriptor("dm_statistics")
 class DMStatisticsDescriptor(Descriptor):
-    """Density-matrix correlation indicators. 3 features."""
+    """Density-matrix correlation indicators. 3 features.
+
+    The 3 features (see ``xcquinox.features.compute_dm_features_array``) are,
+    in order:
+      0. ``idempotency_error`` — normalized Frobenius deviation from the
+         single-determinant idempotency condition; ~0 for an HF/KS reference,
+         growing with correlation.
+      1. ``dm_entropy`` — fractional-occupation (idempotency-deviation) entropy
+         of the natural-orbital occupations: per-spin-orbital binary entropy
+         summed over natural orbitals. ~0 for a single determinant
+         (occupations in {0, 2}) and larger for fractional natural occupations,
+         so larger => more correlated. (DESC-07: this is *not* a size-dependent
+         Shannon entropy of normalized occupations.)
+      2. ``off_diag_norm`` — Frobenius norm of the off-diagonal AO density-matrix
+         block, normalized by the trace.
+
+    All three are designed so larger magnitude indicates stronger departure
+    from a single Slater determinant.
+    """
     n_features: int = eqx.field(default=3, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)
 

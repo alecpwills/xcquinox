@@ -33,6 +33,11 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     "oep_converged",
     "oep_lbfgs_status",
     "oep_n_electrons",
+    # CFG-03: grid_level the reference was generated on. When present,
+    # _load_external_data asserts it equals the consumer's resolved
+    # grid_level so a reference built on a different grid cannot load
+    # silently against a mismatched density/V_xc grid.
+    "grid_level_used",
 })
 
 
@@ -43,6 +48,7 @@ def _load_external_data(
     rho_pbe_shape: tuple[int, ...],
     vxc_pbe_shape: tuple[int, ...],
     mol_name: str,
+    grid_level: int | None = None,
 ) -> tuple[jnp.ndarray | None, jnp.ndarray | None, str | None, float | None, jnp.ndarray | None]:
     """Load and validate a MoleculeSpec.external_data_path .npz.
 
@@ -67,6 +73,23 @@ def _load_external_data(
                 f"keys {sorted(unknown)}; allowed keys: "
                 f"{sorted(_ALLOWED_EXTERNAL_KEYS)}"
             )
+
+        # CFG-03: if the reference records the grid_level it was generated
+        # on, assert it equals the consumer's resolved grid_level. This is
+        # the primary consistency gate; the per-array shape checks below
+        # remain as a fallback for references written before this key
+        # existed.
+        if "grid_level_used" in present and grid_level is not None:
+            grid_level_used = int(np.asarray(npz["grid_level_used"]).item())
+            if grid_level_used != int(grid_level):
+                raise ValueError(
+                    f"external reference for {mol_name!r} was generated at "
+                    f"grid_level={grid_level_used} but the consumer resolves "
+                    f"grid_level={int(grid_level)}; the reference density / "
+                    f"V_xc grid does not match. Regenerate the reference at "
+                    f"grid_level={int(grid_level)} or pin the MoleculeSpec "
+                    f"grid_level to {grid_level_used}."
+                )
 
         dm_target = None
         if "dm_target" in present:
@@ -381,6 +404,7 @@ def precompute_fixed_density_data(
             rho_pbe_shape=tuple(np.asarray(rho_pbe).shape),
             vxc_pbe_shape=tuple(np.asarray(vxc_pbe).shape),
             mol_name=mol_spec.name,
+            grid_level=mol_spec.grid_level,
         )
 
     # Cache pyscfad Mole for hot-path training (avoids Mole.build() inside

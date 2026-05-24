@@ -613,6 +613,23 @@ class TrainingSpec:
                 "atom_energies dict is missing entries for atomic training molecules: "
                 f"{missing_atom_energies}"
             )
+        # CFG-01: ALL elements referenced in any molecule's composition must
+        # appear in atom_energies, regardless of require_atom_anchors.
+        # _ae_from_atoms in losses.py reads atom_energies[Z] for every element
+        # in every compound; a missing key causes a runtime KeyError or a
+        # silently-wrong AE even when single-atom MoleculeSpecs are not required.
+        missing_ae_for_referenced = sorted(
+            referenced_syms - set(atom_energies_dict.keys())
+        )
+        if missing_ae_for_referenced:
+            raise ValueError(
+                "atom_energies is missing entries for elements referenced in "
+                "molecule compositions: "
+                f"{missing_ae_for_referenced}. "
+                "Every element symbol appearing in any molecule's atom_composition "
+                "must have a corresponding atom_energies entry so that "
+                "atomization-energy losses can be computed correctly."
+            )
 
         n_compounds = sum(
             1 for m in self.molecules if sum(dict(m.atom_composition).values()) > 1
@@ -631,9 +648,20 @@ class TrainingSpec:
             if not math.isfinite(value):
                 raise ValueError(f"{field_name} must be finite, got {value}")
         for m_name, t_value in targets_dict.items():
+            # CFG-05: reject bool before isfinite — math.isfinite(True) is True,
+            # so without this check True/False would silently coerce to 1.0/0.0.
+            if isinstance(t_value, bool):
+                raise ValueError(
+                    f"targets[{m_name!r}] must be a float, got bool {t_value!r}"
+                )
             if not math.isfinite(t_value):
                 raise ValueError(f"targets[{m_name!r}] must be finite, got {t_value}")
         for sym, ae_value in atom_energies_dict.items():
+            # CFG-05: same bool-rejection as targets.
+            if isinstance(ae_value, bool):
+                raise ValueError(
+                    f"atom_energies[{sym!r}] must be a float, got bool {ae_value!r}"
+                )
             if not math.isfinite(ae_value):
                 raise ValueError(f"atom_energies[{sym!r}] must be finite, got {ae_value}")
         if not (0.0 <= self.lr_decay_start <= 1.0):

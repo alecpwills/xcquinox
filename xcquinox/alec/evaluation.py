@@ -483,9 +483,22 @@ def _json_default(obj):
 
 
 def _aggregate_results(per_molecule: list[dict]) -> dict:
-    """For each numeric key across molecules, compute mean/MAE/RMSE/max/count."""
+    """For each numeric key across molecules, compute mean/MAE/RMSE/max/count.
+
+    Each metric entry now also records:
+      ``n_total``   -- number of molecules considered for the key (i.e. the
+                       length of per_molecule, regardless of skips).
+      ``n_skipped`` -- molecules that had None/NaN/non-numeric values for the
+                       key and therefore did not contribute to the statistics.
+
+    ``count`` (== n_total - n_skipped) is the number that *did* contribute.
+    All three fields are present so consumers can detect partial-population
+    aggregates (e.g. 2 of 26 molecules having density_rmse != None).
+    """
     if not per_molecule:
         return {}
+
+    n_total = len(per_molecule)
 
     # Collect all keys that appear in any result
     all_keys = set()
@@ -523,5 +536,7 @@ def _aggregate_results(per_molecule: list[dict]) -> dict:
             "RMSE": rmse_val,
             "max": max_val,
             "count": n,
+            "n_total": n_total,
+            "n_skipped": n_total - n,
         }
     return aggregate

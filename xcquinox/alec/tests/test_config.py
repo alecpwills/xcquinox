@@ -533,3 +533,108 @@ def test_registry_smoke_forward_each_attn_arch():
         out_c = cnet(inputs)
         assert jnp.isfinite(out_x), f"{k}: xnet produced non-finite"
         assert jnp.isfinite(out_c), f"{k}: cnet produced non-finite"
+
+
+# ---------------------------------------------------------------------------
+# CFG-01: validate() must catch elements missing from atom_energies even when
+# require_atom_anchors=False (the 2026-05-07 mixed-pool path).
+# ---------------------------------------------------------------------------
+
+def _tiny_arch():
+    from xcquinox.alec.config import ArchitectureConfig
+    return ArchitectureConfig(
+        name="tiny", depth=2, nodes=8, attention=False,
+        descriptors=(), x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+
+
+def test_validate_missing_element_in_atom_energies_require_anchors_false():
+    """CFG-01: compound references C which is absent from atom_energies;
+    validate() must raise ValueError naming C, even with require_atom_anchors=False."""
+    import tempfile
+    from xcquinox.alec.config import TrainingSpec, MoleculeSpec
+
+    h_atom = MoleculeSpec(
+        name="H", atom="H 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("H", 1),),
+    )
+    # Compound with C and H; atom_energies only covers H.
+    ch4 = MoleculeSpec(
+        name="CH4", atom="C 0 0 0; H 0.63 0.63 0.63; H -0.63 -0.63 0.63; "
+                        "H -0.63 0.63 -0.63; H 0.63 -0.63 -0.63",
+        basis="sto-3g", charge=0, spin=0,
+        atom_composition=(("C", 1), ("H", 4)),
+    )
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+        spec = TrainingSpec(
+            arch=_tiny_arch(),
+            molecules=(h_atom, ch4),
+            targets=(("H", 0.0), ("CH4", -100.0)),
+            # atom_energies covers H but NOT C
+            atom_energies=(("H", -0.5),),
+            loss_name="A_atomization",
+            checkpoint_dir=ckpt_dir,
+            require_atom_anchors=False,
+        )
+        with pytest.raises(ValueError, match="C"):
+            spec.validate()
+
+
+# ---------------------------------------------------------------------------
+# CFG-05: bool values must be rejected from targets and atom_energies even
+# though math.isfinite(True) is True.
+# ---------------------------------------------------------------------------
+
+def test_validate_bool_in_targets_rejected():
+    """CFG-05: True passed as a target energy must raise ValueError."""
+    import tempfile
+    from xcquinox.alec.config import TrainingSpec, MoleculeSpec
+
+    h_atom = MoleculeSpec(
+        name="H", atom="H 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("H", 1),),
+    )
+    h2 = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+    )
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+        spec = TrainingSpec(
+            arch=_tiny_arch(),
+            molecules=(h_atom, h2),
+            # True instead of a float for H2 target
+            targets=(("H", 0.0), ("H2", True)),
+            atom_energies=(("H", -0.5),),
+            loss_name="A_atomization",
+            checkpoint_dir=ckpt_dir,
+        )
+        with pytest.raises((ValueError, TypeError)):
+            spec.validate()
+
+
+def test_validate_bool_in_atom_energies_rejected():
+    """CFG-05: True passed as an atom energy must raise ValueError."""
+    import tempfile
+    from xcquinox.alec.config import TrainingSpec, MoleculeSpec
+
+    h_atom = MoleculeSpec(
+        name="H", atom="H 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("H", 1),),
+    )
+    h2 = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+    )
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+        spec = TrainingSpec(
+            arch=_tiny_arch(),
+            molecules=(h_atom, h2),
+            targets=(("H", 0.0), ("H2", -1.0)),
+            # True instead of a float for atom energy
+            atom_energies=(("H", True),),
+            loss_name="A_atomization",
+            checkpoint_dir=ckpt_dir,
+        )
+        with pytest.raises((ValueError, TypeError)):
+            spec.validate()

@@ -42,6 +42,30 @@ def compute_exc_nn(model, rho, sigma, features, grid_weights):
     return jnp.sum(exc * grid_weights)
 
 
+def _exc_scalar_for_part(model, part):
+    """Return the scalar energy-density callable for the requested ``part``.
+
+    SOLV-01: the UKS V_xc must be built from the SPLIT energy density —
+    exchange spin-scaled per Oliver & Perdew (PRA 20, 397 (1979)), but
+    correlation evaluated on the TOTAL density (zeta=0; von Barth & Hedin,
+    J. Phys. C 5, 1629 (1972); PW92, PRB 45, 13244 (1992)). Selecting which
+    scalar to JVP lets the same V_xc assembler produce the exchange-only,
+    correlation-only, or combined potential.
+
+    ``part="xc"`` (default) reproduces the pre-SOLV-01 combined behavior so
+    RKS callers are byte-identical.
+    """
+    if part == "xc":
+        return lambda r, s, f: model.eval_exc_scalar(r, s, f)
+    if part == "x":
+        return lambda r, s, f: model.eval_ex_scalar(r, s, f)
+    if part == "c":
+        return lambda r, s, f: model.eval_ec_scalar(r, s, f)
+    raise ValueError(
+        f"compute_vxc_nn: part must be 'xc', 'x', or 'c'; got {part!r}."
+    )
+
+
 def compute_vxc_nn(
     model,
     rho,
@@ -51,40 +75,71 @@ def compute_vxc_nn(
     grid_weights,
     nabla_rho=None,
     ao_grad=None,
+    lda_only=False,
+    part="xc",
 ) -> jnp.ndarray:
-    """Wrapper: issue the LDA-fallback warning at call time (so it fires on
-    every misuse, not just the first JIT trace), then dispatch to the
-    JIT-compiled core. The split keeps the warning side-effect outside
-    the cached trace boundary -- otherwise eqx.filter_jit suppresses it
-    after the first call."""
+    """Assemble the NN XC potential matrix V_xc, dispatching to the
+    JIT-compiled core.
+
+    ``part`` selects which scalar energy density is JVP'd (SOLV-01):
+    ``"xc"`` (default, combined — byte-identical to pre-SOLV-01 and used by
+    RKS), ``"x"`` (exchange-only ``eval_ex_scalar``), or ``"c"``
+    (correlation-only ``eval_ec_scalar``). The UKS path uses "x" per spin
+    (spin-scaled) and "c" once on the total density.
+
+    ``AlecGGAModel`` is a GGA functional: its XC energy depends on
+    ``sigma = |nabla rho|^2``, so a physically correct V_xc *must* include
+    the GGA ``v_sigma`` term. PRE-07 audit fix: rather than silently
+    dropping ``v_sigma`` (returning LDA-only V_xc, which is physically
+    wrong for a GGA model), this function now *refuses* to do so unless the
+    caller explicitly opts in.
+
+    Contract
+    --------
+    * ``lda_only=False`` (default) + both ``nabla_rho`` and ``ao_grad``
+      provided -> full GGA V_xc (V_rho + V_sigma).
+    * ``lda_only=False`` + either GGA input missing -> ``ValueError``
+      (the silent-LDA footgun is gone).
+    * ``lda_only=True`` -> explicit, genuinely-LDA path: only ``V_rho`` is
+      assembled and the GGA inputs are ignored. Use this only when you
+      truly want the LDA-like ``v_rho`` contribution in isolation.
+    """
+    if lda_only:
+        return _compute_vxc_nn_lda(
+            model, rho, sigma, features, ao_grid, grid_weights, part)
     if nabla_rho is None or ao_grad is None:
-        import warnings
-        warnings.warn(
-            "compute_vxc_nn called without nabla_rho/ao_grad: returning "
-            "LDA-only V_xc (v_sigma term dropped). Correct only for LDA NNs.",
-            RuntimeWarning,
-            stacklevel=2,
+        raise ValueError(
+            "compute_vxc_nn: AlecGGAModel is a GGA functional, so a correct "
+            "V_xc requires the GGA inputs nabla_rho and ao_grad. Both were "
+            "not supplied (nabla_rho is "
+            f"{'set' if nabla_rho is not None else 'None'}, ao_grad is "
+            f"{'set' if ao_grad is not None else 'None'}). Refusing to "
+            "silently return LDA-only V_xc (the v_sigma term would be "
+            "dropped, which is physically wrong for a GGA model). Pass both "
+            "GGA inputs, or set lda_only=True to explicitly request the "
+            "LDA-only v_rho contribution."
         )
-        return _compute_vxc_nn_lda(model, rho, sigma, features, ao_grid, grid_weights)
     return _compute_vxc_nn_gga(
         model, rho, sigma, features, ao_grid, grid_weights, nabla_rho, ao_grad,
+        part,
     )
 
 
 @eqx.filter_jit
-def _compute_vxc_nn_lda(model, rho, sigma, features, ao_grid, grid_weights):
+def _compute_vxc_nn_lda(model, rho, sigma, features, ao_grid, grid_weights,
+                        part="xc"):
     return _compute_vxc_nn_core(
         model, rho, sigma, features, ao_grid, grid_weights,
-        nabla_rho=None, ao_grad=None,
+        nabla_rho=None, ao_grad=None, part=part,
     )
 
 
 @eqx.filter_jit
 def _compute_vxc_nn_gga(model, rho, sigma, features, ao_grid, grid_weights,
-                        nabla_rho, ao_grad):
+                        nabla_rho, ao_grad, part="xc"):
     return _compute_vxc_nn_core(
         model, rho, sigma, features, ao_grid, grid_weights,
-        nabla_rho=nabla_rho, ao_grad=ao_grad,
+        nabla_rho=nabla_rho, ao_grad=ao_grad, part=part,
     )
 
 
@@ -97,6 +152,7 @@ def _compute_vxc_nn_core(
     grid_weights,
     nabla_rho=None,
     ao_grad=None,
+    part="xc",
 ) -> jnp.ndarray:
     """Assemble NN XC potential matrix V_xc via per-point forward-mode jvp.
 
@@ -117,31 +173,64 @@ def _compute_vxc_nn_core(
     features : (n_grid, n_features) or (n_grid, 0)
     ao_grid : (n_grid, n_ao)
     grid_weights : (n_grid,)
-    nabla_rho : (n_grid, 3), optional. If ``None``, the v_sigma term is
-        omitted and a warning is issued — this is correct only for LDA NNs.
+    nabla_rho : (n_grid, 3), optional. If ``None`` the v_sigma term is
+        omitted (LDA-only path). The public ``compute_vxc_nn`` wrapper only
+        reaches this path when the caller passes ``lda_only=True``.
     ao_grad : (3, n_grid, n_ao) or (4, n_grid, n_ao), optional. If 4 leading
         dims, interpreted as ``eval_ao(..., deriv=1)`` and ``ao_grad[1:4]``
-        is used. If ``None``, the v_sigma term is omitted.
+        is used. If ``None`` the v_sigma term is omitted (LDA-only path).
 
     Returns
     -------
     V_xc : (n_ao, n_ao), symmetric.
     """
-    def exc_single_point(r, s, f):
-        return model.eval_exc_scalar(r, s, f)
+    # SOLV-01: select exchange-only / correlation-only / combined scalar.
+    exc_single_point = _exc_scalar_for_part(model, part)
 
-    # Sanitize JVP inputs at low-density points. The networks' reduced-gradient
-    # transform uses sqrt(sigma) whose derivative diverges at sigma=0, and a
-    # spin channel with zero occupations (e.g., beta channel of an H atom with
-    # spin=1) produces rho=sigma=0 everywhere. The forward value is fine (all
-    # bounded networks), but JVP through sqrt(0) gives NaN, which propagates
-    # through the SCF Fock matrix and produces NaN total_energy after training
-    # perturbs the NN into that regime. Replace the JVP inputs at tail points
-    # with safe (rho=1, sigma=1) defaults; the output is masked to zero below,
-    # so the V_xc matrix contribution from these points is exactly zero.
+    # Sanitize JVP inputs at low-density / vanishing-gradient points.
+    #
+    # CODE-02 audit fix: the networks' reduced-gradient transform uses
+    # sqrt(sigma), whose derivative d/dsigma sqrt(sigma) = 1/(2 sqrt(sigma))
+    # diverges as sigma -> 0, and the downstream tanh(s)^2 JVP then evaluates
+    # 0 * inf = NaN. The PRE-existing sanitizer masked only on rho > thr, so a
+    # grid point with rho > thr AND sigma == 0 exactly (reachable on
+    # symmetric / high-symmetry systems, and identically on a zero-occupation
+    # spin channel) slipped through: its NaN v_sigma was NOT masked and spread
+    # through V_sigma -> Fock -> energy/grad.
+    #
+    # Fix: the sanitize predicate (and the v_sigma mask) now ALSO require
+    # sigma > _V_SIGMA_THRESHOLD. We use the standard "safe value under where,
+    # then mask the output with where" double-where trick so that BOTH the
+    # forward value and the reverse-mode (VJP/JVP) gradient are NaN-free: the
+    # masked-out points feed safe (rho=1, sigma=1) inputs into the JVP, and
+    # the JVP output is then forced to exactly 0 — contributing nothing to
+    # V_sigma while keeping 1/(2 sqrt(sigma)) out of the tape entirely.
+    #
+    # _V_SIGMA_THRESHOLD is DENORMAL-LEVEL (1e-30), NOT 1e-10. This is critical
+    # for energy<->potential consistency (verified 2026-05-23). v_sigma is NOT
+    # singular as sigma->0: with the tanh(s)^2 gate the enhancement obeys
+    # F-1 ~ s^2 so F'(s) ~ s ~ sqrt(sigma), which exactly CANCELS the
+    # 1/(2 sqrt(sigma)) from d sqrt(sigma)/d sigma, leaving a FINITE v_sigma
+    # limit. The NaN is purely the 0*inf artefact at sigma == 0 EXACTLY (and at
+    # denormal underflow). An earlier 1e-10 threshold masked v_sigma over the
+    # whole sigma <= 1e-10 RANGE, zeroing a finite, energy-significant
+    # contribution: on an open-shell Li channel ~49% of points fall in that
+    # range and the masked V_xc captured only ~52% of the true energy
+    # derivative (FD energy<->potential residual 0.92 vs 2.3e-7 at 1e-30). At
+    # 1e-30 only the genuinely-singular sigma==0 / denormal points are masked
+    # (1/(2 sqrt(1e-30)) = 5e14 is finite; underflow risk is below ~1e-300), so
+    # v_sigma stays finite everywhere AND the analytic V_xc remains the true
+    # functional derivative of E_xc.
     _V_RHO_THRESHOLD = 1e-10
-    safe_rho = jnp.where(rho > _V_RHO_THRESHOLD, rho, jnp.ones_like(rho))
-    safe_sigma = jnp.where(rho > _V_RHO_THRESHOLD, sigma, jnp.ones_like(sigma))
+    _V_SIGMA_THRESHOLD = 1e-30
+    rho_ok = rho > _V_RHO_THRESHOLD
+    # v_rho only needs the rho guard; v_sigma needs BOTH guards because the
+    # sqrt(sigma)-derivative divergence is what makes the sigma-tangent JVP
+    # blow up.
+    sigma_ok = sigma > _V_SIGMA_THRESHOLD
+    safe_mask = rho_ok & sigma_ok
+    safe_rho = jnp.where(safe_mask, rho, jnp.ones_like(rho))
+    safe_sigma = jnp.where(safe_mask, sigma, jnp.ones_like(sigma))
 
     # Per-point JVPs: tangent on rho and then on sigma
     v_rho, v_sigma = jax.vmap(
@@ -159,17 +248,19 @@ def _compute_vxc_nn_core(
         )
     )(safe_rho, safe_sigma, features)
 
-    # Mask JVP outputs to zero at tail points (physically negligible
-    # contribution AND keeps gradients finite at rho/sigma = 0).
-    v_rho = jnp.where(rho > _V_RHO_THRESHOLD, v_rho, 0.0)
-    v_sigma = jnp.where(rho > _V_RHO_THRESHOLD, v_sigma, 0.0)
+    # Mask JVP outputs to zero at the masked-out points (physically negligible
+    # contribution AND keeps gradients finite at rho/sigma = 0). v_rho is
+    # masked on the rho guard alone (its tangent does not pass through the
+    # sqrt(sigma) singularity); v_sigma is masked on BOTH guards.
+    v_rho = jnp.where(rho_ok, v_rho, 0.0)
+    v_sigma = jnp.where(safe_mask, v_sigma, 0.0)
 
     # LDA-like contribution: V_rho_ij = sum_g w_g v_rho(g) phi_i(g) phi_j(g).
     V_rho = jnp.einsum("g,gi,gj->ij", grid_weights * v_rho, ao_grid, ao_grid)
 
     if nabla_rho is None or ao_grad is None:
-        # LDA-only fallback: warning is issued at the wrapper boundary so
-        # it fires on every misuse rather than only on first JIT trace.
+        # Explicit LDA-only path (reached only via lda_only=True at the
+        # public wrapper). The GGA v_sigma term is intentionally omitted.
         return V_rho
 
     # Accept either the (4, n_grid, n_ao) eval_ao(deriv=1) layout or the
@@ -196,13 +287,66 @@ def _compute_vxc_nn_core(
     return V_rho + V_sigma
 
 
+def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
+                         sigma_tot, features, grid_weights):
+    """Integrated UKS XC energy using the SOLV-01 split (exchange spin-scaled,
+    correlation on the total density).
+
+        E_xc = 1/2 sum_g w_g [eps_x(2 rho_a, 4 sigma_aa)
+                              + eps_x(2 rho_b, 4 sigma_bb)]
+             +     sum_g w_g  eps_c(rho_tot, sigma_tot)
+
+    where eps_x = model.eval_ex, eps_c = model.eval_ec (the exact split of
+    eval_exc with identical tail masking). Exchange spin-scaling: Oliver &
+    Perdew, Phys. Rev. A 20, 397 (1979). Correlation on the TOTAL density
+    (zeta=0): von Barth & Hedin, J. Phys. C 5, 1629 (1972); PW92, Phys. Rev.
+    B 45, 13244 (1972/1992). This is the energy whose functional derivative
+    is the split V_xc built by ``_uks_spin_resolved_vxc`` / the manual solver
+    (the FD-consistency test C guards this).
+
+    FUTURE WORK: zeta-dependent PW92 correlation does not exist here; do NOT
+    add it. ``rho_tot = rho_a + rho_b`` is implied by ``sigma_tot``.
+    """
+    rho_tot = rho_a + rho_b
+    ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, features)
+    ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, features)
+    ec = model.eval_ec(rho_tot, sigma_tot, features)
+    E_x = 0.5 * jnp.sum(grid_weights * (ex_a + ex_b))
+    E_c = jnp.sum(grid_weights * ec)
+    return E_x + E_c
+
+
 def fixed_density_total_energy(model, mol_data) -> float:
     """Total energy with NN XC on frozen PBE density. No Roothaan step.
 
     E_total = E_non_xc + E_xc^NN[rho_PBE]
     Used by A, D1 losses and all energy-based evaluation metrics.
+
+    SOLV-01: the UKS branch uses the SPLIT XC energy (exchange spin-scaled
+    per Oliver & Perdew PRA 20, 397 (1979); correlation on the total density
+    at zeta=0 per von Barth & Hedin 1972 / PW92 1992) so that this energy is
+    consistent with the split V_xc used by the SCF solvers. RKS is unchanged
+    (combined eval_exc on the total density).
     """
     features = assemble_descriptor_features(model.descriptors, mol_data)
+    if mol_data["is_unrestricted"]:
+        dm_pbe = mol_data["dm_pbe"]  # (2, nao, nao)
+        ao_grid = mol_data["ao_grid"]
+        ao_xyz = mol_data["ao_grid_deriv"][1:4]
+        grid_weights = mol_data["grid_weights"]
+        rho_a = jnp.einsum("ij,gi,gj->g", dm_pbe[0], ao_grid, ao_grid)
+        rho_b = jnp.einsum("ij,gi,gj->g", dm_pbe[1], ao_grid, ao_grid)
+        nabla_rho_a = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_pbe[0], ao_xyz, ao_grid)
+        nabla_rho_b = 2.0 * jnp.einsum("ij,dgi,gj->gd", dm_pbe[1], ao_xyz, ao_grid)
+        sigma_aa = jnp.sum(nabla_rho_a * nabla_rho_a, axis=1)
+        sigma_bb = jnp.sum(nabla_rho_b * nabla_rho_b, axis=1)
+        nabla_rho_tot = nabla_rho_a + nabla_rho_b
+        sigma_tot = jnp.sum(nabla_rho_tot * nabla_rho_tot, axis=1)
+        exc_integrated = split_exc_energy_uks(
+            model, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot,
+            features, grid_weights,
+        )
+        return mol_data["E_non_xc"] + exc_integrated
     exc_integrated = compute_exc_nn(
         model,
         mol_data["rho_grid"],
@@ -214,20 +358,35 @@ def fixed_density_total_energy(model, mol_data) -> float:
 
 
 def _uks_spin_resolved_vxc(model, mol_data, features):
-    """Build spin-resolved V_xc^NN_a, V_xc^NN_b via the spin-scaled approximation.
+    """Build spin-resolved V_xc^NN_a, V_xc^NN_b for the SOLV-01 split energy.
 
-    Spin-scaling relation (widely used with RKS XC functionals):
-        E_xc^UKS[rho_a, rho_b] ~= (E_xc^RKS[2*rho_a] + E_xc^RKS[2*rho_b]) / 2
+    SOLV-01 physics. The XC energy is split into exchange + correlation:
 
-    Taking the functional derivative w.r.t. the alpha DM gives (for a GGA)
-        V_xc_a_ij = v_rho^RKS(2 rho_a, 4 sigma_aa) integral phi_i phi_j dr
-                  + 4 v_sigma^RKS(2 rho_a, 4 sigma_aa) integral
-                        nabla_rho_a . nabla(phi_i phi_j) dr
-    which is exactly what ``compute_vxc_nn`` produces when called with
-    (2 rho_a, 4 sigma_aa, 2 nabla_rho_a) — the factor-of-2 in the sigma term
-    absorbs the 2*nabla_rho_a scaling and the remaining factor of 2 from the
-    scaled sigma. The beta channel is symmetric. This keeps alpha != beta V_xc
-    for open-shell systems so the NN can learn spin polarization.
+      * EXCHANGE obeys the exact spin-scaling relation (Oliver & Perdew,
+        Phys. Rev. A 20, 397 (1979)):
+            E_x[n_a, n_b] = 1/2 (E_x[2 n_a] + E_x[2 n_b]).
+        Its functional derivative w.r.t. the alpha DM is exactly what
+        ``compute_vxc_nn(..., part="x")`` produces when called with
+        (2 rho_a, 4 sigma_aa, nabla = 2 nabla_rho_a): the v_sigma factor of 2
+        absorbs the 2*nabla_rho_a scaling and the remaining factor of 2 from
+        4*sigma_aa. Beta is symmetric.
+
+      * CORRELATION does NOT obey the exchange spin-scaling relation; it is
+        spin-interpolated (von Barth & Hedin, J. Phys. C 5, 1629 (1972);
+        PW92, Phys. Rev. B 45, 13244 (1992)). The model's correlation
+        baseline ``pw92c_unpolarized_scalar`` is zeta-independent, so the
+        correct treatment of the EXISTING correlation model is to evaluate it
+        ONCE on the TOTAL density (the zeta=0 approximation). Since the
+        correlation energy depends only on rho_tot, delta rho_tot / delta
+        rho_a = delta rho_tot / delta rho_b = 1, so the SAME correlation
+        matrix V_c[rho_tot, sigma_tot] enters BOTH spin channels.
+
+    Therefore V_xc^a = vx[2 rho_a, 4 sigma_aa; 2 nabla_rho_a] + vc[rho_tot]
+    and V_xc^b = vx[2 rho_b, 4 sigma_bb; 2 nabla_rho_b] + vc[rho_tot], with
+    vc computed exactly ONCE.
+
+    FUTURE WORK: a zeta-dependent PW92 correlation baseline (proper spin
+    interpolation) does not exist in this codebase; do NOT add it here.
     """
     dm_pbe = mol_data["dm_pbe"]  # (2, nao, nao)
     ao_grid = mol_data["ao_grid"]
@@ -243,27 +402,26 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
     sigma_aa = jnp.sum(nabla_rho_a * nabla_rho_a, axis=1)
     sigma_bb = jnp.sum(nabla_rho_b * nabla_rho_b, axis=1)
 
-    vxc_nn_a = compute_vxc_nn(
-        model,
-        2.0 * rho_a,
-        4.0 * sigma_aa,
-        features,
-        ao_grid,
-        grid_weights,
-        nabla_rho=2.0 * nabla_rho_a,
-        ao_grad=ao_grid_deriv,
+    # Total density for the correlation piece (zeta=0 treatment).
+    rho_tot = rho_a + rho_b
+    nabla_rho_tot = nabla_rho_a + nabla_rho_b
+    sigma_tot = jnp.sum(nabla_rho_tot * nabla_rho_tot, axis=1)
+
+    # Exchange: per-spin, spin-scaled (part="x").
+    vx_a = compute_vxc_nn(
+        model, 2.0 * rho_a, 4.0 * sigma_aa, features, ao_grid, grid_weights,
+        nabla_rho=2.0 * nabla_rho_a, ao_grad=ao_grid_deriv, part="x",
     )
-    vxc_nn_b = compute_vxc_nn(
-        model,
-        2.0 * rho_b,
-        4.0 * sigma_bb,
-        features,
-        ao_grid,
-        grid_weights,
-        nabla_rho=2.0 * nabla_rho_b,
-        ao_grad=ao_grid_deriv,
+    vx_b = compute_vxc_nn(
+        model, 2.0 * rho_b, 4.0 * sigma_bb, features, ao_grid, grid_weights,
+        nabla_rho=2.0 * nabla_rho_b, ao_grad=ao_grid_deriv, part="x",
     )
-    return vxc_nn_a, vxc_nn_b
+    # Correlation: evaluated ONCE on the total density; shared by both spins.
+    vc = compute_vxc_nn(
+        model, rho_tot, sigma_tot, features, ao_grid, grid_weights,
+        nabla_rho=nabla_rho_tot, ao_grad=ao_grid_deriv, part="c",
+    )
+    return vx_a + vc, vx_b + vc
 
 
 def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarray:

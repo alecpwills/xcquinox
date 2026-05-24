@@ -115,28 +115,45 @@ def _compute_total_energy_uks(
     rho_b: jnp.ndarray,
     sigma_aa: jnp.ndarray,
     sigma_bb: jnp.ndarray,
+    sigma_tot: jnp.ndarray,
     features: jnp.ndarray,
     grid_weights: jnp.ndarray,
     h_core: jnp.ndarray,
     J_total: jnp.ndarray,
     e_nuc: jnp.ndarray,
 ) -> jnp.ndarray:
-    """UKS total energy with spin-scaled NN XC (Task 10 approximation).
+    """UKS total energy with the SOLV-01 SPLIT NN XC.
 
     E_total = e_nuc + Tr[h·(D_a+D_b)] + 0.5·Tr[J_total·(D_a+D_b)] + E_xc^NN
 
-    E_xc^NN ≈ 0.5 * (E_xc^RKS[2·rho_a, 4·sigma_aa] + E_xc^RKS[2·rho_b, 4·sigma_bb])
+    E_xc^NN = 0.5 * sum_g w_g [eps_x(2·rho_a, 4·sigma_aa)
+                              + eps_x(2·rho_b, 4·sigma_bb)]
+            +       sum_g w_g  eps_c(rho_tot, sigma_tot)
 
-    The spin-scaling relation is consistent with ``_uks_spin_resolved_vxc``:
-    taking the functional derivative of this E_xc w.r.t. D_s gives exactly the
-    V_xc^s matrices that the Fock build uses.
+    Only EXCHANGE obeys the spin-scaling relation (Oliver & Perdew, Phys.
+    Rev. A 20, 397 (1979)). CORRELATION is evaluated ONCE on the TOTAL
+    density (zeta=0), because the model's correlation baseline
+    ``pw92c_unpolarized_scalar`` is spin-unpolarized (von Barth & Hedin,
+    J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45, 13244 (1992)).
+
+    The functional derivative of this E_xc w.r.t. D_s is exactly the split
+    V_xc that ``_vxc_nn_spin`` builds (vx spin-scaled per spin + shared vc
+    on the total density), which the finite-difference consistency test
+    guards. ``sigma_tot`` must be |nabla rho_tot|^2 = sigma_aa + 2 sigma_ab
+    + sigma_bb computed by the caller from nabla_rho_a + nabla_rho_b.
+
+    FUTURE WORK: zeta-dependent PW92 correlation does not exist here; do NOT
+    add it.
     """
+    from xcquinox.alec.oneshot import split_exc_energy_uks
+
     D_tot = D_a + D_b
     E_one = jnp.einsum("ij,ij->", h_core, D_tot)
     E_coul = 0.5 * jnp.einsum("ij,ij->", J_total, D_tot)
-    exc_a = model.eval_exc(2.0 * rho_a, 4.0 * sigma_aa, features)
-    exc_b = model.eval_exc(2.0 * rho_b, 4.0 * sigma_bb, features)
-    E_xc_nn = 0.5 * jnp.sum(grid_weights * (exc_a + exc_b))
+    E_xc_nn = split_exc_energy_uks(
+        model, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot,
+        features, grid_weights,
+    )
     return e_nuc + E_one + E_coul + E_xc_nn
 
 
@@ -374,7 +391,13 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         nabla_rho_b = 2.0 * jnp.einsum("ij,dgi,gj->gd", D_b, ao_xyz, ao_grid)
         sigma_aa = jnp.sum(nabla_rho_a * nabla_rho_a, axis=1)
         sigma_bb = jnp.sum(nabla_rho_b * nabla_rho_b, axis=1)
-        return rho_a, rho_b, nabla_rho_a, nabla_rho_b, sigma_aa, sigma_bb
+        # SOLV-01: total-density gradient for the correlation piece (zeta=0).
+        # nabla_rho_tot = nabla_rho_a + nabla_rho_b, sigma_tot = |nabla_rho_tot|^2
+        # = sigma_aa + 2 sigma_ab + sigma_bb.
+        nabla_rho_tot = nabla_rho_a + nabla_rho_b
+        sigma_tot = jnp.sum(nabla_rho_tot * nabla_rho_tot, axis=1)
+        return (rho_a, rho_b, nabla_rho_a, nabla_rho_b,
+                sigma_aa, sigma_bb, nabla_rho_tot, sigma_tot)
 
     def _features_for(D_ab):
         """Assemble descriptor features from the current DM pair.
@@ -399,8 +422,14 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
             n_grid=grid_weights.shape[0],
         )
 
-    def _vxc_nn_spin(features, rho_s, sigma_ss, nabla_rho_s):
-        """Spin-scaled V_xc^NN for a single spin channel (see Task 10 docstring)."""
+    def _vx_nn_spin(features, rho_s, sigma_ss, nabla_rho_s):
+        """SOLV-01: EXCHANGE-only spin-scaled V_x^NN for a single spin channel.
+
+        Functional derivative of 0.5 (E_x[2 rho_a] + E_x[2 rho_b]) w.r.t. the
+        spin DM (Oliver & Perdew, Phys. Rev. A 20, 397 (1979)). The shared
+        correlation potential vc (computed once on the total density) is
+        added separately by the caller.
+        """
         return compute_vxc_nn(
             model,
             2.0 * rho_s,
@@ -410,6 +439,31 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
             grid_weights,
             nabla_rho=2.0 * nabla_rho_s,
             ao_grad=ao_grid_deriv,
+            part="x",
+        )
+
+    def _vc_nn_total(features, rho_tot, sigma_tot, nabla_rho_tot):
+        """SOLV-01: CORRELATION V_c^NN on the TOTAL density, computed ONCE.
+
+        Correlation does not obey the exchange spin-scaling relation; it is
+        evaluated on rho_tot (zeta=0, since the baseline
+        ``pw92c_unpolarized_scalar`` is spin-unpolarized — von Barth & Hedin,
+        J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45, 13244 (1992)).
+        Because delta rho_tot / delta rho_a = delta rho_tot / delta rho_b = 1,
+        this SAME matrix enters BOTH spin Fock matrices.
+
+        FUTURE WORK: zeta-dependent PW92 correlation does not exist here.
+        """
+        return compute_vxc_nn(
+            model,
+            rho_tot,
+            sigma_tot,
+            features,
+            ao_grid,
+            grid_weights,
+            nabla_rho=nabla_rho_tot,
+            ao_grad=ao_grid_deriv,
+            part="c",
         )
 
     def _j_total_for_cycle(D_ab):
@@ -419,11 +473,12 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         return _compute_j_matrix(D_ab[0], eri) + _compute_j_matrix(D_ab[1], eri)
 
     # Initial energy at D0 = D_PBE.
-    rho_a0, rho_b0, nabla_rho_a0, nabla_rho_b0, sigma_aa0, sigma_bb0 = _spin_resolved_rho(D0)
+    (rho_a0, rho_b0, nabla_rho_a0, nabla_rho_b0,
+     sigma_aa0, sigma_bb0, _nabla_tot0, sigma_tot0) = _spin_resolved_rho(D0)
     features_0 = _features_for(D0)
     J_total_0 = _j_total_for_cycle(D0)
     E0 = _compute_total_energy_uks(
-        model, D0[0], D0[1], rho_a0, rho_b0, sigma_aa0, sigma_bb0,
+        model, D0[0], D0[1], rho_a0, rho_b0, sigma_aa0, sigma_bb0, sigma_tot0,
         features_0, grid_weights, h_core, J_total_0, e_nuc,
     )
 
@@ -440,10 +495,16 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
 
     def body(state, _):
         D_cur = state.density_matrix  # (2, nao, nao)
-        rho_a, rho_b, nabla_rho_a, nabla_rho_b, sigma_aa, sigma_bb = _spin_resolved_rho(D_cur)
+        (rho_a, rho_b, nabla_rho_a, nabla_rho_b,
+         sigma_aa, sigma_bb, nabla_rho_tot, sigma_tot) = _spin_resolved_rho(D_cur)
         features = _features_for(D_cur)
-        vxc_nn_a = _vxc_nn_spin(features, rho_a, sigma_aa, nabla_rho_a)
-        vxc_nn_b = _vxc_nn_spin(features, rho_b, sigma_bb, nabla_rho_b)
+        # SOLV-01: V_xc^s = vx_s (exchange spin-scaled) + vc (shared, on the
+        # total density, computed ONCE per cycle).
+        vx_a = _vx_nn_spin(features, rho_a, sigma_aa, nabla_rho_a)
+        vx_b = _vx_nn_spin(features, rho_b, sigma_bb, nabla_rho_b)
+        vc = _vc_nn_total(features, rho_a + rho_b, sigma_tot, nabla_rho_tot)
+        vxc_nn_a = vx_a + vc
+        vxc_nn_b = vx_b + vc
         j_total = _j_total_for_cycle(D_cur)
         fock_a = h_core + j_total + vxc_nn_a
         fock_b = h_core + j_total + vxc_nn_b
@@ -455,12 +516,13 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         new_mixer_state, D_mixed = mixer.step(state.mixer_state, D_cur, D_new)
         # Consistency: recompute energy from D_mixed (same principle as RKS
         # fix in a622f646d — avoids hybrid D_cur/D_mixed energy).
-        rho_a_m, rho_b_m, _nra_m, _nrb_m, sig_aa_m, sig_bb_m = _spin_resolved_rho(D_mixed)
+        (rho_a_m, rho_b_m, _nra_m, _nrb_m,
+         sig_aa_m, sig_bb_m, _ntot_m, sig_tot_m) = _spin_resolved_rho(D_mixed)
         features_m = _features_for(D_mixed)
         j_total_m = _j_total_for_cycle(D_mixed)
         E_new = _compute_total_energy_uks(
             model, D_mixed[0], D_mixed[1], rho_a_m, rho_b_m, sig_aa_m, sig_bb_m,
-            features_m, grid_weights, h_core, j_total_m, e_nuc,
+            sig_tot_m, features_m, grid_weights, h_core, j_total_m, e_nuc,
         )
         is_conv = criterion.is_converged_from_energies(state.energy, E_new)
         already = state.converged

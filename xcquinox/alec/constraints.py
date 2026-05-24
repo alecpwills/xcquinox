@@ -67,20 +67,35 @@ class Constraint(eqx.Module, abc.ABC):
 
 @register_constraint("lieb_oxford")
 class LiebOxfordBound(Constraint):
-    """Smooth two-sided clamp on the exchange enhancement factor.
+    """One-sided smooth clamp enforcing the (local) Lieb-Oxford upper bound on F_x.
 
-    Functional form ``F = 1 + (mu - 1) * tanh((F_raw - 1)/(mu - 1))``,
-    range ``[2 - mu, mu] = [0.196, 1.804]`` for the default mu=1.804.
+    Functional form (Dick & Fernández-Serra eq. (11) transform ``I_a``):
 
-    The upper bound mu = 1 + kappa is the Lieb-Oxford bound on F_x
-    (Lieb & Oxford, *Int. J. Quantum Chem.* **19**, 427 (1981); PBE
-    convention with kappa = 0.804 — Perdew, Burke, Ernzerhof, *Phys.
-    Rev. Lett.* **77**, 3865 (1996), §3 eq. (14)).
+        I_mu(x) = mu / (1 + (mu - 1) e^{-x}) - 1,   F = 1 + I_mu(F_raw - 1)
 
-    The incidental lower bound 2 - mu = 0.196 is a side effect of the
-    symmetric tanh smoothing. It is physically reasonable because F_x
-    must be non-negative (ε_x^total = ε_x^LDA · F_x ≤ 0 with
-    ε_x^LDA ≤ 0 demands F_x ≥ 0); 0.196 is well above 0.
+    which maps the raw enhancement onto the open interval ``(0, mu)`` with the
+    UEG fixed point preserved (``F = 1`` when ``F_raw = 1``, since
+    ``I_mu(0) = 0``). For the default ``mu = 1.804`` the range is ``(0, 1.804)``.
+
+    Bounds and why:
+      * Upper bound ``mu = 1 + kappa = 1.804`` is the (local) Lieb-Oxford
+        ceiling on the exchange enhancement factor — Lieb & Oxford,
+        *Int. J. Quantum Chem.* **19**, 427 (1981); PBE convention with
+        kappa = 0.804, Perdew, Burke, Ernzerhof, *Phys. Rev. Lett.* **77**,
+        3865 (1996), §III(g) eq. (14).
+      * Lower bound is **0**, the physical floor: the exchange energy density
+        is non-positive (``ε_x = ε_x^LDA · F_x`` with ``ε_x^LDA ≤ 0``), so
+        ``F_x ≥ 0`` is the only rigorous lower constraint — there is no
+        Lieb-Oxford *lower* bound on F_x. This matches the construction used by
+        Dick & Fernández-Serra, *Phys. Rev. B* **104**, L161109 (2021), eqs.
+        (11)–(12) (their ``I_{1.174}`` likewise floors F_x at 0), and the
+        in-network ``_AlecLOB`` squash (``xcquinox/alec/networks.py``).
+
+    REFPHYS-02 fix (2026-05-23 review, verified twice against Oliver & Perdew
+    1979 / PBE 1996 / Dick 2021): the previous implementation used a *symmetric*
+    ``tanh`` clamp ``F = 1 + (mu-1) tanh((F_raw-1)/(mu-1))`` whose lower asymptote
+    ``2 - mu = 0.196`` is an artefact of the symmetry, not a theorem — it
+    needlessly forbade the physically-allowed range ``0 ≤ F_x < 0.196``.
     """
     registry_name: ClassVar[str] = "lieb_oxford"
     mu: float = eqx.field(default=1.804, static=True)
@@ -100,8 +115,12 @@ class LiebOxfordBound(Constraint):
 
     def __call__(self, inner_fn, rho, sigma, features):
         F_raw = inner_fn(rho, sigma, features)
-        max_delta = self.mu - 1.0
-        return 1.0 + max_delta * jnp.tanh((F_raw - 1.0) / max_delta)
+        # One-sided Lieb-Oxford squash, Dick & Fernández-Serra (2021) eq. (11):
+        #   I_mu(x) = mu / (1 + (mu - 1) e^{-x}) - 1   maps R -> (-1, mu - 1),
+        # so F = 1 + I_mu(F_raw - 1) lies in (0, mu) with F(F_raw=1) = 1.
+        x = F_raw - 1.0
+        I_mu = self.mu / (1.0 + (self.mu - 1.0) * jnp.exp(-x)) - 1.0
+        return 1.0 + I_mu
 
 
 @register_constraint("ueg_limit")
@@ -135,17 +154,34 @@ class UEGLimit(Constraint):
 
 @register_constraint("non_negative_correlation")
 class NonNegativeCorrelation(Constraint):
-    """Softplus-clamped Fc, enforcing Fc >= 0 with PBE fixed point F=1.
+    """Softplus-clamped Fc, enforcing Fc >= 0 with fixed point F=1.
 
-    The shifted-softplus form ``softplus(x + log(e - 1))`` satisfies
-    f(0) = log(1 + e^{log(e-1)}) = log(1 + (e-1)) = log(e) = 1. After
-    subtracting 1 and re-adding 1 we get a function g with g(1) = 1 and
-    g(F_raw → -∞) → 0 (true zero, not 1 - log 2 ≈ 0.307).
+    The shifted-softplus form ``softplus(F_raw - 1 + log(e - 1))`` satisfies
+    f(0) = log(1 + e^{log(e-1)}) = log(1 + (e-1)) = log(e) = 1.  After
+    the -1 shift in the argument and the implicit +0 offset, the function g
+    has g(1) = 1 (fixed point preserved) and g(F_raw → -∞) → 0 (true zero
+    floor, not 1 - log 2 ≈ 0.307 from a naive softplus without the shift).
 
-    This enforces the Levy-Perdew non-positive correlation energy
-    constraint (E_c[ρ] ≤ 0): since ε_c^LDA(ρ) ≤ 0 for all ρ in the
-    PW92 parametrization (Perdew & Wang 1992 Phys. Rev. B 45 13244),
-    F_c ≥ 0 ensures ε_c^total = ε_c^LDA · F_c ≤ 0 pointwise.
+    Physical justification
+    ----------------------
+    This code uses the convention  ε_c = ε_c^PW92 · F_c  (multiplicative
+    relative to the PW92 LDA baseline; Perdew & Wang 1992, Phys. Rev. B 45,
+    13244).  This differs from the standard GGA/PBE formulation (Perdew,
+    Burke, Ernzerhof 1996, Phys. Rev. Lett. 77, 3865, eq. 7) where
+    ε_c = ε_c^LDA + H (additive correction H).  In this code's convention,
+    forcing F_c ≥ 0 keeps the sign of ε_c consistent with ε_c^PW92 ≤ 0
+    (since ε_c^PW92 ≤ 0 for all densities in the PW92 parametrization).
+
+    Note: F_c ≥ 0 enforces the non-negativity of the correlation enhancement
+    factor and, within this code's convention, maintains ε_c ≤ 0 pointwise.
+    It does NOT by itself enforce the integral bound ∫ε_c n dV ≤ 0 in
+    general.  The non-positivity of the correlation energy is a basic property
+    of the exact functional (not to be confused with the Levy-Perdew
+    coordinate-scaling inequality, which is a separate result).
+
+    The softplus math is correct (fixed point F=1, floor exactly 0); only
+    the physical framing is clarified here relative to earlier versions of
+    this docstring.
     """
     registry_name: ClassVar[str] = "non_negative_correlation"
 

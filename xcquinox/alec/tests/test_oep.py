@@ -913,12 +913,14 @@ def test_save_vxc_ref_does_not_persist_terminated_by_or_dm_final(tmp_path):
         regularization=1e-4, n_electrons=2.0, lbfgs_status="ok",
         terminated_by="plateau",
         dm_final=np.eye(3),
+        stop_reason="plateau",
     )
     out = tmp_path / "vxc.npz"
     save_vxc_ref(r, str(out), dm_target=np.eye(3), method="ccsd")
     loaded = np.load(str(out))
     assert "terminated_by" not in loaded.files
     assert "dm_final" not in loaded.files
+    assert "stop_reason" not in loaded.files
 
 
 def test_plateau_F_val_cache_uses_unregularized_lagrangian():
@@ -1047,13 +1049,19 @@ def test_terminated_by_field_for_plateau_path():
 
 
 def test_plateau_below_conv_tol_marks_converged():
-    """Spec §9.1 + §5.5: plateau-below-conv_tol → converged=True."""
+    """Spec §9.1 + §5.5: plateau-below-conv_tol → converged=True.
+
+    OEP-01 audit fix: ``converged`` for the plateau path is the
+    SCF-verified condition (final_success AND finite AND
+    final_error < conv_tol), NOT a re-derivation from the plateau
+    median. The plateau median is no longer used to set ``converged``."""
     import inspect
     from xcquinox.alec.oep import run_oep_inversion
     src = inspect.getsource(run_oep_inversion)
-    # Plateau branch recomputes converged based on isfinite + below conv_tol
-    assert 'np.isfinite(density_error_reported)' in src
-    assert '(density_error_reported < conv_tol)' in src
+    # OEP-01: converged is the single SCF-verified condition on
+    # final_error; the plateau branch must NOT re-derive it from the
+    # (possibly biased) plateau median density_error.
+    assert '(final_error < conv_tol)' in src
     from xcquinox.alec.config import MoleculeSpec
     from pyscf import gto, scf as _scf
     spec = MoleculeSpec(
@@ -1193,10 +1201,14 @@ def test_run_oep_inversion_passes_mol_spec_grid_level_through(monkeypatch):
 def test_run_oep_inversion_plateau_catch_path_behavioral(monkeypatch):
     """Behavioral end-to-end test for the plateau catch path: force
     a `_OEPPlateau` raise via monkey-patched scipy.minimize and verify
-    the OEPResult carries terminated_by='plateau', lbfgs_status starts
-    with 'plateau', and density_error equals the plateau median (NOT
-    the post-finalization final_error). Closes the deferred behavioral-
-    coverage gap from Plan 1 Task 9 + Task 10 reviews.
+    the OEPResult carries terminated_by='plateau' and lbfgs_status starts
+    with 'plateau'. Closes the deferred behavioral-coverage gap from
+    Plan 1 Task 9 + Task 10 reviews.
+
+    OEP-01 audit fix: ``density_error`` is the SCF-VERIFIED
+    post-finalization ``final_error``, NOT the plateau median (the old
+    behavior). ``converged`` is derived from the SCF-verified error vs
+    conv_tol, never from the plateau median.
 
     Why monkey-patch minimize rather than _detect_plateau: on tiny
     H2/sto-3g RHF, L-BFGS-B converges before the plateau deque fills,
@@ -1221,12 +1233,16 @@ def test_run_oep_inversion_plateau_catch_path_behavioral(monkeypatch):
     def fake_minimize(fun, x0, **kwargs):
         # Populate scf_state via one objective evaluation:
         fun(x0)
-        # Also tickle the iter callback once so dm0_accepted is set:
+        # Also tickle the iter callback once so dm0_accepted is set.
+        # Swallow whatever sentinel the callback raises (on tiny H2/sto-3g
+        # the b=0 residual can be at/below conv_tol, firing the early-stop
+        # sentinel) so we deterministically force the plateau path via the
+        # explicit raise below.
         cb = kwargs.get("callback")
         if cb is not None:
             try:
                 cb(x0)
-            except _OEPPlateau:
+            except Exception:
                 pass
         raise _OEPPlateau(b=x0, plateau_density_error=plateau_value)
     monkeypatch.setattr(oep_mod, "minimize", fake_minimize)
@@ -1241,10 +1257,13 @@ def test_run_oep_inversion_plateau_catch_path_behavioral(monkeypatch):
     # Behavioral assertions on the catch+wiring path:
     assert result.terminated_by == "plateau"
     assert result.lbfgs_status.startswith("plateau")
-    assert abs(result.density_error - plateau_value) < 1e-12
-    # Plateau-below-conv_tol logic: plateau_value=1.5e-3 vs conv_tol=1e-30
-    # → False (1.5e-3 is NOT below 1e-30):
+    # OEP-01: density_error is the SCF-verified final_error, not the
+    # carried plateau median (1.5e-3).
+    assert abs(result.density_error - plateau_value) > 1e-9
+    # conv_tol=1e-30 is impossible for the real SCF-verified residual at
+    # b=0, so the result is not converged; stop_reason records plateau.
     assert result.converged is False
+    assert result.stop_reason == "plateau"
 
 
 def test_save_vxc_ref_write_is_atomic_no_tmp_leftover(tmp_path):
@@ -1296,3 +1315,134 @@ def test_save_vxc_ref_atomic_write_preserves_file_on_overwrite(tmp_path):
     with np.load(out) as z:
         assert str(z["oep_lbfgs_status"]) == "second"
         np.testing.assert_array_equal(z["vxc_ref"], np.full((3, 3), 2.0))
+
+
+def test_plateau_stop_does_not_claim_converged_without_scf_verification(monkeypatch):
+    """DEFECT OEP-01: a plateau early-stop must NOT be stamped
+    converged=True merely because the plateau-MEDIAN density error sits
+    below conv_tol. Convergence requires the SCF-VERIFIED final_error
+    (recomputed on the post-optimization SCF density) to be below
+    conv_tol. The returned density_error must equal the SCF-verified
+    final_error (not the plateau median), and a stop_reason field must
+    distinguish a plateau stop from genuine convergence.
+
+    Setup: force a _OEPPlateau whose carried plateau_density_error is
+    far below conv_tol (1e-12 << conv_tol=1e-6), while the carried
+    coefficient vector ``b`` is LARGE and non-zero — so the
+    post-finalization SCF runs V_xc = baseline + Σ b_t g_t at that large
+    b, producing a KS density far from the target and hence a large
+    SCF-verified final_error (>> conv_tol). The buggy code reports
+    density_error=1e-12 and converged=True (keying off the fabricated
+    plateau median); the correct behavior is converged=False with
+    density_error == the real (large) final_error.
+    """
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion, _OEPPlateau
+    import xcquinox.alec.oep as oep_mod
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+
+    # Plateau median far below conv_tol — but it is a fabricated floor,
+    # NOT the SCF-verified residual at the carried iterate.
+    plateau_value = 1e-12
+    conv_tol = 1e-6
+
+    def fake_minimize(fun, x0, **kwargs):
+        fun(x0)
+        cb = kwargs.get("callback")
+        if cb is not None:
+            # Swallow any sentinel the callback raises; we deterministically
+            # force the plateau path via the raise below.
+            try:
+                cb(x0)
+            except Exception:
+                pass
+        # Carry a LARGE non-zero b so the finalization SCF density is far
+        # from the target (large SCF-verified residual), while the plateau
+        # median is fabricated tiny.
+        b_large = np.full_like(np.asarray(x0, dtype=float), 5.0)
+        raise _OEPPlateau(b=b_large, plateau_density_error=plateau_value)
+    monkeypatch.setattr(oep_mod, "minimize", fake_minimize)
+
+    result = run_oep_inversion(
+        spec, dm_target,
+        baseline_xc="pbe",
+        aux_basis="def2-svp-jkfit",
+        max_iter=200,
+        conv_tol=conv_tol,
+        regularization=1e-4,
+        plateau_window=0,            # disable real detector; we force-raise
+    )
+
+    # The carried plateau iterate is a large b, whose KS density does NOT
+    # match the target to 1e-6 — so the SCF-verified residual is well
+    # above conv_tol. The reported density_error must be that real
+    # residual, NOT the 1e-12 plateau median.
+    assert result.density_error > conv_tol, (
+        "expected SCF-verified final_error > conv_tol; got "
+        f"{result.density_error!r}"
+    )
+    assert abs(result.density_error - plateau_value) > 1e-9, (
+        "density_error must be the SCF-verified final_error, not the "
+        "plateau median"
+    )
+    # Because the SCF-verified error is above conv_tol, the result must
+    # NOT be marked converged even though the plateau median was tiny.
+    assert result.converged is False
+    # stop_reason must distinguish a plateau stop from true convergence.
+    assert result.stop_reason == "plateau"
+
+
+def test_plateau_stop_below_conv_tol_is_converged_with_plateau_stop_reason(monkeypatch):
+    """DEFECT OEP-01 (other branch): when a plateau stop's
+    SCF-verified final_error genuinely sits below conv_tol, converged is
+    True, but stop_reason still records that it was a plateau stop so
+    downstream can distinguish it from a stationary-point convergence."""
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion, _OEPPlateau
+    import xcquinox.alec.oep as oep_mod
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+
+    def fake_minimize(fun, x0, **kwargs):
+        fun(x0)
+        cb = kwargs.get("callback")
+        if cb is not None:
+            # Swallow whatever sentinel the callback raises (early-stop
+            # would fire here under the loose conv_tol); we deterministically
+            # force the plateau path below.
+            try:
+                cb(x0)
+            except Exception:
+                pass
+        raise _OEPPlateau(b=x0, plateau_density_error=1e-30)
+    monkeypatch.setattr(oep_mod, "minimize", fake_minimize)
+
+    # Loose conv_tol so the real SCF-verified residual at b=0 is below it.
+    result = run_oep_inversion(
+        spec, dm_target,
+        baseline_xc="pbe",
+        aux_basis="def2-svp-jkfit",
+        max_iter=200,
+        conv_tol=1e6,
+        regularization=1e-4,
+        plateau_window=0,
+    )
+    assert result.converged is True
+    assert result.stop_reason == "plateau"
+    # density_error is the SCF-verified value, not the 1e-30 plateau
+    # median (which would have been reported by the buggy code). The
+    # real residual is many orders of magnitude larger than 1e-30.
+    assert result.density_error > 1e-30 * 1e6

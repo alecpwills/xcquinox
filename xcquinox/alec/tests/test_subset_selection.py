@@ -129,6 +129,117 @@ def test_metric_jsd_uses_natural_log():
     assert err == pytest.approx(3.0 * np.log(2.0), rel=1e-6)
 
 
+# ----------------------------------------------------------------------
+# DEFECT SUBSET-01: JSD must operate on PMFs (sum=1), be bounded by ln 2
+# per marginal, and not upper-clip legitimate density peaks > 1.
+# DEFECT SUBSET-05: an empty-in-range candidate must be maximally
+# divergent (never selected), not a moderate ~0.5*ln2 score.
+# ----------------------------------------------------------------------
+
+
+def test_metric_jsd_identical_distributions_returns_zero():
+    """JSD(P||P) == 0 for identical distributions, even when the inputs
+    are density-like (sum != 1) rather than PMFs — internal normalization
+    must collapse the divergence to 0."""
+    rng = np.random.default_rng(123)
+    # Density-like histogram: positive, integrates-to-1 via bin width, so
+    # the raw sum is NOT 1 and individual values exceed 1.
+    h_density = {}
+    for k in ("rho_third", "s", "alpha"):
+        raw = rng.uniform(0.0, 5.0, size=ss.NBINS)  # values up to 5 > 1
+        h_density[k] = raw
+    assert ss.metric_jsd(h_density, h_density) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_metric_jsd_disjoint_support_hits_ln2_bound_per_marginal():
+    """Two distributions with disjoint support have maximal JSD = ln 2 per
+    marginal (Lin 1991). Feed UNNORMALIZED density-like spikes (mass != 1,
+    peak value > 1) on disjoint bins and check the total saturates at
+    3*ln2 — proving internal PMF normalization AND the ln2 bound."""
+    p = {k: np.zeros(ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    q = {k: np.zeros(ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    for k in ("rho_third", "s", "alpha"):
+        # Unnormalized density-like mass: two bins each, peaks well above 1,
+        # disjoint support between p and q.
+        p[k][0] = 7.0
+        p[k][1] = 3.0
+        q[k][2] = 11.0
+        q[k][3] = 2.0
+    err = ss.metric_jsd(p, q)
+    assert err == pytest.approx(3.0 * np.log(2.0), rel=1e-9)
+
+
+def test_metric_jsd_bounded_by_ln2_per_marginal_for_density_inputs():
+    """For arbitrary density-like (sum != 1, peaks > 1) inputs, JSD must
+    remain within [0, 3*ln2]. The pre-fix code upper-clipped values > 1
+    and used unnormalized densities, which could violate the ln2 bound."""
+    rng = np.random.default_rng(7)
+    p = {k: rng.uniform(0.0, 10.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    q = {k: rng.uniform(0.0, 10.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    err = ss.metric_jsd(p, q)
+    assert 0.0 <= err <= 3.0 * np.log(2.0) + 1e-9
+
+
+def test_metric_jsd_normalizes_density_input_matches_pmf_input():
+    """Scaling a histogram by a constant (e.g. a different bin width) must
+    NOT change the JSD, because each input is normalized to a PMF
+    internally. The pre-fix code consumed densities directly, so a uniform
+    rescale of one input changed the result."""
+    rng = np.random.default_rng(31)
+    p = {k: rng.uniform(0.1, 1.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    q = {k: rng.uniform(0.1, 1.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    base = ss.metric_jsd(p, q)
+    # Rescale every input by an arbitrary positive constant: PMF identical.
+    p_scaled = {k: 13.7 * v for k, v in p.items()}
+    q_scaled = {k: 0.021 * v for k, v in q.items()}
+    scaled = ss.metric_jsd(p_scaled, q_scaled)
+    assert scaled == pytest.approx(base, rel=1e-9)
+
+
+def test_select_subset_rejects_empty_in_range_candidate():
+    """DEFECT SUBSET-05: a candidate whose grid points all fall OUTSIDE the
+    histogram range for some descriptor (zero in-range weight) must be
+    treated as maximally divergent and never selected.
+
+    Construct a pool where one entry's descriptor values are extreme
+    outliers that, under the reference edges, contribute zero in-range
+    weight. Any combo built solely from such empty entries must score
+    +inf (or be otherwise disqualified), so it is never chosen."""
+    rng = np.random.default_rng(99)
+    # Two "normal" entries that define the reference edges.
+    normal = [{
+        "rho_third": rng.uniform(0.4, 0.6, size=2000),
+        "s": rng.uniform(0.9, 1.1, size=2000),
+        "alpha": rng.uniform(0.9, 1.1, size=2000),
+        "weights": np.ones(2000),
+    } for _ in range(2)]
+    h_ref, edges = ss.build_reference_histograms(normal)
+
+    # An "outlier" entry whose descriptor values sit far outside the
+    # reference edges for every descriptor → zero in-range weight.
+    outlier = {
+        "rho_third": np.full(2000, 1e8),
+        "s": np.full(2000, 1e8),
+        "alpha": np.full(2000, 1e8),
+        "weights": np.ones(2000),
+    }
+    pool = normal + [outlier]  # indices 0, 1 normal; 2 outlier
+
+    # Direct metric check: an all-zero-in-range candidate scores +inf.
+    per_key_counts, W_in_range = ss._prebin_pool(pool, edges)
+    # The outlier (index 2) has zero in-range weight for every descriptor.
+    for k in ("rho_third", "s", "alpha"):
+        assert W_in_range[k][2] == 0.0
+
+    # select_subset with r=1, fixing nothing: the outlier must NOT win even
+    # though, pre-fix, its empty histogram scored a moderate ~0.5*ln2.
+    chosen, val = ss.select_subset(
+        pool, edges, h_ref, r=1, metric="jsd", progress=False,
+    )
+    assert chosen != (2,), "empty-in-range outlier must never be selected"
+    assert np.isfinite(val)
+
+
 def _toy_descriptor_arrays(seed):
     rng = np.random.default_rng(seed)
     n = 5000

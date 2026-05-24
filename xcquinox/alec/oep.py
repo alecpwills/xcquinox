@@ -19,11 +19,24 @@ standard Wu-Yang formulation; the alternative ``V_xc = Σ b_t g_t`` form
 (no baseline) starts from Hartree-only KS and is numerically much
 harder.
 
-Regularization is in **V-space** via ``b^T S_aux b`` (Heaton-Burgess et
-al. *Phys. Rev. Lett.* **98**, 256401 (2007)), making the regularization
-strength basis-independent — switching ``def2-svp-jkfit`` ↔
+Regularization is in **V-space** via the overlap-metric penalty
+``0.5 * lambda * b^T S_aux b`` (``S_aux`` = auxiliary-basis overlap
+matrix). The CONCEPT of regularizing in the space of the potential
+(rather than the basis-dependent coefficient-norm ``|b|^2``) follows
+Heaton-Burgess, Bulat & Yang *Phys. Rev. Lett.* **98**, 256401 (2007),
+who introduce a λ-regularized OEP energy functional to tame the ill-
+posed finite-basis OEP problem. **Note on the implemented form:** the
+penalty used here is an *overlap-metric (S_aux) Tikhonov / amplitude*
+penalty on ``b``, NOT the kinetic-energy *smoothness norm* of that
+paper. Heaton-Burgess Eq. (1) regularizes with the smoothness measure
+``‖∇v_b‖^2 = b^T T b`` (``T`` = kinetic-energy integral matrix in the
+potential basis); the present code instead penalizes the V_xc
+*amplitude* through the overlap metric ``S_aux``. Both are basis-aware
+penalties in V-space — switching ``def2-svp-jkfit`` ↔
 ``def2-tzvp-jkfit`` no longer silently changes the meaning of
-``regularization``.
+``regularization`` as a bare ``|b|^2`` penalty would — but they are
+mathematically distinct regularizers (amplitude vs. gradient/curvature
+smoothness).
 """
 from __future__ import annotations
 
@@ -69,6 +82,30 @@ class OEPResult(NamedTuple):
         back-compat. Consumers wanting expectation values must
         spin-sum: ``dm.sum(axis=0) if dm.ndim == 3 else dm``.
         In-memory only; not persisted by ``save_vxc_ref``.
+    stop_reason
+        OEP-01 audit fix. A convergence-semantics diagnostic, distinct
+        from ``terminated_by`` (which records WHICH sentinel fired). This
+        records WHETHER the returned V_xc is a verified converged result
+        and, if it stopped early, why:
+          * ``"converged"`` — the SCF-verified ``density_error``
+            (recomputed on the post-optimization SCF density) is below
+            ``conv_tol`` AND the optimization either reached a stationary
+            point (scipy L-BFGS-B success) or early-stopped on the
+            conv_tol sentinel. ``converged`` is True.
+          * ``"plateau"`` — the optimization stopped on a plateau (the
+            density-error / F_val history flattened) rather than at a
+            stationary point. ``converged`` is True ONLY if the
+            SCF-verified ``density_error`` is below ``conv_tol``; it does
+            NOT use the (possibly biased) plateau-median error. Even when
+            ``converged`` is True, ``stop_reason`` stays ``"plateau"`` so
+            consumers can tell a plateau stop from a true stationary
+            convergence and avoid feeding a non-variational V_xc into
+            training targets unaware.
+          * ``"max_iter"`` — L-BFGS-B exhausted ``max_iter`` without a
+            sentinel firing; ``converged`` reflects the SCF-verified
+            density error vs ``conv_tol``.
+        In-memory only; not persisted by ``save_vxc_ref``. Default
+        ``"max_iter"`` for NamedTuple back-compat.
     """
     vxc_matrix: np.ndarray
     converged: bool
@@ -82,6 +119,7 @@ class OEPResult(NamedTuple):
     lbfgs_status: str           # success / message from scipy result (D5)
     terminated_by: str = "max_iter"            # Spec sec. 5.5 (Pass 6)
     dm_final: np.ndarray | None = None         # Spec sec. 5.5/6.1 (Pass 6/8)
+    stop_reason: str = "max_iter"              # OEP-01 audit fix
 
 
 class _OEPEarlyStop(Exception):
@@ -264,10 +302,13 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
         the AO-basis matrix increment per coefficient: V_xc += b_t · 3c[t].
       * ``aux_on_grid[g, t] = g_t(r_g) · w_g`` for grid-side projections.
       * ``S_aux[t, t'] = ∫ g_t(r) g_{t'}(r) dr`` — the auxiliary-basis
-        overlap matrix used for V-space regularization (D2 audit fix:
-        Heaton-Burgess PRL 98, 256401 (2007); the prior coefficient-
-        space ‖b‖² regularization is basis-dependent and silently
-        changes meaning when aux_basis is swapped).
+        overlap matrix used for the V-space (overlap-metric) amplitude
+        regularization (D2 audit fix). V-space regularization follows the
+        CONCEPT of Heaton-Burgess PRL 98, 256401 (2007); the implemented
+        penalty here is an overlap-metric (S_aux) amplitude/Tikhonov term,
+        NOT that paper's kinetic-energy smoothness norm ``b^T T b``. The
+        prior coefficient-space ‖b‖² regularization is basis-dependent and
+        silently changes meaning when aux_basis is swapped.
 
     Uses ``GTOval_sph`` if ``mol.cart`` is False; ``GTOval_cart``
     otherwise (D12 audit fix: hardcoded ``GTOval_sph`` was inconsistent
@@ -536,9 +577,13 @@ def run_oep_inversion(
     conv_tol : float
         Density-error L2 tolerance for the ``converged`` flag.
     regularization : float
-        Tikhonov regularization in V-space: ``+0.5 * lambda *
-        b^T S_aux b``. Heaton-Burgess et al. PRL 98, 256401 (2007).
-        Smooth in V_xc(r) magnitude regardless of which auxiliary
+        Overlap-metric (S_aux) Tikhonov / amplitude penalty in V-space:
+        ``+0.5 * lambda * b^T S_aux b``. The CONCEPT of V-space
+        regularization follows Heaton-Burgess et al. PRL 98, 256401
+        (2007); the implemented penalty is an *amplitude* term in the
+        overlap metric, NOT that paper's kinetic-energy *smoothness*
+        norm ``b^T T b``. Penalizes the V_xc(r) magnitude in a way that
+        is basis-independent in meaning regardless of which auxiliary
         basis is chosen. Pre-fix code used ``0.5 * lambda * |b|^2``
         which silently changed meaning when ``aux_basis`` was swapped.
     level_shift : float
@@ -943,22 +988,42 @@ def run_oep_inversion(
         lbfgs_status = lbfgs_status + " + final_scf_failed"
 
     # Determine terminated_by and the appropriate density_error to report.
+    #
+    # OEP-01 audit fix. ALWAYS report the SCF-verified ``final_error``
+    # (recomputed above on the post-optimization SCF density), never the
+    # plateau MEDIAN. The plateau median is a flatness statistic of the
+    # density-error/F_val history, not the residual of the iterate we
+    # actually return; reporting it (and worse, marking ``converged`` from
+    # it) could feed a biased, non-variational V_xc into training targets
+    # while labeling it converged. The plateau median is still surfaced
+    # for diagnostics via ``lbfgs_status`` (built above).
     if early_stopped_b is not None:
         terminated_by = "conv_tol"
-        density_error_reported = final_error
     elif plateau_terminated:
         terminated_by = "plateau"
-        # Spec sec. 5.5: report the plateau median as the trial's
-        # density_error (the achievable floor at this setting).
-        density_error_reported = float(plateau_density_error)
-        # Plateau-below-conv_tol counts as converged (spec sec. 5.5).
-        converged = bool(
-            np.isfinite(density_error_reported)
-            and (density_error_reported < conv_tol)
-        )
     else:
         terminated_by = "max_iter"
-        density_error_reported = final_error
+    density_error_reported = final_error
+
+    # ``converged`` was already computed (above) from the SCF-verified
+    # condition: final_success AND isfinite(final_error) AND
+    # final_error < conv_tol. That is the genuine-stationarity / matches-
+    # to-tolerance contract and applies uniformly to every stop path,
+    # including plateau. We deliberately do NOT re-derive ``converged``
+    # from the plateau median here (the pre-fix code did, which is
+    # OEP-01).
+    #
+    # ``stop_reason`` records WHETHER this is a verified convergence and,
+    # if it stopped early, why — distinct from ``terminated_by`` (which
+    # sentinel fired). A plateau stop keeps stop_reason="plateau" even
+    # when converged is True, so downstream can distinguish it from a
+    # true stationary-point convergence.
+    if plateau_terminated:
+        stop_reason = "plateau"
+    elif converged:
+        stop_reason = "converged"
+    else:
+        stop_reason = terminated_by
     # Pass-8: dm_final = post-finalization SCF DM. On final-SCF
     # failure, set None so the harness's bias check can skip safely.
     dm_final_returned = dm_final if final_success else None
@@ -975,6 +1040,7 @@ def run_oep_inversion(
         lbfgs_status=lbfgs_status,
         terminated_by=terminated_by,
         dm_final=dm_final_returned,
+        stop_reason=stop_reason,
     )
 
 

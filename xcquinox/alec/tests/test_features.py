@@ -114,6 +114,101 @@ def test_n_elec_trace_matches_density_matrix():
 
 
 # ---------------------------------------------------------------------------
+# DESC-11: natural-orbital occupations must be eig(D @ S) (not eig(S^{-1} D))
+# DESC-07: dm_entropy must be a genuine correlation indicator (~0 for a
+#          single determinant, growing with fractional natural occupations)
+# ---------------------------------------------------------------------------
+
+from xcquinox.features import compute_dm_natural_occupations
+
+
+def test_natural_occupations_equal_eig_DS():
+    """DESC-11: the natural-orbital occupations underlying dm_entropy must
+    equal sorted(eig(D @ S)) for a NON-identity overlap S.
+
+    Pre-fix code used the Lowdin transform S^{-1/2} D S^{-1/2}, whose
+    eigenvalues are eig(S^{-1} D) — NOT the natural occupations. The
+    correct symmetric transform is S^{1/2} D S^{1/2}, whose spectrum
+    equals eig(D S).
+    """
+    D, S = _build_clean_rks_dm(nao=8, nocc=3, seed=0)
+    occ = np.asarray(compute_dm_natural_occupations(D, S))
+    # Reference natural occupations: eigenvalues of D @ S.
+    ref = np.linalg.eigvals(np.asarray(D) @ np.asarray(S))
+    ref = np.sort(np.real(ref))
+    occ_sorted = np.sort(occ)
+    np.testing.assert_allclose(occ_sorted, ref, atol=1e-6)
+
+
+def test_natural_occupations_trace_preserved():
+    """DESC-11: sum of natural occupations == Tr(D S) == electron count."""
+    nocc = 3
+    D, S = _build_clean_rks_dm(nao=8, nocc=nocc, seed=0)
+    occ = np.asarray(compute_dm_natural_occupations(D, S))
+    assert abs(occ.sum() - 2 * nocc) < 1e-6, occ.sum()
+
+
+def test_natural_occupations_single_determinant_are_integers():
+    """A clean RKS single-determinant DM has occupations in {0, 2}."""
+    D, S = _build_clean_rks_dm(nao=8, nocc=3, seed=0)
+    occ = np.sort(np.asarray(compute_dm_natural_occupations(D, S)))
+    # 3 occupied (≈2), 5 virtual (≈0)
+    near0 = occ[occ < 1.0]
+    near2 = occ[occ >= 1.0]
+    assert np.allclose(near0, 0.0, atol=1e-6), near0
+    assert np.allclose(near2, 2.0, atol=1e-6), near2
+
+
+def test_dm_entropy_shannon_of_normalized_occupations():
+    """Reverted DESC-07 decision (2026-05-23 review): dm_entropy is the Shannon
+    entropy of the natural occupations normalized to a probability distribution
+    (the original functional form; only the DESC-11 occupation-transform
+    correctness fix was kept). For a clean RKS single determinant with ``nocc``
+    doubly-occupied orbitals (each n_i = 2, normalized p_i = 1/nocc) this equals
+    ``ln(nocc)``. It is therefore size-dependent and NOT a clean correlation
+    indicator — ``idempotency_error`` is the quantity that vanishes for a single
+    determinant (asserted here too)."""
+    nocc = 3
+    D, S = _build_clean_rks_dm(nao=8, nocc=nocc, seed=0)
+    out = compute_dm_features(D, S)
+    ent = float(out["dm_entropy"])
+    assert abs(ent - np.log(nocc)) < 1e-4, (ent, np.log(nocc))
+    # idempotency_error IS ~0 for a single determinant (the correct indicator).
+    assert abs(float(out["idempotency_error"])) < 1e-5
+
+
+def test_dm_entropy_larger_for_fractional_occupations():
+    """DESC-07: a DM with fractional natural occupations (correlated) must
+    give a strictly larger dm_entropy than a single determinant."""
+    D, S = _build_clean_rks_dm(nao=8, nocc=3, seed=0)
+    ent_single = float(compute_dm_features(D, S)["dm_entropy"])
+
+    # Build a correlated DM by mixing in fractional occupation of a virtual
+    # orbital: move 0.4 electrons from HOMO into LUMO. Work in the natural
+    # representation via S^{1/2}.
+    S_eigvals, S_eigvecs = np.linalg.eigh(np.asarray(S))
+    S_sqrt = S_eigvecs @ np.diag(np.sqrt(S_eigvals)) @ S_eigvecs.T
+    S_inv_sqrt = S_eigvecs @ np.diag(1.0 / np.sqrt(S_eigvals)) @ S_eigvecs.T
+    M = S_sqrt @ np.asarray(D) @ S_sqrt           # symmetric, eig = occupations
+    w, V = np.linalg.eigh(M)
+    order = np.argsort(w)
+    # indices: virtuals (~0) first, occupied (~2) last
+    homo = order[-1]
+    lumo = order[len(order) - 4]   # first virtual after 3 occupied
+    w[homo] -= 0.4
+    w[lumo] += 0.4
+    M_corr = V @ np.diag(w) @ V.T
+    D_corr = jnp.array(S_inv_sqrt @ M_corr @ S_inv_sqrt)
+    ent_corr = float(compute_dm_features(D_corr, S)["dm_entropy"])
+
+    assert ent_corr > ent_single + 1e-4, (
+        f"correlated (fractional-occupation) DM should give larger "
+        f"dm_entropy than single determinant: corr={ent_corr}, "
+        f"single={ent_single}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # R2 audit fix: precompute_fixed_density_data passes spin-resolved DM
 # ---------------------------------------------------------------------------
 

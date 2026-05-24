@@ -40,8 +40,12 @@ def test_p01_compute_vxc_nn_flows_grad_through_dynamic_rho():
     grid_weights = data["grid_weights"]
 
     def scalar_from_vxc(rho_dyn, sigma_dyn):
+        # PRE-07: compute_vxc_nn refuses to silently drop the GGA v_sigma
+        # term, so the LDA-only v_rho path (which this gradient-flow probe
+        # exercises) must be requested explicitly via lda_only=True.
         vxc = compute_vxc_nn(
             model, rho_dyn, sigma_dyn, features, ao_grid, grid_weights,
+            lda_only=True,
         )
         return jnp.sum(vxc ** 2)
 

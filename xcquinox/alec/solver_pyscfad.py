@@ -170,13 +170,23 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
       - spin=1, GGA: rho shape (2, 4, n_grid); returns vrho (n_grid, 2) and
         vsigma (n_grid, 3) in (uu, ud, dd) ordering.
 
-    UKS uses the spin-scaled RKS approximation (see alec.oneshot
-    `_uks_spin_resolved_vxc`):
-        E_xc^UKS[rho_a, rho_b]
-            ~= 0.5 * (E_xc^RKS[2 rho_a, 4 sigma_aa] + E_xc^RKS[2 rho_b, 4 sigma_bb])
-    so vrho^s = v_rho^RKS(2 rho_s, 4 sigma_ss) and vsigma_ss = 2 *
-    v_sigma^RKS(2 rho_s, 4 sigma_ss); the ud cross-term is zero under
-    this approximation.
+    UKS uses the SOLV-01 split (see alec.oneshot `_uks_spin_resolved_vxc`):
+        E_xc^UKS = 0.5 (E_x[2 rho_a, 4 sigma_aa] + E_x[2 rho_b, 4 sigma_bb])
+                 +      E_c[rho_tot, sigma_tot]
+    EXCHANGE obeys the exact spin-scaling relation (Oliver & Perdew, Phys.
+    Rev. A 20, 397 (1979)); CORRELATION does NOT and is evaluated once on the
+    TOTAL density (zeta=0), because the baseline ``pw92c_unpolarized_scalar``
+    is spin-unpolarized (von Barth & Hedin, J. Phys. C 5, 1629 (1972); PW92,
+    Phys. Rev. B 45, 13244 (1992)). The per-spin libxc derivatives are then
+        vrho_s   = v_rho^x(2 rho_s, 4 sigma_ss) + v_rho^c(rho_tot, sigma_tot)
+        vsigma_uu = 2 v_sigma^x(2 rho_a, 4 sigma_aa) + v_sigma^c(rho_tot)
+        vsigma_dd = 2 v_sigma^x(2 rho_b, 4 sigma_bb) + v_sigma^c(rho_tot)
+        vsigma_ud = 2 v_sigma^c(rho_tot)
+    The non-zero ``ud`` term comes entirely from the total-density
+    correlation (sigma_tot = sigma_uu + 2 sigma_ud + sigma_dd).
+
+    FUTURE WORK: zeta-dependent PW92 correlation does not exist here; do NOT
+    add it.
     """
     from xcquinox.alec.descriptors import assemble_descriptor_features
 
@@ -256,6 +266,24 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
     def eval_single(r, s, f):
         return model.eval_exc_scalar(r, s, f)
 
+    # SOLV-01 split scalar energy densities for the UKS callback.
+    def eval_single_x(r, s, f):
+        return model.eval_ex_scalar(r, s, f)
+
+    def eval_single_c(r, s, f):
+        return model.eval_ec_scalar(r, s, f)
+
+    def _eval_part(fn, rho0, sigma, features):
+        """Return (e_density, de/drho, de/dsigma) for scalar energy-density
+        ``fn`` evaluated batched over the grid. Used for RKS (fn=eval_single)
+        and for the SOLV-01 split exchange / correlation pieces."""
+        e_density = jax.vmap(fn)(rho0, sigma, features)
+        drho_fn = lambda r, s, f: jax.grad(fn, argnums=0)(r, s, f)
+        dsigma_fn = lambda r, s, f: jax.grad(fn, argnums=1)(r, s, f)
+        vrho = jax.vmap(drho_fn)(rho0, sigma, features)
+        vsigma = jax.vmap(dsigma_fn)(rho0, sigma, features)
+        return e_density, vrho, vsigma
+
     def _eval_rks(rho0, sigma, features):
         """Return (exc_density, vrho, vsigma) where exc_density = rho * eps (NN output).
 
@@ -263,12 +291,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
         per-particle ``exc``; the UKS branch of the callback spin-scales
         before dividing.
         """
-        exc_density = jax.vmap(eval_single)(rho0, sigma, features)
-        drho_fn = lambda r, s, f: jax.grad(eval_single, argnums=0)(r, s, f)
-        dsigma_fn = lambda r, s, f: jax.grad(eval_single, argnums=1)(r, s, f)
-        vrho = jax.vmap(drho_fn)(rho0, sigma, features)
-        vsigma = jax.vmap(dsigma_fn)(rho0, sigma, features)
-        return exc_density, vrho, vsigma
+        return _eval_part(eval_single, rho0, sigma, features)
 
     def eval_xc_alec_gga(xc_code, rho, spin=0, relativity=0, deriv=1, verbose=None):
         # Detect spin-polarized input: pyscf/libxc convention sends
@@ -285,25 +308,42 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             dxb, dyb, dzb = rho_arr[1, 1], rho_arr[1, 2], rho_arr[1, 3]
             sigma_aa = dxa * dxa + dya * dya + dza * dza
             sigma_bb = dxb * dxb + dyb * dyb + dzb * dzb
+            sigma_ab = dxa * dxb + dya * dyb + dza * dzb
+            # SOLV-01: total-density gradient invariant for the correlation
+            # piece. sigma_tot = |nabla rho_tot|^2 = sigma_aa + 2 sigma_ab + sigma_bb.
+            sigma_tot = sigma_aa + 2.0 * sigma_ab + sigma_bb
 
-            # Spin-scaled RKS evaluation for each channel. Use a
-            # block-sized features slice since pyscfad chunks the grid
+            # SOLV-01 split. EXCHANGE obeys the exact spin-scaling relation
+            # (Oliver & Perdew, Phys. Rev. A 20, 397 (1979)):
+            #   E_x = 0.5 (E_x[2 rho_a, 4 sigma_aa] + E_x[2 rho_b, 4 sigma_bb]),
+            # evaluated per spin. CORRELATION does NOT — it is evaluated ONCE
+            # on the TOTAL density (zeta=0), because the baseline
+            # pw92c_unpolarized_scalar is spin-unpolarized (von Barth & Hedin,
+            # J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45, 13244 (1992)).
+            # FUTURE WORK: a zeta-dependent PW92 correlation does not exist in
+            # this codebase; do NOT add it here.
+            #
+            # Use a block-sized features slice since pyscfad chunks the grid
             # under jax.grad / jit tracing.
             features_blk = _features_for_block(int(rho_a.shape[0]))
-            exc_a_density, vrho_a, vsigma_a = _eval_rks(
-                2.0 * rho_a, 4.0 * sigma_aa, features_blk,
+            rho_tot = rho_a + rho_b
+            # Exchange: per-spin, at the spin-scaled (2 rho_s, 4 sigma_ss).
+            ex_a_density, vrho_x_a, vsigma_x_a = _eval_part(
+                eval_single_x, 2.0 * rho_a, 4.0 * sigma_aa, features_blk,
             )
-            exc_b_density, vrho_b, vsigma_b = _eval_rks(
-                2.0 * rho_b, 4.0 * sigma_bb, features_blk,
+            ex_b_density, vrho_x_b, vsigma_x_b = _eval_part(
+                eval_single_x, 2.0 * rho_b, 4.0 * sigma_bb, features_blk,
+            )
+            # Correlation: once, on the total density.
+            ec_density, vrho_c, vsigma_c = _eval_part(
+                eval_single_c, rho_tot, sigma_tot, features_blk,
             )
 
             # libxc convention: E_xc = integral (rho_a + rho_b) * eps_uks(r) dr,
             # so eps_uks is the per-particle energy density returned here.
-            # Our approximation: E_xc ≈ 0.5 * ∫ (exc_a_density + exc_b_density) dr
-            # where exc_s_density ≡ model.eval_exc(2*rho_s, 4*sigma_ss, ...)
-            # (NN output at the scaled inputs). Dividing by (rho_a + rho_b)
-            # yields eps_uks.
-            rho_tot = rho_a + rho_b
+            # SOLV-01 split energy density:
+            #   E_density = 0.5 (ex_a_density + ex_b_density) + ec_density.
+            xc_density = 0.5 * (ex_a_density + ex_b_density) + ec_density
             # H3 audit fix: 1/(rho_tot + 1e-18) gives O(1/eps^2) JVP at
             # tail points (rho ≈ 0). Use jnp.where with a higher floor
             # that masks tail contributions to 0 instead of letting the
@@ -312,18 +352,29 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             rho_safe = jnp.maximum(rho_tot, _RHO_EPS)
             exc = jnp.where(
                 rho_tot > _RHO_EPS,
-                0.5 * (exc_a_density + exc_b_density) / rho_safe,
+                xc_density / rho_safe,
                 0.0,
             )
 
+            # vrho_s = d E_density / d rho_s.
+            #   Exchange: d/drho_a [0.5 ex(2 rho_a)] = 0.5 * 2 * vrho_x_a = vrho_x_a.
+            #   Correlation: d/drho_a ec(rho_tot) = vrho_c (d rho_tot/d rho_a = 1),
+            #     IDENTICAL for both spins.
+            vrho_a = vrho_x_a + vrho_c
+            vrho_b = vrho_x_b + vrho_c
             # vrho: (n_grid, 2) in (u, d) order.
             vrho_stack = jnp.stack([vrho_a, vrho_b], axis=-1)
-            # vsigma: (n_grid, 3) in (uu, ud, dd) order. The spin-scaled
-            # approximation has zero ud cross-term.
-            vsigma_ud = jnp.zeros_like(vsigma_a)
-            vsigma_stack = jnp.stack(
-                [2.0 * vsigma_a, vsigma_ud, 2.0 * vsigma_b], axis=-1,
-            )
+
+            # vsigma in (uu, ud, dd) order.
+            #   Exchange: d/dsigma_aa [0.5 ex(4 sigma_aa)] = 0.5 * 4 * vsigma_x_a
+            #     = 2 vsigma_x_a (uu); zero exchange ud cross-term.
+            #   Correlation: ec depends on sigma_tot = sigma_aa + 2 sigma_ab
+            #     + sigma_bb, so d ec/d sigma_uu = vsigma_c, d ec/d sigma_ud =
+            #     2 vsigma_c, d ec/d sigma_dd = vsigma_c.
+            vsigma_uu = 2.0 * vsigma_x_a + vsigma_c
+            vsigma_ud = 2.0 * vsigma_c
+            vsigma_dd = 2.0 * vsigma_x_b + vsigma_c
+            vsigma_stack = jnp.stack([vsigma_uu, vsigma_ud, vsigma_dd], axis=-1)
             vxc = (vrho_stack, vsigma_stack, None, None)
             return exc, vxc, None, None
 

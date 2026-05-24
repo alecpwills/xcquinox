@@ -23,6 +23,51 @@ from functools import partial
 # Density Matrix Features
 # =============================================================================
 
+def compute_dm_natural_occupations(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute the natural-orbital occupation numbers of a density matrix.
+
+    For a density matrix ``D`` and AO overlap ``S``, the natural-orbital
+    occupations are the eigenvalues of ``D @ S`` (the generalized
+    eigenproblem ``D S C = C diag(n_i)``). These are obtained here as the
+    eigenvalues of the *symmetric* similarity transform
+
+        M = S^{1/2} D S^{1/2}
+
+    which is similar to ``D S`` (``S^{1/2} (D S) S^{-1/2} = S^{1/2} D S^{1/2}``)
+    and therefore shares its spectrum, while being symmetric so a stable
+    symmetric eigensolver (``eigvalsh``) applies. The trace is preserved:
+    ``sum_i n_i = Tr(M) = Tr(D S) = N_e``.
+
+    Source: natural orbitals/occupations are the eigenvectors/eigenvalues of the
+    one-particle reduced density matrix — P.-O. Löwdin, *Phys. Rev.* **97**, 1474
+    (1955), "Quantum Theory of Many-Particle Systems. I." In a nonorthogonal AO
+    basis with overlap ``S`` this is the generalized eigenproblem ``D S C = C n``,
+    so the occupations are the eigenvalues of ``D S`` (equivalently of the
+    symmetric ``S^{1/2} D S^{1/2}``); see also E. R. Davidson, *Reduced Density
+    Matrices in Quantum Chemistry* (Academic Press, 1976), Ch. 2.
+
+    NOTE (DESC-11 fix): the previous implementation used the *Löwdin* transform
+    ``S^{-1/2} D S^{-1/2}``, whose eigenvalues are those of ``S^{-1} D`` — these
+    are NOT the natural occupations whenever ``S != I``.
+
+    :param dm: Total (spin-summed) density matrix in AO basis, shape (nao, nao).
+    :type dm: jnp.ndarray
+    :param S: AO overlap matrix, shape (nao, nao).
+    :type S: jnp.ndarray
+    :return: Natural-orbital occupation numbers, shape (nao,). For an RKS
+        single determinant these are ~{0, 2}; for UKS spin-summed DMs ~{0, 1, 2}.
+    :rtype: jnp.ndarray
+    """
+    S_eigvals, S_eigvecs = jnp.linalg.eigh(S)
+    s_clamped = jnp.maximum(S_eigvals, 1e-12)
+    S_sqrt = (S_eigvecs * jnp.sqrt(s_clamped)) @ S_eigvecs.T
+    # Symmetric transform; eigenvalues equal the spectrum of D @ S.
+    M = S_sqrt @ dm @ S_sqrt
+    M = 0.5 * (M + M.T)  # symmetrize against round-off
+    return jnp.linalg.eigvalsh(M)
+
+
 def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
     """
     Extract correlation-sensitive features from the density matrix.
@@ -48,7 +93,19 @@ def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
               (Pople-Nesbet 1954).
           Zero for any single-determinant (HF or KS) reference; nonzero
           for correlated natural-orbital DMs.
-        - 'dm_entropy': von Neumann-like entropy of natural-orbital occupations.
+        - 'dm_entropy': Shannon (von-Neumann-like) entropy
+          ``-sum_i p_i ln p_i`` of the natural-orbital occupations normalized to
+          a probability distribution ``p_i = n_i / sum_j n_j``, where the
+          occupations ``n_i`` are the eigenvalues of ``D S`` (see
+          ``compute_dm_natural_occupations``; Löwdin, Phys. Rev. 97, 1474, 1955).
+          DESC-07 caveat: this quantity is *size-dependent* (it scales roughly
+          like ``ln(N_occ)``) and is nonzero even for an uncorrelated single
+          determinant, so it is NOT a clean electron-correlation indicator —
+          'idempotency_error' is the quantity that vanishes for a single
+          determinant. (The DESC-11 correctness fix to the natural-occupation
+          transform still shifts this feature's numeric value relative to the
+          pre-fix code for ``S != I``; checkpoints trained on the old values
+          would, strictly, need re-evaluation.)
         - 'off_diag_norm': Frobenius norm of off-diagonal elements / trace.
         - 'trace': Tr(DM @ S) = number of electrons.
     :rtype: Dict[str, float]
@@ -77,19 +134,21 @@ def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
             d_norm @ S @ d_norm - d_norm, "fro"
         ) / (n_norm + 1e-12)
 
-    # Compute natural orbital occupations via generalized eigenvalue problem
-    # DM @ S @ C = C @ diag(n_i) where n_i are occupations
-    # Use Lowdin orthogonalization: S^{-1/2} @ DM @ S^{1/2}
-    S_eigvals, S_eigvecs = jnp.linalg.eigh(S)
-    S_sqrt = S_eigvecs @ jnp.diag(jnp.sqrt(jnp.maximum(S_eigvals, 1e-12))) @ S_eigvecs.T
-    S_inv_sqrt = S_eigvecs @ jnp.diag(1.0 / jnp.sqrt(jnp.maximum(S_eigvals, 1e-12))) @ S_eigvecs.T
+    # Natural-orbital occupations = eigenvalues of D @ S, obtained from the
+    # symmetric similarity transform S^{1/2} D S^{1/2} (DESC-11). The Löwdin
+    # transform S^{-1/2} D S^{-1/2} used previously yields eig(S^{-1} D), which
+    # are NOT the natural occupations when S != I.
+    occupations = compute_dm_natural_occupations(dm, S)
 
-    dm_ortho = S_inv_sqrt @ dm @ S_inv_sqrt.T
-    occupations = jnp.linalg.eigvalsh(dm_ortho)
-    occupations = jnp.clip(occupations, 1e-12, 2.0)  # Physical bounds
-
-    # Occupation entropy: -sum(n_i * log(n_i)) normalized
-    # High entropy indicates strong correlation (fractional occupations)
+    # Shannon (von-Neumann-like) entropy of the natural-orbital occupations,
+    # normalized to a probability distribution: -sum_i p_i ln p_i with
+    # p_i = n_i / sum_j n_j. This is the ORIGINAL functional form (preserved per
+    # 2026-05-23 review decision: keep only the sourced DESC-11 correctness fix
+    # to the occupation transform; do not redefine the feature's semantics). The
+    # occupations here are the correct natural occupations (eig(D S)). NOTE: this
+    # entropy is size-dependent and nonzero for a single determinant, so it is
+    # not a clean correlation indicator (see docstring); idempotency_error is.
+    occupations = jnp.clip(occupations, 1e-12, 2.0)  # physical bounds
     occ_normalized = occupations / (jnp.sum(occupations) + 1e-12)
     dm_entropy = -jnp.sum(occ_normalized * jnp.log(occ_normalized + 1e-12))
 

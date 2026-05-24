@@ -108,7 +108,12 @@ def test_eval_exc_returns_rho_times_ex_fx_plus_ec_fc():
     Fx = model.eval_Fx(rho, sigma, features)
     Fc = model.eval_Fc(rho, sigma, features)
     rho_safe = jnp.maximum(rho, model.rho_cutoff)
-    expected = rho_safe * (lda_x(rho_safe) * Fx + pw92c_unpolarized_scalar(rho_safe) * Fc)
+    # SOLV-01: eval_exc is now the exact sum of the exchange-only and
+    # correlation-only pieces (rho*ex*Fx) + (rho*ec*Fc). This differs from
+    # the pre-SOLV-01 rho*(ex*Fx + ec*Fc) grouping by at most ~1 ULP of
+    # floating-point reassociation; the split form is the new contract so
+    # that eval_exc == eval_ex + eval_ec holds exactly.
+    expected = rho_safe * lda_x(rho_safe) * Fx + rho_safe * pw92c_unpolarized_scalar(rho_safe) * Fc
     np.testing.assert_array_equal(np.asarray(exc), np.asarray(expected))
 
 
@@ -271,10 +276,76 @@ def test_rho_cutoff_clamps_not_zeros():
     rho_safe = jnp.maximum(rho, cutoff)
     Fx = model.eval_Fx(rho, sigma, features)
     Fc = model.eval_Fc(rho, sigma, features)
-    expected = rho_safe * (lda_x(rho_safe) * Fx + pw92c_unpolarized_scalar(rho_safe) * Fc)
+    # SOLV-01 split grouping (see test_eval_exc_returns_rho_times_ex_fx_plus_ec_fc).
+    expected = rho_safe * lda_x(rho_safe) * Fx + rho_safe * pw92c_unpolarized_scalar(rho_safe) * Fc
     np.testing.assert_array_equal(np.asarray(exc), np.asarray(expected))
     # The clamped points must be non-zero (small but positive).
     assert jnp.all(jnp.abs(exc[:3]) > 0), "clamped rho must produce non-zero exc"
+
+
+# SOLV-01 Test A: exchange/correlation split is exact at the model level.
+def test_eval_exc_equals_eval_ex_plus_eval_ec_batched():
+    """SOLV-01: ``eval_exc == eval_ex + eval_ec`` pointwise (batched path).
+
+    The split is required so the UKS energy can spin-scale the exchange
+    piece (Oliver & Perdew, PRA 20, 397 (1979)) while evaluating the
+    correlation piece on the TOTAL density (von Barth & Hedin, J. Phys. C
+    5, 1629 (1972); PW92, PRB 45, 13244 (1992)). The split must be exact
+    so energy and potential code paths stay mutually consistent.
+    """
+    for cfg in [
+        dict(x_constraints=[], c_constraints=[]),
+        dict(x_constraints=["lieb_oxford"], c_constraints=["non_negative_correlation"]),
+    ]:
+        arch = ArchitectureConfig.from_spec("t", 2, 8, **cfg)
+        model = AlecGGAModel.from_arch(arch, seed=0)
+        rho, sigma, features = _synth_inputs(16, 0)
+        exc = model.eval_exc(rho, sigma, features)
+        ex = model.eval_ex(rho, sigma, features)
+        ec = model.eval_ec(rho, sigma, features)
+        np.testing.assert_array_equal(np.asarray(exc), np.asarray(ex + ec))
+
+
+def test_eval_exc_scalar_equals_ex_plus_ec_scalar():
+    """SOLV-01: scalar split matches scalar combined, point by point.
+
+    Also covers the tail region (rho below ``_NN_TAIL_THRESHOLD``) so the
+    identical-masking requirement is exercised.
+    """
+    arch = ArchitectureConfig.from_spec("t", 2, 8,
+                                        x_constraints=["lieb_oxford"],
+                                        c_constraints=["non_negative_correlation"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rho_pts = jnp.array([1e-12, 0.1, 0.5, 1.0, 2.0])  # first is a tail point
+    sigma_pts = jnp.array([0.0, 0.01, 0.1, 0.5, 1.0])
+    features = jnp.zeros((5, 0))
+    for i in range(rho_pts.shape[0]):
+        exc = model.eval_exc_scalar(rho_pts[i], sigma_pts[i], features[i])
+        ex = model.eval_ex_scalar(rho_pts[i], sigma_pts[i], features[i])
+        ec = model.eval_ec_scalar(rho_pts[i], sigma_pts[i], features[i])
+        np.testing.assert_array_equal(np.asarray(exc), np.asarray(ex + ec))
+
+
+def test_eval_ex_ec_batched_match_scalar():
+    """SOLV-01: batched eval_ex/eval_ec match their scalar counterparts."""
+    arch = ArchitectureConfig.from_spec("t", 2, 8,
+                                        x_constraints=["lieb_oxford"],
+                                        c_constraints=["non_negative_correlation"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rho = jnp.array([0.1, 0.5, 1.0, 2.0])
+    sigma = jnp.array([0.01, 0.1, 0.5, 1.0])
+    features = jnp.zeros((4, 0))
+    ex_b = model.eval_ex(rho, sigma, features)
+    ec_b = model.eval_ec(rho, sigma, features)
+    for i in range(4):
+        np.testing.assert_array_equal(
+            np.asarray(model.eval_ex_scalar(rho[i], sigma[i], features[i])),
+            np.asarray(ex_b[i]),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(model.eval_ec_scalar(rho[i], sigma[i], features[i])),
+            np.asarray(ec_b[i]),
+        )
 
 
 # §13.2 item (19)

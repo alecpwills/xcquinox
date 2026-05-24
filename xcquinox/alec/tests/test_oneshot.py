@@ -299,6 +299,7 @@ def test_vxc_spin_independence(o_data):
     vxc = compute_vxc_nn(
         model, o_data["rho_grid"], o_data["sigma_grid"],
         features, o_data["ao_grid"], o_data["grid_weights"],
+        lda_only=True,
     )
     # V_xc is a single (n_ao, n_ao) matrix — same for both channels
     assert vxc.ndim == 2
@@ -364,6 +365,7 @@ def test_compute_vxc_nn_lda_sanity(h2o_data):
     vxc = compute_vxc_nn(
         model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
         features, h2o_data["ao_grid"], h2o_data["grid_weights"],
+        lda_only=True,
     )
     assert jnp.all(jnp.isfinite(vxc))
     assert vxc.shape == (h2o_data["s_matrix"].shape[0],) * 2
@@ -444,8 +446,10 @@ def test_compute_vxc_nn_v_rho_matches_analytic_lda():
     model = AlecGGAModel.from_arch(arch, seed=0)
 
     # Even without Fx=Fc=1 exactly, verify that the v_rho computation
-    # produces finite values and the einsum assembly works correctly
-    vxc = compute_vxc_nn(model, rho, sigma, features, ao, weights)
+    # produces finite values and the einsum assembly works correctly.
+    # This probes the pure LDA v_rho assembly, so opt into lda_only.
+    vxc = compute_vxc_nn(model, rho, sigma, features, ao, weights,
+                         lda_only=True)
     assert vxc.shape == (n_ao, n_ao)
     assert jnp.all(jnp.isfinite(vxc))
 
@@ -498,14 +502,12 @@ def test_compute_vxc_nn_v_sigma_term_contributes(h2o_data):
     from xcquinox.alec.descriptors import assemble_descriptor_features
     features = assemble_descriptor_features(model.descriptors, h2o_data)
 
-    # LDA-only path (omits nabla_rho/ao_grad; warns)
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        vxc_lda = compute_vxc_nn(
-            model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
-            features, h2o_data["ao_grid"], h2o_data["grid_weights"],
-        )
+    # Explicit LDA-only path (omits nabla_rho/ao_grad; lda_only=True opt-in).
+    vxc_lda = compute_vxc_nn(
+        model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
+        features, h2o_data["ao_grid"], h2o_data["grid_weights"],
+        lda_only=True,
+    )
     vxc_full = compute_vxc_nn(
         model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
         features, h2o_data["ao_grid"], h2o_data["grid_weights"],
@@ -519,18 +521,94 @@ def test_compute_vxc_nn_v_sigma_term_contributes(h2o_data):
     )
 
 
-def test_compute_vxc_nn_warns_without_gga_inputs(h2o_data):
-    """Missing nabla_rho or ao_grad must raise a RuntimeWarning so callers
-    discover the silent LDA fallback."""
+def test_compute_vxc_nn_raises_without_gga_inputs(h2o_data):
+    """PRE-07: AlecGGAModel is a GGA functional. Calling compute_vxc_nn
+    without nabla_rho/ao_grad and without the explicit ``lda_only=True``
+    opt-in must raise ValueError rather than silently producing physically
+    wrong LDA-only V_xc (the v_sigma term dropped)."""
     model = _make_model(seed=0)
     from xcquinox.alec.descriptors import assemble_descriptor_features
     features = assemble_descriptor_features(model.descriptors, h2o_data)
 
-    with pytest.warns(RuntimeWarning, match="nabla_rho"):
+    with pytest.raises(ValueError, match="nabla_rho"):
         _ = compute_vxc_nn(
             model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
             features, h2o_data["ao_grid"], h2o_data["grid_weights"],
         )
+
+    # Partial GGA inputs (one provided, one missing) is also a misuse.
+    with pytest.raises(ValueError):
+        _ = compute_vxc_nn(
+            model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
+            features, h2o_data["ao_grid"], h2o_data["grid_weights"],
+            nabla_rho=h2o_data["nabla_rho_grid"], ao_grad=None,
+        )
+
+    # Explicit LDA-only opt-in is allowed and does not raise.
+    vxc = compute_vxc_nn(
+        model, h2o_data["rho_grid"], h2o_data["sigma_grid"],
+        features, h2o_data["ao_grid"], h2o_data["grid_weights"],
+        lda_only=True,
+    )
+    assert jnp.all(jnp.isfinite(vxc))
+
+
+def test_compute_vxc_nn_finite_at_rho_positive_sigma_zero():
+    """CODE-02 regression: a grid point with rho > _V_RHO_THRESHOLD and
+    sigma == 0 exactly drives the networks' reduced-gradient sqrt(sigma)
+    transform to an infinite derivative; the tanh(s)^2 JVP then becomes
+    0 * inf = NaN. The pre-fix sanitize predicate only tested rho, so such
+    points were NOT masked and spread NaN across V_sigma -> Fock -> energy.
+    Reachable on symmetric / high-symmetry systems.
+
+    Asserts both the forward V_xc and reverse-mode (jacrev) gradients of a
+    scalar reduction through compute_vxc_nn are finite."""
+    n_grid = 6
+    n_ao = 3
+    # Mix of normal points and one explicit rho>0, sigma==0 point.
+    rho = jnp.array([0.8, 1.2, 0.5, 0.3, 0.9, 0.7])
+    sigma = jnp.array([0.04, 0.02, 0.0, 0.03, 0.01, 0.05])  # index 2: sigma == 0
+    assert float(rho[2]) > 1e-10 and float(sigma[2]) == 0.0
+    features = jnp.zeros((n_grid, 0))
+    key = jax.random.PRNGKey(0)
+    ao_grid = jax.random.normal(key, (n_grid, n_ao))
+    grid_weights = jnp.ones(n_grid)
+    # Consistent nabla_rho: a point with sigma==0 must have |nabla_rho|^2==0.
+    nabla_rho = jnp.zeros((n_grid, 3))
+    nabla_rho = nabla_rho.at[:, 0].set(jnp.sqrt(sigma))  # sigma_i = |nabla_rho_i|^2
+    ao_grad = jax.random.normal(jax.random.PRNGKey(1), (3, n_grid, n_ao))
+
+    model = _make_model(seed=0)
+
+    vxc = compute_vxc_nn(
+        model, rho, sigma, features, ao_grid, grid_weights,
+        nabla_rho=nabla_rho, ao_grad=ao_grad,
+    )
+    assert jnp.all(jnp.isfinite(vxc)), "V_xc has NaN/Inf at rho>0, sigma==0 point"
+
+    # Reverse-mode through a scalar reduction must be NaN/Inf-free wrt sigma.
+    def scalar_from_sigma(sig):
+        v = compute_vxc_nn(
+            model, rho, sig, features, ao_grid, grid_weights,
+            nabla_rho=nabla_rho, ao_grad=ao_grad,
+        )
+        return jnp.sum(v ** 2)
+
+    jac = jax.jacrev(scalar_from_sigma)(sigma)
+    assert jnp.all(jnp.isfinite(jac)), (
+        "reverse-mode grad wrt sigma has NaN/Inf at sigma==0 (0*inf JVP unmasked)"
+    )
+
+    # Also exercise grad wrt rho through the same scalar.
+    def scalar_from_rho(r):
+        v = compute_vxc_nn(
+            model, r, sigma, features, ao_grid, grid_weights,
+            nabla_rho=nabla_rho, ao_grad=ao_grad,
+        )
+        return jnp.sum(v ** 2)
+
+    jac_rho = jax.jacrev(scalar_from_rho)(rho)
+    assert jnp.all(jnp.isfinite(jac_rho))
 
 
 def test_compute_vxc_nn_matches_pyscf_pbe_vxc_shape_and_magnitude(h2o_data):

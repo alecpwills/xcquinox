@@ -1,0 +1,99 @@
+{
+  "notebook_builder_path": "notebooks/_build_step7_notebook.py",
+  "notebook_content_sha256": "f71ac0cbd08a06ce953c0a4fe30643833136d5207733791120c05fe6d3703c49",
+  "notebook_sha": "33c6f900ba2fe2c4cae08825a1ee7aec0cd0d1eb",
+  "schema_version": 1,
+  "spec": {
+    "atom_energies": {
+      "C": -37.845,
+      "F": -99.7339,
+      "H": -0.5,
+      "Li": -7.4781,
+      "N": -54.5892,
+      "Na": -162.2546,
+      "O": -75.0673,
+      "S": -398.0
+    },
+    "grid_cell": {
+      "arch": "deep_combined_attn",
+      "loss": "L5_gradnorm_vxc_step7",
+      "metric": "l2",
+      "solver": "oneshot",
+      "subset_size": 2
+    },
+    "hyperparameters": {
+      "grad_clip": 1.0,
+      "lr_decay_start": 0.2,
+      "lr_end": 1e-05,
+      "lr_start": 0.01,
+      "n_steps": 100,
+      "pbe_anchor_weight": 0.0,
+      "seed": 42
+    },
+    "loss_kwargs": {
+      "aux_only_names": [],
+      "bh76_reactions": [],
+      "density_weight": 0.1,
+      "ip13_pairs": [],
+      "regularize_atom_syms": [
+        "H",
+        "Li"
+      ],
+      "solver_config": {
+        "feature_policy": null,
+        "max_cycles": 0,
+        "mode": "ONESHOT"
+      },
+      "vxc_weight": 0.01
+    },
+    "loss_name": "L5_gradnorm_vxc_step7",
+    "molecules": [
+      {
+        "atom": "H 0.000000 0.000000 0.000000",
+        "atom_composition": {
+          "H": 1
+        },
+        "basis": "def2-svp",
+        "charge": 0,
+        "external_data_path_is_set": false,
+        "grid_level": 1,
+        "name": "H",
+        "spin": 1
+      },
+      {
+        "atom": "H 0.000000 0.000000 0.371395; H 0.000000 0.000000 -0.371395",
+        "atom_composition": {
+          "H": 2
+        },
+        "basis": "def2-svp",
+        "charge": 0,
+        "external_data_path_is_set": false,
+        "grid_level": 1,
+        "name": "H2",
+        "spin": 0
+      },
+      {
+        "atom": "N 0.000000 0.000000 0.549396; N 0.000000 0.000000 -0.549396",
+        "atom_composition": {
+          "N": 2
+        },
+        "basis": "def2-svp",
+        "charge": 0,
+        "external_data_path_is_set": false,
+        "grid_level": 1,
+        "name": "N2",
+        "spin": 0
+      }
+    ],
+    "solver_config": {
+      "feature_policy": null,
+      "max_cycles": 0,
+      "mode": "ONESHOT"
+    },
+    "targets": {
+      "H": -0.5,
+      "H2": 0.1743401496298263,
+      "N2": 0.364052611406682
+    }
+  }
+}

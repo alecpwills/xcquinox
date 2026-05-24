@@ -42,6 +42,72 @@ class SpeciesEntry:
                  # "probe_atom_ref", "hbpt"
 
 
+def _fsync_dir(dir_path) -> None:
+    """fsync a directory entry for durability after an atomic os.replace.
+
+    POSIX rename is atomic per-file but the rename is not durable across a
+    power loss until the *parent directory* is fsync'd. Only catch the
+    AttributeError from a missing O_DIRECTORY (Windows); let real OSErrors
+    (ENOSPC, EIO) bubble so durability failures fail loudly (matches the
+    `_migrate_intermediates_to_grid_suffixed` policy).
+    """
+    import os
+    if not hasattr(os, "O_DIRECTORY"):
+        return
+    dir_fd = os.open(str(dir_path), os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _build_hf_meanfield(mol, is_uks: bool):
+    """Construct an (unconverged) HF mean-field object for ``mol``.
+
+    Factored out so EXTREF-01's "real HF SCF before CCSD" contract is
+    unit-testable (tests monkeypatch this to inject a stub mean-field
+    without running PySCF).
+    """
+    from pyscf import scf
+    return scf.UHF(mol) if is_uks else scf.RHF(mol)
+
+
+def _prepare_converged_hf(mol, *, dm0, is_uks: bool):
+    """Run a real HF SCF and return the CONVERGED HF mean-field.
+
+    EXTREF-01: CCSD must sit on a self-consistent HF determinant. Earlier
+    code grafted PBE Kohn-Sham MO coeff/occ onto an HF object and faked
+    ``converged=True`` without re-converging — that runs CCSD on a
+    non-canonical, non-self-consistent PBE determinant (Brillouin's
+    theorem is violated: the occ-virt Fock block is nonzero), and the
+    relaxed 1-RDM then depends on arbitrary PBE start orbitals.
+
+    The PBE DM is used ONLY as the SCF initial guess (``kernel(dm0=...)``)
+    to speed convergence; the orbitals CCSD sees are the converged HF
+    orbitals. Raises ``RuntimeError`` if HF does not converge so a
+    non-self-consistent reference can never silently reach CCSD.
+
+    Sources: single-reference coupled-cluster theory is formulated on a
+    converged (canonical) Hartree-Fock reference for which Brillouin's
+    theorem (the occupied-virtual block of the Fock matrix vanishes) holds —
+    Szabo & Ostlund, *Modern Quantum Chemistry* (Dover, 1996) §3.3, and
+    T. D. Crawford & H. F. Schaefer III, "An Introduction to Coupled Cluster
+    Theory for Computational Chemists," *Rev. Comput. Chem.* **14**, 33-136
+    (2000); see also R. J. Bartlett & M. Musiał, *Rev. Mod. Phys.* **79**, 291
+    (2007). Running CCSD on the non-self-consistent PBE determinant leaves a
+    nonzero f_ov block and makes the relaxed 1-RDM depend on the arbitrary PBE
+    starting orbitals — which is what fed bias into the ML training target.
+    """
+    mf_hf = _build_hf_meanfield(mol, is_uks)
+    mf_hf.kernel(dm0=dm0)
+    if not getattr(mf_hf, "converged", False):
+        raise RuntimeError(
+            "HF SCF did not converge; refusing to run CCSD on a "
+            "non-self-consistent reference determinant"
+        )
+    return mf_hf
+
+
 def build_species_union() -> list[SpeciesEntry]:
     """Assemble the canonical species set requiring CCSD references.
 
@@ -302,7 +368,16 @@ def run_ccsd_with_cache(
     basis: str = "def2-svp",
     grid_level: int = 1,
 ) -> dict:
-    """Stage 2: CCSD + spin-summed grid density, with on-disk cache.
+    """Stage 2: CCSD on a converged HF reference + spin-summed grid
+    density, with on-disk cache.
+
+    CCSD is run on a CONVERGED Hartree-Fock determinant (EXTREF-01): a
+    real HF SCF is performed using the cached PBE density matrix only as
+    the initial guess (``kernel(dm0=pbe_dm)``), then convergence is
+    verified before CCSD. This yields canonical CCSD@HF orbitals — NOT
+    CCSD on grafted, non-self-consistent PBE Kohn-Sham orbitals (which
+    would violate Brillouin's theorem and bias the relaxed 1-RDM toward
+    the arbitrary PBE start orbitals).
 
     Returns dict with keys: dm_ao, rho_ref_grid (1D spin-summed),
     grid_weights, ao_grid.
@@ -348,22 +423,14 @@ def run_ccsd_with_cache(
                 spin=spec.spin, unit="angstrom", verbose=0)
     is_uks = bool(scf_payload["spin_unrestricted"])
 
-    # Build a DFT mean-field object to carry MOs, then convert to HF for
-    # CCSD (PySCF CCSD requires an HF object, not a DFT object).
-    mf = dft.UKS(mol) if is_uks else dft.RKS(mol)
-    mf.xc = "pbe"
-    mf.mo_coeff = scf_payload["mo_coeff"]
-    mf.mo_occ = scf_payload["mo_occ"]
-    mf.mo_energy = scf_payload["mo_energy"]
-    if hasattr(mf, "converged"):
-        mf.converged = True
-
-    mf_hf = mf.to_hf()
-    mf_hf.mo_coeff = mf.mo_coeff
-    mf_hf.mo_occ = mf.mo_occ
-    mf_hf.mo_energy = mf.mo_energy
-    if hasattr(mf_hf, "converged"):
-        mf_hf.converged = True
+    # EXTREF-01: run a REAL HF SCF and converge it before CCSD. The cached
+    # PBE density matrix is used ONLY as the initial guess to speed
+    # convergence; CCSD then sits on the canonical, self-consistent HF
+    # determinant (not on grafted PBE Kohn-Sham orbitals, which would
+    # violate Brillouin's theorem and bias the relaxed 1-RDM).
+    mf_hf = _prepare_converged_hf(
+        mol, dm0=np.asarray(scf_payload["dm"]), is_uks=is_uks
+    )
 
     if is_uks:
         from pyscf.cc import uccsd
@@ -403,6 +470,8 @@ def run_ccsd_with_cache(
     try:
         np.savez_compressed(tmp_name, **result)
         os.replace(tmp_name, cache_path)
+        # EXTREF-04: fsync the parent dir for durability parity with stage 1.
+        _fsync_dir(inter)
     except Exception:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
@@ -917,20 +986,27 @@ def run_oep_cascade(
             f"spin={spec.spin}, source={spec.source}): {last_err}"
         )
 
-    # Two-phase write: phase 1 stores rho_ref_grid; phase 2's
-    # save_vxc_ref merges in vxc_ref + dm_target + provenance.
+    # Two-phase write: phase 1 stores rho_ref_grid (+ grid_level_used
+    # provenance); phase 2's save_vxc_ref merges in vxc_ref + dm_target +
+    # provenance (its merge semantics preserve any phase-1 key not in its
+    # own payload, so grid_level_used survives the merge).
     # Use np.savez_compressed for consistency with stages 1+2 caches
     # (T5 code-quality nit).
+    # CFG-03: record the generating grid_level so data.py can assert the
+    # consumer's resolved grid_level matches what produced this reference.
     np.savez_compressed(
         npz_path,
         rho_ref_grid=ccsd_payload["rho_ref_grid"],
         ref_density_method=np.array("ccsd"),
+        grid_level_used=np.array(int(grid_level)),
     )
     alec_oep.save_vxc_ref(
         oep_result, str(npz_path),
         dm_target=ccsd_payload["dm_ao"],
         method="ccsd",
     )
+    # EXTREF-04: fsync the parent dir for durability parity with stage 1.
+    _fsync_dir(cache_dir)
     return npz_path
 
 

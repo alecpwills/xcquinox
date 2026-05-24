@@ -927,3 +927,60 @@ def test_scf_convergence_metric_records_residual_trace(tiny_model, h2o_data):
         assert math.isfinite(r) and r >= 0.0
     # The trace must show actual decay from the first to the last cycle.
     assert residuals[-1] <= residuals[0] + 1e-12
+
+
+# ---------------------------------------------------------------------------
+# DATA-04: _aggregate_results coverage transparency
+# ---------------------------------------------------------------------------
+
+def test_aggregate_results_records_n_total_and_n_skipped():
+    """DATA-04: aggregate stats must expose n_total and n_skipped per metric.
+
+    Scenario: 5 molecules, but density_rmse is None for 3 of them (e.g. atoms
+    that were skipped).  The aggregate for density_rmse should include:
+      - ``count`` (or ``n_included``) == 2   (molecules that contributed)
+      - ``n_total`` == 5                      (total molecules considered)
+      - ``n_skipped`` == 3                    (molecules that were excluded)
+
+    Without these fields a 2-of-5 aggregate is indistinguishable from a
+    5-of-5 aggregate, so a near-empty result can read as a full-population
+    statistic.
+    """
+    from xcquinox.alec.evaluation import _aggregate_results
+
+    per_molecule = [
+        {"molecule": "H",   "density_rmse": None,  "E_total_nn": -0.5},
+        {"molecule": "He",  "density_rmse": None,  "E_total_nn": -2.9},
+        {"molecule": "Li",  "density_rmse": None,  "E_total_nn": -7.4},
+        {"molecule": "H2",  "density_rmse": 0.012, "E_total_nn": -1.1},
+        {"molecule": "LiH", "density_rmse": 0.034, "E_total_nn": -8.0},
+    ]
+
+    agg = _aggregate_results(per_molecule)
+
+    # density_rmse: only 2 of 5 contributed
+    drms = agg["density_rmse"]
+    assert drms["count"] == 2, (
+        f"expected count=2, got {drms['count']}"
+    )
+    assert drms["n_total"] == 5, (
+        f"expected n_total=5, got {drms.get('n_total')}"
+    )
+    assert drms["n_skipped"] == 3, (
+        f"expected n_skipped=3, got {drms.get('n_skipped')}"
+    )
+
+    # E_total_nn: all 5 contributed; n_skipped must be 0
+    etn = agg["E_total_nn"]
+    assert etn["count"] == 5, f"expected count=5, got {etn['count']}"
+    assert etn["n_total"] == 5, f"expected n_total=5, got {etn.get('n_total')}"
+    assert etn["n_skipped"] == 0, f"expected n_skipped=0, got {etn.get('n_skipped')}"
+
+    # Numeric stats for the included molecules must be unchanged
+    assert math.isclose(drms["mean"], (0.012 + 0.034) / 2)
+    assert math.isclose(drms["MAE"],  (0.012 + 0.034) / 2)
+    assert math.isclose(
+        drms["RMSE"],
+        math.sqrt((0.012**2 + 0.034**2) / 2),
+    )
+    assert math.isclose(drms["max"],  0.034)

@@ -121,10 +121,39 @@ def metric_l2(h_ref: dict, h_cand: dict) -> float:
     return float(np.sum(np.sqrt(diffs_sq)))
 
 
+def _to_pmf(h: np.ndarray) -> np.ndarray:
+    """Normalize a non-negative histogram to a probability MASS function.
+
+    Lin's JSD (Lin 1991, IEEE Trans. Inf. Theory 37, 145) is defined on
+    PMFs that SUM to 1 — not probability densities (which integrate to 1
+    via the bin width, so their raw sum is bin-width-dependent and their
+    individual values can exceed 1). We divide by the total mass so the
+    result sums to 1; this also makes the divergence invariant to a
+    uniform rescale (e.g. differing per-descriptor bin widths). A
+    descriptor whose grid points all fall outside the histogram range has
+    zero total mass; we return an all-zero vector for it and let
+    :func:`_kl` flag the degenerate case.
+    """
+    total = float(np.sum(h))
+    if total <= 0.0:
+        return np.zeros_like(h, dtype=np.float64)
+    return np.asarray(h, dtype=np.float64) / total
+
+
 def _kl(p: np.ndarray, q: np.ndarray) -> float:
-    """Kullback-Leibler divergence in nats. Probabilities clipped at KL_PROB_CLIP."""
-    p_c = np.clip(p, KL_PROB_CLIP, 1.0)
-    q_c = np.clip(q, KL_PROB_CLIP, 1.0)
+    """Kullback-Leibler divergence in nats between two PMFs.
+
+    Probabilities are lower-floored at KL_PROB_CLIP to avoid log(0); there
+    is NO upper clip — a PMF entry never exceeds 1 once normalized, and
+    upper-clipping legitimate (density) peaks was the SUBSET-01 defect.
+    Inputs are normalized to PMFs (sum=1) before the divergence so the
+    result is the genuine KL divergence bounded such that the resulting
+    JSD lies in [0, ln 2].
+    """
+    p_pmf = _to_pmf(p)
+    q_pmf = _to_pmf(q)
+    p_c = np.maximum(p_pmf, KL_PROB_CLIP)
+    q_c = np.maximum(q_pmf, KL_PROB_CLIP)
     return float(np.sum(p_c * (np.log(p_c) - np.log(q_c))))
 
 
@@ -135,13 +164,18 @@ def metric_jsd(h_ref: dict, h_cand: dict) -> float:
 
     Reference: Lin, IEEE Trans. Inf. Theory 37 (1991) eq. (4.1).
 
+    Each marginal histogram is normalized to a probability MASS function
+    (sum=1) before the divergence (see :func:`_to_pmf`); the per-marginal
+    JSD is therefore bounded in [0, ln 2] (Lin 1991), and the 3-marginal
+    total in [0, 3 ln 2].
+
     NOTE: do NOT use scipy.spatial.distance.jensenshannon — that returns
     the JS distance (sqrt of the divergence), not the divergence itself.
     """
     total = 0.0
     for k in _DESCRIPTOR_KEYS:
-        p = h_ref[k]
-        q = h_cand[k]
+        p = _to_pmf(h_ref[k])
+        q = _to_pmf(h_cand[k])
         m = 0.5 * (p + q)
         total += 0.5 * (_kl(p, m) + _kl(q, m))
     return float(total)
@@ -214,19 +248,36 @@ def _metric_jsd_batch(h_ref: dict, h_cand_batch: dict) -> np.ndarray:
 
     Equivalent to ``[metric_jsd(h_ref, {k: h_cand_batch[k][b] ...}) for b in batch]``
     but computed in a single numpy expression. Returns shape ``(batch,)``.
+
+    Each reference and candidate marginal is normalized to a PMF (sum=1)
+    before the divergence (SUBSET-01): rows are divided by their total
+    mass and entries are lower-floored at KL_PROB_CLIP to avoid log(0).
+    There is NO upper clip. A candidate row whose mass is zero for ANY
+    descriptor (all grid points fell outside the histogram range) is
+    disqualified by returning +inf for that row (SUBSET-05), so it is
+    never selected as the minimizer.
     """
     batch_size = next(iter(h_cand_batch.values())).shape[0]
     total = np.zeros(batch_size, dtype=np.float64)
+    empty_row = np.zeros(batch_size, dtype=bool)
     for k in _DESCRIPTOR_KEYS:
-        p = h_ref[k][None, :]                  # (1, NBINS)
-        q = h_cand_batch[k]                    # (batch, NBINS)
+        p_raw = h_ref[k][None, :]              # (1, NBINS)
+        q_raw = h_cand_batch[k]                # (batch, NBINS)
+        # Normalize each row to a PMF (sum=1).  Candidate rows with zero
+        # total mass are degenerate (empty-in-range) and flagged below.
+        q_mass = q_raw.sum(axis=1, keepdims=True)        # (batch, 1)
+        empty_row |= (q_mass[:, 0] <= 0.0)
+        q_mass_safe = np.where(q_mass > 0.0, q_mass, 1.0)
+        p = p_raw / max(float(p_raw.sum()), KL_PROB_CLIP)
+        q = q_raw / q_mass_safe
         m = 0.5 * (p + q)
-        p_c = np.clip(p, KL_PROB_CLIP, 1.0)
-        q_c = np.clip(q, KL_PROB_CLIP, 1.0)
-        m_c = np.clip(m, KL_PROB_CLIP, 1.0)
+        p_c = np.maximum(p, KL_PROB_CLIP)
+        q_c = np.maximum(q, KL_PROB_CLIP)
+        m_c = np.maximum(m, KL_PROB_CLIP)
         kl_pm = np.sum(p_c * (np.log(p_c) - np.log(m_c)), axis=1)
         kl_qm = np.sum(q_c * (np.log(q_c) - np.log(m_c)), axis=1)
         total += 0.5 * (kl_pm + kl_qm)
+    total[empty_row] = np.inf
     return total
 
 
@@ -482,14 +533,26 @@ def select_subset(
         M = np.zeros((b, npool), dtype=np.float64)
         np.put_along_axis(M, full_batch, 1.0, axis=1)
         h_cand_batch = {}
+        empty_in_range = np.zeros(b, dtype=bool)
         for key in _DESCRIPTOR_KEYS:
             counts_combo = M @ per_key_counts[key]                # (b, NBINS)
             W_combo_k = M @ W_in_range[key]                       # (b,)
-            # Guard against the empty-in-range edge case (all grid points
-            # fell outside the histogram range for this descriptor).
+            # SUBSET-05: a combo whose grid points ALL fell outside the
+            # histogram range for some descriptor has zero in-range weight
+            # and is degenerate (empty candidate). Flag it for
+            # disqualification rather than dividing by a fudged W=1.0,
+            # which previously made an empty candidate score a
+            # misleadingly-moderate ~0.5*ln2 JSD. We still compute a
+            # finite (all-zero) histogram here to keep the metric
+            # vectorized, then overwrite the score with +inf below.
+            empty_in_range |= (W_combo_k <= 0.0)
             W_safe = np.where(W_combo_k > 0.0, W_combo_k, 1.0)
             h_cand_batch[key] = counts_combo / (W_safe[:, None] * bin_widths[key][None, :])
         vals_batch = m_batch(h_ref, h_cand_batch)                 # (b,)
+        # Disqualify empty-in-range candidates: maximally divergent so the
+        # argmin never picks them (SUBSET-05). Applies to both metrics.
+        if empty_in_range.any():
+            vals_batch = np.where(empty_in_range, np.inf, vals_batch)
         if return_all:
             vals[base_idx: base_idx + b] = vals_batch
             idx_array[base_idx: base_idx + b, :] = full_batch

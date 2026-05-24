@@ -36,9 +36,30 @@ def test_lieb_oxford_point_evaluation():
     def inner_varied(r, s, f):
         return jnp.array([2.0, 0.5, 1.5])
     out = c(inner_varied, rho, sigma, feats)
-    max_delta = 1.804 - 1.0
-    expected = 1.0 + max_delta * jnp.tanh((jnp.array([2.0, 0.5, 1.5]) - 1.0) / max_delta)
+    # REFPHYS-02: one-sided I_mu transform (Dick 2021 eq. 11), not symmetric tanh.
+    mu = 1.804
+    F_raw = jnp.array([2.0, 0.5, 1.5])
+    expected = 1.0 + (mu / (1.0 + (mu - 1.0) * jnp.exp(-(F_raw - 1.0))) - 1.0)
     assert jnp.allclose(out, expected, atol=1e-12)
+
+
+# LiebOxfordBound (b2) — REFPHYS-02: lower bound is the physical 0, not 0.196.
+def test_lieb_oxford_lower_bound_is_zero_not_0p196():
+    from xcquinox.alec.constraints import LiebOxfordBound
+    c = LiebOxfordBound()
+
+    # A strongly negative raw enhancement must be driven toward F_x = 0, the
+    # physical floor — NOT clamped at the old symmetric-tanh artefact 0.196.
+    def inner_very_negative(r, s, f):
+        return -10.0 * jnp.ones_like(r)
+    out = c(inner_very_negative, jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
+    assert jnp.all(out > 0.0)            # never negative
+    assert jnp.all(out < 0.05)           # below the old 0.196 floor, heading to 0
+    # And the upper Lieb-Oxford ceiling (mu = 1.804) is still respected.
+    def inner_large(r, s, f):
+        return 100.0 * jnp.ones_like(r)
+    hi = c(inner_large, jnp.ones((1,)), jnp.ones((1,)), jnp.zeros((1, 0)))
+    assert jnp.all(hi <= 1.804 + 1e-9) and jnp.all(hi > 1.803)
 
 
 # LiebOxfordBound (c) — differentiability
@@ -513,7 +534,8 @@ def test_lieb_oxford_no_double_clamp():
         return F_raw_grid
     constraint_only = c(inner, jnp.ones_like(F_raw_grid), jnp.ones_like(F_raw_grid),
                         jnp.zeros((F_raw_grid.shape[0], 0)))
-    assert jnp.all(constraint_only >= 2.0 - 1.804 - 1e-10)
+    # REFPHYS-02: physical floor is 0 (not the old symmetric-tanh artefact 0.196).
+    assert jnp.all(constraint_only >= -1e-10)
     assert jnp.all(constraint_only <= 1.804 + 1e-10)
 
 
@@ -578,8 +600,8 @@ def test_scaling_symmetric_c_allow_override():
     assert any(s.name == "scaling_symmetric" for s in arch.c_constraints)
 
 
-# (xxiii): L-E12-1(a) — LiebOxfordBound symmetric lower clamp
-def test_lieb_oxford_lower_clamp_symmetric():
+# (xxiii): REFPHYS-02 — LiebOxfordBound lower asymptote is the physical 0.
+def test_lieb_oxford_lower_asymptote_is_zero():
     from xcquinox.alec.constraints import LiebOxfordBound
     c = LiebOxfordBound(mu=1.804)
 
@@ -587,17 +609,27 @@ def test_lieb_oxford_lower_clamp_symmetric():
         return -100.0 * jnp.ones_like(r)
 
     out = c(inner, jnp.ones((1,)), jnp.ones((1,)), jnp.zeros((1, 0)))
-    expected = 2.0 - 1.804
-    assert jnp.abs(out - expected) < 1e-10
+    # One-sided I_mu squash (Dick 2021 eq. 11) floors F_x at 0, the physical
+    # bound (eps_x = eps_x^LDA * F_x <= 0). The old symmetric tanh wrongly
+    # asymptoted to 2 - mu = 0.196. (At this extreme the floor is reached to
+    # machine precision, so 0 is inclusive.)
+    assert jnp.all(out >= 0.0)
+    assert jnp.abs(out[0]) < 1e-10
 
 
-# (xxiv): L-E12-1(b) — LiebOxfordBound linear response near UEG fixed point
+# (xxiv): REFPHYS-02 — linear response near the UEG fixed point has slope
+# (mu-1)/mu, matching the in-network _AlecLOB squash (I_mu is algebraically
+# identical to limit*sigmoid(x-log(limit-1))-1). The previous symmetric tanh
+# had unit slope, which did NOT match the production network squash.
 def test_lieb_oxford_linear_response_near_ueg():
     from xcquinox.alec.constraints import LiebOxfordBound
-    c = LiebOxfordBound(mu=1.804)
+    mu = 1.804
+    c = LiebOxfordBound(mu=mu)
+    slope = (mu - 1.0) / mu  # I_mu'(0)
 
     for eps in (1e-6, 1e-4, 1e-2):
         def inner(r, s, f, _eps=eps):
             return (1.0 + _eps) * jnp.ones_like(r)
         out = c(inner, jnp.ones((1,)), jnp.ones((1,)), jnp.zeros((1, 0)))
-        assert jnp.abs(out[0] - (1.0 + eps)) < eps ** 2 + 1e-15
+        # F(1)=1 exactly; first-order response is slope*eps, second order O(eps^2).
+        assert jnp.abs(out[0] - (1.0 + slope * eps)) < 10.0 * eps ** 2 + 1e-15

@@ -1,6 +1,8 @@
 """Step-7 loss-extension unit tests."""
 from __future__ import annotations
 
+import warnings
+
 import jax.numpy as jnp
 import pytest
 
@@ -282,3 +284,139 @@ def test_l5_handles_ip13_only_spec_with_no_compound():
     )
     assert loss.compound_idx == ()
     assert dict(loss.atom_mol_idx) == {"Li": 0}
+
+
+# ---------------------------------------------------------------------------
+# CFG-02: regularize_atom_syms subset validation
+# ---------------------------------------------------------------------------
+
+def test_regularize_atom_syms_typo_raises_value_error():
+    """Constructing L5GradnormVxcStep7 with a regularize_atom_syms element
+    not present among the single-atom molecules in the spec must raise
+    ValueError naming the missing symbols.  A typo'd symbol (e.g. 'Xx')
+    should not be silently dropped."""
+    from xcquinox.alec.losses import L5GradnormVxcStep7
+    from xcquinox.alec.config import MoleculeSpec
+
+    h_atom = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    li = MoleculeSpec.from_dict(
+        name="Li", atom="Li 0 0 0", atom_composition={"Li": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+
+    with pytest.raises(ValueError, match="regularize_atom_syms"):
+        L5GradnormVxcStep7(
+            molecules=(h_atom, li),
+            bh76_reactions=(),
+            ip13_pairs=(),
+            regularize_atom_syms=("H", "Xx"),  # "Xx" not in atom_mol_idx
+        )
+
+
+def test_regularize_atom_syms_absent_anchor_raises_value_error():
+    """A symbol that is a valid element but not present as a single-atom
+    MoleculeSpec in the spec must also raise ValueError."""
+    from xcquinox.alec.losses import L5GradnormVxcStep7
+    from xcquinox.alec.config import MoleculeSpec
+
+    h_atom = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+
+    with pytest.raises(ValueError, match="regularize_atom_syms"):
+        L5GradnormVxcStep7(
+            molecules=(h_atom,),
+            bh76_reactions=(),
+            ip13_pairs=(),
+            regularize_atom_syms=("H", "Li"),  # "Li" not in molecules
+        )
+
+
+def test_regularize_atom_syms_valid_subset_does_not_raise():
+    """A valid subset of present single-atom species must not raise."""
+    from xcquinox.alec.losses import L5GradnormVxcStep7
+    from xcquinox.alec.config import MoleculeSpec
+
+    h_atom = MoleculeSpec.from_dict(
+        name="H", atom="H 0 0 0", atom_composition={"H": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+    li = MoleculeSpec.from_dict(
+        name="Li", atom="Li 0 0 0", atom_composition={"Li": 1},
+        basis="sto-3g", charge=0, spin=1,
+    )
+
+    loss = L5GradnormVxcStep7(
+        molecules=(h_atom, li),
+        bh76_reactions=(),
+        ip13_pairs=(),
+        regularize_atom_syms=("H",),  # valid strict subset
+    )
+    assert loss.regularize_atom_syms == ("H",)
+
+
+# ---------------------------------------------------------------------------
+# LOSS-04: RuntimeWarning when any channel has None references skipped
+# ---------------------------------------------------------------------------
+
+def _make_mock_mol_data_with_none(n: int, *, vxc_none_idx=(0,), rho_none_idx=(),
+                                  dm_none_idx=()):
+    """Build a minimal list of mol_data dicts where some references are None."""
+    mols = []
+    for i in range(n):
+        mols.append({
+            "vxc_ref": None if i in vxc_none_idx else object(),
+            "rho_ref_grid": None if i in rho_none_idx else object(),
+            "dm_target": None if i in dm_none_idx else object(),
+        })
+    return mols
+
+
+def test_vxc_term_warns_on_none_references():
+    """_vxc_term must emit a RuntimeWarning when any mol has vxc_ref=None."""
+    from xcquinox.alec.losses import _vxc_term
+
+    class _FakeModel:
+        pass
+
+    # Two mols, one with vxc_ref=None — should warn about 1 skipped entry.
+    mol_data = [
+        {"vxc_ref": None},
+        {"vxc_ref": None},
+    ]
+    with pytest.warns(RuntimeWarning, match="vxc"):
+        _vxc_term(_FakeModel(), mol_data, iter_idx=(0, 1))
+
+
+def test_grid_term_warns_on_none_references():
+    """_grid_term must emit a RuntimeWarning when any mol has rho_ref_grid=None."""
+    from xcquinox.alec.losses import _grid_term
+
+    class _FakeModel:
+        pass
+
+    mol_data = [
+        {"rho_ref_grid": None},
+        {"rho_ref_grid": None},
+    ]
+    with pytest.warns(RuntimeWarning, match="rho"):
+        _grid_term(_FakeModel(), mol_data, iter_idx=(0, 1))
+
+
+def test_dm_term_warns_on_none_references():
+    """_dm_term must emit a RuntimeWarning when any mol has dm_target=None."""
+    from xcquinox.alec.losses import _dm_term
+
+    class _FakeModel:
+        pass
+
+    mol_data = [
+        {"dm_target": None},
+        {"dm_target": None},
+    ]
+    with pytest.warns(RuntimeWarning, match="dm"):
+        _dm_term(_FakeModel(), mol_data, iter_idx=(0, 1))
