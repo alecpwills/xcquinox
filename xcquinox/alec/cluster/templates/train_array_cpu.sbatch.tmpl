@@ -2,8 +2,7 @@
 #SBATCH --job-name=${JOB_NAME}
 #SBATCH --partition=${PARTITION}
 #SBATCH --time=${TIME}
-#SBATCH --mem=${MEM}
-#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --array=0-${ARRAY_MAX}%${THROTTLE}
 #SBATCH --signal=B:TERM@${SIGTERM_GRACE}
 #SBATCH --output=${RUN_DIR}/logs/train_%A_%a.out
@@ -22,4 +21,8 @@ export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=$$SLURM_CPUS_PER_TASK --xla_force_host_platform_device_count=1"
 
 # --- train task ------------------------------------------------------------
-python -m xcquinox.alec.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID}
+# exec so the worker (PID == batch-step PID) receives the #SBATCH
+# --signal=B:TERM@<grace> wall-clock pre-kill signal and its SIGTERM handler
+# can record a timeout failure.json. Without exec the signal hits this shell,
+# not the Python process, and the grace handler never fires.
+exec python -m xcquinox.alec.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID}

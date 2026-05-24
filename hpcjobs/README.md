@@ -81,13 +81,60 @@ Every `inputs.*` and `pretrain.*` path must be **absolute** and on a filesystem
 that resolves identically on the login node and every compute node.
 
 **SeaWulf resource defaults** are already set in the `cluster:` block
-(`short-96core-shared`, `-c 24`, `--mem=96G`, `--time=02:00:00`,
-`array_throttle: 4` — the etiquette cap; preflight + pretrain on
-`long-96core-shared`). The `cluster:` block also carries optional **pretrain
-resource knobs** — `pretrain_partition`, `pretrain_time`, `pretrain_mem`,
-`pretrain_cpus_per_task`, `pretrain_throttle`. Each falls back to the
-train-array resource when unset; `pretrain_throttle` unset means every distinct
-architecture pretrains concurrently. Adjust if your queues differ.
+(`-c 24`, `--time=02:00:00`, `array_throttle: 4` — the etiquette cap;
+preflight + pretrain at 8h walltime). The `cluster:` block also carries optional
+**pretrain resource knobs** — `pretrain_time`, `pretrain_cpus_per_task`,
+`pretrain_throttle`. Each falls back to the train-array resource when unset;
+`pretrain_throttle` unset means every distinct architecture pretrains
+concurrently. Adjust if your queues differ.
+
+**Partition is set on the CLI, not in the config.** The `cluster.partition` key
+is intentionally empty; `submit` *requires* a `--partition` flag (the base for
+all four stages) so a submission never silently lands on a queue that only
+exists on one login-node set. Per-stage overrides —
+`--train-partition`, `--eval-partition`, `--preflight-partition`,
+`--pretrain-partition` — each fall back to `--partition` when omitted.
+
+**Walltime ↔ queue coupling.** train/preflight/pretrain default to an **8 h**
+wall; the *short* queues cap at **4 h**, so the graph must run on a queue that
+allows 8 h. Simplest is one long-wall queue for all stages:
+
+```bash
+… submit <grid> --partition long-96core-shared --max-nodes 3
+```
+
+Set walls on the CLI with `--time` (all stages) or
+`--{train,eval,preflight,pretrain}-time`. SeaWulf max-walls: `short-* 4 h`,
+`medium-* 12 h`, `long-28core 2 days`, `long-96core-shared` longer.
+
+> SeaWulf couples queues to login nodes: `*-96core-shared` exist on
+> `milan1`/`milan2`; `*-28core` on `login1`/`login2`. `sbatch` only accepts
+> partitions that exist on the instance you submit from — pick `--partition`
+> values to match your login node.
+
+**Allocation is whole-node by default; you never set `mem`.** Each stage's
+`<stage>_allocation` defaults to `exclusive`, which renders
+`#SBATCH --nodes=1 --exclusive` and **no `--mem`** — every array task books a
+whole node and owns all its RAM (training peaks near a full node's memory, so
+cpu/mem-slicing would OOM). Flip a stage to `shared` in the config (and set
+`mem`) only when its tasks are small enough to co-tenant a node.
+
+**`--max-nodes N` = simultaneous nodes.** Because one task = one whole node, the
+SLURM array throttle *is* the node-at-once count. `--max-nodes N` sets it for
+every array stage; `--{train,eval,pretrain}-max-nodes` override per stage. Unset
+→ the config's `array_throttle`. Keep it at the per-queue etiquette cap (3–4 on
+shared queues):
+
+```bash
+… submit <grid> --partition long-96core-shared … --max-nodes 3
+```
+
+**Timeout recovery.** A train task killed at its wall is recorded as a
+`timeout` (the train script `exec`s the worker so it receives SLURM's
+`--signal=B:TERM@<grace>` and writes `failure.json`). `resubmit … --submit`
+then re-runs it, rerouted to `timeout_retry_partition`/`timeout_retry_time` (and
+oom failures to `oom_retry_partition`/`oom_retry_mem`) when those config knobs
+are set — no manual `sbatch` overrides needed.
 
 ### How the harness uses the subset ledger
 
@@ -108,7 +155,9 @@ therefore must already exist on shared storage before you submit.
 
 ```bash
 python -m xcquinox.alec.cluster submit hpcjobs/configs/step7.local.yaml \
-    --run-root "$(pwd)/hpcjobs"
+    --run-root "$(pwd)/hpcjobs" \
+    --partition long-96core-shared \
+    --max-nodes 3
 ```
 
 This loads + validates the config, creates `hpcjobs/runs/run_<UTC-timestamp>/`,
@@ -129,8 +178,14 @@ is a benign CPython quirk — ignore it.)
 On a SeaWulf **login node**, from the repo root, with the `xcquinox` env active:
 
 ```bash
-python -m xcquinox.alec.cluster submit hpcjobs/configs/step7.local.yaml --submit
+python -m xcquinox.alec.cluster submit hpcjobs/configs/step7.local.yaml --submit \
+    --partition long-96core-shared \
+    --max-nodes 3
 ```
+
+The resolved partitions are written into `<run_dir>/resolved_config.yaml`, so
+`resubmit` / `resubmit-preflight` reuse them — you do not repeat the partition
+flags on the recovery commands.
 
 Without `--run-root` the run dir is created under `inputs.output_root`. `submit`
 prints the run-dir path and the four submitted job IDs. **`--submit` is

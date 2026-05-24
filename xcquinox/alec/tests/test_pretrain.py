@@ -708,3 +708,93 @@ def test_pretrainspec_validate_n_steps_negative():
         )
         with pytest.raises(ValueError, match="n_steps must be > 0"):
             spec.validate()
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint isolation + early xnet save (fixture-free; trainer is faked)
+# ---------------------------------------------------------------------------
+
+def test_run_pretrain_separates_checkpoints_and_saves_xnet_early(tmp_path, monkeypatch):
+    """run_pretrain gives xnet/cnet their OWN periodic-checkpoint subdirs (so
+    their ``xc.eqx.<step>`` snapshots don't clobber each other), and serialises
+    the final ``xnet.eqx`` BEFORE cnet training (durable if cnet later fails).
+
+    Heavy work is stubbed: the xcTrainer seam is faked, descriptors/networks
+    are stubbed, and a minimal real ``pretrain_data.npz`` is written — so this
+    is fixture-free and fast while still exercising run_pretrain's real
+    control flow (trainer construction + save ordering).
+    """
+    import numpy as np
+    import jax
+    import jax.numpy as jnp
+    import equinox as eqx
+    import xcquinox.train
+    import xcquinox.alec.pretrain as ptmod
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    np.savez(
+        os.path.join(str(data_dir), "pretrain_data.npz"),
+        Fx_all=np.zeros((4,), np.float64),
+        Fc_all=np.zeros((4,), np.float64),
+    )
+
+    # Stub the compute-heavy seams.
+    monkeypatch.setattr(
+        ptmod, "_assemble_pretrain_descriptors",
+        lambda arch, data: jnp.zeros((4, 1)),
+    )
+    k1, k2 = jax.random.split(jax.random.PRNGKey(0))
+    fake_x = eqx.nn.Linear(1, 1, key=k1)
+    fake_c = eqx.nn.Linear(1, 1, key=k2)
+    monkeypatch.setattr(
+        ptmod, "create_network_pair", lambda arch, seed=0: (fake_x, fake_c),
+    )
+
+    ckdir = tmp_path / "ck"
+    xnet_final = os.path.join(str(ckdir), "xnet.eqx")
+
+    constructed = []           # checkpoint_dir each trainer was built with
+    xnet_present_at_call = []  # did xnet.eqx already exist when each trainer ran
+
+    class _FakeTrainer:
+        def __init__(self, *, model, checkpoint_dir, **kw):
+            self.model = model
+            constructed.append(checkpoint_dir)
+
+        def __call__(self, *args, **kwargs):
+            xnet_present_at_call.append(os.path.isfile(xnet_final))
+            return self.model, [0.2, 0.1]
+
+    monkeypatch.setattr(xcquinox.train, "xcTrainer", _FakeTrainer)
+
+    save_order = []  # basenames serialized, in order
+    real_ser = eqx.tree_serialise_leaves
+
+    def _spy_ser(path, tree):
+        save_order.append(os.path.basename(path))
+        return real_ser(path, tree)
+
+    monkeypatch.setattr(ptmod.eqx, "tree_serialise_leaves", _spy_ser)
+
+    spec = PretrainSpec(
+        arch=_make_arch(), data_dir=str(data_dir), checkpoint_dir=str(ckdir),
+        n_steps=3, lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.0,
+        grad_clip=1.0, seed=0, loss_weighting="unweighted",
+    )
+    ptmod.run_pretrain(spec)
+
+    # xnet trainer -> <ck>/xnet, cnet trainer -> <ck>/cnet (no shared dir).
+    assert constructed == [
+        os.path.join(str(ckdir), "xnet"),
+        os.path.join(str(ckdir), "cnet"),
+    ]
+    # Durability: xnet.eqx is absent when the xnet trainer runs (1st call) but
+    # PRESENT by the time the cnet trainer runs (2nd call) — i.e. the final
+    # xnet was persisted before cnet training, not after.
+    assert xnet_present_at_call == [False, True]
+    # The final xnet.eqx is serialized BEFORE cnet.eqx.
+    assert save_order.index("xnet.eqx") < save_order.index("cnet.eqx")
+    # Finals land at the top level of checkpoint_dir.
+    assert os.path.isfile(os.path.join(str(ckdir), "xnet.eqx"))
+    assert os.path.isfile(os.path.join(str(ckdir), "cnet.eqx"))

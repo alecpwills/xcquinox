@@ -45,9 +45,12 @@ That is the cheapest cell (smallest subset, no-SCF solver) and matches the
 ``--metric`` / ``--subset-size`` / ``--solver`` flags if a different cell is
 wanted.
 
-Building the subset ledger for the chosen cell requires running the
-subset-selection enumeration (``select_subset``) over the 26-point pool. That
-is the only non-trivial cost; for the small default subset size it is quick.
+The consume-only harness no longer runs subset selection (that is a finished
+offline pre-process whose result lives in ``subset_index_log.json``). For the
+golden snapshot we only need a STABLE, valid subset to lock the spec's
+structure, so a deterministic ledger entry is built from the first
+``subset_size`` points of the (deterministically ordered) pool — no enumeration,
+near-instant.
 
 What the user must verify
 -------------------------
@@ -193,13 +196,12 @@ def build_representative_spec(metric: str, subset_size: int, solver: str):
     from xcquinox.alec.cluster.domain import get_domain_profile
     from xcquinox.alec.cluster.grid_config import (
         GridConfig, SweepAxes, SolverNamed, HyperParams, InputPaths,
-        ClusterResources, expand_grid,
+        PretrainConfig, ClusterResources, expand_grid,
     )
     from xcquinox.alec.cluster.spec_builder import (
-        build_training_specs, pool_fingerprint,
+        build_training_specs, _ledger_key,
     )
     from xcquinox.alec.training_points import build_dfs_pool_points
-    from xcquinox.alec import subset_selection
 
     domain = get_domain_profile("dfs_step7")
     points = build_dfs_pool_points(bh76_mode="reaction_energy")
@@ -225,21 +227,23 @@ def build_representative_spec(metric: str, subset_size: int, solver: str):
     )
     inputs = InputPaths(
         external_refs_dir="/nonexistent/external_refs",
-        descriptor_cache="/nonexistent/descriptor_cache",
-        refhist_cache="/nonexistent/refhist_cache",
         subset_ledger_path="/nonexistent/subset_index_log.json",
         basis="def2-svp", grid_level=1,
         output_root="/nonexistent/runs",
-        pretrain_checkpoint=None,
     )
     cluster = ClusterResources(
-        partition="short-96core-shared", time="02:00:00", mem="96G",
+        partition="short-96core-shared", time="02:00:00", mem="",
         cpus_per_task=24, array_throttle=4, eval_array_throttle=4,
         max_concurrent_tasks=8,
     )
+    pretrain = PretrainConfig(
+        data_dir="/nonexistent/pretrain_data",
+        pretrain_root="/nonexistent/pretrain",
+    )
     cfg = GridConfig(
         sweep=sweep, solvers=solvers, hyperparams=hyperparams,
-        inputs=inputs, cluster=cluster, domain_profile="dfs_step7",
+        inputs=inputs, pretrain=pretrain, cluster=cluster,
+        domain_profile="dfs_step7",
     )
 
     cells = expand_grid(cfg)
@@ -249,30 +253,31 @@ def build_representative_spec(metric: str, subset_size: int, solver: str):
         )
     cell = cells[0]
 
-    # Run subset selection for the one (metric, subset_size) pair so the
-    # ledger has a real, name-based entry for the chosen cell.
+    # The consume-only harness no longer runs subset selection (that is a
+    # finished offline pre-process whose result lives in subset_index_log.json).
+    # For the golden snapshot we only need a STABLE, valid subset to lock the
+    # spec's structure (molecules/targets/atom_energies/loss_kwargs), so build a
+    # deterministic ledger entry from the first `subset_size` pool points (the
+    # pool order from build_dfs_pool_points is itself deterministic).
+    if subset_size > len(points):
+        raise RuntimeError(
+            f"subset_size {subset_size} exceeds the pool size {len(points)}"
+        )
+    chosen_names = [tp.name for tp in points[:subset_size]]
     print(
-        f"Selecting subset: metric={metric} subset_size={subset_size} "
-        f"over {len(points)} pool points ...",
+        f"Representative cell: metric={metric} subset_size={subset_size} "
+        f"solver={solver}; chosen points (first {subset_size} of "
+        f"{len(points)}): {chosen_names}",
         flush=True,
     )
-    result = subset_selection.select_subset(
-        points, metric=metric, subset_size=subset_size,
-    )
-    # select_subset returns (best_combo, best_val[, ...]); best_combo is a
-    # tuple of indices into `points`.
-    best_combo = result[0] if isinstance(result, tuple) else result
-    chosen_names = [points[i].name for i in best_combo]
 
+    # New consume-only ledger schema: {"<metric>/<r>": {"point_names": [...]}}.
     ledger = {
-        "pool_fingerprint": pool_fingerprint(points),
-        "entries": {
-            (metric, subset_size): {
-                "metric": metric,
-                "subset_size": subset_size,
-                "point_names": chosen_names,
-            }
-        },
+        _ledger_key(metric, subset_size): {
+            "metric": metric,
+            "subset_size": subset_size,
+            "point_names": chosen_names,
+        }
     }
 
     built = build_training_specs(

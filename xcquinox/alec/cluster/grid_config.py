@@ -21,6 +21,7 @@ Design note — the ``domain`` dependency:
 """
 from dataclasses import dataclass, fields
 from itertools import product
+import os
 import warnings
 
 
@@ -146,10 +147,12 @@ class PretrainConfig:
     Pretraining is now a harness STAGE: one ``run_pretrain`` job per distinct
     architecture, submitted up front, feeding every downstream train task. The
     stage builds a :class:`xcquinox.alec.config.PretrainSpec` per architecture
-    from these parameters, runs it, and writes the resulting checkpoint to
-    ``<pretrain_root>/<arch>/``. Each train task then references that
-    directory as its ``pretrain_checkpoint`` — so the checkpoint is a harness
-    PRODUCT, not a pre-staged input.
+    from these parameters, runs it, and writes the resulting checkpoint to the
+    job-scoped ``<pretrain_root>/<run_id>/<arch>/`` (see
+    ``pretrain_checkpoint_dir``). Each train task then references that directory
+    as its ``pretrain_checkpoint`` — so the checkpoint is a harness PRODUCT, not
+    a pre-staged input. The ``<run_id>`` segment keeps concurrent runs that
+    pretrain the same architecture from clobbering each other.
 
     Defaults below mirror what the step-7 notebook's pretraining cell uses
     (see ``notebooks/_build_step7_notebook.py`` / ``_build_step6_notebook.py``):
@@ -224,6 +227,16 @@ class ClusterResources:
     oom_retry_mem: str | None = None
     timeout_retry_partition: str | None = None
     timeout_retry_time: str | None = None
+    # Per-stage node-allocation mode: "exclusive" books a whole node per array
+    # task (``#SBATCH --nodes=1 --exclusive``, no ``--mem`` — the task owns all
+    # the node's RAM) and "shared" requests a cpu/mem slice (``#SBATCH --mem``).
+    # Training peaks near a full node's memory, so every stage defaults to
+    # whole-node; flip a stage to "shared" only when its tasks are small enough
+    # to co-tenant a node. See ``submit.render_sbatch``.
+    train_allocation: str = "exclusive"
+    eval_allocation: str = "exclusive"
+    preflight_allocation: str = "exclusive"
+    pretrain_allocation: str = "exclusive"
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +354,10 @@ def _build_cluster(d: dict) -> ClusterResources:
     return ClusterResources(
         partition=_require(d, "partition", ctx),
         time=_require(d, "time", ctx),
-        mem=_require(d, "mem", ctx),
+        # mem is OPTIONAL — whole-node/exclusive stages emit no --mem at all,
+        # and a shared stage that omits it lets SLURM apply the partition
+        # default-mem-per-cpu. Absent -> "" (no directive rendered).
+        mem=d.get("mem", ""),
         cpus_per_task=_require(d, "cpus_per_task", ctx),
         array_throttle=_require(d, "array_throttle", ctx),
         eval_array_throttle=_require(d, "eval_array_throttle", ctx),
@@ -367,6 +383,10 @@ def _build_cluster(d: dict) -> ClusterResources:
         oom_retry_mem=d.get("oom_retry_mem"),
         timeout_retry_partition=d.get("timeout_retry_partition"),
         timeout_retry_time=d.get("timeout_retry_time"),
+        train_allocation=d.get("train_allocation", "exclusive"),
+        eval_allocation=d.get("eval_allocation", "exclusive"),
+        preflight_allocation=d.get("preflight_allocation", "exclusive"),
+        pretrain_allocation=d.get("pretrain_allocation", "exclusive"),
     )
 
 
@@ -629,6 +649,16 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"{cl.pretrain_cpus_per_task}"
         )
 
+    # --- per-stage allocation mode -----------------------------------------
+    _ALLOC_MODES = ("exclusive", "shared")
+    for _stage in ("train", "eval", "preflight", "pretrain"):
+        _mode = getattr(cl, f"{_stage}_allocation")
+        if _mode not in _ALLOC_MODES:
+            raise ValueError(
+                f"cluster.{_stage}_allocation must be one of {_ALLOC_MODES}, "
+                f"got {_mode!r}"
+            )
+
     # --- SeaWulf throttle etiquette ----------------------------------------
     # The train array and the eval array each consume concurrent slots. If
     # they share a partition, their throttles compete for the same pool.
@@ -662,7 +692,6 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # --- advisory login-node path checks -----------------------------------
     # These are login-node-local and therefore only advisory; the preflight
     # job (a later task) running on a compute node is authoritative.
-    import os
     if not os.path.isdir(cfg.pretrain.data_dir):
         warnings.warn(
             f"pretrain.data_dir {cfg.pretrain.data_dir!r} not found on the "
@@ -677,3 +706,26 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             "on the login node — advisory; the preflight job is authoritative",
             stacklevel=2,
         )
+
+
+# ---------------------------------------------------------------------------
+# Pretrain checkpoint path — job-scoped
+# ---------------------------------------------------------------------------
+
+def pretrain_checkpoint_dir(pretrain_root: str, run_dir: str, arch: str) -> str:
+    """Return the job-scoped pretrain checkpoint dir for one architecture.
+
+    Layout: ``<pretrain_root>/<run_id>/<arch>`` where ``run_id`` is the basename
+    of ``run_dir``. Embedding the run id makes the path unique per submission,
+    so two runs that pretrain the SAME architecture under the SAME
+    ``pretrain_root`` write to DISTINCT directories instead of clobbering each
+    other's ``xnet.eqx``/``cnet.eqx`` (a real hazard when concurrent runs share
+    scratch — and a read-during-write race since serialization is not atomic).
+
+    Both the pretrain worker (``cluster/_pretrain.py``) and the spec-builder
+    (``cluster/spec_builder.py``, which sets each TrainingSpec's
+    ``pretrain_checkpoint``) derive the path through THIS function so the two
+    sides cannot drift.
+    """
+    run_id = os.path.basename(os.path.abspath(run_dir).rstrip(os.sep))
+    return os.path.join(pretrain_root, run_id, arch)

@@ -44,7 +44,9 @@ import sys
 import time
 
 from xcquinox.alec.config import get_architecture
-from xcquinox.alec.cluster.grid_config import load_grid_config, _canon_axis
+from xcquinox.alec.cluster.grid_config import (
+    load_grid_config, _canon_axis, pretrain_checkpoint_dir,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +258,9 @@ def main(argv=None) -> int:
         return 1
 
     pt = cfg.pretrain
-    checkpoint_dir = os.path.join(pt.pretrain_root, arch_name)
+    # Job-scoped (<pretrain_root>/<run_id>/<arch>) so two runs pretraining the
+    # same arch under the same pretrain_root don't clobber each other.
+    checkpoint_dir = pretrain_checkpoint_dir(pt.pretrain_root, run_dir, arch_name)
     from xcquinox.alec.config import PretrainSpec
     spec = PretrainSpec(
         arch=arch_config,

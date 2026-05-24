@@ -209,14 +209,14 @@ def test_dispatch_unknown_subcommand_errors():
         main(["not-a-subcommand"])
 
 
-def test_dispatch_all_six_subcommands_are_registered():
+def test_dispatch_all_subcommands_are_registered():
     parser = cli._build_parser()
     sub = [a for a in parser._subparsers._group_actions]
     choices = set()
     for action in sub:
         choices |= set(action.choices)
     assert choices == {
-        "prepare", "submit", "status", "resubmit",
+        "prepare", "submit", "status", "results", "resubmit",
         "resubmit-preflight", "repair-manifest",
     }
 
@@ -292,7 +292,8 @@ def test_submit_creates_run_dir_and_resolved_config_dry_run(tmp_path,
     run_root = tmp_path / "out"
     run_root.mkdir()
 
-    rc = main(["submit", grid, "--run-root", str(run_root)])
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-40core"])
     assert rc == 0
 
     runs = os.listdir(run_root / "runs")
@@ -318,7 +319,8 @@ def test_submit_with_flag_calls_sbatch(tmp_path, monkeypatch):
     run_root = tmp_path / "out"
     run_root.mkdir()
 
-    rc = main(["submit", grid, "--run-root", str(run_root), "--submit"])
+    rc = main(["submit", grid, "--run-root", str(run_root), "--submit",
+               "--partition", "long-40core"])
     assert rc == 0
     sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
     # 4-stage graph: pretrain + preflight + train + eval.
@@ -328,6 +330,158 @@ def test_submit_with_flag_calls_sbatch(tmp_path, monkeypatch):
     run_dir = str(run_root / "runs" / runs[0])
     kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
     assert kinds == ["eval", "preflight", "pretrain", "train"]
+
+
+def _script_partition(run_dir, name):
+    """Read the ``#SBATCH --partition=`` value from a rendered sbatch script."""
+    path = os.path.join(run_dir, "scripts", name)
+    with open(path) as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith("#SBATCH --partition="):
+                return stripped.split("=", 1)[1]
+    raise AssertionError(f"{name} has no '#SBATCH --partition=' line")
+
+
+def test_submit_requires_partition(tmp_path):
+    """submit without --partition is rejected by argparse (required; no default)."""
+    grid = _write_grid(tmp_path)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    with pytest.raises(SystemExit):
+        main(["submit", grid, "--run-root", str(run_root)])
+
+
+def test_submit_partition_applies_to_all_stages(tmp_path, monkeypatch):
+    """A single --partition routes all four stage scripts to that queue."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core"])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    run_dir = str(run_root / "runs" / runs[0])
+    for name in ("pretrain.sbatch", "preflight.sbatch",
+                 "train_array.sbatch", "eval_array.sbatch"):
+        assert _script_partition(run_dir, name) == "short-28core"
+
+
+def test_submit_per_stage_partition_overrides(tmp_path, monkeypatch):
+    """Per-stage --*-partition flags override the base; unset ones fall back."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main([
+        "submit", grid, "--run-root", str(run_root),
+        "--partition", "short-28core",
+        "--train-partition", "long-28core",
+        "--preflight-partition", "extended-28core",
+    ])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    run_dir = str(run_root / "runs" / runs[0])
+    # train + preflight overridden; eval + pretrain fall back to the base.
+    assert _script_partition(run_dir, "train_array.sbatch") == "long-28core"
+    assert _script_partition(run_dir, "preflight.sbatch") == "extended-28core"
+    assert _script_partition(run_dir, "eval_array.sbatch") == "short-28core"
+    assert _script_partition(run_dir, "pretrain.sbatch") == "short-28core"
+
+
+def test_submit_per_stage_partition_persists_to_resolved_config(tmp_path,
+                                                                monkeypatch):
+    """Resolved partitions are baked into resolved_config.yaml so recovery
+    commands (which re-render from it) inherit them with no extra flag."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main([
+        "submit", grid, "--run-root", str(run_root),
+        "--partition", "short-28core",
+        "--eval-partition", "long-28core",
+    ])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    run_dir = run_root / "runs" / runs[0]
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    cfg = load_grid_config(str(run_dir / "resolved_config.yaml"))
+    assert cfg.cluster.partition == "short-28core"
+    assert cfg.cluster.eval_partition == "long-28core"
+
+
+def _script_array(run_dir, name):
+    """Read the ``#SBATCH --array=`` value from a rendered sbatch script."""
+    path = os.path.join(run_dir, "scripts", name)
+    with open(path) as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith("#SBATCH --array="):
+                return stripped.split("=", 1)[1]
+    raise AssertionError(f"{name} has no '#SBATCH --array=' line")
+
+
+def test_submit_max_nodes_sets_all_array_throttles(tmp_path, monkeypatch):
+    """--max-nodes N sets the simultaneous-node count (array throttle) on every
+    array stage — with 1 whole node per task, throttle == nodes-at-once."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core", "--max-nodes", "3"])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    run_dir = str(run_root / "runs" / runs[0])
+    assert _script_array(run_dir, "train_array.sbatch").endswith("%3")
+    assert _script_array(run_dir, "eval_array.sbatch").endswith("%3")
+    assert _script_array(run_dir, "pretrain.sbatch").endswith("%3")
+
+
+def test_submit_per_stage_max_nodes_overrides(tmp_path, monkeypatch):
+    """Per-stage --{train,eval,pretrain}-max-nodes override the base."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core", "--max-nodes", "3",
+               "--eval-max-nodes", "2", "--pretrain-max-nodes", "5"])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    run_dir = str(run_root / "runs" / runs[0])
+    assert _script_array(run_dir, "train_array.sbatch").endswith("%3")
+    assert _script_array(run_dir, "eval_array.sbatch").endswith("%2")
+    assert _script_array(run_dir, "pretrain.sbatch").endswith("%5")
+
+
+def test_submit_without_max_nodes_keeps_config_throttle(tmp_path, monkeypatch):
+    """Omitting --max-nodes leaves the config's array throttle untouched."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+
+    # _base_config_dict sets array_throttle=4 (the cli-test default).
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core"])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    run_dir = str(run_root / "runs" / runs[0])
+    assert _script_array(run_dir, "train_array.sbatch").endswith("%4")
 
 
 def test_submit_run_dir_collision_gets_counter_suffix(tmp_path, monkeypatch):
@@ -757,3 +911,291 @@ def test_lock_release_removes_file(tmp_path):
     assert os.path.exists(lock_path)
     cli.release_lock(lock_path)
     assert not os.path.exists(lock_path)
+
+
+def test_status_pretrain_checkpoint_uses_job_scoped_path(tmp_path):
+    """status' pretrain-presence check looks at the JOB-SCOPED
+    <pretrain_root>/<run_id>/<arch> (where the pretrain worker now writes),
+    not the old <pretrain_root>/<arch>."""
+    from xcquinox.alec.cluster.grid_config import (
+        load_grid_config, pretrain_checkpoint_dir,
+    )
+    pretrain_root = tmp_path / "pr"
+    pretrain_root.mkdir()
+    run_dir = tmp_path / "run_TESTID"
+    run_dir.mkdir()
+
+    d = _base_config_dict()
+    d["pretrain"]["pretrain_root"] = str(pretrain_root)
+    gp = tmp_path / "_g.json"
+    gp.write_text(json.dumps(d))
+    cfg = load_grid_config(str(gp))
+    cli._write_resolved_config(cfg, str(run_dir))
+
+    arch = sorted(set(cfg.sweep.arch))[0]
+    ck = pretrain_checkpoint_dir(str(pretrain_root), str(run_dir), arch)
+    os.makedirs(ck, exist_ok=True)
+    open(os.path.join(ck, "xnet.eqx"), "wb").close()
+    open(os.path.join(ck, "cnet.eqx"), "wb").close()
+
+    # Sanity: we did NOT create the old non-scoped path.
+    assert not os.path.exists(os.path.join(str(pretrain_root), arch))
+
+    line = cli._pretrain_status(str(run_dir))
+    assert line == "1/1 architecture checkpoint pair(s) present"
+
+
+def test_classify_failure_treats_killed_by_signal_as_timeout(tmp_path):
+    """A wall-clock grace SIGTERM (recorded by _train_task as
+    'killed_by_signal') must classify as 'timeout' — i.e. retryable and routed
+    to the timeout_retry resources — not 'deterministic' (which resubmit skips)."""
+    run_dir = _make_run_dir(tmp_path)
+    sd = _spec_dir(run_dir, 3)
+    with open(os.path.join(sd, "failure.json"), "w") as f:
+        json.dump({"classification": "killed_by_signal", "rc": 143}, f)
+    assert cli._classify_failure(run_dir, 3, _WIDTH, {}) == "timeout"
+
+
+def test_classify_failure_deterministic_still_skipped(tmp_path):
+    """A genuine code error stays 'deterministic' (not retried)."""
+    run_dir = _make_run_dir(tmp_path)
+    sd = _spec_dir(run_dir, 3)
+    with open(os.path.join(sd, "failure.json"), "w") as f:
+        json.dump({"classification": "assertion_error"}, f)
+    assert cli._classify_failure(run_dir, 3, _WIDTH, {}) == "deterministic"
+
+
+def test_resubmit_timeout_applies_timeout_retry_resources(tmp_path, monkeypatch):
+    """A timeout failure must be resubmitted with the timeout_retry partition +
+    time applied as sbatch overrides (previously the knobs were dead, so a
+    timeout retried on the same wall and timed out forever). The eval array
+    must NOT inherit the train-only retry overrides."""
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    d = _base_config_dict()
+    d["cluster"]["timeout_retry_partition"] = "long-28core"
+    d["cluster"]["timeout_retry_time"] = "12:00:00"
+    cp = tmp_path / "_cfg_to.json"
+    cp.write_text(json.dumps(d))
+    cli._write_resolved_config(load_grid_config(str(cp)), rd)
+
+    open(os.path.join(_spec_dir(rd, 0), "model.eqx"), "wb").close()
+    for i in (2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    # index 1: wall-grace SIGTERM (recorded as killed_by_signal -> timeout).
+    with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
+        json.dump({"classification": "killed_by_signal"}, f)
+
+    fake = _fake_slurm(ids=["7700", "7701"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+    sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch) == 2
+    train_cmd, eval_cmd = sbatch[0], sbatch[1]
+    # train carries the timeout_retry overrides:
+    assert "--partition=long-28core" in train_cmd
+    assert "--time=12:00:00" in train_cmd
+    # eval does NOT get the train-only wall override:
+    assert not any(t.startswith("--time=") for t in eval_cmd)
+
+
+def test_resubmit_oom_applies_oom_retry_resources(tmp_path, monkeypatch):
+    """An oom failure is resubmitted with oom_retry partition + mem overrides."""
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    d = _base_config_dict()
+    d["cluster"]["oom_retry_partition"] = "hbm-long-96core"
+    d["cluster"]["oom_retry_mem"] = "512G"
+    cp = tmp_path / "_cfg_oom.json"
+    cp.write_text(json.dumps(d))
+    cli._write_resolved_config(load_grid_config(str(cp)), rd)
+
+    open(os.path.join(_spec_dir(rd, 0), "model.eqx"), "wb").close()
+    for i in (2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
+        json.dump({"classification": "oom"}, f)
+
+    fake = _fake_slurm(ids=["8800", "8801"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+    sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+    train_cmd = sbatch[0]
+    assert "--partition=hbm-long-96core" in train_cmd
+    assert "--mem=512G" in train_cmd
+
+
+def _script_time(run_dir, name):
+    """Read the ``#SBATCH --time=`` value from a rendered sbatch script."""
+    path = os.path.join(run_dir, "scripts", name)
+    with open(path) as f:
+        for line in f:
+            s = line.strip()
+            if s.startswith("#SBATCH --time="):
+                return s.split("=", 1)[1]
+    raise AssertionError(f"{name} has no '#SBATCH --time=' line")
+
+
+def test_submit_time_applies_to_all_stages(tmp_path, monkeypatch):
+    """--time sets the wall for every stage (base, like --partition)."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core", "--time", "06:00:00"])
+    assert rc == 0
+    run_dir = str(run_root / "runs" / os.listdir(run_root / "runs")[0])
+    for name in ("pretrain.sbatch", "preflight.sbatch",
+                 "train_array.sbatch", "eval_array.sbatch"):
+        assert _script_time(run_dir, name) == "06:00:00"
+
+
+def test_submit_per_stage_time_overrides(tmp_path, monkeypatch):
+    """Per-stage --{train,preflight,...}-time override the base --time."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core", "--time", "02:00:00",
+               "--preflight-time", "08:00:00", "--pretrain-time", "08:00:00"])
+    assert rc == 0
+    run_dir = str(run_root / "runs" / os.listdir(run_root / "runs")[0])
+    assert _script_time(run_dir, "train_array.sbatch") == "02:00:00"
+    assert _script_time(run_dir, "eval_array.sbatch") == "02:00:00"
+    assert _script_time(run_dir, "preflight.sbatch") == "08:00:00"
+    assert _script_time(run_dir, "pretrain.sbatch") == "08:00:00"
+
+
+def test_submit_without_time_keeps_config(tmp_path, monkeypatch):
+    """Omitting --time leaves the config's per-stage walls untouched."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core"])
+    assert rc == 0
+    run_dir = str(run_root / "runs" / os.listdir(run_root / "runs")[0])
+    # _base_config_dict sets train time "12:00:00".
+    assert _script_time(run_dir, "train_array.sbatch") == "12:00:00"
+
+
+def test_results_subcommand_prints_table_and_writes_csv(tmp_path):
+    """`results <run_dir>` returns 0, and --csv writes a file."""
+    run_dir = _make_run_dir(tmp_path)
+    # one completed eval so the table has a metric row.
+    import csv as _csv
+    d = _spec_dir(run_dir, 0)
+    with open(os.path.join(d, "eval_df.csv"), "w", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=["set", "mae", "rho_rmse", "n_eval"])
+        w.writeheader()
+        w.writerow({"set": "training_subset", "mae": 1.5,
+                    "rho_rmse": 0.02, "n_eval": 4})
+    csv_out = str(tmp_path / "results.csv")
+    rc = main(["results", run_dir, "--csv", csv_out])
+    assert rc == 0
+    assert os.path.isfile(csv_out)
+
+
+def test_results_subcommand_missing_manifest_is_graceful(tmp_path):
+    """`results` on a run dir with no manifest returns non-zero (not a crash)."""
+    run_dir = tmp_path / "bare"
+    run_dir.mkdir()
+    rc = main(["results", str(run_dir)])
+    assert rc == 1
+
+
+def test_results_spec_prints_per_molecule(tmp_path):
+    """`results <run_dir> --spec <idx>` prints the per-molecule AE table."""
+    run_dir = _make_run_dir(tmp_path)
+    d = _spec_dir(run_dir, 0)
+    open(os.path.join(d, "model.eqx"), "wb").close()
+    ed = os.path.join(d, "eval")
+    os.makedirs(ed, exist_ok=True)
+    with open(os.path.join(ed, "per_molecule.json"), "w") as f:
+        json.dump([
+            {"molecule": "F2O", "AE_nn": -0.1, "AE_ref_kcalmol": 53.7,
+             "AE_error_kcalmol": -141.6, "density_rmse": 0.002},
+            {"molecule": "H2O", "AE_nn": 0.37, "AE_ref_kcalmol": 232.2,
+             "AE_error_kcalmol": -0.1, "density_rmse": 0.001},
+        ], f)
+    rc = main(["results", run_dir, "--spec", "0"])
+    assert rc == 0
+
+
+def test_results_spec_without_per_molecule_is_graceful(tmp_path):
+    """--spec on a spec with no per_molecule.json returns non-zero (no crash)."""
+    run_dir = _make_run_dir(tmp_path)
+    rc = main(["results", run_dir, "--spec", "5"])
+    assert rc == 1
+
+
+def test_results_worst_prints_ranked_table(tmp_path):
+    run_dir = _make_run_dir(tmp_path)
+    ed = os.path.join(_spec_dir(run_dir, 0), "eval")
+    os.makedirs(ed, exist_ok=True)
+    with open(os.path.join(ed, "per_molecule.json"), "w") as f:
+        json.dump([{"molecule": "F2O", "AE_nn": -0.1,
+                    "AE_error_kcalmol": -141.6}], f)
+    rc = main(["results", run_dir, "--worst", "5"])
+    assert rc == 0
+
+
+def test_submit_n_steps_override_rides_into_resolved_config(tmp_path, monkeypatch):
+    """--n-steps overrides the training-optimization step count; it is baked
+    into resolved_config.yaml so the preflight materializes specs with it."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-28core", "--n-steps", "250"])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    run_dir = run_root / "runs" / runs[0]
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    cfg = load_grid_config(str(run_dir / "resolved_config.yaml"))
+    assert cfg.hyperparams.n_steps == 250
+
+
+def test_submit_without_n_steps_keeps_config(tmp_path, monkeypatch):
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-28core"])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    run_dir = run_root / "runs" / runs[0]
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    cfg = load_grid_config(str(run_dir / "resolved_config.yaml"))
+    assert cfg.hyperparams.n_steps == 200   # _base_config_dict default
+
+
+def test_submit_pretrain_n_steps_override(tmp_path, monkeypatch):
+    """--pretrain-n-steps overrides pretrain.n_steps into resolved_config."""
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "long-28core",
+               "--n-steps", "250", "--pretrain-n-steps", "2000"])
+    assert rc == 0
+    runs = os.listdir(run_root / "runs")
+    run_dir = run_root / "runs" / runs[0]
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    cfg = load_grid_config(str(run_dir / "resolved_config.yaml"))
+    assert cfg.hyperparams.n_steps == 250
+    assert cfg.pretrain.n_steps == 2000

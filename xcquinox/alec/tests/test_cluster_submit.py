@@ -90,7 +90,8 @@ _EXPECTED_ARRAY_MAX = 39
 
 # Template placeholders render_sbatch fills via string.Template.substitute.
 _PLACEHOLDER_TOKENS = (
-    "JOB_NAME", "PARTITION", "TIME", "MEM", "CPUS_PER_TASK", "ARRAY_MAX",
+    "JOB_NAME", "PARTITION", "TIME", "ALLOC_LINES", "MEM_LINE",
+    "CPUS_PER_TASK", "ARRAY_MAX",
     "THROTTLE", "RUN_DIR", "CONDA_ACTIVATION", "MAIL_USER_LINE",
     "MAIL_TYPE_LINE", "ACCOUNT_LINE", "SIGTERM_GRACE", "GPUS_PER_TASK",
 )
@@ -211,13 +212,77 @@ def test_render_pretrain_explicit_throttle_and_multi_arch(tmp_path):
 
 
 def test_render_pretrain_resource_fallback(tmp_path):
-    """Unset pretrain_* resource knobs fall back to the train-array values."""
-    cfg = _make_cfg(tmp_path)  # no pretrain_* knobs set
+    """Unset pretrain_* resource knobs fall back to the train-array values.
+
+    Uses shared allocation so the inherited ``--mem`` is actually rendered
+    (whole-node/exclusive stages emit no ``--mem`` at all)."""
+    d = _base_config_dict()
+    d["cluster"]["pretrain_allocation"] = "shared"
+    p = tmp_path / "g_shared.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))  # no pretrain_* resource knobs set
     text = render_sbatch("pretrain", cfg, str(tmp_path / "run"), array_max=0)
     # train-array partition/time/mem are inherited.
     assert "#SBATCH --partition=long-40core" in text
     assert "#SBATCH --time=12:00:00" in text
     assert "#SBATCH --mem=32G" in text
+
+
+# ---------------------------------------------------------------------------
+# Per-stage node-allocation mode (exclusive whole-node vs shared cpu/mem slice)
+# ---------------------------------------------------------------------------
+
+def test_render_exclusive_emits_node_lines_and_omits_mem(tmp_path):
+    """The default (exclusive) allocation books a whole node per task:
+    ``--nodes=1 --exclusive`` and NO ``--mem`` (the task owns all node RAM)."""
+    cfg = _make_cfg(tmp_path)  # all stages default to exclusive
+    text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
+    assert "#SBATCH --nodes=1" in text
+    assert "#SBATCH --exclusive" in text
+    assert "#SBATCH --mem=" not in text
+
+
+def test_render_shared_emits_mem_and_omits_node_lines(tmp_path):
+    """A stage set to 'shared' requests a cpu/mem slice: ``--mem`` is emitted
+    and no whole-node directives appear."""
+    d = _base_config_dict()
+    d["cluster"]["train_allocation"] = "shared"
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))
+    text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
+    assert "#SBATCH --mem=32G" in text
+    assert "#SBATCH --nodes=1" not in text
+    assert "#SBATCH --exclusive" not in text
+
+
+def test_render_shared_omits_mem_when_unset(tmp_path):
+    """A shared stage with mem unset emits NO ``--mem`` line (SLURM applies the
+    partition default-mem-per-cpu) and still no whole-node directives."""
+    d = _base_config_dict()
+    d["cluster"]["train_allocation"] = "shared"
+    d["cluster"].pop("mem", None)
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))
+    text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
+    assert "#SBATCH --mem=" not in text
+    assert "#SBATCH --nodes=1" not in text
+    assert "#SBATCH --exclusive" not in text
+
+
+def test_render_per_stage_allocation_independent(tmp_path):
+    """Each stage's allocation is independent: train whole-node, eval sliced."""
+    d = _base_config_dict()
+    d["cluster"]["train_allocation"] = "exclusive"
+    d["cluster"]["eval_allocation"] = "shared"
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))
+    train = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
+    ev = render_sbatch("eval", cfg, str(tmp_path / "run"), array_max=39)
+    assert "#SBATCH --exclusive" in train and "#SBATCH --mem=" not in train
+    assert "#SBATCH --mem=32G" in ev and "#SBATCH --exclusive" not in ev
 
 
 def test_render_thread_caps_present_every_template(tmp_path):
@@ -473,3 +538,23 @@ def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):
         assert proc.returncode == 0, (
             f"shellcheck flagged {name}:\n{proc.stdout}\n{proc.stderr}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Train worker is exec'd so it receives the SLURM B:TERM grace signal
+# ---------------------------------------------------------------------------
+
+def test_render_train_execs_worker_for_sigterm_delivery(tmp_path):
+    """The train script must ``exec`` the worker. ``#SBATCH --signal=B:TERM``
+    targets the batch-step PID; only by exec-ing does the Python worker (which
+    installs the SIGTERM handler that records a timeout failure.json) become
+    that PID and actually receive the grace signal."""
+    cfg = _make_cfg(tmp_path)
+    text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
+    assert "exec python -m xcquinox.alec.cluster._train_task" in text
+
+
+def test_render_train_gpu_execs_worker_for_sigterm_delivery(tmp_path):
+    cfg = _make_cfg(tmp_path, device="gpu", gpus_per_task=1)
+    text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
+    assert "exec python -m xcquinox.alec.cluster._train_task" in text

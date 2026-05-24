@@ -2,8 +2,7 @@
 #SBATCH --job-name=${JOB_NAME}
 #SBATCH --partition=${PARTITION}
 #SBATCH --time=${TIME}
-#SBATCH --mem=${MEM}
-#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --output=${RUN_DIR}/logs/preflight_%j.out
 ${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
 set -euo pipefail

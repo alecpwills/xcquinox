@@ -96,10 +96,27 @@ pretrain:
 
 # --- SLURM resource requests + submission knobs (SeaWulf defaults) ---------
 cluster:
-  partition: short-96core-shared
-  time: "02:00:00"
+  # partition is intentionally EMPTY — set it on the CLI at submit time via the
+  # required --partition flag (no config default, so a submission never silently
+  # lands on a login-node-specific queue). Per-stage overrides:
+  #   --train-partition --eval-partition --preflight-partition --pretrain-partition
+  # WALLTIME COUPLING: train/preflight/pretrain default to 8h walls below, but
+  # the *short* queues cap at 4h. Run on a queue that allows the wall — simplest
+  # is one long-wall queue for all stages:
+  #   submit … --partition long-96core-shared --max-nodes 3
+  # Override a stage's wall ad-hoc with --time / --{train,eval,...}-time.
+  partition: ""
+  # train wall: the slower (full_3 / large-subset) specs need ~3h for 100 steps
+  # on a CPU node; 8h gives margin. Needs a >=8h queue (medium 12h / long).
+  time: "08:00:00"
+  # mem is used ONLY by stages set to "shared" allocation (a cpu/mem slice). The
+  # default whole-node "exclusive" stages emit no --mem at all — each task owns
+  # the full node's RAM. Left here for shared-mode users; harmless otherwise.
   mem: 96G
   cpus_per_task: 24
+  # array_throttle / eval_array_throttle = simultaneous-node cap per stage. With
+  # one whole node per task (exclusive), this IS the number of nodes running at
+  # once. Override at submit time with --max-nodes (and per-stage variants).
   array_throttle: 4
   eval_array_throttle: 4
   max_concurrent_tasks: 8
@@ -112,17 +129,21 @@ cluster:
   mail_user: CHANGE_ME@example.com
   mail_type: NONE
   account: CHANGE_ME
-  # Preflight runs once on a longer-wall-clock partition (CCSD pre-compute
-  # for the full species union can take well over the train wall clock).
-  preflight_partition: long-96core-shared
+  # Per-stage node allocation: "exclusive" books a whole node per array task
+  # (no --mem; task owns all node RAM — required for memory-heavy training) or
+  # "shared" for a cpu/mem slice that co-tenants a node. Defaults to exclusive
+  # everywhere; flip a stage to shared only when its tasks fit alongside others.
+  train_allocation: exclusive
+  eval_allocation: exclusive
+  preflight_allocation: exclusive
+  pretrain_allocation: exclusive
+  # Per-stage WALLTIME tiers (partition is CLI-controlled — see --partition
+  # above). Preflight runs once and its CCSD pre-compute for the full species
+  # union can take well over the train wall clock, hence 8h.
   preflight_time: "08:00:00"
-  # Eval runs on a CPU partition after training completes.
-  eval_partition: short-96core-shared
   eval_time: "02:00:00"
-  # Pretrain runs once per distinct architecture, up front. Each knob falls
-  # back to the train-array resource when unset; pretrain_throttle unset means
-  # all distinct architectures pretrain concurrently.
-  pretrain_partition: long-96core-shared
+  # Pretrain runs once per distinct architecture, up front; pretrain_throttle
+  # unset means all distinct architectures pretrain concurrently.
   pretrain_time: "08:00:00"
 
 # --- domain profile: physics tables (atom energies, kcal/Ha, extractors) ---

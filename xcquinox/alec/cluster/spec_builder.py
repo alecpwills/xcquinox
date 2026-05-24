@@ -44,6 +44,7 @@ Notes:
   immediately — a real subset always has ≥1 point.
 """
 import os
+import warnings
 
 from xcquinox.alec.config import MoleculeSpec, TrainingSpec, TestSpec
 from xcquinox.alec.training_points import species_union_from_points
@@ -201,15 +202,41 @@ def _ledger_key(metric: str, subset_size: int) -> str:
     return f"{metric}/{int(subset_size)}"
 
 
+def _coerce_enum(enum_cls, token):
+    """Resolve ``token`` to an ``enum_cls`` member by VALUE or by NAME.
+
+    Config files spell solver mode / feature policy as the uppercase enum NAME
+    (e.g. ``ONESHOT``, ``FULL``, ``REASSEMBLE`` — matching the notebook's
+    ``SolverMode.ONESHOT`` references), while unit tests and the enums' own
+    ``__call__`` use the lowercase VALUE (``oneshot``/``full``/``reassemble``).
+    Accept either so a config's name-form string does not blow up at
+    spec-build time (the preflight stage). Raises a clear ``ValueError`` naming
+    the enum and the valid options when ``token`` is neither.
+    """
+    try:
+        return enum_cls(token)          # by value, e.g. "oneshot"
+    except ValueError:
+        pass
+    try:
+        return enum_cls[token]          # by name, e.g. "ONESHOT"
+    except KeyError:
+        valid = [f"{m.name}/{m.value}" for m in enum_cls]
+        raise ValueError(
+            f"{token!r} is not a valid {enum_cls.__name__} — expected one of "
+            f"(name/value): {valid}"
+        )
+
+
 def _solver_config_from_named(named) -> SolverConfig:
     """Materialize a :class:`SolverConfig` from a :class:`SolverNamed`.
 
-    ``SolverNamed`` stores ``mode`` / ``feature_policy`` as plain strings; this
-    coerces them to the ``SolverMode`` / ``FeaturePolicy`` enums.
+    ``SolverNamed`` stores ``mode`` / ``feature_policy`` as plain strings (the
+    config's uppercase enum NAME or the lowercase VALUE); this coerces them to
+    the ``SolverMode`` / ``FeaturePolicy`` enums, accepting either spelling.
     """
-    mode = SolverMode(named.mode)
+    mode = _coerce_enum(SolverMode, named.mode)
     fp = (
-        FeaturePolicy(named.feature_policy)
+        _coerce_enum(FeaturePolicy, named.feature_policy)
         if named.feature_policy is not None
         else None
     )
@@ -268,7 +295,9 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
         If a ``(metric, subset_size)`` grid cell has no ledger entry, or if a
         ledger entry names a training point absent from the ``points`` pool.
     """
-    from xcquinox.alec.cluster.grid_config import expand_grid
+    from xcquinox.alec.cluster.grid_config import (
+        expand_grid, pretrain_checkpoint_dir,
+    )
     from xcquinox.alec.balancing import GradNormConfig
 
     # --- name -> TrainingPoint resolution ----------------------------------
@@ -371,13 +400,15 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             loss_name=cell.loss,
             loss_kwargs=loss_kwargs,
             solver_config=solver_cfg,
-            # The pretrain stage writes one checkpoint per architecture to
-            # ``<pretrain_root>/<arch>/``; that directory IS this cell's
-            # pretrained checkpoint. validate() only checks the path when the
-            # dir exists, so building specs before the pretrain stage runs is
-            # fine — the downstream preflight runs pretrain-then-validate.
-            pretrain_checkpoint=os.path.join(
-                cfg.pretrain.pretrain_root, cell.arch
+            # The pretrain stage writes one checkpoint per architecture to the
+            # job-scoped ``<pretrain_root>/<run_id>/<arch>/``; that directory IS
+            # this cell's pretrained checkpoint. Derived through the SAME helper
+            # the pretrain worker uses so the two sides cannot drift. validate()
+            # only checks the path when the dir exists, so building specs before
+            # the pretrain stage runs is fine — the preflight runs
+            # pretrain-then-validate.
+            pretrain_checkpoint=pretrain_checkpoint_dir(
+                cfg.pretrain.pretrain_root, run_dir, cell.arch
             ),
             checkpoint_dir=_checkpoint_dir(run_dir, idx, n),
             n_steps=hp.n_steps,
@@ -395,12 +426,30 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
     return out
 
 
-def build_test_spec(training_spec, run_dir, idx, domain) -> TestSpec:
+def build_test_spec(
+    training_spec,
+    run_dir,
+    idx,
+    domain,
+    *,
+    holdout_molecule_names: "tuple | None" = None,
+) -> TestSpec:
     """Build the :class:`TestSpec` matching a trained :class:`TrainingSpec`.
 
-    Eval molecules are taken **directly** from ``training_spec.molecules`` (post
-    the mixed-pool refactor, that IS the chosen species union — no ``subset.traj``
-    is read). The ``reference_ae_kcalmol`` metric kwarg is built from
+    By default, eval molecules are taken **directly** from
+    ``training_spec.molecules`` (post the mixed-pool refactor, that IS the chosen
+    species union — no ``subset.traj`` is read).  **This is in-distribution
+    evaluation** — the eval set equals the training set.  It is not a
+    generalization estimate.  A :class:`RuntimeWarning` is emitted whenever this
+    default path is used, so the in-distribution nature is never silently
+    mistaken for held-out performance.
+
+    To evaluate on a held-out or external molecule set, pass
+    ``holdout_molecule_names`` — a tuple of :class:`~xcquinox.alec.config.MoleculeSpec`
+    objects.  When provided, the returned :class:`TestSpec` uses those molecules
+    instead of the training set, and no warning is emitted.
+
+    The ``reference_ae_kcalmol`` metric kwarg is built from
     ``training_spec.targets_dict`` (Ha) × ``domain.kcal_per_ha`` for compound
     molecules only.
 
@@ -413,12 +462,16 @@ def build_test_spec(training_spec, run_dir, idx, domain) -> TestSpec:
         The spec's array-task index — selects ``spec_<idx>``.
     domain : DomainProfile
         Supplies ``atom_energies`` and ``kcal_per_ha``.
+    holdout_molecule_names : tuple[MoleculeSpec, ...] | None, optional
+        When provided, the returned :class:`TestSpec` evaluates on these
+        molecules instead of the training set.  When ``None`` (default), the
+        training molecules are used and a :class:`RuntimeWarning` is emitted to
+        flag the in-distribution nature of the evaluation.
 
     Returns
     -------
     TestSpec
     """
-    spec_dir = os.path.dirname(os.path.abspath(training_spec.checkpoint_dir))
     # Reconstruct the zero-padded spec dir from the same scheme materialize
     # uses, but anchored on run_dir so the path is absolute & deterministic
     # regardless of how the TrainingSpec's checkpoint_dir was set.
@@ -429,17 +482,37 @@ def build_test_spec(training_spec, run_dir, idx, domain) -> TestSpec:
     model_checkpoint = os.path.join(ckpt_dir, "model.eqx")
     output_dir = os.path.join(ckpt_dir, "eval")
 
+    if holdout_molecule_names is None:
+        eval_molecules = training_spec.molecules
+        warnings.warn(
+            "build_test_spec: eval molecules are the TRAINING molecules "
+            "(in-distribution evaluation — not a held-out generalization "
+            "estimate). Pass holdout_molecule_names to evaluate on an "
+            "external set.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    else:
+        eval_molecules = holdout_molecule_names
+
     targets = training_spec.targets_dict
+    # Exclude AUX-ONLY species (BH76/IP13 reaction polyatomics with no real AE
+    # reference) — they carry a 0.0 placeholder target. Mirrors the training
+    # loss, which drops them via classify_aux_only; without this the eval AE
+    # metric scores their full atomization energy against a 0.0 reference (the
+    # CH4 ~+440 / HF ~+150 kcal/mol artifact). aux_only_names is carried in the
+    # TrainingSpec's loss_kwargs by build_training_specs.
+    aux_only = set(training_spec.loss_kwargs_dict.get("aux_only_names", ()))
     reference_ae_kcalmol: dict = {}
     for ms in training_spec.molecules:
         comp_sum = sum(dict(ms.atom_composition).values())
-        if comp_sum > 1 and ms.name in targets:
+        if comp_sum > 1 and ms.name in targets and ms.name not in aux_only:
             reference_ae_kcalmol[ms.name] = targets[ms.name] * domain.kcal_per_ha
 
     return TestSpec.from_dicts(
         arch=training_spec.arch,
         model_checkpoint=model_checkpoint,
-        molecules=training_spec.molecules,
+        molecules=eval_molecules,
         metrics=("total_energy", "atomization_energy",
                  "density_rmse", "scf_convergence"),
         metric_kwargs={

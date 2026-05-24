@@ -166,8 +166,12 @@ def test_main_builds_pretrain_spec_with_correct_checkpoint_dir(run_dir, monkeypa
     spec = captured["spec"]
     assert isinstance(spec, PretrainSpec)
     assert spec.arch.name == "medium"
-    # checkpoint_dir == <pretrain_root>/<arch>/
-    assert spec.checkpoint_dir == os.path.join(cfg.pretrain.pretrain_root, "medium")
+    # checkpoint_dir == <pretrain_root>/<run_id>/<arch>/ (job-scoped so two runs
+    # pretraining the same arch under the same pretrain_root don't collide).
+    run_id = os.path.basename(run_dir.rstrip(os.sep))
+    assert spec.checkpoint_dir == os.path.join(
+        cfg.pretrain.pretrain_root, run_id, "medium"
+    )
     # every cfg.pretrain field threaded through.
     assert spec.data_dir == cfg.pretrain.data_dir
     assert spec.n_steps == 777
@@ -332,7 +336,8 @@ def test_pretrain_template_renders_with_no_leftover_placeholders():
         "JOB_NAME": "xcq_pretrain",
         "PARTITION": "short",
         "TIME": "04:00:00",
-        "MEM": "16G",
+        "ALLOC_LINES": "#SBATCH --nodes=1\n#SBATCH --exclusive\n",
+        "MEM_LINE": "",
         "CPUS_PER_TASK": 4,
         "ARRAY_MAX": 2,
         "THROTTLE": 3,

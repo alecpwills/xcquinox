@@ -37,10 +37,12 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 
+from xcquinox.alec.cluster import analyze
 from xcquinox.alec.cluster import job_tracking
 from xcquinox.alec.cluster.grid_config import (
     expand_grid,
     load_grid_config,
+    pretrain_checkpoint_dir,
     validate_grid_semantics,
 )
 from xcquinox.alec.cluster.domain import get_domain_profile
@@ -350,6 +352,12 @@ def _read_failure_json(run_dir: str, idx: int, width: int):
 # blind retry will not fix).
 _RETRYABLE = {"oom", "timeout"}
 
+# failure.json classifications that ARE retryable but under a different name.
+# A wall-clock pre-kill grace SIGTERM is recorded by ``_train_task`` as
+# "killed_by_signal" — it is a timeout in all but name (the job ran out of
+# wall), so route it like a timeout (longer-wall ``timeout_retry`` resources).
+_FAILURE_CLASS_ALIASES = {"killed_by_signal": "timeout"}
+
 
 def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str:
     """Classify why train index ``idx`` failed: 'oom' / 'timeout' / 'deterministic'.
@@ -361,6 +369,7 @@ def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str
     failure = _read_failure_json(run_dir, idx, width)
     if failure is not None:
         cls = (failure.get("classification") or "").strip().lower()
+        cls = _FAILURE_CLASS_ALIASES.get(cls, cls)
         if cls in _RETRYABLE:
             return cls
         return "deterministic"
@@ -374,6 +383,30 @@ def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str
 # ---------------------------------------------------------------------------
 # Sparse-array helpers (resubmit)
 # ---------------------------------------------------------------------------
+
+def _retry_resource_flags(cls: str, cl) -> list[str]:
+    """sbatch resource-override flags for resubmitting a ``cls`` failure.
+
+    These override the rendered train script's baked ``#SBATCH`` directives so
+    a retry actually gets different resources:
+      - ``oom``     -> ``--partition=oom_retry_partition`` / ``--mem=oom_retry_mem``
+      - ``timeout`` -> ``--partition=timeout_retry_partition`` / ``--time=timeout_retry_time``
+    Each flag is emitted only when its knob is set; an unset class falls back to
+    the script's defaults (returns ``[]``).
+    """
+    flags: list[str] = []
+    if cls == "oom":
+        if cl.oom_retry_partition:
+            flags.append(f"--partition={cl.oom_retry_partition}")
+        if cl.oom_retry_mem:
+            flags.append(f"--mem={cl.oom_retry_mem}")
+    elif cls == "timeout":
+        if cl.timeout_retry_partition:
+            flags.append(f"--partition={cl.timeout_retry_partition}")
+        if cl.timeout_retry_time:
+            flags.append(f"--time={cl.timeout_retry_time}")
+    return flags
+
 
 def _sparse_array_spec(indices: list[int], throttle: int | None = None) -> str:
     """Build a SLURM ``--array`` value from an explicit index list.
@@ -551,6 +584,119 @@ def cmd_prepare(args) -> int:
 # Subcommand: submit
 # ===========================================================================
 
+def _apply_partition_overrides(cfg, args):
+    """Return a copy of ``cfg`` with CLI-resolved partitions on every stage.
+
+    The submit CLI is the sole source of partitions (the config carries no
+    default). ``--partition`` is the required base; the optional per-stage
+    ``--{train,eval,preflight,pretrain}-partition`` flags override it for one
+    stage and otherwise fall back to the base. The resolved values are written
+    onto ``cfg.cluster`` so they (a) feed ``render_sbatch`` for this submission
+    and (b) round-trip into ``resolved_config.yaml`` — so recovery commands,
+    which re-render from that file, inherit the same partitions with no flag.
+
+    Render-time mapping (see ``submit.render_sbatch``): the TRAIN stage uses
+    ``cl.partition`` directly; EVAL/PREFLIGHT/PRETRAIN use
+    ``cl.<stage>_partition or cl.partition``. Setting each per-stage field to a
+    non-empty resolved value makes that fallback a no-op, so every stage lands
+    on exactly its resolved partition.
+    """
+    base = args.partition
+    train_p = args.train_partition or base
+    eval_p = args.eval_partition or base
+    preflight_p = args.preflight_partition or base
+    pretrain_p = args.pretrain_partition or base
+    cluster = dataclasses.replace(
+        cfg.cluster,
+        partition=train_p,
+        eval_partition=eval_p,
+        preflight_partition=preflight_p,
+        pretrain_partition=pretrain_p,
+    )
+    return dataclasses.replace(cfg, cluster=cluster)
+
+
+def _apply_step_overrides(cfg, args):
+    """Return a copy of ``cfg`` with CLI-resolved step counts.
+
+    ``--n-steps`` overrides the per-spec training-optimization steps
+    (``hyperparams.n_steps``); ``--pretrain-n-steps`` overrides the pretraining
+    steps (``pretrain.n_steps``). Each unset flag leaves the config value, so
+    omitting both is a no-op. The resolved counts ride into
+    ``resolved_config.yaml`` and are consumed by the preflight (which
+    materializes the TrainingSpecs) and the pretrain stage.
+    """
+    if args.n_steps is not None:
+        cfg = dataclasses.replace(
+            cfg, hyperparams=dataclasses.replace(
+                cfg.hyperparams, n_steps=args.n_steps))
+    if args.pretrain_n_steps is not None:
+        cfg = dataclasses.replace(
+            cfg, pretrain=dataclasses.replace(
+                cfg.pretrain, n_steps=args.pretrain_n_steps))
+    return cfg
+
+
+def _apply_time_overrides(cfg, args):
+    """Return a copy of ``cfg`` with CLI-resolved per-stage wall times.
+
+    ``--time`` is the base wall for every stage; the per-stage
+    ``--{train,eval,preflight,pretrain}-time`` flags override it. A stage with
+    neither its own flag nor a base keeps the config's value (so omitting all
+    five is a no-op). Mirrors :func:`_apply_partition_overrides`: TRAIN uses
+    ``cl.time`` directly; the others render ``cl.<stage>_time or cl.time``, so
+    each resolved per-stage time is written explicitly to make the override a
+    no-fallback. The resolved times ride into ``resolved_config.yaml``.
+    """
+    base = args.time
+    train_t = args.train_time or base
+    eval_t = args.eval_time or base
+    preflight_t = args.preflight_time or base
+    pretrain_t = args.pretrain_time or base
+    changes = {}
+    if train_t is not None:
+        changes["time"] = train_t
+    if eval_t is not None:
+        changes["eval_time"] = eval_t
+    if preflight_t is not None:
+        changes["preflight_time"] = preflight_t
+    if pretrain_t is not None:
+        changes["pretrain_time"] = pretrain_t
+    if not changes:
+        return cfg
+    cluster = dataclasses.replace(cfg.cluster, **changes)
+    return dataclasses.replace(cfg, cluster=cluster)
+
+
+def _apply_max_nodes_overrides(cfg, args):
+    """Return a copy of ``cfg`` with CLI-resolved per-stage array throttles.
+
+    With each array task booking a whole node ("exclusive"), the SLURM array
+    throttle IS the number of nodes running concurrently. ``--max-nodes`` is the
+    base cap for every array stage; ``--{train,eval,pretrain}-max-nodes``
+    override it per stage. Any value left unset (no flag and no base) keeps the
+    config's existing throttle, so omitting all four is a no-op. (Preflight is a
+    single job, not an array — it has no throttle.) The resolved throttles ride
+    into ``resolved_config.yaml`` so recovery commands reuse them.
+    """
+    base = args.max_nodes
+    train = args.train_max_nodes if args.train_max_nodes is not None else base
+    eval_ = args.eval_max_nodes if args.eval_max_nodes is not None else base
+    pretrain = (args.pretrain_max_nodes
+                if args.pretrain_max_nodes is not None else base)
+    changes = {}
+    if train is not None:
+        changes["array_throttle"] = train
+    if eval_ is not None:
+        changes["eval_array_throttle"] = eval_
+    if pretrain is not None:
+        changes["pretrain_throttle"] = pretrain
+    if not changes:
+        return cfg
+    cluster = dataclasses.replace(cfg.cluster, **changes)
+    return dataclasses.replace(cfg, cluster=cluster)
+
+
 def _make_run_dir(root: str) -> str:
     """Create a fresh, never-before-used run dir under ``<root>/runs/``.
 
@@ -581,6 +727,10 @@ def cmd_submit(args) -> int:
     4-stage pretrain → preflight → train → eval graph.
     """
     cfg = load_grid_config(args.grid)
+    cfg = _apply_partition_overrides(cfg, args)
+    cfg = _apply_max_nodes_overrides(cfg, args)
+    cfg = _apply_time_overrides(cfg, args)
+    cfg = _apply_step_overrides(cfg, args)
     domain = get_domain_profile(cfg.domain_profile)
     validate_grid_semantics(cfg, domain)
 
@@ -622,8 +772,11 @@ def _pretrain_status(run_dir: str) -> str | None:
     Pretrain is a small up-front stage — it gets no per-index
     ``reduce_outcomes``. The check is purely on-disk: for each distinct
     architecture in the resolved config, the pretrain worker writes
-    ``xnet.eqx`` + ``cnet.eqx`` into ``<pretrain_root>/<arch>/``. We report how
-    many of those checkpoint pairs are present.
+    ``xnet.eqx`` + ``cnet.eqx`` into the JOB-SCOPED
+    ``<pretrain_root>/<run_id>/<arch>/`` (see ``pretrain_checkpoint_dir``). We
+    report how many of those checkpoint pairs are present. The path MUST be
+    derived through the same helper the pretrain worker uses, or this check
+    looks in the wrong directory and reports a false ``0/N``.
     """
     cfg_path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
     if not os.path.exists(cfg_path):
@@ -636,7 +789,7 @@ def _pretrain_status(run_dir: str) -> str | None:
     root = cfg.pretrain.pretrain_root
     done = 0
     for arch in archs:
-        d = os.path.join(root, arch)
+        d = pretrain_checkpoint_dir(root, run_dir, arch)
         if (os.path.exists(os.path.join(d, "xnet.eqx"))
                 and os.path.exists(os.path.join(d, "cnet.eqx"))):
             done += 1
@@ -730,6 +883,81 @@ def cmd_status(args) -> int:
 
 
 # ===========================================================================
+# Subcommand: results
+# ===========================================================================
+
+def cmd_results(args) -> int:
+    """``results`` — aggregate per-spec eval metrics (read-only).
+
+    Joins each finished ``eval_df.csv`` with its grid cell from
+    ``manifest.json``, prints a per-spec table + a summary (MAE stats over the
+    COMPLETE specs only — incomplete spec dirs are shown but excluded from the
+    statistics), and optionally writes a CSV (``--csv``) and a MAE-vs-subset_size
+    plot (``--plot``). Takes no lock; safe to re-run as results trickle in.
+    """
+    run_dir = os.path.abspath(args.run_dir)
+
+    # --- per-spec per-molecule drill-down ----------------------------------
+    if args.spec is not None:
+        try:
+            pm = analyze.load_per_molecule(run_dir, args.spec)
+        except FileNotFoundError as exc:
+            _log(f"results: {exc}")
+            return 1
+        if pm is None:
+            _log(f"results: spec {args.spec} has no eval/per_molecule.json — "
+                 "its eval has not completed (see `results <run_dir>` for its "
+                 "status).")
+            return 1
+        _log(f"results: per-molecule AE for spec {args.spec} "
+             "(worst |error| first):")
+        _log(analyze.format_per_molecule_table(pm))
+        return 0
+
+    # --- cross-spec worst molecules ----------------------------------------
+    if args.worst is not None:
+        try:
+            worst = analyze.worst_molecules(run_dir, args.worst)
+        except FileNotFoundError as exc:
+            _log(f"results: {exc}")
+            return 1
+        if not worst:
+            _log("results: no per-molecule eval data found yet.")
+            return 0
+        _log(f"results: {len(worst)} worst molecule-instances by "
+             "|AE_error_kcalmol|:")
+        _log(analyze.format_worst_table(worst))
+        return 0
+
+    # --- default: grid-level table + summary -------------------------------
+    try:
+        rows = analyze.collect_results(run_dir)
+    except FileNotFoundError as exc:
+        _log(f"results: {exc}")
+        _log("  the manifest is written by the preflight job — wait for it to "
+             "finish (check `status <run_dir>`), then re-run.")
+        return 1
+
+    summary = analyze.summarize(rows)
+    _log(analyze.format_table(rows, summary))
+
+    if args.csv:
+        analyze.write_csv(rows, args.csv)
+        _log(f"results: wrote CSV -> {args.csv}")
+    if args.plot:
+        if summary["n_complete"] == 0:
+            _log("results: --plot skipped — no completed evals to plot yet.")
+        else:
+            try:
+                analyze.plot_mae_vs_subset(rows, args.plot)
+                _log(f"results: wrote plot -> {args.plot}")
+            except ImportError as exc:
+                _log(f"results: --plot failed — {exc}")
+                return 1
+    return 0
+
+
+# ===========================================================================
 # Subcommand: resubmit
 # ===========================================================================
 
@@ -798,6 +1026,14 @@ def cmd_resubmit(args) -> int:
             os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
         )
         cl = cfg.cluster
+
+        # Group retryable indices by failure class so each class can be
+        # resubmitted with its OWN resource overrides (oom -> bigger mem /
+        # oom_retry partition; timeout -> longer wall / timeout_retry partition).
+        # A single mixed array could not carry per-class resources.
+        retry_by_class: dict[str, list[int]] = {}
+        for idx in retry:
+            retry_by_class.setdefault(classes[idx], []).append(idx)
         for idx in retry:
             cls = classes[idx]
             if cls == "oom" and not cl.oom_retry_partition and not cl.oom_retry_mem:
@@ -823,25 +1059,21 @@ def cmd_resubmit(args) -> int:
         # Re-verify spec content hashes before reusing specs/.
         _verify_spec_hashes(run_dir, manifest, retry)
 
-        train_array = _sparse_array_spec(retry, cl.array_throttle)
-        eval_array = _sparse_array_spec(retry, cl.eval_array_throttle)
-        # aftercorr requires byte-identical index lists (throttle aside).
-        train_idx_body = train_array.split("%", 1)[0]
-        eval_idx_body = eval_array.split("%", 1)[0]
-        assert train_idx_body == eval_idx_body, (
-            f"resubmit: train array indices {train_idx_body!r} != eval array "
-            f"indices {eval_idx_body!r}"
-        )
-
         train_script = os.path.join(run_dir, "scripts", "train_array.sbatch")
         eval_script = os.path.join(run_dir, "scripts", "eval_array.sbatch")
 
         if not args.submit:
             _log(f"resubmit: DRY-RUN — would archive stale artifacts for "
-                 f"{sorted(retry)} then submit:")
-            _log(f"  sbatch --parsable --array={train_array} {train_script}")
-            _log(f"  sbatch --parsable --array={eval_array} "
-                 f"--dependency=aftercorr:<TRAIN_ID> {eval_script}")
+                 f"{sorted(retry)} then submit per failure class:")
+            for cls in sorted(retry_by_class):
+                idxs = sorted(retry_by_class[cls])
+                ta = _sparse_array_spec(idxs, cl.array_throttle)
+                ea = _sparse_array_spec(idxs, cl.eval_array_throttle)
+                ov = " ".join(_retry_resource_flags(cls, cl))
+                _log(f"  [{cls}] sbatch --parsable --array={ta} {ov} "
+                     f"{train_script}".replace("  ", " "))
+                _log(f"  [{cls}] sbatch --parsable --array={ea} "
+                     f"--dependency=aftercorr:<TRAIN_ID> {eval_script}")
             _log("resubmit: no SLURM call made; pass --submit to submit.")
             return 0
 
@@ -854,42 +1086,55 @@ def cmd_resubmit(args) -> int:
                 _log(f"  index {idx}: archived {len(archived)} artifact(s) "
                      f"-> *.gen{gen}")
 
-        # Submit the sparse train array.
-        train_cmd = [
-            "sbatch", "--parsable", f"--array={train_array}", train_script,
-        ]
-        proc = job_tracking._run_slurm(train_cmd)
-        train_id = _parse_job_id(proc)
+        # Submit one sparse train+eval pair PER failure class, each with that
+        # class's resource overrides. A class whose eval sbatch fails rolls back
+        # only its own train array; classes already submitted are left intact
+        # (they are independent and correctly recorded).
+        for cls in sorted(retry_by_class):
+            idxs = sorted(retry_by_class[cls])
+            train_array = _sparse_array_spec(idxs, cl.array_throttle)
+            eval_array = _sparse_array_spec(idxs, cl.eval_array_throttle)
+            # aftercorr requires byte-identical index lists (throttle aside).
+            assert train_array.split("%", 1)[0] == eval_array.split("%", 1)[0]
+            overrides = _retry_resource_flags(cls, cl)
 
-        # Submit the matching sparse eval array (aftercorr on the new train).
-        eval_cmd = [
-            "sbatch", "--parsable", f"--array={eval_array}",
-            f"--dependency=aftercorr:{train_id}", eval_script,
-        ]
-        try:
-            proc = job_tracking._run_slurm(eval_cmd)
-            eval_id = _parse_job_id(proc)
-        except Exception as exc:
-            # Best-effort rollback: cancel the just-submitted train array.
-            _log(f"resubmit: eval sbatch failed ({exc}); rolling back the "
-                 f"train array {train_id} via scancel.")
+            # Train carries the class's retry resource overrides (sbatch CLI
+            # flags override the script's #SBATCH directives). Eval does NOT —
+            # eval is light and keeps its own (default) resources.
+            train_cmd = [
+                "sbatch", "--parsable", f"--array={train_array}",
+                *overrides, train_script,
+            ]
+            proc = job_tracking._run_slurm(train_cmd)
+            train_id = _parse_job_id(proc)
+
+            eval_cmd = [
+                "sbatch", "--parsable", f"--array={eval_array}",
+                f"--dependency=aftercorr:{train_id}", eval_script,
+            ]
             try:
-                job_tracking._run_slurm(["scancel", str(train_id)])
-            except Exception:
-                _log(f"resubmit: WARNING scancel of train {train_id} also "
-                     "failed — that array may be orphaned; cancel it manually.")
-            _log("resubmit: nothing appended to jobs.json.")
-            return 1
+                proc = job_tracking._run_slurm(eval_cmd)
+                eval_id = _parse_job_id(proc)
+            except Exception as exc:
+                _log(f"resubmit: [{cls}] eval sbatch failed ({exc}); rolling "
+                     f"back train array {train_id} via scancel.")
+                try:
+                    job_tracking._run_slurm(["scancel", str(train_id)])
+                except Exception:
+                    _log(f"resubmit: WARNING scancel of train {train_id} also "
+                         "failed — that array may be orphaned; cancel it "
+                         "manually.")
+                _log(f"resubmit: [{cls}] not recorded in jobs.json.")
+                return 1
 
-        # Both sbatch calls succeeded — now record + bump attempts.
-        job_tracking.append_job_record(run_dir, "train", train_id, retry)
-        job_tracking.append_job_record(run_dir, "eval", eval_id, retry)
-        for idx in retry:
-            attempts[str(idx)] = int(attempts.get(str(idx), 0)) + 1
-        _write_attempts(run_dir, attempts)
-
-        _log(f"resubmit: SUBMITTED sparse arrays — train={train_id} "
-             f"eval={eval_id} for indices {sorted(retry)}.")
+            job_tracking.append_job_record(run_dir, "train", train_id, idxs)
+            job_tracking.append_job_record(run_dir, "eval", eval_id, idxs)
+            for idx in idxs:
+                attempts[str(idx)] = int(attempts.get(str(idx), 0)) + 1
+            _write_attempts(run_dir, attempts)
+            _log(f"resubmit: [{cls}] SUBMITTED train={train_id} eval={eval_id} "
+                 f"for indices {idxs}"
+                 + (f" with overrides {overrides}" if overrides else ""))
         return 0
     finally:
         if lock_path is not None:
@@ -1171,12 +1416,93 @@ def _build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument(
         "--run-root", default=None,
         help="root for runs/ (default: cfg.inputs.output_root)")
+    p_submit.add_argument(
+        "--partition", required=True,
+        help="SLURM partition for the whole 4-stage graph (REQUIRED — the "
+             "config carries no partition default, so a submission never "
+             "silently lands on a login-node-specific queue). The per-stage "
+             "--{train,eval,preflight,pretrain}-partition flags override this "
+             "base for an individual stage.")
+    p_submit.add_argument(
+        "--train-partition", default=None,
+        help="override the partition for the TRAIN array (default: --partition)")
+    p_submit.add_argument(
+        "--eval-partition", default=None,
+        help="override the partition for the EVAL array (default: --partition)")
+    p_submit.add_argument(
+        "--preflight-partition", default=None,
+        help="override the partition for the PREFLIGHT job (default: --partition)")
+    p_submit.add_argument(
+        "--pretrain-partition", default=None,
+        help="override the partition for the PRETRAIN array (default: --partition)")
+    p_submit.add_argument(
+        "--max-nodes", type=int, default=None,
+        help="simultaneous-node cap for every array stage (sets the SLURM "
+             "array throttle: with one whole node per task, this IS the number "
+             "of nodes running at once). Unset -> the config's throttle values. "
+             "Per-stage --{train,eval,pretrain}-max-nodes override this base.")
+    p_submit.add_argument(
+        "--train-max-nodes", type=int, default=None,
+        help="override the simultaneous-node cap for the TRAIN array "
+             "(default: --max-nodes, else config array_throttle)")
+    p_submit.add_argument(
+        "--eval-max-nodes", type=int, default=None,
+        help="override the simultaneous-node cap for the EVAL array "
+             "(default: --max-nodes, else config eval_array_throttle)")
+    p_submit.add_argument(
+        "--pretrain-max-nodes", type=int, default=None,
+        help="override the simultaneous-node cap for the PRETRAIN array "
+             "(default: --max-nodes, else config pretrain_throttle)")
+    p_submit.add_argument(
+        "--time", default=None,
+        help="SLURM wall-clock limit (HH:MM:SS or D-HH:MM:SS) for every stage "
+             "(base). Unset -> the config's per-stage times. Per-stage "
+             "--{train,eval,preflight,pretrain}-time override this base.")
+    p_submit.add_argument(
+        "--train-time", default=None,
+        help="override the wall for the TRAIN array (default: --time, else config)")
+    p_submit.add_argument(
+        "--eval-time", default=None,
+        help="override the wall for the EVAL array (default: --time, else config)")
+    p_submit.add_argument(
+        "--preflight-time", default=None,
+        help="override the wall for the PREFLIGHT job (default: --time, else config)")
+    p_submit.add_argument(
+        "--pretrain-time", default=None,
+        help="override the wall for the PRETRAIN array (default: --time, else config)")
+    p_submit.add_argument(
+        "--n-steps", type=int, default=None,
+        help="override the per-spec training-optimization step count "
+             "(hyperparams.n_steps); unset -> the config value")
+    p_submit.add_argument(
+        "--pretrain-n-steps", type=int, default=None,
+        help="override the pretraining step count (pretrain.n_steps); "
+             "unset -> the config value")
     p_submit.set_defaults(func=cmd_submit)
 
     p_status = sub.add_parser(
         "status", help="read-only per-index outcome report")
     p_status.add_argument("run_dir", help="the run directory")
     p_status.set_defaults(func=cmd_status)
+
+    p_results = sub.add_parser(
+        "results", help="aggregate per-spec eval metrics (MAE etc.)")
+    p_results.add_argument("run_dir", help="the run directory")
+    p_results.add_argument(
+        "--csv", default=None,
+        help="also write the joined per-spec rows to this CSV path")
+    p_results.add_argument(
+        "--plot", default=None,
+        help="also write a MAE-vs-subset_size plot (PNG) to this path")
+    p_results.add_argument(
+        "--spec", type=int, default=None,
+        help="instead of the grid table, show the per-molecule AE breakdown "
+             "for this spec index (worst |error| first)")
+    p_results.add_argument(
+        "--worst", type=int, default=None, metavar="N",
+        help="instead of the grid table, show the N worst molecule-instances "
+             "by |AE_error| across all evaluated specs")
+    p_results.set_defaults(func=cmd_results)
 
     p_resub = sub.add_parser(
         "resubmit", help="recover failed TRAIN tasks (sparse arrays)")

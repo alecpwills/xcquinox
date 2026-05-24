@@ -563,3 +563,84 @@ def test_validate_pretrain_lr_decay_out_of_range():
     ))
     with pytest.raises(ValueError, match="pretrain.lr_decay_start"):
         validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+# ---------------------------------------------------------------------------
+# Per-stage allocation mode + optional mem
+# ---------------------------------------------------------------------------
+
+def test_allocation_defaults_to_exclusive(tmp_path):
+    """A config that omits the per-stage allocation knobs defaults every stage
+    to whole-node 'exclusive' (training peaks near a full node's RAM, so
+    whole-node is the safe default)."""
+    cfg = load_grid_config(_write(tmp_path, "g.json", _base_config_dict()))
+    assert cfg.cluster.train_allocation == "exclusive"
+    assert cfg.cluster.eval_allocation == "exclusive"
+    assert cfg.cluster.preflight_allocation == "exclusive"
+    assert cfg.cluster.pretrain_allocation == "exclusive"
+
+
+def test_load_parses_per_stage_allocation(tmp_path):
+    """Per-stage allocation modes round-trip through load_grid_config."""
+    d = _base_config_dict()
+    d["cluster"]["train_allocation"] = "exclusive"
+    d["cluster"]["eval_allocation"] = "shared"
+    d["cluster"]["preflight_allocation"] = "shared"
+    d["cluster"]["pretrain_allocation"] = "exclusive"
+    cfg = load_grid_config(_write(tmp_path, "g.json", d))
+    assert cfg.cluster.train_allocation == "exclusive"
+    assert cfg.cluster.eval_allocation == "shared"
+    assert cfg.cluster.preflight_allocation == "shared"
+    assert cfg.cluster.pretrain_allocation == "exclusive"
+
+
+def test_mem_is_optional(tmp_path):
+    """mem is no longer required — a config that omits it loads with mem=''
+    (whole-node/exclusive stages need no --mem; SLURM applies the partition
+    default for any shared stage that also leaves mem unset)."""
+    d = _base_config_dict()
+    d["cluster"].pop("mem", None)
+    cfg = load_grid_config(_write(tmp_path, "g.json", d))
+    assert cfg.cluster.mem == ""
+
+
+def test_validate_rejects_unknown_allocation():
+    """An allocation mode other than 'exclusive'/'shared' is a hard error."""
+    import dataclasses
+    base = _cfg()
+    bad = dataclasses.replace(base.cluster, train_allocation="whole-cluster")
+    cfg = dataclasses.replace(base, cluster=bad)
+    with pytest.raises(ValueError, match="train_allocation"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+# ---------------------------------------------------------------------------
+# pretrain_checkpoint_dir — job-scoped pretrain output path
+# ---------------------------------------------------------------------------
+
+def test_pretrain_checkpoint_dir_is_run_scoped():
+    """The pretrain checkpoint dir embeds the run id (basename of run_dir) so
+    two runs that pretrain the SAME architecture under the SAME pretrain_root
+    do not clobber each other."""
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+
+    p1 = pretrain_checkpoint_dir(
+        "/scratch/pretrain", "/scratch/runs/run_AAA", "deep_combined_attn"
+    )
+    assert p1 == "/scratch/pretrain/run_AAA/deep_combined_attn"
+
+    p2 = pretrain_checkpoint_dir(
+        "/scratch/pretrain", "/scratch/runs/run_BBB", "deep_combined_attn"
+    )
+    assert p2 == "/scratch/pretrain/run_BBB/deep_combined_attn"
+
+    # Same arch + same pretrain_root, different run -> distinct dirs.
+    assert p1 != p2
+
+
+def test_pretrain_checkpoint_dir_strips_trailing_sep():
+    """A trailing slash on run_dir does not produce an empty run-id segment."""
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+    assert pretrain_checkpoint_dir(
+        "/scratch/pretrain", "/scratch/runs/run_AAA/", "medium"
+    ) == "/scratch/pretrain/run_AAA/medium"

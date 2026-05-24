@@ -151,7 +151,11 @@ def _aggregate_per_molecule(pm_rows, ae_key="AE_error_kcalmol",
       - ``rho_rmse`` -- mean ``density_rmse`` across molecules that carry it
         (``nan`` if none do -- e.g. when no CCSD reference densities are
         loaded).
-      - ``n_eval`` -- molecule count.
+      - ``n_eval`` -- count of AE-reference molecules that contributed to
+        ``mae`` (i.e. ``len(ae_errs)``).  Atom/aux-only rows that lack the
+        ``AE_error_kcalmol`` key are excluded because they do not contribute
+        to the MAE average; reporting total row count (``len(pm_rows)``) would
+        be misleading when the subset contains BH76/IP13-only entries.
     """
     ae_errs = [
         float(r[ae_key]) for r in pm_rows
@@ -171,7 +175,8 @@ def _aggregate_per_molecule(pm_rows, ae_key="AE_error_kcalmol",
         rho_rmse = sum(rho_vals) / len(rho_vals)
     else:
         rho_rmse = float("nan")
-    return mae, rho_rmse, len(pm_rows)
+    # n_eval: AE-contributing molecules only (matches the mae denominator).
+    return mae, rho_rmse, len(ae_errs)
 
 
 def _write_eval_df_csv(pm_rows, csv_path):

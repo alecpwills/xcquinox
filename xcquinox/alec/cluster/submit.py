@@ -172,11 +172,25 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         mem = cl.mem
         cpus = cl.cpus_per_task
 
+    # Per-stage node-allocation mode. "exclusive" books a whole node per array
+    # task (--nodes=1 --exclusive, NO --mem — the task owns all the node's RAM,
+    # which is what memory-heavy training needs); "shared" requests a cpu/mem
+    # slice so several tasks co-tenant a node (--mem emitted only when set;
+    # otherwise SLURM applies the partition default-mem-per-cpu).
+    allocation = getattr(cl, f"{kind}_allocation")
+    if allocation == "exclusive":
+        alloc_lines = "#SBATCH --nodes=1\n#SBATCH --exclusive\n"
+        mem_line = ""
+    else:  # "shared" — validated in validate_grid_semantics
+        alloc_lines = ""
+        mem_line = _optional_sbatch_line("mem", mem)
+
     mapping = {
         "JOB_NAME": f"xcq_{kind}",
         "PARTITION": partition,
         "TIME": time,
-        "MEM": mem,
+        "ALLOC_LINES": alloc_lines,
+        "MEM_LINE": mem_line,
         "CPUS_PER_TASK": cpus,
         "RUN_DIR": run_dir,
         "CONDA_ACTIVATION": _conda_activation_block(

@@ -33,18 +33,31 @@ _RHO_FLOOR_INTEGRATION = 1e-18
 def _compute_integration_weights(rho, grid_weights=None):
     """Return ``(w_x, w_c)`` integration weights for pretraining.
 
-    The integrated XC energy is
+    **Weight convention (PRE-01, option b):** the per-point weight is the
+    FIRST power (linear) of ``|ρ_i · ε_LDA_i|``, optionally multiplied by
+    the Becke-Lebedev quadrature weight ``w_grid_i``.  The resulting loss
+    is a ``|ρ · ε_LDA|``-magnitude-weighted mean of the squared per-point
+    enhancement-factor residual::
 
-        E_xc = ∫ ρ(r) ε_xc(ρ, ∇ρ; r) d³r
-             ≈ Σ_i  w_grid_i · ρ_i · ε_xc_i ,
+        L = Σ_i w_i · (F_nn_i - F_ref_i)²  /  Σ_i w_i
+            where w_i = |ρ_i · ε_LDA_i|   (or  |ρ_i · ε_LDA_i| · w_grid_i
+                                             when grid_weights is supplied).
 
-    so a pretraining loss that minimizes the *integrated* XC-energy
-    residual must weight pointwise residuals by ``w_grid_i · |ρ_i ·
-    ε_LDA_i|``. The Becke quadrature weights ``w_grid_i = dr_i`` vary
-    by 6+ orders of magnitude on atomic grids; omitting them
-    de-calibrates the loss into "unweighted in r-space, but weighted by
-    ρ ε_LDA per-sample" — which is what the pre-2026-04-27 implementation
-    actually did, despite the name "integration".
+    This is NOT the squared integrated XC-energy residual.  A true
+    integrated-energy L2 loss would require the square of the energy-density
+    weight, i.e.  ``w_i = (ρ_i · ε_LDA_i · w_grid_i)²``.  The linear form
+    was retained because it is the established convention in the codebase
+    (all prior pretrain runs used it) and existing tests pin this behavior.
+    The ``|ρ · ε_LDA|`` factor still steers gradient attention toward
+    energetically important regions without the large dynamic range that the
+    squared form would introduce.
+
+    When ``grid_weights`` is supplied the weights incorporate the quadrature
+    measure ``dr_i``, improving the energy-density calibration relative to the
+    unweighted form.  When ``grid_weights`` is ``None`` the loss reverts to
+    the legacy ``|ρ ε_LDA|``-weighted mean per sample; ``run_pretrain`` emits
+    a ``RuntimeWarning`` in that case and records
+    ``integration_weights_complete=False`` in the pretrain metadata.
 
     Parameters
     ----------
@@ -52,13 +65,10 @@ def _compute_integration_weights(rho, grid_weights=None):
         Electron density at grid points, shape ``(N,)``.
     grid_weights : jnp.ndarray | None
         Becke-Lebedev quadrature weights ``dr_i`` per grid point, shape
-        ``(N,)``. **Required for genuine integrated-energy weighting.**
-        If ``None`` (legacy / pre-fix behavior), the per-sample weights
-        ``|ρ ε_LDA|`` are returned without the ``dr_i`` factor — the
-        loss then optimizes the |ρ ε_LDA|-weighted *mean* per-sample
-        residual, NOT the integrated-energy residual. Callers that
-        cannot supply ``grid_weights`` should expect the warning at
-        ``run_pretrain`` (a ``RuntimeWarning`` is emitted).
+        ``(N,)``.  When supplied the per-point weight becomes
+        ``|ρ ε_LDA| · w_grid``.  When ``None`` (legacy / pre-fix behavior)
+        the ``dr_i`` factor is omitted; callers should expect the
+        ``RuntimeWarning`` from ``run_pretrain``.
 
     Returns
     -------
@@ -290,13 +300,15 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
             w = self.weights
             return jnp.sum(w * residual_sq) / (jnp.sum(w) + 1e-12)
 
+    integration_weights_complete: bool | None = None  # set below for "integration" mode
     if spec.loss_weighting == "integration":
         rho_all = pretrain_data["rho_all"]
-        # Becke-Lebedev quadrature weights ``dr_i`` make the loss a true
-        # integrated-XC-energy residual; older pretrain_data files don't
-        # carry them — fall back with a warning.
+        # Becke-Lebedev quadrature weights ``dr_i`` improve energy-density
+        # calibration; older pretrain_data files don't carry them — fall back
+        # with a warning and record the degradation in metadata (PRE-02).
         grid_weights = pretrain_data.get("weights_all")
         if grid_weights is None:
+            integration_weights_complete = False
             import warnings as _warn
             _warn.warn(
                 "pretrain_data.npz lacks 'weights_all'; integration-mode "
@@ -306,6 +318,8 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
                 "post-2026-04-27 notebook generator to get correct weights.",
                 RuntimeWarning, stacklevel=2,
             )
+        else:
+            integration_weights_complete = True
         w_x, w_c = _compute_integration_weights(rho_all, grid_weights)
         loss_fn_x = _PretrainLoss(weights=w_x)
         loss_fn_c = _PretrainLoss(weights=w_c)
@@ -339,6 +353,18 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
                 "timestamp": time.time(),
             })
 
+    # Per-network checkpoint subdirs. xcTrainer serialises its periodic
+    # best-loss snapshots as ``<checkpoint_dir>/xc.eqx.<step>`` — if both the
+    # xnet and cnet trainers share one checkpoint_dir they clobber each other's
+    # snapshots. Give each its own subdir; the FINAL xnet.eqx/cnet.eqx still
+    # land at the top level (what downstream consumes).
+    xnet_ckpt_dir = os.path.join(checkpoint_dir, "xnet")
+    cnet_ckpt_dir = os.path.join(checkpoint_dir, "cnet")
+    os.makedirs(xnet_ckpt_dir, exist_ok=True)
+    os.makedirs(cnet_ckpt_dir, exist_ok=True)
+    xnet_path = os.path.join(checkpoint_dir, "xnet.eqx")
+    cnet_path = os.path.join(checkpoint_dir, "cnet.eqx")
+
     # --- Train xnet ---
     t0 = time.time()
     optimizer_x = _build_optimizer(
@@ -355,10 +381,14 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
         steps=spec.n_steps,
         do_jit=True,
         serialize_every=max(50, spec.n_steps // 10),
-        checkpoint_dir=checkpoint_dir,
+        checkpoint_dir=xnet_ckpt_dir,
         progress_callback=_x_callback,
     )
     xnet_trained, losses_x = trainer_x(1, [descriptors], [Fx_target])
+    # Persist the final xnet immediately, BEFORE cnet training starts — so a
+    # job that dies or times out during the (separate) cnet phase does not lose
+    # the already-completed xnet result.
+    eqx.tree_serialise_leaves(xnet_path, xnet_trained)
 
     # --- Train cnet (fresh optimizer) ---
     optimizer_c = _build_optimizer(
@@ -375,16 +405,13 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
         steps=spec.n_steps,
         do_jit=True,
         serialize_every=max(50, spec.n_steps // 10),
-        checkpoint_dir=checkpoint_dir,
+        checkpoint_dir=cnet_ckpt_dir,
         progress_callback=_c_callback,
     )
     cnet_trained, losses_c = trainer_c(1, [descriptors], [Fc_target])
     duration = time.time() - t0
 
     # --- Save artifacts ---
-    xnet_path = os.path.join(checkpoint_dir, "xnet.eqx")
-    cnet_path = os.path.join(checkpoint_dir, "cnet.eqx")
-    eqx.tree_serialise_leaves(xnet_path, xnet_trained)
     eqx.tree_serialise_leaves(cnet_path, cnet_trained)
 
     losses_x_np = np.array(losses_x, dtype=np.float64)
@@ -414,6 +441,10 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }
+    # PRE-02: record whether Becke quadrature weights were available for
+    # integration mode.  None means the run did not use integration weighting.
+    if integration_weights_complete is not None:
+        metadata["integration_weights_complete"] = integration_weights_complete
     md_path = os.path.join(checkpoint_dir, "pretrain_metadata.json")
     with open(md_path, "w") as f:
         json.dump(metadata, f, indent=2)

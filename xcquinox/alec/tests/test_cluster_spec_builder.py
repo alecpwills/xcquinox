@@ -31,6 +31,7 @@ from xcquinox.alec.cluster.spec_builder import (
     atoms_to_mol_spec,
     build_targets,
     classify_aux_only,
+    _solver_config_from_named,
 )
 from xcquinox.alec.training_points import TrainingPoint
 
@@ -375,19 +376,22 @@ def test_build_training_specs_checkpoint_dir_is_absolute_padded(tmp_path):
 
 
 def test_build_training_specs_pretrain_checkpoint_is_per_arch(tmp_path):
-    """pretrain_checkpoint is ``<pretrain_root>/<arch>/`` — the dir the
-    pretrain stage writes for that architecture."""
+    """pretrain_checkpoint is ``<pretrain_root>/<run_id>/<arch>/`` — the
+    job-scoped dir the pretrain stage writes for that architecture (run_id =
+    basename(run_dir), so two runs of the same arch don't clobber each other)."""
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
     ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
-    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    run_dir = str(tmp_path / "run")
+    run_id = os.path.basename(run_dir)
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
     for cell, spec in out:
-        expected = os.path.join(cfg.pretrain.pretrain_root, cell.arch)
+        expected = os.path.join(cfg.pretrain.pretrain_root, run_id, cell.arch)
         assert spec.pretrain_checkpoint == expected
         # The synthetic grid sweeps only arch="shallow".
         assert spec.pretrain_checkpoint == os.path.join(
-            str(tmp_path / "pretrain"), "shallow"
+            str(tmp_path / "pretrain"), run_id, "shallow"
         )
 
 
@@ -500,6 +504,32 @@ def test_build_test_spec_absolute_output_dir_and_ref_kcalmol(tmp_path):
     assert "H" not in ref
 
 
+def test_build_test_spec_excludes_aux_only_from_ae_reference(tmp_path):
+    """Aux-only reaction species (BH76/IP13 polyatomics with no real AE target)
+    must NOT appear in reference_ae_kcalmol. Otherwise eval scores their full
+    atomization energy against a 0.0 reference — the CH4/HF ~+440 kcal/mol
+    artifact. The training loss already excludes them via classify_aux_only; the
+    eval reference must do the same."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+
+    # ledger l2/3 -> [H2O (AE), N2_NO_rxn (bh76: species N2, NO), Li_IP (ip13)].
+    spec_by_ss = {cell.subset_size: ts for cell, ts in out}
+    ts = spec_by_ss[3]
+    # The bh76 reaction species are recorded as aux-only (the data the fix uses).
+    aux = set(ts.loss_kwargs_dict.get("aux_only_names", ()))
+    assert "N2" in aux and "NO" in aux
+
+    test_spec = build_test_spec(ts, run_dir, 1, domain)
+    ref = test_spec.metric_kwargs_dict["atomization_energy"]["reference_ae_kcalmol"]
+    assert "H2O" in ref                          # real AE compound kept
+    assert "N2" not in ref and "NO" not in ref   # aux-only excluded
+
+
 def test_build_test_spec_metrics_and_eval_molecules(tmp_path):
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
@@ -517,3 +547,157 @@ def test_build_test_spec_metrics_and_eval_molecules(tmp_path):
     # Eval molecules come straight from training_spec.molecules.
     assert test_spec.molecules == training_spec.molecules
     assert test_spec.atom_energies_dict == dict(domain.atom_energies)
+
+
+# ---------------------------------------------------------------------------
+# _solver_config_from_named — accepts enum NAME or VALUE
+# ---------------------------------------------------------------------------
+
+def test_solver_config_accepts_enum_name_and_value():
+    """The step-7 configs spell the solver mode / feature policy as the
+    uppercase enum NAME ('ONESHOT'/'FULL'/'REASSEMBLE'); the unit tests use the
+    lowercase enum VALUE ('oneshot'/'full'/'reassemble'). Both must resolve, or
+    spec-building dies at the preflight stage on the real config."""
+    from xcquinox.alec.solver import SolverMode, FeaturePolicy
+
+    by_value = _solver_config_from_named(SolverNamed(mode="oneshot", max_cycles=0))
+    assert by_value.mode == SolverMode.ONESHOT
+
+    by_name = _solver_config_from_named(SolverNamed(mode="ONESHOT", max_cycles=0))
+    assert by_name.mode == SolverMode.ONESHOT
+
+    full_named = _solver_config_from_named(
+        SolverNamed(mode="FULL", max_cycles=3, feature_policy="REASSEMBLE")
+    )
+    assert full_named.mode == SolverMode.FULL
+    assert full_named.feature_policy == FeaturePolicy.REASSEMBLE
+
+    full_value = _solver_config_from_named(
+        SolverNamed(mode="full", max_cycles=3, feature_policy="reassemble")
+    )
+    assert full_value.mode == SolverMode.FULL
+    assert full_value.feature_policy == FeaturePolicy.REASSEMBLE
+
+
+def test_solver_config_rejects_unknown_mode():
+    """A mode that is neither a valid enum name nor value is a clear error."""
+    with pytest.raises(ValueError, match="SolverMode"):
+        _solver_config_from_named(SolverNamed(mode="bogus", max_cycles=0))
+
+
+# ---------------------------------------------------------------------------
+# build_test_spec — in-distribution transparency + optional holdout
+# ---------------------------------------------------------------------------
+
+def test_build_test_spec_default_molecules_unchanged(tmp_path):
+    """Backward-compat: default call (no holdout) keeps molecules == training_spec.molecules."""
+    import warnings
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+    _cell, training_spec = out[0]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        test_spec = build_test_spec(training_spec, run_dir, 0, domain)
+
+    assert test_spec.molecules == training_spec.molecules
+
+
+def test_build_test_spec_default_emits_in_distribution_warning(tmp_path):
+    """Default (no holdout_molecule_names) must emit a RuntimeWarning that names
+    the in-distribution / not-held-out nature of the evaluation."""
+    import warnings
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+    _cell, training_spec = out[0]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        build_test_spec(training_spec, run_dir, 0, domain)
+
+    runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+    assert runtime_warnings, "Expected at least one RuntimeWarning from build_test_spec default path"
+    # The warning message must mention in-distribution (or training) and not held-out.
+    msg = str(runtime_warnings[0].message).lower()
+    assert "in-distribution" in msg or "in distribution" in msg or "training" in msg
+
+
+def test_build_test_spec_holdout_molecules_used_when_provided(tmp_path):
+    """When holdout_molecule_names is provided, the TestSpec evaluates on those
+    molecules instead of the training set."""
+    import warnings
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+
+    # Build a held-out MoleculeSpec from a molecule NOT in the training set for cell 0.
+    # Cell 0 uses subset_size=2: H2 + H2O only.
+    # We'll use the N2 molecule spec (from the pool BH76 point) as the held-out set.
+    n2_atoms = pool[2].species[0]   # N2 Atoms
+    from xcquinox.alec.cluster.spec_builder import atoms_to_mol_spec
+    n2_ms = atoms_to_mol_spec(
+        n2_atoms, basis="def2-svp", grid_level=1,
+        external_refs_dir=str(tmp_path / "refs"),
+    )
+    holdout = (n2_ms,)
+
+    _cell, training_spec = out[0]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        test_spec = build_test_spec(
+            training_spec, run_dir, 0, domain,
+            holdout_molecule_names=holdout,
+        )
+
+    assert test_spec.molecules == holdout
+    # The held-out molecules must NOT match training_spec.molecules.
+    assert test_spec.molecules != training_spec.molecules
+
+
+def test_build_test_spec_holdout_suppresses_in_distribution_warning(tmp_path):
+    """When a held-out set is provided, no in-distribution RuntimeWarning is emitted."""
+    import warnings
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+
+    n2_atoms = pool[2].species[0]
+    from xcquinox.alec.cluster.spec_builder import atoms_to_mol_spec
+    n2_ms = atoms_to_mol_spec(
+        n2_atoms, basis="def2-svp", grid_level=1,
+        external_refs_dir=str(tmp_path / "refs"),
+    )
+    holdout = (n2_ms,)
+
+    _cell, training_spec = out[0]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        build_test_spec(
+            training_spec, run_dir, 0, domain,
+            holdout_molecule_names=holdout,
+        )
+
+    runtime_warnings = [
+        w for w in caught
+        if issubclass(w.category, RuntimeWarning)
+        and ("in-distribution" in str(w.message).lower()
+             or "in distribution" in str(w.message).lower()
+             or "training" in str(w.message).lower())
+    ]
+    assert not runtime_warnings, (
+        "No in-distribution RuntimeWarning expected when holdout_molecule_names is provided"
+    )
