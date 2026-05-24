@@ -463,6 +463,8 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
         "min_loss_c": float(np.min(losses_c_np)) if len(losses_c_np) > 0 else float("nan"),
         "use_cusp": use_cusp,
         "use_dm": use_dm,
+        # Shape-changing flag (CODE-5 round-4): polarized cnet input width +1.
+        "use_polarized_correlation": bool(spec.arch.use_polarized_correlation),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }

@@ -222,6 +222,10 @@ def _save_artifacts(spec, model, losses, aux_log, duration) -> dict:
     }
     metadata = {
         "arch_name": spec.arch.name,
+        # Shape-changing flag (CODE-5 round-4): a polarized cnet has input width
+        # +1, so two checkpoints with the same arch_name but different
+        # polarization are NOT interchangeable — record it so loaders can tell.
+        "use_polarized_correlation": bool(spec.arch.use_polarized_correlation),
         "loss_name": spec.loss_name,
         "loss_kwargs": loss_kwargs_ser,
         "solver_config": (
