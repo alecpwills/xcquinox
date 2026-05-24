@@ -300,9 +300,19 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
     eval_exc with identical tail masking). Exchange spin-scaling: Oliver &
     Perdew, Phys. Rev. A 20, 397 (1979). Correlation on the TOTAL density
     (zeta=0): von Barth & Hedin, J. Phys. C 5, 1629 (1972); PW92, Phys. Rev.
-    B 45, 13244 (1972/1992). This is the energy whose functional derivative
+    B 45, 13244 (1992). This is the energy whose functional derivative
     is the split V_xc built by ``_uks_spin_resolved_vxc`` / the manual solver
     (the FD-consistency test C guards this).
+
+    LIMITATION (descriptor features) — P2-02: the EXACT exchange spin-scaling
+    relation holds for an F_x that depends only on (rho, sigma). When descriptor
+    features (cusp, DM-statistics) are active, the SAME molecular ``features``
+    are passed into BOTH the (2*rho_a) and (2*rho_b) exchange evaluations below
+    -- those features encode molecular/structural context that has no
+    doubled-spin-density transform -- so for OPEN-SHELL systems the relation is
+    an APPROXIMATION (the features are evaluated at the physical density, not at
+    the fictitious doubled-spin density). The closed-shell reduction to RKS
+    remains EXACT because rho_a = rho_b gives identical features in both terms.
 
     FUTURE WORK: zeta-dependent PW92 correlation does not exist here; do NOT
     add it. ``rho_tot = rho_a + rho_b`` is implied by ``sigma_tot``.
@@ -384,6 +394,13 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
     Therefore V_xc^a = vx[2 rho_a, 4 sigma_aa; 2 nabla_rho_a] + vc[rho_tot]
     and V_xc^b = vx[2 rho_b, 4 sigma_bb; 2 nabla_rho_b] + vc[rho_tot], with
     vc computed exactly ONCE.
+
+    LIMITATION (descriptor features) — P2-02: the exchange spin-scaling is EXACT
+    only for a feature-free (rho, sigma) F_x. With descriptor features active the
+    same molecular ``features`` feed both doubled-spin exchange terms, so the
+    open-shell relation is an approximation (closed-shell -> RKS stays exact).
+    See ``split_exc_energy_uks`` for the full discussion; the V_xc here is the
+    exact functional derivative of that (approximate-for-open-shell) energy.
 
     FUTURE WORK: a zeta-dependent PW92 correlation baseline (proper spin
     interpolation) does not exist in this codebase; do NOT add it here.

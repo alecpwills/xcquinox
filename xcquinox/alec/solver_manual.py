@@ -142,6 +142,12 @@ def _compute_total_energy_uks(
     guards. ``sigma_tot`` must be |nabla rho_tot|^2 = sigma_aa + 2 sigma_ab
     + sigma_bb computed by the caller from nabla_rho_a + nabla_rho_b.
 
+    LIMITATION (descriptor features) — P2-02: the exchange spin-scaling is
+    EXACT only for a feature-free (rho, sigma) F_x. With descriptor features
+    active, the same molecular features feed both doubled-spin exchange evals,
+    so the open-shell relation is an approximation (closed-shell -> RKS stays
+    exact). See ``oneshot.split_exc_energy_uks`` for the full discussion.
+
     FUTURE WORK: zeta-dependent PW92 correlation does not exist here; do NOT
     add it.
     """

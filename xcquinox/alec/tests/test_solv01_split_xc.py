@@ -389,3 +389,54 @@ def test_spin_swap_symmetry():
     # Swapping inputs must swap the outputs.
     assert float(jnp.max(jnp.abs(V_a - V_b_sw))) < 1e-10
     assert float(jnp.max(jnp.abs(V_b - V_a_sw))) < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# P2-02: descriptor features and the exchange spin-scaling relation.
+# ---------------------------------------------------------------------------
+def _build_descriptor_model():
+    arch = alec.get_architecture("deep_combined_attn")  # cusp + dm_statistics
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    return alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+
+def test_split_energy_closed_shell_reduction_with_descriptors():
+    """With descriptor features ACTIVE, the closed-shell reduction to RKS is
+    still EXACT: rho_a = rho_b feeds identical features into both exchange terms,
+    so E_split == sum_g w_g eval_exc(2 rho_a, 4 sigma_aa, features)."""
+    model = _build_descriptor_model()
+    n_feat = sum(d.n_features for d in model.descriptors)
+    rng = np.random.default_rng(0)
+    rho_a = jnp.asarray(rng.uniform(0.05, 1.0, 6))
+    sigma_aa = jnp.asarray(rng.uniform(0.01, 0.5, 6))
+    feats = jnp.asarray(rng.standard_normal((6, n_feat)))
+    gw = jnp.ones(6)
+    # closed shell: rho_b = rho_a, nabla_rho_b = nabla_rho_a => sigma_tot = 4 sigma_aa
+    E_split = split_exc_energy_uks(
+        model, rho_a, rho_a, sigma_aa, sigma_aa, 4.0 * sigma_aa, feats, gw)
+    E_rks = float(jnp.sum(gw * model.eval_exc(2.0 * rho_a, 4.0 * sigma_aa, feats)))
+    assert abs(float(E_split) - E_rks) < 1e-9, (float(E_split), E_rks)
+
+
+def test_split_energy_openshell_passes_same_features_both_exchange_terms():
+    """P2-02 (documented approximation): for open-shell the SAME molecular
+    features feed BOTH doubled-spin exchange evaluations (descriptor features
+    have no doubled-spin-density transform). Pin that exact contract."""
+    model = _build_descriptor_model()
+    n_feat = sum(d.n_features for d in model.descriptors)
+    rng = np.random.default_rng(1)
+    rho_a = jnp.asarray(rng.uniform(0.05, 1.0, 6))
+    rho_b = jnp.asarray(rng.uniform(0.01, 0.4, 6))     # rho_a != rho_b
+    sigma_aa = jnp.asarray(rng.uniform(0.01, 0.5, 6))
+    sigma_bb = jnp.asarray(rng.uniform(0.01, 0.3, 6))
+    sigma_tot = jnp.asarray(rng.uniform(0.02, 0.9, 6))
+    feats = jnp.asarray(rng.standard_normal((6, n_feat)))
+    gw = jnp.ones(6)
+    got = float(split_exc_energy_uks(
+        model, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot, feats, gw))
+    # expected with the SAME `feats` in both exchange terms (the approximation):
+    ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, feats)
+    ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, feats)
+    ec = model.eval_ec(rho_a + rho_b, sigma_tot, feats)
+    expected = float(0.5 * jnp.sum(gw * (ex_a + ex_b)) + jnp.sum(gw * ec))
+    assert abs(got - expected) < 1e-12
