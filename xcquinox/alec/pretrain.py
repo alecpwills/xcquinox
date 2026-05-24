@@ -129,7 +129,8 @@ _legacy_cnet_lob_lim: float = 2.0    # `xcquinox/net.py:2228` default
 # Pretrain data assembly helper
 # ---------------------------------------------------------------------------
 
-def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict) -> jnp.ndarray:
+def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict,
+                                   *, for_cnet: bool = False) -> jnp.ndarray:
     """Assemble the (N, F) input array for pretraining from pretrain_data.
 
     Column order: [rho_all, sigma_all, *(per-descriptor columns)] where
@@ -140,11 +141,26 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
     appending ``_all`` (e.g. ``dm_statistics`` → ``dm_all``,
     ``cusp`` → ``cusp_all``).
 
+    P2-03: when ``for_cnet`` and ``arch.use_polarized_correlation``, a spin
+    polarization column ``zeta_all`` is inserted at index 2 (right after
+    sigma, BEFORE the descriptor extras) to match the polarized cnet's
+    expected ``[rho, sigma, zeta, *extras]`` input layout (see
+    ``AlecGGA_CNet.__call__``). The xnet input (``for_cnet=False``) NEVER
+    carries zeta — exchange is zeta-independent (Oliver & Perdew, PRA 20,
+    397 (1979)). If ``zeta_all`` is absent, zeta defaults to zeros: a valid
+    unpolarized warm-start (zeta=0 -> x1=1, recovering the unpolarized cnet
+    input and Fc target), to be refined by zeta-resolved training data.
+
     Raises KeyError if any declared descriptor's pretrain key is
     absent from pretrain_data — there is NO zero-array fallback
     (L-B14-2 Round 14).
     """
     cols = [pretrain_data["rho_all"], pretrain_data["sigma_all"]]
+    if for_cnet and arch.use_polarized_correlation:
+        zeta_all = pretrain_data.get("zeta_all")
+        if zeta_all is None:
+            zeta_all = jnp.zeros_like(pretrain_data["rho_all"])
+        cols.append(zeta_all)
     # Map descriptor.name -> key in pretrain_data.
     _key_map = {"dm_statistics": "dm_all", "cusp": "cusp_all"}
     for spec in arch.descriptors:
@@ -253,8 +269,13 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
     # Lift every array into JAX
     pretrain_data = {k: jnp.array(v) for k, v in pretrain_data_np.items()}
 
-    # --- Assemble descriptor tensor ---
+    # --- Assemble descriptor tensors ---
+    # The xnet input is zeta-blind; the cnet input carries the zeta column
+    # when the architecture uses polarized correlation (P2-03). They are
+    # identical for the unpolarized (default) architecture.
     descriptors = _assemble_pretrain_descriptors(spec.arch, pretrain_data)
+    descriptors_c = _assemble_pretrain_descriptors(
+        spec.arch, pretrain_data, for_cnet=True)
 
     # Targets are stored as (F - 1), not F; PretrainLoss subtracts 1 from
     # network output (networks return 1 + enhancement).
@@ -408,7 +429,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
         checkpoint_dir=cnet_ckpt_dir,
         progress_callback=_c_callback,
     )
-    cnet_trained, losses_c = trainer_c(1, [descriptors], [Fc_target])
+    cnet_trained, losses_c = trainer_c(1, [descriptors_c], [Fc_target])
     duration = time.time() - t0
 
     # --- Save artifacts ---

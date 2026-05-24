@@ -172,6 +172,66 @@ def test_pretrainspec_describe_roundtrip():
 
 
 # ---------------------------------------------------------------------------
+# P2-03: cnet pretraining input carries the zeta column when polarized.
+# ---------------------------------------------------------------------------
+def _polc_arch():
+    return ArchitectureConfig.from_spec(
+        "polc_pt", 2, 8, use_polarized_correlation=True)
+
+
+def test_assemble_pretrain_descriptors_cnet_inserts_zeta_when_polarized():
+    import numpy as np
+    from xcquinox.alec.pretrain import _assemble_pretrain_descriptors
+
+    n = 6
+    data = {
+        "rho_all": np.linspace(0.1, 1.0, n),
+        "sigma_all": np.linspace(0.0, 0.5, n),
+        "zeta_all": np.linspace(-0.8, 0.8, n),
+    }
+    arch = _polc_arch()
+    # xnet input: zeta-blind -> [rho, sigma] (no descriptors here).
+    dx = np.asarray(_assemble_pretrain_descriptors(arch, data))
+    assert dx.shape == (n, 2)
+    # cnet input: zeta at column 2.
+    dc = np.asarray(_assemble_pretrain_descriptors(arch, data, for_cnet=True))
+    assert dc.shape == (n, 3)
+    np.testing.assert_allclose(dc[:, 2], data["zeta_all"])
+    # rho/sigma columns unchanged.
+    np.testing.assert_allclose(dc[:, 0], data["rho_all"])
+    np.testing.assert_allclose(dc[:, 1], data["sigma_all"])
+
+
+def test_assemble_pretrain_descriptors_cnet_zeta_zeros_fallback():
+    import numpy as np
+    from xcquinox.alec.pretrain import _assemble_pretrain_descriptors
+
+    n = 5
+    data = {"rho_all": np.linspace(0.1, 1.0, n),
+            "sigma_all": np.linspace(0.0, 0.5, n)}  # no zeta_all
+    dc = np.asarray(
+        _assemble_pretrain_descriptors(_polc_arch(), data, for_cnet=True))
+    assert dc.shape == (n, 3)
+    np.testing.assert_allclose(dc[:, 2], np.zeros(n))  # valid unpolarized warm-start
+
+
+def test_assemble_pretrain_descriptors_unpolarized_ignores_for_cnet():
+    import numpy as np
+    from xcquinox.alec.pretrain import _assemble_pretrain_descriptors
+
+    n = 4
+    data = {"rho_all": np.linspace(0.1, 1.0, n),
+            "sigma_all": np.linspace(0.0, 0.5, n),
+            "zeta_all": np.linspace(-0.5, 0.5, n)}
+    arch = _make_arch()  # use_polarized_correlation defaults False
+    dx = np.asarray(_assemble_pretrain_descriptors(arch, data))
+    dc = np.asarray(_assemble_pretrain_descriptors(arch, data, for_cnet=True))
+    # Unpolarized: no zeta column inserted even with for_cnet and zeta_all present.
+    assert dx.shape == (n, 2) and dc.shape == (n, 2)
+    np.testing.assert_allclose(dx, dc)
+
+
+# ---------------------------------------------------------------------------
 # Tests 9-16: run_pretrain end-to-end (xfail — need fixture)
 # ---------------------------------------------------------------------------
 
@@ -742,7 +802,7 @@ def test_run_pretrain_separates_checkpoints_and_saves_xnet_early(tmp_path, monke
     # Stub the compute-heavy seams.
     monkeypatch.setattr(
         ptmod, "_assemble_pretrain_descriptors",
-        lambda arch, data: jnp.zeros((4, 1)),
+        lambda arch, data, for_cnet=False: jnp.zeros((4, 1)),
     )
     k1, k2 = jax.random.split(jax.random.PRNGKey(0))
     fake_x = eqx.nn.Linear(1, 1, key=k1)
