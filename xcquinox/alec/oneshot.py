@@ -314,13 +314,23 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
     the fictitious doubled-spin density). The closed-shell reduction to RKS
     remains EXACT because rho_a = rho_b gives identical features in both terms.
 
-    FUTURE WORK: zeta-dependent PW92 correlation does not exist here; do NOT
-    add it. ``rho_tot = rho_a + rho_b`` is implied by ``sigma_tot``.
+    P2-03: when the cnet is spin-polarization-aware
+    (``cnet.use_spin_polarization``), correlation is evaluated with the real
+    zeta = (rho_a-rho_b)/rho_tot and the zeta-dependent PW92 baseline (Dick &
+    Fernandez-Serra, PRB 104 L161109 (2021)); this is the energy whose per-spin
+    functional derivative ``compute_vc_polarized_per_spin`` builds. Flag False
+    keeps the zeta=0 total-density correlation. ``rho_tot = rho_a + rho_b`` is
+    implied by ``sigma_tot``.
     """
     rho_tot = rho_a + rho_b
     ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, features)
     ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, features)
-    ec = model.eval_ec(rho_tot, sigma_tot, features)
+    if getattr(model.cnet, "use_spin_polarization", False):
+        zeta = jnp.clip((rho_a - rho_b) / jnp.maximum(rho_tot, 1e-300),
+                        -1.0, 1.0)
+        ec = model.eval_ec(rho_tot, sigma_tot, features, zeta=zeta)
+    else:
+        ec = model.eval_ec(rho_tot, sigma_tot, features)
     E_x = 0.5 * jnp.sum(grid_weights * (ex_a + ex_b))
     E_c = jnp.sum(grid_weights * ec)
     return E_x + E_c

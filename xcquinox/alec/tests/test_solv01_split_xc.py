@@ -383,6 +383,60 @@ def test_polarized_vc_fd_energy_potential_consistency():
         f"per-spin V_c disagrees with autodiff grad of E_c: {grad_resid:.3e}")
 
 
+def test_polarized_full_split_vxc_fd_consistency():
+    """End-to-end: the FULL split V_xc (spin-scaled exchange + per-spin
+    correlation) is the functional derivative of ``split_exc_energy_uks`` with
+    the polarized model — the exact energy/potential pair the SCF solvers use."""
+    from xcquinox.alec.oneshot import compute_vc_polarized_per_spin
+
+    model = _build_polarized_model()
+    md = _li_uks_md()
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_grad = jnp.asarray(md["ao_grid_deriv"])
+    ao_xyz = ao_grad[1:4]
+    grid_weights = jnp.asarray(md["grid_weights"])
+    features = assemble_descriptor_features(model.descriptors, md)
+
+    dm = jnp.asarray(md["dm_pbe"])
+    D_a, D_b = dm[0], dm[1]
+    nao = D_a.shape[0]
+
+    def E(Da, Db):
+        return _uks_split_energy(
+            model, Da, Db, features, ao_grid, ao_xyz, grid_weights)
+
+    # Full per-spin V_xc = spin-scaled exchange + per-spin correlation.
+    rho_a, nra, sig_aa = _grid_quantities(D_a, ao_grid, ao_xyz)
+    rho_b, nrb, sig_bb = _grid_quantities(D_b, ao_grid, ao_xyz)
+    nr_tot = nra + nrb
+    sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
+    vx_a = compute_vxc_nn(model, 2.0 * rho_a, 4.0 * sig_aa, features, ao_grid,
+                          grid_weights, nabla_rho=2.0 * nra, ao_grad=ao_grad,
+                          part="x")
+    vx_b = compute_vxc_nn(model, 2.0 * rho_b, 4.0 * sig_bb, features, ao_grid,
+                          grid_weights, nabla_rho=2.0 * nrb, ao_grad=ao_grad,
+                          part="x")
+    vc_a, vc_b = compute_vc_polarized_per_spin(
+        model, rho_a, rho_b, sig_tot, features, ao_grid, grid_weights,
+        nr_tot, ao_grad)
+    V_a, V_b = vx_a + vc_a, vx_b + vc_b
+
+    rng = np.random.default_rng(424242)
+    Ma = rng.standard_normal((nao, nao)); dDa = jnp.asarray(Ma + Ma.T)
+    Mb = rng.standard_normal((nao, nao)); dDb = jnp.asarray(Mb + Mb.T)
+    eps = 1e-6
+    fd = float((E(D_a + eps * dDa, D_b + eps * dDb)
+                - E(D_a - eps * dDa, D_b - eps * dDb)) / (2.0 * eps))
+    contract = float(jnp.einsum("ij,ij->", V_a, dDa)
+                     + jnp.einsum("ij,ij->", V_b, dDb))
+    rel = abs(fd - contract) / max(abs(contract), 1e-12)
+    print(f"\n[polarized full split] FD={fd:.10e} contract={contract:.10e} "
+          f"rel={rel:.3e}")
+    assert rel < 1e-5, (
+        f"full polarized split V_xc not FD-consistent with split_exc_energy_uks "
+        f"(rel={rel:.3e})")
+
+
 def test_polarized_vc_closed_shell_reduces_to_shared():
     from xcquinox.alec.oneshot import compute_vc_polarized_per_spin
 
