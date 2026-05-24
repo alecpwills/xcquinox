@@ -296,9 +296,12 @@ def _subset_generation_cells() -> list:
         "## 2. Reference-Histogram Builder\n\n"
         "Concatenate descriptors across the full 26-point mixed pool\n"
         "(per-point blocks already concatenated across each point's\n"
-        "species) and build 3 200-bin log10 density-normalized histograms\n"
-        "over $(\\rho^{1/3}, s, \\alpha)$. Same edges are reused for\n"
-        "every candidate-subset histogram.\n"
+        "species) and build 3 200-bin **linear-edge** histograms over\n"
+        "$(\\rho^{1/3}, s, \\alpha)$ (per-feature $[0.1, 99.9]$-percentile\n"
+        "range; the L2/JSD metrics PMF-normalize each marginal for equal\n"
+        "cross-feature treatment). Same edges are reused for every\n"
+        "candidate-subset histogram. Distributions are plotted on log-scale\n"
+        "axes for readability.\n"
     ))
     cells.append(_code(
         "import numpy as np\n"

@@ -4,6 +4,17 @@ This module ports the legacy data_binning2.ipynb cell-17 algorithm into
 the alec subpackage and extends it with a Jensen-Shannon divergence
 metric in addition to the original Euclidean L2-on-bins metric.
 
+Binning (2026-05-24): all three descriptors are binned on a LINEAR scale,
+with per-feature ``[0.1, 99.9]``-percentile edges. The legacy method used
+``log10(x + 1e-10)`` to give cross-scale feature values equal treatment, but
+the descriptors are ALREADY scale-compressed (ρ^{1/3}, not ρ) and each feature
+is independently percentile-ranged, so that range is handled by the descriptor
+choice + percentile edges — log on top was largely redundant and dumped the
+physical α=0 (single-orbital) spike onto a floor bin. Cross-FEATURE equal
+treatment is instead enforced by normalizing BOTH metrics to PMFs (sum=1) per
+marginal (``_to_pmf``), so a feature's contribution no longer depends on its
+raw binwidth. Distributions are still PLOTTED on log-scale axes for readability.
+
 Three-descriptor objective: histograms over (ρ^{1/3}, s, α) where
 - s is the PBE-1996 reduced gradient (Perdew, Burke, Ernzerhof, PRL 77, 3865, 1996)
 - α is the SCAN-2015 iso-orbital indicator (Sun, Ruzsinszky, Perdew,
@@ -39,7 +50,6 @@ from ase.io import read, write
 
 # Constants ---------------------------------------------------------------
 NBINS = 200
-LOG_REGULARIZER = 1e-10
 KL_PROB_CLIP = 1e-12
 
 # HB and PT water-dimer geometries verbatim from
@@ -130,28 +140,29 @@ def _resolve_descriptor_weights(descriptor_weights):
 
 
 def metric_l2(h_ref: dict, h_cand: dict, weights=None) -> float:
-    """Per-bin Euclidean distance summed across the 3 marginals.
+    """Per-bin Euclidean distance summed across the 3 marginals, on PMFs.
 
-    err = sum_b sqrt( (h^ref_rho - h^cand_rho)^2_b
-                    + (h^ref_s   - h^cand_s)^2_b
-                    + (h^ref_a   - h^cand_a)^2_b )
+    err = sum_b sqrt( (p^ref_rho - p^cand_rho)^2_b
+                    + (p^ref_s   - p^cand_s)^2_b
+                    + (p^ref_a   - p^cand_a)^2_b )
 
-    This is the verbatim form from data_binning2.ipynb cell 17. ``weights``
-    (C4-03) scales each descriptor's squared contribution; None = equal.
-
-    NOTE (CW5-M1): unlike ``metric_jsd``, this L2 acts on the histograms AS
-    BUILT (``build_reference_histograms`` uses ``density=True``), NOT on PMFs.
-    Because the three descriptors (rho^(1/3), s, alpha) span different ranges,
-    their density magnitudes scale as 1/bin_width, so a narrower-range
-    descriptor is implicitly up-weighted even at equal C4-03 ``weights``. This
-    is intentional-as-ported (matches the legacy cell-17 objective); L2 and JSD
-    therefore answer different questions. If you need bin-width-independent L2,
-    normalize each marginal with ``_to_pmf`` first.
+    where each ``p`` is the marginal normalized to a probability MASS function
+    (sum=1) via ``_to_pmf`` — like ``metric_jsd``. PMF-normalization (2026-05-24)
+    makes the three marginals dimensionless and binwidth-independent, so each
+    descriptor is treated equally regardless of its raw range (the prior
+    ``density=True`` form let a narrow-range descriptor dominate). ``weights``
+    (C4-03) scales each descriptor's squared contribution; None = equal. A
+    candidate marginal with zero in-range mass is maximally divergent (cannot
+    represent the reference) → +inf, never selected (mirrors ``metric_jsd``).
     """
     w = _resolve_descriptor_weights(weights)
     diffs_sq = np.zeros(NBINS)
     for k in _DESCRIPTOR_KEYS:
-        diffs_sq += w[k] * (h_ref[k] - h_cand[k]) ** 2
+        if float(np.sum(h_cand[k])) <= 0.0:
+            return float("inf")
+        p = _to_pmf(h_ref[k])
+        q = _to_pmf(h_cand[k])
+        diffs_sq += w[k] * (p - q) ** 2
     return float(np.sum(np.sqrt(diffs_sq)))
 
 
@@ -229,12 +240,15 @@ def metric_jsd(h_ref: dict, h_cand: dict, weights=None) -> float:
 
 
 def _bin_with_edges(arrs: dict, edges: dict) -> dict:
-    """Bin descriptors using fixed pre-computed log10 edges; returns 3 histograms."""
+    """Bin descriptors using fixed pre-computed LINEAR edges; returns 3 histograms.
+
+    Bins the raw descriptor values (no log10). ``density=True`` is retained, but
+    the metrics PMF-normalize, so the binwidth factor cancels regardless.
+    """
     out = {}
     w = arrs.get("weights")
     for k in _DESCRIPTOR_KEYS:
-        log_x = np.log10(arrs[k] + LOG_REGULARIZER)
-        h, _ = np.histogram(log_x, bins=edges[k], weights=w, density=True)
+        h, _ = np.histogram(arrs[k], bins=edges[k], weights=w, density=True)
         out[k] = h
     return out
 
@@ -248,7 +262,7 @@ def _prebin_pool(pool, edges: dict) -> tuple[dict, dict]:
     ``np.histogram(..., density=True)`` returns
     ``sum(weight_counts_i_k) / (sum(W_in_range_i_k) * bin_width_k)``
     where ``W_in_range_i_k = per_key_counts[k][i, :].sum()`` is the
-    weight of grid points from pool entry i whose log10-descriptor
+    weight of grid points from pool entry i whose (linear) descriptor
     fell INSIDE the histogram range (samples outside the range are
     dropped by ``np.histogram`` and excluded from its normalization).
     The in-range weight differs across descriptors because the (rho^1/3,
@@ -271,8 +285,7 @@ def _prebin_pool(pool, edges: dict) -> tuple[dict, dict]:
         if w is None:
             w = np.ones_like(arrs["rho_third"])
         for k in _DESCRIPTOR_KEYS:
-            log_x = np.log10(arrs[k] + LOG_REGULARIZER)
-            h, _ = np.histogram(log_x, bins=edges[k], weights=w, density=False)
+            h, _ = np.histogram(arrs[k], bins=edges[k], weights=w, density=False)
             per_key_counts[k][i, :] = h
             W_in_range[k][i] = float(h.sum())
     return per_key_counts, W_in_range
@@ -287,10 +300,22 @@ def _metric_l2_batch(h_ref: dict, h_cand_batch: dict, weights=None) -> np.ndarra
     equal weights (default, behavior-preserving).
     """
     w = _resolve_descriptor_weights(weights)
-    diffs_sq = np.zeros_like(next(iter(h_cand_batch.values())))
+    batch_size = next(iter(h_cand_batch.values())).shape[0]
+    diffs_sq = np.zeros((batch_size, NBINS), dtype=np.float64)
+    empty_row = np.zeros(batch_size, dtype=bool)
     for k in _DESCRIPTOR_KEYS:
-        diffs_sq += w[k] * (h_ref[k][None, :] - h_cand_batch[k]) ** 2
-    return np.sqrt(diffs_sq).sum(axis=1)
+        p_raw = h_ref[k][None, :]                          # (1, NBINS)
+        q_raw = h_cand_batch[k]                            # (batch, NBINS)
+        # PMF-normalize each row (sum=1); flag zero-mass candidates (SUBSET-05).
+        q_mass = q_raw.sum(axis=1, keepdims=True)          # (batch, 1)
+        empty_row |= (q_mass[:, 0] <= 0.0)
+        q_mass_safe = np.where(q_mass > 0.0, q_mass, 1.0)
+        p = p_raw / max(float(p_raw.sum()), KL_PROB_CLIP)
+        q = q_raw / q_mass_safe
+        diffs_sq += w[k] * (p - q) ** 2
+    out = np.sqrt(diffs_sq).sum(axis=1)
+    out[empty_row] = np.inf
+    return out
 
 
 def _metric_jsd_batch(h_ref: dict, h_cand_batch: dict, weights=None) -> np.ndarray:
@@ -333,11 +358,10 @@ def _metric_jsd_batch(h_ref: dict, h_cand_batch: dict, weights=None) -> np.ndarr
 
 
 def bin_descriptors(arrs: dict) -> dict:
-    """Bin a single descriptor-array set with auto-computed log10 edges."""
+    """Bin a single descriptor-array set with auto-computed LINEAR edges."""
     edges = {}
     for k in _DESCRIPTOR_KEYS:
-        log_x = np.log10(arrs[k] + LOG_REGULARIZER)
-        lo, hi = np.percentile(log_x, [0.1, 99.9])
+        lo, hi = np.percentile(arrs[k], [0.1, 99.9])
         edges[k] = np.linspace(lo, hi, NBINS + 1)
     return _bin_with_edges(arrs, edges)
 
@@ -417,8 +441,9 @@ def concatenate_point_descriptors(points, species_descriptors: dict[tuple, dict]
 
 def build_reference_histograms(pool):
     """Concatenate descriptor arrays across the full candidate pool, build
-    the 3 reference 200-bin log10 density-normalized histograms, and return
-    the edges used so that candidate-subset histograms align."""
+    the 3 reference 200-bin LINEAR-edge histograms (per-feature [0.1, 99.9]
+    percentile range; metrics PMF-normalize), and return the edges used so
+    that candidate-subset histograms align."""
     cat: dict = {k: [] for k in _DESCRIPTOR_KEYS}
     cat_w: list = []
     for arrs in pool:
@@ -429,8 +454,10 @@ def build_reference_histograms(pool):
     full["weights"] = np.concatenate(cat_w)
     edges = {}
     for k in _DESCRIPTOR_KEYS:
-        log_x = np.log10(full[k] + LOG_REGULARIZER)
-        lo, hi = np.percentile(log_x, [0.1, 99.9])
+        # Linear-scale edges on the RAW descriptor (no log10): [0.1, 99.9]
+        # percentile range per feature clips outliers and gives cross-feature
+        # comparability; uniform-width bins within the range.
+        lo, hi = np.percentile(full[k], [0.1, 99.9])
         edges[k] = np.linspace(lo, hi, NBINS + 1)
     h_ref = _bin_with_edges(full, edges)
     return h_ref, edges

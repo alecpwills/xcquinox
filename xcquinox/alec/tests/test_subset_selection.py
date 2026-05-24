@@ -93,17 +93,43 @@ def test_metric_jsd_symmetric():
 
 
 def test_metric_l2_three_histogram_sum():
-    """The L2 error sums sqrt over all 3 histograms per bin (matching
-    data_binning2.ipynb cell 17). Constructed input where only h1 differs
-    in a single bin should yield exactly the displacement magnitude."""
+    """L2 sums sqrt over all 3 marginals per bin, on PMF-normalized histograms
+    (2026-05-24: switched from density to PMF for cross-feature equal
+    treatment). With only the rho_third marginal differing, the s/alpha
+    marginals contribute zero and the total equals the rho_third PMF-diff."""
     p = _mock_three_histograms(seed=3)
     q = {k: v.copy() for k, v in p.items()}
     q["rho_third"] = q["rho_third"].copy()
     q["rho_third"][0] += 0.5
     err = ss.metric_l2(p, q)
-    # Only one bin differs; sqrt(0.25 + 0 + 0) = 0.5; sum over 200 bins of
-    # sqrt of the per-bin sum-of-squared-diffs => 0.5 + sum(sqrt(0)) = 0.5
-    assert err == pytest.approx(0.5, abs=1e-12)
+    # Independent recompute on PMFs (s & alpha identical -> 0 contribution).
+    pr = ss._to_pmf(p["rho_third"]); qr = ss._to_pmf(q["rho_third"])
+    assert err == pytest.approx(float(np.sum(np.abs(pr - qr))), abs=1e-12)
+
+
+def test_metric_l2_is_pmf_normalized_equal_cross_feature_treatment():
+    """L2 must treat each marginal equally regardless of its raw magnitude
+    scale: scaling a marginal's counts by a constant (which _to_pmf cancels)
+    must not change the L2, and identical-shape marginals score 0."""
+    p = _mock_three_histograms(seed=7)
+    # identical shapes -> zero distance even at wildly different raw scales
+    q = {"rho_third": p["rho_third"] * 1.0,
+         "s": p["s"] * 1000.0,          # 1000x raw scale, same SHAPE
+         "alpha": p["alpha"] * 1e-6}
+    assert ss.metric_l2(p, q) == pytest.approx(0.0, abs=1e-12)
+    # a zero-mass candidate marginal is maximally divergent (never selected)
+    q_empty = {k: v.copy() for k, v in p.items()}
+    q_empty["alpha"] = np.zeros_like(p["alpha"])
+    assert ss.metric_l2(p, q_empty) == float("inf")
+
+
+def test_reference_histogram_edges_are_linear():
+    """Edges are LINEAR (uniform width) on the raw descriptor, not log10."""
+    pool = [_toy_descriptor_arrays(seed=s) for s in range(4)]
+    _h, edges = ss.build_reference_histograms(pool)
+    for k in ("rho_third", "s", "alpha"):
+        d = np.diff(edges[k])
+        assert np.allclose(d, d[0], rtol=0, atol=1e-12), f"{k} edges not linear"
 
 
 def test_metric_jsd_three_histogram_sum():
