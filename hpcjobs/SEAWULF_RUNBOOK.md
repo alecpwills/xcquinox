@@ -23,12 +23,23 @@ resolve identically on every node.
 
 ```bash
 ls $GROUP/Alec/xcquinox/hpcjobs/configs/step7.yaml
-ls $GROUP/Alec/xcquinox/notebooks/checkpoints_step7/subset_index_log.json
-ls $GROUP/Alec/xcquinox/notebooks/checkpoints_step7/*/subset.traj | head
+# C4-03: the ledger now lives under an alpha-mode subdir. Pick the mode you
+# intend to train (alpha_off = the GGA-faithful selection that drops the
+# meta-GGA tau descriptor; alpha_on = the default alpha-weighted selection):
+ls $GROUP/Alec/xcquinox/notebooks/checkpoints_step7/alpha_off/subset_index_log.json
+ls $GROUP/Alec/xcquinox/notebooks/checkpoints_step7/alpha_off/*/subset.traj | head
 ls -ld $SCRATCH    # confirm scratch dir exists and is writable
 ```
 
 If any of those fail, fix before continuing.
+
+> **C4-03 provenance.** The step-7 notebook regenerates the ledger in two
+> modes via `STEP7_IGNORE_ALPHA`: `alpha_on` (default, `descriptor_weights=None`)
+> and `alpha_off` (`descriptor_weights={'alpha': 0.0}`), each under its own
+> `checkpoints_step7/<mode>/` root so both coexist. Set
+> `inputs.subset_ledger_path` to the mode you are training. Since the GGA
+> network never consumes alpha, `alpha_off` matches the descriptors the model
+> can actually see; `alpha_on` is kept for the comparison experiment.
 
 ---
 
@@ -105,7 +116,7 @@ exactly as written** — do not use `$GROUP` / `$SCRATCH` env vars in the YAML.
 | `cluster.mail_type` | `BEGIN,END,FAIL` (SLURM's keyword for job-start is `BEGIN`, not `START`) |
 | `inputs.output_root` | `/gpfs/scratch/awills/xcquinox_runs` |
 | `inputs.external_refs_dir` | `/gpfs/scratch/awills/external_refs` |
-| `inputs.subset_ledger_path` | `/gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/subset_index_log.json` |
+| `inputs.subset_ledger_path` | `/gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/<alpha_on\|alpha_off>/subset_index_log.json` (C4-03: choose the alpha-mode subdir you are training) |
 | `pretrain.data_dir` | `/gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step6/pretrain_data` (contains `pretrain_data.npz` — matches step-7 notebook cells 469/552) |
 | `pretrain.pretrain_root` | `/gpfs/scratch/awills/pretrain` |
 

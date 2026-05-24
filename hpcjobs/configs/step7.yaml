@@ -81,8 +81,18 @@ inputs:
   # (already-finished) offline subset-selection pre-process. The harness
   # CONSUMES this ledger read-only — it does NOT run subset selection,
   # descriptor extraction, or reference-histogram building. Stage a copy of
-  # ``notebooks/checkpoints_step7/subset_index_log.json`` (and the per-spec
-  # ``subset.traj`` files alongside it) onto shared storage BEFORE submitting.
+  # the ledger (and the per-spec ``subset.traj`` files alongside it) onto
+  # shared storage BEFORE submitting.
+  #
+  # C4-03 (descriptor-weight provenance): the step-7 notebook now writes the
+  # ledger under a MODE subdir keyed by whether the meta-GGA descriptor alpha
+  # was used in the selection objective:
+  #   notebooks/checkpoints_step7/alpha_on/subset_index_log.json   (default;
+  #       alpha weighted equally — descriptor_weights=None)
+  #   notebooks/checkpoints_step7/alpha_off/subset_index_log.json  (alpha
+  #       dropped — descriptor_weights={'alpha': 0.0}, STEP7_IGNORE_ALPHA=1)
+  # Point subset_ledger_path at the mode you intend to train; the GGA network
+  # is alpha-blind, so alpha_off matches the descriptors the model can see.
   subset_ledger_path: /gpfs/projects/CHANGE_ME/xcquinox/step7/subset_index_log.json
   basis: def2-svp           # (L) step-7 basis set
   grid_level: 1             # (L) step-7 DFT integration-grid level
