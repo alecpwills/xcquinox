@@ -476,6 +476,23 @@ def build_test_spec(
     # uses, but anchored on run_dir so the path is absolute & deterministic
     # regardless of how the TrainingSpec's checkpoint_dir was set.
     base = os.path.basename(training_spec.checkpoint_dir.rstrip("/"))
+    # Cross-wire guard (CODE-2/CODE-3 round-4): the path is derived from the
+    # training spec's own checkpoint_dir basename, but it MUST correspond to the
+    # array index ``idx`` the caller is materializing — otherwise a test spec
+    # could silently point at a different spec's checkpoint. ``base`` is
+    # ``spec_<zero-padded idx>``; assert its integer matches ``idx``.
+    try:
+        _base_idx = int(base.split("_")[-1])
+    except (ValueError, IndexError):
+        raise ValueError(
+            f"build_test_spec: checkpoint_dir basename {base!r} is not the "
+            f"expected 'spec_<idx>' form; cannot verify it matches idx={idx}."
+        )
+    if _base_idx != idx:
+        raise ValueError(
+            f"build_test_spec: spec↔checkpoint cross-wire — checkpoint_dir "
+            f"basename {base!r} (index {_base_idx}) != requested idx={idx}."
+        )
     ckpt_dir = os.path.join(
         os.path.abspath(run_dir), "checkpoints", base
     )
