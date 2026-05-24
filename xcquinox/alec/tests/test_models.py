@@ -371,3 +371,61 @@ def test_eval_exc_scalar_matches_constrained_eval_exc():
                 np.asarray(scalar), np.asarray(batched[i]),
                 err_msg=f"scalar/batched mismatch at point {i} with cfg={cfg}",
             )
+
+
+# P2-03: model-level zeta threading for spin-polarization-aware correlation
+def _build_polc_model(seed=0):
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import ArchitectureConfig
+    arch = ArchitectureConfig.from_spec(
+        "polc_test", 4, 32, attention=True, num_heads=4,
+        descriptors=["dm_statistics", "cusp"], use_polarized_correlation=True)
+    x, c = alec.create_network_pair(arch, seed=seed)
+    return alec.AlecGGAModel.from_arch(arch, xnet=x, cnet=c)
+
+
+def test_unpolarized_model_ignores_zeta():
+    """An unpolarized cnet (default) must ignore zeta entirely (no regression)."""
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import get_architecture
+    arch = get_architecture("deep_combined_attn")
+    x, c = alec.create_network_pair(arch, seed=0)
+    m = alec.AlecGGAModel.from_arch(arch, xnet=x, cnet=c)
+    n = 5
+    rho = jnp.linspace(0.1, 1.0, n); sig = jnp.linspace(0.01, 0.5, n)
+    feats = jnp.asarray(np.random.default_rng(0).standard_normal((n, 5)))
+    assert jnp.allclose(m.eval_ec(rho, sig, feats, zeta=0.0),
+                        m.eval_ec(rho, sig, feats, zeta=0.7))
+
+
+def test_polarized_model_split_exact_and_zeta_sensitive():
+    """Polarized model: eval_exc == eval_ex + eval_ec (batched zeta array AND
+    scalar), and eval_ec genuinely depends on zeta."""
+    m = _build_polc_model()
+    n = 5
+    rho = jnp.linspace(0.1, 1.0, n); sig = jnp.linspace(0.01, 0.5, n)
+    feats = jnp.asarray(np.random.default_rng(1).standard_normal((n, 5)))
+    zeta = jnp.linspace(0.0, 0.8, n)
+    exc = m.eval_exc(rho, sig, feats, zeta=zeta)
+    split = m.eval_ex(rho, sig, feats) + m.eval_ec(rho, sig, feats, zeta=zeta)
+    assert jnp.allclose(exc, split), float(jnp.max(jnp.abs(exc - split)))
+    # scalar split exact
+    exc_s = float(m.eval_exc_scalar(rho[0], sig[0], feats[0], zeta=0.3))
+    split_s = float(m.eval_ex_scalar(rho[0], sig[0], feats[0])
+                    + m.eval_ec_scalar(rho[0], sig[0], feats[0], zeta=0.3))
+    assert abs(exc_s - split_s) < 1e-12
+    # zeta sensitivity
+    ec0 = m.eval_ec(rho, sig, feats, zeta=0.0 * rho)
+    ec5 = m.eval_ec(rho, sig, feats, zeta=0.0 * rho + 0.5)
+    assert float(jnp.max(jnp.abs(ec0 - ec5))) > 1e-8
+
+
+def test_polarized_baseline_reduces_to_unpolarized_at_zeta0():
+    """At zeta=0 the model's correlation baseline equals the unpolarized PW92,
+    so a polarized model's eval_ec(zeta=0) uses the same baseline (only the
+    learned cnet differs)."""
+    from xcquinox.utils import pw92c_unpolarized_scalar
+    m = _build_polc_model()
+    rho = jnp.linspace(0.1, 1.0, 5)
+    base_pol0 = m._ec_baseline(rho, jnp.zeros_like(rho))
+    assert jnp.allclose(base_pol0, pw92c_unpolarized_scalar(rho), atol=1e-12)
