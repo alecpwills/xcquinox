@@ -225,6 +225,14 @@ def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets, 
     so the D-family target is a function of the anchor dict even though
     the NN/PBE delta itself is not.
     """
+    # C1-03 caveat: the relative normalization 1/(delta_tgt**2 + 1e-8) is
+    # well-behaved only while |delta_tgt| (= |target_AE - ae_pbe|, the amount PBE
+    # is OFF by) is comfortably above ~1e-4 Ha. A compound where PBE already
+    # nails the AE (delta_tgt -> 0) would have its squared error divided by the
+    # 1e-8 floor, over-weighting it ~1e8x. Not triggered by the current Dick
+    # 21-AE pool (PBE AE errors are ~1e-2..1e-1 Ha), but a scale-aware floor
+    # (e.g. max(delta_tgt**2, eps_abs)) would be needed before adding compounds
+    # PBE describes near-exactly.
     terms = []
     for i in compound_idx:
         ae_nn = _ae_from_atoms(E_nn[i], comp_dicts[i], atom_energies)

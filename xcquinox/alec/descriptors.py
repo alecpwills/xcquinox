@@ -118,6 +118,20 @@ class DMStatisticsDescriptor(Descriptor):
     ``idempotency_error`` and ``off_diag_norm`` grow with departure from a single
     Slater determinant; ``dm_entropy`` is a size-dependent natural-occupation
     entropy (see the caveat above), not a clean correlation indicator.
+
+    SIZE-CONSISTENCY / LOCALITY CAVEAT (P5-06): these are GLOBAL, molecule-level
+    scalars that ``__call__`` ``jnp.tile``s identically to every grid point and
+    feeds into the per-point (semilocal) enhancement factor. Consequences:
+      * The per-point ε_xc then depends on whole-system quantities, so the
+        functional is NOT size-consistent — the XC energy density at a point in
+        fragment A shifts if a distant fragment B is added to the system.
+      * ``dm_entropy`` is extensive (~ln N_occ), so as a constant local feature
+        it largely encodes molecule identity/size (a label-leakage / overfitting
+        handle on a small training pool) rather than local correlation physics.
+    Making this defensible requires an ARCHITECTURE change (feed these as
+    size-INTENSIVE molecule-level conditioning, or normalize per electron), which
+    redefines the feature and invalidates checkpoints trained on the current
+    values — a deferred design decision requiring sign-off, NOT changed here.
     """
     n_features: int = eqx.field(default=3, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)

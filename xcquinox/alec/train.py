@@ -54,7 +54,11 @@ def build_optimizer(
     """Build canonical optimizer chain for training.
 
     Chain order: clip_by_global_norm -> adam(lr_schedule).
-    LR schedule: optional constant warmup then linear decay.
+    LR schedule: a constant-LR warmup for the first ``lr_decay_start`` fraction
+    of ``n_steps`` THEN linear decay to ``lr_end`` — but ONLY when
+    ``lr_decay_start > 0``. With the common ``lr_decay_start = 0`` there is no
+    warmup: it is pure linear decay from ``lr_start`` to ``lr_end`` over all
+    ``n_steps`` (C3-02/10).
 
     Parameters
     ----------

@@ -86,7 +86,7 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
     sigma_aa_eff = (1.0 + zeta) ** 2 * sigma_tot
     sigma_bb_eff = (1.0 - zeta) ** 2 * sigma_tot
 
-    _compute = getattr(_LIBXC_CALL, "eval" "_xc")
+    _compute = _LIBXC_CALL.eval_xc
     c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
     fx_pbe_at_s = _fx_pbe_analytic(s_arr)
 

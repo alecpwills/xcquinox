@@ -432,7 +432,7 @@ def build_test_spec(
     idx,
     domain,
     *,
-    holdout_molecule_names: "tuple | None" = None,
+    holdout_molecules: "tuple | None" = None,
 ) -> TestSpec:
     """Build the :class:`TestSpec` matching a trained :class:`TrainingSpec`.
 
@@ -445,7 +445,7 @@ def build_test_spec(
     mistaken for held-out performance.
 
     To evaluate on a held-out or external molecule set, pass
-    ``holdout_molecule_names`` — a tuple of :class:`~xcquinox.alec.config.MoleculeSpec`
+    ``holdout_molecules`` — a tuple of :class:`~xcquinox.alec.config.MoleculeSpec`
     objects.  When provided, the returned :class:`TestSpec` uses those molecules
     instead of the training set, and no warning is emitted.
 
@@ -462,7 +462,7 @@ def build_test_spec(
         The spec's array-task index — selects ``spec_<idx>``.
     domain : DomainProfile
         Supplies ``atom_energies`` and ``kcal_per_ha``.
-    holdout_molecule_names : tuple[MoleculeSpec, ...] | None, optional
+    holdout_molecules : tuple[MoleculeSpec, ...] | None, optional
         When provided, the returned :class:`TestSpec` evaluates on these
         molecules instead of the training set.  When ``None`` (default), the
         training molecules are used and a :class:`RuntimeWarning` is emitted to
@@ -482,18 +482,18 @@ def build_test_spec(
     model_checkpoint = os.path.join(ckpt_dir, "model.eqx")
     output_dir = os.path.join(ckpt_dir, "eval")
 
-    if holdout_molecule_names is None:
+    if holdout_molecules is None:
         eval_molecules = training_spec.molecules
         warnings.warn(
             "build_test_spec: eval molecules are the TRAINING molecules "
             "(in-distribution evaluation — not a held-out generalization "
-            "estimate). Pass holdout_molecule_names to evaluate on an "
+            "estimate). Pass holdout_molecules to evaluate on an "
             "external set.",
             RuntimeWarning,
             stacklevel=2,
         )
     else:
-        eval_molecules = holdout_molecule_names
+        eval_molecules = holdout_molecules
 
     targets = training_spec.targets_dict
     # Exclude AUX-ONLY species (BH76/IP13 reaction polyatomics with no real AE

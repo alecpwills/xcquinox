@@ -608,7 +608,7 @@ def test_build_test_spec_default_molecules_unchanged(tmp_path):
 
 
 def test_build_test_spec_default_emits_in_distribution_warning(tmp_path):
-    """Default (no holdout_molecule_names) must emit a RuntimeWarning that names
+    """Default (no holdout_molecules) must emit a RuntimeWarning that names
     the in-distribution / not-held-out nature of the evaluation."""
     import warnings
     domain = get_domain_profile("dfs_step7")
@@ -631,7 +631,7 @@ def test_build_test_spec_default_emits_in_distribution_warning(tmp_path):
 
 
 def test_build_test_spec_holdout_molecules_used_when_provided(tmp_path):
-    """When holdout_molecule_names is provided, the TestSpec evaluates on those
+    """When holdout_molecules is provided, the TestSpec evaluates on those
     molecules instead of the training set."""
     import warnings
     domain = get_domain_profile("dfs_step7")
@@ -657,7 +657,7 @@ def test_build_test_spec_holdout_molecules_used_when_provided(tmp_path):
         warnings.simplefilter("always")
         test_spec = build_test_spec(
             training_spec, run_dir, 0, domain,
-            holdout_molecule_names=holdout,
+            holdout_molecules=holdout,
         )
 
     assert test_spec.molecules == holdout
@@ -688,7 +688,7 @@ def test_build_test_spec_holdout_suppresses_in_distribution_warning(tmp_path):
         warnings.simplefilter("always")
         build_test_spec(
             training_spec, run_dir, 0, domain,
-            holdout_molecule_names=holdout,
+            holdout_molecules=holdout,
         )
 
     runtime_warnings = [
@@ -699,5 +699,5 @@ def test_build_test_spec_holdout_suppresses_in_distribution_warning(tmp_path):
              or "training" in str(w.message).lower())
     ]
     assert not runtime_warnings, (
-        "No in-distribution RuntimeWarning expected when holdout_molecule_names is provided"
+        "No in-distribution RuntimeWarning expected when holdout_molecules is provided"
     )
