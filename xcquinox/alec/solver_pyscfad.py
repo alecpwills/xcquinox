@@ -185,8 +185,11 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
     The non-zero ``ud`` term comes entirely from the total-density
     correlation (sigma_tot = sigma_uu + 2 sigma_ud + sigma_dd).
 
-    FUTURE WORK: zeta-dependent PW92 correlation does not exist here; do NOT
-    add it.
+    P2-03: when ``cnet.use_spin_polarization`` is set, correlation uses the
+    zeta-dependent PW92 baseline and ``vrho_c`` becomes PER-SPIN
+    (``vrho_c_a != vrho_c_b``); ``vsigma_c`` stays shared because zeta has no
+    sigma dependence (Dick & Fernandez-Serra, PRB 104 L161109 (2021)). Flag
+    False keeps the zeta=0 shared-correlation path byte-identical.
     """
     from xcquinox.alec.descriptors import assemble_descriptor_features
 
@@ -317,11 +320,12 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             # (Oliver & Perdew, Phys. Rev. A 20, 397 (1979)):
             #   E_x = 0.5 (E_x[2 rho_a, 4 sigma_aa] + E_x[2 rho_b, 4 sigma_bb]),
             # evaluated per spin. CORRELATION does NOT — it is evaluated ONCE
-            # on the TOTAL density (zeta=0), because the baseline
-            # pw92c_unpolarized_scalar is spin-unpolarized (von Barth & Hedin,
-            # J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45, 13244 (1992)).
-            # FUTURE WORK: a zeta-dependent PW92 correlation does not exist in
-            # this codebase; do NOT add it here.
+            # on the TOTAL density (zeta=0) on the default fast path, because
+            # the baseline pw92c_unpolarized_scalar is spin-unpolarized (von
+            # Barth & Hedin, J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45,
+            # 13244 (1992)). P2-03: when cnet.use_spin_polarization is set,
+            # correlation instead uses the zeta-dependent PW92 baseline and a
+            # per-spin vrho_c (Dick & Fernandez-Serra, PRB 104 L161109 (2021)).
             #
             # Use a block-sized features slice since pyscfad chunks the grid
             # under jax.grad / jit tracing.
@@ -334,10 +338,37 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             ex_b_density, vrho_x_b, vsigma_x_b = _eval_part(
                 eval_single_x, 2.0 * rho_b, 4.0 * sigma_bb, features_blk,
             )
-            # Correlation: once, on the total density.
-            ec_density, vrho_c, vsigma_c = _eval_part(
-                eval_single_c, rho_tot, sigma_tot, features_blk,
-            )
+            # Correlation. P2-03: when the cnet is spin-polarization-aware,
+            # eps_c depends on rho_a/rho_b through BOTH rho_tot AND
+            # zeta = (rho_a-rho_b)/rho_tot (Dick & Fernandez-Serra, PRB 104
+            # L161109 (2021)), so vrho_c is PER-SPIN. zeta has no sigma
+            # dependence, so vsigma_c stays the single total-density
+            # derivative. Flag False keeps the shared zeta=0 fast path.
+            if getattr(model.cnet, "use_spin_polarization", False):
+                def ec_spin_scalar(ra, rb, s, f):
+                    rt = ra + rb
+                    z = jnp.clip((ra - rb) / jnp.maximum(rt, 1e-300),
+                                 -1.0, 1.0)
+                    return model.eval_ec_scalar(rt, s, f, zeta=z)
+                ec_density = jax.vmap(ec_spin_scalar)(
+                    rho_a, rho_b, sigma_tot, features_blk)
+                vrho_c_a = jax.vmap(
+                    lambda ra, rb, s, f: jax.grad(ec_spin_scalar, 0)(ra, rb, s, f)
+                )(rho_a, rho_b, sigma_tot, features_blk)
+                vrho_c_b = jax.vmap(
+                    lambda ra, rb, s, f: jax.grad(ec_spin_scalar, 1)(ra, rb, s, f)
+                )(rho_a, rho_b, sigma_tot, features_blk)
+                vsigma_c = jax.vmap(
+                    lambda ra, rb, s, f: jax.grad(ec_spin_scalar, 2)(ra, rb, s, f)
+                )(rho_a, rho_b, sigma_tot, features_blk)
+            else:
+                # zeta=0 fast path: correlation once on the total density,
+                # the SAME vrho_c for both spins.
+                ec_density, vrho_c, vsigma_c = _eval_part(
+                    eval_single_c, rho_tot, sigma_tot, features_blk,
+                )
+                vrho_c_a = vrho_c
+                vrho_c_b = vrho_c
 
             # libxc convention: E_xc = integral (rho_a + rho_b) * eps_uks(r) dr,
             # so eps_uks is the per-particle energy density returned here.
@@ -358,10 +389,11 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
 
             # vrho_s = d E_density / d rho_s.
             #   Exchange: d/drho_a [0.5 ex(2 rho_a)] = 0.5 * 2 * vrho_x_a = vrho_x_a.
-            #   Correlation: d/drho_a ec(rho_tot) = vrho_c (d rho_tot/d rho_a = 1),
-            #     IDENTICAL for both spins.
-            vrho_a = vrho_x_a + vrho_c
-            vrho_b = vrho_x_b + vrho_c
+            #   Correlation: vrho_c_a/vrho_c_b = d ec/d rho_{a,b} — IDENTICAL
+            #     for both spins on the zeta=0 fast path, PER-SPIN when the
+            #     polarized (zeta-dependent) correlation is active.
+            vrho_a = vrho_x_a + vrho_c_a
+            vrho_b = vrho_x_b + vrho_c_b
             # vrho: (n_grid, 2) in (u, d) order.
             vrho_stack = jnp.stack([vrho_a, vrho_b], axis=-1)
 

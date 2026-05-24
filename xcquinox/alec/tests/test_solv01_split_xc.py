@@ -531,6 +531,67 @@ def test_pyscfad_callback_closed_shell_reduction():
     print(f"\n[pyscfad] closed-shell exc residual={e_resid:.3e}")
 
 
+def test_pyscfad_callback_polarized_per_spin_vrho():
+    """P2-03: with a spin-polarization-aware cnet the pyscfad UKS callback must
+    return PER-SPIN vrho (vrho_a != vrho_b on an open-shell density), reduce to
+    a shared vrho at zeta=0, and be pointwise FD-consistent with the energy
+    density (vrho_s = d(exc*rho_tot)/d rho_s at fixed gradients)."""
+    from xcquinox.alec.solver import FeaturePolicy
+    from xcquinox.alec.solver_pyscfad import _make_alec_eval_xc
+
+    model = _build_polarized_model()
+    md = _h2_rks_md()
+    eval_xc = _make_alec_eval_xc(model, model.descriptors, md,
+                                 FeaturePolicy.FROZEN)
+    n = md["ao_grid"].shape[0]
+    rng = np.random.default_rng(11)
+
+    def xc_density(rho_a, rho_b, ga, gb):
+        uks_rho = np.stack([np.stack([rho_a, ga[0], ga[1], ga[2]]),
+                            np.stack([rho_b, gb[0], gb[1], gb[2]])])
+        exc, _, _, _ = eval_xc("", uks_rho, spin=1, deriv=1)
+        return np.asarray(exc) * (rho_a + rho_b)
+
+    def vrho_pair(rho_a, rho_b, ga, gb):
+        uks_rho = np.stack([np.stack([rho_a, ga[0], ga[1], ga[2]]),
+                            np.stack([rho_b, gb[0], gb[1], gb[2]])])
+        _, vxc, _, _ = eval_xc("", uks_rho, spin=1, deriv=1)
+        v = np.asarray(vxc[0])  # (n, 2)
+        return v[:, 0], v[:, 1]
+
+    # Open-shell synthetic density (rho_a != rho_b).
+    rho_a = np.abs(rng.standard_normal(n)) + 0.10
+    rho_b = np.abs(rng.standard_normal(n)) + 0.05
+    ga = rng.standard_normal((3, n)) * 0.1
+    gb = rng.standard_normal((3, n)) * 0.1
+
+    vr_a, vr_b = vrho_pair(rho_a, rho_b, ga, gb)
+    # Per-spin: the two channels must genuinely differ.
+    assert float(np.max(np.abs(vr_a - vr_b))) > 1e-6, (
+        "polarized callback must produce per-spin vrho (vrho_a != vrho_b)")
+
+    # Pointwise FD consistency at fixed gradients.
+    eps = 1e-6
+    fd_a = (xc_density(rho_a + eps, rho_b, ga, gb)
+            - xc_density(rho_a - eps, rho_b, ga, gb)) / (2 * eps)
+    fd_b = (xc_density(rho_a, rho_b + eps, ga, gb)
+            - xc_density(rho_a, rho_b - eps, ga, gb)) / (2 * eps)
+    # Compare on points well above the 1e-12 tail mask.
+    m = (rho_a + rho_b) > 1e-3
+    rel_a = np.max(np.abs(fd_a[m] - vr_a[m])) / max(np.max(np.abs(vr_a[m])), 1e-12)
+    rel_b = np.max(np.abs(fd_b[m] - vr_b[m])) / max(np.max(np.abs(vr_b[m])), 1e-12)
+    print(f"\n[pyscfad polarized] rel_a={rel_a:.3e} rel_b={rel_b:.3e}")
+    assert rel_a < 1e-5 and rel_b < 1e-5, (
+        f"per-spin vrho not FD-consistent (rel_a={rel_a:.3e} rel_b={rel_b:.3e})")
+
+    # Closed-shell reduction: rho_a = rho_b, ga = gb -> vrho_a == vrho_b.
+    rho_c = np.abs(rng.standard_normal(n)) + 0.10
+    gc = rng.standard_normal((3, n)) * 0.1
+    cv_a, cv_b = vrho_pair(rho_c, rho_c, gc, gc)
+    assert float(np.max(np.abs(cv_a - cv_b))) < 1e-10, (
+        "at zeta=0 the per-spin vrho must coincide")
+
+
 # ---------------------------------------------------------------------------
 # Test D: spin symmetry. Swapping (rho_a,nabla_a)<->(rho_b,nabla_b) swaps
 # V_a<->V_b and leaves E_xc unchanged.
