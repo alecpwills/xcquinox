@@ -18,12 +18,12 @@ The harness submits the step-7 grid as a **4-stage SLURM job graph**:
 
 1. **pretrain array** — one task per *distinct architecture*, submitted up
    front. Each task builds a `PretrainSpec` and writes an `xnet.eqx` +
-   `cnet.eqx` pair into `<pretrain_root>/<arch>/`.
+   `cnet.eqx` pair into `<pretrain_root>/<run_id>/<arch>/`.
 2. **preflight** (`afterok:pretrain`) — a single job that (re)computes the
    per-species CCSD external refs (skip-if-cached) and materializes one
    `TrainingSpec` per grid cell.
 3. **train array** (`afterok:pretrain:preflight` — gated on *both*) — one task
-   per spec; each task uses `<pretrain_root>/<arch>/` as its pretrained
+   per spec; each task uses `<pretrain_root>/<run_id>/<arch>/` as its pretrained
    checkpoint.
 4. **eval array** (`aftercorr:train`) — one task per spec, paired index-for-
    index with the train array.
@@ -70,7 +70,7 @@ marked `CHANGE_ME` must be replaced. They are:
 | `inputs.subset_ledger_path` | shared path to the **existing** `subset_index_log.json` from the offline subset-selection pre-process. A **consumed, read-only input** — it must already exist on shared storage when you submit (see below). |
 | `inputs.basis` / `inputs.grid_level` | step-7 physical constants (basis set, DFT grid level). Leave at the template values. |
 | `pretrain.data_dir` | shared dir of training data the pretrain stage builds its `PretrainSpec` from. Must be staged before submitting. |
-| `pretrain.pretrain_root` | shared root the pretrain stage writes each arch's `xnet.eqx`/`cnet.eqx` into (`<pretrain_root>/<arch>/`). A harness **product**, not a pre-staged input — point it at a writable shared-FS path. |
+| `pretrain.pretrain_root` | shared root the pretrain stage writes each arch's `xnet.eqx`/`cnet.eqx` into (`<pretrain_root>/<run_id>/<arch>/`). A harness **product**, not a pre-staged input — point it at a writable shared-FS path. |
 
 The `pretrain:` section also carries the pretraining hyperparameters
 (`n_steps`, `lr_start`, `lr_end`, `lr_decay_start`, `grad_clip`, `seed`,
@@ -209,7 +209,7 @@ The run directory ends up containing:
 ```
 
 (The pretrained `xnet.eqx`/`cnet.eqx` pairs are written by the pretrain stage
-into `<pretrain_root>/<arch>/`, not into the run dir.)
+into `<pretrain_root>/<run_id>/<arch>/`, not into the run dir.)
 
 ---
 

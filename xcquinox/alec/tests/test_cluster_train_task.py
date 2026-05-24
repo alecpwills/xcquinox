@@ -303,3 +303,31 @@ def test_write_failure_json_is_atomic_and_leaves_no_tmp(run_dir):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# C7-01: preflight precompute_failed_species marker short-circuits the worker
+def test_precompute_failed_species_marker_short_circuits(run_dir, monkeypatch):
+    """A spec the preflight already marked ``precompute_failed_species`` must NOT
+    run the worker (it would burn an exclusive node) and must NOT overwrite the
+    precise preflight diagnosis."""
+    _write_spec(run_dir, 0)
+    ckpt = os.path.join(run_dir, "checkpoints", "spec_0000")
+    os.makedirs(ckpt, exist_ok=True)
+    marker = {
+        "classification": "precompute_failed_species",
+        "species": ["N2O"],
+        "detail": "preflight marker — keep verbatim",
+    }
+    with open(os.path.join(ckpt, "failure.json"), "w") as f:
+        json.dump(marker, f)
+
+    def boom(spec_path, device):  # noqa: ARG001
+        raise AssertionError("worker must not run for a pre-marked spec")
+    monkeypatch.setattr(tt, "_run_worker", boom)
+
+    rc = tt.main([run_dir, "0"])
+    assert rc == 0
+    preserved = _read_failure(run_dir, 0)
+    assert preserved["classification"] == "precompute_failed_species"
+    assert preserved["species"] == ["N2O"]
+    assert preserved["detail"] == "preflight marker — keep verbatim"

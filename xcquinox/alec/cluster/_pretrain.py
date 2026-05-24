@@ -17,7 +17,7 @@ For one architecture index it:
     index fails fast.
   - Builds a :class:`~xcquinox.alec.config.PretrainSpec` for that architecture,
     threading every parameter from ``cfg.pretrain`` and writing the checkpoint
-    into exactly ``<cfg.pretrain.pretrain_root>/<arch>/`` -- the directory each
+    into exactly ``<cfg.pretrain.pretrain_root>/<run_id>/<arch>/`` -- the directory each
     train spec's ``pretrain_checkpoint`` resolves to.
   - Calls :func:`run_pretrain` behind the :data:`_run_pretrain` seam, emitting a
     throttled ``[harness pretrain arch=...]`` heartbeat so a multi-hour job is

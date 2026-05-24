@@ -7,7 +7,7 @@ so NO real pretraining / JAX compute is ever spawned. A synthetic ``run_dir``
 Coverage:
   - ``_pretrain.main`` loads ``resolved_config.yaml``, selects the correct
     arch for a given ``arch_idx``, and builds a ``PretrainSpec`` with the
-    right ``checkpoint_dir`` = ``<pretrain_root>/<arch>/`` and every
+    right ``checkpoint_dir`` = ``<pretrain_root>/<run_id>/<arch>/`` and every
     ``cfg.pretrain`` field threaded through.
   - out-of-range ``arch_idx`` fails fast (non-zero exit, clear message).
   - the silent-no-checkpoint guard: mocked ``_run_pretrain`` "succeeds" but

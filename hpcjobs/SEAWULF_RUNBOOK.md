@@ -263,7 +263,7 @@ sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS,ExitCode
   submit_commands.txt                                  every sbatch invocation, timestamped
 ```
 
-Pretrained `xnet.eqx`/`cnet.eqx` pairs live at `/gpfs/scratch/awills/pretrain/<arch>/`,
+Pretrained `xnet.eqx`/`cnet.eqx` pairs live at `/gpfs/scratch/awills/pretrain/<run_id>/<arch>/`,
 not under the run dir.
 
 ---

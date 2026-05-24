@@ -152,6 +152,21 @@ def _write_failure_json(checkpoint_dir, payload):
 # Logging helpers
 # ---------------------------------------------------------------------------
 
+def _read_failure_classification(checkpoint_dir):
+    """Return the ``classification`` of an existing ``failure.json`` in
+    ``checkpoint_dir``, or ``None`` if absent/unreadable.
+
+    Used to honor a preflight ``precompute_failed_species`` marker without
+    re-running the worker or overwriting the marker (C7-01).
+    """
+    path = os.path.join(checkpoint_dir, "failure.json")
+    try:
+        with open(path) as f:
+            return json.load(f).get("classification")
+    except (OSError, ValueError):
+        return None
+
+
 def _log(idx, message):
     """Emit one harness log line (tagged) to our stdout — the SLURM log."""
     sys.stdout.write(f"[harness idx={idx}] {message}\n")
@@ -380,6 +395,19 @@ def main(argv=None) -> int:
     spec_path = _spec_path(run_dir, idx, width)
     checkpoint_dir = _checkpoint_dir(run_dir, idx, width)
     model_path = _model_path(run_dir, idx, width)
+
+    # C7-01: honor a preflight ``precompute_failed_species`` marker. The
+    # preflight writes this when a FIXED subset references a species whose CCSD
+    # external reference failed to precompute, so the spec cannot train. Running
+    # the worker would burn an exclusive node AND overwrite the precise preflight
+    # diagnosis with a generic "deterministic" one. Exit fast, preserving the
+    # marker for ``reduce_outcomes`` (which reads ``failure.json`` off disk).
+    if _read_failure_classification(checkpoint_dir) == "precompute_failed_species":
+        _log(idx, "preflight marked this spec 'precompute_failed_species' "
+                  "(its fixed subset references a species whose CCSD reference "
+                  "failed to precompute); skipping the worker and preserving the "
+                  "marker.")
+        return 0
 
     if not os.path.exists(spec_path):
         _log(idx, f"spec file not found: {spec_path}")
