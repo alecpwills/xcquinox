@@ -630,7 +630,7 @@ def _smoke_and_training_cells() -> list:
         "    'F':  -99.7339,\n"
         "    'Li': -7.4781,  # exact non-relativistic total (was -7.4327, the HF limit)\n"
         "    'Na': -162.2546,\n"
-        "    'S':  -398.0,\n"  # fallback for any S atoms in pool
+        "    'S':  -398.1095,  # Chakravorty 1993 (PRA 47, 3649) Table I exact total\n"
         "}\n\n"
         "SOLVER_CONFIGS = {\n"
         "    'oneshot': SolverConfig(mode=SolverMode.ONESHOT, max_cycles=0),\n"

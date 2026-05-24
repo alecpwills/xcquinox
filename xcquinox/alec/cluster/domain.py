@@ -44,8 +44,8 @@ ATOMIC_ENERGIES_CHAKRAVORTY = {
     'Li': -7.4781,     # (L) Chakravorty 1993 exact non-relativistic total
                        #     (corrected from the HF limit -7.4327 in a prior fix)
     'Na': -162.2546,   # (L) Chakravorty 1993 Table I
-    'S':  -398.0,      # (E) fallback placeholder for any S atoms in pool;
-                       #     genuine Chakravorty Table-I S total is -398.1095
+    'S':  -398.1095,   # (L) Chakravorty 1993 (PRA 47, 3649) Table I exact
+                       #     non-relativistic total (was the -398.0 placeholder)
 }
 
 

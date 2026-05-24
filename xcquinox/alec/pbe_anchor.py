@@ -49,6 +49,20 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
 
     F_x_SS(ra, rb, s) = 0.5 * (F_x_RKS(2*ra, sigma_aa_eff) + F_x_RKS(2*rb, sigma_bb_eff))
 
+    NOTE (anchor convention, not a total-exchange identity): this 0.5/0.5
+    average is a per-sample REGULARIZATION target on the network's F_x SHAPE.
+    It is matched on the NN side by the IDENTICAL aggregation in
+    ``oneshot._nn_fx_local_uks`` (also ``0.5*(fx_a+fx_b)`` at the same
+    sigma_eff), so a PBE-faithful functional drives the anchor loss to ~0
+    (verified bit-for-bit). It is deliberately NOT the energy-density-weighted
+    combination ``0.5*[(1+zeta)^{4/3} F_a + (1-zeta)^{4/3} F_b]`` that would
+    reproduce the TOTAL spin-polarized E_x: that weighting already lives in the
+    PRODUCTION exchange ENERGY (``split_exc_energy_uks`` evaluates
+    ``0.5*(eps_x(2 rho_a,...) + eps_x(2 rho_b,...))`` where eps_x(2 rho_s)
+    carries the (1+/-zeta)^{4/3} scaling intrinsically). Re-weighting only this
+    target would break the anchor (target != prediction form). See
+    ``docs/reviews/2026-05-24-alec-subpackage-review-3`` (CW1-C1 verdict).
+
     where sigma_sigma_eff = (1 +/- zeta)**2 * sigma_tot, zeta = (ra-rb)/(ra+rb),
     and sigma_tot = (2*kF(rho_tot)*s*rho_tot**(4/3))**2. This matches the
     NN's exchange functional form at UKS SCF time (see
