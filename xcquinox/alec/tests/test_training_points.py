@@ -146,10 +146,10 @@ def test_training_point_metadata_preserved():
     # BH76 — default bh76_mode is 'reaction_energy', so e_rxn_ref is
     # the true reaction energy ΔE (GMTKN55-BH76RC), not the barrier.
     bh = by_name["OH+N2_to_H+N2O"]
-    assert bh.metadata["e_rxn_ref"] == 65.14
+    assert bh.metadata["e_rxn_ref"] == 64.91
     assert bh.metadata["bh76_mode"] == "reaction_energy"
     assert bh.metadata["barrier_ref"] == 82.27
-    assert bh.metadata["reaction_energy_ref"] == 65.14
+    assert bh.metadata["reaction_energy_ref"] == 64.91
     assert bh.metadata["reactants"] == ("HO", "N2")
     assert bh.metadata["products"] == ("H", "N2O")
     # IP13 (ip_ref may be None if not set; just check shape)
@@ -160,12 +160,14 @@ def test_training_point_metadata_preserved():
 
 # --- bh76_mode toggle (reaction_energy default vs barrier_height) -----------
 
-# Expected true reaction energies ΔE = Vr − Vf (GMTKN55-BH76RC) for the
-# reactant→product direction of each DFS_BH76_REACTIONS entry.
+# Expected true reaction energies ΔE for the reactant→product direction of
+# each DFS_BH76_REACTIONS entry, taken DIRECTLY from GMTKN55-BH76RC (W2-F12;
+# grimme-lab/GMTKN55 BH76/.resRC). Realigned 2026-05-24 from the prior
+# Minnesota Vr−Vf values (65.14/−5.57/103.53), which differ by ~0.2 kcal/mol.
 _EXPECTED_REACTION_ENERGIES = {
-    "OH+N2_to_H+N2O":  65.14,
-    "OH+CH3_to_O+CH4": -5.57,
-    "HF+F_to_H+F2":    103.53,
+    "OH+N2_to_H+N2O":  64.91,
+    "OH+CH3_to_O+CH4": -5.44,
+    "HF+F_to_H+F2":    103.28,
 }
 # Forward barrier heights kept for the opt-in barrier_height mode.
 _EXPECTED_BARRIERS = {
@@ -177,8 +179,8 @@ _EXPECTED_BARRIERS = {
 
 def test_bh76_default_mode_is_reaction_energy():
     """The default bh76_mode yields BH76 points whose e_rxn_ref is the
-    true reaction energy ΔE (+65.14 / −5.57 / +103.53 kcal/mol), not the
-    barrier height. This is the bug fix: _rxn_residual_term computes
+    true GMTKN55-BH76RC reaction energy ΔE (+64.91 / −5.44 / +103.28 kcal/mol),
+    not the barrier height. _rxn_residual_term computes
     Σ coeffs·E = E(products) − E(reactants), a reaction energy."""
     from xcquinox.alec.training_points import build_dfs_pool_points
     # Explicit default and implicit default must agree.
@@ -206,15 +208,19 @@ def test_bh76_reaction_energy_species_are_reactants_and_products():
     assert sorted(s.info["name"] for s in p.species) == ["H", "HO", "N2", "N2O"]
 
 
-def test_bh76_reaction_energy_equals_vr_minus_vf():
-    """Cross-check: ΔE = Vr − Vf exactly (e.g. 82.27 − 17.13 == 65.14).
-    Vf values from the in-code dfs_pool.py provenance comments."""
+def test_bh76_reaction_energy_consistent_with_vr_minus_vf():
+    """Sanity cross-check: the GMTKN55-BH76RC reaction energy is CLOSE to the
+    Minnesota REF1 barrier difference Vr − Vf (they are different best-estimate
+    references — W2-F12 vs the barrier database — so they agree only to within
+    the ~0.3 kcal/mol method delta, not exactly). GMTKN55 is authoritative."""
     vf = {"OH+N2_to_H+N2O": 17.13,
           "OH+CH3_to_O+CH4": 13.47,
           "HF+F_to_H+F2": 2.27}
-    for name, re_expected in _EXPECTED_REACTION_ENERGIES.items():
-        vr = _EXPECTED_BARRIERS[name]
-        assert vr - vf[name] == pytest.approx(re_expected, abs=1e-9)
+    for name, re_gmtkn55 in _EXPECTED_REACTION_ENERGIES.items():
+        vr_minus_vf = _EXPECTED_BARRIERS[name] - vf[name]
+        assert abs(vr_minus_vf - re_gmtkn55) < 0.3, (
+            f"{name}: GMTKN55 ΔE {re_gmtkn55} vs Vr−Vf {vr_minus_vf} "
+            f"differ by more than the expected method delta")
 
 
 def test_bh76_reactions_carry_both_reference_values():

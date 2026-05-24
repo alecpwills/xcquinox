@@ -262,12 +262,17 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 #                              reactant→product direction below.
 # The mode-aware builder in training_points.py selects which of the two
 # the loss is trained against per ``bh76_mode``.
-# For an elementary reaction ΔE = Vr − Vf exactly. Using the in-code
-# Vf/Vr below, the reaction energies for the pool's reaction directions
-# (GMTKN55-BH76RC) are:
-#   - OH+N2 → H+N2O:  Vr 82.27 − Vf 17.13 =  +65.14 kcal/mol
-#   - OH+CH3 → O+CH4: Vr  7.90 − Vf 13.47 =   −5.57 kcal/mol
-#   - HF+F → H+F2:    Vr 105.80 − Vf 2.27 = +103.53 kcal/mol
+# ``reaction_energy_ref`` is taken DIRECTLY from the GMTKN55-BH76RC subset
+# (W2-F12 best estimates; grimme-lab/GMTKN55 ``BH76/.resRC``, pinned commit
+# 354c3ded — see scripts/script_data/GMTKN55_BH76RC_PROVENANCE.md), the source
+# of truth Dick & Fernandez-Serra (2021) used:
+#   - OH+N2 → H+N2O:  +64.91 kcal/mol   ('h n2o -> oh n2' = -64.91, reversed)
+#   - OH+CH3 → O+CH4: -5.44 kcal/mol    ('O CH4 -> oh ch3' = +5.44, reversed)
+#   - HF+F → H+F2:    +103.28 kcal/mol  ('h f2 -> hf f' = -103.28, reversed)
+# These differ by ~0.13-0.25 kcal/mol from the Minnesota REF1 barrier
+# difference Vr − Vf (the W2-F12-vs-barrier-database delta); GMTKN55 is the
+# authoritative reaction-energy reference, so it — not Vr − Vf — defines ΔE.
+# (Realigned from the prior Minnesota Vr−Vf values per the 2026-05-24 review.)
 #
 # Per-reaction ``species_spins`` and ``species_charges`` dicts hold the
 # ground-state spin (2S, PySCF convention) and charge (default 0) for
@@ -298,9 +303,10 @@ DFS_BH76_REACTIONS = [
         # Forward barrier of OH+N2→H+N2O = REVERSE barrier of NHTBH38
         # entry #1 (H+N2O → OH+N2, Vf=17.13, Vr=82.27 kcal/mol REF1).
         "barrier_ref": 82.27,  # kcal/mol — forward barrier (Vr of NHTBH38 #1)
-        # Reaction energy ΔE of OH+N2 → H+N2O (GMTKN55-BH76RC):
-        #   ΔE = Vr − Vf = 82.27 − 17.13 = +65.14 kcal/mol.
-        "reaction_energy_ref": 65.14,  # kcal/mol
+        # Reaction energy ΔE of OH+N2 → H+N2O = +64.91 kcal/mol, taken directly
+        # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'h n2o -> oh n2' = -64.91,
+        # reversed). [Minnesota Vr − Vf = 82.27 − 17.13 = 65.14 for reference.]
+        "reaction_energy_ref": 64.91,  # kcal/mol (GMTKN55-BH76RC)
         # Optional TS geometry for bh76_mode="barrier_height" (not staged).
         "ts_species": None,
         "species_spins":   {"HO": 1, "N2": 0, "H": 1, "N2O": 0},
@@ -322,9 +328,10 @@ DFS_BH76_REACTIONS = [
         # Forward barrier of OH+CH3→O+CH4 = REVERSE barrier of HTBH38
         # entry 19/20 (O+CH4 → OH+CH3, Vf=13.47, Vr=7.90 kcal/mol REF1).
         "barrier_ref": 7.90,  # kcal/mol — forward barrier (Vr of HTBH38 19-20)
-        # Reaction energy ΔE of OH+CH3 → O+CH4 (GMTKN55-BH76RC):
-        #   ΔE = Vr − Vf = 7.90 − 13.47 = −5.57 kcal/mol.
-        "reaction_energy_ref": -5.57,  # kcal/mol
+        # Reaction energy ΔE of OH+CH3 → O+CH4 = −5.44 kcal/mol, taken directly
+        # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'O CH4 -> oh ch3' = +5.44,
+        # reversed). [Minnesota Vr − Vf = 7.90 − 13.47 = −5.57 for reference.]
+        "reaction_energy_ref": -5.44,  # kcal/mol (GMTKN55-BH76RC)
         # Optional TS geometry for bh76_mode="barrier_height" (not staged).
         "ts_species": None,
         "species_spins":   {"HO": 1, "CH3": 1, "O": 2, "CH4": 0},
@@ -350,9 +357,10 @@ DFS_BH76_REACTIONS = [
         # Forward barrier of HF+F→H+F2 = REVERSE barrier of NHTBH38
         # entry #5 (H+F2 → HF+F, Vf=2.27, Vr=105.80 kcal/mol REF1).
         "barrier_ref": 105.80,  # kcal/mol — forward barrier (Vr of NHTBH38 #5)
-        # Reaction energy ΔE of HF+F → H+F2 (GMTKN55-BH76RC):
-        #   ΔE = Vr − Vf = 105.80 − 2.27 = +103.53 kcal/mol.
-        "reaction_energy_ref": 103.53,  # kcal/mol
+        # Reaction energy ΔE of HF+F → H+F2 = +103.28 kcal/mol, taken directly
+        # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'h f2 -> hf f' = -103.28,
+        # reversed). [Minnesota Vr − Vf = 105.80 − 2.27 = +103.53 for reference.]
+        "reaction_energy_ref": 103.28,  # kcal/mol (GMTKN55-BH76RC)
         # Optional TS geometry for bh76_mode="barrier_height" (not staged).
         "ts_species": None,
         "species_spins":   {"HF": 0, "F": 1, "H": 1, "F2": 0},
