@@ -105,19 +105,44 @@ def compute_descriptor_triple(
 
 _DESCRIPTOR_KEYS = ("rho_third", "s", "alpha")
 
+# C4-03: per-descriptor weights for the selection objective. DEFAULT is equal
+# (1.0 each) so existing subset selections reproduce EXACTLY. Rationale for
+# making it configurable: the trained GGA model is structurally blind to tau, so
+# the meta-GGA descriptor ``alpha = (tau - tau_W)/tau_unif`` is a coordinate the
+# functional cannot represent. A caller that wants the selection to optimize
+# only descriptors the GGA can see may pass ``descriptor_weights={"alpha": 0.0}``
+# to ``select_subset`` (this CHANGES which subset is selected, so it is opt-in,
+# never the default).
+_DEFAULT_DESCRIPTOR_WEIGHTS = {k: 1.0 for k in _DESCRIPTOR_KEYS}
 
-def metric_l2(h_ref: dict, h_cand: dict) -> float:
+
+def _resolve_descriptor_weights(descriptor_weights):
+    """Return a complete {descriptor: weight} dict (missing keys default to 1.0,
+    unknown keys rejected)."""
+    if descriptor_weights is None:
+        return dict(_DEFAULT_DESCRIPTOR_WEIGHTS)
+    unknown = set(descriptor_weights) - set(_DESCRIPTOR_KEYS)
+    if unknown:
+        raise ValueError(
+            f"descriptor_weights has unknown descriptor(s) {sorted(unknown)}; "
+            f"valid keys are {_DESCRIPTOR_KEYS}")
+    return {k: float(descriptor_weights.get(k, 1.0)) for k in _DESCRIPTOR_KEYS}
+
+
+def metric_l2(h_ref: dict, h_cand: dict, weights=None) -> float:
     """Per-bin Euclidean distance summed across the 3 marginals.
 
     err = sum_b sqrt( (h^ref_rho - h^cand_rho)^2_b
                     + (h^ref_s   - h^cand_s)^2_b
                     + (h^ref_a   - h^cand_a)^2_b )
 
-    This is the verbatim form from data_binning2.ipynb cell 17.
+    This is the verbatim form from data_binning2.ipynb cell 17. ``weights``
+    (C4-03) scales each descriptor's squared contribution; None = equal.
     """
+    w = _resolve_descriptor_weights(weights)
     diffs_sq = np.zeros(NBINS)
     for k in _DESCRIPTOR_KEYS:
-        diffs_sq += (h_ref[k] - h_cand[k]) ** 2
+        diffs_sq += w[k] * (h_ref[k] - h_cand[k]) ** 2
     return float(np.sum(np.sqrt(diffs_sq)))
 
 
@@ -159,12 +184,13 @@ def _kl(p: np.ndarray, q: np.ndarray) -> float:
     return float(np.sum(p_c * (np.log(p_c) - np.log(q_c))))
 
 
-def metric_jsd(h_ref: dict, h_cand: dict) -> float:
+def metric_jsd(h_ref: dict, h_cand: dict, weights=None) -> float:
     """Jensen-Shannon divergence summed across the 3 marginals (nats).
 
     JSD(P||Q) = 0.5 [ KL(P||M) + KL(Q||M) ],   M = (P+Q)/2.
 
     Reference: Lin, IEEE Trans. Inf. Theory 37 (1991) eq. (4.1).
+    ``weights`` (C4-03) scales each marginal's JSD; None = equal (default).
 
     Each marginal histogram is normalized to a probability MASS function
     (sum=1) before the divergence (see :func:`_to_pmf`); the per-marginal
@@ -174,6 +200,7 @@ def metric_jsd(h_ref: dict, h_cand: dict) -> float:
     NOTE: do NOT use scipy.spatial.distance.jensenshannon — that returns
     the JS distance (sqrt of the divergence), not the divergence itself.
     """
+    w = _resolve_descriptor_weights(weights)
     total = 0.0
     for k in _DESCRIPTOR_KEYS:
         # SUBSET-05 / C4-04: a candidate marginal with zero in-range mass has no
@@ -188,7 +215,7 @@ def metric_jsd(h_ref: dict, h_cand: dict) -> float:
         p = _to_pmf(h_ref[k])
         q = _to_pmf(h_cand[k])
         m = 0.5 * (p + q)
-        total += 0.5 * (_kl(p, m) + _kl(q, m))
+        total += w[k] * 0.5 * (_kl(p, m) + _kl(q, m))
     return float(total)
 
 
@@ -242,19 +269,22 @@ def _prebin_pool(pool, edges: dict) -> tuple[dict, dict]:
     return per_key_counts, W_in_range
 
 
-def _metric_l2_batch(h_ref: dict, h_cand_batch: dict) -> np.ndarray:
+def _metric_l2_batch(h_ref: dict, h_cand_batch: dict, weights=None) -> np.ndarray:
     """Vectorized L2 metric across a batch of candidate histograms.
 
     Equivalent to ``[metric_l2(h_ref, {k: h_cand_batch[k][b] ...}) for b in batch]``
     but computed in a single numpy expression.  Returns shape ``(batch,)``.
+    ``weights`` (C4-03) scales each descriptor's squared contribution; None =
+    equal weights (default, behavior-preserving).
     """
+    w = _resolve_descriptor_weights(weights)
     diffs_sq = np.zeros_like(next(iter(h_cand_batch.values())))
     for k in _DESCRIPTOR_KEYS:
-        diffs_sq += (h_ref[k][None, :] - h_cand_batch[k]) ** 2
+        diffs_sq += w[k] * (h_ref[k][None, :] - h_cand_batch[k]) ** 2
     return np.sqrt(diffs_sq).sum(axis=1)
 
 
-def _metric_jsd_batch(h_ref: dict, h_cand_batch: dict) -> np.ndarray:
+def _metric_jsd_batch(h_ref: dict, h_cand_batch: dict, weights=None) -> np.ndarray:
     """Vectorized JSD metric across a batch of candidate histograms.
 
     Equivalent to ``[metric_jsd(h_ref, {k: h_cand_batch[k][b] ...}) for b in batch]``
@@ -268,6 +298,7 @@ def _metric_jsd_batch(h_ref: dict, h_cand_batch: dict) -> np.ndarray:
     disqualified by returning +inf for that row (SUBSET-05), so it is
     never selected as the minimizer.
     """
+    w = _resolve_descriptor_weights(weights)
     batch_size = next(iter(h_cand_batch.values())).shape[0]
     total = np.zeros(batch_size, dtype=np.float64)
     empty_row = np.zeros(batch_size, dtype=bool)
@@ -287,7 +318,7 @@ def _metric_jsd_batch(h_ref: dict, h_cand_batch: dict) -> np.ndarray:
         m_c = np.maximum(m, KL_PROB_CLIP)
         kl_pm = np.sum(p_c * (np.log(p_c) - np.log(m_c)), axis=1)
         kl_qm = np.sum(q_c * (np.log(q_c) - np.log(m_c)), axis=1)
-        total += 0.5 * (kl_pm + kl_qm)
+        total += w[k] * 0.5 * (kl_pm + kl_qm)
     total[empty_row] = np.inf
     return total
 
@@ -408,6 +439,7 @@ def select_subset(
     progress_desc: str | None = None,
     return_all: bool = False,
     distribution_path: str | None = None,
+    descriptor_weights: dict | None = None,
 ):
     """Exhaustively enumerate all C(npool, r) subsets and return the
     indices of the size-r combination that minimizes the chosen metric.
@@ -435,6 +467,11 @@ def select_subset(
         m_batch = _metric_jsd_batch
     else:
         raise ValueError(f"unknown metric: {metric!r}")
+    # C4-03: bind per-descriptor weights (default equal => behavior-preserving).
+    # Validate up front so a bad key fails loudly before the long enumeration.
+    _weights = _resolve_descriptor_weights(descriptor_weights)
+    import functools as _functools
+    m_batch = _functools.partial(m_batch, weights=_weights)
 
     npool = len(pool)
     if r > npool:

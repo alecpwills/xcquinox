@@ -1080,3 +1080,36 @@ def test_metric_jsd_scalar_empty_candidate_is_inf():
     h_ok = {k: rng.uniform(0.1, 5.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
     val = ss.metric_jsd(h_ref, h_ok)
     assert np.isfinite(val) and 0.0 <= val <= 3.0 * np.log(2.0) + 1e-9
+
+
+# C4-03: per-descriptor selection weights (default equal, opt-in down-weighting)
+def test_descriptor_weights_default_preserves_behavior():
+    """Default weights (None) must reproduce the unweighted metric exactly."""
+    rng = np.random.default_rng(11)
+    h_ref = {k: rng.uniform(0.1, 5.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    h_cand = {k: rng.uniform(0.1, 5.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    assert ss.metric_jsd(h_ref, h_cand) == ss.metric_jsd(h_ref, h_cand, weights=None)
+    assert ss.metric_l2(h_ref, h_cand) == ss.metric_l2(h_ref, h_cand, weights=None)
+    # explicit all-ones equals default
+    ones = {"rho_third": 1.0, "s": 1.0, "alpha": 1.0}
+    assert ss.metric_jsd(h_ref, h_cand, weights=ones) == pytest.approx(ss.metric_jsd(h_ref, h_cand))
+
+
+def test_descriptor_weights_zero_alpha_excludes_it():
+    """Zeroing alpha's weight must drop its marginal contribution (GGA is
+    tau-blind, so excluding the meta-GGA descriptor is a valid option)."""
+    rng = np.random.default_rng(12)
+    h_ref = {k: rng.uniform(0.1, 5.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    h_cand = {k: rng.uniform(0.1, 5.0, size=ss.NBINS) for k in ("rho_third", "s", "alpha")}
+    full = ss.metric_jsd(h_ref, h_cand)
+    no_alpha = ss.metric_jsd(h_ref, h_cand, weights={"alpha": 0.0})
+    # dropping a positive-divergence marginal strictly reduces the total
+    assert no_alpha < full
+    # and equals manually summing only rho_third + s marginals
+    only_rs = ss.metric_jsd(h_ref, h_cand, weights={"alpha": 0.0, "rho_third": 1.0, "s": 1.0})
+    assert no_alpha == pytest.approx(only_rs)
+
+
+def test_descriptor_weights_rejects_unknown_key():
+    with pytest.raises(ValueError, match="unknown descriptor"):
+        ss.metric_jsd({}, {}, weights={"tau": 1.0})
