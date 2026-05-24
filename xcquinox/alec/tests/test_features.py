@@ -255,3 +255,43 @@ def test_precompute_passes_spin_resolved_dm_for_uks():
         f"got {idem_err}. Pre-fix code routes UKS through the RKS "
         f"branch and gives |err| ~ 1."
     )
+
+
+# P2-03: spin-polarized PW92 correlation baseline — VERIFIED vs libxc.
+# (The polarized branch of utils.pw92c was dead code, nspin hardcoded to 1, so
+# pw92c_polarized_scalar is the first exercised polarized PW92; verify it
+# against an independent reference.)
+def test_pw92c_polarized_reduces_to_unpolarized_at_zeta0():
+    from xcquinox.utils import pw92c_polarized_scalar, pw92c_unpolarized_scalar
+    for rho in [1e-3, 1e-2, 0.1, 1.0, 5.0, 50.0]:
+        pol = float(pw92c_polarized_scalar(rho / 2.0, rho / 2.0))
+        unp = float(pw92c_unpolarized_scalar(rho))
+        assert abs(pol - unp) < 1e-12, (rho, pol, unp)
+
+
+def test_pw92c_polarized_matches_libxc_lda_c_pw():
+    import numpy as np
+    from pyscf.dft import libxc
+    from xcquinox.utils import pw92c_polarized_scalar
+    cases = [(0.5, 0.5), (0.8, 0.2), (1.0, 0.0), (0.3, 0.1),
+             (2.0, 1.0), (0.05, 0.02), (10.0, 3.0)]
+    for ra, rb in cases:
+        ours = float(pw92c_polarized_scalar(ra, rb))
+        exc, _vxc, _fxc, _kxc = libxc.eval_xc(
+            "LDA_C_PW", (np.array([ra]), np.array([rb])), spin=1)
+        assert abs(ours - float(exc[0])) < 1e-8, (ra, rb, ours, float(exc[0]))
+
+
+def test_pw92c_polarized_finite_value_and_grad_at_extremes():
+    """P2-03 (review LOW fix): forward value AND reverse-mode gradient must be
+    finite at vanishing/zero density and at full polarization (zeta=+-1), so the
+    polarized baseline is safe to differentiate through the SCF."""
+    import jax
+    from xcquinox.utils import pw92c_polarized_scalar
+    f = lambda a, b: pw92c_polarized_scalar(a, b)
+    for a, b in [(0.0, 0.0), (1e-300, 1e-300), (1e-200, 0.0),
+                 (0.5, 0.0), (1.0, 1.0), (3.0, 0.0)]:
+        val = float(f(a, b))
+        ga = float(jax.grad(f, 0)(float(a), float(b)))
+        gb = float(jax.grad(f, 1)(float(a), float(b)))
+        assert np.isfinite(val) and np.isfinite(ga) and np.isfinite(gb), (a, b, val, ga, gb)

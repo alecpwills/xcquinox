@@ -858,3 +858,68 @@ def pw92c_unpolarized_scalar(rho):
     EC = G[:, 0] if rs.shape[0] > 1 else G[0]
 
     return EC
+
+
+def pw92c_polarized_scalar(rho_alpha, rho_beta):
+    """PW92 spin-polarized correlation energy density per electron, eps_c(rs, zeta).
+
+    Perdew & Wang, PRB 45, 13244 (1992), eqs. (8)-(10). The spin interpolation is
+
+        eps_c(rs, zeta) = eps_c(rs, 0)
+            + alpha_c(rs) * f(zeta)/f''(0) * (1 - zeta^4)
+            + [eps_c(rs, 1) - eps_c(rs, 0)] * f(zeta) * zeta^4
+
+    with f(zeta) = [(1+zeta)^{4/3} + (1-zeta)^{4/3} - 2] / (2^{4/3} - 2) and
+    f''(0) = 8 / [9 (2^{4/3} - 2)]. The three PW92 ``G(rs)`` parameter sets give
+    eps_c(rs, 0) [set 0], eps_c(rs, 1) [set 1], and -alpha_c(rs) [set 2]; hence
+    the alpha_c term is written ``- G2 * f/f''(0) * (1 - zeta^4)``. At zeta = 0,
+    f(0) = 0 so eps_c = G0, reproducing ``pw92c_unpolarized_scalar`` EXACTLY.
+
+    NOTE: the spin-polarized branch of ``pw92c`` above was dead code (``nspin``
+    hardcoded to 1), so this is the first exercised polarized PW92 in the
+    package; it is verified against libxc ``LDA_C_PW`` in
+    ``tests/test_features.py`` (and reduced to the unpolarized scalar at zeta=0).
+
+    :param rho_alpha: alpha-spin density (scalar or array).
+    :param rho_beta: beta-spin density (same shape).
+    :return: per-electron correlation energy density eps_c(rs, zeta).
+    """
+    rho_alpha = jnp.asarray(rho_alpha)
+    rho_beta = jnp.asarray(rho_beta)
+    # PW92 Table I parameter sets (match pw92c_unpolarized_scalar exactly).
+    A = jnp.array([0.031091, 0.015545, 0.016887])
+    ALPHA1 = jnp.array([0.21370, 0.20548, 0.11125])
+    BETA1 = jnp.array([7.5957, 14.1189, 10.357])
+    BETA2 = jnp.array([3.5876, 6.1977, 3.6231])
+    BETA3 = jnp.array([1.6382, 3.3662, 0.88026])
+    BETA4 = jnp.array([0.49294, 0.62517, 0.49671])
+
+    # Safe-divide (double-where) so BOTH the forward value and the reverse-mode
+    # gradient are NaN-free at vanishing density: feed rho_tot = 1, zeta = 0 into
+    # the math where rho_alpha + rho_beta is at/below the floor (eps_c there is
+    # multiplied by ~0 density downstream, so its exact value is irrelevant — but
+    # this keeps 0*inf out of the tape when differentiated through the SCF).
+    rho_sum = rho_alpha + rho_beta
+    # Floor well below any physical grid density (~1e-12) yet above the point
+    # where d(rs)/d(rho) ~ rho^{-4/3} overflows float64 (~1e-231); 1e-100 keeps
+    # the reverse-mode gradient finite at vanishing density.
+    ok = rho_sum > 1e-100
+    rho_tot = jnp.where(ok, rho_sum, 1.0)
+    zeta = jnp.clip(jnp.where(ok, rho_alpha - rho_beta, 0.0) / rho_tot, -1.0, 1.0)
+    rs = (3 / (4 * jnp.pi * rho_tot)) ** (1 / 3)
+
+    def _G(k):
+        B = (BETA1[k] * jnp.sqrt(rs) + BETA2[k] * rs
+             + BETA3[k] * rs ** 1.5 + BETA4[k] * rs ** 2)
+        C = 1 + 1 / (2 * A[k] * B)
+        return -2 * A[k] * (1 + ALPHA1[k] * rs) * jnp.log(C)
+
+    G0 = _G(0)
+    G1 = _G(1)
+    G2 = _G(2)
+
+    c_fz = 1.0 / (2 ** (4 / 3) - 2)
+    fpp0 = 8.0 * c_fz / 9.0
+    fz = ((1 + zeta) ** (4 / 3) + (1 - zeta) ** (4 / 3) - 2) * c_fz
+    z4 = zeta ** 4
+    return G0 - G2 * fz / fpp0 * (1 - z4) + (G1 - G0) * fz * z4
