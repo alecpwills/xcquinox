@@ -59,17 +59,53 @@ LR_DECAY_START = 0.2
 GRAD_CLIP = 1.0
 
 
-def build_cells() -> list:
+def build_cells(mode: str = "train") -> list:
+    """Assemble notebook cells.
+
+    mode='train'  -> the step-7 training/eval notebook; LOADS a pre-generated
+                     subset ledger (subset generation lives in its own notebook).
+    mode='subset' -> the standalone subset-GENERATION notebook: descriptor
+                     extraction + reference-histogram match + ledger writing.
+    """
+    assert mode in ("train", "subset"), mode
     cells: list = []
-    cells.append(_md(
-        "# Step-7: Histogram-Matched Subset Selection from Dick 2021 Training Pool\n\n"
-        "Generate optimally-representative training subsets (1..21 size sweep) by\n"
-        "minimizing distance between candidate-subset and full-pool histograms over\n"
-        "$(\\rho^{1/3}, s, \\alpha)$.\n\n"
-        "**Critical:** $\\alpha$ enters the subset-selection objective only -- the\n"
-        "trained GGA network does NOT consume it. Future MGGA extension is step-8+.\n\n"
-        "Reference: Dick & Fernandez-Serra, *Phys. Rev. B* **104**, L161109 (2021), SI II.\n"
-    ))
+    if mode == "subset":
+        cells.append(_md(
+            "# Step-7a: Histogram-Matched Subset GENERATION (Dick 2021 Pool)\n\n"
+            "Standalone subset-selection pre-process, split out of the step-7\n"
+            "training notebook. Minimizes the distance between candidate-subset\n"
+            "and full-pool histograms over $(\\rho^{1/3}, s, \\alpha)$ and writes a\n"
+            "`subset_index_log.json` ledger + per-spec `subset.traj` files that the\n"
+            "step-7 training notebook (`gga_training_example-step7.ipynb`) and the\n"
+            "SLURM harness CONSUME read-only.\n\n"
+            "**Critical:** $\\alpha$ enters the subset-selection objective only -- the\n"
+            "trained GGA network does NOT consume it (C4-03: toggle with the\n"
+            "`STEP7_IGNORE_ALPHA` env var). Reference: Dick & Fernandez-Serra,\n"
+            "*Phys. Rev. B* **104**, L161109 (2021), SI II.\n"
+        ))
+    else:
+        cells.append(_md(
+            "# Step-7: Training / Eval on Histogram-Matched Subsets (Dick 2021 Pool)\n\n"
+            "Loads the `subset_index_log.json` ledger produced by the standalone\n"
+            "subset-generation notebook (`gga_subset_generation.ipynb`) and runs the\n"
+            "training + evaluation grid over\n"
+            "$|\\text{sizes}| \\times |\\text{metrics}| \\times |\\text{solvers}|$.\n\n"
+            "**Critical:** $\\alpha$ enters subset selection only -- the trained GGA\n"
+            "network does NOT consume it. Future MGGA extension is step-8+.\n\n"
+            "Reference: Dick & Fernandez-Serra, *Phys. Rev. B* **104**, L161109 (2021), SI II.\n"
+        ))
+    cells += _config_cells()
+    if mode == "subset":
+        cells += _subset_generation_cells()
+    else:
+        cells += _oep_ccsd_cells()
+        cells += _train_points_ledger_cells()
+        cells += _smoke_and_training_cells()
+    return cells
+
+
+def _config_cells() -> list:
+    cells: list = []
     cells.append(_code(
         "import gc\n"
         "import json\n"
@@ -156,6 +192,11 @@ def build_cells() -> list:
         "print(f'  IP13 pairs: {len(pool[\"ip13_pairs\"])}')\n"
         "print(f'  Atom refs: {len(pool[\"atom_refs\"])}')\n"
     ))
+    return cells
+
+
+def _oep_ccsd_cells() -> list:
+    cells: list = []
     cells.append(_md(
         "## Per-species OEP cascade overrides\n\n"
         "Species in `xcquinox.alec.external_refs._PER_SPECIES_OEP_OVERRIDES`\n"
@@ -204,6 +245,11 @@ def build_cells() -> list:
         "    run_preflight=True,\n"
         ")\n"
     ))
+    return cells
+
+
+def _subset_generation_cells() -> list:
+    cells: list = []
     cells.append(_md(
         "## 1. Mixed-Pool Descriptor Extraction (cached)\n\n"
         "Build the 26-point Dick training pool (21 AE + 3 BH76 + 2 IP13) as\n"
@@ -415,6 +461,100 @@ def build_cells() -> list:
         "        f'({len(SUBSET_SIZES)} sizes x {len(METRICS)} metrics x '\n"
         "        f'{len(SOLVERS)} solvers), got {n_specs}')\n"
     ))
+    return cells
+
+
+def _train_points_ledger_cells() -> list:
+    """Train-notebook replacement for the in-notebook subset generation.
+
+    Rebuilds the 26-point mixed ``TrainingPoint`` pool (deterministic, no SCF)
+    so the ledger's chosen indices map back to points, then LOADS + VALIDATES
+    the ``subset_index_log.json`` ledger written by the standalone
+    ``gga_subset_generation.ipynb`` under this ``STEP7_ROOT`` (alpha-mode subdir).
+    """
+    cells: list = []
+    cells.append(_md(
+        "## 1. Load the pre-generated subset ledger\n\n"
+        "Subset selection now lives in `gga_subset_generation.ipynb`. Here we\n"
+        "(a) rebuild the 26-point mixed `TrainingPoint` pool (deterministic, no\n"
+        "SCF) so the ledger's chosen indices map back to points, and (b) load +\n"
+        "validate the `subset_index_log.json` ledger that the generation notebook\n"
+        "wrote under this `STEP7_ROOT` (C4-03 alpha-mode subdir). Run the\n"
+        "generation notebook FIRST (same `STEP7_IGNORE_ALPHA` setting) if this\n"
+        "cell raises.\n"
+    ))
+    cells.append(_code(
+        "import json\n"
+        "import os as _os_smoke\n"
+        "from xcquinox.alec.training_points import (\n"
+        "    build_dfs_pool_points, species_union_from_points,\n"
+        "    DICK_ATOM_REGULARIZER_SYMS,\n"
+        ")\n"
+        "points = build_dfs_pool_points()\n"
+        "_by_kind = {'ae': 0, 'bh76': 0, 'ip13': 0}\n"
+        "for p in points:\n"
+        "    _by_kind[p.kind] += 1\n"
+        "print(f'Mixed pool: {len(points)} points '\n"
+        "      f'({_by_kind[\"ae\"]} AE + {_by_kind[\"bh76\"]} BH76 + '\n"
+        "      f'{_by_kind[\"ip13\"]} IP13). Dick atom regularizer set: '\n"
+        "      f'{DICK_ATOM_REGULARIZER_SYMS}.')\n\n"
+        "_SMOKE = _os_smoke.environ.get('STEP7_SMOKE_ONLY', '0') == '1'\n"
+        "if _SMOKE:\n"
+        "    SUBSET_SIZES = (2,)\n"
+        "    METRICS = ('l2',)\n"
+        "    SOLVERS = ('oneshot',)\n"
+        "    TRAIN_N_STEPS = 5\n"
+        "    print('[SMOKE MODE] restricted to 1 spec: l2/r=2/oneshot, 5 steps')\n"
+        "else:\n"
+        f"    SUBSET_SIZES = {SUBSET_SIZES!r}\n"
+        f"    METRICS = {METRICS!r}\n"
+        f"    SOLVERS = {SOLVERS!r}\n"
+        f"    TRAIN_N_STEPS = {TRAIN_N_STEPS!r}\n"
+        f"LR_START = {LR_START!r}\n"
+        f"LR_END = {LR_END!r}\n"
+        f"LR_DECAY_START = {LR_DECAY_START!r}\n"
+        f"GRAD_CLIP = {GRAD_CLIP!r}\n"
+        f"ARCH_NAME = {ARCH_NAME!r}\n"
+        f"LOSS_NAME = {LOSS_NAME!r}\n\n"
+        "ledger_path = STEP7_ROOT / 'subset_index_log.json'\n"
+        "if not ledger_path.exists():\n"
+        "    raise FileNotFoundError(\n"
+        "        f'No subset ledger at {ledger_path}. Run '\n"
+        "        f'gga_subset_generation.ipynb first with the SAME '\n"
+        "        f'STEP7_IGNORE_ALPHA setting (it writes the ledger under this '\n"
+        "        f'alpha-mode STEP7_ROOT).')\n"
+        "subset_index_log: dict = {}\n"
+        "for _slashkey, _val in json.loads(ledger_path.read_text()).items():\n"
+        "    _m, _r = _slashkey.split('/')\n"
+        "    subset_index_log[(_m, int(_r))] = _val\n"
+        "print(f'Loaded ledger: {len(subset_index_log)} (metric, r) entries '\n"
+        "      f'from {ledger_path}')\n"
+        "# Validate completeness against the (possibly smoke-restricted) grid.\n"
+        "_missing = [(m, r) for m in METRICS for r in SUBSET_SIZES\n"
+        "            if (m, r) not in subset_index_log]\n"
+        "if _missing:\n"
+        "    raise ValueError(\n"
+        "        f'Ledger {ledger_path} missing {len(_missing)} (metric, r) '\n"
+        "        f'entries: {_missing[:10]}. Re-run gga_subset_generation.ipynb.')\n"
+        "_missing_traj = [\n"
+        "    (m, r, solver)\n"
+        "    for m in METRICS for r in SUBSET_SIZES for solver in SOLVERS\n"
+        "    if not (STEP7_ROOT / m / f'bin{r:02d}' /\n"
+        "            f'{ARCH_NAME}/{LOSS_NAME}/{solver}/subset.traj').exists()\n"
+        "]\n"
+        "if _missing_traj:\n"
+        "    raise FileNotFoundError(\n"
+        "        f'{len(_missing_traj)} subset.traj files missing under '\n"
+        "        f'{STEP7_ROOT} (e.g. {_missing_traj[:5]}); re-run generation.')\n"
+        "print(f'Ledger + '\n"
+        "      f'{len(METRICS)*len(SUBSET_SIZES)*len(SOLVERS)} subset.traj '\n"
+        "      f'files validated.')\n"
+    ))
+    return cells
+
+
+def _smoke_and_training_cells() -> list:
+    cells: list = []
     cells.append(_md(
         "## 4. Smoke Test (r=2, l2, oneshot)\n\n"
         "Verify the wiring with a single training spec before launching\n"
