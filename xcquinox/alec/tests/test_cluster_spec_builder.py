@@ -8,6 +8,7 @@ names, targets / aux-only classification, BH76 filtering, checkpoint-dir
 padding, pretrain-checkpoint derivation, TestSpec wiring) without depending on
 the heavy DFS pool builder.
 """
+import dataclasses
 import os
 
 import pytest
@@ -33,7 +34,11 @@ from xcquinox.alec.cluster.spec_builder import (
     classify_aux_only,
     _solver_config_from_named,
 )
-from xcquinox.alec.training_points import TrainingPoint
+from xcquinox.alec.losses import make_loss
+from xcquinox.alec.training_points import (
+    TrainingPoint,
+    species_union_from_points,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -700,4 +705,90 @@ def test_build_test_spec_holdout_suppresses_in_distribution_warning(tmp_path):
     ]
     assert not runtime_warnings, (
         "No in-distribution RuntimeWarning expected when holdout_molecules is provided"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dick atomic-regularizer anchor injection (size-1 / Li-less subset fix)
+# ---------------------------------------------------------------------------
+
+def _cfg_with_subset_sizes(tmp_path, sizes):
+    """``_make_cfg`` with the sweep's ``subset_size`` axis overridden."""
+    cfg = _make_cfg(tmp_path)
+    sweep = dataclasses.replace(cfg.sweep, subset_size=tuple(sizes))
+    return dataclasses.replace(cfg, sweep=sweep)
+
+
+def test_build_training_specs_injects_missing_dick_anchor(tmp_path):
+    """A size-1 subset whose only point is H-only (no Li-bearing species) must
+    still carry a neutral Li single-atom anchor so the Dick regularizer
+    (``regularize_atom_syms == ('H', 'Li')``) is satisfied and the L5 loss
+    constructs without raising CFG-02.  Regression for the deterministic
+    ``train_failed`` on ``jsd/1`` / ``l2/1`` cluster specs.
+    """
+    domain = get_domain_profile("dfs_step7")
+    assert set(domain.regularize_atom_syms) == {"H", "Li"}
+
+    pool = _make_pool()
+    # Size-1 subset = the H2 AE point only (species: H2 compound + H anchor).
+    ledger = {
+        "l2/1": {
+            "chosen_indices": [0],
+            "metric_value": 1.0,
+            "point_kinds": ["ae"],
+            "point_names": ["H2"],
+            "tag": "bin01",
+        },
+    }
+    cfg = _cfg_with_subset_sizes(tmp_path, (1,))
+
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    assert len(out) == 1
+    _cell, spec = out[0]
+
+    # (1) The neutral single-atom anchors present must cover every Dick symbol.
+    neutral_single_atom_syms = {
+        next(iter(dict(ms.atom_composition)))
+        for ms in spec.molecules
+        if sum(dict(ms.atom_composition).values()) == 1 and int(ms.charge) == 0
+    }
+    assert "Li" in neutral_single_atom_syms, (
+        "neutral Li anchor was not injected into the H-only size-1 subset"
+    )
+    assert set(domain.regularize_atom_syms) <= neutral_single_atom_syms
+
+    # (2) The L5 loss must now construct (CFG-02 passes) — replicates the
+    # run_training call site (train.py).
+    loss = make_loss(
+        spec.loss_name,
+        molecules=spec.molecules,
+        pbe_anchor_weight=spec.pbe_anchor_weight,
+        pbe_anchor_sample=spec.pbe_anchor_sample,
+        **spec.loss_kwargs_dict,
+    )
+    assert loss is not None
+
+
+def test_build_training_specs_no_spurious_anchor_when_present(tmp_path):
+    """A subset that already carries both Dick anchors (l2/3 includes the IP13
+    neutral Li) must NOT gain an injected duplicate — the molecule set is
+    byte-identical to the plain species union, so currently-passing specs are
+    unchanged.
+    """
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _cfg_with_subset_sizes(tmp_path, (3,))
+
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    assert len(out) == 1
+    _cell, spec = out[0]
+
+    points_by_name = {tp.name: tp for tp in pool}
+    chosen = [points_by_name[pn] for pn in ledger["l2/3"]["point_names"]]
+    expected_names = sorted(a.info["name"] for a in species_union_from_points(chosen))
+    got_names = sorted(ms.name for ms in spec.molecules)
+    assert got_names == expected_names, (
+        "molecule set diverged from the plain species union — a spurious anchor "
+        "was injected for an already-present symbol"
     )

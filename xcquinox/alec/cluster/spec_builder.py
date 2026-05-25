@@ -47,7 +47,10 @@ import os
 import warnings
 
 from xcquinox.alec.config import MoleculeSpec, TrainingSpec, TestSpec
-from xcquinox.alec.training_points import species_union_from_points
+from xcquinox.alec.training_points import (
+    species_union_from_points,
+    _atom_anchor_atoms,
+)
 from xcquinox.alec.solver import SolverConfig, SolverMode, FeaturePolicy
 from xcquinox.alec import get_architecture
 
@@ -364,6 +367,40 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             )
             for at in sp_atoms
         )
+
+        # Dick atomic-regularizer completeness. The L5 loss anchors the Dick
+        # (2021) atomic regularizer on neutral single-atom MoleculeSpecs for
+        # every symbol in ``domain.regularize_atom_syms`` (== ('H', 'Li')), and
+        # its CFG-02 validation rejects any spec missing one of those anchors.
+        # An AE point only contributes an atom anchor for a regularized element
+        # that appears IN its compound (see training_points._ae_point_from_atoms),
+        # so a subset with no Li-bearing species (e.g. any size-1 subset of an
+        # H-only point) would omit the Li anchor and crash loss construction.
+        # Inject the neutral ground-state anchor for any regularized symbol
+        # absent from the chosen species union — built via the SAME helper the
+        # natural AE path uses, so an injected anchor is byte-identical to a
+        # naturally-occurring one. This holds the Dick regularizer constant
+        # across all subset sizes; symbols already present (the case for every
+        # currently-passing spec) are left untouched.
+        present_single_atom_syms = {
+            next(iter(dict(ms.atom_composition)))
+            for ms in mol_specs
+            if sum(dict(ms.atom_composition).values()) == 1
+        }
+        missing_reg_syms = [
+            s for s in domain.regularize_atom_syms
+            if s not in present_single_atom_syms
+        ]
+        if missing_reg_syms:
+            mol_specs = mol_specs + tuple(
+                atoms_to_mol_spec(
+                    _atom_anchor_atoms(s),
+                    basis=cfg.inputs.basis,
+                    grid_level=cfg.inputs.grid_level,
+                    external_refs_dir=cfg.inputs.external_refs_dir,
+                )
+                for s in missing_reg_syms
+            )
 
         targets = build_targets(mol_specs, ae_ref_kcalmol, domain)
         aux_only_names = classify_aux_only(mol_specs, ae_ref_kcalmol)
