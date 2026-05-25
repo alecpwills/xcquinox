@@ -183,7 +183,6 @@ def _make_cfg(tmp_path):
     )
     pretrain = PretrainConfig(
         data_dir=str(tmp_path / "data"),
-        pretrain_root=str(tmp_path / "pretrain"),
     )
     cluster = ClusterResources(
         partition="short",
@@ -381,22 +380,22 @@ def test_build_training_specs_checkpoint_dir_is_absolute_padded(tmp_path):
 
 
 def test_build_training_specs_pretrain_checkpoint_is_per_arch(tmp_path):
-    """pretrain_checkpoint is ``<pretrain_root>/<run_id>/<arch>/`` — the
-    job-scoped dir the pretrain stage writes for that architecture (run_id =
-    basename(run_dir), so two runs of the same arch don't clobber each other)."""
+    """pretrain_checkpoint is ``<run_dir>/pretrain/<arch>/`` — the run-scoped dir
+    the pretrain stage writes for that architecture, co-located with the run's
+    other artifacts (run_dir is unique per submission, so two runs of the same
+    arch don't clobber each other)."""
     domain = get_domain_profile("dfs_step7")
     pool = _make_pool()
     ledger = _make_ledger()
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
-    run_id = os.path.basename(run_dir)
     out = build_training_specs(pool, ledger, cfg, domain, run_dir)
     for cell, spec in out:
-        expected = os.path.join(cfg.pretrain.pretrain_root, run_id, cell.arch)
+        expected = os.path.join(os.path.abspath(run_dir), "pretrain", cell.arch)
         assert spec.pretrain_checkpoint == expected
         # The synthetic grid sweeps only arch="shallow".
         assert spec.pretrain_checkpoint == os.path.join(
-            str(tmp_path / "pretrain"), run_id, "shallow"
+            os.path.abspath(run_dir), "pretrain", "shallow"
         )
 
 

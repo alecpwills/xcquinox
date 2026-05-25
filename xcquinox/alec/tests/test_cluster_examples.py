@@ -187,7 +187,6 @@ def test_example_validate_raises_on_placeholder_paths():
         cfg.inputs.subset_ledger_path,
         cfg.inputs.output_root,
         cfg.pretrain.data_dir,
-        cfg.pretrain.pretrain_root,
     ):
         assert p is not None and not os.path.exists(p), (
             f"example placeholder path {p!r} unexpectedly exists — the "

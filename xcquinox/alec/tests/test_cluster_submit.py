@@ -54,7 +54,6 @@ def _base_config_dict(*, device="cpu", gpus_per_task=0):
         },
         "pretrain": {
             "data_dir": "/shared/pretrain_data",
-            "pretrain_root": "/shared/pretrain",
         },
         "cluster": {
             "partition": "long-40core",

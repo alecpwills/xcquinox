@@ -147,12 +147,14 @@ class PretrainConfig:
     Pretraining is now a harness STAGE: one ``run_pretrain`` job per distinct
     architecture, submitted up front, feeding every downstream train task. The
     stage builds a :class:`xcquinox.alec.config.PretrainSpec` per architecture
-    from these parameters, runs it, and writes the resulting checkpoint to the
-    job-scoped ``<pretrain_root>/<run_id>/<arch>/`` (see
+    from these parameters, runs it, and writes the resulting checkpoint into the
+    run directory at ``<run_dir>/pretrain/<arch>/`` (see
     ``pretrain_checkpoint_dir``). Each train task then references that directory
     as its ``pretrain_checkpoint`` — so the checkpoint is a harness PRODUCT, not
-    a pre-staged input. The ``<run_id>`` segment keeps concurrent runs that
-    pretrain the same architecture from clobbering each other.
+    a pre-staged input. Keeping it under ``run_dir`` (already unique per
+    submission) co-locates every artifact for a run in one folder and keeps
+    concurrent runs that pretrain the same architecture from clobbering each
+    other.
 
     Defaults below mirror what the step-7 notebook's pretraining cell uses
     (see ``notebooks/_build_step7_notebook.py`` / ``_build_step6_notebook.py``):
@@ -160,11 +162,10 @@ class PretrainConfig:
     schedule, grad-clip 1.0, ``integration`` loss weighting (step-7's only
     pretrain origin — ``PRETRAIN_ORIGIN = "integration"``).
 
-    ``data_dir`` and ``pretrain_root`` have no sensible cross-cluster default
-    and MUST be supplied; both must be ABSOLUTE shared-filesystem paths.
+    ``data_dir`` (the pretraining INPUT dataset) has no sensible cross-cluster
+    default and MUST be supplied as an ABSOLUTE shared-filesystem path.
     """
     data_dir: str
-    pretrain_root: str
     n_steps: int = 1000              # (E) step-7 pretrain schedule length
     lr_start: float = 1e-2           # (E) step-7 pretrain lr start
     lr_end: float = 1e-5             # (E) step-7 pretrain lr floor
@@ -344,7 +345,6 @@ def _build_pretrain(d: dict) -> PretrainConfig:
     ctx = "pretrain"
     return PretrainConfig(
         data_dir=_require(d, "data_dir", ctx),
-        pretrain_root=_require(d, "pretrain_root", ctx),
         n_steps=d.get("n_steps", 1000),
         lr_start=d.get("lr_start", 1e-2),
         lr_end=d.get("lr_end", 1e-5),
@@ -614,8 +614,6 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         )
     if not pt.data_dir:
         raise ValueError("pretrain.data_dir must be a non-empty path")
-    if not pt.pretrain_root:
-        raise ValueError("pretrain.pretrain_root must be a non-empty path")
     if not (0.0 <= pt.lr_decay_start <= 1.0):
         raise ValueError(
             f"pretrain.lr_decay_start must be in [0, 1], got "
@@ -732,20 +730,21 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
 # Pretrain checkpoint path — job-scoped
 # ---------------------------------------------------------------------------
 
-def pretrain_checkpoint_dir(pretrain_root: str, run_dir: str, arch: str) -> str:
-    """Return the job-scoped pretrain checkpoint dir for one architecture.
+def pretrain_checkpoint_dir(run_dir: str, arch: str) -> str:
+    """Return the pretrain checkpoint dir for one architecture, under the run dir.
 
-    Layout: ``<pretrain_root>/<run_id>/<arch>`` where ``run_id`` is the basename
-    of ``run_dir``. Embedding the run id makes the path unique per submission,
-    so two runs that pretrain the SAME architecture under the SAME
-    ``pretrain_root`` write to DISTINCT directories instead of clobbering each
-    other's ``xnet.eqx``/``cnet.eqx`` (a real hazard when concurrent runs share
-    scratch — and a read-during-write race since serialization is not atomic).
+    Layout: ``<run_dir>/pretrain/<arch>``. Co-locating the pretrain checkpoint
+    with every other artifact for the submission (``logs/``, ``specs/``,
+    ``checkpoints/`` …) keeps all work for a run in one folder. Because
+    ``run_dir`` is already unique per submission (its timestamped basename), two
+    runs that pretrain the SAME architecture write to DISTINCT directories
+    instead of clobbering each other's ``xnet.eqx``/``cnet.eqx`` — the same
+    anti-clobber guarantee the former ``<pretrain_root>/<run_id>/<arch>`` layout
+    provided, now intrinsic to the run dir.
 
-    Both the pretrain worker (``cluster/_pretrain.py``) and the spec-builder
+    The pretrain worker (``cluster/_pretrain.py``), the spec-builder
     (``cluster/spec_builder.py``, which sets each TrainingSpec's
-    ``pretrain_checkpoint``) derive the path through THIS function so the two
-    sides cannot drift.
+    ``pretrain_checkpoint``), and the status check (``cluster/__main__.py``)
+    all derive the path through THIS function so they cannot drift.
     """
-    run_id = os.path.basename(os.path.abspath(run_dir).rstrip(os.sep))
-    return os.path.join(pretrain_root, run_id, arch)
+    return os.path.join(os.path.abspath(run_dir), "pretrain", arch)

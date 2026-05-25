@@ -86,7 +86,6 @@ def _make_cfg(tmp_path, bh76_mode="reaction_energy", basis="def2-svp",
     )
     pretrain = PretrainConfig(
         data_dir=str(tmp_path / "data"),
-        pretrain_root=str(tmp_path / "pretrain"),
     )
     cluster = ClusterResources(
         partition="short",

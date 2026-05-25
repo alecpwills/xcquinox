@@ -778,8 +778,8 @@ def _pretrain_status(run_dir: str) -> str | None:
     Pretrain is a small up-front stage — it gets no per-index
     ``reduce_outcomes``. The check is purely on-disk: for each distinct
     architecture in the resolved config, the pretrain worker writes
-    ``xnet.eqx`` + ``cnet.eqx`` into the JOB-SCOPED
-    ``<pretrain_root>/<run_id>/<arch>/`` (see ``pretrain_checkpoint_dir``). We
+    ``xnet.eqx`` + ``cnet.eqx`` into the RUN-SCOPED
+    ``<run_dir>/pretrain/<arch>/`` (see ``pretrain_checkpoint_dir``). We
     report how many of those checkpoint pairs are present. The path MUST be
     derived through the same helper the pretrain worker uses, or this check
     looks in the wrong directory and reports a false ``0/N``.
@@ -792,10 +792,9 @@ def _pretrain_status(run_dir: str) -> str | None:
     except Exception:
         return None
     archs = sorted(set(cfg.sweep.arch))
-    root = cfg.pretrain.pretrain_root
     done = 0
     for arch in archs:
-        d = pretrain_checkpoint_dir(root, run_dir, arch)
+        d = pretrain_checkpoint_dir(run_dir, arch)
         if (os.path.exists(os.path.join(d, "xnet.eqx"))
                 and os.path.exists(os.path.join(d, "cnet.eqx"))):
             done += 1

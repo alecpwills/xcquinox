@@ -55,7 +55,6 @@ def _base_config_dict():
         },
         "pretrain": {
             "data_dir": "/shared/pretrain_data",
-            "pretrain_root": "/shared/pretrain",
         },
         "cluster": {
             "partition": "long-40core",
@@ -944,33 +943,29 @@ def test_lock_release_removes_file(tmp_path):
     assert not os.path.exists(lock_path)
 
 
-def test_status_pretrain_checkpoint_uses_job_scoped_path(tmp_path):
-    """status' pretrain-presence check looks at the JOB-SCOPED
-    <pretrain_root>/<run_id>/<arch> (where the pretrain worker now writes),
-    not the old <pretrain_root>/<arch>."""
+def test_status_pretrain_checkpoint_uses_run_scoped_path(tmp_path):
+    """status' pretrain-presence check looks at the RUN-SCOPED
+    <run_dir>/pretrain/<arch> (where the pretrain worker now writes)."""
     from xcquinox.alec.cluster.grid_config import (
         load_grid_config, pretrain_checkpoint_dir,
     )
-    pretrain_root = tmp_path / "pr"
-    pretrain_root.mkdir()
     run_dir = tmp_path / "run_TESTID"
     run_dir.mkdir()
 
     d = _base_config_dict()
-    d["pretrain"]["pretrain_root"] = str(pretrain_root)
     gp = tmp_path / "_g.json"
     gp.write_text(json.dumps(d))
     cfg = load_grid_config(str(gp))
     cli._write_resolved_config(cfg, str(run_dir))
 
     arch = sorted(set(cfg.sweep.arch))[0]
-    ck = pretrain_checkpoint_dir(str(pretrain_root), str(run_dir), arch)
+    ck = pretrain_checkpoint_dir(str(run_dir), arch)
     os.makedirs(ck, exist_ok=True)
     open(os.path.join(ck, "xnet.eqx"), "wb").close()
     open(os.path.join(ck, "cnet.eqx"), "wb").close()
 
-    # Sanity: we did NOT create the old non-scoped path.
-    assert not os.path.exists(os.path.join(str(pretrain_root), arch))
+    # The checkpoint lives under the run dir, co-located with its other artifacts.
+    assert ck == os.path.join(os.path.abspath(str(run_dir)), "pretrain", arch)
 
     line = cli._pretrain_status(str(run_dir))
     assert line == "1/1 architecture checkpoint pair(s) present"

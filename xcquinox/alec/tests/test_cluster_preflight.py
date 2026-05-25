@@ -99,7 +99,6 @@ def _write_resolved_config(run_dir, extra=None):
         },
         "pretrain": {
             "data_dir": str(run_dir / "data"),
-            "pretrain_root": str(run_dir / "pretrain"),
         },
         "cluster": {
             "partition": "short",

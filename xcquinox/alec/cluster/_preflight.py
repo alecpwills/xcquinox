@@ -32,7 +32,7 @@ If anything is incomplete, :func:`main` returns a non-zero exit code so the
 train array's ``afterok:<preflight>`` dependency correctly blocks.
 
 The pretrained checkpoint is a harness PRODUCT of the pretrain stage (written
-to ``<pretrain_root>/<run_id>/<arch>/`` before the preflight runs); the preflight does
+to ``<run_dir>/pretrain/<arch>/`` before the preflight runs); the preflight does
 not pre-stage or validate it — ``TrainingSpec.validate()`` only checks the
 path when the directory exists.
 

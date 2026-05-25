@@ -7,7 +7,7 @@ so NO real pretraining / JAX compute is ever spawned. A synthetic ``run_dir``
 Coverage:
   - ``_pretrain.main`` loads ``resolved_config.yaml``, selects the correct
     arch for a given ``arch_idx``, and builds a ``PretrainSpec`` with the
-    right ``checkpoint_dir`` = ``<pretrain_root>/<run_id>/<arch>/`` and every
+    right ``checkpoint_dir`` = ``<run_dir>/pretrain/<arch>/`` and every
     ``cfg.pretrain`` field threaded through.
   - out-of-range ``arch_idx`` fails fast (non-zero exit, clear message).
   - the silent-no-checkpoint guard: mocked ``_run_pretrain`` "succeeds" but
@@ -37,8 +37,7 @@ from xcquinox.alec.config import PretrainSpec, get_architecture
 # ---------------------------------------------------------------------------
 
 def _config_dict(archs=("medium", "shallow", "deep"),
-                  data_dir="/tmp/pretrain_data",
-                  pretrain_root="/tmp/pretrain_root"):
+                  data_dir="/tmp/pretrain_data"):
     """A complete-but-minimal resolved config; ``load_grid_config`` needs every
     section, but only ``sweep.arch`` and ``pretrain`` are read by the worker."""
     return {
@@ -71,7 +70,6 @@ def _config_dict(archs=("medium", "shallow", "deep"),
         },
         "pretrain": {
             "data_dir": data_dir,
-            "pretrain_root": pretrain_root,
             "n_steps": 777,
             "lr_start": 5e-2,
             "lr_end": 3e-5,
@@ -110,17 +108,16 @@ def _write_config(run_dir, cfg=None):
 
 @pytest.fixture
 def run_dir(tmp_path):
-    """A run dir whose config points data_dir / pretrain_root at tmp-scoped
-    paths so checkpoint artifacts never leak between tests."""
+    """A run dir whose config points data_dir at a tmp-scoped path so checkpoint
+    artifacts never leak between tests. Pretrain checkpoints land under the run
+    dir itself (<run_dir>/pretrain/<arch>)."""
     d = tmp_path / "run"
     d.mkdir()
     data_dir = tmp_path / "pretrain_data"
     data_dir.mkdir()
-    pretrain_root = tmp_path / "pretrain_root"
-    pretrain_root.mkdir()
     _write_config(
         str(d),
-        _config_dict(data_dir=str(data_dir), pretrain_root=str(pretrain_root)),
+        _config_dict(data_dir=str(data_dir)),
     )
     return str(d)
 
@@ -166,11 +163,10 @@ def test_main_builds_pretrain_spec_with_correct_checkpoint_dir(run_dir, monkeypa
     spec = captured["spec"]
     assert isinstance(spec, PretrainSpec)
     assert spec.arch.name == "medium"
-    # checkpoint_dir == <pretrain_root>/<run_id>/<arch>/ (job-scoped so two runs
-    # pretraining the same arch under the same pretrain_root don't collide).
-    run_id = os.path.basename(run_dir.rstrip(os.sep))
+    # checkpoint_dir == <run_dir>/pretrain/<arch>/ (run-scoped so two runs
+    # pretraining the same arch don't collide; run_dir is unique per submission).
     assert spec.checkpoint_dir == os.path.join(
-        cfg.pretrain.pretrain_root, run_id, "medium"
+        os.path.abspath(run_dir), "pretrain", "medium"
     )
     # every cfg.pretrain field threaded through.
     assert spec.data_dir == cfg.pretrain.data_dir

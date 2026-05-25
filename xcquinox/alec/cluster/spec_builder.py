@@ -438,15 +438,13 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             loss_kwargs=loss_kwargs,
             solver_config=solver_cfg,
             # The pretrain stage writes one checkpoint per architecture to the
-            # job-scoped ``<pretrain_root>/<run_id>/<arch>/``; that directory IS
-            # this cell's pretrained checkpoint. Derived through the SAME helper
-            # the pretrain worker uses so the two sides cannot drift. validate()
+            # run-scoped ``<run_dir>/pretrain/<arch>/``; that directory IS this
+            # cell's pretrained checkpoint. Derived through the SAME helper the
+            # pretrain worker uses so the two sides cannot drift. validate()
             # only checks the path when the dir exists, so building specs before
             # the pretrain stage runs is fine — the preflight runs
             # pretrain-then-validate.
-            pretrain_checkpoint=pretrain_checkpoint_dir(
-                cfg.pretrain.pretrain_root, run_dir, cell.arch
-            ),
+            pretrain_checkpoint=pretrain_checkpoint_dir(run_dir, cell.arch),
             checkpoint_dir=_checkpoint_dir(run_dir, idx, n),
             n_steps=hp.n_steps,
             lr_start=hp.lr_start,

@@ -77,7 +77,6 @@ def _write_resolved_config(run_dir):
         },
         "pretrain": {
             "data_dir": "/tmp/pretrain_data",
-            "pretrain_root": "/tmp/pretrain",
         },
         "cluster": {
             "partition": "short",

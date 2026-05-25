@@ -17,7 +17,7 @@ For one architecture index it:
     index fails fast.
   - Builds a :class:`~xcquinox.alec.config.PretrainSpec` for that architecture,
     threading every parameter from ``cfg.pretrain`` and writing the checkpoint
-    into exactly ``<cfg.pretrain.pretrain_root>/<run_id>/<arch>/`` -- the directory each
+    into exactly ``<run_dir>/pretrain/<arch>/`` -- the directory each
     train spec's ``pretrain_checkpoint`` resolves to.
   - Calls :func:`run_pretrain` behind the :data:`_run_pretrain` seam, emitting a
     throttled ``[harness pretrain arch=...]`` heartbeat so a multi-hour job is
@@ -258,9 +258,10 @@ def main(argv=None) -> int:
         return 1
 
     pt = cfg.pretrain
-    # Job-scoped (<pretrain_root>/<run_id>/<arch>) so two runs pretraining the
-    # same arch under the same pretrain_root don't clobber each other.
-    checkpoint_dir = pretrain_checkpoint_dir(pt.pretrain_root, run_dir, arch_name)
+    # Run-scoped (<run_dir>/pretrain/<arch>) so two runs pretraining the same
+    # arch write to distinct dirs (run_dir is unique per submission) and every
+    # artifact for the run stays in one folder.
+    checkpoint_dir = pretrain_checkpoint_dir(run_dir, arch_name)
     from xcquinox.alec.config import PretrainSpec
     spec = PretrainSpec(
         arch=arch_config,

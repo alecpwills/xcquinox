@@ -67,7 +67,6 @@ def _base_config_dict():
         },
         "pretrain": {
             "data_dir": "/shared/pretrain_data",
-            "pretrain_root": "/shared/pretrain",
             "n_steps": 1000,
             "lr_start": 1e-2,
             "lr_end": 1e-5,
@@ -125,7 +124,6 @@ def _assert_well_formed(cfg):
     assert cfg.bh76_mode == "reaction_energy"
     # pretrain section round-trips
     assert cfg.pretrain.data_dir == "/shared/pretrain_data"
-    assert cfg.pretrain.pretrain_root == "/shared/pretrain"
     assert cfg.pretrain.n_steps == 1000
     assert cfg.pretrain.loss_weighting == "integration"
 
@@ -197,7 +195,6 @@ def _cfg(**sweep_overrides):
         ),
         pretrain=PretrainConfig(
             data_dir="/shared/pretrain_data",
-            pretrain_root="/shared/pretrain",
         ),
         cluster=ClusterResources(
             partition="long-40core", time="12:00:00", mem="32G",
@@ -491,7 +488,6 @@ def test_pretrain_config_round_trip(tmp_path):
     pt = cfg.pretrain
     assert isinstance(pt, PretrainConfig)
     assert pt.data_dir == "/shared/pretrain_data"
-    assert pt.pretrain_root == "/shared/pretrain"
     assert pt.n_steps == 1000
     assert pt.lr_start == 1e-2
     assert pt.lr_end == 1e-5
@@ -505,7 +501,6 @@ def test_pretrain_config_defaults(tmp_path):
     data = _base_config_dict()
     data["pretrain"] = {
         "data_dir": "/shared/pretrain_data",
-        "pretrain_root": "/shared/pretrain",
     }
     path = _write(tmp_path, "grid.json", data)
     cfg = load_grid_config(path)
@@ -547,7 +542,7 @@ def _cfg_with_pretrain(pt: PretrainConfig) -> GridConfig:
 
 def test_validate_pretrain_n_steps_nonpositive():
     cfg = _cfg_with_pretrain(PretrainConfig(
-        data_dir="/shared/pretrain_data", pretrain_root="/shared/pretrain",
+        data_dir="/shared/pretrain_data",
         n_steps=0,
     ))
     with pytest.raises(ValueError, match="pretrain.n_steps must be > 0"):
@@ -556,7 +551,7 @@ def test_validate_pretrain_n_steps_nonpositive():
 
 def test_validate_pretrain_empty_data_dir():
     cfg = _cfg_with_pretrain(PretrainConfig(
-        data_dir="", pretrain_root="/shared/pretrain",
+        data_dir="",
     ))
     with pytest.raises(ValueError, match="pretrain.data_dir"):
         validate_grid_semantics(cfg, _StubDomain(pool_size=40))
@@ -564,7 +559,7 @@ def test_validate_pretrain_empty_data_dir():
 
 def test_validate_pretrain_bad_loss_weighting():
     cfg = _cfg_with_pretrain(PretrainConfig(
-        data_dir="/shared/pretrain_data", pretrain_root="/shared/pretrain",
+        data_dir="/shared/pretrain_data",
         loss_weighting="bogus",
     ))
     with pytest.raises(ValueError, match="pretrain.loss_weighting"):
@@ -573,7 +568,7 @@ def test_validate_pretrain_bad_loss_weighting():
 
 def test_validate_pretrain_lr_decay_out_of_range():
     cfg = _cfg_with_pretrain(PretrainConfig(
-        data_dir="/shared/pretrain_data", pretrain_root="/shared/pretrain",
+        data_dir="/shared/pretrain_data",
         lr_decay_start=1.5,
     ))
     with pytest.raises(ValueError, match="pretrain.lr_decay_start"):
@@ -630,32 +625,33 @@ def test_validate_rejects_unknown_allocation():
 
 
 # ---------------------------------------------------------------------------
-# pretrain_checkpoint_dir — job-scoped pretrain output path
+# pretrain_checkpoint_dir — run-scoped pretrain output path
 # ---------------------------------------------------------------------------
 
-def test_pretrain_checkpoint_dir_is_run_scoped():
-    """The pretrain checkpoint dir embeds the run id (basename of run_dir) so
-    two runs that pretrain the SAME architecture under the SAME pretrain_root
-    do not clobber each other."""
+def test_pretrain_checkpoint_dir_is_under_run_dir():
+    """The pretrain checkpoint dir lives under the run dir at
+    ``<run_dir>/pretrain/<arch>``, co-locating it with the run's other
+    artifacts. Because run_dir is unique per submission, two runs that pretrain
+    the SAME architecture still resolve to distinct dirs (no clobbering)."""
     from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
 
     p1 = pretrain_checkpoint_dir(
-        "/scratch/pretrain", "/scratch/runs/run_AAA", "deep_combined_attn"
+        "/scratch/runs/run_AAA", "deep_combined_attn"
     )
-    assert p1 == "/scratch/pretrain/run_AAA/deep_combined_attn"
+    assert p1 == "/scratch/runs/run_AAA/pretrain/deep_combined_attn"
 
     p2 = pretrain_checkpoint_dir(
-        "/scratch/pretrain", "/scratch/runs/run_BBB", "deep_combined_attn"
+        "/scratch/runs/run_BBB", "deep_combined_attn"
     )
-    assert p2 == "/scratch/pretrain/run_BBB/deep_combined_attn"
+    assert p2 == "/scratch/runs/run_BBB/pretrain/deep_combined_attn"
 
-    # Same arch + same pretrain_root, different run -> distinct dirs.
+    # Same arch, different run -> distinct dirs (run_dir is the uniqueness key).
     assert p1 != p2
 
 
-def test_pretrain_checkpoint_dir_strips_trailing_sep():
-    """A trailing slash on run_dir does not produce an empty run-id segment."""
+def test_pretrain_checkpoint_dir_normalizes_trailing_sep():
+    """A trailing slash on run_dir does not produce a doubled separator."""
     from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
     assert pretrain_checkpoint_dir(
-        "/scratch/pretrain", "/scratch/runs/run_AAA/", "medium"
-    ) == "/scratch/pretrain/run_AAA/medium"
+        "/scratch/runs/run_AAA/", "medium"
+    ) == "/scratch/runs/run_AAA/pretrain/medium"

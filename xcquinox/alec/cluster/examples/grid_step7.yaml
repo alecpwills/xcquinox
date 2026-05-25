@@ -23,9 +23,6 @@
 #   inputs.output_root         - shared run-output root directory
 #   pretrain.data_dir          - shared dir of training data the pretrain
 #                                stage builds its PretrainSpec from
-#   pretrain.pretrain_root     - shared root the pretrain stage writes each
-#                                arch's xnet/cnet checkpoint into
-#                                (<pretrain_root>/<run_id>/<arch>/)
 #
 # Every ``inputs.*`` / ``pretrain.*`` path MUST be an ABSOLUTE path on a SHARED
 # filesystem that resolves identically on the SLURM login node and every
@@ -81,11 +78,11 @@ inputs:
 
 # --- pretrain stage: one run_pretrain job per distinct architecture --------
 # The pretrain stage builds a PretrainSpec per arch and writes the resulting
-# xnet/cnet checkpoint into <pretrain_root>/<run_id>/<arch>/. The defaults below mirror
-# the step-7 notebook's pretraining cell; only the two paths must be filled.
+# xnet/cnet checkpoint into <run_dir>/pretrain/<arch>/ (co-located with the
+# run's logs/specs/checkpoints). The defaults below mirror the step-7
+# notebook's pretraining cell; only data_dir must be filled.
 pretrain:
   data_dir: /gpfs/projects/CHANGE_ME/xcquinox/step7/pretrain_data
-  pretrain_root: /gpfs/projects/CHANGE_ME/xcquinox/step7/pretrain
   n_steps: 1000
   lr_start: 0.01            # 1e-2
   lr_end: 0.00001           # 1e-5
