@@ -388,3 +388,81 @@ def test_arch_polarized_correlation_flag_and_width():
     _, c1 = alec.create_network_pair(a1, seed=0)
     assert c0.use_spin_polarization is False and c1.use_spin_polarization is True
     assert c1.net.in_size == c0.net.in_size + 1
+
+
+# ---------------------------------------------------------------------------
+# Intrinsic constraint enforcement (constraints baked into the network forward)
+# ---------------------------------------------------------------------------
+
+def test_network_constraints_default_is_noop():
+    """An unconstrained network's __call__ is byte-identical to its eval_core —
+    protects the default (constraints=()) path."""
+    from xcquinox.alec.networks import AlecGGA_XNet, AlecGGA_CNet
+    xnet = AlecGGA_XNet(n_extra_features=0, depth=2, nodes=8, seed=0)
+    cnet = AlecGGA_CNet(n_extra_features=0, depth=2, nodes=8, seed=0)
+    xin = jnp.array([0.5, 0.2])
+    cin = jnp.array([0.5, 0.2])
+    assert jnp.array_equal(xnet(xin), xnet.eval_core(xin))
+    assert jnp.array_equal(cnet(cin), cnet.eval_core(cin))
+
+
+def test_xnet_lieb_oxford_constraint_bounds_forward():
+    """A network carrying the Lieb-Oxford constraint (built-in lob disabled)
+    keeps F_x in (0, mu) for every input — the constraint is enforced in the
+    forward pass, so pretraining/training/eval all see the bound."""
+    from xcquinox.alec.networks import AlecGGA_XNet
+    from xcquinox.alec.constraints import LiebOxfordBound
+    mu = 1.804
+    xnet = AlecGGA_XNet(
+        n_extra_features=0, depth=2, nodes=8, seed=3,
+        lob_lim=None, constraints=(LiebOxfordBound(),))
+    rng = np.random.default_rng(0)
+    for _ in range(64):
+        inp = jnp.array([abs(rng.normal()) + 1e-3, abs(rng.normal())])
+        F = float(xnet(inp))
+        assert 0.0 < F < mu + 1e-6
+    # Exactly equals 1 + I_mu(raw - 1) over the unconstrained core.
+    inp = jnp.array([0.4, 0.3])
+    raw = float(xnet.eval_core(inp))
+    expected = 1.0 + (mu / (1.0 + (mu - 1.0) * np.exp(-(raw - 1.0))) - 1.0)
+    assert abs(float(xnet(inp)) - expected) < 1e-6
+
+
+def test_create_network_pair_bakes_arch_constraints():
+    """create_network_pair materializes the arch's constraints into the
+    networks (the source of truth for intrinsic enforcement)."""
+    from xcquinox.alec.networks import create_network_pair
+    from xcquinox.alec.config import ArchitectureConfig
+    arch = ArchitectureConfig.from_spec(
+        "t", 2, 8, x_constraints=["lieb_oxford"],
+        c_constraints=["non_negative_correlation"])
+    xnet, cnet = create_network_pair(arch, seed=0)
+    assert [c.registry_name for c in xnet.constraints] == ["lieb_oxford"]
+    assert [c.registry_name for c in cnet.constraints] == ["non_negative_correlation"]
+    assert xnet.lobf is None  # lieb_oxford disables the built-in LOB wrap
+
+
+def test_constrained_network_serialization_roundtrip_leaffree_constraints():
+    """Constraints are static (no array leaves), so adding the ``constraints``
+    field does not change the serialized leaf stream: a checkpoint saved with
+    constraints=() deserializes correctly into a constrained skeleton (weights
+    transfer; the constraint comes from the skeleton). Both share the same
+    non-constraint static config (lob_lim=None), isolating the constraints field
+    as the only difference."""
+    from xcquinox.alec.networks import AlecGGA_XNet
+    from xcquinox.alec.constraints import LiebOxfordBound
+    plain = AlecGGA_XNet(n_extra_features=0, depth=2, nodes=8, seed=5,
+                         lob_lim=None)  # constraints=() default
+    buf = io.BytesIO()
+    eqx.tree_serialise_leaves(buf, plain)
+    buf.seek(0)
+    constrained_skel = AlecGGA_XNet(
+        n_extra_features=0, depth=2, nodes=8, seed=0,
+        lob_lim=None, constraints=(LiebOxfordBound(),))
+    loaded = eqx.tree_deserialise_leaves(buf, constrained_skel)
+    inp = jnp.array([0.4, 0.3])
+    # Weights transferred -> identical unconstrained core; the skeleton's
+    # constraint is present and applied in __call__.
+    assert len(loaded.constraints) == 1
+    assert abs(float(loaded.eval_core(inp)) - float(plain.eval_core(inp))) < 1e-6
+    assert float(loaded(inp)) < 1.804 + 1e-6  # constraint actually enforced

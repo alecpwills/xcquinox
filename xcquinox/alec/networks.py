@@ -11,6 +11,7 @@ import equinox as eqx
 import xcquinox.net as _xnet
 
 from xcquinox.alec.config import ArchitectureConfig
+from xcquinox.alec.constraints import Constraint, _compose_constraints
 
 
 class _AlecLOB(eqx.Module):
@@ -67,6 +68,11 @@ class AlecGGA_XNet(eqx.Module):
     lower_rho_cutoff: float = eqx.field(static=True)
     use_self_attention: bool = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
+    # Physical constraints enforced INTRINSICALLY by the network forward, so the
+    # same constrained functional is used in pretraining, training, and eval.
+    # Stored static (constraint params are all static -> no array leaves), so the
+    # serialized leaf stream is unchanged and old checkpoints still deserialize.
+    constraints: tuple = eqx.field(static=True)
     net: eqx.nn.MLP
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
@@ -75,7 +81,8 @@ class AlecGGA_XNet(eqx.Module):
                  use_self_attention: bool = False, seed: int = 42,
                  lob_lim: float | None = 1.804,
                  lower_rho_cutoff: float = 1e-12,
-                 num_heads: int = 1):
+                 num_heads: int = 1,
+                 constraints: tuple = ()):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_XNet: use_self_attention=True requires "
@@ -86,6 +93,7 @@ class AlecGGA_XNet(eqx.Module):
         self.lower_rho_cutoff = lower_rho_cutoff
         self.use_self_attention = use_self_attention
         self.num_heads = num_heads
+        self.constraints = tuple(constraints)
 
         in_size = 1 + n_extra_features
 
@@ -101,16 +109,23 @@ class AlecGGA_XNet(eqx.Module):
         )
         self.lobf = _AlecLOB(limit=lob_lim) if lob_lim is not None else None
 
-    def __call__(self, inputs: jnp.ndarray) -> jnp.ndarray:
-        rho = jnp.maximum(inputs[0], self.lower_rho_cutoff)
-        sigma = jnp.maximum(inputs[1], 0.0)
+    def _core(self, rho, sigma, features):
+        """Unconstrained exchange forward: (rho, sigma, features) -> 1 + F_x.
+
+        This is the raw MLP path (reduced-gradient feature, tanh gate, optional
+        built-in ``lobf`` wrap). The physical constraints in ``self.constraints``
+        wrap THIS function — composed in ``__call__`` — so a constraint that
+        re-invokes its inner_fn at a rescaled density (e.g. ScalingSymmetric)
+        re-runs the full forward, exactly as the model-level composition did."""
+        rho = jnp.maximum(rho, self.lower_rho_cutoff)
+        sigma = jnp.maximum(sigma, 0.0)
 
         k_F = (3 * jnp.pi**2 * rho) ** (1 / 3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = jnp.atleast_1d(s).flatten()
 
         if self.n_extra_features > 0:
-            extras = jnp.atleast_1d(inputs[2:2 + self.n_extra_features]).flatten()
+            extras = jnp.atleast_1d(features).flatten()
             netinp = jnp.concatenate([s, extras])
         else:
             netinp = s
@@ -135,6 +150,20 @@ class AlecGGA_XNet(eqx.Module):
             return 1 + lobterm.squeeze()
         return 1 + gated.squeeze()
 
+    def eval_core(self, inputs: jnp.ndarray) -> jnp.ndarray:
+        """UNCONSTRAINED 1 + F_x for a packed ``[rho, sigma, *extras]`` row.
+
+        Exposed for introspection (constraint-violation reporting), which needs
+        the raw value to compare against the constrained output."""
+        return self._core(inputs[0], inputs[1], inputs[2:])
+
+    def __call__(self, inputs: jnp.ndarray) -> jnp.ndarray:
+        rho = inputs[0]
+        sigma = inputs[1]
+        features = inputs[2:]
+        chain = _compose_constraints(self._core, self.constraints)
+        return chain(rho, sigma, features)
+
 
 class AlecGGA_CNet(eqx.Module):
     """Correlation enhancement network matching GGA_FcNet_extended verbatim.
@@ -155,6 +184,8 @@ class AlecGGA_CNet(eqx.Module):
     use_self_attention: bool = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
     use_spin_polarization: bool = eqx.field(static=True)
+    # Physical constraints enforced intrinsically by the forward (see XNet).
+    constraints: tuple = eqx.field(static=True)
     net: eqx.nn.MLP
     attention: _xnet.SelfAttentionBlock | None
     lobf: _AlecLOB | None
@@ -164,7 +195,8 @@ class AlecGGA_CNet(eqx.Module):
                  lob_lim: float | None = 2.0,
                  lower_rho_cutoff: float = 1e-12,
                  num_heads: int = 1,
-                 use_spin_polarization: bool = False):
+                 use_spin_polarization: bool = False,
+                 constraints: tuple = ()):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_CNet: use_self_attention=True requires "
@@ -175,6 +207,7 @@ class AlecGGA_CNet(eqx.Module):
         self.lower_rho_cutoff = lower_rho_cutoff
         self.use_self_attention = use_self_attention
         self.num_heads = num_heads
+        self.constraints = tuple(constraints)
         # P2-03: when True, the cnet takes a spin-polarization input feature
         # x1 = 1/2[(1+zeta)^{4/3}+(1-zeta)^{4/3}] (Dick & Fernández-Serra 2021,
         # input feature x1 / eq. (13)) inserted after [rs, s]. The model packs
@@ -195,9 +228,15 @@ class AlecGGA_CNet(eqx.Module):
         )
         self.lobf = _AlecLOB(limit=lob_lim) if lob_lim is not None else None
 
-    def __call__(self, inputs: jnp.ndarray) -> jnp.ndarray:
-        rho = jnp.maximum(inputs[0], self.lower_rho_cutoff)
-        sigma = jnp.maximum(inputs[1], 0.0)
+    def _core(self, rho, sigma, features, zeta):
+        """Unconstrained correlation forward: (rho, sigma, features) -> 1 + F_c.
+
+        ``zeta`` (spin polarization) is threaded through as a closed-over scalar
+        rather than via the constraint signature, because the c-constraints
+        operate on (rho, sigma, F) only — matching the model-level
+        ``_batched_network_apply_polarized`` base_fn that also captured zeta."""
+        rho = jnp.maximum(rho, self.lower_rho_cutoff)
+        sigma = jnp.maximum(sigma, 0.0)
 
         rs = (3 / (4 * jnp.pi * rho)) ** (1 / 3)
         k_F = (3 * jnp.pi**2 * rho) ** (1 / 3)
@@ -207,23 +246,21 @@ class AlecGGA_CNet(eqx.Module):
         s = jnp.atleast_1d(s).flatten()
 
         if self.use_spin_polarization:
-            # P2-03: inputs[2] is zeta = (rho_a - rho_b)/rho_tot; descriptor
-            # extras (if any) follow at inputs[3:]. Feed the bounded Dick
+            # P2-03: zeta = (rho_a - rho_b)/rho_tot feeds the bounded Dick
             # feature x1 = 1/2[(1+zeta)^{4/3}+(1-zeta)^{4/3}] (in [1, 2^{1/3}]
             # for zeta in [-1,1]; x1=1 at zeta=0, recovering the unpolarized
             # input so an RKS (zeta=0) call sees [rs, s, 1, extras]).
-            zeta = jnp.clip(inputs[2], -1.0, 1.0)
+            zeta_c = jnp.clip(zeta, -1.0, 1.0)
             x1 = jnp.atleast_1d(
-                0.5 * ((1.0 + zeta) ** (4 / 3) + (1.0 - zeta) ** (4 / 3))
+                0.5 * ((1.0 + zeta_c) ** (4 / 3) + (1.0 - zeta_c) ** (4 / 3))
             ).flatten()
             if self.n_extra_features > 0:
-                extras = jnp.atleast_1d(
-                    inputs[3:3 + self.n_extra_features]).flatten()
+                extras = jnp.atleast_1d(features).flatten()
                 netinp = jnp.concatenate([rs, s, x1, extras])
             else:
                 netinp = jnp.concatenate([rs, s, x1])
         elif self.n_extra_features > 0:
-            extras = jnp.atleast_1d(inputs[2:2 + self.n_extra_features]).flatten()
+            extras = jnp.atleast_1d(features).flatten()
             netinp = jnp.concatenate([rs, s, extras])
         else:
             netinp = jnp.concatenate([rs, s])
@@ -248,6 +285,26 @@ class AlecGGA_CNet(eqx.Module):
             return 1 + lobterm.squeeze()
         return 1 + gated.squeeze()
 
+    def eval_core(self, inputs: jnp.ndarray) -> jnp.ndarray:
+        """UNCONSTRAINED 1 + F_c for a packed input row. Exposed for
+        constraint-violation introspection."""
+        if self.use_spin_polarization:
+            return self._core(inputs[0], inputs[1], inputs[3:], inputs[2])
+        return self._core(inputs[0], inputs[1], inputs[2:], 0.0)
+
+    def __call__(self, inputs: jnp.ndarray) -> jnp.ndarray:
+        rho = inputs[0]
+        sigma = inputs[1]
+        if self.use_spin_polarization:
+            zeta = inputs[2]
+            features = inputs[3:]
+        else:
+            zeta = 0.0
+            features = inputs[2:]
+        base = lambda r, s, f: self._core(r, s, f, zeta)  # noqa: E731
+        chain = _compose_constraints(base, self.constraints)
+        return chain(rho, sigma, features)
+
 
 def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
                         lower_rho_cutoff: float = 1e-12):
@@ -257,6 +314,12 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
     LiebOxfordBound constraint is active).  Cnet lob_lim resolved via
     arch.resolved_cnet_lob_lim (default 2.0, a non-negativity squash on F_c
     per Dick & Fernández-Serra 2021 eq. (13) — not a Lieb-Oxford bound).
+
+    Physical constraints are materialized from the arch and handed to the
+    networks, which enforce them INTRINSICALLY in their forward pass.  The same
+    constrained functional is therefore used everywhere the network is called —
+    pretraining, training, and evaluation — rather than being applied only by
+    the composed model at train/eval time.
     """
     n_extra_features = sum(d.n_features for d in arch.materialize_descriptors())
     xnet = AlecGGA_XNet(
@@ -265,6 +328,7 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         lob_lim=arch.resolved_xnet_lob_lim,
         lower_rho_cutoff=lower_rho_cutoff,
         num_heads=arch.num_heads,
+        constraints=arch.materialize_x_constraints(),
     )
     cnet = AlecGGA_CNet(
         n_extra_features=n_extra_features, depth=arch.depth, nodes=arch.nodes,
@@ -274,5 +338,6 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         num_heads=arch.num_heads,
         # P2-03: zeta-aware correlation network when the arch opts in.
         use_spin_polarization=arch.use_polarized_correlation,
+        constraints=arch.materialize_c_constraints(),
     )
     return xnet, cnet

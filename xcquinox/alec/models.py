@@ -12,7 +12,6 @@ from xcquinox.utils import (
 )
 from xcquinox.alec.config import ArchitectureConfig
 from xcquinox.alec.networks import create_network_pair
-from xcquinox.alec.constraints import Constraint, _compose_constraints
 from xcquinox.alec.descriptors import Descriptor
 
 
@@ -63,9 +62,19 @@ class AlecGGAModel(eqx.Module):
     xnet: eqx.Module
     cnet: eqx.Module
     descriptors: tuple[Descriptor, ...] = eqx.field(default=(), static=True)
-    x_constraints: tuple[Constraint, ...] = eqx.field(default=(), static=True)
-    c_constraints: tuple[Constraint, ...] = eqx.field(default=(), static=True)
     rho_cutoff: float = eqx.field(default=1e-18, static=True)
+
+    # Physical constraints are now enforced INTRINSICALLY by the networks
+    # (xnet/cnet carry and apply them in their forward), so the same constrained
+    # functional is used in pretraining, training, and eval. These properties
+    # expose the network-held constraints under the historical model-level API.
+    @property
+    def x_constraints(self) -> tuple:
+        return getattr(self.xnet, "constraints", ())
+
+    @property
+    def c_constraints(self) -> tuple:
+        return getattr(self.cnet, "constraints", ())
 
     @classmethod
     def from_arch(cls, arch: ArchitectureConfig, *, xnet=None, cnet=None,
@@ -73,8 +82,11 @@ class AlecGGAModel(eqx.Module):
                   lower_rho_cutoff: float = 1e-12):
         """Materialize an AlecGGAModel from an ArchitectureConfig.
 
-        If xnet/cnet are None, fresh networks are built via create_network_pair.
-        If provided, they are used directly and lower_rho_cutoff is ignored.
+        If xnet/cnet are None, fresh networks are built via create_network_pair
+        (which bakes the arch's constraints into the networks). If provided, they
+        are used directly — they MUST already carry the arch's constraints (a
+        skeleton built via create_network_pair does), and lower_rho_cutoff is
+        ignored.
         """
         if xnet is None or cnet is None:
             xnet, cnet = create_network_pair(
@@ -83,16 +95,16 @@ class AlecGGAModel(eqx.Module):
         return cls(
             xnet=xnet, cnet=cnet,
             descriptors=arch.materialize_descriptors(),
-            x_constraints=arch.materialize_x_constraints(),
-            c_constraints=arch.materialize_c_constraints(),
             rho_cutoff=rho_cutoff,
         )
 
     def eval_Fx(self, rho, sigma, features):
-        """Constrained exchange enhancement. Shapes: (N,) -> (N,)."""
-        base_fn = lambda r, s, f: _batched_network_apply(self.xnet, r, s, f)
-        constrained = _compose_constraints(base_fn, self.x_constraints)
-        return constrained(rho, sigma, features)
+        """Constrained exchange enhancement. Shapes: (N,) -> (N,).
+
+        The constraint chain is applied INSIDE the network forward, so this is
+        simply the batched network apply (byte-identical to the former
+        model-level ``_compose_constraints`` over the bare network)."""
+        return _batched_network_apply(self.xnet, rho, sigma, features)
 
     def eval_Fc(self, rho, sigma, features, zeta=0.0):
         """Constrained correlation enhancement. Shapes: (N,) -> (N,).
@@ -101,17 +113,14 @@ class AlecGGAModel(eqx.Module):
         (``cnet.use_spin_polarization``), ``zeta`` (broadcast to rho's shape) is
         packed into the cnet row at index 2 and the descriptor extras shift to
         index 3 — so the cnet sees the bounded x1 feature. Otherwise ``zeta`` is
-        ignored and the unpolarized packing [rho, sigma, *extras] is used
-        (byte-identical to the pre-P2-03 path).
+        ignored and the unpolarized packing [rho, sigma, *extras] is used.
+        Constraints are enforced inside the network forward.
         """
         if getattr(self.cnet, "use_spin_polarization", False):
             zeta_arr = jnp.broadcast_to(jnp.asarray(zeta, dtype=rho.dtype), rho.shape)
-            base_fn = (lambda r, s, f:
-                       _batched_network_apply_polarized(self.cnet, r, s, zeta_arr, f))
-        else:
-            base_fn = lambda r, s, f: _batched_network_apply(self.cnet, r, s, f)
-        constrained = _compose_constraints(base_fn, self.c_constraints)
-        return constrained(rho, sigma, features)
+            return _batched_network_apply_polarized(
+                self.cnet, rho, sigma, zeta_arr, features)
+        return _batched_network_apply(self.cnet, rho, sigma, features)
 
     def _ec_baseline(self, rho_safe, zeta):
         """Per-electron UEG correlation baseline eps_c. Spin-polarized PW92
@@ -232,23 +241,23 @@ class AlecGGAModel(eqx.Module):
 
         polarized = getattr(self.cnet, "use_spin_polarization", False)
 
-        def x_base_scalar(r, s, f):
-            row = jnp.concatenate([jnp.atleast_1d(r), jnp.atleast_1d(s), f])
-            return self.xnet(row).squeeze()
-
-        def c_base_scalar(r, s, f):
-            if polarized:
-                # P2-03: zeta at index 2, descriptor extras follow at index 3.
-                row = jnp.concatenate([jnp.atleast_1d(r), jnp.atleast_1d(s),
-                                       jnp.atleast_1d(zeta), f])
-            else:
-                row = jnp.concatenate([jnp.atleast_1d(r), jnp.atleast_1d(s), f])
-            return self.cnet(row).squeeze()
-
-        x_chain = _compose_constraints(x_base_scalar, self.x_constraints)
-        c_chain = _compose_constraints(c_base_scalar, self.c_constraints)
-        Fx_scalar = x_chain(safe_rho_scalar, safe_sigma_scalar, features_scalar)
-        Fc_scalar = c_chain(safe_rho_scalar, safe_sigma_scalar, features_scalar)
+        # The networks enforce their constraints internally, so evaluating the
+        # packed row directly yields the constrained Fx/Fc (no model-level
+        # composition needed — byte-identical to the former chained path).
+        x_row = jnp.concatenate(
+            [jnp.atleast_1d(safe_rho_scalar), jnp.atleast_1d(safe_sigma_scalar),
+             features_scalar])
+        Fx_scalar = self.xnet(x_row).squeeze()
+        if polarized:
+            # P2-03: zeta at index 2, descriptor extras follow at index 3.
+            c_row = jnp.concatenate(
+                [jnp.atleast_1d(safe_rho_scalar), jnp.atleast_1d(safe_sigma_scalar),
+                 jnp.atleast_1d(zeta), features_scalar])
+        else:
+            c_row = jnp.concatenate(
+                [jnp.atleast_1d(safe_rho_scalar), jnp.atleast_1d(safe_sigma_scalar),
+                 features_scalar])
+        Fc_scalar = self.cnet(c_row).squeeze()
         Fx_scalar = jnp.where(tail_mask, Fx_scalar, jnp.ones_like(Fx_scalar))
         Fc_scalar = jnp.where(tail_mask, Fc_scalar, jnp.ones_like(Fc_scalar))
         ex_density = rho_safe * ex_lda * Fx_scalar
@@ -293,15 +302,27 @@ class AlecGGAModel(eqx.Module):
         return ec_density
 
     def constraint_report(self, rho, sigma, features) -> dict:
-        """Returns {side: {name: {max, mean, l2}}} nested dict."""
+        """Returns {side: {name: {max, mean, l2}}} nested dict.
+
+        Each constraint's violation is measured against the network's
+        UNCONSTRAINED core (``_core``) — the networks now apply constraints in
+        their forward, so the raw enhancement must come from the core, not the
+        (already-constrained) ``__call__``."""
+        def _x_raw(r, s, f):
+            return jax.vmap(lambda rr, ss, ff: self.xnet._core(rr, ss, ff))(r, s, f)
+
+        def _c_raw(r, s, f):
+            # zeta=0: constraint_report has always used the unpolarized packing.
+            return jax.vmap(
+                lambda rr, ss, ff: self.cnet._core(rr, ss, ff, 0.0))(r, s, f)
+
         report = {"x": {}, "c": {}}
-        for side, constraints, net in [
-            ("x", self.x_constraints, self.xnet),
-            ("c", self.c_constraints, self.cnet),
+        for side, constraints, raw_fn in [
+            ("x", self.x_constraints, _x_raw),
+            ("c", self.c_constraints, _c_raw),
         ]:
-            base_fn = lambda r, s, f, _net=net: _batched_network_apply(_net, r, s, f)
             for c in constraints:
-                v = c.violation(base_fn, rho, sigma, features)
+                v = c.violation(raw_fn, rho, sigma, features)
                 report[side][c.registry_name] = {
                     "max": float(jnp.max(v)),
                     "mean": float(jnp.mean(v)),

@@ -242,6 +242,13 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
     7. Save artifacts under spec.checkpoint_dir
     8. Return metadata dict
 
+    Constraint awareness: the networks built by ``create_network_pair`` enforce
+    ``spec.arch``'s physical constraints INTRINSICALLY in their forward pass, so
+    the MSE here fits the CONSTRAINED enhancement to the PBE/LDA targets — the
+    same constrained functional that training and evaluation use. (Constraints
+    are static, so the saved ``xnet.eqx``/``cnet.eqx`` leaf streams are unchanged
+    and remain compatible with existing checkpoints.)
+
     Returns:
         dict with pretrain_metadata.json fields.
     """

@@ -858,3 +858,33 @@ def test_run_pretrain_separates_checkpoints_and_saves_xnet_early(tmp_path, monke
     # Finals land at the top level of checkpoint_dir.
     assert os.path.isfile(os.path.join(str(ckdir), "xnet.eqx"))
     assert os.path.isfile(os.path.join(str(ckdir), "cnet.eqx"))
+
+
+# ---------------------------------------------------------------------------
+# Pretraining is now constraint-aware: run_pretrain trains the networks built by
+# create_network_pair, which enforce the arch's constraints in their forward.
+# This pins that the exact forward run_pretrain optimizes (jax.vmap(xnet)(rows))
+# is constrained — so pretraining fits the CONSTRAINED functional.
+# ---------------------------------------------------------------------------
+
+def test_pretrain_forward_is_constraint_aware():
+    import numpy as _np
+    import jax as _jax
+    import jax.numpy as _jnp
+    from xcquinox.alec.networks import create_network_pair
+    from xcquinox.alec.config import ArchitectureConfig
+
+    arch = ArchitectureConfig.from_spec("t", 2, 8, x_constraints=["lieb_oxford"])
+    xnet, _cnet = create_network_pair(arch, seed=0)
+    # The xnet built for pretraining carries the constraint and disables the
+    # built-in LOB wrap (the external constraint owns the bound).
+    assert [c.registry_name for c in xnet.constraints] == ["lieb_oxford"]
+    assert xnet.lobf is None
+
+    # Replicate run_pretrain's forward: jax.vmap(xnet)(descriptors), rows are
+    # [rho, sigma] for a no-descriptor arch.
+    rng = _np.random.default_rng(0)
+    descriptors = _jnp.asarray(rng.uniform(0.01, 3.0, size=(64, 2)))
+    out = _np.asarray(_jax.vmap(xnet)(descriptors))
+    assert _np.all(_np.isfinite(out))
+    assert _np.all(out > 0.0) and _np.all(out < 1.804 + 1e-6)

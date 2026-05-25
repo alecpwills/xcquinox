@@ -225,11 +225,12 @@ def test_jit_retrace_only_on_static_metadata_change():
     _jitted_eval_exc(model, rho_b, sigma_b, features).block_until_ready()
     assert trace_count[0] == 1, "same model + same-shape inputs must hit cache"
 
+    # Constraints now live on the networks (intrinsic enforcement), so the
+    # model no longer takes x_constraints/c_constraints kwargs. Changing a
+    # different static field (rho_cutoff) still invalidates the jit cache.
     model2 = AlecGGAModel(
         xnet=model.xnet, cnet=model.cnet,
         descriptors=model.descriptors,
-        x_constraints=model.x_constraints,
-        c_constraints=model.c_constraints,
         rho_cutoff=1e-12,
     )
     _jitted_eval_exc(model2, rho_a, sigma_a, features).block_until_ready()
@@ -429,3 +430,54 @@ def test_polarized_baseline_reduces_to_unpolarized_at_zeta0():
     rho = jnp.linspace(0.1, 1.0, 5)
     base_pol0 = m._ec_baseline(rho, jnp.zeros_like(rho))
     assert jnp.allclose(base_pol0, pw92c_unpolarized_scalar(rho), atol=1e-12)
+
+
+# Intrinsic-constraint relocation: the model delegates constraint enforcement to
+# the networks. eval_Fx/eval_Fc must equal explicit composition of the arch's
+# constraints over the network's UNCONSTRAINED core — i.e. the relocation is a
+# behavior-preserving move of the same _compose_constraints chain.
+def test_eval_fx_equals_explicit_composition_over_core():
+    from xcquinox.alec.constraints import _compose_constraints
+    arch = ArchitectureConfig.from_spec("t", 2, 8, x_constraints=["lieb_oxford"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rho = jnp.array([0.05, 0.2, 0.7, 1.5])
+    sigma = jnp.array([0.01, 0.1, 0.3, 0.8])
+    feats = jnp.zeros((4, 0))
+
+    def base(r, s, f):
+        return jax.vmap(lambda rr, ss, ff: model.xnet._core(rr, ss, ff))(r, s, f)
+
+    expected = _compose_constraints(base, model.x_constraints)(rho, sigma, feats)
+    got = model.eval_Fx(rho, sigma, feats)
+    np.testing.assert_allclose(np.asarray(got), np.asarray(expected),
+                               rtol=1e-6, atol=1e-7)
+
+
+def test_eval_fc_equals_explicit_composition_over_core():
+    from xcquinox.alec.constraints import _compose_constraints
+    arch = ArchitectureConfig.from_spec(
+        "t", 2, 8, c_constraints=["non_negative_correlation"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rho = jnp.array([0.05, 0.2, 0.7, 1.5])
+    sigma = jnp.array([0.01, 0.1, 0.3, 0.8])
+    feats = jnp.zeros((4, 0))
+
+    def base(r, s, f):
+        return jax.vmap(lambda rr, ss, ff: model.cnet._core(rr, ss, ff, 0.0))(r, s, f)
+
+    expected = _compose_constraints(base, model.c_constraints)(rho, sigma, feats)
+    got = model.eval_Fc(rho, sigma, feats)
+    np.testing.assert_allclose(np.asarray(got), np.asarray(expected),
+                               rtol=1e-6, atol=1e-7)
+
+
+def test_constraints_are_sourced_from_networks():
+    arch = ArchitectureConfig.from_spec(
+        "t", 2, 8, x_constraints=["lieb_oxford"],
+        c_constraints=["non_negative_correlation"])
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert [c.registry_name for c in model.x_constraints] == ["lieb_oxford"]
+    assert [c.registry_name for c in model.c_constraints] == ["non_negative_correlation"]
+    # The model's constraint view IS the networks' constraints.
+    assert model.x_constraints is model.xnet.constraints
+    assert model.c_constraints is model.cnet.constraints
