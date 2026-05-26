@@ -222,30 +222,59 @@ def _convergence_from(md: dict, ckpt_dir: str) -> dict:
     return out
 
 
+def _build_arch(demo, label, x_constraints, c_constraints, polarized):
+    """A no-descriptor GGA arch with the given constraints, polarized or not."""
+    safe = (label.replace("+", "").replace("(", "").replace(")", "").strip()
+            or "base")
+    return demo.ArchitectureConfig.from_spec(
+        safe, demo.DEPTH, demo.NODES,
+        x_constraints=list(x_constraints), c_constraints=list(c_constraints),
+        use_polarized_correlation=polarized)
+
+
+def build_random_model(demo, spec, seed, polarized):
+    """Random-init model for a level (config-aware). ``spec is None`` ⇒ truly
+    unconstrained (lob_lim=None, no constraints); the cnet is spin-polarization-
+    aware iff ``polarized``."""
+    if spec is None:
+        xnet = demo.AlecGGA_XNet(n_extra_features=0, depth=demo.DEPTH,
+                                 nodes=demo.NODES, seed=seed, lob_lim=None)
+        cnet = demo.AlecGGA_CNet(n_extra_features=0, depth=demo.DEPTH,
+                                 nodes=demo.NODES, seed=seed + 1, lob_lim=None,
+                                 use_spin_polarization=polarized)
+        base = demo.ArchitectureConfig.from_spec(
+            "base", demo.DEPTH, demo.NODES, use_polarized_correlation=polarized)
+        return demo.AlecGGAModel.from_arch(base, xnet=xnet, cnet=cnet)
+    x_constraints, c_constraints = spec
+    return demo.AlecGGAModel.from_arch(
+        _build_arch(demo, "lvl", x_constraints, c_constraints, polarized), seed=seed)
+
+
 def _pretrain_one(demo, alec, level_spec, weighting, data_dir, ckpt_dir, n_steps,
-                  seed, reuse=True):
+                  seed, polarized, reuse=True):
     """Pretrain (or reuse) ONE (level, weighting); return (AlecGGAModel, conv dict).
 
     ``level_spec`` is None for the truly-unconstrained level (built lob_lim=None and
     pretrained via the run_pretrain ``networks=`` override, since
     create_network_pair cannot express lob_lim=None), else ``(x_constraints,
-    c_constraints)``. ``reuse=True`` skips pretraining when ``ckpt_dir`` already has
-    xnet.eqx/cnet.eqx + pretrain_metadata.json (reads convergence from disk) — so a
-    re-run doesn't repeat the ~minutes-long pretrain."""
+    c_constraints)``. ``polarized`` selects the spin-polarized vs unpolarized arch
+    (which also picks the pretrain-data file inside run_pretrain). ``reuse=True``
+    skips pretraining when ``ckpt_dir`` already has xnet.eqx/cnet.eqx +
+    pretrain_metadata.json (reads convergence from disk)."""
     eqx = demo.eqx
     if level_spec is None:
         arch = demo.ArchitectureConfig.from_spec(
-            "base", demo.DEPTH, demo.NODES, use_polarized_correlation=True)
+            "base", demo.DEPTH, demo.NODES, use_polarized_correlation=polarized)
         mk_x = lambda: demo.AlecGGA_XNet(n_extra_features=0, depth=demo.DEPTH,
                                          nodes=demo.NODES, seed=seed, lob_lim=None)
         mk_c = lambda: demo.AlecGGA_CNet(n_extra_features=0, depth=demo.DEPTH,
                                          nodes=demo.NODES, seed=seed + 1,
-                                         lob_lim=None, use_spin_polarization=True)
+                                         lob_lim=None, use_spin_polarization=polarized)
         networks = (mk_x(), mk_c())          # lob_lim=None override
         skel = (mk_x, mk_c)                  # matching reload skeletons
     else:
         x_constraints, c_constraints = level_spec
-        arch = demo.build_arch("lvl", x_constraints, c_constraints)
+        arch = _build_arch(demo, "lvl", x_constraints, c_constraints, polarized)
         networks = None                      # build from arch via create_network_pair
         pair = demo.create_network_pair(arch, seed=seed)
         skel = (lambda p=pair[0]: p, lambda p=pair[1]: p)
@@ -296,15 +325,13 @@ def main(argv=None) -> int:
                    help="(smoke) cap the number of species precomputed")
     p.add_argument("--fresh-pretrain", action="store_true",
                    help="re-pretrain even if checkpoints exist (default: reuse them)")
-    p.add_argument("--out", default=os.path.join(_HERE, "demo_logs",
-                                                  "multimode_polarized.json"))
+    p.add_argument("--out", default=None,
+                   help="results JSON (default: demo_logs/multimode_<config>.json)")
     args = p.parse_args(argv)
 
-    if args.config == "unpolarized":
-        raise NotImplementedError(
-            "unpolarized config needs its own non-zeta pretrain_data.npz; this "
-            "driver currently scopes to the polarized config (the demo's builders "
-            "are polarized). Unpolarized is a documented follow-up.")
+    polarized = (args.config == "polarized")
+    if args.out is None:
+        args.out = os.path.join(_HERE, "demo_logs", f"multimode_{args.config}.json")
 
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
     for m in modes:
@@ -312,7 +339,7 @@ def main(argv=None) -> int:
     weightings = [w.strip() for w in args.weightings.split(",") if w.strip()]
 
     t0 = time.time()
-    workdir = os.path.join(demo.OUTDIR, "multimode")
+    workdir = os.path.join(demo.OUTDIR, "multimode", args.config)
     os.makedirs(workdir, exist_ok=True)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
@@ -341,9 +368,9 @@ def main(argv=None) -> int:
         e_pbe[name] = float(md["E_pbe"])
         print(f"      [precompute {i}/{len(mol_specs)}] {name}", flush=True)
 
-    print("[3/4] Generating polarized pretrain data ...", flush=True)
+    print(f"[3/4] Generating {args.config} pretrain data ...", flush=True)
     data_dir = os.path.join(demo.OUTDIR, "pretrain_data")
-    demo.generate_pretrain_data(data_dir)
+    demo.generate_pretrain_data(data_dir, polarized=polarized)
 
     levels = demo.make_constraint_levels()
     n_cells = len(modes) * len(levels)
@@ -368,7 +395,7 @@ def main(argv=None) -> int:
             safe = label.replace("+", "").replace("(", "").replace(")", "").strip()
             ckpt = os.path.join(workdir, "pretrain", w, safe)
             model, conv = _pretrain_one(demo, alec, spec, w, data_dir, ckpt,
-                                        args.pretrain_steps, demo.SEED,
+                                        args.pretrain_steps, demo.SEED, polarized,
                                         reuse=not args.fresh_pretrain)
             pretrained[(w, label)] = model
             results["convergence"].setdefault(w, {})[label] = conv
@@ -384,7 +411,8 @@ def main(argv=None) -> int:
           flush=True)
     cell = 0
     for label, spec in levels:
-        rand_models = [demo.build_random_model(spec, s) for s in range(args.seeds)]
+        rand_models = [build_random_model(demo, spec, s, polarized)
+                       for s in range(args.seeds)]
         for mode in modes:
             cell += 1
             tcell = time.time()

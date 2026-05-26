@@ -283,16 +283,21 @@ def compute_metrics(model, mol_data, bh76_rxns, w411_rxns):
 # pretraining (library; constraint-aware via the networks)
 # ---------------------------------------------------------------------------
 
-def generate_pretrain_data(data_dir):
-    """Write ``<data_dir>/pretrain_data.npz`` with rho_all/sigma_all/Fx_all/Fc_all
-    AND zeta_all, from a few atoms on a coarse grid. Fx/Fc stored as F-1.
+def generate_pretrain_data(data_dir, polarized=True):
+    """Write pretrain data (rho/sigma/Fx/Fc/weights, +zeta when polarized) from a
+    few atoms on a coarse grid. Fx/Fc stored as F-1.
 
-    SPIN-RESOLVED targets (ported from notebooks/_build_step6_notebook.py): for
-    open-shell atoms the PBE/LDA enhancement factors are evaluated with libxc
-    ``spin=1`` on the spin-resolved density (the spin=0 total-density call is
-    wrong for open-shell — PBE 1996 §III spin-scaling), and ``zeta_all`` carries
-    the per-grid-point spin polarization so the polarized cnet is pretrained on
-    the real zeta rather than a zeta=0 warm-start."""
+    ``polarized=True`` (default) → ``pretrain_data_polarized.npz`` with SPIN-RESOLVED
+    targets (open-shell atoms use libxc ``spin=1`` on the spin-resolved density —
+    PBE 1996 §III spin-scaling) plus a per-grid-point ``zeta_all``, so the polarized
+    cnet trains on the real zeta. ``run_pretrain`` selects this file for a polarized
+    arch.
+
+    ``polarized=False`` → ``pretrain_data.npz`` with the UNPOLARIZED (zeta=0) target:
+    even for open-shell atoms the enhancement is evaluated with libxc ``spin=0`` on
+    the TOTAL density (the target the zeta-blind unpolarized functional can actually
+    represent) and ``zeta_all`` is omitted. ``run_pretrain`` selects this file for an
+    unpolarized arch."""
     rho_l, sig_l, fx_l, fc_l, zeta_l, w_l = [], [], [], [], [], []
     for symbol, spin in PRETRAIN_ATOMS:
         mol = gto.M(atom=f"{symbol} 0 0 0", basis=BASIS, charge=0, spin=spin, verbose=0)
@@ -302,7 +307,8 @@ def generate_pretrain_data(data_dir):
         mf.kernel()
         ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=1)
         dm_ab = mf.make_rdm1()
-        if dm_ab.ndim == 3:  # open-shell (UKS): spin-resolve, libxc spin=1
+        open_shell = (dm_ab.ndim == 3)
+        if polarized and open_shell:  # spin-resolve, libxc spin=1
             rho_a_gga = mf._numint.eval_rho(mol, ao, dm_ab[0], xctype="GGA", hermi=True)
             rho_b_gga = mf._numint.eval_rho(mol, ao, dm_ab[1], xctype="GGA", hermi=True)
             rho_gga_uks = np.stack([rho_a_gga, rho_b_gga], axis=0)
@@ -315,8 +321,9 @@ def generate_pretrain_data(data_dir):
             ec_pbe = mf._numint.eval_xc(",PBE", rho_gga_uks, spin=1)[0]
             ex_lda = mf._numint.eval_xc("LDA_X,", (rho_a, rho_b), spin=1)[0]
             ec_lda = mf._numint.eval_xc(",LDA_C_PW", (rho_a, rho_b), spin=1)[0]
-        else:  # closed-shell (RKS): zeta = 0, spin=0 calls
-            rho_gga = mf._numint.eval_rho(mol, ao, dm_ab, xctype="GGA", hermi=True)
+        else:  # unpolarized target (zeta=0): spin=0 on the TOTAL density
+            dm_total = (dm_ab[0] + dm_ab[1]) if open_shell else dm_ab
+            rho_gga = mf._numint.eval_rho(mol, ao, dm_total, xctype="GGA", hermi=True)
             rho = rho_gga[0]
             sigma = rho_gga[1] ** 2 + rho_gga[2] ** 2 + rho_gga[3] ** 2
             zeta = np.zeros_like(rho)
@@ -335,13 +342,16 @@ def generate_pretrain_data(data_dir):
         # is the TRUE quadrature-weighted loss (not the magnitude-only fallback).
         w_l.append(np.asarray(mf.grids.weights)[valid])
     os.makedirs(data_dir, exist_ok=True)
-    # Polarized filename: the demo's archs set use_polarized_correlation=True, so
-    # run_pretrain selects pretrain_data_polarized.npz (carrying zeta_all).
-    # weights_all is ADDITIVE — existing consumers ignore extra npz keys.
-    np.savez(os.path.join(data_dir, "pretrain_data_polarized.npz"),
-             rho_all=np.concatenate(rho_l), sigma_all=np.concatenate(sig_l),
-             Fx_all=np.concatenate(fx_l), Fc_all=np.concatenate(fc_l),
-             zeta_all=np.concatenate(zeta_l), weights_all=np.concatenate(w_l))
+    arrays = dict(rho_all=np.concatenate(rho_l), sigma_all=np.concatenate(sig_l),
+                  Fx_all=np.concatenate(fx_l), Fc_all=np.concatenate(fc_l),
+                  weights_all=np.concatenate(w_l))
+    if polarized:
+        # run_pretrain selects pretrain_data_polarized.npz for a polarized arch.
+        arrays["zeta_all"] = np.concatenate(zeta_l)
+        np.savez(os.path.join(data_dir, "pretrain_data_polarized.npz"), **arrays)
+    else:
+        # run_pretrain selects pretrain_data.npz for an unpolarized arch (no zeta).
+        np.savez(os.path.join(data_dir, "pretrain_data.npz"), **arrays)
 
 
 def pretrain_and_load(spec, data_dir, ckpt_dir):

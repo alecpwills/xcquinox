@@ -123,3 +123,16 @@ def test_steps_to_converge_nan_filtered_and_empty(mod):
     assert mod.steps_to_converge([float("nan"), 3.0, 2.0], frac=1.0) == 2
     assert math.isnan(mod.steps_to_converge([]))
     assert math.isnan(mod.steps_to_converge([float("nan")]))
+
+
+# --- config-aware arch builder (polarized flag) ------------------------------
+
+def test_build_arch_polarized_flag(mod):
+    import types
+    from xcquinox.alec.config import ArchitectureConfig
+    demo_stub = types.SimpleNamespace(
+        ArchitectureConfig=ArchitectureConfig, DEPTH=2, NODES=8)
+    a_pol = mod._build_arch(demo_stub, "unconstrained", (), (), True)
+    a_unp = mod._build_arch(demo_stub, "unconstrained", (), (), False)
+    assert a_pol.use_polarized_correlation is True
+    assert a_unp.use_polarized_correlation is False
