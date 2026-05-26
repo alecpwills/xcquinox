@@ -21,8 +21,8 @@ benchmark. The left and right columns are scored against real GMTKN55 reference 
 
 ## Datasets and coverage
 
-These are **curated subsets**, not the full benchmarks: **6 of 76 BH76** reactions and **10 of ~140
-W4-11** atomizations (29 unique species total). The subsets are chosen to keep the demo fast and
+These are **curated subsets**, not the full benchmarks: **6 of 76 BH76** reactions and **10 of 140
+W4-11** atomizations (29 species computed). The subsets are chosen to keep the demo fast and
 clean (closed-shell W4-11 molecules avoid molecular open-shell bookkeeping; the BH76 reactions are a
 held-out transfer set). Conclusions are about *mechanism*, not full-benchmark accuracy.
 
@@ -50,8 +50,13 @@ GMTKN55 W4-11 reference atomization energy (kcal/mol):
 | NH₃ | 298.018 | C₂H₂ | 405.525 |
 | CO  | 259.727 | C₂H₄ | 564.095 |
 
-The **29 species** is the deduplicated union of the molecules/radicals above plus their constituent
-atoms (H, C, N, O, F, Cl, S) — each gets one PBE SCF + grid precompute.
+The **29 species** are everything precomputed (one PBE SCF + grid each): the BH76 molecules/radicals
+above, the 10 W4-11 molecules, the W4-11 constituent atoms (C, H, N, O, F), and atomic Cl (from
+H + HCl → H₂ + Cl). The BH76 and W4-11 pools key species independently (Hill formula vs the W4-11
+`.res` tokens), so six small species common to both — H₂, H₂O, CH₄, NH₃, N₂, and atomic H — are
+computed in *both* pools; the 29 entries are therefore ~23 chemically distinct (a harmless
+redundancy: the duplicates get near-identical PBE energies). Note there is no atomic sulfur — sulfur
+appears only inside H₂S/HS.
 
 ---
 
