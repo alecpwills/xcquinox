@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=${JOB_NAME}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
+${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --output=${RUN_DIR}/logs/eval_launcher_%j.out
+${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
+set -euo pipefail
+
+# --- conda activation ------------------------------------------------------
+${CONDA_ACTIVATION}
+
+# --- deferred-eval launcher (single task, no array) ------------------------
+# Runs after the train array terminates (afterany). Submits the eval array
+# (with aftercorr gating on the train array, identical to a non-deferred run)
+# and records it. Idempotent: a no-op if the eval array is already recorded.
+python -m xcquinox.alec.cluster._submit_eval ${RUN_DIR}

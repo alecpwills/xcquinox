@@ -452,6 +452,68 @@ def test_real_submit_dependency_directives(tmp_path, monkeypatch):
     assert kinds == ["eval", "preflight", "pretrain", "train"]
     cmds = open(os.path.join(run_dir, "submit_commands.txt")).read()
     assert "[submit]" in cmds
+    # Default (defer_eval off): no launcher script, no deferral flag.
+    assert result.get("defer_eval") is False
+    assert not os.path.exists(
+        os.path.join(run_dir, "scripts", "eval_launcher.sbatch"))
+
+
+def test_deferred_submit_launches_instead_of_eval_array(tmp_path, monkeypatch):
+    """defer_eval=True: the post-train sbatch is the launcher (afterany), the
+    eval array is NOT submitted, and only pretrain/preflight/train are recorded."""
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory(ids=["5000", "5001", "5002", "5003"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=True, defer_eval=True)
+
+    assert result["defer_eval"] is True
+    sbatch_calls = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch_calls) == 4
+    joined = [" ".join(c) for c in sbatch_calls]
+    # 4th sbatch is the launcher: afterany on the train id, launcher script.
+    assert "--dependency=afterany:5002" in joined[3]
+    assert joined[3].endswith("eval_launcher.sbatch")
+    # The eval array itself was NOT submitted here.
+    assert not any("eval_array.sbatch" in j for j in joined)
+    # job_ids reports the launcher, not an eval id; manual fallback is surfaced.
+    assert result["job_ids"] == {
+        "pretrain": "5000", "preflight": "5001",
+        "train": "5002", "eval_launcher": "5003",
+    }
+    assert result["manual_eval_command"].startswith(
+        "python -m xcquinox.alec.cluster submit-eval ")
+    # Only three records — eval is written later by the launcher/manual step.
+    kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
+    assert kinds == ["preflight", "pretrain", "train"]
+    # The launcher script was written and reuses the (also-written) eval script.
+    assert os.path.exists(os.path.join(run_dir, "scripts", "eval_launcher.sbatch"))
+    assert os.path.exists(os.path.join(run_dir, "scripts", "eval_array.sbatch"))
+
+
+def test_deferred_dry_run_shows_launcher(tmp_path):
+    """A deferred dry-run lists the launcher (afterany) instead of the eval
+    array sbatch, and surfaces the manual fallback command."""
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    result = submit_jobs(cfg, run_dir, submit=False, defer_eval=True)
+    assert result["dry_run"] is True
+    cmds = "\n".join(result["commands"])
+    assert "afterany:<TRAIN_ID>" in cmds
+    assert "eval_launcher.sbatch" in cmds
+    assert "manual_eval_command" in result
+
+
+def test_render_eval_launcher_non_array(tmp_path):
+    """The eval_launcher script is a single (non-array) job that invokes the
+    deferred-eval worker, with conda activation and no leftover placeholders."""
+    cfg = _make_cfg(tmp_path)
+    text = render_sbatch("eval_launcher", cfg, str(tmp_path / "run"))
+    assert "--array" not in text
+    assert "python -m xcquinox.alec.cluster._submit_eval" in text
+    assert "conda activate" in text
+    _assert_no_unrendered_placeholders(text)
 
 
 def test_double_submit_guard_requires_force(tmp_path, monkeypatch):
@@ -539,10 +601,11 @@ def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
     monkeypatch.setattr(jt, "_run_slurm", _fake_slurm_factory())
-    submit_jobs(cfg, run_dir, submit=False)
+    # defer_eval=True so the eval_launcher script is also rendered + linted.
+    submit_jobs(cfg, run_dir, submit=False, defer_eval=True)
 
     for name in ("pretrain.sbatch", "preflight.sbatch", "train_array.sbatch",
-                 "eval_array.sbatch"):
+                 "eval_array.sbatch", "eval_launcher.sbatch"):
         path = os.path.join(run_dir, "scripts", name)
         proc = subprocess.run(
             ["shellcheck", "--severity=warning", path],

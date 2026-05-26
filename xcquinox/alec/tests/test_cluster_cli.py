@@ -215,7 +215,7 @@ def test_dispatch_all_subcommands_are_registered():
     for action in sub:
         choices |= set(action.choices)
     assert choices == {
-        "prepare", "submit", "status", "results", "resubmit",
+        "prepare", "submit", "submit-eval", "status", "results", "resubmit",
         "resubmit-preflight", "repair-manifest",
     }
 
@@ -1242,3 +1242,36 @@ def test_submit_polarized_flag_and_override():
     assert on.use_polarized_correlation is True
     off = cli._apply_polarized_override(cfg, types.SimpleNamespace(polarized=False))
     assert off.use_polarized_correlation is False
+
+
+def test_submit_defer_eval_flag_override_and_roundtrip():
+    """`submit --defer-eval` parses to args.defer_eval, the override helper flips
+    cfg.defer_eval (default off), and the value round-trips through
+    _config_to_raw_dict -> load_grid_config."""
+    import types
+    parser = cli._build_parser()
+    assert parser.parse_args(
+        ["submit", "g.yaml", "--partition", "short", "--defer-eval"]
+    ).defer_eval is True
+    assert parser.parse_args(
+        ["submit", "g.yaml", "--partition", "short"]).defer_eval is False
+    cfg = cli.load_grid_config("xcquinox/alec/cluster/examples/grid_step7.yaml")
+    assert cfg.defer_eval is False
+    on = cli._apply_defer_eval_override(cfg, types.SimpleNamespace(defer_eval=True))
+    assert on.defer_eval is True
+    off = cli._apply_defer_eval_override(cfg, types.SimpleNamespace(defer_eval=False))
+    assert off.defer_eval is False
+    # Round-trip: serialized "defer_eval" survives a re-parse.
+    assert cli._config_to_raw_dict(on)["defer_eval"] is True
+
+
+def test_submit_eval_subcommand_parses():
+    """The `submit-eval` subcommand parses run_dir + --force and binds the
+    cmd_submit_eval handler."""
+    parser = cli._build_parser()
+    ns = parser.parse_args(["submit-eval", "/some/run_dir"])
+    assert ns.run_dir == "/some/run_dir"
+    assert ns.force is False
+    assert ns.func is cli.cmd_submit_eval
+    assert parser.parse_args(
+        ["submit-eval", "/some/run_dir", "--force"]).force is True

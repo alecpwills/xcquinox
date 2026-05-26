@@ -670,3 +670,18 @@ def test_use_polarized_correlation_default_and_parse(tmp_path):
     data["use_polarized_correlation"] = True
     cfg2 = load_grid_config(_write(tmp_path, "g2.json", data))
     assert cfg2.use_polarized_correlation is True
+
+
+# ---------------------------------------------------------------------------
+# defer_eval (run-level deferred-eval submission toggle)
+# ---------------------------------------------------------------------------
+
+def test_defer_eval_default_and_parse(tmp_path):
+    # Default: absent key -> False (byte-identical: eval submitted up front).
+    cfg = load_grid_config(_write(tmp_path, "g.json", _base_config_dict()))
+    assert cfg.defer_eval is False
+    # Explicit true parses through.
+    data = _base_config_dict()
+    data["defer_eval"] = True
+    cfg2 = load_grid_config(_write(tmp_path, "g2.json", data))
+    assert cfg2.defer_eval is True

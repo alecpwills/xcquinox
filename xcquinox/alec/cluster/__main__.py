@@ -142,6 +142,7 @@ def _config_to_raw_dict(cfg) -> dict:
         "on_precompute_failure": cfg.on_precompute_failure,
         "bh76_mode": cfg.bh76_mode,
         "use_polarized_correlation": cfg.use_polarized_correlation,
+        "defer_eval": cfg.defer_eval,
     }
     return raw
 
@@ -658,6 +659,21 @@ def _apply_polarized_override(cfg, args):
     return cfg
 
 
+def _apply_defer_eval_override(cfg, args):
+    """Return a copy of ``cfg`` with deferred-eval mode enabled when the
+    ``--defer-eval`` flag is set.
+
+    ``defer_eval=True`` rides into ``resolved_config.yaml`` and is read by
+    ``submit_jobs``: the eval array is launched (afterany on train) only after
+    the train array terminates, shrinking the per-run queued-job footprint.
+    Unset leaves the config value (default False), so omitting the flag is
+    byte-identical to today.
+    """
+    if getattr(args, "defer_eval", False):
+        cfg = dataclasses.replace(cfg, defer_eval=True)
+    return cfg
+
+
 def _apply_time_overrides(cfg, args):
     """Return a copy of ``cfg`` with CLI-resolved per-stage wall times.
 
@@ -753,6 +769,7 @@ def cmd_submit(args) -> int:
     cfg = _apply_time_overrides(cfg, args)
     cfg = _apply_step_overrides(cfg, args)
     cfg = _apply_polarized_override(cfg, args)
+    cfg = _apply_defer_eval_override(cfg, args)
     domain = get_domain_profile(cfg.domain_profile)
     validate_grid_semantics(cfg, domain)
 
@@ -775,12 +792,44 @@ def cmd_submit(args) -> int:
             _log(f"  would run: {line}")
     else:
         ids = result.get("job_ids", {})
+        if result.get("defer_eval"):
+            eval_part = (f"eval_launcher={ids.get('eval_launcher')} "
+                         "(eval array deferred until train terminates)")
+        else:
+            eval_part = f"eval={ids.get('eval')}"
         _log(f"submit: SUBMITTED ({result['n_specs']} specs, "
              f"{result['n_archs']} distinct arch(s)) — "
              f"pretrain={ids.get('pretrain')} "
              f"preflight={ids.get('preflight')} train={ids.get('train')} "
-             f"eval={ids.get('eval')}")
+             f"{eval_part}")
+        if result.get("manual_eval_command"):
+            _log("submit: if the launcher cannot submit from a compute node, "
+                 f"run after train finishes: {result['manual_eval_command']}")
     _log(f"submit: run dir = {run_dir}")
+    return 0
+
+
+def cmd_submit_eval(args) -> int:
+    """``submit-eval`` — submit the (deferred) eval array for a run.
+
+    Reads the run's ``jobs.json`` + ``resolved_config.yaml`` and submits the
+    eval array (``aftercorr`` on the train array), recording it. Idempotent: a
+    no-op if an eval array is already recorded (unless ``--force``). This is what
+    the deferred-eval launcher job runs, and the manual fallback to run from a
+    login node if the launcher cannot submit from a compute node.
+    """
+    from xcquinox.alec.cluster._submit_eval import submit_deferred_eval
+    try:
+        result = submit_deferred_eval(args.run_dir, force=args.force)
+    except RuntimeError as exc:
+        _log(str(exc))
+        return 1
+    if result["submitted"]:
+        _log(f"submit-eval: eval array {result['eval_id']} submitted "
+             f"(aftercorr:{result['train_id']})")
+    else:
+        _log(f"submit-eval: no-op ({result['reason']}); eval array already "
+             f"recorded as {result['eval_id']}")
     return 0
 
 
@@ -1505,7 +1554,24 @@ def _build_parser() -> argparse.ArgumentParser:
              "(use_polarized_correlation=True): the cnet becomes "
              "spin-polarization-aware and the UKS energy path uses the "
              "zeta-dependent PW92c baseline. Default off (unpolarized).")
+    p_submit.add_argument(
+        "--defer-eval", action="store_true", dest="defer_eval",
+        help="deferred-eval mode (defer_eval=True): do NOT queue the eval array "
+             "up front. A tiny launcher job (afterany on train) submits the eval "
+             "array only after the train array terminates, shrinking the per-run "
+             "queued-job footprint (helps under SLURM per-user submit caps). "
+             "Default off (eval queued with the rest).")
     p_submit.set_defaults(func=cmd_submit)
+
+    p_submit_eval = sub.add_parser(
+        "submit-eval",
+        help="submit the (deferred) eval array for a run; manual fallback if the "
+             "launcher job cannot sbatch from a compute node")
+    p_submit_eval.add_argument("run_dir", help="the run directory")
+    p_submit_eval.add_argument(
+        "--force", action="store_true",
+        help="submit even if an eval array is already recorded")
+    p_submit_eval.set_defaults(func=cmd_submit_eval)
 
     p_status = sub.add_parser(
         "status", help="read-only per-index outcome report")

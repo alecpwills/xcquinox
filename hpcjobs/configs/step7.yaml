@@ -170,3 +170,12 @@ bh76_mode: reaction_energy
 # here). A true run REQUIRES a zeta-aware pretrain_data_polarized.npz in
 # pretrain.data_dir (generate via scripts/generate_polarized_pretrain_data.py).
 use_polarized_correlation: false
+# Deferred-eval submission: when true, the eval array is NOT queued up front. The
+# initial submit queues pretrain+preflight+train plus a tiny launcher job
+# (afterany on train) that submits the eval array only after train terminates,
+# shrinking the per-run queued-job footprint (helps under SLURM per-user submit
+# caps like QOSMaxSubmitJobPerUserLimit). Default false (eval queued with the
+# rest). Enable per-run via `submit --defer-eval` (or set true here). If the
+# launcher cannot sbatch from a compute node, submit the eval array manually:
+#   python -m xcquinox.alec.cluster submit-eval <run_dir>
+defer_eval: false

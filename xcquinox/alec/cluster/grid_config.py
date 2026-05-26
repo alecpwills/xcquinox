@@ -269,6 +269,13 @@ class GridConfig:
     # zeta. Default False -> byte-identical unpolarized behavior. Set via the
     # ``submit --polarized`` flag (or ``use_polarized_correlation: true`` in YAML).
     use_polarized_correlation: bool = False
+    # Run-level toggle: when True, the eval array is NOT submitted up front. The
+    # initial ``submit`` queues pretrain+preflight+train plus a tiny launcher job
+    # (afterany on train) that submits the eval array only after train terminates,
+    # shrinking the per-run queued-job footprint (relevant under SLURM per-user
+    # submit caps). Default False -> byte-identical (eval submitted with the rest).
+    # Set via the ``submit --defer-eval`` flag (or ``defer_eval: true`` in YAML).
+    defer_eval: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +461,7 @@ def load_grid_config(path: str) -> GridConfig:
         on_precompute_failure=raw.get("on_precompute_failure", "abort"),
         bh76_mode=raw.get("bh76_mode", "reaction_energy"),
         use_polarized_correlation=bool(raw.get("use_polarized_correlation", False)),
+        defer_eval=bool(raw.get("defer_eval", False)),
     )
 
 

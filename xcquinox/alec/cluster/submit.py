@@ -49,6 +49,10 @@ from xcquinox.alec.cluster import job_tracking
 # hard SIGKILL — gives ``_train_task`` time to checkpoint/classify on timeout.
 _SIGTERM_GRACE_S = 120
 
+# Wall time for the deferred-eval launcher job — it only renders + sbatches the
+# eval array and records it, a few seconds of work; 15 minutes is ample margin.
+_EVAL_LAUNCHER_TIME = "00:15:00"
+
 # kind -> template filename (the GPU train variant is resolved separately).
 _TEMPLATE_FILES = {
     "pretrain": "pretrain.sbatch.tmpl",
@@ -56,6 +60,7 @@ _TEMPLATE_FILES = {
     "train_cpu": "train_array_cpu.sbatch.tmpl",
     "train_gpu": "train_array_gpu.sbatch.tmpl",
     "eval": "eval_array.sbatch.tmpl",
+    "eval_launcher": "eval_launcher.sbatch.tmpl",
 }
 
 _COMMANDS_FILENAME = "submit_commands.txt"
@@ -141,10 +146,12 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         template_kind = _train_template_kind(cfg)
     elif kind == "eval":
         template_kind = "eval"
+    elif kind == "eval_launcher":
+        template_kind = "eval_launcher"
     else:
         raise ValueError(
-            f"render_sbatch: kind must be 'pretrain', 'preflight', 'train' or "
-            f"'eval', got {kind!r}"
+            f"render_sbatch: kind must be 'pretrain', 'preflight', 'train', "
+            f"'eval' or 'eval_launcher', got {kind!r}"
         )
 
     text = _load_template_text(_TEMPLATE_FILES[template_kind])
@@ -166,6 +173,13 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         time = cl.eval_time or cl.time
         mem = cl.mem
         cpus = cl.cpus_per_task
+    elif kind == "eval_launcher":
+        # A trivial submit-only job: share a node (never book one exclusively),
+        # 1 cpu, fixed short wall. Runs on the eval partition by default.
+        partition = cl.eval_partition or cl.partition
+        time = _EVAL_LAUNCHER_TIME
+        mem = ""
+        cpus = 1
     else:  # train
         partition = cl.partition
         time = cl.time
@@ -177,7 +191,11 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
     # which is what memory-heavy training needs); "shared" requests a cpu/mem
     # slice so several tasks co-tenant a node (--mem emitted only when set;
     # otherwise SLURM applies the partition default-mem-per-cpu).
-    allocation = getattr(cl, f"{kind}_allocation")
+    # The launcher has no per-stage allocation field — it always shares a node
+    # (booking a whole node for a few seconds of `sbatch` would be wasteful and
+    # itself counts against the per-user job budget the launcher exists to save).
+    allocation = "shared" if kind == "eval_launcher" else getattr(
+        cl, f"{kind}_allocation")
     if allocation == "exclusive":
         alloc_lines = "#SBATCH --nodes=1\n#SBATCH --exclusive\n"
         mem_line = ""
@@ -282,7 +300,7 @@ def _has_live_jobs(run_dir: str) -> bool:
 
 
 def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
-                force: bool = False) -> dict:
+                force: bool = False, defer_eval=None) -> dict:
     """Render the 4-stage sbatch graph and (optionally) submit it.
 
     **Defaults to dry-run** (``submit=False``): writes the rendered scripts and
@@ -308,6 +326,15 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
          mid-graph, ``scancel`` the ids already returned in THIS call, append
          no partial records, and re-raise.
 
+    Deferred-eval mode (``cfg.defer_eval`` True, or ``defer_eval=True``): the
+    eval array is NOT submitted up front. Instead a tiny launcher job is
+    submitted ``afterany:train``; when train terminates the launcher submits
+    the eval array (``aftercorr:train``, identical gating) and records it. This
+    shrinks the per-run queued-job footprint (pretrain+preflight+train+launcher
+    instead of +eval array). Only pretrain/preflight/train records are written
+    here; the eval record is written later by the launcher (or by a manual
+    ``submit-eval`` run). ``defer_eval=None`` (the default) reads ``cfg.defer_eval``.
+
     Returns:
         A dict describing what was (or would be) submitted: ``n_specs``,
         ``n_archs``, ``array_max``, ``pretrain_array_max``, ``device``, the
@@ -315,6 +342,9 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         (real runs only) the job ids.
     """
     run_dir = os.path.abspath(run_dir)
+    # defer_eval=None reads the config; an explicit bool overrides it.
+    defer = getattr(cfg, "defer_eval", False) if defer_eval is None \
+        else bool(defer_eval)
     cells = expand_grid(cfg)
     n_specs = len(cells)
     if n_specs == 0:
@@ -358,12 +388,19 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     preflight_path = os.path.join(scripts_dir, "preflight.sbatch")
     train_path = os.path.join(scripts_dir, "train_array.sbatch")
     eval_path = os.path.join(scripts_dir, "eval_array.sbatch")
-    for path, text in (
+    scripts_to_write = [
         (pretrain_path, pretrain_text),
         (preflight_path, preflight_text),
         (train_path, train_text),
         (eval_path, eval_text),
-    ):
+    ]
+    # In deferred mode the launcher job (submitted afterany:train) re-uses the
+    # eval_array.sbatch above and is itself a tiny single-task script.
+    launcher_path = os.path.join(scripts_dir, "eval_launcher.sbatch")
+    if defer:
+        launcher_text = render_sbatch("eval_launcher", cfg, run_dir)
+        scripts_to_write.append((launcher_path, launcher_text))
+    for path, text in scripts_to_write:
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
 
@@ -381,7 +418,18 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             "train": train_path,
             "eval": eval_path,
         },
+        "defer_eval": defer,
     }
+    if defer:
+        result["scripts"]["eval_launcher"] = launcher_path
+
+    # Manual fallback: if the launcher can't submit (compute nodes barred from
+    # sbatch), run this from a login node once the train array finishes.
+    manual_eval_cmd = (
+        f"python -m xcquinox.alec.cluster submit-eval {run_dir}"
+    )
+    if defer:
+        result["manual_eval_command"] = manual_eval_cmd
 
     # --- dry-run -------------------------------------------------------------
     if not submit:
@@ -391,8 +439,21 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             f"{preflight_path}",
             f"sbatch --parsable "
             f"--dependency=afterok:<PRETRAIN_ID>:<PREFLIGHT_ID> {train_path}",
-            f"sbatch --parsable --dependency=aftercorr:<TRAIN_ID> {eval_path}",
         ]
+        if defer:
+            cmds.append(
+                f"sbatch --parsable --dependency=afterany:<TRAIN_ID> "
+                f"{launcher_path}"
+            )
+            cmds.append(
+                f"# (launcher then runs) {manual_eval_cmd}  "
+                f"# submits: sbatch --dependency=aftercorr:<TRAIN_ID> {eval_path}"
+            )
+        else:
+            cmds.append(
+                f"sbatch --parsable --dependency=aftercorr:<TRAIN_ID> "
+                f"{eval_path}"
+            )
         _append_commands(run_dir, "dry-run", cmds)
         result["dry_run"] = True
         result["commands"] = cmds
@@ -438,15 +499,29 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         train_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(train_id)
 
-        # 4. eval array — aftercorr on the train array
-        eval_cmd = [
-            "sbatch", "--parsable",
-            f"--dependency=aftercorr:{train_id}", eval_path,
-        ]
-        issued_cmds.append(" ".join(eval_cmd))
-        proc = job_tracking._run_slurm(eval_cmd)
-        eval_id = proc.stdout.strip().split(";")[0].split()[0]
-        submitted_ids.append(eval_id)
+        # 4. eval — either the eval array now (aftercorr:train), or, in deferred
+        #    mode, a tiny launcher (afterany:train) that submits the eval array
+        #    only after train terminates (shrinking the up-front footprint).
+        eval_id = None
+        launcher_id = None
+        if defer:
+            launcher_cmd = [
+                "sbatch", "--parsable",
+                f"--dependency=afterany:{train_id}", launcher_path,
+            ]
+            issued_cmds.append(" ".join(launcher_cmd))
+            proc = job_tracking._run_slurm(launcher_cmd)
+            launcher_id = proc.stdout.strip().split(";")[0].split()[0]
+            submitted_ids.append(launcher_id)
+        else:
+            eval_cmd = [
+                "sbatch", "--parsable",
+                f"--dependency=aftercorr:{train_id}", eval_path,
+            ]
+            issued_cmds.append(" ".join(eval_cmd))
+            proc = job_tracking._run_slurm(eval_cmd)
+            eval_id = proc.stdout.strip().split(";")[0].split()[0]
+            submitted_ids.append(eval_id)
     except Exception as exc:
         # Best-effort rollback: cancel everything submitted in THIS call.
         rollback_failed: list[str] = []
@@ -483,23 +558,37 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             "records were written to jobs.json."
         ) from exc
 
-    # All four accepted — now (and only now) write the append-only records.
+    # All accepted — now (and only now) write the append-only records. In
+    # deferred mode the eval record is NOT written here; the launcher (or a
+    # manual `submit-eval`) writes it once the eval array is actually submitted.
     indices = list(range(n_specs))
     arch_indices = list(range(n_archs))
     job_tracking.append_job_record(run_dir, "pretrain", pretrain_id,
                                    arch_indices)
     job_tracking.append_job_record(run_dir, "preflight", preflight_id, [0])
     job_tracking.append_job_record(run_dir, "train", train_id, indices)
-    job_tracking.append_job_record(run_dir, "eval", eval_id, indices)
+    if not defer:
+        job_tracking.append_job_record(run_dir, "eval", eval_id, indices)
 
     _append_commands(run_dir, "submit", issued_cmds)
 
     result["dry_run"] = False
     result["commands"] = issued_cmds
-    result["job_ids"] = {
+    job_ids = {
         "pretrain": pretrain_id,
         "preflight": preflight_id,
         "train": train_id,
-        "eval": eval_id,
     }
+    if defer:
+        job_ids["eval_launcher"] = launcher_id
+        print(
+            "submit_jobs: deferred-eval mode — the eval array will be submitted "
+            f"by launcher job {launcher_id} after the train array terminates. "
+            "If the launcher cannot submit from a compute node, run this from a "
+            f"login node once train finishes:\n    {manual_eval_cmd}",
+            flush=True,
+        )
+    else:
+        job_ids["eval"] = eval_id
+    result["job_ids"] = job_ids
     return result
