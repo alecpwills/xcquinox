@@ -145,22 +145,26 @@ def aggregate_seed_metrics(per_seed: list, metric_keys) -> dict:
 # evaluation (compute) helpers
 # ---------------------------------------------------------------------------
 
+def _one_energy(alec, cfg, model, md) -> float:
+    """Total energy (Ha) of one model on one species' precomputed ``md`` through
+    the given solver ``cfg`` (None ⇒ fixed-ρ). Non-finite / exception ⇒ NaN
+    (recorded as diverged)."""
+    try:
+        if cfg is None:
+            e = float(alec.fixed_density_total_energy(model, md))
+        else:
+            e = float(run_scf(cfg, model, md).total_energy)
+    except Exception:
+        e = float("nan")
+    return e if math.isfinite(e) else float("nan")
+
+
 def species_energies_mode(model, mol_data_by_name: dict, mode: str) -> dict:
-    """Per-species total energy (Ha) for ``model`` through ``mode``. A species
-    that raises or yields a non-finite energy is recorded as NaN (diverged)."""
+    """Per-species total energy (Ha) for ``model`` through ``mode``."""
     import xcquinox.alec as alec  # lazy: pulls pyscf, only needed at compute time
     cfg = solver_config_for_mode(mode)
-    out = {}
-    for name, md in mol_data_by_name.items():
-        try:
-            if cfg is None:
-                e = float(alec.fixed_density_total_energy(model, md))
-            else:
-                e = float(run_scf(cfg, model, md).total_energy)
-        except Exception:
-            e = float("nan")
-        out[name] = e if math.isfinite(e) else float("nan")
-    return out
+    return {name: _one_energy(alec, cfg, model, md)
+            for name, md in mol_data_by_name.items()}
 
 
 def metrics_from_energies(energies, bh76_rxns, w411_rxns, e_pbe_by_name) -> dict:
@@ -218,41 +222,49 @@ def _convergence_from(md: dict, ckpt_dir: str) -> dict:
     return out
 
 
-def _pretrain_one(demo, alec, level_spec, weighting, data_dir, ckpt_dir, n_steps, seed):
-    """Pretrain ONE (level, weighting); return (AlecGGAModel, convergence dict).
+def _pretrain_one(demo, alec, level_spec, weighting, data_dir, ckpt_dir, n_steps,
+                  seed, reuse=True):
+    """Pretrain (or reuse) ONE (level, weighting); return (AlecGGAModel, conv dict).
 
-    ``level_spec`` is None for the truly-unconstrained level (built with
-    lob_lim=None and pretrained via the run_pretrain ``networks=`` override, since
+    ``level_spec`` is None for the truly-unconstrained level (built lob_lim=None and
+    pretrained via the run_pretrain ``networks=`` override, since
     create_network_pair cannot express lob_lim=None), else ``(x_constraints,
-    c_constraints)`` (built via the demo's polarized arch + create_network_pair)."""
+    c_constraints)``. ``reuse=True`` skips pretraining when ``ckpt_dir`` already has
+    xnet.eqx/cnet.eqx + pretrain_metadata.json (reads convergence from disk) — so a
+    re-run doesn't repeat the ~minutes-long pretrain."""
     eqx = demo.eqx
     if level_spec is None:
-        base = demo.ArchitectureConfig.from_spec(
+        arch = demo.ArchitectureConfig.from_spec(
             "base", demo.DEPTH, demo.NODES, use_polarized_correlation=True)
         mk_x = lambda: demo.AlecGGA_XNet(n_extra_features=0, depth=demo.DEPTH,
                                          nodes=demo.NODES, seed=seed, lob_lim=None)
         mk_c = lambda: demo.AlecGGA_CNet(n_extra_features=0, depth=demo.DEPTH,
                                          nodes=demo.NODES, seed=seed + 1,
                                          lob_lim=None, use_spin_polarization=True)
-        md = alec.run_pretrain(
-            alec.PretrainSpec(arch=base, data_dir=data_dir, checkpoint_dir=ckpt_dir,
-                              n_steps=n_steps, loss_weighting=weighting, seed=seed),
-            networks=(mk_x(), mk_c()))
-        # Reload: skeleton must match the override nets (lob_lim=None), NOT
-        # create_network_pair (which would impose lob_lim=1.804).
-        xnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "xnet.eqx"), mk_x())
-        cnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "cnet.eqx"), mk_c())
-        model = demo.AlecGGAModel.from_arch(base, xnet=xnet, cnet=cnet)
+        networks = (mk_x(), mk_c())          # lob_lim=None override
+        skel = (mk_x, mk_c)                  # matching reload skeletons
     else:
         x_constraints, c_constraints = level_spec
         arch = demo.build_arch("lvl", x_constraints, c_constraints)
+        networks = None                      # build from arch via create_network_pair
+        pair = demo.create_network_pair(arch, seed=seed)
+        skel = (lambda p=pair[0]: p, lambda p=pair[1]: p)
+
+    have = (os.path.isfile(os.path.join(ckpt_dir, "xnet.eqx"))
+            and os.path.isfile(os.path.join(ckpt_dir, "cnet.eqx"))
+            and os.path.isfile(os.path.join(ckpt_dir, "pretrain_metadata.json")))
+    if reuse and have:
+        with open(os.path.join(ckpt_dir, "pretrain_metadata.json")) as f:
+            md = json.load(f)
+    else:
         md = alec.run_pretrain(
             alec.PretrainSpec(arch=arch, data_dir=data_dir, checkpoint_dir=ckpt_dir,
-                              n_steps=n_steps, loss_weighting=weighting, seed=seed))
-        xskel, cskel = demo.create_network_pair(arch, seed=seed)
-        xnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "xnet.eqx"), xskel)
-        cnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "cnet.eqx"), cskel)
-        model = demo.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+                              n_steps=n_steps, loss_weighting=weighting, seed=seed),
+            networks=networks)
+
+    xnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "xnet.eqx"), skel[0]())
+    cnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "cnet.eqx"), skel[1]())
+    model = demo.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
     return model, _convergence_from(md, ckpt_dir)
 
 
@@ -266,6 +278,7 @@ def main(argv=None) -> int:
     sys.path.insert(0, _HERE)
     import constraint_pretrain_gmtkn55_demo as demo  # noqa: E402
     import xcquinox.alec as alec  # noqa: E402
+    import jax  # noqa: E402 — for clear_caches() between species (bound JIT memory)
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", choices=["polarized", "unpolarized"],
@@ -281,6 +294,8 @@ def main(argv=None) -> int:
                         "(default: unweighted,integration)")
     p.add_argument("--species-limit", type=int, default=None,
                    help="(smoke) cap the number of species precomputed")
+    p.add_argument("--fresh-pretrain", action="store_true",
+                   help="re-pretrain even if checkpoints exist (default: reuse them)")
     p.add_argument("--out", default=os.path.join(_HERE, "demo_logs",
                                                   "multimode_polarized.json"))
     args = p.parse_args(argv)
@@ -353,7 +368,8 @@ def main(argv=None) -> int:
             safe = label.replace("+", "").replace("(", "").replace(")", "").strip()
             ckpt = os.path.join(workdir, "pretrain", w, safe)
             model, conv = _pretrain_one(demo, alec, spec, w, data_dir, ckpt,
-                                        args.pretrain_steps, demo.SEED)
+                                        args.pretrain_steps, demo.SEED,
+                                        reuse=not args.fresh_pretrain)
             pretrained[(w, label)] = model
             results["convergence"].setdefault(w, {})[label] = conv
             print(f"      pretrained [{w}] {label}: "
@@ -372,24 +388,34 @@ def main(argv=None) -> int:
         for mode in modes:
             cell += 1
             tcell = time.time()
-            per_seed = []
-            n_div = 0
-            for s, model in enumerate(rand_models):
-                en = species_energies_mode(model, mol_data, mode)
-                if any(not math.isfinite(v) for v in en.values()):
-                    n_div += 1
-                per_seed.append(metrics_from_energies(en, bh76_rxns, w411_rxns, e_pbe))
+            cfg = solver_config_for_mode(mode)
+            # SPECIES-OUTER: compile the SCF for a species ONCE (reused across all
+            # random seeds + pretrained models), then jax.clear_caches() to free
+            # that compiled executable before the next species. Bounds the resident
+            # XLA executables to ~1 (the full set's 29 distinct shapes otherwise
+            # accumulate and segfault the CPU compiler).
+            rand_en = [dict() for _ in rand_models]   # per-seed {species: E}
+            pre_en = {w: dict() for w in weightings}  # per-weighting {species: E}
+            for name, md in mol_data.items():
+                for s, model in enumerate(rand_models):
+                    rand_en[s][name] = _one_energy(alec, cfg, model, md)
+                for w in weightings:
+                    pre_en[w][name] = _one_energy(alec, cfg, pretrained[(w, label)], md)
+                if mode != "fixed_rho":
+                    jax.clear_caches()
+            per_seed = [metrics_from_energies(rand_en[s], bh76_rxns, w411_rxns, e_pbe)
+                        for s in range(args.seeds)]
+            n_div = sum(1 for s in range(args.seeds)
+                        if any(not math.isfinite(v) for v in rand_en[s].values()))
             agg = aggregate_seed_metrics(per_seed, _METRIC_KEYS)
             entry = {"random": agg,
                      "random_any_species_divergence_rate": n_div / max(args.seeds, 1)}
-            # pretrained: one entry per weighting (incl. the unconstrained level).
             entry["pretrained"] = {}
             entry["pretrained_per_species"] = {}
             for w in weightings:
-                pen = species_energies_mode(pretrained[(w, label)], mol_data, mode)
                 entry["pretrained"][w] = metrics_from_energies(
-                    pen, bh76_rxns, w411_rxns, e_pbe)
-                grouped = group_species(per_species_deviation(pen, e_pbe), atom_elem)
+                    pre_en[w], bh76_rxns, w411_rxns, e_pbe)
+                grouped = group_species(per_species_deviation(pre_en[w], e_pbe), atom_elem)
                 entry["pretrained_per_species"][w] = {
                     grp: {n: round(v, 4) for n, v in d.items()}
                     for grp, d in grouped.items()}
