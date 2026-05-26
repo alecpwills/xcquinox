@@ -189,6 +189,71 @@ def per_species_deviation(energies, e_pbe_by_name) -> dict:
 
 
 _METRIC_KEYS = ("bh76", "pbe_dev", "w411_ae")
+WEIGHTINGS = ("unweighted", "integration")
+
+
+def steps_to_converge(trajectory, frac: float = 1.05):
+    """First step (1-based) whose loss <= ``frac`` * min(loss) over the trajectory
+    — a simple "how quickly it converged" measure. NaN for an empty/all-NaN
+    trajectory. Pure."""
+    t = np.asarray(trajectory, dtype=float)
+    t = t[np.isfinite(t)]
+    if t.size == 0:
+        return float("nan")
+    thresh = frac * float(np.min(t))
+    return int(np.argmax(t <= thresh)) + 1  # argmax = first True; min always <= thresh
+
+
+def _convergence_from(md: dict, ckpt_dir: str) -> dict:
+    """Assemble a convergence record from run_pretrain's return dict + the saved
+    losses_{x,c}.npy trajectories."""
+    out = {k: md.get(k) for k in ("final_loss_x", "final_loss_c",
+                                  "min_loss_x", "min_loss_c", "duration_seconds")}
+    for net in ("x", "c"):
+        path = os.path.join(ckpt_dir, f"losses_{net}.npy")
+        if os.path.isfile(path):
+            traj = np.load(path)
+            out[f"steps_to_converge_{net}"] = steps_to_converge(traj)
+            out[f"n_steps_{net}"] = int(np.asarray(traj).size)
+    return out
+
+
+def _pretrain_one(demo, alec, level_spec, weighting, data_dir, ckpt_dir, n_steps, seed):
+    """Pretrain ONE (level, weighting); return (AlecGGAModel, convergence dict).
+
+    ``level_spec`` is None for the truly-unconstrained level (built with
+    lob_lim=None and pretrained via the run_pretrain ``networks=`` override, since
+    create_network_pair cannot express lob_lim=None), else ``(x_constraints,
+    c_constraints)`` (built via the demo's polarized arch + create_network_pair)."""
+    eqx = demo.eqx
+    if level_spec is None:
+        base = demo.ArchitectureConfig.from_spec(
+            "base", demo.DEPTH, demo.NODES, use_polarized_correlation=True)
+        mk_x = lambda: demo.AlecGGA_XNet(n_extra_features=0, depth=demo.DEPTH,
+                                         nodes=demo.NODES, seed=seed, lob_lim=None)
+        mk_c = lambda: demo.AlecGGA_CNet(n_extra_features=0, depth=demo.DEPTH,
+                                         nodes=demo.NODES, seed=seed + 1,
+                                         lob_lim=None, use_spin_polarization=True)
+        md = alec.run_pretrain(
+            alec.PretrainSpec(arch=base, data_dir=data_dir, checkpoint_dir=ckpt_dir,
+                              n_steps=n_steps, loss_weighting=weighting, seed=seed),
+            networks=(mk_x(), mk_c()))
+        # Reload: skeleton must match the override nets (lob_lim=None), NOT
+        # create_network_pair (which would impose lob_lim=1.804).
+        xnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "xnet.eqx"), mk_x())
+        cnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "cnet.eqx"), mk_c())
+        model = demo.AlecGGAModel.from_arch(base, xnet=xnet, cnet=cnet)
+    else:
+        x_constraints, c_constraints = level_spec
+        arch = demo.build_arch("lvl", x_constraints, c_constraints)
+        md = alec.run_pretrain(
+            alec.PretrainSpec(arch=arch, data_dir=data_dir, checkpoint_dir=ckpt_dir,
+                              n_steps=n_steps, loss_weighting=weighting, seed=seed))
+        xskel, cskel = demo.create_network_pair(arch, seed=seed)
+        xnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "xnet.eqx"), xskel)
+        cnet = eqx.tree_deserialise_leaves(os.path.join(ckpt_dir, "cnet.eqx"), cskel)
+        model = demo.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+    return model, _convergence_from(md, ckpt_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +276,9 @@ def main(argv=None) -> int:
                    help="pretraining steps (default: %(default)s)")
     p.add_argument("--modes", default=",".join(MODES),
                    help="comma list of modes (default: all three)")
+    p.add_argument("--weightings", default=",".join(WEIGHTINGS),
+                   help="comma list of pretraining loss weightings "
+                        "(default: unweighted,integration)")
     p.add_argument("--species-limit", type=int, default=None,
                    help="(smoke) cap the number of species precomputed")
     p.add_argument("--out", default=os.path.join(_HERE, "demo_logs",
@@ -226,6 +294,7 @@ def main(argv=None) -> int:
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
     for m in modes:
         solver_config_for_mode(m)  # validate early
+    weightings = [w.strip() for w in args.weightings.split(",") if w.strip()]
 
     t0 = time.time()
     workdir = os.path.join(demo.OUTDIR, "multimode")
@@ -266,24 +335,32 @@ def main(argv=None) -> int:
     results = {
         "config": args.config, "seeds": args.seeds,
         "pretrain_steps": args.pretrain_steps, "modes": modes,
+        "weightings": weightings,
         "n_species": len(mol_specs), "metrics": list(_METRIC_KEYS),
         "pbe_baseline": metrics_from_energies(
             {n: e_pbe[n] for n in mol_specs}, bh76_rxns, w411_rxns, e_pbe),
-        "cells": {},
+        "cells": {}, "convergence": {},
     }
 
-    # Pretrain each constrained level ONCE (mode-independent); evaluate per mode.
-    print("[4/4] Pretraining constrained levels (once) ...", flush=True)
+    # Pretrain every (weighting x level) ONCE — incl. the truly-unconstrained level
+    # (via the run_pretrain networks= override). Mode-independent; evaluated per
+    # mode below. Capture the convergence record for each.
+    print(f"[4/4] Pretraining {len(weightings)}x{len(levels)} (weighting x level) ...",
+          flush=True)
     pretrained = {}
-    for label, spec in levels:
-        if spec is None:
-            continue
-        ckpt = os.path.join(workdir, "pretrain",
-                            label.replace("+", "").replace("(", "").replace(")", "").strip())
-        if args.pretrain_steps != demo.PRETRAIN_N_STEPS:
-            demo.PRETRAIN_N_STEPS = args.pretrain_steps  # honor CLI override
-        pretrained[label] = demo.pretrain_and_load(spec, data_dir, ckpt)
-        print(f"      pretrained {label}", flush=True)
+    for w in weightings:
+        for label, spec in levels:
+            safe = label.replace("+", "").replace("(", "").replace(")", "").strip()
+            ckpt = os.path.join(workdir, "pretrain", w, safe)
+            model, conv = _pretrain_one(demo, alec, spec, w, data_dir, ckpt,
+                                        args.pretrain_steps, demo.SEED)
+            pretrained[(w, label)] = model
+            results["convergence"].setdefault(w, {})[label] = conv
+            print(f"      pretrained [{w}] {label}: "
+                  f"final_loss_x={conv.get('final_loss_x'):.4g} "
+                  f"steps_x={conv.get('steps_to_converge_x')}", flush=True)
+            with open(args.out, "w") as f:
+                json.dump(results, f, indent=2)
 
     # Build the 16 random models once per level, evaluate each through every mode.
     print(f"Evaluating {n_cells} cells "
@@ -305,13 +382,15 @@ def main(argv=None) -> int:
             agg = aggregate_seed_metrics(per_seed, _METRIC_KEYS)
             entry = {"random": agg,
                      "random_any_species_divergence_rate": n_div / max(args.seeds, 1)}
-            if spec is not None:
-                pen = species_energies_mode(pretrained[label], mol_data, mode)
-                entry["pretrained"] = metrics_from_energies(
+            # pretrained: one entry per weighting (incl. the unconstrained level).
+            entry["pretrained"] = {}
+            entry["pretrained_per_species"] = {}
+            for w in weightings:
+                pen = species_energies_mode(pretrained[(w, label)], mol_data, mode)
+                entry["pretrained"][w] = metrics_from_energies(
                     pen, bh76_rxns, w411_rxns, e_pbe)
-                dev = per_species_deviation(pen, e_pbe)
-                grouped = group_species(dev, atom_elem)
-                entry["pretrained_per_species"] = {
+                grouped = group_species(per_species_deviation(pen, e_pbe), atom_elem)
+                entry["pretrained_per_species"][w] = {
                     grp: {n: round(v, 4) for n, v in d.items()}
                     for grp, d in grouped.items()}
             results["cells"].setdefault(mode, {})[label] = entry

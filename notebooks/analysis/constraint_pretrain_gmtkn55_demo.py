@@ -293,7 +293,7 @@ def generate_pretrain_data(data_dir):
     wrong for open-shell — PBE 1996 §III spin-scaling), and ``zeta_all`` carries
     the per-grid-point spin polarization so the polarized cnet is pretrained on
     the real zeta rather than a zeta=0 warm-start."""
-    rho_l, sig_l, fx_l, fc_l, zeta_l = [], [], [], [], []
+    rho_l, sig_l, fx_l, fc_l, zeta_l, w_l = [], [], [], [], [], []
     for symbol, spin in PRETRAIN_ATOMS:
         mol = gto.M(atom=f"{symbol} 0 0 0", basis=BASIS, charge=0, spin=spin, verbose=0)
         mf = dft.UKS(mol) if spin else dft.RKS(mol)
@@ -331,13 +331,17 @@ def generate_pretrain_data(data_dir):
         valid = rho > 1e-10
         rho_l.append(rho[valid]); sig_l.append(sigma[valid])
         fx_l.append(fx[valid]); fc_l.append(fc[valid]); zeta_l.append(zeta[valid])
+        # Becke-Lebedev quadrature weights dr_i, so loss_weighting="integration"
+        # is the TRUE quadrature-weighted loss (not the magnitude-only fallback).
+        w_l.append(np.asarray(mf.grids.weights)[valid])
     os.makedirs(data_dir, exist_ok=True)
     # Polarized filename: the demo's archs set use_polarized_correlation=True, so
     # run_pretrain selects pretrain_data_polarized.npz (carrying zeta_all).
+    # weights_all is ADDITIVE — existing consumers ignore extra npz keys.
     np.savez(os.path.join(data_dir, "pretrain_data_polarized.npz"),
              rho_all=np.concatenate(rho_l), sigma_all=np.concatenate(sig_l),
              Fx_all=np.concatenate(fx_l), Fc_all=np.concatenate(fc_l),
-             zeta_all=np.concatenate(zeta_l))
+             zeta_all=np.concatenate(zeta_l), weights_all=np.concatenate(w_l))
 
 
 def pretrain_and_load(spec, data_dir, ckpt_dir):

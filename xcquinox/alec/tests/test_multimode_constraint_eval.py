@@ -106,3 +106,20 @@ def test_aggregate_all_diverged_is_nan(mod):
     agg = mod.aggregate_seed_metrics([{"m": float("nan")}], ("m",))["m"]
     assert agg["n_used"] == 0 and agg["divergence_rate"] == pytest.approx(1.0)
     assert math.isnan(agg["mean"]) and math.isnan(agg["worst"])
+
+
+# --- steps_to_converge -------------------------------------------------------
+
+def test_steps_to_converge_basic(mod):
+    # monotonically decreasing; min=1.0, frac=1.05 -> threshold 1.05; first loss
+    # <= 1.05 is the 10.0? no: [10,5,2,1.04,1.0] -> 1.04 (index 3, 1-based 4).
+    traj = [10.0, 5.0, 2.0, 1.04, 1.0]
+    assert mod.steps_to_converge(traj, frac=1.05) == 4
+    # frac=1.0 -> only the exact min qualifies -> index 5 (1-based)
+    assert mod.steps_to_converge(traj, frac=1.0) == 5
+
+
+def test_steps_to_converge_nan_filtered_and_empty(mod):
+    assert mod.steps_to_converge([float("nan"), 3.0, 2.0], frac=1.0) == 2
+    assert math.isnan(mod.steps_to_converge([]))
+    assert math.isnan(mod.steps_to_converge([float("nan")]))
