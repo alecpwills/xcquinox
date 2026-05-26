@@ -167,6 +167,17 @@ def plot_3x3(configs, out_path):
                 if c == 0:
                     ax.set_ylabel(f"{row_label}\n\nMAE (kcal/mol)")
                 if first:
+                    # Extra top headroom so the upper-left legend clears the
+                    # tallest bar/whisker (otherwise it overlaps the leftmost,
+                    # unconstrained, worst-seed whisker).
+                    whisker_top = max(
+                        float(np.max(maxes)),
+                        float(np.max(means + stds)),
+                        max(yp) if yp else 0.0,
+                        float(res["pbe"][key]) if (has_pbe and key in res["pbe"])
+                        else 0.0,
+                    )
+                    ax.set_ylim(0, whisker_top * 1.5)
                     ax.legend(loc="upper left", framealpha=0.9)
         fig.suptitle(
             "Physical constraints + pretraining vs GMTKN55 — "
