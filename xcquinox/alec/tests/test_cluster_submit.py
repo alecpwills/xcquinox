@@ -500,6 +500,20 @@ def test_rollback_scancels_on_midgraph_failure(tmp_path, monkeypatch,
     assert not os.path.exists(os.path.join(run_dir, "jobs.json"))
 
 
+def test_midgraph_failure_surfaces_sbatch_stderr(tmp_path, monkeypatch):
+    """The rollback RuntimeError must include sbatch's captured stderr — the
+    real SLURM rejection reason — not just CalledProcessError's opaque str()."""
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    # Fail on the train array (index 2); the fake sets stderr="rejected".
+    fake = _fake_slurm_factory(ids=["9000", "9001", "9002", "9003"],
+                               fail_on_index=2)
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    with pytest.raises(RuntimeError, match="sbatch stderr: rejected"):
+        submit_jobs(cfg, run_dir, submit=True)
+
+
 def test_rollback_on_first_job_failure_no_scancel(tmp_path, monkeypatch):
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")

@@ -465,8 +465,20 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
                 "cancelled manually (scancel <id>).",
                 flush=True,
             )
+        # Surface sbatch's actual stderr/stdout when present — CalledProcessError's
+        # str() is only "Command '[...]' returned non-zero exit status N" and hides
+        # the real SLURM rejection reason (e.g. wall-time exceeds partition limit),
+        # which _run_slurm captured via capture_output=True. Without this the
+        # operator cannot tell WHY the submission was rejected.
+        detail = str(exc)
+        slurm_err = (getattr(exc, "stderr", "") or "").strip()
+        slurm_out = (getattr(exc, "stdout", "") or "").strip()
+        if slurm_err:
+            detail += f"\n  sbatch stderr: {slurm_err}"
+        if slurm_out:
+            detail += f"\n  sbatch stdout: {slurm_out}"
         raise RuntimeError(
-            f"submit_jobs: SLURM rejected a job mid-graph ({exc}); rolled back "
+            f"submit_jobs: SLURM rejected a job mid-graph ({detail}); rolled back "
             f"{len(submitted_ids)} already-submitted job(s) via scancel. No "
             "records were written to jobs.json."
         ) from exc
