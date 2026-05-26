@@ -99,6 +99,42 @@ mean 21.4 → 14.7).
 better *after* pretraining (10.2 vs 27.3). Added physical expressiveness costs at initialization and
 pays off only once trained.
 
+### Mechanism — why atomization improves *only* with the polarized baseline
+
+A natural question: in the unpolarized rows, pretraining + constraints make W4-11 *worse*
+(19.6 → 21.1 → 27.3), yet with the spin-polarized baseline the same machinery improves it
+monotonically to PBE (12.9 → 12.3 → 10.2). The reason is **model representability**, not training:
+
+- **Atomization isolates open-shell atoms.** AE = E(molecule, closed-shell) − Σ E(atoms,
+  open-shell). The molecules are closed-shell (ζ = 0 is exact for them); the atoms (H, C, N, O, F)
+  are open-shell (ζ ≠ 0) and are subtracted with full weight and **no cancelling partner** — unlike
+  BH76, where Σ coeff = 0 and radicals appear on both sides so ζ errors largely cancel. AE is
+  therefore the metric that maximally exposes any open-shell-atom error.
+- **The unpolarized model cannot represent a spin-polarized atom.** At evaluation
+  (`xcquinox/alec/oneshot.py`, `split_exc_energy_uks`) correlation uses the ζ-dependent PW92 baseline
+  **only if `cnet.use_spin_polarization` is True**; otherwise it is the ζ = 0 total-density
+  (PW92/von Barth–Hedin) baseline, and the unpolarized cnet has **no ζ input feature**. So for an
+  open-shell atom the correct, spin-reduced correlation is **outside the model class** — the atom
+  error is *irreducible* within the unpolarized functional.
+- **Hence optimizing harder hurts.** Pretraining fits the network faithfully to its target and the
+  constraints (UEG limit, non-negative correlation) pull it onto a tighter manifold — but for the
+  atoms that manifold is the wrong (ζ = 0) one. "Fitting better" = committing harder to an answer
+  the model cannot make correct for atoms, so AE is flat-to-worse and **degrades monotonically with
+  more constraints**.
+- **The polarized model adds the missing degree of freedom.** `use_spin_polarization=True` switches
+  the baseline to the real per-point ζ = (ρ↑−ρ↓)/ρ *and* gives the cnet a ζ input. The correct
+  open-shell-atom physics is now representable, so the same pretraining + constraints converge toward
+  the right atom energies → AE improves monotonically to PBE-level (10.2 ≈ 10.45).
+
+**Isolation corollary.** The pretrain atom set is identical across all rows (H, He, N, O — no C or
+F), yet the polarized row reaches PBE-level AE anyway. This rules out "needs more training" or "needs
+broader pretrain coverage" and points squarely at **representability of spin polarization**.
+
+**Honest caveat.** The polarized row changes three things together (ζ-dependent eval baseline, ζ
+network input, spin-resolved pretrain targets). The argument above says the eval-time ζ-baseline +
+ζ-input is the binding cause (consistent with the `split_exc_energy_uks` gate); a fully clean proof
+would ablate the three factors independently.
+
 **One-line summary.** *Constraints don't lower mean reaction-energy error (it cancels) — they cut
 worst-case per-species error ~2× and seed variance ~4×; and getting the spin-polarized correlation
 baseline right is what pulls pretrained atomization energies from 2.6× worse than PBE down onto PBE.*
