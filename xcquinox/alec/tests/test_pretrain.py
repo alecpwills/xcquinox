@@ -909,3 +909,51 @@ def test_run_pretrain_polarized_missing_data_errors_clearly():
     spec = _make_spec(arch=_make_arch(use_polarized_correlation=True))
     with pytest.raises(FileNotFoundError, match="pretrain_data_polarized.npz"):
         run_pretrain(spec)
+
+
+def test_run_pretrain_networks_override_bypasses_create_network_pair(tmp_path):
+    """``run_pretrain(spec, networks=(xnet, cnet))`` trains the PROVIDED networks
+    and never calls ``create_network_pair`` -- the path used to pretrain a
+    truly-unconstrained (lob_lim=None) net the arch cannot express. Trains 1 step
+    on a tiny synthetic unpolarized dataset (plumbing test, not accuracy)."""
+    import numpy as np
+    from xcquinox.alec import pretrain as P
+    from xcquinox.alec.networks import AlecGGA_XNet, AlecGGA_CNet
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    rng = np.random.default_rng(0)
+    n = 64
+    np.savez(
+        os.path.join(str(data_dir), "pretrain_data.npz"),
+        rho_all=rng.uniform(0.05, 1.0, n).astype(float),
+        sigma_all=rng.uniform(0.0, 1.0, n).astype(float),
+        Fx_all=rng.uniform(-0.5, 0.5, n).astype(float),
+        Fc_all=rng.uniform(-0.5, 0.5, n).astype(float),
+    )
+    spec = PretrainSpec(
+        arch=_make_arch(),  # default: unpolarized, no descriptors -> n_extra_features=0
+        data_dir=str(data_dir), checkpoint_dir=str(tmp_path / "ck"), n_steps=1,
+    )
+    # Truly-unconstrained override networks (lob_lim=None; create_network_pair
+    # cannot produce these without baking in the LO constraint).
+    xnet = AlecGGA_XNet(n_extra_features=0, depth=2, nodes=8, seed=0, lob_lim=None)
+    cnet = AlecGGA_CNet(n_extra_features=0, depth=2, nodes=8, seed=1, lob_lim=None)
+
+    called = {"hit": False}
+    real_cnp = P.create_network_pair
+
+    def _boom(*a, **k):
+        called["hit"] = True
+        return real_cnp(*a, **k)
+
+    P.create_network_pair = _boom
+    try:
+        md = P.run_pretrain(spec, networks=(xnet, cnet))
+    finally:
+        P.create_network_pair = real_cnp
+
+    assert called["hit"] is False, "create_network_pair must NOT run when networks= is given"
+    assert "final_loss_x" in md and "final_loss_c" in md
+    # the override net (lob_lim=None) was the thing trained + saved
+    assert os.path.isfile(os.path.join(str(tmp_path / "ck"), "xnet.eqx"))

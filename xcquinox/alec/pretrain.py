@@ -241,7 +241,7 @@ def _pretrain_data_filename(arch) -> str:
     return "pretrain_data.npz"
 
 
-def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
+def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -> dict:
     """Pretrain xnet and cnet on synthetic grid data.
 
     Steps:
@@ -260,6 +260,17 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
     same constrained functional that training and evaluation use. (Constraints
     are static, so the saved ``xnet.eqx``/``cnet.eqx`` leaf streams are unchanged
     and remain compatible with existing checkpoints.)
+
+    Args:
+        networks: optional ``(xnet, cnet)`` pair to pretrain INSTEAD of building
+            the pair from ``spec.arch`` via ``create_network_pair``. Use this to
+            pretrain a network the arch cannot express — e.g. a truly-unconstrained
+            net (``lob_lim=None``, no constraints), which ``create_network_pair``
+            cannot produce (a None lob_lim there requires the LO constraint to be
+            active). The provided networks MUST carry whatever constraints they are
+            meant to enforce; ``spec.arch`` is still used for the pretrain-data file
+            selection, descriptor assembly, and metadata. Default ``None`` ⇒
+            byte-identical to the prior behavior (build from ``spec.arch``).
 
     Returns:
         dict with pretrain_metadata.json fields.
@@ -314,8 +325,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
     Fx_target = pretrain_data["Fx_all"]
     Fc_target = pretrain_data["Fc_all"]
 
-    # --- Create network pair ---
-    xnet, cnet = create_network_pair(spec.arch, seed=spec.seed)
+    # --- Create network pair (or use the caller-supplied override) ---
+    if networks is not None:
+        xnet, cnet = networks
+    else:
+        xnet, cnet = create_network_pair(spec.arch, seed=spec.seed)
 
     # --- PretrainLoss (scalar MSE, compatible with xcTrainer) ---
     #
