@@ -164,3 +164,9 @@ domain_profile: dfs_step7
 # --- grid-level behaviour knobs --------------------------------------------
 on_precompute_failure: abort
 bh76_mode: reaction_energy
+# Spin-polarized correlation: when true, every arch is built spin-polarization-
+# aware (cnet input +1) and the UKS energy path uses the zeta-dependent PW92c
+# baseline. Default false. Enable per-run via `submit --polarized` (or set true
+# here). A true run REQUIRES a zeta-aware pretrain_data_polarized.npz in
+# pretrain.data_dir (generate via scripts/generate_polarized_pretrain_data.py).
+use_polarized_correlation: false
