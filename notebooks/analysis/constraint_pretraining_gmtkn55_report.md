@@ -19,6 +19,42 @@ benchmark. The left and right columns are scored against real GMTKN55 reference 
 
 ---
 
+## Datasets and coverage
+
+These are **curated subsets**, not the full benchmarks: **6 of 76 BH76** reactions and **10 of ~140
+W4-11** atomizations (29 unique species total). The subsets are chosen to keep the demo fast and
+clean (closed-shell W4-11 molecules avoid molecular open-shell bookkeeping; the BH76 reactions are a
+held-out transfer set). Conclusions are about *mechanism*, not full-benchmark accuracy.
+
+**BH76 — 6 reaction energies** (the BH76**RC** reaction-energy channel ΔE, *not* barrier heights),
+from the out-of-training Probe-C set — it deliberately **excludes the 3 BH76 reactions used in
+training**, so this is a transfer test. References: GMTKN55-BH76RC (W2-F12), kcal/mol.
+
+| reaction | ΔE_ref (kcal/mol) |
+|---|---|
+| OH + H₂ → H₂O + H    | −16.39 |
+| H + HCl → H₂ + Cl    | −1.90 |
+| CH₃ + H₂ → CH₄ + H   | −3.11 |
+| OH + NH₃ → H₂O + NH₂ | −10.32 |
+| H + N₂O → OH + N₂    | −64.91 |
+| H + H₂S → H₂ + HS    | −13.26 |
+
+**W4-11 — 10 closed-shell molecules**, each scored as molecule → constituent atoms against the
+GMTKN55 W4-11 reference atomization energy (kcal/mol):
+
+| molecule | atomization ref | molecule | atomization ref |
+|---|---|---|---|
+| H₂  | 109.493 | N₂   | 228.485 |
+| H₂O | 232.974 | CO₂  | 390.141 |
+| CH₄ | 420.420 | HF   | 141.640 |
+| NH₃ | 298.018 | C₂H₂ | 405.525 |
+| CO  | 259.727 | C₂H₄ | 564.095 |
+
+The **29 species** is the deduplicated union of the molecules/radicals above plus their constituent
+atoms (H, C, N, O, F, Cl, S) — each gets one PBE SCF + grid precompute.
+
+---
+
 ## Takeaways
 
 **1. The metric can hide the entire constraint benefit.** On BH76 *reaction energies*, constraints
