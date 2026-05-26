@@ -108,11 +108,14 @@ def test_build_random_model_unconstrained_is_truly_raw(demo):
     assert raw.xnet.lob_lim is None
     assert raw.cnet.lob_lim is None
     assert tuple(raw.x_constraints) == () and tuple(raw.c_constraints) == ()
+    # Spin-polarization-aware cnet -> UKS path uses the polarized PW92c baseline.
+    assert raw.cnet.use_spin_polarization is True
     # A constrained level carries the constraint and (for LO) disables built-in lob.
     _, spec = demo.make_constraint_levels()[1]  # +LO(x)
     con = demo.build_random_model(spec, seed=0)
     assert [c.registry_name for c in con.x_constraints] == ["lieb_oxford"]
     assert con.xnet.lob_lim is None
+    assert con.cnet.use_spin_polarization is True
 
 
 def test_build_arch_activates_named_constraints(demo):

@@ -15,6 +15,11 @@ Scenarios per constraint level (x-axis):
 Two series: random-init (multi-seed: mean bar + worst-case whisker) and
 constraint-aware-pretrained (single seed; library ``alec.run_pretrain``).
 
+All archs use ``use_polarized_correlation=True``, so the UKS energy path uses
+the spin-polarized PW92c correlation baseline with the real zeta for open-shell
+species (atoms, radicals) — not the zeta=0 unpolarized baseline. Pretrain data
+is spin-resolved (libxc spin=1 targets + per-point ``zeta_all``).
+
 THREE metrics (three panels), because the constraint benefit is metric-dependent:
   1. BH76 reaction-energy MAE vs GMTKN55-BH76RC (Probe-C, 6 reactions).
      Reaction energies are balanced (sum of coeffs = 0), so they CANCEL the large
@@ -28,8 +33,8 @@ THREE metrics (three panels), because the constraint benefit is metric-dependent
      writes each atomization as a molecule->atoms reaction, so it reuses the same
      reaction-energy scorer; it partially cancels, so the effect is intermediate.
 
-This is a DEMONSTRATION (small basis, coarse grid, few pretrain steps), not a
-benchmark. Requires local reference data: g2_97.traj (via eval_probes) and the
+This is a DEMONSTRATION (small basis, coarse grid, standard 1000 pretrain steps),
+not a benchmark. Requires local reference data: g2_97.traj (via eval_probes) and the
 GMTKN55 clone at scripts/script_data/gmtkn55/ (W4-11 subset).
 
 Run::
@@ -73,7 +78,7 @@ GRID_LEVEL = 1
 SEED = 0
 N_SEEDS = 16                 # random-init seeds (cheap: mol_data is cached)
 DEPTH, NODES = 3, 16
-PRETRAIN_N_STEPS = 150
+PRETRAIN_N_STEPS = 1000       # standard pretrain schedule
 # (symbol, PySCF 2S spin) — atoms whose PBE/LDA grid enhancement factors seed
 # the pretraining targets.
 PRETRAIN_ATOMS = (("H", 1), ("He", 0), ("N", 3), ("O", 2))
@@ -86,7 +91,12 @@ _REPO = os.path.dirname(os.path.dirname(_HERE))
 GMTKN55_DIR = os.path.join(_REPO, "scripts", "script_data", "gmtkn55")
 W411_DIR = os.path.join(GMTKN55_DIR, "W4-11")
 OUTDIR = os.path.join(_HERE, "_constraint_demo_work")
-PLOT_PATH = os.path.join(_HERE, "constraint_pretrain_gmtkn55_demo.png")
+# Step- and baseline-tagged so runs never clobber each other: the original
+# 150-step figure (``constraint_pretrain_gmtkn55_demo.png``) and the unpolarized
+# 1000-step figure (``..._pretrain1000step.png``) are both preserved; this
+# spin-polarized run writes ``..._pretrain{N}step_polc.png``.
+PLOT_PATH = os.path.join(
+    _HERE, f"constraint_pretrain_gmtkn55_demo_pretrain{PRETRAIN_N_STEPS}step_polc.png")
 
 
 # ---------------------------------------------------------------------------
@@ -108,25 +118,32 @@ def make_constraint_levels():
 
 def build_arch(label, x_constraints, c_constraints):
     """Build a no-descriptor GGA arch with the given constraint set (constraints
-    are baked into the networks by create_network_pair)."""
+    are baked into the networks by create_network_pair).
+
+    ``use_polarized_correlation=True`` makes the cnet spin-polarization-aware, so
+    the UKS energy path (``split_exc_energy_uks``) uses the spin-polarized PW92c
+    correlation baseline with the real zeta for open-shell species."""
     safe = (
         label.replace("+", "").replace("(", "").replace(")", "").strip().lower()
         or "base"
     )
     return ArchitectureConfig.from_spec(
         safe, DEPTH, NODES,
-        x_constraints=list(x_constraints), c_constraints=list(c_constraints))
+        x_constraints=list(x_constraints), c_constraints=list(c_constraints),
+        use_polarized_correlation=True)
 
 
 def build_random_model(spec, seed):
     """Random-init model for a level. ``spec is None`` -> TRULY unconstrained
-    (lob_lim=None, constraints=()); else a constrained arch."""
+    (lob_lim=None, constraints=()); else a constrained arch. Both use the
+    spin-polarization-aware cnet (polarized PW92c baseline)."""
     if spec is None:
         xnet = AlecGGA_XNet(n_extra_features=0, depth=DEPTH, nodes=NODES,
                             seed=seed, lob_lim=None)
         cnet = AlecGGA_CNet(n_extra_features=0, depth=DEPTH, nodes=NODES,
-                            seed=seed + 1, lob_lim=None)
-        base = ArchitectureConfig.from_spec("base", DEPTH, NODES)
+                            seed=seed + 1, lob_lim=None, use_spin_polarization=True)
+        base = ArchitectureConfig.from_spec(
+            "base", DEPTH, NODES, use_polarized_correlation=True)
         return AlecGGAModel.from_arch(base, xnet=xnet, cnet=cnet)
     x_constraints, c_constraints = spec
     return AlecGGAModel.from_arch(
@@ -267,9 +284,16 @@ def compute_metrics(model, mol_data, bh76_rxns, w411_rxns):
 # ---------------------------------------------------------------------------
 
 def generate_pretrain_data(data_dir):
-    """Write ``<data_dir>/pretrain_data.npz`` (rho_all/sigma_all/Fx_all/Fc_all) from
-    a few atoms on a coarse grid (step-4 Cell-7 recipe). Fx/Fc stored as F-1."""
-    rho_l, sig_l, fx_l, fc_l = [], [], [], []
+    """Write ``<data_dir>/pretrain_data.npz`` with rho_all/sigma_all/Fx_all/Fc_all
+    AND zeta_all, from a few atoms on a coarse grid. Fx/Fc stored as F-1.
+
+    SPIN-RESOLVED targets (ported from notebooks/_build_step6_notebook.py): for
+    open-shell atoms the PBE/LDA enhancement factors are evaluated with libxc
+    ``spin=1`` on the spin-resolved density (the spin=0 total-density call is
+    wrong for open-shell — PBE 1996 §III spin-scaling), and ``zeta_all`` carries
+    the per-grid-point spin polarization so the polarized cnet is pretrained on
+    the real zeta rather than a zeta=0 warm-start."""
+    rho_l, sig_l, fx_l, fc_l, zeta_l = [], [], [], [], []
     for symbol, spin in PRETRAIN_ATOMS:
         mol = gto.M(atom=f"{symbol} 0 0 0", basis=BASIS, charge=0, spin=spin, verbose=0)
         mf = dft.UKS(mol) if spin else dft.RKS(mol)
@@ -278,25 +302,42 @@ def generate_pretrain_data(data_dir):
         mf.kernel()
         ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=1)
         dm_ab = mf.make_rdm1()
-        dm = dm_ab[0] + dm_ab[1] if dm_ab.ndim == 3 else dm_ab
-        rho_gga = mf._numint.eval_rho(mol, ao, dm, xctype="GGA", hermi=True)
-        rho = rho_gga[0]
-        sigma = rho_gga[1] ** 2 + rho_gga[2] ** 2 + rho_gga[3] ** 2
-        ex_pbe = mf._numint.eval_xc("PBE,", rho_gga, spin=0)[0]
-        ec_pbe = mf._numint.eval_xc(",PBE", rho_gga, spin=0)[0]
-        ex_lda = mf._numint.eval_xc("LDA_X,", rho, spin=0)[0]
-        ec_lda = mf._numint.eval_xc(",LDA_C_PW", rho, spin=0)[0]
+        if dm_ab.ndim == 3:  # open-shell (UKS): spin-resolve, libxc spin=1
+            rho_a_gga = mf._numint.eval_rho(mol, ao, dm_ab[0], xctype="GGA", hermi=True)
+            rho_b_gga = mf._numint.eval_rho(mol, ao, dm_ab[1], xctype="GGA", hermi=True)
+            rho_gga_uks = np.stack([rho_a_gga, rho_b_gga], axis=0)
+            rho_a, rho_b = rho_a_gga[0], rho_b_gga[0]
+            rho = rho_a + rho_b
+            nabla_total = rho_a_gga[1:4] + rho_b_gga[1:4]
+            sigma = (nabla_total ** 2).sum(axis=0)
+            zeta = (rho_a - rho_b) / np.maximum(rho, 1e-300)
+            ex_pbe = mf._numint.eval_xc("PBE,", rho_gga_uks, spin=1)[0]
+            ec_pbe = mf._numint.eval_xc(",PBE", rho_gga_uks, spin=1)[0]
+            ex_lda = mf._numint.eval_xc("LDA_X,", (rho_a, rho_b), spin=1)[0]
+            ec_lda = mf._numint.eval_xc(",LDA_C_PW", (rho_a, rho_b), spin=1)[0]
+        else:  # closed-shell (RKS): zeta = 0, spin=0 calls
+            rho_gga = mf._numint.eval_rho(mol, ao, dm_ab, xctype="GGA", hermi=True)
+            rho = rho_gga[0]
+            sigma = rho_gga[1] ** 2 + rho_gga[2] ** 2 + rho_gga[3] ** 2
+            zeta = np.zeros_like(rho)
+            ex_pbe = mf._numint.eval_xc("PBE,", rho_gga, spin=0)[0]
+            ec_pbe = mf._numint.eval_xc(",PBE", rho_gga, spin=0)[0]
+            ex_lda = mf._numint.eval_xc("LDA_X,", rho, spin=0)[0]
+            ec_lda = mf._numint.eval_xc(",LDA_C_PW", rho, spin=0)[0]
         ex_safe = np.where(np.abs(ex_lda) > 1e-12, ex_lda, 1e-12)
         ec_safe = np.where(np.abs(ec_lda) > 1e-12, ec_lda, 1e-12)
         fx = np.clip(ex_pbe / ex_safe - 1.0, -5.0, 5.0)
         fc = np.clip(ec_pbe / ec_safe - 1.0, -5.0, 5.0)
         valid = rho > 1e-10
         rho_l.append(rho[valid]); sig_l.append(sigma[valid])
-        fx_l.append(fx[valid]); fc_l.append(fc[valid])
+        fx_l.append(fx[valid]); fc_l.append(fc[valid]); zeta_l.append(zeta[valid])
     os.makedirs(data_dir, exist_ok=True)
-    np.savez(os.path.join(data_dir, "pretrain_data.npz"),
+    # Polarized filename: the demo's archs set use_polarized_correlation=True, so
+    # run_pretrain selects pretrain_data_polarized.npz (carrying zeta_all).
+    np.savez(os.path.join(data_dir, "pretrain_data_polarized.npz"),
              rho_all=np.concatenate(rho_l), sigma_all=np.concatenate(sig_l),
-             Fx_all=np.concatenate(fx_l), Fc_all=np.concatenate(fc_l))
+             Fx_all=np.concatenate(fx_l), Fc_all=np.concatenate(fc_l),
+             zeta_all=np.concatenate(zeta_l))
 
 
 def pretrain_and_load(spec, data_dir, ckpt_dir):
@@ -392,37 +433,62 @@ def _print_tables(levels, pbe, rand, pre):
         print("=" * 78)
 
 
+_PLOT_STYLE = {
+    "font.size": 9, "axes.titlesize": 10, "axes.labelsize": 9,
+    "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 7,
+    "axes.axisbelow": True, "figure.dpi": 120, "savefig.dpi": 150,
+    "savefig.bbox": "tight",
+}
+
+
 def _plot(levels, pbe, rand, pre):
     labels = [lbl for lbl, _ in levels]
     x = np.arange(len(labels))
     w = 0.38
-    fig, axes = plt.subplots(1, 3, figsize=(17, 5.2))
-    for ax, (key, ylab, has_pbe) in zip(axes, _METRICS):
-        means = np.array([rand[l][key]["mean"] for l in labels])
-        maxes = np.array([rand[l][key]["max"] for l in labels])
-        # random: mean bar with an upper whisker to the worst-case (over seeds).
-        ax.bar(x - w / 2, means, w, yerr=[np.zeros_like(means), maxes - means],
-               capsize=4, color="#c0504d", ecolor="#7f2a28",
-               label=f"random init (mean; whisker=worst of {N_SEEDS} seeds)")
-        pre_vals = [pre[l][key] for l in labels]
-        xp = [xi for xi, v in zip(x, pre_vals) if v is not None]
-        yp = [v for v in pre_vals if v is not None]
-        ax.bar(np.array(xp) + w / 2, yp, w, color="#4f81bd",
-               label="pretrained (constraint-aware)")
-        if has_pbe:
-            ax.axhline(pbe[key], ls="--", color="k", lw=1.1,
-                       label=f"PBE baseline ({pbe[key]:.1f})")
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
-        ax.set_title(ylab, fontsize=9)
-        ax.legend(fontsize=7)
-    axes[0].set_ylabel("MAE (kcal/mol)")
-    fig.suptitle("Physical constraints + pretraining vs GMTKN55 — "
-                 "reaction energies cancel the per-species error that constraints reduce",
-                 fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    fig.savefig(PLOT_PATH, dpi=120)
-    plt.close(fig)
+    with plt.rc_context(_PLOT_STYLE):
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5.2))
+        for i, (ax, (key, ylab, has_pbe)) in enumerate(zip(axes, _METRICS)):
+            first = (i == 0)
+            means = np.array([rand[l][key]["mean"] for l in labels])
+            maxes = np.array([rand[l][key]["max"] for l in labels])
+            stds = np.array([rand[l][key]["std"] for l in labels])
+            ax.bar(x - w / 2, means, w, color="#c0504d", zorder=2,
+                   label="random init (mean)" if first else None)
+            # faint upper whisker to the worst seed ...
+            ax.errorbar(x - w / 2, means,
+                        yerr=[np.zeros_like(means), np.maximum(maxes - means, 0)],
+                        fmt="none", ecolor="#9a9a9a", elinewidth=1.0, capsize=6,
+                        capthick=1.0, zorder=4,
+                        label=f"worst of {N_SEEDS} seeds" if first else None)
+            # ... and a bold ± std whisker across seeds.
+            ax.errorbar(x - w / 2, means, yerr=stds, fmt="none", ecolor="#5a1714",
+                        elinewidth=1.8, capsize=3, capthick=1.6, zorder=5,
+                        label="± std (seeds)" if first else None)
+            pre_vals = [pre[l][key] for l in labels]
+            xp = [xi for xi, v in zip(x, pre_vals) if v is not None]
+            yp = [v for v in pre_vals if v is not None]
+            ax.bar(np.array(xp) + w / 2, yp, w, color="#4f81bd", zorder=3,
+                   label="pretrained (constraint-aware)" if first else None)
+            if has_pbe:
+                ax.axhline(pbe[key], ls="--", color="k", lw=1.1,
+                           label=f"PBE baseline ({pbe[key]:.1f})" if first else None)
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels, rotation=18, ha="right")
+            ax.grid(axis="y", alpha=0.3)
+            for sp in ("top", "right"):
+                ax.spines[sp].set_visible(False)
+            ax.margins(y=0.08)
+            ax.set_title(ylab)
+            if first:
+                ax.legend(loc="upper left", framealpha=0.9)
+        axes[0].set_ylabel("MAE (kcal/mol)")
+        fig.suptitle("Physical constraints + pretraining vs GMTKN55 — "
+                     "reaction energies cancel the per-species error that constraints reduce  "
+                     f"(pretrain: {PRETRAIN_N_STEPS} steps, seed {SEED})",
+                     fontsize=11)
+        fig.tight_layout(rect=(0, 0, 1, 0.96))
+        fig.savefig(PLOT_PATH)
+        plt.close(fig)
 
 
 if __name__ == "__main__":

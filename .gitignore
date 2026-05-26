@@ -144,5 +144,5 @@ scripts/script_data/gmtkn55/
 # constraint+pretraining demo: regenerable scratch (PBE precompute, pretrain
 # checkpoints, run log) and the output figure.
 notebooks/analysis/_constraint_demo_work/
-notebooks/analysis/_constraint_demo_run.log
-notebooks/analysis/constraint_pretrain_gmtkn55_demo.png
+notebooks/analysis/_constraint_demo*.log
+notebooks/analysis/constraint_pretrain_gmtkn55_demo*.png
