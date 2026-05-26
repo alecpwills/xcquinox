@@ -888,3 +888,24 @@ def test_pretrain_forward_is_constraint_aware():
     out = _np.asarray(_jax.vmap(xnet)(descriptors))
     assert _np.all(_np.isfinite(out))
     assert _np.all(out > 0.0) and _np.all(out < 1.804 + 1e-6)
+
+
+# ---------------------------------------------------------------------------
+# pretrain-data filename selection (polarized -> zeta-aware file)
+# ---------------------------------------------------------------------------
+
+def test_pretrain_data_filename_selection():
+    from xcquinox.alec.pretrain import _pretrain_data_filename
+    assert _pretrain_data_filename(_make_arch()) == "pretrain_data.npz"
+    assert _pretrain_data_filename(
+        _make_arch(use_polarized_correlation=True)) == "pretrain_data_polarized.npz"
+
+
+def test_run_pretrain_polarized_missing_data_errors_clearly():
+    """A spin-polarized run with no pretrain_data_polarized.npz fails fast with a
+    message naming the expected file and the generator script (no silent zeta=0
+    fallback)."""
+    from xcquinox.alec.pretrain import run_pretrain
+    spec = _make_spec(arch=_make_arch(use_polarized_correlation=True))
+    with pytest.raises(FileNotFoundError, match="pretrain_data_polarized.npz"):
+        run_pretrain(spec)

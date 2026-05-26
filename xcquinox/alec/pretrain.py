@@ -229,6 +229,18 @@ def _build_optimizer(
 # run_pretrain
 # ---------------------------------------------------------------------------
 
+def _pretrain_data_filename(arch) -> str:
+    """Pretrain-data filename for an architecture.
+
+    A spin-polarization-aware arch uses the zeta-aware
+    ``pretrain_data_polarized.npz`` (carrying a per-grid-point ``zeta_all``
+    column); the default unpolarized arch uses ``pretrain_data.npz``. Pure so it
+    can be unit-tested without touching disk."""
+    if getattr(arch, "use_polarized_correlation", False):
+        return "pretrain_data_polarized.npz"
+    return "pretrain_data.npz"
+
+
 def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
     """Pretrain xnet and cnet on synthetic grid data.
 
@@ -254,19 +266,32 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None) -> dict:
     """
     spec.validate()
 
-    # --- Load pretrain data (plan deviation: npz instead of pkl) ---
-    npz_path = os.path.join(spec.data_dir, "pretrain_data.npz")
+    # --- Load pretrain data (npz; .pkl legacy fallback for the unpolarized file) ---
+    # A spin-polarized run uses the zeta-aware ``pretrain_data_polarized.npz``;
+    # an unpolarized run uses ``pretrain_data.npz``. Selected purely from the arch
+    # flag, so the cluster picks the right file automatically.
+    polarized = bool(getattr(spec.arch, "use_polarized_correlation", False))
+    npz_path = os.path.join(spec.data_dir, _pretrain_data_filename(spec.arch))
     pkl_path = os.path.join(spec.data_dir, "pretrain_data.pkl")
 
     if os.path.isfile(npz_path):
         raw = np.load(npz_path)
         pretrain_data_np = {k: np.array(raw[k]) for k in raw.files}
-    elif os.path.isfile(pkl_path):
-        # pkl fallback for legacy files — safe because only array data
+    elif not polarized and os.path.isfile(pkl_path):
+        # pkl fallback for legacy (unpolarized) files — safe because only array data
         import pickle  # noqa: S403 — loading trusted local fixture files only
         with open(pkl_path, "rb") as _f:
             pretrain_data_np = _f.read()
         pretrain_data_np = __import__("pickle").loads(pretrain_data_np)
+    elif polarized:
+        # Fail fast: a spin-polarized run MUST use the zeta-aware file (never a
+        # silent zeta=0 fallback that would defeat the purpose).
+        raise FileNotFoundError(
+            f"run_pretrain: spin-polarized run expects "
+            f"{_pretrain_data_filename(spec.arch)!r} in data_dir={spec.data_dir!r} "
+            f"(it carries the zeta_all column). Generate it with `python "
+            f"scripts/generate_polarized_pretrain_data.py --out-dir {spec.data_dir!r}`."
+        )
     else:
         raise FileNotFoundError(
             f"run_pretrain: neither pretrain_data.npz nor pretrain_data.pkl "
