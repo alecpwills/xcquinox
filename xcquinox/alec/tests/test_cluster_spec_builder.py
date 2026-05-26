@@ -791,3 +791,17 @@ def test_build_training_specs_no_spurious_anchor_when_present(tmp_path):
         "molecule set diverged from the plain species union — a spurious anchor "
         "was injected for an already-present symbol"
     )
+
+
+def test_build_training_specs_polarized_flag_propagates(tmp_path):
+    """cfg.use_polarized_correlation rebuilds every spec's arch
+    spin-polarization-aware; default leaves the registry arch unchanged."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg_on = dataclasses.replace(_make_cfg(tmp_path), use_polarized_correlation=True)
+    out_on = build_training_specs(pool, ledger, cfg_on, domain, str(tmp_path / "run_on"))
+    assert out_on and all(spec.arch.use_polarized_correlation for _c, spec in out_on)
+    cfg_off = _make_cfg(tmp_path)
+    out_off = build_training_specs(pool, ledger, cfg_off, domain, str(tmp_path / "run_off"))
+    assert all(not spec.arch.use_polarized_correlation for _c, spec in out_off)

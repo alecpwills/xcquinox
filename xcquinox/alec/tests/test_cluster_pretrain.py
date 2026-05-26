@@ -369,3 +369,29 @@ def test_pretrain_template_is_valid_string_template():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_pretrain_arch_polarized_when_flag_set(tmp_path, monkeypatch):
+    """The pretrain stage rebuilds its arch spin-polarization-aware when the run
+    config sets use_polarized_correlation, so the pretrained checkpoint matches
+    the (polarized) training arch."""
+    captured = {}
+
+    def fake_run_pretrain(spec, progress_callback=None):
+        captured["spec"] = spec
+        os.makedirs(spec.checkpoint_dir, exist_ok=True)
+        open(os.path.join(spec.checkpoint_dir, "xnet.eqx"), "wb").close()
+        open(os.path.join(spec.checkpoint_dir, "cnet.eqx"), "wb").close()
+        return {"arch_name": spec.arch.name}
+
+    monkeypatch.setattr(pt, "_run_pretrain", fake_run_pretrain)
+    d = tmp_path / "run"
+    d.mkdir()
+    data_dir = tmp_path / "pretrain_data"
+    data_dir.mkdir()
+    cd = _config_dict(data_dir=str(data_dir))
+    cd["use_polarized_correlation"] = True
+    _write_config(str(d), cd)
+
+    assert pt.main([str(d), "1"]) == 0
+    assert captured["spec"].arch.use_polarized_correlation is True

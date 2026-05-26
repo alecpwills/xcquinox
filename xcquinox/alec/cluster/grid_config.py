@@ -263,6 +263,12 @@ class GridConfig:
     domain_profile: str
     on_precompute_failure: str = "abort"   # {"abort","drop_failed_species"}
     bh76_mode: str = "reaction_energy"     # {"reaction_energy","barrier_height"}
+    # Run-level toggle: when True, every architecture in the run is built
+    # spin-polarization-aware (cnet input +1), so the UKS energy path uses the
+    # zeta-dependent (spin-polarized) PW92c correlation baseline with the real
+    # zeta. Default False -> byte-identical unpolarized behavior. Set via the
+    # ``submit --polarized`` flag (or ``use_polarized_correlation: true`` in YAML).
+    use_polarized_correlation: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +453,7 @@ def load_grid_config(path: str) -> GridConfig:
         domain_profile=_require(raw, "domain_profile", "<root>"),
         on_precompute_failure=raw.get("on_precompute_failure", "abort"),
         bh76_mode=raw.get("bh76_mode", "reaction_energy"),
+        use_polarized_correlation=bool(raw.get("use_polarized_correlation", False)),
     )
 
 

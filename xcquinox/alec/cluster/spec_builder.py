@@ -43,6 +43,7 @@ Notes:
   an empty list is treated as a malformed ledger entry and raises ``ValueError``
   immediately — a real subset always has ≥1 point.
 """
+import dataclasses
 import os
 import warnings
 
@@ -429,8 +430,15 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             "density_weight": hp.density_weight,
         }
 
+        # Run-level spin-polarized-correlation toggle: rebuild the named arch
+        # spin-polarization-aware so training+eval use the zeta-dependent PW92c
+        # baseline. Default False -> the registry arch is used unchanged.
+        arch_cfg = get_architecture(cell.arch)
+        if getattr(cfg, "use_polarized_correlation", False):
+            arch_cfg = dataclasses.replace(arch_cfg, use_polarized_correlation=True)
+
         spec = TrainingSpec.from_dicts(
-            arch=get_architecture(cell.arch),
+            arch=arch_cfg,
             molecules=mol_specs,
             targets=targets,
             atom_energies=dict(domain.atom_energies),

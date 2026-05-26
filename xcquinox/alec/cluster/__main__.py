@@ -141,6 +141,7 @@ def _config_to_raw_dict(cfg) -> dict:
         "domain_profile": cfg.domain_profile,
         "on_precompute_failure": cfg.on_precompute_failure,
         "bh76_mode": cfg.bh76_mode,
+        "use_polarized_correlation": cfg.use_polarized_correlation,
     }
     return raw
 
@@ -643,6 +644,20 @@ def _apply_step_overrides(cfg, args):
     return cfg
 
 
+def _apply_polarized_override(cfg, args):
+    """Return a copy of ``cfg`` with spin-polarized correlation enabled when the
+    ``--polarized`` flag is set.
+
+    ``use_polarized_correlation=True`` rides into ``resolved_config.yaml`` and is
+    read by the preflight/spec-builder and pretrain stages, which rebuild every
+    architecture spin-polarization-aware. Unset leaves the config value (default
+    False), so omitting the flag is byte-identical to today.
+    """
+    if getattr(args, "polarized", False):
+        cfg = dataclasses.replace(cfg, use_polarized_correlation=True)
+    return cfg
+
+
 def _apply_time_overrides(cfg, args):
     """Return a copy of ``cfg`` with CLI-resolved per-stage wall times.
 
@@ -737,6 +752,7 @@ def cmd_submit(args) -> int:
     cfg = _apply_max_nodes_overrides(cfg, args)
     cfg = _apply_time_overrides(cfg, args)
     cfg = _apply_step_overrides(cfg, args)
+    cfg = _apply_polarized_override(cfg, args)
     domain = get_domain_profile(cfg.domain_profile)
     validate_grid_semantics(cfg, domain)
 
@@ -1483,6 +1499,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pretrain-n-steps", type=int, default=None,
         help="override the pretraining step count (pretrain.n_steps); "
              "unset -> the config value")
+    p_submit.add_argument(
+        "--polarized", action="store_true",
+        help="activate spin-polarized correlation on the networks for this run "
+             "(use_polarized_correlation=True): the cnet becomes "
+             "spin-polarization-aware and the UKS energy path uses the "
+             "zeta-dependent PW92c baseline. Default off (unpolarized).")
     p_submit.set_defaults(func=cmd_submit)
 
     p_status = sub.add_parser(

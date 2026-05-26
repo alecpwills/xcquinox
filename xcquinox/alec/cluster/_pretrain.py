@@ -39,6 +39,7 @@ This is a thin worker -- no resubmit / retry / outcome-classification
 machinery. Pretrain is a handful of jobs; v1 recovery is re-running the graph.
 """
 import argparse
+import dataclasses
 import os
 import sys
 import time
@@ -256,6 +257,13 @@ def main(argv=None) -> int:
         )
         sys.stdout.flush()
         return 1
+
+    # Match the training-spec arch: when the run enables spin-polarized
+    # correlation, pretrain the spin-polarization-aware cnet so the pretrained
+    # checkpoint's shape matches what training/eval will load.
+    if getattr(cfg, "use_polarized_correlation", False):
+        arch_config = dataclasses.replace(
+            arch_config, use_polarized_correlation=True)
 
     pt = cfg.pretrain
     # Run-scoped (<run_dir>/pretrain/<arch>) so two runs pretraining the same

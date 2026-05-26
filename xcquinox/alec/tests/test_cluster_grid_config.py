@@ -655,3 +655,18 @@ def test_pretrain_checkpoint_dir_normalizes_trailing_sep():
     assert pretrain_checkpoint_dir(
         "/scratch/runs/run_AAA/", "medium"
     ) == "/scratch/runs/run_AAA/pretrain/medium"
+
+
+# ---------------------------------------------------------------------------
+# use_polarized_correlation (run-level spin-polarized correlation toggle)
+# ---------------------------------------------------------------------------
+
+def test_use_polarized_correlation_default_and_parse(tmp_path):
+    # Default: absent key -> False (byte-identical unpolarized behavior).
+    cfg = load_grid_config(_write(tmp_path, "g.json", _base_config_dict()))
+    assert cfg.use_polarized_correlation is False
+    # Explicit true parses through.
+    data = _base_config_dict()
+    data["use_polarized_correlation"] = True
+    cfg2 = load_grid_config(_write(tmp_path, "g2.json", data))
+    assert cfg2.use_polarized_correlation is True

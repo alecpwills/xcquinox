@@ -1225,3 +1225,20 @@ def test_submit_pretrain_n_steps_override(tmp_path, monkeypatch):
     cfg = load_grid_config(str(run_dir / "resolved_config.yaml"))
     assert cfg.hyperparams.n_steps == 250
     assert cfg.pretrain.n_steps == 2000
+
+
+def test_submit_polarized_flag_and_override():
+    """`submit --polarized` parses to args.polarized and the override helper
+    flips cfg.use_polarized_correlation (default off)."""
+    import types
+    parser = cli._build_parser()
+    assert parser.parse_args(
+        ["submit", "g.yaml", "--partition", "short", "--polarized"]).polarized is True
+    assert parser.parse_args(
+        ["submit", "g.yaml", "--partition", "short"]).polarized is False
+    cfg = cli.load_grid_config("xcquinox/alec/cluster/examples/grid_step7.yaml")
+    assert cfg.use_polarized_correlation is False
+    on = cli._apply_polarized_override(cfg, types.SimpleNamespace(polarized=True))
+    assert on.use_polarized_correlation is True
+    off = cli._apply_polarized_override(cfg, types.SimpleNamespace(polarized=False))
+    assert off.use_polarized_correlation is False
