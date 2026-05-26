@@ -222,6 +222,14 @@ def _convergence_from(md: dict, ckpt_dir: str) -> dict:
     return out
 
 
+def should_reuse_checkpoint(meta: dict, n_steps: int, weighting: str) -> bool:
+    """True iff a saved pretrain_metadata dict matches the requested ``n_steps``
+    AND ``loss_weighting`` — so a shorter (e.g. smoke) or other-weighting checkpoint
+    is never silently reused. Pure."""
+    return (meta.get("pretrain_steps") == n_steps
+            and meta.get("loss_weighting") == weighting)
+
+
 def _build_arch(demo, label, x_constraints, c_constraints, polarized):
     """A no-descriptor GGA arch with the given constraints, polarized or not."""
     safe = (label.replace("+", "").replace("(", "").replace(")", "").strip()
@@ -279,13 +287,19 @@ def _pretrain_one(demo, alec, level_spec, weighting, data_dir, ckpt_dir, n_steps
         pair = demo.create_network_pair(arch, seed=seed)
         skel = (lambda p=pair[0]: p, lambda p=pair[1]: p)
 
+    # Reuse ONLY when an existing checkpoint was trained for the SAME n_steps AND
+    # weighting (else a shorter smoke/other-weighting run would be silently reused).
+    meta_path = os.path.join(ckpt_dir, "pretrain_metadata.json")
     have = (os.path.isfile(os.path.join(ckpt_dir, "xnet.eqx"))
             and os.path.isfile(os.path.join(ckpt_dir, "cnet.eqx"))
-            and os.path.isfile(os.path.join(ckpt_dir, "pretrain_metadata.json")))
+            and os.path.isfile(meta_path))
+    md = None
     if reuse and have:
-        with open(os.path.join(ckpt_dir, "pretrain_metadata.json")) as f:
-            md = json.load(f)
-    else:
+        with open(meta_path) as f:
+            cand = json.load(f)
+        if should_reuse_checkpoint(cand, n_steps, weighting):
+            md = cand
+    if md is None:
         md = alec.run_pretrain(
             alec.PretrainSpec(arch=arch, data_dir=data_dir, checkpoint_dir=ckpt_dir,
                               n_steps=n_steps, loss_weighting=weighting, seed=seed),

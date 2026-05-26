@@ -136,3 +136,20 @@ def test_build_arch_polarized_flag(mod):
     a_unp = mod._build_arch(demo_stub, "unconstrained", (), (), False)
     assert a_pol.use_polarized_correlation is True
     assert a_unp.use_polarized_correlation is False
+
+
+def test_should_reuse_checkpoint_guards_steps_and_weighting(mod):
+    # match → reuse
+    assert mod.should_reuse_checkpoint(
+        {"pretrain_steps": 1000, "loss_weighting": "unweighted"},
+        1000, "unweighted") is True
+    # mismatched step count (e.g. a 20-step smoke ckpt) → do NOT reuse
+    assert mod.should_reuse_checkpoint(
+        {"pretrain_steps": 20, "loss_weighting": "unweighted"},
+        1000, "unweighted") is False
+    # mismatched weighting → do NOT reuse
+    assert mod.should_reuse_checkpoint(
+        {"pretrain_steps": 1000, "loss_weighting": "integration"},
+        1000, "unweighted") is False
+    # missing keys → do NOT reuse
+    assert mod.should_reuse_checkpoint({}, 1000, "unweighted") is False
