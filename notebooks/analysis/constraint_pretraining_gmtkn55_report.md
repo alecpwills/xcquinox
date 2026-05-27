@@ -205,6 +205,55 @@ baseline right is what pulls pretrained atomization energies from 2.6× worse th
 
 ---
 
+## Follow-up: self-consistency ladder + polarized vs unpolarized
+
+The figures above evaluate the functional **non-self-consistently** (fixed PBE density). To check the
+conclusions survive self-consistency — and to put the polarized-vs-unpolarized comparison on a single
+controlled footing — every (constraint level × pretraining weighting) network was re-evaluated through
+a **three-rung self-consistency ladder**, for both a **polarized** and an **unpolarized** functional:
+
+- **fixed-ρ** — NN XC energy on the frozen PBE density (0 Roothaan steps; the figures above).
+- **one-shot** — one Roothaan step (build the NN Fock from the PBE density, diagonalize once).
+- **3-step** — a 3-cycle self-consistent SCF (J + descriptor features rebuilt each cycle).
+
+16 independent random seeds per mode; 1000-step pretraining in two weightings (`unweighted`,
+`integration`); 29 species; all energies finite (no SCF divergence in any of the 24 cells).
+Figures: `multimode_{polarized,unpolarized}_3x3.png` (+ `_convergence.png`).
+
+**1. Self-consistency barely moves the numbers.** 3-step ≈ fixed-ρ almost exactly; one-shot nudges
+the random means up a touch (e.g. polarized BH76 random 14.7 → 23.4 → 14.3 for fixed-ρ/one-shot/3-step).
+So the fixed-ρ conclusions above are robust to running the functional self-consistently.
+
+**2. Polarized reaches PBE on atomization; unpolarized does not — in every mode.** Pretrained W4-11
+atomization MAE (kcal/mol; PBE = 10.45), `unweighted`, as fixed-ρ / one-shot / 3-step:
+
+| level | **polarized** | **unpolarized** |
+|---|---|---|
+| unconstrained   | 12.3 / 15.0 / 12.3 | 19.7 / 21.5 / 19.8 |
+| +LO             | 13.0 / 14.9 / 13.0 | 19.6 / 21.4 / 19.6 |
+| +LO+UEG         | 12.3 / 13.7 / 12.3 | 21.1 / 24.5 / 21.1 |
+| +LO+UEG+NNc     | **10.2 / 11.5 / 10.2** | **27.3 / 33.6 / 27.3** |
+
+The unpolarized AE stays **~2–3× worse than PBE** and **worsens as constraints are added** (19.7 → 27.3),
+while the polarized AE **improves monotonically to PBE** (12.3 → 10.2). Self-consistency does not rescue
+the unpolarized functional — the ζ degree of freedom is the binding factor, exactly as the mechanism
+section argues.
+
+**3. It is specifically atomization.** Pretrained BH76 reaction energies (3-step; PBE = 8.08) clone
+close to PBE in *both* configs (polarized 7.2–9.5, unpolarized 8.6–10.5) — the open-shell-atom error
+cancels in balanced reactions but not in molecule→atoms atomization.
+
+**4. Constraint effect on pretraining convergence is polarized-specific.** xnet steps-to-converge
+(`unweighted`): polarized 185 / **28** / 396 / 396 (LO accelerates) vs unpolarized 827 / 795 / 874 / 874
+(slow regardless of constraint). A landscape difference, not over-interpreted.
+
+**5. No SCF divergence.** Every random functional — even unconstrained — stayed finite through the
+1- and 3-cycle SCF on this small, mostly-closed-shell set. So the "constraints stabilize an otherwise-
+divergent SCF" idea did **not** manifest here (it would likely need larger / more multireference
+systems or more cycles). Honest negative result.
+
+---
+
 ## Reproduce
 
 The figure is rebuilt from three saved run-logs with **no recomputation**:
@@ -220,6 +269,17 @@ python notebooks/analysis/make_constraint_3x3.py \
 To regenerate a run-log from scratch (~12 min for 150 steps, ~60 min for the 1000-step rows):
 `python notebooks/analysis/constraint_pretrain_gmtkn55_demo.py`. The demo source defines the
 constraint levels, metrics, and the spin-polarized baseline toggle.
+
+The follow-up self-consistency-ladder data (`multimode_{polarized,unpolarized}.json` + figures) is
+produced by `multimode_constraint_eval.py` (~1–2 h each, background) and plotted by
+`make_multimode_figure.py`:
+
+```bash
+python notebooks/analysis/multimode_constraint_eval.py --config polarized   --seeds 16 --pretrain-steps 1000
+python notebooks/analysis/multimode_constraint_eval.py --config unpolarized --seeds 16 --pretrain-steps 1000
+python notebooks/analysis/make_multimode_figure.py notebooks/analysis/demo_logs/multimode_polarized.json   notebooks/analysis/multimode_polarized
+python notebooks/analysis/make_multimode_figure.py notebooks/analysis/demo_logs/multimode_unpolarized.json notebooks/analysis/multimode_unpolarized
+```
 
 **Caveat for presentation.** This is the demo configuration (small basis, coarse grid, single
 pretrain seed, small reaction/atomization sets). It is directional evidence about the *mechanism*;
