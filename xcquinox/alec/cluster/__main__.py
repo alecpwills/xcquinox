@@ -2,15 +2,21 @@
 
 Invoked as ``python -m xcquinox.alec.cluster <subcommand> ...``. This module is
 purely the operator-facing front-end: it parses arguments, owns the run-dir
-lock, and wires the already-built ``cluster/`` modules together. Six
-subcommands:
+lock, and wires the already-built ``cluster/`` modules together. Subcommands:
 
   - ``prepare``             — stage input artifacts (CCSD refs, ledger, ...).
   - ``submit``              — create a fresh run dir + submit the 4-stage graph.
+  - ``submit-eval``         — submit the deferred eval array for an existing run.
   - ``status``              — read-only per-index outcome report.
+  - ``results``              — aggregate per-spec eval metrics (MAE etc.).
   - ``resubmit``            — recover FAILED TRAIN tasks (preflight succeeded).
   - ``resubmit-preflight``  — recover a FAILED/timed-out pretrain/preflight.
   - ``repair-manifest``     — rebuild a corrupt/missing ``manifest.json``.
+  - ``pull``                — rsync a run dir from the cluster back to local
+    for post-processing. Category-aware (``--category alpha_off/runs``).
+  - ``list-runs``           — discover ``run_<UTC>Z`` dirs under
+    ``--remote-root``, grouped by category. See
+    ``xcquinox/alec/cluster/sync.py`` for both.
 
 Design rules (enforced below at their use sites):
 
@@ -33,12 +39,15 @@ import dataclasses
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 from xcquinox.alec.cluster import analyze
 from xcquinox.alec.cluster import job_tracking
+from xcquinox.alec.cluster import sync as _sync
 from xcquinox.alec.cluster.grid_config import (
     expand_grid,
     load_grid_config,
@@ -1454,11 +1463,161 @@ def cmd_repair_manifest(args) -> int:
 
 
 # ===========================================================================
+# Subcommand: pull (rsync a run dir from the cluster back to local)
+# ===========================================================================
+
+# Default connection knobs for the SeaWulf (Stony Brook) deployment. Override
+# with the env vars below or the matching ``--host`` / ``--remote-root`` /
+# ``--local-root`` / ``--category`` CLI flags. Documented in
+# ``hpcjobs/SEAWULF_RUNBOOK.md`` Section 10.
+#
+# IMPORTANT — semantics: ``_PULL_DEFAULT_REMOTE_ROOT`` is the *base scratch
+# directory* holding all xcquinox sweep runs, with experiment-series subdirs
+# (``alpha_off/runs``, ``alpha_on/runs``, ``polarized/alpha_on``, ...) below
+# it. Pull's ``--category`` flag selects which subdir to look in. Pre-v2 docs
+# said this default ended in ``/runs`` — anyone who set
+# XCQUINOX_CLUSTER_REMOTE_ROOT explicitly should drop the ``/runs`` tail and
+# pass ``--category runs`` if they want the old single-series behavior.
+_PULL_DEFAULT_HOST = "login.seawulf.stonybrook.edu"
+_PULL_DEFAULT_REMOTE_ROOT = "/gpfs/scratch/awills/xcquinox_runs"
+
+
+def _pull_default_local_root() -> str:
+    """Default destination for ``pull`` when neither flag nor env var is set."""
+    return str(Path.home() / "Documents/Research/xcquinox-results/runs")
+
+
+def _make_ssh_lines(host: str):
+    """Factory for an SSH-wrapping ``ssh_runner`` matching
+    :func:`sync.resolve_run_id` / :func:`sync.discover_runs`. Shared by
+    ``cmd_pull`` and ``cmd_list_runs`` so the subprocess invocation does not
+    diverge between them. Raises :class:`subprocess.CalledProcessError` on
+    nonzero exit — the caller is expected to format its stderr via
+    :func:`sync.format_ssh_stderr_tail` to strip the SBU banner.
+    """
+    def _runner(argv):
+        completed = subprocess.run(
+            ["ssh", host, *argv],
+            check=True, capture_output=True, text=True,
+        )
+        return completed.stdout.splitlines()
+    return _runner
+
+
+def cmd_pull(args) -> int:
+    """``pull`` — rsync a sweep run dir from the cluster back to local.
+
+    Resolves the run id (``"latest"`` -> newest ``run_<UTC>Z`` under
+    ``<remote-root>/<category>`` via ``ssh ls -1tr``), creates
+    ``<local-root>/<category>/<run_id>/`` locally (mirroring the remote
+    layout to keep categories from colliding), then invokes ``rsync`` with
+    the packaged filter for the chosen profile.
+
+    Exit code is rsync's exit code; on success the local destination path is
+    printed so the caller can pipe it to e.g. ``python -m xcquinox.alec.cluster
+    results "$(...)"``.
+    """
+    host = args.host
+    remote_root = args.remote_root.rstrip("/")
+    local_root = args.local_root.rstrip("/")
+    category = args.category.strip("/")
+
+    ssh_runner = _make_ssh_lines(host)
+
+    try:
+        run_id = _sync.resolve_run_id(
+            args.run_id, ssh_runner=ssh_runner,
+            remote_root=remote_root, category=category,
+        )
+    except ValueError as exc:
+        _log(f"pull: {exc}")
+        return 1
+    except subprocess.CalledProcessError as exc:
+        _log(f"pull: ssh failed while resolving run_id "
+             f"(rc={exc.returncode}): "
+             f"{_sync.format_ssh_stderr_tail(exc.stderr or '')}")
+        return 1
+
+    # Mirror the category layout locally so two different categories with
+    # the same stamp do not stomp on each other.
+    local_dest = Path(local_root)
+    if category:
+        local_dest = local_dest / category
+    local_dest = local_dest / run_id
+    local_dest.mkdir(parents=True, exist_ok=True)
+
+    argv = _sync.build_rsync_command(
+        host=host, remote_root=remote_root, local_root=local_root,
+        run_id=run_id, category=category,
+        profile=args.profile, dry_run=args.dry_run,
+    )
+    _log(f"pull: running: {' '.join(argv)}")
+    rc = subprocess.run(argv).returncode
+    if rc == 0:
+        if args.dry_run:
+            _log(f"pull: dry-run complete (nothing transferred); "
+                 f"local dest would be {local_dest}")
+        else:
+            _log(f"pull: synced -> {local_dest}")
+    else:
+        _log(f"pull: rsync exited rc={rc}")
+    return rc
+
+
+# ===========================================================================
+# Subcommand: list-runs (discover what's under XCQUINOX_CLUSTER_REMOTE_ROOT)
+# ===========================================================================
+
+def cmd_list_runs(args) -> int:
+    """``list-runs`` — discover ``run_<UTC>Z`` dirs under ``--remote-root``.
+
+    Read-only; issues a single ``find -prune`` over SSH and groups results by
+    category (relative parent directory). Use this to figure out what to
+    pass to ``pull --category`` when your sweep layout has experiment-series
+    subdirs (``alpha_off/runs``, ``polarized/alpha_on``, ...).
+    """
+    host = args.host
+    remote_root = args.remote_root.rstrip("/")
+    ssh_runner = _make_ssh_lines(host)
+
+    try:
+        groups = _sync.discover_runs(
+            ssh_runner=ssh_runner, remote_root=remote_root,
+            max_depth=args.depth,
+        )
+    except subprocess.CalledProcessError as exc:
+        _log(f"list-runs: ssh failed (rc={exc.returncode}): "
+             f"{_sync.format_ssh_stderr_tail(exc.stderr or '')}")
+        return 1
+
+    _log(f"remote_root: {remote_root} (host={host})")
+    _log("")
+    if not groups:
+        _log(f"(no run_<UTC>Z dirs found under {remote_root!r} "
+             f"within depth {args.depth}; "
+             f"try `--depth {args.depth + 2}` if your layout nests deeper)")
+        return 0
+
+    # Categories sorted lexicographically; the unnested ("") category first.
+    for cat in sorted(groups.keys()):
+        run_ids = groups[cat]
+        label = (cat + "/") if cat else "(root)/"
+        _log(f"{label}  ({len(run_ids)} run{'s' if len(run_ids) != 1 else ''})")
+        for i, rid in enumerate(run_ids):
+            tag = "   <- latest" if i == len(run_ids) - 1 else ""
+            _log(f"  {rid}{tag}")
+        _log("")
+    _log(f"(searched to depth {args.depth} below {remote_root}; "
+         f"pass `--depth N` to go deeper)")
+    return 0
+
+
+# ===========================================================================
 # argparse wiring
 # ===========================================================================
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Construct the top-level argparse parser with all six subcommands."""
+    """Construct the top-level argparse parser with all the harness subcommands."""
     parser = argparse.ArgumentParser(
         prog="python -m xcquinox.alec.cluster",
         description="HPC (SLURM) training-harness CLI for xcquinox.alec.",
@@ -1596,6 +1755,75 @@ def _build_parser() -> argparse.ArgumentParser:
         help="instead of the grid table, show the N worst molecule-instances "
              "by |AE_error| across all evaluated specs")
     p_results.set_defaults(func=cmd_results)
+
+    p_pull = sub.add_parser(
+        "pull",
+        help="rsync a sweep run dir from the cluster back to local "
+             "for post-processing (default profile: summaries, < 100 MB)")
+    p_pull.add_argument(
+        "run_id",
+        help="run id to pull: a UTC stamp 'run_YYYYmmddTHHMMSSZ' or the "
+             "literal 'latest' (resolved via `ssh <host> ls -1tr <remote-root>`)")
+    p_pull.add_argument(
+        "--profile", choices=list(_sync.VALID_PROFILES), default="summaries",
+        help="which artifacts to pull. 'summaries' (default) skips every "
+             "*.eqx and the logs/ tree (<100 MB / 40-spec run); 'full' mirrors "
+             "the run dir minus logs/ (tens of GB / 40-spec run)")
+    p_pull.add_argument(
+        "--category",
+        default=os.environ.get("XCQUINOX_CLUSTER_CATEGORY", ""),
+        help="path segment under --remote-root that holds run_<UTC>Z dirs, "
+             "e.g. 'alpha_off/runs', 'polarized/alpha_on'. Mirrors locally "
+             "under --local-root so categories cannot collide. Empty (the "
+             "default) looks directly under --remote-root. "
+             "(default: $XCQUINOX_CLUSTER_CATEGORY else empty). "
+             "Use `list-runs` to discover what's available.")
+    p_pull.add_argument(
+        "--host",
+        default=os.environ.get("XCQUINOX_CLUSTER_HOST", _PULL_DEFAULT_HOST),
+        help="SSH host (default: $XCQUINOX_CLUSTER_HOST else "
+             f"'{_PULL_DEFAULT_HOST}'). Use a ~/.ssh/config alias for "
+             "ControlMaster reuse.")
+    p_pull.add_argument(
+        "--remote-root",
+        default=os.environ.get(
+            "XCQUINOX_CLUSTER_REMOTE_ROOT", _PULL_DEFAULT_REMOTE_ROOT),
+        help="base scratch directory on the cluster (default: "
+             f"$XCQUINOX_CLUSTER_REMOTE_ROOT else '{_PULL_DEFAULT_REMOTE_ROOT}'). "
+             "Run dirs live under <remote-root>/<category>/run_<UTC>Z.")
+    p_pull.add_argument(
+        "--local-root",
+        default=os.environ.get(
+            "XCQUINOX_CLUSTER_LOCAL_ROOT", _pull_default_local_root()),
+        help="local directory under which '<run_id>/' is created "
+             "(default: $XCQUINOX_CLUSTER_LOCAL_ROOT else "
+             "~/Documents/Research/xcquinox-results/runs)")
+    p_pull.add_argument(
+        "--dry-run", action="store_true",
+        help="pass --dry-run to rsync: report what would transfer, copy nothing")
+    p_pull.set_defaults(func=cmd_pull)
+
+    p_list_runs = sub.add_parser(
+        "list-runs",
+        help="discover run_<UTC>Z dirs under --remote-root, grouped by "
+             "category (read-only; one ssh `find -prune` call)")
+    p_list_runs.add_argument(
+        "--host",
+        default=os.environ.get("XCQUINOX_CLUSTER_HOST", _PULL_DEFAULT_HOST),
+        help="SSH host (default: $XCQUINOX_CLUSTER_HOST else "
+             f"'{_PULL_DEFAULT_HOST}')")
+    p_list_runs.add_argument(
+        "--remote-root",
+        default=os.environ.get(
+            "XCQUINOX_CLUSTER_REMOTE_ROOT", _PULL_DEFAULT_REMOTE_ROOT),
+        help=f"base scratch directory (default: $XCQUINOX_CLUSTER_REMOTE_ROOT "
+             f"else '{_PULL_DEFAULT_REMOTE_ROOT}')")
+    p_list_runs.add_argument(
+        "--depth", type=int, default=5,
+        help="maximum dir levels to descend below --remote-root (default 5; "
+             "the deepest current layout is polarized/<axis>/runs/run_<UTC>Z "
+             "at depth 4 — bump if your layout nests further)")
+    p_list_runs.set_defaults(func=cmd_list_runs)
 
     p_resub = sub.add_parser(
         "resubmit", help="recover failed TRAIN tasks (sparse arrays)")

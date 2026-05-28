@@ -1,0 +1,44 @@
+# xcquinox.alec.cluster — rsync filter rules for the "summaries" pull profile.
+#
+# Loaded via `rsync --filter='. <abs path>/summaries.filter'`. Rules apply with
+# the run dir (`run_<UTC>Z/`) as the transfer root, so leading `/` anchors a
+# pattern to that root (NOT the filesystem root). See `man rsync` "FILTER RULES"
+# and "INCLUDE/EXCLUDE PATTERN RULES".
+#
+# Contract: this filter MUST stay in sync with the artifact layout the harness
+# writes (see xcquinox/alec/cluster/__main__.py cmd_submit, _train_task.py,
+# _eval_one_spec.py, _pretrain.py). When the harness gains a new small artifact,
+# add a `+ ` line here in the same commit. The end-to-end canary test in
+# tests/test_cluster_sync.py drives rsync against a fixture tree and will fail
+# loudly if this filter omits an artifact it lists or includes a *.eqx blob it
+# is not supposed to.
+
+# --- top-level metadata (small, always wanted) -----------------------------
++ /manifest.json
++ /resolved_config.yaml
++ /jobs.json
++ /attempts.json
+
+# --- per-spec eval / training summaries ------------------------------------
+# rsync needs `+ <dir>/` rules to descend into each level; the final `- *`
+# below would otherwise prune the whole subtree.
++ /checkpoints/
++ /checkpoints/spec_*/
++ /checkpoints/spec_*/eval/
++ /checkpoints/spec_*/eval_df.csv
++ /checkpoints/spec_*/failure.json
++ /checkpoints/spec_*/losses.npy
++ /checkpoints/spec_*/eval/per_molecule.json
++ /checkpoints/spec_*/eval/skipped.json
+
+# --- pretrain metadata + loss curves (small, useful for diagnostics) -------
++ /pretrain/
++ /pretrain/*/
++ /pretrain/*/pretrain_metadata.json
++ /pretrain/*/losses_*.npy
+
+# --- drop everything else -------------------------------------------------
+# This includes: /logs/, /scripts/, /specs/, every *.eqx model checkpoint,
+# every per-spec *.gen<N> archived artifact, and any future top-level dir
+# the harness gains (must be opted in explicitly above).
+- *

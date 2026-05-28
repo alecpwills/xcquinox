@@ -260,6 +260,149 @@ sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS,ExitCode
 
 ---
 
+## 10. Pull results back to your laptop
+
+The `pull` subcommand wraps `rsync` with a packaged filter that knows the
+harness layout. The `list-runs` subcommand discovers what's on the cluster.
+
+> **Migration note.** Pre-2026-05-29, `XCQUINOX_CLUSTER_REMOTE_ROOT`
+> defaulted to `/gpfs/scratch/awills/xcquinox_runs/runs` (a specific
+> single-series subdir that doesn't actually exist in the canonical layout).
+> The default is now `/gpfs/scratch/awills/xcquinox_runs` — the base scratch
+> directory — and a new `--category` flag selects which experiment-series
+> subdir (`alpha_off/runs`, `polarized/alpha_on`, …) the run dirs live in.
+> If your shell currently has `export XCQUINOX_CLUSTER_REMOTE_ROOT=…/runs`,
+> drop the `/runs` tail and add `--category runs` to your pull invocations.
+
+### Layout this assumes
+
+```
+$XCQUINOX_CLUSTER_REMOTE_ROOT/    # /gpfs/scratch/awills/xcquinox_runs by default
+  alpha_off/runs/run_<UTC>Z/...
+  alpha_on/runs/run_<UTC>Z/...
+  polarized/alpha_on/run_<UTC>Z/...
+  polarized/alpha_off/run_<UTC>Z/...
+```
+
+`pull --category <segment>` joins the segment onto the remote root and
+expects `run_<UTC>Z` dirs directly inside. The local destination mirrors the
+same category layout so two different categories with the same stamp cannot
+collide.
+
+### Two profiles
+
+- **`summaries`** (default) — manifest, resolved config, every per-spec
+  `eval_df.csv` / `failure.json` / `losses.npy` / `eval/per_molecule.json`,
+  and pretrain metadata + loss curves. **No `*.eqx`, no `logs/`.** Typically
+  **< 100 MB / 40-spec run**, so this is the right default for driving
+  `analyze.collect_results()` and the notebook figures.
+- **`full`** — mirrors the run dir minus `logs/`. Tens of GB / 40-spec run.
+  Use this when you need the actual trained `model.eqx` or pretrain
+  `xnet.eqx` / `cnet.eqx` checkpoints locally (paper-figure re-evaluation,
+  loading the model into a notebook, etc.).
+
+### One-time setup
+
+```bash
+# ~/.ssh/config — alias + ControlMaster so repeat rsyncs do not re-handshake
+cat >> ~/.ssh/config <<'EOF'
+Host seawulf
+    HostName login.seawulf.stonybrook.edu
+    User awills
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m
+EOF
+
+# ~/.bashrc — optional, overrides the built-in defaults
+export XCQUINOX_CLUSTER_HOST=seawulf
+# (XCQUINOX_CLUSTER_REMOTE_ROOT default = /gpfs/scratch/awills/xcquinox_runs)
+# Set if you want a sticky default category for this shell:
+# export XCQUINOX_CLUSTER_CATEGORY=alpha_off/runs
+# Set if you want results staged somewhere other than the default:
+# export XCQUINOX_CLUSTER_LOCAL_ROOT=$HOME/Documents/Research/xcquinox-results/runs
+```
+
+Bash aliases like `alias seawulf="ssh awills@login2.seawulf.stonybrook.edu"`
+are **not** usable for the `XCQUINOX_CLUSTER_HOST` value — the harness
+`subprocess.run(["ssh", host, ...])` bypasses bash so aliases are invisible.
+Use an `~/.ssh/config` Host alias (above) or set the env var to a literal
+`user@hostname` string (e.g. your existing `$swpath`).
+
+### Discover what's on the cluster
+
+```bash
+python -m xcquinox.alec.cluster list-runs
+# Example output:
+#   remote_root: /gpfs/scratch/awills/xcquinox_runs (host=seawulf)
+#
+#   alpha_off/runs/  (3 runs)
+#     run_20260528T143052Z
+#     run_20260530T100000Z
+#     run_20260601T120000Z   <- latest
+#
+#   alpha_on/runs/  (1 run)
+#     run_20260529T090000Z   <- latest
+#
+#   polarized/alpha_on/  (1 run)
+#     run_20260527T143052Z   <- latest
+
+# Tune the search depth (default 5 — sufficient for the current layout, where
+# the deepest run lives at polarized/<axis>/runs/run_<UTC>Z = depth 4). Bump
+# if you nest categories further:
+python -m xcquinox.alec.cluster list-runs --depth 7
+```
+
+### Daily commands
+
+```bash
+# Latest sweep in the alpha_off series, summaries only, < 100 MB
+python -m xcquinox.alec.cluster pull latest --category alpha_off/runs
+
+# Same for alpha_on or polarized:
+python -m xcquinox.alec.cluster pull latest --category alpha_on/runs
+python -m xcquinox.alec.cluster pull latest --category polarized/alpha_on
+
+# A specific run by stamp:
+python -m xcquinox.alec.cluster pull run_20260528T143052Z --category alpha_off/runs
+
+# Preview without transferring:
+python -m xcquinox.alec.cluster pull latest --category alpha_off/runs --dry-run
+
+# When you need the actual trained models for re-evaluation:
+python -m xcquinox.alec.cluster pull latest --category alpha_off/runs --profile full
+
+# Then analyze locally — the local tree mirrors the category:
+python -m xcquinox.alec.cluster results \
+    ~/Documents/Research/xcquinox-results/runs/alpha_off/runs/run_20260601T120000Z
+```
+
+`pull latest` resolves the newest `run_<UTC>Z` under
+`<remote-root>/<category>/` via `ssh <host> ls -1tr` (filtering out stray
+non-run-dir entries). The summaries profile is small enough that you can
+re-run `pull latest --category …` ad hoc to refresh as eval tasks finish —
+rsync's `--partial` flag makes resumes cheap.
+
+### Why error output is clean
+
+SeaWulf's SSH server prints a multi-line compliance banner to stderr on
+every connection. On a failing command (e.g. wrong `--remote-root`), the
+harness used to dump the banner *and* the real error together; now the
+error formatter shows only the last 3 non-blank lines of stderr — the real
+`ls:`/`find:` error always lives at the tail, so the banner gets dropped
+from view without anything important being suppressed.
+
+### Where the filter rules live
+
+The filter files at `xcquinox/alec/cluster/filters/{summaries,full}.filter`
+are exercised on every test run by the canary tests in
+`xcquinox/alec/tests/test_cluster_sync.py`. Any future change to the
+harness output layout that forgets to update the filter (or the category
+plumbing) fails CI loudly instead of silently dropping artifacts at pull
+time.
+
+---
+
 ## Run-dir contents (for reference)
 
 ```

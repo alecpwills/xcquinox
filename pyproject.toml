@@ -69,7 +69,8 @@ xcquinox = [
 ]
 "xcquinox.alec.cluster" = [
     "templates/*.sbatch.tmpl",
-    "examples/*.yaml"
+    "examples/*.yaml",
+    "filters/*.filter"
 ]
 
 [tool.versioningit]

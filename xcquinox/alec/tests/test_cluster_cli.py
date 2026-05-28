@@ -215,8 +215,8 @@ def test_dispatch_all_subcommands_are_registered():
     for action in sub:
         choices |= set(action.choices)
     assert choices == {
-        "prepare", "submit", "submit-eval", "status", "results", "resubmit",
-        "resubmit-preflight", "repair-manifest",
+        "prepare", "submit", "submit-eval", "status", "results", "pull",
+        "list-runs", "resubmit", "resubmit-preflight", "repair-manifest",
     }
 
 
