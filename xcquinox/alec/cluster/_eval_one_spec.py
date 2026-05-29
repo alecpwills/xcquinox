@@ -300,6 +300,74 @@ def main(argv=None) -> int:
         f"eval_df.csv written -- mae={mae:.4f} rho_rmse={rho_rmse:.4f} "
         f"n_eval={n_eval} ({csv_path})",
     )
+
+    # --- 2026-05-29: held-out eval against full BH76 + W4-11 --------------
+    # Adds an apples-to-apples comparison surface against XCDiff & friends
+    # without disturbing the in-sample eval above. Failure of this section
+    # does NOT mark the task as failed -- the train checkpoint + in-sample
+    # eval are already committed to disk. Writes:
+    #   <ckpt>/eval_holdout/test_set.csv       (per-pool + combined MAE)
+    #   <ckpt>/eval_holdout/per_molecule.json  (per-species E_nn + E_pbe)
+    #   <ckpt>/eval_holdout/per_reaction.json  (per-reaction NN + PBE errors)
+    # On exception: writes <ckpt>/eval_holdout/failure.json with the trace
+    # and returns 0 (the in-sample artifact is the authoritative success
+    # signal for the SLURM array task).
+    try:
+        from xcquinox.alec.eval_holdout import (
+            load_trained_model,
+            run_full_holdout_eval,
+        )
+        from xcquinox.alec.full_benchmark_pools import (
+            load_full_held_out_pools,
+        )
+        from pathlib import Path as _Path
+
+        holdout_dir = _Path(checkpoint_dir) / "eval_holdout"
+        _log(idx, "starting full-pool held-out eval (BH76 + W4-11)")
+        t1 = time.time()
+        model = load_trained_model(training_spec, _Path(model_path))
+        # Basis + grid_level should match what the existing test_spec uses
+        # for the in-sample eval so PBE precomputes are comparable. Today
+        # they default to def2-svp / grid_level=1 (the cluster sweep
+        # standard); a future cfg-derived override would slot here.
+        full_specs, full_rxns = load_full_held_out_pools(
+            basis="def2-svp", grid_level=1,
+        )
+        result = run_full_holdout_eval(
+            training_spec=training_spec,
+            model=model,
+            mol_specs=full_specs,
+            reactions=full_rxns,
+            out_dir=holdout_dir,
+        )
+        elapsed_h = time.time() - t1
+        _log(
+            idx,
+            f"held-out eval complete ({elapsed_h:.1f}s elapsed; "
+            f"{result['n_reactions']} reactions over "
+            f"{result['n_species']} species; "
+            f"{result['n_dropped_nan']} NaN-drop, "
+            f"{result['n_dropped_overlap']} overlap-drop)",
+        )
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        from pathlib import Path as _Path
+        holdout_dir = _Path(checkpoint_dir) / "eval_holdout"
+        holdout_dir.mkdir(parents=True, exist_ok=True)
+        with (holdout_dir / "failure.json").open("w") as f:
+            json.dump({
+                "kind": "held_out_eval_failure",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+                "traceback": traceback.format_exc(),
+            }, f, indent=2)
+        _log(
+            idx,
+            f"held-out eval FAILED ({type(exc).__name__}: {exc}); "
+            "in-sample eval_df.csv was still written -- treating spec as "
+            "succeeded. See eval_holdout/failure.json for details.",
+        )
+
     return 0
 
 
