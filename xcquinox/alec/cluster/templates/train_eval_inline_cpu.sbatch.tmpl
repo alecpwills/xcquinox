@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=${JOB_NAME}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
+${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --array=0-${ARRAY_MAX}%${THROTTLE}
+#SBATCH --signal=B:TERM@${SIGTERM_GRACE}
+#SBATCH --output=${RUN_DIR}/logs/train_eval_%A_%a.out
+${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
+set -uo pipefail
+# NOTE: NOT `set -e` — we intentionally tolerate eval failure so the train
+# checkpoint (already on disk from _train_task) survives a crash in
+# _eval_one_spec. See the `|| true` guard on the eval invocation below.
+
+# --- conda activation ------------------------------------------------------
+${CONDA_ACTIVATION}
+
+# --- thread caps -----------------------------------------------------------
+export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+
+# --- JAX/XLA CPU backend ---------------------------------------------------
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=$$SLURM_CPUS_PER_TASK --xla_force_host_platform_device_count=1"
+
+# --- train task ------------------------------------------------------------
+# 2026-05-29 inline-eval mode: this single SLURM task does BOTH train AND
+# eval for the spec at $$SLURM_ARRAY_TASK_ID. Train is exec'd in a subshell
+# so we can capture its exit code without letting `set -e` abort the eval
+# invocation. The eval is wrapped in `|| true` so an eval crash does not mark
+# the array task as failed — the train checkpoint (model.eqx) is already on
+# disk before eval runs, and any failure.json from _train_task itself is the
+# authoritative train-status record.
+(
+  exec python -m xcquinox.alec.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID}
+)
+train_exit=$$?
+echo "[inline-eval] _train_task exit code: $${train_exit}"
+
+# Only run eval if train succeeded. A failed train means no model.eqx for
+# _eval_one_spec to load; skip and exit with the train's status code.
+if [ "$${train_exit}" -eq 0 ]; then
+  echo "[inline-eval] running _eval_one_spec inline ..."
+  python -m xcquinox.alec.cluster._eval_one_spec ${RUN_DIR} $${SLURM_ARRAY_TASK_ID} || \
+    echo "[inline-eval] WARNING: _eval_one_spec failed (train checkpoint preserved)"
+fi
+
+exit $${train_exit}

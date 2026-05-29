@@ -200,7 +200,14 @@ def _precompute_cache_key(
     # so that re-running a notebook after vxc_ref regeneration (e.g.
     # step6's mid-notebook OEP rerun) invalidates stale cache entries.
     desc_key = tuple(
-        (type(d).__name__, getattr(d, "n_features", None)) for d in descriptors
+        (type(d).__name__, getattr(d, "n_features", None),
+         # 2026-05-29: include settings that affect descriptor compute so a
+         # DMStatisticsDescriptor(intensive=True) does not collide with
+         # DMStatisticsDescriptor(intensive=False) in the cache, and likewise
+         # for CuspDescriptor.log_transform.
+         getattr(d, "intensive", False),
+         getattr(d, "log_transform", False))
+        for d in descriptors
     )
     ext_path = getattr(mol_spec, "external_data_path", None)
     if ext_path and os.path.isfile(ext_path):
@@ -362,8 +369,17 @@ def precompute_fixed_density_data(
         from xcquinox.features import compute_cusp_descriptor
         nuclear_coords = jnp.array(mol.atom_coords())
         nuclear_charges = jnp.array([mol.atom_charge(i) for i in range(mol.natm)])
+        # 2026-05-29: pull the log_transform flag from the CuspDescriptor
+        # instance so precompute matches what the descriptor's consumer
+        # expects. Default False = pre-fix raw-weighted-Z behavior.
+        cusp_log_transform = False
+        for d in descriptors:
+            if type(d).__name__ == "CuspDescriptor":
+                cusp_log_transform = bool(getattr(d, "log_transform", False))
+                break
         cusp_features = compute_cusp_descriptor(
             jnp.array(coords), nuclear_coords, nuclear_charges,
+            log_transform=cusp_log_transform,
         )
 
     if "dm_features" in all_needed:
@@ -378,8 +394,18 @@ def precompute_fixed_density_data(
         # (D_a + D_b)/2 != (D_a + D_b)/2 (cross terms D_a S D_b survive).
         dm_for_features = jnp.array(dm_pbe) if dm_pbe.ndim == 3 \
                          else jnp.array(dm_pbe_tot)
+        # 2026-05-29: pull the intensive flag from the DMStatisticsDescriptor
+        # instance so precompute matches what the descriptor.compute() consumer
+        # will expect. If multiple DMStatisticsDescriptor instances are present
+        # (shouldn't normally happen), use the first one's flag.
+        dm_intensive = False
+        for d in descriptors:
+            if type(d).__name__ == "DMStatisticsDescriptor":
+                dm_intensive = bool(getattr(d, "intensive", False))
+                break
         dm_feat_global = compute_dm_features_array(
             dm_for_features, jnp.array(s_matrix),
+            intensive=dm_intensive,
         )
         dm_features = jnp.tile(dm_feat_global, (len(rho_pbe), 1))
 

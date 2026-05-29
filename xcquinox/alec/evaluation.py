@@ -361,6 +361,24 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
             ) from e
         raise
 
+    # 2026-05-29 forensic-review assertion: the cnet's static
+    # use_spin_polarization flag MUST match the arch's flag. Mismatch would
+    # indicate a checkpoint built outside create_network_pair OR a
+    # round-trip bug; either way, polarized vs unpolarized comparisons would
+    # become degenerate at eval (zeta silently dropped).
+    if hasattr(model.cnet, "use_spin_polarization"):
+        if model.cnet.use_spin_polarization != spec.arch.use_polarized_correlation:
+            raise ValueError(
+                f"Polarization-flag mismatch at load time: "
+                f"model.cnet.use_spin_polarization="
+                f"{model.cnet.use_spin_polarization} but "
+                f"spec.arch.use_polarized_correlation="
+                f"{spec.arch.use_polarized_correlation}. The cnet must be "
+                f"built via create_network_pair(arch) so the flag is "
+                f"derived from arch.use_polarized_correlation — "
+                f"see evaluation.py:350 + networks.py:333-342."
+            )
+
     # 4. Instantiate metrics
     mk_dict = spec.metric_kwargs_dict
     ae_dict = spec.atom_energies_dict

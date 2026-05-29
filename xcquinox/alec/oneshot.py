@@ -325,7 +325,21 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
     rho_tot = rho_a + rho_b
     ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, features)
     ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, features)
-    if getattr(model.cnet, "use_spin_polarization", False):
+    # 2026-05-29: explicit attribute read instead of getattr(..., False) silent
+    # fallback. A polarized model.eqx that loses use_spin_polarization during
+    # (de)serialization would have silently dropped zeta on the open-shell
+    # path before this change, making polarized vs unpolarized indistinguishable
+    # at eval (forensic-review H3). Raises AttributeError if the cnet lacks
+    # the attribute entirely (legacy hand-built cnet, not normal flow).
+    if not hasattr(model.cnet, "use_spin_polarization"):
+        raise AttributeError(
+            "model.cnet has no `use_spin_polarization` attribute. This "
+            "indicates a model built outside the standard "
+            "AlecGGA_CNet / create_network_pair path; the silent-False "
+            "fallback at oneshot.py:328 was removed 2026-05-29 to surface "
+            "this class of bug instead of degrading polarized eval."
+        )
+    if model.cnet.use_spin_polarization:
         zeta = jnp.clip((rho_a - rho_b) / jnp.maximum(rho_tot, 1e-300),
                         -1.0, 1.0)
         ec = model.eval_ec(rho_tot, sigma_tot, features, zeta=zeta)
@@ -526,7 +540,15 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
     # Correlation. P2-03: a spin-polarization-aware cnet makes V_c PER-SPIN
     # (zeta = (rho_a-rho_b)/rho_tot couples the spins); otherwise V_c is the
     # zeta=0 total-density potential, shared by both spins (the fast path).
-    if getattr(model.cnet, "use_spin_polarization", False):
+    # 2026-05-29: explicit attribute read (forensic-review H3) — see
+    # split_exc_energy_uks for rationale.
+    if not hasattr(model.cnet, "use_spin_polarization"):
+        raise AttributeError(
+            "model.cnet has no `use_spin_polarization` attribute (see "
+            "split_exc_energy_uks for the polarization-flag assertion "
+            "rationale)."
+        )
+    if model.cnet.use_spin_polarization:
         vc_a, vc_b = compute_vc_polarized_per_spin(
             model, rho_a, rho_b, sigma_tot, features, ao_grid, grid_weights,
             nabla_rho_tot, ao_grid_deriv,

@@ -17,4 +17,9 @@ NOTEBOOK_ARCHITECTURES = {
     "deep_dm_attn":       {"name": "deep_dm_attn",       "depth": 4, "nodes": 32, "attention": True,  "descriptors": ["dm_statistics"]},
     "deep_combined":      {"name": "deep_combined",      "depth": 4, "nodes": 32, "attention": False, "descriptors": ["dm_statistics", "cusp"]},
     "deep_combined_attn": {"name": "deep_combined_attn", "depth": 4, "nodes": 32, "attention": True,  "descriptors": ["dm_statistics", "cusp"]},
+    # 2026-05-29: notransform variants — bare deep arch (no DM/Cusp extras)
+    # with the Dick XCDiff input log-transform explicitly disabled. Used as
+    # the no-log control in the descriptor ablation sweep.
+    "deep_notransform":      {"name": "deep_notransform",      "depth": 4, "nodes": 32, "attention": False, "descriptors": []},
+    "deep_notransform_attn": {"name": "deep_notransform_attn", "depth": 4, "nodes": 32, "attention": True,  "descriptors": []},
 }

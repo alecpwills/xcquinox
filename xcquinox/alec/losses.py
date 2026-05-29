@@ -184,10 +184,12 @@ def _ae_from_atoms(E_mol, comp_dict, atom_energies):
 
     AE = Σ n_Z · atom_energies[Z] − E_mol
 
-    The atom anchor is a caller-supplied dict (typically PBE-consistent
-    atomic totals for a post-hoc NN XC on a frozen PBE density). Using a
-    fixed anchor rather than NN-predicted atomic totals is what lets the
-    training loss and AtomizationEnergyMetric measure the same quantity.
+    The atom anchor is a caller-supplied dict. Under the active
+    ``dfs_step7`` domain profile this dict carries the Chakravorty 1993
+    exact non-relativistic atomic totals (NOT PBE-consistent values; see
+    forensic-review 2026-05-29). Using a fixed anchor rather than
+    NN-predicted atomic totals is what lets the training loss and
+    AtomizationEnergyMetric measure the same quantity.
     """
     return sum(n * atom_energies[Z] for Z, n in comp_dict.items()) - E_mol
 

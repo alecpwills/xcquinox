@@ -209,6 +209,68 @@ def test_dm_entropy_larger_for_fractional_occupations():
 
 
 # ---------------------------------------------------------------------------
+# 2026-05-29 forensic fix: dm_entropy intensive flag
+# ---------------------------------------------------------------------------
+
+
+def test_dm_entropy_intensive_false_matches_extensive_form():
+    """Default ``intensive=False`` reproduces the extensive ln(N_occ) form
+    (pre-fix behavior; old checkpoints unpickle to this default)."""
+    nocc = 5
+    D, S = _build_clean_rks_dm(nao=10, nocc=nocc, seed=0)
+    ext = float(compute_dm_features(D, S, intensive=False)["dm_entropy"])
+    # ln(5) ≈ 1.6094 — size-extensive
+    assert abs(ext - np.log(nocc)) < 1e-4, ext
+
+
+def test_dm_entropy_intensive_true_normalizes_to_unit_range():
+    """``intensive=True`` divides by ln(max(N_occ, 2)) so a clean RKS single
+    determinant gives ``dm_entropy ≈ 1`` regardless of system size."""
+    for nocc in (3, 5, 9):
+        D, S = _build_clean_rks_dm(nao=2 * nocc, nocc=nocc, seed=0)
+        intensive = float(
+            compute_dm_features(D, S, intensive=True)["dm_entropy"]
+        )
+        assert 0.95 < intensive < 1.05, (
+            f"intensive dm_entropy at nocc={nocc} should be ~1, got {intensive}"
+        )
+
+
+def test_cusp_descriptor_log_transform_off_skips_log():
+    """``compute_cusp_descriptor(log_transform=False)`` feeds the raw
+    weighted-Z value through tanh(·/5); ``=True`` applies the Dick XCDiff
+    log-compress first. The two outputs MUST differ except in the trivial
+    Z_sum << 1 limit (where both reduce to ~ 0)."""
+    from xcquinox.features import compute_cusp_descriptor
+    # 2 grid points near a single Z=8 (oxygen) nucleus, in atomic units.
+    grid = jnp.array([[0.5, 0.0, 0.0], [1.5, 0.0, 0.0]])
+    nuc = jnp.array([[0.0, 0.0, 0.0]])
+    Z = jnp.array([8.0])
+    raw = compute_cusp_descriptor(grid, nuc, Z, log_transform=False)
+    logd = compute_cusp_descriptor(grid, nuc, Z, log_transform=True)
+    # Column 0 (cusp_factor) is identical — log_transform only gates col 1.
+    assert jnp.allclose(raw[:, 0], logd[:, 0]), (raw[:, 0], logd[:, 0])
+    # Column 1 differs because of the log-compress.
+    assert not jnp.allclose(raw[:, 1], logd[:, 1], atol=1e-3), (
+        raw[:, 1], logd[:, 1]
+    )
+
+
+def test_dm_entropy_intensive_independent_of_system_size():
+    """Two clean RKS single determinants with different N_occ should give
+    the SAME intensive dm_entropy (≈ 1). Without the fix, the extensive form
+    gave a size-leaked label (ln(N_occ_a) vs ln(N_occ_b))."""
+    D_a, S_a = _build_clean_rks_dm(nao=6,  nocc=3, seed=0)
+    D_b, S_b = _build_clean_rks_dm(nao=14, nocc=7, seed=0)
+    int_a = float(compute_dm_features(D_a, S_a, intensive=True)["dm_entropy"])
+    int_b = float(compute_dm_features(D_b, S_b, intensive=True)["dm_entropy"])
+    assert abs(int_a - int_b) < 0.1, (
+        f"intensive dm_entropy should NOT depend on system size: "
+        f"nocc=3 → {int_a}, nocc=7 → {int_b}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # R2 audit fix: precompute_fixed_density_data passes spin-resolved DM
 # ---------------------------------------------------------------------------
 

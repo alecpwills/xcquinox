@@ -683,6 +683,28 @@ def _apply_defer_eval_override(cfg, args):
     return cfg
 
 
+def _apply_inline_eval_override(cfg, args):
+    """Return a copy of ``cfg`` with inline-eval mode enabled when the
+    ``--inline-eval`` flag is set.
+
+    ``inline_eval=True`` rides into ``resolved_config.yaml`` and is read by
+    ``submit_jobs``: each train array task runs its own eval inline (same
+    SLURM task) instead of submitting a separate eval array. Mutually
+    exclusive with ``--defer-eval`` (inline eval is the OPPOSITE of a
+    deferred eval).
+    """
+    if getattr(args, "inline_eval", False):
+        if getattr(cfg, "defer_eval", False) or getattr(args, "defer_eval", False):
+            raise ValueError(
+                "submit: --inline-eval is mutually exclusive with "
+                "--defer-eval / defer_eval=true. Inline-eval runs eval "
+                "inside each train SLURM task; defer-eval submits eval "
+                "as a SEPARATE deferred array. Pick one."
+            )
+        cfg = dataclasses.replace(cfg, inline_eval=True)
+    return cfg
+
+
 def _apply_time_overrides(cfg, args):
     """Return a copy of ``cfg`` with CLI-resolved per-stage wall times.
 
@@ -779,6 +801,7 @@ def cmd_submit(args) -> int:
     cfg = _apply_step_overrides(cfg, args)
     cfg = _apply_polarized_override(cfg, args)
     cfg = _apply_defer_eval_override(cfg, args)
+    cfg = _apply_inline_eval_override(cfg, args)
     domain = get_domain_profile(cfg.domain_profile)
     validate_grid_semantics(cfg, domain)
 
@@ -1522,6 +1545,20 @@ def cmd_pull(args) -> int:
     local_root = args.local_root.rstrip("/")
     category = args.category.strip("/")
 
+    # --specs 0,1,5 -> [0, 1, 5]; empty/blank entries are skipped; any
+    # non-numeric entry aborts with a clear error before we hit rsync.
+    spec_indices: list[int] = []
+    if getattr(args, "specs", None):
+        for tok in args.specs.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                spec_indices.append(int(tok))
+            except ValueError:
+                _log(f"pull: --specs entries must be integers, got {tok!r}")
+                return 1
+
     ssh_runner = _make_ssh_lines(host)
 
     try:
@@ -1550,6 +1587,7 @@ def cmd_pull(args) -> int:
         host=host, remote_root=remote_root, local_root=local_root,
         run_id=run_id, category=category,
         profile=args.profile, dry_run=args.dry_run,
+        spec_indices=tuple(spec_indices),
     )
     _log(f"pull: running: {' '.join(argv)}")
     rc = subprocess.run(argv).returncode
@@ -1720,6 +1758,14 @@ def _build_parser() -> argparse.ArgumentParser:
              "array only after the train array terminates, shrinking the per-run "
              "queued-job footprint (helps under SLURM per-user submit caps). "
              "Default off (eval queued with the rest).")
+    p_submit.add_argument(
+        "--inline-eval", action="store_true", dest="inline_eval",
+        help="inline-eval mode (inline_eval=True): each train array task runs "
+             "its own eval immediately after training (in the same SLURM "
+             "task), instead of submitting a separate eval array. Yields a "
+             "3-stage graph (pretrain → preflight → train+eval inline) and "
+             "eliminates the inter-stage queue gap. Mutually exclusive with "
+             "--defer-eval. Default off.")
     p_submit.set_defaults(func=cmd_submit)
 
     p_submit_eval = sub.add_parser(
@@ -1798,6 +1844,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="local directory under which '<run_id>/' is created "
              "(default: $XCQUINOX_CLUSTER_LOCAL_ROOT else "
              "~/Documents/Research/xcquinox-results/runs)")
+    p_pull.add_argument(
+        "--specs", default=None,
+        help="comma-separated spec indices to restrict the pull to "
+             "(e.g. '0,1,21'). When set, only checkpoints/spec_<NNNN>/ "
+             "matching one of these indices are transferred; every other "
+             "spec_* dir is excluded. Combine with --profile full to "
+             "surgically pull just the model.eqx files for those specs "
+             "(use for the local test-set re-evaluation workflow described "
+             "in hpcjobs/SEAWULF_RUNBOOK.md §10.5).")
     p_pull.add_argument(
         "--dry-run", action="store_true",
         help="pass --dry-run to rsync: report what would transfer, copy nothing")

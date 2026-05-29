@@ -296,10 +296,13 @@ collide.
   and pretrain metadata + loss curves. **No `*.eqx`, no `logs/`.** Typically
   **< 100 MB / 40-spec run**, so this is the right default for driving
   `analyze.collect_results()` and the notebook figures.
-- **`full`** — mirrors the run dir minus `logs/`. Tens of GB / 40-spec run.
-  Use this when you need the actual trained `model.eqx` or pretrain
-  `xnet.eqx` / `cnet.eqx` checkpoints locally (paper-figure re-evaluation,
-  loading the model into a notebook, etc.).
+- **`full`** — mirrors the run dir minus `logs/`. **~11–12 MB / 40-spec
+  run** for the current `deep_combined_attn` arch (each `model.eqx` is
+  ~126 KB; xnet+cnet pretrain nets ~64 KB each). Use this when you need
+  the actual trained `model.eqx` or pretrain `xnet.eqx` / `cnet.eqx`
+  checkpoints locally for the local re-eval workflow (§10.5). The full
+  profile is small enough that surgical `--specs` filtering is rarely
+  necessary; pull whole categories in seconds.
 
 ### One-time setup
 
@@ -400,6 +403,182 @@ are exercised on every test run by the canary tests in
 harness output layout that forgets to update the filter (or the category
 plumbing) fails CI loudly instead of silently dropping artifacts at pull
 time.
+
+### 10.5 Local test-set re-evaluation — because cluster eval is in-sample only
+
+> **Known harness gap.** The cluster eval array (`_eval_one_spec.py`)
+> evaluates every trained network **only on the molecules it was trained
+> on**: `_eval_one_spec.py:282` calls `build_test_spec(...)` with no
+> `holdout_molecules`, and `spec_builder.py:545-556` then silently defaults
+> to `eval_molecules = training_spec.molecules` while emitting a
+> `RuntimeWarning` to eval-job stderr. The grid-config schema
+> (`grid_config.py:InputPaths`) has **no field** for a held-out pool, so
+> the operator cannot opt in from the YAML. **Every `eval_df.csv` row is
+> labeled `set=training_subset`; there is no `test_set` row anywhere.**
+>
+> This is therefore a measure of **training fit quality**, not held-out
+> generalization. Large MAE in those rows indicates **training failure**
+> (the optimizer couldn't fit even its own training data), not poor
+> generalization. The proper harness fix — adding `holdout_molecules` to
+> the schema and plumbing it through to the eval worker — is tracked as a
+> future PR; meanwhile, the recommended workflow is:
+
+#### Workflow
+
+1. **Identify which specs are worth re-evaluating** using
+   `make_cluster_pulls_figure.py`'s Fig 1 (training diagnostics):
+
+   ```bash
+   python notebooks/analysis/make_cluster_pulls_figure.py
+   ```
+
+   The right panel of Fig 1 is a scatter of training-subset MAE vs final
+   training loss. Specs in the **lower-left** cluster (low loss, low MAE)
+   converged cleanly and are the ones worth re-evaluating on a held-out
+   pool. Specs in the shaded **upper-right failure region** (MAE > 5
+   kcal/mol or final loss > 5e-3) were not adequately trained — local
+   re-eval would just confirm "the network can't represent anything", so
+   skip them.
+
+2. **Pull the checkpoints.** With the current `deep_combined_attn` arch
+   `model.eqx` files at ~126 KB each, a full-mirror pull across all 3 ready
+   categories is only **~34 MB** — small enough to pull everything in one
+   shell loop:
+
+   ```bash
+   for cat in alpha_on/runs alpha_off/runs polarized/alpha_off/runs; do
+     python -m xcquinox.alec.cluster pull latest --category "$cat" --profile full
+   done
+   ```
+
+   If you want surgical control (e.g. for a future larger arch where this
+   becomes >GB scale), pass `--specs N,M,K` to filter:
+
+   ```bash
+   python -m xcquinox.alec.cluster pull latest \
+       --category alpha_on/runs --profile full --specs 0,1,21,5,9
+   ```
+
+   `--specs` accepts a comma-separated list of integer indices. Combined
+   with `--profile full` (which keeps `*.eqx` files), only
+   `checkpoints/spec_{0000,0001,0021,0005,0009}/model.eqx` will land
+   locally, alongside the manifest, resolved config, and pretrain
+   checkpoint.
+
+   Use `--dry-run` to preview the rsync argv and estimated transfer
+   size:
+
+   ```bash
+   python -m xcquinox.alec.cluster pull latest --category alpha_on/runs \
+       --profile full --specs 0,1,21,5,9 --dry-run
+   ```
+
+3. **Run the local re-eval script.** The recommended invocation
+   auto-discovers every pulled category under `--local-root` and runs
+   `model.eqx`-bearing specs across all of them in a single process so the
+   PBE precompute amortizes:
+
+   ```bash
+   python notebooks/analysis/local_reeval.py --auto
+   ```
+
+   Per-spec failures (NaN convergence, etc.) are logged but do not abort
+   the batch — a final summary table reports `n_ok / n_total` per
+   category. To background a long run:
+
+   ```bash
+   nohup python notebooks/analysis/local_reeval.py --auto \
+       > /tmp/local_reeval.log 2>&1 &
+   ```
+
+   You can still drive a single run dir + specific specs if you prefer:
+
+   ```bash
+   python notebooks/analysis/local_reeval.py \
+       ~/Documents/Research/xcquinox-results/runs/alpha_on/runs/run_<UTC>Z \
+       --specs 0,1,21
+   ```
+
+   Defaults: held-out pool = **BH76 + W4-11 combined**; **loose mode**
+   (every reaction is kept; any training-set overlap is recorded in the
+   output `note` column). Rationale: H is in every training set as a
+   Dick regularization anchor — dropping every reaction with H overlap
+   would discard the *entire* BH76 pool. Similarly, when H2O appears in
+   the training set (e.g. spec_0 with subset_size=1), evaluating its
+   atomization energy AE(H2O) = E(H2O) − 2·E(H) − E(O) is exactly the
+   verification we want (does the model recover the right AE?), not a
+   contaminated metric. Pass `--strict` to opt into the old
+   strictly-disjoint behavior if you ever need it.
+
+   The script writes two files per spec, sitting alongside the cluster's
+   eval outputs so the figure pipeline can consume them later:
+
+   - `<run_dir>/checkpoints/spec_<NNNN>/local_test_set.csv` — one row per
+     pool (BH76, W4-11) plus a combined `held_out_combined` row, with
+     columns `set, mae_nn_kcalmol, mae_pbe_kcalmol, delta_nn_minus_pbe,
+     n_reactions, n_dropped_overlap, note`. The PBE MAE is computed on the
+     SAME reactions using the by-product `E_pbe` from each species'
+     precompute (~free) — gives a direct apples-to-apples NN-vs-PBE
+     comparison on the curated subset. The PBE numbers should reproduce
+     the published values (BH76 ≈ 8.08, W4-11 ≈ 10.45 kcal/mol on this
+     curation); they're a sanity-check on the pool builders.
+   - `<run_dir>/checkpoints/spec_<NNNN>/eval/local_per_molecule.json` —
+     one record per pool species (including those in the training set,
+     flagged via `from_training_subset: bool` so downstream plotters can
+     split). Schema-compatible with the cluster's `per_molecule.json`.
+   - `<run_dir>/checkpoints/spec_<NNNN>/eval/local_per_reaction.json` —
+     one record per held-out reaction (16: 6 BH76 + 10 W4-11) carrying
+     paired NN/PBE predicted ΔE and absolute errors plus an
+     `in_sample_overlap` list of any training-set species the reaction
+     touches. Drives the per-reaction figures (per-pool breakdown,
+     NN−PBE grid heatmap, per-reaction ranking).
+   - `<run_dir>/checkpoints/spec_<NNNN>/eval/local_subset_descriptors.json`
+     — per-molecule grid-weighted means of every DMStatistics + Cusp
+     descriptor feature column across the spec's training subset, plus
+     summary stats (mean/std/min/max/range across the subset). Written
+     by `python notebooks/analysis/extract_subset_descriptors.py --auto`
+     (~3 min, ~30 unique training molecules precomputed once). Drives
+     Fig 10 (descriptor range vs held-out accuracy) and Fig 15 (per-
+     subset descriptor distributions, colored by subset_size, overlaid
+     against the largest-subset reference, separated by metric).
+
+When ≥2 categories are populated, `make_cluster_pulls_figure.py` also
+renders **Fig 16 — cross-category NN vs PBE**: strip plot of per-spec
+held-out NN MAE per (category × metric × solver) plus a stacked histogram
+of NN−PBE delta per category. Use this to read off the
+alpha-mode and polarization effects at a glance once
+`polarized/alpha_on` finishes on the cluster.
+
+   The expensive part is **`fixed_density_total_energy` per molecule**
+   (one PBE SCF + grid build + NN forward). On a laptop this is ~few
+   seconds per molecule; a ~24-species held-out pool re-eval per spec is
+   minutes, not hours.
+
+   **Polarized networks auto-detected.** `local_reeval.py` reads
+   `training_spec.arch.use_polarized_correlation` and prints
+   `[polarized (UKS for open-shell)]` vs `[unpolarized (RKS)]` at model
+   load time. The pool builders set every open-shell atom's
+   `MoleculeSpec.spin` to its NIST ground-state value, so
+   `precompute_fixed_density_data` runs the right PBE branch automatically
+   and `fixed_density_total_energy` routes through `split_exc_energy_uks`
+   for polarized models. **No flag needed when you re-eval the
+   polarized/* checkpoints** — once they finish on the cluster, the same
+   `--auto` invocation evaluates them with the correct UKS path.
+
+#### Long-term fix (not this turn)
+
+A follow-up harness PR should:
+
+- Add an `inputs.holdout_molecules_path` field to the grid config schema
+  (`xcquinox/alec/cluster/grid_config.py:InputPaths`).
+- Pipe it through `build_test_spec` so the eval worker writes a SECOND
+  row (`set=test_set`) to `eval_df.csv` whenever holdout is configured.
+- Promote the silent `RuntimeWarning` to a hard error at config-submit
+  time (in `cmd_submit`) so future operators cannot accidentally run an
+  in-sample-only sweep.
+
+Until that PR lands, the local-reeval workflow above is the source of
+truth for held-out MAE numbers in any paper/report.
 
 ---
 

@@ -138,14 +138,18 @@ def test_architecture_config_field_validation(field, value, exc):
 
 # --- §13.2 items (12)-(15), (17) — Task 1.3 --------------------------------
 
-# §13.2 item (12)
-def test_architectures_has_12_keys():
+# §13.2 item (12) — 2026-05-29: bumped from 12 to 14 by adding
+# deep_notransform + deep_notransform_attn for the descriptor ablation sweep.
+def test_architectures_has_14_keys():
     from xcquinox.alec.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 12
+    assert len(ARCHITECTURES) == 14
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
         "deep_dm", "deep_dm_attn", "deep_combined", "deep_combined_attn",
+        # New 2026-05-29 entries — no DM/Cusp descriptors, Dick log-transform
+        # explicitly disabled, for ablation against the 6 standard archs.
+        "deep_notransform", "deep_notransform_attn",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
 
@@ -162,7 +166,7 @@ def test_list_architectures_returns_sorted():
     from xcquinox.alec.config import list_architectures
     names = list_architectures()
     assert names == sorted(names)
-    assert len(names) == 12
+    assert len(names) == 14
 
 
 # §13.2 item (15)
@@ -334,7 +338,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 12
+    assert len(ARCHITECTURES) == 14  # 2026-05-29: +deep_notransform, +deep_notransform_attn
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)
@@ -501,7 +505,8 @@ def test_attn_registry_entries_have_valid_num_heads():
     """Test 20: each *_attn arch satisfies divisibility + head_dim >= 4."""
     from xcquinox.alec.config import ARCHITECTURES
     attn_keys = [k for k in ARCHITECTURES if k.endswith("_attn")]
-    assert len(attn_keys) == 6, f"expected 6 attn archs, got {len(attn_keys)}"
+    # 2026-05-29: bumped 6 → 7 with `deep_notransform_attn`.
+    assert len(attn_keys) == 7, f"expected 7 attn archs, got {len(attn_keys)}"
     for k in attn_keys:
         arch = ARCHITECTURES[k]
         assert arch.attention is True, k

@@ -122,6 +122,24 @@ class ArchitectureConfig:
     # input width +1) requiring retrain + re-pretrain.
     use_polarized_correlation: bool = False
 
+    # 2026-05-29 forensic-review fixes — each is a NEW checkpoint family.
+    # Defaults match pre-fix behavior so old pickles round-trip byte-identical;
+    # NEW archs in the registry / cluster YAML explicitly set True to opt in.
+    #
+    # dm_entropy_intensive: True divides the Shannon entropy by ln(max(n_occ, 2))
+    # so dm_entropy is size-intensive (Dick & Fernández-Serra 2021 style). False
+    # keeps the size-extensive ln(n_occ) form (pre-fix).
+    dm_entropy_intensive: bool = False
+    # descriptor_log_transform: True applies the Dick XCDiff
+    # (1 - exp(-x²)) · log(x + 1) transform to s (XNet input) and rs+s (CNet
+    # input), and to weighted_Z (CuspDescriptor feature 1). False feeds raw
+    # values (pre-fix; what the May 25-26 cluster runs used).
+    descriptor_log_transform: bool = False
+    # zero_init_final_layer: True zeros the final MLP layer's weight + bias at
+    # construction so Fx = Fc = 1 exactly at init (PBE limit). False keeps
+    # Glorot init (pre-fix; gives Fx mean ~+2.65e-4 off 1).
+    zero_init_final_layer: bool = False
+
     def __post_init__(self):
         if not isinstance(self.name, str):
             raise TypeError(
@@ -158,6 +176,14 @@ class ArchitectureConfig:
                 f"ArchitectureConfig.use_polarized_correlation must be a plain "
                 f"Python bool, got {type(self.use_polarized_correlation).__name__}"
             )
+        for bool_field in ("dm_entropy_intensive", "descriptor_log_transform",
+                            "zero_init_final_layer"):
+            value = getattr(self, bool_field)
+            if not isinstance(value, bool):
+                raise TypeError(
+                    f"ArchitectureConfig.{bool_field} must be a plain Python "
+                    f"bool, got {type(value).__name__}"
+                )
         if not isinstance(self.num_heads, int) or isinstance(self.num_heads, bool):
             raise TypeError(
                 f"ArchitectureConfig.num_heads must be a plain Python int, "
@@ -222,7 +248,20 @@ class ArchitectureConfig:
 
     def materialize_descriptors(self):
         from xcquinox.alec.descriptors import make_descriptor
-        return tuple(make_descriptor(s.name, **s.as_kwargs()) for s in self.descriptors)
+        # 2026-05-29: inject the arch-level flags into the descriptor kwargs
+        # when the descriptor type recognizes them. ``intensive`` lives on
+        # DMStatisticsDescriptor; ``log_transform`` on CuspDescriptor. Other
+        # descriptors ignore the unknown kwargs (filtered by make_descriptor
+        # via FeatureSpec.as_kwargs — known kwargs only).
+        out = []
+        for s in self.descriptors:
+            kwargs = dict(s.as_kwargs())
+            if s.name == "dm_statistics" and "intensive" not in kwargs:
+                kwargs["intensive"] = self.dm_entropy_intensive
+            if s.name == "cusp" and "log_transform" not in kwargs:
+                kwargs["log_transform"] = self.descriptor_log_transform
+            out.append(make_descriptor(s.name, **kwargs))
+        return tuple(out)
 
     def materialize_x_constraints(self):
         from xcquinox.alec.constraints import make_constraint
@@ -238,7 +277,10 @@ class ArchitectureConfig:
                   descriptors=(), x_constraints=(), c_constraints=(),
                   allow_scaling_symmetric_on_c: bool = False,
                   allow_double_lob_clamp: bool = False,
-                  use_polarized_correlation: bool = False):
+                  use_polarized_correlation: bool = False,
+                  dm_entropy_intensive: bool = False,
+                  descriptor_log_transform: bool = False,
+                  zero_init_final_layer: bool = False):
         """Factory that accepts str | (str, dict) | FeatureSpec for each entry.
 
         ``num_heads`` is required when ``attention=True`` (no silent default —
@@ -298,6 +340,9 @@ class ArchitectureConfig:
             c_constraints=c_spec_tuple,
             double_lob_clamp_allowed=allow_double_lob_clamp,
             use_polarized_correlation=use_polarized_correlation,
+            dm_entropy_intensive=dm_entropy_intensive,
+            descriptor_log_transform=descriptor_log_transform,
+            zero_init_final_layer=zero_init_final_layer,
         )
 
 
@@ -310,14 +355,68 @@ ARCHITECTURES = {
     "shallow_attn":        ArchitectureConfig(name="shallow_attn", depth=2, nodes=8,  attention=True, num_heads=2),
     "medium":              ArchitectureConfig(name="medium",       depth=3, nodes=16),
     "medium_attn":         ArchitectureConfig(name="medium_attn",  depth=3, nodes=16, attention=True, num_heads=4),
-    "deep":                ArchitectureConfig(name="deep",         depth=4, nodes=32),
-    "deep_attn":           ArchitectureConfig(name="deep_attn",    depth=4, nodes=32, attention=True, num_heads=4),
-    "deep_cusp":           ArchitectureConfig.from_spec("deep_cusp",          4, 32, descriptors=["cusp"]),
-    "deep_cusp_attn":      ArchitectureConfig.from_spec("deep_cusp_attn",     4, 32, attention=True, num_heads=4, descriptors=["cusp"]),
-    "deep_dm":             ArchitectureConfig.from_spec("deep_dm",            4, 32, descriptors=["dm_statistics"]),
-    "deep_dm_attn":        ArchitectureConfig.from_spec("deep_dm_attn",       4, 32, attention=True, num_heads=4, descriptors=["dm_statistics"]),
-    "deep_combined":       ArchitectureConfig.from_spec("deep_combined",      4, 32, descriptors=["dm_statistics", "cusp"]),
-    "deep_combined_attn":  ArchitectureConfig.from_spec("deep_combined_attn", 4, 32, attention=True, num_heads=4, descriptors=["dm_statistics", "cusp"]),
+    # 2026-05-29: each of the 12 deep_* entries below is built via
+    # ArchitectureConfig.from_spec so the new gated-default-on physics flags
+    # (dm_entropy_intensive, descriptor_log_transform, zero_init_final_layer)
+    # default True at registry-construction time. Old pickled specs that
+    # lack these fields unpickle to False (preserves pre-fix behavior for
+    # checkpoints in ~/Documents/Research/xcquinox-results/runs/*); any new
+    # spec built through the cluster harness picks up True automatically.
+    "deep":                ArchitectureConfig.from_spec("deep",               4, 32,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_attn":           ArchitectureConfig.from_spec("deep_attn",          4, 32,
+                              attention=True, num_heads=4,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_cusp":           ArchitectureConfig.from_spec("deep_cusp",          4, 32,
+                              descriptors=["cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_cusp_attn":      ArchitectureConfig.from_spec("deep_cusp_attn",     4, 32,
+                              attention=True, num_heads=4,
+                              descriptors=["cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_dm":             ArchitectureConfig.from_spec("deep_dm",            4, 32,
+                              descriptors=["dm_statistics"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_dm_attn":        ArchitectureConfig.from_spec("deep_dm_attn",       4, 32,
+                              attention=True, num_heads=4,
+                              descriptors=["dm_statistics"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_combined":       ArchitectureConfig.from_spec("deep_combined",      4, 32,
+                              descriptors=["dm_statistics", "cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_combined_attn":  ArchitectureConfig.from_spec("deep_combined_attn", 4, 32,
+                              attention=True, num_heads=4,
+                              descriptors=["dm_statistics", "cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    # 2026-05-29: notransform variants — NO DM/Cusp descriptors and the Dick
+    # XCDiff log-transform on s/rs is DISABLED. dm_entropy_intensive is a no-op
+    # here (no DM descriptor) but kept default True for consistency.
+    # zero_init_final_layer stays True (good init hygiene regardless).
+    "deep_notransform":       ArchitectureConfig.from_spec("deep_notransform",      4, 32,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=False,
+                              zero_init_final_layer=True),
+    "deep_notransform_attn":  ArchitectureConfig.from_spec("deep_notransform_attn", 4, 32,
+                              attention=True, num_heads=4,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=False,
+                              zero_init_final_layer=True),
 }
 # P2-03 NOTE: spin-polarization-aware correlation is NOT a separate entry in
 # this registry (which mirrors the notebook's canonical 12 variants). Build one

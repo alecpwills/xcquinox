@@ -481,3 +481,72 @@ def test_constraints_are_sourced_from_networks():
     # The model's constraint view IS the networks' constraints.
     assert model.x_constraints is model.xnet.constraints
     assert model.c_constraints is model.cnet.constraints
+
+
+# ------------------------------------------------------------------
+# 2026-05-29 forensic-fix flags: arch -> network propagation tests
+# ------------------------------------------------------------------
+
+def test_zero_init_final_layer_makes_fx_exactly_one_at_init():
+    """``zero_init_final_layer=True`` zeros the final MLP layer so Fx=1
+    exactly at init (untrained PBE limit)."""
+    arch = ArchitectureConfig.from_spec(
+        "t", 2, 8, zero_init_final_layer=True,
+    )
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert jnp.allclose(model.xnet.net.layers[-1].weight, 0.0)
+    assert jnp.allclose(model.xnet.net.layers[-1].bias, 0.0)
+    assert jnp.allclose(model.cnet.net.layers[-1].weight, 0.0)
+    assert jnp.allclose(model.cnet.net.layers[-1].bias, 0.0)
+    # Forward on a sample density: 1 + LOB(tanh(s)^2 * 0) = 1 + LOB(0) ~ 1.
+    rho = jnp.array([0.1])
+    sigma = jnp.array([0.01])
+    fx = float(model.xnet(jnp.concatenate([rho, sigma])))
+    assert abs(fx - 1.0) < 1e-3, fx
+
+
+def test_zero_init_default_false_keeps_glorot_init():
+    """Default ``zero_init_final_layer=False`` keeps Glorot initialization
+    so Fx is NOT exactly 1 (back-compat for old checkpoints)."""
+    arch = ArchitectureConfig.from_spec("t", 2, 8)
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    # Some leaf in the final layer should be nonzero under Glorot.
+    w_abs = float(jnp.sum(jnp.abs(model.xnet.net.layers[-1].weight)))
+    assert w_abs > 1e-6, w_abs
+
+
+def test_descriptor_log_transform_propagates_arch_to_networks():
+    """``arch.descriptor_log_transform`` is wired into both XNet and CNet."""
+    for flag in (True, False):
+        arch = ArchitectureConfig.from_spec(
+            "t", 2, 8, descriptor_log_transform=flag,
+        )
+        model = AlecGGAModel.from_arch(arch, seed=0)
+        assert model.xnet.descriptor_log_transform is flag
+        assert model.cnet.descriptor_log_transform is flag
+
+
+def test_dm_entropy_intensive_propagates_to_dm_descriptor():
+    """``arch.dm_entropy_intensive`` rides through into the materialized
+    DMStatisticsDescriptor instance via ``materialize_descriptors``."""
+    arch = ArchitectureConfig.from_spec(
+        "t", 2, 8, descriptors=["dm_statistics"],
+        dm_entropy_intensive=True,
+    )
+    descriptors = arch.materialize_descriptors()
+    assert len(descriptors) == 1
+    assert getattr(descriptors[0], "intensive", None) is True
+
+
+def test_notransform_archs_in_registry_have_log_transform_false():
+    """The new registry entries ``deep_notransform`` /
+    ``deep_notransform_attn`` MUST have ``descriptor_log_transform=False``
+    explicitly so they serve as the no-log controls."""
+    from xcquinox.alec.config import ARCHITECTURES
+    for name in ("deep_notransform", "deep_notransform_attn"):
+        assert name in ARCHITECTURES
+        assert ARCHITECTURES[name].descriptor_log_transform is False
+        # And the 6 standard archs in the same family must have True:
+    for name in ("deep", "deep_attn", "deep_dm", "deep_cusp",
+                  "deep_combined", "deep_combined_attn"):
+        assert ARCHITECTURES[name].descriptor_log_transform is True

@@ -80,13 +80,20 @@ class CuspDescriptor(Descriptor):
         ``(∂⟨ρ⟩/∂r)|_{r=0} = -2Z·ρ(0)`` on the spherically-averaged density;
         the exponential decay here approximates the resulting Slater-like
         ``exp(-Z r)`` envelope rather than enforcing the condition exactly.
-      * Column 1 ``tanh(log(Σ_A Z_A / r_A) / 5)`` ∈ (-1, 1). Encodes a
-        scaled log of the total nuclear-attraction-like weight.
+      * Column 1 (``log_transform=True``):
+        ``tanh(log(Σ_A Z_A / r_A) / 5)`` ∈ (-1, 1) — log-compressed
+        nuclear-attraction-like weight (Dick & Fernández-Serra XCDiff
+        convention). With ``log_transform=False``, the same input is fed
+        through ``tanh(Σ_A Z_A / r_A / 5)`` (no log).
 
     See ``xcquinox.features.compute_cusp_descriptor`` for the precise
     definitions and the dynamic-range argument for the /5 scaling.
     """
     n_features: int = eqx.field(default=2, static=True)
+    # 2026-05-29: when True, apply the Dick XCDiff log compression to
+    # feature 1. When False, feed the raw weighted-Z value through tanh
+    # only (preserves pre-fix behavior; old checkpoints unpickle to this).
+    log_transform: bool = eqx.field(default=False, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("cusp_features",)
 
     def compute(self, mol_data):
@@ -134,18 +141,24 @@ class DMStatisticsDescriptor(Descriptor):
     values — a deferred design decision requiring sign-off, NOT changed here.
     """
     n_features: int = eqx.field(default=3, static=True)
+    # 2026-05-29: when True, divides dm_entropy by ln(max(n_occ, 2)) so the
+    # feature is size-intensive (range [0, 1]). When False, keeps the
+    # size-extensive ln(N_occ) form (preserves pre-fix behavior; old
+    # checkpoints unpickle to this default).
+    intensive: bool = eqx.field(default=False, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)
 
     @staticmethod
     def compute_from_dm(dm: jnp.ndarray, s_matrix: jnp.ndarray,
-                        n_grid: int) -> jnp.ndarray:
+                        n_grid: int, *, intensive: bool = False) -> jnp.ndarray:
         """Pure kernel: compute 3-feature vector from (dm, S) and tile to grid.
 
         Mirrors the precompute path in data.py:229-234 but accepts a live DM
         so the SCF REASSEMBLE policy can recompute features per cycle.
         """
         from xcquinox.features import compute_dm_features_array
-        global_features = compute_dm_features_array(dm, s_matrix)
+        global_features = compute_dm_features_array(dm, s_matrix,
+                                                     intensive=intensive)
         return jnp.tile(global_features, (n_grid, 1))
 
     def compute(self, mol_data):

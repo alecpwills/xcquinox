@@ -68,7 +68,9 @@ def compute_dm_natural_occupations(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarr
     return jnp.linalg.eigvalsh(M)
 
 
-def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
+def compute_dm_features(
+    dm: jnp.ndarray, S: jnp.ndarray, *, intensive: bool = False,
+) -> Dict[str, float]:
     """
     Extract correlation-sensitive features from the density matrix.
 
@@ -142,15 +144,29 @@ def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
 
     # Shannon (von-Neumann-like) entropy of the natural-orbital occupations,
     # normalized to a probability distribution: -sum_i p_i ln p_i with
-    # p_i = n_i / sum_j n_j. This is the ORIGINAL functional form (preserved per
-    # 2026-05-23 review decision: keep only the sourced DESC-11 correctness fix
-    # to the occupation transform; do not redefine the feature's semantics). The
-    # occupations here are the correct natural occupations (eig(D S)). NOTE: this
-    # entropy is size-dependent and nonzero for a single determinant, so it is
-    # not a clean correlation indicator (see docstring); idempotency_error is.
+    # p_i = n_i / sum_j n_j. The occupations are the correct natural occupations
+    # (eig(D S), DESC-11). NOTE: the raw form is size-extensive — in the
+    # single-determinant equal-occupation limit it collapses to ln(N_occ),
+    # broadcasting molecule-size info to every grid point (forensic review
+    # 2026-05-29). The intensive form (controlled by ``intensive`` flag) divides
+    # by ln(max(N_occ, 2)) so the feature is in [0, 1] and is a size-intensive
+    # correlation indicator.
     occupations = jnp.clip(occupations, 1e-12, 2.0)  # physical bounds
     occ_normalized = occupations / (jnp.sum(occupations) + 1e-12)
     dm_entropy = -jnp.sum(occ_normalized * jnp.log(occ_normalized + 1e-12))
+    if intensive:
+        # Effective number of OCCUPIED ORBITALS (NOT electrons). For a clean
+        # RKS DM each occupied orbital has occupation ≈ 2 → n_orb = N_e/2.
+        # For UKS / correlated DMs the max occupation may be different;
+        # dividing the sum of occupations by the largest single occupation
+        # gives the correct orbital count in both single-determinant limits.
+        # max_occ floored at 1e-12 to avoid divide-by-zero on null DMs.
+        max_occ = jnp.maximum(jnp.max(occupations), 1e-12)
+        n_orb_eff = jnp.sum(occupations) / max_occ
+        # The max(., 2) floor avoids ln(1) = 0 for single-electron systems
+        # (H atom, etc.) where 1 orbital is occupied; without it we'd divide
+        # by 0 / NaN.
+        dm_entropy = dm_entropy / jnp.log(jnp.maximum(n_orb_eff, 2.0))
 
     # Off-diagonal norm (correlation indicator)
     diag_dm = jnp.diag(jnp.diag(dm))
@@ -165,7 +181,9 @@ def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
     }
 
 
-def compute_dm_features_array(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarray:
+def compute_dm_features_array(
+    dm: jnp.ndarray, S: jnp.ndarray, *, intensive: bool = False,
+) -> jnp.ndarray:
     """
     Compute density matrix features as a JAX array for use in networks.
 
@@ -176,10 +194,14 @@ def compute_dm_features_array(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarray:
     :type dm: jnp.ndarray
     :param S: Overlap matrix
     :type S: jnp.ndarray
+    :param intensive: When True, normalize ``dm_entropy`` by
+        ``ln(max(n_occ, 2))`` so the feature is size-intensive (default
+        False = original size-extensive ``ln(N_occ)`` form).
+    :type intensive: bool
     :return: Array of shape (3,) containing [idempotency_error, dm_entropy, off_diag_norm]
     :rtype: jnp.ndarray
     """
-    features = compute_dm_features(dm, S)
+    features = compute_dm_features(dm, S, intensive=intensive)
     return jnp.array([
         features['idempotency_error'],
         features['dm_entropy'],
@@ -242,7 +264,9 @@ def compute_cusp_distances(grid_coords: jnp.ndarray,
 
 def compute_cusp_descriptor(grid_coords: jnp.ndarray,
                             nuclear_coords: jnp.ndarray,
-                            nuclear_charges: jnp.ndarray) -> jnp.ndarray:
+                            nuclear_charges: jnp.ndarray,
+                            *,
+                            log_transform: bool = False) -> jnp.ndarray:
     """
     Compute a compact cusp descriptor for each grid point.
 
@@ -280,10 +304,18 @@ def compute_cusp_descriptor(grid_coords: jnp.ndarray,
     # in the ~linear region of tanh, while near-nucleus outliers
     # (log_weighted_Z >> 5) smoothly saturate at +1 rather than entering
     # the MLP as large unnormalized features.
-    log_weighted_Z = jnp.log(features['weighted_Z_sum'] + 1e-12)
-    log_weighted_Z_bounded = jnp.tanh(log_weighted_Z / 5.0)
+    #
+    # 2026-05-29: ``log_transform`` flag — when True (XCDiff convention),
+    # compress the weighted-Z via log before tanh; when False, feed the
+    # raw weighted-Z through tanh directly (pre-fix behavior; preserved
+    # for backward-compat of old checkpoints).
+    if log_transform:
+        log_weighted_Z = jnp.log(features['weighted_Z_sum'] + 1e-12)
+        weighted_Z_bounded = jnp.tanh(log_weighted_Z / 5.0)
+    else:
+        weighted_Z_bounded = jnp.tanh(features['weighted_Z_sum'] / 5.0)
 
-    return jnp.stack([features['cusp_factor'], log_weighted_Z_bounded], axis=1)
+    return jnp.stack([features['cusp_factor'], weighted_Z_bounded], axis=1)
 
 
 # =============================================================================

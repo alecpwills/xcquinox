@@ -61,6 +61,10 @@ _TEMPLATE_FILES = {
     "train_gpu": "train_array_gpu.sbatch.tmpl",
     "eval": "eval_array.sbatch.tmpl",
     "eval_launcher": "eval_launcher.sbatch.tmpl",
+    # 2026-05-29 inline-eval mode: train then eval in the SAME SLURM task.
+    # No GPU variant today — the inline path is CPU-first; GPU inline support
+    # can be added later if the cluster device is gpu.
+    "train_eval_inline_cpu": "train_eval_inline_cpu.sbatch.tmpl",
 }
 
 _COMMANDS_FILENAME = "submit_commands.txt"
@@ -148,10 +152,19 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         template_kind = "eval"
     elif kind == "eval_launcher":
         template_kind = "eval_launcher"
+    elif kind == "train_eval_inline":
+        # 2026-05-29: inline-eval mode. Today only the CPU variant exists.
+        device = (cfg.cluster.device or "cpu").strip().lower()
+        if device == "gpu":
+            raise NotImplementedError(
+                "render_sbatch: inline_eval is not yet implemented for "
+                "device='gpu'. Use device='cpu' or omit --inline-eval."
+            )
+        template_kind = "train_eval_inline_cpu"
     else:
         raise ValueError(
             f"render_sbatch: kind must be 'pretrain', 'preflight', 'train', "
-            f"'eval' or 'eval_launcher', got {kind!r}"
+            f"'eval', 'eval_launcher' or 'train_eval_inline', got {kind!r}"
         )
 
     text = _load_template_text(_TEMPLATE_FILES[template_kind])
@@ -194,8 +207,14 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
     # The launcher has no per-stage allocation field — it always shares a node
     # (booking a whole node for a few seconds of `sbatch` would be wasteful and
     # itself counts against the per-user job budget the launcher exists to save).
-    allocation = "shared" if kind == "eval_launcher" else getattr(
-        cl, f"{kind}_allocation")
+    # The inline-eval kind aliases to the train allocation (it IS a train task
+    # that runs eval at the end).
+    if kind == "eval_launcher":
+        allocation = "shared"
+    elif kind == "train_eval_inline":
+        allocation = getattr(cl, "train_allocation")
+    else:
+        allocation = getattr(cl, f"{kind}_allocation")
     if allocation == "exclusive":
         alloc_lines = "#SBATCH --nodes=1\n#SBATCH --exclusive\n"
         mem_line = ""
@@ -219,12 +238,14 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         "ACCOUNT_LINE": _optional_sbatch_line("account", cl.account),
     }
 
-    if kind in ("pretrain", "train", "eval"):
+    if kind in ("pretrain", "train", "eval", "train_eval_inline"):
         if array_max is None:
             raise ValueError(
                 f"render_sbatch: array_max is required for kind {kind!r}"
             )
-        if kind == "train":
+        if kind == "train" or kind == "train_eval_inline":
+            # Inline-eval array uses the same throttle as train (it IS a train
+            # task that also runs eval at the end).
             throttle = cl.array_throttle
         elif kind == "eval":
             throttle = cl.eval_array_throttle
@@ -238,7 +259,7 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         mapping["ARRAY_MAX"] = int(array_max)
         mapping["THROTTLE"] = int(throttle)
 
-    if kind == "train":
+    if kind == "train" or kind == "train_eval_inline":
         mapping["SIGTERM_GRACE"] = _SIGTERM_GRACE_S
         if template_kind == "train_gpu":
             mapping["GPUS_PER_TASK"] = int(cl.gpus_per_task)
@@ -300,7 +321,8 @@ def _has_live_jobs(run_dir: str) -> bool:
 
 
 def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
-                force: bool = False, defer_eval=None) -> dict:
+                force: bool = False, defer_eval=None,
+                inline_eval=None) -> dict:
     """Render the 4-stage sbatch graph and (optionally) submit it.
 
     **Defaults to dry-run** (``submit=False``): writes the rendered scripts and
@@ -345,6 +367,15 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     # defer_eval=None reads the config; an explicit bool overrides it.
     defer = getattr(cfg, "defer_eval", False) if defer_eval is None \
         else bool(defer_eval)
+    # inline_eval=None reads the config; an explicit bool overrides it.
+    inline = getattr(cfg, "inline_eval", False) if inline_eval is None \
+        else bool(inline_eval)
+    if defer and inline:
+        raise ValueError(
+            "submit_jobs: defer_eval and inline_eval are mutually exclusive "
+            "(inline eval runs in the SAME SLURM task as train; defer eval "
+            "submits a SEPARATE deferred eval array). Pick one."
+        )
     cells = expand_grid(cfg)
     n_specs = len(cells)
     if n_specs == 0:
@@ -370,30 +401,40 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     pretrain_text = render_sbatch("pretrain", cfg, run_dir,
                                   array_max=pretrain_array_max)
     preflight_text = render_sbatch("preflight", cfg, run_dir)
-    train_text = render_sbatch("train", cfg, run_dir, array_max=array_max)
-    eval_text = render_sbatch("eval", cfg, run_dir, array_max=array_max)
+    if inline:
+        # Single combined train+eval array; no separate eval submission.
+        train_text = render_sbatch("train_eval_inline", cfg, run_dir,
+                                    array_max=array_max)
+        eval_text = None  # No separate eval array in inline mode.
+    else:
+        train_text = render_sbatch("train", cfg, run_dir, array_max=array_max)
+        eval_text = render_sbatch("eval", cfg, run_dir, array_max=array_max)
 
-    # aftercorr requires identical index ranges (throttle may differ). The
-    # pretrain array range is independent (over archs) — NOT checked here.
-    train_range = _array_range(train_text)
-    eval_range = _array_range(eval_text)
-    if train_range != eval_range:
-        raise AssertionError(
-            f"submit_jobs: train array range {train_range!r} != eval array "
-            f"range {eval_range!r}; --dependency=aftercorr requires identical "
-            "index ranges"
-        )
+        # aftercorr requires identical index ranges (throttle may differ).
+        # The pretrain array range is independent (over archs) — NOT checked
+        # here. Inline mode has no separate eval array, so no range check.
+        train_range = _array_range(train_text)
+        eval_range = _array_range(eval_text)
+        if train_range != eval_range:
+            raise AssertionError(
+                f"submit_jobs: train array range {train_range!r} != eval array "
+                f"range {eval_range!r}; --dependency=aftercorr requires identical "
+                "index ranges"
+            )
 
     pretrain_path = os.path.join(scripts_dir, "pretrain.sbatch")
     preflight_path = os.path.join(scripts_dir, "preflight.sbatch")
-    train_path = os.path.join(scripts_dir, "train_array.sbatch")
+    train_path = os.path.join(
+        scripts_dir,
+        "train_eval_inline.sbatch" if inline else "train_array.sbatch")
     eval_path = os.path.join(scripts_dir, "eval_array.sbatch")
     scripts_to_write = [
         (pretrain_path, pretrain_text),
         (preflight_path, preflight_text),
         (train_path, train_text),
-        (eval_path, eval_text),
     ]
+    if not inline:
+        scripts_to_write.append((eval_path, eval_text))
     # In deferred mode the launcher job (submitted afterany:train) re-uses the
     # eval_array.sbatch above and is itself a tiny single-task script.
     launcher_path = os.path.join(scripts_dir, "eval_launcher.sbatch")
@@ -416,10 +457,12 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             "pretrain": pretrain_path,
             "preflight": preflight_path,
             "train": train_path,
-            "eval": eval_path,
         },
         "defer_eval": defer,
+        "inline_eval": inline,
     }
+    if not inline:
+        result["scripts"]["eval"] = eval_path
     if defer:
         result["scripts"]["eval_launcher"] = launcher_path
 
@@ -440,7 +483,13 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             f"sbatch --parsable "
             f"--dependency=afterok:<PRETRAIN_ID>:<PREFLIGHT_ID> {train_path}",
         ]
-        if defer:
+        if inline:
+            cmds.append(
+                f"# inline-eval mode: each train array task runs "
+                "_eval_one_spec at the end of its SLURM task. "
+                "No separate eval array is submitted."
+            )
+        elif defer:
             cmds.append(
                 f"sbatch --parsable --dependency=afterany:<TRAIN_ID> "
                 f"{launcher_path}"
@@ -499,12 +548,17 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         train_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(train_id)
 
-        # 4. eval — either the eval array now (aftercorr:train), or, in deferred
-        #    mode, a tiny launcher (afterany:train) that submits the eval array
-        #    only after train terminates (shrinking the up-front footprint).
+        # 4. eval — three modes:
+        #    (a) inline: the train array task ALREADY ran eval as its final
+        #        step (see train_eval_inline_*.sbatch.tmpl); no further sbatch.
+        #    (b) defer: a tiny launcher (afterany:train) submits the eval
+        #        array only after train terminates.
+        #    (c) default: queue the eval array now (aftercorr:train).
         eval_id = None
         launcher_id = None
-        if defer:
+        if inline:
+            pass  # no separate eval submission
+        elif defer:
             launcher_cmd = [
                 "sbatch", "--parsable",
                 f"--dependency=afterany:{train_id}", launcher_path,

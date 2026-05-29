@@ -186,6 +186,109 @@ def test_build_rsync_command_category_with_surrounding_slashes_is_trimmed():
     assert argv[-1] == f"/l/alpha_off/runs/{GOOD_STAMP}/"
 
 
+# ---------------------------------------------------------------------------
+# build_rsync_command — spec_indices (surgical checkpoint extraction)
+# ---------------------------------------------------------------------------
+
+def test_build_rsync_command_spec_indices_emit_zero_padded_includes():
+    argv = sync.build_rsync_command(
+        host="h", remote_root="/r", local_root="/l",
+        run_id=GOOD_STAMP, profile="full",
+        spec_indices=[0, 36],
+    )
+    # Required rsync include/exclude rules, in order: the checkpoints dir,
+    # each spec_<NNNN>/, each spec_<NNNN>/***, then a catch-all exclude.
+    expected = [
+        "--include=/checkpoints/",
+        "--include=/checkpoints/spec_0000/",
+        "--include=/checkpoints/spec_0000/***",
+        "--include=/checkpoints/spec_0036/",
+        "--include=/checkpoints/spec_0036/***",
+        "--exclude=/checkpoints/spec_*",
+    ]
+    for rule in expected:
+        assert rule in argv, f"missing {rule!r}: {argv}"
+    # The first --include must come BEFORE the --filter= so it wins the
+    # rsync first-match race against the catch-all exclude that follows.
+    first_inc = next(i for i, a in enumerate(argv) if a.startswith("--include="))
+    filter_idx = next(i for i, a in enumerate(argv) if a.startswith("--filter="))
+    assert first_inc < filter_idx
+
+
+def test_build_rsync_command_empty_spec_indices_is_noop():
+    """Default and explicit-empty must match the original (pre-flag) shape."""
+    argv_default = sync.build_rsync_command(
+        host="h", remote_root="/r", local_root="/l",
+        run_id=GOOD_STAMP, profile="full",
+    )
+    argv_empty = sync.build_rsync_command(
+        host="h", remote_root="/r", local_root="/l",
+        run_id=GOOD_STAMP, profile="full", spec_indices=(),
+    )
+    assert argv_default == argv_empty
+    # And neither carries any --include= rules.
+    assert not any(a.startswith("--include=") for a in argv_default)
+
+
+def test_build_rsync_command_negative_spec_index_raises():
+    with pytest.raises(ValueError, match="non-negative ints"):
+        sync.build_rsync_command(
+            host="h", remote_root="/r", local_root="/l",
+            run_id=GOOD_STAMP, spec_indices=[0, -1, 5],
+        )
+
+
+def test_build_rsync_command_non_int_spec_index_raises():
+    with pytest.raises(ValueError, match="non-negative ints"):
+        sync.build_rsync_command(
+            host="h", remote_root="/r", local_root="/l",
+            run_id=GOOD_STAMP, spec_indices=["0", "1"],  # type: ignore[list-item]
+        )
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync not installed")
+def test_spec_indices_canary_against_real_rsync(tmp_path):
+    """End-to-end: a fixture with three spec dirs (0000, 0001, 0036), pull
+    with spec_indices=[0, 36], confirm exactly 0000 + 0036 land locally."""
+    remote_root = tmp_path / "remote"
+    src_run = remote_root / GOOD_STAMP
+    src_run.mkdir(parents=True)
+    (src_run / "manifest.json").write_text('{"n_specs": 3}\n')
+    for idx in (0, 1, 36):
+        spec = src_run / "checkpoints" / f"spec_{idx:04d}"
+        spec.mkdir(parents=True)
+        # A model.eqx that --profile=summaries would drop but --profile=full
+        # keeps — making this a real exercise of the spec filter on the bulky
+        # tier.
+        (spec / "model.eqx").write_bytes(b"FAKE_MODEL_BLOB" * 1000)
+        (spec / "eval_df.csv").write_text("set,mae\ntraining_subset,1.0\n")
+
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    (local_root / GOOD_STAMP).mkdir()
+
+    argv = sync.build_rsync_command(
+        host="", remote_root=str(remote_root), local_root=str(local_root),
+        run_id=GOOD_STAMP, profile="full", spec_indices=[0, 36],
+    )
+    completed = subprocess.run(
+        argv, check=False, capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    dest = local_root / GOOD_STAMP / "checkpoints"
+    assert (dest / "spec_0000" / "model.eqx").is_file()
+    assert (dest / "spec_0036" / "model.eqx").is_file()
+    # The requested 2; the rejected 1 must be entirely absent.
+    assert not (dest / "spec_0001").exists(), (
+        "spec_0001 leaked despite --specs=0,36 — the rsync include/exclude "
+        "order is wrong (the catch-all -exclude must come AFTER all -include "
+        "rules so spec_0000 and spec_0036 win the first-match race)"
+    )
+    # Top-level manifest still arrives (full profile, not gated by --specs).
+    assert (local_root / GOOD_STAMP / "manifest.json").is_file()
+
+
 def test_build_rsync_command_extra_flags_inserted_before_paths():
     argv = sync.build_rsync_command(
         host="h", remote_root="/r", local_root="/l", run_id=GOOD_STAMP,

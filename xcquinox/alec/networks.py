@@ -68,6 +68,13 @@ class AlecGGA_XNet(eqx.Module):
     lower_rho_cutoff: float = eqx.field(static=True)
     use_self_attention: bool = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
+    # 2026-05-29 forensic-review fix: when True, the MLP input ``s`` is
+    # log-transformed via the Dick XCDiff form ``(1 - exp(-s²)) · log(s + 1)``
+    # before being concatenated with extras. When False, raw ``s`` is fed
+    # (preserves pre-fix behavior; old checkpoints unpickle to False via
+    # eqx.field default). The ``tanh(s)²`` UEG gate is ALWAYS computed from
+    # raw ``s`` regardless of this flag.
+    descriptor_log_transform: bool = eqx.field(default=False, static=True)
     # Physical constraints enforced INTRINSICALLY by the network forward, so the
     # same constrained functional is used in pretraining, training, and eval.
     # Stored static (constraint params are all static -> no array leaves), so the
@@ -82,7 +89,9 @@ class AlecGGA_XNet(eqx.Module):
                  lob_lim: float | None = 1.804,
                  lower_rho_cutoff: float = 1e-12,
                  num_heads: int = 1,
-                 constraints: tuple = ()):
+                 constraints: tuple = (),
+                 descriptor_log_transform: bool = False,
+                 zero_init_final_layer: bool = False):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_XNet: use_self_attention=True requires "
@@ -93,6 +102,7 @@ class AlecGGA_XNet(eqx.Module):
         self.lower_rho_cutoff = lower_rho_cutoff
         self.use_self_attention = use_self_attention
         self.num_heads = num_heads
+        self.descriptor_log_transform = descriptor_log_transform
         self.constraints = tuple(constraints)
 
         in_size = 1 + n_extra_features
@@ -103,6 +113,15 @@ class AlecGGA_XNet(eqx.Module):
             in_size=in_size, out_size=1, depth=depth, width_size=nodes,
             activation=jax.nn.gelu, key=keys[0],
         )
+        # 2026-05-29: zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1
+        # at init (exact PBE limit). Without this, the final layer's Glorot
+        # init drifts the untrained model away from PBE.
+        if zero_init_final_layer:
+            self.net = eqx.tree_at(
+                lambda m: (m.layers[-1].weight, m.layers[-1].bias),
+                self.net,
+                replace=(jnp.zeros_like(self.net.layers[-1].weight),
+                         jnp.zeros_like(self.net.layers[-1].bias)))
         self.attention = (
             _xnet.SelfAttentionBlock(hidden_size=nodes, num_heads=num_heads, key=keys[1])
             if use_self_attention else None
@@ -124,11 +143,20 @@ class AlecGGA_XNet(eqx.Module):
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = jnp.atleast_1d(s).flatten()
 
+        # 2026-05-29: when descriptor_log_transform=True, feed the MLP a
+        # Dick XCDiff log-compressed s; otherwise raw s. The tanh(s)² UEG
+        # gate below is ALWAYS computed from raw s (it's a structural physics
+        # constraint, not a feature transform).
+        if self.descriptor_log_transform:
+            s_mlp = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
+        else:
+            s_mlp = s
+
         if self.n_extra_features > 0:
             extras = jnp.atleast_1d(features).flatten()
-            netinp = jnp.concatenate([s, extras])
+            netinp = jnp.concatenate([s_mlp, extras])
         else:
-            netinp = s
+            netinp = s_mlp
 
         tanhterm = jnp.tanh(s) ** 2
 
@@ -184,6 +212,11 @@ class AlecGGA_CNet(eqx.Module):
     use_self_attention: bool = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
     use_spin_polarization: bool = eqx.field(static=True)
+    # 2026-05-29 forensic-review fix: when True, the MLP inputs ``rs`` and
+    # ``s`` are log-transformed via the Dick XCDiff form
+    # ``(1 - exp(-x²)) · log(x + 1)`` before being concatenated with extras.
+    # When False, raw values are fed (preserves pre-fix behavior).
+    descriptor_log_transform: bool = eqx.field(default=False, static=True)
     # Physical constraints enforced intrinsically by the forward (see XNet).
     constraints: tuple = eqx.field(static=True)
     net: eqx.nn.MLP
@@ -196,7 +229,9 @@ class AlecGGA_CNet(eqx.Module):
                  lower_rho_cutoff: float = 1e-12,
                  num_heads: int = 1,
                  use_spin_polarization: bool = False,
-                 constraints: tuple = ()):
+                 constraints: tuple = (),
+                 descriptor_log_transform: bool = False,
+                 zero_init_final_layer: bool = False):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
                 f"AlecGGA_CNet: use_self_attention=True requires "
@@ -207,6 +242,7 @@ class AlecGGA_CNet(eqx.Module):
         self.lower_rho_cutoff = lower_rho_cutoff
         self.use_self_attention = use_self_attention
         self.num_heads = num_heads
+        self.descriptor_log_transform = descriptor_log_transform
         self.constraints = tuple(constraints)
         # P2-03: when True, the cnet takes a spin-polarization input feature
         # x1 = 1/2[(1+zeta)^{4/3}+(1-zeta)^{4/3}] (Dick & Fernández-Serra 2021,
@@ -222,6 +258,14 @@ class AlecGGA_CNet(eqx.Module):
             in_size=in_size, out_size=1, depth=depth, width_size=nodes,
             activation=jax.nn.gelu, key=keys[0],
         )
+        # 2026-05-29: zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1
+        # at init (Fc → 1, PBE-correlation limit).
+        if zero_init_final_layer:
+            self.net = eqx.tree_at(
+                lambda m: (m.layers[-1].weight, m.layers[-1].bias),
+                self.net,
+                replace=(jnp.zeros_like(self.net.layers[-1].weight),
+                         jnp.zeros_like(self.net.layers[-1].bias)))
         self.attention = (
             _xnet.SelfAttentionBlock(hidden_size=nodes, num_heads=num_heads, key=keys[1])
             if use_self_attention else None
@@ -245,6 +289,17 @@ class AlecGGA_CNet(eqx.Module):
         rs = jnp.atleast_1d(rs).flatten()
         s = jnp.atleast_1d(s).flatten()
 
+        # 2026-05-29: log-transform BOTH rs and s for the MLP input when
+        # descriptor_log_transform=True (Dick XCDiff convention applied to
+        # both correlation inputs). zeta (x1) and extras are not transformed.
+        # The tanh(s)² UEG gate below is ALWAYS computed from raw s.
+        if self.descriptor_log_transform:
+            rs_mlp = (1.0 - jnp.exp(-rs * rs)) * jnp.log(rs + 1.0)
+            s_mlp = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
+        else:
+            rs_mlp = rs
+            s_mlp = s
+
         if self.use_spin_polarization:
             # P2-03: zeta = (rho_a - rho_b)/rho_tot feeds the bounded Dick
             # feature x1 = 1/2[(1+zeta)^{4/3}+(1-zeta)^{4/3}] (in [1, 2^{1/3}]
@@ -256,14 +311,14 @@ class AlecGGA_CNet(eqx.Module):
             ).flatten()
             if self.n_extra_features > 0:
                 extras = jnp.atleast_1d(features).flatten()
-                netinp = jnp.concatenate([rs, s, x1, extras])
+                netinp = jnp.concatenate([rs_mlp, s_mlp, x1, extras])
             else:
-                netinp = jnp.concatenate([rs, s, x1])
+                netinp = jnp.concatenate([rs_mlp, s_mlp, x1])
         elif self.n_extra_features > 0:
             extras = jnp.atleast_1d(features).flatten()
-            netinp = jnp.concatenate([rs, s, extras])
+            netinp = jnp.concatenate([rs_mlp, s_mlp, extras])
         else:
-            netinp = jnp.concatenate([rs, s])
+            netinp = jnp.concatenate([rs_mlp, s_mlp])
 
         tanhterm = jnp.tanh(s) ** 2
 
@@ -329,6 +384,8 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         lower_rho_cutoff=lower_rho_cutoff,
         num_heads=arch.num_heads,
         constraints=arch.materialize_x_constraints(),
+        descriptor_log_transform=arch.descriptor_log_transform,
+        zero_init_final_layer=arch.zero_init_final_layer,
     )
     cnet = AlecGGA_CNet(
         n_extra_features=n_extra_features, depth=arch.depth, nodes=arch.nodes,
@@ -339,5 +396,7 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         # P2-03: zeta-aware correlation network when the arch opts in.
         use_spin_polarization=arch.use_polarized_correlation,
         constraints=arch.materialize_c_constraints(),
+        descriptor_log_transform=arch.descriptor_log_transform,
+        zero_init_final_layer=arch.zero_init_final_layer,
     )
     return xnet, cnet

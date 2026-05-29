@@ -109,6 +109,7 @@ def build_rsync_command(
     profile: str = "summaries",
     dry_run: bool = False,
     extra_flags: Sequence[str] = (),
+    spec_indices: Sequence[int] = (),
 ) -> list[str]:
     """Build the argv that the caller will hand to :func:`subprocess.run`.
 
@@ -169,11 +170,22 @@ def build_rsync_command(
         Extra rsync flags appended verbatim (after the standard set, before
         the source/destination args). Reserved for future use (e.g. a
         ``--bwlimit=...`` flag); not currently exposed on the CLI.
+    spec_indices
+        Optional list of per-spec indices to restrict the pull to. When
+        non-empty, only the requested ``checkpoints/spec_<NNNN>/`` subtrees
+        are pulled — every other ``spec_*`` directory under
+        ``checkpoints/`` is excluded. Use this with ``profile="full"`` for
+        the surgical "pull just these N specs' trained model.eqx" workflow
+        described in ``hpcjobs/SEAWULF_RUNBOOK.md`` §10.5 (local test-set
+        re-evaluation). Spec ids are zero-padded to width 4 to match the
+        harness naming (``__main__._utc_stamp`` / preflight conventions).
+        Each id must be ``>= 0`` (raises ``ValueError`` otherwise).
 
     Returns
     -------
     list[str]
         ``["rsync", -a, -v, -z, --partial, --info=progress2,
+        (--include=/checkpoints/spec_NNNN/*** ...)?,
         --filter=. <abs filter path>, [--dry-run,] <src>, <dst>]``.
     """
     if not _RUN_ID_RE.match(run_id):
@@ -187,7 +199,28 @@ def build_rsync_command(
     src = f"{src_prefix}{_join_run_path(remote_root, category, run_id)}/"
     dst = f"{_join_run_path(local_root, category, run_id)}/"
 
-    argv: list[str] = ["rsync", *_BASE_FLAGS, f"--filter=. {filt}"]
+    argv: list[str] = ["rsync", *_BASE_FLAGS]
+
+    # Per-spec narrowing — emit BEFORE the --filter so the includes win
+    # the first-match race against the catch-all `- /checkpoints/spec_*`
+    # exclude that follows them (rsync semantics: first matching rule).
+    if spec_indices:
+        for idx in spec_indices:
+            if not isinstance(idx, int) or idx < 0:
+                raise ValueError(
+                    f"spec_indices entries must be non-negative ints, "
+                    f"got {idx!r}"
+                )
+        # rsync needs to descend into /checkpoints/ first, then into each
+        # named spec_NNNN/, then take everything inside (``***``).
+        argv.append("--include=/checkpoints/")
+        for idx in spec_indices:
+            name = f"spec_{idx:04d}"
+            argv.append(f"--include=/checkpoints/{name}/")
+            argv.append(f"--include=/checkpoints/{name}/***")
+        argv.append("--exclude=/checkpoints/spec_*")
+
+    argv.append(f"--filter=. {filt}")
     if dry_run:
         argv.append("--dry-run")
     argv.extend(extra_flags)

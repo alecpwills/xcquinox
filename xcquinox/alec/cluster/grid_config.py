@@ -276,6 +276,14 @@ class GridConfig:
     # submit caps). Default False -> byte-identical (eval submitted with the rest).
     # Set via the ``submit --defer-eval`` flag (or ``defer_eval: true`` in YAML).
     defer_eval: bool = False
+    # ``inline_eval`` (2026-05-29): each train array task runs its own eval
+    # immediately after training in the SAME SLURM task, instead of submitting
+    # a separate eval array. 3-stage graph: pretrain → preflight →
+    # train+eval inline. Eliminates the inter-stage queue gap. Mutually
+    # exclusive with defer_eval (an inline eval is the OPPOSITE of a deferred
+    # eval — there IS no separate eval array to defer). Default False ->
+    # byte-identical (eval as a separate array).
+    inline_eval: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +470,7 @@ def load_grid_config(path: str) -> GridConfig:
         bh76_mode=raw.get("bh76_mode", "reaction_energy"),
         use_polarized_correlation=bool(raw.get("use_polarized_correlation", False)),
         defer_eval=bool(raw.get("defer_eval", False)),
+        inline_eval=bool(raw.get("inline_eval", False)),
     )
 
 
