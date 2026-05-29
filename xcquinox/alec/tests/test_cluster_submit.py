@@ -516,6 +516,48 @@ def test_render_eval_launcher_non_array(tmp_path):
     _assert_no_unrendered_placeholders(text)
 
 
+def test_inline_eval_submit_skips_eval_array_and_eval_record(
+        tmp_path, monkeypatch):
+    """inline_eval=True: only 3 sbatch calls (pretrain, preflight, train) get
+    issued, NO 4th eval sbatch, NO ``eval`` record in jobs.json, and
+    ``submit_jobs`` returns cleanly (regression test for the prior crash where
+    ``append_job_record`` rejected an ``eval_id=None`` record under the
+    ``if not defer`` guard that didn't account for inline mode).
+    """
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory(ids=["6000", "6001", "6002"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=True, inline_eval=True)
+
+    # Top-level flags reflect inline mode.
+    assert result["inline_eval"] is True
+    assert result["defer_eval"] is False
+    # Only THREE sbatch calls — no separate eval array.
+    sbatch_calls = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch_calls) == 3, [" ".join(c) for c in sbatch_calls]
+    joined = [" ".join(c) for c in sbatch_calls]
+    # The 4th-stage eval array and the deferred launcher are BOTH absent.
+    assert not any("eval_array.sbatch" in j for j in joined), joined
+    assert not any("eval_launcher.sbatch" in j for j in joined), joined
+    # job_ids carries pretrain/preflight/train ONLY — no eval (which would be
+    # None under inline) and no eval_launcher (which is defer-only).
+    assert result["job_ids"] == {
+        "pretrain": "6000", "preflight": "6001", "train": "6002",
+    }, result["job_ids"]
+    # jobs.json carries pretrain/preflight/train ONLY — the absence of an
+    # ``eval`` record is the point: nothing to recover via sacct because eval
+    # ran inline as part of each train task.
+    kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
+    assert kinds == ["preflight", "pretrain", "train"]
+    # The submit_commands audit trail was written (proves the function returned
+    # cleanly past the failure point at L627 in the buggy version).
+    cmds_path = os.path.join(run_dir, "submit_commands.txt")
+    assert os.path.exists(cmds_path)
+    assert "[submit]" in open(cmds_path).read()
+
+
 def test_double_submit_guard_requires_force(tmp_path, monkeypatch):
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")

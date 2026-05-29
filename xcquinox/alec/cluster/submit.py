@@ -615,13 +615,15 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     # All accepted — now (and only now) write the append-only records. In
     # deferred mode the eval record is NOT written here; the launcher (or a
     # manual `submit-eval`) writes it once the eval array is actually submitted.
+    # In inline-eval mode there is NO separate eval array — the eval runs in
+    # the train SLURM task — so no eval record exists to write.
     indices = list(range(n_specs))
     arch_indices = list(range(n_archs))
     job_tracking.append_job_record(run_dir, "pretrain", pretrain_id,
                                    arch_indices)
     job_tracking.append_job_record(run_dir, "preflight", preflight_id, [0])
     job_tracking.append_job_record(run_dir, "train", train_id, indices)
-    if not defer:
+    if not (defer or inline):
         job_tracking.append_job_record(run_dir, "eval", eval_id, indices)
 
     _append_commands(run_dir, "submit", issued_cmds)
@@ -640,6 +642,15 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             f"by launcher job {launcher_id} after the train array terminates. "
             "If the launcher cannot submit from a compute node, run this from a "
             f"login node once train finishes:\n    {manual_eval_cmd}",
+            flush=True,
+        )
+    elif inline:
+        # No separate eval array — each train task ran eval as its final step
+        # via train_eval_inline_*.sbatch.tmpl. Don't record eval=None.
+        print(
+            "submit_jobs: inline-eval mode — each train array task runs its "
+            "own eval at the end of the SLURM task. No separate eval array "
+            f"submitted (train array {train_id} carries both stages).",
             flush=True,
         )
     else:
