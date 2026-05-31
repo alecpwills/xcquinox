@@ -13,9 +13,10 @@ Source data lives at
     reaction). BH76 uses signed stoichiometry (``-1 -1 +1``) for barrier
     forward energies; W4-11 uses ``-1 +n_atom1 +n_atom2 ...`` for
     atomization energies.
-  * ``<set>/<species>/struc.xyz`` — Cartesian geometry in BOHR.
-  * ``<set>/<species>/coord`` — TURBOMOLE-format coords + ``$eht charge=N
-    unpaired=M`` for spin (2S) and charge metadata.
+  * ``<set>/<species>/struc.xyz`` — Cartesian geometry in ANGSTROM (standard
+    .xyz convention; the sibling ``coord`` file is the bohr/TURBOMOLE copy).
+  * ``<set>/<species>/coord`` — TURBOMOLE-format coords (bohr) + ``$eht
+    charge=N unpaired=M`` for spin (2S) and charge metadata.
 
 Performance: parsing the ``.res`` files + reading 200+ ``struc.xyz`` +
 ``coord`` files on every SLURM task adds ~5 s of startup per spec. We
@@ -55,10 +56,11 @@ from xcquinox.alec.config import MoleculeSpec
 _BH76_CACHE: Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]] | None = None
 _W411_CACHE: Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]] | None = None
 
-# Bohr → angstrom (CODATA 2018) — used by the regen script to convert
-# struc.xyz coordinates (which GMTKN55 ships in bohr) before handing them
-# to atoms_to_mol_spec. The JSON cache stores the angstrom-form atom string
-# so loaders here don't re-do the conversion.
+# Bohr → angstrom (CODATA 2018). NOTE: GMTKN55 ``struc.xyz`` files are already
+# in ANGSTROM (the bohr copy is the sibling TURBOMOLE ``coord`` file), so the
+# regen path does NOT convert struc.xyz — it stores those angstrom coordinates
+# verbatim. (Pre-2026-05-31 the code wrongly divided struc.xyz by this factor,
+# shrinking every held-out molecule ~1.89x; kept only for reference/round-trips.)
 BOHR_PER_ANGSTROM = 1.8897261246257702
 
 
@@ -119,12 +121,12 @@ def _read_coord_meta(species_dir: Path) -> Tuple[int, int]:
     return int(m.group(1)), int(m.group(2))
 
 
-def _read_struc_xyz_bohr(species_dir: Path) -> List[Tuple[str, float, float, float]]:
-    """Read ``<species>/struc.xyz`` and return list of (element, x, y, z) in BOHR.
+def _read_struc_xyz_angstrom(species_dir: Path) -> List[Tuple[str, float, float, float]]:
+    """Read ``<species>/struc.xyz`` and return list of (element, x, y, z) in ANGSTROM.
 
-    GMTKN55 ships struc.xyz in bohr (despite the .xyz extension which
-    conventionally means angstroms). Caller is responsible for unit
-    conversion to angstroms when handing the data to ASE / PySCF.
+    GMTKN55 ``struc.xyz`` follows the standard .xyz convention (angstroms); the
+    bohr copy lives in the sibling TURBOMOLE ``coord`` file. The coordinates are
+    handed to PySCF (whose default unit is angstrom) verbatim — no conversion.
     """
     xyz_file = species_dir / "struc.xyz"
     if not xyz_file.is_file():
@@ -150,30 +152,28 @@ def _read_struc_xyz_bohr(species_dir: Path) -> List[Tuple[str, float, float, flo
     return out
 
 
-def _atoms_to_pyscf_str(atoms_bohr: Sequence[Tuple[str, float, float, float]]) -> str:
-    """Convert (element, x_bohr, y_bohr, z_bohr) tuples to a PySCF ``atom``
-    string in ANGSTROMS (the PySCF default unit).
+def _atoms_to_pyscf_str(atoms_ang: Sequence[Tuple[str, float, float, float]]) -> str:
+    """Format (element, x, y, z) angstrom tuples as a PySCF ``atom`` string in
+    ANGSTROMS (the PySCF default unit). Coordinates are passed through verbatim
+    — struc.xyz is already angstrom (see ``_read_struc_xyz_angstrom``).
 
     Returns ``'H 0.000000 0.000000 0.000000; O ...'``.
     """
     parts = []
-    for elem, x_b, y_b, z_b in atoms_bohr:
-        x = x_b / BOHR_PER_ANGSTROM
-        y = y_b / BOHR_PER_ANGSTROM
-        z = z_b / BOHR_PER_ANGSTROM
+    for elem, x, y, z in atoms_ang:
         parts.append(f"{elem} {x:.10f} {y:.10f} {z:.10f}")
     return "; ".join(parts)
 
 
 def _atom_composition(
-    atoms_bohr: Sequence[Tuple[str, float, float, float]],
+    atoms: Sequence[Tuple[str, float, float, float]],
 ) -> Tuple[Tuple[str, int], ...]:
     """Return Hill-ordered composition tuple ((element, count), ...).
 
     MoleculeSpec uses a tuple-of-pairs composition for hashability.
     """
     counts: Dict[str, int] = {}
-    for elem, _, _, _ in atoms_bohr:
+    for elem, _, _, _ in atoms:
         counts[elem] = counts.get(elem, 0) + 1
     return tuple(sorted(counts.items()))
 
@@ -191,12 +191,12 @@ def _build_species_dict(
         raise FileNotFoundError(
             f"species directory missing: {species_dir}"
         )
-    atoms_bohr = _read_struc_xyz_bohr(species_dir)
+    atoms_ang = _read_struc_xyz_angstrom(species_dir)
     charge, spin = _read_coord_meta(species_dir)
     return {
         "name": species_name,
-        "atom": _atoms_to_pyscf_str(atoms_bohr),
-        "atom_composition": list(_atom_composition(atoms_bohr)),
+        "atom": _atoms_to_pyscf_str(atoms_ang),
+        "atom_composition": list(_atom_composition(atoms_ang)),
         "charge": charge,
         "spin": spin,
     }

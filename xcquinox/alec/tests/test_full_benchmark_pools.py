@@ -9,6 +9,8 @@ assertions on counts adjust accordingly.
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from xcquinox.alec.full_benchmark_pools import (
@@ -17,6 +19,26 @@ from xcquinox.alec.full_benchmark_pools import (
     load_full_held_out_pools,
 )
 from xcquinox.alec.config import MoleculeSpec
+
+
+# ---------------------------------------------------------------------------
+# Geometry helpers (for the units-regression tests below)
+# ---------------------------------------------------------------------------
+
+def _parse_atom_str(atom_str: str):
+    """``'H x y z; O x y z'`` -> [(elem, x, y, z), ...] as floats (Angstrom)."""
+    out = []
+    for tok in atom_str.split(";"):
+        p = tok.split()
+        if len(p) < 4:
+            continue
+        out.append((p[0], float(p[1]), float(p[2]), float(p[3])))
+    return out
+
+
+def _bond_length(atom_str: str, i: int, j: int) -> float:
+    c = _parse_atom_str(atom_str)
+    return math.dist(c[i][1:], c[j][1:])
 
 
 # ---------------------------------------------------------------------------
@@ -169,3 +191,62 @@ def test_w411_h2_atomization_ref_109_493():
     assert target is not None
     assert target["reaction_energy_ref"] == pytest.approx(109.493, abs=1e-6)
     assert target["coeffs"] == [-1.0, 2.0]
+
+
+# ---------------------------------------------------------------------------
+# Geometry-units regression (the held-out struc.xyz-as-Bohr bug, 2026-05-31)
+# ---------------------------------------------------------------------------
+#
+# GMTKN55 ``struc.xyz`` files are in ANGSTROM (standard .xyz convention). A bug
+# in ``_atoms_to_pyscf_str`` divided them by BOHR_PER_ANGSTROM, shrinking every
+# molecule ~1.89x and producing catastrophically wrong held-out reaction
+# energies (W4-11 atomizations came out negative; BH76 barriers ~20x too big).
+# The pre-2026-05-31 suite never checked a bond length or an energy, so it
+# missed this entirely. These tests pin the physical geometry + energy sign.
+
+def test_w411_h2_bond_length_is_physical_angstrom():
+    """H2 equilibrium bond length is 0.741 Angstrom. The buggy (shrunk)
+    geometry gives ~0.393 A (0.741 / 1.8897)."""
+    mol_specs, _ = load_full_w411()
+    d = _bond_length(mol_specs["h2"].atom, 0, 1)
+    assert d == pytest.approx(0.741, abs=0.03), (
+        f"H2 bond length {d:.4f} A is not physical (expect ~0.741 A). "
+        f"~0.393 A indicates the struc.xyz-as-Bohr units bug.")
+
+
+def test_w411_n2o_bond_lengths_are_physical_angstrom():
+    """N2O is linear with N-N ~ 1.128 A and N-O ~ 1.184 A. The buggy geometry
+    shrinks these to ~0.60 / ~0.63 A."""
+    mol_specs, _ = load_full_w411()
+    coords = _parse_atom_str(mol_specs["n2o"].atom)
+    # Distances between consecutive atoms along the molecular axis; the two
+    # nearest-neighbour bonds should be ~1.13 and ~1.18 A (order-independent).
+    import itertools
+    dists = sorted(math.dist(a[1:], b[1:])
+                   for a, b in itertools.combinations(coords, 2))
+    assert dists[0] == pytest.approx(1.13, abs=0.05), dists
+    assert dists[1] == pytest.approx(1.18, abs=0.05), dists
+
+
+@pytest.mark.slow
+def test_w411_h2_atomization_pbe_sign_and_magnitude():
+    """End-to-end: PBE/def2-svp atomization 2*E(H) - E(H2) must be ~+105
+    kcal/mol (positive). The shrunk geometry gives ~-46 kcal/mol (wrong sign)."""
+    from pyscf import gto, dft
+    KCAL = 627.5094740631
+    mol_specs, _ = load_full_w411()
+
+    def _e(name, spin):
+        ms = mol_specs[name]
+        mol = gto.M(atom=ms.atom, basis="def2-svp", charge=ms.charge,
+                    spin=spin, unit="angstrom", verbose=0)
+        mf = (dft.UKS(mol) if spin else dft.RKS(mol))
+        mf.xc = "pbe"
+        return float(mf.kernel())
+
+    e_h2 = _e("h2", 0)
+    e_h = _e("h", 1)
+    atomization = (2.0 * e_h - e_h2) * KCAL
+    assert atomization == pytest.approx(105.0, abs=15.0), (
+        f"PBE H2 atomization {atomization:.1f} kcal/mol (expect ~+105; "
+        f"~-46 indicates the geometry units bug).")

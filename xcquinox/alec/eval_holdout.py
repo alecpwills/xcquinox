@@ -185,6 +185,7 @@ def make_per_molecule_record(
     e_nn_ha: float,
     *,
     in_training_subset: bool,
+    scf: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Schema-compatible with the cluster's ``eval/per_molecule.json`` so
     the existing :func:`collect_per_molecule_rows` can read it without
@@ -195,6 +196,16 @@ def make_per_molecule_record(
     locally (``AE_error_kcalmol``, ``density_rmse``, ``density_l1``) are
     left None; ``AE_error_kcalmol`` only makes sense within a reaction
     context, which the per-reaction CSV captures.
+
+    ``scf``: optional per-molecule SCF convergence info captured during the
+    NN self-consistent eval (see :func:`evaluate_holdout`'s ``scf_info_out``).
+    Expected keys: ``cycles_run`` (int), ``converged`` (bool),
+    ``total_energy`` (float), ``energy_trace`` (list[float], one entry per SCF
+    cycle). When present, the record gains, FOR EACH cycle ``i`` that ran:
+    ``scf_energy_step_<i>`` (the total energy after cycle ``i``, Hartree) and
+    ``scf_energy_residual_<i>`` (``|E_i - E_final|``) — the per-molecule,
+    per-SCF-step convergence trace. ``cycles_run`` / ``scf_converged`` /
+    ``scf_total_energy`` reflect the actual SCF (vs the one-shot sentinels).
     """
     e_pbe = mol_data.get("E_pbe")
     e_pbe_f = float(e_pbe) if e_pbe is not None else None
@@ -213,6 +224,25 @@ def make_per_molecule_record(
         "scf_converged": True,
         "from_training_subset": bool(in_training_subset),
     }
+    if scf is not None:
+        record["cycles_run"] = int(scf.get("cycles_run", 0))
+        record["scf_converged"] = bool(scf.get("converged", False))
+        e_final = scf.get("total_energy")
+        if e_final is not None and math.isfinite(float(e_final)):
+            record["scf_total_energy"] = float(e_final)
+        trace = scf.get("energy_trace") or []
+        e_final_f = (float(e_final) if e_final is not None
+                     and math.isfinite(float(e_final)) else None)
+        for i, e_step in enumerate(trace):
+            try:
+                e_i = float(e_step)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(e_i):
+                continue
+            record[f"scf_energy_step_{i}"] = e_i
+            if e_final_f is not None:
+                record[f"scf_energy_residual_{i}"] = abs(e_i - e_final_f)
     return record
 
 
@@ -303,7 +333,8 @@ def precompute_holdout(
 
 def evaluate_holdout(model, mol_data: Dict[str, Any],
                      *, solver_config=None,
-                     verbose_first_failure: bool = True
+                     verbose_first_failure: bool = True,
+                     scf_info_out: Optional[Dict[str, Dict[str, Any]]] = None,
                      ) -> Dict[str, float]:
     """Per-species total energy.
 
@@ -317,19 +348,37 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     supervision domain (forensic-review fix 2026-05-29: train/eval skew
     when training uses full_3 SCF but eval is hard-coded one-shot).
 
+    ``scf_info_out``: optional dict; when provided AND an SCF runs, it is
+    populated ``{name: {cycles_run, converged, total_energy, energy_trace}}``
+    per species — the per-molecule, per-SCF-step convergence trace that
+    :func:`make_per_molecule_record` turns into ``scf_energy_step_<i>`` /
+    ``scf_energy_residual_<i>`` columns. Captures even when the final energy
+    is non-finite (so a diverged SCF's trace is still recorded).
+
     NaN on exception. When ``verbose_first_failure`` is True (default),
     the FIRST exception in a batch is printed with its full message so
     the operator sees real errors instead of a silent column of NaNs.
     """
     import xcquinox.alec as alec
     from xcquinox.alec.solver import run_scf
+    import numpy as _np
     out: Dict[str, float] = {}
     first_err_shown = False
     n_failed = 0
     for name, md in mol_data.items():
         try:
             if solver_config is not None:
-                e = float(run_scf(solver_config, model, md).total_energy)
+                result = run_scf(solver_config, model, md)
+                e = float(result.total_energy)
+                if scf_info_out is not None:
+                    trace = getattr(result, "energy_trace", None)
+                    scf_info_out[name] = {
+                        "cycles_run": int(getattr(result, "cycles_run", 0)),
+                        "converged": bool(getattr(result, "converged", False)),
+                        "total_energy": e,
+                        "energy_trace": ([float(x) for x in _np.asarray(trace)]
+                                         if trace is not None else []),
+                    }
             else:
                 e = float(alec.fixed_density_total_energy(model, md))
         except Exception as exc:  # noqa: BLE001
@@ -502,6 +551,52 @@ def load_trained_model(training_spec, model_path: Path):
 # Cluster-side high-level driver
 # ---------------------------------------------------------------------------
 
+def descriptors_and_required_keys(training_spec):
+    """``(descriptors, required_keys, mode_str)`` for a training spec.
+
+    ``descriptors`` are the arch's materialized descriptors (matched to what
+    the trained model consumes); ``required_keys`` is ``("eri",)`` when the
+    training solver is a non-ONESHOT SCF (so ``run_scf`` can rebuild J), else
+    ``()``. These determine the precompute and are identical for every spec
+    that shares an arch descriptor signature + solver mode — which is what
+    lets a caller precompute ONCE and reuse the result across specs."""
+    try:
+        descriptors = tuple(training_spec.arch.materialize_descriptors())
+    except AttributeError:
+        descriptors = ()
+    spec_solver_config = getattr(training_spec, "solver_config", None)
+    needs_scf = (
+        spec_solver_config is not None
+        and hasattr(spec_solver_config, "mode")
+        and spec_solver_config.mode.value != "oneshot"
+    )
+    required_keys = ("eri",) if needs_scf else ()
+    mode_str = (
+        spec_solver_config.mode.name if spec_solver_config is not None
+        and hasattr(spec_solver_config, "mode") else "fixed_density"
+    )
+    return descriptors, required_keys, mode_str
+
+
+def precompute_holdout_for_spec(training_spec, mol_specs: Dict[str, Any]):
+    """Precompute PBE + grid + (eri) + descriptor features for one spec's arch.
+
+    The expensive part (PBE SCF + integrals) depends only on the geometry,
+    basis, descriptor signature and solver mode — NOT on the trained weights —
+    so the returned ``mol_data`` is reusable by ``run_full_holdout_eval`` (via
+    its ``mol_data=`` argument) for EVERY spec that shares the same descriptor
+    signature + solver mode. This is what turns an N-spec re-eval from N
+    precomputes into one-per-descriptor-group."""
+    descriptors, required_keys, mode_str = descriptors_and_required_keys(
+        training_spec)
+    print(f"[holdout] precomputing {len(mol_specs)} species "
+          f"(descriptors: {[type(d).__name__ for d in descriptors] or 'none'}; "
+          f"solver: {mode_str}; extra precompute keys: "
+          f"{list(required_keys) or 'none'}) ...", flush=True)
+    return precompute_holdout(mol_specs, descriptors=descriptors,
+                              required_keys=required_keys)
+
+
 def run_full_holdout_eval(
     training_spec,
     model,
@@ -510,6 +605,7 @@ def run_full_holdout_eval(
     out_dir: Path,
     *,
     strict: Optional[bool] = None,
+    mol_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """End-to-end held-out eval driver — what the cluster eval task calls.
 
@@ -530,45 +626,37 @@ def run_full_holdout_eval(
          - ``per_reaction.json`` — per-reaction NN + PBE errors with
            ``in_sample_overlap`` lists
 
+    ``mol_data``: when provided (from :func:`precompute_holdout_for_spec`),
+    the expensive PBE/grid/eri precompute is SKIPPED and the supplied data is
+    reused — the caller is responsible for ensuring it was built with a
+    matching descriptor signature + solver mode (same arch group).
+
     Returns a small summary dict (counts + output paths) for the caller's
     log line.
     """
     if strict is None:
         strict = os.environ.get("XCQUINOX_HELDOUT_STRICT") == "1"
-    # Descriptors must match what the trained model consumes.
-    try:
-        descriptors = tuple(training_spec.arch.materialize_descriptors())
-    except AttributeError:
-        descriptors = ()
-    # Pick precompute extra keys based on the training solver mode.
+    _descriptors, _extra_required, mode_str = descriptors_and_required_keys(
+        training_spec)
     spec_solver_config = getattr(training_spec, "solver_config", None)
-    needs_scf = (
-        spec_solver_config is not None
-        and hasattr(spec_solver_config, "mode")
-        and spec_solver_config.mode.value != "oneshot"
-    )
-    extra_required = ("eri",) if needs_scf else ()
-    mode_str = (
-        spec_solver_config.mode.name if spec_solver_config is not None
-        and hasattr(spec_solver_config, "mode") else "fixed_density"
-    )
 
     training_names = tuple(
         getattr(m, "name", "?") for m in
         getattr(training_spec, "molecules", ())
     )
 
-    print(f"[holdout] precomputing {len(mol_specs)} species "
-          f"(descriptors: {[type(d).__name__ for d in descriptors] or 'none'}; "
-          f"solver: {mode_str}; extra precompute keys: "
-          f"{list(extra_required) or 'none'}) ...", flush=True)
-    mol_data = precompute_holdout(mol_specs, descriptors=descriptors,
-                                   required_keys=extra_required)
+    if mol_data is None:
+        mol_data = precompute_holdout_for_spec(training_spec, mol_specs)
+    else:
+        print(f"[holdout] reusing precomputed {len(mol_data)} species "
+              f"(solver: {mode_str}) ...", flush=True)
 
     print(f"[holdout] evaluating model on {len(mol_data)} species "
           f"(solver: {mode_str}) ...", flush=True)
+    scf_info: Dict[str, Dict[str, Any]] = {}
     energies = evaluate_holdout(model, mol_data,
-                                 solver_config=spec_solver_config)
+                                 solver_config=spec_solver_config,
+                                 scf_info_out=scf_info)
 
     pbe_energies = {n: float(md.get("E_pbe"))
                     for n, md in mol_data.items()
@@ -610,6 +698,7 @@ def run_full_holdout_eval(
         mol_records.append(make_per_molecule_record(
             name, mol_data[name], energies.get(name, float("nan")),
             in_training_subset=(name in training_set),
+            scf=scf_info.get(name),
         ))
 
     nn_per_rxn = per_reaction_errors(energies, all_kept)

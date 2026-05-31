@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import xcquinox.alec.eval_holdout as eh
 from xcquinox.alec.eval_holdout import (
     KCAL_PER_HA,
     filter_reactions,
@@ -23,10 +24,81 @@ from xcquinox.alec.eval_holdout import (
     per_reaction_errors,
     reaction_mae_kcalmol,
     reaction_overlap,
+    run_full_holdout_eval,
     write_per_molecule_json,
     write_per_reaction_json,
     write_test_set_csv,
 )
+
+
+class _FakeSolverConfig:
+    """Minimal stand-in with a non-oneshot ``.mode`` (drives the SCF path)."""
+    class _Mode:
+        value = "full"
+        name = "FULL"
+    mode = _Mode()
+
+
+class _FakeArch:
+    use_polarized_correlation = False
+
+    def materialize_descriptors(self):
+        return ()
+
+
+class _FakeMol:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeSpec:
+    arch = _FakeArch()
+    solver_config = _FakeSolverConfig()
+    molecules = ()
+
+
+def test_run_full_holdout_eval_orchestration_no_compute(tmp_path, monkeypatch):
+    """Exercise the full run_full_holdout_eval control flow with the heavy
+    compute stubbed — guards against orchestration regressions (e.g. an
+    undefined ``spec_solver_config``) that the pure-function tests miss. Also
+    asserts the per-SCF-step trace is threaded into per_molecule.json."""
+    mol_specs = {"h2": _FakeMol("h2"), "h": _FakeMol("h")}
+    reactions = [{
+        "name": "w411_h2_atomization", "source_pool": "w411",
+        "reactants": ["h2"], "products": ["h"], "coeffs": [-1.0, 2.0],
+        "reaction_energy_ref": 109.493,
+    }]
+    mol_data = {"h2": {"E_pbe": -1.16}, "h": {"E_pbe": -0.50}}
+
+    # Stub the precompute + NN eval (which would otherwise run pyscf/SCF).
+    monkeypatch.setattr(eh, "precompute_holdout",
+                        lambda specs, **kw: dict(mol_data))
+
+    def _fake_eval(model, md, *, solver_config=None,
+                   verbose_first_failure=True, scf_info_out=None):
+        energies = {"h2": -1.17, "h": -0.50}
+        if scf_info_out is not None:
+            for n in md:
+                scf_info_out[n] = {
+                    "cycles_run": 3, "converged": True,
+                    "total_energy": energies[n],
+                    "energy_trace": [energies[n] - 0.01, energies[n] - 0.002,
+                                     energies[n]],
+                }
+        return energies
+
+    monkeypatch.setattr(eh, "evaluate_holdout", _fake_eval)
+
+    out_dir = tmp_path / "eval_holdout"
+    summary = run_full_holdout_eval(
+        _FakeSpec(), object(), mol_specs, reactions, out_dir)
+
+    assert summary["n_reactions"] == 1
+    pm = json.loads((out_dir / "per_molecule.json").read_text())
+    rec = {r["molecule"]: r for r in pm}["h2"]
+    assert rec["cycles_run"] == 3
+    assert rec["scf_energy_step_0"] == pytest.approx(-1.18)
+    assert rec["scf_energy_residual_2"] == pytest.approx(0.0, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +221,44 @@ def test_make_per_molecule_record_carries_flags_and_E_pbe():
     assert rec["E_total_nn"] == pytest.approx(-76.43)
     assert rec["AE_nn"] == pytest.approx(-76.43 - (-76.27))
     assert rec["from_training_subset"] is True
+    # No SCF info -> one-shot sentinels, no per-step columns.
+    assert rec["cycles_run"] == 0
+    assert "scf_energy_step_0" not in rec
+
+
+def test_make_per_molecule_record_emits_per_scf_step_trace():
+    """With SCF info, the record gains per-cycle energy + residual columns —
+    the per-molecule, per-SCF-step convergence the user asked to see."""
+    mol_data = {"E_pbe": -76.27}
+    scf = {
+        "cycles_run": 3,
+        "converged": False,
+        "total_energy": -76.40,
+        "energy_trace": [-76.30, -76.38, -76.40],
+    }
+    rec = make_per_molecule_record(
+        "H2O", mol_data, e_nn_ha=-76.40, in_training_subset=False, scf=scf)
+    assert rec["cycles_run"] == 3
+    assert rec["scf_converged"] is False
+    assert rec["scf_total_energy"] == pytest.approx(-76.40)
+    # Per-step total energies preserved verbatim.
+    assert rec["scf_energy_step_0"] == pytest.approx(-76.30)
+    assert rec["scf_energy_step_1"] == pytest.approx(-76.38)
+    assert rec["scf_energy_step_2"] == pytest.approx(-76.40)
+    # Residuals = |E_i - E_final|, monotonically shrinking here.
+    assert rec["scf_energy_residual_0"] == pytest.approx(0.10)
+    assert rec["scf_energy_residual_1"] == pytest.approx(0.02)
+    assert rec["scf_energy_residual_2"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_make_per_molecule_record_skips_nonfinite_trace_steps():
+    """A NaN in the trace (diverged cycle) is skipped, not crashed on."""
+    scf = {"cycles_run": 2, "converged": False, "total_energy": -10.0,
+           "energy_trace": [-9.5, float("nan")]}
+    rec = make_per_molecule_record(
+        "X", {"E_pbe": -10.0}, e_nn_ha=-10.0, in_training_subset=False, scf=scf)
+    assert rec["scf_energy_step_0"] == pytest.approx(-9.5)
+    assert "scf_energy_step_1" not in rec
 
 
 def test_make_per_reaction_records_pairs_nn_pbe_and_marks_overlap():
