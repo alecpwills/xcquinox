@@ -30,10 +30,15 @@ def test_cusp_descriptor_columns_are_bounded():
     # Heavy nucleus (Z=8, oxygen) amplifies extreme values — worst case.
     nuc_coords = np.array([[0.0, 0.0, 0.0]])
     nuc_charges = np.array([8])
+    # log_transform=True is the bounded form this test validates (and the form
+    # every cusp-using arch — all descriptor_log_transform=True — receives). The
+    # default raw form tanh(weighted_Z/5) intentionally saturates to 1.0 near
+    # the nucleus and is exercised by test_cusp_descriptor_columns_raw_saturates.
     d = np.asarray(compute_cusp_descriptor(
         jnp.asarray(grid_coords),
         jnp.asarray(nuc_coords),
         jnp.asarray(nuc_charges),
+        log_transform=True,
     ))
 
     # Column 0: cusp_factor = exp(-2 Z r), physically in [0, 1].
@@ -56,6 +61,23 @@ def test_cusp_descriptor_columns_are_bounded():
         "cusp col 1 appears unbounded (regression to unbounded log form?): "
         f"max = {d[:, 1].max():.3f}"
     )
+
+
+def test_cusp_descriptor_columns_raw_saturates():
+    """Default (log_transform=False) col 1 = tanh(weighted_Z/5) saturates to
+    exactly 1.0 at near-nucleus points — documented legacy behavior. The
+    notransform archs that take this default carry NO cusp descriptor, so the
+    saturation is never fed to a network; cusp-using archs all pass
+    log_transform=True (see test_cusp_descriptor_columns_are_bounded)."""
+    r = np.logspace(-3, 1.3, 500)
+    grid_coords = np.stack([r, np.zeros_like(r), np.zeros_like(r)], axis=1)
+    d = np.asarray(compute_cusp_descriptor(
+        jnp.asarray(grid_coords),
+        jnp.asarray(np.array([[0.0, 0.0, 0.0]])),
+        jnp.asarray(np.array([8])),
+    ))
+    assert d[:, 1].max() >= 1.0 - 1e-12          # saturates near the nucleus
+    assert d[:, 1].max() <= 1.0 + 1e-12          # still bounded above by tanh
 
 
 def test_cusp_descriptor_monotone_in_distance():

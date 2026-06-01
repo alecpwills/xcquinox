@@ -40,7 +40,7 @@ _RHO_FLOOR = 1e-10  # strict > threshold for kept grid points
 
 
 def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
-                  density_fit=False):
+                  density_fit=False, cusp_log_transform=True):
     """Per-atom pretrain columns. Returns a dict of equal-length 1-D arrays
     (rho, sigma, Fx, Fc, weights[, zeta][, cusp (N,2)][, dm (N,D)]).
 
@@ -106,10 +106,15 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
         cols["zeta"] = zeta[valid]
     if descriptors:
         coords_v = mf.grids.coords[valid]
+        # Match training: every cusp-using arch sets descriptor_log_transform=
+        # True, and data.py computes the training cusp with that flag. The raw
+        # default (False) saturates near nuclei, so a False pretrain cusp would
+        # feed the network a different feature distribution than training does.
         cusp = _features.compute_cusp_descriptor(
             jnp.asarray(coords_v),
             jnp.asarray(mol.atom_coords()),
             jnp.asarray(mol.atom_charges()),
+            log_transform=cusp_log_transform,
         )
         cols["cusp"] = np.asarray(cusp)
         # UKS: pass spin-resolved DM (3-D) so the UKS branch is used.
@@ -163,7 +168,8 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level):
 
 def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
                          basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
-                         polarized=True, descriptors=True, density_fit=False):
+                         polarized=True, descriptors=True, density_fit=False,
+                         cusp_log_transform=True):
     """Skip-if-current driver for staged pretrain data.
 
     Returns the canonical ``.npz`` path, (re)generating it ONLY when the file is
@@ -176,13 +182,14 @@ def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
         return out_path
     return generate_pretrain_data_npz(
         data_dir, atoms=atoms, basis=basis, grid_level=grid_level,
-        polarized=polarized, descriptors=descriptors, density_fit=density_fit)
+        polarized=polarized, descriptors=descriptors, density_fit=density_fit,
+        cusp_log_transform=cusp_log_transform)
 
 
 def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
                                basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
                                polarized=True, descriptors=True,
-                               density_fit=False):
+                               density_fit=False, cusp_log_transform=True):
     """Generate the pretrain-data ``.npz`` in ``out_dir`` and return its path.
 
     ``polarized=True`` writes ``pretrain_data_polarized.npz`` with a ``zeta_all``
@@ -198,7 +205,8 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     per_atom = [
         _atom_columns(sym, spin, basis, grid_level,
                       polarized=polarized, descriptors=descriptors,
-                      density_fit=density_fit)
+                      density_fit=density_fit,
+                      cusp_log_transform=cusp_log_transform)
         for sym, spin in atoms
     ]
     save_kwargs = {

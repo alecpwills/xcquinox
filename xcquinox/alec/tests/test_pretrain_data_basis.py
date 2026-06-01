@@ -68,7 +68,7 @@ def test_ensure_regenerates_only_when_stale(tmp_path, monkeypatch):
     calls = []
 
     def fake_generate(out_dir, *, atoms, basis, grid_level, polarized,
-                      descriptors, density_fit):
+                      descriptors, density_fit, cusp_log_transform=True):
         calls.append(basis)
         path = os.path.join(out_dir, "pretrain_data_polarized.npz"
                             if polarized else "pretrain_data.npz")

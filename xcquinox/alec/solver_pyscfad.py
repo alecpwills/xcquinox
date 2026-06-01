@@ -131,8 +131,12 @@ def _reassemble_features_on_grid(
     cols = []
     for d in descriptors:
         if isinstance(d, CuspDescriptor):
+            # Honor the descriptor's log_transform so the pyscfad-backend eval
+            # cusp matches what training (data.py) and the cusp-using archs
+            # expect; the default raw form saturates near nuclei (feature skew).
             cols.append(compute_cusp_descriptor(
                 grid_coords, nuclear_coords, nuclear_charges,
+                log_transform=bool(getattr(d, "log_transform", False)),
             ))
         elif isinstance(d, DMStatisticsDescriptor):
             cols.append(d.compute_from_dm(
