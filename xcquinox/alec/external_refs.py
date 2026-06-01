@@ -79,18 +79,42 @@ def _fsync_file(path) -> None:
         os.close(fd)
 
 
-def _build_hf_meanfield(mol, is_uks: bool):
+def _basis_slug(basis: str) -> str:
+    """Filesystem-safe lowercase slug for a basis name."""
+    return basis.replace("*", "s").replace("/", "_").replace(" ", "").lower()
+
+
+def _intermediate_cache_name(name: str, *, grid_level: int, basis: str,
+                             density_fit: bool, kind: str) -> str:
+    """Cache filename for an intermediate (kind in {'scf','ccsd'}).
+
+    Includes the basis (+ a ``_df`` tag) so a basis/DF change does NOT silently
+    reuse a stale file computed in a different basis — the historical
+    ``<name>_g{grid}_{kind}.npz`` key omitted the basis."""
+    df_tag = "_df" if density_fit else ""
+    return f"{name}_g{int(grid_level)}_b{_basis_slug(basis)}{df_tag}_{kind}.npz"
+
+
+def _build_hf_meanfield(mol, is_uks: bool, *, density_fit: bool = False,
+                        basis: str | None = None, auxbasis: str | None = None):
     """Construct an (unconverged) HF mean-field object for ``mol``.
 
     Factored out so EXTREF-01's "real HF SCF before CCSD" contract is
     unit-testable (tests monkeypatch this to inject a stub mean-field
-    without running PySCF).
+    without running PySCF). When ``density_fit`` is set, returns a DF-HF
+    (RI-JK) object so the DF-CCSD that sits on it uses 3-index integrals
+    (essential at larger basis — CCSD is N^6).
     """
     from pyscf import scf
-    return scf.UHF(mol) if is_uks else scf.RHF(mol)
+    mf = scf.UHF(mol) if is_uks else scf.RHF(mol)
+    if density_fit:
+        from xcquinox.alec.df_jk import default_auxbasis
+        mf = mf.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
+    return mf
 
 
-def _prepare_converged_hf(mol, *, dm0, is_uks: bool):
+def _prepare_converged_hf(mol, *, dm0, is_uks: bool, density_fit: bool = False,
+                          basis: str | None = None, auxbasis: str | None = None):
     """Run a real HF SCF and return the CONVERGED HF mean-field.
 
     EXTREF-01: CCSD must sit on a self-consistent HF determinant. Earlier
@@ -116,7 +140,8 @@ def _prepare_converged_hf(mol, *, dm0, is_uks: bool):
     nonzero f_ov block and makes the relaxed 1-RDM depend on the arbitrary PBE
     starting orbitals — which is what fed bias into the ML training target.
     """
-    mf_hf = _build_hf_meanfield(mol, is_uks)
+    mf_hf = _build_hf_meanfield(mol, is_uks, density_fit=density_fit,
+                                basis=basis, auxbasis=auxbasis)
     mf_hf.kernel(dm0=dm0)
     if not getattr(mf_hf, "converged", False):
         raise RuntimeError(
@@ -291,6 +316,8 @@ def run_scf_with_cache(
     cache_dir,
     basis: str = "def2-svp",
     grid_level: int = 1,
+    density_fit: bool = False,
+    auxbasis: str | None = None,
 ) -> dict:
     """Stage 1: PBE SCF with on-disk cache (np.savez_compressed).
 
@@ -311,7 +338,9 @@ def run_scf_with_cache(
 
     inter = Path(cache_dir) / "_intermediates"
     inter.mkdir(parents=True, exist_ok=True)
-    cache_path = inter / f"{spec.name}_g{int(grid_level)}_scf.npz"
+    cache_path = inter / _intermediate_cache_name(
+        spec.name, grid_level=grid_level, basis=basis, density_fit=density_fit,
+        kind="scf")
 
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
@@ -336,6 +365,9 @@ def run_scf_with_cache(
 
     is_uks = spec.spin > 0
     mf = dft.UKS(mol) if is_uks else dft.RKS(mol)
+    if density_fit:
+        from xcquinox.alec.df_jk import default_auxbasis
+        mf = mf.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
     mf.xc = "pbe"
     mf.grids.level = grid_level
     mf.kernel()
@@ -389,6 +421,8 @@ def run_ccsd_with_cache(
     cache_dir,
     basis: str = "def2-svp",
     grid_level: int = 1,
+    density_fit: bool = False,
+    auxbasis: str | None = None,
 ) -> dict:
     """Stage 2: CCSD on a converged HF reference + spin-summed grid
     density, with on-disk cache.
@@ -423,7 +457,9 @@ def run_ccsd_with_cache(
 
     inter = Path(cache_dir) / "_intermediates"
     inter.mkdir(parents=True, exist_ok=True)
-    cache_path = inter / f"{spec.name}_g{int(grid_level)}_ccsd.npz"
+    cache_path = inter / _intermediate_cache_name(
+        spec.name, grid_level=grid_level, basis=basis, density_fit=density_fit,
+        kind="ccsd")
 
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
@@ -451,7 +487,8 @@ def run_ccsd_with_cache(
     # determinant (not on grafted PBE Kohn-Sham orbitals, which would
     # violate Brillouin's theorem and bias the relaxed 1-RDM).
     mf_hf = _prepare_converged_hf(
-        mol, dm0=np.asarray(scf_payload["dm"]), is_uks=is_uks
+        mol, dm0=np.asarray(scf_payload["dm"]), is_uks=is_uks,
+        density_fit=density_fit, basis=basis, auxbasis=auxbasis,
     )
 
     if is_uks:

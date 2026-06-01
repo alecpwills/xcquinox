@@ -153,7 +153,7 @@ def test_run_scf_cache_hit(tmp_path):
     atoms = resolve_geometry(spec)
     p1 = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
                             basis="def2-svp", grid_level=1)
-    cache_path = tmp_path / "_intermediates" / "H2_g1_scf.npz"
+    cache_path = tmp_path / "_intermediates" / "H2_g1_bdef2-svp_scf.npz"
     assert cache_path.is_file(), "SCF cache not written"
     mtime = cache_path.stat().st_mtime
     p2 = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
@@ -768,8 +768,8 @@ def test_run_scf_with_cache_uses_grid_suffixed_filename(tmp_path):
     cache_dir = tmp_path / "external_refs"
     run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
                        basis="sto-3g", grid_level=1)
-    # Post-Plan-2: the file MUST be named <name>_g1_scf.npz
-    expected = cache_dir / "_intermediates" / "H2test_g1_scf.npz"
+    # Post-Plan-2: the file MUST be named <name>_g1_b{basis}_scf.npz
+    expected = cache_dir / "_intermediates" / "H2test_g1_bsto-3g_scf.npz"
     assert expected.is_file()
     # The unsuffixed name MUST NOT exist
     legacy = cache_dir / "_intermediates" / "H2test_scf.npz"
@@ -787,7 +787,7 @@ def test_run_scf_with_cache_grid_level_2_creates_g2_file(tmp_path):
     cache_dir = tmp_path / "external_refs"
     run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
                        basis="sto-3g", grid_level=2)
-    expected = cache_dir / "_intermediates" / "H2test_g2_scf.npz"
+    expected = cache_dir / "_intermediates" / "H2test_g2_bsto-3g_scf.npz"
     assert expected.is_file()
 
 
@@ -805,7 +805,7 @@ def test_run_ccsd_with_cache_uses_grid_suffixed_filename(tmp_path):
                               basis="sto-3g", grid_level=1)
     run_ccsd_with_cache(spec, atoms, scf_payload=scf, cache_dir=cache_dir,
                          basis="sto-3g", grid_level=1)
-    expected = cache_dir / "_intermediates" / "H2test_g1_ccsd.npz"
+    expected = cache_dir / "_intermediates" / "H2test_g1_bsto-3g_ccsd.npz"
     assert expected.is_file()
     legacy = cache_dir / "_intermediates" / "H2test_ccsd.npz"
     assert not legacy.exists()
@@ -1236,7 +1236,7 @@ def test_prepare_converged_hf_uses_dm0_as_initial_guess(monkeypatch):
             calls["dm0"] = dm0
             return -1.0
 
-    def _fake_build_hf(mol_arg, is_uks):
+    def _fake_build_hf(mol_arg, is_uks, **_kw):
         calls["is_uks"] = is_uks
         return _FakeHF()
 
@@ -1265,7 +1265,7 @@ def test_prepare_converged_hf_raises_when_not_converged(monkeypatch):
             return -1.0
 
     monkeypatch.setattr(
-        ext, "_build_hf_meanfield", lambda mol_arg, is_uks: _NonConvHF()
+        ext, "_build_hf_meanfield", lambda mol_arg, is_uks, **_kw: _NonConvHF()
     )
     with pytest.raises(RuntimeError, match="HF SCF did not converge"):
         ext._prepare_converged_hf(mol, dm0=None, is_uks=False)
