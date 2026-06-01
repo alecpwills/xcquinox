@@ -91,12 +91,14 @@ _STYLE = dict(ccp._STYLE)
 
 # Provenance + caveat banners stamped on every figure.
 _PROVENANCE = (
-    "Pre-dm_entropy-fix run (2026-05-29 forensic review). "
-    "Held-out: GMTKN55-BH76 + W4-11 reaction energies, kcal/mol."
+    "Geometry-fixed local re-eval (struc.xyz read as angstrom; 2026-05-31). "
+    "Held-out: GMTKN55-BH76 + W4-11 reaction energies, kcal/mol. PBE: BH76 "
+    "11.83 / W4-11 15.93 / combined 14.49."
 )
 _NNPBE_CAVEAT = (
-    "Note: de_nn ≈ de_pbe — the network reproduces PBE, it does not beat the "
-    "benchmark. See panel (b)."
+    "Corrected geometry: PBE is physical (~12-16 kcal/mol) and NN no longer "
+    "tracks it. At 1-18 training points the NN sits above PBE; only "
+    "deep_combined_attn/subset-3 beats PBE on BH76 barriers (11.49)."
 )
 
 
