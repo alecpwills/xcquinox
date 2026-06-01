@@ -391,6 +391,33 @@ def fixed_density_total_energy(model, mol_data) -> float:
     return mol_data["E_non_xc"] + exc_integrated
 
 
+def total_energy_for_solver(model, mol_data, solver_config=None):
+    """Total energy, dispatched on the SCF solver MODE — the single source of
+    truth shared by training (``losses._compute_energies``) and the
+    energy/AE evaluation metrics so the two optimize/measure the same quantity.
+
+    * ``FULL`` → the SELF-CONSISTENT energy ``run_scf(...).total_energy``.
+      FULL rebuilds both ``J`` and ``V_xc`` from the live density each cycle, so
+      it has a coherent fixed point and ``E[rho_scf]`` is a valid energy
+      functional — the energy a deployed functional actually produces, and the
+      DFS/dpyscf self-consistent training target. The SCF loop is differentiable
+      (``jax.lax.scan``), so training backpropagates through the cycles.
+
+    * ``ONESHOT`` / ``FIXED_J`` / ``None`` → the one-shot fixed-density
+      functional on ``rho_PBE`` (:func:`fixed_density_total_energy`). FIXED_J
+      stays one-shot deliberately: its ``run_scf`` energy is a J-pinned hybrid
+      (``J[rho_PBE]`` acting on ``rho_scf != rho_PBE``) that is NOT a valid
+      energy functional of any single density — the 2026-04-24 fix removed it
+      after it drove FIXED_J specs to lowest train loss but 50+ kcal/mol eval
+      atomization-energy error.
+    """
+    from xcquinox.alec.solver import SolverMode  # local: avoid import cycle
+    if solver_config is not None and solver_config.mode == SolverMode.FULL:
+        from xcquinox.alec.solver import run_scf
+        return run_scf(solver_config, model, mol_data).total_energy
+    return fixed_density_total_energy(model, mol_data)
+
+
 def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
                                   ao_grid, grid_weights, nabla_rho_tot, ao_grad):
     """Per-spin correlation potential V_c^a, V_c^b for a spin-polarization-aware

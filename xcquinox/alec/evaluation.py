@@ -14,7 +14,10 @@ import equinox as eqx
 from xcquinox.alec.config import TestSpec, ArchitectureConfig
 from xcquinox.alec.models import AlecGGAModel
 from xcquinox.alec.data import precompute_fixed_density_data
-from xcquinox.alec.oneshot import fixed_density_total_energy, oneshot_grid_density
+from xcquinox.alec.oneshot import (
+    total_energy_for_solver,
+    oneshot_grid_density,
+)
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
 
@@ -90,11 +93,12 @@ class TotalEnergyMetric(Metric):
     )
 
     def compute(self, model, mol_data, solver_config=None):
-        # Solver-invariant by framework design: the post-hoc fixed-density
-        # total energy is a functional of rho_PBE with NN's V_xc, not of
-        # the SCF-iterated density.
-        del solver_config
-        E_nn = float(fixed_density_total_energy(model, mol_data))
+        # Solver-mode-aware energy: FULL evaluates the SELF-CONSISTENT
+        # run_scf(...).total_energy (the energy a deployed functional actually
+        # produces, and what FULL-mode training now optimizes); ONESHOT/FIXED_J/
+        # None evaluate the one-shot fixed-density functional on rho_PBE. This
+        # keeps training and evaluation measuring the same quantity.
+        E_nn = float(total_energy_for_solver(model, mol_data, solver_config))
         E_pbe = float(mol_data["E_pbe"])
         result = {"E_total_nn": E_nn, "E_pbe": E_pbe}
         E_ref = mol_data.get("E_ref_literature")
@@ -121,10 +125,11 @@ class AtomizationEnergyMetric(Metric):
         self.reference_ae_kcalmol = reference_ae_kcalmol or {}
 
     def compute(self, model, mol_data, solver_config=None):
-        # Same rationale as TotalEnergyMetric: AE is a difference of
-        # fixed-density functionals, so it is solver-invariant by design.
-        del solver_config
-        E_mol = float(fixed_density_total_energy(model, mol_data))
+        # Same solver-mode-aware rule as TotalEnergyMetric: FULL uses the
+        # self-consistent run_scf energy, ONESHOT/FIXED_J/None the one-shot
+        # fixed-density functional. AE = sum(atom_energies) - E_mol; the
+        # atom-energy anchors are fixed references.
+        E_mol = float(total_energy_for_solver(model, mol_data, solver_config))
         comp = mol_data["atom_composition"]
         E_atoms_sum = sum(self.atom_energies[sym] * n for sym, n in comp)
         AE_nn = E_atoms_sum - E_mol  # positive for bound molecule

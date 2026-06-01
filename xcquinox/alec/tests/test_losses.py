@@ -1170,55 +1170,83 @@ class TestPBEAnchorIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Regression: _compute_energies must return the same value across all solver
-# modes so that training (A/D1 energy loss) optimizes what evaluation
-# (TotalEnergyMetric / AtomizationEnergyMetric) measures. Before the 2026-04-24
-# fix, FIXED_J training used run_scf(...).total_energy with J pinned to
-# J[ρ_PBE] against the SCF-evolved ρ_scf — not a valid energy functional of
-# any single density. This drove fixed_j_3 specs to lowest train loss + highest
-# eval error (51+ kcal/mol AE).
+# Solver-MODE-dispatched energy (2026-06-01): the energy term follows the
+# solver mode. ONESHOT / FIXED_J / None use the one-shot fixed-density
+# functional on ρ_PBE; FULL uses the SELF-CONSISTENT run_scf(...).total_energy
+# (coherent fixed point, backprop through the SCF cycles — the DFS/dpyscf
+# target). FIXED_J deliberately STAYS one-shot: its run_scf energy is an
+# incoherent J-pinned hybrid (the 2026-04-24 bug that gave 51+ kcal/mol AE).
+# Evaluation (TotalEnergyMetric / AtomizationEnergyMetric / held-out) uses the
+# SAME rule so training optimizes exactly what evaluation measures.
 # ---------------------------------------------------------------------------
 
 
-def test_compute_energies_solver_invariant(h2o_mol_data):
-    """Training energy must be solver-agnostic and equal to the evaluation
-    energy (fixed_density_total_energy). The post-hoc fixed-density NN-XC
-    framework defines E_total as a functional of ρ_PBE with NN's V_xc;
-    solver choice governs DM/density/V_xc matching terms, not the energy
-    functional."""
+def test_compute_energies_full_self_consistent_else_oneshot(h2o_mol_data):
+    """ONESHOT/FIXED_J/None → one-shot fixed_density energy; FULL → the
+    self-consistent run_scf(...).total_energy."""
     from xcquinox.alec.losses import _compute_energies
-    from xcquinox.alec.solver import SolverConfig, SolverMode
+    from xcquinox.alec.solver import (
+        SolverConfig, SolverMode, SolverBackend, run_scf,
+    )
     from xcquinox.alec.oneshot import fixed_density_total_energy
 
     model = _make_model()
     mol_data = (h2o_mol_data,)
+    E_oneshot = float(fixed_density_total_energy(model, h2o_mol_data))
 
-    E_ref = float(fixed_density_total_energy(model, h2o_mol_data))
+    # None / ONESHOT / FIXED_J all equal the one-shot frozen-density functional.
+    for cfg in (None,
+                SolverConfig(mode=SolverMode.ONESHOT, max_cycles=0),
+                SolverConfig(mode=SolverMode.FIXED_J, max_cycles=3)):
+        E = float(_compute_energies(model, mol_data, 1, solver_config=cfg)[0])
+        assert abs(E - E_oneshot) < 1e-10, (
+            f"{cfg} must use the one-shot fixed-density energy")
 
-    E_none = float(_compute_energies(model, mol_data, 1, solver_config=None)[0])
-    E_oneshot = float(_compute_energies(
-        model, mol_data, 1,
-        solver_config=SolverConfig(mode=SolverMode.ONESHOT, max_cycles=0),
-    )[0])
-    E_fixedj = float(_compute_energies(
-        model, mol_data, 1,
-        solver_config=SolverConfig(mode=SolverMode.FIXED_J, max_cycles=3),
-    )[0])
-    E_full = float(_compute_energies(
-        model, mol_data, 1,
-        solver_config=SolverConfig(mode=SolverMode.FULL, max_cycles=3),
-    )[0])
+    # FULL routes to the self-consistent SCF energy (needs ERIs to rebuild J).
+    spec = MoleculeSpec(
+        name="H2O", atom="O 0 0 0; H 0 1 0; H 0 0 1",
+        basis="sto-3g", charge=0, spin=0,
+        atom_composition=(("O", 1), ("H", 2)), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec, required_keys=("eri",))
+    full = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+        max_cycles=3, conv_tol=1e-8, mixer_kwargs=(("alpha", 1.0),),
+    )
+    E_full = float(_compute_energies(model, (md,), 1, solver_config=full)[0])
+    E_full_direct = float(run_scf(full, model, md).total_energy)
+    assert abs(E_full - E_full_direct) < 1e-10, (
+        f"FULL energy must equal run_scf().total_energy; "
+        f"loss={E_full!r} run_scf={E_full_direct!r}")
 
-    # All four paths must produce the SAME energy -- the post-hoc
-    # fixed-density functional evaluated at ρ_PBE with NN's V_xc.
-    for label, E in [("solver=None", E_none), ("ONESHOT", E_oneshot),
-                     ("FIXED_J", E_fixedj), ("FULL", E_full)]:
-        assert abs(E - E_ref) < 1e-10, (
-            f"training energy under {label} = {E:.10f} differs from "
-            f"fixed_density_total_energy = {E_ref:.10f}. "
-            f"Training and evaluation must optimize/measure the same "
-            f"quantity in the post-hoc fixed-density framework."
-        )
+
+def test_compute_energies_full_is_differentiable_through_scf():
+    """The FULL-mode energy loss backprops through the SCF cycles: the gradient
+    of the energy w.r.t. the model is finite and nonzero — the property that was
+    missing while the energy was hard-coded one-shot on the frozen density."""
+    from xcquinox.alec.losses import _compute_energies
+    from xcquinox.alec.solver import SolverConfig, SolverMode, SolverBackend
+
+    model = _make_model()
+    spec = MoleculeSpec(
+        name="H2O", atom="O 0 0 0; H 0 1 0; H 0 0 1",
+        basis="sto-3g", charge=0, spin=0,
+        atom_composition=(("O", 1), ("H", 2)), grid_level=1,
+    )
+    md = precompute_fixed_density_data(spec, required_keys=("eri",))
+    full = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+        max_cycles=3, conv_tol=1e-8, mixer_kwargs=(("alpha", 1.0),),
+    )
+
+    def loss_fn(m):
+        return _compute_energies(m, (md,), 1, solver_config=full)[0] ** 2
+
+    grads = eqx.filter_grad(loss_fn)(model)
+    leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_inexact_array))
+    gnorm = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in leaves)))
+    assert bool(jnp.isfinite(jnp.array(gnorm))) and gnorm > 0.0, (
+        f"FULL-mode energy gradient must flow through the SCF (gnorm={gnorm})")
 
 
 # ---------------------------------------------------------------------------

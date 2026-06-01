@@ -338,15 +338,17 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
                      ) -> Dict[str, float]:
     """Per-species total energy.
 
-    When ``solver_config`` is None (default), uses
-    ``alec.fixed_density_total_energy(model, mol_data[name])`` — a
-    one-shot evaluation of ``E_xc^NN[ρ_PBE]`` on the frozen PBE density.
+    Energy source follows the same solver-MODE rule as training
+    (``losses._compute_energies`` / ``oneshot.total_energy_for_solver``):
 
-    When ``solver_config`` is a ``SolverConfig`` instance (e.g. the one
-    carried by the training spec), runs ``alec.run_scf(solver_config,
-    model, mol_data[name])`` so eval matches training's V_xc / density
-    supervision domain (forensic-review fix 2026-05-29: train/eval skew
-    when training uses full_3 SCF but eval is hard-coded one-shot).
+    * ``FULL`` → the self-consistent ``alec.run_scf(...).total_energy`` (and the
+      per-SCF-step trace is captured into ``scf_info_out``), matching what
+      FULL-mode training optimizes.
+    * ``ONESHOT`` / ``FIXED_J`` / ``None`` → the one-shot
+      ``alec.fixed_density_total_energy(model, mol_data[name])`` on ρ_PBE.
+      FIXED_J stays one-shot deliberately (its run_scf energy is an incoherent
+      J-pinned hybrid — the 2026-04-24 fix), so a FIXED_J-trained spec is not
+      silently evaluated on that hybrid here.
 
     ``scf_info_out``: optional dict; when provided AND an SCF runs, it is
     populated ``{name: {cycles_run, converged, total_energy, energy_trace}}``
@@ -360,14 +362,18 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     the operator sees real errors instead of a silent column of NaNs.
     """
     import xcquinox.alec as alec
-    from xcquinox.alec.solver import run_scf
+    from xcquinox.alec.solver import run_scf, SolverMode
     import numpy as _np
     out: Dict[str, float] = {}
     first_err_shown = False
     n_failed = 0
+    # FULL → self-consistent run_scf energy (+ trace); else one-shot. Matches
+    # oneshot.total_energy_for_solver so train == in-sample-eval == held-out-eval.
+    use_scf = (solver_config is not None
+               and getattr(solver_config, "mode", None) == SolverMode.FULL)
     for name, md in mol_data.items():
         try:
-            if solver_config is not None:
+            if use_scf:
                 result = run_scf(solver_config, model, md)
                 e = float(result.total_energy)
                 if scf_info_out is not None:

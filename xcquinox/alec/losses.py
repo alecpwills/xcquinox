@@ -12,6 +12,7 @@ import equinox as eqx
 
 from xcquinox.alec.oneshot import (
     fixed_density_total_energy,
+    total_energy_for_solver,
     oneshot_dm_prediction_fast,
     oneshot_grid_density,
     compute_vxc_nn,
@@ -150,32 +151,22 @@ class AlecLoss(eqx.Module, abc.ABC):
 # ---------------------------------------------------------------------------
 
 def _compute_energies(model, mol_data, N, solver_config=None):
-    """Compute per-molecule NN total energies for the energy-loss term.
+    """Per-molecule NN total energies for the energy-loss term, dispatched on
+    the solver MODE via :func:`xcquinox.alec.oneshot.total_energy_for_solver`:
 
-    The post-hoc fixed-density framework defines the total energy as a
-    functional of the frozen reference density (``ρ_PBE``) with the NN's
-    V_xc:
-
-        E_total = e_nuc + Tr[h·ρ_PBE] + ½·Tr[J[ρ_PBE]·ρ_PBE] + E_xc^NN[ρ_PBE]
-
-    This is what :class:`xcquinox.alec.evaluation.TotalEnergyMetric` measures
-    at evaluation time. For training to *optimize* what evaluation
-    *measures*, this function returns the same quantity regardless of
-    ``solver_config`` — the solver governs DM / density / V_xc matching
-    terms (``_dm_term``, ``_grid_term``, ``_vxc_term``), not the energy
-    functional itself.
-
-    (Prior to 2026-04-24 this function branched on ``solver_config`` and,
-    for FIXED_J mode, returned ``run_scf(...).total_energy`` — a hybrid
-    with ``J[ρ_PBE]`` acting on an SCF-evolved ``ρ_scf ≠ ρ_PBE`` that is
-    not a valid energy functional of any single density. Training could
-    drive that pseudo-energy to near-zero while producing a V_xc with a
-    50+ kcal/mol atomization-energy error at evaluation. ``solver_config``
-    is kept in the signature for callers; it is deliberately unused here.)
+    * ``FULL`` → the self-consistent ``run_scf(...).total_energy`` (a coherent
+      fixed point; backprop flows through the SCF cycles). This is the
+      DFS/dpyscf self-consistent training target and is what evaluation
+      (``TotalEnergyMetric`` / ``AtomizationEnergyMetric``) now measures under
+      FULL, so training optimizes exactly what evaluation measures.
+    * ``ONESHOT`` / ``FIXED_J`` / ``None`` → the one-shot fixed-density
+      functional ``E_total = E_non_xc[ρ_PBE] + E_xc^NN[ρ_PBE]``. FIXED_J stays
+      one-shot on purpose: its run_scf energy is an incoherent J-pinned hybrid
+      (the 2026-04-24 fix — see ``total_energy_for_solver``).
     """
-    del solver_config  # energy functional is solver-invariant.
     return jnp.stack([
-        fixed_density_total_energy(model, mol_data[i]) for i in range(N)
+        total_energy_for_solver(model, mol_data[i], solver_config)
+        for i in range(N)
     ])
 
 
