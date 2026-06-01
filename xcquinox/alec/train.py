@@ -185,7 +185,7 @@ def _build_batch(spec: TrainingSpec, loss) -> dict:
 
     sc = spec.loss_kwargs_dict.get("solver_config") or spec.solver_config
     if isinstance(sc, SolverConfig) and sc.mode == SolverMode.FULL:
-        required.add("eri")
+        required.add("cderi" if getattr(sc, "density_fit", False) else "eri")
 
     required_keys = tuple(required)
     mol_data_list = [

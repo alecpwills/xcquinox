@@ -570,7 +570,13 @@ def descriptors_and_required_keys(training_spec):
         and hasattr(spec_solver_config, "mode")
         and spec_solver_config.mode.value != "oneshot"
     )
-    required_keys = ("eri",) if needs_scf else ()
+    if needs_scf:
+        # DF path needs the 3-index cderi instead of the full 4-index eri.
+        required_keys = (("cderi",)
+                         if getattr(spec_solver_config, "density_fit", False)
+                         else ("eri",))
+    else:
+        required_keys = ()
     mode_str = (
         spec_solver_config.mode.name if spec_solver_config is not None
         and hasattr(spec_solver_config, "mode") else "fixed_density"

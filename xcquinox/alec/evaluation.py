@@ -401,7 +401,9 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
     if spec.solver_config is not None:
         from xcquinox.alec.solver import SolverMode
         if getattr(spec.solver_config, "mode", None) == SolverMode.FULL:
-            solver_keys.add("eri")
+            solver_keys.add(
+                "cderi" if getattr(spec.solver_config, "density_fit", False)
+                else "eri")
             solver_keys.add("ao_grid_deriv")
     required_keys = tuple(metric_keys | descriptor_keys | solver_keys)
 
