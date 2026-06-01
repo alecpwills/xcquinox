@@ -231,12 +231,15 @@ def _coerce_enum(enum_cls, token):
         )
 
 
-def _solver_config_from_named(named) -> SolverConfig:
+def _solver_config_from_named(named, *, density_fit: bool = False,
+                              auxbasis: str | None = None) -> SolverConfig:
     """Materialize a :class:`SolverConfig` from a :class:`SolverNamed`.
 
     ``SolverNamed`` stores ``mode`` / ``feature_policy`` as plain strings (the
     config's uppercase enum NAME or the lowercase VALUE); this coerces them to
     the ``SolverMode`` / ``FeaturePolicy`` enums, accepting either spelling.
+    ``density_fit``/``auxbasis`` come from the run's ``inputs`` so the whole
+    sweep shares the same Coulomb backend.
     """
     mode = _coerce_enum(SolverMode, named.mode)
     fp = (
@@ -248,6 +251,8 @@ def _solver_config_from_named(named) -> SolverConfig:
         mode=mode,
         max_cycles=named.max_cycles,
         feature_policy=fp,
+        density_fit=density_fit,
+        auxbasis=auxbasis,
     )
 
 
@@ -418,7 +423,11 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             if tp.kind == "ip13"
         ]
 
-        solver_cfg = _solver_config_from_named(cfg.solvers[cell.solver])
+        solver_cfg = _solver_config_from_named(
+            cfg.solvers[cell.solver],
+            density_fit=cfg.inputs.density_fit,
+            auxbasis=cfg.inputs.auxbasis,
+        )
 
         loss_kwargs = {
             "bh76_reactions": bh76_ha,

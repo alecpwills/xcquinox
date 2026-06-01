@@ -134,6 +134,11 @@ class InputPaths:
     basis: str
     grid_level: int
     output_root: str
+    # Density fitting: when True, the SCF Coulomb is built from a 3-index
+    # cderi (RI) instead of the full ERI, making larger bases memory-feasible.
+    # ``auxbasis`` None -> auto-select from the orbital basis. Default off.
+    density_fit: bool = False
+    auxbasis: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +364,8 @@ def _build_inputs(d: dict) -> InputPaths:
         basis=_require(d, "basis", ctx),
         grid_level=_require(d, "grid_level", ctx),
         output_root=_require(d, "output_root", ctx),
+        density_fit=bool(d.get("density_fit", False)),
+        auxbasis=d.get("auxbasis"),
     )
 
 
