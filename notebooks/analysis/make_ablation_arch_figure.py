@@ -291,7 +291,11 @@ def _draw_mae_inset(ax, mae_by_arch: Dict[str, float], archs: List[str], *,
                     baseline_label: str = "PBE") -> None:
     """Per-arch MAE bar inset (lower-right), color-matched to the scatter —
     the analog of the paper's Fig-5 mean-relative-error inset."""
-    inset = ax.inset_axes([0.55, 0.07, 0.42, 0.40])
+    # Low-right, but lifted just enough that the angled (40°) tick labels clear
+    # the outer panel's x-axis — low enough that the inset body stays under the
+    # y=x diagonal (which passes through ~axes-fraction 0.56 at the inset's left
+    # edge).
+    inset = ax.inset_axes([0.56, 0.13, 0.41, 0.33])
     xs = np.arange(len(archs))
     heights = [mae_by_arch.get(a, np.nan) for a in archs]
     inset.bar(xs, heights, color=[ARCH_COLOR[a] for a in archs],
@@ -301,8 +305,14 @@ def _draw_mae_inset(ax, mae_by_arch: Dict[str, float], archs: List[str], *,
                       label=baseline_label)
         inset.legend(fontsize=5, loc="upper left", framealpha=0.6)
     inset.set_xticks(xs)
-    inset.set_xticklabels([a.replace("deep_", "").replace("deep", "base") or "base"
-                           for a in archs], rotation=90, fontsize=4.5)
+    _short = {"deep": "base", "deep_attn": "attn", "deep_cusp": "cusp",
+              "deep_dm": "dm", "deep_combined": "comb",
+              "deep_combined_attn": "comb_at",
+              "deep_notransform": "notr", "deep_notransform_attn": "notr_at"}
+    inset.set_xticklabels(
+        [_short.get(a, a.replace("deep_", "").replace("deep", "base") or "base")
+         for a in archs],
+        rotation=40, ha="right", rotation_mode="anchor", fontsize=5)
     inset.tick_params(axis="y", labelsize=5)
     inset.set_title(title, fontsize=6)
     inset.set_ylabel("MAE", fontsize=5)
@@ -361,9 +371,11 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
                if r.get("arch") in best
                and r.get("subset_size") == best[r["arch"]]]
 
-        fig, (axa, axb) = plt.subplots(1, 2, figsize=(13, 6.2))
+        fig, (axa, axb) = plt.subplots(1, 2, figsize=(13, 7.4))
 
-        # Panel (a): NN vs PBE (clone fidelity) ----------------------------
+        # Panel (a): optimized NN vs PBE — how far subset training moved the
+        # network from its PBE starting point (the PBE "clone" is the PRETRAIN;
+        # these are the post-pretrain, subset-OPTIMIZED networks). ------------
         xs_a, ys_a = [], []
         for arch in archs:
             for pool, marker in POOL_MARKER.items():
@@ -380,7 +392,7 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
         _diagonal(axa, xs_a, ys_a)
         axa.set_xlabel("PBE reaction energy  de_pbe  (kcal/mol)")
         axa.set_ylabel("NN reaction energy  de_nn  (kcal/mol)")
-        axa.set_title("(a) NN vs PBE — clone fidelity")
+        axa.set_title("(a) optimized NN vs PBE reaction energy")
         mae_nn_vs_pbe = {
             a: m for a in archs
             if (m := _mae([r["de_nn_kcalmol"] - r["de_pbe_kcalmol"]
@@ -435,21 +447,23 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
         handles = [Patch(facecolor=ARCH_COLOR[a], label=a) for a in archs]
         handles.append(plt.Line2D([], [], marker="o", ls="", color="0.4",
                                    label="bh76 (●) / w411 (▲) by marker"))
+        # Shared arch legend in its own reserved band below the panels — the
+        # bottom strip is stacked (legend > note > provenance) with no overlap.
         fig.legend(handles=handles, loc="lower center", ncol=5, fontsize=7,
-                   frameon=False, bbox_to_anchor=(0.5, -0.02))
+                   frameon=False, bbox_to_anchor=(0.5, 0.085))
 
         fig.suptitle(
             "Reaction-energy parity (Fig-5 analog) — "
             f"each arch at its largest available subset_size · {run_id}",
-            fontsize=11)
-        fig.text(0.5, 0.93, _NNPBE_CAVEAT, ha="center", fontsize=7.5,
+            fontsize=11, y=0.985)
+        fig.text(0.5, 0.925, _NNPBE_CAVEAT, ha="center", fontsize=7.5,
                  style="italic", color="#444444")
         if note:
-            fig.text(0.5, 0.035, note, ha="center", fontsize=6.5,
+            fig.text(0.5, 0.05, note, ha="center", fontsize=6.5,
                      color="#a33", wrap=True)
-        fig.text(0.5, 0.008, _PROVENANCE, ha="center", fontsize=6,
+        fig.text(0.5, 0.016, _PROVENANCE, ha="center", fontsize=6,
                  color="#777777")
-        fig.tight_layout(rect=(0, 0.07, 1, 0.92))
+        fig.tight_layout(rect=(0, 0.155, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
