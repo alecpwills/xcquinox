@@ -294,7 +294,8 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                 result = run_holdout_with_escalation(
                     run_dir, idx, training_spec, model, full_rxns, full_specs,
                     holdout_dir, basis=_hb, grid_level=_hg,
-                    n_workers_top=n_top, total_cpus=detect_available_cpus())
+                    n_workers_top=n_top, total_cpus=detect_available_cpus(),
+                    strict=bool(getattr(cfg, "held_out_strict", False)))
             except Exception as pexc:  # noqa: BLE001
                 _log(idx, f"held-out parallel path failed "
                           f"({type(pexc).__name__}: {pexc}); serial fallback")
@@ -302,7 +303,8 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         if result is None:
             result = run_full_holdout_eval(
                 training_spec=training_spec, model=model,
-                mol_specs=full_specs, reactions=full_rxns, out_dir=holdout_dir)
+                mol_specs=full_specs, reactions=full_rxns, out_dir=holdout_dir,
+                strict=bool(getattr(cfg, "held_out_strict", False)))
 
         elapsed_h = time.time() - t1
         _log(

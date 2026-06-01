@@ -151,6 +151,7 @@ def _config_to_raw_dict(cfg) -> dict:
         "on_precompute_failure": cfg.on_precompute_failure,
         "bh76_mode": cfg.bh76_mode,
         "use_polarized_correlation": cfg.use_polarized_correlation,
+        "held_out_strict": cfg.held_out_strict,
         "defer_eval": cfg.defer_eval,
     }
     return raw

@@ -283,6 +283,22 @@ def test_prepare_has_no_regenerate_flag(tmp_path):
 # submit
 # ===========================================================================
 
+def test_resolved_config_persists_held_out_strict(tmp_path):
+    """Regression: ``held_out_strict`` must survive the resolved_config.yaml
+    round trip — otherwise the cluster reloads it as False and the held-out eval
+    silently stops being the strict (no-leakage) complement."""
+    import dataclasses
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+
+    cfg = load_grid_config(_write_grid(tmp_path))
+    cfg = dataclasses.replace(cfg, held_out_strict=True)
+    rd = tmp_path / "rd"
+    rd.mkdir()
+    cli._write_resolved_config(cfg, str(rd))
+    back = load_grid_config(str(rd / "resolved_config.yaml"))
+    assert back.held_out_strict is True
+
+
 def test_submit_creates_run_dir_and_resolved_config_dry_run(tmp_path,
                                                             monkeypatch):
     grid = _write_grid(tmp_path)

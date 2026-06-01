@@ -146,11 +146,15 @@ def _write_ledger(path, ledger):
 
 @pytest.fixture
 def stub_pool(monkeypatch):
-    """Stub ``build_dfs_pool_points`` inside inputs.py so tests need neither
-    the real pool nor the traj files."""
+    """Stub the domain's ``pool_builder`` (the seam ``prepare_inputs`` uses) so
+    tests need neither the real pool nor the traj files; CCSD stays on the
+    canonical (non-ledger-scoped) path."""
+    from types import SimpleNamespace
     pool = _make_pool()
-    monkeypatch.setattr(inputs_mod, "build_dfs_pool_points",
-                        lambda bh76_mode="reaction_energy": pool)
+    fake_domain = SimpleNamespace(pool_builder=lambda cfg: pool,
+                                  ccsd_species_from_ledger=False)
+    monkeypatch.setattr(inputs_mod, "_get_domain_profile",
+                        lambda name: fake_domain)
     return pool
 
 
@@ -274,6 +278,54 @@ def test_prepare_inputs_recompute_refs_false_skips_precompute(
     assert stub_refs["pretrain"] == 0
     assert isinstance(staged, StagedInputs)
     assert staged.subset_ledger == _make_ledger()
+
+
+def test_prepare_inputs_bh76w411_ledger_scoped_ccsd(tmp_path, monkeypatch):
+    """An external (ccsd_species_from_ledger) domain: prepare_inputs builds the
+    domain pool and restricts CCSD to the union of species across the LEDGER's
+    chosen points, handing their geometries to precompute_all + skipping the
+    DFS override check / preflight."""
+    from types import SimpleNamespace
+    from ase import Atoms
+    from xcquinox.alec.training_points import TrainingPoint
+
+    def _pt(name, spnames):
+        sp = []
+        for n in spnames:
+            a = Atoms("He", positions=[(0.0, 0.0, 0.0)])
+            a.info.update(name=n, charge=0, spin=0)
+            sp.append(a)
+        return TrainingPoint(kind="bh76", name=name, species=tuple(sp),
+                             metadata={"e_rxn_ref": 1.0})
+
+    # pool point names match _make_ledger's point_names (P0,P1,P2)
+    pool = [_pt("P0", ["a", "b"]), _pt("P1", ["b", "c"]), _pt("P2", ["c", "d"])]
+    fake_domain = SimpleNamespace(pool_builder=lambda cfg: pool,
+                                  ccsd_species_from_ledger=True)
+    monkeypatch.setattr(inputs_mod, "_get_domain_profile", lambda name: fake_domain)
+
+    cap = {}
+
+    def fake_precompute(species, *, cache_dir, basis, grid_level,
+                        density_fit=False, auxbasis=None, atoms_by_key=None,
+                        validate_overrides=True, run_preflight=True):
+        cap["names"] = sorted(s.name for s in species)
+        cap["keys"] = sorted(atoms_by_key) if atoms_by_key else None
+        cap["validate_overrides"] = validate_overrides
+        cap["run_preflight"] = run_preflight
+    monkeypatch.setattr(inputs_mod, "_precompute_all", fake_precompute)
+    monkeypatch.setattr(inputs_mod, "_ensure_pretrain_data", lambda *a, **k: None)
+
+    cfg = _make_cfg(tmp_path)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+    prepare_inputs(cfg)
+
+    # union of species across the chosen P0,P1,P2 = {a,b,c,d} (subset, geometries
+    # passed directly), with DFS override-check + preflight skipped.
+    assert cap["names"] == ["a", "b", "c", "d"]
+    assert cap["keys"] == [("a", 0, 0), ("b", 0, 0), ("c", 0, 0), ("d", 0, 0)]
+    assert cap["validate_overrides"] is False
+    assert cap["run_preflight"] is False
 
 
 def test_prepare_inputs_threads_density_fit_and_ensures_pretrain(

@@ -1236,8 +1236,18 @@ def precompute_all(
     run_preflight: bool = True,
     density_fit: bool = False,
     auxbasis: str | None = None,
+    atoms_by_key: dict | None = None,
+    validate_overrides: bool = True,
 ) -> None:
     """Top-level Cell 0.5 driver.
+
+    Generalizable to non-DFS pools: when ``atoms_by_key`` (a
+    ``{(name,charge,spin): ASE Atoms}`` map) is supplied, geometries are taken
+    from it directly instead of :func:`resolve_geometry` (whose source-based
+    lookups only know the DFS/probe sets) — so any external pool can provide its
+    own molecules. ``validate_overrides=False`` skips the DFS-specific OEP
+    per-species override check (those overrides target DFS species absent from
+    an external pool).
 
     Iterates the species union, runs SCF + CCSD + OEP per species (each
     stage cached). Skip-if-cached for species whose final .npz already
@@ -1276,7 +1286,8 @@ def precompute_all(
     # ordering): validate the per-species override table BEFORE any
     # disk mutation. Orphan keys / typo'd knobs / out-of-range values
     # raise here, fail-fast before migration touches anything.
-    _validate_overrides(species)
+    if validate_overrides:
+        _validate_overrides(species)
     # Spec sec. 5.6: migrate any pre-2026-05-03 unsuffixed cache
     # filenames BEFORE preflight reads from _intermediates/. Idempotent
     # no-op once migration has run.
@@ -1302,7 +1313,10 @@ def precompute_all(
             continue
         t0 = time.time()
         try:
-            atoms = resolve_geometry(spec)
+            if atoms_by_key is not None:
+                atoms = atoms_by_key[(spec.name, spec.charge, spec.spin)]
+            else:
+                atoms = resolve_geometry(spec)
             scf = run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
                                      basis=basis, grid_level=grid_level,
                                      density_fit=density_fit, auxbasis=auxbasis)

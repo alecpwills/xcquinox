@@ -138,6 +138,23 @@ def ip13_meta_to_loss_dict(tp):
 # DomainProfile + registry
 # ---------------------------------------------------------------------------
 
+BH76W411_POOL_SIZE = 212   # 216 reactions, 4 identical-name duplicates collapse
+
+
+def _dfs_pool_builder(cfg):
+    """Default pool builder: the 26-point DFS pool (lazy import keeps domain.py
+    free of the heavy ASE/pyscf chain until a pool is actually requested)."""
+    from xcquinox.alec.training_points import build_dfs_pool_points
+    return build_dfs_pool_points(bh76_mode=cfg.bh76_mode)
+
+
+def _bh76w411_pool_builder(cfg):
+    """Pool builder for the full BH76+W4-11 reaction set (representative-subset
+    training)."""
+    from xcquinox.alec.training_points import build_bh76w411_pool_points
+    return build_bh76w411_pool_points()
+
+
 @dataclass(frozen=True)
 class DomainProfile:
     """Bundle of physics tables a generic spec-builder needs.
@@ -171,6 +188,15 @@ class DomainProfile:
     pool_size: int
     bh76_meta_to_loss_dict: Callable = field(default=bh76_meta_to_loss_dict)
     ip13_meta_to_loss_dict: Callable = field(default=ip13_meta_to_loss_dict)
+    # pool_builder(cfg) -> list[TrainingPoint]: the trainable pool for this
+    # domain. Default = the 26-point DFS pool; alternate domains (e.g.
+    # bh76w411_step7) supply their own. Generalizable to any training set.
+    pool_builder: Callable = field(default=_dfs_pool_builder)
+    # When True, the harness restricts CCSD-reference generation to the species
+    # actually present in the loaded subset ledger (training-subset species),
+    # passing their geometries directly — instead of the canonical DFS species
+    # union. Keeps the preflight feasible for large external pools.
+    ccsd_species_from_ledger: bool = False
 
 
 # Registry of named domain profiles. ``dfs_step7`` is the step-7 DFS profile:
@@ -184,6 +210,21 @@ DOMAIN_PROFILES: dict = {
         pool_size=DFS_POOL_SIZE,
         bh76_meta_to_loss_dict=bh76_meta_to_loss_dict,
         ip13_meta_to_loss_dict=ip13_meta_to_loss_dict,
+    ),
+    # Representative-subset training on the full BH76+W4-11 reaction set: same
+    # Chakravorty anchors / Dick regularizer / loss extractors, but the pool is
+    # the 212-reaction BH76+W4-11 set and CCSD refs are scoped to the ledger's
+    # training-subset species.
+    "bh76w411_step7": DomainProfile(
+        name="bh76w411_step7",
+        atom_energies=dict(ATOMIC_ENERGIES_CHAKRAVORTY),
+        regularize_atom_syms=tuple(DICK_ATOM_REGULARIZER_SYMS),
+        kcal_per_ha=KCAL_PER_HA,
+        pool_size=BH76W411_POOL_SIZE,
+        bh76_meta_to_loss_dict=bh76_meta_to_loss_dict,
+        ip13_meta_to_loss_dict=ip13_meta_to_loss_dict,
+        pool_builder=_bh76w411_pool_builder,
+        ccsd_species_from_ledger=True,
     ),
 }
 

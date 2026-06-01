@@ -279,6 +279,11 @@ class GridConfig:
     # zeta. Default False -> byte-identical unpolarized behavior. Set via the
     # ``submit --polarized`` flag (or ``use_polarized_correlation: true`` in YAML).
     use_polarized_correlation: bool = False
+    # When True, the held-out eval drops any reaction that shares a species with
+    # the training subset (strict overlap filtering) so held-out = the true
+    # complement with no leakage. Required for the representative-subset
+    # (BH76+W4-11) runs where training subset + held-out partition one benchmark.
+    held_out_strict: bool = False
     # Run-level toggle: when True, the eval array is NOT submitted up front. The
     # initial ``submit`` queues pretrain+preflight+train plus a tiny launcher job
     # (afterany on train) that submits the eval array only after train terminates,
@@ -494,6 +499,7 @@ def load_grid_config(path: str) -> GridConfig:
         on_precompute_failure=raw.get("on_precompute_failure", "abort"),
         bh76_mode=raw.get("bh76_mode", "reaction_energy"),
         use_polarized_correlation=bool(raw.get("use_polarized_correlation", False)),
+        held_out_strict=bool(raw.get("held_out_strict", False)),
         defer_eval=bool(raw.get("defer_eval", False)),
         inline_eval=bool(raw.get("inline_eval", False)),
     )

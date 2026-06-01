@@ -67,6 +67,44 @@ _build_species_union = _external_refs.build_species_union
 _ensure_pretrain_data = _pretrain_data_gen.ensure_pretrain_data
 
 
+def _get_domain_profile(name):
+    """Seam wrapping ``domain.get_domain_profile`` (module-level so tests can
+    monkeypatch the pool/CCSD strategy without the real heavy pool build)."""
+    from xcquinox.alec.cluster.domain import get_domain_profile
+    return get_domain_profile(name)
+
+
+def _ledger_scoped_species(points, subset_ledger):
+    """CCSD species to precompute = the union of species across every training
+    point named in the loaded subset ledger (training-subset species only), plus
+    a ``{(name,charge,spin): ASE Atoms}`` geometry map for ``precompute_all``.
+
+    Generalizable: works for any name-keyed ledger over any pool. Returns
+    ``(list[SpeciesEntry], atoms_by_key)``."""
+    from xcquinox.alec.external_refs import SpeciesEntry
+    from xcquinox.alec.training_points import species_union_from_points
+
+    by_name = {p.name: p for p in points}
+    chosen = []
+    seen = set()
+    for entry in subset_ledger.values():
+        for pn in entry.get("point_names", ()):
+            if pn in by_name and pn not in seen:
+                seen.add(pn)
+                chosen.append(by_name[pn])
+    union_atoms = species_union_from_points(chosen)
+    species = []
+    atoms_by_key = {}
+    for a in union_atoms:
+        name = a.info["name"]
+        charge = int(a.info.get("charge", 0))
+        spin = int(a.info.get("spin", 0))
+        species.append(SpeciesEntry(name=name, charge=charge, spin=spin,
+                                    source="reaction_pool"))
+        atoms_by_key[(name, charge, spin)] = a
+    return species, atoms_by_key
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -204,26 +242,44 @@ def prepare_inputs(
         ``recompute_refs`` is ``True`` and ``precompute_all`` failed for one
         or more species (it raises with the failed-species list).
     """
-    # --- 1. training-point pool --------------------------------------------
-    points = build_dfs_pool_points(bh76_mode=cfg.bh76_mode)
+    # --- 1. training-point pool (domain-selected) --------------------------
+    domain = _get_domain_profile(cfg.domain_profile)
+    points = domain.pool_builder(cfg)
 
     # --- 2. load the EXISTING subset ledger --------------------------------
     subset_ledger = _load_subset_ledger(cfg)
 
     # --- 3. ensure CCSD external references --------------------------------
-    # build_species_union assembles its own canonical species set (training +
-    # probe + HBPT); precompute_all is skip-if-cached / idempotent and raises
-    # RuntimeError with a failed-species list on failure.
+    # DFS domain: build_species_union assembles its own canonical species set
+    # (training + probe + HBPT). External pools (ccsd_species_from_ledger):
+    # restrict CCSD to the ledger's training-subset species and hand their
+    # geometries to precompute_all directly. Either way precompute_all is
+    # skip-if-cached / idempotent and raises RuntimeError with the failed-species
+    # list on failure.
     if recompute_refs:
-        species = _build_species_union()
-        _precompute_all(
-            species,
-            cache_dir=cfg.inputs.external_refs_dir,
-            basis=cfg.inputs.basis,
-            grid_level=cfg.inputs.grid_level,
-            density_fit=cfg.inputs.density_fit,
-            auxbasis=cfg.inputs.auxbasis,
-        )
+        if domain.ccsd_species_from_ledger:
+            species, atoms_by_key = _ledger_scoped_species(points, subset_ledger)
+            _precompute_all(
+                species,
+                cache_dir=cfg.inputs.external_refs_dir,
+                basis=cfg.inputs.basis,
+                grid_level=cfg.inputs.grid_level,
+                density_fit=cfg.inputs.density_fit,
+                auxbasis=cfg.inputs.auxbasis,
+                atoms_by_key=atoms_by_key,
+                validate_overrides=False,
+                run_preflight=False,
+            )
+        else:
+            species = _build_species_union()
+            _precompute_all(
+                species,
+                cache_dir=cfg.inputs.external_refs_dir,
+                basis=cfg.inputs.basis,
+                grid_level=cfg.inputs.grid_level,
+                density_fit=cfg.inputs.density_fit,
+                auxbasis=cfg.inputs.auxbasis,
+            )
 
         # --- 4. ensure pretrain data matches the configured basis -----------
         # The per-atom Fx/Fc pretrain targets are basis-dependent, so a basis

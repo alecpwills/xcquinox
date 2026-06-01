@@ -340,3 +340,90 @@ def species_union_from_points(
             if key not in seen:
                 seen[key] = s
     return list(seen.values())
+
+
+def _molspec_to_atoms(spec) -> Atoms:
+    """Build an ASE ``Atoms`` (carrying ``info`` name/charge/spin) from a
+    ``full_benchmark_pools`` ``MoleculeSpec``. ``spec.atom`` is a pyscf-format
+    ``"Sym x y z; ..."`` string in ANGSTROM."""
+    symbols: list[str] = []
+    positions: list[list[float]] = []
+    for tok in spec.atom.replace("\n", ";").split(";"):
+        tok = tok.strip()
+        if not tok:
+            continue
+        parts = tok.split()
+        symbols.append(parts[0])
+        positions.append([float(parts[1]), float(parts[2]), float(parts[3])])
+    a = Atoms(symbols=symbols, positions=positions)
+    a.info["name"] = spec.name
+    a.info["charge"] = int(getattr(spec, "charge", 0) or 0)
+    a.info["spin"] = int(getattr(spec, "spin", 0) or 0)
+    return a
+
+
+def build_reaction_pool_points(reactions, atoms_by_name) -> list[TrainingPoint]:
+    """Build reaction-energy ``bh76``-kind TrainingPoints from an ARBITRARY set
+    of reactions + a ``name -> ASE Atoms`` map — generalizable to any benchmark
+    or custom training set, not just BH76+W4-11.
+
+    Each ``reaction`` dict must carry ``name``, ``reactants``/``products``
+    (species-name lists), ``coeffs``, and ``reaction_energy_ref`` (kcal/mol —
+    ``bh76_meta_to_loss_dict`` divides by ``KCAL_PER_HA``). ``atoms_by_name``
+    resolves every species name to an ASE ``Atoms`` carrying ``info``
+    name/charge/spin (e.g. via :func:`_molspec_to_atoms`). Each reaction becomes
+    one point whose ``name`` IS the reaction name (so a name-keyed subset ledger
+    resolves directly), and whose ``species`` are its participating molecules;
+    the L5 BH76 channel trains ``Σ coeffs·E`` against the reference while the
+    vxc/rho channels train each species against its CCSD reference density (the
+    harness preflight generates those for the training-subset species).
+
+    Reactions are **deduplicated by name** — identical-name entries collapse to
+    one point (the harness resolves training points by name, which must be
+    unique). Raises ``KeyError`` if a species name is absent from
+    ``atoms_by_name`` (fail loud rather than train on a missing molecule)."""
+    points: list[TrainingPoint] = []
+    seen_names: set[str] = set()
+    for rxn in reactions:
+        name = rxn["name"]
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        species: list[Atoms] = []
+        seen_sp: set[str] = set()
+        for sp_name in list(rxn["reactants"]) + list(rxn["products"]):
+            if sp_name in seen_sp:
+                continue
+            seen_sp.add(sp_name)
+            species.append(atoms_by_name[sp_name].copy())
+        points.append(TrainingPoint(
+            kind="bh76",
+            name=name,
+            species=tuple(species),
+            metadata={
+                "reactants": tuple(rxn["reactants"]),
+                "products": tuple(rxn["products"]),
+                "coeffs": tuple(rxn["coeffs"]),
+                "e_rxn_ref": rxn["reaction_energy_ref"],
+                "source": rxn.get("source"),
+                "source_pool": rxn.get("source_pool"),
+            },
+        ))
+    return points
+
+
+def build_bh76w411_pool_points() -> list[TrainingPoint]:
+    """Trainable pool = the full BH76+W4-11 reaction set (212 unique reactions;
+    4 identical-name duplicates in the benchmark collapse).
+
+    A thin wrapper over the generalizable :func:`build_reaction_pool_points`:
+    pulls the reactions + geometries from ``full_benchmark_pools`` and resolves
+    species via :func:`_molspec_to_atoms`. Reaction names match the
+    representative-subset ledger's ``point_names``."""
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+
+    full_specs, full_rxns = load_full_held_out_pools(basis="def2-svp",
+                                                     grid_level=1)
+    atoms_by_name = {name: _molspec_to_atoms(spec)
+                     for name, spec in full_specs.items()}
+    return build_reaction_pool_points(full_rxns, atoms_by_name)
