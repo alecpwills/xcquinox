@@ -651,6 +651,27 @@ class TrainingSpec:
     # specs can carry C/N/O/F/... compounds without forcing single-atom
     # MoleculeSpecs for those elements.
     require_atom_anchors: bool = True
+    # Optimizer update scheme (2026-06-01):
+    #   "batched"      — one full-batch optimizer step per training step over
+    #                    ALL species at once, with the configured `balancing`
+    #                    strategy (GradNorm etc). The historical default.
+    #   "per_molecule" — DFS/dpyscf-style stochastic updates: each epoch shuffles
+    #                    the per-target groups (one AE compound, one BH76
+    #                    reaction, one IP pair, one atom anchor) and takes ONE
+    #                    optimizer step per group, with FIXED channel weights
+    #                    (`channel_weights`). `n_steps` is interpreted as the
+    #                    number of EPOCHS in this mode (total updates =
+    #                    n_steps * n_groups). Breaks the full-batch compromise
+    #                    that pins multi-target atomization-energy fits.
+    update_scheme: str = "batched"
+    # Fixed per-channel weights for `update_scheme="per_molecule"` (ignored in
+    # "batched" mode, where `balancing` controls weighting). Empty → the
+    # density-dominant dpyscf-style default in train._DEFAULT_CHANNEL_WEIGHTS.
+    channel_weights: tuple[tuple[str, float], ...] = ()
+
+    @property
+    def channel_weights_dict(self) -> dict[str, float]:
+        return dict(self.channel_weights)
 
     @property
     def targets_dict(self) -> dict[str, float]:
@@ -761,6 +782,11 @@ class TrainingSpec:
 
         if self.n_steps <= 0:
             raise ValueError(f"n_steps must be > 0, got {self.n_steps}")
+        if self.update_scheme not in ("batched", "per_molecule"):
+            raise ValueError(
+                f"update_scheme must be 'batched' or 'per_molecule', got "
+                f"{self.update_scheme!r}"
+            )
         import math
         for field_name in ("lr_start", "lr_end", "lr_decay_start", "grad_clip"):
             value = getattr(self, field_name)

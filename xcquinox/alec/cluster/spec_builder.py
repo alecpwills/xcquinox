@@ -473,6 +473,8 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             pbe_anchor_weight=hp.pbe_anchor_weight,
             pbe_anchor_sample=None,
             require_atom_anchors=False,
+            update_scheme=hp.update_scheme,
+            channel_weights=hp.channel_weights,
         )
         out.append((cell, spec))
     return out

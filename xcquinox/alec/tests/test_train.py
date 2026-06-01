@@ -33,6 +33,7 @@ from xcquinox.alec.losses import list_losses
 from xcquinox.alec.solver import SolverConfig, SolverMode
 from xcquinox.alec.tests.fixtures.molecules import (
     h_atom,
+    h2_molecule,
     h2o_molecule,
     o_atom,
 )
@@ -308,6 +309,88 @@ def test_losses_decrease(training_batch_info):
         assert losses[-1] < losses[0], (
             f"losses should decrease: first={losses[0]}, last={losses[-1]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: per-molecule (DFS/dpyscf-style) stochastic update scheme
+# ---------------------------------------------------------------------------
+
+def test_validate_update_scheme_invalid():
+    spec = _make_training_spec(update_scheme="bogus")
+    with pytest.raises(ValueError, match="update_scheme"):
+        spec.validate()
+
+
+def test_update_scheme_defaults_to_batched():
+    spec = _make_training_spec()
+    assert spec.update_scheme == "batched"
+    assert spec.channel_weights_dict == {}
+
+
+def test_training_groups_ae_pool():
+    """One AE group per polyatomic compound carrying a target; atoms that are
+    not regularized produce no anchor groups."""
+    from xcquinox.alec.train import _training_groups
+    mols = (h_atom(), o_atom(), h2o_molecule(), h2_molecule())
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(), molecules=mols,
+        targets={"H": -0.5, "O": -75.0, "H2O": 0.3, "H2": 0.17},
+        atom_energies={"H": -0.5, "O": -75.0},
+        loss_name="L5_gradnorm_vxc_step7",
+        update_scheme="per_molecule", require_atom_anchors=False,
+    )
+    groups = _training_groups(spec)
+    assert {g["label"] for g in groups} == {"ae:H2O", "ae:H2"}
+    assert all(len(g["species"]) == 1 for g in groups)
+
+
+def test_training_groups_bh76_and_anchor():
+    """A BH76 reaction yields one group carrying its species; a regularized
+    single atom yields an anchor group."""
+    from xcquinox.alec.train import _training_groups
+    mols = (h_atom(), h2_molecule(), o_atom())
+    rxn = {"name": "r1", "reactants": ["H2"], "products": ["H"],
+           "coeffs": [-1.0, 2.0], "e_rxn_ref": 0.17}
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(), molecules=mols,
+        targets={"H": -0.5, "H2": 0.17, "O": -75.0},
+        atom_energies={"H": -0.5, "O": -75.0},
+        loss_name="L5_gradnorm_vxc_step7",
+        loss_kwargs={"bh76_reactions": [rxn],
+                     "regularize_atom_syms": ("H",)},
+        update_scheme="per_molecule", require_atom_anchors=False,
+    )
+    groups = _training_groups(spec)
+    labels = [g["label"] for g in groups]
+    assert "bh76:r1" in labels
+    assert "anchor:H" in labels
+    bh = next(g for g in groups if g["label"] == "bh76:r1")
+    assert {s.name for s in bh["species"]} == {"H2", "H"}
+
+
+@pytest.mark.slow
+def test_run_training_per_molecule_completes(training_batch_info):
+    """run_training under update_scheme='per_molecule' completes, takes one
+    update per group per epoch, tags the aux_log, and reduces the loss."""
+    import pickle
+    from xcquinox.alec.train import run_training, _training_groups
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=8, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False,
+        )
+        n_groups = len(_training_groups(spec))
+        run_training(spec)
+        losses = np.load(os.path.join(spec.checkpoint_dir, "losses.npy"))
+        # n_steps is the EPOCH count in per-molecule mode.
+        assert len(losses) == spec.n_steps * n_groups
+        assert losses[-1] < losses[0]
+        with open(os.path.join(spec.checkpoint_dir, "aux_log.pkl"), "rb") as f:
+            aux_log = pickle.load(f)
+        assert all(e["update_scheme"] == "per_molecule" for e in aux_log)
+        assert all("group" in e for e in aux_log)
 
 
 # ---------------------------------------------------------------------------

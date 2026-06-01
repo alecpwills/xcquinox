@@ -104,6 +104,16 @@ class HyperParams:
     pbe_anchor_weight: float = 0.0
     require_atom_anchors: bool = False
     seed: int = 42
+    # Optimizer update scheme (2026-06-01). Defaults to the DFS/dpyscf-style
+    # per-molecule stochastic updates (one optimizer step per training group per
+    # epoch, fixed channel weights) — the recommended default. Set "batched" to
+    # use the historical full-batch + GradNorm path. See
+    # xcquinox.alec.train._run_per_molecule_loop / TrainingSpec.update_scheme.
+    update_scheme: str = "per_molecule"
+    # Fixed per-channel weights for per_molecule mode (e.g.
+    # {"loss_rho": 20.0, "loss_AE": 1.0}); empty → train._DEFAULT_CHANNEL_WEIGHTS
+    # (density-dominant, dpyscf-style). Stored sorted for determinism.
+    channel_weights: tuple = ()
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +373,20 @@ def _build_hyperparams(d: dict) -> HyperParams:
         pbe_anchor_weight=d.get("pbe_anchor_weight", 0.0),
         require_atom_anchors=d.get("require_atom_anchors", False),
         seed=d.get("seed", 42),
+        update_scheme=d.get("update_scheme", "per_molecule"),
+        channel_weights=_parse_channel_weights(d.get("channel_weights")),
     )
+
+
+def _parse_channel_weights(raw) -> tuple:
+    """Accept either a {channel: weight} dict (user YAML) or a list of
+    [channel, weight] pairs (round-tripped resolved_config, where
+    dataclasses.asdict turned the tuple into nested lists). Return a
+    deterministic sorted tuple of (str, float) pairs."""
+    if not raw:
+        return ()
+    items = raw.items() if isinstance(raw, dict) else raw
+    return tuple(sorted((str(k), float(v)) for k, v in items))
 
 
 def _build_inputs(d: dict) -> InputPaths:
@@ -646,6 +669,11 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     if hp.grad_clip <= 0:
         raise ValueError(
             f"hyperparams.grad_clip must be > 0, got {hp.grad_clip}"
+        )
+    if hp.update_scheme not in ("batched", "per_molecule"):
+        raise ValueError(
+            f"hyperparams.update_scheme must be 'batched' or 'per_molecule', "
+            f"got {hp.update_scheme!r}"
         )
     # The harness NEVER builds a PBE-anchor sample (spec_builder hardcodes
     # pbe_anchor_sample=None), so a positive pbe_anchor_weight is a silent

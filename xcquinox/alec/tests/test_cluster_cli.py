@@ -299,6 +299,31 @@ def test_resolved_config_persists_held_out_strict(tmp_path):
     assert back.held_out_strict is True
 
 
+def test_resolved_config_persists_update_scheme_and_channel_weights(tmp_path):
+    """Regression: ``hyperparams.update_scheme`` and ``channel_weights`` must
+    survive the resolved_config.yaml round trip. channel_weights serializes as a
+    list of [name, weight] pairs (dataclasses.asdict on the tuple) and must
+    reparse back to the same sorted tuple — not silently drop to ()."""
+    import dataclasses
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+
+    cfg = load_grid_config(_write_grid(tmp_path))
+    cfg = dataclasses.replace(
+        cfg,
+        hyperparams=dataclasses.replace(
+            cfg.hyperparams, update_scheme="per_molecule",
+            channel_weights=(("loss_AE", 1.0), ("loss_rho", 20.0)),
+        ),
+    )
+    rd = tmp_path / "rd"
+    rd.mkdir()
+    cli._write_resolved_config(cfg, str(rd))
+    back = load_grid_config(str(rd / "resolved_config.yaml"))
+    assert back.hyperparams.update_scheme == "per_molecule"
+    assert back.hyperparams.channel_weights == (
+        ("loss_AE", 1.0), ("loss_rho", 20.0))
+
+
 def test_submit_creates_run_dir_and_resolved_config_dry_run(tmp_path,
                                                             monkeypatch):
     grid = _write_grid(tmp_path)

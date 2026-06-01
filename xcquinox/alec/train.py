@@ -599,6 +599,188 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
 
 
 # ---------------------------------------------------------------------------
+# Per-molecule (DFS/dpyscf-style) stochastic update loop
+# ---------------------------------------------------------------------------
+
+# Density-dominant fixed channel weights (dpyscf: density L_n weight ~20,
+# atomization/reaction L_RE ~1, total-energy L_E ~0.01). Energy channels at 1.0,
+# density at 20.0, vxc at 1.0. Used when update_scheme="per_molecule" and the
+# spec sets no explicit channel_weights.
+_DEFAULT_CHANNEL_WEIGHTS = {
+    "loss_AE": 1.0,
+    "loss_BH76": 1.0,
+    "loss_IP13": 1.0,
+    "loss_vxc": 1.0,
+    "loss_rho": 20.0,
+}
+
+
+def _training_groups(spec: TrainingSpec) -> list:
+    """Decompose a spec into per-target groups for per-molecule updates.
+
+    One group per BH76 reaction (its reactant/product species), per IP13 pair
+    (neutral+cation), per polyatomic AE compound carrying a target, and per
+    regularized single-atom anchor. Each group is a dict ``{label, species,
+    bh76, ip13}`` where ``species`` is a tuple of MoleculeSpec. Mirrors
+    dpyscf's per-molecule loop while reusing the multi-channel loss via scoped
+    sub-losses (see :func:`_build_group_loss_and_batch`).
+    """
+    by_name = {m.name: m for m in spec.molecules}
+    targets = spec.targets_dict
+    lk = spec.loss_kwargs_dict
+    reg_set = set(lk.get("regularize_atom_syms") or ())
+
+    def _n_atoms(m):
+        return sum(dict(m.atom_composition).values())
+
+    groups: list = []
+
+    for r in (lk.get("bh76_reactions") or ()):
+        names: list = []
+        for s in (*r["reactants"], *r["products"]):
+            if s not in names:
+                names.append(s)
+        species = tuple(by_name[n] for n in names if n in by_name)
+        groups.append({"label": f"bh76:{r['name']}", "species": species,
+                       "bh76": (r,), "ip13": ()})
+
+    for p in (lk.get("ip13_pairs") or ()):
+        species = tuple(by_name[n] for n in (p["neutral"], p["cation"])
+                        if n in by_name)
+        groups.append({"label": f"ip13:{p['name']}", "species": species,
+                       "bh76": (), "ip13": (p,)})
+
+    for m in spec.molecules:
+        if _n_atoms(m) > 1 and m.name in targets:
+            groups.append({"label": f"ae:{m.name}", "species": (m,),
+                           "bh76": (), "ip13": ()})
+
+    for m in spec.molecules:
+        comp = dict(m.atom_composition)
+        if sum(comp.values()) == 1 and next(iter(comp)) in reg_set:
+            groups.append({"label": f"anchor:{m.name}", "species": (m,),
+                           "bh76": (), "ip13": ()})
+
+    if not groups:
+        raise ValueError(
+            "update_scheme='per_molecule': no training groups derived from the "
+            "spec (no BH76 reactions, IP13 pairs, AE compounds, or regularized "
+            "atom anchors). Check the molecule/target/reaction configuration."
+        )
+    return groups
+
+
+def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
+    """Scoped loss + sub-batch for one group. Channels are RAW (vxc/density
+    pre-weights forced to 1.0) — the outer fixed ``channel_weights`` are the
+    sole weighting control in per-molecule mode."""
+    name_to_idx = {m.name: i for i, m in enumerate(spec.molecules)}
+    species = group["species"]
+    sub_mol_data = tuple(batch["mol_data"][name_to_idx[s.name]] for s in species)
+
+    lk = dict(spec.loss_kwargs_dict)
+    lk["vxc_weight"] = 1.0
+    lk["density_weight"] = 1.0
+    lk["bh76_reactions"] = list(group["bh76"])
+    lk["ip13_pairs"] = list(group["ip13"])
+    lk["solver_config"] = (spec.loss_kwargs_dict.get("solver_config")
+                           or spec.solver_config)
+    # Scope the atom-anchor allowlist to atoms actually present in this group.
+    group_atom_syms = {
+        next(iter(dict(s.atom_composition)))
+        for s in species if sum(dict(s.atom_composition).values()) == 1
+    }
+    scoped_reg = tuple(s for s in (spec.loss_kwargs_dict.get(
+        "regularize_atom_syms") or ()) if s in group_atom_syms)
+    lk["regularize_atom_syms"] = scoped_reg or None
+    present = {s.name for s in species}
+    if lk.get("aux_only_names"):
+        lk["aux_only_names"] = tuple(a for a in lk["aux_only_names"]
+                                     if a in present)
+    lk.pop("pbe_anchor_weight", None)
+    lk.pop("pbe_anchor_sample", None)
+
+    sub_loss = make_loss(spec.loss_name, molecules=species, **lk)
+    sub_targets = {s.name: batch["targets"][s.name]
+                   for s in species if s.name in batch["targets"]}
+    sub_batch = {
+        "mol_data": sub_mol_data,
+        "targets": sub_targets,
+        "atom_energies": batch["atom_energies"],
+    }
+    return sub_loss, sub_batch
+
+
+def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
+    """DFS/dpyscf-style stochastic loop: each epoch shuffles the per-target
+    groups and takes ONE optimizer step per group with fixed channel weights.
+    ``spec.n_steps`` is the number of EPOCHS; total updates = n_steps*n_groups.
+    """
+    t0 = time.time()
+    relative = spec.loss_metric == "relative"
+    cw = spec.channel_weights_dict or dict(_DEFAULT_CHANNEL_WEIGHTS)
+    groups = _training_groups(spec)
+    n_groups = len(groups)
+    n_epochs = spec.n_steps
+    total_updates = max(1, n_epochs * n_groups)
+
+    optimizer = build_optimizer(
+        lr_start=spec.lr_start, lr_end=spec.lr_end,
+        n_steps=total_updates, lr_decay_start=spec.lr_decay_start,
+        grad_clip=spec.grad_clip,
+    )
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    progress_hook = _adapt_progress_callback(
+        progress_callback, arch=spec.arch.name, phase="train")
+
+    @eqx.filter_jit
+    def _step(model, opt_state, gbatch, gloss):
+        def scalar_loss(m):
+            comps = gloss.compute_components(m, gbatch, relative=relative)
+            total = jnp.array(0.0)
+            for k, v in comps.items():
+                total = total + cw.get(k, 1.0) * v
+            return total, comps
+        (loss_val, comps), grads = eqx.filter_value_and_grad(
+            scalar_loss, has_aux=True)(model)
+        updates, opt_state = optimizer.update(grads, opt_state, model)
+        model = eqx.apply_updates(model, updates)
+        return model, opt_state, loss_val, comps
+
+    prepared = [
+        (g["label"], *_build_group_loss_and_batch(spec, g, batch))
+        for g in groups
+    ]
+
+    rng = np.random.RandomState(spec.seed)
+    order = np.arange(n_groups)
+    losses_list: list = []
+    aux_log: list = []
+    update = 0
+    loss_py = float("nan")
+    for epoch in range(n_epochs):
+        rng.shuffle(order)
+        for gi in order:
+            label, gloss, gbatch = prepared[gi]
+            model, opt_state, loss_val, comps = _step(
+                model, opt_state, gbatch, gloss)
+            loss_py = float(loss_val)
+            losses_list.append(loss_py)
+            aux_log.append({
+                "step": update, "epoch": epoch, "group": label,
+                "loss": loss_py,
+                "aux": {k: float(v) for k, v in comps.items()},
+                "update_scheme": "per_molecule",
+            })
+            update += 1
+        if progress_hook is not None:
+            progress_hook(epoch + 1, n_epochs, loss_py)
+
+    duration = time.time() - t0
+    return _save_artifacts(spec, model, losses_list, aux_log, duration)
+
+
+# ---------------------------------------------------------------------------
 # run_training -- dispatcher
 # ---------------------------------------------------------------------------
 
@@ -614,6 +796,13 @@ def run_training(spec: TrainingSpec, progress_callback=None) -> dict:
         **spec.loss_kwargs_dict,
     )
     batch = _build_batch(spec, loss)
+
+    # DFS/dpyscf-style per-molecule stochastic updates: one optimizer step per
+    # target-group per epoch with fixed channel weights (ignores `balancing`,
+    # whose GradNorm rebalancing is a full-batch construct).
+    if getattr(spec, "update_scheme", "batched") == "per_molecule":
+        return _run_per_molecule_loop(spec, model, batch, loss, progress_callback)
+
     balancing = spec.balancing
 
     if balancing is None or type(balancing).__name__ == "BalancingConfig":
