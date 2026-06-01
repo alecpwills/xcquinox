@@ -173,6 +173,7 @@ class MoleculeData(TypedDict, total=True):
     cusp_features: jnp.ndarray | None
     dm_features: jnp.ndarray | None
     eri: jnp.ndarray | None
+    cderi: jnp.ndarray | None
     atom_composition: tuple[tuple[str, int], ...]
     mol_metadata: dict
     # Cached pyscfad.gto.Mole built once at precompute time so that hot-path
@@ -413,6 +414,15 @@ def precompute_fixed_density_data(
     if "eri" in all_needed:
         eri = jnp.array(mol.intor("int2e", aosym="s1"))
 
+    # Density-fitted 3-index Coulomb tensor (naux, nao, nao). geometry+basis
+    # only (NOT NN-dependent), so it is precomputed here and contracted in JAX
+    # by the manual solver when SolverConfig.density_fit is on. Far smaller than
+    # the full s1 ERI (naux*nao^2 vs nao^4) -> larger bases stay in memory.
+    cderi = None
+    if "cderi" in all_needed:
+        from xcquinox.alec.df_jk import build_cderi
+        cderi = build_cderi(mol)
+
     # External reference data (dm_target / rho_ref_grid / E_ref_literature)
     # come from an optional .npz pointed to by mol_spec.external_data_path.
     # precompute only handles SCF-level quantities; CCSD/HF post-SCF
@@ -480,6 +490,7 @@ def precompute_fixed_density_data(
         cusp_features=cusp_features,
         dm_features=dm_features,
         eri=eri,
+        cderi=cderi,
         atom_composition=mol_spec.atom_composition,
         mol_metadata={
             "atom": mol_spec.atom,
