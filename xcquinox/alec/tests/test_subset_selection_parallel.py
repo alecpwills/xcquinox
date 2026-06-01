@@ -126,6 +126,35 @@ def test_extract_descriptors_for_molspecs_tiny(tmp_path):
     assert set(out2) == set(out)
 
 
+def test_extract_descriptors_for_molspecs_parallel_matches_sequential(tmp_path):
+    """n_jobs>1 (spawn pool, 1 thread/worker) yields the same descriptors as the
+    sequential path (each species' SCF is independent)."""
+    from xcquinox.alec.config import MoleculeSpec
+    specs = [
+        MoleculeSpec(name="He", atom="He 0 0 0", basis="sto-3g", charge=0, spin=0),
+        MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+                     charge=0, spin=0),
+        MoleculeSpec(name="Li", atom="Li 0 0 0", basis="sto-3g", charge=0, spin=1),
+    ]
+    seq = ss.extract_descriptors_for_molspecs(
+        specs, basis="sto-3g", grid_level=1, cache_dir=tmp_path / "seq", n_jobs=1)
+    par = ss.extract_descriptors_for_molspecs(
+        specs, basis="sto-3g", grid_level=1, cache_dir=tmp_path / "par", n_jobs=2)
+    assert set(seq) == set(par)
+    for key in seq:
+        # rho^{1/3}, s and the grid weights are reproducible to machine
+        # precision (the residual is BLAS thread-count nondeterminism).
+        for col in ("rho_third", "s", "weights"):
+            np.testing.assert_allclose(par[key][col], seq[key][col],
+                                       rtol=1e-6, atol=1e-8)
+        # alpha = (tau - tau_W)/tau_unif is a ratio of small quantities in the
+        # low-density tail, so the same machine-eps density difference amplifies
+        # there (both are valid SCF solutions; selection bins these). A loose
+        # tail tolerance is the physically meaningful equivalence check.
+        np.testing.assert_allclose(par[key]["alpha"], seq[key]["alpha"],
+                                   rtol=1e-3, atol=1e-2)
+
+
 def test_concatenate_reaction_descriptors_unions_species():
     specs_by_name = {
         "a": SimpleNamespace(name="a", charge=0, spin=0),

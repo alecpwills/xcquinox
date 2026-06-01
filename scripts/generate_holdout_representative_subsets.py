@@ -85,14 +85,16 @@ def main(argv=None):
     print(f"Pool: {n_rxn} reactions ({n_bh76} bh76 + {n_w411} w411); "
           f"{len(full_specs)} unique species", flush=True)
 
+    from xcquinox.alec.parallel import detect_available_cpus
+    xjobs = int(args.n_jobs) if args.n_jobs else detect_available_cpus()
     DESC_CACHE.mkdir(parents=True, exist_ok=True)
     print(f"Extracting per-species GGA descriptors "
-          f"(PBE/{BASIS}/grid_level={GRID_LEVEL}; cache {DESC_CACHE}) ...",
-          flush=True)
+          f"(PBE/{BASIS}/grid_level={GRID_LEVEL}; {xjobs} workers; "
+          f"cache {DESC_CACHE}) ...", flush=True)
     t0 = time.time()
     species_desc = ss.extract_descriptors_for_molspecs(
         full_specs.values(), basis=BASIS, grid_level=GRID_LEVEL,
-        cache_dir=DESC_CACHE)
+        cache_dir=DESC_CACHE, n_jobs=xjobs)
     print(f"  {len(species_desc)} species in {time.time() - t0:.1f}s", flush=True)
 
     reaction_desc = ss.concatenate_reaction_descriptors(

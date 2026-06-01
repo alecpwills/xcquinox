@@ -811,6 +811,34 @@ def _write_descriptor_cache(cache_path, out: dict) -> None:
             _os.unlink(tmp_name)
 
 
+def _pyscf_thread_init():
+    """Pin one BLAS/OpenMP thread per worker (set before pyscf does work) so N
+    extraction workers saturate N cores without thread oversubscription."""
+    import os as _os
+
+    _os.environ["OMP_NUM_THREADS"] = "1"
+    _os.environ["MKL_NUM_THREADS"] = "1"
+    _os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    try:
+        from pyscf import lib as _lib
+        _lib.num_threads(1)
+    except Exception:
+        pass
+
+
+def _extract_one_molspec_worker(args):
+    """Build one MoleculeSpec's pyscf mol from plain args, extract the descriptor
+    triple, write its atomic cache, and return the dict. Module-level + plain-arg
+    (no MoleculeSpec object) so it is picklable for a ``spawn`` pool."""
+    atom, charge, spin, basis, grid_level, cache_path = args
+    from pyscf import gto
+
+    mol = gto.M(atom=atom, basis=basis, charge=charge, spin=spin, verbose=0)
+    d = _descriptor_triple_from_mol(mol, grid_level=grid_level)
+    _write_descriptor_cache(cache_path, d)
+    return d
+
+
 def extract_descriptors(
     at: Atoms,
     *,
@@ -848,6 +876,7 @@ def extract_descriptors_for_molspecs(
     basis: str = "def2-svp",
     grid_level: int = 1,
     cache_dir,
+    n_jobs: int = 1,
 ) -> dict[tuple, dict]:
     """Per-:class:`MoleculeSpec` ``(ρ^{1/3}, s, α, weights)`` descriptors, cached
     by ``(name, charge, spin)``.
@@ -858,13 +887,17 @@ def extract_descriptors_for_molspecs(
     built directly (no ASE round-trip). ``basis``/``grid_level`` are taken from
     the arguments (def2-svp / 1 to match the pool-descriptor convention), not the
     spec's own fields, so every reaction's descriptors share one footing.
-    """
-    from pyscf import gto
 
+    ``n_jobs`` (>1) runs the per-species PBE SCFs in a ``spawn`` multiprocessing
+    pool (1 BLAS thread per worker, so N workers saturate N cores). The SCFs are
+    independent and each writes its own atomic ``.npz`` cache, so cached species
+    are skipped and a partial run resumes. ``n_jobs=1`` (default) is the
+    sequential, byte-identical path."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     out: dict[tuple, dict] = {}
     seen: set[tuple] = set()
+    todo: list[tuple] = []          # (key, work-args)
     for spec in specs:
         name = spec.name
         charge = int(getattr(spec, "charge", 0) or 0)
@@ -879,10 +912,21 @@ def extract_descriptors_for_molspecs(
             z = np.load(cache_path)
             out[key] = {k: z[k] for k in ("rho_third", "s", "alpha", "weights")}
             continue
-        mol = gto.M(atom=spec.atom, basis=basis, charge=charge, spin=spin,
-                    verbose=0)
-        d = _descriptor_triple_from_mol(mol, grid_level=grid_level)
-        _write_descriptor_cache(cache_path, d)
+        todo.append((key, (spec.atom, charge, spin, basis, grid_level,
+                           str(cache_path))))
+    if not todo:
+        return out
+
+    work = [w for _key, w in todo]
+    if int(n_jobs) <= 1 or len(todo) == 1:
+        results = [_extract_one_molspec_worker(w) for w in work]
+    else:
+        import multiprocessing as _mp
+        ctx = _mp.get_context("spawn")
+        with ctx.Pool(processes=min(int(n_jobs), len(todo)),
+                      initializer=_pyscf_thread_init) as pool:
+            results = pool.map(_extract_one_molspec_worker, work)
+    for (key, _w), d in zip(todo, results):
         out[key] = d
     return out
 
