@@ -44,6 +44,13 @@ class SolverConfig:
     mixer_name: str = "linear"
     mixer_kwargs: tuple[tuple[str, float], ...] = (("alpha", 0.5),)
     convergence_name: str = "energy"
+    # Density fitting: when True the Coulomb J is built from a precomputed
+    # 3-index ``cderi`` (mol_data["cderi"]) instead of the full 4-index ERI,
+    # making larger bases memory-feasible. ``auxbasis`` None -> auto-select
+    # (df_jk.default_auxbasis from the orbital basis). Default off ->
+    # byte-identical full-ERI path.
+    density_fit: bool = False
+    auxbasis: str | None = None
 
     def __post_init__(self):
         if self.max_cycles < 0:
@@ -97,6 +104,8 @@ class SolverConfig:
             "mixer_name": self.mixer_name,
             "mixer_kwargs": dict(self.mixer_kwargs),
             "convergence_name": self.convergence_name,
+            "density_fit": self.density_fit,
+            "auxbasis": self.auxbasis,
         }
 
 
