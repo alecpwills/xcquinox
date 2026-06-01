@@ -642,6 +642,28 @@ def run_full_holdout_eval(
     """
     if strict is None:
         strict = os.environ.get("XCQUINOX_HELDOUT_STRICT") == "1"
+    per = compute_holdout_per_molecule(
+        training_spec, model, mol_specs, mol_data=mol_data)
+    return _finalize_holdout_outputs(
+        reactions, per["energies"], per["pbe_energies"], per["mol_records"],
+        per["training_names"], per["n_species"], out_dir, strict=strict)
+
+
+def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any],
+                                 *, mol_data: Optional[Dict[str, Any]] = None
+                                 ) -> Dict[str, Any]:
+    """Per-molecule stage of the held-out eval (the parallelizable part).
+
+    Precomputes PBE/grid/(eri) and runs the NN forward (one-shot or SCF) on
+    every species in ``mol_specs``, then builds the per-molecule records. This
+    is pure of reaction aggregation and file IO, so a sharded driver can call it
+    on a SUBSET of ``mol_specs`` and merge the returned maps (the loops iterate
+    the dict, so a shard is just a smaller ``mol_specs``).
+
+    Returns a dict with: ``energies`` (name -> E_nn), ``pbe_energies``
+    (name -> E_pbe), ``scf_info`` (name -> SCF convergence dict), ``mol_records``
+    (per_molecule.json rows, sorted by name), ``n_species`` and ``training_names``.
+    """
     _descriptors, _extra_required, mode_str = descriptors_and_required_keys(
         training_spec)
     spec_solver_config = getattr(training_spec, "solver_config", None)
@@ -669,6 +691,58 @@ def run_full_holdout_eval(
                     if md.get("E_pbe") is not None
                     and math.isfinite(float(md.get("E_pbe")))}
 
+    training_set = set(training_names)
+    mol_records: List[Dict[str, Any]] = []
+    for name in sorted(mol_data):
+        mol_records.append(make_per_molecule_record(
+            name, mol_data[name], energies.get(name, float("nan")),
+            in_training_subset=(name in training_set),
+            scf=scf_info.get(name),
+        ))
+
+    return {
+        "energies": energies,
+        "pbe_energies": pbe_energies,
+        "scf_info": scf_info,
+        "mol_records": mol_records,
+        "n_species": len(mol_data),
+        "training_names": training_names,
+    }
+
+
+def merge_holdout_shards(shard_payloads: Sequence[Dict[str, Any]]
+                         ) -> Tuple[Dict[str, float], Dict[str, float],
+                                    List[Dict[str, Any]]]:
+    """Merge per-shard ``{energies, pbe_energies, mol_records}`` payloads into
+    the combined maps the finalize stage consumes.
+
+    Molecule names are a partition of the held-out set (each shard owns a
+    disjoint subset), so the dict-unions are collision-free. ``mol_records`` are
+    concatenated and re-sorted by molecule name to match the serial ordering."""
+    energies: Dict[str, float] = {}
+    pbe_energies: Dict[str, float] = {}
+    mol_records: List[Dict[str, Any]] = []
+    for payload in shard_payloads:
+        energies.update(payload.get("energies", {}))
+        pbe_energies.update(payload.get("pbe_energies", {}))
+        mol_records.extend(payload.get("mol_records", []))
+    mol_records.sort(key=lambda r: r.get("molecule", ""))
+    return energies, pbe_energies, mol_records
+
+
+def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
+                              energies: Dict[str, float],
+                              pbe_energies: Dict[str, float],
+                              mol_records: List[Dict[str, Any]],
+                              training_names: Sequence[str],
+                              n_species: int,
+                              out_dir: Path, *, strict: bool) -> Dict[str, Any]:
+    """Reaction aggregation + artifact writing — the fast serial tail of the
+    held-out eval, shared by the serial driver and the sharded/parallel driver.
+
+    Needs ALL molecule energies (reactions span the whole pool), so it runs once
+    after every shard has finished. Writes ``test_set.csv``, ``per_molecule.json``
+    and ``per_reaction.json`` under ``out_dir`` and returns the summary dict."""
     # Partition reactions by source_pool so we can write per-pool rows.
     by_pool: Dict[str, List[Dict[str, Any]]] = {}
     for r in reactions:
@@ -678,11 +752,9 @@ def run_full_holdout_eval(
     all_kept: List[Dict[str, Any]] = []
     n_dropped_total = 0
     n_nan_total = 0
-    per_pool_kept: Dict[str, List[Dict[str, Any]]] = {}
     for pool, pool_rxns in by_pool.items():
         kept, dropped = filter_reactions(
             pool_rxns, training_names, strict=strict)
-        per_pool_kept[pool] = kept
         n_dropped_pool = len(dropped)
         mae_nn, n_used, n_nan_nn = reaction_mae_kcalmol(energies, kept)
         mae_pbe, _, n_nan_pbe = reaction_mae_kcalmol(pbe_energies, kept)
@@ -697,15 +769,6 @@ def run_full_holdout_eval(
         pbe_energies, all_kept)
     combined = (combined_mae_nn, combined_mae_pbe, combined_n_used,
                 n_dropped_total, max(combined_n_nan_nn, combined_n_nan_pbe))
-
-    training_set = set(training_names)
-    mol_records: List[Dict[str, Any]] = []
-    for name in sorted(mol_data):
-        mol_records.append(make_per_molecule_record(
-            name, mol_data[name], energies.get(name, float("nan")),
-            in_training_subset=(name in training_set),
-            scf=scf_info.get(name),
-        ))
 
     nn_per_rxn = per_reaction_errors(energies, all_kept)
     pbe_per_rxn = per_reaction_errors(pbe_energies, all_kept)
@@ -726,7 +789,7 @@ def run_full_holdout_eval(
 
     return {
         "n_reactions": len(all_kept),
-        "n_species": len(mol_data),
+        "n_species": n_species,
         "n_dropped_overlap": n_dropped_total,
         "n_dropped_nan": n_nan_total,
         "per_pool_mae": per_pool_mae,

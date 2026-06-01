@@ -226,6 +226,48 @@ def _thread_env(threads: int) -> dict[str, str]:
     }
 
 
+def detect_available_cpus() -> int:
+    """Queue-agnostic count of CPUs THIS process may actually use.
+
+    Prefers the scheduler affinity mask (``os.sched_getaffinity``) which
+    respects the SLURM/cgroup cpuset — whether the node is ``exclusive`` (the
+    whole node) or a ``shared`` slice — so the eval parallelism adapts to
+    whatever partition the job lands on rather than the static ``cpus_per_task``
+    request. Falls back to ``SLURM_CPUS_PER_TASK`` then the machine core count.
+    Always returns >= 1."""
+    try:
+        n = len(os.sched_getaffinity(0))
+        if n >= 1:
+            return n
+    except (AttributeError, OSError):
+        pass
+    env = os.environ.get("SLURM_CPUS_PER_TASK", "")
+    if env.isdigit() and int(env) >= 1:
+        return int(env)
+    return max(1, os.cpu_count() or 1)
+
+
+def eval_worker_ladder(total_cpus: int, top: int | None = None
+                       ) -> list[tuple[int, int]]:
+    """Descending ``(n_workers, threads_per_worker)`` tiers for the held-out
+    eval's adaptive degradation.
+
+    Starts at ``top`` (or ``total_cpus`` if unset, capped at ``total_cpus``) and
+    halves the worker count twice — three tiers max — giving each worker
+    ``total_cpus // n`` BLAS threads so the node stays fully utilized at every
+    tier. Tiers with ``n <= 1`` are dropped (those mean "serial", handled
+    separately by the caller), so a single core / ``top=1`` yields an empty
+    ladder (serial only). Example: ``total_cpus=24 -> [(24,1),(12,2),(6,4)]``."""
+    base = total_cpus if top is None else min(top, total_cpus)
+    tiers: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    for n in (base, base // 2, base // 4):
+        if n > 1 and n not in seen:
+            seen.add(n)
+            tiers.append((n, max(1, total_cpus // n)))
+    return tiers
+
+
 def build_pretrain_jobs(
     specs,
     *,

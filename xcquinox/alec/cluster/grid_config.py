@@ -214,6 +214,11 @@ class ClusterResources:
     preflight_time: str = ""
     eval_partition: str = ""
     eval_time: str = ""
+    # Held-out eval parallelism: number of molecule-shard worker processes for
+    # the held-out eval. None (default) = auto-detect the usable CPUs at runtime
+    # (queue-agnostic, via parallel.detect_available_cpus) and parallelize over
+    # them, degrading to serial on failure; 1 = force serial; N = explicit cap.
+    eval_workers: int | None = None
     # Pretrain-stage resources. The pretrain stage is a small up-front array
     # (one task per distinct architecture). Each knob is None-by-default and
     # falls back to the train-array resource when unset — the same None-
@@ -408,6 +413,7 @@ def _build_cluster(d: dict) -> ClusterResources:
         preflight_time=d.get("preflight_time", ""),
         eval_partition=d.get("eval_partition", ""),
         eval_time=d.get("eval_time", ""),
+        eval_workers=d.get("eval_workers"),
         pretrain_partition=d.get("pretrain_partition"),
         pretrain_time=d.get("pretrain_time"),
         pretrain_mem=d.get("pretrain_mem"),
@@ -423,6 +429,18 @@ def _build_cluster(d: dict) -> ClusterResources:
         preflight_allocation=d.get("preflight_allocation", "exclusive"),
         pretrain_allocation=d.get("pretrain_allocation", "exclusive"),
     )
+
+
+def _resolve_eval_workers(cl: ClusterResources, *, n_molecules: int) -> int:
+    """Resolve the top of the held-out-eval worker ladder.
+
+    ``cl.eval_workers`` (when set) is an explicit cap; otherwise auto-detect the
+    CPUs this process may actually use at runtime (queue-agnostic). Capped at
+    ``n_molecules`` (no point spawning more workers than molecules) and floored
+    at 1. A returned value of 1 means serial (the ladder is empty)."""
+    from xcquinox.alec import parallel
+    base = cl.eval_workers if cl.eval_workers else parallel.detect_available_cpus()
+    return max(1, min(int(base), max(1, n_molecules)))
 
 
 def load_grid_config(path: str) -> GridConfig:

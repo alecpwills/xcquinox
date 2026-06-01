@@ -139,6 +139,12 @@ cluster:
   # union can take well over the train wall clock, hence 8h.
   preflight_time: "08:00:00"
   eval_time: "02:00:00"
+  # eval_workers: molecule-shard worker processes for the held-out eval. null
+  # (default) auto-detects the usable CPUs at runtime (queue-agnostic) and
+  # parallelizes the ~200-molecule held-out loop over them, adaptively degrading
+  # to fewer workers and finally in-process serial on failure. Set 1 to force
+  # serial, or an int to cap.
+  eval_workers: null
   # Pretrain runs once per distinct architecture, up front; pretrain_throttle
   # unset means all distinct architectures pretrain concurrently.
   pretrain_time: "08:00:00"

@@ -243,6 +243,96 @@ def _write_skipped_json(checkpoint_dir, reason):
 # main
 # ---------------------------------------------------------------------------
 
+def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
+                       training_spec) -> None:
+    """Full-pool held-out eval (BH76 + W4-11) for one trained spec.
+
+    Parallelizes across molecule shards BY DEFAULT (adaptive degradation via
+    ``_holdout_parallel.run_holdout_with_escalation``), auto-detecting the usable
+    CPUs at runtime; if the parallel path raises it falls back to the serial
+    ``run_full_holdout_eval``. Held-out failure is NOT fatal — it writes
+    ``eval_holdout/failure.json`` and returns, so the in-sample ``eval_df.csv``
+    stays the authoritative success signal for the SLURM array task.
+    """
+    try:
+        from pathlib import Path as _Path
+
+        from xcquinox.alec.eval_holdout import (
+            load_trained_model,
+            run_full_holdout_eval,
+        )
+        from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+        from xcquinox.alec.cluster.grid_config import _resolve_eval_workers
+        from xcquinox.alec.parallel import detect_available_cpus
+
+        holdout_dir = _Path(checkpoint_dir) / "eval_holdout"
+        _log(idx, "starting full-pool held-out eval (BH76 + W4-11)")
+        t1 = time.time()
+        model = load_trained_model(training_spec, _Path(model_path))
+        # Basis + grid_level MUST match what training used (read from the
+        # resolved config) so the held-out PBE/NN energies are computed in the
+        # same basis as the in-sample eval — otherwise a basis bump silently
+        # evaluates the held-out set in def2-svp (invalid comparison).
+        _hb, _hg = _held_out_basis_grid(cfg)
+        _log(idx, f"held-out pool basis={_hb} grid_level={_hg}")
+        full_specs, full_rxns = load_full_held_out_pools(
+            basis=_hb, grid_level=_hg,
+        )
+
+        # Parallelize the ~200-molecule held-out loop across the node's CPUs by
+        # default (queue-agnostic auto-detect), with adaptive degradation to
+        # serial. n_top <= 1 (or eval_workers: 1) ⇒ serial.
+        n_top = _resolve_eval_workers(cfg.cluster, n_molecules=len(full_specs))
+        result = None
+        if n_top > 1:
+            try:
+                from xcquinox.alec.cluster._holdout_parallel import (
+                    run_holdout_with_escalation,
+                )
+                _log(idx, f"held-out eval: parallel over up to {n_top} workers "
+                          f"({len(full_specs)} molecules)")
+                result = run_holdout_with_escalation(
+                    run_dir, idx, training_spec, model, full_rxns, full_specs,
+                    holdout_dir, basis=_hb, grid_level=_hg,
+                    n_workers_top=n_top, total_cpus=detect_available_cpus())
+            except Exception as pexc:  # noqa: BLE001
+                _log(idx, f"held-out parallel path failed "
+                          f"({type(pexc).__name__}: {pexc}); serial fallback")
+                result = None
+        if result is None:
+            result = run_full_holdout_eval(
+                training_spec=training_spec, model=model,
+                mol_specs=full_specs, reactions=full_rxns, out_dir=holdout_dir)
+
+        elapsed_h = time.time() - t1
+        _log(
+            idx,
+            f"held-out eval complete ({elapsed_h:.1f}s elapsed; "
+            f"{result['n_reactions']} reactions over "
+            f"{result['n_species']} species; "
+            f"{result['n_dropped_nan']} NaN-drop, "
+            f"{result['n_dropped_overlap']} overlap-drop)",
+        )
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        from pathlib import Path as _Path
+        holdout_dir = _Path(checkpoint_dir) / "eval_holdout"
+        holdout_dir.mkdir(parents=True, exist_ok=True)
+        with (holdout_dir / "failure.json").open("w") as f:
+            json.dump({
+                "kind": "held_out_eval_failure",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+                "traceback": traceback.format_exc(),
+            }, f, indent=2)
+        _log(
+            idx,
+            f"held-out eval FAILED ({type(exc).__name__}: {exc}); "
+            "in-sample eval_df.csv was still written -- treating spec as "
+            "succeeded. See eval_holdout/failure.json for details.",
+        )
+
+
 def main(argv=None) -> int:
     # Route JAX before ANY import that pulls it in. argparse / json / os are
     # already imported and are jax-free; the xcquinox.alec import below (in the
@@ -322,63 +412,8 @@ def main(argv=None) -> int:
     # On exception: writes <ckpt>/eval_holdout/failure.json with the trace
     # and returns 0 (the in-sample artifact is the authoritative success
     # signal for the SLURM array task).
-    try:
-        from xcquinox.alec.eval_holdout import (
-            load_trained_model,
-            run_full_holdout_eval,
-        )
-        from xcquinox.alec.full_benchmark_pools import (
-            load_full_held_out_pools,
-        )
-        from pathlib import Path as _Path
-
-        holdout_dir = _Path(checkpoint_dir) / "eval_holdout"
-        _log(idx, "starting full-pool held-out eval (BH76 + W4-11)")
-        t1 = time.time()
-        model = load_trained_model(training_spec, _Path(model_path))
-        # Basis + grid_level MUST match what training used (read from the
-        # resolved config) so the held-out PBE/NN energies are computed in the
-        # same basis as the in-sample eval — otherwise a basis bump silently
-        # evaluates the held-out set in def2-svp (invalid comparison).
-        _hb, _hg = _held_out_basis_grid(cfg)
-        _log(idx, f"held-out pool basis={_hb} grid_level={_hg}")
-        full_specs, full_rxns = load_full_held_out_pools(
-            basis=_hb, grid_level=_hg,
-        )
-        result = run_full_holdout_eval(
-            training_spec=training_spec,
-            model=model,
-            mol_specs=full_specs,
-            reactions=full_rxns,
-            out_dir=holdout_dir,
-        )
-        elapsed_h = time.time() - t1
-        _log(
-            idx,
-            f"held-out eval complete ({elapsed_h:.1f}s elapsed; "
-            f"{result['n_reactions']} reactions over "
-            f"{result['n_species']} species; "
-            f"{result['n_dropped_nan']} NaN-drop, "
-            f"{result['n_dropped_overlap']} overlap-drop)",
-        )
-    except Exception as exc:  # noqa: BLE001
-        import traceback
-        from pathlib import Path as _Path
-        holdout_dir = _Path(checkpoint_dir) / "eval_holdout"
-        holdout_dir.mkdir(parents=True, exist_ok=True)
-        with (holdout_dir / "failure.json").open("w") as f:
-            json.dump({
-                "kind": "held_out_eval_failure",
-                "exception_type": type(exc).__name__,
-                "exception_message": str(exc),
-                "traceback": traceback.format_exc(),
-            }, f, indent=2)
-        _log(
-            idx,
-            f"held-out eval FAILED ({type(exc).__name__}: {exc}); "
-            "in-sample eval_df.csv was still written -- treating spec as "
-            "succeeded. See eval_holdout/failure.json for details.",
-        )
+    _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
+                       training_spec)
 
     return 0
 
