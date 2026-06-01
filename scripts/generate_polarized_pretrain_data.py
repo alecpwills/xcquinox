@@ -48,12 +48,17 @@ def main(argv=None):
     p.add_argument("--no-descriptors", action="store_true",
                    help="skip cusp/dm descriptor columns (smaller file; only valid "
                         "if no run uses descriptor architectures)")
+    p.add_argument("--density-fit", action="store_true",
+                   help="density-fit the per-atom SCF Coulomb build (auxbasis "
+                        "auto-selected from the basis) so a large basis stays "
+                        "within node RAM")
     args = p.parse_args(argv)
 
     atoms = _parse_atoms(args.atoms) if args.atoms else DEFAULT_PRETRAIN_ATOMS
     path = generate_pretrain_data_npz(
         args.out_dir, atoms=atoms, basis=args.basis, grid_level=args.grid_level,
-        polarized=True, descriptors=not args.no_descriptors)
+        polarized=True, descriptors=not args.no_descriptors,
+        density_fit=args.density_fit)
     print(f"wrote {path}")
 
 

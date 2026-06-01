@@ -20,6 +20,7 @@ no-descriptor arch simply ignores them.
 """
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -27,6 +28,7 @@ import jax.numpy as jnp
 from pyscf import gto, dft
 
 import xcquinox.features as _features
+from xcquinox.alec.df_jk import default_auxbasis
 
 
 # Same pretraining atoms / basis / grid as the step-6 notebook generator.
@@ -37,11 +39,21 @@ DEFAULT_GRID_LEVEL = 1
 _RHO_FLOOR = 1e-10  # strict > threshold for kept grid points
 
 
-def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors):
+def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
+                  density_fit=False):
     """Per-atom pretrain columns. Returns a dict of equal-length 1-D arrays
-    (rho, sigma, Fx, Fc, weights[, zeta][, cusp (N,2)][, dm (N,D)])."""
+    (rho, sigma, Fx, Fc, weights[, zeta][, cusp (N,2)][, dm (N,D)]).
+
+    ``density_fit`` density-fits the Coulomb build of the per-atom PBE SCF
+    (auxbasis from :func:`df_jk.default_auxbasis`). The Fx/Fc targets are a
+    property of the converged density, so DF only changes them within DF error;
+    it is wired here so the pretrain data can be regenerated at a large basis
+    without the full ERI blowing up RAM (negligible cost for single atoms, but
+    keeps the whole pipeline on one Coulomb backend)."""
     mol = gto.M(atom=f"{symbol} 0 0 0", basis=basis, charge=0, spin=spin, verbose=0)
     mf = dft.UKS(mol) if spin else dft.RKS(mol)
+    if density_fit:
+        mf = mf.density_fit(auxbasis=default_auxbasis(basis))
     mf.xc = "pbe"
     mf.grids.level = grid_level
     mf.kernel()
@@ -108,19 +120,85 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors):
     return cols
 
 
+def _pretrain_manifest_path(npz_path):
+    """Sidecar manifest path for a pretrain-data ``.npz`` (``<npz>.manifest.json``)."""
+    return str(npz_path) + ".manifest.json"
+
+
+def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit):
+    """Record the basis/grid_level/density_fit a pretrain ``.npz`` was built at.
+
+    Written as a sidecar so the ``.npz`` array payload stays byte-identical to the
+    pre-manifest format (legacy loaders that ignore the sidecar are unaffected)."""
+    meta = {"basis": basis, "grid_level": int(grid_level),
+            "density_fit": bool(density_fit)}
+    with open(_pretrain_manifest_path(npz_path), "w") as f:
+        json.dump(meta, f)
+
+
+def read_pretrain_manifest(npz_path):
+    """Return the pretrain-data manifest dict, or ``None`` if absent."""
+    mpath = _pretrain_manifest_path(npz_path)
+    if not os.path.isfile(mpath):
+        return None
+    with open(mpath) as f:
+        return json.load(f)
+
+
+def pretrain_data_is_current(npz_path, *, basis, grid_level):
+    """True iff ``npz_path`` exists AND its manifest's basis+grid_level match.
+
+    A missing file OR a missing/mismatched manifest returns ``False`` so the
+    harness regenerates rather than silently reusing data built at a different
+    basis (the stale-reuse bug Task 9 closes). Legacy manifest-less files
+    therefore regenerate once, then carry a manifest thereafter."""
+    if not os.path.isfile(npz_path):
+        return False
+    meta = read_pretrain_manifest(npz_path)
+    if meta is None:
+        return False
+    return (meta.get("basis") == basis
+            and int(meta.get("grid_level", -1)) == int(grid_level))
+
+
+def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
+                         basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
+                         polarized=True, descriptors=True, density_fit=False):
+    """Skip-if-current driver for staged pretrain data.
+
+    Returns the canonical ``.npz`` path, (re)generating it ONLY when the file is
+    absent or its manifest's basis/grid_level differs from the requested pair.
+    Idempotent — a second call at the same basis is a no-op. Used by the cluster
+    harness so a basis change forces a regen instead of training on stale data."""
+    fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"
+    out_path = os.path.join(data_dir, fname)
+    if pretrain_data_is_current(out_path, basis=basis, grid_level=grid_level):
+        return out_path
+    return generate_pretrain_data_npz(
+        data_dir, atoms=atoms, basis=basis, grid_level=grid_level,
+        polarized=polarized, descriptors=descriptors, density_fit=density_fit)
+
+
 def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
                                basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
-                               polarized=True, descriptors=True):
+                               polarized=True, descriptors=True,
+                               density_fit=False):
     """Generate the pretrain-data ``.npz`` in ``out_dir`` and return its path.
 
     ``polarized=True`` writes ``pretrain_data_polarized.npz`` with a ``zeta_all``
     column (the spin-polarized run's data); ``polarized=False`` writes
     ``pretrain_data.npz`` (the unpolarized data). Both carry the same
     spin-resolved Fx/Fc targets and the same molecules — they differ only by the
-    presence of ``zeta_all``."""
+    presence of ``zeta_all``.
+
+    ``density_fit`` density-fits the per-atom SCF Coulomb build (so the data can
+    be regenerated at a large basis without the full ERI exhausting RAM). A
+    sidecar ``<npz>.manifest.json`` records the basis/grid_level/density_fit so
+    :func:`pretrain_data_is_current` can detect a basis change and force a regen."""
     per_atom = [
         _atom_columns(sym, spin, basis, grid_level,
-                      polarized=polarized, descriptors=descriptors)
+                      polarized=polarized, descriptors=descriptors,
+                      density_fit=density_fit)
         for sym, spin in atoms
     ]
     save_kwargs = {
@@ -140,4 +218,6 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"
     out_path = os.path.join(out_dir, fname)
     np.savez(out_path, **save_kwargs)
+    _write_pretrain_manifest(out_path, basis=basis, grid_level=grid_level,
+                             density_fit=density_fit)
     return out_path

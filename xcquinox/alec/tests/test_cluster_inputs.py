@@ -57,7 +57,8 @@ def _make_pool():
 
 
 def _make_cfg(tmp_path, bh76_mode="reaction_energy", basis="def2-svp",
-              grid_level=1):
+              grid_level=1, density_fit=False, auxbasis=None,
+              use_polarized_correlation=False):
     """A GridConfig whose grid is metric=l2 x subset_size={2,3} (2 cells)."""
     sweep = SweepAxes(
         arch=("shallow",),
@@ -83,6 +84,8 @@ def _make_cfg(tmp_path, bh76_mode="reaction_energy", basis="def2-svp",
         basis=basis,
         grid_level=grid_level,
         output_root=str(tmp_path / "out"),
+        density_fit=density_fit,
+        auxbasis=auxbasis,
     )
     pretrain = PretrainConfig(
         data_dir=str(tmp_path / "data"),
@@ -105,6 +108,7 @@ def _make_cfg(tmp_path, bh76_mode="reaction_energy", basis="def2-svp",
         cluster=cluster,
         domain_profile="dfs_step7",
         bh76_mode=bh76_mode,
+        use_polarized_correlation=use_polarized_correlation,
     )
 
 
@@ -155,24 +159,40 @@ def stub_refs(monkeypatch):
     """Stub the CCSD external-reference seams so no real SCF / CCSD runs.
 
     Returns a ``calls`` dict tests assert against."""
-    calls = {"union": 0, "precompute": 0, "precompute_kwargs": None}
+    calls = {"union": 0, "precompute": 0, "precompute_kwargs": None,
+             "pretrain": 0, "pretrain_kwargs": None}
 
     def fake_build_species_union():
         calls["union"] += 1
         return ["species-union-sentinel"]
 
-    def fake_precompute_all(species, *, cache_dir, basis, grid_level):
+    def fake_precompute_all(species, *, cache_dir, basis, grid_level,
+                            density_fit=False, auxbasis=None):
         calls["precompute"] += 1
         calls["precompute_kwargs"] = {
             "species": species,
             "cache_dir": cache_dir,
             "basis": basis,
             "grid_level": grid_level,
+            "density_fit": density_fit,
+            "auxbasis": auxbasis,
+        }
+
+    def fake_ensure_pretrain(data_dir, *, basis, grid_level, density_fit=False,
+                             polarized=False, **_kw):
+        calls["pretrain"] += 1
+        calls["pretrain_kwargs"] = {
+            "data_dir": data_dir,
+            "basis": basis,
+            "grid_level": grid_level,
+            "density_fit": density_fit,
+            "polarized": polarized,
         }
 
     monkeypatch.setattr(inputs_mod, "_build_species_union",
                         fake_build_species_union)
     monkeypatch.setattr(inputs_mod, "_precompute_all", fake_precompute_all)
+    monkeypatch.setattr(inputs_mod, "_ensure_pretrain_data", fake_ensure_pretrain)
     return calls
 
 
@@ -226,7 +246,13 @@ def test_prepare_inputs_precompute_is_skip_if_cached_noop_friendly(
     # a precompute that does nothing — every ref already cached
     monkeypatch.setattr(
         inputs_mod, "_precompute_all",
-        lambda species, *, cache_dir, basis, grid_level: None,
+        lambda species, *, cache_dir, basis, grid_level,
+        density_fit=False, auxbasis=None: None,
+    )
+    # pretrain data already current — ensure is a no-op
+    monkeypatch.setattr(
+        inputs_mod, "_ensure_pretrain_data",
+        lambda data_dir, **_kw: None,
     )
 
     staged = prepare_inputs(cfg)
@@ -245,8 +271,35 @@ def test_prepare_inputs_recompute_refs_false_skips_precompute(
     # neither seam touched when refs are known-staged
     assert stub_refs["union"] == 0
     assert stub_refs["precompute"] == 0
+    assert stub_refs["pretrain"] == 0
     assert isinstance(staged, StagedInputs)
     assert staged.subset_ledger == _make_ledger()
+
+
+def test_prepare_inputs_threads_density_fit_and_ensures_pretrain(
+    tmp_path, stub_pool, stub_refs
+):
+    """density_fit/auxbasis from inputs reach BOTH the CCSD ref precompute and
+    the pretrain-data ensure; pretrain ensure runs at the configured basis and
+    the run's polarization."""
+    cfg = _make_cfg(tmp_path, basis="def2-tzvp", grid_level=2,
+                    density_fit=True, auxbasis="def2-tzvp-jkfit",
+                    use_polarized_correlation=True)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+
+    prepare_inputs(cfg)
+
+    kw = stub_refs["precompute_kwargs"]
+    assert kw["density_fit"] is True
+    assert kw["auxbasis"] == "def2-tzvp-jkfit"
+
+    assert stub_refs["pretrain"] == 1
+    pk = stub_refs["pretrain_kwargs"]
+    assert pk["data_dir"] == cfg.pretrain.data_dir
+    assert pk["basis"] == "def2-tzvp"
+    assert pk["grid_level"] == 2
+    assert pk["density_fit"] is True
+    assert pk["polarized"] is True
 
 
 # ---------------------------------------------------------------------------

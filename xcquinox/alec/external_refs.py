@@ -1234,6 +1234,8 @@ def precompute_all(
     basis: str = "def2-svp",
     grid_level: int = 1,
     run_preflight: bool = True,
+    density_fit: bool = False,
+    auxbasis: str | None = None,
 ) -> None:
     """Top-level Cell 0.5 driver.
 
@@ -1302,10 +1304,12 @@ def precompute_all(
         try:
             atoms = resolve_geometry(spec)
             scf = run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
-                                     basis=basis, grid_level=grid_level)
+                                     basis=basis, grid_level=grid_level,
+                                     density_fit=density_fit, auxbasis=auxbasis)
             cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
                                      cache_dir=cache_dir,
-                                     basis=basis, grid_level=grid_level)
+                                     basis=basis, grid_level=grid_level,
+                                     density_fit=density_fit, auxbasis=auxbasis)
             run_oep_cascade(spec, atoms, ccsd_payload=cc,
                             cache_dir=cache_dir,
                             basis=basis, grid_level=grid_level)

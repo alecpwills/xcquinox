@@ -50,6 +50,7 @@ import os
 from dataclasses import dataclass
 
 from xcquinox.alec import external_refs as _external_refs
+from xcquinox.alec import pretrain_data_gen as _pretrain_data_gen
 from xcquinox.alec.training_points import build_dfs_pool_points
 from xcquinox.alec.cluster.grid_config import GridConfig, expand_grid
 
@@ -63,6 +64,7 @@ from xcquinox.alec.cluster.grid_config import GridConfig, expand_grid
 
 _precompute_all = _external_refs.precompute_all
 _build_species_union = _external_refs.build_species_union
+_ensure_pretrain_data = _pretrain_data_gen.ensure_pretrain_data
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +221,22 @@ def prepare_inputs(
             cache_dir=cfg.inputs.external_refs_dir,
             basis=cfg.inputs.basis,
             grid_level=cfg.inputs.grid_level,
+            density_fit=cfg.inputs.density_fit,
+            auxbasis=cfg.inputs.auxbasis,
+        )
+
+        # --- 4. ensure pretrain data matches the configured basis -----------
+        # The per-atom Fx/Fc pretrain targets are basis-dependent, so a basis
+        # change must regenerate them (skip-if-current via the data's manifest)
+        # rather than silently training on stale def2-svp data. Density-fit the
+        # per-atom SCF when the run does, so the whole pipeline shares one
+        # Coulomb backend and a large basis stays within node RAM.
+        _ensure_pretrain_data(
+            cfg.pretrain.data_dir,
+            basis=cfg.inputs.basis,
+            grid_level=cfg.inputs.grid_level,
+            density_fit=cfg.inputs.density_fit,
+            polarized=cfg.use_polarized_correlation,
         )
 
     return StagedInputs(points=points, subset_ledger=subset_ledger)
