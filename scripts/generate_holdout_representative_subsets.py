@@ -41,6 +41,27 @@ DESC_CACHE = OUT_ROOT / "_descriptor_cache"
 _MODE_WEIGHTS = {"alpha_on": None, "alpha_off": {"alpha": 0.0}}
 
 
+def _select(pool, edges, h_ref, r, weights, args):
+    """Dispatch to the GPU selector (preferred) or the CPU parallel selector.
+
+    ``--selector auto`` (default) tries the GPU JAX kernel and falls back to the
+    CPU multiprocessing selector if no JAX device initializes; ``gpu``/``cpu``
+    force one. Both return ``(chosen_indices, jsd_value)``."""
+    if args.selector in ("auto", "gpu"):
+        try:
+            from xcquinox.alec.subset_selection_gpu import select_subset_gpu
+            return select_subset_gpu(pool, edges, h_ref, r=r, metric="jsd",
+                                     batch=args.gpu_batch,
+                                     descriptor_weights=weights)
+        except Exception as exc:  # noqa: BLE001
+            if args.selector == "gpu":
+                raise
+            print(f"  [GPU selector unavailable ({type(exc).__name__}: {exc}); "
+                  f"falling back to CPU]", flush=True)
+    return select_subset_parallel(pool, edges, h_ref, r=r, metric="jsd",
+                                  n_jobs=args.n_jobs, descriptor_weights=weights)
+
+
 def _reaction_name(rxn, i):
     return rxn.get("name") or f"{rxn.get('source_pool', 'rxn')}_{i}"
 
@@ -72,7 +93,11 @@ def main(argv=None):
     ap.add_argument("--modes", nargs="+", default=["alpha_on", "alpha_off"],
                     choices=sorted(_MODE_WEIGHTS), help="alpha weighting modes")
     ap.add_argument("--n-jobs", type=int, default=None,
-                    help="worker processes (default: auto-detect usable CPUs)")
+                    help="CPU worker processes (default: auto-detect usable CPUs)")
+    ap.add_argument("--selector", choices=["auto", "gpu", "cpu"], default="auto",
+                    help="auto: GPU (JAX) then CPU fallback; gpu/cpu force one")
+    ap.add_argument("--gpu-batch", type=int, default=None,
+                    help="GPU selector: ranks per batch (default 2^20)")
     args = ap.parse_args(argv)
 
     full_specs, full_rxns = load_full_held_out_pools(
@@ -122,9 +147,7 @@ def main(argv=None):
             print(f"[{mode}] {key}: enumerating C({n_rxn},{r})={ncombo:,} ...",
                   flush=True)
             t1 = time.time()
-            chosen, val = select_subset_parallel(
-                reaction_desc, edges, h_ref, r=r, metric="jsd",
-                n_jobs=args.n_jobs, descriptor_weights=weights)
+            chosen, val = _select(reaction_desc, edges, h_ref, r, weights, args)
             chosen = list(chosen)
             chosen_set = set(chosen)
             held = [rxn_names[i] for i in range(n_rxn) if i not in chosen_set]
