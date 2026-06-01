@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=${JOB_NAME}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
+${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
+#SBATCH --output=${RUN_DIR}/logs/datagen_%j.out
+${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
+set -euo pipefail
+
+# --- conda activation ------------------------------------------------------
+${CONDA_ACTIVATION}
+
+# --- thread caps -----------------------------------------------------------
+export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+
+# --- datagen job (single task, no array) -----------------------------------
+# Generates pretrain_data[_polarized].npz for ALL swept archs into
+# pretrain.data_dir BEFORE the pretrain stage (afterok:datagen) consumes it.
+python -m xcquinox.alec.cluster._datagen ${RUN_DIR}

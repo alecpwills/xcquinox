@@ -299,6 +299,27 @@ def test_resolved_config_persists_held_out_strict(tmp_path):
     assert back.held_out_strict is True
 
 
+def test_resolved_config_persists_datagen_resources(tmp_path):
+    """The datagen-stage cluster knobs survive the resolved_config.yaml round
+    trip (so a re-submit reproduces the same datagen resources)."""
+    import dataclasses
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+
+    cfg = load_grid_config(_write_grid(tmp_path))
+    cfg = dataclasses.replace(
+        cfg, cluster=dataclasses.replace(
+            cfg.cluster, datagen_time="02:00:00",
+            datagen_cpus_per_task=8, datagen_allocation="shared"),
+    )
+    rd = tmp_path / "rd"
+    rd.mkdir()
+    cli._write_resolved_config(cfg, str(rd))
+    back = load_grid_config(str(rd / "resolved_config.yaml"))
+    assert back.cluster.datagen_time == "02:00:00"
+    assert back.cluster.datagen_cpus_per_task == 8
+    assert back.cluster.datagen_allocation == "shared"
+
+
 def test_resolved_config_persists_update_scheme_and_channel_weights(tmp_path):
     """Regression: ``hyperparams.update_scheme`` and ``channel_weights`` must
     survive the resolved_config.yaml round trip. channel_weights serializes as a
@@ -354,7 +375,7 @@ def test_submit_creates_run_dir_and_resolved_config_dry_run(tmp_path,
 
 def test_submit_with_flag_calls_sbatch(tmp_path, monkeypatch):
     grid = _write_grid(tmp_path)
-    fake = _fake_slurm(ids=["5000", "5001", "5002", "5003"])
+    fake = _fake_slurm(ids=["5000", "5001", "5002", "5003", "5004"])
     monkeypatch.setattr(jt, "_run_slurm", fake)
     run_root = tmp_path / "out"
     run_root.mkdir()
@@ -363,13 +384,13 @@ def test_submit_with_flag_calls_sbatch(tmp_path, monkeypatch):
                "--partition", "long-40core"])
     assert rc == 0
     sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
-    # 4-stage graph: pretrain + preflight + train + eval.
-    assert len(sbatch) == 4
-    # jobs.json records the pretrain stage.
+    # 5-stage graph: datagen + pretrain + preflight + train + eval.
+    assert len(sbatch) == 5
+    # jobs.json records all five stages.
     runs = os.listdir(run_root / "runs")
     run_dir = str(run_root / "runs" / runs[0])
     kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
-    assert kinds == ["eval", "preflight", "pretrain", "train"]
+    assert kinds == ["datagen", "eval", "preflight", "pretrain", "train"]
 
 
 def _script_partition(run_dir, name):
@@ -806,25 +827,27 @@ def test_resubmit_preflight_resubmits_and_supersedes(tmp_path, monkeypatch):
     """Genuinely pretrain/preflight-stuck run: no manifest, no train evidence.
     Re-submits then scancels + marks the old arrays superseded."""
     run_dir = _make_run_dir(tmp_path, manifest=False)
-    # Old pretrain/train/eval arrays recorded from the failed first submit.
+    # Old datagen/pretrain/train/eval arrays recorded from the failed first submit.
+    jt.append_job_record(run_dir, "datagen", "40", [0])
     jt.append_job_record(run_dir, "pretrain", "50", [0])
     jt.append_job_record(run_dir, "preflight", "100", [0])
     jt.append_job_record(run_dir, "train", "200", list(range(_N)))
     jt.append_job_record(run_dir, "eval", "300", list(range(_N)))
 
-    fake = _fake_slurm(ids=["400", "401", "402", "403"])
+    fake = _fake_slurm(ids=["400", "401", "402", "403", "404"])
     monkeypatch.setattr(jt, "_run_slurm", fake)
     rc = main(["resubmit-preflight", run_dir, "--submit"])
     assert rc == 0
-    # Four new sbatch calls + three scancels (old pretrain + train + eval).
+    # Five new sbatch calls (datagen+pretrain+preflight+train+eval) + four
+    # scancels (old datagen + pretrain + train + eval).
     sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
     scancel = [c for c in fake.calls if os.path.basename(c[0]) == "scancel"]
-    assert len(sbatch) == 4
-    assert sorted(c[1] for c in scancel) == ["200", "300", "50"]
-    # Old pretrain/train/eval gen-0 records are now superseded.
+    assert len(sbatch) == 5
+    assert sorted(c[1] for c in scancel) == ["200", "300", "40", "50"]
+    # Old datagen/pretrain/train/eval gen-0 records are now superseded.
     records = jt.read_job_records(run_dir)
     old = [r for r in records
-           if r["array_job_id"] in ("50", "200", "300")]
+           if r["array_job_id"] in ("40", "50", "200", "300")]
     assert all(r["superseded"] for r in old)
 
 
@@ -834,8 +857,8 @@ def test_resubmit_preflight_scancel_failure_skips_supersede(tmp_path,
     jt.append_job_record(run_dir, "train", "200", list(range(_N)))
     jt.append_job_record(run_dir, "eval", "300", list(range(_N)))
 
-    # All four new sbatch succeed; scancel fails.
-    fake = _fake_slurm(ids=["400", "401", "402", "403"], fail_scancel=True)
+    # All five new sbatch succeed; scancel fails.
+    fake = _fake_slurm(ids=["400", "401", "402", "403", "404"], fail_scancel=True)
     monkeypatch.setattr(jt, "_run_slurm", fake)
     rc = main(["resubmit-preflight", run_dir, "--submit"])
     assert rc == 1

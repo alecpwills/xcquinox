@@ -55,6 +55,7 @@ _EVAL_LAUNCHER_TIME = "00:15:00"
 
 # kind -> template filename (the GPU train variant is resolved separately).
 _TEMPLATE_FILES = {
+    "datagen": "datagen.sbatch.tmpl",
     "pretrain": "pretrain.sbatch.tmpl",
     "preflight": "preflight.sbatch.tmpl",
     "train_cpu": "train_array_cpu.sbatch.tmpl",
@@ -142,7 +143,9 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
     cl = cfg.cluster
     run_dir = os.path.abspath(run_dir)
 
-    if kind == "pretrain":
+    if kind == "datagen":
+        template_kind = "datagen"
+    elif kind == "pretrain":
         template_kind = "pretrain"
     elif kind == "preflight":
         template_kind = "preflight"
@@ -171,7 +174,15 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
 
     # Per-kind partition / time / mem / cpus fall back to the train-array
     # cluster values when the per-stage knob is unset.
-    if kind == "pretrain":
+    if kind == "datagen":
+        # Datagen is a single front-stage job; knobs fall back to pretrain's,
+        # then to the train-array cluster values.
+        partition = cl.datagen_partition or cl.pretrain_partition or cl.partition
+        time = cl.datagen_time or cl.pretrain_time or cl.time
+        mem = cl.datagen_mem or cl.pretrain_mem or cl.mem
+        cpus = (cl.datagen_cpus_per_task or cl.pretrain_cpus_per_task
+                or cl.cpus_per_task)
+    elif kind == "pretrain":
         partition = cl.pretrain_partition or cl.partition
         time = cl.pretrain_time or cl.time
         mem = cl.pretrain_mem or cl.mem
@@ -398,6 +409,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     os.makedirs(logs_dir, exist_ok=True)
 
     # --- render --------------------------------------------------------------
+    datagen_text = render_sbatch("datagen", cfg, run_dir)
     pretrain_text = render_sbatch("pretrain", cfg, run_dir,
                                   array_max=pretrain_array_max)
     preflight_text = render_sbatch("preflight", cfg, run_dir)
@@ -422,6 +434,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
                 "index ranges"
             )
 
+    datagen_path = os.path.join(scripts_dir, "datagen.sbatch")
     pretrain_path = os.path.join(scripts_dir, "pretrain.sbatch")
     preflight_path = os.path.join(scripts_dir, "preflight.sbatch")
     train_path = os.path.join(
@@ -429,6 +442,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         "train_eval_inline.sbatch" if inline else "train_array.sbatch")
     eval_path = os.path.join(scripts_dir, "eval_array.sbatch")
     scripts_to_write = [
+        (datagen_path, datagen_text),
         (pretrain_path, pretrain_text),
         (preflight_path, preflight_text),
         (train_path, train_text),
@@ -454,6 +468,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         "pretrain_array_max": pretrain_array_max,
         "device": device,
         "scripts": {
+            "datagen": datagen_path,
             "pretrain": pretrain_path,
             "preflight": preflight_path,
             "train": train_path,
@@ -477,7 +492,9 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     # --- dry-run -------------------------------------------------------------
     if not submit:
         cmds = [
-            f"sbatch --parsable {pretrain_path}",
+            f"sbatch --parsable {datagen_path}",
+            f"sbatch --parsable --dependency=afterok:<DATAGEN_ID> "
+            f"{pretrain_path}",
             f"sbatch --parsable --dependency=afterok:<PRETRAIN_ID> "
             f"{preflight_path}",
             f"sbatch --parsable "
@@ -520,14 +537,23 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     submitted_ids: list[str] = []  # ids returned in THIS call — for rollback.
     issued_cmds: list[str] = []
     try:
-        # 1. pretrain array (one task per distinct architecture)
-        pretrain_cmd = ["sbatch", "--parsable", pretrain_path]
+        # 1. datagen — FIRST stage, NO dependency. Generates the pretrain-data
+        # file(s) every swept arch needs before pretrain (afterok:datagen) runs.
+        datagen_cmd = ["sbatch", "--parsable", datagen_path]
+        issued_cmds.append(" ".join(datagen_cmd))
+        proc = job_tracking._run_slurm(datagen_cmd)
+        datagen_id = proc.stdout.strip().split(";")[0].split()[0]
+        submitted_ids.append(datagen_id)
+
+        # 2. pretrain array (one task per distinct architecture) — afterok on datagen
+        pretrain_cmd = ["sbatch", "--parsable",
+                        f"--dependency=afterok:{datagen_id}", pretrain_path]
         issued_cmds.append(" ".join(pretrain_cmd))
         proc = job_tracking._run_slurm(pretrain_cmd)
         pretrain_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(pretrain_id)
 
-        # 2. preflight — afterok on pretrain
+        # 3. preflight — afterok on pretrain
         preflight_cmd = [
             "sbatch", "--parsable",
             f"--dependency=afterok:{pretrain_id}", preflight_path,
@@ -537,7 +563,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         preflight_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(preflight_id)
 
-        # 3. train array — afterok on BOTH pretrain and preflight (the colon-
+        # 4. train array — afterok on BOTH pretrain and preflight (the colon-
         # list is valid SLURM afterok syntax: every listed job must succeed).
         train_cmd = [
             "sbatch", "--parsable",
@@ -548,7 +574,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         train_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(train_id)
 
-        # 4. eval — three modes:
+        # 5. eval — three modes:
         #    (a) inline: the train array task ALREADY ran eval as its final
         #        step (see train_eval_inline_*.sbatch.tmpl); no further sbatch.
         #    (b) defer: a tiny launcher (afterany:train) submits the eval
@@ -619,6 +645,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     # the train SLURM task — so no eval record exists to write.
     indices = list(range(n_specs))
     arch_indices = list(range(n_archs))
+    job_tracking.append_job_record(run_dir, "datagen", datagen_id, [0])
     job_tracking.append_job_record(run_dir, "pretrain", pretrain_id,
                                    arch_indices)
     job_tracking.append_job_record(run_dir, "preflight", preflight_id, [0])
@@ -631,6 +658,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     result["dry_run"] = False
     result["commands"] = issued_cmds
     job_ids = {
+        "datagen": datagen_id,
         "pretrain": pretrain_id,
         "preflight": preflight_id,
         "train": train_id,

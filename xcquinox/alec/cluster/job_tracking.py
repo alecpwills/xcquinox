@@ -50,7 +50,7 @@ _SLURM_TIMEOUT_S = 30.0
 _QUERY_VERBS = frozenset({"sacct", "squeue"})
 _MUTATING_VERBS = frozenset({"sbatch", "scancel"})
 
-_VALID_KINDS = frozenset({"pretrain", "preflight", "train", "eval"})
+_VALID_KINDS = frozenset({"datagen", "pretrain", "preflight", "train", "eval"})
 
 _JOBS_FILENAME = "jobs.json"
 _MANIFEST_FILENAME = "manifest.json"

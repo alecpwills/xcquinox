@@ -832,6 +832,7 @@ def cmd_submit(args) -> int:
             eval_part = f"eval={ids.get('eval')}"
         _log(f"submit: SUBMITTED ({result['n_specs']} specs, "
              f"{result['n_archs']} distinct arch(s)) — "
+             f"datagen={ids.get('datagen')} "
              f"pretrain={ids.get('pretrain')} "
              f"preflight={ids.get('preflight')} train={ids.get('train')} "
              f"{eval_part}")
@@ -1322,15 +1323,19 @@ def cmd_resubmit_preflight(args) -> int:
                 return None
             return max(live, key=lambda r: r["generation"])
 
+        old_datagen = _newest_live("datagen")
         old_pretrain = _newest_live("pretrain")
         old_train = _newest_live("train")
         old_eval = _newest_live("eval")
 
         if not args.submit:
             _log("resubmit-preflight: DRY-RUN — would re-submit the full "
-                 "pretrain->preflight->train->eval graph via "
+                 "datagen->pretrain->preflight->train->eval graph via "
                  "submit_jobs(force=True), then scancel + mark_superseded the "
-                 "old pretrain/train/eval arrays.")
+                 "old datagen/pretrain/train/eval arrays.")
+            if old_datagen:
+                _log(f"  old datagen job {old_datagen['array_job_id']} "
+                     f"(gen {old_datagen['generation']}) would be cancelled.")
             if old_pretrain:
                 _log(f"  old pretrain array {old_pretrain['array_job_id']} "
                      f"(gen {old_pretrain['generation']}) would be cancelled.")
@@ -1350,17 +1355,18 @@ def cmd_resubmit_preflight(args) -> int:
         result = submit_jobs(cfg, run_dir, submit=True, force=True)
         new_ids = result.get("job_ids", {})
         _log(f"resubmit-preflight: re-submitted graph — "
+             f"datagen={new_ids.get('datagen')} "
              f"pretrain={new_ids.get('pretrain')} "
              f"preflight={new_ids.get('preflight')} "
              f"train={new_ids.get('train')} eval={new_ids.get('eval')}.")
 
-        # All four new sbatch calls succeeded (submit_jobs would have raised
-        # otherwise). NOW, and only now: scancel old pretrain/train/eval ->
-        # mark_superseded. A scancel failure aborts before mark_superseded
+        # All new sbatch calls succeeded (submit_jobs would have raised
+        # otherwise). NOW, and only now: scancel old datagen/pretrain/train/eval
+        # -> mark_superseded. A scancel failure aborts before mark_superseded
         # so a superseded generation always has a live successor.
         scancel_ok = True
         orphans = []
-        for rec in (old_pretrain, old_train, old_eval):
+        for rec in (old_datagen, old_pretrain, old_train, old_eval):
             if rec is None:
                 continue
             try:
@@ -1380,13 +1386,13 @@ def cmd_resubmit_preflight(args) -> int:
             return 1
 
         # scancel succeeded for every old array — mark them superseded.
-        for rec in (old_pretrain, old_train, old_eval):
+        for rec in (old_datagen, old_pretrain, old_train, old_eval):
             if rec is None:
                 continue
             job_tracking.mark_superseded(run_dir, rec["kind"],
                                          rec["generation"])
-        _log("resubmit-preflight: old pretrain/train/eval arrays cancelled "
-             "and marked superseded.")
+        _log("resubmit-preflight: old datagen/pretrain/train/eval arrays "
+             "cancelled and marked superseded.")
         return 0
     finally:
         if lock_path is not None:

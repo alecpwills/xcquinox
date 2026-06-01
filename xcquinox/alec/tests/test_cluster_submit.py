@@ -122,7 +122,7 @@ def _fake_slurm_factory(ids=None, fail_on_index=None):
     CalledProcessError instead of returning. ``scancel`` calls always succeed.
     The list of every cmd seen is recorded on ``.calls``.
     """
-    ids = list(ids or ["1001", "1002", "1003", "1004"])
+    ids = list(ids or ["1001", "1002", "1003", "1004", "1005"])
     state = {"sbatch_n": 0}
     calls = []
 
@@ -424,32 +424,35 @@ def test_dry_run_train_eval_array_ranges_identical(tmp_path, monkeypatch):
 def test_real_submit_dependency_directives(tmp_path, monkeypatch):
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
-    fake = _fake_slurm_factory(ids=["5000", "5001", "5002", "5003"])
+    fake = _fake_slurm_factory(ids=["5000", "5001", "5002", "5003", "5004"])
     monkeypatch.setattr(jt, "_run_slurm", fake)
 
     result = submit_jobs(cfg, run_dir, submit=True)
 
     assert result["dry_run"] is False
     assert result["job_ids"] == {
-        "pretrain": "5000", "preflight": "5001",
-        "train": "5002", "eval": "5003",
+        "datagen": "5000", "pretrain": "5001", "preflight": "5002",
+        "train": "5003", "eval": "5004",
     }
     sbatch_calls = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
-    assert len(sbatch_calls) == 4
+    assert len(sbatch_calls) == 5
     joined = [" ".join(c) for c in sbatch_calls]
-    # pretrain: no dependency.
+    # datagen: FIRST, no dependency.
     assert "--dependency" not in joined[0]
-    # preflight: afterok on the pretrain id.
+    assert joined[0].endswith("datagen.sbatch")
+    # pretrain: afterok on the datagen id.
     assert "--dependency=afterok:5000" in joined[1]
+    # preflight: afterok on the pretrain id.
+    assert "--dependency=afterok:5001" in joined[2]
     # train: afterok on BOTH the pretrain and the preflight ids.
-    assert "--dependency=afterok:5000:5001" in joined[2]
+    assert "--dependency=afterok:5001:5002" in joined[3]
     # eval: aftercorr on the train array id.
-    assert "--dependency=aftercorr:5002" in joined[3]
+    assert "--dependency=aftercorr:5003" in joined[4]
 
-    # jobs.json now records all four stages.
+    # jobs.json now records all five stages.
     records = jt.read_job_records(run_dir)
     kinds = sorted(r["kind"] for r in records)
-    assert kinds == ["eval", "preflight", "pretrain", "train"]
+    assert kinds == ["datagen", "eval", "preflight", "pretrain", "train"]
     cmds = open(os.path.join(run_dir, "submit_commands.txt")).read()
     assert "[submit]" in cmds
     # Default (defer_eval off): no launcher script, no deferral flag.
@@ -463,30 +466,31 @@ def test_deferred_submit_launches_instead_of_eval_array(tmp_path, monkeypatch):
     eval array is NOT submitted, and only pretrain/preflight/train are recorded."""
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
-    fake = _fake_slurm_factory(ids=["5000", "5001", "5002", "5003"])
+    fake = _fake_slurm_factory(ids=["5000", "5001", "5002", "5003", "5004"])
     monkeypatch.setattr(jt, "_run_slurm", fake)
 
     result = submit_jobs(cfg, run_dir, submit=True, defer_eval=True)
 
     assert result["defer_eval"] is True
     sbatch_calls = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
-    assert len(sbatch_calls) == 4
+    assert len(sbatch_calls) == 5
     joined = [" ".join(c) for c in sbatch_calls]
-    # 4th sbatch is the launcher: afterany on the train id, launcher script.
-    assert "--dependency=afterany:5002" in joined[3]
-    assert joined[3].endswith("eval_launcher.sbatch")
+    # 5th sbatch is the launcher: afterany on the train id, launcher script.
+    assert "--dependency=afterany:5003" in joined[4]
+    assert joined[4].endswith("eval_launcher.sbatch")
     # The eval array itself was NOT submitted here.
     assert not any("eval_array.sbatch" in j for j in joined)
     # job_ids reports the launcher, not an eval id; manual fallback is surfaced.
     assert result["job_ids"] == {
-        "pretrain": "5000", "preflight": "5001",
-        "train": "5002", "eval_launcher": "5003",
+        "datagen": "5000", "pretrain": "5001", "preflight": "5002",
+        "train": "5003", "eval_launcher": "5004",
     }
     assert result["manual_eval_command"].startswith(
         "python -m xcquinox.alec.cluster submit-eval ")
-    # Only three records — eval is written later by the launcher/manual step.
+    # Only datagen/pretrain/preflight/train recorded — eval is written later by
+    # the launcher/manual step.
     kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
-    assert kinds == ["preflight", "pretrain", "train"]
+    assert kinds == ["datagen", "preflight", "pretrain", "train"]
     # The launcher script was written and reuses the (also-written) eval script.
     assert os.path.exists(os.path.join(run_dir, "scripts", "eval_launcher.sbatch"))
     assert os.path.exists(os.path.join(run_dir, "scripts", "eval_array.sbatch"))
@@ -526,7 +530,7 @@ def test_inline_eval_submit_skips_eval_array_and_eval_record(
     """
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
-    fake = _fake_slurm_factory(ids=["6000", "6001", "6002"])
+    fake = _fake_slurm_factory(ids=["6000", "6001", "6002", "6003"])
     monkeypatch.setattr(jt, "_run_slurm", fake)
 
     result = submit_jobs(cfg, run_dir, submit=True, inline_eval=True)
@@ -534,23 +538,24 @@ def test_inline_eval_submit_skips_eval_array_and_eval_record(
     # Top-level flags reflect inline mode.
     assert result["inline_eval"] is True
     assert result["defer_eval"] is False
-    # Only THREE sbatch calls — no separate eval array.
+    # Only FOUR sbatch calls (datagen, pretrain, preflight, train) — no eval array.
     sbatch_calls = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
-    assert len(sbatch_calls) == 3, [" ".join(c) for c in sbatch_calls]
+    assert len(sbatch_calls) == 4, [" ".join(c) for c in sbatch_calls]
     joined = [" ".join(c) for c in sbatch_calls]
-    # The 4th-stage eval array and the deferred launcher are BOTH absent.
+    # The eval array and the deferred launcher are BOTH absent.
     assert not any("eval_array.sbatch" in j for j in joined), joined
     assert not any("eval_launcher.sbatch" in j for j in joined), joined
-    # job_ids carries pretrain/preflight/train ONLY — no eval (which would be
-    # None under inline) and no eval_launcher (which is defer-only).
+    # job_ids carries datagen/pretrain/preflight/train ONLY — no eval (which
+    # would be None under inline) and no eval_launcher (which is defer-only).
     assert result["job_ids"] == {
-        "pretrain": "6000", "preflight": "6001", "train": "6002",
+        "datagen": "6000", "pretrain": "6001", "preflight": "6002",
+        "train": "6003",
     }, result["job_ids"]
-    # jobs.json carries pretrain/preflight/train ONLY — the absence of an
-    # ``eval`` record is the point: nothing to recover via sacct because eval
+    # jobs.json carries datagen/pretrain/preflight/train ONLY — the absence of
+    # an ``eval`` record is the point: nothing to recover via sacct because eval
     # ran inline as part of each train task.
     kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
-    assert kinds == ["preflight", "pretrain", "train"]
+    assert kinds == ["datagen", "preflight", "pretrain", "train"]
     # The submit_commands audit trail was written (proves the function returned
     # cleanly past the failure point at L627 in the buggy version).
     cmds_path = os.path.join(run_dir, "submit_commands.txt")
@@ -563,13 +568,13 @@ def test_double_submit_guard_requires_force(tmp_path, monkeypatch):
     run_dir = str(tmp_path / "run")
     monkeypatch.setattr(jt, "_run_slurm",
                         _fake_slurm_factory(ids=["7000", "7001", "7002",
-                                                 "7003"]))
+                                                 "7003", "7004"]))
     submit_jobs(cfg, run_dir, submit=True)
 
     # A second submit without force must be rejected.
     monkeypatch.setattr(jt, "_run_slurm",
                         _fake_slurm_factory(ids=["8000", "8001", "8002",
-                                                 "8003"]))
+                                                 "8003", "8004"]))
     with pytest.raises(RuntimeError, match="force"):
         submit_jobs(cfg, run_dir, submit=True)
 
@@ -581,17 +586,18 @@ def test_double_submit_guard_requires_force(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "fail_idx,expected_scancels",
     [
-        (0, []),                              # pretrain rejected — nothing prior
-        (1, ["9000"]),                        # preflight rejected — cancel pretrain
-        (2, ["9000", "9001"]),                # train rejected — cancel both prior
-        (3, ["9000", "9001", "9002"]),        # eval rejected — cancel all three
+        (0, []),                                  # datagen rejected — nothing prior
+        (1, ["9000"]),                            # pretrain rejected — cancel datagen
+        (2, ["9000", "9001"]),                    # preflight rejected — cancel prior 2
+        (3, ["9000", "9001", "9002"]),            # train rejected — cancel prior 3
+        (4, ["9000", "9001", "9002", "9003"]),    # eval rejected — cancel all four
     ],
 )
 def test_rollback_scancels_on_midgraph_failure(tmp_path, monkeypatch,
                                                fail_idx, expected_scancels):
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
-    fake = _fake_slurm_factory(ids=["9000", "9001", "9002", "9003"],
+    fake = _fake_slurm_factory(ids=["9000", "9001", "9002", "9003", "9004"],
                                fail_on_index=fail_idx)
     monkeypatch.setattr(jt, "_run_slurm", fake)
 
@@ -609,8 +615,8 @@ def test_midgraph_failure_surfaces_sbatch_stderr(tmp_path, monkeypatch):
     real SLURM rejection reason — not just CalledProcessError's opaque str()."""
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
-    # Fail on the train array (index 2); the fake sets stderr="rejected".
-    fake = _fake_slurm_factory(ids=["9000", "9001", "9002", "9003"],
+    # Fail on a mid-graph sbatch (index 2 = preflight); fake sets stderr="rejected".
+    fake = _fake_slurm_factory(ids=["9000", "9001", "9002", "9003", "9004"],
                                fail_on_index=2)
     monkeypatch.setattr(jt, "_run_slurm", fake)
 

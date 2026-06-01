@@ -242,6 +242,14 @@ class ClusterResources:
     # concurrently" — the pretrain array is a handful of jobs, so the default
     # is the arch count (resolved in submit.render_sbatch as ARRAY_MAX + 1).
     pretrain_throttle: int | None = None
+    # Datagen-stage resources (the front stage that generates the pretrain-data
+    # file(s) before pretrain consumes them). Single job; each knob is None-by-
+    # default and falls back to the pretrain knob, then the train-array cluster
+    # value, in submit.render_sbatch.
+    datagen_partition: str | None = None       # None -> pretrain_partition -> partition
+    datagen_time: str | None = None            # None -> pretrain_time -> time
+    datagen_mem: str | None = None             # None -> pretrain_mem -> mem
+    datagen_cpus_per_task: int | None = None   # None -> pretrain_cpus_per_task -> cpus
     # Optional retry knobs — used when re-submitting a task that died from
     # OOM or wall-clock timeout. None = no dedicated retry config.
     oom_retry_partition: str | None = None
@@ -264,6 +272,7 @@ class ClusterResources:
     eval_allocation: str = "exclusive"
     preflight_allocation: str = "exclusive"
     pretrain_allocation: str = "exclusive"
+    datagen_allocation: str = "exclusive"
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +456,10 @@ def _build_cluster(d: dict) -> ClusterResources:
         pretrain_mem=d.get("pretrain_mem"),
         pretrain_cpus_per_task=d.get("pretrain_cpus_per_task"),
         pretrain_throttle=d.get("pretrain_throttle"),
+        datagen_partition=d.get("datagen_partition"),
+        datagen_time=d.get("datagen_time"),
+        datagen_mem=d.get("datagen_mem"),
+        datagen_cpus_per_task=d.get("datagen_cpus_per_task"),
         oom_retry_partition=d.get("oom_retry_partition"),
         oom_retry_mem=d.get("oom_retry_mem"),
         oom_retry_force_cpu=bool(d.get("oom_retry_force_cpu", False)),
@@ -456,6 +469,7 @@ def _build_cluster(d: dict) -> ClusterResources:
         eval_allocation=d.get("eval_allocation", "exclusive"),
         preflight_allocation=d.get("preflight_allocation", "exclusive"),
         pretrain_allocation=d.get("pretrain_allocation", "exclusive"),
+        datagen_allocation=d.get("datagen_allocation", "exclusive"),
     )
 
 
