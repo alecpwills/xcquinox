@@ -100,6 +100,21 @@ def _compute_j_matrix(D: jnp.ndarray, eri: jnp.ndarray) -> jnp.ndarray:
     return jnp.einsum("ijkl,kl->ij", eri, D)
 
 
+def _resolve_coulomb(config: SolverConfig, mol_data: dict):
+    """Return a function ``D -> J``. Uses the density-fitted 3-index ``cderi``
+    contraction when ``SolverConfig.density_fit`` is set and ``mol_data['cderi']``
+    is present, else the full-ERI contraction. Both are JAX einsums on
+    NN-independent precomputed tensors -> the SCF stays differentiable."""
+    use_df = bool(getattr(config, "density_fit", False)) and \
+        (mol_data.get("cderi") is not None)
+    if use_df:
+        from xcquinox.alec.df_jk import compute_j_df
+        cderi = mol_data["cderi"]
+        return lambda D: compute_j_df(D, cderi)
+    eri = mol_data["eri"]
+    return lambda D: _compute_j_matrix(D, eri)
+
+
 def _compute_total_energy(
     model,
     D: jnp.ndarray,
@@ -286,10 +301,12 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         )
         return feats, rho_d, sigma_d, nabla_rho_d
 
+    _coulomb = _resolve_coulomb(config, mol_data)
+
     def _j_for_cycle(D):
         if mode == SolverMode.FIXED_J:
             return J_pinned
-        return _compute_j_matrix(D, mol_data["eri"])
+        return _coulomb(D)
 
     features_0, rho_0, sigma_0, _nabla_rho_0 = _features_and_rho(D0)
     J_0 = _j_for_cycle(D0)
@@ -490,11 +507,12 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
             part="c",
         )
 
+    _coulomb = _resolve_coulomb(config, mol_data)
+
     def _j_total_for_cycle(D_ab):
         if mode == SolverMode.FIXED_J:
             return J_pinned_total
-        eri = mol_data["eri"]
-        return _compute_j_matrix(D_ab[0], eri) + _compute_j_matrix(D_ab[1], eri)
+        return _coulomb(D_ab[0]) + _coulomb(D_ab[1])
 
     # Initial energy at D0 = D_PBE.
     (rho_a0, rho_b0, nabla_rho_a0, nabla_rho_b0,
