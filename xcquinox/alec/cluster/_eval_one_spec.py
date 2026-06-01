@@ -106,6 +106,16 @@ def _log(idx, message):
 # Spec loading
 # ---------------------------------------------------------------------------
 
+def _held_out_basis_grid(cfg):
+    """``(basis, grid_level)`` for the held-out pool, read from the resolved
+    config so it matches what training used. Falls back to the historical
+    def2-svp / grid_level=1 when the config lacks them (older runs)."""
+    inputs = getattr(cfg, "inputs", None)
+    basis = getattr(inputs, "basis", None) or "def2-svp"
+    grid_level = getattr(inputs, "grid_level", None)
+    return basis, (1 if grid_level is None else int(grid_level))
+
+
 def _load_spec(path):
     """Deserialize a TrainingSpec from a trusted local file.
 
@@ -326,12 +336,14 @@ def main(argv=None) -> int:
         _log(idx, "starting full-pool held-out eval (BH76 + W4-11)")
         t1 = time.time()
         model = load_trained_model(training_spec, _Path(model_path))
-        # Basis + grid_level should match what the existing test_spec uses
-        # for the in-sample eval so PBE precomputes are comparable. Today
-        # they default to def2-svp / grid_level=1 (the cluster sweep
-        # standard); a future cfg-derived override would slot here.
+        # Basis + grid_level MUST match what training used (read from the
+        # resolved config) so the held-out PBE/NN energies are computed in the
+        # same basis as the in-sample eval — otherwise a basis bump silently
+        # evaluates the held-out set in def2-svp (invalid comparison).
+        _hb, _hg = _held_out_basis_grid(cfg)
+        _log(idx, f"held-out pool basis={_hb} grid_level={_hg}")
         full_specs, full_rxns = load_full_held_out_pools(
-            basis="def2-svp", grid_level=1,
+            basis=_hb, grid_level=_hg,
         )
         result = run_full_holdout_eval(
             training_spec=training_spec,
