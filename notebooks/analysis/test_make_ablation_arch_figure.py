@@ -124,6 +124,27 @@ def test_collect_insample_ae_drops_skipped_and_null(tmp_path):
     assert all(not r["skipped"] for r in rows)
 
 
+def test_w411_rows_filters_pool(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rxn = fig.collect_holdout_reaction_rows(run)
+    w411 = fig._w411_rows(rxn)
+    # Only the w411 reaction per evaluated spec survives (bh76 dropped).
+    assert w411, "expected held-out W4-11 rows"
+    assert all(r["pool"] == "w411" for r in w411)
+    assert all(fig._is_num(r["de_nn_kcalmol"]) for r in w411)
+    assert all(fig._is_num(r["de_pbe_kcalmol"]) for r in w411)
+
+
+def test_w411_mae_by_subset_pools_archs(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rxn = fig.collect_holdout_reaction_rows(run)
+    mae = fig._w411_mae_by_subset(fig._w411_rows(rxn))
+    # subset_size 1: specs 0 (deep) & 2 (deep_notransform); the w411 reaction
+    # has abs_error_nn = 2.0+i -> {2.0 (i=0), 4.0 (i=2)} -> mean 3.0.
+    assert mae[1] == pytest.approx((2.0 + 4.0) / 2, rel=1e-6)
+    assert 3 in mae
+
+
 def test_trained_spec_count(tmp_path):
     run = _make_run_dir(tmp_path)
     # specs 0-4 have model.eqx; spec 5 does not.
@@ -195,11 +216,19 @@ def test_plot_mae_vs_subset_renders(tmp_path):
     assert _png_ok(out)
 
 
-def test_build_all_writes_four_figures(tmp_path):
+def test_plot_ae_parity_renders(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rxn = fig.collect_holdout_reaction_rows(run)
+    out = fig.plot_ae_parity(rxn, tmp_path / "ae_parity.png", _STAMP)
+    assert _png_ok(out)
+
+
+def test_build_all_writes_five_figures(tmp_path):
     run = _make_run_dir(tmp_path)
     written = fig.build_all(run, tmp_path / "out")
-    assert len(written) == 4
+    assert len(written) == 5
     assert all(_png_ok(p) for p in written)
+    assert (tmp_path / "out" / "ablation_ae_parity.png").is_file()
 
 
 # ---------------------------------------------------------------------------

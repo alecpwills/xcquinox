@@ -33,6 +33,11 @@ Figures written (PNG):
   C. ``ablation_mae_by_arch.png``  — per-arch MAE bars (log-y), held-out
      reaction + in-sample AE, with the PBE-vs-benchmark baseline line.
   D. ``ablation_mae_vs_subset.png``— MAE vs subset_size, one line per arch.
+  E. ``ablation_ae_parity.png``    — HELD-OUT atomization-energy parity (W4-11,
+     the held-out set's atomization-energy pool): predicted vs reference AE with
+     PBE drawn as the baseline (grey × + dashed). Panel (a) by architecture,
+     panel (b) colored by training-subset size with an NN-MAE-vs-subset inset.
+     The AE analog of the held-out reaction parity (A).
 
 Usage:
     python notebooks/analysis/make_ablation_arch_figure.py \
@@ -652,6 +657,168 @@ def plot_mae_vs_subset(reaction_rows: List[Dict[str, Any]],
 
 
 # ---------------------------------------------------------------------------
+# Figure E — held-out atomization-energy parity (W4-11)
+# ---------------------------------------------------------------------------
+# W4-11 is the held-out set's atomization-energy benchmark: each W4-11 "reaction"
+# is a molecule -> constituent-atoms atomization, so its ``de_nn``/``de_pbe``
+# ARE predicted atomization energies and ``ref`` is the reference AE. This is
+# the atomization-energy analog of the held-out reaction parity (plot_parity),
+# and — unlike an in-sample training-fit plot — it shows generalization, with
+# PBE drawn as the baseline so "does the NN beat PBE?" is legible.
+
+def _w411_rows(reaction_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Held-out W4-11 reactions (the atomization-energy pool) with finite
+    NN / PBE / reference values."""
+    return [r for r in reaction_rows
+            if r.get("pool") == "w411"
+            and _is_num(r.get("ref_kcalmol"))
+            and _is_num(r.get("de_nn_kcalmol"))
+            and _is_num(r.get("de_pbe_kcalmol"))]
+
+
+def _w411_mae_by_subset(rows: List[Dict[str, Any]], *,
+                        key: str = "abs_error_nn_kcalmol") -> Dict[int, float]:
+    """``{subset_size: MAE}`` over held-out W4-11 ``key`` (NN or PBE abs error),
+    pooled across architectures."""
+    buckets: Dict[int, List[float]] = {}
+    for r in rows:
+        ss = r.get("subset_size")
+        if ss is None or not _is_num(r.get(key)):
+            continue
+        buckets.setdefault(ss, []).append(r[key])
+    return {k: float(np.mean(v)) for k, v in buckets.items() if v}
+
+
+def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
+                   run_id: str, note: str = "") -> Path:
+    """Figure E — HELD-OUT atomization-energy parity (W4-11): predicted vs
+    reference atomization energy (kcal/mol), the AE analog of
+    :func:`plot_parity`. PBE is drawn as the baseline throughout so the
+    NN-vs-PBE comparison is explicit.
+
+    Panel (a) colors points by architecture (each arch's largest-subset spec),
+    overlays PBE as grey ×, and shows a per-arch NN-vs-ref MAE inset with the
+    PBE-vs-ref MAE as the dashed baseline. Panel (b) colors every held-out
+    W4-11 point by training-subset size with an NN-MAE-vs-subset inset that
+    also draws the PBE baseline."""
+    with plt.rc_context(_STYLE):
+        rows = _w411_rows(reaction_rows)
+        archs = _archs_present(rows)
+        best = _best_subset_per_arch(rows)
+        fig, (axa, axb) = plt.subplots(1, 2, figsize=(13, 7.4))
+
+        # Panel (a): by architecture, each arch's representative (largest) spec.
+        sel = [r for r in rows if r.get("arch") in best
+               and r.get("subset_size") == best[r["arch"]]]
+        xs_a, ys_a = [], []
+        for arch in archs:
+            pts = [(r["ref_kcalmol"], r["de_nn_kcalmol"]) for r in sel
+                   if r.get("arch") == arch]
+            if not pts:
+                continue
+            xx, yy = zip(*pts)
+            xs_a += list(xx); ys_a += list(yy)
+            axa.scatter(xx, yy, s=16, alpha=0.6, color=ARCH_COLOR[arch],
+                        edgecolor="none", zorder=3, label=arch)
+        # PBE baseline points (same physical PBE for every arch — draw once).
+        pbe_pts = [(r["ref_kcalmol"], r["de_pbe_kcalmol"]) for r in sel]
+        if pbe_pts:
+            xx, yy = zip(*pbe_pts)
+            xs_a += list(xx); ys_a += list(yy)
+            axa.scatter(xx, yy, s=12, marker="x", alpha=0.4, color="0.4",
+                        zorder=2, label="PBE")
+        limits_a = _robust_limits(xs_a + ys_a, q=(1.0, 99.0))
+        n_out_a = _diagonal(axa, xs_a, ys_a, limits=limits_a)
+        if n_out_a:
+            axa.text(0.02, 0.97, f"{n_out_a} point(s) beyond axis",
+                     transform=axa.transAxes, fontsize=6.5, va="top",
+                     color="#a33")
+        axa.set_xlabel("Reference W4-11 atomization energy  (kcal/mol)")
+        axa.set_ylabel("Predicted atomization energy  (kcal/mol)")
+        axa.set_title("(a) held-out W4-11 AE vs reference — by architecture")
+        mae_by_arch = {
+            a: m for a in archs
+            if (m := _mae([r["abs_error_nn_kcalmol"] for r in sel
+                           if r.get("arch") == a
+                           and _is_num(r.get("abs_error_nn_kcalmol"))])) is not None
+        }
+        pbe_vs_ref = _mae([r["abs_error_pbe_kcalmol"] for r in sel])
+        _draw_mae_inset(axa, mae_by_arch, archs,
+                        title="per-arch NN-vs-ref MAE", baseline=pbe_vs_ref)
+
+        # Panel (b): every held-out W4-11 point, colored by subset_size.
+        all_pts = [(r["ref_kcalmol"], r["de_nn_kcalmol"], r.get("subset_size"))
+                   for r in rows if _is_num(r.get("subset_size"))]
+        cmap = plt.get_cmap("viridis")
+        if all_pts:
+            xs_b = [p[0] for p in all_pts]
+            ys_b = [p[1] for p in all_pts]
+            css = [p[2] for p in all_pts]
+            ss_present = sorted(set(css))
+            norm = matplotlib.colors.Normalize(
+                vmin=min(ss_present), vmax=max(ss_present))
+            sc = axb.scatter(xs_b, ys_b, s=16, alpha=0.6, c=css, cmap=cmap,
+                             norm=norm, edgecolor="none", zorder=3)
+            n_out_b = _diagonal(axb, xs_b, ys_b,
+                                limits=_robust_limits(xs_b + ys_b, q=(1.0, 99.0)))
+            if n_out_b:
+                axb.text(0.02, 0.97, f"{n_out_b} point(s) beyond axis",
+                         transform=axb.transAxes, fontsize=6.5, va="top",
+                         color="#a33")
+            cbar = fig.colorbar(sc, ax=axb, fraction=0.046, pad=0.04)
+            cbar.set_label("training subset_size", fontsize=7)
+            cbar.ax.tick_params(labelsize=6)
+            # NN-MAE-vs-subset inset with the PBE baseline.
+            mae_by_ss = _w411_mae_by_subset(rows)
+            if mae_by_ss:
+                inset = axb.inset_axes([0.56, 0.13, 0.41, 0.33])
+                sss = sorted(mae_by_ss)
+                xs_i = np.arange(len(sss))
+                inset.bar(xs_i, [mae_by_ss[s] for s in sss],
+                          color=[cmap(norm(s)) for s in sss],
+                          edgecolor="k", linewidth=0.3)
+                pbe_b = _mae([r["abs_error_pbe_kcalmol"] for r in rows])
+                if pbe_b is not None and math.isfinite(pbe_b):
+                    inset.axhline(pbe_b, ls="--", color="k", linewidth=1.0,
+                                  label="PBE")
+                    inset.legend(fontsize=5, loc="upper left", framealpha=0.6)
+                inset.set_xticks(xs_i)
+                inset.set_xticklabels([str(s) for s in sss], fontsize=5)
+                inset.set_title("NN AE MAE vs subset_size", fontsize=6)
+                inset.set_ylabel("MAE", fontsize=5)
+                inset.set_xlabel("subset_size", fontsize=5)
+                inset.tick_params(axis="y", labelsize=5)
+                inset.grid(True, axis="y", alpha=0.3)
+        axb.set_xlabel("Reference W4-11 atomization energy  (kcal/mol)")
+        axb.set_ylabel("NN atomization energy  (kcal/mol)")
+        axb.set_title("(b) held-out W4-11 AE vs reference — by train-set size")
+
+        handles = [Patch(facecolor=ARCH_COLOR[a], label=a) for a in archs]
+        handles.append(plt.Line2D([], [], marker="x", ls="", color="0.4",
+                                   label="PBE"))
+        fig.legend(handles=handles, loc="lower center", ncol=5, fontsize=7,
+                   frameon=False, bbox_to_anchor=(0.5, 0.085))
+        fig.suptitle(
+            "Held-out atomization-energy parity (W4-11) — "
+            f"each arch at its largest available subset_size · {run_id}",
+            fontsize=11, y=0.985)
+        fig.text(0.5, 0.925,
+                 "W4-11 (held-out): each reaction is a molecule->atoms "
+                 "atomization energy. PBE (grey ×, dashed baseline) is the bar "
+                 "to beat; points above/below the diagonal over/under-bind.",
+                 ha="center", fontsize=7.5, style="italic", color="#444444")
+        if note:
+            fig.text(0.5, 0.05, note, ha="center", fontsize=6.5,
+                     color="#a33", wrap=True)
+        fig.text(0.5, 0.016, _PROVENANCE, ha="center", fontsize=6,
+                 color="#777777")
+        fig.tight_layout(rect=(0, 0.155, 1, 0.90))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -696,6 +863,8 @@ def build_all(run_dir: Path, outdir: Path) -> List[Path]:
     written.append(plot_mae_vs_subset(
         reaction_rows, insample_rows, outdir / "ablation_mae_vs_subset.png", run_id,
         note=note))
+    written.append(plot_ae_parity(
+        reaction_rows, outdir / "ablation_ae_parity.png", run_id, note=note))
     return written
 
 
