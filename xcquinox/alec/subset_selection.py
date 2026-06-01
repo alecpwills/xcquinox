@@ -763,6 +763,54 @@ def _ase_atoms_to_pyscf_mol(at: Atoms, *, basis: str, charge: int = 0, spin: int
     )
 
 
+def _descriptor_triple_from_mol(mol, *, grid_level: int) -> dict:
+    """Run a PBE SCF on a built pyscf ``mol`` and return the
+    ``(ρ^{1/3}, s, α, weights)`` descriptor dict.
+
+    The SCF → MGGA ``eval_rho`` → :func:`compute_descriptor_triple` core shared
+    by the ASE-Atoms (:func:`extract_descriptors`) and MoleculeSpec
+    (:func:`extract_descriptors_for_molspecs`) extractors."""
+    from pyscf import dft
+
+    is_uhf = (mol.spin or 0) != 0
+    mf = dft.UKS(mol, xc="PBE,PBE") if is_uhf else dft.RKS(mol, xc="PBE,PBE")
+    mf.grids.level = grid_level
+    mf.grids.build()
+    mf.kernel()
+    dm = mf.make_rdm1()
+    ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=2)
+    dm_total = (dm[0] + dm[1]) if is_uhf else dm
+    rho_full = mf._numint.eval_rho(mol, ao, dm_total, xctype="MGGA")
+    # rho_full shape (6, ngrid): [rho, rho_x, rho_y, rho_z, lapl, tau]
+    rho = rho_full[0]
+    sigma = rho_full[1] ** 2 + rho_full[2] ** 2 + rho_full[3] ** 2
+    tau = rho_full[5]
+    descriptors = compute_descriptor_triple(rho, sigma, tau)
+    return {
+        "rho_third": descriptors["rho_third"],
+        "s": descriptors["s"],
+        "alpha": descriptors["alpha"],
+        "weights": mf.grids.weights,
+    }
+
+
+def _write_descriptor_cache(cache_path, out: dict) -> None:
+    """Atomic ``.npz`` write (tempfile + ``os.replace``) so an interrupted
+    extraction cannot leave a half-written cache that future runs mis-load."""
+    import os as _os
+    import tempfile as _tf
+
+    cache_path = Path(cache_path)
+    fd, tmp_name = _tf.mkstemp(dir=str(cache_path.parent), suffix=".npz")
+    try:
+        _os.close(fd)
+        np.savez(tmp_name, **out)
+        _os.replace(tmp_name, cache_path)
+    finally:
+        if _os.path.exists(tmp_name):
+            _os.unlink(tmp_name)
+
+
 def extract_descriptors(
     at: Atoms,
     *,
@@ -779,8 +827,6 @@ def extract_descriptors(
     Conventions match step-5/step-6 (def2-svp, grid_level=1) per
     _build_step6_notebook.py:528-532.
     """
-    from pyscf import dft
-
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     species = at.info.get("species", at.get_chemical_formula())
@@ -791,43 +837,83 @@ def extract_descriptors(
         return {k: z[k] for k in ("rho_third", "s", "alpha", "weights")}
 
     mol = _ase_atoms_to_pyscf_mol(at, basis=basis)
-    is_uhf = (mol.spin or 0) != 0
-    if is_uhf:
-        mf = dft.UKS(mol, xc="PBE,PBE")
-    else:
-        mf = dft.RKS(mol, xc="PBE,PBE")
-    mf.grids.level = grid_level
-    mf.grids.build()
-    mf.kernel()
-    dm = mf.make_rdm1()
-    ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=2)
-    if is_uhf:
-        dm_total = dm[0] + dm[1]
-    else:
-        dm_total = dm
-    rho_full = mf._numint.eval_rho(mol, ao, dm_total, xctype="MGGA")
-    # rho_full shape (6, ngrid): [rho, rho_x, rho_y, rho_z, lapl, tau]
-    rho = rho_full[0]
-    sigma = rho_full[1] ** 2 + rho_full[2] ** 2 + rho_full[3] ** 2
-    tau = rho_full[5]
-    descriptors = compute_descriptor_triple(rho, sigma, tau)
-    weights = mf.grids.weights
-    out = {
-        "rho_third": descriptors["rho_third"],
-        "s": descriptors["s"],
-        "alpha": descriptors["alpha"],
-        "weights": weights,
-    }
-    # Atomic write: tempfile + os.replace so an interrupted extraction
-    # cannot leave a half-written cache that future runs would mis-load.
-    import os as _os
-    import tempfile as _tf
-    fd, tmp_name = _tf.mkstemp(dir=str(cache_dir), suffix=".npz")
-    try:
-        _os.close(fd)
-        np.savez(tmp_name, **out)
-        _os.replace(tmp_name, cache_path)
-    finally:
-        if _os.path.exists(tmp_name):
-            _os.unlink(tmp_name)
+    out = _descriptor_triple_from_mol(mol, grid_level=grid_level)
+    _write_descriptor_cache(cache_path, out)
+    return out
+
+
+def extract_descriptors_for_molspecs(
+    specs,
+    *,
+    basis: str = "def2-svp",
+    grid_level: int = 1,
+    cache_dir,
+) -> dict[tuple, dict]:
+    """Per-:class:`MoleculeSpec` ``(ρ^{1/3}, s, α, weights)`` descriptors, cached
+    by ``(name, charge, spin)``.
+
+    The :func:`extract_descriptors_for_species` analogue for
+    ``full_benchmark_pools`` held-out species: each ``MoleculeSpec`` carries a
+    pyscf-format ``.atom`` string plus ``.charge``/``.spin``, so the pyscf mol is
+    built directly (no ASE round-trip). ``basis``/``grid_level`` are taken from
+    the arguments (def2-svp / 1 to match the pool-descriptor convention), not the
+    spec's own fields, so every reaction's descriptors share one footing.
+    """
+    from pyscf import gto
+
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    out: dict[tuple, dict] = {}
+    seen: set[tuple] = set()
+    for spec in specs:
+        name = spec.name
+        charge = int(getattr(spec, "charge", 0) or 0)
+        spin = int(getattr(spec, "spin", 0) or 0)
+        key = (name, charge, spin)
+        if key in seen:
+            continue
+        seen.add(key)
+        safe = name.replace("+", "plus").replace("/", "_").replace(" ", "_")
+        cache_path = cache_dir / f"{safe}_c{charge}_s{spin}.npz"
+        if cache_path.exists():
+            z = np.load(cache_path)
+            out[key] = {k: z[k] for k in ("rho_third", "s", "alpha", "weights")}
+            continue
+        mol = gto.M(atom=spec.atom, basis=basis, charge=charge, spin=spin,
+                    verbose=0)
+        d = _descriptor_triple_from_mol(mol, grid_level=grid_level)
+        _write_descriptor_cache(cache_path, d)
+        out[key] = d
+    return out
+
+
+def concatenate_reaction_descriptors(reactions, species_descriptors, specs_by_name):
+    """For each reaction, concatenate descriptors across its participating
+    species (``reactants + products``) — the reaction-pool analogue of
+    :func:`concatenate_point_descriptors`.
+
+    ``reactions`` are ``full_benchmark_pools`` reaction dicts (species-name
+    lists); ``specs_by_name`` maps name → ``MoleculeSpec`` (to resolve each
+    species' ``(name,charge,spin)`` key into ``species_descriptors``). Returns a
+    list parallel to ``reactions``, each a descriptor dict ready for
+    :func:`build_reference_histograms` / ``select_subset_parallel``."""
+    out: list[dict] = []
+    for rxn in reactions:
+        names = list(rxn.get("reactants", [])) + list(rxn.get("products", []))
+        cat = {k: [] for k in _DESCRIPTOR_KEYS}
+        cat_w: list = []
+        for nm in names:
+            spec = specs_by_name[nm]
+            key = (spec.name, int(getattr(spec, "charge", 0) or 0),
+                   int(getattr(spec, "spin", 0) or 0))
+            d = species_descriptors[key]
+            for k in _DESCRIPTOR_KEYS:
+                cat[k].append(d[k])
+            cat_w.append(d.get("weights", np.ones_like(d["rho_third"])))
+        out.append({
+            "rho_third": np.concatenate(cat["rho_third"]),
+            "s":         np.concatenate(cat["s"]),
+            "alpha":     np.concatenate(cat["alpha"]),
+            "weights":   np.concatenate(cat_w),
+        })
     return out
