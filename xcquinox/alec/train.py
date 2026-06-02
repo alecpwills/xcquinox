@@ -184,14 +184,20 @@ def _build_batch(spec: TrainingSpec, loss) -> dict:
         required |= set(d.required_mol_keys)
 
     sc = spec.loss_kwargs_dict.get("solver_config") or spec.solver_config
+    density_fit = False
     if isinstance(sc, SolverConfig) and sc.mode == SolverMode.FULL:
-        required.add("cderi" if getattr(sc, "density_fit", False) else "eri")
+        density_fit = bool(getattr(sc, "density_fit", False))
+        required.add("cderi" if density_fit else "eri")
+    # Only forward auxbasis when DF is active; otherwise stays None so the
+    # full-ERI path (and its precompute cache key) is byte-identical to before.
+    auxbasis = getattr(sc, "auxbasis", None) if density_fit else None
 
     required_keys = tuple(required)
     mol_data_list = [
         precompute_fixed_density_data(
             m, required_keys=required_keys,
             descriptors=spec.arch.materialize_descriptors(),
+            auxbasis=auxbasis,
         )
         for m in spec.molecules
     ]

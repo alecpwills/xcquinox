@@ -18,13 +18,13 @@ def _ns(**kw):
     return types.SimpleNamespace(**kw)
 
 
-def _cfg(archs, polarized, *, basis="def2-svp", grid=2, df=False,
+def _cfg(archs, polarized, *, basis="def2-svp", grid=2, df=False, aux=None,
          data_dir="/data/pt"):
     return _ns(
         sweep=_ns(arch=list(archs)),
         use_polarized_correlation=polarized,
         pretrain=_ns(data_dir=data_dir),
-        inputs=_ns(basis=basis, grid_level=grid, density_fit=df),
+        inputs=_ns(basis=basis, grid_level=grid, density_fit=df, auxbasis=aux),
     )
 
 
@@ -86,17 +86,19 @@ def test_main_polarized_svp_covers_all_archs(monkeypatch, tmp_path):
     data_dir, kw = calls[0]
     assert data_dir == "/d/svp"
     assert kw == {"basis": "def2-svp", "grid_level": 2, "density_fit": False,
-                  "polarized": True, "descriptors": True}
+                  "auxbasis": None, "polarized": True, "descriptors": True}
 
 
 def test_main_density_fit_tzvpd(monkeypatch, tmp_path):
     cfg = _cfg(["deep", "deep_combined"], True, basis="def2-tzvpd", grid=2,
-               df=True, data_dir="/d/tz")
+               df=True, aux="def2-universal-jkfit", data_dir="/d/tz")
     rc, calls = _run_main(monkeypatch, tmp_path, cfg)
     assert rc == 0
     assert len(calls) == 1
     assert calls[0][1]["density_fit"] is True
     assert calls[0][1]["basis"] == "def2-tzvpd"
+    # GAP-4: the configured auxbasis must reach the pretrain-data generator.
+    assert calls[0][1]["auxbasis"] == "def2-universal-jkfit"
     assert calls[0][1]["polarized"] is True
 
 

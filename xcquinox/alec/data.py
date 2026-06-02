@@ -192,6 +192,7 @@ def _precompute_cache_key(
     mol_spec: MoleculeSpec,
     required_keys: tuple[str, ...],
     descriptors: tuple[Descriptor, ...],
+    auxbasis: str | None = None,
 ) -> tuple:
     # MoleculeSpec is a frozen dataclass and hashes by structural identity.
     # required_keys are sorted to canonicalize set-equivalence.
@@ -216,7 +217,10 @@ def _precompute_cache_key(
         ext_key = (ext_path, int(st.st_mtime_ns), int(st.st_size))
     else:
         ext_key = (ext_path, None, None)
-    return (mol_spec, tuple(sorted(required_keys)), desc_key, ext_key)
+    # auxbasis is part of the key: the DF auxiliary basis lives on SolverConfig,
+    # not MoleculeSpec, so two runs with the same molecule but different auxbasis
+    # would otherwise collide on the cached cderi.
+    return (mol_spec, tuple(sorted(required_keys)), desc_key, ext_key, auxbasis)
 
 
 def clear_precompute_cache() -> None:
@@ -238,6 +242,7 @@ def precompute_fixed_density_data(
     mol_spec: MoleculeSpec,
     required_keys: tuple[str, ...] = (),
     descriptors: tuple[Descriptor, ...] = (),
+    auxbasis: str | None = None,
 ) -> MoleculeData:
     """Run PBE SCF, extract grid data, return a MoleculeData dict.
 
@@ -256,7 +261,8 @@ def precompute_fixed_density_data(
     cache_key = None
     if _PRECOMPUTE_CACHE_ENABLED:
         try:
-            cache_key = _precompute_cache_key(mol_spec, required_keys, descriptors)
+            cache_key = _precompute_cache_key(
+                mol_spec, required_keys, descriptors, auxbasis)
         except TypeError:
             cache_key = None  # mol_spec or descriptors not hashable
         if cache_key is not None and cache_key in _PRECOMPUTE_CACHE:
@@ -300,6 +306,12 @@ def precompute_fixed_density_data(
     # Extract SCF quantities
     dm_pbe = mf.make_rdm1()
     h_core = mf.get_hcore()
+    # NOTE (density-fitting): j_matrix / E_pbe are deliberately computed with the
+    # FULL ERI even when SolverConfig.density_fit is on. The PBE result is a
+    # fixed, reference-quality anchor (it seeds E_non_xc and the FIXED_J pin);
+    # the DF approximation is applied ONLY to the NN-functional SCF Coulomb that
+    # is being trained, not to this baseline. Keeping PBE full-ERI also makes
+    # E_pbe byte-identical to the pre-DF pipeline.
     j_matrix = mf.get_j(mol, dm_pbe)
     e_nuc = float(mf.energy_nuc())
     E_pbe = float(mf.e_tot)
@@ -421,7 +433,10 @@ def precompute_fixed_density_data(
     cderi = None
     if "cderi" in all_needed:
         from xcquinox.alec.df_jk import build_cderi
-        cderi = build_cderi(mol)
+        # Forward the configured auxbasis so DF uses the intended fitting basis
+        # (e.g. def2-universal-jkfit for def2-tzvpd) consistently with the CCSD
+        # references / pretrain data. auxbasis=None -> df_jk.default_auxbasis.
+        cderi = build_cderi(mol, auxbasis=auxbasis)
 
     # External reference data (dm_target / rho_ref_grid / E_ref_literature)
     # come from an optional .npz pointed to by mol_spec.external_data_path.
@@ -498,6 +513,7 @@ def precompute_fixed_density_data(
             "charge": mol_spec.charge,
             "spin": mol_spec.spin,
             "grid_level": mol_spec.grid_level,
+            "auxbasis": auxbasis,
         },
         _pyscfad_mol=pyscfad_mol,
     )

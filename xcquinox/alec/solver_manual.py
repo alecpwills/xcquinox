@@ -370,7 +370,10 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         )
         return next_state, E_out
 
-    final_state, energy_trace = jax.lax.scan(body, init_state, None, length=config.max_cycles)
+    # Optional activation checkpointing of the per-cycle body: trades recompute
+    # for a smaller reverse-mode tape. Off -> scan_body IS body (byte-identical).
+    scan_body = jax.checkpoint(body) if config.scf_grad_checkpoint else body
+    final_state, energy_trace = jax.lax.scan(scan_body, init_state, None, length=config.max_cycles)
 
     if policy == FeaturePolicy.FROZEN:
         features_final = features_initial
@@ -595,7 +598,10 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         )
         return next_state, E_out
 
-    final_state, energy_trace = jax.lax.scan(body, init_state, None, length=config.max_cycles)
+    # Optional activation checkpointing of the per-cycle body: trades recompute
+    # for a smaller reverse-mode tape. Off -> scan_body IS body (byte-identical).
+    scan_body = jax.checkpoint(body) if config.scf_grad_checkpoint else body
+    final_state, energy_trace = jax.lax.scan(scan_body, init_state, None, length=config.max_cycles)
 
     features_final = _features_for(final_state.density_matrix)
 

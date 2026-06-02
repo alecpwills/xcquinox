@@ -17,22 +17,43 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 
-# Orbital-basis -> standard JK fitting basis. None lets pyscf auto-select the
-# Weigend universal fitting basis. Explicit pairs avoid surprises for the bases
-# we actually run.
+# Orbital-basis -> standard JK fitting basis. Explicit pairs avoid surprises for
+# the bases we actually run. The per-basis ``-jkfit`` sets are the tighter
+# matched fits and are preferred where they exist; the diffuse/large def2 bases
+# (def2-tzvpd, def2-tzvppd, def2-qzvp) have no dedicated ``-jkfit`` and use the
+# Weigend universal Coulomb-fitting set ``def2-universal-jkfit``, which is
+# designed to fit J (and K) for ALL def2 orbital bases.
+#   (L) F. Weigend, Phys. Chem. Chem. Phys. 8, 1057 (2006) — accurate
+#       Coulomb-fitting (def2-universal-JKFIT) basis sets for H to Rn.
+_DEF2_UNIVERSAL_JKFIT = "def2-universal-jkfit"
 _AUXBASIS_TABLE = {
     "def2-svp": "def2-svp-jkfit",
     "def2-svpd": "def2-svp-jkfit",
     "def2-tzvp": "def2-tzvp-jkfit",
     "def2-tzvpp": "def2-tzvp-jkfit",
+    "def2-tzvpd": _DEF2_UNIVERSAL_JKFIT,
+    "def2-tzvppd": _DEF2_UNIVERSAL_JKFIT,
+    "def2-qzvp": _DEF2_UNIVERSAL_JKFIT,
 }
 
 
 def default_auxbasis(orbital_basis: str | None) -> str | None:
-    """Map an orbital basis to its JK fitting basis; None -> pyscf auto-select."""
+    """Map an orbital basis to its JK fitting basis.
+
+    Returns the matched ``-jkfit`` set when one is tabulated; for any other
+    ``def2-*`` orbital basis returns the cited Weigend ``def2-universal-jkfit``
+    (a *reproducible* default rather than pyscf's internal auto-select). For
+    non-def2 / unknown bases (e.g. sto-3g, cc-pVDZ) returns ``None`` so pyscf
+    auto-selects an appropriate fit. ``None`` orbital basis -> ``None``.
+    """
     if orbital_basis is None:
         return None
-    return _AUXBASIS_TABLE.get(orbital_basis.lower())
+    key = orbital_basis.lower()
+    if key in _AUXBASIS_TABLE:
+        return _AUXBASIS_TABLE[key]
+    if key.startswith("def2-"):
+        return _DEF2_UNIVERSAL_JKFIT
+    return None
 
 
 def build_cderi(mol, auxbasis: str | None = None) -> jnp.ndarray:

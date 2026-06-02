@@ -40,7 +40,7 @@ _RHO_FLOOR = 1e-10  # strict > threshold for kept grid points
 
 
 def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
-                  density_fit=False, cusp_log_transform=True):
+                  density_fit=False, auxbasis=None, cusp_log_transform=True):
     """Per-atom pretrain columns. Returns a dict of equal-length 1-D arrays
     (rho, sigma, Fx, Fc, weights[, zeta][, cusp (N,2)][, dm (N,D)]).
 
@@ -53,7 +53,8 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
     mol = gto.M(atom=f"{symbol} 0 0 0", basis=basis, charge=0, spin=spin, verbose=0)
     mf = dft.UKS(mol) if spin else dft.RKS(mol)
     if density_fit:
-        mf = mf.density_fit(auxbasis=default_auxbasis(basis))
+        aux = auxbasis if auxbasis is not None else default_auxbasis(basis)
+        mf = mf.density_fit(auxbasis=aux)
     mf.xc = "pbe"
     mf.grids.level = grid_level
     mf.kernel()
@@ -130,13 +131,17 @@ def _pretrain_manifest_path(npz_path):
     return str(npz_path) + ".manifest.json"
 
 
-def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit):
-    """Record the basis/grid_level/density_fit a pretrain ``.npz`` was built at.
+def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
+                             auxbasis=None):
+    """Record the basis/grid_level/density_fit/auxbasis a pretrain ``.npz`` was
+    built at.
 
     Written as a sidecar so the ``.npz`` array payload stays byte-identical to the
-    pre-manifest format (legacy loaders that ignore the sidecar are unaffected)."""
+    pre-manifest format (legacy loaders that ignore the sidecar are unaffected).
+    ``auxbasis`` is the EFFECTIVE DF fitting basis (``None`` when density_fit is
+    off) so a fitting-basis change forces a regen."""
     meta = {"basis": basis, "grid_level": int(grid_level),
-            "density_fit": bool(density_fit)}
+            "density_fit": bool(density_fit), "auxbasis": auxbasis}
     with open(_pretrain_manifest_path(npz_path), "w") as f:
         json.dump(meta, f)
 
@@ -150,46 +155,63 @@ def read_pretrain_manifest(npz_path):
         return json.load(f)
 
 
-def pretrain_data_is_current(npz_path, *, basis, grid_level):
-    """True iff ``npz_path`` exists AND its manifest's basis+grid_level match.
+def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None):
+    """True iff ``npz_path`` exists AND its manifest's basis+grid_level+auxbasis
+    match.
 
     A missing file OR a missing/mismatched manifest returns ``False`` so the
     harness regenerates rather than silently reusing data built at a different
     basis (the stale-reuse bug Task 9 closes). Legacy manifest-less files
-    therefore regenerate once, then carry a manifest thereafter."""
+    therefore regenerate once, then carry a manifest thereafter. ``auxbasis`` is
+    the EFFECTIVE DF fitting basis (``None`` when DF is off); a legacy manifest
+    without an ``auxbasis`` key reads as ``None``, so the full-ERI path stays
+    current without a spurious regen."""
     if not os.path.isfile(npz_path):
         return False
     meta = read_pretrain_manifest(npz_path)
     if meta is None:
         return False
     return (meta.get("basis") == basis
-            and int(meta.get("grid_level", -1)) == int(grid_level))
+            and int(meta.get("grid_level", -1)) == int(grid_level)
+            and meta.get("auxbasis") == auxbasis)
+
+
+def _effective_auxbasis(basis, density_fit, auxbasis):
+    """Resolve the DF fitting basis actually used: explicit ``auxbasis`` if given,
+    else :func:`df_jk.default_auxbasis(basis)`; ``None`` when DF is off."""
+    if not density_fit:
+        return None
+    return auxbasis if auxbasis is not None else default_auxbasis(basis)
 
 
 def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
                          basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
                          polarized=True, descriptors=True, density_fit=False,
-                         cusp_log_transform=True):
+                         auxbasis=None, cusp_log_transform=True):
     """Skip-if-current driver for staged pretrain data.
 
     Returns the canonical ``.npz`` path, (re)generating it ONLY when the file is
-    absent or its manifest's basis/grid_level differs from the requested pair.
-    Idempotent — a second call at the same basis is a no-op. Used by the cluster
-    harness so a basis change forces a regen instead of training on stale data."""
+    absent or its manifest's basis/grid_level/auxbasis differs from the requested
+    values. Idempotent — a second call at the same settings is a no-op. Used by
+    the cluster harness so a basis OR fitting-basis change forces a regen instead
+    of training on stale data."""
+    eff_aux = _effective_auxbasis(basis, density_fit, auxbasis)
     fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"
     out_path = os.path.join(data_dir, fname)
-    if pretrain_data_is_current(out_path, basis=basis, grid_level=grid_level):
+    if pretrain_data_is_current(out_path, basis=basis, grid_level=grid_level,
+                                auxbasis=eff_aux):
         return out_path
     return generate_pretrain_data_npz(
         data_dir, atoms=atoms, basis=basis, grid_level=grid_level,
         polarized=polarized, descriptors=descriptors, density_fit=density_fit,
-        cusp_log_transform=cusp_log_transform)
+        auxbasis=auxbasis, cusp_log_transform=cusp_log_transform)
 
 
 def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
                                basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
                                polarized=True, descriptors=True,
-                               density_fit=False, cusp_log_transform=True):
+                               density_fit=False, auxbasis=None,
+                               cusp_log_transform=True):
     """Generate the pretrain-data ``.npz`` in ``out_dir`` and return its path.
 
     ``polarized=True`` writes ``pretrain_data_polarized.npz`` with a ``zeta_all``
@@ -205,7 +227,7 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     per_atom = [
         _atom_columns(sym, spin, basis, grid_level,
                       polarized=polarized, descriptors=descriptors,
-                      density_fit=density_fit,
+                      density_fit=density_fit, auxbasis=auxbasis,
                       cusp_log_transform=cusp_log_transform)
         for sym, spin in atoms
     ]
@@ -226,6 +248,7 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"
     out_path = os.path.join(out_dir, fname)
     np.savez(out_path, **save_kwargs)
-    _write_pretrain_manifest(out_path, basis=basis, grid_level=grid_level,
-                             density_fit=density_fit)
+    _write_pretrain_manifest(
+        out_path, basis=basis, grid_level=grid_level, density_fit=density_fit,
+        auxbasis=_effective_auxbasis(basis, density_fit, auxbasis))
     return out_path

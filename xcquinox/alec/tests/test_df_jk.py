@@ -37,8 +37,21 @@ def test_default_auxbasis_maps_known_bases():
     assert df_jk.default_auxbasis("def2-svp") == "def2-svp-jkfit"
     assert df_jk.default_auxbasis("def2-tzvp") == "def2-tzvp-jkfit"
     assert df_jk.default_auxbasis("DEF2-SVP") == "def2-svp-jkfit"  # case-insensitive
-    assert df_jk.default_auxbasis("sto-3g") is None                # unknown -> auto
+    assert df_jk.default_auxbasis("sto-3g") is None                # non-def2 -> auto
     assert df_jk.default_auxbasis(None) is None
+
+
+def test_default_auxbasis_diffuse_def2_uses_universal_jkfit():
+    """def2-tzvpd (and other def2 bases without a dedicated -jkfit) resolve to
+    the cited Weigend universal Coulomb-fitting set — NOT pyscf auto-select.
+    This is the GAP-1 fix: the configured fit is reproducible across stages."""
+    assert df_jk.default_auxbasis("def2-tzvpd") == "def2-universal-jkfit"
+    assert df_jk.default_auxbasis("def2-tzvppd") == "def2-universal-jkfit"
+    assert df_jk.default_auxbasis("def2-qzvp") == "def2-universal-jkfit"
+    # Any other def2-* orbital basis falls back to the universal set too.
+    assert df_jk.default_auxbasis("def2-qzvpp") == "def2-universal-jkfit"
+    # Non-def2 unknown bases still defer to pyscf auto-select.
+    assert df_jk.default_auxbasis("cc-pvdz") is None
 
 
 def test_compute_j_df_is_differentiable_in_D():

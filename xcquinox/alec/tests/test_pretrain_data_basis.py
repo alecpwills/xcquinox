@@ -56,10 +56,36 @@ def test_is_current_false_on_grid_mismatch(tmp_path):
 def test_manifest_round_trips_density_fit_flag(tmp_path):
     p = os.path.join(tmp_path, "pretrain_data.npz")
     pdg._write_pretrain_manifest(p, basis="def2-tzvp", grid_level=2,
-                                 density_fit=True)
+                                 density_fit=True,
+                                 auxbasis="def2-universal-jkfit")
     with open(pdg._pretrain_manifest_path(p)) as f:
         meta = json.load(f)
-    assert meta == {"basis": "def2-tzvp", "grid_level": 2, "density_fit": True}
+    assert meta == {"basis": "def2-tzvp", "grid_level": 2, "density_fit": True,
+                    "auxbasis": "def2-universal-jkfit"}
+
+
+def test_manifest_auxbasis_defaults_none(tmp_path):
+    """Default-off (full-ERI) manifest records auxbasis=None."""
+    p = os.path.join(tmp_path, "pretrain_data.npz")
+    pdg._write_pretrain_manifest(p, basis="def2-svp", grid_level=1,
+                                 density_fit=False)
+    with open(pdg._pretrain_manifest_path(p)) as f:
+        meta = json.load(f)
+    assert meta["auxbasis"] is None
+
+
+def test_legacy_manifest_without_auxbasis_stays_current(tmp_path):
+    """A legacy manifest lacking the auxbasis key must NOT trigger a spurious
+    regen on the full-ERI path (auxbasis reads as None -> matches None)."""
+    p = os.path.join(tmp_path, "pretrain_data.npz")
+    _touch_npz(p)
+    # Old-format manifest: basis + grid_level + density_fit, NO auxbasis key.
+    with open(pdg._pretrain_manifest_path(p), "w") as f:
+        json.dump({"basis": "def2-svp", "grid_level": 1, "density_fit": False}, f)
+    assert pdg.pretrain_data_is_current(p, basis="def2-svp", grid_level=1) is True
+    # A DF run (effective auxbasis set) correctly sees it as stale.
+    assert pdg.pretrain_data_is_current(
+        p, basis="def2-svp", grid_level=1, auxbasis="def2-svp-jkfit") is False
 
 
 # --- ensure-driver: skip-if-current, regen on basis change -----------------
@@ -68,13 +94,15 @@ def test_ensure_regenerates_only_when_stale(tmp_path, monkeypatch):
     calls = []
 
     def fake_generate(out_dir, *, atoms, basis, grid_level, polarized,
-                      descriptors, density_fit, cusp_log_transform=True):
+                      descriptors, density_fit, auxbasis=None,
+                      cusp_log_transform=True):
         calls.append(basis)
         path = os.path.join(out_dir, "pretrain_data_polarized.npz"
                             if polarized else "pretrain_data.npz")
         _touch_npz(path)
-        pdg._write_pretrain_manifest(path, basis=basis, grid_level=grid_level,
-                                     density_fit=density_fit)
+        pdg._write_pretrain_manifest(
+            path, basis=basis, grid_level=grid_level, density_fit=density_fit,
+            auxbasis=pdg._effective_auxbasis(basis, density_fit, auxbasis))
         return path
 
     monkeypatch.setattr(pdg, "generate_pretrain_data_npz", fake_generate)

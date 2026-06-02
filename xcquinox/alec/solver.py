@@ -51,6 +51,13 @@ class SolverConfig:
     # byte-identical full-ERI path.
     density_fit: bool = False
     auxbasis: str | None = None
+    # Gradient (activation) checkpointing of the unrolled SCF scan. When True,
+    # each scan-cycle body is wrapped in ``jax.checkpoint`` (jax.remat) so the
+    # reverse-mode tape stores ~O(sqrt(max_cycles)) cycle activations instead of
+    # all of them (~2-3x lower backward-pass peak memory, ~1.5x recompute cost).
+    # Default off -> the scan body is the original closure, giving a
+    # byte-identical XLA graph and zero behavior change.
+    scf_grad_checkpoint: bool = False
 
     def __post_init__(self):
         if self.max_cycles < 0:
@@ -106,6 +113,7 @@ class SolverConfig:
             "convergence_name": self.convergence_name,
             "density_fit": self.density_fit,
             "auxbasis": self.auxbasis,
+            "scf_grad_checkpoint": self.scf_grad_checkpoint,
         }
 
 

@@ -292,6 +292,7 @@ def precompute_holdout(
     descriptors: Sequence[Any] = (),
     *,
     required_keys: Sequence[str] = (),
+    auxbasis: str | None = None,
 ) -> Dict[str, Any]:
     """Run the PBE precompute over a held-out pool of species.
 
@@ -319,7 +320,7 @@ def precompute_holdout(
         try:
             out[name] = alec.precompute_fixed_density_data(
                 spec, descriptors=tuple(descriptors),
-                required_keys=tuple(required_keys))
+                required_keys=tuple(required_keys), auxbasis=auxbasis)
         except Exception as exc:  # noqa: BLE001
             print(f"  [precompute {i}/{n}] {name}: FAILED ({exc})",
                   flush=True)
@@ -601,12 +602,18 @@ def precompute_holdout_for_spec(training_spec, mol_specs: Dict[str, Any]):
     precomputes into one-per-descriptor-group."""
     descriptors, required_keys, mode_str = descriptors_and_required_keys(
         training_spec)
+    # Forward the spec's DF auxbasis so held-out cderi uses the same fitting
+    # basis as training (else build_cderi falls back to a possibly-different
+    # auto aux). Only meaningful when density_fit is on; None otherwise.
+    sc = getattr(training_spec, "solver_config", None)
+    auxbasis = (getattr(sc, "auxbasis", None)
+                if getattr(sc, "density_fit", False) else None)
     print(f"[holdout] precomputing {len(mol_specs)} species "
           f"(descriptors: {[type(d).__name__ for d in descriptors] or 'none'}; "
           f"solver: {mode_str}; extra precompute keys: "
           f"{list(required_keys) or 'none'}) ...", flush=True)
     return precompute_holdout(mol_specs, descriptors=descriptors,
-                              required_keys=required_keys)
+                              required_keys=required_keys, auxbasis=auxbasis)
 
 
 def run_full_holdout_eval(

@@ -292,6 +292,7 @@ def prepare_inputs(
             basis=cfg.inputs.basis,
             grid_level=cfg.inputs.grid_level,
             density_fit=cfg.inputs.density_fit,
+            auxbasis=cfg.inputs.auxbasis,
             polarized=cfg.use_polarized_correlation,
         )
 
