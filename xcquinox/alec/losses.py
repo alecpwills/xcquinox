@@ -21,6 +21,14 @@ from xcquinox.alec.oneshot import (
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
 
+# Scale-aware denominator floor for the D-family relative delta-AE loss
+# (C1-03). Set to (1 kcal/mol)^2 in Ha^2 so a compound PBE already describes to
+# within ~1 kcal/mol cannot be over-weighted by a near-zero denominator. The
+# 627.5094740631 kcal/mol-per-Ha factor is CODATA-2018 (matches
+# domain.KCAL_PER_HA).
+_DELTA_TGT_FLOOR_HA2 = (1.0 / 627.5094740631) ** 2
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -218,21 +226,23 @@ def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets, 
     so the D-family target is a function of the anchor dict even though
     the NN/PBE delta itself is not.
     """
-    # C1-03 caveat: the relative normalization 1/(delta_tgt**2 + 1e-8) is
-    # well-behaved only while |delta_tgt| (= |target_AE - ae_pbe|, the amount PBE
-    # is OFF by) is comfortably above ~1e-4 Ha. A compound where PBE already
-    # nails the AE (delta_tgt -> 0) would have its squared error divided by the
-    # 1e-8 floor, over-weighting it ~1e8x. Not triggered by the current Dick
-    # 21-AE pool (PBE AE errors are ~1e-2..1e-1 Ha), but a scale-aware floor
-    # (e.g. max(delta_tgt**2, eps_abs)) would be needed before adding compounds
-    # PBE describes near-exactly.
+    # C1-03 (fixed): the relative normalization divides the squared delta error
+    # by a SCALE-AWARE floor ``max(delta_tgt**2, _DELTA_TGT_FLOOR_HA2)`` rather
+    # than the old additive ``delta_tgt**2 + 1e-8``. ``delta_tgt`` is how much PBE
+    # is off by; a compound PBE already nails (delta_tgt -> 0) would, under the
+    # 1e-8 additive floor, have its error divided by ~1e-8 and be over-weighted
+    # ~1e8x. The floor caps the denominator at (1 kcal/mol)^2, so near-exact-PBE
+    # compounds cannot dominate the loss. No-op for the current pools (PBE AE
+    # errors ~1e-2..1e-1 Ha => delta_tgt**2 >> floor), matters only once the
+    # BH76+W4-11 pool adds compounds PBE describes near-exactly.
     terms = []
     for i in compound_idx:
         ae_nn = _ae_from_atoms(E_nn[i], comp_dicts[i], atom_energies)
         ae_pbe = _ae_from_atoms(mol_data[i]["E_pbe"], comp_dicts[i], atom_energies)
         delta_nn = ae_nn - ae_pbe
         delta_tgt = targets[mol_names[i]] - ae_pbe
-        terms.append((delta_nn - delta_tgt) ** 2 / (delta_tgt ** 2 + 1e-8))
+        terms.append((delta_nn - delta_tgt) ** 2
+                     / jnp.maximum(delta_tgt ** 2, _DELTA_TGT_FLOOR_HA2))
     return jnp.mean(jnp.stack(terms))
 
 
@@ -388,6 +398,7 @@ def _rxn_residual_term(
     e_nn: jnp.ndarray,
     coeffs: jnp.ndarray,
     e_rxn_ref: jnp.ndarray,
+    relative: bool = False,
 ) -> jnp.ndarray:
     """Squared residual of a generic reaction energy / barrier height.
 
@@ -396,7 +407,11 @@ def _rxn_residual_term(
              reactants, positive for products)
     e_rxn_ref : scalar reference reaction-energy or barrier-height value
 
-    Returns: scalar squared residual (E_rxn_NN - E_rxn_ref)^2.
+    Returns: ``(E_rxn_NN - E_rxn_ref)^2``; when ``relative`` is set, the
+    relative form ``(.)^2 / (e_rxn_ref^2 + 1e-8)`` — matching the AE/vxc/rho
+    channels' normalization so that under ``loss_metric='relative'`` ALL five
+    GradNorm channels measure the same dimensionless quantity (without this the
+    BH76 channel stayed absolute Ha^2 while the others were relative).
 
     Used by the BH76 task channel of L5_gradnorm_vxc_step7. In Dick &
     Fernandez-Serra PRB 104 L161109 (2021) the 0.01 factor is lambda_E,
@@ -406,19 +421,29 @@ def _rxn_residual_term(
     adaptively rather than hard-coding any fixed scaling.
     """
     e_rxn = jnp.sum(coeffs * e_nn)
-    return (e_rxn - e_rxn_ref) ** 2
+    sq = (e_rxn - e_rxn_ref) ** 2
+    if relative:
+        return sq / (e_rxn_ref ** 2 + 1e-8)
+    return sq
 
 
 def _ip_residual_term(
     e_cation: jnp.ndarray,
     e_neutral: jnp.ndarray,
     ip_ref: jnp.ndarray,
+    relative: bool = False,
 ) -> jnp.ndarray:
     """Squared residual of an ionization potential. IP = E_cation - E_neutral.
 
+    When ``relative`` is set, the relative form ``(.)^2 / (ip_ref^2 + 1e-8)``,
+    consistent with the other channels under ``loss_metric='relative'``.
+
     Used by the IP13 task channel of L5_gradnorm_vxc_step7.
     """
-    return (e_cation - e_neutral - ip_ref) ** 2
+    sq = (e_cation - e_neutral - ip_ref) ** 2
+    if relative:
+        return sq / (ip_ref ** 2 + 1e-8)
+    return sq
 
 
 # ---------------------------------------------------------------------------
@@ -818,6 +843,28 @@ class DeltaAEPlusGridLoss(AlecLoss):
         return total, components
 
 
+# Sanity ceiling (Ha) for frozen reference reaction / atomization / IP energies.
+# BH76 + W4-11 + IP13 references for first/second-row chemistry are all well
+# under this in Hartree (the largest W4-11 total atomization energies are ~1-2
+# Ha; IPs ~0.3-1.6 Ha). A reference above this almost certainly means a
+# kcal/mol value was passed WITHOUT the kcal/mol->Ha conversion (a ~627x error;
+# e.g. a forgotten /KCAL_PER_HA in the pool builder makes every value huge), so
+# we fail loud at construction rather than silently train on it.
+_HA_REF_SANITY_MAX = 10.0
+
+
+def _guard_ref_is_hartree(value, label, kind):
+    """Raise if a frozen reference energy looks like kcal/mol, not Hartree."""
+    if value is not None and abs(value) > _HA_REF_SANITY_MAX:
+        raise ValueError(
+            f"{kind} {label!r}: reference energy {value} Ha exceeds the "
+            f"{_HA_REF_SANITY_MAX} Ha sanity ceiling — this is almost certainly "
+            f"a kcal/mol value passed without the kcal/mol->Ha conversion "
+            f"(~627x too large). Convert references to Hartree before building "
+            f"the loss (e.g. via KCAL_PER_HA)."
+        )
+
+
 def _freeze_rxn_specs(rxns) -> tuple:
     """Convert a list of BH76 reaction-spec dicts to a hashable tuple-of-tuples.
 
@@ -835,6 +882,7 @@ def _freeze_rxn_specs(rxns) -> tuple:
         e_ref = r.get("e_rxn_ref", None)
         if e_ref is not None:
             e_ref = float(e_ref)
+            _guard_ref_is_hartree(e_ref, name, "BH76 reaction")
         out.append((name, reactants, products, coeffs, e_ref))
     return tuple(out)
 
@@ -853,6 +901,7 @@ def _freeze_ip_specs(pairs) -> tuple:
         ip_ref = p.get("ip_ref", None)
         if ip_ref is not None:
             ip_ref = float(ip_ref)
+            _guard_ref_is_hartree(ip_ref, name, "IP13 pair")
         out.append((name, neutral, cation, ip_ref))
     return tuple(out)
 
@@ -1057,14 +1106,16 @@ class L5GradnormVxcStep7(AlecLoss):
                         f"`molecules` (have {sorted(mol_name_set)})"
                     )
 
-    def _bh76_channel(self, E_nn) -> jnp.ndarray:
+    def _bh76_channel(self, E_nn, relative=False) -> jnp.ndarray:
         """Mean of squared reaction-energy residuals across BH76 reactions.
 
         E_NN_total values are looked up from the all-species `E_nn` vector
         by name via `mol_names`. A reaction with `e_rxn_ref=None` is
         skipped (treated as missing reference). If no usable reactions
         remain, returns 0.0 (so the channel contributes nothing under
-        GradNorm without crashing).
+        GradNorm without crashing). ``relative`` selects the dimensionless
+        normalization so this channel is consistent with the others under
+        ``loss_metric='relative'``.
         """
         if not self.bh76_reactions:
             return jnp.array(0.0)
@@ -1078,16 +1129,18 @@ class L5GradnormVxcStep7(AlecLoss):
             e_species = E_nn[idx]
             coeffs_arr = jnp.array(coeffs)
             terms.append(_rxn_residual_term(
-                e_species, coeffs_arr, jnp.array(e_ref),
+                e_species, coeffs_arr, jnp.array(e_ref), relative=relative,
             ))
         if not terms:
             return jnp.array(0.0)
         return jnp.mean(jnp.stack(terms))
 
-    def _ip13_channel(self, E_nn) -> jnp.ndarray:
+    def _ip13_channel(self, E_nn, relative=False) -> jnp.ndarray:
         """Mean of squared IP residuals across IP13 pairs.
 
-        Pairs with `ip_ref=None` are skipped.
+        Pairs with `ip_ref=None` are skipped. ``relative`` selects the
+        dimensionless normalization (consistent with the other channels under
+        ``loss_metric='relative'``).
         """
         if not self.ip13_pairs:
             return jnp.array(0.0)
@@ -1099,7 +1152,7 @@ class L5GradnormVxcStep7(AlecLoss):
             e_neutral = E_nn[name_to_idx[neutral]]
             e_cation = E_nn[name_to_idx[cation]]
             terms.append(_ip_residual_term(
-                e_cation, e_neutral, jnp.array(ip_ref),
+                e_cation, e_neutral, jnp.array(ip_ref), relative=relative,
             ))
         if not terms:
             return jnp.array(0.0)
@@ -1150,8 +1203,11 @@ class L5GradnormVxcStep7(AlecLoss):
         loss_ae_total = loss_ae + atomic_reg
 
         # BH76 + IP13 channels: reaction / IP residuals (Dick 2021 SI II).
-        loss_bh76 = self._bh76_channel(E_nn)
-        loss_ip13 = self._ip13_channel(E_nn)
+        # Pass `relative` so all 5 GradNorm channels share one metric under
+        # loss_metric='relative' (else BH76/IP13 stay absolute Ha^2 while
+        # AE/vxc/rho are relative — inconsistent quantities into GradNorm).
+        loss_bh76 = self._bh76_channel(E_nn, relative=relative)
+        loss_ip13 = self._ip13_channel(E_nn, relative=relative)
 
         # vxc + rho channels: existing alec mechanisms.
         iter_idx = self._iter_idx_for_aux_channels()

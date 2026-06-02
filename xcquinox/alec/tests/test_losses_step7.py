@@ -43,6 +43,88 @@ def test_ip_residual_squared_displacement():
     assert float(res) == pytest.approx(1.0, abs=1e-12)
 
 
+# --- relative metric (L5 all-5-channels consistency) -----------------------
+
+def test_rxn_residual_relative_normalizes():
+    """relative=True normalizes the BH76 residual by ref^2+1e-8, matching the
+    AE/vxc/rho channels so all 5 GradNorm channels are dimensionless."""
+    e_nn = jnp.array([2.0, 1.0])
+    coeffs = jnp.array([-1.0, +1.0])     # e_rxn = -1.0
+    e_ref = jnp.array(-2.0)              # residual^2 = 1.0
+    absolute = losses._rxn_residual_term(e_nn, coeffs, e_ref)
+    relative = losses._rxn_residual_term(e_nn, coeffs, e_ref, relative=True)
+    assert float(absolute) == pytest.approx(1.0, abs=1e-12)
+    assert float(relative) == pytest.approx(1.0 / (4.0 + 1e-8), rel=1e-9)
+
+
+def test_ip_residual_relative_normalizes():
+    e_cation = jnp.array(5.0)
+    e_neutral = jnp.array(3.0)          # IP = 2.0
+    ip_ref = jnp.array(1.0)            # residual^2 = 1.0
+    relative = losses._ip_residual_term(e_cation, e_neutral, ip_ref, relative=True)
+    assert float(relative) == pytest.approx(1.0 / (1.0 + 1e-8), rel=1e-9)
+
+
+# --- Hartree-units guard on frozen reference energies ----------------------
+
+def test_freeze_rxn_specs_rejects_kcalmol_magnitude():
+    """A reaction reference > 10 Ha is almost certainly a kcal/mol value passed
+    without conversion — must raise rather than silently train (~627x error)."""
+    with pytest.raises(ValueError, match="kcal/mol"):
+        losses._freeze_rxn_specs([{
+            "name": "R1", "reactants": ("A",), "products": ("B",),
+            "coeffs": (-1.0, 1.0), "e_rxn_ref": 50.0,  # 50 "Ha" ⇒ implausible
+        }])
+
+
+def test_freeze_rxn_specs_accepts_hartree():
+    out = losses._freeze_rxn_specs([{
+        "name": "R1", "reactants": ("A",), "products": ("B",),
+        "coeffs": (-1.0, 1.0), "e_rxn_ref": 0.08,  # ~50 kcal/mol in Ha
+    }])
+    assert out[0][-1] == pytest.approx(0.08)
+
+
+def test_freeze_ip_specs_rejects_kcalmol_magnitude():
+    with pytest.raises(ValueError, match="kcal/mol"):
+        losses._freeze_ip_specs([{
+            "name": "Li", "neutral": "Li", "cation": "Li+", "ip_ref": 124.0,
+        }])
+
+
+# --- C1-03 scale-aware floor on the D-family relative delta-AE loss ----------
+
+def test_delta_losses_c1_03_floor_caps_near_zero_target():
+    """When PBE already nails the AE (delta_tgt -> 0), the relative delta loss
+    denominator is floored at (1 kcal/mol)^2 instead of the old 1e-8 additive
+    floor, so a near-exact-PBE compound cannot be over-weighted ~1e8x."""
+    from xcquinox.alec.losses import _delta_losses, _DELTA_TGT_FLOOR_HA2
+    # atom_energies=0 and E_pbe=0 ⇒ ae_pbe=0; targets=0 ⇒ delta_tgt=0;
+    # E_nn=0.1 ⇒ delta_nn=-0.1 ⇒ residual^2 = 0.01.
+    E_nn = jnp.array([0.1])
+    mol_data = ({"E_pbe": 0.0},)
+    loss = float(_delta_losses(
+        E_nn, mol_data, [0], [{"H": 2}], ["X"], {"X": 0.0}, {"H": 0.0},
+    ))
+    assert loss == pytest.approx(0.01 / _DELTA_TGT_FLOOR_HA2, rel=1e-6)
+    # Far below the old additive-1e-8 blowup (0.01/1e-8 = 1e6).
+    assert loss < 0.01 / 1e-8
+
+
+def test_delta_losses_c1_03_floor_noop_for_normal_targets():
+    """For a normal PBE error (delta_tgt ~ 0.05 Ha >> floor) the loss is
+    unchanged: max(delta_tgt^2, floor) == delta_tgt^2."""
+    from xcquinox.alec.losses import _delta_losses
+    # ae_pbe=0; delta_tgt = targets = 0.05 (>> sqrt(floor) ~1.6e-3);
+    # delta_nn=-0.1 ⇒ residual = (-0.1-0.05)^2 = 0.0225; denom = 0.05^2 = 0.0025.
+    E_nn = jnp.array([0.1])
+    mol_data = ({"E_pbe": 0.0},)
+    loss = float(_delta_losses(
+        E_nn, mol_data, [0], [{"H": 2}], ["X"], {"X": 0.05}, {"H": 0.0},
+    ))
+    assert loss == pytest.approx((0.15 ** 2) / (0.05 ** 2), rel=1e-5)
+
+
 def test_step7_loss_class_registered():
     """The step-7 loss family registers under the alec loss registry."""
     from xcquinox.alec import losses as alec_losses
@@ -80,10 +162,21 @@ def test_step7_loss_smoke_constructor_with_dict_inputs():
     from xcquinox.alec import dfs_pool
 
     pool = dfs_pool.build_dfs_pool()
+    # dfs_pool stores references in kcal/mol; the L5 loss contract is Hartree
+    # (production converts via domain.{bh76,ip13}_meta_to_loss_dict before
+    # constructing the loss). Mirror that here so the Hartree-units guard passes.
+    from xcquinox.alec.cluster.domain import KCAL_PER_HA
+
+    def _to_ha(d, key):
+        v = d.get(key)
+        return {**d, key: (None if v is None else v / KCAL_PER_HA)}
+
+    bh76_ha = [_to_ha(r, "e_rxn_ref") for r in pool["bh76_reactions"]]
+    ip13_ha = [_to_ha(p, "ip_ref") for p in pool["ip13_pairs"]]
     inst = alec_losses.make_loss(
         "L5_gradnorm_vxc_step7",
-        bh76_reactions=pool["bh76_reactions"],
-        ip13_pairs=pool["ip13_pairs"],
+        bh76_reactions=bh76_ha,
+        ip13_pairs=ip13_ha,
         _smoke_test=True,
     )
     assert len(inst.bh76_reactions) == 3

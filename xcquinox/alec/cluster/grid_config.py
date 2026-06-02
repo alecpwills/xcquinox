@@ -765,8 +765,13 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         )
 
     # --- per-stage allocation mode -----------------------------------------
+    # datagen MUST be validated too: render_sbatch(kind='datagen') only emits
+    # the exclusive `--nodes=1 --exclusive` lines when the value is exactly
+    # "exclusive" and otherwise falls through to a SHARED render, so an invalid
+    # datagen_allocation would silently downgrade the memory-heavy datagen job
+    # to a shared node.
     _ALLOC_MODES = ("exclusive", "shared")
-    for _stage in ("train", "eval", "preflight", "pretrain"):
+    for _stage in ("train", "eval", "preflight", "pretrain", "datagen"):
         _mode = getattr(cl, f"{_stage}_allocation")
         if _mode not in _ALLOC_MODES:
             raise ValueError(

@@ -624,6 +624,17 @@ def test_validate_rejects_unknown_allocation():
         validate_grid_semantics(cfg, _StubDomain(pool_size=40))
 
 
+def test_validate_rejects_unknown_datagen_allocation():
+    """datagen_allocation is validated too — an invalid value must be rejected,
+    not silently rendered as a SHARED datagen job (drops --nodes=1 --exclusive)."""
+    import dataclasses
+    base = _cfg()
+    bad = dataclasses.replace(base.cluster, datagen_allocation="whole-cluster")
+    cfg = dataclasses.replace(base, cluster=bad)
+    with pytest.raises(ValueError, match="datagen_allocation"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
 # ---------------------------------------------------------------------------
 # pretrain_checkpoint_dir — run-scoped pretrain output path
 # ---------------------------------------------------------------------------

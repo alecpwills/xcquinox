@@ -25,16 +25,26 @@ export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads
 
 # --- train task ------------------------------------------------------------
 # 2026-05-29 inline-eval mode: this single SLURM task does BOTH train AND
-# eval for the spec at $$SLURM_ARRAY_TASK_ID. Train is exec'd in a subshell
-# so we can capture its exit code without letting `set -e` abort the eval
-# invocation. The eval is wrapped in `|| true` so an eval crash does not mark
-# the array task as failed — the train checkpoint (model.eqx) is already on
-# disk before eval runs, and any failure.json from _train_task itself is the
-# authoritative train-status record.
-(
-  exec python -m xcquinox.alec.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID}
-)
+# eval for the spec at $$SLURM_ARRAY_TASK_ID. This shell MUST survive the train
+# phase to run eval afterward, so the worker cannot be `exec`'d as the batch
+# PID (as the non-inline templates do). Consequently a wall-clock
+# `--signal=B:TERM@grace` is delivered to THIS shell, not the worker. We run the
+# worker in the background and forward SIGTERM to its PID via a trap, so the
+# worker's grace handler (_train_task._install_sigterm_handler) still fires and
+# writes the timeout failure.json — matching the non-inline exec'd behavior.
+python -m xcquinox.alec.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID} &
+train_pid=$$!
+trap 'echo "[inline-eval] forwarding SIGTERM to train pid $${train_pid}"; kill -TERM $${train_pid} 2>/dev/null' TERM
+wait $${train_pid}
 train_exit=$$?
+# `wait` returns 128+signum when interrupted by the trapped SIGTERM; re-wait
+# until the worker has actually exited so we capture ITS real exit code (and the
+# grace handler has had time to write failure.json).
+while [ $${train_exit} -ge 128 ] && kill -0 $${train_pid} 2>/dev/null; do
+  wait $${train_pid}
+  train_exit=$$?
+done
+trap - TERM
 echo "[inline-eval] _train_task exit code: $${train_exit}"
 
 # Only run eval if train succeeded. A failed train means no model.eqx for

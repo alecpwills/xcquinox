@@ -621,6 +621,15 @@ _DEFAULT_CHANNEL_WEIGHTS = {
 }
 
 
+def _effective_channel_weights(channel_weights_dict: dict) -> dict:
+    """Merge a (possibly partial) user channel_weights over the density-dominant
+    defaults: a PARTIAL dict overrides ONLY the channels it names; omitted
+    channels inherit :data:`_DEFAULT_CHANNEL_WEIGHTS` (NOT 1.0, which would
+    silently de-emphasize e.g. loss_rho from its 20.0 default). An empty dict
+    yields the defaults unchanged."""
+    return {**_DEFAULT_CHANNEL_WEIGHTS, **dict(channel_weights_dict)}
+
+
 def _training_groups(spec: TrainingSpec) -> list:
     """Decompose a spec into per-target groups for per-molecule updates.
 
@@ -724,7 +733,11 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     """
     t0 = time.time()
     relative = spec.loss_metric == "relative"
-    cw = spec.channel_weights_dict or dict(_DEFAULT_CHANNEL_WEIGHTS)
+    # Fill omitted channels from the density-dominant defaults (see
+    # _effective_channel_weights): a PARTIAL channel_weights dict overrides ONLY
+    # the channels it names; previously a partial dict bypassed the defaults and
+    # omitted channels fell back to 1.0 (silently de-emphasizing loss_rho).
+    cw = _effective_channel_weights(spec.channel_weights_dict)
     groups = _training_groups(spec)
     n_groups = len(groups)
     n_epochs = spec.n_steps

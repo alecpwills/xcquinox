@@ -157,6 +157,25 @@ def test_render_train_cpu_has_xla_flags_no_gres(tmp_path):
     assert "#SBATCH --signal=B:TERM@" in text
 
 
+def test_render_inline_forwards_sigterm_to_worker(tmp_path):
+    """Inline-eval mode must forward a wall-clock SIGTERM to the train worker
+    (the batch shell survives to run eval, so B:TERM hits the shell, not the
+    worker). Regression: the old `( exec python )` subshell never received the
+    signal, so the grace handler's timeout failure.json was never written."""
+    cfg = _make_cfg(tmp_path, device="cpu")
+    text = render_sbatch("train_eval_inline", cfg, str(tmp_path / "run"),
+                         array_max=39)
+    # Worker runs backgrounded with its PID captured, and a TERM trap forwards
+    # the signal to it.
+    assert "_train_task" in text
+    assert "train_pid=$!" in text
+    assert "trap " in text and "kill -TERM ${train_pid}" in text
+    assert "wait ${train_pid}" in text
+    # The old subshell-exec form (which swallowed the signal) is gone.
+    assert "exec python -m xcquinox.alec.cluster._train_task" not in text
+    assert "#SBATCH --signal=B:TERM@" in text
+
+
 def test_render_train_gpu_has_gres_no_xla_cpu(tmp_path):
     cfg = _make_cfg(tmp_path, device="gpu", gpus_per_task=2)
     text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)

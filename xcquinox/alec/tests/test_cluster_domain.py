@@ -232,6 +232,16 @@ def test_extractors_on_real_pool_points():
 # Atom-energy coverage of training pools (CFG-01 regression guard)
 # ---------------------------------------------------------------------------
 
+def test_bh76w411_pool_builder_rejects_barrier_height():
+    """bh76w411_step7 has no transition-state data, so a barrier_height request
+    must raise (no silent fallback to reaction energy)."""
+    import types
+    prof = get_domain_profile("bh76w411_step7")
+    cfg = types.SimpleNamespace(bh76_mode="barrier_height")
+    with pytest.raises(ValueError, match="reaction_energy"):
+        prof.pool_builder(cfg)
+
+
 def test_bh76w411_pool_elements_covered_by_atom_energies():
     """Every element referenced by any molecule in the BH76+W4-11 pool MUST
     have an ATOMIC_ENERGIES_CHAKRAVORTY entry on the bh76w411_step7 profile.

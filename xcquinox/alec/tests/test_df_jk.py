@@ -54,6 +54,17 @@ def test_default_auxbasis_diffuse_def2_uses_universal_jkfit():
     assert df_jk.default_auxbasis("cc-pvdz") is None
 
 
+def test_build_cderi_outofcore_matches_incore():
+    """build_cderi must assemble the same tensor whether pyscf keeps _cderi in
+    RAM or spills it to a temp HDF5 file. Forcing max_memory tiny triggers the
+    out-of-core path (which the old np.asarray(_cderi) approach crashed on)."""
+    mol = _h2o()
+    incore = np.asarray(df_jk.build_cderi(mol))
+    outcore = np.asarray(df_jk.build_cderi(mol, max_memory=1e-3))  # force spill
+    assert incore.shape == outcore.shape
+    assert np.allclose(incore, outcore, atol=1e-10)
+
+
 def test_compute_j_df_is_differentiable_in_D():
     mol = _h2o()
     cderi = df_jk.build_cderi(mol)

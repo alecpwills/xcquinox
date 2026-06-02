@@ -707,6 +707,54 @@ def test_build_test_spec_holdout_suppresses_in_distribution_warning(tmp_path):
     )
 
 
+def test_build_test_spec_holdout_ae_refs_from_holdout_targets(tmp_path):
+    """Held-out AE references MUST come from the held-out set's own targets, not
+    the training targets. Regression: building from training_spec.molecules left
+    every held-out compound without an AE reference (silently unscored)."""
+    import warnings
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+
+    n2_atoms = pool[2].species[0]   # N2 — a compound NOT in cell-0 training set
+    from xcquinox.alec.cluster.spec_builder import atoms_to_mol_spec
+    n2_ms = atoms_to_mol_spec(
+        n2_atoms, basis="def2-svp", grid_level=1,
+        external_refs_dir=str(tmp_path / "refs"),
+    )
+    holdout = (n2_ms,)
+    _cell, training_spec = out[0]
+
+    # (a) With holdout_targets, the held-out compound gets an AE reference.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ts_with = build_test_spec(
+            training_spec, run_dir, 0, domain,
+            holdout_molecules=holdout, holdout_targets={n2_ms.name: -0.40},
+        )
+    refs_with = ts_with.metric_kwargs_dict["atomization_energy"]["reference_ae_kcalmol"]
+    assert n2_ms.name in refs_with, "held-out compound must get an AE reference"
+    assert refs_with[n2_ms.name] == -0.40 * domain.kcal_per_ha
+    # And no training-set compound leaked in (refs are from the eval set only).
+    assert set(refs_with) == {n2_ms.name}
+
+    # (b) Without holdout_targets, refs are empty (NOT silently from training)
+    #     and a RuntimeWarning fires.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ts_without = build_test_spec(
+            training_spec, run_dir, 0, domain, holdout_molecules=holdout,
+        )
+    refs_without = ts_without.metric_kwargs_dict["atomization_energy"]["reference_ae_kcalmol"]
+    assert refs_without == {}, "must not build held-out refs from the training set"
+    assert any("holdout_targets" in str(w.message) for w in caught), (
+        "expected a RuntimeWarning that held-out AE refs are unavailable"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dick atomic-regularizer anchor injection (size-1 / Li-less subset fix)
 # ---------------------------------------------------------------------------

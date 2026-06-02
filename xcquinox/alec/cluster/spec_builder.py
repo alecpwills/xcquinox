@@ -487,6 +487,7 @@ def build_test_spec(
     domain,
     *,
     holdout_molecules: "tuple | None" = None,
+    holdout_targets: "dict | None" = None,
 ) -> TestSpec:
     """Build the :class:`TestSpec` matching a trained :class:`TrainingSpec`.
 
@@ -503,9 +504,12 @@ def build_test_spec(
     objects.  When provided, the returned :class:`TestSpec` uses those molecules
     instead of the training set, and no warning is emitted.
 
-    The ``reference_ae_kcalmol`` metric kwarg is built from
-    ``training_spec.targets_dict`` (Ha) × ``domain.kcal_per_ha`` for compound
-    molecules only.
+    The ``reference_ae_kcalmol`` metric kwarg is built from the EVAL molecules
+    against an eval-matched target source × ``domain.kcal_per_ha`` for compound
+    molecules only: ``training_spec.targets_dict`` on the in-distribution path,
+    and ``holdout_targets`` (name→Ha) on the held-out path. (Building held-out
+    references from the training targets would silently leave held-out compounds
+    unscored, since they are absent from the training set.)
 
     Parameters
     ----------
@@ -521,6 +525,12 @@ def build_test_spec(
         molecules instead of the training set.  When ``None`` (default), the
         training molecules are used and a :class:`RuntimeWarning` is emitted to
         flag the in-distribution nature of the evaluation.
+    holdout_targets : dict[str, float] | None, optional
+        Held-out atomization-energy references (name→Ha), used ONLY on the
+        held-out path to build ``reference_ae_kcalmol`` for the held-out
+        compounds.  Required for held-out AE scoring; if omitted while
+        ``holdout_molecules`` is given, a :class:`RuntimeWarning` is emitted and
+        AE error is not scored for the held-out set.
 
     Returns
     -------
@@ -555,6 +565,9 @@ def build_test_spec(
 
     if holdout_molecules is None:
         eval_molecules = training_spec.molecules
+        # In-distribution path: AE references come from the training targets,
+        # which are keyed by exactly these molecules.
+        ref_targets = training_spec.targets_dict
         warnings.warn(
             "build_test_spec: eval molecules are the TRAINING molecules "
             "(in-distribution evaluation — not a held-out generalization "
@@ -565,8 +578,24 @@ def build_test_spec(
         )
     else:
         eval_molecules = holdout_molecules
+        # Held-out path: AE references MUST come from the held-out set's own
+        # targets (Ha), NOT training_spec.targets_dict — held-out compounds are
+        # by construction absent from the training targets, so using the
+        # training targets would silently leave every held-out compound without
+        # an AE reference and AtomizationEnergyMetric would skip it (the whole
+        # point of held-out AE scoring). Fail loud if they were not supplied.
+        ref_targets = dict(holdout_targets or {})
+        if not ref_targets:
+            warnings.warn(
+                "build_test_spec: holdout_molecules provided without "
+                "holdout_targets — atomization-energy references are "
+                "unavailable for the held-out set, so AE error will NOT be "
+                "scored for held-out compounds. Pass holdout_targets (name→Ha) "
+                "to enable held-out AE scoring.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
-    targets = training_spec.targets_dict
     # Exclude AUX-ONLY species (BH76/IP13 reaction polyatomics with no real AE
     # reference) — they carry a 0.0 placeholder target. Mirrors the training
     # loss, which drops them via classify_aux_only; without this the eval AE
@@ -574,11 +603,13 @@ def build_test_spec(
     # CH4 ~+440 / HF ~+150 kcal/mol artifact). aux_only_names is carried in the
     # TrainingSpec's loss_kwargs by build_training_specs.
     aux_only = set(training_spec.loss_kwargs_dict.get("aux_only_names", ()))
+    # Build references from the EVAL molecules (not the training set) against the
+    # eval-matched target source, so the held-out path scores the held-out set.
     reference_ae_kcalmol: dict = {}
-    for ms in training_spec.molecules:
+    for ms in eval_molecules:
         comp_sum = sum(dict(ms.atom_composition).values())
-        if comp_sum > 1 and ms.name in targets and ms.name not in aux_only:
-            reference_ae_kcalmol[ms.name] = targets[ms.name] * domain.kcal_per_ha
+        if comp_sum > 1 and ms.name in ref_targets and ms.name not in aux_only:
+            reference_ae_kcalmol[ms.name] = ref_targets[ms.name] * domain.kcal_per_ha
 
     return TestSpec.from_dicts(
         arch=training_spec.arch,

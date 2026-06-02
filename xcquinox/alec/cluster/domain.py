@@ -162,7 +162,21 @@ def _dfs_pool_builder(cfg):
 
 def _bh76w411_pool_builder(cfg):
     """Pool builder for the full BH76+W4-11 reaction set (representative-subset
-    training)."""
+    training).
+
+    The BH76+W4-11 pool attaches reaction energies only (it has no
+    transition-state geometries / barrier-height references), so it supports
+    only ``bh76_mode='reaction_energy'``. A ``barrier_height`` request is
+    rejected loudly rather than silently trained as reaction energy (unlike the
+    DFS builder, which honors both modes).
+    """
+    mode = getattr(cfg, "bh76_mode", "reaction_energy")
+    if mode != "reaction_energy":
+        raise ValueError(
+            f"bh76w411_step7 supports only bh76_mode='reaction_energy', got "
+            f"{mode!r}: the BH76+W4-11 reaction pool carries reaction energies, "
+            f"not transition-state barrier heights."
+        )
     from xcquinox.alec.training_points import build_bh76w411_pool_points
     return build_bh76w411_pool_points()
 

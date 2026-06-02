@@ -299,6 +299,22 @@ def test_resolved_config_persists_held_out_strict(tmp_path):
     assert back.held_out_strict is True
 
 
+def test_resolved_config_persists_inline_eval(tmp_path):
+    """Regression: ``inline_eval`` must survive the resolved_config.yaml round
+    trip — otherwise a recovery/resubmit reloads it as False and the run
+    silently reverts from inline eval to a separate eval array."""
+    import dataclasses
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+
+    cfg = load_grid_config(_write_grid(tmp_path))
+    cfg = dataclasses.replace(cfg, inline_eval=True)
+    rd = tmp_path / "rd"
+    rd.mkdir()
+    cli._write_resolved_config(cfg, str(rd))
+    back = load_grid_config(str(rd / "resolved_config.yaml"))
+    assert back.inline_eval is True
+
+
 def test_resolved_config_persists_datagen_resources(tmp_path):
     """The datagen-stage cluster knobs survive the resolved_config.yaml round
     trip (so a re-submit reproduces the same datagen resources)."""

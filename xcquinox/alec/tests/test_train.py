@@ -327,6 +327,22 @@ def test_update_scheme_defaults_to_batched():
     assert spec.channel_weights_dict == {}
 
 
+def test_effective_channel_weights_partial_fills_from_defaults():
+    """A PARTIAL channel_weights overrides only named channels; omitted channels
+    inherit the density-dominant defaults (NOT 1.0)."""
+    from xcquinox.alec.train import (
+        _effective_channel_weights, _DEFAULT_CHANNEL_WEIGHTS,
+    )
+    # Empty → defaults unchanged.
+    assert _effective_channel_weights({}) == _DEFAULT_CHANNEL_WEIGHTS
+    # Partial (only loss_AE overridden) → loss_rho keeps its 20.0 default,
+    # NOT the old 1.0 fallback.
+    eff = _effective_channel_weights({"loss_AE": 5.0})
+    assert eff["loss_AE"] == 5.0
+    assert eff["loss_rho"] == 20.0
+    assert eff["loss_BH76"] == _DEFAULT_CHANNEL_WEIGHTS["loss_BH76"]
+
+
 def test_training_groups_ae_pool():
     """One AE group per polyatomic compound carrying a target; atoms that are
     not regularized produce no anchor groups."""

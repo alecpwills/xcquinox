@@ -153,6 +153,11 @@ def _config_to_raw_dict(cfg) -> dict:
         "use_polarized_correlation": cfg.use_polarized_correlation,
         "held_out_strict": cfg.held_out_strict,
         "defer_eval": cfg.defer_eval,
+        # inline_eval MUST round-trip: load_grid_config reads it
+        # (raw.get("inline_eval", ...)), and recovery/resubmit paths re-load
+        # resolved_config.yaml — omitting it silently reverts an inline-eval run
+        # to a separate eval array.
+        "inline_eval": cfg.inline_eval,
     }
     return raw
 
