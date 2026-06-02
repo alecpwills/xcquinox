@@ -586,6 +586,38 @@ def test_validate_missing_element_in_atom_energies_require_anchors_false():
             spec.validate()
 
 
+def test_validate_cl_compound_passes_with_bh76w411_anchors():
+    """CFG-01 positive counterpart / regression for preflight 54403:
+    a Cl-containing compound (HCl) — which aborted the BH76+W4-11 cluster
+    preflight when the bh76w411_step7 anchor table lacked Cl — must now
+    validate cleanly against the extended Chakravorty anchors.
+    """
+    import tempfile
+    from xcquinox.alec.config import TrainingSpec, MoleculeSpec
+    from xcquinox.alec.cluster.domain import get_domain_profile
+
+    prof = get_domain_profile("bh76w411_step7")
+    hcl = MoleculeSpec(
+        name="HCl", atom="H 0 0 0; Cl 0 0 1.275", basis="def2-svp",
+        charge=0, spin=0, atom_composition=(("H", 1), ("Cl", 1)),
+    )
+    h2 = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="def2-svp",
+        charge=0, spin=0, atom_composition=(("H", 2),),
+    )
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+        spec = TrainingSpec.from_dicts(
+            arch=_tiny_arch(),
+            molecules=(hcl, h2),
+            targets={"HCl": -0.17, "H2": -0.17},
+            atom_energies=prof.atom_energies,  # now carries Cl (and Be/B/Al/Si/P)
+            loss_name="A_atomization",
+            checkpoint_dir=ckpt_dir,
+            require_atom_anchors=False,
+        )
+        spec.validate()  # must NOT raise (CFG-01 cleared for Cl)
+
+
 # ---------------------------------------------------------------------------
 # CFG-05: bool values must be rejected from targets and atom_energies even
 # though math.isfinite(True) is True.

@@ -46,6 +46,14 @@ def test_kcal_per_ha_value():
         ("Li", -7.4781),
         ("Na", -162.2546),
         ("S", -398.1095),
+        # Heavier elements added for the BH76+W4-11 pool — Chakravorty 1993
+        # (PRA 47, 3649) Table XI neutral-atom diagonal E(Z, Z), hartrees.
+        ("Be", -14.66736),
+        ("B", -24.65391),
+        ("Al", -242.346),
+        ("Si", -289.359),
+        ("P", -341.259),
+        ("Cl", -460.148),
     ],
 )
 def test_atomic_energies_values(sym, expected):
@@ -54,9 +62,11 @@ def test_atomic_energies_values(sym, expected):
 
 
 def test_atomic_energies_exact_keys():
-    """The dict carries exactly the 8 expected element symbols."""
+    """The dict carries exactly the 14 expected element symbols (the original
+    DFS 8 plus the 6 heavier elements required by the BH76+W4-11 pool)."""
     assert set(ATOMIC_ENERGIES_CHAKRAVORTY) == {
-        "H", "C", "N", "O", "F", "Li", "Na", "S"
+        "H", "C", "N", "O", "F", "Li", "Na", "S",
+        "Be", "B", "Al", "Si", "P", "Cl",
     }
 
 
@@ -68,7 +78,7 @@ def test_lithium_is_corrected_value():
 
 
 def test_sulfur_is_chakravorty_value():
-    """S MUST be the genuine Chakravorty 1993 (PRA 47, 3649) Table-I exact
+    """S MUST be the genuine Chakravorty 1993 (PRA 47, 3649) Table-XI exact
     non-relativistic total -398.1095, NOT the prior -398.0 placeholder
     (the value was corrected in the Round-3 GMTKN55 realignment)."""
     assert ATOMIC_ENERGIES_CHAKRAVORTY["S"] == -398.1095
@@ -216,3 +226,38 @@ def test_extractors_on_real_pool_points():
         ipref = tp.metadata.get("ip_ref")
         if ipref is not None:
             assert out["ip_ref"] == pytest.approx(float(ipref) / KCAL_PER_HA)
+
+
+# ---------------------------------------------------------------------------
+# Atom-energy coverage of training pools (CFG-01 regression guard)
+# ---------------------------------------------------------------------------
+
+def test_bh76w411_pool_elements_covered_by_atom_energies():
+    """Every element referenced by any molecule in the BH76+W4-11 pool MUST
+    have an ATOMIC_ENERGIES_CHAKRAVORTY entry on the bh76w411_step7 profile.
+
+    Regression for the 2026-06-02 preflight failure (job 54403): the
+    bh76w411_step7 profile shipped with only the 8-element DFS anchor table,
+    but the BH76+W4-11 pool references 12 elements (it adds Be, B, Al, Si, P,
+    Cl via HCl/PH3/SiH4 and the boron/beryllium/aluminium W4-11 species).
+    TrainingSpec.validate (CFG-01) rejects any spec whose molecule
+    compositions cite an element absent from atom_energies, so a gap here
+    aborts the cluster preflight ~1.5 h in (only after CCSD-ref generation).
+    This test reproduces that coverage check in milliseconds at CI time, so a
+    future pool expansion fails loudly here instead of on the cluster.
+    """
+    from xcquinox.alec.training_points import build_bh76w411_pool_points
+
+    prof = get_domain_profile("bh76w411_step7")
+    referenced: set[str] = set()
+    for tp in build_bh76w411_pool_points():
+        for atoms in tp.species:
+            referenced.update(atoms.get_chemical_symbols())
+
+    missing = sorted(referenced - set(prof.atom_energies))
+    assert not missing, (
+        f"bh76w411_step7 atom_energies is missing {missing}; every element "
+        "referenced by the pool must carry a Chakravorty anchor (CFG-01)."
+    )
+    # The 6 heavier elements whose absence triggered the original failure.
+    assert {"Be", "B", "Al", "Si", "P", "Cl"} <= set(prof.atom_energies)

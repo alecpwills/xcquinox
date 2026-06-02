@@ -37,15 +37,27 @@ KCAL_PER_HA = 627.5094740631
 # for every molecule, including atoms).
 ATOMIC_ENERGIES_CHAKRAVORTY = {
     'H':  -0.5,        # (L) exact hydrogenic -1/2 Ha (not a Chakravorty datum)
-    'C':  -37.845,     # (L) Chakravorty 1993 Table I
-    'N':  -54.5892,    # (L) Chakravorty 1993 Table I
-    'O':  -75.0673,    # (L) Chakravorty 1993 Table I
-    'F':  -99.7339,    # (L) Chakravorty 1993 Table I
-    'Li': -7.4781,     # (L) Chakravorty 1993 exact non-relativistic total
+    'C':  -37.845,     # (L) Chakravorty 1993 Table XI (neutral C,  -E(6))
+    'N':  -54.5892,    # (L) Chakravorty 1993 Table XI (neutral N,  -E(7))
+    'O':  -75.0673,    # (L) Chakravorty 1993 Table XI (neutral O,  -E(8))
+    'F':  -99.7339,    # (L) Chakravorty 1993 Table XI (neutral F,  -E(9))
+    'Li': -7.4781,     # (L) Chakravorty 1993 Table XI (neutral Li, -E(3) = -7.47806)
                        #     (corrected from the HF limit -7.4327 in a prior fix)
-    'Na': -162.2546,   # (L) Chakravorty 1993 Table I
-    'S':  -398.1095,   # (L) Chakravorty 1993 (PRA 47, 3649) Table I exact
-                       #     non-relativistic total (was the -398.0 placeholder)
+    'Na': -162.2546,   # (L) Chakravorty 1993 Table XI (neutral Na, -E(11))
+    'S':  -398.1095,   # (L) Chakravorty 1993 (PRA 47, 3649) Table XI exact
+                       #     non-relativistic total (neutral S, -E(16) = -398.110)
+    # Heavier elements required by the BH76+W4-11 reaction pool (HCl, PH3,
+    # SiH4, and the B/Be/Al W4-11 species). Transcribed verbatim from
+    # Chakravorty, Gwaltney, Davidson, Parpia, Froese Fischer, Phys. Rev. A
+    # 47, 3649 (1993), Table XI — "Estimated nonrelativistic stationary-
+    # point-nucleus atomic energies" (hartrees) — neutral-atom diagonal
+    # E(Z, Z). Printed precision: 5 dp for Be/B, 3 dp for Z >= 13.
+    'Be': -14.66736,   # (L) Chakravorty 1993 Table XI (neutral Be, -E(4))
+    'B':  -24.65391,   # (L) Chakravorty 1993 Table XI (neutral B,  -E(5))
+    'Al': -242.346,    # (L) Chakravorty 1993 Table XI (neutral Al, -E(13))
+    'Si': -289.359,    # (L) Chakravorty 1993 Table XI (neutral Si, -E(14))
+    'P':  -341.259,    # (L) Chakravorty 1993 Table XI (neutral P,  -E(15))
+    'Cl': -460.148,    # (L) Chakravorty 1993 Table XI (neutral Cl, -E(17))
 }
 
 
