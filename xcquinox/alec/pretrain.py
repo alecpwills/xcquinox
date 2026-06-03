@@ -78,6 +78,14 @@ def _compute_integration_weights(rho, grid_weights=None):
     """
     rho_safe = jnp.maximum(rho, _RHO_FLOOR_INTEGRATION)
     eps_x_lda = lda_x(rho_safe)
+    # The correlation weight intentionally uses the UNPOLARIZED PW92 baseline on
+    # the TOTAL density, even when training a spin-polarization-aware (polarized)
+    # cnet: the integration weights are a grid-importance measure on the total
+    # density, and spin polarization enters the model via the zeta descriptor
+    # column (P2-03), NOT the loss weighting. (The Fc targets in
+    # pretrain_data_gen use spin-resolved libxc for open-shell atoms — that
+    # asymmetry is by design per the pretrain ref-gen review V-4, not a baseline
+    # bug; this is the resolution of audit finding D8-02.)
     eps_c_lda = pw92c_unpolarized_scalar(rho_safe)
     w_x = jnp.abs(rho_safe * eps_x_lda)
     w_c = jnp.abs(rho_safe * eps_c_lda)

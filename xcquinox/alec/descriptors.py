@@ -78,8 +78,10 @@ class CuspDescriptor(Descriptor):
         the Kato electron-nucleus cusp condition (Kato, *Commun. Pure Appl.
         Math.* **10**, 151 (1957)), whose exact statement is
         ``(∂⟨ρ⟩/∂r)|_{r=0} = -2Z·ρ(0)`` on the spherically-averaged density;
-        the exponential decay here approximates the resulting Slater-like
-        ``exp(-Z r)`` envelope rather than enforcing the condition exactly.
+        the exponential decay here approximates the resulting density-form
+        Slater envelope ``exp(-2 Z r)`` (the density ρ=|ψ|² decays at twice the
+        ``exp(-Z r)`` wavefunction rate) rather than enforcing the condition
+        exactly.
       * Column 1 (``log_transform=True``):
         ``tanh(log(Σ_A Z_A / r_A) / 5)`` ∈ (-1, 1) — log-compressed
         nuclear-attraction-like weight (Dick & Fernández-Serra XCDiff
@@ -141,8 +143,9 @@ class DMStatisticsDescriptor(Descriptor):
     values — a deferred design decision requiring sign-off, NOT changed here.
     """
     n_features: int = eqx.field(default=3, static=True)
-    # 2026-05-29: when True, divides dm_entropy by ln(max(n_occ, 2)) so the
-    # feature is size-intensive (range [0, 1]). When False, keeps the
+    # 2026-05-29: when True, divides dm_entropy by ln(max(n_orb_eff, 2)), where
+    # n_orb_eff = sum(occupations)/max_occ, so the feature is size-intensive
+    # (range [0, 1]). When False, keeps the
     # size-extensive ln(N_occ) form (preserves pre-fix behavior; old
     # checkpoints unpickle to this default).
     intensive: bool = eqx.field(default=False, static=True)

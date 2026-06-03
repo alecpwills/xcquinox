@@ -149,7 +149,7 @@ def compute_dm_features(
     # single-determinant equal-occupation limit it collapses to ln(N_occ),
     # broadcasting molecule-size info to every grid point (forensic review
     # 2026-05-29). The intensive form (controlled by ``intensive`` flag) divides
-    # by ln(max(N_occ, 2)) so the feature is in [0, 1] and is a size-intensive
+    # by ln(max(n_orb_eff, 2)) so the feature is in [0, 1] and is a size-intensive
     # correlation indicator.
     occupations = jnp.clip(occupations, 1e-12, 2.0)  # physical bounds
     occ_normalized = occupations / (jnp.sum(occupations) + 1e-12)
@@ -195,8 +195,9 @@ def compute_dm_features_array(
     :param S: Overlap matrix
     :type S: jnp.ndarray
     :param intensive: When True, normalize ``dm_entropy`` by
-        ``ln(max(n_occ, 2))`` so the feature is size-intensive (default
-        False = original size-extensive ``ln(N_occ)`` form).
+        ``ln(max(n_orb_eff, 2))`` (n_orb_eff = sum(occupations)/max_occ) so the
+        feature is size-intensive (default False = original size-extensive
+        ``ln(N_occ)`` form).
     :type intensive: bool
     :return: Array of shape (3,) containing [idempotency_error, dm_entropy, off_diag_norm]
     :rtype: jnp.ndarray
