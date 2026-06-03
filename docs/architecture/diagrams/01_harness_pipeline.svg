@@ -9,7 +9,7 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 1057)">
 <title>harness_pipeline</title>
 <polygon fill="white" stroke="transparent" points="-4,4 -4,-1057 1846,-1057 1846,4 -4,4"/>
-<text text-anchor="middle" x="921" y="-1034.6" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="18.00">xcquinox.alec cluster harness — submit &#45;&gt; 4&#45;stage SLURM graph &#45;&gt; eval &#45;&gt; results</text>
+<text text-anchor="middle" x="921" y="-1034.6" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="18.00">xcquinox.alec cluster harness: submit &#45;&gt; 4&#45;stage SLURM graph &#45;&gt; eval &#45;&gt; results</text>
 <g id="clust1" class="cluster">
 <title>cluster_stages</title>
 <path fill="#f6f9ff" stroke="#7aa7e9" d="M1287,-170C1287,-170 1778,-170 1778,-170 1784,-170 1790,-176 1790,-182 1790,-182 1790,-863 1790,-863 1790,-869 1784,-875 1778,-875 1778,-875 1287,-875 1287,-875 1281,-875 1275,-869 1275,-863 1275,-863 1275,-182 1275,-182 1275,-176 1281,-170 1287,-170"/>

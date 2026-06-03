@@ -1,7 +1,7 @@
 // User-level: what the model actually learns.
 // Render:  dot -Tsvg concept_functional.dot -o concept_functional.svg
 digraph concept_functional {
-  label="What the model learns — a neural enhancement on top of a PBE/LDA baseline";
+  label="What the model learns: a neural enhancement on top of a PBE/LDA baseline";
   labelloc=t; fontsize=17; fontname="Helvetica-Bold";
   rankdir=TB; nodesep=0.4; ranksep=0.5;
   node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#ffffff"];
@@ -9,15 +9,15 @@ digraph concept_functional {
 
   inp [fillcolor="#e7f5e7",
        label="inputs at each grid point\nrho  (electron density)\nsigma = |grad rho|^2\n+ descriptors: cusp, dm-stats, spin zeta"];
-  xnet [fillcolor="#cde4ff", label="xnet  (exchange net)\n→ Fx  (enhancement factor)"];
-  cnet [fillcolor="#cde4ff", label="cnet  (correlation net)\n→ Fc  (enhancement factor)"];
+  xnet [fillcolor="#cde4ff", label="xnet  (exchange net)\n-> Fx  (enhancement factor)"];
+  cnet [fillcolor="#cde4ff", label="cnet  (correlation net)\n-> Fc  (enhancement factor)"];
   exc  [fillcolor="#fde9c9",
-        label="E_xc = ∫ rho · ( LDA_x · Fx  +  PW92_c · Fc ) dr\n(baseline physics × learned factor)"];
-  scf  [label="solve / integrate\n→ predicted energy  E_nn"];
+        label="E_xc = ∫ rho * ( LDA_x * Fx  +  PW92_c * Fc ) dr\n(baseline physics x learned factor)"];
+  scf  [label="solve / integrate\n-> predicted energy  E_nn"];
   ref  [fillcolor="#f3effa",
         label="reference energy\nBH76 barrier heights / W4-11 atomization\n(or CCSD)"];
-  loss [fillcolor="#ffd6d6", label="loss = (E_nn − E_ref)^2\nreported as MAE (kcal/mol)"];
-  bp   [fillcolor="#fff3cd", label="backprop → update xnet & cnet weights"];
+  loss [fillcolor="#ffd6d6", label="loss = (E_nn - E_ref)^2\nreported as MAE (kcal/mol)"];
+  bp   [fillcolor="#fff3cd", label="backprop -> update xnet & cnet weights"];
 
   inp -> xnet -> exc;
   inp -> cnet -> exc;

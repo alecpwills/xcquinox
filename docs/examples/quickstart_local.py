@@ -1,19 +1,18 @@
 #!/usr/bin/env python
 """Local quick-start for the xcquinox.alec ML exchange-correlation trainer.
 
-Trains a tiny neural XC functional on three molecules (H, O, H2O) and then
-evaluates it -- entirely on your laptop, CPU, in ~1 minute. No cluster, no
-pretrained checkpoint, no reference-data files. It exists so you can watch the
-whole train -> evaluate loop run with your own eyes before scaling up.
+Trains a small neural XC functional on three molecules (H, O, H2O) and
+evaluates it, on CPU, in about a minute. No cluster, no pretrained checkpoint,
+and no reference-data files, so the whole train/evaluate loop runs in one go.
 
 Run it:
     JAX_ENABLE_X64=1 JAX_PLATFORMS=cpu python docs/examples/quickstart_local.py
 
-The narrated, step-by-step walkthrough of this script is in docs/user_guide.md.
+A step-by-step walkthrough is in docs/user_guide.md.
 """
 import os
-# Quantum chemistry needs double precision; pin CPU so the example is
-# deterministic and dependency-light. (Set before JAX initialises.)
+# Quantum chemistry needs double precision. Pin CPU for a deterministic run.
+# (Set before JAX initialises.)
 os.environ.setdefault("JAX_ENABLE_X64", "1")
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
@@ -29,7 +28,7 @@ from xcquinox.alec.evaluation import run_test
 
 
 def main() -> str:
-    # ---- 1. Define the molecules -------------------------------------------
+    # 1. Define the molecules
     # A MoleculeSpec is a PySCF atom string + spin/charge + an element count.
     # spin is 2*S (number of unpaired electrons): H and O are open-shell atoms.
     H = MoleculeSpec(name="H", atom="H 0 0 0", basis="sto-3g",
@@ -41,13 +40,13 @@ def main() -> str:
                        atom_composition=(("H", 2), ("O", 1)))
     mols = (H, O, H2O)
 
-    # ---- 2. Precompute the fixed-density data ------------------------------
+    # 2. Precompute the fixed-density data
     # One PBE SCF per molecule, caching the density, integration grid, one- and
     # two-electron integrals, etc. The trainer reuses this so it never re-runs
     # a SCF just to read the density.
     md = {m.name: precompute_fixed_density_data(m) for m in mols}
 
-    # ---- 3. Reference targets + atomic anchors -----------------------------
+    # 3. Reference targets + atomic anchors
     # In a real run these are CCSD / experimental references. For a runnable
     # demo we use each molecule's own PBE energy as a stand-in "reference", and
     # the PBE atomization energy of water (E_atoms - E_molecule).
@@ -59,7 +58,7 @@ def main() -> str:
         "H2O": float(max(ae_h2o, 1e-3)),
     }
 
-    # ---- 4. Build a TrainingSpec -------------------------------------------
+    # 4. Build a TrainingSpec
     # Pick a named architecture, a loss, and how long to train. `A_atomization`
     # fits atomization energies -- the simplest of the registered losses.
     workdir = tempfile.mkdtemp(prefix="xcq_quickstart_")
@@ -73,7 +72,7 @@ def main() -> str:
     )
     spec.validate()                           # fail fast on an inconsistent spec
 
-    # ---- 5. Train ----------------------------------------------------------
+    # 5. Train
     # Writes model.eqx / losses.npy / aux_log.pkl / train_metadata.json to ckpt/.
     print("Training (100 steps on H, O, H2O) ...")
     run_training(spec)
@@ -82,7 +81,7 @@ def main() -> str:
     assert np.all(np.isfinite(losses)), "training produced a non-finite loss"
     assert losses[-1] < losses[0], "loss did not decrease"
 
-    # ---- 6. Evaluate the trained model -------------------------------------
+    # 6. Evaluate the trained model
     # Re-load model.eqx and score it on the same molecules (in-sample). A real
     # run would also score a held-out benchmark; see docs/user_guide.md.
     test = TestSpec.from_dicts(

@@ -1,7 +1,7 @@
 // xcquinox.alec per-spec training flow.
 // Render:  dot -Tsvg 02_training_flow.dot -o 02_training_flow.svg
 digraph training_flow {
-  label="Per-spec training flow — _train_task -> run_training -> loop dispatch -> _step -> save";
+  label="Per-spec training flow: _train_task -> run_training -> loop dispatch -> _step -> save";
   labelloc=t; fontsize=18; fontname="Helvetica-Bold";
   rankdir=TB; compound=true; nodesep=0.3; ranksep=0.5;
   node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#ffffff"];

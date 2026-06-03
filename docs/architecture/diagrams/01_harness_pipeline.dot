@@ -1,7 +1,7 @@
-// xcquinox.alec cluster harness — SLURM job graph.
+// xcquinox.alec cluster harness: SLURM job graph.
 // Render:  dot -Tsvg 01_harness_pipeline.dot -o 01_harness_pipeline.svg
 digraph harness_pipeline {
-  label="xcquinox.alec cluster harness — submit -> 4-stage SLURM graph -> eval -> results";
+  label="xcquinox.alec cluster harness: submit -> 4-stage SLURM graph -> eval -> results";
   labelloc=t; fontsize=18; fontname="Helvetica-Bold";
   rankdir=TB; compound=true; newrank=true; nodesep=0.35; ranksep=0.55;
   node [fontname="Helvetica", fontsize=11];

@@ -9,7 +9,7 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 1398)">
 <title>training_flow</title>
 <polygon fill="white" stroke="transparent" points="-4,4 -4,-1398 877.5,-1398 877.5,4 -4,4"/>
-<text text-anchor="middle" x="436.75" y="-1375.6" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="18.00">Per&#45;spec training flow — _train_task &#45;&gt; run_training &#45;&gt; loop dispatch &#45;&gt; _step &#45;&gt; save</text>
+<text text-anchor="middle" x="436.75" y="-1375.6" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="18.00">Per&#45;spec training flow: _train_task &#45;&gt; run_training &#45;&gt; loop dispatch &#45;&gt; _step &#45;&gt; save</text>
 <g id="clust1" class="cluster">
 <title>cluster_build</title>
 <path fill="#f6f9ff" stroke="#7aa7e9" d="M347.5,-658C347.5,-658 698.5,-658 698.5,-658 704.5,-658 710.5,-664 710.5,-670 710.5,-670 710.5,-1218 710.5,-1218 710.5,-1224 704.5,-1230 698.5,-1230 698.5,-1230 347.5,-1230 347.5,-1230 341.5,-1230 335.5,-1224 335.5,-1218 335.5,-1218 335.5,-670 335.5,-670 335.5,-664 341.5,-658 347.5,-658"/>
