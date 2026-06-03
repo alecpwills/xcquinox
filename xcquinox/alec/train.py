@@ -19,6 +19,7 @@ Internal:
   _run_gradnorm_loop       -- GradNorm balancing loop (Chen et al. 2018)
 """
 import json
+import math
 import os
 import pickle  # noqa: S403 — saving trusted aux_log data only
 import struct
@@ -98,6 +99,42 @@ def build_optimizer(
     return optax.chain(
         optax.clip_by_global_norm(grad_clip),
         optax.adam(learning_rate=lr_schedule),
+    )
+
+
+def _abort_if_nonfinite(loss_value, components, *, loop, step, group=None):
+    """Fail-loud finite guard: raise ``FloatingPointError`` the instant a
+    training step produces a non-finite loss or loss component, naming the
+    offending loop/step/group/channel.
+
+    A single NaN/Inf must NEVER silently continue — it poisons every subsequent
+    weight via ``0 * NaN = NaN`` and the whole run becomes garbage (the 2026-06
+    polarized-correlation regression did exactly this, undetected, for ~1000
+    steps across 8 specs). Called host-side after every optimizer step in every
+    update loop; the per-step loss is already pulled to Python there, so the
+    check is effectively free.
+    """
+    bad = []
+    for k, v in (components or {}).items():
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(fv):
+            bad.append(k)
+    loss_f = float(loss_value)
+    if math.isfinite(loss_f) and not bad:
+        return
+    where = f"loop={loop!r}, step={step}"
+    if group is not None:
+        where += f", group={group!r}"
+    raise FloatingPointError(
+        f"non-finite training value ({where}): loss={loss_f!r}, non-finite "
+        f"channel(s)={sorted(bad) or '[loss itself]'}. Training aborts — a "
+        f"NaN/Inf corrupts every subsequent weight. This is almost always a "
+        f"functional/solver gradient singularity on this group's species "
+        f"(e.g. polarized correlation differentiated through the SCF at full "
+        f"spin polarization)."
     )
 
 
@@ -287,6 +324,7 @@ def _run_static_loop(spec, model, batch, loss, progress_callback):
             model, opt_state, batch, loss, optimizer
         )
         loss_py = float(loss_value)
+        _abort_if_nonfinite(loss_value, aux, loop="batched/static", step=step)
         losses.append(loss_py)
         aux_log.append({"step": step, "loss": loss_py, "aux": aux})
         if progress_hook is not None:
@@ -332,6 +370,8 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
         model, opt_state, loss_value, components = _normed_step(
             model, opt_state, batch)
         loss_py = float(loss_value)
+        _abort_if_nonfinite(loss_value, components, loop="batched/lossnorm",
+                            step=step)
         losses.append(loss_py)
         eff_weights = {k: float(1.0 / norms[k]) for k in component_keys}
         aux_log.append({
@@ -387,6 +427,7 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
         model, opt_state, loss_value, aux = _train_step(
             model, opt_state, batch, phase1_loss, phase1_optimizer)
         loss_py = float(loss_value)
+        _abort_if_nonfinite(loss_value, aux, loop="batched/twophase", step=step)
         losses.append(loss_py)
         aux_log.append({
             "step": step, "loss": loss_py, "aux": aux,
@@ -408,6 +449,8 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
         model, opt_state, loss_value, aux = _train_step(
             model, opt_state, batch, loss, phase2_optimizer)
         loss_py = float(loss_value)
+        _abort_if_nonfinite(loss_value, aux, loop="batched/twophase",
+                            step=global_step)
         losses.append(loss_py)
         aux_log.append({
             "step": global_step, "loss": loss_py, "aux": aux,
@@ -586,6 +629,8 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
             model, opt_state, log_weights, weight_opt_state,
             comp_values, model_grads, G, L0_values, weights)
         loss_py = float(loss_value)
+        _abort_if_nonfinite(loss_value, components, loop="batched/gradnorm",
+                            step=step)
         losses_list.append(loss_py)
         eff = {k: float(weights[i]) for i, k in enumerate(component_keys)}
         gn = {k: float(G[i]) for i, k in enumerate(component_keys)}
@@ -784,6 +829,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             model, opt_state, loss_val, comps = _step(
                 model, opt_state, gbatch, gloss)
             loss_py = float(loss_val)
+            _abort_if_nonfinite(loss_val, comps, loop="per_molecule",
+                                step=update, group=label)
             losses_list.append(loss_py)
             aux_log.append({
                 "step": update, "epoch": epoch, "group": label,

@@ -28,6 +28,13 @@
 + /checkpoints/spec_*/eval_df.csv
 + /checkpoints/spec_*/failure.json
 + /checkpoints/spec_*/losses.npy
+# aux_log.pkl (per-step, per-group, per-channel loss values) + train_metadata
+# (config + final_loss) are the FIRST things needed to triage a NaN/divergent
+# run -- small (~90 KB/spec), so pull them in `summaries` rather than forcing a
+# multi-GB `--profile full`. (2026-06: a polarized-correlation NaN was diagnosed
+# from aux_log.pkl, which the summaries profile had been dropping.)
++ /checkpoints/spec_*/aux_log.pkl
++ /checkpoints/spec_*/train_metadata.json
 + /checkpoints/spec_*/eval/per_molecule.json
 + /checkpoints/spec_*/eval/skipped.json
 

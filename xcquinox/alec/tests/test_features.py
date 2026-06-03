@@ -357,3 +357,35 @@ def test_pw92c_polarized_finite_value_and_grad_at_extremes():
         ga = float(jax.grad(f, 0)(float(a), float(b)))
         gb = float(jax.grad(f, 1)(float(a), float(b)))
         assert np.isfinite(val) and np.isfinite(ga) and np.isfinite(gb), (a, b, val, ga, gb)
+
+
+def test_pw92c_polarized_second_derivative_finite_at_full_polarization():
+    """REGRESSION (NaN root cause, 2026-06): the SECOND derivative of eps_c w.r.t.
+    spin density must be finite at full spin polarization (one spin density 0,
+    zeta=+-1). The FULL SCF differentiates v_xc -- itself a first derivative of
+    E_xc -- a second time, so an inf/NaN second derivative here poisons the
+    training gradient of every fully-spin-polarized species (free atoms H, Li,
+    ...), corrupting all weights. PW92's spin-interpolation
+    f(zeta) ~ (1+-zeta)**(4/3) has d2/dzeta2 ~ (1-+zeta)**(-2/3) -> inf at
+    |zeta|=1 unless the interpolation base is floored. The first-order grad
+    (checked above) is finite there and hid this. Perdew & Wang PRB 45, 13244
+    (1992), eqs (8)-(9)."""
+    import jax
+    from xcquinox.utils import pw92c_polarized_scalar
+
+    def d2_wrt_beta(ra, rb):
+        inner = lambda x: jnp.sum(pw92c_polarized_scalar(jnp.array([ra]), x))
+        outer = lambda b: jnp.sum(jax.grad(inner)(b))
+        return float(jax.grad(outer)(jnp.array([rb])).sum())
+
+    def d2_wrt_alpha(ra, rb):
+        inner = lambda x: jnp.sum(pw92c_polarized_scalar(x, jnp.array([rb])))
+        outer = lambda a: jnp.sum(jax.grad(inner)(a))
+        return float(jax.grad(outer)(jnp.array([ra])).sum())
+
+    # zeta -> +1 (rho_beta -> 0): the free-atom majority-spin boundary.
+    for ra, rb in [(0.5, 0.0), (3.0, 0.0), (0.05, 0.0)]:
+        assert np.isfinite(d2_wrt_beta(ra, rb)), ("d2/drho_beta2", ra, rb)
+    # zeta -> -1 (rho_alpha -> 0): the symmetric boundary.
+    for ra, rb in [(0.0, 0.5), (0.0, 3.0)]:
+        assert np.isfinite(d2_wrt_alpha(ra, rb)), ("d2/drho_alpha2", ra, rb)

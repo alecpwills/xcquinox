@@ -905,6 +905,19 @@ def pw92c_polarized_scalar(rho_alpha, rho_beta):
 
     c_fz = 1.0 / (2 ** (4 / 3) - 2)
     fpp0 = 8.0 * c_fz / 9.0
-    fz = ((1 + zeta) ** (4 / 3) + (1 - zeta) ** (4 / 3) - 2) * c_fz
+    # AD-safety at full spin polarization (|zeta|=1, one spin density = 0). The
+    # spin-interpolation f(zeta) ~ (1+-zeta)**(4/3) is finite there and its FIRST
+    # derivative is finite, but the SECOND derivative ~ (1-+zeta)**(-2/3) -> inf.
+    # The FULL SCF differentiates v_xc (itself a first derivative of E_xc) a
+    # second time, so an unfloored base produces a NaN training gradient on every
+    # fully-spin-polarized species (free atoms H, Li, ... in W4-11 atomization /
+    # atom anchors), which then corrupts all weights. Flooring the interpolation
+    # base keeps d2f/dzeta2 finite; the forward eps_c is preserved to
+    # O(_ZETA_BASE_FLOOR**(4/3)) ~ 1e-16 (far below conv_tol; does NOT invalidate
+    # pretrained checkpoints). Perdew & Wang PRB 45, 13244 (1992), eqs (8)-(9).
+    _ZETA_BASE_FLOOR = 1e-12
+    opz = jnp.maximum(1.0 + zeta, _ZETA_BASE_FLOOR)
+    omz = jnp.maximum(1.0 - zeta, _ZETA_BASE_FLOOR)
+    fz = (opz ** (4 / 3) + omz ** (4 / 3) - 2) * c_fz
     z4 = zeta ** 4
     return G0 - G2 * fz / fpp0 * (1 - z4) + (G1 - G0) * fz * z4

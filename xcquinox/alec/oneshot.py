@@ -287,6 +287,22 @@ def _compute_vxc_nn_core(
     return V_rho + V_sigma
 
 
+# Spin polarization zeta is held strictly INSIDE (-1, 1) by this margin. At full
+# polarization (one spin density 0) zeta -> +-1 EXACTLY; both the PW92 spin
+# interpolation f(zeta) ~ (1+-zeta)**(4/3) and the (rho_a-rho_b)/rho_tot chain
+# have a SECOND derivative ~ (1-+zeta)**(-2/3) -> inf at |zeta|=1. The FULL SCF
+# differentiates v_c (itself a first derivative of E_c) a second time, so the
+# exact boundary produces a NaN training gradient on every fully-spin-polarized
+# species (free atoms H, Li, ... in W4-11 atomization / atom anchors), which then
+# corrupts all weights. Clipping zeta to +-(1 - eps) keeps every derivative
+# finite; the forward E_c bias is O(eps * dE_c/dzeta) ~ 1e-6 * O(1e-2) ~ 1e-8 Ha
+# (far below conv_tol; does NOT invalidate pretrained checkpoints). MUST be
+# IDENTICAL in the energy (split_exc_energy_uks) and potential
+# (compute_vc_polarized_per_spin) paths so v_c stays the exact gradient of E_c.
+# Perdew & Wang PRB 45, 13244 (1992), eqs (8)-(9).
+_ZETA_BOUNDARY_EPS = 1e-6
+
+
 def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
                          sigma_tot, features, grid_weights):
     """Integrated UKS XC energy using the SOLV-01 split (exchange spin-scaled,
@@ -341,7 +357,7 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
         )
     if model.cnet.use_spin_polarization:
         zeta = jnp.clip((rho_a - rho_b) / jnp.maximum(rho_tot, 1e-300),
-                        -1.0, 1.0)
+                        -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
         ec = model.eval_ec(rho_tot, sigma_tot, features, zeta=zeta)
     else:
         ec = model.eval_ec(rho_tot, sigma_tot, features)
@@ -449,7 +465,8 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
     # internally with the SAME clip/floor the UKS energy uses).
     def ec_spin(ra, rb, s, f):
         rt = ra + rb
-        z = jnp.clip((ra - rb) / jnp.maximum(rt, 1e-300), -1.0, 1.0)
+        z = jnp.clip((ra - rb) / jnp.maximum(rt, 1e-300),
+                     -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
         return model.eval_ec_scalar(rt, s, f, zeta=z)
 
     _V_SIGMA_THRESHOLD = 1e-30

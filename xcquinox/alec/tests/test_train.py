@@ -410,6 +410,154 @@ def test_run_training_per_molecule_completes(training_batch_info):
 
 
 # ---------------------------------------------------------------------------
+# Fail-loud finite guard: a NaN/Inf must abort training immediately, naming
+# the offending loop/step/group/channel — never silently corrupt the weights.
+# ---------------------------------------------------------------------------
+
+def test_abort_if_nonfinite_passes_when_finite():
+    from xcquinox.alec.train import _abort_if_nonfinite
+    # finite loss + finite channels -> returns None, no raise.
+    _abort_if_nonfinite(
+        0.5, {"loss_AE": 0.1, "loss_rho": 0.2}, loop="batched", step=0)
+
+
+def test_abort_if_nonfinite_names_nonfinite_channel():
+    from xcquinox.alec.train import _abort_if_nonfinite
+    with pytest.raises(FloatingPointError, match="loss_AE"):
+        _abort_if_nonfinite(
+            float("nan"), {"loss_AE": float("nan"), "loss_rho": 0.2},
+            loop="per_molecule", step=3, group="anchor:h")
+
+
+def test_abort_if_nonfinite_raises_on_nonfinite_loss_even_if_channels_finite():
+    from xcquinox.alec.train import _abort_if_nonfinite
+    with pytest.raises(FloatingPointError, match="step=7"):
+        _abort_if_nonfinite(
+            float("inf"), {"loss_AE": 0.1}, loop="batched", step=7)
+
+
+def test_abort_if_nonfinite_names_group_in_message():
+    from xcquinox.alec.train import _abort_if_nonfinite
+    with pytest.raises(FloatingPointError, match="anchor:h"):
+        _abort_if_nonfinite(
+            float("nan"), {"loss_AE": float("nan")},
+            loop="per_molecule", step=3, group="anchor:h")
+
+
+@pytest.mark.slow
+def test_run_training_aborts_loudly_on_nonfinite(training_batch_info, monkeypatch):
+    """The fail-loud guard raises FloatingPointError (not a silent NaN run) the
+    instant a step produces a non-finite value -- here a forced NaN energy."""
+    import jax.numpy as jnp
+    import xcquinox.alec.losses as losses_mod
+    from xcquinox.alec.train import run_training
+
+    def _nan_energies(model, mol_data, N, solver_config=None):
+        return jnp.full((N,), jnp.nan)
+
+    monkeypatch.setattr(losses_mod, "_compute_energies", _nan_energies)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=3, tmpdir=tmpdir,
+        )
+        with pytest.raises(FloatingPointError, match="non-finite"):
+            run_training(spec)
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION (2026-06): polarized correlation differentiated through the FULL
+# SCF NaN'd on fully-spin-polarized atom anchors (H, Li) at zeta=+-1. The whole
+# run -- EVERY step, not just final_loss -- must stay finite, with all-finite
+# saved params. This is the combo no prior test exercised (polarized + FULL +
+# per_molecule + atom anchors); the ONESHOT-only live tests hid it.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_per_molecule_polarized_full_solver_stays_finite(training_batch_info):
+    import jax
+    import jax.numpy as jnp
+    import equinox as eqx
+    from xcquinox.alec.train import run_training
+    from xcquinox.alec.models import AlecGGAModel
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = TrainingSpec.from_dicts(
+            arch=_make_arch(use_polarized_correlation=True),
+            molecules=training_batch_info["mols"],
+            targets=training_batch_info["targets"],
+            atom_energies=training_batch_info["atom_energies"],
+            loss_name="L5_gradnorm_vxc_step7", n_steps=4,
+            lr_start=0.01, lr_end=1e-5, lr_decay_start=0.2, grad_clip=1.0,
+            checkpoint_dir=os.path.join(tmpdir, "ck"), seed=42,
+            update_scheme="per_molecule", require_atom_anchors=False,
+            solver_config=SolverConfig(mode=SolverMode.FULL, max_cycles=3),
+            loss_kwargs={"regularize_atom_syms": ("H", "O"),
+                         "density_weight": 0.1, "vxc_weight": 0.01},
+        )
+        run_training(spec)
+        losses = np.load(os.path.join(spec.checkpoint_dir, "losses.npy"))
+        bad = int(np.argmax(~np.isfinite(losses))) if not np.all(
+            np.isfinite(losses)) else -1
+        assert np.all(np.isfinite(losses)), (
+            f"non-finite training loss at step {bad} of {len(losses)}")
+        skel = AlecGGAModel.from_arch(spec.arch, seed=spec.seed)
+        model = eqx.tree_deserialise_leaves(
+            os.path.join(spec.checkpoint_dir, "model.eqx"), skel)
+        leaves = jax.tree_util.tree_leaves(
+            eqx.filter(model, eqx.is_inexact_array))
+        assert all(bool(jnp.all(jnp.isfinite(leaf))) for leaf in leaves), (
+            "saved model has non-finite parameters")
+
+
+# ---------------------------------------------------------------------------
+# All-options matrix: every (update_scheme x solver_mode x polarized) combo --
+# the dimension space the 2026-06 NaN lived in -- must train fully finite on
+# tiny molecules (UKS atoms H/O + RKS H2O). Each cell asserts EVERY step finite,
+# not just final_loss. The FULL-solver cells are the ones never exercised before.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+@pytest.mark.parametrize("polarized", [False, True], ids=["unpol", "pol"])
+@pytest.mark.parametrize("solver_id", ["oneshot", "fixed_j", "full3"])
+@pytest.mark.parametrize("update_scheme", ["batched", "per_molecule"])
+def test_train_matrix_all_options_stay_finite(
+        update_scheme, solver_id, polarized, training_batch_info):
+    from xcquinox.alec.train import run_training
+
+    solver_cfg = {
+        "oneshot": SolverConfig(mode=SolverMode.ONESHOT, max_cycles=0),
+        "fixed_j": SolverConfig(mode=SolverMode.FIXED_J, max_cycles=2),
+        "full3": SolverConfig(mode=SolverMode.FULL, max_cycles=3),
+    }[solver_id]
+    extra = {}
+    if update_scheme == "per_molecule":
+        extra = {
+            "update_scheme": "per_molecule",
+            "require_atom_anchors": False,
+            "loss_kwargs": {"regularize_atom_syms": ("H", "O"),
+                            "density_weight": 0.1, "vxc_weight": 0.01},
+        }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = TrainingSpec.from_dicts(
+            arch=_make_arch(use_polarized_correlation=polarized),
+            molecules=training_batch_info["mols"],
+            targets=training_batch_info["targets"],
+            atom_energies=training_batch_info["atom_energies"],
+            loss_name="L5_gradnorm_vxc_step7", n_steps=3,
+            lr_start=0.01, lr_end=1e-5, lr_decay_start=0.2, grad_clip=1.0,
+            checkpoint_dir=os.path.join(tmpdir, "ck"), seed=42,
+            solver_config=solver_cfg, **extra,
+        )
+        run_training(spec)
+        losses = np.load(os.path.join(spec.checkpoint_dir, "losses.npy"))
+        assert np.all(np.isfinite(losses)), (
+            f"non-finite loss: scheme={update_scheme} solver={solver_id} "
+            f"polarized={polarized} at step "
+            f"{int(np.argmax(~np.isfinite(losses)))}/{len(losses)}")
+
+
+# ---------------------------------------------------------------------------
 # Test 17: artifact roundtrip
 # ---------------------------------------------------------------------------
 
