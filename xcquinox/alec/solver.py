@@ -72,7 +72,7 @@ class SolverConfig:
             raise ValueError(
                 f"non-oneshot modes require max_cycles > 0, got 0 with mode={self.mode}"
             )
-        # M2/M7 audit fix: (FULL, FROZEN) is incoherent. FULL mode rebuilds
+        # (FULL, FROZEN) is incoherent. FULL mode rebuilds
         # the Fock from D every cycle (J[D] explicit dependence on D), so
         # the descriptor features that condition the NN's V_xc must also
         # be reassembled with the current D — otherwise the NN sees stale
@@ -122,11 +122,10 @@ from typing import NamedTuple
 import jax.numpy as jnp
 
 
-# Shared numerical-regularization constants used by every SCF backend
-# (R2-C N4 audit fix). Pre-fix these were duplicated as module-level
-# constants in both ``oneshot.py`` and ``solver_manual.py``; a future
-# adjustment in one site silently diverged the two paths. Defined once
-# here so all backends import the same value.
+# Shared numerical-regularization constants used by every SCF backend.
+# When duplicated as module-level constants in both ``oneshot.py`` and
+# ``solver_manual.py``, a future adjustment in one site silently diverges
+# the two paths. Defined once here so all backends import the same value.
 #
 # DEGENERACY_REG: uniform shift on the overlap matrix before Cholesky
 # decomposition (S + ε·I). Conditions S so ``cholesky`` is stable for
@@ -142,8 +141,8 @@ DEGENERACY_REG = 1e-10
 # energy scale. See oneshot.py docstring for full discussion.
 SYM_BREAK_SHIFT = 1e-8
 
-# Golden-ratio constant used by the symmetry-breaking diagonal
-# (R2-C M3 audit fix). Irrational so ``sin(idx · φ)`` produces a
+# Golden-ratio constant used by the symmetry-breaking diagonal.
+# Irrational so ``sin(idx · φ)`` produces a
 # quasi-random spacing — no two indices give bit-equal values.
 _GOLDEN_RATIO = 1.618033988749895
 
@@ -154,7 +153,7 @@ def _sym_break_diag(nao: int, dtype) -> jnp.ndarray:
     Returns ``SYM_BREAK_SHIFT * sin(idx · φ)`` for ``idx ∈ [0, nao)``.
     Fully deterministic in ``nao`` alone (no PRNG), so forward results
     are reproducible across runs. Defined once here and re-exported by
-    ``oneshot`` and ``solver_manual`` (R2-C N4 audit fix).
+    ``oneshot`` and ``solver_manual``.
     """
     idx = jnp.arange(nao, dtype=dtype)
     return SYM_BREAK_SHIFT * jnp.sin(idx * _GOLDEN_RATIO)
@@ -167,8 +166,8 @@ class MixerState(NamedTuple):
 
 # Mixer subclass registry — keyed by ``registry_name``. Populated via the
 # ``register_mixer`` decorator below; ``_build_mixer`` in solver_manual.py
-# consults this map instead of hard-coding the 'linear' branch (H1 audit
-# fix). New mixers (e.g. DIIS, Pulay) only need to subclass ``Mixer`` with
+# consults this map instead of hard-coding the 'linear' branch. New mixers
+# (e.g. DIIS, Pulay) only need to subclass ``Mixer`` with
 # a unique ``registry_name`` and use ``@register_mixer``.
 MIXER_REGISTRY: "dict[str, type[Mixer]]" = {}
 
@@ -222,10 +221,10 @@ class LinearMixer(Mixer):
 
 
 # Convergence-criterion registry — keyed by ``registry_name``. Mirrors
-# the ``MIXER_REGISTRY`` pattern (R2-C N3 audit fix): pre-fix
-# ``_build_criterion`` in solver_manual.py was hard-coded to the
-# 'energy' branch, so any new criterion (e.g. density-RMS, Fock-error)
-# would require editing the dispatch as well as defining the class.
+# the ``MIXER_REGISTRY`` pattern: when ``_build_criterion`` in
+# solver_manual.py is hard-coded to the 'energy' branch, any new criterion
+# (e.g. density-RMS, Fock-error) would require editing the dispatch as well
+# as defining the class.
 CRITERION_REGISTRY: "dict[str, type['ConvergenceCriterion']]" = {}
 
 

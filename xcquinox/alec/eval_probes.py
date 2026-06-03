@@ -619,8 +619,8 @@ def build_probe_pool(probe_name: str) -> dict:
     # PySCF will reject the SCF call for any open-shell radical (e.g. NO,
     # OH, CH3, HS) because g2_97.traj carries no spin info and PySCF's
     # default of spin=0 violates the (nelec - spin) % 2 == 0 invariant
-    # for odd-electron molecules.  See docstring of dfs_pool.py for the
-    # original incident report (NO, 15 electrons, smoke run 2026-05-01).
+    # for odd-electron molecules (e.g. NO, 15 electrons).  See the
+    # docstring of dfs_pool.py for further detail.
     traj = read(str(_g297_traj_path()), ":")
     by_hill: dict = {a.get_chemical_formula(): a for a in traj}
     extras = _bh76_extra_geometries()

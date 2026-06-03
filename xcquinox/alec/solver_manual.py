@@ -21,8 +21,8 @@ from xcquinox.alec.solver import (
     _reassemble_features,
 )
 
-# R2-C N4 audit fix: shared regularization constants live in
-# ``solver`` so manual + oneshot paths cannot silently diverge.
+# Shared regularization constants live in ``solver`` so manual + oneshot
+# paths cannot silently diverge.
 from xcquinox.alec.solver import (
     DEGENERACY_REG,
     SYM_BREAK_SHIFT,
@@ -38,7 +38,7 @@ def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndar
     but the slice form's reverse-mode gradient through multi-cycle
     ``lax.scan`` (eigh on Fock with degenerate p-orbital eigenvalues)
     can produce NaN that propagates via 0*NaN=NaN. The mask form avoids
-    that pathway and matches the UKS path's convention (H2 audit fix).
+    that pathway and matches the UKS path's convention.
     """
     nao = S.shape[0]
     S_reg = S + DEGENERACY_REG * jnp.eye(nao)
@@ -51,7 +51,7 @@ def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndar
     # degeneracy); it therefore biases the converged DM/energy, but only by
     # O(1e-8), measured ~2e-10 in E worst-case — far below the default
     # conv_tol=1e-6. A "gradient-only" form would not lift the forward
-    # degeneracy and so would not fix the gradient (CW6 review, 2026-05-24).
+    # degeneracy and so would not fix the gradient.
     F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
     _, C_orth = jnp.linalg.eigh(F_orth)
     C = L_inv.T @ C_orth
@@ -86,7 +86,7 @@ def _diagonalize_roothaan_unrestricted(
     # degeneracy); it therefore biases the converged DM/energy, but only by
     # O(1e-8), measured ~2e-10 in E worst-case — far below the default
     # conv_tol=1e-6. A "gradient-only" form would not lift the forward
-    # degeneracy and so would not fix the gradient (CW6 review, 2026-05-24).
+    # degeneracy and so would not fix the gradient.
     F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
     _, C_orth = jnp.linalg.eigh(F_orth)
     C = L_inv.T @ C_orth
@@ -197,7 +197,7 @@ def _compute_total_energy_uks(
 
 
 def _build_mixer(config: SolverConfig):
-    """Instantiate mixer from config via the MIXER_REGISTRY (H1 audit fix).
+    """Instantiate mixer from config via the MIXER_REGISTRY.
 
     Looks up ``config.mixer_name`` in ``MIXER_REGISTRY`` and instantiates
     the class with kwargs from ``config.mixer_kwargs``. New mixer types
@@ -223,12 +223,10 @@ def _build_mixer(config: SolverConfig):
 def _build_criterion(config: SolverConfig):
     """Instantiate convergence criterion from config via CRITERION_REGISTRY.
 
-    R2-C N3 audit fix: pre-fix code hard-coded the 'energy' branch and
-    raised NotImplementedError for everything else, requiring this
-    function to be edited each time a new criterion was added. Now
-    mirrors the ``_build_mixer`` registry-driven pattern: any subclass
+    Mirrors the ``_build_mixer`` registry-driven pattern: any subclass
     of ``ConvergenceCriterion`` decorated with ``@register_criterion``
-    is dispatched here automatically.
+    is dispatched here automatically, so adding a criterion needs no
+    edits to this function.
     """
     from xcquinox.alec.solver import CRITERION_REGISTRY
     cls = CRITERION_REGISTRY.get(config.convergence_name)
@@ -351,12 +349,11 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         D_out = jnp.where(already, state.density_matrix, D_mixed)
         E_out = jnp.where(already, state.energy, E_new)
         cycles_inc = jnp.where(already, state.cycles_run, state.cycles_run + jnp.int32(1))
-        # R1-M8 audit fix: freeze the mixer state once the scan has
-        # entered the ``already`` branch. Pre-fix code always emitted
-        # ``new_mixer_state``, advancing ``step_index`` (and any future
-        # history-tracking fields, e.g. DIIS Fock buffers) on every
-        # post-convergence cycle. The leaf-wise ``where`` keeps the
-        # frozen mixer state pytree-shape-compatible with the new one.
+        # Freeze the mixer state once the scan has entered the ``already``
+        # branch: otherwise emitting ``new_mixer_state`` would advance
+        # ``step_index`` (and any history-tracking fields, e.g. DIIS Fock
+        # buffers) on every post-convergence cycle. The leaf-wise ``where``
+        # keeps the frozen mixer state pytree-shape-compatible with the new one.
         frozen_mixer_state = jax.tree_util.tree_map(
             lambda old, new: jnp.where(already, old, new),
             state.mixer_state, new_mixer_state,
@@ -449,10 +446,10 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         CuspDescriptor is geometry-only. DMStatisticsDescriptor receives
         the SPIN-RESOLVED 3-D DM (Pople-Nesbet 1954: D_sigma S D_sigma =
         D_sigma per spin) so the per-spin idempotency-projector branch
-        of compute_dm_features fires. R2-A/R2-E audit fix: pre-fix code
-        summed alpha+beta into a 2-D total DM, routing UKS through the
-        RKS branch and producing a non-zero physically-meaningless
-        idempotency_error. FROZEN policy reuses the initial features.
+        of compute_dm_features fires. Summing alpha+beta into a 2-D total
+        DM would instead route UKS through the RKS branch and produce a
+        non-zero physically-meaningless idempotency_error. FROZEN policy
+        reuses the initial features.
         """
         if policy == FeaturePolicy.FROZEN:
             return features_initial
@@ -568,8 +565,8 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         # LinearMixer is elementwise linear; applying it to (2, nao, nao)
         # mixes alpha and beta channels independently with the same alpha.
         new_mixer_state, D_mixed = mixer.step(state.mixer_state, D_cur, D_new)
-        # Consistency: recompute energy from D_mixed (same principle as RKS
-        # fix in a622f646d — avoids hybrid D_cur/D_mixed energy).
+        # Consistency: recompute energy from D_mixed (same principle as the
+        # RKS path — avoids a hybrid D_cur/D_mixed energy).
         (rho_a_m, rho_b_m, _nra_m, _nrb_m,
          sig_aa_m, sig_bb_m, _ntot_m, sig_tot_m) = _spin_resolved_rho(D_mixed)
         features_m = _features_for(D_mixed)
@@ -583,8 +580,8 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         D_out = jnp.where(already, state.density_matrix, D_mixed)
         E_out = jnp.where(already, state.energy, E_new)
         cycles_inc = jnp.where(already, state.cycles_run, state.cycles_run + jnp.int32(1))
-        # R1-M8 audit fix: freeze mixer state on ``already`` (see
-        # _run_manual_scf_rks for full rationale).
+        # Freeze mixer state on ``already`` (see _run_manual_scf_rks for
+        # full rationale).
         frozen_mixer_state = jax.tree_util.tree_map(
             lambda old, new: jnp.where(already, old, new),
             state.mixer_state, new_mixer_state,

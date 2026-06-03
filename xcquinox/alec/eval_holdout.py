@@ -166,8 +166,7 @@ def reaction_mae_kcalmol(
 
     Thin wrapper around :func:`per_reaction_errors` that averages the
     finite absolute errors and reports how many reactions were silently
-    dropped because a species energy was missing / non-finite (the audit
-    gap surfaced by the 2026-05-29 forensic review).
+    dropped because a species energy was missing / non-finite.
     """
     rxns = list(reactions)
     err_rows = list(per_reaction_errors(energies_ha, rxns))
@@ -348,8 +347,8 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     * ``ONESHOT`` / ``FIXED_J`` / ``None`` → the one-shot
       ``alec.fixed_density_total_energy(model, mol_data[name])`` on ρ_PBE.
       FIXED_J stays one-shot deliberately (its run_scf energy is an incoherent
-      J-pinned hybrid — the 2026-04-24 fix), so a FIXED_J-trained spec is not
-      silently evaluated on that hybrid here.
+      J-pinned hybrid), so a FIXED_J-trained spec is not silently evaluated on
+      that hybrid here.
 
     ``scf_info_out``: optional dict; when provided AND an SCF runs, it is
     populated ``{name: {cycles_run, converged, total_energy, energy_trace}}``
@@ -429,9 +428,9 @@ def write_test_set_csv(
     step, and gives the operator a direct apples-to-apples NN-vs-PBE
     comparison on the SAME pool the NN was scored on.
 
-    The ``n_dropped_nan`` column (added 2026-05-29) reports reactions
-    silently dropped because their species energies were missing or
-    non-finite. It is distinct from ``n_dropped_overlap`` (training-set
+    The ``n_dropped_nan`` column reports reactions silently dropped because
+    their species energies were missing or non-finite. It is distinct from
+    ``n_dropped_overlap`` (training-set
     overlap drops in strict mode). A row with ``n_dropped_nan > 0``
     indicates the MAE was computed on a SMALLER reaction set than expected.
 

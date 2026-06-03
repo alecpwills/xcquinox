@@ -366,11 +366,11 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
             ) from e
         raise
 
-    # 2026-05-29 forensic-review assertion: the cnet's static
-    # use_spin_polarization flag MUST match the arch's flag. Mismatch would
-    # indicate a checkpoint built outside create_network_pair OR a
-    # round-trip bug; either way, polarized vs unpolarized comparisons would
-    # become degenerate at eval (zeta silently dropped).
+    # The cnet's static use_spin_polarization flag MUST match the arch's
+    # flag. Mismatch would indicate a checkpoint built outside
+    # create_network_pair OR a round-trip bug; either way, polarized vs
+    # unpolarized comparisons would become degenerate at eval (zeta silently
+    # dropped).
     if hasattr(model.cnet, "use_spin_polarization"):
         if model.cnet.use_spin_polarization != spec.arch.use_polarized_correlation:
             raise ValueError(

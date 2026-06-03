@@ -21,8 +21,8 @@ from xcquinox.alec.oneshot import (
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
 
-# Scale-aware denominator floor for the D-family relative delta-AE loss
-# (C1-03). Set to (1 kcal/mol)^2 in Ha^2 so a compound PBE already describes to
+# Scale-aware denominator floor for the D-family relative delta-AE loss.
+# Set to (1 kcal/mol)^2 in Ha^2 so a compound PBE already describes to
 # within ~1 kcal/mol cannot be over-weighted by a near-zero denominator. The
 # 627.5094740631 kcal/mol-per-Ha factor is CODATA-2018 (matches
 # domain.KCAL_PER_HA).
@@ -99,7 +99,7 @@ class AlecLoss(eqx.Module, abc.ABC):
         by the ionization-potential magnitude (~5 eV for Li). Mixed-pool
         specs that combine an IP13 pair with the species' neutral atom
         (e.g., HLi's Li anchor + Li_IP's neutral Li and Li+) hit this
-        case at every step ≥ jsd/r=5 / l2/r=7.
+        case.
 
         ``require_compound=False`` permits L5GradnormVxcStep7 to operate
         on specs containing no polyatomic species (BH76- or IP13-only
@@ -137,7 +137,7 @@ class AlecLoss(eqx.Module, abc.ABC):
 
     @staticmethod
     def _validate_static_float(name: str, value) -> None:
-        """D-H1: reject non-scalar types on static float fields."""
+        """Reject non-scalar types on static float fields."""
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise TypeError(
                 f"AlecLoss field {name!r} must be a plain Python int/float, "
@@ -146,7 +146,7 @@ class AlecLoss(eqx.Module, abc.ABC):
 
     @staticmethod
     def _validate_static_bool(name: str, value) -> None:
-        """L-B13-2: reject non-bool types on static bool fields."""
+        """Reject non-bool types on static bool fields."""
         if not isinstance(value, bool):
             raise TypeError(
                 f"AlecLoss field {name!r} must be a plain Python bool, "
@@ -170,7 +170,7 @@ def _compute_energies(model, mol_data, N, solver_config=None):
     * ``ONESHOT`` / ``FIXED_J`` / ``None`` → the one-shot fixed-density
       functional ``E_total = E_non_xc[ρ_PBE] + E_xc^NN[ρ_PBE]``. FIXED_J stays
       one-shot on purpose: its run_scf energy is an incoherent J-pinned hybrid
-      (the 2026-04-24 fix — see ``total_energy_for_solver``).
+      (see ``total_energy_for_solver``).
     """
     return jnp.stack([
         total_energy_for_solver(model, mol_data[i], solver_config)
@@ -185,10 +185,10 @@ def _ae_from_atoms(E_mol, comp_dict, atom_energies):
 
     The atom anchor is a caller-supplied dict. Under the active
     ``dfs_step7`` domain profile this dict carries the Chakravorty 1993
-    exact non-relativistic atomic totals (NOT PBE-consistent values; see
-    forensic-review 2026-05-29). Using a fixed anchor rather than
-    NN-predicted atomic totals is what lets the training loss and
-    AtomizationEnergyMetric measure the same quantity.
+    exact non-relativistic atomic totals (NOT PBE-consistent values).
+    Using a fixed anchor rather than NN-predicted atomic totals is what
+    lets the training loss and AtomizationEnergyMetric measure the same
+    quantity.
     """
     return sum(n * atom_energies[Z] for Z, n in comp_dict.items()) - E_mol
 
@@ -226,15 +226,15 @@ def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets, 
     so the D-family target is a function of the anchor dict even though
     the NN/PBE delta itself is not.
     """
-    # C1-03 (fixed): the relative normalization divides the squared delta error
-    # by a SCALE-AWARE floor ``max(delta_tgt**2, _DELTA_TGT_FLOOR_HA2)`` rather
-    # than the old additive ``delta_tgt**2 + 1e-8``. ``delta_tgt`` is how much PBE
+    # The relative normalization divides the squared delta error by a
+    # SCALE-AWARE floor ``max(delta_tgt**2, _DELTA_TGT_FLOOR_HA2)`` rather
+    # than an additive ``delta_tgt**2 + 1e-8``. ``delta_tgt`` is how much PBE
     # is off by; a compound PBE already nails (delta_tgt -> 0) would, under the
     # 1e-8 additive floor, have its error divided by ~1e-8 and be over-weighted
     # ~1e8x. The floor caps the denominator at (1 kcal/mol)^2, so near-exact-PBE
-    # compounds cannot dominate the loss. No-op for the current pools (PBE AE
-    # errors ~1e-2..1e-1 Ha => delta_tgt**2 >> floor), matters only once the
-    # BH76+W4-11 pool adds compounds PBE describes near-exactly.
+    # compounds cannot dominate the loss. No-op for pools whose PBE AE
+    # errors ~1e-2..1e-1 Ha (delta_tgt**2 >> floor); matters only once the
+    # pool adds compounds PBE describes near-exactly.
     terms = []
     for i in compound_idx:
         ae_nn = _ae_from_atoms(E_nn[i], comp_dicts[i], atom_energies)
@@ -252,9 +252,9 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
     Absolute mode normalizes by the total number of DM elements
     (``n_ao^2`` for RKS; ``2 * n_ao^2`` for UKS — both spin channels).
     This yields a per-element scale invariant under RKS↔UKS, matching
-    ``_vxc_term``'s convention (D5-loss audit fix: pre-fix UKS branch
-    divided by n_ao^2 only, off by a factor of 2 vs RKS and inconsistent
-    with _vxc_term).
+    ``_vxc_term``'s convention; normalizing the UKS branch by ``n_ao^2``
+    only would be off by a factor of 2 vs RKS and inconsistent with
+    ``_vxc_term``.
     """
     terms = []
     n_skipped = 0
@@ -410,8 +410,8 @@ def _rxn_residual_term(
     Returns: ``(E_rxn_NN - E_rxn_ref)^2``; when ``relative`` is set, the
     relative form ``(.)^2 / (e_rxn_ref^2 + 1e-8)`` — matching the AE/vxc/rho
     channels' normalization so that under ``loss_metric='relative'`` ALL five
-    GradNorm channels measure the same dimensionless quantity (without this the
-    BH76 channel stayed absolute Ha^2 while the others were relative).
+    GradNorm channels measure the same dimensionless quantity (otherwise the
+    BH76 channel would be absolute Ha^2 while the others are relative).
 
     Used by the BH76 task channel of L5_gradnorm_vxc_step7. In Dick &
     Fernandez-Serra PRB 104 L161109 (2021) the 0.01 factor is lambda_E,
@@ -496,10 +496,10 @@ class AtomizationLoss(AlecLoss):
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
         components = {"loss_energy": loss_energy, "atomic_reg": atomic_reg}
         if self.vxc_weight > 0:
-            # D10-loss audit fix: gate on molecules_only (default True)
-            # for consistency with B/C/D2/D3. Atoms typically have
-            # vxc_ref=None and are skipped inside _vxc_term anyway, but
-            # the explicit gate makes the API uniform across all 6 losses.
+            # Gate on molecules_only (default True) for consistency with
+            # B/C/D2/D3. Atoms typically have vxc_ref=None and are skipped
+            # inside _vxc_term anyway, but the explicit gate makes the API
+            # uniform across all 6 losses.
             vxc_idx = self.compound_idx if self.molecules_only else tuple(range(N))
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
@@ -694,7 +694,7 @@ class DeltaAELoss(AlecLoss):
         atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
         components = {"loss_delta": loss_delta, "atomic_reg": atomic_reg}
         if self.vxc_weight > 0:
-            # D10-loss audit fix: gate on molecules_only, matching B/C/D2/D3.
+            # Gate on molecules_only, matching B/C/D2/D3.
             vxc_idx = self.compound_idx if self.molecules_only else tuple(range(N))
             components["loss_vxc"] = self.vxc_weight * _vxc_term(
                 model, mol_data, vxc_idx, relative=relative,
@@ -962,8 +962,8 @@ class L5GradnormVxcStep7(AlecLoss):
     vxc_weight: float = eqx.field(default=0.01, static=True)
     density_weight: float = eqx.field(default=0.1, static=True)
     # Atom-symbol allowlist for `_atomic_reg`. None (default) regularizes
-    # every single-atom MoleculeSpec in the spec — the pre-2026-05-07
-    # behavior, kept for back-compat. Set to ("H", "Li") to mirror the
+    # every single-atom MoleculeSpec in the spec, kept for back-compat.
+    # Set to ("H", "Li") to mirror the
     # Dick & Fernandez-Serra 2021 SI §II atomic-density references; in
     # that case `_atomic_reg` ignores any other atomic species (C, N,
     # O, F, ...) that happen to appear in the spec via IP13 pairs or
@@ -989,7 +989,7 @@ class L5GradnormVxcStep7(AlecLoss):
         # Fail-fast on the dead PBE-anchor knob: L5 has NO anchor channel
         # (target_kinds = AE/BH76/IP13/vxc/rho) and step-7 freezes pretraining
         # from step-6, so a positive pbe_anchor_weight would be silently
-        # swallowed by **_unused_kwargs and do nothing (CW2 review finding).
+        # swallowed by **_unused_kwargs and do nothing.
         _anchor_w = _unused_kwargs.get("pbe_anchor_weight", 0.0) or 0.0
         if float(_anchor_w) > 0.0 or _unused_kwargs.get("pbe_anchor_sample") is not None:
             raise ValueError(
@@ -1066,7 +1066,7 @@ class L5GradnormVxcStep7(AlecLoss):
         self.density_weight = density_weight
         self.regularize_atom_syms = reg_syms_frozen
 
-        # CFG-02: validate that regularize_atom_syms is a subset of the
+        # Validate that regularize_atom_syms is a subset of the
         # single-atom anchors actually present in atom_mol_idx.  An
         # unmatched symbol would be silently dropped in compute_components,
         # producing zero regularization for that species with no feedback.
@@ -1173,7 +1173,7 @@ class L5GradnormVxcStep7(AlecLoss):
         # Restrict `_atomic_reg` to the user-specified atom set when
         # `regularize_atom_syms` is configured (e.g., the Dick 2021 SI §II
         # H/Li set). When None, regularize every single-atom MoleculeSpec
-        # (pre-2026-05-07 behavior, kept for back-compat).
+        # (kept for back-compat).
         if self.regularize_atom_syms is not None:
             allowed = set(self.regularize_atom_syms)
             atom_idx = {sym: i for sym, i in atom_idx.items() if sym in allowed}

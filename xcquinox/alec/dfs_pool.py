@@ -247,8 +247,8 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 # adopt verbatim for the GMTKN55-BH76 subset. We use REF1 (the value
 # directly comparable to non-relativistic calculations) for each.
 #
-# bh76_mode toggle (added 2026-05-19)
-# -----------------------------------
+# bh76_mode toggle
+# ----------------
 # The loss term ``_rxn_residual_term`` (losses.py) computes
 # ``e_rxn = Σ(coeffs · e_nn) = E(products) − E(reactants)`` — a true
 # *reaction energy* ΔE, NOT a barrier height. Dick & Fernandez-Serra
@@ -272,7 +272,6 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 # These differ by ~0.13-0.25 kcal/mol from the Minnesota REF1 barrier
 # difference Vr − Vf (the W2-F12-vs-barrier-database delta); GMTKN55 is the
 # authoritative reaction-energy reference, so it — not Vr − Vf — defines ΔE.
-# (Realigned from the prior Minnesota Vr−Vf values per the 2026-05-24 review.)
 #
 # Per-reaction ``species_spins`` and ``species_charges`` dicts hold the
 # ground-state spin (2S, PySCF convention) and charge (default 0) for

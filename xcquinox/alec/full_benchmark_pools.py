@@ -59,8 +59,8 @@ _W411_CACHE: Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]] | None = None
 # Bohr → angstrom (CODATA 2018). NOTE: GMTKN55 ``struc.xyz`` files are already
 # in ANGSTROM (the bohr copy is the sibling TURBOMOLE ``coord`` file), so the
 # regen path does NOT convert struc.xyz — it stores those angstrom coordinates
-# verbatim. (Pre-2026-05-31 the code wrongly divided struc.xyz by this factor,
-# shrinking every held-out molecule ~1.89x; kept only for reference/round-trips.)
+# verbatim. The constant is kept only for reference/round-trips; struc.xyz must
+# NOT be divided by it (doing so shrinks every held-out molecule ~1.89x).
 BOHR_PER_ANGSTROM = 1.8897261246257702
 
 

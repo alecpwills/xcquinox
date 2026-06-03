@@ -2,7 +2,7 @@
 
 Penalizes |F_x_nn(rho_alpha, rho_beta, s) - F_x_PBE(rho_alpha, rho_beta, s)|^2
 on a fixed sample of (rho_alpha, rho_beta, s) points. Mirrors the
-_vxc_term pattern from 2026-04-17: one helper, no abstraction tax.
+_vxc_term pattern: one helper, no abstraction tax.
 """
 from dataclasses import dataclass
 from typing import Callable
@@ -60,8 +60,7 @@ def _pbe_fx_libxc(rho_alpha: jnp.ndarray,
     PRODUCTION exchange ENERGY (``split_exc_energy_uks`` evaluates
     ``0.5*(eps_x(2 rho_a,...) + eps_x(2 rho_b,...))`` where eps_x(2 rho_s)
     carries the (1+/-zeta)^{4/3} scaling intrinsically). Re-weighting only this
-    target would break the anchor (target != prediction form). See
-    ``docs/reviews/2026-05-24-alec-subpackage-review-3`` (CW1-C1 verdict).
+    target would break the anchor (target != prediction form).
 
     where sigma_sigma_eff = (1 +/- zeta)**2 * sigma_tot, zeta = (ra-rb)/(ra+rb),
     and sigma_tot = (2*kF(rho_tot)*s*rho_tot**(4/3))**2. This matches the
@@ -181,11 +180,10 @@ def pbe_anchor_loss(params,
     F_x_UKS(rho/2, rho/2, s) = F_x_RKS(rho, s)).
     """
     if weight == 0.0:
-        # R2-A N6 audit fix: match the dtype of the sample arrays
-        # rather than hardcoding float64 (caller may have x32-only JAX
-        # configured, in which case the hardcoded f64 zero gets cast
-        # back to f32 and the cast itself shows up as a small
-        # discontinuity at the weight=0 boundary).
+        # Match the dtype of the sample arrays rather than hardcoding
+        # float64 (caller may have x32-only JAX configured, in which case
+        # the hardcoded f64 zero gets cast back to f32 and the cast itself
+        # shows up as a small discontinuity at the weight=0 boundary).
         return jnp.zeros((), dtype=sample.Fx_target.dtype)
     fx_nn = nn_fx_fn(params, sample.rho_alpha, sample.rho_beta, sample.s)
     return weight * jnp.mean((fx_nn - sample.Fx_target) ** 2)

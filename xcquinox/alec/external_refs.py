@@ -10,12 +10,12 @@ Pipeline stages (each individually cached via np.savez_compressed):
   3. OEP  → <name>.npz                                    (vxc_ref + dm_target +
                                                           rho_ref_grid + provenance)
 
-Cache layout was changed in 2026-05-03 (spec sec. 5.6) to bake
-grid_level into intermediate filenames; legacy unsuffixed names are
-migrated by `_migrate_intermediates_to_grid_suffixed` invoked from the
-top of both `precompute_all` and `preflight_uks_oep`.
+Cache layout bakes grid_level into intermediate filenames (spec sec. 5.6);
+legacy unsuffixed names are migrated by
+`_migrate_intermediates_to_grid_suffixed` invoked from the top of both
+`precompute_all` and `preflight_uks_oep`.
 
-Reuses step-6 cells 12-13 OEP-cascade pattern verbatim
+Reuses the step-6 cells 12-13 OEP-cascade pattern
 (_build_step6_notebook.py:728-768, 843-877). 2-tier: svp-jkfit primary
 (reg=1e-4, conv_tol=2e-3, max_iter=500), def2-tzvp-jkfit fallback
 (reg=1e-4, conv_tol=2e-3, max_iter=1000). On both-tier failure raises
@@ -89,8 +89,7 @@ def _intermediate_cache_name(name: str, *, grid_level: int, basis: str,
     """Cache filename for an intermediate (kind in {'scf','ccsd'}).
 
     Includes the basis (+ a ``_df`` tag) so a basis/DF change does NOT silently
-    reuse a stale file computed in a different basis — the historical
-    ``<name>_g{grid}_{kind}.npz`` key omitted the basis."""
+    reuse a stale file computed in a different basis."""
     df_tag = "_df" if density_fit else ""
     return f"{name}_g{int(grid_level)}_b{_basis_slug(basis)}{df_tag}_{kind}.npz"
 
@@ -117,9 +116,9 @@ def _prepare_converged_hf(mol, *, dm0, is_uks: bool, density_fit: bool = False,
                           basis: str | None = None, auxbasis: str | None = None):
     """Run a real HF SCF and return the CONVERGED HF mean-field.
 
-    EXTREF-01: CCSD must sit on a self-consistent HF determinant. Earlier
-    code grafted PBE Kohn-Sham MO coeff/occ onto an HF object and faked
-    ``converged=True`` without re-converging — that runs CCSD on a
+    EXTREF-01: CCSD must sit on a self-consistent HF determinant.
+    Grafting PBE Kohn-Sham MO coeff/occ onto an HF object and faking
+    ``converged=True`` without re-converging runs CCSD on a
     non-canonical, non-self-consistent PBE determinant (Brillouin's
     theorem is violated: the occ-virt Fock block is nonzero), and the
     relaxed 1-RDM then depends on arbitrary PBE start orbitals.
@@ -287,9 +286,8 @@ def resolve_geometry(spec: SpeciesEntry):
     # ``pool["entries"]`` is list[dict] (raw PROBE_* entries); ``pool["molecules"]``
     # is the corresponding list[ASE Atoms] with at.info["name"] set by
     # eval_probes._attach_info.  Match by the dict's "name" against
-    # at.info["name"] (T2 spec-review fix — earlier draft iterated entries
-    # as if they were Atoms, which is unreachable today but would crash
-    # if a probe AE molecule were ever absent from g2_97.traj).
+    # at.info["name"] — iterating entries as if they were Atoms would
+    # crash if a probe AE molecule were ever absent from g2_97.traj.
     from xcquinox.alec import eval_probes
     for probe_name in eval_probes.ALL_PROBES:
         if eval_probes.PROBE_KIND[probe_name] != "ae":
@@ -328,7 +326,7 @@ def run_scf_with_cache(
       <cache_dir>/_intermediates/<name>_g{grid_level}_scf.npz
     (Spec sec. 5.6: the `_g{N}_` infix lets the same `cache_dir` host
     multiple grid_levels of the same species without collision; legacy
-    pre-2026-05-03 caches are migrated by
+    unsuffixed caches are migrated by
     `_migrate_intermediates_to_grid_suffixed` at top of `precompute_all`
     / `preflight_uks_oep`.)
     """
@@ -373,9 +371,8 @@ def run_scf_with_cache(
     mf.kernel()
 
     # Build the result dict ONCE — used both for the cache write and the
-    # return value.  Avoids redundant PySCF calls (make_rdm1/get_ovlp
-    # were called twice in the earlier draft) and removes a DRY violation
-    # (T3 code-quality review).
+    # return value.  Avoids redundant PySCF calls (make_rdm1/get_ovlp)
+    # and the resulting DRY violation.
     # grid_coords/grid_weights are stored so Stage 2 (CCSD) can reuse the
     # exact pruned grid from the SCF run without rebuilding (which would
     # give a different grid size due to pruning).
@@ -393,16 +390,15 @@ def run_scf_with_cache(
     }
 
     # Atomic write: temp file + os.replace so an interrupted SCF cannot
-    # leave a corrupt partial .npz that future runs read as a cache hit
-    # (T3 code-quality review).
+    # leave a corrupt partial .npz that future runs read as a cache hit.
     import os
     import tempfile
     fd, tmp_name = tempfile.mkstemp(dir=str(inter), suffix=".npz")
     os.close(fd)
     try:
         np.savez_compressed(tmp_name, **result)
-        # EXTREF-04: fsync content THEN dir so stages 2/3 ("parity with stage 1")
-        # are accurate — stage 1 previously had neither.
+        # EXTREF-04: fsync content THEN dir so stages 2/3 keep durability
+        # parity with stage 1.
         _fsync_file(tmp_name)
         os.replace(tmp_name, cache_path)
         _fsync_dir(inter)
@@ -447,7 +443,7 @@ def run_ccsd_with_cache(
       <cache_dir>/_intermediates/<name>_g{grid_level}_ccsd.npz  (np.savez_compressed)
     (Spec sec. 5.6: the `_g{N}_` infix lets the same `cache_dir` host
     multiple grid_levels of the same species without collision; legacy
-    pre-2026-05-03 caches are migrated by
+    unsuffixed caches are migrated by
     `_migrate_intermediates_to_grid_suffixed` at top of `precompute_all`
     / `preflight_uks_oep`.)
     """
@@ -521,7 +517,7 @@ def run_ccsd_with_cache(
         "grid_weights": grid_weights,
         "ao_grid": ao_grid,
     }
-    # Atomic write (matches T3 pattern): temp file + os.replace.
+    # Atomic write: temp file + os.replace.
     import os
     import tempfile
     fd, tmp_name = tempfile.mkstemp(dir=str(inter), suffix=".npz")
@@ -545,7 +541,7 @@ def run_ccsd_with_cache(
 # RKS (closed-shell): mirrors step-6 _build_step6_notebook.py:729-730,
 # 844-845. conv_tol=2e-3 is tuned against the achievable floor for
 # def2-svp/grid_level=1 (~1.17e-3 on H2O/C2H2); gives ~1.7x margin
-# (step-6 cell 12). 2-tier cascade verified by R-A in Round-1 review.
+# (step-6 cell 12).
 _OEP_TIERS_RKS: tuple[dict, ...] = (
     {"aux_basis": "def2-svp-jkfit",  "regularization": 1e-4,
      "max_iter": 500,  "conv_tol": 2e-3},
@@ -562,7 +558,7 @@ _OEP_TIERS_RKS: tuple[dict, ...] = (
 # matches the UKS-acceptable threshold established in
 # xcquinox/alec/tests/test_oep_uks.py (which accepts density_error < 0.1
 # for Li/sto-3g, calling 6e-3-class results "real progress, not full
-# convergence"). Verified empirically on HO 2026-05-02: L-BFGS plateaus
+# convergence"). Verified empirically on HO: L-BFGS plateaus
 # at ~6e-3 by iter 5 and oscillates 6.1e-3..8.3e-3 thereafter.
 _OEP_TIERS_UKS: tuple[dict, ...] = (
     {"aux_basis": "def2-svp-jkfit",  "regularization": 1e-4,
@@ -689,7 +685,7 @@ _OVERRIDE_TIER_KNOB_ALLOWLIST: frozenset[str] = frozenset({
     "max_iter",                      # int, >= 1
     "conv_tol",                      # float, > 0
     "grid_level",                    # int, >= 0
-    "level_shift",                   # float, |x| <= 5 (Pass-7)
+    "level_shift",                   # float, |x| <= 5
     "inner_damp",                    # float, in [0, 1)
     "inner_diis_start_cycle",        # int, >= 1
 })
@@ -698,7 +694,7 @@ _OVERRIDE_TIER_KNOB_ALLOWLIST: frozenset[str] = frozenset({
 def _validate_overrides(species_union: list[SpeciesEntry]) -> None:
     """Sanity-check the populated _PER_SPECIES_OEP_OVERRIDES.
 
-    Raises ValueError on any violation. Per spec sec. 5.2 (Pass-8 pin),
+    Raises ValueError on any violation. Per spec sec. 5.2,
     canonical call site is `precompute_all` immediately after
     `build_species_union()` is computed for the run, BEFORE any
     cache-dir migration or preflight. Module import does NOT call this
@@ -713,7 +709,7 @@ def _validate_overrides(species_union: list[SpeciesEntry]) -> None:
     4. Every dict's keys lie within `_OVERRIDE_TIER_KNOB_ALLOWLIST`.
     5. Per-knob bounds: regularization>0, max_iter>=1, conv_tol>0,
        grid_level>=0, inner_damp in [0,1), inner_diis_start_cycle>=1,
-       |level_shift|<=5 (Pass-7: negatives allowed; Ziegler-VSO).
+       |level_shift|<=5 (negatives allowed; Ziegler-VSO).
     """
     valid_keys = {(s.name, s.charge, s.spin) for s in species_union}
     for key, ovr_tiers in _PER_SPECIES_OEP_OVERRIDES.items():
@@ -827,7 +823,7 @@ def _resolve_tiers_for_species(
 
 
 def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
-    """Rename pre-2026-05-03 intermediates to grid-suffixed names.
+    """Rename legacy unsuffixed intermediates to grid-suffixed names.
 
     Scans `_intermediates/` shallow (NOT recursive); renames every
     `<name>_scf.npz` to `<name>_g1_scf.npz` and every `<name>_ccsd.npz`
@@ -836,14 +832,14 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     the remaining files visible to the next migration pass (spec
     sec. 5.6 partial-state recovery).
 
-    Pre-2026-05-03 caches were built at the global default
+    Legacy unsuffixed caches were built at the global default
     grid_level=1 (run_scf_with_cache and run_ccsd_with_cache default
     grid_level=1), so the `_g1_` rename is correct by construction.
 
     Returns the number of files renamed (0 on second / idempotent
     call, > 0 on first call against a legacy cache).
 
-    Pass-8 single-writer assumption: callers must not invoke this
+    Single-writer assumption: callers must not invoke this
     helper concurrently against the same `cache_dir` from multiple
     processes. Sane callers (`precompute_all`, `preflight_uks_oep`,
     the harness's startup precaution) all run sequentially.
@@ -862,9 +858,8 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     import re
     # Pre-compile patterns that match ANY `_g{N}_<stage>.npz` for N in [0,9]
     # (MoleculeSpec.grid_level range per config.py:370). Used to skip
-    # already-grid-suffixed files of any grid_level — not just _g1_.
-    # Pass-9 fix (Plan-2 review): the earlier `name.endswith(suffix_new)`
-    # only-skipped `_g1_*` files, which would have corrupted future
+    # already-grid-suffixed files of any grid_level — not just _g1_. A
+    # `name.endswith(suffix_new)`-only skip would corrupt future
     # `_g2_*` / `_g3_*` caches written by override species (spec §5.6
     # explicitly says "Override species at grid_level=2 get fresh _g2_*
     # files; their _g1_* caches are retained").
@@ -877,11 +872,10 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     ):
         for p in inter.iterdir():     # SHALLOW: iterdir, not rglob
             name = p.name
-            # Pass-8 fix: use regex/endswith — NOT `"_g" in name`
-            # substring test (would corrupt Mg/Hg/Ag).
-            # Pass-9 fix: skip ANY `_g{N}_<stage>.npz` for any N
-            # (Plan-2 review caught that `_g2_scf.npz` would otherwise
-            # be re-renamed to `_g2_g1_scf.npz`).
+            # Use regex/endswith — NOT a `"_g" in name` substring test
+            # (that would corrupt Mg/Hg/Ag). Skip ANY `_g{N}_<stage>.npz`
+            # for any N, else `_g2_scf.npz` would be re-renamed to
+            # `_g2_g1_scf.npz`.
             if already_re.search(name):
                 continue              # already migrated at any g{N}
             if name.endswith(suffix_old):
@@ -896,10 +890,10 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
                 n_renamed += 1
     # Parent-directory fsync for durability across power loss
     # (POSIX rename is atomic per-file but not durable until parent fsync).
-    # Plan-2-review fix: only catch AttributeError (Windows lacks
-    # O_DIRECTORY); let real OSErrors (ENOSPC, EIO) bubble — durability
-    # failures should fail loudly so the user can intervene before SCF
-    # results land in a broken filesystem state.
+    # Only catch AttributeError (Windows lacks O_DIRECTORY); let real
+    # OSErrors (ENOSPC, EIO) bubble — durability failures should fail
+    # loudly so the user can intervene before SCF results land in a
+    # broken filesystem state.
     if hasattr(os, "O_DIRECTORY"):
         dir_fd = os.open(str(inter), os.O_DIRECTORY)
         try:
@@ -993,8 +987,8 @@ def run_oep_cascade(
         regularization = tier["regularization"]
         max_iter = tier["max_iter"]
         conv_tol = tier["conv_tol"]
-        # New per-tier knobs, all with safe defaults that preserve
-        # pre-Plan-2 behavior for non-override species:
+        # Per-tier knobs, all with safe defaults that leave non-override
+        # species on the spin-default cascade:
         tier_grid_level = tier.get("grid_level", grid_level)
         tier_level_shift = tier.get("level_shift", spin_default_level_shift)
         tier_inner_damp = tier.get("inner_damp", 0.1)
@@ -1052,11 +1046,10 @@ def run_oep_cascade(
     # provenance); phase 2's save_vxc_ref merges in vxc_ref + dm_target +
     # provenance (its merge semantics preserve any phase-1 key not in its
     # own payload, so grid_level_used survives the merge).
-    # Use np.savez_compressed for consistency with stages 1+2 caches
-    # (T5 code-quality nit).
+    # Use np.savez_compressed for consistency with stages 1+2 caches.
     # CFG-03: record the generating grid_level so data.py can assert the
     # consumer's resolved grid_level matches what produced this reference.
-    # PHYS-4/CW6 round-4: record the WINNING tier's grid_level (an override tier
+    # Record the WINNING tier's grid_level (an override tier
     # may set its own), not the function arg. ccsd_payload['rho_ref_grid'] was
     # computed at the function-arg grid_level, so if the winning tier ran the
     # OEP on a DIFFERENT grid the stored rho_ref_grid and vxc_ref would live on
@@ -1082,7 +1075,7 @@ def run_oep_cascade(
     # density-error tolerance). It is already in data._ALLOWED_EXTERNAL_KEYS, so
     # downstream can read it to WEIGHT the per-species vxc loss by the achieved
     # floor (recommended; the weighting itself is a training-design choice not
-    # yet wired into losses.L5GradnormVxcStep7 — see review P4-03).
+    # yet wired into losses.L5GradnormVxcStep7).
     alec_oep.save_vxc_ref(
         oep_result, str(npz_path),
         dm_target=ccsd_payload["dm_ao"],
@@ -1111,7 +1104,7 @@ def preflight_uks_oep(
     ~hour of CPU on the full set.
     """
     import numpy as np
-    # Spec sec. 5.6: migrate pre-2026-05-03 unsuffixed cache filenames
+    # Spec sec. 5.6: migrate legacy unsuffixed cache filenames
     # for direct callers that bypass precompute_all (e.g.,
     # smoke_preflight_uks_oep.py, tests). Idempotent no-op when
     # already migrated.
@@ -1155,8 +1148,8 @@ class RunLog:
     """Atomic JSON log for the Cell 0.5 pipeline.
 
     Writes _run_log_partial.json after every species (kill-safe via
-    tempfile.mkstemp + os.replace, matching the T3 atomic-write precedent
-    at external_refs.py:264-274). On finalize, renames to
+    tempfile.mkstemp + os.replace, matching the atomic-write precedent
+    in run_scf_with_cache). On finalize, renames to
     _run_log_<UTC-timestamp>.json so each run's log is preserved for
     later debugging.
     """
@@ -1206,9 +1199,9 @@ class RunLog:
     def _flush(self, *, path=None):
         """Atomic JSON write: tempfile.mkstemp -> write -> os.replace.
 
-        Matches the T3 atomic-write pattern at external_refs.py:264-274
-        so a kill mid-flush cannot leave a corrupt partial JSON that the
-        next run would mis-parse.
+        Matches the atomic-write pattern in run_scf_with_cache so a kill
+        mid-flush cannot leave a corrupt partial JSON that the next run
+        would mis-parse.
         """
         import json
         import os
@@ -1282,13 +1275,12 @@ def precompute_all(
 
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    # Spec sec. 5.2 (Pass-8 canonical call site, Plan-2-review-corrected
-    # ordering): validate the per-species override table BEFORE any
+    # Spec sec. 5.2: validate the per-species override table BEFORE any
     # disk mutation. Orphan keys / typo'd knobs / out-of-range values
     # raise here, fail-fast before migration touches anything.
     if validate_overrides:
         _validate_overrides(species)
-    # Spec sec. 5.6: migrate any pre-2026-05-03 unsuffixed cache
+    # Spec sec. 5.6: migrate any legacy unsuffixed cache
     # filenames BEFORE preflight reads from _intermediates/. Idempotent
     # no-op once migration has run.
     _migrate_intermediates_to_grid_suffixed(cache_dir)

@@ -14,18 +14,18 @@ from xcquinox.alec.descriptors import Descriptor
 
 # Keys allowed in MoleculeSpec.external_data_path .npz files. Kept as a
 # module-level constant so tests and documentation can share it.
-# OEP provenance keys (oep_*) are written by save_vxc_ref (D7 audit fix)
-# so downstream loaders can validate baseline / aux_basis / regularization
-# / convergence consistency against what produced the V_xc.
+# OEP provenance keys (oep_*) are written by save_vxc_ref so downstream
+# loaders can validate baseline / aux_basis / regularization / convergence
+# consistency against what produced the V_xc.
 _ALLOWED_EXTERNAL_KEYS = frozenset({
     "dm_target",
     "rho_ref_grid",
     "ref_density_method",
     "E_ref_literature",
     "vxc_ref",
-    # OEP provenance (D7 audit fix; informational only — not validated
-    # against the consumer's runtime config in this loader, but available
-    # for callers that want to assert agreement).
+    # OEP provenance (informational only — not validated against the
+    # consumer's runtime config in this loader, but available for callers
+    # that want to assert agreement).
     "oep_baseline_xc",
     "oep_aux_basis",
     "oep_regularization",
@@ -33,7 +33,7 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     "oep_converged",
     "oep_lbfgs_status",
     "oep_n_electrons",
-    # CFG-03: grid_level the reference was generated on. When present,
+    # grid_level the reference was generated on. When present,
     # _load_external_data asserts it equals the consumer's resolved
     # grid_level so a reference built on a different grid cannot load
     # silently against a mismatched density/V_xc grid.
@@ -74,11 +74,10 @@ def _load_external_data(
                 f"{sorted(_ALLOWED_EXTERNAL_KEYS)}"
             )
 
-        # CFG-03: if the reference records the grid_level it was generated
-        # on, assert it equals the consumer's resolved grid_level. This is
-        # the primary consistency gate; the per-array shape checks below
-        # remain as a fallback for references written before this key
-        # existed.
+        # If the reference records the grid_level it was generated on,
+        # assert it equals the consumer's resolved grid_level. This is the
+        # primary consistency gate; the per-array shape checks below remain
+        # as a fallback for references that do not carry this key.
         if "grid_level_used" in present and grid_level is not None:
             grid_level_used = int(np.asarray(npz["grid_level_used"]).item())
             if grid_level_used != int(grid_level):
@@ -144,7 +143,7 @@ def _load_external_data(
 
 class MoleculeData(TypedDict, total=True):
     """Pre-computed training/test data for one molecule.
-    Every key is always present; unused keys are None (D-M4/C-M3)."""
+    Every key is always present; unused keys are None."""
     name: str
     is_unrestricted: bool
     nocc: int | None
@@ -203,7 +202,7 @@ def _precompute_cache_key(
     # step6's mid-notebook OEP rerun) invalidates stale cache entries.
     desc_key = tuple(
         (type(d).__name__, getattr(d, "n_features", None),
-         # 2026-05-29: include settings that affect descriptor compute so a
+         # include settings that affect descriptor compute so a
          # DMStatisticsDescriptor(intensive=True) does not collide with
          # DMStatisticsDescriptor(intensive=False) in the cache, and likewise
          # for CuspDescriptor.log_transform.
@@ -248,7 +247,7 @@ def precompute_fixed_density_data(
 
     Baseline keys are always populated. Reference/descriptor keys are computed
     on-demand based on required_keys and descriptor.required_mol_keys.
-    Unused keys are set to None (D-M4/C-M3 treedef-homogeneity).
+    Unused keys are set to None for treedef homogeneity.
 
     Results are memoized in a process-level dict keyed on
     ``(mol_spec, sorted(required_keys), descriptor_classes)``. The
@@ -293,7 +292,7 @@ def precompute_fixed_density_data(
         mf.grids.level = mol_spec.grid_level
     mf.kernel()
 
-    # Overlap conditioning gate (E-H4)
+    # Overlap conditioning gate
     s_matrix = mf.get_ovlp()
     cond_s = float(np.linalg.cond(s_matrix))
     if cond_s > 1e10:
@@ -382,9 +381,8 @@ def precompute_fixed_density_data(
         from xcquinox.features import compute_cusp_descriptor
         nuclear_coords = jnp.array(mol.atom_coords())
         nuclear_charges = jnp.array([mol.atom_charge(i) for i in range(mol.natm)])
-        # 2026-05-29: pull the log_transform flag from the CuspDescriptor
-        # instance so precompute matches what the descriptor's consumer
-        # expects. Default False = pre-fix raw-weighted-Z behavior.
+        # pull the log_transform flag from the CuspDescriptor instance so
+        # precompute matches what the descriptor's consumer expects.
         cusp_log_transform = False
         for d in descriptors:
             if type(d).__name__ == "CuspDescriptor":
@@ -397,19 +395,19 @@ def precompute_fixed_density_data(
 
     if "dm_features" in all_needed:
         from xcquinox.features import compute_dm_features_array
-        # R2-A/R2-E audit fix: pass the SPIN-RESOLVED 3-D DM for UKS
-        # molecules so compute_dm_features picks the per-spin
-        # idempotency-projector branch (Pople-Nesbet 1954: D_sigma S
-        # D_sigma = D_sigma per spin). The pre-fix code passed dm_pbe_tot
-        # (the spin-summed total) which forces the RKS branch and
-        # produces a non-zero, physically-meaningless idempotency_error
-        # on every open-shell molecule because (D_a + D_b)/2 · S ·
-        # (D_a + D_b)/2 != (D_a + D_b)/2 (cross terms D_a S D_b survive).
+        # Pass the SPIN-RESOLVED 3-D DM for UKS molecules so
+        # compute_dm_features picks the per-spin idempotency-projector
+        # branch (Pople-Nesbet 1954: D_sigma S D_sigma = D_sigma per spin).
+        # Passing dm_pbe_tot (the spin-summed total) would force the RKS
+        # branch and produce a non-zero, physically-meaningless
+        # idempotency_error on every open-shell molecule because
+        # (D_a + D_b)/2 · S · (D_a + D_b)/2 != (D_a + D_b)/2 (the cross
+        # terms D_a S D_b survive).
         dm_for_features = jnp.array(dm_pbe) if dm_pbe.ndim == 3 \
                          else jnp.array(dm_pbe_tot)
-        # 2026-05-29: pull the intensive flag from the DMStatisticsDescriptor
-        # instance so precompute matches what the descriptor.compute() consumer
-        # will expect. If multiple DMStatisticsDescriptor instances are present
+        # pull the intensive flag from the DMStatisticsDescriptor instance
+        # so precompute matches what the descriptor.compute() consumer will
+        # expect. If multiple DMStatisticsDescriptor instances are present
         # (shouldn't normally happen), use the first one's flag.
         dm_intensive = False
         for d in descriptors:

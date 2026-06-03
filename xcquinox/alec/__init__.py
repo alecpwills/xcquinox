@@ -65,7 +65,7 @@ from xcquinox.alec.train import run_training
 # OEP utility
 from xcquinox.alec.oep import OEPResult, run_oep_inversion, save_vxc_ref
 
-# PBE-anchor regularization (2026-04-21 step-6 addition)
+# PBE-anchor regularization
 from xcquinox.alec.pbe_anchor import (
     PBEAnchorSample,
     build_pbe_anchor_sample,

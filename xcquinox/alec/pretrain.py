@@ -1,12 +1,11 @@
 """xcquinox.alec.pretrain — Pretraining and legacy checkpoint loading.
 
-Implements THE SPEC §8.1 (run_pretrain), §8.3 (from_legacy_step3b,
+Provides run_pretrain plus the legacy-checkpoint loaders (from_legacy_step3b,
 _load_one_network, _count_disk_records, _metadata_preflight,
-_disk_record_preflight), and the B-H-R15 Round 15 legacy lob_lim constants.
+_disk_record_preflight) and the legacy lob_lim constants.
 
-Plan deviation (§13.6 fixture format): pretrain data is stored as .npz
-(numpy compressed archive) rather than .pkl. The loader falls back to .pkl
-for legacy files.
+Pretrain data is stored as .npz (numpy compressed archive) rather than .pkl.
+The loader falls back to .pkl for legacy files.
 """
 import json
 import os
@@ -33,7 +32,7 @@ _RHO_FLOOR_INTEGRATION = 1e-18
 def _compute_integration_weights(rho, grid_weights=None):
     """Return ``(w_x, w_c)`` integration weights for pretraining.
 
-    **Weight convention (PRE-01, option b):** the per-point weight is the
+    **Weight convention:** the per-point weight is the
     FIRST power (linear) of ``|ρ_i · ε_LDA_i|``, optionally multiplied by
     the Becke-Lebedev quadrature weight ``w_grid_i``.  The resulting loss
     is a ``|ρ · ε_LDA|``-magnitude-weighted mean of the squared per-point
@@ -97,7 +96,7 @@ def _compute_integration_weights(rho, grid_weights=None):
            jnp.broadcast_to(w_c, rho_safe.shape)
 
 
-# === B-H-R15 Round 15 fix: legacy lob_lim constants ===
+# Legacy lob_lim constants.
 #
 # The library-shaped skeletons constructed below are used ONLY to
 # deserialize the on-disk byte stream into a pytree whose leaves we
@@ -106,11 +105,11 @@ def _compute_integration_weights(rho, grid_weights=None):
 # written with — which are the hardcoded library defaults `1.804` (xnet,
 # per `xcquinox/net.py:2049` `GGA_FxNet_extended.__init__` default) and
 # `2.0` (cnet, per `xcquinox/net.py:2228` `GGA_FcNet_extended.__init__`
-# default). Earlier drafts passed `arch.resolved_xnet_lob_lim` /
-# `arch.resolved_cnet_lob_lim` here, which was a bug: when a
+# default). Passing `arch.resolved_xnet_lob_lim` /
+# `arch.resolved_cnet_lob_lim` here is wrong: when a
 # `LiebOxfordBound` constraint is registered on `arch.x_constraints`
 # AND `arch.double_lob_clamp_allowed=False`, the `resolved_xnet_lob_lim`
-# property returns `None` (see §11.1 lines 6016-6024) so that
+# property returns `None` so that
 # `create_network_pair` can build an alec XNet that skips its built-in
 # LOB wrap (the constraint becomes the sole clamp). But `None` is
 # invalid for the LIBRARY class — `GGA_FxNet_extended(lob_lim=None, ...)`
@@ -125,9 +124,9 @@ def _compute_integration_weights(rho, grid_weights=None):
 # semantically correct — we are loading bytes that were *written* with
 # these values, not configuring a fresh network. The alec-side
 # `create_network_pair` still honors `arch.resolved_xnet_lob_lim` (which
-# may be `None` under the C-H1 avoidance rule); the library→alec
+# may be `None`); the library→alec
 # leaf graft is oblivious to `lob_lim` because `_AlecLOB.limit` is
-# `eqx.field(static=True)` (§5.1 D-H2) and therefore not in the pytree
+# `eqx.field(static=True)` and therefore not in the pytree
 # leaf stream.
 _legacy_xnet_lob_lim: float = 1.804  # `xcquinox/net.py:2049` default
 _legacy_cnet_lob_lim: float = 2.0    # `xcquinox/net.py:2228` default
@@ -149,7 +148,7 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
     appending ``_all`` (e.g. ``dm_statistics`` → ``dm_all``,
     ``cusp`` → ``cusp_all``).
 
-    P2-03: when ``for_cnet`` and ``arch.use_polarized_correlation``, a spin
+    When ``for_cnet`` and ``arch.use_polarized_correlation``, a spin
     polarization column ``zeta_all`` is inserted at index 2 (right after
     sigma, BEFORE the descriptor extras) to match the polarized cnet's
     expected ``[rho, sigma, zeta, *extras]`` input layout (see
@@ -160,8 +159,7 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
     input and Fc target), to be refined by zeta-resolved training data.
 
     Raises KeyError if any declared descriptor's pretrain key is
-    absent from pretrain_data — there is NO zero-array fallback
-    (L-B14-2 Round 14).
+    absent from pretrain_data — there is NO zero-array fallback.
     """
     cols = [pretrain_data["rho_all"], pretrain_data["sigma_all"]]
     if for_cnet and arch.use_polarized_correlation:
@@ -380,7 +378,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         rho_all = pretrain_data["rho_all"]
         # Becke-Lebedev quadrature weights ``dr_i`` improve energy-density
         # calibration; older pretrain_data files don't carry them — fall back
-        # with a warning and record the degradation in metadata (PRE-02).
+        # with a warning and record the degradation in metadata.
         grid_weights = pretrain_data.get("weights_all")
         if grid_weights is None:
             integration_weights_complete = False
@@ -394,7 +392,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             )
             _warn.warn(_msg, RuntimeWarning, stacklevel=2)
             # RuntimeWarnings are easy to miss in a SLURM .out log; also emit a
-            # flushed banner so the degradation is unmissable there (CW1-M1).
+            # flushed banner so the degradation is unmissable there.
             print(f"\n{'!' * 72}\n[PRETRAIN WARNING] {_msg}\n{'!' * 72}\n",
                   flush=True)
         else:
@@ -517,12 +515,12 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "min_loss_c": float(np.min(losses_c_np)) if len(losses_c_np) > 0 else float("nan"),
         "use_cusp": use_cusp,
         "use_dm": use_dm,
-        # Shape-changing flag (CODE-5 round-4): polarized cnet input width +1.
+        # Shape-changing flag: polarized cnet input width +1.
         "use_polarized_correlation": bool(spec.arch.use_polarized_correlation),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }
-    # PRE-02: record whether Becke quadrature weights were available for
+    # Record whether Becke quadrature weights were available for
     # integration mode.  None means the run did not use integration weighting.
     if integration_weights_complete is not None:
         metadata["integration_weights_complete"] = integration_weights_complete
@@ -540,12 +538,12 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
 def _count_disk_records(path: str) -> int:
     """Count numpy magic-marker occurrences in a .eqx file.
 
-    L-A13-1 note: byte-level heuristic, not a true numpy header parser.
-    Safe for the dtypes this loader sees; see spec §8.3 for the
-    over-count failure mode and when to replace with a real parser.
+    Byte-level heuristic, not a true numpy header parser. Safe for the
+    dtypes this loader sees; the failure mode is an over-count, at which
+    point a real header parser would be needed.
 
-    M-E13-2 Round 13: stream the file in chunks with a small overlap
-    to avoid slurping a multi-hundred-MB checkpoint into memory.
+    Streams the file in chunks with a small overlap to avoid slurping a
+    multi-hundred-MB checkpoint into memory.
     """
     marker = b'\x93NUMPY'
     count = 0
@@ -567,7 +565,7 @@ def _metadata_preflight(
     metadata_path: str,
     arch: ArchitectureConfig,
 ) -> dict:
-    """M-E13-1 / H-E14-2 / M-E14-1: validate checkpoint metadata against arch."""
+    """Validate checkpoint metadata against arch."""
     try:
         with open(metadata_path, "r") as f:
             md = json.load(f)
@@ -596,7 +594,7 @@ def _disk_record_preflight(
     library_skeleton: eqx.Module,
     arch: ArchitectureConfig,
 ) -> None:
-    """L-A13-1 / M-E13-2: byte-level leaf-count sanity on the library skeleton."""
+    """Byte-level leaf-count sanity on the library skeleton."""
     n_disk_records = _count_disk_records(path)
     n_expected = sum(
         1 for leaf in jax.tree_util.tree_leaves(library_skeleton)
@@ -622,15 +620,15 @@ def _load_one_network(
     trainable array leaves onto a fresh alec skeleton.
 
     Steps:
-    1. Deserialize into library_skeleton (B-H4 / H-E14-1: capture return value).
-    2. Check lobf.limit against expected_lob_lim (H-E13-2 / C-C14-1 Round 14).
+    1. Deserialize into library_skeleton (capture the return value).
+    2. Check lobf.limit against expected_lob_lim.
     3. Graft eqx.is_array leaves from library onto alec via tree_flatten/unflatten
-       (C-E14-1 Round 14 pattern — NOT eqx.tree_at).
+       (NOT eqx.tree_at).
     """
     # Step 2: deserialize — MUST capture the return value
     library_skeleton = eqx.tree_deserialise_leaves(path, library_skeleton)
 
-    # Parameterised lob_lim check (C-C14-1 / H-E13-2 Round 14)
+    # Parameterised lob_lim check
     loaded_lim = library_skeleton.lobf.limit
     if abs(loaded_lim - expected_lob_lim) >= 1e-12:
         raise ValueError(
@@ -735,7 +733,7 @@ def from_legacy_step3b(
         # --- Pretrain-layout branch ---
         _metadata_preflight(metadata_path=pretrain_md_path, arch=arch)
 
-        # B-H-R15 Round 15: library skeletons use hardcoded legacy values
+        # Library skeletons use hardcoded legacy values
         lib_xnet_skel = xcquinox.net.GGA_FxNet_extended(
             depth=arch.depth, nodes=arch.nodes, seed=0,
             lob_lim=_legacy_xnet_lob_lim,
@@ -780,7 +778,7 @@ def from_legacy_step3b(
         return xnet_loaded, cnet_loaded
 
     else:  # has_training
-        # --- Training-layout branch (H-E14-3 Round 14) ---
+        # --- Training-layout branch ---
         _metadata_preflight(metadata_path=training_md_path, arch=arch)
 
         class _RXCModelWrapper(eqx.Module):
@@ -793,7 +791,7 @@ def from_legacy_step3b(
             xnet: eqx.Module
             cnet: eqx.Module
 
-        # B-H-R15 Round 15: same hardcoded legacy values here
+        # Same hardcoded legacy values here
         lib_xnet_skel = xcquinox.net.GGA_FxNet_extended(
             depth=arch.depth, nodes=arch.nodes, seed=0,
             lob_lim=_legacy_xnet_lob_lim,
@@ -816,12 +814,12 @@ def from_legacy_step3b(
         )
         wrapper_skel = _RXCModelWrapper(xnet=lib_xnet_skel, cnet=lib_cnet_skel)
 
-        # H-E14-1 Round 14: MUST capture the return value
+        # MUST capture the return value
         wrapper_loaded = eqx.tree_deserialise_leaves(training_model_path, wrapper_skel)
         lib_xnet_loaded = wrapper_loaded.xnet
         lib_cnet_loaded = wrapper_loaded.cnet
 
-        # Parameterised lob_lim check (B-H-R15 constant fix)
+        # Parameterised lob_lim check
         for loaded, expected, label in [
             (lib_xnet_loaded, _legacy_xnet_lob_lim, "xnet"),
             (lib_cnet_loaded, _legacy_cnet_lob_lim, "cnet"),

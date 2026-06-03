@@ -59,7 +59,7 @@ def build_optimizer(
     of ``n_steps`` THEN linear decay to ``lr_end`` — but ONLY when
     ``lr_decay_start > 0``. With the common ``lr_decay_start = 0`` there is no
     warmup: it is pure linear decay from ``lr_start`` to ``lr_end`` over all
-    ``n_steps`` (C3-02/10).
+    ``n_steps``.
 
     Parameters
     ----------
@@ -108,7 +108,7 @@ def _abort_if_nonfinite(loss_value, components, *, loop, step, group=None):
     offending loop/step/group/channel.
 
     A single NaN/Inf must NEVER silently continue — it poisons every subsequent
-    weight via ``0 * NaN = NaN`` and the whole run becomes garbage (the 2026-06
+    weight via ``0 * NaN = NaN`` and the whole run becomes garbage (the
     polarized-correlation regression did exactly this, undetected, for ~1000
     steps across 8 specs). Called host-side after every optimizer step in every
     update loop; the per-step loss is already pulled to Python there, so the
@@ -265,7 +265,7 @@ def _save_artifacts(spec, model, losses, aux_log, duration) -> dict:
     }
     metadata = {
         "arch_name": spec.arch.name,
-        # Shape-changing flag (CODE-5 round-4): a polarized cnet has input width
+        # Shape-changing flag: a polarized cnet has input width
         # +1, so two checkpoints with the same arch_name but different
         # polarization are NOT interchangeable — record it so loaders can tell.
         "use_polarized_correlation": bool(spec.arch.use_polarized_correlation),
@@ -516,7 +516,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
 
     L0 = loss.compute_components(model, batch, relative=relative)
     L0_values = jnp.stack([L0[k] for k in component_keys])
-    # C3-07: warn (once, at setup) about channels with ~0 step-0 loss; these are
+    # Warn (once, at setup) about channels with ~0 step-0 loss; these are
     # neutralized in the GradNorm rebalancing (see _gradnorm_relative_rates).
     # Predicate identical to _gradnorm_relative_rates' `L0 > floor` (loss
     # components are non-negative by construction, so no abs() needed).
@@ -583,12 +583,12 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
         """Optimizer update (weights + model).  Pure jnp/optax math —
         compiles in <1 s and uses negligible memory.
         """
-        # C3-07: robust relative inverse-training-rates (neutralizes L0~=0
+        # Robust relative inverse-training-rates (neutralizes L0~=0
         # channels instead of letting r ~ comp/1e-12 spike to ~1e10).
         r_relative = _gradnorm_relative_rates(comp_values, L0_values)
         G_mean = jnp.mean(G)
         targets = G_mean * (r_relative ** balancing.alpha)
-        # C3-08: the GradNorm loss is minimized w.r.t. log_weights via the
+        # The GradNorm loss is minimized w.r.t. log_weights via the
         # reparameterization w = softmax(lw)*T (which keeps sum(w)=T exactly),
         # rather than Chen et al.'s direct grad w.r.t. w. Both share the same
         # stationary point (targets are stop_gradient'd); this form is stable

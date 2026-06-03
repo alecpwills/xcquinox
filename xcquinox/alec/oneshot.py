@@ -14,10 +14,10 @@ import jax.numpy as jnp
 
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
-# R2-C N4 audit fix: shared numerical-regularization constants live in
-# ``solver`` (single source of truth across all SCF backends). Pre-fix
-# duplicated copies in oneshot.py and solver_manual.py could silently
-# diverge. Re-exported here for backwards compatibility with
+# Numerical-regularization constants (DEGENERACY_REG, SYM_BREAK_SHIFT) are
+# defined in ``solver`` to maintain a single source of truth across all SCF
+# backends; duplicated copies could silently diverge. Re-exported here for
+# backwards compatibility with
 # ``from xcquinox.alec.oneshot import DEGENERACY_REG`` callers.
 from xcquinox.alec.solver import (
     DEGENERACY_REG,
@@ -89,10 +89,9 @@ def compute_vxc_nn(
 
     ``AlecGGAModel`` is a GGA functional: its XC energy depends on
     ``sigma = |nabla rho|^2``, so a physically correct V_xc *must* include
-    the GGA ``v_sigma`` term. PRE-07 audit fix: rather than silently
-    dropping ``v_sigma`` (returning LDA-only V_xc, which is physically
-    wrong for a GGA model), this function now *refuses* to do so unless the
-    caller explicitly opts in.
+    the GGA ``v_sigma`` term. Rather than silently dropping ``v_sigma``
+    (returning LDA-only V_xc, which is physically wrong for a GGA model),
+    this function *refuses* to do so unless the caller explicitly opts in.
 
     Contract
     --------
@@ -189,33 +188,32 @@ def _compute_vxc_nn_core(
 
     # Sanitize JVP inputs at low-density / vanishing-gradient points.
     #
-    # CODE-02 audit fix: the networks' reduced-gradient transform uses
-    # sqrt(sigma), whose derivative d/dsigma sqrt(sigma) = 1/(2 sqrt(sigma))
-    # diverges as sigma -> 0, and the downstream tanh(s)^2 JVP then evaluates
-    # 0 * inf = NaN. The PRE-existing sanitizer masked only on rho > thr, so a
-    # grid point with rho > thr AND sigma == 0 exactly (reachable on
-    # symmetric / high-symmetry systems, and identically on a zero-occupation
-    # spin channel) slipped through: its NaN v_sigma was NOT masked and spread
-    # through V_sigma -> Fock -> energy/grad.
-    #
-    # Fix: the sanitize predicate (and the v_sigma mask) now ALSO require
-    # sigma > _V_SIGMA_THRESHOLD. We use the standard "safe value under where,
-    # then mask the output with where" double-where trick so that BOTH the
-    # forward value and the reverse-mode (VJP/JVP) gradient are NaN-free: the
-    # masked-out points feed safe (rho=1, sigma=1) inputs into the JVP, and
-    # the JVP output is then forced to exactly 0 — contributing nothing to
-    # V_sigma while keeping 1/(2 sqrt(sigma)) out of the tape entirely.
+    # The networks' reduced-gradient transform uses sqrt(sigma), whose
+    # derivative d/dsigma sqrt(sigma) = 1/(2 sqrt(sigma)) diverges as
+    # sigma -> 0, and the downstream tanh(s)^2 JVP then evaluates
+    # 0 * inf = NaN. A sanitizer masking only on rho > thr lets a grid point
+    # with rho > thr AND sigma == 0 exactly (reachable on symmetric /
+    # high-symmetry systems, and identically on a zero-occupation spin
+    # channel) slip through: its NaN v_sigma is NOT masked and spreads
+    # through V_sigma -> Fock -> energy/grad. So the sanitize predicate (and
+    # the v_sigma mask) ALSO require sigma > _V_SIGMA_THRESHOLD. We use the
+    # standard "safe value under where, then mask the output with where"
+    # double-where trick so that BOTH the forward value and the reverse-mode
+    # (VJP/JVP) gradient are NaN-free: the masked-out points feed safe
+    # (rho=1, sigma=1) inputs into the JVP, and the JVP output is then forced
+    # to exactly 0 — contributing nothing to V_sigma while keeping
+    # 1/(2 sqrt(sigma)) out of the tape entirely.
     #
     # _V_SIGMA_THRESHOLD is DENORMAL-LEVEL (1e-30), NOT 1e-10. This is critical
-    # for energy<->potential consistency (verified 2026-05-23). v_sigma is NOT
-    # singular as sigma->0: with the tanh(s)^2 gate the enhancement obeys
-    # F-1 ~ s^2 so F'(s) ~ s ~ sqrt(sigma), which exactly CANCELS the
-    # 1/(2 sqrt(sigma)) from d sqrt(sigma)/d sigma, leaving a FINITE v_sigma
-    # limit. The NaN is purely the 0*inf artefact at sigma == 0 EXACTLY (and at
-    # denormal underflow). An earlier 1e-10 threshold masked v_sigma over the
-    # whole sigma <= 1e-10 RANGE, zeroing a finite, energy-significant
+    # for energy<->potential consistency. v_sigma is NOT singular as
+    # sigma->0: with the tanh(s)^2 gate the enhancement obeys F-1 ~ s^2 so
+    # F'(s) ~ s ~ sqrt(sigma), which exactly CANCELS the 1/(2 sqrt(sigma))
+    # from d sqrt(sigma)/d sigma, leaving a FINITE v_sigma limit. The NaN is
+    # purely the 0*inf artefact at sigma == 0 EXACTLY (and at denormal
+    # underflow). A 1e-10 threshold masks v_sigma over the whole
+    # sigma <= 1e-10 RANGE, zeroing a finite, energy-significant
     # contribution: on an open-shell Li channel ~49% of points fall in that
-    # range and the masked V_xc captured only ~52% of the true energy
+    # range and the masked V_xc captures only ~52% of the true energy
     # derivative (FD energy<->potential residual 0.92 vs 2.3e-7 at 1e-30). At
     # 1e-30 only the genuinely-singular sigma==0 / denormal points are masked
     # (1/(2 sqrt(1e-30)) = 5e14 is finite; underflow risk is below ~1e-300), so
@@ -341,12 +339,12 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
     rho_tot = rho_a + rho_b
     ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, features)
     ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, features)
-    # 2026-05-29: explicit attribute read instead of getattr(..., False) silent
-    # fallback. A polarized model.eqx that loses use_spin_polarization during
-    # (de)serialization would have silently dropped zeta on the open-shell
-    # path before this change, making polarized vs unpolarized indistinguishable
-    # at eval (forensic-review H3). Raises AttributeError if the cnet lacks
-    # the attribute entirely (legacy hand-built cnet, not normal flow).
+    # Explicit attribute read instead of getattr(..., False) silent fallback.
+    # A polarized model.eqx that loses use_spin_polarization during
+    # (de)serialization would silently drop zeta on the open-shell path,
+    # making polarized vs unpolarized indistinguishable at eval. Raises
+    # AttributeError if the cnet lacks the attribute entirely (legacy
+    # hand-built cnet, not normal flow).
     if not hasattr(model.cnet, "use_spin_polarization"):
         raise AttributeError(
             "model.cnet has no `use_spin_polarization` attribute. This "
@@ -423,9 +421,8 @@ def total_energy_for_solver(model, mol_data, solver_config=None):
       functional on ``rho_PBE`` (:func:`fixed_density_total_energy`). FIXED_J
       stays one-shot deliberately: its ``run_scf`` energy is a J-pinned hybrid
       (``J[rho_PBE]`` acting on ``rho_scf != rho_PBE``) that is NOT a valid
-      energy functional of any single density — the 2026-04-24 fix removed it
-      after it drove FIXED_J specs to lowest train loss but 50+ kcal/mol eval
-      atomization-energy error.
+      energy functional of any single density — using it drove FIXED_J specs
+      to lowest train loss but 50+ kcal/mol eval atomization-energy error.
     """
     from xcquinox.alec.solver import SolverMode  # local: avoid import cycle
     if solver_config is not None and solver_config.mode == SolverMode.FULL:
@@ -459,7 +456,7 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
     point. Standard atom-centered Lebedev grids have no sigma == 0 points, but
     high-symmetry / custom grids do; using ``safe_sigma`` matches the sibling
     ``compute_vxc_nn`` (which also evaluates v_rho at safe_sigma) and is
-    byte-identical at every physical sigma > 1e-30 (PHYS-2 review, 2026-05-24).
+    byte-identical at every physical sigma > 1e-30.
     """
     # eps_c density as a function of the SPIN densities (rho_tot + zeta formed
     # internally with the SAME clip/floor the UKS energy uses).
@@ -584,8 +581,7 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
     # Correlation. P2-03: a spin-polarization-aware cnet makes V_c PER-SPIN
     # (zeta = (rho_a-rho_b)/rho_tot couples the spins); otherwise V_c is the
     # zeta=0 total-density potential, shared by both spins (the fast path).
-    # 2026-05-29: explicit attribute read (forensic-review H3) — see
-    # split_exc_energy_uks for rationale.
+    # Explicit attribute read — see split_exc_energy_uks for rationale.
     if not hasattr(model.cnet, "use_spin_polarization"):
         raise AttributeError(
             "model.cnet has no `use_spin_polarization` attribute (see "
@@ -644,16 +640,13 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         fock_a = h_core + j_total + vxc_nn_a
         fock_b = h_core + j_total + vxc_nn_b
 
-        # Transform to orthogonal basis. The uniform DEGENERACY_REG * I
-        # shift alone does NOT resolve eigenvalue degeneracies (every
-        # eigenvalue moves by the same amount), which breaks the eigh VJP
-        # on linear-symmetry molecules. Adding a small non-uniform diag
+        # Transform to orthogonal basis. A uniform DEGENERACY_REG * I shift
+        # does NOT resolve eigenvalue degeneracies (every eigenvalue moves by
+        # the same amount, commuting through eigh), which breaks the eigh VJP
+        # on linear-symmetry molecules. Only the non-uniform diag
         # (_sym_break_diag) resolves exact degeneracies so 1/(λ_i - λ_j)
         # in the reverse-mode derivative stays finite. See SYM_BREAK_SHIFT
         # block comment for full rationale.
-        # R2-C M4 audit fix: dropped dead `+ DEGENERACY_REG * jnp.eye(nao)`
-        # uniform shift (commutes through eigh; doesn't break degeneracies).
-        # Only the non-uniform _sym_break_diag does work.
         _sb = jnp.diag(_sym_break_diag(nao, fock_a.dtype))
         fock_orth_a = L_inv @ fock_a @ L_inv.T + _sb
         fock_orth_b = L_inv @ fock_b @ L_inv.T + _sb
@@ -667,12 +660,11 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         mo_coeff_b = L_inv.T @ mo_coeff_orth_b
 
         # Density matrices (no factor of 2 for UKS).
-        # R2-C N1 audit fix: occupation-mask form (C * occ) @ C.T matches
-        # the RKS path's gradient stability under multi-cycle eigh on
-        # degenerate-eigenvalue Fock matrices (e.g. linear-symmetry mols
-        # C2H2 / HCN / C2H4). Pre-fix slice form C[:, :nocc] @ C[:, :nocc].T
-        # produced 0*NaN=NaN through reverse-mode at exact p-orbital
-        # degeneracies.
+        # Occupation-mask form (C * occ) @ C.T matches the RKS path's gradient
+        # stability under multi-cycle eigh on degenerate-eigenvalue Fock
+        # matrices (e.g. linear-symmetry mols C2H2 / HCN / C2H4). The slice
+        # form C[:, :nocc] @ C[:, :nocc].T produces 0*NaN=NaN through
+        # reverse-mode at exact p-orbital degeneracies.
         occ_a = (jnp.arange(nao) < nocc_a).astype(mo_coeff_a.dtype)
         occ_b = (jnp.arange(nao) < nocc_b).astype(mo_coeff_b.dtype)
         dm_a = (mo_coeff_a * occ_a) @ mo_coeff_a.T
@@ -699,8 +691,7 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         # Transform to orthogonal basis. Only the non-uniform
         # _sym_break_diag perturbation does work — a uniform
         # DEGENERACY_REG * I shift commutes through eigh and leaves
-        # eigenvalue gaps unchanged (M4 audit fix: dropped uniform
-        # term as dead weight). See SYM_BREAK_SHIFT block comment for
+        # eigenvalue gaps unchanged. See SYM_BREAK_SHIFT block comment for
         # full rationale on the non-uniform shift.
         fock_orth = (L_inv @ fock @ L_inv.T
                      + jnp.diag(_sym_break_diag(nao, fock.dtype)))
@@ -714,7 +705,7 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         # Density matrix (factor of 2 for RKS double occupation).
         # Use occupation-mask form to match the UKS path's gradient
         # stability under multi-cycle eigh on degenerate-eigenvalue
-        # Fock matrices (H2 audit fix).
+        # Fock matrices.
         occ = (jnp.arange(nao) < nocc).astype(mo_coeff.dtype)
         dm_pred = 2.0 * (mo_coeff * occ) @ mo_coeff.T
 

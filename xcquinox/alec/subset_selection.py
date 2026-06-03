@@ -4,8 +4,8 @@ This module ports the legacy data_binning2.ipynb cell-17 algorithm into
 the alec subpackage and extends it with a Jensen-Shannon divergence
 metric in addition to the original Euclidean L2-on-bins metric.
 
-Binning (2026-05-24): all three descriptors are binned on a LINEAR scale,
-with per-feature ``[0.1, 99.9]``-percentile edges. The legacy method used
+Binning: all three descriptors are binned on a LINEAR scale, with
+per-feature ``[0.1, 99.9]``-percentile edges. The legacy method used
 ``log10(x + 1e-10)`` to give cross-scale feature values equal treatment, but
 the descriptors are ALREADY scale-compressed (ρ^{1/3}, not ρ) and each feature
 is independently percentile-ranged, so that range is handled by the descriptor
@@ -115,7 +115,7 @@ def compute_descriptor_triple(
 
 _DESCRIPTOR_KEYS = ("rho_third", "s", "alpha")
 
-# C4-03: per-descriptor weights for the selection objective. DEFAULT is equal
+# Per-descriptor weights for the selection objective. DEFAULT is equal
 # (1.0 each) so existing subset selections reproduce EXACTLY. Rationale for
 # making it configurable: the trained GGA model is structurally blind to tau, so
 # the meta-GGA descriptor ``alpha = (tau - tau_W)/tau_unif`` is a coordinate the
@@ -147,13 +147,13 @@ def metric_l2(h_ref: dict, h_cand: dict, weights=None) -> float:
                     + (p^ref_a   - p^cand_a)^2_b )
 
     where each ``p`` is the marginal normalized to a probability MASS function
-    (sum=1) via ``_to_pmf`` — like ``metric_jsd``. PMF-normalization (2026-05-24)
-    makes the three marginals dimensionless and binwidth-independent, so each
-    descriptor is treated equally regardless of its raw range (the prior
-    ``density=True`` form let a narrow-range descriptor dominate). ``weights``
-    (C4-03) scales each descriptor's squared contribution; None = equal. A
-    candidate marginal with zero in-range mass is maximally divergent (cannot
-    represent the reference) → +inf, never selected (mirrors ``metric_jsd``).
+    (sum=1) via ``_to_pmf`` — like ``metric_jsd``. PMF-normalization makes the
+    three marginals dimensionless and binwidth-independent, so each descriptor
+    is treated equally regardless of its raw range (the prior ``density=True``
+    form let a narrow-range descriptor dominate). ``weights`` scales each
+    descriptor's squared contribution; None = equal. A candidate marginal with
+    zero in-range mass is maximally divergent (cannot represent the reference)
+    → +inf, never selected (mirrors ``metric_jsd``).
     """
     w = _resolve_descriptor_weights(weights)
     diffs_sq = np.zeros(NBINS)
@@ -191,11 +191,11 @@ def _kl(p: np.ndarray, q: np.ndarray) -> float:
     """Kullback-Leibler divergence in nats between two PMFs.
 
     Probabilities are lower-floored at KL_PROB_CLIP to avoid log(0); there
-    is NO upper clip — a PMF entry never exceeds 1 once normalized, and
-    upper-clipping legitimate (density) peaks was the SUBSET-01 defect.
-    Inputs are normalized to PMFs (sum=1) before the divergence so the
-    result is the genuine KL divergence bounded such that the resulting
-    JSD lies in [0, ln 2].
+    is NO upper clip — a PMF entry never exceeds 1 once normalized, so
+    upper-clipping would distort legitimate (density) peaks. Inputs are
+    normalized to PMFs (sum=1) before the divergence so the result is the
+    genuine KL divergence bounded such that the resulting JSD lies in
+    [0, ln 2].
     """
     p_pmf = _to_pmf(p)
     q_pmf = _to_pmf(q)
@@ -210,7 +210,7 @@ def metric_jsd(h_ref: dict, h_cand: dict, weights=None) -> float:
     JSD(P||Q) = 0.5 [ KL(P||M) + KL(Q||M) ],   M = (P+Q)/2.
 
     Reference: Lin, IEEE Trans. Inf. Theory 37 (1991) eq. (4.1).
-    ``weights`` (C4-03) scales each marginal's JSD; None = equal (default).
+    ``weights`` scales each marginal's JSD; None = equal (default).
 
     Each marginal histogram is normalized to a probability MASS function
     (sum=1) before the divergence (see :func:`_to_pmf`); the per-marginal
@@ -223,7 +223,7 @@ def metric_jsd(h_ref: dict, h_cand: dict, weights=None) -> float:
     w = _resolve_descriptor_weights(weights)
     total = 0.0
     for k in _DESCRIPTOR_KEYS:
-        # SUBSET-05 / C4-04: a candidate marginal with zero in-range mass has no
+        # SUBSET-05: a candidate marginal with zero in-range mass has no
         # grid points in this descriptor's range — it cannot represent the
         # reference distribution at all, so it is MAXIMALLY divergent and must
         # never be selected. Without this guard _to_pmf -> all-zeros makes
@@ -296,8 +296,8 @@ def _metric_l2_batch(h_ref: dict, h_cand_batch: dict, weights=None) -> np.ndarra
 
     Equivalent to ``[metric_l2(h_ref, {k: h_cand_batch[k][b] ...}) for b in batch]``
     but computed in a single numpy expression.  Returns shape ``(batch,)``.
-    ``weights`` (C4-03) scales each descriptor's squared contribution; None =
-    equal weights (default, behavior-preserving).
+    ``weights`` scales each descriptor's squared contribution; None = equal
+    weights (default, behavior-preserving).
     """
     w = _resolve_descriptor_weights(weights)
     batch_size = next(iter(h_cand_batch.values())).shape[0]
@@ -503,7 +503,7 @@ def select_subset(
         m_batch = _metric_jsd_batch
     else:
         raise ValueError(f"unknown metric: {metric!r}")
-    # C4-03: bind per-descriptor weights (default equal => behavior-preserving).
+    # Bind per-descriptor weights (default equal => behavior-preserving).
     # Validate up front so a bad key fails loudly before the long enumeration.
     _weights = _resolve_descriptor_weights(descriptor_weights)
     import functools as _functools

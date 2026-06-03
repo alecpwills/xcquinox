@@ -8,7 +8,7 @@ this mixed pool, and the resulting ``spec.molecules`` is the deduplicated
 union of all participating species across the chosen points (no implicit
 augmentation; every species in the spec comes from a chosen point).
 
-Per spec design (2026-05-07):
+Per spec design:
 - Each TrainingPoint carries its own atom anchors EXPLICITLY in
   ``species`` (design choice "b"). Spec builder dedupes by
   ``(name, charge, spin)``.
@@ -143,10 +143,9 @@ def _bh76_point_from_dict(
     - ``"reaction_energy"`` (DEFAULT) — the true reaction energy ΔE
       (GMTKN55-BH76RC). The loss is trained against E(products) −
       E(reactants), matching Dick & Fernandez-Serra 2021 (their
-      training set had no transition-state geometries). This is the
-      bug fix: the historical ``e_rxn_ref`` values were barrier
-      heights, which the reactant→product stoichiometry cannot
-      reproduce.
+      training set had no transition-state geometries). The reference
+      MUST be a reaction energy, since barrier heights cannot be
+      reproduced by the reactant→product stoichiometry.
     - ``"barrier_height"`` (opt-in) — the forward barrier height. A
       true forward barrier is ``E(TS) − E(reactants)``, so each
       reaction must additionally supply a transition-state geometry
@@ -275,8 +274,8 @@ def build_dfs_pool_points(
           carry the true reaction energy ΔE (GMTKN55-BH76RC) as
           ``e_rxn_ref``. The BH76 loss term computes
           ``Σ coeffs·E = E(products) − E(reactants)``, so the reference
-          MUST be a reaction energy — this is the correct, bug-fixed
-          behaviour and matches Dick & Fernandez-Serra 2021.
+          MUST be a reaction energy — this is the correct behaviour and
+          matches Dick & Fernandez-Serra 2021.
         - ``'barrier_height'`` (opt-in) — BH76 points carry the forward
           barrier height as ``e_rxn_ref``. A true forward barrier is
           ``E(TS) − E(reactants)``, which requires a transition-state

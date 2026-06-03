@@ -122,22 +122,22 @@ class ArchitectureConfig:
     # input width +1) requiring retrain + re-pretrain.
     use_polarized_correlation: bool = False
 
-    # 2026-05-29 forensic-review fixes — each is a NEW checkpoint family.
-    # Defaults match pre-fix behavior so old pickles round-trip byte-identical;
-    # NEW archs in the registry / cluster YAML explicitly set True to opt in.
+    # Physics-correction flags (each is a NEW checkpoint family). Defaults
+    # preserve byte-identical deserialization of old checkpoints; new registry
+    # entries and cluster runs explicitly set True to opt in.
     #
     # dm_entropy_intensive: True divides the Shannon entropy by ln(max(n_occ, 2))
     # so dm_entropy is size-intensive (Dick & Fernández-Serra 2021 style). False
-    # keeps the size-extensive ln(n_occ) form (pre-fix).
+    # keeps the size-extensive ln(n_occ) form.
     dm_entropy_intensive: bool = False
     # descriptor_log_transform: True applies the Dick XCDiff
     # (1 - exp(-x²)) · log(x + 1) transform to s (XNet input) and rs+s (CNet
     # input), and to weighted_Z (CuspDescriptor feature 1). False feeds raw
-    # values (pre-fix; what the May 25-26 cluster runs used).
+    # values.
     descriptor_log_transform: bool = False
     # zero_init_final_layer: True zeros the final MLP layer's weight + bias at
     # construction so Fx = Fc = 1 exactly at init (PBE limit). False keeps
-    # Glorot init (pre-fix; gives Fx mean ~+2.65e-4 off 1).
+    # Glorot init (gives Fx mean ~+2.65e-4 off 1).
     zero_init_final_layer: bool = False
 
     def __post_init__(self):
@@ -248,7 +248,7 @@ class ArchitectureConfig:
 
     def materialize_descriptors(self):
         from xcquinox.alec.descriptors import make_descriptor
-        # 2026-05-29: inject the arch-level flags into the descriptor kwargs
+        # Inject the arch-level flags into the descriptor kwargs
         # when the descriptor type recognizes them. ``intensive`` lives on
         # DMStatisticsDescriptor; ``log_transform`` on CuspDescriptor. Other
         # descriptors ignore the unknown kwargs (filtered by make_descriptor
@@ -355,13 +355,10 @@ ARCHITECTURES = {
     "shallow_attn":        ArchitectureConfig(name="shallow_attn", depth=2, nodes=8,  attention=True, num_heads=2),
     "medium":              ArchitectureConfig(name="medium",       depth=3, nodes=16),
     "medium_attn":         ArchitectureConfig(name="medium_attn",  depth=3, nodes=16, attention=True, num_heads=4),
-    # 2026-05-29: each of the 12 deep_* entries below is built via
-    # ArchitectureConfig.from_spec so the new gated-default-on physics flags
-    # (dm_entropy_intensive, descriptor_log_transform, zero_init_final_layer)
-    # default True at registry-construction time. Old pickled specs that
-    # lack these fields unpickle to False (preserves pre-fix behavior for
-    # checkpoints in ~/Documents/Research/xcquinox-results/runs/*); any new
-    # spec built through the cluster harness picks up True automatically.
+    # Each of the 12 deep_* entries enables physics-correction flags
+    # (dm_entropy_intensive, descriptor_log_transform, zero_init_final_layer).
+    # Built via ArchitectureConfig.from_spec with True defaults; old pickled
+    # specs without these fields unpickle to False for compatibility.
     "deep":                ArchitectureConfig.from_spec("deep",               4, 32,
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True,
@@ -404,10 +401,10 @@ ARCHITECTURES = {
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True,
                               zero_init_final_layer=True),
-    # 2026-05-29: notransform variants — NO DM/Cusp descriptors and the Dick
-    # XCDiff log-transform on s/rs is DISABLED. dm_entropy_intensive is a no-op
-    # here (no DM descriptor) but kept default True for consistency.
-    # zero_init_final_layer stays True (good init hygiene regardless).
+    # Notransform variants: no DM/Cusp descriptors and descriptor_log_transform
+    # =False. Baseline comparison without Dick XCDiff features.
+    # dm_entropy_intensive is a no-op here (no DM descriptor) but kept True for
+    # consistency; zero_init_final_layer stays True (good init hygiene).
     "deep_notransform":       ArchitectureConfig.from_spec("deep_notransform",      4, 32,
                               dm_entropy_intensive=True,
                               descriptor_log_transform=False,
@@ -636,7 +633,7 @@ class TrainingSpec:
     solver_config: object | None = None
     loss_metric: str = "absolute"
     balancing: object | None = None
-    # PBE-anchor regularization (step 6, 2026-04-21). Direct fields rather
+    # PBE-anchor regularization (step 6). Direct fields rather
     # than loss_kwargs because PBEAnchorSample contains jnp.ndarrays that
     # `_freeze` refuses. `object | None` matches the `solver_config` /
     # `balancing` precedent.
@@ -645,13 +642,13 @@ class TrainingSpec:
     # When True (default), validate() requires every element symbol
     # appearing in any compound's composition to ALSO appear as a
     # single-atom training molecule (so `_atomic_reg` and the AE-anchor
-    # bookkeeping have a place to point). With the 2026-05-07 mixed-pool
+    # bookkeeping have a place to point). With the mixed-pool
     # subset design, atom anchors are restricted to the Dick H/Li set
     # by construction; setting this False disables the enforcement so
     # specs can carry C/N/O/F/... compounds without forcing single-atom
     # MoleculeSpecs for those elements.
     require_atom_anchors: bool = True
-    # Optimizer update scheme (2026-06-01):
+    # Optimizer update scheme:
     #   "batched"      — one full-batch optimizer step per training step over
     #                    ALL species at once, with the configured `balancing`
     #                    strategy (GradNorm etc). The historical default.
@@ -887,7 +884,7 @@ class TestSpec:
     save_per_molecule: bool = True
     save_aggregate: bool = True
     solver_config: object | None = None
-    # PBE-anchor regularization (step 6, 2026-04-21). Direct fields rather
+    # PBE-anchor regularization (step 6). Direct fields rather
     # than loss_kwargs because PBEAnchorSample contains jnp.ndarrays that
     # `_freeze` refuses. `object | None` matches the `solver_config` /
     # `balancing` precedent.

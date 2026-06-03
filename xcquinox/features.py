@@ -47,9 +47,9 @@ def compute_dm_natural_occupations(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarr
     symmetric ``S^{1/2} D S^{1/2}``); see also E. R. Davidson, *Reduced Density
     Matrices in Quantum Chemistry* (Academic Press, 1976), Ch. 2.
 
-    NOTE (DESC-11 fix): the previous implementation used the *Löwdin* transform
-    ``S^{-1/2} D S^{-1/2}``, whose eigenvalues are those of ``S^{-1} D`` — these
-    are NOT the natural occupations whenever ``S != I``.
+    NOTE: the *Löwdin* transform ``S^{-1/2} D S^{-1/2}`` has eigenvalues equal
+    to those of ``S^{-1} D`` — these are NOT the natural occupations whenever
+    ``S != I``, so the symmetric ``S^{1/2} D S^{1/2}`` transform is used here.
 
     :param dm: Total (spin-summed) density matrix in AO basis, shape (nao, nao).
     :type dm: jnp.ndarray
@@ -100,14 +100,13 @@ def compute_dm_features(
           a probability distribution ``p_i = n_i / sum_j n_j``, where the
           occupations ``n_i`` are the eigenvalues of ``D S`` (see
           ``compute_dm_natural_occupations``; Löwdin, Phys. Rev. 97, 1474, 1955).
-          DESC-07 caveat: this quantity is *size-dependent* (it scales roughly
+          Caveat: this quantity is *size-dependent* (it scales roughly
           like ``ln(N_occ)``) and is nonzero even for an uncorrelated single
           determinant, so it is NOT a clean electron-correlation indicator —
           'idempotency_error' is the quantity that vanishes for a single
-          determinant. (The DESC-11 correctness fix to the natural-occupation
-          transform still shifts this feature's numeric value relative to the
-          pre-fix code for ``S != I``; checkpoints trained on the old values
-          would, strictly, need re-evaluation.)
+          determinant. (The symmetric natural-occupation transform shifts this
+          feature's numeric value for ``S != I``; checkpoints trained on the
+          earlier values would, strictly, need re-evaluation.)
         - 'off_diag_norm': Frobenius norm of off-diagonal elements / trace.
         - 'trace': Tr(DM @ S) = number of electrons.
     :rtype: Dict[str, float]
@@ -137,20 +136,19 @@ def compute_dm_features(
         ) / (n_norm + 1e-12)
 
     # Natural-orbital occupations = eigenvalues of D @ S, obtained from the
-    # symmetric similarity transform S^{1/2} D S^{1/2} (DESC-11). The Löwdin
-    # transform S^{-1/2} D S^{-1/2} used previously yields eig(S^{-1} D), which
-    # are NOT the natural occupations when S != I.
+    # symmetric similarity transform S^{1/2} D S^{1/2}. The Löwdin transform
+    # S^{-1/2} D S^{-1/2} yields eig(S^{-1} D), which are NOT the natural
+    # occupations when S != I.
     occupations = compute_dm_natural_occupations(dm, S)
 
     # Shannon (von-Neumann-like) entropy of the natural-orbital occupations,
     # normalized to a probability distribution: -sum_i p_i ln p_i with
     # p_i = n_i / sum_j n_j. The occupations are the correct natural occupations
-    # (eig(D S), DESC-11). NOTE: the raw form is size-extensive — in the
+    # (eig(D S)). NOTE: the raw form is size-extensive — in the
     # single-determinant equal-occupation limit it collapses to ln(N_occ),
-    # broadcasting molecule-size info to every grid point (forensic review
-    # 2026-05-29). The intensive form (controlled by ``intensive`` flag) divides
-    # by ln(max(n_orb_eff, 2)) so the feature is in [0, 1] and is a size-intensive
-    # correlation indicator.
+    # broadcasting molecule-size info to every grid point. The intensive form
+    # (controlled by ``intensive`` flag) divides by ln(max(n_orb_eff, 2)) so the
+    # feature is in [0, 1] and is a size-intensive correlation indicator.
     occupations = jnp.clip(occupations, 1e-12, 2.0)  # physical bounds
     occ_normalized = occupations / (jnp.sum(occupations) + 1e-12)
     dm_entropy = -jnp.sum(occ_normalized * jnp.log(occ_normalized + 1e-12))
@@ -306,10 +304,10 @@ def compute_cusp_descriptor(grid_coords: jnp.ndarray,
     # (log_weighted_Z >> 5) smoothly saturate at +1 rather than entering
     # the MLP as large unnormalized features.
     #
-    # 2026-05-29: ``log_transform`` flag — when True (XCDiff convention),
-    # compress the weighted-Z via log before tanh; when False, feed the
-    # raw weighted-Z through tanh directly (pre-fix behavior; preserved
-    # for backward-compat of old checkpoints).
+    # ``log_transform`` flag — when True (XCDiff convention), compress the
+    # weighted-Z via log before tanh; when False, feed the raw weighted-Z
+    # through tanh directly (preserved for backward-compat of old
+    # checkpoints).
     if log_transform:
         log_weighted_Z = jnp.log(features['weighted_Z_sum'] + 1e-12)
         weighted_Z_bounded = jnp.tanh(log_weighted_Z / 5.0)

@@ -91,11 +91,10 @@ class LiebOxfordBound(Constraint):
         (11)–(12) (their ``I_{1.174}`` likewise floors F_x at 0), and the
         in-network ``_AlecLOB`` squash (``xcquinox/alec/networks.py``).
 
-    REFPHYS-02 fix (2026-05-23 review, verified twice against Oliver & Perdew
-    1979 / PBE 1996 / Dick 2021): the previous implementation used a *symmetric*
-    ``tanh`` clamp ``F = 1 + (mu-1) tanh((F_raw-1)/(mu-1))`` whose lower asymptote
-    ``2 - mu = 0.196`` is an artefact of the symmetry, not a theorem — it
-    needlessly forbade the physically-allowed range ``0 ≤ F_x < 0.196``.
+    A *symmetric* ``tanh`` clamp ``F = 1 + (mu-1) tanh((F_raw-1)/(mu-1))`` is
+    NOT used: its lower asymptote ``2 - mu = 0.196`` is an artefact of the
+    symmetry, not a theorem, and would needlessly forbid the
+    physically-allowed range ``0 ≤ F_x < 0.196``.
     """
     registry_name: ClassVar[str] = "lieb_oxford"
     mu: float = eqx.field(default=1.804, static=True)
@@ -179,9 +178,7 @@ class NonNegativeCorrelation(Constraint):
     of the exact functional (not to be confused with the Levy-Perdew
     coordinate-scaling inequality, which is a separate result).
 
-    The softplus math is correct (fixed point F=1, floor exactly 0); only
-    the physical framing is clarified here relative to earlier versions of
-    this docstring.
+    The softplus math has fixed point F=1 and floor exactly 0.
     """
     registry_name: ClassVar[str] = "non_negative_correlation"
 

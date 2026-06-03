@@ -110,9 +110,9 @@ def _reassemble_features_on_grid(
     For UKS, ``dm`` may have shape ``(2, nao, nao)``. We pass the
     spin-resolved DM unchanged to ``DMStatisticsDescriptor.compute_from_dm``
     so the underlying ``compute_dm_features`` picks its UKS branch
-    (Pople-Nesbet 1954: D_sigma S D_sigma = D_sigma per spin). R2-A/R2-E
-    audit fix: pre-fix code summed alpha+beta into a 2-D total DM and
-    routed UKS through the RKS idempotency branch, producing a non-zero
+    (Pople-Nesbet 1954: D_sigma S D_sigma = D_sigma per spin). Summing
+    alpha+beta into a 2-D total DM and routing UKS through the RKS
+    idempotency branch would instead produce a non-zero,
     physically-meaningless idempotency_error.
     """
     from xcquinox.alec.descriptors import CuspDescriptor, DMStatisticsDescriptor
@@ -189,7 +189,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
     The non-zero ``ud`` term comes entirely from the total-density
     correlation (sigma_tot = sigma_uu + 2 sigma_ud + sigma_dd).
 
-    P2-03: when ``cnet.use_spin_polarization`` is set, correlation uses the
+    When ``cnet.use_spin_polarization`` is set, correlation uses the
     zeta-dependent PW92 baseline and ``vrho_c`` becomes PER-SPIN
     (``vrho_c_a != vrho_c_b``); ``vsigma_c`` stays shared because zeta has no
     sigma dependence (Dick & Fernandez-Serra, PRB 104 L161109 (2021)). Flag
@@ -225,7 +225,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             features_full = feature_holder["features_full"]
             offset = int(feature_holder["offset"])
             features_slice = features_full[offset:offset + block_size]
-            # R1 H4 audit fix: pyscfad's block_loop may emit non-uniform
+            # pyscfad's block_loop may emit non-uniform
             # block sizes — the last block of an unpadded grid is smaller
             # than NBLK, and `non0tab` pruning can skip blocks entirely
             # while still advancing block_loop's internal cursor. Both
@@ -327,7 +327,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             # on the TOTAL density (zeta=0) on the default fast path, because
             # the baseline pw92c_unpolarized_scalar is spin-unpolarized (von
             # Barth & Hedin, J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45,
-            # 13244 (1992)). P2-03: when cnet.use_spin_polarization is set,
+            # 13244 (1992)). When cnet.use_spin_polarization is set,
             # correlation instead uses the zeta-dependent PW92 baseline and a
             # per-spin vrho_c (Dick & Fernandez-Serra, PRB 104 L161109 (2021)).
             #
@@ -342,7 +342,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             ex_b_density, vrho_x_b, vsigma_x_b = _eval_part(
                 eval_single_x, 2.0 * rho_b, 4.0 * sigma_bb, features_blk,
             )
-            # Correlation. P2-03: when the cnet is spin-polarization-aware,
+            # Correlation. When the cnet is spin-polarization-aware,
             # eps_c depends on rho_a/rho_b through BOTH rho_tot AND
             # zeta = (rho_a-rho_b)/rho_tot (Dick & Fernandez-Serra, PRB 104
             # L161109 (2021)), so vrho_c is PER-SPIN. zeta has no sigma
@@ -379,7 +379,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             # SOLV-01 split energy density:
             #   E_density = 0.5 (ex_a_density + ex_b_density) + ec_density.
             xc_density = 0.5 * (ex_a_density + ex_b_density) + ec_density
-            # H3 audit fix: 1/(rho_tot + 1e-18) gives O(1/eps^2) JVP at
+            # 1/(rho_tot + 1e-18) gives O(1/eps^2) JVP at
             # tail points (rho ≈ 0). Use jnp.where with a higher floor
             # that masks tail contributions to 0 instead of letting the
             # autodiff propagate amplified noise.
@@ -422,7 +422,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
         # tracing, so size the features slice to the current block.
         features_blk = _features_for_block(int(rho0.shape[0]))
         exc_density, vrho, vsigma = _eval_rks(rho0, sigma, features_blk)
-        # H3 audit fix: same low-rho JVP guard as the UKS path above.
+        # Same low-rho JVP guard as the UKS path above.
         _RHO_EPS = 1e-12
         rho_safe = jnp.maximum(rho0, _RHO_EPS)
         exc = jnp.where(
@@ -457,15 +457,15 @@ def _cpu_device_context():
 
 
 def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
-    # M6 audit fix: pyscfad's SCF driver depends on CONCRETE numpy arrays
+    # pyscfad's SCF driver depends on CONCRETE numpy arrays
     # for h_core / S / J construction (it goes through libcint via pyscf
     # backends that do not accept JAX tracers). Calling this from inside
     # @jit / @eqx.filter_jit produces a confusing TracerArrayConversion
     # error deep in pyscfad. Detect tracers early and raise a clear
     # message explaining the constraint.
     import jax
-    # R3-C N1 audit fix: scan ALL likely-traced keys, not just the first
-    # present one. Pre-fix code `break`ed after the first hit, missing
+    # Scan ALL likely-traced keys, not just the first
+    # present one: stopping after the first hit would miss
     # tracers in dm_pbe/j_matrix when rho_grid (concrete) preceded them.
     candidate_keys = (
         "dm_pbe", "j_matrix", "rho_grid", "ao_grid", "s_matrix", "h_core",
@@ -569,15 +569,14 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         _grid_coords = jnp.asarray(mf.grids.coords)
 
         def _holder_get_veff(mol_=None, dm=None, *args, **kwargs):
-            # R1-L5 audit fix: pass the caller-supplied ``mol_`` through
+            # Pass the caller-supplied ``mol_`` through
             # to ``_reassemble_features_on_grid`` and the original
             # ``get_veff`` rather than substituting the closed-over
             # ``mol``. Pyscfad's SCF driver passes the live ``mol``
             # explicitly; using the closure variable would silently
             # ignore any geometry/basis change pyscfad introduces (e.g.
             # mol updates inside its scan). Fall back to the closed-over
-            # ``mol`` only when the caller passes ``None`` (matches the
-            # pre-fix behavior for that path).
+            # ``mol`` only when the caller passes ``None``.
             mol_eff = mol_ if mol_ is not None else mol
             if policy == FeaturePolicy.REASSEMBLE and dm is not None:
                 feature_holder["features_full"] = _reassemble_features_on_grid(
@@ -650,16 +649,16 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     # traces from different SCFs into a fixed-shape array. The length of
     # ``energy_history`` corresponds to the actual cycles executed; trailing
     # NaNs mark cycles that never ran (early convergence).
-    # R1-M9 audit fix: SolverConfig always defines ``max_cycles``; the
-    # prior ``getattr(config, "max_cycles", ...)`` default branch was
+    # SolverConfig always defines ``max_cycles``; a
+    # ``getattr(config, "max_cycles", ...)`` default branch would be
     # unreachable. Use the field directly so a missing attribute fails
     # loudly instead of silently substituting ``len(energy_history)``.
     max_cyc = int(config.max_cycles)
     pad_len = max(max_cyc, len(energy_history))
     if energy_history:
-        # R2-C N5 audit fix: drop the ``dtype=jnp.float64`` pin. Under
-        # the suite's ``jax_enable_x64=True`` default this changes
-        # nothing, but under x32 the hardcode forces a silent dtype
+        # No ``dtype=jnp.float64`` pin here. Under
+        # the suite's ``jax_enable_x64=True`` default a pin changes
+        # nothing, but under x32 it would force a silent dtype
         # promotion that breaks downstream metric reductions.
         trace_arr = jnp.full((pad_len,), jnp.nan)
         trace_arr = trace_arr.at[: len(energy_history)].set(jnp.asarray(energy_history))

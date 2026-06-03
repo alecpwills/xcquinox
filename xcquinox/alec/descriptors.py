@@ -92,9 +92,9 @@ class CuspDescriptor(Descriptor):
     definitions and the dynamic-range argument for the /5 scaling.
     """
     n_features: int = eqx.field(default=2, static=True)
-    # 2026-05-29: when True, apply the Dick XCDiff log compression to
-    # feature 1. When False, feed the raw weighted-Z value through tanh
-    # only (preserves pre-fix behavior; old checkpoints unpickle to this).
+    # When True, apply the Dick XCDiff log compression to feature 1. When
+    # False, feed the raw weighted-Z value through tanh only (old
+    # checkpoints unpickle to this).
     log_transform: bool = eqx.field(default=False, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("cusp_features",)
 
@@ -115,7 +115,7 @@ class DMStatisticsDescriptor(Descriptor):
          orbital occupations normalized to a probability distribution
          (``-sum_i p_i ln p_i`` with ``p_i = n_i / sum_j n_j``; the occupations
          ``n_i`` are the eigenvalues of ``D S`` — Löwdin, Phys. Rev. 97, 1474
-         (1955)). NOTE (P5-04): this quantity is *size-dependent* (it scales
+         (1955)). NOTE: this quantity is *size-dependent* (it scales
          roughly like ``ln N_occ``) and is nonzero even for a single
          determinant, so it is NOT a clean electron-correlation indicator —
          ``idempotency_error`` is the quantity that vanishes for a single
@@ -128,7 +128,7 @@ class DMStatisticsDescriptor(Descriptor):
     Slater determinant; ``dm_entropy`` is a size-dependent natural-occupation
     entropy (see the caveat above), not a clean correlation indicator.
 
-    SIZE-CONSISTENCY / LOCALITY CAVEAT (P5-06): these are GLOBAL, molecule-level
+    SIZE-CONSISTENCY / LOCALITY CAVEAT: these are GLOBAL, molecule-level
     scalars that ``__call__`` ``jnp.tile``s identically to every grid point and
     feeds into the per-point (semilocal) enhancement factor. Consequences:
       * The per-point ε_xc then depends on whole-system quantities, so the
@@ -143,11 +143,10 @@ class DMStatisticsDescriptor(Descriptor):
     values — a deferred design decision requiring sign-off, NOT changed here.
     """
     n_features: int = eqx.field(default=3, static=True)
-    # 2026-05-29: when True, divides dm_entropy by ln(max(n_orb_eff, 2)), where
+    # When True, divides dm_entropy by ln(max(n_orb_eff, 2)), where
     # n_orb_eff = sum(occupations)/max_occ, so the feature is size-intensive
-    # (range [0, 1]). When False, keeps the
-    # size-extensive ln(N_occ) form (preserves pre-fix behavior; old
-    # checkpoints unpickle to this default).
+    # (range [0, 1]). When False, keeps the size-extensive ln(N_occ) form
+    # (old checkpoints unpickle to this default).
     intensive: bool = eqx.field(default=False, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)
 

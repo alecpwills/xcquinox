@@ -56,13 +56,13 @@ class OEPResult(NamedTuple):
     Fields
     ------
     n_iter
-        L-BFGS-B iteration count clipped at ``max_iter`` (R3-D L3 audit
-        note): ``min(scipy.result.nit, max_iter)``. Some scipy builds
+        L-BFGS-B iteration count clipped at ``max_iter``:
+        ``min(scipy.result.nit, max_iter)``. Some scipy builds
         report ``nit == max_iter + 1`` when the optimizer exits at the
         iteration cap; the clip ensures ``n_iter`` matches the user-
         requested cap exactly.
     lbfgs_status
-        Scipy's L-BFGS-B termination message. R3-D L6 audit: when the
+        Scipy's L-BFGS-B termination message. When the
         post-optimization final SCF fails (the SCF whose DM determines
         ``density_error``), ``" + final_scf_failed"`` is appended so a
         consumer can distinguish scipy failure from final-SCF failure
@@ -84,7 +84,7 @@ class OEPResult(NamedTuple):
         spin-sum: ``dm.sum(axis=0) if dm.ndim == 3 else dm``.
         In-memory only; not persisted by ``save_vxc_ref``.
     stop_reason
-        OEP-01 audit fix. A convergence-semantics diagnostic, distinct
+        A convergence-semantics diagnostic, distinct
         from ``terminated_by`` (which records WHICH sentinel fired). This
         records WHETHER the returned V_xc is a verified converged result
         and, if it stopped early, why:
@@ -112,15 +112,15 @@ class OEPResult(NamedTuple):
     converged: bool
     n_iter: int
     density_error: float
-    # New (D7 audit fix): provenance for downstream loaders/audits.
+    # Provenance for downstream loaders/audits.
     baseline_xc: str | None
     aux_basis: str
     regularization: float
-    n_electrons: float          # Tr(S . D_target) sanity check (D10 audit)
-    lbfgs_status: str           # success / message from scipy result (D5)
-    terminated_by: str = "max_iter"            # Spec sec. 5.5 (Pass 6)
-    dm_final: np.ndarray | None = None         # Spec sec. 5.5/6.1 (Pass 6/8)
-    stop_reason: str = "max_iter"              # OEP-01 audit fix
+    n_electrons: float          # Tr(S . D_target) sanity check
+    lbfgs_status: str           # success / message from scipy result
+    terminated_by: str = "max_iter"
+    dm_final: np.ndarray | None = None
+    stop_reason: str = "max_iter"
 
 
 class _OEPEarlyStop(Exception):
@@ -152,9 +152,8 @@ class _OEPPlateau(Exception):
     finalize using that iterate. The plateau density-error value is
     carried separately so consumers can record it as the achievable
     floor for that setting (used by the per-species harness verifier
-    in scripts/oep_per_species_emit_overrides.py).
-
-    See spec sec. 5.5 (Pass 7 correction: watches F_val not obj).
+    in scripts/oep_per_species_emit_overrides.py). The detector watches
+    F_val (the unregularized Lagrangian), not the regularized objective.
     """
 
     def __init__(self, b: np.ndarray, plateau_density_error: float) -> None:
@@ -172,7 +171,7 @@ def _detect_plateau(
     plateau_window: int,
     plateau_rtol: float,
 ) -> tuple[bool, float]:
-    """Pure plateau-detection rule (spec sec. 5.5).
+    """Pure plateau-detection rule.
 
     Returns ``(fired, plateau_density_error)``. Used by the inline
     detector in `_scipy_iter_callback` and the unit-test suite.
@@ -223,14 +222,13 @@ def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
     ``mf.xc = ""`` (Hartree-only baseline) -- not recommended for
     Wu-Yang; only included so callers can opt out explicitly.
 
-    Honors ``mol_spec.grid_level`` (canonical source per spec sec. 5.4):
-    when non-None, sets ``mf.grids.level = mol_spec.grid_level`` and
-    calls ``mf.grids.build()`` BEFORE ``mf.kernel()`` to guarantee the
-    SCF (and any downstream consumer of ``mf.grids.coords``) uses the
-    requested mesh. When ``None``, PySCF's own default (level 3)
-    applies. Pass-2 review found the prior version silently ignored
-    ``mol_spec.grid_level``, producing a two-grid mismatch with cached
-    SCF/CCSD intermediates built at xcquinox's default grid_level=1.
+    Honors ``mol_spec.grid_level``: when non-None, sets
+    ``mf.grids.level = mol_spec.grid_level`` and calls
+    ``mf.grids.build()`` BEFORE ``mf.kernel()`` to guarantee the SCF
+    (and any downstream consumer of ``mf.grids.coords``) uses the
+    requested mesh, avoiding a two-grid mismatch with cached SCF/CCSD
+    intermediates built at the same grid_level. When ``None``, PySCF's
+    own default (level 3) applies.
     """
     from pyscf import dft, gto
     mol = gto.M(
@@ -248,7 +246,7 @@ def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
         mf.xc = ""
     else:
         mf.xc = str(baseline_xc)
-        # P3-07: a HYBRID baseline carries non-local HF exchange (K). The inner
+        # A HYBRID baseline carries non-local HF exchange (K). The inner
         # SCF here freezes that K at the baseline DM, so the recovered local
         # V_xc^ref bakes in the frozen non-local piece and is NOT a pure
         # local-multiplier target — using it as a local-V_xc training reference
@@ -322,15 +320,15 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
       * ``aux_on_grid[g, t] = g_t(r_g) · w_g`` for grid-side projections.
       * ``S_aux[t, t'] = ∫ g_t(r) g_{t'}(r) dr`` — the auxiliary-basis
         overlap matrix used for the V-space (overlap-metric) amplitude
-        regularization (D2 audit fix). V-space regularization follows the
+        regularization. V-space regularization follows the
         CONCEPT of Heaton-Burgess PRL 98, 256401 (2007); the implemented
         penalty here is an overlap-metric (S_aux) amplitude/Tikhonov term,
-        NOT that paper's kinetic-energy smoothness norm ``b^T T b``. The
-        prior coefficient-space ‖b‖² regularization is basis-dependent and
-        silently changes meaning when aux_basis is swapped.
+        NOT that paper's kinetic-energy smoothness norm ``b^T T b``. A
+        coefficient-space ‖b‖² regularization would be basis-dependent and
+        silently change meaning when aux_basis is swapped.
 
     Uses ``GTOval_sph`` if ``mol.cart`` is False; ``GTOval_cart``
-    otherwise (D12 audit fix: hardcoded ``GTOval_sph`` was inconsistent
+    otherwise (a hardcoded ``GTOval_sph`` would be inconsistent
     with cartesian-basis molecules).
     """
     from pyscf import gto as gto_mod
@@ -343,14 +341,14 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
     gto_val = "GTOval_cart" if getattr(mol, "cart", False) else "GTOval_sph"
     ao_aux = aux_mol.eval_gto(gto_val, coords)
     ao_orb = mf._numint.eval_ao(mol, coords)
-    # Fused 4-tensor einsum — ~10-100x faster than Python loop (D8 fix).
+    # Fused 4-tensor einsum — ~10-100x faster than Python loop.
     three_center = np.einsum(
         "gt,gi,gj,g->tij", ao_aux, ao_orb, ao_orb, weights, optimize=True,
     )
     # Symmetrize against AO-quadrature noise so V_xc = V_xc^baseline +
     # Σ b_t · three_center[t] is exactly Hermitian in (i, j) — analytically
     # three_center[t,i,j] == three_center[t,j,i] from φ_iφ_j = φ_jφ_i, but
-    # finite-grid quadrature breaks symmetry at ε_machine·N_grid (R3-D L5).
+    # finite-grid quadrature breaks symmetry at ε_machine·N_grid.
     three_center = 0.5 * (three_center + three_center.transpose(0, 2, 1))
     aux_on_grid = ao_aux * weights[:, None]
     # Auxiliary-basis overlap matrix from grid quadrature.
@@ -368,9 +366,8 @@ def _ks_from_vxc_matrix(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
     ``level_shift`` is forwarded to the inner ``mf_fixed.level_shift``
     attribute (PySCF SCF stabilization). ``damp`` and
     ``diis_start_cycle`` are forwarded to the inner ``mf_fixed.damp`` /
-    ``mf_fixed.diis_start_cycle`` (defaults preserve oep.py's
-    pre-Pass-1 hardcoded values 0.1 and 5; PySCF ship defaults are 0.0
-    and 1, respectively).
+    ``mf_fixed.diis_start_cycle`` (defaults 0.1 and 5; PySCF ship
+    defaults are 0.0 and 1, respectively).
     """
     v = np.asarray(vxc_matrix)
     if v.ndim == 3 or mol.spin != 0:
@@ -391,9 +388,9 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
     Returns ``(dm, ts, j_matrix, success)``. ``success=False`` indicates
     SCF blew up (LinAlgError, ValueError, or non-finite output); the
     outer Wu-Yang objective should treat this as +inf so L-BFGS-B backs
-    off (D4 audit fix). Pre-fix code silently returned ``dm0`` and a
-    finite ``ts``, leaving the objective and gradient inconsistent on
-    failed line-search probes.
+    off. Silently returning ``dm0`` and a finite ``ts`` instead would
+    leave the objective and gradient inconsistent on failed line-search
+    probes.
 
     ``level_shift`` (default 0.0) is forwarded to ``mf_fixed.level_shift``;
     closed-shell RKS rarely needs this, but the kwarg exists for symmetry
@@ -410,9 +407,7 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
     # DIIS + damping for robustness against ill-conditioned line-search
     # probes from L-BFGS-B (Pulay DIIS — Pulay CPL 73, 393 (1980); the
     # diis_start_cycle delays activation until damped iterations settle
-    # the wavefunction). D3 audit fix: prior comments contradicted code
-    # by claiming "disable DIIS" while leaving DIIS on; comments now
-    # match behavior.
+    # the wavefunction).
     mf_fixed.diis_start_cycle = diis_start_cycle
     mf_fixed.diis_space = 4
     mf_fixed.damp = damp
@@ -514,7 +509,7 @@ def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
         success = False
 
     j_matrix = mf_fixed.get_j(mol, dm_final)
-    # R3-D L7: PySCF version-defensive normalization. UHF + 3-D DM in
+    # PySCF version-defensive normalization. UHF + 3-D DM in
     # PySCF ≥ 2.0 returns spin-resolved (2, nao, nao); older versions
     # may return spin-summed (nao, nao). Downstream callers index
     # j_matrix[0]/j_matrix[1] unconditionally — guarantee 3-D here.
@@ -584,13 +579,13 @@ def run_oep_inversion(
         becomes inconsistent with the new D). Hybrid baselines work in
         practice but do not enjoy the "b=0 = baseline answer" property
         that pure-DFT baselines do; expect slightly more L-BFGS-B
-        iterations to compensate. R2-D NEW-M1 audit note.
+        iterations to compensate.
     aux_basis : str
         Auxiliary basis for V_xc expansion. Default
         ``"def2-svp-jkfit"`` (matches step6 notebook). Larger bases
         (``def2-tzvp-jkfit``) give finer V_xc resolution at higher
         cost; with V-space regularization the meaning of
-        ``regularization`` is now basis-independent (D2 audit fix).
+        ``regularization`` is basis-independent.
     max_iter : int
         L-BFGS-B max iterations.
     conv_tol : float
@@ -603,12 +598,12 @@ def run_oep_inversion(
         overlap metric, NOT that paper's kinetic-energy *smoothness*
         norm ``b^T T b``. Penalizes the V_xc(r) magnitude in a way that
         is basis-independent in meaning regardless of which auxiliary
-        basis is chosen. Pre-fix code used ``0.5 * lambda * |b|^2``
-        which silently changed meaning when ``aux_basis`` was swapped.
+        basis is chosen. A plain ``0.5 * lambda * |b|^2`` penalty would
+        instead silently change meaning when ``aux_basis`` was swapped.
     level_shift : float
         Energy shift (Ha) applied to virtual orbitals during the inner
-        SCF (``mf_fixed.level_shift``). Default 0.0 reproduces pre-fix
-        behavior. Use ``level_shift=0.5`` for UKS species with orbital
+        SCF (``mf_fixed.level_shift``). Default 0.0.
+        Use ``level_shift=0.5`` for UKS species with orbital
         degeneracy (X²Π radicals like HO, CN, NO; near-degenerate cases
         like NO2's X²A1) to suppress basin-hopping during DIIS — the
         inner SCF would otherwise flip between symmetry-equivalent
@@ -624,7 +619,7 @@ def run_oep_inversion(
 
     Returns
     -------
-    OEPResult with provenance fields (D7 audit fix).
+    OEPResult with provenance fields.
     """
     mol, mf = _build_mol_and_mf(mol_spec, basis, baseline_xc=baseline_xc)
     _, three_center, aux_on_grid, S_aux = _build_aux_basis_matrices(
@@ -634,7 +629,7 @@ def run_oep_inversion(
     weights = mf.grids.weights
     h_core = mf.get_hcore()
 
-    # R2-D NEW-M2 audit fix: spin=0 mol with 3-D dm_target is incoherent.
+    # A spin=0 mol with 3-D dm_target is incoherent.
     # RKS mol means mf=RKS and vxc_baseline is 2-D; coercing the path to
     # UKS (because dm_target.ndim==3) silently broadcasts 1-D rows through
     # the 3-D vxc construction. Reject up-front with a clear error.
@@ -648,7 +643,7 @@ def run_oep_inversion(
         )
     is_uks = (mol.spin != 0) or (dm_target_arr_check.ndim == 3)
 
-    # D10 audit: shape + nelectron sanity check on the target DM. If
+    # Shape + nelectron sanity check on the target DM. If
     # Tr(S * D_target) is far from the actual electron count OR the
     # shape mismatches the AO basis, the target was built in a different
     # basis than mol_spec.basis and the inversion would silently produce
@@ -721,7 +716,7 @@ def run_oep_inversion(
             )
         return vxc_baseline + np.einsum("t,tij->ij", b, three_center)
 
-    # D11 audit fix: keep the most recent ACCEPTED iterate's DM, not the
+    # Keep the most recent ACCEPTED iterate's DM, not the
     # last objective-evaluation's DM (which may correspond to a rejected
     # line-search trial).
     scf_state: dict[str, Any] = {
@@ -734,7 +729,7 @@ def run_oep_inversion(
     }
     _progress_state = {"iter": 0, "density_error_l2": float("inf")}
 
-    # Plateau detector setup (spec sec. 5.5). Two deques tracking the
+    # Plateau detector setup. Two deques tracking the
     # last `plateau_window` accepted-iterate snapshots of
     # density_error_l2 and F_val. Plateau fires when both are flat
     # within `plateau_rtol` AND density_error_l2 is non-descending
@@ -759,14 +754,14 @@ def run_oep_inversion(
         )
         scf_state["dm0_last_eval"] = dm_scf
 
-        # D4 audit fix: on inner-SCF failure, return a large objective
+        # On inner-SCF failure, return a large objective
         # and zero-magnitude (but non-NaN) gradient so L-BFGS-B's Wolfe
         # line search backs off rather than treating the failure as a
         # successful evaluation at a bogus point.
         if not scf_success:
             obj = 1e20
             grad = np.zeros_like(b)
-            # Pass-7 cache contract: on inner-SCF failure, write
+            # On inner-SCF failure, write
             # +inf for density_error and -inf for F_val. The plateau
             # detector reads these as descending sentinels (won't
             # contribute to a flat-window judgement).
@@ -795,7 +790,7 @@ def run_oep_inversion(
                 - float(np.dot(b_a, rhotarget_a_integrals))
                 - float(np.dot(b_b, rhotarget_b_integrals))
             )
-            # D2 + D14 audit fix: V-space regularization. UKS uses a
+            # V-space regularization. UKS uses a
             # JOINT (b_a + b_b) regularization rather than per-spin so
             # spin-symmetric solutions aren't artificially broken when
             # the target is closed-shell.
@@ -811,7 +806,7 @@ def run_oep_inversion(
             _progress_state["density_error_l2"] = float(
                 np.sqrt(np.sum(weights * _delta_tot ** 2))
             )
-            # Pass-7 cache: snapshot density_error_l2 and F_val (the
+            # Snapshot density_error_l2 and F_val (the
             # *unregularized* Lagrangian, NOT obj=-F_val+reg_term)
             # for the plateau detector. F_val computed above.
             scf_state["density_error_l2_last_eval"] = (
@@ -828,7 +823,7 @@ def run_oep_inversion(
             + float(np.einsum("ij,ij->", dm_scf, vxc_matrix))
         )
         F_val = e_ks - float(np.dot(b, rhotarget_integrals))
-        # D2 audit fix: V-space regularization.
+        # V-space regularization.
         reg_term = 0.5 * regularization * float(b @ S_aux @ b)
         obj = -F_val + reg_term
         reg_grad = regularization * (S_aux @ b)
@@ -836,7 +831,7 @@ def run_oep_inversion(
         _progress_state["density_error_l2"] = float(
             np.sqrt(np.sum(weights * delta_rho ** 2))
         )
-        # Pass-7 cache: snapshot density_error_l2 and F_val (the
+        # Snapshot density_error_l2 and F_val (the
         # *unregularized* Lagrangian, computed above).
         scf_state["density_error_l2_last_eval"] = (
             _progress_state["density_error_l2"]
@@ -845,7 +840,7 @@ def run_oep_inversion(
         return obj, grad
 
     def _scipy_iter_callback(_xk):
-        # D11 audit fix + Pass-7 extension: snapshot the most-recent
+        # Snapshot the most-recent
         # ACCEPTED objective_and_grad's outputs so the plateau detector
         # reads only accepted iterates (not rejected line-search probes,
         # which can leave stale +inf / 1e20 values from SCF failures).
@@ -864,7 +859,7 @@ def run_oep_inversion(
                 _progress_state["density_error_l2"],
             )
 
-        # Plateau detector (spec sec. 5.5). Append accepted-iterate
+        # Plateau detector. Append accepted-iterate
         # snapshots to both deques; check plateau BEFORE early-stop
         # so a plateau-below-conv_tol convergence outranks an
         # early-stop on the same iterate.
@@ -919,7 +914,7 @@ def run_oep_inversion(
         early_stopped_b = _es.b
         result = None  # not used in early-stop path
     except _OEPPlateau as _pl:
-        # Plateau handler (spec sec. 5.5), parallel to early-stop.
+        # Plateau handler, parallel to early-stop.
         # The b is used for vxc_final reconstruction; the
         # plateau_density_error is carried separately for the
         # OEPResult.density_error override below.
@@ -934,7 +929,7 @@ def run_oep_inversion(
     else:
         b_final = result.x
     vxc_final = _vxc_from_b(b_final)
-    # Run the final SCF from the most recently ACCEPTED warm-start (D11),
+    # Run the final SCF from the most recently ACCEPTED warm-start,
     # not from a possibly-rejected trial DM.
     final_warm = (
         scf_state["dm0_accepted"]
@@ -956,30 +951,28 @@ def run_oep_inversion(
     final_error = float(
         np.sqrt(np.sum(weights * (rho_target_total - rho_final) ** 2))
     )
-    # R3-D L3: clip scipy's reported nit at our requested max_iter so
+    # Clip scipy's reported nit at our requested max_iter so
     # n_iter never exceeds what the user asked for; documented in the
     # OEPResult.n_iter docstring above.
     if early_stopped_b is not None or plateau_b is not None:
         n_iter = min(_progress_state["iter"], max_iter)
     else:
         n_iter = min(int(result.nit), max_iter)
-    # Convergence semantics (R3.5 audit refinement of the original D5 fix).
-    # The user's contract is: "the V_xc that ``run_oep_inversion`` returns
-    # produces a KS density that matches ``dm_target`` to within
-    # ``conv_tol``." That depends on:
+    # Convergence semantics. The user's contract is: "the V_xc that
+    # ``run_oep_inversion`` returns produces a KS density that matches
+    # ``dm_target`` to within ``conv_tol``." That depends on:
     #   1. final_success — the post-optimization SCF actually solved
     #   2. final_error < conv_tol — the density matches to tolerance
     #   3. final_error is finite (rules out NaN from a blown-up SCF)
     #
-    # Pre-fix code ALSO required ``result.success``, but that flag is
+    # We deliberately do NOT also require ``result.success``: that flag is
     # False whenever scipy exits at ``max_iter`` even if density_error
-    # already passed conv_tol — conflating "L-BFGS-B optimizer converged"
-    # with "OEP inversion converged". For our purposes, hitting max_iter
-    # at a tight density_error is a successful inversion: the V_xc at
+    # already passed conv_tol, which would conflate "L-BFGS-B optimizer
+    # converged" with "OEP inversion converged". Hitting max_iter
+    # at a tight density_error is still a successful inversion: the V_xc at
     # iteration N is mathematically a valid Wu-Yang displacement
     # (V_xc^baseline + Σ b_t^(N) g_t) regardless of whether the gradient
-    # had reached scipy's pgtol/factr threshold. Drop the scipy-success
-    # requirement so genuinely good inversions are reported as such.
+    # had reached scipy's pgtol/factr threshold.
     converged = bool(
         final_success
         and np.isfinite(final_error)
@@ -1000,7 +993,7 @@ def run_oep_inversion(
     else:
         lbfgs_status = str(getattr(result, "message", "no message"))
         plateau_terminated = False
-    # R3-D L6: surface final-SCF failure in lbfgs_status so a consumer
+    # Surface final-SCF failure in lbfgs_status so a consumer
     # reading converged=False can distinguish "scipy failed" (its message)
     # from "scipy succeeded but the post-optimization SCF blew up".
     if not final_success:
@@ -1008,7 +1001,7 @@ def run_oep_inversion(
 
     # Determine terminated_by and the appropriate density_error to report.
     #
-    # OEP-01 audit fix. ALWAYS report the SCF-verified ``final_error``
+    # ALWAYS report the SCF-verified ``final_error``
     # (recomputed above on the post-optimization SCF density), never the
     # plateau MEDIAN. The plateau median is a flatness statistic of the
     # density-error/F_val history, not the residual of the iterate we
@@ -1029,8 +1022,7 @@ def run_oep_inversion(
     # final_error < conv_tol. That is the genuine-stationarity / matches-
     # to-tolerance contract and applies uniformly to every stop path,
     # including plateau. We deliberately do NOT re-derive ``converged``
-    # from the plateau median here (the pre-fix code did, which is
-    # OEP-01).
+    # from the plateau median here.
     #
     # ``stop_reason`` records WHETHER this is a verified convergence and,
     # if it stopped early, why — distinct from ``terminated_by`` (which
@@ -1043,7 +1035,7 @@ def run_oep_inversion(
         stop_reason = "converged"
     else:
         stop_reason = terminated_by
-    # Pass-8: dm_final = post-finalization SCF DM. On final-SCF
+    # dm_final = post-finalization SCF DM. On final-SCF
     # failure, set None so the harness's bias check can skip safely.
     dm_final_returned = dm_final if final_success else None
 
@@ -1072,11 +1064,11 @@ def save_vxc_ref(
 ) -> None:
     """Save OEP result as .npz compatible with ``_load_external_data``.
 
-    D7 audit fix: provenance fields (``oep_baseline_xc``,
+    Provenance fields (``oep_baseline_xc``,
     ``oep_aux_basis``, ``oep_regularization``, ``oep_density_error``,
     ``oep_converged``, ``oep_lbfgs_status``, ``oep_n_electrons``) are
-    written so downstream loaders can validate consistency. Pre-fix
-    code wrote only ``vxc_ref`` and ``ref_density_method``, allowing a
+    written so downstream loaders can validate consistency; writing only
+    ``vxc_ref`` and ``ref_density_method`` would allow a
     wrong-basis or wrong-baseline V_xc to load silently.
 
     If the file already exists, merges new keys with existing ones.
