@@ -210,9 +210,14 @@ class ScalingSymmetric(Constraint):
             raise ValueError(f"ScalingSymmetric requires rho_eps > 0, got {self.rho_eps}")
 
     def __call__(self, inner_fn, rho, sigma, features):
-        s2 = sigma / (jnp.maximum(rho, self.rho_eps) ** (8.0 / 3.0))
+        # s2_unnormalized = sigma / rho^(8/3) is the scaling-invariant proxy
+        # gamma / rho^(8/3), NOT the PBE reduced gradient s^2 (which carries the
+        # additional 1 / (2 (3 pi^2)^(1/3))^2 normalization and is ~19x smaller,
+        # cf. UEGLimit). Only the rho^(8/3) scaling matters for enforcing
+        # uniform-coordinate symmetry here, so the constant is omitted on purpose.
+        s2_unnormalized = sigma / (jnp.maximum(rho, self.rho_eps) ** (8.0 / 3.0))
         rho_new = jnp.full_like(rho, self.rho_ref)
-        sigma_new = s2 * (self.rho_ref ** (8.0 / 3.0))
+        sigma_new = s2_unnormalized * (self.rho_ref ** (8.0 / 3.0))
         return inner_fn(rho_new, sigma_new, features)
 
 
