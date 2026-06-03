@@ -1355,3 +1355,37 @@ def test_submit_eval_subcommand_parses():
     assert ns.func is cli.cmd_submit_eval
     assert parser.parse_args(
         ["submit-eval", "/some/run_dir", "--force"]).force is True
+
+
+def test_resubmit_oom_force_cpu_not_flagged_default_resources(tmp_path,
+                                                              monkeypatch,
+                                                              capsys):
+    """An oom retry configured with cluster.oom_retry_force_cpu (and no
+    partition/mem override) must NOT print the 'use DEFAULT partition/resources'
+    notice: force_cpu IS a dedicated retry knob, so the retry is not running on
+    default resources."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    # Re-render the resolved config with cluster.oom_retry_force_cpu = True.
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    data = _base_config_dict()
+    data["cluster"]["oom_retry_force_cpu"] = True
+    p = os.path.join(rd, "_force_cpu.json")
+    with open(p, "w") as f:
+        json.dump(data, f)
+    cfg = load_grid_config(p)
+    os.unlink(p)
+    cli._write_resolved_config(cfg, rd)
+
+    # All indices succeed EXCEPT index 1, which OOMs (via sacct) -> retried.
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    fake = _fake_slurm(ids=["7001", "7002"],
+                       sacct_rows={"1000": "1000_1|OUT_OF_MEMORY|0:125"})
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "retry=[1]" in out                                 # oom IS retried
+    assert "use DEFAULT partition/resources" not in out, (    # but not "default"
+        "force_cpu retry wrongly flagged as default-resources")

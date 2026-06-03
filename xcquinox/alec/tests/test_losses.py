@@ -48,6 +48,7 @@ from xcquinox.alec.losses import (
     DeltaAELoss,
     DeltaAEPlusDMLoss,
     DeltaAEPlusGridLoss,
+    _atomic_reg,
     list_losses,
     make_loss,
 )
@@ -1374,3 +1375,29 @@ def test_atomization_loss_has_molecules_only_field():
 
     a_off = AtomizationLoss(molecules=molecules, molecules_only=False)
     assert a_off.molecules_only is False
+
+
+def test_atomic_reg_is_mean_not_sum():
+    """_atomic_reg returns the MEAN squared relative error over anchored atoms,
+    so the channel scale is independent of how many anchors a batch carries
+    (matching the other mean-reduced channels). A SUM would grow with the
+    anchor count and silently up-weight w_atomic on larger pools."""
+    # Each anchor is built so its squared relative error == 1.0:
+    # (E_nn - E)^2 / (E^2 + 1e-8) ~ 1 when E_nn = 2 E.
+    atom_energies = {1: -0.5, 6: -37.8}
+    atom_idx = {1: 0, 6: 1}
+    E_nn = jnp.array([2.0 * -0.5, 2.0 * -37.8])
+    val = float(_atomic_reg(E_nn, atom_idx, atom_energies))
+    assert val == pytest.approx(1.0, abs=1e-6)   # MEAN of {~1, ~1}
+    assert val < 1.5                             # NOT the SUM (~2.0)
+
+    # Empty anchor dict -> exactly 0.0 (no anchors to regularize toward).
+    assert float(_atomic_reg(E_nn, {}, atom_energies)) == 0.0
+
+    # Mean-scale invariance: a third ZERO-error anchor must LOWER the value
+    # (mean {1,1,0}=2/3); a SUM would stay ~2.0 in both the 2- and 3-anchor case.
+    atom_energies3 = {1: -0.5, 6: -37.8, 8: -75.0}
+    atom_idx3 = {1: 0, 6: 1, 8: 2}
+    E_nn3 = jnp.array([2.0 * -0.5, 2.0 * -37.8, -75.0])
+    val3 = float(_atomic_reg(E_nn3, atom_idx3, atom_energies3))
+    assert val3 == pytest.approx(2.0 / 3.0, abs=1e-6)

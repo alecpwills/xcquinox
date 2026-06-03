@@ -545,7 +545,14 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         # (zeta couples the channels); otherwise vc is shared (the fast path).
         vx_a = _vx_nn_spin(features, rho_a, sigma_aa, nabla_rho_a)
         vx_b = _vx_nn_spin(features, rho_b, sigma_bb, nabla_rho_b)
-        if getattr(model.cnet, "use_spin_polarization", False):
+        if not hasattr(model.cnet, "use_spin_polarization"):
+            raise AttributeError(
+                "model.cnet has no `use_spin_polarization` attribute (model "
+                "built outside the standard AlecGGA_CNet / create_network_pair "
+                "path); refusing to silently fall back to non-polarized "
+                "correlation for an open-shell system (matches oneshot.py)."
+            )
+        if model.cnet.use_spin_polarization:
             vc_a, vc_b = compute_vc_polarized_per_spin(
                 model, rho_a, rho_b, sigma_tot, features, ao_grid,
                 grid_weights, nabla_rho_tot, ao_grid_deriv,

@@ -194,12 +194,19 @@ def _ae_from_atoms(E_mol, comp_dict, atom_energies):
 
 
 def _atomic_reg(E_nn, atom_mol_idx_dict, atom_energies):
-    """Weak atomic regularization toward the caller-supplied atom anchor dict."""
-    return sum(
+    """Weak atomic regularization toward the caller-supplied atom anchor dict.
+
+    Returns the MEAN squared relative error over the anchored atoms so the
+    channel scale is independent of how many atoms are in the batch, matching
+    the other mean-reduced channels (_ae_losses, _vxc_term, _grid_term).
+    """
+    if not atom_mol_idx_dict:
+        return jnp.array(0.0)
+    return jnp.mean(jnp.stack([
         (E_nn[atom_mol_idx_dict[Z]] - atom_energies[Z]) ** 2
         / (atom_energies[Z] ** 2 + 1e-8)
         for Z in atom_mol_idx_dict
-    )
+    ]))
 
 
 def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies):

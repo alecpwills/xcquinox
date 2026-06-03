@@ -610,6 +610,13 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     Emits ``warnings.warn`` for soft issues (axis dedup, SeaWulf throttle
     etiquette, advisory path checks).
     """
+    # --- eval-mode consistency ---------------------------------------------
+    if cfg.defer_eval and cfg.inline_eval:
+        raise ValueError(
+            "defer_eval and inline_eval are mutually exclusive (inline eval runs "
+            "inside each train task; deferred eval is a separate array submitted "
+            "after train). Set at most one."
+        )
     # --- grid cardinality ---------------------------------------------------
     cells = expand_grid(cfg)
     n = len(cells)

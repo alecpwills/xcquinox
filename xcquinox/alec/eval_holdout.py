@@ -742,6 +742,21 @@ def merge_holdout_shards(shard_payloads: Sequence[Dict[str, Any]]
     return energies, pbe_energies, mol_records
 
 
+def _n_nan_union(energies_ha: Dict[str, float],
+                 pbe_energies_ha: Dict[str, float],
+                 reactions: Sequence[Dict[str, Any]]) -> int:
+    """Count reactions dropped (non-finite abs error) in EITHER the NN or the
+    PBE metric, i.e. the union. The two metrics can drop DIFFERENT reactions, so
+    max(n_nan_nn, n_nan_pbe) undercounts the true dropped set."""
+    nn = list(per_reaction_errors(energies_ha, reactions))
+    pb = list(per_reaction_errors(pbe_energies_ha, reactions))
+    return sum(
+        1 for a, b in zip(nn, pb)
+        if not (math.isfinite(a["abs_error_kcalmol"])
+                and math.isfinite(b["abs_error_kcalmol"]))
+    )
+
+
 def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
                               energies: Dict[str, float],
                               pbe_energies: Dict[str, float],
@@ -770,7 +785,8 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
         n_dropped_pool = len(dropped)
         mae_nn, n_used, n_nan_nn = reaction_mae_kcalmol(energies, kept)
         mae_pbe, _, n_nan_pbe = reaction_mae_kcalmol(pbe_energies, kept)
-        n_nan = max(n_nan_nn, n_nan_pbe)
+        # Union: NN and PBE can drop DIFFERENT reactions, so max() undercounts.
+        n_nan = _n_nan_union(energies, pbe_energies, kept)
         per_pool_mae[pool] = (mae_nn, mae_pbe, n_used, n_dropped_pool, n_nan)
         all_kept.extend(kept)
         n_dropped_total += n_dropped_pool
@@ -780,7 +796,7 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
     combined_mae_pbe, _, combined_n_nan_pbe = reaction_mae_kcalmol(
         pbe_energies, all_kept)
     combined = (combined_mae_nn, combined_mae_pbe, combined_n_used,
-                n_dropped_total, max(combined_n_nan_nn, combined_n_nan_pbe))
+                n_dropped_total, _n_nan_union(energies, pbe_energies, all_kept))
 
     nn_per_rxn = per_reaction_errors(energies, all_kept)
     pbe_per_rxn = per_reaction_errors(pbe_energies, all_kept)

@@ -1395,3 +1395,54 @@ def test_oep_cascade_writes_grid_level_used(tmp_path):
     with np.load(npz_path, allow_pickle=False) as z:
         assert "grid_level_used" in z.files, "missing grid_level_used"
         assert int(z["grid_level_used"]) == 1
+
+
+def test_oep_cache_rejects_basis_mismatch_but_trusts_legacy(tmp_path,
+                                                            monkeypatch):
+    """The OEP output .npz is name-keyed (the filename has no basis tag), so the
+    cache-hit check must compare the recorded ``basis_used``: a mismatching
+    basis MISSES (re-runs, avoiding a stale cross-basis reference), while a
+    matching basis -- and a legacy npz lacking ``basis_used`` -- both HIT with
+    no spurious re-run."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_oep_cascade, _REQUIRED_NPZ_KEYS,
+    )
+    from xcquinox.alec import oep as alec_oep
+
+    spec = SpeciesEntry("H", 0, 1, "dfs_atom")
+    atoms = resolve_geometry(spec)
+
+    class _InversionRan(Exception):
+        """Sentinel: not a RuntimeError/ValueError, so the cascade's tier
+        try/except does NOT swallow it -- it marks a real cache MISS."""
+
+    def _tripwire(*a, **k):
+        raise _InversionRan()
+    monkeypatch.setattr(alec_oep, "run_oep_inversion", _tripwire)
+
+    ccsd_payload = {"dm_ao": np.zeros((2, 2, 2))}
+
+    def _write_fake_npz(basis_used):
+        payload = {k: np.zeros(1) for k in _REQUIRED_NPZ_KEYS}
+        if basis_used is not None:
+            payload["basis_used"] = np.array(str(basis_used))
+        np.savez_compressed(tmp_path / f"{spec.name}.npz", **payload)
+
+    # (1) basis MATCH -> cache hit (the inversion tripwire is never reached).
+    _write_fake_npz("def2-svp")
+    p = run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                        cache_dir=tmp_path, basis="def2-svp", grid_level=1)
+    assert p.is_file()
+
+    # (2) legacy npz (no basis_used) -> trusted regardless of basis -> hit.
+    _write_fake_npz(None)
+    p = run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                        cache_dir=tmp_path, basis="def2-tzvp", grid_level=1)
+    assert p.is_file()
+
+    # (3) basis MISMATCH -> cache MISS -> falls through to the (tripwired) run.
+    _write_fake_npz("def2-svp")
+    with pytest.raises(_InversionRan):
+        run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                        cache_dir=tmp_path, basis="def2-tzvp", grid_level=1)

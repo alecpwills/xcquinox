@@ -357,7 +357,15 @@ def run_scf_with_cache(
 
     is_uks = spec.spin > 0
     mf = dft.UKS(mol) if is_uks else dft.RKS(mol)
-    if density_fit:
+    # Match run_ccsd_with_cache: disable DF when a spin channel is empty
+    # (<=1 e, e.g. the H atom), so the SCF reference's effective DF setting is
+    # identical to the CCSD reference built on top of it. DF-PBE and non-DF-PBE
+    # densities are indistinguishable for such 1-electron channels, and this dm
+    # is only the CCSD HF initial guess + a PBE baseline. The cache key still
+    # uses the REQUESTED density_fit flag (matching the ccsd cache), so an
+    # existing DF-tagged cache is reused unchanged.
+    use_df = density_fit and min(mol.nelec) > 0
+    if use_df:
         from xcquinox.alec.df_jk import default_auxbasis
         mf = mf.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
     mf.xc = "pbe"
@@ -425,7 +433,9 @@ def run_ccsd_with_cache(
     would violate Brillouin's theorem and bias the relaxed 1-RDM toward
     the arbitrary PBE start orbitals).
 
-    Returns dict with keys: dm_ao, rho_ref_grid (1D spin-summed),
+    Returns dict with keys: dm_ao (AO-basis CCSD 1-RDM, shape
+    ``(n_ao, n_ao)`` for RKS or ``(2, n_ao, n_ao)`` for UKS — both spin
+    channels kept for the V_xc shape contract), rho_ref_grid (1D spin-summed),
     grid_weights, ao_grid.
 
     The rho_ref_grid spin-summing is REQUIRED for UKS species, the
@@ -949,6 +959,13 @@ def run_oep_cascade(
     (e.g. ``scripts/smoke_preflight_uks_oep.py``) can show per-tier +
     per-iter convergence trajectory inside the otherwise-silent
     ``run_oep_inversion`` call.
+
+    Density fitting: the OEP inversion uses exact ERIs (no DF); only the
+    upstream CCSD density in ``ccsd_payload`` is DF-dependent. This cache is
+    keyed by ``(name, basis)`` (see the ``basis_used`` check below), NOT by the
+    density_fit setting, so a given ``cache_dir`` must not be shared across
+    different density_fit configurations at the same basis (give each
+    density_fit config its own ``cache_dir``).
     """
     from collections import Counter
     from pathlib import Path
@@ -961,10 +978,18 @@ def run_oep_cascade(
     npz_path = cache_dir / f"{spec.name}.npz"
 
     if npz_path.is_file():
-        # Verify completeness, must have all required keys
+        # Verify completeness AND that the cache was generated for THIS basis.
+        # The .npz is name-keyed (not basis-tagged in the filename), so without
+        # this a stale reference from a different basis in the same cache_dir
+        # would be reused. Legacy caches predate ``basis_used`` and are trusted
+        # (they were written into a per-basis cache_dir), so this only RE-runs on
+        # a recorded-basis mismatch, never invalidating existing references.
         try:
             with np.load(npz_path, allow_pickle=False) as z:
-                if _REQUIRED_NPZ_KEYS.issubset(set(z.files)):
+                cached_basis = (str(z["basis_used"])
+                                if "basis_used" in z.files else basis)
+                if (_REQUIRED_NPZ_KEYS.issubset(set(z.files))
+                        and cached_basis == basis):
                     return npz_path
         except (OSError, ValueError):
             pass  # Corrupt cache, recompute
@@ -1086,6 +1111,7 @@ def run_oep_cascade(
         rho_ref_grid=ccsd_payload["rho_ref_grid"],
         ref_density_method=np.array("ccsd"),
         grid_level_used=np.array(int(winning_grid_level)),
+        basis_used=np.array(str(basis)),
     )
     # P4-03: save_vxc_ref records the achieved OEP density error as the
     # ``oep_density_error`` key (a real noise floor on this species' vxc_ref:

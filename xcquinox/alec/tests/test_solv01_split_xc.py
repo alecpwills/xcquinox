@@ -30,6 +30,7 @@ from xcquinox.alec.oneshot import (
     compute_vxc_nn,
     split_exc_energy_uks,
     compute_exc_nn,
+    _ZETA_BOUNDARY_EPS,
 )
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
@@ -326,7 +327,11 @@ def _ec_energy_polarized(model, D_a, D_b, features, ao_grid, ao_xyz,
     rho_tot = rho_a + rho_b
     nr_tot = nra + nrb
     sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
-    zeta = jnp.clip((rho_a - rho_b) / jnp.maximum(rho_tot, 1e-300), -1.0, 1.0)
+    # Clip MUST match the production paths (split_exc_energy_uks / ec_spin) so
+    # this reference is the exact energy whose gradient compute_vc_polarized_
+    # per_spin builds, INCLUDING at the zeta boundary.
+    zeta = jnp.clip((rho_a - rho_b) / jnp.maximum(rho_tot, 1e-300),
+                    -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
     return jnp.sum(grid_weights * model.eval_ec(rho_tot, sig_tot, features,
                                                 zeta=zeta))
 
@@ -386,6 +391,79 @@ def test_polarized_vc_fd_energy_potential_consistency():
     grad_resid = abs(grad_contract - contract) / max(abs(grad_contract), 1e-12)
     assert grad_resid < 1e-10, (
         f"per-spin V_c disagrees with autodiff grad of E_c: {grad_resid:.3e}")
+
+
+def test_polarized_vc_finite_and_consistent_at_full_polarization():
+    """zeta-boundary guard: at FULL spin polarization (rho_b -> 0,
+    zeta_raw -> +1) the zeta clip shared by ``split_exc_energy_uks`` and
+    ``compute_vc_polarized_per_spin`` keeps PW92's f''(zeta) ~ (1-zeta)^(-2/3)
+    FINITE, AND -- because the per-spin V_c is ``jax.jvp`` THROUGH that same
+    clip -- V_c stays the EXACT gradient of the clipped production energy.
+
+    The SAME clip in both paths makes energy and potential consistent BY
+    CONSTRUCTION (no energy<->potential mismatch at the boundary); dropping the
+    clip would reintroduce the PW92 second-derivative NaN this guards against.
+    Cross-checked against reverse-mode autodiff (no finite-difference noise at
+    the non-smooth clip) to ~1e-9 even where the clip is active and its tangent
+    is exactly 0.
+    """
+    from xcquinox.alec.oneshot import compute_vc_polarized_per_spin
+
+    model = _build_polarized_model()
+    md = _li_uks_md()
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_grad = jnp.asarray(md["ao_grid_deriv"])
+    ao_xyz = ao_grad[1:4]
+    grid_weights = jnp.asarray(md["grid_weights"])
+    features = assemble_descriptor_features(model.descriptors, md)
+
+    # Pile ALL density into the alpha channel: rho_b == 0 -> zeta_raw == +1 at
+    # every grid point -> the clip is active everywhere (the worst case).
+    dm = jnp.asarray(md["dm_pbe"])
+    D_a = dm[0] + dm[1]
+    D_b = jnp.zeros_like(D_a)
+    nao = D_a.shape[0]
+
+    rho_a, nra, _ = _grid_quantities(D_a, ao_grid, ao_xyz)
+    rho_b, nrb, _ = _grid_quantities(D_b, ao_grid, ao_xyz)
+    nr_tot = nra + nrb
+    sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
+    # Precondition: this density really sits at the clip boundary.
+    zeta_raw = (rho_a - rho_b) / jnp.maximum(rho_a + rho_b, 1e-300)
+    assert float(jnp.max(zeta_raw)) >= 1.0 - 1e-12, \
+        "test density is not fully polarized"
+
+    vc_a, vc_b = compute_vc_polarized_per_spin(
+        model, rho_a, rho_b, sig_tot, features, ao_grid, grid_weights,
+        nr_tot, ao_grad)
+
+    # (a) FINITE -- the clip is exactly what prevents the (1-zeta)^(-2/3) blowup.
+    assert jnp.all(jnp.isfinite(vc_a)), "V_c^a non-finite at full polarization"
+    assert jnp.all(jnp.isfinite(vc_b)), "V_c^b non-finite at full polarization"
+
+    # (b) EXACT gradient of the PRODUCTION-clipped energy. _ec_energy_polarized
+    # now clips identically, so reverse-mode autodiff of it is the ground truth.
+    # Symmetric DM perturbations remove the matrix-potential gauge freedom.
+    rng = np.random.default_rng(20260603)
+    Ma = rng.standard_normal((nao, nao))
+    dDa = jnp.asarray(Ma + Ma.T)
+    Mb = rng.standard_normal((nao, nao))
+    dDb = jnp.asarray(Mb + Mb.T)
+
+    def Ec(Da, Db):
+        return _ec_energy_polarized(
+            model, Da, Db, features, ao_grid, ao_xyz, grid_weights)
+
+    ga, gb = jax.grad(Ec, argnums=(0, 1))(D_a, D_b)
+    contract_vc = float(jnp.einsum("ij,ij->", vc_a, dDa)
+                        + jnp.einsum("ij,ij->", vc_b, dDb))
+    contract_gr = float(jnp.einsum("ij,ij->", ga, dDa)
+                        + jnp.einsum("ij,ij->", gb, dDb))
+    assert jnp.isfinite(contract_gr), "autodiff grad of clipped E_c non-finite"
+    resid = abs(contract_vc - contract_gr) / max(abs(contract_gr), 1e-12)
+    assert resid < 1e-9, (
+        f"per-spin V_c disagrees with autodiff grad of the clipped E_c at full "
+        f"polarization: rel={resid:.3e}")
 
 
 def test_polarized_full_split_vxc_fd_consistency():
@@ -713,3 +791,37 @@ def test_split_energy_openshell_passes_same_features_both_exchange_terms():
     ec = model.eval_ec(rho_a + rho_b, sigma_tot, feats)
     expected = float(0.5 * jnp.sum(gw * (ex_a + ex_b)) + jnp.sum(gw * ec))
     assert abs(got - expected) < 1e-12
+
+
+def test_split_exc_energy_uks_raises_when_cnet_lacks_polarization_flag():
+    """A model whose cnet lost ``use_spin_polarization`` (e.g. a model built
+    outside create_network_pair, or a bad deserialization) must RAISE on the
+    open-shell path rather than silently fall back to non-polarized
+    correlation. Guards the identical hasattr check in both
+    oneshot.split_exc_energy_uks AND solver_manual.run_scf's UKS body."""
+    model = _build_polarized_model()
+    md = _li_uks_md()
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_grad = jnp.asarray(md["ao_grid_deriv"])
+    ao_xyz = ao_grad[1:4]
+    grid_weights = jnp.asarray(md["grid_weights"])
+    features = assemble_descriptor_features(model.descriptors, md)
+    dm = jnp.asarray(md["dm_pbe"])
+    rho_a, nra, sig_aa = _grid_quantities(dm[0], ao_grid, ao_xyz)
+    rho_b, nrb, sig_bb = _grid_quantities(dm[1], ao_grid, ao_xyz)
+    nr_tot = nra + nrb
+    sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
+
+    class _ModelNoFlag:
+        """Real (working) exchange, but a cnet object missing the flag, so the
+        guard fires before correlation is ever evaluated."""
+        def __init__(self, real):
+            self._real = real
+            self.cnet = object()  # lacks use_spin_polarization
+
+        def eval_ex(self, *a, **k):
+            return self._real.eval_ex(*a, **k)
+
+    with pytest.raises(AttributeError, match="use_spin_polarization"):
+        split_exc_energy_uks(_ModelNoFlag(model), rho_a, rho_b,
+                             sig_aa, sig_bb, sig_tot, features, grid_weights)

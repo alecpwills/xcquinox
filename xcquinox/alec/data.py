@@ -38,6 +38,9 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     # grid_level so a reference built on a different grid cannot load
     # silently against a mismatched density/V_xc grid.
     "grid_level_used",
+    # basis the reference was generated for; lets the OEP cache-hit reject a
+    # stale .npz built for a different basis in the same cache_dir.
+    "basis_used",
 })
 
 

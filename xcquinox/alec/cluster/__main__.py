@@ -1145,7 +1145,8 @@ def cmd_resubmit(args) -> int:
             retry_by_class.setdefault(classes[idx], []).append(idx)
         for idx in retry:
             cls = classes[idx]
-            if cls == "oom" and not cl.oom_retry_partition and not cl.oom_retry_mem:
+            if cls == "oom" and not cl.oom_retry_partition and not cl.oom_retry_mem \
+                    and not getattr(cl, "oom_retry_force_cpu", False):
                 defaulted.append(idx)
             if cls == "timeout" and not cl.timeout_retry_partition \
                     and not cl.timeout_retry_time:

@@ -40,19 +40,22 @@ def _binomial_table(n, r):
 
 
 def _unrank_batch_np(ranks, n, r, C):
-    """Host (numpy) combinadic unranking, used by tests to validate the kernel.
+    """Host (numpy) unranking in LEX order, matching itertools.combinations(range(n), r).
 
-    ``ranks`` (B,) in ``[0, C(n,r))`` -> ``(B, r)`` combos (ascending). For
-    ``i=r..1``: ``c = searchsorted(C[:,i], t, 'right') - 1``; ``t -= C[c, i]``."""
-    t = np.asarray(ranks, dtype=np.int64).copy()
+    ``ranks`` (B,) in ``[0, C(n,r))`` -> ``(B, r)`` ascending combos. Lex rank R is
+    the complement-reverse (c -> (n-1)-c) of the colex unranking of C(n,r)-1-R, so the
+    GPU selector's lowest-rank tie-break matches the serial selector's lex-first
+    tie-break (subset_selection_parallel)."""
+    total = int(C[n, r])
+    t = (total - 1 - np.asarray(ranks, dtype=np.int64)).copy()
     cols = []
     for i in range(r, 0, -1):
         col = C[:, i]
         c = np.searchsorted(col, t, side="right") - 1
         cols.append(c)
         t = t - C[c, i]
-    combos = np.stack(cols[::-1], axis=1)          # ascending (c_1 < ... < c_r)
-    return combos
+    colex = np.stack(cols[::-1], axis=1)           # ascending colex combo
+    return np.sort((n - 1) - colex, axis=1)        # complement-reverse -> ascending lex
 
 
 def _make_kernel(r, ndesc):
@@ -63,13 +66,17 @@ def _make_kernel(r, ndesc):
     def kernel(ranks, C, counts, pref, pref_logpref, ref_weights):
         # ranks (B,) int64; C (n+1, r+1) int64; counts (ndesc, n, NBINS) f32;
         # pref/pref_logpref (ndesc, NBINS) f32 = max(ref_pmf,CLIP) and pc*log(pc).
-        t = ranks
+        n = C.shape[0] - 1
+        t = C[n, r] - 1 - ranks                    # lex rank R -> colex rank C(n,r)-1-R
         cols = []
         for i in range(r, 0, -1):
             c = jnp.searchsorted(C[:, i], t, side="right") - 1
             cols.append(c)
             t = t - C[c, i]
-        combos = jnp.stack(cols, axis=1)           # (B, r), order irrelevant (a set)
+        # complement-reverse the colex combo into the LEX combo; used as a SET here
+        # (element order immaterial for JSD), but the rank->combo map is now lex so the
+        # lowest-rank tie-break matches the serial selector's lex-first tie-break.
+        combos = (n - 1) - jnp.stack(cols, axis=1)
 
         B = ranks.shape[0]
         total = jnp.zeros(B, dtype=jnp.float32)
@@ -156,7 +163,7 @@ def select_subset_gpu(pool, edges, h_ref, *, r, metric="jsd", batch=None,
                           ref_weights_j)
         val = float(val)
         rank = start + int(idx)
-        if val < best_val or (val == best_val and 0 <= rank < best_rank):
+        if val < best_val or (val == best_val and rank < best_rank):
             best_val = val
             best_rank = rank
         start = end

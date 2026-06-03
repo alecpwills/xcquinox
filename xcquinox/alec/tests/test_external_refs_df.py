@@ -85,3 +85,22 @@ def test_df_ccsd_matches_non_df_within_df_error():
                                    basis="def2-svp", auxbasis=None).run()
     e_df = mf_df.e_tot + cc.CCSD(mf_df).run().e_corr
     assert abs(e_df - e_plain) < 5e-3, (e_plain, e_df)
+
+
+def test_scf_empty_spin_channel_disables_df_like_ccsd(tmp_path):
+    """run_scf_with_cache mirrors run_ccsd_with_cache: a spin channel with 0
+    electrons (the H atom, nelec=(1,0)) forces use_df=False, so density_fit=True
+    yields a result IDENTICAL to density_fit=False (not merely within DF error).
+    Keeps the SCF reference's effective DF setting consistent with the CCSD
+    reference built on top of it."""
+    import numpy as np
+    spec = er.SpeciesEntry("H", 0, 1, "dfs_atom")     # empty beta channel
+    atoms = er.resolve_geometry(spec)
+    df = er.run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                               basis="def2-svp", grid_level=1, density_fit=True)
+    nodf = er.run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                                 basis="def2-svp", grid_level=1,
+                                 density_fit=False)
+    # density_fit was disabled for the empty channel in BOTH effective paths,
+    # so the converged density matrices coincide to numerical precision.
+    np.testing.assert_allclose(df["dm"], nodf["dm"], rtol=0, atol=1e-9)

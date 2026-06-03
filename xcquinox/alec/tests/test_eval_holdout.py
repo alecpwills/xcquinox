@@ -315,3 +315,27 @@ def test_write_per_molecule_and_per_reaction_json(tmp_path):
     assert rxn_path.is_file()
     assert json.loads(mol_path.read_text()) == [{"molecule": "H"}]
     assert json.loads(rxn_path.read_text()) == [{"name": "r"}]
+
+
+def test_n_nan_union_counts_either_metric_dropped():
+    """Reactions dropped (non-finite abs error) in EITHER the NN or the PBE
+    metric must be unioned. The two metrics can drop DIFFERENT reactions, so the
+    old max(n_nan_nn, n_nan_pbe) undercounts the true dropped set."""
+    reactions = [
+        {"name": "r1", "reactants": ["x"], "products": [],
+         "coeffs": [1.0], "reaction_energy_ref": 0.0},
+        {"name": "r2", "reactants": ["y"], "products": [],
+         "coeffs": [1.0], "reaction_energy_ref": 0.0},
+    ]
+    nn = {"x": float("nan"), "y": 1.0}    # NN drops r1 only  -> n_nan_nn = 1
+    pbe = {"x": 1.0, "y": float("nan")}   # PBE drops r2 only -> n_nan_pbe = 1
+    # union = {r1, r2} = 2; the buggy max(1, 1) would report 1.
+    assert eh._n_nan_union(nn, pbe, reactions) == 2
+
+    # Both metrics drop the SAME single reaction -> union is 1 (not 2).
+    same = {"x": float("nan"), "y": 1.0}
+    assert eh._n_nan_union(same, dict(same), reactions) == 1
+
+    # Nothing dropped -> 0.
+    finite = {"x": 1.0, "y": 1.0}
+    assert eh._n_nan_union(finite, dict(finite), reactions) == 0

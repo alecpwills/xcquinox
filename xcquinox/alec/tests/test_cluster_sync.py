@@ -818,3 +818,53 @@ def test_summaries_filter_canary_with_category(tmp_path):
     assert not (local_root / GOOD_STAMP).exists(), (
         "category-mirrored pull leaked a top-level (non-categorized) dest"
     )
+
+
+def test_build_rsync_command_spec_indices_emit_all_pad_widths():
+    """The spec dir pad width = max(4, len(str(n_specs-1))) is unknown at pull
+    time (the manifest is not loaded), so an include is emitted for EVERY
+    plausible width (4..8). A single fixed :04d silently matched nothing once a
+    grid had >9999 specs (dirs padded to width >=5)."""
+    argv = sync.build_rsync_command(
+        host="h", remote_root="/r", local_root="/l",
+        run_id=GOOD_STAMP, profile="full", spec_indices=[48],
+    )
+    for width in range(4, 9):
+        name = f"spec_{48:0{width}d}"
+        assert f"--include=/checkpoints/{name}/" in argv, \
+            f"missing width-{width} include {name}: {argv}"
+        assert f"--include=/checkpoints/{name}/***" in argv
+    # width-4 form still present (back-compat with <=9999-spec grids)
+    assert "--include=/checkpoints/spec_0048/" in argv
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync not installed")
+def test_spec_indices_canary_width5_grid(tmp_path):
+    """End-to-end #10 guard: a grid with >9999 specs pads dir names to width 5
+    (spec_00048). Pull with spec_indices=[48] must still land it; the old
+    :04d-only include (spec_0048) would have matched NOTHING."""
+    remote_root = tmp_path / "remote"
+    src_run = remote_root / GOOD_STAMP
+    src_run.mkdir(parents=True)
+    (src_run / "manifest.json").write_text('{"n_specs": 12000}\n')
+    for idx in (48, 49):
+        spec = src_run / "checkpoints" / f"spec_{idx:05d}"  # width-5 padding
+        spec.mkdir(parents=True)
+        (spec / "model.eqx").write_bytes(b"BLOB" * 100)
+
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    (local_root / GOOD_STAMP).mkdir()
+
+    argv = sync.build_rsync_command(
+        host="", remote_root=str(remote_root), local_root=str(local_root),
+        run_id=GOOD_STAMP, profile="full", spec_indices=[48],
+    )
+    completed = subprocess.run(argv, check=False, capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+
+    dest = local_root / GOOD_STAMP / "checkpoints"
+    assert (dest / "spec_00048" / "model.eqx").is_file(), \
+        "width-5 spec dir did not land; the :04d-only include regressed"
+    # The unrequested neighbor must stay out.
+    assert not (dest / "spec_00049").exists()

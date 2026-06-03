@@ -214,10 +214,22 @@ def build_rsync_command(
         # rsync needs to descend into /checkpoints/ first, then into each
         # named spec_NNNN/, then take everything inside (``***``).
         argv.append("--include=/checkpoints/")
+        # The harness pads spec dir names to width max(4, len(str(n_specs-1))),
+        # which depends on the grid size and is NOT known here (the pull command
+        # does not load the remote manifest). Emit an include for every plausible
+        # zero-pad width (4..8, i.e. grids up to 100M specs, far beyond any SLURM
+        # array limit); only the width matching the grid hits a real dir, the
+        # rest match nothing and are harmless. A single fixed ``:04d`` silently
+        # pulled NOTHING once a grid had >9999 specs (dirs padded to width >=5).
         for idx in spec_indices:
-            name = f"spec_{idx:04d}"
-            argv.append(f"--include=/checkpoints/{name}/")
-            argv.append(f"--include=/checkpoints/{name}/***")
+            seen: set[str] = set()
+            for width in range(4, 9):
+                name = f"spec_{idx:0{width}d}"
+                if name in seen:
+                    continue            # idx already wider than `width`
+                seen.add(name)
+                argv.append(f"--include=/checkpoints/{name}/")
+                argv.append(f"--include=/checkpoints/{name}/***")
         argv.append("--exclude=/checkpoints/spec_*")
 
     argv.append(f"--filter=. {filt}")

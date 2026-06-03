@@ -696,3 +696,18 @@ def test_defer_eval_default_and_parse(tmp_path):
     data["defer_eval"] = True
     cfg2 = load_grid_config(_write(tmp_path, "g2.json", data))
     assert cfg2.defer_eval is True
+
+
+def test_validate_rejects_both_defer_and_inline_eval():
+    """defer_eval and inline_eval are mutually exclusive. A config that sets
+    BOTH (no CLI flags) must fail at login-node validation, not only later
+    inside submit_jobs."""
+    import dataclasses
+    cfg = dataclasses.replace(_cfg(), defer_eval=True, inline_eval=True)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+    # Each alone validates fine.
+    validate_grid_semantics(
+        dataclasses.replace(_cfg(), defer_eval=True), _StubDomain(pool_size=40))
+    validate_grid_semantics(
+        dataclasses.replace(_cfg(), inline_eval=True), _StubDomain(pool_size=40))

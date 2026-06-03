@@ -481,8 +481,8 @@ def load_full_held_out_pools(
 
     Species dicts merge by name (e.g. ``h``, ``c``, ``o``, ``n``, ``f`` appear
     in both sets, same MoleculeSpec for both). Reactions concatenate (BH76
-    first, then W4-11). Total: 76 + 140 = 216 reactions over ~180 unique
-    species (varies slightly with overlap).
+    first, then W4-11). Total: 76 + 140 = 216 reactions over 214 unique
+    species (79 BH76 + 152 W4-11, 17 overlap).
     """
     bh76_mols, bh76_rxns = load_full_bh76(basis=basis, grid_level=grid_level)
     w411_mols, w411_rxns = load_full_w411(basis=basis, grid_level=grid_level)
