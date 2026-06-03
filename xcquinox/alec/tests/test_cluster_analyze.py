@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.cluster.analyze — eval-results aggregation.
+"""Tests for xcquinox.alec.cluster.analyze: eval-results aggregation.
 
 A fake run dir is built with one spec per status so the classifier, the
 metric aggregation (which must EXCLUDE incomplete specs), and the CSV/plot
@@ -106,7 +106,7 @@ def test_collect_results_only_complete_have_metrics(tmp_path):
     by_idx = {r["idx"]: r for r in analyze.collect_results(rd)}
     assert by_idx[0]["mae"] == 2.0
     assert by_idx[0]["n_eval"] == 3
-    # Every non-complete spec has None metrics (NOT 0 — excluded from stats).
+    # Every non-complete spec has None metrics (NOT 0, excluded from stats).
     for i in (2, 3, 4, 5):
         assert by_idx[i]["mae"] is None
         assert by_idx[i]["rho_rmse"] is None
@@ -266,7 +266,7 @@ def test_summarize_nan_mae_excluded_from_statistics(tmp_path):
       (a) mae_mean/min/max/median are computed over the two finite-MAE specs
           only (mean=2.0, min=1.0, max=3.0, median=2.0).
       (b) best_idx/worst_idx ignore the NaN spec and point at the finite ones.
-      (c) n_complete still counts the NaN spec (it *is* complete; the field
+      (c) n_complete still counts the NaN spec (it is complete; the field
           just cannot contribute to the metric aggregation).
     """
     run_dir = str(tmp_path / "run_nan")
@@ -354,7 +354,7 @@ def test_worst_molecules_ranks_across_complete_specs(tmp_path):
     assert abs(worst[0]["ae_error_kcalmol"]) > abs(worst[1]["ae_error_kcalmol"])
 
 
-# C5-07: non-finite AE errors must sink in the ranking, never rank as "worst"
+# non-finite AE errors must sink in the ranking, never rank as "worst"
 def test_abs_ae_err_sinks_nonfinite():
     assert analyze._abs_ae_err({"AE_error_kcalmol": -5.0}) == 5.0
     assert analyze._abs_ae_err({"AE_error_kcalmol": float("nan")}) == -1.0

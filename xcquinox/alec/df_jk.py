@@ -23,7 +23,7 @@ import numpy as np
 # (def2-tzvpd, def2-tzvppd, def2-qzvp) have no dedicated ``-jkfit`` and use the
 # Weigend universal Coulomb-fitting set ``def2-universal-jkfit``, which is
 # designed to fit J (and K) for ALL def2 orbital bases.
-#   (L) F. Weigend, Phys. Chem. Chem. Phys. 8, 1057 (2006) — accurate
+#   (L) F. Weigend, Phys. Chem. Chem. Phys. 8, 1057 (2006), accurate
 #       Coulomb-fitting (def2-universal-JKFIT) basis sets for H to Rn.
 _DEF2_UNIVERSAL_JKFIT = "def2-universal-jkfit"
 _AUXBASIS_TABLE = {
@@ -42,7 +42,7 @@ def default_auxbasis(orbital_basis: str | None) -> str | None:
 
     Returns the matched ``-jkfit`` set when one is tabulated; for any other
     ``def2-*`` orbital basis returns the cited Weigend ``def2-universal-jkfit``
-    (a *reproducible* default rather than pyscf's internal auto-select). For
+    (a reproducible default rather than pyscf's internal auto-select). For
     non-def2 / unknown bases (e.g. sto-3g, cc-pVDZ) returns ``None`` so pyscf
     auto-selects an appropriate fit. ``None`` orbital basis -> ``None``.
     """
@@ -81,7 +81,7 @@ def build_cderi(mol, auxbasis: str | None = None,
         dfobj.max_memory = max_memory
     dfobj.build()
     # Assemble (naux, nao, nao) from the packed (blk, nao_pair) blocks that
-    # dfobj.loop() yields — robust to in-core OR on-disk _cderi storage.
+    # dfobj.loop() yields, robust to in-core OR on-disk _cderi storage.
     nao = mol.nao_nr()
     naux = dfobj.get_naoaux()
     cderi = np.empty((naux, nao, nao))

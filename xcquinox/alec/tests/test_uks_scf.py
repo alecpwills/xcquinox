@@ -1,4 +1,4 @@
-"""UKS SCF tests — MANUAL backend FIXED_J and FULL modes.
+"""UKS SCF tests, MANUAL backend FIXED_J and FULL modes.
 
 Regression tests for Task 11 of the alec physics-fixes plan: run_manual_scf
 must handle UKS molecules via spin-resolved Fock matrices (F_a, F_b) using
@@ -72,7 +72,7 @@ def test_uks_manual_full_dms_distinct(o_atom_uks):
 
 @pytest.fixture
 def o_atom_uks_polarized():
-    """Same open-shell O atom but with a spin-polarization-aware cnet (P2-03)."""
+    """Same open-shell O atom but with a spin-polarization-aware cnet."""
     spec = MoleculeSpec(
         name="O", atom="O 0 0 0", basis="sto-3g",
         charge=0, spin=2, atom_composition=(("O", 1),), grid_level=1,
@@ -88,7 +88,7 @@ def o_atom_uks_polarized():
 
 def test_uks_manual_polarized_full_runs_and_conserves_electrons(
         o_atom_uks_polarized):
-    """The per-spin correlation path (P2-03) must run end-to-end in the manual
+    """The per-spin correlation path must run end-to-end in the manual
     UKS SCF and conserve n_alpha=5, n_beta=3 with a finite energy."""
     spec, md, model = o_atom_uks_polarized
     cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,

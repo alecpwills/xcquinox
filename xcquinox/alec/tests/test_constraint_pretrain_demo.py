@@ -3,7 +3,7 @@
 The demo lives under ``notebooks/analysis/`` (a standalone script, not a package),
 so it is loaded by file path via importlib. These tests exercise the PURE logic
 (metric aggregation, constraint-level construction, the W4-11 parser) with no SCF
-and no pretraining — the full end-to-end run is exercised by running the script.
+and no pretraining, the full end-to-end run is exercised by running the script.
 """
 import importlib.util
 import os
@@ -29,7 +29,7 @@ def demo():
 
 
 # ---------------------------------------------------------------------------
-# reaction_energy_mae — pure aggregation (Ha -> kcal/mol, coeff ordering).
+# reaction_energy_mae: pure aggregation (Ha -> kcal/mol, coeff ordering).
 # Used for BOTH BH76 reaction energies and W4-11 atomization energies.
 # ---------------------------------------------------------------------------
 
@@ -77,7 +77,7 @@ def test_w411_atomization_uses_reaction_scorer(demo):
 
 
 # ---------------------------------------------------------------------------
-# pbe_total_energy_dev_mae — per-species deviation from PBE (kcal/mol).
+# pbe_total_energy_dev_mae: per-species deviation from PBE (kcal/mol).
 # ---------------------------------------------------------------------------
 
 def test_pbe_total_energy_dev_mae(demo):

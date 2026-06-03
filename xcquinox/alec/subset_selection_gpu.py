@@ -1,14 +1,14 @@
 """GPU-accelerated exhaustive subset selection (JSD) for large pools.
 
-The CPU selector (:mod:`subset_selection_parallel`) caps at ~0.3M combos/s — the
-per-combo JSD is logs over the descriptor bins — so exhaustive selection over the
+The CPU selector (:mod:`subset_selection_parallel`) caps at ~0.3M combos/s, the
+per-combo JSD is logs over the descriptor bins, so exhaustive selection over the
 216-reaction BH76+W4-11 pool is infeasible past r≈5 (r=7 has 3.9e12 combos). This
 module runs the whole sweep on a JAX device: combinations are generated
-**on-device** by vectorized combinadic unranking (so the host never enumerates
-3.9e12 tuples), and unrank → JSD → batch-argmin happen in one jit'd kernel.
+on-device by vectorized combinadic unranking (so the host never enumerates
+3.9e12 tuples), and unrank -> JSD -> batch-argmin happen in one jit'd kernel.
 
 Correctness contract: ``select_subset_gpu(..., metric="jsd")`` returns the SAME
-``(chosen, value)`` as :func:`subset_selection.select_subset` — the batch ranking
+``(chosen, value)`` as :func:`subset_selection.select_subset`: the batch ranking
 runs in float32 for speed, then the single global-winner combo's JSD is recomputed
 in float64 on the host via the exact ``metric_jsd`` path. Verified in tests.
 """
@@ -40,9 +40,9 @@ def _binomial_table(n, r):
 
 
 def _unrank_batch_np(ranks, n, r, C):
-    """Host (numpy) combinadic unranking — used by tests to validate the kernel.
+    """Host (numpy) combinadic unranking, used by tests to validate the kernel.
 
-    ``ranks`` (B,) in ``[0, C(n,r))`` → ``(B, r)`` combos (ascending). For
+    ``ranks`` (B,) in ``[0, C(n,r))`` -> ``(B, r)`` combos (ascending). For
     ``i=r..1``: ``c = searchsorted(C[:,i], t, 'right') - 1``; ``t -= C[c, i]``."""
     t = np.asarray(ranks, dtype=np.int64).copy()
     cols = []
@@ -56,7 +56,7 @@ def _unrank_batch_np(ranks, n, r, C):
 
 
 def _make_kernel(r, ndesc):
-    """Build the jit'd (unrank → JSD → batch-argmin) kernel for fixed r/ndesc."""
+    """Build the jit'd (unrank -> JSD -> batch-argmin) kernel for fixed r/ndesc."""
     import jax
     import jax.numpy as jnp
 

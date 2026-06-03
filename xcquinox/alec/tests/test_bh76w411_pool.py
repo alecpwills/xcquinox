@@ -82,7 +82,7 @@ def test_build_bh76w411_pool_points():
 
 def test_bh76w411_species_union_is_small_subset():
     """The CCSD species-union of a few chosen reactions is far smaller than the
-    full 214 species — the property that keeps the preflight feasible."""
+    full 214 species, the property that keeps the preflight feasible."""
     pts = build_bh76w411_pool_points()
     chosen = pts[:6]
     union = species_union_from_points(chosen)

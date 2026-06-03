@@ -1,4 +1,4 @@
-"""xcquinox.alec.models — AlecGGAModel composite model.
+"""xcquinox.alec.models: AlecGGAModel composite model.
 
 Composite model wrapping xnet + cnet with constraint composition, descriptor
 materialization, and scalar eval path.
@@ -17,8 +17,8 @@ from xcquinox.alec.descriptors import Descriptor
 
 # Threshold below which NN inputs are sanitized to avoid sqrt(sigma)-derivative
 # divergence in the networks' reduced-gradient transform. At these tail points
-# Fx, Fc are masked to the LDA/PW92 limit (=1) — the physical limit as rho -> 0
-# anyway — and the rho_safe * eps_xc prefactor vanishes, so energy contribution
+# Fx, Fc are masked to the LDA/PW92 limit (=1), the physical limit as rho -> 0
+# anyway, and the rho_safe * eps_xc prefactor vanishes, so energy contribution
 # is negligible while gradients remain finite.
 _NN_TAIL_THRESHOLD = 1e-10
 
@@ -41,7 +41,7 @@ def _batched_network_apply(net, rho, sigma, features):
 def _pack_row_polarized(rho_scalar, sigma_scalar, zeta_scalar, features_row):
     """Single-row vector [rho, sigma, zeta, *extras] for the spin-polarized
     correlation net. zeta sits at index 2; descriptor extras follow at
-    index 3 — matching ``AlecGGA_CNet.__call__`` when use_spin_polarization."""
+    index 3, matching ``AlecGGA_CNet.__call__`` when use_spin_polarization."""
     return jnp.concatenate([jnp.atleast_1d(rho_scalar),
                             jnp.atleast_1d(sigma_scalar),
                             jnp.atleast_1d(zeta_scalar),
@@ -84,7 +84,7 @@ class AlecGGAModel(eqx.Module):
 
         If xnet/cnet are None, fresh networks are built via create_network_pair
         (which bakes the arch's constraints into the networks). If provided, they
-        are used directly — they MUST already carry the arch's constraints (a
+        are used directly, they MUST already carry the arch's constraints (a
         skeleton built via create_network_pair does), and lower_rho_cutoff is
         ignored.
         """
@@ -111,7 +111,7 @@ class AlecGGAModel(eqx.Module):
         When the cnet is spin-polarization-aware
         (``cnet.use_spin_polarization``), ``zeta`` (broadcast to rho's shape) is
         packed into the cnet row at index 2 and the descriptor extras shift to
-        index 3 — so the cnet sees the bounded x1 feature. Otherwise ``zeta`` is
+        index 3, so the cnet sees the bounded x1 feature. Otherwise ``zeta`` is
         ignored and the unpolarized packing [rho, sigma, *extras] is used.
         Constraints are enforced inside the network forward.
         """
@@ -144,7 +144,7 @@ class AlecGGAModel(eqx.Module):
         Splitting exchange and correlation is required by SOLV-01: in UKS the
         exchange piece obeys the exact spin-scaling relation
         E_x[n_up,n_dn] = 1/2 (E_x[2 n_up] + E_x[2 n_dn]) (Oliver & Perdew,
-        PRA 20, 397 (1979)), but correlation does NOT — correlation is
+        PRA 20, 397 (1979)), but correlation does NOT, correlation is
         spin-interpolated (von Barth & Hedin, J. Phys. C 5, 1629 (1972);
         PW92, PRB 45, 13244 (1992)).
 
@@ -217,7 +217,7 @@ class AlecGGAModel(eqx.Module):
         """Shared scalar core for eval_exc_scalar / eval_ex_scalar /
         eval_ec_scalar. Returns ``(ex_density, ec_density)`` with the same
         tail masking, rho_cutoff prefactor, and constraint composition as
-        ``eval_exc_scalar`` — so the scalar split is exact
+        ``eval_exc_scalar``, so the scalar split is exact
         (eval_ex_scalar + eval_ec_scalar == eval_exc_scalar pointwise).
 
         See ``_exc_pieces`` for the SOLV-01 physics rationale (Oliver &
@@ -304,7 +304,7 @@ class AlecGGAModel(eqx.Module):
         """Returns {side: {name: {max, mean, l2}}} nested dict.
 
         Each constraint's violation is measured against the network's
-        UNCONSTRAINED core (``_core``) — the networks apply constraints in
+        UNCONSTRAINED core (``_core``), the networks apply constraints in
         their forward, so the raw enhancement must come from the core, not the
         (already-constrained) ``__call__``."""
         def _x_raw(r, s, f):

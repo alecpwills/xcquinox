@@ -70,7 +70,7 @@ def test_load_full_w411_returns_140_atomizations():
     ("load_full_w411", "_W411_CACHE"),
 ])
 def test_pool_load_hits_cache_on_second_call(loader_name, cache_name, monkeypatch):
-    """REGRESSION (D10_pools-01/02): the (basis, grid_level) cache must HIT on a
+    """REGRESSION: the (basis, grid_level) cache must HIT on a
     repeat call. The cache compared keys with ``is`` (identity) against a freshly
     built tuple, so it never hit and re-parsed the JSON on every call."""
     import xcquinox.alec.full_benchmark_pools as fbp
@@ -151,7 +151,7 @@ def test_species_dicts_yield_valid_mol_specs():
     for name, ms in mol_specs.items():
         assert isinstance(ms, MoleculeSpec), name
         assert ms.name == name, (ms.name, name)
-        # atom_composition is a tuple of pairs (element, count) — hashable
+        # atom_composition is a tuple of pairs (element, count), hashable
         for elem, count in ms.atom_composition:
             assert isinstance(elem, str), elem
             assert isinstance(count, int) and count >= 1, count

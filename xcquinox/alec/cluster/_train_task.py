@@ -1,4 +1,4 @@
-"""xcquinox.alec.cluster._train_task — per-SLURM-array-task training wrapper.
+"""xcquinox.alec.cluster._train_task: per-SLURM-array-task training wrapper.
 
 The train-array sbatch template invokes this once per array task as::
 
@@ -10,8 +10,8 @@ It is the thin harness layer between SLURM and the existing per-spec worker
   - Locate this task's spec file (``<run_dir>/specs/spec_<idx>.spec``, pad
     ``width`` read from ``manifest.json``) and its checkpoint directory
     (``<run_dir>/checkpoints/spec_<idx>/``).
-  - Run the worker as a subprocess (``_run_worker`` — the single test seam),
-    consuming its JSON progress stream and emitting a **throttled** human
+  - Run the worker as a subprocess (``_run_worker``: the single test seam),
+    consuming its JSON progress stream and emitting a throttled human
     readable progress line to our stdout (which IS the SLURM ``.out`` log).
   - Install a SIGTERM handler so a SLURM wall-clock pre-kill grace signal
     (``--signal=B:TERM@<grace>``) is recorded as a ``killed_by_signal``
@@ -20,7 +20,7 @@ It is the thin harness layer between SLURM and the existing per-spec worker
     write an atomic ``failure.json`` that ``job_tracking.reduce_outcomes``
     can read.
 
-DO NOT echo raw worker lines wholesale to our stdout — the SLURM log would
+DO NOT echo raw worker lines wholesale to our stdout, the SLURM log would
 balloon on long runs. Only the throttled progress line and a bounded tail
 (on failure) are emitted.
 """
@@ -83,7 +83,7 @@ def _looks_like_gpu_oom(text, rc=None):
     return False
 
 
-# Known-benign non-zero exit codes seen *after* a checkpoint is already on
+# Known-benign non-zero exit codes seen after a checkpoint is already on
 # disk: C-extension teardown crashes (glibc / JAX / PySCF). 139 == 128+11
 # (SIGSEGV), -11 is the POSIX subprocess form of the same.
 _BENIGN_TEARDOWN_CODES = frozenset({139, -11})
@@ -121,7 +121,7 @@ def _model_path(run_dir, idx, width):
 
 
 # ---------------------------------------------------------------------------
-# failure.json — atomic write
+# failure.json: atomic write
 # ---------------------------------------------------------------------------
 
 def _write_failure_json(checkpoint_dir, payload):
@@ -144,7 +144,7 @@ def _write_failure_json(checkpoint_dir, payload):
             if tmp_name is not None and os.path.exists(tmp_name):
                 os.unlink(tmp_name)
     except OSError:
-        # Best-effort only — never let a failure-record write crash the task.
+        # Best-effort only, never let a failure-record write crash the task.
         pass
 
 
@@ -157,7 +157,7 @@ def _read_failure_classification(checkpoint_dir):
     ``checkpoint_dir``, or ``None`` if absent/unreadable.
 
     Used to honor a preflight ``precompute_failed_species`` marker without
-    re-running the worker or overwriting the marker (C7-01).
+    re-running the worker or overwriting the marker.
     """
     path = os.path.join(checkpoint_dir, "failure.json")
     try:
@@ -168,7 +168,7 @@ def _read_failure_classification(checkpoint_dir):
 
 
 def _log(idx, message):
-    """Emit one harness log line (tagged) to our stdout — the SLURM log."""
+    """Emit one harness log line (tagged) to our stdout, the SLURM log."""
     sys.stdout.write(f"[harness idx={idx}] {message}\n")
     sys.stdout.flush()
 
@@ -200,14 +200,14 @@ def _fmt_secs(seconds):
 # ---------------------------------------------------------------------------
 
 def _run_worker(spec_path, device):
-    """Run ``_train_one_spec`` for one spec — the single test monkeypatch seam.
+    """Run ``_train_one_spec`` for one spec, the single test monkeypatch seam.
 
     Returns ``(rc, tail_text)`` where ``tail_text`` is a bounded tail (last
     ~200 lines / ~16 KB) of the child's merged stdout+stderr.
 
     Spawned with ``env=None`` (full inheritance): the sbatch thread-cap
     env vars (OMP/MKL/OPENBLAS_NUM_THREADS) MUST reach the worker. The
-    ``--no-progress`` flag is intentionally NOT passed — we want the JSON
+    ``--no-progress`` flag is intentionally NOT passed, we want the JSON
     progress stream so the throttled SLURM heartbeat below can be emitted.
     """
     cmd = [
@@ -220,7 +220,7 @@ def _run_worker(spec_path, device):
         stderr=subprocess.STDOUT,
         bufsize=1,
         text=True,
-        env=None,  # full env inheritance — sbatch thread caps must reach worker
+        env=None,  # full env inheritance, sbatch thread caps must reach worker
     )
     # Expose the child so the SIGTERM handler can terminate it.
     global _ACTIVE_CHILD
@@ -241,7 +241,7 @@ def _run_worker(spec_path, device):
                 del tail[0]
 
             # A non-JSON line (banner, traceback, warning) is kept in the
-            # tail but contributes nothing to progress — a worker that emits
+            # tail but contributes nothing to progress, a worker that emits
             # ZERO JSON progress lines (import-time crash) must not break us.
             if not line or not line.startswith("{"):
                 continue
@@ -289,7 +289,7 @@ def _run_worker(spec_path, device):
     if len(tail_text) > _TAIL_MAX_CHARS:
         tail_text = tail_text[-_TAIL_MAX_CHARS:]
     if not seen_any_step:
-        # Not an error in itself — recorded so the caller's log shows why no
+        # Not an error in itself, recorded so the caller's log shows why no
         # progress heartbeat appeared (e.g. import-time crash).
         pass
     return rc, tail_text
@@ -312,15 +312,15 @@ _PROGRESS_SINK = lambda message: None  # noqa: E731
 # ---------------------------------------------------------------------------
 
 def _write_signal_failure(run_dir, idx, rc):
-    """Record a ``killed_by_signal`` failure for this task — directly testable.
+    """Record a ``killed_by_signal`` failure for this task, directly testable.
 
     Called from the SIGTERM handler. SLURM sends SIGTERM ``<grace>`` seconds
     before the wall-clock SIGKILL (the train-array template requests
     ``--signal=B:TERM@<grace>``), so we get a short window to record why the
     task is about to die.
 
-    NOTE: a cgroup *memory*-OOM kill is an immediate SIGKILL with NO grace
-    period — this handler does NOT fire in that case. OOM recovery for an
+    NOTE: a cgroup memory-OOM kill is an immediate SIGKILL with NO grace
+    period: this handler does NOT fire in that case. OOM recovery for an
     ungraceful kill is handled by ``resubmit``'s ``sacct`` fallback
     (``State == OUT_OF_MEMORY``).
     """
@@ -351,14 +351,14 @@ def _install_sigterm_handler(run_dir, idx):
     non-zero. Returning the handler lets ``main`` (and tests) confirm it is the
     installed handler via ``signal.getsignal(SIGTERM)``.
     """
-    def _handler(signum, frame):  # noqa: ARG001 — signal-handler signature
+    def _handler(signum, frame):  # noqa: ARG001, signal-handler signature
         child = _ACTIVE_CHILD
         if child is not None and child.poll() is None:
             try:
                 child.terminate()
             except OSError:
                 pass
-        _log(idx, "received SIGTERM — recording killed_by_signal and exiting")
+        _log(idx, "received SIGTERM, recording killed_by_signal and exiting")
         _write_signal_failure(run_dir, idx, rc=-15)
         # rc -15 mirrors the POSIX subprocess form of a SIGTERM-induced exit.
         sys.exit(143)  # 128 + 15
@@ -388,7 +388,7 @@ def main(argv=None) -> int:
     global _PROGRESS_SINK
     _PROGRESS_SINK = lambda message: _log(idx, message)  # noqa: E731
 
-    # Install the SIGTERM handler early — a kill can arrive any time.
+    # Install the SIGTERM handler early, a kill can arrive any time.
     _install_sigterm_handler(run_dir, idx)
 
     width = _read_width(run_dir)
@@ -396,7 +396,7 @@ def main(argv=None) -> int:
     checkpoint_dir = _checkpoint_dir(run_dir, idx, width)
     model_path = _model_path(run_dir, idx, width)
 
-    # C7-01: honor a preflight ``precompute_failed_species`` marker. The
+    # honor a preflight ``precompute_failed_species`` marker. The
     # preflight writes this when a FIXED subset references a species whose CCSD
     # external reference failed to precompute, so the spec cannot train. Running
     # the worker would burn an exclusive node AND overwrite the precise preflight
@@ -426,13 +426,13 @@ def main(argv=None) -> int:
 
     # --- four-way outcome classification -----------------------------------
     if rc == 0 and model_exists:
-        _log(idx, f"success — model.eqx written ({_fmt_secs(elapsed)} elapsed)")
+        _log(idx, f"success, model.eqx written ({_fmt_secs(elapsed)} elapsed)")
         return 0
 
     if rc == 0 and not model_exists:
         # A worker that exits 0 but wrote no checkpoint is a real failure:
         # something silently skipped the model write.
-        _log(idx, "worker reported success (rc=0) but wrote no model.eqx — "
+        _log(idx, "worker reported success (rc=0) but wrote no model.eqx: "
                   "classifying as deterministic failure")
         _dump_tail(idx, tail)
         _write_failure_json(checkpoint_dir, {
@@ -445,22 +445,22 @@ def main(argv=None) -> int:
     if rc != 0 and model_exists:
         # model.eqx existing means _train_one_spec's run_training ran to
         # completion (it writes the model once, at the very end). A non-zero
-        # exit here is a post-training C-extension teardown anomaly — the
+        # exit here is a post-training C-extension teardown anomaly, the
         # training result is fully on disk, so this is NOT a failure.
         if rc in _BENIGN_TEARDOWN_CODES:
-            _log(idx, f"worker exited {rc} AFTER writing model.eqx — benign "
+            _log(idx, f"worker exited {rc} AFTER writing model.eqx: benign "
                       "C-extension teardown crash; treating as success")
         else:
-            _log(idx, f"worker exited {rc} AFTER writing model.eqx — "
+            _log(idx, f"worker exited {rc} AFTER writing model.eqx: "
                       "checkpoint is complete; treating as success")
         return 0
 
-    # rc != 0 AND no model.eqx → a genuine failure. Classify it.
+    # rc != 0 AND no model.eqx -> a genuine failure. Classify it.
     if _looks_like_gpu_oom(tail, rc):
         classification = "oom"
     else:
         classification = "deterministic"
-    _log(idx, f"worker failed (rc={rc}, no model.eqx) — "
+    _log(idx, f"worker failed (rc={rc}, no model.eqx), "
               f"classification={classification}")
     _dump_tail(idx, tail)
     _write_failure_json(checkpoint_dir, {

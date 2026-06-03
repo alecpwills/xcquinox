@@ -360,7 +360,7 @@ def test_each_group_has_l5_gradnorm_vxc_branch():
             f"cell {cell_idx} ({group_name}) L5 branch must use "
             f"GradNormConfig(alpha=1.5)"
         )
-        # And L5 carries the same loss + V_xc weighting as L3 — only the
+        # And L5 carries the same loss + V_xc weighting as L3, only the
         # balancing strategy differs.
         assert 'vxc_weight": 0.01' in src or "vxc_weight\\\": 0.01" in src or "vxc_weight': 0.01" in src or "'vxc_weight': 0.01" in src or 'vxc_weight=0.01' in src or '"vxc_weight": 0.01' in src
 

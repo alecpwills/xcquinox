@@ -1,6 +1,6 @@
 """Full GMTKN55-BH76 + W4-11 held-out benchmark pools.
 
-This module exposes the **full** 76-reaction BH76 (barrier heights) and
+This module exposes the full 76-reaction BH76 (barrier heights) and
 140-reaction W4-11 (atomization energies) benchmark sets in the same dict
 schema that :func:`reaction_mae_kcalmol` (originally in
 ``notebooks/analysis/local_reeval.py``) consumes, so the cluster eval can
@@ -9,13 +9,13 @@ write apples-to-apples held-out MAE rows without re-deriving the math.
 Source data lives at
 ``scripts/script_data/gmtkn55/{BH76,W4-11}/``:
 
-  * ``<set>/.res`` — shell-script reaction list (one ``tmer ...`` line per
+  * ``<set>/.res``: shell-script reaction list (one ``tmer ...`` line per
     reaction). BH76 uses signed stoichiometry (``-1 -1 +1``) for barrier
     forward energies; W4-11 uses ``-1 +n_atom1 +n_atom2 ...`` for
     atomization energies.
-  * ``<set>/<species>/struc.xyz`` — Cartesian geometry in ANGSTROM (standard
+  * ``<set>/<species>/struc.xyz``: Cartesian geometry in ANGSTROM (standard
     .xyz convention; the sibling ``coord`` file is the bohr/TURBOMOLE copy).
-  * ``<set>/<species>/coord`` — TURBOMOLE-format coords (bohr) + ``$eht
+  * ``<set>/<species>/coord``: TURBOMOLE-format coords (bohr) + ``$eht
     charge=N unpaired=M`` for spin (2S) and charge metadata.
 
 Performance: parsing the ``.res`` files + reading 200+ ``struc.xyz`` +
@@ -56,9 +56,9 @@ from xcquinox.alec.config import MoleculeSpec
 _BH76_CACHE: Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]] | None = None
 _W411_CACHE: Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]] | None = None
 
-# Bohr → angstrom (CODATA 2018). NOTE: GMTKN55 ``struc.xyz`` files are already
+# Bohr -> angstrom (CODATA 2018). NOTE: GMTKN55 ``struc.xyz`` files are already
 # in ANGSTROM (the bohr copy is the sibling TURBOMOLE ``coord`` file), so the
-# regen path does NOT convert struc.xyz — it stores those angstrom coordinates
+# regen path does NOT convert struc.xyz: it stores those angstrom coordinates
 # verbatim. The constant is kept only for reference/round-trips; struc.xyz must
 # NOT be divided by it (doing so shrinks every held-out molecule ~1.89x).
 BOHR_PER_ANGSTROM = 1.8897261246257702
@@ -72,7 +72,7 @@ _DATA_DIR = Path(__file__).parent / "data"
 BH76_JSON_PATH = _DATA_DIR / "bh76_full_pool.json"
 W411_JSON_PATH = _DATA_DIR / "w411_full_pool.json"
 
-# GMTKN55 source root — the regen script reads from here; runtime loaders
+# GMTKN55 source root, the regen script reads from here; runtime loaders
 # only touch it when XCQUINOX_REBUILD_FULL_POOLS=1.
 _GMTKN55_ROOT = (
     Path(__file__).resolve().parents[2]
@@ -83,7 +83,7 @@ W411_SOURCE_DIR = _GMTKN55_ROOT / "W4-11"
 
 
 # ---------------------------------------------------------------------------
-# GMTKN55 .res parser — used at JSON build time, NOT at every cluster task
+# GMTKN55 .res parser, used at JSON build time, NOT at every cluster task
 # ---------------------------------------------------------------------------
 
 # BH76 lines: "$tmer  h/$f  n2o/$f  n2ohts/$f  x  -1  -1  1  $w  17.7"
@@ -108,7 +108,7 @@ _RE_EHT = re.compile(r"\$eht\s+charge\s*=\s*(-?\d+)\s+unpaired\s*=\s*(\d+)")
 def _read_coord_meta(species_dir: Path) -> Tuple[int, int]:
     """Return (charge, 2S) parsed from ``<species>/coord``'s ``$eht`` block.
 
-    Defaults to (0, 0) if the file is missing or the block is absent —
+    Defaults to (0, 0) if the file is missing or the block is absent,
     closed-shell neutral is the right fallback for the molecule majority.
     """
     coord_file = species_dir / "coord"
@@ -126,7 +126,7 @@ def _read_struc_xyz_angstrom(species_dir: Path) -> List[Tuple[str, float, float,
 
     GMTKN55 ``struc.xyz`` follows the standard .xyz convention (angstroms); the
     bohr copy lives in the sibling TURBOMOLE ``coord`` file. The coordinates are
-    handed to PySCF (whose default unit is angstrom) verbatim — no conversion.
+    handed to PySCF (whose default unit is angstrom) verbatim, no conversion.
     """
     xyz_file = species_dir / "struc.xyz"
     if not xyz_file.is_file():
@@ -155,7 +155,7 @@ def _read_struc_xyz_angstrom(species_dir: Path) -> List[Tuple[str, float, float,
 def _atoms_to_pyscf_str(atoms_ang: Sequence[Tuple[str, float, float, float]]) -> str:
     """Format (element, x, y, z) angstrom tuples as a PySCF ``atom`` string in
     ANGSTROMS (the PySCF default unit). Coordinates are passed through verbatim
-    — struc.xyz is already angstrom (see ``_read_struc_xyz_angstrom``).
+: struc.xyz is already angstrom (see ``_read_struc_xyz_angstrom``).
 
     Returns ``'H 0.000000 0.000000 0.000000; O ...'``.
     """
@@ -380,7 +380,7 @@ def build_w411_pool_dict() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Runtime loaders — what the cluster eval task imports
+# Runtime loaders, what the cluster eval task imports
 # ---------------------------------------------------------------------------
 
 def _dict_to_mol_spec(
@@ -480,7 +480,7 @@ def load_full_held_out_pools(
     """Convenience: union of BH76 + W4-11.
 
     Species dicts merge by name (e.g. ``h``, ``c``, ``o``, ``n``, ``f`` appear
-    in both sets — same MoleculeSpec for both). Reactions concatenate (BH76
+    in both sets, same MoleculeSpec for both). Reactions concatenate (BH76
     first, then W4-11). Total: 76 + 140 = 216 reactions over ~180 unique
     species (varies slightly with overlap).
     """
@@ -491,7 +491,7 @@ def load_full_held_out_pools(
         if sp_name in merged_mols:
             # When the same species appears in both sets the geometries may
             # differ marginally (different GMTKN55 source dirs). Keep the
-            # BH76 version — it covers the barrier-height species set which
+            # BH76 version, it covers the barrier-height species set which
             # matters most for the eval comparison. Document the conflict
             # at debug-print level for the operator.
             continue

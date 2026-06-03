@@ -155,7 +155,7 @@ def test_mark_superseded_flips_flag_and_rewrites_atomically(run_dir):
 
 
 # ---------------------------------------------------------------------------
-# reduce_outcomes — disk-first
+# reduce_outcomes: disk-first
 # ---------------------------------------------------------------------------
 
 def test_reduce_outcomes_disk_first_success_skips_sacct(run_dir, monkeypatch):
@@ -196,12 +196,12 @@ def test_reduce_outcomes_model_eqx_beats_stale_failure_json(run_dir, monkeypatch
                         lambda *a, **k: pytest.fail("sacct must not run"))
 
     out = reduce_outcomes(run_dir, "train")
-    # model.eqx is checked BEFORE failure.json — success wins.
+    # model.eqx is checked BEFORE failure.json: success wins.
     assert out == {0: "success"}
 
 
 # ---------------------------------------------------------------------------
-# reduce_outcomes — manifest-driven (never glob)
+# reduce_outcomes: manifest-driven (never glob)
 # ---------------------------------------------------------------------------
 
 def test_reduce_outcomes_is_manifest_driven_ignores_stale_dir(run_dir, monkeypatch):
@@ -222,7 +222,7 @@ def test_reduce_outcomes_is_manifest_driven_ignores_stale_dir(run_dir, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# reduce_outcomes — sacct fallback
+# reduce_outcomes: sacct fallback
 # ---------------------------------------------------------------------------
 
 def _fake_proc(stdout, returncode=0):
@@ -272,11 +272,11 @@ def test_reduce_outcomes_sacct_state_mapping(run_dir, monkeypatch):
     append_job_record(run_dir, "train", "5000", [0, 1, 2, 3])
 
     sacct_out = "\n".join([
-        "5000|PENDING|0:0",          # array container row — skipped
+        "5000|PENDING|0:0",          # array container row, skipped
         "5000_0|OUT_OF_MEMORY|0:125",
         "5000_1|TIMEOUT|0:0",
         "5000_2|CANCELLED|0:137",    # OOM-ish exit signal
-        "5000_3.batch|FAILED|1:0",   # step row — skipped
+        "5000_3.batch|FAILED|1:0",   # step row: skipped
         "5000_3|FAILED|1:0",
     ])
     monkeypatch.setattr(jt, "_run_slurm", lambda *a, **k: _fake_proc(sacct_out))
@@ -287,7 +287,7 @@ def test_reduce_outcomes_sacct_state_mapping(run_dir, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# reduce_outcomes — superseded generations ignored / newest wins
+# reduce_outcomes: superseded generations ignored / newest wins
 # ---------------------------------------------------------------------------
 
 def test_reduce_outcomes_ignores_superseded_generation(run_dir, monkeypatch):
@@ -308,14 +308,14 @@ def test_reduce_outcomes_ignores_superseded_generation(run_dir, monkeypatch):
 
     out = reduce_outcomes(run_dir, "train")
     assert out == {0: "timeout"}
-    # Exactly one sacct call — the superseded generation was never queried.
+    # Exactly one sacct call, the superseded generation was never queried.
     assert len(queried) == 1
 
 
 def test_reduce_outcomes_newest_generation_wins(run_dir, monkeypatch):
     _write_manifest(run_dir, n_specs=1)
     append_job_record(run_dir, "train", "5000", [0])  # gen 0
-    append_job_record(run_dir, "train", "5001", [0])  # gen 1 — newest
+    append_job_record(run_dir, "train", "5001", [0])  # gen 1, newest
 
     def fake(cmd, **kw):
         if "--jobs=5001" in cmd:
@@ -333,7 +333,7 @@ def test_reduce_outcomes_falls_to_older_generation_when_newest_purged(
         run_dir, monkeypatch):
     _write_manifest(run_dir, n_specs=1)
     append_job_record(run_dir, "train", "5000", [0])  # gen 0
-    append_job_record(run_dir, "train", "5001", [0])  # gen 1 — newest
+    append_job_record(run_dir, "train", "5001", [0])  # gen 1, newest
 
     def fake(cmd, **kw):
         if "--jobs=5001" in cmd:
@@ -347,13 +347,13 @@ def test_reduce_outcomes_falls_to_older_generation_when_newest_purged(
 
 
 # ---------------------------------------------------------------------------
-# reduce_outcomes — SlurmTransientError short-circuits
+# reduce_outcomes: SlurmTransientError short-circuits
 # ---------------------------------------------------------------------------
 
 def test_reduce_outcomes_short_circuits_on_transient_error(run_dir, monkeypatch):
     _write_manifest(run_dir, n_specs=1)
     append_job_record(run_dir, "train", "5000", [0])  # gen 0
-    append_job_record(run_dir, "train", "5001", [0])  # gen 1 — newest
+    append_job_record(run_dir, "train", "5001", [0])  # gen 1, newest
 
     calls = []
 
@@ -365,13 +365,13 @@ def test_reduce_outcomes_short_circuits_on_transient_error(run_dir, monkeypatch)
 
     with pytest.raises(SlurmTransientError):
         reduce_outcomes(run_dir, "train")
-    # The FIRST transient error stops the reduction — the older generation
+    # The FIRST transient error stops the reduction, the older generation
     # is NOT queried.
     assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------
-# _run_slurm — retry policy
+# _run_slurm: retry policy
 # ---------------------------------------------------------------------------
 
 def test_run_slurm_query_verb_retries_then_raises(monkeypatch):
@@ -422,7 +422,7 @@ def test_run_slurm_mutating_verb_does_not_retry(monkeypatch):
 
     with pytest.raises(subprocess.CalledProcessError):
         _run_slurm(["sbatch", "job.sh"])
-    # sbatch is a mutating verb — run exactly ONCE, never retried.
+    # sbatch is a mutating verb, run exactly ONCE, never retried.
     assert len(calls) == 1
 
 

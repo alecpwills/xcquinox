@@ -1,6 +1,6 @@
 """Tests for the ``python -m xcquinox.alec._train_one_spec`` CLI worker.
 
-The worker must be able to route JAX to CPU *before* any JAX import so the
+The worker must be able to route JAX to CPU before any JAX import so the
 parent notebook can gracefully fall back when GPU training OOMs on small
 hardware (the step6 72-spec sweep hits ~7 GB peak on 8 GB GPUs).
 """
@@ -11,7 +11,7 @@ import sys
 
 
 def _base_env():
-    """Return an env dict that mimics a notebook launch — i.e. free of the
+    """Return an env dict that mimics a notebook launch, i.e. free of the
     conftest.py session-autouse JAX_PLATFORMS=cpu leak. Without this scrub
     the CPU-routing tests would pass vacuously because the subprocess would
     inherit cpu routing from the pytest session itself."""
@@ -44,7 +44,7 @@ def test_parent_env_jax_platforms_cpu_routes_worker_to_cpu(tmp_path):
     """The parent-set JAX_PLATFORMS=cpu env var must actually land the
     worker on CPU. Necessary because `python -m xcquinox.alec._train_one_spec`
     imports xcquinox.alec's package __init__ BEFORE main() runs, which in
-    turn imports jax.numpy via descriptors.py — too late for any in-process
+    turn imports jax.numpy via descriptors.py: too late for any in-process
     env fiddling inside main() to take effect. The only reliable switch is
     the env at subprocess-launch time.
 
@@ -139,7 +139,7 @@ def test_worker_enables_jax_x64_by_default(tmp_path):
     and gradients of such small losses are at machine epsilon).
 
     The fix sets ``JAX_ENABLE_X64=1`` as an env var BEFORE the first
-    ``import jax`` (the only universally reliable switch — the
+    ``import jax`` (the only universally reliable switch, the
     ``jax.config.update`` path can be too late when third-party
     importers like equinox or pyscfad have already cached defaults),
     plus a defensive ``jax.config.update("jax_enable_x64", True)``

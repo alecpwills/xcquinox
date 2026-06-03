@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.oneshot — fast pure-JAX prediction.
+"""Tests for xcquinox.alec.oneshot: fast pure-JAX prediction.
 
 Implements THE SPEC §13.2 test_oneshot.py items (1)-(28).
 """
@@ -54,7 +54,7 @@ def o_data():
 
 @pytest.fixture(scope="module")
 def c2h2_data():
-    """Acetylene precomputed data — built for the D∞h symmetry regression
+    """Acetylene precomputed data, built for the D∞h symmetry regression
     in test_oneshot_dm_differentiable_on_linear_symmetry_molecule."""
     return precompute_fixed_density_data(c2h2_molecule())
 
@@ -131,7 +131,7 @@ def test_oneshot_grid_density_integrates_to_n_electrons(h2o_data):
     assert abs(integrated - 10.0) < 0.5  # H2O has 10 electrons
 
 
-# §13.2 item (4) — M-E12-1
+# §13.2 item (4), M-E12-1
 def test_oneshot_total_energy_harris_diagnostic(h2o_data):
     model = _make_model(seed=42)
     E = oneshot_total_energy(model, h2o_data)
@@ -252,7 +252,7 @@ def test_oneshot_grid_density_differentiable(h2o_data):
     assert all(jnp.all(jnp.isfinite(l)) for l in array_leaves)
 
 
-# §13.2 item (13) — xfail: fixture not generated
+# §13.2 item (13), xfail: fixture not generated
 @pytest.mark.xfail(reason="Fixture notebook_cell25_h2o.npz not yet generated")
 def test_fixed_density_total_energy_matches_notebook():
     import pathlib
@@ -262,7 +262,7 @@ def test_fixed_density_total_energy_matches_notebook():
     assert False
 
 
-# §13.2 item (14) — UKS: oneshot_dm_prediction_fast on O
+# §13.2 item (14), UKS: oneshot_dm_prediction_fast on O
 def test_oneshot_dm_uks_shape_and_traces(o_data):
     model = _make_model()
     dm = oneshot_dm_prediction_fast(model, o_data)
@@ -274,7 +274,7 @@ def test_oneshot_dm_uks_shape_and_traces(o_data):
     assert abs(trace_b - 3.0) < 1.0  # nocc_b = 3
 
 
-# §13.2 item (15) — UKS: oneshot_grid_density integrates to 8 electrons
+# §13.2 item (15), UKS: oneshot_grid_density integrates to 8 electrons
 def test_oneshot_grid_density_uks_integrates(o_data):
     model = _make_model()
     rho_nn = oneshot_grid_density(model, o_data)
@@ -282,7 +282,7 @@ def test_oneshot_grid_density_uks_integrates(o_data):
     assert abs(integrated - 8.0) < 1.0  # O has 8 electrons
 
 
-# §13.2 item (16) — UKS: fixed_density_total_energy on O
+# §13.2 item (16), UKS: fixed_density_total_energy on O
 def test_fixed_density_total_energy_uks(o_data):
     model = _make_model()
     E = fixed_density_total_energy(model, o_data)
@@ -290,7 +290,7 @@ def test_fixed_density_total_energy_uks(o_data):
     assert E < 0.0
 
 
-# §13.2 item (17) — V_xc spin-independence
+# §13.2 item (17), V_xc spin-independence
 def test_vxc_spin_independence(o_data):
     """V_xc matrix is spin-independent (same for alpha and beta channels)."""
     model = _make_model()
@@ -301,11 +301,11 @@ def test_vxc_spin_independence(o_data):
         features, o_data["ao_grid"], o_data["grid_weights"],
         lda_only=True,
     )
-    # V_xc is a single (n_ao, n_ao) matrix — same for both channels
+    # V_xc is a single (n_ao, n_ao) matrix, same for both channels
     assert vxc.ndim == 2
 
 
-# §13.2 item (18) — RKS→UKS cross-check
+# §13.2 item (18), RKS -> UKS cross-check
 def test_rks_uks_cross_check(h2o_data):
     """For H2O (closed-shell), treating as UKS with nocc_a=nocc_b=5
     should give the same one-shot total energy as RKS."""
@@ -316,7 +316,7 @@ def test_rks_uks_cross_check(h2o_data):
     assert E_rks < 0.0
 
 
-# §13.2 item (19) — xfail: mixed_batch fixture not generated
+# §13.2 item (19), xfail: mixed_batch fixture not generated
 @pytest.mark.xfail(reason="Fixture mixed_batch_h_o_h2o.npz not yet generated")
 def test_mixed_uks_rks_batch():
     import pathlib
@@ -325,7 +325,7 @@ def test_mixed_uks_rks_batch():
     assert False
 
 
-# §13.2 item (20) — oneshot determinism
+# §13.2 item (20), oneshot determinism
 def test_oneshot_determinism(h2o_data):
     model = _make_model(seed=7)
     dm_1 = oneshot_dm_prediction_fast(model, h2o_data)
@@ -333,7 +333,7 @@ def test_oneshot_determinism(h2o_data):
     np.testing.assert_array_equal(np.asarray(dm_1), np.asarray(dm_2))
 
 
-# §13.2 item (21) — rho_cutoff reconciliation
+# §13.2 item (21), rho_cutoff reconciliation
 def test_rho_cutoff_reconciliation(h2o_data):
     arch = _make_arch()
     model_v1 = AlecGGAModel.from_arch(arch, seed=0, rho_cutoff=1e-18)
@@ -344,18 +344,18 @@ def test_rho_cutoff_reconciliation(h2o_data):
     assert abs(E1 - E2) / max(abs(E1), 1e-10) < 1e-4
 
 
-# §13.2 item (22) — UKS mixed-batch one-shot path
+# §13.2 item (22), UKS mixed-batch one-shot path
 def test_uks_oneshot_dm_shapes(o_data, h2o_data):
     model = _make_model()
     dm_o = oneshot_dm_prediction_fast(model, o_data)
     dm_h2o = oneshot_dm_prediction_fast(model, h2o_data)
-    # O is UKS → (2, n_ao, n_ao)
+    # O is UKS -> (2, n_ao, n_ao)
     assert dm_o.ndim == 3 and dm_o.shape[0] == 2
-    # H2O is RKS → (n_ao, n_ao)
+    # H2O is RKS -> (n_ao, n_ao)
     assert dm_h2o.ndim == 2
 
 
-# §13.2 item (23) — LDA-like V_xc sanity
+# §13.2 item (23), LDA-like V_xc sanity
 def test_compute_vxc_nn_lda_sanity(h2o_data):
     """V_xc on a constant-density grid with zero features should produce
     finite values consistent with the LDA-like approximation."""
@@ -371,7 +371,7 @@ def test_compute_vxc_nn_lda_sanity(h2o_data):
     assert vxc.shape == (h2o_data["s_matrix"].shape[0],) * 2
 
 
-# §13.2 item (24) — compute_exc_nn with constant model
+# §13.2 item (24), compute_exc_nn with constant model
 def test_compute_exc_nn_constant_model(h2o_data):
     """If eval_exc returns a constant 1.0 at every grid point,
     E_xc = sum(grid_weights)."""
@@ -391,7 +391,7 @@ def test_compute_exc_nn_constant_model(h2o_data):
     assert np.isfinite(E_xc)
 
 
-# §13.2 item (25) — E-H2: rho_ref_grid spin-summed
+# §13.2 item (25), E-H2: rho_ref_grid spin-summed
 def test_rho_ref_grid_spin_summed(o_data):
     """For O (UKS), rho_grid should be 1-D (spin-summed)."""
     assert o_data["rho_grid"].ndim == 1
@@ -399,7 +399,7 @@ def test_rho_ref_grid_spin_summed(o_data):
     assert abs(integrated - 8.0) < 0.1  # 8 electrons
 
 
-# §13.2 item (26) — H-B11-7: oneshot_grid_density UKS shape
+# §13.2 item (26), H-B11-7: oneshot_grid_density UKS shape
 def test_oneshot_grid_density_uks_shape(o_data):
     model = _make_model()
     rho_nn = oneshot_grid_density(model, o_data)
@@ -407,7 +407,7 @@ def test_oneshot_grid_density_uks_shape(o_data):
     assert rho_nn.shape == o_data["rho_grid"].shape
 
 
-# §13.2 item (27) — H-E12-2: Harris reduces to PBE when NN is identity
+# §13.2 item (27), H-E12-2: Harris reduces to PBE when NN is identity
 def test_oneshot_harris_reduces_to_pbe_when_nn_is_identity(h2o_data):
     """When Fx=Fc=1 identically, oneshot_total_energy ≈ E_pbe."""
     arch = _make_arch()
@@ -422,7 +422,7 @@ def test_oneshot_harris_reduces_to_pbe_when_nn_is_identity(h2o_data):
     assert abs(E_harris - E_pbe) < 10.0  # sanity check
 
 
-# §13.2 item (28) — M-C12-1: compute_vxc_nn v_rho matches analytic LDA
+# §13.2 item (28), M-C12-1: compute_vxc_nn v_rho matches analytic LDA
 def test_compute_vxc_nn_v_rho_matches_analytic_lda():
     """For a model with Fx=Fc=1, v_rho should match the closed-form LDA.
 
@@ -471,9 +471,9 @@ def test_oneshot_grid_density_solver_config_none_matches_legacy(h2o_data):
     np.testing.assert_allclose(np.asarray(rho_legacy), np.asarray(rho_new), atol=1e-12)
 
 
-# Phase 2 — Task 6: GGA v_sigma term in compute_vxc_nn
+# Phase 2: Task 6: GGA v_sigma term in compute_vxc_nn
 def test_compute_vxc_nn_is_symmetric_with_gga_sigma(h2o_data):
-    """V_xc is Hermitian — and that must hold once the v_sigma GGA term is
+    """V_xc is Hermitian, and that must hold once the v_sigma GGA term is
     assembled as 2*(A + A.T). Regression against accidental asymmetry."""
     model = _make_model(seed=0)
     from xcquinox.alec.descriptors import assemble_descriptor_features
@@ -496,7 +496,7 @@ def test_compute_vxc_nn_is_symmetric_with_gga_sigma(h2o_data):
 
 def test_compute_vxc_nn_v_sigma_term_contributes(h2o_data):
     """The v_sigma term must make a non-trivial contribution relative to the
-    LDA v_rho term. Dropping v_sigma was the Task 6 bug — this test catches
+    LDA v_rho term. Dropping v_sigma was the Task 6 bug, this test catches
     a regression that silently returns V_rho only."""
     model = _make_model(seed=0)
     from xcquinox.alec.descriptors import assemble_descriptor_features
@@ -517,12 +517,12 @@ def test_compute_vxc_nn_v_sigma_term_contributes(h2o_data):
 
     delta = np.asarray(vxc_full) - np.asarray(vxc_lda)
     assert np.max(np.abs(delta)) > 1e-8, (
-        "v_sigma contribution is negligible — compute_vxc_nn likely dropped it"
+        "v_sigma contribution is negligible, compute_vxc_nn likely dropped it"
     )
 
 
 def test_compute_vxc_nn_raises_without_gga_inputs(h2o_data):
-    """PRE-07: AlecGGAModel is a GGA functional. Calling compute_vxc_nn
+    """AlecGGAModel is a GGA functional. Calling compute_vxc_nn
     without nabla_rho/ao_grad and without the explicit ``lda_only=True``
     opt-in must raise ValueError rather than silently producing physically
     wrong LDA-only V_xc (the v_sigma term dropped)."""
@@ -614,7 +614,7 @@ def test_compute_vxc_nn_finite_at_rho_positive_sigma_zero():
 def test_compute_vxc_nn_matches_pyscf_pbe_vxc_shape_and_magnitude(h2o_data):
     """For H2O/STO-3G, compute_vxc_nn with a random-init NN must produce a
     matrix of the same shape and comparable order of magnitude as PySCF's
-    PBE V_xc. This is a coarse sanity check — a tight reference match would
+    PBE V_xc. This is a coarse sanity check, a tight reference match would
     need an NN with Fx/Fc exactly equal to PBE's enhancement factors.
     """
     model = _make_model(seed=0)

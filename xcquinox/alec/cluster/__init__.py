@@ -1,4 +1,4 @@
-"""xcquinox.alec.cluster — HPC (SLURM) training-harness sub-package.
+"""xcquinox.alec.cluster: HPC (SLURM) training-harness sub-package.
 
 Thin re-export of the config, domain and materialize layers. Other modules
 (spec_builder, preflight, ...) are not built yet; only grid_config + domain +

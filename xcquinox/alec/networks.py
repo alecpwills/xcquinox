@@ -1,4 +1,4 @@
-"""xcquinox.alec.networks — Exchange and correlation enhancement networks.
+"""xcquinox.alec.networks: Exchange and correlation enhancement networks.
 
 Implements THE SPEC §5: AlecGGA_XNet (exchange), AlecGGA_CNet (correlation),
 _AlecLOB (static-limit Lieb-Oxford squash), and create_network_pair factory.
@@ -131,7 +131,7 @@ class AlecGGA_XNet(eqx.Module):
 
         This is the raw MLP path (reduced-gradient feature, tanh gate, optional
         built-in ``lobf`` wrap). The physical constraints in ``self.constraints``
-        wrap THIS function — composed in ``__call__`` — so a constraint that
+        wrap THIS function, composed in ``__call__``, so a constraint that
         re-invokes its inner_fn at a rescaled density (e.g. ScalingSymmetric)
         re-runs the full forward, exactly as the model-level composition did."""
         rho = jnp.maximum(rho, self.lower_rho_cutoff)
@@ -258,7 +258,7 @@ class AlecGGA_CNet(eqx.Module):
             activation=jax.nn.gelu, key=keys[0],
         )
         # Zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1 at init
-        # (Fc → 1, the PBE-correlation limit).
+        # (Fc -> 1, the PBE-correlation limit).
         if zero_init_final_layer:
             self.net = eqx.tree_at(
                 lambda m: (m.layers[-1].weight, m.layers[-1].bias),
@@ -276,7 +276,7 @@ class AlecGGA_CNet(eqx.Module):
 
         ``zeta`` (spin polarization) is threaded through as a closed-over scalar
         rather than via the constraint signature, because the c-constraints
-        operate on (rho, sigma, F) only — matching the model-level
+        operate on (rho, sigma, F) only, matching the model-level
         ``_batched_network_apply_polarized`` base_fn that also captured zeta."""
         rho = jnp.maximum(rho, self.lower_rho_cutoff)
         sigma = jnp.maximum(sigma, 0.0)
@@ -367,12 +367,12 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
     Xnet lob_lim resolved via arch.resolved_xnet_lob_lim (None when
     LiebOxfordBound constraint is active).  Cnet lob_lim resolved via
     arch.resolved_cnet_lob_lim (default 2.0, a non-negativity squash on F_c
-    per Dick & Fernández-Serra 2021 eq. (13) — not a Lieb-Oxford bound).
+    per Dick & Fernández-Serra 2021 eq. (13), not a Lieb-Oxford bound).
 
     Physical constraints are materialized from the arch and handed to the
     networks, which enforce them INTRINSICALLY in their forward pass.  The same
-    constrained functional is therefore used everywhere the network is called —
-    pretraining, training, and evaluation — rather than being applied only by
+    constrained functional is therefore used everywhere the network is called,
+    pretraining, training, and evaluation, rather than being applied only by
     the composed model at train/eval time.
     """
     n_extra_features = sum(d.n_features for d in arch.materialize_descriptors())

@@ -45,22 +45,22 @@ def test_example_yaml_exists():
 
 
 def test_examples_dir_has_no_init():
-    """examples/ ships as package DATA, not as a subpackage — no __init__.py."""
+    """examples/ ships as package DATA, not as a subpackage, no __init__.py."""
     examples_dir = os.path.dirname(_example_path())
     assert not os.path.exists(os.path.join(examples_dir, "__init__.py")), (
-        "cluster/examples/ must NOT contain __init__.py — it is package data"
+        "cluster/examples/ must NOT contain __init__.py: it is package data"
     )
 
 
 # ---------------------------------------------------------------------------
-# Load + expand (filesystem-free — no validate_grid_semantics here)
+# Load + expand (filesystem-free, no validate_grid_semantics here)
 # ---------------------------------------------------------------------------
 
 def test_example_loads_and_expands_to_40():
     """grid_step7.yaml loads via load_grid_config and expands to 40 specs.
 
     This is filesystem-free: it calls only load_grid_config + expand_grid.
-    validate_grid_semantics is NOT called — the example's placeholder input
+    validate_grid_semantics is NOT called, the example's placeholder input
     paths intentionally do not exist (see the separate raises test).
     """
     pytest.importorskip("yaml")
@@ -110,7 +110,7 @@ def test_example_reproduces_step7_grid_parameters():
 
 
 # ---------------------------------------------------------------------------
-# Structural completeness — every dataclass field is covered
+# Structural completeness, every dataclass field is covered
 # ---------------------------------------------------------------------------
 
 def _raw_yaml(path: str) -> dict:
@@ -125,7 +125,7 @@ def _assert_fields_covered(dc_type, raw_section, ctx):
     ``raw_section`` (the parsed YAML mapping) or has a dataclass default.
 
     This catches a future required field added to a config dataclass that the
-    shipped example forgot to fill in — without a default such a field would
+    shipped example forgot to fill in, without a default such a field would
     make the example unloadable, and this test pinpoints which field.
     """
     for f in dataclasses.fields(dc_type):
@@ -137,7 +137,7 @@ def _assert_fields_covered(dc_type, raw_section, ctx):
         assert present or has_default, (
             f"{ctx}: config field {dc_type.__name__}.{f.name!r} is required "
             "(no dataclass default) but is absent from the example "
-            "grid_step7.yaml — the example must be updated to set it"
+            "grid_step7.yaml: the example must be updated to set it"
         )
 
 
@@ -168,7 +168,7 @@ def test_example_structural_completeness():
 
 def test_example_validate_raises_on_placeholder_paths():
     """The example's unfilled placeholder input paths do not exist, so a
-    semantic-validation pass surfaces them — either as a hard error or via a
+    semantic-validation pass surfaces them, either as a hard error or via a
     warning (the path checks in validate_grid_semantics are advisory).
 
     The example is a copy-me template; this asserts it is NOT silently usable
@@ -189,7 +189,7 @@ def test_example_validate_raises_on_placeholder_paths():
         cfg.pretrain.data_dir,
     ):
         assert p is not None and not os.path.exists(p), (
-            f"example placeholder path {p!r} unexpectedly exists — the "
+            f"example placeholder path {p!r} unexpectedly exists, the "
             "example must use clearly-non-existent CHANGE_ME paths"
         )
 
@@ -209,7 +209,7 @@ def test_example_validate_raises_on_placeholder_paths():
             f"path: {raised!r}"
         )
     else:
-        # No hard error — then it MUST have warned about a not-found path.
+        # No hard error, then it MUST have warned about a not-found path.
         path_warnings = [
             w for w in caught
             if "not found" in str(w.message).lower()
@@ -237,7 +237,7 @@ def test_example_has_no_real_credentials():
                       "alec.p.wills"):
         assert forbidden not in lowered, (
             f"example grid_step7.yaml contains what looks like a real "
-            f"credential ({forbidden!r}) — it must ship only placeholders"
+            f"credential ({forbidden!r}), it must ship only placeholders"
         )
     # mail_user is the example.com placeholder
     cfg = load_grid_config(_example_path()) if pytest.importorskip("yaml") \

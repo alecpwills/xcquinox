@@ -2,7 +2,7 @@
 
 Enforces the two process-level items of THE SPEC §13.3 principle #2
 (Deterministic): `jax_enable_x64` and CPU-only execution. The third
-item — fixed seeds — is enforced per-test by hardcoded PRNG key values.
+item, fixed seeds, is enforced per-test by hardcoded PRNG key values.
 """
 import os
 

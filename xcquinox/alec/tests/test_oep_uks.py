@@ -27,7 +27,7 @@ def test_oep_uks_on_o_atom_runs():
     """OEP inversion on a UKS target DM (O atom, spin=2) must return a
     (2, nao, nao) vxc matrix and converged/density_error fields.
 
-    No convergence requirement — only that the code runs end-to-end with a
+    No convergence requirement, only that the code runs end-to-end with a
     UKS-shaped DM and produces a (2, nao, nao) V_xc.
     """
     mol = gto.M(atom="O 0 0 0", basis="sto-3g", spin=2, verbose=0)

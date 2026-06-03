@@ -794,11 +794,6 @@ def pw92c_polarized_scalar(rho_alpha, rho_beta):
     the alpha_c term is written ``- G2 * f/f''(0) * (1 - zeta^4)``. At zeta = 0,
     f(0) = 0 so eps_c = G0, reproducing ``pw92c_unpolarized_scalar`` EXACTLY.
 
-    NOTE: the spin-polarized branch of ``pw92c`` above was dead code (``nspin``
-    hardcoded to 1), so this is the first exercised polarized PW92 in the
-    package; it is verified against libxc ``LDA_C_PW`` in
-    ``tests/test_features.py`` (and reduced to the unpolarized scalar at zeta=0).
-
     :param rho_alpha: alpha-spin density (scalar or array).
     :param rho_beta: beta-spin density (same shape).
     :return: per-electron correlation energy density eps_c(rs, zeta).
@@ -816,7 +811,7 @@ def pw92c_polarized_scalar(rho_alpha, rho_beta):
     # Safe-divide (double-where) so BOTH the forward value and the reverse-mode
     # gradient are NaN-free at vanishing density: feed rho_tot = 1, zeta = 0 into
     # the math where rho_alpha + rho_beta is at/below the floor (eps_c there is
-    # multiplied by ~0 density downstream, so its exact value is irrelevant — but
+    # multiplied by ~0 density downstream, so its exact value is irrelevant, but
     # this keeps 0*inf out of the tape when differentiated through the SCF).
     rho_sum = rho_alpha + rho_beta
     # Floor well below any physical grid density (~1e-12) yet above the point

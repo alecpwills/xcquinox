@@ -73,7 +73,7 @@ def test_precompute_all_forwards_density_fit(tmp_path, monkeypatch):
 
 @pytest.mark.slow
 def test_df_ccsd_matches_non_df_within_df_error():
-    """DF-HF→DF-CCSD total energy tracks the plain CCSD reference within DF
+    """DF-HF -> DF-CCSD total energy tracks the plain CCSD reference within DF
     error on a small closed-shell molecule."""
     from pyscf import gto, scf, cc
     mol = gto.M(atom="O 0 0 0.117; H 0 0.757 -0.468; H 0 -0.757 -0.468",

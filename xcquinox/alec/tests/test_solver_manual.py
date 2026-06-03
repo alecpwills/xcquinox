@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.solver_manual — SCF body correctness."""
+"""Tests for xcquinox.alec.solver_manual: SCF body correctness."""
 import numpy as np
 import pytest
 import jax.numpy as jnp
@@ -50,7 +50,7 @@ def test_scf_energy_computed_from_mixed_dm_consistently():
     if len(valid) > 1:
         max_upward_jump = float(np.max(np.diff(valid)))
         assert max_upward_jump < 1.0, (
-            f"SCF energy jumped upward by {max_upward_jump:.3f} Ha — "
+            f"SCF energy jumped upward by {max_upward_jump:.3f} Ha, "
             f"density inconsistency between E_new and features_used"
         )
 
@@ -61,7 +61,7 @@ def test_scf_energy_uses_post_mix_density():
 
     Proxy check: with mixer alpha in (0, 1), D_mixed != D_cur except at
     convergence. The reported energy at convergence should equal the energy
-    evaluated from the final density's features — no hybrid.
+    evaluated from the final density's features, no hybrid.
     """
     spec = MoleculeSpec(
         name="H2",

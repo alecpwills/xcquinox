@@ -265,7 +265,7 @@ def test_alec_xnet_matches_library():
 
 def test_alec_xnet_uses_real_attention():
     """Test 15: outputs differ AND grads on the FIRST MLP layer differ
-    when use_self_attention is toggled — not just attention weights.
+    when use_self_attention is toggled, not just attention weights.
     """
     from xcquinox.alec.networks import AlecGGA_XNet
 
@@ -353,7 +353,7 @@ def test_alec_xnet_attention_grad_end_to_end():
     assert jnp.linalg.norm(g_q) > 0.0
 
 
-# P2-03: gated spin-polarization (zeta) input on the correlation network
+# gated spin-polarization (zeta) input on the correlation network
 def test_cnet_spin_polarization_input_width_and_sensitivity():
     import jax.numpy as jnp
     from xcquinox.alec.networks import AlecGGA_CNet
@@ -395,7 +395,7 @@ def test_arch_polarized_correlation_flag_and_width():
 # ---------------------------------------------------------------------------
 
 def test_network_constraints_default_is_noop():
-    """An unconstrained network's __call__ is byte-identical to its eval_core —
+    """An unconstrained network's __call__ is byte-identical to its eval_core,
     protects the default (constraints=()) path."""
     from xcquinox.alec.networks import AlecGGA_XNet, AlecGGA_CNet
     xnet = AlecGGA_XNet(n_extra_features=0, depth=2, nodes=8, seed=0)
@@ -408,7 +408,7 @@ def test_network_constraints_default_is_noop():
 
 def test_xnet_lieb_oxford_constraint_bounds_forward():
     """A network carrying the Lieb-Oxford constraint (built-in lob disabled)
-    keeps F_x in (0, mu) for every input — the constraint is enforced in the
+    keeps F_x in (0, mu) for every input, the constraint is enforced in the
     forward pass, so pretraining/training/eval all see the bound."""
     from xcquinox.alec.networks import AlecGGA_XNet
     from xcquinox.alec.constraints import LiebOxfordBound

@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.cluster.inputs — input-artifact staging.
+"""Tests for xcquinox.alec.cluster.inputs: input-artifact staging.
 
 ``prepare_inputs`` is consume-only for subsets: it builds the training-point
 pool, loads the EXISTING ``subset_index_log.json`` ledger, and ensures CCSD
@@ -201,7 +201,7 @@ def stub_refs(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Happy path — ledger loaded + returned, refs ensured
+# Happy path, ledger loaded + returned, refs ensured
 # ---------------------------------------------------------------------------
 
 def test_prepare_inputs_loads_ledger_and_returns_it(tmp_path, stub_pool,
@@ -247,13 +247,13 @@ def test_prepare_inputs_precompute_is_skip_if_cached_noop_friendly(
     _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
 
     monkeypatch.setattr(inputs_mod, "_build_species_union", lambda: ["u"])
-    # a precompute that does nothing — every ref already cached
+    # a precompute that does nothing, every ref already cached
     monkeypatch.setattr(
         inputs_mod, "_precompute_all",
         lambda species, *, cache_dir, basis, grid_level,
         density_fit=False, auxbasis=None: None,
     )
-    # pretrain data already current — ensure is a no-op
+    # pretrain data already current, ensure is a no-op
     monkeypatch.setattr(
         inputs_mod, "_ensure_pretrain_data",
         lambda data_dir, **_kw: None,
@@ -355,7 +355,7 @@ def test_prepare_inputs_threads_density_fit_and_ensures_pretrain(
 
 
 # ---------------------------------------------------------------------------
-# Fail-fast cases — ledger problems
+# Fail-fast cases, ledger problems
 # ---------------------------------------------------------------------------
 
 def test_prepare_inputs_missing_ledger_fails(tmp_path, stub_pool, stub_refs):

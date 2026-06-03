@@ -107,13 +107,13 @@ def test_ensure_regenerates_only_when_stale(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pdg, "generate_pretrain_data_npz", fake_generate)
 
-    # first call: file absent → generates
+    # first call: file absent -> generates
     pdg.ensure_pretrain_data(str(tmp_path), basis="def2-svp", grid_level=1,
                              polarized=False)
-    # second call, same basis → current → NO regen
+    # second call, same basis -> current -> NO regen
     pdg.ensure_pretrain_data(str(tmp_path), basis="def2-svp", grid_level=1,
                              polarized=False)
-    # third call, new basis → stale → regen
+    # third call, new basis -> stale -> regen
     pdg.ensure_pretrain_data(str(tmp_path), basis="def2-tzvp", grid_level=1,
                              polarized=False)
     assert calls == ["def2-svp", "def2-tzvp"]
@@ -133,7 +133,7 @@ def test_atom_columns_density_fit_off_matches_pre_df_path():
     """density_fit defaulting to off takes the same (non-DF) SCF code path and
     reproduces the pre-DF per-atom columns to SCF tolerance (the only residual
     is machine-epsilon BLAS nondeterminism, present between any two identical
-    runs — not a code-path difference). Regression guard for the new kwarg."""
+    runs: not a code-path difference). Regression guard for the new kwarg."""
     base = pdg._atom_columns("He", 0, "def2-svp", 1, polarized=False,
                              descriptors=False)
     off = pdg._atom_columns("He", 0, "def2-svp", 1, polarized=False,

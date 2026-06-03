@@ -1,22 +1,22 @@
-"""xcquinox.alec.cluster.grid_config — config layer for the HPC training harness.
+"""xcquinox.alec.cluster.grid_config: config layer for the HPC training harness.
 
 The harness submits a grid of training jobs to a SLURM cluster as an array
 job. The grid is the Cartesian product of a small set of swept axes, defined
 declaratively in a YAML (or JSON) config file. This module provides:
 
   - Frozen dataclasses describing every section of that config.
-  - ``load_grid_config`` — parse a ``.yaml``/``.json`` file into a ``GridConfig``.
-  - ``expand_grid`` — the deterministic Cartesian product producing one
+  - ``load_grid_config``: parse a ``.yaml``/``.json`` file into a ``GridConfig``.
+  - ``expand_grid``: the deterministic Cartesian product producing one
     ``GridCell`` per SLURM array task. A cell's index in the returned list IS
     its array task id, so the expansion MUST be byte-stable across runs and
     Python versions (achieved via ``sorted(set(...))`` per axis).
-  - ``validate_grid_semantics`` — login-node pre-submission sanity checks.
+  - ``validate_grid_semantics``: login-node pre-submission sanity checks.
 
-Design note — the ``domain`` dependency:
+Design note, the ``domain`` dependency:
     ``validate_grid_semantics`` needs the size of the training-point pool to
     bound ``subset_size``. That pool lives in the not-yet-built ``domain.py``
     module. To avoid a hard import dependency on a module that does not exist,
-    the domain object is received as a *parameter*; we depend only on it
+    the domain object is received as a parameter; we depend only on it
     exposing an integer ``pool_size`` attribute. See the function docstring.
 """
 from dataclasses import dataclass, fields
@@ -76,7 +76,7 @@ class SolverNamed:
     """A named solver configuration referenced by the ``solver`` sweep axis.
 
     Deliberately limited: only ``mode``, ``max_cycles`` and an optional
-    ``feature_policy``. Do NOT add conv_tol / mixer fields here — those belong
+    ``feature_policy``. Do NOT add conv_tol / mixer fields here, those belong
     to a richer solver config consumed downstream.
     """
     mode: str
@@ -94,7 +94,7 @@ class HyperParams:
     n_steps: int
     lr_start: float
     lr_end: float
-    # lr_decay_start is a FRACTION of n_steps, in [0, 1] — matches the
+    # lr_decay_start is a FRACTION of n_steps, in [0, 1], matches the
     # PretrainSpec / TrainingSpec convention in xcquinox.alec.config.
     lr_decay_start: float
     grad_clip: float
@@ -106,12 +106,12 @@ class HyperParams:
     seed: int = 42
     # Optimizer update scheme (2026-06-01). Defaults to the DFS/dpyscf-style
     # per-molecule stochastic updates (one optimizer step per training group per
-    # epoch, fixed channel weights) — the recommended default. Set "batched" to
+    # epoch, fixed channel weights), the recommended default. Set "batched" to
     # use the historical full-batch + GradNorm path. See
     # xcquinox.alec.train._run_per_molecule_loop / TrainingSpec.update_scheme.
     update_scheme: str = "per_molecule"
     # Fixed per-channel weights for per_molecule mode (e.g.
-    # {"loss_rho": 20.0, "loss_AE": 1.0}); empty → train._DEFAULT_CHANNEL_WEIGHTS
+    # {"loss_rho": 20.0, "loss_AE": 1.0}); empty -> train._DEFAULT_CHANNEL_WEIGHTS
     # (density-dominant, dpyscf-style). Stored sorted for determinism.
     channel_weights: tuple = ()
 
@@ -136,7 +136,7 @@ class InputPaths:
     # ``subset_ledger_path`` points at the EXISTING ``subset_index_log.json``
     # produced by the (already-finished) subset-selection pre-process. The
     # harness CONSUMES this ledger (and the per-spec ``subset.traj`` files
-    # alongside it) — it does NOT run subset selection, descriptor extraction,
+    # alongside it), it does NOT run subset selection, descriptor extraction,
     # or reference-histogram building. The ledger schema is
     # ``{"<metric>/<r>": {"chosen_indices": [...], "metric_value": float,
     # "point_kinds": [...], "point_names": [...], "tag": "bin01"}}``.
@@ -165,7 +165,7 @@ class PretrainConfig:
     from these parameters, runs it, and writes the resulting checkpoint into the
     run directory at ``<run_dir>/pretrain/<arch>/`` (see
     ``pretrain_checkpoint_dir``). Each train task then references that directory
-    as its ``pretrain_checkpoint`` — so the checkpoint is a harness PRODUCT, not
+    as its ``pretrain_checkpoint``, so the checkpoint is a harness PRODUCT, not
     a pre-staged input. Keeping it under ``run_dir`` (already unique per
     submission) co-locates every artifact for a run in one folder and keeps
     concurrent runs that pretrain the same architecture from clobbering each
@@ -175,7 +175,7 @@ class PretrainConfig:
     (see ``notebooks/_build_step7_notebook.py`` / ``_build_step6_notebook.py``):
     1000 pretraining steps, lr 1e-2 -> 1e-5, decay starting at 0.2 of the
     schedule, grad-clip 1.0, ``integration`` loss weighting (step-7's only
-    pretrain origin — ``PRETRAIN_ORIGIN = "integration"``).
+    pretrain origin, ``PRETRAIN_ORIGIN = "integration"``).
 
     ``data_dir`` (the pretraining INPUT dataset) has no sensible cross-cluster
     default and MUST be supplied as an ABSOLUTE shared-filesystem path.
@@ -184,7 +184,7 @@ class PretrainConfig:
     n_steps: int = 1000              # (E) step-7 pretrain schedule length
     lr_start: float = 1e-2           # (E) step-7 pretrain lr start
     lr_end: float = 1e-5             # (E) step-7 pretrain lr floor
-    # lr_decay_start is a FRACTION of n_steps, in [0, 1] — matches the
+    # lr_decay_start is a FRACTION of n_steps, in [0, 1], matches the
     # PretrainSpec convention in xcquinox.alec.config.
     lr_decay_start: float = 0.2      # (E) step-7 pretrain decay onset
     grad_clip: float = 1.0           # (E) step-7 pretrain grad-clip
@@ -231,7 +231,7 @@ class ClusterResources:
     eval_workers: int | None = None
     # Pretrain-stage resources. The pretrain stage is a small up-front array
     # (one task per distinct architecture). Each knob is None-by-default and
-    # falls back to the train-array resource when unset — the same None-
+    # falls back to the train-array resource when unset, the same None-
     # fallback pattern ``oom_retry_*`` / ``timeout_retry_*`` use, resolved at
     # render time in submit.render_sbatch.
     pretrain_partition: str | None = None      # None -> cluster.partition
@@ -239,7 +239,7 @@ class ClusterResources:
     pretrain_mem: str | None = None            # None -> cluster.mem
     pretrain_cpus_per_task: int | None = None  # None -> cluster.cpus_per_task
     # (E) pretrain_throttle: None means "run every distinct architecture
-    # concurrently" — the pretrain array is a handful of jobs, so the default
+    # concurrently": the pretrain array is a handful of jobs, so the default
     # is the arch count (resolved in submit.render_sbatch as ARRAY_MAX + 1).
     pretrain_throttle: int | None = None
     # Datagen-stage resources (the front stage that generates the pretrain-data
@@ -250,20 +250,20 @@ class ClusterResources:
     datagen_time: str | None = None            # None -> pretrain_time -> time
     datagen_mem: str | None = None             # None -> pretrain_mem -> mem
     datagen_cpus_per_task: int | None = None   # None -> pretrain_cpus_per_task -> cpus
-    # Optional retry knobs — used when re-submitting a task that died from
+    # Optional retry knobs, used when re-submitting a task that died from
     # OOM or wall-clock timeout. None = no dedicated retry config.
     oom_retry_partition: str | None = None
     oom_retry_mem: str | None = None
     # When True, an OOM retry is forced onto the CPU (``--gres=gpu:0`` releases
     # the GPU and ``JAX_PLATFORMS=cpu`` makes JAX ignore any still-visible GPU).
     # Without this, the retry resubmits the SAME gpu-rendered train script and
-    # re-runs on a GPU — so a GPU-memory-bound spec just re-OOMs (CW2-M1). CPU
+    # re-runs on a GPU, so a GPU-memory-bound spec just re-OOMs (CW2-M1). CPU
     # has far more RAM, so this is the real recovery path for GPU OOM.
     oom_retry_force_cpu: bool = False
     timeout_retry_partition: str | None = None
     timeout_retry_time: str | None = None
     # Per-stage node-allocation mode: "exclusive" books a whole node per array
-    # task (``#SBATCH --nodes=1 --exclusive``, no ``--mem`` — the task owns all
+    # task (``#SBATCH --nodes=1 --exclusive``, no ``--mem``: the task owns all
     # the node's RAM) and "shared" requests a cpu/mem slice (``#SBATCH --mem``).
     # Training peaks near a full node's memory, so every stage defaults to
     # whole-node; flip a stage to "shared" only when its tasks are small enough
@@ -281,7 +281,7 @@ class ClusterResources:
 
 @dataclass(frozen=True)
 class GridConfig:
-    """The complete harness config — aggregate of every section above."""
+    """The complete harness config, aggregate of every section above."""
     sweep: SweepAxes
     # Named solver configs, keyed by the names used in the ``solver`` axis.
     solvers: dict[str, SolverNamed]
@@ -312,10 +312,10 @@ class GridConfig:
     defer_eval: bool = False
     # ``inline_eval`` (2026-05-29): each train array task runs its own eval
     # immediately after training in the SAME SLURM task, instead of submitting
-    # a separate eval array. 3-stage graph: pretrain → preflight →
+    # a separate eval array. 3-stage graph: pretrain -> preflight -> 
     # train+eval inline. Eliminates the inter-stage queue gap. Mutually
     # exclusive with defer_eval (an inline eval is the OPPOSITE of a deferred
-    # eval — there IS no separate eval array to defer). Default False ->
+    # eval, there IS no separate eval array to defer). Default False ->
     # byte-identical (eval as a separate array).
     inline_eval: bool = False
 
@@ -430,7 +430,7 @@ def _build_cluster(d: dict) -> ClusterResources:
     return ClusterResources(
         partition=_require(d, "partition", ctx),
         time=_require(d, "time", ctx),
-        # mem is OPTIONAL — whole-node/exclusive stages emit no --mem at all,
+        # mem is OPTIONAL, whole-node/exclusive stages emit no --mem at all,
         # and a shared stage that omits it lets SLURM apply the partition
         # default-mem-per-cpu. Absent -> "" (no directive rendered).
         mem=d.get("mem", ""),
@@ -489,7 +489,7 @@ def load_grid_config(path: str) -> GridConfig:
     """Load a ``.yaml`` or ``.json`` grid config and build the nested frozen
     dataclasses.
 
-    YAML support uses a *lazy* ``import yaml`` so the dependency is only
+    YAML support uses a lazy ``import yaml`` so the dependency is only
     required when a YAML file is actually loaded (matches the pattern in
     ``scripts/oep_per_species_tune.py``). JSON uses the stdlib.
 
@@ -504,7 +504,7 @@ def load_grid_config(path: str) -> GridConfig:
             import yaml
         except ImportError as exc:  # pragma: no cover - env-dependent
             raise ImportError(
-                "loading a YAML grid config requires PyYAML — "
+                "loading a YAML grid config requires PyYAML, "
                 "install it with `pip install pyyaml`"
             ) from exc
         with open(path) as f:
@@ -550,7 +550,7 @@ def _canon_axis(values):
     """Deduplicate and sort an axis so the index->GridCell map is byte-stable.
 
     ``sorted(set(...))`` gives lexical order for the string axes and numeric
-    order for ``subset_size`` — deterministic across runs and Python versions.
+    order for ``subset_size``: deterministic across runs and Python versions.
     """
     return sorted(set(values))
 
@@ -616,7 +616,7 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     max_n = cfg.cluster.max_array_size
     if n == 0:
         raise ValueError(
-            "grid expands to 0 cells — at least one sweep axis is empty; "
+            "grid expands to 0 cells, at least one sweep axis is empty; "
             "every axis (arch, loss, metric, subset_size, solver) must have "
             "at least one value"
         )
@@ -791,7 +791,7 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                 f"array_throttle ({cl.array_throttle}) + eval_array_throttle "
                 f"({cl.eval_array_throttle}) = "
                 f"{cl.array_throttle + cl.eval_array_throttle} exceeds "
-                f"max_concurrent_tasks ({cl.max_concurrent_tasks}) — this "
+                f"max_concurrent_tasks ({cl.max_concurrent_tasks}), this "
                 "may violate cluster fair-use policy",
                 stacklevel=2,
             )
@@ -815,7 +815,7 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     if not os.path.isdir(cfg.pretrain.data_dir):
         warnings.warn(
             f"pretrain.data_dir {cfg.pretrain.data_dir!r} not found on the "
-            "login node — this is advisory; the preflight job is "
+            "login node, this is advisory; the preflight job is "
             "authoritative for compute-node path resolution",
             stacklevel=2,
         )
@@ -823,13 +823,13 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     if not os.path.isdir(out_parent):
         warnings.warn(
             f"parent of inputs.output_root ({out_parent!r}) does not exist "
-            "on the login node — advisory; the preflight job is authoritative",
+            "on the login node, advisory; the preflight job is authoritative",
             stacklevel=2,
         )
 
 
 # ---------------------------------------------------------------------------
-# Pretrain checkpoint path — job-scoped
+# Pretrain checkpoint path, job-scoped
 # ---------------------------------------------------------------------------
 
 def pretrain_checkpoint_dir(run_dir: str, arch: str) -> str:
@@ -840,7 +840,7 @@ def pretrain_checkpoint_dir(run_dir: str, arch: str) -> str:
     ``checkpoints/`` …) keeps all work for a run in one folder. Because
     ``run_dir`` is already unique per submission (its timestamped basename), two
     runs that pretrain the SAME architecture write to DISTINCT directories
-    instead of clobbering each other's ``xnet.eqx``/``cnet.eqx`` — the same
+    instead of clobbering each other's ``xnet.eqx``/``cnet.eqx``: the same
     anti-clobber guarantee the former ``<pretrain_root>/<run_id>/<arch>`` layout
     provided, now intrinsic to the run dir.
 

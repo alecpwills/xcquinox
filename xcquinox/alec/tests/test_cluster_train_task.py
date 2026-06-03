@@ -165,7 +165,7 @@ def test_looks_like_gpu_oom_negative(text, rc):
 
 
 # ---------------------------------------------------------------------------
-# _run_worker — throttled progress + zero-progress robustness
+# _run_worker: throttled progress + zero-progress robustness
 # ---------------------------------------------------------------------------
 
 def _fake_popen_factory(lines, rc):
@@ -283,7 +283,7 @@ def test_main_installs_sigterm_handler(run_dir, monkeypatch):
     try:
         def fake_worker(spec_path, device):
             # The handler must already be installed by the time the worker
-            # runs — confirm it is no longer the original.
+            # runs, confirm it is no longer the original.
             assert signal.getsignal(signal.SIGTERM) is not original
             _write_model(run_dir, 0)
             return 0, "ok"
@@ -305,7 +305,7 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
 
 
-# C7-01: preflight precompute_failed_species marker short-circuits the worker
+# preflight precompute_failed_species marker short-circuits the worker
 def test_precompute_failed_species_marker_short_circuits(run_dir, monkeypatch):
     """A spec the preflight already marked ``precompute_failed_species`` must NOT
     run the worker (it would burn an exclusive node) and must NOT overwrite the
@@ -316,7 +316,7 @@ def test_precompute_failed_species_marker_short_circuits(run_dir, monkeypatch):
     marker = {
         "classification": "precompute_failed_species",
         "species": ["N2O"],
-        "detail": "preflight marker — keep verbatim",
+        "detail": "preflight marker, keep verbatim",
     }
     with open(os.path.join(ckpt, "failure.json"), "w") as f:
         json.dump(marker, f)
@@ -330,4 +330,4 @@ def test_precompute_failed_species_marker_short_circuits(run_dir, monkeypatch):
     preserved = _read_failure(run_dir, 0)
     assert preserved["classification"] == "precompute_failed_species"
     assert preserved["species"] == ["N2O"]
-    assert preserved["detail"] == "preflight marker — keep verbatim"
+    assert preserved["detail"] == "preflight marker, keep verbatim"

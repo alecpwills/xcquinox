@@ -1,11 +1,11 @@
-"""xcquinox.alec.oep — Wu-Yang OEP inversion for reference V_xc generation.
+"""xcquinox.alec.oep: Wu-Yang OEP inversion for reference V_xc generation.
 
 Offline utility: generates V_xc^ref matrices from high-level density
-matrices (e.g., CCSD). Not part of the training loop — produces .npz
+matrices (e.g., CCSD). Not part of the training loop, produces .npz
 files consumed by ``MoleculeSpec.external_data_path``.
 
-Implements the **displacement-form Wu-Yang OEP** of Wu & Yang
-*J. Chem. Phys.* **118**, 2498 (2003) §II.B:
+Implements the displacement-form Wu-Yang OEP of Wu & Yang
+J. Chem. Phys. 118, 2498 (2003) §II.B:
 
     V_xc(r) = V_xc^baseline(r) + Σ_t  b_t · g_t(r)
 
@@ -13,28 +13,28 @@ where ``V_xc^baseline`` is computed from a user-chosen XC functional
 (LDA / PBE / BLYP / SCAN / B3LYP / …; any pyscf-compatible string) and
 ``g_t`` are auxiliary basis functions. At ``b = 0`` the KS equations
 already produce a physically reasonable density (close to the
-``baseline_xc`` answer) and the optimizer fits only the *correction*
+``baseline_xc`` answer) and the optimizer fits only the correction
 δV_xc that bridges the baseline to the reference target. This is the
 standard Wu-Yang formulation; the alternative ``V_xc = Σ b_t g_t`` form
 (no baseline) starts from Hartree-only KS and is numerically much
 harder.
 
-Regularization is in **V-space** via the overlap-metric penalty
+Regularization is in V-space via the overlap-metric penalty
 ``0.5 * lambda * b^T S_aux b`` (``S_aux`` = auxiliary-basis overlap
 matrix). The CONCEPT of regularizing in the space of the potential
 (rather than the basis-dependent coefficient-norm ``|b|^2``) follows
-Heaton-Burgess, Bulat & Yang *Phys. Rev. Lett.* **98**, 256401 (2007),
+Heaton-Burgess, Bulat & Yang Phys. Rev. Lett. 98, 256401 (2007),
 who introduce a λ-regularized OEP energy functional to tame the ill-
-posed finite-basis OEP problem. **Note on the implemented form:** the
+posed finite-basis OEP problem. Note on the implemented form: the
 penalty used here is an *overlap-metric (S_aux) Tikhonov / amplitude*
-penalty on ``b``, NOT the kinetic-energy *smoothness norm* of that
+penalty on ``b``, NOT the kinetic-energy smoothness norm of that
 paper. Heaton-Burgess Eq. (1) regularizes with the smoothness measure
 ``‖∇v_b‖^2 = b^T T b`` (``T`` = kinetic-energy integral matrix in the
 potential basis); the present code instead penalizes the V_xc
-*amplitude* through the overlap metric ``S_aux``. Both are basis-aware
-penalties in V-space — switching ``def2-svp-jkfit`` ↔
+amplitude through the overlap metric ``S_aux``. Both are basis-aware
+penalties in V-space, switching ``def2-svp-jkfit`` ↔
 ``def2-tzvp-jkfit`` no longer silently changes the meaning of
-``regularization`` as a bare ``|b|^2`` penalty would — but they are
+``regularization`` as a bare ``|b|^2`` penalty would, but they are
 mathematically distinct regularizers (amplitude vs. gradient/curvature
 smoothness).
 """
@@ -88,12 +88,12 @@ class OEPResult(NamedTuple):
         from ``terminated_by`` (which records WHICH sentinel fired). This
         records WHETHER the returned V_xc is a verified converged result
         and, if it stopped early, why:
-          * ``"converged"`` — the SCF-verified ``density_error``
+          * ``"converged"``: the SCF-verified ``density_error``
             (recomputed on the post-optimization SCF density) is below
             ``conv_tol`` AND the optimization either reached a stationary
             point (scipy L-BFGS-B success) or early-stopped on the
             conv_tol sentinel. ``converged`` is True.
-          * ``"plateau"`` — the optimization stopped on a plateau (the
+          * ``"plateau"``: the optimization stopped on a plateau (the
             density-error / F_val history flattened) rather than at a
             stationary point. ``converged`` is True ONLY if the
             SCF-verified ``density_error`` is below ``conv_tol``; it does
@@ -102,7 +102,7 @@ class OEPResult(NamedTuple):
             consumers can tell a plateau stop from a true stationary
             convergence and avoid feeding a non-variational V_xc into
             training targets unaware.
-          * ``"max_iter"`` — L-BFGS-B exhausted ``max_iter`` without a
+          * ``"max_iter"``: L-BFGS-B exhausted ``max_iter`` without a
             sentinel firing; ``converged`` reflects the SCF-verified
             density error vs ``conv_tol``.
         In-memory only; not persisted by ``save_vxc_ref``. Default
@@ -249,7 +249,7 @@ def _build_mol_and_mf(mol_spec: MoleculeSpec, basis: str | None = None,
         # A HYBRID baseline carries non-local HF exchange (K). The inner
         # SCF here freezes that K at the baseline DM, so the recovered local
         # V_xc^ref bakes in the frozen non-local piece and is NOT a pure
-        # local-multiplier target — using it as a local-V_xc training reference
+        # local-multiplier target, using it as a local-V_xc training reference
         # is inconsistent. Warn loudly; prefer a semilocal baseline (e.g. 'pbe').
         try:
             _hyb = float(dft.libxc.hybrid_coeff(mf.xc, spin=mol.spin))
@@ -318,7 +318,7 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
       * ``three_center[t, i, j] = ∫ g_t(r) φ_i(r) φ_j(r) dr`` (weighted),
         the AO-basis matrix increment per coefficient: V_xc += b_t · 3c[t].
       * ``aux_on_grid[g, t] = g_t(r_g) · w_g`` for grid-side projections.
-      * ``S_aux[t, t'] = ∫ g_t(r) g_{t'}(r) dr`` — the auxiliary-basis
+      * ``S_aux[t, t'] = ∫ g_t(r) g_{t'}(r) dr``: the auxiliary-basis
         overlap matrix used for the V-space (overlap-metric) amplitude
         regularization. V-space regularization follows the
         CONCEPT of Heaton-Burgess PRL 98, 256401 (2007); the implemented
@@ -341,12 +341,12 @@ def _build_aux_basis_matrices(mol, mf, aux_basis: str):
     gto_val = "GTOval_cart" if getattr(mol, "cart", False) else "GTOval_sph"
     ao_aux = aux_mol.eval_gto(gto_val, coords)
     ao_orb = mf._numint.eval_ao(mol, coords)
-    # Fused 4-tensor einsum — ~10-100x faster than Python loop.
+    # Fused 4-tensor einsum, ~10-100x faster than Python loop.
     three_center = np.einsum(
         "gt,gi,gj,g->tij", ao_aux, ao_orb, ao_orb, weights, optimize=True,
     )
     # Symmetrize against AO-quadrature noise so V_xc = V_xc^baseline +
-    # Σ b_t · three_center[t] is exactly Hermitian in (i, j) — analytically
+    # Σ b_t · three_center[t] is exactly Hermitian in (i, j), analytically
     # three_center[t,i,j] == three_center[t,j,i] from φ_iφ_j = φ_jφ_i, but
     # finite-grid quadrature breaks symmetry at ε_machine·N_grid.
     three_center = 0.5 * (three_center + three_center.transpose(0, 2, 1))
@@ -405,7 +405,7 @@ def _ks_from_vxc_matrix_rhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
     mf_fixed.max_cycle = 200
     mf_fixed.conv_tol = 1e-10
     # DIIS + damping for robustness against ill-conditioned line-search
-    # probes from L-BFGS-B (Pulay DIIS — Pulay CPL 73, 393 (1980); the
+    # probes from L-BFGS-B (Pulay DIIS, Pulay CPL 73, 393 (1980); the
     # diis_start_cycle delays activation until damped iterations settle
     # the wavefunction).
     mf_fixed.diis_start_cycle = diis_start_cycle
@@ -512,7 +512,7 @@ def _ks_from_vxc_matrix_uhf(mol, mf, vxc_matrix, *, dm0=None, level_shift=0.0,
     # PySCF version-defensive normalization. UHF + 3-D DM in
     # PySCF ≥ 2.0 returns spin-resolved (2, nao, nao); older versions
     # may return spin-summed (nao, nao). Downstream callers index
-    # j_matrix[0]/j_matrix[1] unconditionally — guarantee 3-D here.
+    # j_matrix[0]/j_matrix[1] unconditionally, guarantee 3-D here.
     j_matrix = np.asarray(j_matrix)
     if j_matrix.ndim == 2:
         j_matrix = np.stack([0.5 * j_matrix, 0.5 * j_matrix], axis=0)
@@ -551,7 +551,7 @@ def run_oep_inversion(
     yields a Kohn-Sham density that matches ``dm_target`` (e.g. a
     CCSD(T) reference DM). The displacement form (Wu & Yang JCP 118,
     2498 (2003) §II.B) lets the auxiliary basis fit only the
-    *correction* between the baseline and reference; ``b = 0`` already
+    correction between the baseline and reference; ``b = 0`` already
     gives a physical KS density rather than the Hartree-only pathology
     of the bare ``V_xc = Σ b_t g_t`` ansatz.
 
@@ -570,8 +570,8 @@ def run_oep_inversion(
         ``"blyp"``, ``"scan"``, ``"hf"``, etc. Pass ``None`` for
         Hartree-only baseline (NOT recommended; see Wu & Yang §II.B).
 
-        **Hybrid functionals (e.g. ``"b3lyp"``):** the baseline V_xc
-        matrix captures the *local* exchange-correlation portion at the
+        Hybrid functionals (e.g. ``"b3lyp"``): the baseline V_xc
+        matrix captures the local exchange-correlation portion at the
         baseline-XC SCF DM, but the non-local exact-exchange (HF-K) piece
         is frozen at the baseline DM rather than recomputed from the
         evolving inner-SCF DM. This means at b=0 the inner SCF does
@@ -594,8 +594,8 @@ def run_oep_inversion(
         Overlap-metric (S_aux) Tikhonov / amplitude penalty in V-space:
         ``+0.5 * lambda * b^T S_aux b``. The CONCEPT of V-space
         regularization follows Heaton-Burgess et al. PRL 98, 256401
-        (2007); the implemented penalty is an *amplitude* term in the
-        overlap metric, NOT that paper's kinetic-energy *smoothness*
+        (2007); the implemented penalty is an amplitude term in the
+        overlap metric, NOT that paper's kinetic-energy smoothness
         norm ``b^T T b``. Penalizes the V_xc(r) magnitude in a way that
         is basis-independent in meaning regardless of which auxiliary
         basis is chosen. A plain ``0.5 * lambda * |b|^2`` penalty would
@@ -605,7 +605,7 @@ def run_oep_inversion(
         SCF (``mf_fixed.level_shift``). Default 0.0.
         Use ``level_shift=0.5`` for UKS species with orbital
         degeneracy (X²Π radicals like HO, CN, NO; near-degenerate cases
-        like NO2's X²A1) to suppress basin-hopping during DIIS — the
+        like NO2's X²A1) to suppress basin-hopping during DIIS, the
         inner SCF would otherwise flip between symmetry-equivalent
         broken-symmetry solutions under L-BFGS-B perturbations of ``b``,
         making F(b) non-smooth and preventing convergence to
@@ -807,7 +807,7 @@ def run_oep_inversion(
                 np.sqrt(np.sum(weights * _delta_tot ** 2))
             )
             # Snapshot density_error_l2 and F_val (the
-            # *unregularized* Lagrangian, NOT obj=-F_val+reg_term)
+            # unregularized Lagrangian, NOT obj=-F_val+reg_term)
             # for the plateau detector. F_val computed above.
             scf_state["density_error_l2_last_eval"] = (
                 _progress_state["density_error_l2"]
@@ -832,7 +832,7 @@ def run_oep_inversion(
             np.sqrt(np.sum(weights * delta_rho ** 2))
         )
         # Snapshot density_error_l2 and F_val (the
-        # *unregularized* Lagrangian, computed above).
+        # unregularized Lagrangian, computed above).
         scf_state["density_error_l2_last_eval"] = (
             _progress_state["density_error_l2"]
         )
@@ -851,7 +851,7 @@ def run_oep_inversion(
         if progress_callback is not None:
             # NOTE: deliberately reads _progress_state["density_error_l2"]
             # (last-eval) rather than scf_state["density_error_l2_accepted"]
-            # — progress reporting reflects the most recent evaluation for
+            #: progress reporting reflects the most recent evaluation for
             # liveness, while the early-stop and plateau checks below read
             # the accepted-iterate snapshot for correctness.
             progress_callback(
@@ -961,8 +961,8 @@ def run_oep_inversion(
     # Convergence semantics. The user's contract is: "the V_xc that
     # ``run_oep_inversion`` returns produces a KS density that matches
     # ``dm_target`` to within ``conv_tol``." That depends on:
-    #   1. final_success — the post-optimization SCF actually solved
-    #   2. final_error < conv_tol — the density matches to tolerance
+    #   1. final_success, the post-optimization SCF actually solved
+    #   2. final_error < conv_tol, the density matches to tolerance
     #   3. final_error is finite (rules out NaN from a blown-up SCF)
     #
     # We deliberately do NOT also require ``result.success``: that flag is
@@ -1025,7 +1025,7 @@ def run_oep_inversion(
     # from the plateau median here.
     #
     # ``stop_reason`` records WHETHER this is a verified convergence and,
-    # if it stopped early, why — distinct from ``terminated_by`` (which
+    # if it stopped early, why, distinct from ``terminated_by`` (which
     # sentinel fired). A plateau stop keeps stop_reason="plateau" even
     # when converged is True, so downstream can distinguish it from a
     # true stationary-point convergence.
@@ -1078,7 +1078,7 @@ def save_vxc_ref(
         payload["dm_target"] = dm_target
     if method:
         payload["ref_density_method"] = np.array(method)
-    # Provenance — written even when None / empty so loaders can detect.
+    # Provenance, written even when None / empty so loaders can detect.
     payload["oep_baseline_xc"] = np.array(
         "" if oep_result.baseline_xc is None else oep_result.baseline_xc
     )

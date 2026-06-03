@@ -1,8 +1,8 @@
-"""xcquinox.alec.cluster.inputs — input-artifact staging for the HPC harness.
+"""xcquinox.alec.cluster.inputs: input-artifact staging for the HPC harness.
 
 This module prepares the harness's input artifacts before any training job is
-submitted. Subset selection is a **finished pre-process** — the harness does
-NOT run it. ``prepare_inputs`` is therefore *consume-only* for subsets:
+submitted. Subset selection is a finished pre-process, the harness does
+NOT run it. ``prepare_inputs`` is therefore consume-only for subsets:
 
   - it builds the training-point pool,
   - it loads the EXISTING subset ledger (``subset_index_log.json``), and
@@ -34,12 +34,12 @@ consume this format.
 
 Mockable seam
 -------------
-The one heavy call — the CCSD external-reference precompute — is bound to a
+The one heavy call, the CCSD external-reference precompute, is bound to a
 module-level name so tests can monkeypatch it without doing real CCSD / SCF
 work:
 
-  - :data:`_precompute_all`      — wraps ``external_refs.precompute_all``
-  - :data:`_build_species_union` — wraps ``external_refs.build_species_union``
+  - :data:`_precompute_all`: wraps ``external_refs.precompute_all``
+  - :data:`_build_species_union`: wraps ``external_refs.build_species_union``
 
 ``prepare_inputs`` itself is orchestration-only.
 """
@@ -118,7 +118,7 @@ class StagedInputs:
     points : list[TrainingPoint]
         The training-point pool from ``build_dfs_pool_points``.
     subset_ledger : dict
-        The raw, notebook-format ``subset_index_log.json`` dict — keys are
+        The raw, notebook-format ``subset_index_log.json`` dict, keys are
         ``"<metric>/<subset_size>"`` strings. Handed unchanged to
         :func:`xcquinox.alec.cluster.spec_builder.build_training_specs` (the
         spec-builder refactor task adapts it to consume this format).
@@ -157,7 +157,7 @@ def _load_subset_ledger(cfg: GridConfig) -> dict:
         raise ValueError(
             f"subset ledger not found at {ledger_path!r}; the harness "
             "consumes the EXISTING subset_index_log.json produced by the "
-            "(already-finished) subset-selection pre-process — stage it "
+            "(already-finished) subset-selection pre-process, stage it "
             "before running prepare_inputs."
         )
     try:
@@ -175,7 +175,7 @@ def _load_subset_ledger(cfg: GridConfig) -> dict:
         )
 
     # Every (metric, subset_size) cell the grid sweeps must have a ledger
-    # entry — the harness cannot select a subset for a missing cell.
+    # entry, the harness cannot select a subset for a missing cell.
     missing = [
         (metric, subset_size)
         for metric, subset_size in _metric_size_pairs(cfg)
@@ -207,23 +207,23 @@ def prepare_inputs(
 
       1. Build the training-point pool via ``build_dfs_pool_points``.
       2. Load the EXISTING subset ledger at ``cfg.inputs.subset_ledger_path``
-         (the ``subset_index_log.json`` format) — fail fast on a missing /
+         (the ``subset_index_log.json`` format), fail fast on a missing /
          unparseable ledger or a missing required ``(metric, subset_size)``
          grid cell.
       3. Ensure the per-species CCSD external references are staged under
-         ``cfg.inputs.external_refs_dir`` via ``precompute_all`` — skip-if-
+         ``cfg.inputs.external_refs_dir`` via ``precompute_all``: skip-if-
          cached, so already-staged references are a no-op and missing ones
          get computed.
 
     Parameters
     ----------
     cfg : GridConfig
-        The harness config — supplies the swept axes (which determine the
+        The harness config, supplies the swept axes (which determine the
         ``(metric, subset_size)`` cells the ledger must cover), the input
         paths, the basis / grid_level, and ``bh76_mode``.
     recompute_refs : bool, keyword-only, default ``True``
-        ``True`` — call ``precompute_all`` to ensure CCSD external references
-        are staged (skip-if-cached, idempotent). ``False`` — skip the
+        ``True``: call ``precompute_all`` to ensure CCSD external references
+        are staged (skip-if-cached, idempotent). ``False``: skip the
         precompute entirely; use this only when the references are known to
         be already staged.
 

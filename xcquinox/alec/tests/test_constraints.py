@@ -11,7 +11,7 @@ import pytest
 # 16 forward tests: 4 constraints x 4 test kinds (a/b/c/d).
 # ---------------------------------------------------------------------------
 
-# LiebOxfordBound (a) — registry roundtrip
+# LiebOxfordBound (a), registry roundtrip
 def test_lieb_oxford_registry_roundtrip():
     from xcquinox.alec.constraints import CONSTRAINT_REGISTRY, LiebOxfordBound, make_constraint
     assert CONSTRAINT_REGISTRY["lieb_oxford"] is LiebOxfordBound
@@ -20,7 +20,7 @@ def test_lieb_oxford_registry_roundtrip():
     assert c.mu == 1.804
 
 
-# LiebOxfordBound (b) — point evaluation
+# LiebOxfordBound (b), point evaluation
 def test_lieb_oxford_point_evaluation():
     from xcquinox.alec.constraints import LiebOxfordBound
     c = LiebOxfordBound()
@@ -43,13 +43,13 @@ def test_lieb_oxford_point_evaluation():
     assert jnp.allclose(out, expected, atol=1e-12)
 
 
-# LiebOxfordBound (b2) — REFPHYS-02: lower bound is the physical 0, not 0.196.
+# LiebOxfordBound (b2), REFPHYS-02: lower bound is the physical 0, not 0.196.
 def test_lieb_oxford_lower_bound_is_zero_not_0p196():
     from xcquinox.alec.constraints import LiebOxfordBound
     c = LiebOxfordBound()
 
     # A strongly negative raw enhancement must be driven toward F_x = 0, the
-    # physical floor — NOT clamped at the old symmetric-tanh artefact 0.196.
+    # physical floor, NOT clamped at the old symmetric-tanh artefact 0.196.
     def inner_very_negative(r, s, f):
         return -10.0 * jnp.ones_like(r)
     out = c(inner_very_negative, jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
@@ -62,7 +62,7 @@ def test_lieb_oxford_lower_bound_is_zero_not_0p196():
     assert jnp.all(hi <= 1.804 + 1e-9) and jnp.all(hi > 1.803)
 
 
-# LiebOxfordBound (c) — differentiability
+# LiebOxfordBound (c), differentiability
 def test_lieb_oxford_grad_finite():
     from xcquinox.alec.constraints import LiebOxfordBound
     c = LiebOxfordBound()
@@ -76,7 +76,7 @@ def test_lieb_oxford_grad_finite():
     assert jnp.isfinite(g)
 
 
-# LiebOxfordBound (d) — composition with trivial inner_fn
+# LiebOxfordBound (d), composition with trivial inner_fn
 def test_lieb_oxford_composes_with_trivial_inner_fn():
     from xcquinox.alec.constraints import LiebOxfordBound
     c = LiebOxfordBound()
@@ -87,7 +87,7 @@ def test_lieb_oxford_composes_with_trivial_inner_fn():
     assert jnp.allclose(out, 1.0, atol=1e-12)
 
 
-# UEGLimit (a) — registry roundtrip
+# UEGLimit (a), registry roundtrip
 def test_ueg_limit_registry_roundtrip():
     from xcquinox.alec.constraints import CONSTRAINT_REGISTRY, UEGLimit, make_constraint
     assert CONSTRAINT_REGISTRY["ueg_limit"] is UEGLimit
@@ -97,7 +97,7 @@ def test_ueg_limit_registry_roundtrip():
     assert c.rho_eps == 1e-8
 
 
-# UEGLimit (b) — point evaluation
+# UEGLimit (b), point evaluation
 def test_ueg_limit_point_evaluation():
     from xcquinox.alec.constraints import UEGLimit
     c = UEGLimit(damping=1.0)
@@ -117,7 +117,7 @@ def test_ueg_limit_point_evaluation():
     assert jnp.allclose(out, expected, atol=1e-12)
 
 
-# UEGLimit (c) — differentiability
+# UEGLimit (c), differentiability
 def test_ueg_limit_grad_finite():
     from xcquinox.alec.constraints import UEGLimit
     c = UEGLimit()
@@ -131,7 +131,7 @@ def test_ueg_limit_grad_finite():
     assert jnp.isfinite(g)
 
 
-# UEGLimit (d) — composition with trivial inner_fn
+# UEGLimit (d), composition with trivial inner_fn
 def test_ueg_limit_composes_with_trivial_inner_fn():
     from xcquinox.alec.constraints import UEGLimit
     c = UEGLimit()
@@ -143,7 +143,7 @@ def test_ueg_limit_composes_with_trivial_inner_fn():
     assert jnp.all(out < 2.0)
 
 
-# NonNegativeCorrelation (a) — registry roundtrip
+# NonNegativeCorrelation (a), registry roundtrip
 def test_non_negative_correlation_registry_roundtrip():
     from xcquinox.alec.constraints import (
         CONSTRAINT_REGISTRY, NonNegativeCorrelation, make_constraint,
@@ -153,7 +153,7 @@ def test_non_negative_correlation_registry_roundtrip():
     assert isinstance(c, NonNegativeCorrelation)
 
 
-# NonNegativeCorrelation (b) — point evaluation
+# NonNegativeCorrelation (b), point evaluation
 def test_non_negative_correlation_point_evaluation():
     from xcquinox.alec.constraints import NonNegativeCorrelation
     c = NonNegativeCorrelation()
@@ -164,7 +164,7 @@ def test_non_negative_correlation_point_evaluation():
     assert jnp.allclose(out_unit, 1.0, atol=1e-12)
 
 
-# NonNegativeCorrelation (c) — differentiability
+# NonNegativeCorrelation (c), differentiability
 def test_non_negative_correlation_grad_finite():
     from xcquinox.alec.constraints import NonNegativeCorrelation
     c = NonNegativeCorrelation()
@@ -178,12 +178,12 @@ def test_non_negative_correlation_grad_finite():
     assert jnp.isfinite(g)
 
 
-# NonNegativeCorrelation (d) — composition + asymptotic / fixed-point checks
+# NonNegativeCorrelation (d), composition + asymptotic / fixed-point checks
 def test_non_negative_correlation_composes_with_trivial_inner_fn():
     """The corrected NonNegativeCorrelation uses
     `softplus(F_raw - 1 + log(e - 1))` so that:
-      * F_raw =  1 → F_c = 1 (PBE fixed point preserved)
-      * F_raw = -10 → F_c → 0 (Levy-Perdew non-positive correlation:
+      * F_raw =  1 -> F_c = 1 (PBE fixed point preserved)
+      * F_raw = -10 -> F_c -> 0 (Levy-Perdew non-positive correlation:
         E_c = ε_c^LDA · F_c ≤ 0 with ε_c^LDA ≤ 0 demands F_c ≥ 0)
       * monotone increasing in F_raw
     """
@@ -194,7 +194,7 @@ def test_non_negative_correlation_composes_with_trivial_inner_fn():
         return lambda r, s, f: F_raw_value * jnp.ones_like(r)
 
     # Floor at 0 (not 1 - log 2): F_raw = -10 should give a value
-    # very close to 0 (≪ 1e-3) — the prior broken implementation
+    # very close to 0 (≪ 1e-3), the prior broken implementation
     # asymptoted at 1 - log(2) ≈ 0.307.
     out_floor = c(inner_raw(-10.0), jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
     assert jnp.all(out_floor >= 0.0), out_floor
@@ -202,7 +202,7 @@ def test_non_negative_correlation_composes_with_trivial_inner_fn():
         f"floor must be near zero (Levy-Perdew F_c >= 0); got {out_floor}"
     )
 
-    # Fixed point: F_raw = 1 → F_c = 1 (PBE preserved).
+    # Fixed point: F_raw = 1 -> F_c = 1 (PBE preserved).
     out_fixed = c(inner_raw(1.0), jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
     assert jnp.allclose(out_fixed, 1.0, atol=1e-5), out_fixed
 
@@ -211,7 +211,7 @@ def test_non_negative_correlation_composes_with_trivial_inner_fn():
     assert jnp.all(out_high > out_fixed), (out_high, out_fixed)
 
 
-# ScalingSymmetric (a) — registry roundtrip
+# ScalingSymmetric (a), registry roundtrip
 def test_scaling_symmetric_registry_roundtrip():
     from xcquinox.alec.constraints import CONSTRAINT_REGISTRY, ScalingSymmetric, make_constraint
     assert CONSTRAINT_REGISTRY["scaling_symmetric"] is ScalingSymmetric
@@ -221,7 +221,7 @@ def test_scaling_symmetric_registry_roundtrip():
     assert c.rho_eps == 1e-8
 
 
-# ScalingSymmetric (b) — point evaluation
+# ScalingSymmetric (b), point evaluation
 def test_scaling_symmetric_point_evaluation():
     from xcquinox.alec.constraints import ScalingSymmetric
     c = ScalingSymmetric(rho_ref=1.0)
@@ -243,7 +243,7 @@ def test_scaling_symmetric_point_evaluation():
     assert jnp.allclose(captured["sigma"], expected_sigma, atol=1e-12)
 
 
-# ScalingSymmetric (c) — differentiability
+# ScalingSymmetric (c), differentiability
 def test_scaling_symmetric_grad_finite():
     from xcquinox.alec.constraints import ScalingSymmetric
     c = ScalingSymmetric()
@@ -257,7 +257,7 @@ def test_scaling_symmetric_grad_finite():
     assert jnp.isfinite(g)
 
 
-# ScalingSymmetric (d) — composition with trivial inner_fn
+# ScalingSymmetric (d), composition with trivial inner_fn
 def test_scaling_symmetric_composes_with_trivial_inner_fn():
     from xcquinox.alec.constraints import ScalingSymmetric
     c = ScalingSymmetric()
@@ -485,7 +485,7 @@ def test_constraint_report_aggregates_per_constraint_stats():
     assert "non_negative_correlation" in report["c"]
 
 
-# (xvi): D-H1 — constructing a constraint with a jax.Array scalar raises
+# (xvi): D-H1, constructing a constraint with a jax.Array scalar raises
 @pytest.mark.parametrize(
     "ctor,kwargs,offender",
     [
@@ -501,7 +501,7 @@ def test_constraint_rejects_jax_scalars(ctor, kwargs, offender):
         klass(**kwargs)
 
 
-# (xvii): D-H3 — registering a subclass with a non-static trainable field raises
+# (xvii): D-H3, registering a subclass with a non-static trainable field raises
 def test_constraint_register_rejects_trainable_field():
     from xcquinox.alec.constraints import (
         CONSTRAINT_REGISTRY, Constraint, register_constraint,
@@ -517,7 +517,7 @@ def test_constraint_register_rejects_trainable_field():
         CONSTRAINT_REGISTRY.pop("bad", None)
 
 
-# (xviii): H-E12-5 — no double-clamp when LOB is registered under x_constraints
+# (xviii): H-E12-5, no double-clamp when LOB is registered under x_constraints
 def test_lieb_oxford_no_double_clamp():
     from xcquinox.alec.config import ArchitectureConfig
     from xcquinox.alec.models import AlecGGAModel
@@ -539,7 +539,7 @@ def test_lieb_oxford_no_double_clamp():
     assert jnp.all(constraint_only <= 1.804 + 1e-10)
 
 
-# (xix): H-E12-6 — opt-in double clamp narrows F range
+# (xix): H-E12-6, opt-in double clamp narrows F range
 def test_lieb_oxford_opt_in_double_clamp():
     from xcquinox.alec.config import ArchitectureConfig
     from xcquinox.alec.models import AlecGGAModel
@@ -555,7 +555,7 @@ def test_lieb_oxford_opt_in_double_clamp():
     assert model.xnet.lob_lim == 1.804
 
 
-# (xx): H-E12-7 — UEGLimit's internal s^2 matches the network's KS formula
+# (xx): H-E12-7, UEGLimit's internal s^2 matches the network's KS formula
 def test_ueg_limit_matches_network_s():
     from xcquinox.alec.constraints import UEGLimit
     damping = 1.0
@@ -576,7 +576,7 @@ def test_ueg_limit_matches_network_s():
     assert jnp.allclose(s2_recovered, s2_ks, atol=1e-13)
 
 
-# (xxi): H-E12-8 — ScalingSymmetric on c_constraints raises by default
+# (xxi): H-E12-8, ScalingSymmetric on c_constraints raises by default
 def test_scaling_symmetric_c_raises():
     import xcquinox.alec.constraints  # noqa: F401
     from xcquinox.alec.config import ArchitectureConfig
@@ -587,7 +587,7 @@ def test_scaling_symmetric_c_raises():
         )
 
 
-# (xxii): H-E12-9 — allow_scaling_symmetric_on_c=True emits RuntimeWarning
+# (xxii): H-E12-9, allow_scaling_symmetric_on_c=True emits RuntimeWarning
 def test_scaling_symmetric_c_allow_override():
     import xcquinox.alec.constraints  # noqa: F401
     from xcquinox.alec.config import ArchitectureConfig
@@ -600,7 +600,7 @@ def test_scaling_symmetric_c_allow_override():
     assert any(s.name == "scaling_symmetric" for s in arch.c_constraints)
 
 
-# (xxiii): REFPHYS-02 — LiebOxfordBound lower asymptote is the physical 0.
+# (xxiii): REFPHYS-02, LiebOxfordBound lower asymptote is the physical 0.
 def test_lieb_oxford_lower_asymptote_is_zero():
     from xcquinox.alec.constraints import LiebOxfordBound
     c = LiebOxfordBound(mu=1.804)
@@ -617,7 +617,7 @@ def test_lieb_oxford_lower_asymptote_is_zero():
     assert jnp.abs(out[0]) < 1e-10
 
 
-# (xxiv): REFPHYS-02 — linear response near the UEG fixed point has slope
+# (xxiv): REFPHYS-02, linear response near the UEG fixed point has slope
 # (mu-1)/mu, matching the in-network _AlecLOB squash (I_mu is algebraically
 # identical to limit*sigmoid(x-log(limit-1))-1). The previous symmetric tanh
 # had unit slope, which did NOT match the production network squash.

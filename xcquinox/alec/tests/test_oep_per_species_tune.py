@@ -106,7 +106,7 @@ def test_trial_enumeration_drops_aux_reg_coupling_violations():
         },
     }
     trials = harness._enumerate_trials("Test", block)
-    # 4 combos total; tzvp-jkfit + 1e-4 is dropped → 3 trials
+    # 4 combos total; tzvp-jkfit + 1e-4 is dropped -> 3 trials
     assert len(trials) == 3
     # Verify no surviving trial has tzvp-jkfit with reg < 1e-3
     for t in trials:
@@ -208,7 +208,7 @@ def test_short_circuit_on_target_floor_hit(tmp_path, monkeypatch):
     monkeypatch.setattr(alec_oep, "run_oep_inversion", stub_run)
     # ... rest of harness stubbing for cache reads omitted; integration
     # test stub:
-    # We actually verify the short-circuit by inspecting the JSONL —
+    # We actually verify the short-circuit by inspecting the JSONL,
     # only one record per species should be written when trial 0 hits.
     # The full integration is too heavy; this is a contract pin.
     # (For full coverage, a future integration test runs against a
@@ -222,7 +222,7 @@ def test_short_circuit_on_target_floor_hit(tmp_path, monkeypatch):
 
 
 def test_trial_record_carries_plateau_fields(tmp_path):
-    """Synthetic plateau-terminated OEPResult → JSONL record has
+    """Synthetic plateau-terminated OEPResult -> JSONL record has
     termination='plateau', plateau_density_error populated,
     plateau_window_iters populated. Spec §9.3 / Pass-7 contract."""
     import json
@@ -308,7 +308,7 @@ def test_jsonl_trial_record_schema_has_all_required_fields(tmp_path):
 
 def test_trial_conv_tol_equals_target_floor():
     """Spec §6.1 contract: trial.settings.conv_tol == target_floor
-    (NOT 1.7×; that's the *override* conv_tol). Plan-3 review fix."""
+    (NOT 1.7×; that's the override conv_tol). Plan-3 review fix."""
     # Read the harness source to verify the call passes
     # `conv_tol=target_floor` to run_oep_inversion:
     import sys, inspect
@@ -321,7 +321,7 @@ def test_trial_conv_tol_equals_target_floor():
 
 def test_cli_cache_dir_reads_grid_suffixed_intermediates(tmp_path):
     """The harness imports run_scf_with_cache and resolves grid-suffixed
-    cache paths. Plan-3 review fix — verify import + post-Plan-2
+    cache paths. Plan-3 review fix, verify import + post-Plan-2
     grid-suffix integration."""
     # Source-level pin: harness imports must include run_scf_with_cache
     # and the migration helper (Plan-2 integration).

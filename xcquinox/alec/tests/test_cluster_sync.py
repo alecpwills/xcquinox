@@ -1,17 +1,17 @@
-"""Tests for xcquinox.alec.cluster.sync — the ``pull`` subcommand helpers.
+"""Tests for xcquinox.alec.cluster.sync: the ``pull`` subcommand helpers.
 
 Two layers:
 
   - Pure unit tests for :func:`build_rsync_command` and
     :func:`resolve_run_id`, covering the argv shape, dry-run toggle,
-    profile→filter-file mapping, and "latest"-resolution via an injected
+    profile -> filter-file mapping, and "latest"-resolution via an injected
     ssh_runner fake.
-  - One **end-to-end filter canary** that drives the real ``rsync``
+  - One end-to-end filter canary that drives the real ``rsync``
     executable against a tmp-path fixture mimicking a harness run dir, with
     ``host=""`` (local-to-local). This is the test that catches future drift
     between ``filters/summaries.filter`` and the artifact layout the harness
     writes. If rsync is unavailable in the test environment the test is
-    skipped — the pure tests above still cover the argv shape.
+    skipped: the pure tests above still cover the argv shape.
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def test_filter_file_path_unknown_profile_raises():
 
 
 # ---------------------------------------------------------------------------
-# build_rsync_command — pure argv shape
+# build_rsync_command: pure argv shape
 # ---------------------------------------------------------------------------
 
 def test_build_rsync_command_summaries_default():
@@ -135,7 +135,7 @@ def test_build_rsync_command_strips_trailing_slashes():
 
 
 # ---------------------------------------------------------------------------
-# build_rsync_command — category (multi-series layout)
+# build_rsync_command: category (multi-series layout)
 # ---------------------------------------------------------------------------
 
 def test_build_rsync_command_with_category_joins_remote_and_local_paths():
@@ -149,7 +149,7 @@ def test_build_rsync_command_with_category_joins_remote_and_local_paths():
     assert argv[-2] == (
         f"seawulf:/gpfs/scratch/awills/xcquinox_runs/alpha_off/runs/{GOOD_STAMP}/"
     )
-    # Local dest mirrors the remote category layout — collision protection.
+    # Local dest mirrors the remote category layout, collision protection.
     assert argv[-1] == f"/home/awills/results/alpha_off/runs/{GOOD_STAMP}/"
 
 
@@ -187,7 +187,7 @@ def test_build_rsync_command_category_with_surrounding_slashes_is_trimmed():
 
 
 # ---------------------------------------------------------------------------
-# build_rsync_command — spec_indices (surgical checkpoint extraction)
+# build_rsync_command: spec_indices (surgical checkpoint extraction)
 # ---------------------------------------------------------------------------
 
 def test_build_rsync_command_spec_indices_emit_zero_padded_includes():
@@ -258,7 +258,7 @@ def test_spec_indices_canary_against_real_rsync(tmp_path):
         spec = src_run / "checkpoints" / f"spec_{idx:04d}"
         spec.mkdir(parents=True)
         # A model.eqx that --profile=summaries would drop but --profile=full
-        # keeps — making this a real exercise of the spec filter on the bulky
+        # keeps, making this a real exercise of the spec filter on the bulky
         # tier.
         (spec / "model.eqx").write_bytes(b"FAKE_MODEL_BLOB" * 1000)
         (spec / "eval_df.csv").write_text("set,mae\ntraining_subset,1.0\n")
@@ -281,7 +281,7 @@ def test_spec_indices_canary_against_real_rsync(tmp_path):
     assert (dest / "spec_0036" / "model.eqx").is_file()
     # The requested 2; the rejected 1 must be entirely absent.
     assert not (dest / "spec_0001").exists(), (
-        "spec_0001 leaked despite --specs=0,36 — the rsync include/exclude "
+        "spec_0001 leaked despite --specs=0,36, the rsync include/exclude "
         "order is wrong (the catch-all -exclude must come AFTER all -include "
         "rules so spec_0000 and spec_0036 win the first-match race)"
     )
@@ -452,7 +452,7 @@ def test_discover_runs_ignores_non_run_basenames():
             "/r/alpha_off/runs/run_20260601T120000Z",
             "/r/alpha_off/runs/run_old_or_typoZ",   # matches -name but not regex
             "/r/alpha_off/runs/run_20260528T140000Z",
-            "",  # blank line — must be skipped
+            "",  # blank line, must be skipped
         ]
 
     groups = sync.discover_runs(ssh_runner=_ssh, remote_root="/r")
@@ -462,7 +462,7 @@ def test_discover_runs_ignores_non_run_basenames():
 
 
 def test_discover_runs_skips_paths_outside_remote_root():
-    """Defensive — symlinks / bind mounts can surface paths outside the root."""
+    """Defensive: symlinks / bind mounts can surface paths outside the root."""
     def _ssh(_argv):
         return [
             "/r/alpha_off/runs/run_20260601T120000Z",
@@ -505,7 +505,7 @@ def test_discover_runs_passes_depth_to_find():
 def test_discover_runs_default_depth_catches_polarized_layout():
     """Regression: the production SeaWulf layout has ``polarized/<axis>/runs/
     run_<UTC>Z`` at depth 4 below the scratch root. The default ``max_depth``
-    MUST catch that — an earlier default of 3 silently dropped the polarized
+    MUST catch that, an earlier default of 3 silently dropped the polarized
     branch (user-reported: `"the alpha_on/runs is found, but not the
     polarized/alpha_on/runs"`).
 
@@ -532,7 +532,7 @@ def test_discover_runs_default_depth_catches_polarized_layout():
             )
         return out
 
-    groups = sync.discover_runs(  # NO max_depth override — exercises the default
+    groups = sync.discover_runs(  # NO max_depth override, exercises the default
         ssh_runner=_ssh,
         remote_root="/gpfs/scratch/awills/xcquinox_runs",
     )
@@ -541,7 +541,7 @@ def test_discover_runs_default_depth_catches_polarized_layout():
     i = captured["argv"].index("-maxdepth")
     actual_default = int(captured["argv"][i + 1])
     assert actual_default >= 4, (
-        f"discover_runs default max_depth={actual_default} is too shallow — "
+        f"discover_runs default max_depth={actual_default} is too shallow, "
         "polarized/<axis>/runs/run_<UTC>Z is at depth 4 and would be missed"
     )
     # And confirm the polarized run is actually present in the grouping.
@@ -780,7 +780,7 @@ def test_summaries_filter_canary_with_category(tmp_path):
     """End-to-end with a multi-segment category mirrored to local.
 
     Builds <remote>/polarized/alpha_on/run_<stamp>/{manifest.json, model.eqx,...}
-    and confirms the summaries filter still works *and* the local dest
+    and confirms the summaries filter still works and the local dest
     mirrors the category layout (collision protection).
     """
     remote_root = tmp_path / "remote"

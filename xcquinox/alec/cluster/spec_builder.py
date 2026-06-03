@@ -1,7 +1,7 @@
-"""xcquinox.alec.cluster.spec_builder — generic spec assembly for the HPC harness.
+"""xcquinox.alec.cluster.spec_builder: generic spec assembly for the HPC harness.
 
 This module is the de-notebooked, domain-agnostic extraction of "Cell A" of
-``notebooks/_build_step7_notebook.py`` — the logic that assembles
+``notebooks/_build_step7_notebook.py``: the logic that assembles
 :class:`xcquinox.alec.TrainingSpec` (and the matching :class:`TestSpec`)
 objects from a chosen subset of :class:`TrainingPoint` objects.
 
@@ -15,7 +15,7 @@ the EXISTING subset ledger.
 The subset_ledger schema
 ------------------------
 ``build_training_specs`` consumes the EXISTING ``subset_index_log.json`` dict
-produced by the (already-finished) subset-selection pre-process — handed
+produced by the (already-finished) subset-selection pre-process, handed
 through verbatim by :func:`xcquinox.alec.cluster.inputs.prepare_inputs`. Its
 schema is::
 
@@ -31,17 +31,17 @@ schema is::
     }
 
 Notes:
-- The harness resolves a cell's training points **by name** from
+- The harness resolves a cell's training points by name from
   ``entry["point_names"]`` against the supplied ``points`` pool. It does NOT
-  use ``chosen_indices`` — those are positional into a pool list and are not
+  use ``chosen_indices``: those are positional into a pool list and are not
   robust to pool reordering; ``point_names`` is the stable key.
-- There is NO ``pool_fingerprint`` and NO top-level wrapper — the ledger is a
+- There is NO ``pool_fingerprint`` and NO top-level wrapper, the ledger is a
   bare dict of ``"<metric>/<r>"`` entries. The safety net against a stale
   ledger is name resolution itself: if the pool genuinely differs, a
   ``point_name`` will not resolve and ``build_training_specs`` fails loudly.
 - An entry's ``point_names`` MUST be present and non-empty. A missing key or
   an empty list is treated as a malformed ledger entry and raises ``ValueError``
-  immediately — a real subset always has ≥1 point.
+  immediately: a real subset always has ≥1 point.
 """
 import dataclasses
 import os
@@ -110,7 +110,7 @@ def atoms_to_mol_spec(at, basis, grid_level, external_refs_dir, name=None) -> Mo
 
     if name is None:
         # Lookup order matches the notebook: info['name'] (set explicitly by
-        # TrainingPoint species — IP13 cations carry 'Li+'/'C+', AE compounds
+        # TrainingPoint species, IP13 cations carry 'Li+'/'C+', AE compounds
         # carry their Hill formula) -> dfs_hill -> Hill formula.
         name = (
             at.info.get("name")
@@ -142,7 +142,7 @@ def atoms_to_mol_spec(at, basis, grid_level, external_refs_dir, name=None) -> Mo
 
 def classify_aux_only(mol_specs, ae_ref_kcalmol) -> tuple:
     """Return the sorted tuple of polyatomic ``MoleculeSpec`` names that are
-    **aux-only** — i.e. present so the BH76 channel can compute reaction
+    aux-only, i.e. present so the BH76 channel can compute reaction
     energies, but NOT members of the AE channel.
 
     A polyatomic (composition sum > 1) is aux-only iff its name has no entry in
@@ -162,12 +162,12 @@ def build_targets(mol_specs, ae_ref_kcalmol, domain) -> dict:
 
     Faithful port of the notebook's Cell A ``targets`` construction:
 
-    - **Single atom** (composition sum == 1): the ``domain.atom_energies``
+    - Single atom (composition sum == 1): the ``domain.atom_energies``
       total energy for that element (same anchor as ``atom_energies``); 0.0
       fallback if the element is absent from the table.
-    - **AE compound** (polyatomic with an ``ae_ref_kcalmol`` entry): the
+    - AE compound (polyatomic with an ``ae_ref_kcalmol`` entry): the
       atomization energy converted Ha = kcal / ``domain.kcal_per_ha``.
-    - **Aux polyatomic** (polyatomic with NO ``ae_ref_kcalmol`` entry — a BH76
+    - Aux polyatomic (polyatomic with NO ``ae_ref_kcalmol`` entry, a BH76
       reaction species): 0.0 placeholder. ``classify_aux_only`` excludes it
       from the AE channel so the placeholder is never read by the loss.
 
@@ -210,7 +210,7 @@ def _coerce_enum(enum_cls, token):
     """Resolve ``token`` to an ``enum_cls`` member by VALUE or by NAME.
 
     Config files spell solver mode / feature policy as the uppercase enum NAME
-    (e.g. ``ONESHOT``, ``FULL``, ``REASSEMBLE`` — matching the notebook's
+    (e.g. ``ONESHOT``, ``FULL``, ``REASSEMBLE``: matching the notebook's
     ``SolverMode.ONESHOT`` references), while unit tests and the enums' own
     ``__call__`` use the lowercase VALUE (``oneshot``/``full``/``reassemble``).
     Accept either so a config's name-form string does not blow up at
@@ -226,7 +226,7 @@ def _coerce_enum(enum_cls, token):
     except KeyError:
         valid = [f"{m.name}/{m.value}" for m in enum_cls]
         raise ValueError(
-            f"{token!r} is not a valid {enum_cls.__name__} — expected one of "
+            f"{token!r} is not a valid {enum_cls.__name__}, expected one of "
             f"(name/value): {valid}"
         )
 
@@ -277,11 +277,11 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
     points : Sequence[TrainingPoint]
         The full training-point pool (e.g. from ``build_dfs_pool_points``).
     subset_ledger : dict
-        The EXISTING ``subset_index_log.json`` dict — see the module docstring
+        The EXISTING ``subset_index_log.json`` dict, see the module docstring
         for the schema. Keys are ``"<metric>/<subset_size>"`` strings; the
         cell's training points are resolved by name from ``point_names``.
     cfg : GridConfig
-        Harness config — supplies the swept axes, hyperparameters, named
+        Harness config, supplies the swept axes, hyperparameters, named
         solver configs, and the ``pretrain`` stage config.
     domain : DomainProfile
         Physics tables (atom energies, kcal/Ha, BH76/IP13 extractors,
@@ -295,7 +295,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
     Returns
     -------
     list[tuple[GridCell, TrainingSpec]]
-        In index order. Construction is side-effect-free — ``from_dicts`` does
+        In index order. Construction is side-effect-free, ``from_dicts`` does
         not call ``validate()``; a later module runs ``spec.validate()``.
 
     Raises
@@ -338,7 +338,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
         if ledger_key not in subset_ledger:
             raise ValueError(
                 f"subset_ledger has no entry for (metric={cell.metric!r}, "
-                f"subset_size={cell.subset_size}) — key {ledger_key!r} is "
+                f"subset_size={cell.subset_size}), key {ledger_key!r} is "
                 "absent. Every grid cell's (metric, subset_size) pair must be "
                 "present in the existing subset_index_log.json ledger."
             )
@@ -347,7 +347,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             raise ValueError(
                 f"subset_ledger entry {ledger_key!r} is malformed: "
                 "'point_names' key is absent or empty. Every ledger entry "
-                "must carry a non-empty 'point_names' list — a real subset "
+                "must carry a non-empty 'point_names' list, a real subset "
                 "always has ≥1 point."
             )
         point_names = entry["point_names"]
@@ -356,7 +356,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             raise ValueError(
                 f"subset_ledger entry {ledger_key!r} names training points "
                 f"not present in the pool: {missing}. The ledger and the "
-                "training-point pool are out of sync — the ledger was "
+                "training-point pool are out of sync, the ledger was "
                 "selected against a different pool; regenerate it (or pass "
                 "the matching pool)."
             )
@@ -383,7 +383,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
         # so a subset with no Li-bearing species (e.g. any size-1 subset of an
         # H-only point) would omit the Li anchor and crash loss construction.
         # Inject the neutral ground-state anchor for any regularized symbol
-        # absent from the chosen species union — built via the SAME helper the
+        # absent from the chosen species union, built via the SAME helper the
         # natural AE path uses, so an injected anchor is byte-identical to a
         # naturally-occurring one. This holds the Dick regularizer constant
         # across all subset sizes; symbols already present (the case for every
@@ -459,7 +459,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             # cell's pretrained checkpoint. Derived through the SAME helper the
             # pretrain worker uses so the two sides cannot drift. validate()
             # only checks the path when the dir exists, so building specs before
-            # the pretrain stage runs is fine — the preflight runs
+            # the pretrain stage runs is fine, the preflight runs
             # pretrain-then-validate.
             pretrain_checkpoint=pretrain_checkpoint_dir(run_dir, cell.arch),
             checkpoint_dir=_checkpoint_dir(run_dir, idx, n),
@@ -491,23 +491,23 @@ def build_test_spec(
 ) -> TestSpec:
     """Build the :class:`TestSpec` matching a trained :class:`TrainingSpec`.
 
-    By default, eval molecules are taken **directly** from
+    By default, eval molecules are taken directly from
     ``training_spec.molecules`` (post the mixed-pool refactor, that IS the chosen
-    species union — no ``subset.traj`` is read).  **This is in-distribution
-    evaluation** — the eval set equals the training set.  It is not a
+    species union, no ``subset.traj`` is read).  **This is in-distribution
+    evaluation**: the eval set equals the training set.  It is not a
     generalization estimate.  A :class:`RuntimeWarning` is emitted whenever this
     default path is used, so the in-distribution nature is never silently
     mistaken for held-out performance.
 
     To evaluate on a held-out or external molecule set, pass
-    ``holdout_molecules`` — a tuple of :class:`~xcquinox.alec.config.MoleculeSpec`
+    ``holdout_molecules``: a tuple of :class:`~xcquinox.alec.config.MoleculeSpec`
     objects.  When provided, the returned :class:`TestSpec` uses those molecules
     instead of the training set, and no warning is emitted.
 
     The ``reference_ae_kcalmol`` metric kwarg is built from the EVAL molecules
     against an eval-matched target source × ``domain.kcal_per_ha`` for compound
     molecules only: ``training_spec.targets_dict`` on the in-distribution path,
-    and ``holdout_targets`` (name→Ha) on the held-out path. (Building held-out
+    and ``holdout_targets`` (name -> Ha) on the held-out path. (Building held-out
     references from the training targets would silently leave held-out compounds
     unscored, since they are absent from the training set.)
 
@@ -517,7 +517,7 @@ def build_test_spec(
     run_dir : str
         Absolute run directory; checkpoint/eval dirs are placed under it.
     idx : int
-        The spec's array-task index — selects ``spec_<idx>``.
+        The spec's array-task index, selects ``spec_<idx>``.
     domain : DomainProfile
         Supplies ``atom_energies`` and ``kcal_per_ha``.
     holdout_molecules : tuple[MoleculeSpec, ...] | None, optional
@@ -526,7 +526,7 @@ def build_test_spec(
         training molecules are used and a :class:`RuntimeWarning` is emitted to
         flag the in-distribution nature of the evaluation.
     holdout_targets : dict[str, float] | None, optional
-        Held-out atomization-energy references (name→Ha), used ONLY on the
+        Held-out atomization-energy references (name -> Ha), used ONLY on the
         held-out path to build ``reference_ae_kcalmol`` for the held-out
         compounds.  Required for held-out AE scoring; if omitted while
         ``holdout_molecules`` is given, a :class:`RuntimeWarning` is emitted and
@@ -542,7 +542,7 @@ def build_test_spec(
     base = os.path.basename(training_spec.checkpoint_dir.rstrip("/"))
     # Cross-wire guard (CODE-2/CODE-3 round-4): the path is derived from the
     # training spec's own checkpoint_dir basename, but it MUST correspond to the
-    # array index ``idx`` the caller is materializing — otherwise a test spec
+    # array index ``idx`` the caller is materializing, otherwise a test spec
     # could silently point at a different spec's checkpoint. ``base`` is
     # ``spec_<zero-padded idx>``; assert its integer matches ``idx``.
     try:
@@ -554,7 +554,7 @@ def build_test_spec(
         )
     if _base_idx != idx:
         raise ValueError(
-            f"build_test_spec: spec↔checkpoint cross-wire — checkpoint_dir "
+            f"build_test_spec: spec↔checkpoint cross-wire, checkpoint_dir "
             f"basename {base!r} (index {_base_idx}) != requested idx={idx}."
         )
     ckpt_dir = os.path.join(
@@ -570,7 +570,7 @@ def build_test_spec(
         ref_targets = training_spec.targets_dict
         warnings.warn(
             "build_test_spec: eval molecules are the TRAINING molecules "
-            "(in-distribution evaluation — not a held-out generalization "
+            "(in-distribution evaluation, not a held-out generalization "
             "estimate). Pass holdout_molecules to evaluate on an "
             "external set.",
             RuntimeWarning,
@@ -579,7 +579,7 @@ def build_test_spec(
     else:
         eval_molecules = holdout_molecules
         # Held-out path: AE references MUST come from the held-out set's own
-        # targets (Ha), NOT training_spec.targets_dict — held-out compounds are
+        # targets (Ha), NOT training_spec.targets_dict: held-out compounds are
         # by construction absent from the training targets, so using the
         # training targets would silently leave every held-out compound without
         # an AE reference and AtomizationEnergyMetric would skip it (the whole
@@ -588,16 +588,16 @@ def build_test_spec(
         if not ref_targets:
             warnings.warn(
                 "build_test_spec: holdout_molecules provided without "
-                "holdout_targets — atomization-energy references are "
+                "holdout_targets: atomization-energy references are "
                 "unavailable for the held-out set, so AE error will NOT be "
-                "scored for held-out compounds. Pass holdout_targets (name→Ha) "
+                "scored for held-out compounds. Pass holdout_targets (name -> Ha) "
                 "to enable held-out AE scoring.",
                 RuntimeWarning,
                 stacklevel=2,
             )
 
     # Exclude AUX-ONLY species (BH76/IP13 reaction polyatomics with no real AE
-    # reference) — they carry a 0.0 placeholder target. Mirrors the training
+    # reference), they carry a 0.0 placeholder target. Mirrors the training
     # loss, which drops them via classify_aux_only; without this the eval AE
     # metric scores their full atomization energy against a 0.0 reference (the
     # CH4 ~+440 / HF ~+150 kcal/mol artifact). aux_only_names is carried in the

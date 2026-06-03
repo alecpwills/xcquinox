@@ -108,7 +108,7 @@ def test_eval_exc_returns_rho_times_ex_fx_plus_ec_fc():
     Fx = model.eval_Fx(rho, sigma, features)
     Fc = model.eval_Fc(rho, sigma, features)
     rho_safe = jnp.maximum(rho, model.rho_cutoff)
-    # SOLV-01: eval_exc is now the exact sum of the exchange-only and
+    # eval_exc is now the exact sum of the exchange-only and
     # correlation-only pieces (rho*ex*Fx) + (rho*ec*Fc). This differs from
     # the pre-SOLV-01 rho*(ex*Fx + ec*Fc) grouping by at most ~1 ULP of
     # floating-point reassociation; the split form is the new contract so
@@ -286,7 +286,7 @@ def test_rho_cutoff_clamps_not_zeros():
 
 # SOLV-01 Test A: exchange/correlation split is exact at the model level.
 def test_eval_exc_equals_eval_ex_plus_eval_ec_batched():
-    """SOLV-01: ``eval_exc == eval_ex + eval_ec`` pointwise (batched path).
+    """``eval_exc == eval_ex + eval_ec`` pointwise (batched path).
 
     The split is required so the UKS energy can spin-scale the exchange
     piece (Oliver & Perdew, PRA 20, 397 (1979)) while evaluating the
@@ -308,7 +308,7 @@ def test_eval_exc_equals_eval_ex_plus_eval_ec_batched():
 
 
 def test_eval_exc_scalar_equals_ex_plus_ec_scalar():
-    """SOLV-01: scalar split matches scalar combined, point by point.
+    """scalar split matches scalar combined, point by point.
 
     Also covers the tail region (rho below ``_NN_TAIL_THRESHOLD``) so the
     identical-masking requirement is exercised.
@@ -328,7 +328,7 @@ def test_eval_exc_scalar_equals_ex_plus_ec_scalar():
 
 
 def test_eval_ex_ec_batched_match_scalar():
-    """SOLV-01: batched eval_ex/eval_ec match their scalar counterparts."""
+    """batched eval_ex/eval_ec match their scalar counterparts."""
     arch = ArchitectureConfig.from_spec("t", 2, 8,
                                         x_constraints=["lieb_oxford"],
                                         c_constraints=["non_negative_correlation"])
@@ -374,7 +374,7 @@ def test_eval_exc_scalar_matches_constrained_eval_exc():
             )
 
 
-# P2-03: model-level zeta threading for spin-polarization-aware correlation
+# model-level zeta threading for spin-polarization-aware correlation
 def _build_polc_model(seed=0):
     import xcquinox.alec as alec
     from xcquinox.alec.config import ArchitectureConfig
@@ -434,7 +434,7 @@ def test_polarized_baseline_reduces_to_unpolarized_at_zeta0():
 
 # Intrinsic-constraint relocation: the model delegates constraint enforcement to
 # the networks. eval_Fx/eval_Fc must equal explicit composition of the arch's
-# constraints over the network's UNCONSTRAINED core — i.e. the relocation is a
+# constraints over the network's UNCONSTRAINED core, i.e. the relocation is a
 # behavior-preserving move of the same _compose_constraints chain.
 def test_eval_fx_equals_explicit_composition_over_core():
     from xcquinox.alec.constraints import _compose_constraints

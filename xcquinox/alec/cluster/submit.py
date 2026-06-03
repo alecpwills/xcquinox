@@ -1,4 +1,4 @@
-"""xcquinox.alec.cluster.submit — render sbatch scripts + submit the job graph.
+"""xcquinox.alec.cluster.submit: render sbatch scripts + submit the job graph.
 
 The HPC harness submits a **4-stage SLURM job graph**:
 
@@ -14,7 +14,7 @@ The HPC harness submits a **4-stage SLURM job graph**:
     eval  array  (--array=0-N-1%eval_throttle)
 
 The train/eval array size ``N = len(expand_grid(cfg))`` is known at submit
-time from the config alone — no preflight result is needed to size the arrays.
+time from the config alone, no preflight result is needed to size the arrays.
 The pretrain array size ``A = len(_canon_axis(cfg.sweep.arch))`` is the distinct
 architecture count (the same de-dup ``expand_grid`` applies to the arch axis).
 ``aftercorr`` requires the train and eval arrays to share an *identical index
@@ -24,16 +24,16 @@ of that assertion.
 
 This module owns two things:
 
-  - :func:`render_sbatch` — pure: fills a ``string.Template`` from ``cfg`` +
+  - :func:`render_sbatch`: pure: fills a ``string.Template`` from ``cfg`` +
     ``run_dir``. The CPU-vs-GPU train template is picked from
     ``cfg.cluster.device``; eval is always CPU.
-  - :func:`submit_jobs` — the orchestration. **It DEFAULTS TO DRY-RUN**: with
+  - :func:`submit_jobs`: the orchestration. It DEFAULTS TO DRY-RUN: with
     ``submit=False`` it writes the rendered scripts and a ``submit_commands.txt``
     record but calls neither ``sbatch`` nor writes ``jobs.json``. Only
     ``submit=True`` actually submits, and it does best-effort ``scancel``
     rollback if any ``sbatch`` in the graph is rejected.
 
-Every SLURM subprocess goes through ``job_tracking._run_slurm`` — the single
+Every SLURM subprocess goes through ``job_tracking._run_slurm``: the single
 seam tests monkeypatch.
 """
 from datetime import datetime, timezone
@@ -46,10 +46,10 @@ from xcquinox.alec.cluster import job_tracking
 
 
 # Wall-clock grace window (seconds) between SLURM's pre-timeout SIGTERM and the
-# hard SIGKILL — gives ``_train_task`` time to checkpoint/classify on timeout.
+# hard SIGKILL, gives ``_train_task`` time to checkpoint/classify on timeout.
 _SIGTERM_GRACE_S = 120
 
-# Wall time for the deferred-eval launcher job — it only renders + sbatches the
+# Wall time for the deferred-eval launcher job, it only renders + sbatches the
 # eval array and records it, a few seconds of work; 15 minutes is ample margin.
 _EVAL_LAUNCHER_TIME = "00:15:00"
 
@@ -63,7 +63,7 @@ _TEMPLATE_FILES = {
     "eval": "eval_array.sbatch.tmpl",
     "eval_launcher": "eval_launcher.sbatch.tmpl",
     # 2026-05-29 inline-eval mode: train then eval in the SAME SLURM task.
-    # No GPU variant today — the inline path is CPU-first; GPU inline support
+    # No GPU variant today, the inline path is CPU-first; GPU inline support
     # can be added later if the cluster device is gpu.
     "train_eval_inline_cpu": "train_eval_inline_cpu.sbatch.tmpl",
 }
@@ -78,7 +78,7 @@ _COMMANDS_FILENAME = "submit_commands.txt"
 def _load_template_text(filename: str) -> str:
     """Read a packaged ``.sbatch.tmpl`` via ``importlib.resources``.
 
-    The ``templates/`` directory is *data*, not a package (it has no
+    The ``templates/`` directory is data, not a package (it has no
     ``__init__.py``); ``importlib.resources.files`` traverses it fine.
     """
     res = (
@@ -92,7 +92,7 @@ def _optional_sbatch_line(directive: str, value: str) -> str:
     """Render an optional ``#SBATCH`` directive line, or '' if value is blank.
 
     The directive is emitted as a whole line (with a trailing newline) so a
-    blank value leaves NO dangling ``#SBATCH`` token in the script — keeps the
+    blank value leaves NO dangling ``#SBATCH`` token in the script, keeps the
     rendered file clean for shellcheck.
     """
     value = (value or "").strip()
@@ -104,7 +104,7 @@ def _optional_sbatch_line(directive: str, value: str) -> str:
 def _conda_activation_block(conda_profile: str, conda_env: str) -> str:
     """Render the conda-activation block as a single whole-line placeholder.
 
-    A blank ``conda_profile`` must NEVER emit a bare ``source`` line — under the
+    A blank ``conda_profile`` must NEVER emit a bare ``source`` line, under the
     template's ``set -euo pipefail`` that is broken bash. When ``conda_profile``
     is set we ``source`` it before ``conda activate``; when it is empty we skip
     the ``source`` entirely and assume ``conda`` is already on ``PATH``.
@@ -133,7 +133,7 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         cfg: a :class:`~xcquinox.alec.cluster.grid_config.GridConfig`.
         run_dir: the run directory (absolute; ``logs/`` lives under it).
         array_max: the largest array index. Required for the array kinds
-            (``pretrain``/``train``/``eval``) — for ``pretrain`` it is
+            (``pretrain``/``train``/``eval``), for ``pretrain`` it is
             ``A-1`` (A = distinct architecture count); for ``train``/``eval``
             it is ``N-1`` (N = grid cell count). Ignored for ``preflight``.
 
@@ -211,11 +211,11 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         cpus = cl.cpus_per_task
 
     # Per-stage node-allocation mode. "exclusive" books a whole node per array
-    # task (--nodes=1 --exclusive, NO --mem — the task owns all the node's RAM,
+    # task (--nodes=1 --exclusive, NO --mem, the task owns all the node's RAM,
     # which is what memory-heavy training needs); "shared" requests a cpu/mem
     # slice so several tasks co-tenant a node (--mem emitted only when set;
     # otherwise SLURM applies the partition default-mem-per-cpu).
-    # The launcher has no per-stage allocation field — it always shares a node
+    # The launcher has no per-stage allocation field, it always shares a node
     # (booking a whole node for a few seconds of `sbatch` would be wasteful and
     # itself counts against the per-user job budget the launcher exists to save).
     # The inline-eval kind aliases to the train allocation (it IS a train task
@@ -229,7 +229,7 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
     if allocation == "exclusive":
         alloc_lines = "#SBATCH --nodes=1\n#SBATCH --exclusive\n"
         mem_line = ""
-    else:  # "shared" — validated in validate_grid_semantics
+    else:  # "shared": validated in validate_grid_semantics
         alloc_lines = ""
         mem_line = _optional_sbatch_line("mem", mem)
 
@@ -281,7 +281,7 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# submit_commands.txt — human-readable audit trail
+# submit_commands.txt: human-readable audit trail
 # ---------------------------------------------------------------------------
 
 def _append_commands(run_dir: str, tag: str, lines: list[str]) -> None:
@@ -306,8 +306,8 @@ def _append_commands(run_dir: str, tag: str, lines: list[str]) -> None:
 def _array_range(script_text: str) -> str:
     """Extract the ``0-MAX`` index range from a script's ``#SBATCH --array``.
 
-    The ``%throttle`` suffix is stripped — ``aftercorr`` only cares that the
-    train and eval arrays span the *same indices*, not that they run at the
+    The ``%throttle`` suffix is stripped, ``aftercorr`` only cares that the
+    train and eval arrays span the same indices, not that they run at the
     same concurrency.
     """
     for line in script_text.splitlines():
@@ -336,7 +336,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
                 inline_eval=None) -> dict:
     """Render the 4-stage sbatch graph and (optionally) submit it.
 
-    **Defaults to dry-run** (``submit=False``): writes the rendered scripts and
+    Defaults to dry-run (``submit=False``): writes the rendered scripts and
     a ``submit_commands.txt`` audit record, but calls neither ``sbatch`` nor
     writes ``jobs.json``.
 
@@ -352,9 +352,9 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
       5. Dry-run: write scripts + ``submit_commands.txt`` (``[dry-run]`` tag);
          return a descriptor dict; do NOT touch SLURM or ``jobs.json``.
       6. Real run (``submit=True``): a double-submit guard requires ``force``
-         if ``jobs.json`` already has live records. Submit pretrain → preflight
-         (``afterok:pretrain``) → train (``afterok:pretrain:preflight`` — the
-         train array is gated on BOTH) → eval (``aftercorr:train``); record
+         if ``jobs.json`` already has live records. Submit pretrain -> preflight
+         (``afterok:pretrain``) -> train (``afterok:pretrain:preflight``: the
+         train array is gated on BOTH) -> eval (``aftercorr:train``); record
          each via ``append_job_record``. If any ``sbatch`` is rejected
          mid-graph, ``scancel`` the ids already returned in THIS call, append
          no partial records, and re-raise.
@@ -391,14 +391,14 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     n_specs = len(cells)
     if n_specs == 0:
         raise ValueError(
-            "submit_jobs: grid expands to 0 cells — nothing to submit"
+            "submit_jobs: grid expands to 0 cells, nothing to submit"
         )
     array_max = n_specs - 1
 
     n_archs = len(_canon_axis(cfg.sweep.arch))
     if n_archs == 0:
         raise ValueError(
-            "submit_jobs: arch sweep axis is empty — nothing to pretrain"
+            "submit_jobs: arch sweep axis is empty, nothing to pretrain"
         )
     pretrain_array_max = n_archs - 1
 
@@ -423,7 +423,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         eval_text = render_sbatch("eval", cfg, run_dir, array_max=array_max)
 
         # aftercorr requires identical index ranges (throttle may differ).
-        # The pretrain array range is independent (over archs) — NOT checked
+        # The pretrain array range is independent (over archs), NOT checked
         # here. Inline mode has no separate eval array, so no range check.
         train_range = _array_range(train_text)
         eval_range = _array_range(eval_text)
@@ -534,10 +534,10 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             "override (e.g. after manually cancelling the prior graph)."
         )
 
-    submitted_ids: list[str] = []  # ids returned in THIS call — for rollback.
+    submitted_ids: list[str] = []  # ids returned in THIS call, for rollback.
     issued_cmds: list[str] = []
     try:
-        # 1. datagen — FIRST stage, NO dependency. Generates the pretrain-data
+        # 1. datagen, FIRST stage, NO dependency. Generates the pretrain-data
         # file(s) every swept arch needs before pretrain (afterok:datagen) runs.
         datagen_cmd = ["sbatch", "--parsable", datagen_path]
         issued_cmds.append(" ".join(datagen_cmd))
@@ -545,7 +545,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         datagen_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(datagen_id)
 
-        # 2. pretrain array (one task per distinct architecture) — afterok on datagen
+        # 2. pretrain array (one task per distinct architecture), afterok on datagen
         pretrain_cmd = ["sbatch", "--parsable",
                         f"--dependency=afterok:{datagen_id}", pretrain_path]
         issued_cmds.append(" ".join(pretrain_cmd))
@@ -553,7 +553,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         pretrain_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(pretrain_id)
 
-        # 3. preflight — afterok on pretrain
+        # 3. preflight, afterok on pretrain
         preflight_cmd = [
             "sbatch", "--parsable",
             f"--dependency=afterok:{pretrain_id}", preflight_path,
@@ -563,7 +563,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         preflight_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(preflight_id)
 
-        # 4. train array — afterok on BOTH pretrain and preflight (the colon-
+        # 4. train array, afterok on BOTH pretrain and preflight (the colon-
         # list is valid SLURM afterok syntax: every listed job must succeed).
         train_cmd = [
             "sbatch", "--parsable",
@@ -574,7 +574,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         train_id = proc.stdout.strip().split(";")[0].split()[0]
         submitted_ids.append(train_id)
 
-        # 5. eval — three modes:
+        # 5. eval, three modes:
         #    (a) inline: the train array task ALREADY ran eval as its final
         #        step (see train_eval_inline_*.sbatch.tmpl); no further sbatch.
         #    (b) defer: a tiny launcher (afterany:train) submits the eval
@@ -610,17 +610,17 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
                 job_tracking._run_slurm(["scancel", str(jid)])
             except Exception:
                 # Rollback is best-effort: a failed scancel must not mask the
-                # original submission error — but a surviving orphan must be
+                # original submission error, but a surviving orphan must be
                 # logged prominently so the operator can cancel it manually.
                 rollback_failed.append(str(jid))
         if rollback_failed:
             print(
-                "submit_jobs: WARNING — scancel FAILED for job id(s) "
+                "submit_jobs: WARNING, scancel FAILED for job id(s) "
                 f"{rollback_failed}; these arrays may be ORPHANED and must be "
                 "cancelled manually (scancel <id>).",
                 flush=True,
             )
-        # Surface sbatch's actual stderr/stdout when present — CalledProcessError's
+        # Surface sbatch's actual stderr/stdout when present, CalledProcessError's
         # str() is only "Command '[...]' returned non-zero exit status N" and hides
         # the real SLURM rejection reason (e.g. wall-time exceeds partition limit),
         # which _run_slurm captured via capture_output=True. Without this the
@@ -638,11 +638,11 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             "records were written to jobs.json."
         ) from exc
 
-    # All accepted — now (and only now) write the append-only records. In
+    # All accepted, now (and only now) write the append-only records. In
     # deferred mode the eval record is NOT written here; the launcher (or a
     # manual `submit-eval`) writes it once the eval array is actually submitted.
-    # In inline-eval mode there is NO separate eval array — the eval runs in
-    # the train SLURM task — so no eval record exists to write.
+    # In inline-eval mode there is NO separate eval array, the eval runs in
+    # the train SLURM task, so no eval record exists to write.
     indices = list(range(n_specs))
     arch_indices = list(range(n_archs))
     job_tracking.append_job_record(run_dir, "datagen", datagen_id, [0])
@@ -666,17 +666,17 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     if defer:
         job_ids["eval_launcher"] = launcher_id
         print(
-            "submit_jobs: deferred-eval mode — the eval array will be submitted "
+            "submit_jobs: deferred-eval mode, the eval array will be submitted "
             f"by launcher job {launcher_id} after the train array terminates. "
             "If the launcher cannot submit from a compute node, run this from a "
             f"login node once train finishes:\n    {manual_eval_cmd}",
             flush=True,
         )
     elif inline:
-        # No separate eval array — each train task ran eval as its final step
+        # No separate eval array, each train task ran eval as its final step
         # via train_eval_inline_*.sbatch.tmpl. Don't record eval=None.
         print(
-            "submit_jobs: inline-eval mode — each train array task runs its "
+            "submit_jobs: inline-eval mode, each train array task runs its "
             "own eval at the end of the SLURM task. No separate eval array "
             f"submitted (train array {train_id} carries both stages).",
             flush=True,

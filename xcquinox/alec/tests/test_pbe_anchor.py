@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.pbe_anchor — PBE-anchor regularization."""
+"""Tests for xcquinox.alec.pbe_anchor: PBE-anchor regularization."""
 import jax
 import jax.numpy as jnp
 import numpy as np

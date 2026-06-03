@@ -3,7 +3,7 @@
 The heavy library functions (PBE-SCF descriptor extraction, exhaustive
 ``select_subset``) are tested elsewhere; here we verify the runner's ledger /
 subset.traj layout and that it covers BOTH metrics (l2, jsd) across the
-requested alpha modes — with ``select_subset`` monkeypatched so no
+requested alpha modes, with ``select_subset`` monkeypatched so no
 combinatorics run.
 """
 import importlib

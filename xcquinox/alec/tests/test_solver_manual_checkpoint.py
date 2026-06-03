@@ -4,11 +4,11 @@
 Checkpointing (jax.remat) of the unrolled SCF ``lax.scan`` body changes the
 reverse-mode memory profile, NOT the numerical result: forward energy and the
 converged density matrix must be byte/near-bit identical, and the parameter
-gradient must agree to fp tolerance. Both scan sites are exercised — the RKS
+gradient must agree to fp tolerance. Both scan sites are exercised, the RKS
 path (closed-shell H2O) and the UKS path (open-shell O triplet).
 
 Default-off byte-identity is guaranteed structurally in solver_manual.py
-(``scan_body = jax.checkpoint(body) if config.scf_grad_checkpoint else body`` —
+(``scan_body = jax.checkpoint(body) if config.scf_grad_checkpoint else body``:
 when off, ``scan_body is body``), so these tests focus on the ON path matching
 the OFF path.
 """

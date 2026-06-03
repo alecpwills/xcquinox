@@ -1,4 +1,4 @@
-"""xcquinox.alec.pbe_anchor — UKS-aware PBE-anchor regularization.
+"""xcquinox.alec.pbe_anchor: UKS-aware PBE-anchor regularization.
 
 Penalizes |F_x_nn(rho_alpha, rho_beta, s) - F_x_PBE(rho_alpha, rho_beta, s)|^2
 on a fixed sample of (rho_alpha, rho_beta, s) points. Mirrors the
@@ -26,7 +26,7 @@ class PBEAnchorSample:
 
 
 def _fx_pbe_analytic(s: np.ndarray) -> np.ndarray:
-    """PBE F_x(s) closed form — Perdew-Burke-Ernzerhof 1996 §3 eq. (14):
+    """PBE F_x(s) closed form, Perdew-Burke-Ernzerhof 1996 §3 eq. (14):
 
         F_x(s) = 1 + kappa - kappa / (1 + mu * s^2 / kappa)
 

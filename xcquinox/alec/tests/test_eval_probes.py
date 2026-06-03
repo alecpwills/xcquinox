@@ -5,7 +5,7 @@ Tests verify:
   - Every entry carries a non-empty source citation string.
   - Every entry carries a finite reference value (ae_kcalmol, or for probe_c
     the GMTKN55-BH76RC reaction_energy_ref + barrier_vf_ref provenance).
-  - probe_c measures BH76 reaction-energy transfer; entry 5 (H+N2O→OH+N2) is
+  - probe_c measures BH76 reaction-energy transfer; entry 5 (H+N2O -> OH+N2) is
     the intentional REVERSE of training reaction 1 (a directional-consistency
     probe), not accidental overlap.
   - Spot-check selected reference values against the published numbers
@@ -108,7 +108,7 @@ def test_bh76_probe_has_finite_reaction_energies():
             f"{entry['name']}: stale 'e_rxn_ref' (barrier) key still present")
 
 
-# GMTKN55-BH76RC (W2-F12) reaction energies, kcal/mol — source of truth
+# GMTKN55-BH76RC (W2-F12) reaction energies, kcal/mol, source of truth
 # (grimme-lab/GMTKN55 BH76/.resRC; see GMTKN55_BH76RC_PROVENANCE.md).
 _GMTKN55_BH76RC = {
     "OH+H2_to_H2O+H":   -16.39,
@@ -172,7 +172,7 @@ def test_bh76_probe_reaction_signatures_distinct_from_training():
     Reactions with identical (reactants, products) ordered tuples are
     duplicates.  Reverse reactions (swapped reactants/products) are
     treated as DISTINCT probes because their forward barrier height
-    Vf differs from the training reaction's Vr — they are independent
+    Vf differs from the training reaction's Vr, they are independent
     targets in HTBH/NHTBH.  See PROBE_C entry ``H+N2O_to_OH+N2`` whose
     rationale documents the directional-consistency probe.
     """
@@ -205,28 +205,28 @@ def test_ip13_probe_atoms_distinct_from_training():
 # 4. Spot-check published reference values
 # ---------------------------------------------------------------------------
 def test_probe_a_ch4_value_matches_haunschild_kj():
-    """CH4 AE (Haunschild2012 Table I): 1757.82 kJ/mol → 420.129 kcal/mol."""
+    """CH4 AE (Haunschild2012 Table I): 1757.82 kJ/mol -> 420.129 kcal/mol."""
     e = next(d for d in ep.PROBE_A_CHEMICAL_SIMILARITY if d["hill"] == "CH4")
     expected_kcal = 1757.82 / 4.184
     assert e["ae_kcalmol"] == pytest.approx(expected_kcal, abs=1e-3)
     # And cross-check magnitude vs the W4-11 anchor convention used by
-    # alec.dfs_pool — both Haunschild2012 and W4-11 must give CH4 within
+    # alec.dfs_pool: both Haunschild2012 and W4-11 must give CH4 within
     # 1 kcal/mol of each other (sub-1-kJ/mol agreement is documented in
     # Haunschild 2012 §III).  The W4-11 SI value (Karton 2011 Table 1
-    # row 5) is 419.30 kcal/mol; Haunschild gives 420.13 — Δ = 0.83
+    # row 5) is 419.30 kcal/mol; Haunschild gives 420.13: Δ = 0.83
     # kcal/mol, well within the W4 0.24 kcal/mol error budget.
     assert abs(e["ae_kcalmol"] - 419.30) < 1.0
 
 
 def test_probe_b_h2s_value_matches_haunschild_kj():
-    """H2S AE (Haunschild2012 Table I): 768.72 kJ/mol → 183.728 kcal/mol."""
+    """H2S AE (Haunschild2012 Table I): 768.72 kJ/mol -> 183.728 kcal/mol."""
     e = next(d for d in ep.PROBE_B_HETEROATOM_EXTRAPOLATION if d["hill"] == "H2S")
     expected_kcal = 768.72 / 4.184
     assert e["ae_kcalmol"] == pytest.approx(expected_kcal, abs=1e-3)
 
 
 def test_probe_c_oh_h2_to_h2o_h_provenance_and_dE():
-    """OH+H2 → H2O+H: GMTKN55-BH76RC ΔE = -16.39; forward barrier provenance
+    """OH+H2 -> H2O+H: GMTKN55-BH76RC ΔE = -16.39; forward barrier provenance
     Vf = 4.90 kcal/mol (HTBH38/08 entry 2 REF1)."""
     rxn = next(r for r in ep.PROBE_C_BH76_OUT_OF_TRAINING
                if r["name"] == "OH+H2_to_H2O+H")
@@ -235,8 +235,8 @@ def test_probe_c_oh_h2_to_h2o_h_provenance_and_dE():
 
 
 def test_probe_c_h_n2o_to_oh_n2_provenance_and_dE():
-    """H+N2O → OH+N2: GMTKN55-BH76RC ΔE = -64.91 (the REVERSE of Dick training
-    reaction 1, OH+N2→H+N2O = +64.91); forward barrier provenance Vf = 17.13
+    """H+N2O -> OH+N2: GMTKN55-BH76RC ΔE = -64.91 (the REVERSE of Dick training
+    reaction 1, OH+N2 -> H+N2O = +64.91); forward barrier provenance Vf = 17.13
     kcal/mol (NHTBH38/08 entry 1 REF1)."""
     rxn = next(r for r in ep.PROBE_C_BH76_OUT_OF_TRAINING
                if r["name"] == "H+N2O_to_OH+N2")
@@ -245,7 +245,7 @@ def test_probe_c_h_n2o_to_oh_n2_provenance_and_dE():
 
 
 def test_probe_d_o2_value_matches_haunschild_kj():
-    """O2 (triplet) AE (Haunschild2012 Table I): 505.88 kJ/mol → 120.908 kcal/mol."""
+    """O2 (triplet) AE (Haunschild2012 Table I): 505.88 kJ/mol -> 120.908 kcal/mol."""
     e = next(d for d in ep.PROBE_D_MULTIREFERENCE if d["hill"] == "O2")
     expected_kcal = 505.88 / 4.184
     assert e["ae_kcalmol"] == pytest.approx(expected_kcal, abs=1e-3)
@@ -254,11 +254,11 @@ def test_probe_d_o2_value_matches_haunschild_kj():
 
 
 def test_probe_d_beh_value_matches_haunschild_kj():
-    """BeH AE (Haunschild2012 Table I): 212.50 kJ/mol → 50.789 kcal/mol."""
+    """BeH AE (Haunschild2012 Table I): 212.50 kJ/mol -> 50.789 kcal/mol."""
     e = next(d for d in ep.PROBE_D_MULTIREFERENCE if d["hill"] == "HBe")
     expected_kcal = 212.50 / 4.184
     assert e["ae_kcalmol"] == pytest.approx(expected_kcal, abs=1e-3)
-    # BeH ground state is ²Σ⁺ — one unpaired electron.
+    # BeH ground state is ²Σ⁺, one unpaired electron.
     assert e["spin"] == 1
 
 
@@ -318,7 +318,7 @@ def test_build_probe_pool_ae_atom_set_does_not_intersect_unexpected():
 
 def test_build_probe_pool_no_overlap_with_dfs_training_atoms_set():
     """All probe AE molecules' Hill formulas, when compared against
-    DFS_AE_HILL, must be disjoint — this is the load-bearing
+    DFS_AE_HILL, must be disjoint, this is the load-bearing
     no-fabrication / no-training-leak invariant."""
     training_hills = set(DFS_AE_HILL)
     for probe_name in ("probe_a_chemical_similarity",
@@ -398,7 +398,7 @@ def test_build_probe_pool_ae_atoms_satisfy_pyscf_spin_invariant(probe_name):
         spin = int(at.info["spin"])
         assert (nelec - spin) % 2 == 0, (
             f"{probe_name}: {at.info.get('probe_hill', at.get_chemical_formula())} "
-            f"nelec={nelec} spin={spin} — PySCF will reject SCF.")
+            f"nelec={nelec} spin={spin}, PySCF will reject SCF.")
 
 
 def test_probe_c_every_reaction_has_species_spins():
@@ -433,5 +433,5 @@ def test_probe_d_o2_is_triplet_and_so_is_oxygen_so():
     probes must carry spin=2: O2 (³Σg⁻) and SO (³Σ⁻)."""
     o2 = next(d for d in ep.PROBE_D_MULTIREFERENCE if d["hill"] == "O2")
     so = next(d for d in ep.PROBE_B_HETEROATOM_EXTRAPOLATION if d["hill"] == "OS")
-    assert o2["spin"] == 2, "O2 ground state is X³Σg⁻ — spin must be 2"
-    assert so["spin"] == 2, "SO ground state is X³Σ⁻ — spin must be 2"
+    assert o2["spin"] == 2, "O2 ground state is X³Σg⁻, spin must be 2"
+    assert so["spin"] == 2, "SO ground state is X³Σ⁻, spin must be 2"

@@ -1,4 +1,4 @@
-"""xcquinox.alec.workers.pretrain_worker — thin subprocess entry for pretraining."""
+"""xcquinox.alec.workers.pretrain_worker: thin subprocess entry for pretraining."""
 import argparse
 import json
 import os

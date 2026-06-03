@@ -114,8 +114,8 @@ def test_n_elec_trace_matches_density_matrix():
 
 
 # ---------------------------------------------------------------------------
-# DESC-11: natural-orbital occupations must be eig(D @ S) (not eig(S^{-1} D))
-# DESC-07: dm_entropy must be a genuine correlation indicator (~0 for a
+# natural-orbital occupations must be eig(D @ S) (not eig(S^{-1} D))
+# dm_entropy must be a genuine correlation indicator (~0 for a
 #          single determinant, growing with fractional natural occupations)
 # ---------------------------------------------------------------------------
 
@@ -123,11 +123,11 @@ from xcquinox.features import compute_dm_natural_occupations
 
 
 def test_natural_occupations_equal_eig_DS():
-    """DESC-11: the natural-orbital occupations underlying dm_entropy must
+    """the natural-orbital occupations underlying dm_entropy must
     equal sorted(eig(D @ S)) for a NON-identity overlap S.
 
     Pre-fix code used the Lowdin transform S^{-1/2} D S^{-1/2}, whose
-    eigenvalues are eig(S^{-1} D) — NOT the natural occupations. The
+    eigenvalues are eig(S^{-1} D), NOT the natural occupations. The
     correct symmetric transform is S^{1/2} D S^{1/2}, whose spectrum
     equals eig(D S).
     """
@@ -141,7 +141,7 @@ def test_natural_occupations_equal_eig_DS():
 
 
 def test_natural_occupations_trace_preserved():
-    """DESC-11: sum of natural occupations == Tr(D S) == electron count."""
+    """sum of natural occupations == Tr(D S) == electron count."""
     nocc = 3
     D, S = _build_clean_rks_dm(nao=8, nocc=nocc, seed=0)
     occ = np.asarray(compute_dm_natural_occupations(D, S))
@@ -166,7 +166,7 @@ def test_dm_entropy_shannon_of_normalized_occupations():
     correctness fix was kept). For a clean RKS single determinant with ``nocc``
     doubly-occupied orbitals (each n_i = 2, normalized p_i = 1/nocc) this equals
     ``ln(nocc)``. It is therefore size-dependent and NOT a clean correlation
-    indicator — ``idempotency_error`` is the quantity that vanishes for a single
+    indicator: ``idempotency_error`` is the quantity that vanishes for a single
     determinant (asserted here too)."""
     nocc = 3
     D, S = _build_clean_rks_dm(nao=8, nocc=nocc, seed=0)
@@ -178,7 +178,7 @@ def test_dm_entropy_shannon_of_normalized_occupations():
 
 
 def test_dm_entropy_larger_for_fractional_occupations():
-    """DESC-07: a DM with fractional natural occupations (correlated) must
+    """a DM with fractional natural occupations (correlated) must
     give a strictly larger dm_entropy than a single determinant."""
     D, S = _build_clean_rks_dm(nao=8, nocc=3, seed=0)
     ent_single = float(compute_dm_features(D, S)["dm_entropy"])
@@ -219,7 +219,7 @@ def test_dm_entropy_intensive_false_matches_extensive_form():
     nocc = 5
     D, S = _build_clean_rks_dm(nao=10, nocc=nocc, seed=0)
     ext = float(compute_dm_features(D, S, intensive=False)["dm_entropy"])
-    # ln(5) ≈ 1.6094 — size-extensive
+    # ln(5) ≈ 1.6094: size-extensive
     assert abs(ext - np.log(nocc)) < 1e-4, ext
 
 
@@ -248,7 +248,7 @@ def test_cusp_descriptor_log_transform_off_skips_log():
     Z = jnp.array([8.0])
     raw = compute_cusp_descriptor(grid, nuc, Z, log_transform=False)
     logd = compute_cusp_descriptor(grid, nuc, Z, log_transform=True)
-    # Column 0 (cusp_factor) is identical — log_transform only gates col 1.
+    # Column 0 (cusp_factor) is identical, log_transform only gates col 1.
     assert jnp.allclose(raw[:, 0], logd[:, 0]), (raw[:, 0], logd[:, 0])
     # Column 1 differs because of the log-compress.
     assert not jnp.allclose(raw[:, 1], logd[:, 1], atol=1e-3), (
@@ -266,7 +266,7 @@ def test_dm_entropy_intensive_independent_of_system_size():
     int_b = float(compute_dm_features(D_b, S_b, intensive=True)["dm_entropy"])
     assert abs(int_a - int_b) < 0.1, (
         f"intensive dm_entropy should NOT depend on system size: "
-        f"nocc=3 → {int_a}, nocc=7 → {int_b}"
+        f"nocc=3 -> {int_a}, nocc=7 -> {int_b}"
     )
 
 
@@ -293,7 +293,7 @@ def test_precompute_passes_spin_resolved_dm_for_uks():
     from xcquinox.alec.data import precompute_fixed_density_data
     from xcquinox.alec.descriptors import DMStatisticsDescriptor
 
-    # Open-shell radical (CH triplet — spin=2 on a small basis is fast).
+    # Open-shell radical (CH triplet, spin=2 on a small basis is fast).
     mol = MoleculeSpec.from_dict(
         name="CH", atom="C 0 0 0; H 0 0 1.12",
         basis="sto-3g", charge=0, spin=1,
@@ -319,7 +319,7 @@ def test_precompute_passes_spin_resolved_dm_for_uks():
     )
 
 
-# P2-03: spin-polarized PW92 correlation baseline — VERIFIED vs libxc.
+# spin-polarized PW92 correlation baseline, VERIFIED vs libxc.
 # (The polarized branch of utils.pw92c was dead code, nspin hardcoded to 1, so
 # pw92c_polarized_scalar is the first exercised polarized PW92; verify it
 # against an independent reference.)
@@ -360,16 +360,15 @@ def test_pw92c_polarized_finite_value_and_grad_at_extremes():
 
 
 def test_pw92c_polarized_second_derivative_finite_at_full_polarization():
-    """REGRESSION (NaN root cause, 2026-06): the SECOND derivative of eps_c w.r.t.
-    spin density must be finite at full spin polarization (one spin density 0,
-    zeta=+-1). The FULL SCF differentiates v_xc -- itself a first derivative of
-    E_xc -- a second time, so an inf/NaN second derivative here poisons the
-    training gradient of every fully-spin-polarized species (free atoms H, Li,
-    ...), corrupting all weights. PW92's spin-interpolation
-    f(zeta) ~ (1+-zeta)**(4/3) has d2/dzeta2 ~ (1-+zeta)**(-2/3) -> inf at
-    |zeta|=1 unless the interpolation base is floored. The first-order grad
-    (checked above) is finite there and hid this. Perdew & Wang PRB 45, 13244
-    (1992), eqs (8)-(9)."""
+    """The second derivative of eps_c w.r.t. spin density must stay finite at
+    full spin polarization (one spin density 0, zeta=+-1). The FULL SCF
+    differentiates v_xc (itself a first derivative of E_xc) a second time, so an
+    inf/NaN second derivative here breaks the training gradient of every
+    fully-spin-polarized species (free atoms H, Li, ...). PW92's spin
+    interpolation f(zeta) ~ (1+-zeta)**(4/3) has d2/dzeta2 ~ (1-+zeta)**(-2/3)
+    -> inf at |zeta|=1 unless the interpolation base is floored. The first-order
+    gradient (checked above) is finite there and hid this. Perdew & Wang
+    PRB 45, 13244 (1992), eqs (8)-(9)."""
     import jax
     from xcquinox.utils import pw92c_polarized_scalar
 

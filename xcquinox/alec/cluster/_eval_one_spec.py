@@ -168,9 +168,9 @@ def _aggregate_per_molecule(pm_rows, ae_key="AE_error_kcalmol",
         to the MAE average; reporting total row count (``len(pm_rows)``) would
         be misleading when the subset contains BH76/IP13-only entries.
     """
-    # C5-06: a non-finite per-molecule value (NaN/inf from a pathological V_xc
+    # a non-finite per-molecule value (NaN/inf from a pathological V_xc
     # or a diverged density) passes isinstance(...,(int,float)) and would poison
-    # the spec MAE — which then makes the summary layer (analyze.summarize)
+    # the spec MAE, which then makes the summary layer (analyze.summarize)
     # drop the ENTIRE spec instead of just the bad molecule. Exclude non-finite
     # values so a single bad molecule does not discard a spec's good ones.
     ae_errs = [
@@ -250,7 +250,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
     Parallelizes across molecule shards BY DEFAULT (adaptive degradation via
     ``_holdout_parallel.run_holdout_with_escalation``), auto-detecting the usable
     CPUs at runtime; if the parallel path raises it falls back to the serial
-    ``run_full_holdout_eval``. Held-out failure is NOT fatal — it writes
+    ``run_full_holdout_eval``. Held-out failure is NOT fatal, it writes
     ``eval_holdout/failure.json`` and returns, so the in-sample ``eval_df.csv``
     stays the authoritative success signal for the SLURM array task.
     """
@@ -271,7 +271,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         model = load_trained_model(training_spec, _Path(model_path))
         # Basis + grid_level MUST match what training used (read from the
         # resolved config) so the held-out PBE/NN energies are computed in the
-        # same basis as the in-sample eval — otherwise a basis bump silently
+        # same basis as the in-sample eval, otherwise a basis bump silently
         # evaluates the held-out set in def2-svp (invalid comparison).
         _hb, _hg = _held_out_basis_grid(cfg)
         _log(idx, f"held-out pool basis={_hb} grid_level={_hg}")

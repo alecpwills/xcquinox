@@ -1,4 +1,4 @@
-"""xcquinox.alec.config — architecture, feature, and pipeline spec dataclasses.
+"""xcquinox.alec.config: architecture, feature, and pipeline spec dataclasses.
 
 Implements THE SPEC §11.1: FeatureSpec, _FrozenDict, _FrozenTuple, _freeze,
 and the FeatureSpec.as_kwargs thaw round-trip.
@@ -39,7 +39,7 @@ class _FrozenDict(tuple):
     """
     Tuple subclass used to tag a frozen dict so _thaw can losslessly
     distinguish it from a list-of-pairs. Behaves exactly like a tuple for
-    hashing/equality/iteration purposes — only the type tag matters.
+    hashing/equality/iteration purposes, only the type tag matters.
     """
     __slots__ = ()
 
@@ -104,7 +104,7 @@ class FeatureSpec:
 @dataclass(frozen=True)
 class ArchitectureConfig:
     """Stores descriptor and constraint specifications (registry-name strings
-    plus kwargs dicts) — not live instances. Descriptor and constraint instances
+    plus kwargs dicts), not live instances. Descriptor and constraint instances
     are materialized only when a model is constructed."""
     name: str
     depth: int
@@ -115,7 +115,7 @@ class ArchitectureConfig:
     x_constraints: tuple[FeatureSpec, ...] = ()
     c_constraints: tuple[FeatureSpec, ...] = ()
     double_lob_clamp_allowed: bool = False
-    # P2-03: when True, the correlation network takes a spin-polarization input
+    # when True, the correlation network takes a spin-polarization input
     # feature (x1) and the model uses the zeta-dependent PW92 baseline (Dick &
     # Fernández-Serra 2021). Default False = unpolarized correlation (existing
     # behavior; checkpoints compatible). True is a NEW checkpoint family (cnet
@@ -243,7 +243,7 @@ class ArchitectureConfig:
 
     @property
     def n_input_features(self) -> int:
-        # P2-03: +1 for the spin-polarization (x1) input on the correlation net.
+        # +1 for the spin-polarization (x1) input on the correlation net.
         return 2 + (1 if self.use_polarized_correlation else 0) + self.n_extra_features
 
     def materialize_descriptors(self):
@@ -252,7 +252,7 @@ class ArchitectureConfig:
         # when the descriptor type recognizes them. ``intensive`` lives on
         # DMStatisticsDescriptor; ``log_transform`` on CuspDescriptor. Other
         # descriptors ignore the unknown kwargs (filtered by make_descriptor
-        # via FeatureSpec.as_kwargs — known kwargs only).
+        # via FeatureSpec.as_kwargs: known kwargs only).
         out = []
         for s in self.descriptors:
             kwargs = dict(s.as_kwargs())
@@ -283,7 +283,7 @@ class ArchitectureConfig:
                   zero_init_final_layer: bool = False):
         """Factory that accepts str | (str, dict) | FeatureSpec for each entry.
 
-        ``num_heads`` is required when ``attention=True`` (no silent default —
+        ``num_heads`` is required when ``attention=True`` (no silent default,
         callers must specify the head count explicitly so per-architecture
         defaults are visible at the call site). When ``attention=False``, the
         value is ignored and stored as 1.
@@ -291,7 +291,7 @@ class ArchitectureConfig:
         if attention and num_heads is None:
             raise ValueError(
                 "ArchitectureConfig.from_spec: attention=True requires "
-                "explicit num_heads (no silent default — see spec "
+                "explicit num_heads (no silent default, see spec "
                 "§Implementation surface for per-arch defaults)."
             )
         resolved_heads = num_heads if num_heads is not None else 1
@@ -347,7 +347,7 @@ class ArchitectureConfig:
 
 
 # ---------------------------------------------------------------------------
-# §11.2: ARCHITECTURES dict — the 12 notebook variants
+# §11.2: ARCHITECTURES dict, the 12 notebook variants
 # ---------------------------------------------------------------------------
 
 ARCHITECTURES = {
@@ -446,14 +446,14 @@ class MoleculeSpec:
     ``dm_pbe``), ``rho_ref_grid`` (same shape as ``rho_grid``),
     ``ref_density_method`` (string), and ``E_ref_literature`` (scalar).
     Unknown keys are rejected. Each key is
-    optional — a partial ``.npz`` is valid (e.g., only ``E_ref_literature``
+    optional: a partial ``.npz`` is valid (e.g., only ``E_ref_literature``
     for atoms where density matching is skipped).
 
     The optional ``grid_level`` pins the pyscf DFT grid level used by
     ``precompute_fixed_density_data``. ``None`` (the default) leaves pyscf's
     default (currently level 3 with ``nwchem_prune``). Setting an explicit
     integer is required when external reference data was computed on a
-    non-default grid — e.g., the step3b / step 4 experiment uses
+    non-default grid, e.g., the step3b / step 4 experiment uses
     ``grid_level=1`` so that ``precompute`` rebuilds the same coarse grid
     the caller used when writing ``rho_ref_grid`` to the external ``.npz``.
     Values accepted: 0..9, matching ``pyscf.dft.gen_grid.Grids.level``.
@@ -463,7 +463,7 @@ class MoleculeSpec:
     basis: str = "sto-3g"
     charge: int = 0
     spin: int = 0
-    # Sorted tuple of (symbol, count) pairs — e.g. (("H", 2),) for H2.
+    # Sorted tuple of (symbol, count) pairs, e.g. (("H", 2),) for H2.
     # MUST be a tuple-of-tuples (NOT a dict) because MoleculeSpec is frozen
     # and the auto-generated __hash__ hashes every field.
     atom_composition: tuple[tuple[str, int], ...] = ()
@@ -559,7 +559,7 @@ def _describe_spec(spec) -> dict:
 
 @dataclass(frozen=True)
 class PretrainSpec:
-    """Pretraining config. Plain frozen dataclass — NOT an eqx.Module, so float
+    """Pretraining config. Plain frozen dataclass, NOT an eqx.Module, so float
     fields are ordinary Python float leaves and participate in the auto-generated
     __eq__ / __hash__."""
     arch: ArchitectureConfig
@@ -649,10 +649,10 @@ class TrainingSpec:
     # MoleculeSpecs for those elements.
     require_atom_anchors: bool = True
     # Optimizer update scheme:
-    #   "batched"      — one full-batch optimizer step per training step over
+    #   "batched": one full-batch optimizer step per training step over
     #                    ALL species at once, with the configured `balancing`
     #                    strategy (GradNorm etc). The historical default.
-    #   "per_molecule" — DFS/dpyscf-style stochastic updates: each epoch shuffles
+    #   "per_molecule": DFS/dpyscf-style stochastic updates: each epoch shuffles
     #                    the per-target groups (one AE compound, one BH76
     #                    reaction, one IP pair, one atom anchor) and takes ONE
     #                    optimizer step per group, with FIXED channel weights
@@ -662,7 +662,7 @@ class TrainingSpec:
     #                    that pins multi-target atomization-energy fits.
     update_scheme: str = "batched"
     # Fixed per-channel weights for `update_scheme="per_molecule"` (ignored in
-    # "batched" mode, where `balancing` controls weighting). Empty → the
+    # "batched" mode, where `balancing` controls weighting). Empty -> the
     # density-dominant dpyscf-style default in train._DEFAULT_CHANNEL_WEIGHTS.
     channel_weights: tuple[tuple[str, float], ...] = ()
 
@@ -707,7 +707,7 @@ class TrainingSpec:
 
     def validate(self) -> None:
         """Raise ValueError if spec is inconsistent."""
-        # Deferred local import — xcquinox.alec.losses does not exist until
+        # Deferred local import, xcquinox.alec.losses does not exist until
         # Task 4.1 ships.
         from xcquinox.alec.losses import LOSS_REGISTRY, list_losses
         if self.loss_name not in LOSS_REGISTRY:
@@ -750,7 +750,7 @@ class TrainingSpec:
                 "atom_energies dict is missing entries for atomic training molecules: "
                 f"{missing_atom_energies}"
             )
-        # CFG-01: ALL elements referenced in any molecule's composition must
+        # ALL elements referenced in any molecule's composition must
         # appear in atom_energies, regardless of require_atom_anchors.
         # _ae_from_atoms in losses.py reads atom_energies[Z] for every element
         # in every compound; a missing key causes a runtime KeyError or a
@@ -790,7 +790,7 @@ class TrainingSpec:
             if not math.isfinite(value):
                 raise ValueError(f"{field_name} must be finite, got {value}")
         for m_name, t_value in targets_dict.items():
-            # CFG-05: reject bool before isfinite — math.isfinite(True) is True,
+            # reject bool before isfinite, math.isfinite(True) is True,
             # so without this check True/False would silently coerce to 1.0/0.0.
             if isinstance(t_value, bool):
                 raise ValueError(
@@ -799,7 +799,7 @@ class TrainingSpec:
             if not math.isfinite(t_value):
                 raise ValueError(f"targets[{m_name!r}] must be finite, got {t_value}")
         for sym, ae_value in atom_energies_dict.items():
-            # CFG-05: same bool-rejection as targets.
+            # same bool-rejection as targets.
             if isinstance(ae_value, bool):
                 raise ValueError(
                     f"atom_energies[{sym!r}] must be a float, got bool {ae_value!r}"
@@ -928,7 +928,7 @@ class TestSpec:
 
     def validate(self) -> None:
         """Raise ValueError if any referenced metric name or checkpoint is invalid."""
-        # Deferred local import — xcquinox.alec.evaluation does not exist
+        # Deferred local import, xcquinox.alec.evaluation does not exist
         # until Task 5.3 ships.
         from xcquinox.alec.evaluation import METRIC_REGISTRY, list_metrics
         if not os.path.isfile(self.model_checkpoint):
@@ -953,7 +953,7 @@ class TestSpec:
                     f"metric_kwargs[{metric_name!r}] is set but "
                     f"{metric_name!r} is not in self.metrics "
                     f"({list(self.metrics)}). The kwargs would be silently "
-                    "ignored at run_test time — fix the typo or add the "
+                    "ignored at run_test time, fix the typo or add the "
                     "metric to self.metrics."
                 )
             if metric_name not in METRIC_REGISTRY:

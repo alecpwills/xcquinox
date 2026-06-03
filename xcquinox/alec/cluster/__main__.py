@@ -1,34 +1,34 @@
-"""xcquinox.alec.cluster.__main__ — CLI dispatch for the HPC training harness.
+"""xcquinox.alec.cluster.__main__: CLI dispatch for the HPC training harness.
 
 Invoked as ``python -m xcquinox.alec.cluster <subcommand> ...``. This module is
 purely the operator-facing front-end: it parses arguments, owns the run-dir
 lock, and wires the already-built ``cluster/`` modules together. Subcommands:
 
-  - ``prepare``             — stage input artifacts (CCSD refs, ledger, ...).
-  - ``submit``              — create a fresh run dir + submit the 4-stage graph.
-  - ``submit-eval``         — submit the deferred eval array for an existing run.
-  - ``status``              — read-only per-index outcome report.
-  - ``results``              — aggregate per-spec eval metrics (MAE etc.).
-  - ``resubmit``            — recover FAILED TRAIN tasks (preflight succeeded).
-  - ``resubmit-preflight``  — recover a FAILED/timed-out pretrain/preflight.
-  - ``repair-manifest``     — rebuild a corrupt/missing ``manifest.json``.
-  - ``pull``                — rsync a run dir from the cluster back to local
+  - ``prepare``: stage input artifacts (CCSD refs, ledger, ...).
+  - ``submit``: create a fresh run dir + submit the 4-stage graph.
+  - ``submit-eval``: submit the deferred eval array for an existing run.
+  - ``status``: read-only per-index outcome report.
+  - ``results``: aggregate per-spec eval metrics (MAE etc.).
+  - ``resubmit``: recover FAILED TRAIN tasks (preflight succeeded).
+  - ``resubmit-preflight``: recover a FAILED/timed-out pretrain/preflight.
+  - ``repair-manifest``: rebuild a corrupt/missing ``manifest.json``.
+  - ``pull``: rsync a run dir from the cluster back to local
     for post-processing. Category-aware (``--category alpha_off/runs``).
-  - ``list-runs``           — discover ``run_<UTC>Z`` dirs under
+  - ``list-runs``: discover ``run_<UTC>Z`` dirs under
     ``--remote-root``, grouped by category. See
     ``xcquinox/alec/cluster/sync.py`` for both.
 
 Design rules (enforced below at their use sites):
 
-  - **Dry-run is the default** for every submitting subcommand; real SLURM
+  - Dry-run is the default for every submitting subcommand; real SLURM
     submission happens only with ``--submit``.
-  - **Every SLURM subprocess goes through ``job_tracking._run_slurm``** — the
+  - Every SLURM subprocess goes through ``job_tracking._run_slurm``, the
     one seam tests monkeypatch. ``submit_jobs`` already routes through it; the
     sparse-array resubmit paths call it directly for ``sbatch``/``scancel``.
   - ``main`` only dispatches; each subcommand's logic is in its own function;
     small shared helpers (lock, failed-index scan, artifact archive, sparse
     array string) are factored out.
-  - **Login-node guard**: ``prepare`` runs the heavy CCSD external-refs
+  - Login-node guard: ``prepare`` runs the heavy CCSD external-refs
     precompute and is refused on a login node (absent ``$SLURM_JOB_ID``)
     unless ``--no-recompute-refs`` is passed.
 """
@@ -91,7 +91,7 @@ def _log(msg: str) -> None:
 def _on_login_node() -> bool:
     """True iff this process is NOT inside a SLURM allocation.
 
-    SLURM sets ``$SLURM_JOB_ID`` for every job step (batch *and* interactive
+    SLURM sets ``$SLURM_JOB_ID`` for every job step (batch and interactive
     ``salloc``). Its absence means we are on a login node, where heavy compute
     is forbidden by cluster fair-use policy.
     """
@@ -155,7 +155,7 @@ def _config_to_raw_dict(cfg) -> dict:
         "defer_eval": cfg.defer_eval,
         # inline_eval MUST round-trip: load_grid_config reads it
         # (raw.get("inline_eval", ...)), and recovery/resubmit paths re-load
-        # resolved_config.yaml — omitting it silently reverts an inline-eval run
+        # resolved_config.yaml: omitting it silently reverts an inline-eval run
         # to a separate eval array.
         "inline_eval": cfg.inline_eval,
     }
@@ -163,7 +163,7 @@ def _config_to_raw_dict(cfg) -> dict:
 
 
 def _write_resolved_config(cfg, run_dir: str) -> str:
-    """Write ``<run_dir>/resolved_config.yaml`` — a round-trippable GridConfig.
+    """Write ``<run_dir>/resolved_config.yaml``: a round-trippable GridConfig.
 
     YAML is used (lazy ``import yaml``, matching ``load_grid_config``) so the
     file is human-auditable; the preflight reads it back with ``load_grid_config``.
@@ -174,7 +174,7 @@ def _write_resolved_config(cfg, run_dir: str) -> str:
         import yaml
     except ImportError as exc:  # pragma: no cover - env-dependent
         raise ImportError(
-            "writing resolved_config.yaml requires PyYAML — "
+            "writing resolved_config.yaml requires PyYAML, "
             "install it with `pip install pyyaml`"
         ) from exc
     out_dir = os.path.dirname(os.path.abspath(path)) or "."
@@ -192,7 +192,7 @@ def _write_resolved_config(cfg, run_dir: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# .harness.lock — run-dir mutual exclusion
+# .harness.lock: run-dir mutual exclusion
 # ---------------------------------------------------------------------------
 
 class HarnessLockError(RuntimeError):
@@ -208,7 +208,7 @@ def _pid_is_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        # The process exists but is owned by another user — still "alive".
+        # The process exists but is owned by another user, still "alive".
         return True
     return True
 
@@ -217,7 +217,7 @@ def _lock_is_stale(info: dict, lock_path: str) -> bool:
     """Decide whether an existing lock may be reclaimed.
 
     A lock is stale iff EITHER the recorded PID is dead (only trustworthy when
-    the lock was taken on THIS host — a PID number is meaningless across hosts)
+    the lock was taken on THIS host, a PID number is meaningless across hosts)
     OR the lock file is older than :data:`_LOCK_STALE_AGE_S`. The age fallback
     covers a lock left by a process that died on a different node.
     """
@@ -334,11 +334,11 @@ def _scan_train_evidence(run_dir: str, n: int, width: int) -> list[int]:
 
 
 def _failed_train_indices(run_dir: str, width: int, outcomes: dict) -> list[int]:
-    """Train indices with NO ``model.eqx`` — candidates for resubmit recovery.
+    """Train indices with NO ``model.eqx``: candidates for resubmit recovery.
 
     An index counts as failed iff its checkpoint dir has no ``model.eqx`` (a
     produced model is the sole success signal); its ``outcomes`` entry then
-    classifies *why*.
+    classifies why.
     """
     failed = []
     for idx in sorted(outcomes):
@@ -371,7 +371,7 @@ _RETRYABLE = {"oom", "timeout"}
 
 # failure.json classifications that ARE retryable but under a different name.
 # A wall-clock pre-kill grace SIGTERM is recorded by ``_train_task`` as
-# "killed_by_signal" — it is a timeout in all but name (the job ran out of
+# "killed_by_signal": it is a timeout in all but name (the job ran out of
 # wall), so route it like a timeout (longer-wall ``timeout_retry`` resources).
 _FAILURE_CLASS_ALIASES = {"killed_by_signal": "timeout"}
 
@@ -390,7 +390,7 @@ def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str
         if cls in _RETRYABLE:
             return cls
         return "deterministic"
-    # No failure.json — fall back to the sacct-derived outcome.
+    # No failure.json: fall back to the sacct-derived outcome.
     outcome = (outcomes.get(idx) or "").strip().lower()
     if outcome in _RETRYABLE:
         return outcome
@@ -468,7 +468,7 @@ def _archive_stale_artifacts(run_dir: str, idx: int, width: int, gen: int) -> li
 
     Archives ``checkpoints/spec_<i>/{model.eqx,failure.json}`` and the per-spec
     ``eval/`` dir + ``eval_df.csv`` to a ``.gen<g>`` sibling. Refuses (raises)
-    if a ``.gen<g>`` target already exists — that would clobber an older
+    if a ``.gen<g>`` target already exists, that would clobber an older
     archive. Returns the list of archived paths (for the operator report).
     """
     spec_dir = _spec_dir(run_dir, idx, width)
@@ -494,7 +494,7 @@ def _archive_stale_artifacts(run_dir: str, idx: int, width: int, gen: int) -> li
 
 
 # ---------------------------------------------------------------------------
-# attempts.json — per-index resubmit attempt counter
+# attempts.json: per-index resubmit attempt counter
 # ---------------------------------------------------------------------------
 
 def _read_attempts(run_dir: str) -> dict:
@@ -545,7 +545,7 @@ def _verify_spec_hashes(run_dir: str, manifest: dict, indices: list[int]) -> Non
         if expected is not None and actual != expected:
             raise RuntimeError(
                 f"spec file for index {idx} has content hash {actual} but the "
-                f"manifest records {expected}; the specs/ directory drifted — "
+                f"manifest records {expected}; the specs/ directory drifted, "
                 "refusing to resubmit against a mutated spec"
             )
 
@@ -564,7 +564,7 @@ def _parse_job_id(proc) -> str:
 # ===========================================================================
 
 def cmd_prepare(args) -> int:
-    """``prepare`` — stage harness input artifacts.
+    """``prepare``: stage harness input artifacts.
 
     ``prepare`` builds the training-point pool, validates the existing subset
     ledger, and (by default) pre-warms the per-species CCSD external refs via
@@ -582,12 +582,12 @@ def cmd_prepare(args) -> int:
         _log(
             "ERROR: `prepare` runs the heavy CCSD external-refs precompute and "
             "must NOT run on a login node (no $SLURM_JOB_ID detected).\n"
-            "  - Use `python -m xcquinox.alec.cluster submit <grid>` — its "
+            "  - Use `python -m xcquinox.alec.cluster submit <grid>`: its "
             "preflight job runs the precompute on a compute node, or\n"
             "  - request an interactive node with `salloc` first, then re-run "
             "this command inside the allocation, or\n"
             "  - pass `--no-recompute-refs` to validate the ledger only "
-            "(no precompute) — use this only when the refs are already staged."
+            "(no precompute), use this only when the refs are already staged."
         )
         return 2
 
@@ -596,7 +596,7 @@ def cmd_prepare(args) -> int:
     staged = prepare_inputs(cfg, recompute_refs=recompute_refs)
     n_entries = len(staged.subset_ledger)
     _log(
-        f"prepare: OK — pool of {len(staged.points)} training points, "
+        f"prepare: OK, pool of {len(staged.points)} training points, "
         f"{n_entries} subset-ledger entr{'y' if n_entries == 1 else 'ies'}; "
         f"ledger at {cfg.inputs.subset_ledger_path}"
     )
@@ -615,7 +615,7 @@ def _apply_partition_overrides(cfg, args):
     ``--{train,eval,preflight,pretrain}-partition`` flags override it for one
     stage and otherwise fall back to the base. The resolved values are written
     onto ``cfg.cluster`` so they (a) feed ``render_sbatch`` for this submission
-    and (b) round-trip into ``resolved_config.yaml`` — so recovery commands,
+    and (b) round-trip into ``resolved_config.yaml``, so recovery commands,
     which re-render from that file, inherit the same partitions with no flag.
 
     Render-time mapping (see ``submit.render_sbatch``): the TRAIN stage uses
@@ -750,7 +750,7 @@ def _apply_max_nodes_overrides(cfg, args):
     base cap for every array stage; ``--{train,eval,pretrain}-max-nodes``
     override it per stage. Any value left unset (no flag and no base) keeps the
     config's existing throttle, so omitting all four is a no-op. (Preflight is a
-    single job, not an array — it has no throttle.) The resolved throttles ride
+    single job, not an array, it has no throttle.) The resolved throttles ride
     into ``resolved_config.yaml`` so recovery commands reuse them.
     """
     base = args.max_nodes
@@ -793,12 +793,12 @@ def _make_run_dir(root: str) -> str:
 
 
 def cmd_submit(args) -> int:
-    """``submit`` — create a fresh run dir and (dry-run by default) submit.
+    """``submit``: create a fresh run dir and (dry-run by default) submit.
 
     Loads + semantically validates the grid, creates a timestamped run dir,
     writes ``resolved_config.yaml`` + ``scripts/`` + ``logs/``, then calls
     ``submit_jobs`` (dry-run unless ``--submit``) which renders + submits the
-    4-stage pretrain → preflight → train → eval graph.
+    4-stage pretrain -> preflight -> train -> eval graph.
     """
     cfg = load_grid_config(args.grid)
     cfg = _apply_partition_overrides(cfg, args)
@@ -836,7 +836,7 @@ def cmd_submit(args) -> int:
         else:
             eval_part = f"eval={ids.get('eval')}"
         _log(f"submit: SUBMITTED ({result['n_specs']} specs, "
-             f"{result['n_archs']} distinct arch(s)) — "
+             f"{result['n_archs']} distinct arch(s)), "
              f"datagen={ids.get('datagen')} "
              f"pretrain={ids.get('pretrain')} "
              f"preflight={ids.get('preflight')} train={ids.get('train')} "
@@ -849,7 +849,7 @@ def cmd_submit(args) -> int:
 
 
 def cmd_submit_eval(args) -> int:
-    """``submit-eval`` — submit the (deferred) eval array for a run.
+    """``submit-eval``: submit the (deferred) eval array for a run.
 
     Reads the run's ``jobs.json`` + ``resolved_config.yaml`` and submits the
     eval array (``aftercorr`` on the train array), recording it. Idempotent: a
@@ -879,7 +879,7 @@ def cmd_submit_eval(args) -> int:
 def _pretrain_status(run_dir: str) -> str | None:
     """Lightweight pretrain-stage status line, or None if it cannot be checked.
 
-    Pretrain is a small up-front stage — it gets no per-index
+    Pretrain is a small up-front stage, it gets no per-index
     ``reduce_outcomes``. The check is purely on-disk: for each distinct
     architecture in the resolved config, the pretrain worker writes
     ``xnet.eqx`` + ``cnet.eqx`` into the RUN-SCOPED
@@ -906,13 +906,13 @@ def _pretrain_status(run_dir: str) -> str | None:
 
 
 def cmd_status(args) -> int:
-    """``status`` — read-only per-index outcome report (no lock taken).
+    """``status``: read-only per-index outcome report (no lock taken).
 
     Aggregates ``train`` and ``eval`` outcomes via ``reduce_outcomes`` across
     all non-superseded ``jobs.json`` generations, diffs against the manifest's
     ``n_specs``, and prints counts + an actionable remedy line. The pretrain
     stage gets a lightweight on-disk checkpoint-presence check (no per-index
-    reduction — pretrain is a handful of jobs). A
+    reduction: pretrain is a handful of jobs). A
     :class:`SlurmTransientError` is reported, not crashed on.
     """
     run_dir = os.path.abspath(args.run_dir)
@@ -923,7 +923,7 @@ def cmd_status(args) -> int:
         return 1
 
     n_specs = int(manifest["n_specs"])
-    _log(f"status: run dir {run_dir} — manifest records {n_specs} spec(s).")
+    _log(f"status: run dir {run_dir}, manifest records {n_specs} spec(s).")
 
     pt_status = _pretrain_status(run_dir)
     if pt_status is not None:
@@ -933,7 +933,7 @@ def cmd_status(args) -> int:
         train = job_tracking.reduce_outcomes(run_dir, "train")
         ev = job_tracking.reduce_outcomes(run_dir, "eval")
     except job_tracking.SlurmTransientError:
-        _log("status: SLURM controller unreachable — retry. "
+        _log("status: SLURM controller unreachable, retry. "
              "(on-disk evidence below may be partial)")
         return 1
 
@@ -968,26 +968,26 @@ def cmd_status(args) -> int:
         f"{k}={v}" for k, v in sorted(eval_counts.items())) or "  eval: (none)")
     _log(f"    never-scheduled={eval_never}")
 
-    # diff vs manifest — covered indices should equal n_specs.
+    # diff vs manifest, covered indices should equal n_specs.
     if len(train) != n_specs:
         _log(f"  WARNING: reduce_outcomes covered {len(train)} train indices "
-             f"but manifest records {n_specs} — manifest may be inconsistent.")
+             f"but manifest records {n_specs}, manifest may be inconsistent.")
 
     # Remedy line.
     preflight_dead = (
         train_never == n_specs and train_success == 0 and train_failed == 0
     )
     if manifest is None or len(train) != n_specs:
-        _log("  remedy: `repair-manifest <run_dir>` — manifest is "
+        _log("  remedy: `repair-manifest <run_dir>`: manifest is "
              "corrupt/inconsistent.")
     elif preflight_dead:
-        _log("  remedy: `resubmit-preflight <run_dir>` — the preflight job "
+        _log("  remedy: `resubmit-preflight <run_dir>`: the preflight job "
              "appears to have failed (no train task ran).")
     elif train_failed > 0:
-        _log("  remedy: `resubmit <run_dir>` — re-run the failed train "
+        _log("  remedy: `resubmit <run_dir>`: re-run the failed train "
              "task(s).")
     else:
-        _log("  remedy: none — no failed train tasks detected.")
+        _log("  remedy: none, no failed train tasks detected.")
     return 0
 
 
@@ -996,11 +996,11 @@ def cmd_status(args) -> int:
 # ===========================================================================
 
 def cmd_results(args) -> int:
-    """``results`` — aggregate per-spec eval metrics (read-only).
+    """``results``: aggregate per-spec eval metrics (read-only).
 
     Joins each finished ``eval_df.csv`` with its grid cell from
     ``manifest.json``, prints a per-spec table + a summary (MAE stats over the
-    COMPLETE specs only — incomplete spec dirs are shown but excluded from the
+    COMPLETE specs only, incomplete spec dirs are shown but excluded from the
     statistics), and optionally writes a CSV (``--csv``) and a MAE-vs-subset_size
     plot (``--plot``). Takes no lock; safe to re-run as results trickle in.
     """
@@ -1014,7 +1014,7 @@ def cmd_results(args) -> int:
             _log(f"results: {exc}")
             return 1
         if pm is None:
-            _log(f"results: spec {args.spec} has no eval/per_molecule.json — "
+            _log(f"results: spec {args.spec} has no eval/per_molecule.json: "
                  "its eval has not completed (see `results <run_dir>` for its "
                  "status).")
             return 1
@@ -1043,7 +1043,7 @@ def cmd_results(args) -> int:
         rows = analyze.collect_results(run_dir)
     except FileNotFoundError as exc:
         _log(f"results: {exc}")
-        _log("  the manifest is written by the preflight job — wait for it to "
+        _log("  the manifest is written by the preflight job, wait for it to "
              "finish (check `status <run_dir>`), then re-run.")
         return 1
 
@@ -1055,13 +1055,13 @@ def cmd_results(args) -> int:
         _log(f"results: wrote CSV -> {args.csv}")
     if args.plot:
         if summary["n_complete"] == 0:
-            _log("results: --plot skipped — no completed evals to plot yet.")
+            _log("results: --plot skipped, no completed evals to plot yet.")
         else:
             try:
                 analyze.plot_mae_vs_subset(rows, args.plot)
                 _log(f"results: wrote plot -> {args.plot}")
             except ImportError as exc:
-                _log(f"results: --plot failed — {exc}")
+                _log(f"results: --plot failed, {exc}")
                 return 1
     return 0
 
@@ -1071,7 +1071,7 @@ def cmd_results(args) -> int:
 # ===========================================================================
 
 def cmd_resubmit(args) -> int:
-    """``resubmit`` — recover FAILED TRAIN tasks (preflight already succeeded).
+    """``resubmit``: recover FAILED TRAIN tasks (preflight already succeeded).
 
     See the module/plan docstring for the full contract. Summary:
       - scan for train indices with no ``model.eqx``;
@@ -1085,7 +1085,7 @@ def cmd_resubmit(args) -> int:
     run_dir = os.path.abspath(args.run_dir)
     manifest = _try_read_manifest(run_dir)
     if manifest is None:
-        _log(f"resubmit: {run_dir}/manifest.json is missing/corrupt — "
+        _log(f"resubmit: {run_dir}/manifest.json is missing/corrupt, "
              "run `repair-manifest` first.")
         return 1
     n_specs = int(manifest["n_specs"])
@@ -1102,12 +1102,12 @@ def cmd_resubmit(args) -> int:
         try:
             outcomes = job_tracking.reduce_outcomes(run_dir, "train")
         except job_tracking.SlurmTransientError:
-            _log("resubmit: SLURM controller unreachable — retry.")
+            _log("resubmit: SLURM controller unreachable, retry.")
             return 1
 
         failed = _failed_train_indices(run_dir, width, outcomes)
         if not failed:
-            _log("resubmit: no failed train tasks — nothing to do.")
+            _log("resubmit: no failed train tasks, nothing to do.")
             return 0
 
         attempts = _read_attempts(run_dir)
@@ -1156,10 +1156,10 @@ def cmd_resubmit(args) -> int:
              f"skip-attempt-cap={sorted(skipped_cap)}")
         for idx in sorted(skipped_det):
             _log(f"  index {idx}: deterministic failure "
-                 f"({classes[idx]}) — NOT retried; inspect failure.json.")
+                 f"({classes[idx]}): NOT retried; inspect failure.json.")
         if defaulted:
             _log(f"  indices {sorted(set(defaulted))} use DEFAULT "
-                 "partition/resources — no dedicated retry knob configured.")
+                 "partition/resources: no dedicated retry knob configured.")
 
         if not retry:
             _log("resubmit: no retryable indices below the attempt cap.")
@@ -1172,7 +1172,7 @@ def cmd_resubmit(args) -> int:
         eval_script = os.path.join(run_dir, "scripts", "eval_array.sbatch")
 
         if not args.submit:
-            _log(f"resubmit: DRY-RUN — would archive stale artifacts for "
+            _log(f"resubmit: DRY-RUN, would archive stale artifacts for "
                  f"{sorted(retry)} then submit per failure class:")
             for cls in sorted(retry_by_class):
                 idxs = sorted(retry_by_class[cls])
@@ -1208,7 +1208,7 @@ def cmd_resubmit(args) -> int:
             overrides = _retry_resource_flags(cls, cl)
 
             # Train carries the class's retry resource overrides (sbatch CLI
-            # flags override the script's #SBATCH directives). Eval does NOT —
+            # flags override the script's #SBATCH directives). Eval does NOT,
             # eval is light and keeps its own (default) resources.
             train_cmd = [
                 "sbatch", "--parsable", f"--array={train_array}",
@@ -1231,7 +1231,7 @@ def cmd_resubmit(args) -> int:
                     job_tracking._run_slurm(["scancel", str(train_id)])
                 except Exception:
                     _log(f"resubmit: WARNING scancel of train {train_id} also "
-                         "failed — that array may be orphaned; cancel it "
+                         "failed: that array may be orphaned; cancel it "
                          "manually.")
                 _log(f"resubmit: [{cls}] not recorded in jobs.json.")
                 return 1
@@ -1255,7 +1255,7 @@ def cmd_resubmit(args) -> int:
 # ===========================================================================
 
 def cmd_resubmit_preflight(args) -> int:
-    """``resubmit-preflight`` — recover a FAILED/timed-out pretrain/preflight.
+    """``resubmit-preflight``: recover a FAILED/timed-out pretrain/preflight.
 
     Refuses unless the run is genuinely pretrain/preflight-stuck (see the
     plan): a complete manifest from a non-superseded preflight generation, OR
@@ -1268,7 +1268,7 @@ def cmd_resubmit_preflight(args) -> int:
 
     cfg_path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
     if not os.path.exists(cfg_path):
-        _log(f"resubmit-preflight: {cfg_path} not found — cannot reconstruct "
+        _log(f"resubmit-preflight: {cfg_path} not found, cannot reconstruct "
              "the grid. Use a fresh run dir (`submit`).")
         return 1
     cfg = load_grid_config(cfg_path)
@@ -1289,28 +1289,28 @@ def cmd_resubmit_preflight(args) -> int:
             man_n = int(manifest.get("n_specs", -1))
             man_specs = manifest.get("specs", [])
             if man_n == n_cells and len(man_specs) == n_cells:
-                _log("resubmit-preflight: REFUSING — manifest.json records a "
+                _log("resubmit-preflight: REFUSING, manifest.json records a "
                      f"complete {n_cells}-cell materialization; the preflight "
                      "succeeded. Use `resubmit` to recover failed train "
                      "tasks instead.")
                 return 1
             # Refusal 2: grid changed -> a fresh run dir is required.
             if man_n != n_cells:
-                _log(f"resubmit-preflight: REFUSING — manifest records "
+                _log(f"resubmit-preflight: REFUSING, manifest records "
                      f"n_specs={man_n} but the grid now expands to {n_cells} "
                      "cells. A changed grid must use a fresh run dir "
                      "(`submit`).")
                 return 1
 
         # Refusal 3: any on-disk train evidence -> a train task already ran.
-        # This is authoritative — an empty attempts.json is NOT sufficient.
+        # This is authoritative, an empty attempts.json is NOT sufficient.
         scan_width = (
             int(manifest["width"]) if manifest is not None
             else max(4, len(str(n_cells - 1)))
         )
         evidence = _scan_train_evidence(run_dir, n_cells, scan_width)
         if evidence:
-            _log("resubmit-preflight: REFUSING — found train-task evidence "
+            _log("resubmit-preflight: REFUSING, found train-task evidence "
                  f"(model.eqx/failure.json) for indices {evidence}. A train "
                  "task has run; use `resubmit` instead.")
             return 1
@@ -1334,7 +1334,7 @@ def cmd_resubmit_preflight(args) -> int:
         old_eval = _newest_live("eval")
 
         if not args.submit:
-            _log("resubmit-preflight: DRY-RUN — would re-submit the full "
+            _log("resubmit-preflight: DRY-RUN, would re-submit the full "
                  "datagen->pretrain->preflight->train->eval graph via "
                  "submit_jobs(force=True), then scancel + mark_superseded the "
                  "old datagen/pretrain/train/eval arrays.")
@@ -1359,7 +1359,7 @@ def cmd_resubmit_preflight(args) -> int:
         # guard (the old graph is intentionally still recorded here).
         result = submit_jobs(cfg, run_dir, submit=True, force=True)
         new_ids = result.get("job_ids", {})
-        _log(f"resubmit-preflight: re-submitted graph — "
+        _log(f"resubmit-preflight: re-submitted graph, "
              f"datagen={new_ids.get('datagen')} "
              f"pretrain={new_ids.get('pretrain')} "
              f"preflight={new_ids.get('preflight')} "
@@ -1384,13 +1384,13 @@ def cmd_resubmit_preflight(args) -> int:
                      f"({exc}).")
 
         if not scancel_ok:
-            _log("resubmit-preflight: a scancel failed — SKIPPING "
+            _log("resubmit-preflight: a scancel failed, SKIPPING "
                  f"mark_superseded. Orphaned old array id(s): {orphans}. "
                  "Cancel them manually; the old jobs.json records were left "
                  "un-superseded on purpose.")
             return 1
 
-        # scancel succeeded for every old array — mark them superseded.
+        # scancel succeeded for every old array, mark them superseded.
         for rec in (old_datagen, old_pretrain, old_train, old_eval):
             if rec is None:
                 continue
@@ -1409,7 +1409,7 @@ def cmd_resubmit_preflight(args) -> int:
 # ===========================================================================
 
 def cmd_repair_manifest(args) -> int:
-    """``repair-manifest`` — rebuild a corrupt OR missing ``manifest.json``.
+    """``repair-manifest``: rebuild a corrupt OR missing ``manifest.json``.
 
     Never reads the old manifest (absent and corrupt are identical). Rebuilds
     from ``resolved_config.yaml`` (the deterministic idx->GridCell map) plus the
@@ -1420,7 +1420,7 @@ def cmd_repair_manifest(args) -> int:
 
     cfg_path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
     if not os.path.exists(cfg_path):
-        _log(f"repair-manifest: {cfg_path} not found — the resolved config is "
+        _log(f"repair-manifest: {cfg_path} not found, the resolved config is "
              "the only source of truth for the grid. It is unrecoverable; "
              "start a fresh run dir with `submit`.")
         return 1
@@ -1428,7 +1428,7 @@ def cmd_repair_manifest(args) -> int:
         cfg = load_grid_config(cfg_path)
     except Exception as exc:
         # ANY failure to parse/build the resolved config (ValueError, a YAML
-        # ParserError, an OSError, ...) means it is unrecoverable — the grid
+        # ParserError, an OSError, ...) means it is unrecoverable, the grid
         # cannot be reconstructed, so direct the user to a fresh run dir.
         _log(f"repair-manifest: {cfg_path} is unrecoverable ({exc}); start a "
              "fresh run dir with `submit`.")
@@ -1447,7 +1447,7 @@ def cmd_repair_manifest(args) -> int:
 
         specs_dir = os.path.join(run_dir, "specs")
         if not os.path.isdir(specs_dir):
-            _log(f"repair-manifest: {specs_dir} does not exist — no specs to "
+            _log(f"repair-manifest: {specs_dir} does not exist, no specs to "
                  "rebuild from. The preflight never materialized this run; "
                  "use `resubmit-preflight` or a fresh run dir.")
             return 1
@@ -1460,7 +1460,7 @@ def cmd_repair_manifest(args) -> int:
         if len(spec_files) != n:
             _log(f"repair-manifest: found {len(spec_files)} spec file(s) in "
                  f"{specs_dir} but the grid expands to {n} cell(s). The spec "
-                 "set is incomplete — cannot rebuild a trustworthy manifest. "
+                 "set is incomplete, cannot rebuild a trustworthy manifest. "
                  "Use `resubmit-preflight` to re-materialize.")
             return 1
 
@@ -1488,7 +1488,7 @@ def cmd_repair_manifest(args) -> int:
             paths.append(full)
 
         manifest_path = write_manifest(cells, paths, run_dir)
-        _log(f"repair-manifest: rebuilt {manifest_path} — {n} spec(s), "
+        _log(f"repair-manifest: rebuilt {manifest_path}, {n} spec(s), "
              f"pad width {width}. model.eqx / jobs.json / attempts.json / "
              "checkpoints/ were left untouched.")
         return 0
@@ -1506,11 +1506,11 @@ def cmd_repair_manifest(args) -> int:
 # ``--local-root`` / ``--category`` CLI flags. Documented in
 # ``hpcjobs/SEAWULF_RUNBOOK.md`` Section 10.
 #
-# IMPORTANT — semantics: ``_PULL_DEFAULT_REMOTE_ROOT`` is the *base scratch
+# IMPORTANT: semantics: ``_PULL_DEFAULT_REMOTE_ROOT`` is the *base scratch
 # directory* holding all xcquinox sweep runs, with experiment-series subdirs
 # (``alpha_off/runs``, ``alpha_on/runs``, ``polarized/alpha_on``, ...) below
 # it. Pull's ``--category`` flag selects which subdir to look in. Pre-v2 docs
-# said this default ended in ``/runs`` — anyone who set
+# said this default ended in ``/runs``: anyone who set
 # XCQUINOX_CLUSTER_REMOTE_ROOT explicitly should drop the ``/runs`` tail and
 # pass ``--category runs`` if they want the old single-series behavior.
 _PULL_DEFAULT_HOST = "login.seawulf.stonybrook.edu"
@@ -1527,7 +1527,7 @@ def _make_ssh_lines(host: str):
     :func:`sync.resolve_run_id` / :func:`sync.discover_runs`. Shared by
     ``cmd_pull`` and ``cmd_list_runs`` so the subprocess invocation does not
     diverge between them. Raises :class:`subprocess.CalledProcessError` on
-    nonzero exit — the caller is expected to format its stderr via
+    nonzero exit, the caller is expected to format its stderr via
     :func:`sync.format_ssh_stderr_tail` to strip the SBU banner.
     """
     def _runner(argv):
@@ -1540,7 +1540,7 @@ def _make_ssh_lines(host: str):
 
 
 def cmd_pull(args) -> int:
-    """``pull`` — rsync a sweep run dir from the cluster back to local.
+    """``pull``: rsync a sweep run dir from the cluster back to local.
 
     Resolves the run id (``"latest"`` -> newest ``run_<UTC>Z`` under
     ``<remote-root>/<category>`` via ``ssh ls -1tr``), creates
@@ -1619,7 +1619,7 @@ def cmd_pull(args) -> int:
 # ===========================================================================
 
 def cmd_list_runs(args) -> int:
-    """``list-runs`` — discover ``run_<UTC>Z`` dirs under ``--remote-root``.
+    """``list-runs``: discover ``run_<UTC>Z`` dirs under ``--remote-root``.
 
     Read-only; issues a single ``find -prune`` over SSH and groups results by
     category (relative parent directory). Use this to figure out what to
@@ -1697,7 +1697,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="root for runs/ (default: cfg.inputs.output_root)")
     p_submit.add_argument(
         "--partition", required=True,
-        help="SLURM partition for the whole 4-stage graph (REQUIRED — the "
+        help="SLURM partition for the whole 4-stage graph (REQUIRED, the "
              "config carries no partition default, so a submission never "
              "silently lands on a login-node-specific queue). The per-stage "
              "--{train,eval,preflight,pretrain}-partition flags override this "
@@ -1775,7 +1775,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="inline-eval mode (inline_eval=True): each train array task runs "
              "its own eval immediately after training (in the same SLURM "
              "task), instead of submitting a separate eval array. Yields a "
-             "3-stage graph (pretrain → preflight → train+eval inline) and "
+             "3-stage graph (pretrain -> preflight -> train+eval inline) and "
              "eliminates the inter-stage queue gap. Mutually exclusive with "
              "--defer-eval. Default off.")
     p_submit.set_defaults(func=cmd_submit)
@@ -1889,7 +1889,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--depth", type=int, default=5,
         help="maximum dir levels to descend below --remote-root (default 5; "
              "the deepest current layout is polarized/<axis>/runs/run_<UTC>Z "
-             "at depth 4 — bump if your layout nests further)")
+             "at depth 4, bump if your layout nests further)")
     p_list_runs.set_defaults(func=cmd_list_runs)
 
     p_resub = sub.add_parser(

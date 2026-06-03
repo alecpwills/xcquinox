@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.cluster.__main__ — the harness CLI.
+"""Tests for xcquinox.alec.cluster.__main__: the harness CLI.
 
 These tests NEVER shell out to a real SLURM controller: ``job_tracking._run_slurm``
 is monkeypatched with canned ``sbatch`` / ``sacct`` / ``scancel`` behavior. Temp
@@ -152,12 +152,12 @@ def _fake_slurm(ids=None, sacct_rows=None, fail_sbatch_index=None,
                 fail_scancel=False, transient=False):
     """Build a fake ``_run_slurm``.
 
-    ``ids``        — sequence of array-job ids returned for ``sbatch`` calls.
-    ``sacct_rows`` — dict {array_job_id: "<JobID|State|ExitCode>\\n..."} for
+    ``ids``: sequence of array-job ids returned for ``sbatch`` calls.
+    ``sacct_rows``: dict {array_job_id: "<JobID|State|ExitCode>\\n..."} for
                      ``sacct --jobs=<id>`` lookups.
-    ``fail_sbatch_index`` — Nth (0-based) ``sbatch`` raises CalledProcessError.
-    ``fail_scancel``      — every ``scancel`` raises CalledProcessError.
-    ``transient``         — every ``sacct`` raises SlurmTransientError.
+    ``fail_sbatch_index``: Nth (0-based) ``sbatch`` raises CalledProcessError.
+    ``fail_scancel``: every ``scancel`` raises CalledProcessError.
+    ``transient``: every ``sacct`` raises SlurmTransientError.
     Every cmd seen is recorded on ``.calls``.
     """
     ids = list(ids or ["1001", "1002", "1003", "1004", "1005", "1006",
@@ -225,7 +225,7 @@ def test_dispatch_all_subcommands_are_registered():
 # ===========================================================================
 
 def test_prepare_refused_on_login_node(tmp_path, monkeypatch):
-    """`prepare` runs the heavy CCSD precompute by default — refused on a
+    """`prepare` runs the heavy CCSD precompute by default, refused on a
     login node (no $SLURM_JOB_ID)."""
     grid = _write_grid(tmp_path)
     monkeypatch.delenv("SLURM_JOB_ID", raising=False)  # simulate login node
@@ -285,7 +285,7 @@ def test_prepare_has_no_regenerate_flag(tmp_path):
 
 def test_resolved_config_persists_held_out_strict(tmp_path):
     """Regression: ``held_out_strict`` must survive the resolved_config.yaml
-    round trip — otherwise the cluster reloads it as False and the held-out eval
+    round trip, otherwise the cluster reloads it as False and the held-out eval
     silently stops being the strict (no-leakage) complement."""
     import dataclasses
     from xcquinox.alec.cluster.grid_config import load_grid_config
@@ -301,7 +301,7 @@ def test_resolved_config_persists_held_out_strict(tmp_path):
 
 def test_resolved_config_persists_inline_eval(tmp_path):
     """Regression: ``inline_eval`` must survive the resolved_config.yaml round
-    trip — otherwise a recovery/resubmit reloads it as False and the run
+    trip: otherwise a recovery/resubmit reloads it as False and the run
     silently reverts from inline eval to a separate eval array."""
     import dataclasses
     from xcquinox.alec.cluster.grid_config import load_grid_config
@@ -340,7 +340,7 @@ def test_resolved_config_persists_update_scheme_and_channel_weights(tmp_path):
     """Regression: ``hyperparams.update_scheme`` and ``channel_weights`` must
     survive the resolved_config.yaml round trip. channel_weights serializes as a
     list of [name, weight] pairs (dataclasses.asdict on the tuple) and must
-    reparse back to the same sorted tuple — not silently drop to ()."""
+    reparse back to the same sorted tuple, not silently drop to ()."""
     import dataclasses
     from xcquinox.alec.cluster.grid_config import load_grid_config
 
@@ -508,7 +508,7 @@ def _script_array(run_dir, name):
 
 def test_submit_max_nodes_sets_all_array_throttles(tmp_path, monkeypatch):
     """--max-nodes N sets the simultaneous-node count (array throttle) on every
-    array stage — with 1 whole node per task, throttle == nodes-at-once."""
+    array stage, with 1 whole node per task, throttle == nodes-at-once."""
     grid = _write_grid(tmp_path)
     fake = _fake_slurm()
     monkeypatch.setattr(jt, "_run_slurm", fake)
@@ -602,7 +602,7 @@ def test_status_aggregates_across_generations(tmp_path, monkeypatch):
 
     rc = main(["status", run_dir])
     assert rc == 0
-    # status is read-only — it must NOT take the lock.
+    # status is read-only, it must NOT take the lock.
     assert not os.path.exists(os.path.join(run_dir, ".harness.lock"))
 
 
@@ -610,7 +610,7 @@ def test_status_handles_slurm_transient_error(tmp_path, monkeypatch):
     run_dir = _make_run_dir(tmp_path)
     jt.append_job_record(run_dir, "train", "1000", list(range(_N)))
     monkeypatch.setattr(jt, "_run_slurm", _fake_slurm(transient=True))
-    # Must not crash — reports + returns non-zero.
+    # Must not crash, reports + returns non-zero.
     rc = main(["status", run_dir])
     assert rc == 1
 
@@ -720,7 +720,7 @@ def test_resubmit_archives_stale_artifacts(tmp_path, monkeypatch):
     open(os.path.join(_spec_dir(rd, 0), "model.eqx"), "wb").close()
     for i in (2, 3, 4, 5):
         open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
-    # index 1: OOM with a stale failure.json — must be archived to *.gen0.
+    # index 1: OOM with a stale failure.json: must be archived to *.gen0.
     with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
         json.dump({"classification": "oom"}, f)
 
@@ -833,7 +833,7 @@ def test_resubmit_preflight_refuses_when_grid_changed(tmp_path):
 
 
 def test_resubmit_preflight_refuses_when_manifest_complete(tmp_path):
-    """A complete manifest means the preflight succeeded — use resubmit."""
+    """A complete manifest means the preflight succeeded, use resubmit."""
     run_dir = _make_run_dir(tmp_path, manifest=True, n=_N)
     rc = main(["resubmit-preflight", run_dir])
     assert rc == 1
@@ -878,7 +878,7 @@ def test_resubmit_preflight_scancel_failure_skips_supersede(tmp_path,
     monkeypatch.setattr(jt, "_run_slurm", fake)
     rc = main(["resubmit-preflight", run_dir, "--submit"])
     assert rc == 1
-    # mark_superseded was SKIPPED — old records remain un-superseded.
+    # mark_superseded was SKIPPED, old records remain un-superseded.
     records = jt.read_job_records(run_dir)
     old = [r for r in records if r["array_job_id"] in ("200", "300")]
     assert all(not r["superseded"] for r in old)
@@ -983,7 +983,7 @@ def test_repair_manifest_directs_to_fresh_dir_when_config_corrupt(tmp_path):
 
 
 # ===========================================================================
-# .harness.lock — stale-lock reclaim
+# .harness.lock: stale-lock reclaim
 # ===========================================================================
 
 def test_lock_reclaims_stale_lock_dead_pid(tmp_path):
@@ -1053,8 +1053,8 @@ def test_status_pretrain_checkpoint_uses_run_scoped_path(tmp_path):
 
 def test_classify_failure_treats_killed_by_signal_as_timeout(tmp_path):
     """A wall-clock grace SIGTERM (recorded by _train_task as
-    'killed_by_signal') must classify as 'timeout' — i.e. retryable and routed
-    to the timeout_retry resources — not 'deterministic' (which resubmit skips)."""
+    'killed_by_signal') must classify as 'timeout', i.e. retryable and routed
+    to the timeout_retry resources, not 'deterministic' (which resubmit skips)."""
     run_dir = _make_run_dir(tmp_path)
     sd = _spec_dir(run_dir, 3)
     with open(os.path.join(sd, "failure.json"), "w") as f:

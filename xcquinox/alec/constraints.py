@@ -1,4 +1,4 @@
-"""xcquinox.alec.constraints — Constraint ABC, registry, and 4 concrete constraints.
+"""xcquinox.alec.constraints: Constraint ABC, registry, and 4 concrete constraints.
 
 Implements THE SPEC §4: registry-driven constraint composition for enforcing
 physical properties on network enhancement factors.
@@ -79,19 +79,19 @@ class LiebOxfordBound(Constraint):
 
     Bounds and why:
       * Upper bound ``mu = 1 + kappa = 1.804`` is the (local) Lieb-Oxford
-        ceiling on the exchange enhancement factor — Lieb & Oxford,
-        *Int. J. Quantum Chem.* **19**, 427 (1981); PBE convention with
-        kappa = 0.804, Perdew, Burke, Ernzerhof, *Phys. Rev. Lett.* **77**,
+        ceiling on the exchange enhancement factor, Lieb & Oxford,
+        Int. J. Quantum Chem. 19, 427 (1981); PBE convention with
+        kappa = 0.804, Perdew, Burke, Ernzerhof, Phys. Rev. Lett. 77,
         3865 (1996), §III(g) eq. (14).
-      * Lower bound is **0**, the physical floor: the exchange energy density
+      * Lower bound is 0, the physical floor: the exchange energy density
         is non-positive (``ε_x = ε_x^LDA · F_x`` with ``ε_x^LDA ≤ 0``), so
-        ``F_x ≥ 0`` is the only rigorous lower constraint — there is no
-        Lieb-Oxford *lower* bound on F_x. This matches the construction used by
-        Dick & Fernández-Serra, *Phys. Rev. B* **104**, L161109 (2021), eqs.
+        ``F_x ≥ 0`` is the only rigorous lower constraint, there is no
+        Lieb-Oxford lower bound on F_x. This matches the construction used by
+        Dick & Fernández-Serra, Phys. Rev. B 104, L161109 (2021), eqs.
         (11)–(12) (their ``I_{1.174}`` likewise floors F_x at 0), and the
         in-network ``_AlecLOB`` squash (``xcquinox/alec/networks.py``).
 
-    A *symmetric* ``tanh`` clamp ``F = 1 + (mu-1) tanh((F_raw-1)/(mu-1))`` is
+    A symmetric ``tanh`` clamp ``F = 1 + (mu-1) tanh((F_raw-1)/(mu-1))`` is
     NOT used: its lower asymptote ``2 - mu = 0.196`` is an artefact of the
     symmetry, not a theorem, and would needlessly forbid the
     physically-allowed range ``0 ≤ F_x < 0.196``.
@@ -158,7 +158,7 @@ class NonNegativeCorrelation(Constraint):
     The shifted-softplus form ``softplus(F_raw - 1 + log(e - 1))`` satisfies
     f(0) = log(1 + e^{log(e-1)}) = log(1 + (e-1)) = log(e) = 1.  After
     the -1 shift in the argument and the implicit +0 offset, the function g
-    has g(1) = 1 (fixed point preserved) and g(F_raw → -∞) → 0 (true zero
+    has g(1) = 1 (fixed point preserved) and g(F_raw -> -∞) -> 0 (true zero
     floor, not 1 - log 2 ≈ 0.307 from a naive softplus without the shift).
 
     Physical justification

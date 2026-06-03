@@ -27,7 +27,7 @@ def _make_h2():
 
 
 def test_manual_oneshot_matches_legacy():
-    """manual backend, oneshot mode, zero cycles — byte-identical to legacy path."""
+    """manual backend, oneshot mode, zero cycles, byte-identical to legacy path."""
     model, data = _make_h2()
     cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.ONESHOT)
     result = run_scf(cfg, model, data)
@@ -82,7 +82,7 @@ def test_oneshot_and_scf_total_energy_agree_at_D_PBE():
     """Contract test: the ONESHOT fast-path (via fixed_density_total_energy)
     and the SCF code path (via _compute_total_energy) must produce the
     same number when D=D_PBE and J=J[D_PBE]. Spec Section 5.2 "One-shot
-    regression guarantee" — this test enforces the algebraic equivalence.
+    regression guarantee": this test enforces the algebraic equivalence.
     """
     import numpy as np
     from xcquinox.alec.oneshot import fixed_density_total_energy
@@ -112,7 +112,7 @@ def test_oneshot_and_scf_total_energy_agree_at_D_PBE():
 
 
 def test_pyscfad_oneshot_matches_legacy():
-    """pyscfad backend, ONESHOT mode — same byte-identical fast path."""
+    """pyscfad backend, ONESHOT mode, same byte-identical fast path."""
     model, data = _make_h2()
     cfg = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.ONESHOT)
     result = run_scf(cfg, model, data)
@@ -219,7 +219,7 @@ def test_backends_agree_fixed_j_uks_on_o_atom():
 
 
 def test_pyscfad_uks_oneshot_o_atom():
-    """pyscfad backend ONESHOT UKS on O atom — returns (2, nao, nao) DM."""
+    """pyscfad backend ONESHOT UKS on O atom, returns (2, nao, nao) DM."""
     import numpy as np
     import xcquinox.alec as alec
     from xcquinox.alec.config import MoleculeSpec
@@ -289,7 +289,7 @@ def test_pyscfad_fixed_j_monkey_patched_get_j_is_called():
     mf.get_j = fixed_get_j
     mf.kernel(dm0=data["dm_pbe"])
     assert called["flag"], (
-        "pyscfad SCF driver bypassed the overridden get_j — "
+        "pyscfad SCF driver bypassed the overridden get_j, "
         "fixed_j pyscfad mode cannot guarantee J pinning"
     )
 
@@ -377,7 +377,7 @@ def test_pyscfad_reassemble_policy_no_warning(monkeypatch):
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter("always")
         run_scf(cfg, model, md)
-    # Filter for the specific warning — it should NOT be present
+    # Filter for the specific warning, it should NOT be present
     for w in recorded:
         assert "REASSEMBLE policy on pyscfad backend is not yet implemented" \
                not in str(w.message), (
@@ -415,7 +415,7 @@ def test_pyscfad_reassemble_policy_differs_from_frozen(monkeypatch):
     xnet, cnet = alec.create_network_pair(arch, seed=0)
     model = alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
 
-    # Perturb dm_pbe so SCF actually iterates — REASSEMBLE vs FROZEN
+    # Perturb dm_pbe so SCF actually iterates, REASSEMBLE vs FROZEN
     # must diverge when features are recomputed from an evolving DM.
     rng = np.random.default_rng(42)
     dm0 = np.asarray(md["dm_pbe"])

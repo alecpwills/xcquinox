@@ -196,9 +196,9 @@ def test_run_ccsd_uccsd_h_atom_spin_summed_rho(tmp_path):
                              basis="def2-svp", grid_level=1)
     assert cc["dm_ao"].ndim == 3 and cc["dm_ao"].shape[0] == 2
     assert cc["rho_ref_grid"].ndim == 1, (
-        "rho_ref_grid must be spin-summed 1D not (2, N_grid) — see "
+        "rho_ref_grid must be spin-summed 1D not (2, N_grid), see "
         "data.py:296-299 for the canonical spin-summing pattern")
-    # H atom has 1 electron total — integrated rho must equal 1.0
+    # H atom has 1 electron total, integrated rho must equal 1.0
     integ = float(np.sum(cc["grid_weights"] * cc["rho_ref_grid"]))
     assert abs(integ - 1.0) < 0.05, f"integrated rho={integ} != 1 for H atom"
 
@@ -257,7 +257,7 @@ def test_oep_tiers_rks_and_uks_constants_split():
 
     RKS conv_tol=2e-3 is mirrored from step-6 closed-shell H2O/C2H2 floor.
     UKS conv_tol=1e-2 is set against the empirical UKS floor (~6e-3 on HO
-    at def2-svp/grid_level=1 with level_shift=0.5) — see _OEP_TIERS_UKS
+    at def2-svp/grid_level=1 with level_shift=0.5), see _OEP_TIERS_UKS
     docstring in xcquinox/alec/external_refs.py for the full rationale.
 
     This test pins the values so a future edit cannot silently regress
@@ -609,7 +609,7 @@ def test_validate_overrides_rejects_empty_tier_tuple():
 
 
 def test_validate_overrides_rejects_out_of_range_values():
-    """Negative regularization, max_iter=0, level_shift=10 — all rejected."""
+    """Negative regularization, max_iter=0, level_shift=10, all rejected."""
     import pytest
     from xcquinox.alec.external_refs import (
         SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
@@ -648,7 +648,7 @@ def test_validate_overrides_accepts_negative_level_shift():
 
 
 def test_per_species_overrides_empty_dict_uses_defaults_for_all_species():
-    """Spec §9.2 / Plan-2 review fix: empty override table → identity
+    """Spec §9.2 / Plan-2 review fix: empty override table -> identity
     return of `_OEP_TIERS_RKS` / `_OEP_TIERS_UKS` for all species
     types. Pin the no-op-empty-dict invariant."""
     from xcquinox.alec.external_refs import (
@@ -859,7 +859,7 @@ def test_migration_raises_when_target_name_already_exists(tmp_path):
 
 
 def test_migration_handles_mg_hg_ag_correctly(tmp_path):
-    """The substring `_g` appears in Mg, Hg, Ag — must NOT corrupt them.
+    """The substring `_g` appears in Mg, Hg, Ag, must NOT corrupt them.
     Pass-8 fix: was `if "_g" in name and name.endswith(...)`; now
     `if name.endswith(suffix_new)` only."""
     import numpy as np
@@ -956,7 +956,7 @@ def test_cascade_threads_grid_level_via_dataclasses_replace(monkeypatch):
         # ccsd_payload requires dm_ao + rho_ref_grid; provide minimum:
         import numpy as np
         ccsd_payload = {"dm_ao": np.eye(5), "rho_ref_grid": np.zeros(10)}
-        # The cascade may call _build_mol_and_mf etc — for this test we
+        # The cascade may call _build_mol_and_mf etc, for this test we
         # only care about what's passed to run_oep_inversion. Use a
         # cache_dir that doesn't exist so save_vxc_ref can't be called:
         import tempfile
@@ -1043,7 +1043,7 @@ def test_cascade_level_shift_resolution_override_takes_precedence(monkeypatch):
 
 
 def test_cascade_level_shift_falls_back_to_spin_default_rks(monkeypatch):
-    """RKS species with no level_shift override → 0.0 reaches the call.
+    """RKS species with no level_shift override -> 0.0 reaches the call.
     Spec §9.2 / Plan-2 review fix."""
     from xcquinox.alec.external_refs import (
         run_oep_cascade, SpeciesEntry, _PER_SPECIES_OEP_OVERRIDES,
@@ -1077,7 +1077,7 @@ def test_cascade_level_shift_falls_back_to_spin_default_rks(monkeypatch):
 
 
 def test_cascade_level_shift_falls_back_to_spin_default_uks(monkeypatch):
-    """No level_shift in override on UKS species → 0.5 reaches the call."""
+    """No level_shift in override on UKS species -> 0.5 reaches the call."""
     from xcquinox.alec.external_refs import (
         run_oep_cascade, SpeciesEntry, _PER_SPECIES_OEP_OVERRIDES,
     )
@@ -1182,7 +1182,7 @@ def test_preflight_uks_oep_invokes_migration_at_top(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# EXTREF-01: CCSD must run on a CONVERGED HF reference, not grafted PBE MOs.
+# CCSD must run on a CONVERGED HF reference, not grafted PBE MOs.
 # ---------------------------------------------------------------------------
 
 
@@ -1272,7 +1272,7 @@ def test_prepare_converged_hf_raises_when_not_converged(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# EXTREF-04: stages 2 (CCSD) and 3 (OEP) must fsync the parent dir for
+# stages 2 (CCSD) and 3 (OEP) must fsync the parent dir for
 # durability, matching stage 1 (SCF).
 # ---------------------------------------------------------------------------
 
@@ -1329,13 +1329,13 @@ def test_run_oep_cascade_fsyncs_parent_dir(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# CFG-03: the reference npz must carry grid_level_used provenance.
+# the reference npz must carry grid_level_used provenance.
 # ---------------------------------------------------------------------------
 
 
 def test_oep_cascade_writes_grid_level_used(tmp_path):
     """Stage 3 OEP npz records the generating grid_level as grid_level_used
-    so data.py can assert consumer/producer grid agreement (CFG-03)."""
+    so data.py can assert consumer/producer grid agreement."""
     import numpy as np
     from xcquinox.alec.external_refs import (
         SpeciesEntry, resolve_geometry, run_scf_with_cache,

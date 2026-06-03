@@ -5,7 +5,7 @@ emit inline: for each pretraining atom, run a PBE SCF on a coarse grid and store
 the per-grid-point exchange/correlation enhancement targets
 ``Fx = F_x^PBE/F_x^LDA - 1`` and ``Fc = F_c^PBE/F_c^LDA - 1`` (stored as ``F - 1``,
 the network convention), with spin-RESOLVED libxc ``spin=1`` evaluation for
-open-shell atoms (PBE 1996 §III spin-scaling — the ``spin=0`` total-density call
+open-shell atoms (PBE 1996 §III spin-scaling, the ``spin=0`` total-density call
 is wrong for open-shell).
 
 The SPIN-POLARIZED variant additionally writes a ``zeta_all`` column
@@ -192,7 +192,7 @@ def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
 
     Returns the canonical ``.npz`` path, (re)generating it ONLY when the file is
     absent or its manifest's basis/grid_level/auxbasis differs from the requested
-    values. Idempotent — a second call at the same settings is a no-op. Used by
+    values. Idempotent, a second call at the same settings is a no-op. Used by
     the cluster harness so a basis OR fitting-basis change forces a regen instead
     of training on stale data."""
     eff_aux = _effective_auxbasis(basis, density_fit, auxbasis)
@@ -217,7 +217,7 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     ``polarized=True`` writes ``pretrain_data_polarized.npz`` with a ``zeta_all``
     column (the spin-polarized run's data); ``polarized=False`` writes
     ``pretrain_data.npz`` (the unpolarized data). Both carry the same
-    spin-resolved Fx/Fc targets and the same molecules — they differ only by the
+    spin-resolved Fx/Fc targets and the same molecules, they differ only by the
     presence of ``zeta_all``.
 
     ``density_fit`` density-fits the per-atom SCF Coulomb build (so the data can

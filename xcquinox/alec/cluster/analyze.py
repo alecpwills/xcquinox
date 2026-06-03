@@ -1,9 +1,9 @@
-"""xcquinox.alec.cluster.analyze — aggregate per-spec eval results.
+"""xcquinox.alec.cluster.analyze: aggregate per-spec eval results.
 
 The eval stage writes, per grid cell, ``checkpoints/spec_<idx>/eval_df.csv``
 (``set,mae,rho_rmse,n_eval``). This module joins those scalars with each cell's
-grid parameters (from ``manifest.json``) and reports them — re-runnable as
-results trickle in, and **skipping incomplete spec dirs** (they appear in the
+grid parameters (from ``manifest.json``) and reports them, re-runnable as
+results trickle in, and skipping incomplete spec dirs (they appear in the
 table with ``status`` but never contribute to the metric statistics).
 
 Pure + importable (no SLURM, no dep on ``__main__``); the ``results`` CLI
@@ -41,7 +41,7 @@ def _load_manifest(run_dir):
     path = os.path.join(run_dir, "manifest.json")
     if not os.path.isfile(path):
         raise FileNotFoundError(
-            f"no manifest.json in {run_dir} — the preflight has not "
+            f"no manifest.json in {run_dir}, the preflight has not "
             "materialized this run yet."
         )
     with open(path) as f:
@@ -240,7 +240,7 @@ def _abs_ae_err(r):
     """|AE_error_kcalmol| for sorting; rows without a finite key sink to the
     bottom. C5-07: a NaN/inf value passes isinstance(...,(int,float)) and would
     become a NaN sort key (NaN comparisons are all False), letting it rank
-    arbitrarily — including above the real worst cases under reverse=True. Treat
+    arbitrarily: including above the real worst cases under reverse=True. Treat
     non-finite as 'no AE' so it sinks."""
     e = r.get("AE_error_kcalmol")
     return abs(e) if (isinstance(e, (int, float)) and not isinstance(e, bool)
@@ -292,7 +292,7 @@ def worst_molecules(run_dir, n=20):
             continue
         for r in rows:
             e = r.get("AE_error_kcalmol")
-            # C5-07: skip non-finite errors — a NaN/inf would corrupt the
+            # skip non-finite errors, a NaN/inf would corrupt the
             # reverse-sorted ranking and surface as a spurious "worst" molecule.
             if (not isinstance(e, (int, float)) or isinstance(e, bool)
                     or not math.isfinite(e)):
@@ -384,7 +384,7 @@ def write_csv(rows, path):
 
 
 def plot_mae_vs_subset(rows, path):
-    """Plot MAE vs subset_size — one line per (metric, solver) — to ``path``.
+    """Plot MAE vs subset_size, one line per (metric, solver), to ``path``.
 
     Uses only the COMPLETE rows. matplotlib is imported lazily so the table /
     CSV paths work even without it; a clear error is raised if it is missing.
@@ -395,7 +395,7 @@ def plot_mae_vs_subset(rows, path):
         import matplotlib.pyplot as plt
     except ImportError as exc:  # pragma: no cover - env-dependent
         raise ImportError(
-            "plotting requires matplotlib — `pip install matplotlib` or omit "
+            "plotting requires matplotlib, `pip install matplotlib` or omit "
             "--plot"
         ) from exc
 

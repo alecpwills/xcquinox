@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.cluster.submit — sbatch rendering + job-graph submit.
+"""Tests for xcquinox.alec.cluster.submit: sbatch rendering + job-graph submit.
 
 These tests NEVER shell out to a real SLURM controller: ``job_tracking._run_slurm``
 is monkeypatched with canned behavior. A grid config is built from an in-memory
@@ -100,7 +100,7 @@ def _assert_no_unrendered_placeholders(text):
     """Fail if any ${PLACEHOLDER} template token survived substitution.
 
     A legitimate rendered bash variable such as ``${SLURM_ARRAY_TASK_ID}`` is
-    NOT a placeholder — only the tokens in _PLACEHOLDER_TOKENS are.
+    NOT a placeholder, only the tokens in _PLACEHOLDER_TOKENS are.
     """
     for tok in _PLACEHOLDER_TOKENS:
         assert ("${" + tok + "}") not in text, f"unrendered placeholder ${tok}"
@@ -144,7 +144,7 @@ def _fake_slurm_factory(ids=None, fail_on_index=None):
 
 
 # ---------------------------------------------------------------------------
-# render_sbatch — CPU vs GPU template selection
+# render_sbatch: CPU vs GPU template selection
 # ---------------------------------------------------------------------------
 
 def test_render_train_cpu_has_xla_flags_no_gres(tmp_path):
@@ -211,7 +211,7 @@ def test_render_pretrain_array_max_and_throttle(tmp_path):
     assert "xcquinox.alec.cluster._pretrain" in text
     assert "pretrain_%A_%a.out" in text
     # No unsubstituted template placeholder survived (the rendered bash var
-    # ${SLURM_ARRAY_TASK_ID} is legitimate — placeholders are the ones in
+    # ${SLURM_ARRAY_TASK_ID} is legitimate, placeholders are the ones in
     # _PLACEHOLDER_TOKENS below).
     _assert_no_unrendered_placeholders(text)
 
@@ -367,7 +367,7 @@ def test_render_conda_block_with_profile_sources_then_activates(tmp_path):
 
 
 def test_render_conda_block_empty_profile_no_bare_source(tmp_path):
-    # An empty conda_profile must NEVER emit a bare ``source`` line — under
+    # An empty conda_profile must NEVER emit a bare ``source`` line, under
     # ``set -euo pipefail`` that is broken bash.
     d = _base_config_dict()
     d["cluster"]["conda_profile"] = ""
@@ -384,7 +384,7 @@ def test_render_conda_block_empty_profile_no_bare_source(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# submit_jobs — dry run
+# submit_jobs: dry run
 # ---------------------------------------------------------------------------
 
 def test_dry_run_calls_no_sbatch_and_writes_no_jobs_json(tmp_path, monkeypatch):
@@ -437,7 +437,7 @@ def test_dry_run_train_eval_array_ranges_identical(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# submit_jobs — real submission
+# submit_jobs: real submission
 # ---------------------------------------------------------------------------
 
 def test_real_submit_dependency_directives(tmp_path, monkeypatch):
@@ -506,7 +506,7 @@ def test_deferred_submit_launches_instead_of_eval_array(tmp_path, monkeypatch):
     }
     assert result["manual_eval_command"].startswith(
         "python -m xcquinox.alec.cluster submit-eval ")
-    # Only datagen/pretrain/preflight/train recorded — eval is written later by
+    # Only datagen/pretrain/preflight/train recorded, eval is written later by
     # the launcher/manual step.
     kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
     assert kinds == ["datagen", "preflight", "pretrain", "train"]
@@ -557,20 +557,20 @@ def test_inline_eval_submit_skips_eval_array_and_eval_record(
     # Top-level flags reflect inline mode.
     assert result["inline_eval"] is True
     assert result["defer_eval"] is False
-    # Only FOUR sbatch calls (datagen, pretrain, preflight, train) — no eval array.
+    # Only FOUR sbatch calls (datagen, pretrain, preflight, train), no eval array.
     sbatch_calls = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
     assert len(sbatch_calls) == 4, [" ".join(c) for c in sbatch_calls]
     joined = [" ".join(c) for c in sbatch_calls]
     # The eval array and the deferred launcher are BOTH absent.
     assert not any("eval_array.sbatch" in j for j in joined), joined
     assert not any("eval_launcher.sbatch" in j for j in joined), joined
-    # job_ids carries datagen/pretrain/preflight/train ONLY — no eval (which
+    # job_ids carries datagen/pretrain/preflight/train ONLY, no eval (which
     # would be None under inline) and no eval_launcher (which is defer-only).
     assert result["job_ids"] == {
         "datagen": "6000", "pretrain": "6001", "preflight": "6002",
         "train": "6003",
     }, result["job_ids"]
-    # jobs.json carries datagen/pretrain/preflight/train ONLY — the absence of
+    # jobs.json carries datagen/pretrain/preflight/train ONLY, the absence of
     # an ``eval`` record is the point: nothing to recover via sacct because eval
     # ran inline as part of each train task.
     kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
@@ -605,11 +605,11 @@ def test_double_submit_guard_requires_force(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "fail_idx,expected_scancels",
     [
-        (0, []),                                  # datagen rejected — nothing prior
-        (1, ["9000"]),                            # pretrain rejected — cancel datagen
-        (2, ["9000", "9001"]),                    # preflight rejected — cancel prior 2
-        (3, ["9000", "9001", "9002"]),            # train rejected — cancel prior 3
-        (4, ["9000", "9001", "9002", "9003"]),    # eval rejected — cancel all four
+        (0, []),                                  # datagen rejected, nothing prior
+        (1, ["9000"]),                            # pretrain rejected, cancel datagen
+        (2, ["9000", "9001"]),                    # preflight rejected, cancel prior 2
+        (3, ["9000", "9001", "9002"]),            # train rejected, cancel prior 3
+        (4, ["9000", "9001", "9002", "9003"]),    # eval rejected, cancel all four
     ],
 )
 def test_rollback_scancels_on_midgraph_failure(tmp_path, monkeypatch,
@@ -630,8 +630,8 @@ def test_rollback_scancels_on_midgraph_failure(tmp_path, monkeypatch,
 
 
 def test_midgraph_failure_surfaces_sbatch_stderr(tmp_path, monkeypatch):
-    """The rollback RuntimeError must include sbatch's captured stderr — the
-    real SLURM rejection reason — not just CalledProcessError's opaque str()."""
+    """The rollback RuntimeError must include sbatch's captured stderr, the
+    real SLURM rejection reason, not just CalledProcessError's opaque str()."""
     cfg = _make_cfg(tmp_path)
     run_dir = str(tmp_path / "run")
     # Fail on a mid-graph sbatch (index 2 = preflight); fake sets stderr="rejected".
@@ -658,7 +658,7 @@ def test_rollback_on_first_job_failure_no_scancel(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# shellcheck — lint the rendered scripts if shellcheck is available
+# shellcheck: lint the rendered scripts if shellcheck is available
 # ---------------------------------------------------------------------------
 
 def test_rendered_scripts_pass_shellcheck(tmp_path, monkeypatch):

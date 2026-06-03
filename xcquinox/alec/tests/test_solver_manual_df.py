@@ -33,7 +33,7 @@ def test_df_scf_energy_matches_full_eri_within_df_error():
 
 
 def _o_triplet_spec():
-    """Open-shell O atom (triplet) — exercises the UKS DF Coulomb path
+    """Open-shell O atom (triplet), exercises the UKS DF Coulomb path
     J = compute_j_df(Dα) + compute_j_df(Dβ) (solver_manual.py UKS branch)."""
     return MoleculeSpec.from_dict(
         name="O", atom="O 0 0 0", basis="def2-svp", charge=0, spin=2,
@@ -42,8 +42,8 @@ def _o_triplet_spec():
 
 def test_df_scf_energy_matches_full_eri_uks():
     """UKS (open-shell) DF path: DF energy matches full-ERI within DF error.
-    Regression for the audit finding that the open-shell DF Coulomb build —
-    the exact path used by the radicals/atoms in the BH76+W4-11 pools — had
+    Regression for the audit finding that the open-shell DF Coulomb build,
+    the exact path used by the radicals/atoms in the BH76+W4-11 pools, had
     zero test coverage."""
     model = _model()
     md_full = precompute_fixed_density_data(_o_triplet_spec(), required_keys=("eri",))

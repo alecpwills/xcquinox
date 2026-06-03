@@ -9,24 +9,24 @@ potential (kcal/mol) with a per-entry citation.
 
 The four probe sets target:
 
-- **Probe A — Chemical similarity transfer** (in-distribution AE).
+- Probe A: Chemical similarity transfer (in-distribution AE).
   6 first-row organics/inorganics from G2/97 that mirror the diversity
   of the Dick training pool (saturated/unsaturated CH bonds; closed and
   open shells; oxygen and nitrogen radicals) but are NOT in the Dick
   training pool.  Tests in-distribution generalization.
 
-- **Probe B — Heteroatom / heavier-element extrapolation** (OOD AE).
-  6 molecules containing 3rd-period elements (S, P, Cl, Si) — none of
+- Probe B: Heteroatom / heavier-element extrapolation (OOD AE).
+  6 molecules containing 3rd-period elements (S, P, Cl, Si), none of
   which appear in the Dick pool.  Tests how a network trained on H, C,
   N, O, F, Li, Na transfers to H + 3rd-row chemistry.
 
-- **Probe C — Reaction-energy transfer** (BH76 outside training).
+- Probe C: Reaction-energy transfer (BH76 outside training).
   6 forward barrier heights from the Truhlar Minnesota HTBH38/08 +
   NHTBH38/08 datasets that constitute GMTKN55-BH76, EXCLUDING the 3
   reactions that appear in Dick training.  Tests kinetic-barrier
   transferability.
 
-- **Probe D — Multireference / static-correlation challenge.**
+- Probe D: Multireference / static-correlation challenge.
   6 small molecules with significant static correlation (recognized
   hard cases for any single-reference GGA): O2 (³Σg⁻ triplet), CN
   (²Σ⁺ doublet), ClO (²Π doublet), OF2 (bent dichalcogen), Cl2
@@ -35,7 +35,7 @@ The four probe sets target:
 
 Citations
 ---------
-- **Haunschild2012** : Haunschild & Klopper, *J. Chem. Phys.* **136**,
+- Haunschild2012 : Haunschild & Klopper, J. Chem. Phys. 136,
   164102 (2012), DOI 10.1063/1.4704796.  Table I, column "E_ref,non-rel"
   (frozen-core, non-relativistic atomization energies obtained from
   CCSD(T)(F12)/cc-pVQZ-F12 with higher-excitation and core/valence
@@ -43,20 +43,20 @@ Citations
   Local copy: ``scripts/script_data/haunschild_g2/haunschild2012.pdf``;
   local CSV (kJ/mol; column ``E``):
   ``scripts/script_data/haunschild_g2/g2_97.csv``.
-- **HTBH38/08** : Zheng, Zhao, Truhlar, *J. Chem. Theory Comput.* **5**,
+- HTBH38/08 : Zheng, Zhao, Truhlar, J. Chem. Theory Comput. 5,
   808 (2009).  Hydrogen-transfer barrier database, REF1 column.
   Online: https://comp.chem.umn.edu/db/dbs/htbh38.html
-- **NHTBH38/08** : Zheng, Zhao, Truhlar, *J. Chem. Theory Comput.* **5**,
+- NHTBH38/08 : Zheng, Zhao, Truhlar, J. Chem. Theory Comput. 5,
   808 (2009).  Non-hydrogen-transfer barrier database, REF1 column.
   Online: https://comp.chem.umn.edu/db/dbs/nhtbh38.html
-- **GMTKN55** : Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme,
-  *Phys. Chem. Chem. Phys.* **19**, 32184 (2017), DOI 10.1039/c7cp04913g.
+- GMTKN55 : Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme,
+  Phys. Chem. Chem. Phys. 19, 32184 (2017), DOI 10.1039/c7cp04913g.
   GMTKN55-BH76 adopts the Truhlar HTBH/NHTBH REF1 values verbatim.
-- **W4-11** (cross-check; not the primary AE source here):
-  Karton, Daon, Martin, *Chem. Phys. Lett.* **510**, 165 (2011).
-- **Karton2017 / W4-17** (multireference subset rationale):
-  Karton, Sylvetsky, Martin, *J. Comp. Chem.* **38**, 2063 (2017).
-- **NIST atomic spectra** : NIST Standard Reference Database 78
+- W4-11 (cross-check; not the primary AE source here):
+  Karton, Daon, Martin, Chem. Phys. Lett. 510, 165 (2011).
+- Karton2017 / W4-17 (multireference subset rationale):
+  Karton, Sylvetsky, Martin, J. Comp. Chem. 38, 2063 (2017).
+- NIST atomic spectra : NIST Standard Reference Database 78
   (Atomic Spectra Database).  Used for any IP reference values.
 
 Per-molecule rationale (the ``rationale`` field on every probe entry)
@@ -80,7 +80,7 @@ _KCAL_PER_KJ = 1.0 / 4.184
 
 
 # ---------------------------------------------------------------------------
-# Probe A — chemical-similarity transfer (in-distribution AE)
+# Probe A: chemical-similarity transfer (in-distribution AE)
 # ---------------------------------------------------------------------------
 #
 # All values from Haunschild2012 Table I E_ref,non-rel (kJ/mol)
@@ -96,7 +96,7 @@ PROBE_A_CHEMICAL_SIMILARITY = [
      "source": "Haunschild2012 Table I row CH4 (E_ref,non-rel = 1757.82 kJ/mol)",
      "rationale": (
          "Closed-shell saturated first-row organic.  Tests whether the "
-         "network — trained on the open-shell CH3 radical — generalizes "
+         "network, trained on the open-shell CH3 radical, generalizes "
          "to its CH4 closed-shell parent.  CH4 is the paradigmatic test "
          "of CH-bond density representation.")},
     {"hill": "C2H4", "name": "Ethylene",
@@ -106,7 +106,7 @@ PROBE_A_CHEMICAL_SIMILARITY = [
      "rationale": (
          "Closed-shell pi-bonded organic.  Training contains C2H2 (triple "
          "bond); C2H4 (double bond) tests whether the network captures "
-         "the bond-order continuum from sp³ → sp² → sp.")},
+         "the bond-order continuum from sp³ -> sp² -> sp.")},
     {"hill": "C2H6", "name": "Ethane",
      "ae_kcalmol": 2981.64 * _KCAL_PER_KJ,
      "spin": 0, "charge": 0,
@@ -139,13 +139,13 @@ PROBE_A_CHEMICAL_SIMILARITY = [
      "rationale": (
          "Closed-shell O-O single-bond molecule.  Training contains O3 "
          "(triplet O-O-O) but no peroxide; H2O2 tests the network on a "
-         "weak O-O σ-bond — known to be sensitive to delocalization "
+         "weak O-O σ-bond, known to be sensitive to delocalization "
          "error in semilocal DFT.")},
 ]
 
 
 # ---------------------------------------------------------------------------
-# Probe B — heteroatom / heavier-element extrapolation (OOD AE)
+# Probe B: heteroatom / heavier-element extrapolation (OOD AE)
 # ---------------------------------------------------------------------------
 PROBE_B_HETEROATOM_EXTRAPOLATION = [
     {"hill": "H2S", "name": "Hydrogen sulfide",
@@ -188,7 +188,7 @@ PROBE_B_HETEROATOM_EXTRAPOLATION = [
      "rationale": (
          "Closed-shell 3rd-period hydride; analog of NH3.  Training has "
          "NH3 (and NH, NH3, etc.) but no phosphorus; PH3 tests transfer "
-         "across the N→P substitution while preserving Lewis structure.")},
+         "across the N -> P substitution while preserving Lewis structure.")},
     {"hill": "H4Si", "name": "Silane",
      "ae_kcalmol": 1357.91 * _KCAL_PER_KJ,
      "spin": 0, "charge": 0,
@@ -201,21 +201,21 @@ PROBE_B_HETEROATOM_EXTRAPOLATION = [
 
 
 # ---------------------------------------------------------------------------
-# Probe C — BH76 REACTION ENERGIES outside the Dick training set
+# Probe C: BH76 REACTION ENERGIES outside the Dick training set
 # ---------------------------------------------------------------------------
 #
 # The probe metric is the REACTION ENERGY ΔE = Σ coeffs·E = E(products) −
 # E(reactants), matching the BH76 TRAINING channel (losses._rxn_residual_term;
 # dfs_pool.py). The reference ``reaction_energy_ref`` is the GMTKN55-BH76RC
 # (W2-F12) value (Goerigk et al. PCCP 19, 32184 (2017); subset file
-# ``BH76/.resRC`` — see scripts/script_data/GMTKN55_BH76RC_PROVENANCE.md). A
+# ``BH76/.resRC``: see scripts/script_data/GMTKN55_BH76RC_PROVENANCE.md). A
 # barrier height (Vf) is NOT comparable to a reaction energy and could not be
 # computed here anyway (no transition-state species are carried). The forward
 # barrier ``barrier_vf_ref`` (Truhlar HTBH38/08 + NHTBH38/08 REF1; Zheng-Zhao-
 # Truhlar JCTC 5, 808 (2009)) is retained for provenance only.
 #
-# Five reactions are outside Dick training; entry 5 (H+N2O→OH+N2) is the
-# INTENTIONAL REVERSE of training reaction 1 (OH+N2→H+N2O) — a directional-
+# Five reactions are outside Dick training; entry 5 (H+N2O -> OH+N2) is the
+# INTENTIONAL REVERSE of training reaction 1 (OH+N2 -> H+N2O), a directional-
 # consistency probe (its ΔE is −1× the training reaction's), NOT accidental
 # leakage.
 #
@@ -225,7 +225,7 @@ PROBE_B_HETEROATOM_EXTRAPOLATION = [
 # (*reactants, *products) in order.
 #
 # Each entry carries per-species ``species_spins`` and ``species_charges``
-# dicts (Hill formula → ground-state 2S / charge in PySCF convention).
+# dicts (Hill formula -> ground-state 2S / charge in PySCF convention).
 # Sources for atomic spins: NIST ASD ground-state term symbols.
 # Sources for molecular spins: NIST CCCBDB / Herzberg I.
 PROBE_C_BH76_OUT_OF_TRAINING = [
@@ -250,7 +250,7 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         "rationale": (
             "Classic combustion-relevant H-abstraction with low barrier. "
             "Probes whether the network's trained BH76 channel "
-            "(OH+N2→H+N2O, OH+CH3→O+CH4, HF+F→H+F2) generalizes to a "
+            "(OH+N2 -> H+N2O, OH+CH3 -> O+CH4, HF+F -> H+F2) generalizes to a "
             "small, low-barrier H-transfer outside training."
         ),
     },
@@ -296,9 +296,9 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
             "H2 (X¹Σg+, 0), CH4 (X¹A1, 0)."
         ),
         "rationale": (
-            "Methyl + H2 → methane.  Training has CH3 species but no "
+            "Methyl + H2 -> methane.  Training has CH3 species but no "
             "saturated CH4 in any reaction; this tests reaction "
-            "energetics across the CH3 → CH4 hydrogenation step."
+            "energetics across the CH3 -> CH4 hydrogenation step."
         ),
     },
     {
@@ -347,7 +347,7 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
         ),
         "rationale": (
             "REVERSE direction of Dick training reaction 1 (training uses "
-            "OH+N2 → H+N2O). Intentional directional-consistency probe: a "
+            "OH+N2 -> H+N2O). Intentional directional-consistency probe: a "
             "network whose reaction-energy error cancels in one direction may "
             "not cancel in the other. ΔE = -(training ΔE) by construction."
         ),
@@ -380,7 +380,7 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
 
 
 # ---------------------------------------------------------------------------
-# Probe D — multireference / static-correlation challenge
+# Probe D: multireference / static-correlation challenge
 # ---------------------------------------------------------------------------
 #
 # These molecules are recognized as challenging for any single-reference
@@ -391,7 +391,7 @@ PROBE_C_BH76_OUT_OF_TRAINING = [
 # test (Cohen, Mori-Sanchez, Yang, Science 321, 792 (2008)).
 #
 # Reference AEs are the same authoritative Haunschild2012 values used for
-# the rest of the alec stack — frozen-core CCSD(T)(F12) — converted from
+# the rest of the alec stack, frozen-core CCSD(T)(F12), converted from
 # kJ/mol to kcal/mol.  These are non-relativistic; agreement with W4-17
 # TAEe column is sub-0.5 kcal/mol on every entry that appears in W4-17.
 PROBE_D_MULTIREFERENCE = [
@@ -400,7 +400,7 @@ PROBE_D_MULTIREFERENCE = [
      "spin": 2, "charge": 0,
      "source": "Haunschild2012 Table I row O2 (E_ref,non-rel = 505.88 kJ/mol)",
      "rationale": (
-         "³Σg⁻ ground-state triplet — the canonical small-molecule "
+         "³Σg⁻ ground-state triplet, the canonical small-molecule "
          "multireference benchmark.  GGAs typically over-bind O2 by "
          "5-10 kcal/mol.  See Karton 2017 W4-17 §II ('multireference "
          "subset W4-17-MR') for the diagnostic-molecule rationale.")},
@@ -412,13 +412,13 @@ PROBE_D_MULTIREFERENCE = [
          "²Σ⁺ open-shell diatomic with notorious near-degeneracy "
          "between σ and π configurations.  Listed in Karton 2017 "
          "W4-17-MR.  Training has C and N atoms but no C-N triple "
-         "bond in radical form — only the closed-shell HCN.")},
+         "bond in radical form, only the closed-shell HCN.")},
     {"hill": "ClO", "name": "Chlorine monoxide",
      "ae_kcalmol": 271.20 * _KCAL_PER_KJ,
      "spin": 1, "charge": 0,
      "source": "Haunschild2012 Table I row OCl (E_ref,non-rel = 271.20 kJ/mol)",
      "rationale": (
-         "²Π open-shell halogen oxide — recognized multireference "
+         "²Π open-shell halogen oxide, recognized multireference "
          "diatomic (Karton 2017 W4-17-MR).  Combines static "
          "correlation with 3rd-period (Cl) extrapolation; double "
          "out-of-distribution probe.")},
@@ -427,7 +427,7 @@ PROBE_D_MULTIREFERENCE = [
      "spin": 0, "charge": 0,
      "source": "Haunschild2012 Table I row OF2 (E_ref,non-rel = 392.68 kJ/mol)",
      "rationale": (
-         "Bent F-O-F triatomic — closed-shell but with weak O-F "
+         "Bent F-O-F triatomic, closed-shell but with weak O-F "
          "single bonds and significant nondynamical correlation.  "
          "Pairs with O3 in training (also bent triatomic, but "
          "homonuclear); tests heteronuclear bent geometry.")},
@@ -479,10 +479,10 @@ def _g297_traj_path() -> Path:
 
 
 def _bh76_extra_geometries() -> dict:
-    """Hill-formula → ASE Atoms for BH76 reactant/product species that
+    """Hill-formula -> ASE Atoms for BH76 reactant/product species that
     are NOT in g2_97.traj (typically bare atoms and HS).
 
-    Geometries here are deliberately minimal — atomic positions for bare
+    Geometries here are deliberately minimal, atomic positions for bare
     atoms; equilibrium HS bond length from CCCBDB (1.341 Å) for the
     diatomic HS radical.  These geometries enter the AE/total-energy
     computation only as inputs to the SCF, so a few mÅ accuracy is
@@ -615,7 +615,7 @@ def build_probe_pool(probe_name: str) -> dict:
     #
     # Spin/charge propagation: read every species' ground-state spin and
     # charge from the per-reaction ``species_spins`` / ``species_charges``
-    # dicts on each PROBE_C entry.  This is load-bearing — without it,
+    # dicts on each PROBE_C entry.  This is load-bearing, without it,
     # PySCF will reject the SCF call for any open-shell radical (e.g. NO,
     # OH, CH3, HS) because g2_97.traj carries no spin info and PySCF's
     # default of spin=0 violates the (nelec - spin) % 2 == 0 invariant
@@ -636,7 +636,7 @@ def build_probe_pool(probe_name: str) -> dict:
                 a = by_hill[sp].copy()
                 a.info.setdefault("name", sp)
                 # Use the per-reaction ground-state spin if provided
-                # (authoritative).  No fallback — every PROBE_C entry
+                # (authoritative).  No fallback, every PROBE_C entry
                 # MUST carry species_spins per the design above.
                 if sp not in species_spins:
                     raise RuntimeError(

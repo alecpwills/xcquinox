@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.cluster.domain — the HPC harness physics tables."""
+"""Tests for xcquinox.alec.cluster.domain: the HPC harness physics tables."""
 import pytest
 
 from xcquinox.alec.cluster.domain import (
@@ -46,7 +46,7 @@ def test_kcal_per_ha_value():
         ("Li", -7.4781),
         ("Na", -162.2546),
         ("S", -398.1095),
-        # Heavier elements added for the BH76+W4-11 pool — Chakravorty 1993
+        # Heavier elements added for the BH76+W4-11 pool, Chakravorty 1993
         # (PRA 47, 3649) Table XI neutral-atom diagonal E(Z, Z), hartrees.
         ("Be", -14.66736),
         ("B", -24.65391),
@@ -128,7 +128,7 @@ def test_domain_profile_carries_physics_tables():
 
 
 def test_domain_profile_is_frozen():
-    """DomainProfile is a frozen dataclass — assignment raises."""
+    """DomainProfile is a frozen dataclass, assignment raises."""
     prof = get_domain_profile("dfs_step7")
     with pytest.raises(Exception):
         prof.pool_size = 99
@@ -250,7 +250,7 @@ def test_bh76w411_pool_elements_covered_by_atom_energies():
     bh76w411_step7 profile shipped with only the 8-element DFS anchor table,
     but the BH76+W4-11 pool references 12 elements (it adds Be, B, Al, Si, P,
     Cl via HCl/PH3/SiH4 and the boron/beryllium/aluminium W4-11 species).
-    TrainingSpec.validate (CFG-01) rejects any spec whose molecule
+    TrainingSpec.validate rejects any spec whose molecule
     compositions cite an element absent from atom_energies, so a gap here
     aborts the cluster preflight ~1.5 h in (only after CCSD-ref generation).
     This test reproduces that coverage check in milliseconds at CI time, so a

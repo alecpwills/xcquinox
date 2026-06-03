@@ -1,10 +1,10 @@
-"""Slow faithfulness test — harness vs. the committed golden spec snapshot.
+"""Slow faithfulness test, harness vs. the committed golden spec snapshot.
 
 The cluster harness (``xcquinox.alec.cluster``) is a de-notebooked extraction
 of the step-7 spec-building logic in ``notebooks/_build_step7_notebook.py``.
-This test asserts the harness still reproduces the *physical content* of a
-representative step-7 ``TrainingSpec`` — molecules, targets, atom_energies,
-loss_kwargs, solver_config, hyperparameters — so a silent regression is caught.
+This test asserts the harness still reproduces the physical content of a
+representative step-7 ``TrainingSpec``: molecules, targets, atom_energies,
+loss_kwargs, solver_config, hyperparameters, so a silent regression is caught.
 
 The golden reference lives at ``xcquinox/alec/tests/data/notebook_spec_snapshot.json``
 and is produced by the USER-run helper ``scripts/capture_notebook_spec_snapshot.py``.
@@ -69,7 +69,7 @@ def _rebuild_spec_snapshot(grid_cell: dict) -> dict:
     )
     if not os.path.isfile(script_path):
         pytest.skip(
-            f"capture script not found at {script_path!r} — cannot rebuild "
+            f"capture script not found at {script_path!r}, cannot rebuild "
             "the spec for golden comparison"
         )
     spec_mod = importlib.util.spec_from_file_location(
@@ -94,17 +94,17 @@ def _rebuild_spec_snapshot(grid_cell: dict) -> dict:
 def test_harness_reproduces_golden_spec_snapshot():
     """The harness reproduces the committed golden step-7 spec snapshot.
 
-    SKIPs (never fails) when the snapshot fixture is absent — it is absent
+    SKIPs (never fails) when the snapshot fixture is absent, it is absent
     until the user runs scripts/capture_notebook_spec_snapshot.py. It FAILS
     only on a genuine mismatch between the harness output and the committed
     reference.
     """
     snapshot = _load_snapshot()
 
-    # Schema sanity — a snapshot from an incompatible capture-script version
+    # Schema sanity, a snapshot from an incompatible capture-script version
     # is a setup error, not a faithfulness failure.
     assert "spec" in snapshot and "grid_cell" in snapshot["spec"], (
-        "golden snapshot is missing the expected 'spec'/'grid_cell' keys — "
+        "golden snapshot is missing the expected 'spec'/'grid_cell' keys, "
         "regenerate it with the current capture script"
     )
 
@@ -119,23 +119,23 @@ def test_harness_reproduces_golden_spec_snapshot():
         "loss_name mismatch"
     )
     assert rebuilt["solver_config"] == golden_spec["solver_config"], (
-        "solver_config mismatch — the harness solver settings drifted from "
+        "solver_config mismatch, the harness solver settings drifted from "
         "the notebook's SOLVER_CONFIGS"
     )
     assert rebuilt["hyperparameters"] == golden_spec["hyperparameters"], (
         "hyperparameters mismatch"
     )
     assert rebuilt["molecules"] == golden_spec["molecules"], (
-        "molecule set mismatch — the chosen species union changed"
+        "molecule set mismatch, the chosen species union changed"
     )
     assert rebuilt["targets"] == golden_spec["targets"], (
-        "targets mismatch — a target energy drifted from the notebook"
+        "targets mismatch, a target energy drifted from the notebook"
     )
     assert rebuilt["atom_energies"] == golden_spec["atom_energies"], (
-        "atom_energies mismatch — an atomic-energy anchor drifted"
+        "atom_energies mismatch, an atomic-energy anchor drifted"
     )
     assert rebuilt["loss_kwargs"] == golden_spec["loss_kwargs"], (
-        "loss_kwargs mismatch — a loss-channel input drifted from the "
+        "loss_kwargs mismatch, a loss-channel input drifted from the "
         "notebook's _loss_kw"
     )
 
@@ -152,7 +152,7 @@ def test_golden_snapshot_records_notebook_sha():
     sha = snapshot.get("notebook_sha")
     assert sha, "golden snapshot is missing 'notebook_sha'"
     assert sha not in ("GIT_UNAVAILABLE", "UNTRACKED"), (
-        f"golden snapshot notebook_sha is the sentinel {sha!r} — it was "
+        f"golden snapshot notebook_sha is the sentinel {sha!r}, it was "
         "captured without a usable git SHA; regenerate it from a clean "
         "checkout so staleness can be detected"
     )

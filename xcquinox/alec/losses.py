@@ -1,4 +1,4 @@
-"""xcquinox.alec.losses — AlecLoss ABC, registry, 6 concrete losses.
+"""xcquinox.alec.losses: AlecLoss ABC, registry, 6 concrete losses.
 
 Implements THE SPEC §7.1 (base class) and §7.2 (A, B, C, D1, D2, D3).
 """
@@ -95,7 +95,7 @@ class AlecLoss(eqx.Module, abc.ABC):
         downstream consumer (``_atomic_reg``) compares ``E_NN[idx]``
         against the neutral atom anchor in ``atom_energies[Z]``; pointing
         ``atom_map['Li']`` at a Li+ cation would train the network's
-        *cation* energy toward the *neutral* Chakravorty value, biasing
+        cation energy toward the neutral Chakravorty value, biasing
         by the ionization-potential magnitude (~5 eV for Li). Mixed-pool
         specs that combine an IP13 pair with the species' neutral atom
         (e.g., HLi's Li anchor + Li_IP's neutral Li and Li+) hit this
@@ -118,7 +118,7 @@ class AlecLoss(eqx.Module, abc.ABC):
             elif charge_i == 0 and int(molecules[atom_map[symbol]].charge) != 0:
                 # Replace a non-neutral entry with the neutral one.
                 atom_map[symbol] = i
-            # Else: keep existing (already neutral, or both non-neutral —
+            # Else: keep existing (already neutral, or both non-neutral,
             # in which case the first one observed wins, which is harmless
             # because dedup-by-(name, charge, spin) prevents duplicates).
         atom_mol_idx = tuple(sorted(atom_map.items()))
@@ -162,12 +162,12 @@ def _compute_energies(model, mol_data, N, solver_config=None):
     """Per-molecule NN total energies for the energy-loss term, dispatched on
     the solver MODE via :func:`xcquinox.alec.oneshot.total_energy_for_solver`:
 
-    * ``FULL`` → the self-consistent ``run_scf(...).total_energy`` (a coherent
+    * ``FULL`` -> the self-consistent ``run_scf(...).total_energy`` (a coherent
       fixed point; backprop flows through the SCF cycles). This is the
       DFS/dpyscf self-consistent training target and is what evaluation
       (``TotalEnergyMetric`` / ``AtomizationEnergyMetric``) now measures under
       FULL, so training optimizes exactly what evaluation measures.
-    * ``ONESHOT`` / ``FIXED_J`` / ``None`` → the one-shot fixed-density
+    * ``ONESHOT`` / ``FIXED_J`` / ``None`` -> the one-shot fixed-density
       functional ``E_total = E_non_xc[ρ_PBE] + E_xc^NN[ρ_PBE]``. FIXED_J stays
       one-shot on purpose: its run_scf energy is an incoherent J-pinned hybrid
       (see ``total_energy_for_solver``).
@@ -250,7 +250,7 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
     """DM matching: Frobenius^2 mean-squared error per element.
 
     Absolute mode normalizes by the total number of DM elements
-    (``n_ao^2`` for RKS; ``2 * n_ao^2`` for UKS — both spin channels).
+    (``n_ao^2`` for RKS; ``2 * n_ao^2`` for UKS, both spin channels).
     This yields a per-element scale invariant under RKS↔UKS, matching
     ``_vxc_term``'s convention; normalizing the UKS branch by ``n_ao^2``
     only would be off by a factor of 2 vs RKS and inconsistent with
@@ -408,7 +408,7 @@ def _rxn_residual_term(
     e_rxn_ref : scalar reference reaction-energy or barrier-height value
 
     Returns: ``(E_rxn_NN - E_rxn_ref)^2``; when ``relative`` is set, the
-    relative form ``(.)^2 / (e_rxn_ref^2 + 1e-8)`` — matching the AE/vxc/rho
+    relative form ``(.)^2 / (e_rxn_ref^2 + 1e-8)``: matching the AE/vxc/rho
     channels' normalization so that under ``loss_metric='relative'`` ALL five
     GradNorm channels measure the same dimensionless quantity (otherwise the
     BH76 channel would be absolute Ha^2 while the others are relative).
@@ -858,7 +858,7 @@ def _guard_ref_is_hartree(value, label, kind):
     if value is not None and abs(value) > _HA_REF_SANITY_MAX:
         raise ValueError(
             f"{kind} {label!r}: reference energy {value} Ha exceeds the "
-            f"{_HA_REF_SANITY_MAX} Ha sanity ceiling — this is almost certainly "
+            f"{_HA_REF_SANITY_MAX} Ha sanity ceiling, this is almost certainly "
             f"a kcal/mol value passed without the kcal/mol->Ha conversion "
             f"(~627x too large). Convert references to Hartree before building "
             f"the loss (e.g. via KCAL_PER_HA)."
@@ -996,7 +996,7 @@ class L5GradnormVxcStep7(AlecLoss):
                 "L5_gradnorm_vxc_step7 has no PBE-anchor channel; "
                 "pbe_anchor_weight>0 / pbe_anchor_sample would be silently "
                 "ignored. Step-7 freezes pretraining from step-6, so the PBE "
-                "anchor is not used here — set pbe_anchor_weight=0."
+                "anchor is not used here, set pbe_anchor_weight=0."
             )
         # The smoke path is used by registry/contract tests where there is
         # no real training context (no molecules, no batch). It must still
@@ -1053,10 +1053,10 @@ class L5GradnormVxcStep7(AlecLoss):
         # channel evaluates to 0 in compute_components and the loss
         # remains well-formed via BH76 + IP13 + atomic_reg + vxc + rho.
         # Validation that at least ONE channel has signal happens
-        # implicitly — a spec with no compounds, no BH76 reactions, no
+        # implicitly, a spec with no compounds, no BH76 reactions, no
         # IP13 pairs, and no Dick atoms would yield a constant zero loss
         # which the GradNorm rebalance step would surface as NaN/Inf
-        # gnorms — caller is expected to choose a non-degenerate subset.
+        # gnorms, caller is expected to choose a non-degenerate subset.
         self.w_atomic = w_atomic
         self.bh76_reactions = bh76_frozen
         self.ip13_pairs = ip13_frozen
@@ -1189,7 +1189,7 @@ class L5GradnormVxcStep7(AlecLoss):
         # mirroring AtomizationLoss but bundled into a single channel for
         # GradNorm. atomic_reg is folded into the AE channel because it is
         # a regularizer of the AE quantity, not an independent task.
-        # Empty compound_idx → AE-fitting term is 0 (BH76- / IP13-only
+        # Empty compound_idx -> AE-fitting term is 0 (BH76- / IP13-only
         # subsets); atomic_reg may still be nonzero if any Dick atom is
         # in atom_idx.
         if self.compound_idx:
@@ -1205,7 +1205,7 @@ class L5GradnormVxcStep7(AlecLoss):
         # BH76 + IP13 channels: reaction / IP residuals (Dick 2021 SI II).
         # Pass `relative` so all 5 GradNorm channels share one metric under
         # loss_metric='relative' (else BH76/IP13 stay absolute Ha^2 while
-        # AE/vxc/rho are relative — inconsistent quantities into GradNorm).
+        # AE/vxc/rho are relative, inconsistent quantities into GradNorm).
         loss_bh76 = self._bh76_channel(E_nn, relative=relative)
         loss_ip13 = self._ip13_channel(E_nn, relative=relative)
 

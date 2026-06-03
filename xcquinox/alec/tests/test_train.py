@@ -333,9 +333,9 @@ def test_effective_channel_weights_partial_fills_from_defaults():
     from xcquinox.alec.train import (
         _effective_channel_weights, _DEFAULT_CHANNEL_WEIGHTS,
     )
-    # Empty → defaults unchanged.
+    # Empty -> defaults unchanged.
     assert _effective_channel_weights({}) == _DEFAULT_CHANNEL_WEIGHTS
-    # Partial (only loss_AE overridden) → loss_rho keeps its 20.0 default,
+    # Partial (only loss_AE overridden) -> loss_rho keeps its 20.0 default,
     # NOT the old 1.0 fallback.
     eff = _effective_channel_weights({"loss_AE": 5.0})
     assert eff["loss_AE"] == 5.0
@@ -411,7 +411,7 @@ def test_run_training_per_molecule_completes(training_batch_info):
 
 # ---------------------------------------------------------------------------
 # Fail-loud finite guard: a NaN/Inf must abort training immediately, naming
-# the offending loop/step/group/channel — never silently corrupt the weights.
+# the offending loop/step/group/channel, never silently corrupt the weights.
 # ---------------------------------------------------------------------------
 
 def test_abort_if_nonfinite_passes_when_finite():
@@ -466,11 +466,11 @@ def test_run_training_aborts_loudly_on_nonfinite(training_batch_info, monkeypatc
 
 
 # ---------------------------------------------------------------------------
-# REGRESSION (2026-06): polarized correlation differentiated through the FULL
-# SCF NaN'd on fully-spin-polarized atom anchors (H, Li) at zeta=+-1. The whole
-# run -- EVERY step, not just final_loss -- must stay finite, with all-finite
-# saved params. This is the combo no prior test exercised (polarized + FULL +
-# per_molecule + atom anchors); the ONESHOT-only live tests hid it.
+# Polarized correlation differentiated through the FULL SCF NaN'd on
+# fully-spin-polarized atom anchors (H, Li) at zeta=+-1. The whole run (every
+# step, not just final_loss) must stay finite, with all-finite saved params.
+# This combo (polarized + FULL + per_molecule + atom anchors) was untested; the
+# oneshot-only live tests missed it.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.slow
@@ -1056,7 +1056,7 @@ def test_full_mode_requires_eri(mode, expect_eri):
     assert ("eri" in required) == expect_eri
 
 
-# C3-07: GradNorm robustness to zero step-0 loss channels
+# GradNorm robustness to zero step-0 loss channels
 def test_gradnorm_relative_rates_neutralizes_zero_L0():
     """A task channel with ~0 step-0 loss must be neutralized (relative rate 1)
     and excluded from the mean, so a later 0->nonzero excursion cannot inject a

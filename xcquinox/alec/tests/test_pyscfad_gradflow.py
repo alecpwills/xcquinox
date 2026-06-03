@@ -8,7 +8,7 @@ pyscfad's custom ``eigh_gen_p`` primitive has no CUDA kernel, so
 ``run_pyscfad_scf`` wraps its body in a ``jax.default_device(cpu)``
 context to pin the pyscfad subgraph to CPU. This test exercises
 ``eqx.filter_grad`` through a FIXED_J pyscfad SCF on whatever device JAX
-defaults to (GPU on CUDA hosts) — the CPU-pin context is responsible for
+defaults to (GPU on CUDA hosts), the CPU-pin context is responsible for
 producing finite, nonzero gradients w.r.t. NN parameters regardless of
 the host default device.
 """
@@ -43,7 +43,7 @@ def test_grad_through_pyscfad_fixed_j_is_finite():
 
     def loss_fn(model):
         result = run_scf(cfg, model, md)
-        # Use total_energy as the scalar — it depends explicitly on the
+        # Use total_energy as the scalar, it depends explicitly on the
         # XC functional output and thus produces a meaningful gradient
         # flowing through the pyscfad eval_xc callback. (A loss based on
         # the converged density_matrix alone yields near-zero gradients
@@ -61,7 +61,7 @@ def test_grad_through_pyscfad_fixed_j_is_finite():
     assert all_finite, "gradient contains non-finite values"
     max_abs = max(float(jnp.max(jnp.abs(l))) for l in arr_leaves if l.size > 0)
     assert max_abs > 0, f"gradient is all zero: max|grad|={max_abs}"
-    # Sanity-check that the gradient is not just floating-point noise —
+    # Sanity-check that the gradient is not just floating-point noise,
     # a meaningful NN gradient through a converged SCF should be well
     # above the 1e-20 regime.
     assert max_abs > 1e-8, (

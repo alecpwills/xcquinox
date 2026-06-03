@@ -56,7 +56,7 @@ def _numpy_canonical_reference(block, x):
     v_packed = Wv @ x_n + bv
 
     # Per-head loop with explicit slicing (different factorization than a
-    # single reshape — catches reshape-order bugs in the JAX impl).
+    # single reshape, catches reshape-order bugs in the JAX impl).
     out = np.zeros(H)
     q_h_all = np.stack([q_packed[i * hd:(i + 1) * hd] for i in range(nh)])
     k_h_all = np.stack([k_packed[i * hd:(i + 1) * hd] for i in range(nh)])
@@ -92,7 +92,7 @@ def test_canonical_attention_against_numpy_hand_reference():
 
 
 def test_score_matrix_shape():
-    """Test 2: scores shape is (num_heads, num_heads) — not (H,) as the
+    """Test 2: scores shape is (num_heads, num_heads), not (H,) as the
     pre-fix elementwise-Hadamard code produced.
     """
     for nh in (1, 2, 4):
@@ -177,14 +177,14 @@ def test_num_heads_one_collapses_to_residual_mlp():
 
 def test_num_heads_h_vs_one_produce_different_outputs():
     """Test 6: with num_heads=H (head_dim=1), the score matrix is (H,H)
-    — NOT (1,1) — and the softmax over the key axis is non-trivial.
+, NOT (1,1), and the softmax over the key axis is non-trivial.
     With num_heads=1 (head_dim=H), the score matrix is (1,1), softmax is
     [[1.0]], and attn @ v = v exactly.
 
     Therefore num_heads=1 and num_heads=H produce DIFFERENT outputs even
     when constructed with the same key (i.e. bit-identical Q/K/V/O
     weights and LayerNorm). This pins the attention dependency on
-    num_heads — a regression that ignored num_heads (e.g. always treated
+    num_heads: a regression that ignored num_heads (e.g. always treated
     as 1) would make the two outputs identical.
 
     Math:
@@ -318,7 +318,7 @@ def test_divisibility_assertion():
 
 
 # ---------------------------------------------------------------------------
-# Frozen pre-fix reference (DO NOT EDIT — used as regression catcher)
+# Frozen pre-fix reference (DO NOT EDIT, used as regression catcher)
 # ---------------------------------------------------------------------------
 
 class _LegacyBrokenBlockReference(eqx.Module):
@@ -368,7 +368,7 @@ def test_regression_against_frozen_broken_block():
     out_legacy = legacy(x)
     assert not jnp.allclose(out_new, out_legacy, atol=1e-3), (
         "new attention block produces same output as the legacy broken "
-        "block — rewrite did not take effect"
+        "block: rewrite did not take effect"
     )
 
 

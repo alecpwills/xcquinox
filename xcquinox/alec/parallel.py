@@ -230,8 +230,8 @@ def detect_available_cpus() -> int:
     """Queue-agnostic count of CPUs THIS process may actually use.
 
     Prefers the scheduler affinity mask (``os.sched_getaffinity``) which
-    respects the SLURM/cgroup cpuset — whether the node is ``exclusive`` (the
-    whole node) or a ``shared`` slice — so the eval parallelism adapts to
+    respects the SLURM/cgroup cpuset, whether the node is ``exclusive`` (the
+    whole node) or a ``shared`` slice, so the eval parallelism adapts to
     whatever partition the job lands on rather than the static ``cpus_per_task``
     request. Falls back to ``SLURM_CPUS_PER_TASK`` then the machine core count.
     Always returns >= 1."""
@@ -253,7 +253,7 @@ def eval_worker_ladder(total_cpus: int, top: int | None = None
     eval's adaptive degradation.
 
     Starts at ``top`` (or ``total_cpus`` if unset, capped at ``total_cpus``) and
-    halves the worker count twice — three tiers max — giving each worker
+    halves the worker count twice, three tiers max, giving each worker
     ``total_cpus // n`` BLAS threads so the node stays fully utilized at every
     tier. Tiers with ``n <= 1`` are dropped (those mean "serial", handled
     separately by the caller), so a single core / ``top=1`` yields an empty

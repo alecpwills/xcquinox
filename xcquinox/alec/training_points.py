@@ -1,6 +1,6 @@
 """Mixed training-point pool for Dick 2021-style subset selection.
 
-A :class:`TrainingPoint` represents one unit of training signal — either
+A :class:`TrainingPoint` represents one unit of training signal, either
 an atomization-energy compound, a BH76 reaction barrier, or an IP13
 ionization potential. ``build_dfs_pool_points()`` returns the flat list
 of 26 = 21 + 3 + 2 points. ``select_subset`` then picks ``r`` points from
@@ -37,7 +37,7 @@ from .dfs_pool import (
 # DFS_ATOM_REFS in dfs_pool.py:394 declares H + Li as the canonical
 # atomic-density references; this is the same list. Used by the loss to
 # scope `_atomic_reg` (which by default would regularize EVERY atom anchor
-# in spec.molecules — that gets out of hand once Na, Cl, etc. enter via
+# in spec.molecules: that gets out of hand once Na, Cl, etc. enter via
 # chosen compounds).
 DICK_ATOM_REGULARIZER_SYMS: tuple[str, ...] = ("H", "Li")
 
@@ -50,7 +50,7 @@ class TrainingPoint:
     ----------
     kind : 'ae' | 'bh76' | 'ip13'
     name : unique identifier (e.g. 'CH4', 'OH+N2_to_H+N2O', 'Li_IP').
-    species : tuple of ASE Atoms — every molecule this point requires for
+    species : tuple of ASE Atoms, every molecule this point requires for
         the loss to evaluate. For 'ae': (compound, atom_anchors...).
         For 'bh76': (reactants..., products..., atom_anchors...).
         For 'ip13': (neutral, cation).
@@ -81,7 +81,7 @@ class TrainingPoint:
             if "name" not in s.info:
                 raise ValueError(
                     f"TrainingPoint(name={self.name!r}): species without "
-                    f"info['name'] — every species must be uniquely named "
+                    f"info['name']: every species must be uniquely named "
                     f"so the spec-builder can dedupe across points."
                 )
 
@@ -101,7 +101,7 @@ def _ae_point_from_atoms(compound: Atoms) -> TrainingPoint:
     """Build an AE TrainingPoint: compound + atom anchors ONLY for the
     Dick-regularized elements (``DICK_ATOM_REGULARIZER_SYMS = ('H', 'Li')``)
     that appear in the compound. Other element symbols (C, N, O, F, ...)
-    are NOT given separate MoleculeSpec entries — the AE channel's
+    are NOT given separate MoleculeSpec entries, the AE channel's
     ``_ae_from_atoms`` formula reads from the fixed ``atom_energies`` dict
     and does not require those atoms in the spec.
     """
@@ -140,18 +140,18 @@ def _bh76_point_from_dict(
     point's ``e_rxn_ref`` metadata (consumed mode-agnostically by
     ``losses._rxn_residual_term`` as ``Σ coeffs·E``):
 
-    - ``"reaction_energy"`` (DEFAULT) — the true reaction energy ΔE
+    - ``"reaction_energy"`` (DEFAULT), the true reaction energy ΔE
       (GMTKN55-BH76RC). The loss is trained against E(products) −
       E(reactants), matching Dick & Fernandez-Serra 2021 (their
       training set had no transition-state geometries). The reference
       MUST be a reaction energy, since barrier heights cannot be
-      reproduced by the reactant→product stoichiometry.
-    - ``"barrier_height"`` (opt-in) — the forward barrier height. A
+      reproduced by the reactant -> product stoichiometry.
+    - ``"barrier_height"`` (opt-in), the forward barrier height. A
       true forward barrier is ``E(TS) − E(reactants)``, so each
       reaction must additionally supply a transition-state geometry
       (``rxn["ts_species"]``). Those geometries are not yet staged in
       the repo; this path raises a clear, actionable error until they
-      are (the toggle is fully wired — only the data is missing).
+      are (the toggle is fully wired, only the data is missing).
     """
     if bh76_mode not in BH76_MODES:
         raise ValueError(
@@ -209,7 +209,7 @@ def _bh76_point_from_dict(
     # source key must KeyError loudly rather than silently fall back.
     if bh76_mode == "reaction_energy":
         e_rxn_ref = rxn["reaction_energy_ref"]
-    else:  # "barrier_height" — already validated above (TS present)
+    else:  # "barrier_height": already validated above (TS present)
         e_rxn_ref = rxn["barrier_ref"]
     return TrainingPoint(
         kind="bh76",
@@ -270,13 +270,13 @@ def build_dfs_pool_points(
     bh76_mode : {'reaction_energy', 'barrier_height'}, default 'reaction_energy'
         Selects what the 3 BH76 training points are trained against.
 
-        - ``'reaction_energy'`` (DEFAULT, "dick default") — BH76 points
+        - ``'reaction_energy'`` (DEFAULT, "dick default"), BH76 points
           carry the true reaction energy ΔE (GMTKN55-BH76RC) as
           ``e_rxn_ref``. The BH76 loss term computes
           ``Σ coeffs·E = E(products) − E(reactants)``, so the reference
-          MUST be a reaction energy — this is the correct behaviour and
+          MUST be a reaction energy, this is the correct behaviour and
           matches Dick & Fernandez-Serra 2021.
-        - ``'barrier_height'`` (opt-in) — BH76 points carry the forward
+        - ``'barrier_height'`` (opt-in), BH76 points carry the forward
           barrier height as ``e_rxn_ref``. A true forward barrier is
           ``E(TS) − E(reactants)``, which requires a transition-state
           geometry per reaction. Those geometries are NOT yet staged in
@@ -325,7 +325,7 @@ def species_union_from_points(
     """Return the deduplicated union of species across the chosen points.
 
     Dedupe key = (name, charge, spin). This is the ``spec.molecules``
-    list — every entry comes from one of the chosen points; nothing is
+    list: every entry comes from one of the chosen points; nothing is
     forcibly added.
     """
     seen: dict[tuple, Atoms] = {}
@@ -363,11 +363,11 @@ def _molspec_to_atoms(spec) -> Atoms:
 
 def build_reaction_pool_points(reactions, atoms_by_name) -> list[TrainingPoint]:
     """Build reaction-energy ``bh76``-kind TrainingPoints from an ARBITRARY set
-    of reactions + a ``name -> ASE Atoms`` map — generalizable to any benchmark
+    of reactions + a ``name -> ASE Atoms`` map, generalizable to any benchmark
     or custom training set, not just BH76+W4-11.
 
     Each ``reaction`` dict must carry ``name``, ``reactants``/``products``
-    (species-name lists), ``coeffs``, and ``reaction_energy_ref`` (kcal/mol —
+    (species-name lists), ``coeffs``, and ``reaction_energy_ref`` (kcal/mol,
     ``bh76_meta_to_loss_dict`` divides by ``KCAL_PER_HA``). ``atoms_by_name``
     resolves every species name to an ASE ``Atoms`` carrying ``info``
     name/charge/spin (e.g. via :func:`_molspec_to_atoms`). Each reaction becomes
@@ -377,7 +377,7 @@ def build_reaction_pool_points(reactions, atoms_by_name) -> list[TrainingPoint]:
     vxc/rho channels train each species against its CCSD reference density (the
     harness preflight generates those for the training-subset species).
 
-    Reactions are **deduplicated by name** — identical-name entries collapse to
+    Reactions are deduplicated by name, identical-name entries collapse to
     one point (the harness resolves training points by name, which must be
     unique). Raises ``KeyError`` if a species name is absent from
     ``atoms_by_name`` (fail loud rather than train on a missing molecule)."""

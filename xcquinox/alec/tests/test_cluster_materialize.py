@@ -1,6 +1,6 @@
 """Tests for xcquinox.alec.cluster.materialize -- on-disk spec serialization.
 
-The round-trip tests deliberately load spec files through the *actual*
+The round-trip tests deliberately load spec files through the actual
 ``xcquinox.alec._train_one_spec._load_spec`` so the test verifies the real
 worker loader, not a reconstruction of it.
 """

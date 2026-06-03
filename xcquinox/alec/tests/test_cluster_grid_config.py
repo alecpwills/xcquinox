@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.cluster.grid_config — the HPC harness config layer."""
+"""Tests for xcquinox.alec.cluster.grid_config: the HPC harness config layer."""
 import json
 
 import pytest
@@ -24,7 +24,7 @@ from xcquinox.alec.cluster.grid_config import (
 # ---------------------------------------------------------------------------
 
 class _StubDomain:
-    """Minimal stand-in for the not-yet-built DomainProfile — exposes only the
+    """Minimal stand-in for the not-yet-built DomainProfile, exposes only the
     `pool_size` attribute that validate_grid_semantics depends on."""
     def __init__(self, pool_size: int):
         self.pool_size = pool_size
@@ -99,7 +99,7 @@ def _write(tmp_path, name, data):
 
 
 # ---------------------------------------------------------------------------
-# load_grid_config — round-trips
+# load_grid_config: round-trips
 # ---------------------------------------------------------------------------
 
 def _assert_well_formed(cfg):
@@ -263,7 +263,7 @@ def test_validate_ok():
 def test_validate_rejects_positive_pbe_anchor_weight():
     """CW2/CODE-4 round-4: the harness builds no pbe_anchor_sample, so a
     positive hyperparams.pbe_anchor_weight is a no-op (A/B/C/D) or a hard error
-    (L5) — reject it at submit time for all losses."""
+    (L5): reject it at submit time for all losses."""
     import dataclasses
     cfg = _cfg()
     cfg = dataclasses.replace(
@@ -448,7 +448,7 @@ def test_validate_bad_pretrain_cpus_per_task():
 
 def test_validate_pretrain_resource_knobs_none_default_ok():
     """The pretrain resource knobs are None-by-default and fall back to the
-    train-array values — an unset config validates cleanly."""
+    train-array values, an unset config validates cleanly."""
     cfg = _cfg()
     assert cfg.cluster.pretrain_partition is None
     assert cfg.cluster.pretrain_time is None
@@ -605,7 +605,7 @@ def test_load_parses_per_stage_allocation(tmp_path):
 
 
 def test_mem_is_optional(tmp_path):
-    """mem is no longer required — a config that omits it loads with mem=''
+    """mem is no longer required, a config that omits it loads with mem=''
     (whole-node/exclusive stages need no --mem; SLURM applies the partition
     default for any shared stage that also leaves mem unset)."""
     d = _base_config_dict()
@@ -625,7 +625,7 @@ def test_validate_rejects_unknown_allocation():
 
 
 def test_validate_rejects_unknown_datagen_allocation():
-    """datagen_allocation is validated too — an invalid value must be rejected,
+    """datagen_allocation is validated too, an invalid value must be rejected,
     not silently rendered as a SHARED datagen job (drops --nodes=1 --exclusive)."""
     import dataclasses
     base = _cfg()
@@ -636,7 +636,7 @@ def test_validate_rejects_unknown_datagen_allocation():
 
 
 # ---------------------------------------------------------------------------
-# pretrain_checkpoint_dir — run-scoped pretrain output path
+# pretrain_checkpoint_dir: run-scoped pretrain output path
 # ---------------------------------------------------------------------------
 
 def test_pretrain_checkpoint_dir_is_under_run_dir():

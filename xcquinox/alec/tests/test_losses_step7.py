@@ -10,7 +10,7 @@ from xcquinox.alec import losses
 
 
 def test_rxn_residual_basic_zero_residual():
-    """E_NN_products − E_NN_reactants = E_ref → residual = 0."""
+    """E_NN_products − E_NN_reactants = E_ref -> residual = 0."""
     e_nn = jnp.array([2.0, 1.0])  # [reactant, product]
     coeffs = jnp.array([-1.0, +1.0])  # reactant subtracted, product added
     e_rxn_ref = jnp.array(-1.0)  # 1.0 - 2.0 = -1.0
@@ -21,13 +21,13 @@ def test_rxn_residual_basic_zero_residual():
 def test_rxn_residual_off_by_one():
     e_nn = jnp.array([2.0, 1.0])
     coeffs = jnp.array([-1.0, +1.0])
-    e_rxn_ref = jnp.array(0.0)  # but actual rxn energy = -1.0 → residual = 1.0
+    e_rxn_ref = jnp.array(0.0)  # but actual rxn energy = -1.0 -> residual = 1.0
     res = losses._rxn_residual_term(e_nn, coeffs, e_rxn_ref)
     assert float(res) == pytest.approx(1.0, abs=1e-12)
 
 
 def test_ip_residual_basic_zero_residual():
-    """IP = E_cation - E_neutral; residual = (IP_NN - IP_ref)^2 → 0 when match."""
+    """IP = E_cation - E_neutral; residual = (IP_NN - IP_ref)^2 -> 0 when match."""
     e_cation = jnp.array(5.0)
     e_neutral = jnp.array(2.0)
     ip_ref = jnp.array(3.0)
@@ -69,7 +69,7 @@ def test_ip_residual_relative_normalizes():
 
 def test_freeze_rxn_specs_rejects_kcalmol_magnitude():
     """A reaction reference > 10 Ha is almost certainly a kcal/mol value passed
-    without conversion — must raise rather than silently train (~627x error)."""
+    without conversion, must raise rather than silently train (~627x error)."""
     with pytest.raises(ValueError, match="kcal/mol"):
         losses._freeze_rxn_specs([{
             "name": "R1", "reactants": ("A",), "products": ("B",),
@@ -303,9 +303,9 @@ def test_aux_only_names_filtering_all_compounds_is_permitted():
 def test_build_indices_prefers_neutral_atom_over_cation():
     """When a spec contains both neutral Li (charge=0) AND Li+ (charge=1)
     as single-atom MoleculeSpecs, atom_mol_idx['Li'] must point at the
-    NEUTRAL entry — _atomic_reg compares E_NN[atom_mol_idx[Z]] against
+    NEUTRAL entry, _atomic_reg compares E_NN[atom_mol_idx[Z]] against
     atom_energies[Z] (neutral Chakravorty value), so pointing at the
-    cation would train the *cation* energy toward the *neutral* anchor,
+    cation would train the cation energy toward the neutral anchor,
     biasing the loss by the IP magnitude (~5 eV for Li).  Mixed-pool
     specs combining HLi (Li anchor) + Li_IP (neutral Li and Li+) hit
     this exact case (jsd/r=5 onward, l2/r=7 onward)."""
@@ -340,7 +340,7 @@ def test_build_indices_prefers_neutral_atom_over_cation():
         f"{mn[li_idx]} (charge={molecules[li_idx].charge}); "
         f"expected neutral Li (charge=0)"
     )
-    # And the reverse order (neutral first, cation later) — neutral
+    # And the reverse order (neutral first, cation later), neutral
     # should still win.
     molecules2 = (li, h_atom, h_li, li_plus)
     ami2, _, _, _ = AlecLoss.build_indices(molecules2)
@@ -350,7 +350,7 @@ def test_build_indices_prefers_neutral_atom_over_cation():
 
 def test_build_indices_require_compound_false_permits_atomic_only():
     """build_indices(require_compound=False) does NOT raise when every
-    molecule is single-atom — supports L5GradnormVxcStep7 specs that
+    molecule is single-atom, supports L5GradnormVxcStep7 specs that
     contain only IP13 species (Li, Li+) with no compound molecules."""
     from xcquinox.alec.losses import AlecLoss
     from xcquinox.alec.config import MoleculeSpec
@@ -398,7 +398,7 @@ def test_l5_handles_ip13_only_spec_with_no_compound():
 
 
 # ---------------------------------------------------------------------------
-# CFG-02: regularize_atom_syms subset validation
+# regularize_atom_syms subset validation
 # ---------------------------------------------------------------------------
 
 def test_regularize_atom_syms_typo_raises_value_error():
@@ -494,7 +494,7 @@ def test_vxc_term_warns_on_none_references():
     class _FakeModel:
         pass
 
-    # Two mols, one with vxc_ref=None — should warn about 1 skipped entry.
+    # Two mols, one with vxc_ref=None, should warn about 1 skipped entry.
     mol_data = [
         {"vxc_ref": None},
         {"vxc_ref": None},

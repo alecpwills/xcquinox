@@ -410,7 +410,7 @@ def test_cell_22_balancing_configs_has_base_and_vxc():
     assert "phase1_loss_kwargs" in source
     # V_xc sweep spans all solvers
     assert "for solver_label in SOLVER_LABELS" in source
-    # Checkpoint path scheme for V_xc — uses RUN_DIR-namespaced var
+    # Checkpoint path scheme for V_xc, uses RUN_DIR-namespaced var
     # train_balancing_dir, with the "vxc/{variant_label}/{solver_label}"
     # subpath nested inside it. Refactored 2026-04-28 to mirror step 6.
     assert "train_balancing_dir" in source

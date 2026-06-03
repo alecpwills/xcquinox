@@ -1,4 +1,4 @@
-"""xcquinox.alec.cluster._preflight — the SLURM preflight-job entrypoint.
+"""xcquinox.alec.cluster._preflight: the SLURM preflight-job entrypoint.
 
 The HPC harness submits a four-stage job graph (see ``submit.py``):
 
@@ -8,23 +8,23 @@ The HPC harness submits a four-stage job graph (see ``submit.py``):
         |  --dependency=afterok:<pretrain>:<preflight>
     train (array job)  --->  eval (array job)   (aftercorr)
 
-This module is the body of the **preflight job**. The rendered
+This module is the body of the preflight job. The rendered
 ``preflight.sbatch`` invokes it as::
 
     python -m xcquinox.alec.cluster._preflight ${RUN_DIR}
 
-Subset selection is a *finished pre-process* — the harness does NOT run it.
+Subset selection is a finished pre-process, the harness does NOT run it.
 The preflight CONSUMES the existing subset ledger (``subset_index_log.json``)
 read-only. Its job is, on a compute node, before the train array starts:
 
   1. Sweep stale temp files from a prior crashed run (via ``materialize``).
-  2. ``prepare_inputs(cfg)`` — build the training-point pool, load the EXISTING
+  2. ``prepare_inputs(cfg)``: build the training-point pool, load the EXISTING
      subset ledger (fail-fast on a missing required ``(metric, r)`` cell), and
      ensure CCSD external references via ``precompute_all`` (skip-if-cached).
   3. Build one :class:`~xcquinox.alec.config.TrainingSpec` per grid cell via
      :func:`xcquinox.alec.cluster.spec_builder.build_training_specs`,
      ``spec.validate()`` every spec, then ``materialize_specs``.
-  4. Write ``<run_dir>/manifest.json`` (atomic — the last write).
+  4. Write ``<run_dir>/manifest.json`` (atomic, the last write).
   5. Self-check: assert every ``spec_<idx>`` file exists and the manifest
      records all ``N`` cells.
 
@@ -33,7 +33,7 @@ train array's ``afterok:<preflight>`` dependency correctly blocks.
 
 The pretrained checkpoint is a harness PRODUCT of the pretrain stage (written
 to ``<run_dir>/pretrain/<arch>/`` before the preflight runs); the preflight does
-not pre-stage or validate it — ``TrainingSpec.validate()`` only checks the
+not pre-stage or validate it, ``TrainingSpec.validate()`` only checks the
 path when the directory exists.
 
 on_precompute_failure policy
@@ -41,9 +41,9 @@ on_precompute_failure policy
 :class:`~xcquinox.alec.cluster.grid_config.GridConfig` carries an
 ``on_precompute_failure`` field (``"abort"`` / ``"drop_failed_species"``):
 
-  - ``abort`` (default): a precompute ``RuntimeError`` blocks the whole grid —
+  - ``abort`` (default): a precompute ``RuntimeError`` blocks the whole grid,
     the preflight logs the failed-species list and exits 1.
-  - ``drop_failed_species``: subsets are FIXED — the preflight cannot
+  - ``drop_failed_species``: subsets are FIXED, the preflight cannot
     re-select. It instead catches the ``RuntimeError``, extracts the failed
     species, builds all specs anyway (refs for non-failed species are cached),
     writes a ``precompute_failed_species`` ``failure.json`` into the checkpoint
@@ -56,9 +56,9 @@ Mockable seams
 The three heavy calls are bound to module-level names so a test can run
 :func:`main` end-to-end with the heavy work monkeypatched:
 
-  - :data:`_prepare_inputs`       — wraps ``inputs.prepare_inputs``
-  - :data:`_build_training_specs` — wraps ``spec_builder.build_training_specs``
-  - :data:`_materialize_specs`    — wraps ``materialize.materialize_specs``
+  - :data:`_prepare_inputs`: wraps ``inputs.prepare_inputs``
+  - :data:`_build_training_specs`: wraps ``spec_builder.build_training_specs``
+  - :data:`_materialize_specs`: wraps ``materialize.materialize_specs``
 
 :func:`main` itself is orchestration-only.
 """
@@ -161,8 +161,8 @@ def _spec_species(spec) -> set[str]:
     """Return the set of molecule names carried by a ``TrainingSpec``.
 
     Each ``MoleculeSpec.name`` is the Hill formula / explicit ``info['name']``
-    — the same naming convention ``precompute_all`` reports its failed species
-    in — so this set can be intersected directly with the failed-species set.
+: the same naming convention ``precompute_all`` reports its failed species
+    in, so this set can be intersected directly with the failed-species set.
     """
     return {
         getattr(m, "name", None)
@@ -226,7 +226,7 @@ def _stage_inputs(cfg):
     Under ``abort`` (the default) a precompute ``RuntimeError`` re-raises for
     :func:`main` to turn into exit code 1. Under ``drop_failed_species`` the
     error is parsed for its failed-species list and ``prepare_inputs`` is
-    re-invoked with ``recompute_refs=False`` — this re-uses the already-built
+    re-invoked with ``recompute_refs=False``: this re-uses the already-built
     pool + ledger WITHOUT re-running the (just-failed) precompute, so the
     affected specs can be built and marked while the unaffected ones train.
     A ``drop_failed_species`` failure whose species list cannot be parsed is
@@ -240,10 +240,10 @@ def _stage_inputs(cfg):
         policy = cfg.on_precompute_failure
         if policy == "drop_failed_species":
             if not failed:
-                # Could not parse the failed-species list — without it the
+                # Could not parse the failed-species list, without it the
                 # affected specs cannot be identified; treat as abort.
                 _log(
-                    "PRECOMPUTE FAILURE — on_precompute_failure='drop_failed_"
+                    "PRECOMPUTE FAILURE, on_precompute_failure='drop_failed_"
                     "species' but the failed-species list could not be parsed "
                     "from the precompute error; cannot identify affected "
                     "specs. Aborting the grid."
@@ -251,7 +251,7 @@ def _stage_inputs(cfg):
                 _log(f"precompute error detail: {exc}")
                 raise
             _log(
-                "PRECOMPUTE FAILURE — on_precompute_failure='drop_failed_"
+                "PRECOMPUTE FAILURE, on_precompute_failure='drop_failed_"
                 f"species'; affected specs will be marked. Failed species: "
                 f"{failed}"
             )
@@ -266,9 +266,9 @@ def _stage_inputs(cfg):
                 f"species failed: {sorted(failed)}"
             )
             return staged, failed
-        # policy == "abort" (the default) — one bad species blocks the grid.
+        # policy == "abort" (the default), one bad species blocks the grid.
         _log(
-            "PRECOMPUTE FAILURE — on_precompute_failure='abort'; the whole "
+            "PRECOMPUTE FAILURE, on_precompute_failure='abort'; the whole "
             f"grid is blocked. Failed species: {failed or '<unparsed>'}"
         )
         _log(f"precompute error detail: {exc}")
@@ -280,13 +280,13 @@ def _stage_inputs(cfg):
 # ---------------------------------------------------------------------------
 
 def _write_ledger_provenance(run_dir: str, subset_ledger) -> None:
-    """Write a provenance *copy* of the loaded subset ledger into the run dir.
+    """Write a provenance copy of the loaded subset ledger into the run dir.
 
-    The canonical ledger is the EXISTING ``subset_index_log.json`` — consumed
+    The canonical ledger is the EXISTING ``subset_index_log.json``: consumed
     read-only. This copy (``<run_dir>/subset_ledger.json``) records, alongside
     the run, exactly which subset selection the specs were built from. It is
-    never written back to the source. A write failure here is non-fatal — it
-    is provenance only — so it is logged and swallowed.
+    never written back to the source. A write failure here is non-fatal, it
+    is provenance only, so it is logged and swallowed.
     """
     path = os.path.join(run_dir, "subset_ledger.json")
     try:
@@ -402,7 +402,7 @@ def main(argv=None) -> int:
     # prepare_inputs builds the pool, loads the EXISTING subset ledger
     # (fail-fast on a missing required (metric, r) cell), and ensures the CCSD
     # external references via precompute_all (skip-if-cached). Subset selection
-    # is a finished pre-process — the preflight does NOT run it.
+    # is a finished pre-process, the preflight does NOT run it.
     _log("staging inputs (training-point pool, subset ledger, CCSD refs)...")
     try:
         staged, failed_species = _stage_inputs(cfg)
@@ -428,7 +428,7 @@ def main(argv=None) -> int:
         return 1
     n = len(specs)
     if n == 0:
-        _log("ERROR: the grid expanded to 0 specs — nothing to materialize")
+        _log("ERROR: the grid expanded to 0 specs, nothing to materialize")
         return 1
     _log(f"built {n} TrainingSpec(s)")
 

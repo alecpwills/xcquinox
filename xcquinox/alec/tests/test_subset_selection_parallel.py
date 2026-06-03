@@ -13,7 +13,7 @@ from xcquinox.alec import subset_selection_parallel as ssp
 
 def _synth_pool(n, seed, ngrid=60):
     """A small synthetic descriptor pool with distinct per-point data (so the
-    JSD argmin is unique → no tie-break ambiguity in the parallel-vs-serial
+    JSD argmin is unique -> no tie-break ambiguity in the parallel-vs-serial
     comparison)."""
     rng = np.random.default_rng(seed)
     pool = []
@@ -62,7 +62,7 @@ def test_parallel_rejects_non_jsd_metric():
 
 
 # ---------------------------------------------------------------------------
-# Partition completeness — every C(n, r) combo enumerated exactly once
+# Partition completeness, every C(n, r) combo enumerated exactly once
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("r", [1, 2, 3, 4])

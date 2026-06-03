@@ -1,11 +1,11 @@
-"""Datagen-stage entrypoint — the FIRST stage of the cluster job graph.
+"""Datagen-stage entrypoint: the FIRST stage of the cluster job graph.
 
 The graph is ``datagen -> pretrain -> preflight -> train -> eval``. This stage
 generates the per-atom Fx/Fc pretrain-target data (``pretrain_data[_polarized].npz``)
 into ``cfg.pretrain.data_dir`` BEFORE the pretrain stage consumes it. Previously
 that generation lived inside ``inputs.prepare_inputs`` which only runs in the
-preflight stage (``afterok:pretrain``) — i.e. AFTER the pretrain stage that needs
-the data — so pretrain raised ``FileNotFoundError`` and the whole ``afterok``
+preflight stage (``afterok:pretrain``), i.e. AFTER the pretrain stage that needs
+the data, so pretrain raised ``FileNotFoundError`` and the whole ``afterok``
 chain went ``DependencyNeverSatisfied``. Running it here, gated before pretrain,
 fixes that ordering.
 
@@ -32,7 +32,7 @@ from xcquinox.alec import pretrain_data_gen as _pretrain_data_gen
 
 
 # ---------------------------------------------------------------------------
-# Mockable heavy-call seam — tests monkeypatch ``_datagen._ensure_pretrain_data``
+# Mockable heavy-call seam, tests monkeypatch ``_datagen._ensure_pretrain_data``
 # to assert the generation calls without running real PBE SCFs.
 # ---------------------------------------------------------------------------
 _ensure_pretrain_data = _pretrain_data_gen.ensure_pretrain_data
@@ -51,7 +51,7 @@ def _required_polarized_flags(cfg) -> list[bool]:
     Mirrors ``spec_builder``: each swept arch is patched with the run-level
     ``use_polarized_correlation`` before its required pretrain-data filename is
     resolved. Returns a deterministic list of distinct flags (one per distinct
-    required file) — normally ``[True]`` or ``[False]`` since the polarization
+    required file), normally ``[True]`` or ``[False]`` since the polarization
     flag is run-level, but a future per-arch/mixed sweep yields both.
     """
     run_polarized = bool(getattr(cfg, "use_polarized_correlation", False))
@@ -112,11 +112,11 @@ def main(argv=None) -> int:
                 descriptors=True,
             )
             _log(f"ensured pretrain data (polarized={polarized}): {path}")
-    except Exception as exc:  # noqa: BLE001 — fail the stage loudly + non-zero.
+    except Exception as exc:  # noqa: BLE001, fail the stage loudly + non-zero.
         _log(f"ERROR: pretrain-data generation failed: {type(exc).__name__}: {exc}")
         return 1
 
-    _log("datagen complete — all required pretrain-data files present.")
+    _log("datagen complete, all required pretrain-data files present.")
     return 0
 
 

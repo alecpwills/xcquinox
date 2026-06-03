@@ -1,4 +1,4 @@
-"""xcquinox.alec.balancing — LossMetric enum and BalancingConfig hierarchy.
+"""xcquinox.alec.balancing: LossMetric enum and BalancingConfig hierarchy.
 
 Implements the multi-task loss balancing design spec §3.
 """

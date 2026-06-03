@@ -36,7 +36,7 @@ def test_unrank_is_lex_bijection(n, r):
     got = [tuple(int(x) for x in row) for row in combos]
     expected = list(itertools.combinations(range(n), r))
     # each row is an ascending tuple; the map is a bijection onto ALL
-    # combinations (combinadic enumeration order, not lex — order is irrelevant
+    # combinations (combinadic enumeration order, not lex, order is irrelevant
     # since selection takes the argmin over every combination).
     assert all(list(g) == sorted(g) for g in got)
     assert len(set(got)) == total

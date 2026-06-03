@@ -3,7 +3,7 @@ from xcquinox.alec.config import MoleculeSpec
 
 
 def h_atom() -> MoleculeSpec:
-    """Single hydrogen atom (spin=1, open-shell — exercises the UKS branch)."""
+    """Single hydrogen atom (spin=1, open-shell, exercises the UKS branch)."""
     return MoleculeSpec(
         name="H", atom="H 0 0 0", basis="sto-3g",
         charge=0, spin=1, atom_composition=(("H", 1),),
@@ -11,7 +11,7 @@ def h_atom() -> MoleculeSpec:
 
 
 def h2_molecule() -> MoleculeSpec:
-    """H2 (spin=0, closed-shell — smallest RKS diatomic)."""
+    """H2 (spin=0, closed-shell, smallest RKS diatomic)."""
     return MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
         charge=0, spin=0, atom_composition=(("H", 2),),
@@ -19,7 +19,7 @@ def h2_molecule() -> MoleculeSpec:
 
 
 def o_atom() -> MoleculeSpec:
-    """Oxygen atom (spin=2, open-shell — UKS path with a 2-channel DM)."""
+    """Oxygen atom (spin=2, open-shell, UKS path with a 2-channel DM)."""
     return MoleculeSpec(
         name="O", atom="O 0 0 0", basis="sto-3g",
         charge=0, spin=2, atom_composition=(("O", 1),),
@@ -27,7 +27,7 @@ def o_atom() -> MoleculeSpec:
 
 
 def h2o_molecule() -> MoleculeSpec:
-    """Water molecule (spin=0, closed-shell — the canonical notebook subject)."""
+    """Water molecule (spin=0, closed-shell, the canonical notebook subject)."""
     return MoleculeSpec(
         name="H2O", atom="O 0 0 0; H 0 0 0.96; H 0.96 0 0", basis="sto-3g",
         charge=0, spin=0, atom_composition=(("H", 2), ("O", 1)),
@@ -35,7 +35,7 @@ def h2o_molecule() -> MoleculeSpec:
 
 
 def c2h2_molecule(basis: str = "def2-svp") -> MoleculeSpec:
-    """Acetylene (linear D∞h symmetry — exercises the near-degenerate π MO
+    """Acetylene (linear D∞h symmetry, exercises the near-degenerate π MO
     regression path in oneshot_dm_prediction_fast. Without symmetry-breaking
     in the Fock matrix before eigh, the reverse-mode gradient of eigh hits
     1/(λ_i - λ_j) at the degenerate π_x / π_y pair and returns NaN.

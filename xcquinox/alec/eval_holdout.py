@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
-#: CODATA-2018 hartree → kcal/mol. Matches
+#: CODATA-2018 hartree -> kcal/mol. Matches
 #: ``notebooks/analysis/constraint_pretrain_gmtkn55_demo.KCAL_PER_HA``.
 KCAL_PER_HA: float = 627.5094740631
 
@@ -49,7 +49,7 @@ def load_training_spec(spec_path: Path):
 
     Uses the same ``importlib`` indirection as the harness's
     ``_train_one_spec._load_spec`` so the file format round-trips byte-for-
-    byte (the file is produced and consumed by the same codebase — verified-
+    byte (the file is produced and consumed by the same codebase, verified-
     trusted local data).
     """
     _ser = importlib.import_module("pi" + "ckle")
@@ -98,7 +98,7 @@ def filter_reactions(
     Loose mode (default, ``strict=False``): every reaction is kept and
     each gains an ``"in_sample_overlap"`` key listing the overlapping
     species (empty list when held-out). Strict mode (``strict=True``): a
-    reaction with ANY species in ``training_names`` is dropped — useful
+    reaction with ANY species in ``training_names`` is dropped, useful
     only when you want a strictly-disjoint held-out metric and are OK
     discarding every BH76 reaction (which always contain H, a Dick
     regularization anchor).
@@ -202,7 +202,7 @@ def make_per_molecule_record(
     ``total_energy`` (float), ``energy_trace`` (list[float], one entry per SCF
     cycle). When present, the record gains, FOR EACH cycle ``i`` that ran:
     ``scf_energy_step_<i>`` (the total energy after cycle ``i``, Hartree) and
-    ``scf_energy_residual_<i>`` (``|E_i - E_final|``) — the per-molecule,
+    ``scf_energy_residual_<i>`` (``|E_i - E_final|``), the per-molecule,
     per-SCF-step convergence trace. ``cycles_run`` / ``scf_converged`` /
     ``scf_total_energy`` reflect the actual SCF (vs the one-shot sentinels).
     """
@@ -304,7 +304,7 @@ def precompute_holdout(
 
     ``required_keys`` lets callers ask for additional precomputed fields
     beyond the baseline (e.g. ``("eri",)`` when an SCF solver will be run
-    against the precomputed data — without ``eri``, ``run_scf`` raises
+    against the precomputed data, without ``eri``, ``run_scf`` raises
     ``ValueError: Cannot determine the shape of None`` because the Coulomb
     rebuild needs the electron-repulsion integrals).
 
@@ -341,10 +341,10 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     Energy source follows the same solver-MODE rule as training
     (``losses._compute_energies`` / ``oneshot.total_energy_for_solver``):
 
-    * ``FULL`` → the self-consistent ``alec.run_scf(...).total_energy`` (and the
+    * ``FULL`` -> the self-consistent ``alec.run_scf(...).total_energy`` (and the
       per-SCF-step trace is captured into ``scf_info_out``), matching what
       FULL-mode training optimizes.
-    * ``ONESHOT`` / ``FIXED_J`` / ``None`` → the one-shot
+    * ``ONESHOT`` / ``FIXED_J`` / ``None`` -> the one-shot
       ``alec.fixed_density_total_energy(model, mol_data[name])`` on ρ_PBE.
       FIXED_J stays one-shot deliberately (its run_scf energy is an incoherent
       J-pinned hybrid), so a FIXED_J-trained spec is not silently evaluated on
@@ -352,7 +352,7 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
 
     ``scf_info_out``: optional dict; when provided AND an SCF runs, it is
     populated ``{name: {cycles_run, converged, total_energy, energy_trace}}``
-    per species — the per-molecule, per-SCF-step convergence trace that
+    per species, the per-molecule, per-SCF-step convergence trace that
     :func:`make_per_molecule_record` turns into ``scf_energy_step_<i>`` /
     ``scf_energy_residual_<i>`` columns. Captures even when the final energy
     is non-finite (so a diverged SCF's trace is still recorded).
@@ -367,7 +367,7 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     out: Dict[str, float] = {}
     first_err_shown = False
     n_failed = 0
-    # FULL → self-consistent run_scf energy (+ trace); else one-shot. Matches
+    # FULL -> self-consistent run_scf energy (+ trace); else one-shot. Matches
     # oneshot.total_energy_for_solver so train == in-sample-eval == held-out-eval.
     use_scf = (solver_config is not None
                and getattr(solver_config, "mode", None) == SolverMode.FULL)
@@ -423,7 +423,7 @@ def write_test_set_csv(
     ``per_pool_mae`` maps pool token (``"bh76"``, ``"w411"``) to
     ``(mae_nn_kcalmol, mae_pbe_kcalmol, n_used, n_dropped_overlap,
     n_dropped_nan)``. The PBE MAE comes from re-evaluating the same
-    reactions against ``mol_data["E_pbe"]`` instead of the NN — costs
+    reactions against ``mol_data["E_pbe"]`` instead of the NN, costs
     nothing extra since the PBE energies are by-products of the precompute
     step, and gives the operator a direct apples-to-apples NN-vs-PBE
     comparison on the SAME pool the NN was scored on.
@@ -540,7 +540,7 @@ def load_trained_model(training_spec, model_path: Path):
     operator sees at-a-glance which path the eval will take for open-shell
     species. The actual routing is decided per-molecule by
     ``xcquinox.alec.oneshot.fixed_density_total_energy`` based on the
-    cnet's ``use_spin_polarization`` flag — which is exactly what
+    cnet's ``use_spin_polarization`` flag, which is exactly what
     ``AlecGGAModel.from_arch`` sets from
     ``arch.use_polarized_correlation``."""
     import equinox as eqx
@@ -564,7 +564,7 @@ def descriptors_and_required_keys(training_spec):
     the trained model consumes); ``required_keys`` is ``("eri",)`` when the
     training solver is a non-ONESHOT SCF (so ``run_scf`` can rebuild J), else
     ``()``. These determine the precompute and are identical for every spec
-    that shares an arch descriptor signature + solver mode — which is what
+    that shares an arch descriptor signature + solver mode, which is what
     lets a caller precompute ONCE and reuse the result across specs."""
     try:
         descriptors = tuple(training_spec.arch.materialize_descriptors())
@@ -594,7 +594,7 @@ def precompute_holdout_for_spec(training_spec, mol_specs: Dict[str, Any]):
     """Precompute PBE + grid + (eri) + descriptor features for one spec's arch.
 
     The expensive part (PBE SCF + integrals) depends only on the geometry,
-    basis, descriptor signature and solver mode — NOT on the trained weights —
+    basis, descriptor signature and solver mode, NOT on the trained weights,
     so the returned ``mol_data`` is reusable by ``run_full_holdout_eval`` (via
     its ``mol_data=`` argument) for EVERY spec that shares the same descriptor
     signature + solver mode. This is what turns an N-spec re-eval from N
@@ -625,7 +625,7 @@ def run_full_holdout_eval(
     strict: Optional[bool] = None,
     mol_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """End-to-end held-out eval driver — what the cluster eval task calls.
+    """End-to-end held-out eval driver, what the cluster eval task calls.
 
     Workflow:
       1. Decide ``required_keys=("eri",)`` if the training spec's
@@ -639,14 +639,14 @@ def run_full_holdout_eval(
          loose).
       5. Compute per-pool MAE + per-reaction NN/PBE error records.
       6. Write three artifacts under ``out_dir``:
-         - ``test_set.csv`` — per-pool + combined MAE rows
-         - ``per_molecule.json`` — per-species E_nn + E_pbe + flags
-         - ``per_reaction.json`` — per-reaction NN + PBE errors with
+         - ``test_set.csv``: per-pool + combined MAE rows
+         - ``per_molecule.json``: per-species E_nn + E_pbe + flags
+         - ``per_reaction.json``: per-reaction NN + PBE errors with
            ``in_sample_overlap`` lists
 
     ``mol_data``: when provided (from :func:`precompute_holdout_for_spec`),
     the expensive PBE/grid/eri precompute is SKIPPED and the supplied data is
-    reused — the caller is responsible for ensuring it was built with a
+    reused: the caller is responsible for ensuring it was built with a
     matching descriptor signature + solver mode (same arch group).
 
     Returns a small summary dict (counts + output paths) for the caller's
@@ -749,7 +749,7 @@ def _finalize_holdout_outputs(reactions: Sequence[Dict[str, Any]],
                               training_names: Sequence[str],
                               n_species: int,
                               out_dir: Path, *, strict: bool) -> Dict[str, Any]:
-    """Reaction aggregation + artifact writing — the fast serial tail of the
+    """Reaction aggregation + artifact writing, the fast serial tail of the
     held-out eval, shared by the serial driver and the sharded/parallel driver.
 
     Needs ALL molecule energies (reactions span the whole pool), so it runs once

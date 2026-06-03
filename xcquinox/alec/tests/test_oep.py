@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.oep — Wu-Yang OEP inversion utility."""
+"""Tests for xcquinox.alec.oep: Wu-Yang OEP inversion utility."""
 import numpy as np
 import pytest
 
@@ -49,7 +49,7 @@ def test_oep_progress_callback_fires_each_iteration():
     XC contribution from the baseline, the auxiliary-basis correction
     has to span all of V_xc^PBE, so the optimizer cannot converge at
     b=0. (The displacement form means b=0 ≡ baseline V_xc; matching
-    baselines and target zeroes the work — only mismatched ones
+    baselines and target zeroes the work, only mismatched ones
     exercise the loop.) D10 sanity check satisfied: dm_target = PBE DM
     has Tr(S*D) = n_electron exactly.
     """
@@ -109,7 +109,7 @@ def test_oep_nonconvergence_flagged():
     """max_iter=1 should report converged=False (or genuinely converged
     if the displacement form's b=0 already matches; we don't pin which).
     Uses HF target with PBE baseline so the optimizer has real work
-    (b=0 gives PBE DM, target is HF DM — different non-PBE DM forces
+    (b=0 gives PBE DM, target is HF DM, different non-PBE DM forces
     iterations without violating the D10 Tr(S*D)=N_e sanity check).
     """
     from xcquinox.alec.oep import run_oep_inversion
@@ -124,7 +124,7 @@ def test_oep_nonconvergence_flagged():
     assert result.n_iter <= 1
     assert result.density_error >= 0.0
     # If the inversion didn't fully converge in 1 iteration, .converged
-    # must be False; if it DID converge, that's also fine — we just
+    # must be False; if it DID converge, that's also fine, we just
     # require the flag to be a bool reflecting the actual state.
     assert isinstance(result.converged, bool)
 
@@ -203,7 +203,7 @@ def test_oep_residual_decreases_on_h2o():
     # Pre-fix bug could allow density_error >> 1 (non-decreasing steps);
     # with the consistent obj/grad, a non-trivial reduction is expected.
     assert result.density_error < 1.0, (
-        f"Density error {result.density_error:.3e} too large — L-BFGS-B "
+        f"Density error {result.density_error:.3e} too large, L-BFGS-B "
         "did not make progress (obj/grad inconsistent?)"
     )
 
@@ -303,7 +303,7 @@ def test_oep_h2o_ccsd_does_not_crash_with_pathological_bfgs_step():
     # Must complete without exception; vxc_matrix is finite.
     assert np.all(np.isfinite(result.vxc_matrix))
     assert result.density_error < 1.0, (
-        f"density_error = {result.density_error:.3e} — L-BFGS-B should "
+        f"density_error = {result.density_error:.3e}, L-BFGS-B should "
         "still make meaningful progress even with guarded inner SCF"
     )
 
@@ -388,7 +388,7 @@ def test_oep_v_space_regularization_uses_aux_overlap():
     assert np.all(eigs > -1e-8), (
         f"S_aux must be PSD; smallest eig = {eigs.min():.3e}"
     )
-    # Diagonal entries are integrals of g_t^2 — strictly positive.
+    # Diagonal entries are integrals of g_t^2, strictly positive.
     assert np.all(np.diag(S_aux) > 0)
 
 
@@ -421,7 +421,7 @@ def test_oep_provenance_metadata_persists_through_save_load():
 def test_oep_converged_when_density_error_below_tol_even_at_max_iter():
     """Convergence semantics pin: ``OEPResult.converged`` reports
     "the V_xc that the inversion returns produces a KS density that
-    matches dm_target to within conv_tol" — NOT "scipy's L-BFGS-B
+    matches dm_target to within conv_tol": NOT "scipy's L-BFGS-B
     optimizer reached its own pgtol/factr threshold". Hitting
     ``max_iter`` while ``density_error < conv_tol`` MUST still
     produce ``converged == True``.
@@ -437,7 +437,7 @@ def test_oep_converged_when_density_error_below_tol_even_at_max_iter():
     This test runs OEP with a small max_iter so scipy almost certainly
     exits at the limit, but uses a CCSD-target/PBE-baseline pair where
     density_error stays small (the displacement form starts at b=0
-    which gives the PBE density — differences of order CCSD-PBE).
+    which gives the PBE density, differences of order CCSD-PBE).
     The contract: if final_error < conv_tol AND the final SCF succeeded,
     converged == True.
     """
@@ -447,8 +447,8 @@ def test_oep_converged_when_density_error_below_tol_even_at_max_iter():
     data = precompute_fixed_density_data(mol)
     # Use the PBE DM as target so OEP converges trivially at b=0
     # (density_error << conv_tol after one iteration), while max_iter is
-    # set high enough that scipy reports "RELATIVE REDUCTION OF F" —
-    # which IS scipy success — but we still assert that the contract
+    # set high enough that scipy reports "RELATIVE REDUCTION OF F":
+    # which IS scipy success, but we still assert that the contract
     # works regardless of which message scipy emits.
     dm_target = np.asarray(data["dm_pbe"])
     result = run_oep_inversion(
@@ -941,7 +941,7 @@ def test_plateau_F_val_cache_uses_unregularized_lagrangian():
     mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
     mf = _scf.RHF(mol); mf.kernel()
     dm_target = mf.make_rdm1()
-    # Run with max_iter=1 — single L-BFGS step → at least one objective
+    # Run with max_iter=1, single L-BFGS step -> at least one objective
     # evaluation. After that, scf_state["F_val_last_eval"] should be
     # finite and equal to the F_val computed at oep.py:620
     # (e_ks - <b, rhotarget>), NOT obj (which is -F_val + reg_term).
@@ -956,7 +956,7 @@ def test_plateau_F_val_cache_uses_unregularized_lagrangian():
     )
     # Indirect verification: result.density_error finite + non-NaN.
     # Direct verification of the scf_state cache requires accessing
-    # internal closure state — not exposed by the public API. Use
+    # internal closure state, not exposed by the public API. Use
     # source-text pin as the back-up assertion (same pattern Plan 1
     # uses for cache-internals contracts).
     import inspect
@@ -969,7 +969,7 @@ def test_plateau_F_val_cache_uses_unregularized_lagrangian():
 
 def test_plateau_F_val_cache_writes_neg_inf_on_scf_failure():
     """Pass-7 contract: scf_state['F_val_last_eval'] = float('-inf')
-    on inner-SCF failure (descending sentinel). Source-text pin —
+    on inner-SCF failure (descending sentinel). Source-text pin,
     the failure path is hard to trigger in a unit test without
     constructing an ill-conditioned problem; pin the contract via
     inspect."""
@@ -986,7 +986,7 @@ def test_terminated_by_field_for_conv_tol_path():
     path. Drive a trivially-converging OEP (max_iter=200, conv_tol=1e-2).
     When converged=True, terminated_by is either "conv_tol" (early-stop
     sentinel fired mid-optimization) or "max_iter" (optimizer exhausted
-    max_iter but final_error < conv_tol — also a legitimate converged
+    max_iter but final_error < conv_tol, also a legitimate converged
     state per spec). Both cases must populate dm_final and density_error
     below conv_tol."""
     import numpy as np
@@ -1040,8 +1040,8 @@ def test_terminated_by_field_for_plateau_path():
     result = run_oep_inversion(
         spec, dm_target,
         aux_basis="def2-svp-jkfit",
-        max_iter=200, conv_tol=1e-30,   # impossible — forces plateau or max_iter
-        regularization=1e-2,             # high reg → quick plateau
+        max_iter=200, conv_tol=1e-30,   # impossible, forces plateau or max_iter
+        regularization=1e-2,             # high reg -> quick plateau
         plateau_window=5, plateau_rtol=0.1, plateau_min_iter=10,
     )
     # Either plateau fires or max_iter exhausts:
@@ -1049,7 +1049,7 @@ def test_terminated_by_field_for_plateau_path():
 
 
 def test_plateau_below_conv_tol_marks_converged():
-    """Spec §9.1 + §5.5: plateau-below-conv_tol → converged=True.
+    """Spec §9.1 + §5.5: plateau-below-conv_tol -> converged=True.
 
     OEP-01 audit fix: ``converged`` for the plateau path is the
     SCF-verified condition (final_success AND finite AND
@@ -1075,7 +1075,7 @@ def test_plateau_below_conv_tol_marks_converged():
     result = run_oep_inversion(
         spec, dm_target,
         aux_basis="def2-svp-jkfit",
-        max_iter=200, conv_tol=1.0,    # huge — anything below 1 is "converged"
+        max_iter=200, conv_tol=1.0,    # huge, anything below 1 is "converged"
         regularization=1e-2,
         plateau_window=5, plateau_rtol=0.1, plateau_min_iter=10,
     )
@@ -1084,7 +1084,7 @@ def test_plateau_below_conv_tol_marks_converged():
 
 
 def test_plateau_above_conv_tol_marks_not_converged():
-    """Spec §9.1 + §5.5: plateau-above-conv_tol → converged=False
+    """Spec §9.1 + §5.5: plateau-above-conv_tol -> converged=False
     (cascade falls through to next tier)."""
     import inspect
     from xcquinox.alec.oep import run_oep_inversion
@@ -1121,7 +1121,7 @@ def test_plateau_above_conv_tol_marks_not_converged():
 
 
 def test_plateau_detector_disabled_when_min_iter_exceeds_max_iter():
-    """Spec §9.1: plateau_min_iter > max_iter → cannot fire by construction."""
+    """Spec §9.1: plateau_min_iter > max_iter -> cannot fire by construction."""
     from xcquinox.alec.oep import _detect_plateau
     # Pretend max_iter=20 and plateau_min_iter=30. Even on a flat-20-deque,
     # _detect_plateau is gated only by deque-fullness in the helper, but the
@@ -1134,7 +1134,7 @@ def test_plateau_detector_disabled_when_min_iter_exceeds_max_iter():
 
 
 def test_plateau_detector_does_not_fire_on_slow_descent_with_sign_of_trend():
-    """Spec §9.1 §5.5: 0.25%/iter slow descent over 20 iters → relative
+    """Spec §9.1 §5.5: 0.25%/iter slow descent over 20 iters -> relative
     range ~5%. WITH plateau_rtol=0.02 that's outside, so no fire. WITH
     sign-of-trend slack, the test ALSO requires last-half-median to be
     NOT below first-half-median by more than rtol*|median|."""
@@ -1147,7 +1147,7 @@ def test_plateau_detector_does_not_fire_on_slow_descent_with_sign_of_trend():
         plateau_window=20, plateau_rtol=0.02,
     )
     # last-half median < first-half median (descending), so sign-of-trend
-    # check fails → plateau does not fire:
+    # check fails -> plateau does not fire:
     assert not fired
 
 
@@ -1173,7 +1173,7 @@ def test_plateau_detector_sign_of_trend_uses_rtol_slack():
 
 def test_run_oep_inversion_passes_mol_spec_grid_level_through(monkeypatch):
     """Spec §9.1: run_oep_inversion does NOT silently drop or override
-    mol_spec.grid_level — the same spec passes through to _build_mol_and_mf."""
+    mol_spec.grid_level: the same spec passes through to _build_mol_and_mf."""
     captured = {}
     import xcquinox.alec.oep as oep_mod
     real_build = oep_mod._build_mol_and_mf
@@ -1269,14 +1269,14 @@ def test_run_oep_inversion_plateau_catch_path_behavioral(monkeypatch):
     # carried plateau median (1.5e-3).
     assert abs(result.density_error - plateau_value) > 1e-9
     # OEP-01: ``converged`` is derived from the SCF-verified ``final_error``
-    # vs conv_tol — NEVER from the 1.5e-3 plateau median (which, being >
+    # vs conv_tol, NEVER from the 1.5e-3 plateau median (which, being >
     # conv_tol=1e-30, would have forced converged=False in the buggy code
     # regardless of the true residual). The robust invariant is therefore
     # that ``converged`` tracks the SCF-verified error relationship, not a
     # hard-coded False. For this contrived H2/STO-3G case the HF-target /
     # PBE-baseline OEP density coincide to ~machine epsilon, so the
     # SCF-verified residual sits at the float64 noise floor and can be
-    # exactly 0.0 — in which case 0.0 < 1e-30 holds and converged is
+    # exactly 0.0: in which case 0.0 < 1e-30 holds and converged is
     # legitimately True. (The earlier ``assert converged is False`` was
     # flaky precisely because it assumed the residual always exceeds
     # 1e-30, which is false when it rounds to 0.0.)
@@ -1286,7 +1286,7 @@ def test_run_oep_inversion_plateau_catch_path_behavioral(monkeypatch):
 
 def test_save_vxc_ref_write_is_atomic_no_tmp_leftover(tmp_path):
     """After save_vxc_ref completes, output_dir contains exactly the
-    target .npz — no tempfile-mkstemp leftover. Pins the atomic-write
+    target .npz, no tempfile-mkstemp leftover. Pins the atomic-write
     pattern (tempfile + os.replace) introduced 2026-05-06 to match
     the run_scf_with_cache / run_ccsd_with_cache precedent."""
     import numpy as np
@@ -1346,7 +1346,7 @@ def test_plateau_stop_does_not_claim_converged_without_scf_verification(monkeypa
 
     Setup: force a _OEPPlateau whose carried plateau_density_error is
     far below conv_tol (1e-12 << conv_tol=1e-6), while the carried
-    coefficient vector ``b`` is LARGE and non-zero — so the
+    coefficient vector ``b`` is LARGE and non-zero, so the
     post-finalization SCF runs V_xc = baseline + Σ b_t g_t at that large
     b, producing a KS density far from the target and hence a large
     SCF-verified final_error (>> conv_tol). The buggy code reports
@@ -1366,7 +1366,7 @@ def test_plateau_stop_does_not_claim_converged_without_scf_verification(monkeypa
     mf = _scf.RHF(mol); mf.kernel()
     dm_target = mf.make_rdm1()
 
-    # Plateau median far below conv_tol — but it is a fabricated floor,
+    # Plateau median far below conv_tol, but it is a fabricated floor,
     # NOT the SCF-verified residual at the carried iterate.
     plateau_value = 1e-12
     conv_tol = 1e-6
@@ -1399,7 +1399,7 @@ def test_plateau_stop_does_not_claim_converged_without_scf_verification(monkeypa
     )
 
     # The carried plateau iterate is a large b, whose KS density does NOT
-    # match the target to 1e-6 — so the SCF-verified residual is well
+    # match the target to 1e-6, so the SCF-verified residual is well
     # above conv_tol. The reported density_error must be that real
     # residual, NOT the 1e-12 plateau median.
     assert result.density_error > conv_tol, (
@@ -1466,7 +1466,7 @@ def test_plateau_stop_below_conv_tol_is_converged_with_plateau_stop_reason(monke
     # H2/STO-3G case the HF target density and the PBE-baseline OEP density
     # coincide to ~machine epsilon (a 2-electron minimal-basis density is
     # essentially fixed by the single occupied sigma_g orbital), so the
-    # SCF-verified residual is at the float64 noise floor (0..~1e-15) — it
+    # SCF-verified residual is at the float64 noise floor (0..~1e-15), it
     # can even be exactly 0.0 depending on the inner-SCF DIIS trajectory.
     # The robust invariant is therefore that the reported value is NOT the
     # 1e-30 plateau-median sentinel, not that it exceeds some positive floor

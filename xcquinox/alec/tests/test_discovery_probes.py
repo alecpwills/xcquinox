@@ -29,7 +29,7 @@ def _make_h2_model_and_data(seed: int = 0):
 
 def test_p01_compute_vxc_nn_flows_grad_through_dynamic_rho():
     """P0.1: compute_vxc_nn must accept dynamic rho/sigma and let jax.grad
-    flow through. Otherwise the manual SCF backend's D → rho → F → D' loop
+    flow through. Otherwise the manual SCF backend's D -> rho -> F -> D' loop
     is not differentiable."""
     from xcquinox.alec.oneshot import compute_vxc_nn
     from xcquinox.alec.descriptors import assemble_descriptor_features
@@ -40,7 +40,7 @@ def test_p01_compute_vxc_nn_flows_grad_through_dynamic_rho():
     grid_weights = data["grid_weights"]
 
     def scalar_from_vxc(rho_dyn, sigma_dyn):
-        # PRE-07: compute_vxc_nn refuses to silently drop the GGA v_sigma
+        # compute_vxc_nn refuses to silently drop the GGA v_sigma
         # term, so the LDA-only v_rho path (which this gradient-flow probe
         # exercises) must be requested explicitly via lda_only=True.
         vxc = compute_vxc_nn(
@@ -66,7 +66,7 @@ def test_p02_mol_data_has_metadata_for_pyscfad_rebuild():
     object. Required: atom spec, basis, charge, spin."""
     _, data = _make_h2_model_and_data()
     assert "mol_metadata" in data, (
-        "mol_data lacks 'mol_metadata' — extend precompute_fixed_density_data "
+        "mol_data lacks 'mol_metadata': extend precompute_fixed_density_data "
         "to stash atom/basis/charge/spin for pyscfad backend rebuild."
     )
     md = data["mol_metadata"]
@@ -85,7 +85,7 @@ def test_p03_pyscfad_get_fock_sees_current_dm_per_cycle():
     import pyscfad.gto
     import pyscfad.dft
 
-    # Force CPU — pyscfad's custom eigh_gen primitive lacks a CUDA impl,
+    # Force CPU, pyscfad's custom eigh_gen primitive lacks a CUDA impl,
     # so this test fails when JAX defaults to GPU in the full suite.
     cpu = jax.devices("cpu")[0]
     with jax.default_device(cpu):
@@ -122,7 +122,7 @@ def _run_p03_get_fock_probe():
     mf.kernel()
 
     assert len(dm_observations) >= 2, (
-        f"get_fock invoked {len(dm_observations)} times — expected ≥2 "
+        f"get_fock invoked {len(dm_observations)} times, expected ≥2 "
         f"across an SCF with max_cycle=3"
     )
     assert any(dm_observations), (
@@ -135,7 +135,7 @@ def test_p04_pyscfad_get_j_monkey_patch_propagates():
     """P0.4: monkey-patching mf.get_j must actually intercept J in the Fock
     build. Use a sentinel offset that, if bypassed, leaves the total energy
     indistinguishable from the baseline."""
-    # Force CPU — pyscfad's custom eigh_gen primitive lacks a CUDA impl.
+    # Force CPU, pyscfad's custom eigh_gen primitive lacks a CUDA impl.
     cpu = jax.devices("cpu")[0]
     with jax.default_device(cpu):
         return _run_p04_get_j_probe()
@@ -180,6 +180,6 @@ def _run_p04_get_j_probe():
     assert abs(e_patched - e_ref) > 1e-6, (
         f"get_j monkey-patch did not propagate: "
         f"e_patched={e_patched} e_ref={e_ref} |Δ|={abs(e_patched - e_ref):.2e}. "
-        f"Pyscfad bypasses the overridden get_j — fixed_j pyscfad mode "
+        f"Pyscfad bypasses the overridden get_j, fixed_j pyscfad mode "
         f"must fall back to manual backend."
     )

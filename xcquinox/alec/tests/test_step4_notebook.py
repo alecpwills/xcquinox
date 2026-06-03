@@ -58,7 +58,7 @@ def test_main_produces_valid_notebook(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Task 2 — Cells 1-5 builder tests
+# Task 2, Cells 1-5 builder tests
 # ---------------------------------------------------------------------------
 
 
@@ -148,13 +148,13 @@ def test_main_cells_1_to_5_validate(tmp_path):
     )
 
 
-# Task 3 — Cells 6-8 builder tests
+# Task 3, Cells 6-8 builder tests
 
 
 def test_cell_07_uses_rho_cutoff_1e_minus_10():
     """Cell 7's low-density mask must use `valid = rho > 1e-10`.
 
-    Strict `>` not `>=`, threshold 1e-10 not 1e-6 — guards the off-by-threshold
+    Strict `>` not `>=`, threshold 1e-10 not 1e-6, guards the off-by-threshold
     regression from spec B-review rounds 8-10. Step3b uses the looser cutoff
     to keep the atomic tail.
     """
@@ -218,7 +218,7 @@ def test_cell_08_qualifies_alec_pretrainspec():
     gen = load_generator()
     source = gen.build_cell_08_pretrain_loop().source
     assert "alec.PretrainSpec(" in source
-    # Ensure no bare PretrainSpec usage — check that every PretrainSpec
+    # Ensure no bare PretrainSpec usage, check that every PretrainSpec
     # occurrence is preceded by "alec."
     import re
     bare_refs = re.findall(r"(?<!alec\.)PretrainSpec\(", source)
@@ -277,7 +277,7 @@ def test_cell_08_parallel_branch_uses_thread_pool_and_subprocess():
 
 def test_cell_08_parallel_branch_sets_xla_and_omp_env_before_subprocess_run():
     """Cell 8's parallel branch must set XLA_FLAGS and OMP_NUM_THREADS in the
-    child env BEFORE the subprocess.run call — otherwise N parallel workers
+    child env BEFORE the subprocess.run call, otherwise N parallel workers
     all oversubscribe XLA's internal thread pool.
     """
     gen = load_generator()
@@ -305,7 +305,7 @@ def test_cell_08_parallel_branch_bounds_max_workers_by_cpu_count():
 
 
 def test_cell_08_parallel_branch_raises_on_subprocess_failure():
-    """Cell 8's parallel branch must raise on subprocess failure — silent drops
+    """Cell 8's parallel branch must raise on subprocess failure, silent drops
     leave missing checkpoints that break downstream cells.
     """
     gen = load_generator()
@@ -315,7 +315,7 @@ def test_cell_08_parallel_branch_raises_on_subprocess_failure():
 
 def test_cell_08_source_is_valid_python():
     """The unified Cell 8 source (both branches plus the runtime toggle) must
-    parse as valid Python — the parallel branch builds a nested f-string for
+    parse as valid Python, the parallel branch builds a nested f-string for
     the subprocess child code, which is easy to get wrong at generator time.
     """
     gen = load_generator()
@@ -325,7 +325,7 @@ def test_cell_08_source_is_valid_python():
 
 def test_cell_08_serial_path_runtime_dispatches_to_alec_run_pretrain(monkeypatch):
     """With ``PRETRAIN_PARALLEL = False`` at exec time, Cell 8 must call
-    ``alec.run_pretrain`` once per arch in ARCH_NAMES — verifies the runtime
+    ``alec.run_pretrain`` once per arch in ARCH_NAMES, verifies the runtime
     branch picker selects the serial path and the serial path actually runs.
     """
     gen = load_generator()
@@ -366,7 +366,7 @@ def test_cell_08_serial_path_runtime_dispatches_to_alec_run_pretrain(monkeypatch
 
 def test_cell_08_parallel_path_runtime_dispatches_subprocesses(monkeypatch):
     """With ``PRETRAIN_PARALLEL = True`` at exec time, Cell 8 must route each
-    arch through ``subprocess.run`` — verifies the runtime branch picker
+    arch through ``subprocess.run``: verifies the runtime branch picker
     selects the parallel path.
     """
     import subprocess as _real_sp
@@ -408,7 +408,7 @@ def test_cell_08_parallel_path_runtime_dispatches_subprocesses(monkeypatch):
 
 def test_cell_08_parallel_path_sets_child_env_vars_at_runtime(monkeypatch):
     """With ``PRETRAIN_PARALLEL = True``, the env passed to subprocess.run must
-    contain the XLA and OMP overrides — this is a runtime check, not just
+    contain the XLA and OMP overrides, this is a runtime check, not just
     a string-match in the source.
     """
     import subprocess as _real_sp
@@ -462,7 +462,7 @@ def test_cell_08_serial_path_callback_uses_tqdm_bar_with_loss_postfix():
 
 def test_cell_08_parallel_path_uses_arch_level_tqdm_bar():
     """Cell 8's parallel branch must wrap the ``as_completed`` loop in a
-    ``tqdm`` bar tracking arch-level completion count — per-step callbacks
+    ``tqdm`` bar tracking arch-level completion count, per-step callbacks
     do not stream back through subprocesses, so an arch-completion bar is
     the best-available progress signal in parallel mode.
     """
@@ -520,7 +520,7 @@ def test_cell_08_serial_callback_creates_one_bar_per_arch_phase():
 
         @staticmethod
         def run_pretrain(spec, progress_callback=None):
-            return None  # Do not drive callback — we drive it manually below.
+            return None  # Do not drive callback, we drive it manually below.
 
     scope = {
         "__builtins__": __builtins__,
@@ -675,7 +675,7 @@ def test_cell_08_parallel_path_creates_and_closes_arch_bar(monkeypatch):
     assert arch_bar.closed, "arch bar must be closed after dispatch"
 
 
-# Task 4 — Cells 9-10 builder tests
+# Task 4, Cells 9-10 builder tests
 
 
 def test_cell_09_loads_losses_x_and_losses_c():
@@ -721,7 +721,7 @@ def test_cell_10_uses_tree_deserialise_leaves():
 
 
 def test_cell_10_is_12x2_or_documented_subset():
-    """Cell 10 must build a (n_arch x 2) subplots grid — 12 rows for the full
+    """Cell 10 must build a (n_arch x 2) subplots grid, 12 rows for the full
     default ARCH_NAMES or a narrower grid when the test harness passes a subset.
 
     Accept either an explicit `subplots(12, 2` literal OR a dynamic
@@ -811,7 +811,7 @@ def test_cell_10_runtime_predictions_match_target_at_convergence():
     source = gen.build_cell_10_pretrain_parity().source
 
     # Build a fake .npz data file in memory and write it to tmp.
-    # We do not need the full Cell 10 machinery — just the slice that
+    # We do not need the full Cell 10 machinery, just the slice that
     # computes Fx_pred from xnet(p) and the scatter x/y pair.
     #
     # Strategy: carve out the two lines that matter and exec them against
@@ -870,7 +870,7 @@ def test_cell_10_runtime_predictions_match_target_at_convergence():
 # Users want the option to load previously pre-trained models instead of
 # re-running pretraining every notebook execution. The toggle is a
 # notebook-runtime constant (`PRETRAIN_SKIP_IF_EXISTS` set in Cell 3) that
-# Cell 8 reads before dispatching ``alec.run_pretrain`` — if True AND both
+# Cell 8 reads before dispatching ``alec.run_pretrain``: if True AND both
 # xnet.eqx and cnet.eqx already exist for an arch, that arch is skipped.
 
 
@@ -950,7 +950,7 @@ def test_cell_08_serial_path_skips_when_checkpoints_exist(monkeypatch, tmp_path)
 
 def test_cell_08_serial_path_runs_when_skip_is_false_even_if_checkpoints_exist(tmp_path):
     """With ``PRETRAIN_SKIP_IF_EXISTS = False``, existing checkpoints must NOT
-    cause Cell 8 to skip the pretrain call — the default behavior is always
+    cause Cell 8 to skip the pretrain call, the default behavior is always
     to re-run. This guards against the skip logic kicking in unconditionally.
     """
     gen = load_generator()
@@ -1031,7 +1031,7 @@ def test_cell_08_parallel_path_skips_when_checkpoints_exist(monkeypatch, tmp_pat
     }
     exec(source, scope)
 
-    # Only "deep" should reach subprocess.run — "shallow" is already cached.
+    # Only "deep" should reach subprocess.run: "shallow" is already cached.
     assert len(captured_args) == 1, (
         f"expected 1 subprocess.run call (only for 'deep'), got {len(captured_args)}"
     )
@@ -1041,11 +1041,11 @@ def test_cell_08_parallel_path_skips_when_checkpoints_exist(monkeypatch, tmp_pat
     )
 
 
-# Task 5 — Cells 11-13 builder tests
+# Task 5, Cells 11-13 builder tests
 
 
 def test_cell_12_targets_has_all_three_molecules():
-    """`targets` dict must contain H, O, H2O — validator requires entries for
+    """`targets` dict must contain H, O, H2O, validator requires entries for
     every molecule in TrainingSpec.molecules (config.py:523-525).
     """
     gen = load_generator()
@@ -1057,7 +1057,7 @@ def test_cell_12_targets_has_all_three_molecules():
 
 
 def test_cell_12_atom_energies_literature_missing_h2o():
-    """`atom_energies_literature` must contain exactly H and O — H2O
+    """`atom_energies_literature` must contain exactly H and O, H2O
     deliberately absent.
 
     Cell 12 holds the literature-value anchor dict under the name
@@ -1088,7 +1088,7 @@ def test_cell_12_ext_data_dir_uses_checkpoint_base():
 
 
 def test_cell_13_uses_hf_dm_not_ccsd_dm():
-    """Cell 13 must use the HF density matrix (step3b convention) — never the
+    """Cell 13 must use the HF density matrix (step3b convention), never the
     CCSD 1-RDM, despite the misleading `dm_target` key name.
     """
     gen = load_generator()
@@ -1098,7 +1098,7 @@ def test_cell_13_uses_hf_dm_not_ccsd_dm():
 
 
 def test_cell_13_atom_branch_writes_only_e_ref():
-    """The atom branch must write ONLY E_ref_literature — not dm_target and
+    """The atom branch must write ONLY E_ref_literature, not dm_target and
     not rho_ref_grid. Atomic one-shot density targets are unstable due to
     degenerate HOMOs in open-shell atoms.
     """
@@ -1130,7 +1130,7 @@ def test_cell_13_h2o_branch_writes_three_keys():
 
 
 def test_cell_13_sidecar_json_for_every_species():
-    """The `_metadata.json` write must run for every species — not inside any
+    """The `_metadata.json` write must run for every species, not inside any
     branch. Cell 25 reads E_ccsd_total from this file for all three molecules
     so the CCSD atomization-energy reference line can be computed.
     """
@@ -1138,7 +1138,7 @@ def test_cell_13_sidecar_json_for_every_species():
     source = gen.build_cell_13_hf_ccsd_gen().source
     # The json.dump call must come AFTER the atom branch's else: block closes.
     # We check that there is exactly one json.dump and it is at indent level 4
-    # (inside the for loop) but not inside any if/else — a simple heuristic is
+    # (inside the for loop) but not inside any if/else, a simple heuristic is
     # to ensure the json.dump occurrence sits at the same indent level as the
     # `if name in` test, not deeper.
     assert "json.dump(" in source
@@ -1163,7 +1163,7 @@ def test_cell_13_uses_grid_level_pinned():
 
 def test_cell_13_einsum_is_rho_hf_not_rho_nn():
     """The einsum variable must be named `rho_hf`, guarding the step3b-era
-    `rho_nn` naming confusion — `rho_ref_grid` is HF in disguise.
+    `rho_nn` naming confusion, `rho_ref_grid` is HF in disguise.
     """
     gen = load_generator()
     source = gen.build_cell_13_hf_ccsd_gen().source
@@ -1198,7 +1198,7 @@ def test_cell_13_binds_atom_energies_to_pbe_dict():
     )
 
 
-# Task 6 — Cells 14-15 builder tests
+# Task 6, Cells 14-15 builder tests
 
 
 def test_cell_14_mol_specs_has_three_entries():
@@ -1373,7 +1373,7 @@ def test_cell_18_callback_uses_tqdm_bar_with_loss_postfix():
 
 
 def test_cell_18_replaces_print_callback_with_tqdm():
-    """Cell 18 must NOT use a print-based callback — tqdm bars supersede the
+    """Cell 18 must NOT use a print-based callback, tqdm bars supersede the
     old ``print(f"[{arch}]...")`` line-noise.
     """
     gen = load_generator()
@@ -1592,7 +1592,7 @@ def test_cell_18_skips_when_model_eqx_exists(tmp_path):
 
 def test_cell_18_runs_when_skip_is_false_even_if_model_eqx_exists(tmp_path):
     """With ``TRAIN_SKIP_IF_EXISTS = False``, an existing ``model.eqx`` must
-    NOT cause Cell 18 to skip the ``alec.run_training`` call — the default
+    NOT cause Cell 18 to skip the ``alec.run_training`` call, the default
     behavior is always to re-train.
     """
     gen = load_generator()
@@ -1643,7 +1643,7 @@ def test_cell_18_runs_when_skip_is_false_even_if_model_eqx_exists(tmp_path):
 
 def test_cell_18_spec_bar_total_stays_len_specs_when_skipping(tmp_path):
     """When Cell 18 skips a spec, the outer tqdm bar total must still equal
-    ``len(specs)`` and the bar must be advanced for the skipped spec too —
+    ``len(specs)`` and the bar must be advanced for the skipped spec too,
     otherwise the progress display desynchronizes from the spec list.
     """
     gen = load_generator()
@@ -1970,7 +1970,7 @@ def test_cell_26_uses_oneshot_dm_prediction_fast():
     gen = load_generator()
     source = gen.build_cell_26_dm_heatmaps().source
     assert "alec.oneshot_dm_prediction_fast(" in source
-    # The bare variant (without _fast) does not exist in alec.__init__ — guard against a rename regression.
+    # The bare variant (without _fast) does not exist in alec.__init__: guard against a rename regression.
     assert "oneshot_dm_prediction(" not in source.replace("oneshot_dm_prediction_fast(", "")
 
 
@@ -2161,7 +2161,7 @@ def test_cell_31_loops_over_molecule_plus_new_atoms():
     species. Cell 32 reads those totals for its PBE/HF/CCSD reference lines."""
     gen = load_generator()
     source = gen.build_cell_31_new_molecule_template().source
-    # A single loop that covers the molecule + new atoms — this is the
+    # A single loop that covers the molecule + new atoms, this is the
     # canonical shape, any equivalent expression must still mention both
     # ``new_mol_spec`` and ``new_atom_specs`` inside the iteration target.
     assert "new_atom_specs" in source
@@ -2256,7 +2256,7 @@ def test_cell_31_testspec_uses_new_atom_energies():
 
 
 # ---------------------------------------------------------------------------
-# Task #29 / #30 — Cell 32 new-molecule comparison plot (Option 2)
+# Task #29 / #30, Cell 32 new-molecule comparison plot (Option 2)
 # ---------------------------------------------------------------------------
 
 
@@ -2387,7 +2387,7 @@ def test_cell_32_handles_narrow_config():
 
 
 # ---------------------------------------------------------------------------
-# Task 12 — Full-notebook guards
+# Task 12, Full-notebook guards
 # ---------------------------------------------------------------------------
 
 
@@ -2439,7 +2439,7 @@ def test_generator_cell_types_match_expected(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Task 13 — End-to-end smoke test (slow, opt-in)
+# Task 13, End-to-end smoke test (slow, opt-in)
 # ---------------------------------------------------------------------------
 
 
@@ -2448,7 +2448,7 @@ def test_step4_notebook_smoke_runs_end_to_end(tmp_path):
     """Run the regenerated notebook end-to-end on a 1-arch × 1-loss config.
 
     Proves that every cell executes without raising. Does NOT validate
-    numerical correctness (a 250-step training run is not converged) —
+    numerical correctness (a 250-step training run is not converged),
     the assertion surface is purely "files exist at expected paths".
     """
     pytest.importorskip("nbclient")
@@ -2488,7 +2488,7 @@ def test_step4_notebook_smoke_runs_end_to_end(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Figure-labeling pass — per-plot markdown descriptions + suptitle/title/axis
+# Figure-labeling pass, per-plot markdown descriptions + suptitle/title/axis
 # label additions on every figure-generating cell. Guards the audit result
 # that every comparison plot has a preceding description cell and that every
 # figure is labelled precisely enough to stand alone as a results artifact.

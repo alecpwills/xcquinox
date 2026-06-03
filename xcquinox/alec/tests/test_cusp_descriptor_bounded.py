@@ -22,16 +22,16 @@ def test_cusp_descriptor_columns_are_bounded():
     """Both columns of compute_cusp_descriptor must lie in [0, 1] (col 0)
     and [-1, 1] (col 1) on a physical atomic grid spanning a wide range
     of distances from the nucleus."""
-    # O atom at origin, radial grid 0.001 to 20 Å — covers core through tail.
+    # O atom at origin, radial grid 0.001 to 20 Å, covers core through tail.
     r = np.logspace(-3, 1.3, 500)  # 0.001 to ~20
     grid_coords = np.stack(
         [r, np.zeros_like(r), np.zeros_like(r)], axis=1,
     )
-    # Heavy nucleus (Z=8, oxygen) amplifies extreme values — worst case.
+    # Heavy nucleus (Z=8, oxygen) amplifies extreme values, worst case.
     nuc_coords = np.array([[0.0, 0.0, 0.0]])
     nuc_charges = np.array([8])
     # log_transform=True is the bounded form this test validates (and the form
-    # every cusp-using arch — all descriptor_log_transform=True — receives). The
+    # every cusp-using arch, all descriptor_log_transform=True, receives). The
     # default raw form tanh(weighted_Z/5) intentionally saturates to 1.0 near
     # the nucleus and is exercised by test_cusp_descriptor_columns_raw_saturates.
     d = np.asarray(compute_cusp_descriptor(
@@ -65,7 +65,7 @@ def test_cusp_descriptor_columns_are_bounded():
 
 def test_cusp_descriptor_columns_raw_saturates():
     """Default (log_transform=False) col 1 = tanh(weighted_Z/5) saturates to
-    exactly 1.0 at near-nucleus points — documented legacy behavior. The
+    exactly 1.0 at near-nucleus points, documented legacy behavior. The
     notransform archs that take this default carry NO cusp descriptor, so the
     saturation is never fed to a network; cusp-using archs all pass
     log_transform=True (see test_cusp_descriptor_columns_are_bounded)."""
@@ -82,7 +82,7 @@ def test_cusp_descriptor_columns_raw_saturates():
 
 def test_cusp_descriptor_monotone_in_distance():
     """log_weighted_Z_bounded should monotonically decrease with distance
-    from the single nucleus — preserved by tanh's monotonicity."""
+    from the single nucleus, preserved by tanh's monotonicity."""
     r = np.linspace(0.1, 5.0, 50)
     grid_coords = np.stack(
         [r, np.zeros_like(r), np.zeros_like(r)], axis=1,
@@ -102,7 +102,7 @@ def test_cusp_descriptor_monotone_in_distance():
 
 
 def test_cusp_descriptor_shape_preserved():
-    """The descriptor still returns shape (N, 2) — no schema change."""
+    """The descriptor still returns shape (N, 2), no schema change."""
     coords = np.random.default_rng(0).standard_normal((17, 3))
     nuc_coords = np.array([[0.0, 0.0, 0.0]])
     nuc_charges = np.array([3])

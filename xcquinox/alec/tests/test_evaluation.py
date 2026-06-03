@@ -304,7 +304,7 @@ def test_pbe_reference_metric_computes_pbe_ae_error(tiny_model, h_data, o_data, 
 
 
 def test_pbe_reference_metric_is_model_independent(tiny_model, h_data, o_data, h2o_data):
-    """PBEReferenceMetric must not depend on the NN model — it's a
+    """PBEReferenceMetric must not depend on the NN model, it's a
     hardware-free baseline. Calling with two different models on the
     same mol_data must produce identical output."""
     from xcquinox.alec.evaluation import PBEReferenceMetric
@@ -312,7 +312,7 @@ def test_pbe_reference_metric_is_model_independent(tiny_model, h_data, o_data, h
     m = PBEReferenceMetric(atom_energies=atom_energies)
     mol_data = dict(h2o_data); mol_data["name"] = "H2O"
     out1 = m.compute(tiny_model, mol_data)
-    # Any other "model" object — PBEReferenceMetric should ignore it.
+    # Any other "model" object, PBEReferenceMetric should ignore it.
     out2 = m.compute(None, mol_data)
     for k, v in out1.items():
         if isinstance(v, float):
@@ -543,7 +543,7 @@ def test_run_test_forwards_solver_config_to_density_metric(
     """End-to-end: TestSpec.solver_config must reach DensityRMSEMetric.
     Equivalent specs that differ only in ``solver_config`` (None vs
     FIXED_J) must produce different ``density_rmse`` values for the same
-    trained model — otherwise run_test is silently ignoring the solver
+    trained model, otherwise run_test is silently ignoring the solver
     distinction that training used."""
     import numpy as np
     from xcquinox.alec.config import MoleculeSpec

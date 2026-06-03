@@ -1,4 +1,4 @@
-"""xcquinox.alec.solver_pyscfad — pyscfad-based SCF backend.
+"""xcquinox.alec.solver_pyscfad: pyscfad-based SCF backend.
 
 Wraps pyscfad's dft.RKS (or dft.UKS for spin>0) with an alec-specific
 eval_xc callback built from AlecGGAModel.eval_exc_scalar. pyscfad is
@@ -46,7 +46,7 @@ def _build_pyscfad_mf(mol, mol_data: dict):
     RKS otherwise. Callers should subsequently call mf.define_xc_(...) and
     set mf.max_cycle / mf.conv_tol. The grid level is pinned from
     mol_metadata when present so that pyscfad uses the same grid as the
-    precompute step — otherwise features_frozen (assembled on the
+    precompute step, otherwise features_frozen (assembled on the
     precompute grid) would mismatch pyscfad's per-point rho.
 
     For UKS, pyscfad's built-in ``initialize_grids`` skips the density-based
@@ -62,7 +62,7 @@ def _build_pyscfad_mf(mol, mol_data: dict):
 
     When ``mol_data`` carries a cached ``_pyscfad_mol`` (built once at
     precompute time), that pre-built Mole is used in preference to the
-    ``mol`` argument — this avoids ``Mole.build()`` inside any jit-traced
+    ``mol`` argument, this avoids ``Mole.build()`` inside any jit-traced
     hot path (it invokes ``numpy.__array__`` and raises
     ``TracerArrayConversionError`` under ``filter_jit``).
     """
@@ -226,7 +226,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             offset = int(feature_holder["offset"])
             features_slice = features_full[offset:offset + block_size]
             # pyscfad's block_loop may emit non-uniform
-            # block sizes — the last block of an unpadded grid is smaller
+            # block sizes, the last block of an unpadded grid is smaller
             # than NBLK, and `non0tab` pruning can skip blocks entirely
             # while still advancing block_loop's internal cursor. Both
             # cases produce ``features_slice.shape[0] != block_size``.
@@ -236,7 +236,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             # Those grid points have zero weight in pyscfad's downstream
             # numint summation (the corresponding ``rho``/``weights``
             # arrays are zero), so padded feature rows contribute nothing
-            # to the energy/Fock — the value of the padding is irrelevant
+            # to the energy/Fock, the value of the padding is irrelevant
             # so long as the shape contract is satisfied.
             slice_n = features_slice.shape[0]
             if slice_n < block_size:
@@ -316,14 +316,14 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             sigma_aa = dxa * dxa + dya * dya + dza * dza
             sigma_bb = dxb * dxb + dyb * dyb + dzb * dzb
             sigma_ab = dxa * dxb + dya * dyb + dza * dzb
-            # SOLV-01: total-density gradient invariant for the correlation
+            # total-density gradient invariant for the correlation
             # piece. sigma_tot = |nabla rho_tot|^2 = sigma_aa + 2 sigma_ab + sigma_bb.
             sigma_tot = sigma_aa + 2.0 * sigma_ab + sigma_bb
 
             # SOLV-01 split. EXCHANGE obeys the exact spin-scaling relation
             # (Oliver & Perdew, Phys. Rev. A 20, 397 (1979)):
             #   E_x = 0.5 (E_x[2 rho_a, 4 sigma_aa] + E_x[2 rho_b, 4 sigma_bb]),
-            # evaluated per spin. CORRELATION does NOT — it is evaluated ONCE
+            # evaluated per spin. CORRELATION does NOT, it is evaluated ONCE
             # on the TOTAL density (zeta=0) on the default fast path, because
             # the baseline pw92c_unpolarized_scalar is spin-unpolarized (von
             # Barth & Hedin, J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45,
@@ -393,7 +393,7 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
 
             # vrho_s = d E_density / d rho_s.
             #   Exchange: d/drho_a [0.5 ex(2 rho_a)] = 0.5 * 2 * vrho_x_a = vrho_x_a.
-            #   Correlation: vrho_c_a/vrho_c_b = d ec/d rho_{a,b} — IDENTICAL
+            #   Correlation: vrho_c_a/vrho_c_b = d ec/d rho_{a,b}, IDENTICAL
             #     for both spins on the zeta=0 fast path, PER-SPIN when the
             #     polarized (zeta-dependent) correlation is active.
             vrho_a = vrho_x_a + vrho_c_a
@@ -476,12 +476,12 @@ def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
     ):
         raise RuntimeError(
             "run_pyscfad_scf cannot be called from inside @jit / "
-            "@eqx.filter_jit — pyscfad's SCF driver requires concrete "
+            "@eqx.filter_jit: pyscfad's SCF driver requires concrete "
             "numpy/jnp arrays for libcint integral construction. Wrap "
             "the caller without JIT, or use SolverMode.ONESHOT (which is "
             "fully traceable)."
         )
-    # ONESHOT doesn't enter pyscfad at all — skip the CPU pin.
+    # ONESHOT doesn't enter pyscfad at all, skip the CPU pin.
     if config.mode == SolverMode.ONESHOT:
         return _oneshot_result(model, mol_data)
     # Pin the whole pyscfad subgraph (including eval_xc_callback
@@ -495,7 +495,7 @@ def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
 def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFResult:
     from xcquinox.alec.descriptors import assemble_descriptor_features
 
-    import pyscfad.dft  # noqa: F401 — lazy import
+    import pyscfad.dft  # noqa: F401, lazy import
 
     policy = config.effective_feature_policy
     descriptors = model.descriptors
@@ -592,7 +592,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         mf.get_veff = _holder_get_veff
 
     if config.mode == SolverMode.FIXED_J:
-        # pyscfad UKS get_veff calls ks.get_j(mol, dm_total_2d, hermi) — the
+        # pyscfad UKS get_veff calls ks.get_j(mol, dm_total_2d, hermi), the
         # spin DMs are summed before the Coulomb build (Coulomb is spin-blind),
         # so get_j returns a 2D matrix. For RKS, j_matrix is already 2D. For
         # UKS, the precompute stored j_matrix as (2, nao, nao) (per-spin J),
@@ -610,8 +610,8 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         mf.get_j = fixed_get_j
 
     # pyscfad's SCF kernel does not persist the actual iteration count on
-    # the mean-field object (``mf.cycles`` is the *input* parameter that
-    # pyscfad reads as an upper bound, not a tracker — it stays at its
+    # the mean-field object (``mf.cycles`` is the input parameter that
+    # pyscfad reads as an upper bound, not a tracker, it stays at its
     # initial value 0 after kernel()). We install a callback into pyscfad's
     # inner _scf loop to count iterations directly. The callback runs once
     # per cycle and sees the loop-local ``cycle`` index in its ``envs`` dict.

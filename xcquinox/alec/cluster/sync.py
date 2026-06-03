@@ -1,13 +1,13 @@
-"""xcquinox.alec.cluster.sync — pure helpers for the ``pull`` subcommand.
+"""xcquinox.alec.cluster.sync: pure helpers for the ``pull`` subcommand.
 
 The ``pull`` subcommand of ``python -m xcquinox.alec.cluster`` rsyncs a sweep
 run dir from the cluster back to a local results tree. This module owns the
-*pure* parts of that workflow:
+pure parts of that workflow:
 
-  - :func:`build_rsync_command` — assemble the exact ``rsync`` argv for a
+  - :func:`build_rsync_command`: assemble the exact ``rsync`` argv for a
     (host, remote-root, local-root, run-id, profile, dry-run) tuple, including
     the right ``--filter='. <pkg>/filters/<profile>.filter'`` invocation.
-  - :func:`resolve_run_id`      — normalize the user's ``run_id`` argument:
+  - :func:`resolve_run_id`: normalize the user's ``run_id`` argument:
     pass a well-formed ``run_YYYYmmddTHHMMSSZ`` stamp through unchanged; turn
     the literal ``"latest"`` into the newest such stamp under ``remote_root``
     (resolved via an injected ``ssh_runner`` callable so tests stay offline).
@@ -17,7 +17,7 @@ this module is import-clean (no ``subprocess`` / ``socket`` / network I/O) and
 thus trivially unit-testable.
 
 The filter files (``filters/summaries.filter`` and ``filters/full.filter``)
-ship as package data — see ``pyproject.toml`` ``[tool.setuptools.package-data]``
+ship as package data, see ``pyproject.toml`` ``[tool.setuptools.package-data]``
 and the contract comments at the top of each filter file.
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ from typing import Callable, Iterable, Sequence
 #: file ``filters/<name>.filter`` shipped with this package.
 VALID_PROFILES: tuple[str, ...] = ("summaries", "full")
 
-#: Pattern a run-id must match — ``run_YYYYmmddTHHMMSSZ`` (UTC stamp, matches
+#: Pattern a run-id must match, ``run_YYYYmmddTHHMMSSZ`` (UTC stamp, matches
 #: ``__main__._utc_stamp``). Used by :func:`resolve_run_id` to reject typos
 #: before they reach ``rsync``.
 _RUN_ID_RE = re.compile(r"^run_\d{8}T\d{6}Z$")
@@ -58,7 +58,7 @@ def filter_file_path(profile: str) -> Path:
 
     Raises :class:`ValueError` if ``profile`` is not in :data:`VALID_PROFILES`,
     or :class:`FileNotFoundError` if the package data file is missing (which
-    indicates a packaging bug — the test suite covers this).
+    indicates a packaging bug, the test suite covers this).
     """
     if profile not in VALID_PROFILES:
         raise ValueError(
@@ -117,7 +117,7 @@ def build_rsync_command(
     a packaged read-only lookup). The returned list is ready to invoke; the
     caller is responsible for ``mkdir -p`` on the full local destination
     (which is ``<local_root>/<category>/<run_id>/`` when ``category`` is
-    non-empty) before running it — rsync's ``--mkpath`` requires rsync >= 3.2
+    non-empty) before running it, rsync's ``--mkpath`` requires rsync >= 3.2
     and is not available on every cluster image.
 
     Source spec
@@ -125,7 +125,7 @@ def build_rsync_command(
     When ``host`` is a non-empty string the source is
     ``<host>:<remote_root>/<category>/<run_id>/`` (SSH transport). When
     ``host`` is the empty string the source is the plain local path
-    ``<remote_root>/<category>/<run_id>/`` — this is the "local-to-local"
+    ``<remote_root>/<category>/<run_id>/``: this is the "local-to-local"
     mode the end-to-end canary test in ``test_cluster_sync.py`` uses to
     exercise the filter file against a fixture tree without needing SSH.
 
@@ -137,7 +137,7 @@ def build_rsync_command(
     Trailing slashes
     ----------------
     Both source and destination paths end in ``/`` (rsync semantics: "copy
-    the *contents* of this directory into the destination").
+    the contents of this directory into the destination").
 
     Parameters
     ----------
@@ -164,7 +164,7 @@ def build_rsync_command(
     profile
         Which packaged filter file to load. One of :data:`VALID_PROFILES`.
     dry_run
-        When True, ``--dry-run`` is appended so rsync only *reports* what it
+        When True, ``--dry-run`` is appended so rsync only reports what it
         would do.
     extra_flags
         Extra rsync flags appended verbatim (after the standard set, before
@@ -173,7 +173,7 @@ def build_rsync_command(
     spec_indices
         Optional list of per-spec indices to restrict the pull to. When
         non-empty, only the requested ``checkpoints/spec_<NNNN>/`` subtrees
-        are pulled — every other ``spec_*`` directory under
+        are pulled, every other ``spec_*`` directory under
         ``checkpoints/`` is excluded. Use this with ``profile="full"`` for
         the surgical "pull just these N specs' trained model.eqx" workflow
         described in ``hpcjobs/SEAWULF_RUNBOOK.md`` §10.5 (local test-set
@@ -201,7 +201,7 @@ def build_rsync_command(
 
     argv: list[str] = ["rsync", *_BASE_FLAGS]
 
-    # Per-spec narrowing — emit BEFORE the --filter so the includes win
+    # Per-spec narrowing, emit BEFORE the --filter so the includes win
     # the first-match race against the catch-all `- /checkpoints/spec_*`
     # exclude that follows them (rsync semantics: first matching rule).
     if spec_indices:
@@ -318,18 +318,18 @@ def discover_runs(
         find <remote_root> -mindepth 1 -maxdepth <N> -type d \\
              -name 'run_*Z' -prune -print
 
-    The ``-prune`` flag is critical — it stops descent into matched dirs so
+    The ``-prune`` flag is critical, it stops descent into matched dirs so
     we do not accidentally pick up anything inside ``run_<UTC>Z/checkpoints``
     or similar.
 
-    Returns a dict mapping the *relative* parent directory (the "category"
+    Returns a dict mapping the relative parent directory (the "category"
     you would pass to :func:`build_rsync_command`, e.g. ``"alpha_off/runs"``
     or ``""`` if the run lives directly under ``remote_root``) to the list of
     run-id basenames found there, sorted oldest-first (so ``groups[cat][-1]``
     is the latest run for that category).
 
     Stray paths the regex rejects (e.g. a file named ``runs.tar.gz``) are
-    silently filtered out — same robustness story as :func:`resolve_run_id`.
+    silently filtered out, same robustness story as :func:`resolve_run_id`.
 
     Parameters
     ----------
@@ -346,7 +346,7 @@ def discover_runs(
         enclosing experiment-batch segment) without forcing every caller to
         override. ``-prune`` short-circuits descent into matched run dirs,
         so the cost of a higher cap is just ``find`` walking through
-        *unmatched* directories — bounded by the user's xcquinox scratch
+        unmatched directories, bounded by the user's xcquinox scratch
         root.
 
     Returns
@@ -374,14 +374,14 @@ def discover_runs(
             continue
         basename = posixpath.basename(line)
         if not _RUN_ID_RE.match(basename):
-            continue  # stray match — silently skip
+            continue  # stray match, silently skip
         parent_abs = posixpath.dirname(line)
         if parent_abs == rr:
             category = ""
         elif parent_abs.startswith(rr + "/"):
             category = parent_abs[len(rr) + 1:]
         else:
-            # outside the requested root (symlink? bind mount?) — ignore.
+            # outside the requested root (symlink? bind mount?), ignore.
             continue
         groups.setdefault(category, []).append(basename)
     for cat in groups:
@@ -395,9 +395,9 @@ def format_ssh_stderr_tail(stderr: str, n: int = 3) -> str:
 
     Cluster login nodes commonly emit a multi-line compliance banner on every
     SSH connection (the Stony Brook SeaWulf banner is ~10 lines about
-    AI-training restrictions). On a *failed* command the underlying tool's
+    AI-training restrictions). On a failed command the underlying tool's
     actual error (e.g. ``ls: cannot access ...: No such file or directory``)
-    lands at the tail of stderr, *after* the banner. Showing only the last
+    lands at the tail of stderr, after the banner. Showing only the last
     ``n`` non-blank lines drops the banner from view without suppressing
     real error output.
 

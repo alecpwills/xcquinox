@@ -3,8 +3,8 @@
 Every cusp-using architecture in the registry (deep_cusp, deep_cusp_attn,
 deep_combined, deep_combined_attn) sets descriptor_log_transform=True, and the
 training pipeline (data.py) computes the cusp with that flag. Two other code
-paths computed the cusp with the default (False) — the saturating
-``tanh(weighted_Z/5)`` form — silently feeding a DIFFERENT feature distribution:
+paths computed the cusp with the default (False), the saturating
+``tanh(weighted_Z/5)`` form, silently feeding a DIFFERENT feature distribution:
 
   * pretrain_data_gen.py  (pretraining input)
   * solver_pyscfad.py     (pyscfad-backend held-out eval input)

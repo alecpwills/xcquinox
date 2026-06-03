@@ -136,9 +136,9 @@ def test_architecture_config_field_validation(field, value, exc):
         ArchitectureConfig(**kwargs)
 
 
-# --- §13.2 items (12)-(15), (17) — Task 1.3 --------------------------------
+# --- §13.2 items (12)-(15), (17), Task 1.3 --------------------------------
 
-# §13.2 item (12) — 2026-05-29: bumped from 12 to 14 by adding
+# §13.2 item (12), 2026-05-29: bumped from 12 to 14 by adding
 # deep_notransform + deep_notransform_attn for the descriptor ablation sweep.
 def test_architectures_has_14_keys():
     from xcquinox.alec.config import ARCHITECTURES
@@ -147,7 +147,7 @@ def test_architectures_has_14_keys():
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
         "deep_dm", "deep_dm_attn", "deep_combined", "deep_combined_attn",
-        # New 2026-05-29 entries — no DM/Cusp descriptors, Dick log-transform
+        # New 2026-05-29 entries, no DM/Cusp descriptors, Dick log-transform
         # explicitly disabled, for ablation against the 6 standard archs.
         "deep_notransform", "deep_notransform_attn",
     }
@@ -208,7 +208,7 @@ def test_architecture_config_from_spec_equals_direct_construction():
     assert via_factory.descriptors == via_direct.descriptors
 
 
-# --- §13.2 items (10)-(11) — Task 1.5 step 6 --------------------------------
+# --- §13.2 items (10)-(11), Task 1.5 step 6 --------------------------------
 
 # §13.2 item (10)
 def test_architecture_n_input_features_arithmetic():
@@ -251,7 +251,7 @@ def test_architecture_materialize_roundtrip_returns_registry_instances():
     assert isinstance(ccs[0], UEGLimit)
 
 
-# --- §13.2 items (18)-(19) — Task 1.6 ----------------------------------------
+# --- §13.2 items (18)-(19), Task 1.6 ----------------------------------------
 
 # §13.2 item (18)
 def test_trainingspec_describe_json_serializes_with_all_fields():
@@ -332,7 +332,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
     json.dumps(out)
 
 
-# --- §13.2 item (16) — Task 2.2 step 6 ----------------------------------------
+# --- §13.2 item (16), Task 2.2 step 6 ----------------------------------------
 
 # §13.2 item (16)
 def test_architectures_all_materialize_via_from_arch():
@@ -505,7 +505,7 @@ def test_attn_registry_entries_have_valid_num_heads():
     """Test 20: each *_attn arch satisfies divisibility + head_dim >= 4."""
     from xcquinox.alec.config import ARCHITECTURES
     attn_keys = [k for k in ARCHITECTURES if k.endswith("_attn")]
-    # 2026-05-29: bumped 6 → 7 with `deep_notransform_attn`.
+    # 2026-05-29: bumped 6 -> 7 with `deep_notransform_attn`.
     assert len(attn_keys) == 7, f"expected 7 attn archs, got {len(attn_keys)}"
     for k in attn_keys:
         arch = ARCHITECTURES[k]
@@ -541,7 +541,7 @@ def test_registry_smoke_forward_each_attn_arch():
 
 
 # ---------------------------------------------------------------------------
-# CFG-01: validate() must catch elements missing from atom_energies even when
+# validate() must catch elements missing from atom_energies even when
 # require_atom_anchors=False (the 2026-05-07 mixed-pool path).
 # ---------------------------------------------------------------------------
 
@@ -555,7 +555,7 @@ def _tiny_arch():
 
 
 def test_validate_missing_element_in_atom_energies_require_anchors_false():
-    """CFG-01: compound references C which is absent from atom_energies;
+    """compound references C which is absent from atom_energies;
     validate() must raise ValueError naming C, even with require_atom_anchors=False."""
     import tempfile
     from xcquinox.alec.config import TrainingSpec, MoleculeSpec
@@ -588,8 +588,8 @@ def test_validate_missing_element_in_atom_energies_require_anchors_false():
 
 def test_validate_cl_compound_passes_with_bh76w411_anchors():
     """CFG-01 positive counterpart / regression for preflight 54403:
-    a Cl-containing compound (HCl) — which aborted the BH76+W4-11 cluster
-    preflight when the bh76w411_step7 anchor table lacked Cl — must now
+    a Cl-containing compound (HCl), which aborted the BH76+W4-11 cluster
+    preflight when the bh76w411_step7 anchor table lacked Cl, must now
     validate cleanly against the extended Chakravorty anchors.
     """
     import tempfile
@@ -619,12 +619,12 @@ def test_validate_cl_compound_passes_with_bh76w411_anchors():
 
 
 # ---------------------------------------------------------------------------
-# CFG-05: bool values must be rejected from targets and atom_energies even
+# bool values must be rejected from targets and atom_energies even
 # though math.isfinite(True) is True.
 # ---------------------------------------------------------------------------
 
 def test_validate_bool_in_targets_rejected():
-    """CFG-05: True passed as a target energy must raise ValueError."""
+    """True passed as a target energy must raise ValueError."""
     import tempfile
     from xcquinox.alec.config import TrainingSpec, MoleculeSpec
 
@@ -651,7 +651,7 @@ def test_validate_bool_in_targets_rejected():
 
 
 def test_validate_bool_in_atom_energies_rejected():
-    """CFG-05: True passed as an atom energy must raise ValueError."""
+    """True passed as an atom energy must raise ValueError."""
     import tempfile
     from xcquinox.alec.config import TrainingSpec, MoleculeSpec
 

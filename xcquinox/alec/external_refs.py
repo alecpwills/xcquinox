@@ -5,9 +5,9 @@ reference density matrix, grid density, and OEP-inverted V_xc for the
 union of training + held-out probe + HBPT species.
 
 Pipeline stages (each individually cached via np.savez_compressed):
-  1. SCF  → _intermediates/<name>_g{grid_level}_scf.npz   (MO coeffs, DM, S)
-  2. CCSD → _intermediates/<name>_g{grid_level}_ccsd.npz  (CC density matrix + rho)
-  3. OEP  → <name>.npz                                    (vxc_ref + dm_target +
+  1. SCF -> _intermediates/<name>_g{grid_level}_scf.npz   (MO coeffs, DM, S)
+  2. CCSD -> _intermediates/<name>_g{grid_level}_ccsd.npz  (CC density matrix + rho)
+  3. OEP -> <name>.npz                                    (vxc_ref + dm_target +
                                                           rho_ref_grid + provenance)
 
 Cache layout bakes grid_level into intermediate filenames (spec sec. 5.6);
@@ -31,7 +31,7 @@ from dataclasses import dataclass
 class SpeciesEntry:
     """Canonical pre-compute species record.
 
-    Dedup key is (name, charge, spin) — `Li` and `Li+` are distinct
+    Dedup key is (name, charge, spin), `Li` and `Li+` are distinct
     entries with different charges.
     """
     name: str
@@ -46,7 +46,7 @@ def _fsync_dir(dir_path) -> None:
     """fsync a directory entry for durability after an atomic os.replace.
 
     POSIX rename is atomic per-file but the rename is not durable across a
-    power loss until the *parent directory* is fsync'd. Only catch the
+    power loss until the parent directory is fsync'd. Only catch the
     AttributeError from a missing O_DIRECTORY (Windows); let real OSErrors
     (ENOSPC, EIO) bubble so durability failures fail loudly (matches the
     `_migrate_intermediates_to_grid_suffixed` policy).
@@ -64,8 +64,8 @@ def _fsync_dir(dir_path) -> None:
 def _fsync_file(path) -> None:
     """fsync a file's CONTENTS to disk (EXTREF-04).
 
-    ``os.replace`` makes the rename atomic, but the renamed file's *contents*
-    are not durable across power loss unless the data was fsync'd first — a
+    ``os.replace`` makes the rename atomic, but the renamed file's contents
+    are not durable across power loss unless the data was fsync'd first, a
     crash between write and the OS flush can leave the cache path pointing at a
     zero-length/partial file. Call this on the temp file BEFORE ``os.replace``.
     Real OSErrors (ENOSPC, EIO) bubble so durability failures fail loudly,
@@ -102,7 +102,7 @@ def _build_hf_meanfield(mol, is_uks: bool, *, density_fit: bool = False,
     unit-testable (tests monkeypatch this to inject a stub mean-field
     without running PySCF). When ``density_fit`` is set, returns a DF-HF
     (RI-JK) object so the DF-CCSD that sits on it uses 3-index integrals
-    (essential at larger basis — CCSD is N^6).
+    (essential at larger basis, CCSD is N^6).
     """
     from pyscf import scf
     mf = scf.UHF(mol) if is_uks else scf.RHF(mol)
@@ -114,30 +114,24 @@ def _build_hf_meanfield(mol, is_uks: bool, *, density_fit: bool = False,
 
 def _prepare_converged_hf(mol, *, dm0, is_uks: bool, density_fit: bool = False,
                           basis: str | None = None, auxbasis: str | None = None):
-    """Run a real HF SCF and return the CONVERGED HF mean-field.
+    """Run a real HF SCF and return the converged HF mean-field.
 
-    EXTREF-01: CCSD must sit on a self-consistent HF determinant.
-    Grafting PBE Kohn-Sham MO coeff/occ onto an HF object and faking
-    ``converged=True`` without re-converging runs CCSD on a
-    non-canonical, non-self-consistent PBE determinant (Brillouin's
-    theorem is violated: the occ-virt Fock block is nonzero), and the
-    relaxed 1-RDM then depends on arbitrary PBE start orbitals.
-
-    The PBE DM is used ONLY as the SCF initial guess (``kernel(dm0=...)``)
-    to speed convergence; the orbitals CCSD sees are the converged HF
-    orbitals. Raises ``RuntimeError`` if HF does not converge so a
-    non-self-consistent reference can never silently reach CCSD.
+    CCSD must sit on a self-consistent HF determinant. Grafting PBE Kohn-Sham
+    MO coeff/occ onto an HF object and faking ``converged=True`` without
+    re-converging runs CCSD on a non-canonical, non-self-consistent PBE
+    determinant (Brillouin's theorem is violated: the occ-virt Fock block is
+    nonzero), and the relaxed 1-RDM then depends on arbitrary PBE start
+    orbitals. The PBE DM is used ONLY as the SCF initial guess
+    (``kernel(dm0=...)``); the orbitals CCSD sees are the converged HF orbitals.
+    Raises ``RuntimeError`` if HF does not converge.
 
     Sources: single-reference coupled-cluster theory is formulated on a
-    converged (canonical) Hartree-Fock reference for which Brillouin's
-    theorem (the occupied-virtual block of the Fock matrix vanishes) holds —
-    Szabo & Ostlund, *Modern Quantum Chemistry* (Dover, 1996) §3.3, and
-    T. D. Crawford & H. F. Schaefer III, "An Introduction to Coupled Cluster
-    Theory for Computational Chemists," *Rev. Comput. Chem.* **14**, 33-136
-    (2000); see also R. J. Bartlett & M. Musiał, *Rev. Mod. Phys.* **79**, 291
-    (2007). Running CCSD on the non-self-consistent PBE determinant leaves a
-    nonzero f_ov block and makes the relaxed 1-RDM depend on the arbitrary PBE
-    starting orbitals — which is what fed bias into the ML training target.
+    converged (canonical) Hartree-Fock reference for which Brillouin's theorem
+    (the occupied-virtual block of the Fock matrix vanishes) holds: Szabo &
+    Ostlund, Modern Quantum Chemistry (Dover, 1996) §3.3; T. D. Crawford &
+    H. F. Schaefer III, "An Introduction to Coupled Cluster Theory for
+    Computational Chemists," Rev. Comput. Chem. 14, 33-136 (2000); R. J.
+    Bartlett & M. Musiał, Rev. Mod. Phys. 79, 291 (2007).
     """
     mf_hf = _build_hf_meanfield(mol, is_uks, density_fit=density_fit,
                                 basis=basis, auxbasis=auxbasis)
@@ -199,7 +193,7 @@ def build_species_union() -> list[SpeciesEntry]:
         _add(pair["cation"], int(pair["cation_charge"]),
              int(pair["cation_spin"]), "ip13")
 
-    # Probe sets — read entries from eval_probes
+    # Probe sets: read entries from eval_probes
     for probe_name in eval_probes.ALL_PROBES:
         kind = eval_probes.PROBE_KIND[probe_name]
         entries = eval_probes.ALL_PROBES[probe_name]
@@ -256,7 +250,7 @@ def resolve_geometry(spec: SpeciesEntry):
 
     # Atomic species: name is a single chemical symbol (or symbol+"+" for
     # cations). Use ase.data.chemical_symbols as the authoritative element
-    # list — the prior `len(sym) <= 2 and sym.isalpha()` check incorrectly
+    # list, the prior `len(sym) <= 2 and sym.isalpha()` check incorrectly
     # treated diatomic Hill formulas like "HF", "HS", "NO" as single atoms
     # (they're 2 chars and alphabetic but NOT elements), causing
     # `Atoms(sym, positions=[(0,0,0)])` to crash with
@@ -286,7 +280,7 @@ def resolve_geometry(spec: SpeciesEntry):
     # ``pool["entries"]`` is list[dict] (raw PROBE_* entries); ``pool["molecules"]``
     # is the corresponding list[ASE Atoms] with at.info["name"] set by
     # eval_probes._attach_info.  Match by the dict's "name" against
-    # at.info["name"] — iterating entries as if they were Atoms would
+    # at.info["name"], iterating entries as if they were Atoms would
     # crash if a probe AE molecule were ever absent from g2_97.traj.
     from xcquinox.alec import eval_probes
     for probe_name in eval_probes.ALL_PROBES:
@@ -370,7 +364,7 @@ def run_scf_with_cache(
     mf.grids.level = grid_level
     mf.kernel()
 
-    # Build the result dict ONCE — used both for the cache write and the
+    # Build the result dict ONCE, used both for the cache write and the
     # return value.  Avoids redundant PySCF calls (make_rdm1/get_ovlp)
     # and the resulting DRY violation.
     # grid_coords/grid_weights are stored so Stage 2 (CCSD) can reuse the
@@ -397,7 +391,7 @@ def run_scf_with_cache(
     os.close(fd)
     try:
         np.savez_compressed(tmp_name, **result)
-        # EXTREF-04: fsync content THEN dir so stages 2/3 keep durability
+        # fsync content THEN dir so stages 2/3 keep durability
         # parity with stage 1.
         _fsync_file(tmp_name)
         os.replace(tmp_name, cache_path)
@@ -426,7 +420,7 @@ def run_ccsd_with_cache(
     CCSD is run on a CONVERGED Hartree-Fock determinant (EXTREF-01): a
     real HF SCF is performed using the cached PBE density matrix only as
     the initial guess (``kernel(dm0=pbe_dm)``), then convergence is
-    verified before CCSD. This yields canonical CCSD@HF orbitals — NOT
+    verified before CCSD. This yields canonical CCSD@HF orbitals, NOT
     CCSD on grafted, non-self-consistent PBE Kohn-Sham orbitals (which
     would violate Brillouin's theorem and bias the relaxed 1-RDM toward
     the arbitrary PBE start orbitals).
@@ -434,7 +428,7 @@ def run_ccsd_with_cache(
     Returns dict with keys: dm_ao, rho_ref_grid (1D spin-summed),
     grid_weights, ao_grid.
 
-    The rho_ref_grid spin-summing is REQUIRED for UKS species — the
+    The rho_ref_grid spin-summing is REQUIRED for UKS species, the
     data.py loader expects shape (N_grid,), NOT (2, N_grid). See
     xcquinox/alec/data.py:296-299 for the canonical spin-summing
     pattern (`dm_pbe_tot = dm_pbe[0] + dm_pbe[1]` then einsum).
@@ -477,7 +471,7 @@ def run_ccsd_with_cache(
                 spin=spec.spin, unit="angstrom", verbose=0)
     is_uks = bool(scf_payload["spin_unrestricted"])
 
-    # EXTREF-01: run a REAL HF SCF and converge it before CCSD. The cached
+    # run a REAL HF SCF and converge it before CCSD. The cached
     # PBE density matrix is used ONLY as the initial guess to speed
     # convergence; CCSD then sits on the canonical, self-consistent HF
     # determinant (not on grafted PBE Kohn-Sham orbitals, which would
@@ -524,7 +518,7 @@ def run_ccsd_with_cache(
     os.close(fd)
     try:
         np.savez_compressed(tmp_name, **result)
-        # EXTREF-04: fsync content THEN dir (durability parity with stage 1).
+        # fsync content THEN dir (durability parity with stage 1).
         _fsync_file(tmp_name)
         os.replace(tmp_name, cache_path)
         _fsync_dir(inter)
@@ -535,7 +529,7 @@ def run_ccsd_with_cache(
     return result
 
 
-# OEP cascade tiers — split RKS vs UKS because the achievable density_error
+# OEP cascade tiers, split RKS vs UKS because the achievable density_error
 # floor depends on the inner-SCF level shift.
 #
 # RKS (closed-shell): mirrors step-6 _build_step6_notebook.py:729-730,
@@ -552,7 +546,7 @@ _OEP_TIERS_RKS: tuple[dict, ...] = (
 # UKS (open-shell): level_shift=0.5 on the inner SCF (set in run_oep_cascade
 # below) suppresses basin-hopping for X²Π / near-degenerate radicals but
 # slightly biases the converged inner DM relative to the unshifted minimum
-# — bias is small in energy (~mHa) but lifts the density-L2 floor to
+#, bias is small in energy (~mHa) but lifts the density-L2 floor to
 # ~6e-3 on HO at def2-svp/grid_level=1. conv_tol=1e-2 gives ~1.7x margin
 # above that empirical floor (parity with the RKS margin policy) and
 # matches the UKS-acceptable threshold established in
@@ -575,7 +569,7 @@ _REQUIRED_NPZ_KEYS: frozenset[str] = frozenset({
 })
 
 
-# Per-species OEP cascade overrides — populated by the verifier in
+# Per-species OEP cascade overrides, populated by the verifier in
 # scripts/oep_per_species_emit_overrides.py after the harness sweep.
 # Key: (name, charge, spin) tuple matching SpeciesEntry fields.
 # Value: tuple of override-tier dicts; each MERGES onto the
@@ -589,7 +583,7 @@ _PER_SPECIES_OEP_OVERRIDES: dict[tuple[str, int, int], tuple[dict, ...]] = {
     # ── AUTO-GENERATED by scripts/oep_per_species_emit_overrides.py
     # ── Source: reports_local/oep_tune/2026-05-06/summary.json
     # ── Citations [oep-tdl-1..6] resolve to TO-DOWNLOAD entries in
-    #    reports_local/latex/references.bib — AUTHOR-RECALLED, UNVERIFIED.
+    #    reports_local/latex/references.bib: AUTHOR-RECALLED, UNVERIFIED.
     #    Verify each via WebFetch + pdftotext before paper write-up.
 
     # Be winner: density_error_min=4.63e-03, n_iter=3, wall=0.8s
@@ -793,11 +787,11 @@ def _resolve_tiers_for_species(
     default tier (clamped to the last default tier when the override
     has more tiers than the default). When the override has FEWER
     tiers than the default, the resolved cascade is TRUNCATED to the
-    override's length — the override is the authoritative cascade for
+    override's length, the override is the authoritative cascade for
     that species, not a per-tier patch on top of the full default
     cascade.
 
-    The merged tier dict is a *partial* merge: it carries default-tier
+    The merged tier dict is a partial merge: it carries default-tier
     knobs (aux_basis, regularization, max_iter, conv_tol) plus any
     override-set new knobs (grid_level, level_shift, inner_damp,
     inner_diis_start_cycle). The cascade-loop caller fills spin-
@@ -814,7 +808,7 @@ def _resolve_tiers_for_species(
     if len(ovr_tiers) == 0:
         raise ValueError(
             f"override for ({name!r}, {charge}, {spin}) is empty "
-            f"— _validate_overrides should have rejected this earlier"
+            f": _validate_overrides should have rejected this earlier"
         )
     return tuple(
         {**base_tiers[min(i, len(base_tiers) - 1)], **ovr}
@@ -827,7 +821,7 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
 
     Scans `_intermediates/` shallow (NOT recursive); renames every
     `<name>_scf.npz` to `<name>_g1_scf.npz` and every `<name>_ccsd.npz`
-    to `<name>_g1_ccsd.npz` independently — `_scf` and `_ccsd` are
+    to `<name>_g1_ccsd.npz` independently, `_scf` and `_ccsd` are
     scanned in two separate passes so a crash mid-migration leaves
     the remaining files visible to the next migration pass (spec
     sec. 5.6 partial-state recovery).
@@ -858,7 +852,7 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     import re
     # Pre-compile patterns that match ANY `_g{N}_<stage>.npz` for N in [0,9]
     # (MoleculeSpec.grid_level range per config.py:370). Used to skip
-    # already-grid-suffixed files of any grid_level — not just _g1_. A
+    # already-grid-suffixed files of any grid_level, not just _g1_. A
     # `name.endswith(suffix_new)`-only skip would corrupt future
     # `_g2_*` / `_g3_*` caches written by override species (spec §5.6
     # explicitly says "Override species at grid_level=2 get fresh _g2_*
@@ -872,7 +866,7 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     ):
         for p in inter.iterdir():     # SHALLOW: iterdir, not rglob
             name = p.name
-            # Use regex/endswith — NOT a `"_g" in name` substring test
+            # Use regex/endswith, NOT a `"_g" in name` substring test
             # (that would corrupt Mg/Hg/Ag). Skip ANY `_g{N}_<stage>.npz`
             # for any N, else `_g2_scf.npz` would be re-renamed to
             # `_g2_g1_scf.npz`.
@@ -891,7 +885,7 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     # Parent-directory fsync for durability across power loss
     # (POSIX rename is atomic per-file but not durable until parent fsync).
     # Only catch AttributeError (Windows lacks O_DIRECTORY); let real
-    # OSErrors (ENOSPC, EIO) bubble — durability failures should fail
+    # OSErrors (ENOSPC, EIO) bubble, durability failures should fail
     # loudly so the user can intervene before SCF results land in a
     # broken filesystem state.
     if hasattr(os, "O_DIRECTORY"):
@@ -943,13 +937,13 @@ def run_oep_cascade(
     npz_path = cache_dir / f"{spec.name}.npz"
 
     if npz_path.is_file():
-        # Verify completeness — must have all required keys
+        # Verify completeness, must have all required keys
         try:
             with np.load(npz_path, allow_pickle=False) as z:
                 if _REQUIRED_NPZ_KEYS.issubset(set(z.files)):
                     return npz_path
         except (OSError, ValueError):
-            pass  # Corrupt cache — recompute
+            pass  # Corrupt cache, recompute
 
     # Build a MoleculeSpec for run_oep_inversion
     coords = atoms.get_positions()
@@ -1047,13 +1041,13 @@ def run_oep_cascade(
     # provenance (its merge semantics preserve any phase-1 key not in its
     # own payload, so grid_level_used survives the merge).
     # Use np.savez_compressed for consistency with stages 1+2 caches.
-    # CFG-03: record the generating grid_level so data.py can assert the
+    # record the generating grid_level so data.py can assert the
     # consumer's resolved grid_level matches what produced this reference.
     # Record the WINNING tier's grid_level (an override tier
     # may set its own), not the function arg. ccsd_payload['rho_ref_grid'] was
     # computed at the function-arg grid_level, so if the winning tier ran the
     # OEP on a DIFFERENT grid the stored rho_ref_grid and vxc_ref would live on
-    # mismatched grids — raise loudly rather than mislabel (no current override
+    # mismatched grids, raise loudly rather than mislabel (no current override
     # does this; all use grid_level=1).
     if winning_grid_level != grid_level:
         raise RuntimeError(
@@ -1081,7 +1075,7 @@ def run_oep_cascade(
         dm_target=ccsd_payload["dm_ao"],
         method="ccsd",
     )
-    # EXTREF-04: fsync the parent dir for durability parity with stage 1.
+    # fsync the parent dir for durability parity with stage 1.
     _fsync_dir(cache_dir)
     return npz_path
 
@@ -1237,7 +1231,7 @@ def precompute_all(
     Generalizable to non-DFS pools: when ``atoms_by_key`` (a
     ``{(name,charge,spin): ASE Atoms}`` map) is supplied, geometries are taken
     from it directly instead of :func:`resolve_geometry` (whose source-based
-    lookups only know the DFS/probe sets) — so any external pool can provide its
+    lookups only know the DFS/probe sets), so any external pool can provide its
     own molecules. ``validate_overrides=False`` skips the DFS-specific OEP
     per-species override check (those overrides target DFS species absent from
     an external pool).

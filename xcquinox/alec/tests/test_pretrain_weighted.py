@@ -68,7 +68,7 @@ def test_run_pretrain_integration_mode_runs_without_error(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
 
-    # Minimal pretrain_data.npz — match the columns _assemble_pretrain_descriptors
+    # Minimal pretrain_data.npz: match the columns _assemble_pretrain_descriptors
     # will request for arch "deep" (no dm, no cusp): rho_all + sigma_all.
     # Fx_all / Fc_all are the (F - 1) targets; zero means F = 1 (LDA/PW92).
     n_grid = 64
@@ -140,7 +140,7 @@ def test_integration_mode_yields_smaller_e_xc_residual_than_unweighted():
         residual = pred_minus_1 - target_F_minus_1
         return jnp.sum(w * residual ** 2) / (jnp.sum(w) + 1e-12)
 
-    # E_xc-weighted residual — the quantity that actually matters for AE.
+    # E_xc-weighted residual, the quantity that actually matters for AE.
     def e_xc_residual(p):
         pred_minus_1 = p * jnp.tanh(rho)
         return jnp.sum(w * (pred_minus_1 - target_F_minus_1) ** 2)
@@ -207,7 +207,7 @@ def test_integration_weights_grid_weights_none_matches_legacy():
 
 
 # ---------------------------------------------------------------------------
-# PRE-01: weight convention pin — linear |rho * eps_LDA| (option b)
+# PRE-01: weight convention pin, linear |rho * eps_LDA| (option b)
 # ---------------------------------------------------------------------------
 
 def test_integration_weights_linear_convention():
@@ -245,7 +245,7 @@ def test_integration_weights_linear_convention():
     )
     # Sanity: linear and squared are numerically distinct (so the test is non-trivial).
     assert not jnp.allclose(w_x, expected_x_squared, rtol=1e-6), (
-        "linear and squared weights are identical — test is degenerate"
+        "linear and squared weights are identical, test is degenerate"
     )
 
 
@@ -272,7 +272,7 @@ def test_run_pretrain_integration_mode_no_grid_weights_sets_degradation_flag(tmp
     n_grid = 32
     rho = np.linspace(0.01, 5.0, n_grid).astype(np.float64)
     sigma = (rho ** (8.0 / 3.0)) * 0.1
-    # NOTE: no 'weights_all' key — this is the degraded scenario.
+    # NOTE: no 'weights_all' key, this is the degraded scenario.
     np.savez(
         str(data_dir / "pretrain_data.npz"),
         rho_all=rho,

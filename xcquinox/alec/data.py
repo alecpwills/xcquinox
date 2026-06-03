@@ -1,4 +1,4 @@
-"""xcquinox.alec.data — MoleculeData TypedDict and precompute.
+"""xcquinox.alec.data: MoleculeData TypedDict and precompute.
 
 Implements THE SPEC §6.1 (MoleculeData), §6.2 (precompute_fixed_density_data).
 """
@@ -23,7 +23,7 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     "ref_density_method",
     "E_ref_literature",
     "vxc_ref",
-    # OEP provenance (informational only — not validated against the
+    # OEP provenance (informational only, not validated against the
     # consumer's runtime config in this loader, but available for callers
     # that want to assert agreement).
     "oep_baseline_xc",
@@ -177,7 +177,7 @@ class MoleculeData(TypedDict, total=True):
     mol_metadata: dict
     # Cached pyscfad.gto.Mole built once at precompute time so that hot-path
     # training (pyscfad backend, filter_jit'd) does not call Mole.build()
-    # inside the traced region — Mole.build() invokes numpy.__array__ and
+    # inside the traced region, Mole.build() invokes numpy.__array__ and
     # raises TracerArrayConversionError under jit. Always present; may be
     # None if pyscfad is unavailable or Mole construction failed.
     _pyscfad_mol: object | None
@@ -458,7 +458,7 @@ def precompute_fixed_density_data(
 
     # Cache pyscfad Mole for hot-path training (avoids Mole.build() inside
     # jit; see MoleculeData._pyscfad_mol docstring). pyscfad is optional,
-    # so swallow any import/build failure and leave the slot as None — the
+    # so swallow any import/build failure and leave the slot as None, the
     # pyscfad backend's _build_pyscfad_mf will fall back to rebuilding.
     pyscfad_mol: object | None = None
     try:

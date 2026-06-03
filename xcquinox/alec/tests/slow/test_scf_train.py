@@ -1,6 +1,6 @@
 """Slow end-to-end smokes for the SCF solver.
 
-Not run in normal CI — marked with @pytest.mark.slow. Run manually when
+Not run in normal CI, marked with @pytest.mark.slow. Run manually when
 touching SCF code: `pytest xcquinox/alec/tests/slow/ -v -m slow`.
 """
 import pytest

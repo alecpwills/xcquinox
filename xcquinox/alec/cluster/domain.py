@@ -1,9 +1,9 @@
-"""xcquinox.alec.cluster.domain — physics tables for the HPC training harness.
+"""xcquinox.alec.cluster.domain: physics tables for the HPC training harness.
 
 The cluster harness extracts step-7 spec-building from the notebook
 ``notebooks/_build_step7_notebook.py`` into a generic ``cluster/`` package.
-This module isolates the parts of that extraction that are *physics*, not
-*workflow*: the atomic-energy reference table, the kcal/mol -> Ha conversion
+This module isolates the parts of that extraction that are physics, not
+workflow: the atomic-energy reference table, the kcal/mol -> Ha conversion
 constant, the Dick atom-regularizer element set, and the two BH76/IP13
 metadata-to-loss-dict extractor functions.
 
@@ -30,7 +30,7 @@ KCAL_PER_HA = 627.5094740631
 # Chakravorty 1993 exact non-relativistic atomic totals (Ha).
 #
 # (L) Chakravorty, Gwaltney, Davidson, Parpia, Froese Fischer,
-#     Phys. Rev. A 47, 3649 (1993) — exact non-relativistic atomic totals.
+#     Phys. Rev. A 47, 3649 (1993), exact non-relativistic atomic totals.
 #
 # Used as the atom_energies anchor AND as placeholder target values for
 # single-atom MoleculeSpecs (TrainingSpec.validate requires a targets entry
@@ -49,8 +49,8 @@ ATOMIC_ENERGIES_CHAKRAVORTY = {
     # Heavier elements required by the BH76+W4-11 reaction pool (HCl, PH3,
     # SiH4, and the B/Be/Al W4-11 species). Transcribed verbatim from
     # Chakravorty, Gwaltney, Davidson, Parpia, Froese Fischer, Phys. Rev. A
-    # 47, 3649 (1993), Table XI — "Estimated nonrelativistic stationary-
-    # point-nucleus atomic energies" (hartrees) — neutral-atom diagonal
+    # 47, 3649 (1993), Table XI, "Estimated nonrelativistic stationary-
+    # point-nucleus atomic energies" (hartrees), neutral-atom diagonal
     # E(Z, Z). Printed precision: 5 dp for Be/B, 3 dp for Z >= 13.
     'Be': -14.66736,   # (L) Chakravorty 1993 Table XI (neutral Be, -E(4))
     'B':  -24.65391,   # (L) Chakravorty 1993 Table XI (neutral B,  -E(5))
@@ -89,8 +89,8 @@ DFS_POOL_SIZE = 26
 def bh76_meta_to_loss_dict(tp):
     """BH76 TrainingPoint -> loss-input dict (kcal/mol -> Ha).
 
-    Reads ``metadata['e_rxn_ref']`` — the mode-selected reaction energy the
-    DFS pool sets (kcal/mol) — and converts it to Hartree via
+    Reads ``metadata['e_rxn_ref']``: the mode-selected reaction energy the
+    DFS pool sets (kcal/mol), and converts it to Hartree via
     :data:`KCAL_PER_HA`.
 
     Parameters
@@ -194,7 +194,7 @@ class DomainProfile:
     name : str
         Registry key for this profile.
     atom_energies : dict[str, float]
-        Atomic-energy reference table (Ha) — the Chakravorty 1993 dict.
+        Atomic-energy reference table (Ha), the Chakravorty 1993 dict.
     regularize_atom_syms : tuple[str, ...]
         Element symbols whose single-atom MoleculeSpecs are anchored
         (the Dick H/Li set).
@@ -220,7 +220,7 @@ class DomainProfile:
     pool_builder: Callable = field(default=_dfs_pool_builder)
     # When True, the harness restricts CCSD-reference generation to the species
     # actually present in the loaded subset ledger (training-subset species),
-    # passing their geometries directly — instead of the canonical DFS species
+    # passing their geometries directly, instead of the canonical DFS species
     # union. Keeps the preflight feasible for large external pools.
     ccsd_species_from_ledger: bool = False
 

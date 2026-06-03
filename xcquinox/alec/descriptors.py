@@ -1,4 +1,4 @@
-"""xcquinox.alec.descriptors — Descriptor ABC, registry, and concrete descriptors.
+"""xcquinox.alec.descriptors: Descriptor ABC, registry, and concrete descriptors.
 
 Implements THE SPEC §3: registry-driven descriptor composition for additional
 network input features beyond (rho, sigma).
@@ -74,16 +74,16 @@ class CuspDescriptor(Descriptor):
     Both features are bounded for network-friendly inputs:
       * Column 0 ``cusp_factor = exp(-2 Z_nearest r_min)`` ∈ [0, 1], where
         Z_nearest is the charge of the nearest nucleus and r_min is the
-        distance to it. This is a heuristic proximity feature *motivated by*
+        distance to it. This is a heuristic proximity feature motivated by
         the Kato electron-nucleus cusp condition (Kato, *Commun. Pure Appl.
-        Math.* **10**, 151 (1957)), whose exact statement is
+        Math.* 10, 151 (1957)), whose exact statement is
         ``(∂⟨ρ⟩/∂r)|_{r=0} = -2Z·ρ(0)`` on the spherically-averaged density;
         the exponential decay here approximates the resulting density-form
         Slater envelope ``exp(-2 Z r)`` (the density ρ=|ψ|² decays at twice the
         ``exp(-Z r)`` wavefunction rate) rather than enforcing the condition
         exactly.
       * Column 1 (``log_transform=True``):
-        ``tanh(log(Σ_A Z_A / r_A) / 5)`` ∈ (-1, 1) — log-compressed
+        ``tanh(log(Σ_A Z_A / r_A) / 5)`` ∈ (-1, 1), log-compressed
         nuclear-attraction-like weight (Dick & Fernández-Serra XCDiff
         convention). With ``log_transform=False``, the same input is fed
         through ``tanh(Σ_A Z_A / r_A / 5)`` (no log).
@@ -108,20 +108,20 @@ class DMStatisticsDescriptor(Descriptor):
 
     The 3 features (see ``xcquinox.features.compute_dm_features_array``) are,
     in order:
-      0. ``idempotency_error`` — normalized Frobenius deviation from the
+      0. ``idempotency_error``: normalized Frobenius deviation from the
          single-determinant idempotency condition; ~0 for an HF/KS reference,
          growing with correlation.
-      1. ``dm_entropy`` — Shannon (von-Neumann-like) entropy of the natural-
+      1. ``dm_entropy``: Shannon (von-Neumann-like) entropy of the natural-
          orbital occupations normalized to a probability distribution
          (``-sum_i p_i ln p_i`` with ``p_i = n_i / sum_j n_j``; the occupations
-         ``n_i`` are the eigenvalues of ``D S`` — Löwdin, Phys. Rev. 97, 1474
-         (1955)). NOTE: this quantity is *size-dependent* (it scales
+         ``n_i`` are the eigenvalues of ``D S``: Löwdin, Phys. Rev. 97, 1474
+         (1955)). NOTE: this quantity is size-dependent (it scales
          roughly like ``ln N_occ``) and is nonzero even for a single
-         determinant, so it is NOT a clean electron-correlation indicator —
+         determinant, so it is NOT a clean electron-correlation indicator,
          ``idempotency_error`` is the quantity that vanishes for a single
          determinant. See ``xcquinox.features.compute_dm_features`` for the
          full discussion.
-      2. ``off_diag_norm`` — Frobenius norm of the off-diagonal AO density-matrix
+      2. ``off_diag_norm``: Frobenius norm of the off-diagonal AO density-matrix
          block, normalized by the trace.
 
     ``idempotency_error`` and ``off_diag_norm`` grow with departure from a single
@@ -132,7 +132,7 @@ class DMStatisticsDescriptor(Descriptor):
     scalars that ``__call__`` ``jnp.tile``s identically to every grid point and
     feeds into the per-point (semilocal) enhancement factor. Consequences:
       * The per-point ε_xc then depends on whole-system quantities, so the
-        functional is NOT size-consistent — the XC energy density at a point in
+        functional is NOT size-consistent, the XC energy density at a point in
         fragment A shifts if a distant fragment B is added to the system.
       * ``dm_entropy`` is extensive (~ln N_occ), so as a constant local feature
         it largely encodes molecule identity/size (a label-leakage / overfitting
@@ -140,7 +140,7 @@ class DMStatisticsDescriptor(Descriptor):
     Making this defensible requires an ARCHITECTURE change (feed these as
     size-INTENSIVE molecule-level conditioning, or normalize per electron), which
     redefines the feature and invalidates checkpoints trained on the current
-    values — a deferred design decision requiring sign-off, NOT changed here.
+    values: a deferred design decision requiring sign-off, NOT changed here.
     """
     n_features: int = eqx.field(default=3, static=True)
     # When True, divides dm_entropy by ln(max(n_orb_eff, 2)), where

@@ -1,6 +1,6 @@
 """Dick & Fernandez-Serra 2021 SI §II training pool.
 
-Citation: Dick, S.; Fernandez-Serra, M. *Phys. Rev. B* **104**, L161109 (2021).
+Citation: Dick, S.; Fernandez-Serra, M. Phys. Rev. B 104, L161109 (2021).
 SI §II "Training Data" page 1 (verbatim member lists transcribed below).
 
 Pool composition (28 distinct training points):
@@ -14,14 +14,14 @@ All published reference values (AE in kcal/mol for the 21 AE molecules;
 barrier_ref / reaction_energy_ref for BH76; ip_ref for IP13) come from
 authoritative benchmarks and are attached to the build_dfs_pool() output
 via Atoms.info /
-reaction-spec dict entries — never fabricated.  See DFS_AE_DATA for AE
+reaction-spec dict entries, never fabricated.  See DFS_AE_DATA for AE
 sources (W4-11 anchors via step-6 for H2O+C2H2; Haunschild & Klopper
 J. Chem. Phys. 136, 164102 (2012) for the other 19).
 
 Spin / charge metadata
 ----------------------
-Every species in this pool — molecular AE entries, BH76 reactant/product
-species, IP13 neutral/cation pairs, and atomic refs — carries an
+Every species in this pool, molecular AE entries, BH76 reactant/product
+species, IP13 neutral/cation pairs, and atomic refs, carries an
 explicit ground-state ``spin`` (= 2S = N_α − N_β, PySCF convention) and
 ``charge`` (default 0; +1 for cations).  Sources for every value:
   - Atomic spins: NIST Atomic Spectra Database (ASD; Standard Reference
@@ -30,13 +30,13 @@ explicit ground-state ``spin`` (= 2S = N_α − N_β, PySCF convention) and
     Molecular Structure*; per-entry comments cite the term symbol.
 
 Special cases (verified against published spectroscopy):
-  - **NH** (X³Σ⁻): triplet ground state — spin=2.  Herzberg
+  - NH (X³Σ⁻): triplet ground state, spin=2.  Herzberg
     "Molecular Spectra and Molecular Structure I" §VI; NIST CCCBDB.
-  - **CH₂** (X³B₁): triplet ground state — spin=2.  ¹A₁ singlet is a
+  - CH₂ (X³B₁): triplet ground state, spin=2.  ¹A₁ singlet is a
     low-lying excited state ~9 kcal/mol higher (the "methylene paradox";
     Bunker & Sears 1985; NIST CCCBDB).  G2/97 traj entry 106 ("Triplet
-    carbene") carries the triplet TAE_e — must be run as triplet.
-  - **O₃** (X¹A₁): closed-shell singlet ground state despite
+    carbene") carries the triplet TAE_e, must be run as triplet.
+  - O₃ (X¹A₁): closed-shell singlet ground state despite
     multireference character (Borden 1996; W4-17 SI).  spin=0.
 """
 from __future__ import annotations
@@ -59,17 +59,17 @@ from ase.io import read
 #       These are the canonical anchors for cross-notebook
 #       reproducibility (step 5 / step 6 / step 7 must all use the same
 #       AE reference for a given molecule).  See step-6 design spec
-#       §17.1 and §17.3 (Δ from W4-17 < 0.5 kcal/mol — well within the
+#       §17.1 and §17.3 (Δ from W4-17 < 0.5 kcal/mol, well within the
 #       1 kJ/mol confidence interval of the W4 family).
 #
 # - "Haunschild2012":
 #       Haunschild & Klopper, "New accurate reference energies for the
-#       G2/97 test set", J. Chem. Phys. **136**, 164102 (2012),
+#       G2/97 test set", J. Chem. Phys. 136, 164102 (2012),
 #       DOI 10.1063/1.4704796.  Table I, column "E_ref,non-rel"
 #       (frozen-core, all-electron-corrected, non-relativistic
 #       atomization energies obtained from CCSD(T)(F12)/cc-pVQZ-F12
 #       with higher-excitation and core/core-valence corrections;
-#       reported in kJ/mol — converted here via 1 kcal = 4.184 kJ).
+#       reported in kJ/mol, converted here via 1 kcal = 4.184 kJ).
 #       This dataset has a 0.1 kJ/mol per valence electron error
 #       budget (see Haunschild 2012 §III) and a published mean
 #       deviation of −0.75 kJ/mol vs ATcT.
@@ -88,7 +88,7 @@ from ase.io import read
 #   - CH2 in g2_97.traj contains both singlet (idx 105) and triplet
 #     (idx 106) entries with identical Hill formula "CH2"; build_dfs_pool
 #     selects the triplet (last in iteration), matching W4-17 ch2-trip
-#     (TAE_e = 190.53) and Haunschild "Triplet carbene" (797.23 kJ/mol →
+#     (TAE_e = 190.53) and Haunschild "Triplet carbene" (797.23 kJ/mol -> 
 #     190.541 kcal/mol).  Spin metadata for this entry MUST be 2.
 #   - Open-shell molecules (NO, CH, OH, NO2, NH, CH3, CH2-triplet) carry
 #     their published reference AEs at the appropriate ground-state
@@ -174,7 +174,7 @@ DFS_AE_DATA = [
      "spin_source": "X²A1 doublet ground state (NIST CCCBDB)",
      "source": "Haunschild2012 Table I, E_ref,non-rel = 954.10 kJ/mol"},
     {"hill": "HN",   "name": "Imidogen",
-     # NH ground state is X³Σ⁻ triplet — analogous to O2.
+     # NH ground state is X³Σ⁻ triplet, analogous to O2.
      # Herzberg, *Molecular Spectra and Molecular Structure I*, §VI;
      # NIST CCCBDB row "NH (Imidogen)".
      "ae_kcalmol": 347.02 / 4.184,
@@ -224,10 +224,10 @@ DFS_AE_DATA = [
 # that already iterates pool["ae_molecules"]).
 DFS_AE_HILL = [d["hill"] for d in DFS_AE_DATA]
 
-# Quick-lookup map by Hill formula → AE in kcal/mol.
+# Quick-lookup map by Hill formula -> AE in kcal/mol.
 DFS_AE_KCALMOL = {d["hill"]: d["ae_kcalmol"] for d in DFS_AE_DATA}
 
-# Quick-lookup map by Hill formula → ground-state spin (2S, PySCF
+# Quick-lookup map by Hill formula -> ground-state spin (2S, PySCF
 # convention).  Used by build_dfs_pool() to attach at.info["spin"] for
 # every Atoms returned, and re-exported as a separate map so callers
 # (notebook builders, post-processing scripts) can validate spin
@@ -235,7 +235,7 @@ DFS_AE_KCALMOL = {d["hill"]: d["ae_kcalmol"] for d in DFS_AE_DATA}
 DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 
 # 3 BH76 reactions per Dick SI §II:
-#   OH + N2 → H + N2O,   OH + CH3 → O + CH4,   HF + F → H + F2
+#   OH + N2 -> H + N2O,   OH + CH3 -> O + CH4,   HF + F -> H + F2
 #
 # Reference forward-barrier heights (Vf) and reverse-barrier heights (Vr)
 # in kcal/mol come from the Truhlar Minnesota-database BH76 subset entries:
@@ -250,28 +250,28 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 # bh76_mode toggle
 # ----------------
 # The loss term ``_rxn_residual_term`` (losses.py) computes
-# ``e_rxn = Σ(coeffs · e_nn) = E(products) − E(reactants)`` — a true
-# *reaction energy* ΔE, NOT a barrier height. Dick & Fernandez-Serra
+# ``e_rxn = Σ(coeffs · e_nn) = E(products) − E(reactants)``: a true
+# reaction energy ΔE, NOT a barrier height. Dick & Fernandez-Serra
 # 2021 trained against reaction energies (their training set had no
 # transition-state geometries; SI §II). Therefore each entry below
 # carries BOTH numbers:
-#   - ``barrier_ref``        — the forward barrier height (kept for
+#   - ``barrier_ref``: the forward barrier height (kept for
 #                              provenance and for the opt-in
 #                              ``bh76_mode="barrier_height"`` path).
-#   - ``reaction_energy_ref``— the true reaction energy ΔE of the
-#                              reactant→product direction below.
+#   - ``reaction_energy_ref``: the true reaction energy ΔE of the
+#                              reactant -> product direction below.
 # The mode-aware builder in training_points.py selects which of the two
 # the loss is trained against per ``bh76_mode``.
 # ``reaction_energy_ref`` is taken DIRECTLY from the GMTKN55-BH76RC subset
 # (W2-F12 best estimates; grimme-lab/GMTKN55 ``BH76/.resRC``, pinned commit
-# 354c3ded — see scripts/script_data/GMTKN55_BH76RC_PROVENANCE.md), the source
+# 354c3ded: see scripts/script_data/GMTKN55_BH76RC_PROVENANCE.md), the source
 # of truth Dick & Fernandez-Serra (2021) used:
-#   - OH+N2 → H+N2O:  +64.91 kcal/mol   ('h n2o -> oh n2' = -64.91, reversed)
-#   - OH+CH3 → O+CH4: -5.44 kcal/mol    ('O CH4 -> oh ch3' = +5.44, reversed)
-#   - HF+F → H+F2:    +103.28 kcal/mol  ('h f2 -> hf f' = -103.28, reversed)
+#   - OH+N2 -> H+N2O:  +64.91 kcal/mol   ('h n2o -> oh n2' = -64.91, reversed)
+#   - OH+CH3 -> O+CH4: -5.44 kcal/mol    ('O CH4 -> oh ch3' = +5.44, reversed)
+#   - HF+F -> H+F2:    +103.28 kcal/mol  ('h f2 -> hf f' = -103.28, reversed)
 # These differ by ~0.13-0.25 kcal/mol from the Minnesota REF1 barrier
 # difference Vr − Vf (the W2-F12-vs-barrier-database delta); GMTKN55 is the
-# authoritative reaction-energy reference, so it — not Vr − Vf — defines ΔE.
+# authoritative reaction-energy reference, so it, not Vr − Vf, defines ΔE.
 #
 # Per-reaction ``species_spins`` and ``species_charges`` dicts hold the
 # ground-state spin (2S, PySCF convention) and charge (default 0) for
@@ -299,10 +299,10 @@ DFS_BH76_REACTIONS = [
         "reactants": ["HO", "N2"],
         "products": ["H", "N2O"],
         "coeffs": [-1.0, -1.0, +1.0, +1.0],
-        # Forward barrier of OH+N2→H+N2O = REVERSE barrier of NHTBH38
-        # entry #1 (H+N2O → OH+N2, Vf=17.13, Vr=82.27 kcal/mol REF1).
-        "barrier_ref": 82.27,  # kcal/mol — forward barrier (Vr of NHTBH38 #1)
-        # Reaction energy ΔE of OH+N2 → H+N2O = +64.91 kcal/mol, taken directly
+        # Forward barrier of OH+N2 -> H+N2O = REVERSE barrier of NHTBH38
+        # entry #1 (H+N2O -> OH+N2, Vf=17.13, Vr=82.27 kcal/mol REF1).
+        "barrier_ref": 82.27,  # kcal/mol, forward barrier (Vr of NHTBH38 #1)
+        # Reaction energy ΔE of OH+N2 -> H+N2O = +64.91 kcal/mol, taken directly
         # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'h n2o -> oh n2' = -64.91,
         # reversed). [Minnesota Vr − Vf = 82.27 − 17.13 = 65.14 for reference.]
         "reaction_energy_ref": 64.91,  # kcal/mol (GMTKN55-BH76RC)
@@ -311,7 +311,7 @@ DFS_BH76_REACTIONS = [
         "species_spins":   {"HO": 1, "N2": 0, "H": 1, "N2O": 0},
         "species_charges": {"HO": 0, "N2": 0, "H": 0, "N2O": 0},
         "source": (
-            "NHTBH38/08 entry 1 (H+N2O → OH+N2), Vr (REF1) = 82.27 kcal/mol; "
+            "NHTBH38/08 entry 1 (H+N2O -> OH+N2), Vr (REF1) = 82.27 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
         ),
         "spin_source": (
@@ -324,10 +324,10 @@ DFS_BH76_REACTIONS = [
         "reactants": ["HO", "CH3"],
         "products": ["O", "CH4"],
         "coeffs": [-1.0, -1.0, +1.0, +1.0],
-        # Forward barrier of OH+CH3→O+CH4 = REVERSE barrier of HTBH38
-        # entry 19/20 (O+CH4 → OH+CH3, Vf=13.47, Vr=7.90 kcal/mol REF1).
-        "barrier_ref": 7.90,  # kcal/mol — forward barrier (Vr of HTBH38 19-20)
-        # Reaction energy ΔE of OH+CH3 → O+CH4 = −5.44 kcal/mol, taken directly
+        # Forward barrier of OH+CH3 -> O+CH4 = REVERSE barrier of HTBH38
+        # entry 19/20 (O+CH4 -> OH+CH3, Vf=13.47, Vr=7.90 kcal/mol REF1).
+        "barrier_ref": 7.90,  # kcal/mol, forward barrier (Vr of HTBH38 19-20)
+        # Reaction energy ΔE of OH+CH3 -> O+CH4 = −5.44 kcal/mol, taken directly
         # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'O CH4 -> oh ch3' = +5.44,
         # reversed). [Minnesota Vr − Vf = 7.90 − 13.47 = −5.57 for reference.]
         "reaction_energy_ref": -5.44,  # kcal/mol (GMTKN55-BH76RC)
@@ -336,7 +336,7 @@ DFS_BH76_REACTIONS = [
         "species_spins":   {"HO": 1, "CH3": 1, "O": 2, "CH4": 0},
         "species_charges": {"HO": 0, "CH3": 0, "O": 0, "CH4": 0},
         "source": (
-            "HTBH38/08 entry 19-20 (O+CH4 → OH+CH3), Vr (REF1) = 7.90 kcal/mol; "
+            "HTBH38/08 entry 19-20 (O+CH4 -> OH+CH3), Vr (REF1) = 7.90 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
         ),
         "spin_source": (
@@ -353,10 +353,10 @@ DFS_BH76_REACTIONS = [
         "reactants": ["HF", "F"],
         "products": ["H", "F2"],
         "coeffs": [-1.0, -1.0, +1.0, +1.0],
-        # Forward barrier of HF+F→H+F2 = REVERSE barrier of NHTBH38
-        # entry #5 (H+F2 → HF+F, Vf=2.27, Vr=105.80 kcal/mol REF1).
-        "barrier_ref": 105.80,  # kcal/mol — forward barrier (Vr of NHTBH38 #5)
-        # Reaction energy ΔE of HF+F → H+F2 = +103.28 kcal/mol, taken directly
+        # Forward barrier of HF+F -> H+F2 = REVERSE barrier of NHTBH38
+        # entry #5 (H+F2 -> HF+F, Vf=2.27, Vr=105.80 kcal/mol REF1).
+        "barrier_ref": 105.80,  # kcal/mol, forward barrier (Vr of NHTBH38 #5)
+        # Reaction energy ΔE of HF+F -> H+F2 = +103.28 kcal/mol, taken directly
         # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'h f2 -> hf f' = -103.28,
         # reversed). [Minnesota Vr − Vf = 105.80 − 2.27 = +103.53 for reference.]
         "reaction_energy_ref": 103.28,  # kcal/mol (GMTKN55-BH76RC)
@@ -365,7 +365,7 @@ DFS_BH76_REACTIONS = [
         "species_spins":   {"HF": 0, "F": 1, "H": 1, "F2": 0},
         "species_charges": {"HF": 0, "F": 0, "H": 0, "F2": 0},
         "source": (
-            "NHTBH38/08 entry 5 (H+F2 → HF+F), Vr (REF1) = 105.80 kcal/mol; "
+            "NHTBH38/08 entry 5 (H+F2 -> HF+F), Vr (REF1) = 105.80 kcal/mol; "
             "Zheng, Zhao, Truhlar JCTC 5, 808 (2009); also GMTKN55-BH76."
         ),
         "spin_source": (
@@ -375,24 +375,24 @@ DFS_BH76_REACTIONS = [
     },
 ]
 
-# 2 IP13 ionization potentials: Li → Li⁺,  C → C⁺
+# 2 IP13 ionization potentials: Li -> Li⁺,  C -> C⁺
 #
 # Reference IPs are NIST experimental atomic ionization energies, which
 # are the canonical values used by IP13 (Lynch, Truhlar JPCA 107, 3898,
 # 2003) and IP23 (Goerigk-Grimme GMTKN55, 2017). Conversion factor:
 # 1 eV = 23.0605 kcal/mol (CODATA).
-#   - Li I → Li II: 5.391719 eV (43487.150 cm⁻¹) → 124.335736 kcal/mol
+#   - Li I -> Li II: 5.391719 eV (43487.150 cm⁻¹) -> 124.335736 kcal/mol
 #       NIST atomic spectra database, Atomic Data for Lithium,
 #       https://www.physics.nist.gov/PhysRefData/Handbook/Tables/lithiumtable1.htm
-#   - C  I → C  II: 11.26030 eV (90820.45 cm⁻¹) → 259.668148 kcal/mol
+#   - C  I -> C  II: 11.26030 eV (90820.45 cm⁻¹) -> 259.668148 kcal/mol
 #       NIST atomic spectra database, Atomic Data for Carbon,
 #       https://www.physics.nist.gov/PhysRefData/Handbook/Tables/carbontable1.htm
 #
 # Atomic ground-state spins (PySCF 2S convention) from NIST ASD:
-#   - Li I  (3 e⁻): ²S       → spin=1
-#   - Li II (2 e⁻): ¹S       → spin=0
-#   - C  I  (6 e⁻): ³P       → spin=2
-#   - C  II (5 e⁻): ²P°      → spin=1
+#   - Li I  (3 e⁻): ²S -> spin=1
+#   - Li II (2 e⁻): ¹S -> spin=0
+#   - C  I  (6 e⁻): ³P -> spin=2
+#   - C  II (5 e⁻): ²P° -> spin=1
 # Naming convention: the IP13 loss channel looks up neutral and cation
 # total energies by separate MoleculeSpec.name keys (see
 # xcquinox/alec/losses.py::L5GradnormVxcStep7._ip13_channel which reads

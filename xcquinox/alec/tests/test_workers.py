@@ -45,7 +45,7 @@ def _make_arch(**overrides):
 
 
 # ---------------------------------------------------------------------------
-# (1) test_pretrain_worker_subprocess — xfail
+# (1) test_pretrain_worker_subprocess, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires pretrain_data_tiny.pkl fixture", strict=False)
@@ -55,7 +55,7 @@ def test_pretrain_worker_subprocess():
 
 
 # ---------------------------------------------------------------------------
-# (2) test_train_worker_subprocess — xfail
+# (2) test_train_worker_subprocess, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires end-to-end training infrastructure", strict=False)
@@ -65,7 +65,7 @@ def test_train_worker_subprocess():
 
 
 # ---------------------------------------------------------------------------
-# (3) test_pretrain_worker_json_output_schema — xfail
+# (3) test_pretrain_worker_json_output_schema, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires pretrain_data_tiny.pkl fixture", strict=False)
@@ -75,7 +75,7 @@ def test_pretrain_worker_json_output_schema():
 
 
 # ---------------------------------------------------------------------------
-# (4) test_train_worker_json_output_schema — xfail
+# (4) test_train_worker_json_output_schema, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires pretrain_data_tiny.pkl fixture", strict=False)
@@ -85,7 +85,7 @@ def test_train_worker_json_output_schema():
 
 
 # ---------------------------------------------------------------------------
-# (5) test_stdout_stderr_separation — xfail
+# (5) test_stdout_stderr_separation, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires pretrain_data_tiny.pkl fixture", strict=False)
@@ -95,7 +95,7 @@ def test_stdout_stderr_separation():
 
 
 # ---------------------------------------------------------------------------
-# (6) test_thread_limit_env_vars_set_before_jax_import — PASS
+# (6) test_thread_limit_env_vars_set_before_jax_import, PASS
 # ---------------------------------------------------------------------------
 
 def test_thread_limit_env_vars_set_before_jax_import(tmp_path):
@@ -148,7 +148,7 @@ def test_thread_limit_env_vars_set_before_jax_import(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (7) test_legacy_pretrain_shim_translates_argv — xfail
+# (7) test_legacy_pretrain_shim_translates_argv, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires legacy shim implementation", strict=False)
@@ -158,7 +158,7 @@ def test_legacy_pretrain_shim_translates_argv():
 
 
 # ---------------------------------------------------------------------------
-# (8) test_legacy_train_shim_translates_argv — xfail
+# (8) test_legacy_train_shim_translates_argv, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires legacy shim implementation", strict=False)
@@ -168,7 +168,7 @@ def test_legacy_train_shim_translates_argv():
 
 
 # ---------------------------------------------------------------------------
-# (9) test_worker_failure_path — PASS
+# (9) test_worker_failure_path, PASS
 # ---------------------------------------------------------------------------
 
 def test_worker_failure_path(tmp_path):
@@ -198,7 +198,7 @@ def test_worker_failure_path(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (10) test_progress_json_written_during_training — xfail
+# (10) test_progress_json_written_during_training, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires full training infrastructure", strict=False)
@@ -208,7 +208,7 @@ def test_progress_json_written_during_training():
 
 
 # ---------------------------------------------------------------------------
-# (11) test_spec_pickle_roundtrip — PASS
+# (11) test_spec_pickle_roundtrip, PASS
 # ---------------------------------------------------------------------------
 
 def test_spec_pickle_roundtrip(tmp_path):
@@ -259,7 +259,7 @@ def test_spec_pickle_roundtrip(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (12) test_missing_spec_pickle_exits_cleanly — PASS
+# (12) test_missing_spec_pickle_exits_cleanly, PASS
 # ---------------------------------------------------------------------------
 
 def test_missing_spec_pickle_exits_cleanly():
@@ -280,7 +280,7 @@ def test_missing_spec_pickle_exits_cleanly():
 
 
 # ---------------------------------------------------------------------------
-# (13) test_progress_json_rewrite_cadence — xfail
+# (13) test_progress_json_rewrite_cadence, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires full training infrastructure", strict=False)
@@ -290,7 +290,7 @@ def test_progress_json_rewrite_cadence():
 
 
 # ---------------------------------------------------------------------------
-# (14) test_uks_pretrain_worker — xfail
+# (14) test_uks_pretrain_worker, xfail
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="requires UKS pretrain data fixture", strict=False)

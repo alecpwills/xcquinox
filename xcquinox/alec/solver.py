@@ -1,4 +1,4 @@
-"""xcquinox.alec.solver — SolverConfig, ABCs, and SCF dispatcher.
+"""xcquinox.alec.solver: SolverConfig, ABCs, and SCF dispatcher.
 
 Implements the SCF solver toggle design:
 docs/superpowers/specs/2026-04-14-alec-scf-solver-and-ref-density-rename-design.md
@@ -75,7 +75,7 @@ class SolverConfig:
         # (FULL, FROZEN) is incoherent. FULL mode rebuilds
         # the Fock from D every cycle (J[D] explicit dependence on D), so
         # the descriptor features that condition the NN's V_xc must also
-        # be reassembled with the current D — otherwise the NN sees stale
+        # be reassembled with the current D, otherwise the NN sees stale
         # features that disagree with the J term, producing a Fock that
         # has no fixed point for the NN's actual functional. Allow only
         # ``feature_policy is None`` (auto-resolve to REASSEMBLE) or an
@@ -143,7 +143,7 @@ SYM_BREAK_SHIFT = 1e-8
 
 # Golden-ratio constant used by the symmetry-breaking diagonal.
 # Irrational so ``sin(idx · φ)`` produces a
-# quasi-random spacing — no two indices give bit-equal values.
+# quasi-random spacing, no two indices give bit-equal values.
 _GOLDEN_RATIO = 1.618033988749895
 
 
@@ -164,7 +164,7 @@ class MixerState(NamedTuple):
     step_index: jnp.ndarray  # int32 scalar
 
 
-# Mixer subclass registry — keyed by ``registry_name``. Populated via the
+# Mixer subclass registry, keyed by ``registry_name``. Populated via the
 # ``register_mixer`` decorator below; ``_build_mixer`` in solver_manual.py
 # consults this map instead of hard-coding the 'linear' branch. New mixers
 # (e.g. DIIS, Pulay) only need to subclass ``Mixer`` with
@@ -220,7 +220,7 @@ class LinearMixer(Mixer):
         return new_state, D_mixed
 
 
-# Convergence-criterion registry — keyed by ``registry_name``. Mirrors
+# Convergence-criterion registry, keyed by ``registry_name``. Mirrors
 # the ``MIXER_REGISTRY`` pattern: when ``_build_criterion`` in
 # solver_manual.py is hard-coded to the 'energy' branch, any new criterion
 # (e.g. density-RMS, Fock-error) would require editing the dispatch as well
@@ -252,7 +252,7 @@ class ConvergenceCriterion(abc.ABC):
     @abc.abstractmethod
     def is_converged_from_energies(self, e_prev: jnp.ndarray,
                                    e_curr: jnp.ndarray) -> jnp.ndarray:
-        """Return scalar JAX bool. Pure — safe inside jit'd scan body."""
+        """Return scalar JAX bool. Pure, safe inside jit'd scan body."""
 
 
 @register_criterion
@@ -357,7 +357,7 @@ def _oneshot_result(model, mol_data: dict) -> "SCFResult":
     """Fast path for ONESHOT mode: calls the existing pure one-shot helpers
     and wraps their output in an SCFResult.
 
-    Byte-identical to pre-SCF behavior — regression tests pin this.
+    Byte-identical to pre-SCF behavior, regression tests pin this.
     """
     from xcquinox.alec.oneshot import (
         oneshot_dm_prediction_fast, fixed_density_total_energy,

@@ -3,7 +3,7 @@
 Covers the launcher/manual core: submitting the eval array (aftercorr on the
 train array) + recording it, idempotency, the no-train-record error, and that a
 compute-node sbatch failure surfaces a clear message pointing at the login-node
-fallback. SLURM is always mocked — no real controller is contacted.
+fallback. SLURM is always mocked, no real controller is contacted.
 """
 import os
 import shutil
@@ -85,7 +85,7 @@ def test_submit_deferred_eval_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr(jt, "_run_slurm", _fake_slurm(["999"]))
     _sde(rd)
 
-    # Second call: no-op — no new sbatch, still exactly one eval record.
+    # Second call: no-op, no new sbatch, still exactly one eval record.
     fake2 = _fake_slurm(["zzz"])
     monkeypatch.setattr(jt, "_run_slurm", fake2)
     r2 = _sde(rd)

@@ -43,7 +43,7 @@ def test_default_auxbasis_maps_known_bases():
 
 def test_default_auxbasis_diffuse_def2_uses_universal_jkfit():
     """def2-tzvpd (and other def2 bases without a dedicated -jkfit) resolve to
-    the cited Weigend universal Coulomb-fitting set — NOT pyscf auto-select.
+    the cited Weigend universal Coulomb-fitting set, NOT pyscf auto-select.
     This is the GAP-1 fix: the configured fit is reproducible across stages."""
     assert df_jk.default_auxbasis("def2-tzvpd") == "def2-universal-jkfit"
     assert df_jk.default_auxbasis("def2-tzvppd") == "def2-universal-jkfit"

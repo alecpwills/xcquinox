@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.solver — SolverConfig, Mixer, ConvergenceCriterion."""
+"""Tests for xcquinox.alec.solver: SolverConfig, Mixer, ConvergenceCriterion."""
 import json
 import pytest
 import jax.numpy as jnp

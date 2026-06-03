@@ -1,10 +1,10 @@
-"""xcquinox.alec.oneshot — fast pure-JAX one-shot prediction.
+"""xcquinox.alec.oneshot: fast pure-JAX one-shot prediction.
 
 Implements THE SPEC §6.3:
   - fixed_density_total_energy (A/D1 losses, evaluation metrics)
   - oneshot_dm_prediction_fast (B/C/D2/D3 losses)
   - oneshot_grid_density (C/D3 grid losses, DensityRMSEMetric)
-  - oneshot_total_energy (Harris diagnostic — research only)
+  - oneshot_total_energy (Harris diagnostic, research only)
   - compute_exc_nn, compute_vxc_nn (internal helpers)
 """
 
@@ -35,7 +35,7 @@ def compute_exc_nn(model, rho, sigma, features, grid_weights):
 
     JIT-cached: keyed on (model architecture pytree structure, input shapes).
     Calling this with a different model instance of the same architecture
-    skips re-tracing — critical for the eval sweep that loads 72
+    skips re-tracing, critical for the eval sweep that loads 72
     checkpoints sharing two architectures.
     """
     exc = model.eval_exc(rho, sigma, features)
@@ -45,7 +45,7 @@ def compute_exc_nn(model, rho, sigma, features, grid_weights):
 def _exc_scalar_for_part(model, part):
     """Return the scalar energy-density callable for the requested ``part``.
 
-    SOLV-01: the UKS V_xc must be built from the SPLIT energy density —
+    the UKS V_xc must be built from the SPLIT energy density,
     exchange spin-scaled per Oliver & Perdew (PRA 20, 397 (1979)), but
     correlation evaluated on the TOTAL density (zeta=0; von Barth & Hedin,
     J. Phys. C 5, 1629 (1972); PW92, PRB 45, 13244 (1992)). Selecting which
@@ -81,17 +81,17 @@ def compute_vxc_nn(
     """Assemble the NN XC potential matrix V_xc, dispatching to the
     JIT-compiled core.
 
-    ``part`` selects which scalar energy density is JVP'd (SOLV-01):
-    ``"xc"`` (default, combined — byte-identical to pre-SOLV-01 and used by
+    ``part`` selects which scalar energy density is JVP'd:
+    ``"xc"`` (default, combined, byte-identical to pre-SOLV-01 and used by
     RKS), ``"x"`` (exchange-only ``eval_ex_scalar``), or ``"c"``
     (correlation-only ``eval_ec_scalar``). The UKS path uses "x" per spin
     (spin-scaled) and "c" once on the total density.
 
     ``AlecGGAModel`` is a GGA functional: its XC energy depends on
-    ``sigma = |nabla rho|^2``, so a physically correct V_xc *must* include
+    ``sigma = |nabla rho|^2``, so a physically correct V_xc must include
     the GGA ``v_sigma`` term. Rather than silently dropping ``v_sigma``
     (returning LDA-only V_xc, which is physically wrong for a GGA model),
-    this function *refuses* to do so unless the caller explicitly opts in.
+    this function refuses to do so unless the caller explicitly opts in.
 
     Contract
     --------
@@ -183,7 +183,7 @@ def _compute_vxc_nn_core(
     -------
     V_xc : (n_ao, n_ao), symmetric.
     """
-    # SOLV-01: select exchange-only / correlation-only / combined scalar.
+    # select exchange-only / correlation-only / combined scalar.
     exc_single_point = _exc_scalar_for_part(model, part)
 
     # Sanitize JVP inputs at low-density / vanishing-gradient points.
@@ -201,7 +201,7 @@ def _compute_vxc_nn_core(
     # double-where trick so that BOTH the forward value and the reverse-mode
     # (VJP/JVP) gradient are NaN-free: the masked-out points feed safe
     # (rho=1, sigma=1) inputs into the JVP, and the JVP output is then forced
-    # to exactly 0 — contributing nothing to V_sigma while keeping
+    # to exactly 0, contributing nothing to V_sigma while keeping
     # 1/(2 sqrt(sigma)) out of the tape entirely.
     #
     # _V_SIGMA_THRESHOLD is DENORMAL-LEVEL (1e-30), NOT 1e-10. This is critical
@@ -318,7 +318,7 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
     is the split V_xc built by ``_uks_spin_resolved_vxc`` / the manual solver
     (the FD-consistency test C guards this).
 
-    LIMITATION (descriptor features) — P2-02: the EXACT exchange spin-scaling
+    LIMITATION (descriptor features), P2-02: the EXACT exchange spin-scaling
     relation holds for an F_x that depends only on (rho, sigma). When descriptor
     features (cusp, DM-statistics) are active, the SAME molecular ``features``
     are passed into BOTH the (2*rho_a) and (2*rho_b) exchange evaluations below
@@ -328,7 +328,7 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
     the fictitious doubled-spin density). The closed-shell reduction to RKS
     remains EXACT because rho_a = rho_b gives identical features in both terms.
 
-    P2-03: when the cnet is spin-polarization-aware
+    when the cnet is spin-polarization-aware
     (``cnet.use_spin_polarization``), correlation is evaluated with the real
     zeta = (rho_a-rho_b)/rho_tot and the zeta-dependent PW92 baseline (Dick &
     Fernandez-Serra, PRB 104 L161109 (2021)); this is the energy whose per-spin
@@ -370,7 +370,7 @@ def fixed_density_total_energy(model, mol_data) -> float:
     E_total = E_non_xc + E_xc^NN[rho_PBE]
     Used by A, D1 losses and all energy-based evaluation metrics.
 
-    SOLV-01: the UKS branch uses the SPLIT XC energy (exchange spin-scaled
+    the UKS branch uses the SPLIT XC energy (exchange spin-scaled
     per Oliver & Perdew PRA 20, 397 (1979); correlation on the total density
     at zeta=0 per von Barth & Hedin 1972 / PW92 1992) so that this energy is
     consistent with the split V_xc used by the SCF solvers. RKS is unchanged
@@ -406,22 +406,22 @@ def fixed_density_total_energy(model, mol_data) -> float:
 
 
 def total_energy_for_solver(model, mol_data, solver_config=None):
-    """Total energy, dispatched on the SCF solver MODE — the single source of
+    """Total energy, dispatched on the SCF solver MODE, the single source of
     truth shared by training (``losses._compute_energies``) and the
     energy/AE evaluation metrics so the two optimize/measure the same quantity.
 
-    * ``FULL`` → the SELF-CONSISTENT energy ``run_scf(...).total_energy``.
+    * ``FULL`` -> the SELF-CONSISTENT energy ``run_scf(...).total_energy``.
       FULL rebuilds both ``J`` and ``V_xc`` from the live density each cycle, so
       it has a coherent fixed point and ``E[rho_scf]`` is a valid energy
-      functional — the energy a deployed functional actually produces, and the
+      functional: the energy a deployed functional actually produces, and the
       DFS/dpyscf self-consistent training target. The SCF loop is differentiable
       (``jax.lax.scan``), so training backpropagates through the cycles.
 
-    * ``ONESHOT`` / ``FIXED_J`` / ``None`` → the one-shot fixed-density
+    * ``ONESHOT`` / ``FIXED_J`` / ``None`` -> the one-shot fixed-density
       functional on ``rho_PBE`` (:func:`fixed_density_total_energy`). FIXED_J
       stays one-shot deliberately: its ``run_scf`` energy is a J-pinned hybrid
       (``J[rho_PBE]`` acting on ``rho_scf != rho_PBE``) that is NOT a valid
-      energy functional of any single density — using it drove FIXED_J specs
+      energy functional of any single density, using it drove FIXED_J specs
       to lowest train loss but 50+ kcal/mol eval atomization-energy error.
     """
     from xcquinox.alec.solver import SolverMode  # local: avoid import cycle
@@ -434,12 +434,12 @@ def total_energy_for_solver(model, mol_data, solver_config=None):
 def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
                                   ao_grid, grid_weights, nabla_rho_tot, ao_grad):
     """Per-spin correlation potential V_c^a, V_c^b for a spin-polarization-aware
-    cnet (P2-03). E_c depends on rho_a/rho_b through BOTH rho_tot = rho_a+rho_b
+    cnet. E_c depends on rho_a/rho_b through BOTH rho_tot = rho_a+rho_b
     AND zeta = (rho_a-rho_b)/rho_tot, so V_c^s = dE_c/drho_s is NOT shared.
 
     The per-spin rho COEFFICIENTS are obtained EXACTLY by JVP'ing the
     correlation energy density through a helper that forms rho_tot and zeta
-    INTERNALLY w.r.t. rho_a / rho_b — so jax performs the full (clip-aware)
+    INTERNALLY w.r.t. rho_a / rho_b, so jax performs the full (clip-aware)
     zeta chain rule and the result is byte-consistent with autodiff of the
     energy (verified to ~1e-10), avoiding a hand-coded d zeta/d rho.
 
@@ -451,7 +451,7 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
     guarded ``safe_sigma`` rather than the raw ``sigma_tot``: the cnet's shared
     ``s = sqrt(sigma)/(...)`` node has a 1/(2 sqrt(sigma)) derivative that is
     +inf at sigma == 0 EXACTLY, and JAX's JVP forms ``(d/dsigma)*sigma_tangent``
-    for that node on EVERY tangent — so even the rho-only tangents (whose
+    for that node on EVERY tangent, so even the rho-only tangents (whose
     sigma-tangent is 0) hit ``0 * inf = NaN`` at a genuine sigma == 0 grid
     point. Standard atom-centered Lebedev grids have no sigma == 0 points, but
     high-symmetry / custom grids do; using ``safe_sigma`` matches the sibling
@@ -542,7 +542,7 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
     with vc computed exactly ONCE; (flag TRUE) vc is replaced by the per-spin
     vc_a, vc_b.
 
-    LIMITATION (descriptor features) — P2-02: the exchange spin-scaling is EXACT
+    LIMITATION (descriptor features), P2-02: the exchange spin-scaling is EXACT
     only for a feature-free (rho, sigma) F_x. With descriptor features active the
     same molecular ``features`` feed both doubled-spin exchange terms, so the
     open-shell relation is an approximation (closed-shell -> RKS stays exact).
@@ -581,7 +581,7 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
     # Correlation. P2-03: a spin-polarization-aware cnet makes V_c PER-SPIN
     # (zeta = (rho_a-rho_b)/rho_tot couples the spins); otherwise V_c is the
     # zeta=0 total-density potential, shared by both spins (the fast path).
-    # Explicit attribute read — see split_exc_energy_uks for rationale.
+    # Explicit attribute read, see split_exc_energy_uks for rationale.
     if not hasattr(model.cnet, "use_spin_polarization"):
         raise AttributeError(
             "model.cnet has no `use_spin_polarization` attribute (see "
@@ -689,7 +689,7 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         fock = h_core + j_pbe + vxc_nn
 
         # Transform to orthogonal basis. Only the non-uniform
-        # _sym_break_diag perturbation does work — a uniform
+        # _sym_break_diag perturbation does work, a uniform
         # DEGENERACY_REG * I shift commutes through eigh and leaves
         # eigenvalue gaps unchanged. See SYM_BREAK_SHIFT block comment for
         # full rationale on the non-uniform shift.
@@ -743,7 +743,7 @@ def oneshot_total_energy(model, mol_data) -> float:
              - (Tr[D_PBE * V_xc^PBE] - E_xc^PBE)
              + e_nuc
 
-    Research diagnostic only — NOT used by any loss or metric.
+    Research diagnostic only, NOT used by any loss or metric.
     """
     D_NN = oneshot_dm_prediction_fast(model, mol_data)
 
@@ -800,11 +800,11 @@ def _nn_fx_local_uks(model, rho_alpha: jnp.ndarray,
     This is the SAME per-spin effective sigma that
     ``_uks_spin_resolved_vxc`` feeds into ``compute_vxc_nn`` during SCF:
     nabla_rho_sigma = (1 +/- zeta)/2 * nabla_rho_tot spatially, so
-    ``4 * sigma_sigma_sigma = (1 +/- zeta)**2 * sigma_tot`` — exactly
+    ``4 * sigma_sigma_sigma = (1 +/- zeta)**2 * sigma_tot``: exactly
     ``sigma_sigma_eff`` above.
 
     Uses zero extras (no descriptor features). The anchor probes the bare
-    functional form at synthetic (rho, s) points — no molecular grid
+    functional form at synthetic (rho, s) points, no molecular grid
     visits them, so there is no physical descriptor value to feed in.
     """
     n_extra = model.xnet.n_extra_features

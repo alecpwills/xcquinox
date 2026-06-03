@@ -1,4 +1,4 @@
-"""xcquinox.alec.pretrain — Pretraining and legacy checkpoint loading.
+"""xcquinox.alec.pretrain: Pretraining and legacy checkpoint loading.
 
 Provides run_pretrain plus the legacy-checkpoint loaders (from_legacy_step3b,
 _load_one_network, _count_disk_records, _metadata_preflight,
@@ -32,7 +32,7 @@ _RHO_FLOOR_INTEGRATION = 1e-18
 def _compute_integration_weights(rho, grid_weights=None):
     """Return ``(w_x, w_c)`` integration weights for pretraining.
 
-    **Weight convention:** the per-point weight is the
+    Weight convention: the per-point weight is the
     FIRST power (linear) of ``|ρ_i · ε_LDA_i|``, optionally multiplied by
     the Becke-Lebedev quadrature weight ``w_grid_i``.  The resulting loss
     is a ``|ρ · ε_LDA|``-magnitude-weighted mean of the squared per-point
@@ -77,14 +77,13 @@ def _compute_integration_weights(rho, grid_weights=None):
     """
     rho_safe = jnp.maximum(rho, _RHO_FLOOR_INTEGRATION)
     eps_x_lda = lda_x(rho_safe)
-    # The correlation weight intentionally uses the UNPOLARIZED PW92 baseline on
-    # the TOTAL density, even when training a spin-polarization-aware (polarized)
+    # The correlation weight intentionally uses the unpolarized PW92 baseline on
+    # the total density even when training a spin-polarization-aware (polarized)
     # cnet: the integration weights are a grid-importance measure on the total
     # density, and spin polarization enters the model via the zeta descriptor
-    # column (P2-03), NOT the loss weighting. (The Fc targets in
-    # pretrain_data_gen use spin-resolved libxc for open-shell atoms — that
-    # asymmetry is by design per the pretrain ref-gen review V-4, not a baseline
-    # bug; this is the resolution of audit finding D8-02.)
+    # column, not the loss weighting. (The Fc targets in pretrain_data_gen use
+    # spin-resolved libxc for open-shell atoms; that asymmetry is intentional,
+    # not a baseline bug.)
     eps_c_lda = pw92c_unpolarized_scalar(rho_safe)
     w_x = jnp.abs(rho_safe * eps_x_lda)
     w_c = jnp.abs(rho_safe * eps_c_lda)
@@ -102,7 +101,7 @@ def _compute_integration_weights(rho, grid_weights=None):
 # deserialize the on-disk byte stream into a pytree whose leaves we
 # then graft onto the alec skeleton. Those skeletons therefore MUST
 # receive the exact `lob_lim` values that the legacy checkpoints were
-# written with — which are the hardcoded library defaults `1.804` (xnet,
+# written with, which are the hardcoded library defaults `1.804` (xnet,
 # per `xcquinox/net.py:2049` `GGA_FxNet_extended.__init__` default) and
 # `2.0` (cnet, per `xcquinox/net.py:2228` `GGA_FcNet_extended.__init__`
 # default). Passing `arch.resolved_xnet_lob_lim` /
@@ -112,19 +111,19 @@ def _compute_integration_weights(rho, grid_weights=None):
 # property returns `None` so that
 # `create_network_pair` can build an alec XNet that skips its built-in
 # LOB wrap (the constraint becomes the sole clamp). But `None` is
-# invalid for the LIBRARY class — `GGA_FxNet_extended(lob_lim=None, ...)`
+# invalid for the LIBRARY class, `GGA_FxNet_extended(lob_lim=None, ...)`
 # flows into `self.lobf = LOB(limit=None)` which crashes with TypeError
 # the instant `LOB.__call__` dereferences `self.limit`, and the
 # post-load `abs(loaded_lim - expected_lob_lim)` check would also crash
 # with `TypeError: unsupported operand type(s) for -: 'float' and
-# 'NoneType'`. The legacy checkpoints were *all* trained with the
+# 'NoneType'`. The legacy checkpoints were all trained with the
 # library defaults (the step3b notebook never configured
 # `double_lob_clamp_allowed` because that field does not exist on the
 # notebook's architecture), so hardcoding the legacy values is
-# semantically correct — we are loading bytes that were *written* with
+# semantically correct, we are loading bytes that were written with
 # these values, not configuring a fresh network. The alec-side
 # `create_network_pair` still honors `arch.resolved_xnet_lob_lim` (which
-# may be `None`); the library→alec
+# may be `None`); the library -> alec
 # leaf graft is oblivious to `lob_lim` because `_AlecLOB.limit` is
 # `eqx.field(static=True)` and therefore not in the pytree
 # leaf stream.
@@ -145,21 +144,21 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
     order (matching `descriptors.assemble_descriptor_features`'s
     runtime contract). Each descriptor's columns are pulled from a
     pretrain_data key derived by stripping ``_statistics`` and
-    appending ``_all`` (e.g. ``dm_statistics`` → ``dm_all``,
-    ``cusp`` → ``cusp_all``).
+    appending ``_all`` (e.g. ``dm_statistics`` -> ``dm_all``,
+    ``cusp`` -> ``cusp_all``).
 
     When ``for_cnet`` and ``arch.use_polarized_correlation``, a spin
     polarization column ``zeta_all`` is inserted at index 2 (right after
     sigma, BEFORE the descriptor extras) to match the polarized cnet's
     expected ``[rho, sigma, zeta, *extras]`` input layout (see
     ``AlecGGA_CNet.__call__``). The xnet input (``for_cnet=False``) NEVER
-    carries zeta — exchange is zeta-independent (Oliver & Perdew, PRA 20,
+    carries zeta, exchange is zeta-independent (Oliver & Perdew, PRA 20,
     397 (1979)). If ``zeta_all`` is absent, zeta defaults to zeros: a valid
     unpolarized warm-start (zeta=0 -> x1=1, recovering the unpolarized cnet
     input and Fc target), to be refined by zeta-resolved training data.
 
     Raises KeyError if any declared descriptor's pretrain key is
-    absent from pretrain_data — there is NO zero-array fallback.
+    absent from pretrain_data, there is NO zero-array fallback.
     """
     cols = [pretrain_data["rho_all"], pretrain_data["sigma_all"]]
     if for_cnet and arch.use_polarized_correlation:
@@ -200,7 +199,7 @@ def _build_optimizer(
 ) -> optax.GradientTransformation:
     """Build canonical optimizer chain for pretraining.
 
-    Chain order: clip_by_global_norm → adam(lr_schedule).
+    Chain order: clip_by_global_norm -> adam(lr_schedule).
     LR schedule: optional constant warmup then linear decay.
     """
     decay_start_step = int(lr_decay_start * n_steps)
@@ -262,7 +261,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
 
     Constraint awareness: the networks built by ``create_network_pair`` enforce
     ``spec.arch``'s physical constraints INTRINSICALLY in their forward pass, so
-    the MSE here fits the CONSTRAINED enhancement to the PBE/LDA targets — the
+    the MSE here fits the CONSTRAINED enhancement to the PBE/LDA targets, the
     same constrained functional that training and evaluation use. (Constraints
     are static, so the saved ``xnet.eqx``/``cnet.eqx`` leaf streams are unchanged
     and remain compatible with existing checkpoints.)
@@ -270,7 +269,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     Args:
         networks: optional ``(xnet, cnet)`` pair to pretrain INSTEAD of building
             the pair from ``spec.arch`` via ``create_network_pair``. Use this to
-            pretrain a network the arch cannot express — e.g. a truly-unconstrained
+            pretrain a network the arch cannot express, e.g. a truly-unconstrained
             net (``lob_lim=None``, no constraints), which ``create_network_pair``
             cannot produce (a None lob_lim there requires the LO constraint to be
             active). The provided networks MUST carry whatever constraints they are
@@ -295,8 +294,8 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         raw = np.load(npz_path)
         pretrain_data_np = {k: np.array(raw[k]) for k in raw.files}
     elif not polarized and os.path.isfile(pkl_path):
-        # pkl fallback for legacy (unpolarized) files — safe because only array data
-        import pickle  # noqa: S403 — loading trusted local fixture files only
+        # pkl fallback for legacy (unpolarized) files, safe because only array data
+        import pickle  # noqa: S403, loading trusted local fixture files only
         with open(pkl_path, "rb") as _f:
             pretrain_data_np = _f.read()
         pretrain_data_np = __import__("pickle").loads(pretrain_data_np)
@@ -320,7 +319,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
 
     # --- Assemble descriptor tensors ---
     # The xnet input is zeta-blind; the cnet input carries the zeta column
-    # when the architecture uses polarized correlation (P2-03). They are
+    # when the architecture uses polarized correlation. They are
     # identical for the unpolarized (default) architecture.
     descriptors = _assemble_pretrain_descriptors(spec.arch, pretrain_data)
     descriptors_c = _assemble_pretrain_descriptors(
@@ -357,7 +356,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         Networks return 1 + F_enhancement; targets are stored as (F - 1),
         so pred - 1.0 aligns with ref_F. When ``weights`` is None (the
         ``"unweighted"`` branch) the reduction is a plain mean of squared
-        residuals — preserving the exact prior behavior byte-for-byte. When
+        residuals: preserving the exact prior behavior byte-for-byte. When
         ``weights`` is a 1-D array aligned with the descriptor rows
         (``"integration"`` branch) the reduction is
         ``sum(w * residual ** 2) / (sum(w) + 1e-12)``.
@@ -377,7 +376,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
     if spec.loss_weighting == "integration":
         rho_all = pretrain_data["rho_all"]
         # Becke-Lebedev quadrature weights ``dr_i`` improve energy-density
-        # calibration; older pretrain_data files don't carry them — fall back
+        # calibration; older pretrain_data files don't carry them, fall back
         # with a warning and record the degradation in metadata.
         grid_weights = pretrain_data.get("weights_all")
         if grid_weights is None:
@@ -400,7 +399,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         w_x, w_c = _compute_integration_weights(rho_all, grid_weights)
         loss_fn_x = _PretrainLoss(weights=w_x)
         loss_fn_c = _PretrainLoss(weights=w_c)
-    else:  # "unweighted" — validated at construction
+    else:  # "unweighted": validated at construction
         loss_fn_x = _PretrainLoss()
         loss_fn_c = _PretrainLoss()
 
@@ -431,7 +430,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             })
 
     # Per-network checkpoint subdirs. xcTrainer serialises its periodic
-    # best-loss snapshots as ``<checkpoint_dir>/xc.eqx.<step>`` — if both the
+    # best-loss snapshots as ``<checkpoint_dir>/xc.eqx.<step>``: if both the
     # xnet and cnet trainers share one checkpoint_dir they clobber each other's
     # snapshots. Give each its own subdir; the FINAL xnet.eqx/cnet.eqx still
     # land at the top level (what downstream consumes).
@@ -462,7 +461,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         progress_callback=_x_callback,
     )
     xnet_trained, losses_x = trainer_x(1, [descriptors], [Fx_target])
-    # Persist the final xnet immediately, BEFORE cnet training starts — so a
+    # Persist the final xnet immediately, BEFORE cnet training starts, so a
     # job that dies or times out during the (separate) cnet phase does not lose
     # the already-completed xnet result.
     eqx.tree_serialise_leaves(xnet_path, xnet_trained)
@@ -625,7 +624,7 @@ def _load_one_network(
     3. Graft eqx.is_array leaves from library onto alec via tree_flatten/unflatten
        (NOT eqx.tree_at).
     """
-    # Step 2: deserialize — MUST capture the return value
+    # Step 2: deserialize, MUST capture the return value
     library_skeleton = eqx.tree_deserialise_leaves(path, library_skeleton)
 
     # Parameterised lob_lim check
@@ -636,7 +635,7 @@ def _load_one_network(
             f"match expected {expected_lob_lim} for this architecture"
         )
 
-    # Step 3: structural tree walk — NOT eqx.tree_at
+    # Step 3: structural tree walk, NOT eqx.tree_at
     src_leaves_all, _src_treedef = jax.tree_util.tree_flatten(library_skeleton)
     src_array_leaves = [l for l in src_leaves_all if eqx.is_array(l)]
 
@@ -669,7 +668,7 @@ def _load_one_network(
         d = dst_leaves_all[dst_pos]
         if s.shape != d.shape or s.dtype != d.dtype:
             raise ValueError(
-                f"legacy→alec graft leaf #{pair_idx} shape/dtype mismatch "
+                f"legacy -> alec graft leaf #{pair_idx} shape/dtype mismatch "
                 f"at {path}: library {s.shape}/{s.dtype} vs alec "
                 f"{d.shape}/{d.dtype}"
             )
@@ -784,7 +783,7 @@ def from_legacy_step3b(
         class _RXCModelWrapper(eqx.Module):
             """Minimal inline replica of the notebook's RXCModel_GGA_extended.
 
-            Two fields, no methods — just a pytree container so
+            Two fields, no methods, just a pytree container so
             `tree_deserialise_leaves` can consume the on-disk records in
             the same order the notebook wrote them.
             """
@@ -840,7 +839,7 @@ def from_legacy_step3b(
             dst_array_count = sum(1 for l in dst_leaves_all if eqx.is_array(l))
             if len(src_array_leaves) != dst_array_count:
                 raise ValueError(
-                    f"legacy→alec training-layout graft leaf mismatch: "
+                    f"legacy -> alec training-layout graft leaf mismatch: "
                     f"library has {len(src_array_leaves)} eqx.is_array "
                     f"leaves, alec expects {dst_array_count}."
                 )

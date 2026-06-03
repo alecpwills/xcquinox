@@ -1,11 +1,11 @@
-"""Tests for xcquinox.alec.losses — AlecLoss, LOSS_REGISTRY, 6 concrete losses.
+"""Tests for xcquinox.alec.losses: AlecLoss, LOSS_REGISTRY, 6 concrete losses.
 
 Implements THE SPEC §13.2 test_losses.py: exactly 43 tests.
 
 Test structure:
   Tests 1-24  (4 parametrized over 6 losses × 4 aspects = 24 tests):
     (a) registry roundtrip
-    (b) forward → (scalar, dict)
+    (b) forward -> (scalar, dict)
     (c) required_mol_keys
     (d) differentiability via eqx.filter_value_and_grad
 
@@ -165,7 +165,7 @@ LOSS_NAMES = [
 
 
 # ---------------------------------------------------------------------------
-# Tests 1-6 (a): registry roundtrip — make_loss returns correct type
+# Tests 1-6 (a): registry roundtrip, make_loss returns correct type
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("loss_name,expected_cls,_rmk,_aux_keys", LOSS_PARAMS)
@@ -343,7 +343,7 @@ def test_aux_dict_carries_no_gradient(batch_h_o_h2o, model):
 
 
 # ---------------------------------------------------------------------------
-# Test 30: xfail — atomization notebook cell26
+# Test 30: xfail, atomization notebook cell26
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="Fixture notebook_cell26_atomization.npz not yet generated")
@@ -360,7 +360,7 @@ def test_atomizationloss_matches_notebook_cell26():
 
 
 # ---------------------------------------------------------------------------
-# Test 31: xfail — delta-ae notebook cell29
+# Test 31: xfail, delta-ae notebook cell29
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="Fixture notebook_cell29_delta_ae.npz not yet generated")
@@ -376,7 +376,7 @@ def test_deltaaeloss_matches_notebook_cell29():
 
 
 # ---------------------------------------------------------------------------
-# Test 32: molecule-generic — (H, N, NH3) batch
+# Test 32: molecule-generic, (H, N, NH3) batch
 # ---------------------------------------------------------------------------
 
 def _n_atom() -> MoleculeSpec:
@@ -400,7 +400,7 @@ def _nh3_molecule() -> MoleculeSpec:
 
 @pytest.fixture(scope="module")
 def batch_h_n_nh3():
-    """3-molecule batch (H, N, NH3) — tests non-H2O compounds."""
+    """3-molecule batch (H, N, NH3), tests non-H2O compounds."""
     h_spec = h_atom()
     n_spec = _n_atom()
     nh3_spec = _nh3_molecule()
@@ -444,7 +444,7 @@ def test_molecule_generic_h_n_nh3(batch_h_n_nh3, model):
 
 
 # ---------------------------------------------------------------------------
-# Test 33: B15-4 — molecules_only=True skips atoms in DM term
+# Test 33: B15-4, molecules_only=True skips atoms in DM term
 # ---------------------------------------------------------------------------
 
 def test_molecules_only_true_skips_atoms_dm_term(batch_h_o_h2o, model):
@@ -517,7 +517,7 @@ def test_density_weight_scales_grid_term(batch_h_o_h2o, model):
 
 
 # ---------------------------------------------------------------------------
-# Test 36: xfail — missing required_mol_keys raises KeyError
+# Test 36: xfail, missing required_mol_keys raises KeyError
 # ---------------------------------------------------------------------------
 
 def test_missing_required_mol_keys_raises_key_error(batch_h_o_h2o, model):
@@ -525,7 +525,7 @@ def test_missing_required_mol_keys_raises_key_error(batch_h_o_h2o, model):
     mols = batch_h_o_h2o["mols"]
     loss = make_loss("B_atomization_plus_dm", molecules=mols)
     # Build a batch where mol_data entries don't have 'dm_target' at all
-    # (as opposed to None). Currently not enforced — xfail until implemented.
+    # (as opposed to None). Currently not enforced, xfail until implemented.
     mol_data_stripped = tuple(
         {k: v for k, v in md.items() if k != "dm_target"}
         for md in batch_h_o_h2o["mol_data"]
@@ -540,7 +540,7 @@ def test_missing_required_mol_keys_raises_key_error(batch_h_o_h2o, model):
 
 
 # ---------------------------------------------------------------------------
-# Test 37: D-H1 — float type validation rejects bool and non-numeric
+# Test 37: D-H1, float type validation rejects bool and non-numeric
 # ---------------------------------------------------------------------------
 
 def test_float_type_validation_rejects_non_scalar(batch_h_o_h2o):
@@ -552,7 +552,7 @@ def test_float_type_validation_rejects_non_scalar(batch_h_o_h2o):
 
 
 # ---------------------------------------------------------------------------
-# Test 38: D-H5 — field assignment completeness
+# Test 38: D-H5, field assignment completeness
 # ---------------------------------------------------------------------------
 
 def test_field_assignment_completeness(batch_h_o_h2o):
@@ -581,7 +581,7 @@ def test_field_assignment_completeness(batch_h_o_h2o):
 
 
 # ---------------------------------------------------------------------------
-# Test 39: xfail — H-E12-3 DM loss UKS/RKS scaling
+# Test 39: xfail, H-E12-3 DM loss UKS/RKS scaling
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(reason="UKS/RKS CCSD dm_target data not available; needs CCSD fixture")
@@ -591,7 +591,7 @@ def test_dm_loss_uks_rks_scaling():
 
 
 # ---------------------------------------------------------------------------
-# Test 40: M-E12-4 — aux dict schema per class
+# Test 40: M-E12-4, aux dict schema per class
 # ---------------------------------------------------------------------------
 
 def test_aux_dict_schema_per_class(batch_h_o_h2o, model):
@@ -676,13 +676,13 @@ def test_training_loss_and_eval_metric_agree_on_atomization_energy(
             "Training-loss AE and evaluation-metric AE diverged: "
             f"loss={ae_loss!r}, eval={ae_eval!r}. "
             "Both MUST use the batch['atom_energies'] dict as the fixed "
-            "atomic anchor — do not use NN-predicted atomic totals."
+            "atomic anchor, do not use NN-predicted atomic totals."
         ),
     )
 
 
 # ---------------------------------------------------------------------------
-# Test 43: L-B13-2 — molecules_only bool type validation
+# Test 43: L-B13-2, molecules_only bool type validation
 # ---------------------------------------------------------------------------
 
 def test_molecules_only_bool_type_validation(batch_h_o_h2o):
@@ -695,7 +695,7 @@ def test_molecules_only_bool_type_validation(batch_h_o_h2o):
 
 
 # ---------------------------------------------------------------------------
-# Task 7.4: solver_config=None regression — all 6 losses
+# Task 7.4: solver_config=None regression, all 6 losses
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("loss_name", LOSS_NAMES)
@@ -917,7 +917,7 @@ def test_vxc_gradient_is_finite_and_nonzero(batch_h_o_h2o, model):
     assert jnp.isfinite(val)
     flat_grads = jax.tree.leaves(grads)
     any_nonzero = any(jnp.any(jnp.abs(g) > 0).item() for g in flat_grads if g is not None)
-    assert any_nonzero, "All gradients are zero — V_xc gradient path may be broken"
+    assert any_nonzero, "All gradients are zero, V_xc gradient path may be broken"
 
 
 def test_vxc_weight_type_validation(batch_h_o_h2o):
@@ -1027,7 +1027,7 @@ def test_vxc_term_uks_zero_when_nn_equals_ref():
 
 def test_loss_a_with_fixed_j_solver_matches_oneshot_energy():
     """A_atomization loss is solver-invariant in its energy term:
-    ``solver_config=FIXED_J`` and ``solver_config=None`` (→ oneshot) MUST
+    ``solver_config=FIXED_J`` and ``solver_config=None`` ( -> oneshot) MUST
     produce identical loss values when the only difference is the solver.
     The post-hoc fixed-density framework defines E_total as a functional
     of ρ_PBE with NN's V_xc; solver choice governs DM / density / V_xc
@@ -1173,7 +1173,7 @@ class TestPBEAnchorIntegration:
 # Solver-MODE-dispatched energy (2026-06-01): the energy term follows the
 # solver mode. ONESHOT / FIXED_J / None use the one-shot fixed-density
 # functional on ρ_PBE; FULL uses the SELF-CONSISTENT run_scf(...).total_energy
-# (coherent fixed point, backprop through the SCF cycles — the DFS/dpyscf
+# (coherent fixed point, backprop through the SCF cycles, the DFS/dpyscf
 # target). FIXED_J deliberately STAYS one-shot: its run_scf energy is an
 # incoherent J-pinned hybrid (the 2026-04-24 bug that gave 51+ kcal/mol AE).
 # Evaluation (TotalEnergyMetric / AtomizationEnergyMetric / held-out) uses the
@@ -1182,7 +1182,7 @@ class TestPBEAnchorIntegration:
 
 
 def test_compute_energies_full_self_consistent_else_oneshot(h2o_mol_data):
-    """ONESHOT/FIXED_J/None → one-shot fixed_density energy; FULL → the
+    """ONESHOT/FIXED_J/None -> one-shot fixed_density energy; FULL -> the
     self-consistent run_scf(...).total_energy."""
     from xcquinox.alec.losses import _compute_energies
     from xcquinox.alec.solver import (
@@ -1222,7 +1222,7 @@ def test_compute_energies_full_self_consistent_else_oneshot(h2o_mol_data):
 
 def test_compute_energies_full_is_differentiable_through_scf():
     """The FULL-mode energy loss backprops through the SCF cycles: the gradient
-    of the energy w.r.t. the model is finite and nonzero — the property that was
+    of the energy w.r.t. the model is finite and nonzero, the property that was
     missing while the energy was hard-coded one-shot on the frozen density."""
     from xcquinox.alec.losses import _compute_energies
     from xcquinox.alec.solver import SolverConfig, SolverMode, SolverBackend
@@ -1256,11 +1256,11 @@ def test_compute_energies_full_is_differentiable_through_scf():
 def test_dm_term_normalizes_per_element_for_uks(monkeypatch):
     """_dm_term must normalize the squared error by the total element
     count of dm_ref (n_ao^2 for RKS, 2*n_ao^2 for UKS). Pre-fix UKS
-    branch divided by n_ao^2 only — off by factor of 2 vs RKS and
+    branch divided by n_ao^2 only, off by factor of 2 vs RKS and
     inconsistent with _vxc_term.
 
     R3-F audit strengthening: the prior version of this test never
-    called ``_dm_term`` — it just re-derived the arithmetic identity
+    called ``_dm_term``: it just re-derived the arithmetic identity
     ``sum(ones**2) / n_elems == 1.0``, which would still pass if the
     UKS divisor regressed to ``n_ao**2``. This version monkey-patches
     ``oneshot_dm_prediction_fast`` to a fixed stub and calls the real

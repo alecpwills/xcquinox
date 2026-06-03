@@ -10,7 +10,7 @@ from xcquinox.alec import subset_selection as ss
 
 
 def test_compute_descriptor_triple_uniform_gas_returns_alpha_one():
-    """For a uniform electron gas: ∇ρ = 0 → τ_W = 0; τ = τ_unif by construction → α = 1.
+    """For a uniform electron gas: ∇ρ = 0 -> τ_W = 0; τ = τ_unif by construction -> α = 1.
 
     Reference: Sun, Ruzsinszky, Perdew, PRL 115, 036402 (2015), eq. (5).
     """
@@ -29,12 +29,12 @@ def test_compute_descriptor_triple_uniform_gas_returns_alpha_one():
 
 
 def test_compute_descriptor_triple_iso_orbital_returns_alpha_zero():
-    """For a single-orbital iso-orbital region, τ = τ_W → α = 0."""
+    """For a single-orbital iso-orbital region, τ = τ_W -> α = 0."""
     n_grid = 100
     rho = np.linspace(0.05, 0.5, n_grid)
     sigma = np.linspace(0.001, 0.01, n_grid)  # |∇ρ|²
     tau_W = sigma / (8.0 * rho)
-    tau = tau_W.copy()  # τ = τ_W → iso-orbital
+    tau = tau_W.copy()  # τ = τ_W -> iso-orbital
     desc = ss.compute_descriptor_triple(rho, sigma, tau)
     assert np.allclose(desc["alpha"], 0.0, atol=1e-12), \
         f"α should be 0 in iso-orbital region; got max |α|={np.abs(desc['alpha']).max()}"
@@ -43,7 +43,7 @@ def test_compute_descriptor_triple_iso_orbital_returns_alpha_zero():
 def test_compute_descriptor_triple_s_formula_matches_pbe1996():
     """s = |∇ρ| / [2 (3π²)^{1/3} ρ^{4/3}], PBE 1996 eq. block before eq. (12)."""
     rho = np.array([0.5, 1.0, 2.0])
-    sigma = np.array([1.0, 4.0, 9.0])  # |∇ρ|² → |∇ρ| = sqrt(σ) = [1, 2, 3]
+    sigma = np.array([1.0, 4.0, 9.0])  # |∇ρ|² -> |∇ρ| = sqrt(σ) = [1, 2, 3]
     tau = np.zeros_like(rho)  # don't care about α here
     desc = ss.compute_descriptor_triple(rho, sigma, tau)
     grad_rho = np.sqrt(sigma)
@@ -58,7 +58,7 @@ def test_compute_descriptor_triple_no_negative_alpha_under_clip():
     rho = np.full(10, 0.1)
     sigma = np.full(10, 1.0)  # |∇ρ|² = 1
     tau_W = sigma / (8.0 * rho)
-    # τ < τ_W → α < 0; we expect the clip
+    # τ < τ_W -> α < 0; we expect the clip
     tau = 0.5 * tau_W
     desc = ss.compute_descriptor_triple(rho, sigma, tau)
     assert (desc["alpha"] >= 0.0).all(), "α must be clipped to non-negative"
@@ -165,7 +165,7 @@ def test_metric_jsd_uses_natural_log():
 
 def test_metric_jsd_identical_distributions_returns_zero():
     """JSD(P||P) == 0 for identical distributions, even when the inputs
-    are density-like (sum != 1) rather than PMFs — internal normalization
+    are density-like (sum != 1) rather than PMFs, internal normalization
     must collapse the divergence to 0."""
     rng = np.random.default_rng(123)
     # Density-like histogram: positive, integrates-to-1 via bin width, so
@@ -181,7 +181,7 @@ def test_metric_jsd_disjoint_support_hits_ln2_bound_per_marginal():
     """Two distributions with disjoint support have maximal JSD = ln 2 per
     marginal (Lin 1991). Feed UNNORMALIZED density-like spikes (mass != 1,
     peak value > 1) on disjoint bins and check the total saturates at
-    3*ln2 — proving internal PMF normalization AND the ln2 bound."""
+    3*ln2: proving internal PMF normalization AND the ln2 bound."""
     p = {k: np.zeros(ss.NBINS) for k in ("rho_third", "s", "alpha")}
     q = {k: np.zeros(ss.NBINS) for k in ("rho_third", "s", "alpha")}
     for k in ("rho_third", "s", "alpha"):
@@ -242,7 +242,7 @@ def test_select_subset_rejects_empty_in_range_candidate():
     h_ref, edges = ss.build_reference_histograms(normal)
 
     # An "outlier" entry whose descriptor values sit far outside the
-    # reference edges for every descriptor → zero in-range weight.
+    # reference edges for every descriptor -> zero in-range weight.
     outlier = {
         "rho_third": np.full(2000, 1e8),
         "s": np.full(2000, 1e8),
@@ -391,7 +391,7 @@ def test_compute_atom_set_single_molecule():
 
 def test_compute_atom_set_full_dfs_pool_yields_seven():
     """For the full 21-AE-molecule Dick pool, the union of elements is
-    {H, Li, C, N, O, F, Na} — 7 atomic refs."""
+    {H, Li, C, N, O, F, Na}, 7 atomic refs."""
     from ase import Atoms
     formulas = ["H2", "N2", "LiF", "CHN", "CO2", "F2", "C2H2", "CO", "LiH", "Na2",
                 "NO", "CH", "OH",
@@ -547,7 +547,7 @@ def test_dfs_ip13_references_present():
 
 
 def test_dfs_ip13_li_matches_nist():
-    """Li IE_1 = 5.391719 eV from NIST → 124.336 kcal/mol."""
+    """Li IE_1 = 5.391719 eV from NIST -> 124.336 kcal/mol."""
     from xcquinox.alec.dfs_pool import DFS_IP13_PAIRS
     li = next(p for p in DFS_IP13_PAIRS if p["name"] == "Li_IP")
     expected = 5.391719 * 23.0605  # NIST eV × CODATA conversion
@@ -555,7 +555,7 @@ def test_dfs_ip13_li_matches_nist():
 
 
 def test_dfs_ip13_c_matches_nist():
-    """C IE_1 = 11.26030 eV from NIST → 259.668 kcal/mol."""
+    """C IE_1 = 11.26030 eV from NIST -> 259.668 kcal/mol."""
     from xcquinox.alec.dfs_pool import DFS_IP13_PAIRS
     c = next(p for p in DFS_IP13_PAIRS if p["name"] == "C_IP")
     expected = 11.26030 * 23.0605
@@ -563,7 +563,7 @@ def test_dfs_ip13_c_matches_nist():
 
 
 def test_dfs_bh76_oh_n2_to_h_n2o_value():
-    """OH+N2 → H+N2O: forward barrier 82.27 (rev. NHTBH38 #1, REF1),
+    """OH+N2 -> H+N2O: forward barrier 82.27 (rev. NHTBH38 #1, REF1),
     reaction energy ΔE = +64.91 kcal/mol (GMTKN55-BH76RC W2-F12)."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "OH+N2_to_H+N2O")
@@ -572,7 +572,7 @@ def test_dfs_bh76_oh_n2_to_h_n2o_value():
 
 
 def test_dfs_bh76_oh_ch3_to_o_ch4_value():
-    """OH+CH3 → O+CH4: forward barrier 7.90 (rev. HTBH38 #19-20, REF1),
+    """OH+CH3 -> O+CH4: forward barrier 7.90 (rev. HTBH38 #19-20, REF1),
     reaction energy ΔE = −5.44 kcal/mol (GMTKN55-BH76RC W2-F12)."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "OH+CH3_to_O+CH4")
@@ -581,7 +581,7 @@ def test_dfs_bh76_oh_ch3_to_o_ch4_value():
 
 
 def test_dfs_bh76_hf_f_to_h_f2_value():
-    """HF+F → H+F2: forward barrier 105.80 (rev. NHTBH38 #5, REF1),
+    """HF+F -> H+F2: forward barrier 105.80 (rev. NHTBH38 #5, REF1),
     reaction energy ΔE = +103.28 kcal/mol (GMTKN55-BH76RC W2-F12)."""
     from xcquinox.alec.dfs_pool import DFS_BH76_REACTIONS
     rxn = next(r for r in DFS_BH76_REACTIONS if r["name"] == "HF+F_to_H+F2")
@@ -597,7 +597,7 @@ def test_dfs_ae_data_complete_21_molecules():
     """DFS_AE_DATA must list exactly 21 molecules with finite AE refs."""
     from xcquinox.alec.dfs_pool import DFS_AE_DATA, DFS_AE_HILL
     assert len(DFS_AE_DATA) == 21
-    # DFS_AE_HILL is now derived from DFS_AE_DATA — must agree.
+    # DFS_AE_HILL is now derived from DFS_AE_DATA, must agree.
     assert [d["hill"] for d in DFS_AE_DATA] == DFS_AE_HILL
     seen_hills = set()
     for d in DFS_AE_DATA:
@@ -636,7 +636,7 @@ def test_dfs_pool_ae_references_complete():
 def test_dfs_pool_ae_anchor_consistency_with_step6():
     """H2O and C2H2 AE refs must match step-6's published anchor values
     (W4-11; tested in xcquinox/alec/tests/test_step6_notebook.py at the
-    string level — here we enforce the numeric equality)."""
+    string level, here we enforce the numeric equality)."""
     from xcquinox.alec.dfs_pool import build_dfs_pool
     pool = build_dfs_pool()
     by_hill = {a.info["dfs_hill"]: a for a in pool["ae_molecules"]}
@@ -645,7 +645,7 @@ def test_dfs_pool_ae_anchor_consistency_with_step6():
 
 
 def test_dfs_pool_ae_haunschild_lif_lih_na2():
-    """LiF, LiH, Na2 are not in W4-17 — Haunschild Table I (kJ/mol/4.184)
+    """LiF, LiH, Na2 are not in W4-17, Haunschild Table I (kJ/mol/4.184)
     is the authoritative non-relativistic source."""
     from xcquinox.alec.dfs_pool import build_dfs_pool
     pool = build_dfs_pool()
@@ -663,7 +663,7 @@ def test_dfs_pool_ae_haunschild_lif_lih_na2():
 
 
 def test_dfs_pool_ae_h2_consistent_with_haunschild():
-    """H2 spot-check: 457.73 kJ/mol → 109.401 kcal/mol (Haunschild 2012)."""
+    """H2 spot-check: 457.73 kJ/mol -> 109.401 kcal/mol (Haunschild 2012)."""
     from xcquinox.alec.dfs_pool import build_dfs_pool
     pool = build_dfs_pool()
     by_hill = {a.info["dfs_hill"]: a for a in pool["ae_molecules"]}
@@ -688,7 +688,7 @@ def test_dfs_pool_ae_kcalmol_lookup_matches_data():
 # 15 electrons) with PySCF "Electron number 15 and spin 0 are not
 # consistent".  Root cause: ASE Atoms loaded from g2_97.traj have no
 # spin/charge in info{}, so _ase_atoms_to_pyscf_mol defaulted spin=0 for
-# every species — wrong for the 7 open-shell molecules in the AE pool
+# every species, wrong for the 7 open-shell molecules in the AE pool
 # (NO, CH, OH, NO2, NH, CH3, CH2-triplet) and the atomic refs (H, Li).
 #
 # These tests enforce the (nelec - spin) % 2 == 0 invariant PySCF
@@ -745,7 +745,7 @@ def test_dfs_ae_data_open_shell_spins_match_published_ground_states():
 
 def test_dfs_pool_every_ae_atoms_satisfies_pyscf_spin_invariant():
     """Every Atoms in pool['ae_molecules'] must satisfy
-    (nelec - spin) % 2 == 0 — the invariant PySCF enforces.  This is
+    (nelec - spin) % 2 == 0, the invariant PySCF enforces.  This is
     the regression test for the 2026-05-01 NO smoke-run failure."""
     from xcquinox.alec.dfs_pool import build_dfs_pool
     pool = build_dfs_pool()
@@ -753,20 +753,20 @@ def test_dfs_pool_every_ae_atoms_satisfies_pyscf_spin_invariant():
         nelec = _atoms_nelec(at)
         spin = int(at.info["spin"])
         assert (nelec - spin) % 2 == 0, (
-            f"{at.info['dfs_hill']}: nelec={nelec}, spin={spin} — "
+            f"{at.info['dfs_hill']}: nelec={nelec}, spin={spin}, "
             f"(nelec - spin) is odd; PySCF will reject this SCF.")
 
 
 def test_dfs_pool_every_atom_ref_satisfies_pyscf_spin_invariant():
     """Every Atoms in pool['atom_refs'] (H, Li) must satisfy the
     spin/electron-count invariant and carry the NIST ASD ground-state
-    spin (²S → spin=1)."""
+    spin (²S -> spin=1)."""
     from xcquinox.alec.dfs_pool import build_dfs_pool
     pool = build_dfs_pool()
     by_sym = {a.get_chemical_formula(): a for a in pool["atom_refs"]}
     for sym in ("H", "Li"):
         a = by_sym[sym]
-        # NIST ASD: H I and Li I are both ²S — spin=1 (one unpaired e⁻).
+        # NIST ASD: H I and Li I are both ²S, spin=1 (one unpaired e⁻).
         assert a.info["spin"] == 1, (
             f"{sym}: atom-ref spin must be 1 (²S ground state, NIST ASD)")
         assert a.info["charge"] == 0
@@ -794,8 +794,8 @@ def test_dfs_bh76_every_reaction_has_species_spins():
 
 def test_dfs_ip13_every_pair_has_neutral_and_cation_spin():
     """Every IP13 pair must carry neutral_spin/cation_spin and
-    cation_charge=+1.  Spot-check Li (²S→¹S, spins 1→0) and C (³P→²P°,
-    spins 2→1) from NIST ASD."""
+    cation_charge=+1.  Spot-check Li (²S -> ¹S, spins 1 -> 0) and C (³P -> ²P°,
+    spins 2 -> 1) from NIST ASD."""
     from xcquinox.alec.dfs_pool import DFS_IP13_PAIRS
     expected = {
         "Li_IP": {"neutral_spin": 1, "cation_spin": 0},
@@ -935,7 +935,7 @@ def test_select_subset_return_all_distribution_path_hits_cache_on_second_call(tm
 
 
 def test_select_subset_return_all_cache_shape_mismatch_raises(tmp_path):
-    """Cached .npz from r=2 cannot be reused for an r=3 call — the
+    """Cached .npz from r=2 cannot be reused for an r=3 call, the
     shape sanity check raises ValueError pointing to the cache path."""
     import numpy as np
     import pytest
@@ -969,7 +969,7 @@ def test_select_subset_return_all_cache_shape_mismatch_raises(tmp_path):
 
 def test_extract_descriptors_write_is_atomic_no_tmp_leftover(tmp_path):
     """After extract_descriptors completes, cache_dir contains exactly
-    the cache file — no .tmp leftovers from the atomic-write tempfile.
+    the cache file, no .tmp leftovers from the atomic-write tempfile.
     Pins the tempfile + os.replace pattern."""
     import os
     from ase import Atoms
@@ -1013,7 +1013,7 @@ def test_select_subset_distribution_write_is_atomic_no_tmp_leftover(tmp_path):
 
 def test_concatenate_point_descriptors_concats_all_species():
     """concatenate_point_descriptors stacks per-species descriptors across
-    every species in a TrainingPoint (design choice "a" — full union)."""
+    every species in a TrainingPoint (design choice "a": full union)."""
     import numpy as np
     from ase import Atoms
     from xcquinox.alec.subset_selection import concatenate_point_descriptors
@@ -1048,7 +1048,7 @@ def test_concatenate_point_descriptors_dedupe_by_key_lookup():
     """When two points share an atom anchor (e.g. AE 'CH4' and BH76 OH+CH3),
     the species_descriptors dict has it once, but each point still gets the
     H atom's descriptors stacked into its own concatenation. Verifies the
-    helper looks up by (name, charge, spin) — no accidental sharing of
+    helper looks up by (name, charge, spin), no accidental sharing of
     array refs across points."""
     import numpy as np
     from ase import Atoms
@@ -1092,8 +1092,8 @@ def test_concatenate_point_descriptors_missing_species_raises():
 
 
 def test_metric_jsd_scalar_empty_candidate_is_inf():
-    """C4-04: the scalar metric_jsd must disqualify (return +inf) a candidate
-    whose in-range mass is zero for any descriptor marginal — matching the batch
+    """the scalar metric_jsd must disqualify (return +inf) a candidate
+    whose in-range mass is zero for any descriptor marginal, matching the batch
     path's SUBSET-05 guard. Previously it returned a small finite value (a
     spurious near-perfect match)."""
     rng = np.random.default_rng(7)
@@ -1108,7 +1108,7 @@ def test_metric_jsd_scalar_empty_candidate_is_inf():
     assert np.isfinite(val) and 0.0 <= val <= 3.0 * np.log(2.0) + 1e-9
 
 
-# C4-03: per-descriptor selection weights (default equal, opt-in down-weighting)
+# per-descriptor selection weights (default equal, opt-in down-weighting)
 def test_descriptor_weights_default_preserves_behavior():
     """Default weights (None) must reproduce the unweighted metric exactly."""
     rng = np.random.default_rng(11)

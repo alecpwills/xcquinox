@@ -320,7 +320,7 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
 
 
-# C5-06: per-molecule aggregation must exclude non-finite values
+# per-molecule aggregation must exclude non-finite values
 def test_aggregate_per_molecule_excludes_nonfinite():
     rows = [
         {"AE_error_kcalmol": 1.0, "density_rmse": 0.01},

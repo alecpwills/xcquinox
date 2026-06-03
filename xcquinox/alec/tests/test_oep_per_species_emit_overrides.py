@@ -134,7 +134,7 @@ def test_select_winner_tie_break_by_wall_clock():
 
 
 def test_select_winner_returns_none_when_no_candidate_hits_floor():
-    """All trials missed target_floor → no winner."""
+    """All trials missed target_floor -> no winner."""
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     import oep_per_species_emit_overrides as ver
     records = [
@@ -147,7 +147,7 @@ def test_select_winner_returns_none_when_no_candidate_hits_floor():
 
 def test_select_winner_short_history_with_conv_tol_marks_stable():
     """Carve-out: n_iter < plateau_window AND terminated_by==conv_tol
-    → counted as stable (spec sec. 7.1 short-trial carve-out)."""
+ -> counted as stable (spec sec. 7.1 short-trial carve-out)."""
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     import oep_per_species_emit_overrides as ver
     rec = _stub_record(density_error_min=1e-3, wall_clock_s=10,
@@ -159,7 +159,7 @@ def test_select_winner_short_history_with_conv_tol_marks_stable():
 
 def test_select_winner_long_history_with_early_stop_marks_stable():
     """Long oscillatory history with terminated_by=='early_stop_conv_tol'
-    → still accepted as stable. The early-stop sentinel certifies an
+ -> still accepted as stable. The early-stop sentinel certifies an
     accepted iterate hit conv_tol; L-BFGS-B is deterministic, so the
     trajectory reproduces and the override is reliable. Pins the
     relaxed carve-out fix (2026-05-06 F2O/HF observation: long oscillatory
@@ -188,7 +188,7 @@ def test_dm_bias_check_skipped_at_level_shift_le_0_5():
     import oep_per_species_emit_overrides as ver
     rec = _stub_record(density_error_min=1e-3, wall_clock_s=100,
                        level_shift=0.5,
-                       target_q=0.0, inner_q=10.0)  # huge mismatch — ignored
+                       target_q=0.0, inner_q=10.0)  # huge mismatch, ignored
     assert ver._passes_dm_bias_check(rec)
 
 
@@ -285,7 +285,7 @@ def test_dm_bias_check_excludes_when_r_squared_diff_above_5pct():
 
 
 def test_dm_bias_check_passes_when_both_below_5pct():
-    """At level_shift > 0.5: both checks under 5% → passes."""
+    """At level_shift > 0.5: both checks under 5% -> passes."""
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
@@ -298,7 +298,7 @@ def test_dm_bias_check_passes_when_both_below_5pct():
 
 
 def test_dm_bias_check_dipole_null_for_atomic_species():
-    """Atomic species: target_dm_dipole=None → dipole check skipped."""
+    """Atomic species: target_dm_dipole=None -> dipole check skipped."""
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
@@ -322,7 +322,7 @@ def test_dm_bias_check_quad_aniso_normalised_by_target_r_squared():
     rec = _stub_record(density_error_min=1e-3, wall_clock_s=100,
                        level_shift=1.0,
                        target_r2=5.0, inner_r2=5.0,
-                       target_q=0.0, inner_q=0.10)  # 0.10/5.0 = 2% — passes
+                       target_q=0.0, inner_q=0.10)  # 0.10/5.0 = 2%, passes
     assert ver._passes_dm_bias_check(rec)
 
 
@@ -337,7 +337,7 @@ def test_pyscf_int1e_rr_returns_9_components():
 
 
 def test_emitted_snippet_conv_tol_rounds_correctly_at_decade_boundary():
-    """Spec §9.4: density_error_min=5.88e-3 → conv_tol=1.0e-2 (rounds
+    """Spec §9.4: density_error_min=5.88e-3 -> conv_tol=1.0e-2 (rounds
     UP across the decade boundary). Pin _round_2sigfig behavior."""
     import sys
     from pathlib import Path

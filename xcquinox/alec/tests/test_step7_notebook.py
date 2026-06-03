@@ -61,7 +61,7 @@ def test_step7_spec_builder_excludes_bh76_compounds_from_ae_channel():
     CH4, N2, N2O, F2).  Without this, ``_ae_losses`` includes those
     species in ``compound_idx`` with target=0.0, the relative-error
     denominator collapses to (0² + 1e-8) = 1e-8, and a ~0.5 Ha NN-vs-anchor
-    AE prediction blows up to ~2.5e+7 — driving the trained NN to make
+    AE prediction blows up to ~2.5e+7, driving the trained NN to make
     `compound energy = sum-of-atom-energies` for those compounds, an
     unphysical objective.
 
@@ -89,6 +89,6 @@ def test_step7_spec_builder_excludes_bh76_compounds_from_ae_channel():
     )
     # And it must be wired into loss_kwargs:
     assert "'aux_only_names': _aux_polyatomic_names" in code_cells_src, (
-        "loss_kwargs missing aux_only_names — BH76 compounds will enter "
+        "loss_kwargs missing aux_only_names, BH76 compounds will enter "
         "the AE channel with target=0.0 placeholders"
     )

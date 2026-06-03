@@ -9,7 +9,7 @@ per-feature ``[0.1, 99.9]``-percentile edges. The legacy method used
 ``log10(x + 1e-10)`` to give cross-scale feature values equal treatment, but
 the descriptors are ALREADY scale-compressed (ρ^{1/3}, not ρ) and each feature
 is independently percentile-ranged, so that range is handled by the descriptor
-choice + percentile edges — log on top was largely redundant and dumped the
+choice + percentile edges, log on top was largely redundant and dumped the
 physical α=0 (single-orbital) spike onto a floor bin. Cross-FEATURE equal
 treatment is instead enforced by normalizing BOTH metrics to PMFs (sum=1) per
 marginal (``_to_pmf``), so a feature's contribution no longer depends on its
@@ -147,13 +147,13 @@ def metric_l2(h_ref: dict, h_cand: dict, weights=None) -> float:
                     + (p^ref_a   - p^cand_a)^2_b )
 
     where each ``p`` is the marginal normalized to a probability MASS function
-    (sum=1) via ``_to_pmf`` — like ``metric_jsd``. PMF-normalization makes the
+    (sum=1) via ``_to_pmf``: like ``metric_jsd``. PMF-normalization makes the
     three marginals dimensionless and binwidth-independent, so each descriptor
     is treated equally regardless of its raw range (the prior ``density=True``
     form let a narrow-range descriptor dominate). ``weights`` scales each
     descriptor's squared contribution; None = equal. A candidate marginal with
     zero in-range mass is maximally divergent (cannot represent the reference)
-    → +inf, never selected (mirrors ``metric_jsd``).
+ -> +inf, never selected (mirrors ``metric_jsd``).
     """
     w = _resolve_descriptor_weights(weights)
     diffs_sq = np.zeros(NBINS)
@@ -170,7 +170,7 @@ def _to_pmf(h: np.ndarray) -> np.ndarray:
     """Normalize a non-negative histogram to a probability MASS function.
 
     Lin's JSD (Lin 1991, IEEE Trans. Inf. Theory 37, 145) is defined on
-    PMFs that SUM to 1 — not probability densities (which integrate to 1
+    PMFs that SUM to 1, not probability densities (which integrate to 1
     via the bin width, so their raw sum is bin-width-dependent and their
     individual values can exceed 1). We divide by the total mass so the
     result sums to 1; this also makes the divergence invariant to a
@@ -179,7 +179,7 @@ def _to_pmf(h: np.ndarray) -> np.ndarray:
     zero total mass; we return an all-zero vector for it. Callers
     (:func:`metric_jsd`, :func:`_metric_jsd_batch`) detect a zero-mass
     CANDIDATE marginal directly and treat it as maximally divergent
-    (``+inf``) so it is never selected — ``_kl`` itself does not flag it.
+    (``+inf``) so it is never selected, ``_kl`` itself does not flag it.
     """
     total = float(np.sum(h))
     if total <= 0.0:
@@ -191,7 +191,7 @@ def _kl(p: np.ndarray, q: np.ndarray) -> float:
     """Kullback-Leibler divergence in nats between two PMFs.
 
     Probabilities are lower-floored at KL_PROB_CLIP to avoid log(0); there
-    is NO upper clip — a PMF entry never exceeds 1 once normalized, so
+    is NO upper clip, a PMF entry never exceeds 1 once normalized, so
     upper-clipping would distort legitimate (density) peaks. Inputs are
     normalized to PMFs (sum=1) before the divergence so the result is the
     genuine KL divergence bounded such that the resulting JSD lies in
@@ -217,14 +217,14 @@ def metric_jsd(h_ref: dict, h_cand: dict, weights=None) -> float:
     JSD is therefore bounded in [0, ln 2] (Lin 1991), and the 3-marginal
     total in [0, 3 ln 2].
 
-    NOTE: do NOT use scipy.spatial.distance.jensenshannon — that returns
+    NOTE: do NOT use scipy.spatial.distance.jensenshannon: that returns
     the JS distance (sqrt of the divergence), not the divergence itself.
     """
     w = _resolve_descriptor_weights(weights)
     total = 0.0
     for k in _DESCRIPTOR_KEYS:
-        # SUBSET-05: a candidate marginal with zero in-range mass has no
-        # grid points in this descriptor's range — it cannot represent the
+        # a candidate marginal with zero in-range mass has no
+        # grid points in this descriptor's range, it cannot represent the
         # reference distribution at all, so it is MAXIMALLY divergent and must
         # never be selected. Without this guard _to_pmf -> all-zeros makes
         # M = 0.5*p, KL(p||M)=0, and KL(0||M) stays small, so the candidate
@@ -267,7 +267,7 @@ def _prebin_pool(pool, edges: dict) -> tuple[dict, dict]:
     dropped by ``np.histogram`` and excluded from its normalization).
     The in-range weight differs across descriptors because the (rho^1/3,
     s, alpha) ranges are picked independently from the [0.1, 99.9]
-    percentiles in ``build_reference_histograms`` — so we must store
+    percentiles in ``build_reference_histograms``, so we must store
     a separate W_in_range[k] vector per descriptor.
 
     Returns (per_key_counts, W_in_range) where:
@@ -377,7 +377,7 @@ def extract_descriptors_for_species(
 
     Returns a dict keyed by ``(name, charge, spin)`` whose values are the
     same descriptor dicts produced by :func:`extract_descriptors`. Used as
-    the building block for multi-species TrainingPoints — each point's
+    the building block for multi-species TrainingPoints, each point's
     candidate descriptors are then assembled by concatenating its
     species' entries from this dict.
     """
@@ -402,7 +402,7 @@ def extract_descriptors_for_species(
 
 def concatenate_point_descriptors(points, species_descriptors: dict[tuple, dict]) -> list[dict]:
     """For each TrainingPoint, concatenate descriptors across its species
-    (design choice "a" — full union of grid points across participating
+    (design choice "a": full union of grid points across participating
     species; reactions weigh more proportional to grid-point count).
 
     Returns a list parallel to ``points`` whose i-th entry is the same
@@ -545,7 +545,7 @@ def select_subset(
                     f"vals={vals.shape}, indices={idx_array.shape} but the "
                     f"requested r={r} with this pool gives n_combos={n_combos} "
                     f"and per-row width={r}. Pool size, r, or fixed_indices "
-                    f"likely changed — delete the cache file to force a re-run."
+                    f"likely changed, delete the cache file to force a re-run."
                 )
             best_combo = tuple(int(i) for i in best_combo_arr)
             best_val = float(best_val_arr)
@@ -621,7 +621,7 @@ def select_subset(
         for key in _DESCRIPTOR_KEYS:
             counts_combo = M @ per_key_counts[key]                # (b, NBINS)
             W_combo_k = M @ W_in_range[key]                       # (b,)
-            # SUBSET-05: a combo whose grid points ALL fell outside the
+            # a combo whose grid points ALL fell outside the
             # histogram range for some descriptor has zero in-range weight
             # and is degenerate (empty candidate). Flag it for
             # disqualification rather than dividing by a fudged W=1.0,
@@ -767,7 +767,7 @@ def _descriptor_triple_from_mol(mol, *, grid_level: int) -> dict:
     """Run a PBE SCF on a built pyscf ``mol`` and return the
     ``(ρ^{1/3}, s, α, weights)`` descriptor dict.
 
-    The SCF → MGGA ``eval_rho`` → :func:`compute_descriptor_triple` core shared
+    The SCF -> MGGA ``eval_rho`` -> :func:`compute_descriptor_triple` core shared
     by the ASE-Atoms (:func:`extract_descriptors`) and MoleculeSpec
     (:func:`extract_descriptors_for_molspecs`) extractors."""
     from pyscf import dft
@@ -933,11 +933,11 @@ def extract_descriptors_for_molspecs(
 
 def concatenate_reaction_descriptors(reactions, species_descriptors, specs_by_name):
     """For each reaction, concatenate descriptors across its participating
-    species (``reactants + products``) — the reaction-pool analogue of
+    species (``reactants + products``), the reaction-pool analogue of
     :func:`concatenate_point_descriptors`.
 
     ``reactions`` are ``full_benchmark_pools`` reaction dicts (species-name
-    lists); ``specs_by_name`` maps name → ``MoleculeSpec`` (to resolve each
+    lists); ``specs_by_name`` maps name -> ``MoleculeSpec`` (to resolve each
     species' ``(name,charge,spin)`` key into ``species_descriptors``). Returns a
     list parallel to ``reactions``, each a descriptor dict ready for
     :func:`build_reference_histograms` / ``select_subset_parallel``."""

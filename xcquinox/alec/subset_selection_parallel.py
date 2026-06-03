@@ -1,21 +1,21 @@
 """Parallel exhaustive subset selection for large candidate pools.
 
 The serial :func:`xcquinox.alec.subset_selection.select_subset` enumerates all
-``C(npool, r)`` combinations in one process — fine for the 26-point training pool
+``C(npool, r)`` combinations in one process, fine for the 26-point training pool
 but intractable as a single stream for the ~216-reaction BH76+W4-11 pool. The
 enumeration is embarrassingly parallel, so this module partitions the combination
 space across worker processes, evaluates the JSD metric on each chunk with the
-per-point descriptor histograms **precomputed once**, and keeps only the running
-**argmin** (nothing per-combo is written to disk).
+per-point descriptor histograms precomputed once, and keeps only the running
+argmin (nothing per-combo is written to disk).
 
 Correctness contract: ``select_subset_parallel(..., metric="jsd")`` returns the
 SAME ``(chosen, value)`` as the serial ``select_subset`` (same lex-first
-tie-break) — verified in tests on small pools.
+tie-break): verified in tests on small pools.
 
 Partition scheme (adapts granularity to ``r`` for load balance):
-  * ``r == 1`` → 1 task (216 singletons, trivial),
-  * ``r == 2`` → one task per leading index (``npool`` tasks),
-  * ``r >= 3`` → one task per leading PAIR of indices (``C(npool, 2)`` tasks),
+  * ``r == 1`` -> 1 task (216 singletons, trivial),
+  * ``r == 2`` -> one task per leading index (``npool`` tasks),
+  * ``r >= 3`` -> one task per leading PAIR of indices (``C(npool, 2)`` tasks),
 each task fixes that prefix and enumerates the remaining ``r - p`` indices over
 the suffix via ``itertools.combinations``, batched into numpy for a vectorized
 JSD. ``multiprocessing.Pool`` load-balances the (uneven) tasks; a shared
@@ -120,7 +120,7 @@ def _init_worker_with_r(counts, ref_pmf, weights, batch, r):
 
 def _partition_prefixes(npool, r):
     """Yield the fixed-prefix tasks partitioning C(npool, r). Prefix length p =
-    min(2, r-1): r=1→() (single task), r=2→leading index, r>=3→leading pair."""
+    min(2, r-1): r=1 -> () (single task), r=2 -> leading index, r>=3 -> leading pair."""
     p = min(2, max(0, r - 1))
     if p == 0:
         yield ()

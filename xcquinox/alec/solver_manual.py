@@ -1,4 +1,4 @@
-"""xcquinox.alec.solver_manual — Manual JAX-native SCF backend.
+"""xcquinox.alec.solver_manual: Manual JAX-native SCF backend.
 
 Implements run_manual_scf via an unrolled jax.lax.scan over cycles.
 Fully differentiable end-to-end through eqx.filter_value_and_grad.
@@ -46,10 +46,10 @@ def _diagonalize_roothaan(F: jnp.ndarray, S: jnp.ndarray, nocc: int) -> jnp.ndar
     L_inv = jnp.linalg.inv(L)
     # The tiny diagonal perturbation lifts forward eigenvalue degeneracy so the
     # reverse-mode eigh gradient (which carries 1/(lambda_i - lambda_j)) stays
-    # finite at degenerate p-orbital shells — the NaN-gradient bug this guards.
+    # finite at degenerate p-orbital shells, the NaN-gradient bug this guards.
     # It is intentionally in the FORWARD eigh (that is what lifts the
     # degeneracy); it therefore biases the converged DM/energy, but only by
-    # O(1e-8), measured ~2e-10 in E worst-case — far below the default
+    # O(1e-8), measured ~2e-10 in E worst-case, far below the default
     # conv_tol=1e-6. A "gradient-only" form would not lift the forward
     # degeneracy and so would not fix the gradient.
     F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
@@ -81,10 +81,10 @@ def _diagonalize_roothaan_unrestricted(
     L_inv = jnp.linalg.inv(L)
     # The tiny diagonal perturbation lifts forward eigenvalue degeneracy so the
     # reverse-mode eigh gradient (which carries 1/(lambda_i - lambda_j)) stays
-    # finite at degenerate p-orbital shells — the NaN-gradient bug this guards.
+    # finite at degenerate p-orbital shells, the NaN-gradient bug this guards.
     # It is intentionally in the FORWARD eigh (that is what lifts the
     # degeneracy); it therefore biases the converged DM/energy, but only by
-    # O(1e-8), measured ~2e-10 in E worst-case — far below the default
+    # O(1e-8), measured ~2e-10 in E worst-case, far below the default
     # conv_tol=1e-6. A "gradient-only" form would not lift the forward
     # degeneracy and so would not fix the gradient.
     F_orth = L_inv @ F @ L_inv.T + jnp.diag(_symmetry_breaking_perturbation(nao, F.dtype))
@@ -173,13 +173,13 @@ def _compute_total_energy_uks(
     guards. ``sigma_tot`` must be |nabla rho_tot|^2 = sigma_aa + 2 sigma_ab
     + sigma_bb computed by the caller from nabla_rho_a + nabla_rho_b.
 
-    LIMITATION (descriptor features) — P2-02: the exchange spin-scaling is
+    LIMITATION (descriptor features), P2-02: the exchange spin-scaling is
     EXACT only for a feature-free (rho, sigma) F_x. With descriptor features
     active, the same molecular features feed both doubled-spin exchange evals,
     so the open-shell relation is an approximation (closed-shell -> RKS stays
     exact). See ``oneshot.split_exc_energy_uks`` for the full discussion.
 
-    P2-03: ``split_exc_energy_uks`` evaluates correlation with the real
+    ``split_exc_energy_uks`` evaluates correlation with the real
     zeta-dependent PW92 baseline when ``cnet.use_spin_polarization`` is set
     (Dick & Fernandez-Serra, PRB 104 L161109 (2021)); flag False keeps the
     zeta=0 total-density correlation. The SCF Fock build below matches.
@@ -202,7 +202,7 @@ def _build_mixer(config: SolverConfig):
     Looks up ``config.mixer_name`` in ``MIXER_REGISTRY`` and instantiates
     the class with kwargs from ``config.mixer_kwargs``. New mixer types
     only need to subclass ``Mixer`` with a unique ``registry_name`` and
-    use ``@register_mixer`` — no edits to this function are required.
+    use ``@register_mixer``: no edits to this function are required.
 
     Note: ``config.mixer_kwargs`` is typed as ``tuple[tuple[str, float],
     ...]`` (frozen + hashable for jit cache keys); kwargs are converted
@@ -432,7 +432,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         nabla_rho_b = 2.0 * jnp.einsum("ij,dgi,gj->gd", D_b, ao_xyz, ao_grid)
         sigma_aa = jnp.sum(nabla_rho_a * nabla_rho_a, axis=1)
         sigma_bb = jnp.sum(nabla_rho_b * nabla_rho_b, axis=1)
-        # SOLV-01: total-density gradient for the correlation piece (zeta=0).
+        # total-density gradient for the correlation piece (zeta=0).
         # nabla_rho_tot = nabla_rho_a + nabla_rho_b, sigma_tot = |nabla_rho_tot|^2
         # = sigma_aa + 2 sigma_ab + sigma_bb.
         nabla_rho_tot = nabla_rho_a + nabla_rho_b
@@ -464,7 +464,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         )
 
     def _vx_nn_spin(features, rho_s, sigma_ss, nabla_rho_s):
-        """SOLV-01: EXCHANGE-only spin-scaled V_x^NN for a single spin channel.
+        """EXCHANGE-only spin-scaled V_x^NN for a single spin channel.
 
         Functional derivative of 0.5 (E_x[2 rho_a] + E_x[2 rho_b]) w.r.t. the
         spin DM (Oliver & Perdew, Phys. Rev. A 20, 397 (1979)). The shared
@@ -484,16 +484,16 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         )
 
     def _vc_nn_total(features, rho_tot, sigma_tot, nabla_rho_tot):
-        """SOLV-01: CORRELATION V_c^NN on the TOTAL density, computed ONCE.
+        """CORRELATION V_c^NN on the TOTAL density, computed ONCE.
 
         Correlation does not obey the exchange spin-scaling relation; it is
         evaluated on rho_tot (zeta=0, since the baseline
-        ``pw92c_unpolarized_scalar`` is spin-unpolarized — von Barth & Hedin,
+        ``pw92c_unpolarized_scalar`` is spin-unpolarized, von Barth & Hedin,
         J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45, 13244 (1992)).
         Because delta rho_tot / delta rho_a = delta rho_tot / delta rho_b = 1,
         this SAME matrix enters BOTH spin Fock matrices. This is the
         ``use_spin_polarization=False`` fast path; the zeta-dependent per-spin
-        path (P2-03) uses ``compute_vc_polarized_per_spin`` in the SCF body.
+        path uses ``compute_vc_polarized_per_spin`` in the SCF body.
         """
         return compute_vxc_nn(
             model,
@@ -540,8 +540,8 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         (rho_a, rho_b, nabla_rho_a, nabla_rho_b,
          sigma_aa, sigma_bb, nabla_rho_tot, sigma_tot) = _spin_resolved_rho(D_cur)
         features = _features_for(D_cur)
-        # SOLV-01: V_xc^s = vx_s (exchange spin-scaled) + correlation.
-        # P2-03: a spin-polarization-aware cnet makes correlation PER-SPIN
+        # V_xc^s = vx_s (exchange spin-scaled) + correlation.
+        # a spin-polarization-aware cnet makes correlation PER-SPIN
         # (zeta couples the channels); otherwise vc is shared (the fast path).
         vx_a = _vx_nn_spin(features, rho_a, sigma_aa, nabla_rho_a)
         vx_b = _vx_nn_spin(features, rho_b, sigma_bb, nabla_rho_b)
@@ -566,7 +566,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         # mixes alpha and beta channels independently with the same alpha.
         new_mixer_state, D_mixed = mixer.step(state.mixer_state, D_cur, D_new)
         # Consistency: recompute energy from D_mixed (same principle as the
-        # RKS path — avoids a hybrid D_cur/D_mixed energy).
+        # RKS path, avoids a hybrid D_cur/D_mixed energy).
         (rho_a_m, rho_b_m, _nra_m, _nrb_m,
          sig_aa_m, sig_bb_m, _ntot_m, sig_tot_m) = _spin_resolved_rho(D_mixed)
         features_m = _features_for(D_mixed)

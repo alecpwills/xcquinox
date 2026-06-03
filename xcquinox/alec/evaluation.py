@@ -176,7 +176,7 @@ class DensityRMSEMetric(Metric):
         if rho_ref is None:
             # External CCSD reference density not loaded for this species
             # (e.g. spec.external_data_path was None, or the .npz file
-            # didn't carry rho_ref_grid).  Skip gracefully — matches the
+            # didn't carry rho_ref_grid).  Skip gracefully, matches the
             # existing pattern in losses._grid_term which skips when
             # rho_ref is None.
             return {
@@ -380,7 +380,7 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
                 f"spec.arch.use_polarized_correlation="
                 f"{spec.arch.use_polarized_correlation}. The cnet must be "
                 f"built via create_network_pair(arch) so the flag is "
-                f"derived from arch.use_polarized_correlation — "
+                f"derived from arch.use_polarized_correlation: "
                 f"see evaluation.py:350 + networks.py:333-342."
             )
 
@@ -516,7 +516,7 @@ def _aggregate_results(per_molecule: list[dict]) -> dict:
       ``n_skipped`` -- molecules that had None/NaN/non-numeric values for the
                        key and therefore did not contribute to the statistics.
 
-    ``count`` (== n_total - n_skipped) is the number that *did* contribute.
+    ``count`` (== n_total - n_skipped) is the number that did contribute.
     All three fields are present so consumers can detect partial-population
     aggregates (e.g. 2 of 26 molecules having density_rmse != None).
     """

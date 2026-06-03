@@ -4,7 +4,7 @@ The datagen stage runs FIRST in the job graph and generates the pretrain-data
 file(s) every swept arch needs, before the pretrain stage consumes them. These
 tests pin: (1) which files are required for polarized / unpolarized / mixed
 sweeps, and (2) that ``main`` calls the idempotent generator once per distinct
-required file with the basis/grid/density_fit taken from the resolved config —
+required file with the basis/grid/density_fit taken from the resolved config,
 without running any real PBE SCF (the generator seam is monkeypatched).
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ def _cfg(archs, polarized, *, basis="def2-svp", grid=2, df=False, aux=None,
 
 
 # ---------------------------------------------------------------------------
-# _required_polarized_flags — which files the sweep's archs consume
+# _required_polarized_flags, which files the sweep's archs consume
 # ---------------------------------------------------------------------------
 
 def test_required_flags_polarized_run():
@@ -56,7 +56,7 @@ def test_required_flags_mixed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# main — generation calls (generator seam monkeypatched)
+# main: generation calls (generator seam monkeypatched)
 # ---------------------------------------------------------------------------
 
 def _run_main(monkeypatch, tmp_path, cfg):

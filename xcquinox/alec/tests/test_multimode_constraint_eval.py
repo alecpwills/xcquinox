@@ -1,6 +1,6 @@
 """Unit tests for the PURE helpers in notebooks/analysis/multimode_constraint_eval.py
 (the self-consistency-ladder evaluation driver). Loaded by file path. These touch
-no SCF / pyscf compute — only the mode->SolverConfig mapping, the species grouping,
+no SCF / pyscf compute, only the mode->SolverConfig mapping, the species grouping,
 the divergence-robust metric reductions, and the seed aggregator."""
 import importlib.util
 import math
@@ -139,17 +139,17 @@ def test_build_arch_polarized_flag(mod):
 
 
 def test_should_reuse_checkpoint_guards_steps_and_weighting(mod):
-    # match → reuse
+    # match -> reuse
     assert mod.should_reuse_checkpoint(
         {"pretrain_steps": 1000, "loss_weighting": "unweighted"},
         1000, "unweighted") is True
-    # mismatched step count (e.g. a 20-step smoke ckpt) → do NOT reuse
+    # mismatched step count (e.g. a 20-step smoke ckpt) -> do NOT reuse
     assert mod.should_reuse_checkpoint(
         {"pretrain_steps": 20, "loss_weighting": "unweighted"},
         1000, "unweighted") is False
-    # mismatched weighting → do NOT reuse
+    # mismatched weighting -> do NOT reuse
     assert mod.should_reuse_checkpoint(
         {"pretrain_steps": 1000, "loss_weighting": "integration"},
         1000, "unweighted") is False
-    # missing keys → do NOT reuse
+    # missing keys -> do NOT reuse
     assert mod.should_reuse_checkpoint({}, 1000, "unweighted") is False

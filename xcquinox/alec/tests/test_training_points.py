@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.training_points — mixed-pool TrainingPoint
+"""Tests for xcquinox.alec.training_points: mixed-pool TrainingPoint
 abstraction for Dick 2021-style subset selection across AE + BH76 + IP13."""
 import pytest
 
@@ -32,7 +32,7 @@ def test_ae_point_only_carries_dick_atom_anchors():
     chn = by_name["CHN"]
     sp_names = [s.info["name"] for s in chn.species]
     assert sp_names == ["CHN", "H"]
-    # CO contains C, O; no Dick anchors → only the compound:
+    # CO contains C, O; no Dick anchors -> only the compound:
     co = by_name["CO"]
     assert [s.info["name"] for s in co.species] == ["CO"]
     # HLi contains H + Li, both Dick anchors:
@@ -46,12 +46,12 @@ def test_bh76_point_carries_full_reaction_plus_dick_anchors_only():
     from xcquinox.alec.training_points import build_dfs_pool_points
     points = build_dfs_pool_points()
     by_name = {p.name: p for p in points}
-    # OH+N2 → H+N2O: H is a product → no extra H anchor; no N or O anchors.
+    # OH+N2 -> H+N2O: H is a product -> no extra H anchor; no N or O anchors.
     p = by_name["OH+N2_to_H+N2O"]
     assert sorted(s.info["name"] for s in p.species) == [
         "H", "HO", "N2", "N2O",
     ]
-    # OH+CH3 → O+CH4: H is NOT a reactant or product → H anchor added.
+    # OH+CH3 -> O+CH4: H is NOT a reactant or product -> H anchor added.
     p2 = by_name["OH+CH3_to_O+CH4"]
     assert sorted(s.info["name"] for s in p2.species) == [
         "CH3", "CH4", "H", "HO", "O",
@@ -81,14 +81,14 @@ def test_species_union_dedupes_by_name_charge_spin():
     chosen = [by_name["CHN"], by_name["OH+N2_to_H+N2O"]]
     sp = species_union_from_points(chosen)
     names = [s.info["name"] for s in sp]
-    # H appears in CHN (anchor) and as a product of OH+N2 → only once:
+    # H appears in CHN (anchor) and as a product of OH+N2 -> only once:
     assert names.count("H") == 1
     # CHN compound + 4 BH76 species + 1 H anchor (deduped) = 5 total.
     assert sorted(names) == ["CHN", "H", "HO", "N2", "N2O"]
 
 
 def test_r2_mixed_subset_matches_user_example():
-    """User example: 'r=2 = a CH4 AE (if in pool) + a C → C+ IP'.
+    """User example: 'r=2 = a CH4 AE (if in pool) + a C -> C+ IP'.
     CH4 isn't in DFS AE pool (only BH76), so use the closest AE compound
     (CH3) instead. Verifies the API supports mixed-kind subset selection."""
     from xcquinox.alec.training_points import (
@@ -143,7 +143,7 @@ def test_training_point_metadata_preserved():
     chn = by_name["CHN"]
     assert chn.metadata.get("ae_kcalmol") is not None
     assert chn.metadata["ae_kcalmol"] != 0.0
-    # BH76 — default bh76_mode is 'reaction_energy', so e_rxn_ref is
+    # BH76, default bh76_mode is 'reaction_energy', so e_rxn_ref is
     # the true reaction energy ΔE (GMTKN55-BH76RC), not the barrier.
     bh = by_name["OH+N2_to_H+N2O"]
     assert bh.metadata["e_rxn_ref"] == 64.91
@@ -160,7 +160,7 @@ def test_training_point_metadata_preserved():
 
 # --- bh76_mode toggle (reaction_energy default vs barrier_height) -----------
 
-# Expected true reaction energies ΔE for the reactant→product direction of
+# Expected true reaction energies ΔE for the reactant -> product direction of
 # each DFS_BH76_REACTIONS entry, taken DIRECTLY from GMTKN55-BH76RC (W2-F12;
 # grimme-lab/GMTKN55 BH76/.resRC). Realigned 2026-05-24 from the prior
 # Minnesota Vr−Vf values (65.14/−5.57/103.53), which differ by ~0.2 kcal/mol.
@@ -211,7 +211,7 @@ def test_bh76_reaction_energy_species_are_reactants_and_products():
 def test_bh76_reaction_energy_consistent_with_vr_minus_vf():
     """Sanity cross-check: the GMTKN55-BH76RC reaction energy is CLOSE to the
     Minnesota REF1 barrier difference Vr − Vf (they are different best-estimate
-    references — W2-F12 vs the barrier database — so they agree only to within
+    references, W2-F12 vs the barrier database, so they agree only to within
     the ~0.3 kcal/mol method delta, not exactly). GMTKN55 is authoritative."""
     vf = {"OH+N2_to_H+N2O": 17.13,
           "OH+CH3_to_O+CH4": 13.47,
@@ -251,7 +251,7 @@ def test_bh76_unknown_mode_raises():
 
 def test_bh76_barrier_height_mode_raises_gated_error():
     """bh76_mode='barrier_height' is wired but gated on transition-state
-    geometries that are not yet staged — it must raise a clear,
+    geometries that are not yet staged, it must raise a clear,
     actionable NotImplementedError rather than silently mislabelling."""
     from xcquinox.alec.training_points import build_dfs_pool_points
     with pytest.raises(NotImplementedError, match="transition-state"):

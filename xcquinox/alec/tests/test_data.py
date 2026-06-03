@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.data — MoleculeData, precompute, XC helpers.
+"""Tests for xcquinox.alec.data: MoleculeData, precompute, XC helpers.
 
 Implements THE SPEC §13.2 test_data.py items (1)-(13).
 """
@@ -75,7 +75,7 @@ def test_precompute_both_descriptors_assembled_in_dm_before_cusp_order():
     assert data["cusp_features"].shape == (n_grid, 2)
 
 
-# §13.2 item (5) — M-E12-5
+# §13.2 item (5), M-E12-5
 def test_precompute_d1_skips_ccsd():
     mol = h2_molecule()
     # D1_delta_ae requires only ("E_pbe",), no CCSD keys
@@ -145,7 +145,7 @@ def test_precompute_uks_path_for_o_spin_polarized():
     assert data["nocc_b"] == 3  # (8 - 2) // 2
 
 
-# §13.2 item (11) — E-H4
+# §13.2 item (11), E-H4
 def test_precompute_rejects_ill_conditioned_overlap():
     mol = h2_molecule()
     with patch("xcquinox.alec.data.np.linalg.cond", return_value=1e12):
@@ -153,7 +153,7 @@ def test_precompute_rejects_ill_conditioned_overlap():
             precompute_fixed_density_data(mol)
 
 
-# §13.2 item (12) — D-H7 (xfail: fixture not yet generated)
+# §13.2 item (12), D-H7 (xfail: fixture not yet generated)
 @pytest.mark.xfail(reason="Fixture notebook_cell24_precompute_h2o.npz not yet generated")
 def test_precompute_matches_notebook():
     import pathlib
@@ -176,7 +176,7 @@ def test_precompute_matches_notebook():
             data[key], float(ref[key]),
             rtol=1e-10, err_msg=f"scalar mismatch: {key}",
         )
-    # Arrays — bit-exact
+    # Arrays, bit-exact
     for key in ("rho_grid", "sigma_grid", "ao_grid", "grid_weights",
                 "dm_pbe", "s_matrix", "h_core", "j_matrix"):
         np.testing.assert_array_equal(
@@ -185,7 +185,7 @@ def test_precompute_matches_notebook():
         )
 
 
-# §13.2 item (13) — M-E12-2
+# §13.2 item (13), M-E12-2
 def test_precompute_populates_all_required_keys():
     mol = h2_molecule()
     cusp = CuspDescriptor()
@@ -210,7 +210,7 @@ def test_precompute_populates_all_required_keys():
 
 
 # ---------------------------------------------------------------------------
-# §13.2 items (14)-(20) — MoleculeSpec.external_data_path
+# §13.2 items (14)-(20), MoleculeSpec.external_data_path
 # ---------------------------------------------------------------------------
 
 
@@ -400,7 +400,7 @@ def test_molecule_spec_from_dict_accepts_external_data_path(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# §13.2 items (24)-(30) — MoleculeSpec.grid_level
+# §13.2 items (24)-(30), MoleculeSpec.grid_level
 # ---------------------------------------------------------------------------
 
 
@@ -740,7 +740,7 @@ def test_precompute_cache_keys_on_required_keys_and_descriptors():
 
 
 # ---------------------------------------------------------------------------
-# CFG-03: grid_level_used provenance in external .npz is asserted against the
+# grid_level_used provenance in external .npz is asserted against the
 # resolved grid_level in _load_external_data.
 # ---------------------------------------------------------------------------
 
@@ -771,7 +771,7 @@ def test_precompute_external_grid_level_match_ok(tmp_path):
 
 
 def test_precompute_external_grid_level_mismatch_raises(tmp_path):
-    """grid_level_used != resolved grid_level raises (CFG-03)."""
+    """grid_level_used != resolved grid_level raises."""
     mol0 = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
         charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,

@@ -172,7 +172,7 @@ def test_pretrainspec_describe_roundtrip():
 
 
 # ---------------------------------------------------------------------------
-# P2-03: cnet pretraining input carries the zeta column when polarized.
+# cnet pretraining input carries the zeta column when polarized.
 # ---------------------------------------------------------------------------
 def _polc_arch():
     return ArchitectureConfig.from_spec(
@@ -232,7 +232,7 @@ def test_assemble_pretrain_descriptors_unpolarized_ignores_for_cnet():
 
 
 # ---------------------------------------------------------------------------
-# Tests 9-16: run_pretrain end-to-end (xfail — need fixture)
+# Tests 9-16: run_pretrain end-to-end (xfail, need fixture)
 # ---------------------------------------------------------------------------
 
 FIXTURE_DIR = os.path.join(
@@ -493,7 +493,7 @@ def test_run_pretrain_warmup_phase_and_progress_callback():
 
 
 # ---------------------------------------------------------------------------
-# Tests 17a-17b: from_legacy_step3b pretrain layout (xfail — need fixture)
+# Tests 17a-17b: from_legacy_step3b pretrain layout (xfail, need fixture)
 # ---------------------------------------------------------------------------
 
 LEGACY_CKPT_DIR = os.path.join(FIXTURE_DIR, "legacy_step3b_checkpoint")
@@ -555,7 +555,7 @@ def test_from_legacy_step3b_pretrain_layout_eval_bit_exact():
 
 
 # ---------------------------------------------------------------------------
-# Test 18: ambiguous layout raises ValueError (xfail — need fixture)
+# Test 18: ambiguous layout raises ValueError (xfail, need fixture)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(
@@ -606,7 +606,7 @@ def test_pretrainspec_defaults_match_notebook():
 
 
 # ---------------------------------------------------------------------------
-# Test 20: LOB leaf remap (xfail — needs fixture)
+# Test 20: LOB leaf remap (xfail, needs fixture)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(
@@ -660,7 +660,7 @@ def test_from_legacy_step3b_lob_leaf_remap():
 
 
 # ---------------------------------------------------------------------------
-# Test 21: leaf count matches skeleton (xfail — needs fixture)
+# Test 21: leaf count matches skeleton (xfail, needs fixture)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(
@@ -713,7 +713,7 @@ def test_from_legacy_step3b_leaf_count_matches_skeleton():
 
 
 # ---------------------------------------------------------------------------
-# Test 22: loads under LOB constraint (xfail — needs fixture)
+# Test 22: loads under LOB constraint (xfail, needs fixture)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(
@@ -755,7 +755,7 @@ def test_from_legacy_step3b_loads_under_lieb_oxford_constraint():
 
 # ---------------------------------------------------------------------------
 # Test 23: validate rejects non-finite loss_kwargs values
-# (This is a PretrainSpec validate check — tests the nonfinite guard.)
+# (This is a PretrainSpec validate check, tests the nonfinite guard.)
 # ---------------------------------------------------------------------------
 
 def test_pretrainspec_validate_n_steps_negative():
@@ -780,7 +780,7 @@ def test_run_pretrain_separates_checkpoints_and_saves_xnet_early(tmp_path, monke
     the final ``xnet.eqx`` BEFORE cnet training (durable if cnet later fails).
 
     Heavy work is stubbed: the xcTrainer seam is faked, descriptors/networks
-    are stubbed, and a minimal real ``pretrain_data.npz`` is written — so this
+    are stubbed, and a minimal real ``pretrain_data.npz`` is written, so this
     is fixture-free and fast while still exercising run_pretrain's real
     control flow (trainer construction + save ordering).
     """
@@ -850,7 +850,7 @@ def test_run_pretrain_separates_checkpoints_and_saves_xnet_early(tmp_path, monke
         os.path.join(str(ckdir), "cnet"),
     ]
     # Durability: xnet.eqx is absent when the xnet trainer runs (1st call) but
-    # PRESENT by the time the cnet trainer runs (2nd call) — i.e. the final
+    # PRESENT by the time the cnet trainer runs (2nd call), i.e. the final
     # xnet was persisted before cnet training, not after.
     assert xnet_present_at_call == [False, True]
     # The final xnet.eqx is serialized BEFORE cnet.eqx.
@@ -864,7 +864,7 @@ def test_run_pretrain_separates_checkpoints_and_saves_xnet_early(tmp_path, monke
 # Pretraining is now constraint-aware: run_pretrain trains the networks built by
 # create_network_pair, which enforce the arch's constraints in their forward.
 # This pins that the exact forward run_pretrain optimizes (jax.vmap(xnet)(rows))
-# is constrained — so pretraining fits the CONSTRAINED functional.
+# is constrained, so pretraining fits the CONSTRAINED functional.
 # ---------------------------------------------------------------------------
 
 def test_pretrain_forward_is_constraint_aware():

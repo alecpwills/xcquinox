@@ -1,4 +1,4 @@
-"""xcquinox.alec.workers.eval_holdout_worker — held-out eval shard worker.
+"""xcquinox.alec.workers.eval_holdout_worker: held-out eval shard worker.
 
 A thin subprocess entry that evaluates ONE molecule shard of a spec's held-out
 set (a subset of BH76 + W4-11) and writes a small JSON payload the parent
@@ -8,7 +8,7 @@ path (never pickled across the process boundary), and a status JSON is printed
 to stdout for ``parallel.run_workers``.
 
 The per-molecule compute itself lives in
-``eval_holdout.compute_holdout_per_molecule`` — shared verbatim with the serial
+``eval_holdout.compute_holdout_per_molecule``: shared verbatim with the serial
 driver, so a shard's energies are byte-for-byte what the serial path produces.
 """
 import argparse

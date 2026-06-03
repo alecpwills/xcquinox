@@ -5,7 +5,7 @@ Physics (verified against the literature):
   * EXCHANGE obeys the exact spin-scaling relation
         E_x[n_a, n_b] = 1/2 (E_x[2 n_a] + E_x[2 n_b])
     (Oliver & Perdew, Phys. Rev. A 20, 397 (1979)).
-  * CORRELATION does NOT — it is spin-interpolated (von Barth & Hedin,
+  * CORRELATION does NOT, it is spin-interpolated (von Barth & Hedin,
     J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45, 13244 (1992)). The
     model's correlation baseline ``pw92c_unpolarized_scalar`` is
     zeta-independent, so the EXISTING correlation model is evaluated ONCE on
@@ -156,7 +156,7 @@ def _exact_vxc_unmasked(model, rho, sigma, nabla_rho, features, ao_grid,
     assembled from the reverse-mode per-point vrho/vsigma of the requested
     scalar energy density. This is, by construction, the true functional
     derivative of sum_g w_g eps_part(rho, sigma) w.r.t. the DM that produces
-    (rho, nabla_rho) — it omits the tail-sanitization that the production
+    (rho, nabla_rho), it omits the tail-sanitization that the production
     ``compute_vxc_nn`` applies for autodiff stability. Used to prove the
     SOLV-01 split formulas are exactly derivative-consistent.
     """
@@ -271,7 +271,7 @@ def test_fd_energy_potential_consistency():
         f"{grad_resid:.3e}"
     )
 
-    # --- (C2) production compute_vxc_nn split V_xc vs FD — the REAL guard.
+    # --- (C2) production compute_vxc_nn split V_xc vs FD, the REAL guard.
     #
     # The production ``compute_vxc_nn`` masks v_sigma only at the genuinely
     # singular sigma <= _V_SIGMA_THRESHOLD = 1e-30 (denormal-level) points; with
@@ -279,7 +279,7 @@ def test_fd_energy_potential_consistency():
     # cancels the 1/(2 sqrt(sigma)) factor), so the production V_xc IS the true
     # functional derivative of the energy to FD precision. (An earlier 1e-10
     # threshold zeroed a finite, energy-significant v_sigma over ~49% of a
-    # diffuse open-shell channel, giving a 0.92 residual — fixed 2026-05-23.)
+    # diffuse open-shell channel, giving a 0.92 residual, fixed 2026-05-23.)
     V_a, V_b = _uks_split_vxc(
         model, D_a, D_b, features, ao_grid, ao_xyz, ao_grad, grid_weights)
     prod_contract = float(jnp.einsum("ij,ij->", V_a, dDa)
@@ -294,7 +294,7 @@ def test_fd_energy_potential_consistency():
 
 
 # ---------------------------------------------------------------------------
-# P2-03: per-spin correlation potential for a spin-polarization-aware cnet.
+# per-spin correlation potential for a spin-polarization-aware cnet.
 # When the cnet carries the zeta input feature and the model uses the
 # zeta-dependent PW92 baseline (Dick & Fernandez-Serra, PRB 104 L161109
 # (2021)), E_c depends on rho_a/rho_b through BOTH rho_tot AND
@@ -386,7 +386,7 @@ def test_polarized_vc_fd_energy_potential_consistency():
 def test_polarized_full_split_vxc_fd_consistency():
     """End-to-end: the FULL split V_xc (spin-scaled exchange + per-spin
     correlation) is the functional derivative of ``split_exc_energy_uks`` with
-    the polarized model — the exact energy/potential pair the SCF solvers use."""
+    the polarized model, the exact energy/potential pair the SCF solvers use."""
     from xcquinox.alec.oneshot import compute_vc_polarized_per_spin
 
     model = _build_polarized_model()
@@ -565,7 +565,7 @@ def test_pyscfad_callback_closed_shell_reduction():
 
 
 def test_pyscfad_callback_polarized_per_spin_vrho():
-    """P2-03: with a spin-polarization-aware cnet the pyscfad UKS callback must
+    """with a spin-polarization-aware cnet the pyscfad UKS callback must
     return PER-SPIN vrho (vrho_a != vrho_b on an open-shell density), reduce to
     a shared vrho at zeta=0, and be pointwise FD-consistent with the energy
     density (vrho_s = d(exc*rho_tot)/d rho_s at fixed gradients)."""

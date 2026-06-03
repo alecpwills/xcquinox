@@ -21,7 +21,7 @@ Internal:
 import json
 import math
 import os
-import pickle  # noqa: S403 — saving trusted aux_log data only
+import pickle  # noqa: S403, saving trusted aux_log data only
 import struct
 import time
 import warnings
@@ -56,7 +56,7 @@ def build_optimizer(
 
     Chain order: clip_by_global_norm -> adam(lr_schedule).
     LR schedule: a constant-LR warmup for the first ``lr_decay_start`` fraction
-    of ``n_steps`` THEN linear decay to ``lr_end`` — but ONLY when
+    of ``n_steps`` THEN linear decay to ``lr_end``, but ONLY when
     ``lr_decay_start > 0``. With the common ``lr_decay_start = 0`` there is no
     warmup: it is pure linear decay from ``lr_start`` to ``lr_end`` over all
     ``n_steps``.
@@ -107,12 +107,10 @@ def _abort_if_nonfinite(loss_value, components, *, loop, step, group=None):
     training step produces a non-finite loss or loss component, naming the
     offending loop/step/group/channel.
 
-    A single NaN/Inf must NEVER silently continue — it poisons every subsequent
-    weight via ``0 * NaN = NaN`` and the whole run becomes garbage (the
-    polarized-correlation regression did exactly this, undetected, for ~1000
-    steps across 8 specs). Called host-side after every optimizer step in every
-    update loop; the per-step loss is already pulled to Python there, so the
-    check is effectively free.
+    A non-finite loss propagates as ``0 * NaN = NaN`` into every weight, so the
+    run must stop at the first one rather than keep training on garbage. Called
+    after every optimizer step in every update loop; the per-step loss is
+    already on the host there, so the check is effectively free.
     """
     bad = []
     for k, v in (components or {}).items():
@@ -130,7 +128,7 @@ def _abort_if_nonfinite(loss_value, components, *, loop, step, group=None):
         where += f", group={group!r}"
     raise FloatingPointError(
         f"non-finite training value ({where}): loss={loss_f!r}, non-finite "
-        f"channel(s)={sorted(bad) or '[loss itself]'}. Training aborts — a "
+        f"channel(s)={sorted(bad) or '[loss itself]'}. Training aborts, a "
         f"NaN/Inf corrupts every subsequent weight. This is almost always a "
         f"functional/solver gradient singularity on this group's species "
         f"(e.g. polarized correlation differentiated through the SCF at full "
@@ -267,7 +265,7 @@ def _save_artifacts(spec, model, losses, aux_log, duration) -> dict:
         "arch_name": spec.arch.name,
         # Shape-changing flag: a polarized cnet has input width
         # +1, so two checkpoints with the same arch_name but different
-        # polarization are NOT interchangeable — record it so loaders can tell.
+        # polarization are NOT interchangeable, record it so loaders can tell.
         "use_polarized_correlation": bool(spec.arch.use_polarized_correlation),
         "loss_name": spec.loss_name,
         "loss_kwargs": loss_kwargs_ser,
@@ -580,7 +578,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
     @eqx.filter_jit
     def _apply_updates(model, opt_state, log_weights, weight_opt_state,
                        comp_values, model_grads, G, L0_values, weights):
-        """Optimizer update (weights + model).  Pure jnp/optax math —
+        """Optimizer update (weights + model).  Pure jnp/optax math,
         compiles in <1 s and uses negligible memory.
         """
         # Robust relative inverse-training-rates (neutralizes L0~=0
@@ -732,7 +730,7 @@ def _training_groups(spec: TrainingSpec) -> list:
 
 def _build_group_loss_and_batch(spec: TrainingSpec, group: dict, batch: dict):
     """Scoped loss + sub-batch for one group. Channels are RAW (vxc/density
-    pre-weights forced to 1.0) — the outer fixed ``channel_weights`` are the
+    pre-weights forced to 1.0), the outer fixed ``channel_weights`` are the
     sole weighting control in per-molecule mode."""
     name_to_idx = {m.name: i for i, m in enumerate(spec.molecules)}
     species = group["species"]

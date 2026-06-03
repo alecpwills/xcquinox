@@ -231,11 +231,11 @@ def test_escalation_retries_only_failed_names_at_lower_tier(tmp_path, monkeypatc
     full_specs = {n: object() for n in ("a", "b", "c", "d")}
 
     # Tier 1 (call 1): any shard containing "d" fails; others succeed.
-    # Tier 2 (call 2+): everything succeeds → "d" finishes on retry.
+    # Tier 2 (call 2+): everything succeeds -> "d" finishes on retry.
     def should_succeed(call_no, names):
         return call_no >= 2 or "d" not in names
     monkeypatch.setattr(par, "run_workers", _make_fake_run_workers(should_succeed))
-    # Serial fallback must NOT be reached — make it explode if it is.
+    # Serial fallback must NOT be reached, make it explode if it is.
     monkeypatch.setattr(eh, "compute_holdout_per_molecule",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("serial fallback should not run")))
@@ -253,7 +253,7 @@ def test_graceful_total_fallback_to_serial(tmp_path, monkeypatch):
     from xcquinox.alec.cluster import _holdout_parallel as hp
     full_specs = {n: object() for n in ("a", "b", "c", "d")}
 
-    # Every worker tier fails → all molecules fall through to the serial tier.
+    # Every worker tier fails -> all molecules fall through to the serial tier.
     monkeypatch.setattr(par, "run_workers",
                         _make_fake_run_workers(lambda call_no, names: False))
     serial_calls = {"n": 0}
@@ -423,7 +423,7 @@ def test_finalize_writes_artifacts_and_summary(tmp_path):
 
 def test_finalize_via_merge_equals_single_shard(tmp_path):
     """Finalizing the merge of two shards equals finalizing the same data as one
-    block — the property the parallel path relies on."""
+    block: the property the parallel path relies on."""
     reactions = [{
         "name": "w411_h2", "source_pool": "w411",
         "reactants": ["h2"], "products": ["h"], "coeffs": [-1.0, 2.0],

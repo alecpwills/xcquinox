@@ -1,11 +1,11 @@
-"""Tests for xcquinox.alec.cluster._preflight — the SLURM preflight entrypoint.
+"""Tests for xcquinox.alec.cluster._preflight: the SLURM preflight entrypoint.
 
 The re-scoped preflight is orchestration-only: the three heavy calls
 (``prepare_inputs``, ``build_training_specs``, ``materialize_specs``) are bound
 to module-level seams that these tests monkeypatch, so the whole preflight flow
 runs without real CCSD / SCF / DFS-pool work.
 
-Subset selection is a *finished pre-process* — the preflight consumes the
+Subset selection is a finished pre-process, the preflight consumes the
 existing subset ledger read-only and does NOT run descriptor extraction,
 reference histograms, ``select_subset``, or any ``regenerate``/``reuse`` mode
 toggle. Those behaviours were removed and are no longer tested.
@@ -26,7 +26,7 @@ from xcquinox.alec.cluster.grid_config import GridCell
 
 
 # ---------------------------------------------------------------------------
-# Stubs — serializable so the real materialize_specs can write them
+# Stubs: serializable so the real materialize_specs can write them
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -40,7 +40,7 @@ class _StubSpec:
     """Minimal serializable stand-in for a TrainingSpec.
 
     ``validate()`` creates ``checkpoint_dir`` (mirroring the real spec) and,
-    when ``validate_error`` is set, raises it — the validation-failure test
+    when ``validate_error`` is set, raises it, the validation-failure test
     uses that to mimic the ``n_compounds >= 1`` rule firing.
     """
     checkpoint_dir: str
@@ -133,7 +133,7 @@ def _two_cells():
 def _make_specs(run_dir, n=2, validate_error="", molecules_per_spec=None):
     """Build ``n`` ``(cell, _StubSpec)`` pairs with checkpoint dirs under run_dir.
 
-    ``molecules_per_spec`` — optional list of per-spec molecule-name iterables;
+    ``molecules_per_spec``: optional list of per-spec molecule-name iterables;
     each name becomes a ``_StubMol``. Default: one ``"mol"`` molecule per spec.
     """
     cells = _two_cells()[:n]
@@ -293,7 +293,7 @@ def test_self_check_fails_when_manifest_cell_count_wrong(tmp_path, patched,
 
 
 # ---------------------------------------------------------------------------
-# precompute failure handling — on_precompute_failure policy
+# precompute failure handling, on_precompute_failure policy
 # ---------------------------------------------------------------------------
 
 _PRECOMPUTE_ERR = (
@@ -372,7 +372,7 @@ def test_precompute_failure_drop_species_marks_specs_exit_0(tmp_path, patched):
     assert (run_dir / "specs" / "spec_0000.spec").is_file()
     assert (run_dir / "specs" / "spec_0001.spec").is_file()
     # both prepare_inputs calls happened: initial (recompute_refs=True) +
-    # re-stage (recompute_refs=False — the failed precompute is NOT re-run)
+    # re-stage (recompute_refs=False, the failed precompute is NOT re-run)
     assert patched["prepare_calls"] == 2
     assert patched["recompute_refs_seen"] == [True, False]
 
@@ -419,6 +419,6 @@ def test_spec_validation_failure_names_cell_exit_1(tmp_path, patched, capsys):
     assert rc == 1
     out = capsys.readouterr().out
     assert "failed validation" in out
-    # the failing cell is named — spec 0 is metric=l2, subset_size=2
+    # the failing cell is named, spec 0 is metric=l2, subset_size=2
     assert "subset_size=2" in out
     assert "compound molecule" in out

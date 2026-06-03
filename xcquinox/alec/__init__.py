@@ -1,4 +1,4 @@
-"""xcquinox.alec — step3b-notebook functionality as a tested library."""
+"""xcquinox.alec: step3b-notebook functionality as a tested library."""
 
 # Registries + helpers
 from xcquinox.alec.descriptors import (

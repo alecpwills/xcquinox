@@ -1,4 +1,4 @@
-"""xcquinox.alec.cluster.materialize — on-disk serialization of harness specs.
+"""xcquinox.alec.cluster.materialize: on-disk serialization of harness specs.
 
 The harness expands a grid into ``TrainingSpec`` objects and must write them
 to a shared filesystem so the per-task worker ``xcquinox.alec._train_one_spec``
@@ -7,7 +7,7 @@ can load each one by SLURM array-task index. This module performs that write.
 The serialization format MUST round-trip through ``_train_one_spec._load_spec``
 exactly: that loader does ``importlib.import_module("pi" + "ckle")`` then
 ``_ser.load(f)``. So every spec written here is a plain pickle (protocol 4),
-produced via the SAME ``importlib`` indirection — the file comes from the same
+produced via the SAME ``importlib`` indirection, the file comes from the same
 trusted codebase in the same process tree, never from an untrusted source.
 """
 from dataclasses import asdict, is_dataclass
@@ -48,7 +48,7 @@ def write_spec_atomic(obj, path: str) -> None:
     removed so no orphan temp files are left behind.
 
     Raises:
-        ValueError: if ``obj`` carries a non-None ``pbe_anchor_sample`` — the
+        ValueError: if ``obj`` carries a non-None ``pbe_anchor_sample``, the
             harness does not support PBE-anchor specs (that field can hold
             non-serializable JAX arrays). Harness-built specs always have it
             None, so this is a defensive guard against an unsupported path.
@@ -103,7 +103,7 @@ def _purge_stale(out_dir: str, n: int, width: int) -> None:
     """Remove leftovers from a prior run before writing a fresh grid.
 
     Deletes (a) every ``.mktmp_*`` temp file (crash-orphaned partial writes)
-    and (b) every ``spec_*.spec`` whose parsed index is >= ``n`` — those are
+    and (b) every ``spec_*.spec`` whose parsed index is >= ``n``: those are
     stale orphans from a larger prior grid that would otherwise be picked up
     as bogus extra tasks.
     """

@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.cluster.spec_builder — generic spec assembly.
+"""Tests for xcquinox.alec.cluster.spec_builder: generic spec assembly.
 
 These tests use a small synthetic ``TrainingPoint`` pool and a stub
 ``subset_ledger`` in the EXISTING ``subset_index_log.json`` format
@@ -105,7 +105,7 @@ def _make_pool():
          ("H", (0.0, -0.757, 0.587))],
         "H2O",
     )
-    # BH76 reaction species — a polyatomic NOT present as an AE point.
+    # BH76 reaction species, a polyatomic NOT present as an AE point.
     n2 = _named_atoms(
         [("N", (0.0, 0.0, 0.0)), ("N", (0.0, 0.0, 1.10))], "N2"
     )
@@ -380,7 +380,7 @@ def test_build_training_specs_checkpoint_dir_is_absolute_padded(tmp_path):
 
 
 def test_build_training_specs_pretrain_checkpoint_is_per_arch(tmp_path):
-    """pretrain_checkpoint is ``<run_dir>/pretrain/<arch>/`` — the run-scoped dir
+    """pretrain_checkpoint is ``<run_dir>/pretrain/<arch>/``: the run-scoped dir
     the pretrain stage writes for that architecture, co-located with the run's
     other artifacts (run_dir is unique per submission, so two runs of the same
     arch don't clobber each other)."""
@@ -511,7 +511,7 @@ def test_build_test_spec_absolute_output_dir_and_ref_kcalmol(tmp_path):
 def test_build_test_spec_excludes_aux_only_from_ae_reference(tmp_path):
     """Aux-only reaction species (BH76/IP13 polyatomics with no real AE target)
     must NOT appear in reference_ae_kcalmol. Otherwise eval scores their full
-    atomization energy against a 0.0 reference — the CH4/HF ~+440 kcal/mol
+    atomization energy against a 0.0 reference, the CH4/HF ~+440 kcal/mol
     artifact. The training loss already excludes them via classify_aux_only; the
     eval reference must do the same."""
     domain = get_domain_profile("dfs_step7")
@@ -554,7 +554,7 @@ def test_build_test_spec_metrics_and_eval_molecules(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _solver_config_from_named — accepts enum NAME or VALUE
+# _solver_config_from_named, accepts enum NAME or VALUE
 # ---------------------------------------------------------------------------
 
 def test_solver_config_accepts_enum_name_and_value():
@@ -590,7 +590,7 @@ def test_solver_config_rejects_unknown_mode():
 
 
 # ---------------------------------------------------------------------------
-# build_test_spec — in-distribution transparency + optional holdout
+# build_test_spec: in-distribution transparency + optional holdout
 # ---------------------------------------------------------------------------
 
 def test_build_test_spec_default_molecules_unchanged(tmp_path):
@@ -719,7 +719,7 @@ def test_build_test_spec_holdout_ae_refs_from_holdout_targets(tmp_path):
     run_dir = str(tmp_path / "run")
     out = build_training_specs(pool, ledger, cfg, domain, run_dir)
 
-    n2_atoms = pool[2].species[0]   # N2 — a compound NOT in cell-0 training set
+    n2_atoms = pool[2].species[0]   # N2, a compound NOT in cell-0 training set
     from xcquinox.alec.cluster.spec_builder import atoms_to_mol_spec
     n2_ms = atoms_to_mol_spec(
         n2_atoms, basis="def2-svp", grid_level=1,
@@ -804,7 +804,7 @@ def test_build_training_specs_injects_missing_dick_anchor(tmp_path):
     )
     assert set(domain.regularize_atom_syms) <= neutral_single_atom_syms
 
-    # (2) The L5 loss must now construct (CFG-02 passes) — replicates the
+    # (2) The L5 loss must now construct (CFG-02 passes), replicates the
     # run_training call site (train.py).
     loss = make_loss(
         spec.loss_name,
@@ -818,7 +818,7 @@ def test_build_training_specs_injects_missing_dick_anchor(tmp_path):
 
 def test_build_training_specs_no_spurious_anchor_when_present(tmp_path):
     """A subset that already carries both Dick anchors (l2/3 includes the IP13
-    neutral Li) must NOT gain an injected duplicate — the molecule set is
+    neutral Li) must NOT gain an injected duplicate, the molecule set is
     byte-identical to the plain species union, so currently-passing specs are
     unchanged.
     """
@@ -836,7 +836,7 @@ def test_build_training_specs_no_spurious_anchor_when_present(tmp_path):
     expected_names = sorted(a.info["name"] for a in species_union_from_points(chosen))
     got_names = sorted(ms.name for ms in spec.molecules)
     assert got_names == expected_names, (
-        "molecule set diverged from the plain species union — a spurious anchor "
+        "molecule set diverged from the plain species union, a spurious anchor "
         "was injected for an already-present symbol"
     )
 

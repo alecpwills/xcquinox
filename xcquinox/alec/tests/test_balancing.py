@@ -1,4 +1,4 @@
-"""Tests for xcquinox.alec.balancing — LossMetric, BalancingConfig hierarchy."""
+"""Tests for xcquinox.alec.balancing: LossMetric, BalancingConfig hierarchy."""
 import os
 import tempfile
 

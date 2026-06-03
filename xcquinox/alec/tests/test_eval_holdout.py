@@ -1,4 +1,4 @@
-"""Tests for ``xcquinox.alec.eval_holdout`` — the shared eval module.
+"""Tests for ``xcquinox.alec.eval_holdout``: the shared eval module.
 
 Pure-function helpers get hand-crafted inputs with KNOWN expected outputs.
 The side-effectful PBE precompute + NN forward functions are exercised
@@ -59,7 +59,7 @@ class _FakeSpec:
 
 def test_run_full_holdout_eval_orchestration_no_compute(tmp_path, monkeypatch):
     """Exercise the full run_full_holdout_eval control flow with the heavy
-    compute stubbed — guards against orchestration regressions (e.g. an
+    compute stubbed, guards against orchestration regressions (e.g. an
     undefined ``spec_solver_config``) that the pure-function tests miss. Also
     asserts the per-SCF-step trace is threaded into per_molecule.json."""
     mol_specs = {"h2": _FakeMol("h2"), "h": _FakeMol("h")}
@@ -227,7 +227,7 @@ def test_make_per_molecule_record_carries_flags_and_E_pbe():
 
 
 def test_make_per_molecule_record_emits_per_scf_step_trace():
-    """With SCF info, the record gains per-cycle energy + residual columns —
+    """With SCF info, the record gains per-cycle energy + residual columns,
     the per-molecule, per-SCF-step convergence the user asked to see."""
     mol_data = {"E_pbe": -76.27}
     scf = {
