@@ -1,0 +1,80 @@
+// xcquinox.alec per-spec training flow.
+// Render:  dot -Tsvg 02_training_flow.dot -o 02_training_flow.svg
+digraph training_flow {
+  label="Per-spec training flow — _train_task -> run_training -> loop dispatch -> _step -> save";
+  labelloc=t; fontsize=18; fontname="Helvetica-Bold";
+  rankdir=TB; compound=true; nodesep=0.3; ranksep=0.5;
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#ffffff"];
+  edge [fontname="Helvetica", fontsize=9];
+
+  task   [shape=stadium, fillcolor="#cde4ff",
+          label="_train_task.py::main   (SLURM array task i)\nread width from manifest.json; load specs/spec_i.spec"];
+  worker [fillcolor="#e8f0fe",
+          label="spawn worker:  python -m xcquinox.alec._train_one_spec\n-> train.py::run_training(spec)"];
+  task -> worker;
+
+  // ---- build model + batch ----
+  subgraph cluster_build {
+    label="run_training: build"; style=rounded; color="#7aa7e9"; bgcolor="#f6f9ff"; fontname="Helvetica-Bold";
+    validate [label="spec.validate()"];
+    d_pre    [shape=diamond, fillcolor="#fff3cd", label="pretrain_checkpoint?"];
+    m_scratch[label="_build_model:\nAlecGGAModel.from_arch(arch)"];
+    m_load   [label="_build_model: load\npretrain/<arch>/{xnet,cnet}.eqx\n(tree_deserialise_leaves)"];
+    mkloss   [label="make_loss(loss_name, molecules, **loss_kwargs)\nLOSS_REGISTRY[loss_name]"];
+    batch    [label="_build_batch -> precompute_fixed_density_data\n(rho/sigma/grid . h_core . J . dm_pbe . vxc_ref/rho_ref)"];
+    d_full   [shape=diamond, fillcolor="#fff3cd", label="solver mode\n== FULL?"];
+    add_eri  [label="required_keys += 'eri'\n(or 'cderi' if density_fit)"];
+    validate -> d_pre;
+    d_pre -> m_scratch [label="no"];
+    d_pre -> m_load    [label="yes"];
+    m_scratch -> mkloss; m_load -> mkloss;
+    mkloss -> batch -> d_full;
+    d_full -> add_eri [label="yes"];
+  }
+  worker -> validate;
+
+  // ---- dispatch ----
+  d_scheme [shape=diamond, fillcolor="#fff3cd", label="update_scheme ==\n'per_molecule'?"];
+  d_bal    [shape=diamond, fillcolor="#fff3cd", label="balancing?"];
+  l_perm   [fillcolor="#e7f5e7", label="_run_per_molecule_loop\n(DFS/dpyscf: 1 optim step per target group,\nspec.n_steps epochs)"];
+  l_static [fillcolor="#e7f5e7", label="_run_static_loop\n(fixed channel weights)"];
+  l_lnorm  [fillcolor="#e7f5e7", label="_run_lossnorm_loop\n(/ step-0 magnitude)"];
+  l_2phase [fillcolor="#e7f5e7", label="_run_twophase_loop\n(phase-1 loss, then main)"];
+  l_gnorm  [fillcolor="#e7f5e7", label="_run_gradnorm_loop\n(learned task weights, Chen 2018)"];
+  add_eri -> d_scheme; d_full -> d_scheme [label="no"];
+  d_scheme -> l_perm [label="yes"];
+  d_scheme -> d_bal  [label="no (batched)"];
+  d_bal -> l_static [label="None"];
+  d_bal -> l_lnorm  [label="LossNorm"];
+  d_bal -> l_2phase [label="TwoPhase"];
+  d_bal -> l_gnorm  [label="GradNorm"];
+
+  // ---- shared per-step ----
+  subgraph cluster_step {
+    label="per optimizer step  (every loop)"; style=rounded; color="#5a9367"; bgcolor="#f3faf0"; fontname="Helvetica-Bold";
+    step  [fillcolor="#ffffff",
+           label="_step / _train_step   [@eqx.filter_jit]\n(loss, comps), grads = filter_value_and_grad(compute_components)\nupdates, opt_state = optimizer.update(grads)   [clip_by_global_norm + adam]\nmodel = apply_updates(model, updates)"];
+    guard [shape=diamond, fillcolor="#ffd6d6", label="_abort_if_nonfinite\nloss + channels finite?"];
+    raise [shape=box, style="rounded,filled", fillcolor="#ff8a8a",
+           label="raise FloatingPointError\n(names loop/step/group/channel)"];
+    more  [shape=diamond, fillcolor="#fff3cd", label="more steps?"];
+    step -> guard;
+    guard -> raise [label="no (NaN/Inf)"];
+    guard -> more  [label="yes"];
+    more  -> step  [label="next step", constraint=false];
+  }
+  l_perm -> step [lhead=cluster_step];
+  l_static -> step [lhead=cluster_step];
+  l_lnorm -> step [lhead=cluster_step];
+  l_2phase -> step [lhead=cluster_step];
+  l_gnorm -> step [lhead=cluster_step];
+
+  // compute_components links to diagram 3
+  cc [shape=cds, style=filled, fillcolor="#ede7f6",
+      label="compute_components -> SCF + 5 loss channels\n(see diagram 3)"];
+  step -> cc [style=dashed, label=" forward"];
+
+  save [fillcolor="#cde4ff",
+        label="_save_artifacts\nmodel.eqx . losses.npy . aux_log.pkl . train_metadata.json"];
+  more -> save [label="done"];
+}

@@ -1,0 +1,77 @@
+// xcquinox.alec cluster harness — SLURM job graph.
+// Render:  dot -Tsvg 01_harness_pipeline.dot -o 01_harness_pipeline.svg
+digraph harness_pipeline {
+  label="xcquinox.alec cluster harness — submit -> 4-stage SLURM graph -> eval -> results";
+  labelloc=t; fontsize=18; fontname="Helvetica-Bold";
+  rankdir=TB; compound=true; newrank=true; nodesep=0.35; ranksep=0.55;
+  node [fontname="Helvetica", fontsize=11];
+  edge [fontname="Helvetica", fontsize=9];
+
+  // ---- entry ----
+  cli    [shape=stadium, style=filled, fillcolor="#cde4ff",
+          label="$ python -m xcquinox.alec.cluster submit config.yaml"];
+  submit [shape=box, style="rounded,filled", fillcolor="#e8f0fe",
+          label="__main__.py::cmd_submit\n-> submit.py::submit_jobs\nbuild graph + create run_<UTC>Z/ dir"];
+  cli -> submit;
+
+  // ---- the 4-stage SLURM graph ----
+  subgraph cluster_stages {
+    label="SLURM job graph   (sbatch --parsable, dependency-gated)";
+    style=rounded; color="#7aa7e9"; bgcolor="#f6f9ff"; fontname="Helvetica-Bold";
+    node [shape=box, style="rounded,filled", fillcolor="#ffffff"];
+
+    datagen  [label="1. datagen   (single job)\n_datagen.py::main\n-> pretrain_data[_polarized].npz"];
+    pretrain [shape=box3d,
+              label="2. pretrain   [array 0..A-1, one per arch]\n_pretrain.py::main -> run_pretrain\n-> pretrain/<arch>/{xnet,cnet}.eqx"];
+    preflight[label="3. preflight   (single job)\n_preflight.py::main\nmaterialize specs + CCSD/external refs\n-> manifest.json  (atomic, FINAL write)"];
+    train    [shape=box3d,
+              label="4. train   [array 0..N-1, one per spec]\n_train_task.py::main -> alec.run_training\n-> checkpoints/spec_NNNN/"];
+    evalmode [shape=diamond, style=filled, fillcolor="#fff3cd", label="eval mode?"];
+    evalstd  [shape=box3d,
+              label="5. eval   [array 0..N-1]\n_eval_one_spec.py::main\nin-sample + held-out NN-vs-PBE MAE"];
+    launcher [label="eval_launcher\n_submit_eval.py::submit_deferred_eval\n(renders + submits the eval array)"];
+    inlinenote [shape=note, style=filled, fillcolor="#fff3cd",
+                label="inline: train uses the\ntrain_eval_inline template;\neval runs in the SAME task"];
+
+    datagen  -> pretrain  [label=" afterok:datagen"];
+    pretrain -> preflight [label=" afterok:pretrain"];
+    preflight-> train     [label=" afterok:pretrain:preflight\n (gated on BOTH)"];
+    train    -> evalmode;
+    evalmode -> evalstd   [label=" standard:\n aftercorr:train"];
+    evalmode -> launcher  [label=" deferred:\n afterany:train"];
+    launcher -> evalstd   [label=" aftercorr:train", style=dashed];
+    evalmode -> inlinenote[label=" inline_eval", style=dotted];
+  }
+  submit -> datagen [lhead=cluster_stages];
+
+  // ---- run-dir artifacts ----
+  subgraph cluster_artifacts {
+    label="run_<UTC>Z/   artifacts";
+    style=rounded; color="#5a9367"; bgcolor="#f3faf0"; fontname="Helvetica-Bold";
+    node [shape=note, style=filled, fillcolor="#ffffff"];
+    a_meta  [label="manifest.json  (n_specs, width, per-spec cell + sha256)\njobs.json . attempts.json . resolved_config.yaml"];
+    a_specs [label="specs/spec_NNNN.spec   (pickled TrainingSpec)"];
+    a_pre   [label="pretrain/<arch>/{xnet,cnet}.eqx\nlosses_*.npy . pretrain_metadata.json"];
+    a_ckpt  [label="checkpoints/spec_NNNN/\n  model.eqx . losses.npy . aux_log.pkl . train_metadata.json\n  eval/per_molecule.json . eval_df.csv . eval_holdout/ . failure.json"];
+  }
+  pretrain  -> a_pre   [style=dashed, color="#5a9367", label=" writes"];
+  preflight -> a_specs [style=dashed, color="#5a9367"];
+  preflight -> a_meta  [style=dashed, color="#5a9367", label=" writes"];
+  train     -> a_ckpt  [style=dashed, color="#5a9367", label=" writes"];
+  evalstd   -> a_ckpt  [style=dashed, color="#5a9367"];
+
+  // ---- read / recover ----
+  subgraph cluster_ops {
+    label="read / recover   (login node)";
+    style=rounded; color="#b06a90"; bgcolor="#fdf3f8"; fontname="Helvetica-Bold";
+    node [shape=box, style="rounded,filled", fillcolor="#ffffff"];
+    o_status [label="status  -> job_tracking.reduce_outcomes\n(per-spec outcome from disk + sacct)"];
+    o_results[label="results -> aggregate eval_df.csv\n(MAE vs subset_size)"];
+    o_pull   [label="pull -> sync.py::build_rsync_command\n(summaries | full profile)"];
+    o_resub  [label="resubmit / resubmit-preflight / repair-manifest"];
+  }
+  a_ckpt -> o_status  [style=dotted, color="#b06a90"];
+  a_ckpt -> o_results [style=dotted, color="#b06a90"];
+  a_meta -> o_pull    [style=dotted, color="#b06a90"];
+  a_ckpt -> o_resub   [style=dotted, color="#b06a90", dir=both];
+}

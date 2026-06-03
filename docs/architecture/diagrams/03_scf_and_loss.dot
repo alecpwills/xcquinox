@@ -1,0 +1,64 @@
+// xcquinox.alec loss channels + differentiable SCF cycle.
+// Render:  dot -Tsvg 03_scf_and_loss.dot -o 03_scf_and_loss.svg
+digraph scf_and_loss {
+  label="L5 loss channels + the differentiable SCF  (compute_components -> total_energy_for_solver -> run_scf cycle)";
+  labelloc=t; fontsize=17; fontname="Helvetica-Bold";
+  rankdir=TB; compound=true; nodesep=0.3; ranksep=0.5;
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#ffffff"];
+  edge [fontname="Helvetica", fontsize=9];
+
+  // ---- the 5 GradNorm channels ----
+  subgraph cluster_loss {
+    label="L5GradnormVxcStep7.compute_components  ->  5 GradNorm channels"; style=rounded;
+    color="#8e7cc3"; bgcolor="#f3effa"; fontname="Helvetica-Bold";
+    cc  [fillcolor="#ede7f6", label="compute_components(model, batch, relative)"];
+    ae  [label="loss_AE\n_ae_losses + _atomic_reg\n(uses E_nn)"];
+    bh  [label="loss_BH76\n_bh76_channel\n(reaction residuals, uses E_nn)"];
+    ip  [label="loss_IP13\n_ip13_channel\n(IP residuals, uses E_nn)"];
+    vxc [label="loss_vxc\n_vxc_term -> compute_vxc_nn /\ncompute_vc_polarized_per_spin\n(vs vxc_ref)"];
+    rho [label="loss_rho\n_grid_term -> oneshot_grid_density\n(vs rho_ref_grid)"];
+    cc -> ae; cc -> bh; cc -> ip; cc -> vxc; cc -> rho;
+  }
+
+  // ---- energies -> solver dispatch ----
+  ce  [fillcolor="#fff3cd", label="_compute_energies\nE_nn[i] for each molecule i"];
+  ae -> ce; bh -> ce; ip -> ce;
+  tes [fillcolor="#fde9c9",
+       label="total_energy_for_solver(model, mol_data[i], solver_config)"];
+  ce  -> tes;
+  rho -> tes [style=dashed, label=" rho path also runs\n the SCF density when FULL"];
+
+  dmode [shape=diamond, fillcolor="#fff3cd", label="solver mode?"];
+  tes -> dmode;
+  fixed [label="fixed_density_total_energy\n(frozen PBE density;\nsplit_exc_energy_uks [UKS] / compute_exc_nn [RKS])"];
+  dmode -> fixed [label="ONESHOT / FIXED_J"];
+
+  runscf [fillcolor="#cde4ff",
+          label="run_scf -> run_manual_scf\n_run_manual_scf_rks (RKS) / _run_manual_scf_uks (UKS)"];
+  dmode -> runscf [label="FULL"];
+
+  // ---- the per-cycle SCF loop ----
+  subgraph cluster_scf {
+    label="jax.lax.scan over config.max_cycles   (gradients flow through every cycle)";
+    style=rounded; color="#4a86c5"; bgcolor="#eef5fc"; fontname="Helvetica-Bold";
+    c_feat [label="spin-resolve density from D;\nassemble descriptor features\n(FROZEN reuse | REASSEMBLE from D)"];
+    c_vxc  [label="compute_vxc_nn\n(+ compute_vc_polarized_per_spin if polarized)\n-> V_xc^NN  (per-point JVP)"];
+    c_fock [label="F = h_core + J + V_xc^NN\nJ: rebuild from eri/cderi [FULL] | pinned j_matrix [FIXED_J]"];
+    c_diag [label="_diagonalize_roothaan\nCholesky(S + DEGENERACY_REG) -> + symmetry-break\n-> eigh -> C -> D_new = (C*occ) C^T"];
+    c_mix  [label="mix DM (LinearMixer);\nrecompute energy at D_mixed"];
+    c_conv [shape=diamond, fillcolor="#fff3cd", label="converged or\nlast cycle?"];
+    c_feat -> c_vxc -> c_fock -> c_diag -> c_mix -> c_conv;
+    c_conv -> c_feat [label="next cycle", constraint=false];
+  }
+  runscf -> c_feat [lhead=cluster_scf];
+
+  result [shape=stadium, fillcolor="#cde4ff", label="SCFResult.total_energy  ->  E_nn"];
+  c_conv -> result [label="yes"];
+  fixed  -> result;
+
+  // back to the loss scalar
+  back [shape=cds, style=filled, fillcolor="#ede7f6",
+        label="channels summed -> scalar loss\n-> grads (diagram 2 _step)"];
+  result -> back [style=dashed];
+  vxc -> back [style=dashed]; rho -> back [style=dashed];
+}

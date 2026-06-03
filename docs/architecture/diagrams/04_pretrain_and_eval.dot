@@ -1,0 +1,49 @@
+// xcquinox.alec pretrain (stage 2) and eval (stage 5).
+// Render:  dot -Tsvg 04_pretrain_and_eval.dot -o 04_pretrain_and_eval.svg
+digraph pretrain_and_eval {
+  label="Pretrain (stage 2, per arch) and Eval (stage 5, per spec)";
+  labelloc=t; fontsize=17; fontname="Helvetica-Bold";
+  rankdir=TB; compound=true; nodesep=0.3; ranksep=0.45;
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#ffffff"];
+  edge [fontname="Helvetica", fontsize=9];
+
+  // ---- PRETRAIN ----
+  subgraph cluster_pretrain {
+    label="PRETRAIN   pretrain.py::run_pretrain   (one per architecture)";
+    style=rounded; color="#5a9367"; bgcolor="#f3faf0"; fontname="Helvetica-Bold";
+    p_data [fillcolor="#e7f5e7", label="pretrain_data[_polarized].npz\n(Fx, Fc enhancement targets per grid point;\nfrom stage-1 _datagen)"];
+    p_asm  [label="_assemble_pretrain_descriptors\n[rho, sigma, (zeta if polarized), *descriptor cols]"];
+    p_net  [label="create_network_pair(arch)\n-> xnet (Fx),  cnet (Fc)  with constraints"];
+    p_w    [label="_compute_integration_weights\nw = |rho * eps_LDA|   (unpolarized PW92 on total rho)"];
+    p_x    [label="Phase 1: fit xnet -> Fx target\n(weighted MSE; build_optimizer + _train_step)"];
+    p_c    [label="Phase 2: fit cnet -> Fc target\n(xnet frozen)"];
+    p_save [fillcolor="#cde4ff",
+            label="save pretrain/<arch>/\n{xnet,cnet}.eqx . losses_*.npy . pretrain_metadata.json"];
+    p_data -> p_asm -> p_net -> p_w -> p_x -> p_c -> p_save;
+  }
+
+  // ---- EVAL ----
+  subgraph cluster_eval {
+    label="EVAL   _eval_one_spec.py::main   (one per spec)";
+    style=rounded; color="#b06a90"; bgcolor="#fdf3f8"; fontname="Helvetica-Bold";
+    e_chk  [shape=diamond, fillcolor="#fff3cd", label="checkpoints/spec_i/\nmodel.eqx present?"];
+    e_skip [fillcolor="#ffd6d6", label="write eval/skipped.json;\nexit 0  (training never finished)"];
+    e_load [label="load model.eqx + spec_i.spec\n-> build TestSpec"];
+    e_in   [label="IN-SAMPLE:  evaluation.py::run_test\nper-molecule metrics NN vs PBE\n(AE / barrier / IP / density_rmse / vxc_mae)"];
+    e_indf [fillcolor="#cde4ff", label="-> eval/per_molecule.json . eval/aggregate.json\n-> fold to eval_df.csv"];
+    e_ho   [label="HELD-OUT:  _holdout_parallel::run_holdout_with_escalation\n-> eval_holdout::run_full_holdout_eval\n(full BH76 + W4-11 pools)"];
+    e_hodf [fillcolor="#cde4ff", label="-> eval_holdout/per_molecule.json\n(NN-vs-PBE reaction MAE, kcal/mol)"];
+    e_chk -> e_skip [label="absent"];
+    e_chk -> e_load [label="present"];
+    e_load -> e_in -> e_indf;
+    e_load -> e_ho -> e_hodf;
+  }
+
+  // ---- cross-stage data flow ----
+  p_save -> consumed [style=dashed, color="#5a9367"];
+  consumed [shape=note, fillcolor="#ffffff",
+            label="consumed by _build_model\nat train time (diagram 2)"];
+  ckpt [shape=note, fillcolor="#ffffff",
+        label="checkpoints/spec_i/model.eqx\n(produced by training, diagram 2)"];
+  ckpt -> e_chk [style=dashed, color="#b06a90"];
+}
