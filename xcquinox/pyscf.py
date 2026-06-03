@@ -279,8 +279,8 @@ def custom_pbe_e(rho, sigma, XNET=None, CNET=None):
     '''
     Compute the exchange-correlation energy density using neural network enhancement factors.
 
-    Calculates exc = lda_x(rho) * Fx + pw92c(rho) * Fc, where Fx and Fc are
-    obtained from neural networks.
+    Calculates exc = lda_x(rho) * Fx + pw92c_unpolarized_scalar(rho) * Fc, where
+    Fx and Fc are obtained from neural networks.
 
     :param rho: Electron density value(s) on the grid
     :type rho: jax.Array or float

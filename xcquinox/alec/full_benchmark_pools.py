@@ -444,7 +444,7 @@ def load_full_bh76(
     """
     global _BH76_CACHE
     key = (basis, grid_level)
-    if _BH76_CACHE is not None and _BH76_CACHE[0] is key:  # pyright: ignore
+    if _BH76_CACHE is not None and _BH76_CACHE[0] == key:  # pyright: ignore
         return _BH76_CACHE[1]
     mol_specs, reactions = _load_pool_from_json(
         BH76_JSON_PATH, build_bh76_pool_dict, basis, grid_level,
@@ -464,7 +464,7 @@ def load_full_w411(
     """
     global _W411_CACHE
     key = (basis, grid_level)
-    if _W411_CACHE is not None and _W411_CACHE[0] is key:  # pyright: ignore
+    if _W411_CACHE is not None and _W411_CACHE[0] == key:  # pyright: ignore
         return _W411_CACHE[1]
     mol_specs, reactions = _load_pool_from_json(
         W411_JSON_PATH, build_w411_pool_dict, basis, grid_level,

@@ -65,6 +65,36 @@ def test_load_full_w411_returns_140_atomizations():
         assert len(r["products"]) >= 1, r["name"]
 
 
+@pytest.mark.parametrize("loader_name,cache_name", [
+    ("load_full_bh76", "_BH76_CACHE"),
+    ("load_full_w411", "_W411_CACHE"),
+])
+def test_pool_load_hits_cache_on_second_call(loader_name, cache_name, monkeypatch):
+    """REGRESSION (D10_pools-01/02): the (basis, grid_level) cache must HIT on a
+    repeat call. The cache compared keys with ``is`` (identity) against a freshly
+    built tuple, so it never hit and re-parsed the JSON on every call."""
+    import xcquinox.alec.full_benchmark_pools as fbp
+    monkeypatch.setattr(fbp, cache_name, None)
+    calls = {"n": 0}
+    orig = fbp._load_pool_from_json
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(fbp, "_load_pool_from_json", _counting)
+    loader = getattr(fbp, loader_name)
+    first_specs, first_rxns = loader("def2-svp", 1)
+    second_specs, second_rxns = loader("def2-svp", 1)
+    # The second identical call must hit the cache, i.e. NOT re-parse the JSON.
+    assert calls["n"] == 1, (
+        f"cache never hit: _load_pool_from_json called {calls['n']}x for two "
+        f"identical {loader_name}(...) calls")
+    # And it must return the cached payload (same species/reaction objects).
+    assert second_specs is getattr(fbp, cache_name)[1][0]
+    assert len(second_rxns) == len(first_rxns)
+
+
 def test_full_bh76_species_count_at_least_50():
     """BH76 covers at least 50 distinct species (including transition states)."""
     mol_specs, _ = load_full_bh76()
