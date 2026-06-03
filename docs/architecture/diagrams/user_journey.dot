@@ -1,0 +1,26 @@
+// User-level: the cluster workflow as a sequence of commands.
+// Render:  dot -Tsvg user_journey.dot -o user_journey.svg
+digraph user_journey {
+  label="Cluster workflow — what you run, and what you get back";
+  labelloc=t; fontsize=17; fontname="Helvetica-Bold";
+  rankdir=TB; nodesep=0.35; ranksep=0.5;
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#eef5fc"];
+  edge [fontname="Helvetica", fontsize=10];
+
+  config  [label="1 · Write / copy a config YAML\nhpcjobs/configs/*.yaml\nchoose: basis, archs, subset sizes, loss"];
+  dry     [label="2 · Dry-run (preview, nothing queued)\nsubmit config.yaml --partition <queue>\n→ prints the 5-job graph + sizes/walltimes"];
+  sub     [label="3 · Submit for real\nsubmit config.yaml --partition <queue> --submit\n→ creates run_<UTC>Z/ , prints job IDs"];
+  status  [label="4 · Monitor\nstatus <run_dir>\n→ per spec: succeeded / failed / running"];
+  dfail   [shape=diamond, fillcolor="#fff3cd", label="any failures?"];
+  resub   [label="5 · Recover\nresubmit <run_dir> --submit\n(auto-retries OOM / timeout)"];
+  pull    [label="6 · Pull results to your laptop\npull latest --category <c>\n→ rsync into ~/.../xcquinox-results/"];
+  results [label="7 · Read results\nresults <local_run_dir> --plot mae.png\n→ MAE-vs-subset-size table + plot"];
+  holdout [shape=note, fillcolor="#ffffff",
+           label="optional: true generalization\nheld-out BH76+W4-11 re-eval\n(pull --profile full, then re-score)"];
+
+  config -> dry -> sub -> status -> dfail;
+  dfail -> resub [label=" yes"];
+  resub -> status [label=" re-check", constraint=false];
+  dfail -> pull [label=" no / done"];
+  pull -> results -> holdout [style=dashed];
+}
