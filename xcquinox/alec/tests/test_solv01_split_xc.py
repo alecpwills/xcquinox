@@ -34,8 +34,13 @@ from xcquinox.alec.oneshot import (
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
 
-def _build_model():
+def _build_model(zero_init_final_layer: bool = True):
     arch = alec.get_architecture("deep")
+    if not zero_init_final_layer:
+        import dataclasses
+        # A zero-init warm-start cnet returns Fc==1 with ZERO input-gradients;
+        # tests of the model's sigma/feature response need a non-trivial init.
+        arch = dataclasses.replace(arch, zero_init_final_layer=False)
     xnet, cnet = alec.create_network_pair(arch, seed=0)
     return alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
 
@@ -506,7 +511,10 @@ def test_pyscfad_callback_closed_shell_reduction():
     from xcquinox.alec.solver import FeaturePolicy
     from xcquinox.alec.solver_pyscfad import _make_alec_eval_xc
 
-    model = _build_model()
+    # Non-zero-init nets so correlation actually responds to sigma; a zero-init
+    # warm-start cnet (Fc==1) has vsigma_c == 0, making the ud cross-term
+    # asserted below trivially zero.
+    model = _build_model(zero_init_final_layer=False)
     md = _h2_rks_md()
     eval_xc = _make_alec_eval_xc(model, model.descriptors, md,
                                  FeaturePolicy.FROZEN)

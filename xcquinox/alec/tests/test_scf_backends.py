@@ -407,7 +407,12 @@ def test_pyscfad_reassemble_policy_differs_from_frozen(monkeypatch):
     spec = MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74",
                        basis="6-31g", charge=0, spin=0,
                        atom_composition=(("H", 2),), grid_level=1)
-    arch = alec.get_architecture("deep_dm")
+    # Non-zero-init nets so Fx/Fc respond to the DM-features; a zero-init
+    # warm-start (Fc==1, zero feature-gradient) makes FROZEN and REASSEMBLE
+    # produce identical DMs.
+    import dataclasses
+    arch = dataclasses.replace(alec.get_architecture("deep_dm"),
+                               zero_init_final_layer=False)
     md = precompute_fixed_density_data(
         spec, required_keys=("eri",),
         descriptors=arch.materialize_descriptors(),
