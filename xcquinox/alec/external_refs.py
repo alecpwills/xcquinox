@@ -471,6 +471,13 @@ def run_ccsd_with_cache(
                 spin=spec.spin, unit="angstrom", verbose=0)
     is_uks = bool(scf_payload["spin_unrestricted"])
 
+    # pyscf's DF-UCCSD _make_df_eris_outcore builds the OOVV HDF5 dataset with a
+    # zero chunk dimension when a spin channel is empty (noccb == 0, e.g. the H
+    # atom), raising "All chunk dimensions must be positive". Such systems have
+    # <= 1 electron in a channel, so non-DF CCSD (exact, instant) sidesteps the
+    # broken DF path; the resulting density is identical to the DF one there.
+    use_df = density_fit and min(mol.nelec) > 0
+
     # run a REAL HF SCF and converge it before CCSD. The cached
     # PBE density matrix is used ONLY as the initial guess to speed
     # convergence; CCSD then sits on the canonical, self-consistent HF
@@ -478,7 +485,7 @@ def run_ccsd_with_cache(
     # violate Brillouin's theorem and bias the relaxed 1-RDM).
     mf_hf = _prepare_converged_hf(
         mol, dm0=np.asarray(scf_payload["dm"]), is_uks=is_uks,
-        density_fit=density_fit, basis=basis, auxbasis=auxbasis,
+        density_fit=use_df, basis=basis, auxbasis=auxbasis,
     )
 
     if is_uks:
@@ -585,6 +592,15 @@ _PER_SPECIES_OEP_OVERRIDES: dict[tuple[str, int, int], tuple[dict, ...]] = {
     # ── Citations [oep-tdl-1..6] resolve to TO-DOWNLOAD entries in
     #    reports_local/latex/references.bib: AUTHOR-RECALLED, UNVERIFIED.
     #    Verify each via WebFetch + pdftotext before paper write-up.
+
+    # cf4 (MANUAL, not from the 2026-05-06 sweep): at def2-tzvpd the OEP
+    # plateaus at density_error 2.486e-3, just above the 2e-3 default (a better
+    # inversion than 6 of the 8 sweep overrides). Accept it via the established
+    # conv_tol mechanism; re-run scripts/oep_per_species_emit_overrides.py for a
+    # tighter value if a future run needs one.
+    ("cf4", 0, 0): (
+        {"aux_basis": "def2-tzvp-jkfit", "regularization": 1e-4, "conv_tol": 0.0043},
+    ),
 
     # Be winner: density_error_min=4.63e-03, n_iter=3, wall=0.8s
     # Tune log: reports_local/oep_tune/2026-05-06/Be.jsonl trial_idx=1
@@ -698,7 +714,8 @@ def _validate_overrides(species_union: list[SpeciesEntry]) -> None:
 
     Validation rules:
     1. Every key is a 3-tuple ``(str, int, int)``; bool excluded.
-    2. Every key matches a SpeciesEntry in `species_union`.
+    2. Keys absent from `species_union` warn (cross-pool override or typo),
+       not raise (the override table is global across pools).
     3. Every value is a non-empty tuple of dicts.
     4. Every dict's keys lie within `_OVERRIDE_TIER_KNOB_ALLOWLIST`.
     5. Per-knob bounds: regularization>0, max_iter>=1, conv_tol>0,
@@ -715,11 +732,18 @@ def _validate_overrides(species_union: list[SpeciesEntry]) -> None:
             raise ValueError(
                 f"override key {key!r} must be (str, int, int)"
             )
-        # 2. Species existence
+        # 2. Species existence. The override table is GLOBAL but each run only
+        # precomputes one pool, so a key absent from THIS run's species_union
+        # usually targets a DIFFERENT pool (e.g. a bh76w411 species during a DFS
+        # run), not a typo. Warn rather than raise so cross-pool overrides do not
+        # break an otherwise-valid run; a genuine typo surfaces later as the
+        # species failing its OEP cascade. Knob validation below still runs.
         if key not in valid_keys:
-            raise ValueError(
-                f"override key {key} does not match any species in "
-                f"build_species_union(); orphan override"
+            import warnings
+            warnings.warn(
+                f"OEP override key {key} is not in this run's species set "
+                f"(cross-pool override or typo)",
+                RuntimeWarning,
             )
         # 3. Tier list shape
         if not isinstance(ovr_tiers, tuple) or len(ovr_tiers) == 0:

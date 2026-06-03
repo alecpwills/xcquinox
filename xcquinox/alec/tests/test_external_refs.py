@@ -203,6 +203,33 @@ def test_run_ccsd_uccsd_h_atom_spin_summed_rho(tmp_path):
     assert abs(integ - 1.0) < 0.05, f"integrated rho={integ} != 1 for H atom"
 
 
+def test_run_ccsd_h_atom_density_fit_empty_spin_channel(tmp_path):
+    """Regression: H atom (noccb=0) CCSD with density_fit=True must not crash.
+
+    pyscf's DF-UCCSD _make_df_eris_outcore creates the OOVV HDF5 dataset with a
+    zero chunk dimension when a spin channel is empty, raising 'All chunk
+    dimensions must be positive'. run_ccsd_with_cache falls back to non-DF CCSD
+    for any species with min(nelec) == 0, so the reference still builds.
+    """
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry,
+        run_scf_with_cache, run_ccsd_with_cache,
+    )
+    import numpy as np
+    spec = SpeciesEntry("H", 0, 1, "dfs_atom")
+    atoms = resolve_geometry(spec)
+    scf = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1,
+                             density_fit=True, auxbasis="def2-universal-jkfit")
+    cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf, cache_dir=tmp_path,
+                             basis="def2-svp", grid_level=1,
+                             density_fit=True, auxbasis="def2-universal-jkfit")
+    assert np.all(np.isfinite(cc["dm_ao"]))
+    assert cc["rho_ref_grid"].ndim == 1 and np.all(np.isfinite(cc["rho_ref_grid"]))
+    integ = float(np.sum(cc["grid_weights"] * cc["rho_ref_grid"]))
+    assert abs(integ - 1.0) < 0.05, f"integrated rho={integ} != 1 for H atom"
+
+
 def test_oep_cascade_writes_npz_with_required_keys(tmp_path):
     """Stage 3 OEP for H2 produces npz with vxc_ref, dm_target, rho_ref_grid."""
     from xcquinox.alec.external_refs import (
@@ -558,8 +585,9 @@ def test_validate_overrides_rejects_unknown_knob():
         _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
 
 
-def test_validate_overrides_rejects_orphan_species():
-    """Override key not matching any species in the union raises."""
+def test_validate_overrides_warns_on_cross_pool_species():
+    """A global override key absent from THIS run's species set warns (it targets
+    another pool, or is a typo) but does not raise; knobs are still validated."""
     import pytest
     from xcquinox.alec.external_refs import (
         SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
@@ -569,10 +597,25 @@ def test_validate_overrides_rejects_orphan_species():
         {"aux_basis": "def2-tzvp-jkfit"},
     )
     try:
-        with pytest.raises(ValueError, match="orphan"):
+        with pytest.warns(RuntimeWarning, match="cross-pool override or typo"):
             _validate_overrides(species)
     finally:
         _PER_SPECIES_OEP_OVERRIDES.pop(("UnknownSpecies", 0, 0), None)
+
+
+def test_cf4_override_knobs_valid():
+    """The cf4 def2-tzvpd OEP override is well-formed (knobs in allowlist + bounds)."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
+    )
+    species = [SpeciesEntry(name="cf4", charge=0, spin=0, source="reaction_pool")]
+    _PER_SPECIES_OEP_OVERRIDES[("cf4", 0, 0)] = (
+        {"aux_basis": "def2-tzvp-jkfit", "regularization": 1e-4, "conv_tol": 0.0043},
+    )
+    try:
+        _validate_overrides(species)  # cf4 in species -> knobs must validate cleanly
+    finally:
+        _PER_SPECIES_OEP_OVERRIDES.pop(("cf4", 0, 0), None)
 
 
 def test_validate_overrides_rejects_wrong_key_types():
