@@ -146,3 +146,8 @@ scripts/script_data/gmtkn55/
 notebooks/analysis/_constraint_demo_work/
 notebooks/analysis/_constraint_demo*.log
 notebooks/analysis/constraint_pretrain_gmtkn55_demo*.png
+
+# internal review / planning scratch (kept locally, out of the repo)
+docs/reviews/
+docs/superpowers/
+/AUDIT_*.md
