@@ -860,6 +860,11 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     the remaining files visible to the next migration pass (spec
     sec. 5.6 partial-state recovery).
 
+    Files that already carry a `_g{N}_` grid token are SKIPPED, never
+    re-migrated -- this includes both the old `<name>_g1_scf.npz` and the
+    newer basis/DF-tagged `<name>_g{N}_b{basis}[_df]_scf.npz`. Only a truly
+    unsuffixed `<name>_scf.npz` (no grid token) is treated as legacy.
+
     Legacy unsuffixed caches were built at the global default
     grid_level=1 (run_scf_with_cache and run_ccsd_with_cache default
     grid_level=1), so the `_g1_` rename is correct by construction.
@@ -884,28 +889,31 @@ def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     if not inter.is_dir():
         return 0
     import re
-    # Pre-compile patterns that match ANY `_g{N}_<stage>.npz` for N in [0,9]
-    # (MoleculeSpec.grid_level range per config.py:370). Used to skip
-    # already-grid-suffixed files of any grid_level, not just _g1_. A
-    # `name.endswith(suffix_new)`-only skip would corrupt future
-    # `_g2_*` / `_g3_*` caches written by override species (spec §5.6
-    # explicitly says "Override species at grid_level=2 get fresh _g2_*
-    # files; their _g1_* caches are retained").
-    _re_already_g_scf  = re.compile(r"_g\d+_scf\.npz$")
-    _re_already_g_ccsd = re.compile(r"_g\d+_ccsd\.npz$")
+    # A file is "already migrated" iff it carries a `_g{N}_` grid token ANYWHERE
+    # in the name (not only immediately before `_scf.npz`/`_ccsd.npz`). This
+    # covers BOTH the old grid-suffixed `<name>_g1_scf.npz` AND the newer
+    # basis/DF-tagged `<name>_g{N}_b{basis}[_df]_scf.npz` (the basis-aware cache
+    # key added in the density-fit ref-gen work, c5c8f7daf). The previous end-
+    # anchored `_g\d+_scf\.npz$` did NOT match the basis/DF form -- there
+    # `_scf.npz` is preceded by `_df`/`_b...`, not `_g{N}` -- so the migration
+    # mistook those files for legacy `<name>_scf.npz`, renamed them to
+    # `<name>..._g1_scf.npz`, and later collided with the regenerated canonical
+    # file (the "migration conflict ... would overwrite" abort). `_g\d+_`
+    # (underscore-g-DIGITS-underscore) never matches element names like Mg/Hg/Ag.
+    _re_grid_tagged = re.compile(r"_g\d+_")
     n_renamed = 0
     for suffix_old, suffix_new, already_re in (
-        ("_scf.npz",  "_g1_scf.npz",  _re_already_g_scf),
-        ("_ccsd.npz", "_g1_ccsd.npz", _re_already_g_ccsd),
+        ("_scf.npz",  "_g1_scf.npz",  _re_grid_tagged),
+        ("_ccsd.npz", "_g1_ccsd.npz", _re_grid_tagged),
     ):
         for p in inter.iterdir():     # SHALLOW: iterdir, not rglob
             name = p.name
-            # Use regex/endswith, NOT a `"_g" in name` substring test
-            # (that would corrupt Mg/Hg/Ag). Skip ANY `_g{N}_<stage>.npz`
-            # for any N, else `_g2_scf.npz` would be re-renamed to
-            # `_g2_g1_scf.npz`.
+            # Skip any name carrying a `_g{N}_` grid token (regex search, NOT a
+            # `"_g" in name` substring test, which would corrupt Mg/Hg/Ag):
+            # both old `_g1_scf.npz` and new `_g{N}_b{basis}[_df]_scf.npz` are
+            # already migrated; only truly-unsuffixed `<name>_scf.npz` is legacy.
             if already_re.search(name):
-                continue              # already migrated at any g{N}
+                continue              # already grid-tagged at some g{N}
             if name.endswith(suffix_old):
                 base = name[:-len(suffix_old)]
                 target = inter / f"{base}{suffix_new}"

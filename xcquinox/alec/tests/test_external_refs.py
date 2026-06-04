@@ -901,6 +901,36 @@ def test_migration_raises_when_target_name_already_exists(tmp_path):
         _migrate_intermediates_to_grid_suffixed(tmp_path)
 
 
+def test_migration_skips_basis_df_tagged_no_false_conflict(tmp_path):
+    """Regression (cluster preflight abort 2026-06-04): a basis/DF-tagged
+    intermediate (``alf_g2_bdef2-tzvpd_df_scf.npz``) is ALREADY grid-tagged and
+    must be SKIPPED -- not mistaken for a legacy ``<name>_scf.npz`` and
+    re-migrated into a doubly-suffixed ``..._df_g1_scf.npz`` that then collides
+    with the regenerated canonical file. The pre-fix end-anchored
+    ``_g\\d+_scf\\.npz$`` did not match the basis/DF form (its ``_scf.npz`` is
+    preceded by ``_df``), so this raised ``FileExistsError``."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        _migrate_intermediates_to_grid_suffixed,
+    )
+    inter = tmp_path / "_intermediates"
+    inter.mkdir()
+    # Canonical new-format file + the garbage a prior mis-migration produced;
+    # both carry a `_g{N}_` token, so BOTH must be skipped (no rename/conflict).
+    canonical = inter / "alf_g2_bdef2-tzvpd_df_scf.npz"
+    garbage = inter / "alf_g2_bdef2-tzvpd_df_g1_scf.npz"
+    np.savez(canonical, x=np.zeros(3))
+    np.savez(garbage, x=np.zeros(3))
+    # A grid_level=1 basis-tagged ccsd ref (also new format) must be skipped too.
+    g1_ccsd = inter / "h2o_g1_bdef2-svp_df_ccsd.npz"
+    np.savez(g1_ccsd, x=np.zeros(3))
+    n = _migrate_intermediates_to_grid_suffixed(tmp_path)   # must NOT raise
+    assert n == 0                                            # nothing migrated
+    assert canonical.is_file()
+    assert garbage.is_file()
+    assert g1_ccsd.is_file()
+
+
 def test_migration_handles_mg_hg_ag_correctly(tmp_path):
     """The substring `_g` appears in Mg, Hg, Ag, must NOT corrupt them.
     Pass-8 fix: was `if "_g" in name and name.endswith(...)`; now
