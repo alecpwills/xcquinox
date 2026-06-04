@@ -37,6 +37,14 @@
 + /checkpoints/spec_*/train_metadata.json
 + /checkpoints/spec_*/eval/per_molecule.json
 + /checkpoints/spec_*/eval/skipped.json
+# Held-out (BH76 + W4-11) reaction-energy eval -- THE "beats PBE?" headline:
+# eval_holdout/test_set.csv (mae_nn vs mae_pbe vs delta), per_reaction.json,
+# per_molecule.json, and failure.json. This dir holds ONLY small text
+# (CSV/JSON, no *.eqx), so `***` pulls the whole subtree present + future.
+# (2026-06: the summaries profile had been dropping eval_holdout/ entirely, so
+# the headline metric never reached a default pull -- guarded by the canary.)
++ /checkpoints/spec_*/eval_holdout/
++ /checkpoints/spec_*/eval_holdout/***
 
 # --- pretrain metadata + loss curves (small, useful for diagnostics) -------
 + /pretrain/

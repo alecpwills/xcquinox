@@ -621,6 +621,13 @@ def _materialize_fake_run(root: Path) -> Path:
     (spec / "losses.npy").write_bytes(b"\x93NUMPY")  # bytes header is enough
     (spec / "model.eqx").write_bytes(b"FAKE_MODEL_CHECKPOINT_BLOB" * 100)
     (spec / "eval" / "per_molecule.json").write_text("[]\n")
+    # Held-out (BH76 + W4-11) reaction eval -- the "beats PBE?" headline dir.
+    (spec / "eval_holdout").mkdir()
+    (spec / "eval_holdout" / "test_set.csv").write_text(
+        "set,mae_nn_kcalmol,mae_pbe_kcalmol,delta_nn_minus_pbe\n"
+        "test_set_held_out_combined,9.1,11.8,-2.700000\n")
+    (spec / "eval_holdout" / "per_reaction.json").write_text("[]\n")
+    (spec / "eval_holdout" / "per_molecule.json").write_text("[]\n")
     # Pretrain
     pre = run / "pretrain" / "deep_combined_attn"
     pre.mkdir(parents=True)
@@ -687,6 +694,9 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "checkpoints/spec_0000/failure.json",
         "checkpoints/spec_0000/losses.npy",
         "checkpoints/spec_0000/eval/per_molecule.json",
+        "checkpoints/spec_0000/eval_holdout/test_set.csv",
+        "checkpoints/spec_0000/eval_holdout/per_reaction.json",
+        "checkpoints/spec_0000/eval_holdout/per_molecule.json",
         "pretrain/deep_combined_attn/pretrain_metadata.json",
         "pretrain/deep_combined_attn/losses_x.npy",
         "pretrain/deep_combined_attn/losses_c.npy",
