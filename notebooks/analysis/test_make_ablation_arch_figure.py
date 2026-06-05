@@ -438,6 +438,25 @@ def test_training_subsets_by_size(tmp_path):
     assert ts == {1: ["HO"], 3: ["CH4", "HO"]}
 
 
+def test_training_reactions_by_size_real_ledger(tmp_path):
+    # uses the in-repo ledger + BH76 pool JSON (authoritative reaction defs)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "resolved_config.yaml").write_text(
+        "subset_ledger_path: /gpfs/x/hpcjobs/ledgers/"
+        "bh76w411_repr_alpha_on_r1-6.json\n")
+    out = fig.training_reactions_by_size(run)
+    # ss6 = exactly 5 W4-11 atomizations + 1 BH76 reaction (NOT 7 species)
+    assert len(out[6]["ae"]) == 5 and len(out[6]["rxn"]) == 1
+    assert out[6]["rxn"][0] == (["clch3clcomp"], ["clch3clts"])  # one SN2 complex->TS
+    assert "b2h6" in out[6]["ae"] and "ocs" in out[6]["ae"]
+    # ss2 reaction CH3 + ClF -> ch3fclts
+    assert out[2]["rxn"] == [(["ch3", "clf"], ["ch3fclts"])]
+    assert out[2]["ae"] == ["hocn"]
+    # ss1 = a single atomization, no reactions
+    assert out[1]["ae"] == ["hocn"] and out[1]["rxn"] == []
+
+
 def test_plot_energy_wtmad_mae_renders(tmp_path):
     run = _make_run_dir(tmp_path)
     rows = fig.collect_holdout_reaction_rows(run)
@@ -669,16 +688,46 @@ def test_methods_textblock_accepts_column_offsets(tmp_path):
 
 def test_methods_columns_lists_spin_and_descriptor_purposes():
     cols = fig._methods_columns({1: ["hocn"]})
-    col1, col3 = " ".join(cols[0]), " ".join(cols[2])
-    # Dick et al. x1/x2 descriptor naming + spin (zeta) present + cited
+    col1, col2, col3 = (" ".join(cols[0]), " ".join(cols[1]), " ".join(cols[2]))
+    alltext = col1 + col2 + col3
+    # DFS x1/x2 naming + spin (zeta) present + cited; "Dick" never used
     assert "x_1" in col1 and "x_2" in col1 and r"\zeta" in col1
-    assert "DFS" in col1 and "Dick" not in col1  # use DFS (year), not "Dick"
+    assert "DFS" in col1 and "Dick" not in alltext
     assert "polariz" in col1.lower()
-    # honest deviation note (GGA reduction, not verbatim DFS)
-    assert "1.804" in col1 and "1.174" in col1
-    # extended descriptors continue Dick's numbering (x4+) with full purpose
+    # zeta-clip rationale (PW92 2nd-derivative) + r_s = PW92 correlation variable
+    assert "PW92" in col1 and "clip" in col1.lower()
+    # LOB sourcing: 1.804 = PBE ceiling, DFS tighter 1.174 (now in the loss/constraints col)
+    assert "1.804" in col2 and "PBE" in col2 and "1.174" in col2
+    # loss: per-molecule FIXED weights, GradNorm DORMANT (not "GradNorm balances")
+    assert "per-molecule" in col2 and "DORMANT" in col2 and r"$\rho$ 20" in col2
+    # SCF is a fixed self-consistent cycle (not one-shot, not "converged to tol")
+    assert "self-consistent" in col2 and "3-cycle" in col2
+    # extended descriptors continue DFS numbering (x4+) with full purpose
     assert "x_4" in col3 and "cusp" in col3 and "nucle" in col3.lower()
-    assert "Slater" in col3
+    assert "Slater" in col3 or "HF/KS" in col3
+    # x7 corrected to size-INTENSIVE (not size-dependent)
+    assert "INTENSIVE" in col3 and "size-dependent" not in col3
+
+
+def test_subset_reaction_lines_render():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    reactions = {2: {"ae": ["hocn"], "rxn": [(["ch3", "clf"], ["ch3fclts"])]},
+                 6: {"ae": ["alcl", "b2h6", "cf4"],
+                     "rxn": [(["clch3clcomp"], ["clch3clts"])]}}
+    lines = fig._subset_reaction_lines(reactions)
+    joined = "\n".join(lines)
+    assert "AE:" in joined and "barriers:" in joined
+    assert r"\to" in joined  # reactant -> product arrow
+    # renders as valid mathtext
+    f = plt.figure(figsize=(13, 4))
+    f.text(0.02, 0.5, joined, fontsize=6.2, family="serif")
+    out = "/tmp/_subset_rxn_canary.png"
+    f.savefig(out, dpi=80)
+    plt.close(f)
+    import os
+    assert os.path.getsize(out) > 1500
 
 
 def test_run_basis_label_reads_basis_and_df(tmp_path):

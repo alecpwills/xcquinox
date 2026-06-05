@@ -1478,6 +1478,77 @@ def training_subsets_by_size(run_dir: Path) -> Dict[int, List[str]]:
     return out
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_bh76_reactions() -> Dict[str, Dict[str, Any]]:
+    """``{reaction_name: {reactants, products, coeffs}}`` from the in-repo BH76
+    pool JSON -- the authoritative reactants->products definitions."""
+    p = _REPO_ROOT / "xcquinox/alec/data/bh76_full_pool.json"
+    if not p.is_file():
+        return {}
+    try:
+        pool = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {r["name"]: r for r in pool.get("reactions", []) if "name" in r}
+
+
+def training_reactions_by_size(run_dir: Path,
+                               ledgers_dir: Optional[Path] = None
+                               ) -> Dict[int, Dict[str, List[Any]]]:
+    """``{subset_size: {"ae": [W4-11 molecule, ...], "rxn": [(reactants, products),
+    ...]}}`` -- the AUTHORITATIVE training content from the subset-selection
+    ledger (``resolved_config.yaml: subset_ledger_path``), so W4-11 atomization
+    points (``w411_X_atomization`` -> molecule X) and BH76 reaction points
+    (``bh76_..._to_...`` -> reactants->products, looked up in the BH76 pool) are
+    distinguished and reactions are NOT split into separate species. Returns ``{}``
+    if the ledger is not found locally."""
+    cfg = Path(run_dir) / "resolved_config.yaml"
+    ledger_name = None
+    if cfg.is_file():
+        for line in cfg.read_text().splitlines():
+            s = line.strip()
+            if s.startswith("subset_ledger_path:"):
+                ledger_name = Path(s.split(":", 1)[1].strip()).name
+    if not ledger_name:
+        return {}
+    ledgers_dir = Path(ledgers_dir) if ledgers_dir else _REPO_ROOT / "hpcjobs/ledgers"
+    ledger_path = ledgers_dir / ledger_name
+    if not ledger_path.is_file():
+        return {}
+    try:
+        ledger = json.loads(ledger_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    rxn_lookup = _load_bh76_reactions()
+    out: Dict[int, Dict[str, List[Any]]] = {}
+    for key, entry in ledger.items():
+        if not key.startswith("jsd/") or not isinstance(entry, dict):
+            continue
+        try:
+            ss = int(key.split("/", 1)[1])
+        except ValueError:
+            continue
+        ae: List[str] = []
+        rxn: List[Tuple[List[str], List[str]]] = []
+        for nm in entry.get("point_names", []):
+            if nm.startswith("w411_") and nm.endswith("_atomization"):
+                ae.append(nm[len("w411_"):-len("_atomization")])
+            elif nm.startswith("bh76_"):
+                r = rxn_lookup.get(nm)
+                if r:
+                    rxn.append((list(r.get("reactants", [])),
+                                list(r.get("products", []))))
+                else:  # fall back to parsing the name "A_B_to_C"
+                    core = nm[len("bh76_"):]
+                    if "_to_" in core:
+                        lhs, rhs = core.split("_to_", 1)
+                        rxn.append((lhs.split("_"), rhs.split("_")))
+        out[ss] = {"ae": ae, "rxn": rxn}
+    return out
+
+
 def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
                           note: str = "", provenance: Optional[str] = None,
                           caveat: Optional[str] = None,
@@ -2207,75 +2278,108 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
     col1 = [
         "Descriptors -- DFS (2021), PRB 104 L161109, eqs 3-6;",
         " spin ON both runs (use_polarized_correlation):",
-        r"  $x_1=\frac{1}{2}[(1{+}\zeta)^{4/3}{+}(1{-}\zeta)^{4/3}]$ (spin polariz.,",
-        r"     $\zeta{=}(\rho_\alpha{-}\rho_\beta)/\rho$; clip $[-1,1]$; $x_1{=}1$ at $\zeta{=}0$ = RKS),",
-        r"  $x_2=s=|\nabla\rho|/(2(3\pi^2)^{1/3}\rho^{4/3})$ (reduced gradient).",
-        r"  DFS $x_0{=}\rho^{1/3}$ and $x_3{=}\alpha$ are UNUSED (GGA, no $\tau$);",
-        r"  C-net takes $r_s{=}(3/4\pi\rho)^{1/3}$ as its density input instead.",
+        r"  $x_1{=}\frac{1}{2}[(1{+}\zeta)^{4/3}{+}(1{-}\zeta)^{4/3}]$ (spin; $\zeta{=}(\rho_\alpha{-}\rho_\beta)/\rho$;",
+        r"     $x_1{=}1$ at $\zeta{=}0$ = RKS).  $\zeta$ clipped to $\pm(1{-}10^{-6})$: the",
+        r"     PW92 spin-interp 2nd deriv $\sim(1{\mp}\zeta)^{-2/3}$ diverges at full",
+        "     polarization, NaN-ing the SCF gradient on free atoms.",
+        r"  $x_2{=}s{=}|\nabla\rho|/(2(3\pi^2)^{1/3}\rho^{4/3})$ (reduced gradient).",
+        r"  DFS $x_0{=}\rho^{1/3}$, $x_3{=}\alpha$ UNUSED (GGA, no $\tau$); C-net uses",
+        r"  $r_s{=}(3/4\pi\rho)^{1/3}$ (the PW92 LDA-correlation variable) for density.",
         r"  X-net $F_x(x_2)$;   C-net $F_c(r_s, x_2, x_1)$.",
-        "  NOT verbatim DFS (GGA reduction of their meta-GGA): no $x_3$;",
-        r"  $\tanh^2\!x_2$ UEG gate (not DFS's $\tilde{x}_2{+}\tanh^2\!\tilde{x}_3$);",
-        "  $F_x$ global LOB 1.804 (DFS: local 1.174).",
         "",
-        "Log-transform (descriptor_log_transform):",
-        r"  $\tilde{x}_2=(1{-}e^{-x_2^2})\ln(x_2{+}1)$ (DFS eq 9); $r_s$ gets the",
-        r"  SAME form here (DFS instead log-transform their $x_0$, eq 7);",
-        r"  default all but _notransform.  $x_1$ NOT transformed (DFS eq 8 does).",
+        "Log-transform (descriptor_log_transform; DFS eq 9):",
+        r"  $\tilde{x}_2{=}(1{-}e^{-x_2^2})\ln(x_2{+}1)$, same applied to $r_s$ (DFS",
+        r"  use eq 7 for $x_0$);  $x_1$ NOT transformed (DFS eq 8 does).",
     ]
     col2 = [
         "Constraints (identical, all archs):",
-        r"  $F_x=1+\mathrm{LOB}_{1.804}(\tanh^2(x_2)\cdot\mathrm{MLP}(\tilde{x}_2))$,",
-        r"  $F_c=1+\mathrm{LOB}_{2.0}(\tanh^2(x_2)\cdot\mathrm{MLP})$  ($F_c$ squash",
-        r"     $\in[0,2]$, NOT a Lieb-Oxford bound on $F_c$);",
-        r"  $\mathrm{LOB}_L(x)=L\,\sigma(x-\ln(L{-}1))-1$.",
-        r"  Exchange: exact spin-scaling $E_x=\frac{1}{2}[E_x(2\rho_\alpha){+}E_x(2\rho_\beta)]$.",
+        r"  $F_x{=}1{+}\mathrm{LOB}_{1.804}(\tanh^2\!x_2\cdot\mathrm{MLP}(\tilde{x}_2))$;  $\tanh^2\!x_2$ = UEG",
+        r"     gate ($F_x{\to}1$ at $x_2{=}0$, the LDA limit).",
+        r"  $F_c{=}1{+}\mathrm{LOB}_{2.0}(\tanh^2\!x_2\cdot\mathrm{MLP})$ ($F_c$ squash $\in[0,2]$);",
+        r"  $\mathrm{LOB}_L(x){=}L\sigma(x{-}\ln(L{-}1)){-}1$.",
+        r"  $F_x$ ceiling 1.804 = PBE $1{+}\kappa$, $\kappa{=}0.804$ (PBE 1996, local",
+        r"     Lieb-Oxford); DFS use a tighter 1.174.",
+        r"  Exchange exact spin-scaling $E_x{=}\frac{1}{2}[E_x(2\rho_\alpha){+}E_x(2\rho_\beta)]$.",
         "",
-        "Pretrain (2500 steps; per-grid-point, spin-resolved):",
-        r"  $F_x=F_x^{PBE}/F_x^{LDA}-1$,  $F_c=F_c^{PBE}/F_c^{LDA}-1$.",
-        "Optimization (L5_gradnorm_vxc_step7): GradNorm ($\\alpha{=}1.5$)",
-        r"  over {AE, BH76, IP13, $v_{xc}$, $\rho$}; $w_\rho{=}20$, others ${=}1$;",
-        r"  per-molecule (1 step/group/epoch), 250 epochs;",
-        r"  LR $0.01$ held first $0.2$, then linear $\to10^{-5}$.",
-        "Attention (_attn / _combined_attn, heads=4): per-grid-point",
-        r"  channel attn $\mathrm{softmax}(QK^T\!/\sqrt{d_k})V$ over MLP-1 units",
-        "  as 4 head-tokens (seq len 1; NOT spatial / non-local).",
+        "Loss L5_gradnorm_vxc_step7 -- per-molecule update (250 epochs):",
+        "  GradNorm($\\alpha{=}1.5$) is DORMANT under per-molecule -> FIXED",
+        r"  weights {AE 1, BH76 1, IP13 1, $v_{xc}$ 1, $\rho$ 20} (density-dominant).",
+        r"  AE $=(\sum_Z n_Z E_Z^{exact}{-}E_{mol})$ vs ref;  BH76 $=\sum_i c_i E_i$",
+        r"  (products$-$reactants) vs CCSD;  IP13 $=E^{+}{-}E^{0}$;",
+        r"  $v_{xc}{=}\|V_{xc}^{NN}{-}V_{xc}^{ref}\|_F^2$ (AO);  $\rho$ = grid-$L_2$ of density.",
+        "  Energies from a FIXED 3-cycle differentiable self-consistent SCF",
+        r"  (full_3; rebuild $v_{xc}$+density each cycle, backprop all 3). LR",
+        r"  $0.01$ held first $0.2$, then linear $\to10^{-5}$.",
     ]
     col3 = [
-        "Extended descriptors (this work; appended to both nets,",
-        " continuing DFS's $x$ numbering):",
-        r"  _cusp $(x_4, x_5)$ -- electron-nuclear cusp / nuclear proximity",
-        r"  (the density's $\rho\sim e^{-2Zr}$ decay at nuclei that smooth $x_2$",
-        r"  misses):  $x_4{=}e^{-2Z_{near}r_{min}}$ (Slater cusp at nearest",
-        r"  nucleus),  $x_5{=}\tanh(\ln(\sum_A Z_A/r_A)/5)$ (Coulomb field).",
-        r"  _dm $(x_6, x_7, x_8)$ -- departure from one Slater determinant",
-        r"  (correlation indicator):  $x_6{=}\|D'SD'{-}D'\|_F/\mathrm{Tr}(D'S)$",
-        r"  (idempotency, 0 for HF/KS),  $x_7{=}-\!\sum p_i\ln p_i/\ln\max(n_{orb}^{eff},2)$",
-        r"  (natural-occ entropy),  $x_8{=}\|D_{off}\|_F/\mathrm{Tr}(D)$ (off-diag);",
-        r"  $D'{=}D/2$ RKS / $D_\sigma$ UKS.  $x_6, x_8$ vanish for a single",
-        r"  determinant; $x_7$ is a (size-dependent) occupation-spread proxy.",
-        r"  _combined: $+$ cusp & DM.   _notransform: log-transform off.",
+        "Pretrain (2500 steps; per-grid-point, spin-resolved):",
+        r"  $F_x{=}F_x^{PBE}/F_x^{LDA}{-}1$,  $F_c{=}F_c^{PBE}/F_c^{LDA}{-}1$.",
+        "Attention (_attn / _combined_attn, heads=4): per-grid-point channel",
+        r"  attn $\mathrm{softmax}(QK^T\!/\sqrt{d_k})V$ over MLP-1 units as 4 tokens.",
         "",
-        "Training subsets (held-in molecules):",
+        "Extended descriptors (this work; continuing DFS's $x$ numbering):",
+        r"  _cusp $(x_4, x_5)$ -- electron-nuclear cusp (Kato 1957; the density's",
+        r"  $\rho\sim e^{-2Zr}$ decay at nuclei): $x_4{=}e^{-2Z_{near}r_{min}}$ (Slater cusp,",
+        r"  nearest nucleus), $x_5{=}\tanh(\ln(\sum_A Z_A/r_A)/5)$ (nuclear Coulomb",
+        r"  field; log = DFS, $/5$+tanh = this-work conditioning).",
+        r"  _dm $(x_6, x_7, x_8)$ -- single-reference diagnostic:",
+        r"  $x_6{=}\|D'SD'{-}D'\|_F/\mathrm{Tr}(D'S)$ (idempotency, $=0$ exactly for HF/KS);",
+        r"  $x_8{=}\|D_{off}\|_F/\mathrm{Tr}(D)$ (off-diag, grows w/ correlation);",
+        r"  $x_7{=}-\!\sum p_i\ln p_i/\ln\max(n_{orb}^{eff},2)$ (Loewdin nat-occ entropy,",
+        r"  size-INTENSIVE $\in[0,1]$; nonzero even for one determinant).",
+        r"  $D'{=}D/2$ RKS / $D_\sigma$ UKS.  _combined: cusp & DM;  _notransform: off.",
     ]
-    col3 += [f"  {ss}: {', '.join(_chem_latex(m) for m in subsets[ss])}"
-             for ss in sorted(subsets)]
     return [col1, col2, col3]
+
+
+def _render_reaction(reactants: List[str], products: List[str]) -> str:
+    """``reactants -> products`` in mathtext, species via :func:`_chem_latex`."""
+    lhs = r" $+$ ".join(_chem_latex(r) for r in reactants)
+    rhs = r" $+$ ".join(_chem_latex(p) for p in products)
+    return f"{lhs} " + r"$\to$" + f" {rhs}"
+
+
+def _subset_reaction_lines(reactions: Dict[int, Dict[str, List[Any]]]) -> List[str]:
+    """Full-width footer lines making the per-subset training content explicit:
+    W4-11 atomization molecules + BH76 barrier reactions (reactants->TS)."""
+    lines = ["Training content per held-in subset  (W4-11 atomization energies: "
+             "molecule -> atoms;  BH76 barriers: reactants -> transition state):"]
+    for ss in sorted(reactions):
+        ae = ", ".join(_chem_latex(m) for m in reactions[ss].get("ae", []))
+        rx = ";  ".join(_render_reaction(r, p)
+                        for r, p in reactions[ss].get("rxn", []))
+        parts = []
+        if ae:
+            parts.append("AE: " + ae)
+        if rx:
+            parts.append("barriers: " + rx)
+        lines.append(f"  ss{ss} -- " + "    ".join(parts))
+    return lines
 
 
 def _methods_textblock(fig, subsets: Dict[int, List[str]], y_top: float = 0.28,
                        archs: Optional[List[str]] = None,
                        xs: Tuple[float, float, float] = (0.05, 0.385, 0.715),
                        y_deltas: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-                       fontsize: float = 6.2) -> int:
+                       fontsize: float = 6.2,
+                       reactions: Optional[Dict[int, Dict[str, List[Any]]]] = None,
+                       fig_h: Optional[float] = None) -> int:
     """Place the three methods columns (mathtext) under panels a/b/c at ``xs``,
     each offset vertically by ``y_deltas`` (figure fraction; negative = lower).
-    Returns the max column line count (so a caller can size the figure to the
-    text and avoid whitespace)."""
+    When ``reactions`` + ``fig_h`` are given, a FULL-WIDTH training-content footer
+    (W4-11 atomizations + BH76 reactions) is placed below the columns. Returns the
+    total effective line count (columns + footer) so a caller can size the figure."""
     cols = _methods_columns(subsets)
     for x, dy, col in zip(xs, y_deltas, cols):
         fig.text(x, y_top + dy, "\n".join(col), va="top", ha="left",
                  fontsize=fontsize, family="serif")
-    return max(len(c) for c in cols)
+    max_col = max(len(c) for c in cols)
+    footer = _subset_reaction_lines(reactions) if reactions else []
+    if footer and fig_h:
+        line_frac = fontsize * 1.32 / (72.0 * fig_h)
+        fig.text(xs[0], y_top - (max_col + 1.5) * line_frac, "\n".join(footer),
+                 va="top", ha="left", fontsize=fontsize, family="serif")
+    return max_col + (len(footer) + 2 if footer else 0)
 
 
 def run_basis_label(run_dir: Path) -> str:
@@ -2332,8 +2436,12 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         # snug above the provenance so there is no trailing whitespace, and the
         # legend goes ABOVE the panels (clear of the rotated x-axis labels).
         subsets = training_subsets_by_size(runs[0][0]) if runs else {}
+        reactions = training_reactions_by_size(runs[0][0]) if runs else {}
         FS = 6.2
-        n_meth = max(len(c) for c in _methods_columns(subsets))
+        # height = tallest column + full-width subset-reaction footer (+gap)
+        n_cols = max(len(c) for c in _methods_columns(subsets))
+        n_foot = (len(_subset_reaction_lines(reactions)) + 2) if reactions else 0
+        n_meth = n_cols + n_foot
         meth_h = n_meth * FS * 1.30 / 72.0 + 0.06   # methods text block (~1.2 linespacing)
         panels_h, xlabel_h = 3.5, 0.72              # panels + rotated cell labels
         legend_h, gap1, gap2 = 0.30, 0.06, 0.10     # legend band: methods | legend | labels
@@ -2397,10 +2505,11 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         fig.legend(handles=handles, loc="center", ncol=min(4, 2 * nb),
                    fontsize=7.5, frameon=False,
                    bbox_to_anchor=(0.5, _f(bot_pad + meth_h + gap1 + legend_h / 2)))
-        # Methods (3 columns under panels a/b/c); middle column nudged down + left.
+        # Methods: 3 columns under panels a/b/c + a full-width subset-reaction
+        # footer below them (top-aligned columns -- the dense content no longer
+        # leaves room for the old middle-column nudge).
         _methods_textblock(fig, subsets, y_top=_f(bot_pad + meth_h), fontsize=FS,
-                           xs=(0.05, 0.34, 0.715),
-                           y_deltas=(0.0, -_f(0.35), 0.0))
+                           xs=(0.05, 0.37, 0.69), reactions=reactions, fig_h=fig_h)
         fig.suptitle(
             "Cross-basis comparison (union of arch x subset cells; bar absent "
             "where a basis hasn't run) -- NN bars vs benchmark, PBE dashed"
