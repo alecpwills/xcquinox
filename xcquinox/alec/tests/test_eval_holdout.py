@@ -339,3 +339,171 @@ def test_n_nan_union_counts_either_metric_dropped():
     # Nothing dropped -> 0.
     finite = {"x": 1.0, "y": 1.0}
     assert eh._n_nan_union(finite, dict(finite), reactions) == 0
+
+
+def _mol(name, comp):
+    from types import SimpleNamespace
+    return SimpleNamespace(name=name, atom_composition=comp)
+
+
+def test_training_molecule_names_excludes_atoms():
+    """Held-out overlap must be molecule-level: training_molecule_names returns
+    only multi-atom species, dropping single atoms (atom_composition sums to 1)."""
+    from types import SimpleNamespace
+    spec = SimpleNamespace(molecules=[
+        _mol("hocn", (("H", 1), ("O", 1), ("C", 1), ("N", 1))),  # molecule
+        _mol("b2h6", (("B", 2), ("H", 6))),                      # molecule
+        _mol("h", (("H", 1),)), _mol("c", (("C", 1),)),          # atoms
+        _mol("o", (("O", 1),)), _mol("n", (("N", 1),)),          # atoms
+    ])
+    assert set(eh.training_molecule_names(spec)) == {"hocn", "b2h6"}
+
+
+def test_filter_reactions_molecule_level_keeps_atom_sharing_holdout():
+    """An atomization whose ATOMS (not its MOLECULE) are trained must stay
+    HELD-OUT. The old full-species list (atoms included) wrongly dropped every
+    atomization on shared atoms -- 6 training reactions discarded ~all of W4-11."""
+    from types import SimpleNamespace
+    spec = SimpleNamespace(molecules=[
+        _mol("hocn", (("H", 1), ("O", 1), ("C", 1), ("N", 1))),
+        _mol("h", (("H", 1),)), _mol("o", (("O", 1),)),
+        _mol("c", (("C", 1),)), _mol("n", (("N", 1),)),
+    ])
+    reactions = [
+        # co2 shares atoms c,o with the trained ATOMS but co2 is NOT trained.
+        {"name": "co2_atomization", "reactants": ["co2"],
+         "products": ["c", "o"], "coeffs": [1.0, -1.0, -2.0],
+         "reaction_energy_ref": 0.0},
+        # hocn IS a trained molecule -> in-sample.
+        {"name": "hocn_atomization", "reactants": ["hocn"],
+         "products": ["h", "o", "c", "n"], "coeffs": [1.0, -1, -1, -1, -1],
+         "reaction_energy_ref": 0.0},
+    ]
+    mol_names = eh.training_molecule_names(spec)
+    kept, dropped = eh.filter_reactions(reactions, mol_names, strict=True)
+    assert {r["name"] for r in kept} == {"co2_atomization"}
+    assert {r["name"] for r in dropped} == {"hocn_atomization"}
+    # Regression guard: the OLD full list (atoms included) drops BOTH.
+    full_names = [m.name for m in spec.molecules]
+    assert eh.filter_reactions(reactions, full_names, strict=True)[0] == []
+
+
+def test_holdout_overlap_molecule_level_on_real_pools():
+    """On the REAL BH76 + W4-11 pools: a small training set (a few molecules +
+    ALL atoms) holds out almost the whole pool under the molecule-level overlap,
+    where the old atom-level overlap kept almost nothing. Verifies the FIX
+    brings the correct species into the held-out set on real data."""
+    from types import SimpleNamespace
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+    specs, reactions = load_full_held_out_pools()
+    atoms = [s for s in specs.values() if eh._spec_is_atom(s)]
+    mols = [s for s in specs.values() if not eh._spec_is_atom(s)]
+    assert len(atoms) >= 10 and len(mols) >= 150, (len(atoms), len(mols))
+
+    # Realistic spec_0000-style training set: 3 molecules + every atom anchor.
+    trained = mols[:3]
+    training_spec = SimpleNamespace(molecules=trained + atoms)
+    mol_names = eh.training_molecule_names(training_spec)
+    full_names = [getattr(m, "name") for m in training_spec.molecules]
+    assert set(mol_names) == {m.name for m in trained}  # atoms excluded
+
+    kept_new, dropped_new = eh.filter_reactions(reactions, mol_names, strict=True)
+    kept_old, _ = eh.filter_reactions(reactions, full_names, strict=True)
+
+    n = len(reactions)
+    assert len(kept_new) > 0.7 * n, (len(kept_new), n)   # molecule-level: pool survives
+    assert len(kept_old) < 0.25 * n, (len(kept_old), n)  # atom-level bug: pool nuked
+    assert len(kept_new) > 3 * len(kept_old)
+    # Every newly-dropped reaction genuinely references a TRAINED molecule
+    # (no atom-level leak).
+    trained_names = {m.name for m in trained}
+    for r in dropped_new:
+        rn = set(r.get("reactants", [])) | set(r.get("products", []))
+        assert rn & trained_names, f"atom-leak: {r.get('name')} dropped w/o a trained molecule"
+
+
+def test_holdout_pools_reaction_integrity_both_pools():
+    """Phase-0 adversarial check: every reaction in BOTH real pools is
+    mass-balanced and has a finite reference. W4-11 atomization refs are strictly
+    positive; BH76 barrier refs may be negative ONLY for the four gas-phase
+    ion-molecule SN2 reactions (submerged barriers), each with an anion reactant."""
+    from xcquinox.alec.full_benchmark_pools import load_full_bh76, load_full_w411
+    for pool, (specs, rxns), atomization in (
+        ("bh76", load_full_bh76(), False),
+        ("w411", load_full_w411(), True),
+    ):
+        for r in rxns:
+            names = list(r["reactants"]) + list(r["products"])
+            assert len(names) == len(r["coeffs"]), (pool, r["name"])
+            bal = {}
+            for nm, c in zip(names, r["coeffs"]):
+                for el, cnt in dict(specs[nm].atom_composition).items():
+                    bal[el] = bal.get(el, 0.0) + c * cnt
+            assert all(abs(v) < 1e-9 for v in bal.values()), \
+                f"{pool}:{r['name']} not mass-balanced: {bal}"
+            ref = r["reaction_energy_ref"]
+            assert isinstance(ref, (int, float)) and math.isfinite(ref), (pool, r["name"])
+            if atomization:
+                assert ref > 0, f"W4-11 atomization ref must be > 0: {r['name']}={ref}"
+        if pool == "bh76":
+            neg = [r for r in rxns if r["reaction_energy_ref"] <= 0]
+            assert len(neg) == 4, [r["name"] for r in neg]
+            for r in neg:  # legitimate submerged SN2 barrier -> anion reactant
+                assert any(s.endswith("-") for s in r["reactants"]), (r["name"], r["reactants"])
+
+
+def test_holdout_overlap_charge_and_case_aware_no_leak():
+    """Phase-0 adversarial check (NON-circular). The earlier oracle used the SAME
+    comp==1 atom rule as the code and never trained anions/case-twins, so it was
+    circular (the opus review found it could not reach the two real leaks). This
+    oracle uses an INDEPENDENT rule -- a universal anchor is a NEUTRAL monatomic
+    -- and case-folds names, and it actually TRAINS the monatomic anions (f-,
+    cl-) and cross-pool case-twins (NH3/nh3). Asserts molecule-level overlap ==
+    oracle with ZERO case-insensitive leakage on the COMBINED pool.
+
+    Guards both bugs the review found: (A) anion-as-atom, (B) case-variant."""
+    from types import SimpleNamespace
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+    specs, rxns = load_full_held_out_pools()
+
+    def cf(s):
+        return str(s).casefold()
+
+    def rcf(r):
+        return {cf(x) for x in (set(r["reactants"]) | set(r["products"]))}
+
+    def neutral_monatomic(s):          # INDEPENDENT oracle rule (charge + comp)
+        comp = dict(getattr(s, "atom_composition", ()) or ())
+        return sum(comp.values()) == 1 and int(getattr(s, "charge", 0) or 0) == 0
+
+    by = specs
+    mols = [s for s in specs.values() if not neutral_monatomic(s)]
+    subsets = [
+        ("f-", [by["f-"]]),                                   # Vector A
+        ("cl-", [by["cl-"]]),
+        ("nh3", [by["nh3"]]),                                 # Vector B (lower)
+        ("NH3", [by["NH3"]]),                                 # Vector B (upper)
+        ("f-,cl-,nh3", [by[n] for n in ("f-", "cl-", "nh3")]),
+        ("25mol+anions", mols[:25] + [by["f-"], by["cl-"]]),
+    ]
+    for label, trained in subsets:
+        ts = SimpleNamespace(molecules=trained)
+        mol_names = set(eh.training_molecule_names(ts))
+        kept, dropped = eh.filter_reactions(rxns, mol_names, strict=True)
+        mol_cf = {cf(s.name) for s in trained if not neutral_monatomic(s)}
+        oracle_kept = {r["name"] for r in rxns if not (rcf(r) & mol_cf)}
+        assert {r["name"] for r in kept} == oracle_kept, f"{label}: kept != oracle"
+        assert all(not (rcf(r) & mol_cf) for r in kept), f"{label}: case-insensitive LEAK"
+        assert len(kept) + len(dropped) == len(rxns), f"{label}: not conserved"
+
+    # (A) monatomic anions are MOLECULES; neutral monatomics are excluded.
+    assert set(eh.training_molecule_names(
+        SimpleNamespace(molecules=[by["f-"], by["cl-"]]))) == {"f-", "cl-"}
+    assert eh.training_molecule_names(
+        SimpleNamespace(molecules=[by[n] for n in ("h", "f", "cl", "o")])) == ()
+    # (B) training a lower-case twin drops the upper-case reaction (no leak).
+    nm = set(eh.training_molecule_names(SimpleNamespace(molecules=[by["nh3"]])))
+    kept_nh3, _ = eh.filter_reactions(rxns, nm, strict=True)
+    assert all("nh3" not in {s.casefold() for s in
+               (set(r["reactants"]) | set(r["products"]))} for r in kept_nh3), \
+        "NH3/nh3 case-twin leaked into held-out"

@@ -80,10 +80,18 @@ def reaction_overlap(
     held-out (no overlap), or carries an in-sample side (overlap is the
     list of species names present in both the reaction and the training
     set).
+
+    CASE-INSENSITIVE: BH76 and W4-11 name the SAME molecule with different case
+    (``CH4`` vs ``ch4``, ``NH3`` vs ``nh3``, ``H2S`` vs ``h2s``). An exact-name
+    match would let a W4-11 lower-case molecule be trained while its upper-case
+    BH76 reaction stayed "held-out" -> train/test leakage. Every cross-pool
+    case-twin in these pools is verified to be the same molecule (identical
+    atom_composition), so case-folding the membership test is safe here.
     """
     names = set(reaction.get("reactants", [])) | set(
         reaction.get("products", []))
-    in_sample = sorted(names & training_names)
+    training_cf = {str(t).casefold() for t in training_names}
+    in_sample = sorted(n for n in names if str(n).casefold() in training_cf)
     return (len(in_sample) > 0, in_sample)
 
 
@@ -98,10 +106,13 @@ def filter_reactions(
     Loose mode (default, ``strict=False``): every reaction is kept and
     each gains an ``"in_sample_overlap"`` key listing the overlapping
     species (empty list when held-out). Strict mode (``strict=True``): a
-    reaction with ANY species in ``training_names`` is dropped, useful
-    only when you want a strictly-disjoint held-out metric and are OK
-    discarding every BH76 reaction (which always contain H, a Dick
-    regularization anchor).
+    reaction with ANY species in ``training_names`` is dropped. ``training_names``
+    MUST be MOLECULE-level -- build it via :func:`training_molecule_names`, which
+    excludes single ATOMS. Otherwise shared reference atoms (h, c, n, o, ...)
+    count as overlap and drop nearly the ENTIRE atomization held-out set: every
+    W4-11/BH76 atomization shares atoms with any non-empty training set, so
+    strict atom-disjointness is unachievable (this was a real bug -- training on
+    6 reactions dropped ~135/140 W4-11 reactions purely on shared atoms).
     """
     training = set(training_names)
     kept: List[Dict[str, Any]] = []
@@ -113,6 +124,41 @@ def filter_reactions(
         else:
             kept.append({**rxn, "in_sample_overlap": overlap})
     return kept, dropped
+
+
+def _spec_is_atom(mol_spec) -> bool:
+    """True iff ``mol_spec`` is a NEUTRAL single atom -- a universal reference
+    anchor present in every atomization/barrier reaction.
+
+    Charge matters: monatomic ANIONS (``f-``, ``cl-``) are specific SN2 reactant
+    SPECIES, NOT universal anchors. Treating them as atoms (excluding them from
+    the overlap filter) leaks every reaction sharing the anion into the held-out
+    set once any SN2 reaction is trained. So only NEUTRAL monatomics are anchors.
+    """
+    comp = getattr(mol_spec, "atom_composition", ()) or ()
+    try:
+        single = sum(int(n) for _, n in comp) == 1
+    except (TypeError, ValueError):
+        return False
+    return single and int(getattr(mol_spec, "charge", 0) or 0) == 0
+
+
+def training_molecule_names(training_spec) -> Tuple[str, ...]:
+    """Names of the MULTI-ATOM training species, EXCLUDING single atoms.
+
+    Held-out overlap must be MOLECULE-level: atoms (h, c, n, o, f, ...) are
+    universal reference anchors present in every atomization reaction, so
+    including them in ``training_names`` makes :func:`filter_reactions` drop
+    nearly the entire W4-11/BH76 held-out set (every atomization shares atoms
+    with any non-empty training set; strict atom-disjointness is unachievable).
+    Pass this as the ``training_names`` for the held-out OVERLAP filter; use the
+    FULL molecule list only for the per-molecule ``in_training_subset`` flag.
+    """
+    return tuple(
+        getattr(m, "name", None)
+        for m in getattr(training_spec, "molecules", ()) or ()
+        if getattr(m, "name", None) is not None and not _spec_is_atom(m)
+    )
 
 
 def per_reaction_errors(
@@ -262,8 +308,9 @@ def make_per_reaction_records(
     training = set(training_names)
     records: List[Dict[str, Any]] = []
     for rxn, nn, pbe in zip(reactions, nn_errors, pbe_errors):
-        overlap = sorted((set(rxn.get("reactants", []))
-                          | set(rxn.get("products", []))) & training)
+        # Case-insensitive, via the shared overlap helper, so the per-reaction
+        # in_sample_overlap flag matches the strict-drop filter exactly.
+        _, overlap = reaction_overlap(rxn, training)
         records.append({
             "name": rxn.get("name"),
             "pool": rxn.get("source_pool"),
@@ -680,10 +727,15 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
         training_spec)
     spec_solver_config = getattr(training_spec, "solver_config", None)
 
+    # FULL species list (incl. atoms) -- ONLY for the per-molecule
+    # `in_training_subset` flag below.
     training_names = tuple(
         getattr(m, "name", "?") for m in
         getattr(training_spec, "molecules", ())
     )
+    # MOLECULE-level names (single atoms excluded) -- what the held-out OVERLAP
+    # filter must use; atoms are universal anchors, not held-out molecules.
+    held_out_filter_names = training_molecule_names(training_spec)
 
     if mol_data is None:
         mol_data = precompute_holdout_for_spec(training_spec, mol_specs)
@@ -703,12 +755,15 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
                     if md.get("E_pbe") is not None
                     and math.isfinite(float(md.get("E_pbe")))}
 
-    training_set = set(training_names)
+    # Case-insensitive, to match the case-insensitive reaction overlap: CH4
+    # (BH76) and ch4 (W4-11) are the SAME molecule, so the descriptive
+    # in_training_subset flag must agree with the strict-drop filter.
+    training_cf = {str(t).casefold() for t in training_names}
     mol_records: List[Dict[str, Any]] = []
     for name in sorted(mol_data):
         mol_records.append(make_per_molecule_record(
             name, mol_data[name], energies.get(name, float("nan")),
-            in_training_subset=(name in training_set),
+            in_training_subset=(str(name).casefold() in training_cf),
             scf=scf_info.get(name),
         ))
 
@@ -718,7 +773,7 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
         "scf_info": scf_info,
         "mol_records": mol_records,
         "n_species": len(mol_data),
-        "training_names": training_names,
+        "training_names": held_out_filter_names,
     }
 
 

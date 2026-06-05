@@ -113,8 +113,10 @@ def run_holdout_with_escalation(
 
     energies, pbe_energies, mol_records = eval_holdout.merge_holdout_shards(
         shard_payloads)
-    training_names = tuple(
-        getattr(m, "name", "?") for m in getattr(training_spec, "molecules", ()))
+    # MOLECULE-level names (single atoms excluded): held-out overlap is
+    # molecule-level, else shared reference atoms (h, c, n, o, ...) drop nearly
+    # the entire atomization held-out set. See eval_holdout.training_molecule_names.
+    training_names = eval_holdout.training_molecule_names(training_spec)
     return eval_holdout._finalize_holdout_outputs(
         reactions, energies, pbe_energies, mol_records, training_names,
         n_species=len(full_specs), out_dir=out_dir, strict=strict)
