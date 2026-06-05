@@ -1792,11 +1792,13 @@ _BASIS_COLORS = ("#4477aa", "#cc6677", "#228833", "#ccbb44")
 def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                           run_id: str, note: str = "",
                           provenance: Optional[str] = None) -> Path:
-    """Cross-basis comparison over the (arch, subset) cells present in ALL runs:
-    (a) combined held-out reaction-energy MAE, (b) 2-subset WTMAD-2, (c)
-    in-sample density RMSE vs CCSD -- grouped bars by basis. Per-basis PBE
-    baselines drawn as dashed lines on the energy panels. The held-out benchmark
-    reference is basis-independent, so NN errors ARE comparable across bases."""
+    """Cross-basis comparison over the UNION of (arch, subset) cells present in
+    ANY run: (a) combined held-out reaction-energy MAE, (b) 2-subset WTMAD-2, (c)
+    in-sample density RMSE vs CCSD -- grouped bars by basis. A basis's bar is
+    simply absent for a cell it hasn't run yet (leaving room as later runs, e.g.
+    DF, fill in) -- completed cells are NEVER dropped for lack of a counterpart.
+    Per-basis PBE baselines are dashed lines on the energy panels; the held-out
+    benchmark reference is basis-independent, so NN errors ARE comparable."""
     with plt.rc_context(_STYLE):
         data = []
         cellsets = []
@@ -1814,16 +1816,17 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                                     []).append(r["density_rmse"])
             data.append((label, mae, wt, pbe_mae, pbe_wt, dmap))
             cellsets.append(set(mae.keys()))
-        shared = sorted(set.intersection(*cellsets)) if cellsets else []
-        labels = [f"{a}/ss{s}" for a, s in shared]
-        fig, axes = plt.subplots(1, 3, figsize=(6.0 * 3, 5.0), squeeze=False)
+        cells = sorted(set.union(*cellsets)) if cellsets else []
+        labels = [f"{a}/ss{s}" for a, s in cells]
+        pw = max(6.0, 0.42 * max(1, len(cells)))
+        fig, axes = plt.subplots(1, 3, figsize=(pw * 3, 5.4), squeeze=False)
         nb = max(1, len(data))
         bw = 0.8 / nb
 
         def _panel(ax, getval, pbe_attr, title, ylab, logy=False):
             for j, (label, mae, wt, pbe_mae, pbe_wt, dmap) in enumerate(data):
-                xs = [i + (j - (nb - 1) / 2) * bw for i in range(len(shared))]
-                hs = [getval(mae, wt, dmap, c) for c in shared]
+                xs = [i + (j - (nb - 1) / 2) * bw for i in range(len(cells))]
+                hs = [getval(mae, wt, dmap, c) for c in cells]
                 col = _BASIS_COLORS[j % len(_BASIS_COLORS)]
                 ax.bar(xs, hs, width=bw, color=col, edgecolor="k", linewidth=0.3,
                        label=label)
@@ -1831,8 +1834,8 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                     base = pbe_mae if pbe_attr == "mae" else pbe_wt
                     if _is_num(base):
                         ax.axhline(base, ls="--", lw=1.0, color=col, alpha=0.8)
-            ax.set_xticks(range(len(shared)))
-            ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=6.5)
+            ax.set_xticks(range(len(cells)))
+            ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=6)
             ax.set_ylabel(ylab, fontsize=8)
             ax.set_title(title, fontsize=9)
             if logy:
@@ -1862,8 +1865,8 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                    frameon=False, bbox_to_anchor=(0.5, 0.035))
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
-            title="Cross-basis comparison (shared arch x subset cells) -- "
-                  "NN (bars) vs benchmark, PBE (dashed) vs benchmark, + in-sample density")
+            title="Cross-basis comparison (all arch x subset cells; bar absent where a "
+                  "basis hasn't run) -- NN (bars) vs benchmark, PBE (dashed), + in-sample density")
         fig.tight_layout(rect=(0, 0.13, 1, 0.93))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)

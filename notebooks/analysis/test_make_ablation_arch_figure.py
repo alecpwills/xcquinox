@@ -495,6 +495,17 @@ def test_plot_basis_comparison_renders(tmp_path):
     assert _png_ok(out)
 
 
+def test_plot_basis_comparison_union_keeps_unshared_cells(tmp_path):
+    import shutil
+    ra = _make_run_dir(tmp_path / "a")
+    rb = _make_run_dir(tmp_path / "b")
+    # rb loses one (arch, subset) cell; the UNION must still plot it (ra-only),
+    # i.e. a completed cell is not dropped just because the other run lacks it.
+    shutil.rmtree(rb / "checkpoints" / "spec_0001" / "eval_holdout")
+    out = fig.plot_basis_comparison([(ra, "A"), (rb, "B")], tmp_path / "u.png", "u")
+    assert _png_ok(out)
+
+
 def test_build_basis_comparison_writes(tmp_path):
     ra = _make_run_dir(tmp_path / "a")
     (ra / "resolved_config.yaml").write_text("basis: def2-svp\ndensity_fit: false\n")
