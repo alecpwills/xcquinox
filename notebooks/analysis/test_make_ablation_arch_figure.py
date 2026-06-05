@@ -536,14 +536,39 @@ def test_plot_failure_diagnostic_renders(tmp_path):
     assert _png_ok(out)
 
 
-def test_build_diagnostic_figures_renders_both(tmp_path):
+def test_heatmap_panel_diverging_renders(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    f, ax = plt.subplots()
+    # center=1.0 -> diverging RdBu_r around PBE parity; values span <1 and >1
+    fig._heatmap_panel(ax, {("deep", 1): 0.8, ("deep", 3): 2.0,
+                            ("deep_combined", 1): 2.1},
+                       ["deep", "deep_combined"], title="ratio",
+                       cbar_label="MAE/PBE", center=1.0)
+    out = tmp_path / "hp.png"
+    f.savefig(out, dpi=80)
+    plt.close(f)
+    assert out.stat().st_size > 2000
+
+
+def test_plot_capacity_trends_renders(tmp_path):
+    r1 = _make_run_dir(tmp_path / "a")
+    r2 = _make_run_dir(tmp_path / "b")
+    out = fig.plot_capacity_trends([(r1, "def2-svp"), (r2, "def2-tzvpd+DF")],
+                                   tmp_path / "trends.png", _STAMP)
+    assert _png_ok(out)
+
+
+def test_build_diagnostic_figures_renders_all(tmp_path):
     r1 = _make_run_dir(tmp_path / "a")
     r2 = _make_run_dir(tmp_path / "b")
     (r1 / "resolved_config.yaml").write_text("basis: def2-svp\n")
     (r2 / "resolved_config.yaml").write_text("basis: def2-tzvpd\ndensity_fit: true\n")
     out = fig.build_diagnostic_figures([r1, r2], tmp_path / "diag")
     assert {p.name for p in out} == {"diagnostic_training_losses.png",
-                                     "diagnostic_failure_mechanisms.png"}
+                                     "diagnostic_failure_mechanisms.png",
+                                     "diagnostic_capacity_trends.png"}
     assert all(_png_ok(p) for p in out)
 
 

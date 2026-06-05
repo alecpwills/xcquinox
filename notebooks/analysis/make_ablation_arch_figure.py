@@ -52,7 +52,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import matplotlib
@@ -556,22 +556,39 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
 # ---------------------------------------------------------------------------
 
 def _heatmap_panel(ax, mae_map: Dict[Tuple[str, int], float], archs: List[str],
-                   *, title: str, cbar_label: str) -> None:
-    n_a, n_s = len(archs), len(SUBSET_SIZES)
+                   *, title: str, cbar_label: str,
+                   center: Optional[float] = None,
+                   subset_sizes: Optional[Sequence[int]] = None) -> None:
+    """arch x subset_size heatmap. Default: log-scaled viridis (raw MAE spanning
+    decades). With ``center`` set (e.g. 1.0 for a MAE/PBE ratio): a diverging
+    RdBu_r map about ``center`` -- below center is blue (better than the
+    reference), above is red (worse). Missing cells are hatched either way.
+    ``subset_sizes`` overrides the column axis (default the global SUBSET_SIZES);
+    pass the present sizes to drop empty trailing columns."""
+    ss_axis = list(subset_sizes) if subset_sizes is not None else list(SUBSET_SIZES)
+    n_a, n_s = len(archs), len(ss_axis)
     grid = np.full((n_a, n_s), np.nan)
     for i, a in enumerate(archs):
-        for j, ss in enumerate(SUBSET_SIZES):
+        for j, ss in enumerate(ss_axis):
             v = mae_map.get((a, ss))
             if v is not None and math.isfinite(v):
                 grid[i, j] = v
-    # log color scale (MAE spans decades); mask NaN as hatched "no data".
     finite = grid[np.isfinite(grid)]
-    if finite.size:
-        norm = matplotlib.colors.LogNorm(vmin=max(finite.min(), 1e-3),
-                                         vmax=finite.max())
+    if center is not None and finite.size:
+        # diverging about `center` (TwoSlopeNorm needs vmin < vcenter < vmax)
+        vmin = min(float(finite.min()), center * 0.999)
+        vmax = max(float(finite.max()), center * 1.001)
+        norm = matplotlib.colors.TwoSlopeNorm(vcenter=center, vmin=vmin, vmax=vmax)
+        cmap = plt.get_cmap("RdBu_r").copy()
+        fmt = "{:.2f}"
+    elif finite.size:
+        # log color scale (MAE spans decades)
+        norm = matplotlib.colors.LogNorm(vmin=max(float(finite.min()), 1e-3),
+                                         vmax=float(finite.max()))
+        cmap = plt.get_cmap("viridis").copy()
+        fmt = "{:.1f}"
     else:
-        norm = None
-    cmap = plt.get_cmap("viridis").copy()
+        norm, cmap, fmt = None, plt.get_cmap("viridis").copy(), "{:.1f}"
     cmap.set_bad("none")
     im = ax.imshow(np.ma.masked_invalid(grid), aspect="auto", cmap=cmap,
                    norm=norm, origin="upper")
@@ -582,13 +599,16 @@ def _heatmap_panel(ax, mae_map: Dict[Tuple[str, int], float], archs: List[str],
                 ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
                                            fill=False, hatch="//////",
                                            edgecolor="0.7", linewidth=0))
+                continue
+            if norm is not None and center is not None:
+                # white text only on the dark (far-from-center) cells
+                dark = abs(norm(grid[i, j]) - 0.5) > 0.32
             else:
-                ax.text(j, i, f"{grid[i, j]:.1f}", ha="center", va="center",
-                        fontsize=5.5,
-                        color="white" if grid[i, j] < (norm.vmax if norm else 1)
-                        else "black")
+                dark = grid[i, j] < (norm.vmax if norm else 1)
+            ax.text(j, i, fmt.format(grid[i, j]), ha="center", va="center",
+                    fontsize=5.5, color="white" if dark else "black")
     ax.set_xticks(range(n_s))
-    ax.set_xticklabels(SUBSET_SIZES, fontsize=7)
+    ax.set_xticklabels(ss_axis, fontsize=7)
     ax.set_yticks(range(n_a))
     ax.set_yticklabels(archs, fontsize=7)
     ax.set_xlabel("training subset_size")
@@ -1797,6 +1817,15 @@ _FAIL_LABEL = {"pass": "pass (<= PBE)",
                "late_instability": "late training instability"}
 
 
+def _primary_basis(cells: List[Dict[str, Any]]) -> Optional[str]:
+    """The basis with the most evaluated cells -- the dense run (def2-svp) used
+    for the ss-resolved bars / heatmaps; the sparse run is shown in the lines."""
+    counts: Dict[Any, int] = {}
+    for c in cells:
+        counts[c["basis"]] = counts.get(c["basis"], 0) + 1
+    return max(counts, key=counts.get) if counts else None
+
+
 def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
                             run_id: str, note: str = "",
                             provenance: Optional[str] = None) -> Path:
@@ -1858,31 +1887,48 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
         axA.legend(handles=cls_handles, fontsize=6.3, loc="upper left",
                    framealpha=0.7)
 
-        # --- Panel B: capacity ladder, BH76 vs W4-11 ratio by arch ---
+        # --- Panel B: ss-RESOLVED capacity-ladder bars (one bar per arch x ss) ---
+        # NEVER averaged over subset_size -- at fixed (small) ss the capacity
+        # ladder is clean (deep < attn < cusp < combined < combined_attn) and each
+        # arch falls toward PBE as ss grows (overfitting relieved by data).
         present = {c["arch"] for c in cells}
         archs = [a for a in ARCH_ORDER if a in present]
         archs += sorted(present - set(archs))
-
-        def _ratio(arch: str, num: str, den: str) -> float:
-            vs = [c[num] / c[den] for c in cells if c["arch"] == arch
-                  and _is_num(c.get(num)) and _is_num(c.get(den)) and c[den] > 0]
-            return float(np.mean(vs)) if vs else float("nan")
-
-        xb = np.arange(len(archs))
-        axB.bar(xb - 0.2, [_ratio(a, "bh76_mae", "bh76_pbe") for a in archs], 0.4,
-                color="#4477aa", edgecolor="k", linewidth=0.3, label="BH76 barriers")
-        axB.bar(xb + 0.2, [_ratio(a, "w411_mae", "w411_pbe") for a in archs], 0.4,
-                color="#cc6677", edgecolor="k", linewidth=0.3,
-                label="W4-11 atomization")
-        axB.axhline(1.0, ls="--", color="0.3", lw=1.0)
-        axB.set_xticks(xb)
+        prim = _primary_basis(cells)  # densest run (svp); the sparse one is in trends
+        pcells = [c for c in cells if c["basis"] == prim]
+        ss_vals = sorted({c["subset_size"] for c in pcells})
+        rmap = {(c["arch"], c["subset_size"]): c["heldout_mae"] / c["pbe_mae"]
+                for c in pcells if _is_num(c["heldout_mae"])
+                and _is_num(c["pbe_mae"]) and c["pbe_mae"] > 0}
+        nss = max(1, len(ss_vals))
+        bw = 0.82 / nss
+        norm_ss = matplotlib.colors.Normalize(min(ss_vals), max(ss_vals)) \
+            if ss_vals else None
+        cmap_ss = plt.get_cmap("viridis")
+        ycap = 3.6  # cap so the lone deep_attn-ss6 instability spike (5.4) doesn't
+        #             crush the 0.6-3.1 bulk; the clipped value is printed in red.
+        for k, ss in enumerate(ss_vals):
+            xs = [i + (k - (nss - 1) / 2) * bw for i in range(len(archs))]
+            hs = [rmap.get((a, ss), float("nan")) for a in archs]
+            col = cmap_ss(norm_ss(ss)) if norm_ss else "0.5"
+            axB.bar(xs, [min(h, ycap) if _is_num(h) else float("nan") for h in hs],
+                    bw, color=col, edgecolor="k", linewidth=0.3, label=f"ss{ss}")
+            for xi, h in zip(xs, hs):
+                if _is_num(h) and h > ycap:
+                    axB.annotate(f"{h:.1f}", (xi, ycap), fontsize=5.5, rotation=90,
+                                 ha="center", va="bottom", color="#c0392b",
+                                 xytext=(0, 1), textcoords="offset points")
+        axB.axhline(1.0, ls="--", color="0.3", lw=1.0)  # PBE parity
+        axB.set_ylim(0, ycap * 1.1)
+        axB.set_xticks(range(len(archs)))
         axB.set_xticklabels(archs, rotation=35, ha="right", fontsize=6.5)
-        axB.set_ylabel("held-out MAE / PBE  (mean over cells, >1 = worse than PBE)",
-                       fontsize=8)
-        axB.set_title("Capacity ladder: extra descriptors + attention amplify "
-                      "overfitting; error lands on W4-11", fontsize=8.3)
+        axB.set_ylabel("held-out MAE / PBE  (>1 = worse than PBE)", fontsize=8)
+        axB.set_title(f"Capacity ladder per subset_size ({prim}) -- "
+                      "overfitting worst at small ss, relieved by more molecules",
+                      fontsize=7.8)
         axB.grid(True, axis="y", alpha=0.3)
-        axB.legend(fontsize=6.8)
+        axB.legend(fontsize=6.0, ncol=max(1, nss // 2), title="subset",
+                   title_fontsize=6.0, loc="upper left", framealpha=0.7)
 
         # --- classification key: every FAILING cell -> mechanism ---
         def _grp(label: str) -> str:
@@ -1902,6 +1948,76 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
             title="Failure-mechanism diagnostic (held-out vs training loss)")
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+def plot_capacity_trends(runs: List[Tuple[Path, str]], out_path: Path,
+                         run_id: str, note: str = "",
+                         provenance: Optional[str] = None) -> Path:
+    """Secondary descriptive views of the same MAE/PBE structure: two diverging
+    ratio heatmaps (BH76 barriers + W4-11 atomization, arch x ss, centered at PBE
+    parity 1.0) showing the damage lands on W4-11; and a MAE/PBE-vs-subset_size
+    line plot (one line per arch, basis = linestyle) making the capacity ordering
+    and the fall-to-PBE-with-more-data trend explicit."""
+    cells = classify_failures(runs)
+    present = {c["arch"] for c in cells}
+    archs = [a for a in ARCH_ORDER if a in present]
+    archs += sorted(present - set(archs))
+    bases = list(dict.fromkeys(c["basis"] for c in cells))
+    prim = _primary_basis(cells)
+    ss_axis = sorted({c["subset_size"] for c in cells if c["basis"] == prim})
+
+    def _ratio_map(num: str, den: str, basis: Any) -> Dict[Tuple[str, int], float]:
+        return {(c["arch"], c["subset_size"]): c[num] / c[den] for c in cells
+                if c["basis"] == basis and _is_num(c.get(num))
+                and _is_num(c.get(den)) and c[den] > 0}
+
+    with plt.rc_context(_STYLE):
+        fig = plt.figure(figsize=(15.5, 5.2))
+        gs = fig.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 1.15], left=0.055,
+                              right=0.975, top=0.84, bottom=0.2, wspace=0.42)
+        axH1, axH2, axL = (fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]),
+                           fig.add_subplot(gs[0, 2]))
+        _heatmap_panel(axH1, _ratio_map("bh76_mae", "bh76_pbe", prim), archs,
+                       title=f"BH76 barriers  MAE/PBE ({prim})",
+                       cbar_label="MAE / PBE", center=1.0, subset_sizes=ss_axis)
+        _heatmap_panel(axH2, _ratio_map("w411_mae", "w411_pbe", prim), archs,
+                       title=f"W4-11 atomization  MAE/PBE ({prim})",
+                       cbar_label="MAE / PBE", center=1.0, subset_sizes=ss_axis)
+        # line plot: combined MAE/PBE vs subset_size, arch = color, basis = ls
+        arch_color = {a: plt.get_cmap("tab10")(i % 10) for i, a in enumerate(archs)}
+        ls_for = {b: ["-", "--", "-.", ":"][i % 4] for i, b in enumerate(bases)}
+        for a in archs:
+            for b in bases:
+                pts = sorted((c["subset_size"], c["heldout_mae"] / c["pbe_mae"])
+                             for c in cells if c["arch"] == a and c["basis"] == b
+                             and _is_num(c["heldout_mae"]) and _is_num(c["pbe_mae"])
+                             and c["pbe_mae"] > 0)
+                if not pts:
+                    continue
+                xs, ys = zip(*pts)
+                axL.plot(xs, ys, marker="o", ms=3, color=arch_color[a],
+                         ls=ls_for[b], lw=1.3,
+                         label=a if b == bases[0] else None)
+        for c in cells:
+            if (c["classification"] == "late_instability" and _is_num(c["heldout_mae"])
+                    and _is_num(c["pbe_mae"]) and c["pbe_mae"] > 0):
+                axL.annotate(f"{c['arch']} ss{c['subset_size']}",
+                             (c["subset_size"], c["heldout_mae"] / c["pbe_mae"]),
+                             fontsize=6, color="#c0392b", ha="right", va="bottom",
+                             xytext=(-3, 1), textcoords="offset points")
+        axL.axhline(1.0, ls="--", color="0.3", lw=1.0)
+        axL.set_xlabel("training subset_size", fontsize=8)
+        axL.set_ylabel("held-out combined MAE / PBE", fontsize=8)
+        axL.set_title("Overfitting relieved by more held-in molecules\n"
+                      "(basis = linestyle)", fontsize=8.0)
+        axL.grid(True, alpha=0.3)
+        axL.legend(fontsize=5.8, ncol=2, framealpha=0.7)
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
+            title="Capacity / data-relief trends (held-out MAE / PBE, per cell)")
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -2320,6 +2436,7 @@ def build_diagnostic_figures(run_dirs: List[Path], outdir: Path) -> List[Path]:
                              rid, highlight=[("deep_attn", 6)]),
         plot_failure_diagnostic(runs, outdir / "diagnostic_failure_mechanisms.png",
                                 rid),
+        plot_capacity_trends(runs, outdir / "diagnostic_capacity_trends.png", rid),
     ]
 
 
