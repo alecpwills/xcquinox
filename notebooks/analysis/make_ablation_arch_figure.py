@@ -1771,6 +1771,107 @@ def plot_size_consistency_diagnostic(rows: List[Dict[str, Any]], out_path: Path,
     return out_path
 
 
+def run_basis_label(run_dir: Path) -> str:
+    """Short basis tag from ``resolved_config.yaml`` (e.g. ``def2-svp``,
+    ``def2-tzvpd+DF``). Line-parsed -- no yaml dependency."""
+    cfg = Path(run_dir) / "resolved_config.yaml"
+    basis, df = "unknown", False
+    if cfg.is_file():
+        for line in cfg.read_text().splitlines():
+            s = line.strip()
+            if s.startswith("basis:"):
+                basis = s.split(":", 1)[1].strip()
+            elif s.startswith("density_fit:"):
+                df = "true" in s.split(":", 1)[1].strip().lower()
+    return f"{basis}+DF" if df else basis
+
+
+_BASIS_COLORS = ("#4477aa", "#cc6677", "#228833", "#ccbb44")
+
+
+def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
+                          run_id: str, note: str = "",
+                          provenance: Optional[str] = None) -> Path:
+    """Cross-basis comparison over the (arch, subset) cells present in ALL runs:
+    (a) combined held-out reaction-energy MAE, (b) 2-subset WTMAD-2, (c)
+    in-sample density RMSE vs CCSD -- grouped bars by basis. Per-basis PBE
+    baselines drawn as dashed lines on the energy panels. The held-out benchmark
+    reference is basis-independent, so NN errors ARE comparable across bases."""
+    with plt.rc_context(_STYLE):
+        data = []
+        cellsets = []
+        for rd, label in runs:
+            rows = collect_holdout_reaction_rows(rd)
+            mae = reaction_mae_by_arch_subset(rows)
+            wt = wtmad2_by_arch_subset(rows)
+            pbe_mae = _mae([r["abs_error_pbe_kcalmol"]
+                            for r in _dedup_rows_by_name(rows)])
+            pbe_wt = wtmad2_pbe_baseline(rows)
+            dmap: Dict[Tuple[str, int], List[float]] = {}
+            for r in collect_insample_density_rows(rd):
+                if _is_num(r.get("density_rmse")):
+                    dmap.setdefault((r.get("arch"), r.get("subset_size")),
+                                    []).append(r["density_rmse"])
+            data.append((label, mae, wt, pbe_mae, pbe_wt, dmap))
+            cellsets.append(set(mae.keys()))
+        shared = sorted(set.intersection(*cellsets)) if cellsets else []
+        labels = [f"{a}/ss{s}" for a, s in shared]
+        fig, axes = plt.subplots(1, 3, figsize=(6.0 * 3, 5.0), squeeze=False)
+        nb = max(1, len(data))
+        bw = 0.8 / nb
+
+        def _panel(ax, getval, pbe_attr, title, ylab, logy=False):
+            for j, (label, mae, wt, pbe_mae, pbe_wt, dmap) in enumerate(data):
+                xs = [i + (j - (nb - 1) / 2) * bw for i in range(len(shared))]
+                hs = [getval(mae, wt, dmap, c) for c in shared]
+                col = _BASIS_COLORS[j % len(_BASIS_COLORS)]
+                ax.bar(xs, hs, width=bw, color=col, edgecolor="k", linewidth=0.3,
+                       label=label)
+                if pbe_attr is not None:
+                    base = pbe_mae if pbe_attr == "mae" else pbe_wt
+                    if _is_num(base):
+                        ax.axhline(base, ls="--", lw=1.0, color=col, alpha=0.8)
+            ax.set_xticks(range(len(shared)))
+            ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=6.5)
+            ax.set_ylabel(ylab, fontsize=8)
+            ax.set_title(title, fontsize=9)
+            if logy:
+                ax.set_yscale("log")
+            ax.grid(True, axis="y", which="both", alpha=0.3)
+            if ax.get_legend_handles_labels()[1]:
+                ax.legend(fontsize=7)
+
+        _panel(axes[0][0], lambda mae, wt, d, c: mae.get(c, float("nan")), "mae",
+               "Held-out reaction-energy MAE (combined)", "kcal/mol")
+        _panel(axes[0][1], lambda mae, wt, d, c: wt.get(c, float("nan")), "wt",
+               "2-subset WTMAD-2 (BH76+W4-11)", "kcal/mol")
+        _panel(axes[0][2],
+               lambda mae, wt, d, c: (float(np.mean(d[c])) if d.get(c)
+                                      else float("nan")), None,
+               "In-sample density RMSE vs CCSD", "density RMSE", logy=True)
+        axes[0][2].text(0.5, 0.97, "dashed line = that basis's PBE baseline (energy panels)",
+                        transform=axes[0][2].transAxes, ha="center", va="top",
+                        fontsize=5.5, color="#666")
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
+            title="Cross-basis comparison (shared arch x subset cells) -- "
+                  "energy vs benchmark + in-sample density vs CCSD")
+        fig.tight_layout(rect=(0, 0.04, 1, 0.93))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path) -> List[Path]:
+    """Render the cross-basis comparison for the given run dirs (each labeled by
+    its basis+DF from resolved_config.yaml)."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    runs = [(Path(rd), run_basis_label(rd)) for rd in run_dirs]
+    rid = " vs ".join(lbl for _, lbl in runs)
+    return [plot_basis_comparison(runs, outdir / "basis_comparison.png", rid)]
+
+
 def build_density_energy_figures(run_dir: Path, outdir: Path) -> List[Path]:
     """Render the held-out energy (MAE + 2-subset WTMAD-2) figure and the
     in-sample density-vs-CCSD diagnostic, kept SEPARATE."""

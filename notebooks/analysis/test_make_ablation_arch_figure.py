@@ -478,6 +478,32 @@ def test_plot_training_losses_renders(tmp_path):
     assert _png_ok(out)
 
 
+def test_run_basis_label_reads_basis_and_df(tmp_path):
+    (tmp_path / "resolved_config.yaml").write_text(
+        "basis: def2-tzvpd\ndensity_fit: true\ngrid_level: 2\n")
+    assert fig.run_basis_label(tmp_path) == "def2-tzvpd+DF"
+    (tmp_path / "resolved_config.yaml").write_text(
+        "basis: def2-svp\ndensity_fit: false\n")
+    assert fig.run_basis_label(tmp_path) == "def2-svp"
+
+
+def test_plot_basis_comparison_renders(tmp_path):
+    ra = _make_run_dir(tmp_path / "a")
+    rb = _make_run_dir(tmp_path / "b")
+    out = fig.plot_basis_comparison(
+        [(ra, "def2-svp"), (rb, "def2-tzvpd+DF")], tmp_path / "cmp.png", "cmp")
+    assert _png_ok(out)
+
+
+def test_build_basis_comparison_writes(tmp_path):
+    ra = _make_run_dir(tmp_path / "a")
+    (ra / "resolved_config.yaml").write_text("basis: def2-svp\ndensity_fit: false\n")
+    rb = _make_run_dir(tmp_path / "b")
+    (rb / "resolved_config.yaml").write_text("basis: def2-tzvpd\ndensity_fit: true\n")
+    written = fig.build_basis_comparison_figures([ra, rb], tmp_path / "out")
+    assert written and all(_png_ok(p) for p in written)
+
+
 def test_w411_natoms_map_counts_atoms():
     nm = fig._w411_natoms_map()
     assert nm.get("w411_propane_atomization") == 11  # C3H8 = 11 atoms
