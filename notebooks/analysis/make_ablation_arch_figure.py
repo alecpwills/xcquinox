@@ -1997,7 +1997,7 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         meth_h = n_meth * FS * 1.30 / 72.0 + 0.06   # methods text block (~1.2 linespacing)
         panels_h, xlabel_h = 3.5, 0.72              # panels + rotated cell labels
         legend_h, gap1, gap2 = 0.30, 0.06, 0.10     # legend band: methods | legend | labels
-        top_pad, bot_pad = 0.42, 0.24               # suptitle ; provenance
+        top_pad, bot_pad = 0.68, 0.24               # suptitle + panel-title clearance ; provenance
         fig_h = (bot_pad + meth_h + gap1 + legend_h + gap2 + xlabel_h
                  + panels_h + top_pad)
         fig = plt.figure(figsize=(pw * 3, fig_h))
