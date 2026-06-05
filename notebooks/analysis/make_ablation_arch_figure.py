@@ -1844,7 +1844,7 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
         fig = plt.figure(figsize=(14.0, 6.8))
         gs = fig.add_gridspec(1, 2, left=0.06, right=0.985, top=0.9, bottom=0.30,
                               wspace=0.22)
-        axA, axB = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])
+        axA = fig.add_subplot(gs[0, 0])  # axB is built by _broken_bar_panel below
 
         # --- Panel A: decoupling scatter ---
         for c in cells:
@@ -1905,30 +1905,22 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
         norm_ss = matplotlib.colors.Normalize(min(ss_vals), max(ss_vals)) \
             if ss_vals else None
         cmap_ss = plt.get_cmap("viridis")
-        ycap = 3.6  # cap so the lone deep_attn-ss6 instability spike (5.4) doesn't
-        #             crush the 0.6-3.1 bulk; the clipped value is printed in red.
-        for k, ss in enumerate(ss_vals):
-            xs = [i + (k - (nss - 1) / 2) * bw for i in range(len(archs))]
-            hs = [rmap.get((a, ss), float("nan")) for a in archs]
-            col = cmap_ss(norm_ss(ss)) if norm_ss else "0.5"
-            axB.bar(xs, [min(h, ycap) if _is_num(h) else float("nan") for h in hs],
-                    bw, color=col, edgecolor="k", linewidth=0.3, label=f"ss{ss}")
-            for xi, h in zip(xs, hs):
-                if _is_num(h) and h > ycap:
-                    axB.annotate(f"{h:.1f}", (xi, ycap), fontsize=5.5, rotation=90,
-                                 ha="center", va="bottom", color="#c0392b",
-                                 xytext=(0, 1), textcoords="offset points")
+        ss_colors = [cmap_ss(norm_ss(ss)) if norm_ss else "0.5" for ss in ss_vals]
+        series = [(f"ss{ss}", [rmap.get((a, ss), float("nan")) for a in archs])
+                  for ss in ss_vals]
+        # Broken y-axis (reused, tested helper): the lone deep_attn-ss6 spike (5.4)
+        # shows at its TRUE height in an upper band (break ~3.4->5.1) instead of
+        # crushing the 0.6-3.1 bulk -- no cap, no floating label.
+        axB = _broken_bar_panel(
+            fig, gs[0, 1], series, archs, [],
+            f"Capacity ladder per subset_size ({prim});  >1 = worse than PBE",
+            "held-out MAE / PBE", ss_colors, bw)
         axB.axhline(1.0, ls="--", color="0.3", lw=1.0)  # PBE parity
-        axB.set_ylim(0, ycap * 1.1)
-        axB.set_xticks(range(len(archs)))
-        axB.set_xticklabels(archs, rotation=35, ha="right", fontsize=6.5)
-        axB.set_ylabel("held-out MAE / PBE  (>1 = worse than PBE)", fontsize=8)
-        axB.set_title(f"Capacity ladder per subset_size ({prim}) -- "
-                      "overfitting worst at small ss, relieved by more molecules",
-                      fontsize=7.8)
-        axB.grid(True, axis="y", alpha=0.3)
-        axB.legend(fontsize=6.0, ncol=max(1, nss // 2), title="subset",
-                   title_fontsize=6.0, loc="upper left", framealpha=0.7)
+        ss_handles = [Patch(facecolor=ss_colors[k], edgecolor="k", label=f"ss{ss}")
+                      for k, ss in enumerate(ss_vals)]
+        axB.legend(handles=ss_handles, fontsize=6.0, ncol=max(1, nss // 2),
+                   title="subset", title_fontsize=6.0, loc="upper left",
+                   framealpha=0.7)
 
         # --- classification key: every FAILING cell -> mechanism ---
         def _grp(label: str) -> str:
