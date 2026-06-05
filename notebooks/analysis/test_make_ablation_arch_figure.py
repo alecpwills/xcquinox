@@ -556,6 +556,23 @@ def test_chem_latex_renders_in_methods(tmp_path):
     assert out.stat().st_size > 2000
 
 
+def test_methods_textblock_accepts_column_offsets(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    f = plt.figure(figsize=(13, 7))
+    # custom x positions + per-column vertical offsets must render + return the
+    # max column line count (used by the caller to size the figure).
+    n = fig._methods_textblock(
+        f, {1: ["hocn"], 6: ["alcl", "b2h6"]}, y_top=0.45,
+        xs=(0.05, 0.34, 0.715), y_deltas=(0.0, -0.06, 0.0))
+    out = tmp_path / "mo.png"
+    f.savefig(out, dpi=80)
+    plt.close(f)
+    assert out.stat().st_size > 2000
+    assert isinstance(n, int) and n >= 6
+
+
 def test_run_basis_label_reads_basis_and_df(tmp_path):
     (tmp_path / "resolved_config.yaml").write_text(
         "basis: def2-tzvpd\ndensity_fit: true\ngrid_level: 2\n")

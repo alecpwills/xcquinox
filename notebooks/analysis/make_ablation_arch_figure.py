@@ -1925,13 +1925,15 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
 def _methods_textblock(fig, subsets: Dict[int, List[str]], y_top: float = 0.28,
                        archs: Optional[List[str]] = None,
                        xs: Tuple[float, float, float] = (0.05, 0.385, 0.715),
+                       y_deltas: Tuple[float, float, float] = (0.0, 0.0, 0.0),
                        fontsize: float = 6.2) -> int:
-    """Place the three methods columns (mathtext) under panels a/b/c at ``xs``.
+    """Place the three methods columns (mathtext) under panels a/b/c at ``xs``,
+    each offset vertically by ``y_deltas`` (figure fraction; negative = lower).
     Returns the max column line count (so a caller can size the figure to the
     text and avoid whitespace)."""
     cols = _methods_columns(subsets)
-    for x, col in zip(xs, cols):
-        fig.text(x, y_top, "\n".join(col), va="top", ha="left",
+    for x, dy, col in zip(xs, y_deltas, cols):
+        fig.text(x, y_top + dy, "\n".join(col), va="top", ha="left",
                  fontsize=fontsize, family="serif")
     return max(len(c) for c in cols)
 
@@ -1994,8 +1996,10 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         n_meth = max(len(c) for c in _methods_columns(subsets))
         meth_h = n_meth * FS * 1.30 / 72.0 + 0.06   # methods text block (~1.2 linespacing)
         panels_h, xlabel_h = 3.5, 0.72              # panels + rotated cell labels
-        top_pad, bot_pad = 0.62, 0.24               # suptitle+legend ; provenance
-        fig_h = top_pad + panels_h + xlabel_h + 0.10 + meth_h + bot_pad
+        legend_h, gap1, gap2 = 0.30, 0.06, 0.10     # legend band: methods | legend | labels
+        top_pad, bot_pad = 0.42, 0.24               # suptitle ; provenance
+        fig_h = (bot_pad + meth_h + gap1 + legend_h + gap2 + xlabel_h
+                 + panels_h + top_pad)
         fig = plt.figure(figsize=(pw * 3, fig_h))
 
         def _f(inches: float) -> float:             # inches-from-bottom -> fraction
@@ -2003,7 +2007,8 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
 
         top = fig.add_gridspec(
             1, 3, left=0.05, right=0.975, top=1.0 - _f(top_pad),
-            bottom=_f(bot_pad + meth_h + 0.10 + xlabel_h), wspace=0.26)
+            bottom=_f(bot_pad + meth_h + gap1 + legend_h + gap2 + xlabel_h),
+            wspace=0.26)
 
         def _panel(ax, getval, pbe_attr, title, ylab, logy=False):
             for j, (label, mae, wt, pbe_mae, pbe_wt, dmap) in enumerate(data):
@@ -2038,9 +2043,9 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                lambda mae, wt, d, c: (float(np.mean(d[c])) if d.get(c)
                                       else float("nan")), None,
                "In-sample density RMSE vs CCSD", "density RMSE", logy=True)
-        # Legend ABOVE the panels (solid bar = NN vs benchmark; dashed = that
-        # basis's PBE on the energy panels). Placing it at the top avoids the
-        # collision with the rotated cell labels a centered legend used to have.
+        # Legend in its own band BELOW the panels' x-labels and ABOVE the methods
+        # (solid bar = NN vs benchmark; dashed = that basis's PBE on the energy
+        # panels). The dedicated band keeps it clear of the rotated cell labels.
         handles = []
         for j, (label, *_rest) in enumerate(data):
             col = _BASIS_COLORS[j % len(_BASIS_COLORS)]
@@ -2051,9 +2056,11 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                 label=f"{label}: PBE (dashed; energy panels)"))
         fig.legend(handles=handles, loc="center", ncol=min(4, 2 * nb),
                    fontsize=7.5, frameon=False,
-                   bbox_to_anchor=(0.5, 1.0 - _f(0.42)))
-        # Methods (3 columns, under panels a/b/c), snug above the provenance.
-        _methods_textblock(fig, subsets, y_top=_f(bot_pad + meth_h), fontsize=FS)
+                   bbox_to_anchor=(0.5, _f(bot_pad + meth_h + gap1 + legend_h / 2)))
+        # Methods (3 columns under panels a/b/c); middle column nudged down + left.
+        _methods_textblock(fig, subsets, y_top=_f(bot_pad + meth_h), fontsize=FS,
+                           xs=(0.05, 0.34, 0.715),
+                           y_deltas=(0.0, -_f(0.35), 0.0))
         fig.suptitle(
             "Cross-basis comparison (union of arch x subset cells; bar absent "
             "where a basis hasn't run) -- NN bars vs benchmark, PBE dashed"
