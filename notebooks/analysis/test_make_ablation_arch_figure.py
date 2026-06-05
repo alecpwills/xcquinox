@@ -519,6 +519,43 @@ def test_methods_textblock_renders_mathtext(tmp_path):
     assert out.stat().st_size > 2000
 
 
+def test_chem_latex_formats_formulas():
+    f = fig._chem_latex
+    # plain formulas -> subscripted counts, proper element capitalization
+    assert f("ch3") == "CH$_3$"
+    assert f("h2s") == "H$_2$S"
+    assert f("b2h6") == "B$_2$H$_6$"
+    assert f("cf4") == "CF$_4$"
+    assert f("clf") == "ClF"
+    assert f("alcl") == "AlCl"
+    assert f("alf") == "AlF"
+    # no false 2-letter element match (Ho/Co/Os) inside H-O-C-N-S names
+    assert f("hocn") == "HOCN"
+    assert f("ocs") == "OCS"
+    assert f("hnco") == "HNCO"
+    assert f("NH3") == "NH$_3$"
+    # transition-state ('ts') and complex ('comp') suffixes
+    assert f("clch3clts") == r"ClCH$_3$Cl$^{\ddagger}$"
+    assert f("clch3clcomp") == r"ClCH$_3$Cl$_{\mathrm{(c)}}$"
+    assert f("ch3fclts") == r"CH$_3$FCl$^{\ddagger}$"
+    # reaction-label species pass through unchanged
+    assert f("RKT21") == "RKT21"
+
+
+def test_chem_latex_renders_in_methods(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    f = plt.figure(figsize=(13, 7))
+    # TS / complex / reaction species must render as valid mathtext
+    fig._methods_textblock(
+        f, {2: ["ch3fclts", "clf"], 6: ["clch3clcomp", "RKT21", "b2h6"]}, y_top=0.4)
+    out = tmp_path / "cm.png"
+    f.savefig(out, dpi=80)
+    plt.close(f)
+    assert out.stat().st_size > 2000
+
+
 def test_run_basis_label_reads_basis_and_df(tmp_path):
     (tmp_path / "resolved_config.yaml").write_text(
         "basis: def2-tzvpd\ndensity_fit: true\ngrid_level: 2\n")

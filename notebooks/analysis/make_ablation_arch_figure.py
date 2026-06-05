@@ -1827,46 +1827,113 @@ def _broken_bar_panel(fig, subplot_spec, series, labels, pbe_lines, title, ylab,
     return ax
 
 
-def _methods_textblock(fig, subsets: Dict[int, List[str]], y_top: float = 0.28,
-                       archs: Optional[List[str]] = None) -> None:
-    """Place the latex-style (matplotlib mathtext) methods + arch-family key in
-    the figure's bottom band: base GGA inputs, shared constraints, the descriptor
-    family key, pretrain targets, the optimization protocol, and the training
-    subsets. Strings are source-verified (networks.py/config.py/features.py/
-    losses.py/train.py/pretrain_data_gen.py)."""
-    left = "\n".join([
-        r"GGA inputs:  X-net $s=|\nabla\rho|/(2k_F\rho)$, $k_F=(3\pi^2\rho)^{1/3}$;"
-        r"  C-net $[r_s,s]$, $r_s=(3/4\pi\rho)^{1/3}$.",
-        r"DEFAULT (every arch except _notransform): log-transformed descriptors"
-        r"  $\tilde{s}=(1-e^{-s^2})\ln(s+1)$, $\tilde{r}_s=(1-e^{-r_s^2})\ln(r_s+1)$.",
-        r"_notransform / _notransform_attn: feed the RAW $s, r_s$ (no log-transform).",
-        r"",
-        r"Constraints (identical, all archs):",
-        r"  X-net  $F_x=1+\mathrm{LOB}_{1.804}(\tanh^2(s)\cdot\mathrm{MLP})$,",
-        r"  C-net  $F_c=1+\mathrm{LOB}_{2.0}(\tanh^2(s)\cdot\mathrm{MLP})\geq0$,"
+# 2-letter element symbols that actually occur in the bh76w411 pool (H,C,N,O,F,P,
+# S,Cl,Al,Si,B,Be,Li,Na,Mg). Restricted to these so greedy matching never mistakes
+# H-O-C-N-S substrings for Ho/Os/Co/Cs/Ni etc.
+_CHEM_2L = frozenset({"cl", "al", "si", "be", "li", "na", "mg"})
+
+
+def _chem_latex(name: str) -> str:
+    """Render a training-species token as a chemical formula in matplotlib
+    mathtext: element symbols capitalized, digit counts subscripted. Recognizes a
+    transition-state suffix ``ts`` (double-dagger) and a complex suffix ``comp``
+    ((c) subscript); passes reaction-label species (``RKT...``) through verbatim."""
+    if name.lower().startswith("rkt"):
+        return name
+    core, suffix = name, ""
+    if name.lower().endswith("ts"):
+        core, suffix = name[:-2], r"$^{\ddagger}$"
+    elif name.lower().endswith("comp"):
+        core, suffix = name[:-4], r"$_{\mathrm{(c)}}$"
+    out: List[str] = []
+    i = 0
+    while i < len(core):
+        if core[i : i + 2].lower() in _CHEM_2L:
+            out.append(core[i : i + 2].capitalize())
+            i += 2
+        elif core[i].isalpha():
+            out.append(core[i].upper())
+            i += 1
+        elif core[i].isdigit():
+            j = i
+            while j < len(core) and core[j].isdigit():
+                j += 1
+            sub = core[i:j]
+            out.append(r"$_%s$" % sub if len(sub) == 1 else r"$_{%s}$" % sub)
+            i = j
+        else:
+            i += 1
+    return "".join(out) + suffix
+
+
+def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
+    """The three source-verified methods columns (placed under panels a/b/c).
+    Strings checked against networks.py / config.py / features.py / losses.py /
+    train.py: GGA inputs + log-transform + constraints (col 1); pretrain +
+    optimization + attention (col 2); extra descriptors + training subsets
+    (col 3). Subset molecules are rendered as chemical formulas."""
+    col1 = [
+        "Base GGA inputs:",
+        r"  X-net $s=|\nabla\rho|/(2k_F\rho)$, $k_F=(3\pi^2\rho)^{1/3}$.",
+        r"  C-net $[r_s, s]$, $r_s=(3/4\pi\rho)^{1/3}$.",
+        "",
+        "Log-transform (descriptor_log_transform):",
+        r"  default (all but _notransform): $\tilde{s}=(1{-}e^{-s^2})\ln(s{+}1)$,",
+        r"     $\tilde{r}_s=(1{-}e^{-r_s^2})\ln(r_s{+}1)$ (also cusp col-1 log).",
+        r"  _notransform / _notransform_attn: RAW $s, r_s$ to the MLP.",
+        "",
+        "Constraints (identical, all archs):",
+        r"  $F_x=1+\mathrm{LOB}_{1.804}(\tanh^2\!s\cdot\mathrm{MLP}(\tilde{s}))$,",
+        r"  $F_c=1+\mathrm{LOB}_{2.0}(\tanh^2\!s\cdot\mathrm{MLP})$  ($F_c$ squash",
+        r"     $\in[0,2]$, NOT a Lieb-Oxford bound on $F_c$);",
         r"  $\mathrm{LOB}_L(x)=L\,\sigma(x-\ln(L{-}1))-1$.",
-        r"  No composable constraints;  scaling-symmetry off.",
-        r"",
-        r"Pretrain (2500 steps):  per-grid-point",
+        r"  $\tanh^2\!s$ UEG gate on RAW $s$.  No composable constraints;",
+        "     scaling-symmetry off.",
+    ]
+    col2 = [
+        "Pretrain (2500 steps; per-grid-point, spin-resolved):",
         r"  $F_x=F_x^{PBE}/F_x^{LDA}-1$,  $F_c=F_c^{PBE}/F_c^{LDA}-1$.",
-        r"Optimization:  $L5$ GradNorm ($\alpha{=}1.5$) over {AE, BH76, IP13, $v_{xc}$, $\rho$};",
-        r"  per-molecule (1 step/group/epoch), 250 epochs;"
-        r"  $w_\rho{=}20$ vs others${=}1$;  LR $0.01{\to}10^{-5}$ linear.",
-    ])
-    right = ["Architecture family (depth 4, 32 nodes):",
-             r"  deep, deep_attn:  base GGA only.",
-             r"  _cusp:  $+[\,e^{-2Z_{near}r_{min}},\ \tanh(\ln(\sum_A Z_A/r_A)/5)\,]$ (N,2).",
-             r"  _dm:  $+[\,\|DSD{-}D\|_F/\mathrm{Tr}(DS),\ -\!\sum p_i\ln p_i/\ln n_{orb},$",
-             r"          $\|D_{off}\|_F/\mathrm{Tr}(D)\,]$ (N,3, tiled).",
-             r"  _combined:  $+$ cusp & DM.    _notransform:  no log-transform.",
-             r"  _attn (heads=4):  per-grid-point channel attn",
-             r"          $\mathrm{softmax}(QK^T/\sqrt{d_k})V$ after MLP-1 (not spatial).",
-             r"",
-             "Training subsets (held-in molecules):"]
-    right += [f"  {ss}: {', '.join(subsets[ss])}" for ss in sorted(subsets)]
-    fig.text(0.045, y_top, left, va="top", ha="left", fontsize=6.4, family="serif")
-    fig.text(0.52, y_top, "\n".join(right), va="top", ha="left", fontsize=6.4,
-             family="serif")
+        "",
+        "Optimization (L5_gradnorm_vxc_step7):",
+        r"  GradNorm ($\alpha{=}1.5$) over channels",
+        r"     {AE, BH76, IP13, $v_{xc}$, $\rho$};  $w_\rho{=}20$, others ${=}1$.",
+        "  per-molecule update (1 step / group / epoch), 250 epochs.",
+        r"  LR $0.01$ held first $0.2$ of steps, then linear $\to10^{-5}$.",
+        "",
+        "Attention (_attn / _combined_attn, heads=4):",
+        r"  per-grid-point channel attention $\mathrm{softmax}(QK^T\!/\sqrt{d_k})V$",
+        "     over the MLP-1 hidden units as 4 head-tokens",
+        "     (sequence length 1; NOT spatial / non-local).",
+    ]
+    col3 = [
+        "Extra descriptors (appended to GGA base):",
+        r"  _cusp $+(N,2)$:  $[\,e^{-2Z_{near}r_{min}},$",
+        r"     $\tanh(\ln(\sum_A Z_A/r_A)/5)\,]$.",
+        r"  _dm $+(N,3$, tiled$)$:  $[\,\|D'SD'{-}D'\|_F/\mathrm{Tr}(D'S),$",
+        r"     $-\!\sum p_i\ln p_i/\ln\max(n_{orb}^{eff},2),$",
+        r"     $\|D_{off}\|_F/\mathrm{Tr}(D)\,]$",
+        r"     ($D'{=}D/2$ RKS, $D_\sigma$ UKS;  $p_i$ = nat. occ of $DS$).",
+        r"  _combined: $+$ cusp & DM.   _notransform: log-transform off.",
+        "",
+        "Training subsets (held-in molecules):",
+    ]
+    col3 += [f"  {ss}: {', '.join(_chem_latex(m) for m in subsets[ss])}"
+             for ss in sorted(subsets)]
+    return [col1, col2, col3]
+
+
+def _methods_textblock(fig, subsets: Dict[int, List[str]], y_top: float = 0.28,
+                       archs: Optional[List[str]] = None,
+                       xs: Tuple[float, float, float] = (0.05, 0.385, 0.715),
+                       fontsize: float = 6.2) -> int:
+    """Place the three methods columns (mathtext) under panels a/b/c at ``xs``.
+    Returns the max column line count (so a caller can size the figure to the
+    text and avoid whitespace)."""
+    cols = _methods_columns(subsets)
+    for x, col in zip(xs, cols):
+        fig.text(x, y_top, "\n".join(col), va="top", ha="left",
+                 fontsize=fontsize, family="serif")
+    return max(len(c) for c in cols)
 
 
 def run_basis_label(run_dir: Path) -> str:
@@ -1919,9 +1986,24 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         pw = max(6.0, 0.42 * max(1, len(cells)))
         nb = max(1, len(data))
         bw = 0.8 / nb
-        fig = plt.figure(figsize=(pw * 3, 9.6))
-        top = fig.add_gridspec(1, 3, left=0.05, right=0.975, top=0.92,
-                               bottom=0.54, wspace=0.26)
+        # Size the figure to its content (inches): the methods band is placed
+        # snug above the provenance so there is no trailing whitespace, and the
+        # legend goes ABOVE the panels (clear of the rotated x-axis labels).
+        subsets = training_subsets_by_size(runs[0][0]) if runs else {}
+        FS = 6.2
+        n_meth = max(len(c) for c in _methods_columns(subsets))
+        meth_h = n_meth * FS * 1.30 / 72.0 + 0.06   # methods text block (~1.2 linespacing)
+        panels_h, xlabel_h = 3.5, 0.72              # panels + rotated cell labels
+        top_pad, bot_pad = 0.62, 0.24               # suptitle+legend ; provenance
+        fig_h = top_pad + panels_h + xlabel_h + 0.10 + meth_h + bot_pad
+        fig = plt.figure(figsize=(pw * 3, fig_h))
+
+        def _f(inches: float) -> float:             # inches-from-bottom -> fraction
+            return inches / fig_h
+
+        top = fig.add_gridspec(
+            1, 3, left=0.05, right=0.975, top=1.0 - _f(top_pad),
+            bottom=_f(bot_pad + meth_h + 0.10 + xlabel_h), wspace=0.26)
 
         def _panel(ax, getval, pbe_attr, title, ylab, logy=False):
             for j, (label, mae, wt, pbe_mae, pbe_wt, dmap) in enumerate(data):
@@ -1956,7 +2038,9 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                lambda mae, wt, d, c: (float(np.mean(d[c])) if d.get(c)
                                       else float("nan")), None,
                "In-sample density RMSE vs CCSD", "density RMSE", logy=True)
-        # Legend: solid bar = NN vs benchmark; dashed horizontal = that basis's PBE.
+        # Legend ABOVE the panels (solid bar = NN vs benchmark; dashed = that
+        # basis's PBE on the energy panels). Placing it at the top avoids the
+        # collision with the rotated cell labels a centered legend used to have.
         handles = []
         for j, (label, *_rest) in enumerate(data):
             col = _BASIS_COLORS[j % len(_BASIS_COLORS)]
@@ -1964,17 +2048,17 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                                   label=f"{label}: NN (bars)"))
             handles.append(plt.Line2D(
                 [], [], ls="--", color=col,
-                label=f"{label}: PBE reference (dashed, MAE/WTMAD-2 panels)"))
-        fig.legend(handles=handles, loc="center", ncol=2, fontsize=7.5,
-                   frameon=False, bbox_to_anchor=(0.5, 0.508))
-        # Methods + arch-family key (mathtext) under the panels.
-        subsets = training_subsets_by_size(runs[0][0]) if runs else {}
-        _methods_textblock(fig, subsets, y_top=0.47)
+                label=f"{label}: PBE (dashed; energy panels)"))
+        fig.legend(handles=handles, loc="center", ncol=min(4, 2 * nb),
+                   fontsize=7.5, frameon=False,
+                   bbox_to_anchor=(0.5, 1.0 - _f(0.42)))
+        # Methods (3 columns, under panels a/b/c), snug above the provenance.
+        _methods_textblock(fig, subsets, y_top=_f(bot_pad + meth_h), fontsize=FS)
         fig.suptitle(
-            "Cross-basis comparison (all arch x subset cells; bar absent where a basis "
-            "hasn't run) -- NN (bars) vs benchmark, PBE (dashed), + in-sample density"
-            f"  ·  {run_id}", fontsize=11, y=0.975)
-        fig.text(0.5, 0.008, provenance or _PROVENANCE_BASE, ha="center",
+            "Cross-basis comparison (union of arch x subset cells; bar absent "
+            "where a basis hasn't run) -- NN bars vs benchmark, PBE dashed"
+            f"  ·  {run_id}", fontsize=11, y=1.0 - _f(0.16))
+        fig.text(0.5, _f(0.09), provenance or _PROVENANCE_BASE, ha="center",
                  fontsize=6, color="#777777")
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
