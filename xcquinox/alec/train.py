@@ -243,12 +243,47 @@ def _build_batch(spec: TrainingSpec, loss) -> dict:
     }
 
 
-def _save_artifacts(spec, model, losses, aux_log, duration) -> dict:
-    """Save model.eqx, losses.npy, aux_log data, train_metadata.json."""
+class _BestModelTracker:
+    """Tracks the model snapshot at the minimum trailing-mean loss so a best-loss
+    checkpoint can be saved ALONGSIDE the final one. The window smooths per-step
+    noise (the per-molecule scheme's per-group losses are noisy; a one-epoch
+    window gives a stable estimate). This protects against a run that converges
+    then destabilizes late and ends on a high-loss snapshot -- observed for
+    deep_attn at large subset sizes (final loss ~1e4x its own best-ever)."""
+
+    def __init__(self, window: int = 1):
+        self.window = max(1, int(window))
+        self._recent: list = []
+        self.best_loss = float("inf")
+        self.best_model = None
+
+    def update(self, loss_py: float, model) -> None:
+        # JAX arrays are immutable, so keeping the reference snapshots the
+        # current params (the next apply_updates allocates fresh arrays).
+        if not np.isfinite(loss_py):
+            return
+        self._recent.append(loss_py)
+        if len(self._recent) > self.window:
+            self._recent.pop(0)
+        if len(self._recent) >= self.window:
+            avg = sum(self._recent) / len(self._recent)
+            if avg < self.best_loss:
+                self.best_loss = avg
+                self.best_model = model
+
+
+def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None) -> dict:
+    """Save model.eqx (final), losses.npy, aux_log, train_metadata.json. If a
+    best-loss snapshot is given, ALSO write model_best.eqx side-by-side (the
+    final model.eqx is still written) so eval can opt into the pre-instability
+    checkpoint."""
     os.makedirs(spec.checkpoint_dir, exist_ok=True)
 
     model_path = os.path.join(spec.checkpoint_dir, "model.eqx")
     eqx.tree_serialise_leaves(model_path, model)
+    if best_model is not None:
+        eqx.tree_serialise_leaves(
+            os.path.join(spec.checkpoint_dir, "model_best.eqx"), best_model)
 
     losses_np = np.array(losses, dtype=np.float64)
     np.save(os.path.join(spec.checkpoint_dir, "losses.npy"), losses_np)
@@ -287,6 +322,7 @@ def _save_artifacts(spec, model, losses, aux_log, duration) -> dict:
         "balancing": spec.balancing.describe() if spec.balancing is not None else None,
         "final_loss": float(losses_np[-1]) if len(losses_np) > 0 else float("nan"),
         "min_loss": float(np.min(losses_np)) if len(losses_np) > 0 else float("nan"),
+        "has_best_checkpoint": best_model is not None,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }
@@ -313,6 +349,7 @@ def _run_static_loop(spec, model, batch, loss, progress_callback):
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     losses = []
     aux_log = []
+    tracker = _BestModelTracker()
     progress_hook = _adapt_progress_callback(
         progress_callback, arch=spec.arch.name, phase="train"
     )
@@ -324,12 +361,14 @@ def _run_static_loop(spec, model, batch, loss, progress_callback):
         loss_py = float(loss_value)
         _abort_if_nonfinite(loss_value, aux, loop="batched/static", step=step)
         losses.append(loss_py)
+        tracker.update(loss_py, model)
         aux_log.append({"step": step, "loss": loss_py, "aux": aux})
         if progress_hook is not None:
             progress_hook(step + 1, spec.n_steps, loss_py)
 
     duration = time.time() - t0
-    return _save_artifacts(spec, model, losses, aux_log, duration)
+    return _save_artifacts(spec, model, losses, aux_log, duration,
+                           best_model=tracker.best_model)
 
 
 def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
@@ -364,6 +403,7 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
 
     losses = []
     aux_log = []
+    tracker = _BestModelTracker()
     for step in range(spec.n_steps):
         model, opt_state, loss_value, components = _normed_step(
             model, opt_state, batch)
@@ -371,6 +411,7 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
         _abort_if_nonfinite(loss_value, components, loop="batched/lossnorm",
                             step=step)
         losses.append(loss_py)
+        tracker.update(loss_py, model)
         eff_weights = {k: float(1.0 / norms[k]) for k in component_keys}
         aux_log.append({
             "step": step, "loss": loss_py, "aux": components,
@@ -380,7 +421,8 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
             progress_hook(step + 1, spec.n_steps, loss_py)
 
     duration = time.time() - t0
-    return _save_artifacts(spec, model, losses, aux_log, duration)
+    return _save_artifacts(spec, model, losses, aux_log, duration,
+                           best_model=tracker.best_model)
 
 
 def _filter_loss_kwargs(loss_kwargs_dict, target_loss_name):
@@ -404,6 +446,7 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
 
     losses = []
     aux_log = []
+    tracker = _BestModelTracker()
 
     # Phase 1: loss with optional kwarg overrides from TwoPhaseConfig
     phase1_kwargs = _filter_loss_kwargs(spec.loss_kwargs_dict, balancing.phase1_loss)
@@ -427,6 +470,7 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
         loss_py = float(loss_value)
         _abort_if_nonfinite(loss_value, aux, loop="batched/twophase", step=step)
         losses.append(loss_py)
+        tracker.update(loss_py, model)
         aux_log.append({
             "step": step, "loss": loss_py, "aux": aux,
             "balancing_info": {"strategy": "two_phase", "phase": 1},
@@ -450,6 +494,7 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
         _abort_if_nonfinite(loss_value, aux, loop="batched/twophase",
                             step=global_step)
         losses.append(loss_py)
+        tracker.update(loss_py, model)
         aux_log.append({
             "step": global_step, "loss": loss_py, "aux": aux,
             "balancing_info": {"strategy": "two_phase", "phase": 2},
@@ -458,7 +503,8 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
             progress_hook(global_step + 1, spec.n_steps, loss_py)
 
     duration = time.time() - t0
-    return _save_artifacts(spec, model, losses, aux_log, duration)
+    return _save_artifacts(spec, model, losses, aux_log, duration,
+                           best_model=tracker.best_model)
 
 
 # Channels whose step-0 loss L_i(0) is at or below this floor have no
@@ -609,6 +655,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
 
     losses_list = []
     aux_log = []
+    tracker = _BestModelTracker()
     for step in range(spec.n_steps):
         weights = jax.nn.softmax(log_weights) * n_tasks
         components, comp_values, model_grads = _model_grad_step(
@@ -630,6 +677,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
         _abort_if_nonfinite(loss_value, components, loop="batched/gradnorm",
                             step=step)
         losses_list.append(loss_py)
+        tracker.update(loss_py, model)
         eff = {k: float(weights[i]) for i, k in enumerate(component_keys)}
         gn = {k: float(G[i]) for i, k in enumerate(component_keys)}
         aux_log.append({
@@ -644,7 +692,8 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
             progress_hook(step + 1, spec.n_steps, loss_py)
 
     duration = time.time() - t0
-    return _save_artifacts(spec, model, losses_list, aux_log, duration)
+    return _save_artifacts(spec, model, losses_list, aux_log, duration,
+                           best_model=tracker.best_model)
 
 
 # ---------------------------------------------------------------------------
@@ -818,6 +867,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     order = np.arange(n_groups)
     losses_list: list = []
     aux_log: list = []
+    tracker = _BestModelTracker(window=n_groups)  # epoch-scale trailing mean
     update = 0
     loss_py = float("nan")
     for epoch in range(n_epochs):
@@ -830,6 +880,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             _abort_if_nonfinite(loss_val, comps, loop="per_molecule",
                                 step=update, group=label)
             losses_list.append(loss_py)
+            tracker.update(loss_py, model)
             aux_log.append({
                 "step": update, "epoch": epoch, "group": label,
                 "loss": loss_py,
@@ -841,7 +892,8 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             progress_hook(epoch + 1, n_epochs, loss_py)
 
     duration = time.time() - t0
-    return _save_artifacts(spec, model, losses_list, aux_log, duration)
+    return _save_artifacts(spec, model, losses_list, aux_log, duration,
+                           best_model=tracker.best_model)
 
 
 # ---------------------------------------------------------------------------

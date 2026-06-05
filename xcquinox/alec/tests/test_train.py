@@ -285,9 +285,38 @@ def test_run_training_end_to_end(loss_name, training_batch_info):
         # Check artifacts exist
         ckdir = spec.checkpoint_dir
         assert os.path.isfile(os.path.join(ckdir, "model.eqx"))
+        # Best-loss checkpoint written side-by-side with the final one.
+        assert os.path.isfile(os.path.join(ckdir, "model_best.eqx"))
+        assert metadata["has_best_checkpoint"] is True
         assert os.path.isfile(os.path.join(ckdir, "losses.npy"))
         assert os.path.isfile(os.path.join(ckdir, "aux_log.pkl"))
         assert os.path.isfile(os.path.join(ckdir, "train_metadata.json"))
+
+
+# ---------------------------------------------------------------------------
+# Best-loss checkpoint side-by-side saver -- fast unit tests
+# ---------------------------------------------------------------------------
+
+def test_best_model_tracker_selects_min_window1():
+    from xcquinox.alec.train import _BestModelTracker
+    t = _BestModelTracker(window=1)
+    t.update(0.5, "a")
+    t.update(0.1, "b")
+    t.update(0.3, "c")
+    assert t.best_model == "b"
+    assert t.best_loss == 0.1
+
+
+def test_best_model_tracker_window_smooths_and_skips_nonfinite():
+    from xcquinox.alec.train import _BestModelTracker
+    t = _BestModelTracker(window=2)
+    t.update(1.0, "m1")            # window not full yet -> ignored
+    t.update(0.2, "m2")            # trailing mean (1.0+0.2)/2 = 0.6
+    t.update(0.1, "m3")            # trailing mean (0.2+0.1)/2 = 0.15 -> best
+    t.update(float("nan"), "m4")  # non-finite -> ignored
+    t.update(float("inf"), "m5")  # non-finite -> ignored
+    assert t.best_model == "m3"
+    assert abs(t.best_loss - 0.15) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +429,8 @@ def test_run_training_per_molecule_completes(training_batch_info):
         n_groups = len(_training_groups(spec))
         run_training(spec)
         losses = np.load(os.path.join(spec.checkpoint_dir, "losses.npy"))
+        # Best-loss checkpoint (epoch-trailing-mean) saved alongside the final.
+        assert os.path.isfile(os.path.join(spec.checkpoint_dir, "model_best.eqx"))
         # n_steps is the EPOCH count in per-molecule mode.
         assert len(losses) == spec.n_steps * n_groups
         assert losses[-1] < losses[0]
