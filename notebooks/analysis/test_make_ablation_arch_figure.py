@@ -667,6 +667,20 @@ def test_methods_textblock_accepts_column_offsets(tmp_path):
     assert isinstance(n, int) and n >= 6
 
 
+def test_methods_columns_lists_spin_and_descriptor_purposes():
+    cols = fig._methods_columns({1: ["hocn"]})
+    col1, col3 = " ".join(cols[0]), " ".join(cols[2])
+    # Dick et al. x1/x2 descriptor naming + spin (zeta) present + cited
+    assert "x_1" in col1 and "x_2" in col1 and r"\zeta" in col1
+    assert "DFS" in col1 and "Dick" not in col1  # use DFS (year), not "Dick"
+    assert "polariz" in col1.lower()
+    # honest deviation note (GGA reduction, not verbatim DFS)
+    assert "1.804" in col1 and "1.174" in col1
+    # extended descriptors continue Dick's numbering (x4+) with full purpose
+    assert "x_4" in col3 and "cusp" in col3 and "nucle" in col3.lower()
+    assert "Slater" in col3
+
+
 def test_run_basis_label_reads_basis_and_df(tmp_path):
     (tmp_path / "resolved_config.yaml").write_text(
         "basis: def2-tzvpd\ndensity_fit: true\ngrid_level: 2\n")
