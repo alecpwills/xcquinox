@@ -1838,8 +1838,6 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
             if logy:
                 ax.set_yscale("log")
             ax.grid(True, axis="y", which="both", alpha=0.3)
-            if ax.get_legend_handles_labels()[1]:
-                ax.legend(fontsize=7)
 
         _panel(axes[0][0], lambda mae, wt, d, c: mae.get(c, float("nan")), "mae",
                "Held-out reaction-energy MAE (combined)", "kcal/mol")
@@ -1849,14 +1847,24 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                lambda mae, wt, d, c: (float(np.mean(d[c])) if d.get(c)
                                       else float("nan")), None,
                "In-sample density RMSE vs CCSD", "density RMSE", logy=True)
-        axes[0][2].text(0.5, 0.97, "dashed line = that basis's PBE baseline (energy panels)",
-                        transform=axes[0][2].transAxes, ha="center", va="top",
-                        fontsize=5.5, color="#666")
+        # Explicit legend: solid bar = NN vs benchmark; dashed horizontal = that
+        # basis's PBE vs benchmark (drawn on the MAE/WTMAD-2 panels only; the
+        # density panel has no PBE reference).
+        handles = []
+        for j, (label, *_rest) in enumerate(data):
+            col = _BASIS_COLORS[j % len(_BASIS_COLORS)]
+            handles.append(Patch(facecolor=col, edgecolor="k",
+                                  label=f"{label}: NN (bars)"))
+            handles.append(plt.Line2D(
+                [], [], ls="--", color=col,
+                label=f"{label}: PBE reference (dashed, MAE/WTMAD-2 panels)"))
+        fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=7.5,
+                   frameon=False, bbox_to_anchor=(0.5, 0.035))
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
             title="Cross-basis comparison (shared arch x subset cells) -- "
-                  "energy vs benchmark + in-sample density vs CCSD")
-        fig.tight_layout(rect=(0, 0.04, 1, 0.93))
+                  "NN (bars) vs benchmark, PBE (dashed) vs benchmark, + in-sample density")
+        fig.tight_layout(rect=(0, 0.13, 1, 0.93))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
