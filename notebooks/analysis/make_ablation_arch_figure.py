@@ -1771,6 +1771,104 @@ def plot_size_consistency_diagnostic(rows: List[Dict[str, Any]], out_path: Path,
     return out_path
 
 
+def _break_limits(vals: List[Any]):
+    """If one value dwarfs the bulk, return brokenaxes ylims
+    ``((0, bulk_hi), (upper_lo, upper_hi))``; else None (use a normal axis)."""
+    v = sorted(float(x) for x in vals if _is_num(x) and x >= 0)
+    if len(v) < 4:
+        return None
+    rng = v[-1] - v[0]
+    if rng <= 1e-9:
+        return None
+    # Break at the LARGEST gap between consecutive sorted values -- i.e. the empty
+    # band separating the bulk from a lone outlier (e.g. ~45 -> ~77). The lower
+    # band keeps EVERY non-outlier bar; only the empty gap is collapsed.
+    gap, idx = max((v[i + 1] - v[i], i) for i in range(len(v) - 1))
+    if gap < 0.35 * rng:           # no clear separation -> normal axis
+        return None
+    low_hi = v[idx] + 0.12 * gap    # just above the bulk maximum
+    up_lo = v[idx + 1] - 0.12 * gap  # just below the lowest outlier
+    return ((0.0, low_hi), (up_lo, v[-1] * 1.04))
+
+
+def _broken_bar_panel(fig, subplot_spec, series, labels, pbe_lines, title, ylab,
+                      colors, bw):
+    """Grouped-bar panel placed in ``subplot_spec`` (a GridSpec cell): uses a
+    BROKEN y-axis (brokenaxes) when one bar dwarfs the rest, else a normal axis.
+    ``series`` = [(label, heights)]; ``pbe_lines`` = [(label, y)]."""
+    all_vals = [h for _, hs in series for h in hs]
+    lims = _break_limits(all_vals)
+    n = len(labels)
+    nb = max(1, len(series))
+    if lims is not None:
+        from brokenaxes import brokenaxes  # optional dep (xcq env)
+        ax = brokenaxes(ylims=lims, subplot_spec=subplot_spec, hspace=0.08,
+                        d=0.008, despine=False)
+        bottom = min(ax.axs, key=lambda a: a.get_ylim()[0])
+    else:
+        ax = fig.add_subplot(subplot_spec)
+        bottom = ax
+    for j, (label, hs) in enumerate(series):
+        xs = [i + (j - (nb - 1) / 2) * bw for i in range(n)]
+        ax.bar(xs, hs, width=bw, color=colors[j % len(colors)], edgecolor="k",
+               linewidth=0.3, label=label)
+    for j, (label, y) in enumerate(pbe_lines):
+        if _is_num(y):
+            ax.axhline(y, ls="--", lw=1.0, color=colors[j % len(colors)], alpha=0.8)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        bottom.set_xticks(range(n))
+        bottom.set_xticklabels(labels, rotation=45, ha="right", fontsize=6)
+    ax.set_ylabel(ylab, fontsize=8)
+    ax.set_title(title, fontsize=9)
+    if lims is None:
+        ax.grid(True, axis="y", alpha=0.3)
+    return ax
+
+
+def _methods_textblock(fig, subsets: Dict[int, List[str]], y_top: float = 0.28,
+                       archs: Optional[List[str]] = None) -> None:
+    """Place the latex-style (matplotlib mathtext) methods + arch-family key in
+    the figure's bottom band: base GGA inputs, shared constraints, the descriptor
+    family key, pretrain targets, the optimization protocol, and the training
+    subsets. Strings are source-verified (networks.py/config.py/features.py/
+    losses.py/train.py/pretrain_data_gen.py)."""
+    left = "\n".join([
+        r"GGA inputs:  X-net $s=|\nabla\rho|/(2k_F\rho)$, $k_F=(3\pi^2\rho)^{1/3}$;"
+        r"  C-net $[r_s,s]$, $r_s=(3/4\pi\rho)^{1/3}$.",
+        r"DEFAULT (every arch except _notransform): log-transformed descriptors"
+        r"  $\tilde{s}=(1-e^{-s^2})\ln(s+1)$, $\tilde{r}_s=(1-e^{-r_s^2})\ln(r_s+1)$.",
+        r"_notransform / _notransform_attn: feed the RAW $s, r_s$ (no log-transform).",
+        r"",
+        r"Constraints (identical, all archs):",
+        r"  X-net  $F_x=1+\mathrm{LOB}_{1.804}(\tanh^2(s)\cdot\mathrm{MLP})$,",
+        r"  C-net  $F_c=1+\mathrm{LOB}_{2.0}(\tanh^2(s)\cdot\mathrm{MLP})\geq0$,"
+        r"  $\mathrm{LOB}_L(x)=L\,\sigma(x-\ln(L{-}1))-1$.",
+        r"  No composable constraints;  scaling-symmetry off.",
+        r"",
+        r"Pretrain (2500 steps):  per-grid-point",
+        r"  $F_x=F_x^{PBE}/F_x^{LDA}-1$,  $F_c=F_c^{PBE}/F_c^{LDA}-1$.",
+        r"Optimization:  $L5$ GradNorm ($\alpha{=}1.5$) over {AE, BH76, IP13, $v_{xc}$, $\rho$};",
+        r"  per-molecule (1 step/group/epoch), 250 epochs;"
+        r"  $w_\rho{=}20$ vs others${=}1$;  LR $0.01{\to}10^{-5}$ linear.",
+    ])
+    right = ["Architecture family (depth 4, 32 nodes):",
+             r"  deep, deep_attn:  base GGA only.",
+             r"  _cusp:  $+[\,e^{-2Z_{near}r_{min}},\ \tanh(\ln(\sum_A Z_A/r_A)/5)\,]$ (N,2).",
+             r"  _dm:  $+[\,\|DSD{-}D\|_F/\mathrm{Tr}(DS),\ -\!\sum p_i\ln p_i/\ln n_{orb},$",
+             r"          $\|D_{off}\|_F/\mathrm{Tr}(D)\,]$ (N,3, tiled).",
+             r"  _combined:  $+$ cusp & DM.    _notransform:  no log-transform.",
+             r"  _attn (heads=4):  per-grid-point channel attn",
+             r"          $\mathrm{softmax}(QK^T/\sqrt{d_k})V$ after MLP-1 (not spatial).",
+             r"",
+             "Training subsets (held-in molecules):"]
+    right += [f"  {ss}: {', '.join(subsets[ss])}" for ss in sorted(subsets)]
+    fig.text(0.045, y_top, left, va="top", ha="left", fontsize=6.4, family="serif")
+    fig.text(0.52, y_top, "\n".join(right), va="top", ha="left", fontsize=6.4,
+             family="serif")
+
+
 def run_basis_label(run_dir: Path) -> str:
     """Short basis tag from ``resolved_config.yaml`` (e.g. ``def2-svp``,
     ``def2-tzvpd+DF``). Line-parsed -- no yaml dependency."""
@@ -1819,9 +1917,11 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         cells = sorted(set.union(*cellsets)) if cellsets else []
         labels = [f"{a}/ss{s}" for a, s in cells]
         pw = max(6.0, 0.42 * max(1, len(cells)))
-        fig, axes = plt.subplots(1, 3, figsize=(pw * 3, 5.4), squeeze=False)
         nb = max(1, len(data))
         bw = 0.8 / nb
+        fig = plt.figure(figsize=(pw * 3, 9.6))
+        top = fig.add_gridspec(1, 3, left=0.05, right=0.975, top=0.92,
+                               bottom=0.54, wspace=0.26)
 
         def _panel(ax, getval, pbe_attr, title, ylab, logy=False):
             for j, (label, mae, wt, pbe_mae, pbe_wt, dmap) in enumerate(data):
@@ -1842,17 +1942,21 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                 ax.set_yscale("log")
             ax.grid(True, axis="y", which="both", alpha=0.3)
 
-        _panel(axes[0][0], lambda mae, wt, d, c: mae.get(c, float("nan")), "mae",
-               "Held-out reaction-energy MAE (combined)", "kcal/mol")
-        _panel(axes[0][1], lambda mae, wt, d, c: wt.get(c, float("nan")), "wt",
+        # Panel (a) MAE -- BROKEN y-axis when an outlier (e.g. deep_attn ss6) dominates.
+        mae_series = [(lbl, [mae.get(c, float("nan")) for c in cells])
+                      for (lbl, mae, wt, pm, pwt, dm) in data]
+        mae_pbe = [(lbl, pm) for (lbl, mae, wt, pm, pwt, dm) in data]
+        _broken_bar_panel(fig, top[0, 0], mae_series, labels, mae_pbe,
+                          "Held-out reaction-energy MAE (combined)", "kcal/mol",
+                          _BASIS_COLORS, bw)
+        _panel(fig.add_subplot(top[0, 1]),
+               lambda mae, wt, d, c: wt.get(c, float("nan")), "wt",
                "2-subset WTMAD-2 (BH76+W4-11)", "kcal/mol")
-        _panel(axes[0][2],
+        _panel(fig.add_subplot(top[0, 2]),
                lambda mae, wt, d, c: (float(np.mean(d[c])) if d.get(c)
                                       else float("nan")), None,
                "In-sample density RMSE vs CCSD", "density RMSE", logy=True)
-        # Explicit legend: solid bar = NN vs benchmark; dashed horizontal = that
-        # basis's PBE vs benchmark (drawn on the MAE/WTMAD-2 panels only; the
-        # density panel has no PBE reference).
+        # Legend: solid bar = NN vs benchmark; dashed horizontal = that basis's PBE.
         handles = []
         for j, (label, *_rest) in enumerate(data):
             col = _BASIS_COLORS[j % len(_BASIS_COLORS)]
@@ -1861,13 +1965,17 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
             handles.append(plt.Line2D(
                 [], [], ls="--", color=col,
                 label=f"{label}: PBE reference (dashed, MAE/WTMAD-2 panels)"))
-        fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=7.5,
-                   frameon=False, bbox_to_anchor=(0.5, 0.035))
-        _stamp_parity_footer(
-            fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
-            title="Cross-basis comparison (all arch x subset cells; bar absent where a "
-                  "basis hasn't run) -- NN (bars) vs benchmark, PBE (dashed), + in-sample density")
-        fig.tight_layout(rect=(0, 0.13, 1, 0.93))
+        fig.legend(handles=handles, loc="center", ncol=2, fontsize=7.5,
+                   frameon=False, bbox_to_anchor=(0.5, 0.508))
+        # Methods + arch-family key (mathtext) under the panels.
+        subsets = training_subsets_by_size(runs[0][0]) if runs else {}
+        _methods_textblock(fig, subsets, y_top=0.47)
+        fig.suptitle(
+            "Cross-basis comparison (all arch x subset cells; bar absent where a basis "
+            "hasn't run) -- NN (bars) vs benchmark, PBE (dashed), + in-sample density"
+            f"  ·  {run_id}", fontsize=11, y=0.975)
+        fig.text(0.5, 0.008, provenance or _PROVENANCE_BASE, ha="center",
+                 fontsize=6, color="#777777")
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path

@@ -478,6 +478,47 @@ def test_plot_training_losses_renders(tmp_path):
     assert _png_ok(out)
 
 
+def test_break_limits_detects_outlier():
+    lims = fig._break_limits([10, 12, 9, 11, 8, 13, 10, 77])  # 77 dominates
+    assert lims is not None
+    (b_lo, b_hi), (u_lo, u_hi) = lims
+    assert b_lo == 0.0 and b_hi < 30 and u_lo > 50 and u_hi > 77
+
+
+def test_break_limits_none_without_outlier():
+    assert fig._break_limits([10, 12, 9, 11, 8, 13, 10, 14]) is None
+    assert fig._break_limits([1.0, 2.0]) is None  # too few
+
+
+def test_broken_bar_panel_renders_with_break(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    f = plt.figure(figsize=(6, 4))
+    gs = f.add_gridspec(1, 1)
+    fig._broken_bar_panel(
+        f, gs[0, 0], [("a", [10, 20, 77, 9]), ("b", [8, 15, float("nan"), 11])],
+        ["c1", "c2", "c3", "c4"], [("a", 14.0)], "MAE", "kcal/mol",
+        ["#4477aa", "#cc6677"], 0.4)
+    out = tmp_path / "b.png"
+    f.savefig(out, dpi=80)
+    plt.close(f)
+    assert out.stat().st_size > 2000
+
+
+def test_methods_textblock_renders_mathtext(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    f = plt.figure(figsize=(10, 5))
+    # malformed mathtext raises at draw -> a successful savefig proves validity.
+    fig._methods_textblock(f, {1: ["hocn"], 6: ["alcl", "b2h6", "cf4"]}, y_top=0.4)
+    out = tmp_path / "m.png"
+    f.savefig(out, dpi=80)
+    plt.close(f)
+    assert out.stat().st_size > 2000
+
+
 def test_run_basis_label_reads_basis_and_df(tmp_path):
     (tmp_path / "resolved_config.yaml").write_text(
         "basis: def2-tzvpd\ndensity_fit: true\ngrid_level: 2\n")
