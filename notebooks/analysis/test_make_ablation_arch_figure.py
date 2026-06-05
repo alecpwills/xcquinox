@@ -478,6 +478,75 @@ def test_plot_training_losses_renders(tmp_path):
     assert _png_ok(out)
 
 
+def test_collect_training_losses_tags_basis(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rows = fig.collect_training_losses(run, basis_label="def2-svp")
+    assert rows and all(r["basis"] == "def2-svp" for r in rows)
+    # default: basis is None (backward compatible)
+    assert all(r.get("basis") is None for r in fig.collect_training_losses(run))
+
+
+def test_collect_training_losses_multi_merges_both_runs(tmp_path):
+    r1 = _make_run_dir(tmp_path / "a")
+    r2 = _make_run_dir(tmp_path / "b")
+    merged = fig.collect_training_losses_multi([(r1, "def2-svp"),
+                                                (r2, "def2-tzvpd+DF")])
+    # every cell from BOTH runs is present, each tagged with its basis
+    n1 = len(fig.collect_training_losses(r1))
+    n2 = len(fig.collect_training_losses(r2))
+    assert len(merged) == n1 + n2
+    assert {r["basis"] for r in merged} == {"def2-svp", "def2-tzvpd+DF"}
+
+
+def test_plot_training_losses_multi_basis_renders(tmp_path):
+    r1 = _make_run_dir(tmp_path / "a")
+    r2 = _make_run_dir(tmp_path / "b")
+    merged = fig.collect_training_losses_multi([(r1, "def2-svp"),
+                                                (r2, "def2-tzvpd+DF")])
+    out = fig.plot_training_losses(merged, tmp_path / "tl_multi.png", _STAMP)
+    assert _png_ok(out)
+
+
+def test_classify_cell_logic():
+    c = fig._classify_cell
+    med = 0.0037
+    # fails PBE AND final loss is an absolute outlier -> late instability
+    assert c(77.0, 14.0, 0.071, med) == "late_instability"
+    # fails PBE but final loss is healthy (near cohort median) -> overfitting
+    assert c(44.0, 14.0, 0.0023, med) == "generalization_gap"
+    # beats PBE -> pass (regardless of loss)
+    assert c(9.0, 14.0, 0.0048, med) == "pass"
+    assert c(9.0, 14.0, 0.071, med) == "pass"
+
+
+def test_classify_failures_structure(tmp_path):
+    rows = fig.classify_failures([(_make_run_dir(tmp_path), "def2-svp")])
+    assert rows
+    needed = {"arch", "subset_size", "basis", "heldout_mae", "pbe_mae",
+              "final_loss", "classification"}
+    for r in rows:
+        assert needed <= set(r)
+        assert r["classification"] in {"pass", "late_instability",
+                                       "generalization_gap"}
+
+
+def test_plot_failure_diagnostic_renders(tmp_path):
+    out = fig.plot_failure_diagnostic([(_make_run_dir(tmp_path), "def2-svp")],
+                                      tmp_path / "fail.png", _STAMP)
+    assert _png_ok(out)
+
+
+def test_build_diagnostic_figures_renders_both(tmp_path):
+    r1 = _make_run_dir(tmp_path / "a")
+    r2 = _make_run_dir(tmp_path / "b")
+    (r1 / "resolved_config.yaml").write_text("basis: def2-svp\n")
+    (r2 / "resolved_config.yaml").write_text("basis: def2-tzvpd\ndensity_fit: true\n")
+    out = fig.build_diagnostic_figures([r1, r2], tmp_path / "diag")
+    assert {p.name for p in out} == {"diagnostic_training_losses.png",
+                                     "diagnostic_failure_mechanisms.png"}
+    assert all(_png_ok(p) for p in out)
+
+
 def test_break_limits_detects_outlier():
     lims = fig._break_limits([10, 12, 9, 11, 8, 13, 10, 77])  # 77 dominates
     assert lims is not None

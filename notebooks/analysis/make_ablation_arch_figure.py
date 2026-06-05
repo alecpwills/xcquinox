@@ -1591,9 +1591,13 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
     return out_path
 
 
-def collect_training_losses(run_dir: Path) -> List[Dict[str, Any]]:
+def collect_training_losses(run_dir: Path,
+                            basis_label: Optional[str] = None
+                            ) -> List[Dict[str, Any]]:
     """Per-spec training-loss trajectory from ``losses.npy`` (the per-group-update
-    loss recorded during training), joined with the manifest arch/subset_size."""
+    loss recorded during training), joined with the manifest arch/subset_size.
+    Each row is tagged with ``basis`` (``basis_label``) so several runs can be
+    merged into one cumulative plot."""
     cells = ccp._read_manifest_cells(run_dir)
     rows: List[Dict[str, Any]] = []
     for idx, spec_dir in ccp._spec_dirs(run_dir):
@@ -1608,7 +1612,20 @@ def collect_training_losses(run_dir: Path) -> List[Dict[str, Any]]:
             continue
         cell = cells.get(idx, {})
         rows.append({"idx": idx, "arch": cell.get("arch"),
-                     "subset_size": cell.get("subset_size"), "losses": losses})
+                     "subset_size": cell.get("subset_size"), "losses": losses,
+                     "basis": basis_label})
+    return rows
+
+
+def collect_training_losses_multi(runs: List[Tuple[Path, str]]
+                                  ) -> List[Dict[str, Any]]:
+    """Concatenate :func:`collect_training_losses` across several
+    ``(run_dir, basis_label)`` pairs so EVERY trained cell from EVERY run lands in
+    one cumulative loss plot. Cells trained in more than one basis (e.g. ``deep``,
+    ``deep_attn``) yield one row per basis."""
+    rows: List[Dict[str, Any]] = []
+    for run_dir, basis_label in runs:
+        rows.extend(collect_training_losses(run_dir, basis_label=basis_label))
     return rows
 
 
@@ -1624,7 +1641,11 @@ def plot_training_losses(loss_rows: List[Dict[str, Any]], out_path: Path,
                          highlight: Optional[List[Tuple[str, int]]] = None) -> Path:
     """Training-loss trajectories faceted by arch, one curve per subset_size
     (viridis), rolling-mean-smoothed, log-y. A run that destabilizes late (its
-    loss climbs back up) stands out -- e.g. deep_attn ss6."""
+    loss climbs back up) stands out -- e.g. deep_attn ss6. When the rows carry
+    more than one ``basis`` (e.g. def2-svp + def2-tzvpd+DF), basis is shown by
+    LINESTYLE so every trained cell from every run appears together (cells shared
+    across bases get one curve per basis)."""
+    _LS = ["-", "--", "-.", ":"]
     with plt.rc_context(_STYLE):
         present = {r["arch"] for r in loss_rows if r.get("arch")}
         archs = [a for a in ARCH_ORDER if a in present]
@@ -1632,6 +1653,14 @@ def plot_training_losses(loss_rows: List[Dict[str, Any]], out_path: Path,
         archs = archs or ["deep"]
         subset_values = sorted({r["subset_size"] for r in loss_rows
                                 if r.get("subset_size") is not None})
+        # basis -> linestyle (stable order: bases as first seen in the rows)
+        bases: List[Any] = []
+        for r in loss_rows:
+            b = r.get("basis")
+            if b not in bases:
+                bases.append(b)
+        ls_for = {b: _LS[i % len(_LS)] for i, b in enumerate(bases)}
+        multi_basis = len([b for b in bases if b is not None]) > 1
         hl = set(highlight or [])
         n = len(archs)
         ncols = 2 if n > 1 else 1
@@ -1646,7 +1675,8 @@ def plot_training_losses(loss_rows: List[Dict[str, Any]], out_path: Path,
         for ai, arch in enumerate(archs):
             ax = flat[ai]
             for r in sorted((r for r in loss_rows if r.get("arch") == arch),
-                            key=lambda r: r.get("subset_size") or 0):
+                            key=lambda r: (r.get("subset_size") or 0,
+                                           str(r.get("basis")))):
                 L = r["losses"]
                 if L.size == 0:
                     continue
@@ -1654,6 +1684,7 @@ def plot_training_losses(loss_rows: List[Dict[str, Any]], out_path: Path,
                 xs = np.linspace(0.0, 1.0, s.size)
                 is_hl = (arch, r.get("subset_size")) in hl
                 ax.plot(xs, np.clip(s, 1e-14, None), color=cmap(norm(r["subset_size"])),
+                        ls=ls_for.get(r.get("basis"), "-"),
                         lw=2.6 if is_hl else 1.0, alpha=0.95 if is_hl else 0.8,
                         zorder=5 if is_hl else 3)
                 if is_hl:
@@ -1668,6 +1699,12 @@ def plot_training_losses(loss_rows: List[Dict[str, Any]], out_path: Path,
             ax.tick_params(labelsize=6.5)
         for k in range(len(archs), len(flat)):
             flat[k].axis("off")
+        # basis legend (linestyle key), only when several bases are overlaid
+        if multi_basis:
+            handles = [plt.Line2D([], [], color="0.3", ls=ls_for[b],
+                                  label=str(b)) for b in bases if b is not None]
+            flat[0].legend(handles=handles, title="basis", fontsize=6.5,
+                           title_fontsize=6.5, loc="upper right", framealpha=0.7)
         sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
         sm.set_array([])
         fig.tight_layout(rect=(0, 0.05, 0.93, 0.93))
@@ -1675,9 +1712,196 @@ def plot_training_losses(loss_rows: List[Dict[str, Any]], out_path: Path,
         cbar = fig.colorbar(sm, cax=cax)
         cbar.set_label("training subset_size", fontsize=7)
         cbar.ax.tick_params(labelsize=6)
+        title = "Training-loss trajectories by architecture (per-subset"
+        title += ", basis=linestyle)" if multi_basis else ")"
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
-            title="Training-loss trajectories by architecture (per-subset)")
+            title=title)
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+def _final_window_loss(losses: Any, n: int = 50) -> float:
+    """Mean of the last ``n`` training-loss steps -- represents the FINAL
+    checkpoint the eval actually loads (``model.eqx``), so a late blow-up shows
+    here even though the best-ever loss was tiny."""
+    L = np.asarray(losses, float).ravel()
+    if L.size == 0:
+        return float("nan")
+    return float(np.mean(L[-min(n, L.size):]))
+
+
+def _classify_cell(heldout_mae: Optional[float], pbe_mae: Optional[float],
+                   final_loss: float, cohort_median: float,
+                   instab_factor: float = 5.0) -> str:
+    """Mechanism of a single cell. ``pass`` = held-out MAE <= PBE. Among the
+    failures: ``late_instability`` when the FINAL-window loss is an ABSOLUTE
+    outlier vs the cohort (training itself diverged late -- the deep_attn-ss6
+    case); otherwise ``generalization_gap`` (train loss is healthy but the model
+    overfits the tiny held-in subset). The ratio final/best is NOT used -- it is
+    huge for healthy cells too (noisy per-batch SCF loss)."""
+    if not _is_num(heldout_mae) or not _is_num(pbe_mae):
+        return "pass"
+    if heldout_mae <= pbe_mae:
+        return "pass"
+    if (_is_num(final_loss) and _is_num(cohort_median) and cohort_median > 0
+            and final_loss > instab_factor * cohort_median):
+        return "late_instability"
+    return "generalization_gap"
+
+
+def classify_failures(runs: List[Tuple[Path, str]], *, instab_factor: float = 5.0,
+                      final_window: int = 50) -> List[Dict[str, Any]]:
+    """Per (arch, subset_size, basis) held-out diagnosis across several runs:
+    combined held-out MAE + BH76/W4-11 split, that cell's per-reaction PBE
+    baseline, the final-window training loss, and a :func:`_classify_cell`
+    mechanism label. Reuses :func:`collect_holdout_reaction_rows`,
+    :func:`reaction_mae_by_arch_subset`, and :func:`collect_training_losses`."""
+    cells: List[Dict[str, Any]] = []
+    for run_dir, basis in runs:
+        rows = collect_holdout_reaction_rows(run_dir)
+        bh = [r for r in rows if r.get("pool") == "bh76"]
+        w4 = [r for r in rows if r.get("pool") == "w411"]
+        nn = reaction_mae_by_arch_subset(rows)
+        pbe = reaction_mae_by_arch_subset(rows, key="abs_error_pbe_kcalmol")
+        bh_nn = reaction_mae_by_arch_subset(bh)
+        bh_pbe = reaction_mae_by_arch_subset(bh, key="abs_error_pbe_kcalmol")
+        w4_nn = reaction_mae_by_arch_subset(w4)
+        w4_pbe = reaction_mae_by_arch_subset(w4, key="abs_error_pbe_kcalmol")
+        losses = {(r["arch"], r["subset_size"]): r["losses"]
+                  for r in collect_training_losses(run_dir)}
+        for (arch, ss), mae in nn.items():
+            L = losses.get((arch, ss))
+            cells.append({
+                "run_dir": str(run_dir), "basis": basis, "arch": arch,
+                "subset_size": ss, "heldout_mae": mae,
+                "pbe_mae": pbe.get((arch, ss)),
+                "bh76_mae": bh_nn.get((arch, ss)), "bh76_pbe": bh_pbe.get((arch, ss)),
+                "w411_mae": w4_nn.get((arch, ss)), "w411_pbe": w4_pbe.get((arch, ss)),
+                "final_loss": _final_window_loss(L, final_window)
+                if L is not None else float("nan")})
+    fins = [c["final_loss"] for c in cells if _is_num(c["final_loss"])]
+    med = float(np.median(fins)) if fins else float("nan")
+    for c in cells:
+        c["cohort_median_loss"] = med
+        c["classification"] = _classify_cell(
+            c["heldout_mae"], c["pbe_mae"], c["final_loss"], med, instab_factor)
+    return cells
+
+
+_FAIL_COLORS = {"pass": "#2a9d3a", "generalization_gap": "#e08214",
+                "late_instability": "#c0392b"}
+_FAIL_LABEL = {"pass": "pass (<= PBE)",
+               "generalization_gap": "generalization gap (overfit)",
+               "late_instability": "late training instability"}
+
+
+def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
+                            run_id: str, note: str = "",
+                            provenance: Optional[str] = None) -> Path:
+    """Explain WHY each network fails. Panel A: the DECOUPLING -- final-window
+    training loss (x, log) vs held-out combined MAE (y); nearly all cells reach a
+    low train loss yet scatter widely in held-out error (they overfit the tiny
+    held-in subset), and only deep_attn-ss6 also has a high train loss (the lone
+    genuine training failure). Panel B: the capacity ladder -- held-out MAE/PBE by
+    arch family, split BH76 (barriers) vs W4-11 (atomization), showing extra
+    descriptors + attention worsen overfitting and the damage lands on W4-11."""
+    cells = classify_failures(runs)
+    bases = list(dict.fromkeys(c["basis"] for c in cells))
+    mk = ["o", "^", "s", "D"]
+    marker_for = {b: mk[i % len(mk)] for i, b in enumerate(bases)}
+    with plt.rc_context(_STYLE):
+        fig = plt.figure(figsize=(14.0, 6.8))
+        gs = fig.add_gridspec(1, 2, left=0.06, right=0.985, top=0.9, bottom=0.30,
+                              wspace=0.22)
+        axA, axB = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])
+
+        # --- Panel A: decoupling scatter ---
+        for c in cells:
+            if not (_is_num(c["final_loss"]) and _is_num(c["heldout_mae"])):
+                continue
+            axA.scatter(c["final_loss"], c["heldout_mae"],
+                        color=_FAIL_COLORS[c["classification"]],
+                        marker=marker_for.get(c["basis"], "o"), s=40,
+                        edgecolor="k", linewidth=0.4, zorder=3)
+        pbes = [c["pbe_mae"] for c in cells if _is_num(c["pbe_mae"])]
+        if pbes:
+            axA.axhspan(min(pbes), max(pbes), color="0.75", alpha=0.35, zorder=0)
+            axA.axhline(float(np.mean(pbes)), ls="--", color="0.4", lw=1.0)
+        med = cells[0].get("cohort_median_loss") if cells else None
+        if _is_num(med):
+            axA.axvline(5.0 * med, ls=":", color="#c0392b", lw=1.0)
+        # label the worst few cells
+        for c in sorted((c for c in cells if _is_num(c["heldout_mae"])),
+                        key=lambda c: -c["heldout_mae"])[:4]:
+            if _is_num(c["final_loss"]):
+                axA.annotate(f"{c['arch']} ss{c['subset_size']}",
+                             (c["final_loss"], c["heldout_mae"]), fontsize=6,
+                             xytext=(4, 2), textcoords="offset points")
+        axA.set_xscale("log")
+        axA.set_xlabel("final-window training loss (mean of last 50 steps, log)",
+                       fontsize=8)
+        axA.set_ylabel("held-out combined reaction MAE (kcal/mol)", fontsize=8)
+        axA.set_title("Training loss is decoupled from held-out error", fontsize=9)
+        axA.grid(True, which="both", alpha=0.3)
+        cls_handles = [Patch(facecolor=_FAIL_COLORS[k], edgecolor="k",
+                             label=_FAIL_LABEL[k])
+                       for k in ("pass", "generalization_gap", "late_instability")]
+        cls_handles += [plt.Line2D([], [], ls="--", color="0.4",
+                                   label="PBE baseline (band)"),
+                        plt.Line2D([], [], ls=":", color="#c0392b",
+                                   label="instability cut (5x median loss)")]
+        if len(bases) > 1:
+            cls_handles += [plt.Line2D([], [], ls="", marker=marker_for[b],
+                                       color="0.3", label=str(b)) for b in bases]
+        axA.legend(handles=cls_handles, fontsize=6.3, loc="upper left",
+                   framealpha=0.7)
+
+        # --- Panel B: capacity ladder, BH76 vs W4-11 ratio by arch ---
+        present = {c["arch"] for c in cells}
+        archs = [a for a in ARCH_ORDER if a in present]
+        archs += sorted(present - set(archs))
+
+        def _ratio(arch: str, num: str, den: str) -> float:
+            vs = [c[num] / c[den] for c in cells if c["arch"] == arch
+                  and _is_num(c.get(num)) and _is_num(c.get(den)) and c[den] > 0]
+            return float(np.mean(vs)) if vs else float("nan")
+
+        xb = np.arange(len(archs))
+        axB.bar(xb - 0.2, [_ratio(a, "bh76_mae", "bh76_pbe") for a in archs], 0.4,
+                color="#4477aa", edgecolor="k", linewidth=0.3, label="BH76 barriers")
+        axB.bar(xb + 0.2, [_ratio(a, "w411_mae", "w411_pbe") for a in archs], 0.4,
+                color="#cc6677", edgecolor="k", linewidth=0.3,
+                label="W4-11 atomization")
+        axB.axhline(1.0, ls="--", color="0.3", lw=1.0)
+        axB.set_xticks(xb)
+        axB.set_xticklabels(archs, rotation=35, ha="right", fontsize=6.5)
+        axB.set_ylabel("held-out MAE / PBE  (mean over cells, >1 = worse than PBE)",
+                       fontsize=8)
+        axB.set_title("Capacity ladder: extra descriptors + attention amplify "
+                      "overfitting; error lands on W4-11", fontsize=8.3)
+        axB.grid(True, axis="y", alpha=0.3)
+        axB.legend(fontsize=6.8)
+
+        # --- classification key: every FAILING cell -> mechanism ---
+        def _grp(label: str) -> str:
+            items = sorted(f"{c['arch']} ss{c['subset_size']}"
+                           + (f" ({c['basis']})" if len(bases) > 1 else "")
+                           for c in cells if c["classification"] == label)
+            return ", ".join(items) if items else "(none)"
+
+        key = (f"Late training instability (final loss is an outlier; eval uses the "
+               f"bad final checkpoint):  {_grp('late_instability')}.\n"
+               f"Generalization gap (clean low train loss, but overfits the "
+               f"{ '~3-11' }-molecule held-in subset; damage on W4-11 atomization):  "
+               f"{_grp('generalization_gap')}.\n"
+               f"Beats PBE (pass):  {_grp('pass')}.")
+        fig.text(0.06, 0.2, key, ha="left", va="top", fontsize=6.6, family="serif",
+                 wrap=True)
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
+            title="Failure-mechanism diagnostic (held-out vs training loss)")
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -2080,6 +2304,23 @@ def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path) -> List[P
     runs = [(Path(rd), run_basis_label(rd)) for rd in run_dirs]
     rid = " vs ".join(lbl for _, lbl in runs)
     return [plot_basis_comparison(runs, outdir / "basis_comparison.png", rid)]
+
+
+def build_diagnostic_figures(run_dirs: List[Path], outdir: Path) -> List[Path]:
+    """Render the CUMULATIVE (multi-basis) training-loss trajectories -- every
+    trained cell from every run, basis by linestyle -- plus the failure-mechanism
+    diagnostic that classifies and explains each failing cell."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    runs = [(Path(rd), run_basis_label(rd)) for rd in run_dirs]
+    rid = " + ".join(lbl for _, lbl in runs)
+    loss_rows = collect_training_losses_multi(runs)
+    return [
+        plot_training_losses(loss_rows, outdir / "diagnostic_training_losses.png",
+                             rid, highlight=[("deep_attn", 6)]),
+        plot_failure_diagnostic(runs, outdir / "diagnostic_failure_mechanisms.png",
+                                rid),
+    ]
 
 
 def build_density_energy_figures(run_dir: Path, outdir: Path) -> List[Path]:
