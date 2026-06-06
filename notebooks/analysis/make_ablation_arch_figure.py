@@ -2402,28 +2402,32 @@ def _methods_textblock(fig, subsets: Dict[int, List[str]], y_top: float = 0.28,
                        y_deltas: Tuple[float, float, float] = (0.0, 0.0, 0.0),
                        fontsize: float = 6.2,
                        reactions: Optional[Dict[int, Dict[str, List[Any]]]] = None,
-                       fig_h: Optional[float] = None) -> int:
+                       fig_h: Optional[float] = None,
+                       include_references: bool = True) -> int:
     """Place the three methods columns (mathtext) under panels a/b/c at ``xs``,
     each offset vertically by ``y_deltas`` (figure fraction; negative = lower).
     When ``reactions`` + ``fig_h`` are given, a FULL-WIDTH training-content footer
-    (W4-11 atomizations + BH76 reactions) is placed below the columns. Returns the
-    total effective line count (columns + footer) so a caller can size the figure."""
+    (W4-11 atomizations + BH76 reactions) is placed below the columns. With
+    ``include_references=False`` the full-width references key is omitted (the
+    columns keep their ``[n]`` cites) and the training-content footer slides up
+    into the freed slot. Returns the total effective line count (columns +
+    references + footer) so a caller can size the figure."""
     cols = _methods_columns(subsets)
     for x, dy, col in zip(xs, y_deltas, cols):
         fig.text(x, y_top + dy, "\n".join(col), va="top", ha="left",
                  fontsize=fontsize, family="serif")
     max_col = max(len(c) for c in cols)
-    refs = _methods_references()
+    refs = _methods_references() if include_references else []
     footer = _subset_reaction_lines(reactions) if reactions else []
     if fig_h:
         line_frac = fontsize * 1.58 / (72.0 * fig_h)
-        # full-width references key, clear of the tallest column ...
+        # full-width block starts clear of the tallest column
         y = y_top - (max_col + 3.0) * line_frac
-        fig.text(xs[0], y, "\n".join(refs), va="top", ha="left",
-                 fontsize=fontsize - 0.5, family="serif")
-        # ... then the training-content reaction footer below the references
-        if footer:
-            y -= (len(refs) + 2.0) * line_frac
+        if refs:                                   # references key (optional)
+            fig.text(xs[0], y, "\n".join(refs), va="top", ha="left",
+                     fontsize=fontsize - 0.5, family="serif")
+            y -= (len(refs) + 2.0) * line_frac     # slide footer below the refs
+        if footer:                                 # training-content footer (kept)
             fig.text(xs[0], y, "\n".join(footer), va="top", ha="left",
                      fontsize=fontsize, family="serif")
     return max_col + len(refs) + (len(footer) + 6 if footer else 4)
@@ -2449,7 +2453,8 @@ _BASIS_COLORS = ("#4477aa", "#cc6677", "#228833", "#ccbb44")
 
 def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                           run_id: str, note: str = "",
-                          provenance: Optional[str] = None) -> Path:
+                          provenance: Optional[str] = None,
+                          include_references: bool = True) -> Path:
     """Cross-basis comparison over the UNION of (arch, subset) cells present in
     ANY run: (a) combined held-out reaction-energy MAE, (b) 2-subset WTMAD-2, (c)
     in-sample density RMSE vs CCSD -- grouped bars by basis. A basis's bar is
@@ -2487,9 +2492,11 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         FS = 6.2
         # height = tallest column + full-width references key + subset footer (+gaps)
         n_cols = max(len(c) for c in _methods_columns(subsets))
-        n_refs = len(_methods_references())
+        n_refs = len(_methods_references()) if include_references else 0
         n_foot = (len(_subset_reaction_lines(reactions)) + 2) if reactions else 0
-        n_meth = n_cols + n_refs + 6 + n_foot
+        # +6 gap allowance with refs (3 above refs, 2 above footer, 1 pad);
+        # +4 without refs (footer takes the refs' slot: 3 gap + 1 pad).
+        n_meth = n_cols + n_foot + (n_refs + 6 if include_references else 4)
         meth_h = n_meth * FS * 1.58 / 72.0 + 0.06   # methods text block (~1.2 linespacing)
         panels_h, xlabel_h = 3.5, 0.72              # panels + rotated cell labels
         legend_h, gap1, gap2 = 0.30, 0.06, 0.10     # legend band: methods | legend | labels
@@ -2557,7 +2564,8 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         # footer below them (top-aligned columns -- the dense content no longer
         # leaves room for the old middle-column nudge).
         _methods_textblock(fig, subsets, y_top=_f(bot_pad + meth_h), fontsize=FS,
-                           xs=(0.05, 0.37, 0.69), reactions=reactions, fig_h=fig_h)
+                           xs=(0.05, 0.37, 0.69), reactions=reactions, fig_h=fig_h,
+                           include_references=include_references)
         fig.suptitle(
             "Cross-basis comparison (union of arch x subset cells; bar absent "
             "where a basis hasn't run) -- NN bars vs benchmark, PBE dashed"
@@ -2576,7 +2584,12 @@ def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path) -> List[P
     outdir.mkdir(parents=True, exist_ok=True)
     runs = [(Path(rd), run_basis_label(rd)) for rd in run_dirs]
     rid = " vs ".join(lbl for _, lbl in runs)
-    return [plot_basis_comparison(runs, outdir / "basis_comparison.png", rid)]
+    return [
+        plot_basis_comparison(runs, outdir / "basis_comparison.png", rid),
+        # variant without the lower references key (columns + subset footer kept)
+        plot_basis_comparison(runs, outdir / "basis_comparison_no_refs.png", rid,
+                              include_references=False),
+    ]
 
 
 def build_diagnostic_figures(run_dirs: List[Path], outdir: Path) -> List[Path]:

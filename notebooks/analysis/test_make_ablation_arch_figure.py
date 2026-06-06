@@ -669,6 +669,31 @@ def test_chem_latex_renders_in_methods(tmp_path):
     assert out.stat().st_size > 2000
 
 
+def test_methods_textblock_can_omit_references(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    subsets = {1: ["hocn"], 2: ["ch3fclts", "clf"]}
+    reactions = {1: {"ae": ["hocn"], "rxn": []},
+                 2: {"ae": [], "rxn": [(["ch3", "clf"], ["ch3fclts"])]}}
+    f1 = plt.figure(figsize=(13, 9))
+    n_with = fig._methods_textblock(f1, subsets, y_top=0.95, fontsize=6.2,
+                                    reactions=reactions, fig_h=9.0,
+                                    include_references=True)
+    plt.close(f1)
+    f2 = plt.figure(figsize=(13, 9))
+    n_without = fig._methods_textblock(f2, subsets, y_top=0.95, fontsize=6.2,
+                                       reactions=reactions, fig_h=9.0,
+                                       include_references=False)
+    out = tmp_path / "norefs.png"
+    f2.savefig(out, dpi=80)
+    plt.close(f2)
+    # omitting the references drops exactly their lines from the block height ...
+    assert n_with - n_without == len(fig._methods_references())
+    # ... but the figure still renders with the training-subset footer kept
+    assert out.stat().st_size > 2000
+
+
 def test_methods_textblock_accepts_column_offsets(tmp_path):
     import matplotlib
     matplotlib.use("Agg")
@@ -809,6 +834,18 @@ def test_build_basis_comparison_writes(tmp_path):
     (rb / "resolved_config.yaml").write_text("basis: def2-tzvpd\ndensity_fit: true\n")
     written = fig.build_basis_comparison_figures([ra, rb], tmp_path / "out")
     assert written and all(_png_ok(p) for p in written)
+    names = {p.name for p in written}
+    assert "basis_comparison.png" in names          # full figure (with refs)
+    assert "basis_comparison_no_refs.png" in names  # variant w/o references key
+
+
+def test_plot_basis_comparison_omits_references(tmp_path):
+    ra = _make_run_dir(tmp_path / "a")
+    rb = _make_run_dir(tmp_path / "b")
+    out = fig.plot_basis_comparison(
+        [(ra, "def2-svp"), (rb, "def2-tzvpd+DF")], tmp_path / "nr.png", "cmp",
+        include_references=False)
+    assert _png_ok(out)
 
 
 def test_w411_natoms_map_counts_atoms():
