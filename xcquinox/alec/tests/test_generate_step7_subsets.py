@@ -38,6 +38,19 @@ def test_mode_weights_mapping():
     assert "l2" in g.METRICS and "jsd" in g.METRICS
 
 
+def test_resolve_sizes_include_full():
+    """--include-full appends the full-pool size (complete training set) without
+    touching the shared SUBSET_SIZES tuple; idempotent + order-preserving."""
+    base = (1, 2, 3)
+    assert g._resolve_sizes(base, 26, include_full=False) == [1, 2, 3]
+    assert g._resolve_sizes(base, 26, include_full=True) == [1, 2, 3, 26]
+    # already present -> no duplicate
+    assert g._resolve_sizes((1, 2, 26), 26, include_full=True) == [1, 2, 26]
+    # canonical step-7 ladder + full pool, for the 26-point DFS pool
+    assert g._resolve_sizes(g.SUBSET_SIZES, 26, include_full=True)[-1] == 26
+    assert 26 not in g.SUBSET_SIZES        # shared constant left untouched
+
+
 def test_run_mode_writes_both_metrics_and_trajs(tmp_path, monkeypatch):
     """_run_mode writes a ledger with BOTH metrics for every subset size and a
     subset.traj per (metric, size, solver), under the mode's root."""

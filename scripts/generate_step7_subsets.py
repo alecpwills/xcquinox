@@ -62,6 +62,16 @@ _MODE_WEIGHTS = {
 }
 
 
+def _resolve_sizes(base_sizes, n_pool: int, include_full: bool) -> list:
+    """The subset sizes to generate. ``--include-full`` appends the full-pool
+    size (r == n_pool, the complete training set; C(n_pool,n_pool)=1) when it is
+    not already present. Order preserved; deduplicated."""
+    sizes = list(base_sizes)
+    if include_full and n_pool not in sizes:
+        sizes.append(n_pool)
+    return sizes
+
+
 def _build_shared(points):
     """Extract per-species descriptors (cached) and the full-pool reference
     histogram + edges — all mode-independent."""
@@ -79,9 +89,10 @@ def _build_shared(points):
     return point_descriptors, h_ref, edges
 
 
-def _run_mode(mode, points, point_descriptors, h_ref, edges):
+def _run_mode(mode, points, point_descriptors, h_ref, edges, sizes=SUBSET_SIZES):
     """Run the (metric, r) selection sweep for one alpha mode and write the
-    ledger + subset.traj files under that mode's STEP7_ROOT."""
+    ledger + subset.traj files under that mode's STEP7_ROOT. ``sizes`` defaults
+    to the canonical ``SUBSET_SIZES`` (``--include-full`` extends it)."""
     weights = _MODE_WEIGHTS[mode]
     root = CHECKPOINTS / mode
     root.mkdir(parents=True, exist_ok=True)
@@ -108,13 +119,13 @@ def _run_mode(mode, points, point_descriptors, h_ref, edges):
             {f"{k[0]}/{k[1]}": v for k, v in subset_index_log.items()}, indent=2))
 
     n_pool = len(points)
-    n_pairs = len(METRICS) * len(SUBSET_SIZES)
+    n_pairs = len(METRICS) * len(sizes)
     print(f"[{mode}] descriptor_weights={weights}; {n_pairs} (metric, r) pairs "
           f"over {n_pool} candidates -> {root}", flush=True)
     pair_idx = 0
     t0_all = time.time()
     for metric in METRICS:
-        for r in SUBSET_SIZES:
+        for r in sizes:
             pair_idx += 1
             all_present = (
                 (metric, r) in subset_index_log
@@ -156,7 +167,7 @@ def _run_mode(mode, points, point_descriptors, h_ref, edges):
                   f"dt={dt:.1f}s", flush=True)
     _write_ledger()
     n_specs = len(subset_index_log) * len(SOLVERS)
-    expected = len(SUBSET_SIZES) * len(METRICS) * len(SOLVERS)
+    expected = len(sizes) * len(METRICS) * len(SOLVERS)
     print(f"[{mode}] wrote {len(subset_index_log)} (metric, r) entries; "
           f"{n_specs} subset.traj files; total {time.time()-t0_all:.1f}s", flush=True)
     assert n_specs == expected, f"[{mode}] expected {expected} specs, got {n_specs}"
@@ -168,18 +179,26 @@ def main(argv=None):
     ap.add_argument(
         "--modes", nargs="+", default=["alpha_on", "alpha_off"],
         choices=sorted(_MODE_WEIGHTS), help="alpha modes to generate")
+    ap.add_argument(
+        "--include-full", action="store_true",
+        help="also generate the full-pool subset (r = pool size, the complete "
+             "DFS training set) and add it to the ledger")
     args = ap.parse_args(argv)
 
     points = build_dfs_pool_points()
     by_kind = {k: sum(1 for p in points if p.kind == k) for k in ("ae", "bh76", "ip13")}
     print(f"Mixed pool: {len(points)} points ({by_kind['ae']} AE + "
           f"{by_kind['bh76']} BH76 + {by_kind['ip13']} IP13)", flush=True)
+    sizes = _resolve_sizes(SUBSET_SIZES, len(points), args.include_full)
+    if args.include_full:
+        print(f"--include-full: sizes -> {sizes} (added r={len(points)} full pool)",
+              flush=True)
 
     point_descriptors, h_ref, edges = _build_shared(points)
 
     written = []
     for mode in args.modes:
-        written.append(_run_mode(mode, points, point_descriptors, h_ref, edges))
+        written.append(_run_mode(mode, points, point_descriptors, h_ref, edges, sizes))
 
     print("\nDONE. Ledgers (stage these to the cluster's inputs.subset_ledger_path):")
     for p in written:

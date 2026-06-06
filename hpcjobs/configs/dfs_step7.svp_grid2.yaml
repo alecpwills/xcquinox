@@ -1,0 +1,93 @@
+# =============================================================================
+# dfs_step7.svp_grid2.yaml — train the 8-arch ablation set on the DFS TRAINING
+# SET subsets (domain_profile dfs_step7: 26-point pool = 21 G2/97 AE + 3 BH76 +
+# 2 IP), alpha_on JSD ledger, INCLUDING the full 26-point set (jsd/26). Same
+# arch/loss/solver/basis setup as bh76w411_repr.svp_grid2.yaml (def2-svp +
+# grid_level 2, NO density fitting); only the domain + subset source differ, so
+# this is a controlled A/B against the bh76w411-representative svp_grid2 run.
+# Subsets: jsd/{1..7,12,15,18,26}. 8 archs x 11 subset_sizes = 88 specs
+# (inline-eval). NOTE: r=26 = full pool -> held_out_strict complement is EMPTY
+# (trains-only, no within-pool held-out metric), exactly DFS's own train-full /
+# test-on-W4-11 setup.
+# =============================================================================
+
+sweep:
+  arch:
+    - deep
+    - deep_attn
+    - deep_dm
+    - deep_cusp
+    - deep_combined
+    - deep_combined_attn
+    - deep_notransform
+    - deep_notransform_attn
+  loss: [L5_gradnorm_vxc_step7]
+  metric: [jsd]
+  subset_size: [1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 26]
+  solver: [full_3]
+
+solvers:
+  full_3:
+    mode: FULL
+    max_cycles: 3
+    feature_policy: REASSEMBLE
+
+hyperparams:
+  n_steps: 250
+  lr_start: 0.01
+  lr_end: 0.00001
+  lr_decay_start: 0.2
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  seed: 42
+
+inputs:
+  external_refs_dir: /gpfs/scratch/awills/external_refs_dfs_svp_g2
+  subset_ledger_path: /gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/alpha_on/subset_index_log.json
+  basis: def2-svp
+  grid_level: 2
+  density_fit: false
+  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/svp_grid2
+
+pretrain:
+  data_dir: /gpfs/scratch/awills/pretrain_data_bh76w411_svp_g2
+  n_steps: 2500
+  lr_start: 0.01
+  lr_end: 0.00001
+  lr_decay_start: 0.2
+  grad_clip: 1.0
+  seed: 42
+  loss_weighting: integration
+
+cluster:
+  partition: ""
+  time: "16:00:00"        # bumped vs svp_grid2 (08:00): the r=26 full-pool cell
+                          # is ~4x heavier (26 vs <=6 molecules/epoch)
+  cpus_per_task: 24
+  array_throttle: 4
+  eval_array_throttle: 4
+  max_concurrent_tasks: 8
+  max_array_size: 1000
+  device: cpu
+  conda_env: /gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox
+  conda_profile: /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+  mail_user: alec.wills@stonybrook.edu
+  mail_type: BEGIN,END,FAIL
+  account: ""
+  preflight_time: "08:00:00"
+  eval_time: "02:00:00"
+  pretrain_time: "08:00:00"
+
+domain_profile: dfs_step7
+
+on_precompute_failure: abort
+bh76_mode: reaction_energy
+use_polarized_correlation: true
+held_out_strict: true
+
+inline_eval: true
+defer_eval: false
