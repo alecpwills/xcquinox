@@ -2276,60 +2276,97 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
     optimization + attention (col 2); extra descriptors + training subsets
     (col 3). Subset molecules are rendered as chemical formulas."""
     col1 = [
-        "Descriptors -- DFS (2021), PRB 104 L161109, eqs 3-6;",
-        " spin ON both runs (use_polarized_correlation):",
-        r"  $x_1{=}\frac{1}{2}[(1{+}\zeta)^{4/3}{+}(1{-}\zeta)^{4/3}]$ (spin; $\zeta{=}(\rho_\alpha{-}\rho_\beta)/\rho$;",
-        r"     $x_1{=}1$ at $\zeta{=}0$ = RKS).  $\zeta$ clipped to $\pm(1{-}10^{-6})$: the",
-        r"     PW92 spin-interp 2nd deriv $\sim(1{\mp}\zeta)^{-2/3}$ diverges at full",
-        "     polarization, NaN-ing the SCF gradient on free atoms.",
-        r"  $x_2{=}s{=}|\nabla\rho|/(2(3\pi^2)^{1/3}\rho^{4/3})$ (reduced gradient).",
-        r"  DFS $x_0{=}\rho^{1/3}$, $x_3{=}\alpha$ UNUSED (GGA, no $\tau$); C-net uses",
-        r"  $r_s{=}(3/4\pi\rho)^{1/3}$ (the PW92 LDA-correlation variable) for density.",
-        r"  X-net $F_x(x_2)$;   C-net $F_c(r_s, x_2, x_1)$.",
+        "DESCRIPTORS (inputs to the exchange/correlation MLPs):",
+        r"  $x_2{=}s{=}|\nabla\rho|/(2(3\pi^2)^{1/3}\rho^{4/3})$  reduced gradient [1,4].",
+        r"  $r_s{=}(3/4\pi\rho)^{1/3}$  Wigner-Seitz radius = the PW92 LDA-",
+        r"     correlation variable [2].  X-net in $(x_2)$; C-net in $(r_s,x_2,x_1)$.",
+        r"  $x_1{=}\frac{1}{2}[(1{+}\zeta)^{4/3}{+}(1{-}\zeta)^{4/3}]$  spin feature [4],",
+        r"     $\zeta{=}(\rho_\alpha{-}\rho_\beta)/\rho$;  $(1{\pm}\zeta)^{4/3}$ = exchange spin-scaling",
+        r"     factor [3] = PW92 $f(\zeta)$ numerator [2].  $x_1{=}1$ at $\zeta{=}0$ (RKS).",
+        "  Log-transform (this work): the MLP is fed",
+        r"     $\tilde{x}_2{=}(1{-}e^{-x_2^2})\ln(x_2{+}1)$ ($\sim x_2^3{\to}0$, preserving UEG); $r_s$",
+        r"     likewise; $x_1$ raw.  ([4] Eq.9 form; [4] also log-transform $x_1$, Eq.8.)",
+        r"  Spin clip (this work): $\zeta$ clamped to $\pm(1{-}10^{-6})$.  PW92 $f(\zeta)$",
+        r"     [2] has $f''{\sim}(1{\mp}\zeta)^{-2/3}{\to}\infty$ at full polarization ($\rho_\beta{\to}0$,",
+        r"     free atoms); the SCF differentiates $v_c{=}\partial E_c/\partial\rho$ a 2nd time, so",
+        r"     the bare boundary NaNs the gradient ($10^{-6}$ keeps $f''$ finite).",
         "",
-        "Log-transform (descriptor_log_transform; DFS eq 9):",
-        r"  $\tilde{x}_2{=}(1{-}e^{-x_2^2})\ln(x_2{+}1)$, same applied to $r_s$ (DFS",
-        r"  use eq 7 for $x_0$);  $x_1$ NOT transformed (DFS eq 8 does).",
+        "CONSTRAINTS / BOUNDS:",
+        r"  $E_{xc}{=}\int\rho\,(\epsilon_x^{UEG}F_x{+}\epsilon_c^{PW92}F_c)$;  $F{=}1{+}\mathrm{LOB}_L(\tanh^2\!x_2\cdot\mathrm{MLP})$.",
+        r"  $\mathrm{LOB}_L(x){=}L\sigma(x{-}\ln(L{-}1)){-}1$ maps $\mathbb{R}{\to}({-}1,L{-}1)$, so",
+        r"     $F{\in}(0,L)$, $F(0){=}1$  ($=$ DFS $I_L$ [4] Eq.11).",
+        r"  $\tanh^2\!x_2$ UEG gate: $F{\to}1$ at $x_2{=}0$ (exact GGA limit [1]; this-",
+        r"     work gate vs [4]'s $\tilde{x}_2{+}\tanh^2\tilde{x}_3$ meta-GGA form).",
+        r"  $F_x$: $L{=}1.804{=}1{+}\kappa$ ($\kappa{=}0.804$), the PBE exchange ceiling set",
+        r"     by the local Lieb-Oxford bound [1,5]; [4] use a tighter 1.174 [6].",
+        r"  $F_c$: $L{=}2$, a non-negativity squash ([4] $I_2$ Eq.13), NOT a LO",
+        r"     bound on $F_c$.  Exchange spin-scaled $E_x{=}\frac{1}{2}[E_x(2\rho_\alpha){+}E_x(2\rho_\beta)]$ [3].",
     ]
     col2 = [
-        "Constraints (identical, all archs):",
-        r"  $F_x{=}1{+}\mathrm{LOB}_{1.804}(\tanh^2\!x_2\cdot\mathrm{MLP}(\tilde{x}_2))$;  $\tanh^2\!x_2$ = UEG",
-        r"     gate ($F_x{\to}1$ at $x_2{=}0$, the LDA limit).",
-        r"  $F_c{=}1{+}\mathrm{LOB}_{2.0}(\tanh^2\!x_2\cdot\mathrm{MLP})$ ($F_c$ squash $\in[0,2]$);",
-        r"  $\mathrm{LOB}_L(x){=}L\sigma(x{-}\ln(L{-}1)){-}1$.",
-        r"  $F_x$ ceiling 1.804 = PBE $1{+}\kappa$, $\kappa{=}0.804$ (PBE 1996, local",
-        r"     Lieb-Oxford); DFS use a tighter 1.174.",
-        r"  Exchange exact spin-scaling $E_x{=}\frac{1}{2}[E_x(2\rho_\alpha){+}E_x(2\rho_\beta)]$.",
-        "",
-        "Loss L5_gradnorm_vxc_step7 -- per-molecule update (250 epochs):",
-        "  GradNorm($\\alpha{=}1.5$) is DORMANT under per-molecule -> FIXED",
-        r"  weights {AE 1, BH76 1, IP13 1, $v_{xc}$ 1, $\rho$ 20} (density-dominant).",
-        r"  AE $=(\sum_Z n_Z E_Z^{exact}{-}E_{mol})$ vs ref;  BH76 $=\sum_i c_i E_i$",
-        r"  (products$-$reactants) vs CCSD;  IP13 $=E^{+}{-}E^{0}$;",
-        r"  $v_{xc}{=}\|V_{xc}^{NN}{-}V_{xc}^{ref}\|_F^2$ (AO);  $\rho$ = grid-$L_2$ of density.",
-        "  Energies from a FIXED 3-cycle differentiable self-consistent SCF",
-        r"  (full_3; rebuild $v_{xc}$+density each cycle, backprop all 3). LR",
-        r"  $0.01$ held first $0.2$, then linear $\to10^{-5}$.",
+        "LOSS  (channel forms = this work, losses.py; the density-",
+        " dominant weights + per-molecule scheme follow dpyscf/DFS [4,15]):",
+        r"  $L(\omega){=}\sum_k w_k L_k$,  $w{=}\{$AE 1, BH76 1, IP13 1, $v_{xc}$ 1, $\rho$ 20$\}$.",
+        "  Mixed metric (loss_metric = absolute):",
+        r"   AE (relative): $\langle(A^{NN}_i{-}A^{ref}_i)^2/((A^{ref}_i)^2{+}10^{-8})\rangle$ ($A^{ref}${=}W4-11 [17]),",
+        r"      $A^{NN}_i{=}\sum_Z n_Z E_Z - E^{NN}_i$  ($E_Z$ = exact atom totals [18]).",
+        r"   BH76 (absolute): $\langle(\sum_s\nu_s E^{NN}_s - e^{ref}_{rxn})^2\rangle$, $e^{ref}$=W2-F12 [16].",
+        r"   IP13 (absolute): $\langle(E^{NN}_{cat}{-}E^{NN}_{neu}-I^{ref})^2\rangle$ (no IP13 pairs in these subsets).",
+        r"   $v_{xc}$ (per-elem MSE): $\langle\|V^{NN}_{xc}{-}V^{ref}_{xc}\|_F^2/n_{ao}^2\rangle$ (AO matrix).",
+        r"   $\rho$ (grid-$L_2$): $\langle\sum_g w_g(\rho^{NN}_g{-}\rho^{ref}_g)^2\rangle$ ($w_g$ quadrature wt).",
+        r"  SCF: $E^{NN}$ and $\rho^{NN}$ are the FINAL state of a fixed 3-cycle",
+        r"   differentiable Kohn-Sham SCF (rebuild $J{+}V_{xc}$ from the NN density",
+        r"   each cycle, backprop through all 3) [14, our implementation];",
+        r"   $V^{NN}_{xc}$ is one-shot.  Not iterated-to-tolerance.",
+        "  Per-molecule update: one optimizer step per molecule-group,",
+        r"   all groups/epoch, 250 epochs; LR $0.01$ held 0.2 then linear $\to10^{-5}$.",
+        r"   GradNorm ($\alpha{=}1.5$) [13] is CONFIGURED BUT DORMANT (per-molecule",
+        "   bypasses it; the weights stay fixed).",
     ]
     col3 = [
-        "Pretrain (2500 steps; per-grid-point, spin-resolved):",
+        "PRETRAIN (this work, [4]-style; 2500 steps, per-grid-point, spin-resolved):",
         r"  $F_x{=}F_x^{PBE}/F_x^{LDA}{-}1$,  $F_c{=}F_c^{PBE}/F_c^{LDA}{-}1$.",
-        "Attention (_attn / _combined_attn, heads=4): per-grid-point channel",
-        r"  attn $\mathrm{softmax}(QK^T\!/\sqrt{d_k})V$ over MLP-1 units as 4 tokens.",
+        "ATTENTION (_attn / _combined_attn, heads=4): per-grid-point",
+        r"  channel attn $\mathrm{softmax}(QK^T\!/\sqrt{d_k})V$ over MLP-1 units, 4 tokens.",
         "",
-        "Extended descriptors (this work; continuing DFS's $x$ numbering):",
-        r"  _cusp $(x_4, x_5)$ -- electron-nuclear cusp (Kato 1957; the density's",
-        r"  $\rho\sim e^{-2Zr}$ decay at nuclei): $x_4{=}e^{-2Z_{near}r_{min}}$ (Slater cusp,",
-        r"  nearest nucleus), $x_5{=}\tanh(\ln(\sum_A Z_A/r_A)/5)$ (nuclear Coulomb",
-        r"  field; log = DFS, $/5$+tanh = this-work conditioning).",
-        r"  _dm $(x_6, x_7, x_8)$ -- single-reference diagnostic:",
-        r"  $x_6{=}\|D'SD'{-}D'\|_F/\mathrm{Tr}(D'S)$ (idempotency, $=0$ exactly for HF/KS);",
-        r"  $x_8{=}\|D_{off}\|_F/\mathrm{Tr}(D)$ (off-diag, grows w/ correlation);",
-        r"  $x_7{=}-\!\sum p_i\ln p_i/\ln\max(n_{orb}^{eff},2)$ (Loewdin nat-occ entropy,",
-        r"  size-INTENSIVE $\in[0,1]$; nonzero even for one determinant).",
-        r"  $D'{=}D/2$ RKS / $D_\sigma$ UKS.  _combined: cusp & DM;  _notransform: off.",
+        "EXTENDED DESCRIPTORS (this-work heuristics on textbook physics):",
+        r"  _cusp $(x_4,x_5)$ -- nuclear proximity / core region:",
+        r"   $x_4{=}e^{-2Z_{near}r_{min}}$: Slater density envelope at the nearest",
+        r"     nucleus.  Cusp: wavefn $(\partial\bar\psi/\partial r)_0{=}{-}Z\psi(0)$ [7]; density",
+        r"     $(\partial\bar\rho/\partial r)_0{=}{-}2Z\rho(0)$, $\rho{\sim}e^{-2Zr}$ [8].",
+        r"   $x_5{=}\tanh(\ln(\sum_A Z_A/r_A)/5)$: $\sum_A Z_A/r_A$ = magnitude of the",
+        r"     bare-nuclei electrostatic field $={-}V_{ext}$ ($V_{ext}{=}{-}\sum_A Z_A/|r{-}R_A|$",
+        r"     [12]); the $\ln,/5,\tanh$ = this-work range-conditioning (log convention [4]).",
+        r"  _dm $(x_6,x_7,x_8)$ from the 1-particle density matrix $D$ ($D'{=}D/2$",
+        r"   RKS, $D_\sigma$ UKS):",
+        r"   $x_6{=}\|D'SD'{-}D'\|_F/\mathrm{Tr}(D'S)$: idempotency, $=0$ EXACTLY for one",
+        r"     Slater determinant ($PSP{=}P$ [10]) -- the clean single-reference flag.",
+        r"   $x_7{=}-\!\sum p_i\ln p_i/\ln\max(n_{orb}^{eff},2)$, $p_i$=natural occupations",
+        r"     (eig $DS$ [9]): occupation-spread entropy, size-INTENSIVE $\in[0,1]$; a",
+        r"     multireference measure [11].  Nonzero for one determinant (not a clean flag).",
+        r"   $x_8{=}\|D_{off}\|_F/\mathrm{Tr}(D)$: off-diagonal weight, delocalization proxy.",
+        r"  _combined: cusp & DM;   _notransform: log-transform off.",
     ]
     return [col1, col2, col3]
+
+
+def _methods_references() -> List[str]:
+    """Full-width numbered references key for the methods box (each equation in
+    the columns cites [n]). Every entry verified real + accurate (consensus of
+    multiple opus reviewers + two citation-verifiers)."""
+    return [
+        "References   [1] Perdew, Burke, Ernzerhof, PRL 77, 3865 (1996).   "
+        "[2] Perdew & Wang, PRB 45, 13244 (1992).   [3] Oliver & Perdew, PRA 20, 397 (1979).   "
+        "[4] Dick & Fernandez-Serra, PRB 104, L161109 (2021).   [5] Lieb & Oxford, IJQC 19, 427 (1981).   "
+        "[6] Perdew, Ruzsinszky, Sun, Burke, JCP 140, 18A533 (2014).",
+        "[7] Kato, Commun. Pure Appl. Math. 10, 151 (1957).   [8] Steiner, JCP 39, 2365 (1963).   "
+        "[9] Loewdin, Phys. Rev. 97, 1474 (1955).   [10] Szabo & Ostlund (1996) / Pople & Nesbet, JCP 22, 571 (1954).   "
+        "[11] Boguslawski et al., JPCL 3, 3129 (2012); Xu et al., JCTC 20, 721 (2024).   "
+        "[12] Parr & Yang, DFT of Atoms and Molecules (1989).",
+        "[13] Chen et al. (GradNorm), ICML 2018 / arXiv:1711.02257.   [14] Li et al., PRL 126, 036401 (2021).   "
+        "[15] dpyscf / [4] (density-dominant weights + per-molecule scheme).   "
+        "[16] Goerigk et al. (GMTKN55-BH76), PCCP 19, 32184 (2017).   [17] Karton, Daon, Martin (W4-11), CPL 510, 165 (2011).   "
+        "[18] Chakravorty et al., PRA 47, 3649 (1993).",
+    ]
 
 
 def _render_reaction(reactants: List[str], products: List[str]) -> str:
@@ -2374,12 +2411,20 @@ def _methods_textblock(fig, subsets: Dict[int, List[str]], y_top: float = 0.28,
         fig.text(x, y_top + dy, "\n".join(col), va="top", ha="left",
                  fontsize=fontsize, family="serif")
     max_col = max(len(c) for c in cols)
+    refs = _methods_references()
     footer = _subset_reaction_lines(reactions) if reactions else []
-    if footer and fig_h:
-        line_frac = fontsize * 1.32 / (72.0 * fig_h)
-        fig.text(xs[0], y_top - (max_col + 1.5) * line_frac, "\n".join(footer),
-                 va="top", ha="left", fontsize=fontsize, family="serif")
-    return max_col + (len(footer) + 2 if footer else 0)
+    if fig_h:
+        line_frac = fontsize * 1.58 / (72.0 * fig_h)
+        # full-width references key, clear of the tallest column ...
+        y = y_top - (max_col + 3.0) * line_frac
+        fig.text(xs[0], y, "\n".join(refs), va="top", ha="left",
+                 fontsize=fontsize - 0.5, family="serif")
+        # ... then the training-content reaction footer below the references
+        if footer:
+            y -= (len(refs) + 2.0) * line_frac
+            fig.text(xs[0], y, "\n".join(footer), va="top", ha="left",
+                     fontsize=fontsize, family="serif")
+    return max_col + len(refs) + (len(footer) + 6 if footer else 4)
 
 
 def run_basis_label(run_dir: Path) -> str:
@@ -2438,11 +2483,12 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         subsets = training_subsets_by_size(runs[0][0]) if runs else {}
         reactions = training_reactions_by_size(runs[0][0]) if runs else {}
         FS = 6.2
-        # height = tallest column + full-width subset-reaction footer (+gap)
+        # height = tallest column + full-width references key + subset footer (+gaps)
         n_cols = max(len(c) for c in _methods_columns(subsets))
+        n_refs = len(_methods_references())
         n_foot = (len(_subset_reaction_lines(reactions)) + 2) if reactions else 0
-        n_meth = n_cols + n_foot
-        meth_h = n_meth * FS * 1.30 / 72.0 + 0.06   # methods text block (~1.2 linespacing)
+        n_meth = n_cols + n_refs + 6 + n_foot
+        meth_h = n_meth * FS * 1.58 / 72.0 + 0.06   # methods text block (~1.2 linespacing)
         panels_h, xlabel_h = 3.5, 0.72              # panels + rotated cell labels
         legend_h, gap1, gap2 = 0.30, 0.06, 0.10     # legend band: methods | legend | labels
         top_pad, bot_pad = 0.68, 0.24               # suptitle + panel-title clearance ; provenance

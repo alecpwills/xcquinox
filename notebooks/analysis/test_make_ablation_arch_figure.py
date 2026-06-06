@@ -690,23 +690,31 @@ def test_methods_columns_lists_spin_and_descriptor_purposes():
     cols = fig._methods_columns({1: ["hocn"]})
     col1, col2, col3 = (" ".join(cols[0]), " ".join(cols[1]), " ".join(cols[2]))
     alltext = col1 + col2 + col3
-    # DFS x1/x2 naming + spin (zeta) present + cited; "Dick" never used
+    refs = " ".join(fig._methods_references())
+    # descriptors + spin clip
     assert "x_1" in col1 and "x_2" in col1 and r"\zeta" in col1
-    assert "DFS" in col1 and "Dick" not in alltext
-    assert "polariz" in col1.lower()
-    # zeta-clip rationale (PW92 2nd-derivative) + r_s = PW92 correlation variable
     assert "PW92" in col1 and "clip" in col1.lower()
-    # LOB sourcing: 1.804 = PBE ceiling, DFS tighter 1.174 (now in the loss/constraints col)
-    assert "1.804" in col2 and "PBE" in col2 and "1.174" in col2
-    # loss: per-molecule FIXED weights, GradNorm DORMANT (not "GradNorm balances")
-    assert "per-molecule" in col2 and "DORMANT" in col2 and r"$\rho$ 20" in col2
-    # SCF is a fixed self-consistent cycle (not one-shot, not "converged to tol")
-    assert "self-consistent" in col2 and "3-cycle" in col2
-    # extended descriptors continue DFS numbering (x4+) with full purpose
-    assert "x_4" in col3 and "cusp" in col3 and "nucle" in col3.lower()
-    assert "Slater" in col3 or "HF/KS" in col3
-    # x7 corrected to size-INTENSIVE (not size-dependent)
-    assert "INTENSIVE" in col3 and "size-dependent" not in col3
+    assert "1.804" in col1 and "1.174" in col1  # bounds with cites
+    # loss: FORM ours ("this work"), weights/scheme cite dpyscf/DFS, MIXED metric
+    assert r"\sum_k w_k" in col2 and "this work" in col2.lower()
+    assert "dpyscf" in col2 and "DFS" in col2
+    assert "absolute" in col2 and "relative" in col2          # mixed metric
+    assert "DORMANT" in col2 and "per-molecule" in col2
+    assert "3-cycle" in col2 and "one-shot" in col2           # rho SCF, vxc one-shot
+    assert "W2-F12" in col2 and "CCSD(T)" not in col2         # GMTKN55-BH76 refs are W2-F12
+    assert "[17]" in (col1 + col2 + col3)                     # W4-11 ref cited, not orphaned
+    # extended descriptors: x4-x8, V_ext defined, x7 intensive
+    assert "x_4" in col3 and "x_7" in col3 and "INTENSIVE" in col3
+    assert "V_{ext}" in col3                                  # nuclear field defined
+    # opaque shorthand + the corrected errors must be GONE
+    assert "size-dependent" not in alltext
+    assert "log = DFS" not in alltext and "log=DFS" not in alltext
+    assert "Dick" not in alltext  # use the [n] cites / DFS, not "Dick"
+    # references key: every contested citation is the CORRECT one
+    assert "Steiner" in refs and "Kato" in refs               # -2Z density vs -Z wavefn
+    assert "18A533" in refs                                   # Gedanken for 1.174
+    assert "Xu" in refs and "721" in refs and "1218" not in refs
+    assert "Oliver" in refs and "Loewdin" in refs and "Parr" in refs
 
 
 def test_subset_reaction_lines_render():
