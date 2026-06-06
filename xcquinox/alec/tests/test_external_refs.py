@@ -279,6 +279,26 @@ def test_oep_cascade_skip_if_cached(tmp_path):
     assert p2.stat().st_mtime == mtime, "OEP npz rewritten on cache hit"
 
 
+def test_effective_tier_grid_level_ignores_mismatched_pin():
+    """An override's grid_level pin is honored only when it equals the run grid
+    (the CCSD ref is on the run grid); a mismatched pin is ignored + warns, so
+    the grid_level-1 step-7 overrides are reusable in a grid_level-2 run without
+    tripping run_oep_cascade's grid-consistency gate."""
+    from xcquinox.alec.external_refs import _effective_tier_grid_level
+
+    # no pin -> run grid
+    assert _effective_tier_grid_level({"aux_basis": "x"}, 2) == 2
+    # pin == run grid -> honored, no warning
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert _effective_tier_grid_level({"grid_level": 1}, 1) == 1
+        assert _effective_tier_grid_level({"grid_level": 2}, 2) == 2
+    # pin != run grid -> ignored (use run grid) + RuntimeWarning
+    with pytest.warns(RuntimeWarning, match="ignoring the pin"):
+        assert _effective_tier_grid_level({"grid_level": 1}, 2, "F2(0,0)") == 2
+
+
 def test_oep_tiers_rks_and_uks_constants_split():
     """RKS and UKS tier constants exist with documented conv_tol values.
 
@@ -999,48 +1019,47 @@ def test_migration_preserves_already_grid_suffixed_g2_cache(tmp_path):
     assert not (inter / "Foo_g2_g1_scf.npz").exists()  # NOT corrupted
 
 
-def test_cascade_threads_grid_level_via_dataclasses_replace(monkeypatch):
-    """Override tier with grid_level=2 produces a tier_mol_spec with
-    grid_level=2 passed to run_oep_inversion (mol_spec stays unchanged
-    because `dataclasses.replace` returns a NEW frozen instance)."""
+def test_cascade_ignores_mismatched_grid_level_pin(monkeypatch):
+    """An override tier pinning grid_level != the run grid is IGNORED: the CCSD
+    rho_ref_grid is on the run grid and run_oep_cascade's consistency gate forbids
+    mixing grids, so the mol_spec passed to run_oep_inversion stays at the RUN
+    grid_level (and a RuntimeWarning is emitted). This lets the grid_level-1
+    step-7 overrides be reused in a grid_level-2 run; the tier's other knobs
+    (aux_basis, regularization, ...) still apply. (Previously the pin threaded a
+    foreign grid that the gate then rejected -- a footgun.)"""
     from xcquinox.alec.external_refs import (
         run_oep_cascade, SpeciesEntry, _PER_SPECIES_OEP_OVERRIDES,
     )
     captured_specs = []
-    # Monkeypatch run_oep_inversion to capture the mol_spec it sees:
     import xcquinox.alec.oep as alec_oep
-    real_run = alec_oep.run_oep_inversion
     def stub_run(mol_spec, dm_target, **kwargs):
         captured_specs.append(mol_spec)
         from collections import namedtuple
         Stub = namedtuple("Stub", ["converged", "density_error"])
         return Stub(converged=True, density_error=1e-4)
     monkeypatch.setattr(alec_oep, "run_oep_inversion", stub_run)
-    # Add an override forcing grid_level=2 in tier 0:
+    # Override pins grid_level=2, but the run below uses grid_level=1 -> mismatch:
     _PER_SPECIES_OEP_OVERRIDES[("Be", 0, 0)] = (
         {"aux_basis": "def2-tzvp-jkfit", "regularization": 1e-3,
          "grid_level": 2},
     )
     try:
-        # Build minimal stub inputs:
         from ase import Atoms
+        import numpy as np, tempfile, warnings
         atoms = Atoms("Be", positions=[(0, 0, 0)])
         spec = SpeciesEntry(name="Be", charge=0, spin=0, source="dfs_atom")
-        # ccsd_payload requires dm_ao + rho_ref_grid; provide minimum:
-        import numpy as np
         ccsd_payload = {"dm_ao": np.eye(5), "rho_ref_grid": np.zeros(10)}
-        # The cascade may call _build_mol_and_mf etc, for this test we
-        # only care about what's passed to run_oep_inversion. Use a
-        # cache_dir that doesn't exist so save_vxc_ref can't be called:
-        import tempfile
         with tempfile.TemporaryDirectory() as td:
-            try:
-                run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
-                                cache_dir=td, basis="sto-3g", grid_level=1)
-            except Exception:
-                pass  # save_vxc_ref will fail; we only care about captured
-        # First call's mol_spec must have grid_level=2:
-        assert captured_specs[0].grid_level == 2
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                try:
+                    run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                                    cache_dir=td, basis="sto-3g", grid_level=1)
+                except Exception:
+                    pass  # save_vxc_ref will fail; we only care about captured
+        # pin (2) != run grid (1) -> ignored: mol_spec stays at the run grid (1)
+        assert captured_specs[0].grid_level == 1
+        assert any("ignoring the pin" in str(x.message) for x in w)
     finally:
         _PER_SPECIES_OEP_OVERRIDES.pop(("Be", 0, 0), None)
 

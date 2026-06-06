@@ -850,6 +850,31 @@ def _resolve_tiers_for_species(
     )
 
 
+def _effective_tier_grid_level(tier: dict, run_grid_level: int,
+                               species_desc: str = "") -> int:
+    """The grid_level an override tier actually runs at.
+
+    An override's ``grid_level`` pin can only be HONORED when it equals the run
+    grid_level: the CCSD ``rho_ref_grid`` reference is computed on the run grid,
+    and ``run_oep_cascade``'s grid-consistency gate rejects a mismatch. So a pin
+    inherited from a DIFFERENT-grid tuning (e.g. the grid_level-1 step-7 overrides
+    reused in a grid_level-2 run) is IGNORED -- the run grid is used and the
+    tier's other tuned knobs (aux_basis, conv_tol, regularization, level_shift)
+    still apply. Returns the effective grid_level; warns when a pin is dropped."""
+    pinned = tier.get("grid_level", run_grid_level)
+    if pinned != run_grid_level:
+        import warnings
+        warnings.warn(
+            f"OEP override {species_desc} pins grid_level={pinned}, but the run "
+            f"uses grid_level={run_grid_level}; ignoring the pin (the CCSD "
+            f"reference density is on the run grid). Other override knobs still "
+            f"apply.",
+            RuntimeWarning,
+        )
+        return run_grid_level
+    return pinned
+
+
 def _migrate_intermediates_to_grid_suffixed(cache_dir) -> int:
     """Rename legacy unsuffixed intermediates to grid-suffixed names.
 
@@ -1039,8 +1064,12 @@ def run_oep_cascade(
         max_iter = tier["max_iter"]
         conv_tol = tier["conv_tol"]
         # Per-tier knobs, all with safe defaults that leave non-override
-        # species on the spin-default cascade:
-        tier_grid_level = tier.get("grid_level", grid_level)
+        # species on the spin-default cascade. A grid_level pin that mismatches
+        # the run grid is ignored (the CCSD ref is on the run grid) -- see
+        # _effective_tier_grid_level -- so grid1 overrides are reusable at grid2.
+        tier_grid_level = _effective_tier_grid_level(
+            tier, grid_level,
+            f"{spec.name}(charge={spec.charge}, spin={spec.spin})")
         tier_level_shift = tier.get("level_shift", spin_default_level_shift)
         tier_inner_damp = tier.get("inner_damp", 0.1)
         tier_inner_diis = tier.get("inner_diis_start_cycle", 5)
