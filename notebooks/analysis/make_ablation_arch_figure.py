@@ -2289,7 +2289,7 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
         r"  Spin clip (this work): $\zeta$ clamped to $\pm(1{-}10^{-6})$.  PW92 $f(\zeta)$",
         r"     [2] has $f''{\sim}(1{\mp}\zeta)^{-2/3}{\to}\infty$ at full polarization ($\rho_\beta{\to}0$,",
         r"     free atoms); the SCF differentiates $v_c{=}\partial E_c/\partial\rho$ a 2nd time, so",
-        r"     the bare boundary NaNs the gradient ($10^{-6}$ keeps $f''$ finite).",
+        r"     the gradient is non-finite at the unclamped boundary ($10^{-6}$ keeps $f''$ finite).",
         "",
         "CONSTRAINTS / BOUNDS:",
         r"  $E_{xc}{=}\int\rho\,(\epsilon_x^{UEG}F_x{+}\epsilon_c^{PW92}F_c)$ [2,4];  $F{=}1{+}\mathrm{LOB}_L(\tanh^2\!x_2\cdot\mathrm{MLP})$.",
@@ -2307,10 +2307,11 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
         " dominant weights + per-molecule scheme follow dpyscf/DFS [4,15]):",
         r"  $L(\omega){=}\sum_k w_k L_k$,  $w{=}\{$AE 1, BH76 1, IP13 1, $v_{xc}$ 1, $\rho$ 20$\}$.",
         "  Mixed metric (loss_metric = absolute):",
-        r"   AE (relative): $\langle(A^{NN}_i{-}A^{ref}_i)^2/((A^{ref}_i)^2{+}10^{-8})\rangle$ ($A^{ref}${=}W4-11 [17]),",
-        r"      $A^{NN}_i{=}\sum_Z n_Z E_Z - E^{NN}_i$  ($E_Z$ = exact atom totals [18]).",
-        r"   BH76 (absolute): $\langle(\sum_s\nu_s E^{NN}_s - e^{ref}_{rxn})^2\rangle$, $e^{ref}$=W2-F12 [16].",
-        r"   IP13 (absolute): $\langle(E^{NN}_{cat}{-}E^{NN}_{neu}-I^{ref})^2\rangle$ (no IP13 pairs in these subsets).",
+        r"   reaction energy (absolute), the L5 'BH76' channel: $\langle(\sum_s\nu_s E^{NN}_s{-}e^{ref}_{rxn})^2\rangle$,",
+        r"     $E^{NN}_s$=SCF energy.  Trains BOTH W4-11 atomizations (molecule$\to$atoms,",
+        r"     $e^{ref}$=W4-11 [17]) and BH76 barriers (reactants$\to$TS, $e^{ref}$=W2-F12 [16]).",
+        r"   L5's relative-AE $\langle(A^{NN}{-}A^{ref})^2/((A^{ref})^2{+}10^{-8})\rangle$, $A^{NN}{=}\sum_Z n_Z E_Z{-}E^{NN}$",
+        r"     ($E_Z$ atom totals [18]), and the IP13 channel, are not populated by this pool.",
         r"   $v_{xc}$ (per-elem MSE): $\langle\|V^{NN}_{xc}{-}V^{ref}_{xc}\|_F^2/n_{ao}^2\rangle$ (AO matrix).",
         r"   $\rho$ (grid-$L_2$): $\langle\sum_g w_g(\rho^{NN}_g{-}\rho^{ref}_g)^2\rangle$ ($w_g$ quadrature wt).",
         r"  SCF: $E^{NN}$ and $\rho^{NN}$ are the FINAL state of a fixed 3-cycle",
@@ -2326,24 +2327,24 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
         "PRETRAIN (this work, [4]-style; 2500 steps, per-grid-point, spin-resolved):",
         r"  $F_x{=}F_x^{PBE}/F_x^{LDA}{-}1$,  $F_c{=}F_c^{PBE}/F_c^{LDA}{-}1$.",
         "ATTENTION (_attn / _combined_attn, heads=4): per-grid-point",
-        r"  channel attn $\mathrm{softmax}(QK^T\!/\sqrt{d_k})V$ over MLP-1 units, 4 tokens.",
+        r"  channel attn $\mathrm{softmax}(QK^T\!/\sqrt{d_k})V$ [19] over MLP-1 units, 4 tokens.",
         "",
-        "EXTENDED DESCRIPTORS (this-work heuristics on textbook physics):",
-        r"  _cusp $(x_4,x_5)$ -- nuclear proximity / core region:",
+        "EXTENDED DESCRIPTORS (defined in this work):",
+        r"  _cusp $(x_4,x_5)$:",
         r"   $x_4{=}e^{-2Z_{near}r_{min}}$: Slater density envelope at the nearest",
         r"     nucleus.  Cusp: wavefn $(\partial\bar\psi/\partial r)_0{=}{-}Z\psi(0)$ [7]; density",
         r"     $(\partial\bar\rho/\partial r)_0{=}{-}2Z\rho(0)$, $\rho{\sim}e^{-2Zr}$ [8].",
         r"   $x_5{=}\tanh(\ln(\sum_A Z_A/r_A)/5)$: $\sum_A Z_A/r_A$ = magnitude of the",
-        r"     bare-nuclei electrostatic field $={-}V_{ext}$ ($V_{ext}{=}{-}\sum_A Z_A/|r{-}R_A|$",
-        r"     [12]); the $\ln,/5,\tanh$ = this-work range-conditioning (log convention [4]).",
+        r"     bare-nuclei electrostatic potential $={-}V_{ext}$ ($V_{ext}{=}{-}\sum_A Z_A/|r{-}R_A|$",
+        r"     [12]); the $\ln,/5,\tanh$ map it to $(-1,1)$ (this work; log convention [4]).",
         r"  _dm $(x_6,x_7,x_8)$ from the 1-particle density matrix $D$ ($D'{=}D/2$",
         r"   RKS, $D_\sigma$ UKS):",
         r"   $x_6{=}\|D'SD'{-}D'\|_F/\mathrm{Tr}(D'S)$: idempotency, $=0$ EXACTLY for one",
-        r"     Slater determinant ($PSP{=}P$ [10]) -- the clean single-reference flag.",
-        r"   $x_7{=}-\!\sum p_i\ln p_i/\ln\max(n_{orb}^{eff},2)$, $p_i$=natural occupations",
-        r"     (eig $DS$ [9]): occupation-spread entropy, size-INTENSIVE $\in[0,1]$; a",
-        r"     multireference measure [11].  Nonzero for one determinant (not a clean flag).",
-        r"   $x_8{=}\|D_{off}\|_F/\mathrm{Tr}(D)$: off-diagonal weight, delocalization proxy.",
+        r"     Slater determinant ($PSP{=}P$ [10]).",
+        r"   $x_7{=}-\!\sum p_i\ln p_i/\ln\max(n_{orb}^{eff},2)$, $p_i$=normalized occupations",
+        r"     (eig $DS$ [9]): occupation-spread entropy, size-INTENSIVE $\in[0,1]$, used as a",
+        r"     multireference indicator [11].  Nonzero for one determinant.",
+        r"   $x_8{=}\|D_{off}\|_F/\mathrm{Tr}(D)$: relative off-diagonal weight of $D$.",
         r"  _combined: cusp & DM;   _notransform: log-transform off.",
     ]
     return [col1, col2, col3]
@@ -2356,7 +2357,7 @@ def _methods_references() -> List[str]:
     return [
         "References   [1] Perdew, Burke, Ernzerhof, PRL 77, 3865 (1996).   "
         "[2] Perdew & Wang, PRB 45, 13244 (1992).   [3] Oliver & Perdew, PRA 20, 397 (1979).   "
-        "[4] Dick & Fernandez-Serra, PRB 104, L161109 (2021).   [5] Lieb & Oxford, IJQC 19, 427 (1981).   "
+        "[4] Dick & Fernandez-Serra (\"DFS\"), PRB 104, L161109 (2021).   [5] Lieb & Oxford, IJQC 19, 427 (1981).   "
         "[6] Perdew, Ruzsinszky, Sun, Burke, JCP 140, 18A533 (2014).",
         "[7] Kato, Commun. Pure Appl. Math. 10, 151 (1957).   [8] Steiner, JCP 39, 2365 (1963).   "
         "[9] Loewdin, Phys. Rev. 97, 1474 (1955).   [10] Szabo & Ostlund (1996) / Pople & Nesbet, JCP 22, 571 (1954).   "
@@ -2365,7 +2366,7 @@ def _methods_references() -> List[str]:
         "[13] Chen et al. (GradNorm), ICML 2018 / arXiv:1711.02257.   [14] Li et al., PRL 126, 036401 (2021).   "
         "[15] dpyscf / [4] (density-dominant weights + per-molecule scheme).   "
         "[16] Goerigk et al. (GMTKN55-BH76), PCCP 19, 32184 (2017).   [17] Karton, Daon, Martin (W4-11), CPL 510, 165 (2011).   "
-        "[18] Chakravorty et al., PRA 47, 3649 (1993).",
+        "[18] Chakravorty et al., PRA 47, 3649 (1993).   [19] Vaswani et al., NeurIPS 2017 (scaled-dot-product attention).",
     ]
 
 
@@ -2380,7 +2381,8 @@ def _subset_reaction_lines(reactions: Dict[int, Dict[str, List[Any]]]) -> List[s
     """Full-width footer lines making the per-subset training content explicit:
     W4-11 atomization molecules + BH76 barrier reactions (reactants->TS)."""
     lines = ["Training content per held-in subset  (W4-11 atomization energies: "
-             "molecule -> atoms;  BH76 barriers: reactants -> transition state):"]
+             "molecule -> atoms;  BH76 barriers: reactants -> transition state).  "
+             r"Superscript $\ddagger$ = transition state;  subscript (c) = reactant complex:"]
     for ss in sorted(reactions):
         ae = ", ".join(_chem_latex(m) for m in reactions[ss].get("ae", []))
         rx = ";  ".join(_render_reaction(r, p)

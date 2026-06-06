@@ -710,6 +710,31 @@ def test_methods_columns_lists_spin_and_descriptor_purposes():
     assert "size-dependent" not in alltext
     assert "log = DFS" not in alltext and "log=DFS" not in alltext
     assert "Dick" not in alltext  # use the [n] cites / DFS, not "Dick"
+    # de-editorialized: no narrative / condescending / value-judgment modifiers
+    low = alltext.lower()
+    assert "textbook" not in low                  # the called-out condescension
+    assert "heuristic" not in low                 # value judgment on our own work
+    assert "proxy" not in low                     # "delocalization proxy"
+    assert "clean" not in low                     # "clean single-reference flag"
+    assert "range-conditioning" not in low
+    assert "core region" not in low
+    assert "nans" not in low                      # informal jargon verb
+    # physics fix: sum_A Z_A/r_A is a POTENTIAL (= -V_ext), not a field
+    assert "potential" in col3 and "electrostatic field" not in col3
+    assert "non-finite" in col1                   # the de-jargoned clip line
+    # kept content survives the cleanup (honest labels + sourced terms)
+    assert "this work" in col3.lower()
+    assert "multireference" in col3.lower() and "[11]" in col3
+    assert "Slater density envelope" in col3      # verified factual, retained
+    # loss routing: W4-11 atomizations train through the reaction-energy channel
+    # (kind="bh76"), NOT the relative-AE channel
+    assert "reaction energy" in col2 and "W4-11" in col2 and "[17]" in col2
+    assert "not populated by this pool" in col2   # AE-relative + IP13 inactive here
+    # x7 probabilities are normalized before the entropy (features.py)
+    assert "normalized" in col3
+    # attention equation now cited [19]; DFS acronym glossed on [4]
+    assert "[19]" in col3 and "Vaswani" in refs
+    assert "DFS" in refs
     # references key: every contested citation is the CORRECT one
     assert "Steiner" in refs and "Kato" in refs               # -2Z density vs -Z wavefn
     assert "18A533" in refs                                   # Gedanken for 1.174
@@ -736,6 +761,17 @@ def test_subset_reaction_lines_render():
     plt.close(f)
     import os
     assert os.path.getsize(out) > 1500
+
+
+def test_reaction_footer_labels_transition_state_glyph():
+    # the footer header must explain the rendered double-dagger / (c) glyphs
+    reactions = {1: {"ae": ["hocn"],
+                     "rxn": [(["clch3clcomp"], ["clch3clts"])]}}
+    header = fig._subset_reaction_lines(reactions)[0]
+    assert r"\ddagger" in header           # the TS glyph itself is shown
+    assert "transition state" in header
+    assert "(c)" in header                 # the reactant-complex glyph defined
+    assert "subscript" in header           # (c) rendered as a subscript
 
 
 def test_run_basis_label_reads_basis_and_df(tmp_path):
