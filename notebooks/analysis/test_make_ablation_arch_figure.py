@@ -891,6 +891,103 @@ def test_plot_basis_comparison_omits_references(tmp_path):
     assert _png_ok(out)
 
 
+def _make_bh76w411_results(tmp_path):
+    """A results root with the real layout:
+    <root>/bh76w411_repr/<basis>/runs/<stamp>, two bases, each with a newest run
+    (full _make_run_dir content) + an older empty run_* (to test newest-pick)."""
+    import shutil
+    root = tmp_path / "results"
+    runs = {}
+    for basis, stamp in (("svp_grid2", "run_20260603T163407Z"),
+                         ("tzvpd_grid2_df", "run_20260604T230749Z")):
+        src = _make_run_dir(tmp_path / f"_src_{basis}")
+        runs_dir = root / "bh76w411_repr" / basis / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, runs_dir / stamp)
+        (runs_dir / "run_20260101T000000Z").mkdir()      # older, empty
+        # a basis label so the cross-basis figure gets a real label
+        (runs_dir / stamp / "resolved_config.yaml").write_text(
+            f"basis: def2-{'svp' if basis=='svp_grid2' else 'tzvpd'}\n"
+            f"density_fit: {'false' if basis=='svp_grid2' else 'true'}\n")
+        runs[basis] = runs_dir / stamp
+    return root, runs
+
+
+def test_arch_coverage_evaled_without_weights_not_untrained(tmp_path):
+    # eval-only pulls (no model.eqx synced): an arch WITH held-out eval must NOT
+    # be reported 'untrained' (it was obviously trained) -> no false "NOT TRAINED"
+    # footer on the figures.
+    run = tmp_path / "r"
+    run.mkdir()
+    specs = [{"arch": "deep", "subset_size": 1},
+             {"arch": "deep_cusp", "subset_size": 1}]
+    (run / "manifest.json").write_text(json.dumps(
+        {"n_specs": 2, "width": 4,
+         "specs": [{"index": i, "spec_file": f"spec_{i:04d}.spec",
+                    "sha256": "x" * 64, "cell": c} for i, c in enumerate(specs)]}))
+    (run / "specs").mkdir()
+    for i in range(2):
+        eh = run / "checkpoints" / f"spec_{i:04d}" / "eval_holdout"
+        eh.mkdir(parents=True)
+        (eh / "per_reaction.json").write_text(json.dumps([
+            {"name": "x", "pool": "bh76", "reaction_energy_ref_kcalmol": 1.0,
+             "de_nn_kcalmol": 1.0, "de_pbe_kcalmol": 1.0,
+             "abs_error_nn_kcalmol": 0.1, "abs_error_pbe_kcalmol": 0.1}]))
+        # deliberately NO model.eqx (weights not pulled)
+    cov = fig.arch_coverage(run)
+    assert set(cov["holdout"]) == {"deep", "deep_cusp"}
+    assert cov["untrained"] == []     # eval'd -> trained, despite missing weights
+    # coverage count must not collapse to model.eqx count (0 here): both eval'd
+    assert fig.trained_spec_count(run) == 2
+
+
+def test_newest_run_per_basis_picks_latest(tmp_path):
+    root, runs = _make_bh76w411_results(tmp_path)
+    got = fig._newest_run_per_basis(root, ("svp_grid2", "tzvpd_grid2_df"))
+    assert got["svp_grid2"].name == "run_20260603T163407Z"
+    assert got["tzvpd_grid2_df"].name == "run_20260604T230749Z"
+
+
+def test_figure_cell_coverage_reports_renderable_cells(tmp_path):
+    root, runs = _make_bh76w411_results(tmp_path)
+    cov = fig.figure_cell_coverage(runs["svp_grid2"])
+    # deep×{1,3} + deep_notransform×{1,3} are eval'd (deep_attn trained-no-eval
+    # / untrained -> not rendered)
+    assert cov["n_cells"] == 4
+    assert set(cov["archs"]) == {"deep", "deep_notransform"}
+    assert cov["subsets"] == [1, 3]
+    assert cov["archs_not_in_order"] == []     # all renderable -> no silent drop
+    # ARCH_ORDER archs with no eval cell yet (judged by eval, not model.eqx):
+    # deep_attn is trained-but-uneval'd in the fixture -> reported missing
+    assert "deep_attn" in cov["archs_missing"]
+    assert "deep" not in cov["archs_missing"] and \
+           "deep_notransform" not in cov["archs_missing"]
+
+
+def test_build_bh76w411_suite_writes_all_families(tmp_path):
+    root, runs = _make_bh76w411_results(tmp_path)
+    outroot = tmp_path / "figs"
+    written = fig.build_bh76w411_suite(results_root=root, outroot=outroot)
+    assert written and all(_png_ok(p) for p in written)
+    parents = {p.parent.name for p in written}
+    assert "figures_svp" in parents          # per-basis (svp_grid2 -> svp)
+    assert "figures_tzvpd_df" in parents     # per-basis (tzvpd_grid2_df -> tzvpd_df)
+    assert "figures_basis_comparison" in parents
+    names = {p.name for p in written}
+    assert "basis_comparison.png" in names and "basis_comparison_no_refs.png" in names
+    assert "ablation_arch_subset_heatmap.png" in names   # per-basis ablation set
+
+
+def test_build_bh76w411_suite_rejects_unknown_arch(tmp_path, monkeypatch):
+    # an arch present in the data but absent from ARCH_ORDER must FAIL LOUD
+    # (it would otherwise be silently dropped from the per-arch plots)
+    root, runs = _make_bh76w411_results(tmp_path)
+    monkeypatch.setattr(fig, "ARCH_ORDER", ("deep",))   # drop deep_notransform
+    import pytest
+    with pytest.raises(ValueError, match="not in ARCH_ORDER"):
+        fig.build_bh76w411_suite(results_root=root, outroot=tmp_path / "f2")
+
+
 def test_w411_natoms_map_counts_atoms():
     nm = fig._w411_natoms_map()
     assert nm.get("w411_propane_atomization") == 11  # C3H8 = 11 atoms

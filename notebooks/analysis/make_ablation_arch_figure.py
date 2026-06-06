@@ -166,10 +166,16 @@ def collect_insample_ae_rows(run_dir: Path) -> List[Dict[str, Any]]:
 
 
 def trained_spec_count(run_dir: Path) -> int:
-    """Number of specs with a materialized ``model.eqx`` (trained)."""
+    """Number of specs that ran training -- evidenced by a materialized
+    ``model.eqx`` OR any eval output (``eval_holdout/per_reaction.json`` or
+    ``eval/per_molecule.json``). Eval output implies the spec trained even when
+    its weights were not pulled (eval-only sync), so the figure's coverage count
+    is not understated to ``1/48`` when only one model.eqx came down."""
     n = 0
     for _idx, spec_dir in ccp._spec_dirs(run_dir):
-        if (spec_dir / "model.eqx").is_file():
+        if ((spec_dir / "model.eqx").is_file()
+                or (spec_dir / "eval_holdout" / "per_reaction.json").is_file()
+                or (spec_dir / "eval" / "per_molecule.json").is_file()):
             n += 1
     return n
 
@@ -207,7 +213,9 @@ def arch_coverage(run_dir: Path) -> Dict[str, List[str]]:
         "trained": _ordered(trained),
         "holdout": _ordered(holdout),
         "insample": _ordered(insample),
-        "untrained": _ordered(grid_archs - trained),
+        # An arch with held-out or in-sample eval was obviously trained, so it is
+        # NOT untrained even when its model.eqx was not pulled (eval-only sync).
+        "untrained": _ordered(grid_archs - trained - holdout - insample),
     }
 
 
@@ -2775,6 +2783,98 @@ def build_all(run_dir: Path, outdir: Path) -> List[Path]:
     return written
 
 
+_BH76W411_BASES: Tuple[str, ...] = ("svp_grid2", "tzvpd_grid2_df")
+
+
+def _basis_fig_alias(basis: str) -> str:
+    """Output-dir alias for a basis: ``svp_grid2`` -> ``svp`` (figures_svp),
+    ``tzvpd_grid2_df`` -> ``tzvpd_df`` (figures_tzvpd_df)."""
+    return basis.replace("_grid2", "")
+
+
+def _newest_run_per_basis(results_root: Path,
+                          bases: Tuple[str, ...] = _BH76W411_BASES,
+                          domain: str = "bh76w411_repr") -> Dict[str, Path]:
+    """Map each basis -> its newest ``run_*`` dir under
+    ``<results_root>/<domain>/<basis>/runs/``. ISO-Z timestamps sort
+    lexicographically, so the last ``sorted`` entry is the latest pull."""
+    out: Dict[str, Path] = {}
+    for basis in bases:
+        runs_dir = Path(results_root) / domain / basis / "runs"
+        runs = sorted(runs_dir.glob("run_*"))
+        if not runs:
+            raise FileNotFoundError(f"no run_* dir under {runs_dir}")
+        out[basis] = runs[-1]
+    return out
+
+
+def figure_cell_coverage(run_dir: Path) -> Dict[str, Any]:
+    """What the figures will actually render for a run: every held-out (arch,
+    subset_size) cell, plus a guard list ``archs_not_in_order`` of archs present
+    in the data but absent from ``ARCH_ORDER`` (the per-arch plots cannot
+    order/colour those, so they would be silently dropped)."""
+    mae = reaction_mae_by_arch_subset(collect_holdout_reaction_rows(run_dir))
+    cells = sorted(mae.keys())
+    archs = sorted({a for a, _ in cells})
+    return {
+        "run": run_dir.name,
+        "n_cells": len(cells),
+        "cells": cells,
+        "archs": archs,
+        "subsets": sorted({s for _, s in cells}),
+        # archs the figure CANNOT render (present in data, absent from ARCH_ORDER)
+        "archs_not_in_order": [a for a in archs if a not in ARCH_ORDER],
+        # ARCH_ORDER archs with NO held-out eval cell yet (run still in progress);
+        # judged by eval coverage, not model.eqx (weights are often not pulled)
+        "archs_missing": [a for a in ARCH_ORDER if a not in archs],
+        "coverage": arch_coverage(run_dir),
+    }
+
+
+def build_bh76w411_suite(results_root: Optional[Path] = None,
+                         outroot: Optional[Path] = None,
+                         bases: Tuple[str, ...] = _BH76W411_BASES) -> List[Path]:
+    """Regenerate EVERY bh76w411 figure family from the newest run per basis, so a
+    fresh spec pull lands on all figures in one call. Per basis: the arch-aware
+    ablation set (:func:`build_all`) + the held-out energy/density set
+    (:func:`build_density_energy_figures`) into ``figures_<alias>/``. Cross-basis:
+    the basis comparison + its no-references variant
+    (:func:`build_basis_comparison_figures`) and the diagnostic set
+    (:func:`build_diagnostic_figures`) into ``figures_basis_comparison/``.
+
+    Prints a per-run coverage report and FAILS LOUD if a run carries an arch
+    outside ``ARCH_ORDER`` (which the per-arch plots would drop); incomplete runs
+    (archs not yet eval'd) are reported, not masked. Returns every written path.
+    Figures are regenerated outputs -- callers do not version-control them."""
+    results_root = Path(results_root) if results_root else _DEFAULT_LOCAL_ROOT
+    outroot = Path(outroot) if outroot else Path(__file__).resolve().parent
+    runs = _newest_run_per_basis(results_root, bases)
+    written: List[Path] = []
+    ordered_runs: List[Path] = []
+    for basis in bases:
+        run = runs[basis]
+        ordered_runs.append(run)
+        cov = figure_cell_coverage(run)
+        print(f"[{basis}] {cov['run']}: {cov['n_cells']} cells  "
+              f"archs={cov['archs']}  subsets={cov['subsets']}")
+        if cov["archs_not_in_order"]:
+            raise ValueError(
+                f"{basis} {cov['run']} has archs not in ARCH_ORDER "
+                f"{cov['archs_not_in_order']}; add them to ARCH_ORDER/ARCH_COLOR "
+                "(and the per-arch F_x/F_c forms) before regenerating, else they "
+                "are dropped from the figures.")
+        if cov["archs_missing"]:
+            print(f"   (incomplete -- ARCH_ORDER archs with no held-out eval cell "
+                  f"yet: {cov['archs_missing']})")
+        fdir = outroot / f"figures_{_basis_fig_alias(basis)}"
+        written += build_all(run, fdir)
+        written += build_density_energy_figures(run, fdir)
+    cmp_dir = outroot / "figures_basis_comparison"
+    written += build_basis_comparison_figures(ordered_runs, cmp_dir)
+    written += build_diagnostic_figures(ordered_runs, cmp_dir)
+    return written
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2783,8 +2883,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                         f"{_DEFAULT_LOCAL_ROOT / _DEFAULT_CATEGORY})")
     p.add_argument("--outdir", default=str(
         Path(__file__).resolve().parent / "figures_ablation_notransform"),
-        help="output directory for PNGs")
+        help="output directory for PNGs (single-run mode)")
+    p.add_argument("--suite", action="store_true",
+                   help="regenerate ALL bh76w411 figure families (both bases) "
+                        "from the newest run per basis, into figures_<basis>/ + "
+                        "figures_basis_comparison/ next to this script")
+    p.add_argument("--results-root", default=None,
+                   help="results runs root for --suite "
+                        f"(default: {_DEFAULT_LOCAL_ROOT})")
     args = p.parse_args(argv)
+
+    if args.suite:
+        written = build_bh76w411_suite(results_root=args.results_root)
+        for pth in written:
+            print(f"  wrote {pth}")
+        return 0
 
     run_dir = _resolve_run_dir(args.run_dir)
     outdir = Path(args.outdir).expanduser().resolve()
