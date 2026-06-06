@@ -2370,6 +2370,69 @@ def _methods_references() -> List[str]:
     ]
 
 
+_DESCRIPTOR_X_LABELS: Dict[str, Tuple[str, ...]] = {
+    # x-labels each descriptor group contributes, in feature order (col3 defines
+    # x_4,x_5 = cusp and x_6,x_7,x_8 = the 1-RDM statistics).
+    "cusp": ("x_4", "x_5"),
+    "dm_statistics": ("x_6", "x_7", "x_8"),
+}
+
+
+def _arch_input_forms(arch_names: Tuple[str, ...] = ARCH_ORDER,
+                      polarized: bool = True) -> Dict[str, Dict[str, Any]]:
+    """Per-arch X-net (F_x) and C-net (F_c) MLP input signatures, derived from
+    each ArchitectureConfig's descriptor list. Descriptor extras are concatenated
+    in the arch's descriptor order -- exactly the order networks.py packs them
+    (descriptors.py: ``concatenate([d.compute() for d in descriptors])``) -- so
+    e.g. deep_combined (descriptors ``[dm_statistics, cusp]``) packs the DM block
+    x_6,x_7,x_8 BEFORE the cusp block x_4,x_5.  Both nets receive the same extras;
+    ``polarized`` reflects the run-wide ``use_polarized_correlation`` override
+    (True for the bh76w411 runs), which adds x_1 to the C-net.  Source of truth:
+    ``xcquinox.alec.config.ARCHITECTURES``."""
+    from xcquinox.alec.config import ARCHITECTURES
+    out: Dict[str, Dict[str, Any]] = {}
+    for name in arch_names:
+        cfg = ARCHITECTURES[name]
+        extras: List[str] = []
+        for spec in cfg.descriptors:
+            extras.extend(_DESCRIPTOR_X_LABELS[spec.name])
+        out[name] = {
+            "fx": ["x_2", *extras],
+            "fc": ["r_s", "x_2", *(["x_1"] if polarized else []), *extras],
+            "attention": cfg.attention,
+            "log_transform": cfg.descriptor_log_transform,
+        }
+    return out
+
+
+def _arch_forms_lines(arch_names: Tuple[str, ...] = ARCH_ORDER,
+                      polarized: bool = True) -> List[str]:
+    """Full-width methods lines giving the explicit $F_x$/$F_c$ MLP-input form of
+    each figure architecture.  Archs sharing an identical form are grouped (the
+    attention variants share their base's inputs; notransform shares deep's
+    inputs but unleashed from the log-transform)."""
+    forms = _arch_input_forms(arch_names, polarized=polarized)
+    groups: List[Tuple[Tuple[Any, ...], List[str]]] = []
+    for name in arch_names:
+        f = forms[name]
+        key = (tuple(f["fx"]), tuple(f["fc"]), f["log_transform"])
+        for k, names in groups:
+            if k == key:
+                names.append(name)
+                break
+        else:
+            groups.append((key, [name]))
+    lines = [r"Per-arch MLP inputs (X-net $F_x$, C-net $F_c$; descriptor extras "
+             r"concatenated in arch order):"]
+    for (fx, fc, logt), names in groups:
+        raw = "" if logt else r"   [$s,r_s$ raw -- no log-transform]"
+        lines.append(rf"  {', '.join(names)}:  "
+                     rf"$F_x({', '.join(fx)})$,  $F_c({', '.join(fc)})${raw}")
+    lines.append(r"  $\_$attn variants add per-grid channel attention [19]; "
+                 r"MLP inputs unchanged.")
+    return lines
+
+
 def _render_reaction(reactants: List[str], products: List[str]) -> str:
     """``reactants -> products`` in mathtext, species via :func:`_chem_latex`."""
     lhs = r" $+$ ".join(_chem_latex(r) for r in reactants)
@@ -2417,20 +2480,24 @@ def _methods_textblock(fig, subsets: Dict[int, List[str]], y_top: float = 0.28,
         fig.text(x, y_top + dy, "\n".join(col), va="top", ha="left",
                  fontsize=fontsize, family="serif")
     max_col = max(len(c) for c in cols)
+    arch_lines = _arch_forms_lines()
     refs = _methods_references() if include_references else []
     footer = _subset_reaction_lines(reactions) if reactions else []
     if fig_h:
         line_frac = fontsize * 1.58 / (72.0 * fig_h)
-        # full-width block starts clear of the tallest column
-        y = y_top - (max_col + 3.0) * line_frac
-        if refs:                                   # references key (optional)
+        # full-width per-arch F_x/F_c forms, clear of the tallest column ...
+        y = y_top - (max_col + 2.0) * line_frac
+        fig.text(xs[0], y, "\n".join(arch_lines), va="top", ha="left",
+                 fontsize=fontsize, family="serif")
+        y -= (len(arch_lines) + 2.0) * line_frac
+        if refs:                                   # ... the references key (optional) ...
             fig.text(xs[0], y, "\n".join(refs), va="top", ha="left",
                      fontsize=fontsize - 0.5, family="serif")
-            y -= (len(refs) + 2.0) * line_frac     # slide footer below the refs
-        if footer:                                 # training-content footer (kept)
+            y -= (len(refs) + 2.0) * line_frac
+        if footer:                                 # ... and the training-content footer (kept)
             fig.text(xs[0], y, "\n".join(footer), va="top", ha="left",
                      fontsize=fontsize, family="serif")
-    return max_col + len(refs) + (len(footer) + 6 if footer else 4)
+    return max_col + len(arch_lines) + len(refs) + (len(footer) + 8 if footer else 6)
 
 
 def run_basis_label(run_dir: Path) -> str:
@@ -2490,13 +2557,15 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         subsets = training_subsets_by_size(runs[0][0]) if runs else {}
         reactions = training_reactions_by_size(runs[0][0]) if runs else {}
         FS = 6.2
-        # height = tallest column + full-width references key + subset footer (+gaps)
+        # height = tallest column + full-width per-arch forms + references key
+        # + subset footer, each separated by a 2-line gap (+ top/bottom pads).
         n_cols = max(len(c) for c in _methods_columns(subsets))
+        n_arch = len(_arch_forms_lines())
         n_refs = len(_methods_references()) if include_references else 0
-        n_foot = (len(_subset_reaction_lines(reactions)) + 2) if reactions else 0
-        # +6 gap allowance with refs (3 above refs, 2 above footer, 1 pad);
-        # +4 without refs (footer takes the refs' slot: 3 gap + 1 pad).
-        n_meth = n_cols + n_foot + (n_refs + 6 if include_references else 4)
+        n_footlines = len(_subset_reaction_lines(reactions)) if reactions else 0
+        n_meth = (n_cols + 2 + n_arch
+                  + ((2 + n_refs) if include_references else 0)
+                  + ((2 + n_footlines) if n_footlines else 0) + 3)
         meth_h = n_meth * FS * 1.58 / 72.0 + 0.06   # methods text block (~1.2 linespacing)
         panels_h, xlabel_h = 3.5, 0.72              # panels + rotated cell labels
         legend_h, gap1, gap2 = 0.30, 0.06, 0.10     # legend band: methods | legend | labels

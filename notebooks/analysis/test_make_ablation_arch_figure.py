@@ -669,6 +669,49 @@ def test_chem_latex_renders_in_methods(tmp_path):
     assert out.stat().st_size > 2000
 
 
+def test_arch_input_forms_match_config():
+    forms = fig._arch_input_forms(fig.ARCH_ORDER)
+    # base archs (polarized run): F_x(x_2), F_c(r_s, x_2, x_1)
+    assert forms["deep"]["fx"] == ["x_2"]
+    assert forms["deep"]["fc"] == ["r_s", "x_2", "x_1"]
+    # cusp adds x_4,x_5 to BOTH nets; dm adds x_6,x_7,x_8
+    assert forms["deep_cusp"]["fx"] == ["x_2", "x_4", "x_5"]
+    assert forms["deep_cusp"]["fc"] == ["r_s", "x_2", "x_1", "x_4", "x_5"]
+    assert forms["deep_dm"]["fx"] == ["x_2", "x_6", "x_7", "x_8"]
+    # combined packs the DM block (x_6,x_7,x_8) BEFORE cusp (x_4,x_5) -- the
+    # networks.py concat order (descriptors=[dm_statistics, cusp])
+    assert forms["deep_combined"]["fx"] == ["x_2", "x_6", "x_7", "x_8", "x_4", "x_5"]
+    assert forms["deep_combined"]["fc"] == [
+        "r_s", "x_2", "x_1", "x_6", "x_7", "x_8", "x_4", "x_5"]
+    # _attn shares its base's inputs; notransform shares deep's inputs but raw
+    assert forms["deep_combined_attn"]["fx"] == forms["deep_combined"]["fx"]
+    assert forms["deep_attn"]["attention"] is True
+    assert forms["deep_notransform"]["fx"] == forms["deep"]["fx"]
+    assert forms["deep_notransform"]["log_transform"] is False
+
+
+def test_arch_forms_lines_cover_each_arch():
+    lines = fig._arch_forms_lines()
+    joined = " ".join(lines)
+    for a in fig.ARCH_ORDER:                 # every figure arch is named
+        assert a in joined
+    # explicit F_x / F_c forms appear verbatim
+    assert "F_x(x_2, x_4, x_5)" in joined                                # cusp
+    assert "F_c(r_s, x_2, x_1, x_6, x_7, x_8, x_4, x_5)" in joined        # combined
+    assert "raw" in joined.lower()           # notransform note
+    # renders as valid mathtext
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    f = plt.figure(figsize=(22, 4))
+    f.text(0.02, 0.5, "\n".join(lines), fontsize=6.2, family="serif")
+    import os
+    out = "/tmp/_archforms_canary.png"
+    f.savefig(out, dpi=80)
+    plt.close(f)
+    assert os.path.getsize(out) > 1500
+
+
 def test_methods_textblock_can_omit_references(tmp_path):
     import matplotlib
     matplotlib.use("Agg")
