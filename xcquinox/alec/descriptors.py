@@ -75,13 +75,14 @@ class CuspDescriptor(Descriptor):
       * Column 0 ``cusp_factor = exp(-2 Z_nearest r_min)`` ∈ [0, 1], where
         Z_nearest is the charge of the nearest nucleus and r_min is the
         distance to it. This is a heuristic proximity feature motivated by
-        the Kato electron-nucleus cusp condition (Kato, *Commun. Pure Appl.
-        Math.* 10, 151 (1957)), whose exact statement is
-        ``(∂⟨ρ⟩/∂r)|_{r=0} = -2Z·ρ(0)`` on the spherically-averaged density;
-        the exponential decay here approximates the resulting density-form
-        Slater envelope ``exp(-2 Z r)`` (the density ρ=|ψ|² decays at twice the
-        ``exp(-Z r)`` wavefunction rate) rather than enforcing the condition
-        exactly.
+        the electron-nucleus cusp condition. Kato (*Commun. Pure Appl.
+        Math.* 10, 151 (1957)) fixes the wavefunction cusp
+        ``(∂⟨ψ⟩/∂r)|_{r=0} = -Z·ψ(0)``; the corresponding spherically-averaged
+        density relation ``(∂⟨ρ⟩/∂r)|_{r=0} = -2Z·ρ(0)`` is due to Steiner
+        (*J. Chem. Phys.* 39, 2365 (1963)). The exponential decay here
+        approximates the resulting density-form Slater envelope ``exp(-2 Z r)``
+        (the density ρ=|ψ|² decays at twice the ``exp(-Z r)`` wavefunction
+        rate) rather than enforcing the condition exactly.
       * Column 1 (``log_transform=True``):
         ``tanh(log(Σ_A Z_A / r_A) / 5)`` ∈ (-1, 1), log-compressed
         nuclear-attraction-like weight (Dick & Fernández-Serra XCDiff

@@ -246,8 +246,9 @@ def compute_cusp_distances(grid_coords: jnp.ndarray,
     nearest_idx = jnp.argmin(distances, axis=1)  # (N,)
     Z_nearest = nuclear_charges[nearest_idx]  # (N,)
 
-    # Cusp decay factor: exponential decay from nearest nucleus
-    # This is related to the Slater-type cusp: psi ~ exp(-Z*r)
+    # Cusp decay factor: exponential decay from nearest nucleus.
+    # Slater-type cusp: psi ~ exp(-Z*r) [Kato 1957]; the density rho=|psi|^2
+    # ~ exp(-2*Z*r) decays at twice that rate [Steiner, JCP 39, 2365 (1963)].
     cusp_factor = jnp.exp(-2 * Z_nearest * r_min)
 
     # Weighted sum of nuclear contributions (Coulomb-like)
