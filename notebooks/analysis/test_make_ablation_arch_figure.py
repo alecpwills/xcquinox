@@ -550,9 +550,53 @@ def test_classify_failures_structure(tmp_path):
 
 
 def test_plot_failure_diagnostic_renders(tmp_path):
-    out = fig.plot_failure_diagnostic([(_make_run_dir(tmp_path), "def2-svp")],
-                                      tmp_path / "fail.png", _STAMP)
+    # Two bases -> the right column carries one stacked capacity-ladder sub-panel
+    # per basis (def2-svp + def2-tzvpd+DF), not just the primary one.
+    r1 = _make_run_dir(tmp_path / "a")
+    r2 = _make_run_dir(tmp_path / "b")
+    out = fig.plot_failure_diagnostic(
+        [(r1, "def2-svp"), (r2, "def2-tzvpd+DF")], tmp_path / "fail.png", _STAMP)
     assert _png_ok(out)
+
+
+def test_heldout_pbe_ratio_matches_pass_boundary():
+    # the Panel-A y value (held-out / own PBE) crosses 1.0 at exactly the same
+    # place _classify_cell flips pass<->fail, so colour matches position.
+    assert fig._heldout_pbe_ratio({"heldout_mae": 5.0, "pbe_mae": 10.0}) == 0.5
+    assert fig._heldout_pbe_ratio({"heldout_mae": 12.0, "pbe_mae": 10.0}) == 1.2
+    assert fig._heldout_pbe_ratio({"heldout_mae": 1.0, "pbe_mae": 0}) is None
+    assert fig._heldout_pbe_ratio({"heldout_mae": None, "pbe_mae": 10.0}) is None
+    # pass (green, below the line) <=> ratio <= 1 ; fail (above) <=> ratio > 1
+    assert fig._classify_cell(9.0, 10.0, 1e-3, 1e-3) == "pass"
+    assert fig._heldout_pbe_ratio({"heldout_mae": 9.0, "pbe_mae": 10.0}) <= 1.0
+    assert fig._classify_cell(12.0, 10.0, 1e-3, 1e-3) == "generalization_gap"
+    assert fig._heldout_pbe_ratio({"heldout_mae": 12.0, "pbe_mae": 10.0}) > 1.0
+
+
+def test_ladder_bases_includes_both(tmp_path):
+    r1 = _make_run_dir(tmp_path / "a")
+    r2 = _make_run_dir(tmp_path / "b")
+    cells = fig.classify_failures([(r1, "def2-svp"), (r2, "def2-tzvpd+DF")])
+    # both bases rendered in the right column, svp first (run order preserved)
+    assert fig._ladder_bases(cells) == ["def2-svp", "def2-tzvpd+DF"]
+
+
+def test_failure_caption_drops_generalization_gap(tmp_path):
+    r1 = _make_run_dir(tmp_path / "a")
+    r2 = _make_run_dir(tmp_path / "b")
+    cells = fig.classify_failures([(r1, "def2-svp"), (r2, "def2-tzvpd+DF")])
+    cap = fig._failure_caption(cells, fig._ladder_bases(cells))
+    assert "Late training instability" in cap
+    assert "Beats PBE" in cap
+    assert "Generalization gap" not in cap          # list removed from the caption
+
+
+def test_build_per_run_diagnostics_writes_two(tmp_path):
+    run = _make_run_dir(tmp_path)
+    written = fig.build_per_run_diagnostics(run, tmp_path / "out", "def2-svp")
+    assert {p.name for p in written} == {"diagnostic_size_consistency.png",
+                                         "diagnostic_training_losses.png"}
+    assert all(_png_ok(p) for p in written)
 
 
 def test_heatmap_panel_diverging_renders(tmp_path):
@@ -880,6 +924,7 @@ def test_build_basis_comparison_writes(tmp_path):
     names = {p.name for p in written}
     assert "basis_comparison.png" in names          # full figure (with refs)
     assert "basis_comparison_no_refs.png" in names  # variant w/o references key
+    assert "basis_comparison_clean.png" in names    # bars-only (no bottom notes)
 
 
 def test_plot_basis_comparison_omits_references(tmp_path):
@@ -889,6 +934,20 @@ def test_plot_basis_comparison_omits_references(tmp_path):
         [(ra, "def2-svp"), (rb, "def2-tzvpd+DF")], tmp_path / "nr.png", "cmp",
         include_references=False)
     assert _png_ok(out)
+
+
+def test_plot_basis_comparison_bars_only_is_shorter(tmp_path):
+    # bars-only drops every bottom annotation -> a much shorter figure than the
+    # fully-annotated default (verified via the rendered pixel height).
+    from PIL import Image
+    ra = _make_run_dir(tmp_path / "a")
+    rb = _make_run_dir(tmp_path / "b")
+    runs = [(ra, "def2-svp"), (rb, "def2-tzvpd+DF")]
+    full = fig.plot_basis_comparison(runs, tmp_path / "full.png", "cmp")
+    clean = fig.plot_basis_comparison(runs, tmp_path / "clean.png", "cmp",
+                                      bars_only=True)
+    assert _png_ok(clean)
+    assert Image.open(clean).size[1] < Image.open(full).size[1]
 
 
 def _make_bh76w411_results(tmp_path):
@@ -964,6 +1023,17 @@ def test_figure_cell_coverage_reports_renderable_cells(tmp_path):
            "deep_notransform" not in cov["archs_missing"]
 
 
+def _add_best_eval(run_dir):
+    """Duplicate each spec's eval_holdout/ -> eval_holdout_best/ so the suite's
+    best-checkpoint figure set has data to render (mirrors the cluster's default
+    second eval pass on model_best.eqx)."""
+    import shutil
+    for sd in (run_dir / "checkpoints").glob("spec_*"):
+        eh = sd / "eval_holdout"
+        if eh.is_dir():
+            shutil.copytree(eh, sd / "eval_holdout_best", dirs_exist_ok=True)
+
+
 def test_build_bh76w411_suite_writes_all_families(tmp_path):
     root, runs = _make_bh76w411_results(tmp_path)
     outroot = tmp_path / "figs"
@@ -976,6 +1046,41 @@ def test_build_bh76w411_suite_writes_all_families(tmp_path):
     names = {p.name for p in written}
     assert "basis_comparison.png" in names and "basis_comparison_no_refs.png" in names
     assert "ablation_arch_subset_heatmap.png" in names   # per-basis ablation set
+    # newly-wired per-basis families (previously generated by hand -> went stale)
+    assert "ablation_parity_arch_cols.png" in names      # parity-layout variants
+    assert "diagnostic_size_consistency.png" in names    # per-run diagnostics
+    assert "diagnostic_training_losses.png" in names
+    # no eval_holdout_best/ in this fixture -> NO best figure set (backward compat)
+    assert not any(p.parent.name.endswith("_best") for p in written)
+
+
+def test_collect_holdout_reads_named_eval_subdir(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_best_eval(run)
+    final = fig.collect_holdout_reaction_rows(run)
+    best = fig.collect_holdout_reaction_rows(run, eval_subdir="eval_holdout_best")
+    assert best and len(best) == len(final)        # best dir mirrors final here
+    # absent subdir -> empty (no crash), so older runs just skip the best set
+    bare = _make_run_dir(tmp_path / "bare")
+    assert fig.collect_holdout_reaction_rows(
+        bare, eval_subdir="eval_holdout_best") == []
+
+
+def test_build_bh76w411_suite_emits_best_set_when_present(tmp_path):
+    # eval_holdout_best/ present -> a SECOND, parallel figure set into
+    # figures_<alias>_best/ + figures_basis_comparison_best/ (doubled figures).
+    root, runs = _make_bh76w411_results(tmp_path)
+    for r in runs.values():
+        _add_best_eval(r)
+    outroot = tmp_path / "figs"
+    written = fig.build_bh76w411_suite(results_root=root, outroot=outroot)
+    assert written and all(_png_ok(p) for p in written)
+    parents = {p.parent.name for p in written}
+    # both the final set AND the best set are present
+    assert {"figures_svp", "figures_svp_best",
+            "figures_tzvpd_df", "figures_tzvpd_df_best",
+            "figures_basis_comparison",
+            "figures_basis_comparison_best"} <= parents
 
 
 def test_build_bh76w411_suite_rejects_unknown_arch(tmp_path, monkeypatch):

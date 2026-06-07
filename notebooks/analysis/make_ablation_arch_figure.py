@@ -114,19 +114,23 @@ def _is_num(v: Any) -> bool:
 # Data ingest
 # ---------------------------------------------------------------------------
 
-def collect_holdout_reaction_rows(run_dir: Path) -> List[Dict[str, Any]]:
-    """Read every ``checkpoints/spec_*/eval_holdout/per_reaction.json`` (the
+def collect_holdout_reaction_rows(run_dir: Path,
+                                  eval_subdir: str = "eval_holdout"
+                                  ) -> List[Dict[str, Any]]:
+    """Read every ``checkpoints/spec_*/<eval_subdir>/per_reaction.json`` (the
     cluster-side held-out reaction eval) and join with the manifest cell.
 
     One row per (spec, reaction); schema mirrors
-    ``ccp.collect_per_reaction_rows`` but sourced from ``eval_holdout/`` rather
+    ``ccp.collect_per_reaction_rows`` but sourced from ``<eval_subdir>/`` rather
     than the local-reeval ``eval/local_per_reaction.json``. Specs without the
     file (e.g. the 25 specs whose held-out eval did not run) are skipped.
+    ``eval_subdir`` selects the checkpoint variant: ``eval_holdout`` (final-step
+    weights, default) or ``eval_holdout_best`` (best-loss weights).
     """
     cells = ccp._read_manifest_cells(run_dir)
     rows: List[Dict[str, Any]] = []
     for idx, spec_dir in ccp._spec_dirs(run_dir):
-        rj_path = spec_dir / "eval_holdout" / "per_reaction.json"
+        rj_path = spec_dir / eval_subdir / "per_reaction.json"
         if not rj_path.is_file():
             continue
         try:
@@ -165,27 +169,29 @@ def collect_insample_ae_rows(run_dir: Path) -> List[Dict[str, Any]]:
     return out
 
 
-def trained_spec_count(run_dir: Path) -> int:
+def trained_spec_count(run_dir: Path,
+                       eval_subdir: str = "eval_holdout") -> int:
     """Number of specs that ran training -- evidenced by a materialized
-    ``model.eqx`` OR any eval output (``eval_holdout/per_reaction.json`` or
+    ``model.eqx`` OR any eval output (``<eval_subdir>/per_reaction.json`` or
     ``eval/per_molecule.json``). Eval output implies the spec trained even when
     its weights were not pulled (eval-only sync), so the figure's coverage count
     is not understated to ``1/48`` when only one model.eqx came down."""
     n = 0
     for _idx, spec_dir in ccp._spec_dirs(run_dir):
         if ((spec_dir / "model.eqx").is_file()
-                or (spec_dir / "eval_holdout" / "per_reaction.json").is_file()
+                or (spec_dir / eval_subdir / "per_reaction.json").is_file()
                 or (spec_dir / "eval" / "per_molecule.json").is_file()):
             n += 1
     return n
 
 
-def arch_coverage(run_dir: Path) -> Dict[str, List[str]]:
+def arch_coverage(run_dir: Path,
+                  eval_subdir: str = "eval_holdout") -> Dict[str, List[str]]:
     """Per-arch coverage of this (partial) run, computed from disk.
 
     Returns ``{"trained": [...], "holdout": [...], "insample": [...],
     "untrained": [...]}`` — arch names in ``ARCH_ORDER`` order. ``trained``
-    = has ``model.eqx``; ``holdout`` = has ``eval_holdout/per_reaction.json``;
+    = has ``model.eqx``; ``holdout`` = has ``<eval_subdir>/per_reaction.json``;
     ``insample`` = has ``eval/per_molecule.json``; ``untrained`` = arch in the
     manifest grid with no trained spec at all.
     """
@@ -200,7 +206,7 @@ def arch_coverage(run_dir: Path) -> Dict[str, List[str]]:
             continue
         if (spec_dir / "model.eqx").is_file():
             trained.add(arch)
-        if (spec_dir / "eval_holdout" / "per_reaction.json").is_file():
+        if (spec_dir / eval_subdir / "per_reaction.json").is_file():
             holdout.add(arch)
         if (spec_dir / "eval" / "per_molecule.json").is_file():
             insample.add(arch)
@@ -219,10 +225,10 @@ def arch_coverage(run_dir: Path) -> Dict[str, List[str]]:
     }
 
 
-def coverage_note(run_dir: Path) -> str:
+def coverage_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
     """One-line human summary of arch coverage for figure footers — makes the
     partial-run gaps explicit (no silent truncation)."""
-    cov = arch_coverage(run_dir)
+    cov = arch_coverage(run_dir, eval_subdir=eval_subdir)
     parts = [f"Held-out reactions: {len(cov['holdout'])}/{len(ARCH_ORDER)} archs "
              f"({', '.join(cov['holdout']) or 'none'})."]
     if cov["untrained"]:
@@ -238,12 +244,15 @@ def coverage_note(run_dir: Path) -> str:
 # Live (non-hardcoded) footer baselines
 # ---------------------------------------------------------------------------
 
-def _first_pbe_energies(run_dir: Path) -> Dict[str, float]:
+def _first_pbe_energies(run_dir: Path,
+                        eval_subdir: str = "eval_holdout") -> Dict[str, float]:
     """PBE energy map (molecule -> Hartree) from the first spec that carries an
-    ``eval_holdout/per_molecule.json``. PBE is invariant to the trained NN (only
-    SCF noise ~2.5e-6 Ha across specs), so any spec serves as the baseline."""
+    ``<eval_subdir>/per_molecule.json``. PBE is invariant to the trained NN (only
+    SCF noise ~2.5e-6 Ha across specs), so any spec serves as the baseline. The
+    best-checkpoint dir carries the SAME PBE energies, so the best figure set is
+    self-consistent reading its own subdir."""
     for pm in sorted(Path(run_dir).glob(
-            "checkpoints/spec_*/eval_holdout/per_molecule.json")):
+            f"checkpoints/spec_*/{eval_subdir}/per_molecule.json")):
         energies = {r["molecule"]: r["E_pbe"]
                     for r in json.loads(pm.read_text())
                     if isinstance(r.get("E_pbe"), (int, float))}
@@ -252,7 +261,8 @@ def _first_pbe_energies(run_dir: Path) -> Dict[str, float]:
     return {}
 
 
-def pbe_pool_baseline(run_dir: Path, *, _loader=None) -> Dict[str, float]:
+def pbe_pool_baseline(run_dir: Path, *, eval_subdir: str = "eval_holdout",
+                      _loader=None) -> Dict[str, float]:
     """Full-pool PBE reaction-energy MAE (kcal/mol): ``{bh76, w411, combined}``.
 
     The benchmark's inherent difficulty, independent of any train/held-out split
@@ -268,7 +278,7 @@ def pbe_pool_baseline(run_dir: Path, *, _loader=None) -> Dict[str, float]:
         _loader = load_full_held_out_pools
     from xcquinox.alec.eval_holdout import reaction_mae_kcalmol
     _, full_rxns = _loader()
-    pbe = _first_pbe_energies(run_dir)
+    pbe = _first_pbe_energies(run_dir, eval_subdir=eval_subdir)
     out: Dict[str, float] = {}
     for pool in ("bh76", "w411"):
         rx = [r for r in full_rxns if r.get("source_pool") == pool]
@@ -1308,15 +1318,16 @@ def plot_parity_grid_by_subset(rows: List[Dict[str, Any]], out_path: Path,
     return out_path
 
 
-def build_parity_variants(run_dir: Path, outdir: Path) -> List[Path]:
+def build_parity_variants(run_dir: Path, outdir: Path,
+                          eval_subdir: str = "eval_holdout") -> List[Path]:
     """Render all five parity-layout candidates into ``outdir`` for comparison."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    rows = collect_holdout_reaction_rows(run_dir)
+    rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
     run_id = run_dir.name
-    note = coverage_note(run_dir)
+    note = coverage_note(run_dir, eval_subdir=eval_subdir)
     try:
-        baseline = pbe_pool_baseline(run_dir)
+        baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:  # pool unavailable
         print(f"  (PBE baseline unavailable: {exc})")
         baseline = {"bh76": float("nan"), "w411": float("nan"),
@@ -1850,8 +1861,20 @@ def _classify_cell(heldout_mae: Optional[float], pbe_mae: Optional[float],
     return "generalization_gap"
 
 
+def _heldout_pbe_ratio(cell: Dict[str, Any]) -> Optional[float]:
+    """A cell's held-out MAE relative to ITS OWN per-cell PBE baseline. The
+    held-out reaction set differs per spec (each trains on a different subset), so
+    the per-cell PBE -- NOT a cohort mean -- is the honest denominator and the one
+    :func:`_classify_cell` uses. ``> 1`` <=> worse than PBE (a failure);
+    ``<= 1`` <=> beats PBE (pass), so the ratio's side of 1.0 matches the cell's
+    pass/fail colour exactly. None if either MAE is missing or PBE <= 0."""
+    hm, pm = cell.get("heldout_mae"), cell.get("pbe_mae")
+    return hm / pm if _is_num(hm) and _is_num(pm) and pm > 0 else None
+
+
 def classify_failures(runs: List[Tuple[Path, str]], *, instab_factor: float = 5.0,
-                      final_window: int = 50) -> List[Dict[str, Any]]:
+                      final_window: int = 50,
+                      eval_subdir: str = "eval_holdout") -> List[Dict[str, Any]]:
     """Per (arch, subset_size, basis) held-out diagnosis across several runs:
     combined held-out MAE + BH76/W4-11 split, that cell's per-reaction PBE
     baseline, the final-window training loss, and a :func:`_classify_cell`
@@ -1859,7 +1882,7 @@ def classify_failures(runs: List[Tuple[Path, str]], *, instab_factor: float = 5.
     :func:`reaction_mae_by_arch_subset`, and :func:`collect_training_losses`."""
     cells: List[Dict[str, Any]] = []
     for run_dir, basis in runs:
-        rows = collect_holdout_reaction_rows(run_dir)
+        rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
         bh = [r for r in rows if r.get("pool") == "bh76"]
         w4 = [r for r in rows if r.get("pool") == "w411"]
         nn = reaction_mae_by_arch_subset(rows)
@@ -1905,9 +1928,36 @@ def _primary_basis(cells: List[Dict[str, Any]]) -> Optional[str]:
     return max(counts, key=counts.get) if counts else None
 
 
+def _ladder_bases(cells: List[Dict[str, Any]]) -> List[str]:
+    """The bases rendered (one stacked capacity-ladder sub-panel each) in the
+    failure diagnostic's right column, in run order (def2-svp first, the sparse
+    DF run second). De-duplicated, order preserved."""
+    return list(dict.fromkeys(c["basis"] for c in cells))
+
+
+def _failure_caption(cells: List[Dict[str, Any]],
+                     bases: List[str]) -> str:
+    """Two-line failure-mechanism key for the figure footer: the late-instability
+    cells (eval uses the bad final checkpoint) and the cells that beat PBE. The
+    generalization-gap cells are read off Panel B's capacity ladder, so they are
+    NOT enumerated here (the list was unreadably long)."""
+    multi = len(bases) > 1
+
+    def _grp(label: str) -> str:
+        items = sorted(f"{c['arch']} ss{c['subset_size']}"
+                       + (f" ({c['basis']})" if multi else "")
+                       for c in cells if c["classification"] == label)
+        return ", ".join(items) if items else "(none)"
+
+    return (f"Late training instability (final loss is an outlier; eval uses the "
+            f"bad final checkpoint):  {_grp('late_instability')}.\n"
+            f"Beats PBE (pass):  {_grp('pass')}.")
+
+
 def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
                             run_id: str, note: str = "",
-                            provenance: Optional[str] = None) -> Path:
+                            provenance: Optional[str] = None,
+                            eval_subdir: str = "eval_holdout") -> Path:
     """Explain WHY each network fails. Panel A: the DECOUPLING -- final-window
     training loss (x, log) vs held-out combined MAE (y); nearly all cells reach a
     low train loss yet scatter widely in held-out error (they overfit the tiny
@@ -1915,49 +1965,54 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
     genuine training failure). Panel B: the capacity ladder -- held-out MAE/PBE by
     arch family, split BH76 (barriers) vs W4-11 (atomization), showing extra
     descriptors + attention worsen overfitting and the damage lands on W4-11."""
-    cells = classify_failures(runs)
-    bases = list(dict.fromkeys(c["basis"] for c in cells))
+    cells = classify_failures(runs, eval_subdir=eval_subdir)
+    bases = _ladder_bases(cells)
     mk = ["o", "^", "s", "D"]
     marker_for = {b: mk[i % len(mk)] for i, b in enumerate(bases)}
     with plt.rc_context(_STYLE):
-        fig = plt.figure(figsize=(14.0, 6.8))
-        gs = fig.add_gridspec(1, 2, left=0.06, right=0.985, top=0.9, bottom=0.30,
+        fig = plt.figure(figsize=(14.0, 8.0))
+        gs = fig.add_gridspec(1, 2, left=0.06, right=0.985, top=0.92, bottom=0.26,
                               wspace=0.22)
-        axA = fig.add_subplot(gs[0, 0])  # axB is built by _broken_bar_panel below
+        axA = fig.add_subplot(gs[0, 0])  # axB sub-panels built by _broken_bar_panel
 
-        # --- Panel A: decoupling scatter ---
+        # --- Panel A: decoupling scatter. y = each cell's held-out MAE RELATIVE
+        # TO ITS OWN PBE (per-cell, since the held-out set differs per spec), so
+        # PBE parity is a single exact line at 1.0 and the pass/fail COLOUR matches
+        # the point's side of the line (green below, orange/red above). A cohort
+        # mean-PBE line was misleading: a cell can sit below the mean yet still
+        # lose to its own (lower) PBE. ---
         for c in cells:
-            if not (_is_num(c["final_loss"]) and _is_num(c["heldout_mae"])):
+            r = _heldout_pbe_ratio(c)
+            if not (_is_num(c["final_loss"]) and _is_num(r)):
                 continue
-            axA.scatter(c["final_loss"], c["heldout_mae"],
+            axA.scatter(c["final_loss"], r,
                         color=_FAIL_COLORS[c["classification"]],
                         marker=marker_for.get(c["basis"], "o"), s=40,
                         edgecolor="k", linewidth=0.4, zorder=3)
-        pbes = [c["pbe_mae"] for c in cells if _is_num(c["pbe_mae"])]
-        if pbes:
-            axA.axhspan(min(pbes), max(pbes), color="0.75", alpha=0.35, zorder=0)
-            axA.axhline(float(np.mean(pbes)), ls="--", color="0.4", lw=1.0)
+        axA.axhline(1.0, ls="--", color="0.4", lw=1.0)  # PBE parity (held-out = PBE)
         med = cells[0].get("cohort_median_loss") if cells else None
         if _is_num(med):
             axA.axvline(5.0 * med, ls=":", color="#c0392b", lw=1.0)
-        # label the worst few cells
-        for c in sorted((c for c in cells if _is_num(c["heldout_mae"])),
-                        key=lambda c: -c["heldout_mae"])[:4]:
+        # label the worst few cells (largest held-out/PBE ratio)
+        for c in sorted((c for c in cells if _is_num(_heldout_pbe_ratio(c))),
+                        key=lambda c: -_heldout_pbe_ratio(c))[:4]:
             if _is_num(c["final_loss"]):
                 axA.annotate(f"{c['arch']} ss{c['subset_size']}",
-                             (c["final_loss"], c["heldout_mae"]), fontsize=6,
+                             (c["final_loss"], _heldout_pbe_ratio(c)), fontsize=6,
                              xytext=(4, 2), textcoords="offset points")
         axA.set_xscale("log")
         axA.set_xlabel("final-window training loss (mean of last 50 steps, log)",
                        fontsize=8)
-        axA.set_ylabel("held-out combined reaction MAE (kcal/mol)", fontsize=8)
-        axA.set_title("Training loss is decoupled from held-out error", fontsize=9)
+        axA.set_ylabel("held-out MAE / PBE (per cell;  >1 = worse than PBE)",
+                       fontsize=8)
+        axA.set_title("Training loss is decoupled from held-out accuracy vs PBE",
+                      fontsize=9)
         axA.grid(True, which="both", alpha=0.3)
         cls_handles = [Patch(facecolor=_FAIL_COLORS[k], edgecolor="k",
                              label=_FAIL_LABEL[k])
                        for k in ("pass", "generalization_gap", "late_instability")]
         cls_handles += [plt.Line2D([], [], ls="--", color="0.4",
-                                   label="PBE baseline (band)"),
+                                   label="PBE parity (held-out = PBE)"),
                         plt.Line2D([], [], ls=":", color="#c0392b",
                                    label="instability cut (5x median loss)")]
         if len(bases) > 1:
@@ -1966,56 +2021,53 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
         axA.legend(handles=cls_handles, fontsize=6.3, loc="upper left",
                    framealpha=0.7)
 
-        # --- Panel B: ss-RESOLVED capacity-ladder bars (one bar per arch x ss) ---
-        # NEVER averaged over subset_size -- at fixed (small) ss the capacity
-        # ladder is clean (deep < attn < cusp < combined < combined_attn) and each
-        # arch falls toward PBE as ss grows (overfitting relieved by data).
+        # --- Panel B: ss-RESOLVED capacity-ladder bars, ONE STACKED SUB-PANEL PER
+        # BASIS (def2-svp on top, def2-tzvpd+DF below) so the density-fitting run
+        # is shown alongside the dense svp run. Bars are NEVER averaged over
+        # subset_size -- at fixed (small) ss the capacity ladder is clean
+        # (deep < attn < cusp < combined < combined_attn) and each arch falls
+        # toward PBE as ss grows (overfitting relieved by data).
         present = {c["arch"] for c in cells}
         archs = [a for a in ARCH_ORDER if a in present]
         archs += sorted(present - set(archs))
-        prim = _primary_basis(cells)  # densest run (svp); the sparse one is in trends
-        pcells = [c for c in cells if c["basis"] == prim]
-        ss_vals = sorted({c["subset_size"] for c in pcells})
-        rmap = {(c["arch"], c["subset_size"]): c["heldout_mae"] / c["pbe_mae"]
-                for c in pcells if _is_num(c["heldout_mae"])
-                and _is_num(c["pbe_mae"]) and c["pbe_mae"] > 0}
+        # GLOBAL ss scale (over BOTH bases) so the viridis subset colours match
+        # between the two sub-panels.
+        ss_vals = sorted({c["subset_size"] for c in cells
+                          if _is_num(c.get("subset_size"))})
         nss = max(1, len(ss_vals))
         bw = 0.82 / nss
         norm_ss = matplotlib.colors.Normalize(min(ss_vals), max(ss_vals)) \
             if ss_vals else None
         cmap_ss = plt.get_cmap("viridis")
         ss_colors = [cmap_ss(norm_ss(ss)) if norm_ss else "0.5" for ss in ss_vals]
-        series = [(f"ss{ss}", [rmap.get((a, ss), float("nan")) for a in archs])
-                  for ss in ss_vals]
-        # Broken y-axis (reused, tested helper): the lone deep_attn-ss6 spike (5.4)
-        # shows at its TRUE height in an upper band (break ~3.4->5.1) instead of
-        # crushing the 0.6-3.1 bulk -- no cap, no floating label.
-        axB = _broken_bar_panel(
-            fig, gs[0, 1], series, archs, [],
-            f"Capacity ladder per subset_size ({prim});  >1 = worse than PBE",
-            "held-out MAE / PBE", ss_colors, bw)
-        axB.axhline(1.0, ls="--", color="0.3", lw=1.0)  # PBE parity
-        ss_handles = [Patch(facecolor=ss_colors[k], edgecolor="k", label=f"ss{ss}")
-                      for k, ss in enumerate(ss_vals)]
-        axB.legend(handles=ss_handles, fontsize=6.0, ncol=max(1, nss // 2),
-                   title="subset", title_fontsize=6.0, loc="upper left",
-                   framealpha=0.7)
+        gsB = gs[0, 1].subgridspec(max(1, len(bases)), 1, hspace=0.6)
+        for bi, basis in enumerate(bases):
+            pcells = [c for c in cells if c["basis"] == basis]
+            rmap = {(c["arch"], c["subset_size"]): c["heldout_mae"] / c["pbe_mae"]
+                    for c in pcells if _is_num(c["heldout_mae"])
+                    and _is_num(c["pbe_mae"]) and c["pbe_mae"] > 0}
+            series = [(f"ss{ss}", [rmap.get((a, ss), float("nan")) for a in archs])
+                      for ss in ss_vals]
+            # Broken y-axis (reused, tested helper): a lone spike (e.g. svp
+            # deep_attn-ss6 ~5.4) shows at its TRUE height in an upper band instead
+            # of crushing the bulk -- the break is decided independently per basis.
+            axB = _broken_bar_panel(
+                fig, gsB[bi, 0], series, archs, [],
+                f"Capacity ladder per subset_size ({basis});  >1 = worse than PBE",
+                "held-out MAE / PBE", ss_colors, bw)
+            axB.axhline(1.0, ls="--", color="0.3", lw=1.0)  # PBE parity
+            if bi == 0:
+                ss_handles = [Patch(facecolor=ss_colors[k], edgecolor="k",
+                                    label=f"ss{ss}")
+                              for k, ss in enumerate(ss_vals)]
+                axB.legend(handles=ss_handles, fontsize=6.0, ncol=max(1, nss // 2),
+                           title="subset", title_fontsize=6.0, loc="upper left",
+                           framealpha=0.7)
 
-        # --- classification key: every FAILING cell -> mechanism ---
-        def _grp(label: str) -> str:
-            items = sorted(f"{c['arch']} ss{c['subset_size']}"
-                           + (f" ({c['basis']})" if len(bases) > 1 else "")
-                           for c in cells if c["classification"] == label)
-            return ", ".join(items) if items else "(none)"
-
-        key = (f"Late training instability (final loss is an outlier; eval uses the "
-               f"bad final checkpoint):  {_grp('late_instability')}.\n"
-               f"Generalization gap (clean low train loss, but overfits the "
-               f"{ '~3-11' }-molecule held-in subset; damage on W4-11 atomization):  "
-               f"{_grp('generalization_gap')}.\n"
-               f"Beats PBE (pass):  {_grp('pass')}.")
-        fig.text(0.06, 0.2, key, ha="left", va="top", fontsize=6.6, family="serif",
-                 wrap=True)
+        # --- classification key: late-instability + beats-PBE cells (the
+        # generalization-gap cells are read off the capacity ladder above) ---
+        fig.text(0.06, 0.185, _failure_caption(cells, bases), ha="left", va="top",
+                 fontsize=6.6, family="serif", wrap=True)
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
             title="Failure-mechanism diagnostic (held-out vs training loss)")
@@ -2026,13 +2078,14 @@ def plot_failure_diagnostic(runs: List[Tuple[Path, str]], out_path: Path,
 
 def plot_capacity_trends(runs: List[Tuple[Path, str]], out_path: Path,
                          run_id: str, note: str = "",
-                         provenance: Optional[str] = None) -> Path:
+                         provenance: Optional[str] = None,
+                         eval_subdir: str = "eval_holdout") -> Path:
     """Secondary descriptive views of the same MAE/PBE structure: two diverging
     ratio heatmaps (BH76 barriers + W4-11 atomization, arch x ss, centered at PBE
     parity 1.0) showing the damage lands on W4-11; and a MAE/PBE-vs-subset_size
     line plot (one line per arch, basis = linestyle) making the capacity ordering
     and the fall-to-PBE-with-more-data trend explicit."""
-    cells = classify_failures(runs)
+    cells = classify_failures(runs, eval_subdir=eval_subdir)
     present = {c["arch"] for c in cells}
     archs = [a for a in ARCH_ORDER if a in present]
     archs += sorted(present - set(archs))
@@ -2529,19 +2582,27 @@ _BASIS_COLORS = ("#4477aa", "#cc6677", "#228833", "#ccbb44")
 def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                           run_id: str, note: str = "",
                           provenance: Optional[str] = None,
-                          include_references: bool = True) -> Path:
+                          include_references: bool = True,
+                          bars_only: bool = False,
+                          eval_subdir: str = "eval_holdout") -> Path:
     """Cross-basis comparison over the UNION of (arch, subset) cells present in
     ANY run: (a) combined held-out reaction-energy MAE, (b) 2-subset WTMAD-2, (c)
     in-sample density RMSE vs CCSD -- grouped bars by basis. A basis's bar is
     simply absent for a cell it hasn't run yet (leaving room as later runs, e.g.
     DF, fill in) -- completed cells are NEVER dropped for lack of a counterpart.
     Per-basis PBE baselines are dashed lines on the energy panels; the held-out
-    benchmark reference is basis-independent, so NN errors ARE comparable."""
+    benchmark reference is basis-independent, so NN errors ARE comparable.
+
+    ``bars_only`` drops EVERY bottom annotation (the 3-column methods block, the
+    per-arch forms, the references key, the subset-reaction footer and the
+    provenance line), leaving just the three panels + legend + title -- a compact,
+    easy-to-read variant for a slide/email. ``include_references`` is ignored when
+    ``bars_only`` is set."""
     with plt.rc_context(_STYLE):
         data = []
         cellsets = []
         for rd, label in runs:
-            rows = collect_holdout_reaction_rows(rd)
+            rows = collect_holdout_reaction_rows(rd, eval_subdir=eval_subdir)
             mae = reaction_mae_by_arch_subset(rows)
             wt = wtmad2_by_arch_subset(rows)
             pbe_mae = _mae([r["abs_error_pbe_kcalmol"]
@@ -2562,22 +2623,27 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
         # Size the figure to its content (inches): the methods band is placed
         # snug above the provenance so there is no trailing whitespace, and the
         # legend goes ABOVE the panels (clear of the rotated x-axis labels).
-        subsets = training_subsets_by_size(runs[0][0]) if runs else {}
-        reactions = training_reactions_by_size(runs[0][0]) if runs else {}
+        subsets = training_subsets_by_size(runs[0][0]) if runs and not bars_only else {}
+        reactions = training_reactions_by_size(runs[0][0]) if runs and not bars_only else {}
         FS = 6.2
         # height = tallest column + full-width per-arch forms + references key
         # + subset footer, each separated by a 2-line gap (+ top/bottom pads).
-        n_cols = max(len(c) for c in _methods_columns(subsets))
-        n_arch = len(_arch_forms_lines())
-        n_refs = len(_methods_references()) if include_references else 0
-        n_footlines = len(_subset_reaction_lines(reactions)) if reactions else 0
-        n_meth = (n_cols + 2 + n_arch
-                  + ((2 + n_refs) if include_references else 0)
-                  + ((2 + n_footlines) if n_footlines else 0) + 3)
-        meth_h = n_meth * FS * 1.58 / 72.0 + 0.06   # methods text block (~1.2 linespacing)
+        if bars_only:
+            meth_h = 0.0                            # no methods/footer/provenance
+        else:
+            n_cols = max(len(c) for c in _methods_columns(subsets))
+            n_arch = len(_arch_forms_lines())
+            n_refs = len(_methods_references()) if include_references else 0
+            n_footlines = len(_subset_reaction_lines(reactions)) if reactions else 0
+            n_meth = (n_cols + 2 + n_arch
+                      + ((2 + n_refs) if include_references else 0)
+                      + ((2 + n_footlines) if n_footlines else 0) + 3)
+            meth_h = n_meth * FS * 1.58 / 72.0 + 0.06  # methods block (~1.2 linespace)
         panels_h, xlabel_h = 3.5, 0.72              # panels + rotated cell labels
         legend_h, gap1, gap2 = 0.30, 0.06, 0.10     # legend band: methods | legend | labels
-        top_pad, bot_pad = 0.68, 0.24               # suptitle + panel-title clearance ; provenance
+        gap1 = 0.0 if bars_only else gap1           # no methods gap in bars-only
+        top_pad = 0.68                              # suptitle + panel-title clearance
+        bot_pad = 0.12 if bars_only else 0.24       # provenance line (none in bars-only)
         fig_h = (bot_pad + meth_h + gap1 + legend_h + gap2 + xlabel_h
                  + panels_h + top_pad)
         fig = plt.figure(figsize=(pw * 3, fig_h))
@@ -2639,22 +2705,27 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                    bbox_to_anchor=(0.5, _f(bot_pad + meth_h + gap1 + legend_h / 2)))
         # Methods: 3 columns under panels a/b/c + a full-width subset-reaction
         # footer below them (top-aligned columns -- the dense content no longer
-        # leaves room for the old middle-column nudge).
-        _methods_textblock(fig, subsets, y_top=_f(bot_pad + meth_h), fontsize=FS,
-                           xs=(0.05, 0.37, 0.69), reactions=reactions, fig_h=fig_h,
-                           include_references=include_references)
+        # leaves room for the old middle-column nudge). Skipped in bars-only mode.
+        if not bars_only:
+            _methods_textblock(fig, subsets, y_top=_f(bot_pad + meth_h),
+                               fontsize=FS, xs=(0.05, 0.37, 0.69),
+                               reactions=reactions, fig_h=fig_h,
+                               include_references=include_references)
         fig.suptitle(
             "Cross-basis comparison (union of arch x subset cells; bar absent "
             "where a basis hasn't run) -- NN bars vs benchmark, PBE dashed"
             f"  ·  {run_id}", fontsize=11, y=1.0 - _f(0.16))
-        fig.text(0.5, _f(0.09), provenance or _PROVENANCE_BASE, ha="center",
-                 fontsize=6, color="#777777")
+        if not bars_only:
+            fig.text(0.5, _f(0.09), provenance or _PROVENANCE_BASE, ha="center",
+                     fontsize=6, color="#777777")
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
 
 
-def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path) -> List[Path]:
+def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path,
+                                   eval_subdir: str = "eval_holdout"
+                                   ) -> List[Path]:
     """Render the cross-basis comparison for the given run dirs (each labeled by
     its basis+DF from resolved_config.yaml)."""
     outdir = Path(outdir)
@@ -2662,14 +2733,20 @@ def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path) -> List[P
     runs = [(Path(rd), run_basis_label(rd)) for rd in run_dirs]
     rid = " vs ".join(lbl for _, lbl in runs)
     return [
-        plot_basis_comparison(runs, outdir / "basis_comparison.png", rid),
+        plot_basis_comparison(runs, outdir / "basis_comparison.png", rid,
+                              eval_subdir=eval_subdir),
         # variant without the lower references key (columns + subset footer kept)
         plot_basis_comparison(runs, outdir / "basis_comparison_no_refs.png", rid,
-                              include_references=False),
+                              include_references=False, eval_subdir=eval_subdir),
+        # bars-only variant: no bottom notes at all (panels + legend + title) --
+        # the easy-to-read figure for a slide/email
+        plot_basis_comparison(runs, outdir / "basis_comparison_clean.png", rid,
+                              bars_only=True, eval_subdir=eval_subdir),
     ]
 
 
-def build_diagnostic_figures(run_dirs: List[Path], outdir: Path) -> List[Path]:
+def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
+                             eval_subdir: str = "eval_holdout") -> List[Path]:
     """Render the CUMULATIVE (multi-basis) training-loss trajectories -- every
     trained cell from every run, basis by linestyle -- plus the failure-mechanism
     diagnostic that classifies and explains each failing cell."""
@@ -2682,22 +2759,26 @@ def build_diagnostic_figures(run_dirs: List[Path], outdir: Path) -> List[Path]:
         plot_training_losses(loss_rows, outdir / "diagnostic_training_losses.png",
                              rid, highlight=[("deep_attn", 6)]),
         plot_failure_diagnostic(runs, outdir / "diagnostic_failure_mechanisms.png",
-                                rid),
-        plot_capacity_trends(runs, outdir / "diagnostic_capacity_trends.png", rid),
+                                rid, eval_subdir=eval_subdir),
+        plot_capacity_trends(runs, outdir / "diagnostic_capacity_trends.png", rid,
+                             eval_subdir=eval_subdir),
     ]
 
 
-def build_density_energy_figures(run_dir: Path, outdir: Path) -> List[Path]:
+def build_density_energy_figures(run_dir: Path, outdir: Path,
+                                 eval_subdir: str = "eval_holdout") -> List[Path]:
     """Render the held-out energy (MAE + 2-subset WTMAD-2) figure and the
-    in-sample density-vs-CCSD diagnostic, kept SEPARATE."""
+    in-sample density-vs-CCSD diagnostic, kept SEPARATE. The in-sample density
+    panel always reads ``eval/`` (the final-checkpoint in-sample eval); only the
+    held-out energy panels follow ``eval_subdir``."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    rows = collect_holdout_reaction_rows(run_dir)
+    rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
     drows = collect_insample_density_rows(run_dir)
     run_id = run_dir.name
-    note = coverage_note(run_dir)
+    note = coverage_note(run_dir, eval_subdir=eval_subdir)
     try:
-        baseline = pbe_pool_baseline(run_dir)
+        baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:
         print(f"  (PBE baseline unavailable: {exc})")
         baseline = {"bh76": float("nan"), "w411": float("nan"),
@@ -2715,6 +2796,40 @@ def build_density_energy_figures(run_dir: Path, outdir: Path) -> List[Path]:
                                    outdir / "ablation_insample_density_ccsd.png",
                                    run_id, note=note, provenance=dens_prov),
     ]
+    return written
+
+
+def build_per_run_diagnostics(run_dir: Path, outdir: Path,
+                              basis_label: Optional[str] = None,
+                              eval_subdir: str = "eval_holdout") -> List[Path]:
+    """Per-run diagnostics kept in each basis's own ``figures_<alias>/`` dir: the
+    size-consistency (additivity) diagnostic over the capacity ladder at the
+    smallest subset_size (where overfitting -- and the per-atom error it produces
+    -- is worst), and the single-run training-loss trajectories. Wired into
+    :func:`build_bh76w411_suite` so a fresh pull refreshes them too (they were
+    previously generated by hand and went stale)."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    run_id = run_dir.name
+    note = coverage_note(run_dir, eval_subdir=eval_subdir)
+    rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
+    written: List[Path] = []
+    # Capacity ladder at the smallest available subset_size: added capacity
+    # steepens the per-atom (size-consistency) error, clearest at small ss.
+    present = list(reaction_mae_by_arch_subset(rows).keys())
+    if present:
+        ss0 = min(ss for _, ss in present)
+        order = {a: i for i, a in enumerate(ARCH_ORDER)}
+        sc_cells = sorted((cell for cell in present if cell[1] == ss0),
+                          key=lambda c: (order.get(c[0], len(ARCH_ORDER)), c[0]))
+        written.append(plot_size_consistency_diagnostic(
+            rows, outdir / "diagnostic_size_consistency.png", run_id, sc_cells,
+            note=note))
+    loss_rows = collect_training_losses(
+        run_dir, basis_label=basis_label or run_basis_label(run_dir))
+    written.append(plot_training_losses(
+        loss_rows, outdir / "diagnostic_training_losses.png", run_id, note=note,
+        highlight=[("deep_attn", 6)]))
     return written
 
 
@@ -2738,21 +2853,22 @@ def _resolve_run_dir(run_dir: Optional[str]) -> Path:
     return rd
 
 
-def build_all(run_dir: Path, outdir: Path) -> List[Path]:
+def build_all(run_dir: Path, outdir: Path,
+              eval_subdir: str = "eval_holdout") -> List[Path]:
     """Collect once, render every figure. Returns the written PNG paths."""
     outdir.mkdir(parents=True, exist_ok=True)
     run_id = run_dir.name
-    reaction_rows = collect_holdout_reaction_rows(run_dir)
+    reaction_rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
     insample_rows = collect_insample_ae_rows(run_dir)
-    n_trained = trained_spec_count(run_dir)
+    n_trained = trained_spec_count(run_dir, eval_subdir=eval_subdir)
     n_total = len(ccp._read_manifest_cells(run_dir)) or len(ccp._spec_dirs(run_dir))
     n_holdout = len({r["idx"] for r in reaction_rows})
-    note = coverage_note(run_dir)
+    note = coverage_note(run_dir, eval_subdir=eval_subdir)
     print(f"  coverage: {note}")
 
     # Live, non-hardcoded footers (degrade to "n/a" if the pool can't be loaded).
     try:
-        baseline = pbe_pool_baseline(run_dir)
+        baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:  # pool unavailable (e.g. GMTKN55 clone absent)
         print(f"  (PBE baseline unavailable: {exc})")
         baseline = {"bh76": float("nan"), "w411": float("nan"),
@@ -2808,12 +2924,14 @@ def _newest_run_per_basis(results_root: Path,
     return out
 
 
-def figure_cell_coverage(run_dir: Path) -> Dict[str, Any]:
+def figure_cell_coverage(run_dir: Path,
+                         eval_subdir: str = "eval_holdout") -> Dict[str, Any]:
     """What the figures will actually render for a run: every held-out (arch,
     subset_size) cell, plus a guard list ``archs_not_in_order`` of archs present
     in the data but absent from ``ARCH_ORDER`` (the per-arch plots cannot
     order/colour those, so they would be silently dropped)."""
-    mae = reaction_mae_by_arch_subset(collect_holdout_reaction_rows(run_dir))
+    mae = reaction_mae_by_arch_subset(
+        collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir))
     cells = sorted(mae.keys())
     archs = sorted({a for a, _ in cells})
     return {
@@ -2827,7 +2945,7 @@ def figure_cell_coverage(run_dir: Path) -> Dict[str, Any]:
         # ARCH_ORDER archs with NO held-out eval cell yet (run still in progress);
         # judged by eval coverage, not model.eqx (weights are often not pulled)
         "archs_missing": [a for a in ARCH_ORDER if a not in archs],
-        "coverage": arch_coverage(run_dir),
+        "coverage": arch_coverage(run_dir, eval_subdir=eval_subdir),
     }
 
 
@@ -2836,11 +2954,21 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                          bases: Tuple[str, ...] = _BH76W411_BASES) -> List[Path]:
     """Regenerate EVERY bh76w411 figure family from the newest run per basis, so a
     fresh spec pull lands on all figures in one call. Per basis: the arch-aware
-    ablation set (:func:`build_all`) + the held-out energy/density set
-    (:func:`build_density_energy_figures`) into ``figures_<alias>/``. Cross-basis:
-    the basis comparison + its no-references variant
+    ablation set (:func:`build_all`), the held-out energy/density set
+    (:func:`build_density_energy_figures`), the five parity-layout variants
+    (:func:`build_parity_variants`) and the per-run size-consistency/training-loss
+    diagnostics (:func:`build_per_run_diagnostics`) into ``figures_<alias>/``.
+    Cross-basis: the basis comparison + its no-references variant
     (:func:`build_basis_comparison_figures`) and the diagnostic set
     (:func:`build_diagnostic_figures`) into ``figures_basis_comparison/``.
+
+    Emits TWO parallel figure sets per the checkpoint variant the cluster now
+    evaluates by default: the final-step set from ``eval_holdout/`` (into
+    ``figures_<alias>/`` + ``figures_basis_comparison/``) and the best-loss set
+    from ``eval_holdout_best/`` (into ``figures_<alias>_best/`` +
+    ``figures_basis_comparison_best/``). The best set is produced ONLY for bases
+    whose ``eval_holdout_best/`` data was pulled (older/eval-only runs simply get
+    the final set), so this is backward compatible.
 
     Prints a per-run coverage report and FAILS LOUD if a run carries an arch
     outside ``ARCH_ORDER`` (which the per-arch plots would drop); incomplete runs
@@ -2850,28 +2978,44 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     outroot = Path(outroot) if outroot else Path(__file__).resolve().parent
     runs = _newest_run_per_basis(results_root, bases)
     written: List[Path] = []
-    ordered_runs: List[Path] = []
-    for basis in bases:
-        run = runs[basis]
-        ordered_runs.append(run)
-        cov = figure_cell_coverage(run)
-        print(f"[{basis}] {cov['run']}: {cov['n_cells']} cells  "
-              f"archs={cov['archs']}  subsets={cov['subsets']}")
-        if cov["archs_not_in_order"]:
-            raise ValueError(
-                f"{basis} {cov['run']} has archs not in ARCH_ORDER "
-                f"{cov['archs_not_in_order']}; add them to ARCH_ORDER/ARCH_COLOR "
-                "(and the per-arch F_x/F_c forms) before regenerating, else they "
-                "are dropped from the figures.")
-        if cov["archs_missing"]:
-            print(f"   (incomplete -- ARCH_ORDER archs with no held-out eval cell "
-                  f"yet: {cov['archs_missing']})")
-        fdir = outroot / f"figures_{_basis_fig_alias(basis)}"
-        written += build_all(run, fdir)
-        written += build_density_energy_figures(run, fdir)
-    cmp_dir = outroot / "figures_basis_comparison"
-    written += build_basis_comparison_figures(ordered_runs, cmp_dir)
-    written += build_diagnostic_figures(ordered_runs, cmp_dir)
+    for eval_subdir, suffix in (("eval_holdout", ""),
+                                ("eval_holdout_best", "_best")):
+        is_best = eval_subdir != "eval_holdout"
+        ordered_runs: List[Path] = []
+        for basis in bases:
+            run = runs[basis]
+            cov = figure_cell_coverage(run, eval_subdir=eval_subdir)
+            if is_best and cov["n_cells"] == 0:
+                continue  # no best-checkpoint eval pulled for this basis yet
+            ordered_runs.append(run)
+            print(f"[{basis} | {eval_subdir}] {cov['run']}: {cov['n_cells']} "
+                  f"cells  archs={cov['archs']}  subsets={cov['subsets']}")
+            if cov["archs_not_in_order"]:
+                raise ValueError(
+                    f"{basis} {cov['run']} has archs not in ARCH_ORDER "
+                    f"{cov['archs_not_in_order']}; add them to ARCH_ORDER/"
+                    "ARCH_COLOR (and the per-arch F_x/F_c forms) before "
+                    "regenerating, else they are dropped from the figures.")
+            if cov["archs_missing"]:
+                print(f"   (incomplete -- ARCH_ORDER archs with no held-out eval "
+                      f"cell yet: {cov['archs_missing']})")
+            fdir = outroot / f"figures_{_basis_fig_alias(basis)}{suffix}"
+            written += build_all(run, fdir, eval_subdir=eval_subdir)
+            written += build_density_energy_figures(run, fdir,
+                                                    eval_subdir=eval_subdir)
+            written += build_parity_variants(run, fdir, eval_subdir=eval_subdir)
+            written += build_per_run_diagnostics(run, fdir, run_basis_label(run),
+                                                 eval_subdir=eval_subdir)
+        if not ordered_runs:
+            if is_best:
+                print("   (no eval_holdout_best/ data found -- skipping the "
+                      "best-checkpoint figure set)")
+            continue
+        cmp_dir = outroot / f"figures_basis_comparison{suffix}"
+        written += build_basis_comparison_figures(ordered_runs, cmp_dir,
+                                                  eval_subdir=eval_subdir)
+        written += build_diagnostic_figures(ordered_runs, cmp_dir,
+                                            eval_subdir=eval_subdir)
     return written
 
 
