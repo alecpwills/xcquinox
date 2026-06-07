@@ -230,6 +230,61 @@ def test_model_present_runs_eval_and_folds_csv(run_dir, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# default double held-out eval: final (model.eqx) + best (model_best.eqx)
+# ---------------------------------------------------------------------------
+
+def _stub_insample(monkeypatch, out_dir):
+    """Mock the in-sample eval so main() reaches the held-out section."""
+    def fake_build_test_spec(training_spec, rd, idx, domain):
+        return _FakeTestSpec(out_dir)
+
+    def fake_run_eval(test_spec):
+        os.makedirs(test_spec.output_dir, exist_ok=True)
+        with open(os.path.join(test_spec.output_dir, "per_molecule.json"),
+                  "w") as f:
+            json.dump([{"molecule": "H2O", "AE_error_kcalmol": 3.0,
+                        "density_rmse": 0.1}], f)
+        return {}
+    import xcquinox.alec.cluster.spec_builder as sb
+    monkeypatch.setattr(sb, "build_test_spec", fake_build_test_spec)
+    monkeypatch.setattr(ev, "_run_eval", fake_run_eval)
+
+
+def test_main_runs_both_final_and_best_held_out_eval(run_dir, monkeypatch):
+    # model_best.eqx present -> held-out eval runs TWICE by default: final ->
+    # eval_holdout/, best -> eval_holdout_best/ (the "double the data" return).
+    ckpt_dir = _write_model(run_dir, 0)
+    open(os.path.join(ckpt_dir, "model_best.eqx"), "wb").close()
+    _stub_insample(monkeypatch, os.path.join(ckpt_dir, "eval"))
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "_run_held_out_eval",
+        lambda rd, idx, cfg, ck, mp, ts, holdout_subdir="eval_holdout":
+            calls.append((os.path.basename(mp), holdout_subdir)))
+
+    assert ev.main([run_dir, "0"]) == 0
+    assert calls == [("model.eqx", "eval_holdout"),
+                     ("model_best.eqx", "eval_holdout_best")]
+
+
+def test_main_skips_best_held_out_eval_when_absent(run_dir, monkeypatch):
+    # No model_best.eqx (older run) -> only the final-checkpoint eval runs; the
+    # best pass no-ops silently. Backward compatible.
+    ckpt_dir = _write_model(run_dir, 0)
+    _stub_insample(monkeypatch, os.path.join(ckpt_dir, "eval"))
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "_run_held_out_eval",
+        lambda rd, idx, cfg, ck, mp, ts, holdout_subdir="eval_holdout":
+            calls.append((os.path.basename(mp), holdout_subdir)))
+
+    assert ev.main([run_dir, "0"]) == 0
+    assert calls == [("model.eqx", "eval_holdout")]
+
+
+# ---------------------------------------------------------------------------
 # fold helper -- correct per-molecule row keys
 # ---------------------------------------------------------------------------
 

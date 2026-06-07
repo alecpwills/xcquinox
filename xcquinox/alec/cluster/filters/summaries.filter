@@ -45,6 +45,12 @@
 # the headline metric never reached a default pull -- guarded by the canary.)
 + /checkpoints/spec_*/eval_holdout/
 + /checkpoints/spec_*/eval_holdout/***
+# Best-loss-checkpoint held-out eval (2026-06): a SECOND eval pass over the same
+# pool using model_best.eqx instead of the final-step model.eqx, written to a
+# sibling eval_holdout_best/ (same small CSV/JSON artifacts, no *.eqx). Doubles
+# the figure data return; pulled by default like its eval_holdout/ sibling.
++ /checkpoints/spec_*/eval_holdout_best/
++ /checkpoints/spec_*/eval_holdout_best/***
 
 # --- pretrain metadata + loss curves (small, useful for diagnostics) -------
 + /pretrain/

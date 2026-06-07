@@ -33,6 +33,7 @@ def _round_robin(names, k):
 def run_holdout_with_escalation(
     run_dir, spec_idx, training_spec, model, reactions, full_specs, out_dir, *,
     basis, grid_level, n_workers_top, total_cpus, strict=None,
+    model_name="model.eqx",
 ):
     """Run the held-out eval in parallel with adaptive degradation.
 
@@ -40,8 +41,11 @@ def run_holdout_with_escalation(
     context (``run_dir``/``spec_idx`` so workers reload the same spec+model) and
     the parallelism budget (``n_workers_top`` = ladder start, ``total_cpus`` =
     threads-per-worker base). ``training_spec``/``model`` are used only for the
-    in-process serial leftover tier (workers reload their own). Returns the same
-    summary dict as ``run_full_holdout_eval``.
+    in-process serial leftover tier (workers reload their own). ``model_name``
+    selects which checkpoint the shard workers reload (``model.eqx`` final /
+    ``model_best.eqx`` best); the caller MUST pass the same checkpoint it loaded
+    into ``model`` so the serial leftover tier and the workers agree. Returns the
+    same summary dict as ``run_full_holdout_eval``.
     """
     from xcquinox.alec import eval_holdout
 
@@ -74,7 +78,7 @@ def run_holdout_with_escalation(
                 "--run-dir", str(run_dir), "--spec-idx", str(spec_idx),
                 "--names-file", str(names_file), "--out-shard", str(out_shard),
                 "--basis", str(basis), "--grid-level", str(grid_level),
-                "--threads", str(threads),
+                "--threads", str(threads), "--model-name", str(model_name),
             ]
             jobs.append(parallel.WorkerJob(
                 name=f"eval_t{tier_no}_s{si}", cmd=cmd,

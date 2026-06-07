@@ -19,13 +19,17 @@ import time
 import traceback
 
 
-def compute_shard(run_dir, spec_idx, names, basis, grid_level):
+def compute_shard(run_dir, spec_idx, names, basis, grid_level,
+                  model_name="model.eqx"):
     """Evaluate ``names`` (a held-out molecule subset) for spec ``spec_idx`` of
     ``run_dir``. Returns ``{energies, pbe_energies, mol_records}``.
 
     Imports jax-touching modules lazily so the caller can pin thread env first.
     Reuses ``_eval_one_spec``'s path helpers and ``load_trained_model`` so the
-    worker loads exactly what the serial eval task loads."""
+    worker loads exactly what the serial eval task loads. ``model_name`` selects
+    which checkpoint in the spec dir to load (``model.eqx`` for the final-step
+    eval, ``model_best.eqx`` for the best-loss eval); the orchestrator threads it
+    so a best-checkpoint pass shards the BEST weights, not the final ones."""
     from pathlib import Path
 
     from xcquinox.alec.cluster._eval_one_spec import (
@@ -39,7 +43,7 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level):
     width = _read_width(run_dir)
     checkpoint_dir = _checkpoint_dir(run_dir, spec_idx, width)
     spec_path = _spec_path(run_dir, spec_idx, width)
-    model_path = os.path.join(checkpoint_dir, "model.eqx")
+    model_path = os.path.join(checkpoint_dir, model_name)
 
     training_spec = _load_spec(spec_path)
     model = load_trained_model(training_spec, Path(model_path))
@@ -67,6 +71,9 @@ def main(args=None):
     parser.add_argument("--basis", required=True)
     parser.add_argument("--grid-level", type=int, required=True)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--model-name", default="model.eqx",
+                        help="checkpoint filename in the spec dir to evaluate "
+                             "(model.eqx final / model_best.eqx best)")
     parsed = parser.parse_args(args)
 
     # Pin thread env BEFORE any JAX import (one BLAS thread per worker by
@@ -90,7 +97,8 @@ def main(args=None):
             names = json.load(f)
 
         shard = compute_shard(parsed.run_dir, parsed.spec_idx, names,
-                              parsed.basis, parsed.grid_level)
+                              parsed.basis, parsed.grid_level,
+                              model_name=parsed.model_name)
         with open(parsed.out_shard, "w") as f:
             json.dump(shard, f)
 

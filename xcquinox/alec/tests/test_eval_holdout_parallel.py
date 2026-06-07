@@ -149,7 +149,7 @@ def test_worker_main_writes_shard_and_prints_success(tmp_path, monkeypatch, caps
     out_shard = tmp_path / "shard.json"
     monkeypatch.setattr(
         ehw, "compute_shard",
-        lambda rd, idx, names, basis, gl: {
+        lambda rd, idx, names, basis, gl, model_name="model.eqx": {
             "energies": {"h2": -1.17}, "pbe_energies": {"h2": -1.16},
             "mol_records": [{"molecule": "h2"}]})
 
@@ -160,6 +160,48 @@ def test_worker_main_writes_shard_and_prints_success(tmp_path, monkeypatch, caps
     assert json.loads(out_shard.read_text())["energies"] == {"h2": -1.17}
     last = capsys.readouterr().out.strip().splitlines()[-1]
     assert json.loads(last)["status"] == "success"
+
+
+def test_worker_main_forwards_model_name(tmp_path, monkeypatch):
+    # --model-name defaults to model.eqx (final) and is forwarded to compute_shard
+    # verbatim, so a best pass shards model_best.eqx instead.
+    names_file = tmp_path / "names.json"
+    names_file.write_text(json.dumps(["h2"]))
+    seen = []
+    monkeypatch.setattr(
+        ehw, "compute_shard",
+        lambda rd, idx, names, basis, gl, model_name="model.eqx": (
+            seen.append(model_name)
+            or {"energies": {}, "pbe_energies": {}, "mol_records": []}))
+
+    base = ["--run-dir", "/run", "--spec-idx", "0", "--names-file", str(names_file),
+            "--basis", "def2-svp", "--grid-level", "1"]
+    ehw.main(base + ["--out-shard", str(tmp_path / "a.json")])
+    ehw.main(base + ["--out-shard", str(tmp_path / "b.json"),
+                     "--model-name", "model_best.eqx"])
+    assert seen == ["model.eqx", "model_best.eqx"]
+
+
+def test_compute_shard_loads_named_checkpoint(tmp_path, monkeypatch):
+    # compute_shard builds the checkpoint path from model_name, so the best pass
+    # genuinely loads model_best.eqx from the spec dir.
+    import xcquinox.alec.cluster._eval_one_spec as ev
+    import xcquinox.alec.eval_holdout as eh2
+    import xcquinox.alec.full_benchmark_pools as fbp
+    monkeypatch.setattr(ev, "_read_width", lambda rd: 4)
+    monkeypatch.setattr(ev, "_checkpoint_dir", lambda rd, idx, w: "/ck/spec_0000")
+    monkeypatch.setattr(ev, "_spec_path", lambda rd, idx, w: "/ck/spec_0000.spec")
+    monkeypatch.setattr(ev, "_load_spec", lambda p: object())
+    seen = {}
+    monkeypatch.setattr(eh2, "load_trained_model",
+                        lambda spec, path: seen.setdefault("path", str(path)))
+    monkeypatch.setattr(fbp, "load_full_held_out_pools",
+                        lambda basis, grid_level: ({}, []))
+    monkeypatch.setattr(eh2, "compute_holdout_per_molecule",
+                        lambda spec, model, subset: {
+                            "energies": {}, "pbe_energies": {}, "mol_records": []})
+    ehw.compute_shard("/run", 0, [], "def2-svp", 1, model_name="model_best.eqx")
+    assert seen["path"].endswith("/spec_0000/model_best.eqx")
 
 
 def test_worker_main_reports_failure_json(tmp_path, monkeypatch, capsys):
@@ -247,6 +289,45 @@ def test_escalation_retries_only_failed_names_at_lower_tier(tmp_path, monkeypatc
 
     assert summary["n_species"] == 4
     assert _molecules_in_per_molecule_json(out_dir) == {"a", "b", "c", "d"}
+
+
+def test_escalation_threads_model_name_to_worker_cmd(tmp_path, monkeypatch):
+    # The orchestrator must pass --model-name to the shard workers; the workers
+    # re-derive the checkpoint independently, so without this they would silently
+    # shard model.eqx into eval_holdout_best/ -> mixed-checkpoint data corruption.
+    from xcquinox.alec.cluster import _holdout_parallel as hp
+    full_specs = {n: object() for n in ("a", "b")}
+    seen = []
+
+    def _capture(jobs, max_parallel=4, **kw):
+        results = []
+        for job in jobs:
+            seen.append(_cmd_arg(job.cmd, "--model-name"))
+            names = json.loads(open(_cmd_arg(job.cmd, "--names-file")).read())
+            with open(_cmd_arg(job.cmd, "--out-shard"), "w") as f:
+                json.dump({"energies": {n: -1.0 for n in names},
+                           "pbe_energies": {n: -0.9 for n in names},
+                           "mol_records": [{"molecule": n} for n in names]}, f)
+            results.append(par.WorkerResult(
+                job=job, status="success", returncode=0, payload={}, stderr="",
+                duration=0.01))
+        return results
+    monkeypatch.setattr(par, "run_workers", _capture)
+
+    # default -> model.eqx (final pass, unchanged contract)
+    hp.run_holdout_with_escalation(
+        "/run", 0, _FakeSpec(), object(), [], full_specs,
+        tmp_path / "eval_holdout", basis="def2-svp", grid_level=1,
+        n_workers_top=2, total_cpus=2)
+    assert seen and all(m == "model.eqx" for m in seen)
+
+    # explicit -> model_best.eqx (best pass)
+    seen.clear()
+    hp.run_holdout_with_escalation(
+        "/run", 0, _FakeSpec(), object(), [], full_specs,
+        tmp_path / "eval_holdout_best", basis="def2-svp", grid_level=1,
+        n_workers_top=2, total_cpus=2, model_name="model_best.eqx")
+    assert seen and all(m == "model_best.eqx" for m in seen)
 
 
 def test_graceful_total_fallback_to_serial(tmp_path, monkeypatch):
@@ -459,7 +540,7 @@ _FAKE_WORKER = '''\
 import argparse, json
 p = argparse.ArgumentParser()
 for f in ("--run-dir", "--spec-idx", "--names-file", "--out-shard",
-          "--basis", "--grid-level", "--threads"):
+          "--basis", "--grid-level", "--threads", "--model-name"):
     p.add_argument(f)
 a = p.parse_args()
 names = json.load(open(a.names_file))

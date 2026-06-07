@@ -244,15 +244,25 @@ def _write_skipped_json(checkpoint_dir, reason):
 # ---------------------------------------------------------------------------
 
 def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
-                       training_spec) -> None:
+                       training_spec, holdout_subdir="eval_holdout") -> None:
     """Full-pool held-out eval (BH76 + W4-11) for one trained spec.
 
     Parallelizes across molecule shards BY DEFAULT (adaptive degradation via
     ``_holdout_parallel.run_holdout_with_escalation``), auto-detecting the usable
     CPUs at runtime; if the parallel path raises it falls back to the serial
     ``run_full_holdout_eval``. Held-out failure is NOT fatal, it writes
-    ``eval_holdout/failure.json`` and returns, so the in-sample ``eval_df.csv``
-    stays the authoritative success signal for the SLURM array task.
+    ``<holdout_subdir>/failure.json`` and returns, so the in-sample
+    ``eval_df.csv`` stays the authoritative success signal for the SLURM array
+    task.
+
+    ``model_path`` is the checkpoint to evaluate and ``holdout_subdir`` is the
+    output directory under the spec dir. The default pair
+    (``model.eqx`` -> ``eval_holdout``) is the final-step eval; ``main`` calls
+    this a second time with (``model_best.eqx`` -> ``eval_holdout_best``) to also
+    emit the best-loss eval. The shard workers reload the SAME checkpoint via
+    ``model_name`` (derived from ``model_path``'s basename), and each pass has its
+    own ``_shards`` scratch (derived from ``holdout_subdir``), so the two passes
+    are fully isolated -- no shard collision, no mixed-checkpoint energies.
     """
     try:
         from pathlib import Path as _Path
@@ -265,8 +275,10 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         from xcquinox.alec.cluster.grid_config import _resolve_eval_workers
         from xcquinox.alec.parallel import detect_available_cpus
 
-        holdout_dir = _Path(checkpoint_dir) / "eval_holdout"
-        _log(idx, "starting full-pool held-out eval (BH76 + W4-11)")
+        holdout_dir = _Path(checkpoint_dir) / holdout_subdir
+        model_name = os.path.basename(model_path)
+        _log(idx, f"starting full-pool held-out eval (BH76 + W4-11) "
+                  f"[{model_name} -> {holdout_subdir}]")
         t1 = time.time()
         model = load_trained_model(training_spec, _Path(model_path))
         # Basis + grid_level MUST match what training used (read from the
@@ -295,7 +307,8 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                     run_dir, idx, training_spec, model, full_rxns, full_specs,
                     holdout_dir, basis=_hb, grid_level=_hg,
                     n_workers_top=n_top, total_cpus=detect_available_cpus(),
-                    strict=bool(getattr(cfg, "held_out_strict", False)))
+                    strict=bool(getattr(cfg, "held_out_strict", False)),
+                    model_name=model_name)
             except Exception as pexc:  # noqa: BLE001
                 _log(idx, f"held-out parallel path failed "
                           f"({type(pexc).__name__}: {pexc}); serial fallback")
@@ -318,7 +331,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
     except Exception as exc:  # noqa: BLE001
         import traceback
         from pathlib import Path as _Path
-        holdout_dir = _Path(checkpoint_dir) / "eval_holdout"
+        holdout_dir = _Path(checkpoint_dir) / holdout_subdir
         holdout_dir.mkdir(parents=True, exist_ok=True)
         with (holdout_dir / "failure.json").open("w") as f:
             json.dump({
@@ -331,7 +344,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
             idx,
             f"held-out eval FAILED ({type(exc).__name__}: {exc}); "
             "in-sample eval_df.csv was still written -- treating spec as "
-            "succeeded. See eval_holdout/failure.json for details.",
+            f"succeeded. See {holdout_subdir}/failure.json for details.",
         )
 
 
@@ -416,6 +429,22 @@ def main(argv=None) -> int:
     # signal for the SLURM array task).
     _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                        training_spec)
+
+    # --- 2026-06-07: ALSO eval the best-loss checkpoint by DEFAULT ----------
+    # Training saves a separate model_best.eqx (lowest trailing-mean loss); a
+    # late-destabilizing run (e.g. deep_attn ss6) ends on a bad final-step
+    # model.eqx, so the best snapshot is the meaningful one. We eval BOTH so the
+    # figures get a final-checkpoint set (eval_holdout/) AND a best-checkpoint
+    # set (eval_holdout_best/) -- doubling the data return. Fully isolated from
+    # the final pass (own checkpoint, own output dir, own _shards). No-ops
+    # silently when the run never captured a best snapshot (older runs).
+    best_path = os.path.join(checkpoint_dir, "model_best.eqx")
+    if os.path.isfile(best_path):
+        _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, best_path,
+                           training_spec, holdout_subdir="eval_holdout_best")
+    else:
+        _log(idx, "no model_best.eqx -- skipping best-checkpoint held-out eval "
+                  "(only eval_holdout/ produced)")
 
     return 0
 

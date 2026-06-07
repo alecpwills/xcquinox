@@ -620,6 +620,7 @@ def _materialize_fake_run(root: Path) -> Path:
     (spec / "failure.json").write_text('{"classification": "ok"}\n')
     (spec / "losses.npy").write_bytes(b"\x93NUMPY")  # bytes header is enough
     (spec / "model.eqx").write_bytes(b"FAKE_MODEL_CHECKPOINT_BLOB" * 100)
+    (spec / "model_best.eqx").write_bytes(b"FAKE_BEST_CHECKPOINT_BLOB" * 100)
     (spec / "eval" / "per_molecule.json").write_text("[]\n")
     # Held-out (BH76 + W4-11) reaction eval -- the "beats PBE?" headline dir.
     (spec / "eval_holdout").mkdir()
@@ -628,6 +629,13 @@ def _materialize_fake_run(root: Path) -> Path:
         "test_set_held_out_combined,9.1,11.8,-2.700000\n")
     (spec / "eval_holdout" / "per_reaction.json").write_text("[]\n")
     (spec / "eval_holdout" / "per_molecule.json").write_text("[]\n")
+    # Best-loss-checkpoint held-out eval (model_best.eqx) -- the sibling dir.
+    (spec / "eval_holdout_best").mkdir()
+    (spec / "eval_holdout_best" / "test_set.csv").write_text(
+        "set,mae_nn_kcalmol,mae_pbe_kcalmol,delta_nn_minus_pbe\n"
+        "test_set_held_out_combined,8.4,11.8,-3.400000\n")
+    (spec / "eval_holdout_best" / "per_reaction.json").write_text("[]\n")
+    (spec / "eval_holdout_best" / "per_molecule.json").write_text("[]\n")
     # Pretrain
     pre = run / "pretrain" / "deep_combined_attn"
     pre.mkdir(parents=True)
@@ -697,6 +705,9 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "checkpoints/spec_0000/eval_holdout/test_set.csv",
         "checkpoints/spec_0000/eval_holdout/per_reaction.json",
         "checkpoints/spec_0000/eval_holdout/per_molecule.json",
+        "checkpoints/spec_0000/eval_holdout_best/test_set.csv",
+        "checkpoints/spec_0000/eval_holdout_best/per_reaction.json",
+        "checkpoints/spec_0000/eval_holdout_best/per_molecule.json",
         "pretrain/deep_combined_attn/pretrain_metadata.json",
         "pretrain/deep_combined_attn/losses_x.npy",
         "pretrain/deep_combined_attn/losses_c.npy",
@@ -710,6 +721,7 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
     # --- must NOT be present (excluded tier) -----------------------------
     must_not_have = [
         "checkpoints/spec_0000/model.eqx",
+        "checkpoints/spec_0000/model_best.eqx",
         "checkpoints/spec_0000/model.eqx.gen1",
         "pretrain/deep_combined_attn/xnet.eqx",
         "pretrain/deep_combined_attn/cnet.eqx",
