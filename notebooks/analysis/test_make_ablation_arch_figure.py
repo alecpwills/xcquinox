@@ -1093,6 +1093,107 @@ def test_build_bh76w411_suite_rejects_unknown_arch(tmp_path, monkeypatch):
         fig.build_bh76w411_suite(results_root=root, outroot=tmp_path / "f2")
 
 
+def _make_dfs_results(tmp_path):
+    """A results root with the dfs_step7 layout: ONE basis (svp_grid2), subset
+    sizes up to the full 26-pt pool (ss=26), and one ARCH_ORDER arch
+    (deep_cusp) with zero eval'd cells (run still in progress)."""
+    import numpy as _np
+    root = tmp_path / "results"
+    stamp = "run_20260607T162842Z"
+    run_dir = root / "dfs_step7" / "svp_grid2" / "runs" / stamp
+    run_dir.mkdir(parents=True)
+    specs = [
+        {"arch": "deep", "subset_size": 1},
+        {"arch": "deep", "subset_size": 26},
+        {"arch": "deep_attn", "subset_size": 1},
+        {"arch": "deep_attn", "subset_size": 26},
+        {"arch": "deep_cusp", "subset_size": 1},   # not eval'd yet
+    ]
+    (run_dir / "manifest.json").write_text(json.dumps(
+        {"n_specs": len(specs), "width": 4,
+         "specs": [{"index": i, "spec_file": f"spec_{i:04d}.spec",
+                    "sha256": "x" * 64, "cell": c}
+                   for i, c in enumerate(specs)]}))
+    (run_dir / "specs").mkdir()
+    (run_dir / "resolved_config.yaml").write_text(
+        "basis: def2-svp\ndensity_fit: false\n")
+    for i, cell in enumerate(specs):
+        sd = run_dir / "checkpoints" / f"spec_{i:04d}"
+        sd.mkdir(parents=True)
+        (sd / "train_metadata.json").write_text(json.dumps(
+            {"molecules": ["HO", "CH4", "h", "c", "o"]}))
+        if cell["arch"] == "deep_cusp":
+            continue       # in-progress arch: no losses/eval yet
+        (sd / "model.eqx").write_bytes(b"x" * 16)
+        _np.save(sd / "losses.npy", _np.linspace(0.1, 1e-3, 60))
+        ev = sd / "eval"; ev.mkdir()
+        (ev / "per_molecule.json").write_text(json.dumps([
+            {"molecule": "HO", "AE_error_kcalmol": 6.0 + i, "density_rmse": 3e-3,
+             "skipped": False, "scf_converged": True},
+            {"molecule": "CH4", "AE_error_kcalmol": -2.0 - i, "density_rmse": 1e-3,
+             "skipped": False, "scf_converged": True},
+        ]))
+        eh = sd / "eval_holdout"; eh.mkdir()
+        (eh / "per_reaction.json").write_text(json.dumps([
+            {"name": "bh76_a", "pool": "bh76",
+             "reaction_energy_ref_kcalmol": 17.7,
+             "de_nn_kcalmol": -91.0 + i, "de_pbe_kcalmol": -91.2 + i,
+             "abs_error_nn_kcalmol": 108.7 - i, "abs_error_pbe_kcalmol": 108.9 - i},
+            {"name": "w411_b", "pool": "w411",
+             "reaction_energy_ref_kcalmol": 120.0,
+             "de_nn_kcalmol": 118.0 + i, "de_pbe_kcalmol": 119.0 + i,
+             "abs_error_nn_kcalmol": 2.0 + i, "abs_error_pbe_kcalmol": 1.0 + i},
+        ]))
+    return root, run_dir
+
+
+def test_newest_run_per_basis_respects_domain(tmp_path):
+    root, run_dir = _make_dfs_results(tmp_path)
+    got = fig._newest_run_per_basis(root, ("svp_grid2",), domain="dfs_step7")
+    assert got["svp_grid2"] == run_dir
+    # the default domain has no runs in this root -> still fails loud
+    with pytest.raises(FileNotFoundError):
+        fig._newest_run_per_basis(root, ("svp_grid2",))
+
+
+def test_build_suite_single_basis_dfs_domain(tmp_path):
+    # one basis, subset sizes up to 26, one arch with zero eval'd cells: the
+    # per-basis family renders into a DOMAIN-PREFIXED dir (no collision with
+    # the bh76w411 figures_svp/) and the one-run basis comparison is skipped.
+    root, _ = _make_dfs_results(tmp_path)
+    outroot = tmp_path / "figs"
+    written = fig.build_bh76w411_suite(results_root=root, outroot=outroot,
+                                       bases=("svp_grid2",),
+                                       domain="dfs_step7")
+    assert written and all(_png_ok(p) for p in written)
+    parents = {p.parent.name for p in written}
+    assert parents == {"figures_dfs_step7_svp"}
+    names = {p.name for p in written}
+    assert "ablation_arch_subset_heatmap.png" in names   # ss=26 column renders
+    assert "diagnostic_training_losses.png" in names
+    assert "basis_comparison.png" not in names           # needs >= 2 bases
+
+
+def test_heatmap_subset_axis_is_data_driven():
+    # sizes outside the historical SUBSET_SIZES grid (e.g. the full 26-pt
+    # dfs_step7 pool) must appear as heatmap columns, not be silently dropped
+    rxn = [{"subset_size": 1}, {"subset_size": 26}]
+    ae = [{"subset_size": 2}]
+    assert fig._heatmap_subset_axis(rxn, ae) == [1, 2, 26]
+    assert fig._heatmap_subset_axis([], []) == list(fig.SUBSET_SIZES)
+
+
+def test_suite_cli_passes_domain_bases_outroot(tmp_path):
+    root, _ = _make_dfs_results(tmp_path)
+    outroot = tmp_path / "cli_figs"
+    rc = fig.main(["--suite", "--domain", "dfs_step7", "--bases", "svp_grid2",
+                   "--results-root", str(root), "--outroot", str(outroot)])
+    assert rc == 0
+    assert list(outroot.glob("figures_dfs_step7_svp/*.png"))
+    # nothing written next to the script itself by this invocation
+    assert not (outroot / "figures_svp").exists()
+
+
 def test_w411_natoms_map_counts_atoms():
     nm = fig._w411_natoms_map()
     assert nm.get("w411_propane_atomization") == 11  # C3H8 = 11 atoms

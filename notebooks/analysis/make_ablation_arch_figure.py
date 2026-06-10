@@ -634,6 +634,17 @@ def _heatmap_panel(ax, mae_map: Dict[Tuple[str, int], float], archs: List[str],
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=cbar_label)
 
 
+def _heatmap_subset_axis(reaction_rows: List[Dict[str, Any]],
+                         insample_rows: List[Dict[str, Any]]) -> List[int]:
+    """Data-driven column axis for the arch x subset heatmaps: every subset
+    size present in either row set, falling back to the historical
+    SUBSET_SIZES grid when both are empty. Keeps sizes outside that grid
+    (e.g. the full 26-pt dfs_step7 pool) from being silently dropped."""
+    present = sorted(set(_present_subsets(reaction_rows))
+                     | set(_present_subsets(insample_rows)))
+    return present or list(SUBSET_SIZES)
+
+
 def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
                              insample_rows: List[Dict[str, Any]],
                              out_path: Path, run_id: str, *,
@@ -646,13 +657,14 @@ def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
         archs = _archs_present(reaction_rows) or list(ARCH_ORDER)
         archs_ae = _archs_present(insample_rows)
         all_archs = [a for a in ARCH_ORDER if a in set(archs) | set(archs_ae)]
+        ss_axis = _heatmap_subset_axis(reaction_rows, insample_rows)
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.6))
         _heatmap_panel(ax1, reaction_mae_by_arch_subset(reaction_rows),
                        all_archs, title="Held-out reaction-energy MAE (NN)",
-                       cbar_label="MAE (kcal/mol)")
+                       cbar_label="MAE (kcal/mol)", subset_sizes=ss_axis)
         _heatmap_panel(ax2, ae_mae_by_arch_subset(insample_rows), all_archs,
                        title="In-sample atomization-energy MAE",
-                       cbar_label="MAE (kcal/mol)")
+                       cbar_label="MAE (kcal/mol)", subset_sizes=ss_axis)
         fig.suptitle(f"Architecture × subset_size error grid · {run_id}",
                      fontsize=11)
         fig.text(0.5, 0.028,
@@ -2951,16 +2963,22 @@ def figure_cell_coverage(run_dir: Path,
 
 def build_bh76w411_suite(results_root: Optional[Path] = None,
                          outroot: Optional[Path] = None,
-                         bases: Tuple[str, ...] = _BH76W411_BASES) -> List[Path]:
-    """Regenerate EVERY bh76w411 figure family from the newest run per basis, so a
-    fresh spec pull lands on all figures in one call. Per basis: the arch-aware
-    ablation set (:func:`build_all`), the held-out energy/density set
+                         bases: Tuple[str, ...] = _BH76W411_BASES,
+                         domain: str = "bh76w411_repr") -> List[Path]:
+    """Regenerate EVERY figure family for ``domain`` from the newest run per
+    basis, so a fresh spec pull lands on all figures in one call. Per basis: the
+    arch-aware ablation set (:func:`build_all`), the held-out energy/density set
     (:func:`build_density_energy_figures`), the five parity-layout variants
     (:func:`build_parity_variants`) and the per-run size-consistency/training-loss
     diagnostics (:func:`build_per_run_diagnostics`) into ``figures_<alias>/``.
-    Cross-basis: the basis comparison + its no-references variant
+    Cross-basis (only when >= 2 bases have eval coverage -- a one-run "basis
+    comparison" is misleading): the basis comparison + its no-references variant
     (:func:`build_basis_comparison_figures`) and the diagnostic set
     (:func:`build_diagnostic_figures`) into ``figures_basis_comparison/``.
+
+    For a non-default ``domain`` (e.g. ``dfs_step7``) every output dir name is
+    prefixed with the domain (``figures_dfs_step7_svp/``) so the bh76w411 sets
+    are never overwritten.
 
     Emits TWO parallel figure sets per the checkpoint variant the cluster now
     evaluates by default: the final-step set from ``eval_holdout/`` (into
@@ -2976,7 +2994,8 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     Figures are regenerated outputs -- callers do not version-control them."""
     results_root = Path(results_root) if results_root else _DEFAULT_LOCAL_ROOT
     outroot = Path(outroot) if outroot else Path(__file__).resolve().parent
-    runs = _newest_run_per_basis(results_root, bases)
+    prefix = "" if domain == "bh76w411_repr" else f"{domain}_"
+    runs = _newest_run_per_basis(results_root, bases, domain=domain)
     written: List[Path] = []
     for eval_subdir, suffix in (("eval_holdout", ""),
                                 ("eval_holdout_best", "_best")):
@@ -2999,7 +3018,7 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
             if cov["archs_missing"]:
                 print(f"   (incomplete -- ARCH_ORDER archs with no held-out eval "
                       f"cell yet: {cov['archs_missing']})")
-            fdir = outroot / f"figures_{_basis_fig_alias(basis)}{suffix}"
+            fdir = outroot / f"figures_{prefix}{_basis_fig_alias(basis)}{suffix}"
             written += build_all(run, fdir, eval_subdir=eval_subdir)
             written += build_density_energy_figures(run, fdir,
                                                     eval_subdir=eval_subdir)
@@ -3011,7 +3030,11 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                 print("   (no eval_holdout_best/ data found -- skipping the "
                       "best-checkpoint figure set)")
             continue
-        cmp_dir = outroot / f"figures_basis_comparison{suffix}"
+        if len(ordered_runs) < 2:
+            print(f"   (only one basis with {eval_subdir}/ coverage -- "
+                  "skipping the basis-comparison figure set)")
+            continue
+        cmp_dir = outroot / f"figures_{prefix}basis_comparison{suffix}"
         written += build_basis_comparison_figures(ordered_runs, cmp_dir,
                                                   eval_subdir=eval_subdir)
         written += build_diagnostic_figures(ordered_runs, cmp_dir,
@@ -3029,16 +3052,32 @@ def main(argv: Optional[List[str]] = None) -> int:
         Path(__file__).resolve().parent / "figures_ablation_notransform"),
         help="output directory for PNGs (single-run mode)")
     p.add_argument("--suite", action="store_true",
-                   help="regenerate ALL bh76w411 figure families (both bases) "
-                        "from the newest run per basis, into figures_<basis>/ + "
-                        "figures_basis_comparison/ next to this script")
+                   help="regenerate ALL figure families for --domain (every "
+                        "--bases basis) from the newest run per basis, into "
+                        "figures_<basis>/ + figures_basis_comparison/ under "
+                        "--outroot")
     p.add_argument("--results-root", default=None,
                    help="results runs root for --suite "
                         f"(default: {_DEFAULT_LOCAL_ROOT})")
+    p.add_argument("--domain", default="bh76w411_repr",
+                   help="results domain under the runs root for --suite; "
+                        "non-default domains get domain-prefixed figure dirs, "
+                        "e.g. --domain dfs_step7 -> figures_dfs_step7_svp/ "
+                        "(default: bh76w411_repr)")
+    p.add_argument("--bases", default=",".join(_BH76W411_BASES),
+                   help="comma-separated basis subdirs to render for --suite "
+                        f"(default: {','.join(_BH76W411_BASES)})")
+    p.add_argument("--outroot", default=None,
+                   help="directory the figures_* dirs are written under for "
+                        "--suite (default: next to this script)")
     args = p.parse_args(argv)
 
     if args.suite:
-        written = build_bh76w411_suite(results_root=args.results_root)
+        bases = tuple(b.strip() for b in args.bases.split(",") if b.strip())
+        written = build_bh76w411_suite(results_root=args.results_root,
+                                       outroot=args.outroot,
+                                       bases=bases,
+                                       domain=args.domain)
         for pth in written:
             print(f"  wrote {pth}")
         return 0
