@@ -66,6 +66,10 @@ _TEMPLATE_FILES = {
     # No GPU variant today, the inline path is CPU-first; GPU inline support
     # can be added later if the cluster device is gpu.
     "train_eval_inline_cpu": "train_eval_inline_cpu.sbatch.tmpl",
+    # Hold-out benchmark reference densities (CCSD+PBE, no OEP): one
+    # standalone resumable job, submitted only when
+    # cfg.inputs.benchmark_refs_dir is set; starts after train BEGINS.
+    "benchmark_refs": "benchmark_refs.sbatch.tmpl",
 }
 
 _COMMANDS_FILENAME = "submit_commands.txt"
@@ -164,10 +168,13 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
                 "device='gpu'. Use device='cpu' or omit --inline-eval."
             )
         template_kind = "train_eval_inline_cpu"
+    elif kind == "benchmark_refs":
+        template_kind = "benchmark_refs"
     else:
         raise ValueError(
             f"render_sbatch: kind must be 'pretrain', 'preflight', 'train', "
-            f"'eval', 'eval_launcher' or 'train_eval_inline', got {kind!r}"
+            f"'eval', 'eval_launcher', 'train_eval_inline' or "
+            f"'benchmark_refs', got {kind!r}"
         )
 
     text = _load_template_text(_TEMPLATE_FILES[template_kind])
@@ -204,6 +211,14 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         time = _EVAL_LAUNCHER_TIME
         mem = ""
         cpus = 1
+    elif kind == "benchmark_refs":
+        # Single CPU job over the full hold-out pool; preflight-style
+        # fallbacks (it is the same flavor of reference generation).
+        partition = (cl.benchmark_refs_partition or cl.preflight_partition
+                     or cl.partition)
+        time = cl.benchmark_refs_time or cl.preflight_time or cl.time
+        mem = cl.mem
+        cpus = cl.cpus_per_task
     else:  # train
         partition = cl.partition
         time = cl.time
@@ -248,6 +263,29 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         "MAIL_TYPE_LINE": _optional_sbatch_line("mail-type", cl.mail_type),
         "ACCOUNT_LINE": _optional_sbatch_line("account", cl.account),
     }
+
+    # Hold-out benchmark refs wiring. The eval-running kinds export
+    # XCQUINOX_BENCH_REFS_DIR (the pools loader's env hook) so the held-out
+    # eval picks up whatever reference npz files exist at eval time; empty
+    # line when the feature is off.
+    bench_dir = getattr(cfg.inputs, "benchmark_refs_dir", None)
+    mapping["BENCH_REFS_ENV_LINE"] = (
+        f"export XCQUINOX_BENCH_REFS_DIR={bench_dir}\n" if bench_dir else "")
+    if kind == "benchmark_refs":
+        if not bench_dir:
+            raise ValueError(
+                "render_sbatch: kind='benchmark_refs' requires "
+                "cfg.inputs.benchmark_refs_dir to be set"
+            )
+        mapping["BENCH_REFS_DIR"] = bench_dir
+        mapping["BASIS"] = cfg.inputs.basis
+        mapping["GRID_LEVEL"] = int(cfg.inputs.grid_level)
+        df_flags = ""
+        if cfg.inputs.density_fit:
+            df_flags = " --density-fit"
+            if cfg.inputs.auxbasis:
+                df_flags += f" --auxbasis {cfg.inputs.auxbasis}"
+        mapping["BENCH_DF_FLAGS"] = df_flags
 
     if kind in ("pretrain", "train", "eval", "train_eval_inline"):
         if array_max is None:
@@ -455,6 +493,13 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     if defer:
         launcher_text = render_sbatch("eval_launcher", cfg, run_dir)
         scripts_to_write.append((launcher_path, launcher_text))
+    # Hold-out benchmark refs: one standalone resumable job, rendered only
+    # when configured (inputs.benchmark_refs_dir).
+    bench_refs_dir = getattr(cfg.inputs, "benchmark_refs_dir", None)
+    bench_path = os.path.join(scripts_dir, "benchmark_refs.sbatch")
+    if bench_refs_dir:
+        bench_text = render_sbatch("benchmark_refs", cfg, run_dir)
+        scripts_to_write.append((bench_path, bench_text))
     for path, text in scripts_to_write:
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -480,6 +525,8 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         result["scripts"]["eval"] = eval_path
     if defer:
         result["scripts"]["eval_launcher"] = launcher_path
+    if bench_refs_dir:
+        result["scripts"]["benchmark_refs"] = bench_path
 
     # Manual fallback: if the launcher can't submit (compute nodes barred from
     # sbatch), run this from a login node once the train array finishes.
@@ -519,6 +566,13 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             cmds.append(
                 f"sbatch --parsable --dependency=aftercorr:<TRAIN_ID> "
                 f"{eval_path}"
+            )
+        if bench_refs_dir:
+            # 'after' (not afterok): starts once the train array has BEGUN,
+            # running in parallel with training.
+            cmds.append(
+                f"sbatch --parsable --dependency=after:<TRAIN_ID> "
+                f"{bench_path}"
             )
         _append_commands(run_dir, "dry-run", cmds)
         result["dry_run"] = True
@@ -602,6 +656,21 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
             proc = job_tracking._run_slurm(eval_cmd)
             eval_id = proc.stdout.strip().split(";")[0].split()[0]
             submitted_ids.append(eval_id)
+
+        # 6. hold-out benchmark refs: single standalone job, eligible to start
+        # once the train array has BEGUN ('after', not afterok), independent of
+        # the training-refs preflight. Same rollback umbrella as the rest of
+        # the graph.
+        bench_id = None
+        if bench_refs_dir:
+            bench_cmd = [
+                "sbatch", "--parsable",
+                f"--dependency=after:{train_id}", bench_path,
+            ]
+            issued_cmds.append(" ".join(bench_cmd))
+            proc = job_tracking._run_slurm(bench_cmd)
+            bench_id = proc.stdout.strip().split(";")[0].split()[0]
+            submitted_ids.append(bench_id)
     except Exception as exc:
         # Best-effort rollback: cancel everything submitted in THIS call.
         rollback_failed: list[str] = []
@@ -652,6 +721,9 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
     job_tracking.append_job_record(run_dir, "train", train_id, indices)
     if not (defer or inline):
         job_tracking.append_job_record(run_dir, "eval", eval_id, indices)
+    if bench_refs_dir:
+        job_tracking.append_job_record(run_dir, "benchmark_refs", bench_id,
+                                       [0])
 
     _append_commands(run_dir, "submit", issued_cmds)
 
@@ -683,5 +755,7 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
         )
     else:
         job_ids["eval"] = eval_id
+    if bench_refs_dir:
+        job_ids["benchmark_refs"] = bench_id
     result["job_ids"] = job_ids
     return result

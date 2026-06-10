@@ -1,0 +1,127 @@
+# =============================================================================
+# dfs_step7.svp_grid2_v2.yaml — the dfs_step7 sweep with the post-forensics
+# training-regime fixes (see the 2026-06-10 dfs failure diagnosis):
+#
+#   1. ae_as_reactions: the 21 AE points train in PREDICTED-ATOM reaction form
+#      (AE = sum n_Z E_NN(Z) - E_NN(mol), absolute residual through the BH76
+#      channel with its 1-kcal/mol target floor), the construction both dpyscf
+#      and the converged bh76w411 sweep use. Kills the fixed-anchor relative-AE
+#      inflation (Na2's 0.0273 Ha target -> ~1340x loss/grad blowup) and the
+#      0.3 Ha absolute-anchor shift burden. Point names unchanged -> the SAME
+#      alpha_on JSD ledger resolves.
+#   2. density_per_electron: the rho channel is normalized by N_e^2 (dpyscf
+#      losses.py:171), making it intensive -- the OH/CH/NO radical density
+#      terms no longer dominate per-group losses by size.
+#   3. LR/schedule/budget: lr_start 1e-3 (oscillation amplitude tracked LR;
+#      winners converged at ~2.5e-3), hold 50% before the linear decay, and
+#      500 epochs (the Na2 race was lost to the decay, not to capacity).
+#   4. pretrain.atoms: pretraining coverage extended to EVERY pool element
+#      (was H/He/O/N; Na2's element was unseen). Forces a pretrain-data regen
+#      via the manifest's new "atoms" key (fresh data_dir below).
+#
+# Same 88-spec grid (8 archs x jsd/{1..7,12,15,18,26}), basis, solver, and
+# polarized correlation as v1, so v1 -> v2 is a controlled regime A/B.
+# NOTE: the species unions now include the constituent atoms (C, N, O, F, Na),
+# so the preflight will CCSD+OEP those atoms into external_refs_dfs_svp_g2
+# (skip-if-cached). If the OEP cascade fails on a new atomic species, discover
+# a per-species override with the existing oep-overrides harness.
+# =============================================================================
+
+sweep:
+  arch:
+    - deep
+    - deep_attn
+    - deep_dm
+    - deep_cusp
+    - deep_combined
+    - deep_combined_attn
+    - deep_notransform
+    - deep_notransform_attn
+  loss: [L5_gradnorm_vxc_step7]
+  metric: [jsd]
+  subset_size: [1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 26]
+  solver: [full_3]
+
+solvers:
+  full_3:
+    mode: FULL
+    max_cycles: 3
+    feature_policy: REASSEMBLE
+
+hyperparams:
+  n_steps: 500
+  lr_start: 0.001
+  lr_end: 0.00001
+  lr_decay_start: 0.5
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  density_per_electron: true
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  seed: 42
+
+inputs:
+  external_refs_dir: /gpfs/scratch/awills/external_refs_dfs_svp_g2
+  subset_ledger_path: /gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/alpha_on/subset_index_log.json
+  basis: def2-svp
+  grid_level: 2
+  density_fit: false
+  output_root: /gpfs/scratch/awills/xcquinox_runs/dfs_step7/svp_grid2_v2
+  # hold-out benchmark reference densities (CCSD + PBE, no OEP): submit ALSO
+  # launches one standalone resumable job into this dir, starting once the
+  # train array has begun; eval tasks export XCQUINOX_BENCH_REFS_DIR so the
+  # held-out eval consumes whatever references exist at eval time
+  benchmark_refs_dir: /gpfs/scratch/awills/external_refs_bench_svp_g2
+
+pretrain:
+  data_dir: /gpfs/scratch/awills/pretrain_data_dfs_svp_g2_allelem
+  n_steps: 2500
+  lr_start: 0.01
+  lr_end: 0.00001
+  lr_decay_start: 0.2
+  grad_clip: 1.0
+  seed: 42
+  loss_weighting: integration
+  # every element of the dfs pool, NIST ground-state 2S spins (+He for a
+  # closed-shell sample); was (H, He, O, N)
+  atoms:
+    H: 1
+    He: 0
+    Li: 1
+    C: 2
+    N: 3
+    O: 2
+    F: 1
+    Na: 1
+
+cluster:
+  partition: ""
+  time: "24:00:00"        # 500 epochs (2x v1) + atom species in the AE groups
+  cpus_per_task: 24
+  array_throttle: 4
+  eval_array_throttle: 4
+  max_concurrent_tasks: 8
+  max_array_size: 1000
+  device: cpu
+  conda_env: /gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox
+  conda_profile: /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+  mail_user: alec.wills@stonybrook.edu
+  mail_type: BEGIN,END,FAIL
+  account: ""
+  preflight_time: "08:00:00"
+  eval_time: "02:00:00"
+  pretrain_time: "08:00:00"
+  benchmark_refs_time: "24:00:00"   # 214 species sequential CCSD@svp/g2
+
+domain_profile: dfs_step7
+
+on_precompute_failure: abort
+bh76_mode: reaction_energy
+ae_as_reactions: true
+use_polarized_correlation: true
+held_out_strict: true
+
+inline_eval: true
+defer_eval: false

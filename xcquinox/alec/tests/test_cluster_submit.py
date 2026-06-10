@@ -701,3 +701,110 @@ def test_render_train_gpu_execs_worker_for_sigterm_delivery(tmp_path):
     cfg = _make_cfg(tmp_path, device="gpu", gpus_per_task=1)
     text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
     assert "exec python -m xcquinox.alec.cluster._train_task" in text
+
+
+# ---------------------------------------------------------------------------
+# hold-out benchmark refs job (inputs.benchmark_refs_dir)
+# ---------------------------------------------------------------------------
+
+def _make_cfg_bench(tmp_path, *, density_fit=False, auxbasis=None):
+    d = _base_config_dict()
+    d["inputs"]["benchmark_refs_dir"] = "/shared/bench_refs"
+    if density_fit:
+        d["inputs"]["density_fit"] = True
+        if auxbasis:
+            d["inputs"]["auxbasis"] = auxbasis
+    d["cluster"]["benchmark_refs_time"] = "20:00:00"
+    p = tmp_path / "grid_bench.json"
+    p.write_text(json.dumps(d))
+    return load_grid_config(str(p))
+
+
+def test_render_benchmark_refs_single_job(tmp_path):
+    cfg = _make_cfg_bench(tmp_path)
+    text = render_sbatch("benchmark_refs", cfg, str(tmp_path / "run"))
+    _assert_no_unrendered_placeholders(text)
+    assert "${BENCH_REFS_DIR}" not in text and "${BENCH_DF_FLAGS}" not in text
+    assert "--array" not in text                       # single job
+    assert "--out-dir /shared/bench_refs" in text
+    assert "--basis def2-tzvp" in text
+    assert "--grid-level 3" in text
+    assert "--density-fit" not in text
+    assert "#SBATCH --time=20:00:00" in text           # benchmark_refs_time
+    assert "python -m xcquinox.alec.benchmark_refs" in text
+
+
+def test_render_benchmark_refs_df_flags_and_fallback_time(tmp_path):
+    cfg = _make_cfg_bench(tmp_path, density_fit=True,
+                          auxbasis="def2-universal-jkfit")
+    text = render_sbatch("benchmark_refs", cfg, str(tmp_path / "run"))
+    assert "--density-fit --auxbasis def2-universal-jkfit" in text
+    # no benchmark_refs_time / preflight_time -> falls back to cluster.time
+    d = _base_config_dict()
+    d["inputs"]["benchmark_refs_dir"] = "/shared/bench_refs"
+    p = tmp_path / "grid_bench_nb.json"
+    p.write_text(json.dumps(d))
+    cfg2 = load_grid_config(str(p))
+    text2 = render_sbatch("benchmark_refs", cfg2, str(tmp_path / "run"))
+    assert "#SBATCH --time=12:00:00" in text2
+
+
+def test_render_benchmark_refs_requires_dir(tmp_path):
+    cfg = _make_cfg(tmp_path)                          # no benchmark_refs_dir
+    with pytest.raises(ValueError, match="benchmark_refs_dir"):
+        render_sbatch("benchmark_refs", cfg, str(tmp_path / "run"))
+
+
+def test_eval_and_inline_export_bench_refs_env(tmp_path):
+    cfg = _make_cfg_bench(tmp_path)
+    ev = render_sbatch("eval", cfg, str(tmp_path / "run"), array_max=39)
+    inl = render_sbatch("train_eval_inline", cfg, str(tmp_path / "run"),
+                        array_max=39)
+    for text in (ev, inl):
+        assert "export XCQUINOX_BENCH_REFS_DIR=/shared/bench_refs" in text
+    # off by default: no export line, no unrendered placeholder
+    cfg_off = _make_cfg(tmp_path)
+    ev_off = render_sbatch("eval", cfg_off, str(tmp_path / "run"),
+                           array_max=39)
+    assert "XCQUINOX_BENCH_REFS_DIR" not in ev_off
+    assert "${BENCH_REFS_ENV_LINE}" not in ev_off
+
+
+def test_dry_run_includes_bench_command_iff_configured(tmp_path):
+    run_dir = str(tmp_path / "run")
+    res_off = submit_jobs(_make_cfg(tmp_path), run_dir, submit=False)
+    assert not any("benchmark_refs" in c for c in res_off["commands"])
+    assert "benchmark_refs" not in res_off["scripts"]
+
+    run_dir2 = str(tmp_path / "run2")
+    res_on = submit_jobs(_make_cfg_bench(tmp_path), run_dir2, submit=False)
+    bench_lines = [c for c in res_on["commands"] if "benchmark_refs" in c]
+    assert len(bench_lines) == 1
+    assert "--dependency=after:<TRAIN_ID>" in bench_lines[0]
+    assert os.path.isfile(
+        os.path.join(run_dir2, "scripts", "benchmark_refs.sbatch"))
+    assert res_on["scripts"]["benchmark_refs"].endswith(
+        "benchmark_refs.sbatch")
+
+
+def test_real_submit_bench_after_train_and_recorded(tmp_path, monkeypatch):
+    cfg = _make_cfg_bench(tmp_path)
+    run_dir = str(tmp_path / "run")
+    fake = _fake_slurm_factory(
+        ids=["6000", "6001", "6002", "6003", "6004", "6005"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    result = submit_jobs(cfg, run_dir, submit=True)
+
+    assert result["job_ids"]["benchmark_refs"] == "6005"
+    joined = [" ".join(c) for c in fake.calls
+              if os.path.basename(c[0]) == "sbatch"]
+    assert len(joined) == 6
+    # eligible once the train array (6003) has BEGUN -- 'after', not afterok
+    assert "--dependency=after:6003" in joined[5]
+    assert joined[5].endswith("benchmark_refs.sbatch")
+    records = jt.read_job_records(run_dir)
+    bench = [r for r in records if r["kind"] == "benchmark_refs"]
+    assert len(bench) == 1
+    assert bench[0]["array_job_id"] == "6005"
+    assert bench[0]["indices"] == [0]

@@ -711,3 +711,14 @@ def test_validate_rejects_both_defer_and_inline_eval():
         dataclasses.replace(_cfg(), defer_eval=True), _StubDomain(pool_size=40))
     validate_grid_semantics(
         dataclasses.replace(_cfg(), inline_eval=True), _StubDomain(pool_size=40))
+
+
+def test_hyperparams_density_per_electron_optional_default_false():
+    from xcquinox.alec.cluster.grid_config import _build_hyperparams
+    base = {"n_steps": 1, "lr_start": 1e-2, "lr_end": 1e-5,
+            "lr_decay_start": 0.2, "grad_clip": 1.0, "gradnorm_alpha": 1.5,
+            "vxc_weight": 0.01, "density_weight": 0.1}
+    hp = _build_hyperparams(dict(base))
+    assert hp.density_per_electron is False           # byte-identical default
+    hp_on = _build_hyperparams(dict(base, density_per_electron=True))
+    assert hp_on.density_per_electron is True

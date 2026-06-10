@@ -19,7 +19,7 @@ ${CONDA_ACTIVATION}
 export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
-
+${BENCH_REFS_ENV_LINE}
 # --- JAX/XLA CPU backend ---------------------------------------------------
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=$$SLURM_CPUS_PER_TASK --xla_force_host_platform_device_count=1"
 

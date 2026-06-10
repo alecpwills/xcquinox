@@ -835,12 +835,14 @@ def cmd_submit(args) -> int:
                          "(eval array deferred until train terminates)")
         else:
             eval_part = f"eval={ids.get('eval')}"
+        bench_part = (f" benchmark_refs={ids['benchmark_refs']}"
+                      if ids.get("benchmark_refs") else "")
         _log(f"submit: SUBMITTED ({result['n_specs']} specs, "
              f"{result['n_archs']} distinct arch(s)), "
              f"datagen={ids.get('datagen')} "
              f"pretrain={ids.get('pretrain')} "
              f"preflight={ids.get('preflight')} train={ids.get('train')} "
-             f"{eval_part}")
+             f"{eval_part}{bench_part}")
         if result.get("manual_eval_command"):
             _log("submit: if the launcher cannot submit from a compute node, "
                  f"run after train finishes: {result['manual_eval_command']}")
