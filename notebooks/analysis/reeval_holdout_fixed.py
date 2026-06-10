@@ -330,16 +330,25 @@ def run_pbe_density_table(
 ) -> Dict[str, Any]:
     """PBE-vs-CCSD density errors for the held-out pool -- NO model needed.
 
-    The PBE channel is model-free (the precompute's ``rho_grid`` IS the PBE
-    density on the reference grid), and it is identical for every spec/arch of
-    a run (PBE + geometry + basis only), so it is computed ONCE per run and
-    written to ``<run_dir>/pbe_density_errors.json``: ``{basis, grid_level,
-    refs_dir, errors: {name: {density_rmse_pbe, density_l1_pbe}},
+    The PBE channel is model-free and identical for every spec/arch of a run
+    (PBE + geometry + basis only), so it is computed ONCE per run and written
+    to ``<run_dir>/pbe_density_errors.json``: ``{basis, grid_level, refs_dir,
+    errors: {name: {density_rmse_pbe, density_l1_pbe}},
     failures: {name: msg}}``. Works on summaries-profile pulls with zero local
     ``model.eqx`` files. Atoms and species without a reference npz are
-    skipped (not failures). Local non-DF PBE vs a DF-generated reference
-    differs only by the DF error (well below the PBE-vs-CCSD signal).
+    skipped (not failures).
+
+    FAST PATH: benchmark reference npz files that carry ``rho_pbe_grid`` +
+    ``grid_weights`` (written by ``xcquinox.alec.benchmark_refs``) need NO
+    SCF at all -- the error is pure npz arithmetic against the
+    generator-side PBE density (for DF runs, the DF-consistent one).
+    Older refs without those keys fall back to a local PBE precompute
+    (``rho_grid`` is the PBE density on the same grid; non-DF vs a
+    DF-generated reference differs only by the DF error, well below the
+    PBE-vs-CCSD signal).
     """
+    import numpy as np
+
     from xcquinox.alec.evaluation import pbe_density_errors
 
     basis, grid_level = _read_basis_grid(run_dir)
@@ -353,11 +362,24 @@ def run_pbe_density_table(
     errors: Dict[str, Dict[str, float]] = {}
     failures: Dict[str, str] = {}
     t0 = time.perf_counter()
+    n_fast = 0
     for k, (name, ms) in enumerate(sorted(with_refs.items()), 1):
         if sum(n for _, n in ms.atom_composition) == 1:
             continue                      # atoms: density matching skipped
+        md = None
+        try:  # fast path; any read problem falls back to the SCF path
+            with np.load(ms.external_data_path, allow_pickle=False) as z:
+                if {"rho_pbe_grid", "grid_weights", "rho_ref_grid"} \
+                        <= set(z.files):
+                    md = {"rho_grid": np.asarray(z["rho_pbe_grid"]),
+                          "rho_ref_grid": np.asarray(z["rho_ref_grid"]),
+                          "grid_weights": np.asarray(z["grid_weights"])}
+                    n_fast += 1
+        except (OSError, ValueError):
+            md = None
         try:
-            md = precompute_one(ms)
+            if md is None:
+                md = precompute_one(ms)
             rmse, l1 = pbe_density_errors(md)
         except Exception as exc:  # noqa: BLE001 - record + continue
             failures[name] = f"{type(exc).__name__}: {exc}"
@@ -372,6 +394,9 @@ def run_pbe_density_table(
         print(f"[pbe-density] ({k}/{len(with_refs)}) {name} "
               f"rmse={rmse:.3e} l1={l1:.3e} [elapsed {_fmt_eta(elapsed)}, "
               f"ETA {_fmt_eta(eta)}]", flush=True)
+    if n_fast:
+        print(f"[pbe-density] {n_fast} species used the stored "
+              "rho_pbe_grid fast path (no SCF)", flush=True)
 
     payload = {
         "basis": basis,

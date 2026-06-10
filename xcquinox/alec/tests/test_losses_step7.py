@@ -531,3 +531,56 @@ def test_dm_term_warns_on_none_references():
     ]
     with pytest.warns(RuntimeWarning, match="dm"):
         _dm_term(_FakeModel(), mol_data, iter_idx=(0, 1))
+
+
+def test_ae_losses_floor_caps_near_zero_targets():
+    """A near-zero AE target must not inflate the relative loss without bound
+    (dfs forensics: Na2's 0.0273 Ha target inflated its channel ~1340x).
+    Denominator = max(tgt^2, _DELTA_TGT_FLOOR_HA2)."""
+    import jax.numpy as jnp
+    from xcquinox.alec.losses import _ae_losses, _DELTA_TGT_FLOOR_HA2
+
+    E_nn = jnp.array([-1.0])
+    comp = ({"H": 2},)
+    atom_energies = {"H": -0.5}
+    # ae = 2*(-0.5) - (-1.0) = 0.0 -> residual = -tgt
+    tiny = 1e-5                                  # << 1 kcal/mol
+    out = _ae_losses(E_nn, (0,), comp, ("h2",), {"h2": tiny}, atom_energies)
+    assert float(out) == pytest.approx(tiny ** 2 / _DELTA_TGT_FLOOR_HA2)
+    # normal-scale target: floor is a no-op (tgt^2 >> floor)
+    big = 0.17
+    out2 = _ae_losses(E_nn, (0,), comp, ("h2",), {"h2": big}, atom_energies)
+    assert float(out2) == pytest.approx(1.0, rel=1e-6)   # (0-tgt)^2/tgt^2
+
+
+def test_grid_term_per_electron_normalization(monkeypatch):
+    """per_electron=True divides the weighted-L2 integral by N_e^2
+    (N_e = sum w*rho_ref; dpyscf losses.py:171 convention), making the
+    channel intensive: same per-electron error => same loss regardless of
+    electron count."""
+    import jax.numpy as jnp
+    import xcquinox.alec.losses as L
+
+    # 2-electron and 8-electron fake systems with the SAME relative error
+    md_small = {"rho_ref_grid": jnp.array([2.0, 2.0]),
+                "grid_weights": jnp.array([0.5, 0.5])}        # N_e = 2
+    md_big = {"rho_ref_grid": jnp.array([8.0, 8.0]),
+              "grid_weights": jnp.array([0.5, 0.5])}          # N_e = 8
+    monkeypatch.setattr(L, "oneshot_grid_density",
+                        lambda model, md, solver_config=None:
+                        md["rho_ref_grid"] * 1.01)            # +1% density
+    out_small = L._grid_term(object(), [md_small], (0,), per_electron=True)
+    out_big = L._grid_term(object(), [md_big], (0,), per_electron=True)
+    assert float(out_small) == pytest.approx(float(out_big), rel=1e-9)
+    # absolute (default) mode keeps the size-extensive behavior: 16x ratio
+    abs_small = L._grid_term(object(), [md_small], (0,))
+    abs_big = L._grid_term(object(), [md_big], (0,))
+    assert float(abs_big) / float(abs_small) == pytest.approx(16.0, rel=1e-9)
+
+
+def test_l5_density_per_electron_kwarg_roundtrip():
+    from xcquinox.alec.losses import L5GradnormVxcStep7
+    base = L5GradnormVxcStep7(_smoke_test=True)
+    assert base.density_per_electron is False           # byte-identical default
+    on = L5GradnormVxcStep7(_smoke_test=True, density_per_electron=True)
+    assert on.density_per_electron is True

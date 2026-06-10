@@ -1113,3 +1113,30 @@ def test_gradnorm_relative_rates_matches_plain_when_all_valid():
     expected = r / jnp.mean(r)
     got = _gradnorm_relative_rates(comp, L0)
     assert bool(jnp.allclose(got, expected, atol=1e-6))
+
+
+def test_training_groups_skip_charged_atom_anchor():
+    """Cations must NOT get element-symbol anchor groups: anchor:Li+ would
+    pull E_NN(Li+) toward the NEUTRAL Chakravorty Li value via the scoped
+    regularizer (build_indices maps atom_map['Li'] -> Li+ when Li+ is the
+    only candidate), opposing the IP13 channel."""
+    from xcquinox.alec.train import _training_groups
+    from xcquinox.alec.config import MoleculeSpec
+    li = MoleculeSpec(name="Li", atom="Li 0 0 0", basis="sto-3g",
+                      charge=0, spin=1, atom_composition=(("Li", 1),))
+    li_cat = MoleculeSpec(name="Li+", atom="Li 0 0 0", basis="sto-3g",
+                          charge=1, spin=0, atom_composition=(("Li", 1),))
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(), molecules=(li, li_cat, h2_molecule()),
+        targets={"Li": -7.478, "Li+": -7.28, "H2": 0.17},
+        atom_energies={"Li": -7.478, "H": -0.5},
+        loss_name="L5_gradnorm_vxc_step7",
+        loss_kwargs={"regularize_atom_syms": ("Li",),
+                     "ip13_pairs": [{"name": "Li_IP", "neutral": "Li",
+                                     "cation": "Li+", "ip_ref": 0.198}]},
+        update_scheme="per_molecule", require_atom_anchors=False,
+    )
+    labels = [g["label"] for g in _training_groups(spec)]
+    assert "anchor:Li" in labels
+    assert "anchor:Li+" not in labels
+    assert "ip13:Li_IP" in labels       # the cation still trains via its pair

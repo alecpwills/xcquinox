@@ -41,6 +41,13 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     # basis the reference was generated for; lets the OEP cache-hit reject a
     # stale .npz built for a different basis in the same cache_dir.
     "basis_used",
+    # Benchmark density-only refs (xcquinox.alec.benchmark_refs) also carry
+    # the generator-side PBE density + grid weights so the model-free
+    # PBE-vs-CCSD baseline is pure npz arithmetic. Shape-validated here but
+    # NOT returned into MoleculeData (the precompute computes its own PBE
+    # quantities on the identical grid).
+    "rho_pbe_grid",
+    "grid_weights",
 })
 
 
@@ -118,6 +125,16 @@ def _load_external_data(
         if "ref_density_method" in present:
             method_arr = np.asarray(npz["ref_density_method"])
             ref_density_method = str(method_arr.item())
+        # informational benchmark-refs arrays: validate shape, do not return
+        for grid_key in ("rho_pbe_grid", "grid_weights"):
+            if grid_key in present:
+                arr = np.asarray(npz[grid_key])
+                if tuple(arr.shape) != tuple(rho_pbe_shape):
+                    raise ValueError(
+                        f"external {grid_key} shape {tuple(arr.shape)} does "
+                        f"not match rho_grid shape {tuple(rho_pbe_shape)} "
+                        f"for {mol_name!r}"
+                    )
 
         E_ref_literature = None
         if "E_ref_literature" in present:

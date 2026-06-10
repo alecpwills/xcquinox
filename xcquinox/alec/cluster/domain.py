@@ -155,9 +155,13 @@ BH76W411_POOL_SIZE = 212   # 216 reactions, 4 identical-name duplicates collapse
 
 def _dfs_pool_builder(cfg):
     """Default pool builder: the 26-point DFS pool (lazy import keeps domain.py
-    free of the heavy ASE/pyscf chain until a pool is actually requested)."""
+    free of the heavy ASE/pyscf chain until a pool is actually requested).
+    ``cfg.ae_as_reactions`` selects the predicted-atom reaction form for the
+    21 AE points (same point names, so subset ledgers resolve unchanged)."""
     from xcquinox.alec.training_points import build_dfs_pool_points
-    return build_dfs_pool_points(bh76_mode=cfg.bh76_mode)
+    return build_dfs_pool_points(
+        bh76_mode=cfg.bh76_mode,
+        ae_as_reactions=bool(getattr(cfg, "ae_as_reactions", False)))
 
 
 def _bh76w411_pool_builder(cfg):

@@ -256,3 +256,56 @@ def test_bh76_barrier_height_mode_raises_gated_error():
     from xcquinox.alec.training_points import build_dfs_pool_points
     with pytest.raises(NotImplementedError, match="transition-state"):
         build_dfs_pool_points(bh76_mode="barrier_height")
+
+
+def test_ae_reaction_point_predicted_atom_form():
+    """Reaction-form AE point: bh76-kind, SAME name as the fixed-anchor form
+    (ledger compatibility), species = compound + one neutral atom per element,
+    coeffs = (-1, n_Z...) so sum(coeffs*E) = AE."""
+    from ase import Atoms
+    from xcquinox.alec.training_points import (
+        _ae_point_from_atoms, _ae_reaction_point_from_atoms,
+    )
+    h2o = Atoms("OH2", positions=[(0, 0, 0), (0, 0.76, 0.59),
+                                  (0, -0.76, 0.59)])
+    h2o.info.update(dfs_hill="H2O", ae_kcalmol=232.2, ae_source="test")
+    p = _ae_reaction_point_from_atoms(h2o)
+    assert p.kind == "bh76"
+    assert p.name == _ae_point_from_atoms(h2o).name == "H2O"
+    assert {s.info["name"] for s in p.species} == {"H2O", "H", "O"}
+    md = p.metadata
+    assert md["reactants"] == ("H2O",)
+    assert md["products"] == ("H", "O")
+    assert md["coeffs"] == (-1.0, 2.0, 1.0)
+    assert md["e_rxn_ref"] == pytest.approx(232.2)     # kcal/mol (loss converts)
+    assert md["ae_form"] == "predicted_atom_reaction"
+    # atom species are neutral with NIST ground-state spins
+    atoms = {s.info["name"]: s for s in p.species if s.info["name"] != "H2O"}
+    assert all(a.info.get("charge", 0) == 0 for a in atoms.values())
+    assert atoms["O"].info["spin"] == 2 and atoms["H"].info["spin"] == 1
+    # homonuclear: one atom species, multiplicity in the coeff
+    na2 = Atoms("Na2", positions=[(0, 0, 0), (0, 0, 3.08)])
+    na2.info.update(dfs_hill="Na2", ae_kcalmol=17.0)
+    p2 = _ae_reaction_point_from_atoms(na2)
+    assert {s.info["name"] for s in p2.species} == {"Na2", "Na"}
+    assert p2.metadata["coeffs"] == (-1.0, 2.0)
+
+
+def test_build_dfs_pool_points_ae_as_reactions_names_unchanged():
+    """ae_as_reactions=True keeps EVERY point name identical (the JSD subset
+    ledgers resolve by name) while converting the 21 AE points to bh76-kind
+    atomization reactions; BH76/IP13 points are untouched."""
+    from xcquinox.alec.training_points import build_dfs_pool_points
+    base = build_dfs_pool_points()
+    rxn = build_dfs_pool_points(ae_as_reactions=True)
+    assert [p.name for p in base] == [p.name for p in rxn]
+    assert len(rxn) == 26
+    kinds = [p.kind for p in rxn]
+    assert kinds.count("bh76") == 24 and kinds.count("ip13") == 2
+    assert "ae" not in kinds
+    # references carry over exactly (kcal/mol, same value as the ae form)
+    by_name_base = {p.name: p for p in base}
+    for p in rxn:
+        if p.metadata.get("ae_form") == "predicted_atom_reaction":
+            assert (p.metadata["e_rxn_ref"]
+                    == by_name_base[p.name].metadata["ae_kcalmol"])

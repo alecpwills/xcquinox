@@ -275,3 +275,36 @@ def test_main_pbe_density_only_requires_refs(tmp_path):
     run = _make_run(tmp_path, trained=(0,))
     with pytest.raises(SystemExit):
         rh.main(["--run-dir", str(run), "--pbe-density-only"])
+
+
+def test_pbe_density_table_fast_path_uses_stored_pbe_grid(tmp_path):
+    """Benchmark refs carrying rho_pbe_grid + grid_weights must be consumed
+    by pure npz arithmetic -- precompute (PBE SCF) must NOT be invoked."""
+    import numpy as np
+    run = _make_run(tmp_path, trained=(), untrained=(0,))
+    (run / "resolved_config.yaml").write_text("basis: def2-svp\ngrid_level: 2\n")
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    np.savez_compressed(refs / "h2o.npz",
+                        rho_ref_grid=np.array([1.0, 1.0]),
+                        rho_pbe_grid=np.array([1.5, 0.5]),
+                        grid_weights=np.array([3.0, 1.0]),
+                        ref_density_method=np.array("ccsd"))
+
+    class MS:
+        name = "h2o"
+        atom_composition = (("H", 2), ("O", 1))
+        external_data_path = str(refs / "h2o.npz")
+
+    def pools_loader(basis, grid_level, refs_dir=None):
+        return ({"h2o": MS()}, [])
+
+    def precompute_one(ms):
+        raise AssertionError("fast path must not run a PBE SCF")
+
+    payload = rh.run_pbe_density_table(run, density_refs=str(refs),
+                                       pools_loader=pools_loader,
+                                       precompute_one=precompute_one)
+    assert payload["errors"]["h2o"]["density_rmse_pbe"] == 0.5
+    assert payload["errors"]["h2o"]["density_l1_pbe"] == 0.5
+    assert not payload["failures"]

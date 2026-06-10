@@ -326,6 +326,21 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
         for tp in points
         if tp.kind == "ae"
     }
+    # Predicted-atom reaction-form AE points (bh76-kind, ae_form tag; see
+    # training_points._ae_reaction_point_from_atoms) keep a REAL AE
+    # reference here so build_targets/eval scoring see the true value, but
+    # their names are FORCED into aux_only_names below: the fixed-anchor AE
+    # channel must stay zero for them (they train through the BH76 reaction
+    # channel with predicted atom energies instead).
+    ae_rxn_names = {
+        tp.name for tp in points
+        if tp.kind == "bh76"
+        and tp.metadata.get("ae_form") == "predicted_atom_reaction"
+    }
+    ae_ref_kcalmol.update({
+        tp.name: tp.metadata.get("e_rxn_ref")
+        for tp in points if tp.name in ae_rxn_names
+    })
 
     if cells is None:
         cells = expand_grid(cfg)
@@ -409,7 +424,14 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             )
 
         targets = build_targets(mol_specs, ae_ref_kcalmol, domain)
-        aux_only_names = classify_aux_only(mol_specs, ae_ref_kcalmol)
+        # Reaction-form AE compounds are aux for the fixed-anchor AE channel
+        # (they have REAL targets for eval scoring, so classify_aux_only
+        # alone would leave them in the channel and double-count their
+        # energy against the Chakravorty anchors).
+        aux_only_names = tuple(sorted(
+            set(classify_aux_only(mol_specs, ae_ref_kcalmol))
+            | {ms.name for ms in mol_specs if ms.name in ae_rxn_names}
+        ))
 
         # BH76 / IP13 loss inputs come ONLY from the chosen points.
         bh76_ha = [
@@ -437,6 +459,9 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             "solver_config": solver_cfg,
             "vxc_weight": hp.vxc_weight,
             "density_weight": hp.density_weight,
+            # survives the per-molecule loop's weight overrides (it copies
+            # loss_kwargs and only forces the *_weight knobs to 1.0)
+            "density_per_electron": hp.density_per_electron,
         }
 
         # Run-level spin-polarized-correlation toggle: rebuild the named arch
@@ -596,20 +621,27 @@ def build_test_spec(
                 stacklevel=2,
             )
 
-    # Exclude AUX-ONLY species (BH76/IP13 reaction polyatomics with no real AE
-    # reference), they carry a 0.0 placeholder target. Mirrors the training
+    # Exclude AUX-ONLY species whose target is the 0.0 PLACEHOLDER (BH76/IP13
+    # reaction polyatomics with no real AE reference). Mirrors the training
     # loss, which drops them via classify_aux_only; without this the eval AE
     # metric scores their full atomization energy against a 0.0 reference (the
     # CH4 ~+440 / HF ~+150 kcal/mol artifact). aux_only_names is carried in the
-    # TrainingSpec's loss_kwargs by build_training_specs.
+    # TrainingSpec's loss_kwargs by build_training_specs. Reaction-form AE
+    # compounds (ae_as_reactions) are ALSO aux for the training channel but
+    # carry a REAL target -- those must still be scored at eval time, hence
+    # the placeholder test is on the target VALUE, not aux membership alone.
     aux_only = set(training_spec.loss_kwargs_dict.get("aux_only_names", ()))
     # Build references from the EVAL molecules (not the training set) against the
     # eval-matched target source, so the held-out path scores the held-out set.
     reference_ae_kcalmol: dict = {}
     for ms in eval_molecules:
         comp_sum = sum(dict(ms.atom_composition).values())
-        if comp_sum > 1 and ms.name in ref_targets and ms.name not in aux_only:
-            reference_ae_kcalmol[ms.name] = ref_targets[ms.name] * domain.kcal_per_ha
+        if comp_sum <= 1 or ms.name not in ref_targets:
+            continue
+        tgt = ref_targets[ms.name]
+        if ms.name in aux_only and not tgt:
+            continue                       # 0.0/None placeholder -> not scored
+        reference_ae_kcalmol[ms.name] = tgt * domain.kcal_per_ha
 
     return TestSpec.from_dicts(
         arch=training_spec.arch,

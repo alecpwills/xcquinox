@@ -79,6 +79,10 @@ def test_generate_one_writes_density_only_npz(tmp_path, monkeypatch):
         # stage is skipped for benchmark refs)
         assert set(z.files) == set(br._DENSITY_NPZ_KEYS)
         assert z["rho_ref_grid"] == pytest.approx([1.0, 2.0, 3.0, 4.0])
+        # generator-side PBE density + weights stored for the SCF-free
+        # PBE-vs-CCSD baseline (fake dm=I, ao=0 -> rho_pbe = 0)
+        assert z["rho_pbe_grid"].shape == (4,)
+        assert z["grid_weights"] == pytest.approx([1.0, 1.0, 1.0, 1.0])
         assert str(z["ref_density_method"]) == "ccsd"
         assert int(z["grid_level_used"]) == 2
         assert str(z["basis_used"]) == "def2-svp"
@@ -180,11 +184,8 @@ def test_generate_one_h_atom_end_to_end(tmp_path):
                       external_data_path=None, grid_level=1)
     assert br.generate_one(ms, out_dir=tmp_path, basis="def2-svp",
                            grid_level=1, density_fit=True) == "OK"
-    from xcquinox.alec.external_refs import _intermediate_cache_name
-    scf_npz = (tmp_path / "_intermediates"
-               / _intermediate_cache_name("h_test", grid_level=1,
-                                          basis="def2-svp", density_fit=True,
-                                          kind="scf"))
-    with np.load(tmp_path / "h_test.npz") as z, np.load(scf_npz) as s:
-        n_elec = float(np.sum(z["rho_ref_grid"] * s["grid_weights"]))
+    with np.load(tmp_path / "h_test.npz") as z:
+        n_elec = float(np.sum(z["rho_ref_grid"] * z["grid_weights"]))
+        n_elec_pbe = float(np.sum(z["rho_pbe_grid"] * z["grid_weights"]))
     assert n_elec == pytest.approx(1.0, abs=1e-3)
+    assert n_elec_pbe == pytest.approx(1.0, abs=1e-3)

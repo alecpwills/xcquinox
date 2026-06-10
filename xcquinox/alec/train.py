@@ -764,7 +764,14 @@ def _training_groups(spec: TrainingSpec) -> list:
 
     for m in spec.molecules:
         comp = dict(m.atom_composition)
-        if sum(comp.values()) == 1 and next(iter(comp)) in reg_set:
+        # NEUTRAL single atoms only: the Chakravorty anchor table holds
+        # neutral ground-state totals, and a charged species (e.g. the Li+
+        # of an IP13 pair, element symbol still 'Li') in its own group makes
+        # build_indices map atom_map['Li'] -> Li+ -- the scoped regularizer
+        # would then pull E_NN(Li+) toward the NEUTRAL value, opposing the
+        # IP channel. Cations train through their IP13 group only.
+        if (sum(comp.values()) == 1 and next(iter(comp)) in reg_set
+                and int(getattr(m, "charge", 0)) == 0):
             groups.append({"label": f"anchor:{m.name}", "species": (m,),
                            "bh76": (), "ip13": ()})
 

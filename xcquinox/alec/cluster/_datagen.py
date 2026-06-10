@@ -110,6 +110,9 @@ def main(argv=None) -> int:
                 auxbasis=cfg.inputs.auxbasis,
                 polarized=polarized,
                 descriptors=True,
+                # empty config tuple -> the generator's DEFAULT_PRETRAIN_ATOMS
+                **({"atoms": tuple(tuple(a) for a in cfg.pretrain.atoms)}
+                   if getattr(cfg.pretrain, "atoms", ()) else {}),
             )
             _log(f"ensured pretrain data (polarized={polarized}): {path}")
     except Exception as exc:  # noqa: BLE001, fail the stage loudly + non-zero.

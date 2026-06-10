@@ -214,12 +214,23 @@ def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies
 
     AE is computed via `_ae_from_atoms` so the anchor dict is the same
     one that AtomizationEnergyMetric consumes at evaluation time.
+
+    The relative normalization uses a scale-aware floor
+    ``max(tgt**2, _DELTA_TGT_FLOOR_HA2)`` (mirroring `_delta_losses`)
+    rather than the additive ``tgt**2 + 1e-8``: a near-zero AE target
+    would otherwise inflate that compound's loss/gradient without bound
+    (dfs_step7 forensics: Na2's 0.0273 Ha target inflated its channel
+    ~1340x vs CO2-class targets, pegging the grad clip and dominating
+    training). The floor guards the tgt->0 singularity; cross-compound
+    gradient equalization proper comes from the reaction-form AE channel
+    (absolute residuals), not from this floor.
     """
     terms = []
     for i in compound_idx:
         ae = _ae_from_atoms(E_nn[i], comp_dicts[i], atom_energies)
         tgt = targets[mol_names[i]]
-        terms.append((ae - tgt) ** 2 / (tgt ** 2 + 1e-8))
+        terms.append((ae - tgt) ** 2
+                     / jnp.maximum(tgt ** 2, _DELTA_TGT_FLOOR_HA2))
     return jnp.mean(jnp.stack(terms))
 
 
@@ -300,8 +311,19 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
     return jnp.mean(jnp.stack(terms)) if terms else jnp.array(0.0)
 
 
-def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False):
-    """Grid density matching: weighted L2, normalized absolutely or relatively."""
+def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
+               per_electron=False):
+    """Grid density matching: weighted L2, normalized absolutely or relatively.
+
+    ``per_electron=True`` (absolute mode only) divides the weighted-L2
+    integral by N_e^2 with N_e = sum_g w_g rho_ref(g), making the channel
+    INTENSIVE so large/many-electron species cannot dominate a multi-species
+    loss by size alone. This is the dpyscf density-loss normalization
+    (Dick & Fernandez-Serra 2021, dpyscf/losses.py:171:
+    ``drho = sqrt(sum((rho-rho_ref)^2 w) / n_elec^2)``, then MSE vs 0 ==
+    ``sum w (drho)^2 / N^2``); deviation: dpyscf normalizes per spin channel
+    by N_sigma^2, we carry a spin-summed density so the total N_e^2 is used.
+    """
     terms = []
     n_skipped = 0
     n_total = 0
@@ -316,6 +338,9 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False):
         err = jnp.sum(w * (rho_nn - rho_ref) ** 2)
         if relative:
             err = err / (jnp.sum(w * rho_ref ** 2) + 1e-8)
+        elif per_electron:
+            n_e = jnp.sum(w * rho_ref)
+            err = err / (n_e ** 2 + 1e-8)
         terms.append(err)
     if n_skipped:
         warnings.warn(
@@ -968,6 +993,10 @@ class L5GradnormVxcStep7(AlecLoss):
     solver_config: object | None = eqx.field(default=None, static=True)
     vxc_weight: float = eqx.field(default=0.01, static=True)
     density_weight: float = eqx.field(default=0.1, static=True)
+    # Per-electron^2 normalization of the density channel (dpyscf
+    # losses.py:171 convention; see _grid_term). Default OFF so existing
+    # domains are byte-identical; the dfs_step7 v2 sweep enables it.
+    density_per_electron: bool = eqx.field(default=False, static=True)
     # Atom-symbol allowlist for `_atomic_reg`. None (default) regularizes
     # every single-atom MoleculeSpec in the spec, kept for back-compat.
     # Set to ("H", "Li") to mirror the
@@ -989,6 +1018,7 @@ class L5GradnormVxcStep7(AlecLoss):
         solver_config=None,
         vxc_weight: float = 0.01,
         density_weight: float = 0.1,
+        density_per_electron: bool = False,
         regularize_atom_syms=None,
         _smoke_test: bool = False,
         **_unused_kwargs,
@@ -1028,6 +1058,7 @@ class L5GradnormVxcStep7(AlecLoss):
             self.solver_config = solver_config
             self.vxc_weight = vxc_weight
             self.density_weight = density_weight
+            self.density_per_electron = density_per_electron
             self.regularize_atom_syms = reg_syms_frozen
             return
 
@@ -1040,6 +1071,7 @@ class L5GradnormVxcStep7(AlecLoss):
         self._validate_static_bool("molecules_only", molecules_only)
         self._validate_static_float("vxc_weight", vxc_weight)
         self._validate_static_float("density_weight", density_weight)
+        self._validate_static_bool("density_per_electron", density_per_electron)
         # require_compound=False: a BH76-only or IP13-only subset (no
         # polyatomic species) is a legitimate L5 configuration; the AE
         # channel returns 0 in compute_components and the BH76/IP13
@@ -1071,6 +1103,7 @@ class L5GradnormVxcStep7(AlecLoss):
         self.solver_config = solver_config
         self.vxc_weight = vxc_weight
         self.density_weight = density_weight
+        self.density_per_electron = density_per_electron
         self.regularize_atom_syms = reg_syms_frozen
 
         # Validate that regularize_atom_syms is a subset of the
@@ -1223,7 +1256,7 @@ class L5GradnormVxcStep7(AlecLoss):
         )
         loss_rho = self.density_weight * _grid_term(
             model, mol_data, iter_idx, solver_config=self.solver_config,
-            relative=relative,
+            relative=relative, per_electron=self.density_per_electron,
         )
 
         return {

@@ -132,16 +132,20 @@ def _pretrain_manifest_path(npz_path):
 
 
 def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
-                             auxbasis=None):
-    """Record the basis/grid_level/density_fit/auxbasis a pretrain ``.npz`` was
-    built at.
+                             auxbasis=None, atoms=DEFAULT_PRETRAIN_ATOMS):
+    """Record the basis/grid_level/density_fit/auxbasis/atoms a pretrain
+    ``.npz`` was built at.
 
     Written as a sidecar so the ``.npz`` array payload stays byte-identical to the
     pre-manifest format (legacy loaders that ignore the sidecar are unaffected).
     ``auxbasis`` is the EFFECTIVE DF fitting basis (``None`` when density_fit is
-    off) so a fitting-basis change forces a regen."""
+    off) so a fitting-basis change forces a regen. ``atoms`` is recorded so an
+    ATOM-SET change (e.g. extending pretraining coverage to every pool element)
+    also forces a regen -- previously the manifest keyed only basis+grid and a
+    species change silently reused stale data."""
     meta = {"basis": basis, "grid_level": int(grid_level),
-            "density_fit": bool(density_fit), "auxbasis": auxbasis}
+            "density_fit": bool(density_fit), "auxbasis": auxbasis,
+            "atoms": [[str(s), int(sp)] for s, sp in atoms]}
     with open(_pretrain_manifest_path(npz_path), "w") as f:
         json.dump(meta, f)
 
@@ -155,9 +159,10 @@ def read_pretrain_manifest(npz_path):
         return json.load(f)
 
 
-def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None):
-    """True iff ``npz_path`` exists AND its manifest's basis+grid_level+auxbasis
-    match.
+def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
+                             atoms=DEFAULT_PRETRAIN_ATOMS):
+    """True iff ``npz_path`` exists AND its manifest's
+    basis+grid_level+auxbasis+atoms match.
 
     A missing file OR a missing/mismatched manifest returns ``False`` so the
     harness regenerates rather than silently reusing data built at a different
@@ -165,15 +170,21 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None):
     therefore regenerate once, then carry a manifest thereafter. ``auxbasis`` is
     the EFFECTIVE DF fitting basis (``None`` when DF is off); a legacy manifest
     without an ``auxbasis`` key reads as ``None``, so the full-ERI path stays
-    current without a spurious regen."""
+    current without a spurious regen. A legacy manifest without an ``atoms``
+    key reads as the historical DEFAULT_PRETRAIN_ATOMS, so existing default
+    data stays current while any non-default atom set forces a regen."""
     if not os.path.isfile(npz_path):
         return False
     meta = read_pretrain_manifest(npz_path)
     if meta is None:
         return False
+    want_atoms = [[str(s), int(sp)] for s, sp in atoms]
+    have_atoms = meta.get(
+        "atoms", [[str(s), int(sp)] for s, sp in DEFAULT_PRETRAIN_ATOMS])
     return (meta.get("basis") == basis
             and int(meta.get("grid_level", -1)) == int(grid_level)
-            and meta.get("auxbasis") == auxbasis)
+            and meta.get("auxbasis") == auxbasis
+            and have_atoms == want_atoms)
 
 
 def _effective_auxbasis(basis, density_fit, auxbasis):
@@ -199,7 +210,7 @@ def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"
     out_path = os.path.join(data_dir, fname)
     if pretrain_data_is_current(out_path, basis=basis, grid_level=grid_level,
-                                auxbasis=eff_aux):
+                                auxbasis=eff_aux, atoms=atoms):
         return out_path
     return generate_pretrain_data_npz(
         data_dir, atoms=atoms, basis=basis, grid_level=grid_level,
@@ -250,5 +261,6 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     np.savez(out_path, **save_kwargs)
     _write_pretrain_manifest(
         out_path, basis=basis, grid_level=grid_level, density_fit=density_fit,
-        auxbasis=_effective_auxbasis(basis, density_fit, auxbasis))
+        auxbasis=_effective_auxbasis(basis, density_fit, auxbasis),
+        atoms=atoms)
     return out_path

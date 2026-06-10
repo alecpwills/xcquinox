@@ -294,6 +294,9 @@ def prepare_inputs(
             density_fit=cfg.inputs.density_fit,
             auxbasis=cfg.inputs.auxbasis,
             polarized=cfg.use_polarized_correlation,
+            # empty config tuple -> the generator's DEFAULT_PRETRAIN_ATOMS
+            **({"atoms": tuple(tuple(a) for a in cfg.pretrain.atoms)}
+               if getattr(cfg.pretrain, "atoms", ()) else {}),
         )
 
     return StagedInputs(points=points, subset_ledger=subset_ledger)

@@ -853,3 +853,74 @@ def test_build_training_specs_polarized_flag_propagates(tmp_path):
     cfg_off = _make_cfg(tmp_path)
     out_off = build_training_specs(pool, ledger, cfg_off, domain, str(tmp_path / "run_off"))
     assert all(not spec.arch.use_polarized_correlation for _c, spec in out_off)
+
+
+# ---------------------------------------------------------------------------
+# predicted-atom reaction-form AE (ae_as_reactions)
+# ---------------------------------------------------------------------------
+
+def _ae_reaction_pool():
+    """_make_pool with H2O converted to the reaction form (H2 stays
+    fixed-anchor so both forms coexist in one spec)."""
+    pool = _make_pool()
+    h2o = pool[1].species[0]
+    h_atom = _named_atoms([("H", (0.0, 0.0, 0.0))], "H", spin=1)
+    o_atom = _named_atoms([("O", (0.0, 0.0, 0.0))], "O", spin=2)
+    rxn_h2o = TrainingPoint(
+        kind="bh76",
+        name="H2O",
+        species=(h2o, h_atom, o_atom),
+        metadata={
+            "reactants": ("H2O",),
+            "products": ("H", "O"),
+            "coeffs": (-1.0, 2.0, 1.0),
+            "e_rxn_ref": 232.2,
+            "ae_form": "predicted_atom_reaction",
+        },
+    )
+    pool[1] = rxn_h2o
+    return pool
+
+
+def test_build_training_specs_ae_reaction_form(tmp_path):
+    """A reaction-form AE compound keeps a REAL target (eval scoring) but is
+    aux for the fixed-anchor AE channel, and its atomization reaction lands
+    in bh76_reactions (Ha) with the atom species present."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _ae_reaction_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    run_dir = str(tmp_path / "run")
+    out = build_training_specs(pool, ledger, cfg, domain, run_dir)
+    _cell, spec = out[0]                      # l2/2: points H2 + H2O
+
+    # REAL target (not the 0.0 aux placeholder), kcal -> Ha
+    assert spec.targets_dict["H2O"] == pytest.approx(
+        232.2 / domain.kcal_per_ha)
+    # aux for the fixed-anchor AE channel (trains via the reaction instead)
+    assert "H2O" in spec.loss_kwargs_dict["aux_only_names"]
+    # H2 (fixed-anchor form) is NOT aux
+    assert "H2" not in spec.loss_kwargs_dict["aux_only_names"]
+    # the atomization reaction reached the BH76 channel, ref converted to Ha
+    rxns = {r["name"]: r for r in spec.loss_kwargs_dict["bh76_reactions"]}
+    assert "H2O" in rxns
+    assert rxns["H2O"]["coeffs"] == (-1.0, 2.0, 1.0)
+    assert rxns["H2O"]["e_rxn_ref"] == pytest.approx(
+        232.2 / domain.kcal_per_ha)
+    # constituent atoms are spec species (the network predicts their E)
+    names = {m.name for m in spec.molecules}
+    assert {"H2O", "H", "O"} <= names
+
+    # eval: the reaction-form compound IS scored (real target), while a
+    # 0.0-placeholder aux polyatomic stays excluded
+    test_spec = build_test_spec(spec, run_dir, 0, domain)
+    ref = test_spec.metric_kwargs_dict["atomization_energy"]["reference_ae_kcalmol"]
+    assert ref["H2O"] == pytest.approx(232.2)
+    assert ref["H2"] == pytest.approx(109.5)
+
+    # r=3 cell carries the plain BH76 reaction; its aux N2/NO stay unscored
+    _cell3, spec3 = out[1]
+    test_spec3 = build_test_spec(spec3, run_dir, 1, domain)
+    ref3 = test_spec3.metric_kwargs_dict["atomization_energy"]["reference_ae_kcalmol"]
+    assert "N2" not in ref3 and "NO" not in ref3
+    assert ref3["H2O"] == pytest.approx(232.2)

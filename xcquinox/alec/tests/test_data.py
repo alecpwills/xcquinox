@@ -849,3 +849,27 @@ def test_precompute_loads_benchmark_density_only_npz(tmp_path):
     with pytest.raises(ValueError, match="grid_level=2"):
         precompute_fixed_density_data(
             dataclasses.replace(base, external_data_path=bad))
+
+    # full benchmark contract incl the generator-side PBE density + weights
+    # (informational; shape-gated, never returned into MoleculeData)
+    full = str(tmp_path / "H2_full.npz")
+    np.savez_compressed(full, rho_ref_grid=np.full(rho_shape, 0.5),
+                        rho_pbe_grid=np.full(rho_shape, 0.4),
+                        grid_weights=np.full(rho_shape, 0.1),
+                        ref_density_method=np.array("ccsd"),
+                        grid_level_used=np.array(1),
+                        basis_used=np.array("sto-3g"))
+    data_full = precompute_fixed_density_data(
+        dataclasses.replace(base, external_data_path=full))
+    assert data_full["rho_ref_grid"] is not None
+    assert "rho_pbe_grid" not in data_full       # informational only
+
+    bad_pbe = str(tmp_path / "H2_bad_pbe.npz")
+    np.savez_compressed(bad_pbe, rho_ref_grid=np.full(rho_shape, 0.5),
+                        rho_pbe_grid=np.zeros(3),
+                        ref_density_method=np.array("ccsd"),
+                        grid_level_used=np.array(1),
+                        basis_used=np.array("sto-3g"))
+    with pytest.raises(ValueError, match="rho_pbe_grid shape"):
+        precompute_fixed_density_data(
+            dataclasses.replace(base, external_data_path=bad_pbe))

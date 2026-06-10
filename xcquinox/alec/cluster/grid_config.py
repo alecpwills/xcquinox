@@ -101,6 +101,10 @@ class HyperParams:
     gradnorm_alpha: float
     vxc_weight: float
     density_weight: float
+    # Per-electron^2 normalization of the density channel (dpyscf
+    # losses.py:171 convention; see losses._grid_term). Default False keeps
+    # existing sweeps byte-identical.
+    density_per_electron: bool = False
     pbe_anchor_weight: float = 0.0
     require_atom_anchors: bool = False
     seed: int = 42
@@ -149,6 +153,12 @@ class InputPaths:
     # ``auxbasis`` None -> auto-select from the orbital basis. Default off.
     density_fit: bool = False
     auxbasis: str | None = None
+    # Hold-out benchmark reference-density dir (W4-11+BH76 pool). When set,
+    # ``submit`` ALSO submits one standalone benchmark_refs job (CCSD + PBE
+    # densities, no OEP) that starts once the train array has begun, and the
+    # eval tasks export XCQUINOX_BENCH_REFS_DIR so the held-out eval picks up
+    # whatever references exist at eval time. None (default) = feature off.
+    benchmark_refs_dir: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +202,11 @@ class PretrainConfig:
     # PretrainSpec.loss_weighting is a str validated to {"unweighted",
     # "integration"}. Step-7 uses "integration" exclusively.
     loss_weighting: str = "integration"
+    # Pretraining atom set as ((symbol, 2S-spin), ...). Empty tuple -> the
+    # historical default (H, He, O, N). Extending coverage to every element
+    # of the training pool (e.g. +Li, C, F, Na for dfs_step7) forces a
+    # pretrain-data regen via the data manifest's "atoms" key.
+    atoms: tuple = ()
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +288,11 @@ class ClusterResources:
     preflight_allocation: str = "exclusive"
     pretrain_allocation: str = "exclusive"
     datagen_allocation: str = "exclusive"
+    # Benchmark hold-out refs job (single job; submitted only when
+    # inputs.benchmark_refs_dir is set). Falls back preflight -> train.
+    benchmark_refs_partition: str | None = None
+    benchmark_refs_time: str | None = None
+    benchmark_refs_allocation: str = "exclusive"
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +312,10 @@ class GridConfig:
     domain_profile: str
     on_precompute_failure: str = "abort"   # {"abort","drop_failed_species"}
     bh76_mode: str = "reaction_energy"     # {"reaction_energy","barrier_height"}
+    # DFS-domain AE points in predicted-atom reaction form (the converged
+    # bh76w411/dpyscf construction) instead of fixed Chakravorty anchors.
+    # Point names are unchanged, so subset ledgers resolve identically.
+    ae_as_reactions: bool = False
     # Run-level toggle: when True, every architecture in the run is built
     # spin-polarization-aware (cnet input +1), so the UKS energy path uses the
     # zeta-dependent (spin-polarized) PW92c correlation baseline with the real
@@ -379,6 +403,7 @@ def _build_hyperparams(d: dict) -> HyperParams:
         gradnorm_alpha=_require(d, "gradnorm_alpha", ctx),
         vxc_weight=_require(d, "vxc_weight", ctx),
         density_weight=_require(d, "density_weight", ctx),
+        density_per_electron=bool(d.get("density_per_electron", False)),
         pbe_anchor_weight=d.get("pbe_anchor_weight", 0.0),
         require_atom_anchors=d.get("require_atom_anchors", False),
         seed=d.get("seed", 42),
@@ -408,6 +433,7 @@ def _build_inputs(d: dict) -> InputPaths:
         output_root=_require(d, "output_root", ctx),
         density_fit=bool(d.get("density_fit", False)),
         auxbasis=d.get("auxbasis"),
+        benchmark_refs_dir=d.get("benchmark_refs_dir"),
     )
 
 
@@ -422,7 +448,21 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         grad_clip=d.get("grad_clip", 1.0),
         seed=d.get("seed", 42),
         loss_weighting=d.get("loss_weighting", "integration"),
+        atoms=_parse_pretrain_atoms(d.get("atoms")),
     )
+
+
+def _parse_pretrain_atoms(raw) -> tuple:
+    """Normalize the YAML ``pretrain.atoms`` value to ((symbol, spin), ...).
+
+    Accepts a {symbol: spin} dict or a list of [symbol, spin] pairs (the
+    round-tripped resolved_config form). Empty/None -> () (the generator's
+    DEFAULT_PRETRAIN_ATOMS applies)."""
+    if not raw:
+        return ()
+    if isinstance(raw, dict):
+        return tuple((str(sym), int(sp)) for sym, sp in raw.items())
+    return tuple((str(pair[0]), int(pair[1])) for pair in raw)
 
 
 def _build_cluster(d: dict) -> ClusterResources:
@@ -470,6 +510,10 @@ def _build_cluster(d: dict) -> ClusterResources:
         preflight_allocation=d.get("preflight_allocation", "exclusive"),
         pretrain_allocation=d.get("pretrain_allocation", "exclusive"),
         datagen_allocation=d.get("datagen_allocation", "exclusive"),
+        benchmark_refs_partition=d.get("benchmark_refs_partition"),
+        benchmark_refs_time=d.get("benchmark_refs_time"),
+        benchmark_refs_allocation=d.get("benchmark_refs_allocation",
+                                        "exclusive"),
     )
 
 
@@ -535,6 +579,7 @@ def load_grid_config(path: str) -> GridConfig:
         domain_profile=_require(raw, "domain_profile", "<root>"),
         on_precompute_failure=raw.get("on_precompute_failure", "abort"),
         bh76_mode=raw.get("bh76_mode", "reaction_energy"),
+        ae_as_reactions=bool(raw.get("ae_as_reactions", False)),
         use_polarized_correlation=bool(raw.get("use_polarized_correlation", False)),
         held_out_strict=bool(raw.get("held_out_strict", False)),
         defer_eval=bool(raw.get("defer_eval", False)),
@@ -778,7 +823,8 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # datagen_allocation would silently downgrade the memory-heavy datagen job
     # to a shared node.
     _ALLOC_MODES = ("exclusive", "shared")
-    for _stage in ("train", "eval", "preflight", "pretrain", "datagen"):
+    for _stage in ("train", "eval", "preflight", "pretrain", "datagen",
+                   "benchmark_refs"):
         _mode = getattr(cl, f"{_stage}_allocation")
         if _mode not in _ALLOC_MODES:
             raise ValueError(

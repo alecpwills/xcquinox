@@ -59,12 +59,15 @@ from xcquinox.alec import full_benchmark_pools
 
 POOL_CHOICES: Tuple[str, ...] = ("bh76", "w411", "all")
 
-# Keys every density-only reference npz must carry. All four are already in
-# data._ALLOWED_EXTERNAL_KEYS; rho_ref_grid is the only one the density
-# metrics consume, the others are identity guards (the loader raises on a
-# grid_level mismatch, and basis_used keys the staleness check here).
+# Keys every density-only reference npz must carry. All are in
+# data._ALLOWED_EXTERNAL_KEYS (the loader raises on unknown keys);
+# rho_ref_grid is the CCSD density the metrics compare against,
+# rho_pbe_grid + grid_weights make the model-free PBE-vs-CCSD baseline pure
+# npz arithmetic (no local SCF; for DF runs this is the DF-consistent PBE),
+# and grid_level_used/basis_used are identity guards.
 _DENSITY_NPZ_KEYS: frozenset = frozenset(
-    {"rho_ref_grid", "ref_density_method", "grid_level_used", "basis_used"})
+    {"rho_ref_grid", "rho_pbe_grid", "grid_weights",
+     "ref_density_method", "grid_level_used", "basis_used"})
 
 
 def _mol_spec_to_atoms(ms: MoleculeSpec):
@@ -193,9 +196,19 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
     cc = run_ccsd_with_cache(
         spec, atoms, scf_payload=scf, cache_dir=out_dir, basis=basis,
         grid_level=grid_level, density_fit=density_fit, auxbasis=auxbasis)
+    # PBE density on the SAME (pruned) grid as the CCSD reference: spin-sum
+    # the stage-1 PBE dm and contract with the stage-2 AO values. Stored so
+    # the PBE-vs-CCSD baseline needs no SCF at consumption time (and, for DF
+    # runs, IS the DF-consistent PBE density).
+    dm_pbe = np.asarray(scf["dm"])
+    dm_pbe_tot = dm_pbe[0] + dm_pbe[1] if dm_pbe.ndim == 3 else dm_pbe
+    ao = np.asarray(cc["ao_grid"])
+    rho_pbe_grid = np.einsum("ij,gj,gi->g", dm_pbe_tot, ao, ao)
     _atomic_savez(
         final,
         rho_ref_grid=np.asarray(cc["rho_ref_grid"]),
+        rho_pbe_grid=rho_pbe_grid,
+        grid_weights=np.asarray(cc["grid_weights"]),
         ref_density_method=np.array("ccsd"),
         grid_level_used=np.array(int(grid_level)),
         basis_used=np.array(str(basis)),

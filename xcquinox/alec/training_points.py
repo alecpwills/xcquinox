@@ -125,6 +125,55 @@ def _ae_point_from_atoms(compound: Atoms) -> TrainingPoint:
     )
 
 
+def _ae_reaction_point_from_atoms(compound: Atoms) -> TrainingPoint:
+    """AE point in PREDICTED-ATOM reaction form (``bh76``-kind).
+
+    Instead of the fixed-anchor AE channel (``_ae_from_atoms`` against the
+    Chakravorty table), the atomization energy becomes a reaction the L5
+    BH76 channel trains with the NETWORK'S OWN atom energies:
+    ``AE = Σ n_Z·E_NN(Z) − E_NN(mol)`` via ``reactants=(mol,)``,
+    ``products=(elements...)``, ``coeffs=(-1, n_Z...)``. This is the form
+    both dpyscf (Dick & Fernandez-Serra 2021: atoms enter the AE assembly
+    as predicted energies, their fixed totals never enter the loss,
+    E_weight=0) and our converged bh76w411_step7 runs use; the dfs_step7
+    forensics traced the Na2 blowup to the fixed-anchor relative AE form.
+
+    The point NAME equals ``_ae_point_from_atoms``'s, so name-keyed subset
+    ledgers (subset_index_log.json) resolve identically -- the same JSD
+    subsets train under either form. Species gain one neutral ground-state
+    atom per ELEMENT (multiplicity lives in the coeffs); the compound gets
+    no ae_ref entry downstream, so ``build_targets`` gives it a 0.0
+    placeholder and ``classify_aux_only`` zeroes its fixed-anchor AE
+    channel -- density/vxc still apply. ``e_rxn_ref`` is kept in kcal/mol
+    (``bh76_meta_to_loss_dict`` converts to Ha).
+    """
+    name = compound.info.get("dfs_hill", compound.get_chemical_formula())
+    cmp = compound.copy()
+    cmp.info["name"] = name
+    counts: dict = {}
+    for sym in compound.get_chemical_symbols():
+        counts[sym] = counts.get(sym, 0) + 1
+    elements = sorted(counts)
+    species: list = [cmp]
+    for sym in elements:
+        species.append(_atom_anchor_atoms(sym))
+    return TrainingPoint(
+        kind="bh76",
+        name=name,
+        species=tuple(species),
+        metadata={
+            "reactants": (name,),
+            "products": tuple(elements),
+            "coeffs": (-1.0, *(float(counts[s]) for s in elements)),
+            "e_rxn_ref": compound.info.get("ae_kcalmol"),
+            "ae_form": "predicted_atom_reaction",
+            "ae_source": compound.info.get("ae_source"),
+            "ae_name": compound.info.get("ae_name"),
+            "source": compound.info.get("ae_source"),
+        },
+    )
+
+
 def _bh76_point_from_dict(
     rxn: dict,
     *,
@@ -257,6 +306,7 @@ def _ip13_point_from_dict(pair: dict) -> TrainingPoint:
 
 def build_dfs_pool_points(
     bh76_mode: str = "reaction_energy",
+    ae_as_reactions: bool = False,
 ) -> list[TrainingPoint]:
     """Return the flat list of 26 = 21 AE + 3 BH76 + 2 IP13 training points
     that ``select_subset`` should pick from.
@@ -267,6 +317,11 @@ def build_dfs_pool_points(
 
     Parameters
     ----------
+    ae_as_reactions : bool, default False
+        When True, the 21 AE points are built in PREDICTED-ATOM reaction
+        form (:func:`_ae_reaction_point_from_atoms`, ``bh76``-kind) instead
+        of the fixed-anchor AE form; point names (and thus subset-ledger
+        resolution) are identical either way.
     bh76_mode : {'reaction_energy', 'barrier_height'}, default 'reaction_energy'
         Selects what the 3 BH76 training points are trained against.
 
@@ -307,7 +362,8 @@ def build_dfs_pool_points(
         atoms_by_name[a.info.get("dfs_hill", a.get_chemical_formula())] = a
     points: list[TrainingPoint] = []
     for compound in pool["ae_molecules"]:
-        points.append(_ae_point_from_atoms(compound))
+        points.append(_ae_reaction_point_from_atoms(compound)
+                      if ae_as_reactions else _ae_point_from_atoms(compound))
     for rxn in DFS_BH76_REACTIONS:
         points.append(
             _bh76_point_from_dict(

@@ -61,7 +61,8 @@ def test_manifest_round_trips_density_fit_flag(tmp_path):
     with open(pdg._pretrain_manifest_path(p)) as f:
         meta = json.load(f)
     assert meta == {"basis": "def2-tzvp", "grid_level": 2, "density_fit": True,
-                    "auxbasis": "def2-universal-jkfit"}
+                    "auxbasis": "def2-universal-jkfit",
+                    "atoms": [[s, sp] for s, sp in pdg.DEFAULT_PRETRAIN_ATOMS]}
 
 
 def test_manifest_auxbasis_defaults_none(tmp_path):
@@ -151,3 +152,58 @@ def test_generate_writes_basis_tagged_manifest(tmp_path):
     assert pdg.pretrain_data_is_current(path, basis="def2-svp", grid_level=1)
     assert not pdg.pretrain_data_is_current(path, basis="def2-tzvp",
                                             grid_level=1)
+
+
+def test_manifest_records_and_compares_atoms(tmp_path, monkeypatch):
+    """The pretrain-data manifest must key the ATOM SET too: extending
+    pretraining coverage (e.g. +Li/C/F/Na for dfs_step7 v2) must force a
+    regen instead of silently reusing 4-atom data; legacy manifests without
+    the key read as the historical default (no spurious regen)."""
+    import json
+    import numpy as np
+    import xcquinox.alec.pretrain_data_gen as pdg
+
+    calls = []
+
+    def fake_cols(sym, spin, basis, grid_level, **kw):
+        calls.append(sym)
+        return {k: np.ones(2) for k in ("rho", "sigma", "Fx", "Fc", "weights",
+                                        "zeta")} | {"cusp": np.ones((2, 2)),
+                                                    "dm": np.ones((2, 3))}
+
+    monkeypatch.setattr(pdg, "_atom_columns", fake_cols)
+    default_path = pdg.ensure_pretrain_data(str(tmp_path))
+    assert calls == [s for s, _ in pdg.DEFAULT_PRETRAIN_ATOMS]
+    meta = json.loads(open(default_path + ".manifest.json").read())
+    assert meta["atoms"] == [[s, sp] for s, sp in pdg.DEFAULT_PRETRAIN_ATOMS]
+
+    # same atoms -> current, no regen
+    calls.clear()
+    pdg.ensure_pretrain_data(str(tmp_path))
+    assert calls == []
+
+    # extended atom set -> stale -> regen with the new set
+    full = pdg.DEFAULT_PRETRAIN_ATOMS + (("Na", 1), ("Li", 1))
+    pdg.ensure_pretrain_data(str(tmp_path), atoms=full)
+    assert calls == [s for s, _ in full]
+
+    # legacy manifest without 'atoms' key == DEFAULT (no spurious regen) but
+    # stale for a non-default set
+    meta2 = json.loads(open(default_path + ".manifest.json").read())
+    meta2.pop("atoms")
+    open(default_path + ".manifest.json", "w").write(json.dumps(meta2))
+    assert pdg.pretrain_data_is_current(
+        default_path, basis=pdg.DEFAULT_BASIS,
+        grid_level=pdg.DEFAULT_GRID_LEVEL) is True
+    assert pdg.pretrain_data_is_current(
+        default_path, basis=pdg.DEFAULT_BASIS,
+        grid_level=pdg.DEFAULT_GRID_LEVEL, atoms=full) is False
+
+
+def test_parse_pretrain_atoms_forms():
+    from xcquinox.alec.cluster.grid_config import _parse_pretrain_atoms
+    assert _parse_pretrain_atoms(None) == ()
+    assert _parse_pretrain_atoms({}) == ()
+    assert _parse_pretrain_atoms({"H": 1, "Na": 1}) == (("H", 1), ("Na", 1))
+    # round-tripped resolved_config (lists of pairs)
+    assert _parse_pretrain_atoms([["H", 1], ["O", 2]]) == (("H", 1), ("O", 2))
