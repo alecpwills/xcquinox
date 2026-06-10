@@ -183,33 +183,38 @@ def _aggregate_per_molecule(pm_rows, ae_key="AE_error_kcalmol",
         mae = sum(abs(v) for v in ae_errs) / len(ae_errs)
     else:
         mae = float("nan")
-    rho_vals = [
-        float(r[rho_key]) for r in pm_rows
-        if isinstance(r.get(rho_key), (int, float))
-        and not isinstance(r.get(rho_key), bool)
-        and math.isfinite(r[rho_key])
-    ]
-    if rho_vals:
-        rho_rmse = sum(rho_vals) / len(rho_vals)
-    else:
-        rho_rmse = float("nan")
+    def _mean_finite(key):
+        vals = [
+            float(r[key]) for r in pm_rows
+            if isinstance(r.get(key), (int, float))
+            and not isinstance(r.get(key), bool)
+            and math.isfinite(r[key])
+        ]
+        return sum(vals) / len(vals) if vals else float("nan")
+
+    rho_rmse = _mean_finite(rho_key)
+    # PBE-vs-CCSD baseline density error (model-free; nan when no benchmark
+    # CCSD reference densities were wired -- the historical schema).
+    rho_rmse_pbe = _mean_finite("density_rmse_pbe")
     # n_eval: AE-contributing molecules only (matches the mae denominator).
-    return mae, rho_rmse, len(ae_errs)
+    return mae, rho_rmse, len(ae_errs), rho_rmse_pbe
 
 
 def _write_eval_df_csv(pm_rows, csv_path):
     """Fold ``per_molecule.json`` rows into the per-spec ``eval_df.csv``.
 
-    One-row summary CSV with columns ``set, mae, rho_rmse, n_eval`` -- the
-    same scalars the step-7 notebook's Cell D writes per spec (the
-    ``metric``/``tag``/``solver`` columns from the notebook are derived from
-    the notebook-specific checkpoint-dir layout and are intentionally omitted
-    here; the harness manifest carries the GridCell instead).
+    One-row summary CSV with columns ``set, mae, rho_rmse, rho_rmse_pbe,
+    n_eval`` -- the same scalars the step-7 notebook's Cell D writes per spec
+    (the ``metric``/``tag``/``solver`` columns from the notebook are derived
+    from the notebook-specific checkpoint-dir layout and are intentionally
+    omitted here; the harness manifest carries the GridCell instead).
+    ``rho_rmse_pbe`` is the PBE-vs-CCSD density baseline (nan without
+    benchmark reference densities).
     """
     import csv
 
-    mae, rho_rmse, n_eval = _aggregate_per_molecule(pm_rows)
-    fieldnames = ["set", "mae", "rho_rmse", "n_eval"]
+    mae, rho_rmse, n_eval, rho_rmse_pbe = _aggregate_per_molecule(pm_rows)
+    fieldnames = ["set", "mae", "rho_rmse", "rho_rmse_pbe", "n_eval"]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -217,6 +222,7 @@ def _write_eval_df_csv(pm_rows, csv_path):
             "set": "training_subset",
             "mae": mae,
             "rho_rmse": rho_rmse,
+            "rho_rmse_pbe": rho_rmse_pbe,
             "n_eval": n_eval,
         })
     return mae, rho_rmse, n_eval

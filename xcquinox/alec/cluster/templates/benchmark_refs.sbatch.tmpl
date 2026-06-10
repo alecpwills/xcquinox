@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Density-only CCSD reference generation for the held-out benchmark pool
+# (W4-11 + BH76, ~214 species). Self-contained: copy, edit the EDIT-ME
+# block, and sbatch directly (this template is NOT rendered by the
+# harness). Each array task owns a disjoint slice of the sorted species
+# list; complete species are skipped, so resubmitting after a timeout or
+# partial failure resumes where it left off.
+#
+# svp variant (matches bh76w411_repr/dfs_step7 svp_grid2 runs):
+#   BASIS=def2-svp  GRID_LEVEL=2  DF_FLAGS=""
+# tzvpd+DF variant (matches tzvpd_grid2_df runs; CCSD is N^6 -- raise --time):
+#   BASIS=def2-tzvpd  GRID_LEVEL=2
+#   DF_FLAGS="--density-fit --auxbasis def2-universal-jkfit"
+#
+#SBATCH --job-name=bench_ccsd_refs
+#SBATCH --partition=EDIT-ME
+#SBATCH --time=08:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --array=1-16%8
+#SBATCH --output=/gpfs/scratch/awills/logs/bench_refs_%A_%a.out
+set -euo pipefail
+
+# --- EDIT ME -----------------------------------------------------------------
+CONDA_ACTIVATION="source ~/anaconda3/etc/profile.d/conda.sh && conda activate xcq"
+OUT_DIR=/gpfs/scratch/awills/external_refs_bench_svp_g2
+BASIS=def2-svp
+GRID_LEVEL=2
+DF_FLAGS=""           # tzvpd: "--density-fit --auxbasis def2-universal-jkfit"
+N_SHARDS=16           # MUST match the #SBATCH --array upper bound
+# ------------------------------------------------------------------------------
+
+eval "${CONDA_ACTIVATION}"
+
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+python -m xcquinox.alec.benchmark_refs \
+  --out-dir "${OUT_DIR}" \
+  --pool all \
+  --basis "${BASIS}" \
+  --grid-level "${GRID_LEVEL}" \
+  ${DF_FLAGS} \
+  --shard "${SLURM_ARRAY_TASK_ID}/${N_SHARDS}"

@@ -224,6 +224,51 @@ def reaction_mae_kcalmol(
     return float(sum(abs_errs) / len(abs_errs)), len(abs_errs), n_dropped_nan
 
 
+_DENSITY_RECORD_KEYS: Tuple[str, ...] = (
+    "density_rmse", "density_l1", "density_rmse_pbe", "density_l1_pbe",
+    "ref_density_method",
+)
+
+
+def density_errors_for_record(model, md: Dict[str, Any], *,
+                              solver_config=None) -> Dict[str, Any]:
+    """NN-vs-CCSD and PBE-vs-CCSD density errors for one held-out species.
+
+    Returns ``{density_rmse, density_l1, density_rmse_pbe, density_l1_pbe,
+    ref_density_method}`` -- all ``None`` for atoms or when no CCSD reference
+    density was loaded (``rho_ref_grid is None``; e.g. the species'
+    ``external_data_path`` was unresolved), so runs without benchmark refs
+    are byte-identical to the historical all-None schema.
+
+    The NN channel reuses :class:`~xcquinox.alec.evaluation.DensityRMSEMetric`
+    (solver-aware; with a FULL/FIXED_J ``solver_config`` this re-runs the SCF
+    to get the self-consistent NN density -- roughly doubling per-species eval
+    cost WHEN refs are present, same trade the in-sample eval makes). The PBE
+    channel needs NO model: ``md['rho_grid']`` IS the PBE density on the same
+    pruned grid the CCSD reference was evaluated on (data.py precompute), so
+    it is the same weighted RMSE/L1 with rho_pbe in place of rho_nn
+    (formula: evaluation.py DensityRMSEMetric). fp64 note: the cluster eval
+    path already forces JAX_ENABLE_X64 before importing jax."""
+    none_result = {k: None for k in _DENSITY_RECORD_KEYS}
+    comp = md.get("atom_composition") or ()
+    if sum(n for _, n in comp) == 1:
+        return none_result                      # atoms: density matching skipped
+    if md.get("rho_ref_grid") is None:
+        return none_result
+    import xcquinox.alec.evaluation as evaluation
+    nn = evaluation.DensityRMSEMetric().compute(model, md,
+                                                solver_config=solver_config)
+    rmse_pbe, l1_pbe = evaluation.pbe_density_errors(md)
+    return {
+        "density_rmse": nn.get("density_rmse"),
+        "density_l1": nn.get("density_l1"),
+        "density_rmse_pbe": rmse_pbe,
+        "density_l1_pbe": l1_pbe,
+        "ref_density_method": nn.get("ref_density_method")
+                              or md.get("ref_density_method"),
+    }
+
+
 def make_per_molecule_record(
     name: str,
     mol_data: Dict[str, Any],
@@ -231,16 +276,20 @@ def make_per_molecule_record(
     *,
     in_training_subset: bool,
     scf: Optional[Dict[str, Any]] = None,
+    density: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Schema-compatible with the cluster's ``eval/per_molecule.json`` so
     the existing :func:`collect_per_molecule_rows` can read it without
     modification. Adds a ``from_training_subset`` flag for downstream
     splitting.
 
-    Fields that the cluster's in-sample eval has but we can't compute
-    locally (``AE_error_kcalmol``, ``density_rmse``, ``density_l1``) are
-    left None; ``AE_error_kcalmol`` only makes sense within a reaction
-    context, which the per-reaction CSV captures.
+    ``AE_error_kcalmol`` is left None (it only makes sense within a reaction
+    context, which the per-reaction CSV captures). The density fields
+    (``density_rmse``/``density_l1`` NN-vs-CCSD, ``density_rmse_pbe``/
+    ``density_l1_pbe`` PBE-vs-CCSD, ``ref_density_method``) come from the
+    optional ``density`` dict (:func:`density_errors_for_record`) and stay
+    None when it is omitted -- runs without benchmark CCSD reference
+    densities keep the historical all-None schema.
 
     ``scf``: optional per-molecule SCF convergence info captured during the
     NN self-consistent eval (see :func:`evaluate_holdout`'s ``scf_info_out``).
@@ -264,11 +313,16 @@ def make_per_molecule_record(
         "AE_error_kcalmol": None,
         "density_rmse": None,
         "density_l1": None,
+        "density_rmse_pbe": None,
+        "density_l1_pbe": None,
         "ref_density_method": None,
         "cycles_run": 0,
         "scf_converged": True,
         "from_training_subset": bool(in_training_subset),
     }
+    if density is not None:
+        for k in _DENSITY_RECORD_KEYS:
+            record[k] = density.get(k)
     if scf is not None:
         record["cycles_run"] = int(scf.get("cycles_run", 0))
         record["scf_converged"] = bool(scf.get("converged", False))
@@ -765,6 +819,9 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
             name, mol_data[name], energies.get(name, float("nan")),
             in_training_subset=(str(name).casefold() in training_cf),
             scf=scf_info.get(name),
+            # all-None without benchmark CCSD refs (rho_ref_grid is None then)
+            density=density_errors_for_record(
+                model, mol_data[name], solver_config=spec_solver_config),
         ))
 
     return {

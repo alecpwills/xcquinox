@@ -36,6 +36,18 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 #: (scf_energy_step_<i> / scf_energy_residual_<i>) added to per_molecule.json.
 REEVAL_VERSION = "geom_units_fix_v2"
 
+#: Stamp suffix when CCSD benchmark reference densities are wired
+#: (--density-refs): specs stamped refs-free re-process to gain the
+#: density_rmse/_pbe columns, while refs-free re-runs do NOT churn
+#: already-stamped specs.
+_DENSITY_STAMP_SUFFIX = "+density_refs_v3"
+
+
+def effective_version(density_refs: Optional[str]) -> str:
+    """The stamp version for this invocation (see _DENSITY_STAMP_SUFFIX)."""
+    return (REEVAL_VERSION + _DENSITY_STAMP_SUFFIX if density_refs
+            else REEVAL_VERSION)
+
 _STAMP_NAME = "reeval_meta.json"
 _DEFAULT_LOCAL_ROOT = Path.home() / "Documents/Research/xcquinox-results/runs"
 _DEFAULT_CATEGORY = "ablation_notransform/polarized/runs"
@@ -160,9 +172,10 @@ def _read_basis_grid(run_dir: Path) -> tuple[str, int]:
 # Per-spec + driver (heavy deps injected for testability)
 # ---------------------------------------------------------------------------
 
-def _real_pools_loader(basis: str, grid_level: int):
+def _real_pools_loader(basis: str, grid_level: int, refs_dir=None):
     from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
-    return load_full_held_out_pools(basis=basis, grid_level=grid_level)
+    return load_full_held_out_pools(basis=basis, grid_level=grid_level,
+                                    refs_dir=refs_dir)
 
 
 def _real_spec_loader(spec_path: Path):
@@ -203,6 +216,7 @@ def descriptor_signature(training_spec) -> tuple:
 def run(
     run_dir: Path, *, force: bool = False,
     only_specs: Optional[Sequence[int]] = None,
+    density_refs: Optional[str] = None,
     clock: Callable[[], float] = time.perf_counter,
     pools_loader: Callable = _real_pools_loader,
     spec_loader: Callable = _real_spec_loader,
@@ -214,10 +228,15 @@ def run(
 
     Specs are grouped by :func:`descriptor_signature`; the expensive PBE/grid/
     eri precompute runs ONCE per group and is reused across the group's specs
-    (only the cheap per-model NN eval repeats). Heavy callables are injectable
-    for tests. Returns ``{processed, skipped, failed}`` spec-index lists."""
+    (only the cheap per-model NN eval repeats). ``density_refs`` wires a
+    benchmark CCSD reference-density dir into the pools loader (so
+    per_molecule.json gains the NN/PBE-vs-CCSD density columns) and switches
+    the stamp to :func:`effective_version` so refs-free stamps re-process.
+    Heavy callables are injectable for tests. Returns
+    ``{processed, skipped, failed}`` spec-index lists."""
     width = manifest_width(run_dir)
     basis, grid_level = _read_basis_grid(run_dir)
+    version = effective_version(density_refs)
     trained = discover_trained_specs(run_dir)
     if only_specs is not None:
         wanted = set(only_specs)
@@ -226,7 +245,8 @@ def run(
     def _spec_dir(idx: int) -> Path:
         return run_dir / "checkpoints" / f"spec_{idx:0{width}d}"
 
-    todo = [i for i in trained if needs_reeval(_spec_dir(i), force=force)]
+    todo = [i for i in trained
+            if needs_reeval(_spec_dir(i), version=version, force=force)]
     skipped = [i for i in trained if i not in set(todo)]
 
     # Load each todo spec's training_spec once, and group by descriptor sig.
@@ -240,9 +260,11 @@ def run(
     print(f"[reeval] run_dir={run_dir.name}  basis={basis} grid={grid_level}  "
           f"trained={len(trained)}  to-process={len(todo)} in {len(groups)} "
           f"descriptor-group(s)  already-fixed={len(skipped)}  "
-          f"(version {REEVAL_VERSION})", flush=True)
+          f"(version {version}"
+          + (f", density refs {density_refs}" if density_refs else "")
+          + ")", flush=True)
 
-    mol_specs, reactions = pools_loader(basis, grid_level)
+    mol_specs, reactions = pools_loader(basis, grid_level, density_refs)
 
     processed: List[int] = []
     failed: List[int] = []
@@ -277,7 +299,7 @@ def run(
                 model = model_loader(specs_by_idx[idx], model_path)
                 summary = eval_fn(specs_by_idx[idx], model, mol_specs,
                                   reactions, spec_dir / "eval_holdout", mol_data)
-                write_stamp(spec_dir, summary)
+                write_stamp(spec_dir, summary, version=version)
                 processed.append(idx)
                 comb = summary.get("combined")
                 if comb and len(comb) >= 2:
@@ -296,6 +318,75 @@ def run(
     return {"processed": processed, "skipped": skipped, "failed": failed}
 
 
+def _real_precompute_one(mol_spec):
+    from xcquinox.alec.data import precompute_fixed_density_data
+    return precompute_fixed_density_data(mol_spec)
+
+
+def run_pbe_density_table(
+    run_dir: Path, *, density_refs: str,
+    pools_loader: Callable = _real_pools_loader,
+    precompute_one: Callable = _real_precompute_one,
+) -> Dict[str, Any]:
+    """PBE-vs-CCSD density errors for the held-out pool -- NO model needed.
+
+    The PBE channel is model-free (the precompute's ``rho_grid`` IS the PBE
+    density on the reference grid), and it is identical for every spec/arch of
+    a run (PBE + geometry + basis only), so it is computed ONCE per run and
+    written to ``<run_dir>/pbe_density_errors.json``: ``{basis, grid_level,
+    refs_dir, errors: {name: {density_rmse_pbe, density_l1_pbe}},
+    failures: {name: msg}}``. Works on summaries-profile pulls with zero local
+    ``model.eqx`` files. Atoms and species without a reference npz are
+    skipped (not failures). Local non-DF PBE vs a DF-generated reference
+    differs only by the DF error (well below the PBE-vs-CCSD signal).
+    """
+    from xcquinox.alec.evaluation import pbe_density_errors
+
+    basis, grid_level = _read_basis_grid(run_dir)
+    mol_specs, _reactions = pools_loader(basis, grid_level, density_refs)
+    with_refs = {n: ms for n, ms in mol_specs.items()
+                 if getattr(ms, "external_data_path", None)}
+    print(f"[pbe-density] run_dir={run_dir.name}  basis={basis} "
+          f"grid={grid_level}  refs={density_refs}  species with refs: "
+          f"{len(with_refs)}/{len(mol_specs)}", flush=True)
+
+    errors: Dict[str, Dict[str, float]] = {}
+    failures: Dict[str, str] = {}
+    t0 = time.perf_counter()
+    for k, (name, ms) in enumerate(sorted(with_refs.items()), 1):
+        if sum(n for _, n in ms.atom_composition) == 1:
+            continue                      # atoms: density matching skipped
+        try:
+            md = precompute_one(ms)
+            rmse, l1 = pbe_density_errors(md)
+        except Exception as exc:  # noqa: BLE001 - record + continue
+            failures[name] = f"{type(exc).__name__}: {exc}"
+            print(f"[pbe-density] ({k}/{len(with_refs)}) {name} FAILED: "
+                  f"{failures[name]}", flush=True)
+            continue
+        if rmse is None:
+            continue                      # npz present but carried no rho_ref
+        errors[name] = {"density_rmse_pbe": rmse, "density_l1_pbe": l1}
+        elapsed = time.perf_counter() - t0
+        eta = elapsed / k * (len(with_refs) - k)
+        print(f"[pbe-density] ({k}/{len(with_refs)}) {name} "
+              f"rmse={rmse:.3e} l1={l1:.3e} [elapsed {_fmt_eta(elapsed)}, "
+              f"ETA {_fmt_eta(eta)}]", flush=True)
+
+    payload = {
+        "basis": basis,
+        "grid_level": grid_level,
+        "refs_dir": str(density_refs),
+        "errors": errors,
+        "failures": failures,
+    }
+    out_path = run_dir / "pbe_density_errors.json"
+    out_path.write_text(json.dumps(payload, indent=1))
+    print(f"[pbe-density] wrote {out_path} ({len(errors)} species, "
+          f"{len(failures)} failures)", flush=True)
+    return payload
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -307,13 +398,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--force", action="store_true",
                    help="re-process even specs already stamped with the "
                         "current fix version")
+    p.add_argument("--density-refs", default=None,
+                   help="dir of density-only benchmark CCSD reference "
+                        "<name>.npz files (xcquinox.alec.benchmark_refs); "
+                        "wires rho_ref_grid so per_molecule.json gains the "
+                        "NN/PBE-vs-CCSD density columns")
+    p.add_argument("--pbe-density-only", action="store_true",
+                   help="compute ONLY the model-free PBE-vs-CCSD density "
+                        "table (no model.eqx needed) into "
+                        "<run_dir>/pbe_density_errors.json; requires "
+                        "--density-refs")
     args = p.parse_args(argv)
 
+    if args.pbe_density_only and not args.density_refs:
+        p.error("--pbe-density-only requires --density-refs")
+
     run_dir = resolve_run_dir(args.run_dir)
+    if args.pbe_density_only:
+        payload = run_pbe_density_table(run_dir,
+                                        density_refs=args.density_refs)
+        return 1 if payload["failures"] else 0
+
     only = None
     if args.specs:
         only = [int(t) for t in args.specs.split(",") if t.strip()]
-    result = run(run_dir, force=args.force, only_specs=only)
+    result = run(run_dir, force=args.force, only_specs=only,
+                 density_refs=args.density_refs)
     return 1 if result["failed"] else 0
 
 

@@ -280,3 +280,41 @@ def test_w411_h2_atomization_pbe_sign_and_magnitude():
     assert atomization == pytest.approx(105.0, abs=15.0), (
         f"PBE H2 atomization {atomization:.1f} kcal/mol (expect ~+105; "
         f"~-46 indicates the geometry units bug).")
+
+
+# ---------------------------------------------------------------------------
+# benchmark refs_dir wiring (density-only CCSD references)
+# ---------------------------------------------------------------------------
+
+def test_refs_dir_wires_external_data_path(tmp_path, monkeypatch):
+    import numpy as np
+    from xcquinox.alec import full_benchmark_pools as fbp
+
+    monkeypatch.delenv("XCQUINOX_BENCH_REFS_DIR", raising=False)
+    np.savez_compressed(tmp_path / "h.npz", rho_ref_grid=np.ones(3))
+    mols, _ = fbp.load_full_bh76(basis="def2-svp", grid_level=2,
+                                 refs_dir=tmp_path)
+    assert mols["h"].external_data_path == str(tmp_path / "h.npz")
+    # species without a reference file stay None
+    others = [m for n, m in mols.items() if n != "h"]
+    assert all(m.external_data_path is None for m in others)
+    # refs_dir is part of the cache key: a refs-free call must NOT return the
+    # refs-wired cached pool
+    mols_plain, _ = fbp.load_full_bh76(basis="def2-svp", grid_level=2)
+    assert mols_plain["h"].external_data_path is None
+
+
+def test_refs_dir_env_var_fallback(tmp_path, monkeypatch):
+    import numpy as np
+    from xcquinox.alec import full_benchmark_pools as fbp
+
+    np.savez_compressed(tmp_path / "h.npz", rho_ref_grid=np.ones(3))
+    monkeypatch.setenv("XCQUINOX_BENCH_REFS_DIR", str(tmp_path))
+    mols, _ = fbp.load_full_held_out_pools(basis="def2-svp", grid_level=2)
+    assert mols["h"].external_data_path == str(tmp_path / "h.npz")
+    # explicit kwarg wins over the env var
+    other = tmp_path / "other"
+    other.mkdir()
+    mols2, _ = fbp.load_full_bh76(basis="def2-svp", grid_level=2,
+                                  refs_dir=other)
+    assert mols2["h"].external_data_path is None   # no h.npz under other/

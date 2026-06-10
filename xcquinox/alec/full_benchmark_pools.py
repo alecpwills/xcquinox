@@ -383,12 +383,35 @@ def build_w411_pool_dict() -> Dict[str, Any]:
 # Runtime loaders, what the cluster eval task imports
 # ---------------------------------------------------------------------------
 
+def _resolve_refs_dir(refs_dir: str | os.PathLike | None) -> str | None:
+    """Benchmark CCSD reference dir resolution: explicit argument first, then
+    the ``XCQUINOX_BENCH_REFS_DIR`` environment variable (how the cluster eval
+    task and the parallel shard workers pick it up without a config-schema
+    change -- the env propagates into worker subprocesses), else None
+    (historical behavior: no external density references)."""
+    if refs_dir is not None:
+        return str(refs_dir)
+    return os.environ.get("XCQUINOX_BENCH_REFS_DIR") or None
+
+
 def _dict_to_mol_spec(
     sd: Dict[str, Any],
     basis: str,
     grid_level: int | None,
+    refs_dir: str | None = None,
 ) -> MoleculeSpec:
-    """Build a MoleculeSpec from a JSON-cached species dict."""
+    """Build a MoleculeSpec from a JSON-cached species dict.
+
+    When ``refs_dir`` holds ``<name>.npz`` (a density-only benchmark CCSD
+    reference from ``xcquinox.alec.benchmark_refs``), it is wired via
+    ``external_data_path`` so the precompute loads ``rho_ref_grid`` and the
+    held-out eval can report density-vs-CCSD errors (pattern:
+    ``cluster.spec_builder.atoms_to_mol_spec``). Absent file -> None, the
+    historical no-reference behavior."""
+    ext: str | None = None
+    if refs_dir:
+        cand = os.path.join(refs_dir, f"{sd['name']}.npz")
+        ext = cand if os.path.isfile(cand) else None
     return MoleculeSpec(
         name=sd["name"],
         atom=sd["atom"],
@@ -398,7 +421,7 @@ def _dict_to_mol_spec(
         atom_composition=tuple(
             (str(e), int(n)) for e, n in sd["atom_composition"]
         ),
-        external_data_path=None,
+        external_data_path=ext,
         grid_level=grid_level,
     )
 
@@ -408,6 +431,7 @@ def _load_pool_from_json(
     builder,
     basis: str,
     grid_level: int | None,
+    refs_dir: str | None = None,
 ) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
     """Load a pool from the JSON cache, rebuilding on the fly if missing
     or if XCQUINOX_REBUILD_FULL_POOLS=1."""
@@ -422,13 +446,15 @@ def _load_pool_from_json(
             pass
     mol_specs: Dict[str, MoleculeSpec] = {}
     for sd in data["species"]:
-        mol_specs[sd["name"]] = _dict_to_mol_spec(sd, basis, grid_level)
+        mol_specs[sd["name"]] = _dict_to_mol_spec(sd, basis, grid_level,
+                                                  refs_dir)
     return mol_specs, list(data["reactions"])
 
 
 def load_full_bh76(
     basis: str = "def2-svp",
     grid_level: int | None = 1,
+    refs_dir: str | os.PathLike | None = None,
 ) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
     """Return ``({species_name: MoleculeSpec}, [reaction_dict, ...])`` for the
     full GMTKN55-BH76 set (76 reactions, ~50 species).
@@ -441,13 +467,19 @@ def load_full_bh76(
         basis: PySCF basis name to bake into every returned MoleculeSpec.
             Default ``def2-svp`` matches the existing cluster sweep.
         grid_level: PySCF DFT grid level for every MoleculeSpec. Default 1.
+        refs_dir: directory of density-only benchmark CCSD reference
+            ``<name>.npz`` files (``xcquinox.alec.benchmark_refs``); falls
+            back to ``$XCQUINOX_BENCH_REFS_DIR``, else no references
+            (see :func:`_resolve_refs_dir`).
     """
     global _BH76_CACHE
-    key = (basis, grid_level)
+    resolved_refs = _resolve_refs_dir(refs_dir)
+    key = (basis, grid_level, resolved_refs)
     if _BH76_CACHE is not None and _BH76_CACHE[0] == key:  # pyright: ignore
         return _BH76_CACHE[1]
     mol_specs, reactions = _load_pool_from_json(
         BH76_JSON_PATH, build_bh76_pool_dict, basis, grid_level,
+        resolved_refs,
     )
     _BH76_CACHE = (key, (mol_specs, reactions))  # type: ignore[assignment]
     return mol_specs, reactions
@@ -456,18 +488,22 @@ def load_full_bh76(
 def load_full_w411(
     basis: str = "def2-svp",
     grid_level: int | None = 1,
+    refs_dir: str | os.PathLike | None = None,
 ) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
     """Return ``({species_name: MoleculeSpec}, [reaction_dict, ...])`` for the
     full GMTKN55-W4-11 set (140 atomization reactions, ~150 species).
 
-    Same caching + fallback semantics as :func:`load_full_bh76`.
+    Same caching + fallback + ``refs_dir`` semantics as
+    :func:`load_full_bh76`.
     """
     global _W411_CACHE
-    key = (basis, grid_level)
+    resolved_refs = _resolve_refs_dir(refs_dir)
+    key = (basis, grid_level, resolved_refs)
     if _W411_CACHE is not None and _W411_CACHE[0] == key:  # pyright: ignore
         return _W411_CACHE[1]
     mol_specs, reactions = _load_pool_from_json(
         W411_JSON_PATH, build_w411_pool_dict, basis, grid_level,
+        resolved_refs,
     )
     _W411_CACHE = (key, (mol_specs, reactions))  # type: ignore[assignment]
     return mol_specs, reactions
@@ -476,16 +512,20 @@ def load_full_w411(
 def load_full_held_out_pools(
     basis: str = "def2-svp",
     grid_level: int | None = 1,
+    refs_dir: str | os.PathLike | None = None,
 ) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
     """Convenience: union of BH76 + W4-11.
 
     Species dicts merge by name (e.g. ``h``, ``c``, ``o``, ``n``, ``f`` appear
     in both sets, same MoleculeSpec for both). Reactions concatenate (BH76
     first, then W4-11). Total: 76 + 140 = 216 reactions over 214 unique
-    species (79 BH76 + 152 W4-11, 17 overlap).
+    species (79 BH76 + 152 W4-11, 17 overlap). ``refs_dir`` semantics as
+    :func:`load_full_bh76`.
     """
-    bh76_mols, bh76_rxns = load_full_bh76(basis=basis, grid_level=grid_level)
-    w411_mols, w411_rxns = load_full_w411(basis=basis, grid_level=grid_level)
+    bh76_mols, bh76_rxns = load_full_bh76(basis=basis, grid_level=grid_level,
+                                          refs_dir=refs_dir)
+    w411_mols, w411_rxns = load_full_w411(basis=basis, grid_level=grid_level,
+                                          refs_dir=refs_dir)
     merged_mols: Dict[str, MoleculeSpec] = dict(bh76_mols)
     for sp_name, ms in w411_mols.items():
         if sp_name in merged_mols:

@@ -147,6 +147,33 @@ class AtomizationEnergyMetric(Metric):
 # DensityRMSEMetric
 # ---------------------------------------------------------------------------
 
+def pbe_density_errors(mol_data) -> tuple:
+    """Model-free PBE-vs-reference weighted grid density errors.
+
+    ``mol_data['rho_grid']`` IS the PBE density evaluated on the same pruned
+    grid the external reference density (``rho_ref_grid``, e.g. CCSD) was
+    written for, so the PBE baseline needs no model and no extra SCF: it is
+    the :class:`DensityRMSEMetric` formula with rho_pbe in place of rho_nn.
+    Returns ``(rmse, l1)``, or ``(None, None)`` when no reference density is
+    loaded.
+    """
+    rho_ref = mol_data.get("rho_ref_grid")
+    if rho_ref is None:
+        return None, None
+    rho_pbe = jnp.asarray(mol_data["rho_grid"])
+    rho_ref = jnp.asarray(rho_ref)
+    if rho_pbe.shape != rho_ref.shape:
+        raise ValueError(
+            f"density shape mismatch: rho_pbe {rho_pbe.shape} vs "
+            f"rho_ref {rho_ref.shape}"
+        )
+    w = jnp.asarray(mol_data["grid_weights"])
+    diff = rho_pbe - rho_ref
+    rmse = float(jnp.sqrt(jnp.sum(w * diff ** 2) / jnp.sum(w)))
+    l1 = float(jnp.sum(w * jnp.abs(diff)) / jnp.sum(w))
+    return rmse, l1
+
+
 @register_metric("density_rmse")
 class DensityRMSEMetric(Metric):
     required_mol_keys: ClassVar[tuple[str, ...]] = (
@@ -163,6 +190,8 @@ class DensityRMSEMetric(Metric):
             return {
                 "density_rmse": None,
                 "density_l1": None,
+                "density_rmse_pbe": None,
+                "density_l1_pbe": None,
                 "skipped": True,
                 "skip_reason": "atomic_system",
                 "ref_density_method": mol_data.get("ref_density_method"),
@@ -182,6 +211,8 @@ class DensityRMSEMetric(Metric):
             return {
                 "density_rmse": None,
                 "density_l1": None,
+                "density_rmse_pbe": None,
+                "density_l1_pbe": None,
                 "skipped": True,
                 "skip_reason": "no_rho_ref_grid",
                 "ref_density_method": mol_data.get("ref_density_method"),
@@ -195,9 +226,14 @@ class DensityRMSEMetric(Metric):
         diff = rho_nn - rho_ref
         rmse = float(jnp.sqrt(jnp.sum(w * diff ** 2) / jnp.sum(w)))
         l1 = float(jnp.sum(w * jnp.abs(diff)) / jnp.sum(w))
+        rmse_pbe, l1_pbe = pbe_density_errors(mol_data)
         return {
             "density_rmse": rmse,
             "density_l1": l1,
+            # model-free PBE-vs-CCSD baseline on the same grid/weights, so
+            # in-sample per_molecule.json carries the comparison directly
+            "density_rmse_pbe": rmse_pbe,
+            "density_l1_pbe": l1_pbe,
             "ref_density_method": mol_data.get("ref_density_method"),
         }
 

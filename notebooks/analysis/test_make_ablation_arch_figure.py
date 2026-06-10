@@ -1194,6 +1194,90 @@ def test_suite_cli_passes_domain_bases_outroot(tmp_path):
     assert not (outroot / "figures_svp").exists()
 
 
+def _add_holdout_density(run_dir, *, with_nn=True):
+    """Append density columns to each spec's eval_holdout/per_molecule.json
+    (held-out per-species schema; the suite fixture only writes per_reaction)
+    and a run-level pbe_density_errors.json."""
+    for sd in (run_dir / "checkpoints").glob("spec_*"):
+        eh = sd / "eval_holdout"
+        if not (eh / "per_reaction.json").is_file():
+            continue
+        rows = [
+            {"molecule": "HO", "density_rmse": 2e-4 if with_nn else None,
+             "density_l1": 1e-5 if with_nn else None,
+             "density_rmse_pbe": 8e-4, "density_l1_pbe": 5e-5,
+             "ref_density_method": "ccsd", "from_training_subset": False},
+            {"molecule": "H", "density_rmse": None, "density_l1": None,
+             "density_rmse_pbe": None, "density_l1_pbe": None,
+             "ref_density_method": None, "from_training_subset": False},
+        ]
+        (eh / "per_molecule.json").write_text(json.dumps(rows))
+    (run_dir / "pbe_density_errors.json").write_text(json.dumps({
+        "basis": "def2-svp", "grid_level": 2, "refs_dir": "/refs",
+        "errors": {"HO": {"density_rmse_pbe": 8e-4, "density_l1_pbe": 5e-5},
+                   "CH4": {"density_rmse_pbe": 3e-4, "density_l1_pbe": 2e-5}},
+        "failures": {},
+    }))
+
+
+def test_collect_holdout_density_rows_keeps_either_channel(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run, with_nn=False)   # PBE-only re-eval shape
+    rows = fig.collect_holdout_density_rows(run)
+    assert rows, "PBE-only rows must be kept (NN channel may lag the refs)"
+    assert all(r["molecule"] == "HO" for r in rows)   # all-None H row dropped
+    assert all(r["density_rmse"] is None for r in rows)
+    assert all(r["density_rmse_pbe"] == pytest.approx(8e-4) for r in rows)
+    assert {r["arch"] for r in rows} == {"deep", "deep_notransform"}
+
+
+def test_load_pbe_density_table(tmp_path):
+    run = _make_run_dir(tmp_path)
+    assert fig.load_pbe_density_table(run) == {}        # absent -> empty
+    _add_holdout_density(run)
+    tab = fig.load_pbe_density_table(run)
+    assert set(tab) == {"HO", "CH4"}
+    assert tab["CH4"]["density_rmse_pbe"] == pytest.approx(3e-4)
+
+
+def test_plot_holdout_density_ccsd_renders_parity_and_pbe_only(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_density_rows(run)
+    tab = fig.load_pbe_density_table(run)
+    p1 = fig.plot_holdout_density_ccsd(rows, tmp_path / "hd.png", "run_x",
+                                       pbe_table=tab)
+    assert _png_ok(p1)
+    # PBE-only mode (no NN density anywhere) still renders the baseline strip
+    pbe_rows = [dict(r, density_rmse=None) for r in rows]
+    p2 = fig.plot_holdout_density_ccsd(pbe_rows, tmp_path / "hd2.png", "run_x",
+                                       pbe_table=tab)
+    assert _png_ok(p2)
+
+
+def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_path):
+    run = _make_run_dir(tmp_path)
+    out1 = tmp_path / "f1"
+    names1 = {p.name for p in fig.build_density_energy_figures(run, out1)}
+    assert "ablation_holdout_density_ccsd.png" not in names1   # refs-free run
+    _add_holdout_density(run)
+    out2 = tmp_path / "f2"
+    names2 = {p.name for p in fig.build_density_energy_figures(run, out2)}
+    assert "ablation_holdout_density_ccsd.png" in names2
+
+
+def test_insample_density_plot_with_pbe_baseline_renders(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rows = fig.collect_insample_density_rows(run)
+    assert rows
+    # older runs: no density_rmse_pbe column -> collected as None, still renders
+    assert all(r["density_rmse_pbe"] is None for r in rows)
+    for r in rows:
+        r["density_rmse_pbe"] = 9e-4
+    p = fig.plot_insample_density_ccsd(rows, tmp_path / "ins.png", "run_x")
+    assert _png_ok(p)
+
+
 def test_w411_natoms_map_counts_atoms():
     nm = fig._w411_natoms_map()
     assert nm.get("w411_propane_atomization") == 11  # C3H8 = 11 atoms

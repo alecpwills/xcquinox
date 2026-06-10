@@ -42,7 +42,7 @@ def _stub_inject(calls: list, precompute_calls: Optional[list] = None):
     """Injected callables that record processed indices and write a real
     per_reaction.json so the artifacts look produced. ``precompute_calls``, if
     given, records each precompute invocation (to assert once-per-group)."""
-    def pools_loader(basis, grid_level):
+    def pools_loader(basis, grid_level, refs_dir=None):
         return ({"h": object()}, [])
 
     def spec_loader(spec_path):
@@ -188,3 +188,90 @@ def test_group_precompute_failure_fails_whole_group(tmp_path):
     assert res["processed"] == []
     # Neither spec is stamped, so a later run retries them.
     assert rh.needs_reeval(run / "checkpoints" / "spec_0000") is True
+
+
+# ---------------------------------------------------------------------------
+# density refs + PBE-only mode
+# ---------------------------------------------------------------------------
+
+def test_effective_version_switches_with_density_refs():
+    assert rh.effective_version(None) == rh.REEVAL_VERSION
+    v = rh.effective_version("/some/refs")
+    assert v != rh.REEVAL_VERSION and v.startswith(rh.REEVAL_VERSION)
+
+
+def test_density_refs_threads_into_pools_loader_and_restamps(tmp_path):
+    run = _make_run(tmp_path, trained=(0,), untrained=())
+    calls: list = []
+    inj = _stub_inject(calls)
+    seen_refs: list = []
+
+    def pools_loader(basis, grid_level, refs_dir=None):
+        seen_refs.append(refs_dir)
+        return ({"h": object()}, [])
+
+    inj["pools_loader"] = pools_loader
+    # refs-free run stamps the base version
+    rh.run(run, **inj)
+    sd = run / "checkpoints" / "spec_0000"
+    assert rh.read_stamp(sd) == rh.REEVAL_VERSION
+    assert seen_refs == [None]
+    # a refs run must RE-process the base-stamped spec and re-stamp with the
+    # density version; the refs dir reaches the pools loader
+    res = rh.run(run, density_refs="/refs/bench", **inj)
+    assert res["processed"] == [0]
+    assert seen_refs[-1] == "/refs/bench"
+    assert rh.read_stamp(sd) == rh.effective_version("/refs/bench")
+    # and a SECOND refs run is a no-op (idempotent under the new stamp)
+    res2 = rh.run(run, density_refs="/refs/bench", **inj)
+    assert res2["processed"] == [] and res2["skipped"] == [0]
+
+
+def test_pbe_density_only_needs_no_model(tmp_path):
+    """The PBE table must be computable on a summaries-profile pull with ZERO
+    local model.eqx files -- and must never touch a model loader."""
+    run = _make_run(tmp_path, trained=(), untrained=(0,))
+    (run / "resolved_config.yaml").write_text("basis: def2-svp\ngrid_level: 2\n")
+
+    class MS:
+        def __init__(self, name, n_atoms, ext):
+            self.name = name
+            self.atom_composition = (("H", n_atoms),)
+            self.external_data_path = ext
+
+    pool = {
+        "h": MS("h", 1, "/refs/h.npz"),          # atom -> skipped
+        "h2o": MS("h2o", 3, "/refs/h2o.npz"),    # with ref -> computed
+        "ch4": MS("ch4", 5, None),               # no ref -> not attempted
+        "bad": MS("bad", 2, "/refs/bad.npz"),    # precompute raises -> failure
+    }
+
+    def pools_loader(basis, grid_level, refs_dir=None):
+        assert refs_dir == "/refs"
+        return (pool, [])
+
+    def precompute_one(ms):
+        if ms.name == "bad":
+            raise RuntimeError("scf diverged")
+        import numpy as np
+        return {"rho_grid": np.array([1.5, 0.5]),
+                "rho_ref_grid": np.array([1.0, 1.0]),
+                "grid_weights": np.array([3.0, 1.0])}
+
+    payload = rh.run_pbe_density_table(run, density_refs="/refs",
+                                       pools_loader=pools_loader,
+                                       precompute_one=precompute_one)
+    assert set(payload["errors"]) == {"h2o"}
+    assert payload["errors"]["h2o"]["density_rmse_pbe"] == 0.5
+    assert payload["errors"]["h2o"]["density_l1_pbe"] == 0.5
+    assert "bad" in payload["failures"]
+    on_disk = json.loads((run / "pbe_density_errors.json").read_text())
+    assert on_disk["errors"] == payload["errors"]
+    assert on_disk["basis"] == "def2-svp" and on_disk["grid_level"] == 2
+
+
+def test_main_pbe_density_only_requires_refs(tmp_path):
+    import pytest
+    run = _make_run(tmp_path, trained=(0,))
+    with pytest.raises(SystemExit):
+        rh.main(["--run-dir", str(run), "--pbe-density-only"])

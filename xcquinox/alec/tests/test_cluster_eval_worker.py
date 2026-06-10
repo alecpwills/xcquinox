@@ -219,7 +219,8 @@ def test_model_present_runs_eval_and_folds_csv(run_dir, monkeypatch):
         rows = list(csv.DictReader(f))
     assert len(rows) == 1
     row = rows[0]
-    assert set(row.keys()) == {"set", "mae", "rho_rmse", "n_eval"}
+    assert set(row.keys()) == {"set", "mae", "rho_rmse", "rho_rmse_pbe",
+                               "n_eval"}
     assert row["set"] == "training_subset"
     # MAE = mean(|3.0|, |-5.0|) = 4.0; rho_rmse = mean(0.10, 0.20) = 0.15.
     assert float(row["mae"]) == pytest.approx(4.0)
@@ -293,17 +294,36 @@ def test_aggregate_per_molecule_reads_canonical_keys():
         {"molecule": "A", "AE_error_kcalmol": 2.0, "density_rmse": 0.4},
         {"molecule": "B", "AE_error_kcalmol": -4.0, "density_rmse": 0.6},
     ]
-    mae, rho_rmse, n_eval = ev._aggregate_per_molecule(pm_rows)
+    mae, rho_rmse, n_eval, rho_rmse_pbe = ev._aggregate_per_molecule(pm_rows)
     assert mae == pytest.approx(3.0)
     assert rho_rmse == pytest.approx(0.5)
     assert n_eval == 2
+    # no density_rmse_pbe key on any row (historical schema) -> nan
+    import math
+    assert math.isnan(rho_rmse_pbe)
+
+
+def test_aggregate_per_molecule_pbe_density_channel():
+    import math
+    pm_rows = [
+        {"molecule": "A", "AE_error_kcalmol": 1.0, "density_rmse": 0.4,
+         "density_rmse_pbe": 0.8},
+        {"molecule": "B", "AE_error_kcalmol": 2.0, "density_rmse": 0.6,
+         "density_rmse_pbe": None},
+        {"molecule": "C", "AE_error_kcalmol": 3.0, "density_rmse": 0.2,
+         "density_rmse_pbe": float("nan")},
+    ]
+    mae, rho_rmse, n_eval, rho_rmse_pbe = ev._aggregate_per_molecule(pm_rows)
+    # only A's finite numeric value contributes to the PBE baseline mean
+    assert rho_rmse_pbe == pytest.approx(0.8)
+    assert not math.isnan(rho_rmse)
 
 
 def test_aggregate_per_molecule_nan_when_keys_absent():
     import math
     # No AE_error_kcalmol / density_rmse keys at all (atomic systems etc.).
     pm_rows = [{"molecule": "H"}, {"molecule": "Li"}]
-    mae, rho_rmse, n_eval = ev._aggregate_per_molecule(pm_rows)
+    mae, rho_rmse, n_eval, rho_rmse_pbe = ev._aggregate_per_molecule(pm_rows)
     assert math.isnan(mae)
     assert math.isnan(rho_rmse)
     # CODE-03: n_eval is the AE-contributing count (MAE denominator); with no
@@ -317,7 +337,7 @@ def test_aggregate_per_molecule_skips_none_and_bool():
         {"molecule": "B", "AE_error_kcalmol": None, "density_rmse": 0.3},
         {"molecule": "C", "AE_error_kcalmol": True, "density_rmse": False},
     ]
-    mae, rho_rmse, n_eval = ev._aggregate_per_molecule(pm_rows)
+    mae, rho_rmse, n_eval, rho_rmse_pbe = ev._aggregate_per_molecule(pm_rows)
     # Only A's AE error and B's density_rmse are numeric non-bool.
     assert mae == pytest.approx(6.0)
     assert rho_rmse == pytest.approx(0.3)
@@ -383,7 +403,7 @@ def test_aggregate_per_molecule_excludes_nonfinite():
         {"AE_error_kcalmol": float("inf"), "density_rmse": 0.05},
         {"AE_error_kcalmol": -3.0, "density_rmse": 0.03},
     ]
-    mae, rho_rmse, n_eval = ev._aggregate_per_molecule(rows)
+    mae, rho_rmse, n_eval, rho_rmse_pbe = ev._aggregate_per_molecule(rows)
     assert n_eval == 2                      # NaN + inf excluded
     assert abs(mae - 2.0) < 1e-12           # (|1| + |-3|) / 2, finite only
     assert abs(rho_rmse - 0.03) < 1e-12     # (0.01 + 0.05 + 0.03)/3 -> NaN dropped: (0.01+0.05+0.03)/3

@@ -807,3 +807,45 @@ def test_load_external_data_grid_level_used_function_direct(tmp_path):
             path, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
             vxc_pbe_shape=(2, 2), mol_name="H2", grid_level=1,
         )
+
+
+# ---------------------------------------------------------------------------
+# density-only benchmark reference npz (xcquinox.alec.benchmark_refs contract)
+# ---------------------------------------------------------------------------
+
+def test_precompute_loads_benchmark_density_only_npz(tmp_path):
+    """The benchmark generator writes {rho_ref_grid, ref_density_method,
+    grid_level_used, basis_used} and NOTHING else (no vxc_ref/dm_target --
+    the OEP stage is a TRAINING-refs requirement). This must load cleanly
+    with rho populated and the OEP keys None, and the grid_level identity
+    gate must stay loud."""
+    import dataclasses
+
+    base = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    baseline = precompute_fixed_density_data(base)
+    rho_shape = tuple(np.asarray(baseline["rho_grid"]).shape)
+
+    path = str(tmp_path / "H2.npz")
+    np.savez_compressed(path, rho_ref_grid=np.full(rho_shape, 0.5),
+                        ref_density_method=np.array("ccsd"),
+                        grid_level_used=np.array(1),
+                        basis_used=np.array("sto-3g"))
+    data = precompute_fixed_density_data(
+        dataclasses.replace(base, external_data_path=path))
+    assert data["rho_ref_grid"] is not None
+    assert data["ref_density_method"] == "ccsd"
+    assert data["dm_target"] is None
+    assert data["vxc_ref"] is None
+
+    # a reference generated on a different grid must be rejected loudly
+    bad = str(tmp_path / "H2_bad_grid.npz")
+    np.savez_compressed(bad, rho_ref_grid=np.full(rho_shape, 0.5),
+                        ref_density_method=np.array("ccsd"),
+                        grid_level_used=np.array(2),
+                        basis_used=np.array("sto-3g"))
+    with pytest.raises(ValueError, match="grid_level=2"):
+        precompute_fixed_density_data(
+            dataclasses.replace(base, external_data_path=bad))

@@ -1476,10 +1476,67 @@ def collect_insample_density_rows(run_dir: Path) -> List[Dict[str, Any]]:
                 "molecule": r.get("molecule"),
                 "density_rmse": r.get("density_rmse"),
                 "density_l1": r.get("density_l1"),
+                # PBE-vs-CCSD baseline on the same grid (model-free; emitted by
+                # newer evals only -- None on older per_molecule.json)
+                "density_rmse_pbe": r.get("density_rmse_pbe"),
+                "density_l1_pbe": r.get("density_l1_pbe"),
                 "ref_density_method": r.get("ref_density_method"),
                 "from_training_subset": r.get("from_training_subset"),
             })
     return rows
+
+
+def collect_holdout_density_rows(run_dir: Path,
+                                 eval_subdir: str = "eval_holdout"
+                                 ) -> List[Dict[str, Any]]:
+    """Held-out density-vs-CCSD errors from ``<eval_subdir>/per_molecule.json``
+    (the un-stubbed NN ``density_rmse`` + model-free ``density_rmse_pbe``
+    columns; both None until benchmark CCSD reference densities are wired),
+    joined with the manifest arch/subset_size. Rows are kept when EITHER
+    channel is finite, so a PBE-only re-eval still produces the baseline."""
+    cells = ccp._read_manifest_cells(run_dir)
+    rows: List[Dict[str, Any]] = []
+    for idx, spec_dir in ccp._spec_dirs(run_dir):
+        pm_path = spec_dir / eval_subdir / "per_molecule.json"
+        if not pm_path.is_file():
+            continue
+        try:
+            with pm_path.open() as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        cell = cells.get(idx, {})
+        for r in payload:
+            if not (_is_num(r.get("density_rmse"))
+                    or _is_num(r.get("density_rmse_pbe"))):
+                continue
+            rows.append({
+                "idx": idx,
+                "arch": cell.get("arch"),
+                "subset_size": cell.get("subset_size"),
+                "molecule": r.get("molecule"),
+                "density_rmse": r.get("density_rmse"),
+                "density_l1": r.get("density_l1"),
+                "density_rmse_pbe": r.get("density_rmse_pbe"),
+                "density_l1_pbe": r.get("density_l1_pbe"),
+                "ref_density_method": r.get("ref_density_method"),
+                "from_training_subset": r.get("from_training_subset"),
+            })
+    return rows
+
+
+def load_pbe_density_table(run_dir: Path) -> Dict[str, Dict[str, float]]:
+    """``{molecule: {density_rmse_pbe, density_l1_pbe}}`` from the run-level
+    ``pbe_density_errors.json`` written by ``reeval_holdout_fixed.py
+    --pbe-density-only`` (model-free, shared across every spec/arch of the
+    run). Empty dict when absent."""
+    p = Path(run_dir) / "pbe_density_errors.json"
+    if not p.is_file():
+        return {}
+    try:
+        return dict(json.loads(p.read_text()).get("errors", {}))
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 _ELEMENT_SYMBOLS = frozenset(
@@ -1650,8 +1707,10 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
                                caveat: Optional[str] = None) -> Path:
     """In-sample density error vs CCSD (Dick-style diagnostic): (left) per-arch
     density RMSE vs subset_size with n annotated; (right) per-molecule strip
-    (every point, since the trained-species set is tiny). Labeled IN-SAMPLE; no
-    PBE density baseline exists."""
+    (every point, since the trained-species set is tiny). Labeled IN-SAMPLE.
+    Rows carrying ``density_rmse_pbe`` (the model-free PBE-vs-CCSD baseline on
+    the same grid; emitted by newer evals) add a grey dashed PBE baseline to
+    both panels; older runs without the column render exactly as before."""
     with plt.rc_context(_STYLE):
         archs = _archs_present(density_rows) or ["deep"]
         arch_idx = {a: i for i, a in enumerate(archs)}
@@ -1670,6 +1729,18 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
                     axL.annotate(f"n={n}", (s, m), fontsize=5,
                                  color=ARCH_COLOR[a], xytext=(0, 4),
                                  textcoords="offset points")
+        # PBE-vs-CCSD baseline (arch-independent): mean over the molecules
+        # present at each subset_size, grey dashed
+        pbe_by_s: Dict[int, List[float]] = {}
+        for r in density_rows:
+            if _is_num(r.get("density_rmse_pbe")):
+                pbe_by_s.setdefault(r["subset_size"], []).append(
+                    r["density_rmse_pbe"])
+        pbe_pts = sorted((s, float(np.mean(v))) for s, v in pbe_by_s.items())
+        if pbe_pts:
+            axL.plot([s for s, _ in pbe_pts], [m for _, m in pbe_pts],
+                     ls="--", color="0.35", marker="x", ms=5, lw=1.2,
+                     label="PBE vs CCSD")
         axL.set_yscale("log")
         axL.set_xlabel("training subset_size", fontsize=8)
         axL.set_ylabel("density RMSE vs CCSD (grid, weighted-mean)", fontsize=8)
@@ -1689,6 +1760,15 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
             axR.scatter(mol_x[r["molecule"]] + jit, r["density_rmse"], s=18,
                         alpha=0.75, color=ARCH_COLOR.get(r.get("arch"), "0.5"),
                         edgecolor="none")
+        # PBE baseline per molecule (arch-independent -> one grey x each)
+        pbe_by_mol: Dict[str, List[float]] = {}
+        for r in density_rows:
+            if _is_num(r.get("density_rmse_pbe")) and r.get("molecule") in mol_x:
+                pbe_by_mol.setdefault(r["molecule"], []).append(
+                    r["density_rmse_pbe"])
+        for m, vals in pbe_by_mol.items():
+            axR.scatter(mol_x[m], float(np.mean(vals)), s=26, marker="x",
+                        color="0.35", lw=1.2, zorder=3)
         axR.set_yscale("log")
         axR.set_xticks(range(len(mols)))
         axR.set_xticklabels(mols, rotation=60, ha="right", fontsize=6)
@@ -1707,6 +1787,116 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=insample,
             title="In-sample density error vs CCSD (Dick-style diagnostic)")
+        fig.tight_layout(rect=(0, 0.08, 1, 0.92))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
+                              out_path: Path, run_id: str, *,
+                              pbe_table: Optional[Dict[str, Dict[str, float]]]
+                              = None,
+                              note: str = "",
+                              provenance: Optional[str] = None) -> Path:
+    """HELD-OUT density error vs CCSD on the W4-11+BH76 benchmark species:
+    (left) per-arch weighted-mean grid RMSE vs subset_size with the grey
+    dashed PBE-vs-CCSD pool baseline; (right) per-species NN-vs-PBE parity
+    (log-log; below the diagonal = the NN density is closer to CCSD than PBE
+    is). The PBE channel is model-free and shared across every spec --
+    ``pbe_table`` (the run-level ``pbe_density_errors.json``) supplies it for
+    PBE-only re-evals; rows carrying ``density_rmse_pbe`` work too."""
+    # per-molecule PBE map: explicit table first, else from the rows
+    pbe_mol: Dict[str, float] = {
+        m: d["density_rmse_pbe"] for m, d in (pbe_table or {}).items()
+        if _is_num(d.get("density_rmse_pbe"))}
+    if not pbe_mol:
+        acc: Dict[str, List[float]] = {}
+        for r in density_rows:
+            if _is_num(r.get("density_rmse_pbe")) and r.get("molecule"):
+                acc.setdefault(r["molecule"], []).append(r["density_rmse_pbe"])
+        pbe_mol = {m: float(np.mean(v)) for m, v in acc.items()}
+
+    with plt.rc_context(_STYLE):
+        archs = _archs_present(density_rows) or []
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5.2), squeeze=False)
+        axL, axR = axes[0][0], axes[0][1]
+        for a in archs:
+            by_s: Dict[int, List[float]] = {}
+            for r in density_rows:
+                if r.get("arch") == a and _is_num(r.get("density_rmse")):
+                    by_s.setdefault(r["subset_size"], []).append(
+                        r["density_rmse"])
+            pts = sorted((s, float(np.mean(v)), len(v))
+                         for s, v in by_s.items())
+            if pts:
+                axL.plot([s for s, _, _ in pts], [m for _, m, _ in pts],
+                         marker="o", ms=5, color=ARCH_COLOR.get(a, "0.5"),
+                         label=a)
+                for s, m, n in pts:
+                    axL.annotate(f"n={n}", (s, m), fontsize=5,
+                                 color=ARCH_COLOR.get(a, "0.5"),
+                                 xytext=(0, 4), textcoords="offset points")
+        if pbe_mol:
+            pbe_mean = float(np.mean(list(pbe_mol.values())))
+            axL.axhline(pbe_mean, ls="--", color="0.35", lw=1.2,
+                        label=f"PBE vs CCSD (pool mean {pbe_mean:.1e})")
+        axL.set_yscale("log")
+        axL.set_xlabel("training subset_size", fontsize=8)
+        axL.set_ylabel("held-out density RMSE vs CCSD (grid, weighted-mean)",
+                       fontsize=8)
+        axL.set_title("Held-out density error vs CCSD (per arch)", fontsize=9)
+        if axL.get_legend_handles_labels()[1]:
+            axL.legend(fontsize=6, ncol=2)
+        axL.grid(True, which="both", alpha=0.3)
+
+        # right: NN-vs-PBE per-species parity (needs both channels)
+        n_pairs = 0
+        for r in density_rows:
+            x = pbe_mol.get(r.get("molecule"))
+            y = r.get("density_rmse")
+            if not (_is_num(x) and _is_num(y)):
+                continue
+            axR.scatter(x, y, s=14, alpha=0.6,
+                        color=ARCH_COLOR.get(r.get("arch"), "0.5"),
+                        edgecolor="none")
+            n_pairs += 1
+        if n_pairs:
+            lims = [min(axR.get_xlim()[0], axR.get_ylim()[0]),
+                    max(axR.get_xlim()[1], axR.get_ylim()[1])]
+            axR.plot(lims, lims, ls=":", color="0.5", lw=1)
+            axR.set_xscale("log")
+            axR.set_yscale("log")
+        elif pbe_mol:
+            # PBE-only data (no NN density yet): per-species PBE strip
+            vals = sorted(pbe_mol.values(), reverse=True)
+            axR.scatter(range(len(vals)), vals, s=10, color="0.35")
+            axR.set_yscale("log")
+            axR.set_xlabel("species (sorted by PBE error)", fontsize=8)
+        axR.set_xlabel(axR.get_xlabel() or "PBE density RMSE vs CCSD",
+                       fontsize=8)
+        axR.set_ylabel("NN density RMSE vs CCSD" if n_pairs
+                       else "PBE density RMSE vs CCSD", fontsize=8)
+        axR.set_title(f"Per-species NN vs PBE (both vs CCSD; {n_pairs} points)"
+                      if n_pairs else
+                      f"PBE-vs-CCSD per species ({len(pbe_mol)} refs)",
+                      fontsize=9)
+        axR.grid(True, which="both", alpha=0.3)
+
+        arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
+                        for a in archs if a in ARCH_COLOR]
+        if arch_handles:
+            fig.legend(handles=arch_handles, loc="lower center", ncol=8,
+                       fontsize=7, frameon=False, bbox_to_anchor=(0.5, 0.02))
+        heldout = ("HELD-OUT density error vs CCSD reference densities on the "
+                   "W4-11+BH76 benchmark species (atoms excluded; weighted-mean "
+                   "grid RMSE, NOT N_e-normalized). PBE baseline is model-free "
+                   "on the same grid. Density generalization; separate from the "
+                   "held-out ENERGY panels by design.")
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance,
+            caveat=heldout,
+            title="Held-out density error vs CCSD (NN vs PBE)")
         fig.tight_layout(rect=(0, 0.08, 1, 0.92))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -2808,6 +2998,22 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                                    outdir / "ablation_insample_density_ccsd.png",
                                    run_id, note=note, provenance=dens_prov),
     ]
+    # Held-out density family: only renderable once benchmark CCSD reference
+    # densities exist (eval_holdout density columns and/or the run-level
+    # pbe_density_errors.json from a --pbe-density-only re-eval); skipped with
+    # a note otherwise so current refs-free runs are unchanged.
+    hd_rows = collect_holdout_density_rows(run_dir, eval_subdir=eval_subdir)
+    pbe_table = load_pbe_density_table(run_dir)
+    if hd_rows or pbe_table:
+        hd_prov = ("Held-out density vs CCSD: benchmark reference densities "
+                   "(xcquinox.alec.benchmark_refs); PBE baseline model-free "
+                   "on the same grid.")
+        written.append(plot_holdout_density_ccsd(
+            hd_rows, outdir / "ablation_holdout_density_ccsd.png", run_id,
+            pbe_table=pbe_table, note=note, provenance=hd_prov))
+    else:
+        print("  (no held-out density data -- skipping "
+              "ablation_holdout_density_ccsd.png; needs benchmark CCSD refs)")
     return written
 
 

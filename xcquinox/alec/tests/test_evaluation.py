@@ -984,3 +984,44 @@ def test_aggregate_results_records_n_total_and_n_skipped():
         math.sqrt((0.012**2 + 0.034**2) / 2),
     )
     assert math.isclose(drms["max"],  0.034)
+
+
+# ---------------------------------------------------------------------------
+# pbe_density_errors -- model-free PBE-vs-reference baseline
+# ---------------------------------------------------------------------------
+
+def test_pbe_density_errors_closed_form_and_no_ref():
+    import jax.numpy as jnp
+    from xcquinox.alec.evaluation import pbe_density_errors
+    md = {
+        "rho_ref_grid": jnp.array([1.0, 1.0]),
+        "rho_grid": jnp.array([1.5, 0.5]),
+        "grid_weights": jnp.array([3.0, 1.0]),
+    }
+    rmse, l1 = pbe_density_errors(md)
+    # diff = [0.5, -0.5], wsum = 4: RMSE = sqrt((3+1)*0.25/4) = 0.5, L1 = 0.5
+    assert rmse == pytest.approx(0.5)
+    assert l1 == pytest.approx(0.5)
+    assert pbe_density_errors({"rho_ref_grid": None}) == (None, None)
+    md_bad = dict(md, rho_grid=jnp.ones(5))
+    with pytest.raises(ValueError, match="rho_pbe"):
+        pbe_density_errors(md_bad)
+
+
+def test_density_rmse_metric_emits_pbe_channel(tiny_model, h2o_data):
+    import jax.numpy as jnp
+    m = DensityRMSEMetric()
+    h2o = dict(h2o_data)
+    h2o["rho_ref_grid"] = jnp.asarray(h2o["rho_grid"]) * 1.01
+    h2o["ref_density_method"] = "ccsd"
+    out = m.compute(tiny_model, h2o)
+    assert out["density_rmse_pbe"] is not None and out["density_rmse_pbe"] > 0
+    assert out["density_l1_pbe"] is not None
+    # skip branches carry the new keys as None (schema stability)
+    atom = dict(h2o, atom_composition=(("O", 1),))
+    out_atom = m.compute(tiny_model, atom)
+    assert out_atom["density_rmse_pbe"] is None
+    no_ref = dict(h2o)
+    no_ref["rho_ref_grid"] = None
+    out_no_ref = m.compute(tiny_model, no_ref)
+    assert out_no_ref["density_rmse_pbe"] is None

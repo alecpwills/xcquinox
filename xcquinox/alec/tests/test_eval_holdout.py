@@ -507,3 +507,81 @@ def test_holdout_overlap_charge_and_case_aware_no_leak():
     assert all("nh3" not in {s.casefold() for s in
                (set(r["reactants"]) | set(r["products"]))} for r in kept_nh3), \
         "NH3/nh3 case-twin leaked into held-out"
+
+
+# ---------------------------------------------------------------------------
+# held-out density errors (NN-vs-CCSD + model-free PBE-vs-CCSD)
+# ---------------------------------------------------------------------------
+
+def test_density_errors_for_record_all_none_for_atom_and_no_ref():
+    # atoms: density matching skipped (mirrors DensityRMSEMetric)
+    out = eh.density_errors_for_record(None, {"atom_composition": (("H", 1),)})
+    assert set(out) == set(eh._DENSITY_RECORD_KEYS)
+    assert all(v is None for v in out.values())
+    # no CCSD reference loaded (external_data_path unresolved) -> all None,
+    # so runs without benchmark refs keep the historical schema
+    out2 = eh.density_errors_for_record(
+        None, {"atom_composition": (("H", 2),), "rho_ref_grid": None})
+    assert all(v is None for v in out2.values())
+
+
+def test_density_errors_for_record_pbe_closed_form(monkeypatch):
+    import numpy as np
+    import xcquinox.alec.evaluation as ev_mod
+
+    class FakeMetric:
+        def compute(self, model, md, solver_config=None):
+            return {"density_rmse": 0.123, "density_l1": 0.045,
+                    "ref_density_method": "ccsd"}
+
+    monkeypatch.setattr(ev_mod, "DensityRMSEMetric", FakeMetric)
+    md = {
+        "atom_composition": (("H", 2),),
+        "rho_ref_grid": np.array([1.0, 1.0]),
+        "rho_grid": np.array([1.5, 0.5]),       # PBE density on the same grid
+        "grid_weights": np.array([3.0, 1.0]),
+        "ref_density_method": "ccsd",
+    }
+    out = eh.density_errors_for_record(object(), md, solver_config=None)
+    # hand-computed weighted errors: diff = [0.5, -0.5], wsum = 4
+    # RMSE = sqrt((3*0.25 + 1*0.25)/4) = 0.5 ; L1 = (3*0.5 + 1*0.5)/4 = 0.5
+    assert out["density_rmse_pbe"] == pytest.approx(0.5)
+    assert out["density_l1_pbe"] == pytest.approx(0.5)
+    # NN channel comes from DensityRMSEMetric (stubbed; model-dependent)
+    assert out["density_rmse"] == pytest.approx(0.123)
+    assert out["density_l1"] == pytest.approx(0.045)
+    assert out["ref_density_method"] == "ccsd"
+
+
+def test_density_errors_for_record_pbe_shape_mismatch_raises(monkeypatch):
+    import numpy as np
+    import xcquinox.alec.evaluation as ev_mod
+
+    class FakeMetric:
+        def compute(self, model, md, solver_config=None):
+            return {"density_rmse": 0.0, "density_l1": 0.0,
+                    "ref_density_method": "ccsd"}
+
+    monkeypatch.setattr(ev_mod, "DensityRMSEMetric", FakeMetric)
+    md = {
+        "atom_composition": (("H", 2),),
+        "rho_ref_grid": np.ones(3),
+        "rho_grid": np.ones(5),
+        "grid_weights": np.ones(3),
+    }
+    with pytest.raises(ValueError, match="density shape mismatch"):
+        eh.density_errors_for_record(object(), md)
+
+
+def test_make_per_molecule_record_density_kwarg():
+    md = {"E_pbe": -1.0}
+    rec = eh.make_per_molecule_record("x", md, -1.1, in_training_subset=False)
+    for k in eh._DENSITY_RECORD_KEYS:
+        assert k in rec and rec[k] is None     # omitted -> historical all-None
+    dens = {"density_rmse": 1e-4, "density_l1": 2e-5,
+            "density_rmse_pbe": 3e-4, "density_l1_pbe": 4e-5,
+            "ref_density_method": "ccsd"}
+    rec2 = eh.make_per_molecule_record("x", md, -1.1,
+                                       in_training_subset=False, density=dens)
+    for k, v in dens.items():
+        assert rec2[k] == v
