@@ -582,6 +582,9 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             validate_every=hp.validate_every,
             patience=hp.patience,
             early_stop_min_delta=hp.early_stop_min_delta,
+            # WS5 (2026-06-20): periodic-resume checkpoint cadence, threaded like
+            # validate_every. checkpoint_every=0 (default) is a no-op.
+            checkpoint_every=hp.checkpoint_every,
         )
         # WS3: attach the held-out validation slice (no-op unless val_refs_dir +
         # validate_every>0 + a staged val_reactions.json under run_dir).

@@ -734,6 +734,13 @@ class TrainingSpec:
     validate_every: int = 0
     patience: int = 0
     early_stop_min_delta: float = 0.0
+    # Periodic-resume checkpoint cadence (WS5, 2026-06-20): every
+    # ``checkpoint_every`` completed EPOCHS the per_molecule loop writes a
+    # ``resume_*`` checkpoint set (model + opt_state + RNG + trackers) so a run
+    # killed by walltime/maintenance can RESUME from its last periodic snapshot.
+    # Defaults to a NO-OP (0 => no resume writes), so existing runs/tests stay
+    # byte-identical. Only the per_molecule loop honors it.
+    checkpoint_every: int = 0
 
     @property
     def channel_weights_dict(self) -> dict[str, float]:

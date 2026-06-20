@@ -123,6 +123,10 @@ class HyperParams:
     validate_every: int = 0
     patience: int = 0
     early_stop_min_delta: float = 0.0
+    # Periodic-resume checkpoint cadence (WS5, 2026-06-20). Default 0 => no-op
+    # (no resume_* writes) so existing sweeps stay byte-identical. Threaded onto
+    # every TrainingSpec by spec_builder like weight_decay / validate_every.
+    checkpoint_every: int = 0
     pbe_anchor_weight: float = 0.0
     require_atom_anchors: bool = False
     seed: int = 42
@@ -433,6 +437,7 @@ def _build_hyperparams(d: dict) -> HyperParams:
         validate_every=int(d.get("validate_every", 0)),
         patience=int(d.get("patience", 0)),
         early_stop_min_delta=float(d.get("early_stop_min_delta", 0.0)),
+        checkpoint_every=int(d.get("checkpoint_every", 0)),
         pbe_anchor_weight=d.get("pbe_anchor_weight", 0.0),
         require_atom_anchors=d.get("require_atom_anchors", False),
         seed=d.get("seed", 42),

@@ -300,6 +300,11 @@ def _run_worker(spec_path, device):
 # child is running.
 _ACTIVE_CHILD = None
 
+# WS5-SIG-4: bounded grace the parent SIGTERM handler waits for the terminated
+# worker to finish its best-effort resume flush before the parent exits. Kept
+# well inside a typical SLURM kill-grace window so it cannot wedge the parent.
+_SIGTERM_CHILD_WAIT_S = 30.0
+
 # Progress-line sink. Indirected through a module global so _run_worker (the
 # test seam) stays decoupled from the idx-tagged logger; main() points this at
 # the real logger. Default is a no-op so a direct _run_worker call in a test
@@ -356,6 +361,19 @@ def _install_sigterm_handler(run_dir, idx):
         if child is not None and child.poll() is None:
             try:
                 child.terminate()
+            except OSError:
+                pass
+            # WS5-SIG-4: the worker installs its OWN SIGTERM handler that flushes
+            # the in-flight epoch's resume checkpoint before exiting. We MUST give
+            # that best-effort flush time to finish before this parent exits,
+            # otherwise the parent's exit cuts the flush off. Bounded so a hung
+            # child can never wedge the parent past its own grace window.
+            try:
+                child.wait(timeout=_SIGTERM_CHILD_WAIT_S)
+            except subprocess.TimeoutExpired:
+                # Flush overran the grace window; proceed to record + exit anyway
+                # (periodic checkpoints are the primary net, the flush is a bonus).
+                pass
             except OSError:
                 pass
         _log(idx, "received SIGTERM, recording killed_by_signal and exiting")

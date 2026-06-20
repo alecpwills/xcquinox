@@ -507,6 +507,233 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
 
 
 # ---------------------------------------------------------------------------
+# WS5 (2026-06-20): RESUMABLE per_molecule training.
+#
+# A ``per_molecule`` run killed by walltime/maintenance must RESUME from its
+# last PERIODIC checkpoint and finish; an early-stopped run is recognized as
+# complete. The mechanism is gated entirely behind ``spec.checkpoint_every``,
+# which DEFAULTS to 0 (a no-op): with 0, none of the functions below run and the
+# loop is byte-identical to before.
+#
+# WS6 CONTRACT (do NOT violate):
+#   * Periodic checkpoints use ``resume_*`` filenames and MUST NOT write
+#     ``model.eqx`` (the harness success signal). A mid-run dir therefore has
+#     ``resume_state.pkl`` present AND ``model.eqx`` ABSENT.
+#   * Completion (clean OR early-stop) writes ``model.eqx`` (via _save_artifacts)
+#     + a NEW ``completion.json`` sentinel, then DELETES the ``resume_*`` files.
+# ---------------------------------------------------------------------------
+
+# resume_* artifact filenames (the WS6-contract resume set) + completion sentinel.
+_RESUME_MODEL = "resume_model.eqx"
+_RESUME_OPT_STATE = "resume_opt_state.eqx"
+_RESUME_BEST = "resume_best.eqx"
+_RESUME_VAL_BEST = "resume_val_best.eqx"
+_RESUME_STATE = "resume_state.pkl"
+_COMPLETION_SENTINEL = "completion.json"
+# Every resume_* file the periodic checkpoint may write (for cleanup on
+# completion). model.eqx / completion.json are deliberately NOT in this list.
+_RESUME_FILES = (
+    _RESUME_MODEL, _RESUME_OPT_STATE, _RESUME_BEST, _RESUME_VAL_BEST,
+    _RESUME_STATE,
+)
+
+
+def _atomic_serialise(path, pytree) -> None:
+    """``eqx.tree_serialise_leaves`` to ``path`` ATOMICALLY (write to a sibling
+    temp file then ``os.replace``), so a SIGKILL mid-write can never leave a
+    half-written resume artifact that would crash the resuming run."""
+    tmp = path + ".tmp"
+    eqx.tree_serialise_leaves(tmp, pytree)
+    os.replace(tmp, path)
+
+
+def _write_resume_checkpoint(checkpoint_dir, *, model, opt_state, rng_state,
+                             order, train_best_loss, train_recent, train_window,
+                             train_best_model, val_present, val_best_mae,
+                             val_finite_metrics, val_best_model, epoch, update,
+                             losses, aux_log, early_stopped) -> None:
+    """Write one resume checkpoint ATOMICALLY from PRE-CAPTURED state (WS5).
+
+    Persists everything needed to continue the per_molecule loop exactly where
+    it left off WITHOUT re-walking trained groups: the ``model`` / ``opt_state``
+    (the latter carries the adamw step count, so the LR schedule resumes), the
+    ``rng_state`` AND the per-epoch group ``order`` permutation (so the next
+    epoch shuffles the SAME sequence as a continuing run), both trackers' scalars
+    + best_model snapshots, and the accumulated ``losses`` / ``aux_log`` / loop
+    counters.
+
+    CRITICAL (WS5-RESUME-02 / WS5-SIG-1): every argument is a PRE-CAPTURED
+    epoch-boundary value (the caller snapshots ``rng.get_state()``,
+    ``list(order)``, the tracker scalars/``_recent``/models, ``list(losses)`` at
+    the LAST COMPLETED epoch). This function NEVER reaches into a live ``rng`` or
+    ``tracker`` whose fields advance mid-epoch, so a mid-epoch SIGTERM flush
+    writes a SELF-CONSISTENT (stale-but-exact) snapshot of the last completed
+    epoch -- never a torn one (advanced rng/losses paired with a stale epoch).
+
+    Each file is written to a ``.tmp`` sibling then ``os.replace``-d into place,
+    so the set is crash-consistent per-file. Does NOT write ``model.eqx`` (the
+    harness success signal): a mid-run dir is ``resume_state.pkl`` present +
+    ``model.eqx`` absent.
+
+    ``train_best_model`` / ``val_best_model`` are the captured best_model pytrees
+    (or ``None``); ``resume_best.eqx`` / ``resume_val_best.eqx`` are written ONLY
+    when the respective snapshot is present. ``val_present`` is True iff
+    validation ran (its scalars are then meaningful).
+    """
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    _atomic_serialise(os.path.join(checkpoint_dir, _RESUME_MODEL), model)
+    _atomic_serialise(os.path.join(checkpoint_dir, _RESUME_OPT_STATE), opt_state)
+
+    has_train_best = train_best_model is not None
+    if has_train_best:
+        _atomic_serialise(os.path.join(checkpoint_dir, _RESUME_BEST),
+                          train_best_model)
+    has_val_best = bool(val_present) and val_best_model is not None
+    if has_val_best:
+        _atomic_serialise(os.path.join(checkpoint_dir, _RESUME_VAL_BEST),
+                          val_best_model)
+
+    state = {
+        "epoch": int(epoch),
+        "update": int(update),
+        # The per-epoch group permutation captured at epoch boundary. Restoring
+        # it (then continuing rng.shuffle) reproduces the killed run's order.
+        "order": [int(x) for x in order],
+        # np.random.RandomState uses get_state()/set_state() (NOT the stdlib
+        # random getstate/setstate); the loop's rng is a RandomState.
+        "rng_state": rng_state,
+        # _BestModelTracker (train-loss best) scalars.
+        "best_loss": float(train_best_loss),
+        "_recent": list(train_recent),
+        "window": int(train_window),
+        "has_train_best": bool(has_train_best),
+        # _BestValidationTracker scalars (only meaningful when val ran).
+        "val_present": bool(val_present),
+        "best_mae": (float(val_best_mae) if val_present else None),
+        "_finite_metrics": (list(val_finite_metrics)
+                            if val_present else None),
+        "has_val_best": bool(has_val_best),
+        "losses": list(losses),
+        "aux_log": list(aux_log),
+        "early_stopped": bool(early_stopped),
+    }
+    state_path = os.path.join(checkpoint_dir, _RESUME_STATE)
+    tmp = state_path + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(state, f, protocol=4)
+    os.replace(tmp, state_path)
+
+
+def _load_resume_checkpoint(checkpoint_dir, *, model_skeleton,
+                            opt_state_skeleton) -> dict:
+    """Inverse of :func:`_write_resume_checkpoint` (WS5).
+
+    Deserialises ``resume_model.eqx`` / ``resume_opt_state.eqx`` against the
+    supplied skeletons (a freshly-init model + ``optimizer.init`` opt_state,
+    exactly the :func:`_build_model` skeleton pattern), rehydrates a
+    :class:`_BestModelTracker` and (when validation ran) a
+    :class:`_BestValidationTracker` INCLUDING their best_model snapshots from
+    ``resume_best.eqx`` / ``resume_val_best.eqx``, and returns a dict with keys:
+    ``model, opt_state, rng_state, order, train_tracker, val_tracker, epoch,
+    update, losses, aux_log, early_stopped``. ``val_tracker`` is ``None`` when
+    none was saved; ``order`` is the restored per-epoch group permutation.
+    """
+    with open(os.path.join(checkpoint_dir, _RESUME_STATE), "rb") as f:
+        state = pickle.load(f)  # noqa: S301 -- trusted, written by this codebase
+
+    model = eqx.tree_deserialise_leaves(
+        os.path.join(checkpoint_dir, _RESUME_MODEL), model_skeleton)
+    opt_state = eqx.tree_deserialise_leaves(
+        os.path.join(checkpoint_dir, _RESUME_OPT_STATE), opt_state_skeleton)
+
+    train_tracker = _BestModelTracker(window=int(state["window"]))
+    train_tracker.best_loss = float(state["best_loss"])
+    train_tracker._recent = list(state["_recent"])
+    if state.get("has_train_best"):
+        train_tracker.best_model = eqx.tree_deserialise_leaves(
+            os.path.join(checkpoint_dir, _RESUME_BEST), model_skeleton)
+
+    val_tracker = None
+    if state.get("val_present"):
+        val_tracker = _BestValidationTracker()
+        val_tracker.best_mae = (float(state["best_mae"])
+                                if state["best_mae"] is not None
+                                else float("inf"))
+        val_tracker._finite_metrics = list(state["_finite_metrics"] or [])
+        if state.get("has_val_best"):
+            val_tracker.best_model = eqx.tree_deserialise_leaves(
+                os.path.join(checkpoint_dir, _RESUME_VAL_BEST), model_skeleton)
+
+    return {
+        "model": model,
+        "opt_state": opt_state,
+        "rng_state": state["rng_state"],
+        "order": [int(x) for x in state["order"]],
+        "train_tracker": train_tracker,
+        "val_tracker": val_tracker,
+        "epoch": int(state["epoch"]),
+        "update": int(state["update"]),
+        "losses": list(state["losses"]),
+        "aux_log": list(state["aux_log"]),
+        "early_stopped": bool(state["early_stopped"]),
+    }
+
+
+def _has_resume_checkpoint(checkpoint_dir) -> bool:
+    """A resumable checkpoint is present iff ``resume_state.pkl`` exists AND the
+    run is NOT already complete (no ``completion.json`` / ``model.eqx``)."""
+    if os.path.isfile(os.path.join(checkpoint_dir, _COMPLETION_SENTINEL)):
+        return False
+    if os.path.isfile(os.path.join(checkpoint_dir, "model.eqx")):
+        return False
+    return os.path.isfile(os.path.join(checkpoint_dir, _RESUME_STATE))
+
+
+def _finalize_completion(checkpoint_dir, *, early_stopped, epochs_run) -> None:
+    """Mark a run COMPLETE (WS5/WS6): write the ``completion.json`` sentinel and
+    DELETE the ``resume_*`` set. Call AFTER ``_save_artifacts`` has written
+    ``model.eqx``. Deleting an absent resume file is tolerated (idempotent;
+    a checkpoint_every=0 run never wrote them)."""
+    sentinel = {
+        "completed": True,
+        "early_stopped": bool(early_stopped),
+        "epochs_run": int(epochs_run),
+    }
+    with open(os.path.join(checkpoint_dir, _COMPLETION_SENTINEL), "w") as f:
+        json.dump(sentinel, f, indent=2)
+    for fn in _RESUME_FILES:
+        try:
+            os.remove(os.path.join(checkpoint_dir, fn))
+        except FileNotFoundError:
+            pass
+
+
+# Module-level resume-flusher holder. The per_molecule loop registers a
+# zero-arg flush fn (writes the live resume checkpoint); the worker's SIGTERM
+# handler calls it best-effort before exiting so an in-flight epoch is not lost
+# between periodic checkpoints. A single-slot holder is sufficient: one training
+# loop runs per worker process.
+_RESUME_FLUSHER = None
+
+
+def _register_resume_flusher(fn) -> None:
+    """Register the loop's zero-arg resume-flush fn (WS5)."""
+    global _RESUME_FLUSHER
+    _RESUME_FLUSHER = fn
+
+
+def _clear_resume_flusher() -> None:
+    """Clear the registered resume-flush fn (WS5)."""
+    global _RESUME_FLUSHER
+    _RESUME_FLUSHER = None
+
+
+def _get_resume_flusher():
+    """Return the registered resume-flush fn, or ``None`` (WS5)."""
+    return _RESUME_FLUSHER
+
+
+# ---------------------------------------------------------------------------
 # Training loop strategies
 # ---------------------------------------------------------------------------
 
@@ -1029,6 +1256,12 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     progress_hook = _adapt_progress_callback(
         progress_callback, arch=spec.arch.name, phase="train")
 
+    # WS5: periodic-resume checkpointing. checkpoint_every<=0 (default) => the
+    # whole mechanism is OFF and the loop below is byte-identical to pre-WS5.
+    checkpoint_every = int(getattr(spec, "checkpoint_every", 0))
+    resume_enabled = checkpoint_every > 0
+    checkpoint_dir = spec.checkpoint_dir
+
     @eqx.filter_jit
     def _step(model, opt_state, gbatch, gloss):
         def scalar_loss(m):
@@ -1068,66 +1301,202 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                          or spec.solver_config)
     early_stopped = False
     epochs_run = 0
-    for epoch in range(n_epochs):
-        rng.shuffle(order)
-        for gi in order:
-            label, gloss, gbatch = prepared[gi]
-            model, opt_state, loss_val, comps = _step(
-                model, opt_state, gbatch, gloss)
-            loss_py = float(loss_val)
-            _abort_if_nonfinite(loss_val, comps, loop="per_molecule",
-                                step=update, group=label)
-            losses_list.append(loss_py)
-            tracker.update(loss_py, model)
-            aux_log.append({
-                "step": update, "epoch": epoch, "group": label,
-                "loss": loss_py,
-                "aux": {k: float(v) for k, v in comps.items()},
-                "update_scheme": "per_molecule",
-            })
-            update += 1
-        epochs_run = epoch + 1
-        if progress_hook is not None:
-            progress_hook(epoch + 1, n_epochs, loss_py)
-        # Validation check every `validate_every` epochs.
-        if val_enabled and (epoch + 1) % val_every == 0:
-            val_mae = _validation_reaction_mae(
-                model, val_mol_data, val_reactions,
-                solver_config=val_solver_config)
-            val_tracker.update(val_mae, model)
-            aux_log.append({
-                "step": update, "epoch": epoch, "group": "__validation__",
-                "val_mae_kcalmol": (float(val_mae)
-                                    if np.isfinite(val_mae) else None),
-                "update_scheme": "per_molecule",
-            })
-            if val_tracker.should_stop(spec.patience, spec.early_stop_min_delta):
-                early_stopped = True
-                break
 
-    duration = time.time() - t0
-    # FIX 3 (WS3-ESV-1): only emit the validation extras when validation ran;
-    # a per_molecule run with validate_every=0 then writes the PRE-WS3 metadata
-    # key set byte-identically (no early_stopped / val_* keys).
-    extra_metadata = None
-    val_best_model = None
-    if val_enabled:
-        extra_metadata = {
-            "epochs_run": epochs_run,
-            "n_epochs_configured": n_epochs,
-            "early_stopped": early_stopped,
-            "validate_every": val_every,
-            "patience": int(getattr(spec, "patience", 0)),
-            "val_best_mae": (float(val_tracker.best_mae)
-                             if val_tracker is not None
-                             and np.isfinite(val_tracker.best_mae) else None),
-        }
-        val_best_model = val_tracker.best_model
-    return _save_artifacts(
-        spec, model, losses_list, aux_log, duration,
-        best_model=tracker.best_model,
-        val_best_model=val_best_model,
-        extra_metadata=extra_metadata)
+    # WS5: RESUME from the last checkpoint if one is present and the run is not
+    # already complete. The opt_state skeleton is the fresh-init opt_state above;
+    # the model skeleton is the current (fresh/pretrained) model. Restoring
+    # opt_state carries the adamw step count so the LR schedule continues;
+    # restoring rng_state AND the per-epoch `order` permutation makes the next
+    # epoch shuffle identically to a never-killed run (a multi-group epoch's
+    # shuffle result depends on BOTH the rng draws AND the array's starting
+    # arrangement, so `order` MUST be restored to the killed run's last
+    # permutation -- see WS5-RESUME-01). start_epoch = saved epoch (1-based
+    # count) -> range resumes at the NEXT epoch index without re-walking groups.
+    #
+    # WS5-SIG-3: the load is GUARDED. A corrupt/truncated resume_state.pkl or a
+    # missing resume_*.eqx must not crash the task -- on ANY load error we log a
+    # warning and START FRESH (treat as no resume). The whole restore is staged
+    # through `restored` (one call) and applied only on success, so a failed load
+    # never leaves half-restored state.
+    start_epoch = 0
+    if resume_enabled and _has_resume_checkpoint(checkpoint_dir):
+        try:
+            restored = _load_resume_checkpoint(
+                checkpoint_dir, model_skeleton=model, opt_state_skeleton=opt_state)
+        except Exception as exc:  # noqa: BLE001 -- corrupt ckpt -> start fresh
+            warnings.warn(
+                f"WS5: could not load resume checkpoint in {checkpoint_dir} "
+                f"({type(exc).__name__}: {exc}); starting training FRESH.",
+                RuntimeWarning, stacklevel=2,
+            )
+        else:
+            model = restored["model"]
+            opt_state = restored["opt_state"]
+            rng.set_state(restored["rng_state"])
+            order[:] = restored["order"]     # continue the killed run's perm
+            tracker = restored["train_tracker"]
+            losses_list = restored["losses"]
+            aux_log = restored["aux_log"]
+            early_stopped = restored["early_stopped"]
+            update = restored["update"]
+            start_epoch = restored["epoch"]      # 1-based completed-epoch count
+            epochs_run = restored["epoch"]
+            if val_enabled and restored["val_tracker"] is not None:
+                val_tracker = restored["val_tracker"]
+
+    # WS5: an epoch-boundary SNAPSHOT of the loop state for the SIGTERM flush. The
+    # worker's signal handler calls _flush_live() (registered below) to write a
+    # resume checkpoint. CRITICAL (WS5-RESUME-02/WS5-SIG-1): _live holds PLAIN
+    # COPIES captured ONLY at epoch boundaries -- NEVER advanced mid-epoch. So a
+    # mid-epoch flush writes the LAST COMPLETED epoch's self-consistent snapshot
+    # (stale but exact-on-resume), never a TORN one (advanced rng/losses paired
+    # with a stale epoch/model). _capture_live() is the single boundary-copy
+    # point; it is called to seed _live before the loop and again at each epoch
+    # end. Seeded with the resume/initial state so a flush before the first epoch
+    # completes still writes a consistent (no-progress) checkpoint.
+    _live: dict = {}
+
+    def _capture_live():
+        """Snapshot the CURRENT (epoch-boundary) loop state into _live as plain
+        copies. Must only be called when the state is self-consistent (before the
+        loop, or at an epoch end), never mid-epoch."""
+        _live["model"] = model
+        _live["opt_state"] = opt_state
+        _live["rng_state"] = rng.get_state()
+        _live["order"] = list(order)
+        _live["epoch"] = epochs_run
+        _live["update"] = update
+        _live["losses"] = list(losses_list)
+        _live["aux_log"] = list(aux_log)
+        _live["early_stopped"] = early_stopped
+        _live["train_best_loss"] = tracker.best_loss
+        _live["train_recent"] = list(tracker._recent)
+        _live["train_window"] = tracker.window
+        _live["train_best_model"] = tracker.best_model
+        _live["val_present"] = val_tracker is not None
+        _live["val_best_mae"] = (val_tracker.best_mae
+                                 if val_tracker is not None else None)
+        _live["val_finite_metrics"] = (list(val_tracker._finite_metrics)
+                                       if val_tracker is not None else None)
+        _live["val_best_model"] = (val_tracker.best_model
+                                   if val_tracker is not None else None)
+
+    def _flush_live():
+        if not resume_enabled or not _live:
+            return
+        _write_resume_checkpoint(
+            checkpoint_dir, model=_live["model"], opt_state=_live["opt_state"],
+            rng_state=_live["rng_state"], order=_live["order"],
+            train_best_loss=_live["train_best_loss"],
+            train_recent=_live["train_recent"],
+            train_window=_live["train_window"],
+            train_best_model=_live["train_best_model"],
+            val_present=_live["val_present"], val_best_mae=_live["val_best_mae"],
+            val_finite_metrics=_live["val_finite_metrics"],
+            val_best_model=_live["val_best_model"],
+            epoch=_live["epoch"], update=_live["update"],
+            losses=_live["losses"], aux_log=_live["aux_log"],
+            early_stopped=_live["early_stopped"])
+
+    if resume_enabled:
+        _capture_live()                  # seed with the resume/initial boundary
+        _register_resume_flusher(_flush_live)
+
+    # WS5-SIG-2/SIG-5: the epoch loop AND the completion sequence run under a
+    # try/finally that ALWAYS clears the registered flusher -- a raised exception
+    # (e.g. _abort_if_nonfinite) or an interrupt during _save_artifacts must not
+    # leave a stale flusher pointing at a finished/aborted dir for the next run in
+    # the same process.
+    try:
+        for epoch in range(start_epoch, n_epochs):
+            rng.shuffle(order)
+            for gi in order:
+                label, gloss, gbatch = prepared[gi]
+                model, opt_state, loss_val, comps = _step(
+                    model, opt_state, gbatch, gloss)
+                loss_py = float(loss_val)
+                _abort_if_nonfinite(loss_val, comps, loop="per_molecule",
+                                    step=update, group=label)
+                losses_list.append(loss_py)
+                tracker.update(loss_py, model)
+                aux_log.append({
+                    "step": update, "epoch": epoch, "group": label,
+                    "loss": loss_py,
+                    "aux": {k: float(v) for k, v in comps.items()},
+                    "update_scheme": "per_molecule",
+                })
+                update += 1
+            epochs_run = epoch + 1
+            if progress_hook is not None:
+                progress_hook(epoch + 1, n_epochs, loss_py)
+            # Validation check every `validate_every` epochs.
+            if val_enabled and (epoch + 1) % val_every == 0:
+                val_mae = _validation_reaction_mae(
+                    model, val_mol_data, val_reactions,
+                    solver_config=val_solver_config)
+                val_tracker.update(val_mae, model)
+                aux_log.append({
+                    "step": update, "epoch": epoch, "group": "__validation__",
+                    "val_mae_kcalmol": (float(val_mae)
+                                        if np.isfinite(val_mae) else None),
+                    "update_scheme": "per_molecule",
+                })
+                if val_tracker.should_stop(spec.patience,
+                                           spec.early_stop_min_delta):
+                    early_stopped = True
+                    # Capture the early-stop boundary before leaving the loop so
+                    # a flush in flight reflects it.
+                    if resume_enabled:
+                        _capture_live()
+                    break
+            # WS5: snapshot the JUST-COMPLETED epoch into _live (for the SIGTERM
+            # flush) and write a PERIODIC resume checkpoint every checkpoint_every
+            # epochs. epoch is 0-based; epochs_run = epoch+1 is the completed
+            # count persisted as `epoch` so resume continues at
+            # range(epochs_run, n_epochs). `order` now holds THIS epoch's
+            # permutation -- the arrangement the resumed run must shuffle FROM.
+            if resume_enabled:
+                _capture_live()
+                if epochs_run % checkpoint_every == 0:
+                    _flush_live()
+
+        duration = time.time() - t0
+        # FIX 3 (WS3-ESV-1): only emit the validation extras when validation ran;
+        # a per_molecule run with validate_every=0 then writes the PRE-WS3
+        # metadata key set byte-identically (no early_stopped / val_* keys).
+        extra_metadata = None
+        val_best_model = None
+        if val_enabled:
+            extra_metadata = {
+                "epochs_run": epochs_run,
+                "n_epochs_configured": n_epochs,
+                "early_stopped": early_stopped,
+                "validate_every": val_every,
+                "patience": int(getattr(spec, "patience", 0)),
+                "val_best_mae": (float(val_tracker.best_mae)
+                                 if val_tracker is not None
+                                 and np.isfinite(val_tracker.best_mae)
+                                 else None),
+            }
+            val_best_model = val_tracker.best_model
+        metadata = _save_artifacts(
+            spec, model, losses_list, aux_log, duration,
+            best_model=tracker.best_model,
+            val_best_model=val_best_model,
+            extra_metadata=extra_metadata)
+        # WS5/WS6: the run is COMPLETE (clean or early-stopped). _save_artifacts
+        # has written model.eqx (the harness success signal); now drop the
+        # completion.json sentinel and delete the resume_* set. No-op cleanup when
+        # checkpoint_every<=0 (no resume files were ever written).
+        if resume_enabled:
+            _finalize_completion(checkpoint_dir, early_stopped=early_stopped,
+                                 epochs_run=epochs_run)
+    finally:
+        # ALWAYS clear the flusher: on clean return, on early-stop, or on a raised
+        # exception. A stale flusher must never survive into the next run.
+        if resume_enabled:
+            _clear_resume_flusher()
+    return metadata
 
 
 # ---------------------------------------------------------------------------

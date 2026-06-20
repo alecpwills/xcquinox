@@ -36,8 +36,41 @@ import argparse
 import importlib
 import json
 import os
+import signal
 import sys
 import time
+
+
+def _flush_on_signal() -> None:
+    """Best-effort: invoke the per_molecule loop's registered resume flusher
+    (WS5) so the in-flight epoch is checkpointed when SLURM sends its wall-clock
+    pre-kill SIGTERM. Periodic checkpoints are the PRIMARY net, so any failure
+    here is swallowed -- a partial/failed flush must never mask the exit. A
+    no-op when no flusher is registered (checkpoint_every=0, or not yet inside
+    the training loop)."""
+    try:
+        # Lazy import: by the time a SIGTERM lands during training, train (and
+        # jax) are already imported; importing here avoids pulling jax before
+        # main()'s device routing runs.
+        from xcquinox.alec import train as _train
+        flusher = _train._get_resume_flusher()
+        if flusher is not None:
+            flusher()
+    except Exception:  # noqa: BLE001 -- best-effort; never mask the signal exit
+        pass
+
+
+def _install_sigterm_flush_handler():
+    """Install the WS5 SIGTERM handler and return it (so tests can confirm it via
+    ``signal.getsignal``). The handler flushes the resume checkpoint best-effort
+    then exits 143 (128+15), the POSIX SIGTERM exit code the parent
+    ``cluster/_train_task.py`` already expects."""
+    def _handler(signum, frame):  # noqa: ARG001 -- signal-handler signature
+        _flush_on_signal()
+        sys.exit(143)
+
+    signal.signal(signal.SIGTERM, _handler)
+    return _handler
 
 
 def _load_spec(path):
@@ -122,6 +155,11 @@ def main(argv=None) -> int:
     import xcquinox.alec as alec  # noqa: E402
 
     cb = None if args.no_progress else _progress_callback
+    # WS5: install the SIGTERM flush handler so a SLURM wall-clock pre-kill
+    # checkpoints the in-flight epoch (best-effort; periodic checkpoints written
+    # by the per_molecule loop every checkpoint_every epochs are the primary
+    # net). A no-op for runs with checkpoint_every=0 (no flusher registered).
+    _install_sigterm_flush_handler()
     t0 = time.time()
     alec.run_training(spec, progress_callback=cb)
     sys.stdout.write(

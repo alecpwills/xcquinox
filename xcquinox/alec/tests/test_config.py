@@ -447,6 +447,31 @@ def test_training_spec_validation_fields_default_empty():
     assert spec.validate_every == 0
     assert spec.patience == 0
     assert spec.early_stop_min_delta == 0.0
+    # WS5 (2026-06-20): periodic-resume checkpoint cadence defaults to a NO-OP
+    # (0 => no resume_* writes), so existing specs stay byte-identical.
+    assert spec.checkpoint_every == 0
+
+
+def test_training_spec_checkpoint_every_override():
+    """WS5: checkpoint_every overrides to a positive cadence (epochs between
+    periodic resume checkpoints in the per_molecule loop)."""
+    from xcquinox.alec.config import TrainingSpec, ArchitectureConfig, MoleculeSpec
+
+    arch = ArchitectureConfig(
+        name="t", depth=2, nodes=8, attention=False,
+        descriptors=(), x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+    mols = (MoleculeSpec(
+        name="H", atom="H 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("H", 1),),
+    ),)
+    spec = TrainingSpec(
+        arch=arch, molecules=mols,
+        targets=(("H", 0.0),), atom_energies=(("H", -0.5),),
+        loss_name="A_atomization", checkpoint_every=7,
+    )
+    assert spec.checkpoint_every == 7
 
 
 def test_test_spec_default_solver_config_is_none():

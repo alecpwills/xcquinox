@@ -847,6 +847,26 @@ def test_hyperparams_validation_knobs_override():
     assert hp.early_stop_min_delta == 0.01
 
 
+# WS5 (2026-06-20): periodic-resume checkpoint cadence; default 0 => no-op so
+# existing sweeps stay byte-identical.
+def test_hyperparams_checkpoint_every_default_noop():
+    from xcquinox.alec.cluster.grid_config import _build_hyperparams
+    base = {"n_steps": 1, "lr_start": 1e-2, "lr_end": 1e-5,
+            "lr_decay_start": 0.2, "grad_clip": 1.0, "gradnorm_alpha": 1.5,
+            "vxc_weight": 0.01, "density_weight": 0.1}
+    hp = _build_hyperparams(dict(base))
+    assert hp.checkpoint_every == 0
+
+
+def test_hyperparams_checkpoint_every_override():
+    from xcquinox.alec.cluster.grid_config import _build_hyperparams
+    base = {"n_steps": 1, "lr_start": 1e-2, "lr_end": 1e-5,
+            "lr_decay_start": 0.2, "grad_clip": 1.0, "gradnorm_alpha": 1.5,
+            "vxc_weight": 0.01, "density_weight": 0.1}
+    hp = _build_hyperparams(dict(base, checkpoint_every=25))
+    assert hp.checkpoint_every == 25
+
+
 def test_inputs_val_refs_dir_optional_default_none():
     from xcquinox.alec.cluster.grid_config import _build_inputs
     base = {"external_refs_dir": "/refs", "subset_ledger_path": "/led.json",

@@ -453,6 +453,33 @@ def test_build_training_specs_threads_validation_knobs(tmp_path):
         assert spec.early_stop_min_delta == pytest.approx(0.02)
 
 
+def test_build_training_specs_checkpoint_every_default_noop(tmp_path):
+    """WS5: checkpoint_every stays at its no-op default (0) on each spec when not
+    configured, so existing runs stay byte-identical."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    for _cell, spec in out:
+        assert spec.checkpoint_every == 0
+
+
+def test_build_training_specs_threads_checkpoint_every(tmp_path):
+    """WS5: checkpoint_every flows from HyperParams onto every TrainingSpec
+    (mirrors weight_decay / validate_every threading)."""
+    import dataclasses
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    hp = dataclasses.replace(cfg.hyperparams, checkpoint_every=12)
+    cfg = dataclasses.replace(cfg, hyperparams=hp)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    for _cell, spec in out:
+        assert spec.checkpoint_every == 12
+
+
 def test_attach_validation_slice_noop_without_config(tmp_path):
     """WS3: _attach_validation_slice is a no-op (spec unchanged) when there is no
     val_refs_dir, or validation is disabled, or val_reactions.json is absent."""

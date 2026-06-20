@@ -301,6 +301,77 @@ def test_write_failure_json_is_atomic_and_leaves_no_tmp(run_dir):
     assert os.path.exists(os.path.join(d, "failure.json"))
 
 
+class _FakeChild:
+    """A subprocess.Popen stand-in recording terminate()/wait() ordering."""
+    def __init__(self, alive=True):
+        self._alive = alive
+        self.events = []
+        self.wait_timeout = None
+
+    def poll(self):
+        return None if self._alive else 0
+
+    def terminate(self):
+        self.events.append("terminate")
+        # The real child does NOT die instantly; it keeps running (flushing).
+
+    def wait(self, timeout=None):
+        self.events.append(("wait", timeout))
+        self.wait_timeout = timeout
+        self._alive = False
+        return 0
+
+
+def test_sigterm_handler_waits_for_child_flush(run_dir, monkeypatch):
+    """WS5-SIG-4: after delivering SIGTERM to the worker, the parent handler must
+    `child.wait(timeout=...)` so the worker's best-effort resume flush can
+    finish before the parent exits 143 (otherwise the flush is cut off). FAILS
+    before the fix (the handler only terminate()s, never waits)."""
+    original = signal.getsignal(signal.SIGTERM)
+    child = _FakeChild(alive=True)
+    monkeypatch.setattr(tt, "_ACTIVE_CHILD", child)
+    try:
+        handler = tt._install_sigterm_handler(run_dir, 0)
+        with pytest.raises(SystemExit) as ei:
+            handler(signal.SIGTERM, None)
+        assert ei.value.code == 143
+    finally:
+        signal.signal(signal.SIGTERM, original)
+    # terminate() THEN a bounded wait(timeout=positive) -- in that order.
+    assert child.events[0] == "terminate"
+    assert any(isinstance(e, tuple) and e[0] == "wait" for e in child.events)
+    assert child.wait_timeout is not None and child.wait_timeout > 0
+    # ordering: the wait happens AFTER the terminate.
+    wait_idx = next(i for i, e in enumerate(child.events)
+                    if isinstance(e, tuple) and e[0] == "wait")
+    assert wait_idx > child.events.index("terminate")
+
+
+def test_sigterm_handler_wait_timeout_is_survivable(run_dir, monkeypatch):
+    """WS5-SIG-4: a child that overruns the bounded wait (TimeoutExpired) must NOT
+    crash the handler -- it still records the failure and exits 143."""
+    original = signal.getsignal(signal.SIGTERM)
+
+    class _SlowChild(_FakeChild):
+        def wait(self, timeout=None):
+            self.events.append(("wait", timeout))
+            self.wait_timeout = timeout
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+
+    child = _SlowChild(alive=True)
+    monkeypatch.setattr(tt, "_ACTIVE_CHILD", child)
+    try:
+        handler = tt._install_sigterm_handler(run_dir, 0)
+        with pytest.raises(SystemExit) as ei:
+            handler(signal.SIGTERM, None)
+        assert ei.value.code == 143
+    finally:
+        signal.signal(signal.SIGTERM, original)
+    # The failure.json is still written despite the wait timing out.
+    failure = _read_failure(run_dir, 0)
+    assert failure["classification"] == "killed_by_signal"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
 

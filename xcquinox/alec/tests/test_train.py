@@ -1420,3 +1420,797 @@ def test_build_optimizer_weight_decay_defaults_to_zero():
                           lr_decay_start=0.0, grad_clip=1e9)
     updates, _ = opt.update({"w": jnp.zeros((3,))}, opt.init(params), params)
     assert float(optax.apply_updates(params, updates)["w"][0]) == 1.0
+
+
+# ---------------------------------------------------------------------------
+# WS5 (2026-06-20): RESUMABLE per_molecule training -- resume checkpoint
+# serialization helpers (PySCF-free; tiny real AlecGGAModel + optax state).
+# ---------------------------------------------------------------------------
+
+def _tiny_model_and_opt(seed=3, n_advance=2):
+    """Build a tiny real AlecGGAModel + an advanced optax opt_state (the adamw
+    step count > 0 so the round-trip exercises the LR-schedule resume). Returns
+    (model, opt_state, optimizer).
+
+    The optimizer is advanced with a deterministic ones-shaped gradient pytree
+    (no model forward pass needed -- this exercises the SAME optax.update path
+    the real loop uses and produces non-trivial adam moments + a non-zero step
+    count, which is all the resume round-trip needs)."""
+    import equinox as eqx
+    import jax.tree_util as jtu
+    import jax.numpy as jnp
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.train import build_optimizer
+
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=seed)
+    optimizer = build_optimizer(lr_start=1e-3, lr_end=1e-5, n_steps=10,
+                                lr_decay_start=0.0, grad_clip=1.0)
+    params = eqx.filter(model, eqx.is_array)
+    opt_state = optimizer.init(params)
+    for _ in range(n_advance):
+        grads = jtu.tree_map(lambda a: jnp.ones_like(a) * 0.01, params)
+        updates, opt_state = optimizer.update(grads, opt_state, params)
+        model = eqx.apply_updates(model, updates)
+        params = eqx.filter(model, eqx.is_array)
+    return model, opt_state, optimizer
+
+
+def _opt_step_count(opt_state):
+    """Extract the adamw scalar step count from an optax opt_state pytree."""
+    import jax.tree_util as jtu
+    import numpy as _np
+    for leaf in jtu.tree_leaves(opt_state):
+        a = _np.asarray(leaf)
+        if a.dtype.kind in "iu" and a.ndim == 0:
+            return int(a)
+    raise AssertionError("no scalar int count leaf in opt_state")
+
+
+def test_write_then_load_resume_checkpoint_roundtrip(tmp_path):
+    """WS5: _write_resume_checkpoint then _load_resume_checkpoint restores the
+    model arrays, opt_state (incl. adamw step count), RNG state, both trackers'
+    scalars + their best_model snapshots, epoch/update/losses/aux exactly."""
+    import equinox as eqx
+    import jax.tree_util as jtu
+    import numpy as _np
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.train import (
+        _write_resume_checkpoint, _load_resume_checkpoint,
+        _BestModelTracker, _BestValidationTracker, build_optimizer,
+    )
+
+    model, opt_state, optimizer = _tiny_model_and_opt(seed=3, n_advance=3)
+
+    # Trackers carrying DISTINCT best_model snapshots (a different seed) so a
+    # mix-up between train-best and val-best would be detectable.
+    tt = _BestModelTracker(window=2)
+    tt.best_loss = 0.123
+    tt._recent = [0.5, 0.123]
+    train_best = AlecGGAModel.from_arch(_make_arch(), seed=11)
+    tt.best_model = train_best
+
+    vt = _BestValidationTracker()
+    vt.best_mae = 7.5
+    vt._finite_metrics = [9.0, 7.5, 8.0]
+    val_best = AlecGGAModel.from_arch(_make_arch(), seed=22)
+    vt.best_model = val_best
+
+    rng = _np.random.RandomState(42)
+    rng.shuffle(_np.arange(5))      # advance the RNG so its state is non-initial
+    rng_state = rng.get_state()
+    order = [2, 0, 1]
+    losses = [0.5, 0.4, 0.123]
+    aux = [{"step": 0, "loss": 0.5}, {"step": 1, "loss": 0.4}]
+
+    _write_resume_checkpoint(
+        str(tmp_path), model=model, opt_state=opt_state, rng_state=rng_state,
+        order=order,
+        train_best_loss=tt.best_loss, train_recent=list(tt._recent),
+        train_window=tt.window, train_best_model=tt.best_model,
+        val_present=True, val_best_mae=vt.best_mae,
+        val_finite_metrics=list(vt._finite_metrics), val_best_model=vt.best_model,
+        epoch=4, update=12, losses=losses, aux_log=aux, early_stopped=False)
+
+    # the resume_* set exists.
+    for fn in ("resume_model.eqx", "resume_opt_state.eqx", "resume_best.eqx",
+               "resume_val_best.eqx", "resume_state.pkl"):
+        assert os.path.isfile(os.path.join(str(tmp_path), fn)), fn
+
+    # Build the skeletons the loader needs (fresh init).
+    model_skel = AlecGGAModel.from_arch(_make_arch(), seed=999)
+    opt_skel = optimizer.init(eqx.filter(model_skel, eqx.is_array))
+    out = _load_resume_checkpoint(
+        str(tmp_path), model_skeleton=model_skel, opt_state_skeleton=opt_skel)
+
+    # model arrays equal.
+    a1 = [_np.asarray(x) for x in jtu.tree_leaves(eqx.filter(model, eqx.is_array))]
+    a2 = [_np.asarray(x) for x in
+          jtu.tree_leaves(eqx.filter(out["model"], eqx.is_array))]
+    assert len(a1) == len(a2) and all(_np.allclose(x, y) for x, y in zip(a1, a2))
+
+    # opt_state equal incl. step count.
+    assert _opt_step_count(out["opt_state"]) == _opt_step_count(opt_state) == 3
+    o1 = [_np.asarray(x) for x in jtu.tree_leaves(opt_state)]
+    o2 = [_np.asarray(x) for x in jtu.tree_leaves(out["opt_state"])]
+    assert all(_np.allclose(x, y) for x, y in zip(o1, o2))
+
+    # scalars + epoch/update/losses/aux/order.
+    assert out["epoch"] == 4
+    assert out["update"] == 12
+    assert out["order"] == order
+    assert out["losses"] == losses
+    assert out["aux_log"] == aux
+    assert out["early_stopped"] is False
+    # RandomState.get_state() is a tuple whose 2nd element is a uint32 key array;
+    # compare component-wise so the array doesn't trip ==-on-tuple ambiguity.
+    assert out["rng_state"][0] == rng_state[0]
+    assert _np.array_equal(out["rng_state"][1], rng_state[1])
+    assert out["rng_state"][2:] == rng_state[2:]
+
+    # trackers rehydrated incl. their (distinct) best_model snapshots.
+    rt = out["train_tracker"]
+    assert isinstance(rt, _BestModelTracker)
+    assert rt.best_loss == pytest.approx(0.123)
+    assert rt.window == 2 and rt._recent == [0.5, 0.123]
+    rv = out["val_tracker"]
+    assert isinstance(rv, _BestValidationTracker)
+    assert rv.best_mae == pytest.approx(7.5)
+    assert rv._finite_metrics == [9.0, 7.5, 8.0]
+
+    # train_best snapshot round-trips to the SAME arrays as the original
+    # train_best (and is NOT the val_best).
+    tb1 = [_np.asarray(x) for x in
+           jtu.tree_leaves(eqx.filter(train_best, eqx.is_array))]
+    tb2 = [_np.asarray(x) for x in
+           jtu.tree_leaves(eqx.filter(rt.best_model, eqx.is_array))]
+    assert all(_np.allclose(x, y) for x, y in zip(tb1, tb2))
+    vb1 = [_np.asarray(x) for x in
+           jtu.tree_leaves(eqx.filter(val_best, eqx.is_array))]
+    vb2 = [_np.asarray(x) for x in
+           jtu.tree_leaves(eqx.filter(rv.best_model, eqx.is_array))]
+    assert all(_np.allclose(x, y) for x, y in zip(vb1, vb2))
+    # train_best != val_best (distinct seeds) -> ensures no snapshot mix-up.
+    assert not all(_np.allclose(x, y) for x, y in zip(tb1, vb1))
+
+
+def test_resume_rng_state_restores_shuffle_sequence(tmp_path):
+    """WS5: a run that continues on the LIVE rng and a run that resumes from the
+    saved rng_state produce the SAME next shuffle order -- so resume does not
+    re-walk groups the killed run already trained on."""
+    import equinox as eqx
+    import numpy as _np
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.train import (
+        _write_resume_checkpoint, _load_resume_checkpoint, _BestModelTracker,
+    )
+    model, opt_state, optimizer = _tiny_model_and_opt(seed=1, n_advance=1)
+    rng = _np.random.RandomState(7)
+    order = _np.arange(6)
+    for _ in range(3):
+        rng.shuffle(order)         # mimic 3 completed epochs
+    rng_state = rng.get_state()    # captured at epoch boundary (pre-next-shuffle)
+
+    tt = _BestModelTracker(window=1)
+    _write_resume_checkpoint(
+        str(tmp_path), model=model, opt_state=opt_state, rng_state=rng_state,
+        order=list(order),
+        train_best_loss=tt.best_loss, train_recent=list(tt._recent),
+        train_window=tt.window, train_best_model=tt.best_model,
+        val_present=False, val_best_mae=None, val_finite_metrics=None,
+        val_best_model=None, epoch=3, update=18,
+        losses=[], aux_log=[], early_stopped=False)
+
+    # Continuing run: the live rng's NEXT shuffle (the epoch-4 order) applied to
+    # the SAME `order` arrangement the resumed run will restore.
+    cont = order.copy()
+    rng.shuffle(cont)
+
+    # Resumed run: rehydrate the rng AND `order` from the persisted state and
+    # take the next shuffle. This must match the continuing run exactly.
+    model_skel = AlecGGAModel.from_arch(_make_arch(), seed=2)
+    opt_skel = optimizer.init(eqx.filter(model_skel, eqx.is_array))
+    out = _load_resume_checkpoint(
+        str(tmp_path), model_skeleton=model_skel, opt_state_skeleton=opt_skel)
+    assert out["order"] == list(order)
+    resumed_rng = _np.random.RandomState(0)
+    resumed_rng.set_state(out["rng_state"])
+    resumed = _np.asarray(out["order"])
+    resumed_rng.shuffle(resumed)
+
+    assert list(cont) == list(resumed)
+
+
+def test_load_resume_checkpoint_without_optional_best_snapshots(tmp_path):
+    """WS5: when the trackers have NO best_model, resume_best.eqx /
+    resume_val_best.eqx are NOT written, and load rehydrates trackers with
+    best_model=None (and val_tracker=None when none was saved)."""
+    import equinox as eqx
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.train import (
+        _write_resume_checkpoint, _load_resume_checkpoint,
+        _BestModelTracker,
+    )
+    model, opt_state, optimizer = _tiny_model_and_opt(seed=4, n_advance=1)
+    tt = _BestModelTracker(window=3)   # best_model stays None
+    _write_resume_checkpoint(
+        str(tmp_path), model=model, opt_state=opt_state,
+        rng_state=__import__("numpy").random.RandomState(5).get_state(),
+        order=[0],
+        train_best_loss=tt.best_loss, train_recent=list(tt._recent),
+        train_window=tt.window, train_best_model=tt.best_model,
+        val_present=False, val_best_mae=None, val_finite_metrics=None,
+        val_best_model=None, epoch=0, update=3,
+        losses=[1.0], aux_log=[], early_stopped=False)
+    assert not os.path.isfile(os.path.join(str(tmp_path), "resume_best.eqx"))
+    assert not os.path.isfile(os.path.join(str(tmp_path), "resume_val_best.eqx"))
+    model_skel = AlecGGAModel.from_arch(_make_arch(), seed=6)
+    opt_skel = optimizer.init(eqx.filter(model_skel, eqx.is_array))
+    out = _load_resume_checkpoint(
+        str(tmp_path), model_skeleton=model_skel, opt_state_skeleton=opt_skel)
+    assert out["train_tracker"].best_model is None
+    assert out["val_tracker"] is None
+
+
+def test_finalize_completion_writes_sentinel_and_deletes_resume(tmp_path):
+    """WS5/WS6 contract: the completion helper writes completion.json
+    {completed, early_stopped, epochs_run} and DELETES the resume_* set (so a
+    completed dir has model.eqx + completion.json and NO resume_* files)."""
+    import json as _json
+    from xcquinox.alec.train import _finalize_completion
+
+    d = str(tmp_path)
+    # plant a full resume_* set + the model.eqx success signal.
+    for fn in ("resume_model.eqx", "resume_opt_state.eqx", "resume_best.eqx",
+               "resume_val_best.eqx", "resume_state.pkl", "model.eqx"):
+        with open(os.path.join(d, fn), "wb") as f:
+            f.write(b"x")
+    _finalize_completion(d, early_stopped=True, epochs_run=42)
+    # resume_* deleted, model.eqx untouched.
+    for fn in ("resume_model.eqx", "resume_opt_state.eqx", "resume_best.eqx",
+               "resume_val_best.eqx", "resume_state.pkl"):
+        assert not os.path.isfile(os.path.join(d, fn)), fn
+    assert os.path.isfile(os.path.join(d, "model.eqx"))
+    with open(os.path.join(d, "completion.json")) as f:
+        sentinel = _json.load(f)
+    assert sentinel == {"completed": True, "early_stopped": True,
+                        "epochs_run": 42}
+
+
+def test_finalize_completion_tolerates_missing_resume_files(tmp_path):
+    """WS5: completion cleanup is idempotent -- deleting an absent resume_* file
+    must not raise (checkpoint_every=0 runs never wrote them)."""
+    from xcquinox.alec.train import _finalize_completion
+    d = str(tmp_path)
+    _finalize_completion(d, early_stopped=False, epochs_run=3)  # no files present
+    assert os.path.isfile(os.path.join(d, "completion.json"))
+
+
+def test_has_resume_checkpoint_ignores_orphan_resume_next_to_model(tmp_path):
+    """WS5-SIG-5: a SIGTERM that lands AFTER model.eqx is written but BEFORE the
+    resume_* cleanup leaves orphan resume_* files next to model.eqx. This is
+    benign -- _has_resume_checkpoint must return False whenever model.eqx OR
+    completion.json is present, so the orphans are IGNORED (model.eqx wins) and
+    the dir is never re-resumed."""
+    from xcquinox.alec.train import _has_resume_checkpoint
+    d = str(tmp_path)
+    # resume_state.pkl alone -> resumable.
+    with open(os.path.join(d, "resume_state.pkl"), "wb") as f:
+        f.write(b"x")
+    assert _has_resume_checkpoint(d) is True
+    # model.eqx now present (orphan resume_state remains) -> NOT resumable.
+    with open(os.path.join(d, "model.eqx"), "wb") as f:
+        f.write(b"x")
+    assert _has_resume_checkpoint(d) is False
+    # completion.json also wins regardless of orphan resume_state.
+    os.remove(os.path.join(d, "model.eqx"))
+    with open(os.path.join(d, "completion.json"), "w") as f:
+        f.write("{}")
+    assert _has_resume_checkpoint(d) is False
+
+
+def test_resume_flusher_registry_register_and_clear():
+    """WS5: the module-level resume-flusher holder lets the SIGTERM handler in
+    the worker call the loop's flush fn. register/get/clear round-trips."""
+    from xcquinox.alec.train import (
+        _register_resume_flusher, _clear_resume_flusher, _get_resume_flusher,
+    )
+    _clear_resume_flusher()
+    assert _get_resume_flusher() is None
+    calls = []
+    _register_resume_flusher(lambda: calls.append(1))
+    f = _get_resume_flusher()
+    assert f is not None
+    f()
+    assert calls == [1]
+    _clear_resume_flusher()
+    assert _get_resume_flusher() is None
+
+
+# ---------------------------------------------------------------------------
+# WS5 (2026-06-20): RESUMABLE per_molecule loop -- end-to-end wiring.
+# checkpoint_every=0 byte-identity is PySCF-free-ish but still needs the live
+# loop; the resume-equivalence + completion tests use the live PySCF batch.
+# ---------------------------------------------------------------------------
+
+class _StopAfterEpochs(Exception):
+    """Sentinel: simulate a walltime kill after N completed epochs."""
+
+
+def _interrupt_after(n_epochs_before_kill):
+    """A progress callback that raises _StopAfterEpochs once the loop reports it
+    has finished ``n_epochs_before_kill`` epochs (the periodic resume checkpoint
+    for that epoch is already on disk by the time the hook fires)."""
+    def _cb(info):
+        if int(info.get("step", 0)) >= n_epochs_before_kill:
+            raise _StopAfterEpochs(info["step"])
+    return _cb
+
+
+def _model_leaves(path):
+    """Load model.eqx arrays as a flat list of numpy arrays for fp comparison."""
+    import equinox as eqx
+    import jax.tree_util as jtu
+    import numpy as _np
+    from xcquinox.alec.models import AlecGGAModel
+    skel = AlecGGAModel.from_arch(_make_arch(), seed=12345)
+    m = eqx.tree_deserialise_leaves(path, skel)
+    return [_np.asarray(x) for x in jtu.tree_leaves(eqx.filter(m, eqx.is_array))]
+
+
+@pytest.mark.slow
+def test_per_molecule_checkpoint_every_zero_writes_no_resume_files(
+        training_batch_info):
+    """WS5 byte-identity: checkpoint_every=0 (default) writes NONE of the
+    resume_* files and NO completion.json -- the loop is byte-identical to the
+    pre-WS5 per_molecule loop."""
+    from xcquinox.alec.train import run_training
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=3, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False)   # checkpoint_every defaults to 0
+        assert spec.checkpoint_every == 0
+        run_training(spec)
+        d = spec.checkpoint_dir
+        for fn in ("resume_model.eqx", "resume_opt_state.eqx", "resume_best.eqx",
+                   "resume_val_best.eqx", "resume_state.pkl", "completion.json"):
+            assert not os.path.isfile(os.path.join(d, fn)), fn
+        # the normal artifacts are still written.
+        assert os.path.isfile(os.path.join(d, "model.eqx"))
+        assert os.path.isfile(os.path.join(d, "model_best.eqx"))
+
+
+@pytest.mark.slow
+def test_per_molecule_completion_writes_sentinel_and_clears_resume(
+        training_batch_info):
+    """WS5/WS6: a clean run with checkpoint_every>0 ends with model.eqx +
+    completion.json present and ALL resume_* files deleted."""
+    import json as _json
+    from xcquinox.alec.train import run_training
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=3, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False, checkpoint_every=1)
+        run_training(spec)
+        d = spec.checkpoint_dir
+        assert os.path.isfile(os.path.join(d, "model.eqx"))
+        for fn in ("resume_model.eqx", "resume_opt_state.eqx", "resume_best.eqx",
+                   "resume_val_best.eqx", "resume_state.pkl"):
+            assert not os.path.isfile(os.path.join(d, fn)), fn
+        with open(os.path.join(d, "completion.json")) as f:
+            sentinel = _json.load(f)
+        assert sentinel["completed"] is True
+        assert sentinel["early_stopped"] is False
+        assert sentinel["epochs_run"] == 3
+
+
+@pytest.mark.slow
+def test_per_molecule_resume_finishes_and_matches_uninterrupted(
+        training_batch_info):
+    """WS5 CORE: a run killed after 2 of 5 epochs RESUMES from its periodic
+    checkpoint and FINISHES; the final model is identical (fp tolerance) to a
+    from-scratch uninterrupted run with the same seed."""
+    from xcquinox.alec.train import run_training
+    import numpy as _np
+
+    # (A) Reference: a clean 5-epoch run in its own dir.
+    with tempfile.TemporaryDirectory() as ref_dir:
+        ref_spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=5, tmpdir=ref_dir, update_scheme="per_molecule",
+            require_atom_anchors=False, checkpoint_every=1)
+        run_training(ref_spec)
+        ref_leaves = _model_leaves(
+            os.path.join(ref_spec.checkpoint_dir, "model.eqx"))
+
+        # (B) Interrupted run: SAME seed, SAME checkpoint_dir, killed after 2
+        # epochs, then re-entered to finish.
+        with tempfile.TemporaryDirectory() as run_dir:
+            spec = _make_live_spec(
+                training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+                n_steps=5, tmpdir=run_dir, update_scheme="per_molecule",
+                require_atom_anchors=False, checkpoint_every=1)
+            with pytest.raises(_StopAfterEpochs):
+                run_training(spec, progress_callback=_interrupt_after(2))
+            d = spec.checkpoint_dir
+            # mid-run: resume present, NO success signal yet.
+            assert os.path.isfile(os.path.join(d, "resume_state.pkl"))
+            assert not os.path.isfile(os.path.join(d, "model.eqx"))
+            assert not os.path.isfile(os.path.join(d, "completion.json"))
+
+            # Re-enter the SAME spec; the loop resumes from epoch 2 and finishes.
+            run_training(spec)
+            assert os.path.isfile(os.path.join(d, "model.eqx"))
+            assert os.path.isfile(os.path.join(d, "completion.json"))
+            assert not os.path.isfile(os.path.join(d, "resume_state.pkl"))
+
+            resumed_leaves = _model_leaves(os.path.join(d, "model.eqx"))
+
+    assert len(ref_leaves) == len(resumed_leaves)
+    for a, b in zip(ref_leaves, resumed_leaves):
+        assert _np.allclose(a, b, rtol=1e-9, atol=1e-9)
+
+
+@pytest.mark.slow
+def test_per_molecule_completed_dir_does_not_resume(training_batch_info):
+    """WS5: a dir already carrying completion.json (+ model.eqx) is NOT resumed
+    -- re-running starts fresh (does not read the stale resume_state.pkl)."""
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.train import run_training
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=2, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False, checkpoint_every=1)
+        run_training(spec)             # completes -> completion.json present
+        d = spec.checkpoint_dir
+        assert os.path.isfile(os.path.join(d, "completion.json"))
+        # Plant a stale resume_state.pkl; because completion.json exists the loop
+        # MUST ignore it (start fresh) -- spy on _load_resume_checkpoint.
+        with open(os.path.join(d, "resume_state.pkl"), "wb") as f:
+            f.write(b"stale")
+        called = {"n": 0}
+        orig = train_mod._load_resume_checkpoint
+
+        def _spy(*a, **k):
+            called["n"] += 1
+            return orig(*a, **k)
+        train_mod._load_resume_checkpoint = _spy
+        try:
+            run_training(spec)
+        finally:
+            train_mod._load_resume_checkpoint = orig
+        assert called["n"] == 0        # never attempted a resume load
+
+
+def test_resume_continues_lr_schedule_not_restart(tmp_path):
+    """WS5 step 5: the adamw step count restored from the resume checkpoint
+    drives the LR SCHEDULE forward -- the update applied right after resume uses
+    the CONTINUED-schedule learning rate (smaller, decayed), NOT the step-0 LR a
+    fresh restart would use. Proven by comparing the parameter delta of a
+    resumed step against a fresh-state step on the same gradient: with a decaying
+    schedule the resumed (later-step, lower-LR) update is strictly smaller."""
+    import equinox as eqx
+    import jax.numpy as jnp
+    import jax.tree_util as jtu
+    import numpy as _np
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.train import (
+        build_optimizer, _write_resume_checkpoint, _load_resume_checkpoint,
+        _BestModelTracker,
+    )
+
+    # A clearly-decaying schedule so step index materially changes the LR.
+    optimizer = build_optimizer(lr_start=1.0, lr_end=1e-4, n_steps=100,
+                                lr_decay_start=0.0, grad_clip=1e9)
+    model = AlecGGAModel.from_arch(_make_arch(), seed=8)
+    params = eqx.filter(model, eqx.is_array)
+    opt_state = optimizer.init(params)
+    # Advance MANY steps so the restored count maps to a much lower LR.
+    g = jtu.tree_map(lambda a: jnp.ones_like(a), params)
+    for _ in range(50):
+        upd, opt_state = optimizer.update(g, opt_state, params)
+        model = eqx.apply_updates(model, upd)
+        params = eqx.filter(model, eqx.is_array)
+
+    _tt = _BestModelTracker(window=1)
+    _write_resume_checkpoint(
+        str(tmp_path), model=model, opt_state=opt_state,
+        rng_state=_np.random.RandomState(0).get_state(), order=[0],
+        train_best_loss=_tt.best_loss, train_recent=list(_tt._recent),
+        train_window=_tt.window, train_best_model=_tt.best_model,
+        val_present=False, val_best_mae=None, val_finite_metrics=None,
+        val_best_model=None, epoch=50, update=50, losses=[], aux_log=[],
+        early_stopped=False)
+
+    skel = AlecGGAModel.from_arch(_make_arch(), seed=9)
+    opt_skel = optimizer.init(eqx.filter(skel, eqx.is_array))
+    out = _load_resume_checkpoint(
+        str(tmp_path), model_skeleton=skel, opt_state_skeleton=opt_skel)
+    assert _opt_step_count(out["opt_state"]) == 50
+
+    # One more update from the RESTORED state (step ~50 -> low LR).
+    p_resumed = eqx.filter(out["model"], eqx.is_array)
+    upd_resumed, _ = optimizer.update(g, out["opt_state"], p_resumed)
+    delta_resumed = max(
+        float(_np.max(_np.abs(_np.asarray(x))))
+        for x in jtu.tree_leaves(upd_resumed))
+
+    # One update from a FRESH state (step 0 -> high LR) on the same params/grad.
+    fresh_state = optimizer.init(p_resumed)
+    upd_fresh, _ = optimizer.update(g, fresh_state, p_resumed)
+    delta_fresh = max(
+        float(_np.max(_np.abs(_np.asarray(x))))
+        for x in jtu.tree_leaves(upd_fresh))
+
+    # The resumed update is on the decayed branch -> strictly smaller step than a
+    # step-0 restart would take. This is exactly the LR-schedule-resume contract.
+    assert delta_resumed < delta_fresh
+
+
+@pytest.mark.slow
+def test_sigterm_flusher_writes_full_resume_set_between_periodic_checkpoints(
+        training_batch_info):
+    """WS5: the flush registered by the per_molecule loop (what the worker's
+    SIGTERM handler invokes) writes the FULL resume_* set even when NO periodic
+    checkpoint has fired yet -- the safety net for progress between periodic
+    writes. checkpoint_every is set LARGER than n_steps so no periodic write
+    happens; the kill callback grabs the live flusher and calls it."""
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.train import run_training
+
+    captured = {}
+
+    def _cb(info):
+        # On the first epoch report, capture + call the live flusher, then kill.
+        if int(info.get("step", 0)) >= 1:
+            captured["flusher"] = train_mod._get_resume_flusher()
+            captured["flusher"]()       # simulate the SIGTERM flush
+            raise _StopAfterEpochs(info["step"])
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=5, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False, checkpoint_every=100)  # never periodic
+        with pytest.raises(_StopAfterEpochs):
+            run_training(spec, progress_callback=_cb)
+        d = spec.checkpoint_dir
+        assert captured.get("flusher") is not None
+        # full resume set on disk (resume_best.eqx present because the 1-epoch
+        # trailing-mean tracker has a best_model by epoch 1).
+        for fn in ("resume_model.eqx", "resume_opt_state.eqx",
+                   "resume_state.pkl"):
+            assert os.path.isfile(os.path.join(d, fn)), fn
+        # and NO success signal yet (mid-run).
+        assert not os.path.isfile(os.path.join(d, "model.eqx"))
+        assert not os.path.isfile(os.path.join(d, "completion.json"))
+
+
+# ---------------------------------------------------------------------------
+# WS5 adversarial-review regression tests (2026-06-20):
+#   RESUME-01 (BLOCKER): the per-epoch group `order` permutation must survive a
+#     kill+resume so a MULTI-group resumed run processes groups in the SAME
+#     sequence as an uninterrupted same-seed run (the prior CORE test masked it
+#     because its fixture yields ONE group -> shuffle is a no-op).
+#   SIG-1 (major): a mid-epoch SIGTERM flush must write the LAST COMPLETED
+#     epoch's self-consistent snapshot (never a torn rng/losses-advanced one),
+#     so resume-after-flush is byte-exact with no duplicated losses.
+#   SIG-2/3 robustness: an exception clears the flusher; a corrupt resume_state
+#     starts fresh instead of crashing.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def h2_mol_data():
+    from xcquinox.alec.data import precompute_fixed_density_data
+    return precompute_fixed_density_data(h2_molecule())
+
+
+@pytest.fixture(scope="module")
+def multigroup_batch_info(h_mol_data, o_mol_data, h2o_mol_data, h2_mol_data):
+    """Two AE groups (ae:H2O + ae:H2) -> a genuinely multi-group per_molecule
+    spec, so the per-epoch `order` shuffle is NOT a no-op and the resume `order`
+    bug is observable."""
+    mols = (h_atom(), o_atom(), h2o_molecule(), h2_molecule())
+    ae_h2o = float(
+        h_mol_data["E_pbe"] * 2 + o_mol_data["E_pbe"] - h2o_mol_data["E_pbe"])
+    ae_h2 = float(h_mol_data["E_pbe"] * 2 - h2_mol_data["E_pbe"])
+    targets = {
+        "H": float(h_mol_data["E_pbe"]),
+        "O": float(o_mol_data["E_pbe"]),
+        "H2O": max(ae_h2o, 0.001),
+        "H2": max(ae_h2, 0.001),
+    }
+    atom_energies = {
+        "H": float(h_mol_data["E_pbe"]),
+        "O": float(o_mol_data["E_pbe"]),
+    }
+    return {"mols": mols, "targets": targets, "atom_energies": atom_energies}
+
+
+def _make_multigroup_live_spec(multigroup_batch_info, *, tmpdir, n_steps,
+                               **extra):
+    """A live per_molecule TrainingSpec with TWO AE groups (ae:H2O, ae:H2)."""
+    ckdir = os.path.join(tmpdir, "ckpt")
+    return TrainingSpec.from_dicts(
+        arch=_make_arch(),
+        molecules=multigroup_batch_info["mols"],
+        targets=multigroup_batch_info["targets"],
+        atom_energies=multigroup_batch_info["atom_energies"],
+        loss_name="L5_gradnorm_vxc_step7",
+        n_steps=n_steps,
+        lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0, grad_clip=1.0,
+        checkpoint_dir=ckdir, seed=42,
+        update_scheme="per_molecule", require_atom_anchors=False,
+        **extra,
+    )
+
+
+def _losses_npy(checkpoint_dir):
+    import numpy as _np
+    return _np.load(os.path.join(checkpoint_dir, "losses.npy"))
+
+
+@pytest.mark.slow
+def test_per_molecule_multigroup_resume_matches_uninterrupted(
+        multigroup_batch_info):
+    """WS5-RESUME-01 (BLOCKER): with >=2 training groups, a run killed after 2
+    of 5 epochs and RESUMED must reproduce an uninterrupted same-seed run EXACTLY
+    -- identical losses.npy AND final model.eqx leaves to rtol=1e-9. This FAILS
+    before the `order`-persistence fix (the resumed run re-creates `order` fresh
+    while the rng is mid-sequence, so the post-resume epochs shuffle groups in a
+    different order and the optimizer trajectory diverges)."""
+    from xcquinox.alec.train import run_training, _training_groups
+    import numpy as _np
+
+    # (A) Reference: a clean 5-epoch run.
+    with tempfile.TemporaryDirectory() as ref_dir:
+        ref_spec = _make_multigroup_live_spec(
+            multigroup_batch_info, tmpdir=ref_dir, n_steps=5, checkpoint_every=1)
+        assert len(_training_groups(ref_spec)) >= 2   # genuinely multi-group
+        run_training(ref_spec)
+        ref_leaves = _model_leaves(
+            os.path.join(ref_spec.checkpoint_dir, "model.eqx"))
+        ref_losses = _losses_npy(ref_spec.checkpoint_dir)
+
+        # (B) Same seed, killed after 2 epochs, then re-entered to finish.
+        with tempfile.TemporaryDirectory() as run_dir:
+            spec = _make_multigroup_live_spec(
+                multigroup_batch_info, tmpdir=run_dir, n_steps=5,
+                checkpoint_every=1)
+            with pytest.raises(_StopAfterEpochs):
+                run_training(spec, progress_callback=_interrupt_after(2))
+            d = spec.checkpoint_dir
+            assert os.path.isfile(os.path.join(d, "resume_state.pkl"))
+            run_training(spec)         # resume + finish
+            resumed_leaves = _model_leaves(os.path.join(d, "model.eqx"))
+            resumed_losses = _losses_npy(d)
+
+    assert len(ref_losses) == len(resumed_losses)
+    assert _np.allclose(ref_losses, resumed_losses, rtol=1e-9, atol=1e-9)
+    assert len(ref_leaves) == len(resumed_leaves)
+    for a, b in zip(ref_leaves, resumed_leaves):
+        assert _np.allclose(a, b, rtol=1e-9, atol=1e-9)
+
+
+@pytest.mark.slow
+def test_per_molecule_multigroup_midepoch_flush_resume_is_exact(
+        multigroup_batch_info):
+    """WS5-SIG-1 (major): a MID-EPOCH SIGTERM flush (the registered flusher called
+    partway through epoch k+1) must persist epoch k's self-consistent snapshot --
+    NOT a torn checkpoint with advanced rng / already-appended partial losses.
+    Resuming from it must reproduce the uninterrupted run EXACTLY with NO
+    duplicated/lost losses. FAILS before the fix (the flush stores rng/losses by
+    reference, so a mid-epoch flush writes an rng-advanced, losses-partial,
+    stale-epoch torn state)."""
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.train import run_training, _training_groups
+    import numpy as _np
+
+    with tempfile.TemporaryDirectory() as ref_dir:
+        ref_spec = _make_multigroup_live_spec(
+            multigroup_batch_info, tmpdir=ref_dir, n_steps=5, checkpoint_every=1)
+        assert len(_training_groups(ref_spec)) >= 2
+        run_training(ref_spec)
+        ref_leaves = _model_leaves(
+            os.path.join(ref_spec.checkpoint_dir, "model.eqx"))
+        ref_losses = _losses_npy(ref_spec.checkpoint_dir)
+
+        with tempfile.TemporaryDirectory() as run_dir:
+            # checkpoint_every huge so NO periodic write fires -- the ONLY resume
+            # artifact is the mid-epoch flush. Kill mid-epoch-3 (after 2 done).
+            spec = _make_multigroup_live_spec(
+                multigroup_batch_info, tmpdir=run_dir, n_steps=5,
+                checkpoint_every=100)
+
+            def _cb(info):
+                if int(info.get("step", 0)) >= 2:
+                    # We are now PAST epoch 2; the next group steps of epoch 3
+                    # have already advanced the live rng + appended losses.
+                    flusher = train_mod._get_resume_flusher()
+                    flusher()                       # simulate the SIGTERM flush
+                    raise _StopAfterEpochs(info["step"])
+            with pytest.raises(_StopAfterEpochs):
+                run_training(spec, progress_callback=_cb)
+            d = spec.checkpoint_dir
+            assert os.path.isfile(os.path.join(d, "resume_state.pkl"))
+
+            run_training(spec)         # resume from the flush + finish
+            resumed_leaves = _model_leaves(os.path.join(d, "model.eqx"))
+            resumed_losses = _losses_npy(d)
+
+    # No duplicated losses: total count is exactly epochs*groups.
+    assert len(resumed_losses) == len(ref_losses)
+    assert _np.allclose(ref_losses, resumed_losses, rtol=1e-9, atol=1e-9)
+    for a, b in zip(ref_leaves, resumed_leaves):
+        assert _np.allclose(a, b, rtol=1e-9, atol=1e-9)
+
+
+def test_resume_checkpoint_roundtrips_group_order(tmp_path):
+    """WS5-RESUME-01 unit: `order` is persisted by _write_resume_checkpoint and
+    returned by _load_resume_checkpoint (so the resumed loop can continue the
+    killed run's permutation)."""
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.train import (
+        _write_resume_checkpoint, _load_resume_checkpoint, _BestModelTracker,
+    )
+    import equinox as eqx
+    model, opt_state, optimizer = _tiny_model_and_opt(seed=3, n_advance=1)
+    saved_order = [3, 0, 2, 1, 4, 5]
+    _tt = _BestModelTracker(window=1)
+    _write_resume_checkpoint(
+        str(tmp_path), model=model, opt_state=opt_state,
+        rng_state=__import__("numpy").random.RandomState(1).get_state(),
+        order=saved_order,
+        train_best_loss=_tt.best_loss, train_recent=list(_tt._recent),
+        train_window=_tt.window, train_best_model=_tt.best_model,
+        val_present=False, val_best_mae=None, val_finite_metrics=None,
+        val_best_model=None,
+        epoch=2, update=12, losses=[], aux_log=[], early_stopped=False)
+    model_skel = AlecGGAModel.from_arch(_make_arch(), seed=9)
+    opt_skel = optimizer.init(eqx.filter(model_skel, eqx.is_array))
+    out = _load_resume_checkpoint(
+        str(tmp_path), model_skeleton=model_skel, opt_state_skeleton=opt_skel)
+    assert out["order"] == saved_order
+
+
+@pytest.mark.slow
+def test_per_molecule_loop_clears_flusher_on_exception(training_batch_info):
+    """WS5-SIG-2: a raised exception inside the epoch loop (e.g. _abort_if_
+    nonfinite) must STILL clear the registered resume flusher via try/finally --
+    a stale flusher must not survive into the next run in the same process."""
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.train import run_training
+    train_mod._clear_resume_flusher()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=5, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False, checkpoint_every=1)
+        with pytest.raises(_StopAfterEpochs):
+            run_training(spec, progress_callback=_interrupt_after(1))
+        # The loop raised through; the flusher MUST have been cleared.
+        assert train_mod._get_resume_flusher() is None
+
+
+@pytest.mark.slow
+def test_per_molecule_corrupt_resume_starts_fresh(training_batch_info):
+    """WS5-SIG-3: a corrupt/truncated resume_state.pkl must NOT crash the task --
+    the loop logs a warning and starts fresh, producing model.eqx + completion."""
+    from xcquinox.alec.train import run_training
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=2, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False, checkpoint_every=1)
+        d = spec.checkpoint_dir
+        os.makedirs(d, exist_ok=True)
+        # Plant a corrupt resume_state.pkl (no resume_*.eqx alongside) -> a naive
+        # _load_resume_checkpoint would raise UnpicklingError / FileNotFound.
+        with open(os.path.join(d, "resume_state.pkl"), "wb") as f:
+            f.write(b"\x80\x04 not a valid pickle stream")
+        run_training(spec)             # must NOT raise; starts fresh and finishes
+        assert os.path.isfile(os.path.join(d, "model.eqx"))
+        assert os.path.isfile(os.path.join(d, "completion.json"))

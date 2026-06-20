@@ -174,3 +174,71 @@ def test_worker_enables_jax_x64_by_default(tmp_path):
         f"call would let JAX fall back to float32, silently degrading "
         f"convergence on long training runs."
     )
+
+
+# ---------------------------------------------------------------------------
+# WS5 (2026-06-20): SIGTERM flush. The worker installs a handler that, on the
+# SLURM wall-clock pre-kill SIGTERM, calls the per_molecule loop's registered
+# resume flusher (best-effort) before exiting 143, so an in-flight epoch is
+# checkpointed even between periodic writes.
+# ---------------------------------------------------------------------------
+
+def test_flush_on_signal_calls_registered_flusher():
+    """_flush_on_signal invokes the resume flusher registered in train."""
+    from xcquinox.alec import _train_one_spec as worker
+    from xcquinox.alec import train as train_mod
+    train_mod._clear_resume_flusher()
+    calls = []
+    train_mod._register_resume_flusher(lambda: calls.append("flushed"))
+    try:
+        worker._flush_on_signal()
+        assert calls == ["flushed"]
+    finally:
+        train_mod._clear_resume_flusher()
+
+
+def test_flush_on_signal_is_best_effort_when_flusher_raises():
+    """A failing flush must NOT propagate (periodic checkpoints are the primary
+    net); _flush_on_signal swallows the error."""
+    from xcquinox.alec import _train_one_spec as worker
+    from xcquinox.alec import train as train_mod
+    train_mod._clear_resume_flusher()
+
+    def _boom():
+        raise RuntimeError("disk full")
+    train_mod._register_resume_flusher(_boom)
+    try:
+        worker._flush_on_signal()   # must not raise
+    finally:
+        train_mod._clear_resume_flusher()
+
+
+def test_flush_on_signal_noop_when_no_flusher_registered():
+    """With no flusher registered (checkpoint_every=0 / not in the loop yet),
+    _flush_on_signal is a silent no-op."""
+    from xcquinox.alec import _train_one_spec as worker
+    from xcquinox.alec import train as train_mod
+    train_mod._clear_resume_flusher()
+    worker._flush_on_signal()        # must not raise
+
+
+def test_sigterm_handler_flushes_then_exits_143():
+    """The installed SIGTERM handler flushes the registered resume checkpoint
+    and exits 143 (128+15)."""
+    import signal
+    import pytest
+    from xcquinox.alec import _train_one_spec as worker
+    from xcquinox.alec import train as train_mod
+    train_mod._clear_resume_flusher()
+    calls = []
+    train_mod._register_resume_flusher(lambda: calls.append(1))
+    handler = worker._install_sigterm_flush_handler()
+    assert signal.getsignal(signal.SIGTERM) is handler
+    try:
+        with pytest.raises(SystemExit) as ei:
+            handler(signal.SIGTERM, None)
+        assert ei.value.code == 143
+        assert calls == [1]          # flushed before exiting
+    finally:
+        train_mod._clear_resume_flusher()
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
