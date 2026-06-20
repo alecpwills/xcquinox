@@ -75,13 +75,18 @@ class SweepAxes:
 class SolverNamed:
     """A named solver configuration referenced by the ``solver`` sweep axis.
 
-    Deliberately limited: only ``mode``, ``max_cycles`` and an optional
-    ``feature_policy``. Do NOT add conv_tol / mixer fields here, those belong
-    to a richer solver config consumed downstream.
+    Deliberately limited: ``mode``, ``max_cycles``, an optional
+    ``feature_policy`` and an optional ``scf_grad_checkpoint``. Do NOT add
+    conv_tol / mixer fields here, those belong to a richer solver config
+    consumed downstream.
     """
     mode: str
     max_cycles: int
     feature_policy: str | None = None
+    # 2026-06-20: wrap the unrolled SCF scan in jax.checkpoint (O(sqrt(cycles))
+    # backprop memory at ~1.5x recompute) so long-cycle FULL training (full_25)
+    # stays memory-bounded. Default off keeps existing solvers byte-identical.
+    scf_grad_checkpoint: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +110,9 @@ class HyperParams:
     # losses.py:171 convention; see losses._grid_term). Default False keeps
     # existing sweeps byte-identical.
     density_per_electron: bool = False
+    # Decoupled L2 weight decay passed to train.build_optimizer (adamw). Default
+    # 0.0 keeps existing sweeps byte-identical. 2026-06-20.
+    weight_decay: float = 0.0
     pbe_anchor_weight: float = 0.0
     require_atom_anchors: bool = False
     seed: int = 42
@@ -388,6 +396,7 @@ def _build_solvers(d: dict) -> dict[str, SolverNamed]:
             mode=_require(sd, "mode", ctx),
             max_cycles=_require(sd, "max_cycles", ctx),
             feature_policy=sd.get("feature_policy"),
+            scf_grad_checkpoint=bool(sd.get("scf_grad_checkpoint", False)),
         )
     return out
 
@@ -404,6 +413,7 @@ def _build_hyperparams(d: dict) -> HyperParams:
         vxc_weight=_require(d, "vxc_weight", ctx),
         density_weight=_require(d, "density_weight", ctx),
         density_per_electron=bool(d.get("density_per_electron", False)),
+        weight_decay=float(d.get("weight_decay", 0.0)),
         pbe_anchor_weight=d.get("pbe_anchor_weight", 0.0),
         require_atom_anchors=d.get("require_atom_anchors", False),
         seed=d.get("seed", 42),

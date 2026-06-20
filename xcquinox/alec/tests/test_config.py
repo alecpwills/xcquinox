@@ -140,9 +140,10 @@ def test_architecture_config_field_validation(field, value, exc):
 
 # §13.2 item (12), 2026-05-29: bumped from 12 to 14 by adding
 # deep_notransform + deep_notransform_attn for the descriptor ablation sweep.
-def test_architectures_has_14_keys():
+# 2026-06-20: bumped to 22 by adding the 8 depth-3/width-16 dfs_step7 twins.
+def test_architectures_has_22_keys():
     from xcquinox.alec.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 14
+    assert len(ARCHITECTURES) == 22
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -150,6 +151,10 @@ def test_architectures_has_14_keys():
         # New 2026-05-29 entries, no DM/Cusp descriptors, Dick log-transform
         # explicitly disabled, for ablation against the 6 standard archs.
         "deep_notransform", "deep_notransform_attn",
+        # New 2026-06-20: depth-3/width-16 capacity-reduction twins.
+        "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16", "deep_dm_3x16",
+        "deep_combined_3x16", "deep_combined_attn_3x16",
+        "deep_notransform_3x16", "deep_notransform_attn_3x16",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
 
@@ -166,14 +171,17 @@ def test_list_architectures_returns_sorted():
     from xcquinox.alec.config import list_architectures
     names = list_architectures()
     assert names == sorted(names)
-    assert len(names) == 14
+    assert len(names) == 22
 
 
 # §13.2 item (15)
 def test_architectures_match_notebook_reference():
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.tests.fixtures.notebook_reference import NOTEBOOK_ARCHITECTURES
-    assert set(ARCHITECTURES.keys()) == set(NOTEBOOK_ARCHITECTURES.keys())
+    # ARCHITECTURES is a superset: the canonical notebook variants plus the
+    # 2026-06-20 3x16 capacity twins (not from the notebook). Every notebook
+    # variant must still be present and match exactly.
+    assert set(ARCHITECTURES.keys()) >= set(NOTEBOOK_ARCHITECTURES.keys())
     for name, expected in NOTEBOOK_ARCHITECTURES.items():
         actual = ARCHITECTURES[name]
         assert actual.name == expected["name"]
@@ -182,6 +190,41 @@ def test_architectures_match_notebook_reference():
         assert actual.attention is expected["attention"]
         actual_descr_names = [d.name for d in actual.descriptors]
         assert actual_descr_names == expected["descriptors"]
+
+
+# 2026-06-20: 3x16 (depth-3, width-16) twins of the 8 dfs_step7 sweep archs,
+# matching DFS's published net size (Dick & Fernandez-Serra 2021, 3 hidden
+# layers x 16 nodes), for the capacity-reduction experiment. Each twin must
+# differ from its 4x32 sibling ONLY in depth/nodes.
+_DFS_3X16_TWINS = {
+    "deep_3x16": "deep",
+    "deep_attn_3x16": "deep_attn",
+    "deep_cusp_3x16": "deep_cusp",
+    "deep_dm_3x16": "deep_dm",
+    "deep_combined_3x16": "deep_combined",
+    "deep_combined_attn_3x16": "deep_combined_attn",
+    "deep_notransform_3x16": "deep_notransform",
+    "deep_notransform_attn_3x16": "deep_notransform_attn",
+}
+
+
+def test_3x16_variants_mirror_their_32_twins():
+    from xcquinox.alec.config import ARCHITECTURES
+    for small_name, big_name in _DFS_3X16_TWINS.items():
+        assert small_name in ARCHITECTURES, f"missing 3x16 arch {small_name!r}"
+        small = ARCHITECTURES[small_name]
+        big = ARCHITECTURES[big_name]
+        # the ONLY intended difference is capacity (depth/nodes)
+        assert (small.depth, small.nodes) == (3, 16)
+        assert small.attention == big.attention
+        assert small.num_heads == big.num_heads
+        assert small.use_polarized_correlation == big.use_polarized_correlation
+        assert small.dm_entropy_intensive == big.dm_entropy_intensive
+        assert small.descriptor_log_transform == big.descriptor_log_transform
+        assert small.zero_init_final_layer == big.zero_init_final_layer
+        assert [d.name for d in small.descriptors] == [d.name for d in big.descriptors]
+        assert [c.name for c in small.x_constraints] == [c.name for c in big.x_constraints]
+        assert [c.name for c in small.c_constraints] == [c.name for c in big.c_constraints]
 
 
 # §13.2 item (17)
@@ -338,7 +381,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 14  # 2026-05-29: +deep_notransform, +deep_notransform_attn
+    assert len(ARCHITECTURES) == 22  # 2026-06-20: +8 depth-3/width-16 dfs_step7 twins
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)

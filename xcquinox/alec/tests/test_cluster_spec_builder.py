@@ -924,3 +924,17 @@ def test_build_training_specs_ae_reaction_form(tmp_path):
     ref3 = test_spec3.metric_kwargs_dict["atomization_energy"]["reference_ae_kcalmol"]
     assert "N2" not in ref3 and "NO" not in ref3
     assert ref3["H2O"] == pytest.approx(232.2)
+
+
+# 2026-06-20 (WS4): full_25 (25-cycle FULL SCF) needs gradient checkpointing to
+# keep backprop memory bounded; the SolverNamed -> SolverConfig mapping must
+# carry scf_grad_checkpoint through, defaulting off for existing solvers.
+def test_solver_config_from_named_threads_scf_grad_checkpoint():
+    from xcquinox.alec.cluster.spec_builder import _solver_config_from_named
+    from xcquinox.alec.cluster.grid_config import SolverNamed
+    cfg = _solver_config_from_named(
+        SolverNamed(mode="FULL", max_cycles=25, scf_grad_checkpoint=True))
+    assert cfg.max_cycles == 25
+    assert cfg.scf_grad_checkpoint is True
+    off = _solver_config_from_named(SolverNamed(mode="FULL", max_cycles=3))
+    assert off.scf_grad_checkpoint is False

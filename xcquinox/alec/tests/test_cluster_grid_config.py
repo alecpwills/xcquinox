@@ -722,3 +722,15 @@ def test_hyperparams_density_per_electron_optional_default_false():
     assert hp.density_per_electron is False           # byte-identical default
     hp_on = _build_hyperparams(dict(base, density_per_electron=True))
     assert hp_on.density_per_electron is True
+
+
+# 2026-06-20 (WS4): a named solver entry may opt into SCF gradient checkpointing
+# (for full_25); the parser must read it, defaulting off.
+def test_build_solvers_parses_scf_grad_checkpoint():
+    from xcquinox.alec.cluster.grid_config import _build_solvers
+    solvers = _build_solvers({
+        "full_25": {"mode": "FULL", "max_cycles": 25, "scf_grad_checkpoint": True},
+        "full_3": {"mode": "FULL", "max_cycles": 3},
+    })
+    assert solvers["full_25"].scf_grad_checkpoint is True
+    assert solvers["full_3"].scf_grad_checkpoint is False

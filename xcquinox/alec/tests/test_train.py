@@ -1140,3 +1140,40 @@ def test_training_groups_skip_charged_atom_anchor():
     assert "anchor:Li" in labels
     assert "anchor:Li+" not in labels
     assert "ip13:Li_IP" in labels       # the cation still trains via its pair
+
+
+# 2026-06-20 (WS2): L2 weight decay. The 2026-06-20 review found the DFS pool
+# overfits with plain adam (no decay) while DFS used weight decay. build_optimizer
+# must apply DECOUPLED weight decay (adamw): under a ZERO loss-gradient a positive
+# weight_decay still shrinks params; weight_decay=0 leaves them untouched.
+def test_build_optimizer_weight_decay_shrinks_params_under_zero_grad():
+    import jax.numpy as jnp
+    import optax
+    from xcquinox.alec.train import build_optimizer
+
+    params = {"w": jnp.ones((4,))}
+    zero_grad = {"w": jnp.zeros((4,))}
+    kw = dict(lr_start=0.1, lr_end=0.1, n_steps=1, lr_decay_start=0.0,
+              grad_clip=1e9)
+
+    opt = build_optimizer(weight_decay=0.5, **kw)
+    updates, _ = opt.update(zero_grad, opt.init(params), params)
+    decayed = optax.apply_updates(params, updates)
+    assert float(decayed["w"][0]) < 1.0   # decoupled decay shrinks even at zero grad
+
+    opt0 = build_optimizer(weight_decay=0.0, **kw)
+    updates0, _ = opt0.update(zero_grad, opt0.init(params), params)
+    undecayed = optax.apply_updates(params, updates0)
+    assert float(undecayed["w"][0]) == 1.0  # no decay + zero grad -> no change
+
+
+def test_build_optimizer_weight_decay_defaults_to_zero():
+    # default (omitted) weight_decay must be a no-op, so existing runs are unchanged.
+    import jax.numpy as jnp
+    import optax
+    from xcquinox.alec.train import build_optimizer
+    params = {"w": jnp.ones((3,))}
+    opt = build_optimizer(lr_start=0.1, lr_end=0.1, n_steps=1,
+                          lr_decay_start=0.0, grad_clip=1e9)
+    updates, _ = opt.update({"w": jnp.zeros((3,))}, opt.init(params), params)
+    assert float(optax.apply_updates(params, updates)["w"][0]) == 1.0

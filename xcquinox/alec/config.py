@@ -414,6 +414,49 @@ ARCHITECTURES = {
                               dm_entropy_intensive=True,
                               descriptor_log_transform=False,
                               zero_init_final_layer=True),
+    # 2026-06-20: depth-3/width-16 twins of the 8 dfs_step7 sweep archs. The
+    # 2026-06-20 adversarial review found our 4x32 nets (~3.3k params) overfit
+    # the tiny 26-point DFS pool; DFS used 3 hidden layers x 16 nodes (~0.6k).
+    # Each twin mirrors its 4x32 sibling's flags EXACTLY, changing only capacity.
+    "deep_3x16":                ArchitectureConfig.from_spec("deep_3x16",               3, 16,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_attn_3x16":           ArchitectureConfig.from_spec("deep_attn_3x16",          3, 16,
+                              attention=True, num_heads=4,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_cusp_3x16":           ArchitectureConfig.from_spec("deep_cusp_3x16",          3, 16,
+                              descriptors=["cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_dm_3x16":             ArchitectureConfig.from_spec("deep_dm_3x16",            3, 16,
+                              descriptors=["dm_statistics"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_combined_3x16":       ArchitectureConfig.from_spec("deep_combined_3x16",      3, 16,
+                              descriptors=["dm_statistics", "cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_combined_attn_3x16":  ArchitectureConfig.from_spec("deep_combined_attn_3x16", 3, 16,
+                              attention=True, num_heads=4,
+                              descriptors=["dm_statistics", "cusp"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_notransform_3x16":       ArchitectureConfig.from_spec("deep_notransform_3x16",      3, 16,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=False,
+                              zero_init_final_layer=True),
+    "deep_notransform_attn_3x16":  ArchitectureConfig.from_spec("deep_notransform_attn_3x16", 3, 16,
+                              attention=True, num_heads=4,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=False,
+                              zero_init_final_layer=True),
 }
 # P2-03 NOTE: spin-polarization-aware correlation is NOT a separate entry in
 # this registry (which mirrors the notebook's canonical 12 variants). Build one
@@ -627,6 +670,9 @@ class TrainingSpec:
     lr_end: float = 1e-5
     lr_decay_start: float = 0.0
     grad_clip: float = 1.0
+    # Decoupled L2 weight decay (adamw); 0.0 = no decay (byte-identical to the
+    # former adam). Positive values regularize the over-capacity nets. 2026-06-20.
+    weight_decay: float = 0.0
     pretrain_checkpoint: str | None = None
     checkpoint_dir: str = "./checkpoints"
     seed: int = 42

@@ -51,10 +51,16 @@ def build_optimizer(
     n_steps: int,
     lr_decay_start: float,
     grad_clip: float,
+    weight_decay: float = 0.0,
 ) -> optax.GradientTransformation:
     """Build canonical optimizer chain for training.
 
-    Chain order: clip_by_global_norm -> adam(lr_schedule).
+    Chain order: clip_by_global_norm -> adamw(lr_schedule, weight_decay).
+    ``weight_decay`` is DECOUPLED L2 (adamw); the default 0.0 makes adamw
+    byte-identical to the former adam, so existing (decay-free) runs are
+    unchanged. A positive value regularizes the (over-capacity) nets -- the
+    2026-06-20 review traced the DFS-pool generalization gap partly to training
+    with no weight decay while DFS uses it (og_dpyscf/scripts/train.py:47,289).
     LR schedule: a constant-LR warmup for the first ``lr_decay_start`` fraction
     of ``n_steps`` THEN linear decay to ``lr_end``, but ONLY when
     ``lr_decay_start > 0``. With the common ``lr_decay_start = 0`` there is no
@@ -98,7 +104,7 @@ def build_optimizer(
 
     return optax.chain(
         optax.clip_by_global_norm(grad_clip),
-        optax.adam(learning_rate=lr_schedule),
+        optax.adamw(learning_rate=lr_schedule, weight_decay=weight_decay),
     )
 
 
@@ -345,6 +351,7 @@ def _run_static_loop(spec, model, batch, loss, progress_callback):
         lr_start=spec.lr_start, lr_end=spec.lr_end,
         n_steps=spec.n_steps, lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
+        weight_decay=spec.weight_decay,
     )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     losses = []
@@ -378,6 +385,7 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
         lr_start=spec.lr_start, lr_end=spec.lr_end,
         n_steps=spec.n_steps, lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
+        weight_decay=spec.weight_decay,
     )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     relative = spec.loss_metric == "relative"
@@ -461,6 +469,7 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
         lr_start=spec.lr_start, lr_end=spec.lr_end,
         n_steps=balancing.phase1_steps,
         lr_decay_start=spec.lr_decay_start, grad_clip=spec.grad_clip,
+        weight_decay=spec.weight_decay,
     )
     opt_state = phase1_optimizer.init(eqx.filter(model, eqx.is_array))
 
@@ -483,6 +492,7 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
         lr_start=spec.lr_start, lr_end=spec.lr_end,
         n_steps=phase2_steps,
         lr_decay_start=spec.lr_decay_start, grad_clip=spec.grad_clip,
+        weight_decay=spec.weight_decay,
     )
     opt_state = phase2_optimizer.init(eqx.filter(model, eqx.is_array))
 
@@ -543,6 +553,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
         lr_start=spec.lr_start, lr_end=spec.lr_end,
         n_steps=spec.n_steps, lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
+        weight_decay=spec.weight_decay,
     )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     progress_hook = _adapt_progress_callback(
@@ -846,6 +857,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         lr_start=spec.lr_start, lr_end=spec.lr_end,
         n_steps=total_updates, lr_decay_start=spec.lr_decay_start,
         grad_clip=spec.grad_clip,
+        weight_decay=spec.weight_decay,
     )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     progress_hook = _adapt_progress_callback(
