@@ -216,7 +216,7 @@ def _mark_failed_species_specs(specs, failed_species) -> int:
     return marked
 
 
-def _stage_inputs(cfg):
+def _stage_inputs(cfg, run_dir=None):
     """Run :data:`_prepare_inputs`, applying ``cfg.on_precompute_failure``.
 
     Returns ``(staged, failed_species)``. ``failed_species`` is the list of
@@ -233,7 +233,7 @@ def _stage_inputs(cfg):
     treated as ``abort``.
     """
     try:
-        staged = _prepare_inputs(cfg)
+        staged = _prepare_inputs(cfg, run_dir=run_dir)
         return staged, []
     except RuntimeError as exc:
         failed = _failed_species_from_error(exc)
@@ -260,7 +260,7 @@ def _stage_inputs(cfg):
             # cheap and deterministic; skipping the precompute avoids re-
             # running the work that just failed. References for non-failed
             # species remain cached on disk for their specs to consume.
-            staged = _prepare_inputs(cfg, recompute_refs=False)
+            staged = _prepare_inputs(cfg, recompute_refs=False, run_dir=run_dir)
             _log(
                 f"re-staged inputs (precompute skipped); {len(failed)} "
                 f"species failed: {sorted(failed)}"
@@ -405,7 +405,7 @@ def main(argv=None) -> int:
     # is a finished pre-process, the preflight does NOT run it.
     _log("staging inputs (training-point pool, subset ledger, CCSD refs)...")
     try:
-        staged, failed_species = _stage_inputs(cfg)
+        staged, failed_species = _stage_inputs(cfg, run_dir)
     except RuntimeError:
         # _stage_inputs already logged the failed-species list.
         return 1

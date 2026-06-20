@@ -286,6 +286,117 @@ def test_main_skips_best_held_out_eval_when_absent(run_dir, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# WS3 (2026-06-20): report only the held-out TEST slice; eval model_val_best.eqx
+# ---------------------------------------------------------------------------
+
+def _val_reactions(n=40):
+    return [{"name": f"r{i}", "reactants": ["A"], "products": ["B"],
+             "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0}
+            for i in range(n)]
+
+
+def test_test_slice_reactions_filters_to_test_when_validation_enabled():
+    """When the spec GENUINELY validated (validate_every>0 AND non-empty
+    validation_molecules AND a validation_reactions_path) the reported held-out
+    eval is the TEST slice ONLY (the val slice drove early-stop and must not leak
+    into the reported metric). split_held_out is deterministic, so the kept set is
+    the exact complement of the val slice for the same val_frac."""
+    from xcquinox.alec.cluster._eval_one_spec import _test_slice_reactions
+    from xcquinox.alec.eval_holdout import split_held_out
+
+    class _Spec:
+        validate_every = 2
+        val_frac = 0.2
+        validation_molecules = ("A", "B")   # non-empty -> validation ran
+        validation_reactions_path = "/run/validation/val_reactions.json"
+    reactions = _val_reactions(40)
+    val, test = split_held_out(reactions, val_frac=0.2)
+    kept = _test_slice_reactions(reactions, _Spec())
+    kept_names = {r["name"] for r in kept}
+    assert kept_names == {r["name"] for r in test}
+    # disjoint from the val slice -> no leakage into the reported metric.
+    assert kept_names.isdisjoint({r["name"] for r in val})
+    assert len(kept) < len(reactions)        # the val slice was removed
+
+
+def test_test_slice_reactions_noop_when_validation_disabled():
+    """validate_every==0 (no validation) -> the full held-out set is reported,
+    byte-identical to the pre-WS3 behavior (no silent metric shrink)."""
+    from xcquinox.alec.cluster._eval_one_spec import _test_slice_reactions
+
+    class _Spec:
+        validate_every = 0
+        val_frac = 0.2
+        validation_molecules = ()
+        validation_reactions_path = None
+    reactions = _val_reactions(40)
+    kept = _test_slice_reactions(reactions, _Spec())
+    assert kept == reactions                 # unchanged, same object content
+
+
+def test_test_slice_reactions_noop_when_validate_every_set_but_no_val_molecules():
+    """FIX 1(a): validate_every>0 but EMPTY validation_molecules (a partial /
+    misconfigured spec, or update_scheme='batched' which has NO validation hook)
+    -> validation never ran, so the FULL held-out set is reported (no silent,
+    non-comparable ~20% shrink). The eval gate must match the train-side
+    ACTIVATION conditions, not validate_every alone."""
+    from xcquinox.alec.cluster._eval_one_spec import _test_slice_reactions
+
+    class _SpecNoMols:
+        validate_every = 2
+        val_frac = 0.2
+        validation_molecules = ()                  # nothing staged
+        validation_reactions_path = "/run/validation/val_reactions.json"
+
+    class _SpecNoPath:
+        validate_every = 2
+        val_frac = 0.2
+        validation_molecules = ("A", "B")
+        validation_reactions_path = None           # no reactions wired
+
+    reactions = _val_reactions(40)
+    assert _test_slice_reactions(reactions, _SpecNoMols()) == reactions
+    assert _test_slice_reactions(reactions, _SpecNoPath()) == reactions
+
+
+def test_main_runs_val_best_held_out_eval_when_present(run_dir, monkeypatch):
+    """model_val_best.eqx present -> a THIRD held-out pass runs on it into
+    eval_holdout_val_best/ (mirrors the model_best.eqx -> eval_holdout_best/
+    pass). Final + best + val_best = 3 passes."""
+    ckpt_dir = _write_model(run_dir, 0)
+    open(os.path.join(ckpt_dir, "model_best.eqx"), "wb").close()
+    open(os.path.join(ckpt_dir, "model_val_best.eqx"), "wb").close()
+    _stub_insample(monkeypatch, os.path.join(ckpt_dir, "eval"))
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "_run_held_out_eval",
+        lambda rd, idx, cfg, ck, mp, ts, holdout_subdir="eval_holdout":
+            calls.append((os.path.basename(mp), holdout_subdir)))
+
+    assert ev.main([run_dir, "0"]) == 0
+    assert calls == [("model.eqx", "eval_holdout"),
+                     ("model_best.eqx", "eval_holdout_best"),
+                     ("model_val_best.eqx", "eval_holdout_val_best")]
+
+
+def test_main_skips_val_best_held_out_eval_when_absent(run_dir, monkeypatch):
+    """No model_val_best.eqx (validation disabled / older run) -> the val_best
+    pass no-ops; final (+ best if present) only."""
+    ckpt_dir = _write_model(run_dir, 0)
+    _stub_insample(monkeypatch, os.path.join(ckpt_dir, "eval"))
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "_run_held_out_eval",
+        lambda rd, idx, cfg, ck, mp, ts, holdout_subdir="eval_holdout":
+            calls.append((os.path.basename(mp), holdout_subdir)))
+
+    assert ev.main([run_dir, "0"]) == 0
+    assert ("model_val_best.eqx", "eval_holdout_val_best") not in calls
+
+
+# ---------------------------------------------------------------------------
 # fold helper -- correct per-molecule row keys
 # ---------------------------------------------------------------------------
 

@@ -159,12 +159,15 @@ def patched(monkeypatch):
     """
     state = {}
 
-    def fake_prepare_inputs(cfg, *, recompute_refs=True):
+    def fake_prepare_inputs(cfg, *, recompute_refs=True, run_dir=None):
         state["prepare_calls"] = state.get("prepare_calls", 0) + 1
         # Record the recompute_refs kwarg seen on EACH call so a test can
         # assert the re-stage (after a precompute failure) skipped the
         # precompute by passing recompute_refs=False.
         state.setdefault("recompute_refs_seen", []).append(recompute_refs)
+        # WS3: record the run_dir forwarded so a test can assert the preflight
+        # threads it (the val-slice staging writes val_reactions.json under it).
+        state.setdefault("run_dir_seen", []).append(run_dir)
         hook = state.get("prepare_hook")
         if hook is not None:
             return hook(cfg, recompute_refs, state["prepare_calls"])
@@ -204,6 +207,9 @@ def test_happy_path_writes_specs_manifest_exit_0(tmp_path, patched):
     # prepare_inputs called once, with recompute_refs defaulting to True
     assert patched["prepare_calls"] == 1
     assert patched["recompute_refs_seen"] == [True]
+    # WS3: the preflight forwards run_dir so prepare_inputs can stage the
+    # val slice (val_reactions.json lives under run_dir).
+    assert patched["run_dir_seen"] == [str(run_dir)]
     # a provenance copy of the consumed subset ledger was written
     assert (run_dir / "subset_ledger.json").is_file()
 

@@ -711,6 +711,29 @@ class TrainingSpec:
     # "batched" mode, where `balancing` controls weighting). Empty -> the
     # density-dominant dpyscf-style default in train._DEFAULT_CHANNEL_WEIGHTS.
     channel_weights: tuple[tuple[str, float], ...] = ()
+    # Held-out VALIDATION slice (WS3, 2026-06-20) for in-loop early-stop +
+    # validation-best model selection. ``validation_molecules`` are the val-slice
+    # MoleculeSpecs (built by spec_builder via the SAME atoms_to_mol_spec path the
+    # training molecules use, pointing at the density-only val_refs_dir);
+    # ``validation_reactions_path`` is the JSON of val reaction dicts (written by
+    # prepare_inputs to ``<run_dir>/validation/val_reactions.json``). BOTH default
+    # to a no-op (empty tuple + None) so existing specs stay byte-identical and
+    # the per-molecule loop only validates when both are populated AND
+    # ``validate_every > 0``. ``object | None`` matches the solver_config /
+    # balancing precedent (validation_molecules is a tuple of frozen MoleculeSpecs
+    # and participates in __eq__/__hash__ like ``molecules``).
+    validation_molecules: tuple[MoleculeSpec, ...] = ()
+    validation_reactions_path: str | None = None
+    # In-loop validation cadence + early-stop (threaded from HyperParams like
+    # weight_decay). ALL default to a NO-OP so existing specs stay byte-identical:
+    # ``validate_every == 0`` disables in-loop validation entirely; ``patience ==
+    # 0`` disables early-stop. ``val_frac`` records the split fraction used to
+    # build validation_molecules (provenance; the actual split happens upstream
+    # in prepare_inputs/spec_builder via eval_holdout.split_held_out).
+    val_frac: float = 0.2
+    validate_every: int = 0
+    patience: int = 0
+    early_stop_min_delta: float = 0.0
 
     @property
     def channel_weights_dict(self) -> dict[str, float]:

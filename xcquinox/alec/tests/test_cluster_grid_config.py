@@ -397,6 +397,100 @@ def test_validate_missing_pool_size():
         validate_grid_semantics(_cfg(), _Empty())
 
 
+def _cfg_with(hp_kwargs=None, inputs_kwargs=None):
+    """Build a GridConfig (single sweep cell so cardinality is irrelevant) with
+    HyperParams / InputPaths field overrides, for the WS3 validation guards."""
+    base = _cfg(
+        arch=("medium",), loss=("delta_ae",), metric=("l2",),
+        subset_size=(4,), solver=("fast",),
+    )
+    hp_defaults = dict(
+        n_steps=200, lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.2,
+        grad_clip=1.0, gradnorm_alpha=1.5, vxc_weight=1.0, density_weight=0.5,
+    )
+    hp_defaults.update(hp_kwargs or {})
+    hp = HyperParams(**hp_defaults)
+    in_defaults = dict(
+        external_refs_dir="/shared/refs",
+        subset_ledger_path="/shared/subset_index_log.json",
+        basis="def2-tzvp", grid_level=3, output_root="/shared/runs",
+    )
+    in_defaults.update(inputs_kwargs or {})
+    inputs = InputPaths(**in_defaults)
+    return GridConfig(
+        sweep=base.sweep, solvers=base.solvers, hyperparams=hp,
+        inputs=inputs, pretrain=base.pretrain, cluster=base.cluster,
+        domain_profile=base.domain_profile,
+    )
+
+
+# --- WS3 validation-slice cross-field + range guards (2026-06-20) -----------
+
+def test_validate_rejects_validate_every_without_val_refs_dir():
+    """FIX 1(b): validate_every>0 requires inputs.val_refs_dir (the only thing
+    that stages the val slice). Without it training never validates yet the eval
+    would still exclude a val slice -> asymmetric/dead config; reject at submit."""
+    cfg = _cfg_with(hp_kwargs=dict(validate_every=2, update_scheme="per_molecule"),
+                    inputs_kwargs=dict(val_refs_dir=None))
+    with pytest.raises(ValueError, match="val_refs_dir"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_rejects_validate_every_with_batched_scheme():
+    """FIX 1(b): only _run_per_molecule_loop has the validation hook; with
+    update_scheme='batched' validate_every>0 would never validate. Reject it."""
+    cfg = _cfg_with(
+        hp_kwargs=dict(validate_every=2, update_scheme="batched"),
+        inputs_kwargs=dict(val_refs_dir="/shared/val_refs"))
+    with pytest.raises(ValueError, match="per_molecule"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_accepts_validate_every_when_fully_configured():
+    """validate_every>0 + val_refs_dir set + per_molecule scheme validates."""
+    cfg = _cfg_with(
+        hp_kwargs=dict(validate_every=2, update_scheme="per_molecule"),
+        inputs_kwargs=dict(val_refs_dir="/shared/val_refs"))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_default_no_validation_is_clean():
+    """validate_every=0 (default) needs neither val_refs_dir nor per_molecule;
+    the cross-field guard must not fire for the no-op default."""
+    cfg = _cfg_with(hp_kwargs=dict(validate_every=0, update_scheme="batched"),
+                    inputs_kwargs=dict(val_refs_dir=None))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_rejects_bad_val_frac():
+    """FIX 2 (WS3-CFG-2): val_frac must be in (0, 1)."""
+    for bad in (0.0, 1.0, -0.1, 1.5):
+        cfg = _cfg_with(hp_kwargs=dict(val_frac=bad))
+        with pytest.raises(ValueError, match="val_frac"):
+            validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_rejects_negative_validate_every():
+    """FIX 2 (WS3-CFG-2): validate_every must be >= 0."""
+    cfg = _cfg_with(hp_kwargs=dict(validate_every=-1))
+    with pytest.raises(ValueError, match="validate_every"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_rejects_negative_patience():
+    """FIX 2 (WS3-CFG-2): patience must be >= 0."""
+    cfg = _cfg_with(hp_kwargs=dict(patience=-1))
+    with pytest.raises(ValueError, match="patience"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_rejects_negative_early_stop_min_delta():
+    """FIX 2 (WS3-CFG-2): early_stop_min_delta must be >= 0."""
+    cfg = _cfg_with(hp_kwargs=dict(early_stop_min_delta=-0.1))
+    with pytest.raises(ValueError, match="early_stop_min_delta"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
 def test_validate_rejects_unknown_arch_name():
     """Every arch-axis value must resolve via get_architecture; an unknown
     name is rejected on the login node, not deferred to the pretrain worker."""
@@ -722,6 +816,45 @@ def test_hyperparams_density_per_electron_optional_default_false():
     assert hp.density_per_electron is False           # byte-identical default
     hp_on = _build_hyperparams(dict(base, density_per_electron=True))
     assert hp_on.density_per_electron is True
+
+
+# 2026-06-20 (WS3): held-out validation slice knobs drive in-loop early-stop +
+# validation-best selection. All MUST default to a NO-OP so decay-free runs stay
+# byte-identical (validate_every=0 -> no in-loop validation; patience=0 -> no
+# early-stop).
+def test_hyperparams_validation_knobs_default_noop():
+    from xcquinox.alec.cluster.grid_config import _build_hyperparams
+    base = {"n_steps": 1, "lr_start": 1e-2, "lr_end": 1e-5,
+            "lr_decay_start": 0.2, "grad_clip": 1.0, "gradnorm_alpha": 1.5,
+            "vxc_weight": 0.01, "density_weight": 0.1}
+    hp = _build_hyperparams(dict(base))
+    assert hp.val_frac == 0.2                 # default split fraction
+    assert hp.validate_every == 0             # no in-loop validation
+    assert hp.patience == 0                   # no early-stop
+    assert hp.early_stop_min_delta == 0.0
+
+
+def test_hyperparams_validation_knobs_override():
+    from xcquinox.alec.cluster.grid_config import _build_hyperparams
+    base = {"n_steps": 1, "lr_start": 1e-2, "lr_end": 1e-5,
+            "lr_decay_start": 0.2, "grad_clip": 1.0, "gradnorm_alpha": 1.5,
+            "vxc_weight": 0.01, "density_weight": 0.1}
+    hp = _build_hyperparams(dict(base, val_frac=0.25, validate_every=10,
+                                  patience=5, early_stop_min_delta=0.01))
+    assert hp.val_frac == 0.25
+    assert hp.validate_every == 10
+    assert hp.patience == 5
+    assert hp.early_stop_min_delta == 0.01
+
+
+def test_inputs_val_refs_dir_optional_default_none():
+    from xcquinox.alec.cluster.grid_config import _build_inputs
+    base = {"external_refs_dir": "/refs", "subset_ledger_path": "/led.json",
+            "basis": "def2-svp", "grid_level": 1, "output_root": "/out"}
+    cfg_in = _build_inputs(dict(base))
+    assert cfg_in.val_refs_dir is None                # byte-identical default
+    cfg_on = _build_inputs(dict(base, val_refs_dir="/val_refs"))
+    assert cfg_on.val_refs_dir == "/val_refs"
 
 
 # 2026-06-20 (WS4): a named solver entry may opt into SCF gradient checkpointing

@@ -249,6 +249,40 @@ def _write_skipped_json(checkpoint_dir, reason):
 # main
 # ---------------------------------------------------------------------------
 
+def _test_slice_reactions(reactions, training_spec):
+    """Return the held-out reactions to REPORT. WS3.
+
+    When the spec GENUINELY ran in-loop validation the held-out pool was split
+    val/test by :func:`eval_holdout.split_held_out`; the val slice drove
+    early-stop / validation-best selection, so reporting it here would leak the
+    selection signal into the reported generalization metric. We therefore report
+    ONLY the test slice (the deterministic complement of the val slice for the
+    same ``val_frac``).
+
+    FIX 1 (2026-06-20): the gate MUST match the TRAIN-side activation, not
+    ``validate_every`` alone. Training validates only in
+    :func:`train._run_per_molecule_loop` (the only loop with the validation hook)
+    and only when :func:`train._build_validation_data` returns data -- i.e.
+    ``validate_every > 0`` AND non-empty ``validation_molecules`` AND a
+    ``validation_reactions_path``. A partial/misconfigured spec (or any
+    ``update_scheme='batched'`` run, which has NO validation hook) therefore never
+    splits off a val slice, so the FULL held-out set is reported (no silent,
+    non-comparable ~20% shrink). split_held_out is deterministic, so when
+    validation DID run the kept set is the exact complement of the val slice the
+    training used."""
+    validated = (
+        int(getattr(training_spec, "validate_every", 0)) > 0
+        and bool(getattr(training_spec, "validation_molecules", ()))
+        and getattr(training_spec, "validation_reactions_path", None)
+    )
+    if not validated:
+        return reactions
+    from xcquinox.alec.eval_holdout import split_held_out
+    _val, test = split_held_out(
+        reactions, val_frac=float(getattr(training_spec, "val_frac", 0.2)))
+    return test
+
+
 def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                        training_spec, holdout_subdir="eval_holdout") -> None:
     """Full-pool held-out eval (BH76 + W4-11) for one trained spec.
@@ -296,6 +330,19 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         full_specs, full_rxns = load_full_held_out_pools(
             basis=_hb, grid_level=_hg,
         )
+
+        # WS3: report ONLY the TEST slice when in-loop validation ran (the val
+        # slice drove early-stop and must not leak into the reported metric); the
+        # full set otherwise (byte-identical to pre-WS3). split_held_out is
+        # deterministic, so this is the exact complement of the val slice the
+        # training used.
+        n_before = len(full_rxns)
+        full_rxns = _test_slice_reactions(full_rxns, training_spec)
+        if len(full_rxns) != n_before:
+            _log(idx, f"held-out eval: reporting TEST slice only "
+                      f"({len(full_rxns)}/{n_before} reactions; val slice "
+                      f"excluded, validate_every="
+                      f"{getattr(training_spec, 'validate_every', 0)})")
 
         # Parallelize the ~200-molecule held-out loop across the node's CPUs by
         # default (queue-agnostic auto-detect), with adaptive degradation to
@@ -451,6 +498,21 @@ def main(argv=None) -> int:
     else:
         _log(idx, "no model_best.eqx -- skipping best-checkpoint held-out eval "
                   "(only eval_holdout/ produced)")
+
+    # --- WS3 (2026-06-20): ALSO eval the VALIDATION-best checkpoint -----------
+    # When in-loop validation ran, training saved model_val_best.eqx (the minimum
+    # held-out-validation snapshot, the best-generalizing model, vs model_best.eqx
+    # which minimizes the TRAINING loss). Eval it into eval_holdout_val_best/ on
+    # the SAME test slice. No-ops silently when validation was disabled / older
+    # runs never produced the snapshot. Fully isolated (own checkpoint, own dir,
+    # own _shards) from the final + best passes.
+    val_best_path = os.path.join(checkpoint_dir, "model_val_best.eqx")
+    if os.path.isfile(val_best_path):
+        _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, val_best_path,
+                           training_spec, holdout_subdir="eval_holdout_val_best")
+    else:
+        _log(idx, "no model_val_best.eqx -- skipping validation-best held-out "
+                  "eval (in-loop validation disabled or older run)")
 
     return 0
 

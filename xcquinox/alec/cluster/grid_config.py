@@ -113,6 +113,16 @@ class HyperParams:
     # Decoupled L2 weight decay passed to train.build_optimizer (adamw). Default
     # 0.0 keeps existing sweeps byte-identical. 2026-06-20.
     weight_decay: float = 0.0
+    # Held-out VALIDATION slice (WS3, 2026-06-20). The held-out reactions are
+    # split val/test by eval_holdout.split_held_out(val_frac); the val slice
+    # drives in-loop early-stop + validation-best model selection, the test slice
+    # is what the held-out eval REPORTS. ALL default to a NO-OP so decay-free
+    # runs stay byte-identical: validate_every=0 => no in-loop validation;
+    # patience=0 => no early-stop.
+    val_frac: float = 0.2
+    validate_every: int = 0
+    patience: int = 0
+    early_stop_min_delta: float = 0.0
     pbe_anchor_weight: float = 0.0
     require_atom_anchors: bool = False
     seed: int = 42
@@ -167,6 +177,11 @@ class InputPaths:
     # eval tasks export XCQUINOX_BENCH_REFS_DIR so the held-out eval picks up
     # whatever references exist at eval time. None (default) = feature off.
     benchmark_refs_dir: str | None = None
+    # WS3 (2026-06-20): density-only SCF inputs for the VAL slice of the held-out
+    # pools, precomputed at preflight and scored in-loop for early-stop /
+    # validation-best selection. Mirrors ``benchmark_refs_dir``. None (default)
+    # = no in-loop validation precompute.
+    val_refs_dir: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +429,10 @@ def _build_hyperparams(d: dict) -> HyperParams:
         density_weight=_require(d, "density_weight", ctx),
         density_per_electron=bool(d.get("density_per_electron", False)),
         weight_decay=float(d.get("weight_decay", 0.0)),
+        val_frac=float(d.get("val_frac", 0.2)),
+        validate_every=int(d.get("validate_every", 0)),
+        patience=int(d.get("patience", 0)),
+        early_stop_min_delta=float(d.get("early_stop_min_delta", 0.0)),
         pbe_anchor_weight=d.get("pbe_anchor_weight", 0.0),
         require_atom_anchors=d.get("require_atom_anchors", False),
         seed=d.get("seed", 42),
@@ -444,6 +463,7 @@ def _build_inputs(d: dict) -> InputPaths:
         density_fit=bool(d.get("density_fit", False)),
         auxbasis=d.get("auxbasis"),
         benchmark_refs_dir=d.get("benchmark_refs_dir"),
+        val_refs_dir=d.get("val_refs_dir"),
     )
 
 
@@ -751,6 +771,49 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"hyperparams.update_scheme must be 'batched' or 'per_molecule', "
             f"got {hp.update_scheme!r}"
         )
+
+    # --- WS3 validation-slice knobs (2026-06-20) ---------------------------
+    # FIX 2 (WS3-CFG-2): bound the 4 new knobs at submit time.
+    if not (0.0 < hp.val_frac < 1.0):
+        raise ValueError(
+            f"hyperparams.val_frac must be in (0, 1), got {hp.val_frac}"
+        )
+    if hp.validate_every < 0:
+        raise ValueError(
+            f"hyperparams.validate_every must be >= 0, got {hp.validate_every}"
+        )
+    if hp.patience < 0:
+        raise ValueError(
+            f"hyperparams.patience must be >= 0, got {hp.patience}"
+        )
+    if hp.early_stop_min_delta < 0:
+        raise ValueError(
+            f"hyperparams.early_stop_min_delta must be >= 0, got "
+            f"{hp.early_stop_min_delta}"
+        )
+    # FIX 1 (asymmetric/dead-config guard): in-loop validation actually runs ONLY
+    # in train._run_per_molecule_loop (the only loop with the validation hook) and
+    # ONLY when the val slice was staged (inputs.val_refs_dir, which spec_builder
+    # uses to attach validation_molecules + validation_reactions_path). Without
+    # both, validate_every>0 would never validate yet the eval would still exclude
+    # a val slice (silent, non-comparable metric shrink). Make that unreachable at
+    # submit: validate_every>0 REQUIRES val_refs_dir AND update_scheme per_molecule.
+    if hp.validate_every > 0:
+        if not getattr(cfg.inputs, "val_refs_dir", None):
+            raise ValueError(
+                f"hyperparams.validate_every={hp.validate_every} > 0 but "
+                f"inputs.val_refs_dir is unset; in-loop validation needs the "
+                f"staged density-only val slice (val_refs_dir). Set val_refs_dir "
+                f"or set validate_every=0 to disable validation."
+            )
+        if hp.update_scheme != "per_molecule":
+            raise ValueError(
+                f"hyperparams.validate_every={hp.validate_every} > 0 requires "
+                f"update_scheme='per_molecule' (the only training loop with an "
+                f"in-loop validation hook); got update_scheme="
+                f"{hp.update_scheme!r}. The 'batched' loop never validates, so "
+                f"the eval would silently report a non-comparable shrunken metric."
+            )
     # The harness NEVER builds a PBE-anchor sample (spec_builder hardcodes
     # pbe_anchor_sample=None), so a positive pbe_anchor_weight is a silent
     # no-op for the A/B/C/D losses and a hard error for L5_gradnorm_vxc_step7

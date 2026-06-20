@@ -408,3 +408,142 @@ def test_prepare_inputs_does_not_precompute_when_ledger_invalid(
     with pytest.raises(ValueError):
         prepare_inputs(cfg)
     assert stub_refs["precompute"] == 0
+
+
+# ---------------------------------------------------------------------------
+# WS3 (2026-06-20): held-out VALIDATION-slice staging
+# ---------------------------------------------------------------------------
+
+class _FakeMolSpec:
+    """Minimal MoleculeSpec stand-in for held-out pool stubs."""
+    def __init__(self, name, charge=0, spin=0):
+        self.name = name
+        self.charge = charge
+        self.spin = spin
+        self.atom = f"{name} 0 0 0"
+        self.basis = "def2-svp"
+        self.grid_level = 1
+        self.atom_composition = ((name, 1),)
+
+
+def _fake_held_out_pools():
+    """A tiny held-out pool: 6 species, 4 reactions, returned in the
+    (mols_by_name, reactions) shape of load_full_held_out_pools."""
+    names = ["A", "B", "C", "D", "E", "F"]
+    mols = {n: _FakeMolSpec(n) for n in names}
+    reactions = [
+        {"name": "rxn0", "source_pool": "bh76", "reactants": ["A"],
+         "products": ["B"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 1.0},
+        {"name": "rxn1", "source_pool": "bh76", "reactants": ["C"],
+         "products": ["D"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 2.0},
+        {"name": "rxn2", "source_pool": "w411", "reactants": ["E"],
+         "products": ["F"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 3.0},
+        {"name": "rxn3", "source_pool": "w411", "reactants": ["A"],
+         "products": ["F"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 4.0},
+    ]
+    return mols, reactions
+
+
+@pytest.fixture
+def stub_val_slice(monkeypatch):
+    """Stub the held-out-pool load + spy on the SCF primitive.
+
+    FIX 4 (WS3-INPUTS-01): validation is energy-only and rebuilds its PBE density
+    at train time (``data.precompute_fixed_density_data`` runs a fresh SCF and
+    NEVER reads any ``val_refs_dir`` cache). The preflight val-slice SCF precompute
+    was therefore pure wasted SCF whose artifact path no spec ever resolved -- it
+    is removed. The spy patches the underlying SCF primitive
+    (``external_refs.run_scf_with_cache``) so any regression that re-introduces a
+    val-slice precompute FAILS the no-waste tests below (precompute == 0)."""
+    import xcquinox.alec.external_refs as _ext
+    calls = {"precompute": 0}
+
+    def fake_load_pools(basis="def2-svp", grid_level=1, refs_dir=None):
+        return _fake_held_out_pools()
+
+    def fake_run_scf_with_cache(*a, **k):
+        calls["precompute"] += 1
+        return {}
+
+    monkeypatch.setattr(inputs_mod, "_load_full_held_out_pools",
+                        fake_load_pools)
+    monkeypatch.setattr(_ext, "run_scf_with_cache", fake_run_scf_with_cache)
+    return calls
+
+
+def test_stage_validation_slice_writes_disjoint_val_reactions(
+        tmp_path, stub_val_slice):
+    """_stage_validation_slice splits the held-out pool and writes a
+    val_reactions.json that is the val slice and DISJOINT from the test slice.
+
+    FIX 4: it must NOT precompute any SCF (validation rebuilds the density at
+    train time; the preflight precompute was dead + wasted). val_reactions.json
+    staging IS still needed (the train loop scores these reactions)."""
+    from xcquinox.alec.cluster.inputs import _stage_validation_slice
+    from xcquinox.alec.eval_holdout import split_held_out
+
+    cfg = _make_cfg(tmp_path)
+    import dataclasses
+    cfg = dataclasses.replace(
+        cfg, inputs=dataclasses.replace(
+            cfg.inputs, val_refs_dir=str(tmp_path / "val_refs")))
+    run_dir = str(tmp_path / "run")
+
+    val_rxns = _stage_validation_slice(cfg, run_dir)
+
+    # val_reactions.json written under <run_dir>/validation/.
+    val_json = tmp_path / "run" / "validation" / "val_reactions.json"
+    assert val_json.is_file()
+    with open(val_json) as f:
+        on_disk = json.load(f)
+
+    _mols, reactions = _fake_held_out_pools()
+    exp_val, exp_test = split_held_out(reactions, val_frac=cfg.hyperparams.val_frac)
+    assert {r["name"] for r in on_disk} == {r["name"] for r in exp_val}
+    assert {r["name"] for r in val_rxns} == {r["name"] for r in exp_val}
+    # disjoint from the test slice -> the reported eval can never see val.
+    assert ({r["name"] for r in on_disk}
+            .isdisjoint({r["name"] for r in exp_test}))
+
+    # FIX 4: NO wasted SCF precompute (dead path removed).
+    assert stub_val_slice["precompute"] == 0
+
+
+def test_prepare_inputs_stages_val_slice_when_configured(
+        tmp_path, stub_pool, stub_refs, stub_val_slice):
+    """prepare_inputs(cfg, run_dir=...) stages the val slice when
+    inputs.val_refs_dir is set; the val_reactions.json appears under run_dir and
+    NO val-slice SCF precompute runs (FIX 4)."""
+    import dataclasses
+    cfg = _make_cfg(tmp_path)
+    cfg = dataclasses.replace(
+        cfg, inputs=dataclasses.replace(
+            cfg.inputs, val_refs_dir=str(tmp_path / "val_refs")))
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+    run_dir = str(tmp_path / "run")
+
+    prepare_inputs(cfg, run_dir=run_dir)
+
+    assert (tmp_path / "run" / "validation" / "val_reactions.json").is_file()
+    assert stub_val_slice["precompute"] == 0
+
+
+def test_prepare_inputs_skips_val_slice_when_not_configured(
+        tmp_path, stub_pool, stub_refs, stub_val_slice):
+    """No val_refs_dir (default) OR no run_dir -> the val-slice staging is a
+    NO-OP, so existing runs are byte-identical (no file written)."""
+    cfg = _make_cfg(tmp_path)            # val_refs_dir defaults to None
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+
+    # run_dir given but val_refs_dir None -> skip.
+    prepare_inputs(cfg, run_dir=str(tmp_path / "run"))
+    assert stub_val_slice["precompute"] == 0
+    assert not (tmp_path / "run" / "validation").exists()
+
+    # val_refs_dir set but run_dir omitted -> skip (no place to write reactions).
+    import dataclasses
+    cfg2 = dataclasses.replace(
+        cfg, inputs=dataclasses.replace(
+            cfg.inputs, val_refs_dir=str(tmp_path / "val_refs")))
+    prepare_inputs(cfg2)
+    assert stub_val_slice["precompute"] == 0

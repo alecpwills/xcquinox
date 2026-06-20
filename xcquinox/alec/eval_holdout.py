@@ -26,6 +26,7 @@ Schema for the reaction dicts these helpers consume mirrors
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib
 import json
 import math
@@ -124,6 +125,31 @@ def filter_reactions(
         else:
             kept.append({**rxn, "in_sample_overlap": overlap})
     return kept, dropped
+
+
+def split_held_out(
+    reactions: Sequence[Dict[str, Any]],
+    val_frac: float = 0.2,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Deterministically partition held-out ``reactions`` into ``(val, test)``.
+
+    The val slice (~``val_frac``) drives in-training early-stop and
+    validation-best model selection; the test slice is what the held-out eval
+    REPORTS. Assignment is by a STABLE hash of ``reaction["name"]`` (hashlib,
+    not the salted builtin ``hash``), so the split is identical across runs,
+    processes and input order -- every spec sees the same val/test partition and
+    a reaction can never land in both (no val<->test leakage into the reported
+    metric). 2026-06-20 (WS3).
+    """
+    if not (0.0 < val_frac < 1.0):
+        raise ValueError(f"val_frac must be in (0, 1), got {val_frac}")
+    val: List[Dict[str, Any]] = []
+    test: List[Dict[str, Any]] = []
+    for rxn in reactions:
+        digest = hashlib.md5(str(rxn["name"]).encode("utf-8")).hexdigest()
+        frac = int(digest[:8], 16) / 0xFFFFFFFF   # deterministic [0, 1]
+        (val if frac < val_frac else test).append(rxn)
+    return val, test
 
 
 def _spec_is_atom(mol_spec) -> bool:

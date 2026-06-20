@@ -278,11 +278,163 @@ class _BestModelTracker:
                 self.best_model = model
 
 
-def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None) -> dict:
+class _BestValidationTracker:
+    """Tracks the model snapshot at the minimum HELD-OUT VALIDATION metric
+    (lower = better, e.g. reaction-energy MAE in kcal/mol) and drives in-loop
+    early-stop. WS3 (2026-06-20): the over-capacity DFS nets overfit the tiny
+    training subset, so we periodically score a disjoint validation slice and
+    keep the validation-best snapshot, stopping once it stops improving.
+
+    Distinct from :class:`_BestModelTracker` (which minimizes the TRAINING loss,
+    a quantity that keeps dropping as the net overfits): this minimizes a
+    GENERALIZATION metric, so its best snapshot is the one that generalizes best,
+    not merely the lowest train loss.
+
+    ``update(metric, model)`` records one validation check (the metric is the
+    val MAE; ``model`` is the live snapshot, JAX arrays are immutable so the
+    reference snapshots the current params). Non-finite metrics are IGNORED:
+    they update neither the best snapshot nor the no-improvement streak (a NaN
+    val score is a transient, not evidence of non-improvement).
+
+    ``should_stop(patience, min_delta)`` returns True once the last ``patience``
+    consecutive FINITE checks each failed to improve the running best by more
+    than ``min_delta`` (the streak is computed from the recorded finite-metric
+    history, so ``min_delta`` lives entirely in ``should_stop`` and a single
+    tracker can be probed at different thresholds). ``patience <= 0`` => never
+    stops (the documented no-op).
+    """
+
+    def __init__(self):
+        self.best_mae = float("inf")
+        self.best_model = None
+        # Finite val metrics in arrival order; the no-improvement streak that
+        # drives early-stop is derived from this (using should_stop's min_delta),
+        # NOT stored, so min_delta is a should_stop-only concern.
+        self._finite_metrics: list = []
+
+    def update(self, metric: float, model) -> None:
+        m = float(metric)
+        if not np.isfinite(m):
+            return                       # transient NaN/inf: ignore entirely
+        self._finite_metrics.append(m)
+        # The best SNAPSHOT is the numerically-lowest val metric seen so far
+        # (the best-generalizing model), even when the last drop was tiny.
+        if m < self.best_mae:
+            self.best_mae = m
+            self.best_model = model
+
+    def should_stop(self, patience: int, min_delta: float = 0.0) -> bool:
+        if int(patience) <= 0:
+            return False                 # no-op: early-stop disabled
+        patience = int(patience)
+        md = float(min_delta)
+        # No-improvement streak: count trailing finite checks that each failed to
+        # beat the best-so-far (over the prefix BEFORE that check) by > min_delta.
+        streak = 0
+        for i in range(len(self._finite_metrics) - 1, 0, -1):
+            best_prefix = min(self._finite_metrics[:i])
+            if self._finite_metrics[i] < best_prefix - md:
+                break                    # this check improved -> streak ends
+            streak += 1
+            if streak >= patience:
+                return True
+        return False
+
+
+def _build_validation_data(spec):
+    """Build ``(val_mol_data, val_reactions)`` for the in-loop held-out
+    validation, or ``(None, None)`` when validation is DISABLED. WS3.
+
+    Disabled (returns ``(None, None)``, the byte-identical no-op) when
+    ``spec.validate_every <= 0`` OR no ``validation_molecules`` OR no
+    ``validation_reactions_path``. Otherwise precompute density-only MoleculeData
+    for each ``validation_molecules`` entry via the SAME
+    :func:`precompute_fixed_density_data` path the training batch uses (matching
+    descriptor signature + DF/auxbasis from the spec's solver_config), and load
+    the val reaction dicts from the JSON at ``validation_reactions_path``.
+
+    Module-level so :func:`_run_per_molecule_loop` can call it through a
+    monkeypatchable seam (tests stub it to avoid PySCF).
+    """
+    if int(getattr(spec, "validate_every", 0)) <= 0:
+        return (None, None)
+    val_mols = tuple(getattr(spec, "validation_molecules", ()) or ())
+    rxn_path = getattr(spec, "validation_reactions_path", None)
+    if not val_mols or not rxn_path:
+        return (None, None)
+
+    # Descriptor + DF/auxbasis signature mirrors _build_batch so the val SCF
+    # inputs match what the model consumes.
+    required = set()
+    for d in spec.arch.materialize_descriptors():
+        required |= set(d.required_mol_keys)
+    sc = spec.loss_kwargs_dict.get("solver_config") or spec.solver_config
+    density_fit = False
+    if isinstance(sc, SolverConfig) and sc.mode == SolverMode.FULL:
+        density_fit = bool(getattr(sc, "density_fit", False))
+        required.add("cderi" if density_fit else "eri")
+    auxbasis = getattr(sc, "auxbasis", None) if density_fit else None
+    required_keys = tuple(required)
+
+    val_mol_data = {
+        m.name: precompute_fixed_density_data(
+            m, required_keys=required_keys,
+            descriptors=spec.arch.materialize_descriptors(),
+            auxbasis=auxbasis,
+        )
+        for m in val_mols
+    }
+    with open(rxn_path) as f:
+        val_reactions = json.load(f)
+    return (val_mol_data, val_reactions)
+
+
+def _validation_reaction_mae(model, val_mol_data, val_reactions,
+                             solver_config=None, *, energy_fn=None) -> float:
+    """In-loop held-out VALIDATION reaction-energy MAE (kcal/mol). WS3.
+
+    For every species in ``val_mol_data`` compute a total energy via the SAME
+    energy path the training loss uses (``oneshot.total_energy_for_solver``,
+    dispatched on the solver MODE so FULL re-runs the SCF and ONESHOT/FIXED_J
+    use the fixed-density functional), then aggregate per-reaction errors against
+    ``reaction_energy_ref`` with :func:`eval_holdout.reaction_mae_kcalmol`. A
+    species whose energy is non-finite drops its reaction; with no finite
+    reactions the MAE is NaN (the tracker ignores it).
+
+    ``energy_fn(model, mol_data)`` is an injectable seam: the default is
+    ``total_energy_for_solver`` bound to ``solver_config``; tests pass a stub so
+    the pure MAE assembly runs with NO PySCF. Returns a Python float.
+    """
+    from xcquinox.alec.eval_holdout import reaction_mae_kcalmol
+    if energy_fn is None:
+        from xcquinox.alec.oneshot import total_energy_for_solver
+
+        def energy_fn(m, md):
+            return float(total_energy_for_solver(m, md,
+                                                 solver_config=solver_config))
+    energies_ha: dict = {}
+    for name, md in val_mol_data.items():
+        try:
+            e = float(energy_fn(model, md))
+        except Exception:  # noqa: BLE001 -- a diverged species drops its reaction
+            e = float("nan")
+        energies_ha[name] = e if math.isfinite(e) else float("nan")
+    mae, _n_used, _n_nan = reaction_mae_kcalmol(energies_ha, val_reactions)
+    return float(mae)
+
+
+def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
+                    val_best_model=None, extra_metadata=None) -> dict:
     """Save model.eqx (final), losses.npy, aux_log, train_metadata.json. If a
     best-loss snapshot is given, ALSO write model_best.eqx side-by-side (the
     final model.eqx is still written) so eval can opt into the pre-instability
-    checkpoint."""
+    checkpoint.
+
+    WS3: ``val_best_model`` (the minimum held-out-validation snapshot) is written
+    to ``model_val_best.eqx`` when present, and ``extra_metadata`` (e.g.
+    ``early_stopped`` / ``epochs_run`` / ``val_best_mae``) is merged into
+    train_metadata.json. Both default to no-op so non-validating runs are
+    byte-identical."""
     os.makedirs(spec.checkpoint_dir, exist_ok=True)
 
     model_path = os.path.join(spec.checkpoint_dir, "model.eqx")
@@ -290,6 +442,10 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None) -> 
     if best_model is not None:
         eqx.tree_serialise_leaves(
             os.path.join(spec.checkpoint_dir, "model_best.eqx"), best_model)
+    if val_best_model is not None:
+        eqx.tree_serialise_leaves(
+            os.path.join(spec.checkpoint_dir, "model_val_best.eqx"),
+            val_best_model)
 
     losses_np = np.array(losses, dtype=np.float64)
     np.save(os.path.join(spec.checkpoint_dir, "losses.npy"), losses_np)
@@ -332,6 +488,16 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None) -> 
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }
+    # FIX 3 (WS3-ESV-1): add the validation metadata keys ONLY when validation
+    # actually ran (a val-best snapshot was taken, or the loop passed validation
+    # extras). Otherwise the key set is BYTE-IDENTICAL to pre-WS3 -- a non-
+    # validating run (any loop, or per_molecule with validate_every=0) must not
+    # gain has_val_best_checkpoint / early_stopped / val_* keys.
+    val_ran = val_best_model is not None or bool(extra_metadata)
+    if val_ran:
+        metadata["has_val_best_checkpoint"] = val_best_model is not None
+    if extra_metadata:
+        metadata.update(extra_metadata)
 
     md_path = os.path.join(spec.checkpoint_dir, "train_metadata.json")
     with open(md_path, "w") as f:
@@ -889,6 +1055,19 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     tracker = _BestModelTracker(window=n_groups)  # epoch-scale trailing mean
     update = 0
     loss_py = float("nan")
+
+    # WS3: held-out validation -> early-stop + validation-best snapshot. A no-op
+    # when validate_every<=0 / no val data (_build_validation_data -> None,None):
+    # the loop is then byte-identical to before. solver_config matches training
+    # so the val energy path == the loss energy path.
+    val_every = int(getattr(spec, "validate_every", 0))
+    val_mol_data, val_reactions = _build_validation_data(spec)
+    val_enabled = val_every > 0 and val_mol_data is not None
+    val_tracker = _BestValidationTracker() if val_enabled else None
+    val_solver_config = (spec.loss_kwargs_dict.get("solver_config")
+                         or spec.solver_config)
+    early_stopped = False
+    epochs_run = 0
     for epoch in range(n_epochs):
         rng.shuffle(order)
         for gi in order:
@@ -907,12 +1086,48 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                 "update_scheme": "per_molecule",
             })
             update += 1
+        epochs_run = epoch + 1
         if progress_hook is not None:
             progress_hook(epoch + 1, n_epochs, loss_py)
+        # Validation check every `validate_every` epochs.
+        if val_enabled and (epoch + 1) % val_every == 0:
+            val_mae = _validation_reaction_mae(
+                model, val_mol_data, val_reactions,
+                solver_config=val_solver_config)
+            val_tracker.update(val_mae, model)
+            aux_log.append({
+                "step": update, "epoch": epoch, "group": "__validation__",
+                "val_mae_kcalmol": (float(val_mae)
+                                    if np.isfinite(val_mae) else None),
+                "update_scheme": "per_molecule",
+            })
+            if val_tracker.should_stop(spec.patience, spec.early_stop_min_delta):
+                early_stopped = True
+                break
 
     duration = time.time() - t0
-    return _save_artifacts(spec, model, losses_list, aux_log, duration,
-                           best_model=tracker.best_model)
+    # FIX 3 (WS3-ESV-1): only emit the validation extras when validation ran;
+    # a per_molecule run with validate_every=0 then writes the PRE-WS3 metadata
+    # key set byte-identically (no early_stopped / val_* keys).
+    extra_metadata = None
+    val_best_model = None
+    if val_enabled:
+        extra_metadata = {
+            "epochs_run": epochs_run,
+            "n_epochs_configured": n_epochs,
+            "early_stopped": early_stopped,
+            "validate_every": val_every,
+            "patience": int(getattr(spec, "patience", 0)),
+            "val_best_mae": (float(val_tracker.best_mae)
+                             if val_tracker is not None
+                             and np.isfinite(val_tracker.best_mae) else None),
+        }
+        val_best_model = val_tracker.best_model
+    return _save_artifacts(
+        spec, model, losses_list, aux_log, duration,
+        best_model=tracker.best_model,
+        val_best_model=val_best_model,
+        extra_metadata=extra_metadata)
 
 
 # ---------------------------------------------------------------------------

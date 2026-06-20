@@ -421,6 +421,34 @@ def test_training_spec_default_solver_config_is_none():
     assert spec.solver_config is None
 
 
+def test_training_spec_validation_fields_default_empty():
+    """2026-06-20 (WS3): validation-slice fields default to no-op
+    (None path + empty molecules) so existing specs stay byte-identical."""
+    from xcquinox.alec.config import TrainingSpec, ArchitectureConfig, MoleculeSpec
+
+    arch = ArchitectureConfig(
+        name="t", depth=2, nodes=8, attention=False,
+        descriptors=(), x_constraints=(), c_constraints=(),
+        double_lob_clamp_allowed=False,
+    )
+    mols = (MoleculeSpec(
+        name="H", atom="H 0 0 0", basis="sto-3g",
+        charge=0, spin=1, atom_composition=(("H", 1),),
+    ),)
+    spec = TrainingSpec(
+        arch=arch, molecules=mols,
+        targets=(("H", 0.0),), atom_energies=(("H", -0.5),),
+        loss_name="A_atomization",
+    )
+    assert spec.validation_reactions_path is None
+    assert spec.validation_molecules == ()
+    # in-loop validation knobs default to a no-op (validate_every=0 disables it).
+    assert spec.val_frac == 0.2
+    assert spec.validate_every == 0
+    assert spec.patience == 0
+    assert spec.early_stop_min_delta == 0.0
+
+
 def test_test_spec_default_solver_config_is_none():
     from xcquinox.alec.config import TestSpec, ArchitectureConfig, MoleculeSpec
 

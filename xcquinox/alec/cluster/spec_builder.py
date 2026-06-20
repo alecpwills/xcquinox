@@ -56,6 +56,14 @@ from xcquinox.alec.solver import SolverConfig, SolverMode, FeaturePolicy
 from xcquinox.alec import get_architecture
 
 
+def _load_full_held_out_pools(basis="def2-svp", grid_level=1, refs_dir=None):
+    """Seam wrapping ``full_benchmark_pools.load_full_held_out_pools`` (module-
+    level so the WS3 validation-attachment tests can stub the heavy pool load)."""
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+    return load_full_held_out_pools(basis=basis, grid_level=grid_level,
+                                    refs_dir=refs_dir)
+
+
 # ---------------------------------------------------------------------------
 # ASE Atoms -> MoleculeSpec helpers (ports of the notebook's _-prefixed forms)
 # ---------------------------------------------------------------------------
@@ -269,6 +277,69 @@ def _checkpoint_dir(run_dir: str, idx: int, n: int) -> str:
 # ---------------------------------------------------------------------------
 # Main builders
 # ---------------------------------------------------------------------------
+
+def _val_mol_spec_from_held_out(ms, *, basis, grid_level, val_refs_dir):
+    """Rebuild a held-out-pool MoleculeSpec as a VALIDATION MoleculeSpec.
+    The geometry/charge/spin/composition come straight from the held-out spec.
+
+    FIX 4 (WS3-INPUTS-01): ``external_data_path`` is ALWAYS None. In-loop
+    validation scores reaction energies only, and its MoleculeData is rebuilt at
+    train time by :func:`xcquinox.alec.data.precompute_fixed_density_data`, which
+    runs its OWN PBE SCF and -- for validation -- consumes NO external reference
+    (no dm_target / rho_ref / E_ref). The old wiring pointed at
+    ``<val_refs_dir>/<name>.npz``, a file the preflight never created (its SCF
+    precompute wrote ``_intermediates/<name>_g..._scf.npz`` instead), so it never
+    resolved and supplied no key validation uses. ``val_refs_dir`` is retained in
+    the signature only to keep the caller stable."""
+    return MoleculeSpec.from_dict(
+        name=ms.name,
+        atom=ms.atom,
+        basis=basis,
+        charge=int(getattr(ms, "charge", 0)),
+        spin=int(getattr(ms, "spin", 0)),
+        atom_composition=dict(ms.atom_composition),
+        grid_level=grid_level,
+        external_data_path=None,
+    )
+
+
+def _attach_validation_slice(spec, cfg, run_dir):
+    """Attach the held-out VALIDATION slice (MoleculeSpecs + reactions path) to a
+    TrainingSpec. WS3.
+
+    No-op (returns ``spec`` unchanged) when in-loop validation is not configured:
+    ``cfg.inputs.val_refs_dir`` unset, OR ``spec.validate_every <= 0``, OR the
+    staged ``<run_dir>/validation/val_reactions.json`` is absent (e.g. the
+    preflight val-slice staging has not run). Otherwise build the val
+    MoleculeSpecs from the held-out pools (same val species the preflight staged,
+    pointing at ``val_refs_dir``) and set ``validation_molecules`` +
+    ``validation_reactions_path`` on the spec."""
+    val_refs_dir = getattr(cfg.inputs, "val_refs_dir", None)
+    if not val_refs_dir or int(getattr(spec, "validate_every", 0)) <= 0:
+        return spec
+    val_json = os.path.join(run_dir, "validation", "val_reactions.json")
+    if not os.path.isfile(val_json):
+        return spec
+
+    import json
+    with open(val_json) as f:
+        val_rxns = json.load(f)
+    wanted = set()
+    for r in val_rxns:
+        wanted |= set(r.get("reactants", ())) | set(r.get("products", ()))
+
+    mols_by_name, _reactions = _load_full_held_out_pools(
+        basis=cfg.inputs.basis, grid_level=cfg.inputs.grid_level)
+    val_mols = tuple(
+        _val_mol_spec_from_held_out(
+            mols_by_name[n], basis=cfg.inputs.basis,
+            grid_level=cfg.inputs.grid_level, val_refs_dir=val_refs_dir)
+        for n in sorted(wanted) if n in mols_by_name
+    )
+    return dataclasses.replace(
+        spec, validation_molecules=val_mols,
+        validation_reactions_path=val_json)
+
 
 def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None):
     """Assemble one :class:`TrainingSpec` per :class:`GridCell`.
@@ -502,7 +573,19 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             require_atom_anchors=False,
             update_scheme=hp.update_scheme,
             channel_weights=hp.channel_weights,
+            # WS3 (2026-06-20): in-loop held-out validation cadence + early-stop,
+            # threaded from HyperParams like weight_decay. validate_every=0 (the
+            # default) is a no-op; validation_molecules / validation_reactions_path
+            # are attached separately by _attach_validation_slice when the run
+            # configures a val_refs_dir.
+            val_frac=hp.val_frac,
+            validate_every=hp.validate_every,
+            patience=hp.patience,
+            early_stop_min_delta=hp.early_stop_min_delta,
         )
+        # WS3: attach the held-out validation slice (no-op unless val_refs_dir +
+        # validate_every>0 + a staged val_reactions.json under run_dir).
+        spec = _attach_validation_slice(spec, cfg, run_dir)
         out.append((cell, spec))
     return out
 

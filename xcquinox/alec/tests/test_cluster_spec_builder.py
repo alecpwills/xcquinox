@@ -416,6 +416,165 @@ def test_build_training_specs_hyperparams_wired(tmp_path):
     assert lk["regularize_atom_syms"] == ("H", "Li")
 
 
+def test_build_training_specs_validation_knobs_default_noop(tmp_path):
+    """WS3: with no validation config, the validation knobs on each spec stay at
+    their no-op defaults (validate_every=0) and no validation molecules/path are
+    attached, so existing runs are byte-identical."""
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    _cell, spec = out[0]
+    assert spec.validate_every == 0
+    assert spec.patience == 0
+    assert spec.val_frac == pytest.approx(0.2)
+    assert spec.early_stop_min_delta == 0.0
+    assert spec.validation_molecules == ()
+    assert spec.validation_reactions_path is None
+
+
+def test_build_training_specs_threads_validation_knobs(tmp_path):
+    """WS3: validate_every/patience/val_frac/early_stop_min_delta flow from
+    HyperParams onto every TrainingSpec (mirrors weight_decay threading)."""
+    import dataclasses
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    hp = dataclasses.replace(cfg.hyperparams, validate_every=5, patience=3,
+                             val_frac=0.25, early_stop_min_delta=0.02)
+    cfg = dataclasses.replace(cfg, hyperparams=hp)
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    for _cell, spec in out:
+        assert spec.validate_every == 5
+        assert spec.patience == 3
+        assert spec.val_frac == pytest.approx(0.25)
+        assert spec.early_stop_min_delta == pytest.approx(0.02)
+
+
+def test_attach_validation_slice_noop_without_config(tmp_path):
+    """WS3: _attach_validation_slice is a no-op (spec unchanged) when there is no
+    val_refs_dir, or validation is disabled, or val_reactions.json is absent."""
+    from xcquinox.alec.cluster.spec_builder import _attach_validation_slice
+
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)            # val_refs_dir defaults to None
+    out = build_training_specs(pool, ledger, cfg, domain, str(tmp_path / "run"))
+    _cell, spec = out[0]
+    # validate_every is 0 here AND val_refs_dir is None -> unchanged.
+    same = _attach_validation_slice(spec, cfg, str(tmp_path / "run"))
+    assert same.validation_molecules == ()
+    assert same.validation_reactions_path is None
+
+
+def test_attach_validation_slice_wires_molecules_and_path(tmp_path, monkeypatch):
+    """WS3: when val_refs_dir is set, validation is enabled, and the staged
+    val_reactions.json exists, _attach_validation_slice sets validation_molecules
+    and validation_reactions_path on the spec.
+
+    FIX 4 (WS3-INPUTS-01): validation is energy-only and rebuilds the PBE density
+    at train time (precompute_fixed_density_data runs its own SCF, never reading
+    any external .npz for validation). The val MoleculeSpecs therefore carry NO
+    external_data_path -- the old <val_refs_dir>/<name>.npz wiring never resolved
+    (the precompute wrote to _intermediates/) and supplied no key validation uses."""
+    import dataclasses as _dc
+    import json as _json
+    from xcquinox.alec.cluster import spec_builder as sb
+    from xcquinox.alec.cluster.spec_builder import _attach_validation_slice
+    from xcquinox.alec.config import MoleculeSpec
+
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    hp = _dc.replace(_make_cfg(tmp_path).hyperparams, validate_every=2,
+                     val_frac=0.2)
+    cfg = _make_cfg(tmp_path)
+    val_refs = tmp_path / "val_refs"
+    val_refs.mkdir()
+    cfg = _dc.replace(cfg, hyperparams=hp,
+                      inputs=_dc.replace(cfg.inputs, val_refs_dir=str(val_refs)))
+    run_dir = tmp_path / "run"
+    (run_dir / "validation").mkdir(parents=True)
+
+    # Stage val_reactions.json (the file prepare_inputs would write). Even a stub
+    # .npz sitting at <val_refs>/VA.npz must NOT be wired (validation is density-
+    # rebuilt at runtime; FIX 4).
+    val_rxns = [{"name": "vr0", "source_pool": "bh76", "reactants": ["VA"],
+                 "products": ["VB"], "coeffs": [-1.0, 1.0],
+                 "reaction_energy_ref": 5.0}]
+    with open(run_dir / "validation" / "val_reactions.json", "w") as f:
+        _json.dump(val_rxns, f)
+    (val_refs / "VA.npz").write_bytes(b"stub")
+
+    # Stub the held-out pool load so spec_builder gets the val species' specs.
+    def fake_load_pools(basis="def2-svp", grid_level=1, refs_dir=None):
+        mols = {
+            "VA": MoleculeSpec(name="VA", atom="O 0 0 0", basis=basis,
+                               atom_composition=(("O", 1),), grid_level=grid_level),
+            "VB": MoleculeSpec(name="VB", atom="N 0 0 0", basis=basis,
+                               atom_composition=(("N", 1),), grid_level=grid_level),
+        }
+        return mols, val_rxns
+    monkeypatch.setattr(sb, "_load_full_held_out_pools", fake_load_pools)
+
+    spec = build_training_specs(pool, ledger, cfg, domain, str(run_dir))[0][1]
+    wired = _attach_validation_slice(spec, cfg, str(run_dir))
+
+    assert wired.validation_reactions_path == str(
+        run_dir / "validation" / "val_reactions.json")
+    by_name = {m.name: m for m in wired.validation_molecules}
+    assert set(by_name) == {"VA", "VB"}
+    # FIX 4: NO external_data_path wiring -- validation rebuilds density at runtime.
+    assert by_name["VA"].external_data_path is None
+    assert by_name["VB"].external_data_path is None
+
+
+def test_build_training_specs_attaches_validation_when_configured(
+        tmp_path, monkeypatch):
+    """End-to-end: build_training_specs sets validation_molecules +
+    validation_reactions_path on EVERY spec when the run configures validation."""
+    import dataclasses as _dc
+    import json as _json
+    from xcquinox.alec.cluster import spec_builder as sb
+    from xcquinox.alec.config import MoleculeSpec
+
+    domain = get_domain_profile("dfs_step7")
+    pool = _make_pool()
+    ledger = _make_ledger()
+    cfg = _make_cfg(tmp_path)
+    val_refs = tmp_path / "val_refs"
+    val_refs.mkdir()
+    hp = _dc.replace(cfg.hyperparams, validate_every=2)
+    cfg = _dc.replace(cfg, hyperparams=hp,
+                      inputs=_dc.replace(cfg.inputs, val_refs_dir=str(val_refs)))
+    run_dir = tmp_path / "run"
+    (run_dir / "validation").mkdir(parents=True)
+    val_rxns = [{"name": "vr0", "source_pool": "bh76", "reactants": ["VA"],
+                 "products": ["VB"], "coeffs": [-1.0, 1.0],
+                 "reaction_energy_ref": 5.0}]
+    with open(run_dir / "validation" / "val_reactions.json", "w") as f:
+        _json.dump(val_rxns, f)
+
+    def fake_load_pools(basis="def2-svp", grid_level=1, refs_dir=None):
+        mols = {
+            "VA": MoleculeSpec(name="VA", atom="O 0 0 0", basis=basis,
+                               atom_composition=(("O", 1),), grid_level=grid_level),
+            "VB": MoleculeSpec(name="VB", atom="N 0 0 0", basis=basis,
+                               atom_composition=(("N", 1),), grid_level=grid_level),
+        }
+        return mols, val_rxns
+    monkeypatch.setattr(sb, "_load_full_held_out_pools", fake_load_pools)
+
+    out = build_training_specs(pool, ledger, cfg, domain, str(run_dir))
+    for _cell, spec in out:
+        assert spec.validation_reactions_path == str(
+            run_dir / "validation" / "val_reactions.json")
+        assert {m.name for m in spec.validation_molecules} == {"VA", "VB"}
+
+
 def test_build_training_specs_missing_cell_raises(tmp_path):
     """A grid cell with no ledger entry fails fast, naming the missing key."""
     domain = get_domain_profile("dfs_step7")

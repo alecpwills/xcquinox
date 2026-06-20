@@ -67,6 +67,14 @@ _build_species_union = _external_refs.build_species_union
 _ensure_pretrain_data = _pretrain_data_gen.ensure_pretrain_data
 
 
+def _load_full_held_out_pools(basis="def2-svp", grid_level=1, refs_dir=None):
+    """Seam wrapping ``full_benchmark_pools.load_full_held_out_pools`` (module-
+    level so the WS3 val-slice staging tests can stub the heavy pool load)."""
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+    return load_full_held_out_pools(basis=basis, grid_level=grid_level,
+                                    refs_dir=refs_dir)
+
+
 def _get_domain_profile(name):
     """Seam wrapping ``domain.get_domain_profile`` (module-level so tests can
     monkeypatch the pool/CCSD strategy without the real heavy pool build)."""
@@ -196,10 +204,51 @@ def _load_subset_ledger(cfg: GridConfig) -> dict:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def _stage_validation_slice(cfg: GridConfig, run_dir: str):
+    """Stage the held-out VALIDATION slice (WS3).
+
+    Loads the held-out pools at the run's basis/grid, splits the reactions
+    val/test via :func:`eval_holdout.split_held_out` (``cfg.hyperparams.val_frac``
+    -- the SAME deterministic split the eval reports the test side of), and writes
+    the val reaction dicts to ``<run_dir>/validation/val_reactions.json``.
+
+    FIX 4 (WS3-INPUTS-01): there is NO SCF precompute here. The in-loop
+    validation MAE is reaction-energy-only against PUBLISHED references, and the
+    val MoleculeData is rebuilt at TRAIN time by
+    :func:`xcquinox.alec.data.precompute_fixed_density_data` (via
+    :func:`train._build_validation_data`), which runs its OWN PBE SCF and never
+    consults any ``val_refs_dir`` cache. The previous ``_precompute_val_refs``
+    call wrote ``<val_refs_dir>/_intermediates/<name>_g..._scf.npz`` that NOTHING
+    read (and that no spec's ``external_data_path`` ever resolved to), so it was
+    pure wasted compute -- removed. Only the ``val_reactions.json`` staging is
+    needed (the train loop loads those reaction dicts).
+
+    Returns the val reaction list. The caller (``prepare_inputs``) only invokes
+    this when ``cfg.inputs.val_refs_dir`` AND ``run_dir`` are both set, so it is a
+    no-op for runs that do not configure in-loop validation."""
+    from xcquinox.alec.eval_holdout import split_held_out
+
+    val_frac = float(getattr(cfg.hyperparams, "val_frac", 0.2))
+    _mols_by_name, reactions = _load_full_held_out_pools(
+        basis=cfg.inputs.basis, grid_level=cfg.inputs.grid_level)
+    val_rxns, _test_rxns = split_held_out(reactions, val_frac=val_frac)
+
+    val_dir = os.path.join(run_dir, "validation")
+    os.makedirs(val_dir, exist_ok=True)
+    with open(os.path.join(val_dir, "val_reactions.json"), "w") as f:
+        json.dump(list(val_rxns), f, indent=2)
+    print(f"[val-slice] staged {len(val_rxns)} val reactions "
+          f"(val_frac={val_frac}); reactions -> "
+          f"{val_dir}/val_reactions.json. Val density is rebuilt at train time "
+          f"(no SCF precompute).", flush=True)
+    return list(val_rxns)
+
+
 def prepare_inputs(
     cfg: GridConfig,
     *,
     recompute_refs: bool = True,
+    run_dir: str | None = None,
 ) -> StagedInputs:
     """Stage the harness's input artifacts (consume-only for subsets).
 
@@ -298,5 +347,12 @@ def prepare_inputs(
             **({"atoms": tuple(tuple(a) for a in cfg.pretrain.atoms)}
                if getattr(cfg.pretrain, "atoms", ()) else {}),
         )
+
+    # --- 5. stage the held-out VALIDATION slice (WS3, option a) -------------
+    # Only when a val_refs_dir is configured AND a run_dir is given (the
+    # val_reactions.json lives under run_dir). No-op otherwise so existing runs
+    # stay byte-identical. Density-only (PBE SCF), skip-if-cached, no CCSD/OEP.
+    if getattr(cfg.inputs, "val_refs_dir", None) and run_dir:
+        _stage_validation_slice(cfg, run_dir)
 
     return StagedInputs(points=points, subset_ledger=subset_ledger)

@@ -320,6 +320,133 @@ def test_best_model_tracker_window_smooths_and_skips_nonfinite():
 
 
 # ---------------------------------------------------------------------------
+# WS3 (2026-06-20): _BestValidationTracker (validation-metric early-stop)
+# ---------------------------------------------------------------------------
+
+def test_best_validation_tracker_keeps_min_on_improving_curve():
+    """A strictly-improving validation curve keeps the LAST (lowest) snapshot and
+    NEVER triggers early-stop."""
+    from xcquinox.alec.train import _BestValidationTracker
+    t = _BestValidationTracker()
+    for mae, snap in [(10.0, "a"), (8.0, "b"), (5.0, "c"), (3.0, "d")]:
+        t.update(mae, snap)
+        assert t.should_stop(patience=2, min_delta=0.0) is False
+    assert t.best_model == "d"
+    assert t.best_mae == 3.0
+
+
+def test_best_validation_tracker_stops_after_exactly_patience_checks():
+    """A plateaued/rising curve stops after EXACTLY `patience` consecutive
+    non-improving checks; the best snapshot remains the min-val one."""
+    from xcquinox.alec.train import _BestValidationTracker
+    t = _BestValidationTracker()
+    t.update(5.0, "best")                          # improvement -> counter resets
+    assert t.should_stop(patience=2, min_delta=0.0) is False
+    t.update(6.0, "worse1")                        # non-improving #1
+    assert t.should_stop(patience=2, min_delta=0.0) is False
+    t.update(6.0, "worse2")                        # non-improving #2 -> stop
+    assert t.should_stop(patience=2, min_delta=0.0) is True
+    # best snapshot is the minimum-val one, not the latest.
+    assert t.best_model == "best"
+    assert t.best_mae == 5.0
+
+
+def test_best_validation_tracker_min_delta_requires_real_improvement():
+    """A drop smaller than `min_delta` counts as NON-improving (so a noisy
+    near-flat curve still early-stops)."""
+    from xcquinox.alec.train import _BestValidationTracker
+    t = _BestValidationTracker()
+    t.update(5.0, "a")
+    t.update(4.99, "b")        # improves by 0.01 < min_delta=0.1 -> non-improving
+    assert t.should_stop(patience=1, min_delta=0.1) is True
+    # best snapshot still updates to the numerically-lower value.
+    assert t.best_mae == 4.99
+    assert t.best_model == "b"
+
+
+def test_best_validation_tracker_skips_nonfinite():
+    """Non-finite validation MAE (NaN/inf) is ignored: not counted as an
+    improvement AND not counted as a non-improving check (no spurious stop)."""
+    from xcquinox.alec.train import _BestValidationTracker
+    t = _BestValidationTracker()
+    t.update(5.0, "a")
+    t.update(float("nan"), "b")
+    t.update(float("inf"), "c")
+    assert t.best_model == "a"
+    assert t.best_mae == 5.0
+    # the two non-finite checks did NOT advance the no-improvement counter.
+    assert t.should_stop(patience=1, min_delta=0.0) is False
+
+
+def test_best_validation_tracker_patience_zero_never_stops():
+    """patience=0 is the documented no-op: never early-stops, even on a rising
+    curve."""
+    from xcquinox.alec.train import _BestValidationTracker
+    t = _BestValidationTracker()
+    t.update(5.0, "a")
+    t.update(9.0, "b")
+    t.update(9.0, "c")
+    assert t.should_stop(patience=0, min_delta=0.0) is False
+
+
+# ---------------------------------------------------------------------------
+# WS3 (2026-06-20): _validation_reaction_mae (in-loop val MAE assembly)
+# ---------------------------------------------------------------------------
+
+def test_validation_reaction_mae_assembles_from_energy_fn():
+    """The val MAE = reaction_mae_kcalmol over per-species energies produced by
+    the injected energy_fn (so the assembly is testable with NO PySCF). The
+    energy_fn is called once per species in val_mol_data; the reaction energies
+    are then scored against reaction_energy_ref."""
+    from xcquinox.alec.train import _validation_reaction_mae
+
+    # Two species; one reaction A -> B with a known reference. Per-species
+    # energies (Hartree) chosen so the predicted ΔE differs from the ref by a
+    # round number of kcal/mol.
+    KCAL = 627.5094740631
+    val_mol_data = {"A": {"tag": "A"}, "B": {"tag": "B"}}
+    energies = {"A": -1.0, "B": -1.5}   # ΔE = E_B - E_A = -0.5 Ha
+    de_ref = (-0.5) * KCAL + 4.0        # ref 4 kcal/mol ABOVE the prediction
+    reactions = [{
+        "name": "rxn1", "reactants": ["A"], "products": ["B"],
+        "coeffs": [-1.0, 1.0], "reaction_energy_ref": de_ref,
+    }]
+
+    calls = []
+
+    def fake_energy(model, md):
+        calls.append(md["tag"])
+        return energies[md["tag"]]
+
+    mae = _validation_reaction_mae(
+        model=object(), val_mol_data=val_mol_data, val_reactions=reactions,
+        solver_config=None, energy_fn=fake_energy)
+    assert abs(mae - 4.0) < 1e-6
+    assert sorted(calls) == ["A", "B"]   # one energy eval per species
+
+
+def test_validation_reaction_mae_nan_when_no_finite_reactions():
+    """If a species energy is non-finite, its reaction is dropped; with no
+    finite reactions the MAE is NaN (matching reaction_mae_kcalmol)."""
+    import math
+    from xcquinox.alec.train import _validation_reaction_mae
+
+    val_mol_data = {"A": {"tag": "A"}, "B": {"tag": "B"}}
+
+    def fake_energy(model, md):
+        return float("nan")
+
+    reactions = [{
+        "name": "rxn1", "reactants": ["A"], "products": ["B"],
+        "coeffs": [-1.0, 1.0], "reaction_energy_ref": 10.0,
+    }]
+    mae = _validation_reaction_mae(
+        model=object(), val_mol_data=val_mol_data, val_reactions=reactions,
+        solver_config=None, energy_fn=fake_energy)
+    assert math.isnan(mae)
+
+
+# ---------------------------------------------------------------------------
 # Test 16: losses decrease after 5 steps
 # ---------------------------------------------------------------------------
 
@@ -438,6 +565,122 @@ def test_run_training_per_molecule_completes(training_batch_info):
             aux_log = pickle.load(f)
         assert all(e["update_scheme"] == "per_molecule" for e in aux_log)
         assert all("group" in e for e in aux_log)
+        # FIX 3 (WS3-ESV-1) E2E: a per_molecule run with validate_every=0 (default)
+        # writes the PRE-WS3 metadata key set through the REAL loop -- no
+        # has_val_best_checkpoint, no early_stopped/val_* keys, no model_val_best.eqx.
+        with open(os.path.join(spec.checkpoint_dir, "train_metadata.json")) as f:
+            on_disk = json.load(f)
+        assert set(on_disk) == set(_PRE_WS3_METADATA_KEYS)
+        assert not os.path.isfile(
+            os.path.join(spec.checkpoint_dir, "model_val_best.eqx"))
+
+
+# ---------------------------------------------------------------------------
+# WS3 (2026-06-20): in-loop validation early-stop + model_val_best.eqx in the
+# per_molecule loop.
+# ---------------------------------------------------------------------------
+
+def test_build_validation_data_disabled_returns_none():
+    """validate_every<=0 OR no validation_molecules => (None, None): the loop
+    runs with no validation (byte-identical to a decay-free run)."""
+    from xcquinox.alec.train import _build_validation_data
+    # validate_every=0 (default) -> disabled even if molecules were present.
+    spec = _make_training_spec()
+    assert _build_validation_data(spec) == (None, None)
+    # validate_every>0 but no validation molecules/path -> still disabled.
+    spec2 = _make_training_spec(validate_every=2)
+    assert _build_validation_data(spec2) == (None, None)
+
+
+@pytest.mark.slow
+def test_per_molecule_loop_early_stops_and_writes_val_best(
+        training_batch_info, monkeypatch):
+    """With validate_every=1, patience=1 and a monkeypatched val function
+    returning a RISING curve, the per_molecule loop early-stops, writes
+    model_val_best.eqx, and records early_stopped/epochs_run/val_best_mae."""
+    import json as _json
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.train import run_training
+
+    # Stub the val-data build (no extra PySCF) + a strictly-RISING val curve so
+    # the FIRST check is the best and the SECOND triggers patience=1.
+    monkeypatch.setattr(
+        train_mod, "_build_validation_data",
+        lambda spec: ({"A": {}, "B": {}},
+                      [{"name": "r", "reactants": ["A"], "products": ["B"],
+                        "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0}]))
+    seq = iter([10.0, 11.0, 12.0, 13.0, 14.0])
+    monkeypatch.setattr(train_mod, "_validation_reaction_mae",
+                        lambda *a, **k: next(seq))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=8, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False,
+            validate_every=1, patience=1, early_stop_min_delta=0.0,
+        )
+        meta = run_training(spec)
+        # model_val_best.eqx written (the min-val snapshot).
+        assert os.path.isfile(
+            os.path.join(spec.checkpoint_dir, "model_val_best.eqx"))
+        # early-stopped before the full 8 epochs: best at epoch 1 (mae 10), the
+        # epoch-2 check (mae 11) is the 1st non-improving -> patience=1 stop.
+        assert meta["early_stopped"] is True
+        assert meta["epochs_run"] == 2
+        assert meta["val_best_mae"] == pytest.approx(10.0)
+        # metadata round-trips to disk.
+        with open(os.path.join(spec.checkpoint_dir,
+                               "train_metadata.json")) as f:
+            on_disk = _json.load(f)
+        assert on_disk["early_stopped"] is True
+        assert on_disk["epochs_run"] == 2
+
+
+# The EXACT train_metadata.json key set produced BEFORE WS3 (no validation).
+# FIX 3 (WS3-ESV-1): a non-validating run must produce byte-identically this
+# key set -- no has_val_best_checkpoint, no early_stopped/epochs_run/val_* keys.
+_PRE_WS3_METADATA_KEYS = frozenset({
+    "arch_name", "use_polarized_correlation", "loss_name", "loss_kwargs",
+    "solver_config", "n_steps", "lr_start", "lr_end", "lr_decay_start",
+    "grad_clip", "pretrain_checkpoint", "molecules", "targets",
+    "atom_energies", "loss_metric", "balancing", "final_loss", "min_loss",
+    "has_best_checkpoint", "timestamp", "duration_seconds",
+})
+
+
+def test_save_artifacts_metadata_byte_identical_when_no_validation():
+    """FIX 3 (WS3-ESV-1): _save_artifacts with no val_best snapshot + no
+    extra_metadata (the per_molecule-with-validate_every=0 / batched case)
+    writes train_metadata.json with the PRE-WS3 key set -- no
+    has_val_best_checkpoint, no val_* keys. Byte-identical to pre-WS3."""
+    spec = _make_training_spec(update_scheme="per_molecule")
+    from xcquinox.alec.train import _save_artifacts
+    meta = _save_artifacts(
+        spec, _make_arch(), [0.5, 0.4, 0.3], [], 1.0,
+        best_model=None, val_best_model=None, extra_metadata=None)
+    assert set(meta) == set(_PRE_WS3_METADATA_KEYS)
+    assert "has_val_best_checkpoint" not in meta
+    with open(os.path.join(spec.checkpoint_dir, "train_metadata.json")) as f:
+        on_disk = json.load(f)
+    assert set(on_disk) == set(_PRE_WS3_METADATA_KEYS)
+
+
+def test_save_artifacts_adds_val_keys_only_when_validation_ran():
+    """When a val-best snapshot + extra_metadata ARE supplied (validation ran),
+    has_val_best_checkpoint and the val_* extras appear -- the keys are added
+    ONLY in the validated case, never on the default path."""
+    spec = _make_training_spec(update_scheme="per_molecule")
+    from xcquinox.alec.train import _save_artifacts
+    extra = {"early_stopped": True, "epochs_run": 2, "val_best_mae": 10.0,
+             "n_epochs_configured": 8, "validate_every": 1, "patience": 1}
+    meta = _save_artifacts(
+        spec, _make_arch(), [0.5, 0.4], [], 1.0,
+        best_model=_make_arch(), val_best_model=_make_arch(),
+        extra_metadata=extra)
+    assert meta["has_val_best_checkpoint"] is True
+    assert meta["early_stopped"] is True and meta["epochs_run"] == 2
+    assert set(extra).issubset(set(meta))
 
 
 # ---------------------------------------------------------------------------

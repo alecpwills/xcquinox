@@ -585,3 +585,34 @@ def test_make_per_molecule_record_density_kwarg():
                                        in_training_subset=False, density=dens)
     for k, v in dens.items():
         assert rec2[k] == v
+
+
+# 2026-06-20 (WS3): deterministic val/test split of the held-out pools. The val
+# slice drives in-training early-stop/selection; the test slice is what eval
+# REPORTS. Must be stable (same partition every run/process/order) and a clean
+# partition, so val never leaks into the reported test metric.
+def _mk_rxns(n):
+    return [{"name": f"rxn_{i:03d}", "source_pool": "w411", "reactants": ["a"],
+             "products": ["b"], "coeffs": [1.0, -1.0],
+             "reaction_energy_ref": float(i)} for i in range(n)]
+
+
+def test_split_held_out_is_deterministic_and_partitions():
+    rxns = _mk_rxns(200)
+    val, test = eh.split_held_out(rxns, val_frac=0.2)
+    val_names = {r["name"] for r in val}
+    test_names = {r["name"] for r in test}
+    assert val_names.isdisjoint(test_names)
+    assert val_names | test_names == {r["name"] for r in rxns}
+    assert 0.12 < len(val) / len(rxns) < 0.28      # ~20% in val
+    import random
+    shuffled = list(rxns)
+    random.Random(0).shuffle(shuffled)
+    val2, _ = eh.split_held_out(shuffled, val_frac=0.2)
+    assert {r["name"] for r in val2} == val_names   # order-independent + stable
+
+
+def test_split_held_out_rejects_bad_val_frac():
+    for bad in (0.0, 1.0, -0.1, 1.5):
+        with pytest.raises(ValueError):
+            eh.split_held_out(_mk_rxns(3), val_frac=bad)
