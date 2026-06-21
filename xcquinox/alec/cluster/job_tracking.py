@@ -307,12 +307,33 @@ def _spec_dir(run_dir: str, idx: int, width: int) -> str:
 def _disk_outcome(spec_dir: str):
     """Outcome from on-disk evidence in ``spec_dir``, or None if no evidence.
 
-    ``model.eqx`` is checked BEFORE ``failure.json``: if a task produced a
-    model it succeeded, regardless of any stale ``failure.json`` left by an
-    earlier attempt, success evidence wins.
+    Resolution order (each branch wins over the ones below it):
+
+      1. ``model.eqx`` -> ``"success"``. A produced model is the sole success
+         signal, regardless of any stale ``failure.json`` from an earlier
+         attempt OR an orphan ``resume_*`` set a completed run did not finish
+         cleaning up: success evidence always wins.
+      2. ``resume_state.pkl`` present AND no ``completion.json`` ->
+         ``"incomplete_resumable"`` (WS6). This is a per_molecule train task
+         that was KILLED mid-run: it left a resume checkpoint and NO
+         ``model.eqx``. Crucially this is checked BEFORE the ``failure.json``
+         branch, because the wall-clock grace SIGTERM path writes BOTH a
+         ``killed_by_signal`` failure.json AND the ``resume_*`` set; the
+         resumable checkpoint must win so ``resubmit`` RESUMES (continues the
+         training) rather than archiving + retrying from scratch. Mirrors
+         ``train._has_resume_checkpoint`` (resume_state.pkl present AND no
+         model.eqx AND no completion.json).
+      3. ``failure.json`` -> its ``classification`` (an ordinary failure with
+         no resumable checkpoint).
     """
     if os.path.exists(os.path.join(spec_dir, "model.eqx")):
         return "success"
+    # WS6: a killed mid-run (resume checkpoint, no model.eqx, no completion
+    # sentinel) outranks the killed_by_signal failure.json the SIGTERM path also
+    # wrote, so resubmit resumes instead of fresh-retrying.
+    if (os.path.exists(os.path.join(spec_dir, "resume_state.pkl"))
+            and not os.path.exists(os.path.join(spec_dir, "completion.json"))):
+        return "incomplete_resumable"
     failure_path = os.path.join(spec_dir, "failure.json")
     if os.path.exists(failure_path):
         try:

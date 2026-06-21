@@ -56,6 +56,23 @@ def _write_failure(run_dir, idx, classification, width=4):
         json.dump({"classification": classification, "rc": 1}, f)
 
 
+def _write_resume_state(run_dir, idx, width=4):
+    """Write a WS5 mid-run ``resume_state.pkl`` marker (contents irrelevant; the
+    harness keys only on its PRESENCE)."""
+    open(os.path.join(_spec_dir(run_dir, idx, width), "resume_state.pkl"),
+         "wb").close()
+
+
+def _write_completion(run_dir, idx, width=4, *, early_stopped=False,
+                      epochs_run=1):
+    """Write the WS5 ``completion.json`` sentinel a clean/early-stopped finish
+    leaves alongside ``model.eqx``."""
+    path = os.path.join(_spec_dir(run_dir, idx, width), "completion.json")
+    with open(path, "w") as f:
+        json.dump({"completed": True, "early_stopped": early_stopped,
+                   "epochs_run": epochs_run}, f)
+
+
 @pytest.fixture
 def run_dir(tmp_path):
     d = tmp_path / "run"
@@ -198,6 +215,86 @@ def test_reduce_outcomes_model_eqx_beats_stale_failure_json(run_dir, monkeypatch
     out = reduce_outcomes(run_dir, "train")
     # model.eqx is checked BEFORE failure.json: success wins.
     assert out == {0: "success"}
+
+
+# ---------------------------------------------------------------------------
+# _disk_outcome: WS6 incomplete_resumable detection (resume_state.pkl)
+# ---------------------------------------------------------------------------
+
+def test_disk_outcome_resume_state_only_is_incomplete_resumable(run_dir):
+    """A killed mid-run dir (resume_state.pkl present, NO model.eqx, NO
+    completion.json) is classified incomplete_resumable so resubmit RESUMES it
+    rather than fresh-retrying from scratch (WS6)."""
+    sd = _spec_dir(run_dir, 0)
+    _write_resume_state(run_dir, 0)
+    assert jt._disk_outcome(sd) == "incomplete_resumable"
+
+
+def test_disk_outcome_resume_state_plus_killed_failure_resume_wins(run_dir):
+    """A grace-SIGTERM kill writes BOTH a killed_by_signal failure.json AND the
+    resume_* set. The resumable checkpoint MUST win (return incomplete_resumable,
+    NOT the failure classification) so resubmit continues from the checkpoint
+    instead of archiving + retrying fresh."""
+    sd = _spec_dir(run_dir, 0)
+    _write_resume_state(run_dir, 0)
+    _write_failure(run_dir, 0, "killed_by_signal")
+    assert jt._disk_outcome(sd) == "incomplete_resumable"
+
+
+def test_disk_outcome_model_eqx_beats_resume_state(run_dir):
+    """model.eqx wins first: an orphan resume_* set left next to a produced
+    model (a completion that did not finish its resume_* cleanup) is still a
+    SUCCESS, never incomplete_resumable."""
+    sd = _spec_dir(run_dir, 0)
+    _write_model(run_dir, 0)
+    _write_resume_state(run_dir, 0)
+    assert jt._disk_outcome(sd) == "success"
+
+
+def test_disk_outcome_completion_with_resume_state_is_success(run_dir):
+    """An early-stop finish writes model.eqx + completion.json; if its resume_*
+    cleanup was interrupted leaving resume_state.pkl, model.eqx still wins ->
+    success (completion.json present means NOT resumable regardless)."""
+    sd = _spec_dir(run_dir, 0)
+    _write_model(run_dir, 0)
+    _write_completion(run_dir, 0, early_stopped=True)
+    _write_resume_state(run_dir, 0)
+    assert jt._disk_outcome(sd) == "success"
+
+
+def test_disk_outcome_completion_no_model_no_resume_is_failure_unclassified(
+        run_dir):
+    """completion.json + resume_state.pkl but NO model.eqx is NOT resumable
+    (completion.json present blocks resume per train._has_resume_checkpoint);
+    with no failure.json it falls through to None (no evidence)."""
+    sd = _spec_dir(run_dir, 0)
+    _write_completion(run_dir, 0)
+    _write_resume_state(run_dir, 0)
+    # No model.eqx, completion.json present -> resume blocked; no failure.json
+    # -> no disk evidence at all.
+    assert jt._disk_outcome(sd) is None
+
+
+def test_disk_outcome_failure_without_resume_state_is_its_class(run_dir):
+    """A plain failure.json with NO resume_state.pkl keeps its own
+    classification (the resume branch must not steal ordinary failures)."""
+    sd = _spec_dir(run_dir, 0)
+    _write_failure(run_dir, 0, "oom")
+    assert jt._disk_outcome(sd) == "oom"
+
+
+def test_reduce_outcomes_propagates_incomplete_resumable(run_dir, monkeypatch):
+    """reduce_outcomes is disk-first, so it surfaces incomplete_resumable for a
+    killed mid-run index WITHOUT consulting sacct."""
+    _write_manifest(run_dir, n_specs=2)
+    _write_model(run_dir, 0)
+    _write_resume_state(run_dir, 1)
+
+    monkeypatch.setattr(jt, "_run_slurm",
+                        lambda *a, **k: pytest.fail("sacct must not run"))
+
+    out = reduce_outcomes(run_dir, "train")
+    assert out == {0: "success", 1: "incomplete_resumable"}
 
 
 # ---------------------------------------------------------------------------

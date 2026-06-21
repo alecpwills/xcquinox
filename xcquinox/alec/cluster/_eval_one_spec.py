@@ -425,7 +425,26 @@ def main(argv=None) -> int:
     # model_checkpoint to be an existing file and would raise instead of
     # letting us skip cleanly.
     if not os.path.isfile(model_path):
-        reason = "no model.eqx -- training did not produce a checkpoint"
+        # WS6: distinguish a genuinely-never-trained spec from one whose
+        # training is still IN PROGRESS. A mid-run per_molecule task leaves a
+        # resume checkpoint (resume_state.pkl) and no model.eqx (and no
+        # completion.json) -- mirrors train._has_resume_checkpoint. In that
+        # case eval was scheduled before training finished/resumed, so we emit a
+        # CLEAR "training incomplete (resume in progress)" message rather than a
+        # confusing crash, and still skip cleanly (exit 0): a later resubmit
+        # will continue training and re-run this eval.
+        resume_in_progress = (
+            os.path.isfile(os.path.join(checkpoint_dir, "resume_state.pkl"))
+            and not os.path.isfile(
+                os.path.join(checkpoint_dir, "completion.json"))
+        )
+        if resume_in_progress:
+            reason = ("no model.eqx -- training incomplete (resume in "
+                      "progress: resume_state.pkl present, no model.eqx). "
+                      "Eval was scheduled before training finished; a "
+                      "`resubmit` will continue it and re-run this eval.")
+        else:
+            reason = "no model.eqx -- training did not produce a checkpoint"
         _write_skipped_json(checkpoint_dir, reason)
         _log(idx, f"skipped -- {reason} ({model_path})")
         return 0

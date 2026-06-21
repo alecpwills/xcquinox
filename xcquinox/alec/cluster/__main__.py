@@ -365,24 +365,62 @@ def _read_failure_json(run_dir: str, idx: int, width: int):
 # ---------------------------------------------------------------------------
 
 # Outcome string -> retry class. "oom"/"timeout" are retryable with possibly
-# rerouted resources; everything else is deterministic (a code/config bug a
-# blind retry will not fix).
-_RETRYABLE = {"oom", "timeout"}
+# rerouted resources; "resume" is retryable via the RESUME path (continue from a
+# mid-run checkpoint, no archive); everything else is deterministic (a
+# code/config bug a blind retry will not fix).
+_RETRYABLE = {"oom", "timeout", "resume"}
+
+# Retry classes that route to a FRESH retry (archive stale artifacts + relaunch
+# from scratch, possibly with rerouted resources). "resume" is deliberately
+# EXCLUDED: it continues an in-flight run and must NOT archive its resume_* set.
+_FRESH_RETRY = {"oom", "timeout"}
 
 # failure.json classifications that ARE retryable but under a different name.
 # A wall-clock pre-kill grace SIGTERM is recorded by ``_train_task`` as
 # "killed_by_signal": it is a timeout in all but name (the job ran out of
-# wall), so route it like a timeout (longer-wall ``timeout_retry`` resources).
+# wall), so route it like a timeout (longer-wall ``timeout_retry`` resources)
+# -- UNLESS a resumable checkpoint also exists (see _classify_failure: the
+# resume path wins so we continue rather than restart from scratch).
 _FAILURE_CLASS_ALIASES = {"killed_by_signal": "timeout"}
 
 
-def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str:
-    """Classify why train index ``idx`` failed: 'oom' / 'timeout' / 'deterministic'.
+def _has_resume_checkpoint(run_dir: str, idx: int, width: int) -> bool:
+    """True iff train index ``idx`` has a WS5 RESUMABLE mid-run checkpoint.
 
-    Disk-first: a ``failure.json`` ``classification`` wins. Absent that, the
-    ``reduce_outcomes`` value (its own ``sacct`` fallback) is used. Any value
-    not in :data:`_RETRYABLE` collapses to ``'deterministic'``.
+    Mirrors ``train._has_resume_checkpoint`` / ``job_tracking._disk_outcome``:
+    ``resume_state.pkl`` present AND the run is NOT complete (no ``model.eqx``
+    and no ``completion.json``). This is the load-bearing WS6 signal: a
+    per_molecule train task that was killed mid-run left a resume checkpoint
+    and no model, so it should be CONTINUED, not retried from scratch.
     """
+    d = _spec_dir(run_dir, idx, width)
+    if os.path.exists(os.path.join(d, "model.eqx")):
+        return False
+    if os.path.exists(os.path.join(d, "completion.json")):
+        return False
+    return os.path.exists(os.path.join(d, "resume_state.pkl"))
+
+
+def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str:
+    """Classify train index ``idx``: 'resume' / 'oom' / 'timeout' / 'deterministic'.
+
+    Resolution order:
+      1. A WS5 RESUMABLE mid-run checkpoint (``resume_state.pkl`` present, no
+         ``model.eqx``/``completion.json``) -> ``'resume'``. Checked FIRST,
+         before ``failure.json``, because the wall-grace SIGTERM path writes
+         BOTH a ``killed_by_signal`` failure.json AND the resume_* set; the
+         resumable checkpoint must win so resubmit CONTINUES the run (no
+         archive) instead of fresh-retrying it like a timeout.
+      2. A ``failure.json`` ``classification`` (oom/timeout, killed_by_signal
+         aliased to timeout).
+      3. Else the ``reduce_outcomes`` (``sacct`` fallback) value.
+
+    Any value not in :data:`_RETRYABLE` collapses to ``'deterministic'``.
+    """
+    # WS6: a resumable mid-run checkpoint outranks everything else (incl. the
+    # killed_by_signal failure.json the SIGTERM path also wrote).
+    if _has_resume_checkpoint(run_dir, idx, width):
+        return "resume"
     failure = _read_failure_json(run_dir, idx, width)
     if failure is not None:
         cls = (failure.get("classification") or "").strip().lower()
@@ -470,6 +508,14 @@ def _archive_stale_artifacts(run_dir: str, idx: int, width: int, gen: int) -> li
     ``eval/`` dir + ``eval_df.csv`` to a ``.gen<g>`` sibling. Refuses (raises)
     if a ``.gen<g>`` target already exists, that would clobber an older
     archive. Returns the list of archived paths (for the operator report).
+
+    WS6: the ``resume_*`` set (``resume_state.pkl`` / ``resume_model.eqx`` /
+    ``resume_opt_state.eqx`` / ``resume_best.eqx`` / ``resume_val_best.eqx``) is
+    DELIBERATELY NOT in ``targets`` and must never be archived here: it is what
+    lets a relaunched train task auto-continue (``train.py`` resumes iff
+    ``resume_state.pkl`` is present). ``cmd_resubmit`` additionally skips this
+    function entirely for resume indices; this exclusion is the second line of
+    defense so a future caller cannot accidentally move/delete the checkpoint.
     """
     spec_dir = _spec_dir(run_dir, idx, width)
     archived = []
@@ -953,6 +999,13 @@ def cmd_status(args) -> int:
         1 for v in train.values()
         if v in ("oom", "timeout") or v.startswith("failure")
     )
+    # WS6: per_molecule train tasks killed mid-run that left a resume checkpoint
+    # (resume_state.pkl present, no model.eqx/completion.json). These are NOT
+    # "failed" (a resubmit CONTINUES them from the checkpoint), so they are
+    # tallied + reported + remedied separately.
+    train_resumable = sum(
+        1 for v in train.values() if v == "incomplete_resumable"
+    )
     train_never = sum(
         1 for v in train.values()
         if v in ("dependency_never_satisfied", "unknown_sacct_purged")
@@ -965,7 +1018,7 @@ def cmd_status(args) -> int:
     _log("  train: " + ", ".join(
         f"{k}={v}" for k, v in sorted(train_counts.items())) or "  train: (none)")
     _log(f"    success={train_success}  failed={train_failed}  "
-         f"never-ran={train_never}")
+         f"resumable={train_resumable}  never-ran={train_never}")
     _log("  eval:  " + ", ".join(
         f"{k}={v}" for k, v in sorted(eval_counts.items())) or "  eval: (none)")
     _log(f"    never-scheduled={eval_never}")
@@ -988,6 +1041,13 @@ def cmd_status(args) -> int:
     elif train_failed > 0:
         _log("  remedy: `resubmit <run_dir>`: re-run the failed train "
              "task(s).")
+        if train_resumable > 0:
+            _log(f"  remedy: `resubmit --submit <run_dir>`: {train_resumable} "
+                 "task(s) have a resume checkpoint and will continue from it.")
+    elif train_resumable > 0:
+        # WS6: no hard failures, but mid-run-killed tasks can be CONTINUED.
+        _log(f"  remedy: `resubmit --submit <run_dir>`: {train_resumable} "
+             "task(s) have a resume checkpoint and will continue from it.")
     else:
         _log("  remedy: none, no failed train tasks detected.")
     return 0
@@ -1174,9 +1234,28 @@ def cmd_resubmit(args) -> int:
         train_script = os.path.join(run_dir, "scripts", "train_array.sbatch")
         eval_script = os.path.join(run_dir, "scripts", "eval_array.sbatch")
 
+        # WS6: "resume" indices are RELAUNCHED to CONTINUE from their mid-run
+        # checkpoint, so their stale artifacts (incl. the killed_by_signal
+        # failure.json the SIGTERM path wrote) are NOT archived -- archiving /
+        # removing the resume_* set, or even the failure.json, would break the
+        # auto-continue (train.py resumes iff resume_state.pkl is present and
+        # model.eqx/completion.json are absent). Only FRESH-retry classes
+        # (oom/timeout) archive.
+        archive_idxs = [idx for idx in retry if classes[idx] in _FRESH_RETRY]
+        resume_idxs = [idx for idx in retry if classes[idx] == "resume"]
+
         if not args.submit:
-            _log(f"resubmit: DRY-RUN, would archive stale artifacts for "
-                 f"{sorted(retry)} then submit per failure class:")
+            if archive_idxs:
+                _log(f"resubmit: DRY-RUN, would archive stale artifacts for "
+                     f"{sorted(archive_idxs)} (fresh-retry) then submit per "
+                     "failure class:")
+            else:
+                _log("resubmit: DRY-RUN, would submit per failure class "
+                     "(no fresh-retry artifacts to archive):")
+            if resume_idxs:
+                _log(f"  RESUME indices {sorted(resume_idxs)}: resume_* set "
+                     "PRESERVED (the relaunched train task continues from the "
+                     "checkpoint); nothing archived.")
             for cls in sorted(retry_by_class):
                 idxs = sorted(retry_by_class[cls])
                 ta = _sparse_array_spec(idxs, cl.array_throttle)
@@ -1190,13 +1269,18 @@ def cmd_resubmit(args) -> int:
             return 0
 
         # --- real submission --------------------------------------------------
-        # Archive stale artifacts for every retried index first.
-        for idx in retry:
+        # Archive stale artifacts ONLY for fresh-retry (oom/timeout) indices.
+        # Resume indices are skipped: their resume_* set MUST survive so the
+        # relaunched train task auto-continues.
+        for idx in archive_idxs:
             gen = _train_generation(run_dir, idx)
             archived = _archive_stale_artifacts(run_dir, idx, width, gen)
             if archived:
                 _log(f"  index {idx}: archived {len(archived)} artifact(s) "
                      f"-> *.gen{gen}")
+        for idx in resume_idxs:
+            _log(f"  index {idx}: RESUME -- resume_* set preserved (no "
+                 "archive); relaunched train task will continue from it.")
 
         # Submit one sparse train+eval pair PER failure class, each with that
         # class's resource overrides. A class whose eval sbatch fails rolls back

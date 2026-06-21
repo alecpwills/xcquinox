@@ -43,6 +43,7 @@ def test_solver_config_from_named_threads_density_fit():
         mode = "FULL"
         max_cycles = 3
         feature_policy = None
+        scf_grad_checkpoint = False   # 2026-06-20: mirror SolverNamed (WS4 field)
 
     sc = _solver_config_from_named(_Named(), density_fit=True,
                                    auxbasis="def2-svp-jkfit")

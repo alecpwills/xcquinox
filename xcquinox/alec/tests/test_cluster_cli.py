@@ -1389,3 +1389,196 @@ def test_resubmit_oom_force_cpu_not_flagged_default_resources(tmp_path,
     assert "retry=[1]" in out                                 # oom IS retried
     assert "use DEFAULT partition/resources" not in out, (    # but not "default"
         "force_cpu retry wrongly flagged as default-resources")
+
+
+# ===========================================================================
+# WS6: incomplete_resumable -> RESUME path (resubmit) + status tally
+# ===========================================================================
+
+def _write_resume_state(run_dir, idx, width=_WIDTH):
+    """Write a WS5 mid-run ``resume_state.pkl`` marker (presence is the signal)."""
+    open(os.path.join(_spec_dir(run_dir, idx, width), "resume_state.pkl"),
+         "wb").close()
+
+
+def test_classify_failure_incomplete_resumable_is_resume(tmp_path):
+    """WS6: a killed mid-run index (resume_state.pkl, no model.eqx/completion)
+    classifies as 'resume' -- retryable, but routed to the RESUME path (continue
+    from the checkpoint), distinct from oom/timeout fresh-retry."""
+    run_dir = _make_run_dir(tmp_path)
+    _write_resume_state(run_dir, 3)
+    out = jt.reduce_outcomes(run_dir, "train")
+    assert cli._classify_failure(run_dir, 3, _WIDTH, out) == "resume"
+
+
+def test_classify_failure_resume_wins_over_killed_by_signal(tmp_path):
+    """The grace-SIGTERM path writes BOTH killed_by_signal failure.json AND the
+    resume_* set; classify must return 'resume' (continue), NOT 'timeout'
+    (fresh-retry), so the resume_* survive."""
+    run_dir = _make_run_dir(tmp_path)
+    _write_resume_state(run_dir, 3)
+    sd = _spec_dir(run_dir, 3)
+    with open(os.path.join(sd, "failure.json"), "w") as f:
+        json.dump({"classification": "killed_by_signal"}, f)
+    out = jt.reduce_outcomes(run_dir, "train")
+    assert cli._classify_failure(run_dir, 3, _WIDTH, out) == "resume"
+
+
+def test_resubmit_resume_path_does_not_archive_resume_files(tmp_path,
+                                                            monkeypatch):
+    """A 'resume' index is relaunched WITHOUT archiving its resume_* set -- the
+    relaunched train task auto-continues (train.py resumes when resume_state.pkl
+    is present and model.eqx/completion.json are absent). The sparse train+eval
+    pair is still submitted and attempts bumped."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    # All other indices succeeded.
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    # index 1 was killed mid-run: resume_state.pkl + killed_by_signal failure.json.
+    _write_resume_state(rd, 1)
+    with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
+        json.dump({"classification": "killed_by_signal"}, f)
+
+    fake = _fake_slurm(ids=["7100", "7101"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+
+    spec1 = _spec_dir(rd, 1)
+    # CRITICAL: the resume_* set MUST survive (NOT archived) so the relaunched
+    # train task continues from it.
+    assert os.path.exists(os.path.join(spec1, "resume_state.pkl"))
+    assert not os.path.exists(os.path.join(spec1, "resume_state.pkl.gen0"))
+    # The resume path archives NOTHING for that index -- even the
+    # killed_by_signal failure.json is left in place (train.py resumes when
+    # resume_state.pkl is present; a fresh-retry archive would wrongly route it
+    # like a timeout). It must NOT have been moved to *.gen0.
+    assert os.path.exists(os.path.join(spec1, "failure.json"))
+    assert not os.path.exists(os.path.join(spec1, "failure.json.gen0"))
+    # A sparse train + eval pair was submitted for the resumed index.
+    sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+    assert len(sbatch) == 2
+
+    def _arr(cmd):
+        for tok in cmd:
+            if tok.startswith("--array="):
+                return tok.split("=", 1)[1].split("%", 1)[0]
+        raise AssertionError("no --array")
+    assert _arr(sbatch[0]) == _arr(sbatch[1]) == "1"
+    # The resume relaunch carries NO oom/timeout resource overrides (it is a
+    # plain continuation, not a resource-rerouted retry).
+    train_cmd = sbatch[0]
+    assert not any(t.startswith("--partition=") for t in train_cmd)
+    assert not any(t.startswith("--mem=") for t in train_cmd)
+    assert not any(t.startswith("--time=") for t in train_cmd)
+    # attempts bumped so a genuinely-stuck resume cannot loop forever.
+    attempts = json.load(open(os.path.join(rd, "attempts.json")))
+    assert attempts.get("1") == 1
+
+
+def test_resubmit_oom_still_archives_and_fresh_retries(tmp_path, monkeypatch):
+    """An oom index (NO resume checkpoint) keeps the old behavior: archive its
+    stale artifacts to *.gen0 and fresh-retry."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
+        json.dump({"classification": "oom"}, f)
+
+    fake = _fake_slurm(ids=["7200", "7201"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+    spec1 = _spec_dir(rd, 1)
+    # oom path archives the stale failure.json (fresh retry).
+    assert not os.path.exists(os.path.join(spec1, "failure.json"))
+    assert os.path.exists(os.path.join(spec1, "failure.json.gen0"))
+
+
+def test_resubmit_resume_respects_attempt_cap(tmp_path, monkeypatch):
+    """A resume index that has already hit the attempt cap is not relaunched
+    (a genuinely-stuck resume cannot loop forever)."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    _write_resume_state(rd, 1)
+    cli._write_attempts(rd, {"1": 3})
+
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit", "--attempt-cap", "3"])
+    assert rc == 0
+    # Capped out -> no sbatch; resume_* untouched.
+    assert [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"] == []
+    assert os.path.exists(os.path.join(_spec_dir(rd, 1), "resume_state.pkl"))
+
+
+def test_resubmit_resume_dry_run_lists_and_does_not_archive(tmp_path,
+                                                            monkeypatch,
+                                                            capsys):
+    """Dry-run lists the resume index for RESUME and makes NO sbatch call NOR
+    archives the resume_* set."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    _write_resume_state(rd, 1)
+
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd])      # dry-run (no --submit)
+    assert rc == 0
+    assert [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"] == []
+    # resume_* untouched on dry-run.
+    assert os.path.exists(os.path.join(_spec_dir(rd, 1), "resume_state.pkl"))
+    out = capsys.readouterr().out
+    assert "retry=[1]" in out
+
+
+def test_resubmit_deterministic_skipped_with_resume_index(tmp_path,
+                                                          monkeypatch):
+    """A deterministic-failure index is still skipped even when a separate
+    resume index is present (the two routes coexist)."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    # index 1 is resumable; index 2 is a genuine code error -> skipped.
+    _write_resume_state(rd, 1)
+    with open(os.path.join(_spec_dir(rd, 2), "failure.json"), "w") as f:
+        json.dump({"classification": "assertion_error"}, f)
+
+    fake = _fake_slurm(ids=["7300", "7301"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+    sbatch = [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+
+    def _arr(cmd):
+        for tok in cmd:
+            if tok.startswith("--array="):
+                return tok.split("=", 1)[1].split("%", 1)[0]
+        raise AssertionError("no --array")
+    # Only index 1 (resume) submitted; index 2 (deterministic) skipped.
+    arrays = {_arr(c) for c in sbatch}
+    assert arrays == {"1"}
+
+
+def test_status_tallies_incomplete_resumable_and_remedy(tmp_path, monkeypatch,
+                                                        capsys):
+    """status counts incomplete_resumable in the train tally and prints a remedy
+    line telling the operator a resume checkpoint will be continued."""
+    run_dir = _make_run_dir(tmp_path)
+    open(os.path.join(_spec_dir(run_dir, 0), "model.eqx"), "wb").close()
+    _write_resume_state(run_dir, 1)
+    jt.append_job_record(run_dir, "train", "1000", list(range(_N)))
+    jt.append_job_record(run_dir, "eval", "2000", list(range(_N)))
+
+    # everything else never scheduled (no sacct rows).
+    fake = _fake_slurm(sacct_rows={"1000": "", "2000": ""})
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["status", run_dir])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "incomplete_resumable=1" in out
+    # remedy mentions the resume checkpoint / continue.
+    assert "resume checkpoint" in out
+    assert "continue" in out

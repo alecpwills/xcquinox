@@ -174,6 +174,44 @@ def test_no_model_eqx_writes_skipped_json_and_exits_zero(run_dir, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# WS6: eval gating when training is INCOMPLETE (resume in progress)
+# ---------------------------------------------------------------------------
+
+def test_no_model_eqx_with_resume_state_reports_incomplete(run_dir,
+                                                           monkeypatch):
+    """WS6: when a resume checkpoint is present (resume_state.pkl) but no
+    model.eqx yet, eval was scheduled before training finished/resumed. The
+    skip marker must CLEARLY say training is incomplete / resume in progress
+    (not a confusing crash), still exit 0, and still NOT construct a TestSpec."""
+    # resume_state.pkl present, model.eqx absent -> mid-run.
+    ckpt_dir = os.path.join(run_dir, "checkpoints", "spec_0000")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    open(os.path.join(ckpt_dir, "resume_state.pkl"), "wb").close()
+
+    monkeypatch.setattr(
+        ev, "_run_eval", lambda ts: pytest.fail("_run_eval ran on skip path"))
+    import xcquinox.alec.cluster.spec_builder as sb
+    monkeypatch.setattr(
+        sb, "build_test_spec",
+        lambda *a, **k: pytest.fail("build_test_spec ran on incomplete path"))
+
+    rc = ev.main([run_dir, "0"])
+    assert rc == 0
+
+    skipped_path = os.path.join(ckpt_dir, "eval", "skipped.json")
+    assert os.path.isfile(skipped_path)
+    with open(skipped_path) as f:
+        payload = json.load(f)
+    reason = payload["reason"]
+    # Backward compatible: still mentions the missing model.eqx ...
+    assert "no model.eqx" in reason
+    # ... but ALSO flags the in-progress resume so the operator does not mistake
+    # it for a genuinely-never-trained spec.
+    assert "incomplete" in reason.lower()
+    assert "resume" in reason.lower()
+
+
+# ---------------------------------------------------------------------------
 # model.eqx present -> build test spec, run (mocked) run_test, fold CSV
 # ---------------------------------------------------------------------------
 
