@@ -1372,3 +1372,17 @@ def test_real_checkpoint_fx_curve_finite():
     assert fx.shape == s.shape
     assert np.all(np.isfinite(fx))
     assert np.isclose(fx[0], 1.0, atol=0.2)   # near UEG limit at s->0
+
+
+def test_arch_order_includes_3x16_twins_sharing_sibling_colors():
+    # 2026-06-20 (WS7): the dfs_step7 v3 sweep uses the depth-3/width-16 twins;
+    # the suite must RECOGNIZE them (it fails loud on unknown archs) and color
+    # each twin like its 4x32 sibling (same architecture, reduced capacity), so
+    # tab10's 10-color cap is never exceeded.
+    base = ["deep", "deep_attn", "deep_cusp", "deep_dm", "deep_combined",
+            "deep_combined_attn", "deep_notransform", "deep_notransform_attn"]
+    for a in base:
+        twin = f"{a}_3x16"
+        assert twin in fig.ARCH_ORDER, f"{twin} missing from ARCH_ORDER"
+        assert fig.ARCH_COLOR[twin] == fig.ARCH_COLOR[a]   # twin shares sibling color
+    assert len({fig.ARCH_COLOR[a] for a in base}) == 8     # base-8 stay distinct
