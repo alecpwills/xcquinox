@@ -141,11 +141,14 @@ def _ae_reaction_point_from_atoms(compound: Atoms) -> TrainingPoint:
     The point NAME equals ``_ae_point_from_atoms``'s, so name-keyed subset
     ledgers (subset_index_log.json) resolve identically -- the same JSD
     subsets train under either form. Species gain one neutral ground-state
-    atom per ELEMENT (multiplicity lives in the coeffs); the compound gets
-    no ae_ref entry downstream, so ``build_targets`` gives it a 0.0
-    placeholder and ``classify_aux_only`` zeroes its fixed-anchor AE
-    channel -- density/vxc still apply. ``e_rxn_ref`` is kept in kcal/mol
-    (``bh76_meta_to_loss_dict`` converts to Ha).
+    atom per ELEMENT (multiplicity lives in the coeffs). ``spec_builder``
+    injects this point's ``e_rxn_ref`` into ``ae_ref_kcalmol`` (so
+    ``build_targets`` gives the compound a REAL target for eval scoring) AND
+    forces its name into ``aux_only_names`` -- so ``_ae_losses`` zeroes its
+    fixed-anchor AE channel and it trains via the BH76 reaction channel, while
+    ``_training_groups`` SKIPS its redundant ``ae:<name>`` group so it is
+    density/vxc-supervised exactly once (via its bh76 group). ``e_rxn_ref`` is
+    kept in kcal/mol (``bh76_meta_to_loss_dict`` converts to Ha).
     """
     name = compound.info.get("dfs_hill", compound.get_chemical_formula())
     cmp = compound.copy()

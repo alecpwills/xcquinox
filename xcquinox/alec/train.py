@@ -1153,7 +1153,9 @@ def _training_groups(spec: TrainingSpec) -> list:
     """Decompose a spec into per-target groups for per-molecule updates.
 
     One group per BH76 reaction (its reactant/product species), per IP13 pair
-    (neutral+cation), per polyatomic AE compound carrying a target, and per
+    (neutral+cation), per polyatomic AE compound carrying a target that is NOT
+    aux-forced (a reaction-form/aux compound trains via its bh76/ip13 group, so
+    a separate ae group would double its density/vxc supervision), and per
     regularized single-atom anchor. Each group is a dict ``{label, species,
     bh76, ip13}`` where ``species`` is a tuple of MoleculeSpec. Mirrors
     dpyscf's per-molecule loop while reusing the multi-channel loss via scoped
@@ -1163,6 +1165,7 @@ def _training_groups(spec: TrainingSpec) -> list:
     targets = spec.targets_dict
     lk = spec.loss_kwargs_dict
     reg_set = set(lk.get("regularize_atom_syms") or ())
+    aux_only = set(lk.get("aux_only_names") or ())
 
     def _n_atoms(m):
         return sum(dict(m.atom_composition).values())
@@ -1185,7 +1188,14 @@ def _training_groups(spec: TrainingSpec) -> list:
                        "bh76": (), "ip13": (p,)})
 
     for m in spec.molecules:
-        if _n_atoms(m) > 1 and m.name in targets:
+        # Skip aux-forced polyatomics: a reaction-form AE compound
+        # (ae_as_reactions=True) or a BH76/IP13 reaction intermediate carries a
+        # REAL/placeholder target AND sits in ``aux_only_names``, so it already
+        # trains -- and is density/vxc-supervised -- through its bh76/ip13 group.
+        # A separate ae:<name> group has no AE term (aux-forced) and would only
+        # re-apply density (weight 20) + vxc, double-supervising it per epoch.
+        if (_n_atoms(m) > 1 and m.name in targets
+                and m.name not in aux_only):
             groups.append({"label": f"ae:{m.name}", "species": (m,),
                            "bh76": (), "ip13": ()})
 

@@ -319,10 +319,11 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
     integral by N_e^2 with N_e = sum_g w_g rho_ref(g), making the channel
     INTENSIVE so large/many-electron species cannot dominate a multi-species
     loss by size alone. This is the dpyscf density-loss normalization
-    (Dick & Fernandez-Serra 2021, dpyscf/losses.py:171:
+    (Dick & Fernandez-Serra 2021, og_dpyscf/ogdpyscf/losses.py:62:
     ``drho = sqrt(sum((rho-rho_ref)^2 w) / n_elec^2)``, then MSE vs 0 ==
     ``sum w (drho)^2 / N^2``); deviation: dpyscf normalizes per spin channel
-    by N_sigma^2, we carry a spin-summed density so the total N_e^2 is used.
+    by N_sigma^2 (og_dpyscf/ogdpyscf/losses.py:70-73), we carry a spin-summed
+    density so the total N_e^2 is used.
     """
     terms = []
     n_skipped = 0
@@ -1268,8 +1269,9 @@ class L5GradnormVxcStep7(AlecLoss):
         }
 
     def _iter_idx_for_aux_channels(self) -> tuple:
-        """Indices used by V_xc / rho channels.  Includes aux_only_names
-        species (HBPT) which the AE channel excludes via compound_idx.
+        """Indices used by V_xc / rho channels.  Includes ``aux_only_names``
+        species (reaction-form AE compounds under ``ae_as_reactions``, or HBPT
+        aux fixtures) which the AE channel excludes via ``compound_idx``.
         """
         N = len(self.mol_names)
         if not self.molecules_only:

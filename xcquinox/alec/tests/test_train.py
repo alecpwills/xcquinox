@@ -540,6 +540,37 @@ def test_training_groups_bh76_and_anchor():
     assert {s.name for s in bh["species"]} == {"H2", "H"}
 
 
+def test_training_groups_skips_ae_group_for_aux_only_reaction_compound():
+    """Regression: under ae_as_reactions=true a reaction-form AE compound is
+    aux-forced (in ``aux_only_names``) AND carries a real target AND trains via
+    its bh76 reaction group. It must NOT also get a redundant ``ae:<name>``
+    group -- that group has no AE term (aux-forced) and only re-applies the
+    density (weight 20) + vxc channels, density/vxc-supervising the compound
+    TWICE per epoch. See reports_local/dfs_training_review_2026-06-22.md BUG-1."""
+    from xcquinox.alec.train import _training_groups
+    mols = (h_atom(), o_atom(), h2o_molecule())
+    rxn = {"name": "H2O", "reactants": ["H2O"], "products": ["H", "O"],
+           "coeffs": [-1.0, 2.0, 1.0], "e_rxn_ref": 0.3}
+    spec = TrainingSpec.from_dicts(
+        arch=_make_arch(), molecules=mols,
+        targets={"H": -0.5, "O": -75.0, "H2O": 0.3},
+        atom_energies={"H": -0.5, "O": -75.0},
+        loss_name="L5_gradnorm_vxc_step7",
+        loss_kwargs={"bh76_reactions": [rxn],
+                     "aux_only_names": ("H2O",),
+                     "regularize_atom_syms": ("H", "O")},
+        update_scheme="per_molecule", require_atom_anchors=False,
+    )
+    groups = _training_groups(spec)
+    labels = [g["label"] for g in groups]
+    assert "bh76:H2O" in labels             # supervised via its reaction group
+    assert "ae:H2O" not in labels           # NOT a second (redundant) group
+    # the aux-forced compound appears in EXACTLY ONE density/vxc-bearing group
+    h2o_groups = [g for g in groups
+                  if any(s.name == "H2O" for s in g["species"])]
+    assert [g["label"] for g in h2o_groups] == ["bh76:H2O"]
+
+
 @pytest.mark.slow
 def test_run_training_per_molecule_completes(training_batch_info):
     """run_training under update_scheme='per_molecule' completes, takes one
