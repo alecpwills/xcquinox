@@ -2214,3 +2214,72 @@ def test_per_molecule_corrupt_resume_starts_fresh(training_batch_info):
         run_training(spec)             # must NOT raise; starts fresh and finishes
         assert os.path.isfile(os.path.join(d, "model.eqx"))
         assert os.path.isfile(os.path.join(d, "completion.json"))
+
+
+# ---------------------------------------------------------------------------
+# Regression: optimizer.update must receive array-filtered params, not the raw
+# Equinox model. adamw's add_decayed_weights does tree_map(g + wd*p, updates,
+# params); grads from eqx.filter_value_and_grad carry None at the networks'
+# non-array (activation function / final_activation lambda) leaves, so the raw
+# model is a structure mismatch that newer JAX rejects ("Expected None, got
+# <function <lambda>>"). See xcquinox/alec/HISTORY.md.
+# ---------------------------------------------------------------------------
+
+def test_trainable_params_structure_matches_grads_not_raw_model():
+    """Version-independent invariant: array-filtered params share the grads'
+    tree structure; the raw model (function leaves populated) does NOT."""
+    import jax
+    import jax.numpy as jnp
+    import equinox as eqx
+    from xcquinox.alec.train import _trainable_params
+
+    # eqx.nn.MLP is what create_network_pair embeds (networks.py:113,258); its
+    # `activation`=gelu and default `final_activation`=lambda are dynamic
+    # (non-array) leaves -> grads carry None there.
+    model = eqx.nn.MLP(in_size=3, out_size=1, width_size=4, depth=1,
+                       activation=jax.nn.gelu, key=jax.random.PRNGKey(0))
+
+    def loss(m, x):
+        return jnp.sum(jax.vmap(m)(x) ** 2)
+
+    _, grads = eqx.filter_value_and_grad(loss)(model, jnp.ones((2, 3)))
+    ts = jax.tree_util.tree_structure
+    assert ts(grads) != ts(model)                      # the bug (raw model)
+    assert ts(grads) == ts(_trainable_params(model))   # the fix (filtered)
+
+
+def test_train_step_adamw_weight_decay_with_function_leaves():
+    """The real fixed _train_step (train.py) runs end-to-end on a model with
+    function leaves, and decoupled weight decay flows through add_decayed_weights
+    (the exact transform that crashed when handed the raw model)."""
+    import jax
+    import jax.numpy as jnp
+    import equinox as eqx
+    from xcquinox.alec.train import build_optimizer, _trainable_params, _train_step
+
+    model = eqx.nn.MLP(in_size=3, out_size=2, width_size=4, depth=1,
+                       activation=jax.nn.gelu, key=jax.random.PRNGKey(0))
+    opt = build_optimizer(lr_start=1e-2, lr_end=1e-3, n_steps=4,
+                          lr_decay_start=0.0, grad_clip=1.0, weight_decay=0.1)
+    opt_state = opt.init(eqx.filter(model, eqx.is_array))
+
+    # (a) Zero grads -> update is pure decoupled weight decay (-lr*wd*p): proves
+    #     add_decayed_weights executed on a structurally-valid params tree.
+    grads0 = jax.tree_util.tree_map(jnp.zeros_like, _trainable_params(model))
+    updates, _ = opt.update(grads0, opt_state, _trainable_params(model))
+    w0 = model.layers[0].weight
+    dw = updates.layers[0].weight
+    assert bool(jnp.isfinite(dw).all())
+    assert bool((jnp.sign(dw) == -jnp.sign(w0)).all())  # decay points inward
+
+    # (b) The real fixed _train_step runs and stays finite.
+    def loss_fn(m, batch):
+        pred = jax.vmap(m)(batch)
+        tot = jnp.sum(pred ** 2)
+        return tot, {"loss": tot}
+
+    new_model, _new_state, loss_val, _aux = _train_step(
+        model, opt_state, jnp.ones((5, 3)), loss_fn, opt)
+    assert bool(jnp.isfinite(loss_val))
+    leaves = jax.tree_util.tree_leaves(eqx.filter(new_model, eqx.is_array))
+    assert all(bool(jnp.isfinite(leaf).all()) for leaf in leaves)

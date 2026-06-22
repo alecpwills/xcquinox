@@ -108,6 +108,29 @@ def build_optimizer(
     )
 
 
+def _trainable_params(model):
+    """Params PyTree to pass as ``optimizer.update(grads, opt_state, params)``.
+
+    ``build_optimizer`` uses ``optax.adamw`` (decoupled weight decay), which
+    always routes through ``add_decayed_weights``; its ``update_fn`` runs
+    ``tree_map(lambda g, p: g + wd * p, updates, params)``. ``updates`` carries
+    the structure of the grads from ``eqx.filter_value_and_grad`` -- i.e. with
+    ``None`` at every non-array leaf -- while an Equinox ``model`` also has its
+    non-array leaves populated (``eqx.nn.MLP`` stores ``activation`` and a
+    default ``final_activation`` lambda; see networks.py:113,258). Passing the
+    raw ``model`` therefore gives ``params`` a *different* tree structure than
+    ``updates``: newer JAX no longer treats ``None`` as a tree-prefix of a
+    non-None leaf and raises ``ValueError: Expected None, got <function ...>``
+    (older JAX silently tolerated it, so this was a latent bug). Filtering to the
+    array leaves -- the *same* filter every matching ``optimizer.init`` uses --
+    makes ``params`` structurally identical to the grads, so weight decay applies
+    correctly on every JAX version. ``eqx.apply_updates(model, updates)`` is
+    unaffected: it is designed to keep the model's non-array leaves where the
+    update is ``None``.
+    """
+    return eqx.filter(model, eqx.is_array)
+
+
 def _abort_if_nonfinite(loss_value, components, *, loop, step, group=None):
     """Fail-loud finite guard: raise ``FloatingPointError`` the instant a
     training step produces a non-finite loss or loss component, naming the
@@ -179,7 +202,7 @@ def _train_step(model, opt_state, batch, loss_fn, optimizer):
     (loss_value, aux), grads = eqx.filter_value_and_grad(
         loss_fn, has_aux=True
     )(model, batch)
-    updates, opt_state = optimizer.update(grads, opt_state, model)
+    updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
     model = eqx.apply_updates(model, updates)
     return model, opt_state, loss_value, aux
 
@@ -798,7 +821,7 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
             return total, components
         (loss_val, components), grads = eqx.filter_value_and_grad(
             normed_loss_fn, has_aux=True)(model, batch)
-        updates, new_opt_state = optimizer.update(grads, opt_state, model)
+        updates, new_opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         new_model = eqx.apply_updates(model, updates)
         return new_model, new_opt_state, loss_val, components
 
@@ -1051,7 +1074,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
         w_updates, new_weight_opt_state = weight_optimizer.update(
             weight_grads, weight_opt_state)
         new_log_weights = log_weights + w_updates
-        updates, new_opt_state = optimizer.update(model_grads, opt_state, model)
+        updates, new_opt_state = optimizer.update(model_grads, opt_state, _trainable_params(model))
         new_model = eqx.apply_updates(model, updates)
         total = jnp.sum(weights * comp_values)
         return (new_model, new_opt_state, new_log_weights,
@@ -1272,7 +1295,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             return total, comps
         (loss_val, comps), grads = eqx.filter_value_and_grad(
             scalar_loss, has_aux=True)(model)
-        updates, opt_state = optimizer.update(grads, opt_state, model)
+        updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         model = eqx.apply_updates(model, updates)
         return model, opt_state, loss_val, comps
 
