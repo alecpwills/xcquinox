@@ -262,6 +262,10 @@ sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS,ExitCode
 
 ## 10. Pull results back to your laptop
 
+> **dfs_step7 figures:** for the end-to-end "pull a training + regenerate the
+> figures" recipe (exact `pull` categories per run + the `make_ablation_arch_figure.py
+> --suite` command), see [`notebooks/analysis/RUNBOOK_pull_and_figures.md`](../notebooks/analysis/RUNBOOK_pull_and_figures.md).
+
 The `pull` subcommand wraps `rsync` with a packaged filter that knows the
 harness layout. The `list-runs` subcommand discovers what's on the cluster.
 
