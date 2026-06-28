@@ -331,6 +331,37 @@ def test_occupancy_far_field_vanishes_smoothly():
     assert np.allclose(n, 0.0, atol=1e-8), f"occupancy not ~0 far away: max={n.max()}"
 
 
+def test_occupancy_leak_free_size_consistent():
+    """DEFINITIVE leak-freeness check (the whole motivation): the local occupancy
+    near a fragment is UNCHANGED by a distant fragment (size-consistency). This is
+    exactly what the global dm_statistics descriptor FAILED -- dm_entropy ~ ln(Nocc)
+    grows with system size and leaks molecule identity. Compute n_sigma at points
+    near fragment A in molecule (A) vs molecule (A + far-away B); assert equal."""
+    from pyscf import dft, gto
+    from xcquinox.alec.rung35 import (compute_projected_ao,
+                                       compute_rung35_occupancy)
+    alpha = 0.2
+    # All in BOHR (PySCF's internal/grid unit; the probe points below are Bohr).
+    # Fragment A = H2 (bond 1.4 a0); B = a second H2 20 a0 away. A's geometry is
+    # IDENTICAL in both molecules so any occupancy change is a leak, not geometry.
+    mA = gto.M(atom="H 0 0 0; H 0 0 1.4", basis="def2-svp", unit="Bohr", verbose=0)
+    mfA = dft.RKS(mA); mfA.xc = "pbe"; mfA.kernel()
+    mAB = gto.M(atom="H 0 0 0; H 0 0 1.4; H 0 0 20.0; H 0 0 21.4",
+                basis="def2-svp", unit="Bohr", verbose=0)
+    mfAB = dft.RKS(mAB); mfAB.xc = "pbe"; mfAB.kernel()
+    pts = np.array([[0., 0., 0.0], [0., 0., 0.7], [0., 0., 1.4], [0.5, 0., 0.7]])
+    nA = np.asarray(compute_rung35_occupancy(
+        jnp.asarray(compute_projected_ao(mA, pts, alpha)),
+        jnp.asarray(mfA.make_rdm1())))
+    nAB = np.asarray(compute_rung35_occupancy(
+        jnp.asarray(compute_projected_ao(mAB, pts, alpha)),
+        jnp.asarray(mfAB.make_rdm1())))
+    np.testing.assert_allclose(
+        nA, nAB, atol=1e-4, rtol=1e-3,
+        err_msg="occupancy near A changed when a distant fragment B was added "
+                "-> NOT leak-free / size-consistent (the dm_statistics failure mode)")
+
+
 def test_v3_yamls_swept_to_rung35_not_combined():
     """In-flight-safe sweep swap: the v3 + full25 dfs_step7 YAMLs now train the
     rung-3.5 archs (NOT the leaky deep_combined/deep_dm), keep deep_cusp_3x16 as
