@@ -10,6 +10,8 @@ import equinox as eqx
 import jax.numpy as jnp
 from typing import ClassVar
 
+from xcquinox.alec.rung35 import DEFAULT_RUNG35_ALPHA
+
 
 class Descriptor(eqx.Module, abc.ABC):
     """Base class for all descriptors. Subclasses provide extra input features."""
@@ -166,6 +168,54 @@ class DMStatisticsDescriptor(Descriptor):
 
     def compute(self, mol_data):
         return mol_data["dm_features"]
+
+
+@register_descriptor("rung35")
+class DMRung35Descriptor(Descriptor):
+    """Rung-3.5 localized density-matrix descriptor: per-spin bounded local
+    occupancy ``n_sigma(r) = A(r)^T P^sigma A(r) in [0, 1]`` (Janesko,
+    arXiv:2206.07118 Eq. 12-13; M11plus, Verma et al. *J. Chem. Theory Comput.*
+    15, 4804 (2019)).
+
+    Unlike :class:`DMStatisticsDescriptor` (GLOBAL per-molecule scalars tiled to
+    every grid point -- a molecule-identity leak), this is a genuine PER-GRID-POINT
+    contraction of the *non-local* Kohn-Sham 1-RDM against a localized Gaussian
+    projector. It is therefore leak-free (size-intensive), self-consistent (a
+    functional of the LIVE DM, recomputed each SCF cycle), NOT a static reference
+    DM, and NOT a meta-GGA (no tau) -- its own rung on Jacob's ladder, between
+    meta-GGA and hybrid. Bounded ``[0, 1]`` by Bessel's inequality (``P^sigma`` is
+    PSD => ``>= 0``; orthonormal occupied orbitals + normalized projector =>
+    ``<= 1``), so it is NaN-safe by construction.
+
+    The two features are the alpha- and beta-spin occupancies. They feed BOTH the
+    exchange and correlation networks: the M11plus rung-3.5 ingredient is a
+    CORRELATION ingredient (so the C-net is a first-class consumer from the
+    start), and the X-net receives it equally via the shared ``features`` extras
+    mechanism -- complete X/C parity.
+
+    See :mod:`xcquinox.alec.rung35` for the projected-AO overlap ``A_mu(r)`` (a
+    fixed, density-independent precompute) and the occupancy contraction.
+    """
+    n_features: int = eqx.field(default=2, static=True)
+    # Gaussian-projector width (a0^-2); a configurable hyperparameter. Default
+    # grounded at the M11plus kernel scale (d^2 = 5 a0^2). A FIXED alpha makes
+    # A_mu(r) a precompute-once constant (never differentiated); the occupancy is
+    # then linear in the live DM.
+    alpha: float = eqx.field(default=DEFAULT_RUNG35_ALPHA, static=True)
+    required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35_features",)
+
+    @staticmethod
+    def compute_from_dm(proj_ao: jnp.ndarray, dm: jnp.ndarray) -> jnp.ndarray:
+        """Reassemble kernel: recompute the per-spin occupancy from a LIVE DM and
+        the constant projected-AO matrix ``A`` (``proj_ao``), so the SCF REASSEMBLE
+        policy keeps the descriptor self-consistent each cycle. Mirrors
+        :meth:`DMStatisticsDescriptor.compute_from_dm` but per grid point (the
+        occupancy is local, not a tiled global scalar)."""
+        from xcquinox.alec.rung35 import compute_rung35_occupancy
+        return compute_rung35_occupancy(proj_ao, dm)
+
+    def compute(self, mol_data):
+        return mol_data["rung35_features"]
 
 
 def assemble_descriptor_features(descriptors: tuple[Descriptor, ...],

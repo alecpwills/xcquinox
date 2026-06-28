@@ -97,3 +97,50 @@ def test_occupancy_linear_and_differentiable_in_dm():
     dm = jnp.asarray(rng.standard_normal((6, 6)))
     grad = jax.grad(f)(dm)
     assert np.all(np.isfinite(np.asarray(grad))), "non-finite gradient wrt DM"
+
+
+# ===========================================================================
+# Phase 2: the DMRung35Descriptor (registration + delegation to rung35.py).
+# ===========================================================================
+
+def test_rung35_descriptor_registration():
+    """Registered under "rung35" (matches the arch descriptor list), 2 features,
+    gated on the precomputed "rung35_features" key, default alpha from rung35.py."""
+    from xcquinox.alec.descriptors import DESCRIPTOR_REGISTRY, make_descriptor
+    from xcquinox.alec.rung35 import DEFAULT_RUNG35_ALPHA
+    assert "rung35" in DESCRIPTOR_REGISTRY
+    d = make_descriptor("rung35")
+    assert d.n_features == 2, d.n_features
+    assert d.required_mol_keys == ("rung35_features",)
+    assert float(d.alpha) == DEFAULT_RUNG35_ALPHA
+
+
+def test_rung35_descriptor_compute_reads_precomputed_feature():
+    """compute(mol_data) returns the precomputed occupancy (one-shot path)."""
+    from xcquinox.alec.descriptors import make_descriptor
+    d = make_descriptor("rung35")
+    feat = jnp.ones((12, 2)) * 0.4
+    assert jnp.array_equal(d.compute({"rung35_features": feat}), feat)
+
+
+def test_rung35_descriptor_compute_from_dm_reassembles_occupancy():
+    """The reassemble kernel recomputes the occupancy from the LIVE DM + the
+    constant projected-AO matrix A (the self-consistent SCF path)."""
+    from xcquinox.alec.descriptors import make_descriptor
+    from xcquinox.alec.rung35 import compute_rung35_occupancy
+    d = make_descriptor("rung35")
+    rng = np.random.default_rng(1)
+    A = jnp.asarray(rng.standard_normal((15, 5)))
+    dm = jnp.asarray(rng.standard_normal((5, 5)))
+    dm = dm + dm.T
+    got = d.compute_from_dm(proj_ao=A, dm=dm)
+    assert got.shape == (15, 2)
+    assert jnp.allclose(got, compute_rung35_occupancy(A, dm))
+
+
+def test_rung35_descriptor_alpha_configurable_and_static():
+    """alpha is a static (hyperparameter) field, configurable per instance."""
+    from xcquinox.alec.descriptors import make_descriptor
+    d = make_descriptor("rung35", alpha=0.5)
+    assert float(d.alpha) == 0.5
+    assert d.n_features == 2
