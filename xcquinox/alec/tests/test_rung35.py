@@ -331,6 +331,32 @@ def test_occupancy_far_field_vanishes_smoothly():
     assert np.allclose(n, 0.0, atol=1e-8), f"occupancy not ~0 far away: max={n.max()}"
 
 
+def test_v3_yamls_swept_to_rung35_not_combined():
+    """In-flight-safe sweep swap: the v3 + full25 dfs_step7 YAMLs now train the
+    rung-3.5 archs (NOT the leaky deep_combined/deep_dm), keep deep_cusp_3x16 as
+    the control, and every swept arch resolves in the registry. The leaky entries
+    remain in the registry (so the running array still resolves them) but are no
+    longer in the sweep, so a fresh submit auto-trains rung-3.5."""
+    import pathlib
+    import yaml
+    from xcquinox.alec.config import ARCHITECTURES
+    root = pathlib.Path(__file__).resolve().parents[3]
+    for fn in ("dfs_step7.svp_grid2_v3.yaml", "dfs_step7.svp_grid2_v3_full25.yaml"):
+        cfg = yaml.safe_load((root / "hpcjobs" / "configs" / fn).read_text())
+        archs = cfg["sweep"]["arch"]
+        assert "deep_rung35_3x16" in archs, fn
+        assert "deep_rung35_attn_3x16" in archs, fn
+        assert "deep_rung35only_3x16" in archs, fn
+        assert "deep_cusp_3x16" in archs, f"{fn}: control deep_cusp_3x16 dropped"
+        assert "deep_combined_3x16" not in archs, f"{fn}: leaky deep_combined still swept"
+        assert "deep_combined_attn_3x16" not in archs, fn
+        assert "deep_dm_3x16" not in archs, f"{fn}: leaky deep_dm still swept"
+        for a in archs:
+            assert a in ARCHITECTURES, f"{fn}: swept arch {a!r} not in registry"
+    # registry still resolves the leaky archs for the in-flight array.
+    assert "deep_combined_3x16" in ARCHITECTURES and "deep_dm_3x16" in ARCHITECTURES
+
+
 @pytest.mark.slow
 def test_rung35_full_scf_pyscfad_runs_no_nan():
     """End-to-end smoke validating the Phase-3 threading: a deep_rung35

@@ -21,10 +21,15 @@ sweep:
   arch:
     - deep_3x16
     - deep_attn_3x16
-    - deep_dm_3x16
+    # rung-3.5 localized-DM archs replace the leaky deep_dm/deep_combined (which
+    # stay in the registry so the in-flight array still resolves them). The
+    # occupancy descriptor is leak-free + self-consistent (Janesko 2206.07118 /
+    # M11plus). deep_cusp_3x16 is KEPT as the CONTROL for the A/B: deep_cusp vs
+    # deep_rung35 (cusp+localized DM) vs the frozen deep_combined (cusp+global DM).
+    - deep_rung35only_3x16
     - deep_cusp_3x16
-    - deep_combined_3x16
-    - deep_combined_attn_3x16
+    - deep_rung35_3x16
+    - deep_rung35_attn_3x16
     - deep_notransform_3x16
     - deep_notransform_attn_3x16
   loss: [L5_gradnorm_vxc_step7]
