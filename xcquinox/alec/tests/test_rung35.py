@@ -298,6 +298,39 @@ def test_rung35_feeds_both_nets_xc_parity():
         "rung-3.5 feature does not affect the correlation net (X/C parity broken)"
 
 
+# ===========================================================================
+# Phase 5: NaN robustness. The occupancy A^T P A is bounded [0,1] by
+# construction (no division by rho / k_F anywhere), so it is NaN-safe; these
+# pin that across extreme widths and the low-density (far-field) limit.
+# ===========================================================================
+
+def test_occupancy_alpha_extremes_finite_and_bounded():
+    """At extreme projector widths (very tight 1e4, very diffuse 1e-3) the
+    occupancy stays finite and in [0, 1]."""
+    from xcquinox.alec.rung35 import (compute_projected_ao,
+                                       compute_rung35_occupancy)
+    mol, dm, coords, _w = _h2()
+    for alpha in (1e4, 1e-3, 5.0):
+        A = compute_projected_ao(mol, coords, alpha)
+        n = np.asarray(compute_rung35_occupancy(jnp.asarray(A), jnp.asarray(dm)))
+        assert np.all(np.isfinite(n)), f"alpha={alpha}: non-finite occupancy"
+        assert n.min() >= -1e-9 and n.max() <= 1 + 1e-6, \
+            f"alpha={alpha}: occupancy out of [0,1] ({n.min()}, {n.max()})"
+
+
+def test_occupancy_far_field_vanishes_smoothly():
+    """Low-density / far-from-molecule limit: A -> 0, so the occupancy -> 0
+    smoothly (no NaN, no blow-up -- the rho->0 limit is benign by construction)."""
+    from xcquinox.alec.rung35 import (compute_projected_ao,
+                                       compute_rung35_occupancy)
+    mol, dm, _c, _w = _h2()
+    far = np.array([[0.0, 0.0, 50.0], [50.0, 50.0, 50.0]])
+    A = compute_projected_ao(mol, far, 0.2)
+    n = np.asarray(compute_rung35_occupancy(jnp.asarray(A), jnp.asarray(dm)))
+    assert np.all(np.isfinite(n))
+    assert np.allclose(n, 0.0, atol=1e-8), f"occupancy not ~0 far away: max={n.max()}"
+
+
 @pytest.mark.slow
 def test_rung35_full_scf_pyscfad_runs_no_nan():
     """End-to-end smoke validating the Phase-3 threading: a deep_rung35
