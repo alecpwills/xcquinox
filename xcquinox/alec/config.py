@@ -448,6 +448,28 @@ ARCHITECTURES = {
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True,
                               zero_init_final_layer=True),
+    # Rung-3.5 localized-DM archs (ADDITIVE). The leaky deep_dm/deep_combined
+    # entries above are KEPT so a pending in-flight array task still resolves
+    # them. deep_rung35_3x16 (cusp + localized rung-3.5 DM occupancy) replaces
+    # deep_combined in the sweep; deep_rung35only_3x16 (rung-3.5 alone) replaces
+    # deep_dm. The rung-3.5 occupancy is leak-free + self-consistent (Janesko
+    # arXiv:2206.07118; M11plus, Verma 2019). See descriptors.DMRung35Descriptor.
+    "deep_rung35_3x16":         ArchitectureConfig.from_spec("deep_rung35_3x16",        3, 16,
+                              descriptors=["cusp", "rung35"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_rung35_attn_3x16":    ArchitectureConfig.from_spec("deep_rung35_attn_3x16",   3, 16,
+                              attention=True, num_heads=4,
+                              descriptors=["cusp", "rung35"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_rung35only_3x16":     ArchitectureConfig.from_spec("deep_rung35only_3x16",    3, 16,
+                              descriptors=["rung35"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
     "deep_notransform_3x16":       ArchitectureConfig.from_spec("deep_notransform_3x16",      3, 16,
                               dm_entropy_intensive=True,
                               descriptor_log_transform=False,

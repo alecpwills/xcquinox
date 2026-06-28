@@ -19,6 +19,7 @@ from __future__ import annotations
 import numpy as np
 import jax
 import jax.numpy as jnp
+import pytest
 
 
 ALPHA = 0.2  # projector width (a0^-2), grounded at the M11plus kernel scale d^2=5 a0^2
@@ -239,3 +240,109 @@ def test_reassemble_on_grid_rung35_matches_occupancy():
     assert f_cached.shape == (10, 2)
     assert jnp.allclose(f_cached, ref)
     assert jnp.allclose(f_fallback, ref)  # fallback recomputes the same A
+
+
+# ===========================================================================
+# Phase 4: additive deep_rung35 archs + X/C parity.
+# ===========================================================================
+
+def test_deep_rung35_archs_registered():
+    """The new archs exist: deep_rung35_3x16 (cusp+rung35) replacing the leaky
+    deep_combined; deep_rung35only_3x16 (rung35 alone) replacing deep_dm; + attn."""
+    from xcquinox.alec.config import ARCHITECTURES
+    for name in ("deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16"):
+        assert name in ARCHITECTURES, name
+    a = ARCHITECTURES["deep_rung35_3x16"]
+    assert [s.name for s in a.descriptors] == ["cusp", "rung35"]
+    assert sum(d.n_features for d in a.materialize_descriptors()) == 4  # cusp 2 + rung35 2
+    assert [type(d).__name__ for d in a.materialize_descriptors()] == \
+        ["CuspDescriptor", "DMRung35Descriptor"]
+    only = ARCHITECTURES["deep_rung35only_3x16"]
+    assert [s.name for s in only.descriptors] == ["rung35"]
+    assert sum(d.n_features for d in only.materialize_descriptors()) == 2
+    assert ARCHITECTURES["deep_rung35_attn_3x16"].attention is True
+
+
+def test_existing_leaky_archs_untouched_in_flight_safe():
+    """In-flight safety: the deep_combined / deep_dm registry entries are
+    byte-identical, so a pending in-flight array task still resolves them."""
+    from xcquinox.alec.config import ARCHITECTURES
+    assert [s.name for s in ARCHITECTURES["deep_combined_3x16"].descriptors] == \
+        ["dm_statistics", "cusp"]
+    assert [s.name for s in ARCHITECTURES["deep_combined_attn_3x16"].descriptors] == \
+        ["dm_statistics", "cusp"]
+    assert [s.name for s in ARCHITECTURES["deep_dm_3x16"].descriptors] == ["dm_statistics"]
+
+
+def test_rung35_feeds_both_nets_xc_parity():
+    """X/C PARITY (user hard requirement): the rung-3.5 channel feeds BOTH the
+    exchange and correlation networks. With a non-zero-init model, perturbing the
+    rung35 feature columns must change BOTH Fx and Fc (no X-only path)."""
+    from xcquinox.alec.config import ArchitectureConfig
+    from xcquinox.alec.models import AlecGGAModel
+    arch = ArchitectureConfig.from_spec(
+        "test_rung35_parity", 3, 16, descriptors=["cusp", "rung35"],
+        zero_init_final_layer=False)
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    assert model.xnet.n_extra_features == 4
+    assert model.cnet.n_extra_features == 4
+    rho = jnp.array([0.5, 0.3])
+    sigma = jnp.array([0.1, 0.2])
+    feat0 = jnp.zeros((2, 4))
+    feat1 = feat0.at[:, 2:].set(0.7)  # perturb ONLY the rung35 columns (2, 3)
+    assert not jnp.allclose(model.eval_Fx(rho, sigma, feat0),
+                            model.eval_Fx(rho, sigma, feat1)), \
+        "rung-3.5 feature does not affect the exchange net (X/C parity broken)"
+    assert not jnp.allclose(model.eval_Fc(rho, sigma, feat0),
+                            model.eval_Fc(rho, sigma, feat1)), \
+        "rung-3.5 feature does not affect the correlation net (X/C parity broken)"
+
+
+@pytest.mark.slow
+def test_rung35_full_scf_pyscfad_runs_no_nan():
+    """End-to-end smoke validating the Phase-3 threading: a deep_rung35
+    (cusp+rung35) model runs a FULL pyscfad SCF under REASSEMBLE -- A is computed
+    once on pyscfad's (pruned) grid and the occupancy is recomputed from the live
+    DM each cycle. Asserts finite energy + DM + features (no NaN through the
+    self-consistent loop)."""
+    from xcquinox.alec.config import ARCHITECTURES
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.data import (precompute_fixed_density_data,
+                                    clear_precompute_cache)
+    from xcquinox.alec.solver import (SolverConfig, SolverBackend, SolverMode,
+                                      FeaturePolicy, run_scf)
+    clear_precompute_cache()
+    arch = ARCHITECTURES["deep_rung35_3x16"]
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    data = precompute_fixed_density_data(
+        _h2_spec(), descriptors=arch.materialize_descriptors(),
+        required_keys=("cusp_features", "rung35_features"))
+    cfg = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FULL,
+                       feature_policy=FeaturePolicy.REASSEMBLE, max_cycles=10)
+    result = run_scf(cfg, model, data)
+    assert np.isfinite(float(result.total_energy)), "non-finite energy"
+    assert np.all(np.isfinite(np.asarray(result.density_matrix))), "non-finite DM"
+    assert np.all(np.isfinite(np.asarray(result.features_used))), "non-finite features"
+
+
+@pytest.mark.slow
+def test_rung35_full_scf_manual_runs_no_nan():
+    """End-to-end smoke for the MANUAL backend: deep_rung35 FULL SCF under
+    REASSEMBLE uses the precomputed A (precompute grid). Finite + no NaN."""
+    from xcquinox.alec.config import ARCHITECTURES
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.data import (precompute_fixed_density_data,
+                                    clear_precompute_cache)
+    from xcquinox.alec.solver import (SolverConfig, SolverBackend, SolverMode,
+                                      FeaturePolicy, run_scf)
+    clear_precompute_cache()
+    arch = ARCHITECTURES["deep_rung35_3x16"]
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    data = precompute_fixed_density_data(
+        _h2_spec(), descriptors=arch.materialize_descriptors(),
+        required_keys=("cusp_features", "rung35_features", "eri"))  # manual FULL needs the ERI
+    cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                       feature_policy=FeaturePolicy.REASSEMBLE, max_cycles=10)
+    result = run_scf(cfg, model, data)
+    assert np.isfinite(float(result.total_energy)), "non-finite energy"
+    assert np.all(np.isfinite(np.asarray(result.density_matrix))), "non-finite DM"

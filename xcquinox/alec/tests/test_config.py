@@ -141,9 +141,10 @@ def test_architecture_config_field_validation(field, value, exc):
 # §13.2 item (12), 2026-05-29: bumped from 12 to 14 by adding
 # deep_notransform + deep_notransform_attn for the descriptor ablation sweep.
 # 2026-06-20: bumped to 22 by adding the 8 depth-3/width-16 dfs_step7 twins.
-def test_architectures_has_22_keys():
+# 2026-06-28: bumped to 25 by adding the 3 rung-3.5 localized-DM archs.
+def test_architectures_has_25_keys():
     from xcquinox.alec.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 22
+    assert len(ARCHITECTURES) == 25
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -155,6 +156,10 @@ def test_architectures_has_22_keys():
         "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16", "deep_dm_3x16",
         "deep_combined_3x16", "deep_combined_attn_3x16",
         "deep_notransform_3x16", "deep_notransform_attn_3x16",
+        # New 2026-06-28: rung-3.5 localized-DM archs (additive; deep_rung35_3x16
+        # = cusp+rung35 replaces deep_combined in the sweep, deep_rung35only_3x16
+        # = rung35 alone replaces deep_dm; the leaky entries are kept for in-flight).
+        "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
 
@@ -171,7 +176,7 @@ def test_list_architectures_returns_sorted():
     from xcquinox.alec.config import list_architectures
     names = list_architectures()
     assert names == sorted(names)
-    assert len(names) == 22
+    assert len(names) == 25
 
 
 # §13.2 item (15)
@@ -381,7 +386,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 22  # 2026-06-20: +8 depth-3/width-16 dfs_step7 twins
+    assert len(ARCHITECTURES) == 25  # +8 (2026-06-20) +3 rung-3.5 (2026-06-28)
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)
