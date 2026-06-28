@@ -296,6 +296,7 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict) -> SCFResul
             s_matrix=s_matrix,
             cusp_features=cusp_cached,
             n_grid=grid_weights.shape[0],
+            rung35_proj_ao=mol_data.get("rung35_proj_ao"),
         )
         return feats, rho_d, sigma_d, nabla_rho_d
 
@@ -461,6 +462,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
             s_matrix=s_matrix,
             cusp_features=cusp_cached,
             n_grid=grid_weights.shape[0],
+            rung35_proj_ao=mol_data.get("rung35_proj_ao"),
         )
 
     def _vx_nn_spin(features, rho_s, sigma_ss, nabla_rho_s):

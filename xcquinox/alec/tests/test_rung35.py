@@ -144,3 +144,98 @@ def test_rung35_descriptor_alpha_configurable_and_static():
     d = make_descriptor("rung35", alpha=0.5)
     assert float(d.alpha) == 0.5
     assert d.n_features == 2
+
+
+# ===========================================================================
+# Phase 3: gated precompute + self-consistent SCF reassemble.
+# ===========================================================================
+
+def _h2_spec():
+    from xcquinox.alec.config import MoleculeSpec
+    return MoleculeSpec.from_dict(name="H2", atom="H 0 0 0; H 0 0 0.74",
+                                  basis="def2-svp", charge=0, spin=0,
+                                  atom_composition={"H": 2})
+
+
+def test_precompute_populates_rung35_features_when_descriptor_present():
+    """The gated precompute computes + stores both the constant projected-AO
+    matrix A (rung35_proj_ao) and the one-shot occupancy (rung35_features),
+    correctly shaped, finite, and bounded [0, 1]."""
+    from xcquinox.alec.data import (precompute_fixed_density_data,
+                                    clear_precompute_cache)
+    from xcquinox.alec.descriptors import make_descriptor
+    clear_precompute_cache()
+    data = precompute_fixed_density_data(
+        _h2_spec(), descriptors=(make_descriptor("rung35"),),
+        required_keys=("rung35_features",))
+    A = data.get("rung35_proj_ao")
+    feat = data.get("rung35_features")
+    N = data["rho_grid"].shape[0]
+    nao = data["s_matrix"].shape[0]
+    assert A is not None and tuple(A.shape) == (N, nao), None if A is None else A.shape
+    assert feat is not None and tuple(feat.shape) == (N, 2)
+    assert jnp.all(jnp.isfinite(feat))
+    assert float(jnp.min(feat)) >= -1e-9 and float(jnp.max(feat)) <= 1 + 1e-6
+
+
+def test_precompute_rung35_keys_none_without_descriptor():
+    """Gated by required_mol_keys: with no rung-3.5 descriptor present the
+    rung35 keys stay None, so the existing-arch precompute is byte-identical
+    (in-flight safety)."""
+    from xcquinox.alec.data import (precompute_fixed_density_data,
+                                    clear_precompute_cache)
+    from xcquinox.alec.descriptors import make_descriptor
+    clear_precompute_cache()
+    data = precompute_fixed_density_data(
+        _h2_spec(), descriptors=(make_descriptor("cusp"),),
+        required_keys=("cusp_features",))
+    assert data.get("rung35_proj_ao") is None
+    assert data.get("rung35_features") is None
+
+
+def test_reassemble_manual_rung35_tracks_live_dm():
+    """The manual-backend REASSEMBLE recomputes the occupancy from the LIVE DM
+    (self-consistency, not frozen at the PBE value): a different DM gives a
+    different occupancy, matching compute_rung35_occupancy(A, dm)."""
+    from xcquinox.alec.solver import _reassemble_features
+    from xcquinox.alec.descriptors import make_descriptor
+    from xcquinox.alec.rung35 import compute_rung35_occupancy
+    rng = np.random.default_rng(3)
+    nao, N = 5, 12
+    A = jnp.asarray(rng.standard_normal((N, nao)))
+    S = jnp.eye(nao)
+    d = make_descriptor("rung35")
+    dm1 = jnp.asarray(rng.standard_normal((nao, nao))); dm1 = dm1 + dm1.T
+    dm2 = jnp.asarray(rng.standard_normal((nao, nao))); dm2 = dm2 + dm2.T
+    f1 = _reassemble_features((d,), dm=dm1, s_matrix=S, n_grid=N, rung35_proj_ao=A)
+    f2 = _reassemble_features((d,), dm=dm2, s_matrix=S, n_grid=N, rung35_proj_ao=A)
+    assert f1.shape == (N, 2) and f2.shape == (N, 2)
+    assert jnp.allclose(f1, compute_rung35_occupancy(A, dm1))
+    assert not jnp.allclose(f1, f2)  # genuinely tracks the live DM
+
+
+def test_reassemble_on_grid_rung35_matches_occupancy():
+    """The pyscfad-backend reassemble produces the rung-3.5 occupancy on its own
+    grid. With a cached proj_ao A it uses it; without one it recomputes A on the
+    grid (fallback) -- both give compute_rung35_occupancy(A, dm)."""
+    from pyscf import gto
+    from xcquinox.alec.solver_pyscfad import _reassemble_features_on_grid
+    from xcquinox.alec.descriptors import make_descriptor
+    from xcquinox.alec.rung35 import (compute_projected_ao,
+                                       compute_rung35_occupancy)
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="def2-svp", verbose=0)
+    rng = np.random.default_rng(4)
+    coords = jnp.asarray(rng.standard_normal((10, 3)))
+    d = make_descriptor("rung35")
+    A = jnp.asarray(compute_projected_ao(mol, np.asarray(coords), float(d.alpha)))
+    nao = mol.nao_nr()
+    dm = jnp.asarray(rng.standard_normal((nao, nao))); dm = dm + dm.T
+    S = jnp.asarray(mol.intor("int1e_ovlp"))
+    ref = compute_rung35_occupancy(A, dm)
+    f_cached = _reassemble_features_on_grid(
+        (d,), dm=dm, s_matrix=S, grid_coords=coords, mol=mol, rung35_proj_ao=A)
+    f_fallback = _reassemble_features_on_grid(
+        (d,), dm=dm, s_matrix=S, grid_coords=coords, mol=mol)
+    assert f_cached.shape == (10, 2)
+    assert jnp.allclose(f_cached, ref)
+    assert jnp.allclose(f_fallback, ref)  # fallback recomputes the same A

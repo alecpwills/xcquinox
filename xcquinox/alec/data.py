@@ -191,6 +191,11 @@ class MoleculeData(TypedDict, total=True):
     ao_grid_deriv: jnp.ndarray
     cusp_features: jnp.ndarray | None
     dm_features: jnp.ndarray | None
+    # Rung-3.5 localized DM descriptor (gated on a DMRung35Descriptor being
+    # present). rung35_proj_ao is the constant projected-AO matrix A (N, nao);
+    # rung35_features is the one-shot per-spin occupancy A^T P_pbe A (N, 2).
+    rung35_proj_ao: jnp.ndarray | None
+    rung35_features: jnp.ndarray | None
     eri: jnp.ndarray | None
     cderi: jnp.ndarray | None
     atom_composition: tuple[tuple[str, int], ...]
@@ -227,7 +232,10 @@ def _precompute_cache_key(
          # DMStatisticsDescriptor(intensive=False) in the cache, and likewise
          # for CuspDescriptor.log_transform.
          getattr(d, "intensive", False),
-         getattr(d, "log_transform", False))
+         getattr(d, "log_transform", False),
+         # rung-3.5 projector width: distinct alpha -> distinct projected-AO A,
+         # so DMRung35Descriptor(alpha=...) variants must not collide in cache.
+         getattr(d, "alpha", None))
         for d in descriptors
     )
     ext_path = getattr(mol_spec, "external_data_path", None)
@@ -396,6 +404,8 @@ def precompute_fixed_density_data(
     # Descriptor features (on-demand)
     cusp_features = None
     dm_features = None
+    rung35_proj_ao = None
+    rung35_features = None
 
     if "cusp_features" in all_needed:
         from xcquinox.features import compute_cusp_descriptor
@@ -439,6 +449,25 @@ def precompute_fixed_density_data(
             intensive=dm_intensive,
         )
         dm_features = jnp.tile(dm_feat_global, (len(rho_pbe), 1))
+
+    if "rung35_features" in all_needed:
+        from xcquinox.alec.rung35 import (
+            compute_projected_ao, compute_rung35_occupancy, DEFAULT_RUNG35_ALPHA)
+        # Pull the projector width from the DMRung35Descriptor instance so the
+        # precompute matches the descriptor's consumer (and the cache key, which
+        # includes alpha). First instance wins if several are present.
+        rung35_alpha = DEFAULT_RUNG35_ALPHA
+        for d in descriptors:
+            if type(d).__name__ == "DMRung35Descriptor":
+                rung35_alpha = float(getattr(d, "alpha", DEFAULT_RUNG35_ALPHA))
+                break
+        # A_mu(r) = <chi_mu | normalized Gaussian projector at r> -- a constant
+        # (DM/density-independent) precompute; coords are in Bohr (mf.grids.coords).
+        rung35_proj_ao = jnp.array(compute_projected_ao(mol, coords, rung35_alpha))
+        # One-shot per-spin occupancy A^T P_pbe A from the PBE DM. Pass the
+        # SPIN-RESOLVED 3-D DM for UKS so the alpha/beta channels are correct;
+        # for RKS the 2-D total DM is split evenly inside compute_rung35_occupancy.
+        rung35_features = compute_rung35_occupancy(rung35_proj_ao, jnp.array(dm_pbe))
 
     eri = None
     if "eri" in all_needed:
@@ -522,6 +551,8 @@ def precompute_fixed_density_data(
         ao_grid_deriv=jnp.array(ao),
         cusp_features=cusp_features,
         dm_features=dm_features,
+        rung35_proj_ao=rung35_proj_ao,
+        rung35_features=rung35_features,
         eri=eri,
         cderi=cderi,
         atom_composition=mol_spec.atom_composition,

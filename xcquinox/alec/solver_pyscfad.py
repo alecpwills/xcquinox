@@ -92,12 +92,26 @@ def _build_pyscfad_mf(mol, mol_data: dict):
     return mf
 
 
+def _maybe_rung35_proj_ao(descriptors: tuple, mol, grid_coords):
+    """Constant rung-3.5 projected-AO matrix ``A`` on ``grid_coords`` if a
+    DMRung35Descriptor is present (else ``None``). ``A`` is DM-independent, so the
+    pyscfad backend computes it ONCE per SCF on pyscfad's actual (pruned) grid and
+    reuses it for every cycle's reassemble (avoids a per-cycle PySCF integral)."""
+    from xcquinox.alec.descriptors import DMRung35Descriptor
+    for d in descriptors:
+        if isinstance(d, DMRung35Descriptor):
+            from xcquinox.alec.rung35 import compute_projected_ao
+            return jnp.asarray(compute_projected_ao(mol, grid_coords, float(d.alpha)))
+    return None
+
+
 def _reassemble_features_on_grid(
     descriptors: tuple,
     dm: "jnp.ndarray",
     s_matrix: "jnp.ndarray",
     grid_coords: "jnp.ndarray",
     mol,
+    rung35_proj_ao: "jnp.ndarray | None" = None,
 ) -> "jnp.ndarray":
     """Compute descriptor features from (dm, S) on a specific grid.
 
@@ -115,7 +129,8 @@ def _reassemble_features_on_grid(
     idempotency branch would instead produce a non-zero,
     physically-meaningless idempotency_error.
     """
-    from xcquinox.alec.descriptors import CuspDescriptor, DMStatisticsDescriptor
+    from xcquinox.alec.descriptors import (
+        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor)
     from xcquinox.features import compute_cusp_descriptor
 
     dm_arr = jnp.asarray(dm)
@@ -142,6 +157,16 @@ def _reassemble_features_on_grid(
             cols.append(d.compute_from_dm(
                 dm=dm_arr, s_matrix=s_matrix, n_grid=n_grid,
             ))
+        elif isinstance(d, DMRung35Descriptor):
+            # The occupancy n_sigma = A^T P^sigma A needs A on THIS (pruned)
+            # grid. A is DM-independent; the caller normally precomputes it once
+            # per SCF (rung35_proj_ao) -- fall back to computing it here.
+            A = rung35_proj_ao
+            if A is None:
+                from xcquinox.alec.rung35 import compute_projected_ao
+                A = jnp.asarray(compute_projected_ao(
+                    mol, grid_coords, float(getattr(d, "alpha"))))
+            cols.append(d.compute_from_dm(proj_ao=A, dm=dm_arr))
         else:
             raise NotImplementedError(
                 f"_reassemble_features_on_grid does not yet know how to "
@@ -531,10 +556,15 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     # REASSEMBLE: get_veff wrapper (below) refreshes features from the
     #         current DM on every cycle.
     feature_holder = None
+    _rung35_proj_ao = None
     if descriptors:
         is_uks = bool(mol_data.get("is_unrestricted", False)) or int(getattr(mol, "spin", 0)) != 0
         if not is_uks:
             mf.initialize_grids(mol, mol_data["dm_pbe"])
+        # Constant rung-3.5 projected-AO A on pyscfad's actual (pruned) grid,
+        # computed once and reused every cycle (None unless a rung-3.5 arch).
+        # Geometry is fixed across the SCF, so A is cycle-invariant.
+        _rung35_proj_ao = _maybe_rung35_proj_ao(descriptors, mol, mf.grids.coords)
         feature_holder = {
             "features_full": _reassemble_features_on_grid(
                 descriptors=descriptors,
@@ -542,6 +572,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
                 s_matrix=jnp.asarray(mol_data["s_matrix"]),
                 grid_coords=jnp.asarray(mf.grids.coords),
                 mol=mol,
+                rung35_proj_ao=_rung35_proj_ao,
             ),
             "offset": 0,
         }
@@ -585,6 +616,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
                     s_matrix=_s_matrix,
                     grid_coords=_grid_coords,
                     mol=mol_eff,
+                    rung35_proj_ao=_rung35_proj_ao,
                 )
             feature_holder["offset"] = 0
             return original_get_veff(mol_eff, dm, *args, **kwargs)

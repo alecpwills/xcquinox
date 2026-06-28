@@ -315,17 +315,23 @@ def _reassemble_features(
     s_matrix: jnp.ndarray,
     cusp_features: jnp.ndarray | None = None,
     n_grid: int | None = None,
+    rung35_proj_ao: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Recompute descriptor features from the live (dm, S) + cached cusp.
 
     Used by REASSEMBLE policy. CuspDescriptor features are geometry-only
     (not DM-dependent) so they are passed in as the frozen precompute value.
     DMStatisticsDescriptor features use the live DM via compute_from_dm.
+    DMRung35Descriptor features use the live DM contracted with the constant
+    projected-AO matrix ``rung35_proj_ao`` (= mol_data['rung35_proj_ao'], which
+    the manual backend computes on the precompute grid -- the same grid this
+    backend integrates on).
 
     ``n_grid`` supplies the grid size for DMStatisticsDescriptor when no
     CuspDescriptor (and therefore no cusp_features) is present.
     """
-    from xcquinox.alec.descriptors import CuspDescriptor, DMStatisticsDescriptor
+    from xcquinox.alec.descriptors import (
+        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor)
     if not descriptors:
         _ng = cusp_features.shape[0] if cusp_features is not None else (n_grid or 0)
         return jnp.zeros((_ng, 0))
@@ -346,6 +352,13 @@ def _reassemble_features(
                     "cusp_features or n_grid"
                 )
             cols.append(d.compute_from_dm(dm=dm, s_matrix=s_matrix, n_grid=n_grid_hint))
+        elif isinstance(d, DMRung35Descriptor):
+            if rung35_proj_ao is None:
+                raise ValueError(
+                    "rung35_proj_ao (mol_data['rung35_proj_ao']) must be provided "
+                    "when descriptors include DMRung35Descriptor"
+                )
+            cols.append(d.compute_from_dm(proj_ao=rung35_proj_ao, dm=dm))
         else:
             raise NotImplementedError(
                 f"_reassemble_features does not yet know how to recompute {type(d).__name__}"
