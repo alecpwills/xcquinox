@@ -1386,3 +1386,26 @@ def test_arch_order_includes_3x16_twins_sharing_sibling_colors():
         assert twin in fig.ARCH_ORDER, f"{twin} missing from ARCH_ORDER"
         assert fig.ARCH_COLOR[twin] == fig.ARCH_COLOR[a]   # twin shares sibling color
     assert len({fig.ARCH_COLOR[a] for a in base}) == 8     # base-8 stay distinct
+
+
+def test_arch_order_covers_v3_full25_sweep_archs():
+    # 2026-06-29: the rung-3.5 sweep swap (deep_combined -> deep_rung35) MUST keep
+    # every arch the v3/full25 YAMLs sweep inside ARCH_ORDER -- else
+    # build_bh76w411_suite raises ValueError on figure regen once rung-3.5 eval
+    # data is pulled. Pins the deep_rung35* additions + their colors + the
+    # _arch_input_forms descriptor labels so the swap can't silently break figures.
+    import yaml
+    root = Path(__file__).resolve().parents[2]
+    for fn in ("dfs_step7.svp_grid2_v3.yaml", "dfs_step7.svp_grid2_v3_full25.yaml"):
+        cfg = yaml.safe_load((root / "hpcjobs" / "configs" / fn).read_text())
+        for a in cfg["sweep"]["arch"]:
+            assert a in fig.ARCH_ORDER, f"{fn}: swept arch {a!r} not in ARCH_ORDER"
+            assert fig.ARCH_COLOR.get(a) not in (None, "#333333"), \
+                f"{fn}: {a!r} has no distinct color (fell back to gray)"
+    for a in ("deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16"):
+        assert a in fig.ARCH_ORDER, f"{a} missing from ARCH_ORDER"
+        assert fig.ARCH_COLOR.get(a) not in (None, "#333333"), f"{a} has no color"
+    # _arch_input_forms must resolve the rung-3.5 descriptor labels (no KeyError)
+    forms = fig._arch_input_forms(("deep_rung35_3x16", "deep_rung35only_3x16"))
+    assert all(lbl in forms["deep_rung35_3x16"]["fx"] for lbl in ("x_4", "x_9")), \
+        "deep_rung35 X-net inputs should carry cusp (x_4) + rung-3.5 (x_9) labels"
