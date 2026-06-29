@@ -388,6 +388,168 @@ def test_v3_yamls_swept_to_rung35_not_combined():
     assert "deep_combined_3x16" in ARCHITECTURES and "deep_dm_3x16" in ARCHITECTURES
 
 
+# ===========================================================================
+# Gap-closing tests from the 2026-06-29 separate-agent adversarial review:
+# d-functions (Reviewer 1), the multi-cycle SCF loop + model-grad + additivity
+# (Reviewer 2). The H-only fixtures above never exercised d-shells or the lax.scan
+# SCF body; these close that.
+# ===========================================================================
+
+def _h2o_mol(spin=0):
+    """Real molecule WITH a d-shell (O in def2-svp), RKS (spin=0) or its OH/UKS
+    radical (spin=1). Geometry in Bohr."""
+    from pyscf import gto
+    atom = ("O 0 0 0; H 0 0 1.81; H 1.75 0 -0.45" if spin == 0
+            else "O 0 0 0; H 0 0 1.83")
+    return gto.M(atom=atom, basis="def2-svp", spin=spin, unit="Bohr", verbose=0)
+
+
+def test_projected_ao_d_functions_vs_ghost_atom_oracle():
+    """A_mu(r) for the O d-shell (H2O/def2-svp) matches an INDEPENDENT ghost-atom
+    gto.M overlap (a different construction than the module's fakemol_for_charges).
+    Closes the gap that the H-only fixtures left d-functions empirically untested."""
+    from pyscf import gto
+    from xcquinox.alec.rung35 import compute_projected_ao
+    mol = _h2o_mol()
+    assert any(mol.bas_angular(b) >= 2 for b in range(mol.nbas)), "no d shell in fixture"
+    pts = np.array([[0., 0., 0.1], [0.3, 0.2, -0.1], [0., 0., 1.81],
+                    [1.0, 0., -0.3], [0.5, 0.5, 0.5]])
+    A_mod = np.asarray(compute_projected_ao(mol, pts, ALPHA))
+    A_ghost = []
+    for rm in pts:
+        g = gto.M(atom=[["H", (float(rm[0]), float(rm[1]), float(rm[2]))]],
+                  basis={"H": [[0, [ALPHA, 1.0]]]}, spin=1, charge=0,
+                  unit="Bohr", verbose=0)
+        A_ghost.append(np.asarray(gto.intor_cross("int1e_ovlp", mol, g))[:, 0])
+    np.testing.assert_allclose(A_mod, np.array(A_ghost), rtol=1e-9, atol=1e-11,
+                               err_msg="projected-AO A wrong for d-functions")
+
+
+@pytest.mark.slow
+def test_occupancy_bounded_d_functions_rks_and_uks():
+    """The [0,1] bound holds with d-shell basis functions, closed-shell (H2O) AND
+    open-shell (OH/UKS, spin-resolved DM)."""
+    from pyscf import dft
+    from xcquinox.alec.rung35 import (compute_projected_ao,
+                                       compute_rung35_occupancy)
+    for spin in (0, 1):
+        mol = _h2o_mol(spin)
+        mf = (dft.UKS if spin else dft.RKS)(mol); mf.xc = "pbe"; mf.kernel()
+        A = compute_projected_ao(mol, mf.grids.coords, ALPHA)
+        n = np.asarray(compute_rung35_occupancy(jnp.asarray(A),
+                                                jnp.asarray(mf.make_rdm1())))
+        assert np.all(np.isfinite(n)), f"spin={spin} non-finite"
+        assert n.min() >= -1e-9 and n.max() <= 1 + 1e-6, (spin, n.min(), n.max())
+
+
+def _rung35_model_data(eri=True):
+    from xcquinox.alec.config import ARCHITECTURES
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.data import (precompute_fixed_density_data,
+                                    clear_precompute_cache)
+    clear_precompute_cache()
+    arch = ARCHITECTURES["deep_rung35_3x16"]
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    keys = ("cusp_features", "rung35_features") + (("eri",) if eri else ())
+    data = precompute_fixed_density_data(
+        _h2_spec(), descriptors=arch.materialize_descriptors(), required_keys=keys)
+    return model, data
+
+
+@pytest.mark.slow
+def test_rung35_self_consistent_through_full_scf_loop():
+    """The FULL-SCF LOOP (not just the reassemble kernel) recomputes the occupancy
+    from the EVOLVING DM each cycle: after a manual FULL SCF the features actually
+    used differ from the frozen PBE one-shot (same grid -> a fair comparison) and
+    equal compute_rung35_occupancy(A, final_DM). Proves the reassemble fires inside
+    the lax.scan body and tracks the live DM."""
+    from xcquinox.alec.solver import (SolverConfig, SolverBackend, SolverMode,
+                                      FeaturePolicy, run_scf)
+    from xcquinox.alec.rung35 import compute_rung35_occupancy
+    model, data = _rung35_model_data(eri=True)
+    cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                       feature_policy=FeaturePolicy.REASSEMBLE, max_cycles=8)
+    result = run_scf(cfg, model, data)
+    f_used = np.asarray(result.features_used)            # (N, 4): cusp 0-1, rung35 2-3
+    pbe_occ = np.asarray(data["rung35_features"])        # (N, 2) PBE one-shot
+    assert np.all(np.isfinite(f_used))
+    assert not np.allclose(f_used[:, 2:], pbe_occ, atol=1e-7), \
+        "rung-3.5 occupancy frozen at the PBE value -> reassemble did NOT fire in the SCF loop"
+    A = jnp.asarray(data["rung35_proj_ao"])
+    final_occ = np.asarray(compute_rung35_occupancy(A, jnp.asarray(result.density_matrix)))
+    np.testing.assert_allclose(f_used[:, 2:], final_occ, atol=1e-6,
+                               err_msg="features_used != occupancy of the final DM")
+
+
+@pytest.mark.slow
+def test_rung35_training_gradient_flows_through_the_occupancy_path(monkeypatch):
+    """The training gradient flows through the multi-cycle SCF AND specifically the
+    rung-3.5 occupancy: jax.grad of a FULL-SCF energy loss wrt the model is finite
+    and non-zero, and DETACHING the occupancy (stop_gradient) CHANGES that gradient
+    -- so A's precompute did not sever the graph."""
+    import equinox as eqx
+    import xcquinox.alec.rung35 as r35
+    from xcquinox.alec.config import ArchitectureConfig
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.solver import (SolverConfig, SolverBackend, SolverMode,
+                                      FeaturePolicy, run_scf)
+    _, data = _rung35_model_data(eri=True)  # reuse the precompute (descriptors fixed)
+    # NON-zero-init so the NN enhancement is actually sensitive to its inputs: with
+    # zero_init_final_layer=True, F=1+0 is constant and dF/d(occupancy)=0, so the
+    # occupancy would (correctly) carry no gradient -- masking the real path. A
+    # sensitive functional is what training uses anyway.
+    arch = ArchitectureConfig.from_spec("rung35_grad", 3, 16,
+                                        descriptors=["cusp", "rung35"],
+                                        zero_init_final_layer=False)
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                       feature_policy=FeaturePolicy.REASSEMBLE, max_cycles=4)
+
+    def loss(m):
+        return run_scf(cfg, m, data).total_energy ** 2
+
+    def _flat(g):
+        leaves = [np.asarray(x).ravel() for x in jax.tree_util.tree_leaves(g)
+                  if hasattr(x, "shape") and x.dtype.kind == "f"]
+        return np.concatenate(leaves)
+
+    g_live = _flat(eqx.filter_grad(loss)(model))
+    assert np.all(np.isfinite(g_live)), "non-finite training gradient"
+    assert np.any(np.abs(g_live) > 1e-12), "training gradient is identically zero"
+
+    orig = r35.compute_rung35_occupancy
+    monkeypatch.setattr(r35, "compute_rung35_occupancy",
+                        lambda proj_ao, dm: jax.lax.stop_gradient(orig(proj_ao, dm)))
+    g_det = _flat(eqx.filter_grad(loss)(model))
+    assert not np.allclose(g_live, g_det, atol=1e-9), \
+        "detaching the rung-3.5 occupancy did NOT change the gradient -> the path carries none"
+
+
+@pytest.mark.slow
+def test_rung35_code_does_not_perturb_an_existing_arch():
+    """Additivity (in-flight safety) at the SCF level: a non-rung35 arch
+    (deep_cusp_3x16) precomputes NO rung35 keys and runs a FULL SCF to a finite
+    energy with the rung-3.5 code present -- the rung-3.5 branch is never taken."""
+    from xcquinox.alec.config import ARCHITECTURES
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.data import (precompute_fixed_density_data,
+                                    clear_precompute_cache)
+    from xcquinox.alec.solver import (SolverConfig, SolverBackend, SolverMode,
+                                      FeaturePolicy, run_scf)
+    clear_precompute_cache()
+    arch = ARCHITECTURES["deep_cusp_3x16"]
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    data = precompute_fixed_density_data(
+        _h2_spec(), descriptors=arch.materialize_descriptors(),
+        required_keys=("cusp_features", "eri"))
+    assert data.get("rung35_proj_ao") is None and data.get("rung35_features") is None
+    cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                       feature_policy=FeaturePolicy.REASSEMBLE, max_cycles=5)
+    result = run_scf(cfg, model, data)
+    assert np.isfinite(float(result.total_energy))
+    assert np.asarray(result.features_used).shape[1] == 2  # cusp only, no rung35 cols
+
+
 @pytest.mark.slow
 def test_rung35_full_scf_pyscfad_runs_no_nan():
     """End-to-end smoke validating the Phase-3 threading: a deep_rung35
