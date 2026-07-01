@@ -84,7 +84,6 @@ if SMOKE:
     SOLVER_NAMES   = ("full_3",)
     N_EPOCHS       = {"full_3": 3, "full_25": 3}
     PRETRAIN_STEPS = 20
-    PRETRAIN_ATOMS = (("H", 1), ("O", 2), ("Li", 1))
 else:
     HILLS          = dfs_demo.DEFAULT_MOLECULE_HILLS  # H2O, LiH, OH, NH
     BASIS          = dfs_demo.DFS_BASIS               # 6-311++G(3df,2pd)
@@ -93,7 +92,6 @@ else:
     SOLVER_NAMES   = ("full_3", "full_25")
     N_EPOCHS       = dfs_demo.DFS_N_EPOCHS            # 150 / 100
     PRETRAIN_STEPS = dfs_demo.DFS_PRETRAIN_STEPS      # 2500
-    PRETRAIN_ATOMS = dfs_demo.DFS_PRETRAIN_ATOMS      # H, He, Li, N, O
 
 DO_PRETRAIN = True
 
@@ -184,12 +182,14 @@ architecture and writes `xnet.eqx`/`cnet.eqx` used as the training warm-start.
 code(r"""
 pretrained = {}
 if DO_PRETRAIN:
+    pretrain_atoms = dfs_demo.pretrain_atoms_for(mol_specs)
+    print("pretrain atoms (derived from the systems):", [a[0] for a in pretrain_atoms])
     for arch_name in ARCH_NAMES:
         ck = os.path.join(PRETRAIN_DIR, arch_name)
-        print(f"pretrain {arch_name} to PBE ({PRETRAIN_STEPS} steps, atoms {[a[0] for a in PRETRAIN_ATOMS]})")
+        print(f"pretrain {arch_name} to PBE ({PRETRAIN_STEPS} steps)")
         dfs_demo.pretrain_to_pbe(
             dfs_demo.dfs_arch(arch_name), data_dir=PRETRAIN_DIR, checkpoint_dir=ck,
-            basis=BASIS, grid_level=GRID_LEVEL, n_steps=PRETRAIN_STEPS, atoms=PRETRAIN_ATOMS)
+            basis=BASIS, grid_level=GRID_LEVEL, atoms=pretrain_atoms, n_steps=PRETRAIN_STEPS)
         pretrained[arch_name] = ck
         print("  wrote", ck)
 else:

@@ -50,6 +50,7 @@ from xcquinox.alec.config import PretrainSpec, TestSpec, TrainingSpec
 from xcquinox.alec.pretrain import run_pretrain
 from xcquinox.alec.pretrain_data_gen import ensure_pretrain_data
 from xcquinox.alec.solver import FeaturePolicy, SolverConfig, SolverMode
+from xcquinox.alec.dfs_pool import ATOMIC_GROUND_STATE_SPIN
 from xcquinox.alec.training_points import (
     _atom_anchor_atoms,
     build_dfs_pool_points,
@@ -95,12 +96,11 @@ DFS_HYPERPARAMS: dict = {
 #: Production epoch counts per solver (CLI ``--n-steps`` on the real runs).
 DFS_N_EPOCHS: dict = {"full_3": 150, "full_25": 100}
 
-#: Pretraining atoms (symbol, 2S): the system elements + He. Pretraining fits the
+#: Production pretraining step count (dfs_step7 recipe). Pretraining fits the
 #: enhancement factors to PBE per atom; the archs zero-init to LDA (F=1 over
-#: lda_x + PW92), so this is the LDA->PBE warm-start the DFS recipe uses.
-DFS_PRETRAIN_ATOMS: tuple = (("H", 1), ("He", 0), ("Li", 1), ("N", 3), ("O", 2))
-
-#: Production pretraining step count (dfs_step7 recipe).
+#: lda_x + PW92), so this is the LDA->PBE warm-start the DFS recipe uses. The
+#: pretrain ATOMS are derived from the training systems via pretrain_atoms_for()
+#: so they always exist at the training basis.
 DFS_PRETRAIN_STEPS: int = 2500
 
 #: The DFS domain profile (Chakravorty atom anchors, ("H","Li") regularizer set).
@@ -251,8 +251,28 @@ def dfs_arch(arch_name: str, *, polarized: bool = True):
     return arch
 
 
-def pretrain_to_pbe(arch, *, data_dir, checkpoint_dir, basis, grid_level,
-                    n_steps=DFS_PRETRAIN_STEPS, atoms=DFS_PRETRAIN_ATOMS):
+def pretrain_atoms_for(mol_specs):
+    """Ground-state ``(symbol, 2S)`` atoms for the unique elements in ``mol_specs``.
+
+    Pretraining only needs the elements the functional will encounter, and
+    deriving them from the training systems keeps the pretrain-atom set
+    consistent with the training basis: the systems were built (and CCSD-ref'd)
+    at that basis, so every element is guaranteed available -- unlike a
+    hard-coded set that may name an element the basis lacks (e.g. He is absent
+    from PySCF's 6-311++G(3df,2pd)).
+    """
+    syms = sorted({s for ms in mol_specs for s in dict(ms.atom_composition)})
+    missing = [s for s in syms if s not in ATOMIC_GROUND_STATE_SPIN]
+    if missing:
+        raise KeyError(
+            f"no ground-state spin for pretrain element(s) {missing}; add them to "
+            "xcquinox.alec.dfs_pool.ATOMIC_GROUND_STATE_SPIN (with a citation)."
+        )
+    return tuple((s, ATOMIC_GROUND_STATE_SPIN[s]) for s in syms)
+
+
+def pretrain_to_pbe(arch, *, data_dir, checkpoint_dir, basis, grid_level, atoms,
+                    n_steps=DFS_PRETRAIN_STEPS):
     """Pretrain ``arch``'s enhancement factors to PBE; return the checkpoint dir.
 
     The archs zero-initialize to LDA (F_x = F_c = 1 multiply lda_x + PW92, the

@@ -204,6 +204,28 @@ def test_aggregate_density_diagnostics_beats_pbe_and_skips_atoms():
 
 
 # ---------------------------------------------------------------------------
+# Pretrain-atom derivation (must never emit He, which is absent at the paper basis)
+# ---------------------------------------------------------------------------
+
+def test_pretrain_atoms_for_default_systems():
+    chosen = dfs_demo.select_dfs_points()
+    with tempfile.TemporaryDirectory() as refs:
+        specs = dfs_demo.build_mol_specs(
+            chosen, basis="sto-3g", grid_level=1, refs_dir=refs)
+    atoms = dict(dfs_demo.pretrain_atoms_for(specs))
+    assert atoms == {"H": 1, "Li": 1, "N": 3, "O": 2}   # system elements, ground-state 2S
+    assert "He" not in atoms                              # the bug that crashed 6-311++G(3df,2pd)
+
+
+def test_pretrain_atoms_for_smoke_subset():
+    chosen = dfs_demo.select_dfs_points(dfs_demo.SMOKE_MOLECULE_HILLS)  # H2O + OH (+ injected Li)
+    with tempfile.TemporaryDirectory() as refs:
+        specs = dfs_demo.build_mol_specs(
+            chosen, basis="sto-3g", grid_level=1, refs_dir=refs)
+    assert dict(dfs_demo.pretrain_atoms_for(specs)) == {"H": 1, "Li": 1, "O": 2}
+
+
+# ---------------------------------------------------------------------------
 # PBE pretraining wiring (runs a small PBE SCF + pretrain regression)
 # ---------------------------------------------------------------------------
 
