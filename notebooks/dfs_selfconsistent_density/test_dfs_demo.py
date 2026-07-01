@@ -4,6 +4,8 @@ These exercise only the pure spec-assembly / pool-selection / aggregation logic
 (no PySCF SCF, no CCSD generation, no training), so they run in seconds. The
 end-to-end density training is exercised separately by the SMOKE notebook run.
 """
+import glob
+import json
 import os
 import sys
 import tempfile
@@ -261,3 +263,88 @@ def test_pretrain_to_pbe_writes_checkpoint(tmp_path):
         pretrain_checkpoint=ckpt)
     spec.validate()
     assert spec.pretrain_checkpoint == ckpt
+
+
+# ---------------------------------------------------------------------------
+# Self-consistent atomization energy + combined energy-density metric
+# ---------------------------------------------------------------------------
+
+_KCAL = dfs_demo._HARTREE_TO_KCAL
+
+
+def test_self_consistent_ae_uses_own_atoms():
+    # AE = (2*E(H) + E(O)) - E(H2O), from the functional's OWN atom energies.
+    records = [
+        {"molecule": "H", "E_total_nn": -0.5, "E_pbe": -0.5, "skip_reason": "atomic_system"},
+        {"molecule": "O", "E_total_nn": -75.0, "E_pbe": -75.0, "skip_reason": "atomic_system"},
+        {"molecule": "H2O", "E_total_nn": -76.4, "E_pbe": -76.4},
+    ]
+    rows = dfs_demo.self_consistent_ae(records, {"H2O": {"H": 2, "O": 1}}, {"H2O": 230.0})
+    assert len(rows) == 1 and rows[0]["name"] == "H2O"
+    # AE = 2*(-0.5) + (-75.0) - (-76.4) = 0.4 Ha -- a physical AE (~251 kcal/mol),
+    # NOT the anchored absolute-energy offset.
+    assert abs(rows[0]["ae_nn_kcal"] - 0.4 * _KCAL) < 1e-6
+    assert abs(rows[0]["err_nn"] - (0.4 * _KCAL - 230.0)) < 1e-6
+    assert rows[0]["ae_nn_kcal"] > 200.0
+
+
+def test_self_consistent_ae_beats_pbe_when_atoms_closer():
+    # NN reproduces the OH atomization energy better than PBE.
+    records = [
+        {"molecule": "H", "E_total_nn": -0.5, "E_pbe": -0.5, "skip_reason": "atomic_system"},
+        {"molecule": "O", "E_total_nn": -75.0, "E_pbe": -75.02, "skip_reason": "atomic_system"},
+        {"molecule": "HO", "E_total_nn": -75.67, "E_pbe": -75.70},
+    ]
+    rows = dfs_demo.self_consistent_ae(records, {"HO": {"H": 1, "O": 1}}, {"HO": 106.4})
+    assert rows[0]["beats_pbe"] and abs(rows[0]["err_nn"]) < abs(rows[0]["err_pbe"])
+
+
+def test_self_consistent_ae_skips_molecule_missing_an_atom():
+    records = [
+        {"molecule": "H", "E_total_nn": -0.5, "E_pbe": -0.5, "skip_reason": "atomic_system"},
+        {"molecule": "HO", "E_total_nn": -75.67, "E_pbe": -75.70},  # O never evaluated
+    ]
+    assert dfs_demo.self_consistent_ae(records, {"HO": {"H": 1, "O": 1}}, {"HO": 106.4}) == []
+
+
+def test_combined_energy_density_self_calibrated_harmonic_mean():
+    ae_rows = [{"err_nn": 1.0, "err_pbe": 4.0}, {"err_nn": -2.0, "err_pbe": -4.0}]
+    density_rows = [{"density_rmse": 1e-4, "density_rmse_pbe": 2e-4},
+                    {"density_rmse": 3e-4, "density_rmse_pbe": 4e-4}]
+    m = dfs_demo.combined_energy_density(ae_rows, density_rows)
+    assert abs(m["E_MAE_nn"] - 1.5) < 1e-12 and abs(m["E_MAE_pbe"] - 4.0) < 1e-12
+    assert abs(m["gamma"] - (4.0 / 3e-4)) < 1e-6
+    # gamma self-calibrated from PBE => ED_pbe == E_MAE_pbe.
+    assert abs(m["ED_pbe"] - 4.0) < 1e-9
+    gd_nn = (4.0 / 3e-4) * 2e-4
+    assert abs(m["ED_nn"] - 2.0 / (1 / 1.5 + 1 / gd_nn)) < 1e-9
+    assert m["beats_pbe"] and m["ED_nn"] < m["ED_pbe"]
+
+
+def test_combined_energy_density_requires_nonempty():
+    with pytest.raises(ValueError):
+        dfs_demo.combined_energy_density([], [{"density_rmse": 1e-4, "density_rmse_pbe": 2e-4}])
+
+
+# Literature electronic atomization energies (De, kcal/mol) for the demo set; the
+# corrected self-consistent AE must beat PBE against these on every trained model.
+_LIT_AE_KCAL = {"HLi": 57.8, "HO": 106.4, "HN": 82.8, "H2O": 232.2}
+_DEMO_COMP = {"HLi": {"H": 1, "Li": 1}, "HO": {"H": 1, "O": 1},
+              "HN": {"H": 1, "N": 1}, "H2O": {"H": 2, "O": 1}}
+_RUNS_DIR = os.path.join(os.path.dirname(__file__), "runs")
+
+
+@pytest.mark.skipif(not os.path.isdir(_RUNS_DIR), reason="no trained runs/ present")
+def test_corrected_ae_and_combined_beat_pbe_on_real_runs():
+    pmjs = sorted(glob.glob(os.path.join(_RUNS_DIR, "*__full_*", "eval", "per_molecule.json")))
+    assert pmjs, "expected trained per_molecule.json outputs"
+    for pmj in pmjs:
+        with open(pmj) as fh:
+            records = json.load(fh)
+        rows = dfs_demo.self_consistent_ae(records, _DEMO_COMP, _LIT_AE_KCAL)
+        assert rows, f"{pmj}: no AE rows"
+        e_mae_nn = sum(abs(r["err_nn"]) for r in rows) / len(rows)
+        e_mae_pbe = sum(abs(r["err_pbe"]) for r in rows) / len(rows)
+        assert e_mae_nn < e_mae_pbe, f"{pmj}: AE-MAE NN {e_mae_nn:.2f} !< PBE {e_mae_pbe:.2f}"
+        m = dfs_demo.combined_energy_density(rows, dfs_demo.aggregate_density_diagnostics(records))
+        assert m["beats_pbe"], f"{pmj}: ED NN {m['ED_nn']:.2f} !< PBE {m['ED_pbe']:.2f}"

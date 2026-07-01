@@ -358,47 +358,78 @@ for i, key in enumerate(evals):
            label=f"NN {key[0]}/{key[1]}")
 ax.set_xticks(x + 0.4 - width / 2); ax.set_xticklabels(mols)
 ax.set_ylabel("density RMSE vs CCSD"); ax.legend(fontsize=8)
+# log y-scale: the OH radical (~2.6e-3) is 40-250x the closed-shell systems, so a
+# linear axis hides the H2O/NH wins and the full_3-vs-full_25 spread.
+ax.set_yscale("log"); ax.set_ylim(bottom=1e-6)
 plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_density_rmse.png"), dpi=110); plt.show()
 """)
 
 code(r"""
-# (c) atomization-energy error vs GMTKN55 (diagnostic), fixed Chakravorty anchors
-def ae_err_kcal(E_mol_ha, comp, ref_kcal):
-    ae_ha = sum(CHAK[s] * n for s, n in comp.items()) - float(E_mol_ha)
-    return ae_ha * KCAL - float(ref_kcal)
+# (c) atomization-energy error vs reference, from each functional's OWN
+#     self-consistent atom energies (the physically correct AE, and what
+#     ae_as_reactions trains). NOT the anchored AE_nn field, which subtracts the
+#     molecule energy from FIXED exact atoms and so reports the net's absolute-
+#     energy offset (tens-to-hundreds of kcal/mol), not its atomization energy.
+ae_rows = {key: dfs_demo.self_consistent_ae(res["per_molecule"], comp_by_name, ae_ref_kcal)
+           for key, res in evals.items()}
+ae_mols = [r["name"] for r in next(iter(ae_rows.values()))]
+pbe_err = {r["name"]: r["err_pbe"] for r in next(iter(ae_rows.values()))}
 
-pbe_ae, nn_ae = {}, {key: {} for key in evals}
-for key, res in evals.items():
-    for rec in res["per_molecule"]:
-        name = rec["molecule"]
-        if name not in comp_by_name or ae_ref_kcal.get(name) is None:
-            continue
-        if rec.get("E_total_nn") is not None:
-            nn_ae[key][name] = ae_err_kcal(rec["E_total_nn"], comp_by_name[name], ae_ref_kcal[name])
-        if rec.get("E_pbe") is not None:
-            pbe_ae[name] = ae_err_kcal(rec["E_pbe"], comp_by_name[name], ae_ref_kcal[name])
-
-ae_mols = [m for m in mols if m in pbe_ae]
 x = np.arange(len(ae_mols)); width = 0.8 / (len(evals) + 1)
 fig, ax = plt.subplots(figsize=(8, 4.5))
 ax.axhline(0, color="k", lw=0.8)
-ax.bar(x, [pbe_ae.get(m, np.nan) for m in ae_mols], width, label="PBE", color="0.6")
-for i, key in enumerate(evals):
-    ax.bar(x + (i + 1) * width, [nn_ae[key].get(m, np.nan) for m in ae_mols], width,
+ax.bar(x, [pbe_err.get(m, np.nan) for m in ae_mols], width, label="PBE", color="0.6")
+for i, (key, rows) in enumerate(ae_rows.items()):
+    nn_err = {r["name"]: r["err_nn"] for r in rows}
+    ax.bar(x + (i + 1) * width, [nn_err.get(m, np.nan) for m in ae_mols], width,
            label=f"NN {key[0]}/{key[1]}")
 ax.set_xticks(x + 0.4 - width / 2); ax.set_xticklabels(ae_mols)
-ax.set_ylabel("AE error vs GMTKN55 (kcal/mol)"); ax.legend(fontsize=8)
+ax.set_ylabel("AE error vs reference (kcal/mol)"); ax.legend(fontsize=8)
 plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_ae_error.png"), dpi=110); plt.show()
+""")
+
+code(r"""
+# (d) DFS-style combined energy-density error: energy AE-MAE (top) over the
+#     combined ED = harmonic-mean(E_MAE, gamma*density) (bottom), NN vs PBE.
+#     gamma is self-calibrated from PBE (so ED_pbe == E_MAE_pbe); see
+#     dfs_demo.combined_energy_density (DFS PRB 104 L161109 (2021) Eq. 21).
+ed = {}
+for key, res in evals.items():
+    rows = dfs_demo.self_consistent_ae(res["per_molecule"], comp_by_name, ae_ref_kcal)
+    drows = dfs_demo.aggregate_density_diagnostics(res["per_molecule"])
+    ed[key] = dfs_demo.combined_energy_density(rows, drows)
+
+keys = list(evals); xk = np.arange(len(keys)); w = 0.38
+fig, (axE, axED) = plt.subplots(2, 1, figsize=(8, 6.2), sharex=True)
+axE.bar(xk - w / 2, [ed[k]["E_MAE_pbe"] for k in keys], w, label="PBE", color="0.6")
+axE.bar(xk + w / 2, [ed[k]["E_MAE_nn"] for k in keys], w, label="NN", color="C0")
+axE.set_ylabel("AE-MAE (kcal/mol)"); axE.set_title("energy error"); axE.legend(fontsize=8)
+axED.bar(xk - w / 2, [ed[k]["ED_pbe"] for k in keys], w, label="PBE", color="0.6")
+axED.bar(xk + w / 2, [ed[k]["ED_nn"] for k in keys], w, label="NN", color="C0")
+axED.set_ylabel(r"$\mathcal{ED}$ (kcal/mol)")
+axED.set_title("combined energy-density (DFS Eq. 21, gamma self-calibrated from PBE)")
+axED.set_xticks(xk); axED.set_xticklabels([f"{k[0]}\n{k[1]}" for k in keys], fontsize=8)
+plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_combined_ed.png"), dpi=110); plt.show()
+
+for k in keys:
+    m = ed[k]
+    print(f"{k[0]}/{k[1]}: AE-MAE NN {m['E_MAE_nn']:.2f} vs PBE {m['E_MAE_pbe']:.2f} | "
+          f"ED NN {m['ED_nn']:.2f} vs PBE {m['ED_pbe']:.2f} kcal/mol "
+          f"({'beats PBE' if m['beats_pbe'] else 'NO'})")
 """)
 
 # ---------------------------------------------------------------------------
 md(r"""
 ## 9. Notes
 
-- Figure (b): self-consistent density RMSE vs CCSD per molecule, NN vs the PBE baseline. `full_25`
-  reaches a more self-consistent fixed point than `full_3` (25 vs 3 differentiated cycles).
-- Energies (figure c) are a diagnostic; the density channel carries 20x the weight of the energy
-  channel.
+- Figure (b): self-consistent density RMSE vs CCSD per molecule (log scale), NN vs the PBE baseline.
+  `full_25` reaches a more self-consistent fixed point than `full_3` (25 vs 3 differentiated cycles).
+- Figure (c): atomization-energy error vs reference, from each functional's OWN self-consistent atom
+  energies (the physically correct AE, matching `ae_as_reactions`) -- NOT the anchored `AE_nn` field
+  (molecule energy minus FIXED exact atoms), which reports absolute-energy offset, not the AE.
+- Figure (d): DFS combined energy-density error (Eq. 21) -- energy AE-MAE over the combined `ED`, NN
+  vs PBE; `gamma` self-calibrated from PBE so `ED_pbe == E_MAE_pbe`. The density channel (20x the
+  loss weight) and the energy channel both improve over PBE, so `ED_nn < ED_pbe`.
 - To adapt: change `ARCH_NAMES` or pass a custom `ArchitectureConfig` to `build_dfs_training_spec`;
   extend `HILLS` with any `build_dfs_pool()` Hill formula. For the full pool + BH76/IP13 channels +
   V_xc supervision, use the cluster harness (`xcquinox.alec.cluster`) with the `dfs_step7` config; the

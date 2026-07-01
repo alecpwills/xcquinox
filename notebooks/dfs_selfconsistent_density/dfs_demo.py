@@ -452,3 +452,115 @@ def aggregate_density_diagnostics(per_molecule_records: Iterable[dict]) -> list:
             "improvement": float(rmse_pbe) - float(rmse),
         })
     return rows
+
+
+# Hartree -> kcal/mol (matches the notebook's KCAL and utils convention).
+_HARTREE_TO_KCAL = 627.5094740631
+
+
+def self_consistent_ae(per_molecule_records, comp_by_name, ae_ref_kcal):
+    """Atomization-energy errors (kcal/mol) from each functional's OWN
+    self-consistent atom energies.
+
+    This is the physically correct atomization energy, and exactly what
+    ``ae_as_reactions`` trains (compound -> constituent atoms, scored with the
+    functional's own self-consistent atom energies). It is NOT the fixed-anchor
+    ``AE_nn`` field emitted by the ``atomization_energy`` metric, which subtracts
+    the molecule energy from FIXED exact (Chakravorty) atom totals and so reports
+    the functional's absolute-energy offset (tens-to-hundreds of kcal/mol for a
+    net trained only on reaction energies + density), not its atomization energy.
+
+    Atom energies are read from the atomic-system eval records (``skip_reason ==
+    "atomic_system"``); a molecule is emitted only if every constituent atom was
+    evaluated. Returns one row per non-atomic molecule with a reference AE:
+    ``{name, ae_nn_kcal, ae_pbe_kcal, ref_kcal, err_nn, err_pbe, beats_pbe}``.
+    """
+    e_atom_nn: dict = {}
+    e_atom_pbe: dict = {}
+    for rec in per_molecule_records:
+        if rec.get("skip_reason") == "atomic_system":
+            sym = rec.get("molecule") or rec.get("name")
+            e_atom_nn[sym] = float(rec["E_total_nn"])
+            e_atom_pbe[sym] = float(rec["E_pbe"])
+
+    rows = []
+    for rec in per_molecule_records:
+        if rec.get("skip_reason") == "atomic_system":
+            continue
+        name = rec.get("name") or rec.get("molecule")
+        comp = comp_by_name.get(name)
+        ref = ae_ref_kcal.get(name)
+        if comp is None or ref is None:
+            continue
+        comp = dict(comp)
+        if not all(sym in e_atom_nn for sym in comp):
+            continue  # a constituent atom was not evaluated self-consistently
+        ae_nn = sum(e_atom_nn[s] * n for s, n in comp.items()) - float(rec["E_total_nn"])
+        ae_pbe = sum(e_atom_pbe[s] * n for s, n in comp.items()) - float(rec["E_pbe"])
+        ae_nn_kcal = ae_nn * _HARTREE_TO_KCAL
+        ae_pbe_kcal = ae_pbe * _HARTREE_TO_KCAL
+        ref = float(ref)
+        err_nn = ae_nn_kcal - ref
+        err_pbe = ae_pbe_kcal - ref
+        rows.append({
+            "name": name,
+            "ae_nn_kcal": ae_nn_kcal,
+            "ae_pbe_kcal": ae_pbe_kcal,
+            "ref_kcal": ref,
+            "err_nn": err_nn,
+            "err_pbe": err_pbe,
+            "beats_pbe": abs(err_nn) < abs(err_pbe),
+        })
+    return rows
+
+
+def combined_energy_density(ae_rows, density_rows):
+    """DFS energy-density error ``ED`` (kcal/mol), NN vs PBE.
+
+    Follows Dick & Fernandez-Serra (PRB 104, L161109 (2021)) Eq. 21: the harmonic
+    mean of an energy error and the density error rescaled to an energy,
+    ``ED = 2 / (1/E_MAE + 1/(gamma*D))``. DFS fit the slope ``gamma`` (1084.87
+    kcal/mol) across many functionals against WTMAD-2; this pool is tiny (WTMAD
+    dropped, per request) and has only the NN + PBE, so ``gamma`` is
+    SELF-CALIBRATED from the PBE baseline (``gamma = E_MAE_pbe / D_pbe``). Density
+    and energy then share a kcal/mol scale and ``ED_pbe == E_MAE_pbe``; the choice
+    of density-error unit (RMSE here, matching the density figure) does not affect
+    the NN-vs-PBE ranking because gamma absorbs it.
+
+    ``E_MAE`` is the MAE of the self-consistent AE error (``self_consistent_ae``);
+    ``D`` is the mean self-consistent density RMSE vs CCSD
+    (``aggregate_density_diagnostics``). Returns
+    ``{gamma, E_MAE_nn, E_MAE_pbe, D_nn, D_pbe, ED_nn, ED_pbe, beats_pbe}``.
+    """
+    ae_rows = list(ae_rows)
+    density_rows = list(density_rows)
+    if not ae_rows or not density_rows:
+        raise ValueError(
+            "combined_energy_density needs non-empty ae_rows and density_rows")
+
+    e_mae_nn = sum(abs(r["err_nn"]) for r in ae_rows) / len(ae_rows)
+    e_mae_pbe = sum(abs(r["err_pbe"]) for r in ae_rows) / len(ae_rows)
+    d_nn = sum(r["density_rmse"] for r in density_rows) / len(density_rows)
+    d_pbe = sum(r["density_rmse_pbe"] for r in density_rows) / len(density_rows)
+
+    if d_pbe <= 0.0:
+        raise ValueError("PBE density error non-positive; cannot self-calibrate gamma")
+    gamma = e_mae_pbe / d_pbe
+
+    def _harmonic(a, b):
+        if a <= 0.0 or b <= 0.0:
+            return 0.0
+        return 2.0 / (1.0 / a + 1.0 / b)
+
+    ed_nn = _harmonic(e_mae_nn, gamma * d_nn)
+    ed_pbe = _harmonic(e_mae_pbe, gamma * d_pbe)  # == e_mae_pbe by construction
+    return {
+        "gamma": gamma,
+        "E_MAE_nn": e_mae_nn,
+        "E_MAE_pbe": e_mae_pbe,
+        "D_nn": d_nn,
+        "D_pbe": d_pbe,
+        "ED_nn": ed_nn,
+        "ED_pbe": ed_pbe,
+        "beats_pbe": ed_nn < ed_pbe,
+    }
