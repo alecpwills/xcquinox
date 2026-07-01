@@ -197,17 +197,17 @@ def generate_ccsd_density_refs(mol_specs: Sequence, *, refs_dir: str, basis: str
     """
     os.makedirs(refs_dir, exist_ok=True)
     mols = molecule_specs(mol_specs)
-    iterator = mols
-    if progress:
-        try:
-            from tqdm.auto import tqdm
-            iterator = tqdm(mols, desc=f"CCSD refs ({basis})", unit="mol")
-        except ImportError:
-            iterator = mols
     results = []
-    for ms in iterator:
+    for i, ms in enumerate(mols, 1):
+        if progress:
+            print(f"  CCSD ref {i}/{len(mols)}: {ms.name} @ {basis} ...", flush=True)
+        # generate_one returns "SKIP" when a complete .npz already exists for this
+        # basis/grid (reused), else "OK" (freshly computed). "SKIP" is NOT an error.
         status = benchmark_refs.generate_one(
             ms, out_dir=refs_dir, basis=basis, grid_level=grid_level)
+        if progress:
+            human = "cached (reused existing .npz)" if status == "SKIP" else "generated"
+            print(f"    {ms.name}: {human}", flush=True)
         results.append((ms.name, status))
     return results
 
@@ -272,7 +272,7 @@ def pretrain_atoms_for(mol_specs):
 
 
 def pretrain_to_pbe(arch, *, data_dir, checkpoint_dir, basis, grid_level, atoms,
-                    n_steps=DFS_PRETRAIN_STEPS):
+                    n_steps=DFS_PRETRAIN_STEPS, progress_callback=None):
     """Pretrain ``arch``'s enhancement factors to PBE; return the checkpoint dir.
 
     The archs zero-initialize to LDA (F_x = F_c = 1 multiply lda_x + PW92, the
@@ -285,12 +285,12 @@ def pretrain_to_pbe(arch, *, data_dir, checkpoint_dir, basis, grid_level, atoms,
     os.makedirs(checkpoint_dir, exist_ok=True)
     ensure_pretrain_data(
         data_dir, atoms=atoms, basis=basis, grid_level=grid_level,
-        polarized=True, descriptors=True)
+        polarized=True, descriptors=True, progress=True)
     spec = PretrainSpec(
         arch=arch, data_dir=data_dir, checkpoint_dir=checkpoint_dir,
         n_steps=n_steps, lr_start=1e-2, lr_end=1e-5, lr_decay_start=0.2,
         grad_clip=1.0, seed=42, loss_weighting="integration")
-    run_pretrain(spec)
+    run_pretrain(spec, progress_callback=progress_callback)
     return checkpoint_dir
 
 

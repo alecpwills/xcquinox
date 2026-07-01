@@ -222,7 +222,7 @@ def _effective_auxbasis(basis, density_fit, auxbasis):
 def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
                          basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
                          polarized=True, descriptors=True, density_fit=False,
-                         auxbasis=None, cusp_log_transform=True):
+                         auxbasis=None, cusp_log_transform=True, progress=False):
     """Skip-if-current driver for staged pretrain data.
 
     Returns the canonical ``.npz`` path, (re)generating it ONLY when the file is
@@ -239,14 +239,14 @@ def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     return generate_pretrain_data_npz(
         data_dir, atoms=atoms, basis=basis, grid_level=grid_level,
         polarized=polarized, descriptors=descriptors, density_fit=density_fit,
-        auxbasis=auxbasis, cusp_log_transform=cusp_log_transform)
+        auxbasis=auxbasis, cusp_log_transform=cusp_log_transform, progress=progress)
 
 
 def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
                                basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
                                polarized=True, descriptors=True,
                                density_fit=False, auxbasis=None,
-                               cusp_log_transform=True):
+                               cusp_log_transform=True, progress=False):
     """Generate the pretrain-data ``.npz`` in ``out_dir`` and return its path.
 
     ``polarized=True`` writes ``pretrain_data_polarized.npz`` with a ``zeta_all``
@@ -259,13 +259,16 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     be regenerated at a large basis without the full ERI exhausting RAM). A
     sidecar ``<npz>.manifest.json`` records the basis/grid_level/density_fit so
     :func:`pretrain_data_is_current` can detect a basis change and force a regen."""
-    per_atom = [
-        _atom_columns(sym, spin, basis, grid_level,
-                      polarized=polarized, descriptors=descriptors,
-                      density_fit=density_fit, auxbasis=auxbasis,
-                      cusp_log_transform=cusp_log_transform)
-        for sym, spin in atoms
-    ]
+    per_atom = []
+    for _i, (sym, spin) in enumerate(atoms, 1):
+        if progress:
+            print(f"  pretrain data: atom {_i}/{len(atoms)} {sym} (PBE SCF @ {basis}) ...",
+                  flush=True)
+        per_atom.append(_atom_columns(
+            sym, spin, basis, grid_level,
+            polarized=polarized, descriptors=descriptors,
+            density_fit=density_fit, auxbasis=auxbasis,
+            cusp_log_transform=cusp_log_transform))
     save_kwargs = {
         "rho_all": np.concatenate([c["rho"] for c in per_atom]),
         "sigma_all": np.concatenate([c["sigma"] for c in per_atom]),

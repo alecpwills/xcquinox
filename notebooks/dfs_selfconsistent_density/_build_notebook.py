@@ -49,7 +49,7 @@ compute-heavy.
 
 # ---------------------------------------------------------------------------
 code(r"""
-import os, sys, warnings
+import os, sys, time, warnings
 import numpy as np
 
 import jax
@@ -59,7 +59,6 @@ os.makedirs(".jax_compilation_cache", exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", ".jax_compilation_cache")
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from tqdm.auto import tqdm
 try:
     import pandas as pd
 except ImportError:
@@ -95,21 +94,36 @@ else:
 
 DO_PRETRAIN = True
 
-REFS_DIR     = os.path.abspath("refs")
 OUT_DIR      = os.path.abspath("runs_smoke" if SMOKE else "runs")
+# The full run reuses the top-level refs/ CCSD cache; the smoke isolates its refs
+# under runs_smoke/ so a smoke (grid 1, small basis) never collides with a full
+# run (grid 2, big basis) sharing one refs/ dir -- which risks a stale-ref
+# grid_level/basis mismatch at consumption.
+REFS_DIR     = os.path.join(OUT_DIR, "refs") if SMOKE else os.path.abspath("refs")
 PRETRAIN_DIR = os.path.join(OUT_DIR, "pretrain")
 for _d in (REFS_DIR, OUT_DIR, PRETRAIN_DIR):
     os.makedirs(_d, exist_ok=True)
 
 
-def make_progress(desc):
-    state = {"bar": None}
+def make_progress(label, updates=20):
+    # Robust flushed-print progress that works in Jupyter, nbconvert, and a plain
+    # terminal (unlike a tqdm bar, which can silently no-op headless). Handles the
+    # run_training callback (phase "train") and the run_pretrain callbacks
+    # (phases "X" then "C"), each with its own step/total.
+    state = {}
     def cb(p):
-        if state["bar"] is None:
-            state["bar"] = tqdm(total=p.get("total"), desc=desc, leave=False)
-        state["bar"].n = int(p["step"])
-        state["bar"].set_postfix(loss=f"{p['loss']:.4g}")
-        state["bar"].refresh()
+        phase = p.get("phase", "")
+        step, total, loss = int(p["step"]), int(p["total"]), float(p["loss"])
+        key = (label, phase)
+        if step <= 1 or key not in state:
+            state[key] = time.time()
+        every = max(1, total // updates)
+        if step == 1 or step % every == 0 or step >= total:
+            el = time.time() - state[key]
+            eta = el / max(step, 1) * max(total - step, 0)
+            tag = (label + " " + phase).strip()
+            print(f"    [{tag}] {step}/{total}  loss={loss:.4g}  "
+                  f"{el:.0f}s elapsed, ~{eta:.0f}s left", flush=True)
     return cb
 
 
@@ -158,9 +172,8 @@ Cached; atoms need no reference.
 """)
 
 code(r"""
-status = dfs_demo.generate_ccsd_density_refs(
+dfs_demo.generate_ccsd_density_refs(
     mol_specs, refs_dir=REFS_DIR, basis=BASIS, grid_level=GRID_LEVEL)
-print("reference status:", status)
 
 mol_specs = dfs_demo.build_mol_specs(chosen, basis=BASIS, grid_level=GRID_LEVEL, refs_dir=REFS_DIR)
 print("molecules with CCSD density:", [ms.name for ms in mol_specs if ms.external_data_path])
@@ -183,15 +196,16 @@ code(r"""
 pretrained = {}
 if DO_PRETRAIN:
     pretrain_atoms = dfs_demo.pretrain_atoms_for(mol_specs)
-    print("pretrain atoms (derived from the systems):", [a[0] for a in pretrain_atoms])
+    print("pretrain atoms (derived from the systems):", [a[0] for a in pretrain_atoms], flush=True)
     for arch_name in ARCH_NAMES:
         ck = os.path.join(PRETRAIN_DIR, arch_name)
-        print(f"pretrain {arch_name} to PBE ({PRETRAIN_STEPS} steps)")
+        print(f"pretrain {arch_name} to PBE ({PRETRAIN_STEPS} steps per X/C net)", flush=True)
         dfs_demo.pretrain_to_pbe(
             dfs_demo.dfs_arch(arch_name), data_dir=PRETRAIN_DIR, checkpoint_dir=ck,
-            basis=BASIS, grid_level=GRID_LEVEL, atoms=pretrain_atoms, n_steps=PRETRAIN_STEPS)
+            basis=BASIS, grid_level=GRID_LEVEL, atoms=pretrain_atoms, n_steps=PRETRAIN_STEPS,
+            progress_callback=make_progress(arch_name))
         pretrained[arch_name] = ck
-        print("  wrote", ck)
+        print("  wrote", ck, flush=True)
 else:
     print("pretraining off; networks start from the LDA init")
 """)
