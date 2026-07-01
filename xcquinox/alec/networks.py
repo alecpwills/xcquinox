@@ -113,7 +113,8 @@ class AlecGGA_XNet(eqx.Module):
             activation=jax.nn.gelu, key=keys[0],
         )
         # Zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1 at init,
-        # ensuring the untrained network returns PBE (limit=1).
+        # ensuring the untrained network returns F_x=1 -- Slater/LDA exchange (the
+        # uniform-gas limit, since F multiplies lda_x in models.py), NOT PBE.
         if zero_init_final_layer:
             self.net = eqx.tree_at(
                 lambda m: (m.layers[-1].weight, m.layers[-1].bias),
@@ -258,7 +259,7 @@ class AlecGGA_CNet(eqx.Module):
             activation=jax.nn.gelu, key=keys[0],
         )
         # Zero the final MLP layer so 1 + LOB(tanh(s)² · MLP) ≈ 1 at init
-        # (Fc -> 1, the PBE-correlation limit).
+        # (Fc -> 1, the PW92/LDA-correlation limit, NOT PBE).
         if zero_init_final_layer:
             self.net = eqx.tree_at(
                 lambda m: (m.layers[-1].weight, m.layers[-1].bias),

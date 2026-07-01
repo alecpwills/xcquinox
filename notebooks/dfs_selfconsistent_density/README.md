@@ -1,0 +1,222 @@
+# DFS-style self-consistent density training — companion notes
+
+Companion to `train_dfs_density.ipynb`. It explains the physics of the functional and its
+descriptors, why the training is set up the way it is, and exactly which code the notebook calls.
+Every physical claim carries a citation `[n]` (see [References](#references)); every code claim gives
+a `file:line`. The functional-form and training-recipe choices follow Dick & Fernandez-Serra's
+differentiable-programming functional ("DFS") [4]. Bibliographic details follow the repo's
+consensus-verified methods box (`notebooks/analysis/make_ablation_arch_figure.py`) and its
+PDF-verified bibliography (`reports_local/latex/references.bib`); the reference *numbering* below is
+this document's own.
+
+---
+
+## 1. The functional and its ingredients (physics recap)
+
+### 1.1 Enhancement-factor form
+
+The neural functional is written as a local baseline times a learned **enhancement factor**:
+
+```
+E_xc = ∫ n(r) [ ε_x^LDA(n) · F_x + ε_c^PW92(n,ζ) · F_c ] dr
+```
+
+- Exchange baseline `ε_x^LDA = -¾(3/π)^{1/3} n^{1/3}`, the uniform-electron-gas (Dirac–Slater) exchange
+  [16] (`utils.py:689`).
+- Correlation baseline `ε_c^PW92`, the Perdew–Wang parametrization of the uniform-gas correlation
+  energy [2] (`utils.py:785`; spin-dependent when ζ≠0, `models.py:124-132`).
+- `F_x`, `F_c` are the neural enhancement factors; the multiplicative assembly is
+  `ex_density = ρ·ε_x^LDA·F_x` (`models.py:170-171`).
+
+At `F_x = F_c = 1` the functional is exactly LDA/PW92 (the uniform-gas limit). This is where the
+**untrained** network sits (its final layer is zero-initialized when `zero_init_final_layer=True`,
+which both notebook archs set, `networks.py:117-122`) and where the
+low-density **tail** is masked (`models.py:164-166`). Training moves `F` away from 1. *Why this form:*
+factoring out the exact uniform-gas limit makes the network a bounded correction to a physically sound
+baseline rather than an unconstrained fit — the standard construction of DFS [4] and of PBE-family GGAs
+[1].
+
+### 1.2 The GGA ingredient — reduced density gradient
+
+The exchange net's semilocal input is the dimensionless reduced gradient
+
+```
+s = |∇n| / (2 (3π²)^{1/3} n^{4/3})            [1,4]   (networks.py:141)
+```
+
+`s` measures density inhomogeneity and defines the GGA rung of "Jacob's ladder." For the MLP it is
+fed through a smooth log-compression `(1−e^{−s²})·log(s+1)` (a numerical rescaling of this work, not a
+new physical input, `networks.py:148-149`); the structural constraints below use raw `s`.
+
+### 1.3 Correlation ingredients — density and spin
+
+The correlation net additionally takes the Wigner–Seitz radius `r_s = (3/4πn)^{1/3}` — the natural
+LDA-correlation variable of PW92 [2] (`networks.py:284`) — and a **spin-polarization** feature
+
+```
+x1 = ½[(1+ζ)^{4/3} + (1−ζ)^{4/3}],   ζ = (n_α−n_β)/n     [4]   (networks.py:307-310)
+```
+
+with `x1 ∈ [1, 2^{1/3}]` and `x1 = 1` at ζ=0 (so a closed-shell/RKS call recovers the unpolarized
+input). The `(1±ζ)^{4/3}` factors are the exact exchange spin-scaling terms [3] that also appear in the
+correlation spin-interpolation `f(ζ)` [2,12]. *Why:* correlation depends on the relative spin density; open-shell
+systems (the notebook trains OH and NH) require it.
+
+### 1.4 Physical constraints (why `F` is not a free MLP)
+
+- **Lieb–Oxford exchange ceiling.** `F_x` is squashed to `≤ 1.804 = 1 + κ` (κ=0.804), the PBE
+  exchange bound set by the local Lieb–Oxford inequality [1,5], enforced by the network's built-in
+  squash (`networks.py:24-26,55-57`). (DFS [4] use a tighter local bound 1.174 [6]; the notebook's archs use the
+  PBE value 1.804.)
+- **Correlation non-negativity.** `F_c` uses the same squash with limit 2.0, whose purpose is
+  `F_c ≥ 0` (the `I_2` transform of DFS [4], Eq.13), **not** a Lieb–Oxford bound on `F_c`
+  (`networks.py:28-33`).
+- **Uniform-gas limit.** A `tanh²(s)` gate multiplies the MLP output so `F → 1` as `s → 0`
+  (`networks.py:159`, `322`), recovering the correct slowly-varying-density limit.
+
+*Why:* imposing exact constraints architecturally (not just via the loss) is what makes a learned
+functional transferable rather than an interpolation table [4].
+
+### 1.5 The cusp descriptor (used by `deep_rung35_3x16`)
+
+Two extra per-grid-point features (`descriptors.py:72-105`, computed in `features.py:215-318`):
+
+- `cusp_factor = exp(−2 Z_nearest · r_min) ∈ (0,1]` — Z of the nearest nucleus, `r_min` its distance.
+- `tanh( log(Σ_A Z_A / r_A) / 5 )` — a log-compressed nuclear-attraction weight (DFS XCDiff
+  convention [4]).
+
+*Physics.* The Kohn–Sham wavefunction has an electron–nucleus **cusp**,
+`(∂⟨ψ⟩/∂r)|_{r=0} = −Z ψ(0)` [7 (Kato)]; the corresponding **spherically-averaged density** obeys
+`(∂⟨n⟩/∂r)|_{r=0} = −2Z n(0)`, so the density decays as `exp(−2Zr)` near a nucleus [8 (Steiner)]. The
+`exp(−2 Z r_min)` feature approximates that density-form Slater envelope. *Why:* from `(n,s)` alone a
+GGA cannot resolve the sharp near-nucleus/core structure or the identity of the nearest nucleus; the
+cusp features inject nuclear charge and proximity so the functional can adapt in core regions.
+
+### 1.6 The rung-3.5 localized density-matrix occupancy (used by `deep_rung35_3x16`)
+
+Per-spin, per-grid-point **bounded local occupancy** (`rung35.py`, `descriptors.py:173-218`):
+
+```
+n_σ(r_m) = A(r_m)^T P^σ A(r_m) ∈ [0,1],   A_μ(r_m) = ⟨χ_μ | φ^G_{r_m}⟩
+φ^G_{r_m}(r) = (2α/π)^{3/4} exp(−α |r − r_m|²)      [10,11]   (rung35.py:3-19)
+```
+
+`A` is a density-independent overlap of each atomic orbital `χ_μ` with an L²-normalized Gaussian
+projector at the grid point (PySCF `int1e_ovlp`); the occupancy is then a single linear contraction
+against the live one-particle density matrix `P^σ`. It is bounded `[0,1]` by Bessel's inequality
+(hence NaN-safe by construction, `rung35.py:28-30`). The projector width `α = 0.2 a₀⁻² = 1/d²` is set
+at the M11plus kernel scale `d² = 5 a₀²` [11] (`rung35.py:37-39`).
+
+*Physics.* This contracts the **non-local** Kohn–Sham 1-RDM `γ_σ(r,r')` once against a model projector
+— a genuine **Rung-3.5** ingredient (Janesko's unified rung-3.5/DFT+U formalism [10], its own rung of
+Jacob's ladder between meta-GGA and hybrid; the M11plus occupancy is originally a *correlation*
+ingredient [11]). It is **not** reducible to the kinetic-energy density τ (so it does not silently
+promote the GGA to a meta-GGA), **not** a static reference DM (it uses the self-consistent DM each SCF
+cycle), and it is evaluated **per grid point** so it is size-intensive/leak-free. *Why:* it gives the
+functional genuine non-local density-matrix information beyond `{n, ∇n}` while keeping the training
+self-consistent and size-consistent — it replaces the earlier global `dm_statistics` descriptor, whose
+molecule-level scalars (e.g. `dm_entropy ~ ln N_occ`, natural-occupation entropy [9]) leaked molecule
+identity and overfit small pools.
+
+---
+
+## 2. The training method and why
+
+The notebook trains the functional the way DFS [4] do — the recipe encoded in the repo's `dfs_step7`
+configuration:
+
+- **Train on the density, anchor energies to a benchmark.** The loss is dominated (weight ~20×) by a
+  density term that drives the network's own **self-consistent** density toward an accurate **CCSD**
+  reference density, normalized per-electron² (`∫(n−n_ref)² w / N_e²`); energies enter only as
+  atomization-energy anchors from the GMTKN55/Haunschild–Klopper reference set [13,14], with exact
+  atomic totals from Chakravorty [15]. Rationale: a functional that reproduces accurate densities (not
+  just energies) is more transferable and avoids error cancellation — the central thesis of DFS [4].
+- **Atomization energies as reactions.** Each AE is scored as `molecule → atoms` using the network's
+  *own* self-consistent atom energies (not fixed anchors), matching DFS's `L_RE` form [4].
+- **Differentiate through the SCF.** Training backpropagates through a fixed number of Kohn–Sham SCF
+  cycles (`full_3` = 3, `full_25` = 25) from a converged-PBE seed, with a step-decaying linear mixer
+  `α = 0.3^step + 0.3` and a tail-weighted energy loss [4]; optimization is AdamW with a per-molecule
+  (dpyscf-style) update loop.
+- **Pretrain to PBE first.** The archs zero-initialize to **LDA** (`F=1`), so each network is first fit
+  to **PBE** enhancement factors (`F_x = F_x^PBE/F_x^LDA − 1`) as a warm-start before density training.
+
+**Documented deviations from DFS [4]** (also listed in the notebook): plain **CCSD** (not CCSD(T))
+reference densities; the modern GGA + rung-3.5 networks rather than the paper's meta-GGA (no
+iso-orbital α, exchange bound 1.804 not 1.174); `grid_level 2`; AdamW + linear-decay LR (not Adam +
+ReduceLROnPlateau); spin-summed `N_e²` normalization (not per-spin `N_σ²`).
+
+---
+
+## 3. What the notebook does, and the code it calls
+
+All helpers live in `dfs_demo.py` and wrap the production `xcquinox.alec` APIs (so the demo config is
+byte-for-byte what the cluster harness builds, only on a smaller pool).
+
+1. **Systems** — `dfs_demo.select_dfs_points()` filters the Dick-2021 pool `build_dfs_pool()` to a
+   spin-diverse handful (closed-shell H₂O, LiH; open-shell OH, NH; + H/O/Li/N atom anchors);
+   `build_mol_specs()` builds the PySCF `MoleculeSpec`s (geometries/spins/AEs from the pool — no
+   fabricated values).
+2. **CCSD reference densities** — `generate_ccsd_density_refs()` → `benchmark_refs.generate_one()`
+   (converged HF → CCSD 1-RDM → spin-summed density on the SCF grid; cached, prints `cached`/`generated`
+   per molecule).
+3. **Pretraining to PBE** — `pretrain_atoms_for(mol_specs)` derives the pretrain atoms from the systems'
+   elements (so they exist at the basis); `pretrain_to_pbe()` runs `ensure_pretrain_data` +
+   `run_pretrain` and **reuses an existing checkpoint** on rerun.
+4. **Architectures** — `dfs_arch("deep_3x16" | "deep_rung35_3x16")` (`get_architecture` +
+   spin-polarized correlation). `deep_3x16` is the plain GGA; `deep_rung35_3x16` adds the cusp +
+   rung-3.5 descriptors of §1.5–1.6.
+5. **Training spec** — `build_dfs_training_spec()` assembles the DFS-exact `TrainingSpec` by calling the
+   same `spec_builder`/`domain` helpers the harness uses (`per_molecule` loop, `L5` loss,
+   `density_per_electron`, 20× density weight, `ae_as_reactions`, the `full_3`/`full_25` solvers).
+6. **Train** — `xcquinox.alec.run_training(spec)`, differentiating through the SCF; live per-step
+   progress.
+7. **Evaluate** — `build_dfs_test_spec()` + `run_test()` under the same solver. The headline is the
+   solver-aware `density_rmse` metric: the network's **self-consistent** density RMSE vs CCSD next to
+   the **PBE-vs-CCSD** baseline — i.e. did density-anchored training pull the self-consistent density
+   toward CCSD, beating PBE.
+
+---
+
+## 4. Adapting this to your own work
+
+- **Your architecture:** change `ARCH_NAMES` (setup cell) to any registered arch, or pass a custom
+  `ArchitectureConfig` to `build_dfs_training_spec`. Everything else (loss, solver, DFS recipe) is
+  unchanged.
+- **More systems:** extend `HILLS` with any `build_dfs_pool()` Hill formula (e.g. `CO`, `N2`, `CH3`).
+- **The full pipeline:** for the complete DFS pool + BH76/IP13 channels + V_xc supervision, use the
+  cluster harness (`xcquinox.alec.cluster`) with the `dfs_step7` config; its CCSD-reference generator
+  `external_refs.precompute_all` adds the OEP V_xc cascade.
+
+---
+
+## References
+
+Bibliographic details are the repo's PDF-verified `reports_local/latex/references.bib` and its
+consensus-verified methods box.
+
+1. J. P. Perdew, K. Burke, M. Ernzerhof, "Generalized Gradient Approximation Made Simple," *Phys. Rev.
+   Lett.* **77**, 3865 (1996); DOI 10.1103/PhysRevLett.77.3865.
+2. J. P. Perdew, Y. Wang, *Phys. Rev. B* **45**, 13244 (1992); DOI 10.1103/PhysRevB.45.13244.
+3. G. L. Oliver, J. P. Perdew, *Phys. Rev. A* **20**, 397 (1979).
+4. S. Dick, M. Fernandez-Serra, "Highly accurate and constrained density functional obtained with
+   differentiable programming," *Phys. Rev. B* **104**, L161109 (2021); DOI 10.1103/PhysRevB.104.L161109.
+5. E. H. Lieb, S. Oxford, *Int. J. Quantum Chem.* **19**, 427 (1981); DOI 10.1002/qua.560190306.
+6. J. P. Perdew, A. Ruzsinszky, J. Sun, K. Burke, *J. Chem. Phys.* **140**, 18A533 (2014) — the tighter
+   1.174 local bound used by DFS. (The repo attributes the 1.174 value to this work; DFS's own code
+   cites no source. The notebook's archs use the PBE value 1.804, not 1.174.)
+7. T. Kato, *Commun. Pure Appl. Math.* **10**, 151 (1957) (electron–nucleus wavefunction cusp).
+8. E. Steiner, *J. Chem. Phys.* **39**, 2365 (1963) (the −2Z spherically-averaged density cusp).
+9. P.-O. Löwdin, *Phys. Rev.* **97**, 1474 (1955) (natural-orbital occupations; the replaced
+   `dm_statistics` descriptor).
+10. B. G. Janesko, arXiv:2206.07118 (unified Rung-3.5 / DFT+U formalism, Eq. 12–13); original rung-3.5:
+    B. G. Janesko, *J. Chem. Phys.* **133**, 104103 (2010).
+11. P. Verma et al. (M11plus), *J. Chem. Theory Comput.* **15**, 4804 (2019).
+12. U. von Barth, L. Hedin, *J. Phys. C* **5**, 1629 (1972) (correlation spin-interpolation).
+13. L. Goerigk, A. Hansen, C. Bauer, S. Ehrlich, A. Najibi, S. Grimme (GMTKN55), *Phys. Chem. Chem.
+    Phys.* **19**, 32184 (2017); DOI 10.1039/C7CP04913G.
+14. R. Haunschild, W. Klopper, "New accurate reference energies for the G2/97 test set," *J. Chem.
+    Phys.* **136**, 164102 (2012); DOI 10.1063/1.4704796.
+15. S. J. Chakravorty, S. R. Gwaltney, E. R. Davidson, F. A. Parpia, C. Froese Fischer, *Phys. Rev. A*
+    **47**, 3649 (1993); DOI 10.1103/PhysRevA.47.3649 (exact atomic totals).
+16. P. A. M. Dirac, *Proc. Cambridge Philos. Soc.* **26**, 376 (1930); J. C. Slater, *Phys. Rev.* **81**,
+    385 (1951) (uniform-gas / Dirac–Slater exchange).

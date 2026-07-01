@@ -136,7 +136,8 @@ class ArchitectureConfig:
     # values.
     descriptor_log_transform: bool = False
     # zero_init_final_layer: True zeros the final MLP layer's weight + bias at
-    # construction so Fx = Fc = 1 exactly at init (PBE limit). False keeps
+    # construction so Fx = Fc = 1 exactly at init (the LDA/PW92 limit -- F=1
+    # multiplies lda_x + PW92, NOT PBE). False keeps
     # Glorot init (gives Fx mean ~+2.65e-4 off 1).
     zero_init_final_layer: bool = False
 
