@@ -169,11 +169,17 @@ byte-for-byte what the cluster harness builds, only on a smaller pool).
    same `spec_builder`/`domain` helpers the harness uses (`per_molecule` loop, `L5` loss,
    `density_per_electron`, 20× density weight, `ae_as_reactions`, the `full_3`/`full_25` solvers).
 6. **Train** — `xcquinox.alec.run_training(spec)`, differentiating through the SCF; live per-step
-   progress.
-7. **Evaluate** — `build_dfs_test_spec()` + `run_test()` under the same solver. The headline is the
-   solver-aware `density_rmse` metric: the network's **self-consistent** density RMSE vs CCSD next to
-   the **PBE-vs-CCSD** baseline — i.e. did density-anchored training pull the self-consistent density
-   toward CCSD, beating PBE.
+   progress. **Reuses a finished checkpoint on rerun**: if `<run>/model.eqx` exists it is loaded and
+   (re)training is skipped, so together with the pretrain reuse (step 3) a rerun re-does neither
+   pretraining nor training unless the checkpoints are absent (delete `runs/` to force a fresh run).
+7. **Evaluate** — `build_dfs_test_spec()` + `run_test()` under the same solver, then three figures:
+   **(b)** the solver-aware `density_rmse` (self-consistent density vs CCSD, on a **log scale**) next to
+   the PBE-vs-CCSD baseline; **(c)** atomization-energy error from `self_consistent_ae`, using each
+   functional's **own** self-consistent atom energies (the physically correct AE, matching
+   `ae_as_reactions`) — **not** the anchored `AE_nn` field (molecule energy minus fixed exact atoms),
+   which reports absolute-energy offset, not the AE; and **(d)** the DFS combined energy-density error
+   `ED` (`combined_energy_density`, PRB 104 L161109 (2021) Eq. 21) with the energy AE-MAE panel stacked
+   above it. On this pool every network beats PBE on AE-MAE, density, and `ED`.
 
 ---
 

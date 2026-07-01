@@ -284,6 +284,13 @@ for arch_name in ARCH_NAMES:
             chosen_points=chosen, mol_specs=mol_specs,
             checkpoint_dir=ckpt, n_steps=N_EPOCHS[solver_name],
             pretrain_checkpoint=pretrained.get(arch_name))
+        # Reuse a finished training checkpoint on rerun: if model.eqx already exists
+        # skip (re)training and just evaluate it. Delete <ckpt>/model.eqx (or the
+        # whole runs/ dir) to force a fresh train.
+        if os.path.isfile(os.path.join(ckpt, "model.eqx")):
+            print(f"reuse trained {arch_name} / {solver_name}: {ckpt}/model.eqx", flush=True)
+            trained[(arch_name, solver_name)] = {"spec": spec, "ckpt": ckpt, "meta": None}
+            continue
         print(f"train {arch_name} / {solver_name} ({N_EPOCHS[solver_name]} epochs)")
         meta = run_training(spec, progress_callback=make_progress(f"{arch_name}/{solver_name}"))
         trained[(arch_name, solver_name)] = {"spec": spec, "ckpt": ckpt, "meta": meta}
