@@ -199,7 +199,8 @@ if DO_PRETRAIN:
     print("pretrain atoms (derived from the systems):", [a[0] for a in pretrain_atoms], flush=True)
     for arch_name in ARCH_NAMES:
         ck = os.path.join(PRETRAIN_DIR, arch_name)
-        print(f"pretrain {arch_name} to PBE ({PRETRAIN_STEPS} steps per X/C net)", flush=True)
+        print(f"pretrain {arch_name} (reuse cached checkpoint if present, else "
+              f"{PRETRAIN_STEPS} steps per X/C net):", flush=True)
         dfs_demo.pretrain_to_pbe(
             dfs_demo.dfs_arch(arch_name), data_dir=PRETRAIN_DIR, checkpoint_dir=ck,
             basis=BASIS, grid_level=GRID_LEVEL, atoms=pretrain_atoms, n_steps=PRETRAIN_STEPS,
@@ -267,6 +268,13 @@ Each architecture under each solver. Every optimizer step differentiates through
 """)
 
 code(r"""
+# Ensure every molecule's CCSD reference exists before training: regenerate any
+# missing one (cached refs are instant) and re-wire mol_specs, so a deleted or
+# partially generated ref can never crash training mid-run.
+dfs_demo.generate_ccsd_density_refs(
+    mol_specs, refs_dir=REFS_DIR, basis=BASIS, grid_level=GRID_LEVEL, progress=False)
+mol_specs = dfs_demo.build_mol_specs(chosen, basis=BASIS, grid_level=GRID_LEVEL, refs_dir=REFS_DIR)
+
 trained = {}
 for arch_name in ARCH_NAMES:
     for solver_name in SOLVER_NAMES:

@@ -272,7 +272,7 @@ def pretrain_atoms_for(mol_specs):
 
 
 def pretrain_to_pbe(arch, *, data_dir, checkpoint_dir, basis, grid_level, atoms,
-                    n_steps=DFS_PRETRAIN_STEPS, progress_callback=None):
+                    n_steps=DFS_PRETRAIN_STEPS, progress_callback=None, force=False):
     """Pretrain ``arch``'s enhancement factors to PBE; return the checkpoint dir.
 
     The archs zero-initialize to LDA (F_x = F_c = 1 multiply lda_x + PW92, the
@@ -281,8 +281,19 @@ def pretrain_to_pbe(arch, *, data_dir, checkpoint_dir, basis, grid_level, atoms,
     idempotent/cached across archs) then runs the pretrain regression
     (``run_pretrain``), writing ``xnet.eqx``/``cnet.eqx`` under ``checkpoint_dir``
     for ``build_dfs_training_spec(pretrain_checkpoint=...)``.
+
+    Checkpoint reuse: if ``checkpoint_dir`` already holds ``xnet.eqx`` +
+    ``cnet.eqx`` the pretrain is skipped and the existing checkpoint is reused, so
+    reruns are instant. Pass ``force=True`` (or delete the checkpoint dir) to
+    re-pretrain -- e.g. after changing the arch, basis, or pretrain atoms.
     """
     os.makedirs(checkpoint_dir, exist_ok=True)
+    xnet_ckpt = os.path.join(checkpoint_dir, "xnet.eqx")
+    cnet_ckpt = os.path.join(checkpoint_dir, "cnet.eqx")
+    if not force and os.path.isfile(xnet_ckpt) and os.path.isfile(cnet_ckpt):
+        print(f"  reusing existing pretrain checkpoint (skip; force=True to redo): {checkpoint_dir}",
+              flush=True)
+        return checkpoint_dir
     ensure_pretrain_data(
         data_dir, atoms=atoms, basis=basis, grid_level=grid_level,
         polarized=True, descriptors=True, progress=True)

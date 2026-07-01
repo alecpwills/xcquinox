@@ -241,6 +241,14 @@ def test_pretrain_to_pbe_writes_checkpoint(tmp_path):
     assert os.path.isfile(os.path.join(ckpt, "cnet.eqx"))
     # Progress callback fired for both the exchange (X) and correlation (C) nets.
     assert {"X", "C"} <= set(fired)
+    # Rerun reuses the checkpoint (skips pretraining -> no callback fires).
+    fired2 = []
+    dfs_demo.pretrain_to_pbe(
+        dfs_demo.dfs_arch("deep_3x16"),
+        data_dir=str(tmp_path / "pdata"), checkpoint_dir=str(tmp_path / "pre"),
+        basis="sto-3g", grid_level=1, n_steps=2, atoms=(("H", 1),),
+        progress_callback=lambda p: fired2.append(p["phase"]))
+    assert fired2 == []
     # The training spec then loads it (pretrain_checkpoint dir must validate).
     chosen = dfs_demo.select_dfs_points(dfs_demo.SMOKE_MOLECULE_HILLS)
     specs = dfs_demo.build_mol_specs(
