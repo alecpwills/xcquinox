@@ -1,0 +1,11 @@
+# Generated CCSD reference densities (regenerate via the notebook / benchmark_refs)
+refs/
+# Training + eval outputs
+runs/
+runs_smoke/
+# JAX compilation cache
+.jax_compilation_cache/
+# Notebook execution byproducts
+.ipynb_checkpoints/
+__pycache__/
+*.smoke.ipynb

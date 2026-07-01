@@ -231,6 +231,44 @@ def test_assemble_pretrain_descriptors_unpolarized_ignores_for_cnet():
     np.testing.assert_allclose(dx, dc)
 
 
+def test_assemble_pretrain_descriptors_rung35_arch():
+    # Regression: deep_rung35_3x16 (cusp + rung35) assembles without the KeyError
+    # rung35 hit before it was added to pretrain _key_map.
+    import dataclasses
+    import numpy as np
+    from xcquinox.alec.pretrain import _assemble_pretrain_descriptors
+    from xcquinox.alec import get_architecture
+
+    n = 6
+    data = {
+        "rho_all": np.linspace(0.1, 1.0, n),
+        "sigma_all": np.linspace(0.0, 0.5, n),
+        "zeta_all": np.linspace(-0.5, 0.5, n),
+        "cusp_all": np.linspace(0.0, 1.0, 2 * n).reshape(n, 2),
+        "rung35_all": np.linspace(1.0, 0.0, 2 * n).reshape(n, 2),
+    }
+    arch = get_architecture("deep_rung35_3x16")  # descriptors: cusp (2) + rung35 (2)
+    dx = np.asarray(_assemble_pretrain_descriptors(arch, data))
+    assert dx.shape == (n, 6)  # rho, sigma, cusp(2), rung35(2); rung35 -> no KeyError
+    # Polarized cnet inserts zeta at column 2, then the 4 descriptor columns.
+    parch = dataclasses.replace(arch, use_polarized_correlation=True)
+    dc = np.asarray(_assemble_pretrain_descriptors(parch, data, for_cnet=True))
+    assert dc.shape == (n, 7)
+    np.testing.assert_allclose(dc[:, 2], data["zeta_all"])
+
+
+def test_atom_columns_includes_rung35_occupancy():
+    # The per-atom pretrain column generator must emit a bounded [0, 1] rung35
+    # occupancy column aligned with rho (H atom, sto-3g -> fast).
+    import numpy as np
+    from xcquinox.alec.pretrain_data_gen import _atom_columns
+    cols = _atom_columns("H", 1, "sto-3g", 1, polarized=True, descriptors=True)
+    assert "rung35" in cols
+    r = np.asarray(cols["rung35"])
+    assert r.ndim == 2 and r.shape == (len(cols["rho"]), 2)
+    assert np.all(r >= -1e-6) and np.all(r <= 1.0 + 1e-6)
+
+
 # ---------------------------------------------------------------------------
 # Tests 9-16: run_pretrain end-to-end (xfail, need fixture)
 # ---------------------------------------------------------------------------

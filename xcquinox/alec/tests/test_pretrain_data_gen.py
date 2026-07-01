@@ -18,7 +18,7 @@ def test_polarized_npz_has_zeta_and_consistent_columns(tmp_path):
     d = dict(np.load(path))
     # Required columns + zeta + descriptors all present.
     for key in ("rho_all", "sigma_all", "Fx_all", "Fc_all", "weights_all",
-                "zeta_all", "cusp_all", "dm_all"):
+                "zeta_all", "cusp_all", "dm_all", "rung35_all"):
         assert key in d, f"missing {key}"
     n = d["rho_all"].shape[0]
     assert n > 0
@@ -27,6 +27,9 @@ def test_polarized_npz_has_zeta_and_consistent_columns(tmp_path):
         assert d[key].shape[0] == n
         assert np.all(np.isfinite(d[key]))
     assert d["cusp_all"].shape[0] == n and d["dm_all"].shape[0] == n
+    # rung-3.5 occupancy column: aligned with rho, two per-spin channels, in [0, 1].
+    assert d["rung35_all"].shape == (n, 2)
+    assert np.all(d["rung35_all"] >= -1e-6) and np.all(d["rung35_all"] <= 1.0 + 1e-6)
     # zeta in [-1, 1]; ~0 on the closed-shell He points, ~+1 on the fully spin-
     # polarized H points -> the column must span from near 0 up toward 1.
     z = d["zeta_all"]

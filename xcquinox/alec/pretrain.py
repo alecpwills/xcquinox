@@ -167,7 +167,7 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
             zeta_all = jnp.zeros_like(pretrain_data["rho_all"])
         cols.append(zeta_all)
     # Map descriptor.name -> key in pretrain_data.
-    _key_map = {"dm_statistics": "dm_all", "cusp": "cusp_all"}
+    _key_map = {"dm_statistics": "dm_all", "cusp": "cusp_all", "rung35": "rung35_all"}
     for spec in arch.descriptors:
         key = _key_map.get(spec.name)
         if key is None:

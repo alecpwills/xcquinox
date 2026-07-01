@@ -123,6 +123,17 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
         dm_global = _features.compute_dm_features_array(
             dm_for_features, jnp.asarray(mol.intor("int1e_ovlp")))
         cols["dm"] = np.tile(np.asarray(dm_global), (len(cols["rho"]), 1))
+        # Rung-3.5 per-spin local occupancy n_sigma = A^T P A on the valid grid,
+        # mirroring the training-side computation in data.py so a rung35-descriptor
+        # arch has its pretrain column (otherwise _assemble_pretrain_descriptors
+        # KeyErrors). A is the density-independent projected-AO overlap; the
+        # occupancy is linear in the PBE DM and bounded [0, 1]. Uses the default
+        # alpha the rung35 archs are built with.
+        from xcquinox.alec.rung35 import (
+            compute_projected_ao, compute_rung35_occupancy, DEFAULT_RUNG35_ALPHA)
+        proj_ao = compute_projected_ao(mol, coords_v, DEFAULT_RUNG35_ALPHA)
+        rung35_feat = compute_rung35_occupancy(jnp.asarray(proj_ao), dm_for_features)
+        cols["rung35"] = np.asarray(rung35_feat)
     return cols
 
 
@@ -181,10 +192,23 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
     want_atoms = [[str(s), int(sp)] for s, sp in atoms]
     have_atoms = meta.get(
         "atoms", [[str(s), int(sp)] for s, sp in DEFAULT_PRETRAIN_ATOMS])
-    return (meta.get("basis") == basis
-            and int(meta.get("grid_level", -1)) == int(grid_level)
-            and meta.get("auxbasis") == auxbasis
-            and have_atoms == want_atoms)
+    manifest_ok = (meta.get("basis") == basis
+                   and int(meta.get("grid_level", -1)) == int(grid_level)
+                   and meta.get("auxbasis") == auxbasis
+                   and have_atoms == want_atoms)
+    if not manifest_ok:
+        return False
+    # A descriptor-bearing file written before rung-3.5 support lacks the
+    # ``rung35_all`` column; the manifest matches but ``run_pretrain`` would
+    # KeyError on a rung35 arch. Treat such a file as stale so it regenerates.
+    try:
+        with np.load(npz_path) as _z:
+            _keys = set(_z.files)
+    except Exception:
+        return False
+    if "cusp_all" in _keys and "rung35_all" not in _keys:
+        return False
+    return True
 
 
 def _effective_auxbasis(basis, density_fit, auxbasis):
@@ -254,6 +278,7 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     if descriptors:
         save_kwargs["cusp_all"] = np.concatenate([c["cusp"] for c in per_atom])
         save_kwargs["dm_all"] = np.concatenate([c["dm"] for c in per_atom])
+        save_kwargs["rung35_all"] = np.concatenate([c["rung35"] for c in per_atom])
 
     os.makedirs(out_dir, exist_ok=True)
     fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"
