@@ -177,9 +177,11 @@ byte-for-byte what the cluster harness builds, only on a smaller pool).
    the PBE-vs-CCSD baseline; **(c)** atomization-energy error from `self_consistent_ae`, using each
    functional's **own** self-consistent atom energies (the physically correct AE, matching
    `ae_as_reactions`) — **not** the anchored `AE_nn` field (molecule energy minus fixed exact atoms),
-   which reports absolute-energy offset, not the AE; and **(d)** the DFS combined energy-density error
-   `ED` (`combined_energy_density`, PRB 104 L161109 (2021) Eq. 21) with the energy AE-MAE panel stacked
-   above it. On this pool every network beats PBE on AE-MAE, density, and `ED`.
+   which reports absolute-energy offset, not the AE; and **(d)** a DFS-Fig.2-style 3-panel chart
+   (`combined_energy_density`, PRB 104 L161109 (2021) Eq. 21): energy AE-MAE, mean density RMSE, and
+   the combined energy-density error `ED`, NN vs PBE. On this pool every network beats PBE on AE-MAE,
+   density, and `ED`; the mean density error is OH-radical-dominated, so its aggregate win is modest
+   (the printout's "excl. OH" mean shows the H₂O/NH density improves ~40%).
 
 ---
 
