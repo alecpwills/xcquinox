@@ -775,6 +775,46 @@ def test_solver_config_rejects_unknown_mode():
         _solver_config_from_named(SolverNamed(mode="bogus", max_cycles=0))
 
 
+def test_named_mixer_without_kwargs_uses_mixer_defaults():
+    """A named solver that selects a custom mixer but omits mixer_kwargs must
+    build that mixer with ITS OWN __init__ defaults, NOT inherit SolverConfig's
+    default mixer_kwargs ({'alpha': 0.5}) -- which a non-linear mixer like
+    DecayingLinearMixer has no 'alpha' arg for and would TypeError on in
+    _build_mixer. The dfs_step7 configs always pass mixer_kwargs, but this
+    foot-gun lives in the same feature, so guard it."""
+    from xcquinox.alec.solver import DecayingLinearMixer
+    from xcquinox.alec.solver_manual import _build_mixer
+
+    cfg = _solver_config_from_named(
+        SolverNamed(mode="FULL", max_cycles=3, feature_policy="REASSEMBLE",
+                    mixer_name="decaying_linear", mixer_kwargs=None)
+    )
+    assert cfg.mixer_name == "decaying_linear"
+    # crucially: empty, not the leftover {'alpha': 0.5} default
+    assert cfg.mixer_kwargs == ()
+    mixer = _build_mixer(cfg)
+    assert isinstance(mixer, DecayingLinearMixer)
+    assert mixer.base == 0.3 and mixer.floor == 0.3
+
+
+def test_named_mixer_with_kwargs_threads_through():
+    """When a named solver DOES specify mixer_kwargs, they reach SolverConfig
+    and the built mixer (the dfs_step7 v3 path)."""
+    from xcquinox.alec.solver import DecayingLinearMixer
+    from xcquinox.alec.solver_manual import _build_mixer
+
+    cfg = _solver_config_from_named(
+        SolverNamed(mode="FULL", max_cycles=25, feature_policy="REASSEMBLE",
+                    mixer_name="decaying_linear",
+                    mixer_kwargs=(("base", 0.2), ("floor", 0.1)))
+    )
+    assert cfg.mixer_name == "decaying_linear"
+    assert cfg.mixer_kwargs == (("base", 0.2), ("floor", 0.1))
+    mixer = _build_mixer(cfg)
+    assert isinstance(mixer, DecayingLinearMixer)
+    assert mixer.base == 0.2 and mixer.floor == 0.1
+
+
 # ---------------------------------------------------------------------------
 # build_test_spec: in-distribution transparency + optional holdout
 # ---------------------------------------------------------------------------
@@ -1124,3 +1164,84 @@ def test_solver_config_from_named_threads_scf_grad_checkpoint():
     assert cfg.scf_grad_checkpoint is True
     off = _solver_config_from_named(SolverNamed(mode="FULL", max_cycles=3))
     assert off.scf_grad_checkpoint is False
+
+
+# 2026-06-24: full_X needs the DFS step-decaying mixer + tail-weighted energy
+# loss; the SolverNamed -> SolverConfig mapping and the YAML -> SolverNamed
+# parser must carry mixer_name/mixer_kwargs + scf_loss_* through, defaulting to
+# the current linear/0.5 + tail-off behavior for existing solvers.
+def test_solver_config_from_named_threads_mixer_and_tail():
+    from xcquinox.alec.cluster.spec_builder import _solver_config_from_named
+    from xcquinox.alec.cluster.grid_config import SolverNamed
+    named = SolverNamed(
+        mode="FULL", max_cycles=25, scf_grad_checkpoint=True,
+        mixer_name="decaying_linear",
+        mixer_kwargs=(("base", 0.3), ("floor", 0.3)),
+        scf_loss_use_tail=True, scf_loss_tail=10, scf_loss_weight_power=2.0,
+    )
+    cfg = _solver_config_from_named(named)
+    assert cfg.mixer_name == "decaying_linear"
+    assert dict(cfg.mixer_kwargs) == {"base": 0.3, "floor": 0.3}
+    assert cfg.scf_loss_use_tail is True
+    assert cfg.scf_loss_tail == 10
+    assert cfg.scf_loss_weight_power == 2.0
+
+
+def test_solver_config_from_named_mixer_defaults_when_unset():
+    from xcquinox.alec.cluster.spec_builder import _solver_config_from_named
+    from xcquinox.alec.cluster.grid_config import SolverNamed
+    cfg = _solver_config_from_named(SolverNamed(mode="FULL", max_cycles=3))
+    assert cfg.mixer_name == "linear"
+    assert dict(cfg.mixer_kwargs) == {"alpha": 0.5}
+    assert cfg.scf_loss_use_tail is False
+    assert cfg.scf_loss_tail == 10
+    assert cfg.scf_loss_weight_power == 2.0
+
+
+def test_build_solvers_parses_mixer_and_tail():
+    from xcquinox.alec.cluster.grid_config import _build_solvers
+    solvers = _build_solvers({
+        "full_25": {
+            "mode": "FULL", "max_cycles": 25,
+            "feature_policy": "REASSEMBLE", "scf_grad_checkpoint": True,
+            "mixer_name": "decaying_linear",
+            "mixer_kwargs": {"base": 0.3, "floor": 0.3},
+            "scf_loss_use_tail": True,
+            "scf_loss_tail": 10,
+            "scf_loss_weight_power": 2.0,
+        }
+    })
+    s = solvers["full_25"]
+    assert s.mixer_name == "decaying_linear"
+    assert dict(s.mixer_kwargs) == {"base": 0.3, "floor": 0.3}
+    assert s.scf_loss_use_tail is True
+    assert s.scf_loss_tail == 10
+    assert s.scf_loss_weight_power == 2.0
+
+
+def test_build_solvers_defaults_when_mixer_absent():
+    from xcquinox.alec.cluster.grid_config import _build_solvers
+    solvers = _build_solvers(
+        {"full_3": {"mode": "FULL", "max_cycles": 3,
+                    "feature_policy": "REASSEMBLE"}})
+    s = solvers["full_3"]
+    assert s.mixer_name is None
+    assert s.mixer_kwargs is None
+    assert s.scf_loss_use_tail is False
+
+
+def test_build_solvers_to_config_roundtrip_builds_dfs_mixer():
+    from xcquinox.alec.cluster.grid_config import _build_solvers
+    from xcquinox.alec.cluster.spec_builder import _solver_config_from_named
+    from xcquinox.alec.solver import MIXER_REGISTRY
+    s = _build_solvers({
+        "full_25": {
+            "mode": "FULL", "max_cycles": 25, "feature_policy": "REASSEMBLE",
+            "mixer_name": "decaying_linear",
+            "mixer_kwargs": {"base": 0.3, "floor": 0.3},
+            "scf_loss_use_tail": True,
+        }
+    })["full_25"]
+    cfg = _solver_config_from_named(s)
+    assert MIXER_REGISTRY[cfg.mixer_name].__name__ == "DecayingLinearMixer"
+    assert cfg.scf_loss_use_tail is True

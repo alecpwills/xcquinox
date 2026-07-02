@@ -616,3 +616,61 @@ def test_split_held_out_rejects_bad_val_frac():
     for bad in (0.0, 1.0, -0.1, 1.5):
         with pytest.raises(ValueError):
             eh.split_held_out(_mk_rxns(3), val_frac=bad)
+
+
+# 2026-06-24: DFS tail loss -> held-out eval must REPORT the convergence-aware
+# tail-weighted mean (denoised), not the arbitrary final SCF step, while still
+# recording the raw final energy + full trace for forensics.
+def test_evaluate_holdout_reports_tail_weighted_energy(monkeypatch):
+    import jax.numpy as jnp
+    import xcquinox.alec.solver as solver_mod
+    from xcquinox.alec.eval_holdout import evaluate_holdout
+    from xcquinox.alec.solver import SolverConfig, SolverMode, SolverBackend
+    from xcquinox.alec.oneshot import tail_weighted_mean_energy
+
+    # non-converged period-2-ish tail; final step (-76.3) is an arbitrary phase.
+    trace = jnp.array([-76.0, -76.2, -76.5, -76.3])
+
+    class FakeResult:
+        total_energy = jnp.array(-76.3)
+        cycles_run = jnp.int32(4)
+        converged = jnp.array(False)
+        energy_trace = trace
+
+    monkeypatch.setattr(solver_mod, "run_scf", lambda cfg, model, md: FakeResult())
+
+    full = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=4,
+        scf_loss_use_tail=True, scf_loss_tail=2, scf_loss_weight_power=2.0,
+    )
+    info = {}
+    out = evaluate_holdout(None, {"X": {}}, solver_config=full, scf_info_out=info)
+    expected = float(tail_weighted_mean_energy(trace, 2, 2.0))
+    assert out["X"] == pytest.approx(expected, abs=1e-12)
+    assert out["X"] != pytest.approx(-76.3, abs=1e-6)  # NOT the final step
+    # raw final + reported both recorded for forensics
+    assert info["X"]["total_energy"] == pytest.approx(-76.3, abs=1e-12)
+    assert info["X"]["reported_energy"] == pytest.approx(expected, abs=1e-12)
+    assert info["X"]["energy_trace"] == pytest.approx([-76.0, -76.2, -76.5, -76.3])
+
+
+def test_evaluate_holdout_tail_off_reports_final_step(monkeypatch):
+    import jax.numpy as jnp
+    import xcquinox.alec.solver as solver_mod
+    from xcquinox.alec.eval_holdout import evaluate_holdout
+    from xcquinox.alec.solver import SolverConfig, SolverMode, SolverBackend
+
+    trace = jnp.array([-76.0, -76.2, -76.5, -76.3])
+
+    class FakeResult:
+        total_energy = jnp.array(-76.3)
+        cycles_run = jnp.int32(4)
+        converged = jnp.array(True)
+        energy_trace = trace
+
+    monkeypatch.setattr(solver_mod, "run_scf", lambda cfg, model, md: FakeResult())
+    full_off = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=4,
+    )  # scf_loss_use_tail defaults False
+    out = evaluate_holdout(None, {"X": {}}, solver_config=full_off)
+    assert out["X"] == pytest.approx(-76.3, abs=1e-12)  # final step, unchanged

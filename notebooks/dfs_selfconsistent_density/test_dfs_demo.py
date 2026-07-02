@@ -348,3 +348,93 @@ def test_corrected_ae_and_combined_beat_pbe_on_real_runs():
         assert e_mae_nn < e_mae_pbe, f"{pmj}: AE-MAE NN {e_mae_nn:.2f} !< PBE {e_mae_pbe:.2f}"
         m = dfs_demo.combined_energy_density(rows, dfs_demo.aggregate_density_diagnostics(records))
         assert m["beats_pbe"], f"{pmj}: ED NN {m['ED_nn']:.2f} !< PBE {m['ED_pbe']:.2f}"
+
+
+# ---------------------------------------------------------------------------
+# Orientation lock threaded through the demo
+# ---------------------------------------------------------------------------
+
+def test_orientation_lock_strength_on_both_solvers():
+    """The demo turns the lock ON, so BOTH FULL solvers carry the same nonzero
+    strength -> training AND eval precompute bias h_core identically."""
+    cfgs = dfs_demo.solver_configs()
+    assert dfs_demo.ORIENTATION_LOCK_STRENGTH > 0.0
+    for name in ("full_3", "full_25"):
+        assert cfgs[name].orientation_lock_strength == dfs_demo.ORIENTATION_LOCK_STRENGTH
+
+
+# ---------------------------------------------------------------------------
+# Held-out generalization set (N2 + NO + NO2)
+# ---------------------------------------------------------------------------
+
+def test_heldout_points_are_pool_entries_with_correct_spins():
+    pts = dfs_demo.heldout_points()
+    assert {tp.name for tp in pts} == set(dfs_demo.HELDOUT_MOLECULE_HILLS)
+    specs = dfs_demo.build_mol_specs(pts, basis="def2-svp", grid_level=2,
+                                     refs_dir=tempfile.mkdtemp())
+    by = {ms.name: ms for ms in specs}
+    # real pool spins (NO/NO2 are open-shell doublets; N2 closed-shell)
+    assert by["N2"].spin == 0
+    assert by["NO"].spin == 1
+    assert by["NO2"].spin == 1
+    # the N and O atom anchors must be in the union for own-atom AE
+    assert "N" in by and "O" in by
+
+
+def test_heldout_comp_and_ae_from_pool_no_fabrication():
+    pts = dfs_demo.heldout_points()
+    specs = dfs_demo.build_mol_specs(pts, basis="def2-svp", grid_level=2,
+                                     refs_dir=tempfile.mkdtemp())
+    comp, ae = dfs_demo.heldout_comp_and_ae(pts, specs)
+    assert comp["N2"] == {"N": 2}
+    assert comp["NO"] == {"N": 1, "O": 1}
+    assert comp["NO2"] == {"N": 1, "O": 2}
+    # AE references come from the pool (positive kcal/mol), not hand-typed here
+    for name in ("N2", "NO", "NO2"):
+        assert ae[name] > 0.0
+
+
+def test_heldout_summary_tallies_beats_pbe():
+    combined = {
+        "deep_3x16__full_3": {  # beats on all three
+            "E_MAE_nn": 1.0, "E_MAE_pbe": 2.0, "D_nn": 1e-4, "D_pbe": 2e-4,
+            "ED_nn": 1.0, "ED_pbe": 2.0, "beats_pbe": True},
+        "deep_3x16__full_25": {  # loses on all three
+            "E_MAE_nn": 3.0, "E_MAE_pbe": 2.0, "D_nn": 3e-4, "D_pbe": 2e-4,
+            "ED_nn": 3.0, "ED_pbe": 2.0, "beats_pbe": False},
+        "deep_rung35_3x16__full_3": {  # beats density only
+            "E_MAE_nn": 3.0, "E_MAE_pbe": 2.0, "D_nn": 1e-4, "D_pbe": 2e-4,
+            "ED_nn": 3.0, "ED_pbe": 2.0, "beats_pbe": False},
+    }
+    s = dfs_demo.heldout_summary(combined)
+    assert s["n_models"] == 3
+    assert s["n_beat_ae"] == 1
+    assert s["n_beat_density"] == 2
+    assert s["n_beat_ed"] == 1
+    assert len(s["rows"]) == 3
+
+
+_HELDOUT_RUNS_DIR = os.path.join(os.path.dirname(__file__), "runs", "heldout")
+
+
+@pytest.mark.skipif(not os.path.isdir(_HELDOUT_RUNS_DIR),
+                    reason="no held-out eval outputs present (run the notebook §9)")
+def test_heldout_generalization_beats_pbe_on_real_runs():
+    """When the notebook's §9 held-out eval has run, every trained model's
+    held-out combined energy-density error must beat PBE."""
+    pts = dfs_demo.heldout_points()
+    specs = dfs_demo.build_mol_specs(pts, basis=dfs_demo.DFS_BASIS,
+                                     grid_level=dfs_demo.DFS_GRID_LEVEL,
+                                     refs_dir=tempfile.mkdtemp())
+    comp, ae = dfs_demo.heldout_comp_and_ae(pts, specs)
+    pmjs = sorted(glob.glob(os.path.join(_HELDOUT_RUNS_DIR, "*", "eval",
+                                         "per_molecule.json")))
+    assert pmjs, "expected held-out per_molecule.json outputs"
+    for pmj in pmjs:
+        with open(pmj) as fh:
+            records = json.load(fh)
+        ae_rows = dfs_demo.self_consistent_ae(records, comp, ae)
+        d_rows = dfs_demo.aggregate_density_diagnostics(records)
+        assert ae_rows and d_rows, f"{pmj}: empty held-out rows"
+        m = dfs_demo.combined_energy_density(ae_rows, d_rows)
+        assert m["beats_pbe"], f"{pmj}: held-out ED NN {m['ED_nn']:.2f} !< PBE {m['ED_pbe']:.2f}"

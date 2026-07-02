@@ -140,6 +140,121 @@ def test_json_round_trip(tmp_path):
     _assert_well_formed(cfg)
 
 
+# ---------------------------------------------------------------------------
+# Solver mixer_kwargs: resolved_config.yaml round-trip (datagen regression)
+# ---------------------------------------------------------------------------
+
+def _mixer_config_dict():
+    """A base config whose swept solver carries the DFS step-decaying mixer +
+    tail-loss knobs -- the exact form the dfs_step7 v3 configs use."""
+    d = _base_config_dict()
+    d["solvers"]["robust"].update({
+        "mixer_name": "decaying_linear",
+        "mixer_kwargs": {"base": 0.3, "floor": 0.3},
+        "scf_loss_use_tail": True,
+        "scf_loss_tail": 10,
+        "scf_loss_weight_power": 2.0,
+    })
+    return d
+
+
+def test_solver_mixer_kwargs_dict_form_parses(tmp_path):
+    """A user-authored {base: .., floor: ..} mapping parses to a sorted
+    hashable tuple-of-pairs on SolverNamed (and the scalar tail knobs ride
+    along)."""
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _mixer_config_dict()))
+    sv = cfg.solvers["robust"]
+    assert sv.mixer_name == "decaying_linear"
+    assert sv.mixer_kwargs == (("base", 0.3), ("floor", 0.3))
+    assert sv.scf_loss_use_tail is True
+    assert sv.scf_loss_tail == 10
+    assert sv.scf_loss_weight_power == 2.0
+
+
+def test_solver_mixer_kwargs_resolved_round_trip(tmp_path):
+    """REGRESSION (datagen crash): submit writes resolved_config.yaml by
+    serializing each SolverNamed through dataclasses.asdict (keeps the
+    mixer_kwargs tuple) then yaml.safe_dump (which writes tuples as YAML
+    sequences); reloading parses them back as nested LISTS. Re-loading that
+    resolved config -- which datagen/pretrain/preflight/eval all do -- must NOT
+    raise 'mixer_kwargs must be a mapping, got list'. Uses the real production
+    serializer so the test tracks any future serialization change."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    yaml = pytest.importorskip("yaml")
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _mixer_config_dict()))
+    # exactly what `submit` writes to resolved_config.yaml:
+    resolved = _config_to_raw_dict(cfg)
+    resolved_path = _write(tmp_path, "resolved.yaml", resolved)
+    # the on-disk form datagen actually re-reads: the yaml dump->load turned the
+    # tuple-of-pairs into list-of-lists (else this test would not exercise the bug):
+    with open(resolved_path) as fh:
+        on_disk = yaml.safe_load(fh)
+    assert isinstance(on_disk["solvers"]["robust"]["mixer_kwargs"], list)
+    # re-load the resolved config, as every downstream stage does:
+    cfg2 = load_grid_config(resolved_path)
+    sv = cfg2.solvers["robust"]
+    assert sv.mixer_kwargs == (("base", 0.3), ("floor", 0.3))
+    assert sv.mixer_name == "decaying_linear"
+    # the scalar knobs survive the round-trip too:
+    assert sv.scf_loss_use_tail is True
+    assert sv.scf_loss_tail == 10
+    assert sv.scf_loss_weight_power == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Solver orientation_lock_strength: parse, default-off, resolved round-trip
+# ---------------------------------------------------------------------------
+
+def test_solver_orientation_lock_default_off(tmp_path):
+    """Solvers without the key parse to strength 0.0 (byte-identical / off)."""
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert cfg.solvers["robust"].orientation_lock_strength == 0.0
+
+
+def test_solver_orientation_lock_parses_and_reaches_solver_config(tmp_path):
+    from xcquinox.alec.cluster.spec_builder import _solver_config_from_named
+    from xcquinox.alec.cluster.grid_config import SolverNamed
+    # the scalar lands on the parsed SolverNamed
+    d = _base_config_dict()
+    d["solvers"]["robust"]["orientation_lock_strength"] = 3e-5
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", d))
+    assert cfg.solvers["robust"].orientation_lock_strength == 3e-5
+    # and it materializes onto the runtime SolverConfig (valid oneshot solver)
+    sv = SolverNamed(mode="oneshot", max_cycles=0, orientation_lock_strength=3e-5)
+    sc = _solver_config_from_named(sv)
+    assert sc.orientation_lock_strength == 3e-5
+
+
+def test_solver_orientation_lock_resolved_round_trip(tmp_path):
+    """The scalar survives asdict + yaml.safe_dump + reload (the datagen path),
+    like the mixer/tail knobs -- guards against the full25 list/dict crash class."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    yaml = pytest.importorskip("yaml")
+    d = _base_config_dict()
+    d["solvers"]["robust"]["orientation_lock_strength"] = 3e-5
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", d))
+    resolved_path = _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg))
+    cfg2 = load_grid_config(resolved_path)
+    assert cfg2.solvers["robust"].orientation_lock_strength == 3e-5
+
+
+def test_parse_mixer_kwargs_accepts_dict_and_list():
+    """_parse_mixer_kwargs accepts both the user {name: value} dict and the
+    round-tripped [name, value]-pair list, returns None for empty/absent, and
+    rejects a genuinely-malformed scalar with a contextual error."""
+    from xcquinox.alec.cluster.grid_config import _parse_mixer_kwargs
+    ctx = "solvers.full_25"
+    want = (("base", 0.3), ("floor", 0.3))
+    assert _parse_mixer_kwargs({"base": 0.3, "floor": 0.3}, ctx) == want
+    assert _parse_mixer_kwargs([["base", 0.3], ["floor", 0.3]], ctx) == want
+    # tuple-of-pairs (jit form) is accepted verbatim too
+    assert _parse_mixer_kwargs((("base", 0.3), ("floor", 0.3)), ctx) == want
+    assert _parse_mixer_kwargs(None, ctx) is None
+    assert _parse_mixer_kwargs({}, ctx) is None
+    with pytest.raises(ValueError, match=r"solvers\.full_25\.mixer_kwargs"):
+        _parse_mixer_kwargs(0.5, ctx)
+
+
 def test_load_unsupported_extension(tmp_path):
     p = tmp_path / "grid.txt"
     p.write_text("nonsense")
@@ -460,6 +575,52 @@ def test_validate_default_no_validation_is_clean():
     cfg = _cfg_with(hp_kwargs=dict(validate_every=0, update_scheme="batched"),
                     inputs_kwargs=dict(val_refs_dir=None))
     validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_rejects_dead_early_stop_patience():
+    # Early-stop GEOMETRY: n_steps=150 / validate_every=25 -> floor=6 validation
+    # checks; should_stop's no-improvement streak maxes at n_checks-1=5 (the first
+    # check sets the baseline), so patience=5 can fire only degenerately/never --
+    # exactly the v3 config whose runs all reported early_stopped=False. Reject it
+    # at submit so a whole training run is not wasted on a dead early-stop.
+    cfg = _cfg_with(
+        hp_kwargs=dict(n_steps=150, validate_every=25, patience=5,
+                       update_scheme="per_molecule"),
+        inputs_kwargs=dict(val_refs_dir="/shared/val_refs"))
+    with pytest.raises(ValueError, match="early-stop"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_accepts_early_stop_with_enough_checks():
+    # n_steps=500 / validate_every=25 -> 20 checks; patience=5 has ample slack
+    # (streak can reach 5 long before the end), so the geometry guard must NOT fire.
+    cfg = _cfg_with(
+        hp_kwargs=dict(n_steps=500, validate_every=25, patience=5,
+                       update_scheme="per_molecule"),
+        inputs_kwargs=dict(val_refs_dir="/shared/val_refs"))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_early_stop_guard_ignores_patience_zero():
+    # patience=0 disables early-stop (val-best tracking only); the geometry guard
+    # must not fire even when n_checks is tiny.
+    cfg = _cfg_with(
+        hp_kwargs=dict(n_steps=150, validate_every=25, patience=0,
+                       update_scheme="per_molecule"),
+        inputs_kwargs=dict(val_refs_dir="/shared/val_refs"))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+
+
+def test_validate_early_stop_message_n_checks_is_int():
+    # a float n_steps must not leak "n_checks=6.0" into the actionable message.
+    cfg = _cfg_with(
+        hp_kwargs=dict(n_steps=150.0, validate_every=25, patience=5,
+                       update_scheme="per_molecule"),
+        inputs_kwargs=dict(val_refs_dir="/shared/val_refs"))
+    with pytest.raises(ValueError) as exc:
+        validate_grid_semantics(cfg, _StubDomain(pool_size=40))
+    assert "n_checks=6" in str(exc.value)
+    assert "n_checks=6.0" not in str(exc.value)
 
 
 def test_validate_rejects_bad_val_frac():

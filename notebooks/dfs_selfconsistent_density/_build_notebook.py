@@ -42,6 +42,16 @@ Deviations from PRB L161109: CCSD (not CCSD(T)) reference densities; GGA + rung-
 paper's meta-GGA); `grid_level=2` (paper 3); adamw + linear decay (paper Adam + ReduceLROnPlateau);
 spin-summed `N_e^2` (paper per-spin `N_sigma^2`).
 
+**Orientation lock.** OH (and the held-out NO in section 9) is an X-2-Pi *orbitally degenerate*
+radical: its singly-occupied pi hole can sit in any combination of the degenerate `(pi_x, pi_y)` pair,
+so its single-determinant density on a fixed grid is orientation-arbitrary and *not reproducible*
+across processes/machines (threaded BLAS tips the near-degenerate SCF differently each run) -- even
+though the energy is degeneracy-invariant. An **orientation lock** fixes this: a small, fixed,
+traceless anisotropic-quadrupole bias is added to `h_core` **identically** in the CCSD reference, the
+PBE seed, training, and eval, so the reference and the functional always select the *same*
+representative of the degenerate manifold. The density becomes deterministic; energies shift
+negligibly (< 0.1 kcal/mol). See the companion README for the physics and `xcquinox.alec.orientation_lock`.
+
 Set `STEP_SMOKE=1` for a small end-to-end run (2 systems, `full_3`, few epochs, well-conditioned
 basis). The full run (4 models at `6-311++G(3df,2pd)`, `full_25` = 25 differentiated SCF cycles) is
 compute-heavy.
@@ -265,6 +275,12 @@ md(r"""
 
 Each architecture under each solver. Every optimizer step differentiates through the full KS SCF.
 `full_25` (25 SCF cycles) is the slow path.
+
+> **One-time reset if you trained before the orientation lock:** the lock is now on, so a fresh run
+> trains against the locked OH reference. CCSD references self-heal (they carry the lock strength and
+> regenerate automatically). Training checkpoints do **not** auto-invalidate, so if you have
+> `runs/*__*/model.eqx` from an earlier *unlocked* run, delete them (keep `runs/pretrain/`, which is
+> orientation-invariant) to retrain consistently: `rm runs/*__*/model.eqx`.
 """)
 
 code(r"""
@@ -457,7 +473,93 @@ for k in keys:
 
 # ---------------------------------------------------------------------------
 md(r"""
-## 9. Notes
+## 9. Held-out generalization -- does the tiny functional beat PBE off the training set?
+
+The four molecules above were the *training* set. Here the already-trained models (no retraining) are
+evaluated on systems they never saw: **N2** (closed-shell triple bond, a classic PBE density-error
+case), **NO** (X-2-Pi degenerate radical), and **NO2** (bent doublet). All are real
+`build_dfs_pool()` entries -- geometry, spin, and atomization energy come from the pool (no fabricated
+values).
+
+**NO is the acid test for the orientation lock:** it is a degenerate radical *outside* the training
+set, so a reproducible, PBE-beating NO density shows the lock generalizes -- the CCSD reference and the
+functional select the same representative of NO's degenerate 2-Pi manifold on any machine. Metrics
+match sections 7-8: self-consistent density RMSE vs CCSD and own-atom atomization energy, NN vs PBE.
+""")
+
+code(r"""
+# Evaluate the ALREADY-TRAINED models (no retraining) on held-out systems.
+HELDOUT_HILLS = ("N2", "NO") if SMOKE else dfs_demo.HELDOUT_MOLECULE_HILLS
+ho_points = dfs_demo.heldout_points(HELDOUT_HILLS)
+ho_specs  = dfs_demo.build_mol_specs(ho_points, basis=BASIS, grid_level=GRID_LEVEL, refs_dir=REFS_DIR)
+
+# Locked CCSD references for the held-out molecules (self-heals; NO's degenerate
+# density is reproducible because ref + eval lock the same pi component).
+dfs_demo.generate_ccsd_density_refs(ho_specs, refs_dir=REFS_DIR, basis=BASIS, grid_level=GRID_LEVEL)
+ho_specs = dfs_demo.build_mol_specs(ho_points, basis=BASIS, grid_level=GRID_LEVEL, refs_dir=REFS_DIR)
+ho_comp, ho_ae_ref = dfs_demo.heldout_comp_and_ae(ho_points, ho_specs)
+print("held-out molecules:", [ms.name for ms in dfs_demo.molecule_specs(ho_specs)], flush=True)
+
+HELDOUT_DIR = os.path.join(OUT_DIR, "heldout")
+ho_evals, ho_combined = {}, {}
+for key, info in trained.items():
+    tag = f"{key[0]}__{key[1]}"
+    ts = dfs_demo.build_heldout_test_spec(
+        arch=info["spec"].arch, solver_cfg=solvers[key[1]], mol_specs=ho_specs,
+        model_checkpoint=os.path.join(info["ckpt"], "model.eqx"),
+        output_dir=os.path.join(HELDOUT_DIR, tag, "eval"))
+    res = run_test(ts)
+    ho_evals[key] = res
+    arows = dfs_demo.self_consistent_ae(res["per_molecule"], ho_comp, ho_ae_ref)
+    drows = dfs_demo.aggregate_density_diagnostics(res["per_molecule"])
+    if arows and drows:
+        ho_combined[tag] = dfs_demo.combined_energy_density(arows, drows)
+
+summary = dfs_demo.heldout_summary(ho_combined)
+N = summary["n_models"]
+print(f"\nHeld-out generalization ({N} trained models on {HELDOUT_HILLS}):", flush=True)
+print(f"  beat PBE on AE-MAE:  {summary['n_beat_ae']}/{N}")
+print(f"  beat PBE on density: {summary['n_beat_density']}/{N}")
+print(f"  beat PBE on ED:      {summary['n_beat_ed']}/{N}")
+""")
+
+code(r"""
+# Figure: held-out generalization -- mean density RMSE (log) + AE-MAE, NN vs PBE, per model.
+if ho_combined:
+    tags = list(ho_combined)
+    xk = np.arange(len(tags)); w = 0.38
+    fig, (axD, axE) = plt.subplots(1, 2, figsize=(11, 4.5))
+    axD.bar(xk - w/2, [ho_combined[t]["D_pbe"] for t in tags], w, label="PBE", color="0.6")
+    axD.bar(xk + w/2, [ho_combined[t]["D_nn"]  for t in tags], w, label="NN",  color="C2")
+    axD.set_yscale("log"); axD.set_ylabel("held-out mean density RMSE vs CCSD")
+    axD.set_title("density generalization"); axD.legend(fontsize=8)
+    axE.bar(xk - w/2, [ho_combined[t]["E_MAE_pbe"] for t in tags], w, label="PBE", color="0.6")
+    axE.bar(xk + w/2, [ho_combined[t]["E_MAE_nn"]  for t in tags], w, label="NN",  color="C2")
+    axE.set_ylabel("held-out AE-MAE (kcal/mol)"); axE.set_title("energy generalization"); axE.legend(fontsize=8)
+    for ax in (axD, axE):
+        ax.set_xticks(xk); ax.set_xticklabels([t.replace("__", "\n") for t in tags], fontsize=7)
+    plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_heldout_generalization.png"), dpi=110); plt.show()
+else:
+    print("no held-out combined metrics (missing refs or eval); skipping figure", flush=True)
+
+# Orientation-lock generalization check: NO is a degenerate 2-Pi radical NONE of the
+# models trained on. Its PBE density RMSE is model-independent, so a spread across
+# models would flag a non-reproducible (unlocked) NO density; with the lock on it is flat.
+no_pbe = []
+for key, res in ho_evals.items():
+    for rec in res["per_molecule"]:
+        if (rec.get("name") or rec.get("molecule")) == "NO" and rec.get("density_rmse_pbe") is not None:
+            no_pbe.append(float(rec["density_rmse_pbe"]))
+if len(no_pbe) > 1:
+    spread = (max(no_pbe) - min(no_pbe)) / min(no_pbe)
+    status = "reproducible (orientation lock holds)" if spread <= 0.02 else "VARYING -- lock may be off!"
+    print(f"held-out NO PBE density RMSE across models: {min(no_pbe):.3e}..{max(no_pbe):.3e} -> {status}",
+          flush=True)
+""")
+
+# ---------------------------------------------------------------------------
+md(r"""
+## 10. Notes
 
 - Figure (b): self-consistent density RMSE vs CCSD per molecule (log scale), NN vs the PBE baseline.
   `full_25` reaches a more self-consistent fixed point than `full_3` (25 vs 3 differentiated cycles).
@@ -469,6 +571,10 @@ md(r"""
   E_MAE_pbe`. The mean density error is OH-radical-dominated (~2.6e-3 vs ~1e-4 elsewhere), so the
   aggregate density win is modest even though H2O/NH improve ~40% -- the printout's "excl. OH" mean
   makes this explicit. Energy and density both improve, so `ED_nn < ED_pbe`.
+- Section 9 (held-out): the trained models are evaluated on N2/NO/NO2 -- none in the training set --
+  and the printout reports how many beat PBE on density, AE, and `ED` (`fig_heldout_generalization.png`).
+  It also confirms the held-out degenerate NO radical's PBE density RMSE is model-independent, i.e. the
+  orientation lock generalizes to an unseen 2-Pi system.
 - To adapt: change `ARCH_NAMES` or pass a custom `ArchitectureConfig` to `build_dfs_training_spec`;
   extend `HILLS` with any `build_dfs_pool()` Hill formula. For the full pool + BH76/IP13 channels +
   V_xc supervision, use the cluster harness (`xcquinox.alec.cluster`) with the `dfs_step7` config; the

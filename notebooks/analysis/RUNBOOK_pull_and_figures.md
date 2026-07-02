@@ -27,9 +27,9 @@ python -m xcquinox.alec.cluster pull latest --category dfs_step7/svp_grid2_v3_fu
 python notebooks/analysis/make_ablation_arch_figure.py --suite \
     --domain dfs_step7 --bases svp_grid2_v3,svp_grid2_v3_full25 \
     --outroot notebooks/analysis
-# -> notebooks/analysis/figures_dfs_step7_svp_v3/  (+ _best)
-#    notebooks/analysis/figures_dfs_step7_svp_v3_full25/  (+ _best)
-#    notebooks/analysis/figures_dfs_step7_basis_comparison/  (+ _best)
+# -> notebooks/analysis/figures_dfs_step7_svp_v3/  (+ _val_best)
+#    notebooks/analysis/figures_dfs_step7_svp_v3_full25/  (+ _val_best)
+#    notebooks/analysis/figures_dfs_step7_basis_comparison/  (+ _val_best)
 ```
 
 That's the common case. Details, other comparisons, verification, and
@@ -85,7 +85,7 @@ python -m xcquinox.alec.cluster pull latest --category <CATEGORY>
   `pull run_20260622T111908Z --category dfs_step7/svp_grid2_v3/runs`.
 - **Profile (default is correct for figures):** the default `--profile summaries`
   pulls all the JSON/npy the figures read — `eval_holdout/**`,
-  `eval_holdout_best/**`, `eval/per_molecule.json`, `losses.npy`,
+  `eval_holdout_best/**`, `eval_holdout_val_best/**`, `eval/per_molecule.json`, `losses.npy`,
   `train_metadata.json`, `resolved_config.yaml` — and **skips** the big
   `model.eqx` weights. Only add `--profile full` if you need the weights for a
   LOCAL re-eval (Step 3); figures do **not** need it.
@@ -128,12 +128,12 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite \
 
 ### What it writes (under `--outroot`, i.e. `notebooks/analysis/`)
 
-Per basis (two parallel sets — final-checkpoint and best-checkpoint):
-- `figures_dfs_step7_<alias>/`        — final-step eval (`eval_holdout/`)
-- `figures_dfs_step7_<alias>_best/`   — best-loss eval (`eval_holdout_best/`), only if that data was pulled
+Per basis (two parallel sets — final-checkpoint and val-best):
+- `figures_dfs_step7_<alias>/`           — final-step eval (`eval_holdout/`)
+- `figures_dfs_step7_<alias>_val_best/`  — val-best eval (`eval_holdout_val_best/`, the held-out-validation-best checkpoint), only if that data was pulled
 
 Cross comparison (only when **>= 2** bases are given AND both have eval coverage):
-- `figures_dfs_step7_basis_comparison/`       (+ `_best`)
+- `figures_dfs_step7_basis_comparison/`       (+ `_val_best`)
 
 Each per-basis dir contains: the arch-aware ablation set (parity, MAE-by-arch,
 arch×subset heatmap, MAE-vs-subset), held-out energy/density figures, the five

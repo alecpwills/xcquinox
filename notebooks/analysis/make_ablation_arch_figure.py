@@ -147,7 +147,7 @@ def collect_holdout_reaction_rows(run_dir: Path,
     than the local-reeval ``eval/local_per_reaction.json``. Specs without the
     file (e.g. the 25 specs whose held-out eval did not run) are skipped.
     ``eval_subdir`` selects the checkpoint variant: ``eval_holdout`` (final-step
-    weights, default) or ``eval_holdout_best`` (best-loss weights).
+    weights, default) or ``eval_holdout_val_best`` (held-out validation-best weights).
     """
     cells = ccp._read_manifest_cells(run_dir)
     rows: List[Dict[str, Any]] = []
@@ -734,7 +734,7 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
         fig, ax = plt.subplots(figsize=(11, 5.6))
         ax.bar(xs - w, rxn_mean, w, label="held-out reaction MAE (mean)",
                color="#4f81bd", edgecolor="k", linewidth=0.3)
-        ax.bar(xs, rxn_best, w, label="held-out reaction MAE (best subset)",
+        ax.bar(xs, rxn_best, w, label="held-out reaction MAE (best subset-size)",
                color="#9dc3e6", edgecolor="k", linewidth=0.3)
         ax.bar(xs + w, ae_mean, w, label="in-sample AE MAE (mean)",
                color="#c0504d", edgecolor="k", linewidth=0.3)
@@ -1358,7 +1358,7 @@ def build_parity_variants(run_dir: Path, outdir: Path,
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
-    run_id = run_dir.name
+    run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
     note = coverage_note(run_dir, eval_subdir=eval_subdir)
     try:
         baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
@@ -2802,6 +2802,69 @@ def run_basis_label(run_dir: Path) -> str:
     return f"{basis}+DF" if df else basis
 
 
+def run_solver_label(run_dir: Path) -> str:
+    """SCF-cycle tag (e.g. ``full_3`` / ``full_25``) from the ``solver:`` entry of
+    ``resolved_config.yaml`` -- the variable that distinguishes two runs sharing a
+    basis (3-cycle vs 25-cycle SCF). Reads the same file as :func:`run_basis_label`
+    (no yaml dependency); returns ``""`` when no solver entry is present."""
+    cfg = Path(run_dir) / "resolved_config.yaml"
+    if not cfg.is_file():
+        return ""
+    in_solver = False
+    for line in cfg.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("solver:"):
+            inline = stripped.split(":", 1)[1].strip()      # "solver: full_3"
+            if inline and not inline.startswith("#"):
+                return inline.strip("[]'\" ")
+            in_solver = True                                # block form follows
+            continue
+        if in_solver:
+            if stripped.startswith("-"):                    # "- full_3"
+                return stripped[1:].strip().strip("'\"")
+            if stripped and not line.startswith((" ", "\t")):
+                break                                       # left the solver block
+    return ""
+
+
+def _disambiguated_run_labels(run_dirs: List[Path]) -> List[str]:
+    """Display labels for a set of runs, guaranteed pairwise-distinct. Uses the
+    bare basis tag (:func:`run_basis_label`) when those are already unique; when
+    two runs share a basis (e.g. def2-svp full_3 vs full_25) the SCF-cycle tag is
+    appended, and as a last resort the basis-subdir alias -- so the comparison
+    legend/title can always tell the series apart."""
+    dirs = [Path(rd) for rd in run_dirs]
+    base = [run_basis_label(rd) for rd in dirs]
+    if len(set(base)) == len(base):
+        return base
+    tagged = []
+    for rd, b in zip(dirs, base):
+        tag = run_solver_label(rd)
+        tagged.append(f"{b} · {tag}" if tag else b)
+    if len(set(tagged)) == len(tagged):
+        return tagged
+    out = []
+    for rd, b in zip(dirs, base):                           # last resort: subdir alias
+        try:
+            alias = _basis_fig_alias(rd.parents[1].name)
+        except IndexError:
+            alias = rd.name
+        out.append(f"{b} ({alias})")
+    return out
+
+
+def _ckpt_label(eval_subdir: str) -> str:
+    """Human tag for which checkpoint a figure set was scored from: final-step
+    weights (``eval_holdout``), the held-out-validation-best weights
+    (``eval_holdout_val_best``), or the legacy training-loss-best weights
+    (``eval_holdout_best``, no longer plotted)."""
+    return {
+        "eval_holdout": "final-step",
+        "eval_holdout_val_best": "val-best",
+        "eval_holdout_best": "train-best",
+    }.get(eval_subdir, "final-step")
+
+
 _BASIS_COLORS = ("#4477aa", "#cc6677", "#228833", "#ccbb44")
 
 
@@ -2956,8 +3019,9 @@ def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path,
     its basis+DF from resolved_config.yaml)."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    runs = [(Path(rd), run_basis_label(rd)) for rd in run_dirs]
-    rid = " vs ".join(lbl for _, lbl in runs)
+    labels = _disambiguated_run_labels(run_dirs)
+    runs = list(zip((Path(rd) for rd in run_dirs), labels))
+    rid = " vs ".join(labels) + f" [{_ckpt_label(eval_subdir)}]"
     return [
         plot_basis_comparison(runs, outdir / "basis_comparison.png", rid,
                               eval_subdir=eval_subdir),
@@ -2978,8 +3042,9 @@ def build_diagnostic_figures(run_dirs: List[Path], outdir: Path,
     diagnostic that classifies and explains each failing cell."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    runs = [(Path(rd), run_basis_label(rd)) for rd in run_dirs]
-    rid = " + ".join(lbl for _, lbl in runs)
+    labels = _disambiguated_run_labels(run_dirs)
+    runs = list(zip((Path(rd) for rd in run_dirs), labels))
+    rid = " + ".join(labels) + f" [{_ckpt_label(eval_subdir)}]"
     loss_rows = collect_training_losses_multi(runs)
     return [
         plot_training_losses(loss_rows, outdir / "diagnostic_training_losses.png",
@@ -3001,7 +3066,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     outdir.mkdir(parents=True, exist_ok=True)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
     drows = collect_insample_density_rows(run_dir)
-    run_id = run_dir.name
+    run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
     note = coverage_note(run_dir, eval_subdir=eval_subdir)
     try:
         baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
@@ -3052,7 +3117,7 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
     previously generated by hand and went stale)."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    run_id = run_dir.name
+    run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
     note = coverage_note(run_dir, eval_subdir=eval_subdir)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
     written: List[Path] = []
@@ -3099,7 +3164,7 @@ def build_all(run_dir: Path, outdir: Path,
               eval_subdir: str = "eval_holdout") -> List[Path]:
     """Collect once, render every figure. Returns the written PNG paths."""
     outdir.mkdir(parents=True, exist_ok=True)
-    run_id = run_dir.name
+    run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
     reaction_rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
     insample_rows = collect_insample_ae_rows(run_dir)
     n_trained = trained_spec_count(run_dir, eval_subdir=eval_subdir)
@@ -3211,12 +3276,13 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     are never overwritten.
 
     Emits TWO parallel figure sets per the checkpoint variant the cluster now
-    evaluates by default: the final-step set from ``eval_holdout/`` (into
-    ``figures_<alias>/`` + ``figures_basis_comparison/``) and the best-loss set
-    from ``eval_holdout_best/`` (into ``figures_<alias>_best/`` +
-    ``figures_basis_comparison_best/``). The best set is produced ONLY for bases
-    whose ``eval_holdout_best/`` data was pulled (older/eval-only runs simply get
-    the final set), so this is backward compatible.
+    evaluates: the final-step set from ``eval_holdout/`` (into ``figures_<alias>/``
+    + ``figures_basis_comparison/``) and the val-best set from
+    ``eval_holdout_val_best/`` (into ``figures_<alias>_val_best/`` +
+    ``figures_basis_comparison_val_best/``) -- scored from the held-out
+    validation-best weights, which (unlike the min-training-loss checkpoint) do not
+    select the most-overfit step. The val-best set is produced for every basis whose
+    ``eval_holdout_val_best/`` data was pulled.
 
     Prints a per-run coverage report and FAILS LOUD if a run carries an arch
     outside ``ARCH_ORDER`` (which the per-arch plots would drop); incomplete runs
@@ -3228,14 +3294,14 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     runs = _newest_run_per_basis(results_root, bases, domain=domain)
     written: List[Path] = []
     for eval_subdir, suffix in (("eval_holdout", ""),
-                                ("eval_holdout_best", "_best")):
-        is_best = eval_subdir != "eval_holdout"
+                                ("eval_holdout_val_best", "_val_best")):
+        is_val_best = eval_subdir != "eval_holdout"
         ordered_runs: List[Path] = []
         for basis in bases:
             run = runs[basis]
             cov = figure_cell_coverage(run, eval_subdir=eval_subdir)
-            if is_best and cov["n_cells"] == 0:
-                continue  # no best-checkpoint eval pulled for this basis yet
+            if is_val_best and cov["n_cells"] == 0:
+                continue  # no val-best eval pulled for this basis yet
             ordered_runs.append(run)
             print(f"[{basis} | {eval_subdir}] {cov['run']}: {cov['n_cells']} "
                   f"cells  archs={cov['archs']}  subsets={cov['subsets']}")
@@ -3256,9 +3322,9 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
             written += build_per_run_diagnostics(run, fdir, run_basis_label(run),
                                                  eval_subdir=eval_subdir)
         if not ordered_runs:
-            if is_best:
-                print("   (no eval_holdout_best/ data found -- skipping the "
-                      "best-checkpoint figure set)")
+            if is_val_best:
+                print("   (no eval_holdout_val_best/ data found -- skipping the "
+                      "val-best figure set)")
             continue
         if len(ordered_runs) < 2:
             print(f"   (only one basis with {eval_subdir}/ coverage -- "

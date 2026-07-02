@@ -10,6 +10,7 @@ import jax.numpy as jnp
 
 from xcquinox.alec.config import MoleculeSpec
 from xcquinox.alec.descriptors import Descriptor
+from xcquinox.alec.orientation_lock import orientation_lock_bias
 
 
 # Keys allowed in MoleculeSpec.external_data_path .npz files. Kept as a
@@ -48,6 +49,11 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     # quantities on the identical grid).
     "rho_pbe_grid",
     "grid_weights",
+    # Orientation-lock strength the reference density was generated with
+    # (0.0 = unlocked). Informational: the consumer applies its own lock from
+    # SolverConfig; the demo threads one shared constant to ref-gen + eval so
+    # they match. Tolerated here so the loader does not reject a locked ref.
+    "orientation_lock_strength",
 })
 
 
@@ -217,6 +223,7 @@ def _precompute_cache_key(
     required_keys: tuple[str, ...],
     descriptors: tuple[Descriptor, ...],
     auxbasis: str | None = None,
+    orientation_lock_strength: float = 0.0,
 ) -> tuple:
     # MoleculeSpec is a frozen dataclass and hashes by structural identity.
     # required_keys are sorted to canonicalize set-equivalence.
@@ -247,7 +254,11 @@ def _precompute_cache_key(
     # auxbasis is part of the key: the DF auxiliary basis lives on SolverConfig,
     # not MoleculeSpec, so two runs with the same molecule but different auxbasis
     # would otherwise collide on the cached cderi.
-    return (mol_spec, tuple(sorted(required_keys)), desc_key, ext_key, auxbasis)
+    # orientation_lock_strength is likewise part of the key: it perturbs h_core
+    # (and thus the PBE seed), so a locked run must not reuse an unlocked cache
+    # entry (or one locked at a different strength).
+    return (mol_spec, tuple(sorted(required_keys)), desc_key, ext_key, auxbasis,
+            float(orientation_lock_strength))
 
 
 def clear_precompute_cache() -> None:
@@ -270,6 +281,7 @@ def precompute_fixed_density_data(
     required_keys: tuple[str, ...] = (),
     descriptors: tuple[Descriptor, ...] = (),
     auxbasis: str | None = None,
+    orientation_lock_strength: float = 0.0,
 ) -> MoleculeData:
     """Run PBE SCF, extract grid data, return a MoleculeData dict.
 
@@ -289,7 +301,8 @@ def precompute_fixed_density_data(
     if _PRECOMPUTE_CACHE_ENABLED:
         try:
             cache_key = _precompute_cache_key(
-                mol_spec, required_keys, descriptors, auxbasis)
+                mol_spec, required_keys, descriptors, auxbasis,
+                orientation_lock_strength)
         except TypeError:
             cache_key = None  # mol_spec or descriptors not hashable
         if cache_key is not None and cache_key in _PRECOMPUTE_CACHE:
@@ -318,6 +331,18 @@ def precompute_fixed_density_data(
     # the first kernel call so .build() picks it up.
     if mol_spec.grid_level is not None:
         mf.grids.level = mol_spec.grid_level
+    # Orientation lock: bias h_core with a small fixed anisotropic quadrupole
+    # BEFORE kernel(), so the PBE seed (dm_pbe) already picks the locked
+    # degenerate component and the stored h_core the manual/oneshot SCF consumes
+    # is the biased one. Applied identically in the CCSD reference generation so
+    # ref and functional lock the same pi component. strength=0 -> no-op.
+    orientation_lock_bias_mat = None
+    if orientation_lock_strength:
+        orientation_lock_bias_mat = orientation_lock_bias(
+            mol, orientation_lock_strength)
+        _base_hcore = np.asarray(mf.get_hcore())
+        _locked_hcore = _base_hcore + orientation_lock_bias_mat
+        mf.get_hcore = lambda *a, **k: _locked_hcore
     mf.kernel()
 
     # Overlap conditioning gate
@@ -563,6 +588,10 @@ def precompute_fixed_density_data(
             "spin": mol_spec.spin,
             "grid_level": mol_spec.grid_level,
             "auxbasis": auxbasis,
+            # Precomputed orientation-lock bias (numpy, AO basis) so the pyscfad
+            # backend can add it to its internally-built get_hcore without
+            # recomputing intor on a traced pyscfad Mole. None when off.
+            "orientation_lock_bias": orientation_lock_bias_mat,
         },
         _pyscfad_mol=pyscfad_mol,
     )

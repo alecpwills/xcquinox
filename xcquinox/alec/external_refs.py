@@ -26,6 +26,8 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 
+from xcquinox.alec.orientation_lock import orientation_lock_bias
+
 
 @dataclass(frozen=True)
 class SpeciesEntry:
@@ -85,13 +87,19 @@ def _basis_slug(basis: str) -> str:
 
 
 def _intermediate_cache_name(name: str, *, grid_level: int, basis: str,
-                             density_fit: bool, kind: str) -> str:
+                             density_fit: bool, kind: str,
+                             orientation_lock_strength: float = 0.0) -> str:
     """Cache filename for an intermediate (kind in {'scf','ccsd'}).
 
     Includes the basis (+ a ``_df`` tag) so a basis/DF change does NOT silently
-    reuse a stale file computed in a different basis."""
+    reuse a stale file computed in a different basis. An ``_ol{strength}`` tag is
+    appended when the orientation lock is on, so a locked reference cannot be
+    reused from an unlocked (or differently-locked) intermediate. strength=0
+    (off) leaves the filename byte-identical to the pre-lock form."""
     df_tag = "_df" if density_fit else ""
-    return f"{name}_g{int(grid_level)}_b{_basis_slug(basis)}{df_tag}_{kind}.npz"
+    ol_tag = f"_ol{orientation_lock_strength:g}" if orientation_lock_strength else ""
+    return (f"{name}_g{int(grid_level)}_b{_basis_slug(basis)}"
+            f"{df_tag}{ol_tag}_{kind}.npz")
 
 
 def _build_hf_meanfield(mol, is_uks: bool, *, density_fit: bool = False,
@@ -113,7 +121,8 @@ def _build_hf_meanfield(mol, is_uks: bool, *, density_fit: bool = False,
 
 
 def _prepare_converged_hf(mol, *, dm0, is_uks: bool, density_fit: bool = False,
-                          basis: str | None = None, auxbasis: str | None = None):
+                          basis: str | None = None, auxbasis: str | None = None,
+                          orientation_lock_strength: float = 0.0):
     """Run a real HF SCF and return the converged HF mean-field.
 
     CCSD must sit on a self-consistent HF determinant. Grafting PBE Kohn-Sham
@@ -135,6 +144,15 @@ def _prepare_converged_hf(mol, *, dm0, is_uks: bool, density_fit: bool = False,
     """
     mf_hf = _build_hf_meanfield(mol, is_uks, density_fit=density_fit,
                                 basis=basis, auxbasis=auxbasis)
+    # Orientation lock: bias the HF core Hamiltonian so the canonical HF
+    # orbitals -- and thus the CCSD relaxed density built on them -- lock the
+    # SAME degenerate component as the PBE seed/eval. Same operator, applied
+    # before convergence so CCSD sits on the locked determinant.
+    if orientation_lock_strength:
+        _base_hcore = mf_hf.get_hcore()
+        _locked_hcore = _base_hcore + orientation_lock_bias(
+            mol, orientation_lock_strength)
+        mf_hf.get_hcore = lambda *a, **k: _locked_hcore
     mf_hf.kernel(dm0=dm0)
     if not getattr(mf_hf, "converged", False):
         raise RuntimeError(
@@ -310,6 +328,7 @@ def run_scf_with_cache(
     grid_level: int = 1,
     density_fit: bool = False,
     auxbasis: str | None = None,
+    orientation_lock_strength: float = 0.0,
 ) -> dict:
     """Stage 1: PBE SCF with on-disk cache (np.savez_compressed).
 
@@ -332,7 +351,7 @@ def run_scf_with_cache(
     inter.mkdir(parents=True, exist_ok=True)
     cache_path = inter / _intermediate_cache_name(
         spec.name, grid_level=grid_level, basis=basis, density_fit=density_fit,
-        kind="scf")
+        kind="scf", orientation_lock_strength=orientation_lock_strength)
 
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
@@ -370,6 +389,14 @@ def run_scf_with_cache(
         mf = mf.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
     mf.xc = "pbe"
     mf.grids.level = grid_level
+    # Orientation lock: bias h_core so the PBE baseline density (rho_pbe_grid)
+    # locks the SAME degenerate component as the eval/training seed. Identical
+    # operator (same geometry+basis) as data.precompute -> reproducible density.
+    if orientation_lock_strength:
+        _base_hcore = np.asarray(mf.get_hcore())
+        _locked_hcore = _base_hcore + orientation_lock_bias(
+            mol, orientation_lock_strength)
+        mf.get_hcore = lambda *a, **k: _locked_hcore
     mf.kernel()
 
     # Build the result dict ONCE, used both for the cache write and the
@@ -421,6 +448,7 @@ def run_ccsd_with_cache(
     grid_level: int = 1,
     density_fit: bool = False,
     auxbasis: str | None = None,
+    orientation_lock_strength: float = 0.0,
 ) -> dict:
     """Stage 2: CCSD on a converged HF reference + spin-summed grid
     density, with on-disk cache.
@@ -459,7 +487,7 @@ def run_ccsd_with_cache(
     inter.mkdir(parents=True, exist_ok=True)
     cache_path = inter / _intermediate_cache_name(
         spec.name, grid_level=grid_level, basis=basis, density_fit=density_fit,
-        kind="ccsd")
+        kind="ccsd", orientation_lock_strength=orientation_lock_strength)
 
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
@@ -496,6 +524,7 @@ def run_ccsd_with_cache(
     mf_hf = _prepare_converged_hf(
         mol, dm0=np.asarray(scf_payload["dm"]), is_uks=is_uks,
         density_fit=use_df, basis=basis, auxbasis=auxbasis,
+        orientation_lock_strength=orientation_lock_strength,
     )
 
     if is_uks:

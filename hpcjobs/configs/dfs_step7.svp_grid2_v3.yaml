@@ -41,17 +41,33 @@ sweep:
   subset_size: [1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 26]
   solver: [full_3]
 
+# 2026-06-24: DFS self-consistency fix (see _full25.yaml header). The DFS
+# step-decaying mixer (alpha=0.3**step+0.3) + tail-weighted energy loss
+# (quadratic weight over the last scf_loss_tail SCF steps, generalized to any
+# max_cycles) on every full_X. full_3 scores its last min(3,10)=3 steps; since
+# the final step carries weight 1 this is ~unchanged from the prior final-step
+# behavior, but converges the SCF for the few species 3 cycles destabilize.
 solvers:
   full_3:
     mode: FULL
     max_cycles: 3
     feature_policy: REASSEMBLE
+    mixer_name: decaying_linear
+    mixer_kwargs: {base: 0.3, floor: 0.3}
+    scf_loss_use_tail: true
+    scf_loss_tail: 10
+    scf_loss_weight_power: 2.0
   # ceiling fix, ready for a follow-up sweep (solver: [full_25]); not swept now.
   full_25:
     mode: FULL
     max_cycles: 25
     feature_policy: REASSEMBLE
     scf_grad_checkpoint: true
+    mixer_name: decaying_linear
+    mixer_kwargs: {base: 0.3, floor: 0.3}
+    scf_loss_use_tail: true
+    scf_loss_tail: 10
+    scf_loss_weight_power: 2.0
 
 hyperparams:
   n_steps: 500

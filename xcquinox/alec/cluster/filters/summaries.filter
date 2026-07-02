@@ -51,6 +51,14 @@
 # the figure data return; pulled by default like its eval_holdout/ sibling.
 + /checkpoints/spec_*/eval_holdout_best/
 + /checkpoints/spec_*/eval_holdout_best/***
+# Validation-best-checkpoint held-out eval (2026-06): a THIRD eval pass over the
+# same pool using model_val_best.eqx (the held-out-VALIDATION-best weights). This
+# is the checkpoint the figures now plot as "val-best" -- unlike model_best.eqx
+# (min TRAINING loss, which selects the most-overfit step) it does not collapse on
+# overfit-prone archs. Same small CSV/JSON, no *.eqx; pulled by default like its
+# eval_holdout/ siblings so the default figures-only pull has the data.
++ /checkpoints/spec_*/eval_holdout_val_best/
++ /checkpoints/spec_*/eval_holdout_val_best/***
 
 # --- pretrain metadata + loss curves (small, useful for diagnostics) -------
 + /pretrain/

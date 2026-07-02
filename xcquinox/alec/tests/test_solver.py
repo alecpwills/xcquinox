@@ -376,3 +376,100 @@ def test_full_mode_rejects_frozen_feature_policy():
         backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=3,
     )
     assert cfg2.effective_feature_policy == FeaturePolicy.REASSEMBLE
+
+
+# ---------------------------------------------------------------------------
+# DecayingLinearMixer: DFS step-decaying damping alpha = base**step + floor.
+# DFS (Dick & Fernandez-Serra 2021) torch_routines.py:174-178 uses
+# alpha = (0.3)**step + 0.3 -> step0=1.3 (over-relaxation), step1=0.6,
+# step2=0.39 -> asymptote 0.3. Unlike LinearMixer it must NOT clamp alpha.
+# ---------------------------------------------------------------------------
+from xcquinox.alec.solver import DecayingLinearMixer, MIXER_REGISTRY
+
+
+def test_decaying_linear_mixer_registry_name():
+    assert DecayingLinearMixer.registry_name == "decaying_linear"
+
+
+def test_decaying_linear_mixer_in_registry():
+    assert MIXER_REGISTRY["decaying_linear"] is DecayingLinearMixer
+
+
+def test_decaying_linear_mixer_alpha_schedule():
+    # D_in = 0, D_out = I  =>  D_mixed = alpha * I, isolating alpha per step.
+    mixer = DecayingLinearMixer(base=0.3, floor=0.3)
+    state = mixer.init_state(nao=3)
+    D_in = jnp.zeros((3, 3))
+    D_out = jnp.eye(3)
+    expected_alpha = [1.3, 0.6, 0.39]  # 0.3**step + 0.3 for step 0,1,2
+    for step, exp in enumerate(expected_alpha):
+        new_state, D_mixed = mixer.step(state, D_in, D_out)
+        assert jnp.allclose(jnp.diag(D_mixed), exp), (
+            f"step {step}: alpha {float(D_mixed[0, 0])} != {exp}"
+        )
+        state = new_state
+
+
+def test_decaying_linear_mixer_step0_over_relaxes():
+    # step 0 alpha = 1.3 > 1: D_mixed extrapolates beyond D_out (DFS-faithful,
+    # not clamped). D_mixed = 1.3*D_out - 0.3*D_in.
+    mixer = DecayingLinearMixer(base=0.3, floor=0.3)
+    state = mixer.init_state(nao=2)
+    D_in = jnp.eye(2) * 1.0
+    D_out = jnp.eye(2) * 2.0
+    _, D_mixed = mixer.step(state, D_in, D_out)
+    expected = 1.3 * D_out - 0.3 * D_in
+    assert jnp.allclose(D_mixed, expected)
+
+
+def test_decaying_linear_mixer_step_increments_state():
+    mixer = DecayingLinearMixer()
+    state = mixer.init_state(nao=3)
+    assert int(state.step_index) == 0
+    D = jnp.eye(3)
+    new_state, _ = mixer.step(state, D, D)
+    assert int(new_state.step_index) == 1
+
+
+def test_decaying_linear_mixer_rejects_bad_params():
+    with pytest.raises(ValueError, match="base must be in"):
+        DecayingLinearMixer(base=0.0)
+    with pytest.raises(ValueError, match="base must be in"):
+        DecayingLinearMixer(base=1.0)
+    with pytest.raises(ValueError, match="floor must be in"):
+        DecayingLinearMixer(floor=-0.1)
+    with pytest.raises(ValueError, match="floor must be in"):
+        DecayingLinearMixer(floor=1.0)
+
+
+# ---------------------------------------------------------------------------
+# SolverConfig: DFS tail-weighted-loss knobs (opt-in; defaults inert).
+# ---------------------------------------------------------------------------
+
+def test_solver_config_tail_defaults_are_inert():
+    cfg = SolverConfig()
+    assert cfg.scf_loss_use_tail is False
+    assert cfg.scf_loss_tail == 10
+    assert cfg.scf_loss_weight_power == 2.0
+
+
+def test_solver_config_rejects_bad_tail():
+    with pytest.raises(ValueError, match="scf_loss_tail must be >= 1"):
+        SolverConfig(scf_loss_tail=0)
+
+
+def test_solver_config_rejects_negative_weight_power():
+    with pytest.raises(ValueError, match="scf_loss_weight_power must be >= 0"):
+        SolverConfig(scf_loss_weight_power=-1.0)
+
+
+def test_solver_config_describe_includes_tail_knobs():
+    cfg = SolverConfig(
+        mode=SolverMode.FULL, max_cycles=25,
+        scf_loss_use_tail=True, scf_loss_tail=10, scf_loss_weight_power=2.0,
+    )
+    d = cfg.describe()
+    assert d["scf_loss_use_tail"] is True
+    assert d["scf_loss_tail"] == 10
+    assert d["scf_loss_weight_power"] == 2.0
+    assert json.dumps(d)  # still JSON-serializable

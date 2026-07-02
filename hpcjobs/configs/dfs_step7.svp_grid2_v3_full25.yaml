@@ -37,16 +37,34 @@ sweep:
   subset_size: [1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 26]
   solver: [full_25]
 
+# 2026-06-24: DFS self-consistency fix on ALL full_X. full_25 forced 25 cycles
+# but scored only the FINAL SCF step; for hard species (TS, radicals) the
+# NN-SCF left the PBE basin into a period-2 oscillation the constant alpha=0.5
+# mixer could not damp, so the final-step energy was an arbitrary phase (+1000s
+# kcal/mol). Fix = the DFS step-decaying mixer (alpha=0.3**step+0.3) + the
+# tail-weighted energy loss (quadratic weight over the last scf_loss_tail SCF
+# steps, generalized to any max_cycles). full_3 keeps the same knobs for parity
+# (step N-1 dominates, so it stays ~unchanged).
 solvers:
   full_3:
     mode: FULL
     max_cycles: 3
     feature_policy: REASSEMBLE
+    mixer_name: decaying_linear
+    mixer_kwargs: {base: 0.3, floor: 0.3}
+    scf_loss_use_tail: true
+    scf_loss_tail: 10
+    scf_loss_weight_power: 2.0
   full_25:
     mode: FULL
     max_cycles: 25
     feature_policy: REASSEMBLE
     scf_grad_checkpoint: true
+    mixer_name: decaying_linear
+    mixer_kwargs: {base: 0.3, floor: 0.3}
+    scf_loss_use_tail: true
+    scf_loss_tail: 10
+    scf_loss_weight_power: 2.0
 
 hyperparams:
   n_steps: 500

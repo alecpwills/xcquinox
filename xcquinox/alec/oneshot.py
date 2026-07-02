@@ -11,6 +11,7 @@ Implements THE SPEC §6.3:
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
@@ -427,8 +428,108 @@ def total_energy_for_solver(model, mol_data, solver_config=None):
     from xcquinox.alec.solver import SolverMode  # local: avoid import cycle
     if solver_config is not None and solver_config.mode == SolverMode.FULL:
         from xcquinox.alec.solver import run_scf
-        return run_scf(solver_config, model, mol_data).total_energy
+        result = run_scf(solver_config, model, mol_data)
+        # DFS tail reporting: when enabled, report a convergence-aware
+        # weighted mean of the SCF tail rather than the arbitrary final cycle
+        # (which for a non-converged species is one phase of an oscillation).
+        # Used by validation MAE and the single-scalar energy/AE metric; the
+        # per-step TRAINING loss takes the full tail via
+        # ``energy_trajectory_for_solver``. Degrades to ``.total_energy`` when
+        # the tail is disabled or no trace was captured.
+        if solver_config.scf_loss_use_tail and result.energy_trace is not None:
+            return tail_weighted_mean_energy(
+                result.energy_trace,
+                solver_config.scf_loss_tail,
+                solver_config.scf_loss_weight_power,
+            )
+        return result.total_energy
     return fixed_density_total_energy(model, mol_data)
+
+
+def scf_tail_window(n_cycles, tail, power):
+    """DFS convergence-tail window for an ``n_cycles``-step SCF, generalized to
+    any N (the fix to DFS's ``skip = max(5, N-10)`` which underflows to an
+    empty slice for small N).
+
+    Returns ``(skip, weights)`` where ``weights`` (a numpy array, host-static
+    so it is jit-safe) are the per-step quadratic weights ``(i/(N-1))**power``
+    over the KEPT tail steps ``[skip:]``. The tail keeps the last
+    ``min(N, tail)`` steps, so ``skip = max(0, N - tail) <= N - 1`` and at
+    least one step is always kept. At ``N == 25, tail == 10, power == 2`` this
+    reproduces DFS exactly (skip 15, last 10, weights ~0.39..1.0).
+    """
+    n = int(n_cycles)
+    t = max(1, int(tail))
+    p = float(power)
+    tail_len = min(n, t)
+    skip = n - tail_len
+    if n <= 1:
+        # ``linspace(0,1,1)**p == [0.0]`` would zero out the only step.
+        w_full = np.ones(max(n, 1), dtype=float)
+    else:
+        w_full = np.linspace(0.0, 1.0, n) ** p
+    return skip, w_full[skip:]
+
+
+def tail_weighted_mean_energy(energy_trace, tail, power):
+    """Convergence-aware scalar: the quadratic-weighted mean of the SCF tail.
+
+    ``energy_trace`` is the per-cycle energy ``(n_cycles,)`` from
+    ``run_scf().energy_trace``. Denoises a non-converged (oscillating) tail and
+    equals the converged value for a frozen/flat tail. ``sum(weights) >= 1``
+    always (the final step carries weight 1), so the mean is well-defined.
+    """
+    n = energy_trace.shape[0]
+    skip, w = scf_tail_window(n, tail, power)
+    w = jnp.asarray(w, dtype=energy_trace.dtype)
+    tail_e = energy_trace[skip:]
+    return jnp.sum(w * tail_e) / jnp.sum(w)
+
+
+def scf_loss_tail_weights(solver_config):
+    """The per-step tail weights ``(tail_len,)`` for the DFS training loss, or
+    ``None`` when the tail scheme is disabled / not a FULL solver. Pairs with
+    :func:`energy_trajectory_for_solver` (same kept-tail length)."""
+    from xcquinox.alec.solver import SolverMode  # local: avoid import cycle
+    if (
+        solver_config is None
+        or solver_config.mode != SolverMode.FULL
+        or not solver_config.scf_loss_use_tail
+    ):
+        return None
+    _, w = scf_tail_window(
+        solver_config.max_cycles,
+        solver_config.scf_loss_tail,
+        solver_config.scf_loss_weight_power,
+    )
+    return jnp.asarray(w)
+
+
+def energy_trajectory_for_solver(model, mol_data, solver_config=None):
+    """Per-cycle SCF energies over the DFS convergence tail, for the per-step
+    training loss. Returns shape ``(tail_len,)`` when FULL + ``scf_loss_use_tail``
+    and a trace was captured; otherwise the single reporting scalar reshaped to
+    ``(1,)`` (so the per-step loss with one step + weight 1 reduces EXACTLY to
+    the prior final-step behavior). All species in a spec share one
+    ``solver_config``, so the returned length is uniform and stackable."""
+    from xcquinox.alec.solver import SolverMode  # local: avoid import cycle
+    if (
+        solver_config is not None
+        and solver_config.mode == SolverMode.FULL
+        and solver_config.scf_loss_use_tail
+    ):
+        from xcquinox.alec.solver import run_scf
+        result = run_scf(solver_config, model, mol_data)
+        if result.energy_trace is not None:
+            skip, _ = scf_tail_window(
+                result.energy_trace.shape[0],
+                solver_config.scf_loss_tail,
+                solver_config.scf_loss_weight_power,
+            )
+            return result.energy_trace[skip:]
+    return jnp.reshape(
+        total_energy_for_solver(model, mol_data, solver_config), (1,)
+    )
 
 
 def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,

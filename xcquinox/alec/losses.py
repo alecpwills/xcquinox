@@ -13,6 +13,8 @@ import equinox as eqx
 from xcquinox.alec.oneshot import (
     fixed_density_total_energy,
     total_energy_for_solver,
+    energy_trajectory_for_solver,
+    scf_loss_tail_weights,
     oneshot_dm_prediction_fast,
     oneshot_grid_density,
     compute_vxc_nn,
@@ -178,6 +180,20 @@ def _compute_energies(model, mol_data, N, solver_config=None):
     ])
 
 
+def _compute_energy_trajectories(model, mol_data, N, solver_config=None):
+    """Per-molecule SCF-energy TAIL trajectories, shape ``(N, T)``, for the DFS
+    per-step tail-weighted energy loss. Each row is the convergence-tail
+    energies from :func:`energy_trajectory_for_solver` (``T = min(max_cycles,
+    scf_loss_tail)`` when the tail is enabled). All species share one
+    ``solver_config`` so ``T`` is uniform and stackable. When the tail is
+    disabled this is ``(N, 1)`` carrying the same scalar as
+    :func:`_compute_energies` (the loss then reduces to the final-step form)."""
+    return jnp.stack([
+        energy_trajectory_for_solver(model, mol_data[i], solver_config)
+        for i in range(N)
+    ])
+
+
 def _ae_from_atoms(E_mol, comp_dict, atom_energies):
     """Positive-for-bound atomization energy from a fixed atomic anchor dict.
 
@@ -193,23 +209,31 @@ def _ae_from_atoms(E_mol, comp_dict, atom_energies):
     return sum(n * atom_energies[Z] for Z, n in comp_dict.items()) - E_mol
 
 
-def _atomic_reg(E_nn, atom_mol_idx_dict, atom_energies):
+def _atomic_reg(E_nn, atom_mol_idx_dict, atom_energies, step_w2=None):
     """Weak atomic regularization toward the caller-supplied atom anchor dict.
 
     Returns the MEAN squared relative error over the anchored atoms so the
     channel scale is independent of how many atoms are in the batch, matching
     the other mean-reduced channels (_ae_losses, _vxc_term, _grid_term).
+
+    ``step_w2`` (the DFS per-SCF-step weights squared, shape ``(T,)``) enables
+    the tail-weighted form: ``E_nn`` rows are then ``(T,)`` SCF-energy
+    trajectories and each atom's squared error is reduced over the step axis as
+    ``mean(step_w2 * diff^2)``. ``None`` -> the byte-identical scalar form.
     """
     if not atom_mol_idx_dict:
         return jnp.array(0.0)
-    return jnp.mean(jnp.stack([
-        (E_nn[atom_mol_idx_dict[Z]] - atom_energies[Z]) ** 2
-        / (atom_energies[Z] ** 2 + 1e-8)
-        for Z in atom_mol_idx_dict
-    ]))
+    terms = []
+    for Z in atom_mol_idx_dict:
+        diff_sq = (E_nn[atom_mol_idx_dict[Z]] - atom_energies[Z]) ** 2
+        if step_w2 is not None:
+            diff_sq = jnp.mean(step_w2 * diff_sq)
+        terms.append(diff_sq / (atom_energies[Z] ** 2 + 1e-8))
+    return jnp.mean(jnp.stack(terms))
 
 
-def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies):
+def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies,
+               step_w2=None):
     """A-family: relative squared AE error per compound.
 
     AE is computed via `_ae_from_atoms` so the anchor dict is the same
@@ -229,12 +253,17 @@ def _ae_losses(E_nn, compound_idx, comp_dicts, mol_names, targets, atom_energies
     for i in compound_idx:
         ae = _ae_from_atoms(E_nn[i], comp_dicts[i], atom_energies)
         tgt = targets[mol_names[i]]
-        terms.append((ae - tgt) ** 2
-                     / jnp.maximum(tgt ** 2, _DELTA_TGT_FLOOR_HA2))
+        sq = (ae - tgt) ** 2
+        if step_w2 is not None:
+            # tail mode: ae is a (T,) SCF trajectory -> DFS weighted-MSE over
+            # the step axis before the relative normalization.
+            sq = jnp.mean(step_w2 * sq)
+        terms.append(sq / jnp.maximum(tgt ** 2, _DELTA_TGT_FLOOR_HA2))
     return jnp.mean(jnp.stack(terms))
 
 
-def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets, atom_energies):
+def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets,
+                  atom_energies, step_w2=None):
     """D-family: relative squared delta-AE error per compound.
 
     Both the NN and PBE atomization energies are computed from the same
@@ -259,8 +288,11 @@ def _delta_losses(E_nn, mol_data, compound_idx, comp_dicts, mol_names, targets, 
         ae_pbe = _ae_from_atoms(mol_data[i]["E_pbe"], comp_dicts[i], atom_energies)
         delta_nn = ae_nn - ae_pbe
         delta_tgt = targets[mol_names[i]] - ae_pbe
-        terms.append((delta_nn - delta_tgt) ** 2
-                     / jnp.maximum(delta_tgt ** 2, _DELTA_TGT_FLOOR_HA2))
+        sq = (delta_nn - delta_tgt) ** 2
+        if step_w2 is not None:
+            # tail mode: delta_nn is a (T,) SCF trajectory -> DFS weighted-MSE.
+            sq = jnp.mean(step_w2 * sq)
+        terms.append(sq / jnp.maximum(delta_tgt ** 2, _DELTA_TGT_FLOOR_HA2))
     return jnp.mean(jnp.stack(terms))
 
 
@@ -432,13 +464,20 @@ def _rxn_residual_term(
     coeffs: jnp.ndarray,
     e_rxn_ref: jnp.ndarray,
     relative: bool = False,
+    step_w2: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Squared residual of a generic reaction energy / barrier height.
 
-    e_nn   : (n_species,) NN total energies for each species in the reaction
+    e_nn   : ``(n_species,)`` NN total energies for each species in the
+             reaction, OR ``(n_species, T)`` per-SCF-step trajectories when the
+             DFS tail loss is on (``step_w2`` provided).
     coeffs : (n_species,) signed stoichiometric coefficients (negative for
              reactants, positive for products)
     e_rxn_ref : scalar reference reaction-energy or barrier-height value
+    step_w2 : ``(T,)`` per-step DFS weights squared, or ``None`` for the
+             byte-identical final-step-only scalar form. When set, the per-step
+             reaction-energy residual is reduced as DFS's ``mean(w^2 r^2)``
+             over the tail, directly penalizing a non-converging SCF.
 
     Returns: ``(E_rxn_NN - E_rxn_ref)^2``; when ``relative`` is set, the
     relative form ``(.)^2 / (e_rxn_ref^2 + 1e-8)``: matching the AE/vxc/rho
@@ -453,8 +492,14 @@ def _rxn_residual_term(
     al. 2018, arXiv:1711.02257; alpha=1.5 default) discover task weights
     adaptively rather than hard-coding any fixed scaling.
     """
-    e_rxn = jnp.sum(coeffs * e_nn)
-    sq = (e_rxn - e_rxn_ref) ** 2
+    if step_w2 is None:
+        e_rxn = jnp.sum(coeffs * e_nn)
+        sq = (e_rxn - e_rxn_ref) ** 2
+    else:
+        # e_nn: (n_species, T) -> per-step reaction energy (T,), then DFS
+        # weighted mean-squared residual over the SCF tail.
+        e_rxn = jnp.sum(coeffs[:, None] * e_nn, axis=0)
+        sq = jnp.mean(step_w2 * (e_rxn - e_rxn_ref) ** 2)
     if relative:
         return sq / (e_rxn_ref ** 2 + 1e-8)
     return sq
@@ -465,15 +510,23 @@ def _ip_residual_term(
     e_neutral: jnp.ndarray,
     ip_ref: jnp.ndarray,
     relative: bool = False,
+    step_w2: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Squared residual of an ionization potential. IP = E_cation - E_neutral.
 
     When ``relative`` is set, the relative form ``(.)^2 / (ip_ref^2 + 1e-8)``,
     consistent with the other channels under ``loss_metric='relative'``.
+    ``step_w2`` (``(T,)``) enables the DFS tail form: ``e_cation``/``e_neutral``
+    are ``(T,)`` SCF trajectories and the residual is reduced as
+    ``mean(w^2 r^2)`` over the tail; ``None`` -> byte-identical scalar form.
 
     Used by the IP13 task channel of L5_gradnorm_vxc_step7.
     """
-    sq = (e_cation - e_neutral - ip_ref) ** 2
+    resid = e_cation - e_neutral - ip_ref
+    if step_w2 is None:
+        sq = resid ** 2
+    else:
+        sq = jnp.mean(step_w2 * resid ** 2)
     if relative:
         return sq / (ip_ref ** 2 + 1e-8)
     return sq
@@ -1147,7 +1200,7 @@ class L5GradnormVxcStep7(AlecLoss):
                         f"`molecules` (have {sorted(mol_name_set)})"
                     )
 
-    def _bh76_channel(self, E_nn, relative=False) -> jnp.ndarray:
+    def _bh76_channel(self, E_nn, relative=False, step_w2=None) -> jnp.ndarray:
         """Mean of squared reaction-energy residuals across BH76 reactions.
 
         E_NN_total values are looked up from the all-species `E_nn` vector
@@ -1171,12 +1224,13 @@ class L5GradnormVxcStep7(AlecLoss):
             coeffs_arr = jnp.array(coeffs)
             terms.append(_rxn_residual_term(
                 e_species, coeffs_arr, jnp.array(e_ref), relative=relative,
+                step_w2=step_w2,
             ))
         if not terms:
             return jnp.array(0.0)
         return jnp.mean(jnp.stack(terms))
 
-    def _ip13_channel(self, E_nn, relative=False) -> jnp.ndarray:
+    def _ip13_channel(self, E_nn, relative=False, step_w2=None) -> jnp.ndarray:
         """Mean of squared IP residuals across IP13 pairs.
 
         Pairs with `ip_ref=None` are skipped. ``relative`` selects the
@@ -1194,6 +1248,7 @@ class L5GradnormVxcStep7(AlecLoss):
             e_cation = E_nn[name_to_idx[cation]]
             terms.append(_ip_residual_term(
                 e_cation, e_neutral, jnp.array(ip_ref), relative=relative,
+                step_w2=step_w2,
             ))
         if not terms:
             return jnp.array(0.0)
@@ -1223,9 +1278,21 @@ class L5GradnormVxcStep7(AlecLoss):
         atom_energies = batch["atom_energies"]
         N = len(self.mol_names)
         comp_dicts = tuple(dict(c) for c in self.compositions)
-        E_nn = _compute_energies(
-            model, mol_data, N, solver_config=self.solver_config
-        )
+        # DFS tail loss: when enabled, score a quadratic-weighted window of the
+        # SCF-energy TAIL (E_nn is then (N, T)) so the energy channels penalize
+        # a non-converging SCF rather than one arbitrary final cycle. step_w2 is
+        # None when disabled -> the scalar (N,) path, byte-identical to before.
+        step_w = scf_loss_tail_weights(self.solver_config)
+        if step_w is not None:
+            E_nn = _compute_energy_trajectories(
+                model, mol_data, N, solver_config=self.solver_config
+            )
+            step_w2 = step_w ** 2
+        else:
+            E_nn = _compute_energies(
+                model, mol_data, N, solver_config=self.solver_config
+            )
+            step_w2 = None
         # AE channel: relative squared AE residual + atomic regularization,
         # mirroring AtomizationLoss but bundled into a single channel for
         # GradNorm. atomic_reg is folded into the AE channel because it is
@@ -1236,19 +1303,21 @@ class L5GradnormVxcStep7(AlecLoss):
         if self.compound_idx:
             loss_ae = _ae_losses(
                 E_nn, self.compound_idx, comp_dicts,
-                self.mol_names, targets, atom_energies,
+                self.mol_names, targets, atom_energies, step_w2=step_w2,
             )
         else:
             loss_ae = jnp.array(0.0)
-        atomic_reg = self.w_atomic * _atomic_reg(E_nn, atom_idx, atom_energies)
+        atomic_reg = self.w_atomic * _atomic_reg(
+            E_nn, atom_idx, atom_energies, step_w2=step_w2,
+        )
         loss_ae_total = loss_ae + atomic_reg
 
         # BH76 + IP13 channels: reaction / IP residuals (Dick 2021 SI II).
         # Pass `relative` so all 5 GradNorm channels share one metric under
         # loss_metric='relative' (else BH76/IP13 stay absolute Ha^2 while
         # AE/vxc/rho are relative, inconsistent quantities into GradNorm).
-        loss_bh76 = self._bh76_channel(E_nn, relative=relative)
-        loss_ip13 = self._ip13_channel(E_nn, relative=relative)
+        loss_bh76 = self._bh76_channel(E_nn, relative=relative, step_w2=step_w2)
+        loss_ip13 = self._ip13_channel(E_nn, relative=relative, step_w2=step_w2)
 
         # vxc + rho channels: existing alec mechanisms.
         iter_idx = self._iter_idx_for_aux_channels()

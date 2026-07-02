@@ -455,6 +455,8 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
             mol_spec,
             required_keys=required_keys,
             descriptors=spec.arch.materialize_descriptors(),
+            orientation_lock_strength=getattr(
+                spec.solver_config, "orientation_lock_strength", 0.0),
         )
         mol_result = {"molecule": mol_spec.name}
         for metric in metrics:

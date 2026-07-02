@@ -255,6 +255,7 @@ def _build_batch(spec: TrainingSpec, loss) -> dict:
     # Only forward auxbasis when DF is active; otherwise stays None so the
     # full-ERI path (and its precompute cache key) is byte-identical to before.
     auxbasis = getattr(sc, "auxbasis", None) if density_fit else None
+    orientation_lock_strength = getattr(sc, "orientation_lock_strength", 0.0)
 
     required_keys = tuple(required)
     mol_data_list = [
@@ -262,6 +263,7 @@ def _build_batch(spec: TrainingSpec, loss) -> dict:
             m, required_keys=required_keys,
             descriptors=spec.arch.materialize_descriptors(),
             auxbasis=auxbasis,
+            orientation_lock_strength=orientation_lock_strength,
         )
         for m in spec.molecules
     ]
@@ -397,6 +399,7 @@ def _build_validation_data(spec):
         density_fit = bool(getattr(sc, "density_fit", False))
         required.add("cderi" if density_fit else "eri")
     auxbasis = getattr(sc, "auxbasis", None) if density_fit else None
+    orientation_lock_strength = getattr(sc, "orientation_lock_strength", 0.0)
     required_keys = tuple(required)
 
     val_mol_data = {
@@ -404,6 +407,7 @@ def _build_validation_data(spec):
             m, required_keys=required_keys,
             descriptors=spec.arch.materialize_descriptors(),
             auxbasis=auxbasis,
+            orientation_lock_strength=orientation_lock_strength,
         )
         for m in val_mols
     }

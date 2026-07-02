@@ -118,6 +118,40 @@ self-consistent and size-consistent — it replaces the earlier global `dm_stati
 molecule-level scalars (e.g. `dm_entropy ~ ln N_occ`, natural-occupation entropy [9]) leaked molecule
 identity and overfit small pools.
 
+### 1.7 The orientation lock (degenerate open-shell references)
+
+Two of the systems here are **orbitally degenerate**: OH (trained) and NO (held-out, §9 of the
+notebook) have `X²Π` doublet ground states [17]. Their singly-occupied π hole can sit in any linear
+combination of the degenerate `(π_x, π_y)` pair, so a single-determinant density (the UKS seed *and*
+the CCSD reference) on a **fixed** real-space grid is orientation-arbitrary. The **energy** is invariant
+to that choice, but the **density** is not — and threaded-BLAS non-associativity tips the near-degenerate
+SCF to a different component from one process/machine to the next, so the density is not reproducible.
+Because the DFS loss matches densities (weight ~20×), that arbitrary orientation would be a physical
+artifact in the training target, not a code bug.
+
+The **orientation lock** fixes it. A small, fixed, deterministic, **traceless anisotropic-quadrupole**
+operator `M = Σ_ij W_ij ⟨χ_μ| r_i r_j |χ_ν⟩` (about the nuclear-charge centroid, so it is
+translation-invariant) is added to `h_core` as `strength·M`, **identically** in the CCSD reference SCF,
+the PBE seed, training, and evaluation (`orientation_lock.py`; `data.py`, `external_refs.py`). Being a
+pure function of `(geometry, basis)`, the operator matrix is byte-identical across those paths, so the
+reference and the functional necessarily lock the **same** representative of the degenerate manifold —
+which is exactly what makes density matching well-defined for a degenerate reference. `W` is traceless
+so the first-order energy shift `strength·Tr(M ρ) ≈ 0` for a near-isotropic density: the lock *splits*
+the degenerate π pair without materially shifting energies (< 0.1 kcal/mol at the default
+`strength = 3e-5`), while the induced splitting (~10⁻⁶–10⁻⁵ Ha) sits orders of magnitude above the
+float64/BLAS noise that scrambled the orientation, so it deterministically pins it.
+
+*Physics.* This **selects one representative of the degenerate ²Π manifold** — standard broken-symmetry
+practice; the density comparison is well posed precisely because reference and functional pick the same
+one. (An in-repo precedent applies a `level_shift=0.5` to `X²Π` radicals in the OEP cascade,
+`external_refs.py:1044-1055`, though that path is not on the density-only reference route.) The lock is
+opt-in and off by default (`SolverConfig.orientation_lock_strength=0.0` → byte-identical), so it changes
+nothing for closed-shell systems or the production sweep; the demo turns it on via
+`dfs_demo.ORIENTATION_LOCK_STRENGTH`. *Why not `irrep_nelec`?* The manual JAX SCF is plain Fock-diag +
+Aufbau with no point-group symmetry, so a PySCF symmetry constraint on the reference and a bias on the
+functional would be two *different* mechanisms that could lock *different* components; the shared
+`h_core` bias is the single mechanism that is provably consistent across both.
+
 ---
 
 ## 2. The training method and why
@@ -182,6 +216,11 @@ byte-for-byte what the cluster harness builds, only on a smaller pool).
    the combined energy-density error `ED`, NN vs PBE. On this pool every network beats PBE on AE-MAE,
    density, and `ED`; the mean density error is OH-radical-dominated, so its aggregate win is modest
    (the printout's "excl. OH" mean shows the H₂O/NH density improves ~40%).
+8. **Held-out generalization (§9)** — `build_heldout_test_spec` + `run_test` evaluate the
+   already-trained models (no retraining) on **N2, NO, NO2** — real pool entries none of them trained
+   on. It reports how many models beat PBE on held-out density/AE/`ED` and, crucially, checks the
+   held-out degenerate **NO** radical's PBE density RMSE is model-independent: a reproducible,
+   PBE-beating NO density shows the §1.7 orientation lock generalizes to an *unseen* ²Π system.
 
 ---
 
@@ -191,6 +230,11 @@ byte-for-byte what the cluster harness builds, only on a smaller pool).
   `ArchitectureConfig` to `build_dfs_training_spec`. Everything else (loss, solver, DFS recipe) is
   unchanged.
 - **More systems:** extend `HILLS` with any `build_dfs_pool()` Hill formula (e.g. `CO`, `N2`, `CH3`).
+- **One-time reset (orientation lock):** the lock (§1.7) is on, so a fresh run trains against the
+  locked OH reference. CCSD references self-heal (they carry the lock strength and regenerate). Training
+  checkpoints do not auto-invalidate, so if you have `runs/*__*/model.eqx` from an earlier *unlocked*
+  run, delete them (`rm runs/*__*/model.eqx`; keep `runs/pretrain/`, which is orientation-invariant) to
+  retrain consistently.
 - **The full pipeline:** for the complete DFS pool + BH76/IP13 channels + V_xc supervision, use the
   cluster harness (`xcquinox.alec.cluster`) with the `dfs_step7` config; its CCSD-reference generator
   `external_refs.precompute_all` adds the OEP V_xc cascade.
@@ -228,3 +272,6 @@ consensus-verified methods box.
     **47**, 3649 (1993); DOI 10.1103/PhysRevA.47.3649 (exact atomic totals).
 16. P. A. M. Dirac, *Proc. Cambridge Philos. Soc.* **26**, 376 (1930); J. C. Slater, *Phys. Rev.* **81**,
     385 (1951) (uniform-gas / Dirac–Slater exchange).
+17. G. Herzberg, *Molecular Spectra and Molecular Structure I: Spectra of Diatomic Molecules* (Van
+    Nostrand, 1950); NIST CCCBDB (the `X²Π` doublet ground states of OH and NO — the orbital
+    degeneracy the orientation lock resolves).

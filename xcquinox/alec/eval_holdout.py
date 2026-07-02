@@ -419,6 +419,7 @@ def precompute_holdout(
     *,
     required_keys: Sequence[str] = (),
     auxbasis: str | None = None,
+    orientation_lock_strength: float = 0.0,
 ) -> Dict[str, Any]:
     """Run the PBE precompute over a held-out pool of species.
 
@@ -446,7 +447,8 @@ def precompute_holdout(
         try:
             out[name] = alec.precompute_fixed_density_data(
                 spec, descriptors=tuple(descriptors),
-                required_keys=tuple(required_keys), auxbasis=auxbasis)
+                required_keys=tuple(required_keys), auxbasis=auxbasis,
+                orientation_lock_strength=orientation_lock_strength)
         except Exception as exc:  # noqa: BLE001
             print(f"  [precompute {i}/{n}] {name}: FAILED ({exc})",
                   flush=True)
@@ -490,6 +492,7 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     """
     import xcquinox.alec as alec
     from xcquinox.alec.solver import run_scf, SolverMode
+    from xcquinox.alec.oneshot import tail_weighted_mean_energy
     import numpy as _np
     out: Dict[str, float] = {}
     first_err_shown = False
@@ -502,13 +505,27 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
         try:
             if use_scf:
                 result = run_scf(solver_config, model, md)
-                e = float(result.total_energy)
+                e_final = float(result.total_energy)
+                trace = getattr(result, "energy_trace", None)
+                # Convergence-aware reported energy: the DFS tail-weighted mean
+                # (denoised) when the tail loss is enabled, else the final
+                # cycle. Matches oneshot.total_energy_for_solver so train ==
+                # in-sample-eval == held-out-eval all report the same quantity.
+                if (getattr(solver_config, "scf_loss_use_tail", False)
+                        and trace is not None):
+                    e = float(tail_weighted_mean_energy(
+                        trace, solver_config.scf_loss_tail,
+                        solver_config.scf_loss_weight_power))
+                else:
+                    e = e_final
                 if scf_info_out is not None:
-                    trace = getattr(result, "energy_trace", None)
                     scf_info_out[name] = {
                         "cycles_run": int(getattr(result, "cycles_run", 0)),
                         "converged": bool(getattr(result, "converged", False)),
-                        "total_energy": e,
+                        # raw final-cycle energy, kept for forensics ...
+                        "total_energy": e_final,
+                        # ... alongside the energy the metric actually used.
+                        "reported_energy": e,
                         "energy_trace": ([float(x) for x in _np.asarray(trace)]
                                          if trace is not None else []),
                     }
@@ -734,12 +751,14 @@ def precompute_holdout_for_spec(training_spec, mol_specs: Dict[str, Any]):
     sc = getattr(training_spec, "solver_config", None)
     auxbasis = (getattr(sc, "auxbasis", None)
                 if getattr(sc, "density_fit", False) else None)
+    orientation_lock_strength = getattr(sc, "orientation_lock_strength", 0.0)
     print(f"[holdout] precomputing {len(mol_specs)} species "
           f"(descriptors: {[type(d).__name__ for d in descriptors] or 'none'}; "
           f"solver: {mode_str}; extra precompute keys: "
           f"{list(required_keys) or 'none'}) ...", flush=True)
     return precompute_holdout(mol_specs, descriptors=descriptors,
-                              required_keys=required_keys, auxbasis=auxbasis)
+                              required_keys=required_keys, auxbasis=auxbasis,
+                              orientation_lock_strength=orientation_lock_strength)
 
 
 def run_full_holdout_eval(

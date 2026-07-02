@@ -21,13 +21,15 @@ def _fake_stages(monkeypatch, calls):
     """Stub SCF/CCSD seams (pattern: test_external_refs_df.py) so no PySCF
     runs; the CCSD payload carries a recognizable rho_ref_grid."""
     def fake_scf(spec, atoms, *, cache_dir, basis, grid_level,
-                 density_fit=False, auxbasis=None):
+                 density_fit=False, auxbasis=None,
+                 orientation_lock_strength=0.0):
         calls.append(("scf", spec.name, density_fit, auxbasis))
         return {"dm": np.eye(2), "spin_unrestricted": False,
                 "grid_coords": np.zeros((4, 3)), "grid_weights": np.ones(4)}
 
     def fake_ccsd(spec, atoms, *, scf_payload, cache_dir, basis, grid_level,
-                  density_fit=False, auxbasis=None):
+                  density_fit=False, auxbasis=None,
+                  orientation_lock_strength=0.0):
         calls.append(("ccsd", spec.name, density_fit, auxbasis))
         return {"rho_ref_grid": np.array([1.0, 2.0, 3.0, 4.0]),
                 "grid_weights": np.ones(4), "ao_grid": np.zeros((4, 2)),

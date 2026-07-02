@@ -255,6 +255,18 @@ def _solver_config_from_named(named, *, density_fit: bool = False,
         if named.feature_policy is not None
         else None
     )
+    # Only override the mixer when the named solver specifies one, so existing
+    # solvers keep SolverConfig's linear/alpha-0.5 default. When a custom mixer
+    # IS selected, always override mixer_kwargs too (-> () when unspecified) so
+    # the chosen mixer uses its OWN __init__ defaults rather than inheriting
+    # SolverConfig's {'alpha': 0.5}, which a non-linear mixer (e.g.
+    # DecayingLinearMixer) has no 'alpha' arg for and would crash _build_mixer.
+    mixer_overrides = {}
+    if named.mixer_name is not None:
+        mixer_overrides["mixer_name"] = named.mixer_name
+        mixer_overrides["mixer_kwargs"] = (
+            named.mixer_kwargs if named.mixer_kwargs is not None else ()
+        )
     return SolverConfig(
         mode=mode,
         max_cycles=named.max_cycles,
@@ -262,6 +274,11 @@ def _solver_config_from_named(named, *, density_fit: bool = False,
         feature_policy=fp,
         density_fit=density_fit,
         auxbasis=auxbasis,
+        scf_loss_use_tail=named.scf_loss_use_tail,
+        scf_loss_tail=named.scf_loss_tail,
+        scf_loss_weight_power=named.scf_loss_weight_power,
+        orientation_lock_strength=named.orientation_lock_strength,
+        **mixer_overrides,
     )
 
 

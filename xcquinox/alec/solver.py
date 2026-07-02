@@ -58,12 +58,47 @@ class SolverConfig:
     # Default off -> the scan body is the original closure, giving a
     # byte-identical XLA graph and zero behavior change.
     scf_grad_checkpoint: bool = False
+    # DFS (Dick & Fernandez-Serra 2021) tail-weighted SCF-energy loss knobs.
+    # When True, FULL-mode training and eval score a quadratic-weighted window
+    # of the LAST ``scf_loss_tail`` SCF-cycle energies (per-step weight
+    # (i/(N-1))**scf_loss_weight_power, rising toward convergence) instead of
+    # only the final cycle's energy. This makes the loss penalize a
+    # non-converging / oscillating SCF tail rather than chasing one arbitrary
+    # final-step energy (the root cause of the full_25 collapse). Generalizes
+    # DFS's fixed 25-step "last 10" rule to any max_cycles. Default off ->
+    # final-cycle-only, byte-identical to the prior behavior.
+    scf_loss_use_tail: bool = False
+    scf_loss_tail: int = 10
+    scf_loss_weight_power: float = 2.0
+    # Orientation lock (orientation_lock.py): coefficient on a small, fixed,
+    # traceless anisotropic-quadrupole bias added to h_core so an orbitally
+    # degenerate open-shell radical (OH/NO, X-2-Pi) always relaxes to the SAME
+    # representative of its degenerate pi manifold -> its single-determinant
+    # density on a fixed grid is reproducible across processes/machines. Applied
+    # identically here (the manual/oneshot/pyscfad SCF) and in the CCSD reference
+    # generation so ref and functional lock the same component. Default 0.0 ->
+    # off -> byte-identical to the pre-lock pipeline.
+    orientation_lock_strength: float = 0.0
 
     def __post_init__(self):
         if self.max_cycles < 0:
             raise ValueError(f"max_cycles must be >= 0, got {self.max_cycles}")
         if self.conv_tol <= 0:
             raise ValueError(f"conv_tol must be > 0, got {self.conv_tol}")
+        if self.scf_loss_tail < 1:
+            raise ValueError(
+                f"scf_loss_tail must be >= 1, got {self.scf_loss_tail}"
+            )
+        if self.scf_loss_weight_power < 0:
+            raise ValueError(
+                "scf_loss_weight_power must be >= 0, got "
+                f"{self.scf_loss_weight_power}"
+            )
+        if self.orientation_lock_strength < 0:
+            raise ValueError(
+                "orientation_lock_strength must be >= 0, got "
+                f"{self.orientation_lock_strength}"
+            )
         if self.mode == SolverMode.ONESHOT and self.max_cycles != 0:
             raise ValueError(
                 f"oneshot mode requires max_cycles=0, got {self.max_cycles}"
@@ -114,6 +149,10 @@ class SolverConfig:
             "density_fit": self.density_fit,
             "auxbasis": self.auxbasis,
             "scf_grad_checkpoint": self.scf_grad_checkpoint,
+            "scf_loss_use_tail": self.scf_loss_use_tail,
+            "scf_loss_tail": self.scf_loss_tail,
+            "scf_loss_weight_power": self.scf_loss_weight_power,
+            "orientation_lock_strength": self.orientation_lock_strength,
         }
 
 
@@ -216,6 +255,46 @@ class LinearMixer(Mixer):
 
     def step(self, state, D_in, D_out):
         D_mixed = self.alpha * D_out + (1.0 - self.alpha) * D_in
+        new_state = MixerState(step_index=state.step_index + jnp.int32(1))
+        return new_state, D_mixed
+
+
+@register_mixer
+class DecayingLinearMixer(Mixer):
+    """DFS step-decaying linear mixer: ``alpha = base**step + floor``.
+
+    Dick & Fernandez-Serra 2021 (og_dpyscf ``torch_routines.py:174-178``) damps
+    the SCF with a per-step ``alpha = (0.3)**step + 0.3``: aggressive early
+    (step 0 -> 1.3, a mild over-relaxation), settling toward ``floor`` (0.3) as
+    the iteration proceeds. This damps the period-2 density oscillations a
+    constant linear mixer cannot, which is what lets a forced multi-cycle SCF
+    converge for hard species (transition states, radicals). Unlike
+    ``LinearMixer`` the alpha is intentionally NOT clamped to ``[0, 1]`` -- the
+    step-0 over-relaxation (1.3) is part of the DFS schedule.
+
+    The per-step index comes from ``MixerState.step_index`` (incremented each
+    ``step``), which the SCF scan freezes once converged, so a converged tail
+    stops advancing alpha along with everything else.
+    """
+    registry_name = "decaying_linear"
+
+    def __init__(self, base: float = 0.3, floor: float = 0.3):
+        if not (0.0 < base < 1.0):
+            raise ValueError(f"base must be in (0, 1), got {base}")
+        if not (0.0 <= floor < 1.0):
+            raise ValueError(f"floor must be in [0, 1), got {floor}")
+        self.base = base
+        self.floor = floor
+
+    def init_state(self, nao: int) -> MixerState:
+        return MixerState(step_index=jnp.int32(0))
+
+    def step(self, state, D_in, D_out):
+        alpha = (
+            jnp.power(self.base, state.step_index.astype(jnp.float64))
+            + self.floor
+        )
+        D_mixed = alpha * D_out + (1.0 - alpha) * D_in
         new_state = MixerState(step_index=state.step_index + jnp.int32(1))
         return new_state, D_mixed
 

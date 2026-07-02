@@ -75,10 +75,12 @@ class SweepAxes:
 class SolverNamed:
     """A named solver configuration referenced by the ``solver`` sweep axis.
 
-    Deliberately limited: ``mode``, ``max_cycles``, an optional
-    ``feature_policy`` and an optional ``scf_grad_checkpoint``. Do NOT add
-    conv_tol / mixer fields here, those belong to a richer solver config
-    consumed downstream.
+    Core fields: ``mode``, ``max_cycles``, optional ``feature_policy`` /
+    ``scf_grad_checkpoint``. Plus the DFS self-consistency knobs (2026-06-24):
+    an optional ``mixer_name`` / ``mixer_kwargs`` (to select the step-decaying
+    mixer) and the tail-weighted-energy-loss toggles. All default to the prior
+    linear/0.5 mixer + final-step-only loss so existing solvers are unchanged.
+    Do NOT add conv_tol here.
     """
     mode: str
     max_cycles: int
@@ -87,6 +89,19 @@ class SolverNamed:
     # backprop memory at ~1.5x recompute) so long-cycle FULL training (full_25)
     # stays memory-bounded. Default off keeps existing solvers byte-identical.
     scf_grad_checkpoint: bool = False
+    # 2026-06-24: DFS step-decaying mixer + tail-weighted energy loss. None ->
+    # SolverConfig keeps its linear/alpha-0.5 default; tail off -> final-step
+    # only. mixer_kwargs is a hashable tuple-of-(name, value) pairs.
+    mixer_name: str | None = None
+    mixer_kwargs: tuple[tuple[str, float], ...] | None = None
+    scf_loss_use_tail: bool = False
+    scf_loss_tail: int = 10
+    scf_loss_weight_power: float = 2.0
+    # 2026-07-02: orientation lock. Coefficient on the traceless
+    # anisotropic-quadrupole h_core bias (orientation_lock.py) that makes a
+    # degenerate radical's density reproducible. 0.0 -> off -> byte-identical, so
+    # existing sweep YAMLs (which do not set it) are unchanged.
+    orientation_lock_strength: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -411,11 +426,19 @@ def _build_solvers(d: dict) -> dict[str, SolverNamed]:
     out: dict[str, SolverNamed] = {}
     for name, sd in d.items():
         ctx = f"solvers.{name}"
+        mixer_kwargs = _parse_mixer_kwargs(sd.get("mixer_kwargs"), ctx)
         out[str(name)] = SolverNamed(
             mode=_require(sd, "mode", ctx),
             max_cycles=_require(sd, "max_cycles", ctx),
             feature_policy=sd.get("feature_policy"),
             scf_grad_checkpoint=bool(sd.get("scf_grad_checkpoint", False)),
+            mixer_name=sd.get("mixer_name"),
+            mixer_kwargs=mixer_kwargs,
+            scf_loss_use_tail=bool(sd.get("scf_loss_use_tail", False)),
+            scf_loss_tail=int(sd.get("scf_loss_tail", 10)),
+            scf_loss_weight_power=float(sd.get("scf_loss_weight_power", 2.0)),
+            orientation_lock_strength=float(
+                sd.get("orientation_lock_strength", 0.0)),
         )
     return out
 
@@ -485,6 +508,37 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         loss_weighting=d.get("loss_weighting", "integration"),
         atoms=_parse_pretrain_atoms(d.get("atoms")),
     )
+
+
+def _parse_mixer_kwargs(raw, ctx):
+    """Normalize a named solver's ``mixer_kwargs`` to a hashable, sorted
+    tuple-of-(str, float) pairs, or ``None`` when absent.
+
+    Accepts either a ``{name: value}`` dict (the user-authored YAML form) or a
+    list/tuple of ``[name, value]`` pairs -- the latter is the round-tripped
+    ``resolved_config.yaml`` form: ``submit`` serializes ``SolverNamed`` via
+    ``dataclasses.asdict`` (keeping the tuple-of-pairs) and ``yaml.safe_dump``
+    writes tuples as YAML sequences, so a reload (datagen/pretrain/preflight/
+    eval) parses them back as nested lists. Mirrors ``_parse_channel_weights``
+    / ``_parse_pretrain_atoms``, which solve the same dict<->list round-trip;
+    NOT handling the list form is what crashed datagen with
+    ``mixer_kwargs must be a mapping, got list``.
+
+    ``None``/empty -> ``None`` so ``SolverConfig`` keeps its default mixer
+    kwargs unless a solver explicitly overrides them.
+    """
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        items = raw.items()
+    elif isinstance(raw, (list, tuple)):
+        items = raw
+    else:
+        raise ValueError(
+            f"{ctx}.mixer_kwargs must be a mapping or a list of "
+            f"[name, value] pairs, got {type(raw).__name__}"
+        )
+    return tuple(sorted((str(k), float(v)) for k, v in items))
 
 
 def _parse_pretrain_atoms(raw) -> tuple:
@@ -819,6 +873,29 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                 f"{hp.update_scheme!r}. The 'batched' loop never validates, so "
                 f"the eval would silently report a non-comparable shrunken metric."
             )
+        # Early-stop GEOMETRY guard: in-loop validation fires
+        # floor(n_steps/validate_every) times, and train._BestValidationTracker.
+        # should_stop can only build a no-improvement streak of n_checks-1 (the
+        # FIRST finite check sets the baseline and never counts as non-improving --
+        # the correct Keras semantics). So a patience of P fires anywhere but the
+        # degenerate "val-min at the very first check" case ONLY when
+        # n_checks >= P+2. patience >= n_checks-1 is effectively dead: the v3 runs
+        # (n_steps=150, validate_every=25 -> 6 checks, patience=5) reported
+        # early_stopped=False for EVERY spec. Reject at submit so a whole training
+        # run is not silently wasted on an early-stop that can never trigger.
+        if hp.patience > 0:
+            n_checks = int(hp.n_steps) // hp.validate_every
+            if hp.patience >= n_checks - 1:
+                raise ValueError(
+                    f"hyperparams.patience={hp.patience} cannot drive early-stop "
+                    f"with n_steps={hp.n_steps} / validate_every={hp.validate_every}"
+                    f": that is only n_checks={n_checks} validation checks, and the "
+                    f"no-improvement streak maxes at n_checks-1={n_checks - 1} (the "
+                    f"first check sets the baseline), so early-stop would fire only "
+                    f"degenerately or never. Use patience <= {max(0, n_checks - 2)} "
+                    f"(n_checks >= patience+2), or raise n_steps / lower "
+                    f"validate_every."
+                )
     # The harness NEVER builds a PBE-anchor sample (spec_builder hardcodes
     # pbe_anchor_sample=None), so a positive pbe_anchor_weight is a silent
     # no-op for the A/B/C/D losses and a hard error for L5_gradnorm_vxc_step7

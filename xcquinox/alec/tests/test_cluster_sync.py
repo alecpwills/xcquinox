@@ -636,6 +636,14 @@ def _materialize_fake_run(root: Path) -> Path:
         "test_set_held_out_combined,8.4,11.8,-3.400000\n")
     (spec / "eval_holdout_best" / "per_reaction.json").write_text("[]\n")
     (spec / "eval_holdout_best" / "per_molecule.json").write_text("[]\n")
+    # Validation-best-checkpoint held-out eval (model_val_best.eqx) -- the figures'
+    # "best" selector; same small CSV/JSON, must be pulled by summaries.
+    (spec / "eval_holdout_val_best").mkdir()
+    (spec / "eval_holdout_val_best" / "test_set.csv").write_text(
+        "set,mae_nn_kcalmol,mae_pbe_kcalmol,delta_nn_minus_pbe\n"
+        "test_set_held_out_combined,8.0,11.8,-3.800000\n")
+    (spec / "eval_holdout_val_best" / "per_reaction.json").write_text("[]\n")
+    (spec / "eval_holdout_val_best" / "per_molecule.json").write_text("[]\n")
     # Pretrain
     pre = run / "pretrain" / "deep_combined_attn"
     pre.mkdir(parents=True)
@@ -708,6 +716,9 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "checkpoints/spec_0000/eval_holdout_best/test_set.csv",
         "checkpoints/spec_0000/eval_holdout_best/per_reaction.json",
         "checkpoints/spec_0000/eval_holdout_best/per_molecule.json",
+        "checkpoints/spec_0000/eval_holdout_val_best/test_set.csv",
+        "checkpoints/spec_0000/eval_holdout_val_best/per_reaction.json",
+        "checkpoints/spec_0000/eval_holdout_val_best/per_molecule.json",
         "pretrain/deep_combined_attn/pretrain_metadata.json",
         "pretrain/deep_combined_attn/losses_x.npy",
         "pretrain/deep_combined_attn/losses_c.npy",

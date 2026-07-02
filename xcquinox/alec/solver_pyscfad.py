@@ -76,6 +76,16 @@ def _build_pyscfad_mf(mol, mol_data: dict):
     else:
         mf = pyscfad.dft.RKS(mol)
     md = mol_data.get("mol_metadata") or {}
+    # Orientation lock: the pyscfad backend rebuilds its own mean-field and does
+    # NOT read mol_data["h_core"], so add the precomputed bias matrix (stashed by
+    # precompute) to its get_hcore. Wrap the original get_hcore so any
+    # geometry-dependence is preserved and only the constant bias is added.
+    _ol_bias = md.get("orientation_lock_bias")
+    if _ol_bias is not None:
+        import jax.numpy as jnp
+        _orig_get_hcore = mf.get_hcore
+        _ol_bias_j = jnp.asarray(_ol_bias)
+        mf.get_hcore = lambda *a, **k: _orig_get_hcore(*a, **k) + _ol_bias_j
     grid_level = md.get("grid_level")
     if grid_level is not None:
         mf.grids.level = int(grid_level)

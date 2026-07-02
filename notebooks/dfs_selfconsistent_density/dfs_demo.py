@@ -50,6 +50,7 @@ from xcquinox.alec.config import PretrainSpec, TestSpec, TrainingSpec
 from xcquinox.alec.pretrain import run_pretrain
 from xcquinox.alec.pretrain_data_gen import ensure_pretrain_data
 from xcquinox.alec.solver import FeaturePolicy, SolverConfig, SolverMode
+from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH as _OL_DEFAULT_STRENGTH
 from xcquinox.alec.dfs_pool import ATOMIC_GROUND_STATE_SPIN
 from xcquinox.alec.training_points import (
     _atom_anchor_atoms,
@@ -72,6 +73,20 @@ SMOKE_MOLECULE_HILLS: tuple[str, ...] = ("H2O", "HO")
 
 #: The two modern architectures featured by the notebook (swap your own here).
 ARCH_NAMES: tuple[str, ...] = ("deep_3x16", "deep_rung35_3x16")
+
+#: Held-out generalization set (real DFS-pool entries, elements subset {H,O,Li,N},
+#: NONE in the training set): N2 (closed-shell triple bond, a classic PBE
+#: density-error case), NO (X-2-Pi degenerate radical -- doubles as proof the
+#: orientation lock generalizes to an UNSEEN degenerate system), NO2 (bent 2-A1
+#: polyatomic radical). Their AE-as-reaction points carry the N/O atom anchors.
+HELDOUT_MOLECULE_HILLS: tuple[str, ...] = ("N2", "NO", "NO2")
+
+#: Orientation-lock strength for the whole demo (orientation_lock.py). Applied
+#: IDENTICALLY in CCSD ref-generation, the PBE seed, training, and eval (via the
+#: solver configs below and generate_ccsd_density_refs), so a degenerate radical
+#: (OH in training, NO held-out) always locks the SAME representative of its 2-Pi
+#: manifold -> its density is reproducible across processes/machines. 0.0 = off.
+ORIENTATION_LOCK_STRENGTH: float = _OL_DEFAULT_STRENGTH
 
 #: DFS reference density basis (Dick & Fernandez-Serra 2021) and repo-recipe grid.
 DFS_BASIS: str = "6-311++G(3df,2pd)"
@@ -184,7 +199,9 @@ def molecule_specs(mol_specs: Iterable) -> list:
 # ---------------------------------------------------------------------------
 
 def generate_ccsd_density_refs(mol_specs: Sequence, *, refs_dir: str, basis: str,
-                               grid_level: int, progress: bool = True) -> list:
+                               grid_level: int, progress: bool = True,
+                               orientation_lock_strength: float = ORIENTATION_LOCK_STRENGTH
+                               ) -> list:
     """Generate per-molecule CCSD reference densities into ``refs_dir``.
 
     Reuses :func:`xcquinox.alec.benchmark_refs.generate_one` (converged HF ->
@@ -194,6 +211,12 @@ def generate_ccsd_density_refs(mol_specs: Sequence, *, refs_dir: str, basis: str
     density and reference align point-for-point. Atoms are skipped (no density
     reference needed -- the loss is molecules-only). Returns ``[(name, status)]``
     where status is ``"OK"``/``"SKIP"``.
+
+    ``orientation_lock_strength`` (>0) biases the reference PBE + HF-for-CCSD core
+    Hamiltonians with the SAME operator the eval/training seed uses, so a
+    degenerate radical's reference density locks the same component. Turning it on
+    (or changing it) auto-regenerates the ref (the strength tags the caches +
+    npz), so this is self-healing -- no manual ``refs/`` deletion needed.
     """
     os.makedirs(refs_dir, exist_ok=True)
     mols = molecule_specs(mol_specs)
@@ -202,9 +225,10 @@ def generate_ccsd_density_refs(mol_specs: Sequence, *, refs_dir: str, basis: str
         if progress:
             print(f"  CCSD ref {i}/{len(mols)}: {ms.name} @ {basis} ...", flush=True)
         # generate_one returns "SKIP" when a complete .npz already exists for this
-        # basis/grid (reused), else "OK" (freshly computed). "SKIP" is NOT an error.
+        # basis/grid/lock (reused), else "OK" (freshly computed). "SKIP" is NOT an error.
         status = benchmark_refs.generate_one(
-            ms, out_dir=refs_dir, basis=basis, grid_level=grid_level)
+            ms, out_dir=refs_dir, basis=basis, grid_level=grid_level,
+            orientation_lock_strength=orientation_lock_strength)
         if progress:
             human = "cached (reused existing .npz)" if status == "SKIP" else "generated"
             print(f"    {ms.name}: {human}", flush=True)
@@ -232,6 +256,9 @@ def solver_configs() -> dict:
         scf_loss_use_tail=True,
         scf_loss_tail=10,
         scf_loss_weight_power=2.0,
+        # Orientation lock on both solvers -> training AND eval precompute bias
+        # h_core identically, so OH's (and held-out NO's) density is reproducible.
+        orientation_lock_strength=ORIENTATION_LOCK_STRENGTH,
     )
     return {
         "full_3": SolverConfig(max_cycles=3, **common),
@@ -563,4 +590,89 @@ def combined_energy_density(ae_rows, density_rows):
         "ED_nn": ed_nn,
         "ED_pbe": ed_pbe,
         "beats_pbe": ed_nn < ed_pbe,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Held-out generalization (does the tiny functional beat PBE OFF the training set?)
+# ---------------------------------------------------------------------------
+
+def heldout_points(hills: Sequence[str] = HELDOUT_MOLECULE_HILLS) -> list:
+    """AE-as-reaction ``TrainingPoint``s for the held-out molecules.
+
+    Same machinery as :func:`select_dfs_points` (so the geometry, spin, and AE
+    reference all come verbatim from the DFS pool -- no fabricated values); only
+    the Hill list differs. The returned points carry the compounds plus their
+    constituent atom anchors (N, O), so a held-out eval can compute each
+    functional's OWN self-consistent atomization energy.
+    """
+    return select_dfs_points(hills)
+
+
+def heldout_comp_and_ae(chosen_points: Sequence, mol_specs: Sequence) -> tuple[dict, dict]:
+    """``(comp_by_name, ae_ref_kcal)`` for the held-out molecules.
+
+    ``comp_by_name`` maps each polyatomic's name to its atom composition (for
+    :func:`self_consistent_ae`); ``ae_ref_kcal`` maps it to the pool's reference
+    atomization energy in kcal/mol (via :func:`_ae_ref_kcalmol`, the same source
+    the training path uses -- not a hand-typed literal).
+    """
+    comp_by_name = {ms.name: dict(ms.atom_composition)
+                    for ms in molecule_specs(mol_specs)}
+    ae_ref_kcal, _ = _ae_ref_kcalmol(chosen_points)
+    ae_ref_kcal = {k: float(v) for k, v in ae_ref_kcal.items()
+                   if k in comp_by_name and v is not None}
+    return comp_by_name, ae_ref_kcal
+
+
+def build_heldout_test_spec(*, arch, solver_cfg, mol_specs: Sequence,
+                            model_checkpoint: str, output_dir: str, domain=DOMAIN,
+                            metrics: Sequence[str] = (
+                                "total_energy", "atomization_energy",
+                                "density_rmse", "scf_convergence")) -> TestSpec:
+    """A ``TestSpec`` that evaluates one trained checkpoint on the held-out pool.
+
+    Like :func:`build_dfs_test_spec` but over an EXPLICIT ``mol_specs`` union
+    (the held-out molecules + their N/O atom anchors) rather than the training
+    spec's molecules, under the SAME FULL ``solver_cfg`` (so the orientation lock
+    rides along and the held-out density is self-consistent + reproducible). No
+    retraining: this only consumes the already-trained ``model_checkpoint``.
+    """
+    return TestSpec.from_dicts(
+        model_checkpoint=model_checkpoint,
+        arch=arch,
+        molecules=tuple(mol_specs),
+        metrics=tuple(metrics),
+        atom_energies=dict(domain.atom_energies),
+        solver_config=solver_cfg,
+        output_dir=output_dir,
+    )
+
+
+def heldout_summary(per_model_combined: dict) -> dict:
+    """Tally how many trained models beat PBE on the held-out set (pure logic).
+
+    ``per_model_combined`` maps ``model_name -> combined_energy_density(...)``
+    (each already computed from that model's held-out ``run_test`` records).
+    Returns a per-model table plus the ``k/N`` beat-PBE counts on AE-MAE, mean
+    density RMSE, and the combined energy-density error ``ED``.
+    """
+    rows = []
+    for name, c in per_model_combined.items():
+        rows.append({
+            "model": name,
+            "E_MAE_nn": c["E_MAE_nn"], "E_MAE_pbe": c["E_MAE_pbe"],
+            "D_nn": c["D_nn"], "D_pbe": c["D_pbe"],
+            "ED_nn": c["ED_nn"], "ED_pbe": c["ED_pbe"],
+            "beats_ae": c["E_MAE_nn"] < c["E_MAE_pbe"],
+            "beats_density": c["D_nn"] < c["D_pbe"],
+            "beats_ed": bool(c["beats_pbe"]),
+        })
+    n = len(rows)
+    return {
+        "rows": rows,
+        "n_models": n,
+        "n_beat_ae": sum(r["beats_ae"] for r in rows),
+        "n_beat_density": sum(r["beats_density"] for r in rows),
+        "n_beat_ed": sum(r["beats_ed"] for r in rows),
     }

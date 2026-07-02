@@ -67,7 +67,8 @@ POOL_CHOICES: Tuple[str, ...] = ("bh76", "w411", "all")
 # and grid_level_used/basis_used are identity guards.
 _DENSITY_NPZ_KEYS: frozenset = frozenset(
     {"rho_ref_grid", "rho_pbe_grid", "grid_weights",
-     "ref_density_method", "grid_level_used", "basis_used"})
+     "ref_density_method", "grid_level_used", "basis_used",
+     "orientation_lock_strength"})
 
 
 def _mol_spec_to_atoms(ms: MoleculeSpec):
@@ -113,11 +114,15 @@ def _atomic_savez(path, **arrays) -> None:
         raise
 
 
-def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int) -> bool:
+def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int,
+                               orientation_lock_strength: float = 0.0) -> bool:
     """True iff ``path`` is a readable density-only reference matching this
-    run's basis + grid_level. Deliberately NOT ``external_refs._npz_is_complete``
-    (that demands the OEP keys vxc_ref/dm_target). A corrupt or partial file
-    reads as incomplete -> regenerated."""
+    run's basis + grid_level + orientation-lock strength. Deliberately NOT
+    ``external_refs._npz_is_complete`` (that demands the OEP keys
+    vxc_ref/dm_target). A corrupt or partial file reads as incomplete ->
+    regenerated. A legacy file with no stored strength is treated as
+    strength 0.0, so an unlocked cache matches only an unlocked request and
+    turning the lock on (or changing its strength) forces regeneration."""
     p = Path(path)
     if not p.is_file():
         return False
@@ -132,6 +137,10 @@ def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int) -> bool:
                 return False
             if ("grid_level_used" in files
                     and int(z["grid_level_used"]) != int(grid_level)):
+                return False
+            stored_ol = (float(z["orientation_lock_strength"])
+                         if "orientation_lock_strength" in files else 0.0)
+            if stored_ol != float(orientation_lock_strength):
                 return False
     except Exception:
         return False
@@ -176,26 +185,36 @@ def resolve_slice(n: int, *, shard: Optional[str] = None,
 
 def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
                  density_fit: bool = False,
-                 auxbasis: Optional[str] = None) -> str:
+                 auxbasis: Optional[str] = None,
+                 orientation_lock_strength: float = 0.0) -> str:
     """Generate (or skip) one species' density-only reference npz.
 
     Returns ``"SKIP"`` when the final npz is already complete for this
-    basis/grid, else runs SCF + CCSD (both stages individually cached and
-    atomic, so a killed job resumes mid-species) and writes the final npz.
-    ``source='benchmark'`` on the SpeciesEntry is a provenance tag only --
-    geometry comes from the MoleculeSpec, never ``resolve_geometry``."""
+    basis/grid/orientation-lock, else runs SCF + CCSD (both stages individually
+    cached and atomic, so a killed job resumes mid-species) and writes the final
+    npz. ``source='benchmark'`` on the SpeciesEntry is a provenance tag only --
+    geometry comes from the MoleculeSpec, never ``resolve_geometry``.
+
+    ``orientation_lock_strength`` (>0) biases the PBE + HF-for-CCSD core
+    Hamiltonians with the shared anisotropic-quadrupole operator so a degenerate
+    radical's reference density locks the SAME component as the eval/training
+    seed; it tags the intermediate caches + the final npz so switching it on (or
+    changing it) regenerates rather than silently reusing an unlocked file."""
     final = Path(out_dir) / f"{ms.name}.npz"
-    if _benchmark_npz_is_complete(final, basis=basis, grid_level=grid_level):
+    if _benchmark_npz_is_complete(final, basis=basis, grid_level=grid_level,
+                                  orientation_lock_strength=orientation_lock_strength):
         return "SKIP"
     spec = SpeciesEntry(name=ms.name, charge=int(ms.charge),
                         spin=int(ms.spin), source="benchmark")
     atoms = _mol_spec_to_atoms(ms)
     scf = run_scf_with_cache(
         spec, atoms, cache_dir=out_dir, basis=basis, grid_level=grid_level,
-        density_fit=density_fit, auxbasis=auxbasis)
+        density_fit=density_fit, auxbasis=auxbasis,
+        orientation_lock_strength=orientation_lock_strength)
     cc = run_ccsd_with_cache(
         spec, atoms, scf_payload=scf, cache_dir=out_dir, basis=basis,
-        grid_level=grid_level, density_fit=density_fit, auxbasis=auxbasis)
+        grid_level=grid_level, density_fit=density_fit, auxbasis=auxbasis,
+        orientation_lock_strength=orientation_lock_strength)
     # PBE density on the SAME (pruned) grid as the CCSD reference: spin-sum
     # the stage-1 PBE dm and contract with the stage-2 AO values. Stored so
     # the PBE-vs-CCSD baseline needs no SCF at consumption time (and, for DF
@@ -212,6 +231,7 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
         ref_density_method=np.array("ccsd"),
         grid_level_used=np.array(int(grid_level)),
         basis_used=np.array(str(basis)),
+        orientation_lock_strength=np.array(float(orientation_lock_strength)),
     )
     return "OK"
 

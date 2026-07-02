@@ -1401,3 +1401,138 @@ def test_atomic_reg_is_mean_not_sum():
     E_nn3 = jnp.array([2.0 * -0.5, 2.0 * -37.8, -75.0])
     val3 = float(_atomic_reg(E_nn3, atom_idx3, atom_energies3))
     assert val3 == pytest.approx(2.0 / 3.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# DFS per-step tail-weighted energy loss (2026-06-24).
+# When SolverConfig.scf_loss_use_tail is on, the energy-derived channels score
+# a quadratic-weighted window of the LAST scf_loss_tail SCF-cycle energies
+# (per-step residual, mean of (w_i * r_i)^2) instead of only the final cycle.
+# step_w2 = weights**2; step_w2=None keeps the byte-identical scalar path.
+# ---------------------------------------------------------------------------
+
+def test_rxn_residual_term_scalar_path_unchanged():
+    from xcquinox.alec.losses import _rxn_residual_term
+    e_nn = jnp.array([1.0, 4.0])
+    coeffs = jnp.array([-1.0, 1.0])
+    ref = jnp.array(2.0)
+    out = float(_rxn_residual_term(e_nn, coeffs, ref))  # step_w2=None
+    assert out == pytest.approx((3.0 - 2.0) ** 2, abs=1e-12)  # e_rxn=3
+
+
+def test_rxn_residual_term_tail_weighted_matches_manual():
+    from xcquinox.alec.losses import _rxn_residual_term
+    # 2 species x 3 SCF steps; coeffs [-1, 1] -> e_rxn = e1 - e0 per step.
+    e_nn = jnp.array([[1.0, 1.0, 1.0],
+                      [2.0, 3.0, 4.0]])
+    coeffs = jnp.array([-1.0, 1.0])
+    ref = jnp.array(2.0)
+    w2 = jnp.array([0.0, 0.25, 1.0])
+    out = float(_rxn_residual_term(e_nn, coeffs, ref, step_w2=w2))
+    # e_rxn=[1,2,3]; resid=[-1,0,1]; w2*resid^2=[0,0,1]; mean=1/3
+    assert out == pytest.approx(1.0 / 3.0, abs=1e-12)
+
+
+def test_ip_residual_term_tail_weighted_matches_manual():
+    from xcquinox.alec.losses import _ip_residual_term
+    e_cat = jnp.array([5.0, 5.0, 6.0])
+    e_neu = jnp.array([1.0, 1.0, 1.0])
+    ipref = jnp.array(4.0)
+    w2 = jnp.array([0.0, 0.25, 1.0])
+    out = float(_ip_residual_term(e_cat, e_neu, ipref, step_w2=w2))
+    # ip=[4,4,5]; resid=[0,0,1]; w2*resid^2=[0,0,1]; mean=1/3
+    assert out == pytest.approx(1.0 / 3.0, abs=1e-12)
+
+
+def test_ae_losses_tail_weighted_matches_manual():
+    from xcquinox.alec.losses import _ae_losses
+    # one compound 'M' = {H:1}, atom anchor H=-0.5, target AE=0.4.
+    # AE_step = (1*-0.5) - E_mol_step.
+    E_nn = jnp.array([[-0.9, -1.0]])  # compound 0 over 2 steps
+    w2 = jnp.array([0.0, 1.0])
+    out = float(_ae_losses(
+        E_nn, (0,), ({"H": 1},), ("M",), {"M": 0.4}, {"H": -0.5}, step_w2=w2,
+    ))
+    # AE=[-0.5+0.9, -0.5+1.0]=[0.4,0.5]; resid=[0,0.1]; w2*resid^2=[0,0.01];
+    # mean=0.005; /max(0.4^2, floor)=0.16
+    assert out == pytest.approx(0.005 / 0.16, abs=1e-9)
+
+
+def test_atomic_reg_tail_weighted_matches_manual():
+    from xcquinox.alec.losses import _atomic_reg
+    # one anchored atom H, anchor -0.5, energy over 2 steps [-0.4, -0.5].
+    E_nn = jnp.array([[-0.4, -0.5]])
+    w2 = jnp.array([0.0, 1.0])
+    out = float(_atomic_reg(E_nn, {"H": 0}, {"H": -0.5}, step_w2=w2))
+    # diff=[0.1, 0.0]; diff^2=[0.01,0]; w2*=[0,0]; mean=0; /(0.25+1e-8)=0
+    assert out == pytest.approx(0.0, abs=1e-12)
+    # step 0 weighted instead -> nonzero
+    out2 = float(_atomic_reg(E_nn, {"H": 0}, {"H": -0.5}, step_w2=jnp.array([1.0, 0.0])))
+    # diff^2=[0.01,0]; w2=[1,0]; mean=0.005; /0.25
+    assert out2 == pytest.approx(0.005 / (0.25 + 1e-8), abs=1e-9)
+
+
+def _h2o_sto3g_full_md():
+    spec = MoleculeSpec(
+        name="H2O", atom="O 0 0 0; H 0 1 0; H 0 0 1", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("O", 1), ("H", 2)), grid_level=1,
+    )
+    return precompute_fixed_density_data(spec, required_keys=("eri",))
+
+
+def test_compute_energy_trajectories_tail_shape_and_values():
+    from xcquinox.alec.losses import _compute_energy_trajectories
+    from xcquinox.alec.solver import (
+        SolverConfig, SolverMode, SolverBackend, run_scf,
+    )
+    model = _make_model()
+    md = _h2o_sto3g_full_md()
+    full = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=4,
+        conv_tol=1e-8, mixer_kwargs=(("alpha", 1.0),),
+        scf_loss_use_tail=True, scf_loss_tail=2, scf_loss_weight_power=2.0,
+    )
+    traj = _compute_energy_trajectories(model, (md,), 1, solver_config=full)
+    assert traj.shape == (1, 2)  # tail_len = min(4, 2) = 2
+    trace = run_scf(full, model, md).energy_trace
+    assert jnp.allclose(traj[0], trace[2:])  # skip = 4 - 2 = 2
+
+
+def test_compute_energy_trajectories_off_is_scalar_column():
+    from xcquinox.alec.losses import (
+        _compute_energy_trajectories, _compute_energies,
+    )
+    from xcquinox.alec.solver import SolverConfig, SolverMode, SolverBackend
+    model = _make_model()
+    md = _h2o_sto3g_full_md()
+    full_off = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=3,
+        conv_tol=1e-8, mixer_kwargs=(("alpha", 1.0),),
+    )  # scf_loss_use_tail defaults False
+    traj = _compute_energy_trajectories(model, (md,), 1, solver_config=full_off)
+    assert traj.shape == (1, 1)
+    scalar = _compute_energies(model, (md,), 1, solver_config=full_off)
+    assert jnp.allclose(traj[:, 0], scalar)
+
+
+def test_compute_energy_trajectories_tail_differentiable():
+    from xcquinox.alec.losses import _compute_energy_trajectories
+    from xcquinox.alec.solver import SolverConfig, SolverMode, SolverBackend
+    model = _make_model()
+    md = _h2o_sto3g_full_md()
+    full = SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=4,
+        conv_tol=1e-8, mixer_kwargs=(("alpha", 1.0),),
+        scf_loss_use_tail=True, scf_loss_tail=3, scf_loss_weight_power=2.0,
+    )
+
+    def loss_fn(m):
+        # sum over ALL tail steps -> grad must flow through each, not just final
+        return jnp.sum(
+            _compute_energy_trajectories(m, (md,), 1, solver_config=full)[0] ** 2
+        )
+
+    grads = eqx.filter_grad(loss_fn)(model)
+    leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_inexact_array))
+    gnorm = float(jnp.sqrt(sum(jnp.sum(g ** 2) for g in leaves)))
+    assert bool(jnp.isfinite(jnp.array(gnorm))) and gnorm > 0.0

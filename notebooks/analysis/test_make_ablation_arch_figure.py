@@ -895,6 +895,60 @@ def test_run_basis_label_reads_basis_and_df(tmp_path):
     assert fig.run_basis_label(tmp_path) == "def2-svp"
 
 
+def test_run_solver_label_reads_block_list(tmp_path):
+    # block-style "solver:\n- full_3" (the form the v3 configs use)
+    (tmp_path / "resolved_config.yaml").write_text(
+        "basis: def2-svp\ndensity_fit: false\nsolver:\n- full_3\ngrid_level: 2\n")
+    assert fig.run_solver_label(tmp_path) == "full_3"
+
+
+def test_run_solver_label_reads_full25(tmp_path):
+    (tmp_path / "resolved_config.yaml").write_text(
+        "basis: def2-svp\nsolver:\n- full_25\n")
+    assert fig.run_solver_label(tmp_path) == "full_25"
+
+
+def test_run_solver_label_inline_form(tmp_path):
+    (tmp_path / "resolved_config.yaml").write_text("solver: full_3\n")
+    assert fig.run_solver_label(tmp_path) == "full_3"
+
+
+def test_run_solver_label_empty_when_absent(tmp_path):
+    (tmp_path / "resolved_config.yaml").write_text("basis: def2-svp\n")
+    assert fig.run_solver_label(tmp_path) == ""
+
+
+def test_disambiguated_labels_appends_solver_on_basis_collision(tmp_path):
+    # two runs that share a basis (def2-svp) but differ in SCF cycles must get
+    # DISTINCT display labels carrying the full_3 / full_25 tag.
+    a = tmp_path / "a"; a.mkdir()
+    (a / "resolved_config.yaml").write_text("basis: def2-svp\nsolver:\n- full_3\n")
+    b = tmp_path / "b"; b.mkdir()
+    (b / "resolved_config.yaml").write_text("basis: def2-svp\nsolver:\n- full_25\n")
+    labels = fig._disambiguated_run_labels([a, b])
+    assert len(set(labels)) == 2                       # distinct
+    assert any("full_3" in lbl for lbl in labels)
+    assert any("full_25" in lbl for lbl in labels)
+    assert all("def2-svp" in lbl for lbl in labels)
+
+
+def test_disambiguated_labels_unchanged_when_basis_differs(tmp_path):
+    # distinct bases need no disambiguation -> bare labels preserved.
+    a = tmp_path / "a"; a.mkdir()
+    (a / "resolved_config.yaml").write_text("basis: def2-svp\ndensity_fit: false\n")
+    b = tmp_path / "b"; b.mkdir()
+    (b / "resolved_config.yaml").write_text("basis: def2-tzvpd\ndensity_fit: true\n")
+    assert fig._disambiguated_run_labels([a, b]) == ["def2-svp", "def2-tzvpd+DF"]
+
+
+def test_ckpt_label_maps_eval_subdir():
+    assert fig._ckpt_label("eval_holdout") == "final-step"
+    assert fig._ckpt_label("eval_holdout_val_best") == "val-best"
+    # the legacy training-loss-best dir (no longer plotted) must not mislabel as
+    # "final-step" -- it is the train-best checkpoint.
+    assert fig._ckpt_label("eval_holdout_best") == "train-best"
+
+
 def test_plot_basis_comparison_renders(tmp_path):
     ra = _make_run_dir(tmp_path / "a")
     rb = _make_run_dir(tmp_path / "b")
@@ -1023,15 +1077,15 @@ def test_figure_cell_coverage_reports_renderable_cells(tmp_path):
            "deep_notransform" not in cov["archs_missing"]
 
 
-def _add_best_eval(run_dir):
-    """Duplicate each spec's eval_holdout/ -> eval_holdout_best/ so the suite's
-    best-checkpoint figure set has data to render (mirrors the cluster's default
-    second eval pass on model_best.eqx)."""
+def _add_val_best_eval(run_dir):
+    """Duplicate each spec's eval_holdout/ -> eval_holdout_val_best/ so the suite's
+    val-best figure set has data to render (mirrors the cluster's eval pass on
+    model_val_best.eqx, the held-out-validation-best weights)."""
     import shutil
     for sd in (run_dir / "checkpoints").glob("spec_*"):
         eh = sd / "eval_holdout"
         if eh.is_dir():
-            shutil.copytree(eh, sd / "eval_holdout_best", dirs_exist_ok=True)
+            shutil.copytree(eh, sd / "eval_holdout_val_best", dirs_exist_ok=True)
 
 
 def test_build_bh76w411_suite_writes_all_families(tmp_path):
@@ -1050,37 +1104,37 @@ def test_build_bh76w411_suite_writes_all_families(tmp_path):
     assert "ablation_parity_arch_cols.png" in names      # parity-layout variants
     assert "diagnostic_size_consistency.png" in names    # per-run diagnostics
     assert "diagnostic_training_losses.png" in names
-    # no eval_holdout_best/ in this fixture -> NO best figure set (backward compat)
-    assert not any(p.parent.name.endswith("_best") for p in written)
+    # no eval_holdout_val_best/ in this fixture -> NO val-best figure set
+    assert not any(p.parent.name.endswith("_val_best") for p in written)
 
 
 def test_collect_holdout_reads_named_eval_subdir(tmp_path):
     run = _make_run_dir(tmp_path)
-    _add_best_eval(run)
+    _add_val_best_eval(run)
     final = fig.collect_holdout_reaction_rows(run)
-    best = fig.collect_holdout_reaction_rows(run, eval_subdir="eval_holdout_best")
-    assert best and len(best) == len(final)        # best dir mirrors final here
-    # absent subdir -> empty (no crash), so older runs just skip the best set
+    vbest = fig.collect_holdout_reaction_rows(run, eval_subdir="eval_holdout_val_best")
+    assert vbest and len(vbest) == len(final)      # val-best dir mirrors final here
+    # absent subdir -> empty (no crash), so runs without val-best skip that set
     bare = _make_run_dir(tmp_path / "bare")
     assert fig.collect_holdout_reaction_rows(
-        bare, eval_subdir="eval_holdout_best") == []
+        bare, eval_subdir="eval_holdout_val_best") == []
 
 
-def test_build_bh76w411_suite_emits_best_set_when_present(tmp_path):
-    # eval_holdout_best/ present -> a SECOND, parallel figure set into
-    # figures_<alias>_best/ + figures_basis_comparison_best/ (doubled figures).
+def test_build_bh76w411_suite_emits_val_best_set_when_present(tmp_path):
+    # eval_holdout_val_best/ present -> a SECOND, parallel figure set into
+    # figures_<alias>_val_best/ + figures_basis_comparison_val_best/ (doubled).
     root, runs = _make_bh76w411_results(tmp_path)
     for r in runs.values():
-        _add_best_eval(r)
+        _add_val_best_eval(r)
     outroot = tmp_path / "figs"
     written = fig.build_bh76w411_suite(results_root=root, outroot=outroot)
     assert written and all(_png_ok(p) for p in written)
     parents = {p.parent.name for p in written}
-    # both the final set AND the best set are present
-    assert {"figures_svp", "figures_svp_best",
-            "figures_tzvpd_df", "figures_tzvpd_df_best",
+    # both the final set AND the val-best set are present
+    assert {"figures_svp", "figures_svp_val_best",
+            "figures_tzvpd_df", "figures_tzvpd_df_val_best",
             "figures_basis_comparison",
-            "figures_basis_comparison_best"} <= parents
+            "figures_basis_comparison_val_best"} <= parents
 
 
 def test_build_bh76w411_suite_rejects_unknown_arch(tmp_path, monkeypatch):
