@@ -27,12 +27,13 @@ dependencies:
   - ase
   - pyyaml
   - tqdm
+  - ml_dtypes         # conda-forge binary: 0.5.3 has no cp312/old-glibc wheel on PyPI, so
+                      # pip would source-build it (+ numpy 2.5) -> needs GCC>=9.3 (node has 8.1)
   - pip
   # pure JAX / pyscf layer (wheels)
   - pip:
     - jax==0.7.0
     - jaxlib==0.7.0
-    - ml_dtypes==0.5.3
     - opt_einsum==3.4.0
     - equinox==0.13.0
     - optax==0.2.6
