@@ -22,8 +22,8 @@ dependencies:
   - numpy=2.3
   - scipy=1.16
   - h5py
-  - matplotlib
-  - pandas
+  - matplotlib-base   # -base: no Qt/GUI stack (headless cluster; far fewer small files)
+  - pandas<3          # pandas 3.0 mandates pyarrow -> libllvm22 (42 MB) + aws-c; 2.x needs none
   - ase
   - pyyaml
   - tqdm
