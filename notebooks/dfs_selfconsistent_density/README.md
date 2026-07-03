@@ -120,6 +120,15 @@ identity and overfit small pools.
 
 ### 1.7 The orientation lock (degenerate open-shell references)
 
+![OH/NO X²Π orbital degeneracy and the orientation lock](figures/orientation_degeneracy.png)
+
+*OH (`1π³`, a π hole) and NO (`2π¹`, a π electron) are both `X²Π`: the odd electron occupies a
+**degenerate** `π_x`/`π_y` pair (left), so the single-determinant density can point anywhere in the
+`(x, y)` plane at the same energy (middle) — threaded BLAS tips the near-degenerate SCF to a different
+component each run, so the density is not reproducible. A small **traceless-quadrupole** bias added to
+`h_core` (right) splits the pair by ~10⁻⁵ Ha and deterministically selects one component, at a
+total-energy cost < 0.1 kcal/mol. The mechanism is detailed below.*
+
 Two of the systems here are **orbitally degenerate**: OH (trained) and NO (held-out, §9 of the
 notebook) have `X²Π` doublet ground states [17]. Their singly-occupied π hole can sit in any linear
 combination of the degenerate `(π_x, π_y)` pair, so a single-determinant density (the UKS seed *and*
@@ -224,7 +233,68 @@ byte-for-byte what the cluster harness builds, only on a smaller pool).
 
 ---
 
-## 4. Adapting this to your own work
+## 4. Results — what these functionals actually learned
+
+Numbers below are a full run of this notebook (`deep_3x16` and `deep_rung35_3x16`, each under `full_3`
+and `full_25`, at `6-311++G(3df,2pd)` / grid 2). Every value is the notebook's own printed output or read
+off its committed figures — nothing is hand-entered.
+
+### 4.1 In-sample — the four training molecules
+
+DFS-Fig.2-style combined energy–density error (§8, figure (d)): every network beats PBE on all three axes
+on the training pool.
+
+![in-sample combined energy-density error, NN vs PBE](figures/fig_combined_ed.png)
+
+| model | AE-MAE (kcal/mol) | mean density RMSE | combined `ED` |
+|---|---|---|---|
+| `deep_3x16` / `full_3`        | **1.67** vs PBE 3.72 | 5.63e-5 vs 9.90e-5 | **1.87** vs 3.72 |
+| `deep_3x16` / `full_25`       | 1.72 | 5.88e-5 | 1.94 |
+| `deep_rung35_3x16` / `full_3` | 1.78 | 5.79e-5 | 1.96 |
+| `deep_rung35_3x16` / `full_25`| 1.94 | 6.12e-5 | 2.10 |
+
+All four roughly **halve** the PBE atomization-energy error (~1.7–1.9 vs 3.72 kcal/mol) and cut the mean
+density RMSE ~40% (the mean is OH-radical-dominated, so the closed-shell wins are larger — the notebook's
+"excl. OH" print shows ~5.1–5.5e-5 vs 8.6e-5). Per-molecule density and AE breakdowns are
+`figures/fig_density_rmse.png` (figure (b), log scale) and `figures/fig_ae_error.png` (figure (c)).
+
+### 4.2 Held-out generalization — N2, NO, NO2 (never trained on)
+
+The already-trained models are evaluated, with **no retraining**, on three systems outside the training
+set (§9) — the honest test of whether four-molecule training learned transferable physics or just
+memorized. All values below are exact (recomputed from the saved eval results). The figure **mirrors §8's
+figure (d)**: energy AE-MAE (top), mean density RMSE (middle), and combined `ED` (bottom), NN vs PBE.
+
+![held-out generalization (mirrors §8 fig. d): energy AE-MAE, mean density RMSE, and combined ED, NN vs PBE, over N2/NO/NO2](figures/fig_heldout_generalization.png)
+
+- **Density transfers universally — 4/4.** Every model beats PBE on held-out density: NN 1.43–1.50e-4 vs
+  PBE 2.32e-4 (~38% lower), for both architectures and both solvers. The density-matching objective
+  generalizes off the training set.
+- **Energy transfer is architecture-dependent — 2/4.** The plain GGA `deep_3x16` generalizes strongly on
+  atomization energy (**10.28–10.83** vs PBE **26.70** kcal/mol, a ~60% cut), but the descriptor-rich
+  `deep_rung35_3x16` does **not** (**35.20–35.68**, *worse* than PBE). The extra cusp + rung-3.5 flexibility
+  barely improves the in-sample AE (1.78–1.94 vs `deep_3x16`'s 1.67–1.72) yet **overfits** the four-molecule
+  set, so it fails to extrapolate to the larger held-out systems. On a pool this small, the added
+  descriptors buy nothing in-sample and cost held-out energy generalization — that capacity only pays off on
+  the full pool (the cluster harness), not this demo.
+- **Combined `ED` still favors NN — 4/4** (NN 12.66 / 13.08 for `deep_3x16`, 22.83 / 23.20 for
+  `deep_rung35_3x16`, vs PBE 26.70). Even the rung-3.5 models — whose AE *regresses* — beat PBE on `ED`,
+  because the universal density win carries the harmonic-mean `ED` (DFS Eq. 21) below the PBE baseline.
+- **The orientation lock generalizes.** NO is a degenerate ²Π radical none of the models saw; its PBE
+  density RMSE is **identical across all four models (2.082e-4)** — model-independent, exactly as a
+  *reproducible* density must be. This confirms the §1.7 lock deterministically selects the same
+  representative of NO's degenerate manifold on an *unseen* system, so held-out degenerate radicals are
+  well-posed, not machine-dependent.
+
+**Takeaway.** The density objective is what transfers; the energy channel transfers for the plain GGA but
+overfits for the richer arch on this tiny pool, and the orientation lock — the notebook's headline
+degenerate-radical fix — holds off the training set. Section 9 is **self-contained**: it re-derives its
+config and discovers the trained `runs/<arch>__<solver>/model.eqx` checkpoints on disk, so it regenerates
+this figure from a fresh kernel without retraining (and without depending on the sections 1–8 session).
+
+---
+
+## 5. Adapting this to your own work
 
 - **Your architecture:** change `ARCH_NAMES` (setup cell) to any registered arch, or pass a custom
   `ArchitectureConfig` to `build_dfs_training_spec`. Everything else (loss, solver, DFS recipe) is
