@@ -190,6 +190,13 @@ class InputPaths:
     # ``auxbasis`` None -> auto-select from the orbital basis. Default off.
     density_fit: bool = False
     auxbasis: str | None = None
+    # 2026-07-02: run-level orientation-lock strength (orientation_lock.py).
+    # Authoritative for the WHOLE run -- threaded to the training/eval SCF (via
+    # SolverConfig, in spec_builder) AND the CCSD reference generation (training
+    # refs via external_refs.precompute_all + the held-out benchmark_refs job), so
+    # the references and the functional lock the SAME degenerate component of a
+    # radical (OH/CH/NO). 0.0 -> off -> byte-identical; existing YAMLs unaffected.
+    orientation_lock_strength: float = 0.0
     # Hold-out benchmark reference-density dir (W4-11+BH76 pool). When set,
     # ``submit`` ALSO submits one standalone benchmark_refs job (CCSD + PBE
     # densities, no OEP) that starts once the train array has begun, and the
@@ -490,6 +497,7 @@ def _build_inputs(d: dict) -> InputPaths:
         output_root=_require(d, "output_root", ctx),
         density_fit=bool(d.get("density_fit", False)),
         auxbasis=d.get("auxbasis"),
+        orientation_lock_strength=float(d.get("orientation_lock_strength", 0.0)),
         benchmark_refs_dir=d.get("benchmark_refs_dir"),
         val_refs_dir=d.get("val_refs_dir"),
     )

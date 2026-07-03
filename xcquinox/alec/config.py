@@ -140,6 +140,11 @@ class ArchitectureConfig:
     # multiplies lda_x + PW92, NOT PBE). False keeps
     # Glorot init (gives Fx mean ~+2.65e-4 off 1).
     zero_init_final_layer: bool = False
+    # meta_gga: DFS-faithful meta-GGA (PRB 104 L161109 Eq. 12-13). True switches the
+    # X/C UEG gate to (x2 + tanh^2(x3)) (x3 = ln((alpha+1)/2)) and the exchange
+    # Lieb-Oxford ceiling to 1.174; requires a "metagga" descriptor (which supplies
+    # the iso-orbital alpha). A NEW checkpoint family. Default False -> unchanged.
+    meta_gga: bool = False
 
     def __post_init__(self):
         if not isinstance(self.name, str):
@@ -281,6 +286,7 @@ class ArchitectureConfig:
                   use_polarized_correlation: bool = False,
                   dm_entropy_intensive: bool = False,
                   descriptor_log_transform: bool = False,
+                  meta_gga: bool = False,
                   zero_init_final_layer: bool = False):
         """Factory that accepts str | (str, dict) | FeatureSpec for each entry.
 
@@ -321,6 +327,13 @@ class ArchitectureConfig:
                     stacklevel=2,
                 )
 
+        descriptor_specs = tuple(FeatureSpec.of(x) for x in descriptors)
+        if meta_gga and not any(s.name == "metagga" for s in descriptor_specs):
+            raise ValueError(
+                "ArchitectureConfig.from_spec: meta_gga=True requires a 'metagga' "
+                "descriptor (it supplies the iso-orbital alpha the DFS gate reads)."
+            )
+
         has_lob_constraint = any(s.name == "lieb_oxford" for s in x_spec_tuple)
         if has_lob_constraint and allow_double_lob_clamp:
             warnings.warn(
@@ -336,13 +349,14 @@ class ArchitectureConfig:
         return cls(
             name=name, depth=depth, nodes=nodes, attention=attention,
             num_heads=resolved_heads,
-            descriptors=tuple(FeatureSpec.of(x) for x in descriptors),
+            descriptors=descriptor_specs,
             x_constraints=x_spec_tuple,
             c_constraints=c_spec_tuple,
             double_lob_clamp_allowed=allow_double_lob_clamp,
             use_polarized_correlation=use_polarized_correlation,
             dm_entropy_intensive=dm_entropy_intensive,
             descriptor_log_transform=descriptor_log_transform,
+            meta_gga=meta_gga,
             zero_init_final_layer=zero_init_final_layer,
         )
 
@@ -468,6 +482,30 @@ ARCHITECTURES = {
                               zero_init_final_layer=True),
     "deep_rung35only_3x16":     ArchitectureConfig.from_spec("deep_rung35only_3x16",    3, 16,
                               descriptors=["rung35"],
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    # DFS-faithful meta-GGA archs (ADDITIVE). meta_gga=True switches the X/C UEG
+    # gate to DFS's (x2 + tanh^2(x3)) prefactor (x3 = ln((alpha+1)/2)) and the
+    # exchange Lieb-Oxford ceiling to 1.174; the "metagga" descriptor supplies the
+    # iso-orbital alpha = (tau - tau_W)/tau_unif (DFS PRB 104 L161109 Eq. 6, 12-13).
+    # These archs PRETRAIN TO SCAN (a GGA cannot fit SCAN's alpha-dependence).
+    # deep_mgga_3x16 is the pure DFS meta-GGA (exchange on (s, alpha));
+    # deep_rung35_mgga_3x16 stacks cusp + localized rung-3.5 DM + meta-GGA alpha to
+    # test whether the extra richness helps (replaces deep_rung35only in the sweep).
+    "deep_mgga_3x16":           ArchitectureConfig.from_spec("deep_mgga_3x16",          3, 16,
+                              descriptors=["metagga"], meta_gga=True,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_mgga_attn_3x16":      ArchitectureConfig.from_spec("deep_mgga_attn_3x16",     3, 16,
+                              attention=True, num_heads=4,
+                              descriptors=["metagga"], meta_gga=True,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_rung35_mgga_3x16":    ArchitectureConfig.from_spec("deep_rung35_mgga_3x16",   3, 16,
+                              descriptors=["cusp", "rung35", "metagga"], meta_gga=True,
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True,
                               zero_init_final_layer=True),

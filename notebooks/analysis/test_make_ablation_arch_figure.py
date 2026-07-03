@@ -1450,7 +1450,8 @@ def test_arch_order_covers_v3_full25_sweep_archs():
     # _arch_input_forms descriptor labels so the swap can't silently break figures.
     import yaml
     root = Path(__file__).resolve().parents[2]
-    for fn in ("dfs_step7.svp_grid2_v3.yaml", "dfs_step7.svp_grid2_v3_full25.yaml"):
+    for fn in ("dfs_step7.svp_grid2_v3.yaml", "dfs_step7.svp_grid2_v3_full25.yaml",
+               "dfs_step7.dfs6311_grid3_v3.yaml"):
         cfg = yaml.safe_load((root / "hpcjobs" / "configs" / fn).read_text())
         for a in cfg["sweep"]["arch"]:
             assert a in fig.ARCH_ORDER, f"{fn}: swept arch {a!r} not in ARCH_ORDER"
@@ -1459,6 +1460,15 @@ def test_arch_order_covers_v3_full25_sweep_archs():
     for a in ("deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16"):
         assert a in fig.ARCH_ORDER, f"{a} missing from ARCH_ORDER"
         assert fig.ARCH_COLOR.get(a) not in (None, "#333333"), f"{a} has no color"
+    # 2026-07-02: the DFS-faithful meta-GGA archs (dfs6311 sweep) must likewise be
+    # in ARCH_ORDER with distinct colors + resolvable descriptor labels.
+    for a in ("deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16"):
+        assert a in fig.ARCH_ORDER, f"{a} missing from ARCH_ORDER"
+        assert fig.ARCH_COLOR.get(a) not in (None, "#333333"), f"{a} has no color"
+    mgga_forms = fig._arch_input_forms(("deep_mgga_3x16", "deep_rung35_mgga_3x16"))
+    assert "x_11" in mgga_forms["deep_mgga_3x16"]["fx"], "metagga label x_11 missing"
+    assert all(lbl in mgga_forms["deep_rung35_mgga_3x16"]["fx"]
+               for lbl in ("x_4", "x_9", "x_11")), "combined mgga labels missing"
     # _arch_input_forms must resolve the rung-3.5 descriptor labels (no KeyError)
     forms = fig._arch_input_forms(("deep_rung35_3x16", "deep_rung35only_3x16"))
     assert all(lbl in forms["deep_rung35_3x16"]["fx"] for lbl in ("x_4", "x_9")), \

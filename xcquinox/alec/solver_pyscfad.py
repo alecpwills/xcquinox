@@ -115,6 +115,23 @@ def _maybe_rung35_proj_ao(descriptors: tuple, mol, grid_coords):
     return None
 
 
+def _maybe_metagga_ao_grad(descriptors: tuple, mol, grid_coords):
+    """Constant deriv=1 AO ``[ao, d/dx, d/dy, d/dz] chi_mu`` (shape ``(4, N, nao)``)
+    on ``grid_coords`` if a MetaGGAAlphaDescriptor is present (else ``None``). The AO
+    is geometry-only (DM-independent), so -- exactly like the rung-3.5 ``A`` -- the
+    pyscfad backend computes it ONCE per SCF on pyscfad's actual (pruned) grid and
+    reuses it every cycle to build ``tau = 1/2 P:(grad chi (x) grad chi)`` -> the
+    iso-orbital ``alpha``. ``np.asarray`` detaches it from any pyscfad geometry trace
+    (it is constant w.r.t. the model params the training gradient differentiates)."""
+    from xcquinox.alec.descriptors import MetaGGAAlphaDescriptor
+    for d in descriptors:
+        if isinstance(d, MetaGGAAlphaDescriptor):
+            import numpy as np
+            ao = np.asarray(mol.eval_gto("GTOval_sph_deriv1", np.asarray(grid_coords)))
+            return jnp.asarray(ao)
+    return None
+
+
 def _reassemble_features_on_grid(
     descriptors: tuple,
     dm: "jnp.ndarray",
@@ -122,6 +139,7 @@ def _reassemble_features_on_grid(
     grid_coords: "jnp.ndarray",
     mol,
     rung35_proj_ao: "jnp.ndarray | None" = None,
+    metagga_ao: "jnp.ndarray | None" = None,
 ) -> "jnp.ndarray":
     """Compute descriptor features from (dm, S) on a specific grid.
 
@@ -140,7 +158,8 @@ def _reassemble_features_on_grid(
     physically-meaningless idempotency_error.
     """
     from xcquinox.alec.descriptors import (
-        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor)
+        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
+        MetaGGAAlphaDescriptor)
     from xcquinox.features import compute_cusp_descriptor
 
     dm_arr = jnp.asarray(dm)
@@ -177,6 +196,25 @@ def _reassemble_features_on_grid(
                 A = jnp.asarray(compute_projected_ao(
                     mol, grid_coords, float(getattr(d, "alpha"))))
             cols.append(d.compute_from_dm(proj_ao=A, dm=dm_arr))
+        elif isinstance(d, MetaGGAAlphaDescriptor):
+            # Meta-GGA iso-orbital alpha = (tau - tau_W)/tau_unif, treated as a
+            # reassembled DESCRIPTOR feature (NOT native pyscfad MGGA) so the pyscfad
+            # backend matches the manual backend's functional. tau + rho/sigma come
+            # from the constant deriv=1 AO (metagga_ao, once/SCF) contracted with the
+            # LIVE DM on THIS pruned grid.
+            from xcquinox.alec.metagga import compute_tau_from_dm, compute_alpha
+            ao = metagga_ao
+            if ao is None:
+                import numpy as np
+                ao = jnp.asarray(np.asarray(
+                    mol.eval_gto("GTOval_sph_deriv1", np.asarray(grid_coords))))
+            ao0, ao_grad = ao[0], ao[1:4]
+            d_tot = dm_arr if dm_arr.ndim == 2 else dm_arr[0] + dm_arr[1]
+            rho = jnp.einsum("ij,gi,gj->g", d_tot, ao0, ao0)
+            nabla = 2.0 * jnp.einsum("ij,dgi,gj->gd", d_tot, ao_grad, ao0)
+            sigma = jnp.einsum("gd,gd->g", nabla, nabla)
+            tau = compute_tau_from_dm(ao_grad, dm_arr)
+            cols.append(compute_alpha(rho, sigma, tau).reshape(-1, 1))
         else:
             raise NotImplementedError(
                 f"_reassemble_features_on_grid does not yet know how to "
@@ -567,14 +605,16 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     #         current DM on every cycle.
     feature_holder = None
     _rung35_proj_ao = None
+    _metagga_ao = None
     if descriptors:
         is_uks = bool(mol_data.get("is_unrestricted", False)) or int(getattr(mol, "spin", 0)) != 0
         if not is_uks:
             mf.initialize_grids(mol, mol_data["dm_pbe"])
-        # Constant rung-3.5 projected-AO A on pyscfad's actual (pruned) grid,
-        # computed once and reused every cycle (None unless a rung-3.5 arch).
-        # Geometry is fixed across the SCF, so A is cycle-invariant.
+        # Constant rung-3.5 projected-AO A + meta-GGA deriv=1 AO on pyscfad's actual
+        # (pruned) grid, computed once and reused every cycle (None unless the arch
+        # uses them). Geometry is fixed across the SCF, so both are cycle-invariant.
         _rung35_proj_ao = _maybe_rung35_proj_ao(descriptors, mol, mf.grids.coords)
+        _metagga_ao = _maybe_metagga_ao_grad(descriptors, mol, mf.grids.coords)
         feature_holder = {
             "features_full": _reassemble_features_on_grid(
                 descriptors=descriptors,
@@ -583,6 +623,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
                 grid_coords=jnp.asarray(mf.grids.coords),
                 mol=mol,
                 rung35_proj_ao=_rung35_proj_ao,
+                metagga_ao=_metagga_ao,
             ),
             "offset": 0,
         }
@@ -627,6 +668,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
                     grid_coords=_grid_coords,
                     mol=mol_eff,
                     rung35_proj_ao=_rung35_proj_ao,
+                    metagga_ao=_metagga_ao,
                 )
             feature_holder["offset"] = 0
             return original_get_veff(mol_eff, dm, *args, **kwargs)

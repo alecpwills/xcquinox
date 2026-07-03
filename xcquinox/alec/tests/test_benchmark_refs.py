@@ -191,3 +191,34 @@ def test_generate_one_h_atom_end_to_end(tmp_path):
         n_elec_pbe = float(np.sum(z["rho_pbe_grid"] * z["grid_weights"]))
     assert n_elec == pytest.approx(1.0, abs=1e-3)
     assert n_elec_pbe == pytest.approx(1.0, abs=1e-3)
+
+
+def test_run_shard_threads_orientation_lock_strength(tmp_path, monkeypatch):
+    """run_shard forwards orientation_lock_strength to generate_one so the
+    held-out refs lock the same degenerate component as the training refs."""
+    seen = {}
+
+    def fake_generate_one(ms, **kw):
+        seen["ol"] = kw.get("orientation_lock_strength")
+        return "OK"
+
+    monkeypatch.setattr(br, "generate_one", fake_generate_one)
+    br.run_shard(["X"], {"X": _ms(name="X")}, out_dir=tmp_path, basis="def2-svp",
+                 grid_level=2, orientation_lock_strength=3e-5, progress=False)
+    assert seen["ol"] == 3e-5
+
+
+def test_main_parses_orientation_lock_strength(tmp_path, monkeypatch):
+    """The --orientation-lock-strength CLI flag reaches run_shard."""
+    seen = {}
+
+    def fake_run_shard(names, mol_specs, **kw):
+        seen.update(kw)
+        return 0
+
+    monkeypatch.setattr(br, "run_shard", fake_run_shard)
+    monkeypatch.setattr(br, "load_benchmark_species",
+                        lambda pool, basis, grid_level: {"X": _ms(name="X")})
+    br.main(["--out-dir", str(tmp_path), "--pool", "all", "--basis", "def2-svp",
+             "--grid-level", "2", "--orientation-lock-strength", "3e-5"])
+    assert seen["orientation_lock_strength"] == 3e-5

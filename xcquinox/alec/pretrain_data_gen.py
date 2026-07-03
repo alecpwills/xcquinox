@@ -95,12 +95,42 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
     fx = np.clip(ex_pbe / ex_safe - 1.0, -5.0, 5.0)
     fc = np.clip(ec_pbe / ec_safe - 1.0, -5.0, 5.0)
 
+    # Meta-GGA (SCAN) pretrain targets + iso-orbital alpha column, computed
+    # unconditionally so the shared pretrain data always supports meta_gga archs (a
+    # GGA cannot be pretrained to SCAN -- SCAN is alpha-dependent). tau comes from
+    # the deriv=1 AO gradients + DM (metagga.py); SCAN reads a [rho, grad, lapl, tau]
+    # MGGA row with lapl=0 (SCAN ignores the laplacian).
+    from xcquinox.alec.metagga import compute_tau_from_dm, compute_alpha
+    _ag = jnp.asarray(ao[1:4])
+    if is_uks:
+        tau_a = np.asarray(compute_tau_from_dm(_ag, jnp.asarray(dm_ab[0])))
+        tau_b = np.asarray(compute_tau_from_dm(_ag, jnp.asarray(dm_ab[1])))
+        _lapl = np.zeros_like(rho_a)
+        mgga_a = np.vstack([rho_a_gga, _lapl, tau_a])
+        mgga_b = np.vstack([rho_b_gga, _lapl, tau_b])
+        ex_scan = mf._numint.eval_xc("SCAN,", (mgga_a, mgga_b), spin=1)[0]
+        ec_scan = mf._numint.eval_xc(",SCAN", (mgga_a, mgga_b), spin=1)[0]
+        tau_tot = tau_a + tau_b
+    else:
+        tau_tot = np.asarray(compute_tau_from_dm(_ag, jnp.asarray(dm_total)))
+        _lapl = np.zeros_like(rho)
+        mgga = np.vstack([rho_gga, _lapl, tau_tot])
+        ex_scan = mf._numint.eval_xc("SCAN,", mgga, spin=0)[0]
+        ec_scan = mf._numint.eval_xc(",SCAN", mgga, spin=0)[0]
+    fx_scan = np.clip(ex_scan / ex_safe - 1.0, -5.0, 5.0)
+    fc_scan = np.clip(ec_scan / ec_safe - 1.0, -5.0, 5.0)
+    alpha_col = np.asarray(compute_alpha(
+        jnp.asarray(rho), jnp.asarray(sigma), jnp.asarray(tau_tot)))
+
     valid = rho > _RHO_FLOOR
     cols = {
         "rho": rho[valid],
         "sigma": sigma[valid],
         "Fx": fx[valid],
         "Fc": fc[valid],
+        "Fx_scan": fx_scan[valid],
+        "Fc_scan": fc_scan[valid],
+        "metagga": alpha_col[valid].reshape(-1, 1),
         "weights": np.asarray(mf.grids.weights)[valid],
     }
     if polarized:
@@ -208,6 +238,13 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
         return False
     if "cusp_all" in _keys and "rung35_all" not in _keys:
         return False
+    # A real pretrain-data file (has Fx_all) written before meta-GGA support lacks
+    # the SCAN targets + metagga alpha column; a meta_gga arch would KeyError. Force
+    # a regen so the columns appear. Gated on Fx_all so bare stub files (manifest-
+    # only tests) are not spuriously flagged.
+    if "Fx_all" in _keys and (
+            "metagga_all" not in _keys or "Fx_scan_all" not in _keys):
+        return False
     return True
 
 
@@ -274,6 +311,12 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
         "sigma_all": np.concatenate([c["sigma"] for c in per_atom]),
         "Fx_all": np.concatenate([c["Fx"] for c in per_atom]),
         "Fc_all": np.concatenate([c["Fc"] for c in per_atom]),
+        # SCAN (meta-GGA) targets + iso-orbital alpha column, always present so
+        # meta_gga archs pretrain to SCAN (pretrain.py routes the target by the
+        # arch's meta_gga flag); GGA archs ignore these keys.
+        "Fx_scan_all": np.concatenate([c["Fx_scan"] for c in per_atom]),
+        "Fc_scan_all": np.concatenate([c["Fc_scan"] for c in per_atom]),
+        "metagga_all": np.concatenate([c["metagga"] for c in per_atom]),
         "weights_all": np.concatenate([c["weights"] for c in per_atom]),
     }
     if polarized:

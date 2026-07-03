@@ -94,6 +94,10 @@ ARCH_ORDER: Tuple[str, ...] = (
     # deep_combined/deep_dm in the sweep; NOT 4x32-twinned, so they get their own
     # ARCH_COLOR (below) instead of inheriting via the _3x16-strip heuristic.
     "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
+    # 2026-07-02: DFS-faithful meta-GGA archs (dfs6311 parity sweep). Like the
+    # rung-3.5 archs they are NOT 4x32-twinned, so their BASE names get explicit
+    # ARCH_COLOR (below) for the _3x16-strip heuristic to resolve.
+    "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
 )
 _ARCH_TAB = plt.get_cmap("tab10")
 # The 8 base (4x32) archs take tab10; each depth-3/width-16 twin REUSES its 4x32
@@ -109,6 +113,10 @@ ARCH_COLOR: Dict[str, str] = {
 ARCH_COLOR["deep_rung35"] = matplotlib.colors.to_hex(_ARCH_TAB(8))
 ARCH_COLOR["deep_rung35_attn"] = matplotlib.colors.to_hex(_ARCH_TAB(9))
 ARCH_COLOR["deep_rung35only"] = "#393b79"
+# Meta-GGA base names (tab10 + #393b79 are taken): distinct tab20b-family hexes.
+ARCH_COLOR["deep_mgga"] = "#8c6d31"
+ARCH_COLOR["deep_mgga_attn"] = "#843c39"
+ARCH_COLOR["deep_rung35_mgga"] = "#7b4173"
 for _small in ARCH_ORDER[8:]:
     ARCH_COLOR[_small] = ARCH_COLOR.get(_small[: -len("_3x16")], "#333333")
 SUBSET_SIZES: Tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18)
@@ -2658,10 +2666,12 @@ def _methods_references() -> List[str]:
 _DESCRIPTOR_X_LABELS: Dict[str, Tuple[str, ...]] = {
     # x-labels each descriptor group contributes, in feature order (col3 defines
     # x_4,x_5 = cusp and x_6,x_7,x_8 = the 1-RDM statistics; x_9,x_10 = the rung-3.5
-    # per-spin localized-DM occupancies n_alpha, n_beta).
+    # per-spin localized-DM occupancies n_alpha, n_beta; x_11 = the meta-GGA
+    # iso-orbital alpha = (tau - tau_W)/tau_unif).
     "cusp": ("x_4", "x_5"),
     "dm_statistics": ("x_6", "x_7", "x_8"),
     "rung35": ("x_9", "x_10"),
+    "metagga": ("x_11",),
 }
 
 

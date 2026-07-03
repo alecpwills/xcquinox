@@ -245,7 +245,8 @@ def _fmt_hms(seconds: float) -> str:
 
 def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
               out_dir, basis: str, grid_level: int, density_fit: bool = False,
-              auxbasis: Optional[str] = None, shard_label: str = "1/1",
+              auxbasis: Optional[str] = None,
+              orientation_lock_strength: float = 0.0, shard_label: str = "1/1",
               progress: bool = True) -> int:
     """Generate every species in ``names``; returns the FAIL count.
 
@@ -268,7 +269,8 @@ def run_shard(names: List[str], mol_specs: Dict[str, MoleculeSpec], *,
         try:
             status = generate_one(ms, out_dir=out_dir, basis=basis,
                                   grid_level=grid_level,
-                                  density_fit=density_fit, auxbasis=auxbasis)
+                                  density_fit=density_fit, auxbasis=auxbasis,
+                                  orientation_lock_strength=orientation_lock_strength)
         except Exception as exc:  # log + continue: one hard species must not
             status = "FAIL"      # sink the whole shard's remaining work
             err = f"{type(exc).__name__}: {exc}"
@@ -306,6 +308,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="DF SCF/CCSD (use for def2-tzvpd; pass --auxbasis)")
     p.add_argument("--auxbasis", default=None,
                    help="DF auxiliary basis (e.g. def2-universal-jkfit)")
+    p.add_argument("--orientation-lock-strength", type=float, default=0.0,
+                   help="orientation-lock h_core bias strength (orientation_lock.py); "
+                        "MUST match the run's inputs.orientation_lock_strength so the "
+                        "held-out refs lock the same degenerate component as training")
     p.add_argument("--shard", default=None,
                    help="i/N: run the i-th of N disjoint slices (1-based)")
     p.add_argument("--species-slice", default=None,
@@ -335,6 +341,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     n_fail = run_shard(names, mol_specs, out_dir=args.out_dir,
                        basis=args.basis, grid_level=args.grid_level,
                        density_fit=args.density_fit, auxbasis=args.auxbasis,
+                       orientation_lock_strength=args.orientation_lock_strength,
                        shard_label=shard_label,
                        progress=not args.no_progress)
     if n_fail:

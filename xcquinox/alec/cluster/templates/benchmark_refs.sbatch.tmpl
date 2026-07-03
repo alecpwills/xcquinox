@@ -20,7 +20,7 @@ export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 # species' final npz is atomic + skip-if-complete, so a timeout/requeue
 # simply resumes. Starts once the train array has BEGUN (--dependency=after).
 python -m xcquinox.alec.benchmark_refs \
-  --out-dir ${BENCH_REFS_DIR} \
+  --out-dir "${BENCH_REFS_DIR}" \
   --pool all \
-  --basis ${BASIS} \
+  --basis "${BASIS}" \
   --grid-level ${GRID_LEVEL}${BENCH_DF_FLAGS}

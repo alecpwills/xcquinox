@@ -116,9 +116,15 @@ def _conda_activation_block(conda_profile: str, conda_env: str) -> str:
     conda_profile = (conda_profile or "").strip()
     conda_env = (conda_env or "").strip()
     activate = f"conda activate {conda_env}"
+    # Isolate every job from ~/.local user-site packages: on a shared HPC node a
+    # stray `pip install --user` leaves packages in ~/.local/lib/pythonX.Y/
+    # site-packages that Python adds to sys.path for EVERY interpreter of that
+    # version, silently overriding the conda env's pinned versions and breaking
+    # env parity. Exported AFTER activation so it wins in the job environment.
+    isolate = "export PYTHONNOUSERSITE=1"
     if conda_profile:
-        return f"source {conda_profile}\n{activate}"
-    return activate
+        return f"source {conda_profile}\n{activate}\n{isolate}"
+    return f"{activate}\n{isolate}"
 
 
 def _train_template_kind(cfg) -> str:
@@ -285,6 +291,11 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
             df_flags = " --density-fit"
             if cfg.inputs.auxbasis:
                 df_flags += f" --auxbasis {cfg.inputs.auxbasis}"
+        # Orientation lock: held-out refs must lock the SAME component as the
+        # training refs / functional. A bare float is shell-safe unquoted.
+        ol = float(getattr(cfg.inputs, "orientation_lock_strength", 0.0) or 0.0)
+        if ol:
+            df_flags += f" --orientation-lock-strength {ol:g}"
         mapping["BENCH_DF_FLAGS"] = df_flags
 
     if kind in ("pretrain", "train", "eval", "train_eval_inline"):

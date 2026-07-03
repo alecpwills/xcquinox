@@ -297,6 +297,11 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict) -> SCFResul
             cusp_features=cusp_cached,
             n_grid=grid_weights.shape[0],
             rung35_proj_ao=mol_data.get("rung35_proj_ao"),
+            # meta-GGA alpha needs the live tau (AO gradients + DM) + rho/sigma;
+            # RKS rho_d/sigma_d are the total density, already computed above.
+            ao_grad=ao_grid_deriv[1:4],
+            rho=rho_d,
+            sigma=sigma_d,
         )
         return feats, rho_d, sigma_d, nabla_rho_d
 
@@ -456,6 +461,16 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
             return features_initial
         if not model.descriptors:
             return features_initial
+        # meta-GGA alpha is a TOTAL-density quantity: recompute the total rho/sigma
+        # from the summed spin DM only when a meta-GGA descriptor is present (no
+        # cost for non-meta-GGA UKS archs).
+        # metagga_features is populated by precompute iff a meta-GGA descriptor is
+        # present -> the natural flag (no descriptor-type import needed here).
+        mgga_kw = {}
+        if mol_data.get("metagga_features") is not None:
+            rho_t, _nab_t, sigma_t = _contract_dm_to_grid_with_nabla(
+                D_ab[0] + D_ab[1], ao_grid_deriv)
+            mgga_kw = dict(ao_grad=ao_grid_deriv[1:4], rho=rho_t, sigma=sigma_t)
         return _reassemble_features(
             descriptors=model.descriptors,
             dm=D_ab,                        # 3-D spin-resolved
@@ -463,6 +478,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
             cusp_features=cusp_cached,
             n_grid=grid_weights.shape[0],
             rung35_proj_ao=mol_data.get("rung35_proj_ao"),
+            **mgga_kw,
         )
 
     def _vx_nn_spin(features, rho_s, sigma_ss, nabla_rho_s):

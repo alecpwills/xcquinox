@@ -218,6 +218,41 @@ class DMRung35Descriptor(Descriptor):
         return mol_data["rung35_features"]
 
 
+@register_descriptor("metagga")
+class MetaGGAAlphaDescriptor(Descriptor):
+    """Meta-GGA iso-orbital indicator ``alpha = (tau - tau_W)/tau_unif`` (SCAN 2015,
+    Sun-Ruzsinszky-Perdew PRL 115 036402; Dick & Fernandez-Serra PRB 104 L161109
+    (2021) Eq. 6). A genuine RUNG-3 (meta-GGA) ingredient: the kinetic-energy density
+    ``tau = 1/2 sum_{mu nu} P_{mu nu} grad chi_mu . grad chi_nu`` is a LINEAR
+    contraction of the live one-particle DM against the AO gradients already on the
+    grid (``eval_ao(deriv=1)``). So -- exactly like the rung-3.5 occupancy
+    (:class:`DMRung35Descriptor`) -- it is self-consistent (a functional of the LIVE
+    DM, recomputed each SCF cycle under REASSEMBLE), differentiable through the SCF,
+    and needs NO new integrals, NO laplacian, NO ``deriv=2``.
+
+    One feature: the total-density ``alpha`` (alpha=1 uniform gas, alpha=0 single
+    orbital), clamped ``>= 0``. It feeds both the exchange and correlation networks;
+    for the DFS-faithful meta-GGA net (``meta_gga=True``) alpha additionally drives
+    the ``(x2 + tanh^2(x3))`` UEG-recovery gate (x3 = ln((alpha+1)/2)) and the 1.174
+    Lieb-Oxford exchange ceiling. See :mod:`xcquinox.alec.metagga`.
+    """
+    n_features: int = eqx.field(default=1, static=True)
+    required_mol_keys: ClassVar[tuple[str, ...]] = ("metagga_features",)
+
+    @staticmethod
+    def compute_from_dm(ao_grad, rho, sigma, dm):
+        """Reassemble kernel: total ``tau`` from the live DM contracted with the
+        constant AO gradients, then the SCAN ``alpha`` from ``(rho, sigma, tau)`` --
+        so the descriptor stays self-consistent each SCF cycle. ``ao_grad`` is the
+        ``(3, N, nao)`` AO-gradient slice (``ao[1:4]`` of ``eval_ao(deriv=1)``)."""
+        from xcquinox.alec.metagga import compute_tau_from_dm, compute_alpha
+        tau = compute_tau_from_dm(ao_grad, dm)
+        return compute_alpha(rho, sigma, tau).reshape(-1, 1)
+
+    def compute(self, mol_data):
+        return mol_data["metagga_features"]
+
+
 def assemble_descriptor_features(descriptors: tuple[Descriptor, ...],
                                  mol_data: dict) -> jnp.ndarray:
     """Concatenate descriptor outputs left-to-right in declaration order."""

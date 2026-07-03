@@ -120,6 +120,84 @@ def _build_hf_meanfield(mol, is_uks: bool, *, density_fit: bool = False,
     return mf
 
 
+def _converge_scf_tiered(base_builder, *, dm0=None, is_uks: bool,
+                         locked_hcore=None):
+    """Run an SCF with escalating convergence aids until ``mf.converged``.
+
+    ``base_builder()`` must return a FRESH, fully-configured mean-field (HF or KS)
+    each call, so the SOSCF/canonical-orthogonalization tiers get a clean object.
+    ``locked_hcore`` (an AO-basis numpy matrix, optional) is SET -- idempotently, not
+    added -- on the FINAL object's ``get_hcore`` each tier, so the orientation lock is
+    preserved across every escalation, including the ``newton`` (SOSCF) wrapper.
+    Returns the first CONVERGED mf (canonical orbitals, safe for CCSD), else ``None``.
+
+    Tiers, escalating: (0) plain DIIS; (1) SOSCF/``newton`` -- robust and canonical, the
+    fix for near-degenerate open-shell radicals like HOOO that stall plain UHF; (2)
+    ``level_shift`` + ``damp`` DIIS to reach the basin, then a ``newton`` polish from that
+    density (canonical orbitals); (3) canonical orthogonalization (``remove_linear_dep_``,
+    for diffuse / near-linear-dependent bases such as 6-311++G(3df,2pd)) + ``newton``.
+    Mirrors the OEP inner-SCF aids (``oep.py`` ``_ks_from_vxc_matrix_*``) + cascade.
+    """
+    import numpy as np
+
+    def _prep(mf, *, newton=False):
+        if newton:
+            mf = mf.newton()
+        if locked_hcore is not None:
+            mf.get_hcore = lambda *a, **k: locked_hcore
+        return mf
+
+    def _kernel(mf):
+        if dm0 is not None:
+            mf.kernel(dm0=dm0)
+        else:
+            mf.kernel()
+        return mf
+
+    shift = 0.5 if is_uks else 0.2
+
+    def _tier_plain():
+        return _kernel(_prep(base_builder()))
+
+    def _tier_newton():
+        return _kernel(_prep(base_builder(), newton=True))
+
+    def _tier_shift_then_newton():
+        # level_shift + damp DIIS reaches the basin, then a newton polish from
+        # that density gives CANONICAL orbitals (safe for CCSD; a persistently
+        # level-shifted mf would corrupt the CCSD virtual energies).
+        mf = _prep(base_builder())
+        mf.max_cycle = 200
+        mf.level_shift = shift
+        mf.damp = 0.2
+        _kernel(mf)
+        mf2 = _prep(base_builder(), newton=True)
+        mf2.kernel(dm0=np.asarray(mf.make_rdm1()))
+        return mf2
+
+    def _tier_lindep_newton():
+        # canonical orthogonalization for near-linear-dependent (diffuse) bases
+        # such as 6-311++G(3df,2pd), then newton.
+        from pyscf.scf.addons import remove_linear_dep_
+        base = base_builder()
+        remove_linear_dep_(base)
+        return _kernel(_prep(base, newton=True))
+
+    # Each tier is attempted independently: a tier that raises (e.g. newton/
+    # remove_linear_dep_ not applicable to this mean-field) is skipped, not fatal.
+    # Only genuine SCF/setup failures are swallowed; a NameError etc. propagates.
+    for _tier in (_tier_plain, _tier_newton, _tier_shift_then_newton,
+                  _tier_lindep_newton):
+        try:
+            mf = _tier()
+        except (np.linalg.LinAlgError, ValueError, AttributeError,
+                RuntimeError, TypeError):
+            continue
+        if bool(getattr(mf, "converged", False)):
+            return mf
+    return None
+
+
 def _prepare_converged_hf(mol, *, dm0, is_uks: bool, density_fit: bool = False,
                           basis: str | None = None, auxbasis: str | None = None,
                           orientation_lock_strength: float = 0.0):
@@ -142,22 +220,31 @@ def _prepare_converged_hf(mol, *, dm0, is_uks: bool, density_fit: bool = False,
     Computational Chemists," Rev. Comput. Chem. 14, 33-136 (2000); R. J.
     Bartlett & M. Musiał, Rev. Mod. Phys. 79, 291 (2007).
     """
-    mf_hf = _build_hf_meanfield(mol, is_uks, density_fit=density_fit,
-                                basis=basis, auxbasis=auxbasis)
-    # Orientation lock: bias the HF core Hamiltonian so the canonical HF
-    # orbitals -- and thus the CCSD relaxed density built on them -- lock the
-    # SAME degenerate component as the PBE seed/eval. Same operator, applied
-    # before convergence so CCSD sits on the locked determinant.
+    import numpy as np
+    # Orientation lock: precompute the biased core Hamiltonian ONCE so it can be
+    # set idempotently on every convergence tier (incl. the SOSCF wrapper), so the
+    # canonical HF orbitals -- and thus the CCSD relaxed density built on them --
+    # lock the SAME degenerate component as the PBE seed/eval.
+    locked_hcore = None
     if orientation_lock_strength:
-        _base_hcore = mf_hf.get_hcore()
-        _locked_hcore = _base_hcore + orientation_lock_bias(
-            mol, orientation_lock_strength)
-        mf_hf.get_hcore = lambda *a, **k: _locked_hcore
-    mf_hf.kernel(dm0=dm0)
-    if not getattr(mf_hf, "converged", False):
+        _bare = _build_hf_meanfield(mol, is_uks, density_fit=density_fit,
+                                    basis=basis, auxbasis=auxbasis)
+        locked_hcore = (np.asarray(_bare.get_hcore())
+                        + orientation_lock_bias(mol, orientation_lock_strength))
+    # Tiered convergence: plain DIIS -> SOSCF/newton -> level-shift -> canonical
+    # orthogonalization. Plain UHF stalls on near-degenerate open-shell radicals
+    # (e.g. cis-HOOO) and on the diffuse 6-311++G(3df,2pd) basis; the escalation
+    # returns a CONVERGED, canonical determinant (verified to reach the correct,
+    # lower HF minimum, not the stalled higher one).
+    mf_hf = _converge_scf_tiered(
+        lambda: _build_hf_meanfield(mol, is_uks, density_fit=density_fit,
+                                    basis=basis, auxbasis=auxbasis),
+        dm0=dm0, is_uks=is_uks, locked_hcore=locked_hcore)
+    if mf_hf is None:
         raise RuntimeError(
-            "HF SCF did not converge; refusing to run CCSD on a "
-            "non-self-consistent reference determinant"
+            "HF SCF did not converge after tiered escalation (DIIS -> SOSCF -> "
+            "level-shift -> canonical-orthogonalization); refusing to run CCSD on "
+            "a non-self-consistent reference determinant"
         )
     return mf_hf
 
@@ -392,12 +479,31 @@ def run_scf_with_cache(
     # Orientation lock: bias h_core so the PBE baseline density (rho_pbe_grid)
     # locks the SAME degenerate component as the eval/training seed. Identical
     # operator (same geometry+basis) as data.precompute -> reproducible density.
+    _locked_hcore = None
     if orientation_lock_strength:
-        _base_hcore = np.asarray(mf.get_hcore())
-        _locked_hcore = _base_hcore + orientation_lock_bias(
-            mol, orientation_lock_strength)
+        _locked_hcore = (np.asarray(mf.get_hcore())
+                         + orientation_lock_bias(mol, orientation_lock_strength))
         mf.get_hcore = lambda *a, **k: _locked_hcore
     mf.kernel()
+    if not getattr(mf, "converged", False):
+        # A non-converged PBE density must NOT be cached: it becomes the
+        # HF-for-CCSD initial guess, so a poor PBE dm co-causes the downstream HF
+        # stall (the c-hooo failure mode) -- and on rerun the bad dm is a cache
+        # hit that re-fails deterministically. Escalate; raise if still stuck.
+        def _pbe_builder():
+            m = dft.UKS(mol) if is_uks else dft.RKS(mol)
+            if use_df:
+                from xcquinox.alec.df_jk import default_auxbasis
+                m = m.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
+            m.xc = "pbe"
+            m.grids.level = grid_level
+            return m
+        mf = _converge_scf_tiered(_pbe_builder, dm0=np.asarray(mf.make_rdm1()),
+                                  is_uks=is_uks, locked_hcore=_locked_hcore)
+        if mf is None or not getattr(mf, "converged", False):
+            raise RuntimeError(
+                f"PBE SCF for {spec.name!r} did not converge after tiered escalation"
+            )
 
     # Build the result dict ONCE, used both for the cache write and the
     # return value.  Avoids redundant PySCF calls (make_rdm1/get_ovlp)
@@ -1201,6 +1307,7 @@ def preflight_uks_oep(
     cache_dir,
     basis: str = "def2-svp",
     grid_level: int = 1,
+    orientation_lock_strength: float = 0.0,
 ) -> None:
     """Smoke-test UKS OEP on HO (doublet, 2Pi) and HN (triplet, 3Sigma-)
     BEFORE running the full ~58-species pre-compute.
@@ -1226,7 +1333,8 @@ def preflight_uks_oep(
     for spec in smoke_specs:
         atoms = resolve_geometry(spec)
         scf = run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
-                                 basis=basis, grid_level=grid_level)
+                                 basis=basis, grid_level=grid_level,
+                                 orientation_lock_strength=orientation_lock_strength)
         if not scf["spin_unrestricted"]:
             raise RuntimeError(
                 f"Pre-flight failure: {spec.name} should be UKS but "
@@ -1234,7 +1342,8 @@ def preflight_uks_oep(
             )
         cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
                                  cache_dir=cache_dir,
-                                 basis=basis, grid_level=grid_level)
+                                 basis=basis, grid_level=grid_level,
+                                 orientation_lock_strength=orientation_lock_strength)
         npz_path = run_oep_cascade(spec, atoms, ccsd_payload=cc,
                                    cache_dir=cache_dir,
                                    basis=basis, grid_level=grid_level)
@@ -1339,6 +1448,7 @@ def precompute_all(
     run_preflight: bool = True,
     density_fit: bool = False,
     auxbasis: str | None = None,
+    orientation_lock_strength: float = 0.0,
     atoms_by_key: dict | None = None,
     validate_overrides: bool = True,
 ) -> None:
@@ -1399,7 +1509,8 @@ def precompute_all(
 
     if run_preflight:
         preflight_uks_oep(cache_dir=cache_dir,
-                          basis=basis, grid_level=grid_level)
+                          basis=basis, grid_level=grid_level,
+                          orientation_lock_strength=orientation_lock_strength)
 
     failures: list[str] = []
     bar = tqdm(species, desc="Cell 0.5 CCSD refs", leave=True,
@@ -1421,11 +1532,16 @@ def precompute_all(
                 atoms = resolve_geometry(spec)
             scf = run_scf_with_cache(spec, atoms, cache_dir=cache_dir,
                                      basis=basis, grid_level=grid_level,
-                                     density_fit=density_fit, auxbasis=auxbasis)
+                                     density_fit=density_fit, auxbasis=auxbasis,
+                                     orientation_lock_strength=orientation_lock_strength)
             cc = run_ccsd_with_cache(spec, atoms, scf_payload=scf,
                                      cache_dir=cache_dir,
                                      basis=basis, grid_level=grid_level,
-                                     density_fit=density_fit, auxbasis=auxbasis)
+                                     density_fit=density_fit, auxbasis=auxbasis,
+                                     orientation_lock_strength=orientation_lock_strength)
+            # run_oep_cascade inherits the lock: it fits V_xc to REPRODUCE the
+            # (locked) CCSD dm_target, so vxc_ref is consistent with the locked
+            # density by construction -- no separate h_core bias needed there.
             run_oep_cascade(spec, atoms, ccsd_payload=cc,
                             cache_dir=cache_dir,
                             basis=basis, grid_level=grid_level)

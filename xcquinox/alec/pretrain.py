@@ -167,7 +167,8 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
             zeta_all = jnp.zeros_like(pretrain_data["rho_all"])
         cols.append(zeta_all)
     # Map descriptor.name -> key in pretrain_data.
-    _key_map = {"dm_statistics": "dm_all", "cusp": "cusp_all", "rung35": "rung35_all"}
+    _key_map = {"dm_statistics": "dm_all", "cusp": "cusp_all", "rung35": "rung35_all",
+                "metagga": "metagga_all"}
     for spec in arch.descriptors:
         key = _key_map.get(spec.name)
         if key is None:
@@ -327,8 +328,15 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
 
     # Targets are stored as (F - 1), not F; PretrainLoss subtracts 1 from
     # network output (networks return 1 + enhancement).
-    Fx_target = pretrain_data["Fx_all"]
-    Fc_target = pretrain_data["Fc_all"]
+    # DFS-faithful meta_gga archs pretrain to SCAN (a GGA structurally cannot fit
+    # SCAN's alpha-dependence); GGA archs keep the PBE targets. The SCAN columns are
+    # always present (pretrain_data_gen writes them + the staleness guard regens).
+    if bool(getattr(spec.arch, "meta_gga", False)):
+        Fx_target = pretrain_data["Fx_scan_all"]
+        Fc_target = pretrain_data["Fc_scan_all"]
+    else:
+        Fx_target = pretrain_data["Fx_all"]
+        Fc_target = pretrain_data["Fc_all"]
 
     # --- Create network pair (or use the caller-supplied override) ---
     if networks is not None:

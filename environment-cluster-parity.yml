@@ -1,0 +1,43 @@
+# Cluster PARITY env -- mirrors the LOCAL dev/test JAX stack (jax 0.7.0) so the
+# cluster runs the SAME numerical stack the meta-GGA code was tested on.
+#
+# Built for an OLD-TOOLCHAIN login node (GCC 8.1.0): the compiled scientific
+# libraries come from conda-forge (prebuilt binaries, independent of the system
+# compiler) and only the pure-wheel JAX/pyscf layer comes from pip. Do NOT pip a
+# full bleeding-edge freeze here -- packages without a matching-glibc wheel would
+# source-build and hit "NumPy requires GCC >= 9.3".
+#
+#   conda env create -p /gpfs/.../conda_envs/xcquinox_j070 -f environment-cluster-parity.yml
+#   conda activate /gpfs/.../conda_envs/xcquinox_j070
+#   cd <repo> && pip install -e . --no-deps
+#
+# Single-purpose: keep dpgen/pymatgen/cider/torch in their OWN envs (a stray
+# install of one of those is what mass-uninstalled numpy/h5py/cffi last time).
+# (no `name:` -- always create with `-p <prefix>` so it lands at the group path.)
+channels:
+  - conda-forge
+dependencies:
+  # compiled scientific stack (prebuilt; no system GCC)
+  - python=3.12
+  - numpy=2.3
+  - scipy=1.16
+  - h5py
+  - matplotlib
+  - pandas
+  - ase
+  - pyyaml
+  - tqdm
+  - pip
+  # pure JAX / pyscf layer (wheels)
+  - pip:
+    - jax==0.7.0
+    - jaxlib==0.7.0
+    - ml_dtypes==0.5.3
+    - opt_einsum==3.4.0
+    - equinox==0.13.0
+    - optax==0.2.6
+    - chex==0.1.91
+    - jaxtyping==0.3.3
+    - pyscf==2.11.0
+    - pyscfad==0.1.11
+    - pyscfadlib==0.1.11

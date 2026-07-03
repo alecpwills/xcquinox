@@ -315,6 +315,7 @@ def prepare_inputs(
                 grid_level=cfg.inputs.grid_level,
                 density_fit=cfg.inputs.density_fit,
                 auxbasis=cfg.inputs.auxbasis,
+                orientation_lock_strength=cfg.inputs.orientation_lock_strength,
                 atoms_by_key=atoms_by_key,
                 validate_overrides=False,
                 run_preflight=False,

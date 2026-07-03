@@ -395,6 +395,9 @@ def _reassemble_features(
     cusp_features: jnp.ndarray | None = None,
     n_grid: int | None = None,
     rung35_proj_ao: jnp.ndarray | None = None,
+    ao_grad: jnp.ndarray | None = None,
+    rho: jnp.ndarray | None = None,
+    sigma: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Recompute descriptor features from the live (dm, S) + cached cusp.
 
@@ -410,7 +413,8 @@ def _reassemble_features(
     CuspDescriptor (and therefore no cusp_features) is present.
     """
     from xcquinox.alec.descriptors import (
-        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor)
+        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
+        MetaGGAAlphaDescriptor)
     if not descriptors:
         _ng = cusp_features.shape[0] if cusp_features is not None else (n_grid or 0)
         return jnp.zeros((_ng, 0))
@@ -438,6 +442,13 @@ def _reassemble_features(
                     "when descriptors include DMRung35Descriptor"
                 )
             cols.append(d.compute_from_dm(proj_ao=rung35_proj_ao, dm=dm))
+        elif isinstance(d, MetaGGAAlphaDescriptor):
+            if ao_grad is None or rho is None or sigma is None:
+                raise ValueError(
+                    "ao_grad, rho, and sigma must be provided when descriptors "
+                    "include MetaGGAAlphaDescriptor (the live tau contraction)"
+                )
+            cols.append(d.compute_from_dm(ao_grad=ao_grad, rho=rho, sigma=sigma, dm=dm))
         else:
             raise NotImplementedError(
                 f"_reassemble_features does not yet know how to recompute {type(d).__name__}"

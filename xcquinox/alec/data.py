@@ -202,6 +202,10 @@ class MoleculeData(TypedDict, total=True):
     # rung35_features is the one-shot per-spin occupancy A^T P_pbe A (N, 2).
     rung35_proj_ao: jnp.ndarray | None
     rung35_features: jnp.ndarray | None
+    # Meta-GGA iso-orbital alpha (metagga.py). One-shot alpha from the PBE DM (N, 1);
+    # the FULL/REASSEMBLE SCF recomputes it self-consistently each cycle from the
+    # live DM + the stored AO gradients (ao_grid_deriv).
+    metagga_features: jnp.ndarray | None
     eri: jnp.ndarray | None
     cderi: jnp.ndarray | None
     atom_composition: tuple[tuple[str, int], ...]
@@ -431,6 +435,7 @@ def precompute_fixed_density_data(
     dm_features = None
     rung35_proj_ao = None
     rung35_features = None
+    metagga_features = None
 
     if "cusp_features" in all_needed:
         from xcquinox.features import compute_cusp_descriptor
@@ -493,6 +498,15 @@ def precompute_fixed_density_data(
         # SPIN-RESOLVED 3-D DM for UKS so the alpha/beta channels are correct;
         # for RKS the 2-D total DM is split evenly inside compute_rung35_occupancy.
         rung35_features = compute_rung35_occupancy(rung35_proj_ao, jnp.array(dm_pbe))
+
+    if "metagga_features" in all_needed:
+        from xcquinox.alec.metagga import compute_tau_from_dm, compute_alpha
+        # One-shot meta-GGA alpha from the PBE DM: total tau from the deriv=1 AO
+        # gradients (ao[1:4]) contracted with dm_pbe, then SCAN alpha from the PBE
+        # rho/sigma. The FULL SCF recomputes this each cycle from the live DM.
+        _tau_pbe = compute_tau_from_dm(jnp.array(ao[1:4]), jnp.array(dm_pbe))
+        metagga_features = compute_alpha(
+            jnp.array(rho_pbe), jnp.array(sigma_pbe), _tau_pbe).reshape(-1, 1)
 
     eri = None
     if "eri" in all_needed:
@@ -578,6 +592,7 @@ def precompute_fixed_density_data(
         dm_features=dm_features,
         rung35_proj_ao=rung35_proj_ao,
         rung35_features=rung35_features,
+        metagga_features=metagga_features,
         eri=eri,
         cderi=cderi,
         atom_composition=mol_spec.atom_composition,

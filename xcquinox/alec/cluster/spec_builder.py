@@ -240,7 +240,9 @@ def _coerce_enum(enum_cls, token):
 
 
 def _solver_config_from_named(named, *, density_fit: bool = False,
-                              auxbasis: str | None = None) -> SolverConfig:
+                              auxbasis: str | None = None,
+                              orientation_lock_strength: float | None = None
+                              ) -> SolverConfig:
     """Materialize a :class:`SolverConfig` from a :class:`SolverNamed`.
 
     ``SolverNamed`` stores ``mode`` / ``feature_policy`` as plain strings (the
@@ -277,7 +279,12 @@ def _solver_config_from_named(named, *, density_fit: bool = False,
         scf_loss_use_tail=named.scf_loss_use_tail,
         scf_loss_tail=named.scf_loss_tail,
         scf_loss_weight_power=named.scf_loss_weight_power,
-        orientation_lock_strength=named.orientation_lock_strength,
+        # Run-level inputs.orientation_lock_strength is authoritative (so the SCF
+        # matches the references); fall back to the per-solver value when the
+        # caller does not pass it (non-cluster / demo use).
+        orientation_lock_strength=(
+            orientation_lock_strength if orientation_lock_strength is not None
+            else named.orientation_lock_strength),
         **mixer_overrides,
     )
 
@@ -538,6 +545,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             cfg.solvers[cell.solver],
             density_fit=cfg.inputs.density_fit,
             auxbasis=cfg.inputs.auxbasis,
+            orientation_lock_strength=cfg.inputs.orientation_lock_strength,
         )
 
         loss_kwargs = {

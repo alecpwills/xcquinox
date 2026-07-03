@@ -74,6 +74,14 @@ class AlecGGA_XNet(eqx.Module):
     # ``tanh(s)²`` UEG gate uses raw ``s`` (structural physics constraint, not
     # a feature transform).
     descriptor_log_transform: bool = eqx.field(default=False, static=True)
+    # Meta-GGA (DFS-faithful, PRB 104 L161109 Eq. 12): when True the GGA UEG gate
+    # ``tanh(s)^2`` becomes DFS's ``(x2 + tanh^2(x3))`` prefactor, where x2 is the
+    # log-transformed s ``(1-e^{-s^2}) ln(s+1)`` and ``x3 = ln((alpha+1)/2)``, so the
+    # gate -> 0 (UEG) at s=0 AND alpha=1. ``alpha`` is read from the descriptor
+    # ``features`` at ``metagga_alpha_index`` (the MetaGGAAlphaDescriptor column).
+    # Pair with ``lob_lim=1.174`` for the DFS exchange ceiling.
+    meta_gga: bool = eqx.field(default=False, static=True)
+    metagga_alpha_index: int = eqx.field(default=-1, static=True)
     # Physical constraints enforced INTRINSICALLY by the network forward, so the
     # same constrained functional is used in pretraining, training, and eval.
     # Stored static (constraint params are all static -> no array leaves) so the
@@ -90,6 +98,8 @@ class AlecGGA_XNet(eqx.Module):
                  num_heads: int = 1,
                  constraints: tuple = (),
                  descriptor_log_transform: bool = False,
+                 meta_gga: bool = False,
+                 metagga_alpha_index: int = -1,
                  zero_init_final_layer: bool = False):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
@@ -102,6 +112,8 @@ class AlecGGA_XNet(eqx.Module):
         self.use_self_attention = use_self_attention
         self.num_heads = num_heads
         self.descriptor_log_transform = descriptor_log_transform
+        self.meta_gga = meta_gga
+        self.metagga_alpha_index = metagga_alpha_index
         self.constraints = tuple(constraints)
 
         in_size = 1 + n_extra_features
@@ -157,7 +169,17 @@ class AlecGGA_XNet(eqx.Module):
         else:
             netinp = s_mlp
 
-        tanhterm = jnp.tanh(s) ** 2
+        if self.meta_gga:
+            # DFS Eq. 12 meta-GGA UEG-recovery prefactor (x2 + tanh^2(x3)): x2 =
+            # log-transformed s, x3 = ln((alpha+1)/2). alpha is the descriptor
+            # column at metagga_alpha_index (also an MLP input via `extras`), so it
+            # is used in BOTH the gate and the MLP -- the DFS exchange (s, alpha).
+            alpha = jnp.atleast_1d(features).flatten()[self.metagga_alpha_index]
+            x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
+            x3 = jnp.log((alpha + 1.0) / 2.0)
+            tanhterm = jnp.atleast_1d(x2).flatten() + jnp.tanh(x3) ** 2
+        else:
+            tanhterm = jnp.tanh(s) ** 2
 
         if self.attention is not None:
             x = netinp
@@ -216,6 +238,11 @@ class AlecGGA_CNet(eqx.Module):
     # before concatenation with extras. Prevents feature magnitude saturation.
     # The ``tanh(s)²`` UEG gate uses raw ``s`` (structural physics constraint).
     descriptor_log_transform: bool = eqx.field(default=False, static=True)
+    # Meta-GGA (DFS Eq. 13): same (x2 + tanh^2(x3)) UEG-recovery prefactor as the
+    # X-net; alpha read from the descriptor features at metagga_alpha_index. lob_lim
+    # stays 2.0 (F_c non-negativity, not a Lieb-Oxford bound).
+    meta_gga: bool = eqx.field(default=False, static=True)
+    metagga_alpha_index: int = eqx.field(default=-1, static=True)
     # Physical constraints enforced intrinsically by the forward (see XNet).
     constraints: tuple = eqx.field(static=True)
     net: eqx.nn.MLP
@@ -230,6 +257,8 @@ class AlecGGA_CNet(eqx.Module):
                  use_spin_polarization: bool = False,
                  constraints: tuple = (),
                  descriptor_log_transform: bool = False,
+                 meta_gga: bool = False,
+                 metagga_alpha_index: int = -1,
                  zero_init_final_layer: bool = False):
         if use_self_attention and nodes % num_heads != 0:
             raise ValueError(
@@ -242,6 +271,8 @@ class AlecGGA_CNet(eqx.Module):
         self.use_self_attention = use_self_attention
         self.num_heads = num_heads
         self.descriptor_log_transform = descriptor_log_transform
+        self.meta_gga = meta_gga
+        self.metagga_alpha_index = metagga_alpha_index
         self.constraints = tuple(constraints)
         # When True, the correlation network takes a spin-polarization input
         # feature x1 = 1/2[(1+zeta)^{4/3}+(1-zeta)^{4/3}] (Dick & Fernández-Serra
@@ -320,7 +351,15 @@ class AlecGGA_CNet(eqx.Module):
         else:
             netinp = jnp.concatenate([rs_mlp, s_mlp])
 
-        tanhterm = jnp.tanh(s) ** 2
+        if self.meta_gga:
+            # DFS Eq. 13 meta-GGA UEG-recovery prefactor (x2 + tanh^2(x3)); alpha is
+            # the descriptor column at metagga_alpha_index (same as the X-net).
+            alpha = jnp.atleast_1d(features).flatten()[self.metagga_alpha_index]
+            x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
+            x3 = jnp.log((alpha + 1.0) / 2.0)
+            tanhterm = jnp.atleast_1d(x2).flatten() + jnp.tanh(x3) ** 2
+        else:
+            tanhterm = jnp.tanh(s) ** 2
 
         if self.attention is not None:
             x = netinp
@@ -376,15 +415,29 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
     pretraining, training, and evaluation, rather than being applied only by
     the composed model at train/eval time.
     """
-    n_extra_features = sum(d.n_features for d in arch.materialize_descriptors())
+    _descs = arch.materialize_descriptors()
+    n_extra_features = sum(d.n_features for d in _descs)
+    # DFS-faithful meta-GGA: the arch flags meta_gga -> the nets use the
+    # (x2 + tanh^2(x3)) UEG gate + (exchange) the 1.174 Lieb-Oxford ceiling, reading
+    # alpha from the MetaGGAAlphaDescriptor's column in the concatenated features.
+    meta_gga = bool(getattr(arch, "meta_gga", False))
+    metagga_alpha_index = -1
+    if meta_gga:
+        _off = 0
+        for d in _descs:
+            if type(d).__name__ == "MetaGGAAlphaDescriptor":
+                metagga_alpha_index = _off
+                break
+            _off += d.n_features
     xnet = AlecGGA_XNet(
         n_extra_features=n_extra_features, depth=arch.depth, nodes=arch.nodes,
         use_self_attention=arch.attention, seed=seed,
-        lob_lim=arch.resolved_xnet_lob_lim,
+        lob_lim=(1.174 if meta_gga else arch.resolved_xnet_lob_lim),
         lower_rho_cutoff=lower_rho_cutoff,
         num_heads=arch.num_heads,
         constraints=arch.materialize_x_constraints(),
         descriptor_log_transform=arch.descriptor_log_transform,
+        meta_gga=meta_gga, metagga_alpha_index=metagga_alpha_index,
         zero_init_final_layer=arch.zero_init_final_layer,
     )
     cnet = AlecGGA_CNet(
@@ -397,6 +450,7 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
         use_spin_polarization=arch.use_polarized_correlation,
         constraints=arch.materialize_c_constraints(),
         descriptor_log_transform=arch.descriptor_log_transform,
+        meta_gga=meta_gga, metagga_alpha_index=metagga_alpha_index,
         zero_init_final_layer=arch.zero_init_final_layer,
     )
     return xnet, cnet

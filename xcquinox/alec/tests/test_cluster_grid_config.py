@@ -238,6 +238,35 @@ def test_solver_orientation_lock_resolved_round_trip(tmp_path):
     assert cfg2.solvers["robust"].orientation_lock_strength == 3e-5
 
 
+# ---------------------------------------------------------------------------
+# Run-level inputs.orientation_lock_strength (authoritative for the whole run)
+# ---------------------------------------------------------------------------
+
+def test_inputs_orientation_lock_default_off(tmp_path):
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert cfg.inputs.orientation_lock_strength == 0.0
+
+
+def test_inputs_orientation_lock_parses_roundtrips_and_is_authoritative(tmp_path):
+    """The run-level inputs value parses, survives the resolved-config reload, and
+    is threaded into the SolverConfig (overriding the per-solver value) so the
+    training/eval SCF locks the same component as the references."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    from xcquinox.alec.cluster.spec_builder import _solver_config_from_named
+    from xcquinox.alec.cluster.grid_config import SolverNamed
+    d = _base_config_dict()
+    d["inputs"]["orientation_lock_strength"] = 3e-5
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", d))
+    assert cfg.inputs.orientation_lock_strength == 3e-5
+    cfg2 = load_grid_config(_write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.inputs.orientation_lock_strength == 3e-5
+    # run-level value wins over a per-solver 0.0 (the SCF must match the refs)
+    sv = SolverNamed(mode="oneshot", max_cycles=0, orientation_lock_strength=0.0)
+    sc = _solver_config_from_named(
+        sv, orientation_lock_strength=cfg.inputs.orientation_lock_strength)
+    assert sc.orientation_lock_strength == 3e-5
+
+
 def test_parse_mixer_kwargs_accepts_dict_and_list():
     """_parse_mixer_kwargs accepts both the user {name: value} dict and the
     round-tripped [name, value]-pair list, returns None for empty/absent, and

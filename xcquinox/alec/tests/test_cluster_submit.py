@@ -147,6 +147,61 @@ def _fake_slurm_factory(ids=None, fail_on_index=None):
 # render_sbatch: CPU vs GPU template selection
 # ---------------------------------------------------------------------------
 
+def test_render_benchmark_refs_basis_is_shell_safe(tmp_path):
+    """A basis containing shell metacharacters -- 6-311++G(3df,2pd) -- must render
+    into a benchmark_refs sbatch script that is VALID bash. The unquoted
+    ``--basis ${BASIS}`` broke here under ``set -euo pipefail`` (bash parsed the
+    ``(3df,2pd)`` as a subshell -> syntax error before Python ran)."""
+    d = _base_config_dict()
+    d["inputs"]["basis"] = "6-311++G(3df,2pd)"
+    d["inputs"]["benchmark_refs_dir"] = "/shared/bench_refs"
+    p = tmp_path / "grid.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))
+
+    text = render_sbatch("benchmark_refs", cfg, str(tmp_path / "run"))
+    script = tmp_path / "bench.sbatch"
+    script.write_text(text)
+    # bash -n = syntax check only (never executes); catches the unquoted-paren bug.
+    r = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    assert r.returncode == 0, (
+        "rendered benchmark_refs script is not valid bash:\n"
+        f"{r.stderr}\n--- script ---\n{text}"
+    )
+    assert "6-311++G(3df,2pd)" in text
+
+
+def test_render_benchmark_refs_passes_orientation_lock(tmp_path):
+    """When inputs.orientation_lock_strength is set, the benchmark_refs command
+    must carry --orientation-lock-strength (so held-out refs lock the same
+    component as training) and stay valid bash."""
+    d = _base_config_dict()
+    d["inputs"]["basis"] = "6-311++G(3df,2pd)"
+    d["inputs"]["benchmark_refs_dir"] = "/shared/bench_refs"
+    d["inputs"]["orientation_lock_strength"] = 3e-5
+    d["inputs"]["density_fit"] = True
+    p = tmp_path / "grid.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))
+
+    text = render_sbatch("benchmark_refs", cfg, str(tmp_path / "run"))
+    assert "--orientation-lock-strength 3e-05" in text
+    assert "--density-fit" in text
+    script = tmp_path / "bench.sbatch"
+    script.write_text(text)
+    r = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+    # off by default -> no flag
+    d2 = _base_config_dict()
+    d2["inputs"]["benchmark_refs_dir"] = "/shared/bench_refs"
+    p2 = tmp_path / "grid2.json"
+    p2.write_text(json.dumps(d2))
+    text2 = render_sbatch("benchmark_refs", load_grid_config(str(p2)),
+                          str(tmp_path / "run2"))
+    assert "--orientation-lock-strength" not in text2
+
+
 def test_render_train_cpu_has_xla_flags_no_gres(tmp_path):
     cfg = _make_cfg(tmp_path, device="cpu")
     text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
@@ -364,6 +419,10 @@ def test_render_conda_block_with_profile_sources_then_activates(tmp_path):
         # source must come before conda activate.
         assert (text.index("source /opt/conda/etc/profile.d/conda.sh")
                 < text.index("conda activate xcq")), kind
+        # ~/.local user-site isolation, exported AFTER activation (env parity).
+        assert "export PYTHONNOUSERSITE=1" in text, kind
+        assert (text.index("conda activate xcq")
+                < text.index("export PYTHONNOUSERSITE=1")), kind
 
 
 def test_render_conda_block_empty_profile_no_bare_source(tmp_path):
@@ -381,6 +440,7 @@ def test_render_conda_block_empty_profile_no_bare_source(tmp_path):
         assert "conda activate xcq" in text, kind
         assert not _has_bare_source_line(text), kind
         assert "set -euo pipefail" in text, kind
+        assert "export PYTHONNOUSERSITE=1" in text, kind
 
 
 # ---------------------------------------------------------------------------
@@ -726,8 +786,10 @@ def test_render_benchmark_refs_single_job(tmp_path):
     _assert_no_unrendered_placeholders(text)
     assert "${BENCH_REFS_DIR}" not in text and "${BENCH_DF_FLAGS}" not in text
     assert "--array" not in text                       # single job
-    assert "--out-dir /shared/bench_refs" in text
-    assert "--basis def2-tzvp" in text
+    # basis + out-dir are shell-quoted (a basis with parens would otherwise break
+    # bash under set -euo pipefail; see test_render_benchmark_refs_basis_is_shell_safe)
+    assert '--out-dir "/shared/bench_refs"' in text
+    assert '--basis "def2-tzvp"' in text
     assert "--grid-level 3" in text
     assert "--density-fit" not in text
     assert "#SBATCH --time=20:00:00" in text           # benchmark_refs_time

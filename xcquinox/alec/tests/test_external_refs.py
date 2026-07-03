@@ -1495,3 +1495,58 @@ def test_oep_cache_rejects_basis_mismatch_but_trusts_legacy(tmp_path,
     with pytest.raises(_InversionRan):
         run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
                         cache_dir=tmp_path, basis="def2-tzvp", grid_level=1)
+
+
+# ---------------------------------------------------------------------------
+# HF-for-CCSD convergence robustness (roots the c-hooo benchmark_refs failure)
+# ---------------------------------------------------------------------------
+
+# cis-HOOO (a HOOO doublet radical) is the species the benchmark_refs stage failed
+# on: plain UHF from the PBE guess does NOT converge, so _prepare_converged_hf
+# raised and CCSD never ran. geometry from the benchmark pool (bh76).
+_C_HOOO_ATOM = ("O 1.0937122327 -0.3034156995 0; O 0.1609687573 0.5273601460 0; "
+                "O -1.1992568767 -0.1563105723 0; H -0.8798021212 -1.0736198095 0")
+
+
+def test_converge_scf_tiered_escalates_to_newton_on_stall():
+    """Fast (no real SCF): when the plain kernel does not converge, the tiered
+    helper falls back to SOSCF (newton) and returns the converged object."""
+    from xcquinox.alec.external_refs import _converge_scf_tiered
+
+    calls = []
+
+    class _FakeMF:
+        def __init__(self, is_newton=False):
+            self.converged = False
+            self._is_newton = is_newton
+
+        def kernel(self, dm0=None):
+            calls.append("newton" if self._is_newton else "plain")
+            # plain stalls; the SOSCF-wrapped object converges
+            self.converged = self._is_newton
+
+        def newton(self):
+            return _FakeMF(is_newton=True)
+
+    mf = _converge_scf_tiered(lambda: _FakeMF(), dm0=None, is_uks=True)
+    assert mf is not None and mf.converged
+    assert calls[0] == "plain" and "newton" in calls  # plain first, then escalate
+
+
+@pytest.mark.slow
+def test_prepare_converged_hf_converges_hard_radical():
+    """SLOW real-SCF integration: c-hooo (HOOO doublet) does NOT converge with
+    plain UHF -- the exact benchmark_refs 'HF SCF did not converge' failure. The
+    tiered convergence must return a converged (canonical) HF reference for CCSD."""
+    from pyscf import gto, dft
+    from xcquinox.alec.external_refs import _prepare_converged_hf
+
+    mol = gto.M(atom=_C_HOOO_ATOM, basis="def2-svp", spin=1, charge=0, verbose=0)
+    mf_pbe = dft.UKS(mol); mf_pbe.xc = "pbe"; mf_pbe.grids.level = 2
+    mf_pbe.kernel()
+    dm0 = mf_pbe.make_rdm1()
+
+    mf_hf = _prepare_converged_hf(mol, dm0=dm0, is_uks=True)
+    assert getattr(mf_hf, "converged", False)
+    # converges to the CORRECT lower minimum (not the stalled ~-224.741 one)
+    assert mf_hf.e_tot < -224.745
