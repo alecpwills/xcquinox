@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=parity_env_build
-#SBATCH --partition=long-40core
+#SBATCH --partition=short-28core   # verified valid via sinfo; note 28-core goes down Jul 13 -- for a maintenance-safe partition run `sinfo -s -o "%P"` and pick a 40-/96-core one
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=03:00:00
