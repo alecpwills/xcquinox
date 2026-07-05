@@ -80,46 +80,20 @@ HA_TO_KCAL = 627.5094740631  # CODATA-2018, matches analyze.HA_TO_KCAL
 
 # Fixed display order: baseline first, then attention / descriptor variants,
 # then the notransform pair (the headline of *this* ablation) last.
-ARCH_ORDER: Tuple[str, ...] = (
-    "deep", "deep_attn", "deep_cusp", "deep_dm",
-    "deep_combined", "deep_combined_attn",
-    "deep_notransform", "deep_notransform_attn",
-    # 2026-06-20: depth-3/width-16 capacity twins (dfs_step7 v3 generalization-gap
-    # A/B). Kept in ARCH_ORDER so the suite recognizes them (it fails loud on
-    # unknown archs); the 8 base archs MUST stay first (they own the tab10 colors).
-    "deep_3x16", "deep_attn_3x16", "deep_cusp_3x16", "deep_dm_3x16",
-    "deep_combined_3x16", "deep_combined_attn_3x16",
-    "deep_notransform_3x16", "deep_notransform_attn_3x16",
-    # 2026-06-29: rung-3.5 localized-DM archs (dfs_step7 A/B). deep_rung35* replace
-    # deep_combined/deep_dm in the sweep; NOT 4x32-twinned, so they get their own
-    # ARCH_COLOR (below) instead of inheriting via the _3x16-strip heuristic.
-    "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
-    # 2026-07-02: DFS-faithful meta-GGA archs (dfs6311 parity sweep). Like the
-    # rung-3.5 archs they are NOT 4x32-twinned, so their BASE names get explicit
-    # ARCH_COLOR (below) for the _3x16-strip heuristic to resolve.
-    "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
-)
-_ARCH_TAB = plt.get_cmap("tab10")
-# The 8 base (4x32) archs take tab10; each depth-3/width-16 twin REUSES its 4x32
-# sibling's color (same architecture, reduced capacity) so v3 figures read cleanly
-# and tab10's 10-color cap is never exceeded.
-ARCH_COLOR: Dict[str, str] = {
-    a: matplotlib.colors.to_hex(_ARCH_TAB(i)) for i, a in enumerate(ARCH_ORDER[:8])
-}
-# The rung-3.5 archs have no 4x32 sibling to inherit from; give their BASE names
-# distinct colors (the 2 unused tab10 slots + a distinct extra) so the
-# _3x16-strip heuristic below resolves them instead of collapsing all three to
-# gray, and so they read distinctly from the deep_combined they replace.
-ARCH_COLOR["deep_rung35"] = matplotlib.colors.to_hex(_ARCH_TAB(8))
-ARCH_COLOR["deep_rung35_attn"] = matplotlib.colors.to_hex(_ARCH_TAB(9))
-ARCH_COLOR["deep_rung35only"] = "#393b79"
-# Meta-GGA base names (tab10 + #393b79 are taken): distinct tab20b-family hexes.
-ARCH_COLOR["deep_mgga"] = "#8c6d31"
-ARCH_COLOR["deep_mgga_attn"] = "#843c39"
-ARCH_COLOR["deep_rung35_mgga"] = "#7b4173"
-for _small in ARCH_ORDER[8:]:
-    ARCH_COLOR[_small] = ARCH_COLOR.get(_small[: -len("_3x16")], "#333333")
-SUBSET_SIZES: Tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18)
+# ARCH_ORDER / ARCH_COLOR / SUBSET_SIZES and the Jacob's-ladder rung taxonomy now
+# live in the shared ``arch_style`` module, imported by every figure script (this
+# suite, the DFS demo notebook, plot_pretraining_curves.py) so the rung /
+# meta-GGA-vs-SCAN story reads consistently. Loaded by PATH -- this directory is
+# not an importable package (identical mechanism to the ``ccp`` sibling above).
+_AS_PATH = Path(__file__).resolve().parent / "arch_style.py"
+_as_spec = importlib.util.spec_from_file_location("arch_style", _AS_PATH)
+arch_style = importlib.util.module_from_spec(_as_spec)  # type: ignore[arg-type]
+sys.modules["arch_style"] = arch_style
+_as_spec.loader.exec_module(arch_style)  # type: ignore[union-attr]
+
+ARCH_ORDER: Tuple[str, ...] = arch_style.ARCH_ORDER
+ARCH_COLOR: Dict[str, str] = arch_style.ARCH_COLOR
+SUBSET_SIZES: Tuple[int, ...] = arch_style.SUBSET_SIZES
 POOL_MARKER: Dict[str, str] = {"bh76": "o", "w411": "^"}
 
 _STYLE = dict(ccp._STYLE)
