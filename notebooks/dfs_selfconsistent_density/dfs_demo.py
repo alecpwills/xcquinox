@@ -301,9 +301,19 @@ def scan_baseline(mol_specs: Sequence, mol_data_by_name: dict, *, refs_dir: str,
         atoms = benchmark_refs._mol_spec_to_atoms(ms)
         if progress:
             print(f"  SCAN SCF {i}/{n}: {ms.name} @ {basis} ...", flush=True)
-        scf = run_scf_with_cache(
-            spec, atoms, cache_dir=refs_dir, basis=basis, grid_level=grid_level,
-            orientation_lock_strength=orientation_lock_strength, xc="scan")
+        try:
+            scf = run_scf_with_cache(
+                spec, atoms, cache_dir=refs_dir, basis=basis, grid_level=grid_level,
+                orientation_lock_strength=orientation_lock_strength, xc="scan")
+        except RuntimeError as exc:
+            # A meta-GGA that genuinely will not converge for ONE species must not
+            # crash the whole baseline. Skip it (a missing E_scan -> the aggregation
+            # fns report NN vs PBE only for that species, and any AE needing it is
+            # skipped) with a LOUD warning rather than a silent drop.
+            print(f"  WARNING: SCAN did not converge for {ms.name!r} ({exc}); "
+                  f"skipping its SCAN baseline (NN-vs-PBE unaffected).", flush=True)
+            out[ms.name] = {"E_scan": None, "density_rmse_scan": None}
+            continue
         rec = {"E_scan": float(scf["e_tot"]), "density_rmse_scan": None}
         if _is_molecule(ms):
             md = mol_data_by_name.get(ms.name)

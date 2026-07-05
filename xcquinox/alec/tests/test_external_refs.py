@@ -1628,3 +1628,33 @@ def test_run_scf_scan_returns_e_tot_and_valid_self_consistent_density(tmp_path):
             / "H2_g1_bdef2-svp_xcscan_scf.npz").is_file()
     assert not (tmp_path / "_intermediates"
                 / "H2_g1_bdef2-svp_scf.npz").is_file()
+
+
+@pytest.mark.slow
+def test_converge_scf_tiered_scan_li_fresh_newton():
+    """SCAN/Li @ 6-311++G(3df,2pd) diverges under plain DIIS to a garbage density
+    (E~-4.9 vs the true -7.48); the fresh-guess newton tier must still converge it
+    despite being handed that garbage as ``dm0`` -- the regression for the demo
+    SCAN-baseline crash on 'Li' (meta-GGA + diffuse-atom poisoned-dm0 case)."""
+    import numpy as np
+    from pyscf import gto, dft
+    from xcquinox.alec.external_refs import _converge_scf_tiered
+
+    mol = gto.M(atom="Li 0 0 0", basis="6-311++G(3df,2pd)", spin=1, charge=0,
+                verbose=0)
+    mf0 = dft.UKS(mol)
+    mf0.xc = "scan"
+    mf0.grids.level = 2
+    mf0.kernel()
+    assert not bool(mf0.converged)          # plain SCAN diverges -> the poison dm0
+    dm0 = np.asarray(mf0.make_rdm1())
+
+    def _builder():
+        m = dft.UKS(mol)
+        m.xc = "scan"
+        m.grids.level = 2
+        return m
+
+    mf = _converge_scf_tiered(_builder, dm0=dm0, is_uks=True)
+    assert mf is not None and bool(getattr(mf, "converged", False))
+    assert abs(float(mf.e_tot) - (-7.4785)) < 1e-2

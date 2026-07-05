@@ -141,7 +141,11 @@ def _converge_scf_tiered(base_builder, *, dm0=None, is_uks: bool,
     fix for near-degenerate open-shell radicals like HOOO that stall plain UHF; (2)
     ``level_shift`` + ``damp`` DIIS to reach the basin, then a ``newton`` polish from that
     density (canonical orbitals); (3) canonical orthogonalization (``remove_linear_dep_``,
-    for diffuse / near-linear-dependent bases such as 6-311++G(3df,2pd)) + ``newton``.
+    for diffuse / near-linear-dependent bases such as 6-311++G(3df,2pd)) + ``newton``;
+    (4) newton and (5) lindep+newton from a FRESH minao guess that IGNORE ``dm0`` --
+    the fix for a diverged plain SCF whose garbage density poisons the dm0-seeded
+    tiers (a meta-GGA like SCAN on a diffuse atom such as Li diverges to E~-4.9 vs
+    the true -7.48; a fresh-guess newton converges cleanly).
     Mirrors the OEP inner-SCF aids (``oep.py`` ``_ks_from_vxc_matrix_*``) + cascade.
     """
     import numpy as np
@@ -153,8 +157,10 @@ def _converge_scf_tiered(base_builder, *, dm0=None, is_uks: bool,
             mf.get_hcore = lambda *a, **k: locked_hcore
         return mf
 
-    def _kernel(mf):
-        if dm0 is not None:
+    def _kernel(mf, fresh=False):
+        # fresh=True IGNORES dm0 (minao guess). We only escalate because the plain
+        # SCF diverged, so its dm0 can be garbage and poison the robust tiers.
+        if dm0 is not None and not fresh:
             mf.kernel(dm0=dm0)
         else:
             mf.kernel()
@@ -189,11 +195,27 @@ def _converge_scf_tiered(base_builder, *, dm0=None, is_uks: bool,
         remove_linear_dep_(base)
         return _kernel(_prep(base, newton=True))
 
+    def _tier_newton_fresh():
+        # newton from a FRESH minao guess, IGNORING dm0. A meta-GGA (SCAN) on a
+        # diffuse tail (Li 2s at 6-311++G(3df,2pd)) diverges under plain DIIS to a
+        # garbage density (E~-4.9 vs the true -7.48); a dm0-SEEDED newton inherits
+        # that garbage and stalls, but newton from minao converges cleanly
+        # (verified: SCAN/Li). This is the tier that fixes the poisoned-dm0 case.
+        return _kernel(_prep(base_builder(), newton=True), fresh=True)
+
+    def _tier_lindep_newton_fresh():
+        from pyscf.scf.addons import remove_linear_dep_
+        base = base_builder()
+        remove_linear_dep_(base)
+        return _kernel(_prep(base, newton=True), fresh=True)
+
     # Each tier is attempted independently: a tier that raises (e.g. newton/
     # remove_linear_dep_ not applicable to this mean-field) is skipped, not fatal.
     # Only genuine SCF/setup failures are swallowed; a NameError etc. propagates.
-    for _tier in (_tier_plain, _tier_newton, _tier_shift_then_newton,
-                  _tier_lindep_newton):
+    # The *_fresh tiers ignore a (diverged) dm0 -- the meta-GGA/diffuse-atom fix.
+    for _tier in (_tier_plain, _tier_newton, _tier_newton_fresh,
+                  _tier_shift_then_newton, _tier_lindep_newton,
+                  _tier_lindep_newton_fresh):
         try:
             mf = _tier()
         except (np.linalg.LinAlgError, ValueError, AttributeError,

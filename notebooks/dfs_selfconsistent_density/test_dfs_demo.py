@@ -591,3 +591,22 @@ def test_scan_baseline_runs_scf_energy_and_density(tmp_path):
     d = out["H2"]["density_rmse_scan"]
     assert isinstance(d, float) and np.isfinite(d) and d > 0.0
     assert out["H"]["density_rmse_scan"] is None       # atom: density skipped
+
+
+def test_scan_baseline_skips_nonconverging_species(tmp_path, monkeypatch):
+    """A species whose SCAN SCF raises RuntimeError (genuine non-convergence) is
+    skipped with E_scan=None rather than crashing the whole baseline (the 'Li'
+    failure mode). Downstream, a missing E_scan just drops that species' SCAN."""
+    from xcquinox.alec.config import MoleculeSpec
+
+    h = MoleculeSpec(name="H", atom="H 0.0 0.0 0.0", basis="def2-svp", spin=1,
+                     charge=0, atom_composition=(("H", 1),), grid_level=1)
+
+    def _boom(*a, **k):
+        raise RuntimeError("SCAN SCF for 'H' did not converge after tiered escalation")
+
+    monkeypatch.setattr(dfs_demo, "run_scf_with_cache", _boom)
+    out = dfs_demo.scan_baseline(
+        [h], {}, refs_dir=str(tmp_path), basis="def2-svp",
+        grid_level=1, orientation_lock_strength=0.0, progress=False)
+    assert out["H"] == {"E_scan": None, "density_rmse_scan": None}
