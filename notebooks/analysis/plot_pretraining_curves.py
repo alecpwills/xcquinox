@@ -34,21 +34,44 @@ matplotlib.use("Agg")  # headless-safe; must precede pyplot import
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Reuse the canonical per-arch color map for cross-figure consistency. The figure
-# module pulls in heavier deps, so fall back to a colormap if it can't be
-# imported -- the curves stay correct, only the exact colors differ.
+# Shared cross-figure styling (rung-keyed palette + rung grouping). ``arch_style``
+# is light (no heavy analysis deps, unlike make_ablation_arch_figure), loaded by
+# path since this directory is not an importable package. Falls back to a colormap
+# if it can't be imported -- the curves stay correct, only the styling differs.
+import importlib.util as _ilu  # noqa: E402
+
+_AS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arch_style.py")
 try:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from make_ablation_arch_figure import ARCH_COLOR as _ARCH_COLOR
-except Exception:  # pragma: no cover - exercised only when the sibling import breaks
-    _ARCH_COLOR = {}
+    _as_spec = _ilu.spec_from_file_location("arch_style", _AS_PATH)
+    arch_style = _ilu.module_from_spec(_as_spec)
+    sys.modules.setdefault("arch_style", arch_style)
+    _as_spec.loader.exec_module(arch_style)
+except Exception:  # pragma: no cover - only if arch_style is missing/broken
+    arch_style = None
 
 _FALLBACK_CMAP = plt.get_cmap("tab10")
+# Linestyle by rung so GGA / meta-GGA / rung-3.5 / combined read apart even in
+# grayscale (pretraining has no solver axis to map to linestyle).
+_RUNG_LS = {"GGA": "-", "meta-GGA": "--", "rung-3.5": ":", "rung-3.5+meta-GGA": "-."}
 
 
 def _arch_color(arch: str, idx: int):
-    """Canonical ARCH_COLOR if known, else a stable tab10 fallback by index."""
-    return _ARCH_COLOR.get(arch) or _FALLBACK_CMAP(idx % 10)
+    """Rung-keyed shared color if available, else a stable tab10 fallback."""
+    if arch_style is not None:
+        return arch_style.arch_color(arch)
+    return _FALLBACK_CMAP(idx % 10)
+
+
+def _arch_linestyle(arch: str):
+    """Rung-keyed linestyle (solid GGA .. dashdot combined); solid if unavailable."""
+    if arch_style is None:
+        return "-"
+    return _RUNG_LS.get(arch_style.rung_of(arch), "-")
+
+
+def _order_archs(archs):
+    """Rung-grouped order (GGA -> meta-GGA -> rung-3.5 -> combined) if available."""
+    return arch_style.sort_by_rung(archs) if arch_style is not None else sorted(archs)
 
 
 def load_pretrain_curves(run_dir):
@@ -91,17 +114,18 @@ def plot_pretraining_curves(curves, out_path, run_label=""):
     ``curves`` is the mapping returned by :func:`load_pretrain_curves`. Writes a
     PNG to ``out_path`` (creating parent dirs) and returns that path.
     """
-    archs = sorted(curves)
+    archs = _order_archs(list(curves))  # rung-grouped: GGA -> mGGA -> 3.5 -> both
     fig, (axx, axc) = plt.subplots(1, 2, figsize=(13.0, 5.2))
     for i, arch in enumerate(archs):
         d = curves[arch]
         color = _arch_color(arch, i)
+        ls = _arch_linestyle(arch)
         meta = d.get("meta") or {}
         fx, fc = meta.get("final_loss_x"), meta.get("final_loss_c")
         lbl_x = arch if fx is None else f"{arch}  (final {fx:.2e})"
         lbl_c = arch if fc is None else f"{arch}  (final {fc:.2e})"
-        axx.plot(np.arange(d["x"].size), d["x"], color=color, lw=1.3, label=lbl_x)
-        axc.plot(np.arange(d["c"].size), d["c"], color=color, lw=1.3, label=lbl_c)
+        axx.plot(np.arange(d["x"].size), d["x"], color=color, lw=1.3, ls=ls, label=lbl_x)
+        axc.plot(np.arange(d["c"].size), d["c"], color=color, lw=1.3, ls=ls, label=lbl_c)
     for ax, title in ((axx, "X-net  (exchange $F_x$)"),
                       (axc, "C-net  (correlation $F_c$)")):
         ax.set_yscale("log")
@@ -114,7 +138,7 @@ def plot_pretraining_curves(curves, out_path, run_label=""):
     nsteps = any_meta.get("pretrain_steps")
     if nsteps is None:
         nsteps = max(c["x"].size for c in curves.values())
-    sup = f"Pretraining loss curves — {len(archs)} archs, {nsteps} steps"
+    sup = f"Pretraining loss curves -- {len(archs)} archs, {nsteps} steps"
     if run_label:
         sup += f"\n{run_label}"
     fig.suptitle(sup, fontsize=11)

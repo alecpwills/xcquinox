@@ -72,3 +72,22 @@ def test_main_end_to_end(tmp_path):
     rc = ppc.main([str(run), "-o", str(out)])
     assert rc == 0
     assert out.is_file()
+
+
+def test_rung_ordering_and_render_mixed_rungs(tmp_path):
+    # mixed rungs exercise the arch_style wiring (order + rung-keyed color/linestyle)
+    archs = ("deep_rung35_mgga_3x16", "deep_3x16", "deep_mgga_3x16",
+             "deep_rung35_3x16")
+    run = _make_run(tmp_path, archs=archs, n=120)
+    curves = ppc.load_pretrain_curves(run)
+    if ppc.arch_style is not None:  # shared styling available -> rung-grouped order
+        ordered = ppc._order_archs(list(curves))
+        ranks = [ppc.arch_style.rung_rank(a) for a in ordered]
+        assert ranks == sorted(ranks)
+        assert ordered[0] == "deep_3x16"                # GGA first
+        assert ordered[-1] == "deep_rung35_mgga_3x16"   # combined last
+        # rung-keyed linestyles differ across rungs
+        assert ppc._arch_linestyle("deep_3x16") != ppc._arch_linestyle("deep_mgga_3x16")
+    out = tmp_path / "mixed.png"
+    written = ppc.plot_pretraining_curves(curves, out, run_label="mixed")
+    assert written.is_file() and written.stat().st_size > 1000
