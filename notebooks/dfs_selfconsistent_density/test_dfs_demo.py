@@ -438,3 +438,156 @@ def test_heldout_generalization_beats_pbe_on_real_runs():
         assert ae_rows and d_rows, f"{pmj}: empty held-out rows"
         m = dfs_demo.combined_energy_density(ae_rows, d_rows)
         assert m["beats_pbe"], f"{pmj}: held-out ED NN {m['ED_nn']:.2f} !< PBE {m['ED_pbe']:.2f}"
+
+
+# ---------------------------------------------------------------------------
+# SCAN self-consistent baseline (a meta-GGA comparator alongside PBE). The demo
+# asks whether a trained meta-GGA net improves on SCAN itself at the CCSD density
+# + atomization energy. The aggregation fns gain a *_scan series parallel to PBE.
+# ---------------------------------------------------------------------------
+
+def test_weighted_density_rmse_matches_hand_formula():
+    import numpy as np
+    rho = np.array([1.0, 2.0, 3.0])
+    rho_ref = np.array([1.5, 1.0, 3.0])
+    w = np.array([2.0, 1.0, 1.0])
+    got = dfs_demo._weighted_density_rmse(rho, rho_ref, w)
+    # sqrt( (2*0.25 + 1*1.0 + 1*0.0) / 4 ) = sqrt(1.5/4)
+    assert abs(got - (1.5 / 4.0) ** 0.5) < 1e-12
+
+
+def test_attach_scan_baseline_merges_by_name_without_mutating():
+    records = [
+        {"molecule": "H", "E_total_nn": -0.5, "E_pbe": -0.5,
+         "skip_reason": "atomic_system"},
+        {"name": "H2O", "E_total_nn": -76.4, "E_pbe": -76.4,
+         "density_rmse": 0.01, "density_rmse_pbe": 0.02},
+    ]
+    scan = {"H": {"E_scan": -0.49, "density_rmse_scan": None},
+            "H2O": {"E_scan": -76.3, "density_rmse_scan": 0.015}}
+    out = dfs_demo.attach_scan_baseline(records, scan)
+    by = {r.get("name") or r.get("molecule"): r for r in out}
+    assert by["H"]["E_scan"] == -0.49
+    assert "density_rmse_scan" not in by["H"]        # None is not attached (atom)
+    assert by["H2O"]["E_scan"] == -76.3
+    assert by["H2O"]["density_rmse_scan"] == 0.015
+    assert "E_scan" not in records[0]                # inputs untouched
+
+
+def test_aggregate_density_diagnostics_emits_scan_when_present():
+    records = [
+        {"name": "H2O", "density_rmse": 0.010, "density_rmse_pbe": 0.020,
+         "density_rmse_scan": 0.015},
+        {"name": "HO", "density_rmse": 0.030, "density_rmse_pbe": 0.020,
+         "density_rmse_scan": 0.025},
+    ]
+    rows = dfs_demo.aggregate_density_diagnostics(records)
+    by = {r["name"]: r for r in rows}
+    assert by["H2O"]["density_rmse_scan"] == 0.015
+    assert by["H2O"]["beats_scan"] is True      # 0.010 < 0.015
+    assert by["HO"]["beats_scan"] is False      # 0.030 !< 0.025
+
+
+def test_self_consistent_ae_emits_scan_series():
+    records = [
+        {"molecule": "H", "E_total_nn": -0.5, "E_pbe": -0.5, "E_scan": -0.51,
+         "skip_reason": "atomic_system"},
+        {"molecule": "O", "E_total_nn": -75.0, "E_pbe": -75.0, "E_scan": -75.05,
+         "skip_reason": "atomic_system"},
+        {"molecule": "H2O", "E_total_nn": -76.4, "E_pbe": -76.4, "E_scan": -76.45},
+    ]
+    rows = dfs_demo.self_consistent_ae(records, {"H2O": {"H": 2, "O": 1}},
+                                       {"H2O": 230.0})
+    r = rows[0]
+    # AE_scan = 2*(-0.51) + (-75.05) - (-76.45) = 0.38 Ha
+    assert abs(r["ae_scan_kcal"] - 0.38 * _KCAL) < 1e-6
+    assert abs(r["err_scan"] - (0.38 * _KCAL - 230.0)) < 1e-6
+    assert "beats_scan" in r
+
+
+def test_self_consistent_ae_omits_scan_when_atom_missing_e_scan():
+    # A molecule whose constituent atom has no SCAN energy must not emit a scan
+    # series (mirrors the NN own-atom rule), but the PBE/NN series still emit.
+    records = [
+        {"molecule": "H", "E_total_nn": -0.5, "E_pbe": -0.5, "E_scan": -0.51,
+         "skip_reason": "atomic_system"},
+        {"molecule": "O", "E_total_nn": -75.0, "E_pbe": -75.0,
+         "skip_reason": "atomic_system"},   # no E_scan
+        {"molecule": "H2O", "E_total_nn": -76.4, "E_pbe": -76.4, "E_scan": -76.45},
+    ]
+    rows = dfs_demo.self_consistent_ae(records, {"H2O": {"H": 2, "O": 1}},
+                                       {"H2O": 230.0})
+    assert rows and "err_nn" in rows[0]
+    assert "err_scan" not in rows[0]
+
+
+def test_combined_energy_density_emits_scan_series():
+    ae_rows = [{"err_nn": 1.0, "err_pbe": 4.0, "err_scan": 2.0},
+               {"err_nn": -2.0, "err_pbe": -4.0, "err_scan": -3.0}]
+    density_rows = [
+        {"density_rmse": 1e-4, "density_rmse_pbe": 2e-4, "density_rmse_scan": 1.5e-4},
+        {"density_rmse": 3e-4, "density_rmse_pbe": 4e-4, "density_rmse_scan": 3.5e-4}]
+    m = dfs_demo.combined_energy_density(ae_rows, density_rows)
+    assert abs(m["E_MAE_scan"] - 2.5) < 1e-12         # mean(|2|, |-3|)
+    assert abs(m["D_scan"] - 2.5e-4) < 1e-16          # mean(1.5e-4, 3.5e-4)
+    # gamma is STILL self-calibrated from PBE (common scale), not from SCAN.
+    assert abs(m["gamma"] - (4.0 / 3e-4)) < 1e-6
+    gd_scan = (4.0 / 3e-4) * 2.5e-4
+    assert abs(m["ED_scan"] - 2.0 / (1 / 2.5 + 1 / gd_scan)) < 1e-9
+    assert m["beats_scan"] == (m["ED_nn"] < m["ED_scan"])
+
+
+def test_combined_energy_density_no_scan_keys_when_absent():
+    # Backward compatible: without a scan series the scan keys are absent.
+    m = dfs_demo.combined_energy_density(
+        [{"err_nn": 1.0, "err_pbe": 4.0}],
+        [{"density_rmse": 1e-4, "density_rmse_pbe": 2e-4}])
+    assert "ED_scan" not in m and "beats_scan" not in m
+
+
+def test_heldout_summary_tallies_scan_when_present():
+    combined = {
+        "m1": {"E_MAE_nn": 1.0, "E_MAE_pbe": 2.0, "D_nn": 1e-4, "D_pbe": 2e-4,
+               "ED_nn": 1.0, "ED_pbe": 2.0, "beats_pbe": True,
+               "E_MAE_scan": 1.5, "D_scan": 1.5e-4, "ED_scan": 1.5,
+               "beats_scan": True},
+    }
+    s = dfs_demo.heldout_summary(combined)
+    assert s["n_beat_ae_scan"] == 1        # 1.0 < 1.5
+    assert s["n_beat_density_scan"] == 1   # 1e-4 < 1.5e-4
+    assert s["n_beat_ed_scan"] == 1
+    assert s["rows"][0]["beats_ae_scan"] is True
+
+
+def test_scan_baseline_runs_scf_energy_and_density(tmp_path):
+    """scan_baseline runs a real SCAN KS-SCF per species: finite SCAN energies for
+    a molecule AND an atom, and a finite density RMSE vs the reference grid for
+    the molecule (atoms are skipped -> None)."""
+    import numpy as np
+    from pyscf import dft, gto
+    from xcquinox.alec.config import MoleculeSpec
+
+    h2 = MoleculeSpec(name="H2", atom="H 0.0 0.0 0.0; H 0.0 0.0 0.741",
+                      basis="def2-svp", spin=0, charge=0,
+                      atom_composition=(("H", 2),), grid_level=1)
+    h = MoleculeSpec(name="H", atom="H 0.0 0.0 0.0", basis="def2-svp", spin=1,
+                     charge=0, atom_composition=(("H", 1),), grid_level=1)
+
+    # A reference grid + AO values for H2 (stands in for the eval mol_data): the
+    # SCAN dm is grid-independent, so scoring it on this grid is well-defined.
+    mol = gto.M(atom="H 0.0 0.0 0.0; H 0.0 0.0 0.741", basis="def2-svp",
+                spin=0, charge=0, unit="angstrom", verbose=0)
+    g = dft.gen_grid.Grids(mol); g.level = 1; g.build()
+    ao = dft.numint.eval_ao(mol, g.coords, deriv=0)
+    mol_data_by_name = {"H2": {"ao_grid": ao, "grid_weights": g.weights,
+                               "rho_ref_grid": np.zeros(g.weights.shape)}}
+
+    out = dfs_demo.scan_baseline(
+        [h2, h], mol_data_by_name, refs_dir=str(tmp_path), basis="def2-svp",
+        grid_level=1, orientation_lock_strength=0.0, progress=False)
+
+    assert np.isfinite(out["H2"]["E_scan"]) and out["H2"]["E_scan"] < 0.0
+    assert np.isfinite(out["H"]["E_scan"]) and out["H"]["E_scan"] < 0.0
+    d = out["H2"]["density_rmse_scan"]
+    assert isinstance(d, float) and np.isfinite(d) and d > 0.0
+    assert out["H"]["density_rmse_scan"] is None       # atom: density skipped

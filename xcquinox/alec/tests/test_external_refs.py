@@ -435,15 +435,17 @@ def test_preflight_uks_oep_signature_and_imports():
     sig = inspect.signature(preflight_uks_oep)
     params = sig.parameters
 
-    assert list(params) == ["cache_dir", "basis", "grid_level"], (
+    assert list(params) == [
+        "cache_dir", "basis", "grid_level", "orientation_lock_strength"], (
         f"signature drift: got {list(params)}"
     )
-    for name in ("cache_dir", "basis", "grid_level"):
+    for name in ("cache_dir", "basis", "grid_level", "orientation_lock_strength"):
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, (
             f"{name} must be keyword-only (matches T3/T4/T5 contract)"
         )
     assert params["basis"].default == "def2-svp"
     assert params["grid_level"].default == 1
+    assert params["orientation_lock_strength"].default == 0.0
 
     src = inspect.getsource(preflight_uks_oep)
     assert 'SpeciesEntry("HO", 0, 1, "dfs_ae")' in src, (
@@ -1550,3 +1552,79 @@ def test_prepare_converged_hf_converges_hard_radical():
     assert getattr(mf_hf, "converged", False)
     # converges to the CORRECT lower minimum (not the stalled ~-224.741 one)
     assert mf_hf.e_tot < -224.745
+
+
+# ---------------------------------------------------------------------------
+# xc keyword on run_scf_with_cache (SCAN baseline in the DFS density demo).
+# The default xc="pbe" MUST reproduce the pre-existing cache name + numerics.
+# ---------------------------------------------------------------------------
+
+def test_intermediate_cache_name_pbe_default_unchanged_scan_gets_infix():
+    """xc="pbe" (the default) leaves the cache filename byte-identical to the
+    pre-xc form; a non-pbe functional appends an ``_xc<slug>`` infix so a SCAN
+    cache can never collide with (or be mistaken for) the PBE cache."""
+    from xcquinox.alec.external_refs import _intermediate_cache_name
+    pre_xc = "H2_g1_bdef2-svp_scf.npz"
+    assert _intermediate_cache_name(
+        "H2", grid_level=1, basis="def2-svp", density_fit=False,
+        kind="scf") == pre_xc
+    assert _intermediate_cache_name(
+        "H2", grid_level=1, basis="def2-svp", density_fit=False,
+        kind="scf", xc="pbe") == pre_xc
+    scan = _intermediate_cache_name(
+        "H2", grid_level=1, basis="def2-svp", density_fit=False,
+        kind="scf", xc="scan")
+    assert scan != pre_xc
+    assert "xcscan" in scan
+    assert scan.endswith("_scf.npz")
+
+
+def test_run_scf_pbe_default_reproduces_cache_name_and_returns_e_tot(tmp_path):
+    """The default xc="pbe" writes the SAME intermediate filename as before and
+    now also returns a finite SCF total energy ``e_tot`` in the payload."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache,
+    )
+    import numpy as np
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    payload = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                                 basis="def2-svp", grid_level=1)
+    # Byte-for-byte cache-name compatibility: the pre-xc PBE filename.
+    assert (tmp_path / "_intermediates" / "H2_g1_bdef2-svp_scf.npz").is_file()
+    assert "e_tot" in payload
+    assert np.isfinite(payload["e_tot"])
+    assert payload["e_tot"] < 0.0  # a bound H2 total energy is negative
+
+
+def test_run_scf_scan_returns_e_tot_and_valid_self_consistent_density(tmp_path):
+    """xc="scan" runs a SCAN KS-SCF: finite ``e_tot``, a valid SCAN dm, and a
+    self-consistent density that integrates to the electron count. The SCAN
+    cache is a DISTINCT file from the PBE one (xc infix)."""
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_scf_with_cache,
+    )
+    import numpy as np
+    from pyscf import dft, gto
+    spec = SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = resolve_geometry(spec)
+    scan = run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                              basis="def2-svp", grid_level=1, xc="scan")
+    assert np.isfinite(scan["e_tot"]) and scan["e_tot"] < 0.0
+    dm = np.asarray(scan["dm"])
+    assert np.all(np.isfinite(dm))
+    # SCAN self-consistent density on its own grid integrates to N_electrons=2.
+    coords = np.asarray(atoms.get_positions())
+    syms = atoms.get_chemical_symbols()
+    mol = gto.M(atom=[(s, tuple(coords[i])) for i, s in enumerate(syms)],
+                basis="def2-svp", charge=0, spin=0, unit="angstrom", verbose=0)
+    ao = dft.numint.eval_ao(mol, scan["grid_coords"], deriv=0)
+    dm_tot = dm[0] + dm[1] if dm.ndim == 3 else dm
+    rho = np.einsum("ij,gj,gi->g", dm_tot, ao, ao)
+    integ = float(np.sum(scan["grid_weights"] * rho))
+    assert abs(integ - 2.0) < 0.05, f"integrated SCAN rho={integ} != 2 for H2"
+    # Distinct on-disk cache from the PBE intermediate.
+    assert (tmp_path / "_intermediates"
+            / "H2_g1_bdef2-svp_xcscan_scf.npz").is_file()
+    assert not (tmp_path / "_intermediates"
+                / "H2_g1_bdef2-svp_scf.npz").is_file()

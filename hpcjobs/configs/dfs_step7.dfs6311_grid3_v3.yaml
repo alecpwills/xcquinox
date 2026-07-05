@@ -165,6 +165,17 @@ cluster:
   max_concurrent_tasks: 8
   max_array_size: 1000
   device: cpu
+  # OOM auto-retry -- engaged now that CPU XLA/LLVM *compile* OOMs classify as
+  # "oom" (not "deterministic"); see HISTORY Phase 15. To make a compile-OOM'd
+  # spec auto-resubmit onto more memory, uncomment and set this to a
+  # LARGER-per-node-memory partition that EXISTS on the login instance you submit
+  # from (e.g. long-96core on milan1/2 ~256 GB, vs long-28core ~128 GB). Must be
+  # valid on the submitting instance or the retry sbatch is rejected. Leave unset
+  # if the biggest reachable node is already your submit --partition -- a
+  # same-partition retry cannot clear a deterministic compile OOM; the
+  # --xla_llvm_disable_expensive_passes trim in the train template is the
+  # no-bigger-node lever there.
+  # oom_retry_partition: long-96core
   # jax-0.7.0 PARITY env (matches the local dev/test stack the meta-GGA code was
   # tested on) -- a fresh, single-purpose conda-forge+pip env built from
   # environment-cluster-parity.yml. NOT the old polluted xcquinox env (jax 0.4.35).

@@ -36,11 +36,15 @@ replicates Dick & Fernandez-Serra, Phys. Rev. B 104, L161109 (2021):
 - adamw with linear learning-rate decay;
 - networks pretrained to PBE before density training (they zero-initialize to LDA).
 
-Architectures: `deep_3x16` and `deep_rung35_3x16`. Change `ARCH_NAMES` in the setup cell to use others.
+Architectures: two GGA-ladder networks (`deep_3x16`, `deep_rung35_3x16`) and two meta-GGA networks
+(`deep_mgga_3x16`, `deep_rung35_mgga_3x16`, which pretrain to SCAN). Change `ARCH_NAMES` in the setup
+cell to use others. Section 7 adds a **SCAN** self-consistent baseline alongside PBE, so the
+meta-GGA networks can be judged against the meta-GGA (SCAN) they were warm-started from, not just PBE.
 
-Deviations from PRB L161109: CCSD (not CCSD(T)) reference densities; GGA + rung-3.5 networks (not the
-paper's meta-GGA); `grid_level=2` (paper 3); adamw + linear decay (paper Adam + ReduceLROnPlateau);
-spin-summed `N_e^2` (paper per-spin `N_sigma^2`).
+Deviations from PRB L161109: CCSD (not CCSD(T)) reference densities; `grid_level=2` (paper 3);
+adamw + linear decay (paper Adam + ReduceLROnPlateau); spin-summed `N_e^2` (paper per-spin `N_sigma^2`).
+The arch set spans GGA -> rung-3.5 -> meta-GGA, so the paper's meta-GGA rung IS included (the
+`deep_mgga_*` nets).
 
 **Orientation lock.** OH (and the held-out NO in section 9) is an X-2-Pi *orbitally degenerate*
 radical: its singly-occupied pi hole can sit in any combination of the degenerate `(pi_x, pi_y)` pair,
@@ -89,7 +93,8 @@ if SMOKE:
     HILLS          = dfs_demo.SMOKE_MOLECULE_HILLS   # H2O + OH
     BASIS          = "6-311G(d,p)"                   # no diffuse functions -> well-conditioned
     GRID_LEVEL     = 1
-    ARCH_NAMES     = ("deep_3x16", "deep_rung35_3x16")
+    ARCH_NAMES     = ("deep_3x16", "deep_rung35_3x16",
+                      "deep_mgga_3x16", "deep_rung35_mgga_3x16")
     SOLVER_NAMES   = ("full_3",)
     N_EPOCHS       = {"full_3": 3, "full_25": 3}
     PRETRAIN_STEPS = 20
@@ -344,6 +349,62 @@ for key, info in trained.items():
 
 # ---------------------------------------------------------------------------
 md(r"""
+### SCAN meta-GGA baseline
+
+PBE is a GGA. **SCAN** (Sun, Ruzsinszky, Perdew, PRL 115, 036402 (2015)) is a *meta-GGA*: a
+strongly-constrained, higher-rung functional that is systematically more accurate than PBE for many
+densities. It is the natural comparator for the demo's two meta-GGA networks (`deep_mgga_3x16`,
+`deep_rung35_mgga_3x16`), which pretrain to SCAN. The scientific question this section poses is
+therefore sharper than "does the network beat PBE?": **does a network trained self-consistently on
+CCSD densities improve on SCAN itself** -- the functional it was warm-started from -- at reproducing
+the CCSD density and the atomization energy?
+
+SCAN is *model-independent* (a fixed functional), so like the PBE baseline it is computed once over
+the species union and reused for every trained network. Each species (molecules **and** the
+atomization-energy constituent atoms) gets a SCAN Kohn-Sham SCF via `run_scf_with_cache(xc="scan")`,
+reusing the **same** basis / grid / charge / spin / orientation-lock as the PBE and CCSD references
+(so the degenerate radicals OH and held-out NO lock the same density component the CCSD reference
+does). The SCAN self-consistent density is scored against CCSD on the identical evaluation grid, and
+SCAN's own self-consistent atomization energy is formed from its own atom energies -- exactly
+mirroring how the network and PBE are scored. Sections 8-10 then report **NN vs PBE vs SCAN**.
+
+> The outcome is empirical and reported as-is: a trained network may or may not beat SCAN. Beating PBE
+> is the low bar; beating SCAN (a meta-GGA) is the demanding one, especially for the GGA-rung networks.
+""")
+
+code(r"""
+from xcquinox.alec.data import precompute_fixed_density_data
+
+# SCAN is a fixed meta-GGA -> model-independent, so compute it ONCE over the
+# species union and reuse for every trained model (exactly like the PBE
+# baseline). Rebuild each molecule's eval mol_data (reference-grid ao_grid +
+# grid_weights + CCSD rho_ref_grid) via precompute -- same orientation lock as
+# run_test uses -- then run a SCAN KS-SCF per species (molecules AND their AE
+# atoms), scoring SCAN's self-consistent density on that exact grid.
+scan_mol_data = {
+    ms.name: precompute_fixed_density_data(
+        ms, orientation_lock_strength=dfs_demo.ORIENTATION_LOCK_STRENGTH)
+    for ms in dfs_demo.molecule_specs(mol_specs)
+}
+scan_by_name = dfs_demo.scan_baseline(
+    mol_specs, scan_mol_data, refs_dir=REFS_DIR, basis=BASIS, grid_level=GRID_LEVEL)
+
+# Attach the SCAN series to every model's records so sections 8-10 (density, AE,
+# combined ED) report NN vs PBE vs SCAN. SCAN is identical across models.
+for key in evals:
+    evals[key]["per_molecule"] = dfs_demo.attach_scan_baseline(
+        evals[key]["per_molecule"], scan_by_name)
+
+print("SCAN baseline (model-independent):")
+for _m in [ms.name for ms in dfs_demo.molecule_specs(mol_specs)]:
+    _s = scan_by_name.get(_m, {})
+    _d = _s.get("density_rmse_scan")
+    print(f"  {_m}: E_scan={_s.get('E_scan'):.5f} Ha  "
+          f"density_rmse_scan={'n/a' if _d is None else f'{_d:.4e}'}")
+""")
+
+# ---------------------------------------------------------------------------
+md(r"""
 ## 8. Figures
 """)
 
@@ -363,7 +424,7 @@ plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_loss_curves.png"), dp
 """)
 
 code(r"""
-# (b) self-consistent density RMSE vs CCSD: NN per (arch, solver) vs PBE baseline
+# (b) self-consistent density RMSE vs CCSD: NN per (arch, solver) vs PBE + SCAN
 mols = [ms.name for ms in dfs_demo.molecule_specs(mol_specs)]
 pbe_rmse, nn_rmse = {}, {key: {} for key in evals}
 for key, res in evals.items():
@@ -373,11 +434,17 @@ for key, res in evals.items():
         nn_rmse[key][rec["molecule"]] = rec["density_rmse"]
         pbe_rmse[rec["molecule"]] = rec.get("density_rmse_pbe")
 
-x = np.arange(len(mols)); width = 0.8 / (len(evals) + 1)
+def _nan(v):
+    return np.nan if v is None else v
+scan_rmse = {m: _nan((scan_by_name.get(m) or {}).get("density_rmse_scan")) for m in mols}
+
+# PBE + SCAN baselines then one bar per model.
+nbar = len(evals) + 2; x = np.arange(len(mols)); width = 0.8 / nbar
 fig, ax = plt.subplots(figsize=(8, 4.5))
 ax.bar(x, [pbe_rmse.get(m, np.nan) for m in mols], width, label="PBE", color="0.6")
+ax.bar(x + width, [scan_rmse.get(m, np.nan) for m in mols], width, label="SCAN", color="0.35")
 for i, key in enumerate(evals):
-    ax.bar(x + (i + 1) * width, [nn_rmse[key].get(m, np.nan) for m in mols], width,
+    ax.bar(x + (i + 2) * width, [nn_rmse[key].get(m, np.nan) for m in mols], width,
            label=f"NN {key[0]}/{key[1]}")
 ax.set_xticks(x + 0.4 - width / 2); ax.set_xticklabels(mols)
 ax.set_ylabel("density RMSE vs CCSD"); ax.legend(fontsize=8)
@@ -396,15 +463,20 @@ code(r"""
 ae_rows = {key: dfs_demo.self_consistent_ae(res["per_molecule"], comp_by_name, ae_ref_kcal)
            for key, res in evals.items()}
 ae_mols = [r["name"] for r in next(iter(ae_rows.values()))]
-pbe_err = {r["name"]: r["err_pbe"] for r in next(iter(ae_rows.values()))}
+_first = next(iter(ae_rows.values()))
+pbe_err = {r["name"]: r["err_pbe"] for r in _first}
+# SCAN AE error is model-independent (err_scan is identical across models).
+scan_err = {r["name"]: r.get("err_scan") for r in _first}
 
-x = np.arange(len(ae_mols)); width = 0.8 / (len(evals) + 1)
+nbar = len(evals) + 2; x = np.arange(len(ae_mols)); width = 0.8 / nbar
 fig, ax = plt.subplots(figsize=(8, 4.5))
 ax.axhline(0, color="k", lw=0.8)
 ax.bar(x, [pbe_err.get(m, np.nan) for m in ae_mols], width, label="PBE", color="0.6")
+ax.bar(x + width, [scan_err.get(m) if scan_err.get(m) is not None else np.nan
+                   for m in ae_mols], width, label="SCAN", color="0.35")
 for i, (key, rows) in enumerate(ae_rows.items()):
     nn_err = {r["name"]: r["err_nn"] for r in rows}
-    ax.bar(x + (i + 1) * width, [nn_err.get(m, np.nan) for m in ae_mols], width,
+    ax.bar(x + (i + 2) * width, [nn_err.get(m, np.nan) for m in ae_mols], width,
            label=f"NN {key[0]}/{key[1]}")
 ax.set_xticks(x + 0.4 - width / 2); ax.set_xticklabels(ae_mols)
 ax.set_ylabel("AE error vs reference (kcal/mol)"); ax.legend(fontsize=8)
@@ -412,7 +484,7 @@ plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_ae_error.png"), dpi=1
 """)
 
 code(r"""
-# (d) DFS-Fig.2-style 3-panel, NN vs PBE: energy AE-MAE (top), mean density error
+# (d) DFS-Fig.2-style 3-panel, NN vs PBE vs SCAN: energy AE-MAE (top), mean density error
 #     (middle), combined ED (bottom). The mean density error is dominated by the OH
 #     radical (~2.6e-3, ~30-250x the closed-shell systems), so the aggregate density
 #     win is modest even though H2O/NH improve ~40% -- see the "excl. OH" print below.
@@ -437,23 +509,29 @@ if _dpbe and (max(_dpbe) - min(_dpbe)) / min(_dpbe) > 0.02:
           f"not comparable; re-run section 7 (checkpoints are reused) for one stable refs/ set.",
           flush=True)
 
-keys = list(evals); xk = np.arange(len(keys)); w = 0.38
+keys = list(evals); xk = np.arange(len(keys)); w = 0.26
 
-def _grouped(ax, pbe_vals, nn_vals, fmt):
-    ax.bar(xk - w / 2, pbe_vals, w, label="PBE", color="0.6")
-    ax.bar(xk + w / 2, nn_vals, w, label="NN", color="C0")
-    for xi, (p, n) in enumerate(zip(pbe_vals, nn_vals)):
-        ax.annotate(fmt(p), (xi - w / 2, p), ha="center", va="bottom", fontsize=6)
-        ax.annotate(fmt(n), (xi + w / 2, n), ha="center", va="bottom", fontsize=6)
+def _grouped(ax, pbe_vals, scan_vals, nn_vals, fmt):
+    ax.bar(xk - w, pbe_vals, w, label="PBE", color="0.6")
+    ax.bar(xk + 0.0, scan_vals, w, label="SCAN", color="0.35")
+    ax.bar(xk + w, nn_vals, w, label="NN", color="C0")
+    for xi, (p, s, n) in enumerate(zip(pbe_vals, scan_vals, nn_vals)):
+        ax.annotate(fmt(p), (xi - w, p), ha="center", va="bottom", fontsize=6)
+        ax.annotate(fmt(s), (xi, s), ha="center", va="bottom", fontsize=6)
+        ax.annotate(fmt(n), (xi + w, n), ha="center", va="bottom", fontsize=6)
     ax.margins(y=0.20)
 
+def _col(k, field):
+    return [ed[kk].get(field, np.nan) for kk in k]
+
 fig, (axE, axD, axED) = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
-_grouped(axE, [ed[k]["E_MAE_pbe"] for k in keys], [ed[k]["E_MAE_nn"] for k in keys], lambda v: f"{v:.2f}")
+_grouped(axE, _col(keys, "E_MAE_pbe"), _col(keys, "E_MAE_scan"), _col(keys, "E_MAE_nn"),
+         lambda v: f"{v:.2f}")
 axE.set_ylabel("AE-MAE (kcal/mol)"); axE.set_title("energy error"); axE.legend(fontsize=8)
-_grouped(axD, [ed[k]["D_pbe"] for k in keys], [ed[k]["D_nn"] for k in keys], lambda v: f"{v:.2e}")
+_grouped(axD, _col(keys, "D_pbe"), _col(keys, "D_scan"), _col(keys, "D_nn"), lambda v: f"{v:.2e}")
 axD.set_ylabel("mean density RMSE vs CCSD")
 axD.set_title("density error (mean over molecules; OH radical dominates the mean)")
-_grouped(axED, [ed[k]["ED_pbe"] for k in keys], [ed[k]["ED_nn"] for k in keys], lambda v: f"{v:.2f}")
+_grouped(axED, _col(keys, "ED_pbe"), _col(keys, "ED_scan"), _col(keys, "ED_nn"), lambda v: f"{v:.2f}")
 axED.set_ylabel(r"$\mathcal{ED}$ (kcal/mol)")
 axED.set_title("combined energy-density (DFS Eq. 21, gamma self-calibrated from PBE)")
 axED.set_xticks(xk); axED.set_xticklabels([f"{k[0]}\n{k[1]}" for k in keys], fontsize=8)
@@ -465,10 +543,16 @@ for k in keys:
              if r["name"] != "HO"]
     d_nn_x = sum(r["density_rmse"] for r in no_oh) / len(no_oh)
     d_pbe_x = sum(r["density_rmse_pbe"] for r in no_oh) / len(no_oh)
+    scan_txt = ""
+    if "ED_scan" in m:
+        beats_scan = "beats SCAN" if m["beats_scan"] else "NO"
+        scan_txt = (f" || SCAN: AE-MAE {m['E_MAE_scan']:.2f} densMAE {m['D_scan']:.3e} "
+                    f"ED {m['ED_scan']:.2f} (NN {beats_scan})")
     print(f"{k[0]}/{k[1]}: AE-MAE NN {m['E_MAE_nn']:.2f} vs PBE {m['E_MAE_pbe']:.2f} kcal/mol | "
           f"densMAE NN {m['D_nn']:.3e} vs PBE {m['D_pbe']:.3e} "
           f"(excl. OH: {d_nn_x:.3e} vs {d_pbe_x:.3e}) | "
-          f"ED NN {m['ED_nn']:.2f} vs PBE {m['ED_pbe']:.2f} ({'beats PBE' if m['beats_pbe'] else 'NO'})")
+          f"ED NN {m['ED_nn']:.2f} vs PBE {m['ED_pbe']:.2f} "
+          f"({'beats PBE' if m['beats_pbe'] else 'NO'}){scan_txt}")
 """)
 
 # ---------------------------------------------------------------------------
@@ -500,6 +584,19 @@ ho_specs = dfs_demo.build_mol_specs(ho_points, basis=BASIS, grid_level=GRID_LEVE
 ho_comp, ho_ae_ref = dfs_demo.heldout_comp_and_ae(ho_points, ho_specs)
 print("held-out molecules:", [ms.name for ms in dfs_demo.molecule_specs(ho_specs)], flush=True)
 
+# SCAN held-out baseline (model-independent): one SCAN SCF per held-out species,
+# same lock/basis/grid as the CCSD refs, so NO's degenerate density is scored
+# against the matching CCSD component -- the acid test that SCAN, like the NN,
+# reproduces a held-out degenerate radical.
+from xcquinox.alec.data import precompute_fixed_density_data
+ho_scan_mol_data = {
+    ms.name: precompute_fixed_density_data(
+        ms, orientation_lock_strength=dfs_demo.ORIENTATION_LOCK_STRENGTH)
+    for ms in dfs_demo.molecule_specs(ho_specs)
+}
+ho_scan_by_name = dfs_demo.scan_baseline(
+    ho_specs, ho_scan_mol_data, refs_dir=REFS_DIR, basis=BASIS, grid_level=GRID_LEVEL)
+
 HELDOUT_DIR = os.path.join(OUT_DIR, "heldout")
 ho_evals, ho_combined = {}, {}
 for key, info in trained.items():
@@ -509,6 +606,8 @@ for key, info in trained.items():
         model_checkpoint=os.path.join(info["ckpt"], "model.eqx"),
         output_dir=os.path.join(HELDOUT_DIR, tag, "eval"))
     res = run_test(ts)
+    res["per_molecule"] = dfs_demo.attach_scan_baseline(
+        res["per_molecule"], ho_scan_by_name)
     ho_evals[key] = res
     arows = dfs_demo.self_consistent_ae(res["per_molecule"], ho_comp, ho_ae_ref)
     drows = dfs_demo.aggregate_density_diagnostics(res["per_molecule"])
@@ -521,20 +620,32 @@ print(f"\nHeld-out generalization ({N} trained models on {HELDOUT_HILLS}):", flu
 print(f"  beat PBE on AE-MAE:  {summary['n_beat_ae']}/{N}")
 print(f"  beat PBE on density: {summary['n_beat_density']}/{N}")
 print(f"  beat PBE on ED:      {summary['n_beat_ed']}/{N}")
+if "n_beat_ed_scan" in summary:
+    print(f"  beat SCAN on AE-MAE:  {summary['n_beat_ae_scan']}/{N}")
+    print(f"  beat SCAN on density: {summary['n_beat_density_scan']}/{N}")
+    print(f"  beat SCAN on ED:      {summary['n_beat_ed_scan']}/{N}")
 """)
 
 code(r"""
-# Figure: held-out generalization -- mean density RMSE (log) + AE-MAE, NN vs PBE, per model.
+# Figure: held-out generalization -- mean density RMSE (log) + AE-MAE, NN vs PBE
+# vs SCAN, per model.
 if ho_combined:
     tags = list(ho_combined)
-    xk = np.arange(len(tags)); w = 0.38
+    _has_scan = all("ED_scan" in ho_combined[t] for t in tags)
+    xk = np.arange(len(tags)); w = 0.26 if _has_scan else 0.38
+    def _pos(slot):  # slot in {-1,0,1} for PBE/SCAN/NN when scan present, else {-1,1}->{-.5,.5}
+        return xk + slot * w if _has_scan else xk + slot * (w / 2)
     fig, (axD, axE) = plt.subplots(1, 2, figsize=(11, 4.5))
-    axD.bar(xk - w/2, [ho_combined[t]["D_pbe"] for t in tags], w, label="PBE", color="0.6")
-    axD.bar(xk + w/2, [ho_combined[t]["D_nn"]  for t in tags], w, label="NN",  color="C2")
+    axD.bar(_pos(-1), [ho_combined[t]["D_pbe"] for t in tags], w, label="PBE", color="0.6")
+    if _has_scan:
+        axD.bar(_pos(0), [ho_combined[t]["D_scan"] for t in tags], w, label="SCAN", color="0.35")
+    axD.bar(_pos(1), [ho_combined[t]["D_nn"]  for t in tags], w, label="NN",  color="C2")
     axD.set_yscale("log"); axD.set_ylabel("held-out mean density RMSE vs CCSD")
     axD.set_title("density generalization"); axD.legend(fontsize=8)
-    axE.bar(xk - w/2, [ho_combined[t]["E_MAE_pbe"] for t in tags], w, label="PBE", color="0.6")
-    axE.bar(xk + w/2, [ho_combined[t]["E_MAE_nn"]  for t in tags], w, label="NN",  color="C2")
+    axE.bar(_pos(-1), [ho_combined[t]["E_MAE_pbe"] for t in tags], w, label="PBE", color="0.6")
+    if _has_scan:
+        axE.bar(_pos(0), [ho_combined[t]["E_MAE_scan"] for t in tags], w, label="SCAN", color="0.35")
+    axE.bar(_pos(1), [ho_combined[t]["E_MAE_nn"]  for t in tags], w, label="NN",  color="C2")
     axE.set_ylabel("held-out AE-MAE (kcal/mol)"); axE.set_title("energy generalization"); axE.legend(fontsize=8)
     for ax in (axD, axE):
         ax.set_xticks(xk); ax.set_xticklabels([t.replace("__", "\n") for t in tags], fontsize=7)
@@ -567,10 +678,15 @@ md(r"""
   energies (the physically correct AE, matching `ae_as_reactions`) -- NOT the anchored `AE_nn` field
   (molecule energy minus FIXED exact atoms), which reports absolute-energy offset, not the AE.
 - Figure (d): DFS combined energy-density error (Eq. 21), 3 panels (cf. DFS Fig. 2) -- energy AE-MAE,
-  mean density RMSE, and the combined `ED`, NN vs PBE; `gamma` self-calibrated from PBE so `ED_pbe ==
-  E_MAE_pbe`. The mean density error is OH-radical-dominated (~2.6e-3 vs ~1e-4 elsewhere), so the
-  aggregate density win is modest even though H2O/NH improve ~40% -- the printout's "excl. OH" mean
-  makes this explicit. Energy and density both improve, so `ED_nn < ED_pbe`.
+  mean density RMSE, and the combined `ED`, NN vs PBE vs SCAN; `gamma` self-calibrated from PBE so
+  `ED_pbe == E_MAE_pbe` and PBE/SCAN/NN share one kcal/mol scale. The mean density error is
+  OH-radical-dominated (~2.6e-3 vs ~1e-4 elsewhere), so the aggregate density win is modest even
+  though H2O/NH improve ~40% -- the printout's "excl. OH" mean makes this explicit.
+- SCAN baseline (section 7): a meta-GGA self-consistent comparator to PBE, computed once per species
+  (model-independent) via `run_scf_with_cache(xc="scan")` and scored identically (own-atom AE + CCSD
+  density RMSE on the eval grid). Figures (b)/(c)/(d) and the section-9 held-out figure carry a SCAN
+  series next to PBE. Whether a trained network beats SCAN -- the demanding, meta-GGA bar -- is
+  reported as-is by the printouts and figures; it is NOT assumed.
 - Section 9 (held-out): the trained models are evaluated on N2/NO/NO2 -- none in the training set --
   and the printout reports how many beat PBE on density, AE, and `ED` (`fig_heldout_generalization.png`).
   It also confirms the held-out degenerate NO radical's PBE density RMSE is model-independent, i.e. the
@@ -580,8 +696,8 @@ md(r"""
   V_xc supervision, use the cluster harness (`xcquinox.alec.cluster`) with the `dfs_step7` config; the
   CCSD reference generator there is `xcquinox.alec.external_refs.precompute_all` (adds the OEP V_xc
   cascade).
-- Deviations from PRB L161109: CCSD (not CCSD(T)); GGA + rung-3.5 (not meta-GGA); `grid_level=2`;
-  adamw + linear decay; spin-summed `N_e^2`.
+- Deviations from PRB L161109: CCSD (not CCSD(T)); `grid_level=2`; adamw + linear decay;
+  spin-summed `N_e^2`. (The meta-GGA rung IS now included -- the `deep_mgga_*` nets.)
 """)
 
 # ---------------------------------------------------------------------------

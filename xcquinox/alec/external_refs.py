@@ -38,7 +38,7 @@ class SpeciesEntry:
     """
     name: str
     charge: int
-    spin: int  # PySCF 2S = N_α − N_β convention
+    spin: int  # PySCF 2S = N_α - N_β convention
     source: str  # one of "dfs_ae", "dfs_atom", "bh76", "ip13",
                  # "probe_a", "probe_b", "probe_c", "probe_d",
                  # "probe_atom_ref", "hbpt"
@@ -88,18 +88,24 @@ def _basis_slug(basis: str) -> str:
 
 def _intermediate_cache_name(name: str, *, grid_level: int, basis: str,
                              density_fit: bool, kind: str,
-                             orientation_lock_strength: float = 0.0) -> str:
+                             orientation_lock_strength: float = 0.0,
+                             xc: str = "pbe") -> str:
     """Cache filename for an intermediate (kind in {'scf','ccsd'}).
 
     Includes the basis (+ a ``_df`` tag) so a basis/DF change does NOT silently
     reuse a stale file computed in a different basis. An ``_ol{strength}`` tag is
     appended when the orientation lock is on, so a locked reference cannot be
     reused from an unlocked (or differently-locked) intermediate. strength=0
-    (off) leaves the filename byte-identical to the pre-lock form."""
+    (off) leaves the filename byte-identical to the pre-lock form. An
+    ``_xc{slug}`` tag is appended when ``xc`` is not the default ``"pbe"`` (e.g. a
+    SCAN baseline SCF), so a SCAN cache never collides with the PBE cache;
+    ``xc="pbe"`` leaves the filename byte-identical to the pre-xc form (existing
+    PBE caches still resolve)."""
     df_tag = "_df" if density_fit else ""
     ol_tag = f"_ol{orientation_lock_strength:g}" if orientation_lock_strength else ""
+    xc_tag = "" if xc == "pbe" else f"_xc{_basis_slug(xc)}"
     return (f"{name}_g{int(grid_level)}_b{_basis_slug(basis)}"
-            f"{df_tag}{ol_tag}_{kind}.npz")
+            f"{df_tag}{ol_tag}{xc_tag}_{kind}.npz")
 
 
 def _build_hf_meanfield(mol, is_uks: bool, *, density_fit: bool = False,
@@ -416,11 +422,18 @@ def run_scf_with_cache(
     density_fit: bool = False,
     auxbasis: str | None = None,
     orientation_lock_strength: float = 0.0,
+    xc: str = "pbe",
 ) -> dict:
-    """Stage 1: PBE SCF with on-disk cache (np.savez_compressed).
+    """Stage 1: KS-SCF with on-disk cache (np.savez_compressed).
 
-    Returns dict with keys: dm, mo_coeff, mo_occ, mo_energy, S,
-    spin_unrestricted, n_ao, n_grid.
+    ``xc`` selects the exchange-correlation functional (default ``"pbe"``); pass
+    e.g. ``"scan"`` for a meta-GGA baseline SCF. A non-pbe ``xc`` is tagged into
+    the cache filename (see :func:`_intermediate_cache_name`) so a SCAN cache
+    never collides with the PBE cache, and ``xc="pbe"`` reproduces the pre-xc
+    cache name + numerics byte-for-byte.
+
+    Returns dict with keys: dm, mo_coeff, mo_occ, mo_energy, S, e_tot (the SCF
+    total energy in Hartree), spin_unrestricted, n_ao, n_grid.
 
     Cache layout:
       <cache_dir>/_intermediates/<name>_g{grid_level}_scf.npz
@@ -438,7 +451,7 @@ def run_scf_with_cache(
     inter.mkdir(parents=True, exist_ok=True)
     cache_path = inter / _intermediate_cache_name(
         spec.name, grid_level=grid_level, basis=basis, density_fit=density_fit,
-        kind="scf", orientation_lock_strength=orientation_lock_strength)
+        kind="scf", orientation_lock_strength=orientation_lock_strength, xc=xc)
 
     if cache_path.is_file():
         with np.load(cache_path, allow_pickle=False) as z:
@@ -448,6 +461,10 @@ def run_scf_with_cache(
                 "mo_occ": np.asarray(z["mo_occ"]),
                 "mo_energy": np.asarray(z["mo_energy"]),
                 "S": np.asarray(z["S"]),
+                # e_tot post-dates the pre-xc cache format; a legacy PBE cache
+                # written before this key existed returns None (the PBE path
+                # does not consume e_tot -- the demo reads E_pbe from precompute).
+                "e_tot": (float(z["e_tot"]) if "e_tot" in z.files else None),
                 "spin_unrestricted": bool(z["spin_unrestricted"]),
                 "n_ao": int(z["n_ao"]),
                 "n_grid": int(z["n_grid"]),
@@ -474,7 +491,7 @@ def run_scf_with_cache(
     if use_df:
         from xcquinox.alec.df_jk import default_auxbasis
         mf = mf.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
-    mf.xc = "pbe"
+    mf.xc = xc
     mf.grids.level = grid_level
     # Orientation lock: bias h_core so the PBE baseline density (rho_pbe_grid)
     # locks the SAME degenerate component as the eval/training seed. Identical
@@ -486,23 +503,24 @@ def run_scf_with_cache(
         mf.get_hcore = lambda *a, **k: _locked_hcore
     mf.kernel()
     if not getattr(mf, "converged", False):
-        # A non-converged PBE density must NOT be cached: it becomes the
-        # HF-for-CCSD initial guess, so a poor PBE dm co-causes the downstream HF
+        # A non-converged density must NOT be cached: for the PBE path it becomes
+        # the HF-for-CCSD initial guess, so a poor dm co-causes the downstream HF
         # stall (the c-hooo failure mode) -- and on rerun the bad dm is a cache
         # hit that re-fails deterministically. Escalate; raise if still stuck.
-        def _pbe_builder():
+        def _scf_builder():
             m = dft.UKS(mol) if is_uks else dft.RKS(mol)
             if use_df:
                 from xcquinox.alec.df_jk import default_auxbasis
                 m = m.density_fit(auxbasis=auxbasis or default_auxbasis(basis))
-            m.xc = "pbe"
+            m.xc = xc
             m.grids.level = grid_level
             return m
-        mf = _converge_scf_tiered(_pbe_builder, dm0=np.asarray(mf.make_rdm1()),
+        mf = _converge_scf_tiered(_scf_builder, dm0=np.asarray(mf.make_rdm1()),
                                   is_uks=is_uks, locked_hcore=_locked_hcore)
         if mf is None or not getattr(mf, "converged", False):
             raise RuntimeError(
-                f"PBE SCF for {spec.name!r} did not converge after tiered escalation"
+                f"{xc.upper()} SCF for {spec.name!r} did not converge after "
+                "tiered escalation"
             )
 
     # Build the result dict ONCE, used both for the cache write and the
@@ -517,6 +535,7 @@ def run_scf_with_cache(
         "mo_occ": np.asarray(mf.mo_occ),
         "mo_energy": np.asarray(mf.mo_energy),
         "S": np.asarray(mf.get_ovlp()),
+        "e_tot": float(mf.e_tot),
         "spin_unrestricted": bool(is_uks),
         "n_ao": int(mol.nao),
         "n_grid": int(mf.grids.weights.size),
@@ -568,7 +587,7 @@ def run_ccsd_with_cache(
     the arbitrary PBE start orbitals).
 
     Returns dict with keys: dm_ao (AO-basis CCSD 1-RDM, shape
-    ``(n_ao, n_ao)`` for RKS or ``(2, n_ao, n_ao)`` for UKS — both spin
+    ``(n_ao, n_ao)`` for RKS or ``(2, n_ao, n_ao)`` for UKS -- both spin
     channels kept for the V_xc shape contract), rho_ref_grid (1D spin-summed),
     grid_weights, ao_grid.
 

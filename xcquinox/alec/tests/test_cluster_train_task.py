@@ -133,6 +133,23 @@ def test_rc_nonzero_no_model_deterministic(run_dir, monkeypatch):
     assert failure["rc"] == 1
 
 
+def test_rc_nonzero_no_model_cpu_compile_oom(run_dir, monkeypatch):
+    # A large-basis XLA/LLVM CPU *compile* OOM: std::bad_alloc / "Cannot allocate
+    # memory" in the tail, SIGABRT (-6), no model.eqx. Must classify as "oom" so
+    # `resubmit` retries it on a bigger-memory partition. Regression: these were
+    # mislabeled "deterministic" and dropped (6-311++G(3df,2pd)+grid3 runs).
+    monkeypatch.setattr(
+        tt, "_run_worker",
+        lambda s, d: (-6, "[Compiling module jit__step]\n"
+                          "LLVM compilation error: Cannot allocate memory\n"
+                          "terminate called after throwing an instance of "
+                          "'std::bad_alloc'\n  what():  std::bad_alloc"))
+    assert tt.main([run_dir, "0"]) != 0
+    failure = _read_failure(run_dir, 0)
+    assert failure["classification"] == "oom"
+    assert "std::bad_alloc" in failure["log_excerpt"]
+
+
 def test_missing_spec_file_is_deterministic_failure(run_dir, monkeypatch):
     os.remove(os.path.join(run_dir, "specs", "spec_0000.spec"))
     # _run_worker should never be reached.
@@ -150,6 +167,13 @@ def test_missing_spec_file_is_deterministic_failure(run_dir, monkeypatch):
     ("CUDA_ERROR_OUT_OF_MEMORY", 1),
     ("nothing", -9),
     ("nothing", 137),
+    # CPU-host OOM: a large-basis XLA/LLVM compile exhausts node RAM.
+    ("terminate called after throwing an instance of 'std::bad_alloc'", None),
+    ("LLVM compilation error: Cannot allocate memory", 1),
+    ("LLVM ERROR: pthread_create failed: Resource temporarily unavailable", None),
+    # SIGABRT (std::bad_alloc -> abort()) recognized by exit code alone.
+    ("no output", -6),
+    ("no output", 134),
 ])
 def test_looks_like_gpu_oom_positive(text, rc):
     assert tt._looks_like_gpu_oom(text, rc) is True

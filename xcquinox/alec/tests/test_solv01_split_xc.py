@@ -31,6 +31,7 @@ from xcquinox.alec.oneshot import (
     split_exc_energy_uks,
     compute_exc_nn,
     _ZETA_BOUNDARY_EPS,
+    _RHO_TOT_FLOOR,
 )
 from xcquinox.alec.descriptors import assemble_descriptor_features
 
@@ -329,11 +330,54 @@ def _ec_energy_polarized(model, D_a, D_b, features, ao_grid, ao_xyz,
     sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
     # Clip MUST match the production paths (split_exc_energy_uks / ec_spin) so
     # this reference is the exact energy whose gradient compute_vc_polarized_
-    # per_spin builds, INCLUDING at the zeta boundary.
-    zeta = jnp.clip((rho_a - rho_b) / jnp.maximum(rho_tot, 1e-300),
-                    -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
+    # per_spin builds, INCLUDING at the zeta boundary AND the negative-density tail
+    # (_RHO_TOT_FLOOR + where/stop_gradient; HISTORY Phase 17).
+    safe_rt = jnp.maximum(rho_tot, _RHO_TOT_FLOOR)
+    _zeta_raw = jnp.clip((rho_a - rho_b) / safe_rt,
+                         -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
+    zeta = jnp.where(rho_tot > _RHO_TOT_FLOOR, _zeta_raw,
+                     jax.lax.stop_gradient(_zeta_raw))
     return jnp.sum(grid_weights * model.eval_ec(rho_tot, sig_tot, features,
                                                 zeta=zeta))
+
+
+def test_polarized_vc_finite_on_negative_density_tail():
+    """Regression (HISTORY Phase 17): diffuse-basis grid-tail quadrature noise (or
+    an aggressive NN update) can drive the TOTAL density rho_tot = rho_a + rho_b
+    slightly NEGATIVE. The old zeta = clip((ra-rb)/max(rt,1e-300)) floored a
+    negative rt to 1e-300, whose square (1e-600) underflowed to 0 in the V_c jvp
+    quotient rule -> 0*inf = NaN -- the meta-GGA `bh76:HLi` step-0 training failure
+    (Li is open-shell -> UKS -> uses compute_vc_polarized_per_spin). The
+    _RHO_TOT_FLOOR + where/stop_gradient guard makes the potential finite. Inject
+    the reproduced negative-density tail (rho_a ~ -4e-10, rt < 0) into a real Li
+    UKS density and confirm the per-spin V_c is all-finite (was NaN)."""
+    from xcquinox.alec.oneshot import compute_vc_polarized_per_spin
+
+    model = _build_polarized_model()
+    md = _li_uks_md()
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_grad = jnp.asarray(md["ao_grid_deriv"])
+    ao_xyz = ao_grad[1:4]
+    grid_weights = jnp.asarray(md["grid_weights"])
+    features = assemble_descriptor_features(model.descriptors, md)
+    dm = jnp.asarray(md["dm_pbe"])
+    D_a, D_b = dm[0], dm[1]
+    rho_a, nra, _ = _grid_quantities(D_a, ao_grid, ao_xyz)
+    rho_b, nrb, _ = _grid_quantities(D_b, ao_grid, ao_xyz)
+    nr_tot = nra + nrb
+    sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
+
+    # Inject the reproduced negative-rt tail at the lowest-density grid points.
+    idx = jnp.argsort(rho_a + rho_b)[:16]
+    rho_a = rho_a.at[idx].set(-4.061e-10)
+    rho_b = rho_b.at[idx].set(2.001e-12)   # rt = rho_a + rho_b < 0
+    assert bool(jnp.any((rho_a + rho_b) < 0.0)), "test lost its negative-rt trigger"
+
+    vc_a, vc_b = compute_vc_polarized_per_spin(
+        model, rho_a, rho_b, sig_tot, features, ao_grid, grid_weights,
+        nr_tot, ao_grad)
+    assert bool(jnp.all(jnp.isfinite(vc_a))) and bool(jnp.all(jnp.isfinite(vc_b))), \
+        "polarized V_c NON-FINITE on the negative-density tail (bh76:HLi NaN regression)"
 
 
 def test_polarized_vc_fd_energy_potential_consistency():

@@ -208,3 +208,88 @@ def test_meta_gga_full_scf_pyscfad_runs_no_nan():
     assert np.isfinite(float(result.total_energy)), "non-finite energy"
     assert np.all(np.isfinite(np.asarray(result.density_matrix))), "non-finite DM"
     assert np.all(np.isfinite(np.asarray(result.features_used))), "non-finite features"
+
+
+# ---------------------------------------------------------------------------
+# HISTORY Phase 17 (singularity 1 of 2): the iso-orbital-alpha low-density-tail
+# blowup. alpha = (tau - tau_W)/tau_unif divides by n / n^{5/3}; on a low-density
+# tail its VALUE reaches ~1e4-1e7 (even at normal bases -- alpha is NOT physically
+# O(1) here) and its GRADIENT ~1e28, which the unrolled full-SCF backprop compounds
+# toward a NaN meta-GGA training gradient. Fixed by clip [0, _ALPHA_MAX] + a
+# gradient freeze below _RHO_GRAD_CUTOFF, mirroring the oneshot.py zeta clip. (The
+# OTHER bh76:HLi singularity -- the polarized-correlation potential jvp NaN on the
+# negative-density tail -- lives in test_solv01_split_xc.py.)
+# ---------------------------------------------------------------------------
+def test_compute_alpha_bounded_and_tail_gradient_frozen():
+    from xcquinox.alec.metagga import compute_alpha, _ALPHA_MAX, _RHO_GRAD_CUTOFF
+    for rho_v in (1e-20, 1e-12, 1e-8, 1e-6, 1e-3, 1e-2, 0.1, 1.0):
+        rho = jnp.array([rho_v])
+        sigma = jnp.array([max(rho_v ** 2 * 1e-2, 1e-40)])
+        tau = jnp.array([1e-3])
+        a = float(compute_alpha(rho, sigma, tau)[0])
+        assert 0.0 <= a <= _ALPHA_MAX + 1e-9, f"alpha={a} out of [0,{_ALPHA_MAX}] at rho={rho_v}"
+        gs = float(jax.grad(lambda s: compute_alpha(rho, s, tau).sum())(sigma)[0])
+        gr = float(jax.grad(lambda r: compute_alpha(r, sigma, tau).sum())(rho)[0])
+        assert np.isfinite(gs) and np.isfinite(gr), f"non-finite alpha grad at rho={rho_v}"
+        if rho_v < _RHO_GRAD_CUTOFF:      # negligible-density tail -> gradient frozen
+            assert gs == 0.0 and gr == 0.0, f"tail gradient not frozen at rho={rho_v}"
+
+
+def test_compute_alpha_clip_is_noop_below_ceiling():
+    """The clip is a no-op wherever raw alpha < _ALPHA_MAX and rho > cutoff:
+    such points are byte-identical to the pre-fix formula. (Note: real molecular
+    grids DO have alpha > _ALPHA_MAX at rho > 1e-8 -- those points ARE clipped;
+    the fix is energy-faithful via gate saturation, not via leaving alpha
+    untouched. This test only pins the no-op-below-ceiling property.)"""
+    from xcquinox.alec.metagga import compute_alpha
+    def old(rho, sigma, tau):
+        rs = jnp.maximum(rho, 1e-30)
+        tw = sigma / (8.0 * rs)
+        tu = (3.0 / 10.0) * (3.0 * jnp.pi ** 2) ** (2.0 / 3.0) * rs ** (5.0 / 3.0)
+        return jnp.maximum((tau - tw) / jnp.maximum(tu, 1e-30), 0.0)
+    rho = jnp.array([0.05, 0.1, 0.3, 1.0, 3.0])
+    sigma = jnp.array([0.01, 0.02, 0.05, 0.1, 0.2])
+    tau = jnp.array([0.02, 0.05, 0.1, 0.3, 0.8])
+    assert float(jnp.max(jnp.abs(
+        compute_alpha(rho, sigma, tau) - old(rho, sigma, tau)))) == 0.0
+
+
+def test_subset_selection_alpha_clip_matches_metagga():
+    """The numpy twin clips to the same ceiling so precomputed and live alpha agree."""
+    from xcquinox.alec.subset_selection import compute_descriptor_triple
+    from xcquinox.alec.metagga import _ALPHA_MAX
+    out = compute_descriptor_triple(  # a low-density point that blows up unclipped
+        np.array([1e-12]), np.array([1e-20]), np.array([1e-3]))
+    assert out["alpha"][0] <= _ALPHA_MAX + 1e-9
+
+
+def test_meta_gga_full_scf_gradient_finite_on_diffuse_tail():
+    """Regression (HISTORY 17): a meta_gga arch's FULL-SCF training gradient on a
+    fully-polarized atom at the diffuse DFS-parity basis (H rho_min ~ 6e-10) was NaN
+    before the alpha clip -- the notebook `bh76:HLi` step-0 failure. Now finite."""
+    import equinox as eqx
+    from xcquinox.alec.config import ArchitectureConfig, MoleculeSpec
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.descriptors import MetaGGAAlphaDescriptor
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.solver import (SolverConfig, SolverBackend, SolverMode,
+                                      FeaturePolicy, run_scf)
+    arch = ArchitectureConfig.from_spec(
+        "t_mgga_tail", 3, 16, descriptors=["metagga"], meta_gga=True,
+        descriptor_log_transform=True, use_polarized_correlation=True,
+        zero_init_final_layer=False)
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    spec = MoleculeSpec(name="H", atom="H 0 0 0", basis="6-311++G(3df,2pd)",
+                        charge=0, spin=1, atom_composition=(("H", 1),), grid_level=2)
+    data = precompute_fixed_density_data(
+        spec, descriptors=(MetaGGAAlphaDescriptor(),), required_keys=("eri",))
+    assert float(np.min(np.asarray(data["rho_grid"]))) < 1e-8, "lost the low-density trigger"
+    cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                       max_cycles=3, conv_tol=1e-12, feature_policy=FeaturePolicy.REASSEMBLE)
+    val, grads = eqx.filter_value_and_grad(
+        lambda m: run_scf(cfg, m, data).total_energy)(model)
+    assert bool(jnp.isfinite(val)), "meta-GGA full-SCF energy non-finite on the diffuse tail"
+    leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_inexact_array))
+    assert all(bool(jnp.all(jnp.isfinite(l))) for l in leaves), \
+        "NON-FINITE meta-GGA training gradient (the bh76:HLi NaN regression)"
+    assert any(bool(jnp.any(l != 0.0)) for l in leaves), "no gradient reached the net"

@@ -67,18 +67,47 @@ _GPU_OOM_MARKERS = (
 )
 
 
-def _looks_like_gpu_oom(text, rc=None):
-    """True iff ``text`` / ``rc`` look like a GPU-OOM (or OS OOM-kill) failure.
+# Host (CPU) out-of-memory signatures. A large-basis XLA/LLVM *compile* -- building
+# the fused SCF-step kernel for e.g. 6-311++G(3df,2pd)+grid3 -- can exhaust node
+# RAM; the C++ runtime then aborts on ``std::bad_alloc``, the allocator returns
+# ENOMEM (``Cannot allocate memory``), or a thread stack cannot be allocated
+# (``pthread_create failed``). These strings appear in the failure tail of every
+# such crash. Matching them lets the harness classify the crash as ``"oom"`` so
+# ``resubmit`` retries it on a larger-memory partition instead of dropping it as a
+# permanent ``"deterministic"`` failure. See HISTORY (2026-07-04).
+_CPU_OOM_MARKERS = (
+    "std::bad_alloc",
+    "bad_alloc",
+    "Cannot allocate memory",
+    "pthread_create failed",
+)
 
-    Ported from the step-7 notebook. Two signals:
-      - a textual CUDA/cuDNN/XLA marker in the captured output, or
-      - a SIGKILL exit (``rc`` == -9 POSIX, or 137 == 128+9). The OS OOM-killer
-        dispatches SIGKILL instantly with no chance for JAX/CUDA to print an
-        error, so a marker-only check would miss kernel-OOM kills entirely.
+
+def _looks_like_gpu_oom(text, rc=None):
+    """True iff ``text`` / ``rc`` look like an OOM failure -- GPU-side, CPU-host,
+    or an OS OOM-kill. (Name kept for its many call sites / pins; scope is now any
+    OOM, not just GPU.)
+
+    Three signals:
+      - a GPU/CUDA/XLA marker (``_GPU_OOM_MARKERS``), or
+      - a host-allocator marker (``_CPU_OOM_MARKERS``) -- a large-basis XLA/LLVM
+        CPU compile that exhausts node RAM (``std::bad_alloc`` /
+        ``Cannot allocate memory`` / ``pthread_create failed``), or
+      - an OOM-ish signal exit: SIGKILL from the OS OOM-killer (``-9`` / ``137``)
+        or SIGABRT from a C++ ``std::bad_alloc`` -> ``abort()`` (``-6`` / ``134``).
+        A signal exit can carry no textual marker, so the exit code is a necessary
+        backstop.
+
+    Deliberately broad: a false positive costs at most one resubmit onto a bigger
+    node, whereas a missed OOM is dropped as a permanent ``"deterministic"``
+    failure and never retried (exactly the 6-311++G(3df,2pd)+grid3 regression this
+    widening fixes).
     """
     if any(m in text for m in _GPU_OOM_MARKERS):
         return True
-    if rc is not None and rc in (-9, 137):
+    if any(m in text for m in _CPU_OOM_MARKERS):
+        return True
+    if rc is not None and rc in (-9, 137, -6, 134):
         return True
     return False
 

@@ -27,10 +27,10 @@ functional obtained with differentiable programming," Phys. Rev. B 104, L161109
   - adamw with the linear-decay LR schedule.
 
 Documented deviations from the PRB paper (all inherited from the repo's
-dfs_step7 recipe): plain CCSD (not CCSD(T)) reference densities; the modern
-GGA + rung-3.5 archs rather than the paper's meta-GGA; ``grid_level=2`` (paper
-uses 3); adamw (paper uses Adam + ReduceLROnPlateau); spin-summed ``N_e^2``
-(paper uses per-spin ``N_sigma^2``).
+dfs_step7 recipe): plain CCSD (not CCSD(T)) reference densities; ``grid_level=2``
+(paper uses 3); adamw (paper uses Adam + ReduceLROnPlateau); spin-summed ``N_e^2``
+(paper uses per-spin ``N_sigma^2``). The arch set spans GGA -> rung-3.5 ->
+meta-GGA, so the paper's meta-GGA rung IS represented (the ``deep_mgga_*`` nets).
 """
 from __future__ import annotations
 
@@ -38,8 +38,11 @@ import dataclasses
 import os
 from typing import Iterable, Sequence
 
+import numpy as np
+
 from xcquinox.alec import benchmark_refs, get_architecture
 from xcquinox.alec.balancing import GradNormConfig
+from xcquinox.alec.external_refs import SpeciesEntry, run_scf_with_cache
 from xcquinox.alec.cluster.domain import get_domain_profile
 from xcquinox.alec.cluster.spec_builder import (
     atoms_to_mol_spec,
@@ -71,8 +74,13 @@ DEFAULT_MOLECULE_HILLS: tuple[str, ...] = ("H2O", "HLi", "HO", "HN")
 #: Smallest end-to-end subset for the SMOKE path (one closed- + one open-shell).
 SMOKE_MOLECULE_HILLS: tuple[str, ...] = ("H2O", "HO")
 
-#: The two modern architectures featured by the notebook (swap your own here).
-ARCH_NAMES: tuple[str, ...] = ("deep_3x16", "deep_rung35_3x16")
+#: The architectures featured by the notebook (swap your own here). Two GGA-ladder
+#: nets (plain GGA, GGA+cusp+rung-3.5) plus two meta-GGA nets (pure DFS meta-GGA,
+#: and the combined cusp+rung-3.5+meta-GGA). The meta-GGA nets pretrain to SCAN
+#: (arch.meta_gga=True routes the target), so the notebook can ask whether a
+#: trained meta-GGA net improves on SCAN itself at reproducing the CCSD density.
+ARCH_NAMES: tuple[str, ...] = (
+    "deep_3x16", "deep_rung35_3x16", "deep_mgga_3x16", "deep_rung35_mgga_3x16")
 
 #: Held-out generalization set (real DFS-pool entries, elements subset {H,O,Li,N},
 #: NONE in the training set): N2 (closed-shell triple bond, a classic PBE
@@ -234,6 +242,103 @@ def generate_ccsd_density_refs(mol_specs: Sequence, *, refs_dir: str, basis: str
             print(f"    {ms.name}: {human}", flush=True)
         results.append((ms.name, status))
     return results
+
+
+# ---------------------------------------------------------------------------
+# SCAN self-consistent baseline (a meta-GGA comparator alongside PBE)
+# ---------------------------------------------------------------------------
+
+def _weighted_density_rmse(rho, rho_ref, weights) -> float:
+    """Grid-weighted density RMSE vs a reference, mirroring
+    ``evaluation.pbe_density_errors``: ``sqrt(sum(w (rho-rho_ref)^2) / sum(w))``.
+    """
+    rho = np.asarray(rho)
+    rho_ref = np.asarray(rho_ref)
+    w = np.asarray(weights)
+    diff = rho - rho_ref
+    return float(np.sqrt(np.sum(w * diff ** 2) / np.sum(w)))
+
+
+def scan_baseline(mol_specs: Sequence, mol_data_by_name: dict, *, refs_dir: str,
+                  basis: str, grid_level: int,
+                  orientation_lock_strength: float = ORIENTATION_LOCK_STRENGTH,
+                  progress: bool = True) -> dict:
+    """Per-species SCAN self-consistent baseline (a meta-GGA comparator to PBE).
+
+    For every species in ``mol_specs`` (molecules AND the AE constituent atoms)
+    runs a SCAN KS-SCF via :func:`external_refs.run_scf_with_cache` with
+    ``xc="scan"``, reusing the SAME basis/grid/charge/spin/orientation-lock the
+    PBE + CCSD references use. The orientation lock matters for the degenerate
+    radicals (OH in training, held-out NO): it selects the same representative of
+    the degenerate manifold as the CCSD reference, so SCAN's density is scored
+    against the matching reference component (identical to how the PBE baseline is
+    formed). SCAN caches land next to the PBE/CCSD intermediates under
+    ``<refs_dir>/_intermediates/`` with an ``_xcscan`` tag, so they never collide
+    with the PBE caches.
+
+    Returns ``{name: {"E_scan", "density_rmse_scan"}}`` where:
+
+      - ``E_scan``            -- SCAN self-consistent total energy (Hartree), for
+                                 EVERY species (molecules + atoms), so the demo can
+                                 form SCAN's OWN self-consistent atomization energy;
+      - ``density_rmse_scan`` -- grid-weighted RMSE of the SCAN self-consistent
+                                 density vs the CCSD reference on the eval grid
+                                 (molecules only; ``None`` for atoms).
+
+    ``mol_data_by_name`` maps each polyatomic's name to its eval ``mol_data`` (the
+    ``precompute_fixed_density_data`` output), supplying ``ao_grid`` (the
+    reference-grid AO values), ``grid_weights`` and ``rho_ref_grid``. The SCAN dm
+    is in the AO basis (grid-independent), so ``rho_scan_grid = einsum(
+    "ij,gj,gi->g", dm_scan_tot, ao_grid, ao_grid)`` evaluates the SCAN density on
+    the exact grid the CCSD/PBE references live on. Atoms need no ``mol_data``
+    (the density objective is molecules-only).
+    """
+    out: dict = {}
+    n = len(mol_specs)
+    for i, ms in enumerate(mol_specs, 1):
+        spec = SpeciesEntry(name=ms.name, charge=int(ms.charge),
+                            spin=int(ms.spin), source="benchmark")
+        atoms = benchmark_refs._mol_spec_to_atoms(ms)
+        if progress:
+            print(f"  SCAN SCF {i}/{n}: {ms.name} @ {basis} ...", flush=True)
+        scf = run_scf_with_cache(
+            spec, atoms, cache_dir=refs_dir, basis=basis, grid_level=grid_level,
+            orientation_lock_strength=orientation_lock_strength, xc="scan")
+        rec = {"E_scan": float(scf["e_tot"]), "density_rmse_scan": None}
+        if _is_molecule(ms):
+            md = mol_data_by_name.get(ms.name)
+            if md is not None and md.get("rho_ref_grid") is not None:
+                dm = np.asarray(scf["dm"])
+                dm_tot = dm[0] + dm[1] if dm.ndim == 3 else dm
+                ao = np.asarray(md["ao_grid"])
+                rho_scan = np.einsum("ij,gj,gi->g", dm_tot, ao, ao)
+                rec["density_rmse_scan"] = _weighted_density_rmse(
+                    rho_scan, md["rho_ref_grid"], md["grid_weights"])
+        out[ms.name] = rec
+    return out
+
+
+def attach_scan_baseline(per_molecule_records: Iterable[dict],
+                         scan_by_name: dict) -> list:
+    """Copies of ``per_molecule_records`` with the SCAN baseline merged in.
+
+    Adds ``E_scan`` (all species) and ``density_rmse_scan`` (molecules) from
+    :func:`scan_baseline` output keyed by molecule name, so the three aggregation
+    fns can emit their ``*_scan`` series parallel to PBE. A ``None`` SCAN field is
+    not attached (atoms carry no density RMSE). Inputs are not mutated.
+    """
+    out = []
+    for rec in per_molecule_records:
+        name = rec.get("name") or rec.get("molecule")
+        rec = dict(rec)
+        s = scan_by_name.get(name)
+        if s is not None:
+            if s.get("E_scan") is not None:
+                rec["E_scan"] = float(s["E_scan"])
+            if s.get("density_rmse_scan") is not None:
+                rec["density_rmse_scan"] = float(s["density_rmse_scan"])
+        out.append(rec)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -471,13 +576,19 @@ def aggregate_density_diagnostics(per_molecule_records: Iterable[dict]) -> list:
         rmse_pbe = rec.get("density_rmse_pbe")
         if rmse is None or rmse_pbe is None:
             continue  # atomic system or no CCSD reference loaded
-        rows.append({
+        row = {
             "name": rec.get("name") or rec.get("molecule"),
             "density_rmse": float(rmse),
             "density_rmse_pbe": float(rmse_pbe),
             "beats_pbe": float(rmse) < float(rmse_pbe),
             "improvement": float(rmse_pbe) - float(rmse),
-        })
+        }
+        # SCAN comparator (attached by attach_scan_baseline); absent -> PBE-only.
+        rmse_scan = rec.get("density_rmse_scan")
+        if rmse_scan is not None:
+            row["density_rmse_scan"] = float(rmse_scan)
+            row["beats_scan"] = float(rmse) < float(rmse_scan)
+        rows.append(row)
     return rows
 
 
@@ -504,11 +615,14 @@ def self_consistent_ae(per_molecule_records, comp_by_name, ae_ref_kcal):
     """
     e_atom_nn: dict = {}
     e_atom_pbe: dict = {}
+    e_atom_scan: dict = {}
     for rec in per_molecule_records:
         if rec.get("skip_reason") == "atomic_system":
             sym = rec.get("molecule") or rec.get("name")
             e_atom_nn[sym] = float(rec["E_total_nn"])
             e_atom_pbe[sym] = float(rec["E_pbe"])
+            if rec.get("E_scan") is not None:
+                e_atom_scan[sym] = float(rec["E_scan"])
 
     rows = []
     for rec in per_molecule_records:
@@ -529,7 +643,7 @@ def self_consistent_ae(per_molecule_records, comp_by_name, ae_ref_kcal):
         ref = float(ref)
         err_nn = ae_nn_kcal - ref
         err_pbe = ae_pbe_kcal - ref
-        rows.append({
+        row = {
             "name": name,
             "ae_nn_kcal": ae_nn_kcal,
             "ae_pbe_kcal": ae_pbe_kcal,
@@ -537,7 +651,18 @@ def self_consistent_ae(per_molecule_records, comp_by_name, ae_ref_kcal):
             "err_nn": err_nn,
             "err_pbe": err_pbe,
             "beats_pbe": abs(err_nn) < abs(err_pbe),
-        })
+        }
+        # SCAN's OWN self-consistent atomization energy -- only when the molecule
+        # AND every constituent atom carry a SCAN energy (mirrors the own-atom NN
+        # rule); attach_scan_baseline populates E_scan.
+        if rec.get("E_scan") is not None and all(s in e_atom_scan for s in comp):
+            ae_scan = sum(e_atom_scan[s] * n for s, n in comp.items()) - float(rec["E_scan"])
+            ae_scan_kcal = ae_scan * _HARTREE_TO_KCAL
+            err_scan = ae_scan_kcal - ref
+            row["ae_scan_kcal"] = ae_scan_kcal
+            row["err_scan"] = err_scan
+            row["beats_scan"] = abs(err_nn) < abs(err_scan)
+        rows.append(row)
     return rows
 
 
@@ -581,7 +706,7 @@ def combined_energy_density(ae_rows, density_rows):
 
     ed_nn = _harmonic(e_mae_nn, gamma * d_nn)
     ed_pbe = _harmonic(e_mae_pbe, gamma * d_pbe)  # == e_mae_pbe by construction
-    return {
+    result = {
         "gamma": gamma,
         "E_MAE_nn": e_mae_nn,
         "E_MAE_pbe": e_mae_pbe,
@@ -591,6 +716,20 @@ def combined_energy_density(ae_rows, density_rows):
         "ED_pbe": ed_pbe,
         "beats_pbe": ed_nn < ed_pbe,
     }
+    # SCAN comparator on the SAME gamma (self-calibrated from PBE) so energy and
+    # density share one kcal/mol scale across PBE/NN/SCAN. Emitted only when every
+    # row carries the SCAN series (attach_scan_baseline was applied); otherwise
+    # the result stays PBE-vs-NN only, for backward compatibility.
+    if (all("err_scan" in r for r in ae_rows)
+            and all("density_rmse_scan" in r for r in density_rows)):
+        e_mae_scan = sum(abs(r["err_scan"]) for r in ae_rows) / len(ae_rows)
+        d_scan = sum(r["density_rmse_scan"] for r in density_rows) / len(density_rows)
+        ed_scan = _harmonic(e_mae_scan, gamma * d_scan)
+        result["E_MAE_scan"] = e_mae_scan
+        result["D_scan"] = d_scan
+        result["ED_scan"] = ed_scan
+        result["beats_scan"] = ed_nn < ed_scan
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -659,7 +798,7 @@ def heldout_summary(per_model_combined: dict) -> dict:
     """
     rows = []
     for name, c in per_model_combined.items():
-        rows.append({
+        row = {
             "model": name,
             "E_MAE_nn": c["E_MAE_nn"], "E_MAE_pbe": c["E_MAE_pbe"],
             "D_nn": c["D_nn"], "D_pbe": c["D_pbe"],
@@ -667,12 +806,26 @@ def heldout_summary(per_model_combined: dict) -> dict:
             "beats_ae": c["E_MAE_nn"] < c["E_MAE_pbe"],
             "beats_density": c["D_nn"] < c["D_pbe"],
             "beats_ed": bool(c["beats_pbe"]),
-        })
+        }
+        # SCAN comparator (present iff combined_energy_density saw a SCAN series).
+        if "ED_scan" in c:
+            row["E_MAE_scan"] = c["E_MAE_scan"]
+            row["D_scan"] = c["D_scan"]
+            row["ED_scan"] = c["ED_scan"]
+            row["beats_ae_scan"] = c["E_MAE_nn"] < c["E_MAE_scan"]
+            row["beats_density_scan"] = c["D_nn"] < c["D_scan"]
+            row["beats_ed_scan"] = bool(c["beats_scan"])
+        rows.append(row)
     n = len(rows)
-    return {
+    summary = {
         "rows": rows,
         "n_models": n,
         "n_beat_ae": sum(r["beats_ae"] for r in rows),
         "n_beat_density": sum(r["beats_density"] for r in rows),
         "n_beat_ed": sum(r["beats_ed"] for r in rows),
     }
+    if rows and all("beats_ed_scan" in r for r in rows):
+        summary["n_beat_ae_scan"] = sum(r["beats_ae_scan"] for r in rows)
+        summary["n_beat_density_scan"] = sum(r["beats_density_scan"] for r in rows)
+        summary["n_beat_ed_scan"] = sum(r["beats_ed_scan"] for r in rows)
+    return summary

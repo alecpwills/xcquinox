@@ -20,7 +20,7 @@ class LOB(eqx.Module):
 
     def __init__(self, limit: float):
         '''
-        Utility function to squash output to [-1, limit-1] inteval.
+        Utility function to squash output to [-1, limit-1] interval.
 
         :param limit: The Lieb-Oxford bound value to impose, defaults to 1.804
         :type limit: float, optional
@@ -1026,7 +1026,7 @@ def save_xcquinox_model(model, path: str = '', fixing: Union[str, None] = None,
 def load_xcquinox_model(path: str):
     """Load a model from a file.
 
-    Note that we must give the path where the model is stored, without the extension.
+    Give the path where the model is stored, without the extension.
     I.e, in path, we should have the files path.eqx and path.json.
     """
     jax.config.update("jax_enable_x64", True)  # Ensure 64-bit is enabled first
@@ -1342,9 +1342,12 @@ class MGGA_FxNet_sigma(eqx.Module):
         rho = inputs[0]
         sigma = inputs[1]
         tau = inputs[3]
-        tau_w = sigma/(8*rho)
-        tau_unif = (3/10)*(3*jnp.pi**2)**(2/3)*rho**(5/3)
-        alpha = ((tau - tau_w)/tau_unif).flatten()
+        rho_s = jnp.maximum(rho, 1e-30)  # floor: this legacy path had no rho floor (div-by-0 risk)
+        tau_w = sigma/(8*rho_s)
+        tau_unif = (3/10)*(3*jnp.pi**2)**(2/3)*rho_s**(5/3)
+        # clip alpha to [0, 100] (matches metagga.compute_alpha): >=0 guards the gate
+        # log((alpha+1)/2) from log(neg)=NaN; the ceiling + rho floor bound the low-density tail.
+        alpha = jnp.clip((tau - tau_w)/jnp.maximum(tau_unif, 1e-30), 0.0, 100.0).flatten()
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
@@ -1458,9 +1461,12 @@ class MGGA_FxNet_sigma_transform(eqx.Module):
         rho = inputs[0]
         sigma = inputs[1]
         tau = inputs[3]
-        tau_w = sigma/(8*rho)
-        tau_unif = (3/10)*(3*jnp.pi**2)**(2/3)*rho**(5/3)
-        alpha = ((tau - tau_w)/tau_unif).flatten()
+        rho_s = jnp.maximum(rho, 1e-30)  # floor: this legacy path had no rho floor (div-by-0 risk)
+        tau_w = sigma/(8*rho_s)
+        tau_unif = (3/10)*(3*jnp.pi**2)**(2/3)*rho_s**(5/3)
+        # clip alpha to [0, 100] (matches metagga.compute_alpha): >=0 guards the gate
+        # log((alpha+1)/2) from log(neg)=NaN; the ceiling + rho floor bound the low-density tail.
+        alpha = jnp.clip((tau - tau_w)/jnp.maximum(tau_unif, 1e-30), 0.0, 100.0).flatten()
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
@@ -1567,9 +1573,12 @@ class MGGA_FcNet_sigma(eqx.Module):
         rho = inputs[0].flatten()
         sigma = inputs[1]
         tau = inputs[3]
-        tau_w = sigma/(8*rho)
-        tau_unif = (3/10)*(3*jnp.pi**2)**(2/3)*rho**(5/3)
-        alpha = ((tau - tau_w)/tau_unif).flatten()
+        rho_s = jnp.maximum(rho, 1e-30)  # floor: this legacy path had no rho floor (div-by-0 risk)
+        tau_w = sigma/(8*rho_s)
+        tau_unif = (3/10)*(3*jnp.pi**2)**(2/3)*rho_s**(5/3)
+        # clip alpha to [0, 100] (matches metagga.compute_alpha): >=0 guards the gate
+        # log((alpha+1)/2) from log(neg)=NaN; the ceiling + rho floor bound the low-density tail.
+        alpha = jnp.clip((tau - tau_w)/jnp.maximum(tau_unif, 1e-30), 0.0, 100.0).flatten()
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()
@@ -1681,9 +1690,12 @@ class MGGA_FcNet_sigma_transform(eqx.Module):
         rho = inputs[0].flatten()
         sigma = inputs[1]
         tau = inputs[3]
-        tau_w = sigma/(8*rho)
-        tau_unif = (3/10)*(3*jnp.pi**2)**(2/3)*rho**(5/3)
-        alpha = ((tau - tau_w)/tau_unif).flatten()
+        rho_s = jnp.maximum(rho, 1e-30)  # floor: this legacy path had no rho floor (div-by-0 risk)
+        tau_w = sigma/(8*rho_s)
+        tau_unif = (3/10)*(3*jnp.pi**2)**(2/3)*rho_s**(5/3)
+        # clip alpha to [0, 100] (matches metagga.compute_alpha): >=0 guards the gate
+        # log((alpha+1)/2) from log(neg)=NaN; the ceiling + rho floor bound the low-density tail.
+        alpha = jnp.clip((tau - tau_w)/jnp.maximum(tau_unif, 1e-30), 0.0, 100.0).flatten()
         k_F = (3 * jnp.pi**2 * rho)**(1/3)
         s = jnp.sqrt(sigma) / (2 * k_F * rho)
         s = s.flatten()

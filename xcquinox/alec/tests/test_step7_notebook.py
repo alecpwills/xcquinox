@@ -48,8 +48,11 @@ def test_step7_notebook_oom_detection_handles_sigkill_exit_code():
     )
     # New signature: rc=None default kwarg accepted:
     assert "def _looks_like_gpu_oom(text, rc=None):" in code_cells_src
-    # SIGKILL exit-code branch present:
-    assert "rc in (-9, 137)" in code_cells_src
+    # SIGKILL + SIGABRT exit-code branch present (SIGABRT = C++ std::bad_alloc):
+    assert "rc in (-9, 137, -6, 134)" in code_cells_src
+    # Host (CPU) OOM markers present -- a large-basis XLA/LLVM compile OOM:
+    assert "_CPU_OOM_MARKERS" in code_cells_src
+    assert "std::bad_alloc" in code_cells_src
     # _run_training_isolated must call the helper with rc passed through:
     assert "_looks_like_gpu_oom(captured, rc=rc)" in code_cells_src
 

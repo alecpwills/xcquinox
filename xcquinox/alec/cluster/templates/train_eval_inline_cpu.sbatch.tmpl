@@ -21,7 +21,13 @@ export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 ${BENCH_REFS_ENV_LINE}
 # --- JAX/XLA CPU backend ---------------------------------------------------
-export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=$$SLURM_CPUS_PER_TASK --xla_force_host_platform_device_count=1"
+# 2026-07-04: dropped the bare `intra_op_parallelism_threads=...` token (it was
+# missing its `--xla_` prefix, so XLA silently ignored it), and added
+# `--xla_llvm_disable_expensive_passes=true` to cut LLVM codegen PEAK MEMORY when
+# compiling the fused SCF-step kernel for large bases -- 6-311++G(3df,2pd)+grid3
+# OOMed LLVM ("Cannot allocate memory"/std::bad_alloc) on 128 GB nodes. If a
+# compile still OOMs, also add `--xla_backend_optimization_level=1`. See HISTORY.
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true --xla_force_host_platform_device_count=1 --xla_llvm_disable_expensive_passes=true"
 
 # --- train task ------------------------------------------------------------
 # 2026-05-29 inline-eval mode: this single SLURM task does BOTH train AND

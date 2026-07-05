@@ -1,7 +1,9 @@
 """Meta-GGA kinetic-energy density (tau) and SCAN iso-orbital indicator (alpha).
 
-This is the meta-GGA (Jacob's-ladder rung 3) ingredient of the DFS functional
-(Dick & Fernandez-Serra, PRB 104 L161109 (2021), Eq. 6): the iso-orbital indicator
+This is the meta-GGA (Jacob's-ladder rung 3) ingredient of the DFS functional: the
+iso-orbital indicator introduced by SCAN (Sun, Ruzsinszky, Perdew, PRL 115, 036402
+(2015), Eq. 2), reused by DFS (Dick & Fernandez-Serra, PRB 104, L161109 (2021),
+Eq. 6):
 
     alpha(r) = (tau - tau_W) / tau_unif,   tau_W = |grad n|^2 / (8 n),
                tau_unif = (3/10)(3 pi^2)^{2/3} n^{5/3}
@@ -26,11 +28,30 @@ matching the repo's existing numpy formula
 """
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 
 # Floor for the density / uniform-gas denominators (matches
 # subset_selection.compute_descriptor_triple so alpha is bit-comparable).
 _RHO_FLOOR: float = 1e-30
+
+# alpha = (tau - tau_W)/tau_unif divides by n and n^{5/3}; on a low-density grid
+# tail its VALUE reaches ~1e4-1e7 (yes, even at NORMAL bases, e.g. H2O/def2-svp --
+# alpha is NOT physically O(1) here) and its DERIVATIVE (d alpha/d n ~ n^{-8/3})
+# blows up (~1e28 in the deep tail), and the unrolled FULL-SCF backprop compounds
+# that XC kernel into a NaN training gradient -- the same failure class as the
+# polarized-correlation zeta clip in oneshot.py, which meta-GGA alpha re-introduced
+# by dividing by n. Fix: clip alpha to [0, _ALPHA_MAX] and freeze its gradient
+# below _RHO_GRAD_CUTOFF. This is energy-faithful NOT because alpha is small (it
+# isn't) but because (a) the DFS/SCAN enhancement gate has SATURATED by alpha~100
+# (tanh^2(log((100+1)/2)) = 0.998), and (b) the SAME [0, _ALPHA_MAX] clip is applied
+# to the pretrain-data alpha (subset_selection), so live and precomputed alpha
+# agree -- clipped points carry ~0 exchange-integrand mass, so the XC-energy change
+# is <=1e-9 relative. _RHO_GRAD_CUTOFF is 1e-6 (not 1e-8): a residual ~2e18 band
+# gradient sits just above 1e-8, so freezing to 1e-6 zeroes it at ppm energy cost.
+# See HISTORY Phase 17.
+_ALPHA_MAX: float = 100.0
+_RHO_GRAD_CUTOFF: float = 1e-6
 
 
 def compute_tau_from_dm(ao_grad, dm) -> jnp.ndarray:
@@ -61,7 +82,9 @@ def compute_tau_from_dm(ao_grad, dm) -> jnp.ndarray:
 
 
 def compute_alpha(rho, sigma, tau) -> jnp.ndarray:
-    """SCAN iso-orbital indicator ``alpha = (tau - tau_W)/tau_unif`` (DFS Eq. 6).
+    """Iso-orbital indicator ``alpha = (tau - tau_W)/tau_unif`` (SCAN, Sun, Ruzsinszky,
+    Perdew, PRL 115, 036402 (2015), Eq. 2; reused by DFS, PRB 104, L161109 (2021),
+    Eq. 6).
 
     Parameters
     ----------
@@ -72,11 +95,20 @@ def compute_alpha(rho, sigma, tau) -> jnp.ndarray:
     Returns
     -------
     array, shape (N,)
-        ``alpha`` clamped to ``>= 0`` (grid-tail noise), matching
+        ``alpha`` clipped to ``[0, _ALPHA_MAX]`` and gradient-frozen where
+        ``rho < _RHO_GRAD_CUTOFF`` (grid-tail noise), matching
         :func:`subset_selection.compute_descriptor_triple`. Differentiable in
-        ``tau`` (hence in the DM).
+        ``tau`` (hence in the DM); the clip + freeze keep both value and
+        reverse-mode gradient finite through the full differentiable SCF.
     """
     rho_safe = jnp.maximum(rho, _RHO_FLOOR)
     tau_w = sigma / (8.0 * rho_safe)
     tau_unif = (3.0 / 10.0) * (3.0 * jnp.pi**2) ** (2.0 / 3.0) * rho_safe ** (5.0 / 3.0)
-    return jnp.maximum((tau - tau_w) / jnp.maximum(tau_unif, _RHO_FLOOR), 0.0)
+    # Lower clamp (>= 0) is load-bearing: it guards the network gate
+    # x3 = log((alpha+1)/2) from log(neg)=NaN. Upper clip bounds the astronomical
+    # tail value (no forward inf) and zeroes the gradient of the worst tail points.
+    alpha = jnp.clip((tau - tau_w) / jnp.maximum(tau_unif, _RHO_FLOOR), 0.0, _ALPHA_MAX)
+    # Freeze the residual ~n^{-8/3} gradient on the negligible-density tail (alpha
+    # is ~0-weight noise there). where + stop_gradient is NaN-safe: both branches
+    # are finite, so no double-where hazard.
+    return jnp.where(rho < _RHO_GRAD_CUTOFF, jax.lax.stop_gradient(alpha), alpha)

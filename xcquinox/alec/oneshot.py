@@ -301,6 +301,19 @@ def _compute_vxc_nn_core(
 # Perdew & Wang PRB 45, 13244 (1992), eqs (8)-(9).
 _ZETA_BOUNDARY_EPS = 1e-6
 
+# Positive floor on the TOTAL density in the zeta = (rho_a - rho_b)/rho_tot ratio.
+# Diffuse-basis grid-tail quadrature noise can drive rho_tot slightly NEGATIVE; the
+# old jnp.maximum(rho_tot, 1e-300) then floors a negative rt to 1e-300, whose SQUARE
+# (1e-600) UNDERFLOWS to 0 in the POTENTIAL's forward-mode (jvp) quotient-rule
+# derivative -> inf, and the saturated clip's 0 derivative -> 0*inf = NaN training
+# gradient (the meta-GGA `bh76:HLi` step-0 failure: the pretrained net drives ~1300
+# tail points negative at cycle 0; the energy path is forward-only so it stayed
+# finite -- hence finite energy, NaN potential). A physical floor (1e-12, square
+# 1e-24) never underflows; paired with a where+stop_gradient it also freezes the
+# gradient on the non-physical rt <= floor tail. MUST match in BOTH paths (the
+# energy/potential invariant above). See HISTORY Phase 17.
+_RHO_TOT_FLOOR = 1e-12
+
 
 def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
                          sigma_tot, features, grid_weights):
@@ -355,8 +368,11 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
             "this class of bug instead of degrading polarized eval."
         )
     if model.cnet.use_spin_polarization:
-        zeta = jnp.clip((rho_a - rho_b) / jnp.maximum(rho_tot, 1e-300),
-                        -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
+        safe_rho_tot = jnp.maximum(rho_tot, _RHO_TOT_FLOOR)
+        _zeta_raw = jnp.clip((rho_a - rho_b) / safe_rho_tot,
+                             -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
+        zeta = jnp.where(rho_tot > _RHO_TOT_FLOOR, _zeta_raw,
+                         jax.lax.stop_gradient(_zeta_raw))
         ec = model.eval_ec(rho_tot, sigma_tot, features, zeta=zeta)
     else:
         ec = model.eval_ec(rho_tot, sigma_tot, features)
@@ -563,8 +579,14 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
     # internally with the SAME clip/floor the UKS energy uses).
     def ec_spin(ra, rb, s, f):
         rt = ra + rb
-        z = jnp.clip((ra - rb) / jnp.maximum(rt, 1e-300),
-                     -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
+        # IDENTICAL to the energy path's zeta (above): floor rt at _RHO_TOT_FLOOR so
+        # its square cannot underflow in this jvp, and freeze the gradient on the
+        # non-physical rt <= floor tail. Without this, a negative rt from grid-tail
+        # noise makes max(rt,1e-300)^2 underflow -> 0*inf = NaN in the potential.
+        safe_rt = jnp.maximum(rt, _RHO_TOT_FLOOR)
+        z_raw = jnp.clip((ra - rb) / safe_rt,
+                         -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
+        z = jnp.where(rt > _RHO_TOT_FLOOR, z_raw, jax.lax.stop_gradient(z_raw))
         return model.eval_ec_scalar(rt, s, f, zeta=z)
 
     _V_SIGMA_THRESHOLD = 1e-30

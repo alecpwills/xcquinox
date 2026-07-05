@@ -17,8 +17,9 @@ raw binwidth. Distributions are still PLOTTED on log-scale axes for readability.
 
 Three-descriptor objective: histograms over (ρ^{1/3}, s, α) where
 - s is the PBE-1996 reduced gradient (Perdew, Burke, Ernzerhof, PRL 77, 3865, 1996)
-- α is the SCAN-2015 iso-orbital indicator (Sun, Ruzsinszky, Perdew,
-  PRL 115, 036402, 2015, eq. 4); used for subset selection only,
+- α is the iso-orbital indicator introduced by SCAN (Sun, Ruzsinszky,
+  Perdew, PRL 115, 036402 (2015), eq. 2), reused by DFS (PRB 104,
+  L161109 (2021), eq. 6); used for subset selection only,
   NOT consumed by the trained GGA network.
 
 Candidate pool is Dick & Fernandez-Serra 2021 SI §II training data:
@@ -93,12 +94,14 @@ def compute_descriptor_triple(
     Returns
     -------
     dict with keys "rho_third", "s", "alpha", each (N,) ndarray. α is
-    clipped at 0 to handle grid noise in low-density tails.
+    clipped to [0, 100] to handle grid noise AND the low-density-tail blowup of
+    the (τ - τ_W)/τ_unif division (matches :func:`metagga.compute_alpha`, whose
+    ceiling `_ALPHA_MAX` this mirrors so precomputed and live α agree).
 
     Formulas:
     - s = |∇ρ| / [2 (3π²)^{1/3} ρ^{4/3}]   (PBE 1996, before eq. 12)
     - τ_W = |∇ρ|²/(8ρ),  τ_unif = (3/10)(3π²)^{2/3} ρ^{5/3}
-    - α = (τ - τ_W) / τ_unif               (SCAN 2015, eq. 4)
+    - α = (τ - τ_W) / τ_unif               (SCAN 2015 eq. 2; reused by DFS 2021 eq. 6)
     """
     rho_safe = np.maximum(rho, 1e-30)
     grad_rho = np.sqrt(np.maximum(sigma, 0.0))
@@ -109,7 +112,10 @@ def compute_descriptor_triple(
     tau_unif = (
         (3.0 / 10.0) * (3.0 * np.pi**2) ** (2.0 / 3.0) * rho_safe ** (5.0 / 3.0)
     )
-    alpha = np.maximum((tau - tau_w) / np.maximum(tau_unif, 1e-30), 0.0)
+    # clip to [0, 100] -- must match metagga._ALPHA_MAX; the low-density tail can
+    # make (tau - tau_W)/tau_unif astronomical (division by rho^{5/3}), so the
+    # bare 1e-30 floor is not enough for value-comparability with the live alpha.
+    alpha = np.clip((tau - tau_w) / np.maximum(tau_unif, 1e-30), 0.0, 100.0)
     return {"rho_third": rho_third, "s": s, "alpha": alpha}
 
 
@@ -613,7 +619,7 @@ def select_subset(
         # one-hot indicator ``M[i, j] = 1 if j in combo_i`` (shape
         # (b, npool)) and a matrix multiply ``M @ per_key_counts[k]``
         # (shape (b, NBINS)).  np.matmul dispatches to BLAS gemm, hitting
-        # 50–100× the throughput of the fancy-index path.
+        # 50-100× the throughput of the fancy-index path.
         M = np.zeros((b, npool), dtype=np.float64)
         np.put_along_axis(M, full_batch, 1.0, axis=1)
         h_cand_batch = {}

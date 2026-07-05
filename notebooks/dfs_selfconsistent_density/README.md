@@ -1,13 +1,59 @@
-# DFS-style self-consistent density training — companion notes
+# A primer on xcquinox -- learning density functionals by differentiable programming
 
-Companion to `train_dfs_density.ipynb`. It explains the physics of the functional and its
-descriptors, why the training is set up the way it is, and exactly which code the notebook calls.
-Every physical claim carries a citation `[n]` (see [References](#references)); every code claim gives
-a `file:line`. The functional-form and training-recipe choices follow Dick & Fernandez-Serra's
+This document is both a **primer on xcquinox** (Section 0, for any reader) and the rigorous
+**companion notes** to `train_dfs_density.ipynb` (Sections 1-5, for the practitioner). Every
+physical claim carries a citation `[n]` (see [References](#references)); every code claim gives a
+`file:line`. The functional-form and training-recipe choices follow Dick & Fernandez-Serra's
 differentiable-programming functional ("DFS") [4]. Bibliographic details follow the repo's
 consensus-verified methods box (`notebooks/analysis/make_ablation_arch_figure.py`) and its
 PDF-verified bibliography (`reports_local/latex/references.bib`); the reference *numbering* below is
 this document's own.
+
+---
+
+## 0. A primer: what is xcquinox, and what does this notebook show?
+
+**xcquinox** builds and trains exchange-correlation (XC) density functionals as neural networks,
+by *differentiable programming*. In Kohn-Sham DFT the total energy is exact but for one unknown
+term, the XC functional `E_xc[n]`; every practical functional (LDA, GGA, meta-GGA, ...) is a
+hand-crafted approximation to it. xcquinox instead makes `E_xc` a small neural network and makes
+the entire self-consistent field (SCF) calculation *differentiable* (JAX + pyscfad), so the
+network can be trained by gradient descent **directly against high-accuracy reference data** --
+CCSD reference densities [19] and benchmark reference energies -- while still obeying the exact
+physical constraints a real functional must satisfy.
+
+**Jacob's ladder of ingredients.** What the network "sees" at each grid point sets its rung on
+Jacob's ladder; each rung adds physics the rung below cannot represent:
+- **LDA** -- the density `n` alone.
+- **GGA** -- `+` the reduced density gradient `s`. This notebook's baseline net (`deep_3x16`).
+- **Rung-3.5** -- `+` a localized density-matrix occupancy descriptor (nonlocal information from
+  the 1-particle density matrix) [10,11]. The notebook's `deep_rung35_3x16`.
+- **Meta-GGA** -- `+` the kinetic-energy density `tau` via the iso-orbital indicator `alpha`; this
+  is the rung of SCAN [18] and of the paper this notebook reproduces [4]. The notebook's
+  `deep_mgga_3x16` and `deep_rung35_mgga_3x16`.
+
+**How the pieces fit.** *Descriptors* (`xcquinox/alec/descriptors.py`, `metagga.py`) compute the
+rung inputs on the integration grid from the live density/orbitals; the *networks* (`networks.py`,
+`net.py`) map them to the exchange and correlation enhancement factors `F_x, F_c`, constructed to
+satisfy the Lieb-Oxford bound [5], the uniform-gas limit, and correlation non-negativity; the
+*differentiable SCF solver* (`solver_manual.py`) iterates the Kohn-Sham equations to a
+self-consistent density under that XC; and the *loss* scores the self-consistent density against
+the CCSD reference [19] plus the energy error, backpropagating gradients through the entire SCF to
+update the network.
+
+**What this notebook demonstrates.** It trains those four nets on a few small molecules
+(H2O, LiH, OH, NH) against their CCSD densities and reference atomization energies, then evaluates
+each net's *self-consistent* density and atomization energy -- on the training set and on a
+held-out set (N2, NO, NO2) -- against the standard functionals **PBE** [1] and **SCAN** [18]. The
+guiding question: can a learned meta-GGA, trained on CCSD data, improve on SCAN (the strongest
+hand-crafted meta-GGA) at reproducing the true (CCSD) density and the energies? The result is
+reported honestly in Section 4 from a full run -- SCAN is a strong baseline, so this is a genuine
+test, not a foregone conclusion.
+
+**Running it.** Set `STEP_SMOKE=1` for a fast small-basis smoke pass, or run the full notebook for
+publishable figures. `dfs_demo.py` is a thin orchestration layer over `xcquinox.alec`; the sections
+below are the rigorous companion notes -- the physics of each ingredient, why the training is set
+up as it is, the exact code each cell calls, and the results.
 
 ---
 
@@ -239,6 +285,14 @@ Numbers below are a full run of this notebook (`deep_3x16` and `deep_rung35_3x16
 and `full_25`, at `6-311++G(3df,2pd)` / grid 2). Every value is the notebook's own printed output or read
 off its committed figures — nothing is hand-entered.
 
+> **Update (2026-07-04):** the notebook now also trains two **meta-GGA** nets (`deep_mgga_3x16`,
+> `deep_rung35_mgga_3x16`) and adds a **SCAN** [18] self-consistent baseline alongside PBE (see
+> Section 0), to test whether a learned meta-GGA improves on SCAN itself at reproducing the CCSD
+> density and energies. The tables/figures in this section are from the earlier run (the two
+> GGA-ladder nets vs PBE); the meta-GGA rows and the SCAN comparison populate on the next full run.
+> The outcome is reported as-run -- SCAN is a strong meta-GGA, so beating it is a genuine, not
+> foregone, result.
+
 ### 4.1 In-sample — the four training molecules
 
 DFS-Fig.2-style combined energy–density error (§8, figure (d)): every network beats PBE on all three axes
@@ -345,3 +399,12 @@ consensus-verified methods box.
 17. G. Herzberg, *Molecular Spectra and Molecular Structure I: Spectra of Diatomic Molecules* (Van
     Nostrand, 1950); NIST CCCBDB (the `X²Π` doublet ground states of OH and NO — the orbital
     degeneracy the orientation lock resolves).
+18. J. Sun, A. Ruzsinszky, J. P. Perdew, "Strongly Constrained and Appropriately Normed Semilocal
+    Density Functional" (SCAN), *Phys. Rev. Lett.* **115**, 036402 (2015); DOI
+    10.1103/PhysRevLett.115.036402. The iso-orbital indicator `alpha = (tau - tau_W)/tau_unif` is
+    SCAN Eq. 2 (reused by DFS [4] Eq. 6); SCAN is the meta-GGA baseline this notebook compares against.
+19. K. Raghavachari, G. W. Trucks, J. A. Pople, M. Head-Gordon, "A fifth-order perturbation
+    comparison of electron correlation theories" (CCSD(T)), *Chem. Phys. Lett.* **157**, 479 (1989);
+    DOI 10.1016/S0009-2614(89)87395-6. The coupled-cluster gold standard; the notebook's reference
+    densities are computed at CCSD (the coupled-cluster level below the (T) correction), and the
+    reference atomization energies are the GMTKN55 [13] / Haunschild-Klopper [14] values.
