@@ -67,9 +67,9 @@ The neural functional is written as a local baseline times a learned **enhanceme
 E_xc = ∫ n(r) [ ε_x^LDA(n) · F_x + ε_c^PW92(n,ζ) · F_c ] dr
 ```
 
-- Exchange baseline `ε_x^LDA = -¾(3/π)^{1/3} n^{1/3}`, the uniform-electron-gas (Dirac–Slater) exchange
+- Exchange baseline `ε_x^LDA = -¾(3/π)^{1/3} n^{1/3}`, the uniform-electron-gas (Dirac-Slater) exchange
   [16] (`utils.py:689`).
-- Correlation baseline `ε_c^PW92`, the Perdew–Wang parametrization of the uniform-gas correlation
+- Correlation baseline `ε_c^PW92`, the Perdew-Wang parametrization of the uniform-gas correlation
   energy [2] (`utils.py:785`; spin-dependent when ζ≠0, `models.py:124-132`).
 - `F_x`, `F_c` are the neural enhancement factors; the multiplicative assembly is
   `ex_density = ρ·ε_x^LDA·F_x` (`models.py:170-171`).
@@ -79,10 +79,10 @@ At `F_x = F_c = 1` the functional is exactly LDA/PW92 (the uniform-gas limit). T
 which both notebook archs set, `networks.py:117-122`) and where the
 low-density **tail** is masked (`models.py:164-166`). Training moves `F` away from 1. *Why this form:*
 factoring out the exact uniform-gas limit makes the network a bounded correction to a physically sound
-baseline rather than an unconstrained fit — the standard construction of DFS [4] and of PBE-family GGAs
+baseline rather than an unconstrained fit -- the standard construction of DFS [4] and of PBE-family GGAs
 [1].
 
-### 1.2 The GGA ingredient — reduced density gradient
+### 1.2 The GGA ingredient -- reduced density gradient
 
 The exchange net's semilocal input is the dimensionless reduced gradient
 
@@ -91,16 +91,16 @@ s = |∇n| / (2 (3π²)^{1/3} n^{4/3})            [1,4]   (networks.py:141)
 ```
 
 `s` measures density inhomogeneity and defines the GGA rung of "Jacob's ladder." For the MLP it is
-fed through a smooth log-compression `(1−e^{−s²})·log(s+1)` (a numerical rescaling of this work, not a
+fed through a smooth log-compression `(1-e^{-s²})·log(s+1)` (a numerical rescaling of this work, not a
 new physical input, `networks.py:148-149`); the structural constraints below use raw `s`.
 
-### 1.3 Correlation ingredients — density and spin
+### 1.3 Correlation ingredients -- density and spin
 
-The correlation net additionally takes the Wigner–Seitz radius `r_s = (3/4πn)^{1/3}` — the natural
-LDA-correlation variable of PW92 [2] (`networks.py:284`) — and a **spin-polarization** feature
+The correlation net additionally takes the Wigner-Seitz radius `r_s = (3/4πn)^{1/3}` -- the natural
+LDA-correlation variable of PW92 [2] (`networks.py:284`) -- and a **spin-polarization** feature
 
 ```
-x1 = ½[(1+ζ)^{4/3} + (1−ζ)^{4/3}],   ζ = (n_α−n_β)/n     [4]   (networks.py:307-310)
+x1 = ½[(1+ζ)^{4/3} + (1-ζ)^{4/3}],   ζ = (n_α-n_β)/n     [4]   (networks.py:307-310)
 ```
 
 with `x1 ∈ [1, 2^{1/3}]` and `x1 = 1` at ζ=0 (so a closed-shell/RKS call recovers the unpolarized
@@ -110,14 +110,14 @@ systems (the notebook trains OH and NH) require it.
 
 ### 1.4 Physical constraints (why `F` is not a free MLP)
 
-- **Lieb–Oxford exchange ceiling.** `F_x` is squashed to `≤ 1.804 = 1 + κ` (κ=0.804), the PBE
-  exchange bound set by the local Lieb–Oxford inequality [1,5], enforced by the network's built-in
+- **Lieb-Oxford exchange ceiling.** `F_x` is squashed to `≤ 1.804 = 1 + κ` (κ=0.804), the PBE
+  exchange bound set by the local Lieb-Oxford inequality [1,5], enforced by the network's built-in
   squash (`networks.py:24-26,55-57`). (DFS [4] use a tighter local bound 1.174 [6]; the notebook's archs use the
   PBE value 1.804.)
 - **Correlation non-negativity.** `F_c` uses the same squash with limit 2.0, whose purpose is
-  `F_c ≥ 0` (the `I_2` transform of DFS [4], Eq.13), **not** a Lieb–Oxford bound on `F_c`
+  `F_c ≥ 0` (the `I_2` transform of DFS [4], Eq.13), **not** a Lieb-Oxford bound on `F_c`
   (`networks.py:28-33`).
-- **Uniform-gas limit.** A `tanh²(s)` gate multiplies the MLP output so `F → 1` as `s → 0`
+- **Uniform-gas limit.** A `tanh²(s)` gate multiplies the MLP output so `F -> 1` as `s -> 0`
   (`networks.py:159`, `322`), recovering the correct slowly-varying-density limit.
 
 *Why:* imposing exact constraints architecturally (not just via the loss) is what makes a learned
@@ -127,14 +127,14 @@ functional transferable rather than an interpolation table [4].
 
 Two extra per-grid-point features (`descriptors.py:72-105`, computed in `features.py:215-318`):
 
-- `cusp_factor = exp(−2 Z_nearest · r_min) ∈ (0,1]` — Z of the nearest nucleus, `r_min` its distance.
-- `tanh( log(Σ_A Z_A / r_A) / 5 )` — a log-compressed nuclear-attraction weight (DFS XCDiff
+- `cusp_factor = exp(-2 Z_nearest · r_min) ∈ (0,1]` -- Z of the nearest nucleus, `r_min` its distance.
+- `tanh( log(Σ_A Z_A / r_A) / 5 )` -- a log-compressed nuclear-attraction weight (DFS XCDiff
   convention [4]).
 
-*Physics.* The Kohn–Sham wavefunction has an electron–nucleus **cusp**,
-`(∂⟨ψ⟩/∂r)|_{r=0} = −Z ψ(0)` [7 (Kato)]; the corresponding **spherically-averaged density** obeys
-`(∂⟨n⟩/∂r)|_{r=0} = −2Z n(0)`, so the density decays as `exp(−2Zr)` near a nucleus [8 (Steiner)]. The
-`exp(−2 Z r_min)` feature approximates that density-form Slater envelope. *Why:* from `(n,s)` alone a
+*Physics.* The Kohn-Sham wavefunction has an electron-nucleus **cusp**,
+`(∂⟨ψ⟩/∂r)|_{r=0} = -Z ψ(0)` [7 (Kato)]; the corresponding **spherically-averaged density** obeys
+`(∂⟨n⟩/∂r)|_{r=0} = -2Z n(0)`, so the density decays as `exp(-2Zr)` near a nucleus [8 (Steiner)]. The
+`exp(-2 Z r_min)` feature approximates that density-form Slater envelope. *Why:* from `(n,s)` alone a
 GGA cannot resolve the sharp near-nucleus/core structure or the identity of the nearest nucleus; the
 cusp features inject nuclear charge and proximity so the functional can adapt in core regions.
 
@@ -144,7 +144,7 @@ Per-spin, per-grid-point **bounded local occupancy** (`rung35.py`, `descriptors.
 
 ```
 n_σ(r_m) = A(r_m)^T P^σ A(r_m) ∈ [0,1],   A_μ(r_m) = ⟨χ_μ | φ^G_{r_m}⟩
-φ^G_{r_m}(r) = (2α/π)^{3/4} exp(−α |r − r_m|²)      [10,11]   (rung35.py:3-19)
+φ^G_{r_m}(r) = (2α/π)^{3/4} exp(-α |r - r_m|²)      [10,11]   (rung35.py:3-19)
 ```
 
 `A` is a density-independent overlap of each atomic orbital `χ_μ` with an L²-normalized Gaussian
@@ -153,14 +153,14 @@ against the live one-particle density matrix `P^σ`. It is bounded `[0,1]` by Be
 (hence NaN-safe by construction, `rung35.py:28-30`). The projector width `α = 0.2 a₀⁻² = 1/d²` is set
 at the M11plus kernel scale `d² = 5 a₀²` [11] (`rung35.py:37-39`).
 
-*Physics.* This contracts the **non-local** Kohn–Sham 1-RDM `γ_σ(r,r')` once against a model projector
-— a genuine **Rung-3.5** ingredient (Janesko's unified rung-3.5/DFT+U formalism [10], its own rung of
+*Physics.* This contracts the **non-local** Kohn-Sham 1-RDM `γ_σ(r,r')` once against a model projector
+-- a genuine **Rung-3.5** ingredient (Janesko's unified rung-3.5/DFT+U formalism [10], its own rung of
 Jacob's ladder between meta-GGA and hybrid; the M11plus occupancy is originally a *correlation*
 ingredient [11]). It is **not** reducible to the kinetic-energy density τ (so it does not silently
 promote the GGA to a meta-GGA), **not** a static reference DM (it uses the self-consistent DM each SCF
 cycle), and it is evaluated **per grid point** so it is size-intensive/leak-free. *Why:* it gives the
 functional genuine non-local density-matrix information beyond `{n, ∇n}` while keeping the training
-self-consistent and size-consistent — it replaces the earlier global `dm_statistics` descriptor, whose
+self-consistent and size-consistent -- it replaces the earlier global `dm_statistics` descriptor, whose
 molecule-level scalars (e.g. `dm_entropy ~ ln N_occ`, natural-occupation entropy [9]) leaked molecule
 identity and overfit small pools.
 
@@ -170,7 +170,7 @@ identity and overfit small pools.
 
 *OH (`1π³`, a π hole) and NO (`2π¹`, a π electron) are both `X²Π`: the odd electron occupies a
 **degenerate** `π_x`/`π_y` pair (left), so the single-determinant density can point anywhere in the
-`(x, y)` plane at the same energy (middle) — threaded BLAS tips the near-degenerate SCF to a different
+`(x, y)` plane at the same energy (middle) -- threaded BLAS tips the near-degenerate SCF to a different
 component each run, so the density is not reproducible. A small **traceless-quadrupole** bias added to
 `h_core` (right) splits the pair by ~10⁻⁵ Ha and deterministically selects one component, at a
 total-energy cost < 0.1 kcal/mol. The mechanism is detailed below.*
@@ -179,7 +179,7 @@ Two of the systems here are **orbitally degenerate**: OH (trained) and NO (held-
 notebook) have `X²Π` doublet ground states [17]. Their singly-occupied π hole can sit in any linear
 combination of the degenerate `(π_x, π_y)` pair, so a single-determinant density (the UKS seed *and*
 the CCSD reference) on a **fixed** real-space grid is orientation-arbitrary. The **energy** is invariant
-to that choice, but the **density** is not — and threaded-BLAS non-associativity tips the near-degenerate
+to that choice, but the **density** is not -- and threaded-BLAS non-associativity tips the near-degenerate
 SCF to a different component from one process/machine to the next, so the density is not reproducible.
 Because the DFS loss matches densities (weight ~20×), that arbitrary orientation would be a physical
 artifact in the training target, not a code bug.
@@ -189,18 +189,18 @@ operator `M = Σ_ij W_ij ⟨χ_μ| r_i r_j |χ_ν⟩` (about the nuclear-charge 
 translation-invariant) is added to `h_core` as `strength·M`, **identically** in the CCSD reference SCF,
 the PBE seed, training, and evaluation (`orientation_lock.py`; `data.py`, `external_refs.py`). Being a
 pure function of `(geometry, basis)`, the operator matrix is byte-identical across those paths, so the
-reference and the functional necessarily lock the **same** representative of the degenerate manifold —
+reference and the functional necessarily lock the **same** representative of the degenerate manifold --
 which is exactly what makes density matching well-defined for a degenerate reference. `W` is traceless
 so the first-order energy shift `strength·Tr(M ρ) ≈ 0` for a near-isotropic density: the lock *splits*
 the degenerate π pair without materially shifting energies (< 0.1 kcal/mol at the default
-`strength = 3e-5`), while the induced splitting (~10⁻⁶–10⁻⁵ Ha) sits orders of magnitude above the
+`strength = 3e-5`), while the induced splitting (~10⁻⁶-10⁻⁵ Ha) sits orders of magnitude above the
 float64/BLAS noise that scrambled the orientation, so it deterministically pins it.
 
-*Physics.* This **selects one representative of the degenerate ²Π manifold** — standard broken-symmetry
+*Physics.* This **selects one representative of the degenerate ²Π manifold** -- standard broken-symmetry
 practice; the density comparison is well posed precisely because reference and functional pick the same
 one. (An in-repo precedent applies a `level_shift=0.5` to `X²Π` radicals in the OEP cascade,
 `external_refs.py:1044-1055`, though that path is not on the density-only reference route.) The lock is
-opt-in and off by default (`SolverConfig.orientation_lock_strength=0.0` → byte-identical), so it changes
+opt-in and off by default (`SolverConfig.orientation_lock_strength=0.0` -> byte-identical), so it changes
 nothing for closed-shell systems or the production sweep; the demo turns it on via
 `dfs_demo.ORIENTATION_LOCK_STRENGTH`. *Why not `irrep_nelec`?* The manual JAX SCF is plain Fock-diag +
 Aufbau with no point-group symmetry, so a PySCF symmetry constraint on the reference and a bias on the
@@ -211,23 +211,23 @@ functional would be two *different* mechanisms that could lock *different* compo
 
 ## 2. The training method and why
 
-The notebook trains the functional the way DFS [4] do — the recipe encoded in the repo's `dfs_step7`
+The notebook trains the functional the way DFS [4] do -- the recipe encoded in the repo's `dfs_step7`
 configuration:
 
 - **Train on the density, anchor energies to a benchmark.** The loss is dominated (weight ~20×) by a
   density term that drives the network's own **self-consistent** density toward an accurate **CCSD**
-  reference density, normalized per-electron² (`∫(n−n_ref)² w / N_e²`); energies enter only as
-  atomization-energy anchors from the GMTKN55/Haunschild–Klopper reference set [13,14], with exact
+  reference density, normalized per-electron² (`∫(n-n_ref)² w / N_e²`); energies enter only as
+  atomization-energy anchors from the GMTKN55/Haunschild-Klopper reference set [13,14], with exact
   atomic totals from Chakravorty [15]. Rationale: a functional that reproduces accurate densities (not
-  just energies) is more transferable and avoids error cancellation — the central thesis of DFS [4].
-- **Atomization energies as reactions.** Each AE is scored as `molecule → atoms` using the network's
+  just energies) is more transferable and avoids error cancellation -- the central thesis of DFS [4].
+- **Atomization energies as reactions.** Each AE is scored as `molecule -> atoms` using the network's
   *own* self-consistent atom energies (not fixed anchors), matching DFS's `L_RE` form [4].
-- **Differentiate through the SCF.** Training backpropagates through a fixed number of Kohn–Sham SCF
+- **Differentiate through the SCF.** Training backpropagates through a fixed number of Kohn-Sham SCF
   cycles (`full_3` = 3, `full_25` = 25) from a converged-PBE seed, with a step-decaying linear mixer
   `α = 0.3^step + 0.3` and a tail-weighted energy loss [4]; optimization is AdamW with a per-molecule
   (dpyscf-style) update loop.
 - **Pretrain to PBE first.** The archs zero-initialize to **LDA** (`F=1`), so each network is first fit
-  to **PBE** enhancement factors (`F_x = F_x^PBE/F_x^LDA − 1`) as a warm-start before density training.
+  to **PBE** enhancement factors (`F_x = F_x^PBE/F_x^LDA - 1`) as a warm-start before density training.
 
 **Documented deviations from DFS [4]** (also listed in the notebook): plain **CCSD** (not CCSD(T))
 reference densities; the modern GGA + rung-3.5 networks rather than the paper's meta-GGA (no
@@ -241,49 +241,49 @@ ReduceLROnPlateau); spin-summed `N_e²` normalization (not per-spin `N_σ²`).
 All helpers live in `dfs_demo.py` and wrap the production `xcquinox.alec` APIs (so the demo config is
 byte-for-byte what the cluster harness builds, only on a smaller pool).
 
-1. **Systems** — `dfs_demo.select_dfs_points()` filters the Dick-2021 pool `build_dfs_pool()` to a
+1. **Systems** -- `dfs_demo.select_dfs_points()` filters the Dick-2021 pool `build_dfs_pool()` to a
    spin-diverse handful (closed-shell H₂O, LiH; open-shell OH, NH; + H/O/Li/N atom anchors);
-   `build_mol_specs()` builds the PySCF `MoleculeSpec`s (geometries/spins/AEs from the pool — no
+   `build_mol_specs()` builds the PySCF `MoleculeSpec`s (geometries/spins/AEs from the pool -- no
    fabricated values).
-2. **CCSD reference densities** — `generate_ccsd_density_refs()` → `benchmark_refs.generate_one()`
-   (converged HF → CCSD 1-RDM → spin-summed density on the SCF grid; cached, prints `cached`/`generated`
+2. **CCSD reference densities** -- `generate_ccsd_density_refs()` -> `benchmark_refs.generate_one()`
+   (converged HF -> CCSD 1-RDM -> spin-summed density on the SCF grid; cached, prints `cached`/`generated`
    per molecule).
-3. **Pretraining to PBE** — `pretrain_atoms_for(mol_specs)` derives the pretrain atoms from the systems'
+3. **Pretraining to PBE** -- `pretrain_atoms_for(mol_specs)` derives the pretrain atoms from the systems'
    elements (so they exist at the basis); `pretrain_to_pbe()` runs `ensure_pretrain_data` +
    `run_pretrain` and **reuses an existing checkpoint** on rerun.
-4. **Architectures** — `dfs_arch("deep_3x16" | "deep_rung35_3x16")` (`get_architecture` +
+4. **Architectures** -- `dfs_arch("deep_3x16" | "deep_rung35_3x16")` (`get_architecture` +
    spin-polarized correlation). `deep_3x16` is the plain GGA; `deep_rung35_3x16` adds the cusp +
-   rung-3.5 descriptors of §1.5–1.6.
-5. **Training spec** — `build_dfs_training_spec()` assembles the DFS-exact `TrainingSpec` by calling the
+   rung-3.5 descriptors of §1.5-1.6.
+5. **Training spec** -- `build_dfs_training_spec()` assembles the DFS-exact `TrainingSpec` by calling the
    same `spec_builder`/`domain` helpers the harness uses (`per_molecule` loop, `L5` loss,
    `density_per_electron`, 20× density weight, `ae_as_reactions`, the `full_3`/`full_25` solvers).
-6. **Train** — `xcquinox.alec.run_training(spec)`, differentiating through the SCF; live per-step
+6. **Train** -- `xcquinox.alec.run_training(spec)`, differentiating through the SCF; live per-step
    progress. **Reuses a finished checkpoint on rerun**: if `<run>/model.eqx` exists it is loaded and
    (re)training is skipped, so together with the pretrain reuse (step 3) a rerun re-does neither
    pretraining nor training unless the checkpoints are absent (delete `runs/` to force a fresh run).
-7. **Evaluate** — `build_dfs_test_spec()` + `run_test()` under the same solver, then three figures:
+7. **Evaluate** -- `build_dfs_test_spec()` + `run_test()` under the same solver, then three figures:
    **(b)** the solver-aware `density_rmse` (self-consistent density vs CCSD, on a **log scale**) next to
    the PBE-vs-CCSD baseline; **(c)** atomization-energy error from `self_consistent_ae`, using each
    functional's **own** self-consistent atom energies (the physically correct AE, matching
-   `ae_as_reactions`) — **not** the anchored `AE_nn` field (molecule energy minus fixed exact atoms),
+   `ae_as_reactions`) -- **not** the anchored `AE_nn` field (molecule energy minus fixed exact atoms),
    which reports absolute-energy offset, not the AE; and **(d)** a DFS-Fig.2-style 3-panel chart
    (`combined_energy_density`, PRB 104 L161109 (2021) Eq. 21): energy AE-MAE, mean density RMSE, and
    the combined energy-density error `ED`, NN vs PBE. On this pool every network beats PBE on AE-MAE,
    density, and `ED`; the mean density error is OH-radical-dominated, so its aggregate win is modest
    (the printout's "excl. OH" mean shows the H₂O/NH density improves ~40%).
-8. **Held-out generalization (§9)** — `build_heldout_test_spec` + `run_test` evaluate the
-   already-trained models (no retraining) on **N2, NO, NO2** — real pool entries none of them trained
+8. **Held-out generalization (§9)** -- `build_heldout_test_spec` + `run_test` evaluate the
+   already-trained models (no retraining) on **N2, NO, NO2** -- real pool entries none of them trained
    on. It reports how many models beat PBE on held-out density/AE/`ED` and, crucially, checks the
    held-out degenerate **NO** radical's PBE density RMSE is model-independent: a reproducible,
    PBE-beating NO density shows the §1.7 orientation lock generalizes to an *unseen* ²Π system.
 
 ---
 
-## 4. Results — what these functionals actually learned
+## 4. Results -- what these functionals actually learned
 
 Numbers below are a full run of this notebook (`deep_3x16` and `deep_rung35_3x16`, each under `full_3`
 and `full_25`, at `6-311++G(3df,2pd)` / grid 2). Every value is the notebook's own printed output or read
-off its committed figures — nothing is hand-entered.
+off its committed figures -- nothing is hand-entered.
 
 > **Update (2026-07-04):** the notebook now also trains two **meta-GGA** nets (`deep_mgga_3x16`,
 > `deep_rung35_mgga_3x16`) and adds a **SCAN** [18] self-consistent baseline alongside PBE (see
@@ -293,9 +293,9 @@ off its committed figures — nothing is hand-entered.
 > The outcome is reported as-run -- SCAN is a strong meta-GGA, so beating it is a genuine, not
 > foregone, result.
 
-### 4.1 In-sample — the four training molecules
+### 4.1 In-sample -- the four training molecules
 
-DFS-Fig.2-style combined energy–density error (§8, figure (d)): every network beats PBE on all three axes
+DFS-Fig.2-style combined energy-density error (§8, figure (d)): every network beats PBE on all three axes
 on the training pool.
 
 ![in-sample combined energy-density error, NN vs PBE](figures/fig_combined_ed.png)
@@ -307,44 +307,44 @@ on the training pool.
 | `deep_rung35_3x16` / `full_3` | 1.78 | 5.79e-5 | 1.96 |
 | `deep_rung35_3x16` / `full_25`| 1.94 | 6.12e-5 | 2.10 |
 
-All four roughly **halve** the PBE atomization-energy error (~1.7–1.9 vs 3.72 kcal/mol) and cut the mean
-density RMSE ~40% (the mean is OH-radical-dominated, so the closed-shell wins are larger — the notebook's
-"excl. OH" print shows ~5.1–5.5e-5 vs 8.6e-5). Per-molecule density and AE breakdowns are
+All four roughly **halve** the PBE atomization-energy error (~1.7-1.9 vs 3.72 kcal/mol) and cut the mean
+density RMSE ~40% (the mean is OH-radical-dominated, so the closed-shell wins are larger -- the notebook's
+"excl. OH" print shows ~5.1-5.5e-5 vs 8.6e-5). Per-molecule density and AE breakdowns are
 `figures/fig_density_rmse.png` (figure (b), log scale) and `figures/fig_ae_error.png` (figure (c)).
 
-### 4.2 Held-out generalization — N2, NO, NO2 (never trained on)
+### 4.2 Held-out generalization -- N2, NO, NO2 (never trained on)
 
 The already-trained models are evaluated, with **no retraining**, on three systems outside the training
-set (§9) — the honest test of whether four-molecule training learned transferable physics or just
+set (§9) -- the honest test of whether four-molecule training learned transferable physics or just
 memorized. All values below are exact (recomputed from the saved eval results). The figure **mirrors §8's
 figure (d)**: energy AE-MAE (top), mean density RMSE (middle), and combined `ED` (bottom), NN vs PBE.
 
 ![held-out generalization (mirrors §8 fig. d): energy AE-MAE, mean density RMSE, and combined ED, NN vs PBE, over N2/NO/NO2](figures/fig_heldout_generalization.png)
 
-- **Density transfers universally — 4/4.** Every model beats PBE on held-out density: NN 1.43–1.50e-4 vs
+- **Density transfers universally -- 4/4.** Every model beats PBE on held-out density: NN 1.43-1.50e-4 vs
   PBE 2.32e-4 (~38% lower), for both architectures and both solvers. The density-matching objective
   generalizes off the training set.
-- **Energy transfer is architecture-dependent — 2/4.** The plain GGA `deep_3x16` generalizes strongly on
-  atomization energy (**10.28–10.83** vs PBE **26.70** kcal/mol, a ~60% cut), but the descriptor-rich
-  `deep_rung35_3x16` does **not** (**35.20–35.68**, *worse* than PBE). The extra cusp + rung-3.5 flexibility
-  barely improves the in-sample AE (1.78–1.94 vs `deep_3x16`'s 1.67–1.72) yet **overfits** the four-molecule
+- **Energy transfer is architecture-dependent -- 2/4.** The plain GGA `deep_3x16` generalizes strongly on
+  atomization energy (**10.28-10.83** vs PBE **26.70** kcal/mol, a ~60% cut), but the descriptor-rich
+  `deep_rung35_3x16` does **not** (**35.20-35.68**, *worse* than PBE). The extra cusp + rung-3.5 flexibility
+  barely improves the in-sample AE (1.78-1.94 vs `deep_3x16`'s 1.67-1.72) yet **overfits** the four-molecule
   set, so it fails to extrapolate to the larger held-out systems. On a pool this small, the added
-  descriptors buy nothing in-sample and cost held-out energy generalization — that capacity only pays off on
+  descriptors buy nothing in-sample and cost held-out energy generalization -- that capacity only pays off on
   the full pool (the cluster harness), not this demo.
-- **Combined `ED` still favors NN — 4/4** (NN 12.66 / 13.08 for `deep_3x16`, 22.83 / 23.20 for
-  `deep_rung35_3x16`, vs PBE 26.70). Even the rung-3.5 models — whose AE *regresses* — beat PBE on `ED`,
+- **Combined `ED` still favors NN -- 4/4** (NN 12.66 / 13.08 for `deep_3x16`, 22.83 / 23.20 for
+  `deep_rung35_3x16`, vs PBE 26.70). Even the rung-3.5 models -- whose AE *regresses* -- beat PBE on `ED`,
   because the universal density win carries the harmonic-mean `ED` (DFS Eq. 21) below the PBE baseline.
 - **The orientation lock generalizes.** NO is a degenerate ²Π radical none of the models saw; its PBE
-  density RMSE is **identical across all four models (2.082e-4)** — model-independent, exactly as a
+  density RMSE is **identical across all four models (2.082e-4)** -- model-independent, exactly as a
   *reproducible* density must be. This confirms the §1.7 lock deterministically selects the same
   representative of NO's degenerate manifold on an *unseen* system, so held-out degenerate radicals are
   well-posed, not machine-dependent.
 
 **Takeaway.** The density objective is what transfers; the energy channel transfers for the plain GGA but
-overfits for the richer arch on this tiny pool, and the orientation lock — the notebook's headline
-degenerate-radical fix — holds off the training set. Section 9 is **self-contained**: it re-derives its
+overfits for the richer arch on this tiny pool, and the orientation lock -- the notebook's headline
+degenerate-radical fix -- holds off the training set. Section 9 is **self-contained**: it re-derives its
 config and discovers the trained `runs/<arch>__<solver>/model.eqx` checkpoints on disk, so it regenerates
-this figure from a fresh kernel without retraining (and without depending on the sections 1–8 session).
+this figure from a fresh kernel without retraining (and without depending on the sections 1-8 session).
 
 ---
 
@@ -377,14 +377,14 @@ consensus-verified methods box.
 4. S. Dick, M. Fernandez-Serra, "Highly accurate and constrained density functional obtained with
    differentiable programming," *Phys. Rev. B* **104**, L161109 (2021); DOI 10.1103/PhysRevB.104.L161109.
 5. E. H. Lieb, S. Oxford, *Int. J. Quantum Chem.* **19**, 427 (1981); DOI 10.1002/qua.560190306.
-6. J. P. Perdew, A. Ruzsinszky, J. Sun, K. Burke, *J. Chem. Phys.* **140**, 18A533 (2014) — the tighter
+6. J. P. Perdew, A. Ruzsinszky, J. Sun, K. Burke, *J. Chem. Phys.* **140**, 18A533 (2014) -- the tighter
    1.174 local bound used by DFS. (The repo attributes the 1.174 value to this work; DFS's own code
    cites no source. The notebook's archs use the PBE value 1.804, not 1.174.)
-7. T. Kato, *Commun. Pure Appl. Math.* **10**, 151 (1957) (electron–nucleus wavefunction cusp).
-8. E. Steiner, *J. Chem. Phys.* **39**, 2365 (1963) (the −2Z spherically-averaged density cusp).
+7. T. Kato, *Commun. Pure Appl. Math.* **10**, 151 (1957) (electron-nucleus wavefunction cusp).
+8. E. Steiner, *J. Chem. Phys.* **39**, 2365 (1963) (the -2Z spherically-averaged density cusp).
 9. P.-O. Löwdin, *Phys. Rev.* **97**, 1474 (1955) (natural-orbital occupations; the replaced
    `dm_statistics` descriptor).
-10. B. G. Janesko, arXiv:2206.07118 (unified Rung-3.5 / DFT+U formalism, Eq. 12–13); original rung-3.5:
+10. B. G. Janesko, arXiv:2206.07118 (unified Rung-3.5 / DFT+U formalism, Eq. 12-13); original rung-3.5:
     B. G. Janesko, *J. Chem. Phys.* **133**, 104103 (2010).
 11. P. Verma et al. (M11plus), *J. Chem. Theory Comput.* **15**, 4804 (2019).
 12. U. von Barth, L. Hedin, *J. Phys. C* **5**, 1629 (1972) (correlation spin-interpolation).
@@ -395,9 +395,9 @@ consensus-verified methods box.
 15. S. J. Chakravorty, S. R. Gwaltney, E. R. Davidson, F. A. Parpia, C. Froese Fischer, *Phys. Rev. A*
     **47**, 3649 (1993); DOI 10.1103/PhysRevA.47.3649 (exact atomic totals).
 16. P. A. M. Dirac, *Proc. Cambridge Philos. Soc.* **26**, 376 (1930); J. C. Slater, *Phys. Rev.* **81**,
-    385 (1951) (uniform-gas / Dirac–Slater exchange).
+    385 (1951) (uniform-gas / Dirac-Slater exchange).
 17. G. Herzberg, *Molecular Spectra and Molecular Structure I: Spectra of Diatomic Molecules* (Van
-    Nostrand, 1950); NIST CCCBDB (the `X²Π` doublet ground states of OH and NO — the orbital
+    Nostrand, 1950); NIST CCCBDB (the `X²Π` doublet ground states of OH and NO -- the orbital
     degeneracy the orientation lock resolves).
 18. J. Sun, A. Ruzsinszky, J. P. Perdew, "Strongly Constrained and Appropriately Normed Semilocal
     Density Functional" (SCAN), *Phys. Rev. Lett.* **115**, 036402 (2015); DOI
