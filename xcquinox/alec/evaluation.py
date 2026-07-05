@@ -98,7 +98,8 @@ class TotalEnergyMetric(Metric):
         # produces, and what FULL-mode training now optimizes); ONESHOT/FIXED_J/
         # None evaluate the one-shot fixed-density functional on rho_PBE. This
         # keeps training and evaluation measuring the same quantity.
-        E_nn = float(total_energy_for_solver(model, mol_data, solver_config))
+        E_nn = float(total_energy_for_solver(model, mol_data, solver_config,
+                                             forward_only=True))
         E_pbe = float(mol_data["E_pbe"])
         result = {"E_total_nn": E_nn, "E_pbe": E_pbe}
         E_ref = mol_data.get("E_ref_literature")
@@ -129,7 +130,8 @@ class AtomizationEnergyMetric(Metric):
         # self-consistent run_scf energy, ONESHOT/FIXED_J/None the one-shot
         # fixed-density functional. AE = sum(atom_energies) - E_mol; the
         # atom-energy anchors are fixed references.
-        E_mol = float(total_energy_for_solver(model, mol_data, solver_config))
+        E_mol = float(total_energy_for_solver(model, mol_data, solver_config,
+                                              forward_only=True))
         comp = mol_data["atom_composition"]
         E_atoms_sum = sum(self.atom_energies[sym] * n for sym, n in comp)
         AE_nn = E_atoms_sum - E_mol  # positive for bound molecule
@@ -200,7 +202,8 @@ class DensityRMSEMetric(Metric):
         # the SCF-iterated density (FIXED_J / FULL) rather than the
         # 1-Roothaan-step oneshot density. ``oneshot_grid_density`` already
         # accepts ``solver_config=None`` for the back-compat oneshot path.
-        rho_nn = oneshot_grid_density(model, mol_data, solver_config=solver_config)
+        rho_nn = oneshot_grid_density(model, mol_data, solver_config=solver_config,
+                                      forward_only=True)
         rho_ref = mol_data["rho_ref_grid"]
         if rho_ref is None:
             # External CCSD reference density not loaded for this species
@@ -308,7 +311,7 @@ class SCFConvergenceMetric(Metric):
         from xcquinox.alec.solver import SolverMode, run_scf
         if getattr(solver_config, "mode", None) == SolverMode.ONESHOT:
             return {"cycles_run": 0, "scf_converged": True}
-        result = run_scf(solver_config, model, mol_data)
+        result = run_scf(solver_config, model, mol_data, forward_only=True)
         out = {
             "cycles_run": int(result.cycles_run),
             "scf_converged": bool(result.converged),

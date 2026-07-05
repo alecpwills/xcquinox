@@ -246,15 +246,46 @@ class SCFCycleState(NamedTuple):
     cycles_run: jnp.ndarray
 
 
-def run_manual_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+def _iterate_scf(config: SolverConfig, body, init_state, forward_only: bool):
+    """Drive the per-cycle SCF ``body`` for ``config.max_cycles`` cycles.
+
+    ``forward_only=False`` (TRAINING, default): ``jax.lax.scan`` -- byte-identical
+    to before, with optional ``jax.checkpoint`` of the body for a smaller
+    reverse-mode tape.
+
+    ``forward_only=True`` (EVAL): a plain Python loop over the SAME ``body``. XLA
+    then never fuses the whole per-cycle SCF into one giant module, so the
+    multi-minute, RAM-heavy big-basis ``jit__step`` compile -- recompiled for every
+    distinct molecule shape -- never happens; each sub-op (``compute_vxc_nn``
+    ``@eqx.filter_jit``, the J einsum, ``eigh``, the mixer) compiles small and is
+    reused across cycles / same-shape molecules. Numerically identical to the scan
+    (same ``body``, same post-convergence ``jnp.where(already, ...)`` freeze, same
+    stacked energy trace). Valid ONLY because eval never differentiates -- a Python
+    loop under ``jax.grad`` would build exactly the reverse tape we are avoiding, so
+    this path must never be taken in a grad context.
+    """
+    if forward_only:
+        state = init_state
+        trace = []
+        for _ in range(config.max_cycles):
+            state, e_out = body(state, None)
+            trace.append(e_out)
+        return state, jnp.stack(trace)
+    scan_body = jax.checkpoint(body) if config.scf_grad_checkpoint else body
+    return jax.lax.scan(scan_body, init_state, None, length=config.max_cycles)
+
+
+def run_manual_scf(config: SolverConfig, model, mol_data: dict,
+                   forward_only: bool = False) -> SCFResult:
     if config.mode == SolverMode.ONESHOT:
         return _oneshot_result(model, mol_data)
     if bool(mol_data.get("is_unrestricted", False)):
-        return _run_manual_scf_uks(config, model, mol_data)
-    return _run_manual_scf_rks(config, model, mol_data)
+        return _run_manual_scf_uks(config, model, mol_data, forward_only=forward_only)
+    return _run_manual_scf_rks(config, model, mol_data, forward_only=forward_only)
 
 
-def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
+                        forward_only: bool = False) -> SCFResult:
     from xcquinox.alec.descriptors import assemble_descriptor_features
     from xcquinox.alec.oneshot import compute_vxc_nn
 
@@ -373,10 +404,7 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         )
         return next_state, E_out
 
-    # Optional activation checkpointing of the per-cycle body: trades recompute
-    # for a smaller reverse-mode tape. Off -> scan_body IS body (byte-identical).
-    scan_body = jax.checkpoint(body) if config.scf_grad_checkpoint else body
-    final_state, energy_trace = jax.lax.scan(scan_body, init_state, None, length=config.max_cycles)
+    final_state, energy_trace = _iterate_scf(config, body, init_state, forward_only)
 
     if policy == FeaturePolicy.FROZEN:
         features_final = features_initial
@@ -393,7 +421,8 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict) -> SCFResul
     )
 
 
-def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResult:
+def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
+                        forward_only: bool = False) -> SCFResult:
     """UKS SCF: spin-resolved Fock matrices with spin-scaled V_xc^NN.
 
     Per-cycle:
@@ -620,10 +649,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict) -> SCFResul
         )
         return next_state, E_out
 
-    # Optional activation checkpointing of the per-cycle body: trades recompute
-    # for a smaller reverse-mode tape. Off -> scan_body IS body (byte-identical).
-    scan_body = jax.checkpoint(body) if config.scf_grad_checkpoint else body
-    final_state, energy_trace = jax.lax.scan(scan_body, init_state, None, length=config.max_cycles)
+    final_state, energy_trace = _iterate_scf(config, body, init_state, forward_only)
 
     features_final = _features_for(final_state.density_matrix)
 

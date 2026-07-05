@@ -422,10 +422,14 @@ def fixed_density_total_energy(model, mol_data) -> float:
     return mol_data["E_non_xc"] + exc_integrated
 
 
-def total_energy_for_solver(model, mol_data, solver_config=None):
+def total_energy_for_solver(model, mol_data, solver_config=None, forward_only=False):
     """Total energy, dispatched on the SCF solver MODE, the single source of
     truth shared by training (``losses._compute_energies``) and the
     energy/AE evaluation metrics so the two optimize/measure the same quantity.
+
+    ``forward_only`` is forwarded to :func:`run_scf` (EVAL passes True to skip the
+    fused ``lax.scan`` compile; TRAINING keeps the default False so backprop through
+    the differentiable SCF is unchanged).
 
     * ``FULL`` -> the SELF-CONSISTENT energy ``run_scf(...).total_energy``.
       FULL rebuilds both ``J`` and ``V_xc`` from the live density each cycle, so
@@ -444,7 +448,7 @@ def total_energy_for_solver(model, mol_data, solver_config=None):
     from xcquinox.alec.solver import SolverMode  # local: avoid import cycle
     if solver_config is not None and solver_config.mode == SolverMode.FULL:
         from xcquinox.alec.solver import run_scf
-        result = run_scf(solver_config, model, mol_data)
+        result = run_scf(solver_config, model, mol_data, forward_only=forward_only)
         # DFS tail reporting: when enabled, report a convergence-aware
         # weighted mean of the SCF tail rather than the arbitrary final cycle
         # (which for a non-converged species is one phase of an oscillation).
@@ -835,14 +839,18 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
     return dm_pred
 
 
-def oneshot_grid_density(model, mol_data, solver_config=None) -> jnp.ndarray:
+def oneshot_grid_density(model, mol_data, solver_config=None,
+                         forward_only=False) -> jnp.ndarray:
     """Run oneshot DM prediction, then compute grid density.
 
     Returns spin-summed density of shape (n_points,) for both RKS and UKS.
+    ``forward_only`` is forwarded to :func:`run_scf` (EVAL passes True to skip the
+    fused ``lax.scan`` compile; identical density, no grad context).
     """
     if solver_config is not None:
         from xcquinox.alec.solver import run_scf
-        D_total = run_scf(solver_config, model, mol_data).density_matrix
+        D_total = run_scf(solver_config, model, mol_data,
+                          forward_only=forward_only).density_matrix
         if mol_data["is_unrestricted"]:
             D_total = D_total[0] + D_total[1]
         ao = mol_data["ao_grid"]

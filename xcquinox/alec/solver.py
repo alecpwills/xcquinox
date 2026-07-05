@@ -478,11 +478,21 @@ def _oneshot_result(model, mol_data: dict) -> "SCFResult":
     )
 
 
-def run_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
-    """Dispatch to the selected backend. Backends are imported lazily."""
+def run_scf(config: SolverConfig, model, mol_data: dict,
+            forward_only: bool = False) -> SCFResult:
+    """Dispatch to the selected backend. Backends are imported lazily.
+
+    ``forward_only=True`` (EVAL only) drives the MANUAL backend's SCF with a plain
+    Python cycle loop instead of ``jax.lax.scan``, so XLA never compiles the whole
+    per-cycle SCF as one giant fused module (the multi-minute, RAM-heavy big-basis
+    compile that recompiles per molecule shape). Numerically identical to the scan;
+    see ``solver_manual._iterate_scf``. No effect on the pyscfad backend. MUST stay
+    False in any grad context (training) -- a Python loop under ``jax.grad`` would
+    build the reverse tape this avoids.
+    """
     if config.backend == SolverBackend.MANUAL:
         from xcquinox.alec.solver_manual import run_manual_scf
-        return run_manual_scf(config, model, mol_data)
+        return run_manual_scf(config, model, mol_data, forward_only=forward_only)
     if config.backend == SolverBackend.PYSCFAD:
         from xcquinox.alec.solver_pyscfad import run_pyscfad_scf
         return run_pyscfad_scf(config, model, mol_data)
