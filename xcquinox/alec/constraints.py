@@ -88,7 +88,7 @@ class LiebOxfordBound(Constraint):
         ``F_x ≥ 0`` is the only rigorous lower constraint, there is no
         Lieb-Oxford lower bound on F_x. This matches the construction used by
         Dick & Fernández-Serra, Phys. Rev. B 104, L161109 (2021), eqs.
-        (11)–(12) (their ``I_{1.174}`` likewise floors F_x at 0), and the
+        (11)-(12) (their ``I_{1.174}`` likewise floors F_x at 0), and the
         in-network ``_AlecLOB`` squash (``xcquinox/alec/networks.py``).
 
     A symmetric ``tanh`` clamp ``F = 1 + (mu-1) tanh((F_raw-1)/(mu-1))`` is
@@ -212,7 +212,7 @@ class ScalingSymmetric(Constraint):
     def __call__(self, inner_fn, rho, sigma, features):
         # s2_unnormalized = sigma / rho^(8/3) is the scaling-invariant proxy
         # gamma / rho^(8/3), NOT the PBE reduced gradient s^2 (which carries the
-        # additional 1 / (2 (3 pi^2)^(1/3))^2 normalization and is ~19x smaller,
+        # additional 1 / (2 (3 pi^2)^(1/3))^2 normalization and is ~38x smaller,
         # cf. UEGLimit). Only the rho^(8/3) scaling matters for enforcing
         # uniform-coordinate symmetry here, so the constant is omitted on purpose.
         s2_unnormalized = sigma / (jnp.maximum(rho, self.rho_eps) ** (8.0 / 3.0))

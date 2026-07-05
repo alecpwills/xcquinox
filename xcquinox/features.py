@@ -1,15 +1,10 @@
-"""
-Feature extraction utilities for extended GGA neural network functionals.
+"""Extended feature descriptors for GGA XC neural networks (beyond rho, sigma).
 
-This module provides functions for computing additional features beyond
-the standard GGA descriptors (rho, sigma), including:
-- Density matrix features (correlation indicators)
-- Cusp-related quantities (nuclear position information)
-- Extended local descriptors (Laplacian-based)
-
-These features can be used to improve the accuracy of neural network
-XC functionals, particularly for capturing correlation effects that
-are difficult to represent with local/semi-local descriptors alone.
+Computes:
+- density-matrix / correlation-indicator features (natural-orbital
+  occupations, idempotency error, DM entropy)
+- cusp / nuclear-cusp quantities
+- Laplacian-based local descriptors
 """
 
 import jax
@@ -40,7 +35,7 @@ def compute_dm_natural_occupations(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarr
     ``sum_i n_i = Tr(M) = Tr(D S) = N_e``.
 
     Source: natural orbitals/occupations are the eigenvectors/eigenvalues of the
-    one-particle reduced density matrix — P.-O. Löwdin, *Phys. Rev.* **97**, 1474
+    one-particle reduced density matrix -- P.-O. Löwdin, *Phys. Rev.* **97**, 1474
     (1955), "Quantum Theory of Many-Particle Systems. I." In a nonorthogonal AO
     basis with overlap ``S`` this is the generalized eigenproblem ``D S C = C n``,
     so the occupations are the eigenvalues of ``D S`` (equivalently of the
@@ -48,7 +43,7 @@ def compute_dm_natural_occupations(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarr
     Matrices in Quantum Chemistry* (Academic Press, 1976), Ch. 2.
 
     NOTE: the *Löwdin* transform ``S^{-1/2} D S^{-1/2}`` has eigenvalues equal
-    to those of ``S^{-1} D`` — these are NOT the natural occupations whenever
+    to those of ``S^{-1} D`` -- these are NOT the natural occupations whenever
     ``S != I``, so the symmetric ``S^{1/2} D S^{1/2}`` transform is used here.
 
     :param dm: Total (spin-summed) density matrix in AO basis, shape (nao, nao).
@@ -90,7 +85,7 @@ def compute_dm_features(
               with ``D_norm = D/2`` (Szabo & Ostlund 1996 §3.4.2 eq. (3.144)
               gives D = 2P with PSP = P, hence DSD = 2D).
             * UKS (D ndim=3): mean over alpha/beta of
-              ``||D_sigma S D_sigma - D_sigma||_F / Tr(D_sigma S)`` —
+              ``||D_sigma S D_sigma - D_sigma||_F / Tr(D_sigma S)`` --
               spin-orbital DMs satisfy D_sigma S D_sigma = D_sigma directly
               (Pople-Nesbet 1954).
           Zero for any single-determinant (HF or KS) reference; nonzero
@@ -102,7 +97,7 @@ def compute_dm_features(
           ``compute_dm_natural_occupations``; Löwdin, Phys. Rev. 97, 1474, 1955).
           Caveat: this quantity is *size-dependent* (it scales roughly
           like ``ln(N_occ)``) and is nonzero even for an uncorrelated single
-          determinant, so it is NOT a clean electron-correlation indicator —
+          determinant, so it is NOT a clean electron-correlation indicator --
           'idempotency_error' is the quantity that vanishes for a single
           determinant. (The symmetric natural-occupation transform shifts this
           feature's numeric value for ``S != I``; checkpoints trained on the
@@ -127,7 +122,7 @@ def compute_dm_features(
         dm = d_a + d_b
         n_elec = n_a + n_b
     else:
-        # Closed-shell RKS: normalize D → P = D/2 to match PSP = P.
+        # Closed-shell RKS: normalize D -> P = D/2 to match PSP = P.
         n_elec = jnp.trace(dm @ S)
         d_norm = 0.5 * dm
         n_norm = 0.5 * n_elec  # = Tr(P S) = N_e/2
@@ -144,7 +139,7 @@ def compute_dm_features(
     # Shannon (von-Neumann-like) entropy of the natural-orbital occupations,
     # normalized to a probability distribution: -sum_i p_i ln p_i with
     # p_i = n_i / sum_j n_j. The occupations are the correct natural occupations
-    # (eig(D S)). NOTE: the raw form is size-extensive — in the
+    # (eig(D S)). NOTE: the raw form is size-extensive -- in the
     # single-determinant equal-occupation limit it collapses to ln(N_occ),
     # broadcasting molecule-size info to every grid point. The intensive form
     # (controlled by ``intensive`` flag) divides by ln(max(n_orb_eff, 2)) so the
@@ -154,7 +149,7 @@ def compute_dm_features(
     dm_entropy = -jnp.sum(occ_normalized * jnp.log(occ_normalized + 1e-12))
     if intensive:
         # Effective number of OCCUPIED ORBITALS (NOT electrons). For a clean
-        # RKS DM each occupied orbital has occupation ≈ 2 → n_orb = N_e/2.
+        # RKS DM each occupied orbital has occupation ≈ 2 -> n_orb = N_e/2.
         # For UKS / correlated DMs the max occupation may be different;
         # dividing the sum of occupations by the largest single occupation
         # gives the correct orbital count in both single-determinant limits.
@@ -293,7 +288,7 @@ def compute_cusp_descriptor(grid_coords: jnp.ndarray,
     :param nuclear_charges: Nuclear charges, shape (M,)
     :type nuclear_charges: jnp.ndarray
     :return: Cusp descriptors, shape (N, 2) containing
-        [cusp_factor, tanh(log_weighted_Z / 5)] — both in a bounded
+        [cusp_factor, tanh(log_weighted_Z / 5)] -- both in a bounded
         range suitable for direct MLP input.
     :rtype: jnp.ndarray
     """
@@ -305,7 +300,7 @@ def compute_cusp_descriptor(grid_coords: jnp.ndarray,
     # (log_weighted_Z >> 5) smoothly saturate at +1 rather than entering
     # the MLP as large unnormalized features.
     #
-    # ``log_transform`` flag — when True (XCDiff convention), compress the
+    # ``log_transform`` flag -- when True (XCDiff convention), compress the
     # weighted-Z via log before tanh; when False, feed the raw weighted-Z
     # through tanh directly (preserved for backward-compat of old
     # checkpoints).

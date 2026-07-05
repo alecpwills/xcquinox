@@ -220,9 +220,10 @@ class DMRung35Descriptor(Descriptor):
 
 @register_descriptor("metagga")
 class MetaGGAAlphaDescriptor(Descriptor):
-    """Meta-GGA iso-orbital indicator ``alpha = (tau - tau_W)/tau_unif`` (SCAN 2015,
-    Sun-Ruzsinszky-Perdew PRL 115 036402; Dick & Fernandez-Serra PRB 104 L161109
-    (2021) Eq. 6). A genuine RUNG-3 (meta-GGA) ingredient: the kinetic-energy density
+    """Meta-GGA iso-orbital indicator ``alpha = (tau - tau_W)/tau_unif``: introduced by
+    SCAN (Sun, Ruzsinszky, Perdew, PRL 115, 036402 (2015), Eq. 2), reused by DFS
+    (Dick & Fernandez-Serra, PRB 104, L161109 (2021), Eq. 6). A genuine RUNG-3
+    (meta-GGA) ingredient: the kinetic-energy density
     ``tau = 1/2 sum_{mu nu} P_{mu nu} grad chi_mu . grad chi_nu`` is a LINEAR
     contraction of the live one-particle DM against the AO gradients already on the
     grid (``eval_ao(deriv=1)``). So -- exactly like the rung-3.5 occupancy

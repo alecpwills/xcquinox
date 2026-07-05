@@ -197,7 +197,7 @@ def _compute_energy_trajectories(model, mol_data, N, solver_config=None):
 def _ae_from_atoms(E_mol, comp_dict, atom_energies):
     """Positive-for-bound atomization energy from a fixed atomic anchor dict.
 
-    AE = Σ n_Z · atom_energies[Z] − E_mol
+    AE = Σ n_Z · atom_energies[Z] - E_mol
 
     The atom anchor is a caller-supplied dict. Under the active
     ``dfs_step7`` domain profile this dict carries the Chakravorty 1993
@@ -301,7 +301,7 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
 
     Absolute mode normalizes by the total number of DM elements
     (``n_ao^2`` for RKS; ``2 * n_ao^2`` for UKS, both spin channels).
-    This yields a per-element scale invariant under RKS↔UKS, matching
+    This yields a per-element scale invariant under RKS<->UKS, matching
     ``_vxc_term``'s convention; normalizing the UKS branch by ``n_ao^2``
     only would be off by a factor of 2 vs RKS and inconsistent with
     ``_vxc_term``.

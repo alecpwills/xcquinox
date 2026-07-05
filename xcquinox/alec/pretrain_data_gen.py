@@ -3,20 +3,20 @@
 This is the canonical, importable version of the recipe the step-4/5/6 notebooks
 emit inline: for each pretraining atom, run a PBE SCF on a coarse grid and store
 the per-grid-point exchange/correlation enhancement targets
-``Fx = F_x^PBE/F_x^LDA - 1`` and ``Fc = F_c^PBE/F_c^LDA - 1`` (stored as ``F - 1``,
+``Fx = F_x^PBE - 1`` and ``Fc = F_c^PBE - 1`` (stored as ``F - 1``,
 the network convention), with spin-RESOLVED libxc ``spin=1`` evaluation for
 open-shell atoms (PBE 1996 §III spin-scaling, the ``spin=0`` total-density call
 is wrong for open-shell).
 
 The SPIN-POLARIZED variant additionally writes a ``zeta_all`` column
-(ζ = (ρ_a − ρ_b)/ρ per grid point) so a spin-polarization-aware cnet
+(ζ = (ρ_a - ρ_b)/ρ per grid point) so a spin-polarization-aware cnet
 (``use_polarized_correlation``) is pretrained on the real ζ rather than a ζ=0
 warm-start. ``run_pretrain`` auto-selects ``pretrain_data_polarized.npz`` for a
 polarized architecture (see ``pretrain._pretrain_data_filename``).
 
 Descriptor columns ``cusp_all`` / ``dm_all`` are included by default so the file
-works for descriptor architectures (deep_cusp / deep_dm / deep_combined …); a
-no-descriptor arch simply ignores them.
+works for descriptor architectures (deep_cusp / deep_dm / deep_combined ...); a
+no-descriptor arch ignores them.
 """
 from __future__ import annotations
 

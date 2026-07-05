@@ -22,7 +22,7 @@ Spin / charge metadata
 ----------------------
 Every species in this pool, molecular AE entries, BH76 reactant/product
 species, IP13 neutral/cation pairs, and atomic refs, carries an
-explicit ground-state ``spin`` (= 2S = N_α − N_β, PySCF convention) and
+explicit ground-state ``spin`` (= 2S = N_α - N_β, PySCF convention) and
 ``charge`` (default 0; +1 for cations).  Sources for every value:
   - Atomic spins: NIST Atomic Spectra Database (ASD; Standard Reference
     Database 78), Hund's-rule ground-state term symbols.
@@ -72,7 +72,7 @@ from ase.io import read
 #       reported in kJ/mol, converted here via 1 kcal = 4.184 kJ).
 #       This dataset has a 0.1 kJ/mol per valence electron error
 #       budget (see Haunschild 2012 §III) and a published mean
-#       deviation of −0.75 kJ/mol vs ATcT.
+#       deviation of -0.75 kJ/mol vs ATcT.
 #       Local copy of the paper:
 #       scripts/script_data/haunschild_g2/haunschild2012.pdf
 #       Local CSV (kJ/mol; column E):
@@ -96,7 +96,7 @@ from ase.io import read
 #     by build_dfs_pool() and read by _ase_atoms_to_pyscf_mol +
 #     MoleculeSpec construction in the step-7 notebook builder.
 #
-# Spin field convention (per entry below): PySCF spin = 2S = N_α − N_β.
+# Spin field convention (per entry below): PySCF spin = 2S = N_α - N_β.
 # Closed-shell singlets: spin=0.  Doublets: spin=1.  Triplets: spin=2.
 # Quartets: spin=3.  Sources for each non-trivial spin are cited inline.
 DFS_AE_DATA = [
@@ -250,7 +250,7 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 # bh76_mode toggle
 # ----------------
 # The loss term ``_rxn_residual_term`` (losses.py) computes
-# ``e_rxn = Σ(coeffs · e_nn) = E(products) − E(reactants)``: a true
+# ``e_rxn = Σ(coeffs · e_nn) = E(products) - E(reactants)``: a true
 # reaction energy ΔE, NOT a barrier height. Dick & Fernandez-Serra
 # 2021 trained against reaction energies (their training set had no
 # transition-state geometries; SI §II). Therefore each entry below
@@ -270,8 +270,8 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 #   - OH+CH3 -> O+CH4: -5.44 kcal/mol    ('O CH4 -> oh ch3' = +5.44, reversed)
 #   - HF+F -> H+F2:    +103.28 kcal/mol  ('h f2 -> hf f' = -103.28, reversed)
 # These differ by ~0.13-0.25 kcal/mol from the Minnesota REF1 barrier
-# difference Vr − Vf (the W2-F12-vs-barrier-database delta); GMTKN55 is the
-# authoritative reaction-energy reference, so it, not Vr − Vf, defines ΔE.
+# difference Vr - Vf (the W2-F12-vs-barrier-database delta); GMTKN55 is the
+# authoritative reaction-energy reference, so it, not Vr - Vf, defines ΔE.
 #
 # Per-reaction ``species_spins`` and ``species_charges`` dicts hold the
 # ground-state spin (2S, PySCF convention) and charge (default 0) for
@@ -285,7 +285,7 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 # ``ts_species`` is an optional transition-state-species slot (default
 # None). It is required ONLY for ``bh76_mode="barrier_height"``: the
 # barrier-height path needs a TS geometry so that
-# ``Σ coeffs·E = E(TS) − E(reactants)`` is a true forward barrier. The
+# ``Σ coeffs·E = E(TS) - E(reactants)`` is a true forward barrier. The
 # 3 BH76 transition-state geometries are NOT yet staged in this repo;
 # until they are, ``bh76_mode="barrier_height"`` raises a clear error
 # (see training_points.build_dfs_pool_points).
@@ -304,7 +304,7 @@ DFS_BH76_REACTIONS = [
         "barrier_ref": 82.27,  # kcal/mol, forward barrier (Vr of NHTBH38 #1)
         # Reaction energy ΔE of OH+N2 -> H+N2O = +64.91 kcal/mol, taken directly
         # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'h n2o -> oh n2' = -64.91,
-        # reversed). [Minnesota Vr − Vf = 82.27 − 17.13 = 65.14 for reference.]
+        # reversed). [Minnesota Vr - Vf = 82.27 - 17.13 = 65.14 for reference.]
         "reaction_energy_ref": 64.91,  # kcal/mol (GMTKN55-BH76RC)
         # Optional TS geometry for bh76_mode="barrier_height" (not staged).
         "ts_species": None,
@@ -327,9 +327,9 @@ DFS_BH76_REACTIONS = [
         # Forward barrier of OH+CH3 -> O+CH4 = REVERSE barrier of HTBH38
         # entry 19/20 (O+CH4 -> OH+CH3, Vf=13.47, Vr=7.90 kcal/mol REF1).
         "barrier_ref": 7.90,  # kcal/mol, forward barrier (Vr of HTBH38 19-20)
-        # Reaction energy ΔE of OH+CH3 -> O+CH4 = −5.44 kcal/mol, taken directly
+        # Reaction energy ΔE of OH+CH3 -> O+CH4 = -5.44 kcal/mol, taken directly
         # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'O CH4 -> oh ch3' = +5.44,
-        # reversed). [Minnesota Vr − Vf = 7.90 − 13.47 = −5.57 for reference.]
+        # reversed). [Minnesota Vr - Vf = 7.90 - 13.47 = -5.57 for reference.]
         "reaction_energy_ref": -5.44,  # kcal/mol (GMTKN55-BH76RC)
         # Optional TS geometry for bh76_mode="barrier_height" (not staged).
         "ts_species": None,
@@ -358,7 +358,7 @@ DFS_BH76_REACTIONS = [
         "barrier_ref": 105.80,  # kcal/mol, forward barrier (Vr of NHTBH38 #5)
         # Reaction energy ΔE of HF+F -> H+F2 = +103.28 kcal/mol, taken directly
         # from GMTKN55-BH76RC (W2-F12; BH76/.resRC 'h f2 -> hf f' = -103.28,
-        # reversed). [Minnesota Vr − Vf = 105.80 − 2.27 = +103.53 for reference.]
+        # reversed). [Minnesota Vr - Vf = 105.80 - 2.27 = +103.53 for reference.]
         "reaction_energy_ref": 103.28,  # kcal/mol (GMTKN55-BH76RC)
         # Optional TS geometry for bh76_mode="barrier_height" (not staged).
         "ts_species": None,
@@ -456,7 +456,7 @@ DFS_ATOM_REFS = [
 ]
 
 
-# Atomic ground-state spins (PySCF 2S = N_α − N_β convention) for every
+# Atomic ground-state spins (PySCF 2S = N_α - N_β convention) for every
 # element that appears in the DFS training pool, BH76 reactions, IP13
 # pairs, AND the held-out probe sets.  Sources:
 #   - NIST Atomic Spectra Database, ground-state term symbols
@@ -566,7 +566,7 @@ def build_dfs_pool() -> dict:
             a.info["ae_kcalmol"] = float(entry["ae_kcalmol"])
             a.info["ae_source"] = entry["source"]
             a.info["ae_name"] = entry["name"]
-            # Spin / charge metadata (PySCF convention: spin = 2S = N_α − N_β).
+            # Spin / charge metadata (PySCF convention: spin = 2S = N_α - N_β).
             # Required by every SCF call downstream (see
             # subset_selection._ase_atoms_to_pyscf_mol which reads
             # at.info["spin"] / ["charge"] verbatim).

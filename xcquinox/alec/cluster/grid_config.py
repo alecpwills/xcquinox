@@ -1053,7 +1053,7 @@ def pretrain_checkpoint_dir(run_dir: str, arch: str) -> str:
 
     Layout: ``<run_dir>/pretrain/<arch>``. Co-locating the pretrain checkpoint
     with every other artifact for the submission (``logs/``, ``specs/``,
-    ``checkpoints/`` …) keeps all work for a run in one folder. Because
+    ``checkpoints/`` ...) keeps all work for a run in one folder. Because
     ``run_dir`` is already unique per submission (its timestamped basename), two
     runs that pretrain the SAME architecture write to DISTINCT directories
     instead of clobbering each other's ``xnet.eqx``/``cnet.eqx``: the same

@@ -204,7 +204,7 @@ PROBE_B_HETEROATOM_EXTRAPOLATION = [
 # Probe C: BH76 REACTION ENERGIES outside the Dick training set
 # ---------------------------------------------------------------------------
 #
-# The probe metric is the REACTION ENERGY ΔE = Σ coeffs·E = E(products) −
+# The probe metric is the REACTION ENERGY ΔE = Σ coeffs·E = E(products) -
 # E(reactants), matching the BH76 TRAINING channel (losses._rxn_residual_term;
 # dfs_pool.py). The reference ``reaction_energy_ref`` is the GMTKN55-BH76RC
 # (W2-F12) value (Goerigk et al. PCCP 19, 32184 (2017); subset file
@@ -216,7 +216,7 @@ PROBE_B_HETEROATOM_EXTRAPOLATION = [
 #
 # Five reactions are outside Dick training; entry 5 (H+N2O -> OH+N2) is the
 # INTENTIONAL REVERSE of training reaction 1 (OH+N2 -> H+N2O), a directional-
-# consistency probe (its ΔE is −1× the training reaction's), NOT accidental
+# consistency probe (its ΔE is -1× the training reaction's), NOT accidental
 # leakage.
 #
 # Reactant/product names in this dict refer to MoleculeSpec.name strings

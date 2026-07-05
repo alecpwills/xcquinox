@@ -275,7 +275,7 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
             cannot produce (a None lob_lim there requires the LO constraint to be
             active). The provided networks MUST carry whatever constraints they are
             meant to enforce; ``spec.arch`` is still used for the pretrain-data file
-            selection, descriptor assembly, and metadata. Default ``None`` ⇒
+            selection, descriptor assembly, and metadata. Default ``None`` =>
             byte-identical to the prior behavior (build from ``spec.arch``).
 
     Returns:

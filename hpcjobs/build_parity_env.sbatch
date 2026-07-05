@@ -5,6 +5,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --time=03:00:00
 #SBATCH --output=%x_%j.log
+#SBATCH --mail-user=alec.wills@stonybrook.edu
+#SBATCH --mail-type=BEGIN,END,FAIL
 # Build the jax-0.7 parity conda env on a COMPUTE node (the login node throttles/kills
 # conda's heavy extraction). Package cache goes on node-local scratch ($TMPDIR) so the
 # small-file-heavy extraction never touches GPFS. Submit: sbatch hpcjobs/build_parity_env.sbatch

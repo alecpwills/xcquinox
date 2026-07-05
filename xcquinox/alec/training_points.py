@@ -131,7 +131,7 @@ def _ae_reaction_point_from_atoms(compound: Atoms) -> TrainingPoint:
     Instead of the fixed-anchor AE channel (``_ae_from_atoms`` against the
     Chakravorty table), the atomization energy becomes a reaction the L5
     BH76 channel trains with the NETWORK'S OWN atom energies:
-    ``AE = Σ n_Z·E_NN(Z) − E_NN(mol)`` via ``reactants=(mol,)``,
+    ``AE = Σ n_Z·E_NN(Z) - E_NN(mol)`` via ``reactants=(mol,)``,
     ``products=(elements...)``, ``coeffs=(-1, n_Z...)``. This is the form
     both dpyscf (Dick & Fernandez-Serra 2021: atoms enter the AE assembly
     as predicted energies, their fixed totals never enter the loss,
@@ -193,13 +193,13 @@ def _bh76_point_from_dict(
     ``losses._rxn_residual_term`` as ``Σ coeffs·E``):
 
     - ``"reaction_energy"`` (DEFAULT), the true reaction energy ΔE
-      (GMTKN55-BH76RC). The loss is trained against E(products) −
+      (GMTKN55-BH76RC). The loss is trained against E(products) -
       E(reactants), matching Dick & Fernandez-Serra 2021 (their
       training set had no transition-state geometries). The reference
       MUST be a reaction energy, since barrier heights cannot be
       reproduced by the reactant -> product stoichiometry.
     - ``"barrier_height"`` (opt-in), the forward barrier height. A
-      true forward barrier is ``E(TS) − E(reactants)``, so each
+      true forward barrier is ``E(TS) - E(reactants)``, so each
       reaction must additionally supply a transition-state geometry
       (``rxn["ts_species"]``). Those geometries are not yet staged in
       the repo; this path raises a clear, actionable error until they
@@ -331,12 +331,12 @@ def build_dfs_pool_points(
         - ``'reaction_energy'`` (DEFAULT, "dick default"), BH76 points
           carry the true reaction energy ΔE (GMTKN55-BH76RC) as
           ``e_rxn_ref``. The BH76 loss term computes
-          ``Σ coeffs·E = E(products) − E(reactants)``, so the reference
+          ``Σ coeffs·E = E(products) - E(reactants)``, so the reference
           MUST be a reaction energy, this is the correct behaviour and
           matches Dick & Fernandez-Serra 2021.
         - ``'barrier_height'`` (opt-in), BH76 points carry the forward
           barrier height as ``e_rxn_ref``. A true forward barrier is
-          ``E(TS) − E(reactants)``, which requires a transition-state
+          ``E(TS) - E(reactants)``, which requires a transition-state
           geometry per reaction. Those geometries are NOT yet staged in
           dfs_pool.py, so selecting this mode raises NotImplementedError
           until they are supplied.

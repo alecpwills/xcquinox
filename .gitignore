@@ -151,3 +151,10 @@ notebooks/analysis/constraint_pretrain_gmtkn55_demo*.png
 docs/reviews/
 docs/superpowers/
 /AUDIT_*.md
+
+# Stray local scratch that `git add -A` would otherwise sweep in: an accidental
+# nested notebooks/ copy, a test-run eqx checkpoint tree, and a representative-
+# subset analysis cache. Regenerable / not source.
+notebooks/notebooks/
+/testmakenet/
+notebooks/analysis/bh76w411_representative_subsets/

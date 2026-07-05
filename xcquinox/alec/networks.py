@@ -276,7 +276,7 @@ class AlecGGA_CNet(eqx.Module):
         self.constraints = tuple(constraints)
         # When True, the correlation network takes a spin-polarization input
         # feature x1 = 1/2[(1+zeta)^{4/3}+(1-zeta)^{4/3}] (Dick & Fernández-Serra
-        # 2021 eq. 13) allowing the correlation functional to depend on relative
+        # 2021 eq. 4) allowing the correlation functional to depend on relative
         # spin density. Zeta is packed at inputs[2], descriptor extras at
         # inputs[3:].
         self.use_spin_polarization = use_spin_polarization

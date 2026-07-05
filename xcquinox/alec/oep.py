@@ -10,7 +10,7 @@ J. Chem. Phys. 118, 2498 (2003) §II.B:
     V_xc(r) = V_xc^baseline(r) + Σ_t  b_t · g_t(r)
 
 where ``V_xc^baseline`` is computed from a user-chosen XC functional
-(LDA / PBE / BLYP / SCAN / B3LYP / …; any pyscf-compatible string) and
+(LDA / PBE / BLYP / SCAN / B3LYP / ...; any pyscf-compatible string) and
 ``g_t`` are auxiliary basis functions. At ``b = 0`` the KS equations
 already produce a physically reasonable density (close to the
 ``baseline_xc`` answer) and the optimizer fits only the correction
@@ -32,7 +32,7 @@ paper. Heaton-Burgess Eq. (1) regularizes with the smoothness measure
 ``‖∇v_b‖^2 = b^T T b`` (``T`` = kinetic-energy integral matrix in the
 potential basis); the present code instead penalizes the V_xc
 amplitude through the overlap metric ``S_aux``. Both are basis-aware
-penalties in V-space, switching ``def2-svp-jkfit`` ↔
+penalties in V-space, switching ``def2-svp-jkfit`` <->
 ``def2-tzvp-jkfit`` no longer silently changes the meaning of
 ``regularization`` as a bare ``|b|^2`` penalty would, but they are
 mathematically distinct regularizers (amplitude vs. gradient/curvature

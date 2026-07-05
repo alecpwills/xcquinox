@@ -346,7 +346,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
 
         # Parallelize the ~200-molecule held-out loop across the node's CPUs by
         # default (queue-agnostic auto-detect), with adaptive degradation to
-        # serial. n_top <= 1 (or eval_workers: 1) ⇒ serial.
+        # serial. n_top <= 1 (or eval_workers: 1) => serial.
         n_top = _resolve_eval_workers(cfg.cluster, n_molecules=len(full_specs))
         result = None
         if n_top > 1:

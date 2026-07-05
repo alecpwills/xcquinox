@@ -281,7 +281,7 @@ def _parse_w411_res(
     The braced list is ``{target_molecule, atom_type_1, atom_type_2, ...}``
     in species-table order. Coefficients are signed: -1 for the molecule,
     +n_i for each atom type (count of that atom in the molecule). So the
-    atomization energy ``2·E(h) − E(h2) = 109.493 kcal/mol``.
+    atomization energy ``2·E(h) - E(h2) = 109.493 kcal/mol``.
     """
     text = res_path.read_text(encoding="utf-8")
     reactions: List[Dict[str, Any]] = []

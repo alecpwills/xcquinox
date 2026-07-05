@@ -195,7 +195,7 @@ def per_reaction_errors(
 
     Returns a list of dicts, one per reaction, with keys: ``name``,
     ``de_kcalmol`` (predicted ΔE in kcal/mol), ``ref_kcalmol``,
-    ``error_kcalmol`` (signed = predicted − reference), and
+    ``error_kcalmol`` (signed = predicted - reference), and
     ``abs_error_kcalmol``. Reactions whose species set has any non-finite
     energy get ``de_kcalmol = NaN`` so downstream consumers (per-reaction
     figures, MAE aggregators) can filter consistently. Pure.
