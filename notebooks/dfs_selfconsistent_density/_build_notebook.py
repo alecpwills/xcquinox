@@ -88,6 +88,50 @@ sys.path.insert(0, os.getcwd())
 import dfs_demo
 from xcquinox.alec import run_training, run_test
 
+# Shared cross-figure rung palette, so the meta-GGA-vs-SCAN story reads the same
+# here and in the cluster ablation figures. arch_style lives in ../analysis; load
+# it defensively -- the notebook still runs (matplotlib defaults) if it moves.
+try:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "..", "analysis")))
+    import arch_style
+except Exception:
+    arch_style = None
+
+_SOLVER_HATCH = {"full_3": "", "full_25": "//"}  # distinguish SCF-cycle count
+
+def _nn_color(key):
+    "Per-arch shared-palette color for an (arch, solver) key (None -> mpl default)."
+    return arch_style.arch_color(key[0]) if arch_style is not None else None
+
+def _nn_hatch(key):
+    return _SOLVER_HATCH.get(key[1], "")
+
+def _mark_beats(ax, x, y, beats, up=True):
+    "Star a bar that beats the baseline -- makes the win/lose verdict visible."
+    if beats and y is not None and np.isfinite(y):
+        ax.annotate("*", (x, y), ha="center", va="bottom" if up else "top",
+                    fontsize=12, fontweight="bold", color="#111", clip_on=False)
+
+def baseline_panel(ax, xk, pbe_vals, scan_vals, nn_vals, nn_colors, nn_hatches, fmt,
+                   beats=None):
+    "PBE + SCAN are model-independent -> labeled HORIZONTAL reference lines (not a"
+    " redundant bar at every tick); NN is one bar per model (arch color, solver"
+    " hatch). Each tick then reads as the NN value against the PBE/SCAN baselines."
+    import numpy as _np
+    pbe0 = float(_np.nanmean(pbe_vals))
+    ax.axhline(pbe0, color="0.55", lw=1.6, ls="--", zorder=1, label=f"PBE = {fmt(pbe0)}")
+    scan0 = float(_np.nanmean(scan_vals)) if scan_vals is not None else float("nan")
+    if _np.isfinite(scan0):
+        ax.axhline(scan0, color="0.15", lw=1.6, ls=":", zorder=1, label=f"SCAN = {fmt(scan0)}")
+    ax.bar(xk, nn_vals, 0.6, color=nn_colors, hatch=nn_hatches, edgecolor="white",
+           linewidth=0.4, zorder=2, label="NN")
+    for xi, n in enumerate(nn_vals):
+        if _np.isfinite(n):
+            ax.annotate(fmt(n), (xi, n), ha="center", va="bottom", fontsize=7, zorder=3)
+        if beats is not None and xi < len(beats) and beats[xi] and _np.isfinite(n):
+            _mark_beats(ax, xi, n, True)
+    ax.margins(y=0.20)
+
 SMOKE = os.environ.get("STEP_SMOKE", "0") == "1"
 if SMOKE:
     HILLS          = dfs_demo.SMOKE_MOLECULE_HILLS   # H2O + OH
@@ -102,7 +146,7 @@ else:
     HILLS          = dfs_demo.DEFAULT_MOLECULE_HILLS  # H2O, LiH, OH, NH
     BASIS          = dfs_demo.DFS_BASIS               # 6-311++G(3df,2pd)
     GRID_LEVEL     = dfs_demo.DFS_GRID_LEVEL          # 2
-    ARCH_NAMES     = dfs_demo.ARCH_NAMES              # deep_3x16, deep_rung35_3x16
+    ARCH_NAMES     = dfs_demo.ARCH_NAMES              # 4 archs: GGA, rung-3.5, meta-GGA, combined
     SOLVER_NAMES   = ("full_3", "full_25")
     N_EPOCHS       = dfs_demo.DFS_N_EPOCHS            # 150 / 100
     PRETRAIN_STEPS = dfs_demo.DFS_PRETRAIN_STEPS      # 2500
@@ -409,22 +453,31 @@ md(r"""
 """)
 
 code(r"""
-# (a) training-loss curves
-fig, ax = plt.subplots(figsize=(7, 4))
-for key, info in trained.items():
-    lp = os.path.join(info["ckpt"], "losses.npy")
-    if os.path.exists(lp):
-        L = np.asarray(np.load(lp)).ravel()
-        ax.plot(np.arange(len(L)), L, label=f"{key[0]}/{key[1]}")
+# (a) training-loss curves -- color by arch (shared rung palette), linestyle by
+#     solver (full_3 solid / full_25 dashed); legend rung-ordered, outside the axes.
+_SOLVER_LS = {"full_3": "-", "full_25": "--"}
+_keys_a = sorted(trained, key=lambda k: (arch_style.rung_rank(k[0]) if arch_style else 0, k[0], k[1]))
+fig, ax = plt.subplots(figsize=(7.5, 4))
+for key in _keys_a:
+    lp = os.path.join(trained[key]["ckpt"], "losses.npy")
+    if not os.path.exists(lp):
+        print(f"  (no losses.npy for {key[0]}/{key[1]} -- skipped)", flush=True)
+        continue
+    L = np.asarray(np.load(lp)).ravel()
+    ax.plot(np.arange(len(L)), L, color=_nn_color(key),
+            ls=_SOLVER_LS.get(key[1], "-"), lw=1.4, label=f"{key[0]}/{key[1]}")
 ax.set_xlabel("optimizer step"); ax.set_ylabel("training loss")
+ax.set_title("training loss  (color = arch, style = solver)")
 if ax.has_data():
     ax.set_yscale("log")
-ax.legend(fontsize=8)
-plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_loss_curves.png"), dpi=110); plt.show()
+ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.01, 0.5), framealpha=0.9)
+plt.tight_layout()
+plt.savefig(os.path.join(OUT_DIR, "fig_loss_curves.png"), dpi=110, bbox_inches="tight"); plt.show()
 """)
 
 code(r"""
-# (b) self-consistent density RMSE vs CCSD: NN per (arch, solver) vs PBE + SCAN
+# (b) self-consistent density RMSE vs CCSD: NN per (arch, solver) vs PBE + SCAN.
+#     A "*" over an NN bar marks that it BEATS SCAN on that molecule (the verdict).
 mols = [ms.name for ms in dfs_demo.molecule_specs(mol_specs)]
 pbe_rmse, nn_rmse = {}, {key: {} for key in evals}
 for key, res in evals.items():
@@ -438,20 +491,28 @@ def _nan(v):
     return np.nan if v is None else v
 scan_rmse = {m: _nan((scan_by_name.get(m) or {}).get("density_rmse_scan")) for m in mols}
 
-# PBE + SCAN baselines then one bar per model.
+# PBE + SCAN baselines, then one bar per model (rung-ordered, shared palette).
+_keys_b = sorted(evals, key=lambda k: (arch_style.rung_rank(k[0]) if arch_style else 0, k[0], k[1]))
 nbar = len(evals) + 2; x = np.arange(len(mols)); width = 0.8 / nbar
-fig, ax = plt.subplots(figsize=(8, 4.5))
+fig, ax = plt.subplots(figsize=(9, 4.8))
 ax.bar(x, [pbe_rmse.get(m, np.nan) for m in mols], width, label="PBE", color="0.6")
 ax.bar(x + width, [scan_rmse.get(m, np.nan) for m in mols], width, label="SCAN", color="0.35")
-for i, key in enumerate(evals):
-    ax.bar(x + (i + 2) * width, [nn_rmse[key].get(m, np.nan) for m in mols], width,
-           label=f"NN {key[0]}/{key[1]}")
+for i, key in enumerate(_keys_b):
+    vals = [nn_rmse[key].get(m, np.nan) for m in mols]
+    ax.bar(x + (i + 2) * width, vals, width, color=_nn_color(key), hatch=_nn_hatch(key),
+           edgecolor="white", linewidth=0.3, label=f"NN {key[0]}/{key[1]}")
+    for xi, (m, v) in enumerate(zip(mols, vals)):
+        _mark_beats(ax, x[xi] + (i + 2) * width, v,
+                    np.isfinite(v) and v < scan_rmse.get(m, np.inf))
 ax.set_xticks(x + 0.4 - width / 2); ax.set_xticklabels(mols)
-ax.set_ylabel("density RMSE vs CCSD"); ax.legend(fontsize=8)
+ax.set_ylabel("density RMSE vs CCSD")
+ax.set_title("self-consistent density error  (* = NN beats SCAN)")
+ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.01, 0.5), framealpha=0.9)
 # log y-scale: the OH radical (~2.6e-3) is 40-250x the closed-shell systems, so a
 # linear axis hides the H2O/NH wins and the full_3-vs-full_25 spread.
 ax.set_yscale("log"); ax.set_ylim(bottom=1e-6)
-plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_density_rmse.png"), dpi=110); plt.show()
+plt.tight_layout()
+plt.savefig(os.path.join(OUT_DIR, "fig_density_rmse.png"), dpi=110, bbox_inches="tight"); plt.show()
 """)
 
 code(r"""
@@ -462,25 +523,36 @@ code(r"""
 #     energy offset (tens-to-hundreds of kcal/mol), not its atomization energy.
 ae_rows = {key: dfs_demo.self_consistent_ae(res["per_molecule"], comp_by_name, ae_ref_kcal)
            for key, res in evals.items()}
-ae_mols = [r["name"] for r in next(iter(ae_rows.values()))]
-_first = next(iter(ae_rows.values()))
-pbe_err = {r["name"]: r["err_pbe"] for r in _first}
+# Union the molecule set across ALL models, so a species dropped by one model (a
+# constituent atom whose self-consistent eval failed) still shows for the others.
+ae_mols = list(dict.fromkeys(r["name"] for rows in ae_rows.values() for r in rows))
+pbe_err = {r["name"]: r["err_pbe"] for rows in ae_rows.values() for r in rows}
 # SCAN AE error is model-independent (err_scan is identical across models).
-scan_err = {r["name"]: r.get("err_scan") for r in _first}
+scan_err = {r["name"]: r.get("err_scan") for rows in ae_rows.values() for r in rows}
 
+_keys_c = sorted(evals, key=lambda k: (arch_style.rung_rank(k[0]) if arch_style else 0, k[0], k[1]))
 nbar = len(evals) + 2; x = np.arange(len(ae_mols)); width = 0.8 / nbar
-fig, ax = plt.subplots(figsize=(8, 4.5))
+fig, ax = plt.subplots(figsize=(9, 4.8))
 ax.axhline(0, color="k", lw=0.8)
 ax.bar(x, [pbe_err.get(m, np.nan) for m in ae_mols], width, label="PBE", color="0.6")
 ax.bar(x + width, [scan_err.get(m) if scan_err.get(m) is not None else np.nan
                    for m in ae_mols], width, label="SCAN", color="0.35")
-for i, (key, rows) in enumerate(ae_rows.items()):
-    nn_err = {r["name"]: r["err_nn"] for r in rows}
-    ax.bar(x + (i + 2) * width, [nn_err.get(m, np.nan) for m in ae_mols], width,
-           label=f"NN {key[0]}/{key[1]}")
+for i, key in enumerate(_keys_c):
+    nn_err = {r["name"]: r["err_nn"] for r in ae_rows[key]}
+    beats = {r["name"]: r.get("beats_scan") for r in ae_rows[key]}
+    for xi, m in enumerate(ae_mols):
+        v = nn_err.get(m, np.nan)
+        ax.bar(x[xi] + (i + 2) * width, v, width, color=_nn_color(key), hatch=_nn_hatch(key),
+               edgecolor="white", linewidth=0.3,
+               label=(f"NN {key[0]}/{key[1]}" if xi == 0 else None))
+        _mark_beats(ax, x[xi] + (i + 2) * width, v, bool(beats.get(m)),
+                    up=(np.isfinite(v) and v >= 0))
 ax.set_xticks(x + 0.4 - width / 2); ax.set_xticklabels(ae_mols)
-ax.set_ylabel("AE error vs reference (kcal/mol)"); ax.legend(fontsize=8)
-plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_ae_error.png"), dpi=110); plt.show()
+ax.set_ylabel("AE error vs reference (kcal/mol)")
+ax.set_title("atomization-energy error  (* = NN beats SCAN |error|)")
+ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.01, 0.5), framealpha=0.9)
+plt.tight_layout()
+plt.savefig(os.path.join(OUT_DIR, "fig_ae_error.png"), dpi=110, bbox_inches="tight"); plt.show()
 """)
 
 code(r"""
@@ -509,32 +581,34 @@ if _dpbe and (max(_dpbe) - min(_dpbe)) / min(_dpbe) > 0.02:
           f"not comparable; re-run section 7 (checkpoints are reused) for one stable refs/ set.",
           flush=True)
 
-keys = list(evals); xk = np.arange(len(keys)); w = 0.26
-
-def _grouped(ax, pbe_vals, scan_vals, nn_vals, fmt):
-    ax.bar(xk - w, pbe_vals, w, label="PBE", color="0.6")
-    ax.bar(xk + 0.0, scan_vals, w, label="SCAN", color="0.35")
-    ax.bar(xk + w, nn_vals, w, label="NN", color="C0")
-    for xi, (p, s, n) in enumerate(zip(pbe_vals, scan_vals, nn_vals)):
-        ax.annotate(fmt(p), (xi - w, p), ha="center", va="bottom", fontsize=6)
-        ax.annotate(fmt(s), (xi, s), ha="center", va="bottom", fontsize=6)
-        ax.annotate(fmt(n), (xi + w, n), ha="center", va="bottom", fontsize=6)
-    ax.margins(y=0.20)
+keys = sorted(evals, key=lambda k: (arch_style.rung_rank(k[0]) if arch_style else 0, k[0], k[1]))
+xk = np.arange(len(keys)); w = 0.26
+_nn_cols = [_nn_color(k) or "C0" for k in keys]      # NN bar per-arch (shared palette)
+_gamma = ed[keys[0]].get("gamma") if keys else None  # self-calibrated from PBE
 
 def _col(k, field):
     return [ed[kk].get(field, np.nan) for kk in k]
 
-fig, (axE, axD, axED) = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
-_grouped(axE, _col(keys, "E_MAE_pbe"), _col(keys, "E_MAE_scan"), _col(keys, "E_MAE_nn"),
-         lambda v: f"{v:.2f}")
-axE.set_ylabel("AE-MAE (kcal/mol)"); axE.set_title("energy error"); axE.legend(fontsize=8)
-_grouped(axD, _col(keys, "D_pbe"), _col(keys, "D_scan"), _col(keys, "D_nn"), lambda v: f"{v:.2e}")
+_beats_scan = [ed[k].get("beats_scan") for k in keys]
+_hatches = [_nn_hatch(k) for k in keys]     # solver hatch (full_3 vs full_25)
+fig, (axE, axD, axED) = plt.subplots(3, 1, figsize=(9, 10), sharex=True)
+baseline_panel(axE, xk, _col(keys, "E_MAE_pbe"), _col(keys, "E_MAE_scan"),
+               _col(keys, "E_MAE_nn"), _nn_cols, _hatches, lambda v: f"{v:.2f}")
+axE.set_ylabel("AE-MAE (kcal/mol)"); axE.set_title("energy error")
+axE.legend(fontsize=8, ncol=3, loc="upper right")
+baseline_panel(axD, xk, _col(keys, "D_pbe"), _col(keys, "D_scan"),
+               _col(keys, "D_nn"), _nn_cols, _hatches, lambda v: f"{v:.2e}")
 axD.set_ylabel("mean density RMSE vs CCSD")
 axD.set_title("density error (mean over molecules; OH radical dominates the mean)")
-_grouped(axED, _col(keys, "ED_pbe"), _col(keys, "ED_scan"), _col(keys, "ED_nn"), lambda v: f"{v:.2f}")
+axD.legend(fontsize=8, ncol=3, loc="upper right")
+baseline_panel(axED, xk, _col(keys, "ED_pbe"), _col(keys, "ED_scan"),
+               _col(keys, "ED_nn"), _nn_cols, _hatches, lambda v: f"{v:.2f}", beats=_beats_scan)
 axED.set_ylabel(r"$\mathcal{ED}$ (kcal/mol)")
-axED.set_title("combined energy-density (DFS Eq. 21, gamma self-calibrated from PBE)")
-axED.set_xticks(xk); axED.set_xticklabels([f"{k[0]}\n{k[1]}" for k in keys], fontsize=8)
+_gtxt = f", $\\gamma$={_gamma:.3g}" if _gamma is not None else ""
+axED.set_title(f"combined energy-density (DFS Eq. 21{_gtxt}; * = NN beats SCAN)")
+axED.legend(fontsize=8, ncol=3, loc="upper right")
+axED.set_xticks(xk)
+axED.set_xticklabels([f"{k[0]} / {k[1]}" for k in keys], rotation=32, ha="right", fontsize=8)
 plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_combined_ed.png"), dpi=110); plt.show()
 
 for k in keys:
@@ -599,8 +673,16 @@ ho_scan_by_name = dfs_demo.scan_baseline(
 
 HELDOUT_DIR = os.path.join(OUT_DIR, "heldout")
 ho_evals, ho_combined = {}, {}
-for key, info in trained.items():
+_nho = len(trained)
+for _i, (key, info) in enumerate(trained.items(), 1):
     tag = f"{key[0]}__{key[1]}"
+    _t0 = time.time()
+    # Per-network progress: the held-out eval is FORWARD-ONLY (run_test's metrics
+    # pass forward_only=True -> solver_manual runs the SCF as a python loop, no
+    # fused per-molecule XLA compile). Printing per network makes that visible so
+    # it no longer looks hung.
+    print(f"  held-out eval {_i}/{_nho}: {key[0]} / {key[1]} (forward-only SCF) ...",
+          flush=True)
     ts = dfs_demo.build_heldout_test_spec(
         arch=info["spec"].arch, solver_cfg=solvers[key[1]], mol_specs=ho_specs,
         model_checkpoint=os.path.join(info["ckpt"], "model.eqx"),
@@ -613,6 +695,7 @@ for key, info in trained.items():
     drows = dfs_demo.aggregate_density_diagnostics(res["per_molecule"])
     if arows and drows:
         ho_combined[tag] = dfs_demo.combined_energy_density(arows, drows)
+    print(f"    done in {time.time() - _t0:.1f}s", flush=True)
 
 summary = dfs_demo.heldout_summary(ho_combined)
 N = summary["n_models"]
@@ -630,26 +713,50 @@ code(r"""
 # Figure: held-out generalization -- mean density RMSE (log) + AE-MAE, NN vs PBE
 # vs SCAN, per model.
 if ho_combined:
-    tags = list(ho_combined)
+    tags = sorted(ho_combined, key=lambda t: (
+        arch_style.rung_rank(t.split("__")[0]) if arch_style else 0, t))
     _has_scan = all("ED_scan" in ho_combined[t] for t in tags)
-    xk = np.arange(len(tags)); w = 0.26 if _has_scan else 0.38
-    def _pos(slot):  # slot in {-1,0,1} for PBE/SCAN/NN when scan present, else {-1,1}->{-.5,.5}
-        return xk + slot * w if _has_scan else xk + slot * (w / 2)
-    fig, (axD, axE) = plt.subplots(1, 2, figsize=(11, 4.5))
-    axD.bar(_pos(-1), [ho_combined[t]["D_pbe"] for t in tags], w, label="PBE", color="0.6")
+    hxk = np.arange(len(tags))
+    _ho_cols = [_nn_color((t.split("__")[0], "")) or "C2" for t in tags]  # arch color
+    _ho_hatch = [_nn_hatch(("", t.split("__")[1])) for t in tags]          # solver hatch
+
+    def _hcol(fld, suffix):
+        return [ho_combined[t].get(fld + suffix, np.nan) for t in tags]
+    def _scan(fld):
+        return _hcol(fld, "_scan") if _has_scan else None
+
+    # beat tallies -> subtitle (the headline generalization verdict)
+    N = len(tags)
+    nb_d = sum(ho_combined[t]["D_nn"] < ho_combined[t]["D_pbe"] for t in tags)
+    nb_e = sum(ho_combined[t]["E_MAE_nn"] < ho_combined[t]["E_MAE_pbe"] for t in tags)
+    nb_ed = sum(ho_combined[t]["ED_nn"] < ho_combined[t]["ED_pbe"] for t in tags)
+    _sub = f"NN beats PBE: density {nb_d}/{N}, energy {nb_e}/{N}, ED {nb_ed}/{N}"
+    _beats_ed_scan = None
     if _has_scan:
-        axD.bar(_pos(0), [ho_combined[t]["D_scan"] for t in tags], w, label="SCAN", color="0.35")
-    axD.bar(_pos(1), [ho_combined[t]["D_nn"]  for t in tags], w, label="NN",  color="C2")
+        _beats_ed_scan = [ho_combined[t]["ED_nn"] < ho_combined[t]["ED_scan"] for t in tags]
+        _sub += f"  |  beats SCAN: ED {sum(_beats_ed_scan)}/{N}"
+
+    # 3x1 sharex, order E / D / ED -- IDENTICAL structure to the in-sample
+    # fig_combined_ed (parity), same baseline_panel (PBE/SCAN as horizontal lines).
+    fig, (axE, axD, axED) = plt.subplots(3, 1, figsize=(9, 10), sharex=True)
+    baseline_panel(axE, hxk, _hcol("E_MAE", "_pbe"), _scan("E_MAE"), _hcol("E_MAE", "_nn"),
+                   _ho_cols, _ho_hatch, lambda v: f"{v:.2f}")
+    axE.set_ylabel("held-out AE-MAE (kcal/mol)"); axE.set_title("energy generalization")
+    axE.legend(fontsize=8, ncol=3, loc="upper right")
+    baseline_panel(axD, hxk, _hcol("D", "_pbe"), _scan("D"), _hcol("D", "_nn"),
+                   _ho_cols, _ho_hatch, lambda v: f"{v:.2e}")
     axD.set_yscale("log"); axD.set_ylabel("held-out mean density RMSE vs CCSD")
-    axD.set_title("density generalization"); axD.legend(fontsize=8)
-    axE.bar(_pos(-1), [ho_combined[t]["E_MAE_pbe"] for t in tags], w, label="PBE", color="0.6")
-    if _has_scan:
-        axE.bar(_pos(0), [ho_combined[t]["E_MAE_scan"] for t in tags], w, label="SCAN", color="0.35")
-    axE.bar(_pos(1), [ho_combined[t]["E_MAE_nn"]  for t in tags], w, label="NN",  color="C2")
-    axE.set_ylabel("held-out AE-MAE (kcal/mol)"); axE.set_title("energy generalization"); axE.legend(fontsize=8)
-    for ax in (axD, axE):
-        ax.set_xticks(xk); ax.set_xticklabels([t.replace("__", "\n") for t in tags], fontsize=7)
-    plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "fig_heldout_generalization.png"), dpi=110); plt.show()
+    axD.set_title("density generalization"); axD.legend(fontsize=8, ncol=3, loc="upper right")
+    baseline_panel(axED, hxk, _hcol("ED", "_pbe"), _scan("ED"), _hcol("ED", "_nn"),
+                   _ho_cols, _ho_hatch, lambda v: f"{v:.2f}", beats=_beats_ed_scan)
+    axED.set_ylabel(r"held-out $\mathcal{ED}$ (kcal/mol)")
+    axED.set_title("combined ED (DFS Eq. 21; * = NN beats SCAN)")
+    axED.legend(fontsize=8, ncol=3, loc="upper right")
+    axED.set_xticks(hxk)
+    axED.set_xticklabels([t.replace("__", " / ") for t in tags], rotation=32, ha="right", fontsize=8)
+    fig.suptitle("held-out generalization (N2/NO/NO2)  --  " + _sub, fontsize=10)
+    plt.tight_layout(rect=(0, 0, 1, 0.96))
+    plt.savefig(os.path.join(OUT_DIR, "fig_heldout_generalization.png"), dpi=110); plt.show()
 else:
     print("no held-out combined metrics (missing refs or eval); skipping figure", flush=True)
 
