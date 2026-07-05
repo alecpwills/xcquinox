@@ -504,7 +504,11 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     for name, md in mol_data.items():
         try:
             if use_scf:
-                result = run_scf(solver_config, model, md)
+                # forward_only: held-out energy eval is a forward pass (no grad),
+                # so run the SCF cycles in a python loop -> skip the giant fused
+                # per-molecule XLA compile (see solver_manual._iterate_scf). The
+                # held-out DENSITY path already de-fuses via DensityRMSEMetric.
+                result = run_scf(solver_config, model, md, forward_only=True)
                 e_final = float(result.total_energy)
                 trace = getattr(result, "energy_trace", None)
                 # Convergence-aware reported energy: the DFS tail-weighted mean

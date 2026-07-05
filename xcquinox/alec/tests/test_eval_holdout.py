@@ -637,7 +637,8 @@ def test_evaluate_holdout_reports_tail_weighted_energy(monkeypatch):
         converged = jnp.array(False)
         energy_trace = trace
 
-    monkeypatch.setattr(solver_mod, "run_scf", lambda cfg, model, md: FakeResult())
+    monkeypatch.setattr(solver_mod, "run_scf",
+                        lambda cfg, model, md, forward_only=False: FakeResult())
 
     full = SolverConfig(
         backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=4,
@@ -668,7 +669,8 @@ def test_evaluate_holdout_tail_off_reports_final_step(monkeypatch):
         converged = jnp.array(True)
         energy_trace = trace
 
-    monkeypatch.setattr(solver_mod, "run_scf", lambda cfg, model, md: FakeResult())
+    monkeypatch.setattr(solver_mod, "run_scf",
+                        lambda cfg, model, md, forward_only=False: FakeResult())
     full_off = SolverConfig(
         backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=4,
     )  # scf_loss_use_tail defaults False
