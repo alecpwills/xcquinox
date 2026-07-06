@@ -285,66 +285,99 @@ Numbers below are a full run of this notebook (`deep_3x16` and `deep_rung35_3x16
 and `full_25`, at `6-311++G(3df,2pd)` / grid 2). Every value is the notebook's own printed output or read
 off its committed figures -- nothing is hand-entered.
 
-> **Update (2026-07-04):** the notebook now also trains two **meta-GGA** nets (`deep_mgga_3x16`,
+> **Update (2026-07-05):** the notebook now also trains two **meta-GGA** nets (`deep_mgga_3x16`,
 > `deep_rung35_mgga_3x16`) and adds a **SCAN** [18] self-consistent baseline alongside PBE (see
 > Section 0), to test whether a learned meta-GGA improves on SCAN itself at reproducing the CCSD
-> density and energies. The tables/figures in this section are from the earlier run (the two
-> GGA-ladder nets vs PBE); the meta-GGA rows and the SCAN comparison populate on the next full run.
-> The outcome is reported as-run -- SCAN is a strong meta-GGA, so beating it is a genuine, not
-> foregone, result.
+> density and energies. **The tables and figures below now include all four architectures (x two
+> solvers) and the SCAN baseline, from the full run.** The headline result is reported as-run and is a
+> genuine, not foregone, one: on the CCSD **density** the nets beat both PBE and SCAN everywhere
+> (SCAN's density is actually *worse* than PBE's), but on held-out **energy** the descriptor-rich
+> meta-GGA/rung-3.5 nets *overfit* the four-molecule pool (best in-sample, worst held-out) -- the
+> capacity pays off only on the full cluster pool, so this demo is a controlled overfitting ablation,
+> not a claim that a 4-molecule-trained meta-GGA beats SCAN on energy.
 
 ### 4.1 In-sample -- the four training molecules
 
-DFS-Fig.2-style combined energy-density error (§8, figure (d)): every network beats PBE on all three axes
-on the training pool.
+DFS-Fig.2-style combined energy-density error (§8, figure (d)): all eight networks (four architectures x
+two solvers) beat PBE on all three axes on the training pool -- and beat SCAN too. PBE and SCAN are the
+model-independent dashed/dotted reference lines; each bar is one NN model read against them.
 
-![in-sample combined energy-density error, NN vs PBE](figures/fig_combined_ed.png)
+![in-sample combined energy-density error, NN vs PBE vs SCAN](figures/fig_combined_ed.png)
 
 | model | AE-MAE (kcal/mol) | mean density RMSE | combined `ED` |
 |---|---|---|---|
-| `deep_3x16` / `full_3`        | **1.67** vs PBE 3.72 | 5.63e-5 vs 9.90e-5 | **1.87** vs 3.72 |
-| `deep_3x16` / `full_25`       | 1.72 | 5.88e-5 | 1.94 |
-| `deep_rung35_3x16` / `full_3` | 1.78 | 5.79e-5 | 1.96 |
-| `deep_rung35_3x16` / `full_25`| 1.94 | 6.12e-5 | 2.10 |
+| `deep_3x16` / `full_3`              | 1.67 vs PBE 3.72 | 5.63e-5 vs 9.90e-5 | 1.87 vs 3.72 |
+| `deep_3x16` / `full_25`             | 1.72 | 5.88e-5 | 1.94 |
+| `deep_mgga_3x16` / `full_3`         | **0.16** | **3.55e-5** | **0.29** |
+| `deep_mgga_3x16` / `full_25`        | 0.46 | 4.21e-5 | 0.71 |
+| `deep_rung35_3x16` / `full_3`       | 1.78 | 5.78e-5 | 1.96 |
+| `deep_rung35_3x16` / `full_25`      | 1.94 | 6.11e-5 | 2.10 |
+| `deep_rung35_mgga_3x16` / `full_3`  | 0.94 | 3.71e-5 | 1.12 |
+| `deep_rung35_mgga_3x16` / `full_25` | 1.07 | 5.20e-5 | 1.38 |
 
-All four roughly **halve** the PBE atomization-energy error (~1.7-1.9 vs 3.72 kcal/mol) and cut the mean
-density RMSE ~40% (the mean is OH-radical-dominated, so the closed-shell wins are larger -- the notebook's
-"excl. OH" print shows ~5.1-5.5e-5 vs 8.6e-5). Per-molecule density and AE breakdowns are
-`figures/fig_density_rmse.png` (figure (b), log scale) and `figures/fig_ae_error.png` (figure (c)).
+Every model beats PBE on all three axes; the **meta-GGA** `deep_mgga_3x16` fits **best** (AE-MAE
+**0.16-0.46** vs PBE 3.72, `ED` 0.29-0.71), the plain GGA and rung-3.5 archs roughly **halve** the PBE
+atomization-energy error (~1.7-1.9), and all cut the mean density RMSE ~40-65% (the mean is
+OH-radical-dominated, so the closed-shell wins are larger). Note the ordering: **richer descriptors fit
+the four training molecules *better*** -- which is exactly what makes the held-out result in §4.2 a clean
+overfitting demonstration. Per-molecule density and AE breakdowns are `figures/fig_density_rmse.png`
+(figure (b), log scale) and `figures/fig_ae_error.png` (figure (c)).
 
 ### 4.2 Held-out generalization -- N2, NO, NO2 (never trained on)
 
 The already-trained models are evaluated, with **no retraining**, on three systems outside the training
 set (§9) -- the honest test of whether four-molecule training learned transferable physics or just
-memorized. All values below are exact (recomputed from the saved eval results). The figure **mirrors §8's
-figure (d)**: energy AE-MAE (top), mean density RMSE (middle), and combined `ED` (bottom), NN vs PBE.
+memorized. All values below are exact (from the saved eval results + the notebook's SCAN baseline). The
+figure **mirrors §8's figure (d)**: energy AE-MAE (top), mean density RMSE (middle), and combined `ED`
+(bottom), NN vs PBE vs SCAN (PBE/SCAN are the dashed/dotted model-independent reference lines).
 
-![held-out generalization (mirrors §8 fig. d): energy AE-MAE, mean density RMSE, and combined ED, NN vs PBE, over N2/NO/NO2](figures/fig_heldout_generalization.png)
+![held-out generalization (mirrors §8 fig. d): energy AE-MAE, mean density RMSE, and combined ED, NN vs PBE vs SCAN, over N2/NO/NO2](figures/fig_heldout_generalization.png)
 
-- **Density transfers universally -- 4/4.** Every model beats PBE on held-out density: NN 1.43-1.50e-4 vs
-  PBE 2.32e-4 (~38% lower), for both architectures and both solvers. The density-matching objective
-  generalizes off the training set.
-- **Energy transfer is architecture-dependent -- 2/4.** The plain GGA `deep_3x16` generalizes strongly on
-  atomization energy (**10.28-10.83** vs PBE **26.70** kcal/mol, a ~60% cut), but the descriptor-rich
-  `deep_rung35_3x16` does **not** (**35.20-35.68**, *worse* than PBE). The extra cusp + rung-3.5 flexibility
-  barely improves the in-sample AE (1.78-1.94 vs `deep_3x16`'s 1.67-1.72) yet **overfits** the four-molecule
-  set, so it fails to extrapolate to the larger held-out systems. On a pool this small, the added
-  descriptors buy nothing in-sample and cost held-out energy generalization -- that capacity only pays off on
-  the full pool (the cluster harness), not this demo.
-- **Combined `ED` still favors NN -- 4/4** (NN 12.66 / 13.08 for `deep_3x16`, 22.83 / 23.20 for
-  `deep_rung35_3x16`, vs PBE 26.70). Even the rung-3.5 models -- whose AE *regresses* -- beat PBE on `ED`,
-  because the universal density win carries the harmonic-mean `ED` (DFS Eq. 21) below the PBE baseline.
+| model | held-out AE-MAE (kcal/mol) | mean density RMSE | combined `ED` |
+|---|---|---|---|
+| **PBE** (baseline)                  | 26.70 | 2.32e-4 | 26.70 |
+| **SCAN** (baseline)                 | 7.25  | 5.60e-4 | 13.03 |
+| `deep_3x16` / `full_3`              | 10.83 | 1.44e-4 | 13.08 |
+| `deep_3x16` / `full_25`             | **10.28** | **1.43e-4** | **12.66** |
+| `deep_mgga_3x16` / `full_3`         | 51.01 | **1.31e-4** | 23.22 |
+| `deep_mgga_3x16` / `full_25`        | 51.79 | 1.34e-4 | 23.68 |
+| `deep_rung35_3x16` / `full_3`       | 35.20 | 1.47e-4 | 22.83 |
+| `deep_rung35_3x16` / `full_25`      | 35.68 | 1.49e-4 | 23.20 |
+| `deep_rung35_mgga_3x16` / `full_3`  | 23.33 | 1.48e-4 | 19.67 |
+| `deep_rung35_mgga_3x16` / `full_25` | 23.39 | 1.50e-4 | 19.89 |
+
+- **Density transfers universally -- 8/8.** Every model beats PBE on held-out density (NN 1.31-1.50e-4 vs
+  PBE 2.32e-4, ~40% lower), for all four architectures and both solvers. And **NN beats SCAN on density,
+  8/8** -- SCAN's held-out density RMSE (5.60e-4) is *worse than PBE's*, so the CCSD-density training
+  objective generalizes off the training set where even the meta-GGA functional does not.
+- **Energy transfer inverts the in-sample ranking -- the descriptor-rich archs OVERFIT (4/8 beat PBE).**
+  The plain GGA `deep_3x16`, which fit in-sample *worst*, generalizes *best* (**10.28-10.83** vs PBE
+  **26.70**, a ~60% cut); the combined `deep_rung35_mgga_3x16` marginally beats PBE (23.33-23.39); but the
+  single-ingredient rich archs *lose* -- `deep_rung35_3x16` (35.20-35.68) and, worst of all, the
+  **meta-GGA `deep_mgga_3x16` (51.01-51.79)**, the very arch with the **best in-sample AE (0.16-0.46)**.
+  That is a **~110x train->held-out blow-up**: the most flexible net memorizes the four molecules and
+  fails to extrapolate. The extra cusp / rung-3.5 / meta-GGA capacity buys a better in-sample fit and
+  *costs* held-out energy generalization -- the textbook fingerprint of **overfitting a four-molecule
+  pool**. This is an intended negative-result ablation: that capacity only pays off on the full pool (the
+  cluster harness, 26 species / 212 reactions), not this teaching toy. (Held-out SCAN energy is actually
+  strong -- 7.25, better than every NN -- the mirror image of its poor density: SCAN nails the N2/NO/NO2
+  energetics but not their densities, while the NN nails the densities but overfits the energies.)
+- **Combined `ED` still favors NN -- 8/8** (NN 12.66-23.68 vs PBE 26.70). Even the archs whose AE
+  *regresses* beat PBE on `ED`, because the universal density win carries the harmonic-mean `ED` (DFS
+  Eq. 21) below the PBE baseline; only the plain GGA also clears SCAN's `ED` (13.03).
 - **The orientation lock generalizes.** NO is a degenerate ²Π radical none of the models saw; its PBE
-  density RMSE is **identical across all four models (2.082e-4)** -- model-independent, exactly as a
+  density RMSE is **identical across all eight models (2.082e-4)** -- model-independent, exactly as a
   *reproducible* density must be. This confirms the §1.7 lock deterministically selects the same
   representative of NO's degenerate manifold on an *unseen* system, so held-out degenerate radicals are
   well-posed, not machine-dependent.
 
-**Takeaway.** The density objective is what transfers; the energy channel transfers for the plain GGA but
-overfits for the richer arch on this tiny pool, and the orientation lock -- the notebook's headline
-degenerate-radical fix -- holds off the training set. Section 9 is **self-contained**: it re-derives its
-config and discovers the trained `runs/<arch>__<solver>/model.eqx` checkpoints on disk, so it regenerates
-this figure from a fresh kernel without retraining (and without depending on the sections 1-8 session).
+**Takeaway.** The density objective is what transfers -- universally, and past SCAN. The energy channel
+transfers for the plain GGA but **overfits monotonically with descriptor richness** (the meta-GGA is best
+in-sample, worst held-out) -- a controlled demonstration that capacity needs data: it pays off on the full
+cluster pool, not four molecules. The orientation lock -- the notebook's headline degenerate-radical fix --
+holds off the training set. Section 9 is **self-contained**: it re-derives its config and discovers the
+trained `runs/<arch>__<solver>/model.eqx` checkpoints on disk, so it regenerates this figure from a fresh
+kernel without retraining (and without depending on the sections 1-8 session).
 
 ---
 
