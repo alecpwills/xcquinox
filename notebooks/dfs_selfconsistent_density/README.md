@@ -383,6 +383,58 @@ kernel without retraining (and without depending on the sections 1-8 session).
 
 ---
 
+### 4.3 Is that held-out failure a code bug, or overfitting? (verification)
+
+The meta-GGA `deep_mgga_3x16` fits in-sample **best** (AE-MAE 0.46) yet generalizes **worst** (51.79) -- a
+113x train->held-out blow-up. Before trusting that as a physics result, it was verified NOT to be a
+meta-GGA code bug: six agents including **three independent adversarial code audits, each tasked to
+*refute* overfitting**, all returned clean. Everything below is data-regenerable -- run
+`python verify_overfitting_report.py` to recompute it from `runs/**/eval/` (it writes the standalone
+`OVERFITTING_REPORT.md`, which is gitignored -- the committed script + this section are the record).
+
+**Mechanism -- an under-constrained atom-energy null space.** The training loss anchors only **H and Li**
+to exact totals (the Dick & Fernandez-Serra 2021 design, applied identically to every arch); **N and O are
+never anchored**, so their absolute self-consistent energies drift freely. Per-atom drift vs exact
+(kcal/mol, full_25):
+
+| arch | H (anchored) | Li (anchored) | N (free) | O (free) |
+|---|---|---|---|---|
+| `deep_3x16` | +1 | +15 | +77 | +99 |
+| `deep_mgga_3x16` | +3 | +34 | **+158** | **+192** |
+| `deep_rung35_3x16` | +1 | +29 | +120 | +134 |
+| `deep_rung35_mgga_3x16` | -3 | +1 | +3 | -10 |
+
+Anchored H/Li stay near-exact; the free N/O drift. In each *training* molecule that drift is absorbed (one
+N or one O apiece), but held-out **N2 (2N), NO, NO2 (N+2O)** have different stoichiometry, so it no longer
+cancels -- giving all-positive (over-binding) errors, largest on NO2. (The magnitude is not simply
+capacity-ordered: the combined arch drifts *least*.)
+
+**It is converged-but-wrong, not numeric breakage.** Every discriminator that would betray a code/numeric
+bug instead says the SCF is healthy and only the learned energy overfits:
+
+| discriminator | result | what a bug would show |
+|---|---|---|
+| full_25 SCF converged (all species) | yes | non-convergence -> bad energy |
+| non-finite (NaN/Inf) energies | none | numeric breakage |
+| both solvers (full_3 vs full_25) agree | within ~0.8 kcal/mol | solver-specific bug -> divergence |
+| held-out **density** vs PBE | **beats PBE 8/8** | a broken SCF cannot yield a good density |
+
+The last row is decisive: the *same* converged SCF that gives the bad *energy* yields a *density* better
+than PBE -- impossible if the functional were numerically broken (density and energy share the
+alpha->V_xc->DM path).
+
+**Adversarial code audit -- all clean.** Three independent audits, each told to *find* a bug: (i) the
+meta-GGA **exchange gate** is a byte-for-byte replication of DFS's published XC_L, and its Lieb-Oxford
+bound is a sigmoid squash keeping F_x in (0, 1.174) for *any* input -- the "unbounded gate" is
+structurally unable to misbehave; (ii) the **alpha clamp/mask** carries ~0.001 kcal/mol (40000x too small)
+and live-vs-precomputed alpha agree to 2.8e-14; (iii) the **open-shell N/O** atoms are computed correctly
+(UKS, correct occupations), and the drift scales with capacity rather than being an arch-uniform defect.
+
+**Verdict: overfitting of an under-constrained N/O null space + legitimate (DFS-faithful, bounded)
+meta-GGA capacity -- not a code bug.** The definitive empirical confirmation (a one-knob ablation:
+anchor N/O in the loss -> held-out should collapse ~52 -> ~10 with no training-code change) is the last
+step, still to run.
+
 ## 5. Adapting this to your own work
 
 - **Your architecture:** change `ARCH_NAMES` (setup cell) to any registered arch, or pass a custom

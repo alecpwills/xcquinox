@@ -9,3 +9,6 @@ runs_smoke/
 .ipynb_checkpoints/
 __pycache__/
 *.smoke.ipynb
+# Regenerable verification report (regenerate via verify_overfitting_report.py;
+# its content is committed in README section 4.3)
+OVERFITTING_REPORT.md
