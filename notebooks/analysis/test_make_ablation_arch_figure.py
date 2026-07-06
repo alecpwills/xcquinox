@@ -1346,13 +1346,179 @@ def test_plot_size_consistency_diagnostic_renders(tmp_path):
     assert _png_ok(out)
 
 
-def test_build_density_energy_figures_writes_two(tmp_path):
+def test_build_density_energy_figures_writes_three(tmp_path):
     run = _make_run_dir(tmp_path)
     written = fig.build_density_energy_figures(run, tmp_path / "out")
-    assert len(written) == 2
+    # now leads with the headline rung summary (no SCAN cache -> no SCAN line)
+    assert len(written) == 3
     assert all(_png_ok(p) for p in written)
-    assert {p.name for p in written} == {"ablation_energy_wtmad_mae.png",
+    assert {p.name for p in written} == {"ablation_rung_summary.png",
+                                         "ablation_energy_wtmad_mae.png",
                                          "ablation_insample_density_ccsd.png"}
+
+
+# ---------------------------------------------------------------------------
+# Jacob's-ladder rung summary + rung ordering + beats-PBE + SCAN baseline
+# ---------------------------------------------------------------------------
+
+def _make_multirung_rows():
+    """Synthetic held-out reaction rows across all four Jacob's-ladder rungs
+    (GGA / meta-GGA / rung-3.5 / combined), BH76 + W4-11, two subset sizes so
+    best-subset selection is exercised."""
+    archs = ["deep", "deep_mgga_3x16", "deep_rung35_3x16", "deep_rung35_mgga_3x16"]
+    rows = []
+    for i, a in enumerate(archs):
+        for ss in (1, 3):
+            rows.append({"arch": a, "subset_size": ss, "pool": "bh76",
+                         "name": f"bh76_{a}_{ss}",
+                         "reaction_energy_ref_kcalmol": 17.7,
+                         "abs_error_nn_kcalmol": 20.0 - 3.0 * i - ss,
+                         "abs_error_pbe_kcalmol": 14.0})
+            rows.append({"arch": a, "subset_size": ss, "pool": "w411",
+                         "name": f"w411_{a}_{ss}",
+                         "reaction_energy_ref_kcalmol": 120.0,
+                         "abs_error_nn_kcalmol": 30.0 - 2.0 * i - ss,
+                         "abs_error_pbe_kcalmol": 16.0})
+    return rows
+
+
+def test_plot_rung_summary_renders_multirung(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    rows = _make_multirung_rows()
+    # all four rungs present among the synthetic archs, in ladder order
+    by_r = fig.arch_style.by_rung(fig._archs_present(rows))
+    assert list(by_r) == list(fig.arch_style.RUNG_ORDER)
+    out = fig.plot_rung_summary(
+        rows, tmp_path / "rung.png", "run_x",
+        pbe_baseline={"bh76": 14.0, "w411": 16.0, "combined": 15.0},
+        scan_baseline={"bh76": float("nan"), "w411": float("nan"),
+                       "combined": float("nan")})
+    assert _png_ok(out)          # PBE line drawn, SCAN line omitted (NaN)
+    # a finite SCAN baseline still renders (SCAN reference line added)
+    out2 = fig.plot_rung_summary(
+        rows, tmp_path / "rung2.png", "run_x",
+        pbe_baseline={"combined": 15.0}, scan_baseline={"combined": 9.0})
+    assert _png_ok(out2)
+    # no baselines at all -> still renders (both reference lines omitted)
+    assert _png_ok(fig.plot_rung_summary(rows, tmp_path / "rung3.png", "run_x"))
+
+
+def test_energy_and_heatmap_arch_axes_are_rung_sorted():
+    rows = _make_multirung_rows()
+    # ARCH_ORDER order here is NOT rung order (r3.5 precedes mGGA in ARCH_ORDER),
+    # so a passing rung-rank check proves these axes actually rung-sort.
+    order = fig._energy_arch_axis(rows)
+    assert order == fig.arch_style.sort_by_rung(order)          # idempotent
+    assert [fig.arch_style.rung_rank(a) for a in order] == sorted(
+        fig.arch_style.rung_rank(a) for a in order)             # GGA..combined
+    assert order.index("deep") < order.index("deep_mgga_3x16")  # base before mGGA
+    assert order.index("deep_mgga_3x16") < order.index("deep_rung35_3x16")
+    hx = fig._heatmap_arch_axis(rows, [])
+    assert [fig.arch_style.rung_rank(a) for a in hx] == sorted(
+        fig.arch_style.rung_rank(a) for a in hx)
+
+
+def test_beats_pbe_marks_flags_below_line_cells():
+    m = fig._beats_pbe_marks
+    assert m([0, 1, 2], [5.0, 20.0, 3.0], 10.0) == [(0.0, 5.0), (2.0, 3.0)]
+    assert m([0, 1], [5.0, 8.0], float("nan")) == []           # no PBE -> no marks
+    assert m([0, 1], [float("nan"), 4.0], 10.0) == [(1.0, 4.0)]  # NaN bar skipped
+    assert m([], [], 10.0) == []
+    assert m([0], [10.0], 10.0) == []                          # equal is not below
+
+
+def test_plot_mae_by_arch_marks_below_pbe_cell(tmp_path):
+    # a synthetic arch whose held-out reaction MAE (~5) sits well below the PBE
+    # line (~14) must render with the beats-PBE marker layer (no crash).
+    import matplotlib
+    matplotlib.use("Agg")
+    rows = _make_multirung_rows()
+    out = fig.plot_mae_by_arch(rows, [], tmp_path / "mae.png", "run_x",
+                               scan_baseline={"combined": 9.0})
+    assert _png_ok(out)
+    # at least one cell is below its own PBE-vs-benchmark line -> a mark exists
+    pbe = fig._mae([r["abs_error_pbe_kcalmol"] for r in rows])
+    mp = fig.reaction_mae_by_arch_subset(rows)
+    assert any(v < pbe for v in mp.values())
+
+
+def test_plot_energy_wtmad_mae_renders_with_scan(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    rows = _make_multirung_rows()
+    out = fig.plot_energy_wtmad_mae(rows, tmp_path / "wt_scan.png", "run_x",
+                                    scan_baseline={"combined": 9.0})
+    assert _png_ok(out)
+
+
+def test_scan_pool_baseline_via_energies_seam(tmp_path):
+    """Full-pool SCAN MAE from an injected {name: E_scan} map + reaction pool
+    (test seams). Same arithmetic as the PBE-baseline seam test."""
+    fake_rxns = [
+        {"name": "rb", "source_pool": "bh76", "reactants": ["a"], "products": ["b"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 10.0},   # de=12 -> |err|=2
+        {"name": "rw", "source_pool": "w411", "reactants": ["a"], "products": ["c"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 100.0},  # de=90 -> |err|=10
+    ]
+    e_a = -1.0
+    e_b = e_a + 12.0 / _KCAL_PER_HA
+    e_c = e_a + 90.0 / _KCAL_PER_HA
+    base = fig.scan_pool_baseline(tmp_path, _loader=lambda: ({}, fake_rxns),
+                                  _energies={"a": e_a, "b": e_b, "c": e_c})
+    assert base["bh76"] == pytest.approx(2.0, abs=1e-6)
+    assert base["w411"] == pytest.approx(10.0, abs=1e-6)
+    assert base["combined"] == pytest.approx((2.0 + 10.0) / 2, abs=1e-6)
+
+
+def test_scan_pool_baseline_missing_cache_is_all_nan(tmp_path):
+    import math
+    # no scan_pool_energies_*.json anywhere -> all-NaN AND the pool loader is
+    # never called (no xcquinox import for a cache-less run).
+    called = []
+    base = fig.scan_pool_baseline(
+        tmp_path, _loader=lambda: (called.append(1), ({}, []))[1])
+    assert math.isnan(base["bh76"]) and math.isnan(base["w411"])
+    assert math.isnan(base["combined"])
+    assert called == []          # short-circuits before the pool loader
+
+
+def test_scan_energies_reads_cache_json(tmp_path):
+    (tmp_path / "resolved_config.yaml").write_text("basis: def2-svp\n")
+    (tmp_path / fig._scan_cache_name("def2-svp")).write_text(
+        json.dumps({"a": -1.0, "b": -0.9, "bad": "x"}))
+    # basis auto-resolved from resolved_config.yaml; non-numeric value dropped
+    assert fig._scan_energies(tmp_path) == {"a": -1.0, "b": -0.9}
+    # explicit basis + cache_dir also resolves the same filename
+    assert fig._scan_energies(tmp_path, basis="def2-svp",
+                              cache_dir=tmp_path) == {"a": -1.0, "b": -0.9}
+    # +DF label maps to the same (undecorated) cache filename as precompute writes
+    assert fig._scan_cache_name("def2-tzvpd+DF") == "scan_pool_energies_def2-tzvpd.json"
+
+
+def test_scan_pool_baseline_reads_disk_cache(tmp_path):
+    (tmp_path / "resolved_config.yaml").write_text("basis: def2-svp\n")
+    e_a = -1.0
+    e_b = e_a + 12.0 / _KCAL_PER_HA
+    (tmp_path / fig._scan_cache_name("def2-svp")).write_text(
+        json.dumps({"a": e_a, "b": e_b}))
+    fake = [{"name": "rb", "source_pool": "bh76", "reactants": ["a"],
+             "products": ["b"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 10.0}]
+    base = fig.scan_pool_baseline(tmp_path, _loader=lambda: ({}, fake))
+    assert base["bh76"] == pytest.approx(2.0, abs=1e-6)
+
+
+def test_provenance_footer_appends_scan_when_present():
+    s = fig.provenance_footer({"bh76": 11.8, "w411": 15.9, "combined": 14.5},
+                              {"bh76": 8.0, "w411": 6.0, "combined": 7.0})
+    assert "PBE: BH76 11.80" in s and "SCAN: BH76 8.00" in s
+    assert "SCAN: BH76 8.00 / W4-11 6.00 / combined 7.00." in s
+    # absent/NaN SCAN -> byte-identical to the PBE-only footer (backward compat)
+    pbe_only = fig.provenance_footer({"bh76": 11.8, "w411": 15.9, "combined": 14.5})
+    assert "SCAN" not in pbe_only
+    assert fig.provenance_footer(
+        {"bh76": 11.8, "w411": 15.9, "combined": 14.5},
+        {"bh76": float("nan"), "w411": None, "combined": float("nan")}) == pbe_only
 
 
 # ---------------------------------------------------------------------------

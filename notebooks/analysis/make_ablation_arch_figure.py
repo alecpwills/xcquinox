@@ -96,6 +96,15 @@ ARCH_COLOR: Dict[str, str] = arch_style.ARCH_COLOR
 SUBSET_SIZES: Tuple[int, ...] = arch_style.SUBSET_SIZES
 POOL_MARKER: Dict[str, str] = {"bh76": "o", "w411": "^"}
 
+# Compact rung tags for tight gutters/labels (the full RUNG_ORDER names are too
+# long for a heatmap gutter or a 1-arch-tall rung span).
+_RUNG_SHORT: Dict[str, str] = {
+    arch_style.RUNG_GGA: "GGA",
+    arch_style.RUNG_MGGA: "mGGA",
+    arch_style.RUNG_R35: "r3.5",
+    arch_style.RUNG_R35_MGGA: "r3.5+m",
+}
+
 _STYLE = dict(ccp._STYLE)
 
 # Provenance banner (static methodology note). The PBE baseline and the
@@ -297,11 +306,21 @@ def _fmt_mae(x: Any) -> str:
             else "n/a")
 
 
-def provenance_footer(baseline: Dict[str, float]) -> str:
-    """Static methodology banner + the LIVE full-pool PBE baseline."""
-    return (_PROVENANCE_BASE + f" PBE: BH76 {_fmt_mae(baseline.get('bh76'))}"
-            f" / W4-11 {_fmt_mae(baseline.get('w411'))}"
-            f" / combined {_fmt_mae(baseline.get('combined'))}.")
+def provenance_footer(baseline: Dict[str, float],
+                      scan_baseline: Optional[Dict[str, float]] = None) -> str:
+    """Static methodology banner + the LIVE full-pool PBE baseline, and -- when a
+    SCAN-energy cache is present (``scan_baseline`` carries a finite value) -- the
+    parallel full-pool SCAN meta-GGA baseline. Absent SCAN -> the string is
+    byte-identical to the PBE-only footer (backward compatible)."""
+    s = (_PROVENANCE_BASE + f" PBE: BH76 {_fmt_mae(baseline.get('bh76'))}"
+         f" / W4-11 {_fmt_mae(baseline.get('w411'))}"
+         f" / combined {_fmt_mae(baseline.get('combined'))}.")
+    if scan_baseline and any(_is_num(scan_baseline.get(k))
+                             for k in ("bh76", "w411", "combined")):
+        s += (f" SCAN: BH76 {_fmt_mae(scan_baseline.get('bh76'))}"
+              f" / W4-11 {_fmt_mae(scan_baseline.get('w411'))}"
+              f" / combined {_fmt_mae(scan_baseline.get('combined'))}.")
+    return s
 
 
 def nn_vs_pbe_caveat(reaction_rows: List[Dict[str, Any]],
@@ -323,6 +342,83 @@ def nn_vs_pbe_caveat(reaction_rows: List[Dict[str, Any]],
     return (f"PBE BH76 baseline {pbe_bh76:.2f} kcal/mol; best NN "
             f"{best_arch}/subset-{best_ss} ({best:.2f} kcal/mol); "
             f"{n_beat}/{len(cell_mae)} arch x subset cell(s) beat PBE on barriers.")
+
+
+def _scan_cache_name(basis: str) -> str:
+    """Filename for the SCAN full-pool energy cache at ``basis``
+    (``scan_pool_energies_<basis>.json`` written by ``precompute_scan_pool.py``).
+    The ``+DF`` density-fit suffix is dropped -- SCAN reference energies span the
+    same species set regardless -- and any path-unsafe char is mapped to ``_``."""
+    b = (basis or "def2-svp").replace("+DF", "").strip() or "def2-svp"
+    safe = "".join(c if (c.isalnum() or c in "-.+") else "_" for c in b)
+    return f"scan_pool_energies_{safe}.json"
+
+
+def _scan_energies(run_dir: Path, *, basis: Optional[str] = None,
+                   cache_dir: Optional[Path] = None) -> Dict[str, float]:
+    """Load the cached ``{molecule_name: E_scan_hartree}`` map written by
+    ``precompute_scan_pool.py``. Searches ``cache_dir`` (default: ``run_dir``)
+    for ``scan_pool_energies_<basis>.json`` (basis from ``run_basis_label`` when
+    not given). Returns ``{}`` when the cache is absent, so the SCAN baseline
+    degrades to all-NaN (figures then omit the SCAN line)."""
+    try:
+        basis = basis or run_basis_label(run_dir)
+    except Exception:
+        basis = basis or "def2-svp"
+    fname = _scan_cache_name(basis)
+    base = Path(cache_dir) if cache_dir else Path(run_dir)
+    p = base / fname
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {k: float(v) for k, v in raw.items()
+            if isinstance(v, (int, float)) and math.isfinite(v)}
+
+
+def scan_pool_baseline(run_dir: Path, *, basis: Optional[str] = None,
+                       cache_dir: Optional[Path] = None, _loader=None,
+                       _energies: Optional[Dict[str, float]] = None
+                       ) -> Dict[str, float]:
+    """Full-pool SCAN reaction-energy MAE (kcal/mol): ``{bh76, w411, combined}``.
+
+    The meta-GGA reference the ``_mgga`` archs clone, computed LIVE from a
+    precomputed SCAN-energy cache (``scan_pool_energies_<basis>.json`` from
+    ``precompute_scan_pool.py``) over the SAME canonical pool as
+    :func:`pbe_pool_baseline`, so PBE and SCAN reference lines are directly
+    comparable. Returns all-NaN (so figures OMIT the SCAN line) when the cache is
+    absent -- older runs render exactly as before. MIRRORS
+    :func:`pbe_pool_baseline`; ``_loader`` / ``_energies`` are test seams."""
+    scan = (_energies if _energies is not None
+            else _scan_energies(run_dir, basis=basis, cache_dir=cache_dir))
+    nan = {"bh76": float("nan"), "w411": float("nan"), "combined": float("nan")}
+    if not scan:
+        return nan          # no cache -> no SCAN line (no xcquinox import needed)
+    if _loader is None:
+        from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+        _loader = load_full_held_out_pools
+    from xcquinox.alec.eval_holdout import reaction_mae_kcalmol
+    _, full_rxns = _loader()
+    out: Dict[str, float] = {}
+    for pool in ("bh76", "w411"):
+        rx = [r for r in full_rxns if r.get("source_pool") == pool]
+        out[pool] = reaction_mae_kcalmol(scan, rx)[0] if rx else float("nan")
+    out["combined"] = (reaction_mae_kcalmol(scan, list(full_rxns))[0]
+                       if full_rxns else float("nan"))
+    return out
+
+
+def _beats_pbe_marks(xs, heights, pbe_line) -> List[Tuple[float, float]]:
+    """``(x, height)`` for every bar whose height is strictly BELOW ``pbe_line``
+    -- the positions to stamp a beats-PBE marker. Empty when ``pbe_line`` is not
+    finite or nothing beats it. Pure + NaN-safe so both bar figures share one
+    tested rule for "this cell beats PBE"."""
+    if not _is_num(pbe_line):
+        return []
+    return [(float(x), float(h)) for x, h in zip(xs, heights)
+            if _is_num(h) and h < pbe_line]
 
 
 # ---------------------------------------------------------------------------
@@ -580,13 +676,17 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
 def _heatmap_panel(ax, mae_map: Dict[Tuple[str, int], float], archs: List[str],
                    *, title: str, cbar_label: str,
                    center: Optional[float] = None,
-                   subset_sizes: Optional[Sequence[int]] = None) -> None:
+                   subset_sizes: Optional[Sequence[int]] = None,
+                   rung_separators: bool = False) -> None:
     """arch x subset_size heatmap. Default: log-scaled viridis (raw MAE spanning
     decades). With ``center`` set (e.g. 1.0 for a MAE/PBE ratio): a diverging
     RdBu_r map about ``center`` -- below center is blue (better than the
     reference), above is red (worse). Missing cells are hatched either way.
     ``subset_sizes`` overrides the column axis (default the global SUBSET_SIZES);
-    pass the present sizes to drop empty trailing columns."""
+    pass the present sizes to drop empty trailing columns. ``rung_separators``
+    (for a rung-ordered ``archs`` axis) draws a colored rung gutter to the left
+    plus thin lines between rung groups -- the heatmap analog of
+    :func:`plot_mae_by_arch`'s rung bands."""
     ss_axis = list(subset_sizes) if subset_sizes is not None else list(SUBSET_SIZES)
     n_a, n_s = len(archs), len(ss_axis)
     grid = np.full((n_a, n_s), np.nan)
@@ -635,6 +735,21 @@ def _heatmap_panel(ax, mae_map: Dict[Tuple[str, int], float], archs: List[str],
     ax.set_yticklabels(archs, fontsize=7)
     ax.set_xlabel("training subset_size")
     ax.set_title(title, fontsize=10)
+    # Rung gutter + separators (left of the grid, between the spine and column 0),
+    # so the Jacob's-ladder grouping of the rung-ordered arch axis reads at a
+    # glance. Collision-free: arch tick labels sit outside the spine.
+    if rung_separators and n_a:
+        ax.set_xlim(-1.75, n_s - 0.5)
+        for _rg, _s, _e in arch_style.rung_bands(archs):
+            ax.add_patch(plt.Rectangle(
+                (-1.62, _s - 0.5), 1.0, _e - _s, clip_on=False, zorder=2,
+                facecolor=arch_style.RUNG_ACCENT.get(_rg, "0.5"), alpha=0.85,
+                edgecolor="none"))
+            ax.text(-1.12, (_s + _e - 1) / 2.0, _RUNG_SHORT.get(_rg, _rg),
+                    rotation=90, va="center", ha="center", fontsize=5.5,
+                    color="white", fontweight="bold", zorder=3, clip_on=False)
+            if _s > 0:
+                ax.axhline(_s - 0.5, color="0.15", lw=1.0, zorder=4)
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=cbar_label)
 
 
@@ -649,6 +764,20 @@ def _heatmap_subset_axis(reaction_rows: List[Dict[str, Any]],
     return present or list(SUBSET_SIZES)
 
 
+def _heatmap_arch_axis(reaction_rows: List[Dict[str, Any]],
+                       insample_rows: List[Dict[str, Any]]) -> List[str]:
+    """Rung-sorted arch (y) axis for the arch x subset heatmaps: every arch that
+    has a held-out reaction or in-sample AE cell, ordered by Jacob's-ladder rung
+    so the rung separators drawn on the panel are contiguous (GGA -> meta-GGA ->
+    rung-3.5 -> combined)."""
+    present = (set(_archs_present(reaction_rows))
+               | set(_archs_present(insample_rows)))
+    ordered = arch_style.sort_by_rung([a for a in ARCH_ORDER if a in present])
+    # Fall back to the full (rung-sorted) ladder when nothing is present, so the
+    # panel never renders a zero-row grid (matches the pre-rung behavior).
+    return ordered or arch_style.sort_by_rung(list(ARCH_ORDER))
+
+
 def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
                              insample_rows: List[Dict[str, Any]],
                              out_path: Path, run_id: str, *,
@@ -658,17 +787,18 @@ def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
     """Figure B — arch × subset_size MAE heatmaps (held-out reactions +
     in-sample AE). Missing cells hatched; coverage stated in the footer."""
     with plt.rc_context(_STYLE):
-        archs = _archs_present(reaction_rows) or list(ARCH_ORDER)
-        archs_ae = _archs_present(insample_rows)
-        all_archs = [a for a in ARCH_ORDER if a in set(archs) | set(archs_ae)]
+        # Rung-ordered arch (y) axis so the rung separators are contiguous.
+        all_archs = _heatmap_arch_axis(reaction_rows, insample_rows)
         ss_axis = _heatmap_subset_axis(reaction_rows, insample_rows)
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.6))
         _heatmap_panel(ax1, reaction_mae_by_arch_subset(reaction_rows),
                        all_archs, title="Held-out reaction-energy MAE (NN)",
-                       cbar_label="MAE (kcal/mol)", subset_sizes=ss_axis)
+                       cbar_label="MAE (kcal/mol)", subset_sizes=ss_axis,
+                       rung_separators=True)
         _heatmap_panel(ax2, ae_mae_by_arch_subset(insample_rows), all_archs,
                        title="In-sample atomization-energy MAE",
-                       cbar_label="MAE (kcal/mol)", subset_sizes=ss_axis)
+                       cbar_label="MAE (kcal/mol)", subset_sizes=ss_axis,
+                       rung_separators=True)
         fig.suptitle(f"Architecture × subset_size error grid · {run_id}",
                      fontsize=11)
         fig.text(0.5, 0.028,
@@ -691,15 +821,20 @@ def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
 def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
                      insample_rows: List[Dict[str, Any]],
                      out_path: Path, run_id: str, note: str = "",
-                     provenance: Optional[str] = None) -> Path:
+                     provenance: Optional[str] = None,
+                     scan_baseline: Optional[Dict[str, float]] = None) -> Path:
     """Figure C — per-arch MAE bars (log-y): held-out reaction MAE (mean &
-    best over available subsets) + in-sample AE MAE, with PBE-vs-ref line."""
+    best over available subsets) + in-sample AE MAE, with PBE-vs-ref line.
+    Archs are rung-ordered with Jacob's-ladder rung bands; a beats-PBE marker
+    tags every held-out reaction bar below the PBE line; a dotted SCAN full-pool
+    reference line is drawn when ``scan_baseline`` carries a finite combined MAE
+    (absent SCAN cache -> unchanged)."""
     with plt.rc_context(_STYLE):
         rxn_map = reaction_mae_by_arch_subset(reaction_rows)
         ae_map = ae_mae_by_arch_subset(insample_rows)
-        archs = [a for a in ARCH_ORDER
+        archs = arch_style.sort_by_rung([a for a in ARCH_ORDER
                  if any(k[0] == a for k in rxn_map)
-                 or any(k[0] == a for k in ae_map)]
+                 or any(k[0] == a for k in ae_map)])
 
         def _arch_stat(mp, arch, stat):
             vals = [v for (a, _ss), v in mp.items() if a == arch]
@@ -714,6 +849,12 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
         ae_mean = [_arch_stat(ae_map, a, "mean") for a in archs]
 
         fig, ax = plt.subplots(figsize=(11, 5.6))
+        # Rung bands: shade GGA / meta-GGA / rung-3.5 / combined groups so the
+        # "does climbing Jacob's ladder help?" comparison is legible (archs are
+        # rung-ordered above; the flat layout hid the rung structure).
+        for _rg, _s, _e in arch_style.rung_bands(archs):
+            ax.axvspan(_s - 0.5, _e - 0.5, color=arch_style.RUNG_BAND[_rg],
+                       alpha=0.6, zorder=0)
         ax.bar(xs - w, rxn_mean, w, label="held-out reaction MAE (mean)",
                color="#4f81bd", edgecolor="k", linewidth=0.3)
         ax.bar(xs, rxn_best, w, label="held-out reaction MAE (best subset-size)",
@@ -725,6 +866,18 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
         if pbe_vs_ref is not None:
             ax.axhline(pbe_vs_ref, ls="--", color="k", linewidth=1.2,
                        label=f"PBE-vs-benchmark MAE ({pbe_vs_ref:.1f})")
+            # Mark every held-out reaction bar (mean + best-subset) below PBE.
+            marks = (_beats_pbe_marks(list(xs - w), rxn_mean, pbe_vs_ref)
+                     + _beats_pbe_marks(list(xs), rxn_best, pbe_vs_ref))
+            if marks:
+                mx, mh = zip(*marks)
+                ax.scatter(mx, mh, marker="v", s=22, color="#2ca02c",
+                           edgecolor="k", linewidths=0.3, zorder=6,
+                           label="beats PBE")
+        scan_c = (scan_baseline or {}).get("combined")
+        if _is_num(scan_c):
+            ax.axhline(scan_c, ls=":", color="#555555", linewidth=1.3,
+                       label=f"SCAN full-pool MAE ({scan_c:.1f})")
         ax.axhline(1.0, ls=":", color="green", linewidth=1.0,
                    label="chemical accuracy (1 kcal/mol)")
 
@@ -740,6 +893,91 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
         fig.text(0.5, 0.006, provenance or _PROVENANCE_BASE, ha="center",
                  fontsize=6, color="#777777")
         fig.tight_layout(rect=(0, 0.06, 1, 1))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Figure: Jacob's-ladder rung summary (headline "does climbing help?")
+# ---------------------------------------------------------------------------
+
+def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *,
+                      pbe_baseline: Optional[Dict[str, float]] = None,
+                      scan_baseline: Optional[Dict[str, float]] = None,
+                      note: str = "", provenance: Optional[str] = None,
+                      caveat: Optional[str] = None) -> Path:
+    """Headline rung figure -- "does climbing Jacob's ladder to meta-GGA help?".
+
+    Per rung (in :data:`arch_style.RUNG_ORDER`, only those present), the MEAN over
+    that rung's architectures of each arch's BEST-subset (largest subset_size)
+    held-out reaction MAE, split BH76 barriers vs W4-11 atomization. Grouped bars
+    (BH76 solid, W4-11 hatched ``//``) colored by :data:`arch_style.RUNG_ACCENT`,
+    each value annotated. The full-pool PBE (dashed) and -- when a SCAN cache is
+    present -- SCAN (dotted) combined baselines are drawn as labeled reference
+    lines. Absent SCAN -> no SCAN line (guarded, backward compatible)."""
+    with plt.rc_context(_STYLE):
+        by_r = arch_style.by_rung(_archs_present(rows))
+        rungs = [r for r in arch_style.RUNG_ORDER if r in by_r]
+        best = _best_subset_per_arch(rows)
+        pool_mae = {p: reaction_mae_by_arch_subset(
+                        [r for r in rows if r.get("pool") == p])
+                    for p in ("bh76", "w411")}
+
+        def _rung_pool_mean(rung: str, pool: str) -> float:
+            vals = []
+            for a in by_r.get(rung, []):
+                ss = best.get(a)
+                v = pool_mae[pool].get((a, ss)) if ss is not None else None
+                if _is_num(v):
+                    vals.append(v)
+            return float(np.mean(vals)) if vals else float("nan")
+
+        bh = [_rung_pool_mean(r, "bh76") for r in rungs]
+        w4 = [_rung_pool_mean(r, "w411") for r in rungs]
+        xs = np.arange(len(rungs))
+        w = 0.38
+        fig, ax = plt.subplots(figsize=(max(6.0, 1.9 * len(rungs) + 3.0), 5.4))
+        for i, rg in enumerate(rungs):
+            c = arch_style.RUNG_ACCENT.get(rg, "0.5")
+            ax.bar(xs[i] - w / 2, bh[i], w, color=c, edgecolor="k", linewidth=0.4)
+            ax.bar(xs[i] + w / 2, w4[i], w, color=c, edgecolor="k", linewidth=0.4,
+                   hatch="//")
+            n_arch = len(by_r.get(rg, []))
+            ax.annotate(f"n={n_arch}", (xs[i], 0), xytext=(0, -14),
+                        textcoords="offset points", ha="center", va="top",
+                        fontsize=6, color="#555555")
+            for xc, val in ((xs[i] - w / 2, bh[i]), (xs[i] + w / 2, w4[i])):
+                if _is_num(val):
+                    ax.annotate(f"{val:.1f}", (xc, val), ha="center", va="bottom",
+                                fontsize=6.5, xytext=(0, 1.5),
+                                textcoords="offset points")
+        pbe_c = (pbe_baseline or {}).get("combined")
+        if _is_num(pbe_c):
+            ax.axhline(pbe_c, ls="--", color="0.35", linewidth=1.4,
+                       label=f"PBE (combined {pbe_c:.1f})")
+        scan_c = (scan_baseline or {}).get("combined")
+        if _is_num(scan_c):
+            ax.axhline(scan_c, ls=":", color="#555555", linewidth=1.6,
+                       label=f"SCAN (combined {scan_c:.1f})")
+        # BH76/W4-11 hatch key + the reference lines.
+        style_handles = [
+            Patch(facecolor="0.75", edgecolor="k", label="BH76 barriers"),
+            Patch(facecolor="0.75", edgecolor="k", hatch="//",
+                  label="W4-11 atomization")]
+        ref_h, ref_l = ax.get_legend_handles_labels()
+        ax.legend(handles=style_handles + ref_h, fontsize=7, ncol=2, loc="best",
+                  framealpha=0.7)
+        ax.set_xticks(xs)
+        ax.set_xticklabels(rungs, fontsize=9)
+        ax.set_xlabel("Jacob's-ladder rung  (mean over the rung's architectures, "
+                      "each at its best subset_size)", fontsize=8.5)
+        ax.set_ylabel("held-out reaction-energy MAE (kcal/mol)", fontsize=9)
+        ax.grid(True, axis="y", alpha=0.3)
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance, caveat=caveat,
+            title="Jacob's-ladder rung summary -- held-out MAE (BH76 | W4-11)")
+        fig.tight_layout(rect=(0, 0.075, 1, 0.93))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -1073,7 +1311,9 @@ def _combined_mae_inset(ax, rows_for_subset: List[Dict[str, Any]],
 
 
 def _arch_pbe_legend_handles(archs: List[str], *, pools: Optional[List[str]] = None):
-    handles = [Patch(facecolor=ARCH_COLOR[a], label=a) for a in archs]
+    # Rung-ordered so the compact (ncol ~ #rungs) legend reads up Jacob's ladder.
+    handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
+               for a in arch_style.sort_by_rung(archs)]
     if pools:
         handles += [plt.Line2D([], [], marker=POOL_MARKER[p], ls="", color="0.3",
                                 label=p.upper()) for p in pools]
@@ -1128,7 +1368,8 @@ def plot_parity_marginal(rows: List[Dict[str, Any]], out_path: Path, run_id: str
                 axes[i][j].set_xlabel("reference reaction energy (kcal/mol)",
                                       fontsize=8)
         fig.legend(handles=_arch_pbe_legend_handles(_archs_present(rows)),
-                   loc="lower center", ncol=8, fontsize=7, frameon=False,
+                   loc="lower center", ncol=len(arch_style.RUNG_ORDER),
+                   fontsize=7, frameon=False,
                    bbox_to_anchor=(0.5, 0.052))
         _stamp_parity_footer(fig, run_id=run_id, note=note, provenance=provenance,
                              caveat=caveat,
@@ -1167,7 +1408,8 @@ def plot_parity_facet_subset(rows: List[Dict[str, Any]], out_path: Path,
                     axes[i][j].set_ylabel(f"{_POOL_LABEL[pool]}\nNN de", fontsize=7)
                 axes[i][j].tick_params(labelsize=6)
         fig.legend(handles=_arch_pbe_legend_handles(_archs_present(rows)),
-                   loc="lower center", ncol=8, fontsize=7, frameon=False,
+                   loc="lower center", ncol=len(arch_style.RUNG_ORDER),
+                   fontsize=7, frameon=False,
                    bbox_to_anchor=(0.5, 0.05))
         _stamp_parity_footer(fig, run_id=run_id, note=note, provenance=provenance,
                              caveat=caveat,
@@ -1279,7 +1521,8 @@ def plot_parity_errbars_by_subset(rows: List[Dict[str, Any]], out_path: Path,
         for k in range(n, len(flat)):
             flat[k].axis("off")
         fig.legend(handles=_arch_pbe_legend_handles(archs, pools=pools),
-                   loc="lower center", ncol=8, fontsize=7, frameon=False,
+                   loc="lower center", ncol=len(arch_style.RUNG_ORDER),
+                   fontsize=7, frameon=False,
                    bbox_to_anchor=(0.5, 0.05))
         _stamp_parity_footer(fig, run_id=run_id, note=note, provenance=provenance,
                              caveat=caveat,
@@ -1323,7 +1566,8 @@ def plot_parity_grid_by_subset(rows: List[Dict[str, Any]], out_path: Path,
             pbe_s = _mae([r["abs_error_pbe_kcalmol"] for r in rows_s])
             _combined_mae_inset(axes[i][inset_col], rows_s, archs, pbe_s)
         fig.legend(handles=_arch_pbe_legend_handles(archs),
-                   loc="lower center", ncol=8, fontsize=7, frameon=False,
+                   loc="lower center", ncol=len(arch_style.RUNG_ORDER),
+                   fontsize=7, frameon=False,
                    bbox_to_anchor=(0.5, 0.04))
         _stamp_parity_footer(fig, run_id=run_id, note=note, provenance=provenance,
                              caveat=caveat,
@@ -1641,39 +1885,63 @@ def training_reactions_by_size(run_dir: Path,
     return out
 
 
+def _energy_arch_axis(rows: List[Dict[str, Any]]) -> List[str]:
+    """Rung-sorted arch order for the per-cell energy bars
+    (:func:`plot_energy_wtmad_mae`) so the grouped bars climb Jacob's ladder."""
+    return arch_style.sort_by_rung(_archs_present(rows) or ["deep"])
+
+
 def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
                           note: str = "", provenance: Optional[str] = None,
                           caveat: Optional[str] = None,
-                          training_subsets: Optional[Dict[int, List[str]]] = None
+                          training_subsets: Optional[Dict[int, List[str]]] = None,
+                          scan_baseline: Optional[Dict[str, float]] = None
                           ) -> Path:
     """Held-out energy: ONE bar per (arch, subset_size) cell -- combined
     reaction-energy MAE (panel a) and 2-subset WTMAD-2 (panel b) -- grouped by
-    arch within each subset_size on the x-axis. NO error bars: each cell is a
-    single model trained on a distinct subset and evaluated on a fixed held-out
-    set, so a within-sample spread would be arbitrary and cross-subset
-    aggregation is invalid (the six subset models per arch are not comparable).
-    The subset trend is the x-axis. WTMAD-2 here = 2-subset, NOT full GMTKN55."""
+    arch (rung-ordered) within each subset_size on the x-axis. NO error bars:
+    each cell is a single model trained on a distinct subset and evaluated on a
+    fixed held-out set, so a within-sample spread would be arbitrary and
+    cross-subset aggregation is invalid (the six subset models per arch are not
+    comparable). The subset trend is the x-axis. WTMAD-2 here = 2-subset, NOT
+    full GMTKN55. A beats-PBE marker tags each bar below the PBE line; a dotted
+    SCAN full-pool reference line is added to the MAE panel when ``scan_baseline``
+    carries a finite combined MAE (absent SCAN cache -> unchanged)."""
     with plt.rc_context(_STYLE):
-        archs = _archs_present(rows) or ["deep"]
+        archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
         mae = reaction_mae_by_arch_subset(rows)
         wt = wtmad2_by_arch_subset(rows)
         pbe_mae = _mae([r["abs_error_pbe_kcalmol"] for r in _dedup_rows_by_name(rows)])
         pbe_wt = wtmad2_pbe_baseline(rows)
         has_ts = bool(training_subsets)
-        fig, axes = plt.subplots(1, 2, figsize=(13, 6.4 if has_ts else 5),
+        # Taller bottom band than the pre-rung layout: the rung-grouped legend
+        # (ncol ~ #rungs) stacks into ~3 rows, which must clear the training-
+        # subset text block + footer without overlap.
+        fig, axes = plt.subplots(1, 2, figsize=(13, 7.8 if has_ts else 5.6),
                                  squeeze=False)
         bw = 0.8 / max(1, len(archs))
 
-        def _grouped(ax, metric, pbe_line, title):
+        def _grouped(ax, metric, pbe_line, title, scan_line=None):
+            beat_x: List[float] = []
+            beat_h: List[float] = []
             for j, a in enumerate(archs):
                 xs = [i + (j - (len(archs) - 1) / 2) * bw
                       for i in range(len(subsets))]
                 hs = [metric.get((a, s), float("nan")) for s in subsets]
                 ax.bar(xs, hs, width=bw, color=ARCH_COLOR[a], edgecolor="k",
                        linewidth=0.3, label=a)
+                for x, h in _beats_pbe_marks(xs, hs, pbe_line):
+                    beat_x.append(x); beat_h.append(h)
             if _is_num(pbe_line):
                 ax.axhline(pbe_line, ls="--", color="k", linewidth=1.0, label="PBE")
+            if _is_num(scan_line):
+                ax.axhline(scan_line, ls=":", color="#555555", linewidth=1.3,
+                           label="SCAN")
+            if beat_x:
+                ax.scatter(beat_x, beat_h, marker="v", s=16, color="#2ca02c",
+                           edgecolor="k", linewidths=0.3, zorder=6,
+                           label="beats PBE")
             ax.set_xticks(range(len(subsets)))
             ax.set_xticklabels(subsets)
             ax.set_xlabel("training subset_size", fontsize=8)
@@ -1681,25 +1949,31 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
             ax.set_title(title, fontsize=9)
             ax.grid(True, axis="y", alpha=0.3)
 
+        # SCAN full-pool combined MAE only tracks panel (a) (there is no
+        # 2-subset SCAN WTMAD-2 to draw); guarded so absent SCAN changes nothing.
+        scan_c = (scan_baseline or {}).get("combined")
         _grouped(axes[0][0], mae, pbe_mae,
-                 "Held-out reaction-energy MAE (combined), per (arch, subset)")
+                 "Held-out reaction-energy MAE (combined), per (arch, subset)",
+                 scan_line=scan_c)
         _grouped(axes[0][1], wt, pbe_wt,
                  "2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)")
         handles, labels = axes[0][0].get_legend_handles_labels()
         if labels:
-            fig.legend(handles, labels, loc="lower center", ncol=8, fontsize=7,
-                       frameon=False, bbox_to_anchor=(0.5, 0.045))
+            fig.legend(handles, labels, loc="lower center",
+                       ncol=len(arch_style.RUNG_ORDER), fontsize=7,
+                       frameon=False, bbox_to_anchor=(0.5, 0.05))
         if has_ts:
             lines = ["Training subsets (held-in molecules; + element anchors):"]
             for ss in sorted(training_subsets):
                 ms = training_subsets[ss]
                 lines.append(f"  {ss}:  {', '.join(ms) if ms else '(atoms only)'}")
-            fig.text(0.06, 0.265, "\n".join(lines), ha="left", va="top",
+            # Anchored high (just under the axes) so it clears the taller legend.
+            fig.text(0.06, 0.35, "\n".join(lines), ha="left", va="top",
                      fontsize=6, family="monospace", color="#333333")
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=caveat,
             title="Held-out energy: per-cell combined MAE + 2-subset WTMAD-2 (NOT full GMTKN55)")
-        fig.tight_layout(rect=(0, 0.31 if has_ts else 0.10, 1, 0.93))
+        fig.tight_layout(rect=(0, 0.37 if has_ts else 0.16, 1, 0.93))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -1781,8 +2055,10 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
                       fontsize=9)
         axR.grid(True, axis="y", which="both", alpha=0.3)
 
-        arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a) for a in archs]
-        fig.legend(handles=arch_handles, loc="lower center", ncol=8, fontsize=7,
+        arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
+                        for a in arch_style.sort_by_rung(archs)]
+        fig.legend(handles=arch_handles, loc="lower center",
+                   ncol=len(arch_style.RUNG_ORDER), fontsize=7,
                    frameon=False, bbox_to_anchor=(0.5, 0.02))
         insample = ("IN-SAMPLE density fit on TRAINING molecules (atoms excluded; "
                     "weighted-mean grid RMSE vs CCSD, NOT N_e-normalized). "
@@ -1888,9 +2164,10 @@ def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
         axR.grid(True, which="both", alpha=0.3)
 
         arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
-                        for a in archs if a in ARCH_COLOR]
+                        for a in arch_style.sort_by_rung(archs) if a in ARCH_COLOR]
         if arch_handles:
-            fig.legend(handles=arch_handles, loc="lower center", ncol=8,
+            fig.legend(handles=arch_handles, loc="lower center",
+                       ncol=len(arch_style.RUNG_ORDER),
                        fontsize=7, frameon=False, bbox_to_anchor=(0.5, 0.02))
         heldout = ("HELD-OUT density error vs CCSD reference densities on the "
                    "W4-11+BH76 benchmark species (atoms excluded; weighted-mean "
@@ -2592,7 +2869,8 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
     ]
     col3 = [
         "PRETRAIN (this work, [4]-style; 2500 steps, per-grid-point, spin-resolved):",
-        r"  $F_x{=}F_x^{PBE}/F_x^{LDA}{-}1$,  $F_c{=}F_c^{PBE}/F_c^{LDA}{-}1$.",
+        r"  GGA/rung-3.5: $F_x{=}F_x^{PBE}/F_x^{LDA}{-}1$, $F_c{=}F_c^{PBE}/F_c^{LDA}{-}1$;",
+        r"  _mgga archs: the SAME ratios to SCAN [20] (the meta-GGA they clone).",
         "ATTENTION (_attn / _combined_attn, heads=4): per-grid-point",
         r"  channel attn $\mathrm{softmax}(QK^T\!/\sqrt{d_k})V$ [19] over MLP-1 units, 4 tokens.",
         "",
@@ -2612,6 +2890,11 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
         r"     (eig $DS$ [9]): occupation-spread entropy, size-INTENSIVE $\in[0,1]$, used as a",
         r"     multireference indicator [11].  Nonzero for one determinant.",
         r"   $x_8{=}\|D_{off}\|_F/\mathrm{Tr}(D)$: relative off-diagonal weight of $D$.",
+        r"  _rung35 $(x_9,x_{10})$: per-spin localized-DM occupancy",
+        r"   $n_\sigma(r){=}A(r)^T\!D^\sigma A(r)\in[0,1]$, $A_\mu{=}\langle\chi_\mu|\phi^G_r\rangle$",
+        r"     a Gaussian projector (Rung-3.5 [21]; leak-free, replaces global _dm).",
+        r"  _mgga $(x_{11})$: iso-orbital $\alpha{=}(\tau{-}\tau_W)/\tau_{unif}$ [20]",
+        r"     (meta-GGA; $F_x$ ceiling 1.174 not 1.804; UEG gate on $(s,\alpha)$).",
         r"  _combined: cusp & DM;   _notransform: log-transform off.",
     ]
     return [col1, col2, col3]
@@ -2633,7 +2916,9 @@ def _methods_references() -> List[str]:
         "[13] Chen et al. (GradNorm), ICML 2018 / arXiv:1711.02257.   [14] Li et al., PRL 126, 036401 (2021).   "
         "[15] dpyscf / [4] (density-dominant weights + per-molecule scheme).   "
         "[16] Goerigk et al. (GMTKN55-BH76), PCCP 19, 32184 (2017).   [17] Karton, Daon, Martin (W4-11), CPL 510, 165 (2011).   "
-        "[18] Chakravorty et al., PRA 47, 3649 (1993).   [19] Vaswani et al., NeurIPS 2017 (scaled-dot-product attention).",
+        "[18] Chakravorty et al., PRA 47, 3649 (1993).   [19] Vaswani et al., NeurIPS 2017 (scaled-dot-product attention).   "
+        "[20] Sun, Ruzsinszky, Perdew (SCAN), PRL 115, 036402 (2015).   "
+        "[21] Janesko (Rung-3.5), JCP 133, 104103 (2010) / Verma et al. (M11plus), JCTC 15, 4804 (2019).",
     ]
 
 
@@ -3058,15 +3343,27 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         print(f"  (PBE baseline unavailable: {exc})")
         baseline = {"bh76": float("nan"), "w411": float("nan"),
                     "combined": float("nan")}
-    prov = provenance_footer(baseline)
+    # SCAN meta-GGA baseline: all-NaN (no line) unless a precomputed SCAN cache
+    # sits by the run -- see scan_pool_baseline / precompute_scan_pool.py.
+    try:
+        scan_baseline = scan_pool_baseline(run_dir)
+    except Exception as exc:
+        print(f"  (SCAN baseline unavailable: {exc})")
+        scan_baseline = {"bh76": float("nan"), "w411": float("nan"),
+                         "combined": float("nan")}
+    prov = provenance_footer(baseline, scan_baseline)
     caveat = nn_vs_pbe_caveat(rows, baseline)
     dens_prov = ("In-sample density vs CCSD: grid weighted-mean RMSE/L1 on trained "
                  "species (atoms excluded).")
     tsubsets = training_subsets_by_size(run_dir)
     written = [
+        plot_rung_summary(rows, outdir / "ablation_rung_summary.png", run_id,
+                          pbe_baseline=baseline, scan_baseline=scan_baseline,
+                          note=note, provenance=prov, caveat=caveat),
         plot_energy_wtmad_mae(rows, outdir / "ablation_energy_wtmad_mae.png",
                               run_id, note=note, provenance=prov, caveat=caveat,
-                              training_subsets=tsubsets),
+                              training_subsets=tsubsets,
+                              scan_baseline=scan_baseline),
         plot_insample_density_ccsd(drows,
                                    outdir / "ablation_insample_density_ccsd.png",
                                    run_id, note=note, provenance=dens_prov),
@@ -3164,11 +3461,23 @@ def build_all(run_dir: Path, outdir: Path,
         print(f"  (PBE baseline unavailable: {exc})")
         baseline = {"bh76": float("nan"), "w411": float("nan"),
                     "combined": float("nan")}
-    prov = provenance_footer(baseline)
+    # SCAN meta-GGA baseline: all-NaN (no SCAN line) unless a precomputed cache
+    # sits by the run (precompute_scan_pool.py); older runs render as before.
+    try:
+        scan_baseline = scan_pool_baseline(run_dir)
+    except Exception as exc:
+        print(f"  (SCAN baseline unavailable: {exc})")
+        scan_baseline = {"bh76": float("nan"), "w411": float("nan"),
+                         "combined": float("nan")}
+    prov = provenance_footer(baseline, scan_baseline)
     caveat = nn_vs_pbe_caveat(reaction_rows, baseline)
     print(f"  PBE baseline (full pool): BH76 {_fmt_mae(baseline['bh76'])} / "
           f"W4-11 {_fmt_mae(baseline['w411'])} / "
           f"combined {_fmt_mae(baseline['combined'])}")
+    if any(_is_num(scan_baseline.get(k)) for k in ("bh76", "w411", "combined")):
+        print(f"  SCAN baseline (full pool): BH76 {_fmt_mae(scan_baseline['bh76'])} "
+              f"/ W4-11 {_fmt_mae(scan_baseline['w411'])} / "
+              f"combined {_fmt_mae(scan_baseline['combined'])}")
 
     written: List[Path] = []
     written.append(plot_parity(
@@ -3180,7 +3489,7 @@ def build_all(run_dir: Path, outdir: Path,
         note=note, provenance=prov))
     written.append(plot_mae_by_arch(
         reaction_rows, insample_rows, outdir / "ablation_mae_by_arch.png", run_id,
-        note=note, provenance=prov))
+        note=note, provenance=prov, scan_baseline=scan_baseline))
     written.append(plot_mae_vs_subset(
         reaction_rows, insample_rows, outdir / "ablation_mae_vs_subset.png", run_id,
         note=note, provenance=prov))
