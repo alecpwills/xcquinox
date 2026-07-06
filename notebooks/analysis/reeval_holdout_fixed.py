@@ -8,13 +8,13 @@ held-out molecule ~1.89x. That made every held-out reaction energy garbage
 (W4-11 atomizations came out negative; BH76 barriers ~20x too large) for BOTH
 the NN and PBE channels. The library fix corrects the geometry; this script
 regenerates each spec's `checkpoints/spec_<NNNN>/eval_holdout/{test_set.csv,
-per_molecule.json,per_reaction.json}` — the same artifacts the cluster eval
-writes — by calling `eval_holdout.run_full_holdout_eval` with the corrected
+per_molecule.json,per_reaction.json}` -- the same artifacts the cluster eval
+writes -- by calling `eval_holdout.run_full_holdout_eval` with the corrected
 `full_benchmark_pools.load_full_held_out_pools`.
 
 IDEMPOTENT / RE-RUNNABLE: a sidecar `eval_holdout/reeval_meta.json` records the
 fix version. A spec is (re)processed iff it has a `model.eqx` AND lacks the
-current stamp — so cluster-written / stale outputs are redone, already-fixed
+current stamp -- so cluster-written / stale outputs are redone, already-fixed
 specs are skipped, and specs that finish or download LATER are picked up on the
 next run. Safe to run repeatedly as the sweep completes.
 
@@ -202,7 +202,7 @@ def _real_eval_fn(training_spec, model, mol_specs, reactions, out_dir, mol_data)
 def descriptor_signature(training_spec) -> tuple:
     """Group key: ``(descriptor-type-names, solver-mode)``. Specs sharing this
     signature share an identical PBE/grid/eri precompute, so we precompute once
-    per signature and reuse it across the group — the optimization that turns
+    per signature and reuse it across the group -- the optimization that turns
     an N-spec re-eval from N precomputes into one-per-group."""
     try:
         descs = tuple(type(d).__name__
@@ -273,7 +273,7 @@ def run(
     for sig, idxs in groups.items():
         # One precompute for the whole group (reused across its specs).
         rep_ts = specs_by_idx[idxs[0]]
-        print(f"[reeval] group {sig} — {len(idxs)} spec(s); precomputing once "
+        print(f"[reeval] group {sig} -- {len(idxs)} spec(s); precomputing once "
               f"...", flush=True)
         try:
             mol_data = precompute_fn(rep_ts, mol_specs)

@@ -9,14 +9,14 @@
 % Local build:
 %   cd reports_local/latex
 %   mkdir -p build_supp build_main
-%   # Step 1 — supplement
+%   # Step 1 -- supplement
 %   pdflatex -output-directory=build_supp supplement.tex
 %   (cd build_supp && BIBINPUTS=.. bibtex supplement)
 %   pdflatex -output-directory=build_supp supplement.tex
 %   pdflatex -output-directory=build_supp supplement.tex
 %   # Make supplement.aux visible to main (xr-hyper reads it)
 %   cp build_supp/supplement.aux .
-%   # Step 2 — main
+%   # Step 2 -- main
 %   pdflatex -output-directory=build_main main.tex
 %   (cd build_main && BIBINPUTS=.. bibtex main)
 %   pdflatex -output-directory=build_main main.tex
@@ -50,7 +50,7 @@
 % verbatim and reference them in main as \ref{S:...}.
 % Note: natbib emits "Citation X multiply defined" warnings during the
 % xr-hyper aux import for cite keys that appear in both main and supplement.
-% These are cosmetic — the bibliography deduplicates and renders one entry
+% These are cosmetic -- the bibliography deduplicates and renders one entry
 % per key. Compile output is correct.
 \externaldocument{supplement}
 
@@ -643,7 +643,7 @@ the H$_2$O-only narrow-data regime.
 \paragraph{(3) V$_{xc}$-aware losses are necessary for sub-$2\times 10^{-4}$ density quality.}
 Step 5's loss set lacks V$_{xc}$ fitting; step 5's best density-RMSE is $3.72\times 10^{-4}$
 e/bohr$^3$. Step 6 added $V_{xc}$-aware losses (L3, L4); their best density-RMSE is
-$1.23\times 10^{-4}$ — a 3$\times$ improvement only achievable with explicit V$_{xc}$
+$1.23\times 10^{-4}$ -- a 3$\times$ improvement only achievable with explicit V$_{xc}$
 training data. The within-run Pareto pattern (V$_{xc}$-aware specs lose AE accuracy in
 exchange for density quality, Fig.~\ref{fig:headline_step6}) is consistent with Burke's earlier
 formulation of the energy-vs-density tradeoff (paraphrased in \citet{Kepp2017}); the
@@ -653,8 +653,8 @@ $1s^2$ and $1s^2 2s^2$ atomic systems and is not chemically relevant for typical
 bonding regimes.
 
 \paragraph{(4) Transfer is dominated by molecule-specific physics, not pretrain weighting.}
-Across the three molecules common to step 5's and step 6's transfer sets — CH$_4$, H$_2$,
-OH — pretrain weighting moves the median MAE by less than $2\times$. CH$_4$ favors step
+Across the three molecules common to step 5's and step 6's transfer sets -- CH$_4$, H$_2$,
+OH -- pretrain weighting moves the median MAE by less than $2\times$. CH$_4$ favors step
 5 (narrower training; bonding pattern closer to H$_2$O than to C$_2$H$_2$); H$_2$ slightly
 favors step 6 (broader training); OH is uniformly above PBE in all four workflows because
 it is open-shell ($^2\Pi$, $S=1/2$) while the molecular pretrain set is closed-shell.
@@ -665,7 +665,7 @@ generalization principle applies but the citation is by analogy).
 \paragraph{(5) F$_c$ pretrain is mostly insensitive to the integration weighting.}
 The implementation already builds the F$_c$ weight from $|\rho\,\varepsilon_c^{\text{PW92}}|$
 (\texttt{xcquinox/alec/pretrain.py:69--77}, using the LSDA correlation parameterization of
-\citealp{PerdewWang1992}) — not from $|\rho\,\varepsilon_x^{\text{LDA}}|$. The F$_c$
+\citealp{PerdewWang1992}) -- not from $|\rho\,\varepsilon_x^{\text{LDA}}|$. The F$_c$
 stagnation under integration weighting therefore does not have a ``wrong prefactor'' cause;
 likely candidates are (a) PW92 $\varepsilon_c$ being $\sim 10\times$ smaller in magnitude
 than $\varepsilon_x^{\text{LDA}}$ at typical bonding densities (so the F$_c$-weighted
@@ -687,7 +687,7 @@ rather than first-principles derivation, or where citations are by analogy rathe
 direct.
 
 \begin{enumerate}
-\item Cross-step $F_x$ mean ratios are not on equal footing — step 5 averages over 8
+\item Cross-step $F_x$ mean ratios are not on equal footing -- step 5 averages over 8
 architectures (light to heavy), step 6 over 2 (both heavy). The fair cross-step
 comparison is the per-arch overlay (Fig.~\ref{fig:headline_pretrain_fx}), not the population means.
 
@@ -703,7 +703,7 @@ difference is a population shift, not just a tail artefact.
 \item The compounding factor $\sim 2.8\times$ in conclusion (2) is empirical.
 
 \item The transfer-set comparison combines step 5's transfer-mol output with step 6's
-\texttt{transfer\_primary\_df} — these are not bit-identical pipelines (step 6 uses
+\texttt{transfer\_primary\_df} -- these are not bit-identical pipelines (step 6 uses
 different precompute paths and a CCSD-target overlay). Cross-step transfer numbers are
 qualitatively but not quantitatively identical-protocol.
 

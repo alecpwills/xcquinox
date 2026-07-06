@@ -11,13 +11,13 @@ stats (mean / std / min / max / range across the training set).
 The output, ``<run_dir>/checkpoints/spec_<NNNN>/eval/local_subset_descriptors.json``,
 is consumed by:
 
-  - Fig 10 — descriptor range vs held-out accuracy (uses ``range``).
-  - Fig 15 — per-subset descriptor histograms with std/mean marks
+  - Fig 10 -- descriptor range vs held-out accuracy (uses ``range``).
+  - Fig 15 -- per-subset descriptor histograms with std/mean marks
     (uses ``per_molecule_features``).
 
-Runtime: ~30–40 unique training molecules × ~5 s/molecule for the first
+Runtime: ~30-40 unique training molecules × ~5 s/molecule for the first
 spec's pass, then near-zero for every subsequent spec (in-process cache in
-``xcquinox.alec.precompute_fixed_density_data``). Total: ~3–5 min for the
+``xcquinox.alec.precompute_fixed_density_data``). Total: ~3-5 min for the
 current 119 specs.
 
 Usage::
@@ -131,7 +131,7 @@ def _load_category_discovery() -> Callable:
 
 
 def discover_specs_in_run(run_dir: Path, width: int = 4) -> List[int]:
-    """``[spec_index, …]`` for every ``specs/spec_<NNNN>.spec`` present."""
+    """``[spec_index, ...]`` for every ``specs/spec_<NNNN>.spec`` present."""
     sp = run_dir / "specs"
     if not sp.is_dir():
         return []
@@ -157,7 +157,7 @@ def _strip_external_data_path(mol_spec: Any) -> Any:
     try:
         return dataclasses.replace(mol_spec, external_data_path=None)
     except (TypeError, AttributeError):
-        # Non-dataclass or unsupported field — fall through, the caller
+        # Non-dataclass or unsupported field -- fall through, the caller
         # will see the original failure.
         return mol_spec
 
@@ -247,7 +247,7 @@ def run_one_spec(
     except AttributeError:
         descriptors = ()
     if not descriptors:
-        print(f"[spec {spec_idx}] no descriptors on arch — skipping",
+        print(f"[spec {spec_idx}] no descriptors on arch -- skipping",
               flush=True)
         return {"idx": spec_idx, "skipped": True,
                 "reason": "no descriptors on arch"}
@@ -267,7 +267,7 @@ def run_one_spec(
             t0 = time.time()
             vec = compute_feature_means_for_molecule(m, descriptors)
             feature_cache[name] = vec
-            tag = "(cached miss — new)" if vec is not None else "(FAILED)"
+            tag = "(cached miss -- new)" if vec is not None else "(FAILED)"
             print(f"  {name}: {time.time() - t0:.2f}s  {tag}",
                   flush=True)
         if vec is None:
@@ -275,7 +275,7 @@ def run_one_spec(
         rows.append(vec)
         kept_names.append(name)
     if not rows:
-        print(f"[spec {spec_idx}] no usable training-molecule features — "
+        print(f"[spec {spec_idx}] no usable training-molecule features -- "
               "skipping write", flush=True)
         return {"idx": spec_idx, "skipped": True,
                 "reason": "no usable training features"}

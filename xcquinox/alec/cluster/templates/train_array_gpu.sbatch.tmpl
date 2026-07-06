@@ -18,7 +18,7 @@ export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 
-# NOTE: the GPU visibility env var is intentionally NOT set here — SLURM's
+# NOTE: the GPU visibility env var is intentionally NOT set here -- SLURM's
 # --gres binding scopes the GPU(s) for this task automatically.
 
 # --- train task ------------------------------------------------------------

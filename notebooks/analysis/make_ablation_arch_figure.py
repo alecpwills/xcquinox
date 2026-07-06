@@ -2,38 +2,38 @@
 """Architecture-ablation figures for the ``ablation_notransform`` sweep.
 
 The existing :mod:`make_cluster_pulls_figure` renders a category-level suite
-but keys every series on ``(metric, solver)`` — so it collapses the eight
+but keys every series on ``(metric, solver)`` -- so it collapses the eight
 architectures of this ablation (which holds ``metric=jsd``/``solver=full_3``
 fixed and varies ``arch``) into a single line. This module fills that gap:
 every figure here is **architecture-aware**, and the parity figure is modeled
 on Figure 5 of Navarro-Rodriguez et al., *Constraint-aware functional cloning*
-(MLXC_Constraints, 2026) — predicted-vs-reference scatter with a y=x diagonal
+(MLXC_Constraints, 2026) -- predicted-vs-reference scatter with a y=x diagonal
 and a per-network mean-error inset.
 
 It reuses the data collectors and house style from
 ``make_cluster_pulls_figure`` verbatim (no re-parsing of the run dir), adding
 only an ``eval_holdout/per_reaction.json`` collector (the cluster-side held-out
-reaction eval — same schema as the local-reeval ``local_per_reaction.json``
+reaction eval -- same schema as the local-reeval ``local_per_reaction.json``
 that the existing module reads, but a different source path).
 
 Scientific provenance carried on every figure:
   * The pulled run ``run_20260529T165503Z`` predates the ``dm_entropy`` fix
-    from the 2026-05-29 forensic review — these are PRE-FIX numbers.
+    from the 2026-05-29 forensic review -- these are PRE-FIX numbers.
   * On the held-out reactions ``de_nn ≈ de_pbe`` while both sit far from the
     benchmark refs: the network faithfully *reproduces PBE*, it does not beat
     it. The two parity panels make that explicit rather than hiding it.
   * Coverage is partial (57/80 specs trained; only 32 carry held-out
-    reactions) — incomplete grid cells are drawn hatched, never dropped.
+    reactions) -- incomplete grid cells are drawn hatched, never dropped.
 
 Figures written (PNG):
-  A. ``ablation_parity.png``       — Fig-5 analog, 2 panels (NN-vs-PBE and
+  A. ``ablation_parity.png``       -- Fig-5 analog, 2 panels (NN-vs-PBE and
      NN&PBE-vs-benchmark), points colored by arch, per-arch MAE inset bars.
-  B. ``ablation_arch_subset_heatmap.png`` — arch × subset_size MAE heatmap
+  B. ``ablation_arch_subset_heatmap.png`` -- arch × subset_size MAE heatmap
      (held-out reaction MAE + in-sample atomization-energy MAE).
-  C. ``ablation_mae_by_arch.png``  — per-arch MAE bars (log-y), held-out
+  C. ``ablation_mae_by_arch.png``  -- per-arch MAE bars (log-y), held-out
      reaction + in-sample AE, with the PBE-vs-benchmark baseline line.
-  D. ``ablation_mae_vs_subset.png``— MAE vs subset_size, one line per arch.
-  E. ``ablation_ae_parity.png``    — HELD-OUT atomization-energy parity (W4-11,
+  D. ``ablation_mae_vs_subset.png``-- MAE vs subset_size, one line per arch.
+  E. ``ablation_ae_parity.png``    -- HELD-OUT atomization-energy parity (W4-11,
      the held-out set's atomization-energy pool): predicted vs reference AE with
      PBE drawn as the baseline (grey × + dashed). Panel (a) by architecture,
      panel (b) colored by training-subset size with an NN-MAE-vs-subset inset.
@@ -203,7 +203,7 @@ def arch_coverage(run_dir: Path,
     """Per-arch coverage of this (partial) run, computed from disk.
 
     Returns ``{"trained": [...], "holdout": [...], "insample": [...],
-    "untrained": [...]}`` — arch names in ``ARCH_ORDER`` order. ``trained``
+    "untrained": [...]}`` -- arch names in ``ARCH_ORDER`` order. ``trained``
     = has ``model.eqx``; ``holdout`` = has ``<eval_subdir>/per_reaction.json``;
     ``insample`` = has ``eval/per_molecule.json``; ``untrained`` = arch in the
     manifest grid with no trained spec at all.
@@ -239,7 +239,7 @@ def arch_coverage(run_dir: Path,
 
 
 def coverage_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
-    """One-line human summary of arch coverage for figure footers — makes the
+    """One-line human summary of arch coverage for figure footers -- makes the
     partial-run gaps explicit (no silent truncation)."""
     cov = arch_coverage(run_dir, eval_subdir=eval_subdir)
     parts = [f"Held-out reactions: {len(cov['holdout'])}/{len(ARCH_ORDER)} archs "
@@ -467,7 +467,7 @@ def _archs_present(rows: List[Dict[str, Any]]) -> List[str]:
 
 
 def _best_subset_per_arch(rows: List[Dict[str, Any]]) -> Dict[str, int]:
-    """For each arch, the LARGEST subset_size that has held-out reactions —
+    """For each arch, the LARGEST subset_size that has held-out reactions --
     the most-trained representative used for the parity scatter. Principled
     and stated on the figure (no MAE-based cherry-picking)."""
     by_arch: Dict[str, int] = {}
@@ -481,16 +481,16 @@ def _best_subset_per_arch(rows: List[Dict[str, Any]]) -> Dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# Figure A — Fig-5-style parity
+# Figure A -- Fig-5-style parity
 # ---------------------------------------------------------------------------
 
 def _draw_mae_inset(ax, mae_by_arch: Dict[str, float], archs: List[str], *,
                     title: str, baseline: Optional[float] = None,
                     baseline_label: str = "PBE") -> None:
-    """Per-arch MAE bar inset (lower-right), color-matched to the scatter —
+    """Per-arch MAE bar inset (lower-right), color-matched to the scatter --
     the analog of the paper's Fig-5 mean-relative-error inset."""
     # Low-right, but lifted just enough that the angled (40°) tick labels clear
-    # the outer panel's x-axis — low enough that the inset body stays under the
+    # the outer panel's x-axis -- low enough that the inset body stays under the
     # y=x diagonal (which passes through ~axes-fraction 0.56 at the inset's left
     # edge).
     inset = ax.inset_axes([0.56, 0.13, 0.41, 0.33])
@@ -559,7 +559,7 @@ def _diagonal(ax, xs: List[float], ys: List[float],
 def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
                 note: str = "", provenance: Optional[str] = None,
                 caveat: Optional[str] = None) -> Path:
-    """Figure A — two-panel parity, points colored by arch, y=x diagonal,
+    """Figure A -- two-panel parity, points colored by arch, y=x diagonal,
     per-arch MAE inset. Each arch contributes its most-trained (largest
     subset_size) spec's held-out reactions."""
     with plt.rc_context(_STYLE):
@@ -572,7 +572,7 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
 
         fig, (axa, axb) = plt.subplots(1, 2, figsize=(13, 7.4))
 
-        # Panel (a): optimized NN vs PBE — how far subset training moved the
+        # Panel (a): optimized NN vs PBE -- how far subset training moved the
         # network from its PBE starting point (the PBE "clone" is the PRETRAIN;
         # these are the post-pretrain, subset-OPTIMIZED networks). ------------
         xs_a, ys_a = [], []
@@ -646,13 +646,13 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
         handles = [Patch(facecolor=ARCH_COLOR[a], label=a) for a in archs]
         handles.append(plt.Line2D([], [], marker="o", ls="", color="0.4",
                                    label="bh76 (●) / w411 (▲) by marker"))
-        # Shared arch legend in its own reserved band below the panels — the
+        # Shared arch legend in its own reserved band below the panels -- the
         # bottom strip is stacked (legend > note > provenance) with no overlap.
         fig.legend(handles=handles, loc="lower center", ncol=5, fontsize=7,
                    frameon=False, bbox_to_anchor=(0.5, 0.085))
 
         fig.suptitle(
-            "Reaction-energy parity (Fig-5 analog) — "
+            "Reaction-energy parity (Fig-5 analog) -- "
             f"each arch at its largest available subset_size · {run_id}",
             fontsize=11, y=0.985)
         if caveat:
@@ -670,7 +670,7 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
 
 
 # ---------------------------------------------------------------------------
-# Figure B — arch × subset_size heatmaps
+# Figure B -- arch × subset_size heatmaps
 # ---------------------------------------------------------------------------
 
 def _heatmap_panel(ax, mae_map: Dict[Tuple[str, int], float], archs: List[str],
@@ -784,7 +784,7 @@ def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
                              n_trained: int, n_total: int,
                              n_holdout: int, note: str = "",
                              provenance: Optional[str] = None) -> Path:
-    """Figure B — arch × subset_size MAE heatmaps (held-out reactions +
+    """Figure B -- arch × subset_size MAE heatmaps (held-out reactions +
     in-sample AE). Missing cells hatched; coverage stated in the footer."""
     with plt.rc_context(_STYLE):
         # Rung-ordered arch (y) axis so the rung separators are contiguous.
@@ -815,7 +815,7 @@ def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
 
 
 # ---------------------------------------------------------------------------
-# Figure C — per-arch MAE bars
+# Figure C -- per-arch MAE bars
 # ---------------------------------------------------------------------------
 
 def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
@@ -823,7 +823,7 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
                      out_path: Path, run_id: str, note: str = "",
                      provenance: Optional[str] = None,
                      scan_baseline: Optional[Dict[str, float]] = None) -> Path:
-    """Figure C — per-arch MAE bars (log-y): held-out reaction MAE (mean &
+    """Figure C -- per-arch MAE bars (log-y): held-out reaction MAE (mean &
     best over available subsets) + in-sample AE MAE, with PBE-vs-ref line.
     Archs are rung-ordered with Jacob's-ladder rung bands; a beats-PBE marker
     tags every held-out reaction bar below the PBE line; a dotted SCAN full-pool
@@ -984,7 +984,7 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
 
 
 # ---------------------------------------------------------------------------
-# Figure D (bonus) — MAE vs subset_size, one line per arch
+# Figure D (bonus) -- MAE vs subset_size, one line per arch
 # ---------------------------------------------------------------------------
 
 def _mae_vs_subset_panel(ax, mae_map: Dict[Tuple[str, int], float],
@@ -1007,7 +1007,7 @@ def plot_mae_vs_subset(reaction_rows: List[Dict[str, Any]],
                        insample_rows: List[Dict[str, Any]],
                        out_path: Path, run_id: str, note: str = "",
                        provenance: Optional[str] = None) -> Path:
-    """Figure D — learning curves: MAE vs subset_size, one line per arch."""
+    """Figure D -- learning curves: MAE vs subset_size, one line per arch."""
     with plt.rc_context(_STYLE):
         archs = [a for a in ARCH_ORDER
                  if a in _archs_present(reaction_rows)
@@ -1030,13 +1030,13 @@ def plot_mae_vs_subset(reaction_rows: List[Dict[str, Any]],
 
 
 # ---------------------------------------------------------------------------
-# Figure E — held-out atomization-energy parity (W4-11)
+# Figure E -- held-out atomization-energy parity (W4-11)
 # ---------------------------------------------------------------------------
 # W4-11 is the held-out set's atomization-energy benchmark: each W4-11 "reaction"
 # is a molecule -> constituent-atoms atomization, so its ``de_nn``/``de_pbe``
 # ARE predicted atomization energies and ``ref`` is the reference AE. This is
 # the atomization-energy analog of the held-out reaction parity (plot_parity),
-# and — unlike an in-sample training-fit plot — it shows generalization, with
+# and -- unlike an in-sample training-fit plot -- it shows generalization, with
 # PBE drawn as the baseline so "does the NN beat PBE?" is legible.
 
 def _w411_rows(reaction_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1065,7 +1065,7 @@ def _w411_mae_by_subset(rows: List[Dict[str, Any]], *,
 def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
                    run_id: str, note: str = "",
                    provenance: Optional[str] = None) -> Path:
-    """Figure E — HELD-OUT atomization-energy parity (W4-11): predicted vs
+    """Figure E -- HELD-OUT atomization-energy parity (W4-11): predicted vs
     reference atomization energy (kcal/mol), the AE analog of
     :func:`plot_parity`. PBE is drawn as the baseline throughout so the
     NN-vs-PBE comparison is explicit.
@@ -1094,7 +1094,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
             xs_a += list(xx); ys_a += list(yy)
             axa.scatter(xx, yy, s=16, alpha=0.6, color=ARCH_COLOR[arch],
                         edgecolor="none", zorder=3, label=arch)
-        # PBE baseline points (same physical PBE for every arch — draw once).
+        # PBE baseline points (same physical PBE for every arch -- draw once).
         pbe_pts = [(r["ref_kcalmol"], r["de_pbe_kcalmol"]) for r in sel]
         if pbe_pts:
             xx, yy = zip(*pbe_pts)
@@ -1109,7 +1109,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
                      color="#a33")
         axa.set_xlabel("Reference W4-11 atomization energy  (kcal/mol)")
         axa.set_ylabel("Predicted atomization energy  (kcal/mol)")
-        axa.set_title("(a) held-out W4-11 AE vs reference — by architecture")
+        axa.set_title("(a) held-out W4-11 AE vs reference -- by architecture")
         mae_by_arch = {
             a: m for a in archs
             if (m := _mae([r["abs_error_nn_kcalmol"] for r in sel
@@ -1165,7 +1165,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
                 inset.grid(True, axis="y", alpha=0.3)
         axb.set_xlabel("Reference W4-11 atomization energy  (kcal/mol)")
         axb.set_ylabel("NN atomization energy  (kcal/mol)")
-        axb.set_title("(b) held-out W4-11 AE vs reference — by train-set size")
+        axb.set_title("(b) held-out W4-11 AE vs reference -- by train-set size")
 
         handles = [Patch(facecolor=ARCH_COLOR[a], label=a) for a in archs]
         handles.append(plt.Line2D([], [], marker="x", ls="", color="0.4",
@@ -1173,7 +1173,7 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
         fig.legend(handles=handles, loc="lower center", ncol=5, fontsize=7,
                    frameon=False, bbox_to_anchor=(0.5, 0.085))
         fig.suptitle(
-            "Held-out atomization-energy parity (W4-11) — "
+            "Held-out atomization-energy parity (W4-11) -- "
             f"each arch at its largest available subset_size · {run_id}",
             fontsize=11, y=0.985)
         fig.text(0.5, 0.925,

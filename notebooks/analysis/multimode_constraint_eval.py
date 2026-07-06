@@ -198,7 +198,7 @@ WEIGHTINGS = ("unweighted", "integration")
 
 def steps_to_converge(trajectory, frac: float = 1.05):
     """First step (1-based) whose loss <= ``frac`` * min(loss) over the trajectory
-    — a simple "how quickly it converged" measure. NaN for an empty/all-NaN
+    -- a simple "how quickly it converged" measure. NaN for an empty/all-NaN
     trajectory. Pure."""
     t = np.asarray(trajectory, dtype=float)
     t = t[np.isfinite(t)]
@@ -224,7 +224,7 @@ def _convergence_from(md: dict, ckpt_dir: str) -> dict:
 
 def should_reuse_checkpoint(meta: dict, n_steps: int, weighting: str) -> bool:
     """True iff a saved pretrain_metadata dict matches the requested ``n_steps``
-    AND ``loss_weighting`` — so a shorter (e.g. smoke) or other-weighting checkpoint
+    AND ``loss_weighting`` -- so a shorter (e.g. smoke) or other-weighting checkpoint
     is never silently reused. Pure."""
     return (meta.get("pretrain_steps") == n_steps
             and meta.get("loss_weighting") == weighting)
@@ -316,12 +316,12 @@ def _pretrain_one(demo, alec, level_spec, weighting, data_dir, ckpt_dir, n_steps
 # ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
-    # Lazy imports (pull pyscf / the demo module) — kept out of module scope so the
+    # Lazy imports (pull pyscf / the demo module) -- kept out of module scope so the
     # pure helpers + unit tests import cheaply.
     sys.path.insert(0, _HERE)
     import constraint_pretrain_gmtkn55_demo as demo  # noqa: E402
     import xcquinox.alec as alec  # noqa: E402
-    import jax  # noqa: E402 — for clear_caches() between species (bound JIT memory)
+    import jax  # noqa: E402 -- for clear_caches() between species (bound JIT memory)
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", choices=["polarized", "unpolarized"],
@@ -398,7 +398,7 @@ def main(argv=None) -> int:
         "cells": {}, "convergence": {},
     }
 
-    # Pretrain every (weighting x level) ONCE — incl. the truly-unconstrained level
+    # Pretrain every (weighting x level) ONCE -- incl. the truly-unconstrained level
     # (via the run_pretrain networks= override). Mode-independent; evaluated per
     # mode below. Capture the convergence record for each.
     print(f"[4/4] Pretraining {len(weightings)}x{len(levels)} (weighting x level) ...",

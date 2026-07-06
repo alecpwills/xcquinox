@@ -1,4 +1,4 @@
-# xcquinox.alec.cluster — rsync filter rules for the "full" pull profile.
+# xcquinox.alec.cluster -- rsync filter rules for the "full" pull profile.
 #
 # Pulls the full run dir minus chatty SLURM /logs/. Use when you need the
 # trained model.eqx checkpoints locally (e.g. for paper-figure re-evaluation

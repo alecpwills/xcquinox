@@ -39,7 +39,7 @@ FIG_DIR = OUT_DIR / "figures"
 
 def main() -> int:
     if not RUN_DIR.is_dir():
-        print(f"NOTE: {RUN_DIR} does not exist yet — integration sweep not finished.")
+        print(f"NOTE: {RUN_DIR} does not exist yet -- integration sweep not finished.")
         print("      Re-run this script once the integration-pretrain training cell completes.")
         return 0
 

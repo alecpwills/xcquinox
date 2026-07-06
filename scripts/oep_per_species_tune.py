@@ -304,12 +304,12 @@ def main() -> int:
     wall_caps_min = _parse_wall_cap_min(args.wall_cap_min, len(species_parsed))
 
     print("=" * 60)
-    print("OEP per-species harness — trial-enumeration plan")
+    print("OEP per-species harness -- trial-enumeration plan")
     print("=" * 60)
     total_trials = 0
     for (name, _, _), cap_min in zip(species_parsed, wall_caps_min):
         if name not in grid:
-            print(f"  {name}: NOT in YAML grid — skipping")
+            print(f"  {name}: NOT in YAML grid -- skipping")
             continue
         trials = _enumerate_trials(name, grid[name])
         n = min(len(trials), args.max_trials_per_species)

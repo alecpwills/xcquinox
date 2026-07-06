@@ -1,4 +1,4 @@
-# HPC harness run outputs — large (model.eqx, checkpoints, logs); never commit.
+# HPC harness run outputs -- large (model.eqx, checkpoints, logs); never commit.
 runs/
 !runs/.gitkeep
 

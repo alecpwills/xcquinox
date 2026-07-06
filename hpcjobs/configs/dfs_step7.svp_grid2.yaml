@@ -1,5 +1,5 @@
 # =============================================================================
-# dfs_step7.svp_grid2.yaml — train the 8-arch ablation set on the DFS TRAINING
+# dfs_step7.svp_grid2.yaml -- train the 8-arch ablation set on the DFS TRAINING
 # SET subsets (domain_profile dfs_step7: 26-point pool = 21 G2/97 AE + 3 BH76 +
 # 2 IP), alpha_on JSD ledger, INCLUDING the full 26-point set (jsd/26). Same
 # arch/loss/solver/basis setup as bh76w411_repr.svp_grid2.yaml (def2-svp +

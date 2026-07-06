@@ -67,7 +67,7 @@ def _trained_h2o_only(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Figure 1 — pretrain F_x and F_c per arch, both origins
+# Figure 1 -- pretrain F_x and F_c per arch, both origins
 # ---------------------------------------------------------------------------
 
 def plot_pretrain_loss(arts: dict, out_path: Path) -> None:
@@ -80,7 +80,7 @@ def plot_pretrain_loss(arts: dict, out_path: Path) -> None:
     "[E_X] = ∫ d³r ε_X^unif(n) F_X(s)"), the integrand of E_x is
     proportional to ρ^(4/3) F_x. The integration weighting therefore
     concentrates pretrain fit error reduction on grid points that
-    contribute most to E_x — which we verify here via tighter F_x
+    contribute most to E_x -- which we verify here via tighter F_x
     pretrain residual.
     """
     unw = arts["unweighted"]["pretrain_meta"].set_index("arch")
@@ -110,7 +110,7 @@ def plot_pretrain_loss(arts: dict, out_path: Path) -> None:
     axes[0].set_ylabel("pretrain MSE  (log)")
 
     fig.suptitle(
-        "Step 5 — pretrain final F_x / F_c loss per architecture\n"
+        "Step 5 -- pretrain final F_x / F_c loss per architecture\n"
         "unweighted vs integration · both at 1000 pretrain steps · x64",
         fontsize=11,
     )
@@ -120,7 +120,7 @@ def plot_pretrain_loss(arts: dict, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Figure 2 — multi-decade baseline reduction on H2O AE
+# Figure 2 -- multi-decade baseline reduction on H2O AE
 # ---------------------------------------------------------------------------
 
 def plot_baseline_reduction(arts: dict, out_path: Path) -> None:
@@ -144,7 +144,7 @@ def plot_baseline_reduction(arts: dict, out_path: Path) -> None:
             (d["eval_df"].molecule == "H2O")
         ].copy()
         ae["abs"] = ae["value"].abs()
-        # Bars per (arch, loss, solver) — sorted within arch
+        # Bars per (arch, loss, solver) -- sorted within arch
         x_idx = []
         labels = []
         i = 0
@@ -179,7 +179,7 @@ def plot_baseline_reduction(arts: dict, out_path: Path) -> None:
         ]["value"].abs().mean())
         # PBE vs literature on H2O = abs(E_pbe_AE - E_ref) for any spec.
         ae_pbe = ae.assign(absv=ae["value"].abs())
-        # Hardcoded from PBE 1996 prediction — but we use the per-spec
+        # Hardcoded from PBE 1996 prediction -- but we use the per-spec
         # E_pbe-derived AE_error stored in the CSV. PBE H2O AE error is
         # arch-independent; take any row.
         # (E_total_nn for the "pretrained" baseline approximates this;
@@ -203,7 +203,7 @@ def plot_baseline_reduction(arts: dict, out_path: Path) -> None:
     axes[0].set_ylabel("|AE error|  on H₂O  (kcal/mol, log)")
 
     fig.suptitle(
-        "Step 5 — H₂O AE-error baseline reduction\n"
+        "Step 5 -- H₂O AE-error baseline reduction\n"
         "8 archs × 3 losses × 3 solvers per panel; bars = trained NN, lines = baselines + PBE",
         fontsize=11,
     )
@@ -213,7 +213,7 @@ def plot_baseline_reduction(arts: dict, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Figure 3 — Medvedev density-vs-energy plane, both origins overlaid
+# Figure 3 -- Medvedev density-vs-energy plane, both origins overlaid
 # ---------------------------------------------------------------------------
 
 def plot_pareto_density_vs_AE(arts: dict, out_path: Path) -> None:
@@ -264,7 +264,7 @@ def plot_pareto_density_vs_AE(arts: dict, out_path: Path) -> None:
     ax.set_ylabel("density-RMSE on H₂O  (e/bohr³, log)")
     ax.grid(True, which="both", ls=":", alpha=0.35)
     ax.set_title(
-        "Step 5 — density-vs-energy plane, unweighted (blue) vs integration (green)\n"
+        "Step 5 -- density-vs-energy plane, unweighted (blue) vs integration (green)\n"
         "Burke et al. 1998 (quoted in Kepp 2017): \"functionals which yield highly accurate\n"
         "energies often produce potentials which differ markedly from the exact ones\"",
         fontsize=10,
@@ -287,7 +287,7 @@ def plot_pareto_density_vs_AE(arts: dict, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Figure 4 — log-AE landscape heatmap (arch × (loss, solver))
+# Figure 4 -- log-AE landscape heatmap (arch × (loss, solver))
 # ---------------------------------------------------------------------------
 
 def plot_arch_landscape(arts: dict, out_path: Path) -> None:
@@ -338,7 +338,7 @@ def plot_arch_landscape(arts: dict, out_path: Path) -> None:
     fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.025,
                  label="log₁₀ |AE error|  (kcal/mol)")
     fig.suptitle(
-        "Step 5 — H₂O AE-MAE landscape: 8 archs × 3 losses × 3 solvers\n"
+        "Step 5 -- H₂O AE-MAE landscape: 8 archs × 3 losses × 3 solvers\n"
         "green = below chemical accuracy (1 kcal/mol); red = above PBE (~7 kcal/mol)",
         fontsize=11,
     )
@@ -347,7 +347,7 @@ def plot_arch_landscape(arts: dict, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Figure 5 — transfer comparison (CH4, H2, OH per origin)
+# Figure 5 -- transfer comparison (CH4, H2, OH per origin)
 # ---------------------------------------------------------------------------
 
 def plot_transfer(arts: dict, out_path: Path) -> None:
@@ -394,7 +394,7 @@ def plot_transfer(arts: dict, out_path: Path) -> None:
     axes[0].set_ylabel("|AE error|  on transfer mol  (kcal/mol, log)")
 
     fig.suptitle(
-        "Step 5 — transfer-mol AE-error per architecture, unweighted vs integration\n"
+        "Step 5 -- transfer-mol AE-error per architecture, unweighted vs integration\n"
         "primary transfer set {CH₄, H₂, OH} (W4-11 subset; Karton, Daon, Martin *CPL* 510, 165, 2011)",
         fontsize=11,
     )

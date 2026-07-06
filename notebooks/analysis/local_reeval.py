@@ -42,12 +42,12 @@ Rationale:
 
   - H is in every training set as a Dick regularization anchor (not as a
     substantively learned target). Dropping every BH76 reaction because of
-    H overlap would discard the entire pool — see
+    H overlap would discard the entire pool -- see
     ``constraint_pretraining_gmtkn55_report.md``.
   - When a molecule like H2O is in the training set, evaluating its
     atomization energy AE(H2O) = E(H2O) − 2·E(H) − E(O) is a meaningful
     test of whether the model learned the right *atomization*, not just
-    the total energy — so we WANT to compute it.
+    the total energy -- so we WANT to compute it.
 
 Pass ``--strict`` to opt into the old behavior where any reaction
 with a training-set species is dropped. The output ``note`` column
@@ -119,7 +119,7 @@ def write_local_test_set_csv(
     combined_mae: Tuple[float, float, int, int, int],
     strict: bool,
 ) -> Path:
-    """Write ``<spec_dir>/local_test_set.csv`` — see
+    """Write ``<spec_dir>/local_test_set.csv`` -- see
     :func:`xcquinox.alec.eval_holdout.write_test_set_csv` for the schema."""
     return _write_test_set_csv(
         spec_dir / "local_test_set.csv",
@@ -164,7 +164,7 @@ def _load_category_discovery() -> Callable:
 
 
 def discover_specs_in_run(run_dir: Path) -> List[int]:
-    """``[spec_index, …]`` for every ``checkpoints/spec_<NNNN>/model.eqx``
+    """``[spec_index, ...]`` for every ``checkpoints/spec_<NNNN>/model.eqx``
     actually present under ``run_dir``. Specs without a model.eqx (training
     failed or in-flight) are silently skipped.
 
@@ -225,7 +225,7 @@ def write_local_per_reaction_json(
     spec_dir: Path,
     records: List[Dict[str, Any]],
 ) -> Path:
-    """Write the per-spec ``eval/local_per_reaction.json`` — one entry per
+    """Write the per-spec ``eval/local_per_reaction.json`` -- one entry per
     (BH76 + W4-11) reaction, paired NN vs PBE. Consumed by the per-pool
     figure (Fig 6), the grid heatmap (Fig 7), and the per-reaction
     comparison (Fig 8). Schema: see :func:`make_per_reaction_records`."""
@@ -289,7 +289,7 @@ def run_one_spec(
     # Materialize the model's descriptor list so precompute_fixed_density_data
     # computes the columns the model actually consumes (e.g. dm_statistics,
     # cusp for the deep_combined_attn arch). Empty descriptors here cause
-    # `jnp.concatenate` to error inside the NN forward — see the docstring
+    # `jnp.concatenate` to error inside the NN forward -- see the docstring
     # of precompute_holdout.
     try:
         descriptors = tuple(training_spec.arch.materialize_descriptors())
@@ -299,12 +299,12 @@ def run_one_spec(
     # Precompute + evaluate on EVERY pool species (not just the held-out
     # subset). Loose mode keeps reactions that touch training-set species
     # like H or H2O, and reaction_mae_kcalmol needs every species in the
-    # kept reaction to have a finite energy — so we always evaluate on
+    # kept reaction to have a finite energy -- so we always evaluate on
     # the full pool. The held_names list is still used downstream for the
     # per-molecule records' in-vs-out-of-training flag.
     n_to_eval = len(pool_specs)
     # 2026-05-29: when training used a full SCF solver (FULL / FIXED_J), the
-    # eval has to run the same SCF — and run_scf needs the electron-repulsion
+    # eval has to run the same SCF -- and run_scf needs the electron-repulsion
     # integrals (eri) precomputed to rebuild J each cycle. Without 'eri' in
     # required_keys the precompute leaves md["eri"] = None and run_scf raises
     # "Cannot determine the shape of None" on every species (silent 16/16 NaN
@@ -341,7 +341,7 @@ def run_one_spec(
                                  solver_config=spec_solver_config)
 
     # Per-pool MAEs.
-    # PBE baseline energies — by-product of precompute_fixed_density_data,
+    # PBE baseline energies -- by-product of precompute_fixed_density_data,
     # so a direct apples-to-apples comparison on the SAME held-out reactions
     # is essentially free. ``species_energies(model=None, ...)`` in the demo
     # uses exactly this pattern.
@@ -349,7 +349,7 @@ def run_one_spec(
                     for n, md in mol_data.items()
                     if md.get("E_pbe") is not None}
 
-    # Per-pool MAEs — both NN and PBE on the same kept reaction set.
+    # Per-pool MAEs -- both NN and PBE on the same kept reaction set.
     # Tuple shape: (mae_nn, mae_pbe, n_used, n_dropped_overlap, n_dropped_nan).
     # n_dropped_overlap is the strict-mode drop count; n_dropped_nan counts
     # reactions silently dropped because their species energies were missing
@@ -376,7 +376,7 @@ def run_one_spec(
     combined = (combined_mae_nn, combined_mae_pbe, combined_n_used,
                 n_dropped_total, max(combined_n_nan_nn, combined_n_nan_pbe))
 
-    # Per-molecule records — one per pool species. The
+    # Per-molecule records -- one per pool species. The
     # `from_training_subset` flag distinguishes the held-out species (False)
     # from the species that were in the training set (True). Downstream
     # plotters can split or filter accordingly.
@@ -388,7 +388,7 @@ def run_one_spec(
             in_training_subset=(name in training_set),
         ))
 
-    # Per-reaction records — paired NN vs PBE for every reaction in the
+    # Per-reaction records -- paired NN vs PBE for every reaction in the
     # combined pool (16 = 6 BH76 + 10 W4-11), with `in_sample_overlap`
     # listing any training-set species each reaction touches. Used by the
     # per-pool / heatmap / per-reaction figures.
@@ -447,11 +447,11 @@ def run_auto(
 
     Per-spec failures are logged and counted; they do NOT abort the batch.
     The PBE precompute cache in ``xcquinox.alec.data`` amortizes across all
-    specs within a category (~24 species × 1–10 s = ~1–2 min once per
+    specs within a category (~24 species × 1-10 s = ~1-2 min once per
     category; the per-spec NN forward eval that follows is fast).
 
-    Returns a summary dict: ``{category: {"n_specs": …, "n_ok": …, "n_failed":
-    …, "failed_specs": [(idx, reason), …]}}``.
+    Returns a summary dict: ``{category: {"n_specs": ..., "n_ok": ..., "n_failed":
+    ..., "failed_specs": [(idx, reason), ...]}}``.
     """
     discover = _load_category_discovery()
     cats = discover(local_root)
@@ -490,7 +490,7 @@ def run_auto(
                 failed.append((idx, msg))
                 print(f"[spec {idx}] FAILED: {msg}", file=sys.stderr,
                       flush=True)
-            except Exception as exc:  # noqa: BLE001 — batch resilience
+            except Exception as exc:  # noqa: BLE001 -- batch resilience
                 msg = f"{type(exc).__name__}: {exc}"
                 failed.append((idx, msg))
                 print(f"[spec {idx}] FAILED: {msg}", file=sys.stderr,

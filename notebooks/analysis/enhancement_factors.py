@@ -18,7 +18,7 @@ Definitions used (consistent with ``AlecGGAModel`` and ``pbe_anchor``):
   * F_x reference  : analytic PBE, ``pbe_anchor._fx_pbe_analytic(s)``
     (Perdew-Burke-Ernzerhof, PRL 77, 3865 (1996), eq. 14;
     kappa=0.804, mu=0.21951).
-  * F_c reference  : libxc GGA_C_PBE eps_c / LDA_C_PW eps_c — i.e. the PBE
+  * F_c reference  : libxc GGA_C_PBE eps_c / LDA_C_PW eps_c -- i.e. the PBE
     correlation enhancement over the same PW92 baseline the network's
     ``eval_Fc`` enhances (``_ec_baseline`` -> PW92). Same per-electron ratio,
     so the network and reference are directly comparable.
@@ -27,7 +27,7 @@ Caveats stamped on the figure:
   * Pre-``dm_entropy``-fix run (2026-05-29 forensic review).
   * **Zero-descriptor slice**: for descriptor architectures (cusp / dm /
     combined) the extra features are set to 0, so these curves are the
-    F(s) slice at zero auxiliary descriptors — a well-defined cut, not the
+    F(s) slice at zero auxiliary descriptors -- a well-defined cut, not the
     full descriptor-dependent surface. ``deep``/``deep_attn``/``*notransform``
     have no extra descriptors, so the cut is exact for them.
 
@@ -91,7 +91,7 @@ def rs_to_rho(rs: float) -> float:
 # ---------------------------------------------------------------------------
 
 def representative_specs(run_dir: Path) -> Dict[str, int]:
-    """``{arch: spec_idx}`` — per arch, the largest-subset trained spec
+    """``{arch: spec_idx}`` -- per arch, the largest-subset trained spec
     (has ``model.eqx``). The most-trained representative per architecture."""
     cells = ccp._read_manifest_cells(run_dir)
     best: Dict[str, Tuple[int, int]] = {}  # arch -> (subset_size, idx)
@@ -203,7 +203,7 @@ def pbe_fc_curve(s_grid: np.ndarray, rs: float) -> Optional[np.ndarray]:
 
 def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
                              s_max: float = 3.0, n_points: int = 240) -> Path:
-    """Figure D — F_x(s) and F_c(s; r_s) for every architecture vs PBE."""
+    """Figure D -- F_x(s) and F_c(s; r_s) for every architecture vs PBE."""
     reps = representative_specs(run_dir)
     archs = [a for a in ARCH_ORDER if a in reps]
     s_grid = np.linspace(1e-3, s_max, n_points)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Training-subset descriptor *completeness* vs held-out accuracy — over the
+"""Training-subset descriptor *completeness* vs held-out accuracy -- over the
 FULL per-architecture descriptor set the network actually consumes.
 
 The held-out reaction-energy MAE is non-monotonic in ``subset_size`` because
-the JSD subsets are NOT nested — each size trains on a differently-composed
+the JSD subsets are NOT nested -- each size trains on a differently-composed
 set, so what matters is *which* region of the functional's INPUT (descriptor)
 space the subset covers, not the point count. This module makes that explicit
 by binning every descriptor dimension the network sees and correlating coverage
@@ -13,8 +13,8 @@ Descriptor set per spec (exactly the network inputs):
   * ``s``   = |grad rho| / (2 (3 pi^2)^{1/3} rho^{4/3})   (reduced gradient; xnet+cnet)
   * ``r_s`` = (3 / (4 pi rho))^{1/3}                       (Wigner-Seitz; cnet)
   * the arch's EXTRA descriptors, per grid point:
-        - ``CuspDescriptor_{0,1}``        (cusp archs)         — spatial
-        - ``DMStatisticsDescriptor_{0,1,2}`` (dm archs)        — per-molecule, tiled
+        - ``CuspDescriptor_{0,1}``        (cusp archs)         -- spatial
+        - ``DMStatisticsDescriptor_{0,1,2}`` (dm archs)        -- per-molecule, tiled
     (``deep``/``deep_attn``/``notransform`` have none -> set = {s, r_s}).
 
 All dimensions are sampled per grid point from one cached PBE precompute (with
@@ -27,10 +27,10 @@ histogram-intersection coverage of the held-out descriptor distribution by the
 training subset, averaged over THAT arch's dimensions (1 = fully spans them).
 
 Figures:
-  * ``ablation_descriptor_completeness_vs_mae.png`` — C (x) vs held-out NN MAE
+  * ``ablation_descriptor_completeness_vs_mae.png`` -- C (x) vs held-out NN MAE
     (y), one point per spec, colored by arch, Spearman rho. "Does coverage
     predict accuracy?"
-  * ``ablation_descriptor_histograms.png`` — one panel per descriptor dimension;
+  * ``ablation_descriptor_histograms.png`` -- one panel per descriptor dimension;
     per-subset training distributions overlaid on the shaded held-out reference.
 
 Heavy step (PBE density precompute on ~200 unique molecules; cached, no SCF)

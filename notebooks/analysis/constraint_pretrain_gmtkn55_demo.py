@@ -3,11 +3,11 @@
 
 Shows how physical constraints and pretraining each pull a randomly-initialized
 exchange-correlation network toward correct physics, evaluated against GMTKN55
-references — and why the choice of metric matters.
+references -- and why the choice of metric matters.
 
 Scenarios per constraint level (x-axis):
   - "unconstrained": a truly raw network (built-in Lieb-Oxford squash disabled,
-    lob_lim=None, no constraints) — F_x can run to ~17.
+    lob_lim=None, no constraints) -- F_x can run to ~17.
   - "+LO(x)" -> "+LO+UEG(x)" -> "+LO+UEG+NNc(c)": increasing physical constraints,
     enforced INTRINSICALLY by the networks (so the same constrained functional is
     used in pretraining, optimization, and eval).
@@ -17,18 +17,18 @@ constraint-aware-pretrained (single seed; library ``alec.run_pretrain``).
 
 All archs use ``use_polarized_correlation=True``, so the UKS energy path uses
 the spin-polarized PW92c correlation baseline with the real zeta for open-shell
-species (atoms, radicals) — not the zeta=0 unpolarized baseline. Pretrain data
+species (atoms, radicals) -- not the zeta=0 unpolarized baseline. Pretrain data
 is spin-resolved (libxc spin=1 targets + per-point ``zeta_all``).
 
 THREE metrics (three panels), because the constraint benefit is metric-dependent:
   1. BH76 reaction-energy MAE vs GMTKN55-BH76RC (Probe-C, 6 reactions).
      Reaction energies are balanced (sum of coeffs = 0), so they CANCEL the large
-     systematic per-species XC error that constraints reduce — the effect looks
+     systematic per-species XC error that constraints reduce -- the effect looks
      small here.
   2. Per-species |E_nn - E_pbe| MAE (deviation from the PBE total energy). This is
      where the constraint benefit is sizable: constraints cut the worst-case and
      variance of a random network dramatically. (No GMTKN55 absolute-energy
-     reference exists — PBE is the baseline.)
+     reference exists -- PBE is the baseline.)
   3. Atomization-energy MAE vs GMTKN55 W4-11 (parsed from the local clone). W4-11
      writes each atomization as a molecule->atoms reaction, so it reuses the same
      reaction-energy scorer; it partially cancels, so the effect is intermediate.
@@ -79,7 +79,7 @@ SEED = 0
 N_SEEDS = 16                 # random-init seeds (cheap: mol_data is cached)
 DEPTH, NODES = 3, 16
 PRETRAIN_N_STEPS = 1000       # standard pretrain schedule
-# (symbol, PySCF 2S spin) — atoms whose PBE/LDA grid enhancement factors seed
+# (symbol, PySCF 2S spin) -- atoms whose PBE/LDA grid enhancement factors seed
 # the pretraining targets.
 PRETRAIN_ATOMS = (("H", 1), ("He", 0), ("N", 3), ("O", 2))
 PROBE = "probe_c_bh76_transfer"
@@ -107,7 +107,7 @@ def make_constraint_levels():
     """Increasing-constraint progression as ``(label, spec)`` where ``spec`` is
     ``None`` for the truly-unconstrained baseline, else ``(x_constraints,
     c_constraints)``. The unconstrained level disables the built-in Lieb-Oxford
-    squash too — otherwise "no constraints" would still be LO-bounded."""
+    squash too -- otherwise "no constraints" would still be LO-bounded."""
     return [
         ("unconstrained", None),
         ("+LO(x)", (("lieb_oxford",), ())),
@@ -182,7 +182,7 @@ def build_w411_ae_pool():
     Each atomization is a molecule->atoms reaction, scored by ``reaction_energy_mae``.
     Molecule geometries come from the clone's struc.xyz; atom species (with NIST
     ground-state spins) from make_atom_atoms. References are read straight from the
-    GMTKN55 clone — no transcription/fabrication."""
+    GMTKN55 clone -- no transcription/fabrication."""
     res_path = os.path.join(W411_DIR, ".res")
     if not os.path.isfile(res_path):
         raise RuntimeError(
@@ -251,7 +251,7 @@ def reaction_energy_mae(energies_by_name, reactions):
     BH76 reaction energies and W4-11 atomization energies (same dict shape).
 
     ``dE = sum_i coeff_i * E(species_i)`` (Ha) over reactants-then-products in
-    ``coeffs`` order, to kcal/mol, vs ``reaction_energy_ref``. Pure — unit-tested."""
+    ``coeffs`` order, to kcal/mol, vs ``reaction_energy_ref``. Pure -- unit-tested."""
     errs = []
     for rxn in reactions:
         names = list(rxn["reactants"]) + list(rxn["products"])
@@ -261,8 +261,8 @@ def reaction_energy_mae(energies_by_name, reactions):
 
 
 def pbe_total_energy_dev_mae(energies_by_name, mol_data_by_name):
-    """Mean over species of |E_nn - E_pbe| (kcal/mol) — direct XC-functional
-    quality, the metric on which the constraint benefit is sizable. Pure —
+    """Mean over species of |E_nn - E_pbe| (kcal/mol) -- direct XC-functional
+    quality, the metric on which the constraint benefit is sizable. Pure --
     unit-tested. (E_pbe read from each species' precomputed mol_data.)"""
     errs = [abs(energies_by_name[n] - float(mol_data_by_name[n]["E_pbe"])) * KCAL_PER_HA
             for n in energies_by_name]
@@ -288,7 +288,7 @@ def generate_pretrain_data(data_dir, polarized=True):
     few atoms on a coarse grid. Fx/Fc stored as F-1.
 
     ``polarized=True`` (default) → ``pretrain_data_polarized.npz`` with SPIN-RESOLVED
-    targets (open-shell atoms use libxc ``spin=1`` on the spin-resolved density —
+    targets (open-shell atoms use libxc ``spin=1`` on the spin-resolved density --
     PBE 1996 §III spin-scaling) plus a per-grid-point ``zeta_all``, so the polarized
     cnet trains on the real zeta. ``run_pretrain`` selects this file for a polarized
     arch.
@@ -496,7 +496,7 @@ def _plot(levels, pbe, rand, pre):
             if first:
                 ax.legend(loc="upper left", framealpha=0.9)
         axes[0].set_ylabel("MAE (kcal/mol)")
-        fig.suptitle("Physical constraints + pretraining vs GMTKN55 — "
+        fig.suptitle("Physical constraints + pretraining vs GMTKN55 -- "
                      "reaction energies cancel the per-species error that constraints reduce  "
                      f"(pretrain: {PRETRAIN_N_STEPS} steps, seed {SEED})",
                      fontsize=11)

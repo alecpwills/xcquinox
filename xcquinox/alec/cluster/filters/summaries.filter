@@ -1,4 +1,4 @@
-# xcquinox.alec.cluster — rsync filter rules for the "summaries" pull profile.
+# xcquinox.alec.cluster -- rsync filter rules for the "summaries" pull profile.
 #
 # Loaded via `rsync --filter='. <abs path>/summaries.filter'`. Rules apply with
 # the run dir (`run_<UTC>Z/`) as the transfer root, so leading `/` anchors a

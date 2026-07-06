@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Step-7 T14 — single-spec end-to-end smoke verification (USER-RUN ONLY).
+# Step-7 T14 -- single-spec end-to-end smoke verification (USER-RUN ONLY).
 #
 # Per the standing project directive (memory/feedback_expensive_test_handling.md),
-# this verification is NOT executed by an agent — wall-clock is 30-90 minutes on
+# this verification is NOT executed by an agent -- wall-clock is 30-90 minutes on
 # first run because Cell 0.5 (CCSD pre-compute) dominates. Cached re-runs are
 # under 10 minutes.
 #
@@ -22,7 +22,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 echo "=============================================================================="
-echo "  Step-7 T14 smoke — single-spec end-to-end verification"
+echo "  Step-7 T14 smoke -- single-spec end-to-end verification"
 echo "  Repo: $REPO_ROOT"
 echo "  Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "=============================================================================="
@@ -52,7 +52,7 @@ ELAPSED=$((SMOKE_END - SMOKE_START))
 echo
 echo "  nbconvert exit=$NBCONVERT_RC, elapsed=${ELAPSED}s ($(printf '%dh%dm%ds' $((ELAPSED/3600)) $((ELAPSED%3600/60)) $((ELAPSED%60))))"
 if [[ $NBCONVERT_RC -ne 0 ]]; then
-    echo "  !!! nbconvert FAILED — inspect the smoke notebook for the failing cell"
+    echo "  !!! nbconvert FAILED -- inspect the smoke notebook for the failing cell"
     exit 1
 fi
 
@@ -86,7 +86,7 @@ if fail > 0:
     for r in results:
         if r['status'].startswith('FAIL'):
             err = (r.get('error_msg') or '').splitlines()[-1] if r.get('error_msg') else ''
-            print(f\"    {r['name']}: {r['status']} — {err}\")
+            print(f\"    {r['name']}: {r['status']} -- {err}\")
     sys.exit(2)
 "
 RC=$?
@@ -110,7 +110,7 @@ print(f'  density-RMSE = {rmse:.3e} e/bohr^3')
 if not (mae == mae) or not math.isfinite(mae):
     print('  !!! AE MAE is NaN/inf'); sys.exit(3)
 if not (rmse == rmse) or not math.isfinite(rmse):
-    print('  !!! density RMSE is NaN/inf — external_refs not loaded?'); sys.exit(3)
+    print('  !!! density RMSE is NaN/inf -- external_refs not loaded?'); sys.exit(3)
 if not (1e-4 <= rmse <= 1.0):
     print(f'  WARN: density-RMSE {rmse:.3e} is outside expected 1e-3 .. 1e-1 range')
 print('  All metrics finite.')

@@ -134,7 +134,7 @@ axes[0, -1].legend(
 
 fig.suptitle(
     "H2O atomization-energy error by architecture\n"
-    "(grouped by arch, colored by treatment — includes pretrained & random baselines)",
+    "(grouped by arch, colored by treatment -- includes pretrained & random baselines)",
     fontsize=13,
 )
 fig.tight_layout(rect=(0, 0, 1, 0.95))
@@ -142,7 +142,7 @@ os.makedirs(f"{CHECKPOINT_BASE}/figures", exist_ok=True)
 fig.savefig(f"{CHECKPOINT_BASE}/figures/scf_comparison_ae.png", dpi=150, bbox_inches="tight")
 plt.show()'''
 
-# ── Cell 41 (id=cell_34): Feature impact chart — fix ALL_SOLVER_LABELS ──
+# ── Cell 41 (id=cell_34): Feature impact chart -- fix ALL_SOLVER_LABELS ──
 CELL_41_SOURCE = r'''_feature_archs = ["deep", "deep_cusp", "deep_dm", "deep_combined"]
 _feature_archs = [a for a in _feature_archs if a in ARCH_NAMES]
 

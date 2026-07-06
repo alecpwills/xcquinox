@@ -1,4 +1,4 @@
-"""Tests for ``subset_descriptor_coverage`` — pure descriptor/coverage math +
+"""Tests for ``subset_descriptor_coverage`` -- pure descriptor/coverage math +
 render canaries over the full descriptor set. No pyscf / density precompute."""
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ _spec.loader.exec_module(sdc)
 
 
 # ---------------------------------------------------------------------------
-# point_s_rs — closed forms
+# point_s_rs -- closed forms
 # ---------------------------------------------------------------------------
 
 def test_point_s_rs_closed_forms():

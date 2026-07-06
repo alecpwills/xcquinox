@@ -1522,7 +1522,7 @@ def test_provenance_footer_appends_scan_when_present():
 
 
 # ---------------------------------------------------------------------------
-# enhancement_factors — grid geometry + physics references (fast)
+# enhancement_factors -- grid geometry + physics references (fast)
 # ---------------------------------------------------------------------------
 
 def test_s_to_sigma_round_trips():

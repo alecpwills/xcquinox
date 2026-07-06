@@ -1,5 +1,5 @@
 # =============================================================================
-# bh76w411_repr.tzvpd_grid2_df.yaml — train the 8-arch ablation set on the
+# bh76w411_repr.tzvpd_grid2_df.yaml -- train the 8-arch ablation set on the
 # BH76+W4-11 JSD representative subsets (r=1..6). Submission B: def2-tzvpd +
 # grid_level 2 + DENSITY FITTING (RI). DF makes the larger basis memory-feasible
 # pipeline-wide (CCSD-ref gen, pretrain, training, held-out eval).

@@ -80,7 +80,7 @@ def _make_run_dir(root: Path, category: str = "alpha_on/runs",
         )
         (sd / "model.eqx").write_bytes(b"x" * 16)
         ev = sd / "eval"; ev.mkdir()
-        ev.write_text  # noop — just to silence the linter
+        ev.write_text  # noop -- just to silence the linter
         (ev / "per_molecule.json").write_text(json.dumps([
             {"molecule": "H2O", "AE_error_kcalmol": 1.5 + i,
              "density_rmse": 5e-4 * (i + 1), "scf_converged": True},
@@ -358,7 +358,7 @@ def test_plot_in_sample_vs_held_out_keeps_small_subset_specs(tmp_path,
                                                               monkeypatch):
     """Regression (2026-05-29 update): the prior behavior CLAMPED the x-axis
     floor to 0.32 so subset_size=1 trivial-overfit specs were clipped out of
-    fig11. The user explicitly requested those specs stay visible — they're
+    fig11. The user explicitly requested those specs stay visible -- they're
     descriptive (memorization signal), even if they sit far above the
     diagonal. This test confirms the lower axis limit now stretches DOWN to
     where the actual data lives (not clamped at 0.32).
@@ -404,13 +404,13 @@ def test_plot_in_sample_vs_held_out_keeps_small_subset_specs(tmp_path,
     # The 1e-4 outlier MUST pull the lower limit below the prior 0.32 floor
     # so the spec is visible (lim_min = max(min_positive_x * 0.5, 1e-5)).
     assert lo < 0.32, (
-        f"x-axis lower limit {lo:g} is still >= 0.32 — the subset_size=1 "
+        f"x-axis lower limit {lo:g} is still >= 0.32 -- the subset_size=1 "
         f"trivial-overfit spec is being clipped out of fig11. The user "
         f"explicitly requested 2026-05-29 that these specs stay visible."
     )
     # But the floor must not be ridiculous either; lower bound at 1e-5.
     assert lo >= 1e-5, (
-        f"x-axis lower limit {lo:g} is below the 1e-5 absolute floor — the "
+        f"x-axis lower limit {lo:g} is below the 1e-5 absolute floor -- the "
         f"axis would stretch across too many empty decades."
     )
 
@@ -462,7 +462,7 @@ def test_plot_density_vs_energy_by_cell_renders(tmp_path):
 
 @pytest.mark.skipif(not _PLT_OK, reason="matplotlib not installed")
 def test_plot_cross_category_nn_vs_pbe_renders(tmp_path):
-    """Fig 16 canary — feed 3 fake categories' local rows and assert the
+    """Fig 16 canary -- feed 3 fake categories' local rows and assert the
     figure renders. Empty-category cases handled by the builder, but the
     canary stress-tests the populated path."""
     rows_by_cat = {
@@ -703,5 +703,5 @@ def test_main_smoke_end_to_end(tmp_path, monkeypatch):
         p = out_dir / name
         assert p.is_file(), f"missing output PNG: {name}"
         assert p.stat().st_size > 10_000, (
-            f"{name} too small ({p.stat().st_size} B) — likely blank canvas"
+            f"{name} too small ({p.stat().st_size} B) -- likely blank canvas"
         )

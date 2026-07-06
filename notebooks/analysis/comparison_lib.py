@@ -191,7 +191,7 @@ def mae_of(df: pd.DataFrame, value_name: str, *, group_keys: list[str]) -> pd.Da
 
 
 # ---------------------------------------------------------------------------
-# Plot 1 — multi-decade baseline reduction (log-y bar chart)
+# Plot 1 -- multi-decade baseline reduction (log-y bar chart)
 # ---------------------------------------------------------------------------
 
 def _per_arch_baseline_mae(baseline_df: pd.DataFrame,
@@ -289,7 +289,7 @@ def _draw_one_baseline_panel(
 def plot_baseline_reduction(art: dict, out_path: Path, run_label: str = "unweighted") -> None:
     """Bar chart on log-y showing mean |AE error| (kcal/mol) per spec,
     with the random-init NN and pretrained-only NN baselines plotted as
-    BAR GROUPS (per arch) on the left of each panel — not just as
+    BAR GROUPS (per arch) on the left of each panel -- not just as
     horizontal reference lines. PBE-vs-W4-11 and chemical accuracy
     remain as horizontal references.
 
@@ -343,7 +343,7 @@ def plot_baseline_reduction(art: dict, out_path: Path, run_label: str = "unweigh
     fig.legend(handles, labels, loc="lower center", ncol=5,
                fontsize=7, bbox_to_anchor=(0.5, -0.05))
     fig.suptitle(
-        f"Baseline reduction — {run_label} pretrain-origin · trained mols (H₂O+C₂H₂)\n"
+        f"Baseline reduction -- {run_label} pretrain-origin · trained mols (H₂O+C₂H₂)\n"
         "log-y bars: per-spec NN MAE; left bar-group = random + pretrained baselines; "
         "horizontal lines = PBE on this set + chemical accuracy",
         fontsize=11,
@@ -354,7 +354,7 @@ def plot_baseline_reduction(art: dict, out_path: Path, run_label: str = "unweigh
 
 
 # ---------------------------------------------------------------------------
-# Plot 1b — multi-decade baseline reduction on TRANSFER sets
+# Plot 1b -- multi-decade baseline reduction on TRANSFER sets
 # ---------------------------------------------------------------------------
 
 def plot_baseline_reduction_transfer(art: dict, out_path: Path, run_label: str = "unweighted") -> None:
@@ -442,7 +442,7 @@ def plot_baseline_reduction_transfer(art: dict, out_path: Path, run_label: str =
            if have_baselines
            else "(transfer-set baselines not computed; run notebooks/analysis/compute_baseline_transfer.py)")
     fig.suptitle(
-        f"Baseline reduction (transfer sets) — {run_label} pretrain-origin\n"
+        f"Baseline reduction (transfer sets) -- {run_label} pretrain-origin\n"
         "log-y bars: per-spec NN MAE on held-out molecules; "
         "horizontal lines = PBE on this transfer set + chemical accuracy\n"
         f"{sub}",
@@ -454,7 +454,7 @@ def plot_baseline_reduction_transfer(art: dict, out_path: Path, run_label: str =
 
 
 # ---------------------------------------------------------------------------
-# Plot 2 — density vs energy tradeoff scatter (Medvedev et al. 2017)
+# Plot 2 -- density vs energy tradeoff scatter (Medvedev et al. 2017)
 # ---------------------------------------------------------------------------
 
 def plot_density_vs_energy_tradeoff(art: dict, out_path: Path, run_label: str = "unweighted") -> None:
@@ -508,7 +508,7 @@ def plot_density_vs_energy_tradeoff(art: dict, out_path: Path, run_label: str = 
     ax.set_xlabel("mean |AE error|  (kcal/mol, log)")
     ax.set_ylabel("density-RMSE on Becke grid  (e/bohr³, log)")
     ax.set_title(
-        f"Density vs energy tradeoff — {run_label} pretrain-origin\n"
+        f"Density vs energy tradeoff -- {run_label} pretrain-origin\n"
         "after Medvedev et al. *Science* 355, 49 (2017): V_xc-aware losses (red/green)\n"
         "should give lower density error than energy-only losses (blue) at higher AE error",
         fontsize=10,
@@ -535,7 +535,7 @@ def plot_density_vs_energy_tradeoff(art: dict, out_path: Path, run_label: str = 
 
 
 # ---------------------------------------------------------------------------
-# Plot 3 — in-distribution vs transfer generalization
+# Plot 3 -- in-distribution vs transfer generalization
 # ---------------------------------------------------------------------------
 
 def plot_in_dist_vs_transfer(art: dict, out_path: Path, run_label: str = "unweighted") -> None:
@@ -620,7 +620,7 @@ def plot_in_dist_vs_transfer(art: dict, out_path: Path, run_label: str = "unweig
     axes[0].set_ylabel("transfer MAE  (kcal/mol, log)")
 
     fig.suptitle(
-        f"In-distribution vs transfer generalization — {run_label} pretrain-origin\n"
+        f"In-distribution vs transfer generalization -- {run_label} pretrain-origin\n"
         "after Behler & Parrinello *PRL* 98, 146401 (2007): perpendicular distance from y=x is the overfit magnitude",
         fontsize=11,
     )
@@ -630,7 +630,7 @@ def plot_in_dist_vs_transfer(art: dict, out_path: Path, run_label: str = "unweig
 
 
 # ---------------------------------------------------------------------------
-# Plot 4 — full-landscape AE-MAE heatmap (loss × group×solver)
+# Plot 4 -- full-landscape AE-MAE heatmap (loss × group×solver)
 # ---------------------------------------------------------------------------
 
 def plot_loss_strategy_heatmap(art: dict, out_path: Path, run_label: str = "unweighted") -> None:
@@ -665,7 +665,7 @@ def plot_loss_strategy_heatmap(art: dict, out_path: Path, run_label: str = "unwe
             ax.text(j, i, f"{v:.2g}", ha="center", va="center",
                     fontsize=5, color=("black" if log_pv[i,j] < 0.5 else "white"))
     ax.set_title(
-        f"AE-MAE landscape — {run_label} pretrain-origin · trained molecules\n"
+        f"AE-MAE landscape -- {run_label} pretrain-origin · trained molecules\n"
         f"green = below chemical accuracy (1 kcal/mol); red = above PBE (~7-8 kcal/mol)",
         fontsize=10,
     )
@@ -675,7 +675,7 @@ def plot_loss_strategy_heatmap(art: dict, out_path: Path, run_label: str = "unwe
 
 
 # ---------------------------------------------------------------------------
-# Plot 5 — architecture comparison (deep_combined vs deep_combined_attn)
+# Plot 5 -- architecture comparison (deep_combined vs deep_combined_attn)
 # ---------------------------------------------------------------------------
 
 def plot_arch_comparison(art: dict, out_path: Path, run_label: str = "unweighted") -> None:
@@ -743,7 +743,7 @@ def plot_arch_comparison(art: dict, out_path: Path, run_label: str = "unweighted
             ax.legend(loc="best", fontsize=8)
     axes[0].set_ylabel("mean |AE error|  (kcal/mol, log) -- mean over groups + solvers")
     fig.suptitle(
-        f"Architecture comparison — {run_label} pretrain-origin\n"
+        f"Architecture comparison -- {run_label} pretrain-origin\n"
         "deep_combined (no attn) vs deep_combined_attn (Vaswani 2017 SDPA + Xiong 2020 Pre-LN)",
         fontsize=11,
     )
@@ -787,7 +787,7 @@ def plot_origin_comparison_per_loss_per_group(
       multiexponential quadrature (the basis for the integration-
       weighted pretrain loss).
     - Levy, Perdew, *Phys. Rev. A* **32**, 2010 (1985): coordinate
-      scaling — F_x[ρ_λ] uniformly scales with the density, so a
+      scaling -- F_x[ρ_λ] uniformly scales with the density, so a
       density-weighted F_x fitting loss is the physically natural
       objective for an XC functional.
     """
@@ -827,7 +827,7 @@ def plot_origin_comparison_per_loss_per_group(
             ax.legend(loc="best", fontsize=8)
     axes[0].set_ylabel("mean |AE error| on trained mols  (kcal/mol, log)")
     fig.suptitle(
-        f"Pretrain-origin comparison — trained mols (H₂O+C₂H₂) per (group, loss)\n"
+        f"Pretrain-origin comparison -- trained mols (H₂O+C₂H₂) per (group, loss)\n"
         f"{label_a} (blue) vs {label_b} (green); chemical accuracy = 1 kcal/mol",
         fontsize=11,
     )
@@ -941,7 +941,7 @@ def plot_origin_pareto_density_vs_energy(
     ax.set_ylabel("density-RMSE  (e/bohr³, log)")
     ax.grid(True, which="both", ls=":", alpha=0.35)
     ax.set_title(
-        f"Density-vs-energy plane — {label_a} (blue) vs {label_b} (green)\n"
+        f"Density-vs-energy plane -- {label_a} (blue) vs {label_b} (green)\n"
         "after Medvedev et al. *Science* 355, 49 (2017); chem. acc. = 1 kcal/mol (purple)",
         fontsize=10,
     )
@@ -1007,7 +1007,7 @@ def plot_origin_fx_asymptote_vs_pbe(
     ax.legend(loc="lower right", fontsize=8)
     ax.grid(True, axis="y", ls=":", alpha=0.35)
     ax.set_title(
-        f"Asymptotic F_x(s>5) by loss strategy — {label_a} vs {label_b}\n"
+        f"Asymptotic F_x(s>5) by loss strategy -- {label_a} vs {label_b}\n"
         "Lieb-Oxford theorem (Lieb & Oxford IJQC 19, 427, 1981) sets F_x ≤ 1.804;\n"
         "PBE chooses F_x(s→∞) = 1.804 (Perdew/Burke/Ernzerhof PRL 77, 3865, 1996, eq. 14).\n"
         "Bars below 1.804 reflect a softer asymptote, NOT a LOB violation.",

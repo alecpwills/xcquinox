@@ -4,7 +4,7 @@
 The ENTIRE BH76+W4-11 set (~216 reactions) is the candidate pool. For each
 subset size r, exhaustively (parallel) select the r reactions whose pooled GGA
 descriptor distribution minimizes the Jensen-Shannon divergence to the FULL-set
-distribution — i.e. the most representative size-r subset. Held-out = the
+distribution -- i.e. the most representative size-r subset. Held-out = the
 complement (the reactions NOT chosen). GGA XCDiff descriptors only
 (rho^{1/3}, s, alpha); per-species histograms are precomputed once and cached;
 the selector keeps only the running argmin (nothing per-combo to disk).

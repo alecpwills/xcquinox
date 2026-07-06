@@ -4,7 +4,7 @@
 A `python -m xcquinox.alec.cluster submit ... --polarized` run pretrains
 spin-polarization-aware networks and therefore expects a
 ``pretrain_data_polarized.npz`` (carrying a ``zeta_all`` column) in its
-``pretrain.data_dir`` — ``run_pretrain`` selects that filename automatically for
+``pretrain.data_dir`` -- ``run_pretrain`` selects that filename automatically for
 a polarized architecture and fails fast if it is absent. Run this once to stage
 it alongside the unpolarized ``pretrain_data.npz``.
 

@@ -1,5 +1,5 @@
 # =============================================================================
-# dfs_step7.svp_grid2_v2.yaml — the dfs_step7 sweep with the post-forensics
+# dfs_step7.svp_grid2_v2.yaml -- the dfs_step7 sweep with the post-forensics
 # training-regime fixes (see the 2026-06-10 dfs failure diagnosis):
 #
 #   1. ae_as_reactions: the 21 AE points train in PREDICTED-ATOM reaction form

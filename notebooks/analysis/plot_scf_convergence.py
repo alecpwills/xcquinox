@@ -39,7 +39,7 @@ _DEFAULT_CATEGORY = "ablation_notransform/polarized/runs"
 def molecule_scf_trace(record: Dict[str, Any]) -> Dict[str, Any]:
     """Extract the ordered per-cycle (step, energy, residual) from one
     per_molecule record. Returns ``{molecule, steps, energies, residuals,
-    cycles_run, converged}`` — empty ``steps`` when no trace is present."""
+    cycles_run, converged}`` -- empty ``steps`` when no trace is present."""
     steps: List[int] = []
     energies: List[float] = []
     residuals: List[float] = []
@@ -178,7 +178,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         traces = collect_spec_scf_traces(run_dir, idx)
         out = plot_spec_convergence(
             traces, outdir / f"scf_convergence_spec_{idx:04d}.png",
-            title=f"NN SCF convergence — spec {idx} · {run_dir.name}")
+            title=f"NN SCF convergence -- spec {idx} · {run_dir.name}")
         print(f"  wrote {out}  ({len(traces)} molecule traces)")
         n += 1
     if not n:

@@ -8,7 +8,7 @@ Rows are three runs of ``constraint_pretrain_gmtkn55_demo.py``:
 Columns are the demo's three metrics (BH76 reaction-energy MAE, per-species
 |E_nn - E_pbe| MAE, GMTKN55 W4-11 atomization-energy MAE).
 
-This does NO recomputation — it parses the three demo run-logs' printed metric
+This does NO recomputation -- it parses the three demo run-logs' printed metric
 tables, so it's cheap and reproducible from the captured runs. Each table block
 in a demo log looks like::
 
@@ -180,7 +180,7 @@ def plot_3x3(configs, out_path):
                     ax.set_ylim(0, whisker_top * 1.5)
                     ax.legend(loc="upper left", framealpha=0.9)
         fig.suptitle(
-            "Physical constraints + pretraining vs GMTKN55 — "
+            "Physical constraints + pretraining vs GMTKN55 -- "
             "150-step → 1000-step → 1000-step + spin-polarized PW92c baseline",
             fontsize=12)
         fig.tight_layout(rect=(0, 0, 1, 0.97))

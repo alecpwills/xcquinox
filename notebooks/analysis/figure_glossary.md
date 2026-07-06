@@ -1,5 +1,5 @@
 ---
-title: "Figure glossary — what every label on the 3×3 plots means"
+title: "Figure glossary -- what every label on the 3×3 plots means"
 author: "Alec Wills"
 date: "2026-05-28"
 geometry: margin=0.9in
@@ -29,7 +29,7 @@ this file on another.
 
 # The big picture
 
-We train a small **GGA-style exchange–correlation neural network** (call it the
+We train a small **GGA-style exchange-correlation neural network** (call it the
 *nn-functional*) to reproduce reference exchange and correlation enhancement
 factors at every grid point of a precomputed PBE density. We then ask two
 questions about that nn-functional:
@@ -37,7 +37,7 @@ questions about that nn-functional:
 1. **How well does it reproduce real chemistry references** (BH76 reaction
    energies and W4-11 atomization energies from GMTKN55)?
 2. **How much do physical-constraint priors and the pretraining target choice
-   matter** — both for accuracy and for run-to-run reproducibility across random
+   matter** -- both for accuracy and for run-to-run reproducibility across random
    seeds?
 
 The 3×3 plots answer those questions by sweeping *three independent axes*
@@ -54,16 +54,16 @@ The 3×3 plots answer those questions by sweeping *three independent axes*
 
 | Phrase | Meaning |
 |---|---|
-| **Self-consistency ladder** | The *rows* (`fixed-ρ`, `one-shot`, `3-step SCF`) — increasing the number of SCF cycles the nn-functional is run through before we read off the energy. |
-| **× constraints** | The *x-axis* of each panel — a progression of physical-constraint priors switched on cumulatively (`unconstrained → +LO → +LO+UEG → +LO+UEG+NNc`). |
-| **× pretraining** | The *colored bars* inside each x-position — random initialization versus two flavors of pretrained network. |
+| **Self-consistency ladder** | The *rows* (`fixed-ρ`, `one-shot`, `3-step SCF`) -- increasing the number of SCF cycles the nn-functional is run through before we read off the energy. |
+| **× constraints** | The *x-axis* of each panel -- a progression of physical-constraint priors switched on cumulatively (`unconstrained → +LO → +LO+UEG → +LO+UEG+NNc`). |
+| **× pretraining** | The *colored bars* inside each x-position -- random initialization versus two flavors of pretrained network. |
 | **vs GMTKN55** | The reference values for the left and right columns come from the GMTKN55 benchmark database (the Grimme group's gold-standard collection of accurate post-HF energies). |
 | **polarized / unpolarized** | Which version of the **PW92** correlation baseline the nn-functional is built on. *Polarized* uses the spin-resolved ζ-dependent baseline (correct for open-shell atoms); *unpolarized* uses the ζ = 0 total-density baseline. The two PNGs let us compare them directly. |
 | **16 seeds** | The "random init" bars summarize 16 independent random network initializations (different seeds). The pretrained bars are a single pretrain seed (this is a demo, not a production benchmark). |
 
 ---
 
-# Rows — the **self-consistency ladder**
+# Rows -- the **self-consistency ladder**
 
 The same trained network is evaluated three ways, in increasing self-consistency.
 ρ denotes the electron density; "ρ_PBE" is the precomputed PBE density.
@@ -79,17 +79,17 @@ conclusions you draw from the cheap fixed-ρ evaluation survive when you turn th
 SCF machinery back on. Empirically (see the report) `3-step ≈ fixed-ρ` almost
 exactly on this set, so the cheap evaluation is faithful.
 
-### Equations — what each mode literally computes
+### Equations -- what each mode literally computes
 
 Equations below have been cross-checked against the actual implementation
 (`xcquinox/alec/oneshot.py`, `xcquinox/alec/solver.py`,
-`xcquinox/alec/solver_manual.py`) — not just the docstring.
+`xcquinox/alec/solver_manual.py`) -- not just the docstring.
 
 **Notation.** Let $\hat h_\text{core}$ be the one-electron core Hamiltonian
 (kinetic + nuclear-attraction), $J[D]_{\mu\nu} = \sum_{\lambda\sigma}
 (\mu\nu|\lambda\sigma)\,D_{\lambda\sigma}$ the Coulomb (Hartree) matrix built
 from an AO density matrix $D$, $V_\text{xc}^\text{NN}[\rho]$ the
-exchange–correlation potential matrix produced by the trained nn-functional, and
+exchange-correlation potential matrix produced by the trained nn-functional, and
 $E_\text{xc}^\text{NN}[\rho] = \int
 \epsilon_\text{xc}^\text{NN}(\rho, |\nabla\rho|^2, \dots)\, d\mathbf r$ its
 energy functional. $E_\text{nuc}$ is the nuclear repulsion. Subscripts
@@ -97,7 +97,7 @@ $\text{PBE}$ denote the precomputed PBE reference solution (frozen);
 subscripts $n$ index Roothaan cycles. The linear-mixer parameter
 $\alpha = \tfrac{1}{2}$ (the `SolverConfig` default) throughout.
 
-**1. fixed-ρ** — no SCF, energy-only evaluation on the frozen PBE density:
+**1. fixed-ρ** -- no SCF, energy-only evaluation on the frozen PBE density:
 
 $$
 E_\text{fixed-}\rho \;=\; E_\text{nuc} \;+\; \mathrm{Tr}\!\bigl[\hat h_\text{core}\,D_\text{PBE}\bigr]
@@ -105,10 +105,10 @@ E_\text{fixed-}\rho \;=\; E_\text{nuc} \;+\; \mathrm{Tr}\!\bigl[\hat h_\text{cor
 \;+\; E_\text{xc}^\text{NN}\!\bigl[\rho_\text{PBE}\bigr].
 $$
 
-The nn-functional contributes only its *energy* — no Fock matrix is built,
+The nn-functional contributes only its *energy* -- no Fock matrix is built,
 no diagonalization is run, the orbitals do not relax.
 
-**2. one-shot** — `SolverMode.FIXED_J` + `FeaturePolicy.FROZEN`,
+**2. one-shot** -- `SolverMode.FIXED_J` + `FeaturePolicy.FROZEN`,
 exactly one Roothaan step. Build the Fock matrix once with $J$ pinned to
 $J[D_\text{PBE}]$ and $V_\text{xc}^\text{NN}$ evaluated on the frozen
 PBE-density grid inputs:
@@ -135,7 +135,7 @@ $$
 The orbitals are allowed to relax exactly once, but neither $J$ nor the
 nn-functional's potential is rebuilt.
 
-**3. 3-step SCF** — `SolverMode.FULL` + `FeaturePolicy.REASSEMBLE`,
+**3. 3-step SCF** -- `SolverMode.FULL` + `FeaturePolicy.REASSEMBLE`,
 at most 3 Roothaan steps. Starting from $D_0 = D_\text{PBE}$, for
 $n = 0, 1, 2$:
 
@@ -151,7 +151,7 @@ $$
 
 Each cycle recomputes the Coulomb matrix from the live density and reassembles
 the nn-functional's descriptor features from the live density. The final
-energy is the standard Kohn–Sham expression at the converged (or cycle-3)
+energy is the standard Kohn-Sham expression at the converged (or cycle-3)
 density:
 
 $$
@@ -165,12 +165,12 @@ The 3-cycle cap is the unroll length passed to `jax.lax.scan` inside
 `run_manual_scf`; early-converged states are simply held constant for the
 remaining iterations.
 
-**Footnote — UKS and the descriptor list in this study.** For
+**Footnote -- UKS and the descriptor list in this study.** For
 spin-polarized (UKS) evaluation the Fock matrix is built per spin channel,
 $F^\sigma = \hat h_\text{core} + J[D^\alpha + D^\beta]
 + V_\text{xc}^{\text{NN},\sigma}[\rho^\alpha, \rho^\beta]$, with exchange
-spin-scaled per Oliver–Perdew and correlation taken from the spin-resolved
-(or ζ = 0) baseline — this is the `split_exc_energy_uks` branch whose gate is
+spin-scaled per Oliver-Perdew and correlation taken from the spin-resolved
+(or ζ = 0) baseline -- this is the `split_exc_energy_uks` branch whose gate is
 exactly what the **polarized vs unpolarized** PNG pair toggles. For the
 figures in this glossary the descriptor list is empty
 (`precompute_fixed_density_data(spec, descriptors=(), ...)` in
@@ -193,7 +193,7 @@ integration grid come from $D_\text{PBE}$ (frozen) or from the live $D_n$
 
 ---
 
-# Columns — the three metrics
+# Columns -- the three metrics
 
 Each column is a different MAE (mean absolute error), in **kcal/mol**, against a
 different reference set. Lower bars = better.
@@ -203,7 +203,7 @@ different reference set. Lower bars = better.
 - **BH76** = a 76-reaction benchmark of thermochemical reaction barriers,
   curated by Goerigk & Grimme. **BH76RC** is its *reaction-energy channel* (ΔE
   for products − reactants), as opposed to BH76's standard *barrier heights*.
-- We use **6 of the 76** BH76RC reactions here — a deliberately held-out
+- We use **6 of the 76** BH76RC reactions here -- a deliberately held-out
   "probe-C" subset whose three companion reactions are used in training. The 6
   shown are therefore a **transfer test**, not a training metric.
 - Reference values are the GMTKN55 W2-F12 / CCSD(T) reaction energies.
@@ -222,7 +222,7 @@ different reference set. Lower bars = better.
 - Why it is informative: reaction-energy MAEs cancel any systematic per-species
   XC error (Σ coefficients = 0 for a balanced reaction). The per-species metric
   refuses that cancellation and exposes how *individually* good or bad each
-  total energy is — which is where constraints actually act.
+  total energy is -- which is where constraints actually act.
 - There is **no PBE baseline line** on this panel by construction (PBE deviates
   from itself by 0).
 
@@ -236,13 +236,13 @@ different reference set. Lower bars = better.
   reference value (kcal/mol).
 - **PBE ≈ 10.45 kcal/mol** (dashed line) on this subset.
 - This is the metric that most aggressively exposes **open-shell-atom physics**
-  — the atoms (H, C, N, O, F) enter with no cancelling partner on the other
+  -- the atoms (H, C, N, O, F) enter with no cancelling partner on the other
   side, so any error in their spin-resolved correlation shows up at full
   weight. That is why polarized-vs-unpolarized matters so much here.
 
 ---
 
-# x-axis (within each panel) — the **constraint ladder**
+# x-axis (within each panel) -- the **constraint ladder**
 
 These labels are the cumulative stack of *physical-constraint priors* baked
 into the nn-functional's architecture. Each level adds one more constraint to
@@ -250,10 +250,10 @@ the previous; constraints are mathematical guarantees, not soft losses.
 
 | x-axis label | Code term | Physical meaning |
 |---|---|---|
-| **unconstrained** | `lob_lim=None`, empty constraint list | No physics priors imposed: the network's outputs are free real numbers. (The built-in Lieb–Oxford "squash" is also disabled — otherwise even "no constraints" would already be LO-bounded.) |
-| **+LO** | `lieb_oxford` on the exchange net | Enforces the **Lieb–Oxford bound** — a rigorous lower bound on the exchange-correlation energy (E_xc ≥ −C · ∫ρ^{4/3}). Implemented as a smooth output squash that prevents the network from emitting unphysically negative enhancement factors. |
-| **+LO+UEG** | `lieb_oxford` + `ueg_limit` on the exchange net | Adds the **uniform-electron-gas limit**: in the slowly-varying (uniform) density limit, the exchange enhancement factor F_x → 1 (i.e. the functional reduces to LDA). This is a Levy–Perdew–Sahni-style consistency condition. |
-| **+LO+UEG+NNc** | adds `non_negative_correlation` on the *correlation* net | **NNc = non-negative correlation enhancement** — guarantees the correlation enhancement factor stays non-negative, ruling out unphysically positive correlation energies. ("NNc" reads as "Non-Negative correlation".) |
+| **unconstrained** | `lob_lim=None`, empty constraint list | No physics priors imposed: the network's outputs are free real numbers. (The built-in Lieb-Oxford "squash" is also disabled -- otherwise even "no constraints" would already be LO-bounded.) |
+| **+LO** | `lieb_oxford` on the exchange net | Enforces the **Lieb-Oxford bound** -- a rigorous lower bound on the exchange-correlation energy (E_xc ≥ −C · ∫ρ^{4/3}). Implemented as a smooth output squash that prevents the network from emitting unphysically negative enhancement factors. |
+| **+LO+UEG** | `lieb_oxford` + `ueg_limit` on the exchange net | Adds the **uniform-electron-gas limit**: in the slowly-varying (uniform) density limit, the exchange enhancement factor F_x → 1 (i.e. the functional reduces to LDA). This is a Levy-Perdew-Sahni-style consistency condition. |
+| **+LO+UEG+NNc** | adds `non_negative_correlation` on the *correlation* net | **NNc = non-negative correlation enhancement** -- guarantees the correlation enhancement factor stays non-negative, ruling out unphysically positive correlation energies. ("NNc" reads as "Non-Negative correlation".) |
 
 ### Letter suffixes you may see in older labels
 
@@ -282,14 +282,14 @@ error indicators:
 | **Faint gray cap** at the top of the red bar | `worst of seeds` | The *worst* (largest, i.e. worst-MAE) value across the 16 seeds. Drawn as an upward-only error cap because we only care how bad the tail gets. Pulls back as constraints add. |
 | **Bold dark-red whisker** centered on the red bar | `± std (seeds)` | One standard deviation across the 16 seeds. Shrinks as constraints add → constraints buy *robustness*, even when they don't move the mean. |
 | **Blue bar** (slightly to the right) | `pretrained [unweighted]` | A *single*, pretrained network, where the pretraining loss is a **plain unweighted mean of squared residuals** between the network and the PBE/LDA target enhancement factors at every grid point. (One seed, hence no error bar.) |
-| **Teal bar** (rightmost) | `pretrained [integration]` | Same pretrained network architecture, but the pretraining loss is **integration-weighted** — each grid-point residual is multiplied by the DFT integration weight × density factors, so the loss approximates the *integrated* exchange/correlation-energy error, not a uniform point-by-point error. |
+| **Teal bar** (rightmost) | `pretrained [integration]` | Same pretrained network architecture, but the pretraining loss is **integration-weighted** -- each grid-point residual is multiplied by the DFT integration weight × density factors, so the loss approximates the *integrated* exchange/correlation-energy error, not a uniform point-by-point error. |
 | **Black dashed line** | `PBE (8.1)` (or `PBE (10.45)`) | The PBE functional's MAE on this metric. Bars below the line beat PBE. The PBE line is omitted in the deviation-from-PBE column. |
 
 ### Loss-weighting code translation
 
-- **`unweighted`** — `L = (1/N) Σ_i (f_nn(x_i) − f_target(x_i))²` over grid
+- **`unweighted`** -- `L = (1/N) Σ_i (f_nn(x_i) − f_target(x_i))²` over grid
   points i. Treats every point equally.
-- **`integration`** — `L = Σ_i w_i · (f_nn(x_i) − f_target(x_i))²`, with
+- **`integration`** -- `L = Σ_i w_i · (f_nn(x_i) − f_target(x_i))²`, with
   `w_i` ∝ DFT integration weight × density-weighting that converts the
   per-point residual into an approximate energy-integral residual. Tilts the
   optimizer toward getting *energy-relevant* regions right rather than tail
@@ -315,12 +315,12 @@ optimization difficulty**, separately for exchange and correlation.
 This figure answers: *do constraints help or hurt the pretraining optimizer?*
 For the polarized config the picture is non-monotonic and interesting (LO
 accelerates exchange dramatically; NNc accelerates correlation dramatically).
-For the unpolarized config most levels hit the budget — a landscape
+For the unpolarized config most levels hit the budget -- a landscape
 difference between the two functional families.
 
 ---
 
-# The other 3×3 — `constraint_pretrain_gmtkn55_demo_3x3.png`
+# The other 3×3 -- `constraint_pretrain_gmtkn55_demo_3x3.png`
 
 This older figure is **structured differently**. It is the
 *fixed-ρ-only* version, but with the rows reinterpreted as **pretraining
@@ -330,7 +330,7 @@ recipe**, not self-consistency depth:
 |---|---|
 | **150-step pretrain (unpolarized)** | Short pretraining run, unpolarized correlation baseline. |
 | **1000-step pretrain (unpolarized)** | Longer pretraining, same unpolarized baseline. |
-| **1000-step pretrain + spin-polarized PW92c** | Longer pretraining, **switched to the polarized correlation baseline**. This is the row that drops atomization MAE from ~27 → ~10 kcal/mol — the "polarized baseline is what fixes atomization" punchline. |
+| **1000-step pretrain + spin-polarized PW92c** | Longer pretraining, **switched to the polarized correlation baseline**. This is the row that drops atomization MAE from ~27 → ~10 kcal/mol -- the "polarized baseline is what fixes atomization" punchline. |
 
 The **columns**, **x-axis**, **bar/error semantics**, and **PBE dashed lines**
 are identical to the multimode 3×3. Only the row meaning changes.
@@ -343,20 +343,20 @@ are identical to the multimode 3×3. Only the row meaning changes.
 |---|---|
 | **GMTKN55-BH76RC** | Benchmark file `bh76rc.json`, GMTKN55 distribution. |
 | **GMTKN55 W4-11** | Benchmark file `w411.json` (atomization-energy subset). |
-| **PBE** | Perdew–Burke–Ernzerhof GGA, the reference DFT functional throughout. |
-| **PW92** / **PW92c** | Perdew–Wang 1992 LDA correlation. "PW92c" emphasizes the *correlation* part; the spin-polarized form is the ζ-dependent VWN/PW92 expression. |
-| **GGA** | Generalized-gradient-approximation rung of Jacob's ladder — the functional class our nn lives in (uses ρ and ∇ρ but no kinetic-energy density). |
+| **PBE** | Perdew-Burke-Ernzerhof GGA, the reference DFT functional throughout. |
+| **PW92** / **PW92c** | Perdew-Wang 1992 LDA correlation. "PW92c" emphasizes the *correlation* part; the spin-polarized form is the ζ-dependent VWN/PW92 expression. |
+| **GGA** | Generalized-gradient-approximation rung of Jacob's ladder -- the functional class our nn lives in (uses ρ and ∇ρ but no kinetic-energy density). |
 | **`xcquinox.alec.solver`** | Where `SolverConfig`, `SolverMode`, `FeaturePolicy`, and `SolverBackend` are defined. |
 | **`xcquinox.alec.pretrain`** | Defines `PretrainSpec`, `loss_weighting`, integration weights. |
-| **`make_constraint_levels()`** | In `constraint_pretrain_gmtkn55_demo.py` — produces the four constraint-ladder labels. |
+| **`make_constraint_levels()`** | In `constraint_pretrain_gmtkn55_demo.py` -- produces the four constraint-ladder labels. |
 | **`make_multimode_figure.py`** | The plotting script that *literally produces* the multimode 3×3 and convergence PNGs from the saved JSON; this glossary is faithful to its label strings. |
 
 ---
 
-# Advisor summary — what to take away from the multimode 3×3 figures
+# Advisor summary -- what to take away from the multimode 3×3 figures
 
 > Across all three self-consistency rungs (`fixed-ρ → one-shot → 3-step SCF`)
-> the picture is essentially identical — running the functional
+> the picture is essentially identical -- running the functional
 > self-consistently barely moves any bar, so the cheap fixed-ρ conclusions
 > hold. Within each rung, layering on physical constraints does not change
 > the random-init *mean* accuracy but cuts seed-to-seed standard deviation by
@@ -366,6 +366,6 @@ are identical to the multimode 3×3. Only the row meaning changes.
 > spin-polarized correlation baseline is the binding factor for atomization
 > energies: the polarized functional lands on PBE (≈10 kcal/mol) at the
 > fully-constrained pretrained level, while the unpolarized one is stuck at
-> ~27 kcal/mol and actually *worsens* as constraints are added — because
+> ~27 kcal/mol and actually *worsens* as constraints are added -- because
 > open-shell atoms need ζ-resolved correlation the unpolarized functional
 > cannot represent.

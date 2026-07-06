@@ -109,13 +109,13 @@ def _select_winner(records: list[dict], target_floor: float,
         terminated_by = res.get("termination", "max_iter")
         # Stability via plateau-shared metric, with carve-out:
         # `terminated_by == "early_stop_conv_tol"` certifies that an
-        # accepted L-BFGS-B iterate satisfied conv_tol — the early-stop
+        # accepted L-BFGS-B iterate satisfied conv_tol -- the early-stop
         # sentinel only fires from `_scipy_iter_callback` when
         # `scf_state["density_error_l2_accepted"] < conv_tol`. L-BFGS-B
         # is deterministic given the same starting point + gradient
         # evaluations, so re-running with these settings reproduces the
         # same trajectory and hits the same accepted iterate. Treat
-        # early-stop trials as stable regardless of history length —
+        # early-stop trials as stable regardless of history length --
         # the older `len(history) < plateau_window` gate over-rejected
         # long oscillatory trajectories whose final accepted iterate
         # nonetheless cleared conv_tol (observed on F2O / HF in the
@@ -199,7 +199,7 @@ def _emit_history_plot(name: str, records: list[dict],
                label=f"target_floor={target_floor:.1e}")
     ax.set_xlabel("L-BFGS-B iteration")
     ax.set_ylabel("density_error_l2")
-    ax.set_title(f"{name} — OEP convergence history")
+    ax.set_title(f"{name} -- OEP convergence history")
     ax.legend(loc="best")
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
@@ -226,7 +226,7 @@ def main() -> int:
     snippets = [
         "# AUTO-GENERATED snippet for xcquinox/alec/external_refs.py:_PER_SPECIES_OEP_OVERRIDES.\n"
         "# Source: %s\n" % summary_path
-        + "# Citations: [oep-tdl-1..6] in reports_local/latex/references.bib —\n"
+        + "# Citations: [oep-tdl-1..6] in reports_local/latex/references.bib --\n"
         "# AUTHOR-RECALLED, UNVERIFIED. Verify each via WebFetch + pdftotext\n"
         "# before paper write-up. REVIEW BEFORE PASTING.\n"
         "#\n"

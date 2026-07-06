@@ -1,4 +1,4 @@
-# Archive — superseded by 2026-04-30 LaTeX restructure
+# Archive -- superseded by 2026-04-30 LaTeX restructure
 
 These files were superseded by the restructure committed on 2026-04-30 (commits
 `8767604f` through `e411e5547`). They are kept here as historical reference only;
@@ -19,11 +19,11 @@ and tables originally distributed across these four files now resolve via
 Old build output directories for the pre-restructure manuscript family.
 Regenerable from the archived sources if ever needed; otherwise safe to delete.
 
-- `build/` — old main.pdf (pre-restructure, 9 pp Results-section-only main)
-- `build_s5/` — old step5_supplement.pdf
-- `build_s6c/` — old step6_comparison_supplement.pdf
-- `build_s6i/` — old step6_integration_supplement.pdf
-- `build_s6u/` — old step6_unweighted_supplement.pdf
+- `build/` -- old main.pdf (pre-restructure, 9 pp Results-section-only main)
+- `build_s5/` -- old step5_supplement.pdf
+- `build_s6c/` -- old step6_comparison_supplement.pdf
+- `build_s6i/` -- old step6_integration_supplement.pdf
+- `build_s6u/` -- old step6_unweighted_supplement.pdf
 
 ## Current pipeline (use these, not the archive)
 

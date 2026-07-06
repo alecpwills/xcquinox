@@ -11,12 +11,12 @@ C4-03 alpha mode, the artifacts the SLURM harness consumes read-only:
         <ARCH>/<LOSS>/<solver>/subset.traj
 
 Descriptors (ρ^{1/3}, s, α via one PBE SCF per unique species) and the
-full-pool reference histogram are MODE-INDEPENDENT — the alpha mode only sets
-``descriptor_weights`` inside ``select_subset`` — so both are computed ONCE
+full-pool reference histogram are MODE-INDEPENDENT -- the alpha mode only sets
+``descriptor_weights`` inside ``select_subset`` -- so both are computed ONCE
 (shared cache) and the selection sweep is run for every requested mode.
 
 Binning is LINEAR (2026-05-24 revision; see subset_selection.py). CPU-only
-(pyscf SCF + numpy combinatorics) — does not use the GPU.
+(pyscf SCF + numpy combinatorics) -- does not use the GPU.
 
 Usage:
     python scripts/generate_step7_subsets.py                 # both modes
@@ -74,7 +74,7 @@ def _resolve_sizes(base_sizes, n_pool: int, include_full: bool) -> list:
 
 def _build_shared(points):
     """Extract per-species descriptors (cached) and the full-pool reference
-    histogram + edges — all mode-independent."""
+    histogram + edges -- all mode-independent."""
     species = species_union_from_points(points)
     print(f"Extracting descriptors for {len(species)} unique species "
           f"(PBE/{BASIS}/grid_level={GRID_LEVEL}; cached at "

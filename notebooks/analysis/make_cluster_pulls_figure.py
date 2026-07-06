@@ -7,15 +7,15 @@ trained network ONLY on the molecules it was trained on
 ``holdout_molecules``; ``spec_builder.py:545-556`` silently defaults to
 in-distribution eval and emits a ``RuntimeWarning`` to eval-job stderr that
 is easily missed). Every "MAE" plotted here is therefore the **in-sample
-training-subset MAE** — a measure of how well training converged, NOT a
+training-subset MAE** -- a measure of how well training converged, NOT a
 test-set generalization estimate. Large MAE in these figures indicates
 **training failure**, not poor generalization. Held-out test-set MAE is
 computed by a separate local script after pulling the relevant
 ``model.eqx`` checkpoints with
-``python -m xcquinox.alec.cluster pull <run> --profile full --specs <…>``
+``python -m xcquinox.alec.cluster pull <run> --profile full --specs <...>``
 (see ``hpcjobs/SEAWULF_RUNBOOK.md`` §10.5).
 
-The script walks ``<local_root>/{category…}/run_<UTC>Z/`` directories that
+The script walks ``<local_root>/{category...}/run_<UTC>Z/`` directories that
 the harness ``pull`` workflow stages, aggregates:
 
   - per-spec ``eval_df.csv`` (training-subset MAE / rho_rmse / n_eval),
@@ -25,20 +25,20 @@ the harness ``pull`` workflow stages, aggregates:
   - per-spec ``status`` and ``final_loss`` from
     :func:`xcquinox.alec.cluster.analyze.collect_results`.
 
-…and renders four PNGs:
+...and renders four PNGs:
 
-  1. ``fig1_training_diagnostics.png`` — training-subset MAE vs subset_size
+  1. ``fig1_training_diagnostics.png`` -- training-subset MAE vs subset_size
      (log-y) + a training-success scatter (training-subset MAE vs final
      training loss, log-log; failure zone shaded).
-  2. ``fig2_per_molecule_errors.png`` — top-20 hardest molecules across all
+  2. ``fig2_per_molecule_errors.png`` -- top-20 hardest molecules across all
      specs + density-RMSE-vs-AE-error scatter + per-(metric, solver)
      per-molecule |AE_error| violin.
-  3. ``fig3_coverage_dashboard.png`` — (metric, solver) × subset_size
+  3. ``fig3_coverage_dashboard.png`` -- (metric, solver) × subset_size
      status heatmap per category.
-  4. ``fig_composite_summary.png`` — 2x2 composite tying the three together.
+  4. ``fig_composite_summary.png`` -- 2x2 composite tying the three together.
 
 The script is self-contained: only stdlib (``csv``, ``json``, ``os``,
-``argparse``, ``pathlib``), ``numpy`` and ``matplotlib`` — no pandas.
+``argparse``, ``pathlib``), ``numpy`` and ``matplotlib`` -- no pandas.
 Style matches the existing ``make_multimode_figure.py`` template (DPI 120,
 font.size 9, soft grid).
 
@@ -68,7 +68,7 @@ from matplotlib.colors import ListedColormap  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# House style — match notebooks/analysis/make_multimode_figure.py
+# House style -- match notebooks/analysis/make_multimode_figure.py
 # ---------------------------------------------------------------------------
 
 _STYLE = {
@@ -84,7 +84,7 @@ _STYLE = {
     "savefig.bbox": "tight",
 }
 
-# Color/marker/linestyle palette — `metric` color, `solver` marker.
+# Color/marker/linestyle palette -- `metric` color, `solver` marker.
 _METRIC_COLOR: Dict[str, str] = {
     "jsd": "#4f81bd",   # blue family (matches existing multimode plot)
     "l2":  "#c0504d",   # red family (matches existing multimode plot)
@@ -94,7 +94,7 @@ _SOLVER_MARKER: Dict[str, str] = {
     "oneshot": "s",     # square = non-self-consistent
 }
 _STATUS_COLOR: Dict[str, str] = {
-    # Dashboard heatmap colors — green = ready to plot, lighter shades = in
+    # Dashboard heatmap colors -- green = ready to plot, lighter shades = in
     # flight, red = trouble, gray = nothing here yet.
     "complete":         "#1e7d36",   # dark green
     "trained_no_eval":  "#a4d4ae",   # light green
@@ -109,7 +109,7 @@ _STATUS_ORDER = ("complete", "trained_no_eval", "eval_skipped", "train_failed",
 _CATEGORY_COLOR: Dict[str, str] = {
     # Per-category color palette used by every cross-category figure. New
     # categories that aren't listed here fall through to _CATEGORY_FALLBACKS
-    # via _palette_for() — guarantees a stable color even before we hard-code
+    # via _palette_for() -- guarantees a stable color even before we hard-code
     # one (e.g. when polarized/alpha_on/runs lands).
     "alpha_on/runs":            "#c0504d",
     "alpha_off/runs":           "#4f81bd",
@@ -146,7 +146,7 @@ _RUN_ID_RE = re.compile(r"^run_\d{8}T\d{6}Z$")
 
 
 # ---------------------------------------------------------------------------
-# Data ingest — pure helpers (unit-tested)
+# Data ingest -- pure helpers (unit-tested)
 # ---------------------------------------------------------------------------
 
 def discover_pulled_categories(local_root: Path) -> Dict[str, Path]:
@@ -159,7 +159,7 @@ def discover_pulled_categories(local_root: Path) -> Dict[str, Path]:
     sort (zero-padded ISO timestamps sort chronologically).
 
     A category with no ``run_*Z`` subdir is omitted entirely. A category whose
-    sole run-dir is missing ``manifest.json`` is still included — the
+    sole run-dir is missing ``manifest.json`` is still included -- the
     dashboard will mark it ``missing`` so the operator can see it pulled but
     didn't have a materialized manifest yet.
     """
@@ -220,7 +220,7 @@ def _spec_dirs(run_dir: Path) -> List[Tuple[int, Path]]:
 
 def collect_eval_df_rows(run_dir: Path) -> List[Dict[str, Any]]:
     """Read every ``checkpoints/spec_*/eval_df.csv`` and join with its
-    manifest cell. One output row per CSV data row (one CSV row per "set" —
+    manifest cell. One output row per CSV data row (one CSV row per "set" --
     on this harness only ``training_subset`` is written today).
 
     Output schema (each row): ``idx, arch, loss, metric, subset_size, solver,
@@ -265,7 +265,7 @@ def collect_per_molecule_rows(run_dir: Path) -> List[Dict[str, Any]]:
 
     Output schema: ``idx, arch, loss, metric, subset_size, solver, molecule,
     AE_error_kcalmol, density_rmse, density_l1, skipped, scf_converged``.
-    Atoms (``skipped=true, skip_reason=atomic_system``) are kept — they
+    Atoms (``skipped=true, skip_reason=atomic_system``) are kept -- they
     contribute density-tracking diagnostics but typically lack AE_error.
     """
     cells = _read_manifest_cells(run_dir)
@@ -320,7 +320,7 @@ def collect_local_test_set_rows(run_dir: Path) -> List[Dict[str, Any]]:
             reader = csv.DictReader(f)
             for r in reader:
                 # The CSV's "set" column is one of "test_set_bh76",
-                # "test_set_w411", "test_set_held_out_combined" — strip the
+                # "test_set_w411", "test_set_held_out_combined" -- strip the
                 # leading "test_set_" so the downstream consumer just sees
                 # the pool token.
                 set_label = (r.get("set") or "")
@@ -417,7 +417,7 @@ def collect_per_reaction_rows(run_dir: Path) -> List[Dict[str, Any]]:
     Yields one dict per (spec, reaction) pair carrying both the NN and PBE
     absolute errors plus the grid cell. The per-reaction figures (Fig 7
     heatmap, Fig 8 per-reaction comparison) aggregate over this. Specs
-    without the JSON are silently skipped — happens when local_reeval was
+    without the JSON are silently skipped -- happens when local_reeval was
     last run before this writer landed.
     """
     cells = _read_manifest_cells(run_dir)
@@ -522,7 +522,7 @@ def _completion_summary(grids: Dict[str, Dict[Tuple[str, str], Dict[int, str]]],
 # Plot builders
 # ---------------------------------------------------------------------------
 
-_FAILURE_MAE_THRESHOLD = 5.0  # kcal/mol — heuristic "this spec did not train"
+_FAILURE_MAE_THRESHOLD = 5.0  # kcal/mol -- heuristic "this spec did not train"
 _FAILURE_LOSS_THRESHOLD = 5e-3  # final-loss threshold matching the above
 
 
@@ -536,7 +536,7 @@ def _plot_mae_vs_subset(ax, rows: List[Dict[str, Any]],
     When ``local_rows`` is non-empty, also overlay the held-out (test_set)
     MAE from ``local_test_set.csv`` as DASHED lines at the same color/marker
     per (metric, solver). ``local_pool`` selects which row of the local CSV
-    feeds the overlay — by default the ``held_out_combined`` row
+    feeds the overlay -- by default the ``held_out_combined`` row
     (BH76 + W4-11). Returns the number of distinct in-sample specs plotted
     so the caller can put it in the title.
     """
@@ -557,7 +557,7 @@ def _plot_mae_vs_subset(ax, rows: List[Dict[str, Any]],
                 color=_METRIC_COLOR.get(metric, "k"), linewidth=1.5,
                 markersize=6, label=f"{metric} · {solver} (in-sample)",
                 zorder=3)
-    # Held-out dashed overlay — only the selected pool, only finite MAE.
+    # Held-out dashed overlay -- only the selected pool, only finite MAE.
     if local_rows:
         held: Dict[Tuple[str, str], List[Tuple[int, float]]] = {}
         for r in local_rows:
@@ -669,7 +669,7 @@ def _plot_training_success(ax, rows: List[Dict[str, Any]],
     ys = np.array([p[1] for p in pts])
     colors = [_METRIC_COLOR.get(p[2], "#888") for p in pts]
     markers = [_SOLVER_MARKER.get(p[3], "x") for p in pts]
-    # matplotlib's scatter doesn't take per-point markers — split by marker.
+    # matplotlib's scatter doesn't take per-point markers -- split by marker.
     for marker in set(markers):
         sel = [i for i, m in enumerate(markers) if m == marker]
         ax.scatter(xs[sel], ys[sel],
@@ -679,7 +679,7 @@ def _plot_training_success(ax, rows: List[Dict[str, Any]],
     ax.set_xscale("log"); ax.set_yscale("log")
     ax.set_xlabel("final training loss (unitless, ↓ better convergence)")
     ax.set_ylabel("training-subset MAE (kcal/mol, ↓ better fit)")
-    ax.set_title("Training-success diagnostic — lower-left = well-converged")
+    ax.set_title("Training-success diagnostic -- lower-left = well-converged")
 
     # Shade the "likely training failure" zone.
     xlo, xhi = ax.get_xlim(); ylo, yhi = ax.get_ylim()
@@ -722,7 +722,7 @@ def plot_generalization(
     out_path: Path,
     local_rows_by_cat: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Path:
-    """Fig 1 — cluster training diagnostics, faceted by category.
+    """Fig 1 -- cluster training diagnostics, faceted by category.
 
     One row per category. Left panel: MAE vs subset_size (solid in-sample,
     dashed held-out overlay when local rows present). Right panel:
@@ -765,9 +765,9 @@ def plot_generalization(
                 ax_l, rows, local_rows=local_rows,
                 compact_legend=(ri != 0))
             title_l = (
-                f"{cat}  —  MAE vs subset size  (solid=in-sample, "
+                f"{cat}  --  MAE vs subset size  (solid=in-sample, "
                 "dashed=held-out)") if local_rows else (
-                f"{cat}  —  Training fit vs subset size  (in-sample only)")
+                f"{cat}  --  Training fit vs subset size  (in-sample only)")
             ax_l.set_title(title_l, fontsize=10)
             _plot_training_success(ax_r, rows, final_losses)
             spec_counts.append((cat, n_specs))
@@ -778,7 +778,7 @@ def plot_generalization(
         subtitle = ("Solid = cluster training-subset MAE (in-sample, "
                     "training quality only); dashed = held-out MAE "
                     "computed locally on BH76+W4-11.") if have_local else (
-                    "Cluster eval is in-sample only — large MAE here "
+                    "Cluster eval is in-sample only -- large MAE here "
                     "indicates training failure, not poor generalization.")
         # Position subtitle just under the suptitle (works for any n_rows).
         fig.text(0.5, 0.952, subtitle,
@@ -904,7 +904,7 @@ def plot_per_molecule(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 2 — per-species error structure, faceted by category.
+    """Fig 2 -- per-species error structure, faceted by category.
 
     One row per category, 3 panels per row: top-20 hardest molecules
     (in-sample mean |AE error|), per-(metric, solver) violin spread, and
@@ -1039,13 +1039,13 @@ def plot_dashboard(grids_by_category: Dict[str, Dict[Tuple[str, str], Dict[int, 
 
 
 # ---------------------------------------------------------------------------
-# New dedicated test-set-eval figures (Figs 5–8)
+# New dedicated test-set-eval figures (Figs 5-8)
 # ---------------------------------------------------------------------------
 
 def plot_nn_vs_pbe(local_rows_by_cat: Dict[str, List[Dict[str, Any]]],
                    lead_label: str,
                    out_path: Path) -> Path:
-    """Fig 5 — NN vs PBE on the combined held-out set, all categories.
+    """Fig 5 -- NN vs PBE on the combined held-out set, all categories.
 
     Left panel: per-(metric, solver) strip plot, each cell split into one
     sub-column per category (color = category, marker = solver). Horizontal
@@ -1094,7 +1094,7 @@ def plot_nn_vs_pbe(local_rows_by_cat: Dict[str, List[Dict[str, Any]]],
         # ---- Panel A: per-(metric, solver) strip, sub-columns per cat. -
         cell_order = list(_METRIC_SOLVER_PAIRS)
         cell_pos = {ms: i + 1 for i, ms in enumerate(cell_order)}
-        # Sub-column offset within each cell — symmetric around center.
+        # Sub-column offset within each cell -- symmetric around center.
         n_cats = len(cats)
         if n_cats <= 1:
             sub_offsets = {cats[0]: 0.0} if cats else {}
@@ -1237,12 +1237,12 @@ _POOL_PBE_REF = {
 def plot_per_pool(local_rows_by_cat: Dict[str, List[Dict[str, Any]]],
                   lead_label: str,
                   out_path: Path) -> Path:
-    """Fig 6 — per-pool breakdown, faceted by category.
+    """Fig 6 -- per-pool breakdown, faceted by category.
 
     Layout: 2 rows (BH76 / W4-11) × N category columns. Each subplot shows
     per-(metric, solver) line plots of NN MAE vs subset_size, with the PBE
     MAE for that pool as a horizontal dotted reference (BH76 = 8.08,
-    W4-11 = 10.45 — same constant across all specs).
+    W4-11 = 10.45 -- same constant across all specs).
     """
     cats = list(local_rows_by_cat.keys())
     with plt.rc_context(_STYLE):
@@ -1325,7 +1325,7 @@ def plot_grid_heatmap(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 7 — NN−PBE delta heatmap, faceted by category.
+    """Fig 7 -- NN−PBE delta heatmap, faceted by category.
 
     Each category becomes a column of 4 mini-heatmaps (one per (metric,
     solver) cell). Shared symmetric color scale across all categories so
@@ -1423,7 +1423,7 @@ def plot_per_reaction(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 8 — per-reaction NN vs PBE, faceted by category.
+    """Fig 8 -- per-reaction NN vs PBE, faceted by category.
 
     One row per category × 2 columns (paired-bars left, ranked-delta
     right). Each row uses the same reaction ordering (BH76 first, then
@@ -1511,7 +1511,7 @@ def plot_per_reaction(
                           ha="center", va="bottom", fontsize=8,
                           style="italic", color="#555")
             ax_l.set_title(
-                f"{cat}  —  per-reaction median |error| (NN vs PBE)  "
+                f"{cat}  --  per-reaction median |error| (NN vs PBE)  "
                 f"across {len({r['idx'] for r in per_rxn_rows})} specs",
                 fontsize=9)
             ax_l.legend(loc="upper right", framealpha=0.9, fontsize=8)
@@ -1530,7 +1530,7 @@ def plot_per_reaction(
             ax_r.set_xlabel(
                 "median (NN − PBE)  (kcal/mol;  <0 = NN beats PBE)")
             ax_r.set_title(
-                f"{cat}  —  ranked delta (NN beats PBE on top)",
+                f"{cat}  --  ranked delta (NN beats PBE on top)",
                 fontsize=9)
             n_win = int(np.sum(deltas < 0))
             ax_r.text(0.98, 0.02,
@@ -1558,7 +1558,7 @@ def plot_subset_size_correlation(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 9 — held-out NN MAE vs subset_size, faceted by category.
+    """Fig 9 -- held-out NN MAE vs subset_size, faceted by category.
 
     One row per category; each row carries the boxplot + jittered scatter
     + per-(metric, solver) Spearman annotation. Shared y-axis. Tells the
@@ -1713,7 +1713,7 @@ def plot_in_sample_vs_held_out(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 11 — overfitting diagnostic, all categories overlaid.
+    """Fig 11 -- overfitting diagnostic, all categories overlaid.
 
     Per spec: x = cluster's training-subset MAE (from ``eval_df.csv``),
     y = local held-out MAE (from ``local_test_set.csv``). Each category gets
@@ -1722,7 +1722,7 @@ def plot_in_sample_vs_held_out(
     diagonal = NN worse on held-out than on training (the expected overfit
     case); the gap is the overfit magnitude.
 
-    Axis limits are clamped so the diagonal lives where data lives —
+    Axis limits are clamped so the diagonal lives where data lives --
     subset_size=1 specs sometimes overfit their single training molecule to
     ~1e-4 MAE; without the clamp the y=x line stretches across an empty
     decade and looks misleading.
@@ -1792,7 +1792,7 @@ def plot_in_sample_vs_held_out(
         # Axis bounds: stretch to where positive-x data actually lives,
         # without clipping small-subset (subset_size=1) trivial-overfit
         # specs out of the figure. The user explicitly requested 2026-05-29
-        # that these specs stay visible — they're descriptive even when
+        # that these specs stay visible -- they're descriptive even when
         # their in-sample MAE is near 0. We annotate the count separately
         # so the audience knows which markers are trivial fits.
         positive_xs = all_xs[all_xs > 0]
@@ -1877,7 +1877,7 @@ def plot_in_sample_vs_held_out(
             ax.spines[sp].set_visible(False)
         title_cats = " · ".join(pts_by_cat.keys())
         fig.suptitle(
-            f"In-sample vs held-out MAE — {title_cats}  "
+            f"In-sample vs held-out MAE -- {title_cats}  "
             "(overfitting diagnostic)", fontsize=11)
         fig.tight_layout(rect=(0, 0, 1, 0.95))
         fig.savefig(out_path, dpi=150)
@@ -1890,7 +1890,7 @@ def plot_per_reaction_vs_subset(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 12 — per-reaction NN abs-error vs subset_size, color by category.
+    """Fig 12 -- per-reaction NN abs-error vs subset_size, color by category.
 
     4×4 small-multiples (one per reaction). Within each subplot: one line
     per category, showing the median NN |error| across all (metric,
@@ -1898,7 +1898,7 @@ def plot_per_reaction_vs_subset(
     dotted horizontal reference (shared across categories).
 
     The original per-(metric, solver) decomposition was unreadable at
-    cross-category scale (12+ lines per tiny subplot) — collapsing the
+    cross-category scale (12+ lines per tiny subplot) -- collapsing the
     (metric, solver) dimension via median keeps the cross-category
     comparison legible.
     """
@@ -1960,7 +1960,7 @@ def plot_per_reaction_vs_subset(
                 ax.axhline(float(np.median(pbe_vals)), color="#222",
                            linestyle=":", linewidth=0.9, alpha=0.85,
                            zorder=2)
-            # Bigger subplot title — the May-29 figure had ~6pt titles
+            # Bigger subplot title -- the May-29 figure had ~6pt titles
             # that were unreadable.
             ax.set_title(f"{name}  ({rxn_pool.get(name, '?')})",
                          fontsize=9)
@@ -2005,7 +2005,7 @@ def plot_best_vs_worst_per_reaction(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 13 — best vs worst spec head-to-head, per reaction, per category.
+    """Fig 13 -- best vs worst spec head-to-head, per reaction, per category.
 
     Each category gets its own subplot row showing that category's best
     and worst spec (by combined NN−PBE delta) vs PBE across the 16
@@ -2099,7 +2099,7 @@ def plot_best_vs_worst_per_reaction(
             ax.set_xticks(x)
             ax.set_xticklabels(names, rotation=30, ha="right", fontsize=7)
             ax.set_ylabel("|rxn error|  (kcal/mol)")
-            ax.set_title(f"Best vs worst — {cat}", fontsize=10,
+            ax.set_title(f"Best vs worst -- {cat}", fontsize=10,
                          loc="left")
             n_bh76 = sum(1 for n in names
                          if pool_by_name.get(n) == "bh76")
@@ -2131,7 +2131,7 @@ def plot_density_vs_energy_by_cell(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 14 — density-RMSE vs |AE error| split by (metric, solver), with
+    """Fig 14 -- density-RMSE vs |AE error| split by (metric, solver), with
     one row per category.
 
     Each row is the existing 2×2 (metric × solver) grid for one category.
@@ -2180,7 +2180,7 @@ def plot_density_vs_energy_by_cell(
                             transform=ax.transAxes, color="#888",
                             fontsize=9)
                     ax.set_title(
-                        f"{cat}  —  metric={key[0]}, solver={key[1]}",
+                        f"{cat}  --  metric={key[0]}, solver={key[1]}",
                         fontsize=8)
                     continue
                 xs = np.array([p[0] for p in pts])
@@ -2189,7 +2189,7 @@ def plot_density_vs_energy_by_cell(
                            marker=_SOLVER_MARKER.get(key[1], "x"),
                            s=14, alpha=0.55, edgecolors="none")
                 ax.set_xscale("log"); ax.set_yscale("log")
-                ax.set_title(f"{cat}  —  metric={key[0]}, "
+                ax.set_title(f"{cat}  --  metric={key[0]}, "
                              f"solver={key[1]}  (n={len(pts)})",
                              fontsize=8)
                 for sp in ("top", "right"):
@@ -2215,7 +2215,7 @@ def plot_cross_category_nn_vs_pbe(
     local_rows_by_category: Dict[str, List[Dict[str, Any]]],
     out_path: Path,
 ) -> Path:
-    """Fig 16 — cross-category NN vs PBE on the combined held-out set.
+    """Fig 16 -- cross-category NN vs PBE on the combined held-out set.
 
     ``local_rows_by_category`` maps category label (e.g. ``"alpha_on/runs"``)
     to its list of ``local_test_set.csv`` rows. Only categories with at
@@ -2230,7 +2230,7 @@ def plot_cross_category_nn_vs_pbe(
       (n_below_PBE / total) annotated at the top of each column.
     - Right panel: KDE-flavored stacked histograms of NN−PBE delta per
       category. Δ = 0 (PBE) vertical line; per-category subtitle with
-      "k specs beat PBE; median Δ = …".
+      "k specs beat PBE; median Δ = ...".
     """
     cats: List[str] = []
     combined_by_cat: Dict[str, List[Dict[str, Any]]] = {}
@@ -2428,7 +2428,7 @@ def plot_descriptor_range_vs_accuracy(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 10 — per-spec descriptor diversity vs held-out NN MAE, cross-cat.
+    """Fig 10 -- per-spec descriptor diversity vs held-out NN MAE, cross-cat.
 
     x = diversity score (L2 norm of the per-feature range across training
     molecules), y = held-out combined NN MAE. Color = category. Marker =
@@ -2532,7 +2532,7 @@ def plot_descriptor_histograms_by_metric(
     lead_label: str,
     out_path: Path,
 ) -> Path:
-    """Fig 15 — per-subset descriptor distributions per (category, metric).
+    """Fig 15 -- per-subset descriptor distributions per (category, metric).
 
     Layout: (n_categories × 2) rows, one per (cat, metric={jsd, l2});
     columns: one per descriptor feature. Each cell: per-subset_size
@@ -2668,7 +2668,7 @@ def plot_composite(eval_rows_by_cat: Dict[str, List[Dict[str, Any]]],
                    local_rows_by_cat: Optional[
                        Dict[str, List[Dict[str, Any]]]] = None,
                    ) -> Path:
-    """Fig 4 — 2x2 cross-category composite suitable for a slide/poster.
+    """Fig 4 -- 2x2 cross-category composite suitable for a slide/poster.
 
     Layout:
       ┌────────────────────────┬─────────────────────────┐
@@ -2699,9 +2699,9 @@ def plot_composite(eval_rows_by_cat: Dict[str, List[Dict[str, Any]]],
         _plot_mae_vs_subset(ax_a, lead_eval, local_rows=lead_local,
                             compact_legend=True)
         title_a = (
-            f"(A)  In-sample vs held-out MAE — {lead_label}"
+            f"(A)  In-sample vs held-out MAE -- {lead_label}"
             if lead_local
-            else f"(A)  Training-subset MAE vs subset — {lead_label}"
+            else f"(A)  Training-subset MAE vs subset -- {lead_label}"
         )
         ax_a.set_title(title_a)
 
@@ -2767,8 +2767,8 @@ def plot_composite(eval_rows_by_cat: Dict[str, List[Dict[str, Any]]],
             head_parts.append(f"{c} {done}/{total}" if total
                               else f"{c} (no manifest)")
         fig.suptitle(
-            "Cluster sweep summary — " + ";  ".join(head_parts)
-            + "  (in-sample fit only — runbook §10.5)",
+            "Cluster sweep summary -- " + ";  ".join(head_parts)
+            + "  (in-sample fit only -- runbook §10.5)",
             fontsize=12, y=0.995)
         fig.savefig(out_path, dpi=120, bbox_inches="tight")
         plt.close(fig)
@@ -2822,7 +2822,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         # Pick the category with the most `complete` specs.
         lead = max(summary, key=lambda c: summary[c][0]) if summary else None
     if lead is None:
-        print("no category to plot — bailing", file=sys.stderr)
+        print("no category to plot -- bailing", file=sys.stderr)
         return 1
     lead_label = lead or "(root)"
     print(f"lead category: {lead_label} "
@@ -2857,7 +2857,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if dr:
             descriptor_rows_by_cat[cat] = dr
     # Per-lead-category slices (used by plots that still need a single primary
-    # category — currently only the dashboard summary). Plot functions that
+    # category -- currently only the dashboard summary). Plot functions that
     # have been migrated to cross-category accept the *_by_cat dicts above.
     eval_rows = eval_rows_by_cat.get(lead, [])
     per_mol_rows = per_mol_rows_by_cat.get(lead, [])

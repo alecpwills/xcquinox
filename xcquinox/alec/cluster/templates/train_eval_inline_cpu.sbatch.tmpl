@@ -8,7 +8,7 @@ ${ALLOC_LINES}${MEM_LINE}#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --output=${RUN_DIR}/logs/train_eval_%A_%a.out
 ${MAIL_USER_LINE}${MAIL_TYPE_LINE}${ACCOUNT_LINE}
 set -uo pipefail
-# NOTE: NOT `set -e` — we intentionally tolerate eval failure so the train
+# NOTE: NOT `set -e` -- we intentionally tolerate eval failure so the train
 # checkpoint (already on disk from _train_task) survives a crash in
 # _eval_one_spec. See the `|| true` guard on the eval invocation below.
 
@@ -37,7 +37,7 @@ export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true --xla_force_host_platform_de
 # `--signal=B:TERM@grace` is delivered to THIS shell, not the worker. We run the
 # worker in the background and forward SIGTERM to its PID via a trap, so the
 # worker's grace handler (_train_task._install_sigterm_handler) still fires and
-# writes the timeout failure.json — matching the non-inline exec'd behavior.
+# writes the timeout failure.json -- matching the non-inline exec'd behavior.
 python -m xcquinox.alec.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID} &
 train_pid=$$!
 trap 'echo "[inline-eval] forwarding SIGTERM to train pid $${train_pid}"; kill -TERM $${train_pid} 2>/dev/null' TERM

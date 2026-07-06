@@ -15,7 +15,7 @@ HEADLINE_PATH = REPO / "reports_local" / "step7_subset_selection" / "headline.js
 FIGS_DIR.mkdir(parents=True, exist_ok=True)
 
 SUBSET_SIZES = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18)  # r=21 excluded (full pool, no selection)
-R_MAX = max(SUBSET_SIZES)  # largest *selected* subset size — used for "best subset"
+R_MAX = max(SUBSET_SIZES)  # largest *selected* subset size -- used for "best subset"
                             # overlay (Plot 5) and probe-comparison reference (Plot 7).
 METRICS = ("l2", "jsd")
 SOLVERS = ("oneshot", "full_3")
@@ -143,7 +143,7 @@ def main():
     plt.close(fig)
 
     # ---- Plot 5: descriptor overlay (full pool vs largest-r subsets) -----------
-    # Uses R_MAX (largest *selected* subset size), not the full pool size — the
+    # Uses R_MAX (largest *selected* subset size), not the full pool size -- the
     # full pool reference and an r=N_pool subset would be identical.
     ref_npz = np.load(STEP7_ROOT / "dfs_pool_full_hist" / "reference.npz")
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
@@ -232,7 +232,7 @@ def main():
         headline["best_per_metric_solver_aug"] = []
 
     # ----------------------------------------------------------------------
-    # T23 — Held-out probe-set comprehensive analysis
+    # T23 -- Held-out probe-set comprehensive analysis
     #
     # Reads the per-spec eval_df.csv files in long-form schema:
     #   columns = metric / tag / solver / set / molecule / value_name / value
@@ -252,7 +252,7 @@ def main():
     def _probe_signed_errors(_df_unused: pd.DataFrame, probe_name: str) -> pd.DataFrame:
         """Walk eval_probes/<probe>/per_molecule.json across all specs and
         extract per-molecule signed errors. Replaces the old long-form
-        eval_df.csv read — eval_df.csv is now wide-form (one row per
+        eval_df.csv read -- eval_df.csv is now wide-form (one row per
         spec×set with aggregated mae), so per-molecule detail comes
         directly from the per_molecule.json files written by alec.run_test.
 

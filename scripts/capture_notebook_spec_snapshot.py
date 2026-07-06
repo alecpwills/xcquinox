@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""capture_notebook_spec_snapshot.py — capture the golden spec snapshot.
+"""capture_notebook_spec_snapshot.py -- capture the golden spec snapshot.
 
 USER-RUN HELPER. This script is NOT executed by the test suite or by an agent.
 It produces the golden-file fixture consumed by the slow faithfulness test
@@ -10,15 +10,15 @@ What the snapshot is for
 The cluster harness (``xcquinox.alec.cluster``) is a de-notebooked extraction
 of the step-7 spec-building logic in ``notebooks/_build_step7_notebook.py``.
 The faithfulness test asserts the harness still reproduces the *physical
-content* of a representative step-7 ``TrainingSpec`` — so a future refactor
+content* of a representative step-7 ``TrainingSpec`` -- so a future refactor
 that silently changes a target, an atom-energy anchor, a loss kwarg, or a
 solver setting is caught.
 
 To compare, the test needs a committed reference. This script builds one
 representative step-7 ``TrainingSpec`` via the harness, serializes its
 physically-meaningful content to JSON, stamps the current git SHA of
-``notebooks/_build_step7_notebook.py`` (so a stale snapshot — captured before
-the notebook builder changed — is detectable), and writes it to::
+``notebooks/_build_step7_notebook.py`` (so a stale snapshot -- captured before
+the notebook builder changed -- is detectable), and writes it to::
 
     xcquinox/alec/tests/data/notebook_spec_snapshot.json
 
@@ -49,7 +49,7 @@ The consume-only harness no longer runs subset selection (that is a finished
 offline pre-process whose result lives in ``subset_index_log.json``). For the
 golden snapshot we only need a STABLE, valid subset to lock the spec's
 structure, so a deterministic ledger entry is built from the first
-``subset_size`` points of the (deterministically ordered) pool — no enumeration,
+``subset_size`` points of the (deterministically ordered) pool -- no enumeration,
 near-instant.
 
 What the user must verify
@@ -79,7 +79,7 @@ SNAPSHOT_PATH = os.path.join(
     "notebook_spec_snapshot.json",
 )
 
-# Snapshot schema version — bump if the JSON layout below changes so a stale
+# Snapshot schema version -- bump if the JSON layout below changes so a stale
 # snapshot from an older script is rejected by the test.
 SNAPSHOT_SCHEMA_VERSION = 1
 
@@ -101,7 +101,7 @@ def _git_sha_of(path: str) -> str:
 
 
 def _file_content_sha(path: str) -> str:
-    """SHA-256 of the file's current bytes — detects uncommitted edits to the
+    """SHA-256 of the file's current bytes -- detects uncommitted edits to the
     notebook builder that the commit-SHA alone would miss."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -147,7 +147,7 @@ def _jsonable(obj):
                                                         key=lambda kv: str(kv[0]))}
     if isinstance(obj, (list, tuple)):
         return [_jsonable(v) for v in obj]
-    # SolverConfig (duck-typed) — it has mode + max_cycles.
+    # SolverConfig (duck-typed) -- it has mode + max_cycles.
     if hasattr(obj, "mode") and hasattr(obj, "max_cycles"):
         return _solver_config_dict(obj)
     # enum-like
@@ -190,7 +190,7 @@ def _spec_snapshot(cell, spec) -> dict:
 def build_representative_spec(metric: str, subset_size: int, solver: str):
     """Build one representative step-7 ``TrainingSpec`` through the harness.
 
-    Returns ``(GridCell, TrainingSpec)``. Raises on any harness error — this
+    Returns ``(GridCell, TrainingSpec)``. Raises on any harness error -- this
     is a capture utility, so failing loudly is correct.
     """
     from xcquinox.alec.cluster.domain import get_domain_profile
@@ -206,7 +206,7 @@ def build_representative_spec(metric: str, subset_size: int, solver: str):
     domain = get_domain_profile("dfs_step7")
     points = build_dfs_pool_points(bh76_mode="reaction_energy")
 
-    # Single-cell sweep — only the requested representative cell.
+    # Single-cell sweep -- only the requested representative cell.
     sweep = SweepAxes(
         arch=("deep_combined_attn",),
         loss=("L5_gradnorm_vxc_step7",),

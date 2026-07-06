@@ -99,9 +99,9 @@ class TestLiveStep5Data:
         PBE 1996 eq. 10 integrand structure), so F_x final loss is
         meaningfully tighter for every architecture under integration.
 
-        A regression of this contract — e.g. if a future change
+        A regression of this contract -- e.g. if a future change
         accidentally swapped the integration weight back to a per-grid-
-        point MSE — would break the report's headline narrative.
+        point MSE -- would break the report's headline narrative.
         """
         unw_pm = runs["unweighted"]["pretrain_meta"].set_index("arch")
         int_pm = runs["integration"]["pretrain_meta"].set_index("arch")

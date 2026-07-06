@@ -1,4 +1,4 @@
-# GMTKN55 — source of truth for BH76 / BH76RC references
+# GMTKN55 -- source of truth for BH76 / BH76RC references
 
 The full GMTKN55 benchmark is cloned (gitignored, 190M) at
 `scripts/script_data/gmtkn55/` for local reference-value extraction.
@@ -11,10 +11,10 @@ The BH76RC reaction energies live in `BH76/.resRC` (W2-F12 best estimates, the
 GMTKN55-BH76RC subset); barrier heights in `BH76/.res`; citations in `BH76/.bib`.
 
 ## Citations (from `BH76/.bib`)
-- **Goerigk2017** — Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, *Phys. Chem.
+- **Goerigk2017** -- Goerigk, Hansen, Bauer, Ehrlich, Najibi, Grimme, *Phys. Chem.
   Chem. Phys.* **19**, 32184 (2017). doi:10.1039/C7CP04913G. (GMTKN55 database)
-- **Zhao2005-1** — Zhao, Lynch, Truhlar, *PCCP* **7**, 43 (2005). doi:10.1039/B416937A.
-- **Zhao2015-2** — Zhao, González-García, Truhlar, *J. Phys. Chem. A* **109**, 2012
+- **Zhao2005-1** -- Zhao, Lynch, Truhlar, *PCCP* **7**, 43 (2005). doi:10.1039/B416937A.
+- **Zhao2015-2** -- Zhao, González-García, Truhlar, *J. Phys. Chem. A* **109**, 2012
   (2005). doi:10.1021/jp045141s. (NHTBH barrier database)
 
 ## BH76RC reaction energies used by `eval_probes.PROBE_C_BH76_OUT_OF_TRAINING`
@@ -32,7 +32,7 @@ All in kcal/mol, reactant→product as written (W2-F12, `BH76/.resRC`):
 Cross-checked against Minnesota HTBH38/08 + NHTBH38/08 (REF1) Vf−Vr: agree to
 <0.7 kcal/mol (the W2-F12-vs-barrier-database difference). GMTKN55 is authoritative.
 
-## Note — training (dfs_pool) BH76 values differ slightly from GMTKN55
+## Note -- training (dfs_pool) BH76 values differ slightly from GMTKN55
 `xcquinox/alec/dfs_pool.py` stores the 3 Dick training BH76 reaction energies from
 the Minnesota REF1 barrier difference (Vr−Vf): +65.14 / −5.57 / +103.53. The
 GMTKN55-BH76RC (W2-F12) values for the same reactions are +64.91 / −5.44 / +103.28.

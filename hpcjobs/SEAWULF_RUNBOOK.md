@@ -13,7 +13,7 @@ The repo has already been rsynced to `$GROUP/Alec/xcquinox` and `~/xcquinox` is 
 symlink to that path. This runbook starts from that point.
 
 In bash commands below, `$GROUP` / `$SCRATCH` / `$HOME` are used where convenient.
-In `step7.local.yaml`, **always use the canonical absolute path** — env vars are
+In `step7.local.yaml`, **always use the canonical absolute path** -- env vars are
 not expanded inside YAML strings and the harness wants absolute paths that
 resolve identically on every node.
 
@@ -72,7 +72,7 @@ python -c "import xcquinox; print(xcquinox.__file__)"
 # expect: /gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/__init__.py
 python -c "from xcquinox.alec import cluster; print('cluster ok')"
 echo "$(conda info --base)/etc/profile.d/conda.sh"
-# ↑ save this output — it goes in cluster.conda_profile in step 5
+# ↑ save this output -- it goes in cluster.conda_profile in step 5
 ```
 
 ---
@@ -105,30 +105,30 @@ $EDITOR hpcjobs/configs/step7.local.yaml
 ```
 
 Set every `CHANGE_ME` to the values in this table. **Use the absolute paths
-exactly as written** — do not use `$GROUP` / `$SCRATCH` env vars in the YAML.
+exactly as written** -- do not use `$GROUP` / `$SCRATCH` env vars in the YAML.
 
 | field | value |
 |---|---|
 | `cluster.conda_profile` | `/gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh` (user's personal miniconda install under `$GROUP`, confirmed via `conda info --base`) |
 | `cluster.conda_env` | `/gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox` |
-| `cluster.account` | **leave blank** (`""`). SeaWulf routes your jobs to your default Fernandez allocation based on user identity — no explicit `--account=` needed. The harness omits the `#SBATCH --account=` line entirely when this is empty (`submit.py:_optional_sbatch_line`). |
+| `cluster.account` | **leave blank** (`""`). SeaWulf routes your jobs to your default Fernandez allocation based on user identity -- no explicit `--account=` needed. The harness omits the `#SBATCH --account=` line entirely when this is empty (`submit.py:_optional_sbatch_line`). |
 | `cluster.mail_user` | `alec.wills@stonybrook.edu` |
 | `cluster.mail_type` | `BEGIN,END,FAIL` (SLURM's keyword for job-start is `BEGIN`, not `START`) |
 | `inputs.output_root` | `/gpfs/scratch/awills/xcquinox_runs` |
 | `inputs.external_refs_dir` | `/gpfs/scratch/awills/external_refs` |
 | `inputs.subset_ledger_path` | `/gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step7/<alpha_on\|alpha_off>/subset_index_log.json` (C4-03: choose the alpha-mode subdir you are training) |
-| `pretrain.data_dir` | `/gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step6/pretrain_data` (contains `pretrain_data.npz` — matches step-7 notebook cells 469/552) |
+| `pretrain.data_dir` | `/gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step6/pretrain_data` (contains `pretrain_data.npz` -- matches step-7 notebook cells 469/552) |
 | `pretrain.pretrain_root` | `/gpfs/scratch/awills/pretrain` |
 
 Leave `inputs.basis`, `inputs.grid_level`, the `cluster:` resource defaults, and
 the `pretrain:` hyperparameters at template values. The SeaWulf etiquette
 throttle (`array_throttle: 4`) is already set in the template.
 
-**Partition is NOT in the config** — it is set on the CLI at submit time via the
+**Partition is NOT in the config** -- it is set on the CLI at submit time via the
 required `--partition` flag (and the optional per-stage
 `--{train,eval,preflight,pretrain}-partition` overrides). The config's
 `partition:` is intentionally empty so a submission never silently lands on a
-queue that only exists on one login-node set. See steps 7–8.
+queue that only exists on one login-node set. See steps 7-8.
 
 > **Login-node ↔ queue coupling.** The `*-96core-shared` queues live on the
 > `milan1`/`milan2` SLURM instance; the `*-28core` queues live on
@@ -165,7 +165,7 @@ python -m xcquinox.alec.cluster submit hpcjobs/configs/step7.local.yaml \
 **Use a long-wall queue for all stages.** The config now sets train, preflight,
 and pretrain to an **8 h** wall (a 2 h train wall previously killed 15/40 specs
 mid-training). The *short* queues cap at **4 h**, so the whole graph goes on a
-queue that allows 8 h — `long-96core-shared` is simplest (`--partition` is the
+queue that allows 8 h -- `long-96core-shared` is simplest (`--partition` is the
 base for all four stages). On `login1`/`login2`, use `long-28core` instead.
 SeaWulf queue max-walls: `short-* 4 h`, `medium-* 12 h`, `long-28core 2 days`,
 `long-96core-shared` (longer still). To shorten/lengthen a stage ad-hoc, add
@@ -173,7 +173,7 @@ SeaWulf queue max-walls: `short-* 4 h`, `medium-* 12 h`, `long-28core 2 days`,
 
 **Allocation = whole node per task.** Every stage defaults to `exclusive`
 (`#SBATCH --nodes=1 --exclusive`, **no `--mem`**), so each training task owns a
-full node's RAM — required since training peaks near 90 GB and 4 sliced tasks
+full node's RAM -- required since training peaks near 90 GB and 4 sliced tasks
 would OOM a 256 GB node. You never set `mem`. `--max-nodes N` is then the number
 of *nodes running at once* (it sets the array throttle; 1 task = 1 node);
 `--max-nodes 3` keeps you at the shared-queue etiquette cap. Per-stage
@@ -187,17 +187,17 @@ Inspect `hpcjobs/runs/run_<UTC-timestamp>/scripts/{pretrain,preflight,train_arra
   `eval_array` shows `02:00:00`.
 - Every script carries `#SBATCH --nodes=1` + `#SBATCH --exclusive` and **no**
   `#SBATCH --mem` line (whole-node allocation).
-- The train script runs `exec python -m …_train_task …` (the `exec` lets the
+- The train script runs `exec python -m ..._train_task ...` (the `exec` lets the
   worker receive the wall-clock grace signal so a timeout is recorded + auto-
   recoverable by `resubmit`).
 - Train/eval arrays carry `--array=0-N%3` (the `--max-nodes 3` cap).
 - Conda activation lines reference `/gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox`.
 
 Advisory `UserWarning`s about non-existent paths during a login-node dry-run are
-expected — the preflight job is authoritative on the compute side.
+expected -- the preflight job is authoritative on the compute side.
 
 A one-line `RuntimeWarning` from `python -m` about `__main__` in `sys.modules` is
-a benign CPython quirk — ignore it.
+a benign CPython quirk -- ignore it.
 
 ---
 
@@ -212,12 +212,12 @@ python -m xcquinox.alec.cluster submit hpcjobs/configs/step7.local.yaml --submit
 
 The resolved partitions, node caps **and** walls are baked into
 `<run_dir>/resolved_config.yaml`, so the recovery commands (`resubmit`,
-`resubmit-preflight`) reuse them automatically — you do **not** repeat
+`resubmit-preflight`) reuse them automatically -- you do **not** repeat
 `--partition` / `--max-nodes` / `--time` on those.
 
 **Timeout recovery is now automatic.** If a train task still hits its wall, the
 worker records a `failure.json{classification: "timeout"}` (via the `exec`'d
-SIGTERM handler), and `resubmit … --submit` re-runs it — rerouted to the
+SIGTERM handler), and `resubmit ... --submit` re-runs it -- rerouted to the
 `timeout_retry_partition`/`timeout_retry_time` knobs if you set them in the
 config (otherwise on the same resources). No more manual `sbatch` overrides.
 
@@ -272,10 +272,10 @@ harness layout. The `list-runs` subcommand discovers what's on the cluster.
 > **Migration note.** Pre-2026-05-29, `XCQUINOX_CLUSTER_REMOTE_ROOT`
 > defaulted to `/gpfs/scratch/awills/xcquinox_runs/runs` (a specific
 > single-series subdir that doesn't actually exist in the canonical layout).
-> The default is now `/gpfs/scratch/awills/xcquinox_runs` — the base scratch
-> directory — and a new `--category` flag selects which experiment-series
-> subdir (`alpha_off/runs`, `polarized/alpha_on`, …) the run dirs live in.
-> If your shell currently has `export XCQUINOX_CLUSTER_REMOTE_ROOT=…/runs`,
+> The default is now `/gpfs/scratch/awills/xcquinox_runs` -- the base scratch
+> directory -- and a new `--category` flag selects which experiment-series
+> subdir (`alpha_off/runs`, `polarized/alpha_on`, ...) the run dirs live in.
+> If your shell currently has `export XCQUINOX_CLUSTER_REMOTE_ROOT=.../runs`,
 > drop the `/runs` tail and add `--category runs` to your pull invocations.
 
 ### Layout this assumes
@@ -295,12 +295,12 @@ collide.
 
 ### Two profiles
 
-- **`summaries`** (default) — manifest, resolved config, every per-spec
+- **`summaries`** (default) -- manifest, resolved config, every per-spec
   `eval_df.csv` / `failure.json` / `losses.npy` / `eval/per_molecule.json`,
   and pretrain metadata + loss curves. **No `*.eqx`, no `logs/`.** Typically
   **< 100 MB / 40-spec run**, so this is the right default for driving
   `analyze.collect_results()` and the notebook figures.
-- **`full`** — mirrors the run dir minus `logs/`. **~11–12 MB / 40-spec
+- **`full`** -- mirrors the run dir minus `logs/`. **~11-12 MB / 40-spec
   run** for the current `deep_combined_attn` arch (each `model.eqx` is
   ~126 KB; xnet+cnet pretrain nets ~64 KB each). Use this when you need
   the actual trained `model.eqx` or pretrain `xnet.eqx` / `cnet.eqx`
@@ -311,7 +311,7 @@ collide.
 ### One-time setup
 
 ```bash
-# ~/.ssh/config — alias + ControlMaster so repeat rsyncs do not re-handshake
+# ~/.ssh/config -- alias + ControlMaster so repeat rsyncs do not re-handshake
 cat >> ~/.ssh/config <<'EOF'
 Host seawulf
     HostName login.seawulf.stonybrook.edu
@@ -321,7 +321,7 @@ Host seawulf
     ControlPersist 10m
 EOF
 
-# ~/.bashrc — optional, overrides the built-in defaults
+# ~/.bashrc -- optional, overrides the built-in defaults
 export XCQUINOX_CLUSTER_HOST=seawulf
 # (XCQUINOX_CLUSTER_REMOTE_ROOT default = /gpfs/scratch/awills/xcquinox_runs)
 # Set if you want a sticky default category for this shell:
@@ -331,7 +331,7 @@ export XCQUINOX_CLUSTER_HOST=seawulf
 ```
 
 Bash aliases like `alias seawulf="ssh awills@login2.seawulf.stonybrook.edu"`
-are **not** usable for the `XCQUINOX_CLUSTER_HOST` value — the harness
+are **not** usable for the `XCQUINOX_CLUSTER_HOST` value -- the harness
 `subprocess.run(["ssh", host, ...])` bypasses bash so aliases are invisible.
 Use an `~/.ssh/config` Host alias (above) or set the env var to a literal
 `user@hostname` string (e.g. your existing `$swpath`).
@@ -354,7 +354,7 @@ python -m xcquinox.alec.cluster list-runs
 #   polarized/alpha_on/  (1 run)
 #     run_20260527T143052Z   <- latest
 
-# Tune the search depth (default 5 — sufficient for the current layout, where
+# Tune the search depth (default 5 -- sufficient for the current layout, where
 # the deepest run lives at polarized/<axis>/runs/run_<UTC>Z = depth 4). Bump
 # if you nest categories further:
 python -m xcquinox.alec.cluster list-runs --depth 7
@@ -379,7 +379,7 @@ python -m xcquinox.alec.cluster pull latest --category alpha_off/runs --dry-run
 # When you need the actual trained models for re-evaluation:
 python -m xcquinox.alec.cluster pull latest --category alpha_off/runs --profile full
 
-# Then analyze locally — the local tree mirrors the category:
+# Then analyze locally -- the local tree mirrors the category:
 python -m xcquinox.alec.cluster results \
     ~/Documents/Research/xcquinox-results/runs/alpha_off/runs/run_20260601T120000Z
 ```
@@ -387,7 +387,7 @@ python -m xcquinox.alec.cluster results \
 `pull latest` resolves the newest `run_<UTC>Z` under
 `<remote-root>/<category>/` via `ssh <host> ls -1tr` (filtering out stray
 non-run-dir entries). The summaries profile is small enough that you can
-re-run `pull latest --category …` ad hoc to refresh as eval tasks finish —
+re-run `pull latest --category ...` ad hoc to refresh as eval tasks finish --
 rsync's `--partial` flag makes resumes cheap.
 
 ### Why error output is clean
@@ -395,7 +395,7 @@ rsync's `--partial` flag makes resumes cheap.
 SeaWulf's SSH server prints a multi-line compliance banner to stderr on
 every connection. On a failing command (e.g. wrong `--remote-root`), the
 harness used to dump the banner *and* the real error together; now the
-error formatter shows only the last 3 non-blank lines of stderr — the real
+error formatter shows only the last 3 non-blank lines of stderr -- the real
 `ls:`/`find:` error always lives at the tail, so the banner gets dropped
 from view without anything important being suppressed.
 
@@ -408,7 +408,7 @@ harness output layout that forgets to update the filter (or the category
 plumbing) fails CI loudly instead of silently dropping artifacts at pull
 time.
 
-### 10.5 Local test-set re-evaluation — because cluster eval is in-sample only
+### 10.5 Local test-set re-evaluation -- because cluster eval is in-sample only
 
 > **Known harness gap.** The cluster eval array (`_eval_one_spec.py`)
 > evaluates every trained network **only on the molecules it was trained
@@ -423,8 +423,8 @@ time.
 > This is therefore a measure of **training fit quality**, not held-out
 > generalization. Large MAE in those rows indicates **training failure**
 > (the optimizer couldn't fit even its own training data), not poor
-> generalization. The proper harness fix — adding `holdout_molecules` to
-> the schema and plumbing it through to the eval worker — is tracked as a
+> generalization. The proper harness fix -- adding `holdout_molecules` to
+> the schema and plumbing it through to the eval worker -- is tracked as a
 > future PR; meanwhile, the recommended workflow is:
 
 #### Workflow
@@ -440,13 +440,13 @@ time.
    training loss. Specs in the **lower-left** cluster (low loss, low MAE)
    converged cleanly and are the ones worth re-evaluating on a held-out
    pool. Specs in the shaded **upper-right failure region** (MAE > 5
-   kcal/mol or final loss > 5e-3) were not adequately trained — local
+   kcal/mol or final loss > 5e-3) were not adequately trained -- local
    re-eval would just confirm "the network can't represent anything", so
    skip them.
 
 2. **Pull the checkpoints.** With the current `deep_combined_attn` arch
    `model.eqx` files at ~126 KB each, a full-mirror pull across all 3 ready
-   categories is only **~34 MB** — small enough to pull everything in one
+   categories is only **~34 MB** -- small enough to pull everything in one
    shell loop:
 
    ```bash
@@ -487,7 +487,7 @@ time.
    ```
 
    Per-spec failures (NaN convergence, etc.) are logged but do not abort
-   the batch — a final summary table reports `n_ok / n_total` per
+   the batch -- a final summary table reports `n_ok / n_total` per
    category. To background a long run:
 
    ```bash
@@ -506,7 +506,7 @@ time.
    Defaults: held-out pool = **BH76 + W4-11 combined**; **loose mode**
    (every reaction is kept; any training-set overlap is recorded in the
    output `note` column). Rationale: H is in every training set as a
-   Dick regularization anchor — dropping every reaction with H overlap
+   Dick regularization anchor -- dropping every reaction with H overlap
    would discard the *entire* BH76 pool. Similarly, when H2O appears in
    the training set (e.g. spec_0 with subset_size=1), evaluating its
    atomization energy AE(H2O) = E(H2O) − 2·E(H) − E(O) is exactly the
@@ -517,27 +517,27 @@ time.
    The script writes two files per spec, sitting alongside the cluster's
    eval outputs so the figure pipeline can consume them later:
 
-   - `<run_dir>/checkpoints/spec_<NNNN>/local_test_set.csv` — one row per
+   - `<run_dir>/checkpoints/spec_<NNNN>/local_test_set.csv` -- one row per
      pool (BH76, W4-11) plus a combined `held_out_combined` row, with
      columns `set, mae_nn_kcalmol, mae_pbe_kcalmol, delta_nn_minus_pbe,
      n_reactions, n_dropped_overlap, note`. The PBE MAE is computed on the
      SAME reactions using the by-product `E_pbe` from each species'
-     precompute (~free) — gives a direct apples-to-apples NN-vs-PBE
+     precompute (~free) -- gives a direct apples-to-apples NN-vs-PBE
      comparison on the curated subset. The PBE numbers should reproduce
      the published values (BH76 ≈ 8.08, W4-11 ≈ 10.45 kcal/mol on this
      curation); they're a sanity-check on the pool builders.
-   - `<run_dir>/checkpoints/spec_<NNNN>/eval/local_per_molecule.json` —
+   - `<run_dir>/checkpoints/spec_<NNNN>/eval/local_per_molecule.json` --
      one record per pool species (including those in the training set,
      flagged via `from_training_subset: bool` so downstream plotters can
      split). Schema-compatible with the cluster's `per_molecule.json`.
-   - `<run_dir>/checkpoints/spec_<NNNN>/eval/local_per_reaction.json` —
+   - `<run_dir>/checkpoints/spec_<NNNN>/eval/local_per_reaction.json` --
      one record per held-out reaction (16: 6 BH76 + 10 W4-11) carrying
      paired NN/PBE predicted ΔE and absolute errors plus an
      `in_sample_overlap` list of any training-set species the reaction
      touches. Drives the per-reaction figures (per-pool breakdown,
      NN−PBE grid heatmap, per-reaction ranking).
    - `<run_dir>/checkpoints/spec_<NNNN>/eval/local_subset_descriptors.json`
-     — per-molecule grid-weighted means of every DMStatistics + Cusp
+     -- per-molecule grid-weighted means of every DMStatistics + Cusp
      descriptor feature column across the spec's training subset, plus
      summary stats (mean/std/min/max/range across the subset). Written
      by `python notebooks/analysis/extract_subset_descriptors.py --auto`
@@ -547,7 +547,7 @@ time.
      against the largest-subset reference, separated by metric).
 
 When ≥2 categories are populated, `make_cluster_pulls_figure.py` also
-renders **Fig 16 — cross-category NN vs PBE**: strip plot of per-spec
+renders **Fig 16 -- cross-category NN vs PBE**: strip plot of per-spec
 held-out NN MAE per (category × metric × solver) plus a stacked histogram
 of NN−PBE delta per category. Use this to read off the
 alpha-mode and polarization effects at a glance once
@@ -566,7 +566,7 @@ alpha-mode and polarization effects at a glance once
    `precompute_fixed_density_data` runs the right PBE branch automatically
    and `fixed_density_total_energy` routes through `split_exc_energy_uks`
    for polarized models. **No flag needed when you re-eval the
-   polarized/* checkpoints** — once they finish on the cluster, the same
+   polarized/* checkpoints** -- once they finish on the cluster, the same
    `--auto` invocation evaluates them with the correct UKS path.
 
 #### Long-term fix (not this turn)
@@ -592,9 +592,9 @@ truth for held-out MAE numbers in any paper/report.
 /gpfs/scratch/awills/xcquinox_runs/runs/run_<UTC-timestamp>/
   resolved_config.yaml                                 the exact resolved config (provenance)
   scripts/{pretrain,preflight,train_array,eval_array}.sbatch
-  specs/spec_0000.spec …                               one materialized TrainingSpec per array task (preflight writes)
+  specs/spec_0000.spec ...                               one materialized TrainingSpec per array task (preflight writes)
   manifest.json                                        idx → GridCell → spec file → hash (preflight writes)
-  checkpoints/spec_0000/ …                             model.eqx, losses, eval/, eval_df.csv (train/eval write)
+  checkpoints/spec_0000/ ...                             model.eqx, losses, eval/, eval_df.csv (train/eval write)
   jobs.json                                            submitted-job records (pretrain/preflight/train/eval)
   logs/{pretrain,preflight,train,eval}_*.out
   submit_commands.txt                                  every sbatch invocation, timestamped
@@ -608,14 +608,14 @@ not under the run dir.
 ## Resolved values (no remaining unknowns)
 
 - **`pretrain.data_dir`**: `/gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/checkpoints_step6/pretrain_data`
-  — directory holding `pretrain_data.npz`. Matches what the step-7 notebook uses
+  -- directory holding `pretrain_data.npz`. Matches what the step-7 notebook uses
   (cells 469 and 552 of `gga_training_example-step7.ipynb`), which is what the
   pretrain stage's `run_pretrain` loads via
   `os.path.join(spec.data_dir, "pretrain_data.npz")` (see
   `xcquinox/alec/pretrain.py:225`). Bundled with the rsync; verify on cluster:
   `ls $GROUP/Alec/xcquinox/notebooks/checkpoints_step6/pretrain_data/pretrain_data.npz`.
 - **`cluster.account`**: leave blank. The user confirmed they have never needed
-  to pass `--account=` in their normal `sbatch` workflow on SeaWulf — their
+  to pass `--account=` in their normal `sbatch` workflow on SeaWulf -- their
   default allocation (Fernandez group) is bound to the `awills` user identity
   and is selected automatically. The harness already treats `account` as
   optional (`ClusterResources.account` defaults to `""` in

@@ -1,4 +1,4 @@
-"""Tests for ``plot_scf_convergence`` — per-molecule SCF-step ingest + render."""
+"""Tests for ``plot_scf_convergence`` -- per-molecule SCF-step ingest + render."""
 from __future__ import annotations
 
 import importlib.util

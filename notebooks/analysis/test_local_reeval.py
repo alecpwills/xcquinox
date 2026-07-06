@@ -313,9 +313,9 @@ def test_main_smoke_with_stubbed_pyscf(tmp_path, monkeypatch):
     assert any("test_set_bh76" in line for line in csv_text[1:])
     assert any("test_set_w411" in line for line in csv_text[1:])
     assert any("held_out_combined" in line for line in csv_text[1:])
-    # NEW default: loose — no reactions dropped, AE_H2O kept despite H/O
+    # NEW default: loose -- no reactions dropped, AE_H2O kept despite H/O
     # overlap. Layout: set,mae_nn,mae_pbe,delta,n_reactions,
-    # n_dropped_overlap,n_dropped_nan,note — so n_dropped_overlap is index 5
+    # n_dropped_overlap,n_dropped_nan,note -- so n_dropped_overlap is index 5
     # and n_dropped_nan is index 6.
     w411_row = [l for l in csv_text[1:] if "test_set_w411" in l][0]
     cols = w411_row.split(",")
@@ -472,7 +472,7 @@ def test_main_auto_smoke_across_multiple_categories(tmp_path, monkeypatch):
     """The --auto driver discovers every category + every spec with a
     model.eqx, and per-spec failures do not abort the batch."""
     # Two categories: alpha_on (3 specs, all with model) and alpha_off
-    # (3 specs, only the middle one without a model — mimicking in-flight
+    # (3 specs, only the middle one without a model -- mimicking in-flight
     # training).
     _materialize_fake_pulled_tree(
         tmp_path, category="alpha_on/runs", stamp="run_20260525T163822Z",

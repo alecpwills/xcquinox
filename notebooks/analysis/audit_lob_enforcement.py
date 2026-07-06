@@ -62,7 +62,7 @@ def pbe_fx_analytic(s: np.ndarray) -> np.ndarray:
 def build_ch4_grid(arch_name: str):
     """Build CH4 (rho, sigma, features, s) on the PBE grid for one arch.
 
-    Cached by arch — the descriptor features depend on the arch's
+    Cached by arch -- the descriptor features depend on the arch's
     descriptor list, but the grid coords/density themselves don't.
     """
     arch_cfg = alec.get_architecture(arch_name)
@@ -141,7 +141,7 @@ def main() -> int:
 
     print()
     print("=" * 70)
-    print(f"LIEB-OXFORD BOUND ENFORCEMENT — {args.run_dir.name} pretrain-origin")
+    print(f"LIEB-OXFORD BOUND ENFORCEMENT -- {args.run_dir.name} pretrain-origin")
     print("=" * 70)
     print(f"  Specs scanned:              {len(rows)}")
     print(f"  max(F_x) global:            {arr_max.max():.6f}  (LOB ceiling = {LOB_CEILING})")
@@ -157,7 +157,7 @@ def main() -> int:
     if n_violate == 0:
         print(f"  ✓ LOB IS ENFORCED.  All {len(rows)} specs respect F_x <= 1.804.")
     else:
-        print(f"  ✗ LOB VIOLATED in {n_violate} specs — investigate the _AlecLOB clamp.")
+        print(f"  ✗ LOB VIOLATED in {n_violate} specs -- investigate the _AlecLOB clamp.")
 
     arr_asym = np.array([r["fx_at_s5plus"] for r in rows])
     arr_asym = arr_asym[~np.isnan(arr_asym)]

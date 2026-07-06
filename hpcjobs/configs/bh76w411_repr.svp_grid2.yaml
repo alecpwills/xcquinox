@@ -1,5 +1,5 @@
 # =============================================================================
-# bh76w411_repr.svp_grid2.yaml — train the 8-arch ablation set on the BH76+W4-11
+# bh76w411_repr.svp_grid2.yaml -- train the 8-arch ablation set on the BH76+W4-11
 # JSD representative subsets (r=1..6). Submission A: def2-svp + grid_level 2, NO
 # density fitting.
 # =============================================================================

@@ -67,7 +67,7 @@ def test_mae_of_returns_mean_absolute():
 
     DFT atomization-energy errors are signed; a model that overshoots and
     undershoots in equal proportion has a tiny mean(value) but a large
-    mean(|value|) — only the latter is the reported MAE.
+    mean(|value|) -- only the latter is the reported MAE.
     """
     df = pd.DataFrame({
         "loss":       ["L1", "L1", "L1"],

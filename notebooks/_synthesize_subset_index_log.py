@@ -8,7 +8,7 @@ When to use:
     The earlier subset-generation cell did not persist the ledger after each
     (metric, r) pair (only at the very end of all 20).  If a long run is
     killed mid-way, the subset.traj files for completed pairs are on disk
-    but no ledger entry exists — so the new resume-aware cell would re-run
+    but no ledger entry exists -- so the new resume-aware cell would re-run
     those completed enumerations.
 
 What it does:
@@ -26,7 +26,7 @@ What it does:
        per-pair entries: chosen_indices, metric_value, atom_set, tag.
 
 Idempotent: if a ledger already exists, entries from this synthesis OVERWRITE
-matching keys (metric/r/aug) — the synthesized values are recomputed exactly
+matching keys (metric/r/aug) -- the synthesized values are recomputed exactly
 the way the cell would compute them, so this stays consistent.
 """
 from __future__ import annotations
@@ -128,7 +128,7 @@ def _parse_subset_traj(traj_path: Path, hill_to_idx: dict[str, int]):
         if len(at) == 1:
             atom_syms_set.add(at.get_chemical_symbols()[0])
         else:
-            # Unknown entry — skip but warn
+            # Unknown entry -- skip but warn
             print(f"  [warn] {traj_path}: unrecognized entry "
                   f"(formula={at.get_chemical_formula()}, "
                   f"info_keys={list(at.info.keys())})")
@@ -189,7 +189,7 @@ def main() -> int:
         chosen, atom_set, has_hbpt = _parse_subset_traj(traj_path, hill_to_idx)
         if len(chosen) != r:
             print(f"  [warn] {slashkey}: subset.traj has {len(chosen)} chosen "
-                  f"AE entries but tag implies r={r} — skipping")
+                  f"AE entries but tag implies r={r} -- skipping")
             n_skip += 1
             continue
         if has_hbpt != aug:

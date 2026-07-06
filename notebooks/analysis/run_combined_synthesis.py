@@ -1,4 +1,4 @@
-"""Combined step-5 + step-6 synthesis report — all four
+"""Combined step-5 + step-6 synthesis report -- all four
 {step5, step6} × {unweighted, integration} workflows in one place.
 
 Reads:
@@ -82,7 +82,7 @@ def load_all_runs() -> dict:
 
 def best_ae_on_h2o(art, step) -> float:
     """Best AE-MAE in kcal/mol on H2O (the trained mol common to both steps).
-    Step 5 trains on H2O only; step 6 trains on H2O + C2H2 — for a fair
+    Step 5 trains on H2O only; step 6 trains on H2O + C2H2 -- for a fair
     cross-step number we restrict step 6 to its H2O subset.
     """
     if art is None:
@@ -165,7 +165,7 @@ def plot_best_ae_4way(arts: dict, out_path: Path) -> None:
                        rotation=18, ha="right", fontsize=10)
     ax.set_ylabel("best |AE error| on H₂O  (kcal/mol, log)")
     ax.set_title(
-        "Combined synthesis — best H₂O AE-MAE achieved per workflow\n"
+        "Combined synthesis -- best H₂O AE-MAE achieved per workflow\n"
         "horizontal lines = PBE on H₂O (~7.03 kcal/mol), chemical accuracy (1 kcal/mol)",
         fontsize=11,
     )
@@ -182,7 +182,7 @@ def plot_best_ae_4way(arts: dict, out_path: Path) -> None:
 
 def plot_pretrain_fx_4way(arts: dict, out_path: Path) -> None:
     """Per-arch pretrain F_x loss bars. Step 5 has 8 archs (left panel),
-    step 6 has 2 archs that are a SUBSET (right panel) — plot both panels
+    step 6 has 2 archs that are a SUBSET (right panel) -- plot both panels
     sharing the y-axis so the cross-step shift is visible.
 
     The cross-step shift on the SHARED archs (deep_combined,
@@ -208,7 +208,7 @@ def plot_pretrain_fx_4way(arts: dict, out_path: Path) -> None:
     axes[0].set_xticklabels(archs5, rotation=22, ha="right", fontsize=8)
     axes[0].set_yscale("log")
     axes[0].set_ylabel("pretrain F_x final MSE  (log)")
-    axes[0].set_title("(a) step 5 — 8 architectures", fontsize=10)
+    axes[0].set_title("(a) step 5 -- 8 architectures", fontsize=10)
     axes[0].grid(True, axis="y", which="both", ls=":", alpha=0.35)
     axes[0].legend(loc="upper right", fontsize=8)
 
@@ -225,12 +225,12 @@ def plot_pretrain_fx_4way(arts: dict, out_path: Path) -> None:
                 label="step6 · integration")
     axes[1].set_xticks(x6)
     axes[1].set_xticklabels(archs6, rotation=22, ha="right", fontsize=8)
-    axes[1].set_title("(b) step 6 — shared archs only", fontsize=10)
+    axes[1].set_title("(b) step 6 -- shared archs only", fontsize=10)
     axes[1].grid(True, axis="y", which="both", ls=":", alpha=0.35)
     axes[1].legend(loc="upper right", fontsize=8)
 
     fig.suptitle(
-        "Combined — pretrain F_x final MSE per architecture, all 4 workflows\n"
+        "Combined -- pretrain F_x final MSE per architecture, all 4 workflows\n"
         "step 6 only includes deep_combined / deep_combined_attn (subset of step 5)",
         fontsize=11,
     )
@@ -275,7 +275,7 @@ def plot_density_vs_ae_unified(arts: dict, out_path: Path) -> None:
     ax.set_ylabel("density-RMSE on H₂O  (e/bohr³, log)")
     ax.grid(True, which="both", ls=":", alpha=0.35)
     ax.set_title(
-        "Combined density-vs-energy plane — all four step{5,6}/{unweighted,integration} workflows\n"
+        "Combined density-vs-energy plane -- all four step{5,6}/{unweighted,integration} workflows\n"
         "Burke 1998 (in Kepp 2017): 'functionals which yield highly accurate energies often\n"
         "produce potentials which differ markedly from the exact ones'",
         fontsize=10,
@@ -287,7 +287,7 @@ def plot_density_vs_ae_unified(arts: dict, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Figure 4: Transfer overlap — CH4 / H2 / OH across all 4
+# Figure 4: Transfer overlap -- CH4 / H2 / OH across all 4
 # ---------------------------------------------------------------------------
 
 def plot_transfer_overlap(arts: dict, out_path: Path) -> None:
@@ -362,7 +362,7 @@ def plot_transfer_overlap(arts: dict, out_path: Path) -> None:
             ax.legend(loc="upper right", fontsize=7)
     axes[0].set_ylabel("median |AE error|  on transfer mol  (kcal/mol, log)")
     fig.suptitle(
-        "Combined transfer comparison — restricted to common-loss-strategy specs\n"
+        "Combined transfer comparison -- restricted to common-loss-strategy specs\n"
         "step 5: {B, C} only · step 6: {L1_B, L2_C_anchor} only · L3/L4/L5 V_xc-aware excluded\n"
         "(without this restriction, step 6's median is inflated by V_xc-aware losses with no step-5 analog)",
         fontsize=10,
@@ -405,7 +405,7 @@ def plot_normalized_landscape(arts: dict, out_path: Path) -> None:
     ax.set_xlabel("log₁₀(|AE error| / chem. accuracy)  on H₂O")
     ax.set_ylabel("count of specs")
     ax.set_title(
-        "Combined — distribution of H₂O AE-MAE across all specs, four workflows\n"
+        "Combined -- distribution of H₂O AE-MAE across all specs, four workflows\n"
         "leftward shift = better; left of purple = below chemical accuracy",
         fontsize=11,
     )
