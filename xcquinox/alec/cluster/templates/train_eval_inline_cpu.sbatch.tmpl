@@ -16,9 +16,20 @@ set -uo pipefail
 ${CONDA_ACTIVATION}
 
 # --- thread caps -----------------------------------------------------------
-export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
-export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
-export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+# 2026-07-06: train_eval's linear algebra runs through XLA/JAX, so these BLAS/OMP
+# pools are pre-spawned but IDLE. Pinning each to the full core count starved LLVM's
+# parallel codegen during the big dfs6311 compile: `pthread_create failed: Resource
+# temporarily unavailable` -> rc -6/-11 (classified oom) after training already ran.
+# Give the idle pools a small, node-scaled slice (~1/12 of the allocated cores -> 8 on
+# a 96-core node, 2 on a 28-core node) and leave the rest of the thread budget for
+# XLA's runtime pool + LLVM codegen. Derived from the allocation so it scales evenly
+# across node sizes instead of a fixed constant.
+CORES="$${SLURM_CPUS_PER_TASK:-$$(nproc)}"
+BLAS_THREADS=$$(( CORES / 12 )); [ "$$BLAS_THREADS" -ge 1 ] || BLAS_THREADS=1
+export OMP_NUM_THREADS="$$BLAS_THREADS"
+export MKL_NUM_THREADS="$$BLAS_THREADS"
+export OPENBLAS_NUM_THREADS="$$BLAS_THREADS"
+echo "[thread-caps] CORES=$$CORES -> OMP/MKL/OPENBLAS=$$BLAS_THREADS (idle in train_eval; XLA+LLVM keep the rest)"
 ${BENCH_REFS_ENV_LINE}
 # --- JAX/XLA CPU backend ---------------------------------------------------
 # 2026-07-04: dropped the bare `intra_op_parallelism_threads=...` token (it was
@@ -38,6 +49,9 @@ export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true --xla_force_host_platform_de
 # worker in the background and forward SIGTERM to its PID via a trap, so the
 # worker's grace handler (_train_task._install_sigterm_handler) still fires and
 # writes the timeout failure.json -- matching the non-inline exec'd behavior.
+# Raise the per-user process/thread ceiling if node policy permits (extra
+# pthread_create headroom for LLVM codegen); harmless where the hard limit forbids it.
+ulimit -u unlimited 2>/dev/null || true
 python -m xcquinox.alec.cluster._train_task ${RUN_DIR} $${SLURM_ARRAY_TASK_ID} &
 train_pid=$$!
 trap 'echo "[inline-eval] forwarding SIGTERM to train pid $${train_pid}"; kill -TERM $${train_pid} 2>/dev/null' TERM
