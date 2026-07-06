@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """capture_notebook_spec_snapshot.py -- capture the golden spec snapshot.
 
-USER-RUN HELPER. This script is NOT executed by the test suite or by an agent.
+Manual helper -- produces a committed fixture; not run by the test suite.
 It produces the golden-file fixture consumed by the slow faithfulness test
 ``xcquinox/alec/tests/test_cluster_spec_golden.py``.
 
@@ -293,7 +293,7 @@ def main(argv=None) -> int:
         description=(
             "Capture the golden step-7 TrainingSpec snapshot consumed by "
             "the slow faithfulness test test_cluster_spec_golden.py. "
-            "USER-RUN: build the spec via the harness, then commit the "
+            "Build the spec via the harness, then commit the "
             "generated JSON fixture."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -1,9 +1,9 @@
 # =============================================================================
 # dfs_step7.svp_grid2_v3.yaml -- the GENERALIZATION-GAP decoupling fixes
-# (2026-06-20 adversarial review, reports_local/dfs_discrepancy_review_2026-06-20.md).
+# (2026-06-20 discrepancy review, reports_local/dfs_discrepancy_review_2026-06-20.md).
 #
 # v2 fixed the training REGIME (ae_as_reactions, density per-electron, LR/budget,
-# pretrain coverage). The review found the residual failure-to-beat-PBE is a
+# pretrain coverage). The residual failure-to-beat-PBE is a
 # COMPOUND generalization gap -- over-capacity nets trained with none of DFS's
 # anti-overfit machinery. v3 applies the three ranked DECOUPLING fixes on top of
 # the v2 regime, as a controlled v2 -> v3 A/B (same 88-cell grid, basis, solver):

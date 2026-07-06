@@ -260,7 +260,7 @@ def test_rho_cutoff_clamps_not_zeros():
     uses inputs above ``_NN_TAIL_THRESHOLD`` (1e-10) so the explicit
     rho_cutoff is the only clamp in play; below that threshold,
     ``eval_exc`` masks F_x = F_c = 1 to keep gradients finite on
-    open-shell atoms (F-H test-quality audit fix: pre-fix test put
+    open-shell atoms (test-quality fix: pre-fix test put
     inputs at the threshold and called eval_Fx/eval_Fc directly which
     bypass the mask, causing index-by-index disagreement)."""
     from xcquinox.utils import lda_x, pw92c_unpolarized_scalar

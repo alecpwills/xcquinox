@@ -140,8 +140,8 @@ def _select_winner(records: list[dict], target_floor: float,
 
 def _emit_snippet(winner: dict, tune_log_path: Path) -> str:
     """Build the Python source snippet for one species' override entry.
-    Plan-3-review fix: includes the JSONL tune-log path + trial index
-    for audit trail per spec §7.3."""
+    Includes the JSONL tune-log path + trial index for provenance per
+    design sec. 7.3."""
     spec = winner["species"]
     settings = winner["settings"]
     res = winner["result"]
@@ -227,8 +227,8 @@ def main() -> int:
         "# AUTO-GENERATED snippet for xcquinox/alec/external_refs.py:_PER_SPECIES_OEP_OVERRIDES.\n"
         "# Source: %s\n" % summary_path
         + "# Citations: [oep-tdl-1..6] in reports_local/latex/references.bib --\n"
-        "# AUTHOR-RECALLED, UNVERIFIED. Verify each via WebFetch + pdftotext\n"
-        "# before paper write-up. REVIEW BEFORE PASTING.\n"
+        "# AUTHOR-RECALLED, UNVERIFIED. Verify each against the cited PDFs\n"
+        "# before paper write-up. Review before committing.\n"
         "#\n"
     ]
     failed = []

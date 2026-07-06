@@ -109,7 +109,7 @@ exactly as written** -- do not use `$GROUP` / `$SCRATCH` env vars in the YAML.
 
 | field | value |
 |---|---|
-| `cluster.conda_profile` | `/gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh` (user's personal miniconda install under `$GROUP`, confirmed via `conda info --base`) |
+| `cluster.conda_profile` | `/gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh` (the miniconda install under `$GROUP`, confirmed via `conda info --base`) |
 | `cluster.conda_env` | `/gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox` |
 | `cluster.account` | **leave blank** (`""`). SeaWulf routes your jobs to your default Fernandez allocation based on user identity -- no explicit `--account=` needed. The harness omits the `#SBATCH --account=` line entirely when this is empty (`submit.py:_optional_sbatch_line`). |
 | `cluster.mail_user` | `alec.wills@stonybrook.edu` |
@@ -569,7 +569,7 @@ alpha-mode and polarization effects at a glance once
    polarized/* checkpoints** -- once they finish on the cluster, the same
    `--auto` invocation evaluates them with the correct UKS path.
 
-#### Long-term fix (not this turn)
+#### Long-term fix (future work)
 
 A follow-up harness PR should:
 
@@ -614,8 +614,8 @@ not under the run dir.
   `os.path.join(spec.data_dir, "pretrain_data.npz")` (see
   `xcquinox/alec/pretrain.py:225`). Bundled with the rsync; verify on cluster:
   `ls $GROUP/Alec/xcquinox/notebooks/checkpoints_step6/pretrain_data/pretrain_data.npz`.
-- **`cluster.account`**: leave blank. The user confirmed they have never needed
-  to pass `--account=` in their normal `sbatch` workflow on SeaWulf -- their
+- **`cluster.account`**: leave blank. This account has not been needed
+  to pass `--account=` in the normal `sbatch` workflow on SeaWulf -- the
   default allocation (Fernandez group) is bound to the `awills` user identity
   and is selected automatically. The harness already treats `account` as
   optional (`ClusterResources.account` defaults to `""` in

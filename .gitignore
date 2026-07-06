@@ -152,6 +152,9 @@ docs/reviews/
 docs/superpowers/
 /AUDIT_*.md
 
+# local dev conventions, not pushed
+CLAUDE.md
+
 # Stray local scratch that `git add -A` would otherwise sweep in: an accidental
 # nested notebooks/ copy, a test-run eqx checkpoint tree, and a representative-
 # subset analysis cache. Regenerable / not source.

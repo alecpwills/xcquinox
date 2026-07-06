@@ -777,7 +777,7 @@ _PER_SPECIES_OEP_OVERRIDES: dict[tuple[str, int, int], tuple[dict, ...]] = {
     # ── Source: reports_local/oep_tune/2026-05-06/summary.json
     # ── Citations [oep-tdl-1..6] resolve to TO-DOWNLOAD entries in
     #    reports_local/latex/references.bib: AUTHOR-RECALLED, UNVERIFIED.
-    #    Verify each via WebFetch + pdftotext before paper write-up.
+    #    Verify each against the cited PDFs before paper write-up.
 
     # cf4 (MANUAL, not from the 2026-05-06 sweep): at def2-tzvpd the OEP
     # plateaus at density_error 2.486e-3, just above the 2e-3 default (a better

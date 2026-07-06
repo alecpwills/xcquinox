@@ -9,8 +9,8 @@ the ``dfs_step7`` domain (``get_domain_profile``, ``build_dfs_pool_points``,
 -- only the pool is shrunk to a handful of small systems. Nothing here is new
 physics.
 
-The training recipe replicated here is the repo's source-audited DFS ("dpyscf")
-methodology, documented in ``xcquinox/alec/HISTORY.md`` (Phases 10-13) and
+The training recipe replicated here is the DFS ("dpyscf") methodology as replicated in
+the repo, documented in ``xcquinox/alec/HISTORY.md`` (Phases 10-13) and
 sourced to Dick & Fernandez-Serra, "Highly accurate and constrained density
 functional obtained with differentiable programming," Phys. Rev. B 104, L161109
 (2021):

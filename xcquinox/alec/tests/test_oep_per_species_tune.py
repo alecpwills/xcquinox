@@ -224,7 +224,7 @@ def test_short_circuit_on_target_floor_hit(tmp_path, monkeypatch):
 def test_trial_record_carries_plateau_fields(tmp_path):
     """Synthetic plateau-terminated OEPResult -> JSONL record has
     termination='plateau', plateau_density_error populated,
-    plateau_window_iters populated. Spec §9.3 / Pass-7 contract."""
+    plateau_window_iters populated. Spec §9.3 contract."""
     import json
     record = {
         "trial_idx": 0,

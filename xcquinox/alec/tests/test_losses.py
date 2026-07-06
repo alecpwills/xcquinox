@@ -1251,7 +1251,7 @@ def test_compute_energies_full_is_differentiable_through_scf():
 
 
 # ---------------------------------------------------------------------------
-# D5-loss audit fix: _dm_term per-element normalization
+# Fix: _dm_term per-element normalization
 # ---------------------------------------------------------------------------
 
 def test_dm_term_normalizes_per_element_for_uks(monkeypatch):
@@ -1358,12 +1358,12 @@ def test_dm_term_n_elems_is_jit_safe(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# D10-loss audit fix: A and D1 now have molecules_only flag
+# Fix: A and D1 now have molecules_only flag
 # ---------------------------------------------------------------------------
 
 def test_atomization_loss_has_molecules_only_field():
     """AtomizationLoss (A) and DeltaAELoss (D1) gained molecules_only
-    flag for consistency with B/C/D2/D3 (D10-loss audit fix)."""
+    flag for consistency with B/C/D2/D3 (fix)."""
     from xcquinox.alec.losses import AtomizationLoss, DeltaAELoss
     molecules = (_nh3_molecule(),)
     a = AtomizationLoss(molecules=molecules)

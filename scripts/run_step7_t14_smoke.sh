@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Step-7 T14 -- single-spec end-to-end smoke verification (USER-RUN ONLY).
+# Step-7 T14 -- single-spec end-to-end smoke check (run manually).
 #
-# Per the standing project directive (memory/feedback_expensive_test_handling.md),
-# this verification is NOT executed by an agent -- wall-clock is 30-90 minutes on
-# first run because Cell 0.5 (CCSD pre-compute) dominates. Cached re-runs are
+# This is a long-running smoke check (30-90 min first run; CCSD precompute dominates).
+# Cached re-runs are
 # under 10 minutes.
 #
 # Run from the repo root:

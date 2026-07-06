@@ -314,12 +314,12 @@ def test_oneshot_result_matches_legacy_total_energy():
 
 
 # ---------------------------------------------------------------------------
-# H1 audit fix: mixer registry
+# Fix: mixer registry
 # ---------------------------------------------------------------------------
 
 def test_mixer_registry_resolves_linear_via_class_lookup():
     """_build_mixer must resolve config.mixer_name through MIXER_REGISTRY,
-    not a hard-coded 'linear' branch (H1 audit fix). The default
+    not a hard-coded 'linear' branch (fix). The default
     'linear' name maps to LinearMixer with the kwargs from
     config.mixer_kwargs."""
     from xcquinox.alec.solver import (
@@ -353,7 +353,7 @@ def test_mixer_registry_unknown_name_raises_with_available_list():
 
 
 def test_full_mode_rejects_frozen_feature_policy():
-    """M2/M7 audit fix: (FULL, FROZEN) is incoherent; constructor
+    """Fix: (FULL, FROZEN) is incoherent; constructor
     must reject it with a clear message."""
     import pytest
     from xcquinox.alec.solver import (

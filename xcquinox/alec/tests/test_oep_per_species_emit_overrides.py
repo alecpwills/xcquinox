@@ -244,7 +244,7 @@ def test_select_winner_rejects_unstable_converged():
 
 def test_select_winner_stability_uses_plateau_metric_window_rtol():
     """Spec §7.1: stability uses (max-min)/median < plateau_rtol over
-    the final plateau_window iters. Pass-3 explicit pin."""
+    the final plateau_window iters. Explicit pin."""
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
@@ -312,7 +312,7 @@ def test_dm_bias_check_dipole_null_for_atomic_species():
 
 
 def test_dm_bias_check_quad_aniso_normalised_by_target_r_squared():
-    """Pass-7 pin: quad_aniso difference is normalized by target_r²
+    """Regression pin: quad_aniso difference is normalized by target_r²
     (NOT by target_q which can be ~0 for symmetric atomic targets)."""
     import sys
     from pathlib import Path
@@ -327,7 +327,7 @@ def test_dm_bias_check_quad_aniso_normalised_by_target_r_squared():
 
 
 def test_pyscf_int1e_rr_returns_9_components():
-    """Pass-7 regression pin: mol.intor('int1e_rr') returns shape
+    """Regression pin: mol.intor('int1e_rr') returns shape
     (9, n_ao, n_ao); diagonal indices 0=xx, 4=yy, 8=zz. Pin the
     PySCF API used in _compute_dm_observables."""
     from pyscf import gto

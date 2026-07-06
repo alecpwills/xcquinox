@@ -389,9 +389,8 @@ def test_v3_yamls_swept_to_rung35_not_combined():
 
 
 # ===========================================================================
-# Gap-closing tests from the 2026-06-29 separate-agent adversarial review:
-# d-functions (Reviewer 1), the multi-cycle SCF loop + model-grad + additivity
-# (Reviewer 2). The H-only fixtures above never exercised d-shells or the lax.scan
+# Gap-closing tests from the 2026-06-29 review: d-functions, and the multi-cycle
+# SCF loop + model-grad + additivity. The H-only fixtures above never exercised d-shells or the lax.scan
 # SCF body; these close that.
 # ===========================================================================
 

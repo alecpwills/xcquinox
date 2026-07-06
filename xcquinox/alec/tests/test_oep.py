@@ -225,7 +225,7 @@ def test_oep_objective_gradient_consistent():
     mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
     mf_pbe = dft.RKS(mol); mf_pbe.xc = "pbe"; mf_pbe.kernel()
     dm_target = mf_pbe.make_rdm1()
-    # New API: _build_aux_basis_matrices returns S_aux too (D2 audit fix).
+    # New API: _build_aux_basis_matrices returns S_aux too (fix).
     _, three_center, aux_on_grid, S_aux = _build_aux_basis_matrices(
         mol, mf_pbe, "sto-3g",
     )
@@ -309,7 +309,7 @@ def test_oep_h2o_ccsd_does_not_crash_with_pathological_bfgs_step():
 
 
 # ---------------------------------------------------------------------------
-# D1 audit fix: baseline_xc parameter (Wu-Yang displacement form)
+# Fix: baseline_xc parameter (Wu-Yang displacement form)
 # ---------------------------------------------------------------------------
 
 def test_oep_baseline_xc_parameter_accepts_arbitrary_xc():
@@ -359,7 +359,7 @@ def test_oep_baseline_xc_parameter_accepts_arbitrary_xc():
 
 
 def test_oep_v_space_regularization_uses_aux_overlap():
-    """D2 audit fix: V-space regularization 0.5*lambda*b^T S_aux b is
+    """Fix: V-space regularization 0.5*lambda*b^T S_aux b is
     aux-basis independent in meaning. Pre-fix coefficient-space
     0.5*lambda*|b|^2 silently changed regularization strength when
     aux_basis was swapped. Heaton-Burgess et al. PRL 98, 256401 (2007).
@@ -394,7 +394,7 @@ def test_oep_v_space_regularization_uses_aux_overlap():
 
 def test_oep_provenance_metadata_persists_through_save_load():
     """save_vxc_ref records baseline_xc/aux_basis/regularization/etc.
-    so downstream loaders can validate consistency (D7 audit fix)."""
+    so downstream loaders can validate consistency (fix)."""
     import os, tempfile
     from xcquinox.alec.oep import OEPResult, save_vxc_ref
     nao = 3
@@ -468,7 +468,7 @@ def test_oep_converged_when_density_error_below_tol_even_at_max_iter():
 
 
 def test_oep_rejects_wrong_basis_target_dm():
-    """D10 audit fix: Tr(S * dm_target) must equal mol.nelectron; a
+    """Fix: Tr(S * dm_target) must equal mol.nelectron; a
     target DM built in a different basis silently has the wrong trace
     and would corrupt the inversion."""
     from xcquinox.alec.oep import run_oep_inversion
@@ -626,7 +626,7 @@ def test_build_mol_and_mf_grid_level_zero_is_legitimate_coarsest():
 
 
 def test_ks_from_vxc_matrix_rhf_default_damp_is_0_1():
-    """Default damp=0.1 (preserves the pre-Pass-1 hardcoded oep.py:255)."""
+    """Default damp=0.1 (preserves the earlier hardcoded oep.py:255)."""
     from pyscf import gto, dft, scf as _scf
     import numpy as np
     from xcquinox.alec.oep import _ks_from_vxc_matrix_rhf
@@ -830,7 +830,7 @@ def test_detect_plateau_does_not_fire_on_descending_history():
 
 def test_detect_plateau_does_not_fire_when_F_val_still_descending():
     """density flat but F_val still descending -> does not fire.
-    Pins the Pass-7 watch-surface correction (F_val, not obj)."""
+    Pins the watch-surface correction (F_val, not obj)."""
     import numpy as np
     from xcquinox.alec.oep import _detect_plateau
     d_e = [3.1e-3] * 20
@@ -924,7 +924,7 @@ def test_save_vxc_ref_does_not_persist_terminated_by_or_dm_final(tmp_path):
 
 
 def test_plateau_F_val_cache_uses_unregularized_lagrangian():
-    """Pass-7 contract: scf_state['F_val_last_eval'] caches F_val
+    """Contract: scf_state['F_val_last_eval'] caches F_val
     (unregularized Lagrangian at oep.py:590/620), NOT obj=-F_val+reg_term.
     Drive a tiny OEP with non-zero regularization and a single
     objective_and_grad evaluation; spy on scf_state."""
@@ -968,7 +968,7 @@ def test_plateau_F_val_cache_uses_unregularized_lagrangian():
 
 
 def test_plateau_F_val_cache_writes_neg_inf_on_scf_failure():
-    """Pass-7 contract: scf_state['F_val_last_eval'] = float('-inf')
+    """Contract: scf_state['F_val_last_eval'] = float('-inf')
     on inner-SCF failure (descending sentinel). Source-text pin,
     the failure path is hard to trigger in a unit test without
     constructing an ill-conditioned problem; pin the contract via
@@ -1051,7 +1051,7 @@ def test_terminated_by_field_for_plateau_path():
 def test_plateau_below_conv_tol_marks_converged():
     """Spec §9.1 + §5.5: plateau-below-conv_tol -> converged=True.
 
-    OEP-01 audit fix: ``converged`` for the plateau path is the
+    Fix: ``converged`` for the plateau path is the
     SCF-verified condition (final_success AND finite AND
     final_error < conv_tol), NOT a re-derivation from the plateau
     median. The plateau median is no longer used to set ``converged``."""
@@ -1152,7 +1152,7 @@ def test_plateau_detector_does_not_fire_on_slow_descent_with_sign_of_trend():
 
 
 def test_plateau_detector_sign_of_trend_uses_rtol_slack():
-    """Spec §9.1 / Pass-7: rtol-scaled slack on the sign-of-trend test
+    """Spec §9.1: rtol-scaled slack on the sign-of-trend test
     ensures L-BFGS-B float-noise micro-oscillations don't false-fire."""
     from xcquinox.alec.oep import _detect_plateau
     # Tight flat tail with last-half-median ε above first-half-median
@@ -1213,7 +1213,7 @@ def test_run_oep_inversion_plateau_catch_path_behavioral(monkeypatch):
     with 'plateau'. Closes the deferred behavioral-coverage gap from
     Plan 1 Task 9 + Task 10 reviews.
 
-    OEP-01 audit fix: ``density_error`` is the SCF-VERIFIED
+    Fix: ``density_error`` is the SCF-VERIFIED
     post-finalization ``final_error``, NOT the plateau median (the old
     behavior). ``converged`` is derived from the SCF-verified error vs
     conv_tol, never from the plateau median.

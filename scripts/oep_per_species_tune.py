@@ -126,7 +126,7 @@ class _Heartbeat:
     scripts/smoke_preflight_uks_oep.py:73-110. Daemon thread prints a
     one-line status every `interval_sec` (default 15s) showing current
     species + trial_idx + elapsed wall-clock + RSS (Linux only).
-    Spec §6.6 + user MEMORY directive on progress reporting."""
+    Heartbeat thread for progress reporting (design sec. 6.6)."""
 
     def __init__(self, interval_sec: float = 15.0) -> None:
         import threading
@@ -173,7 +173,7 @@ class _Heartbeat:
 class _HarnessWallCap(Exception):
     """Raised by the SIGALRM handler when a trial exceeds its wall cap.
     Caught in the per-trial loop; partial trial record is finalized
-    from the harness-owned history accumulator (spec sec. 6.1 Pass-8).
+    from the harness-owned history accumulator (spec sec. 6.1).
     """
 
 
@@ -206,14 +206,14 @@ def _append_jsonl(path, record: dict) -> None:
 
 def _compute_dm_observables(mol, dm, *, is_atomic: bool) -> dict:
     """Compute <r^2>, <3z^2 - r^2> (quadrupole anisotropy), and dipole
-    magnitude on a DM. Per spec sec. 6.1 / sec. 7.1 Pass-7 fix:
+    magnitude on a DM. Per design sec. 6.1 / 7.1:
     quadrupole anisotropy is the load-bearing observable for atomic
     Cartesian-bias detection; <r^2> is a coarser radial-extent
     diagnostic; dipole is null for atomic species (zero by parity)
     and computed for molecular species.
 
     Uses mol.intor('int1e_rr') -> shape (9, n_ao, n_ao) with diagonal
-    indices 0=xx, 4=yy, 8=zz. Verified Pass 7/8 against
+    indices 0=xx, 4=yy, 8=zz. Checked against
     pyscf/scf/hf.py::traceless_quadrupole_tensor.
     """
     import numpy as np
@@ -242,7 +242,7 @@ def _is_stably_converged_inline(history: list[float], *,
     plateau_rtol relative range. Carve-out: terminated_by ==
     'early_stop_conv_tol' AND len(history) < plateau_window → stable
     (the early-stop sentinel certifies cleanly hitting the goal).
-    Plan-3-review fix: harness now populates `converged_stably` rather
+    Fix: harness now populates `converged_stably` rather
     than always-False (was a JSONL schema contract drift)."""
     import statistics
     if not history:
@@ -262,7 +262,7 @@ def _is_stably_converged_inline(history: list[float], *,
 
 def _is_atomic_species(name: str) -> bool:
     """A species is 'atomic' when its name is a single chemical symbol
-    (or symbol+'+' for cations). Mirrors the post-Pass-1 fix in
+    (or symbol+'+' for cations). Mirrors the fix in
     xcquinox/alec/external_refs.py:resolve_geometry."""
     from ase.data import chemical_symbols
     sym = name.rstrip("+")

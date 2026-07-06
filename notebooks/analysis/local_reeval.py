@@ -353,7 +353,7 @@ def run_one_spec(
     # Tuple shape: (mae_nn, mae_pbe, n_used, n_dropped_overlap, n_dropped_nan).
     # n_dropped_overlap is the strict-mode drop count; n_dropped_nan counts
     # reactions silently dropped because their species energies were missing
-    # / non-finite (forensic-review audit gap surfaced 2026-05-29).
+    # / non-finite (bug found 2026-05-29).
     per_pool_mae: Dict[str, Tuple[float, float, int, int, int]] = {}
     all_kept: List[Dict[str, Any]] = []
     n_dropped_total = 0

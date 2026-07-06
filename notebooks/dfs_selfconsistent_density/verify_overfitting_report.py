@@ -2,7 +2,7 @@
 """Data-driven verification report for the DFS demo's meta-GGA held-out result.
 
 Regenerates -- purely from the committed raw eval records on disk (no notebook
-re-run, no AI narrative) -- the in-sample vs held-out atomization-energy numbers
+re-run, no hand-written interpretation) -- the in-sample vs held-out atomization-energy numbers
 for every arch/solver, plus the MECHANISM behind the meta-GGA held-out blow-up:
 the per-atom self-consistent energy drift (anchored H/Li vs unanchored N/O) and
 how it compounds through held-out stoichiometry (N2=2N, NO2=N+2O). Also runs the

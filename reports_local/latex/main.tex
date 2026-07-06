@@ -159,7 +159,7 @@ pretrain-error reduction concentrated there should produce a network whose
 $F_x$ is tighter exactly where it matters for downstream energy predictions.
 This is the central hypothesis of the present work.
 
-Why does this matter? Neural-network exchange--correlation functionals are a
+Neural-network exchange--correlation functionals are a
 candidate route to higher-rung accuracy without giving up the
 constraint-satisfaction structure that makes traditional
 GGA/meta-GGA/hybrid functionals reliable. The PBE form
@@ -412,11 +412,11 @@ restrict to the shared primary set.
 \section{Results}
 \label{sec:results}
 
-The Results section is organised by training phase: §\ref{sec:results_pretrain}
+The Results section is organised by training phase: \S\ref{sec:results_pretrain}
 covers the pretraining phase (relevant to all four workflows);
-§\ref{sec:results_step5} covers the H$_2$O-only step-5 optimization
+\S\ref{sec:results_step5} covers the H$_2$O-only step-5 optimization
 (8 archs $\times$ 3 losses $\times$ 3 solvers, 72 specs per origin); and
-§\ref{sec:results_step6} covers the H$_2$O+C$_2$H$_2$ step-6 optimization
+\S\ref{sec:results_step6} covers the H$_2$O+C$_2$H$_2$ step-6 optimization
 (2 archs $\times$ 5 losses $\times$ 3 solvers $\times$ 3 group schedules,
 90 specs per origin). Each subsection presents one headline figure or
 table; the supporting diagnostic depth is in the supplement (\S\ref{S:sec:pretraining}
@@ -616,7 +616,7 @@ The architectural Lieb--Oxford / PBE-design ceiling holds across all
 \texttt{eqx.field(static=True)}, so gradient descent has no path to
 mutate the ceiling.
 
-\section{Compelling conclusions}
+\section{Conclusions}
 \label{sec:conclusions}
 
 \paragraph{(1) Integration weighting tightens $F_x$ pretrain quality on every architecture.}
@@ -624,7 +624,7 @@ Across all 10 architectures (8 in step 5, 2 in step 6), integration-weighted pre
 produces a tighter final $F_x$ MSE in every single case. Per-arch ratio range
 2.95--4.74$\times$ in step 5 (mean 3.98$\times$ per-arch, 4.25$\times$ for the population
 means); the two step-6 architectures give 3.00$\times$ and 3.13$\times$ (population-mean
-ratio 3.06$\times$). This is the cleanest cross-workflow finding of the synthesis
+ratio 3.06$\times$). This is the most consistent cross-workflow result
 (Fig.~\ref{fig:headline_pretrain_fx}). The integrand-structure justification follows directly from
 \citet{PerdewBurkeErnzerhof1996} eq.~10 (Eq.~\ref{eq:Ex_integrand} in this manuscript):
 pretrain pressure concentrated where $E_X$'s integrand is biggest produces a network whose
@@ -679,7 +679,7 @@ checkpoints in each origin shows $F_x \le 1.804$ in 90/90 specs. The ceiling 1.8
 PBE's stricter design (\S\ref{sec:intro}); the bare Lieb--Oxford bound permits
 $F_x \le 2.273$ \citep{LiebOxford1981, PerdewBurkeErnzerhof1996}.
 
-\section{Limitations and honesty disclosures}
+\section{Limitations}
 \label{sec:limits}
 
 This section enumerates the places where conclusions rest on empirical observation
@@ -751,7 +751,7 @@ empirically reasonable but un-tuned; a controlled sweep is warranted.
 % covering Be / C+ / F2 plus any further species flagged by step-7 Cell 0.5) is
 % written up in the methods section, cite the OEP sources flagged "TO DOWNLOAD"
 % at the end of references.bib (markers [oep-tdl-1] through [oep-tdl-6]).
-% Each must be downloaded and verified via WebFetch + pdftotext (per the
+% Each must be downloaded and verified against the source PDF (per the
 % convention at the top of references.bib) before being promoted to @article
 % entries and \citep-d here.
 \bibliographystyle{plainnat}

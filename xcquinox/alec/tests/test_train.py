@@ -2021,7 +2021,7 @@ def test_sigterm_flusher_writes_full_resume_set_between_periodic_checkpoints(
 
 
 # ---------------------------------------------------------------------------
-# WS5 adversarial-review regression tests (2026-06-20):
+# WS5 regression tests (2026-06-20):
 #   RESUME-01 (BLOCKER): the per-epoch group `order` permutation must survive a
 #     kill+resume so a MULTI-group resumed run processes groups in the SAME
 #     sequence as an uninterrupted same-seed run (the prior CORE test masked it

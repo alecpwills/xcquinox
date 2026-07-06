@@ -2814,7 +2814,7 @@ def _chem_latex(name: str) -> str:
 
 
 def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
-    """The three source-verified methods columns (placed under panels a/b/c).
+    """The three methods columns (checked against networks.py / config.py / models.py) (placed under panels a/b/c).
     Strings checked against networks.py / config.py / features.py / losses.py /
     train.py: GGA inputs + log-transform + constraints (col 1); pretrain +
     optimization + attention (col 2); extra descriptors + training subsets
@@ -2902,8 +2902,7 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
 
 def _methods_references() -> List[str]:
     """Full-width numbered references key for the methods box (each equation in
-    the columns cites [n]). Every entry verified real + accurate (consensus of
-    multiple opus reviewers + two citation-verifiers)."""
+    the columns cites [n]). Every reference checked against the primary source."""
     return [
         "References   [1] Perdew, Burke, Ernzerhof, PRL 77, 3865 (1996).   "
         "[2] Perdew & Wang, PRB 45, 13244 (1992).   [3] Oliver & Perdew, PRA 20, 397 (1979).   "

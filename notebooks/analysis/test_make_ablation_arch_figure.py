@@ -837,7 +837,7 @@ def test_methods_columns_lists_spin_and_descriptor_purposes():
     # kept content survives the cleanup (honest labels + sourced terms)
     assert "this work" in col3.lower()
     assert "multireference" in col3.lower() and "[11]" in col3
-    assert "Slater density envelope" in col3      # verified factual, retained
+    assert "Slater density envelope" in col3      # factual, kept
     # loss routing: W4-11 atomizations train through the reaction-energy channel
     # (kind="bh76"), NOT the relative-AE channel
     assert "reaction energy" in col2 and "W4-11" in col2 and "[17]" in col2

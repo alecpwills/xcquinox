@@ -423,7 +423,7 @@ def test_holdout_overlap_molecule_level_on_real_pools():
 
 
 def test_holdout_pools_reaction_integrity_both_pools():
-    """Phase-0 adversarial check: every reaction in BOTH real pools is
+    """Phase-0 integrity check: every reaction in BOTH real pools is
     mass-balanced and has a finite reference. W4-11 atomization refs are strictly
     positive; BH76 barrier refs may be negative ONLY for the four gas-phase
     ion-molecule SN2 reactions (submerged barriers), each with an anion reactant."""
@@ -453,15 +453,15 @@ def test_holdout_pools_reaction_integrity_both_pools():
 
 
 def test_holdout_overlap_charge_and_case_aware_no_leak():
-    """Phase-0 adversarial check (NON-circular). The earlier oracle used the SAME
+    """Phase-0 integrity check (NON-circular). The earlier oracle used the SAME
     comp==1 atom rule as the code and never trained anions/case-twins, so it was
-    circular (the opus review found it could not reach the two real leaks). This
+    circular (the earlier oracle could not reach the two real leaks). This
     oracle uses an INDEPENDENT rule -- a universal anchor is a NEUTRAL monatomic
     -- and case-folds names, and it actually TRAINS the monatomic anions (f-,
     cl-) and cross-pool case-twins (NH3/nh3). Asserts molecule-level overlap ==
     oracle with ZERO case-insensitive leakage on the COMBINED pool.
 
-    Guards both bugs the review found: (A) anion-as-atom, (B) case-variant."""
+    Guards both leaks: (A) anion-as-atom, (B) case-variant."""
     from types import SimpleNamespace
     from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
     specs, rxns = load_full_held_out_pools()

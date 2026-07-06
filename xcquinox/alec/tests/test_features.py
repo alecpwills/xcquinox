@@ -271,7 +271,7 @@ def test_dm_entropy_intensive_independent_of_system_size():
 
 
 # ---------------------------------------------------------------------------
-# R2 audit fix: precompute_fixed_density_data passes spin-resolved DM
+# Fix: precompute_fixed_density_data passes spin-resolved DM
 # ---------------------------------------------------------------------------
 
 import pytest
@@ -284,7 +284,7 @@ def test_precompute_passes_spin_resolved_dm_for_uks():
     molecules so the per-spin idempotency-projector branch fires
     (Pople-Nesbet 1954: D_sigma S D_sigma = D_sigma).
 
-    R2-A/R2-E audit fix: pre-fix `precompute_fixed_density_data` summed
+    Fix: pre-fix `precompute_fixed_density_data` summed
     alpha+beta into `dm_pbe_tot` and forced UKS molecules through the
     RKS branch, producing a non-zero physically-meaningless
     idempotency_error on every open-shell molecule.

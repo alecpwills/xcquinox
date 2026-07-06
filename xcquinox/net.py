@@ -1944,7 +1944,7 @@ class eC(eqx.Module):
 def make_net(xorc, level, depth, nhidden, ninput=None, use=None, spin_scaling=None, lob=None, ueg_limit=None,
              random_seed=None, savepath=None, configfile='network.config'):
     '''
-    make_net is a utility function designed to easily create new, individual exchange or correlation networks with ease. If no extra arguments are specified, the network will be generated with a default structure that respects the various constraints implemented within xcquinox
+    make_net creates a single exchange or correlation network; with no extra arguments it builds a default structure respecting xcquinox's constraints.
 
     :param xorc: 'X' or 'C' -- the type of network to generate, exchange or correlation
     :type xorc: str

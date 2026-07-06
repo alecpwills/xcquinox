@@ -1,9 +1,8 @@
 # Runbook: pull cluster trainings + regenerate figures (dfs_step7)
 
-**Purpose:** a step-by-step, copy-paste runbook so this can be done WITHOUT deep
-reasoning (Sonnet-safe). Run the blocks in order; each step says how to verify it
+**Purpose:** a step-by-step, copy-paste runbook -- you can follow it mechanically. Run the blocks in order; each step says how to verify it
 worked before moving on. The only step that can require a *code* change is the
-`ARCH_ORDER` guard (Step 2, "If it fails") -- that one, escalate.
+`ARCH_ORDER` guard (Step 2, "If it fails") -- that one, ask the author.
 
 All commands run **locally** (your laptop/workstation), in the conda env that has
 `xcquinox` importable (e.g. `conda activate xcq`), from the repo root
@@ -175,7 +174,7 @@ python notebooks/analysis/make_ablation_arch_figure.py --suite \
   a **code change**: add the arch name to `ARCH_ORDER` (and a color in
   `ARCH_COLOR`) near the top of `make_ablation_arch_figure.py`. The `deep_*_3x16`
   twins are already registered; you'd only hit this for a brand-new arch. If
-  unsure, escalate rather than guess.
+  unsure, ask the author rather than guess.
 - **"only one basis with eval coverage -- skipping the basis-comparison set"** --
   expected when you pass one basis (or the 2nd basis has no `eval_holdout/` yet).
   Per-run figures still render; pull the other basis to get the comparison.
@@ -190,8 +189,7 @@ a changed eval setting):
 1. Pull with weights: `pull <run> --category <cat> --profile full` (adds
    `model.eqx`; large). Narrow to specific specs with `--specs 0,3,7`.
 2. Run `python notebooks/analysis/reeval_holdout_fixed.py ...` (see its `--help`).
-   This is CPU-heavy (runs SCF) -- prefer a background run, and it does not need
-   opus.
+   This is CPU-heavy (runs SCF) -- prefer a background run, and it does not need a code change.
 
 ---
 

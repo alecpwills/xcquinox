@@ -698,7 +698,7 @@ def test_validate_overrides_rejects_out_of_range_values():
 
 
 def test_validate_overrides_accepts_negative_level_shift():
-    """level_shift=-0.5 is allowed (Ziegler VSO usage). Pass-7 fix."""
+    """level_shift=-0.5 is allowed (Ziegler VSO usage)."""
     from xcquinox.alec.external_refs import (
         SpeciesEntry, _validate_overrides, _PER_SPECIES_OEP_OVERRIDES,
     )
@@ -955,7 +955,7 @@ def test_migration_skips_basis_df_tagged_no_false_conflict(tmp_path):
 
 def test_migration_handles_mg_hg_ag_correctly(tmp_path):
     """The substring `_g` appears in Mg, Hg, Ag, must NOT corrupt them.
-    Pass-8 fix: was `if "_g" in name and name.endswith(...)`; now
+    Fix: was `if "_g" in name and name.endswith(...)`; now
     `if name.endswith(suffix_new)` only."""
     import numpy as np
     from xcquinox.alec.external_refs import (
@@ -1003,7 +1003,7 @@ def test_migration_no_intermediates_dir_returns_zero(tmp_path):
 
 
 def test_migration_preserves_already_grid_suffixed_g2_cache(tmp_path):
-    """Plan-2-review CRITICAL: pre-existing _g2_scf.npz must NOT be
+    """CRITICAL: pre-existing _g2_scf.npz must NOT be
     re-renamed to _g2_g1_scf.npz. Spec §5.6 (line 1389) explicitly
     promises future _g{N>1}_* caches will be retained."""
     import numpy as np
@@ -1230,7 +1230,7 @@ def test_precompute_all_invokes_migration_before_preflight(tmp_path, monkeypatch
 def test_preflight_uks_oep_invokes_migration_at_top(tmp_path, monkeypatch):
     """preflight_uks_oep also runs migration (defensive idempotence
     for direct callers that bypass precompute_all). Spec sec. 5.6.
-    Plan-2-review fix: also call preflight TWICE and assert the second
+    Fix: also call preflight TWICE and assert the second
     call is a no-op (idempotent contract per spec §9.2)."""
     from xcquinox.alec import external_refs as ext
     called = []

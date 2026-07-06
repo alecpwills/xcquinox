@@ -59,7 +59,7 @@ def build_optimizer(
     ``weight_decay`` is DECOUPLED L2 (adamw); the default 0.0 makes adamw
     byte-identical to the former adam, so existing (decay-free) runs are
     unchanged. A positive value regularizes the (over-capacity) nets -- the
-    2026-06-20 review traced the DFS-pool generalization gap partly to training
+    DFS-pool generalization gap was traced (2026-06-20) partly to training
     with no weight decay while DFS uses it (og_dpyscf/scripts/train.py:47,289).
     LR schedule: a constant-LR warmup for the first ``lr_decay_start`` fraction
     of ``n_steps`` THEN linear decay to ``lr_end``, but ONLY when

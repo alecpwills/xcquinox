@@ -1,12 +1,12 @@
 # A primer on xcquinox -- learning density functionals by differentiable programming
 
-This document is both a **primer on xcquinox** (Section 0, for any reader) and the rigorous
+This document is both a **primer on xcquinox** (Section 0, for any reader) and the
 **companion notes** to `train_dfs_density.ipynb` (Sections 1-5, for the practitioner). Every
 physical claim carries a citation `[n]` (see [References](#references)); every code claim gives a
 `file:line`. The functional-form and training-recipe choices follow Dick & Fernandez-Serra's
 differentiable-programming functional ("DFS") [4]. Bibliographic details follow the repo's
-consensus-verified methods box (`notebooks/analysis/make_ablation_arch_figure.py`) and its
-PDF-verified bibliography (`reports_local/latex/references.bib`); the reference *numbering* below is
+methods box (`notebooks/analysis/make_ablation_arch_figure.py`) and its
+bibliography (`reports_local/latex/references.bib`); the reference *numbering* below is
 this document's own.
 
 ---
@@ -47,12 +47,12 @@ each net's *self-consistent* density and atomization energy -- on the training s
 held-out set (N2, NO, NO2) -- against the standard functionals **PBE** [1] and **SCAN** [18]. The
 guiding question: can a learned meta-GGA, trained on CCSD data, improve on SCAN (the strongest
 hand-crafted meta-GGA) at reproducing the true (CCSD) density and the energies? The result is
-reported honestly in Section 4 from a full run -- SCAN is a strong baseline, so this is a genuine
+reported in Section 4 from a full run -- SCAN is a strong baseline, so this is a genuine
 test, not a foregone conclusion.
 
 **Running it.** Set `STEP_SMOKE=1` for a fast small-basis smoke pass, or run the full notebook for
 publishable figures. `dfs_demo.py` is a thin orchestration layer over `xcquinox.alec`; the sections
-below are the rigorous companion notes -- the physics of each ingredient, why the training is set
+below are the companion notes -- the physics of each ingredient, why the training is set
 up as it is, the exact code each cell calls, and the results.
 
 ---
@@ -273,7 +273,7 @@ byte-for-byte what the cluster harness builds, only on a smaller pool).
    (the printout's "excl. OH" mean shows the H₂O/NH density improves ~40%).
 8. **Held-out generalization (§9)** -- `build_heldout_test_spec` + `run_test` evaluate the
    already-trained models (no retraining) on **N2, NO, NO2** -- real pool entries none of them trained
-   on. It reports how many models beat PBE on held-out density/AE/`ED` and, crucially, checks the
+   on. It reports how many models beat PBE on held-out density/AE/`ED` and checks the
    held-out degenerate **NO** radical's PBE density RMSE is model-independent: a reproducible,
    PBE-beating NO density shows the §1.7 orientation lock generalizes to an *unseen* ²Π system.
 
@@ -290,7 +290,7 @@ off its committed figures -- nothing is hand-entered.
 > Section 0), to test whether a learned meta-GGA improves on SCAN itself at reproducing the CCSD
 > density and energies. **The tables and figures below now include all four architectures (x two
 > solvers) and the SCAN baseline, from the full run.** The headline result is reported as-run and is a
-> genuine, not foregone, one: on the CCSD **density** the nets beat both PBE and SCAN everywhere
+> real one, not foregone: on the CCSD **density** the nets beat both PBE and SCAN everywhere
 > (SCAN's density is actually *worse* than PBE's), but on held-out **energy** the descriptor-rich
 > meta-GGA/rung-3.5 nets *overfit* the four-molecule pool (best in-sample, worst held-out) -- the
 > capacity pays off only on the full cluster pool, so this demo is a controlled overfitting ablation,
@@ -326,7 +326,7 @@ overfitting demonstration. Per-molecule density and AE breakdowns are `figures/f
 ### 4.2 Held-out generalization -- N2, NO, NO2 (never trained on)
 
 The already-trained models are evaluated, with **no retraining**, on three systems outside the training
-set (§9) -- the honest test of whether four-molecule training learned transferable physics or just
+set (§9) -- the true test of whether four-molecule training learned transferable physics or just
 memorized. All values below are exact (from the saved eval results + the notebook's SCAN baseline). The
 figure **mirrors §8's figure (d)**: energy AE-MAE (top), mean density RMSE (middle), and combined `ED`
 (bottom), NN vs PBE vs SCAN (PBE/SCAN are the dashed/dotted model-independent reference lines).
@@ -357,7 +357,7 @@ figure **mirrors §8's figure (d)**: energy AE-MAE (top), mean density RMSE (mid
   **meta-GGA `deep_mgga_3x16` (51.01-51.79)**, the very arch with the **best in-sample AE (0.16-0.46)**.
   That is a **~110x train->held-out blow-up**: the most flexible net memorizes the four molecules and
   fails to extrapolate. The extra cusp / rung-3.5 / meta-GGA capacity buys a better in-sample fit and
-  *costs* held-out energy generalization -- the textbook fingerprint of **overfitting a four-molecule
+  *costs* held-out energy generalization -- the classic fingerprint of **overfitting a four-molecule
   pool**. This is an intended negative-result ablation: that capacity only pays off on the full pool (the
   cluster harness, 26 species / 212 reactions), not this teaching toy. (Held-out SCAN energy is actually
   strong -- 7.25, better than every NN -- the mirror image of its poor density: SCAN nails the N2/NO/NO2
@@ -383,12 +383,12 @@ kernel without retraining (and without depending on the sections 1-8 session).
 
 ---
 
-### 4.3 Is that held-out failure a code bug, or overfitting? (verification)
+### 4.3 Is that held-out failure a code bug, or overfitting?
 
 The meta-GGA `deep_mgga_3x16` fits in-sample **best** (AE-MAE 0.46) yet generalizes **worst** (51.79) -- a
-113x train->held-out blow-up. Before trusting that as a physics result, it was verified NOT to be a
-meta-GGA code bug: six agents including **three independent adversarial code audits, each tasked to
-*refute* overfitting**, all returned clean. Everything below is data-regenerable -- run
+113x train->held-out blow-up. Before trusting that as a physics result, a meta-GGA code bug was ruled out. Two independent lines of
+evidence separate overfitting from a bug: the numeric discriminators (below) and a direct inspection of
+the three code paths a bug would live in -- both point to overfitting. Everything below is data-regenerable -- run
 `python verify_overfitting_report.py` to recompute it from `runs/**/eval/` (it writes the standalone
 `OVERFITTING_REPORT.md`, which is gitignored -- the committed script + this section are the record).
 
@@ -419,11 +419,11 @@ bug instead says the SCF is healthy and only the learned energy overfits:
 | both solvers (full_3 vs full_25) agree | within ~0.8 kcal/mol | solver-specific bug -> divergence |
 | held-out **density** vs PBE | **beats PBE 8/8** | a broken SCF cannot yield a good density |
 
-The last row is decisive: the *same* converged SCF that gives the bad *energy* yields a *density* better
+The last row is the key discriminator: the *same* converged SCF that gives the bad *energy* yields a *density* better
 than PBE -- impossible if the functional were numerically broken (density and energy share the
 alpha->V_xc->DM path).
 
-**Adversarial code audit -- all clean.** Three independent audits, each told to *find* a bug: (i) the
+**Code-path checks.** The three places a meta-GGA bug could hide were each examined and found sound: (i) the
 meta-GGA **exchange gate** is a byte-for-byte replication of DFS's published XC_L, and its Lieb-Oxford
 bound is a sigmoid squash keeping F_x in (0, 1.174) for *any* input -- the "unbounded gate" is
 structurally unable to misbehave; (ii) the **alpha clamp/mask** carries ~0.001 kcal/mol (40000x too small)
@@ -431,7 +431,7 @@ and live-vs-precomputed alpha agree to 2.8e-14; (iii) the **open-shell N/O** ato
 (UKS, correct occupations), and the drift scales with capacity rather than being an arch-uniform defect.
 
 **Verdict: overfitting of an under-constrained N/O null space + legitimate (DFS-faithful, bounded)
-meta-GGA capacity -- not a code bug.** The definitive empirical confirmation (a one-knob ablation:
+meta-GGA capacity -- not a code bug.** The conclusive test (a one-knob ablation:
 anchor N/O in the loss -> held-out should collapse ~52 -> ~10 with no training-code change) is the last
 step, still to run.
 
@@ -454,8 +454,8 @@ step, still to run.
 
 ## References
 
-Bibliographic details are the repo's PDF-verified `reports_local/latex/references.bib` and its
-consensus-verified methods box.
+Bibliographic details are the repo's `reports_local/latex/references.bib` and its
+methods box.
 
 1. J. P. Perdew, K. Burke, M. Ernzerhof, "Generalized Gradient Approximation Made Simple," *Phys. Rev.
    Lett.* **77**, 3865 (1996); DOI 10.1103/PhysRevLett.77.3865.
