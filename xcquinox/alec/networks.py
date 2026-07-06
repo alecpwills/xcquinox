@@ -352,8 +352,12 @@ class AlecGGA_CNet(eqx.Module):
             netinp = jnp.concatenate([rs_mlp, s_mlp])
 
         if self.meta_gga:
-            # DFS Eq. 13 meta-GGA UEG-recovery prefactor (x2 + tanh^2(x3)); alpha is
-            # the descriptor column at metagga_alpha_index (same as the X-net).
+            # meta-GGA UEG-recovery prefactor x2 + tanh^2(x3): this reuses the X-net
+            # (DFS XC_L exchange) gate form (raw x2) -- a deliberate X/C unification.
+            # NOTE it DEVIATES from DFS's correlation C_L, which applies tanh to x2
+            # (tanh(x2) + tanh^2(x3); vendored dpyscf/net.py:820). Either form is
+            # bounded by the correlation LOB below. alpha is the descriptor column
+            # at metagga_alpha_index (same as the X-net).
             alpha = jnp.atleast_1d(features).flatten()[self.metagga_alpha_index]
             x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
             x3 = jnp.log((alpha + 1.0) / 2.0)

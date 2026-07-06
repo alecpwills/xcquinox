@@ -372,9 +372,11 @@ figure **mirrors §8's figure (d)**: energy AE-MAE (top), mean density RMSE (mid
   well-posed, not machine-dependent.
 
 **Takeaway.** The density objective is what transfers -- universally, and past SCAN. The energy channel
-transfers for the plain GGA but **overfits monotonically with descriptor richness** (the meta-GGA is best
-in-sample, worst held-out) -- a controlled demonstration that capacity needs data: it pays off on the full
-cluster pool, not four molecules. The orientation lock -- the notebook's headline degenerate-radical fix --
+transfers for the plain GGA but **overfits for the descriptor-rich archs** (the pure meta-GGA is best
+in-sample yet worst held-out) -- a controlled demonstration that capacity needs data: it pays off on the
+full cluster pool, not four molecules. (The extremes hold -- plain GGA generalizes best, pure meta-GGA
+worst -- but it is not a clean monotone in descriptor count: the combined rung-3.5+meta-GGA arch actually
+generalizes 2nd-best, better than either single-rich arch.) The orientation lock -- the notebook's headline degenerate-radical fix --
 holds off the training set. Section 9 is **self-contained**: it re-derives its config and discovers the
 trained `runs/<arch>__<solver>/model.eqx` checkpoints on disk, so it regenerates this figure from a fresh
 kernel without retraining (and without depending on the sections 1-8 session).
