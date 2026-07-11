@@ -295,7 +295,7 @@ Phase-25 de-fused per-molecule gradient. One results-affecting defect was found 
 references, below); the remaining changes are documentation accuracy, harness robustness, and test
 coverage.
 
-- 2026-07-11 `<pending>` (dfs_step7 training CCSD references were generated WITHOUT the orientation
+- 2026-07-11 `760feb5aa` (dfs_step7 training CCSD references were generated WITHOUT the orientation
   lock) -- **results-affecting.** For the `dfs_step7` domain (`domain.ccsd_species_from_ledger=False`),
   `inputs.prepare_inputs` built the training CCSD density references via the non-ledger `else` branch,
   which OMITTED `orientation_lock_strength`, so `external_refs.precompute_all` defaulted it to 0.0 --
@@ -312,7 +312,7 @@ coverage.
   the lock must reach the training references, not only the functional and held-out references.
   **USER:** affects the next dfs6311 submit (fresh reference generation picks up the lock).
 
-- 2026-07-11 `<pending>` (harness: recover no-disk-evidence train failures) -- `cmd_resubmit`
+- 2026-07-11 `760feb5aa` (harness: recover no-disk-evidence train failures) -- `cmd_resubmit`
   classified a `dependency_never_satisfied` / `unknown_sacct_purged` train index (a NODE_FAIL / cancel
   that left no `model.eqx`, `resume_state.pkl`, or `failure.json`) as `deterministic` and skipped it,
   directing the operator to a `failure.json` that does not exist -- a recoverable task was stranded. A
@@ -321,7 +321,7 @@ coverage.
   materialized-but-cancelled train task whose preflight succeeded was previously unrecoverable by both
   `resubmit` and `resubmit-preflight`.
 
-- 2026-07-11 `<pending>` (worker compile-memory flags reach the live launcher; mis-prefixed XLA token
+- 2026-07-11 `760feb5aa` (worker compile-memory flags reach the live launcher; mis-prefixed XLA token
   dropped) -- the Phase-25 `XLA_FLAGS` `setdefault` + compile-memory trims had been applied to
   `pretrain_worker`/`train_worker` (no live cluster caller), not to the live `eval_holdout_worker` (via
   `_holdout_parallel.run_workers`) nor the real launcher `parallel._thread_env`. The trims
@@ -330,7 +330,7 @@ coverage.
   `intra_op_parallelism_threads=<n>` token (no `--xla_` prefix, silently ignored by XLA) was removed
   everywhere; intra-op width is bounded by the OMP/MKL/OPENBLAS caps. Results-neutral (compiler effort).
 
-- 2026-07-11 `<pending>` (Phase-25 de-fuse: review, documentation, coverage) -- the loss-agnostic
+- 2026-07-11 `760feb5aa` (Phase-25 de-fuse: review, documentation, coverage) -- the loss-agnostic
   de-fuse was reviewed and confirmed to reproduce the fused `value_and_grad` on real BH76 groups.
   Corrections: the "cheap, one-shot V_xc / density" docstring was wrong -- under a FULL solver the
   density channel runs its own per-molecule SCF (`_grid_term -> oneshot_grid_density -> run_scf`),
@@ -340,7 +340,7 @@ coverage.
   FULL+tail solver raises loudly (a non-production pairing). `test_defused_grad` gains an n_mol=1
   gradient-parity case, a trajectory-form-with-nonzero-one-shot-channels case, and the loud-failure guard.
 
-- 2026-07-11 `<pending>` (`compute_vxc_nn`: `v_rho` evaluated at the true density) -- the `safe_rho`
+- 2026-07-11 `760feb5aa` (`compute_vxc_nn`: `v_rho` evaluated at the true density) -- the `safe_rho`
   sanitizer was gated on `rho_ok & sigma_ok`, so at a high-density point with `sigma == 0` exactly
   (rho_ok but not sigma_ok) the KEPT `v_rho` was evaluated at the substituted `rho=1`, breaking
   `V_xc = dE_xc/drho` there. `safe_rho` is now gated on `rho_ok` alone (matching `v_rho`'s own output
@@ -348,7 +348,7 @@ coverage.
   `0*inf` source). Benign on standard Lebedev grids (no exact zero-gradient high-density points); a
   `test_oneshot` regression pins that `v_rho` depends on the true density at `sigma == 0`.
 
-- 2026-07-11 `<pending>` (parity + citation documentation corrections) -- documentation-only, no
+- 2026-07-11 `760feb5aa` (parity + citation documentation corrections) -- documentation-only, no
   numerics changed. The BH76 docstrings (`dfs_pool`, `training_points`) misattributed the
   reaction-energy training CHOICE to the DFS SI, which (Sec. I) uses BARRIER HEIGHTS for those three
   reactions -- corrected to state the deliberate deviation. The H2O/C2H2 atomization-energy anchors were
@@ -361,7 +361,7 @@ coverage.
   log-transformed `x3`. The `_PER_SPECIES_OEP_OVERRIDES` citations remain flagged UNVERIFIED (a required
   pre-publication check).
 
-- 2026-07-11 `<pending>` (cleanup: dead code, stale docstrings, residual design-doc/ticket references,
+- 2026-07-11 `760feb5aa` (cleanup: dead code, stale docstrings, residual design-doc/ticket references,
   test quality) -- grouped non-results changes: the previously-dead `VALID_ON_PRECOMPUTE_FAILURE` /
   `VALID_BH76_MODE` submit-time validation was wired; the `require_atom_anchors` config knob is now
   honored (was hardcoded False); dead code was removed (`_purge_stale` unused `width`, a dead
