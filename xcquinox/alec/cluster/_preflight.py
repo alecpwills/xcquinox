@@ -1,7 +1,9 @@
 """xcquinox.alec.cluster._preflight: the SLURM preflight-job entrypoint.
 
-The HPC harness submits a four-stage job graph (see ``submit.py``):
+The HPC harness submits a five-stage job graph (see ``submit.py``):
 
+    datagen (single job)
+        |  --dependency=afterok:<datagen>
     pretrain (one job per architecture)
         |  --dependency=afterok:<pretrain>
     preflight (single job)
@@ -160,8 +162,8 @@ def _write_failure_json(checkpoint_dir: str, payload: dict) -> None:
 def _spec_species(spec) -> set[str]:
     """Return the set of molecule names carried by a ``TrainingSpec``.
 
-    Each ``MoleculeSpec.name`` is the Hill formula / explicit ``info['name']``
-: the same naming convention ``precompute_all`` reports its failed species
+    Each ``MoleculeSpec.name`` is the Hill formula / explicit ``info['name']``:
+    the same naming convention ``precompute_all`` reports its failed species
     in, so this set can be intersected directly with the failed-species set.
     """
     return {

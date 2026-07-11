@@ -1,6 +1,8 @@
 """Tests for xcquinox.alec.losses: AlecLoss, LOSS_REGISTRY, 6 concrete losses.
 
-Implements THE SPEC §13.2 test_losses.py: exactly 43 tests.
+The enumerated structure below covers the original 43-test contract; later
+regression tests were appended after it as fixes landed, so the file now holds
+well over 43 tests.
 
 Test structure:
   Tests 1-24  (4 parametrized over 6 losses × 4 aspects = 24 tests):
@@ -10,7 +12,7 @@ Test structure:
     (d) differentiability via eqx.filter_value_and_grad
 
   Tests 25-43 (19 additional):
-    25. LOSS_REGISTRY has exactly 6 builtins
+    25. LOSS_REGISTRY has exactly 7 builtins
     26. list_losses returns sorted
     27. make_loss kwargs propagation
     28. make_loss unknown name raises KeyError
@@ -255,7 +257,7 @@ def test_differentiability(loss_name, _cls, _rmk, _aux_keys,
 
 
 # ---------------------------------------------------------------------------
-# Test 25: LOSS_REGISTRY has exactly 6 builtins
+# Test 25: LOSS_REGISTRY has exactly 7 builtins
 # ---------------------------------------------------------------------------
 
 def test_loss_registry_has_exactly_7_builtins():
@@ -624,7 +626,16 @@ def test_aux_dict_schema_per_class(batch_h_o_h2o, model):
 # ---------------------------------------------------------------------------
 
 def test_atomizationloss_sign_convention(batch_h_o_h2o, model):
-    """Test 41: loss_energy is non-negative (relative squared error ≥ 0)."""
+    """Test 41: the atomization-energy sign convention is
+    AE = Σ_Z n_Z · atom_energies[Z] - E_mol (positive for a bound molecule),
+    and the loss's relative-squared-error channel stays non-negative.
+
+    The loss_energy >= 0 check alone is tautological for a squared error; the
+    load-bearing assertion is that ``_ae_from_atoms`` follows the atoms-minus-
+    molecule convention: AE > 0 when E_mol lies below the summed atomic anchors
+    (bound), AE < 0 when it lies above (less stable than the free atoms).
+    """
+    from xcquinox.alec.losses import _ae_from_atoms
     mols = batch_h_o_h2o["mols"]
     loss = make_loss("A_atomization", molecules=mols)
     batch = {
@@ -633,10 +644,25 @@ def test_atomizationloss_sign_convention(batch_h_o_h2o, model):
         "atom_energies": batch_h_o_h2o["atom_energies"],
     }
     total, aux = loss(model, batch)
+    # Relative-squared-error channel is non-negative by construction.
     assert float(aux["loss_energy"]) >= 0.0, (
         f"loss_energy must be >= 0 (relative squared error), got {aux['loss_energy']}"
     )
     assert float(total) >= 0.0, f"total loss must be >= 0, got {total}"
+
+    # Sign convention: AE = sum(atomic anchors) - E_mol, positive for bound.
+    atom_energies = {"H": -0.5, "O": -75.0}
+    comp = {"H": 2, "O": 1}
+    e_atoms_sum = 2 * (-0.5) + 1 * (-75.0)   # = -76.0 Ha
+    # Bound molecule: E_mol below the summed atoms -> AE > 0.
+    ae_bound = float(_ae_from_atoms(-76.4, comp, atom_energies))
+    assert ae_bound == pytest.approx(e_atoms_sum - (-76.4))
+    assert ae_bound > 0.0, f"bound-molecule AE must be positive, got {ae_bound}"
+    # Molecule less stable than the free atoms: E_mol above the sum -> AE < 0.
+    ae_unbound = float(_ae_from_atoms(-75.6, comp, atom_energies))
+    assert ae_unbound < 0.0, (
+        f"unbound-configuration AE must be negative, got {ae_unbound}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1159,9 +1185,7 @@ class TestPBEAnchorIntegration:
                          molecules=batch_h_o_h2o["mols"],
                          pbe_anchor_weight=1e-2,
                          pbe_anchor_sample=sample)
-        grad_fn = eqx_grad_filter = __import__("equinox").filter_grad(
-            lambda m: loss(m, batch)[0]
-        )
+        grad_fn = eqx.filter_grad(lambda m: loss(m, batch)[0])
         g = grad_fn(model)
         leaves = jax.tree_util.tree_leaves(g)
         # Drop non-inexact leaves (integers, etc.) before .isfinite check:

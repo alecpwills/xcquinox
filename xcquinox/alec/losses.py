@@ -21,6 +21,7 @@ from xcquinox.alec.oneshot import (
     _uks_spin_resolved_vxc,
 )
 from xcquinox.alec.descriptors import assemble_descriptor_features
+from xcquinox.alec.energy_override import get_energy_override
 
 
 # Scale-aware denominator floor for the D-family relative delta-AE loss.
@@ -174,6 +175,11 @@ def _compute_energies(model, mol_data, N, solver_config=None):
       one-shot on purpose: its run_scf energy is an incoherent J-pinned hybrid
       (see ``total_energy_for_solver``).
     """
+    override = get_energy_override("scalar")
+    if override is not None:
+        # De-fused gradient pass: the per-molecule energies were computed
+        # outside this graph and injected (see xcquinox.alec.defused_grad).
+        return override
     return jnp.stack([
         total_energy_for_solver(model, mol_data[i], solver_config)
         for i in range(N)
@@ -188,6 +194,11 @@ def _compute_energy_trajectories(model, mol_data, N, solver_config=None):
     ``solver_config`` so ``T`` is uniform and stackable. When the tail is
     disabled this is ``(N, 1)`` carrying the same scalar as
     :func:`_compute_energies` (the loss then reduces to the final-step form)."""
+    override = get_energy_override("trajectory")
+    if override is not None:
+        # De-fused gradient pass: the per-molecule energy trajectories were
+        # computed outside this graph and injected (see defused_grad).
+        return override
     return jnp.stack([
         energy_trajectory_for_solver(model, mol_data[i], solver_config)
         for i in range(N)

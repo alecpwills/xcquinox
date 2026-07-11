@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import importlib
 import json
 import math
 import os
+import pickle  # noqa: S403 -- trusted local .spec files, written by this codebase
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -48,14 +48,12 @@ KCAL_PER_HA: float = 627.5094740631
 def load_training_spec(spec_path: Path):
     """Read the harness's serialized ``spec_<NNNN>.spec`` file.
 
-    Uses the same ``importlib`` indirection as the harness's
-    ``_train_one_spec._load_spec`` so the file format round-trips byte-for-
-    byte (the file is produced and consumed by the same codebase, verified-
-    trusted local data).
+    The ``.spec`` file is a plain pickle produced and consumed by the same
+    codebase (the harness's ``_train_one_spec._load_spec`` writes it), so it
+    round-trips byte-for-byte; it is trusted local data.
     """
-    _ser = importlib.import_module("pi" + "ckle")
     with open(spec_path, "rb") as f:
-        return _ser.load(f)
+        return pickle.load(f)  # noqa: S301 -- trusted local .spec, written by this codebase
 
 
 def held_out_pool_names(

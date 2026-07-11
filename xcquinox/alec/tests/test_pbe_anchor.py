@@ -120,7 +120,7 @@ def test_pbe_anchor_rks_reduction_via_spin_scaling():
     rho_input_rks = np.zeros((4, rho_total.shape[0]), dtype=np.float64)
     rho_input_rks[0, :] = rho_total
     rho_input_rks[3, :] = np.sqrt(sigma)
-    _compute = getattr(_pyscf_dft.libxc, "eval" "_xc")
+    _compute = _pyscf_dft.libxc.eval_xc
     ex_per_e_rks, *_ = _compute("GGA_X_PBE", rho_input_rks, spin=0, deriv=0)
     c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
     ex_lda_per_e = c_lda * rho_total ** (1.0 / 3.0)
@@ -163,7 +163,7 @@ def test_pbe_anchor_spin_scaling_at_polarized_point():
     sigma_aa_eff = (1.0 + zeta) ** 2 * sigma_tot
     sigma_bb_eff = (1.0 - zeta) ** 2 * sigma_tot
     c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
-    _compute = getattr(_pyscf_dft.libxc, "eval" "_xc")
+    _compute = _pyscf_dft.libxc.eval_xc
 
     def _fx_rks(rho_d, sig):
         rho_input = np.zeros((4, 1), dtype=np.float64)

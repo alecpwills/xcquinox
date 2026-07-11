@@ -1,7 +1,10 @@
 """xcquinox.alec.cluster.submit: render sbatch scripts + submit the job graph.
 
-The HPC harness submits a **4-stage SLURM job graph**:
+The HPC harness submits a **5-stage SLURM job graph**:
 
+    datagen (single job, no dependency)
+        |  --dependency=afterok:<datagen>
+        v
     pretrain array  (--array=0-A-1%pretrain_throttle, A = distinct archs)
         |  --dependency=afterok:<pretrain>
         v
@@ -383,7 +386,7 @@ def _has_live_jobs(run_dir: str) -> bool:
 def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
                 force: bool = False, defer_eval=None,
                 inline_eval=None) -> dict:
-    """Render the 4-stage sbatch graph and (optionally) submit it.
+    """Render the 5-stage sbatch graph and (optionally) submit it.
 
     Defaults to dry-run (``submit=False``): writes the rendered scripts and
     a ``submit_commands.txt`` audit record, but calls neither ``sbatch`` nor
@@ -393,18 +396,18 @@ def submit_jobs(cfg, run_dir: str, *, submit: bool = False,
       1. ``N = len(expand_grid(cfg))``; train/eval ``array_max = N-1``.
          ``A = len(_canon_axis(cfg.sweep.arch))``; pretrain ``array_max = A-1``.
       2. Ensure ``run_dir`` + its ``logs/`` and ``scripts/`` subdirs exist.
-      3. Render pretrain, preflight, train (cpu or gpu) and eval scripts into
-         ``<run_dir>/scripts/``.
+      3. Render datagen, pretrain, preflight, train (cpu or gpu) and eval
+         scripts into ``<run_dir>/scripts/``.
       4. Assert the train and eval ``--array`` index ranges are identical
          (``aftercorr`` requires it). The pretrain array range is independent
          (over archs) and is NOT part of that assertion.
       5. Dry-run: write scripts + ``submit_commands.txt`` (``[dry-run]`` tag);
          return a descriptor dict; do NOT touch SLURM or ``jobs.json``.
       6. Real run (``submit=True``): a double-submit guard requires ``force``
-         if ``jobs.json`` already has live records. Submit pretrain -> preflight
-         (``afterok:pretrain``) -> train (``afterok:pretrain:preflight``: the
-         train array is gated on BOTH) -> eval (``aftercorr:train``); record
-         each via ``append_job_record``. If any ``sbatch`` is rejected
+         if ``jobs.json`` already has live records. Submit datagen -> pretrain
+         (``afterok:datagen``) -> preflight (``afterok:pretrain``) -> train
+         (``afterok:pretrain:preflight``: the train array is gated on BOTH) ->
+         eval (``aftercorr:train``); record each via ``append_job_record``. If any ``sbatch`` is rejected
          mid-graph, ``scancel`` the ids already returned in THIS call, append
          no partial records, and re-raise.
 

@@ -9,6 +9,7 @@ The loader falls back to .pkl for legacy files.
 """
 import json
 import os
+import pickle  # noqa: S403 -- only used for the trusted legacy local .pkl fallback below
 import time
 
 import equinox as eqx
@@ -296,10 +297,8 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         pretrain_data_np = {k: np.array(raw[k]) for k in raw.files}
     elif not polarized and os.path.isfile(pkl_path):
         # pkl fallback for legacy (unpolarized) files, safe because only array data
-        import pickle  # noqa: S403, loading trusted local fixture files only
         with open(pkl_path, "rb") as _f:
-            pretrain_data_np = _f.read()
-        pretrain_data_np = __import__("pickle").loads(pretrain_data_np)
+            pretrain_data_np = pickle.loads(_f.read())  # noqa: S301 -- trusted local data
     elif polarized:
         # Fail fast: a spin-polarized run MUST use the zeta-aware file (never a
         # silent zeta=0 fallback that would defeat the purpose).

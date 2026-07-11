@@ -679,11 +679,12 @@ def lda_c_pw(rho):
 
 def lda_x(rho):
     '''
-    The HEG exchange energy density.
+    The HEG exchange energy per particle (eps_x); the exchange energy density is
+    this times rho.
 
     :param rho: Total electron density array on a grid.
     :type rho: jax.numpy array
-    :return: Exchange energy density array.
+    :return: Exchange energy per particle (eps_x) array.
     :rtype: jax.numpy array
     '''
     return -3/4*(3/jnp.pi)**(1/3)*rho**(1/3)

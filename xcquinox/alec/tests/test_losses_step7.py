@@ -73,7 +73,7 @@ def test_freeze_rxn_specs_rejects_kcalmol_magnitude():
     with pytest.raises(ValueError, match="kcal/mol"):
         losses._freeze_rxn_specs([{
             "name": "R1", "reactants": ("A",), "products": ("B",),
-            "coeffs": (-1.0, 1.0), "e_rxn_ref": 50.0,  # 50 "Ha" ⇒ implausible
+            "coeffs": (-1.0, 1.0), "e_rxn_ref": 50.0,  # 50 "Ha" => implausible
         }])
 
 
@@ -99,8 +99,8 @@ def test_delta_losses_c1_03_floor_caps_near_zero_target():
     denominator is floored at (1 kcal/mol)^2 instead of the old 1e-8 additive
     floor, so a near-exact-PBE compound cannot be over-weighted ~1e8x."""
     from xcquinox.alec.losses import _delta_losses, _DELTA_TGT_FLOOR_HA2
-    # atom_energies=0 and E_pbe=0 ⇒ ae_pbe=0; targets=0 ⇒ delta_tgt=0;
-    # E_nn=0.1 ⇒ delta_nn=-0.1 ⇒ residual^2 = 0.01.
+    # atom_energies=0 and E_pbe=0 => ae_pbe=0; targets=0 => delta_tgt=0;
+    # E_nn=0.1 => delta_nn=-0.1 => residual^2 = 0.01.
     E_nn = jnp.array([0.1])
     mol_data = ({"E_pbe": 0.0},)
     loss = float(_delta_losses(
@@ -116,7 +116,7 @@ def test_delta_losses_c1_03_floor_noop_for_normal_targets():
     unchanged: max(delta_tgt^2, floor) == delta_tgt^2."""
     from xcquinox.alec.losses import _delta_losses
     # ae_pbe=0; delta_tgt = targets = 0.05 (>> sqrt(floor) ~1.6e-3);
-    # delta_nn=-0.1 ⇒ residual = (-0.1-0.05)^2 = 0.0225; denom = 0.05^2 = 0.0025.
+    # delta_nn=-0.1 => residual = (-0.1-0.05)^2 = 0.0225; denom = 0.05^2 = 0.0025.
     E_nn = jnp.array([0.1])
     mol_data = ({"E_pbe": 0.0},)
     loss = float(_delta_losses(

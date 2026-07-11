@@ -158,6 +158,11 @@ def pbe_density_errors(mol_data) -> tuple:
     the :class:`DensityRMSEMetric` formula with rho_pbe in place of rho_nn.
     Returns ``(rmse, l1)``, or ``(None, None)`` when no reference density is
     loaded.
+
+    The returned errors are grid-weight-AVERAGED (see
+    :class:`DensityRMSEMetric`), distinct from the DFS per-electron density
+    error eps_{|n|} = (1/N_e) * integral|rho - rho_ref| (Letter Eq.20) and from
+    the N_e^2-normalized training-loss form.
     """
     rho_ref = mol_data.get("rho_ref_grid")
     if rho_ref is None:
@@ -227,6 +232,12 @@ class DensityRMSEMetric(Metric):
             )
         w = mol_data["grid_weights"]
         diff = rho_nn - rho_ref
+        # Grid-weight-AVERAGED RMSE / L1: sqrt(sum w*(dn)^2 / sum w) and
+        # sum w*|dn| / sum w. This is NOT the DFS per-electron density error
+        # eps_{|n|} = (1/N_e) * integral|rho_nn - rho_ref| (Letter Eq.20), nor
+        # the N_e^2-normalized training-loss form; the sole consumer compares
+        # against the model's value on the same grid and self-calibrates its
+        # scale, so the absolute normalization is immaterial here.
         rmse = float(jnp.sqrt(jnp.sum(w * diff ** 2) / jnp.sum(w)))
         l1 = float(jnp.sum(w * jnp.abs(diff)) / jnp.sum(w))
         rmse_pbe, l1_pbe = pbe_density_errors(mol_data)
@@ -418,9 +429,8 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
                 f"{model.cnet.use_spin_polarization} but "
                 f"spec.arch.use_polarized_correlation="
                 f"{spec.arch.use_polarized_correlation}. The cnet must be "
-                f"built via create_network_pair(arch) so the flag is "
-                f"derived from arch.use_polarized_correlation: "
-                f"see evaluation.py:350 + networks.py:333-342."
+                f"built via create_network_pair(arch), the single site that "
+                f"derives the cnet flag from arch.use_polarized_correlation."
             )
 
     # 4. Instantiate metrics

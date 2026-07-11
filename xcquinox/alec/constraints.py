@@ -1,7 +1,7 @@
 """xcquinox.alec.constraints: Constraint ABC, registry, and 4 concrete constraints.
 
-Implements THE SPEC §4: registry-driven constraint composition for enforcing
-physical properties on network enhancement factors.
+Registry-driven constraint composition for enforcing physical properties on
+network enhancement factors.
 """
 import abc
 import dataclasses
@@ -26,7 +26,7 @@ def register_constraint(name: str):
                     f"Constraint subclass {cls.__name__} has non-static instance field "
                     f"{f.name!r}. All Constraint fields must be declared with "
                     f"eqx.field(static=True) so the instance is a pure pytree leaf "
-                    f"with zero traced data. See §4.2 register_constraint docstring."
+                    f"with zero traced data."
                 )
         cls.registry_name = name
         CONSTRAINT_REGISTRY[name] = cls
@@ -171,12 +171,12 @@ class NonNegativeCorrelation(Constraint):
     forcing F_c ≥ 0 keeps the sign of ε_c consistent with ε_c^PW92 ≤ 0
     (since ε_c^PW92 ≤ 0 for all densities in the PW92 parametrization).
 
-    Note: F_c ≥ 0 enforces the non-negativity of the correlation enhancement
-    factor and, within this code's convention, maintains ε_c ≤ 0 pointwise.
-    It does NOT by itself enforce the integral bound ∫ε_c n dV ≤ 0 in
-    general.  The non-positivity of the correlation energy is a basic property
-    of the exact functional (not to be confused with the Levy-Perdew
-    coordinate-scaling inequality, which is a separate result).
+    Note: F_c ≥ 0 constrains only the correlation enhancement factor; by
+    itself it does not determine the sign of ε_c.  In this code's convention
+    ε_c = ε_c^PW92 · F_c with ε_c^PW92 ≤ 0, so F_c ≥ 0 makes ε_c ≤ 0 pointwise
+    and hence ∫ε_c n dV ≤ 0.  The non-positivity of the correlation energy is a
+    basic property of the exact functional (not to be confused with the
+    Levy-Perdew coordinate-scaling inequality, which is a separate result).
 
     The softplus math has fixed point F=1 and floor exactly 0.
     """

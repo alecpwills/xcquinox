@@ -109,15 +109,39 @@ def test_uks_oneshot_fock_spin_resolved():
     sigma_aa = np.sum(nabla_rho_a * nabla_rho_a, axis=1)
     sigma_bb = np.sum(nabla_rho_b * nabla_rho_b, axis=1)
 
+    # UKS exchange spin-scaling recipe (Oliver & Perdew 1979): the alpha
+    # channel is evaluated at (2 rho_a, 4 sigma_aa, 2 nabla_rho_a). The sigma
+    # argument is passed as |2 nabla_rho_a|^2 = 4 sigma_aa to match the doubled
+    # gradient (the convention _uks_spin_resolved_vxc and test_solv01_split_xc
+    # use); this GGA path builds its v_sigma correction from nabla_rho.
     vxc_a = compute_vxc_nn(
-        model, jnp.asarray(2.0 * rho_a), jnp.asarray(2.0 * sigma_aa),
+        model, jnp.asarray(2.0 * rho_a), jnp.asarray(4.0 * sigma_aa),
         features, ao_grid, grid_weights,
         nabla_rho=jnp.asarray(2.0 * nabla_rho_a), ao_grad=ao_grid_deriv,
     )
     vxc_b = compute_vxc_nn(
-        model, jnp.asarray(2.0 * rho_b), jnp.asarray(2.0 * sigma_bb),
+        model, jnp.asarray(2.0 * rho_b), jnp.asarray(4.0 * sigma_bb),
         features, ao_grid, grid_weights,
         nabla_rho=jnp.asarray(2.0 * nabla_rho_b), ao_grad=ao_grid_deriv,
     )
     diff = float(np.max(np.abs(np.asarray(vxc_a) - np.asarray(vxc_b))))
     assert diff > 1e-6, f"spin-scaled V_xc must differ for open-shell O: {diff}"
+
+    # Tie the potential to its spin-scaled density/gradient inputs: the exchange
+    # spin-scaling doubles the density and its gradient (2 rho_a, 2 nabla_rho_a).
+    # Evaluating at the un-doubled (rho_a, nabla_rho_a) must give a different
+    # potential, so a regression that dropped the spin-scaling factor would be
+    # caught (V_rho alone already depends on rho).
+    vxc_a_unscaled = compute_vxc_nn(
+        model, jnp.asarray(rho_a), jnp.asarray(sigma_aa),
+        features, ao_grid, grid_weights,
+        nabla_rho=jnp.asarray(nabla_rho_a), ao_grad=ao_grid_deriv,
+    )
+    scaling_sensitivity = float(
+        np.max(np.abs(np.asarray(vxc_a) - np.asarray(vxc_a_unscaled)))
+    )
+    assert scaling_sensitivity > 1e-8, (
+        "V_xc must depend on the exchange spin-scaling of its density/gradient "
+        f"inputs; a dropped-scaling regression would go undetected: "
+        f"{scaling_sensitivity}"
+    )

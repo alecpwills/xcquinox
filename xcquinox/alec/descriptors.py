@@ -232,10 +232,14 @@ class MetaGGAAlphaDescriptor(Descriptor):
     and needs NO new integrals, NO laplacian, NO ``deriv=2``.
 
     One feature: the total-density ``alpha`` (alpha=1 uniform gas, alpha=0 single
-    orbital), clamped ``>= 0``. It feeds both the exchange and correlation networks;
-    for the DFS-faithful meta-GGA net (``meta_gga=True``) alpha additionally drives
-    the ``(x2 + tanh^2(x3))`` UEG-recovery gate (x3 = ln((alpha+1)/2)) and the 1.174
-    Lieb-Oxford exchange ceiling. See :mod:`xcquinox.alec.metagga`.
+    orbital), clamped ``>= 0``. It feeds both the exchange and correlation networks
+    RAW (the clamped alpha column); for the DFS-faithful meta-GGA net
+    (``meta_gga=True``) alpha additionally drives the ``(x2 + tanh^2(x3))``
+    UEG-recovery gate (x3 = ln((alpha+1)/2)) and the 1.174 Lieb-Oxford exchange
+    ceiling. DEVIATION from DFS Eq. 10: DFS feeds the network the log-transformed
+    x3 = ln((alpha+1)/2) as its alpha input, whereas here the raw alpha column is
+    the MLP input and x3 enters only through the gate. Documented, not changed.
+    See :mod:`xcquinox.alec.metagga`.
     """
     n_features: int = eqx.field(default=1, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("metagga_features",)

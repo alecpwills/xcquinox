@@ -99,7 +99,7 @@ def _parse_spec_index(name: str):
     return int(core)
 
 
-def _purge_stale(out_dir: str, n: int, width: int) -> None:
+def _purge_stale(out_dir: str, n: int) -> None:
     """Remove leftovers from a prior run before writing a fresh grid.
 
     Deletes (a) every ``.mktmp_*`` temp file (crash-orphaned partial writes)
@@ -137,7 +137,7 @@ def materialize_specs(specs, out_dir: str) -> list[str]:
     # grids with >= 10000 cells. N-1 is the largest index actually used.
     width = max(4, len(str(n - 1))) if n > 0 else 4
 
-    _purge_stale(out_dir, n, width)
+    _purge_stale(out_dir, n)
 
     paths: list[str] = []
     for idx, (_cell, spec_obj) in enumerate(specs):

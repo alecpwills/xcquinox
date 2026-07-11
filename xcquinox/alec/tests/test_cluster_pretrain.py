@@ -367,10 +367,6 @@ def test_pretrain_template_is_valid_string_template():
     assert isinstance(tmpl.template, str)
 
 
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q"]))
-
-
 def test_pretrain_arch_polarized_when_flag_set(tmp_path, monkeypatch):
     """The pretrain stage rebuilds its arch spin-polarization-aware when the run
     config sets use_polarized_correlation, so the pretrained checkpoint matches
@@ -395,3 +391,7 @@ def test_pretrain_arch_polarized_when_flag_set(tmp_path, monkeypatch):
 
     assert pt.main([str(d), "1"]) == 0
     assert captured["spec"].arch.use_polarized_correlation is True
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

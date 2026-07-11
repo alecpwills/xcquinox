@@ -1,9 +1,8 @@
 """xcquinox.alec.config: architecture, feature, and pipeline spec dataclasses.
 
-Implements THE SPEC §11.1: FeatureSpec, _FrozenDict, _FrozenTuple, _freeze,
-and the FeatureSpec.as_kwargs thaw round-trip.
-Also implements §6.1 MoleculeSpec, §8.1 PretrainSpec, §8.2 TrainingSpec,
-§9.3 TestSpec.
+Provides FeatureSpec, _FrozenDict, _FrozenTuple, _freeze, and the
+FeatureSpec.as_kwargs thaw round-trip, together with MoleculeSpec,
+PretrainSpec, TrainingSpec, and TestSpec.
 """
 import os
 from dataclasses import dataclass, field, fields
@@ -298,8 +297,8 @@ class ArchitectureConfig:
         if attention and num_heads is None:
             raise ValueError(
                 "ArchitectureConfig.from_spec: attention=True requires "
-                "explicit num_heads (no silent default, see spec "
-                "§Implementation surface for per-arch defaults)."
+                "explicit num_heads (no silent default; specify the head "
+                "count per architecture at the call site)."
             )
         resolved_heads = num_heads if num_heads is not None else 1
         import warnings
@@ -321,8 +320,8 @@ class ArchitectureConfig:
                     )
                 warnings.warn(
                     "ScalingSymmetric is applied to AlecGGA_CNet via "
-                    "allow_scaling_symmetric_on_c=True \u2014 this destroys the "
-                    "correlation network's rs dependence. See \u00a74.3 of the spec.",
+                    "allow_scaling_symmetric_on_c=True -- this destroys the "
+                    "correlation network's rs dependence.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
@@ -338,10 +337,10 @@ class ArchitectureConfig:
         if has_lob_constraint and allow_double_lob_clamp:
             warnings.warn(
                 "LiebOxfordBound is registered under x_constraints AND "
-                "allow_double_lob_clamp=True \u2014 the network will retain its "
+                "allow_double_lob_clamp=True -- the network will retain its "
                 "built-in LOB wrap (lob_lim=1.804) in addition to the "
                 "constraint, narrowing the effective F range from [0, 1.804] "
-                "to [0.321, 1.613]. See \u00a74.3 of the spec.",
+                "to [0.321, 1.613].",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -362,7 +361,7 @@ class ArchitectureConfig:
 
 
 # ---------------------------------------------------------------------------
-# §11.2: ARCHITECTURES dict, the 12 notebook variants
+# ARCHITECTURES registry: the notebook-derived arch variants
 # ---------------------------------------------------------------------------
 
 ARCHITECTURES = {
@@ -370,7 +369,7 @@ ARCHITECTURES = {
     "shallow_attn":        ArchitectureConfig(name="shallow_attn", depth=2, nodes=8,  attention=True, num_heads=2),
     "medium":              ArchitectureConfig(name="medium",       depth=3, nodes=16),
     "medium_attn":         ArchitectureConfig(name="medium_attn",  depth=3, nodes=16, attention=True, num_heads=4),
-    # Each of the 12 deep_* entries enables physics-correction flags
+    # Each deep_* entry enables physics-correction flags
     # (dm_entropy_intensive, descriptor_log_transform, zero_init_final_layer).
     # Built via ArchitectureConfig.from_spec with True defaults; old pickled
     # specs without these fields unpickle to False for compatibility.
@@ -519,8 +518,8 @@ ARCHITECTURES = {
                               descriptor_log_transform=False,
                               zero_init_final_layer=True),
 }
-# P2-03 NOTE: spin-polarization-aware correlation is NOT a separate entry in
-# this registry (which mirrors the notebook's canonical 12 variants). Build one
+# NOTE: spin-polarization-aware correlation is NOT a separate entry in
+# this registry (which mirrors the notebook's arch variants). Build one
 # via ``ArchitectureConfig.from_spec(..., use_polarized_correlation=True)`` (or
 # set the flag on any arch). Wiring it into the step7 grid sweep + the notebook
 # ARCHITECTURES cell is handled in the step7-config step so code and notebook
@@ -536,7 +535,7 @@ def list_architectures() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# §6.1: MoleculeSpec
+# MoleculeSpec
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -658,7 +657,7 @@ def _describe_spec(spec) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# §8.1: PretrainSpec
+# PretrainSpec
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -714,7 +713,7 @@ class PretrainSpec:
 
 
 # ---------------------------------------------------------------------------
-# §8.2: TrainingSpec
+# TrainingSpec
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -1005,7 +1004,7 @@ class TrainingSpec:
 
 
 # ---------------------------------------------------------------------------
-# §9.3: TestSpec
+# TestSpec
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)

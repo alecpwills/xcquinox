@@ -153,8 +153,6 @@ def test_closed_shell_reduction_energy_and_vxc():
     assert v_resid_b < 1e-10, f"closed-shell V_b residual {v_resid_b:.3e}"
     # rho_a == rho_b => V_a == V_b
     assert float(jnp.max(jnp.abs(V_a - V_b))) < 1e-12
-    print(f"\n[Test B] closed-shell residuals: energy={e_resid:.3e}, "
-          f"V_a-V_rks={v_resid_a:.3e}, V_b-V_rks={v_resid_b:.3e}")
 
 
 def _exact_vxc_unmasked(model, rho, sigma, nabla_rho, features, ao_grid,
@@ -252,8 +250,6 @@ def test_fd_energy_potential_consistency():
     exact_contract = float(jnp.einsum("ij,ij->", Vx_a, dDa)
                            + jnp.einsum("ij,ij->", Vx_b, dDb))
     rel_exact = abs(fd - exact_contract) / max(abs(exact_contract), 1e-12)
-    print(f"\n[Test C1] FD={fd:.10e}  exact_V_contract={exact_contract:.10e}  "
-          f"rel_residual={rel_exact:.3e}")
     assert rel_exact < 1e-5, (
         f"split V_xc is NOT the derivative of the split energy: "
         f"FD={fd:.6e} exact={exact_contract:.6e} rel={rel_exact:.3e}"
@@ -271,8 +267,6 @@ def test_fd_energy_potential_consistency():
     grad_contract = float(jnp.einsum("ij,ij->", ga, dDa)
                           + jnp.einsum("ij,ij->", gb, dDb))
     grad_resid = abs(grad_contract - exact_contract) / max(abs(grad_contract), 1e-12)
-    print(f"[Test C1] exact V_xc vs autodiff grad (symmetric contraction): "
-          f"rel={grad_resid:.3e}")
     assert grad_resid < 1e-10, (
         f"exact split V_xc disagrees with autodiff grad of the energy: "
         f"{grad_resid:.3e}"
@@ -292,7 +286,6 @@ def test_fd_energy_potential_consistency():
     prod_contract = float(jnp.einsum("ij,ij->", V_a, dDa)
                           + jnp.einsum("ij,ij->", V_b, dDb))
     rel_prod = abs(fd - prod_contract) / max(abs(prod_contract), 1e-12)
-    print(f"[Test C2] production split rel={rel_prod:.3e}")
     assert rel_prod < 1e-5, (
         f"production split V_xc is not FD-consistent with the energy "
         f"(rel={rel_prod:.3e}); check the v_sigma masking threshold in "
@@ -421,8 +414,6 @@ def test_polarized_vc_fd_energy_potential_consistency():
     contract = float(jnp.einsum("ij,ij->", vc_a, dDa)
                      + jnp.einsum("ij,ij->", vc_b, dDb))
     rel_fd = abs(fd - contract) / max(abs(contract), 1e-12)
-    print(f"\n[polarized V_c] FD={fd:.10e} contract={contract:.10e} "
-          f"rel={rel_fd:.3e}")
     assert rel_fd < 1e-5, (
         f"per-spin V_c is not FD-consistent with the polarized E_c "
         f"(rel={rel_fd:.3e})")
@@ -557,8 +548,6 @@ def test_polarized_full_split_vxc_fd_consistency():
     contract = float(jnp.einsum("ij,ij->", V_a, dDa)
                      + jnp.einsum("ij,ij->", V_b, dDb))
     rel = abs(fd - contract) / max(abs(contract), 1e-12)
-    print(f"\n[polarized full split] FD={fd:.10e} contract={contract:.10e} "
-          f"rel={rel:.3e}")
     assert rel < 1e-5, (
         f"full polarized split V_xc not FD-consistent with split_exc_energy_uks "
         f"(rel={rel:.3e})")
@@ -586,7 +575,6 @@ def test_polarized_vc_closed_shell_reduces_to_shared():
         model, rho_c, rho_c, sig_tot, features, ao_grid, grid_weights,
         nr_tot, ao_grad)
     max_diff = float(jnp.max(jnp.abs(vc_a - vc_b)))
-    print(f"\n[polarized V_c] closed-shell max|vc_a-vc_b|={max_diff:.2e}")
     assert max_diff < 1e-12, (
         f"at zeta=0 the per-spin V_c must coincide: max|vc_a-vc_b|={max_diff:.2e}")
 
@@ -691,7 +679,6 @@ def test_pyscfad_callback_closed_shell_reduction():
     assert float(np.max(np.abs(vs[:, 1]))) > 0.0, (
         "correlation must contribute a non-zero ud cross-term"
     )
-    print(f"\n[pyscfad] closed-shell exc residual={e_resid:.3e}")
 
 
 def test_pyscfad_callback_polarized_per_spin_vrho():
@@ -743,7 +730,6 @@ def test_pyscfad_callback_polarized_per_spin_vrho():
     m = (rho_a + rho_b) > 1e-3
     rel_a = np.max(np.abs(fd_a[m] - vr_a[m])) / max(np.max(np.abs(vr_a[m])), 1e-12)
     rel_b = np.max(np.abs(fd_b[m] - vr_b[m])) / max(np.max(np.abs(vr_b[m])), 1e-12)
-    print(f"\n[pyscfad polarized] rel_a={rel_a:.3e} rel_b={rel_b:.3e}")
     assert rel_a < 1e-5 and rel_b < 1e-5, (
         f"per-spin vrho not FD-consistent (rel_a={rel_a:.3e} rel_b={rel_b:.3e})")
 

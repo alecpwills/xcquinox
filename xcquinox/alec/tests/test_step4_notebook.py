@@ -5,9 +5,8 @@ of an importable package (``notebooks/`` intentionally has no ``__init__.py``).
 Tests load the generator via ``importlib.util.spec_from_file_location`` so
 test discovery does not depend on ``sys.path`` tricks.
 
-Per ``docs/superpowers/plans/2026-04-12-step4-notebook-implementation.md``, this
-module starts with a single scaffolding test in Task 1 and grows one builder
-test group per downstream task (Tasks 2 through 13).
+The suite pairs a per-builder unit test with each notebook cell group and adds
+full-notebook structural guards plus an opt-in end-to-end smoke test.
 """
 import importlib.util
 import pathlib
@@ -28,10 +27,7 @@ def load_generator():
     question without requiring a spurious ``__init__.py``.
     """
     if not GENERATOR_PATH.is_file():
-        pytest.fail(
-            f"Step 4 notebook generator not found at {GENERATOR_PATH}. "
-            "Did Task 1 fail to land?"
-        )
+        pytest.fail(f"Step 4 notebook generator not found at {GENERATOR_PATH}.")
     spec = importlib.util.spec_from_file_location(
         "step4_generator", str(GENERATOR_PATH)
     )
@@ -58,7 +54,7 @@ def test_main_produces_valid_notebook(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Task 2, Cells 1-5 builder tests
+# Cells 1-5 builder tests
 # ---------------------------------------------------------------------------
 
 
@@ -148,7 +144,7 @@ def test_main_cells_1_to_5_validate(tmp_path):
     )
 
 
-# Task 3, Cells 6-8 builder tests
+# Cells 6-8 builder tests
 
 
 def test_cell_07_uses_rho_cutoff_1e_minus_10():
@@ -534,7 +530,7 @@ def test_cell_08_serial_callback_creates_one_bar_per_arch_phase():
     exec(source, scope)
 
     cb = scope["_cb"]
-    # Drive 2 phases × 2 steps for a single arch
+    # Drive 2 phases x 2 steps for a single arch
     cb({"arch": "shallow", "phase": "X", "step": 1, "total": 2,
         "loss": 1e-2, "timestamp": 0.0})
     cb({"arch": "shallow", "phase": "X", "step": 2, "total": 2,
@@ -675,7 +671,7 @@ def test_cell_08_parallel_path_creates_and_closes_arch_bar(monkeypatch):
     assert arch_bar.closed, "arch bar must be closed after dispatch"
 
 
-# Task 4, Cells 9-10 builder tests
+# Cells 9-10 builder tests
 
 
 def test_cell_09_loads_losses_x_and_losses_c():
@@ -1041,7 +1037,7 @@ def test_cell_08_parallel_path_skips_when_checkpoints_exist(monkeypatch, tmp_pat
     )
 
 
-# Task 5, Cells 11-13 builder tests
+# Cells 11-13 builder tests
 
 
 def test_cell_12_targets_has_all_three_molecules():
@@ -1198,7 +1194,7 @@ def test_cell_13_binds_atom_energies_to_pbe_dict():
     )
 
 
-# Task 6, Cells 14-15 builder tests
+# Cells 14-15 builder tests
 
 
 def test_cell_14_mol_specs_has_three_entries():
@@ -1280,7 +1276,7 @@ def test_cell_15_mol_data_list_carries_descriptor_union():
     )
 
 
-# Task 7 -- Cells 16-20 builder tests
+# Cells 16-20 builder tests
 
 
 def test_cell_17_builds_specs_list():
@@ -1817,7 +1813,7 @@ def test_cell_20_binds_arch_name_before_loop():
     assert bind_idx < loop_idx, "arch_name binding must precede the loss loop"
 
 
-# Task 8 -- Cells 21-24 builder tests
+# Cells 21-24 builder tests
 
 
 def test_cell_22_metrics_tuple_is_four():
@@ -1883,7 +1879,7 @@ def test_cell_23_multiindex_is_arch_loss():
     assert 'set_index(["arch", "loss"])' in source
 
 
-# Task 9 -- Cells 25-26 builder tests
+# Cells 25-26 builder tests
 
 
 def test_cell_25_binds_best_idx():
@@ -1990,7 +1986,7 @@ def test_cell_26_panel_assignment_is_explicit():
         assert expr in source, f"panel expression {expr!r} missing"
 
 
-# Task 10 -- Cells 27-29 builder tests
+# Cells 27-29 builder tests
 
 
 def test_cell_27_uses_oneshot_grid_density():
@@ -2037,7 +2033,7 @@ def test_cell_29_filter_startswith_deep():
     assert 'n.startswith("deep")' in source
 
 
-# Task 11 -- Cells 30-31 builder tests
+# Cells 30-31 builder tests
 
 
 def test_cell_31_uses_qualified_alec_names():
@@ -2387,7 +2383,7 @@ def test_cell_32_handles_narrow_config():
 
 
 # ---------------------------------------------------------------------------
-# Task 12, Full-notebook guards
+# Full-notebook guards
 # ---------------------------------------------------------------------------
 
 
@@ -2411,7 +2407,7 @@ def test_generator_produces_39_cells(tmp_path):
     The figure-labeling pass added 6 per-plot markdown description cells
     (section 7 overview + per-comparison-plot descriptions for cells 26-29
     and cell 32) on top of the 32-cell baseline, plus the SolverConfig
-    example cell added in Task 8.1.
+    example cell.
     """
     gen = load_generator()
     out_path = tmp_path / "out.ipynb"
@@ -2424,7 +2420,7 @@ def test_generator_cell_types_match_expected(tmp_path):
     """Markdown cells: original section headings (0, 6, 11, 16, 21, 35)
     plus the 6 new comparison-plot description markdown cells inserted by
     the figure-labeling pass at indices (25, 27, 29, 31, 33, 37).
-    Cell 5 is the SolverConfig example (code) added in Task 8.1."""
+    Cell 5 is the SolverConfig example (code)."""
     gen = load_generator()
     out_path = tmp_path / "out.ipynb"
     gen.main(str(out_path))
@@ -2439,13 +2435,13 @@ def test_generator_cell_types_match_expected(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Task 13, End-to-end smoke test (slow, opt-in)
+# End-to-end smoke test (slow, opt-in)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.slow
 def test_step4_notebook_smoke_runs_end_to_end(tmp_path):
-    """Run the regenerated notebook end-to-end on a 1-arch × 1-loss config.
+    """Run the regenerated notebook end-to-end on a 1-arch x 1-loss config.
 
     Proves that every cell executes without raising. Does NOT validate
     numerical correctness (a 250-step training run is not converged),
@@ -2735,11 +2731,16 @@ def test_every_code_cell_emitted_source_is_valid_python(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Task 8.1: SolverConfig example cell presence
+# SolverConfig example cell presence
 # ---------------------------------------------------------------------------
 
-def test_notebook_contains_scf_config_example():
-    from pathlib import Path
-    src = Path("notebooks/gga_training_example-step4.ipynb").read_text()
+def test_notebook_contains_scf_config_example(tmp_path):
+    """The generator must emit the SolverConfig example cell. Built fresh into
+    tmp_path and read back (CWD-independent, and testing the generator's output
+    rather than a possibly-stale committed notebook)."""
+    gen = load_generator()
+    out_path = tmp_path / "step4_scf_example.ipynb"
+    gen.main(str(out_path))
+    src = out_path.read_text()
     assert "SolverConfig(" in src
     assert "SolverBackend.MANUAL" in src

@@ -43,6 +43,21 @@ def _load_snapshot() -> dict:
         return json.load(f)
 
 
+def test_golden_snapshot_atom_energies_match_domain():
+    """Independent oracle (NOT the self-consistent rebuild): the committed golden
+    snapshot's atom_energies must equal the live Chakravorty table (domain.py),
+    their true source. Guards against a stale golden -- e.g. the prior S=-398.0
+    placeholder vs the correct -398.1095, and a short 8-element table vs the
+    current 14 -- which the rebuild-via-the-same-capture-path faithfulness test
+    (which proves determinism, not correctness) cannot catch."""
+    from xcquinox.alec.cluster.domain import ATOMIC_ENERGIES_CHAKRAVORTY
+    ae = _load_snapshot()["spec"]["atom_energies"]
+    assert set(ae) == set(ATOMIC_ENERGIES_CHAKRAVORTY), (
+        "golden atom_energies element set drifted from domain.py")
+    for el, e in ae.items():
+        assert abs(e - ATOMIC_ENERGIES_CHAKRAVORTY[el]) < 1e-6, (el, e)
+
+
 # ---------------------------------------------------------------------------
 # Rebuild the spec the same way the capture script does
 # ---------------------------------------------------------------------------

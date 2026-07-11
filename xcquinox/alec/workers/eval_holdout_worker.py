@@ -77,10 +77,18 @@ def main(args=None):
     parsed = parser.parse_args(args)
 
     # Pin thread env BEFORE any JAX import (one BLAS thread per worker by
-    # default so N workers saturate N cores without oversubscription).
-    os.environ["XLA_FLAGS"] = (
-        f"--xla_cpu_multi_thread_eigen=true "
-        f"intra_op_parallelism_threads={parsed.threads}"
+    # default so N workers saturate N cores without oversubscription). Respect
+    # an XLA_FLAGS already set by the launcher (parallel._thread_env carries the
+    # compile-memory trims); only fall back here when unset -- unconditional
+    # assignment would clobber the launcher value, and the old
+    # ``intra_op_parallelism_threads=<n>`` token was mis-prefixed (no ``--xla_``)
+    # so XLA silently ignored it -- dropped; intra-op width is bounded by the
+    # OMP/MKL/OPENBLAS caps below.
+    os.environ.setdefault(
+        "XLA_FLAGS",
+        "--xla_cpu_multi_thread_eigen=true "
+        "--xla_llvm_disable_expensive_passes=true "
+        "--xla_backend_optimization_level=1",
     )
     os.environ["OMP_NUM_THREADS"] = str(parsed.threads)
     os.environ["MKL_NUM_THREADS"] = str(parsed.threads)

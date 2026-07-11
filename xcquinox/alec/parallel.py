@@ -1,8 +1,8 @@
 """xcquinox.alec.parallel -- WorkerJob, WorkerResult, run_workers.
 
-Parallel orchestration module for launching worker subprocesses.
-Implements THE SPEC section 10.2 (full parallel.py listing), section 10.4
-(progress file schema), and section 10.5 (argv contract).
+Parallel orchestration module for launching worker subprocesses: the
+WorkerJob/WorkerResult data model, the progress-file schema, and the
+worker argv contract.
 
 NOTE: This is a launcher module; it has NO jax / equinox / optax imports.
 Every import below is stdlib, so the module can be imported freely from
@@ -216,9 +216,15 @@ def _thread_env(threads: int) -> dict[str, str]:
     inherits as part of its subprocess environment.
     """
     return {
+        # Compile-memory trims (results-neutral: they cut LLVM codegen peak RSS
+        # and time for large-basis kernels) plus eigen threading. The old
+        # ``intra_op_parallelism_threads=<n>`` token was mis-prefixed (no
+        # ``--xla_`` prefix) so XLA silently ignored it -- dropped; intra-op
+        # width is bounded by the OMP/MKL/OPENBLAS caps below.
         "XLA_FLAGS": (
-            f"--xla_cpu_multi_thread_eigen=true "
-            f"intra_op_parallelism_threads={threads}"
+            "--xla_cpu_multi_thread_eigen=true "
+            "--xla_llvm_disable_expensive_passes=true "
+            "--xla_backend_optimization_level=1"
         ),
         "OMP_NUM_THREADS": str(threads),
         "MKL_NUM_THREADS": str(threads),

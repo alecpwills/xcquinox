@@ -610,9 +610,12 @@ def test_test_spec_accepts_pbe_anchor_fields():
 def test_attn_registry_entries_have_valid_num_heads():
     """Test 20: each *_attn arch satisfies divisibility + head_dim >= 4."""
     from xcquinox.alec.config import ARCHITECTURES
-    attn_keys = [k for k in ARCHITECTURES if k.endswith("_attn")]
-    # 2026-05-29: bumped 6 -> 7 with `deep_notransform_attn`.
-    assert len(attn_keys) == 7, f"expected 7 attn archs, got {len(attn_keys)}"
+    # Filter on the attention FLAG, not the name suffix: the *_attn_3x16 family
+    # ends in `_3x16`, so `endswith("_attn")` silently dropped it (uncovered).
+    attn_keys = [k for k, a in ARCHITECTURES.items() if a.attention]
+    assert len(attn_keys) >= 7, f"expected >=7 attn archs, got {len(attn_keys)}"
+    assert {"deep_attn_3x16", "deep_combined_attn_3x16"} <= set(attn_keys), (
+        "the *_attn_3x16 archs must be covered by the attention census")
     for k in attn_keys:
         arch = ARCHITECTURES[k]
         assert arch.attention is True, k
@@ -633,7 +636,9 @@ def test_registry_smoke_forward_each_attn_arch():
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.networks import create_network_pair
 
-    attn_keys = [k for k in ARCHITECTURES if k.endswith("_attn")]
+    # Filter on the attention flag so the *_attn_3x16 archs (which end in
+    # `_3x16`, not `_attn`) also get a forward-pass smoke.
+    attn_keys = [k for k, a in ARCHITECTURES.items() if a.attention]
     for k in attn_keys:
         arch = ARCHITECTURES[k]
         xnet, cnet = create_network_pair(arch, seed=0)

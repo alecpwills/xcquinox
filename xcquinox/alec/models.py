@@ -17,9 +17,10 @@ from xcquinox.alec.descriptors import Descriptor
 
 # Threshold below which NN inputs are sanitized to avoid sqrt(sigma)-derivative
 # divergence in the networks' reduced-gradient transform. At these tail points
-# Fx, Fc are masked to the LDA/PW92 limit (=1), the physical limit as rho -> 0
-# anyway, and the rho_safe * eps_xc prefactor vanishes, so energy contribution
-# is negligible while gradients remain finite.
+# Fx, Fc are masked to 1; this is a numerically-immaterial mask, not a rigorous
+# rho -> 0 limit of the enhancement factor: the rho_safe * eps_xc prefactor
+# vanishes there, so the energy contribution is negligible regardless of F, while
+# masking keeps the gradients finite.
 _NN_TAIL_THRESHOLD = 1e-10
 
 

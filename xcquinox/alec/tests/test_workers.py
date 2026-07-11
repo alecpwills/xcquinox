@@ -109,10 +109,12 @@ def test_thread_limit_env_vars_set_before_jax_import(tmp_path):
 
         threads = sys.argv[1]
 
-        # Set env vars (same as worker pattern)
+        # Set env vars (same as worker pattern: eigen threading + the
+        # compile-memory trims; intra-op width is bounded by OMP/MKL/OPENBLAS).
         os.environ["XLA_FLAGS"] = (
-            f"--xla_cpu_multi_thread_eigen=true "
-            f"intra_op_parallelism_threads={threads}"
+            "--xla_cpu_multi_thread_eigen=true "
+            "--xla_llvm_disable_expensive_passes=true "
+            "--xla_backend_optimization_level=1"
         )
         os.environ["OMP_NUM_THREADS"] = threads
         os.environ["MKL_NUM_THREADS"] = threads
@@ -141,7 +143,7 @@ def test_thread_limit_env_vars_set_before_jax_import(tmp_path):
     assert result.returncode == 0, f"Script failed: {result.stderr}"
 
     stderr = result.stderr
-    assert "intra_op_parallelism_threads=7" in stderr
+    assert "xla_llvm_disable_expensive_passes=true" in stderr
     assert "OMP=7" in stderr
     assert "MKL=7" in stderr
     assert "OPENBLAS=7" in stderr

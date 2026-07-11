@@ -33,7 +33,8 @@ from .dfs_pool import (
 )
 
 
-# Dick & Fernandez-Serra 2021 SI §II atom regularizer set.
+# Dick & Fernandez-Serra 2021 SI §I atom regularizer set (H, Li: the SI's
+# "atomic electron densities were calculated and included for H and Li").
 # DFS_ATOM_REFS in dfs_pool.py:394 declares H + Li as the canonical
 # atomic-density references; this is the same list. Used by the loss to
 # scope `_atomic_reg` (which by default would regularize EVERY atom anchor
@@ -194,10 +195,11 @@ def _bh76_point_from_dict(
 
     - ``"reaction_energy"`` (DEFAULT), the true reaction energy ΔE
       (GMTKN55-BH76RC). The loss is trained against E(products) -
-      E(reactants), matching Dick & Fernandez-Serra 2021 (their
-      training set had no transition-state geometries). The reference
-      MUST be a reaction energy, since barrier heights cannot be
-      reproduced by the reactant -> product stoichiometry.
+      E(reactants). This DEVIATES from Dick & Fernandez-Serra 2021,
+      whose SI (Sec. I) used the *barrier heights* of these reactions;
+      our loss is a reactant -> product stoichiometric sum with no TS
+      geometries staged, so a reaction energy is what we can train
+      (barrier heights cannot be reproduced by the stoichiometry).
     - ``"barrier_height"`` (opt-in), the forward barrier height. A
       true forward barrier is ``E(TS) - E(reactants)``, so each
       reaction must additionally supply a transition-state geometry
@@ -332,8 +334,9 @@ def build_dfs_pool_points(
           carry the true reaction energy ΔE (GMTKN55-BH76RC) as
           ``e_rxn_ref``. The BH76 loss term computes
           ``Σ coeffs·E = E(products) - E(reactants)``, so the reference
-          MUST be a reaction energy, this is the correct behaviour and
-          matches Dick & Fernandez-Serra 2021.
+          MUST be a reaction energy. This DEVIATES from Dick &
+          Fernandez-Serra 2021, whose SI (Sec. I) used barrier heights
+          (see the dfs_pool.py deviation note).
         - ``'barrier_height'`` (opt-in), BH76 points carry the forward
           barrier height as ``e_rxn_ref``. A true forward barrier is
           ``E(TS) - E(reactants)``, which requires a transition-state

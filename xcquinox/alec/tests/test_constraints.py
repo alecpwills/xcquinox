@@ -45,16 +45,27 @@ def test_lieb_oxford_point_evaluation():
 
 # LiebOxfordBound (b2), REFPHYS-02: lower bound is the physical 0, not 0.196.
 def test_lieb_oxford_lower_bound_is_zero_not_0p196():
+    """The one-sided I_mu transform (Dick 2021 eq. 11) floors F_x at the
+    physical 0, not the old symmetric-tanh artefact 2 - mu = 0.196. A
+    moderately negative raw enhancement drops below 0.196 heading to 0, a
+    strongly negative one reaches 0 to machine precision, and the upper
+    Lieb-Oxford ceiling (mu = 1.804) is still respected."""
     from xcquinox.alec.constraints import LiebOxfordBound
     c = LiebOxfordBound()
 
-    # A strongly negative raw enhancement must be driven toward F_x = 0, the
+    # A moderately negative raw enhancement is driven toward F_x = 0, the
     # physical floor, NOT clamped at the old symmetric-tanh artefact 0.196.
     def inner_very_negative(r, s, f):
         return -10.0 * jnp.ones_like(r)
     out = c(inner_very_negative, jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
     assert jnp.all(out > 0.0)            # never negative
     assert jnp.all(out < 0.05)           # below the old 0.196 floor, heading to 0
+    # A strongly negative raw enhancement reaches the 0 floor to machine
+    # precision (folds in the former lower-asymptote test).
+    out_extreme = c(lambda r, s, f: -100.0 * jnp.ones_like(r),
+                    jnp.ones((1,)), jnp.ones((1,)), jnp.zeros((1, 0)))
+    assert jnp.all(out_extreme >= 0.0)
+    assert jnp.abs(out_extreme[0]) < 1e-10
     # And the upper Lieb-Oxford ceiling (mu = 1.804) is still respected.
     def inner_large(r, s, f):
         return 100.0 * jnp.ones_like(r)
@@ -183,8 +194,11 @@ def test_non_negative_correlation_composes_with_trivial_inner_fn():
     """The corrected NonNegativeCorrelation uses
     `softplus(F_raw - 1 + log(e - 1))` so that:
       * F_raw =  1 -> F_c = 1 (PBE fixed point preserved)
-      * F_raw = -10 -> F_c -> 0 (Levy-Perdew non-positive correlation:
-        E_c = ε_c^LDA · F_c ≤ 0 with ε_c^LDA ≤ 0 demands F_c ≥ 0)
+      * F_raw = -10 -> F_c -> 0. In this code's convention
+        ε_c = ε_c^PW92 · F_c with ε_c^PW92 ≤ 0, so F_c ≥ 0 keeps ε_c ≤ 0
+        pointwise; the non-positivity of the correlation energy is a basic
+        property of the exact functional (distinct from the Levy-Perdew
+        coordinate-scaling inequality, which is a separate result).
       * monotone increasing in F_raw
     """
     from xcquinox.alec.constraints import NonNegativeCorrelation
@@ -199,7 +213,8 @@ def test_non_negative_correlation_composes_with_trivial_inner_fn():
     out_floor = c(inner_raw(-10.0), jnp.ones((3,)), jnp.ones((3,)), jnp.zeros((3, 0)))
     assert jnp.all(out_floor >= 0.0), out_floor
     assert jnp.all(out_floor < 1e-3), (
-        f"floor must be near zero (Levy-Perdew F_c >= 0); got {out_floor}"
+        f"floor must be near zero (F_c >= 0 keeps ε_c^PW92 · F_c <= 0); "
+        f"got {out_floor}"
     )
 
     # Fixed point: F_raw = 1 -> F_c = 1 (PBE preserved).
@@ -600,24 +615,7 @@ def test_scaling_symmetric_c_allow_override():
     assert any(s.name == "scaling_symmetric" for s in arch.c_constraints)
 
 
-# (xxiii): REFPHYS-02, LiebOxfordBound lower asymptote is the physical 0.
-def test_lieb_oxford_lower_asymptote_is_zero():
-    from xcquinox.alec.constraints import LiebOxfordBound
-    c = LiebOxfordBound(mu=1.804)
-
-    def inner(r, s, f):
-        return -100.0 * jnp.ones_like(r)
-
-    out = c(inner, jnp.ones((1,)), jnp.ones((1,)), jnp.zeros((1, 0)))
-    # One-sided I_mu squash (Dick 2021 eq. 11) floors F_x at 0, the physical
-    # bound (eps_x = eps_x^LDA * F_x <= 0). The old symmetric tanh wrongly
-    # asymptoted to 2 - mu = 0.196. (At this extreme the floor is reached to
-    # machine precision, so 0 is inclusive.)
-    assert jnp.all(out >= 0.0)
-    assert jnp.abs(out[0]) < 1e-10
-
-
-# (xxiv): REFPHYS-02, linear response near the UEG fixed point has slope
+# (xxiii): REFPHYS-02, linear response near the UEG fixed point has slope
 # (mu-1)/mu, matching the in-network _AlecLOB squash (I_mu is algebraically
 # identical to limit*sigmoid(x-log(limit-1))-1). The previous symmetric tanh
 # had unit slope, which did NOT match the production network squash.

@@ -15,7 +15,7 @@ barrier_ref / reaction_energy_ref for BH76; ip_ref for IP13) come from
 authoritative benchmarks and are attached to the build_dfs_pool() output
 via Atoms.info /
 reaction-spec dict entries, never fabricated.  See DFS_AE_DATA for AE
-sources (W4-11 anchors via step-6 for H2O+C2H2; Haunschild & Klopper
+sources (W4-11 (Karton 2011) anchors for H2O+C2H2; Haunschild & Klopper
 J. Chem. Phys. 136, 164102 (2012) for the other 19).
 
 Spin / charge metadata
@@ -51,16 +51,20 @@ from ase.io import read
 #
 # Sources:
 #
-# - "step6":
-#       H2O = 232.974 and C2H2 = 405.525 kcal/mol are the W4-11 reference
-#       values anchored by the step-6 notebook
-#       (`notebooks/_build_step6_notebook.py`,
-#        constants H2O_AE_REF_KCALMOL / C2H2_AE_REF_KCALMOL).
-#       These are the canonical anchors for cross-notebook
-#       reproducibility (step 5 / step 6 / step 7 must all use the same
-#       AE reference for a given molecule).  See step-6 design spec
-#       §17.1 and §17.3 (Δ from W4-17 < 0.5 kcal/mol, well within the
-#       1 kJ/mol confidence interval of the W4 family).
+# - "W4-11 (Karton 2011)":
+#       H2O = 232.974 and C2H2 = 405.525 kcal/mol are the GMTKN55-W4-11
+#       zero-point-exclusive nonrelativistic atomization energies of
+#       Karton, Daon & Martin, Chem. Phys. Lett. 510, 165 (2011)
+#       (= DFS ref [29]), carried in the repo's W4-11 pool
+#       `xcquinox/alec/data/w411_full_pool.json` and in
+#       `scripts/script_data/gmtkn55/W4-11/.res`.
+#       DEVIATION (documented): unlike the 19 G2/97 + Haunschild-
+#       recalculated anchors, H2O and C2H2 carry the W4-11 geometry AND
+#       the W4-11 AE (they are computed on W4-11 geometries; the W4-11 vs
+#       W4-17 difference is < 0.5 kcal/mol, within the W4-family 1 kJ/mol
+#       interval). The numeric value is verified against the W4-11 pool
+#       file, not the notebook, by
+#       test_subset_selection.test_dfs_pool_ae_anchor_w411_provenance.
 #
 # - "Haunschild2012":
 #       Haunschild & Klopper, "New accurate reference energies for the
@@ -132,10 +136,10 @@ DFS_AE_DATA = [
      "spin_source": "X¹Σg+ closed-shell (NIST CCCBDB)",
      "source": "Haunschild2012 Table I, E_ref,non-rel = 162.31 kJ/mol"},
     {"hill": "C2H2", "name": "Acetylene",
-     "ae_kcalmol": 405.525,  # step-6 anchor (W4-11)
+     "ae_kcalmol": 405.525,  # W4-11 geom+AE (Karton 2011); see source note
      "spin": 0, "charge": 0,
      "spin_source": "X¹Σg+ closed-shell (NIST CCCBDB)",
-     "source": "step6 (W4-11 anchor; H2O+C2H2 must match step-6)"},
+     "source": "W4-11 (Karton 2011, CPL 510, 165; = DFS ref [29]); value in data/w411_full_pool.json"},
     {"hill": "CO",   "name": "Carbon monoxide",
      "ae_kcalmol": 1087.57 / 4.184,
      "spin": 0, "charge": 0,
@@ -209,10 +213,10 @@ DFS_AE_DATA = [
      "spin_source": "X³B1 triplet ground state (Bunker & Sears 1985; NIST CCCBDB)",
      "source": "Haunschild2012 Table I, E_ref,non-rel = 797.23 kJ/mol (Triplet carbene)"},
     {"hill": "H2O",  "name": "Water",
-     "ae_kcalmol": 232.974,  # step-6 anchor (W4-11)
+     "ae_kcalmol": 232.974,  # W4-11 geom+AE (Karton 2011); see source note
      "spin": 0, "charge": 0,
      "spin_source": "X¹A1 closed-shell (NIST CCCBDB)",
-     "source": "step6 (W4-11 anchor; H2O+C2H2 must match step-6)"},
+     "source": "W4-11 (Karton 2011, CPL 510, 165; = DFS ref [29]); value in data/w411_full_pool.json"},
     {"hill": "H3N",  "name": "Ammonia",
      "ae_kcalmol": 1245.99 / 4.184,
      "spin": 0, "charge": 0,
@@ -234,7 +238,8 @@ DFS_AE_KCALMOL = {d["hill"]: d["ae_kcalmol"] for d in DFS_AE_DATA}
 # coverage without rebuilding the pool.
 DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 
-# 3 BH76 reactions per Dick SI §II:
+# 3 BH76 reactions per Dick SI §I (the training-set augmentation text,
+# where the barrier heights of these reactions are listed):
 #   OH + N2 -> H + N2O,   OH + CH3 -> O + CH4,   HF + F -> H + F2
 #
 # Reference forward-barrier heights (Vf) and reverse-barrier heights (Vr)
@@ -251,10 +256,14 @@ DFS_AE_SPIN = {d["hill"]: d["spin"] for d in DFS_AE_DATA}
 # ----------------
 # The loss term ``_rxn_residual_term`` (losses.py) computes
 # ``e_rxn = Σ(coeffs · e_nn) = E(products) - E(reactants)``: a true
-# reaction energy ΔE, NOT a barrier height. Dick & Fernandez-Serra
-# 2021 trained against reaction energies (their training set had no
-# transition-state geometries; SI §II). Therefore each entry below
-# carries BOTH numbers:
+# reaction energy ΔE, NOT a barrier height. This is a DELIBERATE
+# DEVIATION from Dick & Fernandez-Serra 2021: their SI (Sec. I) added the
+# *barrier heights* of these three BH76 reactions (which require TS
+# geometries and were treated non-self-consistently on a SCAN density).
+# We stage no TS geometries and the loss is a reactant->product
+# stoichiometric sum, so we instead train the GMTKN55-BH76RC *reaction
+# energies* (approved 2026-05-24; HISTORY Phase 7). Each entry below
+# therefore carries BOTH numbers:
 #   - ``barrier_ref``: the forward barrier height (kept for
 #                              provenance and for the opt-in
 #                              ``bh76_mode="barrier_height"`` path).
@@ -550,6 +559,13 @@ def build_dfs_pool() -> dict:
     traj_path = _g297_traj_path()
     traj = read(str(traj_path), ":")
 
+    # NOTE (latent fragility): this map is LAST-WINS by Hill formula -- when two
+    # traj entries share a formula (CH2 has a singlet at idx 105 and a triplet at
+    # idx 106), the entry appearing last in g2_97.traj overwrites the earlier one,
+    # so the CH2 GEOMETRY selected here is traj-order-dependent. The spin and AE
+    # target are taken from DFS_AE_DATA (authoritative), so the energy target is
+    # correct regardless of which geometry wins; only the geometry pick is
+    # order-sensitive (reordering the traj could silently swap singlet for triplet).
     by_hill: dict = {a.get_chemical_formula(): a for a in traj}
 
     ae_atoms: list = []

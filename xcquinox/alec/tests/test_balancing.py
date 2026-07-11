@@ -276,7 +276,7 @@ def test_twophase_phase1_loss_kwargs_hashable():
         phase1_steps=100,
         phase1_loss_kwargs=(("vxc_weight", 1.0),),
     )
-    assert hash(cfg)  # Should not raise
+    assert isinstance(hash(cfg), int)  # hashable (frozen dataclass); does not raise
     cfg2 = TwoPhaseConfig(
         phase1_steps=100,
         phase1_loss_kwargs=(("vxc_weight", 1.0),),

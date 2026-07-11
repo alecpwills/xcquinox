@@ -17,10 +17,18 @@ def main(args=None):
     parser.add_argument("--threads", type=int, default=1)
     parsed = parser.parse_args(args)
 
-    # Set thread env BEFORE any JAX import
-    os.environ["XLA_FLAGS"] = (
-        f"--xla_cpu_multi_thread_eigen=true "
-        f"intra_op_parallelism_threads={parsed.threads}"
+    # Set thread env BEFORE any JAX import. Respect an XLA_FLAGS already set by
+    # the launcher (e.g. the cluster sbatch, which carries the compile-memory
+    # trims); only fall back to the trims here when it is unset -- unconditional
+    # assignment would clobber the sbatch value. The old
+    # `intra_op_parallelism_threads=<n>` token was mis-prefixed (no `--xla_`
+    # prefix) so XLA silently ignored it -- dropped; intra-op width is bounded by
+    # the OMP/MKL/OPENBLAS caps below.
+    os.environ.setdefault(
+        "XLA_FLAGS",
+        "--xla_cpu_multi_thread_eigen=true "
+        "--xla_llvm_disable_expensive_passes=true "
+        "--xla_backend_optimization_level=1",
     )
     os.environ["OMP_NUM_THREADS"] = str(parsed.threads)
     os.environ["MKL_NUM_THREADS"] = str(parsed.threads)

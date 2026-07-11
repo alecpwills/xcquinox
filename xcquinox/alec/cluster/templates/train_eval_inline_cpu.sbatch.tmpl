@@ -32,13 +32,18 @@ export OPENBLAS_NUM_THREADS="$$BLAS_THREADS"
 echo "[thread-caps] CORES=$$CORES -> OMP/MKL/OPENBLAS=$$BLAS_THREADS (idle in train_eval; XLA+LLVM keep the rest)"
 ${BENCH_REFS_ENV_LINE}
 # --- JAX/XLA CPU backend ---------------------------------------------------
-# 2026-07-04: dropped the bare `intra_op_parallelism_threads=...` token (it was
-# missing its `--xla_` prefix, so XLA silently ignored it), and added
-# `--xla_llvm_disable_expensive_passes=true` to cut LLVM codegen PEAK MEMORY when
-# compiling the fused SCF-step kernel for large bases -- 6-311++G(3df,2pd)+grid3
-# OOMed LLVM ("Cannot allocate memory"/std::bad_alloc) on 128 GB nodes. If a
-# compile still OOMs, also add `--xla_backend_optimization_level=1`. See HISTORY.
-export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true --xla_force_host_platform_device_count=1 --xla_llvm_disable_expensive_passes=true"
+# XLA_FLAGS reaches every compile in the worker (nothing in the train/eval path
+# overrides it). `--xla_llvm_disable_expensive_passes=true` and
+# `--xla_backend_optimization_level=1` trim LLVM codegen effort and peak memory
+# for the large 6-311++G(3df,2pd)+grid3 kernels; results-neutral (compiler
+# effort only, not the math). These flags are only a MARGINAL help (~1-5% peak
+# RSS in local measurement) -- the primary compile-memory fix is the per-molecule
+# de-fusing of the training step (each molecule's SCF compiles at per-molecule
+# size instead of the whole group fused into one kernel; see
+# _run_per_molecule_loop in train.py and L5GradnormVxcStep7 in losses.py).
+# `--xla_cpu_parallel_codegen_split_count` was measured and deliberately NOT set
+# (no memory benefit, ~50% slower compile). See HISTORY.
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true --xla_force_host_platform_device_count=1 --xla_llvm_disable_expensive_passes=true --xla_backend_optimization_level=1"
 
 # --- train task ------------------------------------------------------------
 # 2026-05-29 inline-eval mode: this single SLURM task does BOTH train AND

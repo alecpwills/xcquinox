@@ -1071,6 +1071,24 @@ def test_classify_failure_deterministic_still_skipped(tmp_path):
     assert cli._classify_failure(run_dir, 3, _WIDTH, {}) == "deterministic"
 
 
+def test_classify_failure_no_disk_evidence_is_recoverable(tmp_path):
+    """A train index with NO disk trace (no model.eqx / resume_state.pkl /
+    failure.json) whose sacct state is a no-evidence catch-all
+    (dependency_never_satisfied / unknown_sacct_purged) classifies as
+    'no_evidence' -- a bounded FRESH relaunch, NOT stranded as 'deterministic'.
+    Regression for the NODE_FAIL / cancel of a materialized train task whose
+    preflight succeeded (previously unrecoverable by resubmit + resubmit-preflight)."""
+    run_dir = _make_run_dir(tmp_path)
+    _spec_dir(run_dir, 3)  # spec dir exists; the task left no artifacts in it
+    for outcome in ("dependency_never_satisfied", "unknown_sacct_purged"):
+        cls = cli._classify_failure(run_dir, 3, _WIDTH, {3: outcome})
+        assert cls == "no_evidence", (outcome, cls)
+    # 'no_evidence' must be retryable (resubmit does not skip it as deterministic)
+    # and fresh (nothing to archive -- the task never ran).
+    assert "no_evidence" in cli._RETRYABLE
+    assert "no_evidence" in cli._FRESH_RETRY
+
+
 def test_resubmit_timeout_applies_timeout_retry_resources(tmp_path, monkeypatch):
     """A timeout failure must be resubmitted with the timeout_retry partition +
     time applied as sbatch overrides (previously the knobs were dead, so a

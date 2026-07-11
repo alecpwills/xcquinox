@@ -38,6 +38,7 @@ from xcquinox.alec.data import precompute_fixed_density_data
 from xcquinox.alec.losses import make_loss
 from xcquinox.alec.models import AlecGGAModel
 from xcquinox.alec.networks import create_network_pair
+from xcquinox.alec.defused_grad import defused_value_and_grad
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,15 @@ def build_optimizer(
     unchanged. A positive value regularizes the (over-capacity) nets -- the
     DFS-pool generalization gap was traced (2026-06-20) partly to training
     with no weight decay while DFS uses it (og_dpyscf/scripts/train.py:47,289).
+
+    DFS parity note: the production ``weight_decay`` (``1e-4`` in the cluster
+    YAML) is two orders of magnitude larger than DFS's L2 regularization of
+    ``1e-6`` (SI), and ``adamw`` applies DECOUPLED weight decay whereas DFS
+    regularizes with coupled Adam-L2. Both the 100x magnitude and the
+    coupled->decoupled change are intentional regularization choices beyond
+    DFS (the adam->adamw switch is the generalization-gap fix of HISTORY
+    Phase 10), not accidental parity breaks.
+
     LR schedule: a constant-LR warmup for the first ``lr_decay_start`` fraction
     of ``n_steps`` THEN linear decay to ``lr_end``, but ONLY when
     ``lr_decay_start > 0``. With the common ``lr_decay_start = 0`` there is no
@@ -420,10 +430,12 @@ def _validation_reaction_mae(model, val_mol_data, val_reactions,
                              solver_config=None, *, energy_fn=None) -> float:
     """In-loop held-out VALIDATION reaction-energy MAE (kcal/mol). WS3.
 
-    For every species in ``val_mol_data`` compute a total energy via the SAME
-    energy path the training loss uses (``oneshot.total_energy_for_solver``,
-    dispatched on the solver MODE so FULL re-runs the SCF and ONESHOT/FIXED_J
-    use the fixed-density functional), then aggregate per-reaction errors against
+    For every species in ``val_mol_data`` compute a total energy via
+    ``oneshot.total_energy_for_solver`` with ``forward_only=True`` -- the same
+    solver-MODE dispatch as the training loss (FULL re-runs the SCF, ONESHOT/
+    FIXED_J use the fixed-density functional) but a forward-only pass: validation
+    needs no gradient, so it must not compile the differentiable fused-scan kernel
+    (the converged energy is identical). Then aggregate per-reaction errors against
     ``reaction_energy_ref`` with :func:`eval_holdout.reaction_mae_kcalmol`. A
     species whose energy is non-finite drops its reaction; with no finite
     reactions the MAE is NaN (the tracker ignores it).
@@ -437,8 +449,17 @@ def _validation_reaction_mae(model, val_mol_data, val_reactions,
         from xcquinox.alec.oneshot import total_energy_for_solver
 
         def energy_fn(m, md):
+            # forward_only=True: validation is a forward energy eval (no gradient),
+            # so it must NOT trace the differentiable fused-scan SCF kernel. That
+            # second large compile -- over the held-out shapes, on top of the
+            # resident training kernels -- is what exhausted host RAM at the
+            # validate_every boundary on the 6-311++G(3df,2pd)+grid3 run. Every
+            # other energy-eval path (eval_holdout, evaluation) passes
+            # forward_only=True for the same reason; the converged energy is
+            # identical, only the reverse-mode scan is skipped.
             return float(total_energy_for_solver(m, md,
-                                                 solver_config=solver_config))
+                                                 solver_config=solver_config,
+                                                 forward_only=True))
     energies_ha: dict = {}
     for name, md in val_mol_data.items():
         try:
@@ -1299,16 +1320,16 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     resume_enabled = checkpoint_every > 0
     checkpoint_dir = spec.checkpoint_dir
 
-    @eqx.filter_jit
     def _step(model, opt_state, gbatch, gloss):
-        def scalar_loss(m):
-            comps = gloss.compute_components(m, gbatch, relative=relative)
-            total = jnp.array(0.0)
-            for k, v in comps.items():
-                total = total + cw.get(k, 1.0) * v
-            return total, comps
-        (loss_val, comps), grads = eqx.filter_value_and_grad(
-            scalar_loss, has_aux=True)(model)
+        # De-fused value-and-gradient: identical (loss, grads) to the fused
+        # eqx.filter_value_and_grad(scalar_loss) but each molecule's SCF compiles
+        # at per-molecule size, so the 6-311++G(3df,2pd)+grid3 groups no longer
+        # exhaust host RAM at LLVM codegen time. NOT wrapped in a single
+        # filter_jit -- the group-wide fusion is exactly what is removed; the
+        # utility jits per molecule internally (see xcquinox.alec.defused_grad),
+        # and is loss-agnostic (any AlecLoss, via the shared energy-stack hook).
+        (loss_val, comps), grads = defused_value_and_grad(
+            gloss, model, gbatch, cw, relative)
         updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         model = eqx.apply_updates(model, updates)
         return model, opt_state, loss_val, comps

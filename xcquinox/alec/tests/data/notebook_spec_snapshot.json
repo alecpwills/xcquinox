@@ -1,18 +1,24 @@
 {
   "notebook_builder_path": "notebooks/_build_step7_notebook.py",
-  "notebook_content_sha256": "f71ac0cbd08a06ce953c0a4fe30643833136d5207733791120c05fe6d3703c49",
-  "notebook_sha": "33c6f900ba2fe2c4cae08825a1ee7aec0cd0d1eb",
+  "notebook_content_sha256": "785e45665a1546f56cdcdc26f9d0b34b3ef73ea9717a54e62951e1cfb226c028",
+  "notebook_sha": "01c4dfd91a0972bda348548041753fd3adf8b558",
   "schema_version": 1,
   "spec": {
     "atom_energies": {
+      "Al": -242.346,
+      "B": -24.65391,
+      "Be": -14.66736,
       "C": -37.845,
+      "Cl": -460.148,
       "F": -99.7339,
       "H": -0.5,
       "Li": -7.4781,
       "N": -54.5892,
       "Na": -162.2546,
       "O": -75.0673,
-      "S": -398.0
+      "P": -341.259,
+      "S": -398.1095,
+      "Si": -289.359
     },
     "grid_cell": {
       "arch": "deep_combined_attn",
@@ -33,6 +39,7 @@
     "loss_kwargs": {
       "aux_only_names": [],
       "bh76_reactions": [],
+      "density_per_electron": false,
       "density_weight": 0.1,
       "ip13_pairs": [],
       "regularize_atom_syms": [
@@ -73,6 +80,18 @@
         "spin": 0
       },
       {
+        "atom": "Li 0.000000 0.000000 0.000000",
+        "atom_composition": {
+          "Li": 1
+        },
+        "basis": "def2-svp",
+        "charge": 0,
+        "external_data_path_is_set": false,
+        "grid_level": 1,
+        "name": "Li",
+        "spin": 1
+      },
+      {
         "atom": "N 0.000000 0.000000 0.549396; N 0.000000 0.000000 -0.549396",
         "atom_composition": {
           "N": 2
@@ -93,6 +112,7 @@
     "targets": {
       "H": -0.5,
       "H2": 0.1743401496298263,
+      "Li": -7.4781,
       "N2": 0.364052611406682
     }
   }

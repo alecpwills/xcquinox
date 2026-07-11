@@ -88,6 +88,10 @@ W411_SOURCE_DIR = _GMTKN55_ROOT / "W4-11"
 
 # BH76 lines: "$tmer  h/$f  n2o/$f  n2ohts/$f  x  -1  -1  1  $w  17.7"
 # Capture: species tokens before 'x', integer coeffs after 'x', float ref after $w.
+# The 17.7 forward barrier is the literal value in BH76/.res (the GMTKN55-adopted
+# number parsed at runtime); it differs from the NHTBH38/08 REF1 provenance value
+# 17.13 kcal/mol cited in eval_probes.py. Both are correct for their respective
+# reference sets -- do not reconcile one to the other.
 _RE_BH76_LINE = re.compile(
     r"^\$tmer\s+(?P<spec>.+?)\s+x\s+(?P<coeffs>-?\d+(?:\s+-?\d+)*)\s+\$w\s+"
     r"(?P<ref>-?\d+(?:\.\d+)?)\s*$"

@@ -174,6 +174,11 @@ class AlecGGA_XNet(eqx.Module):
             # log-transformed s, x3 = ln((alpha+1)/2). alpha is the descriptor
             # column at metagga_alpha_index (also an MLP input via `extras`), so it
             # is used in BOTH the gate and the MLP -- the DFS exchange (s, alpha).
+            # DEVIATION from DFS Eq. 10/12: the MLP receives RAW clamped alpha (the
+            # descriptor column), whereas DFS feeds the network the log-transformed
+            # x3 = ln((alpha+1)/2); here x3 enters only through this gate, never as
+            # an MLP input. Documented, not changed (feeding x3 to the MLP would
+            # invalidate existing checkpoints).
             alpha = jnp.atleast_1d(features).flatten()[self.metagga_alpha_index]
             x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
             x3 = jnp.log((alpha + 1.0) / 2.0)
@@ -233,9 +238,11 @@ class AlecGGA_CNet(eqx.Module):
     use_self_attention: bool = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
     use_spin_polarization: bool = eqx.field(static=True)
-    # When True, applies the Dick XCDiff log-transform
-    # ``(1 - exp(-x²)) · log(x + 1)`` to both MLP inputs ``rs`` and ``s``
-    # before concatenation with extras. Prevents feature magnitude saturation.
+    # When True, applies the ``(1 - exp(-x²)) · log(x + 1)`` transform to both
+    # MLP inputs ``rs`` and ``s`` before concatenation with extras (prevents
+    # feature magnitude saturation). This is DFS's reduced-gradient form (Eq. 9);
+    # applying it to the density feature ``rs`` DEVIATES from DFS Eq. 7, which
+    # uses a plain log on the density variable ``x0 = n^{1/3}`` (see ``_core``).
     # The ``tanh(s)²`` UEG gate uses raw ``s`` (structural physics constraint).
     descriptor_log_transform: bool = eqx.field(default=False, static=True)
     # Meta-GGA (DFS Eq. 13): same (x2 + tanh^2(x3)) UEG-recovery prefactor as the
@@ -321,9 +328,14 @@ class AlecGGA_CNet(eqx.Module):
         s = jnp.atleast_1d(s).flatten()
 
         # Log-transform BOTH rs and s for the MLP input when
-        # descriptor_log_transform=True (Dick XCDiff convention applied to
-        # both correlation inputs). zeta (x1) and extras are not transformed.
-        # The tanh(s)² UEG gate below is ALWAYS computed from raw s.
+        # descriptor_log_transform=True. DELIBERATE DEVIATION from DFS Eq. 7:
+        # the C-net density feature is r_s (not DFS's x0 = n^{1/3}), and it is
+        # passed through the s-style {1 - exp(-x²)}·log(x + 1) transform (the
+        # reduced-gradient form, DFS Eq. 9) rather than the plain log that DFS
+        # Eq. 7 applies to the density variable. Documented, not changed (a
+        # plain-log density form would invalidate existing checkpoints). zeta
+        # (x1) and extras are not transformed. The tanh(s)² UEG gate below is
+        # ALWAYS computed from raw s.
         if self.descriptor_log_transform:
             rs_mlp = (1.0 - jnp.exp(-rs * rs)) * jnp.log(rs + 1.0)
             s_mlp = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
@@ -357,7 +369,10 @@ class AlecGGA_CNet(eqx.Module):
             # NOTE it DEVIATES from DFS's correlation C_L, which applies tanh to x2
             # (tanh(x2) + tanh^2(x3); vendored dpyscf/net.py:820). Either form is
             # bounded by the correlation LOB below. alpha is the descriptor column
-            # at metagga_alpha_index (same as the X-net).
+            # at metagga_alpha_index (same as the X-net). As in the X-net, the MLP
+            # receives RAW clamped alpha, not DFS's log-transformed x3 =
+            # ln((alpha+1)/2) network input (Eq. 10/12); x3 enters only through
+            # this gate. Documented, not changed.
             alpha = jnp.atleast_1d(features).flatten()[self.metagga_alpha_index]
             x2 = (1.0 - jnp.exp(-s * s)) * jnp.log(s + 1.0)
             x3 = jnp.log((alpha + 1.0) / 2.0)
@@ -433,6 +448,13 @@ def create_network_pair(arch: ArchitectureConfig, seed: int = 42,
                 metagga_alpha_index = _off
                 break
             _off += d.n_features
+    # meta_gga hardcodes the DFS 1.174 exchange ceiling through the core _AlecLOB.
+    # LATENT RISK: this bypasses the resolved_xnet_lob_lim -> None suppression
+    # signal that disables the core _AlecLOB when a `lieb_oxford` x-constraint is
+    # active. No meta_gga arch currently carries a lieb_oxford constraint, so the
+    # two bounds never coexist today; if such an arch is ever added, that
+    # constraint and this 1.174 core bound would both apply (double-bound) -- gate
+    # on arch.resolved_xnet_lob_lim (or drop the constraint) before enabling it.
     xnet = AlecGGA_XNet(
         n_extra_features=n_extra_features, depth=arch.depth, nodes=arch.nodes,
         use_self_attention=arch.attention, seed=seed,

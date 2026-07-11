@@ -238,7 +238,6 @@ def build_representative_spec(metric: str, subset_size: int, solver: str):
     )
     pretrain = PretrainConfig(
         data_dir="/nonexistent/pretrain_data",
-        pretrain_root="/nonexistent/pretrain",
     )
     cfg = GridConfig(
         sweep=sweep, solvers=solvers, hyperparams=hyperparams,

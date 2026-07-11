@@ -372,8 +372,14 @@ def test_v3_yamls_swept_to_rung35_not_combined():
     import yaml
     from xcquinox.alec.config import ARCHITECTURES
     root = pathlib.Path(__file__).resolve().parents[3]
+    cfg_dir = root / "hpcjobs" / "configs"
     for fn in ("dfs_step7.svp_grid2_v3.yaml", "dfs_step7.svp_grid2_v3_full25.yaml"):
-        cfg = yaml.safe_load((root / "hpcjobs" / "configs" / fn).read_text())
+        cfg_path = cfg_dir / fn
+        if not cfg_path.exists():
+            # The cluster-config tree is optional in a source-only checkout;
+            # skip rather than couple this physics test to its presence.
+            pytest.skip(f"cluster config {fn} not present in this checkout")
+        cfg = yaml.safe_load(cfg_path.read_text())
         archs = cfg["sweep"]["arch"]
         assert "deep_rung35_3x16" in archs, fn
         assert "deep_rung35_attn_3x16" in archs, fn

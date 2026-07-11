@@ -454,6 +454,32 @@ def test_compute_vxc_nn_v_rho_matches_analytic_lda():
     assert jnp.all(jnp.isfinite(vxc))
 
 
+def test_compute_vxc_nn_v_rho_uses_true_rho_at_zero_sigma():
+    """At a high-density point with sigma == 0 EXACTLY, the KEPT v_rho must be
+    evaluated at the TRUE rho, not the sanitizer's rho=1. Regression for the bug
+    where safe_rho was gated on (rho_ok AND sigma_ok): at such a point safe_rho
+    collapsed to 1, so v_rho became INDEPENDENT of the actual density -- breaking
+    V_xc = dE_xc/drho on zero-gradient high-symmetry grid points. With one grid
+    point and ao=[[1,0]], V_rho[0,0] == v_rho, so distinct rho must give distinct
+    V_rho[0,0]."""
+    arch = _make_arch()
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    features = jnp.zeros((1, 0))
+    ao = jnp.array([[1.0, 0.0]])          # 1 grid point, 2 AOs -> V[0,0] = v_rho
+    weights = jnp.ones(1)
+    sigma0 = jnp.array([0.0])             # sigma == 0 exactly -> safe_mask False
+
+    def v_rho_at(R):
+        V = compute_vxc_nn(model, jnp.array([R]), sigma0, features, ao, weights,
+                           lda_only=True)
+        assert jnp.isfinite(V[0, 0])      # NaN-safe at sigma == 0
+        return float(V[0, 0])
+
+    # v_rho depends on the true density; the bug substituted rho=1 for BOTH,
+    # making these identical.
+    assert abs(v_rho_at(0.3) - v_rho_at(1.7)) > 1e-6
+
+
 def test_oneshot_dm_prediction_fast_solver_config_none_matches_legacy(h2o_data):
     """Passing solver_config=None explicitly must reproduce the legacy path."""
     model = _make_model(seed=0, descriptors=())

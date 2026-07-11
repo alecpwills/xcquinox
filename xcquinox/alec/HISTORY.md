@@ -272,6 +272,112 @@ low-risk decoupling fixes (existing decay-free runs stay byte-identical -- all n
 
 - 2026-07-06 `497f0a40b` (dfs6311 meta-GGA run `run_20260704T170501Z` had 71/88 train specs fail after the 256 GB relaunch fixed the compile RAM-OOM) -- CLUSTER-HARNESS fix; a resource artifact, not a code bug. **Artifact:** the train_eval tasks crashed with `pthread_create failed: Resource temporarily unavailable` + `LLVM compilation error: Cannot allocate memory` (rc -6/-11, classified `oom`) DURING LLVM codegen, AFTER training had already run (spec_0038 reached step 50/200). This is thread/process-budget exhaustion (`RLIMIT_NPROC` / thread-stack memory), distinct from the first run's pure compile-time RAM-OOM that the 256 GB node fixed -- the pthread error surfaces only BECAUSE compilation now succeeds. **Root cause:** `train_eval_inline_cpu.sbatch.tmpl` exported `OMP_NUM_THREADS = MKL_NUM_THREADS = OPENBLAS_NUM_THREADS = $SLURM_CPUS_PER_TASK` (=96 on the milan node); those three BLAS/OMP pools are pre-spawned but IDLE (train_eval's linear algebra runs through XLA/JAX), and at 96 each they pre-consume the per-user thread budget so LLVM's parallel codegen cannot `pthread_create` for the big 6-311++G(3df,2pd)+grid3 meta-GGA 25-cycle-unrolled kernel. `oom`-retry could not help (the exhaustion is deterministic on the template). **Remedy:** the three pools were re-sized to a small NODE-SCALED slice computed in the sbatch -- `BLAS_THREADS = max(1, SLURM_CPUS_PER_TASK / 12)` (8 on the 96-core node, 2 on a 28-core node), so it scales evenly across node sizes rather than a fixed constant that only fits one node; the idle pools then leave the thread budget for XLA's runtime pool + LLVM codegen. `ulimit -u unlimited || true` was added for extra headroom where node policy allows. The XLA compile-memory flags (`--xla_llvm_disable_expensive_passes=true` etc.) were KEPT unchanged -- they are what made the compile fit on 256 GB; stripping them would regress to the RAM-OOM. **Detection signal for next time:** a `failure.json` carrying `pthread_create`/`Resource temporarily unavailable` after a non-empty train-step log = thread starvation (shrink the BLAS/OMP slice); a bare LLVM `Cannot allocate memory` with NO training steps = compile RAM-OOM (bigger node / keep the compile-memory flags). 170501Z's sbatch was captured at submit time, so the fix needs a fresh submit; datagen/pretrain checkpoints are reusable.
 
+## Phase 25 -- dfs6311 compile-OOM: loss-agnostic per-molecule de-fuse of the training step + validation forward-only leak (2026-07-10)
+
+- 2026-07-10 `<pending>` (the Phase-24 thread-cap relaunch `run_20260706T221448Z` still failed 84/88 train specs, worse than the 71/88 it replaced) -- COMPILE-MEMORY fix; part physical artifact, part BUG. **Evidence (pulled run):** every `failure.json` classified `oom`; the last-logged training epoch is MONOTONIC in the spec's molecule count (nmol 3 -> completed or died epoch 100-125; nmol 21-30 -> died epoch 25-50 or at the epoch-0 compile), a memory-accumulation signature, splitting the failures into two independent compile events. **EVENT B (~73 specs) -- BUG:** the in-loop held-out validation `train.py::_validation_reaction_mae` called `oneshot.total_energy_for_solver(...)` WITHOUT `forward_only=True`, so it defaulted to the differentiable `jax.lax.scan` path (`solver_manual.py`) and compiled a SECOND large fused-scan SCF kernel over the held-out molecules at the first `validate_every`=25 boundary, on top of the resident training kernels -> host-RAM OOM. Every OTHER energy-eval site already passes `forward_only=True` for exactly this reason (`eval_holdout.py`, `evaluation.py`; Phase 18); the in-loop validation was the lone leak. Validation needs only the forward energy, so `forward_only=True` is correct and results-neutral (verified: the converged energy matches the scan path to 0.0 on a real FULL SCF). **EVENT A (11 specs, all the largest subsets on the three attention archs) -- ARTIFACT:** `_run_per_molecule_loop._step` wrapped the whole group loss in one `eqx.filter_value_and_grad`, whose energy term (`losses._compute_energies` / `_compute_energy_trajectories`) stacks every molecule's SCF into one graph, so an N-molecule BH76 group fused N SCF forward+backward passes into a single kernel whose LLVM CPU codegen scales with N and exhausts 256 GB at the epoch-0 compile.
+
+- **Adversarial result -- the obvious XLA-flag mitigations were empirically REFUTED, so they are NOT the fix.** On a codegen-heavy CPU kernel under jaxlib 0.7.0 (the cluster env), peak compile RSS moved <=5% for `--xla_backend_optimization_level=1/0`, and `--xla_cpu_parallel_codegen_split_count=1` moved it 0% while adding ~50% compile time and NOT reducing the thread count. The documented "add `--xla_backend_optimization_level=1` if it still OOMs" escalation would not have saved the run. `--xla_backend_optimization_level=1` was still added to both train templates (`train_eval_inline_cpu`/`train_array_cpu.sbatch.tmpl`) as a free, results-neutral marginal; `split_count` was measured and deliberately left OUT. The real lever is structural: on the same synthetic kernel, computing 8 molecules per-molecule (reused by shape) instead of fused cut peak RSS 2.9-3.1x.
+
+- **Fix (results-neutral, parity-tested):** (1) `_validation_reaction_mae` now threads `forward_only=True` (EVENT B). (2) A loss-AGNOSTIC per-molecule de-fuse of the training step (EVENT A): new `energy_override.py` (a request-scoped injection seam consulted by the two shared energy-stack builders) + new `defused_grad.defused_value_and_grad(loss, model, batch, channel_weights, relative)`, and `_step` rewired to call it (its monolithic `@eqx.filter_jit` REMOVED -- the group-wide fusion is exactly what is dropped). The utility computes each molecule's SCF energy in a per-molecule `eqx.filter_jit` (one small compile per molecule SHAPE, reused across groups/epochs), injects the stack so the loss's channel assembly consumes it as an array, differentiates the total loss wrt (energy stack, model) to get the per-molecule energy cotangents + the cheap non-energy (V_xc/density) model gradient, then a per-molecule seeded vjp reconstructs the energy gradient (`dL/dtheta = sum_i (dL/dE_i)(dE_i/dtheta)`; the reaction/AE coupling enters only through the scalar energies). It uses only the shared energy hook + the loss's `compute_components`/`solver_config`, so it works for ANY `AlecLoss` (the training loop's per-target update granularity is unchanged -- still one optimizer step per group). (3) Two latent bugs found while tracing the failure and fixed: `cmd_resubmit` (`cluster/__main__.py`) hard-coded `train_array.sbatch`/`eval_array.sbatch`, which an inline-eval run never writes, so a resubmit silently pointed `sbatch` at a nonexistent file -> now fails loudly and directs to a fresh submit; and `workers/{train,pretrain}_worker.py` unconditionally overwrote `XLA_FLAGS` with a mis-prefixed no-op `intra_op_parallelism_threads` token that dropped the compile-memory flags -> now `setdefault` (respects the launcher's flags) with the correct trims.
+
+- **Verified:** gradient parity de-fused-vs-fused on REAL PySCF-backed groups -- ONESHOT/scalar form, the real FULL differentiable-SCF/tail-trajectory form, a case with all four L5 channels non-zero, and a DIFFERENT loss class (`A_atomization`) -- all matching loss AND every parameter-gradient leaf to float64 round-off (max |dgrad| ~1e-17); the validation forward-only energy neutrality; and a real end-to-end `run_training` over a BH76 group that drives the optimizer to finite, decreasing loss and writes `model.eqx` (`tests/test_defused_grad.py`, 6 tests). The full alec suite is green (231 core + 502 cluster tests, 0 failures; one pre-existing stale mock in `test_cluster_inputs` -- unrelated to this change -- was updated for the `orientation_lock_strength` kwarg). **Why:** the DFS-parity basis/grid (CCSD(T)/6-311++G(3df,2pd) + grid 3) are FIXED and 256 GB is the SeaWulf single-node ceiling, so the fix had to REMOVE the N-molecule fusion rather than buy more RAM or trim compiler effort; de-fusing per molecule makes the compile cost independent of a group's molecule count while leaving the physics, the gradients, and the update scheme identical. **Next (USER):** fresh `submit` (NOT `resubmit`) of the dfs6311 sweep after a single-spec probe on the largest attention spec confirms the epoch-0 compile now fits; datagen/pretrain checkpoints are reusable.
+
+## Phase 26 -- source-level review: training-reference orientation lock, harness recovery, de-fuse review, parity + citation corrections (2026-07-11)
+
+A full source-level review of the `xcquinox/alec` subpackage checked physical correctness and
+citations, parity with Dick & Fernandez-Serra (PRB 104 L161109 (2021)) and its SI, and residual code
+quality (comment/docstring accuracy, dead code, test coverage). The functional physics verified
+correct against the paper and the standard literature: the UEG exchange (`utils.lda_x`), PW92
+correlation (both spin branches, incl. the `-alpha_c` sign and `f''(0)`), the `F_x`/`F_c` enhancement
+assembly and the `I_a` Lieb-Oxford map, the SCF decaying mixer (`0.3^i+0.3`, against the vendored
+dpyscf source), UKS spin-scaling, the Wu-Yang OEP, density fitting, the orientation lock, and the
+Phase-25 de-fused per-molecule gradient. One results-affecting defect was found (the unlocked training
+references, below); the remaining changes are documentation accuracy, harness robustness, and test
+coverage.
+
+- 2026-07-11 `<pending>` (dfs_step7 training CCSD references were generated WITHOUT the orientation
+  lock) -- **results-affecting.** For the `dfs_step7` domain (`domain.ccsd_species_from_ledger=False`),
+  `inputs.prepare_inputs` built the training CCSD density references via the non-ledger `else` branch,
+  which OMITTED `orientation_lock_strength`, so `external_refs.precompute_all` defaulted it to 0.0 --
+  the training references were UNLOCKED while the functional's SCF (`spec_builder`) and the held-out
+  references (`submit`) were locked from the run-level `inputs.orientation_lock_strength` (3e-5 in
+  `dfs6311_grid3_v3.yaml`). For the orbitally-degenerate radicals (OH, CH, NO) this matched the
+  functional's locked density against an orientation-arbitrary reference in the density channel -- the
+  exact artifact the Phase-13/14 lock removes -- and contradicted the Phase-13 statement that this path
+  locks the training references. Fixed: the else-branch now threads
+  `orientation_lock_strength=cfg.inputs.orientation_lock_strength`; `test_cluster_inputs` gains an
+  assertion that `dfs_step7` reference-generation receives the configured strength (the prior test
+  double accepted-and-dropped the argument, which is why the gap was invisible). **Why:** density
+  matching against an orientation-scrambled radical reference injects irreducible noise into training;
+  the lock must reach the training references, not only the functional and held-out references.
+  **USER:** affects the next dfs6311 submit (fresh reference generation picks up the lock).
+
+- 2026-07-11 `<pending>` (harness: recover no-disk-evidence train failures) -- `cmd_resubmit`
+  classified a `dependency_never_satisfied` / `unknown_sacct_purged` train index (a NODE_FAIL / cancel
+  that left no `model.eqx`, `resume_state.pkl`, or `failure.json`) as `deterministic` and skipped it,
+  directing the operator to a `failure.json` that does not exist -- a recoverable task was stranded. A
+  `no_evidence` retry class was added (fresh relaunch, bounded by the per-index attempt cap);
+  `_classify_failure` routes the no-evidence sacct outcomes to it (`test_cluster_cli`). **Why:** a
+  materialized-but-cancelled train task whose preflight succeeded was previously unrecoverable by both
+  `resubmit` and `resubmit-preflight`.
+
+- 2026-07-11 `<pending>` (worker compile-memory flags reach the live launcher; mis-prefixed XLA token
+  dropped) -- the Phase-25 `XLA_FLAGS` `setdefault` + compile-memory trims had been applied to
+  `pretrain_worker`/`train_worker` (no live cluster caller), not to the live `eval_holdout_worker` (via
+  `_holdout_parallel.run_workers`) nor the real launcher `parallel._thread_env`. The trims
+  (`--xla_llvm_disable_expensive_passes`, `--xla_backend_optimization_level=1`) are now emitted by
+  `parallel._thread_env`, and the live workers `setdefault` (respecting the launcher). The mis-prefixed
+  `intra_op_parallelism_threads=<n>` token (no `--xla_` prefix, silently ignored by XLA) was removed
+  everywhere; intra-op width is bounded by the OMP/MKL/OPENBLAS caps. Results-neutral (compiler effort).
+
+- 2026-07-11 `<pending>` (Phase-25 de-fuse: review, documentation, coverage) -- the loss-agnostic
+  de-fuse was reviewed and confirmed to reproduce the fused `value_and_grad` on real BH76 groups.
+  Corrections: the "cheap, one-shot V_xc / density" docstring was wrong -- under a FULL solver the
+  density channel runs its own per-molecule SCF (`_grid_term -> oneshot_grid_density -> run_scf`),
+  separate from the injected energy stack, though it still compiles per-molecule (eager, no group-wide
+  jit); the "works for ANY AlecLoss" claim was narrowed -- the injected energy FORM follows the solver's
+  tail setting (matching L5, but not the scalar-only A/B/C/D losses), so a scalar-only loss under a
+  FULL+tail solver raises loudly (a non-production pairing). `test_defused_grad` gains an n_mol=1
+  gradient-parity case, a trajectory-form-with-nonzero-one-shot-channels case, and the loud-failure guard.
+
+- 2026-07-11 `<pending>` (`compute_vxc_nn`: `v_rho` evaluated at the true density) -- the `safe_rho`
+  sanitizer was gated on `rho_ok & sigma_ok`, so at a high-density point with `sigma == 0` exactly
+  (rho_ok but not sigma_ok) the KEPT `v_rho` was evaluated at the substituted `rho=1`, breaking
+  `V_xc = dE_xc/drho` there. `safe_rho` is now gated on `rho_ok` alone (matching `v_rho`'s own output
+  mask and the correlation path); `safe_sigma` keeps both guards (the `sqrt(sigma)` tangent is the
+  `0*inf` source). Benign on standard Lebedev grids (no exact zero-gradient high-density points); a
+  `test_oneshot` regression pins that `v_rho` depends on the true density at `sigma == 0`.
+
+- 2026-07-11 `<pending>` (parity + citation documentation corrections) -- documentation-only, no
+  numerics changed. The BH76 docstrings (`dfs_pool`, `training_points`) misattributed the
+  reaction-energy training CHOICE to the DFS SI, which (Sec. I) uses BARRIER HEIGHTS for those three
+  reactions -- corrected to state the deliberate deviation. The H2O/C2H2 atomization-energy anchors were
+  sourced only to the internal step-6 notebook (circular) -- re-cited to their true primary source,
+  GMTKN55-W4-11 (Karton, Daon & Martin, CPL 510, 165 (2011) = DFS ref [29]), verified against
+  `data/w411_full_pool.json` by a non-circular test. Explicit deviation notes were added for the
+  confirmed DFS departures: pretraining on per-atom grids (H,He,O,N) vs the SI's 21-molecule molecular +
+  regular `(s,alpha)` grids; `weight_decay` 1e-4 (100x the SI's L2 1e-6) and decoupled adamw vs coupled
+  Adam-L2; the C-net density-feature transform and the meta-GGA network's raw-alpha input vs DFS's
+  log-transformed `x3`. The `_PER_SPECIES_OEP_OVERRIDES` citations remain flagged UNVERIFIED (a required
+  pre-publication check).
+
+- 2026-07-11 `<pending>` (cleanup: dead code, stale docstrings, residual design-doc/ticket references,
+  test quality) -- grouped non-results changes: the previously-dead `VALID_ON_PRECOMPUTE_FAILURE` /
+  `VALID_BH76_MODE` submit-time validation was wired; the `require_atom_anchors` config knob is now
+  honored (was hardcoded False); dead code was removed (`_purge_stale` unused `width`, a dead
+  `import pickle`, the never-called `energy_override_active`, an unreachable `or "(none)"` made
+  reachable); stale docstrings were corrected (the SLURM graph is 5-stage not 4; the cluster `__init__`
+  export list; `reduce_outcomes` resolution order; the `_converge_scf_tiered` tier order); residual
+  internal design-doc cross-references ("THE SPEC section N") and ticket IDs were removed from shipped
+  comments and user-facing messages (legitimate published-literature `§` citations preserved), and two
+  em-dashes in runtime warnings were made ASCII; the string-split pickle imports were de-obfuscated
+  (plain `import pickle` + a `# noqa` note). Test quality: the stale golden spec snapshot was
+  regenerated (the capture script's removed `pretrain_root` kwarg had frozen it at a wrong sulfur atomic
+  energy and an 8- vs 14-element table) and now carries an independent domain-table oracle; the
+  attention-arch census/forward-smoke was broadened to the `*_attn_3x16` family; several source-text
+  `inspect.getsource` pins and shape-only assertions were converted to behavioral checks; and dev-plan
+  process commentary was removed from test docstrings.
+
 ## Open / in-progress (as of 2026-06-20)
 
 - **Full DFS-pool training still does not beat PBE.** The 2026-06-20 review (`reports_local/dfs_discrepancy_review_2026-06-20.md`) verified the cause is a *compound* generalization gap -- network over-capacity (4x32 vs DFS 3x16) trained with none of DFS's anti-overfit machinery (no L2, no disjoint-validation early-stop / validation-best selection) -- with the loss/SCF/density deviations capping the achievable ceiling rather than driving the decoupling. The DECOUPLING FIXES are now implemented + verified + committed: 3x16 capacity (`ac4de863d`), L2 weight decay (`ac4de863d`), held-out validation/early-stop + validation-best (`a8f0c45a7`), plus harness resilience -- resumable training (`498e35640`) + resubmit-resume (`60a831a40`) -- and the submittable v3 A/B job (`f48e5f1a3`). The v3 job's first launch (`run_20260621T140311Z`) crashed ALL 88 train_eval specs on the adamw optimizer-update tree mismatch, now fixed (`2a6266215`). **Next gate (USER):** rsync `train.py` + `resubmit --submit` the v3 run (cached datagen/pretrain/CCSD-refs skip), then compare the held-out TEST-slice MAE vs the existing 4x32 run (`run_20260611T022820Z`) -- expect the in-sample<->held-out gap to shrink. The `full_25` SCF ceiling fix + a tzvpd-DF variant are the follow-ups once the gap closes.

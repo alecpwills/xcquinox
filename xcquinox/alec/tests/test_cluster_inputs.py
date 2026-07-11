@@ -58,7 +58,7 @@ def _make_pool():
 
 def _make_cfg(tmp_path, bh76_mode="reaction_energy", basis="def2-svp",
               grid_level=1, density_fit=False, auxbasis=None,
-              use_polarized_correlation=False):
+              use_polarized_correlation=False, orientation_lock_strength=0.0):
     """A GridConfig whose grid is metric=l2 x subset_size={2,3} (2 cells)."""
     sweep = SweepAxes(
         arch=("shallow",),
@@ -86,6 +86,7 @@ def _make_cfg(tmp_path, bh76_mode="reaction_energy", basis="def2-svp",
         output_root=str(tmp_path / "out"),
         density_fit=density_fit,
         auxbasis=auxbasis,
+        orientation_lock_strength=orientation_lock_strength,
     )
     pretrain = PretrainConfig(
         data_dir=str(tmp_path / "data"),
@@ -171,7 +172,8 @@ def stub_refs(monkeypatch):
         return ["species-union-sentinel"]
 
     def fake_precompute_all(species, *, cache_dir, basis, grid_level,
-                            density_fit=False, auxbasis=None):
+                            density_fit=False, auxbasis=None,
+                            orientation_lock_strength=0.0):
         calls["precompute"] += 1
         calls["precompute_kwargs"] = {
             "species": species,
@@ -180,6 +182,7 @@ def stub_refs(monkeypatch):
             "grid_level": grid_level,
             "density_fit": density_fit,
             "auxbasis": auxbasis,
+            "orientation_lock_strength": orientation_lock_strength,
         }
 
     def fake_ensure_pretrain(data_dir, *, basis, grid_level, density_fit=False,
@@ -238,6 +241,23 @@ def test_prepare_inputs_calls_precompute_all_for_external_refs(
     assert kw["grid_level"] == cfg.inputs.grid_level
 
 
+def test_prepare_inputs_locks_dfs_ccsd_refs_when_configured(
+    tmp_path, stub_pool, stub_refs
+):
+    """The dfs_step7 (non-ledger) else-branch must thread the run-level
+    orientation_lock_strength into the TRAINING CCSD references, so they lock the
+    same degenerate density component as the (locked) functional and held-out
+    refs. Without it the radical (OH/CH/NO) training densities are orientation-
+    scrambled in the density-matching loss (the artifact the lock removes)."""
+    cfg = _make_cfg(tmp_path, orientation_lock_strength=3e-5)
+    _write_ledger(cfg.inputs.subset_ledger_path, _make_ledger())
+
+    prepare_inputs(cfg)
+
+    kw = stub_refs["precompute_kwargs"]
+    assert kw["orientation_lock_strength"] == 3e-5
+
+
 def test_prepare_inputs_precompute_is_skip_if_cached_noop_friendly(
     tmp_path, stub_pool, monkeypatch
 ):
@@ -251,7 +271,8 @@ def test_prepare_inputs_precompute_is_skip_if_cached_noop_friendly(
     monkeypatch.setattr(
         inputs_mod, "_precompute_all",
         lambda species, *, cache_dir, basis, grid_level,
-        density_fit=False, auxbasis=None: None,
+        density_fit=False, auxbasis=None,
+        orientation_lock_strength=0.0: None,
     )
     # pretrain data already current, ensure is a no-op
     monkeypatch.setattr(
@@ -308,7 +329,8 @@ def test_prepare_inputs_bh76w411_ledger_scoped_ccsd(tmp_path, monkeypatch):
 
     def fake_precompute(species, *, cache_dir, basis, grid_level,
                         density_fit=False, auxbasis=None, atoms_by_key=None,
-                        validate_overrides=True, run_preflight=True):
+                        validate_overrides=True, run_preflight=True,
+                        orientation_lock_strength=0.0):
         cap["names"] = sorted(s.name for s in species)
         cap["keys"] = sorted(atoms_by_key) if atoms_by_key else None
         cap["validate_overrides"] = validate_overrides

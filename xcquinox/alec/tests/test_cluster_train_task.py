@@ -203,9 +203,11 @@ def _fake_popen_factory(lines, rc):
 
     class _FakePopen:
         last_kwargs = None
+        last_cmd = None
 
         def __init__(self, cmd, **kwargs):
             type(self).last_kwargs = kwargs
+            type(self).last_cmd = cmd
             self.cmd = cmd
             self.stdout = _FakeStdout(lines)
             self._rc = rc
@@ -223,12 +225,15 @@ def _fake_popen_factory(lines, rc):
 
 
 def test_run_worker_emits_throttled_progress(monkeypatch):
-    # 1200 step lines -> with _THROTTLE_STEPS=500, expect the first step plus
-    # ~2 more + the final = at least 2 emitted [harness idx= lines.
+    # 1200 step lines: with _THROTTLE_STEPS=500 the worker emits the first
+    # step, then one per 500-step stride, plus the final -- a small bounded
+    # count, NOT one line per step. Both bounds are asserted so a throttling
+    # regression that emits every step is caught, not only an under-emit.
+    n_steps = 1200
     step_lines = [
-        json.dumps({"kind": "step", "step": i, "total": 1200, "loss": 0.1})
+        json.dumps({"kind": "step", "step": i, "total": n_steps, "loss": 0.1})
         + "\n"
-        for i in range(1, 1201)
+        for i in range(1, n_steps + 1)
     ]
     lines = [json.dumps({"kind": "init"}) + "\n"] + step_lines \
         + [json.dumps({"kind": "done", "elapsed_s": 1.0}) + "\n"]
@@ -239,7 +244,16 @@ def test_run_worker_emits_throttled_progress(monkeypatch):
     monkeypatch.setattr(tt, "_PROGRESS_SINK", emitted.append)
     rc, tail = tt._run_worker("/tmp/x.spec", "auto")
     assert rc == 0
+    # Lower bound: at least the first + final heartbeat.
     assert len(emitted) >= 2
+    # Upper bound tied to the throttle stride (first + one per stride + final);
+    # a per-step regression would emit ~n_steps, far above this cap.
+    max_emissions = n_steps // tt._THROTTLE_STEPS + 3
+    assert len(emitted) <= max_emissions, (
+        f"throttle must cap emissions near {max_emissions} for {n_steps} steps "
+        f"at _THROTTLE_STEPS={tt._THROTTLE_STEPS}, got {len(emitted)} "
+        f"(an un-throttled worker would emit ~{n_steps})"
+    )
     assert all("step" in line and "loss=" in line for line in emitted)
 
 
@@ -268,7 +282,9 @@ def test_run_worker_spawns_with_env_none_and_no_progress_flag(monkeypatch):
     tt._run_worker("/tmp/x.spec", "gpu")
     # env=None -> full inheritance so sbatch thread-cap vars reach the worker.
     assert popen_cls.last_kwargs["env"] is None
-    # --no-progress must NOT be passed (we need the JSON progress stream).
+    # --no-progress must NOT be passed: the throttled SLURM heartbeat depends on
+    # the worker's JSON progress stream, so the flag's absence is asserted.
+    assert "--no-progress" not in popen_cls.last_cmd
 
 
 def test_run_worker_bounded_tail(monkeypatch):
@@ -396,10 +412,6 @@ def test_sigterm_handler_wait_timeout_is_survivable(run_dir, monkeypatch):
     assert failure["classification"] == "killed_by_signal"
 
 
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q"]))
-
-
 # preflight precompute_failed_species marker short-circuits the worker
 def test_precompute_failed_species_marker_short_circuits(run_dir, monkeypatch):
     """A spec the preflight already marked ``precompute_failed_species`` must NOT
@@ -426,3 +438,7 @@ def test_precompute_failed_species_marker_short_circuits(run_dir, monkeypatch):
     assert preserved["classification"] == "precompute_failed_species"
     assert preserved["species"] == ["N2O"]
     assert preserved["detail"] == "preflight marker, keep verbatim"
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

@@ -787,6 +787,22 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
                 f"valid metrics: {sorted(VALID_METRICS)}"
             )
 
+    # --- string-enum membership (on_precompute_failure / bh76_mode) --------
+    # These carry defaults, so they are always set; validate at submit so an
+    # invalid YAML value fails on the login node rather than at a later stage.
+    opf = getattr(cfg, "on_precompute_failure", None)
+    if opf is not None and opf not in VALID_ON_PRECOMPUTE_FAILURE:
+        raise ValueError(
+            f"on_precompute_failure {opf!r} is not valid; must be one of "
+            f"{sorted(VALID_ON_PRECOMPUTE_FAILURE)}"
+        )
+    bh76_mode = getattr(cfg, "bh76_mode", None)
+    if bh76_mode is not None and bh76_mode not in VALID_BH76_MODE:
+        raise ValueError(
+            f"bh76_mode {bh76_mode!r} is not valid; must be one of "
+            f"{sorted(VALID_BH76_MODE)}"
+        )
+
     # --- arch-name resolvability -------------------------------------------
     # Every value on the arch axis must resolve via get_architecture. Catching
     # an unknown arch on the login node gives a clear error instead of letting

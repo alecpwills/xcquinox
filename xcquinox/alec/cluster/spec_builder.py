@@ -595,7 +595,11 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             balancing=GradNormConfig(alpha=hp.gradnorm_alpha),
             pbe_anchor_weight=hp.pbe_anchor_weight,
             pbe_anchor_sample=None,
-            require_atom_anchors=False,
+            # Honor the configured knob. Default False (HyperParams default)
+            # keeps the mixed-pool subset design, which injects only the H/Li
+            # atom anchors above; a config may opt into TrainingSpec.validate's
+            # strict all-referenced-atoms-anchored check by setting it True.
+            require_atom_anchors=hp.require_atom_anchors,
             update_scheme=hp.update_scheme,
             channel_weights=hp.channel_weights,
             # WS3 (2026-06-20): in-loop held-out validation cadence + early-stop,

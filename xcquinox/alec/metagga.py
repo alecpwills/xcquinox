@@ -36,8 +36,8 @@ import jax.numpy as jnp
 _RHO_FLOOR: float = 1e-30
 
 # alpha = (tau - tau_W)/tau_unif divides by n and n^{5/3}; on a low-density grid
-# tail its VALUE reaches ~1e4-1e7 (yes, even at NORMAL bases, e.g. H2O/def2-svp --
-# alpha is NOT physically O(1) here) and its DERIVATIVE (d alpha/d n ~ n^{-8/3})
+# tail its VALUE reaches ~1e4-1e7 (alpha is not O(1) even at normal bases such as
+# H2O/def2-svp) and its DERIVATIVE (d alpha/d n ~ n^{-8/3})
 # blows up (~1e28 in the deep tail), and the unrolled FULL-SCF backprop compounds
 # that XC kernel into a NaN training gradient -- the same failure class as the
 # polarized-correlation zeta clip in oneshot.py, which meta-GGA alpha re-introduced

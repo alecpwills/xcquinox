@@ -15,9 +15,9 @@ Coverage:
     routes JAX before any JAX import.
 """
 import csv
-import importlib
 import json
 import os
+import pickle  # noqa: S403 - round-trips this test's own in-process spec fixtures
 import sys
 
 import pytest
@@ -112,9 +112,8 @@ def _write_spec(run_dir, idx, width=4, obj=None):
         with open(path, "wb") as f:
             f.write(b"stub-spec")
     else:
-        _ser = importlib.import_module("pi" + "ckle")
         with open(path, "wb") as f:
-            _ser.dump(obj, f)
+            pickle.dump(obj, f)
     return path
 
 
@@ -540,10 +539,6 @@ def test_model_present_but_spec_missing_returns_2(run_dir, monkeypatch):
     assert rc == 2
 
 
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q"]))
-
-
 # per-molecule aggregation must exclude non-finite values
 def test_aggregate_per_molecule_excludes_nonfinite():
     rows = [
@@ -555,4 +550,9 @@ def test_aggregate_per_molecule_excludes_nonfinite():
     mae, rho_rmse, n_eval, rho_rmse_pbe = ev._aggregate_per_molecule(rows)
     assert n_eval == 2                      # NaN + inf excluded
     assert abs(mae - 2.0) < 1e-12           # (|1| + |-3|) / 2, finite only
-    assert abs(rho_rmse - 0.03) < 1e-12     # (0.01 + 0.05 + 0.03)/3 -> NaN dropped: (0.01+0.05+0.03)/3
+    # density_rmse: mean(0.01, 0.05, 0.03) = 0.03; the NaN value is dropped.
+    assert abs(rho_rmse - 0.03) < 1e-12
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

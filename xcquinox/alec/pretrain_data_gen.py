@@ -17,6 +17,20 @@ polarized architecture (see ``pretrain._pretrain_data_filename``).
 Descriptor columns ``cusp_all`` / ``dm_all`` are included by default so the file
 works for descriptor architectures (deep_cusp / deep_dm / deep_combined ...); a
 no-descriptor arch ignores them.
+
+DFS parity deviation (SI Sec. III)
+----------------------------------
+DFS pretrains the exchange network on its 21 training molecules evaluated on
+their molecular grids, together with a regular ``(s, alpha)`` parameter-space
+grid, targeting SCAN for the meta-GGA architectures and PBE for the GGA
+architectures. The recipe here instead samples the ``Fx`` / ``Fc`` targets on
+the atomic grids of four single atoms (H, He, O, N; ``DEFAULT_PRETRAIN_ATOMS``)
+from per-atom PBE SCFs -- neither the 21-molecule molecular grids nor the
+``(s, alpha)`` parameter grid is reproduced. This atomic warm-start is
+subsequently refined by self-consistent training on the molecular pool, so the
+deviation affects only the pretraining seed. It is most consequential for the
+alpha-dependent meta-GGA / SCAN targets, whose ``alpha`` coordinate is
+undersampled by the four closed-/open-shell atoms.
 """
 from __future__ import annotations
 
@@ -33,6 +47,9 @@ from xcquinox.alec.df_jk import default_auxbasis
 
 # Same pretraining atoms / basis / grid as the step-6 notebook generator.
 # (symbol, PySCF 2S spin): H, O, N are open-shell (UKS); He is closed-shell.
+# NOTE: these four atoms are a DFS-parity deviation -- DFS SI Sec. III pretrains
+# on the 21 training molecules' molecular grids plus a regular (s, alpha)
+# parameter grid; see the module docstring for the full deviation note.
 DEFAULT_PRETRAIN_ATOMS = (("H", 1), ("He", 0), ("O", 2), ("N", 3))
 DEFAULT_BASIS = "def2-svp"
 DEFAULT_GRID_LEVEL = 1

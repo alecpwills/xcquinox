@@ -29,8 +29,8 @@ The four probe sets target:
 - Probe D: Multireference / static-correlation challenge.
   6 small molecules with significant static correlation (recognized
   hard cases for any single-reference GGA): O2 (³Σg⁻ triplet), CN
-  (²Σ⁺ doublet), ClO (²Π doublet), OF2 (bent dichalcogen), Cl2
-  (single-bond chalcogen) and BeH (one-electron Be-H bond).  Tests
+  (²Σ⁺ doublet), ClO (²Π doublet), OF2 (bent oxygen difluoride), Cl2
+  (single-bond halogen) and BeH (one-electron Be-H bond).  Tests
   the network at the single-reference DFT failure boundary.
 
 Citations

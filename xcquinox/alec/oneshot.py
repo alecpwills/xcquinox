@@ -228,7 +228,15 @@ def _compute_vxc_nn_core(
     # blow up.
     sigma_ok = sigma > _V_SIGMA_THRESHOLD
     safe_mask = rho_ok & sigma_ok
-    safe_rho = jnp.where(safe_mask, rho, jnp.ones_like(rho))
+    # safe_rho is gated on the rho guard ALONE (matching v_rho's output mask
+    # below). At a high-density point with sigma == 0 EXACTLY (rho_ok but not
+    # sigma_ok) v_rho is KEPT, so it must see the TRUE rho: gating safe_rho on
+    # safe_mask (as before) fed rho=1 into that kept v_rho, breaking
+    # V_xc = dE_xc/drho at zero-gradient high-symmetry points. safe_sigma keeps
+    # BOTH guards because the sqrt(sigma) tangent is the actual 0*inf source, so
+    # sigma must stay away from 0 in both JVPs. This mirrors the correlation
+    # path (keep rho, mask sigma only).
+    safe_rho = jnp.where(rho_ok, rho, jnp.ones_like(rho))
     safe_sigma = jnp.where(safe_mask, sigma, jnp.ones_like(sigma))
 
     # Per-point JVPs: tangent on rho and then on sigma

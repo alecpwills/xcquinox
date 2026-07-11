@@ -851,7 +851,7 @@ def run_oep_inversion(
         if progress_callback is not None:
             # NOTE: deliberately reads _progress_state["density_error_l2"]
             # (last-eval) rather than scf_state["density_error_l2_accepted"]
-            #: progress reporting reflects the most recent evaluation for
+            # progress reporting reflects the most recent evaluation for
             # liveness, while the early-stop and plateau checks below read
             # the accepted-iterate snapshot for correctness.
             progress_callback(

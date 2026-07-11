@@ -20,15 +20,19 @@ import numpy as np
 # Orbital-basis -> standard JK fitting basis. Explicit pairs avoid surprises for
 # the bases we actually run. The per-basis ``-jkfit`` sets are the tighter
 # matched fits and are preferred where they exist; the diffuse/large def2 bases
-# (def2-tzvpd, def2-tzvppd, def2-qzvp) have no dedicated ``-jkfit`` and use the
-# Weigend universal Coulomb-fitting set ``def2-universal-jkfit``, which is
-# designed to fit J (and K) for ALL def2 orbital bases.
+# (def2-svpd, def2-tzvpd, def2-tzvppd, def2-qzvp) have no dedicated ``-jkfit``
+# and use the Weigend universal Coulomb-fitting set ``def2-universal-jkfit``,
+# which is designed to fit J (and K) for ALL def2 orbital bases.
 #   (L) F. Weigend, Phys. Chem. Chem. Phys. 8, 1057 (2006), accurate
 #       Coulomb-fitting (def2-universal-JKFIT) basis sets for H to Rn.
 _DEF2_UNIVERSAL_JKFIT = "def2-universal-jkfit"
 _AUXBASIS_TABLE = {
     "def2-svp": "def2-svp-jkfit",
-    "def2-svpd": "def2-svp-jkfit",
+    # def2-svpd is diffuse (def2-svp + diffuse functions); like the diffuse
+    # siblings def2-tzvpd/tzvppd it uses the universal set, whose diffuse
+    # fitting functions the tight def2-svp-jkfit lacks. Not used by any current
+    # run; set here for consistency with the other diffuse bases.
+    "def2-svpd": _DEF2_UNIVERSAL_JKFIT,
     "def2-tzvp": "def2-tzvp-jkfit",
     "def2-tzvpp": "def2-tzvp-jkfit",
     "def2-tzvpd": _DEF2_UNIVERSAL_JKFIT,

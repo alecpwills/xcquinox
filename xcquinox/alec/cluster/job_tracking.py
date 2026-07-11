@@ -187,8 +187,8 @@ def read_job_records(run_dir: str) -> list[dict]:
     Returns an empty list if the file does not exist (no jobs submitted yet).
 
     Raises:
-        ValueError: if any record lacks a real numeric/string ``array_job_id``
-: a record without one is unusable for ``sacct`` recovery, so the
+        ValueError: if any record lacks a real numeric/string ``array_job_id``:
+            a record without one is unusable for ``sacct`` recovery, so the
             log is treated as corrupt rather than silently skipping it.
     """
     path = _jobs_path(run_dir)
@@ -432,13 +432,16 @@ def _query_sacct(array_job_id: str) -> dict[int, tuple[str, str]]:
 
 
 def reduce_outcomes(run_dir: str, kind: str) -> dict[int, str]:
-    """Compute the per-index outcome map for ``kind`` ∈ {``train``, ``eval``}.
+    """Compute the per-index outcome map for ``kind`` in {``train``, ``eval``}.
 
     The result maps every grid index ``0 .. n_specs-1`` to an outcome string.
 
     Resolution order, per index:
-      1. Disk evidence (authoritative, cheap): ``model.eqx`` -> 
-         ``"success"``; else ``failure.json`` -> its ``classification``.
+      1. Disk evidence (authoritative, cheap): ``model.eqx`` ->
+         ``"success"``; else ``resume_state.pkl`` present with no
+         ``completion.json`` -> ``"incomplete_resumable"`` (a killed-mid-run
+         per_molecule task that ``resubmit`` RESUMES); else ``failure.json``
+         -> its ``classification``.
       2. **``sacct`` fallback** (only for indices with no disk evidence): for
          the newest non-superseded generation of this ``kind``, one
          ``sacct --jobs=<id>`` is run and the task's State/ExitCode mapped.

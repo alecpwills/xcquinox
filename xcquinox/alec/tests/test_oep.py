@@ -19,23 +19,37 @@ def test_oep_result_shape():
 
 
 def test_oep_pbe_identity():
-    """PBE density as target should recover approximately V_xc^PBE."""
+    """PBE density as target recovers V_xc^PBE.
+
+    With the default ``baseline_xc='pbe'`` and the PBE density matrix as the
+    target, the displacement form starts at b=0 already matching the target,
+    so the returned V_xc equals the baseline PBE V_xc. The inversion must
+    report convergence (density matched below conv_tol) and reproduce the
+    reference V_xc to a tight tolerance -- not merely pass vacuously when it
+    fails to converge.
+    """
     from xcquinox.alec.oep import run_oep_inversion
     from xcquinox.alec.data import precompute_fixed_density_data
     mol = h2_molecule()
     data = precompute_fixed_density_data(mol)
     dm_target = np.asarray(data["dm_pbe"])
     vxc_pbe = np.asarray(data["vxc_pbe"])
+    conv_tol = 1e-8
     result = run_oep_inversion(
-        mol, dm_target, max_iter=50, conv_tol=1e-8,
+        mol, dm_target, max_iter=50, conv_tol=conv_tol,
         aux_basis="sto-3g", regularization=1e-6,
     )
-    if result.converged:
-        diff = np.linalg.norm(result.vxc_matrix - vxc_pbe)
-        ref_norm = np.linalg.norm(vxc_pbe) + 1e-8
-        assert diff / ref_norm < 1.5, (
-            f"Converged OEP V_xc differs from PBE V_xc by {diff/ref_norm:.2%}"
-        )
+    assert result.converged is True, (
+        f"OEP must converge on the PBE-identity target; "
+        f"density_error={result.density_error:.2e}, "
+        f"lbfgs_status={result.lbfgs_status!r}"
+    )
+    assert result.density_error < conv_tol
+    diff = np.linalg.norm(result.vxc_matrix - vxc_pbe)
+    ref_norm = np.linalg.norm(vxc_pbe) + 1e-8
+    assert diff / ref_norm < 1e-6, (
+        f"Converged OEP V_xc differs from PBE V_xc by {diff/ref_norm:.2%}"
+    )
 
 
 def test_oep_progress_callback_fires_each_iteration():
@@ -725,25 +739,53 @@ def test_ks_from_vxc_matrix_dispatcher_forwards_damp_and_diis_start_cycle():
     assert sig.parameters["diis_start_cycle"].default == 5
 
 
-def test_objective_and_grad_caches_density_error_and_F_val_in_scf_state():
-    """objective_and_grad writes density_error_l2_last_eval and
-    F_val_last_eval into scf_state on every success-path return."""
-    import inspect
+def test_objective_and_grad_reports_finite_density_error():
+    """A completed inversion surfaces a finite, non-negative density_error --
+    the SCF-verified L2 density residual that the objective evaluation tracks
+    internally and the finalization step recomputes on the returned V_xc.
+
+    Driven on a real (short) inversion with a Hartree-only baseline so the
+    optimizer takes genuine iterations; the internal per-eval cache is a
+    closure local with no public accessor, so the observable is the surfaced
+    OEPResult.density_error.
+    """
     from xcquinox.alec.oep import run_oep_inversion
-    src = inspect.getsource(run_oep_inversion)
-    assert "density_error_l2_last_eval" in src
-    assert "F_val_last_eval" in src
+    from xcquinox.alec.data import precompute_fixed_density_data
+    mol = h2_molecule()
+    data = precompute_fixed_density_data(mol)
+    dm_target = np.asarray(data["dm_pbe"])
+    result = run_oep_inversion(
+        mol, dm_target, max_iter=5, aux_basis="sto-3g",
+        baseline_xc=None,  # Hartree-only baseline forces real iterations
+    )
+    assert np.isfinite(result.density_error)
+    assert result.density_error >= 0.0
+    assert isinstance(result.n_iter, int) and 0 <= result.n_iter <= 5
 
 
-def test_scipy_iter_callback_snapshots_density_error_and_F_val_on_accept():
-    """_scipy_iter_callback copies *_last_eval into *_accepted on each
-    accepted L-BFGS-B step (so the plateau detector reads only
-    accepted-iterate values, not rejected line-search probes)."""
-    import inspect
+def test_progress_callback_counts_accepted_iterates():
+    """The progress callback fires once per ACCEPTED L-BFGS-B iterate, not per
+    rejected line-search probe: the callback count equals result.n_iter, the
+    reported iteration counter is monotone, and each reported density_error is
+    finite and non-negative. This is the observable end of the accepted-iterate
+    snapshotting the plateau detector reads (the scf_state cache itself is a
+    closure local with no public accessor)."""
     from xcquinox.alec.oep import run_oep_inversion
-    src = inspect.getsource(run_oep_inversion)
-    assert 'scf_state["density_error_l2_accepted"] = scf_state["density_error_l2_last_eval"]' in src
-    assert 'scf_state["F_val_accepted"] = scf_state["F_val_last_eval"]' in src
+    from xcquinox.alec.data import precompute_fixed_density_data
+    mol = h2_molecule()
+    data = precompute_fixed_density_data(mol)
+    dm_target = np.asarray(data["dm_pbe"])
+    calls = []
+    result = run_oep_inversion(
+        mol, dm_target, max_iter=5, aux_basis="sto-3g",
+        baseline_xc=None,  # Hartree-only baseline forces real iterations
+        progress_callback=lambda it, de: calls.append((int(it), float(de))),
+    )
+    assert len(calls) == result.n_iter
+    iters = [c[0] for c in calls]
+    assert iters == sorted(iters)
+    for _, de in calls:
+        assert np.isfinite(de) and de >= 0.0
 
 
 def test_run_oep_inversion_accepts_plateau_kwargs():
@@ -766,14 +808,36 @@ def test_run_oep_inversion_accepts_inner_scf_kwargs():
     assert sig.parameters["inner_diis_start_cycle"].default == 5
 
 
-def test_run_oep_inversion_handles_oep_plateau_sentinel():
-    """run_oep_inversion catches _OEPPlateau parallel to _OEPEarlyStop."""
-    import inspect
-    from xcquinox.alec.oep import run_oep_inversion
-    src = inspect.getsource(run_oep_inversion)
-    assert "except _OEPPlateau" in src
-    assert ".plateau_density_error" in src
-    assert "plateau_terminated" in src
+def test_run_oep_inversion_catches_oep_plateau_sentinel(monkeypatch):
+    """A _OEPPlateau raised from the optimizer is CAUGHT (not propagated),
+    parallel to the early-stop sentinel: run_oep_inversion returns a valid
+    OEPResult with terminated_by='plateau' and stop_reason='plateau' rather
+    than letting the exception escape."""
+    import xcquinox.alec.oep as oep_mod
+    from xcquinox.alec.oep import run_oep_inversion, _OEPPlateau
+    from xcquinox.alec.data import precompute_fixed_density_data
+    mol = h2_molecule()
+    data = precompute_fixed_density_data(mol)
+    dm_target = np.asarray(data["dm_pbe"])
+
+    def fake_minimize(fun, x0, **kwargs):
+        fun(x0)  # one objective eval to populate the finalization warm-start
+        cb = kwargs.get("callback")
+        if cb is not None:
+            try:
+                cb(x0)
+            except Exception:
+                pass
+        raise _OEPPlateau(b=x0, plateau_density_error=1.5e-3)
+
+    monkeypatch.setattr(oep_mod, "minimize", fake_minimize)
+    result = run_oep_inversion(
+        mol, dm_target, max_iter=50, aux_basis="sto-3g",
+        conv_tol=1e-30, regularization=1e-4, plateau_window=0,
+    )
+    assert result.terminated_by == "plateau"
+    assert result.stop_reason == "plateau"
+    assert np.all(np.isfinite(result.vxc_matrix))
 
 
 def test_run_oep_inversion_returns_terminated_by_max_iter_on_default_path():
@@ -923,11 +987,15 @@ def test_save_vxc_ref_does_not_persist_terminated_by_or_dm_final(tmp_path):
     assert "stop_reason" not in loaded.files
 
 
-def test_plateau_F_val_cache_uses_unregularized_lagrangian():
-    """Contract: scf_state['F_val_last_eval'] caches F_val
-    (unregularized Lagrangian at oep.py:590/620), NOT obj=-F_val+reg_term.
-    Drive a tiny OEP with non-zero regularization and a single
-    objective_and_grad evaluation; spy on scf_state."""
+def test_oep_nonzero_regularization_completes_with_finite_density_error():
+    """A short inversion with non-trivial V-space regularization completes and
+    surfaces a finite, non-negative density_error.
+
+    The internal plateau cache stores the unregularized Wu-Yang Lagrangian
+    F_val (not obj = -F_val + reg_term) as a closure local with no public
+    accessor; the observable behavioral consequence checked here is that a
+    regularized run finalizes to a finite SCF-verified residual.
+    """
     import numpy as np
     from xcquinox.alec.config import MoleculeSpec
     from xcquinox.alec.oep import run_oep_inversion
@@ -941,12 +1009,7 @@ def test_plateau_F_val_cache_uses_unregularized_lagrangian():
     mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
     mf = _scf.RHF(mol); mf.kernel()
     dm_target = mf.make_rdm1()
-    # Run with max_iter=1, single L-BFGS step -> at least one objective
-    # evaluation. After that, scf_state["F_val_last_eval"] should be
-    # finite and equal to the F_val computed at oep.py:620
-    # (e_ks - <b, rhotarget>), NOT obj (which is -F_val + reg_term).
-    # We use regularization=1e-2 so the reg_term is non-trivially
-    # different from F_val.
+    # regularization=1e-2 makes the reg_term non-trivially different from F_val.
     result = run_oep_inversion(
         spec, dm_target,
         aux_basis="def2-svp-jkfit",
@@ -954,31 +1017,41 @@ def test_plateau_F_val_cache_uses_unregularized_lagrangian():
         regularization=1e-2,
         plateau_window=0,   # disable plateau
     )
-    # Indirect verification: result.density_error finite + non-NaN.
-    # Direct verification of the scf_state cache requires accessing
-    # internal closure state, not exposed by the public API. Use
-    # source-text pin as the back-up assertion (same pattern Plan 1
-    # uses for cache-internals contracts).
-    import inspect
-    src = inspect.getsource(run_oep_inversion)
-    # The F_val cache write must reference the F_val local, NOT obj:
-    assert 'scf_state["F_val_last_eval"] = float(F_val)' in src
-    assert 'scf_state["F_val_last_eval"] = float(obj)' not in src
     assert np.isfinite(result.density_error)
+    assert result.density_error >= 0.0
 
 
-def test_plateau_F_val_cache_writes_neg_inf_on_scf_failure():
-    """Contract: scf_state['F_val_last_eval'] = float('-inf')
-    on inner-SCF failure (descending sentinel). Source-text pin,
-    the failure path is hard to trigger in a unit test without
-    constructing an ill-conditioned problem; pin the contract via
-    inspect."""
-    import inspect
+def test_oep_inner_scf_failure_is_handled_gracefully(monkeypatch):
+    """When the inner SCF fails, the inversion does not raise: the objective
+    returns a large penalty with a finite (zero) gradient so L-BFGS-B backs
+    off, and the finalization reports converged=False with dm_final=None and a
+    'final_scf_failed' marker in lbfgs_status. This exercises the inner-SCF-
+    failure branch that writes the descending +inf / -inf plateau sentinels
+    (those cache locals have no public accessor)."""
+    import numpy as np
+    import xcquinox.alec.oep as oep_mod
     from xcquinox.alec.oep import run_oep_inversion
-    src = inspect.getsource(run_oep_inversion)
-    # On failure path (oep.py:569-572), both sentinels must be written:
-    assert 'scf_state["density_error_l2_last_eval"] = float("inf")' in src
-    assert 'scf_state["F_val_last_eval"] = float("-inf")' in src
+    from xcquinox.alec.data import precompute_fixed_density_data
+    mol = h2_molecule()
+    data = precompute_fixed_density_data(mol)
+    dm_target = np.asarray(data["dm_pbe"])
+    nao = dm_target.shape[-1]
+
+    def failing_ks(mol_, mf_, vxc, **kw):
+        # Mimic a blown-up inner SCF: valid-shaped DM but scf_success=False.
+        dm0 = kw.get("dm0")
+        dm = np.zeros((nao, nao)) if dm0 is None else np.asarray(dm0)
+        return dm, None, np.zeros((nao, nao)), False
+
+    monkeypatch.setattr(oep_mod, "_ks_from_vxc_matrix", failing_ks)
+    result = run_oep_inversion(
+        mol, dm_target, max_iter=3, aux_basis="sto-3g", plateau_window=0,
+    )
+    assert np.all(np.isfinite(result.vxc_matrix))
+    assert np.isfinite(result.density_error)
+    assert result.converged is False
+    assert result.dm_final is None
+    assert "final_scf_failed" in result.lbfgs_status
 
 
 def test_terminated_by_field_for_conv_tol_path():
@@ -1018,14 +1091,13 @@ def test_terminated_by_field_for_conv_tol_path():
 
 
 def test_terminated_by_field_for_plateau_path():
-    """Plan-1 review fix: spec §9.1 names this test for the plateau
-    path explicitly. Drive an OEP that should plateau (high reg + tight
-    plateau_window/min_iter so plateau fires before max_iter)."""
-    import inspect
-    from xcquinox.alec.oep import run_oep_inversion
-    src = inspect.getsource(run_oep_inversion)
-    assert 'terminated_by = "plateau"' in src
+    """Drive an OEP configured to plateau (high regularization + tight
+    plateau_window/min_iter so a flat tail fires before max_iter). The
+    surfaced terminated_by must be one of the two reachable outcomes for this
+    configuration -- 'plateau' (the detector fired) or 'max_iter' (the flat
+    tail never triggered within the budget)."""
     from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
     from pyscf import gto, scf as _scf
     spec = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
@@ -1049,20 +1121,13 @@ def test_terminated_by_field_for_plateau_path():
 
 
 def test_plateau_below_conv_tol_marks_converged():
-    """Spec §9.1 + §5.5: plateau-below-conv_tol -> converged=True.
-
-    Fix: ``converged`` for the plateau path is the
-    SCF-verified condition (final_success AND finite AND
-    final_error < conv_tol), NOT a re-derivation from the plateau
-    median. The plateau median is no longer used to set ``converged``."""
-    import inspect
-    from xcquinox.alec.oep import run_oep_inversion
-    src = inspect.getsource(run_oep_inversion)
-    # OEP-01: converged is the single SCF-verified condition on
-    # final_error; the plateau branch must NOT re-derive it from the
-    # (possibly biased) plateau median density_error.
-    assert '(final_error < conv_tol)' in src
+    """When a plateau (or max_iter) stop's SCF-verified final_error sits below
+    conv_tol, the result is marked converged. ``converged`` is the SCF-verified
+    condition (final_success AND finite AND final_error < conv_tol), never a
+    re-derivation from the plateau median. Driven with a huge conv_tol so the
+    residual is far below it regardless of which sentinel fires."""
     from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
     from pyscf import gto, scf as _scf
     spec = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
@@ -1071,7 +1136,7 @@ def test_plateau_below_conv_tol_marks_converged():
     mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
     mf = _scf.RHF(mol); mf.kernel()
     dm_target = mf.make_rdm1()
-    # Loose conv_tol so any plateau is below it:
+    # Loose conv_tol so the SCF-verified residual is below it:
     result = run_oep_inversion(
         spec, dm_target,
         aux_basis="def2-svp-jkfit",
@@ -1079,19 +1144,20 @@ def test_plateau_below_conv_tol_marks_converged():
         regularization=1e-2,
         plateau_window=5, plateau_rtol=0.1, plateau_min_iter=10,
     )
-    if result.terminated_by == "plateau":
-        assert result.converged is True
+    # With a huge conv_tol the residual is far below it, so the inversion is
+    # converged regardless of which sentinel fired.
+    assert result.converged is True
+    assert result.density_error < 1.0
 
 
 def test_plateau_above_conv_tol_marks_not_converged():
-    """Spec §9.1 + §5.5: plateau-above-conv_tol -> converged=False
-    (cascade falls through to next tier)."""
-    import inspect
-    from xcquinox.alec.oep import run_oep_inversion
-    src = inspect.getsource(run_oep_inversion)
-    # The bool() wrap means False propagates correctly when plateau is above conv_tol
-    assert 'converged = bool(' in src
+    """With an impossibly tight conv_tol, a plateau (or max_iter) stop is not
+    marked converged unless the SCF-verified final_error genuinely rounds below
+    conv_tol. ``converged`` tracks the SCF-verified final_error vs conv_tol
+    (never the plateau median), so on this benign H2/STO-3G case where the final
+    SCF succeeds it equals (density_error < conv_tol)."""
     from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.oep import run_oep_inversion
     from pyscf import gto, scf as _scf
     spec = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
@@ -1100,7 +1166,7 @@ def test_plateau_above_conv_tol_marks_not_converged():
     mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
     mf = _scf.RHF(mol); mf.kernel()
     dm_target = mf.make_rdm1()
-    # Tight conv_tol so plateau-density-error is NOT below it:
+    # Tight conv_tol so the density-error is essentially never below it:
     result = run_oep_inversion(
         spec, dm_target,
         aux_basis="def2-svp-jkfit",
@@ -1108,29 +1174,34 @@ def test_plateau_above_conv_tol_marks_not_converged():
         regularization=1e-2,
         plateau_window=5, plateau_rtol=0.1, plateau_min_iter=10,
     )
-    if result.terminated_by == "plateau":
-        # ``converged`` is derived from the SCF-verified ``final_error`` vs
-        # conv_tol (the ``converged = bool(...)`` line pinned above), never
-        # from the plateau median. With conv_tol=1e-30 the result is
-        # non-converged UNLESS the SCF-verified residual genuinely rounds to
-        # the float64 noise floor below 1e-30 (possible on this contrived
-        # H2/STO-3G case where the regularized OEP density nearly matches the
-        # HF target). Assert the relationship rather than a hard-coded False
-        # so the test cannot flake when the residual underflows to ~0.
-        assert result.converged is bool(result.density_error < 1e-30)
+    assert result.terminated_by in ("plateau", "max_iter")
+    # converged is the SCF-verified relationship, not a hard-coded False, so it
+    # cannot flake if the residual underflows to ~0 (< 1e-30).
+    assert result.converged is bool(result.density_error < 1e-30)
 
 
-def test_plateau_detector_disabled_when_min_iter_exceeds_max_iter():
-    """Spec §9.1: plateau_min_iter > max_iter -> cannot fire by construction."""
-    from xcquinox.alec.oep import _detect_plateau
-    # Pretend max_iter=20 and plateau_min_iter=30. Even on a flat-20-deque,
-    # _detect_plateau is gated only by deque-fullness in the helper, but the
-    # CALL SITE in _scipy_iter_callback gates on plateau_min_iter. Pin the
-    # caller-side contract via source-text:
-    import inspect
+def test_plateau_does_not_fire_when_min_iter_exceeds_max_iter():
+    """When plateau_min_iter exceeds max_iter the plateau detector cannot fire
+    by construction (the call site gates firing on the accepted-iterate count
+    reaching plateau_min_iter). Driven on a real short inversion: the result
+    terminates by conv_tol or max_iter, never by plateau."""
+    from xcquinox.alec.config import MoleculeSpec
     from xcquinox.alec.oep import run_oep_inversion
-    src = inspect.getsource(run_oep_inversion)
-    assert '_progress_state["iter"] >= plateau_min_iter' in src
+    from pyscf import gto, scf as _scf
+    spec = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),), grid_level=1,
+    )
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=0, spin=0, verbose=0)
+    mf = _scf.RHF(mol); mf.kernel()
+    dm_target = mf.make_rdm1()
+    result = run_oep_inversion(
+        spec, dm_target, aux_basis="def2-svp-jkfit",
+        max_iter=5, conv_tol=1e-2, regularization=1e-4,
+        plateau_window=5, plateau_rtol=0.1, plateau_min_iter=50,
+    )
+    assert result.terminated_by != "plateau"
+    assert result.terminated_by in ("conv_tol", "max_iter")
 
 
 def test_plateau_detector_does_not_fire_on_slow_descent_with_sign_of_trend():

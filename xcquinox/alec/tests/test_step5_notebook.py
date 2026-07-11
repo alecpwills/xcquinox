@@ -28,10 +28,7 @@ def load_generator():
     question without requiring a spurious ``__init__.py``.
     """
     if not GENERATOR_PATH.is_file():
-        pytest.fail(
-            f"Step 5 notebook generator not found at {GENERATOR_PATH}. "
-            "Did Task 1 fail to land?"
-        )
+        pytest.fail(f"Step 5 notebook generator not found at {GENERATOR_PATH}.")
     spec = importlib.util.spec_from_file_location(
         "step5_generator", str(GENERATOR_PATH)
     )
@@ -41,7 +38,7 @@ def load_generator():
 
 
 # ---------------------------------------------------------------------------
-# Task 1 -- scaffold + Cells 1-6 builder tests
+# Cells 1-6 builder tests
 # ---------------------------------------------------------------------------
 
 
@@ -204,7 +201,7 @@ def test_cell_06_solver_labels_honors_override():
 
 
 # ---------------------------------------------------------------------------
-# Task 2 -- Pretraining Cells 7-11
+# Pretraining Cells 7-11
 # ---------------------------------------------------------------------------
 
 
@@ -258,7 +255,7 @@ def test_cell_11_pretrain_parity():
 
 
 # ---------------------------------------------------------------------------
-# Task 3 -- Training Data Cells 12-16
+# Training Data Cells 12-16
 # ---------------------------------------------------------------------------
 
 
@@ -307,7 +304,7 @@ def test_cell_16_precompute_requires_eri():
 
 
 # ---------------------------------------------------------------------------
-# Task 4 -- SCF-Varied Training Cells 17-21
+# SCF-Varied Training Cells 17-21
 # ---------------------------------------------------------------------------
 
 
@@ -315,7 +312,9 @@ def test_cell_17_training_md():
     gen = load_generator()
     cell = gen.build_cell_17_training_md()
     assert cell.cell_type == "markdown"
-    assert "72" in cell.source or "solver" in cell.source.lower()
+    # Section-4 header pins the 72-run sweep and its solver-config axis.
+    assert "72 training runs" in cell.source
+    assert "3 solver configurations" in cell.source
 
 
 def test_cell_18_training_specs_triple_loop():
@@ -436,7 +435,7 @@ def test_cell_24_balancing_aux_inspection():
 
 
 # ---------------------------------------------------------------------------
-# Task 5 -- Evaluation Cells 22-25
+# Evaluation Cells 22-25
 # ---------------------------------------------------------------------------
 
 
@@ -444,7 +443,10 @@ def test_cell_22_eval_md():
     gen = load_generator()
     cell = gen.build_cell_22_eval_md()
     assert cell.cell_type == "markdown"
-    assert "solver_config" in cell.source or "evaluation" in cell.source.lower()
+    # Eval header pins that the whole 72-combination sweep is scored and that
+    # each TestSpec carries its solver_config.
+    assert "solver_config" in cell.source
+    assert "72 (arch, loss, solver_config) combinations" in cell.source
 
 
 def test_cell_23_test_loop_triple_nested():
@@ -477,7 +479,7 @@ def test_cell_25_results_table():
 
 
 # ---------------------------------------------------------------------------
-# Task 6 -- Primary Visualization Cells 26-31
+# Primary Visualization Cells 26-31
 # ---------------------------------------------------------------------------
 
 
@@ -521,7 +523,7 @@ def test_cell_31_density_histograms():
 
 
 # ---------------------------------------------------------------------------
-# Task 7 -- Advanced Visualization + Extension Cells 32-39
+# Advanced Visualization + Extension Cells 32-39
 # ---------------------------------------------------------------------------
 
 
@@ -553,11 +555,32 @@ def test_cell_35_feature_impact():
 
 
 # ---------------------------------------------------------------------------
-# Task 9 -- structural validation tests
+# Structural validation tests
 # ---------------------------------------------------------------------------
 
 
-def test_generator_produces_50_cells(tmp_path):
+def test_every_code_cell_is_ast_parseable(tmp_path):
+    """Every emitted code cell must be valid Python. A builder change that
+    emits a syntactically broken cell would still open in Jupyter but crash at
+    that cell on every run, so a silent regression is caught here. Mirrors the
+    step 4 compile-all guard and the step 6 ast.parse guard."""
+    import ast
+    gen = load_generator()
+    nb = gen.main(str(tmp_path / "step5_ast.ipynb"))
+    for i, cell in enumerate(nb.cells):
+        if cell.cell_type != "code":
+            continue
+        src = ("".join(cell.source) if isinstance(cell.source, list)
+               else cell.source)
+        if not src.strip():
+            continue
+        try:
+            ast.parse(src)
+        except SyntaxError as exc:
+            pytest.fail(f"code cell {i} fails to parse: {exc}")
+
+
+def test_generator_produces_53_cells(tmp_path):
     """Step 5 notebook must contain exactly 53 cells (52 + closing interpretation MD)."""
     gen = load_generator()
     nb = gen.main(str(tmp_path / "step5.ipynb"))

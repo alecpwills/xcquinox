@@ -329,6 +329,11 @@ def prepare_inputs(
                 grid_level=cfg.inputs.grid_level,
                 density_fit=cfg.inputs.density_fit,
                 auxbasis=cfg.inputs.auxbasis,
+                # Lock the TRAINING CCSD references to the same degenerate density
+                # component the functional and held-out refs use (spec_builder /
+                # submit); otherwise OH/CH/NO radical training densities are
+                # orientation-arbitrary and inject noise into the density loss.
+                orientation_lock_strength=cfg.inputs.orientation_lock_strength,
             )
 
         # --- 4. ensure pretrain data matches the configured basis -----------

@@ -312,7 +312,7 @@ def _metric_l2_batch(h_ref: dict, h_cand_batch: dict, weights=None) -> np.ndarra
     for k in _DESCRIPTOR_KEYS:
         p_raw = h_ref[k][None, :]                          # (1, NBINS)
         q_raw = h_cand_batch[k]                            # (batch, NBINS)
-        # PMF-normalize each row (sum=1); flag zero-mass candidates (SUBSET-05).
+        # PMF-normalize each row (sum=1); flag zero-mass candidates.
         q_mass = q_raw.sum(axis=1, keepdims=True)          # (batch, 1)
         empty_row |= (q_mass[:, 0] <= 0.0)
         q_mass_safe = np.where(q_mass > 0.0, q_mass, 1.0)
@@ -331,11 +331,11 @@ def _metric_jsd_batch(h_ref: dict, h_cand_batch: dict, weights=None) -> np.ndarr
     but computed in a single numpy expression. Returns shape ``(batch,)``.
 
     Each reference and candidate marginal is normalized to a PMF (sum=1)
-    before the divergence (SUBSET-01): rows are divided by their total
+    before the divergence: rows are divided by their total
     mass and entries are lower-floored at KL_PROB_CLIP to avoid log(0).
     There is NO upper clip. A candidate row whose mass is zero for ANY
     descriptor (all grid points fell outside the histogram range) is
-    disqualified by returning +inf for that row (SUBSET-05), so it is
+    disqualified by returning +inf for that row, so it is
     never selected as the minimizer.
     """
     w = _resolve_descriptor_weights(weights)
@@ -640,7 +640,7 @@ def select_subset(
             h_cand_batch[key] = counts_combo / (W_safe[:, None] * bin_widths[key][None, :])
         vals_batch = m_batch(h_ref, h_cand_batch)                 # (b,)
         # Disqualify empty-in-range candidates: maximally divergent so the
-        # argmin never picks them (SUBSET-05). Applies to both metrics.
+        # argmin never picks them. Applies to both metrics.
         if empty_in_range.any():
             vals_batch = np.where(empty_in_range, np.inf, vals_batch)
         if return_all:
@@ -691,7 +691,7 @@ def select_subset(
 def compute_atom_set(ae_subset) -> set:
     """Return the union of chemical-element symbols across the given AE
     molecules. Used to determine which atomic-energy references must
-    appear in `subset.traj` for total-energy regularization (§5c)."""
+    appear in `subset.traj` for total-energy regularization."""
     out: set = set()
     for a in ae_subset:
         out.update(a.get_chemical_symbols())

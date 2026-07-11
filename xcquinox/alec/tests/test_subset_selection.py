@@ -633,15 +633,35 @@ def test_dfs_pool_ae_references_complete():
         assert "ae_name" in a.info
 
 
-def test_dfs_pool_ae_anchor_consistency_with_step6():
-    """H2O and C2H2 AE refs must match step-6's published anchor values
-    (W4-11; tested in xcquinox/alec/tests/test_step6_notebook.py at the
-    string level, here we enforce the numeric equality)."""
+def test_dfs_pool_ae_anchor_w411_provenance():
+    """H2O and C2H2 carry the W4-11 geometry+AE (a documented deviation from
+    the 19 G2/97 + Haunschild anchors). Their AE reference is the GMTKN55-W4-11
+    zero-point-exclusive nonrelativistic atomization energy (Karton, Daon &
+    Martin, Chem. Phys. Lett. 510, 165 (2011) = DFS ref [29]). Verify the
+    dfs_pool anchor against the W4-11 pool file directly -- an INDEPENDENT
+    source (GMTKN55-W4-11/.res), not the step-6 notebook the value was
+    previously only cross-checked against, so the provenance is no longer
+    circular."""
+    import json
+    from pathlib import Path
     from xcquinox.alec.dfs_pool import build_dfs_pool
+
+    w411 = json.loads(
+        (Path(__file__).resolve().parents[1] / "data" / "w411_full_pool.json")
+        .read_text()
+    )
+
+    def w411_atomization_ref(mol):
+        hits = [r for r in w411["reactions"] if r.get("reactants") == [mol]]
+        assert len(hits) == 1, f"expected one W4-11 atomization for {mol!r}"
+        return hits[0]["reaction_energy_ref"]
+
     pool = build_dfs_pool()
     by_hill = {a.info["dfs_hill"]: a for a in pool["ae_molecules"]}
-    assert by_hill["H2O"].info["ae_kcalmol"] == pytest.approx(232.974, abs=1e-3)
-    assert by_hill["C2H2"].info["ae_kcalmol"] == pytest.approx(405.525, abs=1e-3)
+    assert by_hill["H2O"].info["ae_kcalmol"] == pytest.approx(
+        w411_atomization_ref("h2o"), abs=1e-3)
+    assert by_hill["C2H2"].info["ae_kcalmol"] == pytest.approx(
+        w411_atomization_ref("c2h2"), abs=1e-3)
 
 
 def test_dfs_pool_ae_haunschild_lif_lih_na2():

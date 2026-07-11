@@ -5,7 +5,7 @@ purely the operator-facing front-end: it parses arguments, owns the run-dir
 lock, and wires the already-built ``cluster/`` modules together. Subcommands:
 
   - ``prepare``: stage input artifacts (CCSD refs, ledger, ...).
-  - ``submit``: create a fresh run dir + submit the 4-stage graph.
+  - ``submit``: create a fresh run dir + submit the 5-stage graph.
   - ``submit-eval``: submit the deferred eval array for an existing run.
   - ``status``: read-only per-index outcome report.
   - ``results``: aggregate per-spec eval metrics (MAE etc.).
@@ -366,14 +366,25 @@ def _read_failure_json(run_dir: str, idx: int, width: int):
 
 # Outcome string -> retry class. "oom"/"timeout" are retryable with possibly
 # rerouted resources; "resume" is retryable via the RESUME path (continue from a
-# mid-run checkpoint, no archive); everything else is deterministic (a
-# code/config bug a blind retry will not fix).
-_RETRYABLE = {"oom", "timeout", "resume"}
+# mid-run checkpoint, no archive); "no_evidence" is a task that left NO disk
+# trace of running (no model.eqx / resume_state.pkl / failure.json) and whose
+# sacct state is a no-evidence catch-all (NODE_FAIL / cancel / purged record) --
+# relaunched FRESH, bounded by the per-index attempt cap so a genuinely broken
+# upstream gives up after `cap` tries instead of being silently stranded;
+# everything else is deterministic (a code/config bug a blind retry will not fix).
+_RETRYABLE = {"oom", "timeout", "resume", "no_evidence"}
 
 # Retry classes that route to a FRESH retry (archive stale artifacts + relaunch
 # from scratch, possibly with rerouted resources). "resume" is deliberately
 # EXCLUDED: it continues an in-flight run and must NOT archive its resume_* set.
-_FRESH_RETRY = {"oom", "timeout"}
+# "no_evidence" is fresh too (there is nothing to archive -- the task never ran).
+_FRESH_RETRY = {"oom", "timeout", "no_evidence"}
+
+# sacct "no-evidence" outcomes: no failure.json and no resume checkpoint, but the
+# task did not complete (no model.eqx). A NODE_FAIL / requeue / cancel that left
+# no disk trace -- recoverable by a bounded fresh relaunch, NOT a deterministic
+# code bug, so it must not be stranded as "deterministic".
+_NO_EVIDENCE_OUTCOMES = {"dependency_never_satisfied", "unknown_sacct_purged"}
 
 # failure.json classifications that ARE retryable but under a different name.
 # A wall-clock pre-kill grace SIGTERM is recorded by ``_train_task`` as
@@ -402,7 +413,8 @@ def _has_resume_checkpoint(run_dir: str, idx: int, width: int) -> bool:
 
 
 def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str:
-    """Classify train index ``idx``: 'resume' / 'oom' / 'timeout' / 'deterministic'.
+    """Classify train index ``idx``: 'resume' / 'oom' / 'timeout' / 'no_evidence'
+    / 'deterministic'.
 
     Resolution order:
       1. A WS5 RESUMABLE mid-run checkpoint (``resume_state.pkl`` present, no
@@ -415,7 +427,9 @@ def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str
          aliased to timeout).
       3. Else the ``reduce_outcomes`` (``sacct`` fallback) value.
 
-    Any value not in :data:`_RETRYABLE` collapses to ``'deterministic'``.
+    A no-evidence sacct state (:data:`_NO_EVIDENCE_OUTCOMES`) with no
+    failure.json and no resume checkpoint -> ``'no_evidence'`` (a bounded fresh
+    relaunch); any other value collapses to ``'deterministic'``.
     """
     # WS6: a resumable mid-run checkpoint outranks everything else (incl. the
     # killed_by_signal failure.json the SIGTERM path also wrote).
@@ -432,6 +446,12 @@ def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str
     outcome = (outcomes.get(idx) or "").strip().lower()
     if outcome in _RETRYABLE:
         return outcome
+    # A no-evidence sacct state (dependency_never_satisfied / unknown_sacct_purged)
+    # with no failure.json and no resume checkpoint = the task left no trace of
+    # running (NODE_FAIL / cancel / purged). Relaunch FRESH (attempt-cap bounded)
+    # rather than stranding it as deterministic.
+    if outcome in _NO_EVIDENCE_OUTCOMES:
+        return "no_evidence"
     return "deterministic"
 
 
@@ -844,7 +864,7 @@ def cmd_submit(args) -> int:
     Loads + semantically validates the grid, creates a timestamped run dir,
     writes ``resolved_config.yaml`` + ``scripts/`` + ``logs/``, then calls
     ``submit_jobs`` (dry-run unless ``--submit``) which renders + submits the
-    4-stage pretrain -> preflight -> train -> eval graph.
+    5-stage datagen -> pretrain -> preflight -> train -> eval graph.
     """
     cfg = load_grid_config(args.grid)
     cfg = _apply_partition_overrides(cfg, args)
@@ -1015,12 +1035,12 @@ def cmd_status(args) -> int:
         if v in ("dependency_never_satisfied", "unknown_sacct_purged")
     )
 
-    _log("  train: " + ", ".join(
-        f"{k}={v}" for k, v in sorted(train_counts.items())) or "  train: (none)")
+    _log("  train: " + (", ".join(
+        f"{k}={v}" for k, v in sorted(train_counts.items())) or "(none)"))
     _log(f"    success={train_success}  failed={train_failed}  "
          f"resumable={train_resumable}  never-ran={train_never}")
-    _log("  eval:  " + ", ".join(
-        f"{k}={v}" for k, v in sorted(eval_counts.items())) or "  eval: (none)")
+    _log("  eval:  " + (", ".join(
+        f"{k}={v}" for k, v in sorted(eval_counts.items())) or "(none)"))
     _log(f"    never-scheduled={eval_never}")
 
     # diff vs manifest, covered indices should equal n_specs.
@@ -1233,6 +1253,20 @@ def cmd_resubmit(args) -> int:
 
         train_script = os.path.join(run_dir, "scripts", "train_array.sbatch")
         eval_script = os.path.join(run_dir, "scripts", "eval_array.sbatch")
+
+        # Inline-eval runs write a single `train_eval_inline.sbatch` (no
+        # train_array/eval_array script), so resubmit's separate train+eval array
+        # submission cannot apply -- and replaying a captured script would in any
+        # case miss a template fix. Fail loudly rather than handing sbatch a
+        # non-existent file; the run must be relaunched with a fresh `submit`.
+        if (os.path.exists(os.path.join(run_dir, "scripts",
+                                        "train_eval_inline.sbatch"))
+                and not os.path.exists(train_script)):
+            _log("resubmit: this run used inline-eval "
+                 "(train_eval_inline.sbatch); resubmit does not support inline "
+                 "runs. Relaunch with a fresh `submit` (which re-renders the "
+                 "current template).")
+            return 1
 
         # WS6: "resume" indices are RELAUNCHED to CONTINUE from their mid-run
         # checkpoint, so their stale artifacts (incl. the killed_by_signal
@@ -1771,7 +1805,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_prepare.set_defaults(func=cmd_prepare)
 
     p_submit = sub.add_parser(
-        "submit", help="create a run dir and submit the 4-stage job graph")
+        "submit", help="create a run dir and submit the 5-stage job graph")
     p_submit.add_argument("grid", help="path to the grid config (.yaml/.json)")
     p_submit.add_argument(
         "--submit", action="store_true",
@@ -1784,7 +1818,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="root for runs/ (default: cfg.inputs.output_root)")
     p_submit.add_argument(
         "--partition", required=True,
-        help="SLURM partition for the whole 4-stage graph (REQUIRED, the "
+        help="SLURM partition for the whole 5-stage graph (REQUIRED, the "
              "config carries no partition default, so a submission never "
              "silently lands on a login-node-specific queue). The per-stage "
              "--{train,eval,preflight,pretrain}-partition flags override this "

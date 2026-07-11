@@ -351,12 +351,19 @@ def _cfg(**sweep_overrides):
 
 def test_expand_grid_cardinality():
     # axes (1, 1, 2, 10, 2) -> 40 cells
-    cells = expand_grid(_cfg())
+    import itertools
+    cfg = _cfg()
+    cells = expand_grid(cfg)
     assert len(cells) == 40
     assert all(isinstance(c, GridCell) for c in cells)
-    # indices are 0..N-1 and the list IS the index map
-    assert cells[0] is cells[0]
-    assert cells[39] == cells[-1]
+    # No duplicate cells in the 40-way expansion.
+    assert len(set(cells)) == 40
+    # The expansion is exactly the Cartesian product of the five sweep axes.
+    got = {(c.arch, c.loss, c.metric, c.subset_size, c.solver) for c in cells}
+    expected = set(itertools.product(
+        cfg.sweep.arch, cfg.sweep.loss, cfg.sweep.metric,
+        cfg.sweep.subset_size, cfg.sweep.solver))
+    assert got == expected
 
 
 def test_expand_grid_axis_order_fixed():

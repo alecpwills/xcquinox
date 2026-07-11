@@ -645,8 +645,7 @@ def test_aux_inspection_cell():
     assert "loss_anchor_final" in src
     # Reads the aux-log artifact (the canonical per-step record -- NOT
     # train_metadata.json for history; metadata is scalar-only).
-    _artifact = "aux_log" + ".pkl"
-    assert _artifact in src
+    assert "aux_log.pkl" in src
 
 
 def test_imports_cell_has_pickle_for_aux_reading():
@@ -655,8 +654,7 @@ def test_imports_cell_has_pickle_for_aux_reading():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[1].source) if isinstance(nb.cells[1].source, list) else nb.cells[1].source
-    _tok = "import " + "pickle"
-    assert _tok in src
+    assert "import pickle" in src
 
 
 # ---------------------------------------------------------------------------
@@ -774,7 +772,9 @@ def test_drift_md_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[37].source) if isinstance(nb.cells[37].source, list) else nb.cells[37].source
-    assert "drift" in src.lower() or "F_x" in src
+    # Section-7 header pins the diagnostic quantity (F_x) and its subject.
+    assert "F_x" in src
+    assert "Drift Diagnostic" in src
 
 
 def test_drift_panel_b_cell():
@@ -807,7 +807,10 @@ def test_scf_convergence_cell():
     gen = load_generator()
     nb = gen.main(output_path="/tmp/_step6.ipynb")
     src = "".join(nb.cells[40].source) if isinstance(nb.cells[40].source, list) else nb.cells[40].source
-    assert "SCF" in src or "cycles_run" in src or "convergence" in src.lower()
+    # The cell reads the per-cycle SCF residual rows emitted by
+    # SCFConvergenceMetric; pin both the metric and the row-key prefix.
+    assert "scf_energy_residual" in src
+    assert "SCFConvergenceMetric" in src
 
 
 @pytest.mark.slow
