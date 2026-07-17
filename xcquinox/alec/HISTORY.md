@@ -392,7 +392,7 @@ submit queue), and three launch-hardening levers were added so a relaunch cannot
 separate RESULTS-AFFECTING bug was also found (below): the training CCSD references were still generated
 UNLOCKED despite the config, because the final per-species reference cache was lock-blind.
 
-- 2026-07-14 `<pending>` (results-affecting: the training CCSD references were STILL unlocked despite
+- 2026-07-14 `599d64726` (results-affecting: the training CCSD references were STILL unlocked despite
   the config, via a lock-blind final reference cache) -- the Phase-26 fix threaded
   `orientation_lock_strength` into `precompute_all`, which locked the SCF/CCSD INTERMEDIATES (their
   filenames carry an `_ol{strength}` tag). But the FINAL per-species reference -- `run_oep_cascade`,
@@ -420,7 +420,7 @@ UNLOCKED despite the config, because the final per-species reference cache was l
   refs locked -- no manual cache deletion -- but that datagen runs longer while the OEP references
   regenerate.
 
-- 2026-07-14 `<pending>` (compile scaling verified: de-fuse is O(1) in subset size, fused is O(N)) --
+- 2026-07-14 `599d64726` (compile scaling verified: de-fuse is O(1) in subset size, fused is O(N)) --
   on real PySCF-backed meta-GGA `full_3` groups (`scratch/verify_defuse_scaling.py`), the pre-de-fuse
   fused `eqx.filter_value_and_grad` over the stacked per-molecule SCF energies (verbatim from
   `760feb5aa^`) shows peak compile RSS growing linearly in the group's molecule count N (2.2 -> 3.6 ->
@@ -432,7 +432,7 @@ UNLOCKED despite the config, because the final per-species reference cache was l
   def2-svp basis; at 6-311++G(3df,2pd)/grid3 it is the node-RAM exhaustion) while leaving the gradient
   identical.
 
-- 2026-07-14 `<pending>` (production-basis per-molecule compile ceiling fits with large headroom) --
+- 2026-07-14 `599d64726` (production-basis per-molecule compile ceiling fits with large headroom) --
   the de-fused compile of the LARGEST pool molecule (CO2, 117 basis functions, 40k grid points) at the
   full production basis 6-311++G(3df,2pd)/grid3/DF with the density channel active peaks at 11.62 GB
   (`scratch/verify_compile_ceiling.py`). Because the de-fuse compiles one molecule at a time, 11.62 GB
@@ -441,7 +441,7 @@ UNLOCKED despite the config, because the final per-species reference cache was l
   largest single de-fused compile at the production basis certifies the de-fuse alone resolves it,
   with no structural molecule-bucketing needed.
 
-- 2026-07-14 `<pending>` (full-subset meta-GGA capability run completes de-fused) -- a single
+- 2026-07-14 `599d64726` (full-subset meta-GGA capability run completes de-fused) -- a single
   `deep_mgga_3x16` spec over the full 26-point DFS pool (32 species, 28 per-target groups),
   `update_scheme=per_molecule`, `full_3`, SCAN-pretrained, trains three epochs to finite, decreasing
   loss (per-epoch mean 1.25e-3 -> 1.03e-3 -> 9.2e-4) and writes `model.eqx` with no compile OOM
@@ -451,7 +451,7 @@ UNLOCKED despite the config, because the final per-species reference cache was l
   full-subset meta-GGA spec) trains through the de-fused path; the de-fuse converts the fused path's
   UNBOUNDED transient compile peak into a BOUNDED accumulated footprint of small per-molecule kernels.
 
-- 2026-07-14 `<pending>` (gradient parity on the hard cases; meta-GGA alpha pretrain wiring
+- 2026-07-14 `599d64726` (gradient parity on the hard cases; meta-GGA alpha pretrain wiring
   locked) -- `test_defused_grad` extended: de-fused == fused to ~1e-18..1e-23 on an open-shell UKS
   triplet (O, FULL differentiable SCF), the fully-polarized limit (H, zeta=+1), a meta-GGA alpha-gated
   architecture, and a no-re-jit guard (cold call compiles, identical repeat compiles 0).
@@ -461,20 +461,20 @@ UNLOCKED despite the config, because the final per-species reference cache was l
   PBE for GGA. **Why:** the de-fuse must not perturb the physics on the degenerate/open-shell cases the
   functional actually sees, and the meta-GGA warm-start must supply the alpha channel its gate reads.
 
-- 2026-07-14 `<pending>` (lever: whole-node memory under `--exclusive`) -- `submit.render_sbatch`'s
+- 2026-07-14 `599d64726` (lever: whole-node memory under `--exclusive`) -- `submit.render_sbatch`'s
   exclusive branch now emits `#SBATCH --mem=0` instead of no `--mem`. On a SelectType with a
   `DefMemPerCPU`, an exclusive job that omits `--mem` is cgroup-capped at `DefMemPerCPU*cpus-per-task`
   (a fraction of the node) despite owning it; `--mem=0` claims all node RAM. Applies to every exclusive
   stage (`test_cluster_submit`). **Why:** the failed run reserved no memory, so a DefMemPerCPU cap could
   have throttled the task well below the node's RAM regardless of `--exclusive`.
 
-- 2026-07-14 `<pending>` (lever: node-scaled BLAS/OMP cap from the node core count) -- the inline train
+- 2026-07-14 `599d64726` (lever: node-scaled BLAS/OMP cap from the node core count) -- the inline train
   template computed its idle-BLAS-pool cap (Phase 24) from `SLURM_CPUS_PER_TASK` (the `--cpus-per-task`
   value, 24), giving `24/12 = 2` instead of the intended 8 on a 96-core node; it now reads
   `SLURM_CPUS_ON_NODE` (the whole-node count under `--exclusive`). Throughput correctness only, not the
   OOM (`test_cluster_submit`). **Why:** the Phase-24 cap was silently mis-scaled on the exclusive node.
 
-- 2026-07-14 `<pending>` (lever: preflight compile-smoke gate) -- an opt-in
+- 2026-07-14 `599d64726` (lever: preflight compile-smoke gate) -- an opt-in
   `cluster.preflight_compile_smoke` makes the preflight compile the single heaviest attention cell once
   (`_train_one_spec --smoke`, `n_steps=1`, throwaway checkpoint dir) on its exclusive node before the
   train array; a host-OOM there exits the preflight non-zero so the `afterok` dependency blocks the
@@ -486,7 +486,7 @@ UNLOCKED despite the config, because the final per-species reference cache was l
   Enabled in `dfs6311_grid3_v3.yaml`. **Why:** convert an 88-task compile-OOM wipeout into a single
   up-front probe on the exact worst-case kernel.
 
-- 2026-07-14 `<pending>` (compiler-flag / solver-knob decisions, by measurement) -- the existing XLA
+- 2026-07-14 `599d64726` (compiler-flag / solver-knob decisions, by measurement) -- the existing XLA
   optimizing flags are KEPT (results-neutral, marginal help). `--xla_cpu_parallel_codegen_split_count=1`
   is NOT added: re-measured on the de-fused meta-GGA `full_3` kernel it RAISES peak compile RSS (1.98 ->
   2.49 GB) and slows compilation ~50% (16.5 -> 24.7 s), confirming the Phase-24/25 measurement.
@@ -503,7 +503,7 @@ UNLOCKED despite the config, because the final per-species reference cache was l
   site-packages build), then FRESH `submit` (NOT `resubmit`) after a single heaviest-spec smoke confirms
   the epoch-0 compile fits; datagen/pretrain/CCSD-refs are cached and reusable.
 
-- 2026-07-16 `<pending>` (results-affecting: the preflight compile-smoke gate false-blocked the entire
+- 2026-07-16 `599d64726` (results-affecting: the preflight compile-smoke gate false-blocked the entire
   train array by probing a harsher environment than production) -- the relaunched
   `run_20260715T030651Z` reached the gate, which FAILED on the heaviest cell (`deep_attn_3x16`,
   `subset_size=26`) with `rc=-11` and `LLVM compilation error: Resource tracker ... became defunct`, so
@@ -540,7 +540,7 @@ UNLOCKED despite the config, because the final per-species reference cache was l
 
 ## Phase 28 -- dfs6311 deep_attn compile-OOM: opt-in shape-padding pass collapses the per-molecule kernel count (2026-07-17)
 
-- 2026-07-17 `<pending>` (results-neutral training-throughput fix for the retained-per-signature compile-OOM) -- the corrected-environment smoke probe of the heaviest cell (`spec_0021`, `deep_attn_3x16`, subset_size 26) still died `LLVM compilation error: Cannot allocate memory` (SIGSEGV / exit 139) after ~39 min, at peak RSS 116 GiB / VSZ 148 GiB on a 252 GiB node with ~135 GiB free -- an allocation-COUNT wall (`vm.max_map_count=65530`, `SwapTotal=0`, heuristic overcommit), not a RAM ceiling. **Mechanism:** the de-fused step's four module-scope `@eqx.filter_jit` energy kernels are cached one-per-distinct-JIT-signature in a never-evicted process-global cache; a full attention subset retains ~26 enormous kernels whose accumulated JIT `mmap`s trip the 65530 mapping ceiling at compile time. Shape padding ALONE collapses nothing: two molecules padded to identical shapes still recompile, because the per-molecule signature also keys on molecule-identifying static leaves the energy never reads (`_pyscfad_mol` -- a pyscfad `Mole` whose basis-shaped `ctr_coeff`/`exp` leaves force a per-shape recompile -- plus `name`/`atom_composition`/`mol_metadata` and the scalar PBE energies stored as Python floats) and on the occupation counts (`nocc`/`nocc_a`/`nocc_b`, Python ints baked into the kernel by electron count); stripping the identifying leaves was measured energy-neutral to float64 zero. **Fix:** a standalone opt-in pass `xcquinox/alec/padding.py` (`pad_group_to_common_shape`, default OFF) canonicalizes each molecule -- pads every shape-carrying array to one common `(n_ao, n_grid, naux)` target with results-neutral masks (padded grid weight 0; padded AO block decoupled: overlap = I, Fock diagonal 1e6, so padded orbitals sort last, never occupy, and their density block is exactly zero every SCF cycle), strips the identifying leaves, and traces the scalar energies and the occupation counts -- paired with the ONLY core-solver change, in `solver_manual.py`: the three `int(mol_data["nocc*"])` casts are dropped (the existing `arange(nao) < nocc` occupation masks accept a traced value) and the static empty-channel fast-path `if nocc == 0` is guarded on `isinstance(nocc, int)`, so the default path stays byte-identical while a traced (padded) `nocc=0` falls through to the all-zero mask. Molecules of one spin-type then share ONE kernel -> two total (RKS + UKS, genuinely distinct code paths). The pass is delegated from `defused_grad.defused_value_and_grad(pad_target=...)`; the flag threads `grid_config -> spec_builder -> TrainingSpec -> train._run_per_molecule_loop`, which computes one common target over all molecules so every group shares the signature. **Verified locally on real PySCF molecules through the real differentiable SCF:** energy, per-channel loss, density / V_xc, and the model gradient are equal to float64 round-off padded vs unpadded (closed- and open-shell, meta-GGA, attention); two distinct UKS molecules collapse from two kernels to one; the traced `nocc=0` empty beta channel stays finite in value AND gradient; and -- the acceptance criterion -- a model trained three steps WITH padding is identical (loss trajectory and parameters) to one trained WITHOUT, and yields the same energy under a standard UNPADDED forward-only SCF, so padded-input learning transfers unchanged to plain, non-padded inference. The existing de-fuse, solver, config, and golden-spec suites pass unchanged. **Why:** the DFS-parity basis/grid are fixed and node RAM is sufficient (the full attention-cell footprint fits at ~116 GiB), so the wall is a per-process mapping ceiling and the remedy must cut the NUMBER of simultaneously-retained kernels, not buy RAM; padding is opt-in and results-neutral by construction so it cannot alter the trained functional -- the invariant the generalization test pins. **Detection signal (future OOM triage):** an `LLVM ... Cannot allocate memory` at RSS well below node RAM is a mapping/commit-count limit, not a RAM-OOM; and the earlier local de-fuse verification had certified the compile ceiling only for the NON-attention arch on a single molecule, never the failing combination (attention x ~26 distinct real shapes x 6-311++G(3df,2pd)/grid3), which is what the on-cluster smoke gate exposed. Files: NEW `padding.py`, `defused_grad.py`, `solver_manual.py`, `config.py`, `cluster/grid_config.py`, `cluster/spec_builder.py`, `train.py`, NEW `tests/test_shape_padding.py`. **NEXT (USER):** rsync the changed `alec/` files; re-run the monitored probe (`hpcjobs/dfs6311_smoke_vma.sbatch`) with the flag ON -> expect two kernels, `nVMA` far below 65530, `{"kind": "done"}`; then set `pad_group_to_common_shape: true` in the dfs6311 config and FRESH `submit`.
+- 2026-07-17 `599d64726` (results-neutral training-throughput fix for the retained-per-signature compile-OOM) -- the corrected-environment smoke probe of the heaviest cell (`spec_0021`, `deep_attn_3x16`, subset_size 26) still died `LLVM compilation error: Cannot allocate memory` (SIGSEGV / exit 139) after ~39 min, at peak RSS 116 GiB / VSZ 148 GiB on a 252 GiB node with ~135 GiB free -- an allocation-COUNT wall (`vm.max_map_count=65530`, `SwapTotal=0`, heuristic overcommit), not a RAM ceiling. **Mechanism:** the de-fused step's four module-scope `@eqx.filter_jit` energy kernels are cached one-per-distinct-JIT-signature in a never-evicted process-global cache; a full attention subset retains ~26 enormous kernels whose accumulated JIT `mmap`s trip the 65530 mapping ceiling at compile time. Shape padding ALONE collapses nothing: two molecules padded to identical shapes still recompile, because the per-molecule signature also keys on molecule-identifying static leaves the energy never reads (`_pyscfad_mol` -- a pyscfad `Mole` whose basis-shaped `ctr_coeff`/`exp` leaves force a per-shape recompile -- plus `name`/`atom_composition`/`mol_metadata` and the scalar PBE energies stored as Python floats) and on the occupation counts (`nocc`/`nocc_a`/`nocc_b`, Python ints baked into the kernel by electron count); stripping the identifying leaves was measured energy-neutral to float64 zero. **Fix:** a standalone opt-in pass `xcquinox/alec/padding.py` (`pad_group_to_common_shape`, default OFF) canonicalizes each molecule -- pads every shape-carrying array to one common `(n_ao, n_grid, naux)` target with results-neutral masks (padded grid weight 0; padded AO block decoupled: overlap = I, Fock diagonal 1e6, so padded orbitals sort last, never occupy, and their density block is exactly zero every SCF cycle), strips the identifying leaves, and traces the scalar energies and the occupation counts -- paired with the ONLY core-solver change, in `solver_manual.py`: the three `int(mol_data["nocc*"])` casts are dropped (the existing `arange(nao) < nocc` occupation masks accept a traced value) and the static empty-channel fast-path `if nocc == 0` is guarded on `isinstance(nocc, int)`, so the default path stays byte-identical while a traced (padded) `nocc=0` falls through to the all-zero mask. Molecules of one spin-type then share ONE kernel -> two total (RKS + UKS, genuinely distinct code paths). The pass is delegated from `defused_grad.defused_value_and_grad(pad_target=...)`; the flag threads `grid_config -> spec_builder -> TrainingSpec -> train._run_per_molecule_loop`, which computes one common target over all molecules so every group shares the signature. **Verified locally on real PySCF molecules through the real differentiable SCF:** energy, per-channel loss, density / V_xc, and the model gradient are equal to float64 round-off padded vs unpadded (closed- and open-shell, meta-GGA, attention); two distinct UKS molecules collapse from two kernels to one; the traced `nocc=0` empty beta channel stays finite in value AND gradient; and -- the acceptance criterion -- a model trained three steps WITH padding is identical (loss trajectory and parameters) to one trained WITHOUT, and yields the same energy under a standard UNPADDED forward-only SCF, so padded-input learning transfers unchanged to plain, non-padded inference. The existing de-fuse, solver, config, and golden-spec suites pass unchanged. **Why:** the DFS-parity basis/grid are fixed and node RAM is sufficient (the full attention-cell footprint fits at ~116 GiB), so the wall is a per-process mapping ceiling and the remedy must cut the NUMBER of simultaneously-retained kernels, not buy RAM; padding is opt-in and results-neutral by construction so it cannot alter the trained functional -- the invariant the generalization test pins. **Detection signal (future OOM triage):** an `LLVM ... Cannot allocate memory` at RSS well below node RAM is a mapping/commit-count limit, not a RAM-OOM; and the earlier local de-fuse verification had certified the compile ceiling only for the NON-attention arch on a single molecule, never the failing combination (attention x ~26 distinct real shapes x 6-311++G(3df,2pd)/grid3), which is what the on-cluster smoke gate exposed. Files: NEW `padding.py`, `defused_grad.py`, `solver_manual.py`, `config.py`, `cluster/grid_config.py`, `cluster/spec_builder.py`, `train.py`, NEW `tests/test_shape_padding.py`. **NEXT (USER):** rsync the changed `alec/` files; re-run the monitored probe (`hpcjobs/dfs6311_smoke_vma.sbatch`) with the flag ON -> expect two kernels, `nVMA` far below 65530, `{"kind": "done"}`; then set `pad_group_to_common_shape: true` in the dfs6311 config and FRESH `submit`.
 
 ## Open / in-progress (as of 2026-06-20)
 
