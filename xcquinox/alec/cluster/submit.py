@@ -235,10 +235,12 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         cpus = cl.cpus_per_task
 
     # Per-stage node-allocation mode. "exclusive" books a whole node per array
-    # task (--nodes=1 --exclusive, NO --mem, the task owns all the node's RAM,
-    # which is what memory-heavy training needs); "shared" requests a cpu/mem
-    # slice so several tasks co-tenant a node (--mem emitted only when set;
-    # otherwise SLURM applies the partition default-mem-per-cpu).
+    # task (--nodes=1 --exclusive) and requests all of its RAM with --mem=0:
+    # under a SelectType with DefMemPerCPU, an exclusive job that omits --mem is
+    # still cgroup-capped at DefMemPerCPU*cpus-per-task (a fraction of the node),
+    # so --mem=0 is what actually hands memory-heavy training the whole node.
+    # "shared" requests a cpu/mem slice so several tasks co-tenant a node (--mem
+    # emitted only when set; otherwise SLURM applies the partition default-mem-per-cpu).
     # The launcher has no per-stage allocation field, it always shares a node
     # (booking a whole node for a few seconds of `sbatch` would be wasteful and
     # itself counts against the per-user job budget the launcher exists to save).
@@ -252,7 +254,7 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
         allocation = getattr(cl, f"{kind}_allocation")
     if allocation == "exclusive":
         alloc_lines = "#SBATCH --nodes=1\n#SBATCH --exclusive\n"
-        mem_line = ""
+        mem_line = "#SBATCH --mem=0\n"  # all node RAM; see note above (DefMemPerCPU cap)
     else:  # "shared": validated in validate_grid_semantics
         alloc_lines = ""
         mem_line = _optional_sbatch_line("mem", mem)

@@ -1499,6 +1499,56 @@ def test_oep_cache_rejects_basis_mismatch_but_trusts_legacy(tmp_path,
                         cache_dir=tmp_path, basis="def2-tzvp", grid_level=1)
 
 
+def test_run_oep_cascade_cache_keys_on_orientation_lock(tmp_path, monkeypatch):
+    """The final per-species reference cache must key on orientation_lock_strength
+    too, so a LOCKED run cannot silently reuse an UNLOCKED reference from a prior
+    run in the same cache_dir (the degenerate OH/CH/NO radical density fix). An
+    inversion tripwire marks a cache MISS (regeneration)."""
+    import numpy as np
+    from xcquinox.alec.external_refs import (
+        SpeciesEntry, resolve_geometry, run_oep_cascade, _REQUIRED_NPZ_KEYS,
+    )
+    from xcquinox.alec import oep as alec_oep
+
+    spec = SpeciesEntry("H", 0, 1, "dfs_atom")
+    atoms = resolve_geometry(spec)
+
+    class _InversionRan(Exception):
+        """Sentinel (not Runtime/ValueError, so the cascade tier try/except does
+        not swallow it) -> a real cache MISS."""
+
+    monkeypatch.setattr(alec_oep, "run_oep_inversion",
+                        lambda *a, **k: (_ for _ in ()).throw(_InversionRan()))
+    ccsd_payload = {"dm_ao": np.zeros((2, 2, 2))}
+
+    def _write_fake_npz(ol):
+        payload = {k: np.zeros(1) for k in _REQUIRED_NPZ_KEYS}
+        payload["basis_used"] = np.array("def2-svp")
+        if ol is not None:
+            payload["orientation_lock_strength"] = np.array(float(ol))
+        np.savez_compressed(tmp_path / f"{spec.name}.npz", **payload)
+
+    def _run(ol):
+        return run_oep_cascade(spec, atoms, ccsd_payload=ccsd_payload,
+                               cache_dir=tmp_path, basis="def2-svp", grid_level=1,
+                               orientation_lock_strength=ol)
+
+    # (1) locked run + UNLOCKED cache (no ol key -> treated 0.0) -> MISS.
+    _write_fake_npz(None)
+    with pytest.raises(_InversionRan):
+        _run(3e-5)
+    # (2) locked run + matching LOCKED cache -> HIT (tripwire never reached).
+    _write_fake_npz(3e-5)
+    assert _run(3e-5).is_file()
+    # (3) unlocked run + legacy UNLOCKED cache -> HIT (byte-identical to pre-fix).
+    _write_fake_npz(None)
+    assert _run(0.0).is_file()
+    # (4) unlocked run + LOCKED cache -> MISS (must not reuse a locked ref either).
+    _write_fake_npz(3e-5)
+    with pytest.raises(_InversionRan):
+        _run(0.0)
+
+
 # ---------------------------------------------------------------------------
 # HF-for-CCSD convergence robustness (roots the c-hooo benchmark_refs failure)
 # ---------------------------------------------------------------------------

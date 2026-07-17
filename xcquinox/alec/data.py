@@ -65,6 +65,7 @@ def _load_external_data(
     vxc_pbe_shape: tuple[int, ...],
     mol_name: str,
     grid_level: int | None = None,
+    orientation_lock_strength: float | None = None,
 ) -> tuple[jnp.ndarray | None, jnp.ndarray | None, str | None, float | None, jnp.ndarray | None]:
     """Load and validate a MoleculeSpec.external_data_path .npz.
 
@@ -104,6 +105,27 @@ def _load_external_data(
                     f"V_xc grid does not match. Regenerate the reference at "
                     f"grid_level={int(grid_level)} or pin the MoleculeSpec "
                     f"grid_level to {grid_level_used}."
+                )
+
+        # Orientation-lock guard: if the reference RECORDS the lock it was
+        # generated with, assert it matches the consumer's configured lock. A
+        # mismatch means the training density (esp. the degenerate radicals
+        # OH/CH/NO) was built for a different orientation than the functional's
+        # locked SCF -- the silent cache-key gap that let unlocked refs be reused
+        # for a locked run. Fires only when BOTH the ref carries the key and the
+        # caller passes a lock (None consumer -> skip); a legacy ref without the
+        # key is caught upstream by run_oep_cascade's skip-if-cached predicate,
+        # which regenerates it with the key.
+        if ("orientation_lock_strength" in present
+                and orientation_lock_strength is not None):
+            ref_ol = float(np.asarray(npz["orientation_lock_strength"]).item())
+            if f"{ref_ol:g}" != f"{orientation_lock_strength:g}":
+                raise ValueError(
+                    f"external reference for {mol_name!r} was generated with "
+                    f"orientation_lock_strength={ref_ol:g} but the consumer "
+                    f"resolves {orientation_lock_strength:g}; the reference "
+                    f"density does not match the functional's locked SCF. "
+                    f"Regenerate the reference at the configured lock."
                 )
 
         dm_target = None
@@ -542,6 +564,7 @@ def precompute_fixed_density_data(
             vxc_pbe_shape=tuple(np.asarray(vxc_pbe).shape),
             mol_name=mol_spec.name,
             grid_level=mol_spec.grid_level,
+            orientation_lock_strength=orientation_lock_strength,
         )
 
     # Cache pyscfad Mole for hot-path training (avoids Mole.build() inside

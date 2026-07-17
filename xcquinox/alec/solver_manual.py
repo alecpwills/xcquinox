@@ -73,8 +73,11 @@ def _diagonalize_roothaan_unrestricted(
     that then pollutes everything via ``0 * NaN = NaN`` in IEEE arithmetic.
     """
     nao = S.shape[0]
-    # Static Python branch (nocc is a Python int, traced once at jit time).
-    if nocc == 0:
+    # Fast-path the empty channel only on the concrete-int default path. A traced
+    # (padded) nocc=0 falls through: the all-zero occupation mask below rebuilds a
+    # zero DM, keeping the padded kernel electron-count-agnostic (NaN-safety pinned
+    # by the padded fully-polarized-atom test).
+    if isinstance(nocc, int) and nocc == 0:
         return jnp.zeros((nao, nao), dtype=jnp.result_type(F, S))
     S_reg = S + DEGENERACY_REG * jnp.eye(nao)
     L = jnp.linalg.cholesky(S_reg)
@@ -295,7 +298,7 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
     D0 = mol_data["dm_pbe"]
     h_core = mol_data["h_core"]
     S = mol_data["s_matrix"]
-    nocc = int(mol_data["nocc"])
+    nocc = mol_data["nocc"]  # int (default) or traced 0-d array (padded)
     ao_grid = mol_data["ao_grid"]
     ao_grid_deriv = mol_data["ao_grid_deriv"]
     grid_weights = mol_data["grid_weights"]
@@ -444,8 +447,8 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
     D0 = mol_data["dm_pbe"]  # (2, nao, nao)
     h_core = mol_data["h_core"]
     S = mol_data["s_matrix"]
-    nocc_a = int(mol_data["nocc_a"])
-    nocc_b = int(mol_data["nocc_b"])
+    nocc_a = mol_data["nocc_a"]  # int (default) or traced 0-d array (padded)
+    nocc_b = mol_data["nocc_b"]
     ao_grid = mol_data["ao_grid"]
     ao_grid_deriv = mol_data["ao_grid_deriv"]
     ao_xyz = ao_grid_deriv[1:4]  # (3, n_grid, n_ao)

@@ -151,6 +151,11 @@ class HyperParams:
     # use the historical full-batch + GradNorm path. See
     # xcquinox.alec.train._run_per_molecule_loop / TrainingSpec.update_scheme.
     update_scheme: str = "per_molecule"
+    # Opt-in (default OFF): pad every molecule in a training group up to one common
+    # shape so the de-fused per-molecule kernels collapse to one compile per spin-type
+    # (RKS + UKS), bounding the JIT mmap footprint for large deep_attn subsets.
+    # Results-neutral; see xcquinox.alec.padding. Off => byte-identical training.
+    pad_group_to_common_shape: bool = False
     # Fixed per-channel weights for per_molecule mode (e.g.
     # {"loss_rho": 20.0, "loss_AE": 1.0}); empty -> train._DEFAULT_CHANNEL_WEIGHTS
     # (density-dominant, dpyscf-style). Stored sorted for determinism.
@@ -327,8 +332,10 @@ class ClusterResources:
     timeout_retry_partition: str | None = None
     timeout_retry_time: str | None = None
     # Per-stage node-allocation mode: "exclusive" books a whole node per array
-    # task (``#SBATCH --nodes=1 --exclusive``, no ``--mem``: the task owns all
-    # the node's RAM) and "shared" requests a cpu/mem slice (``#SBATCH --mem``).
+    # task (``#SBATCH --nodes=1 --exclusive`` plus ``--mem=0`` to claim all of
+    # the node's RAM -- an exclusive job that omits --mem is still cgroup-capped
+    # at DefMemPerCPU*cpus-per-task on a memory-tracking SelectType) and "shared"
+    # requests a cpu/mem slice (``#SBATCH --mem``).
     # Training peaks near a full node's memory, so every stage defaults to
     # whole-node; flip a stage to "shared" only when its tasks are small enough
     # to co-tenant a node. See ``submit.render_sbatch``.
@@ -342,6 +349,12 @@ class ClusterResources:
     benchmark_refs_partition: str | None = None
     benchmark_refs_time: str | None = None
     benchmark_refs_allocation: str = "exclusive"
+    # Opt-in compile-smoke gate. When True the preflight compiles the heaviest
+    # attention cell once on its exclusive node before the array launches and
+    # blocks the array on a host-OOM (one cheap failure instead of every
+    # large-basis task OOMing at XLA/LLVM compile time). Default False ->
+    # byte-identical (no probe, no extra subprocess).
+    preflight_compile_smoke: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +485,7 @@ def _build_hyperparams(d: dict) -> HyperParams:
         require_atom_anchors=d.get("require_atom_anchors", False),
         seed=d.get("seed", 42),
         update_scheme=d.get("update_scheme", "per_molecule"),
+        pad_group_to_common_shape=bool(d.get("pad_group_to_common_shape", False)),
         channel_weights=_parse_channel_weights(d.get("channel_weights")),
     )
 
@@ -611,6 +625,7 @@ def _build_cluster(d: dict) -> ClusterResources:
         benchmark_refs_time=d.get("benchmark_refs_time"),
         benchmark_refs_allocation=d.get("benchmark_refs_allocation",
                                         "exclusive"),
+        preflight_compile_smoke=bool(d.get("preflight_compile_smoke", False)),
     )
 
 

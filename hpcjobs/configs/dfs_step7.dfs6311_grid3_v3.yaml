@@ -185,6 +185,10 @@ cluster:
   mail_type: BEGIN,END,FAIL
   account: ""
   preflight_time: "12:00:00"
+  # Compile-smoke gate: the preflight compiles the heaviest attention cell once
+  # (n_steps=1) on its exclusive node before the 88-task array; a host-OOM there
+  # blocks the array via the afterok dep -- one cheap failure instead of ~80.
+  preflight_compile_smoke: true
   eval_time: "02:00:00"
   pretrain_time: "12:00:00"
   # The 214-species held-out CCSD at 6-311++G(3df,2pd) (even DF) is slow for the

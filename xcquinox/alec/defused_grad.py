@@ -46,6 +46,9 @@ solver would request a form that was not injected and raise loudly
 (:func:`energy_override.get_energy_override`) rather than return a wrong
 gradient -- that pairing is not a production config (production uses L5); every
 other loss/solver pairing is handled.
+
+Optional shape padding (``pad_target``) is delegated to the standalone
+:mod:`xcquinox.alec.padding` pass; see that module for the mechanism.
 """
 import jax
 import jax.numpy as jnp
@@ -60,6 +63,7 @@ from xcquinox.alec.energy_override import (
     set_energy_override,
     reset_energy_override,
 )
+from xcquinox.alec.padding import pad_batch
 
 
 # Per-molecule energy evaluators, jitted once at module scope so JAX caches the
@@ -93,20 +97,28 @@ def _tree_add(a, b):
     return jax.tree_util.tree_map(jnp.add, a, b)
 
 
-def defused_value_and_grad(loss, model, batch, channel_weights, relative=False):
+def defused_value_and_grad(loss, model, batch, channel_weights, relative=False,
+                           pad_target=None):
     """Loss-agnostic drop-in for the fused per-molecule
     ``eqx.filter_value_and_grad``.
 
     Parameters mirror the fused ``_step``: ``loss`` is the group loss (any
     :class:`AlecLoss`), ``batch`` its sub-batch (``batch["mol_data"]`` is the
     tuple of the group's per-molecule data), ``channel_weights`` the fixed
-    per-channel weights, ``relative`` the loss metric flag.
+    per-channel weights, ``relative`` the loss metric flag. ``pad_target``
+    (opt-in, default ``None``) is a ``PadTarget`` from
+    :func:`xcquinox.alec.padding.common_pad_target`; when given, every molecule is
+    canonicalized to that one common shape by the standalone
+    :func:`xcquinox.alec.padding.pad_batch` pass (results-neutral) so the
+    per-molecule kernels collapse to one per spin-type.
 
     Returns ``((total, components), grads)`` where ``grads`` is the model
     gradient as an inexact-array pytree (matching
     ``eqx.filter(model, eqx.is_inexact_array)``), identical to the fused
     gradient to float64 round-off.
     """
+    if pad_target is not None:
+        batch = pad_batch(batch, pad_target)
     mol_data = batch["mol_data"]
     n_mol = len(mol_data)
     solver_config = loss.solver_config

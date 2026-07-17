@@ -11,9 +11,18 @@ set -euo pipefail
 ${CONDA_ACTIVATION}
 
 # --- thread caps -----------------------------------------------------------
+# These pin preflight's OWN precompute (CCSD/OEP, BLAS-bound) to the full task
+# thread count. The compile-smoke probe deliberately does NOT inherit these -- it
+# re-derives the production BLAS cap (SLURM_CPUS_ON_NODE/12) + the XLA compile
+# trims in _preflight._compile_smoke_impl so the gate mirrors a real train node.
 export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
+
+# Raise the per-user process/thread ceiling if node policy permits (extra
+# pthread_create headroom for the compile-smoke probe's LLVM codegen); harmless
+# where the hard limit forbids it. Mirrors train_eval_inline_cpu.sbatch.tmpl.
+ulimit -u unlimited 2>/dev/null || true
 
 # --- preflight job (single task, no array) ---------------------------------
 python -m xcquinox.alec.cluster._preflight ${RUN_DIR}

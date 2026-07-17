@@ -601,6 +601,7 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             # strict all-referenced-atoms-anchored check by setting it True.
             require_atom_anchors=hp.require_atom_anchors,
             update_scheme=hp.update_scheme,
+            pad_group_to_common_shape=hp.pad_group_to_common_shape,
             channel_weights=hp.channel_weights,
             # WS3 (2026-06-20): in-loop held-out validation cadence + early-stop,
             # threaded from HyperParams like weight_decay. validate_every=0 (the

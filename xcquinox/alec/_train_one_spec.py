@@ -33,6 +33,7 @@ parent parses these and updates its tqdm bar. End-of-training is
 signalled with ``{"kind": "done", ...}``.
 """
 import argparse
+import dataclasses
 import importlib
 import json
 import os
@@ -113,6 +114,25 @@ def main(argv=None) -> int:
             "JAX picks the best available backend (usually GPU)."
         ),
     )
+    parser.add_argument(
+        "--smoke", action="store_true",
+        help=(
+            "Compile-smoke mode: force n_steps=1 (one epoch, compiles every "
+            "per-molecule kernel of the spec) and redirect checkpoint_dir to a "
+            "throwaway temp dir, so the heaviest cell's epoch-0 compile is "
+            "exercised without polluting the real spec dir or running a full "
+            "training."
+        ),
+    )
+    parser.add_argument(
+        "--pad-group", action="store_true",
+        help=(
+            "Enable pad_group_to_common_shape on the loaded spec (overrides its "
+            "stored value) so the de-fused per-molecule kernels collapse to one "
+            "compile per spin-type. Lets an existing spec be smoke-probed with "
+            "padding ON without rebuilding it. See xcquinox.alec.padding."
+        ),
+    )
     args = parser.parse_args(argv)
 
     # Route JAX before ANY import that pulls it in. This MUST run before the
@@ -150,6 +170,43 @@ def main(argv=None) -> int:
     sys.stdout.flush()
 
     spec = _load_spec(args.spec_path)
+
+    if args.pad_group:
+        if "pad_group_to_common_shape" not in {f.name for f in dataclasses.fields(spec)}:
+            raise ValueError(
+                f"--pad-group requires the loaded {type(spec).__name__} to expose "
+                f"a 'pad_group_to_common_shape' field"
+            )
+        spec = dataclasses.replace(spec, pad_group_to_common_shape=True)
+        sys.stdout.write(json.dumps({"kind": "pad_group", "enabled": True}) + "\n")
+        sys.stdout.flush()
+
+    if args.smoke:
+        # Compile-smoke mode: force a single epoch (compiles every per-molecule
+        # kernel of the spec, so the heaviest cell's epoch-0 XLA/LLVM compile is
+        # exercised) and redirect the checkpoint dir to a throwaway temp dir so
+        # the real spec dir is neither polluted nor mistaken for a completed run.
+        # Verify FIRST that n_steps + checkpoint_dir are real replaceable fields
+        # of the loaded spec (train.py reads spec.n_steps / spec.checkpoint_dir);
+        # dataclasses.replace on a non-field would raise a bare TypeError.
+        _field_names = {f.name for f in dataclasses.fields(spec)}
+        _missing = {"n_steps", "checkpoint_dir"} - _field_names
+        if _missing:
+            raise ValueError(
+                f"--smoke requires the loaded {type(spec).__name__} to expose "
+                f"replaceable fields {sorted(_missing)}; it has "
+                f"{sorted(_field_names)}"
+            )
+        import atexit
+        import shutil
+        import tempfile
+        d = tempfile.mkdtemp(prefix="xcq_smoke_")
+        atexit.register(shutil.rmtree, d, ignore_errors=True)
+        spec = dataclasses.replace(spec, n_steps=1, checkpoint_dir=d)
+        sys.stdout.write(json.dumps({
+            "kind": "smoke", "n_steps": 1, "checkpoint_dir": d,
+        }) + "\n")
+        sys.stdout.flush()
 
     # Lazy import keeps startup fast if anything fails before we need alec.
     import xcquinox.alec as alec  # noqa: E402

@@ -288,7 +288,7 @@ def test_render_pretrain_resource_fallback(tmp_path):
     """Unset pretrain_* resource knobs fall back to the train-array values.
 
     Uses shared allocation so the inherited ``--mem`` is actually rendered
-    (whole-node/exclusive stages emit no ``--mem`` at all)."""
+    (whole-node/exclusive stages emit ``--mem=0`` instead)."""
     d = _base_config_dict()
     d["cluster"]["pretrain_allocation"] = "shared"
     p = tmp_path / "g_shared.json"
@@ -305,14 +305,15 @@ def test_render_pretrain_resource_fallback(tmp_path):
 # Per-stage node-allocation mode (exclusive whole-node vs shared cpu/mem slice)
 # ---------------------------------------------------------------------------
 
-def test_render_exclusive_emits_node_lines_and_omits_mem(tmp_path):
+def test_render_exclusive_emits_node_lines_and_full_mem(tmp_path):
     """The default (exclusive) allocation books a whole node per task:
-    ``--nodes=1 --exclusive`` and NO ``--mem`` (the task owns all node RAM)."""
+    ``--nodes=1 --exclusive`` plus ``--mem=0`` so the task claims all node RAM
+    (an exclusive job that omits --mem is cgroup-capped at DefMemPerCPU*cpus)."""
     cfg = _make_cfg(tmp_path)  # all stages default to exclusive
     text = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
     assert "#SBATCH --nodes=1" in text
     assert "#SBATCH --exclusive" in text
-    assert "#SBATCH --mem=" not in text
+    assert "#SBATCH --mem=0" in text
 
 
 def test_render_shared_emits_mem_and_omits_node_lines(tmp_path):
@@ -354,7 +355,7 @@ def test_render_per_stage_allocation_independent(tmp_path):
     cfg = load_grid_config(str(p))
     train = render_sbatch("train", cfg, str(tmp_path / "run"), array_max=39)
     ev = render_sbatch("eval", cfg, str(tmp_path / "run"), array_max=39)
-    assert "#SBATCH --exclusive" in train and "#SBATCH --mem=" not in train
+    assert "#SBATCH --exclusive" in train and "#SBATCH --mem=0" in train
     assert "#SBATCH --mem=32G" in ev and "#SBATCH --exclusive" not in ev
 
 
@@ -369,12 +370,37 @@ def test_render_thread_caps_present_every_template(tmp_path):
         assert "export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK" in text, kind
 
 
+def test_render_inline_thread_cap_scales_from_node_cores(tmp_path):
+    """The inline train template caps the idle BLAS/OMP pools from the whole-node
+    core count (SLURM_CPUS_ON_NODE), not --cpus-per-task. Regression: sourcing the
+    cap from SLURM_CPUS_PER_TASK (=24) mis-scaled it to 24/12=2 on a 96-core node
+    instead of the intended 8."""
+    cfg = _make_cfg(tmp_path, device="cpu")
+    text = render_sbatch("train_eval_inline", cfg, str(tmp_path / "run"),
+                         array_max=39)
+    assert 'CORES="${SLURM_CPUS_ON_NODE:-$(nproc --all)}"' in text
+    assert "BLAS_THREADS=$(( CORES / 12 ))" in text
+    assert 'export OMP_NUM_THREADS="$BLAS_THREADS"' in text
+    # The old, mis-scaling source (--cpus-per-task) is gone from the CORES line.
+    assert 'CORES="${SLURM_CPUS_PER_TASK' not in text
+
+
 def test_render_preflight_has_no_array_directive(tmp_path):
     cfg = _make_cfg(tmp_path)
     text = render_sbatch("preflight", cfg, str(tmp_path / "run"))
     assert "#SBATCH --array" not in text
     assert "_preflight" in text
     assert "preflight_%j.out" in text
+
+
+def test_render_preflight_raises_nproc_ceiling(tmp_path):
+    """Preflight renders `ulimit -u unlimited` (mirrors the inline train template)
+    so the compile-smoke probe's LLVM codegen has pthread_create headroom. Without
+    it, the probe at the preflight 24-thread env hit `pthread_create failed` on the
+    heaviest attention cell and false-blocked the 030651Z train array."""
+    cfg = _make_cfg(tmp_path)
+    text = render_sbatch("preflight", cfg, str(tmp_path / "run"))
+    assert "ulimit -u unlimited 2>/dev/null || true" in text
 
 
 def test_render_optional_directives_emitted_and_omitted(tmp_path):
@@ -465,7 +491,7 @@ def test_dry_run_calls_no_sbatch_and_writes_no_jobs_json(tmp_path, monkeypatch):
     assert fake.calls == []
     # No jobs.json written.
     assert not os.path.exists(os.path.join(run_dir, "jobs.json"))
-    # Scripts + the audit file ARE written.
+    # Scripts + the submit-commands record ARE written.
     for name in ("pretrain.sbatch", "preflight.sbatch", "train_array.sbatch",
                  "eval_array.sbatch"):
         assert os.path.exists(os.path.join(run_dir, "scripts", name))
@@ -473,7 +499,7 @@ def test_dry_run_calls_no_sbatch_and_writes_no_jobs_json(tmp_path, monkeypatch):
     assert os.path.exists(cmds_path)
     cmds_text = open(cmds_path).read()
     assert "[dry-run]" in cmds_text
-    # The pretrain sbatch invocation is listed in the audit trail.
+    # The pretrain sbatch invocation is listed in the submit-commands record.
     assert "scripts/pretrain.sbatch" in cmds_text
     assert os.path.isdir(os.path.join(run_dir, "logs"))
 
@@ -635,7 +661,7 @@ def test_inline_eval_submit_skips_eval_array_and_eval_record(
     # ran inline as part of each train task.
     kinds = sorted(r["kind"] for r in jt.read_job_records(run_dir))
     assert kinds == ["datagen", "preflight", "pretrain", "train"]
-    # The submit_commands audit trail was written (proves the function returned
+    # The submit_commands record was written (proves the function returned
     # cleanly past the failure point at L627 in the buggy version).
     cmds_path = os.path.join(run_dir, "submit_commands.txt")
     assert os.path.exists(cmds_path)

@@ -39,6 +39,7 @@ from xcquinox.alec.losses import make_loss
 from xcquinox.alec.models import AlecGGAModel
 from xcquinox.alec.networks import create_network_pair
 from xcquinox.alec.defused_grad import defused_value_and_grad
+from xcquinox.alec.padding import common_pad_target
 
 
 # ---------------------------------------------------------------------------
@@ -1299,6 +1300,10 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
     # the channels it names; previously a partial dict bypassed the defaults and
     # omitted channels fell back to 1.0 (silently de-emphasizing loss_rho).
     cw = _effective_channel_weights(spec.channel_weights_dict)
+    # Opt-in shape padding: one common target over ALL molecules so every group's
+    # per-molecule kernels share one JIT signature per spin-type (see padding.py).
+    pad_target = (common_pad_target(batch["mol_data"])
+                  if getattr(spec, "pad_group_to_common_shape", False) else None)
     groups = _training_groups(spec)
     n_groups = len(groups)
     n_epochs = spec.n_steps
@@ -1329,7 +1334,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
         # utility jits per molecule internally (see xcquinox.alec.defused_grad),
         # and is loss-agnostic (any AlecLoss, via the shared energy-stack hook).
         (loss_val, comps), grads = defused_value_and_grad(
-            gloss, model, gbatch, cw, relative)
+            gloss, model, gbatch, cw, relative, pad_target=pad_target)
         updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         model = eqx.apply_updates(model, updates)
         return model, opt_state, loss_val, comps

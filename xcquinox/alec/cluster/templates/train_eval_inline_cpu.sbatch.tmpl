@@ -20,11 +20,12 @@ ${CONDA_ACTIVATION}
 # pools are pre-spawned but IDLE. Pinning each to the full core count starved LLVM's
 # parallel codegen during the big dfs6311 compile: `pthread_create failed: Resource
 # temporarily unavailable` -> rc -6/-11 (classified oom) after training already ran.
-# Give the idle pools a small, node-scaled slice (~1/12 of the allocated cores -> 8 on
+# Give the idle pools a small, node-scaled slice (~1/12 of the node's cores -> 8 on
 # a 96-core node, 2 on a 28-core node) and leave the rest of the thread budget for
-# XLA's runtime pool + LLVM codegen. Derived from the allocation so it scales evenly
-# across node sizes instead of a fixed constant.
-CORES="$${SLURM_CPUS_PER_TASK:-$$(nproc)}"
+# XLA's runtime pool + LLVM codegen. The slice is derived from SLURM_CPUS_ON_NODE (the
+# whole-node core count under --exclusive), NOT SLURM_CPUS_PER_TASK: the latter is the
+# --cpus-per-task value (24 here), which mis-scaled the cap to 24/12=2 on a 96-core node.
+CORES="$${SLURM_CPUS_ON_NODE:-$$(nproc --all)}"
 BLAS_THREADS=$$(( CORES / 12 )); [ "$$BLAS_THREADS" -ge 1 ] || BLAS_THREADS=1
 export OMP_NUM_THREADS="$$BLAS_THREADS"
 export MKL_NUM_THREADS="$$BLAS_THREADS"

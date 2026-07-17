@@ -128,6 +128,22 @@ def test_device_invalid_value_is_rejected(tmp_path):
     assert rc == 2, f"expected rc=2 for invalid --device, got {rc}"
 
 
+def test_pad_group_flag_is_accepted(tmp_path):
+    """--pad-group is a recognized CLI flag: it turns on the standalone padding
+    pass for the loaded spec so an existing spec can be smoke-probed with padding
+    without rebuilding it. Verified via arg-parsing -- with a bogus spec the worker
+    still emits its init line (args parsed) before failing to load the spec; an
+    unknown flag would make argparse exit 2 with no init line."""
+    bogus = tmp_path / "no_such.spec"
+    rc, stdout = _run_worker(
+        [str(bogus), "--device=cpu", "--pad-group", "--smoke", "--no-progress"],
+        env_overrides={"JAX_PLATFORMS": "cpu"},
+    )
+    init = _parse_init_line(stdout)
+    assert init is not None, f"--pad-group not accepted (no init line); stdout={stdout!r}"
+    assert init["requested_device"] == "cpu"
+
+
 def test_worker_enables_jax_x64_by_default(tmp_path):
     """The training subprocess MUST run with ``jax_enable_x64=True``.
 

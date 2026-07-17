@@ -16,7 +16,9 @@ the failure-injection tests stub it to drop a spec file.
 """
 import json
 import os
+import subprocess
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,11 +67,13 @@ class _StagedStub:
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
-def _write_resolved_config(run_dir, extra=None):
+def _write_resolved_config(run_dir, extra=None, cluster_extra=None):
     """Write a minimal valid ``resolved_config.yaml`` into ``run_dir``.
 
     The grid is metric=l2 x subset_size={2,3} -> 2 cells. ``extra`` merges
-    top-level keys (e.g. ``on_precompute_failure``).
+    top-level keys (e.g. ``on_precompute_failure``); ``cluster_extra`` merges
+    keys into the nested ``cluster`` block (e.g. ``preflight_compile_smoke``),
+    exercising the real ``_build_cluster`` round-trip.
     """
     cfg = {
         "sweep": {
@@ -111,6 +115,8 @@ def _write_resolved_config(run_dir, extra=None):
         },
         "domain_profile": "dfs_step7",
     }
+    if cluster_extra:
+        cfg["cluster"].update(cluster_extra)
     if extra:
         cfg.update(extra)
     import yaml
@@ -428,3 +434,204 @@ def test_spec_validation_failure_names_cell_exit_1(tmp_path, patched, capsys):
     # the failing cell is named, spec 0 is metric=l2, subset_size=2
     assert "subset_size=2" in out
     assert "compound molecule" in out
+
+
+# ---------------------------------------------------------------------------
+# compile-smoke gate (cluster.preflight_compile_smoke)
+# ---------------------------------------------------------------------------
+
+def test_compile_smoke_gate_failure_blocks_exit_1(tmp_path, patched, monkeypatch):
+    """cluster.preflight_compile_smoke=True and the heaviest-cell compile probe
+    FAILS -> main() returns 1 so the train array's afterok dependency blocks."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_resolved_config(run_dir,
+                           cluster_extra={"preflight_compile_smoke": True})
+
+    monkeypatch.setattr(_preflight, "_compile_smoke",
+                        lambda specs, paths, run_dir: False)
+    assert main([str(run_dir)]) == 1
+
+
+def test_compile_smoke_gate_pass_exit_0(tmp_path, patched, monkeypatch):
+    """cluster.preflight_compile_smoke=True and the probe PASSES -> exit 0, and
+    the gate was actually invoked exactly once."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_resolved_config(run_dir,
+                           cluster_extra={"preflight_compile_smoke": True})
+
+    calls = {"n": 0}
+
+    def fake_smoke(specs, paths, run_dir):
+        calls["n"] += 1
+        return True
+
+    monkeypatch.setattr(_preflight, "_compile_smoke", fake_smoke)
+    assert main([str(run_dir)]) == 0
+    assert calls["n"] == 1
+
+
+def test_compile_smoke_gate_off_by_default_not_called(tmp_path, patched,
+                                                      monkeypatch):
+    """With the flag OFF (default) the gate is NEVER invoked, so existing runs
+    are byte-identical. A sentinel _compile_smoke that raises if called proves
+    it, and main still returns 0."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_resolved_config(run_dir)  # no preflight_compile_smoke -> default False
+
+    def _boom(specs, paths, run_dir):
+        raise AssertionError("_compile_smoke must NOT run when the flag is off")
+
+    monkeypatch.setattr(_preflight, "_compile_smoke", _boom)
+    assert main([str(run_dir)]) == 0
+
+
+def test_compile_smoke_impl_classification(monkeypatch):
+    """_compile_smoke_impl classifies the probe subprocess result. subprocess.run
+    is stubbed (via the _preflight module) so no real worker runs:
+      (a) host-OOM text + SIGABRT rc  -> False
+      (b) clean completion (done, rc 0) -> True
+      (c) done marker + benign teardown rc (-11) -> True
+      (d) non-zero rc, no completion marker -> False
+      (e) done marker + SIGABRT teardown (-6) with heap-corruption text but NO
+          OOM marker -> the epoch finished, teardown crash is benign -> True
+      (f) crash before completion with an OOM signal but no OOM text -> block -> False
+    """
+    cell = SimpleNamespace(arch="deep_attn_3x16", subset_size=26)
+    specs = [(cell, object())]
+    paths = ["/x"]
+
+    def _cp(stdout, returncode, stderr=""):
+        return subprocess.CompletedProcess(
+            args=["stub"], returncode=returncode, stdout=stdout, stderr=stderr)
+
+    # (a) host-allocator marker + SIGABRT exit -> OOM -> False
+    monkeypatch.setattr(_preflight.subprocess, "run",
+                        lambda *a, **k: _cp("Cannot allocate memory", -6))
+    assert _preflight._compile_smoke_impl(specs, paths, "/run") is False
+
+    # (b) clean completion (spaced done marker, rc 0) -> True
+    monkeypatch.setattr(
+        _preflight.subprocess, "run",
+        lambda *a, **k: _cp('{"kind": "done", "elapsed_s": 1.0}', 0))
+    assert _preflight._compile_smoke_impl(specs, paths, "/run") is True
+
+    # (c) done marker (compact form) + benign C-extension teardown crash -> True
+    monkeypatch.setattr(_preflight.subprocess, "run",
+                        lambda *a, **k: _cp('{"kind":"done"}', -11))
+    assert _preflight._compile_smoke_impl(specs, paths, "/run") is True
+
+    # (d) non-zero rc, no completion marker -> False
+    monkeypatch.setattr(_preflight.subprocess, "run",
+                        lambda *a, **k: _cp("Traceback ... ValueError", 1))
+    assert _preflight._compile_smoke_impl(specs, paths, "/run") is False
+
+    # (e) done marker + SIGABRT teardown (-6/134) carrying the glibc
+    # heap-corruption text but NO OOM marker -> the one epoch finished, so the
+    # teardown crash is benign -> True. Regression: the old classifier read
+    # rc=-6 as an OOM via _looks_like_gpu_oom and would have blocked the array.
+    monkeypatch.setattr(
+        _preflight.subprocess, "run",
+        lambda *a, **k: _cp('{"kind": "done", "elapsed_s": 2.0}\n', -6,
+                            stderr="corrupted size vs. prev_size while consolidating"))
+    assert _preflight._compile_smoke_impl(specs, paths, "/run") is True
+
+    # (f) crash BEFORE completion with an OOM-ish signal (SIGKILL) but no OOM
+    # text and no done marker -> unknown non-completion -> block the array.
+    monkeypatch.setattr(_preflight.subprocess, "run",
+                        lambda *a, **k: _cp("", -9))
+    assert _preflight._compile_smoke_impl(specs, paths, "/run") is False
+
+
+def test_compile_smoke_probe_runs_in_production_env_and_persists_output(
+        tmp_path, monkeypatch):
+    """The probe MUST run in the production train-node compile env, not inherit
+    the preflight shell's ``OMP=$SLURM_CPUS_PER_TASK`` (24) with no XLA trims --
+    that env mismatch is what false-blocked the 030651Z train array
+    (``pthread_create failed`` at 24 threads on the heaviest attention cell). And
+    the FULL probe output (not just the 500-char tail) must be persisted so a gate
+    failure is diagnosable off-cluster.
+    """
+    cell = SimpleNamespace(arch="deep_attn_3x16", subset_size=26)
+    specs = [(cell, object())]
+    paths = [str(tmp_path / "spec_0021.spec")]
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    # 96-core exclusive node -> production BLAS cap = 96 // 12 = 8.
+    monkeypatch.setenv("SLURM_CPUS_ON_NODE", "96")
+    # A hostile inherited value the probe must NOT propagate.
+    monkeypatch.setenv("OMP_NUM_THREADS", "24")
+
+    captured = {}
+    # Output long enough that the HEAD marker (where a real pthread/OOM signature
+    # would sit) falls OUTSIDE the 500-char tail the preflight log keeps -- so the
+    # persisted file must capture strictly more than the tail.
+    long_stdout = ("PROBE-HEAD-MARKER\n" + ("filler line\n" * 200)
+                   + '{"kind": "done", "elapsed_s": 1.0}')
+
+    def _capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout=long_stdout, stderr="PROBE-STDERR-TAIL")
+
+    monkeypatch.setattr(_preflight.subprocess, "run", _capture_run)
+    assert _preflight._compile_smoke_impl(
+        specs, paths, str(run_dir)) is True
+    # Precondition for the regression to be meaningful: the head marker is NOT in
+    # the last 500 chars (what the preflight log would show).
+    full_probe_text = long_stdout + "\nPROBE-STDERR-TAIL"
+    assert "PROBE-HEAD-MARKER" not in full_probe_text[-500:]
+
+    # --- the probe ran in the PRODUCTION compile env ---------------------------
+    env = captured["kwargs"]["env"]
+    assert env["OMP_NUM_THREADS"] == "8", (
+        "probe inherited the preflight 24-thread env instead of the node-scaled "
+        "production BLAS cap -- the exact bug that false-blocked 030651Z")
+    assert env["MKL_NUM_THREADS"] == "8"
+    assert env["OPENBLAS_NUM_THREADS"] == "8"
+    assert "--xla_llvm_disable_expensive_passes=true" in env["XLA_FLAGS"]
+    # os.environ is MERGED (not replaced): conda/PATH etc. survive.
+    assert "PATH" in env
+
+    # --- the FULL probe output is persisted, including the dropped head --------
+    probe_out = run_dir / "logs" / "compile_smoke_probe.out"
+    assert probe_out.is_file()
+    body = probe_out.read_text()
+    assert "PROBE-HEAD-MARKER" in body   # the head the 500-char tail would drop
+    assert "PROBE-STDERR-TAIL" in body
+    assert "blas_threads=8" in body
+
+
+@pytest.mark.parametrize("cpus_on_node,expected", [("96", "8"), ("28", "2"),
+                                                   ("4", "1")])
+def test_compile_smoke_probe_blas_cap_scales_with_node(
+        tmp_path, monkeypatch, cpus_on_node, expected):
+    """Probe BLAS cap = max(1, SLURM_CPUS_ON_NODE // 12), matching the train
+    template's node-scaled slice (96->8, 28->2, and the floor of 1 for tiny nodes).
+    """
+    cell = SimpleNamespace(arch="deep_attn_3x16", subset_size=26)
+    specs = [(cell, object())]
+    paths = [str(tmp_path / "s.spec")]
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setenv("SLURM_CPUS_ON_NODE", cpus_on_node)
+
+    captured = {}
+
+    def _capture_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout='{"kind": "done"}', stderr="")
+
+    monkeypatch.setattr(_preflight.subprocess, "run", _capture_run)
+    assert _preflight._compile_smoke_impl(
+        specs, paths, str(run_dir)) is True
+
+    env = captured["kwargs"]["env"]
+    assert env["OMP_NUM_THREADS"] == expected
+    assert env["MKL_NUM_THREADS"] == expected
+    assert env["OPENBLAS_NUM_THREADS"] == expected

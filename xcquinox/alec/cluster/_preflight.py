@@ -29,6 +29,11 @@ read-only. Its job is, on a compute node, before the train array starts:
   4. Write ``<run_dir>/manifest.json`` (atomic, the last write).
   5. Self-check: assert every ``spec_<idx>`` file exists and the manifest
      records all ``N`` cells.
+  6. (optional, ``cluster.preflight_compile_smoke``) Compile the single heaviest
+     attention cell once on this exclusive node (``_train_one_spec --smoke``,
+     n_steps=1). A host-OOM at that epoch-0 compile exits non-zero so the whole
+     train array is blocked -- one cheap failure instead of every large-basis
+     task OOMing at XLA/LLVM compile time.
 
 If anything is incomplete, :func:`main` returns a non-zero exit code so the
 train array's ``afterok:<preflight>`` dependency correctly blocks.
@@ -68,10 +73,16 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 
+from xcquinox.alec import parallel
 from xcquinox.alec.cluster.grid_config import load_grid_config
 from xcquinox.alec.cluster.domain import get_domain_profile
+from xcquinox.alec.cluster._train_task import (
+    _CPU_OOM_MARKERS,
+    _GPU_OOM_MARKERS,
+)
 from xcquinox.alec.cluster.inputs import prepare_inputs as _inputs_prepare_inputs
 from xcquinox.alec.cluster.spec_builder import (
     build_training_specs as _spec_build_training_specs,
@@ -92,6 +103,130 @@ from xcquinox.alec.cluster.materialize import (
 _prepare_inputs = _inputs_prepare_inputs
 _build_training_specs = _spec_build_training_specs
 _materialize_specs = _materialize_materialize_specs
+
+
+# ---------------------------------------------------------------------------
+# Optional compile-smoke gate
+# ---------------------------------------------------------------------------
+
+def _compile_smoke_impl(specs, paths, run_dir) -> bool:
+    """Compile-smoke the single heaviest grid cell before the train array.
+
+    ``specs`` is the preflight's ``[(cell, spec), ...]`` list; ``paths`` are the
+    same-indexed materialized spec-file paths. The heaviest cell is the one whose
+    epoch-0 XLA/LLVM compile is most likely to exhaust node RAM: among the
+    attention archs (``str(cell.arch)`` contains ``"attn"``) the largest
+    ``subset_size``; if no attention arch is present, the max-subset cell overall.
+    That spec is run through ``_train_one_spec --smoke`` (n_steps=1, throwaway
+    checkpoint dir) on the CPU so the heaviest per-molecule kernel is actually
+    compiled once on this exclusive preflight node.
+
+    Returns ``True`` iff the probe compiled and ran its single epoch without a
+    host OOM; ``False`` on a host/GPU OOM or any other non-completion. A ``False``
+    return makes :func:`main` exit non-zero so the train array's ``afterok``
+    dependency blocks -- one cheap failure instead of the whole array OOMing at
+    compile time (the 6-311++G(3df,2pd)+grid3 regression this gate guards).
+    """
+    # Attention specs compile the largest fused kernels, so probe the
+    # biggest-subset attention cell; fall back to the biggest subset overall when
+    # the sweep has no attention arch.
+    attn = [
+        (i, cell) for i, (cell, _spec) in enumerate(specs)
+        if "attn" in str(cell.arch)
+    ]
+    pool = attn if attn else [(i, cell) for i, (cell, _spec) in enumerate(specs)]
+    i_heavy, heavy = max(pool, key=lambda ic: ic[1].subset_size)
+    _log(
+        f"compile-smoke: heaviest cell is index {i_heavy} "
+        f"(arch={heavy.arch!r}, subset_size={heavy.subset_size}); compiling it "
+        f"once via _train_one_spec --smoke on the CPU"
+    )
+
+    # Reproduce the PRODUCTION train-node compile environment so the gate is a
+    # faithful proxy. The probe MUST NOT inherit the preflight shell's
+    # OMP/MKL/OPENBLAS=$SLURM_CPUS_PER_TASK (24) with no XLA trims: at that thread
+    # count the heaviest attention cell's LLVM parallel codegen fails to spawn its
+    # threads (``pthread_create failed`` -> "Resource tracker became defunct",
+    # rc -11), a FALSE-POSITIVE OOM block -- even though production training compiles
+    # the same de-fused per-molecule kernel fine at BLAS = SLURM_CPUS_ON_NODE/12 with
+    # the compile-memory XLA trims (train_eval_inline_cpu.sbatch.tmpl). Match
+    # production here via the single-source ``parallel._thread_env``. The node core
+    # count and /12 slice mirror the train template exactly.
+    cores = int(os.environ.get("SLURM_CPUS_ON_NODE") or os.cpu_count() or 12)
+    blas_threads = max(1, cores // 12)
+    probe_env = {**os.environ, **parallel._thread_env(blas_threads)}
+
+    proc = subprocess.run(
+        [
+            sys.executable, "-m", "xcquinox.alec._train_one_spec",
+            paths[i_heavy], "--device", "cpu", "--smoke", "--no-progress",
+        ],
+        capture_output=True, text=True, env=probe_env,
+    )
+    stdout = proc.stdout or ""
+    text = stdout + "\n" + (proc.stderr or "")
+    rc = proc.returncode
+    tail = text[-500:]
+
+    # Persist the FULL probe output. The 500-char ``tail`` logged below drops the
+    # head where the actual OOM/pthread marker + traceback live, which is exactly
+    # what made this failure hard to diagnose off-cluster. Best-effort: a write
+    # failure must never change the gate verdict.
+    try:
+        probe_log = os.path.join(run_dir, "logs", "compile_smoke_probe.out")
+        os.makedirs(os.path.dirname(probe_log), exist_ok=True)
+        with open(probe_log, "w") as fh:
+            fh.write(
+                f"# compile-smoke probe: spec index {i_heavy}, "
+                f"arch={heavy.arch!r}, subset_size={heavy.subset_size}, "
+                f"blas_threads={blas_threads}, rc={rc}\n"
+                f"# argv: _train_one_spec {paths[i_heavy]} --device cpu --smoke\n\n"
+            )
+            fh.write(text)
+    except OSError as exc:
+        _log(f"compile-smoke: could not persist full probe output ({exc})")
+    # The worker emits ``{"kind": "done", ...}`` (json.dumps -> spaced form) at a
+    # clean finish; accept the compact form too so a trivial JSON-whitespace
+    # difference cannot misclassify a genuinely-completed probe.
+    done_seen = ('"kind": "done"' in stdout) or ('"kind":"done"' in stdout)
+
+    # Classify on the OOM TEXT signature, not the exit signal. A real host/GPU
+    # OOM prints a marker ("Cannot allocate memory", "std::bad_alloc",
+    # "RESOURCE_EXHAUSTED", ...) and crashes BEFORE the one-epoch completion. A
+    # glibc heap-corruption abort at process TEARDOWN ("corrupted size vs.
+    # prev_size" / "double free", SIGABRT -6/134 or SIGSEGV -11, with NO OOM
+    # text) is a known-benign artifact of this JAX/PySCF/OpenBLAS stack; once the
+    # worker has printed its completion marker the compile has already succeeded,
+    # so a teardown signal must NOT be read as a compile OOM (which would wrongly
+    # block the whole array). done_seen => the epoch finished => no OOM occurred.
+    oom_text = any(m in text for m in (_CPU_OOM_MARKERS + _GPU_OOM_MARKERS))
+    if oom_text:
+        _log(
+            f"compile-smoke FAILED: host-OOM signature in the heaviest cell "
+            f"(index {i_heavy}, arch={heavy.arch!r}, "
+            f"subset_size={heavy.subset_size}) output (rc={rc}). Tail:\n{tail}"
+        )
+        return False
+    if done_seen or rc == 0:
+        _log(
+            f"compile-smoke PASSED: the heaviest cell (index {i_heavy}, "
+            f"arch={heavy.arch!r}, subset_size={heavy.subset_size}) compiled + "
+            f"ran one epoch (rc={rc}; a teardown signal after completion is benign)"
+        )
+        return True
+    _log(
+        f"compile-smoke FAILED: the heaviest cell (index {i_heavy}, "
+        f"arch={heavy.arch!r}, subset_size={heavy.subset_size}) did not complete "
+        f"one epoch and shows no OOM text (rc={rc}); blocking the array. "
+        f"Tail:\n{tail}"
+    )
+    return False
+
+
+# Seam: tests monkeypatch ``_preflight._compile_smoke`` (main() looks it up as a
+# module global, so a patched value is honored) to run the gate wiring without
+# spawning the real worker subprocess.
+_compile_smoke = _compile_smoke_impl
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +628,19 @@ def main(argv=None) -> int:
     _log("self-checking materialized grid...")
     if not _self_check(run_dir, specs_dir, n):
         return 1
+
+    # --- 8. optional compile-smoke gate ------------------------------------
+    # When enabled, compile the single heaviest attention cell once on this
+    # exclusive node before the train array launches. A host-OOM at that compile
+    # exits the preflight non-zero so the array's afterok dependency blocks (one
+    # cheap failure instead of the whole array OOMing at XLA/LLVM compile time).
+    if getattr(getattr(cfg, "cluster", None), "preflight_compile_smoke", False):
+        _log("compile-smoke gate enabled: probing the heaviest cell before the "
+             "array ...")
+        if not _compile_smoke(specs, paths, run_dir):
+            _log("ERROR: compile-smoke gate FAILED -- blocking the train array")
+            return 1
+        _log("compile-smoke gate PASSED")
 
     _log(f"preflight SUCCEEDED: {n} specs staged + verified")
     return 0

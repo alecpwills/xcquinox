@@ -1,18 +1,17 @@
 # xcquinox.alec.cluster -- rsync filter rules for the "full" pull profile.
 #
-# Pulls the full run dir minus chatty SLURM /logs/. Use when you need the
-# trained model.eqx checkpoints locally (e.g. for paper-figure re-evaluation
-# or to re-run analysis that requires loading the actual networks).
+# Mirrors the ENTIRE run dir, including the SLURM /logs/ tree. Use when you need
+# the trained model.eqx checkpoints locally (paper-figure re-evaluation, re-running
+# analysis that loads the actual networks) OR the SLURM `.out`/`.err` logs to
+# diagnose a failed run off-cluster (compile OOMs, tracebacks, dependency/exit-code
+# failures live only in the logs). `summaries` stays lean and still drops /logs/;
+# reach for `full` when you want the complete picture.
 #
 # Loaded via `rsync --filter='. <abs path>/full.filter'`. Rules apply with the
 # run dir (`run_<UTC>Z/`) as the transfer root.
 
-# --- exclude the SLURM log tree -------------------------------------------
-# `.out`/`.err` files are bulky (often several MB each, one per array task)
-# and rarely needed off-cluster; pull them on demand with a separate
-# `rsync seawulf:.../run_<UTC>Z/logs/ ./logs/` if you need a specific one.
-- /logs/
-
-# --- include everything else ----------------------------------------------
-# The `***` matches the dir itself and every path below it.
+# --- include everything, no exclusions ------------------------------------
+# The `***` matches the dir itself and every path below it, so the whole run
+# dir -- logs/, scripts/, specs/, every *.eqx, and any future top-level dir --
+# is transferred. (Contrast summaries.filter, which opts artifacts in one by one.)
 + /***

@@ -809,6 +809,37 @@ def test_load_external_data_grid_level_used_function_direct(tmp_path):
         )
 
 
+def test_load_external_data_guards_orientation_lock_mismatch(tmp_path):
+    """A reference that RECORDS orientation_lock_strength must match the
+    consumer's configured lock, else raise -- the load-time backstop for the
+    cache-key gap that let an unlocked reference train against a locked
+    functional (the degenerate OH/CH/NO radical density fix). Fires only when the
+    ref carries the key and the consumer passes a lock; a None consumer or a
+    legacy keyless ref does not raise."""
+    from xcquinox.alec.data import _load_external_data
+    path = str(tmp_path / "ol.npz")
+    np.savez(path, orientation_lock_strength=np.array(3e-5))
+
+    def _load(ol):
+        return _load_external_data(
+            path, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
+            vxc_pbe_shape=(2, 2), mol_name="OH", grid_level=1,
+            orientation_lock_strength=ol)
+
+    _load(3e-5)                                   # match -> no raise
+    with pytest.raises(ValueError, match="orientation_lock"):
+        _load(0.0)                                # unlocked consumer, locked ref
+    # None consumer -> guard skipped (backward-compat for direct callers).
+    _load_external_data(path, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
+                        vxc_pbe_shape=(2, 2), mol_name="OH", grid_level=1)
+    # Legacy ref WITHOUT the key -> conservative guard does not fire.
+    legacy = str(tmp_path / "legacy.npz")
+    np.savez(legacy, grid_level_used=np.array(1))
+    _load_external_data(legacy, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
+                        vxc_pbe_shape=(2, 2), mol_name="OH", grid_level=1,
+                        orientation_lock_strength=3e-5)
+
+
 # ---------------------------------------------------------------------------
 # density-only benchmark reference npz (xcquinox.alec.benchmark_refs contract)
 # ---------------------------------------------------------------------------

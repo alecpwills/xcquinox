@@ -55,8 +55,12 @@ def test_filter_file_path_full_exists():
     p = sync.filter_file_path("full")
     assert p.is_file()
     body = p.read_text()
-    assert "- /logs/" in body
+    # 'full' mirrors the entire run dir -- no exclusions, logs included.
     assert "+ /***" in body
+    assert "- /logs/" not in body, (
+        "the 'full' profile must NOT exclude /logs/ -- the SLURM logs are "
+        "needed to diagnose failed runs off-cluster"
+    )
 
 
 def test_filter_file_path_unknown_profile_raises():
@@ -752,8 +756,8 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
 
 
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync not installed")
-def test_full_filter_canary_excludes_only_logs(tmp_path, fake_remote_root):
-    """The 'full' profile mirrors the run dir minus /logs/."""
+def test_full_filter_canary_mirrors_run_dir_including_logs(tmp_path, fake_remote_root):
+    """The 'full' profile mirrors the ENTIRE run dir, logs included."""
     local_root = tmp_path / "local_full"
     local_root.mkdir()
     (local_root / GOOD_STAMP).mkdir()
@@ -777,8 +781,9 @@ def test_full_filter_canary_excludes_only_logs(tmp_path, fake_remote_root):
     assert (dest / "pretrain/deep_combined_attn/cnet.eqx").is_file()
     assert (dest / "scripts/train_array.sbatch").is_file()
     assert (dest / "specs/spec_0000.spec").is_file()
-    # Only /logs/ is excluded
-    assert not (dest / "logs").exists()
+    # The SLURM log tree now comes too (the whole point of 'full': diagnosing
+    # failed runs off-cluster requires the .out logs).
+    assert (dest / "logs" / "train_42_0.out").is_file()
 
 
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync not installed")

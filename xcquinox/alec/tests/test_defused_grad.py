@@ -6,6 +6,7 @@ no longer fuses an N-molecule group's SCF into one kernel, and the in-loop
 validation no longer compiles the differentiable fused-scan kernel. Correctness
 is pinned on REAL PySCF-backed molecules and a real (small) differentiable SCF.
 """
+import logging
 import tempfile
 
 import jax
@@ -15,7 +16,7 @@ import numpy as np
 import pytest
 
 from xcquinox.alec.config import ArchitectureConfig, TrainingSpec
-from xcquinox.alec.tests.fixtures.molecules import h_atom, h2_molecule
+from xcquinox.alec.tests.fixtures.molecules import h_atom, o_atom, h2_molecule
 from xcquinox.alec.data import precompute_fixed_density_data
 from xcquinox.alec.solver import SolverConfig, SolverBackend, SolverMode
 from xcquinox.alec.oneshot import total_energy_for_solver
@@ -83,6 +84,29 @@ def _l5_group(solver_config=None, extra_keys=(), synth_refs=False):
         gbatch = _inject_synthetic_refs(gbatch)
     cw = _effective_channel_weights(spec.channel_weights_dict)
     return model, gloss, gbatch, cw, (spec.loss_metric == "relative")
+
+
+def _atom_anchor_l5_group(mol, sym, atom_energy, solver_config=None, extra_keys=()):
+    """Real single-atom L5 group over PySCF mol_data: the lone atom's SCF energy
+    enters through the atomic-regularization channel. A_atomization rejects a
+    compound-free spec (build_indices requires a polyatomic); L5 builds indices
+    with require_compound=False, so an open-shell atom can be scored on its own.
+    Returns the (model, loss, batch, cw, relative) tuple _assert_parity consumes."""
+    lk = {}
+    if solver_config is not None:
+        lk["solver_config"] = solver_config
+    spec = TrainingSpec.from_dicts(
+        arch=_ARCH, molecules=(mol,),
+        targets={sym: 0.0}, atom_energies={sym: atom_energy},
+        loss_name="L5_gradnorm_vxc_step7", loss_kwargs=lk,
+        update_scheme="per_molecule", require_atom_anchors=False,
+        n_steps=1, lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0,
+        grad_clip=1.0, checkpoint_dir=None, seed=42)
+    model = _build_model(spec)
+    loss = make_loss(spec.loss_name, molecules=spec.molecules, **spec.loss_kwargs_dict)
+    batch = _batch(spec, extra_keys)
+    cw = _effective_channel_weights(spec.channel_weights_dict)
+    return model, loss, batch, cw, (spec.loss_metric == "relative")
 
 
 def _fused_value_and_grad(gloss, model, gbatch, cw, relative):
@@ -175,6 +199,98 @@ def test_defused_matches_fused_single_molecule():
     batch = _batch(spec)
     assert len(batch["mol_data"]) == 1
     _assert_parity(model, loss, batch, {}, spec.loss_metric == "relative")
+
+
+def test_defused_matches_fused_open_shell_atom():
+    """Open-shell TRIPLET O atom (spin=2, two-channel UKS density matrix) through
+    the de-fuse: the unrestricted differentiable SCF (FULL tail trajectory) and its
+    per-molecule seeded backward must reproduce the fused gradient. Every other
+    parity case is closed-shell or spin-1/2; the spin-1 triplet exercises the
+    UKS path with two unpaired electrons. The atom enters via the L5
+    atomic-regularization channel (require_compound=False); the SCF-energy path is
+    the same the reaction/AE channels would drive."""
+    _assert_parity(*_atom_anchor_l5_group(
+        o_atom(), "O", -75.0, solver_config=_SC_FULL, extra_keys=("eri",)))
+
+
+def test_defused_matches_fused_fully_polarized_atom():
+    """Fully spin-polarized H atom (one electron, zeta=+1): the correlation
+    zeta-clip limit that the polarized PW92 baseline handles at the pole. Scored
+    one-shot on the single-molecule de-fuse path (n_mol=1), so it pairs the lone
+    open-shell atom with the single-element stack+vjp loop -- the existing
+    single-molecule case is closed-shell H2."""
+    _assert_parity(*_atom_anchor_l5_group(h_atom(), "H", -0.5))
+
+
+def test_defused_matches_fused_mgga_arch():
+    """Meta-GGA architecture through the de-fuse: the alpha-gated network branch
+    (XNet/CNet DFS prefactor (x2 + tanh^2(x3)) with x3 = log((alpha+1)/2)) must
+    differentiate identically fused vs de-fused. The metagga descriptor's grid
+    input (iso-orbital alpha) is pulled by _batch automatically from the arch's
+    materialized descriptors, and a non-zero final layer keeps the alpha gate live."""
+    arch = ArchitectureConfig.from_spec(
+        "t_mgga", 2, 8, descriptors=["metagga"], meta_gga=True,
+        descriptor_log_transform=True, zero_init_final_layer=False)
+    spec = TrainingSpec.from_dicts(
+        arch=arch, molecules=(h2_molecule(),),
+        targets={"H2": 0.17}, atom_energies={"H": -0.5},
+        loss_name="A_atomization", loss_kwargs={"vxc_weight": 0.0},
+        update_scheme="per_molecule", require_atom_anchors=False,
+        n_steps=1, lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0,
+        grad_clip=1.0, checkpoint_dir=None, seed=42)
+    model = _build_model(spec)
+    loss = make_loss(spec.loss_name, molecules=spec.molecules, **spec.loss_kwargs_dict)
+    batch = _batch(spec)
+    _assert_parity(model, loss, batch, {}, spec.loss_metric == "relative")
+
+
+def test_defused_no_rejit_over_repeated_shapes():
+    """The O(1) compile property: a second de-fuse over the SAME molecule shapes
+    triggers NO new XLA compile. The per-molecule energy/vjp kernels are module-scope
+    ``eqx.filter_jit`` functions cached per (molecule shape, solver_config), so the
+    group compiles once and reuses across calls/epochs -- the whole point of the
+    de-fuse vs the fused N-molecule kernel. Compiles are counted from JAX's own
+    "Compiling ..." log records under ``jax.log_compiles()``; the counter is
+    self-validated (the cold first call MUST register > 0, else a green second==0
+    would be meaningless)."""
+    model, loss, batch, cw, relative = _l5_group(solver_config=None)
+
+    class _CompileCounter(logging.Handler):
+        def __init__(self):
+            super().__init__(level=logging.NOTSET)
+            self.msgs = []
+
+        def emit(self, record):
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return
+            if "Compiling" in msg:
+                self.msgs.append(msg)
+
+    jax.clear_caches()  # cold cache so the first call is guaranteed to compile
+    handler = _CompileCounter()
+    jax_logger = logging.getLogger("jax")
+    prev_level, prev_prop = jax_logger.level, jax_logger.propagate
+    jax_logger.addHandler(handler)
+    jax_logger.setLevel(logging.DEBUG)
+    jax_logger.propagate = False  # keep compile chatter out of the captured pytest log
+    try:
+        with jax.log_compiles():
+            defused_value_and_grad(loss, model, batch, cw, relative)
+            first = len(handler.msgs)
+            handler.msgs.clear()
+            defused_value_and_grad(loss, model, batch, cw, relative)
+            second = len(handler.msgs)
+            second_msgs = list(handler.msgs)
+    finally:
+        jax_logger.removeHandler(handler)
+        jax_logger.setLevel(prev_level)
+        jax_logger.propagate = prev_prop
+    assert first > 0, "compile counter registered no compiles on the cold first call"
+    assert second == 0, (
+        f"a second identical de-fuse recompiled {second}x (expected 0): "
+        f"{second_msgs[:6]}")
 
 
 def test_scalar_loss_under_full_tail_solver_raises_loudly():

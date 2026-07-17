@@ -166,7 +166,7 @@ def _write_resolved_config(cfg, run_dir: str) -> str:
     """Write ``<run_dir>/resolved_config.yaml``: a round-trippable GridConfig.
 
     YAML is used (lazy ``import yaml``, matching ``load_grid_config``) so the
-    file is human-auditable; the preflight reads it back with ``load_grid_config``.
+    file is human-readable; the preflight reads it back with ``load_grid_config``.
     """
     raw = _config_to_raw_dict(cfg)
     path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
@@ -1947,7 +1947,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--profile", choices=list(_sync.VALID_PROFILES), default="summaries",
         help="which artifacts to pull. 'summaries' (default) skips every "
              "*.eqx and the logs/ tree (<100 MB / 40-spec run); 'full' mirrors "
-             "the run dir minus logs/ (tens of GB / 40-spec run)")
+             "the entire run dir including the logs/ SLURM output tree "
+             "(tens of GB / 40-spec run)")
     p_pull.add_argument(
         "--category",
         default=os.environ.get("XCQUINOX_CLUSTER_CATEGORY", ""),

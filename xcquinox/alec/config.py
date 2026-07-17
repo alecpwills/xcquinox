@@ -767,6 +767,10 @@ class TrainingSpec:
     #                    n_steps * n_groups). Breaks the full-batch compromise
     #                    that pins multi-target atomization-energy fits.
     update_scheme: str = "batched"
+    # Opt-in (default OFF): pad every molecule in a group up to one common shape so the
+    # de-fused per-molecule kernels collapse to one compile per spin-type; results-
+    # neutral (see xcquinox.alec.padding). Threaded from HyperParams by spec_builder.
+    pad_group_to_common_shape: bool = False
     # Fixed per-channel weights for `update_scheme="per_molecule"` (ignored in
     # "batched" mode, where `balancing` controls weighting). Empty -> the
     # density-dominant dpyscf-style default in train._DEFAULT_CHANNEL_WEIGHTS.

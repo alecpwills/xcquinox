@@ -1153,6 +1153,7 @@ def run_oep_cascade(
     cache_dir,
     basis: str = "def2-svp",
     grid_level: int = 1,
+    orientation_lock_strength: float = 0.0,
     progress_callback=None,
 ):
     """Stage 3: OEP inversion with 2-tier cascade + skip-if-cached.
@@ -1192,18 +1193,25 @@ def run_oep_cascade(
     npz_path = cache_dir / f"{spec.name}.npz"
 
     if npz_path.is_file():
-        # Verify completeness AND that the cache was generated for THIS basis.
-        # The .npz is name-keyed (not basis-tagged in the filename), so without
-        # this a stale reference from a different basis in the same cache_dir
-        # would be reused. Legacy caches predate ``basis_used`` and are trusted
-        # (they were written into a per-basis cache_dir), so this only RE-runs on
-        # a recorded-basis mismatch, never invalidating existing references.
+        # Verify completeness AND that the cache was generated for THIS basis
+        # AND THIS orientation-lock strength. The .npz is name-keyed (not
+        # basis/lock-tagged in the filename), so without these guards a stale
+        # reference from a different basis -- or, critically, an UNLOCKED
+        # reference from a prior run in the same cache_dir -- would be silently
+        # reused, defeating the training-reference lock (the degenerate-radical
+        # OH/CH/NO density fix). Legacy caches predate ``basis_used`` /
+        # ``orientation_lock_strength`` and default to (recorded basis, 0.0), so
+        # an unlocked run still reuses them byte-identically; only a lock/basis
+        # mismatch RE-runs.
         try:
             with np.load(npz_path, allow_pickle=False) as z:
                 cached_basis = (str(z["basis_used"])
                                 if "basis_used" in z.files else basis)
+                cached_ol = (float(z["orientation_lock_strength"])
+                             if "orientation_lock_strength" in z.files else 0.0)
                 if (_REQUIRED_NPZ_KEYS.issubset(set(z.files))
-                        and cached_basis == basis):
+                        and cached_basis == basis
+                        and f"{cached_ol:g}" == f"{orientation_lock_strength:g}"):
                     return npz_path
         except (OSError, ValueError):
             pass  # Corrupt cache, recompute
@@ -1339,6 +1347,11 @@ def run_oep_cascade(
             ref_density_method=np.array("ccsd"),
             grid_level_used=np.array(int(winning_grid_level)),
             basis_used=np.array(str(basis)),
+            # Record the lock the CCSD density was generated with so the
+            # skip-if-cached predicate cannot reuse an unlocked reference for a
+            # locked run (0.0 leaves the field byte-compatible with the demo's
+            # already-allowed orientation_lock_strength key).
+            orientation_lock_strength=np.array(float(orientation_lock_strength)),
         )
         _fsync_file(tmp_name)
         os.replace(tmp_name, npz_path)
@@ -1408,7 +1421,8 @@ def preflight_uks_oep(
                                  orientation_lock_strength=orientation_lock_strength)
         npz_path = run_oep_cascade(spec, atoms, ccsd_payload=cc,
                                    cache_dir=cache_dir,
-                                   basis=basis, grid_level=grid_level)
+                                   basis=basis, grid_level=grid_level,
+                                   orientation_lock_strength=orientation_lock_strength)
         # Verify shape contract
         with np.load(npz_path, allow_pickle=False) as z:
             vxc = np.asarray(z["vxc_ref"])
@@ -1604,9 +1618,12 @@ def precompute_all(
             # run_oep_cascade inherits the lock: it fits V_xc to REPRODUCE the
             # (locked) CCSD dm_target, so vxc_ref is consistent with the locked
             # density by construction -- no separate h_core bias needed there.
+            # The strength is also threaded so the final .npz RECORDS it and the
+            # skip-if-cached predicate cannot reuse an unlocked reference here.
             run_oep_cascade(spec, atoms, ccsd_payload=cc,
                             cache_dir=cache_dir,
-                            basis=basis, grid_level=grid_level)
+                            basis=basis, grid_level=grid_level,
+                            orientation_lock_strength=orientation_lock_strength)
             dt = time.time() - t0
             log.record_result(
                 name=spec.name, charge=spec.charge, spin=spec.spin,
