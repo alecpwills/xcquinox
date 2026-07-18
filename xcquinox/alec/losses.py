@@ -15,8 +15,8 @@ from xcquinox.alec.oneshot import (
     total_energy_for_solver,
     energy_trajectory_for_solver,
     scf_loss_tail_weights,
-    oneshot_dm_prediction_fast,
-    oneshot_grid_density,
+    dm_prediction_for_loss,
+    grid_density_for_loss,
     compute_vxc_nn,
     _uks_spin_resolved_vxc,
 )
@@ -326,7 +326,7 @@ def _dm_term(model, mol_data, iter_idx, solver_config=None, relative=False):
         if dm_ref is None:
             n_skipped += 1
             continue
-        dm_nn = oneshot_dm_prediction_fast(model, mol_data[i], solver_config=solver_config)
+        dm_nn = dm_prediction_for_loss(model, mol_data[i], solver_config)
         dm_ref_arr = jnp.asarray(dm_ref)
         err = jnp.sum((dm_nn - dm_ref_arr) ** 2)
         if relative:
@@ -377,7 +377,7 @@ def _grid_term(model, mol_data, iter_idx, solver_config=None, relative=False,
         if rho_ref is None:
             n_skipped += 1
             continue
-        rho_nn = oneshot_grid_density(model, mol_data[i], solver_config=solver_config)
+        rho_nn = grid_density_for_loss(model, mol_data[i], solver_config)
         w = mol_data[i]["grid_weights"]
         err = jnp.sum(w * (rho_nn - rho_ref) ** 2)
         if relative:

@@ -566,7 +566,7 @@ def test_grid_term_per_electron_normalization(monkeypatch):
                 "grid_weights": jnp.array([0.5, 0.5])}        # N_e = 2
     md_big = {"rho_ref_grid": jnp.array([8.0, 8.0]),
               "grid_weights": jnp.array([0.5, 0.5])}          # N_e = 8
-    monkeypatch.setattr(L, "oneshot_grid_density",
+    monkeypatch.setattr(L, "grid_density_for_loss",
                         lambda model, md, solver_config=None:
                         md["rho_ref_grid"] * 1.01)            # +1% density
     out_small = L._grid_term(object(), [md_small], (0,), per_electron=True)

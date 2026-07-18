@@ -23,6 +23,7 @@ from xcquinox.alec.descriptors import assemble_descriptor_features
 from xcquinox.alec.solver import (
     DEGENERACY_REG,
     SYM_BREAK_SHIFT,
+    SolverBackend,
     _sym_break_diag,
 )
 
@@ -872,6 +873,82 @@ def oneshot_grid_density(model, mol_data, solver_config=None,
         D_total = D_NN
 
     return jnp.einsum("ij,gi,gj->g", D_total, ao, ao)
+
+
+# ---------------------------------------------------------------------------
+# Training-path SCF jit seam
+#
+# The de-fused training step differentiates the group loss EAGERLY -- removing
+# the group-wide fusion is its whole purpose (see
+# :mod:`xcquinox.alec.defused_grad`) -- and under reverse-mode AD an eager
+# ``lax.scan`` is rebuilt by ``partial_eval``/``transpose`` on every call. The
+# resulting linearized-forward and transposed-backward scans are fresh
+# ``ClosedJaxpr`` objects, hashed by identity, so they never hit the
+# primitive-executable cache: each call compiles and then permanently retains
+# two more XLA modules, because the runtime does not release LLVM code mappings
+# once allocated. Over a training run the process mapping count climbs
+# monotonically until it crosses ``vm.max_map_count`` (65530) and the job dies
+# with SIGSEGV, reported as ``LLVM compilation error: Cannot allocate memory``
+# at a resident set far below node RAM.
+#
+# Evaluating the SCF inside a module-scope ``eqx.filter_jit`` gives the scan a
+# stable cache key, so it compiles once per molecule shape and is reused for the
+# rest of the run -- the per-molecule sizing the de-fused step already applies to
+# the energy channel (``defused_grad._energy_*_jit``), without reintroducing the
+# group-wide fusion that exhausted host RAM at codegen time.
+#
+# BOTH self-consistent loss channels need this: the density channel
+# (``losses._grid_term``) and the density-matrix channel (``losses._dm_term``).
+# The public ``oneshot_*`` entry points are left untouched so evaluation,
+# notebook, and metric callers are unaffected.
+# ---------------------------------------------------------------------------
+
+def _scf_needs_jit(solver_config) -> bool:
+    """Whether this config's SCF is an eager ``lax.scan`` that must be compiled.
+
+    Only the MANUAL backend runs a ``lax.scan``. ``solver_config=None`` takes a
+    one-shot branch with no scan at all. The pyscfad backend has no scan to
+    stabilise and cannot be traced in the first place -- its driver needs
+    concrete arrays for libcint integral construction and raises on tracers
+    (:func:`solver_pyscfad.run_pyscfad_scf`), including in ONESHOT mode, whose
+    short-circuit sits behind that guard.
+    """
+    return (solver_config is not None
+            and solver_config.backend is SolverBackend.MANUAL)
+
+
+@eqx.filter_jit
+def _grid_density_scf_jit(model, mol_data, solver_config):
+    """SCF-backed grid density, compiled once per (molecule shape, solver_config)."""
+    return oneshot_grid_density(model, mol_data, solver_config=solver_config)
+
+
+@eqx.filter_jit
+def _dm_prediction_scf_jit(model, mol_data, solver_config):
+    """SCF-backed density matrix, compiled once per (molecule shape, solver_config)."""
+    return oneshot_dm_prediction_fast(model, mol_data, solver_config=solver_config)
+
+
+def grid_density_for_loss(model, mol_data, solver_config):
+    """Grid density for the training density channel.
+
+    Numerically identical to :func:`oneshot_grid_density`; the difference is only
+    where the SCF is compiled. See the seam note above.
+    """
+    if _scf_needs_jit(solver_config):
+        return _grid_density_scf_jit(model, mol_data, solver_config)
+    return oneshot_grid_density(model, mol_data, solver_config=solver_config)
+
+
+def dm_prediction_for_loss(model, mol_data, solver_config):
+    """Predicted density matrix for the training density-matrix channel.
+
+    Numerically identical to :func:`oneshot_dm_prediction_fast`; the difference
+    is only where the SCF is compiled. See the seam note above.
+    """
+    if _scf_needs_jit(solver_config):
+        return _dm_prediction_scf_jit(model, mol_data, solver_config)
+    return oneshot_dm_prediction_fast(model, mol_data, solver_config=solver_config)
 
 
 def oneshot_total_energy(model, mol_data) -> float:
