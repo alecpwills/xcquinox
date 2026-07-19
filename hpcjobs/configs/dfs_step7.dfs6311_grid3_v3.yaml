@@ -115,6 +115,12 @@ hyperparams:
   patience: 5
   early_stop_min_delta: 0.1
   checkpoint_every: 10
+  # Shape padding: one common (n_ao, n_grid, naux) target over the whole batch so
+  # the de-fused per-molecule kernels collapse to one compile per spin-type instead
+  # of one per molecule -- at this basis/grid the per-molecule compile count drove
+  # the process mapping count into the vm.max_map_count ceiling. Results-neutral
+  # input pass (see xcquinox.alec.padding).
+  pad_group_to_common_shape: true
 
 inputs:
   # DFS-paper parity: same basis for training AND the CCSD references, grid 3.

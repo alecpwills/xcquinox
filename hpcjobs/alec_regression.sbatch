@@ -34,6 +34,13 @@ source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
 conda activate /gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j070
 export PYTHONNOUSERSITE=1
 
+# Fail fast if the env cannot even launch pytest -- otherwise every batch
+# "fails" in under a second and the job burns a queue slot reporting nothing.
+python -m pytest --version >/dev/null 2>&1 || {
+  echo "[regression] FATAL: pytest not importable in the activated env"
+  exit 99
+}
+
 CORES="${SLURM_CPUS_ON_NODE:-$(nproc --all)}"
 BT=$(( CORES / 12 )); [ "$BT" -ge 1 ] || BT=1
 export OMP_NUM_THREADS="$BT" MKL_NUM_THREADS="$BT" OPENBLAS_NUM_THREADS="$BT"

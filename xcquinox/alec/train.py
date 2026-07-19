@@ -142,15 +142,23 @@ def _trainable_params(model):
     return eqx.filter(model, eqx.is_array)
 
 
-def _abort_if_nonfinite(loss_value, components, *, loop, step, group=None):
+def _abort_if_nonfinite(loss_value, components, *, loop, step, group=None,
+                        grads=None):
     """Fail-loud finite guard: raise ``FloatingPointError`` the instant a
-    training step produces a non-finite loss or loss component, naming the
-    offending loop/step/group/channel.
+    training step produces a non-finite loss, loss component, or gradient,
+    naming the offending loop/step/group/channel/parameter path.
 
     A non-finite loss propagates as ``0 * NaN = NaN`` into every weight, so the
-    run must stop at the first one rather than keep training on garbage. Called
-    after every optimizer step in every update loop; the per-step loss is
-    already on the host there, so the check is effectively free.
+    run must stop at the first one rather than keep training on garbage. The
+    loss-level check alone has a one-step blind spot: a step whose loss is
+    finite but whose GRADIENT carries a NaN corrupts every weight through
+    ``apply_updates`` and only surfaces at the NEXT step's loss, so the abort
+    names the wrong step/group. Passing ``grads`` (the pytree fed to
+    ``optimizer.update``) closes that gap: every inexact-array leaf is swept
+    and the first non-finite parameter path is reported for the step where the
+    corruption actually originates. Called after every optimizer step in every
+    update loop; the loss is already on the host there and the parameter trees
+    are small, so the check is effectively free next to the SCF.
     """
     bad = []
     for k, v in (components or {}).items():
@@ -160,19 +168,42 @@ def _abort_if_nonfinite(loss_value, components, *, loop, step, group=None):
             continue
         if not math.isfinite(fv):
             bad.append(k)
+    bad_grads = []
+    n_grad_leaves = 0
+    if grads is not None:
+        for path, leaf in jax.tree_util.tree_flatten_with_path(grads)[0]:
+            if not eqx.is_inexact_array(leaf):
+                continue
+            n_grad_leaves += 1
+            if bool(jnp.all(jnp.isfinite(leaf))):
+                continue
+            bad_grads.append((jax.tree_util.keystr(path),
+                              int(jnp.isnan(leaf).sum()),
+                              int(jnp.isinf(leaf).sum()),
+                              tuple(leaf.shape)))
     loss_f = float(loss_value)
-    if math.isfinite(loss_f) and not bad:
+    if math.isfinite(loss_f) and not bad and not bad_grads:
         return
     where = f"loop={loop!r}, step={step}"
     if group is not None:
         where += f", group={group!r}"
+    detail = [f"loss={loss_f!r}"]
+    if not math.isfinite(loss_f) or bad:
+        detail.append(f"non-finite channel(s)={sorted(bad) or '[loss itself]'}")
+    if bad_grads:
+        first_path, n_nan, n_inf, shape = bad_grads[0]
+        detail.append(
+            f"non-finite GRADIENT leaf(s) {len(bad_grads)} of "
+            f"{n_grad_leaves}, first at {first_path} (shape={shape}, "
+            f"n_nan={n_nan}, n_inf={n_inf}); a finite loss with a non-finite "
+            f"gradient marks THIS step as the corruption origin, one step "
+            f"before any loss-level signal")
     raise FloatingPointError(
-        f"non-finite training value ({where}): loss={loss_f!r}, non-finite "
-        f"channel(s)={sorted(bad) or '[loss itself]'}. Training aborts, a "
-        f"NaN/Inf corrupts every subsequent weight. This is almost always a "
-        f"functional/solver gradient singularity on this group's species "
-        f"(e.g. polarized correlation differentiated through the SCF at full "
-        f"spin polarization)."
+        f"non-finite training value ({where}): " + "; ".join(detail) +
+        ". Training aborts, a NaN/Inf corrupts every subsequent weight. "
+        "This is almost always a functional/solver gradient singularity on "
+        "this group's species (e.g. polarized correlation differentiated "
+        "through the SCF at full spin polarization)."
     )
 
 
@@ -209,13 +240,18 @@ def _train_step(model, opt_state, batch, loss_fn, optimizer):
 
     Uses eqx.filter_value_and_grad(has_aux=True) because AlecLoss.__call__
     returns (scalar, aux_dict) and xcTrainer does not support aux.
+
+    The raw gradient pytree is returned alongside so the callers can feed it to
+    the ``_abort_if_nonfinite`` gradient sweep -- a finite-loss/NaN-grad step is
+    otherwise invisible until the NEXT step's loss. The parameter trees are
+    small, so returning them from the jit costs nothing measurable.
     """
     (loss_value, aux), grads = eqx.filter_value_and_grad(
         loss_fn, has_aux=True
     )(model, batch)
     updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
     model = eqx.apply_updates(model, updates)
-    return model, opt_state, loss_value, aux
+    return model, opt_state, loss_value, aux, grads
 
 
 # ---------------------------------------------------------------------------
@@ -804,11 +840,12 @@ def _run_static_loop(spec, model, batch, loss, progress_callback):
     )
 
     for step in range(spec.n_steps):
-        model, opt_state, loss_value, aux = _train_step(
+        model, opt_state, loss_value, aux, grads = _train_step(
             model, opt_state, batch, loss, optimizer
         )
         loss_py = float(loss_value)
-        _abort_if_nonfinite(loss_value, aux, loop="batched/static", step=step)
+        _abort_if_nonfinite(loss_value, aux, loop="batched/static", step=step,
+                            grads=grads)
         losses.append(loss_py)
         tracker.update(loss_py, model)
         aux_log.append({"step": step, "loss": loss_py, "aux": aux})
@@ -849,17 +886,17 @@ def _run_lossnorm_loop(spec, model, batch, loss, progress_callback):
             normed_loss_fn, has_aux=True)(model, batch)
         updates, new_opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         new_model = eqx.apply_updates(model, updates)
-        return new_model, new_opt_state, loss_val, components
+        return new_model, new_opt_state, loss_val, components, grads
 
     losses = []
     aux_log = []
     tracker = _BestModelTracker()
     for step in range(spec.n_steps):
-        model, opt_state, loss_value, components = _normed_step(
+        model, opt_state, loss_value, components, grads = _normed_step(
             model, opt_state, batch)
         loss_py = float(loss_value)
         _abort_if_nonfinite(loss_value, components, loop="batched/lossnorm",
-                            step=step)
+                            step=step, grads=grads)
         losses.append(loss_py)
         tracker.update(loss_py, model)
         eff_weights = {k: float(1.0 / norms[k]) for k in component_keys}
@@ -916,10 +953,11 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
     opt_state = phase1_optimizer.init(eqx.filter(model, eqx.is_array))
 
     for step in range(balancing.phase1_steps):
-        model, opt_state, loss_value, aux = _train_step(
+        model, opt_state, loss_value, aux, grads = _train_step(
             model, opt_state, batch, phase1_loss, phase1_optimizer)
         loss_py = float(loss_value)
-        _abort_if_nonfinite(loss_value, aux, loop="batched/twophase", step=step)
+        _abort_if_nonfinite(loss_value, aux, loop="batched/twophase", step=step,
+                            grads=grads)
         losses.append(loss_py)
         tracker.update(loss_py, model)
         aux_log.append({
@@ -940,11 +978,11 @@ def _run_twophase_loop(spec, model, batch, loss, progress_callback):
 
     for step in range(phase2_steps):
         global_step = balancing.phase1_steps + step
-        model, opt_state, loss_value, aux = _train_step(
+        model, opt_state, loss_value, aux, grads = _train_step(
             model, opt_state, batch, loss, phase2_optimizer)
         loss_py = float(loss_value)
         _abort_if_nonfinite(loss_value, aux, loop="batched/twophase",
-                            step=global_step)
+                            step=global_step, grads=grads)
         losses.append(loss_py)
         tracker.update(loss_py, model)
         aux_log.append({
@@ -1128,7 +1166,7 @@ def _run_gradnorm_loop(spec, model, batch, loss, progress_callback):
             comp_values, model_grads, G, L0_values, weights)
         loss_py = float(loss_value)
         _abort_if_nonfinite(loss_value, components, loop="batched/gradnorm",
-                            step=step)
+                            step=step, grads=model_grads)
         losses_list.append(loss_py)
         tracker.update(loss_py, model)
         eff = {k: float(weights[i]) for i, k in enumerate(component_keys)}
@@ -1337,7 +1375,7 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             gloss, model, gbatch, cw, relative, pad_target=pad_target)
         updates, opt_state = optimizer.update(grads, opt_state, _trainable_params(model))
         model = eqx.apply_updates(model, updates)
-        return model, opt_state, loss_val, comps
+        return model, opt_state, loss_val, comps, grads
 
     prepared = [
         (g["label"], *_build_group_loss_and_batch(spec, g, batch))
@@ -1475,11 +1513,11 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
             rng.shuffle(order)
             for gi in order:
                 label, gloss, gbatch = prepared[gi]
-                model, opt_state, loss_val, comps = _step(
+                model, opt_state, loss_val, comps, grads = _step(
                     model, opt_state, gbatch, gloss)
                 loss_py = float(loss_val)
                 _abort_if_nonfinite(loss_val, comps, loop="per_molecule",
-                                    step=update, group=label)
+                                    step=update, group=label, grads=grads)
                 losses_list.append(loss_py)
                 tracker.update(loss_py, model)
                 aux_log.append({

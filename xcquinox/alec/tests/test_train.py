@@ -749,6 +749,124 @@ def test_abort_if_nonfinite_names_group_in_message():
             loop="per_molecule", step=3, group="anchor:h")
 
 
+# ---------------------------------------------------------------------------
+# Gradient-level guard: a step whose LOSS is finite but whose GRADIENT carries a
+# NaN/Inf used to pass the guard, corrupt every weight via apply_updates, and
+# abort one step LATE on the next group's now-NaN loss -- so the abort named the
+# wrong step/group (dfs6311 step-5 ae:CO). The guard must sweep the gradient
+# pytree and name the first offending parameter path at the step it occurs.
+# ---------------------------------------------------------------------------
+
+def test_abort_if_nonfinite_passes_when_grads_finite():
+    import jax.numpy as jnp
+    from xcquinox.alec.train import _abort_if_nonfinite
+    grads = {"b": jnp.zeros(3), "w": jnp.ones((2, 2))}
+    _abort_if_nonfinite(
+        0.5, {"loss_AE": 0.1}, loop="per_molecule", step=0, group="ae:H2",
+        grads=grads)
+
+
+def test_abort_if_nonfinite_raises_on_nan_grad_with_finite_loss():
+    import jax.numpy as jnp
+    from xcquinox.alec.train import _abort_if_nonfinite
+    grads = {"b": jnp.array([0.0, jnp.nan, jnp.inf]), "w": jnp.ones((2, 2))}
+    with pytest.raises(FloatingPointError) as exc:
+        _abort_if_nonfinite(
+            0.5, {"loss_AE": 0.1}, loop="per_molecule", step=5, group="ae:CO",
+            grads=grads)
+    msg = str(exc.value)
+    assert "['b']" in msg, msg          # keystr of the offending leaf
+    assert "n_nan=1" in msg and "n_inf=1" in msg, msg
+    assert "ae:CO" in msg and "step=5" in msg, msg
+    assert "1 of 2" in msg, msg         # bad-leaf count over swept leaves
+
+
+def test_abort_if_nonfinite_counts_all_bad_grad_leaves():
+    import jax.numpy as jnp
+    from xcquinox.alec.train import _abort_if_nonfinite
+    grads = {"a": jnp.full(2, jnp.nan), "b": jnp.ones(2),
+             "c": jnp.full((2, 2), jnp.inf)}
+    with pytest.raises(FloatingPointError, match="2 of 3"):
+        _abort_if_nonfinite(
+            0.5, {"loss_AE": 0.1}, loop="batched/static", step=1, grads=grads)
+
+
+def test_abort_if_nonfinite_grads_none_preserves_loss_only_behavior():
+    from xcquinox.alec.train import _abort_if_nonfinite
+    # grads omitted -> exactly the pre-existing loss/channel semantics.
+    _abort_if_nonfinite(0.5, {"loss_AE": 0.1}, loop="batched", step=0)
+    with pytest.raises(FloatingPointError, match="loss_AE"):
+        _abort_if_nonfinite(
+            float("nan"), {"loss_AE": float("nan")}, loop="batched", step=0)
+
+
+def _nan_grads_like(model):
+    import jax
+    import jax.numpy as jnp
+    import equinox as eqx
+    return jax.tree_util.tree_map(
+        lambda a: jnp.full_like(a, jnp.nan),
+        eqx.filter(model, eqx.is_inexact_array))
+
+
+def test_per_molecule_loop_aborts_on_nan_gradient(monkeypatch):
+    """Finite loss + NaN grads at the step seam -> the per_molecule loop must
+    raise AT that step, naming the group and the gradient, instead of applying
+    the corrupt update and surviving to the next step."""
+    import jax.numpy as jnp
+    import xcquinox.alec.train as train_mod
+    from xcquinox.alec.train import run_training
+
+    def _finite_loss_nan_grads(gloss, model, gbatch, cw, relative,
+                               pad_target=None):
+        return ((jnp.array(0.5), {"loss_AE": jnp.array(0.5)}),
+                _nan_grads_like(model))
+
+    monkeypatch.setattr(train_mod, "defused_value_and_grad",
+                        _finite_loss_nan_grads)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = TrainingSpec.from_dicts(
+            arch=_make_arch(),
+            molecules=(h_atom(), h2_molecule()),
+            targets={"H": -0.5, "H2": 0.17},
+            atom_energies={"H": -0.5},
+            loss_name="L5_gradnorm_vxc_step7",
+            update_scheme="per_molecule", require_atom_anchors=False,
+            n_steps=1, lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0,
+            grad_clip=1.0, checkpoint_dir=os.path.join(tmpdir, "ck"),
+            seed=42)
+        with pytest.raises(FloatingPointError) as exc:
+            run_training(spec)
+    msg = str(exc.value)
+    assert "GRADIENT" in msg, msg
+    assert "ae:H2" in msg, msg
+
+
+def test_static_loop_aborts_on_nan_gradient(monkeypatch):
+    """Same blind spot in the batched/static loop via the _train_step seam."""
+    import jax.numpy as jnp
+    import xcquinox.alec.train as train_mod
+    from xcquinox.alec.train import run_training
+
+    def _fake_train_step(model, opt_state, batch, loss_fn, optimizer):
+        return (model, opt_state, jnp.array(0.25),
+                {"loss_AE": jnp.array(0.25)}, _nan_grads_like(model))
+
+    monkeypatch.setattr(train_mod, "_train_step", _fake_train_step)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = TrainingSpec.from_dicts(
+            arch=_make_arch(),
+            molecules=(h_atom(), h2_molecule()),
+            targets={"H": -0.5, "H2": 0.17},
+            atom_energies={"H": -0.5},
+            loss_name="A_atomization",
+            n_steps=2, lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0,
+            grad_clip=1.0, checkpoint_dir=os.path.join(tmpdir, "ck"),
+            seed=42)
+        with pytest.raises(FloatingPointError, match="GRADIENT"):
+            run_training(spec)
+
+
 @pytest.mark.slow
 def test_run_training_aborts_loudly_on_nonfinite(training_batch_info, monkeypatch):
     """The fail-loud guard raises FloatingPointError (not a silent NaN run) the
@@ -2309,7 +2427,7 @@ def test_train_step_adamw_weight_decay_with_function_leaves():
         tot = jnp.sum(pred ** 2)
         return tot, {"loss": tot}
 
-    new_model, _new_state, loss_val, _aux = _train_step(
+    new_model, _new_state, loss_val, _aux, _grads = _train_step(
         model, opt_state, jnp.ones((5, 3)), loss_fn, opt)
     assert bool(jnp.isfinite(loss_val))
     leaves = jax.tree_util.tree_leaves(eqx.filter(new_model, eqx.is_array))

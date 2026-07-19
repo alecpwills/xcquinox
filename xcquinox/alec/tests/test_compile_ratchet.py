@@ -24,7 +24,10 @@ from xcquinox.alec.padding import common_pad_target
 from xcquinox.alec.solver import SolverBackend, SolverConfig, SolverMode
 from xcquinox.alec.train import build_optimizer, _trainable_params
 from xcquinox.alec.tests.fixtures.compile_counter import CompileCounter
-from xcquinox.alec.tests.test_defused_grad import _l5_group, _SC_FULL
+from xcquinox.alec.tests.fixtures.molecules import o_atom
+from xcquinox.alec.tests.test_defused_grad import (
+    _atom_anchor_l5_group, _l5_group, _SC_FULL,
+)
 
 
 def _mapping_count():
@@ -176,3 +179,63 @@ def test_defused_step_stops_compiling_after_warmup_padded():
     """
     compiles, mappings = _run_defused_steps(padded=True)
     _assert_steady_state_is_quiet(compiles, mappings, label="padded")
+
+
+def test_multi_group_padded_loop_stops_compiling_after_first_epoch():
+    """A NEW group each step under ONE global pad target, as in production.
+
+    The per_molecule loop computes a single ``common_pad_target`` over the whole
+    batch (train.py) and then presents a DIFFERENT group every optimizer step.
+    The single-group tests above repeat one group, so a kernel keyed on group
+    identity -- a different molecule-field-presence pattern, spin type, or
+    molecule count -- would pass them and still compile on every step of a real
+    run, which is the per-step mapping-count growth observed on the cluster.
+
+    Epoch 1 may compile freely (each variant's first encounter). After one full
+    epoch every variant has been seen, so epochs 2-3 must compile NOTHING and
+    the mapping count must stop trending upward. Group A is a two-molecule
+    reaction group (RKS H2 + UKS H, synthetic vxc/rho refs present); group B is
+    a single-atom anchor group (UKS O, no refs) -- different species, different
+    natural shapes, different field-presence pattern, different molecule count.
+    """
+    model, gloss_a, gbatch_a, cw, relative = _l5_group(
+        solver_config=_SC_FULL, extra_keys=("eri",), synth_refs=True)
+    _mb, loss_b, batch_b, _cwb, _relb = _atom_anchor_l5_group(
+        o_atom(), "O", -74.8, solver_config=_SC_FULL, extra_keys=("eri",))
+    groups = [(gloss_a, gbatch_a), (loss_b, batch_b)]
+    pad_target = common_pad_target(
+        tuple(gbatch_a["mol_data"]) + tuple(batch_b["mol_data"]))
+
+    opt = build_optimizer(lr_start=1e-3, lr_end=1e-5, n_steps=16,
+                          lr_decay_start=0.0, grad_clip=1.0, weight_decay=0.0)
+    opt_state = opt.init(eqx.filter(model, eqx.is_array))
+
+    epoch_compiles, mappings = [], []
+    with CompileCounter() as cc:
+        for _epoch in range(3):
+            before = cc.count
+            for gloss, gbatch in groups:
+                (_total, _comps), grads = defused_value_and_grad(
+                    gloss, model, gbatch, cw, relative, pad_target=pad_target)
+                jax.block_until_ready(grads)
+                updates, opt_state = opt.update(
+                    grads, opt_state, _trainable_params(model))
+                model = eqx.apply_updates(model, updates)
+                mappings.append(_mapping_count())
+            epoch_compiles.append(cc.count - before)
+
+    assert epoch_compiles[0] >= 1, (
+        "first encounters must compile -- a zero here means the counter is "
+        "broken, not that the loop is quiet")
+    assert epoch_compiles[1:] == [0, 0], (
+        f"kernels keyed on group identity keep compiling after every group "
+        f"has been seen once; compiles per epoch = {epoch_compiles}, "
+        f"mapping count per step = {mappings}"
+    )
+    n_groups = len(groups)
+    growth = mappings[-1] - mappings[n_groups - 1]
+    budget = _MAPPING_STEP_TOLERANCE * (len(mappings) - n_groups)
+    assert growth < budget, (
+        f"process mapping count still climbs across epochs 2-3: {mappings} "
+        f"(growth {growth} over the steady-state steps, budget {budget})"
+    )
