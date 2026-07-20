@@ -175,10 +175,16 @@ DEGENERACY_REG = 1e-10
 # added to the transformed Fock matrix before ``jnp.linalg.eigh``.
 # Required because eigh's reverse-mode JVP uses 1/(λ_i - λ_j) which
 # returns NaN at exact degeneracies (linear-symmetry π MOs, atomic
-# p_x/p_y/p_z). Size: 1e-8 is comfortably above float64 accumulation
-# noise (~1e-13 relative) and orders of magnitude below any physical
-# energy scale. See oneshot.py docstring for full discussion.
-SYM_BREAK_SHIFT = 1e-8
+# p_x/p_y/p_z). Sizing window: the eigenvector backward amplifies
+# matrix-level round-off ε by ε/gap², so gap² must exceed machine ε
+# (2.2e-16) by a safety margin -- at 1e-8 the ratio is O(1) and the
+# padded production graph at 6-311++G(3df,2pd) returned all-leaf NaN
+# gradients, while at 1e-6 it is ~2e-4 and the same replay completes
+# with the step loss unchanged to seven digits. The upper wall is the
+# 3e-5 orientation-lock splitting (the shift must not rival it) and
+# the <= 1e-6 Ha Weyl bound on eigenvalue displacement. Enforced by
+# tests/test_sym_break_shift.py; history in alec/HISTORY.md Phase 33.
+SYM_BREAK_SHIFT = 1e-6
 
 # Golden-ratio constant used by the symmetry-breaking diagonal.
 # Irrational so ``sin(idx · φ)`` produces a
