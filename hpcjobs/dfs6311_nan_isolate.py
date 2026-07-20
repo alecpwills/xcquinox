@@ -473,8 +473,12 @@ def run_spec_replay(args):
         log(f"step {update} {label}: loss={float(loss_val):.6e} "
             f"grads {'NON-FINITE' if bad else 'finite'}")
         if bad or (args.at_step is not None and update == args.at_step):
-            # The decomposition re-runs this group's gradient without padding
-            # (padding is results-neutral; proven at production basis).
+            # The decomposition re-runs this group's gradient WITHOUT padding.
+            # Padding neutrality is proven only for ae:CO; on this group (job
+            # 2091734) the padded gradient is NaN while the unpadded re-run is
+            # finite, with a 0.219% forward-loss shift at identical parameters.
+            # An all-ok verdict below therefore localizes the defect to the
+            # padded computation path rather than exonerating the group.
             stages_ok = decompose(model, gloss, gbatch, cw, relative, names,
                                   label)
             return 3 if (bad or not stages_ok) else 0

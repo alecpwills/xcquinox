@@ -22,8 +22,10 @@
 # Variants, one per submission (module constants bake at trace time):
 #   structural (fresh-init, no pretrained weights needed):
 #     sbatch --export=ALL,ISOLATE_ARGS="--local --padded" dfs6311_nan_isolate.sbatch
-#   ablations on the replay (a cured epoch exits 0; a persisting NaN decomposes):
-#     sbatch --export=ALL,ISOLATE_ARGS="--spec <specpath> --ablate ec_tail" ...
+#   ablations on the replay (a cured epoch exits 0; a persisting NaN decomposes;
+#   ISOLATE_ARGS replaces the default list, so --pad --horizon-epochs 1 must be
+#   restated or the replay silently runs unpadded):
+#     sbatch --export=ALL,ISOLATE_ARGS="--spec <specpath> --pad --horizon-epochs 1 --ablate ec_tail" ...
 #     (--ablate one of: sym_break degeneracy_reg both_eigh ec_tail zeta_eps)
 # Exit 3 = non-finite found and decomposed (the informative outcome); 0 = ran
 # all-finite to completion.
