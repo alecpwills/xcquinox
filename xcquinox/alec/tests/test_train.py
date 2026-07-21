@@ -2438,12 +2438,15 @@ def test_train_step_adamw_weight_decay_with_function_leaves():
 # Per-update RSS instrumentation in the per_molecule loop
 # ---------------------------------------------------------------------------
 
-def test_aux_log_records_rss_per_molecule(training_batch_info):
+def test_aux_log_records_rss_per_molecule(training_batch_info, monkeypatch):
     """Every per_molecule training-step aux entry carries the process RSS and
     high-water mark (GiB floats) at append time, so aux_log.pkl holds the full
-    RSS-vs-update curve for post-mortem memory diagnosis."""
+    RSS-vs-update curve for post-mortem memory diagnosis. With the opt-in
+    diagnostic env vars unset, the live-array census keys are absent."""
     from xcquinox.alec.train import run_training
 
+    monkeypatch.delenv("XCQUINOX_MEMDIAG", raising=False)
+    monkeypatch.delenv("XCQUINOX_GC_EVERY", raising=False)
     with tempfile.TemporaryDirectory() as tmpdir:
         spec = _make_live_spec(
             training_batch_info, loss_name="L5_gradnorm_vxc_step7",
@@ -2462,6 +2465,9 @@ def test_aux_log_records_rss_per_molecule(training_batch_info):
         assert math.isfinite(entry["rss_gb"]) and entry["rss_gb"] > 0.0
         # High-water mark is read from the same /proc snapshot as VmRSS.
         assert entry["hwm_gb"] >= entry["rss_gb"]
+        # Opt-in census keys must not appear when XCQUINOX_MEMDIAG is unset.
+        assert "live_n" not in entry
+        assert "live_gb" not in entry
 
 
 def test_per_molecule_validation_entry_records_rss(
@@ -2498,3 +2504,64 @@ def test_per_molecule_validation_entry_records_rss(
             assert isinstance(entry[key], float)
             assert math.isfinite(entry[key]) and entry[key] > 0.0
         assert entry["hwm_gb_post_val"] >= entry["rss_gb_post_val"]
+
+
+# ---------------------------------------------------------------------------
+# Opt-in memory-diagnostic levers (XCQUINOX_MEMDIAG / XCQUINOX_GC_EVERY)
+# ---------------------------------------------------------------------------
+
+def test_gc_every_parser(monkeypatch):
+    """XCQUINOX_GC_EVERY parses to a positive int cadence; unset, garbage,
+    and non-positive values all disable (0)."""
+    from xcquinox.alec import train as train_mod
+
+    monkeypatch.delenv("XCQUINOX_GC_EVERY", raising=False)
+    assert train_mod._gc_every() == 0
+    monkeypatch.setenv("XCQUINOX_GC_EVERY", "7")
+    assert train_mod._gc_every() == 7
+    monkeypatch.setenv("XCQUINOX_GC_EVERY", "junk")
+    assert train_mod._gc_every() == 0
+    monkeypatch.setenv("XCQUINOX_GC_EVERY", "-3")
+    assert train_mod._gc_every() == 0
+    monkeypatch.setenv("XCQUINOX_GC_EVERY", "0")
+    assert train_mod._gc_every() == 0
+
+
+def test_per_molecule_memdiag_and_gc_levers(training_batch_info, monkeypatch):
+    """With XCQUINOX_MEMDIAG=1 every step aux entry carries the live JAX
+    device-array census (live_n count, live_gb GiB); with XCQUINOX_GC_EVERY=1
+    the loop runs one gc.collect per optimizer update."""
+    import gc as gc_mod
+
+    from xcquinox.alec.train import run_training
+
+    monkeypatch.setenv("XCQUINOX_MEMDIAG", "1")
+    monkeypatch.setenv("XCQUINOX_GC_EVERY", "1")
+    calls = {"n": 0}
+    real_collect = gc_mod.collect
+
+    def _counting_collect(*a, **k):
+        calls["n"] += 1
+        return real_collect(*a, **k)
+
+    monkeypatch.setattr(gc_mod, "collect", _counting_collect)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=2, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False,
+        )
+        run_training(spec)
+        with open(os.path.join(spec.checkpoint_dir, "aux_log.pkl"), "rb") as f:
+            aux_log = pickle.load(f)  # noqa: S301 -- trusted test data
+
+    steps = [e for e in aux_log if e.get("group") != "__validation__"]
+    assert steps
+    for e in steps:
+        assert isinstance(e["live_n"], int) and e["live_n"] > 0
+        assert isinstance(e["live_gb"], float)
+        assert math.isfinite(e["live_gb"]) and e["live_gb"] > 0.0
+    # One collect per update at cadence 1 (other in-process callers can only
+    # add to the count, never subtract).
+    assert calls["n"] >= len(steps)

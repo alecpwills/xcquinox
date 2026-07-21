@@ -18,6 +18,7 @@ Internal:
   _run_twophase_loop       -- two-phase balancing loop
   _run_gradnorm_loop       -- GradNorm balancing loop (Chen et al. 2018)
 """
+import gc
 import json
 import math
 import os
@@ -41,6 +42,37 @@ from xcquinox.alec.networks import create_network_pair
 from xcquinox.alec.defused_grad import defused_value_and_grad
 from xcquinox.alec.padding import common_pad_target
 from xcquinox.alec.procmem import read_rss_gb
+
+
+# ---------------------------------------------------------------------------
+# Opt-in memory diagnostics (per_molecule loop)
+# ---------------------------------------------------------------------------
+
+def _gc_every():
+    """gc.collect cadence for the per_molecule loop, in optimizer updates,
+    from ``XCQUINOX_GC_EVERY``. Unset, non-integer, or non-positive values
+    disable the lever (0). Read per call so a running test can toggle it."""
+    try:
+        n = int(os.environ.get("XCQUINOX_GC_EVERY", "0"))
+    except ValueError:
+        return 0
+    return n if n > 0 else 0
+
+
+def _live_array_gb():
+    """``(count, GiB)`` census of live JAX device arrays, or ``(0, nan)`` on
+    any failure -- a diagnostic read must never abort training. Distinguishes
+    Python-side buffer retention (census grows with RSS) from C-level
+    allocator retention (census flat while RSS grows)."""
+    try:
+        n = 0
+        total = 0
+        for arr in jax.live_arrays():
+            n += 1
+            total += int(getattr(arr, "nbytes", 0))
+        return n, total / (1024.0 ** 3)
+    except Exception:  # noqa: BLE001 -- diagnostic path, degrade silently
+        return 0, math.nan
 
 
 # ---------------------------------------------------------------------------
@@ -1525,14 +1557,24 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                 # full memory-vs-update curve (retention shows in rss_gb,
                 # transient peaks in hwm_gb) for post-mortem OOM diagnosis.
                 rss_gb, hwm_gb = read_rss_gb()
-                aux_log.append({
+                entry = {
                     "step": update, "epoch": epoch, "group": label,
                     "loss": loss_py,
                     "aux": {k: float(v) for k, v in comps.items()},
                     "update_scheme": "per_molecule",
                     "rss_gb": rss_gb, "hwm_gb": hwm_gb,
-                })
+                }
+                if os.environ.get("XCQUINOX_MEMDIAG") == "1":
+                    entry["live_n"], entry["live_gb"] = _live_array_gb()
+                aux_log.append(entry)
                 update += 1
+                # Opt-in collection cadence: dead-but-cyclic update graphs
+                # hold GB-scale device buffers until a generational pass runs;
+                # gen-2 rarely triggers on its own in this array-dominated
+                # loop, so an explicit collect bounds the retention.
+                gc_every = _gc_every()
+                if gc_every and update % gc_every == 0:
+                    gc.collect()
             epochs_run = epoch + 1
             if progress_hook is not None:
                 progress_hook(epoch + 1, n_epochs, loss_py)
