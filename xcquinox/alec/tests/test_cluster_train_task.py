@@ -440,5 +440,37 @@ def test_precompute_failed_species_marker_short_circuits(run_dir, monkeypatch):
     assert preserved["detail"] == "preflight marker, keep verbatim"
 
 
+def test_run_worker_heartbeat_includes_rss_when_present(monkeypatch):
+    """Step lines carrying rss_gb surface it in the throttled heartbeat."""
+    n_steps = 3
+    lines = [
+        json.dumps({"kind": "step", "step": i, "total": n_steps,
+                    "loss": 0.1, "rss_gb": 12.34, "hwm_gb": 13.0}) + "\n"
+        for i in range(1, n_steps + 1)
+    ]
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen_factory(lines, rc=0))
+    emitted = []
+    monkeypatch.setattr(tt, "_PROGRESS_SINK", emitted.append)
+    rc, _tail = tt._run_worker("/tmp/x.spec", "auto")
+    assert rc == 0
+    assert any("rss=12.3G" in line for line in emitted)
+
+
+def test_run_worker_heartbeat_omits_rss_when_absent(monkeypatch):
+    """Legacy step lines without rss_gb emit heartbeats with no rss field."""
+    n_steps = 3
+    lines = [
+        json.dumps({"kind": "step", "step": i, "total": n_steps, "loss": 0.1})
+        + "\n"
+        for i in range(1, n_steps + 1)
+    ]
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen_factory(lines, rc=0))
+    emitted = []
+    monkeypatch.setattr(tt, "_PROGRESS_SINK", emitted.append)
+    rc, _tail = tt._run_worker("/tmp/x.spec", "auto")
+    assert rc == 0
+    assert emitted and not any("rss=" in line for line in emitted)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

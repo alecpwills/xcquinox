@@ -41,6 +41,8 @@ import signal
 import sys
 import time
 
+from xcquinox.alec.procmem import read_rss_gb
+
 
 def _flush_on_signal() -> None:
     """Best-effort: invoke the per_molecule loop's registered resume flusher
@@ -86,6 +88,10 @@ def _load_spec(path):
 
 def _progress_callback(info):
     """Emit one JSON line per step for the parent tqdm bar."""
+    # Live memory in every step line: the parent heartbeat surfaces rss so an
+    # approaching node-memory ceiling is visible in the SLURM log before the
+    # OOM killer fires (nan where /proc is unavailable).
+    rss_gb, hwm_gb = read_rss_gb()
     payload = {
         "kind": "step",
         "arch": info.get("arch"),
@@ -93,6 +99,8 @@ def _progress_callback(info):
         "step": int(info.get("step", 0)),
         "total": int(info.get("total", 0)),
         "loss": float(info.get("loss", float("nan"))),
+        "rss_gb": rss_gb,
+        "hwm_gb": hwm_gb,
     }
     sys.stdout.write(json.dumps(payload) + "\n")
     sys.stdout.flush()

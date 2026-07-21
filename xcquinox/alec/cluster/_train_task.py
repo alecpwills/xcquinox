@@ -26,6 +26,7 @@ balloon on long runs. Only the throttled progress line and a bounded tail
 """
 import argparse
 import json
+import math
 import os
 import signal
 import subprocess
@@ -303,9 +304,13 @@ def _run_worker(spec_path, device):
                     loss_s = f"{float(loss):.4e}"
                 except (TypeError, ValueError):
                     loss_s = str(loss)
+                rss = msg.get("rss_gb")
+                rss_s = (f", rss={rss:.1f}G"
+                         if isinstance(rss, (int, float))
+                         and math.isfinite(rss) else "")
                 _PROGRESS_SINK(
                     f"step {step}/{total}, loss={loss_s}, "
-                    f"elapsed={_fmt_secs(elapsed)}, ETA={_fmt_secs(eta)}"
+                    f"elapsed={_fmt_secs(elapsed)}, ETA={_fmt_secs(eta)}{rss_s}"
                 )
                 last_emit_step = step
                 last_emit_time = now

@@ -2432,3 +2432,69 @@ def test_train_step_adamw_weight_decay_with_function_leaves():
     assert bool(jnp.isfinite(loss_val))
     leaves = jax.tree_util.tree_leaves(eqx.filter(new_model, eqx.is_array))
     assert all(bool(jnp.isfinite(leaf).all()) for leaf in leaves)
+
+
+# ---------------------------------------------------------------------------
+# Per-update RSS instrumentation in the per_molecule loop
+# ---------------------------------------------------------------------------
+
+def test_aux_log_records_rss_per_molecule(training_batch_info):
+    """Every per_molecule training-step aux entry carries the process RSS and
+    high-water mark (GiB floats) at append time, so aux_log.pkl holds the full
+    RSS-vs-update curve for post-mortem memory diagnosis."""
+    from xcquinox.alec.train import run_training
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=2, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False,
+        )
+        run_training(spec)
+        with open(os.path.join(spec.checkpoint_dir, "aux_log.pkl"), "rb") as f:
+            aux_log = pickle.load(f)  # noqa: S301 -- trusted test data
+
+    step_entries = [e for e in aux_log if e.get("group") != "__validation__"]
+    assert step_entries
+    for entry in step_entries:
+        assert isinstance(entry["rss_gb"], float)
+        assert isinstance(entry["hwm_gb"], float)
+        assert math.isfinite(entry["rss_gb"]) and entry["rss_gb"] > 0.0
+        # High-water mark is read from the same /proc snapshot as VmRSS.
+        assert entry["hwm_gb"] >= entry["rss_gb"]
+
+
+def test_per_molecule_validation_entry_records_rss(
+        training_batch_info, monkeypatch):
+    """__validation__ aux entries record RSS before and after the validation
+    eval (plus the post-eval high-water mark) so a validation-boundary memory
+    burst is directly visible in aux_log.pkl."""
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.train import run_training
+
+    monkeypatch.setattr(
+        train_mod, "_build_validation_data",
+        lambda spec: ({"A": {}, "B": {}},
+                      [{"name": "r", "reactants": ["A"], "products": ["B"],
+                        "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0}]))
+    monkeypatch.setattr(train_mod, "_validation_reaction_mae",
+                        lambda *a, **k: 10.0)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=2, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False,
+            validate_every=1, patience=999, early_stop_min_delta=0.0,
+        )
+        run_training(spec)
+        with open(os.path.join(spec.checkpoint_dir, "aux_log.pkl"), "rb") as f:
+            aux_log = pickle.load(f)  # noqa: S301 -- trusted test data
+
+    val_entries = [e for e in aux_log if e.get("group") == "__validation__"]
+    assert len(val_entries) == 2
+    for entry in val_entries:
+        for key in ("rss_gb_pre_val", "rss_gb_post_val", "hwm_gb_post_val"):
+            assert isinstance(entry[key], float)
+            assert math.isfinite(entry[key]) and entry[key] > 0.0
+        assert entry["hwm_gb_post_val"] >= entry["rss_gb_post_val"]

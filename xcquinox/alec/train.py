@@ -40,6 +40,7 @@ from xcquinox.alec.models import AlecGGAModel
 from xcquinox.alec.networks import create_network_pair
 from xcquinox.alec.defused_grad import defused_value_and_grad
 from xcquinox.alec.padding import common_pad_target
+from xcquinox.alec.procmem import read_rss_gb
 
 
 # ---------------------------------------------------------------------------
@@ -1520,11 +1521,16 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                                     step=update, group=label, grads=grads)
                 losses_list.append(loss_py)
                 tracker.update(loss_py, model)
+                # Per-update RSS/HWM snapshot: aux_log.pkl then carries the
+                # full memory-vs-update curve (retention shows in rss_gb,
+                # transient peaks in hwm_gb) for post-mortem OOM diagnosis.
+                rss_gb, hwm_gb = read_rss_gb()
                 aux_log.append({
                     "step": update, "epoch": epoch, "group": label,
                     "loss": loss_py,
                     "aux": {k: float(v) for k, v in comps.items()},
                     "update_scheme": "per_molecule",
+                    "rss_gb": rss_gb, "hwm_gb": hwm_gb,
                 })
                 update += 1
             epochs_run = epoch + 1
@@ -1532,15 +1538,22 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                 progress_hook(epoch + 1, n_epochs, loss_py)
             # Validation check every `validate_every` epochs.
             if val_enabled and (epoch + 1) % val_every == 0:
+                # RSS bracketing the validation eval: a boundary memory burst
+                # (fresh kernels for the val set) appears as post-minus-pre.
+                rss_pre_val, _ = read_rss_gb()
                 val_mae = _validation_reaction_mae(
                     model, val_mol_data, val_reactions,
                     solver_config=val_solver_config)
+                rss_post_val, hwm_post_val = read_rss_gb()
                 val_tracker.update(val_mae, model)
                 aux_log.append({
                     "step": update, "epoch": epoch, "group": "__validation__",
                     "val_mae_kcalmol": (float(val_mae)
                                         if np.isfinite(val_mae) else None),
                     "update_scheme": "per_molecule",
+                    "rss_gb_pre_val": rss_pre_val,
+                    "rss_gb_post_val": rss_post_val,
+                    "hwm_gb_post_val": hwm_post_val,
                 })
                 if val_tracker.should_stop(spec.patience,
                                            spec.early_stop_min_delta):

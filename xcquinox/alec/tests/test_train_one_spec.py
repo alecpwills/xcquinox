@@ -258,3 +258,22 @@ def test_sigterm_handler_flushes_then_exits_143():
     finally:
         train_mod._clear_resume_flusher()
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+def test_progress_callback_includes_rss(capsys):
+    """The per-step JSON progress payload carries the worker's current RSS and
+    high-water mark so the parent heartbeat can surface live memory."""
+    import math as _math
+
+    from xcquinox.alec import _train_one_spec as worker_mod
+
+    worker_mod._progress_callback(
+        {"arch": "a", "phase": "train", "step": 1, "total": 2, "loss": 0.5})
+    line = capsys.readouterr().out.strip()
+    payload = json.loads(line)
+    assert payload["kind"] == "step"
+    assert isinstance(payload["rss_gb"], float)
+    assert isinstance(payload["hwm_gb"], float)
+    if sys.platform.startswith("linux"):
+        assert _math.isfinite(payload["rss_gb"]) and payload["rss_gb"] > 0.0
+        assert payload["hwm_gb"] >= payload["rss_gb"]
