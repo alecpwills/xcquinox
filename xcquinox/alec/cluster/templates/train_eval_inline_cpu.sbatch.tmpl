@@ -32,6 +32,20 @@ export MKL_NUM_THREADS="$$BLAS_THREADS"
 export OPENBLAS_NUM_THREADS="$$BLAS_THREADS"
 echo "[thread-caps] CORES=$$CORES -> OMP/MKL/OPENBLAS=$$BLAS_THREADS (idle in train_eval; XLA+LLVM keep the rest)"
 ${BENCH_REFS_ENV_LINE}
+# --- glibc allocator -------------------------------------------------------
+# Cap malloc arenas at 2 (glibc default: 8 x cores = 768 on a 96-core node).
+# glibc parks freed heap on per-arena free lists instead of returning it to
+# the OS; under the ~100-thread XLA/BLAS runtime this freed-but-cached heap
+# held a ~200 GB resident floor in the dfs6311 train worker (job 2093139:
+# live-buffer census pinned at 23.5 GB while RSS sat near 200 GB) and
+# OOM-killed most of the padded 6-311++G(3df,2pd)/grid3 sweep on 251.6 GB
+# nodes. Two arenas cut the floor to ~86 GB (HWM 219 -> 108 GB) at unchanged
+# throughput over a full 200-epoch rerun (job 2093577). Must be exported
+# before the interpreter starts -- glibc reads it at first malloc, so an
+# in-process setenv is too late; the worker subprocess inherits it.
+export MALLOC_ARENA_MAX=2
+echo "[malloc] MALLOC_ARENA_MAX=$$MALLOC_ARENA_MAX"
+
 # --- JAX/XLA CPU backend ---------------------------------------------------
 # XLA_FLAGS reaches every compile in the worker (nothing in the train/eval path
 # overrides it). `--xla_llvm_disable_expensive_passes=true` and

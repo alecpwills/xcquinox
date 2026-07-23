@@ -45,17 +45,33 @@ from xcquinox.alec.procmem import read_rss_gb
 
 
 # ---------------------------------------------------------------------------
-# Opt-in memory diagnostics (per_molecule loop)
+# Memory management + opt-in diagnostics (per_molecule loop)
 # ---------------------------------------------------------------------------
+
+# Default gc cadence for the per_molecule loop, in optimizer updates per
+# collect. The eagerly differentiated per-update graph strands dead-but-cyclic
+# reference islands holding GB-scale device buffers, and the generational
+# collector -- triggered by object counts, not bytes -- rarely fires in this
+# array-dominated loop: uncollected, the dfs6311 train worker grew
+# ~1.6 GB/update to OOM (probe job 2093006), while collecting every update
+# held RSS stationary at ~zero throughput cost, 2.56 vs 2.70 min/epoch
+# (probe job 2093139).
+_GC_EVERY_DEFAULT = 1
+
 
 def _gc_every():
     """gc.collect cadence for the per_molecule loop, in optimizer updates,
-    from ``XCQUINOX_GC_EVERY``. Unset, non-integer, or non-positive values
-    disable the lever (0). Read per call so a running test can toggle it."""
+    from ``XCQUINOX_GC_EVERY`` (default ``_GC_EVERY_DEFAULT``: collect every
+    update). Explicit non-positive integers disable the lever (0); unset or
+    unparseable values take the default. Read per call so a running test can
+    toggle it."""
+    raw = os.environ.get("XCQUINOX_GC_EVERY")
+    if raw is None:
+        return _GC_EVERY_DEFAULT
     try:
-        n = int(os.environ.get("XCQUINOX_GC_EVERY", "0"))
+        n = int(raw)
     except ValueError:
-        return 0
+        return _GC_EVERY_DEFAULT
     return n if n > 0 else 0
 
 
@@ -1568,10 +1584,11 @@ def _run_per_molecule_loop(spec, model, batch, loss, progress_callback):
                     entry["live_n"], entry["live_gb"] = _live_array_gb()
                 aux_log.append(entry)
                 update += 1
-                # Opt-in collection cadence: dead-but-cyclic update graphs
-                # hold GB-scale device buffers until a generational pass runs;
-                # gen-2 rarely triggers on its own in this array-dominated
-                # loop, so an explicit collect bounds the retention.
+                # Collection cadence (default: every update): dead-but-cyclic
+                # update graphs hold GB-scale device buffers until a
+                # generational pass runs; gen-2 rarely triggers on its own in
+                # this array-dominated loop, so an explicit collect bounds
+                # the retention.
                 gc_every = _gc_every()
                 if gc_every and update % gc_every == 0:
                     gc.collect()

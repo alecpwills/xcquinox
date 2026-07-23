@@ -57,12 +57,14 @@ declare -a NAMES=(
   "touched modules (losses, oneshot) + teardown hard-exit"
   "solver / SCF"
   "open-shell + pyscfad backend"
+  "training loops (gc cadence, RSS instrumentation) + sbatch rendering"
 )
 declare -a BATCHES=(
   "$T/test_compile_ratchet.py $T/test_defused_grad.py $T/test_shape_padding.py"
   "$T/test_losses_step7.py $T/test_oneshot.py $T/test_conftest_hard_exit.py"
   "$T/test_solver.py $T/test_solver_manual.py $T/test_solver_manual_df.py $T/test_solver_manual_checkpoint.py $T/test_solver_config_df.py $T/test_scf_backends.py $T/test_scf_diff.py $T/test_scf_tail.py $T/test_sym_break_shift.py"
   "$T/test_uks_scf.py $T/test_uks_oneshot.py $T/test_uks_vxc_integration.py $T/test_uks_atom_gradflow.py $T/test_oep_uks.py $T/test_pyscfad_gradflow.py"
+  "$T/test_train.py $T/test_cluster_submit.py"
 )
 
 overall=0

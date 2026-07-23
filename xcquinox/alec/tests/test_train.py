@@ -2441,8 +2441,8 @@ def test_train_step_adamw_weight_decay_with_function_leaves():
 def test_aux_log_records_rss_per_molecule(training_batch_info, monkeypatch):
     """Every per_molecule training-step aux entry carries the process RSS and
     high-water mark (GiB floats) at append time, so aux_log.pkl holds the full
-    RSS-vs-update curve for post-mortem memory diagnosis. With the opt-in
-    diagnostic env vars unset, the live-array census keys are absent."""
+    RSS-vs-update curve for post-mortem memory diagnosis. With
+    XCQUINOX_MEMDIAG unset, the live-array census keys are absent."""
     from xcquinox.alec.train import run_training
 
     monkeypatch.delenv("XCQUINOX_MEMDIAG", raising=False)
@@ -2507,20 +2507,23 @@ def test_per_molecule_validation_entry_records_rss(
 
 
 # ---------------------------------------------------------------------------
-# Opt-in memory-diagnostic levers (XCQUINOX_MEMDIAG / XCQUINOX_GC_EVERY)
+# Memory levers: XCQUINOX_MEMDIAG (opt-in census) / XCQUINOX_GC_EVERY
+# (default-on collection cadence)
 # ---------------------------------------------------------------------------
 
 def test_gc_every_parser(monkeypatch):
-    """XCQUINOX_GC_EVERY parses to a positive int cadence; unset, garbage,
-    and non-positive values all disable (0)."""
+    """XCQUINOX_GC_EVERY parses to a positive int cadence. Unset and
+    unparseable values take the default of 1 (collect every update -- the
+    cadence that held the dfs6311 per_molecule RSS stationary); explicit
+    non-positive integers disable (0)."""
     from xcquinox.alec import train as train_mod
 
     monkeypatch.delenv("XCQUINOX_GC_EVERY", raising=False)
-    assert train_mod._gc_every() == 0
+    assert train_mod._gc_every() == 1
     monkeypatch.setenv("XCQUINOX_GC_EVERY", "7")
     assert train_mod._gc_every() == 7
     monkeypatch.setenv("XCQUINOX_GC_EVERY", "junk")
-    assert train_mod._gc_every() == 0
+    assert train_mod._gc_every() == 1
     monkeypatch.setenv("XCQUINOX_GC_EVERY", "-3")
     assert train_mod._gc_every() == 0
     monkeypatch.setenv("XCQUINOX_GC_EVERY", "0")
@@ -2564,4 +2567,42 @@ def test_per_molecule_memdiag_and_gc_levers(training_batch_info, monkeypatch):
         assert math.isfinite(e["live_gb"]) and e["live_gb"] > 0.0
     # One collect per update at cadence 1 (other in-process callers can only
     # add to the count, never subtract).
+    assert calls["n"] >= len(steps)
+
+
+def test_per_molecule_gc_default_on(training_batch_info, monkeypatch):
+    """With XCQUINOX_GC_EVERY unset the per_molecule loop runs one gc.collect
+    per optimizer update: the collection cadence is a production default, not
+    an opt-in diagnostic. The eagerly differentiated per-update graph strands
+    dead-but-cyclic islands holding GB-scale buffers; uncollected, the dfs6311
+    train worker grew ~1.6 GB/update to OOM."""
+    import gc as gc_mod
+
+    from xcquinox.alec.train import run_training
+
+    monkeypatch.delenv("XCQUINOX_GC_EVERY", raising=False)
+    monkeypatch.delenv("XCQUINOX_MEMDIAG", raising=False)
+    calls = {"n": 0}
+    real_collect = gc_mod.collect
+
+    def _counting_collect(*a, **k):
+        calls["n"] += 1
+        return real_collect(*a, **k)
+
+    monkeypatch.setattr(gc_mod, "collect", _counting_collect)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        spec = _make_live_spec(
+            training_batch_info, loss_name="L5_gradnorm_vxc_step7",
+            n_steps=2, tmpdir=tmpdir, update_scheme="per_molecule",
+            require_atom_anchors=False,
+        )
+        run_training(spec)
+        with open(os.path.join(spec.checkpoint_dir, "aux_log.pkl"), "rb") as f:
+            aux_log = pickle.load(f)  # noqa: S301 -- trusted test data
+
+    steps = [e for e in aux_log if e.get("group") != "__validation__"]
+    assert steps
+    # One collect per update at the default cadence (other in-process callers
+    # can only add to the count, never subtract).
     assert calls["n"] >= len(steps)

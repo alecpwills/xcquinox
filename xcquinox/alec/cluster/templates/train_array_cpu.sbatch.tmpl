@@ -17,6 +17,15 @@ export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 
+# --- glibc allocator -------------------------------------------------------
+# Cap malloc arenas at 2: glibc's per-arena free lists held a ~200 GB
+# resident floor of freed-but-cached heap in the dfs6311 train worker; two
+# arenas cut it to ~86 GB at unchanged throughput. Full rationale in
+# train_eval_inline_cpu.sbatch.tmpl. Exported before the interpreter starts
+# (glibc reads it at first malloc); the worker subprocess inherits it.
+export MALLOC_ARENA_MAX=2
+echo "[malloc] MALLOC_ARENA_MAX=$$MALLOC_ARENA_MAX"
+
 # --- JAX/XLA CPU backend ---------------------------------------------------
 # XLA_FLAGS reaches every compile in the worker (nothing in the train/eval path
 # overrides it). `--xla_llvm_disable_expensive_passes=true` and

@@ -385,6 +385,28 @@ def test_render_inline_thread_cap_scales_from_node_cores(tmp_path):
     assert 'CORES="${SLURM_CPUS_PER_TASK' not in text
 
 
+def test_render_malloc_arena_cap_on_train_worker_path(tmp_path):
+    """Every template whose job runs the train worker (array train, inline
+    train+eval, preflight compile-smoke) exports MALLOC_ARENA_MAX=2: glibc's
+    default per-arena free lists (8 x cores = 768 arenas on a 96-core node)
+    held a ~200 GB resident floor of freed-but-cached heap in the dfs6311
+    train worker; two arenas cut it to ~86 GB at unchanged throughput. The cap
+    must be in the environment BEFORE the interpreter starts (glibc reads it
+    at first malloc), hence an sbatch export rather than Python code. Stages
+    that never run the train worker deliberately keep glibc defaults pending
+    their own measurements."""
+    cfg = _make_cfg(tmp_path, device="cpu")
+    for kind, kw in (("train", {"array_max": 39}),
+                     ("train_eval_inline", {"array_max": 39}),
+                     ("preflight", {})):
+        text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
+        assert "export MALLOC_ARENA_MAX=2" in text, kind
+    for kind, kw in (("datagen", {}), ("pretrain", {"array_max": 0}),
+                     ("eval", {"array_max": 39})):
+        text = render_sbatch(kind, cfg, str(tmp_path / "run"), **kw)
+        assert "MALLOC_ARENA_MAX" not in text, kind
+
+
 def test_render_preflight_has_no_array_directive(tmp_path):
     cfg = _make_cfg(tmp_path)
     text = render_sbatch("preflight", cfg, str(tmp_path / "run"))

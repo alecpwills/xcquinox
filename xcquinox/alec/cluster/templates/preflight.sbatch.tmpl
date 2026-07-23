@@ -19,6 +19,15 @@ export OMP_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$$SLURM_CPUS_PER_TASK
 
+# --- glibc allocator -------------------------------------------------------
+# Mirror the train templates' MALLOC_ARENA_MAX=2 so the compile-smoke gate
+# measures the allocator behavior of a production train node (the cap cut the
+# train worker's resident floor ~200 -> ~86 GB; rationale in
+# train_eval_inline_cpu.sbatch.tmpl). The probe subprocess inherits it through
+# os.environ in _preflight._compile_smoke_impl.
+export MALLOC_ARENA_MAX=2
+echo "[malloc] MALLOC_ARENA_MAX=$$MALLOC_ARENA_MAX"
+
 # Raise the per-user process/thread ceiling if node policy permits (extra
 # pthread_create headroom for the compile-smoke probe's LLVM codegen); harmless
 # where the hard limit forbids it. Mirrors train_eval_inline_cpu.sbatch.tmpl.
