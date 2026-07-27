@@ -904,3 +904,18 @@ def test_precompute_loads_benchmark_density_only_npz(tmp_path):
     with pytest.raises(ValueError, match="rho_pbe_grid shape"):
         precompute_fixed_density_data(
             dataclasses.replace(base, external_data_path=bad_pbe))
+
+
+def test_load_external_data_accepts_density_fit_used_key(tmp_path):
+    """density_fit_used is an allowed, informational key: a stamped reference
+    loads without an unknown-key rejection. The DF identity itself is enforced
+    at generation by benchmark_refs._benchmark_npz_is_complete."""
+    from xcquinox.alec.data import _ALLOWED_EXTERNAL_KEYS, _load_external_data
+    assert "density_fit_used" in _ALLOWED_EXTERNAL_KEYS
+    path = str(tmp_path / "dfstamp.npz")
+    np.savez(path, rho_ref_grid=np.zeros(5), density_fit_used=np.array(True))
+    got = _load_external_data(
+        path, dm_pbe_shape=(2, 2), rho_pbe_shape=(5,),
+        vxc_pbe_shape=(2, 2), mol_name="H2",
+    )
+    assert got[1] is not None  # rho_ref_grid loaded

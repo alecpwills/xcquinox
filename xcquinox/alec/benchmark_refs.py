@@ -64,11 +64,11 @@ POOL_CHOICES: Tuple[str, ...] = ("bh76", "w411", "all")
 # rho_ref_grid is the CCSD density the metrics compare against,
 # rho_pbe_grid + grid_weights make the model-free PBE-vs-CCSD baseline pure
 # npz arithmetic (no local SCF; for DF runs this is the DF-consistent PBE),
-# and grid_level_used/basis_used are identity guards.
+# and grid_level_used/basis_used/density_fit_used are identity guards.
 _DENSITY_NPZ_KEYS: frozenset = frozenset(
     {"rho_ref_grid", "rho_pbe_grid", "grid_weights",
      "ref_density_method", "grid_level_used", "basis_used",
-     "orientation_lock_strength"})
+     "orientation_lock_strength", "density_fit_used"})
 
 
 def _mol_spec_to_atoms(ms: MoleculeSpec):
@@ -115,14 +115,18 @@ def _atomic_savez(path, **arrays) -> None:
 
 
 def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int,
-                               orientation_lock_strength: float = 0.0) -> bool:
+                               orientation_lock_strength: float = 0.0,
+                               density_fit: bool = False) -> bool:
     """True iff ``path`` is a readable density-only reference matching this
-    run's basis + grid_level + orientation-lock strength. Deliberately NOT
-    ``external_refs._npz_is_complete`` (that demands the OEP keys
-    vxc_ref/dm_target). A corrupt or partial file reads as incomplete ->
+    run's basis + grid_level + orientation-lock strength + DF setting.
+    Deliberately NOT ``external_refs._npz_is_complete`` (that demands the OEP
+    keys vxc_ref/dm_target). A corrupt or partial file reads as incomplete ->
     regenerated. A legacy file with no stored strength is treated as
     strength 0.0, so an unlocked cache matches only an unlocked request and
-    turning the lock on (or changing its strength) forces regeneration."""
+    turning the lock on (or changing its strength) forces regeneration. A
+    legacy file with no ``density_fit_used`` stamp matches either DF setting
+    (the stamp post-dates the existing caches); once stamped, a DF reference
+    is never silently reused by a non-DF run or vice versa."""
     p = Path(path)
     if not p.is_file():
         return False
@@ -141,6 +145,9 @@ def _benchmark_npz_is_complete(path, *, basis: str, grid_level: int,
             stored_ol = (float(z["orientation_lock_strength"])
                          if "orientation_lock_strength" in files else 0.0)
             if stored_ol != float(orientation_lock_strength):
+                return False
+            if ("density_fit_used" in files
+                    and bool(z["density_fit_used"]) != bool(density_fit)):
                 return False
     except Exception:
         return False
@@ -202,7 +209,8 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
     changing it) regenerates rather than silently reusing an unlocked file."""
     final = Path(out_dir) / f"{ms.name}.npz"
     if _benchmark_npz_is_complete(final, basis=basis, grid_level=grid_level,
-                                  orientation_lock_strength=orientation_lock_strength):
+                                  orientation_lock_strength=orientation_lock_strength,
+                                  density_fit=density_fit):
         return "SKIP"
     spec = SpeciesEntry(name=ms.name, charge=int(ms.charge),
                         spin=int(ms.spin), source="benchmark")
@@ -232,6 +240,7 @@ def generate_one(ms: MoleculeSpec, *, out_dir, basis: str, grid_level: int,
         grid_level_used=np.array(int(grid_level)),
         basis_used=np.array(str(basis)),
         orientation_lock_strength=np.array(float(orientation_lock_strength)),
+        density_fit_used=np.array(bool(density_fit)),
     )
     return "OK"
 

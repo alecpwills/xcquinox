@@ -1708,3 +1708,58 @@ def test_converge_scf_tiered_scan_li_fresh_newton():
     mf = _converge_scf_tiered(_builder, dm0=dm0, is_uks=True)
     assert mf is not None and bool(getattr(mf, "converged", False))
     assert abs(float(mf.e_tot) - (-7.4785)) < 1e-2
+
+
+def test_run_scf_escalation_keeps_first_attempt_grid(tmp_path, monkeypatch):
+    """When the plain kernel reports non-convergence and the tiered escalation
+    rebuilds the mean-field, the stored grid must remain the FIRST attempt's
+    guess-pruned grid -- the grid every consumer of the reference prunes to
+    (data.precompute runs a plain kernel). Storing the escalated object's grid
+    is the c2 failure mode: pyscf density-prunes the rebuilt grid on the
+    non-converged dm0, so the reference grid size drifts from the consumer's
+    (the 26840-vs-26568 rho_ref_grid rejection in the dfs6311 held-out evals;
+    c2 is the only pool species whose plain PBE kernel fails)."""
+    from types import SimpleNamespace
+    import numpy as np
+    import pyscf.dft
+    from xcquinox.alec import external_refs as er
+
+    spec = er.SpeciesEntry("H2", 0, 0, "dfs_ae")
+    atoms = er.resolve_geometry(spec)
+
+    kernel_calls = {"n": 0}
+    real_rks = pyscf.dft.rks.RKS
+
+    class FlakyRKS(real_rks):
+        # first kernel() in this test reports non-convergence (after really
+        # running, so the grids are built + guess-pruned exactly as in
+        # production); later kernels behave normally.
+        def kernel(self, *a, **k):
+            out = super().kernel(*a, **k)
+            kernel_calls["n"] += 1
+            if kernel_calls["n"] == 1:
+                self.converged = False
+            return out
+
+    monkeypatch.setattr(pyscf.dft, "RKS", FlakyRKS)
+
+    seen = {}
+
+    def _stub_tiered(base_builder, *, dm0=None, is_uks, locked_hcore=None):
+        m = base_builder()
+        m.kernel()
+        assert bool(m.converged)
+        first_size = int(m.grids.weights.size)
+        seen["stub_size"] = first_size + 7
+        m.grids = SimpleNamespace(coords=np.zeros((first_size + 7, 3)),
+                                  weights=np.zeros(first_size + 7))
+        return m
+
+    monkeypatch.setattr(er, "_converge_scf_tiered", _stub_tiered)
+
+    payload = er.run_scf_with_cache(spec, atoms, cache_dir=tmp_path,
+                                    basis="sto-3g", grid_level=1)
+    assert "stub_size" in seen, "escalation path was not exercised"
+    assert payload["n_grid"] == seen["stub_size"] - 7
+    assert payload["grid_weights"].size == payload["n_grid"]
+    assert payload["grid_coords"].shape == (payload["n_grid"], 3)

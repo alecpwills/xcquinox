@@ -526,6 +526,18 @@ def run_scf_with_cache(
                          + orientation_lock_bias(mol, orientation_lock_strength))
         mf.get_hcore = lambda *a, **k: _locked_hcore
     mf.kernel()
+    # The stored grid must be the FIRST attempt's: pyscf density-prunes the
+    # grid once, at the first SCF cycle, on the density it holds THEN -- the
+    # minao initial guess, which is exactly what every consumer of these
+    # references prunes on (data.precompute runs a plain kernel). The
+    # escalation below seeds a FRESH mean-field with the non-converged dm,
+    # whose grid is pruned on THAT density instead; storing the escalated
+    # grid desynchronizes the reference from the consumer grid for precisely
+    # the species that escalate (c2: the 26840-vs-26568 rho_ref_grid
+    # rejection in every dfs6311 held-out eval). Converged quantities (dm,
+    # MOs, e_tot) still come from whichever tier converged -- they are
+    # basis-space objects, independent of the grid stored here.
+    payload_grids = mf.grids
     if not getattr(mf, "converged", False):
         # A non-converged density must NOT be cached: for the PBE path it becomes
         # the HF-for-CCSD initial guess, so a poor dm co-causes the downstream HF
@@ -552,7 +564,9 @@ def run_scf_with_cache(
     # and the resulting DRY violation.
     # grid_coords/grid_weights are stored so Stage 2 (CCSD) can reuse the
     # exact pruned grid from the SCF run without rebuilding (which would
-    # give a different grid size due to pruning).
+    # give a different grid size due to pruning). They come from
+    # payload_grids (the first attempt's guess-pruned grid), NOT mf.grids,
+    # which on the escalation path belongs to a rebuilt mean-field.
     result = {
         "dm": np.asarray(mf.make_rdm1()),
         "mo_coeff": np.asarray(mf.mo_coeff),
@@ -562,9 +576,9 @@ def run_scf_with_cache(
         "e_tot": float(mf.e_tot),
         "spin_unrestricted": bool(is_uks),
         "n_ao": int(mol.nao),
-        "n_grid": int(mf.grids.weights.size),
-        "grid_coords": np.asarray(mf.grids.coords),
-        "grid_weights": np.asarray(mf.grids.weights),
+        "n_grid": int(payload_grids.weights.size),
+        "grid_coords": np.asarray(payload_grids.coords),
+        "grid_weights": np.asarray(payload_grids.weights),
     }
 
     # Atomic write: temp file + os.replace so an interrupted SCF cannot

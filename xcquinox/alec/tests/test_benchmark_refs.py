@@ -222,3 +222,48 @@ def test_main_parses_orientation_lock_strength(tmp_path, monkeypatch):
     br.main(["--out-dir", str(tmp_path), "--pool", "all", "--basis", "def2-svp",
              "--grid-level", "2", "--orientation-lock-strength", "3e-5"])
     assert seen["orientation_lock_strength"] == 3e-5
+
+
+def test_benchmark_npz_is_complete_density_fit_identity(tmp_path):
+    """A stamped density_fit_used matches only the same DF setting; a legacy
+    file without the stamp matches either (the stamp post-dates the existing
+    caches, which must stay valid)."""
+    p = tmp_path / "s.npz"
+    np.savez_compressed(p, rho_ref_grid=np.ones(3),
+                        ref_density_method=np.array("ccsd"),
+                        density_fit_used=np.array(True))
+    assert br._benchmark_npz_is_complete(p, basis="def2-svp", grid_level=2,
+                                         density_fit=True) is True
+    assert br._benchmark_npz_is_complete(p, basis="def2-svp", grid_level=2,
+                                         density_fit=False) is False
+    legacy = tmp_path / "l.npz"
+    np.savez_compressed(legacy, rho_ref_grid=np.ones(3),
+                        ref_density_method=np.array("ccsd"))
+    assert br._benchmark_npz_is_complete(legacy, basis="def2-svp",
+                                         grid_level=2,
+                                         density_fit=True) is True
+    assert br._benchmark_npz_is_complete(legacy, basis="def2-svp",
+                                         grid_level=2,
+                                         density_fit=False) is True
+
+
+def test_generate_one_stamps_and_regenerates_on_df_mismatch(tmp_path,
+                                                            monkeypatch):
+    """generate_one stamps density_fit_used; flipping the DF setting makes the
+    cached npz incomplete and forces regeneration under the new identity."""
+    calls = []
+    _fake_stages(monkeypatch, calls)
+    ms = _ms()
+    assert br.generate_one(ms, out_dir=tmp_path, basis="def2-svp",
+                           grid_level=2) == "OK"
+    with np.load(tmp_path / "H2O.npz", allow_pickle=False) as z:
+        assert bool(z["density_fit_used"]) is False
+    n_calls = len(calls)
+    assert br.generate_one(ms, out_dir=tmp_path, basis="def2-svp",
+                           grid_level=2) == "SKIP"
+    assert len(calls) == n_calls
+    assert br.generate_one(ms, out_dir=tmp_path, basis="def2-svp",
+                           grid_level=2, density_fit=True) == "OK"
+    assert len(calls) > n_calls
+    with np.load(tmp_path / "H2O.npz", allow_pickle=False) as z:
+        assert bool(z["density_fit_used"]) is True

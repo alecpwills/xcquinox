@@ -47,12 +47,14 @@ def test_precompute_all_forwards_density_fit(tmp_path, monkeypatch):
     spec = er.SpeciesEntry(name="H2", charge=0, spin=0, source="dfs_ae")
 
     def fake_scf(s, atoms, *, cache_dir, basis, grid_level,
-                 density_fit=False, auxbasis=None):
+                 density_fit=False, auxbasis=None,
+                 orientation_lock_strength=0.0):
         seen["scf"] = (density_fit, auxbasis)
         return {"dm": None}
 
     def fake_ccsd(s, atoms, *, scf_payload, cache_dir, basis, grid_level,
-                  density_fit=False, auxbasis=None):
+                  density_fit=False, auxbasis=None,
+                  orientation_lock_strength=0.0):
         seen["ccsd"] = (density_fit, auxbasis)
         return {}
 

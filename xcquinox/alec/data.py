@@ -54,6 +54,11 @@ _ALLOWED_EXTERNAL_KEYS = frozenset({
     # SolverConfig; the demo threads one shared constant to ref-gen + eval so
     # they match. Tolerated here so the loader does not reject a locked ref.
     "orientation_lock_strength",
+    # Whether the reference was generated with density fitting. Identity
+    # guard consumed by benchmark_refs._benchmark_npz_is_complete (a stamped
+    # DF reference is never silently reused by a non-DF run or vice versa);
+    # informational in this loader.
+    "density_fit_used",
 })
 
 
