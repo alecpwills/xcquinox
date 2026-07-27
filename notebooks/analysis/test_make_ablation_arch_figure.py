@@ -1004,6 +1004,76 @@ def test_plot_basis_comparison_bars_only_is_shorter(tmp_path):
     assert Image.open(clean).size[1] < Image.open(full).size[1]
 
 
+def test_comparison_cells_union_and_arch_filter():
+    # union across runs; the arch filter keeps only the named archs (all their
+    # subset sizes) and preserves the sorted cell order; empty input -> [].
+    sets = [{("deep", 1), ("deep", 3), ("deep_attn", 1)},
+            {("deep", 26), ("deep_cusp", 1)}]
+    assert fig._comparison_cells(sets) == [
+        ("deep", 1), ("deep", 3), ("deep", 26),
+        ("deep_attn", 1), ("deep_cusp", 1)]
+    assert fig._comparison_cells(sets, archs=("deep",)) == [
+        ("deep", 1), ("deep", 3), ("deep", 26)]
+    assert fig._comparison_cells(sets, archs=("deep", "deep_cusp")) == [
+        ("deep", 1), ("deep", 3), ("deep", 26), ("deep_cusp", 1)]
+    assert fig._comparison_cells([]) == []
+
+
+def test_plot_basis_comparison_archs_filter_renders(tmp_path):
+    ra = _make_run_dir(tmp_path / "a")
+    rb = _make_run_dir(tmp_path / "b")
+    out = fig.plot_basis_comparison(
+        [(ra, "A"), (rb, "B")], tmp_path / "focus.png", "cmp",
+        archs=("deep",))
+    assert _png_ok(out)
+
+
+def test_plot_basis_comparison_rejects_unknown_archs(tmp_path):
+    # an arch filter matching zero cells must fail loud (a blank comparison
+    # would otherwise render); a partially-matching filter renders with the
+    # unknown names reported, not dropped silently into a blank figure.
+    import pytest
+    ra = _make_run_dir(tmp_path / "a")
+    rb = _make_run_dir(tmp_path / "b")
+    runs = [(ra, "A"), (rb, "B")]
+    with pytest.raises(ValueError, match="match no"):
+        fig.plot_basis_comparison(runs, tmp_path / "bogus.png", "cmp",
+                                  archs=("no_such_arch",))
+    out = fig.plot_basis_comparison(runs, tmp_path / "partial.png", "cmp",
+                                    archs=("deep", "no_such_arch"))
+    assert _png_ok(out)
+
+
+def test_build_basis_comparison_rejects_empty_archs(tmp_path):
+    # archs=() is a caller error: it is falsy (so the _focus suffix logic
+    # would pick the FULL-UNION filenames) yet filters to zero cells -- the
+    # blank output would overwrite the real comparison trio.
+    import pytest
+    ra = _make_run_dir(tmp_path / "a")
+    (ra / "resolved_config.yaml").write_text("basis: def2-svp\ndensity_fit: false\n")
+    rb = _make_run_dir(tmp_path / "b")
+    (rb / "resolved_config.yaml").write_text("basis: def2-tzvpd\ndensity_fit: true\n")
+    with pytest.raises(ValueError, match="non-empty"):
+        fig.build_basis_comparison_figures([ra, rb], tmp_path / "out",
+                                           archs=())
+
+
+def test_build_basis_comparison_focus_names(tmp_path):
+    # the focused render must not overwrite the full-union trio: it writes the
+    # basis_comparison_focus* stems instead.
+    ra = _make_run_dir(tmp_path / "a")
+    (ra / "resolved_config.yaml").write_text("basis: def2-svp\ndensity_fit: false\n")
+    rb = _make_run_dir(tmp_path / "b")
+    (rb / "resolved_config.yaml").write_text("basis: def2-tzvpd\ndensity_fit: true\n")
+    written = fig.build_basis_comparison_figures([ra, rb], tmp_path / "out",
+                                                 archs=("deep",))
+    names = {p.name for p in written}
+    assert names == {"basis_comparison_focus.png",
+                     "basis_comparison_focus_no_refs.png",
+                     "basis_comparison_focus_clean.png"}
+    assert all(_png_ok(p) for p in written)
+
+
 def _make_bh76w411_results(tmp_path):
     """A results root with the real layout:
     <root>/bh76w411_repr/<basis>/runs/<stamp>, two bases, each with a newest run

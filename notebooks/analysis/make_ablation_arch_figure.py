@@ -3136,12 +3136,28 @@ def _ckpt_label(eval_subdir: str) -> str:
 _BASIS_COLORS = ("#4477aa", "#cc6677", "#228833", "#ccbb44")
 
 
+def _comparison_cells(cellsets: List[set],
+                      archs: Optional[Sequence[str]] = None
+                      ) -> List[Tuple[str, int]]:
+    """Sorted union of (arch, subset_size) cells across the per-run cell sets.
+    ``archs`` (when given) restricts the union to the named architectures; the
+    full range of subset sizes within those archs is kept. The figure width
+    scales with the cell count, so the restriction is what keeps a focused
+    comparison readable when the full union spans many arch x subset columns."""
+    cells = sorted(set.union(*cellsets)) if cellsets else []
+    if archs is not None:
+        wanted = set(archs)
+        cells = [c for c in cells if c[0] in wanted]
+    return cells
+
+
 def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                           run_id: str, note: str = "",
                           provenance: Optional[str] = None,
                           include_references: bool = True,
                           bars_only: bool = False,
-                          eval_subdir: str = "eval_holdout") -> Path:
+                          eval_subdir: str = "eval_holdout",
+                          archs: Optional[Sequence[str]] = None) -> Path:
     """Cross-basis comparison over the UNION of (arch, subset) cells present in
     ANY run: (a) combined held-out reaction-energy MAE, (b) 2-subset WTMAD-2, (c)
     in-sample density RMSE vs CCSD -- grouped bars by basis. A basis's bar is
@@ -3154,7 +3170,8 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
     per-arch forms, the references key, the subset-reaction footer and the
     provenance line), leaving just the three panels + legend + title -- a compact,
     easy-to-read variant for a slide/email. ``include_references`` is ignored when
-    ``bars_only`` is set."""
+    ``bars_only`` is set. ``archs`` restricts the plotted cells to the named
+    architectures (see :func:`_comparison_cells`)."""
     with plt.rc_context(_STYLE):
         data = []
         cellsets = []
@@ -3172,7 +3189,19 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
                                     []).append(r["density_rmse"])
             data.append((label, mae, wt, pbe_mae, pbe_wt, dmap))
             cellsets.append(set(mae.keys()))
-        cells = sorted(set.union(*cellsets)) if cellsets else []
+        cells = _comparison_cells(cellsets, archs)
+        if archs is not None:
+            present = {a for cs in cellsets for (a, _s) in cs}
+            missing = [a for a in dict.fromkeys(archs) if a not in present]
+            if not cells:
+                raise ValueError(
+                    f"archs {list(archs)} match no (arch, subset) cell in any "
+                    f"run (present archs: {sorted(present)}); a blank "
+                    "comparison would render. Check the names (e.g. the "
+                    "_3x16 suffix).")
+            if missing:
+                print(f"  (comparison archs with no cell in any run, "
+                      f"skipped: {missing})")
         labels = [f"{a}/ss{s}" for a, s in cells]
         pw = max(6.0, 0.42 * max(1, len(cells)))
         nb = max(1, len(data))
@@ -3281,25 +3310,39 @@ def plot_basis_comparison(runs: List[Tuple[Path, str]], out_path: Path,
 
 
 def build_basis_comparison_figures(run_dirs: List[Path], outdir: Path,
-                                   eval_subdir: str = "eval_holdout"
+                                   eval_subdir: str = "eval_holdout",
+                                   archs: Optional[Sequence[str]] = None
                                    ) -> List[Path]:
     """Render the cross-basis comparison for the given run dirs (each labeled by
-    its basis+DF from resolved_config.yaml)."""
+    its basis+DF from resolved_config.yaml). ``archs`` narrows the comparison to
+    the named architectures and switches the filenames to a ``_focus`` stem, so
+    the full-union trio is never overwritten by a focused render."""
+    if archs is not None and not archs:
+        raise ValueError(
+            "archs must be non-empty when given (an empty filter would "
+            "render blank figures under the full-union filenames); pass "
+            "None for the unfiltered comparison.")
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     labels = _disambiguated_run_labels(run_dirs)
     runs = list(zip((Path(rd) for rd in run_dirs), labels))
     rid = " vs ".join(labels) + f" [{_ckpt_label(eval_subdir)}]"
+    sfx = ""
+    if archs:
+        rid += " · " + " + ".join(dict.fromkeys(archs))
+        sfx = "_focus"
     return [
-        plot_basis_comparison(runs, outdir / "basis_comparison.png", rid,
-                              eval_subdir=eval_subdir),
+        plot_basis_comparison(runs, outdir / f"basis_comparison{sfx}.png", rid,
+                              eval_subdir=eval_subdir, archs=archs),
         # variant without the lower references key (columns + subset footer kept)
-        plot_basis_comparison(runs, outdir / "basis_comparison_no_refs.png", rid,
-                              include_references=False, eval_subdir=eval_subdir),
+        plot_basis_comparison(runs, outdir / f"basis_comparison{sfx}_no_refs.png",
+                              rid, include_references=False,
+                              eval_subdir=eval_subdir, archs=archs),
         # bars-only variant: no bottom notes at all (panels + legend + title) --
         # the easy-to-read figure for a slide/email
-        plot_basis_comparison(runs, outdir / "basis_comparison_clean.png", rid,
-                              bars_only=True, eval_subdir=eval_subdir),
+        plot_basis_comparison(runs, outdir / f"basis_comparison{sfx}_clean.png",
+                              rid, bars_only=True, eval_subdir=eval_subdir,
+                              archs=archs),
     ]
 
 
@@ -3551,7 +3594,9 @@ def figure_cell_coverage(run_dir: Path,
 def build_bh76w411_suite(results_root: Optional[Path] = None,
                          outroot: Optional[Path] = None,
                          bases: Tuple[str, ...] = _BH76W411_BASES,
-                         domain: str = "bh76w411_repr") -> List[Path]:
+                         domain: str = "bh76w411_repr",
+                         comparison_archs: Optional[Tuple[str, ...]] = None
+                         ) -> List[Path]:
     """Regenerate EVERY figure family for ``domain`` from the newest run per
     basis, so a fresh spec pull lands on all figures in one call. Per basis: the
     arch-aware ablation set (:func:`build_all`), the held-out energy/density set
@@ -3562,6 +3607,8 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
     comparison" is misleading): the basis comparison + its no-references variant
     (:func:`build_basis_comparison_figures`) and the diagnostic set
     (:func:`build_diagnostic_figures`) into ``figures_basis_comparison/``.
+    ``comparison_archs`` additionally renders the ``basis_comparison_focus*``
+    trio restricted to the named archs (the full-union files are kept).
 
     For a non-default ``domain`` (e.g. ``dfs_step7``) every output dir name is
     prefixed with the domain (``figures_dfs_step7_svp/``) so the bh76w411 sets
@@ -3625,6 +3672,12 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
         cmp_dir = outroot / f"figures_{prefix}basis_comparison{suffix}"
         written += build_basis_comparison_figures(ordered_runs, cmp_dir,
                                                   eval_subdir=eval_subdir)
+        if comparison_archs:
+            # focused trio (basis_comparison_focus*) alongside the full union --
+            # readable column count when the union spans many arch x subset cells
+            written += build_basis_comparison_figures(ordered_runs, cmp_dir,
+                                                      eval_subdir=eval_subdir,
+                                                      archs=comparison_archs)
         written += build_diagnostic_figures(ordered_runs, cmp_dir,
                                             eval_subdir=eval_subdir)
     return written
@@ -3658,14 +3711,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--outroot", default=None,
                    help="directory the figures_* dirs are written under for "
                         "--suite (default: next to this script)")
+    p.add_argument("--comparison-archs", default=None,
+                   help="comma-separated arch names; when given, --suite ALSO "
+                        "writes a basis_comparison_focus* trio restricted to "
+                        "these archs (readable column count when the full "
+                        "union of arch x subset cells is wide)")
     args = p.parse_args(argv)
 
     if args.suite:
         bases = tuple(b.strip() for b in args.bases.split(",") if b.strip())
+        cmp_archs = (tuple(a.strip() for a in args.comparison_archs.split(",")
+                           if a.strip())
+                     if args.comparison_archs else None)
         written = build_bh76w411_suite(results_root=args.results_root,
                                        outroot=args.outroot,
                                        bases=bases,
-                                       domain=args.domain)
+                                       domain=args.domain,
+                                       comparison_archs=cmp_archs)
         for pth in written:
             print(f"  wrote {pth}")
         return 0
