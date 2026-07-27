@@ -91,8 +91,9 @@ def main(argv):
                     print("       %-26s ABSENT" % (k + ":"))
 
     print()
-    print("expected: c2 (26840,) lock 3e-05 non-DF intermediates; "
-          "n2 (26616,); f2 (26568,)")
+    print("reference states: drifted c2 = (26840,), no density_fit_used stamp; "
+          "healthy c2 = (26568,), density_fit_used stamped. "
+          "controls: n2 (26616,); f2 (26568,)")
     return 0
 
 
