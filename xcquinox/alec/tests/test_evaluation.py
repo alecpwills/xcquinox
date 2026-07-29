@@ -36,6 +36,7 @@ from xcquinox.alec.evaluation import (
     _flatten_constraint_report,
     list_metrics,
     make_metric,
+    pbe_density_eps,
     run_test,
 )
 from xcquinox.alec.models import AlecGGAModel
@@ -354,6 +355,75 @@ def test_density_rmse_schema(tiny_model, h2o_data):
     assert "density_l1" in result
     assert math.isfinite(result["density_rmse"])
     assert math.isfinite(result["density_l1"])
+
+
+# DFS Letter Eq. 20 support: eps = sum(w|drho|)/N_e with N_e the quadrature
+# integral of the reference density (the dpyscf per-electron convention).
+def test_pbe_density_eps_closed_form():
+    md = {
+        "rho_ref_grid": np.array([2.0, 1.0]),
+        "rho_grid": np.array([2.5, 0.5]),
+        "grid_weights": np.array([3.0, 1.0]),
+    }
+    eps, n_e, wsum = pbe_density_eps(md)
+    # sum(w|diff|) = 3*0.5 + 1*0.5 = 2 ; N_e = sum(w*rho_ref) = 7 ; wsum = 4
+    assert eps == pytest.approx(2.0 / 7.0)
+    assert n_e == pytest.approx(7.0)
+    assert wsum == pytest.approx(4.0)
+    # deliberately distinct from the volume-averaged L1 (= 0.5) so the two
+    # normalizations cannot be confused by a passing test
+    assert abs(eps - 0.5) > 0.1
+    # missing reference -> the historical all-None skip semantics
+    assert pbe_density_eps({"rho_ref_grid": None}) == (None, None, None)
+
+
+def test_density_rmse_emits_eps_and_bookkeeping(tiny_model, h2o_data):
+    mol_data = dict(h2o_data)
+    mol_data["rho_ref_grid"] = mol_data["rho_grid"] + 0.001 * jnp.ones_like(
+        mol_data["rho_grid"]
+    )
+    mol_data["ref_density_method"] = "hf"
+    out = DensityRMSEMetric().compute(tiny_model, mol_data)
+    w = np.asarray(mol_data["grid_weights"])
+    n_e = float(np.sum(w * np.asarray(mol_data["rho_ref_grid"])))
+    wsum = float(np.sum(w))
+    assert out["n_electrons"] == pytest.approx(n_e, rel=1e-10)
+    assert out["grid_weight_sum"] == pytest.approx(wsum, rel=1e-10)
+    # the REAL PBE density integrates to ~10 electrons for H2O; the synthetic
+    # reference (+0.001 everywhere) inflates N_e by exactly 0.001 * sum(w)
+    n_e_pbe = float(np.sum(w * np.asarray(mol_data["rho_grid"])))
+    assert 9.5 < n_e_pbe < 10.5
+    assert out["n_electrons"] == pytest.approx(n_e_pbe + 0.001 * wsum,
+                                               rel=1e-8)
+    # exact identity: eps (per-electron L1) = (volume-averaged L1) * wsum/N_e
+    assert out["density_eps_l1"] == pytest.approx(
+        out["density_l1"] * wsum / n_e, rel=1e-10)
+    assert out["density_eps_l1_pbe"] == pytest.approx(
+        out["density_l1_pbe"] * wsum / n_e, rel=1e-10)
+
+
+def test_density_rmse_atom_skip_carries_eps_keys(tiny_model, h_data):
+    out = DensityRMSEMetric().compute(tiny_model, h_data)
+    for k in ("density_eps_l1", "density_eps_l1_pbe", "n_electrons",
+              "grid_weight_sum"):
+        assert k in out and out[k] is None
+
+
+def test_aggregate_excludes_quadrature_bookkeeping():
+    """n_electrons / grid_weight_sum are bookkeeping, not error metrics --
+    aggregate.json must not carry their mean/MAE/RMSE as pseudo-metrics,
+    while the genuine eps error metric still aggregates."""
+    from xcquinox.alec.evaluation import _aggregate_results
+    agg = _aggregate_results([
+        {"molecule": "h2o", "density_eps_l1": 1e-3, "n_electrons": 10.0,
+         "grid_weight_sum": 2.1e5},
+        {"molecule": "nh3", "density_eps_l1": 2e-3, "n_electrons": 10.0,
+         "grid_weight_sum": 1.9e5},
+    ])
+    assert "density_eps_l1" in agg
+    assert agg["density_eps_l1"]["mean"] == pytest.approx(1.5e-3)
+    assert "n_electrons" not in agg
+    assert "grid_weight_sum" not in agg
 
 
 # ---------------------------------------------------------------------------

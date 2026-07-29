@@ -228,6 +228,65 @@ a changed eval setting):
 
 ---
 
+## 4. DFS-units density error (eps) + gamma calibration -- deployment + backfill
+
+The eval emits the DFS Letter Eq. 20 per-electron L1 density error
+(`density_eps_l1`, `density_eps_l1_pbe`, with `n_electrons` /
+`grid_weight_sum` bookkeeping) alongside the grid-weighted RMSE. When those
+columns are present in a pull, `ablation_combined_energy_density.csv` gains a
+`wtmad2_eps_gamma_dfs` leg (ED with the Letter's published gamma = 1084.87
+kcal/mol, dimensionally valid on eps units) -- and a `wtmad2_eps_gamma_fit`
+leg when the nonempirical calibration cache (below) sits in the pulled run
+dir. Pulls without the columns render byte-identically to before.
+
+**DEPLOYMENT GATE:** `xcquinox/alec/evaluation.py` and
+`xcquinox/alec/eval_holdout.py` are live-imported by a running sweep's eval
+chain. Deploy only after the active run completes (`sacct -j <train jobid>`
+shows a terminal state), else later specs' eval schema differs from earlier
+ones within the same run.
+
+```bash
+# (a) deploy the eval + calibration files (AFTER the sweep completes):
+rsync -av xcquinox/alec/evaluation.py xcquinox/alec/eval_holdout.py \
+      "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/xcquinox/alec/
+rsync -av notebooks/analysis/precompute_nonempirical_pool.py \
+      "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/notebooks/analysis/
+rsync -av hpcjobs/nonempirical_pool.sbatch \
+      "$swpath":/gpfs/projects/FernandezGroup/Alec/xcquinox/hpcjobs/
+
+# (b) six-functional calibration pool (PW91/PBE/TPSS/revTPSS/SCAN/PBE0;
+#     resumable -- a resubmit after timeout continues). On the cluster:
+sbatch ~/xcquinox/hpcjobs/nonempirical_pool.sbatch
+
+# (c) when the job's DONE line appears, pull the cache next to the pulled
+#     run dir the figures read (gamma-fit leg then renders automatically):
+rsync -av "$swpath":/gpfs/scratch/awills/nonempirical_pool_6311ppg3df2pd_g3/nonempirical_pool_6-311++G_3df_2pd_.json \
+      <local pulled run dir>/
+```
+
+**Backfill for already-trained specs** (they were evaluated before the eps
+columns existed): local re-eval on a full-profile pull --
+
+```bash
+# val-best weights (what the *_val_best figures plot); model / model_best
+# are independent stamps, run each you need:
+python notebooks/analysis/reeval_holdout_fixed.py \
+    --run-dir <local pulled run dir> \
+    --checkpoint model_val_best \
+    --density-refs <local benchmark refs dir>
+# run-level PBE table (model-free, no weights needed) gains the eps columns:
+python notebooks/analysis/reeval_holdout_fixed.py \
+    --run-dir <local pulled run dir> \
+    --density-refs <local benchmark refs dir> --pbe-density-only
+```
+
+The density stamp is now `+density_refs_v4` (eps columns) -- specs stamped
+`v3` re-process automatically; refs-free stamps are untouched by refs-free
+re-runs, as before. CPU-heavy (runs SCF): background it, do not race a live
+training.
+
+---
+
 ## Quick reference
 
 | Task | Command |

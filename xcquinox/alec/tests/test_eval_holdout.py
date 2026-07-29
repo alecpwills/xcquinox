@@ -532,13 +532,14 @@ def test_density_errors_for_record_pbe_closed_form(monkeypatch):
     class FakeMetric:
         def compute(self, model, md, solver_config=None):
             return {"density_rmse": 0.123, "density_l1": 0.045,
+                    "density_eps_l1": 0.011,
                     "ref_density_method": "ccsd"}
 
     monkeypatch.setattr(ev_mod, "DensityRMSEMetric", FakeMetric)
     md = {
         "atom_composition": (("H", 2),),
-        "rho_ref_grid": np.array([1.0, 1.0]),
-        "rho_grid": np.array([1.5, 0.5]),       # PBE density on the same grid
+        "rho_ref_grid": np.array([2.0, 1.0]),
+        "rho_grid": np.array([2.5, 0.5]),       # PBE density on the same grid
         "grid_weights": np.array([3.0, 1.0]),
         "ref_density_method": "ccsd",
     }
@@ -547,9 +548,15 @@ def test_density_errors_for_record_pbe_closed_form(monkeypatch):
     # RMSE = sqrt((3*0.25 + 1*0.25)/4) = 0.5 ; L1 = (3*0.5 + 1*0.5)/4 = 0.5
     assert out["density_rmse_pbe"] == pytest.approx(0.5)
     assert out["density_l1_pbe"] == pytest.approx(0.5)
+    # DFS Eq. 20 per-electron L1: sum(w|diff|)/N_e = 2/(3*2 + 1*1) = 2/7,
+    # deliberately distinct from the volume-averaged L1 (0.5)
+    assert out["density_eps_l1_pbe"] == pytest.approx(2.0 / 7.0)
+    assert out["n_electrons"] == pytest.approx(7.0)
+    assert out["grid_weight_sum"] == pytest.approx(4.0)
     # NN channel comes from DensityRMSEMetric (stubbed; model-dependent)
     assert out["density_rmse"] == pytest.approx(0.123)
     assert out["density_l1"] == pytest.approx(0.045)
+    assert out["density_eps_l1"] == pytest.approx(0.011)
     assert out["ref_density_method"] == "ccsd"
 
 
@@ -580,6 +587,8 @@ def test_make_per_molecule_record_density_kwarg():
         assert k in rec and rec[k] is None     # omitted -> historical all-None
     dens = {"density_rmse": 1e-4, "density_l1": 2e-5,
             "density_rmse_pbe": 3e-4, "density_l1_pbe": 4e-5,
+            "density_eps_l1": 5e-5, "density_eps_l1_pbe": 6e-5,
+            "n_electrons": 10.0, "grid_weight_sum": 123.4,
             "ref_density_method": "ccsd"}
     rec2 = eh.make_per_molecule_record("x", md, -1.1,
                                        in_training_subset=False, density=dens)

@@ -1753,6 +1753,8 @@ def collect_insample_density_rows(run_dir: Path) -> List[Dict[str, Any]]:
                 # newer evals only -- None on older per_molecule.json)
                 "density_rmse_pbe": r.get("density_rmse_pbe"),
                 "density_l1_pbe": r.get("density_l1_pbe"),
+                "density_eps_l1": r.get("density_eps_l1"),
+                "density_eps_l1_pbe": r.get("density_eps_l1_pbe"),
                 "ref_density_method": r.get("ref_density_method"),
                 "from_training_subset": r.get("from_training_subset"),
             })
@@ -1792,6 +1794,10 @@ def collect_holdout_density_rows(run_dir: Path,
                 "density_l1": r.get("density_l1"),
                 "density_rmse_pbe": r.get("density_rmse_pbe"),
                 "density_l1_pbe": r.get("density_l1_pbe"),
+                # DFS Eq. 20 per-electron L1 columns (emitted by newer evals;
+                # None on older pulls)
+                "density_eps_l1": r.get("density_eps_l1"),
+                "density_eps_l1_pbe": r.get("density_eps_l1_pbe"),
                 "ref_density_method": r.get("ref_density_method"),
                 "from_training_subset": r.get("from_training_subset"),
             })
@@ -1841,68 +1847,77 @@ def load_pbe_density_table(run_dir: Path) -> Dict[str, Dict[str, float]]:
 # plotting-only script).
 
 
-def holdout_density_by_arch_subset(hd_rows: List[Dict[str, Any]]
+def holdout_density_by_arch_subset(hd_rows: List[Dict[str, Any]],
+                                   key: str = "density_rmse"
                                    ) -> Dict[Tuple[str, int], float]:
-    """``{(arch, subset_size): mean held-out density_rmse}`` over rows with a
-    finite NN channel -- the D leg of ED. Same bucketing rule as
-    ``reaction_mae_by_arch_subset``; atoms never contribute (their
-    ``density_rmse`` is None at eval time)."""
+    """``{(arch, subset_size): mean held-out density error}`` over rows with
+    a finite NN channel -- the D leg of ED. ``key`` selects the error column
+    (default the grid-weighted RMSE; ``density_eps_l1`` gives the DFS Eq. 20
+    per-electron L1 when the eval emitted it). Same bucketing rule as
+    ``reaction_mae_by_arch_subset``; atoms never contribute (their density
+    columns are None at eval time)."""
     buckets: Dict[Tuple[str, int], List[float]] = {}
     for r in hd_rows:
         arch, ss = r.get("arch"), r.get("subset_size")
         if arch is None or ss is None:
             continue
-        if _is_num(r.get("density_rmse")):
-            buckets.setdefault((arch, ss), []).append(r["density_rmse"])
+        if _is_num(r.get(key)):
+            buckets.setdefault((arch, ss), []).append(r[key])
     return {k: float(np.mean(v)) for k, v in buckets.items() if v}
 
 
 def _pbe_density_map(hd_rows: List[Dict[str, Any]],
-                     pbe_table: Optional[Dict[str, Dict[str, float]]] = None
-                     ) -> Dict[str, float]:
+                     pbe_table: Optional[Dict[str, Dict[str, float]]] = None,
+                     key: str = "density_rmse_pbe") -> Dict[str, float]:
     """Per-molecule PBE density-error map behind ``pbe_density_baseline`` and
     ``_pbe_anchor_coverage_warning``: the run-level table when given (finite
-    entries only), else the per-molecule mean of the inline
-    ``density_rmse_pbe`` columns."""
+    entries only), else the per-molecule mean of the inline ``key`` columns
+    (default the grid-weighted RMSE; ``density_eps_l1_pbe`` selects the DFS
+    Eq. 20 per-electron L1 twin)."""
     pbe_mol: Dict[str, float] = {
-        m: d["density_rmse_pbe"] for m, d in (pbe_table or {}).items()
-        if _is_num(d.get("density_rmse_pbe"))}
+        m: d[key] for m, d in (pbe_table or {}).items()
+        if _is_num(d.get(key))}
     if not pbe_mol:
         acc: Dict[str, List[float]] = {}
         for r in hd_rows:
-            if _is_num(r.get("density_rmse_pbe")) and r.get("molecule"):
-                acc.setdefault(r["molecule"], []).append(r["density_rmse_pbe"])
+            if _is_num(r.get(key)) and r.get("molecule"):
+                acc.setdefault(r["molecule"], []).append(r[key])
         pbe_mol = {m: float(np.mean(v)) for m, v in acc.items()}
     return pbe_mol
 
 
 def pbe_density_baseline(hd_rows: List[Dict[str, Any]],
-                         pbe_table: Optional[Dict[str, Dict[str, float]]] = None
-                         ) -> float:
+                         pbe_table: Optional[Dict[str, Dict[str, float]]] = None,
+                         key: str = "density_rmse_pbe") -> float:
     """Pooled PBE density-vs-CCSD anchor ``D_PBE``: the run-level
     ``pbe_density_errors.json`` table when given, else the per-molecule mean of
-    the inline ``density_rmse_pbe`` columns; then the mean over molecules. The
-    per-molecule dedup matters -- the PBE channel is model-free and identical
-    across specs, so a row-weighted mean would multiply-count each molecule by
-    its spec coverage. NaN when nothing finite (older evals without the PBE
-    columns), mirroring ``wtmad2_pbe_baseline``'s NaN-degrade convention. An
-    anchor set wider or narrower than the NN density union is flagged by
+    the inline ``key`` columns (default the grid-weighted RMSE;
+    ``density_eps_l1_pbe`` selects the DFS Eq. 20 per-electron L1 anchor);
+    then the mean over molecules. The per-molecule dedup matters -- the PBE
+    channel is model-free and identical across specs, so a row-weighted mean
+    would multiply-count each molecule by its spec coverage. NaN when nothing
+    finite (older evals without the PBE columns), mirroring
+    ``wtmad2_pbe_baseline``'s NaN-degrade convention. An anchor set wider or
+    narrower than the NN density union is flagged by
     ``_pbe_anchor_coverage_warning``."""
-    pbe_mol = _pbe_density_map(hd_rows, pbe_table)
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=key)
     return float(np.mean(list(pbe_mol.values()))) if pbe_mol else float("nan")
 
 
 def _pbe_anchor_coverage_warning(hd_rows: List[Dict[str, Any]],
                                  pbe_table: Optional[Dict[str, Dict[str, float]]]
-                                 = None) -> str:
+                                 = None, *, nn_key: str = "density_rmse",
+                                 pbe_key: str = "density_rmse_pbe") -> str:
     """'' when the PBE density anchor's molecule set equals the set of
     molecules with a finite NN density; otherwise names the symmetric
     difference. Guards ``D_PBE`` against silently averaging species the NN
     legs never see -- possible when a run-level ``pbe_density_errors.json``
     spans more species than the NN eval, or when the NN channel failed for
-    rows whose PBE column survived."""
-    anchor = set(_pbe_density_map(hd_rows, pbe_table))
-    nn = {r.get("molecule") for r in hd_rows if _is_num(r.get("density_rmse"))}
+    rows whose PBE column survived. ``nn_key``/``pbe_key`` select the error
+    channel (defaults: the RMSE pair; the ``density_eps_l1`` pair guards the
+    DFS-units legs, where a partial backfill shrinks both sets)."""
+    anchor = set(_pbe_density_map(hd_rows, pbe_table, key=pbe_key))
+    nn = {r.get("molecule") for r in hd_rows if _is_num(r.get(nn_key))}
     if not anchor or anchor == nn:
         return ""
 
@@ -1973,8 +1988,175 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
         cells[cell] = {"E": float(e), "D": float(d),
                        "gammaD": gamma * float(d), "ED": ed,
                        "beats_pbe": bool(ed < ed_pbe)}
-    return {"gamma": gamma, "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
+    return {"gamma": gamma, "gamma_mode": "self_calibrated",
+            "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
             "ed_pbe": ed_pbe, "cells": cells}
+
+
+# The Letter's published conversion slope (kcal/mol per unit of its Eq. 20
+# per-electron L1 density error): the zero-intercept regression of WTMAD-2 on
+# eps across PW91/PBE/TPSS/revTPSS/SCAN/PBE0 (Dick & Fernandez-Serra, PRB 104,
+# L161109 (2021), Fig. 3). Dimensionally valid ONLY against density errors in
+# the same Eq. 20 units (the density_eps_l1 columns) -- never against the
+# grid-weighted RMSE.
+_DFS_GAMMA_KCAL = 1084.87
+
+
+def gamma_zero_intercept(pairs) -> float:
+    """Zero-intercept least-squares slope of W on eps over ``(eps, W)`` pairs:
+    ``gamma = sum(eps*W) / sum(eps^2)`` -- the Letter's Fig. 3 regression
+    procedure. NaN when no pair has a positive eps."""
+    num = 0.0
+    den = 0.0
+    for eps, wt in pairs:
+        if _is_num(eps) and _is_num(wt) and eps > 0.0:
+            num += eps * wt
+            den += eps * eps
+    return num / den if den > 0.0 else float("nan")
+
+
+def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
+                            e_pbe: float,
+                            density_by_cell: Dict[Tuple[str, int], float],
+                            d_pbe: float, gamma: float) -> Dict[str, Any]:
+    """DFS Eq. 21 ED per cell with an EXTERNALLY FIXED gamma (the Letter's
+    published 1084.87 on Eq. 20 units, or an own-axes regression slope from
+    the nonempirical pool cache) -- unlike ``combined_ed_by_cell``, gamma is
+    NOT derived from the anchors, so ``ed_pbe`` is generally NOT equal to
+    ``e_pbe`` and PBE sits off the y=x locus wherever it sits off the
+    calibration trend. Same summary contract as ``combined_ed_by_cell``
+    except ``gamma_mode = "fixed"`` -- the ED panels branch their stamps and
+    PBE labels on that key, so a fixed-gamma summary never renders the
+    self-calibration claims (ED_PBE = E_PBE, PBE-on-y=x), which are false
+    here."""
+    if not (_is_num(e_pbe) and e_pbe > 0.0):
+        raise ValueError(
+            f"PBE energy anchor must be finite and positive, got {e_pbe!r}")
+    if not (_is_num(d_pbe) and d_pbe > 0.0):
+        raise ValueError(
+            f"PBE density anchor must be finite and positive, got {d_pbe!r}")
+    if not (_is_num(gamma) and gamma > 0.0):
+        raise ValueError(f"gamma must be finite and positive, got {gamma!r}")
+    ed_pbe = _harmonic_mean(float(e_pbe), gamma * float(d_pbe))
+    cells: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    for cell, e in energy_by_cell.items():
+        d = density_by_cell.get(cell)
+        if not (_is_num(e) and _is_num(d)):
+            continue
+        ed = _harmonic_mean(float(e), gamma * float(d))
+        cells[cell] = {"E": float(e), "D": float(d),
+                       "gammaD": gamma * float(d), "ED": ed,
+                       "beats_pbe": bool(ed < ed_pbe)}
+    return {"gamma": float(gamma), "gamma_mode": "fixed",
+            "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
+            "ed_pbe": ed_pbe, "cells": cells}
+
+
+def _nonempirical_cache_name(basis: str) -> str:
+    """Filename of the nonempirical-functional pool cache at ``basis`` --
+    kept identical to ``precompute_nonempirical_pool._pool_cache_name``."""
+    b = (basis or "def2-svp").replace("+DF", "").strip() or "def2-svp"
+    safe = "".join(c if (c.isalnum() or c in "-.+") else "_" for c in b)
+    return f"nonempirical_pool_{safe}.json"
+
+
+def _wtmad2_from_energies(energies: Dict[str, float],
+                          _loader=None) -> float:
+    """2-subset WTMAD-2 for one functional from its ``{species: E_tot(Ha)}``
+    map over the canonical full held-out pool -- the validated reaction math
+    in ``eval_holdout.per_reaction_errors``, bucketed by ``source_pool`` and
+    reweighted by :func:`_wtmad2_over_pools` (lazy pool import; ``_loader``
+    is the test seam). NaN when no reaction is computable."""
+    if _loader is None:
+        from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+        _loader = load_full_held_out_pools
+    from xcquinox.alec.eval_holdout import per_reaction_errors
+    _, rxns = _loader()
+    rxns = list(rxns)
+    pools: Dict[str, List[Tuple[float, float]]] = {}
+    for rxn, er in zip(rxns, per_reaction_errors(energies, rxns)):
+        if math.isfinite(er["abs_error_kcalmol"]):
+            pools.setdefault(rxn.get("source_pool"), []).append(
+                (er["abs_error_kcalmol"], abs(er["ref_kcalmol"])))
+    w = _wtmad2_over_pools(pools, _GMTKN55_SCALE)
+    return float(w) if w is not None else float("nan")
+
+
+def nonempirical_gamma(run_dir: Path, *, basis: Optional[str] = None,
+                       cache_dir: Optional[Path] = None,
+                       _wtmad: Optional[Dict[str, float]] = None
+                       ) -> Dict[str, Any]:
+    """The DFS-procedure gamma on OUR axes: load the nonempirical pool cache
+    (``precompute_nonempirical_pool.py``), build per-functional
+    ``(eps, WTMAD-2)`` pairs, and fit the zero-intercept slope.
+
+    A partially-filled cache (timed-out job, per-species failures) leaves the
+    functionals with UNEQUAL species support; fitting each functional's mean
+    over its own set would bias the slope by coverage, not physics. So eps is
+    averaged over the COMMON species intersection across all functionals, and
+    the real WTMAD-2 path restricts each functional's energies to the common
+    energy-species set (making the computable reaction list identical across
+    functionals). Coverage is reported: ``n_species`` (the intersection) and
+    ``n_species_dropped`` (union minus intersection; nonzero means partial
+    support, worth stating wherever the fitted gamma is used). Returns
+    ``{gamma, pairs, n_functionals, n_species, n_species_dropped}`` or ``{}``
+    when the cache is absent/empty/malformed or the intersection is empty.
+    ``_wtmad`` injects per-functional WTMAD-2 values directly (test seam).
+    Cache-name note: like the SCAN cache, the slug drops ``+DF``, so DF and
+    non-DF runs at one basis share the calibration cache (the DF error is far
+    below the eps signal, the same trade ``run_pbe_density_table`` makes)."""
+    b = basis or run_basis_label(Path(run_dir)) or "def2-svp"
+    candidates = [Path(d) / _nonempirical_cache_name(b)
+                  for d in (cache_dir, run_dir) if d is not None]
+    cache = None
+    for p in candidates:
+        if p.is_file():
+            try:
+                cache = json.loads(p.read_text())
+                break
+            except (json.JSONDecodeError, OSError):
+                cache = None
+    if not cache or not isinstance(cache, dict):
+        return {}
+    by_xc: Dict[str, Dict[str, float]] = {}
+    energies: Dict[str, Dict[str, float]] = {}
+    for name, per_xc in cache.items():
+        if not isinstance(per_xc, dict):
+            continue
+        for xc, entry in per_xc.items():
+            if not isinstance(entry, dict):
+                continue
+            if _is_num(entry.get("density_eps_l1")):
+                by_xc.setdefault(xc, {})[name] = entry["density_eps_l1"]
+            if _is_num(entry.get("e_tot")):
+                energies.setdefault(xc, {})[name] = entry["e_tot"]
+    if not by_xc:
+        return {}
+    common = set.intersection(*(set(v) for v in by_xc.values()))
+    if not common:
+        return {}
+    union = set().union(*(set(v) for v in by_xc.values()))
+    e_common: set = set()
+    if _wtmad is None:
+        e_sets = [set(energies.get(xc, {})) for xc in by_xc]
+        e_common = set.intersection(*e_sets) if all(e_sets) else set()
+    pairs: Dict[str, Tuple[float, float]] = {}
+    for xc, eps_by_mol in by_xc.items():
+        eps = float(np.mean([eps_by_mol[n] for n in common]))
+        if _wtmad is not None:
+            wt = _wtmad.get(xc, float("nan"))
+        else:
+            wt = _wtmad2_from_energies(
+                {n: e for n, e in energies.get(xc, {}).items()
+                 if n in e_common})
+        if _is_num(eps) and _is_num(wt):
+            pairs[xc] = (eps, wt)
+    if not pairs:
+        return {}
+    return {"gamma": gamma_zero_intercept(pairs.values()),
+            "pairs": pairs, "n_functionals": len(pairs),
+            "n_species": len(common),
+            "n_species_dropped": len(union) - len(common)}
 
 
 def _cell_tag(cell: Tuple[str, int]) -> str:
@@ -2701,13 +2883,17 @@ def plot_holdout_density_per_arch(hd_rows: List[Dict[str, Any]],
 
 _ED_CAVEAT = ("ED = 2/(1/E + 1/(gamma*D)) (Dick & Fernandez-Serra, PRB 104, "
               "L161109 (2021), Eq. 21); gamma self-calibrated per leg from "
-              "pooled PBE anchors (gamma = E_PBE/D_PBE), so ED_PBE == E_PBE "
-              "by construction (dashed).")
+              "pooled PBE anchors (gamma = E_PBE/D_PBE -- the Letter's "
+              "regression slope, calibrated here on PBE alone), so "
+              "ED_PBE == E_PBE by construction (dashed).")
 
 _HOLDOUT_OVERVIEW_CAVEAT = (
     "Single-pool 'WTMAD-2' (panels A, B) reduces to 56.84 * MAD_pool / "
     "mean|ref|_pool -- a scaled relative error, NOT a reweighting; only "
-    "panel C (2-subset) reweights BH76 vs W4-11, and it is NOT full GMTKN55.")
+    "panel C (2-subset) reweights BH76 vs W4-11, and it is NOT full GMTKN55. "
+    "E/F: ED = 2/(1/E + 1/(gamma*D)), gamma = E_PBE/D_PBE self-calibrated "
+    "from the pooled PBE anchors (value printed in the panels), so "
+    "ED_PBE == E_PBE (dashed).")
 
 _INSAMPLE_OVERVIEW_CAVEAT = (
     "IN-SAMPLE (training-fit) overview on trained molecules -- NOT "
@@ -2732,9 +2918,11 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
             continue
         ax.plot([s for s, _ in pts], [e for _, e in pts], marker="o",
                 ms=5, color=ARCH_COLOR.get(a, "0.5"), label=a)
+    self_cal = summary.get("gamma_mode", "self_calibrated") == "self_calibrated"
     if _is_num(summary["ed_pbe"]) and summary["ed_pbe"] > 0.0:
         ax.axhline(summary["ed_pbe"], ls="--", color="k", lw=1.0,
-                   label="PBE (ED = E by self-calibration)")
+                   label=("PBE (ED = E by self-calibration)" if self_cal
+                          else "PBE"))
     beat = [(ss, c["ED"]) for (_, ss), c in cells.items()
             if c["beats_pbe"] and c["ED"] > 0.0]
     if beat:
@@ -2747,7 +2935,9 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
     ax.set_title(title, fontsize=9)
     ax.grid(True, which="both", alpha=0.3)
     ax.text(0.02, 0.02,
-            f"$\\gamma$ = {summary['gamma']:.4g} (self-calibrated)",
+            ("$\\gamma$ = E$_{\\rm PBE}$/D$_{\\rm PBE}$ = "
+             f"{summary['gamma']:.4g} (self-calibrated)" if self_cal
+             else f"$\\gamma$ = {summary['gamma']:.6g} (fixed, external)"),
             transform=ax.transAxes, fontsize=6, color="#444444")
 
 
@@ -2770,7 +2960,10 @@ def _ed_decomposition_panel(ax, summary: Dict[str, Any]) -> None:
     e_pbe = summary["e_pbe"]
     gd_pbe = summary["gamma"] * summary["d_pbe"]
     ax.scatter([e_pbe], [gd_pbe], marker="x", s=40, color="0.4",
-               label="PBE (on y=x by construction)")
+               label=("PBE (on y=x by construction)"
+                      if summary.get("gamma_mode",
+                                     "self_calibrated") == "self_calibrated"
+                      else "PBE"))
     fin_e = [c["E"] for c in cells.values() if c["E"] > 0.0] + [e_pbe]
     fin_g = [c["gammaD"] for c in cells.values()
              if c["gammaD"] > 0.0] + [gd_pbe]
@@ -2859,8 +3052,9 @@ def _ed_decomposition_rich_panel(ax, summary: Dict[str, Any]) -> None:
         for ss, e, g in pts:
             ax.annotate(str(ss), (e, g), fontsize=5, color=col,
                         xytext=(2, 2), textcoords="offset points")
+    self_cal = summary.get("gamma_mode", "self_calibrated") == "self_calibrated"
     ax.scatter([e_pbe], [gd_pbe], marker="x", s=60, color="k", zorder=5,
-               label="PBE (on y=x by construction)")
+               label=("PBE (on y=x by construction)" if self_cal else "PBE"))
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlim(lo, hi)
@@ -2871,8 +3065,10 @@ def _ed_decomposition_rich_panel(ax, summary: Dict[str, Any]) -> None:
                  "shaded, per-arch subset trajectories", fontsize=10)
     ax.grid(True, which="both", alpha=0.25)
     ax.text(0.02, 0.02,
-            f"$\\gamma$ = {summary['gamma']:.4g} (self-calibrated); "
-            "shaded: ED < ED of PBE",
+            ("$\\gamma$ = E$_{\\rm PBE}$/D$_{\\rm PBE}$ = "
+             f"{summary['gamma']:.4g} (self-calibrated); " if self_cal
+             else f"$\\gamma$ = {summary['gamma']:.6g} (fixed, external); ")
+            + "shaded: ED < ED of PBE",
             transform=ax.transAxes, fontsize=6.5, color="#444444")
     if ax.get_legend_handles_labels()[1]:
         ax.legend(fontsize=6, ncol=2, loc="upper left")
@@ -3042,12 +3238,13 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
 
 
 _3X3_CAVEAT = (
-    "Columns are channels: BH76 | W4-11 | combined. Energy rows use the "
-    "one-bucket WTMAD-2 reduction per pool (A/B, and the ED legs in G/H) -- "
-    "a scaled relative error, NOT a reweighting; only the combined column "
-    "reweights, and it is NOT full GMTKN55. Each channel's gamma is "
-    "self-calibrated from its own PBE anchors: EDs compare within a panel, "
-    "never across channels. Overlap species appear in both density channels.")
+    "Columns are channels: BH76 | W4-11 | combined. A/B and the ED legs in "
+    "G/H use the one-bucket WTMAD-2 reduction (a scaled relative error; only "
+    "the combined column reweights, NOT full GMTKN55). "
+    "ED = 2/(1/E + 1/(gamma*D)) with gamma = E_PBE/D_PBE from that channel's "
+    "OWN anchors (value printed in each ED panel), so ED_PBE == E_PBE per "
+    "channel and EDs never compare across channels. Overlap species appear "
+    "in both density channels.")
 
 
 def plot_density_energy_3x3(rows: List[Dict[str, Any]],
@@ -4514,11 +4711,63 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 wt_summary, outdir / "ablation_ed_decomposition.png",
                 run_id, note="  ".join(extra), provenance=ed_prov,
                 dataset=ds))
+            legs_main: Dict[str, Optional[Dict[str, Any]]] = {
+                "wtmad2": wt_summary, "mae": mae_summary}
+            counts_main: Dict[str, Tuple[Dict, Dict]] = {}
+            # DFS-units ED legs: when the pulled data carries the Eq. 20 eps
+            # columns, the SAME WTMAD-2 energy cells are re-scored with
+            # D = per-cell mean eps and gamma = the Letter's published
+            # 1084.87 (dimensionally valid on eps units), plus the own-axes
+            # six-functional regression slope when the nonempirical pool
+            # cache resolves. Older pulls lack the columns, so the CSV is
+            # unchanged.
+            eps_cells = holdout_density_by_arch_subset(
+                hd_rows, key="density_eps_l1")
+            eps_pbe = pbe_density_baseline(hd_rows, pbe_table,
+                                           key="density_eps_l1_pbe")
+            if eps_cells and _is_num(eps_pbe) and eps_pbe > 0.0:
+                # the RMSE legs' coverage guards, re-run on the eps channel:
+                # a partial backfill (only some specs re-evaled) leaves the
+                # eps legs covering fewer cells/molecules than the RMSE legs
+                # -- disclose it rather than shipping a silently narrower CSV
+                eps_missing = sorted(set(d_cells) - set(eps_cells))
+                if eps_missing:
+                    print("  (DFS-units ED: eps columns cover "
+                          f"{len(eps_cells)}/{len(d_cells)} density cells; "
+                          "missing "
+                          + ", ".join(_cell_tag(c) for c in eps_missing)
+                          + " -- partial backfill?)")
+                aw_eps = _pbe_anchor_coverage_warning(
+                    hd_rows, pbe_table, nn_key="density_eps_l1",
+                    pbe_key="density_eps_l1_pbe")
+                if aw_eps:
+                    print(f"  (DFS-units ED eps anchor: {aw_eps})")
+                eps_counts = (_cell_counts(rows, "abs_error_nn_kcalmol"),
+                              _cell_counts(hd_rows, "density_eps_l1"))
+                legs_main["wtmad2_eps_gamma_dfs"] = combined_ed_fixed_gamma(
+                    wt_cells, e_pbe_wt, eps_cells, eps_pbe, _DFS_GAMMA_KCAL)
+                counts_main["wtmad2_eps_gamma_dfs"] = eps_counts
+                fit = nonempirical_gamma(run_dir)
+                if fit and _is_num(fit.get("gamma")) and fit["gamma"] > 0.0:
+                    legs_main["wtmad2_eps_gamma_fit"] = (
+                        combined_ed_fixed_gamma(wt_cells, e_pbe_wt,
+                                                eps_cells, eps_pbe,
+                                                fit["gamma"]))
+                    counts_main["wtmad2_eps_gamma_fit"] = eps_counts
+                    print(f"  (DFS-units ED: own-axes gamma = "
+                          f"{fit['gamma']:.6g} kcal/mol from "
+                          f"{fit['n_functionals']} nonempirical functionals"
+                          f" over {fit['n_species']} common species"
+                          + (f"; {fit['n_species_dropped']} species dropped "
+                             "for unequal support"
+                             if fit.get("n_species_dropped") else "")
+                          + ")")
             csv_path = write_combined_ed_csv(
-                {"wtmad2": wt_summary, "mae": mae_summary},
+                legs_main,
                 outdir / "ablation_combined_energy_density.csv",
                 n_reactions=_cell_counts(rows, "abs_error_nn_kcalmol"),
-                n_density=_cell_counts(hd_rows, "density_rmse"))
+                n_density=_cell_counts(hd_rows, "density_rmse"),
+                counts_by_leg=counts_main or None)
             gtxt = f"gamma_wt = {wt_summary['gamma']:.4g}"
             if mae_summary:
                 gtxt += f", gamma_mae = {mae_summary['gamma']:.4g}"

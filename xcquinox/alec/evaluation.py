@@ -162,7 +162,8 @@ def pbe_density_errors(mol_data) -> tuple:
     The returned errors are grid-weight-AVERAGED (see
     :class:`DensityRMSEMetric`), distinct from the DFS per-electron density
     error eps_{|n|} = (1/N_e) * integral|rho - rho_ref| (Letter Eq.20) and from
-    the N_e^2-normalized training-loss form.
+    the N_e^2-normalized training-loss form. The Eq. 20 form is emitted
+    alongside via :func:`density_eps_terms` / :func:`pbe_density_eps`.
     """
     rho_ref = mol_data.get("rho_ref_grid")
     if rho_ref is None:
@@ -179,6 +180,43 @@ def pbe_density_errors(mol_data) -> tuple:
     rmse = float(jnp.sqrt(jnp.sum(w * diff ** 2) / jnp.sum(w)))
     l1 = float(jnp.sum(w * jnp.abs(diff)) / jnp.sum(w))
     return rmse, l1
+
+
+def density_eps_terms(rho, rho_ref, w):
+    """DFS Letter Eq. 20 per-species density-error ingredients.
+
+    ``eps = sum_i(w_i |rho - rho_ref|_i) / N_e`` with ``N_e = sum_i(w_i *
+    rho_ref_i)`` -- the quadrature electron count of the REFERENCE density,
+    the same N_e convention as this package's density loss
+    (``losses._grid_term`` with ``per_electron=True``, which realizes the
+    Letter's Eq. 17 normalization; the vendored dpyscf instead counts
+    neutral-atom Z, which is wrong for ions -- the quadrature count is
+    charge-correct by construction). Using the identical quadrature for
+    numerator and N_e makes eps a pure ratio of two integrals on the same
+    grid, so grid-truncation error partially cancels.
+    Returns ``(eps, n_electrons, grid_weight_sum)`` as floats; eps degrades
+    to NaN when the quadrature N_e is non-positive (unphysical input)."""
+    rho = jnp.asarray(rho)
+    rho_ref = jnp.asarray(rho_ref)
+    w = jnp.asarray(w)
+    n_e = float(jnp.sum(w * rho_ref))
+    wsum = float(jnp.sum(w))
+    if n_e <= 0.0:
+        return float("nan"), n_e, wsum
+    eps = float(jnp.sum(w * jnp.abs(rho - rho_ref)) / n_e)
+    return eps, n_e, wsum
+
+
+def pbe_density_eps(mol_data) -> tuple:
+    """Model-free DFS Eq. 20 terms for the stored PBE density vs the loaded
+    reference: ``(density_eps_l1_pbe, n_electrons, grid_weight_sum)``, or
+    ``(None, None, None)`` when no reference density is present (the
+    historical skip semantics of :func:`pbe_density_errors`)."""
+    rho_ref = mol_data.get("rho_ref_grid")
+    if rho_ref is None:
+        return None, None, None
+    return density_eps_terms(mol_data["rho_grid"], rho_ref,
+                             mol_data["grid_weights"])
 
 
 @register_metric("density_rmse")
@@ -199,6 +237,10 @@ class DensityRMSEMetric(Metric):
                 "density_l1": None,
                 "density_rmse_pbe": None,
                 "density_l1_pbe": None,
+                "density_eps_l1": None,
+                "density_eps_l1_pbe": None,
+                "n_electrons": None,
+                "grid_weight_sum": None,
                 "skipped": True,
                 "skip_reason": "atomic_system",
                 "ref_density_method": mol_data.get("ref_density_method"),
@@ -221,6 +263,10 @@ class DensityRMSEMetric(Metric):
                 "density_l1": None,
                 "density_rmse_pbe": None,
                 "density_l1_pbe": None,
+                "density_eps_l1": None,
+                "density_eps_l1_pbe": None,
+                "n_electrons": None,
+                "grid_weight_sum": None,
                 "skipped": True,
                 "skip_reason": "no_rho_ref_grid",
                 "ref_density_method": mol_data.get("ref_density_method"),
@@ -233,14 +279,18 @@ class DensityRMSEMetric(Metric):
         w = mol_data["grid_weights"]
         diff = rho_nn - rho_ref
         # Grid-weight-AVERAGED RMSE / L1: sqrt(sum w*(dn)^2 / sum w) and
-        # sum w*|dn| / sum w. This is NOT the DFS per-electron density error
-        # eps_{|n|} = (1/N_e) * integral|rho_nn - rho_ref| (Letter Eq.20), nor
-        # the N_e^2-normalized training-loss form; the sole consumer compares
-        # against the model's value on the same grid and self-calibrates its
-        # scale, so the absolute normalization is immaterial here.
+        # sum w*|dn| / sum w -- the figure suite's self-calibrated scale.
+        # The DFS per-electron density error eps_{|n|} = (1/N_e) *
+        # integral|rho_nn - rho_ref| (Letter Eq.20) is emitted ALONGSIDE as
+        # density_eps_l1 (+ the model-free PBE twin), with N_e the quadrature
+        # integral of the reference density, so the Letter's gamma applies to
+        # it dimensionally. n_electrons / grid_weight_sum make any other
+        # normalization reconstructible offline.
         rmse = float(jnp.sqrt(jnp.sum(w * diff ** 2) / jnp.sum(w)))
         l1 = float(jnp.sum(w * jnp.abs(diff)) / jnp.sum(w))
         rmse_pbe, l1_pbe = pbe_density_errors(mol_data)
+        eps_nn, n_e, wsum = density_eps_terms(rho_nn, rho_ref, w)
+        eps_pbe, _, _ = pbe_density_eps(mol_data)
         return {
             "density_rmse": rmse,
             "density_l1": l1,
@@ -248,6 +298,10 @@ class DensityRMSEMetric(Metric):
             # in-sample per_molecule.json carries the comparison directly
             "density_rmse_pbe": rmse_pbe,
             "density_l1_pbe": l1_pbe,
+            "density_eps_l1": eps_nn,
+            "density_eps_l1_pbe": eps_pbe,
+            "n_electrons": n_e,
+            "grid_weight_sum": wsum,
             "ref_density_method": mol_data.get("ref_density_method"),
         }
 
@@ -558,6 +612,12 @@ def _json_default(obj):
     return str(obj)
 
 
+#: Quadrature bookkeeping columns (not error metrics): excluded from
+#: aggregate.json -- their mean/MAE/RMSE would read as pseudo-metrics
+#: (grid_weight_sum is ~1e5-scale integration volume, n_electrons a count).
+_NON_METRIC_KEYS = frozenset({"n_electrons", "grid_weight_sum"})
+
+
 def _aggregate_results(per_molecule: list[dict]) -> dict:
     """For each numeric key across molecules, compute mean/MAE/RMSE/max/count.
 
@@ -583,7 +643,7 @@ def _aggregate_results(per_molecule: list[dict]) -> dict:
 
     aggregate = {}
     for key in sorted(all_keys):
-        if key == "molecule":
+        if key == "molecule" or key in _NON_METRIC_KEYS:
             continue
         values = []
         for row in per_molecule:

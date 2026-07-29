@@ -1363,9 +1363,14 @@ def _add_holdout_density(run_dir, *, with_nn=True):
             {"molecule": "HO", "density_rmse": 2e-4 if with_nn else None,
              "density_l1": 1e-5 if with_nn else None,
              "density_rmse_pbe": 8e-4, "density_l1_pbe": 5e-5,
+             "density_eps_l1": 2.5e-4 if with_nn else None,
+             "density_eps_l1_pbe": 7e-4,
+             "n_electrons": 9.0, "grid_weight_sum": 100.0,
              "ref_density_method": "ccsd", "from_training_subset": False},
             {"molecule": "H", "density_rmse": None, "density_l1": None,
              "density_rmse_pbe": None, "density_l1_pbe": None,
+             "density_eps_l1": None, "density_eps_l1_pbe": None,
+             "n_electrons": None, "grid_weight_sum": None,
              "ref_density_method": None, "from_training_subset": False},
         ]
         (eh / "per_molecule.json").write_text(json.dumps(rows))
@@ -1890,6 +1895,194 @@ def test_plot_density_energy_3x3_renders(tmp_path):
     assert _png_ok(p2)
 
 
+def test_gamma_zero_intercept_hand_slope():
+    # zero-intercept least squares: slope = sum(eps*W)/sum(eps^2)
+    pairs = [(1.0, 2.0), (2.0, 4.0)]
+    assert fig.gamma_zero_intercept(pairs) == pytest.approx(2.0)
+    pairs2 = [(1.0, 3.0), (2.0, 2.0)]         # (3 + 4)/(1 + 4) = 7/5
+    assert fig.gamma_zero_intercept(pairs2) == pytest.approx(1.4)
+    assert math.isnan(fig.gamma_zero_intercept([]))
+    assert math.isnan(fig.gamma_zero_intercept([(0.0, 5.0)]))
+
+
+def test_combined_ed_fixed_gamma_hand_values():
+    s = fig.combined_ed_fixed_gamma({("deep", 1): 8.0}, 10.0,
+                                    {("deep", 1): 0.004}, 0.005, 2000.0)
+    # fixed gamma: ed_pbe = harmonic(10, 2000*0.005=10) = 10 here, but with
+    # gamma=1000 the PBE point moves OFF the diagonal:
+    assert s["gamma"] == pytest.approx(2000.0)
+    assert s["ed_pbe"] == pytest.approx(10.0)
+    assert s["cells"][("deep", 1)]["ED"] == pytest.approx(8.0)
+    s2 = fig.combined_ed_fixed_gamma({("deep", 1): 8.0}, 10.0,
+                                     {("deep", 1): 0.004}, 0.005, 1000.0)
+    # ed_pbe = harmonic(10, 5) = 2/(1/10+1/5) = 20/3 != e_pbe
+    assert s2["ed_pbe"] == pytest.approx(20.0 / 3.0)
+    assert s2["cells"][("deep", 1)]["gammaD"] == pytest.approx(4.0)
+    assert s2["cells"][("deep", 1)]["ED"] == pytest.approx(
+        2.0 / (1.0 / 8.0 + 1.0 / 4.0))
+
+
+def test_nonempirical_gamma_from_cache(tmp_path):
+    cache = {
+        "m1": {"pbe": {"density_eps_l1": 0.010},
+               "scan": {"density_eps_l1": 0.006}},
+        "m2": {"pbe": {"density_eps_l1": 0.014},
+               "scan": {"density_eps_l1": 0.008}},
+    }
+    (tmp_path / "nonempirical_pool_def2-svp.json").write_text(
+        json.dumps(cache))
+    # seam: WTMAD-2 per functional supplied directly (no pool loader)
+    out = fig.nonempirical_gamma(tmp_path, basis="def2-svp",
+                                 cache_dir=tmp_path,
+                                 _wtmad={"pbe": 12.0, "scan": 7.0})
+    # eps means: pbe 0.012, scan 0.007
+    # slope = (0.012*12 + 0.007*7)/(0.012^2 + 0.007^2) = 0.193/0.000193
+    assert out["gamma"] == pytest.approx(0.193 / 0.000193)
+    assert out["n_functionals"] == 2
+    assert set(out["pairs"]) == {"pbe", "scan"}
+    # absent cache -> empty dict
+    assert fig.nonempirical_gamma(tmp_path / "nope", basis="def2-svp") == {}
+
+
+def test_holdout_density_by_arch_subset_key_param():
+    rows = [{"arch": "deep", "subset_size": 1, "molecule": "HO",
+             "density_rmse": 2e-4, "density_eps_l1": 3e-3}]
+    assert fig.holdout_density_by_arch_subset(rows)[("deep", 1)] == \
+        pytest.approx(2e-4)
+    assert fig.holdout_density_by_arch_subset(
+        rows, key="density_eps_l1")[("deep", 1)] == pytest.approx(3e-3)
+
+
+def test_collectors_carry_eps_columns(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    hd = fig.collect_holdout_density_rows(run)
+    assert all("density_eps_l1" in r and "density_eps_l1_pbe" in r
+               for r in hd)
+    finite = [r for r in hd if fig._is_num(r.get("density_eps_l1"))]
+    assert finite and all(r["density_eps_l1"] == pytest.approx(2.5e-4)
+                          for r in finite)
+
+
+def test_build_emits_dfs_units_ed_legs_when_eps_present(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    out = tmp_path / "f"
+    fig.build_density_energy_figures(run, out)
+    with (out / "ablation_combined_energy_density.csv").open() as fh:
+        legs = {r["leg"] for r in csv.DictReader(fh)}
+    # the DFS-units leg (Letter's gamma transplanted to Eq. 20 units) rides
+    # along whenever the eps columns are present in the pulled data
+    assert "wtmad2" in legs and "mae" in legs
+    assert "wtmad2_eps_gamma_dfs" in legs
+
+
+def test_nonempirical_gamma_common_support_and_malformed(tmp_path):
+    # unequal support (partial cache): m3 is pbe-only, so the fit restricts
+    # to the {m1, m2} intersection -- slope identical to the equal-support
+    # fixture -- and the coverage fields disclose the drop
+    cache = {
+        "m1": {"pbe": {"density_eps_l1": 0.010},
+               "scan": {"density_eps_l1": 0.006}},
+        "m2": {"pbe": {"density_eps_l1": 0.014},
+               "scan": {"density_eps_l1": 0.008}},
+        "m3": {"pbe": {"density_eps_l1": 0.100}},
+    }
+    p = tmp_path / "nonempirical_pool_def2-svp.json"
+    p.write_text(json.dumps(cache))
+    out = fig.nonempirical_gamma(tmp_path, basis="def2-svp",
+                                 cache_dir=tmp_path,
+                                 _wtmad={"pbe": 12.0, "scan": 7.0})
+    assert out["gamma"] == pytest.approx(0.193 / 0.000193)
+    assert out["n_species"] == 2 and out["n_species_dropped"] == 1
+    # disjoint support -> empty intersection -> {}
+    p.write_text(json.dumps({"m1": {"pbe": {"density_eps_l1": 1e-2}},
+                             "m2": {"scan": {"density_eps_l1": 1e-2}}}))
+    assert fig.nonempirical_gamma(tmp_path, basis="def2-svp",
+                                  cache_dir=tmp_path,
+                                  _wtmad={"pbe": 1.0, "scan": 1.0}) == {}
+    # malformed-but-parseable caches degrade to {} / skip, never raise
+    for payload in ([1, 2], {"m1": 3}, {"m1": {"pbe": 5}}):
+        p.write_text(json.dumps(payload))
+        assert fig.nonempirical_gamma(tmp_path, basis="def2-svp",
+                                      cache_dir=tmp_path,
+                                      _wtmad={"pbe": 1.0}) == {}
+
+
+def test_gamma_mode_keys_and_fixed_stamp_truthfulness():
+    self_s = fig.combined_ed_by_cell({("deep", 1): 8.0}, 10.0,
+                                     {("deep", 1): 4e-4}, 5e-4)
+    assert self_s["gamma_mode"] == "self_calibrated"
+    fixed_s = fig.combined_ed_fixed_gamma({("deep", 1): 8.0}, 10.0,
+                                          {("deep", 1): 0.004}, 0.005,
+                                          1000.0)
+    assert fixed_s["gamma_mode"] == "fixed"
+    # under an EXTERNAL gamma the self-calibration claims are false; the
+    # panels must not print them
+    for panel in (lambda ax, s: fig._ed_lines_panel(ax, s, "t"),
+                  fig._ed_decomposition_rich_panel,
+                  fig._ed_decomposition_panel):
+        f1, ax = fig.plt.subplots()
+        panel(ax, fixed_s)
+        texts = [t.get_text() for t in ax.texts]
+        assert not any("self-calibrated" in t for t in texts)
+        labels = ax.get_legend_handles_labels()[1]
+        assert not any("by self-calibration" in lb or "by construction" in lb
+                       for lb in labels)
+        fig.plt.close(f1)
+        # self-calibrated summaries keep the exact historical strings
+        f2, ax2 = fig.plt.subplots()
+        panel(ax2, self_s)
+        lbls2 = ax2.get_legend_handles_labels()[1]
+        txts2 = [t.get_text() for t in ax2.texts]
+        assert (any("(self-calibrated)" in t for t in txts2)
+                or any("by self-calibration" in lb or "by construction" in lb
+                       for lb in lbls2))
+        fig.plt.close(f2)
+    # the two stamped panels print the fixed gamma explicitly
+    for panel in (lambda ax, s: fig._ed_lines_panel(ax, s, "t"),
+                  fig._ed_decomposition_rich_panel):
+        f3, ax3 = fig.plt.subplots()
+        panel(ax3, fixed_s)
+        assert any("fixed, external" in t.get_text() for t in ax3.texts)
+        fig.plt.close(f3)
+
+
+def test_build_discloses_partial_eps_backfill(tmp_path, capsys):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    # strip the NN eps column from ONE spec: the state a partial backfill
+    # leaves (its cell keeps the RMSE channel but loses the eps channel)
+    specs = sorted((run / "checkpoints").glob("spec_*"))
+    pm = specs[0] / "eval_holdout" / "per_molecule.json"
+    rows = json.loads(pm.read_text())
+    for r in rows:
+        r["density_eps_l1"] = None
+    pm.write_text(json.dumps(rows))
+    out = tmp_path / "f"
+    fig.build_density_energy_figures(run, out)
+    printed = capsys.readouterr().out
+    assert "eps columns cover" in printed and "partial backfill" in printed
+    with (out / "ablation_combined_energy_density.csv").open() as fh:
+        rows_csv = list(csv.DictReader(fh))
+    n_wt = sum(1 for r in rows_csv if r["leg"] == "wtmad2")
+    n_eps = sum(1 for r in rows_csv if r["leg"] == "wtmad2_eps_gamma_dfs")
+    assert 0 < n_eps < n_wt
+
+
+def test_pbe_anchor_coverage_warning_key_params():
+    rows = [
+        {"molecule": "m1", "density_rmse": 1e-4, "density_rmse_pbe": 2e-4,
+         "density_eps_l1": 1e-3, "density_eps_l1_pbe": 2e-3},
+        {"molecule": "m2", "density_rmse": 1e-4, "density_rmse_pbe": 2e-4,
+         "density_eps_l1": None, "density_eps_l1_pbe": 2e-3},
+    ]
+    assert fig._pbe_anchor_coverage_warning(rows) == ""      # RMSE aligned
+    w = fig._pbe_anchor_coverage_warning(rows, nn_key="density_eps_l1",
+                                         pbe_key="density_eps_l1_pbe")
+    assert "m2" in w and "anchor-only" in w
+
+
 def test_plot_ed_decomposition_renders(tmp_path):
     from matplotlib.collections import PolyCollection
     run = _make_run_dir(tmp_path)
@@ -1909,7 +2102,15 @@ def test_plot_ed_decomposition_renders(tmp_path):
     assert ax.get_xscale() == "log" and ax.get_yscale() == "log"
     assert len(ax.lines) >= 5           # y=x + several iso-ED contour levels
     assert any(isinstance(c, PolyCollection) for c in ax.collections)
+    # the gamma stamp must DEFINE gamma, not just print its value
+    assert any("E$_{\\rm PBE}$/D$_{\\rm PBE}$" in t.get_text()
+               for t in ax.texts)
     fig.plt.close(f1)
+    f2, ax2 = fig.plt.subplots()
+    fig._ed_lines_panel(ax2, wt, "t")
+    assert any("E$_{\\rm PBE}$/D$_{\\rm PBE}$" in t.get_text()
+               for t in ax2.texts)
+    fig.plt.close(f2)
 
 
 def test_plot_density_energy_overview_renders(tmp_path):

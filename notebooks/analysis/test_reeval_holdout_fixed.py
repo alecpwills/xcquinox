@@ -191,8 +191,121 @@ def test_group_precompute_failure_fails_whole_group(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# checkpoint selection (model / model_best / model_val_best)
+# ---------------------------------------------------------------------------
+
+def test_eval_subdir_for_mapping():
+    import pytest
+    assert rh.eval_subdir_for("model") == "eval_holdout"
+    assert rh.eval_subdir_for("model_best") == "eval_holdout_best"
+    assert rh.eval_subdir_for("model_val_best") == "eval_holdout_val_best"
+    with pytest.raises(ValueError):
+        rh.eval_subdir_for("model_final")
+
+
+def test_discover_trained_specs_checkpoint_param(tmp_path):
+    run = _make_run(tmp_path, trained=(0, 1), untrained=())
+    (run / "checkpoints" / "spec_0001" / "model_val_best.eqx").write_bytes(b"x")
+    assert rh.discover_trained_specs(run) == [0, 1]
+    assert rh.discover_trained_specs(run, checkpoint="model_val_best") == [1]
+
+
+def test_needs_reeval_checkpoint_requires_that_checkpoint(tmp_path):
+    run = _make_run(tmp_path, trained=(0,))
+    sd = run / "checkpoints" / "spec_0000"
+    # model.eqx exists but model_val_best.eqx does not
+    assert rh.needs_reeval(sd, checkpoint="model_val_best") is False
+    (sd / "model_val_best.eqx").write_bytes(b"x")
+    assert rh.needs_reeval(sd, checkpoint="model_val_best") is True
+
+
+def test_run_checkpoint_val_best_isolated_subdir_and_stamp(tmp_path):
+    run = _make_run(tmp_path, trained=(0,), untrained=())
+    sd = run / "checkpoints" / "spec_0000"
+    (sd / "model_val_best.eqx").write_bytes(b"x")
+    seen_paths: list = []
+    out_dirs: list = []
+    inj = _stub_inject([])
+
+    def model_loader(spec, model_path):
+        seen_paths.append(model_path.name)
+        return object()
+
+    def eval_fn(spec, model, mol_specs, reactions, out_dir, mol_data):
+        out_dirs.append(out_dir.name)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "per_reaction.json").write_text("[]")
+        return {"n_reactions": 1, "combined": (1.0, 2.0, 1, 0, 0)}
+
+    inj["model_loader"] = model_loader
+    inj["eval_fn"] = eval_fn
+    res = rh.run(run, checkpoint="model_val_best", clock=lambda: 0.0, **inj)
+    assert res["processed"] == [0]
+    assert seen_paths == ["model_val_best.eqx"]
+    assert out_dirs == ["eval_holdout_val_best"]
+    # stamp lives in the val-best subdir; the default subdir has none
+    assert (sd / "eval_holdout_val_best" / "reeval_meta.json").is_file()
+    assert not (sd / "eval_holdout" / "reeval_meta.json").exists()
+    # the default-checkpoint eval is INDEPENDENT: still needed afterwards
+    assert rh.needs_reeval(sd) is True
+    # val-best re-run is a no-op (idempotent under its own stamp)
+    res2 = rh.run(run, checkpoint="model_val_best", clock=lambda: 0.0, **inj)
+    assert res2["processed"] == [] and res2["skipped"] == [0]
+
+
+def test_main_checkpoint_flag_threads(tmp_path, monkeypatch):
+    import pytest
+    run = _make_run(tmp_path, trained=(0,))
+    seen: dict = {}
+
+    def fake_run(run_dir, **kw):
+        seen.update(kw)
+        return {"processed": [], "skipped": [], "failed": []}
+
+    monkeypatch.setattr(rh, "run", fake_run)
+    rc = rh.main(["--run-dir", str(run), "--checkpoint", "model_val_best"])
+    assert rc == 0 and seen["checkpoint"] == "model_val_best"
+    with pytest.raises(SystemExit):
+        rh.main(["--run-dir", str(run), "--checkpoint", "nope"])
+
+
+# ---------------------------------------------------------------------------
 # density refs + PBE-only mode
 # ---------------------------------------------------------------------------
+
+def test_density_stamp_v3_reprocesses_under_current_suffix(tmp_path):
+    """Specs stamped +density_refs_v3 (pre-eps schema) must re-process under
+    the current density stamp so per_molecule.json gains the DFS Eq. 20
+    per-electron L1 columns."""
+    run = _make_run(tmp_path, trained=(0,), untrained=())
+    sd = run / "checkpoints" / "spec_0000"
+    out = sd / "eval_holdout"
+    out.mkdir(parents=True)
+    (out / "reeval_meta.json").write_text(json.dumps(
+        {"geom_units_fix": rh.REEVAL_VERSION + "+density_refs_v3"}))
+    assert rh.needs_reeval(sd, version=rh.effective_version("/refs")) is True
+
+
+def test_refs_free_rerun_does_not_churn_density_stamped_spec(tmp_path):
+    """A density-stamped spec satisfies the refs-free base version: a re-run
+    without --density-refs must skip it (re-processing would overwrite the
+    density columns with the all-None schema and downgrade the stamp)."""
+    run = _make_run(tmp_path, trained=(0,), untrained=())
+    sd = run / "checkpoints" / "spec_0000"
+    out = sd / "eval_holdout"
+    out.mkdir(parents=True)
+    (out / "reeval_meta.json").write_text(json.dumps(
+        {"geom_units_fix": rh.effective_version("/refs")}))
+    assert rh.needs_reeval(sd) is False
+    # a genuinely NEW base version still re-evals (no prefix collision)
+    assert rh.needs_reeval(sd, version=rh.REEVAL_VERSION + "9") is True
+    # and force always overrides
+    assert rh.needs_reeval(sd, force=True) is True
+    # driver-level: a refs-free run skips the density-stamped spec entirely
+    calls: list = []
+    res = rh.run(run, clock=lambda: 0.0, **_stub_inject(calls))
+    assert res["processed"] == [] and res["skipped"] == [0] and calls == []
+
 
 def test_effective_version_switches_with_density_refs():
     assert rh.effective_version(None) == rh.REEVAL_VERSION
@@ -255,7 +368,7 @@ def test_pbe_density_only_needs_no_model(tmp_path):
             raise RuntimeError("scf diverged")
         import numpy as np
         return {"rho_grid": np.array([1.5, 0.5]),
-                "rho_ref_grid": np.array([1.0, 1.0]),
+                "rho_ref_grid": np.array([2.0, 1.0]),
                 "grid_weights": np.array([3.0, 1.0])}
 
     payload = rh.run_pbe_density_table(run, density_refs="/refs",
@@ -264,6 +377,13 @@ def test_pbe_density_only_needs_no_model(tmp_path):
     assert set(payload["errors"]) == {"h2o"}
     assert payload["errors"]["h2o"]["density_rmse_pbe"] == 0.5
     assert payload["errors"]["h2o"]["density_l1_pbe"] == 0.5
+    # DFS Eq. 20 per-electron L1: sum(w|drho|)/N_e = (3*0.5+1*0.5)/7 = 2/7,
+    # distinct from the weight-mean l1 (2/4) because N_e = sum(w rho_ref) = 7
+    import pytest
+    assert payload["errors"]["h2o"]["density_eps_l1_pbe"] == \
+        pytest.approx(2.0 / 7.0)
+    assert payload["errors"]["h2o"]["n_electrons"] == pytest.approx(7.0)
+    assert payload["errors"]["h2o"]["grid_weight_sum"] == pytest.approx(4.0)
     assert "bad" in payload["failures"]
     on_disk = json.loads((run / "pbe_density_errors.json").read_text())
     assert on_disk["errors"] == payload["errors"]
@@ -286,7 +406,7 @@ def test_pbe_density_table_fast_path_uses_stored_pbe_grid(tmp_path):
     refs = tmp_path / "refs"
     refs.mkdir()
     np.savez_compressed(refs / "h2o.npz",
-                        rho_ref_grid=np.array([1.0, 1.0]),
+                        rho_ref_grid=np.array([2.0, 1.0]),
                         rho_pbe_grid=np.array([1.5, 0.5]),
                         grid_weights=np.array([3.0, 1.0]),
                         ref_density_method=np.array("ccsd"))
@@ -305,6 +425,11 @@ def test_pbe_density_table_fast_path_uses_stored_pbe_grid(tmp_path):
     payload = rh.run_pbe_density_table(run, density_refs=str(refs),
                                        pools_loader=pools_loader,
                                        precompute_one=precompute_one)
+    import pytest
     assert payload["errors"]["h2o"]["density_rmse_pbe"] == 0.5
     assert payload["errors"]["h2o"]["density_l1_pbe"] == 0.5
+    assert payload["errors"]["h2o"]["density_eps_l1_pbe"] == \
+        pytest.approx(2.0 / 7.0)
+    assert payload["errors"]["h2o"]["n_electrons"] == pytest.approx(7.0)
+    assert payload["errors"]["h2o"]["grid_weight_sum"] == pytest.approx(4.0)
     assert not payload["failures"]

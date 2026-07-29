@@ -40,6 +40,21 @@ def test_step5_constants():
     assert len(STEP5_SOLVERS) == 3
 
 
+def test_per_molecule_melt_drops_bookkeeping_columns():
+    """n_electrons / grid_weight_sum are quadrature bookkeeping -- the long
+    form must not carry them as ~1e5-scale pseudo-metric rows, while genuine
+    error columns (the Eq. 20 eps) still melt."""
+    import pandas as pd
+    from step5_data_loader import _per_molecule_rows_to_long
+    df = pd.DataFrame([{"molecule": "h2o", "density_eps_l1": 1e-3,
+                        "n_electrons": 10.0, "grid_weight_sum": 2.1e5}])
+    long = _per_molecule_rows_to_long(df)
+    names = set(long["value_name"])
+    assert "density_eps_l1" in names
+    assert "n_electrons" not in names
+    assert "grid_weight_sum" not in names
+
+
 @pytest.mark.skipif(
     not (RUN_UNW.is_dir() and RUN_INT.is_dir()),
     reason="needs both step-5 unweighted and integration runs present",

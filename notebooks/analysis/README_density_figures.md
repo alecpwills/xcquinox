@@ -33,7 +33,7 @@ no model weights are opened.
 | `eval/per_molecule.json` | All IN-SAMPLE panels | Final-checkpoint eval of the trained molecules. There is no val-best variant of this file, so in-sample panels are identical across the two output dirs (only the title's checkpoint stamp differs). Carries `AE_error_kcalmol`, `AE_ref_kcalmol`, `density_rmse`, `density_l1`, `density_rmse_pbe`, `density_l1_pbe`, `ref_density_method`; it has NO PBE AE column. |
 | `eval_holdout*/per_reaction.json` | All held-out ENERGY panels | One row per evaluated benchmark reaction (`pool` = `bh76` or `w411`) with `abs_error_nn_kcalmol`, `abs_error_pbe_kcalmol`, `reaction_energy_ref_kcalmol`. These are the reactions the eval wrote -- the run's TEST slice, not the full canonical pool; the dataset footer line (Sec. 3) carries the live name-deduplicated counts. The three variants `eval_holdout/`, `eval_holdout_best/`, `eval_holdout_val_best/` hold the final-step, train-best, and validation-best checkpoints' evals. |
 | `eval_holdout*/per_molecule.json` | All held-out DENSITY panels | Per benchmark species: `density_rmse`, `density_l1` (NN vs CCSD) and `density_rmse_pbe`, `density_l1_pbe` (model-free PBE vs CCSD on the same grid). Atoms carry None by design (skipped as `atomic_system`, `xcquinox/alec/evaluation.py:203`). |
-| `pbe_density_errors.json` (run level) | Optional PBE density anchor | Written only by `reeval_holdout_fixed.py --pbe-density-only`; takes precedence over the inline PBE columns when present (`_pbe_density_map`, :1860). Absent on ordinary pulls. |
+| `pbe_density_errors.json` (run level) | Optional PBE density anchor | Written only by `reeval_holdout_fixed.py --pbe-density-only`; takes precedence over the inline PBE columns when present (`_pbe_density_map`, :1869). Absent on ordinary pulls. |
 
 Reference densities are CCSD (not CCSD(T)) benchmark references generated at the SAME basis
 and grid as the run (`xcquinox.alec.benchmark_refs`); the PBE density channel is model-free
@@ -48,7 +48,7 @@ a grid-weight-AVERAGED error -- deliberately NOT the per-electron L1 of the DFS 
 Eq. 20 and NOT the N_e^2-normalized form used inside the training loss (see Sec. 2.3).
 
 Checkpoint stamps: figure suptitles end in `final-step` (from `eval_holdout/`) or `val-best`
-(from `eval_holdout_val_best/`), mapped by `_ckpt_label` (:4133).
+(from `eval_holdout_val_best/`), mapped by `_ckpt_label` (:4330).
 
 ## 2. The metrics
 
@@ -57,7 +57,7 @@ Checkpoint stamps: figure suptitles end in `final-step` (from `eval_holdout/`) o
 Plain mean of |reaction-energy error| (kcal/mol) over the held-out reactions of a cell
 (`reaction_mae_by_arch_subset`, :439). The PBE twin deduplicates rows by reaction name
 before averaging, because the PBE error is spec-invariant and would otherwise be counted
-once per spec (`pbe_reaction_mae_baseline`, :1924; `_dedup_rows_by_name`, :1649).
+once per spec (`pbe_reaction_mae_baseline`, :1939; `_dedup_rows_by_name`, :1649).
 
 ### 2.2 2-subset WTMAD-2 and its single-pool reduction
 
@@ -91,15 +91,24 @@ density error eps_|n| = E[(1/N_e) INT |n - n_ref|] (its Eq. 20), and
 gamma = 1084.87 kcal/mol, the slope of a zero-intercept regression of WTMAD-2 on eps_|n|
 across six nonempirical functionals (PW91, PBE, TPSS, revTPSS, SCAN, PBE0; R^2 = 0.87).
 
-The suite's implementation (`combined_ed_by_cell`, :1946; section note :1815-1841) keeps the
+The suite's implementation (`combined_ed_by_cell`, :1961; section note :1821-1847) keeps the
 Eq. 21 form with three documented deviations, each stamped on the figures:
 
 1. **gamma is self-calibrated, per energy leg, from the pooled PBE anchors:**
    `gamma = E_PBE / D_PBE`, so `ED_PBE == E_PBE` by construction and every cell shares the
-   PBE kcal/mol scale. The Letter's 1084.87 kcal/mol is dimensionally tied to its
-   per-electron L1 density units and would be wrong against the grid-weight-averaged RMSE
-   stored by the eval pipeline. Consequence: ED here is a relative-to-PBE score; its values
-   are comparable across cells of one figure, not across runs with different PBE baselines.
+   PBE kcal/mol scale. What gamma IS: inside each cell's ED, E and D are the NETWORK'S OWN
+   aggregate errors vs the references -- gamma is the conversion slope that maps density
+   error onto the energy axis, and it must come from OUTSIDE the scored functional
+   (gamma = E_NN/D_NN would give gamma*D_NN = E_NN and collapse ED to the pure energy
+   error for every network). In the Letter, gamma is the zero-intercept regression slope
+   of WTMAD-2 on eps across six nonempirical functionals ("the energy error (WTMAD-2), a
+   fictional nonempirical functional with density error eps_n would exhibit"); here the
+   calibration set is collapsed to one functional, PBE (a zero-intercept line through one
+   point has slope E_PBE/D_PBE). The Letter's 1084.87 kcal/mol is dimensionally tied to
+   its per-electron L1 density units and would be wrong against the grid-weight-averaged
+   RMSE stored by the eval pipeline. Consequence: ED here is a relative-to-PBE score; its
+   values are comparable across cells of one figure, not across runs with different PBE
+   baselines.
 2. **Energy legs:** the headline leg is the 2-subset WTMAD-2 (Sec. 2.2), and a second leg
    uses the combined reaction MAE. The Spearman rank correlation between the two legs' ED
    values over the shared cells is printed in the figure's note band -- the ranking, not the
@@ -109,13 +118,32 @@ Eq. 21 form with three documented deviations, each stamped on the figures:
    and its L2 variant (SI Eq. 8) correlates best with WTMAD-2 (R^2 = 0.98); gamma absorbs
    the unit change.
 
+**Closing deviations 1 and 3 (DFS-units legs).** The eval also emits the exact Eq. 20
+per-species term, `density_eps_l1 = sum_i(w_i |rho - rho_ref|_i) / N_e` with
+`N_e = sum_i(w_i rho_ref_i)` (plus the PBE twin and the `n_electrons` / `grid_weight_sum`
+bookkeeping; `density_eps_terms` in `xcquinox/alec/evaluation.py`). When a pull carries
+those columns, the ED CSV gains a `wtmad2_eps_gamma_dfs` leg: same WTMAD-2 energy cells,
+D = per-cell mean eps, and gamma FIXED at the Letter's published 1084.87 kcal/mol -- now
+dimensionally valid because the density error is in the Letter's own units. Because that
+gamma is external, `ED_PBE != E_PBE` on this leg: PBE lands off the y=x locus by exactly
+its displacement from the Letter's cross-functional trend. A second conditional leg,
+`wtmad2_eps_gamma_fit`, repeats the construction with gamma refit the DFS way on OUR axes
+-- the zero-intercept regression of WTMAD-2 on eps across the same six nonempirical
+functionals, computed from the offline calibration cache
+(`precompute_nonempirical_pool.py`; `nonempirical_gamma` / `gamma_zero_intercept` in the
+figure module). The fitted slope is not expected to equal 1084.87 (different reaction set,
+basis, grid, and reference level); the published constant transplants the Letter's scale,
+the fitted one reproduces its procedure. Both legs are strictly additive -- pulls without
+the eps columns produce byte-identical CSVs, and the self-calibrated legs above remain the
+headline for relative-to-PBE claims.
+
 Supporting rules, all fail-loud: cells lacking a finite value in either leg are excluded and
-named in the note band (`_ed_exclusion_note`, :1984); the PBE density anchor deduplicates
-molecules across specs and uses finite rows only (`pbe_density_baseline`, :1879); a
+named in the note band (`_ed_exclusion_note`, :2166); the PBE density anchor deduplicates
+molecules across specs and uses finite rows only (`pbe_density_baseline`, :1889); a
 divergence between the anchor's molecule set and the NN density union is stamped as a
-warning rather than silently averaged (`_pbe_anchor_coverage_warning`, :1895); per-cell
+warning rather than silently averaged (`_pbe_anchor_coverage_warning`, :1907); per-cell
 density species sets that differ from the pooled union are named
-(`_density_cell_coverage_warning`, :2010). The same arithmetic, on identical inputs, matches
+(`_density_cell_coverage_warning`, :2192). The same arithmetic, on identical inputs, matches
 `combined_energy_density` in `notebooks/dfs_selfconsistent_density/dfs_demo.py`
 (reimplemented in the figure script; the notebook module's import chain is too heavy for a
 plotting-only script).
@@ -131,7 +159,7 @@ plotting-only script).
 | Grey `x` marker | PBE value (per molecule in strips; the PBE point in the ED decomposition) |
 | `n=...` annotations | Number of species behind that mean point |
 | Italic line under the title | The panel-family caveat (what the metric is and is not) |
-| Small grey line under the caveat | The DATASET line: what the held-out eval is, with live counts -- name-deduplicated reactions per pool and density-species coverage (`_holdout_eval_note`, :2062). Density/ED figures carry the full line; energy figures carry the reactions clause (as a dedicated line on the stamper-based figures, appended to the grey provenance on the five bespoke-footer figures). The name-by-name expansion of this line is `HOLDOUT_SET.md` (this directory) |
+| Small grey line under the caveat | The DATASET line: what the held-out eval is, with live counts -- name-deduplicated reactions per pool and density-species coverage (`_holdout_eval_note`, :2244). Density/ED figures carry the full line; energy figures carry the reactions clause (as a dedicated line on the stamper-based figures, appended to the grey provenance on the five bespoke-footer figures). The name-by-name expansion of this line is `HOLDOUT_SET.md` (this directory) |
 | Red band above the footer | Coverage/exclusion warnings: untrained archs, excluded cells, set divergences, the leg-agreement Spearman rho |
 | Grey footer line | Data provenance (which JSON, which references, which normalization) |
 
@@ -139,7 +167,7 @@ plotting-only script).
 
 ## 4. Figure register
 
-### 4.1 `ablation_insample_density_ccsd.png` (`plot_insample_density_ccsd`, :2512)
+### 4.1 `ablation_insample_density_ccsd.png` (`plot_insample_density_ccsd`, :2694)
 
 Training-set density FIT -- the direct diagnostic of the 20*rho density term the functionals
 were trained with. IN-SAMPLE only; not generalization; final checkpoint always.
@@ -149,7 +177,7 @@ were trained with. IN-SAMPLE only; not generalization; final checkpoint always.
 | Left | Per-arch mean `density_rmse` vs training subset_size (log y), `n=` species counts, grey dashed PBE-vs-CCSD line over the same subsets (present when the model-free PBE columns exist) |
 | Right | Per-molecule strip: every (spec, molecule) point, arch-jittered; one grey `x` per molecule = PBE-vs-CCSD |
 
-### 4.2 `ablation_holdout_density_ccsd.png` (`plot_holdout_density_ccsd`, :2629)
+### 4.2 `ablation_holdout_density_ccsd.png` (`plot_holdout_density_ccsd`, :2811)
 
 Held-out density GENERALIZATION on the W4-11+BH76 benchmark species (198 with finite
 density channels on the current pulls; atoms excluded).
@@ -159,7 +187,7 @@ density channels on the current pulls; atoms excluded).
 | Left | Per-arch mean held-out `density_rmse` vs subset_size (log y), grey dashed PBE pool-mean line (its label prints the pool-mean value). Also shipped standalone as 4.3 |
 | Right | Per-species NN-vs-PBE parity, log-log, dotted diagonal: a point BELOW the diagonal means the NN density is closer to CCSD than PBE is for that species. Falls back to a PBE-only sorted strip when no NN density exists (a PBE-only re-eval) |
 
-### 4.3 `ablation_holdout_density_per_arch.png` (`plot_holdout_density_per_arch`, :2671)
+### 4.3 `ablation_holdout_density_per_arch.png` (`plot_holdout_density_per_arch`, :2853)
 
 The left panel of 4.2 promoted to its own single-panel figure (same panel body, same PBE
 pool-mean baseline, same caveat) after the held-out overview swapped this slot for the
@@ -167,7 +195,7 @@ parity and iso-ED decomposition panels. Use it when the per-arch density TREND v
 subset_size is the point; use 4.2's parity panel when the per-species NN-vs-PBE comparison
 is the point.
 
-### 4.4 `ablation_combined_energy_density.png` (`plot_combined_energy_density`, :2904)
+### 4.4 `ablation_combined_energy_density.png` (`plot_combined_energy_density`, :3100)
 
 The DFS Eq. 21 ED figure, NN vs PBE, held-out.
 
@@ -177,29 +205,35 @@ The DFS Eq. 21 ED figure, NN vs PBE, held-out.
 | (b) | Per-cell decomposition in the (E, gamma*D) plane, log-log (`_ed_decomposition_panel`): dotted y=x is the self-calibration locus (PBE sits on it exactly, grey `x`); thin grey iso-ED harmonic contours at 0.5x, 1x, 2x the PBE ED; points below the locus are density-limited, above it energy-limited; small digits = subset_size |
 | (c) | Secondary ED with the reaction-MAE leg (its own gamma) -- the leg-independence check; renders a grey placeholder when the MAE anchors are unavailable |
 
-### 4.5 `ablation_combined_energy_density.csv` (`write_combined_ed_csv`, :2159)
+### 4.5 `ablation_combined_energy_density.csv` (`write_combined_ed_csv`, :2341)
 
-One row per (energy leg, arch, subset_size); legs are `wtmad2` and `mae`. Columns
-(`_ED_CSV_FIELDS`, :2153):
+One row per (energy leg, arch, subset_size); legs are `wtmad2` and `mae`, plus -- only
+when the pull carries the Eq. 20 eps columns (Sec. 2.3, "Closing deviations 1 and 3") --
+`wtmad2_eps_gamma_dfs` (D = per-cell mean `density_eps_l1`, gamma = 1084.87 fixed) and,
+when the nonempirical calibration cache sits in the run dir, `wtmad2_eps_gamma_fit`
+(gamma = the own-axes six-functional regression slope). On those two legs the `D_rmse` /
+`D_pbe_rmse` columns carry eps values (per-electron L1, not RMSE), `gamma` is the fixed
+slope rather than `E_pbe/D_pbe`, and `ED_pbe_kcalmol` generally differs from
+`E_pbe_kcalmol`. Columns (`_ED_CSV_FIELDS`, :2335):
 
 | Column | Meaning |
 |---|---|
-| `leg` | Energy leg: `wtmad2` (headline) or `mae` |
+| `leg` | Energy leg: `wtmad2` (headline), `mae`, or -- eps columns present -- `wtmad2_eps_gamma_dfs` / `wtmad2_eps_gamma_fit` |
 | `arch` | Architecture (ARCH_ORDER-sorted within each leg) |
 | `subset_size` | Training subset size of the cell |
 | `n_reactions` | Finite-NN reaction rows in the cell behind E (equals the reaction count under the current one-spec-per-cell layout) |
-| `n_density_species` | Finite-NN density rows in the cell behind D (equals the species count under the same layout) |
+| `n_density_species` | Finite-NN density rows in the cell behind D (counted on the leg's own channel: RMSE rows, or eps rows on the DFS-units legs) |
 | `E_kcalmol` | Cell energy error (2-subset WTMAD-2 or combined reaction MAE) |
-| `D_rmse` | Cell mean held-out density RMSE vs CCSD |
-| `gamma` | Self-calibrated rescale, `E_pbe_kcalmol / D_pbe_rmse` (one value per leg) |
+| `D_rmse` | Cell mean held-out density error vs CCSD: grid-weighted RMSE on the self-calibrated legs, per-electron L1 eps on the DFS-units legs |
+| `gamma` | The leg's rescale slope: `E_pbe_kcalmol / D_pbe_rmse` (self-calibrated legs) or the fixed external slope (1084.87 / the own-axes fit) |
 | `gammaD_kcalmol` | `gamma * D_rmse`, the density leg on the energy scale |
 | `ED_kcalmol` | `2 / (1/E + 1/(gamma*D))` |
 | `E_pbe_kcalmol` | Pooled PBE energy anchor (name-dedup) |
-| `D_pbe_rmse` | Pooled PBE density anchor (molecule-dedup, finite rows only) |
-| `ED_pbe_kcalmol` | PBE's ED; equals `E_pbe_kcalmol` by construction |
+| `D_pbe_rmse` | Pooled PBE density anchor (molecule-dedup, finite rows only; eps units on the DFS-units legs) |
+| `ED_pbe_kcalmol` | PBE's ED; equals `E_pbe_kcalmol` by construction on the self-calibrated legs, generally differs on the DFS-units legs |
 | `beats_pbe` | `True` iff `ED_kcalmol < ED_pbe_kcalmol` |
 
-### 4.6 `ablation_density_energy_overview.png` (`plot_density_energy_overview`, :2966)
+### 4.6 `ablation_density_energy_overview.png` (`plot_density_energy_overview`, :3162)
 
 The one-canvas held-out story -- energy above, the energy-density TRADE below; rendered
 whenever the held-out density figure renders. Same panel bodies as the dedicated figures
@@ -218,7 +252,7 @@ The per-arch density trend that formerly occupied (D) lives in 4.3 (and in the l
 of 4.2). No SCAN lines anywhere on this figure: a SCAN energy cache exists only for the
 combined MAE, and no SCAN WTMAD-2 or SCAN density cache exists.
 
-### 4.7 `ablation_density_energy_3x3.png` + `.csv` (`plot_density_energy_3x3`, :3053)
+### 4.7 `ablation_density_energy_3x3.png` + `.csv` (`plot_density_energy_3x3`, :3250)
 
 The per-channel held-out story: one column per channel (BH76 | W4-11 | combined), rendered
 whenever the held-out density figure renders.
@@ -226,8 +260,8 @@ whenever the held-out density figure renders.
 | Row | Content |
 |---|---|
 | 1 (A/B/C) | WTMAD-2 bars per (arch, subset_size): A/B are the one-bucket reduction of Sec. 2.2 (titles say so), C the genuine 2-subset form -- the overview's energy row |
-| 2 (D/E/F) | Per-species NN-vs-PBE density parity restricted to that channel's species. Species-channel membership comes from the reactions' reactants+products (`_species_pools`, :2096); overlap species contribute to BOTH channels (stated in the caveat) |
-| 3 (G/H/I) | The DFS Eq. 21 ED per channel (`channel_ed_summaries`, :2112): the energy leg is that channel's WTMAD-2 form, the density leg that channel's species, and gamma is self-calibrated from THAT CHANNEL'S OWN PBE anchors -- so EDs compare within a panel, never across channels. Grey placeholder when a channel's anchors are missing |
+| 2 (D/E/F) | Per-species NN-vs-PBE density parity restricted to that channel's species. Species-channel membership comes from the reactions' reactants+products (`_species_pools`, :2278); overlap species contribute to BOTH channels (stated in the caveat) |
+| 3 (G/H/I) | The DFS Eq. 21 ED per channel (`channel_ed_summaries`, :2294): the energy leg is that channel's WTMAD-2 form, the density leg that channel's species, and the panel-title "own gamma" means gamma = E_PBE/D_PBE computed from THAT CHANNEL'S OWN PBE anchors (the value is printed inside each panel) -- so ED_PBE == E_PBE per channel and EDs compare within a panel, never across channels. Grey placeholder when a channel's anchors are missing |
 
 The companion `ablation_density_energy_3x3.csv` reuses the Sec. 4.5 schema with legs
 `bh76_wtmad2` / `w411_wtmad2` / `combined_wtmad2` and per-channel `n_reactions` /
@@ -236,10 +270,10 @@ Older pulls whose `per_reaction.json` predates the species lists (no
 `reactants`/`products`) cannot map species to channels: the single-pool columns then
 render placeholders/empty parity panels while the combined column stays intact.
 
-### 4.8 `ablation_ed_decomposition.png` (`plot_ed_decomposition`, :2881)
+### 4.8 `ablation_ed_decomposition.png` (`plot_ed_decomposition`, :3077)
 
 The iso-ED decomposition promoted to its own enriched canvas
-(`_ed_decomposition_rich_panel`, :2804), WTMAD-2 leg, same `combined_ed_by_cell` summary as
+(`_ed_decomposition_rich_panel`, :2997), WTMAD-2 leg, same `combined_ed_by_cell` summary as
 the ED figure's headline:
 
 | Visual | Meaning |
@@ -249,7 +283,7 @@ the ED figure's headline:
 | Thin colored lines | Per-arch trajectories through the cells in subset_size order (digits = subset_size) |
 | Dotted diagonal | The y=x self-calibration locus; the black `x` is PBE, on it by construction |
 
-### 4.9 `ablation_insample_overview.png` (`plot_insample_overview`, :3140)
+### 4.9 `ablation_insample_overview.png` (`plot_insample_overview`, :3337)
 
 The one-canvas in-sample (training-fit) story; always rendered. Three stamped disclosures:
 final checkpoint only (`eval/` has no val-best variant, so the panels are identical in the
@@ -260,7 +294,7 @@ self-calibrate gamma).
 | Panel | Content |
 |---|---|
 | (A) | In-sample AE MAE per (arch, subset_size) bars, NN only -- no PBE line by construction. The near-zero subset_size-1 bars are real: a one-molecule training set fits its own AE |
-| (B) | Per-molecule \|AE error\| strip (log y), arch-jittered (`_insample_ae_strip_panel`, :2484) |
+| (B) | Per-molecule \|AE error\| strip (log y), arch-jittered (`_insample_ae_strip_panel`, :2666) |
 | (C) | In-sample density RMSE vs subset_size (= left panel of 4.1, PBE dashed line included) |
 | (D) | Per-molecule density strip with grey PBE `x` (= right panel of 4.1) |
 

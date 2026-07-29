@@ -250,6 +250,10 @@ def reaction_mae_kcalmol(
 
 _DENSITY_RECORD_KEYS: Tuple[str, ...] = (
     "density_rmse", "density_l1", "density_rmse_pbe", "density_l1_pbe",
+    # DFS Letter Eq. 20 per-electron L1 (eps) + its model-free PBE twin,
+    # with the quadrature bookkeeping that makes any renormalization
+    # reconstructible offline (evaluation.density_eps_terms)
+    "density_eps_l1", "density_eps_l1_pbe", "n_electrons", "grid_weight_sum",
     "ref_density_method",
 )
 
@@ -259,10 +263,13 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
     """NN-vs-CCSD and PBE-vs-CCSD density errors for one held-out species.
 
     Returns ``{density_rmse, density_l1, density_rmse_pbe, density_l1_pbe,
-    ref_density_method}`` -- all ``None`` for atoms or when no CCSD reference
-    density was loaded (``rho_ref_grid is None``; e.g. the species'
-    ``external_data_path`` was unresolved), so runs without benchmark refs
-    are byte-identical to the historical all-None schema.
+    density_eps_l1, density_eps_l1_pbe, n_electrons, grid_weight_sum,
+    ref_density_method}`` (= ``_DENSITY_RECORD_KEYS``; the eps pair is the
+    DFS Letter Eq. 20 per-electron L1 with its quadrature bookkeeping) --
+    all ``None`` for atoms or when no CCSD reference density was loaded
+    (``rho_ref_grid is None``; e.g. the species' ``external_data_path`` was
+    unresolved), so runs without benchmark refs are byte-identical to the
+    historical all-None schema.
 
     The NN channel reuses :class:`~xcquinox.alec.evaluation.DensityRMSEMetric`
     (solver-aware; with a FULL/FIXED_J ``solver_config`` this re-runs the SCF
@@ -283,11 +290,16 @@ def density_errors_for_record(model, md: Dict[str, Any], *,
     nn = evaluation.DensityRMSEMetric().compute(model, md,
                                                 solver_config=solver_config)
     rmse_pbe, l1_pbe = evaluation.pbe_density_errors(md)
+    eps_pbe, n_e, wsum = evaluation.pbe_density_eps(md)
     return {
         "density_rmse": nn.get("density_rmse"),
         "density_l1": nn.get("density_l1"),
         "density_rmse_pbe": rmse_pbe,
         "density_l1_pbe": l1_pbe,
+        "density_eps_l1": nn.get("density_eps_l1"),
+        "density_eps_l1_pbe": eps_pbe,
+        "n_electrons": n_e,
+        "grid_weight_sum": wsum,
         "ref_density_method": nn.get("ref_density_method")
                               or md.get("ref_density_method"),
     }
@@ -310,7 +322,9 @@ def make_per_molecule_record(
     ``AE_error_kcalmol`` is left None (it only makes sense within a reaction
     context, which the per-reaction CSV captures). The density fields
     (``density_rmse``/``density_l1`` NN-vs-CCSD, ``density_rmse_pbe``/
-    ``density_l1_pbe`` PBE-vs-CCSD, ``ref_density_method``) come from the
+    ``density_l1_pbe`` PBE-vs-CCSD, ``density_eps_l1``/``density_eps_l1_pbe``
+    the DFS Eq. 20 per-electron L1 pair, ``n_electrons``/``grid_weight_sum``
+    the quadrature bookkeeping, ``ref_density_method``) come from the
     optional ``density`` dict (:func:`density_errors_for_record`) and stay
     None when it is omitted -- runs without benchmark CCSD reference
     densities keep the historical all-None schema.
@@ -339,6 +353,10 @@ def make_per_molecule_record(
         "density_l1": None,
         "density_rmse_pbe": None,
         "density_l1_pbe": None,
+        "density_eps_l1": None,
+        "density_eps_l1_pbe": None,
+        "n_electrons": None,
+        "grid_weight_sum": None,
         "ref_density_method": None,
         "cycles_run": 0,
         "scf_converged": True,

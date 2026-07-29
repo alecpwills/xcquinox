@@ -12,15 +12,24 @@ per_molecule.json,per_reaction.json}` -- the same artifacts the cluster eval
 writes -- by calling `eval_holdout.run_full_holdout_eval` with the corrected
 `full_benchmark_pools.load_full_held_out_pools`.
 
-IDEMPOTENT / RE-RUNNABLE: a sidecar `eval_holdout/reeval_meta.json` records the
-fix version. A spec is (re)processed iff it has a `model.eqx` AND lacks the
-current stamp -- so cluster-written / stale outputs are redone, already-fixed
-specs are skipped, and specs that finish or download LATER are picked up on the
-next run. Safe to run repeatedly as the sweep completes.
+IDEMPOTENT / RE-RUNNABLE: a sidecar `<eval subdir>/reeval_meta.json` records
+the fix version. A spec is (re)processed iff it has the selected checkpoint
+file AND lacks the current stamp -- so cluster-written / stale outputs are
+redone, already-fixed specs are skipped, and specs that finish or download
+LATER are picked up on the next run. Safe to run repeatedly as the sweep
+completes.
+
+CHECKPOINT SELECTION: `--checkpoint {model,model_best,model_val_best}`
+(default `model`) re-evals the corresponding weights into the matching
+cluster-convention subdir (`eval_holdout` / `eval_holdout_best` /
+`eval_holdout_val_best`), each with its own independent stamp -- so a
+val-best backfill (e.g. to gain the density columns on the checkpoints the
+figures actually plot) never disturbs the final-checkpoint artifacts.
 
 Usage:
     python notebooks/analysis/reeval_holdout_fixed.py \
-        [--run-dir <pulled run dir>] [--specs 0,1,5] [--force]
+        [--run-dir <pulled run dir>] [--specs 0,1,5] [--force] \
+        [--checkpoint model_val_best] [--density-refs <refs dir>]
 """
 from __future__ import annotations
 
@@ -39,8 +48,26 @@ REEVAL_VERSION = "geom_units_fix_v2"
 #: Stamp suffix when CCSD benchmark reference densities are wired
 #: (--density-refs): specs stamped refs-free re-process to gain the
 #: density_rmse/_pbe columns, while refs-free re-runs do NOT churn
-#: already-stamped specs.
-_DENSITY_STAMP_SUFFIX = "+density_refs_v3"
+#: already-stamped specs. v4 (2026-07-29): per_molecule.json gains the DFS
+#: Letter Eq. 20 per-electron L1 columns (density_eps_l1 / density_eps_l1_pbe)
+#: plus the n_electrons / grid_weight_sum quadrature bookkeeping, so
+#: v3-stamped specs re-process to gain them.
+_DENSITY_STAMP_SUFFIX = "+density_refs_v4"
+
+#: Checkpoint files a spec may carry (written by train.save_checkpoint) and
+#: the cluster-convention eval subdir each one's re-eval lands in.
+_CHECKPOINTS = ("model", "model_best", "model_val_best")
+
+
+def eval_subdir_for(checkpoint: str) -> str:
+    """Eval output subdir for a checkpoint name: ``model`` -> ``eval_holdout``,
+    ``model_best`` -> ``eval_holdout_best``, ``model_val_best`` ->
+    ``eval_holdout_val_best`` (the exact names the cluster eval writes and the
+    figure suite consumes)."""
+    if checkpoint not in _CHECKPOINTS:
+        raise ValueError(f"unknown checkpoint {checkpoint!r}; "
+                         f"expected one of {_CHECKPOINTS}")
+    return "eval_holdout" + checkpoint[len("model"):]
 
 
 def effective_version(density_refs: Optional[str]) -> str:
@@ -70,14 +97,15 @@ def manifest_width(run_dir: Path) -> int:
     return 4
 
 
-def discover_trained_specs(run_dir: Path) -> List[int]:
-    """Sorted spec indices that have a materialized ``model.eqx``."""
+def discover_trained_specs(run_dir: Path,
+                           checkpoint: str = "model") -> List[int]:
+    """Sorted spec indices that have a materialized ``<checkpoint>.eqx``."""
     ck = run_dir / "checkpoints"
     if not ck.is_dir():
         return []
     out: List[int] = []
     for sd in sorted(ck.glob("spec_*")):
-        if sd.is_dir() and (sd / "model.eqx").is_file():
+        if sd.is_dir() and (sd / f"{checkpoint}.eqx").is_file():
             try:
                 out.append(int(sd.name[len("spec_"):]))
             except ValueError:
@@ -85,9 +113,10 @@ def discover_trained_specs(run_dir: Path) -> List[int]:
     return sorted(set(out))
 
 
-def read_stamp(spec_dir: Path) -> Optional[str]:
-    """Return the recorded geom-fix version for a spec, or None."""
-    p = spec_dir / "eval_holdout" / _STAMP_NAME
+def read_stamp(spec_dir: Path, subdir: str = "eval_holdout") -> Optional[str]:
+    """Return the recorded geom-fix version for a spec's eval subdir, or
+    None."""
+    p = spec_dir / subdir / _STAMP_NAME
     if not p.is_file():
         return None
     try:
@@ -97,20 +126,32 @@ def read_stamp(spec_dir: Path) -> Optional[str]:
 
 
 def needs_reeval(spec_dir: Path, *, version: str = REEVAL_VERSION,
-                 force: bool = False) -> bool:
-    """A spec needs re-eval iff it has a model.eqx AND (force OR its stamp does
-    not match the current fix version)."""
-    if not (spec_dir / "model.eqx").is_file():
+                 force: bool = False, checkpoint: str = "model") -> bool:
+    """A spec needs re-eval iff it has the selected ``<checkpoint>.eqx`` AND
+    (force OR the checkpoint's own eval-subdir stamp does not satisfy the
+    requested version). A stamp that EXTENDS the requested base version with
+    a density suffix (``<version>+density_refs_*``) satisfies it: a
+    refs-free re-run must not churn a density-stamped spec, since
+    re-processing would overwrite its density columns with the all-None
+    schema. The ``+`` delimiter check prevents a prefix collision between
+    distinct base versions."""
+    if not (spec_dir / f"{checkpoint}.eqx").is_file():
         return False
     if force:
         return True
-    return read_stamp(spec_dir) != version
+    stamp = read_stamp(spec_dir, eval_subdir_for(checkpoint))
+    if stamp == version:
+        return False
+    if stamp is not None and stamp.startswith(version + "+"):
+        return False
+    return True
 
 
 def write_stamp(spec_dir: Path, summary: Dict[str, Any], *,
-                version: str = REEVAL_VERSION) -> Path:
+                version: str = REEVAL_VERSION,
+                subdir: str = "eval_holdout") -> Path:
     """Record the fix version + a small eval summary next to the artifacts."""
-    out = spec_dir / "eval_holdout"
+    out = spec_dir / subdir
     out.mkdir(parents=True, exist_ok=True)
     p = out / _STAMP_NAME
     payload = {
@@ -217,6 +258,7 @@ def run(
     run_dir: Path, *, force: bool = False,
     only_specs: Optional[Sequence[int]] = None,
     density_refs: Optional[str] = None,
+    checkpoint: str = "model",
     clock: Callable[[], float] = time.perf_counter,
     pools_loader: Callable = _real_pools_loader,
     spec_loader: Callable = _real_spec_loader,
@@ -232,12 +274,16 @@ def run(
     benchmark CCSD reference-density dir into the pools loader (so
     per_molecule.json gains the NN/PBE-vs-CCSD density columns) and switches
     the stamp to :func:`effective_version` so refs-free stamps re-process.
-    Heavy callables are injectable for tests. Returns
+    ``checkpoint`` selects the weights file (``model`` / ``model_best`` /
+    ``model_val_best``); artifacts and the stamp land in the matching
+    :func:`eval_subdir_for` subdir, independent per checkpoint. Heavy
+    callables are injectable for tests. Returns
     ``{processed, skipped, failed}`` spec-index lists."""
     width = manifest_width(run_dir)
     basis, grid_level = _read_basis_grid(run_dir)
     version = effective_version(density_refs)
-    trained = discover_trained_specs(run_dir)
+    subdir = eval_subdir_for(checkpoint)
+    trained = discover_trained_specs(run_dir, checkpoint=checkpoint)
     if only_specs is not None:
         wanted = set(only_specs)
         trained = [i for i in trained if i in wanted]
@@ -246,7 +292,8 @@ def run(
         return run_dir / "checkpoints" / f"spec_{idx:0{width}d}"
 
     todo = [i for i in trained
-            if needs_reeval(_spec_dir(i), version=version, force=force)]
+            if needs_reeval(_spec_dir(i), version=version, force=force,
+                            checkpoint=checkpoint)]
     skipped = [i for i in trained if i not in set(todo)]
 
     # Load each todo spec's training_spec once, and group by descriptor sig.
@@ -258,6 +305,7 @@ def run(
         groups.setdefault(descriptor_signature(ts), []).append(idx)
 
     print(f"[reeval] run_dir={run_dir.name}  basis={basis} grid={grid_level}  "
+          f"checkpoint={checkpoint} -> {subdir}/  "
           f"trained={len(trained)}  to-process={len(todo)} in {len(groups)} "
           f"descriptor-group(s)  already-fixed={len(skipped)}  "
           f"(version {version}"
@@ -294,12 +342,13 @@ def run(
                   f"[elapsed {_fmt_eta(elapsed)}, ETA {_fmt_eta(eta)}] ...",
                   flush=True)
             spec_dir = _spec_dir(idx)
-            model_path = spec_dir / "model.eqx"
+            model_path = spec_dir / f"{checkpoint}.eqx"
             try:
                 model = model_loader(specs_by_idx[idx], model_path)
                 summary = eval_fn(specs_by_idx[idx], model, mol_specs,
-                                  reactions, spec_dir / "eval_holdout", mol_data)
-                write_stamp(spec_dir, summary, version=version)
+                                  reactions, spec_dir / subdir, mol_data)
+                write_stamp(spec_dir, summary, version=version,
+                            subdir=subdir)
                 processed.append(idx)
                 comb = summary.get("combined")
                 if comb and len(comb) >= 2:
@@ -333,9 +382,11 @@ def run_pbe_density_table(
     The PBE channel is model-free and identical for every spec/arch of a run
     (PBE + geometry + basis only), so it is computed ONCE per run and written
     to ``<run_dir>/pbe_density_errors.json``: ``{basis, grid_level, refs_dir,
-    errors: {name: {density_rmse_pbe, density_l1_pbe}},
-    failures: {name: msg}}``. Works on summaries-profile pulls with zero local
-    ``model.eqx`` files. Atoms and species without a reference npz are
+    errors: {name: {density_rmse_pbe, density_l1_pbe, density_eps_l1_pbe,
+    n_electrons, grid_weight_sum}}, failures: {name: msg}}`` -- the eps column
+    is the DFS Letter Eq. 20 per-electron L1, ``sum(w|rho_PBE - rho_ref|)/N_e``
+    with ``N_e = sum(w rho_ref)``. Works on summaries-profile pulls with zero
+    local ``model.eqx`` files. Atoms and species without a reference npz are
     skipped (not failures).
 
     FAST PATH: benchmark reference npz files that carry ``rho_pbe_grid`` +
@@ -349,7 +400,7 @@ def run_pbe_density_table(
     """
     import numpy as np
 
-    from xcquinox.alec.evaluation import pbe_density_errors
+    from xcquinox.alec.evaluation import pbe_density_eps, pbe_density_errors
 
     basis, grid_level = _read_basis_grid(run_dir)
     mol_specs, _reactions = pools_loader(basis, grid_level, density_refs)
@@ -381,6 +432,7 @@ def run_pbe_density_table(
             if md is None:
                 md = precompute_one(ms)
             rmse, l1 = pbe_density_errors(md)
+            eps, n_e, wsum = pbe_density_eps(md)
         except Exception as exc:  # noqa: BLE001 - record + continue
             failures[name] = f"{type(exc).__name__}: {exc}"
             print(f"[pbe-density] ({k}/{len(with_refs)}) {name} FAILED: "
@@ -388,11 +440,15 @@ def run_pbe_density_table(
             continue
         if rmse is None:
             continue                      # npz present but carried no rho_ref
-        errors[name] = {"density_rmse_pbe": rmse, "density_l1_pbe": l1}
+        errors[name] = {"density_rmse_pbe": rmse, "density_l1_pbe": l1,
+                        "density_eps_l1_pbe": eps, "n_electrons": n_e,
+                        "grid_weight_sum": wsum}
         elapsed = time.perf_counter() - t0
         eta = elapsed / k * (len(with_refs) - k)
         print(f"[pbe-density] ({k}/{len(with_refs)}) {name} "
-              f"rmse={rmse:.3e} l1={l1:.3e} [elapsed {_fmt_eta(elapsed)}, "
+              f"rmse={rmse:.3e} l1={l1:.3e} "
+              f"eps={eps if eps is None else format(eps, '.3e')} "
+              f"[elapsed {_fmt_eta(elapsed)}, "
               f"ETA {_fmt_eta(eta)}]", flush=True)
     if n_fast:
         print(f"[pbe-density] {n_fast} species used the stored "
@@ -423,6 +479,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--force", action="store_true",
                    help="re-process even specs already stamped with the "
                         "current fix version")
+    p.add_argument("--checkpoint", default="model", choices=_CHECKPOINTS,
+                   help="weights file to re-eval (model.eqx final, "
+                        "model_best.eqx train-best, model_val_best.eqx "
+                        "val-best); artifacts land in the matching "
+                        "eval_holdout[_best|_val_best]/ subdir")
     p.add_argument("--density-refs", default=None,
                    help="dir of density-only benchmark CCSD reference "
                         "<name>.npz files (xcquinox.alec.benchmark_refs); "
@@ -448,7 +509,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.specs:
         only = [int(t) for t in args.specs.split(",") if t.strip()]
     result = run(run_dir, force=args.force, only_specs=only,
-                 density_refs=args.density_refs)
+                 density_refs=args.density_refs, checkpoint=args.checkpoint)
     return 1 if result["failed"] else 0
 
 

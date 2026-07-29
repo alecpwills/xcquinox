@@ -53,8 +53,12 @@ def _per_molecule_rows_to_long(df: pd.DataFrame) -> pd.DataFrame:
         )
         df = df[~skipped_bool]
     # Pivot to long: each numeric column becomes a (value_name, value) pair.
+    # n_electrons / grid_weight_sum are quadrature bookkeeping, not error
+    # metrics -- melting them would inject ~1e5-scale pseudo-metric rows.
     keep_cols = [c for c in df.columns if c not in ("skipped", "skip_reason",
-                                                     "ref_density_method")]
+                                                     "ref_density_method",
+                                                     "n_electrons",
+                                                     "grid_weight_sum")]
     long = df[keep_cols].melt(id_vars=["molecule"], var_name="value_name",
                                value_name="value")
     long = long.dropna(subset=["value"]).copy()
