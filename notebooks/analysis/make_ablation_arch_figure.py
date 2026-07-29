@@ -47,6 +47,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.util
 import json
 import math
@@ -1787,6 +1788,295 @@ def load_pbe_density_table(run_dir: Path) -> Dict[str, Dict[str, float]]:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# DFS Eq. 21 combined energy-density metric (ED)
+# ---------------------------------------------------------------------------
+# ED combines the held-out energy error with the held-out density-vs-CCSD error
+# in the metric of Dick & Fernandez-Serra, PRB 104, L161109 (2021), Eq. 21: the
+# harmonic mean of an energy error and a density error rescaled to an energy,
+# ED = 2/(1/E + 1/(gamma*D)). Three deviations from the Letter, all stamped on
+# the figure:
+#   * gamma is SELF-CALIBRATED per energy leg from the pooled PBE anchors
+#     (gamma = E_PBE/D_PBE, so ED_PBE == E_PBE by construction). The Letter's
+#     gamma = 1084.87 kcal/mol is the slope of a zero-intercept regression of
+#     WTMAD-2 on its per-electron L1 density error (Eq. 20) across six
+#     nonempirical functionals, and is dimensionally tied to those units --
+#     applying it to the grid-weight-averaged RMSE stored by the eval pipeline
+#     would be wrong.
+#   * the energy legs are the suite's 2-subset WTMAD-2 (Eq. 19 form over
+#     BH76+W4-11 only, a labeled reweighting) and the plain combined reaction
+#     MAE -- not the Letter's diet-GMTKN55-150 WTMAD-2.
+#   * the density leg is the grid-weight-averaged RMSE vs CCSD (not CCSD(T))
+#     emitted by the eval pipeline, not Eq. 20's per-electron L1. The Letter's
+#     SI Sec. VI reports the ranking "largely independent of the density error
+#     metric chosen" (its L2 variant, SI Eq. 8, correlates best with WTMAD-2,
+#     R^2 = 0.98), and gamma absorbs the unit change.
+# Semantics match ``combined_energy_density`` in
+# notebooks/dfs_selfconsistent_density/dfs_demo.py, reimplemented here because
+# dfs_demo pulls in the TestSpec/xcquinox import chain (too heavy for a
+# plotting-only script).
+
+
+def holdout_density_by_arch_subset(hd_rows: List[Dict[str, Any]]
+                                   ) -> Dict[Tuple[str, int], float]:
+    """``{(arch, subset_size): mean held-out density_rmse}`` over rows with a
+    finite NN channel -- the D leg of ED. Same bucketing rule as
+    ``reaction_mae_by_arch_subset``; atoms never contribute (their
+    ``density_rmse`` is None at eval time)."""
+    buckets: Dict[Tuple[str, int], List[float]] = {}
+    for r in hd_rows:
+        arch, ss = r.get("arch"), r.get("subset_size")
+        if arch is None or ss is None:
+            continue
+        if _is_num(r.get("density_rmse")):
+            buckets.setdefault((arch, ss), []).append(r["density_rmse"])
+    return {k: float(np.mean(v)) for k, v in buckets.items() if v}
+
+
+def _pbe_density_map(hd_rows: List[Dict[str, Any]],
+                     pbe_table: Optional[Dict[str, Dict[str, float]]] = None
+                     ) -> Dict[str, float]:
+    """Per-molecule PBE density-error map behind ``pbe_density_baseline`` and
+    ``_pbe_anchor_coverage_warning``: the run-level table when given (finite
+    entries only), else the per-molecule mean of the inline
+    ``density_rmse_pbe`` columns."""
+    pbe_mol: Dict[str, float] = {
+        m: d["density_rmse_pbe"] for m, d in (pbe_table or {}).items()
+        if _is_num(d.get("density_rmse_pbe"))}
+    if not pbe_mol:
+        acc: Dict[str, List[float]] = {}
+        for r in hd_rows:
+            if _is_num(r.get("density_rmse_pbe")) and r.get("molecule"):
+                acc.setdefault(r["molecule"], []).append(r["density_rmse_pbe"])
+        pbe_mol = {m: float(np.mean(v)) for m, v in acc.items()}
+    return pbe_mol
+
+
+def pbe_density_baseline(hd_rows: List[Dict[str, Any]],
+                         pbe_table: Optional[Dict[str, Dict[str, float]]] = None
+                         ) -> float:
+    """Pooled PBE density-vs-CCSD anchor ``D_PBE``: the run-level
+    ``pbe_density_errors.json`` table when given, else the per-molecule mean of
+    the inline ``density_rmse_pbe`` columns; then the mean over molecules. The
+    per-molecule dedup matters -- the PBE channel is model-free and identical
+    across specs, so a row-weighted mean would multiply-count each molecule by
+    its spec coverage. NaN when nothing finite (older evals without the PBE
+    columns), mirroring ``wtmad2_pbe_baseline``'s NaN-degrade convention. An
+    anchor set wider or narrower than the NN density union is flagged by
+    ``_pbe_anchor_coverage_warning``."""
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table)
+    return float(np.mean(list(pbe_mol.values()))) if pbe_mol else float("nan")
+
+
+def _pbe_anchor_coverage_warning(hd_rows: List[Dict[str, Any]],
+                                 pbe_table: Optional[Dict[str, Dict[str, float]]]
+                                 = None) -> str:
+    """'' when the PBE density anchor's molecule set equals the set of
+    molecules with a finite NN density; otherwise names the symmetric
+    difference. Guards ``D_PBE`` against silently averaging species the NN
+    legs never see -- possible when a run-level ``pbe_density_errors.json``
+    spans more species than the NN eval, or when the NN channel failed for
+    rows whose PBE column survived."""
+    anchor = set(_pbe_density_map(hd_rows, pbe_table))
+    nn = {r.get("molecule") for r in hd_rows if _is_num(r.get("density_rmse"))}
+    if not anchor or anchor == nn:
+        return ""
+
+    def _fmt(ms: List[str]) -> str:
+        shown = ", ".join(ms[:6])
+        return shown + (f" (+{len(ms) - 6} more)" if len(ms) > 6 else "")
+
+    parts = []
+    extra = sorted(m for m in anchor - nn if m)
+    missing = sorted(m for m in nn - anchor if m)
+    if extra:
+        parts.append("anchor-only: " + _fmt(extra))
+    if missing:
+        parts.append("NN-only: " + _fmt(missing))
+    return ("PBE density anchor set differs from the NN density union -- "
+            + "; ".join(parts) + ".")
+
+
+def pbe_reaction_mae_baseline(rows: List[Dict[str, Any]]) -> float:
+    """Pooled PBE reaction MAE (kcal/mol) over the held-out rows, dedup by
+    reaction name -- the MAE-leg anchor ``E_PBE``, the same arithmetic as the
+    inline expression in ``plot_energy_wtmad_mae``. NOT ``pbe_pool_baseline``'s
+    'combined': that one spans the full canonical pool (including reactions
+    absent from the pulled ``per_reaction.json``), and gamma self-calibration
+    needs ``E_PBE`` on the same reaction set as the per-cell ``E_NN``. NaN when
+    empty."""
+    val = _mae([r.get("abs_error_pbe_kcalmol")
+                for r in _dedup_rows_by_name(rows)])
+    return float("nan") if val is None else float(val)
+
+
+def _harmonic_mean(a: float, b: float) -> float:
+    """``2/(1/a + 1/b)``; 0.0 when either input is non-positive or non-finite
+    (the guard of dfs_demo's ``combined_energy_density`` -- a leg at or below
+    zero has no harmonic-mean meaning and would otherwise divide by zero)."""
+    if not (_is_num(a) and _is_num(b)) or a <= 0.0 or b <= 0.0:
+        return 0.0
+    return 2.0 / (1.0 / a + 1.0 / b)
+
+
+def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
+                        e_pbe: float,
+                        density_by_cell: Dict[Tuple[str, int], float],
+                        d_pbe: float) -> Dict[str, Any]:
+    """DFS Eq. 21 ED per (arch, subset_size) cell (kcal/mol), NN vs PBE.
+
+    ``gamma = e_pbe / d_pbe`` (self-calibrated; see the section note above for
+    why the Letter's fixed 1084.87 kcal/mol cannot be used here), so
+    ``ed_pbe == e_pbe`` by construction and every cell's
+    ``ED = 2/(1/E + 1/(gamma*D))`` shares the PBE kcal/mol scale. Only cells
+    with a finite value in BOTH maps are emitted -- callers surface the
+    excluded cells via ``_ed_exclusion_note``. Raises ValueError on
+    non-finite/non-positive anchors (no silent NaN ED)."""
+    if not (_is_num(e_pbe) and e_pbe > 0.0):
+        raise ValueError(
+            f"PBE energy anchor must be finite and positive, got {e_pbe!r}")
+    if not (_is_num(d_pbe) and d_pbe > 0.0):
+        raise ValueError(
+            f"PBE density anchor must be finite and positive, got {d_pbe!r}")
+    gamma = float(e_pbe) / float(d_pbe)
+    ed_pbe = _harmonic_mean(float(e_pbe), gamma * float(d_pbe))
+    cells: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    for cell, e in energy_by_cell.items():
+        d = density_by_cell.get(cell)
+        if not (_is_num(e) and _is_num(d)):
+            continue
+        ed = _harmonic_mean(float(e), gamma * float(d))
+        cells[cell] = {"E": float(e), "D": float(d),
+                       "gammaD": gamma * float(d), "ED": ed,
+                       "beats_pbe": bool(ed < ed_pbe)}
+    return {"gamma": gamma, "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
+            "ed_pbe": ed_pbe, "cells": cells}
+
+
+def _cell_tag(cell: Tuple[str, int]) -> str:
+    return f"{cell[0]}/ss{cell[1]}"
+
+
+def _ed_exclusion_note(energy_by_cell: Dict[Tuple[str, int], float],
+                       density_by_cell: Dict[Tuple[str, int], float]) -> str:
+    """Names every cell excluded from ED -- present in only one leg, or keyed
+    but non-finite in either -- mirroring ``combined_ed_by_cell``'s
+    finite-in-both emission rule so nothing drops silently; '' when every
+    keyed cell is emitted."""
+    e_ok = {c for c, v in energy_by_cell.items() if _is_num(v)}
+    d_ok = {c for c, v in density_by_cell.items() if _is_num(v)}
+    e_only = sorted(e_ok - d_ok)
+    d_only = sorted(d_ok - e_ok)
+    nonfinite = sorted((set(energy_by_cell) | set(density_by_cell))
+                       - e_ok - d_ok)
+    if not e_only and not d_only and not nonfinite:
+        return ""
+    parts = []
+    if e_only:
+        parts.append("energy-only: " + ", ".join(_cell_tag(c) for c in e_only))
+    if d_only:
+        parts.append("density-only: " + ", ".join(_cell_tag(c) for c in d_only))
+    if nonfinite:
+        parts.append("non-finite: " + ", ".join(_cell_tag(c)
+                                                for c in nonfinite))
+    return ("ED excludes cells lacking a usable leg -- "
+            + "; ".join(parts) + ".")
+
+
+def _density_cell_coverage_warning(hd_rows: List[Dict[str, Any]]) -> str:
+    """'' when every (arch, subset_size) cell's set of finite-NN density
+    species equals the pooled union; otherwise names the divergent cells with
+    their counts. Cells are expected to share one held-out species set -- a
+    partial eval would silently bias that cell's mean D."""
+    per_cell: Dict[Tuple[str, int], set] = {}
+    for r in hd_rows:
+        arch, ss = r.get("arch"), r.get("subset_size")
+        if arch is None or ss is None or not _is_num(r.get("density_rmse")):
+            continue
+        per_cell.setdefault((arch, ss), set()).add(r.get("molecule"))
+    if not per_cell:
+        return ""
+    union = set().union(*per_cell.values())
+    bad = {c: s for c, s in per_cell.items() if s != union}
+    if not bad:
+        return ""
+    frag = ", ".join(f"{_cell_tag(c)} n={len(s)}"
+                     for c, s in sorted(bad.items()))
+    return (f"per-cell density species differ from the pooled union "
+            f"(n={len(union)}): {frag}.")
+
+
+def _spearman(xs: Sequence[float], ys: Sequence[float]) -> float:
+    """Spearman rank correlation via double argsort + Pearson on the ranks.
+    NaN for n < 2, length mismatch, or a constant series; ties are not
+    rank-averaged (ED values are continuous -- exact ties arise only from
+    degenerate inputs)."""
+    xv = [float(x) for x in xs]
+    yv = [float(y) for y in ys]
+    if len(xv) < 2 or len(xv) != len(yv):
+        return float("nan")
+    if len(set(xv)) < 2 or len(set(yv)) < 2:
+        return float("nan")
+    rx = np.argsort(np.argsort(xv))
+    ry = np.argsort(np.argsort(yv))
+    return float(np.corrcoef(rx, ry)[0, 1])
+
+
+def _cell_counts(rows: List[Dict[str, Any]], key: str
+                 ) -> Dict[Tuple[str, int], int]:
+    """``{(arch, subset_size): #rows with a finite key}`` -- the n_* columns
+    of the ED CSV."""
+    out: Dict[Tuple[str, int], int] = {}
+    for r in rows:
+        arch, ss = r.get("arch"), r.get("subset_size")
+        if arch is None or ss is None or not _is_num(r.get(key)):
+            continue
+        out[(arch, ss)] = out.get((arch, ss), 0) + 1
+    return out
+
+
+_ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
+                  "n_density_species", "E_kcalmol", "D_rmse", "gamma",
+                  "gammaD_kcalmol", "ED_kcalmol", "E_pbe_kcalmol",
+                  "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe"]
+
+
+def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
+                          out_path: Path, *,
+                          n_reactions: Dict[Tuple[str, int], int],
+                          n_density: Dict[Tuple[str, int], int]) -> Path:
+    """Per-cell ED table for both energy legs, alongside the figure -- the
+    machine-readable source for a paper table. One row per (leg, cell), cells
+    in ARCH_ORDER-then-subset order; None legs skipped. The CSV path is NOT
+    appended to the figure list returned by ``build_density_energy_figures``
+    (that return contract stays PNG-only)."""
+    order = {a: i for i, a in enumerate(ARCH_ORDER)}
+    out_path = Path(out_path)
+    with out_path.open("w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=_ED_CSV_FIELDS)
+        w.writeheader()
+        for leg, summary in legs.items():
+            if not summary:
+                continue
+            cells = sorted(summary["cells"].items(),
+                           key=lambda kv: (order.get(kv[0][0], len(order)),
+                                           kv[0][0], kv[0][1]))
+            for (arch, ss), c in cells:
+                w.writerow({
+                    "leg": leg, "arch": arch, "subset_size": ss,
+                    "n_reactions": n_reactions.get((arch, ss), ""),
+                    "n_density_species": n_density.get((arch, ss), ""),
+                    "E_kcalmol": c["E"], "D_rmse": c["D"],
+                    "gamma": summary["gamma"],
+                    "gammaD_kcalmol": c["gammaD"], "ED_kcalmol": c["ED"],
+                    "E_pbe_kcalmol": summary["e_pbe"],
+                    "D_pbe_rmse": summary["d_pbe"],
+                    "ED_pbe_kcalmol": summary["ed_pbe"],
+                    "beats_pbe": c["beats_pbe"],
+                })
+    return out_path
+
+
 _ELEMENT_SYMBOLS = frozenset(
     "h he li be b c n o f ne na mg al si p s cl ar k ca sc ti v cr mn fe co "
     "ni cu zn ga ge as se br kr".split())
@@ -2179,6 +2469,140 @@ def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
             caveat=heldout,
             title="Held-out density error vs CCSD (NN vs PBE)")
         fig.tight_layout(rect=(0, 0.08, 1, 0.92))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+_ED_CAVEAT = ("ED = 2/(1/E + 1/(gamma*D)) (Dick & Fernandez-Serra, PRB 104, "
+              "L161109 (2021), Eq. 21); gamma self-calibrated per leg from "
+              "pooled PBE anchors (gamma = E_PBE/D_PBE), so ED_PBE == E_PBE "
+              "by construction (dashed).")
+
+
+def plot_combined_energy_density(wt_summary: Dict[str, Any],
+                                 mae_summary: Optional[Dict[str, Any]],
+                                 out_path: Path, run_id: str, *,
+                                 note: str = "",
+                                 provenance: Optional[str] = None,
+                                 caveat: Optional[str] = None) -> Path:
+    """DFS Eq. 21 combined energy-density ED, held-out, NN vs PBE:
+    (a) headline ED with the 2-subset WTMAD-2 energy leg vs subset_size per
+    arch, PBE dashed at its own ED (== its energy error, by gamma
+    self-calibration); (b) the per-cell (E, gamma*D) decomposition with iso-ED
+    harmonic contours -- PBE sits exactly on the dotted y=x self-calibration
+    locus, cells below it are density-limited, above it energy-limited;
+    (c) the reaction-MAE-leg ED, the leg-independence check (its own gamma).
+    ``wt_summary`` / ``mae_summary`` are ``combined_ed_by_cell`` outputs; a
+    None/empty ``mae_summary`` renders a placeholder panel. Non-positive
+    points are dropped defensively (log axes; cannot occur for real
+    MAE/WTMAD-2/D > 0). See the ED section note for the deviations from the
+    Letter."""
+
+    def _ed_lines(ax, summary, title):
+        cells = summary["cells"]
+        archs = arch_style.sort_by_rung(sorted({a for a, _ in cells}))
+        for a in archs:
+            pts = sorted((ss, c["ED"]) for (aa, ss), c in cells.items()
+                         if aa == a and c["ED"] > 0.0)
+            if not pts:
+                continue
+            ax.plot([s for s, _ in pts], [e for _, e in pts], marker="o",
+                    ms=5, color=ARCH_COLOR.get(a, "0.5"), label=a)
+        if _is_num(summary["ed_pbe"]) and summary["ed_pbe"] > 0.0:
+            ax.axhline(summary["ed_pbe"], ls="--", color="k", lw=1.0,
+                       label="PBE (ED = E by self-calibration)")
+        beat = [(ss, c["ED"]) for (_, ss), c in cells.items()
+                if c["beats_pbe"] and c["ED"] > 0.0]
+        if beat:
+            ax.scatter([s for s, _ in beat], [e for _, e in beat], marker="v",
+                       s=16, color="#2ca02c", edgecolor="k", linewidths=0.3,
+                       zorder=6, label="beats PBE")
+        ax.set_yscale("log")
+        ax.set_xlabel("training subset_size", fontsize=8)
+        ax.set_ylabel("ED (kcal/mol)", fontsize=8)
+        ax.set_title(title, fontsize=9)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.text(0.02, 0.02,
+                f"$\\gamma$ = {summary['gamma']:.4g} (self-calibrated)",
+                transform=ax.transAxes, fontsize=6, color="#444444")
+
+    with plt.rc_context(_STYLE):
+        fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.6), squeeze=False)
+        axA, axB, axC = axes[0]
+        _ed_lines(axA, wt_summary,
+                  "ED, energy leg = 2-subset WTMAD-2 (headline)")
+
+        # (b) decomposition: one point per cell in (E, gamma*D) space
+        cells = wt_summary["cells"]
+        for (a, ss), c in sorted(cells.items()):
+            if c["E"] <= 0.0 or c["gammaD"] <= 0.0:
+                continue
+            axB.scatter(c["E"], c["gammaD"], s=18, alpha=0.8,
+                        color=ARCH_COLOR.get(a, "0.5"), edgecolor="none")
+            axB.annotate(str(ss), (c["E"], c["gammaD"]), fontsize=5,
+                         color=ARCH_COLOR.get(a, "0.5"), xytext=(2, 2),
+                         textcoords="offset points")
+        e_pbe = wt_summary["e_pbe"]
+        gd_pbe = wt_summary["gamma"] * wt_summary["d_pbe"]
+        axB.scatter([e_pbe], [gd_pbe], marker="x", s=40, color="0.4",
+                    label="PBE (on y=x by construction)")
+        fin_e = [c["E"] for c in cells.values() if c["E"] > 0.0] + [e_pbe]
+        fin_g = [c["gammaD"] for c in cells.values()
+                 if c["gammaD"] > 0.0] + [gd_pbe]
+        lo = 0.5 * min(fin_e + fin_g)
+        hi = 2.0 * max(fin_e + fin_g)
+        xs = np.geomspace(lo, hi, 256)
+        axB.plot(xs, xs, ls=":", color="0.5", lw=1.0)
+        # iso-ED harmonic contours: ED = c  <=>  y = 1/(2/c - 1/x), x > c/2
+        for k in (0.5, 1.0, 2.0):
+            cval = k * wt_summary["ed_pbe"]
+            xv = xs[xs > cval / 2.0 * (1.0 + 1e-9)]
+            if not len(xv):
+                continue
+            yv = 1.0 / (2.0 / cval - 1.0 / xv)
+            axB.plot(xv, yv, lw=1.1 if k == 1.0 else 0.7,
+                     color="0.55" if k == 1.0 else "0.75", zorder=1)
+            axB.annotate(f"ED={cval:.3g}", (xv[-1], yv[-1]), fontsize=5,
+                         color="0.5", xytext=(-2, 2),
+                         textcoords="offset points", ha="right")
+        axB.set_xscale("log")
+        axB.set_yscale("log")
+        axB.set_xlim(lo, hi)
+        axB.set_ylim(lo, hi)
+        axB.set_xlabel("E, 2-subset WTMAD-2 (kcal/mol)", fontsize=8)
+        axB.set_ylabel("$\\gamma$ * D (kcal/mol)", fontsize=8)
+        axB.set_title("Energy vs rescaled density error per cell "
+                      "(iso-ED contours)", fontsize=9)
+        axB.grid(True, which="both", alpha=0.3)
+
+        if mae_summary and mae_summary.get("cells"):
+            _ed_lines(axC, mae_summary,
+                      "ED, energy leg = combined reaction MAE "
+                      "(leg-independence check)")
+        else:
+            axC.text(0.5, 0.5, "MAE leg unavailable", ha="center",
+                     va="center", transform=axC.transAxes, fontsize=9,
+                     color="0.5")
+            axC.set_title("ED, energy leg = combined reaction MAE "
+                          "(leg-independence check)", fontsize=9)
+
+        seen: Dict[str, Any] = {}
+        for ax in (axA, axB, axC):
+            hs, ls = ax.get_legend_handles_labels()
+            for h, l in zip(hs, ls):
+                seen.setdefault(l, h)
+        if seen:
+            fig.legend(list(seen.values()), list(seen.keys()),
+                       loc="lower center",
+                       ncol=max(4, len(arch_style.RUNG_ORDER)), fontsize=7,
+                       frameon=False, bbox_to_anchor=(0.5, 0.04))
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance,
+            caveat=caveat or _ED_CAVEAT,
+            title="Combined energy-density ED (DFS Eq. 21, harmonic mean) "
+                  "-- held-out, NN vs PBE")
+        fig.tight_layout(rect=(0, 0.10, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -3372,7 +3796,12 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     """Render the held-out energy (MAE + 2-subset WTMAD-2) figure and the
     in-sample density-vs-CCSD diagnostic, kept SEPARATE. The in-sample density
     panel always reads ``eval/`` (the final-checkpoint in-sample eval); only the
-    held-out energy panels follow ``eval_subdir``."""
+    held-out energy panels follow ``eval_subdir``. When the held-out
+    per-molecule files carry the density columns, the held-out density figure
+    AND the DFS Eq. 21 combined energy-density figure
+    (``ablation_combined_energy_density.png``) are rendered too; the ED
+    per-cell CSV is written alongside but its path is NOT in the returned
+    list (the return contract stays PNG-only)."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
@@ -3423,6 +3852,67 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         written.append(plot_holdout_density_ccsd(
             hd_rows, outdir / "ablation_holdout_density_ccsd.png", run_id,
             pbe_table=pbe_table, note=note, provenance=hd_prov))
+        # DFS Eq. 21 combined ED: needs the NN held-out density (finite
+        # density_rmse rows) AND positive PBE anchors on both legs; a
+        # pbe_table-only re-eval reaches here but cannot produce ED.
+        d_cells = holdout_density_by_arch_subset(hd_rows)
+        d_pbe = pbe_density_baseline(hd_rows, pbe_table)
+        wt_cells = wtmad2_by_arch_subset(rows)
+        e_pbe_wt = wtmad2_pbe_baseline(rows)
+        if (d_cells and _is_num(d_pbe) and d_pbe > 0.0 and wt_cells
+                and _is_num(e_pbe_wt) and e_pbe_wt > 0.0):
+            wt_summary = combined_ed_by_cell(wt_cells, e_pbe_wt,
+                                             d_cells, d_pbe)
+            mae_cells = reaction_mae_by_arch_subset(rows)
+            e_pbe_mae = pbe_reaction_mae_baseline(rows)
+            mae_summary = (combined_ed_by_cell(mae_cells, e_pbe_mae,
+                                               d_cells, d_pbe)
+                           if mae_cells and _is_num(e_pbe_mae)
+                           and e_pbe_mae > 0.0 else None)
+            ed_prov = ("Energy legs: 2-subset WTMAD-2 (BH76+W4-11 labeled "
+                       "reweighting, NOT full GMTKN55) and combined reaction "
+                       "MAE. Density leg: held-out grid-weight-averaged RMSE "
+                       "vs CCSD (not the Letter's per-electron L1, Eq. 20; "
+                       "SI Sec. VI: ranking largely metric-independent, SI "
+                       "Eq. 8 R^2 = 0.98). CCSD (not CCSD(T)) references at "
+                       "matching basis/grid.")
+            extra = [note] if note else []
+            excl = _ed_exclusion_note(wt_cells, d_cells)
+            if excl:
+                extra.append(excl)
+            covw = _density_cell_coverage_warning(hd_rows)
+            if covw:
+                extra.append(covw)
+            aw = _pbe_anchor_coverage_warning(hd_rows, pbe_table)
+            if aw:
+                extra.append(aw)
+            if mae_summary:
+                shared = [c for c in wt_summary["cells"]
+                          if c in mae_summary["cells"]]
+                rho = _spearman(
+                    [wt_summary["cells"][c]["ED"] for c in shared],
+                    [mae_summary["cells"][c]["ED"] for c in shared])
+                if _is_num(rho):
+                    extra.append(f"Leg agreement: Spearman rho = {rho:.2f} "
+                                 f"over {len(shared)} shared cells.")
+            written.append(plot_combined_energy_density(
+                wt_summary, mae_summary,
+                outdir / "ablation_combined_energy_density.png", run_id,
+                note="  ".join(extra), provenance=ed_prov))
+            csv_path = write_combined_ed_csv(
+                {"wtmad2": wt_summary, "mae": mae_summary},
+                outdir / "ablation_combined_energy_density.csv",
+                n_reactions=_cell_counts(rows, "abs_error_nn_kcalmol"),
+                n_density=_cell_counts(hd_rows, "density_rmse"))
+            gtxt = f"gamma_wt = {wt_summary['gamma']:.4g}"
+            if mae_summary:
+                gtxt += f", gamma_mae = {mae_summary['gamma']:.4g}"
+            print(f"  (combined ED: {gtxt}; wrote {csv_path})")
+        else:
+            print("  (no NN held-out density and/or positive PBE anchors -- "
+                  "skipping ablation_combined_energy_density.png/.csv; a "
+                  "stale file from a prior render persists, as with the "
+                  "holdout density figure)")
     else:
         print("  (no held-out density data -- skipping "
               "ablation_holdout_density_ccsd.png; needs benchmark CCSD refs)")

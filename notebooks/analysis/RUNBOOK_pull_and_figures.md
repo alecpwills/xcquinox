@@ -21,13 +21,15 @@ export XCQUINOX_CLUSTER_HOST=seawulf          # your ~/.ssh/config Host alias
 # 1. PULL the runs you want figures for (latest run per category):
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/svp_grid2_v3/runs
 python -m xcquinox.alec.cluster pull latest --category dfs_step7/svp_grid2_v3_full25/runs
+python -m xcquinox.alec.cluster pull latest --category dfs_step7/dfs6311_grid3_v3/runs
 
 # 2. REGENERATE figures (per-run sets + cross comparison):
 python notebooks/analysis/make_ablation_arch_figure.py --suite \
-    --domain dfs_step7 --bases svp_grid2_v3,svp_grid2_v3_full25 \
+    --domain dfs_step7 --bases svp_grid2_v3,svp_grid2_v3_full25,dfs6311_grid3_v3 \
     --outroot notebooks/analysis
 # -> notebooks/analysis/figures_dfs_step7_svp_v3/  (+ _val_best)
 #    notebooks/analysis/figures_dfs_step7_svp_v3_full25/  (+ _val_best)
+#    notebooks/analysis/figures_dfs_step7_dfs6311_grid3_v3/  (+ _val_best)
 #    notebooks/analysis/figures_dfs_step7_basis_comparison/  (+ _val_best)
 ```
 
@@ -69,10 +71,13 @@ troubleshooting below.
 | **full25** same as v3 but 25-cycle SCF (ceiling fix) | `dfs_step7/svp_grid2_v3_full25/runs` | `.../dfs_step7/svp_grid2_v3_full25/runs/run_*` | `svp_v3_full25` |
 | **4x32 baseline** (the over-capacity reference, `run_20260611T022820Z`) | `dfs_step7/svp_grid2/runs` | `.../dfs_step7/svp_grid2/runs/run_*` | `svp` |
 | **tzvpd+DF** (def2-tzvpd + density fitting) | `dfs_step7/tzvpd_grid2_df/runs` | `.../dfs_step7/tzvpd_grid2_df/runs/run_*` | `tzvpd_df` |
+| **dfs6311 v3** 6-311++G(3df,2pd) grid-3 + DF (the DFS-paper basis, production) | `dfs_step7/dfs6311_grid3_v3/runs` | `.../dfs_step7/dfs6311_grid3_v3/runs/run_*` | `dfs6311_grid3_v3` |
 
 > The "basis" is just the directory name under `dfs_step7/`. The figure script
 > turns it into an output-dir alias by deleting `_grid2` (`svp_grid2_v3` ->
-> `svp_v3`). Pull whichever runs you want to plot.
+> `svp_v3`); `_grid3` names pass through unchanged (`dfs6311_grid3_v3` keeps its
+> full name, matching the on-disk `figures_dfs_step7_dfs6311_grid3_v3*` dirs).
+> Pull whichever runs you want to plot.
 
 ### Pull command
 
@@ -136,7 +141,12 @@ Cross comparison (only when **>= 2** bases are given AND both have eval coverage
 
 Each per-basis dir contains: the arch-aware ablation set (parity, MAE-by-arch,
 arch×subset heatmap, MAE-vs-subset), held-out energy/density figures, the five
-parity-layout variants, and per-run size-consistency / training-loss diagnostics.
+parity-layout variants, per-run size-consistency / training-loss diagnostics,
+and the DFS Eq. 21 combined energy-density figure + per-cell CSV
+(`ablation_combined_energy_density.png` / `.csv`; held-out only, rendered when
+the pulled `eval_holdout*/per_molecule.json` carries the NN + PBE density
+columns -- skipped with a console note otherwise, in which case a stale file
+from an earlier render may persist).
 
 ### The specific comparisons you'll want
 

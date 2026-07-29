@@ -8,8 +8,10 @@ Three layers, mirroring ``test_make_cluster_pulls_figure.py``:
 """
 from __future__ import annotations
 
+import csv
 import importlib.util
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -1384,10 +1386,16 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     out1 = tmp_path / "f1"
     names1 = {p.name for p in fig.build_density_energy_figures(run, out1)}
     assert "ablation_holdout_density_ccsd.png" not in names1   # refs-free run
+    # the combined-ED family is gated on the same holdout density columns
+    assert "ablation_combined_energy_density.png" not in names1
+    assert not (out1 / "ablation_combined_energy_density.csv").exists()
     _add_holdout_density(run)
     out2 = tmp_path / "f2"
     names2 = {p.name for p in fig.build_density_energy_figures(run, out2)}
     assert "ablation_holdout_density_ccsd.png" in names2
+    assert "ablation_combined_energy_density.png" in names2
+    # the CSV is written alongside but NEVER returned (return stays PNG-only)
+    assert (out2 / "ablation_combined_energy_density.csv").is_file()
 
 
 def test_insample_density_plot_with_pbe_baseline_renders(tmp_path):
@@ -1425,6 +1433,215 @@ def test_build_density_energy_figures_writes_three(tmp_path):
     assert {p.name for p in written} == {"ablation_rung_summary.png",
                                          "ablation_energy_wtmad_mae.png",
                                          "ablation_insample_density_ccsd.png"}
+
+
+# ---------------------------------------------------------------------------
+# DFS Eq. 21 combined energy-density metric (ED)
+# ---------------------------------------------------------------------------
+
+def test_holdout_density_by_arch_subset_means_and_drops_nonfinite():
+    rows = [
+        {"arch": "deep", "subset_size": 1, "molecule": "HO",
+         "density_rmse": 2e-4},
+        {"arch": "deep", "subset_size": 1, "molecule": "CH4",
+         "density_rmse": 4e-4},
+        {"arch": "deep", "subset_size": 3, "molecule": "HO",
+         "density_rmse": 6e-4},
+        {"arch": "deep", "subset_size": 3, "molecule": "CH4",
+         "density_rmse": None},                      # non-finite NN -> dropped
+        {"arch": None, "subset_size": 1, "molecule": "HO",
+         "density_rmse": 1e-4},                      # no cell -> dropped
+    ]
+    d = fig.holdout_density_by_arch_subset(rows)
+    assert set(d) == {("deep", 1), ("deep", 3)}
+    assert d[("deep", 1)] == pytest.approx(3e-4)
+    assert d[("deep", 3)] == pytest.approx(6e-4)
+
+
+def test_pbe_density_baseline_dedups_molecules():
+    rows = [
+        {"molecule": "HO", "density_rmse_pbe": 8e-4},
+        {"molecule": "HO", "density_rmse_pbe": 8e-4},   # same molecule, 2nd spec
+        {"molecule": "CH4", "density_rmse_pbe": 3e-4},
+    ]
+    # per-molecule mean first, then mean over molecules: (8e-4 + 3e-4)/2,
+    # NOT the row-weighted (8+8+3)/3 e-4
+    assert fig.pbe_density_baseline(rows) == pytest.approx(5.5e-4)
+    # an explicit run-level table takes precedence over the rows
+    tab = {"HO": {"density_rmse_pbe": 1e-3}}
+    assert fig.pbe_density_baseline(rows, tab) == pytest.approx(1e-3)
+
+
+def test_pbe_density_baseline_all_none_is_nan():
+    rows = [{"molecule": "HO", "density_rmse_pbe": None},
+            {"molecule": "CH4", "density_rmse_pbe": None}]
+    assert math.isnan(fig.pbe_density_baseline(rows))
+    assert math.isnan(fig.pbe_density_baseline([]))
+
+
+def test_harmonic_mean_guards():
+    assert fig._harmonic_mean(0.0, 5.0) == 0.0
+    assert fig._harmonic_mean(5.0, -1.0) == 0.0
+    assert fig._harmonic_mean(4.0, 4.0) == pytest.approx(4.0)
+    # 2ab/(a+b): 2*3*6/9 = 4
+    assert fig._harmonic_mean(3.0, 6.0) == pytest.approx(4.0)
+
+
+def test_combined_ed_by_cell_gamma_self_calibration():
+    energy = {("deep", 1): 8.0, ("deep", 3): 6.0, ("deep_attn", 1): 20.0}
+    density = {("deep", 1): 0.004, ("deep", 3): 0.003, ("deep_attn", 1): 0.02}
+    s = fig.combined_ed_by_cell(energy, 10.0, density, 0.005)
+    assert s["gamma"] == pytest.approx(2000.0)          # 10 / 0.005
+    assert s["ed_pbe"] == pytest.approx(10.0)           # ED_PBE == E_PBE identity
+    c1 = s["cells"][("deep", 1)]
+    assert c1["gammaD"] == pytest.approx(8.0)
+    assert c1["ED"] == pytest.approx(8.0)               # equal legs -> the leg
+    assert c1["beats_pbe"] is True
+    c3 = s["cells"][("deep", 3)]
+    assert c3["ED"] == pytest.approx(6.0)
+    ca = s["cells"][("deep_attn", 1)]
+    assert ca["gammaD"] == pytest.approx(40.0)
+    assert ca["ED"] == pytest.approx(80.0 / 3.0)        # 2/(1/20 + 1/40)
+    assert ca["beats_pbe"] is False
+
+
+def test_combined_ed_by_cell_excludes_partial_cells():
+    energy = {("deep", 1): 8.0, ("deep", 3): 6.0,
+              ("deep_attn", 1): float("nan")}           # non-finite -> excluded
+    density = {("deep", 1): 0.004, ("x", 1): 0.001}
+    s = fig.combined_ed_by_cell(energy, 10.0, density, 0.005)
+    # energy-only ("deep",3), density-only ("x",1) and the NaN cell all excluded
+    assert set(s["cells"]) == {("deep", 1)}
+
+
+def test_combined_ed_by_cell_raises_on_bad_anchors():
+    energy = {("deep", 1): 8.0}
+    density = {("deep", 1): 0.004}
+    with pytest.raises(ValueError):
+        fig.combined_ed_by_cell(energy, 10.0, density, 0.0)      # D_PBE <= 0
+    with pytest.raises(ValueError):
+        fig.combined_ed_by_cell(energy, float("nan"), density, 0.005)
+
+
+def test_pbe_reaction_mae_baseline_dedups_by_name():
+    rows = [
+        {"name": "r1", "abs_error_pbe_kcalmol": 10.0},
+        {"name": "r1", "abs_error_pbe_kcalmol": 10.0},  # dup name (2nd spec)
+        {"name": "r2", "abs_error_pbe_kcalmol": 2.0},
+    ]
+    assert fig.pbe_reaction_mae_baseline(rows) == pytest.approx(6.0)
+    assert math.isnan(fig.pbe_reaction_mae_baseline([]))
+
+
+def test_spearman_rank_helper():
+    assert fig._spearman([1, 2, 3], [1, 10, 100]) == pytest.approx(1.0)
+    assert fig._spearman([1, 2, 3], [5, 4, 3]) == pytest.approx(-1.0)
+    assert math.isnan(fig._spearman([1.0], [2.0]))              # n < 2
+    assert math.isnan(fig._spearman([1, 1, 1], [1, 2, 3]))      # constant series
+
+
+def test_ed_exclusion_and_coverage_notes():
+    # exclusion note names one-leg-only cells; empty when the maps agree
+    note = fig._ed_exclusion_note({("deep", 1): 1.0, ("deep", 3): 2.0},
+                                  {("deep", 1): 1e-4, ("x", 1): 2e-4})
+    assert "deep/ss3" in note and "x/ss1" in note
+    assert fig._ed_exclusion_note({("deep", 1): 1.0}, {("deep", 1): 1e-4}) == ""
+    # coverage warning fires when a cell's species set diverges from the union
+    uniform = [
+        {"arch": "deep", "subset_size": 1, "molecule": "HO",
+         "density_rmse": 1e-4},
+        {"arch": "deep", "subset_size": 3, "molecule": "HO",
+         "density_rmse": 2e-4},
+    ]
+    assert fig._density_cell_coverage_warning(uniform) == ""
+    divergent = uniform + [{"arch": "deep", "subset_size": 3,
+                            "molecule": "CH4", "density_rmse": 2e-4}]
+    warn = fig._density_cell_coverage_warning(divergent)
+    assert "deep/ss1" in warn
+
+
+def test_ed_exclusion_note_names_nonfinite_cells():
+    # a cell keyed in BOTH maps but non-finite must not vanish silently
+    note = fig._ed_exclusion_note(
+        {("deep", 1): 1.0, ("deep", 5): float("nan")},
+        {("deep", 1): 1e-4, ("deep", 5): float("nan")})
+    assert "deep/ss5" in note
+    # non-finite on one side only -> the finite side's *-only group
+    note2 = fig._ed_exclusion_note({("deep", 2): float("nan")},
+                                   {("deep", 2): 2e-4})
+    assert "deep/ss2" in note2 and "density-only" in note2
+
+
+def test_pbe_anchor_coverage_warning_flags_set_divergence():
+    rows = [{"arch": "deep", "subset_size": 1, "molecule": "HO",
+             "density_rmse": 2e-4, "density_rmse_pbe": 8e-4}]
+    # run-level table carrying a species the NN legs never cover
+    tab = {"HO": {"density_rmse_pbe": 8e-4},
+           "CH4": {"density_rmse_pbe": 3e-4}}
+    warn = fig._pbe_anchor_coverage_warning(rows, tab)
+    assert "CH4" in warn
+    # matched sets -> silent (table and inline variants)
+    assert fig._pbe_anchor_coverage_warning(
+        rows, {"HO": {"density_rmse_pbe": 8e-4}}) == ""
+    assert fig._pbe_anchor_coverage_warning(rows, None) == ""
+    # inline divergence: PBE column present where the NN channel failed
+    rows2 = rows + [{"arch": "deep", "subset_size": 1, "molecule": "F2",
+                     "density_rmse": None, "density_rmse_pbe": 5e-4}]
+    assert "F2" in fig._pbe_anchor_coverage_warning(rows2, None)
+
+
+def test_plot_combined_energy_density_renders(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    d_cells = fig.holdout_density_by_arch_subset(hd)
+    d_pbe = fig.pbe_density_baseline(hd, fig.load_pbe_density_table(run))
+    wt = fig.combined_ed_by_cell(fig.wtmad2_by_arch_subset(rows),
+                                 fig.wtmad2_pbe_baseline(rows), d_cells, d_pbe)
+    mae = fig.combined_ed_by_cell(fig.reaction_mae_by_arch_subset(rows),
+                                  fig.pbe_reaction_mae_baseline(rows),
+                                  d_cells, d_pbe)
+    p1 = fig.plot_combined_energy_density(wt, mae, tmp_path / "ed.png", "run_x")
+    assert _png_ok(p1)
+    # secondary leg unavailable -> placeholder panel, still a valid figure
+    p2 = fig.plot_combined_energy_density(wt, None, tmp_path / "ed2.png",
+                                          "run_x")
+    assert _png_ok(p2)
+
+
+def test_write_combined_ed_csv_columns_and_legs(tmp_path):
+    energy = {("deep", 1): 8.0, ("deep_attn", 1): 20.0}
+    density = {("deep", 1): 0.004, ("deep_attn", 1): 0.02}
+    wt = fig.combined_ed_by_cell(energy, 10.0, density, 0.005)
+    mae = fig.combined_ed_by_cell(energy, 12.0, density, 0.005)
+    out = tmp_path / "ed.csv"
+    fig.write_combined_ed_csv(
+        {"wtmad2": wt, "mae": mae}, out,
+        n_reactions={("deep", 1): 2, ("deep_attn", 1): 2},
+        n_density={("deep", 1): 1, ("deep_attn", 1): 1})
+    with out.open() as fh:
+        rd = list(csv.DictReader(fh))
+    assert rd
+    assert set(rd[0]) == {
+        "leg", "arch", "subset_size", "n_reactions", "n_density_species",
+        "E_kcalmol", "D_rmse", "gamma", "gammaD_kcalmol", "ED_kcalmol",
+        "E_pbe_kcalmol", "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe"}
+    assert {r["leg"] for r in rd} == {"wtmad2", "mae"}
+    for r in rd:
+        # the self-calibration identity holds row-by-row
+        assert (float(r["ED_pbe_kcalmol"])
+                == pytest.approx(float(r["E_pbe_kcalmol"])))
+    beat = {(r["leg"], r["arch"]): r["beats_pbe"] for r in rd}
+    assert beat[("wtmad2", "deep")] == "True"
+    assert beat[("wtmad2", "deep_attn")] == "False"
+    # a None leg is skipped, not written as empty rows
+    out2 = tmp_path / "ed2.csv"
+    fig.write_combined_ed_csv({"wtmad2": wt, "mae": None}, out2,
+                              n_reactions={}, n_density={})
+    with out2.open() as fh:
+        rd2 = list(csv.DictReader(fh))
+    assert {r["leg"] for r in rd2} == {"wtmad2"}
 
 
 # ---------------------------------------------------------------------------
