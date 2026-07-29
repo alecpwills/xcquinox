@@ -1400,9 +1400,10 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     out2 = tmp_path / "f2"
     names2 = {p.name for p in fig.build_density_energy_figures(run, out2)}
     assert "ablation_holdout_density_ccsd.png" in names2
+    assert "ablation_holdout_density_per_arch.png" in names2
     assert "ablation_combined_energy_density.png" in names2
     assert "ablation_density_energy_overview.png" in names2
-    assert len(names2) == 7
+    assert len(names2) == 8
     # the CSV is written alongside but NEVER returned (return stays PNG-only)
     assert (out2 / "ablation_combined_energy_density.csv").is_file()
 
@@ -1733,6 +1734,54 @@ def test_plot_insample_overview_renders(tmp_path):
     for r in dr:
         r["density_rmse_pbe"] = 9e-4
     p2 = fig.plot_insample_overview(ae, dr, tmp_path / "io2.png", "run_x")
+    assert _png_ok(p2)
+
+
+def test_holdout_eval_note_counts():
+    rows = [
+        {"name": "r1", "pool": "bh76", "abs_error_pbe_kcalmol": 1.0},
+        {"name": "r1", "pool": "bh76", "abs_error_pbe_kcalmol": 1.0},  # dup name
+        {"name": "r2", "pool": "bh76", "abs_error_pbe_kcalmol": 2.0},
+        {"name": "w1", "pool": "w411", "abs_error_pbe_kcalmol": 3.0},
+    ]
+    hd = [
+        {"molecule": "HO", "density_rmse": 1e-4, "density_rmse_pbe": 2e-4},
+        {"molecule": "CH4", "density_rmse": 1e-4, "density_rmse_pbe": 2e-4},
+        {"molecule": "F2", "density_rmse": None, "density_rmse_pbe": 5e-4},
+    ]
+    note = fig._holdout_eval_note(rows, hd)
+    assert "BH76 2" in note and "W4-11 1" in note      # name-deduplicated
+    assert "2 NN / 3 PBE" in note                      # unequal-channel branch
+    hd_eq = [dict(r, density_rmse=1e-4) for r in hd]
+    assert "3 species" in fig._holdout_eval_note(rows, hd_eq)
+    assert fig._holdout_eval_note([], []) == ""
+
+
+def test_ed_decomposition_panel_draws_cells():
+    s = fig.combined_ed_by_cell({("deep", 1): 8.0, ("deep", 3): 6.0}, 10.0,
+                                {("deep", 1): 0.004, ("deep", 3): 0.003},
+                                0.005)
+    f1, ax = fig.plt.subplots()
+    fig._ed_decomposition_panel(ax, s)
+    assert ax.get_xscale() == "log" and ax.get_yscale() == "log"
+    assert len(ax.collections) >= 1            # cell points + the PBE x
+    assert len(ax.lines) == 4                  # y=x locus + 3 iso-ED contours
+    assert "iso-ED" in ax.get_title()
+    fig.plt.close(f1)
+
+
+def test_plot_holdout_density_per_arch_renders(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    hd = fig.collect_holdout_density_rows(run)
+    tab = fig.load_pbe_density_table(run)
+    p1 = fig.plot_holdout_density_per_arch(hd, tmp_path / "pa.png", "run_x",
+                                           pbe_table=tab)
+    assert _png_ok(p1)
+    # PBE-only shape (no NN channel anywhere) still renders the baseline
+    pbe_rows = [dict(r, density_rmse=None) for r in hd]
+    p2 = fig.plot_holdout_density_per_arch(pbe_rows, tmp_path / "pa2.png",
+                                           "run_x", pbe_table=tab)
     assert _png_ok(p2)
 
 

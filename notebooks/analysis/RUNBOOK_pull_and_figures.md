@@ -148,14 +148,19 @@ the pulled `eval_holdout*/per_molecule.json` carries the NN + PBE density
 columns -- skipped with a console note otherwise, in which case a stale file
 from an earlier render may persist).
 
-Each per-basis dir also gets two overview composites:
-`ablation_density_energy_overview.png` (per-pool + 2-subset WTMAD-2 bars, the
-held-out density panels, and the ED headline; rendered whenever the held-out
-density figure renders, with an "ED unavailable" placeholder panel when the ED
-anchors are missing) and `ablation_insample_overview.png` (in-sample AE +
-density; always rendered; final-checkpoint data, so its panels are identical in
-the final and val-best dirs). Every label on the density/energy figures and
-every ED CSV column is decoded in `README_density_figures.md` (this directory).
+Each per-basis dir also gets two overview composites plus a standalone density
+trend: `ablation_density_energy_overview.png` (per-pool + 2-subset WTMAD-2
+bars over the NN-vs-PBE density parity, the iso-ED decomposition, and the ED
+headline; rendered whenever the held-out density figure renders, with
+placeholder panels when the ED anchors are missing),
+`ablation_holdout_density_per_arch.png` (the per-arch held-out density trend
+vs subset_size as its own figure; same gate), and
+`ablation_insample_overview.png` (in-sample AE + density; always rendered;
+final-checkpoint data, so its panels are identical in the final and val-best
+dirs). The held-out figures carry a dataset footer line stating what the
+held-out eval is (live name-deduplicated reaction counts per pool + density
+species coverage). Every label on the density/energy figures and every ED CSV
+column is decoded in `README_density_figures.md` (this directory).
 
 ### The specific comparisons you'll want
 

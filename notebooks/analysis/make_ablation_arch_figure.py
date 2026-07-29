@@ -1323,11 +1323,17 @@ def _arch_pbe_legend_handles(archs: List[str], *, pools: Optional[List[str]] = N
 
 
 def _stamp_parity_footer(fig, *, run_id: str, title: str, note: str,
-                         provenance: Optional[str], caveat: Optional[str]) -> None:
+                         provenance: Optional[str], caveat: Optional[str],
+                         dataset: Optional[str] = None) -> None:
     fig.suptitle(f"{title}  ·  {run_id}", fontsize=11.5, y=0.997)
     if caveat:
         fig.text(0.5, 0.945, caveat, ha="center", fontsize=7.5, style="italic",
                  color="#444444")
+    if dataset:
+        # what the eval set IS (live counts) -- sits between the caveat and
+        # the axes; None (the default) renders every legacy figure unchanged
+        fig.text(0.5, 0.922, dataset, ha="center", fontsize=5.6,
+                 color="#555555")
     if note:
         fig.text(0.5, 0.032, note, ha="center", fontsize=5.6, color="#a33",
                  wrap=True)
@@ -2035,6 +2041,40 @@ def _cell_counts(rows: List[Dict[str, Any]], key: str
     return out
 
 
+def _holdout_eval_note(rows: List[Dict[str, Any]],
+                       hd_rows: List[Dict[str, Any]]) -> str:
+    """One-line description of WHAT the held-out eval is, with live counts:
+    name-deduplicated reactions per pool (from the per_reaction rows) and the
+    density-species coverage (from the per_molecule rows). Stamped on the
+    held-out figures via the footer's ``dataset`` line so each figure is
+    self-describing. '' when both inputs are empty; either clause is omitted
+    when its input is absent."""
+    pool_label = {"bh76": "BH76", "w411": "W4-11"}
+    parts: List[str] = []
+    pools: Dict[str, int] = {}
+    for r in _dedup_rows_by_name(rows):
+        p = r.get("pool")
+        if p:
+            pools[p] = pools.get(p, 0) + 1
+    if pools:
+        frag = " + ".join(f"{pool_label.get(p, str(p).upper())} {n}"
+                          for p, n in sorted(pools.items()))
+        parts.append(f"{frag} reactions (name-dedup; reaction energies, "
+                     "kcal/mol)")
+    n_nn = len({r.get("molecule") for r in hd_rows
+                if r.get("molecule") and _is_num(r.get("density_rmse"))})
+    n_pbe = len({r.get("molecule") for r in hd_rows
+                 if r.get("molecule") and _is_num(r.get("density_rmse_pbe"))})
+    if n_nn or n_pbe:
+        cnt = (f"{n_nn} species" if n_nn == n_pbe
+               else f"{n_nn} NN / {n_pbe} PBE species")
+        parts.append(f"density: {cnt} vs CCSD refs at matching basis/grid "
+                     "(atoms excluded)")
+    if not parts:
+        return ""
+    return "Held-out eval: " + "; ".join(parts) + "."
+
+
 _ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
                   "n_density_species", "E_kcalmol", "D_rmse", "gamma",
                   "gammaD_kcalmol", "ED_kcalmol", "E_pbe_kcalmol",
@@ -2494,12 +2534,20 @@ def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
     ax.grid(True, which="both", alpha=0.3)
 
 
+_HOLDOUT_DENSITY_CAVEAT = (
+    "HELD-OUT density error vs CCSD reference densities on the W4-11+BH76 "
+    "benchmark species (atoms excluded; weighted-mean grid RMSE, NOT "
+    "N_e-normalized). PBE baseline is model-free on the same grid. Density "
+    "generalization; separate from the held-out ENERGY panels by design.")
+
+
 def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
                               out_path: Path, run_id: str, *,
                               pbe_table: Optional[Dict[str, Dict[str, float]]]
                               = None,
                               note: str = "",
-                              provenance: Optional[str] = None) -> Path:
+                              provenance: Optional[str] = None,
+                              dataset: Optional[str] = None) -> Path:
     """HELD-OUT density error vs CCSD on the W4-11+BH76 benchmark species:
     (left) per-arch weighted-mean grid RMSE vs subset_size with the grey
     dashed PBE-vs-CCSD pool baseline; (right) per-species NN-vs-PBE parity
@@ -2524,16 +2572,43 @@ def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
             fig.legend(handles=arch_handles, loc="lower center",
                        ncol=len(arch_style.RUNG_ORDER),
                        fontsize=7, frameon=False, bbox_to_anchor=(0.5, 0.02))
-        heldout = ("HELD-OUT density error vs CCSD reference densities on the "
-                   "W4-11+BH76 benchmark species (atoms excluded; weighted-mean "
-                   "grid RMSE, NOT N_e-normalized). PBE baseline is model-free "
-                   "on the same grid. Density generalization; separate from the "
-                   "held-out ENERGY panels by design.")
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
-            caveat=heldout,
+            caveat=_HOLDOUT_DENSITY_CAVEAT, dataset=dataset,
             title="Held-out density error vs CCSD (NN vs PBE)")
-        fig.tight_layout(rect=(0, 0.08, 1, 0.92))
+        # rect top 0.90 (was 0.92) makes room for the dataset footer line
+        fig.tight_layout(rect=(0, 0.08, 1, 0.90))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+def plot_holdout_density_per_arch(hd_rows: List[Dict[str, Any]],
+                                  out_path: Path, run_id: str, *,
+                                  pbe_table: Optional[Dict[str, Dict[str, float]]]
+                                  = None,
+                                  note: str = "",
+                                  provenance: Optional[str] = None,
+                                  dataset: Optional[str] = None) -> Path:
+    """Standalone single-panel figure of the per-arch held-out density trend
+    vs subset_size (grid weighted-mean RMSE vs CCSD, PBE pool-mean dashed) --
+    the left panel of ``plot_holdout_density_ccsd`` promoted to its own
+    figure after the held-out overview swapped this slot for the parity and
+    iso-ED decomposition panels. Same panel body
+    (``_holdout_density_lines_panel``), same caveat."""
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table)
+    with plt.rc_context(_STYLE):
+        fig, axes = plt.subplots(1, 1, figsize=(12, 5.6), squeeze=False)
+        # the panel's own axes legend identifies archs + the PBE line; a
+        # bottom fig-level legend would duplicate it and collide with the
+        # note band on a single-panel figure
+        _holdout_density_lines_panel(axes[0][0], hd_rows, pbe_mol)
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance,
+            caveat=_HOLDOUT_DENSITY_CAVEAT, dataset=dataset,
+            title="Held-out density error vs CCSD per arch "
+                  "(grid weighted-mean)")
+        fig.tight_layout(rect=(0, 0.10, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -2591,12 +2666,63 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
             transform=ax.transAxes, fontsize=6, color="#444444")
 
 
+def _ed_decomposition_panel(ax, summary: Dict[str, Any]) -> None:
+    """Per-cell decomposition in the (E, gamma*D) plane, log-log: dotted y=x
+    self-calibration locus (PBE sits on it exactly, grey x), thin iso-ED
+    harmonic contours at {0.5, 1, 2} x the PBE ED, subset_size digits on the
+    cell points; below the locus = density-limited, above = energy-limited.
+    Panel body shared by ``plot_combined_energy_density`` and
+    ``plot_density_energy_overview``."""
+    cells = summary["cells"]
+    for (a, ss), c in sorted(cells.items()):
+        if c["E"] <= 0.0 or c["gammaD"] <= 0.0:
+            continue
+        ax.scatter(c["E"], c["gammaD"], s=18, alpha=0.8,
+                   color=ARCH_COLOR.get(a, "0.5"), edgecolor="none")
+        ax.annotate(str(ss), (c["E"], c["gammaD"]), fontsize=5,
+                    color=ARCH_COLOR.get(a, "0.5"), xytext=(2, 2),
+                    textcoords="offset points")
+    e_pbe = summary["e_pbe"]
+    gd_pbe = summary["gamma"] * summary["d_pbe"]
+    ax.scatter([e_pbe], [gd_pbe], marker="x", s=40, color="0.4",
+               label="PBE (on y=x by construction)")
+    fin_e = [c["E"] for c in cells.values() if c["E"] > 0.0] + [e_pbe]
+    fin_g = [c["gammaD"] for c in cells.values()
+             if c["gammaD"] > 0.0] + [gd_pbe]
+    lo = 0.5 * min(fin_e + fin_g)
+    hi = 2.0 * max(fin_e + fin_g)
+    xs = np.geomspace(lo, hi, 256)
+    ax.plot(xs, xs, ls=":", color="0.5", lw=1.0)
+    # iso-ED harmonic contours: ED = c  <=>  y = 1/(2/c - 1/x), x > c/2
+    for k in (0.5, 1.0, 2.0):
+        cval = k * summary["ed_pbe"]
+        xv = xs[xs > cval / 2.0 * (1.0 + 1e-9)]
+        if not len(xv):
+            continue
+        yv = 1.0 / (2.0 / cval - 1.0 / xv)
+        ax.plot(xv, yv, lw=1.1 if k == 1.0 else 0.7,
+                color="0.55" if k == 1.0 else "0.75", zorder=1)
+        ax.annotate(f"ED={cval:.3g}", (xv[-1], yv[-1]), fontsize=5,
+                    color="0.5", xytext=(-2, 2),
+                    textcoords="offset points", ha="right")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_xlabel("E, 2-subset WTMAD-2 (kcal/mol)", fontsize=8)
+    ax.set_ylabel("$\\gamma$ * D (kcal/mol)", fontsize=8)
+    ax.set_title("Energy vs rescaled density error per cell "
+                 "(iso-ED contours)", fontsize=9)
+    ax.grid(True, which="both", alpha=0.3)
+
+
 def plot_combined_energy_density(wt_summary: Dict[str, Any],
                                  mae_summary: Optional[Dict[str, Any]],
                                  out_path: Path, run_id: str, *,
                                  note: str = "",
                                  provenance: Optional[str] = None,
-                                 caveat: Optional[str] = None) -> Path:
+                                 caveat: Optional[str] = None,
+                                 dataset: Optional[str] = None) -> Path:
     """DFS Eq. 21 combined energy-density ED, held-out, NN vs PBE:
     (a) headline ED with the 2-subset WTMAD-2 energy leg vs subset_size per
     arch, PBE dashed at its own ED (== its energy error, by gamma
@@ -2618,47 +2744,7 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
                         "ED, energy leg = 2-subset WTMAD-2 (headline)")
 
         # (b) decomposition: one point per cell in (E, gamma*D) space
-        cells = wt_summary["cells"]
-        for (a, ss), c in sorted(cells.items()):
-            if c["E"] <= 0.0 or c["gammaD"] <= 0.0:
-                continue
-            axB.scatter(c["E"], c["gammaD"], s=18, alpha=0.8,
-                        color=ARCH_COLOR.get(a, "0.5"), edgecolor="none")
-            axB.annotate(str(ss), (c["E"], c["gammaD"]), fontsize=5,
-                         color=ARCH_COLOR.get(a, "0.5"), xytext=(2, 2),
-                         textcoords="offset points")
-        e_pbe = wt_summary["e_pbe"]
-        gd_pbe = wt_summary["gamma"] * wt_summary["d_pbe"]
-        axB.scatter([e_pbe], [gd_pbe], marker="x", s=40, color="0.4",
-                    label="PBE (on y=x by construction)")
-        fin_e = [c["E"] for c in cells.values() if c["E"] > 0.0] + [e_pbe]
-        fin_g = [c["gammaD"] for c in cells.values()
-                 if c["gammaD"] > 0.0] + [gd_pbe]
-        lo = 0.5 * min(fin_e + fin_g)
-        hi = 2.0 * max(fin_e + fin_g)
-        xs = np.geomspace(lo, hi, 256)
-        axB.plot(xs, xs, ls=":", color="0.5", lw=1.0)
-        # iso-ED harmonic contours: ED = c  <=>  y = 1/(2/c - 1/x), x > c/2
-        for k in (0.5, 1.0, 2.0):
-            cval = k * wt_summary["ed_pbe"]
-            xv = xs[xs > cval / 2.0 * (1.0 + 1e-9)]
-            if not len(xv):
-                continue
-            yv = 1.0 / (2.0 / cval - 1.0 / xv)
-            axB.plot(xv, yv, lw=1.1 if k == 1.0 else 0.7,
-                     color="0.55" if k == 1.0 else "0.75", zorder=1)
-            axB.annotate(f"ED={cval:.3g}", (xv[-1], yv[-1]), fontsize=5,
-                         color="0.5", xytext=(-2, 2),
-                         textcoords="offset points", ha="right")
-        axB.set_xscale("log")
-        axB.set_yscale("log")
-        axB.set_xlim(lo, hi)
-        axB.set_ylim(lo, hi)
-        axB.set_xlabel("E, 2-subset WTMAD-2 (kcal/mol)", fontsize=8)
-        axB.set_ylabel("$\\gamma$ * D (kcal/mol)", fontsize=8)
-        axB.set_title("Energy vs rescaled density error per cell "
-                      "(iso-ED contours)", fontsize=9)
-        axB.grid(True, which="both", alpha=0.3)
+        _ed_decomposition_panel(axB, wt_summary)
 
         if mae_summary and mae_summary.get("cells"):
             _ed_lines_panel(axC, mae_summary,
@@ -2683,7 +2769,7 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
                        frameon=False, bbox_to_anchor=(0.5, 0.04))
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
-            caveat=caveat or _ED_CAVEAT,
+            caveat=caveat or _ED_CAVEAT, dataset=dataset,
             title="Combined energy-density ED (DFS Eq. 21, harmonic mean) "
                   "-- held-out, NN vs PBE")
         fig.tight_layout(rect=(0, 0.10, 1, 0.90))
@@ -2700,18 +2786,22 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                                  ed_summary: Optional[Dict[str, Any]] = None,
                                  note: str = "",
                                  provenance: Optional[str] = None,
-                                 caveat: Optional[str] = None) -> Path:
-    """Held-out overview composite -- energy above, density below, joint
-    metric closing the row: (A)/(B) single-pool WTMAD-2 bars per (arch,
-    subset_size) for BH76 / W4-11 (with one pool the WTMAD-2 sum collapses to
+                                 caveat: Optional[str] = None,
+                                 dataset: Optional[str] = None) -> Path:
+    """Held-out overview composite -- energy above, the energy-density TRADE
+    below: (A)/(B) single-pool WTMAD-2 bars per (arch, subset_size) for BH76 /
+    W4-11 (with one pool the WTMAD-2 sum collapses to
     56.84 * MAD_pool / mean|ref|_pool -- a scaled relative error, stamped as
-    such), (C) the genuine 2-subset WTMAD-2, (D) held-out density RMSE vs
-    subset_size, (E) per-species NN-vs-PBE density parity, (F) the DFS Eq. 21
-    ED headline (WTMAD-2 leg; ``ed_summary`` = a ``combined_ed_by_cell``
-    output) or an "ED unavailable" placeholder when it is missing/empty.
-    Panel bodies are the same ax-level helpers the dedicated figures use, so
-    the views cannot drift apart. No SCAN lines (no SCAN WTMAD-2 cache
-    exists). Each top panel carries its own pool-filtered PBE dashed line."""
+    such), (C) the genuine 2-subset WTMAD-2, (D) per-species NN-vs-PBE density
+    parity, (E) the per-cell (E, gamma*D) iso-ED decomposition, (F) the DFS
+    Eq. 21 ED headline. (E)/(F) take ``ed_summary`` (a ``combined_ed_by_cell``
+    output) and degrade to grey placeholders when it is missing/empty. The
+    per-arch density-vs-subset trend lives in its own figure
+    (``plot_holdout_density_per_arch``) and in the left panel of
+    ``plot_holdout_density_ccsd``. Panel bodies are the same ax-level helpers
+    the dedicated figures use, so the views cannot drift apart. No SCAN lines
+    (no SCAN WTMAD-2 cache exists). Each top panel carries its own
+    pool-filtered PBE dashed line."""
     pbe_mol = _pbe_density_map(hd_rows, pbe_table)
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
@@ -2729,14 +2819,19 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                            pbe_line=wtmad2_pbe_baseline(rows),
                            title="(C) 2-subset WTMAD-2 (BH76+W4-11), "
                                  "per (arch, subset)")
-        _holdout_density_lines_panel(axD, hd_rows, pbe_mol)
+        _density_parity_panel(axD, hd_rows, pbe_mol)
         axD.set_title("(D) " + axD.get_title(), fontsize=9)
-        _density_parity_panel(axE, hd_rows, pbe_mol)
-        axE.set_title("(E) " + axE.get_title(), fontsize=9)
         if ed_summary and ed_summary.get("cells"):
+            _ed_decomposition_panel(axE, ed_summary)
+            axE.set_title("(E) " + axE.get_title(), fontsize=9)
             _ed_lines_panel(axF, ed_summary,
                             "(F) ED, energy leg = 2-subset WTMAD-2 (headline)")
         else:
+            axE.text(0.5, 0.5, "ED decomposition unavailable", ha="center",
+                     va="center", transform=axE.transAxes, fontsize=9,
+                     color="0.5")
+            axE.set_title("(E) Energy vs rescaled density error per cell "
+                          "(iso-ED contours)", fontsize=9)
             axF.text(0.5, 0.5, "ED unavailable", ha="center", va="center",
                      transform=axF.transAxes, fontsize=9, color="0.5")
             axF.set_title("(F) ED, energy leg = 2-subset WTMAD-2 (headline)",
@@ -2753,7 +2848,7 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                        frameon=False, bbox_to_anchor=(0.5, 0.04))
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
-            caveat=caveat or _HOLDOUT_OVERVIEW_CAVEAT,
+            caveat=caveat or _HOLDOUT_OVERVIEW_CAVEAT, dataset=dataset,
             title="Held-out overview: WTMAD-2 by pool + density vs CCSD + ED")
         fig.tight_layout(rect=(0, 0.10, 1, 0.90))
         fig.savefig(out_path, dpi=150)
@@ -4012,8 +4107,11 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     along: ``ablation_insample_overview.png`` is ALWAYS rendered (in-sample
     AE + density; final-checkpoint data, so its panels are identical in the
     final and val-best output dirs), and ``ablation_density_energy_overview.png``
-    renders whenever the held-out density figure does, with an "ED
-    unavailable" placeholder panel when the ED anchors are missing."""
+    + the standalone ``ablation_holdout_density_per_arch.png`` render whenever
+    the held-out density figure does, with "ED (decomposition) unavailable"
+    placeholder panels when the ED anchors are missing. The held-out figures
+    carry a ``dataset`` footer line stating what the held-out eval is
+    (live reaction/species counts from ``_holdout_eval_note``)."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
@@ -4069,9 +4167,13 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         hd_prov = ("Held-out density vs CCSD: benchmark reference densities "
                    "(xcquinox.alec.benchmark_refs); PBE baseline model-free "
                    "on the same grid.")
+        ds = _holdout_eval_note(rows, hd_rows)
         written.append(plot_holdout_density_ccsd(
             hd_rows, outdir / "ablation_holdout_density_ccsd.png", run_id,
-            pbe_table=pbe_table, note=note, provenance=hd_prov))
+            pbe_table=pbe_table, note=note, provenance=hd_prov, dataset=ds))
+        written.append(plot_holdout_density_per_arch(
+            hd_rows, outdir / "ablation_holdout_density_per_arch.png", run_id,
+            pbe_table=pbe_table, note=note, provenance=hd_prov, dataset=ds))
         # DFS Eq. 21 combined ED: needs the NN held-out density (finite
         # density_rmse rows) AND positive PBE anchors on both legs; a
         # pbe_table-only re-eval reaches here but cannot produce ED.
@@ -4119,7 +4221,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             written.append(plot_combined_energy_density(
                 wt_summary, mae_summary,
                 outdir / "ablation_combined_energy_density.png", run_id,
-                note="  ".join(extra), provenance=ed_prov))
+                note="  ".join(extra), provenance=ed_prov, dataset=ds))
             csv_path = write_combined_ed_csv(
                 {"wtmad2": wt_summary, "mae": mae_summary},
                 outdir / "ablation_combined_energy_density.csv",
@@ -4148,7 +4250,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             rows, hd_rows,
             outdir / "ablation_density_energy_overview.png", run_id,
             pbe_table=pbe_table, ed_summary=wt_summary, note=note,
-            provenance=ho_prov))
+            provenance=ho_prov, dataset=ds))
     else:
         print("  (no held-out density data -- skipping "
               "ablation_holdout_density_ccsd.png; needs benchmark CCSD refs)")
