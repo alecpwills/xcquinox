@@ -157,10 +157,21 @@ placeholder panels when the ED anchors are missing),
 vs subset_size as its own figure; same gate), and
 `ablation_insample_overview.png` (in-sample AE + density; always rendered;
 final-checkpoint data, so its panels are identical in the final and val-best
-dirs). The held-out figures carry a dataset footer line stating what the
-held-out eval is (live name-deduplicated reaction counts per pool + density
-species coverage). Every label on the density/energy figures and every ED CSV
-column is decoded in `README_density_figures.md` (this directory).
+dirs). The per-channel 3x3 `ablation_density_energy_3x3.png` rides the same
+held-out-density gate (WTMAD-2 / density parity / ED as columns
+BH76 | W4-11 | combined, each channel's ED gamma self-calibrated from its own
+PBE anchors, with `ablation_density_energy_3x3.csv` alongside), and the
+enriched combined-channel standalone `ablation_ed_decomposition.png` (iso-ED
+contour family, beats-PBE shading, per-arch subset trajectories) rides the
+stricter ED-anchor gate of the ED figure. The held-out figures carry
+a dataset footer line stating what the held-out eval is (live name-dedup
+reaction counts per pool + density species coverage); the energy figures
+carry the reactions clause too, and the full-pool PBE/SCAN baselines in the
+grey footers are labeled as full-pool. Every label on the density/energy
+figures and every ED CSV column is decoded in `README_density_figures.md`,
+and the held-out set's exact constituents (every test/validation reaction by
+name, the density species, the atoms skipped) are enumerated in
+`HOLDOUT_SET.md` (both in this directory).
 
 ### The specific comparisons you'll want
 

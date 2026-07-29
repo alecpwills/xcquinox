@@ -100,10 +100,12 @@ def _make_run_dir(root: Path) -> Path:
         eh = sd / "eval_holdout"; eh.mkdir()
         (eh / "per_reaction.json").write_text(json.dumps([
             {"name": "bh76_a", "pool": "bh76",
+             "reactants": ["HO", "h"], "products": ["HOh_ts"],
              "reaction_energy_ref_kcalmol": 17.7,
              "de_nn_kcalmol": -91.0 + i, "de_pbe_kcalmol": -91.2 + i,
              "abs_error_nn_kcalmol": 108.7 - i, "abs_error_pbe_kcalmol": 108.9 - i},
             {"name": "w411_b", "pool": "w411",
+             "reactants": ["HO"], "products": ["h", "o"],
              "reaction_energy_ref_kcalmol": 120.0,
              "de_nn_kcalmol": 118.0 + i, "de_pbe_kcalmol": 119.0 + i,
              "abs_error_nn_kcalmol": 2.0 + i, "abs_error_pbe_kcalmol": 1.0 + i},
@@ -297,6 +299,33 @@ def test_provenance_footer_handles_missing_baseline():
     s = fig.provenance_footer({"bh76": float("nan"), "w411": None,
                                "combined": float("nan")})
     assert "n/a" in s
+
+
+def test_provenance_footer_labels_full_pool():
+    # the PBE/SCAN baselines are computed on the FULL canonical pool, not the
+    # test slice the NN cells are evaluated on -- the label must say so
+    s = fig.provenance_footer({"bh76": 11.8, "w411": 15.9, "combined": 14.5})
+    assert "PBE (full pool):" in s
+    s2 = fig.provenance_footer({"bh76": 11.8, "w411": 15.9, "combined": 14.5},
+                               {"bh76": 8.0, "w411": 9.0, "combined": 8.5})
+    assert "SCAN (full pool):" in s2
+
+
+def test_energy_figures_accept_dataset_line(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rows = fig.collect_holdout_reaction_rows(run)
+    ds = fig._holdout_eval_note(rows, [])
+    p1 = fig.plot_energy_wtmad_mae(rows, tmp_path / "ew.png", _STAMP,
+                                   dataset=ds)
+    assert _png_ok(p1)
+    p2 = fig.plot_rung_summary(rows, tmp_path / "rs.png", _STAMP,
+                               pbe_baseline={"bh76": 10.0, "w411": 3.0,
+                                             "combined": 6.0},
+                               dataset=ds)
+    assert _png_ok(p2)
+    p3 = fig.plot_parity_marginal(rows, tmp_path / "pm.png", _STAMP,
+                                  dataset=ds)
+    assert _png_ok(p3)
 
 
 def test_nn_vs_pbe_caveat_picks_best_bh76_cell():
@@ -1262,10 +1291,12 @@ def _make_dfs_results(tmp_path):
         eh = sd / "eval_holdout"; eh.mkdir()
         (eh / "per_reaction.json").write_text(json.dumps([
             {"name": "bh76_a", "pool": "bh76",
+             "reactants": ["HO", "h"], "products": ["HOh_ts"],
              "reaction_energy_ref_kcalmol": 17.7,
              "de_nn_kcalmol": -91.0 + i, "de_pbe_kcalmol": -91.2 + i,
              "abs_error_nn_kcalmol": 108.7 - i, "abs_error_pbe_kcalmol": 108.9 - i},
             {"name": "w411_b", "pool": "w411",
+             "reactants": ["HO"], "products": ["h", "o"],
              "reaction_energy_ref_kcalmol": 120.0,
              "de_nn_kcalmol": 118.0 + i, "de_pbe_kcalmol": 119.0 + i,
              "abs_error_nn_kcalmol": 2.0 + i, "abs_error_pbe_kcalmol": 1.0 + i},
@@ -1403,9 +1434,12 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     assert "ablation_holdout_density_per_arch.png" in names2
     assert "ablation_combined_energy_density.png" in names2
     assert "ablation_density_energy_overview.png" in names2
-    assert len(names2) == 8
-    # the CSV is written alongside but NEVER returned (return stays PNG-only)
+    assert "ablation_density_energy_3x3.png" in names2
+    assert "ablation_ed_decomposition.png" in names2
+    assert len(names2) == 10
+    # the CSVs are written alongside but NEVER returned (return stays PNG-only)
     assert (out2 / "ablation_combined_energy_density.csv").is_file()
+    assert (out2 / "ablation_density_energy_3x3.csv").is_file()
 
 
 def test_insample_density_plot_with_pbe_baseline_renders(tmp_path):
@@ -1654,6 +1688,20 @@ def test_write_combined_ed_csv_columns_and_legs(tmp_path):
     with out2.open() as fh:
         rd2 = list(csv.DictReader(fh))
     assert {r["leg"] for r in rd2} == {"wtmad2"}
+    # counts_by_leg overrides the flat maps PER LEG -- the values must land
+    # in the written rows (per-channel 3x3 CSV path)
+    out3 = tmp_path / "ed3.csv"
+    fig.write_combined_ed_csv(
+        {"wtmad2": wt, "mae": mae}, out3, n_reactions={}, n_density={},
+        counts_by_leg={"wtmad2": ({("deep", 1): 7, ("deep_attn", 1): 8},
+                                  {("deep", 1): 5, ("deep_attn", 1): 6})})
+    with out3.open() as fh:
+        rd3 = list(csv.DictReader(fh))
+    got = {(r["leg"], r["arch"]): (r["n_reactions"], r["n_density_species"])
+           for r in rd3}
+    assert got[("wtmad2", "deep")] == ("7", "5")
+    assert got[("wtmad2", "deep_attn")] == ("8", "6")
+    assert got[("mae", "deep")] == ("", "")     # no override -> flat maps
 
 
 # ---------------------------------------------------------------------------
@@ -1755,6 +1803,9 @@ def test_holdout_eval_note_counts():
     hd_eq = [dict(r, density_rmse=1e-4) for r in hd]
     assert "3 species" in fig._holdout_eval_note(rows, hd_eq)
     assert fig._holdout_eval_note([], []) == ""
+    # energy-figure variant: reactions clause only, no density clause
+    note_e = fig._holdout_eval_note(rows, [])
+    assert "BH76 2" in note_e and "density" not in note_e
 
 
 def test_ed_decomposition_panel_draws_cells():
@@ -1783,6 +1834,82 @@ def test_plot_holdout_density_per_arch_renders(tmp_path):
     p2 = fig.plot_holdout_density_per_arch(pbe_rows, tmp_path / "pa2.png",
                                            "run_x", pbe_table=tab)
     assert _png_ok(p2)
+
+
+def test_collect_holdout_reaction_rows_carries_species(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rows = fig.collect_holdout_reaction_rows(run)
+    r = next(x for x in rows if x["name"] == "bh76_a")
+    assert r["reactants"] == ["HO", "h"] and r["products"] == ["HOh_ts"]
+
+
+def test_species_pools_maps_overlap():
+    rows = [
+        {"pool": "bh76", "reactants": ["HO", "h"], "products": ["HOh_ts"]},
+        {"pool": "w411", "reactants": ["HO"], "products": ["h", "o"]},
+        {"pool": None, "reactants": ["ghost"], "products": []},
+    ]
+    m = fig._species_pools(rows)
+    assert m["HO"] == {"bh76", "w411"}          # overlap species: both channels
+    assert m["HOh_ts"] == {"bh76"}
+    assert m["o"] == {"w411"}
+    assert "ghost" not in m                     # pool-less rows ignored
+
+
+def test_channel_ed_summaries_per_channel_gammas(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    tab = fig.load_pbe_density_table(run)
+    ch = fig.channel_ed_summaries(rows, hd, tab)
+    assert set(ch) == {"bh76", "w411", "combined"}
+    assert all(ch[c] is not None for c in ch)
+    # each channel self-calibrates from its own PBE anchors
+    assert ch["bh76"]["gamma"] != ch["w411"]["gamma"]
+    assert ch["combined"]["ed_pbe"] == pytest.approx(ch["combined"]["e_pbe"])
+    # a channel with no reactions degrades to None, others survive
+    ch2 = fig.channel_ed_summaries(
+        [r for r in rows if r["pool"] == "bh76"], hd, tab)
+    assert ch2["w411"] is None and ch2["bh76"] is not None
+
+
+def test_plot_density_energy_3x3_renders(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    tab = fig.load_pbe_density_table(run)
+    p1 = fig.plot_density_energy_3x3(rows, hd, tmp_path / "g.png", "run_x",
+                                     pbe_table=tab)
+    assert _png_ok(p1)
+    # single-pool input: the w411 channel panels degrade to placeholders
+    bh_only = [r for r in rows if r["pool"] == "bh76"]
+    p2 = fig.plot_density_energy_3x3(bh_only, hd, tmp_path / "g2.png",
+                                     "run_x", pbe_table=tab)
+    assert _png_ok(p2)
+
+
+def test_plot_ed_decomposition_renders(tmp_path):
+    from matplotlib.collections import PolyCollection
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    tab = fig.load_pbe_density_table(run)
+    wt = fig.combined_ed_by_cell(
+        fig.wtmad2_by_arch_subset(rows), fig.wtmad2_pbe_baseline(rows),
+        fig.holdout_density_by_arch_subset(hd),
+        fig.pbe_density_baseline(hd, tab))
+    p1 = fig.plot_ed_decomposition(wt, tmp_path / "iso.png", "run_x")
+    assert _png_ok(p1)
+    # structural check on a bare axes: contour family + shading + trajectories
+    f1, ax = fig.plt.subplots()
+    fig._ed_decomposition_rich_panel(ax, wt)
+    assert ax.get_xscale() == "log" and ax.get_yscale() == "log"
+    assert len(ax.lines) >= 5           # y=x + several iso-ED contour levels
+    assert any(isinstance(c, PolyCollection) for c in ax.collections)
+    fig.plt.close(f1)
 
 
 def test_plot_density_energy_overview_renders(tmp_path):
@@ -1960,8 +2087,8 @@ def test_scan_pool_baseline_reads_disk_cache(tmp_path):
 def test_provenance_footer_appends_scan_when_present():
     s = fig.provenance_footer({"bh76": 11.8, "w411": 15.9, "combined": 14.5},
                               {"bh76": 8.0, "w411": 6.0, "combined": 7.0})
-    assert "PBE: BH76 11.80" in s and "SCAN: BH76 8.00" in s
-    assert "SCAN: BH76 8.00 / W4-11 6.00 / combined 7.00." in s
+    assert "PBE (full pool): BH76 11.80" in s
+    assert "SCAN (full pool): BH76 8.00 / W4-11 6.00 / combined 7.00." in s
     # absent/NaN SCAN -> byte-identical to the PBE-only footer (backward compat)
     pbe_only = fig.provenance_footer({"bh76": 11.8, "w411": 15.9, "combined": 14.5})
     assert "SCAN" not in pbe_only

@@ -165,6 +165,9 @@ def collect_holdout_reaction_rows(run_dir: Path,
                 "de_pbe_kcalmol": r.get("de_pbe_kcalmol"),
                 "abs_error_nn_kcalmol": r.get("abs_error_nn_kcalmol"),
                 "abs_error_pbe_kcalmol": r.get("abs_error_pbe_kcalmol"),
+                # species membership (for per-channel density/ED views)
+                "reactants": r.get("reactants"),
+                "products": r.get("products"),
             })
     return rows
 
@@ -313,12 +316,14 @@ def provenance_footer(baseline: Dict[str, float],
     SCAN-energy cache is present (``scan_baseline`` carries a finite value) -- the
     parallel full-pool SCAN meta-GGA baseline. Absent SCAN -> the string is
     byte-identical to the PBE-only footer (backward compatible)."""
-    s = (_PROVENANCE_BASE + f" PBE: BH76 {_fmt_mae(baseline.get('bh76'))}"
+    s = (_PROVENANCE_BASE + " PBE (full pool):"
+         f" BH76 {_fmt_mae(baseline.get('bh76'))}"
          f" / W4-11 {_fmt_mae(baseline.get('w411'))}"
          f" / combined {_fmt_mae(baseline.get('combined'))}.")
     if scan_baseline and any(_is_num(scan_baseline.get(k))
                              for k in ("bh76", "w411", "combined")):
-        s += (f" SCAN: BH76 {_fmt_mae(scan_baseline.get('bh76'))}"
+        s += (" SCAN (full pool):"
+              f" BH76 {_fmt_mae(scan_baseline.get('bh76'))}"
               f" / W4-11 {_fmt_mae(scan_baseline.get('w411'))}"
               f" / combined {_fmt_mae(scan_baseline.get('combined'))}.")
     return s
@@ -907,7 +912,8 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
                       pbe_baseline: Optional[Dict[str, float]] = None,
                       scan_baseline: Optional[Dict[str, float]] = None,
                       note: str = "", provenance: Optional[str] = None,
-                      caveat: Optional[str] = None) -> Path:
+                      caveat: Optional[str] = None,
+                      dataset: Optional[str] = None) -> Path:
     """Headline rung figure -- "does climbing Jacob's ladder to meta-GGA help?".
 
     Per rung (in :data:`arch_style.RUNG_ORDER`, only those present), the MEAN over
@@ -977,6 +983,7 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
         ax.grid(True, axis="y", alpha=0.3)
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=caveat,
+            dataset=dataset,
             title="Jacob's-ladder rung summary -- held-out MAE (BH76 | W4-11)")
         fig.tight_layout(rect=(0, 0.075, 1, 0.93))
         fig.savefig(out_path, dpi=150)
@@ -1352,7 +1359,8 @@ def _add_subset_colorbar(fig, mappable, *, x=0.945):
 
 def plot_parity_marginal(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
                          note: str = "", provenance: Optional[str] = None,
-                         caveat: Optional[str] = None) -> Path:
+                         caveat: Optional[str] = None,
+                         dataset: Optional[str] = None) -> Path:
     """L1 -- compact 2x2: rows = pool (own scale); col0 by ARCH, col1 by
     SUBSET (viridis). Arch & subset as separate marginal views."""
     with plt.rc_context(_STYLE):
@@ -1378,7 +1386,8 @@ def plot_parity_marginal(rows: List[Dict[str, Any]], out_path: Path, run_id: str
                    loc="lower center", ncol=len(arch_style.RUNG_ORDER),
                    fontsize=7, frameon=False,
                    bbox_to_anchor=(0.5, 0.052))
-        _stamp_parity_footer(fig, run_id=run_id, note=note, provenance=provenance,
+        _stamp_parity_footer(fig, run_id=run_id, note=note,
+                             provenance=provenance, dataset=dataset,
                              caveat=caveat,
                              title="Reaction-energy parity -- marginal (arch | subset)")
         fig.tight_layout(rect=(0, 0.085, 0.92, 0.915))
@@ -1391,7 +1400,8 @@ def plot_parity_marginal(rows: List[Dict[str, Any]], out_path: Path, run_id: str
 def plot_parity_facet_subset(rows: List[Dict[str, Any]], out_path: Path,
                              run_id: str, note: str = "",
                              provenance: Optional[str] = None,
-                             caveat: Optional[str] = None) -> Path:
+                             caveat: Optional[str] = None,
+                             dataset: Optional[str] = None) -> Path:
     """L2 -- rows = pool x cols = subset_size; arch = color within each facet.
     Joint arch x subset."""
     with plt.rc_context(_STYLE):
@@ -1418,7 +1428,8 @@ def plot_parity_facet_subset(rows: List[Dict[str, Any]], out_path: Path,
                    loc="lower center", ncol=len(arch_style.RUNG_ORDER),
                    fontsize=7, frameon=False,
                    bbox_to_anchor=(0.5, 0.05))
-        _stamp_parity_footer(fig, run_id=run_id, note=note, provenance=provenance,
+        _stamp_parity_footer(fig, run_id=run_id, note=note,
+                             provenance=provenance, dataset=dataset,
                              caveat=caveat,
                              title="Reaction-energy parity -- pool x subset facets (arch=color)")
         fig.tight_layout(rect=(0, 0.085, 1, 0.915))
@@ -1430,7 +1441,8 @@ def plot_parity_facet_subset(rows: List[Dict[str, Any]], out_path: Path,
 def plot_parity_arch_cols(rows: List[Dict[str, Any]], out_path: Path,
                           run_id: str, note: str = "",
                           provenance: Optional[str] = None,
-                          caveat: Optional[str] = None) -> Path:
+                          caveat: Optional[str] = None,
+                          dataset: Optional[str] = None) -> Path:
     """L3 -- rows = pool x cols = arch; subset_size = viridis within each panel.
     All subsets per arch, individually colored."""
     with plt.rc_context(_STYLE):
@@ -1461,7 +1473,8 @@ def plot_parity_arch_cols(rows: List[Dict[str, Any]], out_path: Path,
                                        label="PBE")],
                    loc="lower center", fontsize=7, frameon=False,
                    bbox_to_anchor=(0.5, 0.05))
-        _stamp_parity_footer(fig, run_id=run_id, note=note, provenance=provenance,
+        _stamp_parity_footer(fig, run_id=run_id, note=note,
+                             provenance=provenance, dataset=dataset,
                              caveat=caveat,
                              title="Reaction-energy parity -- pool x arch panels (subset=viridis)")
         fig.tight_layout(rect=(0, 0.075, 0.92, 0.915))
@@ -1474,7 +1487,8 @@ def plot_parity_arch_cols(rows: List[Dict[str, Any]], out_path: Path,
 def plot_parity_errbars_by_subset(rows: List[Dict[str, Any]], out_path: Path,
                                   run_id: str, note: str = "",
                                   provenance: Optional[str] = None,
-                                  caveat: Optional[str] = None) -> Path:
+                                  caveat: Optional[str] = None,
+                                  dataset: Optional[str] = None) -> Path:
     """L4 -- 3x2 by subset_size: each subplot = AGGREGATE parity, one marker per
     (arch, pool) at (mean ref, mean de_nn) with a vertical error bar = that
     cell's reaction-energy MAE. Pool by marker, arch by color, y=x line."""
@@ -1531,7 +1545,8 @@ def plot_parity_errbars_by_subset(rows: List[Dict[str, Any]], out_path: Path,
                    loc="lower center", ncol=len(arch_style.RUNG_ORDER),
                    fontsize=7, frameon=False,
                    bbox_to_anchor=(0.5, 0.05))
-        _stamp_parity_footer(fig, run_id=run_id, note=note, provenance=provenance,
+        _stamp_parity_footer(fig, run_id=run_id, note=note,
+                             provenance=provenance, dataset=dataset,
                              caveat=caveat,
                              title="Reaction-energy parity + error bars -- 3x2 by subset (aggregate)")
         fig.tight_layout(rect=(0, 0.085, 1, 0.915))
@@ -1543,7 +1558,8 @@ def plot_parity_errbars_by_subset(rows: List[Dict[str, Any]], out_path: Path,
 def plot_parity_grid_by_subset(rows: List[Dict[str, Any]], out_path: Path,
                                run_id: str, note: str = "",
                                provenance: Optional[str] = None,
-                               caveat: Optional[str] = None) -> Path:
+                               caveat: Optional[str] = None,
+                               dataset: Optional[str] = None) -> Path:
     """L5 -- 6x2 grid: rows = subset_size, cols = pool (BH76 | W4-11). Each cell
     = per-reaction parity (arch=color), robust window per pool-column. Each
     subset ROW carries one combined-MAE-per-arch inset on its W4-11 panel."""
@@ -1576,7 +1592,8 @@ def plot_parity_grid_by_subset(rows: List[Dict[str, Any]], out_path: Path,
                    loc="lower center", ncol=len(arch_style.RUNG_ORDER),
                    fontsize=7, frameon=False,
                    bbox_to_anchor=(0.5, 0.04))
-        _stamp_parity_footer(fig, run_id=run_id, note=note, provenance=provenance,
+        _stamp_parity_footer(fig, run_id=run_id, note=note,
+                             provenance=provenance, dataset=dataset,
                              caveat=caveat,
                              title="Reaction-energy parity -- 6x2 subset x pool, per-subset combined-MAE inset")
         fig.tight_layout(rect=(0, 0.065, 1, 0.93))
@@ -1601,6 +1618,7 @@ def build_parity_variants(run_dir: Path, outdir: Path,
                     "combined": float("nan")}
     prov = provenance_footer(baseline)
     caveat = nn_vs_pbe_caveat(rows, baseline)
+    ds_e = _holdout_eval_note(rows, [])
     variants = [
         (plot_parity_arch_cols, "ablation_parity_arch_cols.png"),
         (plot_parity_marginal, "ablation_parity_marginal_2x2.png"),
@@ -1611,7 +1629,7 @@ def build_parity_variants(run_dir: Path, outdir: Path,
     written: List[Path] = []
     for fn, name in variants:
         written.append(fn(rows, outdir / name, run_id, note=note,
-                          provenance=prov, caveat=caveat))
+                          provenance=prov, caveat=caveat, dataset=ds_e))
     return written
 
 
@@ -2075,6 +2093,63 @@ def _holdout_eval_note(rows: List[Dict[str, Any]],
     return "Held-out eval: " + "; ".join(parts) + "."
 
 
+def _species_pools(rows: List[Dict[str, Any]]) -> Dict[str, set]:
+    """``{molecule: {pools}}`` from the held-out reaction rows' reactants and
+    products. Species appearing in reactions of both pools (the BH76/W4-11
+    overlap) map to both -- the per-channel density panels show them in each
+    channel, stated on the figure. Pool-less rows are ignored."""
+    out: Dict[str, set] = {}
+    for r in rows:
+        p = r.get("pool")
+        if not p:
+            continue
+        for sp in list(r.get("reactants") or []) + list(r.get("products") or []):
+            if sp:
+                out.setdefault(sp, set()).add(p)
+    return out
+
+
+def channel_ed_summaries(rows: List[Dict[str, Any]],
+                         hd_rows: List[Dict[str, Any]],
+                         pbe_table: Optional[Dict[str, Dict[str, float]]] = None
+                         ) -> Dict[str, Optional[Dict[str, Any]]]:
+    """Per-channel DFS Eq. 21 summaries for ``bh76`` / ``w411`` / ``combined``.
+
+    Each channel filters the reaction rows by pool (its energy leg is then the
+    one-bucket WTMAD-2 reduction; the combined channel is the genuine 2-subset
+    form) and the density rows by species membership (``_species_pools``;
+    overlap species contribute to both channels). Each channel's gamma is
+    self-calibrated from ITS OWN pool-filtered PBE anchors, so EDs are
+    comparable within a channel, not across channels. A channel whose anchors
+    are missing/non-positive maps to None (callers render placeholders).
+    When a run-level ``pbe_table`` is given but carries no entries for a
+    channel's species, that channel's density anchor falls back to the inline
+    ``density_rmse_pbe`` columns (the ``pbe_density_baseline`` contract)."""
+    pools_of = _species_pools(rows)
+    out: Dict[str, Optional[Dict[str, Any]]] = {}
+    for ch in ("bh76", "w411", "combined"):
+        if ch == "combined":
+            ch_rows, ch_hd, ch_tab = rows, hd_rows, pbe_table
+        else:
+            ch_rows = [r for r in rows if r.get("pool") == ch]
+            ch_hd = [r for r in hd_rows
+                     if ch in pools_of.get(r.get("molecule"), ())]
+            ch_tab = None
+            if pbe_table:
+                ch_tab = {m: v for m, v in pbe_table.items()
+                          if ch in pools_of.get(m, ())}
+        e_cells = wtmad2_by_arch_subset(ch_rows)
+        e_pbe = wtmad2_pbe_baseline(ch_rows)
+        d_cells = holdout_density_by_arch_subset(ch_hd)
+        d_pbe = pbe_density_baseline(ch_hd, ch_tab)
+        if (e_cells and _is_num(e_pbe) and e_pbe > 0.0 and d_cells
+                and _is_num(d_pbe) and d_pbe > 0.0):
+            out[ch] = combined_ed_by_cell(e_cells, e_pbe, d_cells, d_pbe)
+        else:
+            out[ch] = None
+    return out
+
+
 _ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
                   "n_density_species", "E_kcalmol", "D_rmse", "gamma",
                   "gammaD_kcalmol", "ED_kcalmol", "E_pbe_kcalmol",
@@ -2084,12 +2159,18 @@ _ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
 def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                           out_path: Path, *,
                           n_reactions: Dict[Tuple[str, int], int],
-                          n_density: Dict[Tuple[str, int], int]) -> Path:
-    """Per-cell ED table for both energy legs, alongside the figure -- the
-    machine-readable source for a paper table. One row per (leg, cell), cells
-    in ARCH_ORDER-then-subset order; None legs skipped. The CSV path is NOT
-    appended to the figure list returned by ``build_density_energy_figures``
-    (that return contract stays PNG-only)."""
+                          n_density: Dict[Tuple[str, int], int],
+                          counts_by_leg: Optional[Dict[str, Tuple[
+                              Dict[Tuple[str, int], int],
+                              Dict[Tuple[str, int], int]]]] = None) -> Path:
+    """Per-cell ED table for the given energy legs, alongside the figure --
+    the machine-readable source for a paper table. One row per (leg, cell),
+    cells in ARCH_ORDER-then-subset order; None legs skipped.
+    ``counts_by_leg`` optionally overrides the flat count maps per leg
+    (the per-channel 3x3 CSV, where each channel counts only its own pool's
+    rows/species). The CSV path is NOT appended to the figure list returned
+    by ``build_density_energy_figures`` (that return contract stays
+    PNG-only)."""
     order = {a: i for i, a in enumerate(ARCH_ORDER)}
     out_path = Path(out_path)
     with out_path.open("w", newline="") as fh:
@@ -2098,14 +2179,17 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
         for leg, summary in legs.items():
             if not summary:
                 continue
+            nr, nd = n_reactions, n_density
+            if counts_by_leg and leg in counts_by_leg:
+                nr, nd = counts_by_leg[leg]
             cells = sorted(summary["cells"].items(),
                            key=lambda kv: (order.get(kv[0][0], len(order)),
                                            kv[0][0], kv[0][1]))
             for (arch, ss), c in cells:
                 w.writerow({
                     "leg": leg, "arch": arch, "subset_size": ss,
-                    "n_reactions": n_reactions.get((arch, ss), ""),
-                    "n_density_species": n_density.get((arch, ss), ""),
+                    "n_reactions": nr.get((arch, ss), ""),
+                    "n_density_species": nd.get((arch, ss), ""),
                     "E_kcalmol": c["E"], "D_rmse": c["D"],
                     "gamma": summary["gamma"],
                     "gammaD_kcalmol": c["gammaD"], "ED_kcalmol": c["ED"],
@@ -2263,8 +2347,8 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
                           note: str = "", provenance: Optional[str] = None,
                           caveat: Optional[str] = None,
                           training_subsets: Optional[Dict[int, List[str]]] = None,
-                          scan_baseline: Optional[Dict[str, float]] = None
-                          ) -> Path:
+                          scan_baseline: Optional[Dict[str, float]] = None,
+                          dataset: Optional[str] = None) -> Path:
     """Held-out energy: ONE bar per (arch, subset_size) cell -- combined
     reaction-energy MAE (panel a) and 2-subset WTMAD-2 (panel b) -- grouped by
     arch (rung-ordered) within each subset_size on the x-axis. NO error bars:
@@ -2313,6 +2397,7 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
                      fontsize=6, family="monospace", color="#333333")
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=caveat,
+            dataset=dataset,
             title="Held-out energy: per-cell combined MAE + 2-subset WTMAD-2 (NOT full GMTKN55)")
         fig.tight_layout(rect=(0, 0.37 if has_ts else 0.16, 1, 0.93))
         fig.savefig(out_path, dpi=150)
@@ -2716,6 +2801,106 @@ def _ed_decomposition_panel(ax, summary: Dict[str, Any]) -> None:
     ax.grid(True, which="both", alpha=0.3)
 
 
+def _ed_decomposition_rich_panel(ax, summary: Dict[str, Any]) -> None:
+    """Enriched (E, gamma*D) decomposition: labeled iso-ED contour family at
+    {0.25, 0.5, 0.75, 1, 1.5, 2, 3} x ED_PBE, light shading of the beats-PBE
+    region (every point with ED < ED_PBE -- including the whole strip
+    E < ED_PBE/2, where the harmonic mean cannot reach ED_PBE for any density
+    error), per-arch subset-ordered trajectories through the cells, and the
+    PBE anchor on the dotted y=x self-calibration locus. Same summary
+    contract as ``_ed_decomposition_panel`` (the compact version used by the
+    ED figure and the held-out overview)."""
+    cells = summary["cells"]
+    e_pbe = summary["e_pbe"]
+    gd_pbe = summary["gamma"] * summary["d_pbe"]
+    ed_pbe = summary["ed_pbe"]
+    fin_e = [c["E"] for c in cells.values() if c["E"] > 0.0] + [e_pbe]
+    fin_g = [c["gammaD"] for c in cells.values()
+             if c["gammaD"] > 0.0] + [gd_pbe]
+    lo = 0.4 * min(fin_e + fin_g)
+    hi = 2.5 * max(fin_e + fin_g)
+    xs = np.geomspace(lo, hi, 512)
+    # beats-PBE region: harmonic(x, y) < ED_PBE <=> y < 1/(2/ED_PBE - 1/x)
+    # for x > ED_PBE/2, and every y when x <= ED_PBE/2
+    with np.errstate(divide="ignore"):
+        upper = np.where(xs > ed_pbe / 2.0 * (1.0 + 1e-9),
+                         1.0 / (2.0 / ed_pbe - 1.0 / xs), hi)
+    upper = np.clip(upper, lo, hi)
+    ax.fill_between(xs, lo, upper, color="#2ca02c", alpha=0.08, zorder=0)
+    # iso-ED contour family, labeled where each curve crosses the y=x locus
+    for k in (0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0):
+        cval = k * ed_pbe
+        xv = xs[xs > cval / 2.0 * (1.0 + 1e-9)]
+        if not len(xv):
+            continue
+        yv = 1.0 / (2.0 / cval - 1.0 / xv)
+        ax.plot(xv, yv, lw=1.4 if k == 1.0 else 0.7,
+                color="0.35" if k == 1.0 else "0.72", zorder=1)
+        if lo < cval < hi:
+            ax.annotate(f"ED = {cval:.3g}" if k == 1.0 else f"{k:g}x",
+                        (cval, cval), fontsize=5.5, color="0.4",
+                        ha="left", va="bottom", rotation=-40,
+                        xytext=(1, 1), textcoords="offset points")
+    ax.plot(xs, xs, ls=":", color="0.5", lw=1.0, zorder=1)
+    # per-arch subset-ordered trajectories through the cells
+    archs = arch_style.sort_by_rung(sorted({a for a, _ in cells}))
+    for a in archs:
+        pts = sorted((ss, c["E"], c["gammaD"])
+                     for (aa, ss), c in cells.items()
+                     if aa == a and c["E"] > 0.0 and c["gammaD"] > 0.0)
+        if not pts:
+            continue
+        col = ARCH_COLOR.get(a, "0.5")
+        ax.plot([p[1] for p in pts], [p[2] for p in pts], lw=0.8,
+                alpha=0.45, color=col, zorder=2)
+        ax.scatter([p[1] for p in pts], [p[2] for p in pts], s=22,
+                   alpha=0.9, color=col, edgecolor="k", linewidths=0.2,
+                   zorder=3, label=a)
+        for ss, e, g in pts:
+            ax.annotate(str(ss), (e, g), fontsize=5, color=col,
+                        xytext=(2, 2), textcoords="offset points")
+    ax.scatter([e_pbe], [gd_pbe], marker="x", s=60, color="k", zorder=5,
+               label="PBE (on y=x by construction)")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_xlabel("E, 2-subset WTMAD-2 (kcal/mol)", fontsize=9)
+    ax.set_ylabel("$\\gamma$ * D (kcal/mol)", fontsize=9)
+    ax.set_title("ED decomposition -- iso-ED contours, beats-PBE region "
+                 "shaded, per-arch subset trajectories", fontsize=10)
+    ax.grid(True, which="both", alpha=0.25)
+    ax.text(0.02, 0.02,
+            f"$\\gamma$ = {summary['gamma']:.4g} (self-calibrated); "
+            "shaded: ED < ED of PBE",
+            transform=ax.transAxes, fontsize=6.5, color="#444444")
+    if ax.get_legend_handles_labels()[1]:
+        ax.legend(fontsize=6, ncol=2, loc="upper left")
+
+
+def plot_ed_decomposition(summary: Dict[str, Any], out_path: Path,
+                          run_id: str, *, note: str = "",
+                          provenance: Optional[str] = None,
+                          caveat: Optional[str] = None,
+                          dataset: Optional[str] = None) -> Path:
+    """Standalone enriched ED decomposition (WTMAD-2 leg): the ED figure's
+    (E, gamma*D) panel promoted to its own canvas with a labeled iso-ED
+    contour family, the beats-PBE region shaded, and per-arch subset-ordered
+    trajectories. Consumes the same ``combined_ed_by_cell`` summary as the ED
+    figure's headline, so the two views cannot drift."""
+    with plt.rc_context(_STYLE):
+        fig, axes = plt.subplots(1, 1, figsize=(9.0, 8.0), squeeze=False)
+        _ed_decomposition_rich_panel(axes[0][0], summary)
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance,
+            caveat=caveat or _ED_CAVEAT, dataset=dataset,
+            title="ED decomposition (DFS Eq. 21) -- held-out, NN vs PBE")
+        fig.tight_layout(rect=(0, 0.06, 1, 0.90))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
 def plot_combined_energy_density(wt_summary: Dict[str, Any],
                                  mae_summary: Optional[Dict[str, Any]],
                                  out_path: Path, run_id: str, *,
@@ -2851,6 +3036,102 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
             caveat=caveat or _HOLDOUT_OVERVIEW_CAVEAT, dataset=dataset,
             title="Held-out overview: WTMAD-2 by pool + density vs CCSD + ED")
         fig.tight_layout(rect=(0, 0.10, 1, 0.90))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+_3X3_CAVEAT = (
+    "Columns are channels: BH76 | W4-11 | combined. Energy rows use the "
+    "one-bucket WTMAD-2 reduction per pool (A/B, and the ED legs in G/H) -- "
+    "a scaled relative error, NOT a reweighting; only the combined column "
+    "reweights, and it is NOT full GMTKN55. Each channel's gamma is "
+    "self-calibrated from its own PBE anchors: EDs compare within a panel, "
+    "never across channels. Overlap species appear in both density channels.")
+
+
+def plot_density_energy_3x3(rows: List[Dict[str, Any]],
+                            hd_rows: List[Dict[str, Any]],
+                            out_path: Path, run_id: str, *,
+                            pbe_table: Optional[Dict[str, Dict[str, float]]]
+                            = None,
+                            ch_summaries: Optional[Dict[str, Optional[
+                                Dict[str, Any]]]] = None,
+                            note: str = "",
+                            provenance: Optional[str] = None,
+                            caveat: Optional[str] = None,
+                            dataset: Optional[str] = None) -> Path:
+    """Per-channel held-out story, one column per channel (BH76 | W4-11 |
+    combined): row 1 = WTMAD-2 bars per (arch, subset_size) (A/B the
+    one-bucket reduction, C the genuine 2-subset form); row 2 = per-species
+    NN-vs-PBE density parity restricted to that channel's species (overlap
+    species contribute to both, stated in the caveat); row 3 = the DFS
+    Eq. 21 ED metric per channel, each gamma self-calibrated from that
+    channel's own PBE anchors (grey placeholder when a channel's anchors are
+    missing). Panel bodies are the shared ax-level helpers, so the views
+    match the dedicated figures."""
+    if ch_summaries is None:
+        ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
+    pools_of = _species_pools(rows)
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table)
+    with plt.rc_context(_STYLE):
+        archs = _energy_arch_axis(rows)
+        subsets = _present_subsets(rows) or [1]
+        fig, axes = plt.subplots(3, 3, figsize=(18.0, 14.0), squeeze=False)
+        chans = (("bh76", "BH76"), ("w411", "W4-11"),
+                 ("combined", "combined"))
+        letters = "ABCDEFGHI"
+        for j, (ch, lab) in enumerate(chans):
+            pr = rows if ch == "combined" else [
+                r for r in rows if r.get("pool") == ch]
+            ttl = (f"({letters[j]}) 2-subset WTMAD-2 (BH76+W4-11), "
+                   "per (arch, subset)" if ch == "combined" else
+                   f"({letters[j]}) WTMAD-2, {lab} only -- one-bucket "
+                   "reduction (scaled relative error)")
+            _grouped_arch_bars(axes[0][j], wtmad2_by_arch_subset(pr), archs,
+                               subsets, pbe_line=wtmad2_pbe_baseline(pr),
+                               title=ttl)
+        for j, (ch, lab) in enumerate(chans):
+            ax = axes[1][j]
+            if ch == "combined":
+                hd_ch, pbe_ch = hd_rows, pbe_mol
+            else:
+                hd_ch = [r for r in hd_rows
+                         if ch in pools_of.get(r.get("molecule"), ())]
+                pbe_ch = {m: v for m, v in pbe_mol.items()
+                          if ch in pools_of.get(m, ())}
+            _density_parity_panel(ax, hd_ch, pbe_ch)
+            ax.set_title(f"({letters[3 + j]}) {lab} species -- "
+                         + ax.get_title(), fontsize=9)
+        for j, (ch, lab) in enumerate(chans):
+            ax = axes[2][j]
+            s = ch_summaries.get(ch)
+            ttl = f"({letters[6 + j]}) ED, {lab} channel (own gamma)"
+            if s and s.get("cells"):
+                _ed_lines_panel(ax, s, ttl)
+            else:
+                ax.text(0.5, 0.5, "ED unavailable", ha="center", va="center",
+                        transform=ax.transAxes, fontsize=9, color="0.5")
+                ax.set_title(ttl, fontsize=9)
+        seen: Dict[str, Any] = {}
+        for row_axes in axes:
+            for ax in row_axes:
+                hs, ls = ax.get_legend_handles_labels()
+                for h, l in zip(hs, ls):
+                    seen.setdefault(l, h)
+        if seen:
+            # anchored above the red note band (0.032) so a two-row legend
+            # stacks upward into the reserved bottom margin, never onto it
+            fig.legend(list(seen.values()), list(seen.keys()),
+                       loc="lower center",
+                       ncol=max(4, len(arch_style.RUNG_ORDER)), fontsize=7,
+                       frameon=False, bbox_to_anchor=(0.5, 0.045))
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance,
+            caveat=caveat or _3X3_CAVEAT, dataset=dataset,
+            title="Per-channel held-out story: WTMAD-2 | density parity | "
+                  "ED (BH76, W4-11, combined)")
+        fig.tight_layout(rect=(0, 0.085, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -3379,7 +3660,8 @@ def plot_size_consistency_diagnostic(rows: List[Dict[str, Any]], out_path: Path,
                                      run_id: str,
                                      cells: List[Tuple[str, int]], *,
                                      note: str = "",
-                                     provenance: Optional[str] = None) -> Path:
+                                     provenance: Optional[str] = None,
+                                     dataset: Optional[str] = None) -> Path:
     """Diagnostic for the size-consistency (additivity) failure across a few
     chosen (arch, subset_size) cells: (a) W4-11 atomization |error| vs molecule
     atom-count with a per-cell linear fit -- a steep slope is a non-additive
@@ -3437,6 +3719,7 @@ def plot_size_consistency_diagnostic(rows: List[Dict[str, Any]], out_path: Path,
         axB.grid(True, axis="y", alpha=0.3)
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=None,
+            dataset=dataset,
             title="Why deep_attn ss=6 fails: a size-consistency (additivity) breakdown")
         fig.tight_layout(rect=(0, 0.04, 1, 0.93))
         fig.savefig(out_path, dpi=150)
@@ -4107,11 +4390,14 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     along: ``ablation_insample_overview.png`` is ALWAYS rendered (in-sample
     AE + density; final-checkpoint data, so its panels are identical in the
     final and val-best output dirs), and ``ablation_density_energy_overview.png``
-    + the standalone ``ablation_holdout_density_per_arch.png`` render whenever
-    the held-out density figure does, with "ED (decomposition) unavailable"
-    placeholder panels when the ED anchors are missing. The held-out figures
-    carry a ``dataset`` footer line stating what the held-out eval is
-    (live reaction/species counts from ``_holdout_eval_note``)."""
+    + the standalone ``ablation_holdout_density_per_arch.png`` + the
+    per-channel ``ablation_density_energy_3x3.png`` (with its own per-channel
+    ED CSV, path printed, never returned) render whenever the held-out
+    density figure does, with placeholder panels where a channel's ED anchors
+    are missing; the enriched ``ablation_ed_decomposition.png`` renders with
+    the ED figure. The held-out figures carry a ``dataset`` footer line
+    stating what the held-out eval is (live reaction/species counts from
+    ``_holdout_eval_note``)."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
@@ -4138,14 +4424,16 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     dens_prov = ("In-sample density vs CCSD: grid weighted-mean RMSE/L1 on trained "
                  "species (atoms excluded).")
     tsubsets = training_subsets_by_size(run_dir)
+    ds_e = _holdout_eval_note(rows, [])
     written = [
         plot_rung_summary(rows, outdir / "ablation_rung_summary.png", run_id,
                           pbe_baseline=baseline, scan_baseline=scan_baseline,
-                          note=note, provenance=prov, caveat=caveat),
+                          note=note, provenance=prov, caveat=caveat,
+                          dataset=ds_e),
         plot_energy_wtmad_mae(rows, outdir / "ablation_energy_wtmad_mae.png",
                               run_id, note=note, provenance=prov, caveat=caveat,
                               training_subsets=tsubsets,
-                              scan_baseline=scan_baseline),
+                              scan_baseline=scan_baseline, dataset=ds_e),
         plot_insample_density_ccsd(drows,
                                    outdir / "ablation_insample_density_ccsd.png",
                                    run_id, note=note, provenance=dens_prov),
@@ -4222,6 +4510,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 wt_summary, mae_summary,
                 outdir / "ablation_combined_energy_density.png", run_id,
                 note="  ".join(extra), provenance=ed_prov, dataset=ds))
+            written.append(plot_ed_decomposition(
+                wt_summary, outdir / "ablation_ed_decomposition.png",
+                run_id, note="  ".join(extra), provenance=ed_prov,
+                dataset=ds))
             csv_path = write_combined_ed_csv(
                 {"wtmad2": wt_summary, "mae": mae_summary},
                 outdir / "ablation_combined_energy_density.csv",
@@ -4233,9 +4525,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             print(f"  (combined ED: {gtxt}; wrote {csv_path})")
         else:
             print("  (no NN held-out density and/or positive PBE anchors -- "
-                  "skipping ablation_combined_energy_density.png/.csv; a "
-                  "stale file from a prior render persists, as with the "
-                  "holdout density figure)")
+                  "skipping ablation_combined_energy_density.png/.csv and "
+                  "ablation_ed_decomposition.png; a stale file from a prior "
+                  "render persists, as with the holdout density figure)")
         # Held-out overview composite: same gate as the holdout density figure
         # (renders whenever it does); panel F degrades to the "ED unavailable"
         # placeholder when the ED anchors above were missing (wt_summary None).
@@ -4251,6 +4543,35 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             outdir / "ablation_density_energy_overview.png", run_id,
             pbe_table=pbe_table, ed_summary=wt_summary, note=note,
             provenance=ho_prov, dataset=ds))
+        # Per-channel 3x3 + its CSV: renders whenever held-out density
+        # exists; channels degrade individually inside the figure.
+        ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
+        prov_3x3 = ("Channels: pool-filtered reactions (energy legs) and "
+                    "species-membership-filtered densities (membership from "
+                    "reaction reactants+products; overlap species in both "
+                    "channels). Density leg: grid-weight-averaged RMSE vs "
+                    "CCSD; per-channel gamma = that channel's E_PBE/D_PBE.")
+        written.append(plot_density_energy_3x3(
+            rows, hd_rows, outdir / "ablation_density_energy_3x3.png",
+            run_id, pbe_table=pbe_table, ch_summaries=ch_summaries,
+            note=note, provenance=prov_3x3, dataset=ds))
+        pools_of = _species_pools(rows)
+        legs3: Dict[str, Optional[Dict[str, Any]]] = {}
+        counts3: Dict[str, Tuple[Dict, Dict]] = {}
+        for ch, s in ch_summaries.items():
+            leg = f"{ch}_wtmad2"
+            legs3[leg] = s
+            ch_rows = rows if ch == "combined" else [
+                r for r in rows if r.get("pool") == ch]
+            ch_hd = hd_rows if ch == "combined" else [
+                r for r in hd_rows
+                if ch in pools_of.get(r.get("molecule"), ())]
+            counts3[leg] = (_cell_counts(ch_rows, "abs_error_nn_kcalmol"),
+                            _cell_counts(ch_hd, "density_rmse"))
+        csv3 = write_combined_ed_csv(
+            legs3, outdir / "ablation_density_energy_3x3.csv",
+            n_reactions={}, n_density={}, counts_by_leg=counts3)
+        print(f"  (per-channel ED: wrote {csv3})")
     else:
         print("  (no held-out density data -- skipping "
               "ablation_holdout_density_ccsd.png; needs benchmark CCSD refs)")
@@ -4282,7 +4603,7 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
                           key=lambda c: (order.get(c[0], len(ARCH_ORDER)), c[0]))
         written.append(plot_size_consistency_diagnostic(
             rows, outdir / "diagnostic_size_consistency.png", run_id, sc_cells,
-            note=note))
+            note=note, dataset=_holdout_eval_note(rows, [])))
     loss_rows = collect_training_losses(
         run_dir, basis_label=basis_label or run_basis_label(run_dir))
     written.append(plot_training_losses(
@@ -4340,6 +4661,12 @@ def build_all(run_dir: Path, outdir: Path,
         scan_baseline = {"bh76": float("nan"), "w411": float("nan"),
                          "combined": float("nan")}
     prov = provenance_footer(baseline, scan_baseline)
+    # These five figures stamp their footers with bespoke fig.text stacks (no
+    # _stamp_parity_footer dataset slot), so the dataset sentence rides the
+    # grey provenance line instead of a dedicated line.
+    ds_e = _holdout_eval_note(reaction_rows, [])
+    if ds_e:
+        prov = prov + " " + ds_e
     caveat = nn_vs_pbe_caveat(reaction_rows, baseline)
     print(f"  PBE baseline (full pool): BH76 {_fmt_mae(baseline['bh76'])} / "
           f"W4-11 {_fmt_mae(baseline['w411'])} / "
