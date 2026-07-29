@@ -1385,15 +1385,24 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     run = _make_run_dir(tmp_path)
     out1 = tmp_path / "f1"
     names1 = {p.name for p in fig.build_density_energy_figures(run, out1)}
-    assert "ablation_holdout_density_ccsd.png" not in names1   # refs-free run
-    # the combined-ED family is gated on the same holdout density columns
+    # refs-free run: only the four unconditional figures
+    assert names1 == {"ablation_rung_summary.png",
+                      "ablation_energy_wtmad_mae.png",
+                      "ablation_insample_density_ccsd.png",
+                      "ablation_insample_overview.png"}
+    assert "ablation_holdout_density_ccsd.png" not in names1
+    # the combined-ED family is gated on the same holdout density columns,
+    # and so is the held-out overview composite
     assert "ablation_combined_energy_density.png" not in names1
+    assert "ablation_density_energy_overview.png" not in names1
     assert not (out1 / "ablation_combined_energy_density.csv").exists()
     _add_holdout_density(run)
     out2 = tmp_path / "f2"
     names2 = {p.name for p in fig.build_density_energy_figures(run, out2)}
     assert "ablation_holdout_density_ccsd.png" in names2
     assert "ablation_combined_energy_density.png" in names2
+    assert "ablation_density_energy_overview.png" in names2
+    assert len(names2) == 7
     # the CSV is written alongside but NEVER returned (return stays PNG-only)
     assert (out2 / "ablation_combined_energy_density.csv").is_file()
 
@@ -1424,15 +1433,17 @@ def test_plot_size_consistency_diagnostic_renders(tmp_path):
     assert _png_ok(out)
 
 
-def test_build_density_energy_figures_writes_three(tmp_path):
+def test_build_density_energy_figures_writes_four(tmp_path):
     run = _make_run_dir(tmp_path)
     written = fig.build_density_energy_figures(run, tmp_path / "out")
-    # now leads with the headline rung summary (no SCAN cache -> no SCAN line)
-    assert len(written) == 3
+    # headline rung summary + energy + in-sample density + in-sample overview
+    # (no SCAN cache -> no SCAN line; refs-free run -> no holdout/ED family)
+    assert len(written) == 4
     assert all(_png_ok(p) for p in written)
     assert {p.name for p in written} == {"ablation_rung_summary.png",
                                          "ablation_energy_wtmad_mae.png",
-                                         "ablation_insample_density_ccsd.png"}
+                                         "ablation_insample_density_ccsd.png",
+                                         "ablation_insample_overview.png"}
 
 
 # ---------------------------------------------------------------------------
@@ -1642,6 +1653,108 @@ def test_write_combined_ed_csv_columns_and_legs(tmp_path):
     with out2.open() as fh:
         rd2 = list(csv.DictReader(fh))
     assert {r["leg"] for r in rd2} == {"wtmad2"}
+
+
+# ---------------------------------------------------------------------------
+# Overview composites (per-pool WTMAD-2 + density + ED; in-sample companion)
+# ---------------------------------------------------------------------------
+
+def test_wtmad2_single_pool_reduces_to_scaled_mad():
+    # One (deep, 1) cell. bh76: NN MAD=4 over mean|ref|=20 (PBE MAD=6);
+    # w411: single reaction, NN err 5 over ref 100. Pool-filtered WTMAD-2 must
+    # collapse to scale*MAD/mean|ref| (one-bucket reduction), while the full
+    # 2-subset call is the genuine reweighting -- distinct from both.
+    rows = [
+        {"name": "b1", "arch": "deep", "subset_size": 1, "pool": "bh76",
+         "abs_error_nn_kcalmol": 3.0, "abs_error_pbe_kcalmol": 5.0,
+         "reaction_energy_ref_kcalmol": 10.0},
+        {"name": "b2", "arch": "deep", "subset_size": 1, "pool": "bh76",
+         "abs_error_nn_kcalmol": 5.0, "abs_error_pbe_kcalmol": 7.0,
+         "reaction_energy_ref_kcalmol": 30.0},
+        {"name": "w1", "arch": "deep", "subset_size": 1, "pool": "w411",
+         "abs_error_nn_kcalmol": 5.0, "abs_error_pbe_kcalmol": 9.0,
+         "reaction_energy_ref_kcalmol": 100.0},
+    ]
+    bh = [r for r in rows if r["pool"] == "bh76"]
+    w4 = [r for r in rows if r["pool"] == "w411"]
+    assert fig.wtmad2_by_arch_subset(bh)[("deep", 1)] == pytest.approx(
+        56.84 * 4.0 / 20.0)
+    assert fig.wtmad2_pbe_baseline(bh) == pytest.approx(56.84 * 6.0 / 20.0)
+    assert fig.wtmad2_by_arch_subset(w4)[("deep", 1)] == pytest.approx(
+        56.84 * 5.0 / 100.0)
+    assert fig.wtmad2_by_arch_subset(rows)[("deep", 1)] == pytest.approx(
+        56.84 / 3.0 * (2 * (4.0 / 20.0) + 1 * (5.0 / 100.0)))
+
+
+def test_grouped_arch_bars_pbe_line_none_skips_baseline():
+    f1, ax1 = fig.plt.subplots()
+    fig._grouped_arch_bars(ax1, {("deep", 1): 5.0}, ["deep"], [1],
+                           pbe_line=None, title="t")
+    assert not ax1.lines                                  # no PBE axhline
+    _, labels1 = ax1.get_legend_handles_labels()
+    assert "PBE" not in labels1 and "beats PBE" not in labels1
+    fig.plt.close(f1)
+    f2, ax2 = fig.plt.subplots()
+    fig._grouped_arch_bars(ax2, {("deep", 1): 5.0}, ["deep"], [1],
+                           pbe_line=10.0, title="t")
+    assert len(ax2.lines) == 1                            # the PBE axhline
+    _, labels2 = ax2.get_legend_handles_labels()
+    assert "PBE" in labels2 and "beats PBE" in labels2    # 5.0 beats 10.0
+    fig.plt.close(f2)
+
+
+def test_insample_ae_strip_panel_points():
+    ae_rows = [
+        {"arch": "deep", "subset_size": 1, "molecule": "HO",
+         "AE_error_kcalmol": 6.0},
+        {"arch": "deep", "subset_size": 1, "molecule": "CH4",
+         "AE_error_kcalmol": -2.0},                      # plotted as |.| = 2.0
+        {"arch": "deep", "subset_size": 1, "molecule": None,
+         "AE_error_kcalmol": 1.0},                       # no molecule -> drop
+        {"arch": "deep", "subset_size": 1, "molecule": "X",
+         "AE_error_kcalmol": None},                      # no AE -> drop
+    ]
+    f1, ax = fig.plt.subplots()
+    fig._insample_ae_strip_panel(ax, ae_rows)
+    assert ax.get_yscale() == "log"
+    assert len(ax.collections) == 2                      # HO + CH4 points only
+    ticks = [t.get_text() for t in ax.get_xticklabels()]
+    assert "HO" in ticks and "CH4" in ticks and "X" not in ticks
+    fig.plt.close(f1)
+
+
+def test_plot_insample_overview_renders(tmp_path):
+    run = _make_run_dir(tmp_path)
+    ae = fig.collect_insample_ae_rows(run)
+    dr = fig.collect_insample_density_rows(run)
+    p1 = fig.plot_insample_overview(ae, dr, tmp_path / "io.png", "run_x")
+    assert _png_ok(p1)
+    # with the PBE density columns present, panel C gains the dashed line
+    for r in dr:
+        r["density_rmse_pbe"] = 9e-4
+    p2 = fig.plot_insample_overview(ae, dr, tmp_path / "io2.png", "run_x")
+    assert _png_ok(p2)
+
+
+def test_plot_density_energy_overview_renders(tmp_path):
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    tab = fig.load_pbe_density_table(run)
+    d_cells = fig.holdout_density_by_arch_subset(hd)
+    d_pbe = fig.pbe_density_baseline(hd, tab)
+    wt = fig.combined_ed_by_cell(fig.wtmad2_by_arch_subset(rows),
+                                 fig.wtmad2_pbe_baseline(rows), d_cells, d_pbe)
+    p1 = fig.plot_density_energy_overview(rows, hd, tmp_path / "ov.png",
+                                          "run_x", pbe_table=tab,
+                                          ed_summary=wt)
+    assert _png_ok(p1)
+    # ED anchors unavailable -> panel F placeholder, still a valid figure
+    p2 = fig.plot_density_energy_overview(rows, hd, tmp_path / "ov2.png",
+                                          "run_x", pbe_table=tab,
+                                          ed_summary=None)
+    assert _png_ok(p2)
 
 
 # ---------------------------------------------------------------------------

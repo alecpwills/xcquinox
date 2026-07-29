@@ -2181,6 +2181,44 @@ def _energy_arch_axis(rows: List[Dict[str, Any]]) -> List[str]:
     return arch_style.sort_by_rung(_archs_present(rows) or ["deep"])
 
 
+def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
+                       archs: List[str], subsets: List[int], *,
+                       pbe_line: Optional[float] = None, title: str,
+                       scan_line: Optional[float] = None) -> None:
+    """Grouped per-(arch, subset_size) bar panel: one bar group per arch
+    (rung-ordered by the caller), x = subset_size, PBE dashed / SCAN dotted
+    reference lines when finite, green beats-PBE markers on bars strictly
+    below the PBE line. ``pbe_line=None`` silently draws no line and no
+    beats-PBE marks (the in-sample AE panel has no PBE baseline). Shared by
+    ``plot_energy_wtmad_mae`` and the overview composites."""
+    bw = 0.8 / max(1, len(archs))
+    beat_x: List[float] = []
+    beat_h: List[float] = []
+    for j, a in enumerate(archs):
+        xs = [i + (j - (len(archs) - 1) / 2) * bw
+              for i in range(len(subsets))]
+        hs = [metric.get((a, s), float("nan")) for s in subsets]
+        ax.bar(xs, hs, width=bw, color=ARCH_COLOR.get(a, "0.5"), edgecolor="k",
+               linewidth=0.3, label=a)
+        for x, h in _beats_pbe_marks(xs, hs, pbe_line):
+            beat_x.append(x); beat_h.append(h)
+    if _is_num(pbe_line):
+        ax.axhline(pbe_line, ls="--", color="k", linewidth=1.0, label="PBE")
+    if _is_num(scan_line):
+        ax.axhline(scan_line, ls=":", color="#555555", linewidth=1.3,
+                   label="SCAN")
+    if beat_x:
+        ax.scatter(beat_x, beat_h, marker="v", s=16, color="#2ca02c",
+                   edgecolor="k", linewidths=0.3, zorder=6,
+                   label="beats PBE")
+    ax.set_xticks(range(len(subsets)))
+    ax.set_xticklabels(subsets)
+    ax.set_xlabel("training subset_size", fontsize=8)
+    ax.set_ylabel("kcal/mol", fontsize=8)
+    ax.set_title(title, fontsize=9)
+    ax.grid(True, axis="y", alpha=0.3)
+
+
 def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
                           note: str = "", provenance: Optional[str] = None,
                           caveat: Optional[str] = None,
@@ -2210,43 +2248,16 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
         # subset text block + footer without overlap.
         fig, axes = plt.subplots(1, 2, figsize=(13, 7.8 if has_ts else 5.6),
                                  squeeze=False)
-        bw = 0.8 / max(1, len(archs))
-
-        def _grouped(ax, metric, pbe_line, title, scan_line=None):
-            beat_x: List[float] = []
-            beat_h: List[float] = []
-            for j, a in enumerate(archs):
-                xs = [i + (j - (len(archs) - 1) / 2) * bw
-                      for i in range(len(subsets))]
-                hs = [metric.get((a, s), float("nan")) for s in subsets]
-                ax.bar(xs, hs, width=bw, color=ARCH_COLOR[a], edgecolor="k",
-                       linewidth=0.3, label=a)
-                for x, h in _beats_pbe_marks(xs, hs, pbe_line):
-                    beat_x.append(x); beat_h.append(h)
-            if _is_num(pbe_line):
-                ax.axhline(pbe_line, ls="--", color="k", linewidth=1.0, label="PBE")
-            if _is_num(scan_line):
-                ax.axhline(scan_line, ls=":", color="#555555", linewidth=1.3,
-                           label="SCAN")
-            if beat_x:
-                ax.scatter(beat_x, beat_h, marker="v", s=16, color="#2ca02c",
-                           edgecolor="k", linewidths=0.3, zorder=6,
-                           label="beats PBE")
-            ax.set_xticks(range(len(subsets)))
-            ax.set_xticklabels(subsets)
-            ax.set_xlabel("training subset_size", fontsize=8)
-            ax.set_ylabel("kcal/mol", fontsize=8)
-            ax.set_title(title, fontsize=9)
-            ax.grid(True, axis="y", alpha=0.3)
-
         # SCAN full-pool combined MAE only tracks panel (a) (there is no
         # 2-subset SCAN WTMAD-2 to draw); guarded so absent SCAN changes nothing.
         scan_c = (scan_baseline or {}).get("combined")
-        _grouped(axes[0][0], mae, pbe_mae,
-                 "Held-out reaction-energy MAE (combined), per (arch, subset)",
-                 scan_line=scan_c)
-        _grouped(axes[0][1], wt, pbe_wt,
-                 "2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)")
+        _grouped_arch_bars(
+            axes[0][0], mae, archs, subsets, pbe_line=pbe_mae,
+            title="Held-out reaction-energy MAE (combined), per (arch, subset)",
+            scan_line=scan_c)
+        _grouped_arch_bars(
+            axes[0][1], wt, archs, subsets, pbe_line=pbe_wt,
+            title="2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)")
         handles, labels = axes[0][0].get_legend_handles_labels()
         if labels:
             fig.legend(handles, labels, loc="lower center",
@@ -2269,6 +2280,110 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
     return out_path
 
 
+def _insample_density_lines_panel(ax, density_rows: List[Dict[str, Any]]
+                                  ) -> None:
+    """Per-arch mean in-sample density RMSE vs subset_size (n annotated), with
+    the grey dashed PBE-vs-CCSD line over subset_size when the model-free
+    ``density_rmse_pbe`` column is present. Panel body shared by
+    ``plot_insample_density_ccsd`` and ``plot_insample_overview``."""
+    archs = _archs_present(density_rows) or ["deep"]
+    for a in archs:
+        by_s: Dict[int, List[float]] = {}
+        for r in density_rows:
+            if r.get("arch") == a and _is_num(r.get("density_rmse")):
+                by_s.setdefault(r["subset_size"], []).append(r["density_rmse"])
+        pts = sorted((s, float(np.mean(v)), len(v)) for s, v in by_s.items())
+        if pts:
+            ax.plot([s for s, _, _ in pts], [m for _, m, _ in pts],
+                    marker="o", ms=5, color=ARCH_COLOR[a], label=a)
+            for s, m, n in pts:
+                ax.annotate(f"n={n}", (s, m), fontsize=5,
+                            color=ARCH_COLOR[a], xytext=(0, 4),
+                            textcoords="offset points")
+    # PBE-vs-CCSD baseline (arch-independent): mean over the molecules
+    # present at each subset_size, grey dashed
+    pbe_by_s: Dict[int, List[float]] = {}
+    for r in density_rows:
+        if _is_num(r.get("density_rmse_pbe")):
+            pbe_by_s.setdefault(r["subset_size"], []).append(
+                r["density_rmse_pbe"])
+    pbe_pts = sorted((s, float(np.mean(v))) for s, v in pbe_by_s.items())
+    if pbe_pts:
+        ax.plot([s for s, _ in pbe_pts], [m for _, m in pbe_pts],
+                ls="--", color="0.35", marker="x", ms=5, lw=1.2,
+                label="PBE vs CCSD")
+    ax.set_yscale("log")
+    ax.set_xlabel("training subset_size", fontsize=8)
+    ax.set_ylabel("density RMSE vs CCSD (grid, weighted-mean)", fontsize=8)
+    ax.set_title("In-sample density fit vs CCSD (per arch)", fontsize=9)
+    if ax.get_legend_handles_labels()[1]:
+        ax.legend(fontsize=6, ncol=2)
+    ax.grid(True, which="both", alpha=0.3)
+
+
+def _insample_density_strip_panel(ax, density_rows: List[Dict[str, Any]]
+                                  ) -> None:
+    """Per-molecule in-sample density strip (every point, arch-jittered) with
+    one grey PBE x per molecule when the PBE column is present. Panel body
+    shared by ``plot_insample_density_ccsd`` and ``plot_insample_overview``."""
+    archs = _archs_present(density_rows) or ["deep"]
+    arch_idx = {a: i for i, a in enumerate(archs)}
+    mols = sorted({r["molecule"] for r in density_rows if r.get("molecule")})
+    mol_x = {m: i for i, m in enumerate(mols)}
+    noff = max(1, len(archs))
+    for r in density_rows:
+        if not _is_num(r.get("density_rmse")) or r.get("molecule") not in mol_x:
+            continue
+        jit = (arch_idx.get(r.get("arch"), 0) - (noff - 1) / 2) * 0.12
+        ax.scatter(mol_x[r["molecule"]] + jit, r["density_rmse"], s=18,
+                   alpha=0.75, color=ARCH_COLOR.get(r.get("arch"), "0.5"),
+                   edgecolor="none")
+    # PBE baseline per molecule (arch-independent -> one grey x each)
+    pbe_by_mol: Dict[str, List[float]] = {}
+    for r in density_rows:
+        if _is_num(r.get("density_rmse_pbe")) and r.get("molecule") in mol_x:
+            pbe_by_mol.setdefault(r["molecule"], []).append(
+                r["density_rmse_pbe"])
+    for m, vals in pbe_by_mol.items():
+        ax.scatter(mol_x[m], float(np.mean(vals)), s=26, marker="x",
+                   color="0.35", lw=1.2, zorder=3)
+    ax.set_yscale("log")
+    ax.set_xticks(range(len(mols)))
+    ax.set_xticklabels(mols, rotation=60, ha="right", fontsize=6)
+    ax.set_ylabel("density RMSE vs CCSD", fontsize=8)
+    ax.set_title(f"Per-molecule (every point; {len(mols)} trained species)",
+                 fontsize=9)
+    ax.grid(True, axis="y", which="both", alpha=0.3)
+
+
+def _insample_ae_strip_panel(ax, ae_rows: List[Dict[str, Any]]) -> None:
+    """Per-molecule in-sample |AE error| strip (kcal/mol, arch-jittered), the
+    AE analog of ``_insample_density_strip_panel``. Rows without a molecule or
+    a finite nonzero ``AE_error_kcalmol`` are dropped (log axis). No PBE
+    series: the in-sample per_molecule.json carries no PBE AE column."""
+    plotted = [r for r in ae_rows
+               if r.get("molecule") and _is_num(r.get("AE_error_kcalmol"))
+               and abs(r["AE_error_kcalmol"]) > 0.0]
+    archs = _archs_present(plotted) or ["deep"]
+    arch_idx = {a: i for i, a in enumerate(archs)}
+    mols = sorted({r["molecule"] for r in plotted})
+    mol_x = {m: i for i, m in enumerate(mols)}
+    noff = max(1, len(archs))
+    for r in plotted:
+        jit = (arch_idx.get(r.get("arch"), 0) - (noff - 1) / 2) * 0.12
+        ax.scatter(mol_x[r["molecule"]] + jit, abs(r["AE_error_kcalmol"]),
+                   s=18, alpha=0.75,
+                   color=ARCH_COLOR.get(r.get("arch"), "0.5"),
+                   edgecolor="none")
+    ax.set_yscale("log")
+    ax.set_xticks(range(len(mols)))
+    ax.set_xticklabels(mols, rotation=60, ha="right", fontsize=6)
+    ax.set_ylabel("|AE error| (kcal/mol)", fontsize=8)
+    ax.set_title(f"Per-molecule |AE error| (every point; {len(mols)} trained "
+                 "species)", fontsize=9)
+    ax.grid(True, axis="y", which="both", alpha=0.3)
+
+
 def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Path,
                                run_id: str, note: str = "",
                                provenance: Optional[str] = None,
@@ -2278,72 +2393,14 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
     (every point, since the trained-species set is tiny). Labeled IN-SAMPLE.
     Rows carrying ``density_rmse_pbe`` (the model-free PBE-vs-CCSD baseline on
     the same grid; emitted by newer evals) add a grey dashed PBE baseline to
-    both panels; older runs without the column render exactly as before."""
+    both panels; older runs without the column render exactly as before.
+    Panel bodies live in ``_insample_density_lines_panel`` /
+    ``_insample_density_strip_panel`` (shared with the in-sample overview)."""
     with plt.rc_context(_STYLE):
         archs = _archs_present(density_rows) or ["deep"]
-        arch_idx = {a: i for i, a in enumerate(archs)}
         fig, axes = plt.subplots(1, 2, figsize=(13, 5.2), squeeze=False)
-        axL = axes[0][0]
-        for a in archs:
-            by_s: Dict[int, List[float]] = {}
-            for r in density_rows:
-                if r.get("arch") == a and _is_num(r.get("density_rmse")):
-                    by_s.setdefault(r["subset_size"], []).append(r["density_rmse"])
-            pts = sorted((s, float(np.mean(v)), len(v)) for s, v in by_s.items())
-            if pts:
-                axL.plot([s for s, _, _ in pts], [m for _, m, _ in pts],
-                         marker="o", ms=5, color=ARCH_COLOR[a], label=a)
-                for s, m, n in pts:
-                    axL.annotate(f"n={n}", (s, m), fontsize=5,
-                                 color=ARCH_COLOR[a], xytext=(0, 4),
-                                 textcoords="offset points")
-        # PBE-vs-CCSD baseline (arch-independent): mean over the molecules
-        # present at each subset_size, grey dashed
-        pbe_by_s: Dict[int, List[float]] = {}
-        for r in density_rows:
-            if _is_num(r.get("density_rmse_pbe")):
-                pbe_by_s.setdefault(r["subset_size"], []).append(
-                    r["density_rmse_pbe"])
-        pbe_pts = sorted((s, float(np.mean(v))) for s, v in pbe_by_s.items())
-        if pbe_pts:
-            axL.plot([s for s, _ in pbe_pts], [m for _, m in pbe_pts],
-                     ls="--", color="0.35", marker="x", ms=5, lw=1.2,
-                     label="PBE vs CCSD")
-        axL.set_yscale("log")
-        axL.set_xlabel("training subset_size", fontsize=8)
-        axL.set_ylabel("density RMSE vs CCSD (grid, weighted-mean)", fontsize=8)
-        axL.set_title("In-sample density fit vs CCSD (per arch)", fontsize=9)
-        if axL.get_legend_handles_labels()[1]:
-            axL.legend(fontsize=6, ncol=2)
-        axL.grid(True, which="both", alpha=0.3)
-
-        axR = axes[0][1]
-        mols = sorted({r["molecule"] for r in density_rows if r.get("molecule")})
-        mol_x = {m: i for i, m in enumerate(mols)}
-        noff = max(1, len(archs))
-        for r in density_rows:
-            if not _is_num(r.get("density_rmse")) or r.get("molecule") not in mol_x:
-                continue
-            jit = (arch_idx.get(r.get("arch"), 0) - (noff - 1) / 2) * 0.12
-            axR.scatter(mol_x[r["molecule"]] + jit, r["density_rmse"], s=18,
-                        alpha=0.75, color=ARCH_COLOR.get(r.get("arch"), "0.5"),
-                        edgecolor="none")
-        # PBE baseline per molecule (arch-independent -> one grey x each)
-        pbe_by_mol: Dict[str, List[float]] = {}
-        for r in density_rows:
-            if _is_num(r.get("density_rmse_pbe")) and r.get("molecule") in mol_x:
-                pbe_by_mol.setdefault(r["molecule"], []).append(
-                    r["density_rmse_pbe"])
-        for m, vals in pbe_by_mol.items():
-            axR.scatter(mol_x[m], float(np.mean(vals)), s=26, marker="x",
-                        color="0.35", lw=1.2, zorder=3)
-        axR.set_yscale("log")
-        axR.set_xticks(range(len(mols)))
-        axR.set_xticklabels(mols, rotation=60, ha="right", fontsize=6)
-        axR.set_ylabel("density RMSE vs CCSD", fontsize=8)
-        axR.set_title(f"Per-molecule (every point; {len(mols)} trained species)",
-                      fontsize=9)
-        axR.grid(True, axis="y", which="both", alpha=0.3)
+        _insample_density_lines_panel(axes[0][0], density_rows)
+        _insample_density_strip_panel(axes[0][1], density_rows)
 
         arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
                         for a in arch_style.sort_by_rung(archs)]
@@ -2363,6 +2420,80 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
     return out_path
 
 
+def _holdout_density_lines_panel(ax, density_rows: List[Dict[str, Any]],
+                                 pbe_mol: Dict[str, float]) -> None:
+    """Per-arch mean held-out density RMSE vs subset_size (n annotated) with
+    the grey dashed PBE pool-mean line. Panel body shared by
+    ``plot_holdout_density_ccsd`` and ``plot_density_energy_overview``."""
+    for a in (_archs_present(density_rows) or []):
+        by_s: Dict[int, List[float]] = {}
+        for r in density_rows:
+            if r.get("arch") == a and _is_num(r.get("density_rmse")):
+                by_s.setdefault(r["subset_size"], []).append(
+                    r["density_rmse"])
+        pts = sorted((s, float(np.mean(v)), len(v))
+                     for s, v in by_s.items())
+        if pts:
+            ax.plot([s for s, _, _ in pts], [m for _, m, _ in pts],
+                    marker="o", ms=5, color=ARCH_COLOR.get(a, "0.5"),
+                    label=a)
+            for s, m, n in pts:
+                ax.annotate(f"n={n}", (s, m), fontsize=5,
+                            color=ARCH_COLOR.get(a, "0.5"),
+                            xytext=(0, 4), textcoords="offset points")
+    if pbe_mol:
+        pbe_mean = float(np.mean(list(pbe_mol.values())))
+        ax.axhline(pbe_mean, ls="--", color="0.35", lw=1.2,
+                   label=f"PBE vs CCSD (pool mean {pbe_mean:.1e})")
+    ax.set_yscale("log")
+    ax.set_xlabel("training subset_size", fontsize=8)
+    ax.set_ylabel("held-out density RMSE vs CCSD (grid, weighted-mean)",
+                  fontsize=8)
+    ax.set_title("Held-out density error vs CCSD (per arch)", fontsize=9)
+    if ax.get_legend_handles_labels()[1]:
+        ax.legend(fontsize=6, ncol=2)
+    ax.grid(True, which="both", alpha=0.3)
+
+
+def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
+                          pbe_mol: Dict[str, float]) -> None:
+    """Per-species NN-vs-PBE density parity (log-log; below the diagonal =
+    the NN density is closer to CCSD than PBE is), with a PBE-only sorted
+    strip as the fallback when no NN channel exists. Panel body shared by
+    ``plot_holdout_density_ccsd`` and ``plot_density_energy_overview``."""
+    n_pairs = 0
+    for r in density_rows:
+        x = pbe_mol.get(r.get("molecule"))
+        y = r.get("density_rmse")
+        if not (_is_num(x) and _is_num(y)):
+            continue
+        ax.scatter(x, y, s=14, alpha=0.6,
+                   color=ARCH_COLOR.get(r.get("arch"), "0.5"),
+                   edgecolor="none")
+        n_pairs += 1
+    if n_pairs:
+        lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]),
+                max(ax.get_xlim()[1], ax.get_ylim()[1])]
+        ax.plot(lims, lims, ls=":", color="0.5", lw=1)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+    elif pbe_mol:
+        # PBE-only data (no NN density yet): per-species PBE strip
+        vals = sorted(pbe_mol.values(), reverse=True)
+        ax.scatter(range(len(vals)), vals, s=10, color="0.35")
+        ax.set_yscale("log")
+        ax.set_xlabel("species (sorted by PBE error)", fontsize=8)
+    ax.set_xlabel(ax.get_xlabel() or "PBE density RMSE vs CCSD",
+                  fontsize=8)
+    ax.set_ylabel("NN density RMSE vs CCSD" if n_pairs
+                  else "PBE density RMSE vs CCSD", fontsize=8)
+    ax.set_title(f"Per-species NN vs PBE (both vs CCSD; {n_pairs} points)"
+                 if n_pairs else
+                 f"PBE-vs-CCSD per species ({len(pbe_mol)} refs)",
+                 fontsize=9)
+    ax.grid(True, which="both", alpha=0.3)
+
+
 def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
                               out_path: Path, run_id: str, *,
                               pbe_table: Optional[Dict[str, Dict[str, float]]]
@@ -2375,83 +2506,17 @@ def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
     (log-log; below the diagonal = the NN density is closer to CCSD than PBE
     is). The PBE channel is model-free and shared across every spec --
     ``pbe_table`` (the run-level ``pbe_density_errors.json``) supplies it for
-    PBE-only re-evals; rows carrying ``density_rmse_pbe`` work too."""
+    PBE-only re-evals; rows carrying ``density_rmse_pbe`` work too. Panel
+    bodies live in ``_holdout_density_lines_panel`` / ``_density_parity_panel``
+    (shared with the held-out overview)."""
     # per-molecule PBE map: explicit table first, else from the rows
-    pbe_mol: Dict[str, float] = {
-        m: d["density_rmse_pbe"] for m, d in (pbe_table or {}).items()
-        if _is_num(d.get("density_rmse_pbe"))}
-    if not pbe_mol:
-        acc: Dict[str, List[float]] = {}
-        for r in density_rows:
-            if _is_num(r.get("density_rmse_pbe")) and r.get("molecule"):
-                acc.setdefault(r["molecule"], []).append(r["density_rmse_pbe"])
-        pbe_mol = {m: float(np.mean(v)) for m, v in acc.items()}
+    pbe_mol = _pbe_density_map(density_rows, pbe_table)
 
     with plt.rc_context(_STYLE):
         archs = _archs_present(density_rows) or []
         fig, axes = plt.subplots(1, 2, figsize=(13, 5.2), squeeze=False)
-        axL, axR = axes[0][0], axes[0][1]
-        for a in archs:
-            by_s: Dict[int, List[float]] = {}
-            for r in density_rows:
-                if r.get("arch") == a and _is_num(r.get("density_rmse")):
-                    by_s.setdefault(r["subset_size"], []).append(
-                        r["density_rmse"])
-            pts = sorted((s, float(np.mean(v)), len(v))
-                         for s, v in by_s.items())
-            if pts:
-                axL.plot([s for s, _, _ in pts], [m for _, m, _ in pts],
-                         marker="o", ms=5, color=ARCH_COLOR.get(a, "0.5"),
-                         label=a)
-                for s, m, n in pts:
-                    axL.annotate(f"n={n}", (s, m), fontsize=5,
-                                 color=ARCH_COLOR.get(a, "0.5"),
-                                 xytext=(0, 4), textcoords="offset points")
-        if pbe_mol:
-            pbe_mean = float(np.mean(list(pbe_mol.values())))
-            axL.axhline(pbe_mean, ls="--", color="0.35", lw=1.2,
-                        label=f"PBE vs CCSD (pool mean {pbe_mean:.1e})")
-        axL.set_yscale("log")
-        axL.set_xlabel("training subset_size", fontsize=8)
-        axL.set_ylabel("held-out density RMSE vs CCSD (grid, weighted-mean)",
-                       fontsize=8)
-        axL.set_title("Held-out density error vs CCSD (per arch)", fontsize=9)
-        if axL.get_legend_handles_labels()[1]:
-            axL.legend(fontsize=6, ncol=2)
-        axL.grid(True, which="both", alpha=0.3)
-
-        # right: NN-vs-PBE per-species parity (needs both channels)
-        n_pairs = 0
-        for r in density_rows:
-            x = pbe_mol.get(r.get("molecule"))
-            y = r.get("density_rmse")
-            if not (_is_num(x) and _is_num(y)):
-                continue
-            axR.scatter(x, y, s=14, alpha=0.6,
-                        color=ARCH_COLOR.get(r.get("arch"), "0.5"),
-                        edgecolor="none")
-            n_pairs += 1
-        if n_pairs:
-            lims = [min(axR.get_xlim()[0], axR.get_ylim()[0]),
-                    max(axR.get_xlim()[1], axR.get_ylim()[1])]
-            axR.plot(lims, lims, ls=":", color="0.5", lw=1)
-            axR.set_xscale("log")
-            axR.set_yscale("log")
-        elif pbe_mol:
-            # PBE-only data (no NN density yet): per-species PBE strip
-            vals = sorted(pbe_mol.values(), reverse=True)
-            axR.scatter(range(len(vals)), vals, s=10, color="0.35")
-            axR.set_yscale("log")
-            axR.set_xlabel("species (sorted by PBE error)", fontsize=8)
-        axR.set_xlabel(axR.get_xlabel() or "PBE density RMSE vs CCSD",
-                       fontsize=8)
-        axR.set_ylabel("NN density RMSE vs CCSD" if n_pairs
-                       else "PBE density RMSE vs CCSD", fontsize=8)
-        axR.set_title(f"Per-species NN vs PBE (both vs CCSD; {n_pairs} points)"
-                      if n_pairs else
-                      f"PBE-vs-CCSD per species ({len(pbe_mol)} refs)",
-                      fontsize=9)
-        axR.grid(True, which="both", alpha=0.3)
+        _holdout_density_lines_panel(axes[0][0], density_rows, pbe_mol)
+        _density_parity_panel(axes[0][1], density_rows, pbe_mol)
 
         arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
                         for a in arch_style.sort_by_rung(archs) if a in ARCH_COLOR]
@@ -2479,6 +2544,52 @@ _ED_CAVEAT = ("ED = 2/(1/E + 1/(gamma*D)) (Dick & Fernandez-Serra, PRB 104, "
               "pooled PBE anchors (gamma = E_PBE/D_PBE), so ED_PBE == E_PBE "
               "by construction (dashed).")
 
+_HOLDOUT_OVERVIEW_CAVEAT = (
+    "Single-pool 'WTMAD-2' (panels A, B) reduces to 56.84 * MAD_pool / "
+    "mean|ref|_pool -- a scaled relative error, NOT a reweighting; only "
+    "panel C (2-subset) reweights BH76 vs W4-11, and it is NOT full GMTKN55.")
+
+_INSAMPLE_OVERVIEW_CAVEAT = (
+    "IN-SAMPLE (training-fit) overview on trained molecules -- NOT "
+    "generalization; final checkpoint only (eval/ has no val-best variant, so "
+    "the panels are identical in the final-step and val-best dirs; only the "
+    "title's checkpoint stamp differs).\n"
+    "No PBE AE baseline exists in-sample (per_molecule.json has no PBE AE "
+    "column); no in-sample ED (no PBE energy anchor to self-calibrate gamma).")
+
+
+def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
+    """Per-arch ED vs subset_size lines with the dashed PBE line at
+    ``ed_pbe`` (== the energy anchor, by gamma self-calibration), green
+    beats-PBE markers, and the gamma stamp. Panel body shared by
+    ``plot_combined_energy_density`` and ``plot_density_energy_overview``."""
+    cells = summary["cells"]
+    archs = arch_style.sort_by_rung(sorted({a for a, _ in cells}))
+    for a in archs:
+        pts = sorted((ss, c["ED"]) for (aa, ss), c in cells.items()
+                     if aa == a and c["ED"] > 0.0)
+        if not pts:
+            continue
+        ax.plot([s for s, _ in pts], [e for _, e in pts], marker="o",
+                ms=5, color=ARCH_COLOR.get(a, "0.5"), label=a)
+    if _is_num(summary["ed_pbe"]) and summary["ed_pbe"] > 0.0:
+        ax.axhline(summary["ed_pbe"], ls="--", color="k", lw=1.0,
+                   label="PBE (ED = E by self-calibration)")
+    beat = [(ss, c["ED"]) for (_, ss), c in cells.items()
+            if c["beats_pbe"] and c["ED"] > 0.0]
+    if beat:
+        ax.scatter([s for s, _ in beat], [e for _, e in beat], marker="v",
+                   s=16, color="#2ca02c", edgecolor="k", linewidths=0.3,
+                   zorder=6, label="beats PBE")
+    ax.set_yscale("log")
+    ax.set_xlabel("training subset_size", fontsize=8)
+    ax.set_ylabel("ED (kcal/mol)", fontsize=8)
+    ax.set_title(title, fontsize=9)
+    ax.grid(True, which="both", alpha=0.3)
+    ax.text(0.02, 0.02,
+            f"$\\gamma$ = {summary['gamma']:.4g} (self-calibrated)",
+            transform=ax.transAxes, fontsize=6, color="#444444")
+
 
 def plot_combined_energy_density(wt_summary: Dict[str, Any],
                                  mae_summary: Optional[Dict[str, Any]],
@@ -2496,42 +2607,15 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
     ``wt_summary`` / ``mae_summary`` are ``combined_ed_by_cell`` outputs; a
     None/empty ``mae_summary`` renders a placeholder panel. Non-positive
     points are dropped defensively (log axes; cannot occur for real
-    MAE/WTMAD-2/D > 0). See the ED section note for the deviations from the
-    Letter."""
-
-    def _ed_lines(ax, summary, title):
-        cells = summary["cells"]
-        archs = arch_style.sort_by_rung(sorted({a for a, _ in cells}))
-        for a in archs:
-            pts = sorted((ss, c["ED"]) for (aa, ss), c in cells.items()
-                         if aa == a and c["ED"] > 0.0)
-            if not pts:
-                continue
-            ax.plot([s for s, _ in pts], [e for _, e in pts], marker="o",
-                    ms=5, color=ARCH_COLOR.get(a, "0.5"), label=a)
-        if _is_num(summary["ed_pbe"]) and summary["ed_pbe"] > 0.0:
-            ax.axhline(summary["ed_pbe"], ls="--", color="k", lw=1.0,
-                       label="PBE (ED = E by self-calibration)")
-        beat = [(ss, c["ED"]) for (_, ss), c in cells.items()
-                if c["beats_pbe"] and c["ED"] > 0.0]
-        if beat:
-            ax.scatter([s for s, _ in beat], [e for _, e in beat], marker="v",
-                       s=16, color="#2ca02c", edgecolor="k", linewidths=0.3,
-                       zorder=6, label="beats PBE")
-        ax.set_yscale("log")
-        ax.set_xlabel("training subset_size", fontsize=8)
-        ax.set_ylabel("ED (kcal/mol)", fontsize=8)
-        ax.set_title(title, fontsize=9)
-        ax.grid(True, which="both", alpha=0.3)
-        ax.text(0.02, 0.02,
-                f"$\\gamma$ = {summary['gamma']:.4g} (self-calibrated)",
-                transform=ax.transAxes, fontsize=6, color="#444444")
+    MAE/WTMAD-2/D > 0). The line-panel body lives in ``_ed_lines_panel``
+    (shared with the held-out overview). See the ED section note for the
+    deviations from the Letter."""
 
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.6), squeeze=False)
         axA, axB, axC = axes[0]
-        _ed_lines(axA, wt_summary,
-                  "ED, energy leg = 2-subset WTMAD-2 (headline)")
+        _ed_lines_panel(axA, wt_summary,
+                        "ED, energy leg = 2-subset WTMAD-2 (headline)")
 
         # (b) decomposition: one point per cell in (E, gamma*D) space
         cells = wt_summary["cells"]
@@ -2577,9 +2661,9 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
         axB.grid(True, which="both", alpha=0.3)
 
         if mae_summary and mae_summary.get("cells"):
-            _ed_lines(axC, mae_summary,
-                      "ED, energy leg = combined reaction MAE "
-                      "(leg-independence check)")
+            _ed_lines_panel(axC, mae_summary,
+                            "ED, energy leg = combined reaction MAE "
+                            "(leg-independence check)")
         else:
             axC.text(0.5, 0.5, "MAE leg unavailable", ha="center",
                      va="center", transform=axC.transAxes, fontsize=9,
@@ -2602,6 +2686,129 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
             caveat=caveat or _ED_CAVEAT,
             title="Combined energy-density ED (DFS Eq. 21, harmonic mean) "
                   "-- held-out, NN vs PBE")
+        fig.tight_layout(rect=(0, 0.10, 1, 0.90))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+def plot_density_energy_overview(rows: List[Dict[str, Any]],
+                                 hd_rows: List[Dict[str, Any]],
+                                 out_path: Path, run_id: str, *,
+                                 pbe_table: Optional[Dict[str, Dict[str, float]]]
+                                 = None,
+                                 ed_summary: Optional[Dict[str, Any]] = None,
+                                 note: str = "",
+                                 provenance: Optional[str] = None,
+                                 caveat: Optional[str] = None) -> Path:
+    """Held-out overview composite -- energy above, density below, joint
+    metric closing the row: (A)/(B) single-pool WTMAD-2 bars per (arch,
+    subset_size) for BH76 / W4-11 (with one pool the WTMAD-2 sum collapses to
+    56.84 * MAD_pool / mean|ref|_pool -- a scaled relative error, stamped as
+    such), (C) the genuine 2-subset WTMAD-2, (D) held-out density RMSE vs
+    subset_size, (E) per-species NN-vs-PBE density parity, (F) the DFS Eq. 21
+    ED headline (WTMAD-2 leg; ``ed_summary`` = a ``combined_ed_by_cell``
+    output) or an "ED unavailable" placeholder when it is missing/empty.
+    Panel bodies are the same ax-level helpers the dedicated figures use, so
+    the views cannot drift apart. No SCAN lines (no SCAN WTMAD-2 cache
+    exists). Each top panel carries its own pool-filtered PBE dashed line."""
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table)
+    with plt.rc_context(_STYLE):
+        archs = _energy_arch_axis(rows)
+        subsets = _present_subsets(rows) or [1]
+        fig, axes = plt.subplots(2, 3, figsize=(18.0, 9.6), squeeze=False)
+        (axA, axB, axC), (axD, axE, axF) = axes
+        for ax, pool, tag in ((axA, "bh76", "(A) WTMAD-2, BH76 only"),
+                              (axB, "w411", "(B) WTMAD-2, W4-11 only")):
+            pr = [r for r in rows if r.get("pool") == pool]
+            _grouped_arch_bars(ax, wtmad2_by_arch_subset(pr), archs, subsets,
+                               pbe_line=wtmad2_pbe_baseline(pr),
+                               title=tag + " -- one-bucket reduction "
+                                     "(scaled relative error)")
+        _grouped_arch_bars(axC, wtmad2_by_arch_subset(rows), archs, subsets,
+                           pbe_line=wtmad2_pbe_baseline(rows),
+                           title="(C) 2-subset WTMAD-2 (BH76+W4-11), "
+                                 "per (arch, subset)")
+        _holdout_density_lines_panel(axD, hd_rows, pbe_mol)
+        axD.set_title("(D) " + axD.get_title(), fontsize=9)
+        _density_parity_panel(axE, hd_rows, pbe_mol)
+        axE.set_title("(E) " + axE.get_title(), fontsize=9)
+        if ed_summary and ed_summary.get("cells"):
+            _ed_lines_panel(axF, ed_summary,
+                            "(F) ED, energy leg = 2-subset WTMAD-2 (headline)")
+        else:
+            axF.text(0.5, 0.5, "ED unavailable", ha="center", va="center",
+                     transform=axF.transAxes, fontsize=9, color="0.5")
+            axF.set_title("(F) ED, energy leg = 2-subset WTMAD-2 (headline)",
+                          fontsize=9)
+        seen: Dict[str, Any] = {}
+        for ax in (axA, axB, axC, axD, axE, axF):
+            hs, ls = ax.get_legend_handles_labels()
+            for h, l in zip(hs, ls):
+                seen.setdefault(l, h)
+        if seen:
+            fig.legend(list(seen.values()), list(seen.keys()),
+                       loc="lower center",
+                       ncol=max(4, len(arch_style.RUNG_ORDER)), fontsize=7,
+                       frameon=False, bbox_to_anchor=(0.5, 0.04))
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance,
+            caveat=caveat or _HOLDOUT_OVERVIEW_CAVEAT,
+            title="Held-out overview: WTMAD-2 by pool + density vs CCSD + ED")
+        fig.tight_layout(rect=(0, 0.10, 1, 0.90))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+def plot_insample_overview(ae_rows: List[Dict[str, Any]],
+                           density_rows: List[Dict[str, Any]],
+                           out_path: Path, run_id: str, *,
+                           note: str = "",
+                           provenance: Optional[str] = None,
+                           caveat: Optional[str] = None) -> Path:
+    """In-sample companion composite (training fit, final checkpoint):
+    (A) in-sample AE MAE bars per (arch, subset_size) -- NN only, no PBE line
+    (the in-sample per_molecule.json has no PBE AE column, which is also why
+    no in-sample ED exists: no PBE energy anchor to self-calibrate gamma);
+    (B) per-molecule |AE error| strip; (C) in-sample density RMSE vs
+    subset_size with the PBE dashed line when the model-free column is
+    present; (D) per-molecule density strip with one grey PBE x per molecule.
+    ``eval/`` has no val-best variant, so the panels are identical in the
+    final-step and val-best output dirs -- only the title's checkpoint stamp
+    differs (stated in the caveat). Panel bodies are the same ax-level
+    helpers ``plot_insample_density_ccsd`` uses."""
+    with plt.rc_context(_STYLE):
+        fig, axes = plt.subplots(2, 2, figsize=(13, 9.6), squeeze=False)
+        (axA, axB), (axC, axD) = axes
+        _grouped_arch_bars(axA, ae_mae_by_arch_subset(ae_rows),
+                           _energy_arch_axis(ae_rows),
+                           _present_subsets(ae_rows) or [1],
+                           pbe_line=None,
+                           title="(A) In-sample AE MAE per (arch, subset) -- "
+                                 "NN only (no in-sample PBE AE)")
+        axA.set_ylabel("in-sample AE MAE (kcal/mol)", fontsize=8)
+        _insample_ae_strip_panel(axB, ae_rows)
+        axB.set_title("(B) " + axB.get_title(), fontsize=9)
+        _insample_density_lines_panel(axC, density_rows)
+        axC.set_title("(C) " + axC.get_title(), fontsize=9)
+        _insample_density_strip_panel(axD, density_rows)
+        axD.set_title("(D) " + axD.get_title(), fontsize=9)
+        seen: Dict[str, Any] = {}
+        for ax in (axA, axB, axC, axD):
+            hs, ls = ax.get_legend_handles_labels()
+            for h, l in zip(hs, ls):
+                seen.setdefault(l, h)
+        if seen:
+            fig.legend(list(seen.values()), list(seen.keys()),
+                       loc="lower center",
+                       ncol=max(4, len(arch_style.RUNG_ORDER)), fontsize=7,
+                       frameon=False, bbox_to_anchor=(0.5, 0.04))
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance,
+            caveat=caveat or _INSAMPLE_OVERVIEW_CAVEAT,
+            title="In-sample overview: AE + density vs CCSD "
+                  "(training fit; final checkpoint)")
         fig.tight_layout(rect=(0, 0.10, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -3801,11 +4008,17 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     AND the DFS Eq. 21 combined energy-density figure
     (``ablation_combined_energy_density.png``) are rendered too; the ED
     per-cell CSV is written alongside but its path is NOT in the returned
-    list (the return contract stays PNG-only)."""
+    list (the return contract stays PNG-only). Two overview composites ride
+    along: ``ablation_insample_overview.png`` is ALWAYS rendered (in-sample
+    AE + density; final-checkpoint data, so its panels are identical in the
+    final and val-best output dirs), and ``ablation_density_energy_overview.png``
+    renders whenever the held-out density figure does, with an "ED
+    unavailable" placeholder panel when the ED anchors are missing."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
     drows = collect_insample_density_rows(run_dir)
+    ae_rows = collect_insample_ae_rows(run_dir)
     run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
     note = coverage_note(run_dir, eval_subdir=eval_subdir)
     try:
@@ -3838,6 +4051,13 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         plot_insample_density_ccsd(drows,
                                    outdir / "ablation_insample_density_ccsd.png",
                                    run_id, note=note, provenance=dens_prov),
+        plot_insample_overview(
+            ae_rows, drows, outdir / "ablation_insample_overview.png", run_id,
+            note=note,
+            provenance=("In-sample AE + density vs CCSD from "
+                        "eval/per_molecule.json (atoms excluded); density "
+                        "RMSE grid-weight-averaged, NOT N_e-normalized; AE "
+                        "vs benchmark reference atomization energies.")),
     ]
     # Held-out density family: only renderable once benchmark CCSD reference
     # densities exist (eval_holdout density columns and/or the run-level
@@ -3859,6 +4079,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         d_pbe = pbe_density_baseline(hd_rows, pbe_table)
         wt_cells = wtmad2_by_arch_subset(rows)
         e_pbe_wt = wtmad2_pbe_baseline(rows)
+        wt_summary: Optional[Dict[str, Any]] = None
         if (d_cells and _is_num(d_pbe) and d_pbe > 0.0 and wt_cells
                 and _is_num(e_pbe_wt) and e_pbe_wt > 0.0):
             wt_summary = combined_ed_by_cell(wt_cells, e_pbe_wt,
@@ -3913,6 +4134,21 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                   "skipping ablation_combined_energy_density.png/.csv; a "
                   "stale file from a prior render persists, as with the "
                   "holdout density figure)")
+        # Held-out overview composite: same gate as the holdout density figure
+        # (renders whenever it does); panel F degrades to the "ED unavailable"
+        # placeholder when the ED anchors above were missing (wt_summary None).
+        ho_prov = ("Held-out overview. A/B: one-bucket WTMAD-2 reduction "
+                   "56.84*MAD/mean|ref| per pool; C: 2-subset WTMAD-2; no "
+                   "SCAN lines (no SCAN WTMAD-2 cache). D/E: grid-weight-"
+                   "averaged density RMSE vs CCSD (not CCSD(T)) refs at "
+                   "matching basis/grid, PBE model-free on the same grid. "
+                   "F: ED -- full diagnostics on "
+                   "ablation_combined_energy_density.png.")
+        written.append(plot_density_energy_overview(
+            rows, hd_rows,
+            outdir / "ablation_density_energy_overview.png", run_id,
+            pbe_table=pbe_table, ed_summary=wt_summary, note=note,
+            provenance=ho_prov))
     else:
         print("  (no held-out density data -- skipping "
               "ablation_holdout_density_ccsd.png; needs benchmark CCSD refs)")
