@@ -2070,6 +2070,58 @@ def test_build_discloses_partial_eps_backfill(tmp_path, capsys):
     assert 0 < n_eps < n_wt
 
 
+def test_build_discloses_eps_cell_species_divergence(tmp_path, capsys):
+    """Per-species strip WITHIN one spec (RMSE intact): the eps-channel
+    cell-homogeneity guard must fire at the build site -- and neither
+    sibling guard (whole-cell missing / anchor-vs-union) may fire, so the
+    three disclosures partition the narrowing modes."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    for i, sd in enumerate(sorted((run / "checkpoints").glob("spec_*"))):
+        pm = sd / "eval_holdout" / "per_molecule.json"
+        if not pm.is_file():
+            continue
+        rows = json.loads(pm.read_text())
+        rows.append({
+            "molecule": "OH2", "density_rmse": 3e-4, "density_l1": 2e-5,
+            "density_rmse_pbe": 9e-4, "density_l1_pbe": 6e-5,
+            # first spec: eps stripped for this species only (RMSE intact)
+            "density_eps_l1": None if i == 0 else 3.5e-4,
+            "density_eps_l1_pbe": 8e-4,
+            "n_electrons": 10.0, "grid_weight_sum": 110.0,
+            "ref_density_method": "ccsd", "from_training_subset": False})
+        pm.write_text(json.dumps(rows))
+    fig.build_density_energy_figures(run, tmp_path / "f")
+    printed = capsys.readouterr().out
+    assert "DFS-units ED eps cells:" in printed
+    assert "eps columns cover" not in printed        # whole-cell guard silent
+    assert "DFS-units ED eps anchor:" not in printed  # anchor guard silent
+
+
+def test_build_discloses_eps_anchor_only_species(tmp_path, capsys):
+    """One species carrying a PBE eps but NO NN eps in ANY spec: the
+    eps-channel anchor-vs-NN-union guard must fire at the build site (the
+    cell-homogeneity guard stays silent -- every cell sees the same NN set)."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    for sd in sorted((run / "checkpoints").glob("spec_*")):
+        pm = sd / "eval_holdout" / "per_molecule.json"
+        if not pm.is_file():
+            continue
+        rows = json.loads(pm.read_text())
+        rows.append({
+            "molecule": "OF2", "density_rmse": 4e-4, "density_l1": 3e-5,
+            "density_rmse_pbe": 9e-4, "density_l1_pbe": 6e-5,
+            "density_eps_l1": None, "density_eps_l1_pbe": 8e-4,
+            "n_electrons": 26.0, "grid_weight_sum": 120.0,
+            "ref_density_method": "ccsd", "from_training_subset": False})
+        pm.write_text(json.dumps(rows))
+    fig.build_density_energy_figures(run, tmp_path / "f")
+    printed = capsys.readouterr().out
+    assert "DFS-units ED eps anchor:" in printed and "OF2" in printed
+    assert "DFS-units ED eps cells:" not in printed
+
+
 def test_pbe_anchor_coverage_warning_key_params():
     rows = [
         {"molecule": "m1", "density_rmse": 1e-4, "density_rmse_pbe": 2e-4,
@@ -2081,6 +2133,25 @@ def test_pbe_anchor_coverage_warning_key_params():
     w = fig._pbe_anchor_coverage_warning(rows, nn_key="density_eps_l1",
                                          pbe_key="density_eps_l1_pbe")
     assert "m2" in w and "anchor-only" in w
+
+
+def test_density_cell_coverage_warning_key_param():
+    """Within-cell species homogeneity must be checkable on the eps channel
+    independently of the RMSE channel (a per-species partial backfill leaves
+    RMSE aligned while eps diverges)."""
+    rows = [
+        {"arch": "deep", "subset_size": 1, "molecule": "m1",
+         "density_rmse": 1e-4, "density_eps_l1": 1e-3},
+        {"arch": "deep", "subset_size": 1, "molecule": "m2",
+         "density_rmse": 1e-4, "density_eps_l1": None},
+        {"arch": "deep", "subset_size": 2, "molecule": "m1",
+         "density_rmse": 1e-4, "density_eps_l1": 1e-3},
+        {"arch": "deep", "subset_size": 2, "molecule": "m2",
+         "density_rmse": 1e-4, "density_eps_l1": 1e-3},
+    ]
+    assert fig._density_cell_coverage_warning(rows) == ""    # RMSE uniform
+    w = fig._density_cell_coverage_warning(rows, key="density_eps_l1")
+    assert "deep/ss1" in w and "n=1" in w
 
 
 def test_plot_ed_decomposition_renders(tmp_path):

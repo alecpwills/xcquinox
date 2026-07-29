@@ -2189,15 +2189,19 @@ def _ed_exclusion_note(energy_by_cell: Dict[Tuple[str, int], float],
             + "; ".join(parts) + ".")
 
 
-def _density_cell_coverage_warning(hd_rows: List[Dict[str, Any]]) -> str:
+def _density_cell_coverage_warning(hd_rows: List[Dict[str, Any]],
+                                   key: str = "density_rmse") -> str:
     """'' when every (arch, subset_size) cell's set of finite-NN density
     species equals the pooled union; otherwise names the divergent cells with
     their counts. Cells are expected to share one held-out species set -- a
-    partial eval would silently bias that cell's mean D."""
+    partial eval would silently bias that cell's mean D. ``key`` selects the
+    error channel (default the grid-weighted RMSE; ``density_eps_l1`` runs
+    the same homogeneity check on the DFS-units channel, where a per-species
+    partial backfill is the realistic cause)."""
     per_cell: Dict[Tuple[str, int], set] = {}
     for r in hd_rows:
         arch, ss = r.get("arch"), r.get("subset_size")
-        if arch is None or ss is None or not _is_num(r.get("density_rmse")):
+        if arch is None or ss is None or not _is_num(r.get(key)):
             continue
         per_cell.setdefault((arch, ss), set()).add(r.get("molecule"))
     if not per_cell:
@@ -4742,6 +4746,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     pbe_key="density_eps_l1_pbe")
                 if aw_eps:
                     print(f"  (DFS-units ED eps anchor: {aw_eps})")
+                cw_eps = _density_cell_coverage_warning(
+                    hd_rows, key="density_eps_l1")
+                if cw_eps:
+                    print(f"  (DFS-units ED eps cells: {cw_eps})")
                 eps_counts = (_cell_counts(rows, "abs_error_nn_kcalmol"),
                               _cell_counts(hd_rows, "density_eps_l1"))
                 legs_main["wtmad2_eps_gamma_dfs"] = combined_ed_fixed_gamma(

@@ -68,13 +68,17 @@ OUT="${1:-/gpfs/scratch/awills/nonempirical_pool_6311ppg3df2pd_g3}"
 echo "[nonemp-pool] refs: $REFS"
 echo "[nonemp-pool] out-dir: $OUT"
 [ -d "$REFS" ] || { echo "[nonemp-pool] FATAL: refs dir missing"; exit 1; }
-# path-normalized guard: trailing slashes / ./ segments / relative spellings
-# of the refs dir must not evade the out-dir check
+# path-normalized CONTAINMENT guard: the out-dir must be neither the refs
+# dir itself nor anywhere inside it (an _intermediates/ tree landing in the
+# refs dir would pollute the production cache); trailing slashes / ./
+# segments / relative spellings must not evade it
 REFS_REAL="$(realpath -m "$REFS")"
 OUT_REAL="$(realpath -m "$OUT")"
-if [ "$OUT_REAL" = "$REFS_REAL" ]; then
-  echo "[nonemp-pool] FATAL: out-dir must NOT be the refs dir"; exit 1
-fi
+case "$OUT_REAL/" in
+  "$REFS_REAL"/*)
+    echo "[nonemp-pool] FATAL: out-dir must NOT be the refs dir or inside it"
+    exit 1 ;;
+esac
 mkdir -p "$OUT" || { echo "[nonemp-pool] FATAL: cannot create out-dir"; exit 1; }
 
 # --- generation (resumable; atomic JSON after every (species, xc)) -----------
