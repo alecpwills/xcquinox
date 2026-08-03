@@ -257,6 +257,74 @@ def coverage_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
     return "  ".join(parts)
 
 
+def lockfix_boundary(run_dir: Path) -> Dict[str, Any]:
+    """Mid-run density-reference swap boundary, or ``{}`` when the run has none.
+
+    Reads ``lockfix_swap_manifest.json``, written into the run directory by
+    ``hpcjobs/dfs6311_lockfix_swap.py`` when degenerate-radical references are
+    relocked while a sweep is in flight. Specs that had started before the swap
+    trained against the OLD references; those that had not train against the
+    new ones, so a density comparison spanning the boundary mixes two
+    reference sets and must say so. Returns ``{swap_time, species, pre, post}``
+    with ``pre``/``post`` as sets of spec INDICES.
+    """
+    path = Path(run_dir) / "lockfix_swap_manifest.json"
+    if not path.is_file():
+        return {}
+    try:
+        with path.open() as fh:
+            man = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    part = man.get("spec_partition_at_swap") or {}
+
+    def _idx(names):
+        out = set()
+        for n in names or ():
+            try:
+                out.add(int(str(n).rsplit("_", 1)[-1]))
+            except ValueError:
+                continue
+        return out
+
+    pre = _idx(part.get("complete")) | _idx(part.get("in_flight"))
+    post = _idx(part.get("not_started"))
+    if not (pre or post):
+        return {}
+    return {"swap_time": man.get("swap_time_local", "unknown"),
+            "species": sorted((man.get("species") or {}).keys()),
+            "pre": pre, "post": post}
+
+
+def lockfix_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
+    """Disclosure naming how the PLOTTED cells fall either side of a mid-run
+    density-reference swap. Empty string when the run has no swap manifest, so
+    runs without one are unchanged."""
+    b = lockfix_boundary(run_dir)
+    if not b:
+        return ""
+    plotted = {idx for idx, spec_dir in ccp._spec_dirs(Path(run_dir))
+               if (spec_dir / eval_subdir / "per_molecule.json").is_file()}
+    pre = sorted(plotted & b["pre"])
+    post = sorted(plotted & b["post"])
+    species = "/".join(b["species"]) or "degenerate-radical"
+    head = (f"DENSITY-REFERENCE BOUNDARY: {species} references were relocked "
+            f"mid-run ({b['swap_time']}).")
+    if pre and post:
+        return (head + f" {len(pre)} plotted cell(s) trained against the OLD "
+                f"(unlocked) references [spec {pre[0]:04d}-{pre[-1]:04d}] and "
+                f"{len(post)} against the relocked ones "
+                f"[spec {post[0]:04d}-{post[-1]:04d}] -- density comparisons "
+                "across this boundary mix two reference sets.")
+    if pre:
+        return head + (f" All {len(pre)} plotted cells predate the swap "
+                       "(OLD unlocked references).")
+    if post:
+        return head + (f" All {len(post)} plotted cells postdate the swap "
+                       "(relocked references).")
+    return head
+
+
 # ---------------------------------------------------------------------------
 # Live (non-hardcoded) footer baselines
 # ---------------------------------------------------------------------------
@@ -4878,6 +4946,14 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     ae_rows = collect_insample_ae_rows(run_dir)
     run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
     note = coverage_note(run_dir, eval_subdir=eval_subdir)
+    # A mid-run density-reference swap makes cells on either side incomparable
+    # on the density axis; stamp it on every figure this builder renders (all
+    # carry a density or ED panel). Empty for runs without a swap, so their
+    # figures are unchanged.
+    _lockfix = lockfix_note(run_dir, eval_subdir=eval_subdir)
+    if _lockfix:
+        print(f"  ({_lockfix})")
+        note = f"{note}  {_lockfix}" if note else _lockfix
     try:
         baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:

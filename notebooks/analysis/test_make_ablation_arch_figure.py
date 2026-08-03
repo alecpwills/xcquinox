@@ -2698,6 +2698,89 @@ def test_dfs_paper_notation_symbols():
     fig.plt.close(f1)
 
 
+def _write_lockfix_manifest(run_dir, pre=("spec_0000",), in_flight=(),
+                            post=("spec_0001",)):
+    """The manifest hpcjobs/dfs6311_lockfix_swap.py writes into the run dir."""
+    (run_dir / "lockfix_swap_manifest.json").write_text(json.dumps({
+        "what": "CH/NO training references relocked mid-sweep",
+        "swap_time_local": "2026-08-03 15:53:39 EDT",
+        "swap_time_epoch": 1785786819,
+        "species": {"CH": {"live_lock_after": 3e-05},
+                    "NO": {"live_lock_after": 3e-05}},
+        "spec_partition_at_swap": {"complete": list(pre),
+                                   "in_flight": list(in_flight),
+                                   "not_started": list(post)},
+    }))
+
+
+def test_lockfix_boundary_absent_is_empty(tmp_path):
+    """A run with no mid-run swap has no boundary and no disclosure -- those
+    runs' figures must be unchanged."""
+    run = _make_run_dir(tmp_path)
+    assert fig.lockfix_boundary(run) == {}
+    assert fig.lockfix_note(run) == ""
+
+
+def test_lockfix_boundary_parses_partition(tmp_path):
+    """Spec names -> indices, with in-flight counted on the OLD side (those
+    tasks loaded their references before the swap)."""
+    run = _make_run_dir(tmp_path)
+    _write_lockfix_manifest(run, pre=("spec_0000", "spec_0002"),
+                            in_flight=("spec_0003",),
+                            post=("spec_0004", "spec_0005"))
+    b = fig.lockfix_boundary(run)
+    assert b["pre"] == {0, 2, 3}          # complete + in flight
+    assert b["post"] == {4, 5}
+    assert b["species"] == ["CH", "NO"]
+    assert "2026-08-03" in b["swap_time"]
+
+
+def test_lockfix_note_reports_only_plotted_cells(tmp_path):
+    """The disclosure counts the cells actually on the figure, not every spec
+    in the manifest, and names the spec range on each side."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    # the fixture evaluates specs 0-4; put 0-2 pre-swap and 3+ post
+    _write_lockfix_manifest(run, pre=("spec_0000", "spec_0001", "spec_0002"),
+                            post=("spec_0003", "spec_0004", "spec_0087"))
+    msg = fig.lockfix_note(run)
+    assert "DENSITY-REFERENCE BOUNDARY" in msg
+    assert "CH/NO" in msg
+    assert "mix two reference sets" in msg
+    # spec_0087 is in the manifest but has no eval -> must not be counted
+    assert "0087" not in msg
+    # single-sided runs say so instead of claiming a mix
+    _write_lockfix_manifest(run, pre=(), post=("spec_0000", "spec_0001",
+                                               "spec_0002", "spec_0003"))
+    only_post = fig.lockfix_note(run)
+    assert "postdate the swap" in only_post
+    assert "mix two reference sets" not in only_post
+
+
+def test_density_figures_stamp_the_lockfix_boundary(tmp_path, capsys):
+    """The builder stamps the boundary on the density figures' note band (and
+    the console), so no density comparison can silently span it."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    _write_lockfix_manifest(run, pre=("spec_0000", "spec_0001"),
+                            post=("spec_0002", "spec_0003"))
+    seen = []
+
+    def spy(rows, out_path, run_id, **kw):
+        seen.append(kw.get("note", ""))
+        Path(out_path).write_bytes(b"x" * 4096)
+        return Path(out_path)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(fig, "plot_holdout_density_ccsd", spy)
+    try:
+        fig.build_density_energy_figures(run, tmp_path / "f")
+    finally:
+        monkey.undo()
+    assert seen and "DENSITY-REFERENCE BOUNDARY" in seen[0]
+    assert "DENSITY-REFERENCE BOUNDARY" in capsys.readouterr().out
+
+
 def test_pbe_anchor_coverage_warning_key_params():
     rows = [
         {"molecule": "m1", "density_rmse": 1e-4, "density_rmse_pbe": 2e-4,
