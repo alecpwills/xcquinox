@@ -151,7 +151,13 @@ D's parity in eps units and E/F under the published gamma), and
 `ablation_density_energy_3x3_dfs_units.png` + `.csv` (the per-channel 3x3 with row 2 in
 eps units and row 3's ED under ONE shared published gamma -- so, unlike the
 self-calibrated original whose per-channel gammas forbid it, EDs DO compare across the
-BH76 | W4-11 | combined columns; the CSV legs are `<channel>_wtmad2_eps_gamma_dfs`).
+BH76 | W4-11 | combined columns; the CSV legs are `<channel>_wtmad2_eps_gamma_dfs`.
+Row 3 renders as the same grouped per-(arch, subset_size) bars as the WTMAD-2 row, each
+panel title stating the gamma -- "gamma = 1084.87 kcal/mol, DFS published" -- with the
+fixed-external stamp in-panel; the twin's caveat line 1 spells out the single-pool
+"one-bucket" reduction, 56.84*MAD_pool/mean|dE_ref|_pool. All per-species parity panels
+(here and in every figure sharing the panel body) use square shared log limits, so the
+cloud is centered and the y=x diagonal runs corner-to-corner).
 The panel bodies are the shared `gamma_mode`-aware ones, so the self-calibration claims
 (ED_PBE = E_PBE, PBE-on-y=x) never appear on these figures; the gamma stamp reads
 "(fixed, external)" and the caveats state the Eq. 20 units and the gamma source. The eps

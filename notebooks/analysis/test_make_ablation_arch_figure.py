@@ -2335,7 +2335,10 @@ def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
         for c in s["cells"].values():
             assert c["D"] == pytest.approx(2.5e-4)
     assert x3_twin[0]["parity_nn_key"] == "density_eps_l1"
-    assert "shared published gamma" in x3_twin[0]["ed_gamma_label"]
+    # the row-3 gamma tag states the actual value, and the twin renders the
+    # ED row as grouped bars (the A/B/C form), not lines
+    assert "1084.87" in x3_twin[0]["ed_gamma_label"]
+    assert x3_twin[0]["ed_as_bars"] is True
     # the ORIGINAL calls keep their defaults (no parity/gamma overrides)
     ov_orig = [kw for p, kw in ov_calls if p.name
                == "ablation_density_energy_overview.png"]
@@ -2371,7 +2374,8 @@ def test_plot_composite_dfs_units_twins_render(tmp_path):
         rows, hd, tmp_path / "x3_dfs.png", "run_x",
         ch_summaries=ch_eps, parity_nn_key="density_eps_l1",
         parity_pbe_key="density_eps_l1_pbe", parity_unit_label="Eq. 20 eps",
-        ed_gamma_label="shared published gamma", title="3x3, DFS units")
+        ed_gamma_label="gamma = 1084.87 kcal/mol, DFS published",
+        ed_as_bars=True, title="3x3, DFS units")
     assert _png_ok(p1)
     p2 = fig.plot_density_energy_overview(
         rows, hd, tmp_path / "ov_dfs.png", "run_x",
@@ -2379,6 +2383,70 @@ def test_plot_composite_dfs_units_twins_render(tmp_path):
         parity_pbe_key="density_eps_l1_pbe", parity_unit_label="Eq. 20 eps",
         title="Overview, DFS units")
     assert _png_ok(p2)
+
+
+def test_density_parity_panel_square_limits():
+    """Asymmetric data (an NN outlier stretching one axis) must still give
+    SQUARE shared limits -- cloud centered, y=x corner-to-corner -- instead
+    of independently autoscaled axes."""
+    rows = [
+        {"molecule": "a", "arch": "deep", "density_rmse": 1e-3},
+        {"molecule": "b", "arch": "deep", "density_rmse": 9e-2},  # outlier
+        {"molecule": "c", "arch": "deep", "density_rmse": 2e-3},
+    ]
+    pbe = {"a": 2e-3, "b": 3e-3, "c": 2.5e-3}
+    f1, ax = fig.plt.subplots()
+    fig._density_parity_panel(ax, rows, pbe)
+    assert ax.get_xlim() == ax.get_ylim()
+    lo, hi = ax.get_xlim()
+    # the exact padded envelope of the pooled pairs
+    assert lo == pytest.approx(0.8 * 1e-3)
+    assert hi == pytest.approx(1.25 * 9e-2)
+    fig.plt.close(f1)
+    # a zero-valued error (unrenderable on log axes) must not poison the
+    # lower limit: limits stay square and strictly positive, from the
+    # positive values alone
+    rows0 = rows + [{"molecule": "z", "arch": "deep", "density_rmse": 0.0}]
+    pbe0 = dict(pbe, z=2e-3)
+    f2, ax2 = fig.plt.subplots()
+    fig._density_parity_panel(ax2, rows0, pbe0)
+    assert ax2.get_xlim() == ax2.get_ylim()
+    assert ax2.get_xlim()[0] == pytest.approx(0.8 * 1e-3)
+    fig.plt.close(f2)
+
+
+def test_gamma_stamp_branches():
+    """The shared in-panel gamma stamp: fixed summaries state the external
+    value, self-calibrated ones the E_PBE/D_PBE construction."""
+    fixed_s = fig.combined_ed_fixed_gamma({("deep", 1): 8.0}, 10.0,
+                                          {("deep", 1): 0.004}, 0.005,
+                                          1084.87)
+    self_s = fig.combined_ed_by_cell({("deep", 1): 8.0}, 10.0,
+                                     {("deep", 1): 4e-4}, 5e-4)
+    f1, ax1 = fig.plt.subplots()
+    fig._gamma_stamp(ax1, fixed_s)
+    t1 = " ".join(t.get_text() for t in ax1.texts)
+    assert "fixed, external" in t1 and "1084.87" in t1
+    assert "self-calibrated" not in t1
+    fig.plt.close(f1)
+    f2, ax2 = fig.plt.subplots()
+    fig._gamma_stamp(ax2, self_s)
+    t2 = " ".join(t.get_text() for t in ax2.texts)
+    assert "(self-calibrated)" in t2 and "fixed, external" not in t2
+    fig.plt.close(f2)
+
+
+def test_3x3_caveats_define_reduction_and_gamma():
+    """Both 3x3 caveats spell out the one-bucket reduction formula on the
+    figure; the DFS-units caveat states the published gamma value and its
+    source. Two-line form keeps the canvas width bounded."""
+    for cav in (fig._3X3_CAVEAT, fig._3X3_DFS_UNITS_CAVEAT):
+        assert "56.84*MAD_pool/mean|dE_ref|_pool" in cav
+        assert "scaled relative error" in cav
+        assert "\n" in cav
+    assert "1084.87" in fig._3X3_DFS_UNITS_CAVEAT
+    assert "published" in fig._3X3_DFS_UNITS_CAVEAT
+    assert "1084.87" not in fig._3X3_CAVEAT   # original stays self-calibrated
 
 
 def test_pbe_anchor_coverage_warning_key_params():

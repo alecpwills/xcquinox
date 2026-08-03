@@ -2791,6 +2791,7 @@ def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
     ``density_eps_l1`` with an eps label, and the caller supplies a
     ``pbe_mol`` built on the matching PBE key)."""
     n_pairs = 0
+    fin_xy: List[float] = []
     for r in density_rows:
         x = pbe_mol.get(r.get("molecule"))
         y = r.get(nn_key)
@@ -2799,11 +2800,25 @@ def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
         ax.scatter(x, y, s=14, alpha=0.6,
                    color=ARCH_COLOR.get(r.get("arch"), "0.5"),
                    edgecolor="none")
+        fin_xy.extend((float(x), float(y)))
         n_pairs += 1
-    if n_pairs:
-        lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]),
-                max(ax.get_xlim()[1], ax.get_ylim()[1])]
-        ax.plot(lims, lims, ls=":", color="0.5", lw=1)
+    pos_xy = [v for v in fin_xy if v > 0.0]
+    if n_pairs and pos_xy:
+        # square shared log limits from the pooled POSITIVE data: without
+        # them the two axes autoscale independently (the NN axis
+        # outlier-stretched, the PBE axis tight), the cloud drifts
+        # off-center and the y=x diagonal exits mid-frame instead of
+        # corner-to-corner. A zero-valued error (unrenderable on the log
+        # axes anyway) must not poison lo -- set_xlim(0, ...) on a log axis
+        # is silently ignored and the panel falls back to non-square.
+        lo = 0.8 * min(pos_xy)
+        hi = 1.25 * max(pos_xy)
+        ax.plot([lo, hi], [lo, hi], ls=":", color="0.5", lw=1)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+    elif n_pairs:
         ax.set_xscale("log")
         ax.set_yscale("log")
     elif pbe_mol:
@@ -2935,6 +2950,19 @@ _INSAMPLE_OVERVIEW_CAVEAT = (
     "column); no in-sample ED (no PBE energy anchor to self-calibrate gamma).")
 
 
+def _gamma_stamp(ax, summary: Dict[str, Any]) -> None:
+    """The in-panel gamma provenance stamp, branched on ``gamma_mode`` --
+    self-calibrated summaries state the E_PBE/D_PBE construction, fixed ones
+    the external value. Single source for every ED panel body (lines and
+    bars) so the truthfulness contract cannot fork."""
+    self_cal = summary.get("gamma_mode", "self_calibrated") == "self_calibrated"
+    ax.text(0.02, 0.02,
+            ("$\\gamma$ = E$_{\\rm PBE}$/D$_{\\rm PBE}$ = "
+             f"{summary['gamma']:.4g} (self-calibrated)" if self_cal
+             else f"$\\gamma$ = {summary['gamma']:.6g} (fixed, external)"),
+            transform=ax.transAxes, fontsize=6, color="#444444")
+
+
 def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
     """Per-arch ED vs subset_size lines with the dashed PBE line at
     ``ed_pbe`` (== the energy anchor under gamma self-calibration; a plain
@@ -2966,11 +2994,7 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
     ax.set_ylabel("ED (kcal/mol)", fontsize=8)
     ax.set_title(title, fontsize=9)
     ax.grid(True, which="both", alpha=0.3)
-    ax.text(0.02, 0.02,
-            ("$\\gamma$ = E$_{\\rm PBE}$/D$_{\\rm PBE}$ = "
-             f"{summary['gamma']:.4g} (self-calibrated)" if self_cal
-             else f"$\\gamma$ = {summary['gamma']:.6g} (fixed, external)"),
-            transform=ax.transAxes, fontsize=6, color="#444444")
+    _gamma_stamp(ax, summary)
 
 
 def _ed_decomposition_panel(ax, summary: Dict[str, Any]) -> None:
@@ -3299,23 +3323,33 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
     return out_path
 
 
+# Two-line caveats (\n): the 14-inch 3x3 canvas has room for a second
+# caveat line above the dataset band, and the shorter longest-line keeps
+# bbox="tight" from widening the canvas. Line 1 defines the single-pool
+# "one-bucket" WTMAD-2 reduction explicitly.
 _3X3_CAVEAT = (
     "Columns are channels: BH76 | W4-11 | combined. A/B and the ED legs in "
-    "G/H use the one-bucket WTMAD-2 reduction (a scaled relative error; only "
-    "the combined column reweights, NOT full GMTKN55). "
-    "ED = 2/(1/E + 1/(gamma*D)) with gamma = E_PBE/D_PBE from that channel's "
-    "OWN anchors (value printed in each ED panel), so ED_PBE == E_PBE per "
-    "channel and EDs never compare across channels. Overlap species appear "
-    "in both density channels.")
+    "G/H use the SINGLE-POOL 'WTMAD-2', which collapses to "
+    "56.84*MAD_pool/mean|dE_ref|_pool -- the pool's mean abs deviation "
+    "rescaled by its mean abs reference energy: a scaled relative error, "
+    "NOT a reweighting (only the combined column reweights; NOT full "
+    "GMTKN55).\n"
+    "ED = 2/(1/E + 1/(gamma*D)) with gamma = E_PBE/D_PBE from that "
+    "channel's OWN anchors (value printed in each ED panel), so "
+    "ED_PBE == E_PBE per channel and EDs never compare across channels. "
+    "Overlap species appear in both density channels.")
 
-# DFS-units twins' caveats: one figtext line each (bbox="tight" widens the
-# canvas to the longest line -- keep near the RMSE twins' length)
 _3X3_DFS_UNITS_CAVEAT = (
-    "Columns are channels: BH76 | W4-11 | combined; A/B and the G/H ED legs "
-    "use the one-bucket WTMAD-2 reduction (only combined reweights; NOT full "
-    "GMTKN55). ED = 2/(1/E + 1/(gamma*D)); D = the Letter's Eq. 20 "
-    "per-electron L1; gamma = 1084.87 (published) SHARED by all channels -- "
-    "EDs compare across columns; ED_PBE != E_PBE. Parity row in eps units.")
+    "Columns are channels: BH76 | W4-11 | combined. A/B and the G/H ED "
+    "energy legs use the SINGLE-POOL 'WTMAD-2', which collapses to "
+    "56.84*MAD_pool/mean|dE_ref|_pool -- the pool's mean abs deviation "
+    "rescaled by its mean abs reference energy: a scaled relative error, "
+    "NOT a reweighting (only the combined column reweights; NOT full "
+    "GMTKN55).\n"
+    "ED = 2/(1/E + 1/(gamma*D)); D = the Letter's Eq. 20 per-electron L1; "
+    "gamma = 1084.87 kcal/mol = the DFS Letter's published Fig. 3 slope, "
+    "SHARED by all channels -- EDs compare across columns; "
+    "ED_PBE != E_PBE. Parity row in eps units.")
 
 _HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT = (
     "Single-pool 'WTMAD-2' (A, B) reduces to 56.84*MAD_pool/mean|ref|_pool "
@@ -3340,6 +3374,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                             parity_pbe_key: str = "density_rmse_pbe",
                             parity_unit_label: str = "density RMSE",
                             ed_gamma_label: str = "own gamma",
+                            ed_as_bars: bool = False,
                             title: Optional[str] = None) -> Path:
     """Per-channel held-out story, one column per channel (BH76 | W4-11 |
     combined): row 1 = WTMAD-2 bars per (arch, subset_size) (A/B the
@@ -3351,11 +3386,13 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
     anchors are missing). Panel bodies are the shared ax-level helpers, so
     the views match the dedicated figures.
 
-    The keyword overrides (parity keys/label, ``ed_gamma_label``, ``title``)
-    default to the historical figure exactly; the DFS-units twin passes
-    fixed-gamma ``ch_summaries`` (from ``channel_ed_summaries`` with
-    ``fixed_gamma``/eps keys), the eps parity keys, and its own row-3
-    gamma tag."""
+    The keyword overrides (parity keys/label, ``ed_gamma_label``,
+    ``ed_as_bars``, ``title``) default to the historical figure exactly; the
+    DFS-units twin passes fixed-gamma ``ch_summaries`` (from
+    ``channel_ed_summaries`` with ``fixed_gamma``/eps keys), the eps parity
+    keys, its own row-3 gamma tag, and ``ed_as_bars=True`` -- row 3 then
+    renders as the same grouped per-(arch, subset_size) bars as row 1 (PBE
+    dashed, beats-PBE marks, the gamma stamp in-panel)."""
     if ch_summaries is None:
         ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
     pools_of = _species_pools(rows)
@@ -3395,7 +3432,19 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
             s = ch_summaries.get(ch)
             ttl = f"({letters[6 + j]}) ED, {lab} channel ({ed_gamma_label})"
             if s and s.get("cells"):
-                _ed_lines_panel(ax, s, ttl)
+                if ed_as_bars:
+                    ed_map = {c: v["ED"] for c, v in s["cells"].items()
+                              if _is_num(v.get("ED")) and v["ED"] > 0.0}
+                    ed_pbe = s.get("ed_pbe")
+                    _grouped_arch_bars(
+                        ax, ed_map, archs, subsets,
+                        pbe_line=(float(ed_pbe) if _is_num(ed_pbe)
+                                  and ed_pbe > 0.0 else None),
+                        title=ttl)
+                    ax.set_ylabel("ED (kcal/mol)", fontsize=8)
+                    _gamma_stamp(ax, s)
+                else:
+                    _ed_lines_panel(ax, s, ttl)
             else:
                 ax.text(0.5, 0.5, "ED unavailable", ha="center", va="center",
                         transform=ax.transAxes, fontsize=9, color="0.5")
@@ -4941,7 +4990,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     parity_nn_key="density_eps_l1",
                     parity_pbe_key="density_eps_l1_pbe",
                     parity_unit_label="Eq. 20 eps",
-                    ed_gamma_label="shared published gamma",
+                    ed_gamma_label=(f"$\\gamma$ = {_DFS_GAMMA_KCAL:g} "
+                                    "kcal/mol, DFS published"),
+                    ed_as_bars=True,
                     title="Per-channel held-out story (DFS units): WTMAD-2 "
                           "| eps parity | ED (BH76, W4-11, combined)"))
                 pools_of_eps = _species_pools(rows)
