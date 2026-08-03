@@ -278,17 +278,25 @@ fires after `patience = 5` consecutive non-improving checks at
 The Letter's validation loss, by contrast, is "identical to the training loss
 presented in the main text except for lambda_E = 0 and w_j = delta_j,25" (SI) -- the
 density term at weight 20 participates in every checkpoint decision. This selection
-asymmetry is a REAL, measured deviation: on dfs6311 the median-of-medians NN/PBE
-density ratio moves from 1.066 (final checkpoint) to 1.112 (val-best) -- val-best
-selection trades density quality away because density is not in its metric (HISTORY,
-2026-07-29 follow-up, legs 2-3 of which stand).
+asymmetry is a structural deviation, but on the current run it is NOT costly: over the
+14 dfs6311 specs with all three evals the median-of-medians NN/PBE eps ratio is 1.0503
+(final), 1.0520 (train-best), 1.0488 (val-best) -- a selection cost of -0.1%
+(`DENSITY_DIAGNOSIS.md` Sec. 5). An earlier figure quoted in HISTORY (1.066 -> 1.112)
+came from the RMSE channel on a different pull and should not be carried forward as
+this run's selection cost.
 
 So the accurate one-line summary of "how do our weights differ from DFS" is NOT the
-training lambdas (those match: the 1 / 20 structure) but: (i) checkpoint SELECTION
-ignores the density channel entirely, where the Letter selects density-inclusively;
-(ii) the SCF trajectory is 3 cycles with a [0, 0.0625, 1] tail rather than 25 cycles
-with the long dpyscf tail; (iii) the nominal pre-scales (0.01 vxc, 0.1 density) and
-the GradNorm knobs in the YAML are inert.
+training lambdas (those match: the 1 / 20 structure) but: (i) the density channel exerts
+no effective optimization pressure -- it is flat across training, and the open-shell
+radicals CH and NO occupy 68-98% of it with a degenerate-component mismatch no functional
+can close, so the runs are effectively energy-only training with a decorative density
+term; this is the dominant effect and is diagnosed in `DENSITY_DIAGNOSIS.md` (the Letter
+met the same wall on the same species class and down-weighted lambda_n by 0.01 for it);
+(ii) the SCF trajectory is 3 cycles with a
+[0, 0.0625, 1] tail rather than 25 cycles with the long dpyscf tail; (iii) checkpoint
+SELECTION ignores the density channel, where the Letter selects density-inclusively
+(structural, but measured at -0.1% here); (iv) the nominal pre-scales (0.01 vxc, 0.1
+density) and the GradNorm knobs in the YAML are inert.
 
 ## 6. Pretraining (one paragraph)
 
