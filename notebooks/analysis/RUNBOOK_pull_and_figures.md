@@ -251,7 +251,9 @@ own-axes-fit panel when the cache resolves, placeholder otherwise),
 `ablation_ed_decomposition_dfs_units.png`,
 `ablation_density_energy_overview_dfs_units.png`, and
 `ablation_density_energy_3x3_dfs_units.png` + `.csv` (per-channel eps legs
-under one shared published gamma), each with the eps coverage disclosures
+under one shared gamma -- the own-axes fit when the calibration cache
+resolves, the published slope otherwise, stamped in-panel; the CSV carries
+both), each with the eps coverage disclosures
 stamped in its note band (partially-covered pulls name the missing cells on
 the figure). Pulls without the columns produce byte-identical artifacts;
 the skipped `_dfs_units` twins are announced with the standard stale-file

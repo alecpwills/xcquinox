@@ -2211,30 +2211,82 @@ def test_build_dfs_units_png_absent_without_eps(tmp_path, capsys):
 
 def test_build_dfs_units_fit_panel_with_cache(tmp_path, monkeypatch):
     """A resolving nonempirical pool cache puts the own-axes-fit leg in panel
-    C of the DFS-units figure and its provenance line in the note band."""
+    C of the DFS-units figure, its provenance line in the note band, and --
+    the fit being the calibration on THIS data's axes -- makes it the
+    OPERATIVE gamma of every single-gamma DFS-units view (decomposition
+    twin, overview twin, 3x3 twin); the twin CSV carries both leg
+    families."""
     run = _make_run_dir(tmp_path)
     _add_holdout_density(run)
     monkeypatch.setattr(
         fig, "nonempirical_gamma",
         lambda run_dir, **kw: {"gamma": 900.0, "n_functionals": 6,
                                "n_species": 5, "n_species_dropped": 1})
-    calls = []
+    calls, dec_calls, ov_calls, x3_calls = [], [], [], []
 
     def ed_spy(wt_summary, mae_summary, out_path, run_id, **kw):
         calls.append((wt_summary, mae_summary, Path(out_path), kw))
         Path(out_path).write_bytes(b"x" * 4096)
         return Path(out_path)
 
+    def dec_spy(summary, out_path, run_id, **kw):
+        dec_calls.append((summary, Path(out_path), kw))
+        Path(out_path).write_bytes(b"x" * 4096)
+        return Path(out_path)
+
+    def ov_spy(rows, hd_rows, out_path, run_id, **kw):
+        ov_calls.append((Path(out_path), kw))
+        Path(out_path).write_bytes(b"x" * 4096)
+        return Path(out_path)
+
+    def x3_spy(rows, hd_rows, out_path, run_id, **kw):
+        x3_calls.append((Path(out_path), kw))
+        Path(out_path).write_bytes(b"x" * 4096)
+        return Path(out_path)
+
     monkeypatch.setattr(fig, "plot_combined_energy_density", ed_spy)
-    fig.build_density_energy_figures(run, tmp_path / "f")
+    monkeypatch.setattr(fig, "plot_ed_decomposition", dec_spy)
+    monkeypatch.setattr(fig, "plot_density_energy_overview", ov_spy)
+    monkeypatch.setattr(fig, "plot_density_energy_3x3", x3_spy)
+    out = tmp_path / "f"
+    fig.build_density_energy_figures(run, out)
     dfs = [c for c in calls if c[2].name
            == "ablation_combined_energy_density_dfs_units.png"]
     assert len(dfs) == 1
-    _, fit_s, _, kw = dfs[0]
+    dfs_s, fit_s, _, kw = dfs[0]
     assert fit_s is not None and fit_s["gamma_mode"] == "fixed"
     assert fit_s["gamma"] == pytest.approx(900.0)
+    assert fit_s["gamma_source"] == "own-axes fit"
+    assert dfs_s["gamma_source"] == "DFS published"   # panel A keeps both
     assert "own-axes gamma = 900" in kw["note"]
     assert "1 species dropped for unequal support" in kw["note"]
+    # operative gamma on every single-gamma twin = the fit, not 1084.87
+    dec_twin = [c for c in dec_calls if c[1].name
+                == "ablation_ed_decomposition_dfs_units.png"]
+    assert len(dec_twin) == 1
+    assert dec_twin[0][0]["gamma"] == pytest.approx(900.0)
+    assert dec_twin[0][0]["gamma_source"] == "own-axes fit"
+    ov_twin = [kw2 for p, kw2 in ov_calls if p.name
+               == "ablation_density_energy_overview_dfs_units.png"]
+    assert len(ov_twin) == 1
+    assert ov_twin[0]["ed_summary"]["gamma"] == pytest.approx(900.0)
+    assert ov_twin[0]["ed_summary"]["gamma_source"] == "own-axes fit"
+    x3_twin = [kw2 for p, kw2 in x3_calls if p.name
+               == "ablation_density_energy_3x3_dfs_units.png"]
+    assert len(x3_twin) == 1
+    assert all(s["gamma"] == pytest.approx(900.0)
+               and s["gamma_source"] == "own-axes fit"
+               for s in x3_twin[0]["ch_summaries"].values())
+    # the twin CSV carries BOTH leg families, each at its own gamma
+    with (out / "ablation_density_energy_3x3_dfs_units.csv").open() as fh:
+        rows_csv = list(csv.DictReader(fh))
+    legs = {r["leg"] for r in rows_csv}
+    assert legs == {f"{ch}_wtmad2_eps_gamma_{tag}"
+                    for ch in ("bh76", "w411", "combined")
+                    for tag in ("dfs", "fit")}
+    for r in rows_csv:
+        want = 1084.87 if r["leg"].endswith("_dfs") else 900.0
+        assert float(r["gamma"]) == pytest.approx(want)
 
 
 def test_plot_combined_energy_density_dfs_units_renders(tmp_path):
@@ -2322,6 +2374,10 @@ def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
     assert len(ov_twin) == 1 and len(x3_twin) == 1
     assert ov_twin[0]["ed_summary"]["gamma_mode"] == "fixed"
     assert ov_twin[0]["parity_nn_key"] == "density_eps_l1"
+    # NO calibration cache in this fixture -> the operative gamma falls back
+    # to the published slope, and the summaries say so
+    assert ov_twin[0]["ed_summary"]["gamma"] == pytest.approx(1084.87)
+    assert ov_twin[0]["ed_summary"]["gamma_source"] == "DFS published"
     # the D leg must be the EPS channel, not the RMSE one -- the published
     # gamma is dimensionally valid only on Eq. 20 units (fixture: NN eps
     # 2.5e-4 / PBE eps 7e-4, vs RMSE 2e-4 / 8e-4)
@@ -2329,15 +2385,16 @@ def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
     chs = x3_twin[0]["ch_summaries"]
     assert all(s is not None and s["gamma_mode"] == "fixed"
                and s["gamma"] == pytest.approx(1084.87)
+               and s["gamma_source"] == "DFS published"
                for s in chs.values())
     for s in chs.values():
         assert s["d_pbe"] == pytest.approx(7e-4)
         for c in s["cells"].values():
             assert c["D"] == pytest.approx(2.5e-4)
     assert x3_twin[0]["parity_nn_key"] == "density_eps_l1"
-    # the row-3 gamma tag states the actual value, and the twin renders the
-    # ED row as grouped bars (the A/B/C form), not lines
-    assert "1084.87" in x3_twin[0]["ed_gamma_label"]
+    # titles are clean (the in-panel stamp carries value + source) and the
+    # twin renders the ED row as grouped bars (the A/B/C form), not lines
+    assert x3_twin[0]["ed_gamma_label"] == ""
     assert x3_twin[0]["ed_as_bars"] is True
     # the ORIGINAL calls keep their defaults (no parity/gamma overrides)
     ov_orig = [kw for p, kw in ov_calls if p.name
@@ -2352,6 +2409,7 @@ def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
     with (out / "ablation_density_energy_3x3_dfs_units.csv").open() as fh:
         rows_csv = list(csv.DictReader(fh))
     legs = {r["leg"] for r in rows_csv}
+    # no cache -> only the published-gamma legs
     assert legs == {"bh76_wtmad2_eps_gamma_dfs", "w411_wtmad2_eps_gamma_dfs",
                     "combined_wtmad2_eps_gamma_dfs"}
     assert all(float(r["gamma"]) == pytest.approx(1084.87) for r in rows_csv)
@@ -2374,8 +2432,7 @@ def test_plot_composite_dfs_units_twins_render(tmp_path):
         rows, hd, tmp_path / "x3_dfs.png", "run_x",
         ch_summaries=ch_eps, parity_nn_key="density_eps_l1",
         parity_pbe_key="density_eps_l1_pbe", parity_unit_label="Eq. 20 eps",
-        ed_gamma_label="gamma = 1084.87 kcal/mol, DFS published",
-        ed_as_bars=True, title="3x3, DFS units")
+        ed_gamma_label="", ed_as_bars=True, title="3x3, DFS units")
     assert _png_ok(p1)
     p2 = fig.plot_density_energy_overview(
         rows, hd, tmp_path / "ov_dfs.png", "run_x",
@@ -2417,7 +2474,8 @@ def test_density_parity_panel_square_limits():
 
 def test_gamma_stamp_branches():
     """The shared in-panel gamma stamp: fixed summaries state the external
-    value, self-calibrated ones the E_PBE/D_PBE construction."""
+    value (plus its source when the summary carries one), self-calibrated
+    ones the E_PBE/D_PBE construction; placed top-right."""
     fixed_s = fig.combined_ed_fixed_gamma({("deep", 1): 8.0}, 10.0,
                                           {("deep", 1): 0.004}, 0.005,
                                           1084.87)
@@ -2428,12 +2486,85 @@ def test_gamma_stamp_branches():
     t1 = " ".join(t.get_text() for t in ax1.texts)
     assert "fixed, external" in t1 and "1084.87" in t1
     assert "self-calibrated" not in t1
+    obj = ax1.texts[-1]
+    assert obj.get_position() == (0.98, 0.98)
+    assert obj.get_ha() == "right" and obj.get_va() == "top"
     fig.plt.close(f1)
     f2, ax2 = fig.plt.subplots()
     fig._gamma_stamp(ax2, self_s)
     t2 = " ".join(t.get_text() for t in ax2.texts)
     assert "(self-calibrated)" in t2 and "fixed, external" not in t2
     fig.plt.close(f2)
+    # a sourced fixed summary names its gamma's origin -- on the shared
+    # stamp AND on the rich decomposition panel's inline stamp (single
+    # text source, no fork)
+    src_s = fig.combined_ed_fixed_gamma({("deep", 1): 8.0}, 10.0,
+                                        {("deep", 1): 0.004}, 0.005,
+                                        1158.34, gamma_source="own-axes fit")
+    f3, ax3 = fig.plt.subplots()
+    fig._gamma_stamp(ax3, src_s)
+    t3 = " ".join(t.get_text() for t in ax3.texts)
+    assert "fixed: own-axes fit" in t3 and "1158.34" in t3
+    assert "fixed, external" not in t3
+    fig.plt.close(f3)
+    f4, ax4 = fig.plt.subplots()
+    fig._ed_decomposition_rich_panel(ax4, src_s)
+    t4 = " ".join(t.get_text() for t in ax4.texts)
+    assert "fixed: own-axes fit" in t4 and "fixed, external" not in t4
+    fig.plt.close(f4)
+
+
+def test_density_parity_panel_external_limits():
+    """An externally supplied (lo, hi) is applied exactly and squarely --
+    the 3x3 row-share mechanism."""
+    rows = [{"molecule": "a", "arch": "deep", "density_rmse": 1e-3}]
+    pbe = {"a": 2e-3}
+    f1, ax = fig.plt.subplots()
+    fig._density_parity_panel(ax, rows, pbe, limits=(1e-4, 1e-1))
+    assert ax.get_xlim() == ax.get_ylim() == (1e-4, 1e-1)
+    fig.plt.close(f1)
+
+
+def test_3x3_parity_row_shares_limits(tmp_path, monkeypatch):
+    """The 3x3 passes ONE row-wide envelope to all three parity panels --
+    the channels render in the same frame and are directly comparable. The
+    fixture carries a bh76-only outlier species so per-channel envelopes
+    differ from the pooled one: identical per-channel frames cannot fake
+    the row share."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    # HOh_ts is bh76-only (see the _species_pools test); its large errors
+    # stretch the pooled envelope beyond the w411 channel's own data
+    for sd in (run / "checkpoints").glob("spec_*"):
+        pm = sd / "eval_holdout" / "per_molecule.json"
+        if not pm.is_file():
+            continue
+        rows_pm = json.loads(pm.read_text())
+        rows_pm.append({
+            "molecule": "HOh_ts", "density_rmse": 5e-3, "density_l1": 1e-4,
+            "density_rmse_pbe": 6e-3, "density_l1_pbe": 2e-4,
+            "density_eps_l1": 4e-3, "density_eps_l1_pbe": 5e-3,
+            "n_electrons": 10.0, "grid_weight_sum": 100.0,
+            "ref_density_method": "ccsd", "from_training_subset": False})
+        pm.write_text(json.dumps(rows_pm))
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    seen = []
+    real = fig._density_parity_panel
+
+    def spy(ax, density_rows, pbe_mol, **kw):
+        seen.append(kw.get("limits"))
+        return real(ax, density_rows, pbe_mol, **kw)
+
+    monkeypatch.setattr(fig, "_density_parity_panel", spy)
+    fig.plot_density_energy_3x3(rows, hd, tmp_path / "x3.png", "run_x")
+    assert len(seen) == 3
+    assert all(lim is not None and lim == seen[0] for lim in seen)
+    # the shared envelope is the POOLED positive envelope: lo from the HO
+    # NN RMSE (2e-4), hi from the bh76-only HOh_ts PBE value (6e-3) -- a
+    # per-channel w411 frame would top out at 1.25*8e-4 instead
+    assert seen[0][0] == pytest.approx(0.8 * 2e-4)
+    assert seen[0][1] == pytest.approx(1.25 * 6e-3)
 
 
 def test_3x3_caveats_define_reduction_and_gamma():
@@ -2444,6 +2575,9 @@ def test_3x3_caveats_define_reduction_and_gamma():
         assert "56.84*MAD_pool/mean|dE_ref|_pool" in cav
         assert "scaled relative error" in cav
         assert "\n" in cav
+    # the twin's caveat defers the plotted value to the in-panel stamp and
+    # names both possible sources (fit operative, published fallback)
+    assert "own-axes" in fig._3X3_DFS_UNITS_CAVEAT
     assert "1084.87" in fig._3X3_DFS_UNITS_CAVEAT
     assert "published" in fig._3X3_DFS_UNITS_CAVEAT
     assert "1084.87" not in fig._3X3_CAVEAT   # original stays self-calibrated

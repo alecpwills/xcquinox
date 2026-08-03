@@ -13,11 +13,11 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 | `ablation_combined_energy_density.csv` | Machine-readable per-cell ED table (all energy legs) |
 | `ablation_combined_energy_density_dfs_units.png` | The ED parity in DFS units: Eq. 20 eps density leg, gamma fixed (published / own-axes fit); eps pulls only |
 | `ablation_density_energy_overview.png` | One-canvas held-out story: per-pool WTMAD-2 + density parity + iso-ED + ED |
-| `ablation_density_energy_overview_dfs_units.png` | The overview with panels D/E/F in DFS units (eps parity, published-gamma ED); eps pulls only |
+| `ablation_density_energy_overview_dfs_units.png` | The overview with panels D/E/F in DFS units (eps parity, ED under the operative gamma stamped in-panel); eps pulls only |
 | `ablation_density_energy_3x3.png` (+ `.csv`) | Per-channel 3x3: WTMAD-2 / density parity / ED for BH76, W4-11, combined |
-| `ablation_density_energy_3x3_dfs_units.png` (+ `.csv`) | The 3x3 with eps parity and per-channel ED under ONE shared published gamma; eps pulls only |
+| `ablation_density_energy_3x3_dfs_units.png` (+ `.csv`) | The 3x3 with eps parity (row-shared frame) and per-channel ED bars under ONE shared gamma (stamped in-panel); eps pulls only |
 | `ablation_ed_decomposition.png` | The iso-ED decomposition as its own enriched canvas |
-| `ablation_ed_decomposition_dfs_units.png` | The enriched decomposition under the published DFS gamma (Eq. 20 eps units); eps pulls only |
+| `ablation_ed_decomposition_dfs_units.png` | The enriched decomposition under the operative DFS-units gamma (Eq. 20 eps units, stamped in-panel); eps pulls only |
 | `ablation_insample_overview.png` | One-canvas in-sample story: AE + density (training fit) |
 
 The intended use mirrors the multimode figure glossary: open the figure on one screen and
@@ -145,19 +145,23 @@ The DFS-units legs also render as figures -- four `_dfs_units` twins, one per ED
 `ablation_combined_energy_density_dfs_units.png` (panel (a) the ED lines under the
 published gamma, (b) the (E, gamma*D) decomposition, (c) the own-axes-fit leg when the
 calibration cache sits in the run dir, a labeled placeholder otherwise),
-`ablation_ed_decomposition_dfs_units.png` (the enriched decomposition under the published
+`ablation_ed_decomposition_dfs_units.png` (the enriched decomposition under the operative
 gamma), `ablation_density_energy_overview_dfs_units.png` (the held-out overview with panel
-D's parity in eps units and E/F under the published gamma), and
+D's parity in eps units and E/F under the operative gamma, stamped in-panel), and
 `ablation_density_energy_3x3_dfs_units.png` + `.csv` (the per-channel 3x3 with row 2 in
-eps units and row 3's ED under ONE shared published gamma -- so, unlike the
-self-calibrated original whose per-channel gammas forbid it, EDs DO compare across the
-BH76 | W4-11 | combined columns; the CSV legs are `<channel>_wtmad2_eps_gamma_dfs`.
-Row 3 renders as the same grouped per-(arch, subset_size) bars as the WTMAD-2 row, each
-panel title stating the gamma -- "gamma = 1084.87 kcal/mol, DFS published" -- with the
-fixed-external stamp in-panel; the twin's caveat line 1 spells out the single-pool
-"one-bucket" reduction, 56.84*MAD_pool/mean|dE_ref|_pool. All per-species parity panels
-(here and in every figure sharing the panel body) use square shared log limits, so the
-cloud is centered and the y=x diagonal runs corner-to-corner).
+eps units and row 3's ED under ONE shared gamma -- so, unlike the self-calibrated
+original whose per-channel gammas forbid it, EDs DO compare across the
+BH76 | W4-11 | combined columns. The OPERATIVE gamma is the own-axes six-functional fit
+whenever the calibration cache resolves next to the run dir -- the calibration performed
+on this data's axes -- with the Letter's published 1084.87 only as the fallback; the
+value and its source are stamped top-right in each ED panel, and the CSV carries BOTH
+families, `<channel>_wtmad2_eps_gamma_dfs` (published) and
+`<channel>_wtmad2_eps_gamma_fit` (own-axes, cache present). Row 3 renders as the same
+grouped per-(arch, subset_size) bars as the WTMAD-2 row; the twin's caveat line 1 spells
+out the single-pool "one-bucket" reduction, 56.84*MAD_pool/mean|dE_ref|_pool. All
+per-species parity panels use square log limits -- own-data envelope on the single-panel
+figures, and ONE row-shared frame across the 3x3's three channel panels so they are
+directly comparable).
 The panel bodies are the shared `gamma_mode`-aware ones, so the self-calibration claims
 (ED_PBE = E_PBE, PBE-on-y=x) never appear on these figures; the gamma stamp reads
 "(fixed, external)" and the caveats state the Eq. 20 units and the gamma source. The eps

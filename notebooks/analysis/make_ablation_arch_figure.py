@@ -2018,7 +2018,9 @@ def gamma_zero_intercept(pairs) -> float:
 def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
                             e_pbe: float,
                             density_by_cell: Dict[Tuple[str, int], float],
-                            d_pbe: float, gamma: float) -> Dict[str, Any]:
+                            d_pbe: float, gamma: float, *,
+                            gamma_source: Optional[str] = None
+                            ) -> Dict[str, Any]:
     """DFS Eq. 21 ED per cell with an EXTERNALLY FIXED gamma (the Letter's
     published 1084.87 on Eq. 20 units, or an own-axes regression slope from
     the nonempirical pool cache) -- unlike ``combined_ed_by_cell``, gamma is
@@ -2028,7 +2030,9 @@ def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
     except ``gamma_mode = "fixed"`` -- the ED panels branch their stamps and
     PBE labels on that key, so a fixed-gamma summary never renders the
     self-calibration claims (ED_PBE = E_PBE, PBE-on-y=x), which are false
-    here."""
+    here. ``gamma_source`` (e.g. "DFS published" / "own-axes fit") is stored
+    additively when given, and the gamma stamp names it -- the value alone
+    cannot tell a reader WHICH external gamma a panel plots."""
     if not (_is_num(e_pbe) and e_pbe > 0.0):
         raise ValueError(
             f"PBE energy anchor must be finite and positive, got {e_pbe!r}")
@@ -2047,9 +2051,12 @@ def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
         cells[cell] = {"E": float(e), "D": float(d),
                        "gammaD": gamma * float(d), "ED": ed,
                        "beats_pbe": bool(ed < ed_pbe)}
-    return {"gamma": float(gamma), "gamma_mode": "fixed",
-            "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
-            "ed_pbe": ed_pbe, "cells": cells}
+    out: Dict[str, Any] = {"gamma": float(gamma), "gamma_mode": "fixed",
+                           "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
+                           "ed_pbe": ed_pbe, "cells": cells}
+    if gamma_source:
+        out["gamma_source"] = gamma_source
+    return out
 
 
 def _nonempirical_cache_name(basis: str) -> str:
@@ -2142,7 +2149,10 @@ def nonempirical_gamma(run_dir: Path, *, basis: Optional[str] = None,
         e_common = set.intersection(*e_sets) if all(e_sets) else set()
     pairs: Dict[str, Tuple[float, float]] = {}
     for xc, eps_by_mol in by_xc.items():
-        eps = float(np.mean([eps_by_mol[n] for n in common]))
+        # sorted: set iteration is hash-ordered and float summation is
+        # order-dependent -- an unsorted mean makes the fitted gamma's last
+        # ulp vary across processes
+        eps = float(np.mean([eps_by_mol[n] for n in sorted(common)]))
         if _wtmad is not None:
             wt = _wtmad.get(xc, float("nan"))
         else:
@@ -2300,6 +2310,7 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
                          pbe_table: Optional[Dict[str, Dict[str, float]]]
                          = None, *,
                          fixed_gamma: Optional[float] = None,
+                         gamma_source: Optional[str] = None,
                          density_key: str = "density_rmse",
                          pbe_density_key: str = "density_rmse_pbe"
                          ) -> Dict[str, Optional[Dict[str, Any]]]:
@@ -2340,7 +2351,8 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
         if (e_cells and _is_num(e_pbe) and e_pbe > 0.0 and d_cells
                 and _is_num(d_pbe) and d_pbe > 0.0):
             out[ch] = (combined_ed_fixed_gamma(e_cells, e_pbe, d_cells,
-                                               d_pbe, fixed_gamma)
+                                               d_pbe, fixed_gamma,
+                                               gamma_source=gamma_source)
                        if fixed_gamma is not None else
                        combined_ed_by_cell(e_cells, e_pbe, d_cells, d_pbe))
         else:
@@ -2781,7 +2793,9 @@ def _holdout_density_lines_panel(ax, density_rows: List[Dict[str, Any]],
 def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
                           pbe_mol: Dict[str, float], *,
                           nn_key: str = "density_rmse",
-                          unit_label: str = "density RMSE") -> None:
+                          unit_label: str = "density RMSE",
+                          limits: Optional[Tuple[float, float]] = None
+                          ) -> None:
     """Per-species NN-vs-PBE density parity (log-log; below the diagonal =
     the NN density is closer to CCSD than PBE is), with a PBE-only sorted
     strip as the fallback when no NN channel exists. Panel body shared by
@@ -2789,7 +2803,10 @@ def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
     ``nn_key``/``unit_label`` select the error channel (defaults reproduce
     the grid-weighted RMSE panel; the DFS-units twins pass
     ``density_eps_l1`` with an eps label, and the caller supplies a
-    ``pbe_mol`` built on the matching PBE key)."""
+    ``pbe_mol`` built on the matching PBE key). ``limits`` imposes an
+    external square (lo, hi) on both axes -- the 3x3 figures pass one
+    row-wide envelope so their three channel panels share a frame and are
+    directly comparable; None keeps the own-data envelope."""
     n_pairs = 0
     fin_xy: List[float] = []
     for r in density_rows:
@@ -2803,16 +2820,17 @@ def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
         fin_xy.extend((float(x), float(y)))
         n_pairs += 1
     pos_xy = [v for v in fin_xy if v > 0.0]
-    if n_pairs and pos_xy:
-        # square shared log limits from the pooled POSITIVE data: without
-        # them the two axes autoscale independently (the NN axis
-        # outlier-stretched, the PBE axis tight), the cloud drifts
+    lims = limits if limits is not None else (
+        (0.8 * min(pos_xy), 1.25 * max(pos_xy)) if pos_xy else None)
+    if n_pairs and lims is not None:
+        # square shared log limits (external, or from the pooled POSITIVE
+        # own data): without them the two axes autoscale independently (the
+        # NN axis outlier-stretched, the PBE axis tight), the cloud drifts
         # off-center and the y=x diagonal exits mid-frame instead of
         # corner-to-corner. A zero-valued error (unrenderable on the log
         # axes anyway) must not poison lo -- set_xlim(0, ...) on a log axis
         # is silently ignored and the panel falls back to non-square.
-        lo = 0.8 * min(pos_xy)
-        hi = 1.25 * max(pos_xy)
+        lo, hi = lims
         ax.plot([lo, hi], [lo, hi], ls=":", color="0.5", lw=1)
         ax.set_xscale("log")
         ax.set_yscale("log")
@@ -2950,17 +2968,28 @@ _INSAMPLE_OVERVIEW_CAVEAT = (
     "column); no in-sample ED (no PBE energy anchor to self-calibrate gamma).")
 
 
-def _gamma_stamp(ax, summary: Dict[str, Any]) -> None:
-    """The in-panel gamma provenance stamp, branched on ``gamma_mode`` --
-    self-calibrated summaries state the E_PBE/D_PBE construction, fixed ones
-    the external value. Single source for every ED panel body (lines and
-    bars) so the truthfulness contract cannot fork."""
+def _gamma_stamp_text(summary: Dict[str, Any]) -> str:
+    """The gamma provenance text, branched on ``gamma_mode`` --
+    self-calibrated summaries state the E_PBE/D_PBE construction; fixed ones
+    the external value plus its source when the summary carries
+    ``gamma_source`` (the value alone cannot tell the published slope from
+    the own-axes fit). Single source for EVERY panel that prints a gamma
+    (lines, bars, and the rich decomposition's inline stamp) so the
+    truthfulness contract cannot fork."""
     self_cal = summary.get("gamma_mode", "self_calibrated") == "self_calibrated"
-    ax.text(0.02, 0.02,
-            ("$\\gamma$ = E$_{\\rm PBE}$/D$_{\\rm PBE}$ = "
-             f"{summary['gamma']:.4g} (self-calibrated)" if self_cal
-             else f"$\\gamma$ = {summary['gamma']:.6g} (fixed, external)"),
-            transform=ax.transAxes, fontsize=6, color="#444444")
+    src = summary.get("gamma_source")
+    if self_cal:
+        return ("$\\gamma$ = E$_{\\rm PBE}$/D$_{\\rm PBE}$ = "
+                f"{summary['gamma']:.4g} (self-calibrated)")
+    if src:
+        return f"$\\gamma$ = {summary['gamma']:.6g} (fixed: {src})"
+    return f"$\\gamma$ = {summary['gamma']:.6g} (fixed, external)"
+
+
+def _gamma_stamp(ax, summary: Dict[str, Any]) -> None:
+    """``_gamma_stamp_text`` placed top-right of an ED panel."""
+    ax.text(0.98, 0.98, _gamma_stamp_text(summary), transform=ax.transAxes,
+            fontsize=6, color="#444444", ha="right", va="top")
 
 
 def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
@@ -3123,10 +3152,7 @@ def _ed_decomposition_rich_panel(ax, summary: Dict[str, Any]) -> None:
                  "shaded, per-arch subset trajectories", fontsize=10)
     ax.grid(True, which="both", alpha=0.25)
     ax.text(0.02, 0.02,
-            ("$\\gamma$ = E$_{\\rm PBE}$/D$_{\\rm PBE}$ = "
-             f"{summary['gamma']:.4g} (self-calibrated); " if self_cal
-             else f"$\\gamma$ = {summary['gamma']:.6g} (fixed, external); ")
-            + "shaded: ED < ED of PBE",
+            _gamma_stamp_text(summary) + "; shaded: ED < ED of PBE",
             transform=ax.transAxes, fontsize=6.5, color="#444444")
     if ax.get_legend_handles_labels()[1]:
         ax.legend(fontsize=6, ncol=2, loc="upper left")
@@ -3347,16 +3373,20 @@ _3X3_DFS_UNITS_CAVEAT = (
     "NOT a reweighting (only the combined column reweights; NOT full "
     "GMTKN55).\n"
     "ED = 2/(1/E + 1/(gamma*D)); D = the Letter's Eq. 20 per-electron L1; "
-    "gamma = 1084.87 kcal/mol = the DFS Letter's published Fig. 3 slope, "
-    "SHARED by all channels -- EDs compare across columns; "
-    "ED_PBE != E_PBE. Parity row in eps units.")
+    "ONE gamma SHARED by all channels, value + source stamped in each ED "
+    "panel (own-axes six-functional fit when the calibration cache "
+    "resolves, the Letter's published 1084.87 otherwise) -- EDs compare "
+    "across columns; ED_PBE != E_PBE. Parity row in eps units, one shared "
+    "frame.")
 
 _HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT = (
     "Single-pool 'WTMAD-2' (A, B) reduces to 56.84*MAD_pool/mean|ref|_pool "
     "-- a scaled relative error, not a reweighting; only (C) reweights (NOT "
     "full GMTKN55). E/F: ED = 2/(1/E + 1/(gamma*D)); D = the Letter's "
-    "Eq. 20 per-electron L1; gamma = 1084.87 (published, external) -- "
-    "ED_PBE != E_PBE, PBE off y=x. (D) parity in eps units.")
+    "Eq. 20 per-electron L1; gamma EXTERNALLY FIXED, value + source stamped "
+    "in-panel (own-axes fit when the calibration cache resolves, published "
+    "1084.87 otherwise) -- ED_PBE != E_PBE, PBE off y=x. (D) parity in eps "
+    "units.")
 
 
 def plot_density_energy_3x3(rows: List[Dict[str, Any]],
@@ -3397,6 +3427,17 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
         ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
     pools_of = _species_pools(rows)
     pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=parity_pbe_key)
+    # one row-wide square envelope over ALL species (the combined channel's
+    # superset), passed to every parity panel: the three channel frames
+    # share x and y limits and are directly comparable
+    row_pairs: List[float] = []
+    for r in hd_rows:
+        x = pbe_mol.get(r.get("molecule"))
+        y = r.get(parity_nn_key)
+        if _is_num(x) and x > 0.0 and _is_num(y) and y > 0.0:
+            row_pairs.extend((float(x), float(y)))
+    row_limits = ((0.8 * min(row_pairs), 1.25 * max(row_pairs))
+                  if row_pairs else None)
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -3424,13 +3465,15 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                 pbe_ch = {m: v for m, v in pbe_mol.items()
                           if ch in pools_of.get(m, ())}
             _density_parity_panel(ax, hd_ch, pbe_ch, nn_key=parity_nn_key,
-                                  unit_label=parity_unit_label)
+                                  unit_label=parity_unit_label,
+                                  limits=row_limits)
             ax.set_title(f"({letters[3 + j]}) {lab} species -- "
                          + ax.get_title(), fontsize=9)
         for j, (ch, lab) in enumerate(chans):
             ax = axes[2][j]
             s = ch_summaries.get(ch)
-            ttl = f"({letters[6 + j]}) ED, {lab} channel ({ed_gamma_label})"
+            ttl = (f"({letters[6 + j]}) ED, {lab} channel"
+                   + (f" ({ed_gamma_label})" if ed_gamma_label else ""))
             if s and s.get("cells"):
                 if ed_as_bars:
                     ed_map = {c: v["ED"] for c, v in s["cells"].items()
@@ -4894,14 +4937,18 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 eps_counts = (_cell_counts(rows, "abs_error_nn_kcalmol"),
                               _cell_counts(hd_rows, "density_eps_l1"))
                 dfs_summary = combined_ed_fixed_gamma(
-                    wt_cells, e_pbe_wt, eps_cells, eps_pbe, _DFS_GAMMA_KCAL)
+                    wt_cells, e_pbe_wt, eps_cells, eps_pbe, _DFS_GAMMA_KCAL,
+                    gamma_source="DFS published")
                 legs_main["wtmad2_eps_gamma_dfs"] = dfs_summary
                 counts_main["wtmad2_eps_gamma_dfs"] = eps_counts
                 fit = nonempirical_gamma(run_dir)
+                fit_ok = bool(fit and _is_num(fit.get("gamma"))
+                              and fit["gamma"] > 0.0)
                 fit_summary = None
-                if fit and _is_num(fit.get("gamma")) and fit["gamma"] > 0.0:
+                if fit_ok:
                     fit_summary = combined_ed_fixed_gamma(
-                        wt_cells, e_pbe_wt, eps_cells, eps_pbe, fit["gamma"])
+                        wt_cells, e_pbe_wt, eps_cells, eps_pbe, fit["gamma"],
+                        gamma_source="own-axes fit")
                     legs_main["wtmad2_eps_gamma_fit"] = fit_summary
                     counts_main["wtmad2_eps_gamma_fit"] = eps_counts
                     fit_msg = (f"own-axes gamma = {fit['gamma']:.6g} kcal/mol "
@@ -4913,6 +4960,12 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                                   if fit.get("n_species_dropped") else ""))
                     print(f"  (DFS-units ED: {fit_msg})")
                     eps_extra.append(fit_msg)
+                # the OPERATIVE gamma for every single-gamma DFS-units view:
+                # the own-axes six-functional fit when its cache resolves
+                # (the calibration performed on THIS data's axes), the
+                # published slope only as the fallback -- each panel's stamp
+                # names which one it plots
+                op_summary = fit_summary if fit_ok else dfs_summary
                 # DFS-units parity ED figures: the same panel bodies as the
                 # RMSE-channel ED figure, rendered from the fixed-gamma
                 # summaries (gamma_mode="fixed" keeps the self-calibration
@@ -4941,28 +4994,29 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     title="Combined ED in DFS units (Eq. 21 on Eq. 20 eps) "
                           "-- held-out, NN vs PBE"))
                 written.append(plot_ed_decomposition(
-                    dfs_summary,
+                    op_summary,
                     outdir / "ablation_ed_decomposition_dfs_units.png",
                     run_id, note="  ".join(eps_extra), provenance=eps_prov,
                     caveat=_ED_DFS_UNITS_CAVEAT, dataset=ds,
                     title="ED decomposition in DFS units (Eq. 21 on "
                           "Eq. 20 eps) -- held-out, NN vs PBE"))
                 # DFS-units twins of the composite ED surfaces: the held-out
-                # overview (E/F under the published gamma, D parity in eps
+                # overview (E/F under the operative gamma, D parity in eps
                 # units) and the per-channel 3x3 (row 3 under ONE shared
                 # gamma -- EDs compare across columns, unlike the
-                # self-calibrated original -- row 2 parity in eps units).
+                # self-calibrated original -- row 2 parity in eps units,
+                # one row-shared frame).
                 written.append(plot_density_energy_overview(
                     rows, hd_rows,
                     outdir / "ablation_density_energy_overview_dfs_units.png",
-                    run_id, pbe_table=pbe_table, ed_summary=dfs_summary,
+                    run_id, pbe_table=pbe_table, ed_summary=op_summary,
                     note="  ".join(eps_extra),
                     provenance=(
                         "Held-out overview, DFS units. A/B: one-bucket "
                         "WTMAD-2 reduction per pool; C: 2-subset WTMAD-2. "
                         "D: per-species Eq. 20 eps parity vs CCSD refs, PBE "
-                        "model-free. E/F: ED with the published gamma -- "
-                        "full diagnostics on "
+                        "model-free. E/F: ED with the gamma stamped "
+                        "in-panel -- full diagnostics on "
                         "ablation_combined_energy_density_dfs_units.png."),
                     caveat=_HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT, dataset=ds,
                     parity_nn_key="density_eps_l1",
@@ -4970,45 +5024,55 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     parity_unit_label="Eq. 20 eps",
                     title="Held-out overview (DFS units): WTMAD-2 by pool + "
                           "eps density vs CCSD + ED"))
-                ch_summaries_eps = channel_ed_summaries(
+                ch_eps_dfs = channel_ed_summaries(
                     rows, hd_rows, pbe_table, fixed_gamma=_DFS_GAMMA_KCAL,
+                    gamma_source="DFS published",
                     density_key="density_eps_l1",
                     pbe_density_key="density_eps_l1_pbe")
+                ch_eps_fit = (channel_ed_summaries(
+                    rows, hd_rows, pbe_table, fixed_gamma=fit["gamma"],
+                    gamma_source="own-axes fit",
+                    density_key="density_eps_l1",
+                    pbe_density_key="density_eps_l1_pbe")
+                    if fit_ok else None)
                 written.append(plot_density_energy_3x3(
                     rows, hd_rows,
                     outdir / "ablation_density_energy_3x3_dfs_units.png",
                     run_id, pbe_table=pbe_table,
-                    ch_summaries=ch_summaries_eps,
+                    ch_summaries=(ch_eps_fit if fit_ok else ch_eps_dfs),
                     note="  ".join(eps_extra),
                     provenance=(
                         "Channels: pool-filtered reactions (energy legs) and "
                         "species-membership-filtered densities (overlap "
                         "species in both channels). Density leg: the "
-                        "Letter's Eq. 20 per-electron L1 vs CCSD; gamma = "
-                        "1084.87 published, shared by all channels."),
+                        "Letter's Eq. 20 per-electron L1 vs CCSD; ONE gamma "
+                        "shared by all channels, stamped in each ED panel."),
                     caveat=_3X3_DFS_UNITS_CAVEAT, dataset=ds,
                     parity_nn_key="density_eps_l1",
                     parity_pbe_key="density_eps_l1_pbe",
                     parity_unit_label="Eq. 20 eps",
-                    ed_gamma_label=(f"$\\gamma$ = {_DFS_GAMMA_KCAL:g} "
-                                    "kcal/mol, DFS published"),
+                    ed_gamma_label="",
                     ed_as_bars=True,
                     title="Per-channel held-out story (DFS units): WTMAD-2 "
                           "| eps parity | ED (BH76, W4-11, combined)"))
                 pools_of_eps = _species_pools(rows)
                 legs3_eps: Dict[str, Optional[Dict[str, Any]]] = {}
                 counts3_eps: Dict[str, Tuple[Dict, Dict]] = {}
-                for ch, s in ch_summaries_eps.items():
-                    leg = f"{ch}_wtmad2_eps_gamma_dfs"
-                    legs3_eps[leg] = s
+                for ch in ch_eps_dfs:
                     ch_rows_ = rows if ch == "combined" else [
                         r for r in rows if r.get("pool") == ch]
                     ch_hd_ = hd_rows if ch == "combined" else [
                         r for r in hd_rows
                         if ch in pools_of_eps.get(r.get("molecule"), ())]
-                    counts3_eps[leg] = (
+                    ch_counts = (
                         _cell_counts(ch_rows_, "abs_error_nn_kcalmol"),
                         _cell_counts(ch_hd_, "density_eps_l1"))
+                    legs3_eps[f"{ch}_wtmad2_eps_gamma_dfs"] = ch_eps_dfs[ch]
+                    counts3_eps[f"{ch}_wtmad2_eps_gamma_dfs"] = ch_counts
+                    if ch_eps_fit is not None:
+                        legs3_eps[f"{ch}_wtmad2_eps_gamma_fit"] = \
+                            ch_eps_fit[ch]
+                        counts3_eps[f"{ch}_wtmad2_eps_gamma_fit"] = ch_counts
                 csv3_eps = write_combined_ed_csv(
                     legs3_eps,
                     outdir / "ablation_density_energy_3x3_dfs_units.csv",
