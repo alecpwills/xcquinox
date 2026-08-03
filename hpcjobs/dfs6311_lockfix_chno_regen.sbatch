@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=xcq_lockfix_chno
-#SBATCH --partition=long-96core
+# long-40core, NOT long-96core: the 96-core queue is saturated by the production
+# training array, and this job must not queue behind it or compete with it for
+# nodes. Two small-molecule CCSD+OEP cascades do not need 96 cores; --exclusive
+# with --mem=0 still takes the whole node, so the CCSD memory headroom is
+# whatever the 40-core node provides rather than a fixed request.
+#SBATCH --partition=long-40core
 #SBATCH --time=08:00:00
 #SBATCH --nodes=1
 #SBATCH --exclusive
 #SBATCH --mem=0
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=40
 #SBATCH --output=/gpfs/scratch/awills/lockfix_chno_regen_%j.out
 #SBATCH --mail-user=alec.wills@stonybrook.edu
 #SBATCH --mail-type=END,FAIL
@@ -73,7 +78,7 @@ case "$PYBIN" in
 esac
 
 # --- thread caps (SLURM vars not assumed present) ---------------------------
-THREADS="${SLURM_CPUS_PER_TASK:-24}"
+THREADS="${SLURM_CPUS_PER_TASK:-40}"
 export OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" OPENBLAS_NUM_THREADS="$THREADS"
 export MALLOC_ARENA_MAX=2
 ulimit -u unlimited 2>/dev/null || true
