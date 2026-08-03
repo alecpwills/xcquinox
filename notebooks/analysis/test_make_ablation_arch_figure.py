@@ -1447,7 +1447,10 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     assert "ablation_ed_decomposition_dfs_units.png" in names2
     assert "ablation_density_energy_overview_dfs_units.png" in names2
     assert "ablation_density_energy_3x3_dfs_units.png" in names2
-    assert len(names2) == 14
+    # the 3x3s' former parity rows as standalone per-channel figures
+    assert "ablation_density_parity_by_channel.png" in names2
+    assert "ablation_density_parity_by_channel_dfs_units.png" in names2
+    assert len(names2) == 16
     assert (out2 / "ablation_density_energy_3x3_dfs_units.csv").is_file()
     # the CSVs are written alongside but NEVER returned (return stays PNG-only)
     assert (out2 / "ablation_combined_energy_density.csv").is_file()
@@ -1829,7 +1832,7 @@ def test_ed_decomposition_panel_draws_cells():
     assert ax.get_xscale() == "log" and ax.get_yscale() == "log"
     assert len(ax.collections) >= 1            # cell points + the PBE x
     assert len(ax.lines) == 4                  # y=x locus + 3 iso-ED contours
-    assert "iso-ED" in ax.get_title()
+    assert "iso-" + fig._ED_SYM in ax.get_title()
     fig.plt.close(f1)
 
 
@@ -2173,7 +2176,9 @@ def test_build_dfs_units_png_notes_missing_cells(tmp_path, monkeypatch):
                == "ablation_ed_decomposition_dfs_units.png"]
     assert len(dfs_dec) == 1
     assert dfs_dec[0][0]["gamma_mode"] == "fixed"
-    assert "DFS units" in dfs_dec[0][2]["title"]
+    # the twin's title identifies the DFS-units variant by the paper's
+    # combined-metric symbol
+    assert fig._ED_N_SYM in dfs_dec[0][2]["title"]
     assert "eps columns cover" in dfs_dec[0][2]["note"]
 
 
@@ -2204,6 +2209,12 @@ def test_build_dfs_units_png_absent_without_eps(tmp_path, capsys):
                 / "ablation_density_energy_overview_dfs_units.png").exists()
     assert not (out / "ablation_density_energy_3x3_dfs_units.png").exists()
     assert not (out / "ablation_density_energy_3x3_dfs_units.csv").exists()
+    assert not (out
+                / "ablation_density_parity_by_channel_dfs_units.png"
+                ).exists()
+    # the RMSE-channel standalone parity still renders (its gate is the
+    # RMSE density data, present here)
+    assert (out / "ablation_density_parity_by_channel.png").exists()
     printed = capsys.readouterr().out
     assert "skipping the DFS-units ED legs" in printed
     assert "a stale file from a prior render persists" in printed
@@ -2391,18 +2402,18 @@ def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
         assert s["d_pbe"] == pytest.approx(7e-4)
         for c in s["cells"].values():
             assert c["D"] == pytest.approx(2.5e-4)
-    assert x3_twin[0]["parity_nn_key"] == "density_eps_l1"
-    # titles are clean (the in-panel stamp carries value + source) and the
-    # twin renders the ED row as grouped bars (the A/B/C form), not lines
+    assert x3_twin[0]["density_nn_key"] == "density_eps_l1"
+    assert x3_twin[0]["density_pbe_key"] == "density_eps_l1_pbe"
+    # titles are clean -- the in-panel stamp carries value + source
     assert x3_twin[0]["ed_gamma_label"] == ""
-    assert x3_twin[0]["ed_as_bars"] is True
     # the ORIGINAL calls keep their defaults (no parity/gamma overrides)
     ov_orig = [kw for p, kw in ov_calls if p.name
                == "ablation_density_energy_overview.png"]
     x3_orig = [kw for p, kw in x3_calls if p.name
                == "ablation_density_energy_3x3.png"]
     assert len(ov_orig) == 1 and "parity_nn_key" not in ov_orig[0]
-    assert len(x3_orig) == 1 and "parity_nn_key" not in x3_orig[0]
+    # the ORIGINAL 3x3 runs on its RMSE defaults -- no density-key override
+    assert len(x3_orig) == 1 and "density_nn_key" not in x3_orig[0]
     assert x3_orig[0]["ch_summaries"]["combined"]["gamma_mode"] == \
         "self_calibrated"
     # the twin CSV carries the per-channel eps legs at the shared gamma
@@ -2430,16 +2441,22 @@ def test_plot_composite_dfs_units_twins_render(tmp_path):
                                       pbe_density_key="density_eps_l1_pbe")
     p1 = fig.plot_density_energy_3x3(
         rows, hd, tmp_path / "x3_dfs.png", "run_x",
-        ch_summaries=ch_eps, parity_nn_key="density_eps_l1",
-        parity_pbe_key="density_eps_l1_pbe", parity_unit_label="Eq. 20 eps",
-        ed_gamma_label="", ed_as_bars=True, title="3x3, DFS units")
+        ch_summaries=ch_eps, density_nn_key="density_eps_l1",
+        density_pbe_key="density_eps_l1_pbe",
+        density_unit_label=fig._EPS_N_SYM,
+        ed_gamma_label="", title="3x3, DFS units")
     assert _png_ok(p1)
     p2 = fig.plot_density_energy_overview(
         rows, hd, tmp_path / "ov_dfs.png", "run_x",
         ed_summary=ch_eps["combined"], parity_nn_key="density_eps_l1",
-        parity_pbe_key="density_eps_l1_pbe", parity_unit_label="Eq. 20 eps",
-        title="Overview, DFS units")
+        parity_pbe_key="density_eps_l1_pbe",
+        parity_unit_label=fig._EPS_N_SYM, title="Overview, DFS units")
     assert _png_ok(p2)
+    p3 = fig.plot_density_parity_by_channel(
+        rows, hd, tmp_path / "parity_dfs.png", "run_x",
+        nn_key="density_eps_l1", pbe_key="density_eps_l1_pbe",
+        unit_label=fig._EPS_N_SYM, title="Parity by channel, DFS units")
+    assert _png_ok(p3)
 
 
 def test_density_parity_panel_square_limits():
@@ -2525,12 +2542,13 @@ def test_density_parity_panel_external_limits():
     fig.plt.close(f1)
 
 
-def test_3x3_parity_row_shares_limits(tmp_path, monkeypatch):
-    """The 3x3 passes ONE row-wide envelope to all three parity panels --
-    the channels render in the same frame and are directly comparable. The
-    fixture carries a bh76-only outlier species so per-channel envelopes
-    differ from the pooled one: identical per-channel frames cannot fake
-    the row share."""
+def test_parity_by_channel_shares_limits_and_3x3_has_no_parity(
+        tmp_path, monkeypatch):
+    """The standalone parity figure passes ONE row-wide envelope to all
+    three channel panels (directly comparable frames), while the all-bars
+    3x3 no longer draws any parity panel. The fixture carries a bh76-only
+    outlier species so per-channel envelopes differ from the pooled one:
+    identical per-channel frames cannot fake the share."""
     run = _make_run_dir(tmp_path)
     _add_holdout_density(run)
     # HOh_ts is bh76-only (see the _species_pools test); its large errors
@@ -2557,7 +2575,8 @@ def test_3x3_parity_row_shares_limits(tmp_path, monkeypatch):
         return real(ax, density_rows, pbe_mol, **kw)
 
     monkeypatch.setattr(fig, "_density_parity_panel", spy)
-    fig.plot_density_energy_3x3(rows, hd, tmp_path / "x3.png", "run_x")
+    fig.plot_density_parity_by_channel(rows, hd, tmp_path / "par.png",
+                                       "run_x")
     assert len(seen) == 3
     assert all(lim is not None and lim == seen[0] for lim in seen)
     # the shared envelope is the POOLED positive envelope: lo from the HO
@@ -2565,6 +2584,69 @@ def test_3x3_parity_row_shares_limits(tmp_path, monkeypatch):
     # per-channel w411 frame would top out at 1.25*8e-4 instead
     assert seen[0][0] == pytest.approx(0.8 * 2e-4)
     assert seen[0][1] == pytest.approx(1.25 * 6e-3)
+    # the all-bars 3x3 never calls the parity panel body
+    seen.clear()
+    fig.plot_density_energy_3x3(rows, hd, tmp_path / "x3.png", "run_x")
+    assert seen == []
+
+
+def test_3x3_density_bar_row_values(tmp_path, monkeypatch):
+    """Row 2 of the all-bars 3x3: per-channel cell-mean density-error bars
+    on the selected channel, PBE dashed at the channel's deduplicated
+    anchor -- values pinned against the fixture. A bh76-only outlier
+    species makes the three channels' values DIFFER, so a mutant feeding
+    the pooled rows to every channel cannot pass."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    for sd in (run / "checkpoints").glob("spec_*"):
+        pm = sd / "eval_holdout" / "per_molecule.json"
+        if not pm.is_file():
+            continue
+        rows_pm = json.loads(pm.read_text())
+        rows_pm.append({
+            "molecule": "HOh_ts", "density_rmse": 5e-3, "density_l1": 1e-4,
+            "density_rmse_pbe": 6e-3, "density_l1_pbe": 2e-4,
+            "density_eps_l1": 4e-3, "density_eps_l1_pbe": 5e-3,
+            "n_electrons": 10.0, "grid_weight_sum": 100.0,
+            "ref_density_method": "ccsd", "from_training_subset": False})
+        pm.write_text(json.dumps(rows_pm))
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    calls = []
+    real = fig._grouped_arch_bars
+
+    def spy(ax, metric, archs, subsets, **kw):
+        calls.append((dict(metric), kw))
+        return real(ax, metric, archs, subsets, **kw)
+
+    monkeypatch.setattr(fig, "_grouped_arch_bars", spy)
+    fig.plot_density_energy_3x3(
+        rows, hd, tmp_path / "x3.png", "run_x",
+        density_nn_key="density_eps_l1",
+        density_pbe_key="density_eps_l1_pbe",
+        density_unit_label=fig._EPS_N_SYM)
+    dens = {}
+    for m, kw in calls:
+        t = kw.get("title", "")
+        if fig._EPS_N_SYM in t and "cell mean" in t:
+            for ch in ("BH76", "W4-11", "combined"):
+                if f"{ch} species" in t:
+                    dens[ch] = (m, kw)
+    assert set(dens) == {"BH76", "W4-11", "combined"}
+    # channel-restricted values: HO (eps 2.5e-4) is in BOTH pools, the
+    # HOh_ts outlier (4e-3) is bh76-only -> bh76/combined cell means are
+    # mean(2.5e-4, 4e-3), w411 stays 2.5e-4; anchors mean(7e-4, 5e-3) vs
+    # 7e-4. A pooled-rows mutant would show the combined values everywhere.
+    for ch, want_m, want_pbe in (
+            ("BH76", (2.5e-4 + 4e-3) / 2, (7e-4 + 5e-3) / 2),
+            ("W4-11", 2.5e-4, 7e-4),
+            ("combined", (2.5e-4 + 4e-3) / 2, (7e-4 + 5e-3) / 2)):
+        m, kw = dens[ch]
+        assert m, "density bar map must not be empty"
+        assert all(v == pytest.approx(want_m) for v in m.values()), ch
+        assert kw["pbe_line"] == pytest.approx(want_pbe), ch
+    # nine bar panels in total: 3 energy + 3 density + 3 ED
+    assert len(calls) == 9
 
 
 def test_3x3_caveats_define_reduction_and_gamma():
@@ -2581,6 +2663,39 @@ def test_3x3_caveats_define_reduction_and_gamma():
     assert "1084.87" in fig._3X3_DFS_UNITS_CAVEAT
     assert "published" in fig._3X3_DFS_UNITS_CAVEAT
     assert "1084.87" not in fig._3X3_CAVEAT   # original stays self-calibrated
+    # both caveats point at the standalone parity figure that replaced the
+    # parity row
+    assert "ablation_density_parity_by_channel.png" in fig._3X3_CAVEAT
+    assert ("ablation_density_parity_by_channel_dfs_units.png"
+            in fig._3X3_DFS_UNITS_CAVEAT)
+
+
+def test_dfs_paper_notation_symbols():
+    """Figure text carries the DFS paper's symbols: the combined metric is
+    the CALLIGRAPHIC ED (ED_{|n|} on the eps-leg figures, per Eq. 21 /
+    Table I), the density error is varepsilon_{|n|} (Eq. 20) -- verified
+    against the Letter's PDF. Equation NUMBERS remain citations, not
+    labels."""
+    assert fig._ED_SYM == r"$\mathcal{ED}$"
+    assert fig._ED_N_SYM == r"$\mathcal{ED}_{|n|}$"
+    assert fig._EPS_N_SYM == r"$\varepsilon_{|n|}$"
+    assert r"\int|n - n_{ref}|" in fig._EPS_N_EQ
+    # the eps caveats define the density error by its equation and use the
+    # paper's combined-metric symbol
+    for cav in (fig._ED_DFS_UNITS_CAVEAT, fig._3X3_DFS_UNITS_CAVEAT,
+                fig._HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT):
+        assert fig._EPS_N_SYM in cav
+        assert fig._ED_N_SYM in cav
+        assert "Eq. 20 eps" not in cav      # the number is not the label
+    assert fig._ED_SYM in fig._ED_CAVEAT
+    assert fig._ED_SYM in fig._3X3_CAVEAT
+    # the ED lines panel's ylabel carries the symbol
+    s = fig.combined_ed_by_cell({("deep", 1): 8.0}, 10.0,
+                                {("deep", 1): 4e-4}, 5e-4)
+    f1, ax = fig.plt.subplots()
+    fig._ed_lines_panel(ax, s, "t")
+    assert fig._ED_SYM.strip("$") in ax.get_ylabel().replace("$", "")
+    fig.plt.close(f1)
 
 
 def test_pbe_anchor_coverage_warning_key_params():

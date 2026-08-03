@@ -2001,6 +2001,16 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
 # grid-weighted RMSE.
 _DFS_GAMMA_KCAL = 1084.87
 
+# DFS-paper notation (PRB 104, L161109): the combined energy-density metric
+# is the CALLIGRAPHIC ED -- generic form (main text, "we propose a metric
+# ED"), and ED_{|n|} when its density leg is the Eq. 20 per-electron L1
+# eps_{|n|} (Eq. 21, Table I, Fig. 2's ylabel). Figure text uses the
+# paper's symbols; CSV column names keep their ASCII schema.
+_ED_SYM = r"$\mathcal{ED}$"
+_ED_N_SYM = r"$\mathcal{ED}_{|n|}$"
+_EPS_N_SYM = r"$\varepsilon_{|n|}$"
+_EPS_N_EQ = r"$\varepsilon_{|n|} = \frac{1}{N_e}\int|n - n_{ref}|$"
+
 
 def gamma_zero_intercept(pairs) -> float:
     """Zero-intercept least-squares slope of W on eps over ``(eps, W)`` pairs:
@@ -2936,28 +2946,30 @@ def plot_holdout_density_per_arch(hd_rows: List[Dict[str, Any]],
     return out_path
 
 
-_ED_CAVEAT = ("ED = 2/(1/E + 1/(gamma*D)) (Dick & Fernandez-Serra, PRB 104, "
-              "L161109 (2021), Eq. 21); gamma self-calibrated per leg from "
-              "pooled PBE anchors (gamma = E_PBE/D_PBE -- the Letter's "
-              "regression slope, calibrated here on PBE alone), so "
-              "ED_PBE == E_PBE by construction (dashed).")
+_ED_CAVEAT = (_ED_SYM + " = 2/(1/E + 1/(gamma*D)) (Dick & Fernandez-Serra, "
+              "PRB 104, L161109 (2021), Eq. 21); gamma self-calibrated per "
+              "leg from pooled PBE anchors (gamma = E_PBE/D_PBE -- the "
+              "Letter's regression slope, calibrated here on PBE alone), so "
+              + _ED_SYM + " of PBE == E_PBE by construction (dashed).")
 
 # kept near _ED_CAVEAT's length: the caveat renders as ONE figtext line and
 # savefig.bbox="tight" widens the canvas to the longest line
 _ED_DFS_UNITS_CAVEAT = (
-    "ED = 2/(1/E + 1/(gamma*D)) (Dick & Fernandez-Serra, PRB 104, L161109 "
-    "(2021), Eq. 21); D = the Letter's Eq. 20 per-electron L1, "
-    "sum(w|rho-rho_ref|)/N_e; gamma EXTERNALLY FIXED (published Fig. 3 "
-    "slope 1084.87 or own-axes nonempirical refit) -- NOT self-calibrated: "
-    "ED_PBE != E_PBE and PBE off y=x.")
+    _ED_N_SYM + " = 2/(1/E + 1/(gamma " + _EPS_N_SYM + ")) (Dick & "
+    "Fernandez-Serra, PRB 104, L161109 (2021), Eq. 21); " + _EPS_N_EQ
+    + " (Eq. 20 per species; quadrature sum_i(w_i|rho-rho_ref|_i)/N_e); "
+    "gamma "
+    "EXTERNALLY FIXED (published Fig. 3 slope 1084.87 or own-axes refit) "
+    "-- NOT self-calibrated: " + _ED_N_SYM + " of PBE != E_PBE, "
+    "PBE off y=x.")
 
 _HOLDOUT_OVERVIEW_CAVEAT = (
     "Single-pool 'WTMAD-2' (panels A, B) reduces to 56.84 * MAD_pool / "
     "mean|ref|_pool -- a scaled relative error, NOT a reweighting; only "
     "panel C (2-subset) reweights BH76 vs W4-11, and it is NOT full GMTKN55. "
-    "E/F: ED = 2/(1/E + 1/(gamma*D)), gamma = E_PBE/D_PBE self-calibrated "
-    "from the pooled PBE anchors (value printed in the panels), so "
-    "ED_PBE == E_PBE (dashed).")
+    "E/F: " + _ED_SYM + " = 2/(1/E + 1/(gamma*D)), gamma = E_PBE/D_PBE "
+    "self-calibrated from the pooled PBE anchors (value printed in the "
+    "panels), so " + _ED_SYM + " of PBE == E_PBE (dashed).")
 
 _INSAMPLE_OVERVIEW_CAVEAT = (
     "IN-SAMPLE (training-fit) overview on trained molecules -- NOT "
@@ -2965,7 +2977,8 @@ _INSAMPLE_OVERVIEW_CAVEAT = (
     "the panels are identical in the final-step and val-best dirs; only the "
     "title's checkpoint stamp differs).\n"
     "No PBE AE baseline exists in-sample (per_molecule.json has no PBE AE "
-    "column); no in-sample ED (no PBE energy anchor to self-calibrate gamma).")
+    "column); no in-sample " + _ED_SYM + " (no PBE energy anchor to "
+    "self-calibrate gamma).")
 
 
 def _gamma_stamp_text(summary: Dict[str, Any]) -> str:
@@ -3020,7 +3033,7 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
                    zorder=6, label="beats PBE")
     ax.set_yscale("log")
     ax.set_xlabel("training subset_size", fontsize=8)
-    ax.set_ylabel("ED (kcal/mol)", fontsize=8)
+    ax.set_ylabel(f"{_ED_SYM} (kcal/mol)", fontsize=8)
     ax.set_title(title, fontsize=9)
     ax.grid(True, which="both", alpha=0.3)
     _gamma_stamp(ax, summary)
@@ -3066,7 +3079,7 @@ def _ed_decomposition_panel(ax, summary: Dict[str, Any]) -> None:
         yv = 1.0 / (2.0 / cval - 1.0 / xv)
         ax.plot(xv, yv, lw=1.1 if k == 1.0 else 0.7,
                 color="0.55" if k == 1.0 else "0.75", zorder=1)
-        ax.annotate(f"ED={cval:.3g}", (xv[-1], yv[-1]), fontsize=5,
+        ax.annotate(f"{_ED_SYM}={cval:.3g}", (xv[-1], yv[-1]), fontsize=5,
                     color="0.5", xytext=(-2, 2),
                     textcoords="offset points", ha="right")
     ax.set_xscale("log")
@@ -3076,7 +3089,7 @@ def _ed_decomposition_panel(ax, summary: Dict[str, Any]) -> None:
     ax.set_xlabel("E, 2-subset WTMAD-2 (kcal/mol)", fontsize=8)
     ax.set_ylabel("$\\gamma$ * D (kcal/mol)", fontsize=8)
     ax.set_title("Energy vs rescaled density error per cell "
-                 "(iso-ED contours)", fontsize=9)
+                 f"(iso-{_ED_SYM} contours)", fontsize=9)
     ax.grid(True, which="both", alpha=0.3)
 
 
@@ -3117,7 +3130,8 @@ def _ed_decomposition_rich_panel(ax, summary: Dict[str, Any]) -> None:
         ax.plot(xv, yv, lw=1.4 if k == 1.0 else 0.7,
                 color="0.35" if k == 1.0 else "0.72", zorder=1)
         if lo < cval < hi:
-            ax.annotate(f"ED = {cval:.3g}" if k == 1.0 else f"{k:g}x",
+            ax.annotate(f"{_ED_SYM} = {cval:.3g}" if k == 1.0
+                        else f"{k:g}x",
                         (cval, cval), fontsize=5.5, color="0.4",
                         ha="left", va="bottom", rotation=-40,
                         xytext=(1, 1), textcoords="offset points")
@@ -3148,11 +3162,13 @@ def _ed_decomposition_rich_panel(ax, summary: Dict[str, Any]) -> None:
     ax.set_ylim(lo, hi)
     ax.set_xlabel("E, 2-subset WTMAD-2 (kcal/mol)", fontsize=9)
     ax.set_ylabel("$\\gamma$ * D (kcal/mol)", fontsize=9)
-    ax.set_title("ED decomposition -- iso-ED contours, beats-PBE region "
-                 "shaded, per-arch subset trajectories", fontsize=10)
+    ax.set_title(f"{_ED_SYM} decomposition -- iso-{_ED_SYM} contours, "
+                 "beats-PBE region shaded, per-arch subset trajectories",
+                 fontsize=10)
     ax.grid(True, which="both", alpha=0.25)
     ax.text(0.02, 0.02,
-            _gamma_stamp_text(summary) + "; shaded: ED < ED of PBE",
+            _gamma_stamp_text(summary)
+            + f"; shaded: {_ED_SYM} < {_ED_SYM} of PBE",
             transform=ax.transAxes, fontsize=6.5, color="#444444")
     if ax.get_legend_handles_labels()[1]:
         ax.legend(fontsize=6, ncol=2, loc="upper left")
@@ -3177,8 +3193,8 @@ def plot_ed_decomposition(summary: Dict[str, Any], out_path: Path,
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
             caveat=caveat or _ED_CAVEAT, dataset=dataset,
-            title=title or "ED decomposition (DFS Eq. 21) -- held-out, "
-                           "NN vs PBE")
+            title=title or f"{_ED_SYM} decomposition (DFS Eq. 21) -- "
+                           "held-out, NN vs PBE")
         fig.tight_layout(rect=(0, 0.06, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -3220,8 +3236,9 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
     with panel C = the own-axes-fit leg instead of the MAE leg."""
 
     title_a, title_c = panel_titles or (
-        "ED, energy leg = 2-subset WTMAD-2 (headline)",
-        "ED, energy leg = combined reaction MAE (leg-independence check)")
+        f"{_ED_SYM}, energy leg = 2-subset WTMAD-2 (headline)",
+        f"{_ED_SYM}, energy leg = combined reaction MAE "
+        "(leg-independence check)")
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.6), squeeze=False)
         axA, axB, axC = axes[0]
@@ -3251,8 +3268,8 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
             caveat=caveat or _ED_CAVEAT, dataset=dataset,
-            title=title or "Combined energy-density ED (DFS Eq. 21, "
-                           "harmonic mean) -- held-out, NN vs PBE")
+            title=title or f"Combined energy-density {_ED_SYM} (DFS "
+                           "Eq. 21, harmonic mean) -- held-out, NN vs PBE")
         fig.tight_layout(rect=(0, 0.10, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -3317,17 +3334,19 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
             _ed_decomposition_panel(axE, ed_summary)
             axE.set_title("(E) " + axE.get_title(), fontsize=9)
             _ed_lines_panel(axF, ed_summary,
-                            "(F) ED, energy leg = 2-subset WTMAD-2 (headline)")
+                            f"(F) {_ED_SYM}, energy leg = 2-subset "
+                            "WTMAD-2 (headline)")
         else:
-            axE.text(0.5, 0.5, "ED decomposition unavailable", ha="center",
-                     va="center", transform=axE.transAxes, fontsize=9,
-                     color="0.5")
+            axE.text(0.5, 0.5, f"{_ED_SYM} decomposition unavailable",
+                     ha="center", va="center", transform=axE.transAxes,
+                     fontsize=9, color="0.5")
             axE.set_title("(E) Energy vs rescaled density error per cell "
-                          "(iso-ED contours)", fontsize=9)
-            axF.text(0.5, 0.5, "ED unavailable", ha="center", va="center",
-                     transform=axF.transAxes, fontsize=9, color="0.5")
-            axF.set_title("(F) ED, energy leg = 2-subset WTMAD-2 (headline)",
-                          fontsize=9)
+                          f"(iso-{_ED_SYM} contours)", fontsize=9)
+            axF.text(0.5, 0.5, f"{_ED_SYM} unavailable", ha="center",
+                     va="center", transform=axF.transAxes, fontsize=9,
+                     color="0.5")
+            axF.set_title(f"(F) {_ED_SYM}, energy leg = 2-subset WTMAD-2 "
+                          "(headline)", fontsize=9)
         seen: Dict[str, Any] = {}
         for ax in (axA, axB, axC, axD, axE, axF):
             hs, ls = ax.get_legend_handles_labels()
@@ -3360,10 +3379,12 @@ _3X3_CAVEAT = (
     "rescaled by its mean abs reference energy: a scaled relative error, "
     "NOT a reweighting (only the combined column reweights; NOT full "
     "GMTKN55).\n"
-    "ED = 2/(1/E + 1/(gamma*D)) with gamma = E_PBE/D_PBE from that "
-    "channel's OWN anchors (value printed in each ED panel), so "
-    "ED_PBE == E_PBE per channel and EDs never compare across channels. "
-    "Overlap species appear in both density channels.")
+    + _ED_SYM + " = 2/(1/E + 1/(gamma*D)) with gamma = E_PBE/D_PBE from "
+    "that channel's OWN anchors (value printed in each panel), so "
+    + _ED_SYM + " of PBE == E_PBE per channel and " + _ED_SYM + " never "
+    "compares across channels. Overlap species appear in both density "
+    "channels; per-species parity in "
+    "ablation_density_parity_by_channel.png.")
 
 _3X3_DFS_UNITS_CAVEAT = (
     "Columns are channels: BH76 | W4-11 | combined. A/B and the G/H ED "
@@ -3372,21 +3393,25 @@ _3X3_DFS_UNITS_CAVEAT = (
     "rescaled by its mean abs reference energy: a scaled relative error, "
     "NOT a reweighting (only the combined column reweights; NOT full "
     "GMTKN55).\n"
-    "ED = 2/(1/E + 1/(gamma*D)); D = the Letter's Eq. 20 per-electron L1; "
-    "ONE gamma SHARED by all channels, value + source stamped in each ED "
-    "panel (own-axes six-functional fit when the calibration cache "
-    "resolves, the Letter's published 1084.87 otherwise) -- EDs compare "
-    "across columns; ED_PBE != E_PBE. Parity row in eps units, one shared "
-    "frame.")
+    + _ED_N_SYM + " = 2/(1/E + 1/(gamma " + _EPS_N_SYM + ")); " + _EPS_N_EQ
+    + " (Eq. 20 per species); ONE gamma SHARED by all channels, value + "
+    "source stamped "
+    "in each panel (own-axes six-functional fit when the calibration cache "
+    "resolves, the Letter's published 1084.87 otherwise) -- "
+    + _ED_N_SYM + " compares across columns; " + _ED_N_SYM + " of PBE != "
+    "E_PBE. Density row = cell-mean " + _EPS_N_SYM + "; per-species parity "
+    "in ablation_density_parity_by_channel_dfs_units.png.")
 
 _HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT = (
     "Single-pool 'WTMAD-2' (A, B) reduces to 56.84*MAD_pool/mean|ref|_pool "
     "-- a scaled relative error, not a reweighting; only (C) reweights (NOT "
-    "full GMTKN55). E/F: ED = 2/(1/E + 1/(gamma*D)); D = the Letter's "
-    "Eq. 20 per-electron L1; gamma EXTERNALLY FIXED, value + source stamped "
-    "in-panel (own-axes fit when the calibration cache resolves, published "
-    "1084.87 otherwise) -- ED_PBE != E_PBE, PBE off y=x. (D) parity in eps "
-    "units.")
+    "full GMTKN55). E/F: " + _ED_N_SYM + " = 2/(1/E + 1/(gamma "
+    + _EPS_N_SYM + ")); " + _EPS_N_EQ + " (Eq. 20 per species); gamma "
+    "EXTERNALLY "
+    "FIXED, value + source stamped in-panel (own-axes fit when the "
+    "calibration cache resolves, published 1084.87 otherwise) -- "
+    + _ED_N_SYM + " of PBE != E_PBE, PBE off y=x. (D) parity in "
+    + _EPS_N_SYM + " units.")
 
 
 def plot_density_energy_3x3(rows: List[Dict[str, Any]],
@@ -3400,44 +3425,32 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                             provenance: Optional[str] = None,
                             caveat: Optional[str] = None,
                             dataset: Optional[str] = None,
-                            parity_nn_key: str = "density_rmse",
-                            parity_pbe_key: str = "density_rmse_pbe",
-                            parity_unit_label: str = "density RMSE",
+                            density_nn_key: str = "density_rmse",
+                            density_pbe_key: str = "density_rmse_pbe",
+                            density_unit_label: str = "density RMSE",
                             ed_gamma_label: str = "own gamma",
-                            ed_as_bars: bool = False,
                             title: Optional[str] = None) -> Path:
-    """Per-channel held-out story, one column per channel (BH76 | W4-11 |
-    combined): row 1 = WTMAD-2 bars per (arch, subset_size) (A/B the
-    one-bucket reduction, C the genuine 2-subset form); row 2 = per-species
-    NN-vs-PBE density parity restricted to that channel's species (overlap
-    species contribute to both, stated in the caveat); row 3 = the DFS
-    Eq. 21 ED metric per channel, by default each gamma self-calibrated from
-    that channel's own PBE anchors (grey placeholder when a channel's
-    anchors are missing). Panel bodies are the shared ax-level helpers, so
-    the views match the dedicated figures.
+    """Per-channel held-out story, ALL BARS, one column per channel
+    (BH76 | W4-11 | combined): row 1 = WTMAD-2 bars per (arch, subset_size)
+    (A/B the one-bucket reduction, C the genuine 2-subset form); row 2 =
+    the density-error bars on the ``density_nn_key`` channel, restricted to
+    that channel's species (cell mean; PBE dashed at the channel's
+    deduplicated anchor; overlap species contribute to both single-pool
+    columns, stated in the caveat); row 3 = the DFS Eq. 21 combined metric
+    per channel as bars (PBE dashed at its own combined value, the gamma
+    stamp in-panel). Channels missing data render grey placeholders. The
+    per-species parity view lives in its own figure,
+    :func:`plot_density_parity_by_channel`.
 
-    The keyword overrides (parity keys/label, ``ed_gamma_label``,
-    ``ed_as_bars``, ``title``) default to the historical figure exactly; the
-    DFS-units twin passes fixed-gamma ``ch_summaries`` (from
-    ``channel_ed_summaries`` with ``fixed_gamma``/eps keys), the eps parity
-    keys, its own row-3 gamma tag, and ``ed_as_bars=True`` -- row 3 then
-    renders as the same grouped per-(arch, subset_size) bars as row 1 (PBE
-    dashed, beats-PBE marks, the gamma stamp in-panel)."""
+    The keyword overrides (density keys/label, ``ed_gamma_label``,
+    ``title``) default to the grid-weighted-RMSE original; the DFS-units
+    twin passes fixed-gamma ``ch_summaries`` (from ``channel_ed_summaries``
+    with ``fixed_gamma``/eps keys), the eps density keys, the
+    ``$\\varepsilon_{|n|}$`` unit label, and a clean row-3 gamma tag."""
     if ch_summaries is None:
         ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
     pools_of = _species_pools(rows)
-    pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=parity_pbe_key)
-    # one row-wide square envelope over ALL species (the combined channel's
-    # superset), passed to every parity panel: the three channel frames
-    # share x and y limits and are directly comparable
-    row_pairs: List[float] = []
-    for r in hd_rows:
-        x = pbe_mol.get(r.get("molecule"))
-        y = r.get(parity_nn_key)
-        if _is_num(x) and x > 0.0 and _is_num(y) and y > 0.0:
-            row_pairs.extend((float(x), float(y)))
-    row_limits = ((0.8 * min(row_pairs), 1.25 * max(row_pairs))
-                  if row_pairs else None)
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=density_pbe_key)
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -3464,33 +3477,44 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                          if ch in pools_of.get(r.get("molecule"), ())]
                 pbe_ch = {m: v for m, v in pbe_mol.items()
                           if ch in pools_of.get(m, ())}
-            _density_parity_panel(ax, hd_ch, pbe_ch, nn_key=parity_nn_key,
-                                  unit_label=parity_unit_label,
-                                  limits=row_limits)
-            ax.set_title(f"({letters[3 + j]}) {lab} species -- "
-                         + ax.get_title(), fontsize=9)
+            d_map = holdout_density_by_arch_subset(hd_ch,
+                                                   key=density_nn_key)
+            ttl_d = (f"({letters[3 + j]}) {density_unit_label} vs CCSD, "
+                     f"{lab} species -- cell mean")
+            if d_map:
+                d_pbe_ch = (float(np.mean(list(pbe_ch.values())))
+                            if pbe_ch else float("nan"))
+                _grouped_arch_bars(
+                    ax, d_map, archs, subsets,
+                    pbe_line=(d_pbe_ch if _is_num(d_pbe_ch)
+                              and d_pbe_ch > 0.0 else None),
+                    title=ttl_d)
+                ax.set_ylabel(f"{density_unit_label} vs CCSD", fontsize=8)
+            else:
+                ax.text(0.5, 0.5, "density unavailable", ha="center",
+                        va="center", transform=ax.transAxes, fontsize=9,
+                        color="0.5")
+                ax.set_title(ttl_d, fontsize=9)
         for j, (ch, lab) in enumerate(chans):
             ax = axes[2][j]
             s = ch_summaries.get(ch)
-            ttl = (f"({letters[6 + j]}) ED, {lab} channel"
+            ttl = (f"({letters[6 + j]}) {_ED_SYM}, {lab} channel"
                    + (f" ({ed_gamma_label})" if ed_gamma_label else ""))
             if s and s.get("cells"):
-                if ed_as_bars:
-                    ed_map = {c: v["ED"] for c, v in s["cells"].items()
-                              if _is_num(v.get("ED")) and v["ED"] > 0.0}
-                    ed_pbe = s.get("ed_pbe")
-                    _grouped_arch_bars(
-                        ax, ed_map, archs, subsets,
-                        pbe_line=(float(ed_pbe) if _is_num(ed_pbe)
-                                  and ed_pbe > 0.0 else None),
-                        title=ttl)
-                    ax.set_ylabel("ED (kcal/mol)", fontsize=8)
-                    _gamma_stamp(ax, s)
-                else:
-                    _ed_lines_panel(ax, s, ttl)
+                ed_map = {c: v["ED"] for c, v in s["cells"].items()
+                          if _is_num(v.get("ED")) and v["ED"] > 0.0}
+                ed_pbe = s.get("ed_pbe")
+                _grouped_arch_bars(
+                    ax, ed_map, archs, subsets,
+                    pbe_line=(float(ed_pbe) if _is_num(ed_pbe)
+                              and ed_pbe > 0.0 else None),
+                    title=ttl)
+                ax.set_ylabel(f"{_ED_SYM} (kcal/mol)", fontsize=8)
+                _gamma_stamp(ax, s)
             else:
-                ax.text(0.5, 0.5, "ED unavailable", ha="center", va="center",
-                        transform=ax.transAxes, fontsize=9, color="0.5")
+                ax.text(0.5, 0.5, f"{_ED_SYM} unavailable", ha="center",
+                        va="center", transform=ax.transAxes, fontsize=9,
+                        color="0.5")
                 ax.set_title(ttl, fontsize=9)
         seen: Dict[str, Any] = {}
         for row_axes in axes:
@@ -3509,8 +3533,78 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
             fig, run_id=run_id, note=note, provenance=provenance,
             caveat=caveat or _3X3_CAVEAT, dataset=dataset,
             title=title or "Per-channel held-out story: WTMAD-2 | density "
-                           "parity | ED (BH76, W4-11, combined)")
+                           "error | ED (BH76, W4-11, combined)")
         fig.tight_layout(rect=(0, 0.085, 1, 0.90))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
+_PARITY_BY_CHANNEL_DFS_UNITS_CAVEAT = (
+    "Per-species " + _EPS_N_SYM + " vs CCSD (DFS Eq. 20: "
+    + _EPS_N_EQ + " per species; quadrature "
+    "sum_i(w_i|rho-rho_ref|_i)/N_e), NN vs the "
+    "model-free PBE baseline on the same grid; below the diagonal = the NN "
+    "density is closer to CCSD. One shared square frame across the three "
+    "channel panels; overlap species appear in both single-pool panels.")
+
+
+def plot_density_parity_by_channel(rows: List[Dict[str, Any]],
+                                   hd_rows: List[Dict[str, Any]],
+                                   out_path: Path, run_id: str, *,
+                                   pbe_table: Optional[Dict[str, Dict[
+                                       str, float]]] = None,
+                                   nn_key: str = "density_rmse",
+                                   pbe_key: str = "density_rmse_pbe",
+                                   unit_label: str = "density RMSE",
+                                   note: str = "",
+                                   provenance: Optional[str] = None,
+                                   caveat: Optional[str] = None,
+                                   dataset: Optional[str] = None,
+                                   title: Optional[str] = None) -> Path:
+    """Per-species NN-vs-PBE density parity, one panel per channel
+    (BH76 | W4-11 | combined species; membership from the reactions'
+    reactants+products via ``_species_pools``, overlap species in both
+    single-pool panels), all three panels in ONE shared square frame (the
+    pooled positive envelope) so the channels are directly comparable --
+    the 3x3's former parity row promoted to its own figure. ``nn_key`` /
+    ``pbe_key`` / ``unit_label`` select the error channel exactly as in
+    ``_density_parity_panel``."""
+    pools_of = _species_pools(rows)
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=pbe_key)
+    # one shared square envelope over ALL species (the combined panel's
+    # superset): identical x and y limits on every panel
+    row_pairs: List[float] = []
+    for r in hd_rows:
+        x = pbe_mol.get(r.get("molecule"))
+        y = r.get(nn_key)
+        if _is_num(x) and x > 0.0 and _is_num(y) and y > 0.0:
+            row_pairs.extend((float(x), float(y)))
+    row_limits = ((0.8 * min(row_pairs), 1.25 * max(row_pairs))
+                  if row_pairs else None)
+    with plt.rc_context(_STYLE):
+        fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.6), squeeze=False)
+        chans = (("bh76", "BH76"), ("w411", "W4-11"),
+                 ("combined", "combined"))
+        for j, (ch, lab) in enumerate(chans):
+            ax = axes[0][j]
+            if ch == "combined":
+                hd_ch, pbe_ch = hd_rows, pbe_mol
+            else:
+                hd_ch = [r for r in hd_rows
+                         if ch in pools_of.get(r.get("molecule"), ())]
+                pbe_ch = {m: v for m, v in pbe_mol.items()
+                          if ch in pools_of.get(m, ())}
+            _density_parity_panel(ax, hd_ch, pbe_ch, nn_key=nn_key,
+                                  unit_label=unit_label, limits=row_limits)
+            ax.set_title(f"({'ABC'[j]}) {lab} species -- "
+                         + ax.get_title(), fontsize=9)
+        _stamp_parity_footer(
+            fig, run_id=run_id, note=note, provenance=provenance,
+            caveat=caveat or _HOLDOUT_DENSITY_CAVEAT, dataset=dataset,
+            title=title or "Per-species density parity by channel -- "
+                           "held-out, NN vs PBE")
+        fig.tight_layout(rect=(0, 0.08, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -4975,7 +5069,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 eps_prov = (
                     "Energy legs: 2-subset WTMAD-2 (BH76+W4-11 labeled "
                     "reweighting, NOT full GMTKN55) in BOTH line panels. "
-                    "Density leg: the Letter's Eq. 20 per-electron L1 vs "
+                    "Density leg: " + _EPS_N_SYM + " (DFS Eq. 20) vs "
                     "CCSD references at matching basis/grid. CCSD (not "
                     "CCSD(T)) references.")
                 written.append(plot_combined_energy_density(
@@ -4984,22 +5078,22 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     run_id, note="  ".join(eps_extra), provenance=eps_prov,
                     caveat=_ED_DFS_UNITS_CAVEAT, dataset=ds,
                     panel_titles=(
-                        "ED (DFS units), $\\gamma$ = "
+                        _ED_N_SYM + ", $\\gamma$ = "
                         f"{_DFS_GAMMA_KCAL:g} (published)",
-                        "ED (DFS units), $\\gamma$ = own-axes "
+                        _ED_N_SYM + ", $\\gamma$ = own-axes "
                         "nonempirical fit"),
                     second_leg_placeholder=(
                         "own-axes $\\gamma$ unavailable\n(no nonempirical "
                         "pool cache next to the run dir)"),
-                    title="Combined ED in DFS units (Eq. 21 on Eq. 20 eps) "
-                          "-- held-out, NN vs PBE"))
+                    title=f"Combined {_ED_N_SYM} (DFS Eq. 21 on "
+                          f"{_EPS_N_SYM}) -- held-out, NN vs PBE"))
                 written.append(plot_ed_decomposition(
                     op_summary,
                     outdir / "ablation_ed_decomposition_dfs_units.png",
                     run_id, note="  ".join(eps_extra), provenance=eps_prov,
                     caveat=_ED_DFS_UNITS_CAVEAT, dataset=ds,
-                    title="ED decomposition in DFS units (Eq. 21 on "
-                          "Eq. 20 eps) -- held-out, NN vs PBE"))
+                    title=f"{_ED_N_SYM} decomposition (DFS Eq. 21 on "
+                          f"{_EPS_N_SYM}) -- held-out, NN vs PBE"))
                 # DFS-units twins of the composite ED surfaces: the held-out
                 # overview (E/F under the operative gamma, D parity in eps
                 # units) and the per-channel 3x3 (row 3 under ONE shared
@@ -5014,16 +5108,17 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     provenance=(
                         "Held-out overview, DFS units. A/B: one-bucket "
                         "WTMAD-2 reduction per pool; C: 2-subset WTMAD-2. "
-                        "D: per-species Eq. 20 eps parity vs CCSD refs, PBE "
-                        "model-free. E/F: ED with the gamma stamped "
-                        "in-panel -- full diagnostics on "
+                        "D: per-species " + _EPS_N_SYM + " (DFS Eq. 20) "
+                        "parity vs CCSD refs, PBE model-free. E/F: "
+                        + _ED_N_SYM + " with the gamma stamped in-panel -- "
+                        "full diagnostics on "
                         "ablation_combined_energy_density_dfs_units.png."),
                     caveat=_HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT, dataset=ds,
                     parity_nn_key="density_eps_l1",
                     parity_pbe_key="density_eps_l1_pbe",
-                    parity_unit_label="Eq. 20 eps",
-                    title="Held-out overview (DFS units): WTMAD-2 by pool + "
-                          "eps density vs CCSD + ED"))
+                    parity_unit_label=_EPS_N_SYM,
+                    title="Held-out overview (DFS units): WTMAD-2 by pool "
+                          f"+ {_EPS_N_SYM} vs CCSD + {_ED_N_SYM}"))
                 ch_eps_dfs = channel_ed_summaries(
                     rows, hd_rows, pbe_table, fixed_gamma=_DFS_GAMMA_KCAL,
                     gamma_source="DFS published",
@@ -5042,19 +5137,34 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     ch_summaries=(ch_eps_fit if fit_ok else ch_eps_dfs),
                     note="  ".join(eps_extra),
                     provenance=(
-                        "Channels: pool-filtered reactions (energy legs) and "
-                        "species-membership-filtered densities (overlap "
-                        "species in both channels). Density leg: the "
-                        "Letter's Eq. 20 per-electron L1 vs CCSD; ONE gamma "
-                        "shared by all channels, stamped in each ED panel."),
+                        "Channels: pool-filtered reactions (energy legs) "
+                        "and species-membership-filtered densities (overlap "
+                        "species in both channels). Density rows: "
+                        + _EPS_N_SYM + " (DFS Eq. 20) vs CCSD; ONE gamma "
+                        "shared by all channels, stamped in each panel."),
                     caveat=_3X3_DFS_UNITS_CAVEAT, dataset=ds,
-                    parity_nn_key="density_eps_l1",
-                    parity_pbe_key="density_eps_l1_pbe",
-                    parity_unit_label="Eq. 20 eps",
+                    density_nn_key="density_eps_l1",
+                    density_pbe_key="density_eps_l1_pbe",
+                    density_unit_label=_EPS_N_SYM,
                     ed_gamma_label="",
-                    ed_as_bars=True,
                     title="Per-channel held-out story (DFS units): WTMAD-2 "
-                          "| eps parity | ED (BH76, W4-11, combined)"))
+                          f"| {_EPS_N_SYM} | {_ED_N_SYM} "
+                          "(BH76, W4-11, combined)"))
+                written.append(plot_density_parity_by_channel(
+                    rows, hd_rows,
+                    outdir
+                    / "ablation_density_parity_by_channel_dfs_units.png",
+                    run_id, pbe_table=pbe_table,
+                    nn_key="density_eps_l1", pbe_key="density_eps_l1_pbe",
+                    unit_label=_EPS_N_SYM, note="  ".join(eps_extra),
+                    provenance=(
+                        "Per-species " + _EPS_N_SYM + " (DFS Eq. 20) vs "
+                        "CCSD references at matching basis/grid; PBE "
+                        "model-free on the same grid. Channel membership "
+                        "from the reactions' reactants+products."),
+                    caveat=_PARITY_BY_CHANNEL_DFS_UNITS_CAVEAT, dataset=ds,
+                    title="Per-species " + _EPS_N_SYM + " parity by "
+                          "channel (DFS units) -- held-out, NN vs PBE"))
                 pools_of_eps = _species_pools(rows)
                 legs3_eps: Dict[str, Optional[Dict[str, Any]]] = {}
                 counts3_eps: Dict[str, Tuple[Dict, Dict]] = {}
@@ -5082,8 +5192,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 print("  (no Eq. 20 eps columns / positive eps PBE anchor in "
                       "this pull -- skipping the DFS-units ED legs and the "
                       "_dfs_units figure twins (combined ED, decomposition, "
-                      "overview, 3x3 + CSV); a stale file from a prior "
-                      "render persists, as with the holdout density figure)")
+                      "overview, 3x3 + CSV, parity-by-channel); a stale "
+                      "file from a prior render persists, as with the "
+                      "holdout density figure)")
             csv_path = write_combined_ed_csv(
                 legs_main,
                 outdir / "ablation_combined_energy_density.csv",
@@ -5144,6 +5255,16 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             legs3, outdir / "ablation_density_energy_3x3.csv",
             n_reactions={}, n_density={}, counts_by_leg=counts3)
         print(f"  (per-channel ED: wrote {csv3})")
+        # the 3x3's former parity row as its own figure (RMSE channel)
+        written.append(plot_density_parity_by_channel(
+            rows, hd_rows,
+            outdir / "ablation_density_parity_by_channel.png", run_id,
+            pbe_table=pbe_table, note=note,
+            provenance=("Per-species grid-weighted density RMSE vs CCSD "
+                        "references at matching basis/grid; PBE model-free "
+                        "on the same grid. Channel membership from the "
+                        "reactions' reactants+products."),
+            dataset=ds))
     else:
         print("  (no held-out density data -- skipping "
               "ablation_holdout_density_ccsd.png; needs benchmark CCSD refs)")

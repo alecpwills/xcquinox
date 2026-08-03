@@ -14,8 +14,10 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 | `ablation_combined_energy_density_dfs_units.png` | The ED parity in DFS units: Eq. 20 eps density leg, gamma fixed (published / own-axes fit); eps pulls only |
 | `ablation_density_energy_overview.png` | One-canvas held-out story: per-pool WTMAD-2 + density parity + iso-ED + ED |
 | `ablation_density_energy_overview_dfs_units.png` | The overview with panels D/E/F in DFS units (eps parity, ED under the operative gamma stamped in-panel); eps pulls only |
-| `ablation_density_energy_3x3.png` (+ `.csv`) | Per-channel 3x3: WTMAD-2 / density parity / ED for BH76, W4-11, combined |
-| `ablation_density_energy_3x3_dfs_units.png` (+ `.csv`) | The 3x3 with eps parity (row-shared frame) and per-channel ED bars under ONE shared gamma (stamped in-panel); eps pulls only |
+| `ablation_density_energy_3x3.png` (+ `.csv`) | Per-channel 3x3, ALL BARS: WTMAD-2 / density RMSE / ED for BH76, W4-11, combined |
+| `ablation_density_energy_3x3_dfs_units.png` (+ `.csv`) | The all-bars 3x3 in DFS units: eps density bars + per-channel ED bars under ONE shared gamma (stamped in-panel); eps pulls only |
+| `ablation_density_parity_by_channel.png` | Per-species NN-vs-PBE density-RMSE parity by channel (one shared frame) -- the 3x3's former parity row |
+| `ablation_density_parity_by_channel_dfs_units.png` | The per-channel parity in eps units (shared frame); eps pulls only |
 | `ablation_ed_decomposition.png` | The iso-ED decomposition as its own enriched canvas |
 | `ablation_ed_decomposition_dfs_units.png` | The enriched decomposition under the operative DFS-units gamma (Eq. 20 eps units, stamped in-panel); eps pulls only |
 | `ablation_insample_overview.png` | One-canvas in-sample story: AE + density (training fit) |
@@ -156,12 +158,13 @@ whenever the calibration cache resolves next to the run dir -- the calibration p
 on this data's axes -- with the Letter's published 1084.87 only as the fallback; the
 value and its source are stamped top-right in each ED panel, and the CSV carries BOTH
 families, `<channel>_wtmad2_eps_gamma_dfs` (published) and
-`<channel>_wtmad2_eps_gamma_fit` (own-axes, cache present). Row 3 renders as the same
-grouped per-(arch, subset_size) bars as the WTMAD-2 row; the twin's caveat line 1 spells
-out the single-pool "one-bucket" reduction, 56.84*MAD_pool/mean|dE_ref|_pool. All
-per-species parity panels use square log limits -- own-data envelope on the single-panel
-figures, and ONE row-shared frame across the 3x3's three channel panels so they are
-directly comparable).
+`<channel>_wtmad2_eps_gamma_fit` (own-axes, cache present). The twin is ALL BARS: row 2 =
+per-channel cell-mean epsilon_|n| bars (PBE dashed at the channel anchor), row 3 = the
+combined-metric bars; its caveat line 1 spells out the single-pool "one-bucket"
+reduction, 56.84*MAD_pool/mean|dE_ref|_pool, and line 2 the metric and density-error
+equations in the paper's notation. The per-species parity view lives in
+`ablation_density_parity_by_channel_dfs_units.png` -- three channel panels in ONE shared
+square frame (own-data envelopes remain on the single-panel parity figures)).
 The panel bodies are the shared `gamma_mode`-aware ones, so the self-calibration claims
 (ED_PBE = E_PBE, PBE-on-y=x) never appear on these figures; the gamma stamp reads
 "(fixed, external)" and the caveats state the Eq. 20 units and the gamma source. The eps
@@ -295,15 +298,24 @@ whenever the held-out density figure renders.
 | Row | Content |
 |---|---|
 | 1 (A/B/C) | WTMAD-2 bars per (arch, subset_size): A/B are the one-bucket reduction of Sec. 2.2 (titles say so), C the genuine 2-subset form -- the overview's energy row |
-| 2 (D/E/F) | Per-species NN-vs-PBE density parity restricted to that channel's species. Species-channel membership comes from the reactions' reactants+products (`_species_pools`, :2278); overlap species contribute to BOTH channels (stated in the caveat) |
-| 3 (G/H/I) | The DFS Eq. 21 ED per channel (`channel_ed_summaries`, :2294): the energy leg is that channel's WTMAD-2 form, the density leg that channel's species, and the panel-title "own gamma" means gamma = E_PBE/D_PBE computed from THAT CHANNEL'S OWN PBE anchors (the value is printed inside each panel) -- so ED_PBE == E_PBE per channel and EDs compare within a panel, never across channels. Grey placeholder when a channel's anchors are missing |
+| 2 (D/E/F) | Density-error BARS per (arch, subset_size): the cell-mean error on the figure's density channel (RMSE here; eps on the DFS-units twin) restricted to that channel's species, PBE dashed at the channel's deduplicated per-molecule anchor, beats-PBE marks = lower error than PBE. Species-channel membership comes from the reactions' reactants+products (`_species_pools`); overlap species contribute to BOTH channels (stated in the caveat). The bar heights equal the ED legs' D column in the companion CSV |
+| 3 (G/H/I) | The DFS Eq. 21 combined metric per channel as BARS (`channel_ed_summaries`): the energy leg is that channel's WTMAD-2 form, the density leg that channel's species, and the panel-title "own gamma" means gamma = E_PBE/D_PBE computed from THAT CHANNEL'S OWN PBE anchors (value stamped in each panel) -- so PBE's value == E_PBE per channel and the metric never compares across channels (the DFS-units twin's SHARED gamma does). Grey placeholder when a channel's anchors are missing |
+
+The whole figure is bar charts; the per-species parity view lives in
+`ablation_density_parity_by_channel[_dfs_units].png` (one shared square frame across the
+three channel panels, so the channels are directly comparable).
 
 The companion `ablation_density_energy_3x3.csv` reuses the Sec. 4.5 schema with legs
 `bh76_wtmad2` / `w411_wtmad2` / `combined_wtmad2` and per-channel `n_reactions` /
 `n_density_species` counts (each channel counts only its own pool's rows/species).
 Older pulls whose `per_reaction.json` predates the species lists (no
 `reactants`/`products`) cannot map species to channels: the single-pool columns then
-render placeholders/empty parity panels while the combined column stays intact.
+render placeholders/empty panels while the combined column stays intact.
+
+Figure text uses the DFS paper's notation: the combined metric is the calligraphic ED
+(with the |n| subscript on the eps-leg figures, matching the Letter's Eq. 21 / Table I),
+and the per-electron density error is epsilon_|n| with its defining integral shown in the
+eps caveats (Eq. 20). CSV column names keep the ASCII schema of Sec. 4.5.
 
 ### 4.8 `ablation_ed_decomposition.png` (`plot_ed_decomposition`, :3077)
 

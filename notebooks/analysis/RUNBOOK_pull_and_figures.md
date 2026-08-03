@@ -163,15 +163,18 @@ BH76 | W4-11 | combined, each channel's ED gamma self-calibrated from its own
 PBE anchors, with `ablation_density_energy_3x3.csv` alongside), and the
 enriched combined-channel standalone `ablation_ed_decomposition.png` (iso-ED
 contour family, beats-PBE shading, per-arch subset trajectories) rides the
-stricter ED-anchor gate of the ED figure. When the pull additionally carries
-the Eq. 20 eps columns (Sec. 4), both dirs gain the DFS-units twins of all
-four ED surfaces -- `ablation_combined_energy_density_dfs_units.png`,
+stricter ED-anchor gate of the ED figure; the standalone per-channel parity
+`ablation_density_parity_by_channel.png` (the 3x3's former parity row,
+three channel panels in one shared frame) rides the same gate. When the
+pull additionally carries the Eq. 20 eps columns (Sec. 4), both dirs gain
+the DFS-units twins -- `ablation_combined_energy_density_dfs_units.png`,
 `ablation_ed_decomposition_dfs_units.png`,
-`ablation_density_energy_overview_dfs_units.png`, and
-`ablation_density_energy_3x3_dfs_units.png` + `.csv` (fixed gamma, eps
-density legs and parity panels, coverage disclosures stamped in the note
-band; the 3x3 twin's shared gamma makes its EDs comparable across
-channels). The held-out figures carry
+`ablation_density_energy_overview_dfs_units.png`,
+`ablation_density_energy_3x3_dfs_units.png` + `.csv` (ALL BARS: eps
+density-error row + combined-metric row under one shared gamma, stamped
+in-panel), and `ablation_density_parity_by_channel_dfs_units.png`;
+coverage disclosures stamped in the note bands; the 3x3 twin's shared
+gamma makes its combined metric comparable across channels. The held-out figures carry
 a dataset footer line stating what the held-out eval is (live name-dedup
 reaction counts per pool + density species coverage); the energy figures
 carry the reactions clause too, and the full-pool PBE/SCAN baselines in the
@@ -250,14 +253,15 @@ dir -- plus DFS-units twins of every ED surface:
 own-axes-fit panel when the cache resolves, placeholder otherwise),
 `ablation_ed_decomposition_dfs_units.png`,
 `ablation_density_energy_overview_dfs_units.png`, and
-`ablation_density_energy_3x3_dfs_units.png` + `.csv` (per-channel eps legs
-under one shared gamma -- the own-axes fit when the calibration cache
-resolves, the published slope otherwise, stamped in-panel; the CSV carries
-both), each with the eps coverage disclosures
-stamped in its note band (partially-covered pulls name the missing cells on
-the figure). Pulls without the columns produce byte-identical artifacts;
-the skipped `_dfs_units` twins are announced with the standard stale-file
-warning.
+`ablation_density_energy_3x3_dfs_units.png` + `.csv` (all bars; per-channel
+eps legs under one shared gamma -- the own-axes fit when the calibration
+cache resolves, the published slope otherwise, stamped in-panel; the CSV
+carries both), and `ablation_density_parity_by_channel_dfs_units.png`
+(per-species eps parity, shared frame) -- each with the eps coverage
+disclosures stamped in its note band (partially-covered pulls name the
+missing cells on the figure). Pulls without the columns produce
+byte-identical artifacts; the skipped `_dfs_units` twins are announced with
+the standard stale-file warning.
 
 **DEPLOYMENT GATE:** `xcquinox/alec/evaluation.py` and
 `xcquinox/alec/eval_holdout.py` are live-imported by a running sweep's eval
