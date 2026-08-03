@@ -616,6 +616,21 @@ def _save_artifacts(spec, model, losses, aux_log, duration, best_model=None,
         "atom_energies": spec.atom_energies_dict,
         "loss_metric": spec.loss_metric,
         "balancing": spec.balancing.describe() if spec.balancing is not None else None,
+        # Runtime weighting truth: the nominal loss_kwargs pre-scales and the
+        # configured balancing block above are NOT what the per-molecule loop
+        # applies -- it ignores the balancer and weights the RAW channels with
+        # the fixed effective_channel_weights (pre-scales forced to 1.0). See
+        # notebooks/analysis/LOSS_PRIMER.md.
+        "update_scheme": getattr(spec, "update_scheme", "batched"),
+        "balancing_active": (
+            getattr(spec, "update_scheme", "batched") != "per_molecule"
+            and spec.balancing is not None
+        ),
+        "effective_channel_weights": (
+            _effective_channel_weights(spec.channel_weights_dict)
+            if getattr(spec, "update_scheme", "batched") == "per_molecule"
+            else None
+        ),
         "final_loss": float(losses_np[-1]) if len(losses_np) > 0 else float("nan"),
         "min_loss": float(np.min(losses_np)) if len(losses_np) > 0 else float("nan"),
         "has_best_checkpoint": best_model is not None,

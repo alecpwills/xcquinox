@@ -499,9 +499,14 @@ def _rxn_residual_term(
     Used by the BH76 task channel of L5_gradnorm_vxc_step7. In Dick &
     Fernandez-Serra PRB 104 L161109 (2021) the 0.01 factor is lambda_E,
     the weight on total energies L_E; BH76/atomization energies enter L_RE
-    at weight 1 and density L_n at weight 20. Step-7 lets GradNorm (Chen et
-    al. 2018, arXiv:1711.02257; alpha=1.5 default) discover task weights
-    adaptively rather than hard-coding any fixed scaling.
+    at weight 1 and density L_n at weight 20. Channel weighting depends on
+    the update scheme: under ``update_scheme="batched"`` GradNorm (Chen et
+    al. 2018, arXiv:1711.02257; alpha=1.5 default) discovers task weights
+    adaptively, but the production per-molecule scheme (the cluster
+    default) ignores the balancer and applies the fixed density-dominant
+    weights {AE 1, BH76 1, IP13 1, vxc 1, rho 20}
+    (train._DEFAULT_CHANNEL_WEIGHTS) -- the Letter's 1/20 structure. See
+    notebooks/analysis/LOSS_PRIMER.md.
     """
     if step_w2 is None:
         e_rxn = jnp.sum(coeffs * e_nn)
@@ -1021,10 +1026,16 @@ class L5GradnormVxcStep7(AlecLoss):
 
     In Dick & Fernandez-Serra PRB 104 L161109 (2021) the 0.01 factor is
     lambda_E, the weight on total energies L_E; BH76/atomization energies
-    enter L_RE at weight 1 and density L_n at weight 20. Step-7 lets
-    GradNorm (Chen et al. 2018, arXiv:1711.02257; alpha=1.5 default at
-    xcquinox/alec/balancing.py:55) discover task weights adaptively
-    rather than hard-coding any fixed scaling.
+    enter L_RE at weight 1 and density L_n at weight 20. How the five
+    channels are weighted depends on the training loop: the batched scheme
+    balances them with GradNorm (Chen et al. 2018, arXiv:1711.02257;
+    alpha=1.5 default at xcquinox/alec/balancing.py:55), while the
+    per-molecule scheme -- the cluster default used by every dfs_step7
+    production run -- ignores the balancer and applies the fixed
+    density-dominant channel weights {AE 1, BH76 1, IP13 1, vxc 1, rho 20}
+    (train._DEFAULT_CHANNEL_WEIGHTS), i.e. the Letter's lambda_RE=1 /
+    lambda_n=20 structure; the vxc_weight/density_weight pre-scales below
+    are forced to 1.0 there. See notebooks/analysis/LOSS_PRIMER.md.
 
     Constructor arguments
     ---------------------

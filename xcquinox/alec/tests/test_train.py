@@ -668,33 +668,76 @@ def test_per_molecule_loop_early_stops_and_writes_val_best(
         assert on_disk["epochs_run"] == 2
 
 
-# The EXACT train_metadata.json key set produced BEFORE WS3 (no validation).
-# FIX 3 (WS3-ESV-1): a non-validating run must produce byte-identically this
-# key set -- no has_val_best_checkpoint, no early_stopped/epochs_run/val_* keys.
-_PRE_WS3_METADATA_KEYS = frozenset({
+# The base train_metadata.json key set for a non-validating run: the pre-WS3
+# set (FIX 3, WS3-ESV-1: no has_val_best_checkpoint, no
+# early_stopped/epochs_run/val_* keys) plus the runtime-weighting truth keys
+# (update_scheme / balancing_active / effective_channel_weights -- added so
+# the artifact reports the weights the loop ACTUALLY applied, not only the
+# nominal loss_kwargs/balancing config; see notebooks/analysis/LOSS_PRIMER.md).
+_BASE_METADATA_KEYS = frozenset({
     "arch_name", "use_polarized_correlation", "loss_name", "loss_kwargs",
     "solver_config", "n_steps", "lr_start", "lr_end", "lr_decay_start",
     "grad_clip", "pretrain_checkpoint", "molecules", "targets",
     "atom_energies", "loss_metric", "balancing", "final_loss", "min_loss",
     "has_best_checkpoint", "timestamp", "duration_seconds",
+    "update_scheme", "balancing_active", "effective_channel_weights",
 })
 
 
 def test_save_artifacts_metadata_byte_identical_when_no_validation():
     """FIX 3 (WS3-ESV-1): _save_artifacts with no val_best snapshot + no
     extra_metadata (the per_molecule-with-validate_every=0 / batched case)
-    writes train_metadata.json with the PRE-WS3 key set -- no
-    has_val_best_checkpoint, no val_* keys. Byte-identical to pre-WS3."""
+    writes train_metadata.json with the base key set -- no
+    has_val_best_checkpoint, no val_* keys."""
     spec = _make_training_spec(update_scheme="per_molecule")
     from xcquinox.alec.train import _save_artifacts
     meta = _save_artifacts(
         spec, _make_arch(), [0.5, 0.4, 0.3], [], 1.0,
         best_model=None, val_best_model=None, extra_metadata=None)
-    assert set(meta) == set(_PRE_WS3_METADATA_KEYS)
+    assert set(meta) == set(_BASE_METADATA_KEYS)
     assert "has_val_best_checkpoint" not in meta
     with open(os.path.join(spec.checkpoint_dir, "train_metadata.json")) as f:
         on_disk = json.load(f)
-    assert set(on_disk) == set(_PRE_WS3_METADATA_KEYS)
+    assert set(on_disk) == set(_BASE_METADATA_KEYS)
+
+
+def test_metadata_records_runtime_weighting_truth():
+    """The artifact must report the weights the loop ACTUALLY applies: a
+    per-molecule spec CARRYING A CONFIGURED GradNorm block (the production
+    shape: spec_builder always bakes one) records
+    update_scheme='per_molecule', balancing_active=False -- the balancer is
+    written but never consulted there -- and the fixed density-dominant
+    effective channel weights {AE 1, BH76 1, IP13 1, vxc 1, rho 20}; the
+    same block under 'batched' records balancing_active=True and no
+    effective weights (GradNorm's are learned, logged per step)."""
+    from xcquinox.alec.balancing import GradNormConfig
+    from xcquinox.alec.train import _save_artifacts
+    spec = _make_training_spec(update_scheme="per_molecule",
+                               balancing=GradNormConfig(alpha=1.5))
+    meta = _save_artifacts(
+        spec, _make_arch(), [0.5], [], 1.0,
+        best_model=None, val_best_model=None, extra_metadata=None)
+    assert meta["update_scheme"] == "per_molecule"
+    assert meta["balancing"] is not None      # configured ...
+    assert meta["balancing_active"] is False  # ... but dormant
+    assert meta["effective_channel_weights"] == {
+        "loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0,
+        "loss_vxc": 1.0, "loss_rho": 20.0}
+    spec_b = _make_training_spec(update_scheme="batched",
+                                 balancing=GradNormConfig(alpha=1.5))
+    meta_b = _save_artifacts(
+        spec_b, _make_arch(), [0.5], [], 1.0,
+        best_model=None, val_best_model=None, extra_metadata=None)
+    assert meta_b["update_scheme"] == "batched"
+    assert meta_b["balancing_active"] is True
+    assert meta_b["effective_channel_weights"] is None
+    # a scheme-blind `balancing is not None` implementation cannot satisfy
+    # both legs above; nor can a balancer-blind one
+    spec_n = _make_training_spec(update_scheme="batched")
+    meta_n = _save_artifacts(
+        spec_n, _make_arch(), [0.5], [], 1.0,
+        best_model=None, val_best_model=None, extra_metadata=None)
+    assert meta_n["balancing_active"] is False   # batched, no balancer
 
 
 def test_save_artifacts_adds_val_keys_only_when_validation_ran():
