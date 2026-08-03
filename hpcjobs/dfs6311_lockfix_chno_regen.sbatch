@@ -131,8 +131,12 @@ rc=$?
 [ "$rc" -eq 0 ] || { echo "[lockfix] FATAL: precompute_all exited rc=$rc"; exit "$rc"; }
 
 # --- verification ------------------------------------------------------------
+# --no-verdict: the probe's verdict diagnoses a LIVE cache. Against staging it
+# would report "all stamped -> regeneration will not help", which is trivially
+# true of a directory we just regenerated and says nothing about the deployed
+# state. The authoritative check here is the explicit gate below.
 echo "[lockfix] staged result (expect CH and NO: LOCK KEY PRESENT = 3e-05):"
-python "$REPO/hpcjobs/dfs6311_lock_stamp_probe.py" "$STAGE"
+python "$REPO/hpcjobs/dfs6311_lock_stamp_probe.py" --no-verdict "$STAGE"
 rc=$?
 [ "$rc" -eq 0 ] || { echo "[lockfix] FATAL: probe exited rc=$rc"; exit "$rc"; }
 

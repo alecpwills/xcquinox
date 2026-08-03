@@ -141,13 +141,24 @@ def verdict(found):
 
 
 def main(argv):
-    bases = tuple(argv[1:]) or DEFAULT_REFS
+    # The verdict interprets a LIVE reference cache (is the deployed state
+    # defective?). Against a freshly regenerated staging directory it is a
+    # false read by construction -- everything there is stamped because it was
+    # just written -- so callers verifying staged output pass --no-verdict and
+    # rely on their own gate instead.
+    args = [a for a in argv[1:] if a != "--no-verdict"]
+    show_verdict = "--no-verdict" not in argv[1:]
+    bases = tuple(args) or DEFAULT_REFS
     training = {}
     for i, base in enumerate(bases):
         found = probe_dir(base)
         if i == 0:
             training = found
-    verdict(training)
+    if show_verdict:
+        verdict(training)
+    else:
+        print("\n(verdict suppressed: --no-verdict; this listing is a staged "
+              "verification, not a diagnosis of the deployed cache)")
     return 0
 
 
