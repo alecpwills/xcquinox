@@ -10,10 +10,12 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 | `ablation_holdout_density_ccsd.png` | Held-out density GENERALIZATION vs CCSD, NN vs PBE (trend + parity) |
 | `ablation_holdout_density_per_arch.png` | The per-arch held-out density trend alone (standalone) |
 | `ablation_combined_energy_density.png` | DFS Eq. 21 combined energy-density metric ED, per cell |
-| `ablation_combined_energy_density.csv` | Machine-readable per-cell ED table (both energy legs) |
+| `ablation_combined_energy_density.csv` | Machine-readable per-cell ED table (all energy legs) |
+| `ablation_combined_energy_density_dfs_units.png` | The ED parity in DFS units: Eq. 20 eps density leg, gamma fixed (published / own-axes fit); eps pulls only |
 | `ablation_density_energy_overview.png` | One-canvas held-out story: per-pool WTMAD-2 + density parity + iso-ED + ED |
 | `ablation_density_energy_3x3.png` (+ `.csv`) | Per-channel 3x3: WTMAD-2 / density parity / ED for BH76, W4-11, combined |
 | `ablation_ed_decomposition.png` | The iso-ED decomposition as its own enriched canvas |
+| `ablation_ed_decomposition_dfs_units.png` | The enriched decomposition under the published DFS gamma (Eq. 20 eps units); eps pulls only |
 | `ablation_insample_overview.png` | One-canvas in-sample story: AE + density (training fit) |
 
 The intended use mirrors the multimode figure glossary: open the figure on one screen and
@@ -136,6 +138,19 @@ basis, grid, and reference level); the published constant transplants the Letter
 the fitted one reproduces its procedure. Both legs are strictly additive -- pulls without
 the eps columns produce byte-identical CSVs, and the self-calibrated legs above remain the
 headline for relative-to-PBE claims.
+
+The DFS-units legs also render as figures: `ablation_combined_energy_density_dfs_units.png`
+(panel (a) the ED lines under the published gamma, (b) the (E, gamma*D) decomposition, (c)
+the own-axes-fit leg when the calibration cache sits in the run dir, a labeled placeholder
+otherwise) and `ablation_ed_decomposition_dfs_units.png` (the enriched decomposition under
+the published gamma). The panel bodies are the shared `gamma_mode`-aware ones, so the
+self-calibration claims (ED_PBE = E_PBE, PBE-on-y=x) never appear on these figures; the
+gamma stamp reads "(fixed, external)" and the caveat states the Eq. 20 units and both gamma
+sources. The eps coverage disclosures (partial-backfill cell listing, eps-anchor-vs-union,
+eps cell-species homogeneity) are stamped into the note band of BOTH figures in addition to
+the console -- on a partially-covered pull the missing cells are named on the figure itself.
+Pulls without the eps columns skip both figures with a console line carrying the suite's
+standard stale-file warning (a `_dfs_units` PNG left by a prior eps render persists).
 
 Supporting rules, all fail-loud: cells lacking a finite value in either leg are excluded and
 named in the note band (`_ed_exclusion_note`, :2166); the PBE density anchor deduplicates

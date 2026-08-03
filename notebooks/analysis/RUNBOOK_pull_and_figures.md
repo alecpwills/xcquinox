@@ -163,7 +163,11 @@ BH76 | W4-11 | combined, each channel's ED gamma self-calibrated from its own
 PBE anchors, with `ablation_density_energy_3x3.csv` alongside), and the
 enriched combined-channel standalone `ablation_ed_decomposition.png` (iso-ED
 contour family, beats-PBE shading, per-arch subset trajectories) rides the
-stricter ED-anchor gate of the ED figure. The held-out figures carry
+stricter ED-anchor gate of the ED figure. When the pull additionally carries
+the Eq. 20 eps columns (Sec. 4), both dirs gain the DFS-units parity twins
+`ablation_combined_energy_density_dfs_units.png` and
+`ablation_ed_decomposition_dfs_units.png` (fixed gamma, eps density leg,
+coverage disclosures stamped in the note band). The held-out figures carry
 a dataset footer line stating what the held-out eval is (live name-dedup
 reaction counts per pool + density species coverage); the energy figures
 carry the reactions clause too, and the full-pool PBE/SCAN baselines in the
@@ -237,7 +241,14 @@ columns are present in a pull, `ablation_combined_energy_density.csv` gains a
 `wtmad2_eps_gamma_dfs` leg (ED with the Letter's published gamma = 1084.87
 kcal/mol, dimensionally valid on eps units) -- and a `wtmad2_eps_gamma_fit`
 leg when the nonempirical calibration cache (below) sits in the pulled run
-dir. Pulls without the columns render byte-identically to before.
+dir -- plus the DFS-units parity figures
+`ablation_combined_energy_density_dfs_units.png` (published-gamma panel +
+own-axes-fit panel when the cache resolves, placeholder otherwise) and
+`ablation_ed_decomposition_dfs_units.png`, with the eps coverage disclosures
+stamped in their note band (partially-covered pulls name the missing cells
+on the figure). Pulls without the columns produce byte-identical artifacts;
+the skipped `_dfs_units` figures are announced with the standard stale-file
+warning.
 
 **DEPLOYMENT GATE:** `xcquinox/alec/evaluation.py` and
 `xcquinox/alec/eval_holdout.py` are live-imported by a running sweep's eval

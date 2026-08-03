@@ -1441,7 +1441,11 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     assert "ablation_density_energy_overview.png" in names2
     assert "ablation_density_energy_3x3.png" in names2
     assert "ablation_ed_decomposition.png" in names2
-    assert len(names2) == 10
+    # DFS-units twins ride along whenever the eps columns are present
+    # (the fixture writes them)
+    assert "ablation_combined_energy_density_dfs_units.png" in names2
+    assert "ablation_ed_decomposition_dfs_units.png" in names2
+    assert len(names2) == 12
     # the CSVs are written alongside but NEVER returned (return stays PNG-only)
     assert (out2 / "ablation_combined_energy_density.csv").is_file()
     assert (out2 / "ablation_density_energy_3x3.csv").is_file()
@@ -2120,6 +2124,136 @@ def test_build_discloses_eps_anchor_only_species(tmp_path, capsys):
     printed = capsys.readouterr().out
     assert "DFS-units ED eps anchor:" in printed and "OF2" in printed
     assert "DFS-units ED eps cells:" not in printed
+
+
+def test_build_dfs_units_png_notes_missing_cells(tmp_path, monkeypatch):
+    """Partial eps coverage: the DFS-units parity figure renders from the
+    FIXED-gamma summaries with the missing cells named in its note band (the
+    on-figure twin of the stdout disclosure), no fit panel without a pool
+    cache, and the fixed-gamma caveat instead of the self-calibration one."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    specs = sorted((run / "checkpoints").glob("spec_*"))
+    pm = specs[0] / "eval_holdout" / "per_molecule.json"
+    rows = json.loads(pm.read_text())
+    for r in rows:
+        r["density_eps_l1"] = None
+    pm.write_text(json.dumps(rows))
+    ed_calls, dec_calls = [], []
+
+    def ed_spy(wt_summary, mae_summary, out_path, run_id, **kw):
+        ed_calls.append((wt_summary, mae_summary, Path(out_path), kw))
+        Path(out_path).write_bytes(b"x" * 4096)
+        return Path(out_path)
+
+    def dec_spy(summary, out_path, run_id, **kw):
+        dec_calls.append((summary, Path(out_path), kw))
+        Path(out_path).write_bytes(b"x" * 4096)
+        return Path(out_path)
+
+    monkeypatch.setattr(fig, "plot_combined_energy_density", ed_spy)
+    monkeypatch.setattr(fig, "plot_ed_decomposition", dec_spy)
+    fig.build_density_energy_figures(run, tmp_path / "f")
+    dfs = [c for c in ed_calls if c[2].name
+           == "ablation_combined_energy_density_dfs_units.png"]
+    assert len(dfs) == 1
+    wt_s, fit_s, _, kw = dfs[0]
+    assert wt_s["gamma_mode"] == "fixed"
+    assert wt_s["gamma"] == pytest.approx(1084.87)
+    assert fit_s is None                    # no pool cache in the run dir
+    assert "eps columns cover" in kw["note"] and "missing" in kw["note"]
+    assert "deep" in kw["note"]             # the dropped cell is named
+    assert "NOT self-calibrated" in kw["caveat"]
+    assert "ED_PBE == E_PBE" not in kw["caveat"]
+    assert "published" in kw["panel_titles"][0]
+    dfs_dec = [c for c in dec_calls if c[1].name
+               == "ablation_ed_decomposition_dfs_units.png"]
+    assert len(dfs_dec) == 1
+    assert dfs_dec[0][0]["gamma_mode"] == "fixed"
+    assert "DFS units" in dfs_dec[0][2]["title"]
+    assert "eps columns cover" in dfs_dec[0][2]["note"]
+
+
+def test_build_dfs_units_png_absent_without_eps(tmp_path, capsys):
+    """Old-schema pulls (no eps columns anywhere) must NOT gain the DFS-units
+    figures -- the RMSE-channel ED family renders unchanged, and the skip is
+    disclosed with the stale-file warning (the suite's convention for every
+    gated figure)."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    for sd in (run / "checkpoints").glob("spec_*"):
+        pm = sd / "eval_holdout" / "per_molecule.json"
+        if not pm.is_file():
+            continue
+        rows = json.loads(pm.read_text())
+        for r in rows:
+            r["density_eps_l1"] = None
+            r["density_eps_l1_pbe"] = None
+        pm.write_text(json.dumps(rows))
+    out = tmp_path / "f"
+    names = {p.name for p in fig.build_density_energy_figures(run, out)}
+    assert "ablation_combined_energy_density.png" in names
+    assert "ablation_combined_energy_density_dfs_units.png" not in names
+    assert not (out
+                / "ablation_combined_energy_density_dfs_units.png").exists()
+    assert not (out / "ablation_ed_decomposition_dfs_units.png").exists()
+    printed = capsys.readouterr().out
+    assert "skipping the DFS-units ED legs" in printed
+    assert "a stale file from a prior render persists" in printed
+
+
+def test_build_dfs_units_fit_panel_with_cache(tmp_path, monkeypatch):
+    """A resolving nonempirical pool cache puts the own-axes-fit leg in panel
+    C of the DFS-units figure and its provenance line in the note band."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    monkeypatch.setattr(
+        fig, "nonempirical_gamma",
+        lambda run_dir, **kw: {"gamma": 900.0, "n_functionals": 6,
+                               "n_species": 5, "n_species_dropped": 1})
+    calls = []
+
+    def ed_spy(wt_summary, mae_summary, out_path, run_id, **kw):
+        calls.append((wt_summary, mae_summary, Path(out_path), kw))
+        Path(out_path).write_bytes(b"x" * 4096)
+        return Path(out_path)
+
+    monkeypatch.setattr(fig, "plot_combined_energy_density", ed_spy)
+    fig.build_density_energy_figures(run, tmp_path / "f")
+    dfs = [c for c in calls if c[2].name
+           == "ablation_combined_energy_density_dfs_units.png"]
+    assert len(dfs) == 1
+    _, fit_s, _, kw = dfs[0]
+    assert fit_s is not None and fit_s["gamma_mode"] == "fixed"
+    assert fit_s["gamma"] == pytest.approx(900.0)
+    assert "own-axes gamma = 900" in kw["note"]
+    assert "1 species dropped for unequal support" in kw["note"]
+
+
+def test_plot_combined_energy_density_dfs_units_renders(tmp_path):
+    """Real render of the DFS-units variant: fixed-gamma summaries with the
+    panel/placeholder/title overrides, both with and without the fit leg,
+    plus the decomposition twin's title override."""
+    dfs_s = fig.combined_ed_fixed_gamma(
+        {("deep", 1): 8.0, ("deep", 3): 5.0}, 10.0,
+        {("deep", 1): 0.004, ("deep", 3): 0.003}, 0.005, 1084.87)
+    fit_s = fig.combined_ed_fixed_gamma(
+        {("deep", 1): 8.0, ("deep", 3): 5.0}, 10.0,
+        {("deep", 1): 0.004, ("deep", 3): 0.003}, 0.005, 900.0)
+    p1 = fig.plot_combined_energy_density(
+        dfs_s, fit_s, tmp_path / "dfs_units.png", "run_x",
+        panel_titles=("published-gamma panel", "own-axes panel"),
+        second_leg_placeholder="no fit", title="DFS units")
+    assert _png_ok(p1)
+    p2 = fig.plot_combined_energy_density(
+        dfs_s, None, tmp_path / "dfs_units_nofit.png", "run_x",
+        panel_titles=("published-gamma panel", "own-axes panel"),
+        second_leg_placeholder="no fit", title="DFS units")
+    assert _png_ok(p2)
+    p3 = fig.plot_ed_decomposition(
+        dfs_s, tmp_path / "dfs_units_decomp.png", "run_x",
+        title="DFS-units decomposition")
+    assert _png_ok(p3)
 
 
 def test_pbe_anchor_coverage_warning_key_params():

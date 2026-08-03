@@ -2891,6 +2891,15 @@ _ED_CAVEAT = ("ED = 2/(1/E + 1/(gamma*D)) (Dick & Fernandez-Serra, PRB 104, "
               "regression slope, calibrated here on PBE alone), so "
               "ED_PBE == E_PBE by construction (dashed).")
 
+# kept near _ED_CAVEAT's length: the caveat renders as ONE figtext line and
+# savefig.bbox="tight" widens the canvas to the longest line
+_ED_DFS_UNITS_CAVEAT = (
+    "ED = 2/(1/E + 1/(gamma*D)) (Dick & Fernandez-Serra, PRB 104, L161109 "
+    "(2021), Eq. 21); D = the Letter's Eq. 20 per-electron L1, "
+    "sum(w|rho-rho_ref|)/N_e; gamma EXTERNALLY FIXED (published Fig. 3 "
+    "slope 1084.87 or own-axes nonempirical refit) -- NOT self-calibrated: "
+    "ED_PBE != E_PBE and PBE off y=x.")
+
 _HOLDOUT_OVERVIEW_CAVEAT = (
     "Single-pool 'WTMAD-2' (panels A, B) reduces to 56.84 * MAD_pool / "
     "mean|ref|_pool -- a scaled relative error, NOT a reweighting; only "
@@ -2910,8 +2919,9 @@ _INSAMPLE_OVERVIEW_CAVEAT = (
 
 def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
     """Per-arch ED vs subset_size lines with the dashed PBE line at
-    ``ed_pbe`` (== the energy anchor, by gamma self-calibration), green
-    beats-PBE markers, and the gamma stamp. Panel body shared by
+    ``ed_pbe`` (== the energy anchor under gamma self-calibration; a plain
+    PBE level under a fixed gamma -- labels and the gamma stamp branch on
+    ``gamma_mode``), green beats-PBE markers. Panel body shared by
     ``plot_combined_energy_density`` and ``plot_density_energy_overview``."""
     cells = summary["cells"]
     archs = arch_style.sort_by_rung(sorted({a for a, _ in cells}))
@@ -2947,11 +2957,12 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
 
 def _ed_decomposition_panel(ax, summary: Dict[str, Any]) -> None:
     """Per-cell decomposition in the (E, gamma*D) plane, log-log: dotted y=x
-    self-calibration locus (PBE sits on it exactly, grey x), thin iso-ED
-    harmonic contours at {0.5, 1, 2} x the PBE ED, subset_size digits on the
-    cell points; below the locus = density-limited, above = energy-limited.
-    Panel body shared by ``plot_combined_energy_density`` and
-    ``plot_density_energy_overview``."""
+    self-calibration locus (PBE sits on it exactly under self-calibration,
+    off it under a fixed gamma -- the label branches on ``gamma_mode``; grey
+    x), thin iso-ED harmonic contours at {0.5, 1, 2} x the PBE ED,
+    subset_size digits on the cell points; below the locus =
+    density-limited, above = energy-limited. Panel body shared by
+    ``plot_combined_energy_density`` and ``plot_density_energy_overview``."""
     cells = summary["cells"]
     for (a, ss), c in sorted(cells.items()):
         if c["E"] <= 0.0 or c["gammaD"] <= 0.0:
@@ -3004,9 +3015,10 @@ def _ed_decomposition_rich_panel(ax, summary: Dict[str, Any]) -> None:
     region (every point with ED < ED_PBE -- including the whole strip
     E < ED_PBE/2, where the harmonic mean cannot reach ED_PBE for any density
     error), per-arch subset-ordered trajectories through the cells, and the
-    PBE anchor on the dotted y=x self-calibration locus. Same summary
-    contract as ``_ed_decomposition_panel`` (the compact version used by the
-    ED figure and the held-out overview)."""
+    PBE anchor (on the dotted y=x locus under gamma self-calibration, off it
+    under a fixed gamma -- label and stamp branch on ``gamma_mode``). Same
+    summary contract as ``_ed_decomposition_panel`` (the compact version
+    used by the ED figure and the held-out overview)."""
     cells = summary["cells"]
     e_pbe = summary["e_pbe"]
     gd_pbe = summary["gamma"] * summary["d_pbe"]
@@ -3082,19 +3094,23 @@ def plot_ed_decomposition(summary: Dict[str, Any], out_path: Path,
                           run_id: str, *, note: str = "",
                           provenance: Optional[str] = None,
                           caveat: Optional[str] = None,
-                          dataset: Optional[str] = None) -> Path:
+                          dataset: Optional[str] = None,
+                          title: Optional[str] = None) -> Path:
     """Standalone enriched ED decomposition (WTMAD-2 leg): the ED figure's
     (E, gamma*D) panel promoted to its own canvas with a labeled iso-ED
     contour family, the beats-PBE region shaded, and per-arch subset-ordered
     trajectories. Consumes the same ``combined_ed_by_cell`` summary as the ED
-    figure's headline, so the two views cannot drift."""
+    figure's headline, so the two views cannot drift. ``title`` overrides the
+    footer title (the DFS-units variant renders a ``combined_ed_fixed_gamma``
+    summary under its own heading; default preserved otherwise)."""
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(1, 1, figsize=(9.0, 8.0), squeeze=False)
         _ed_decomposition_rich_panel(axes[0][0], summary)
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
             caveat=caveat or _ED_CAVEAT, dataset=dataset,
-            title="ED decomposition (DFS Eq. 21) -- held-out, NN vs PBE")
+            title=title or "ED decomposition (DFS Eq. 21) -- held-out, "
+                           "NN vs PBE")
         fig.tight_layout(rect=(0, 0.06, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -3107,40 +3123,52 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
                                  note: str = "",
                                  provenance: Optional[str] = None,
                                  caveat: Optional[str] = None,
-                                 dataset: Optional[str] = None) -> Path:
+                                 dataset: Optional[str] = None,
+                                 panel_titles: Optional[Tuple[str, str]]
+                                 = None,
+                                 second_leg_placeholder: str
+                                 = "MAE leg unavailable",
+                                 title: Optional[str] = None) -> Path:
     """DFS Eq. 21 combined energy-density ED, held-out, NN vs PBE:
     (a) headline ED with the 2-subset WTMAD-2 energy leg vs subset_size per
-    arch, PBE dashed at its own ED (== its energy error, by gamma
-    self-calibration); (b) the per-cell (E, gamma*D) decomposition with iso-ED
-    harmonic contours -- PBE sits exactly on the dotted y=x self-calibration
-    locus, cells below it are density-limited, above it energy-limited;
+    arch, PBE dashed at its own ED (== its energy error under gamma
+    self-calibration; off it under a fixed gamma); (b) the per-cell
+    (E, gamma*D) decomposition with iso-ED harmonic contours -- PBE sits on
+    the dotted y=x locus exactly when gamma is self-calibrated, cells below
+    it are density-limited, above it energy-limited;
     (c) the reaction-MAE-leg ED, the leg-independence check (its own gamma).
     ``wt_summary`` / ``mae_summary`` are ``combined_ed_by_cell`` outputs; a
     None/empty ``mae_summary`` renders a placeholder panel. Non-positive
     points are dropped defensively (log axes; cannot occur for real
     MAE/WTMAD-2/D > 0). The line-panel body lives in ``_ed_lines_panel``
     (shared with the held-out overview). See the ED section note for the
-    deviations from the Letter."""
+    deviations from the Letter.
 
+    ``panel_titles`` (a, c), ``second_leg_placeholder``, and ``title``
+    override the panel headings, the empty-panel-C text, and the footer
+    title; defaults reproduce the historical WTMAD-2/MAE figure exactly. The
+    DFS-units variant passes ``combined_ed_fixed_gamma`` summaries here (the
+    panel bodies branch their stamps/labels on ``gamma_mode`` themselves)
+    with panel C = the own-axes-fit leg instead of the MAE leg."""
+
+    title_a, title_c = panel_titles or (
+        "ED, energy leg = 2-subset WTMAD-2 (headline)",
+        "ED, energy leg = combined reaction MAE (leg-independence check)")
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.6), squeeze=False)
         axA, axB, axC = axes[0]
-        _ed_lines_panel(axA, wt_summary,
-                        "ED, energy leg = 2-subset WTMAD-2 (headline)")
+        _ed_lines_panel(axA, wt_summary, title_a)
 
         # (b) decomposition: one point per cell in (E, gamma*D) space
         _ed_decomposition_panel(axB, wt_summary)
 
         if mae_summary and mae_summary.get("cells"):
-            _ed_lines_panel(axC, mae_summary,
-                            "ED, energy leg = combined reaction MAE "
-                            "(leg-independence check)")
+            _ed_lines_panel(axC, mae_summary, title_c)
         else:
-            axC.text(0.5, 0.5, "MAE leg unavailable", ha="center",
+            axC.text(0.5, 0.5, second_leg_placeholder, ha="center",
                      va="center", transform=axC.transAxes, fontsize=9,
                      color="0.5")
-            axC.set_title("ED, energy leg = combined reaction MAE "
-                          "(leg-independence check)", fontsize=9)
+            axC.set_title(title_c, fontsize=9)
 
         seen: Dict[str, Any] = {}
         for ax in (axA, axB, axC):
@@ -3155,8 +3183,8 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
             caveat=caveat or _ED_CAVEAT, dataset=dataset,
-            title="Combined energy-density ED (DFS Eq. 21, harmonic mean) "
-                  "-- held-out, NN vs PBE")
+            title=title or "Combined energy-density ED (DFS Eq. 21, "
+                           "harmonic mean) -- held-out, NN vs PBE")
         fig.tight_layout(rect=(0, 0.10, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -4733,43 +4761,92 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 # the RMSE legs' coverage guards, re-run on the eps channel:
                 # a partial backfill (only some specs re-evaled) leaves the
                 # eps legs covering fewer cells/molecules than the RMSE legs
-                # -- disclose it rather than shipping a silently narrower CSV
+                # -- disclose it on stdout AND in the DFS-units figures' note
+                # band rather than shipping silently narrower outputs
+                eps_extra = [note] if note else []
                 eps_missing = sorted(set(d_cells) - set(eps_cells))
                 if eps_missing:
-                    print("  (DFS-units ED: eps columns cover "
-                          f"{len(eps_cells)}/{len(d_cells)} density cells; "
-                          "missing "
-                          + ", ".join(_cell_tag(c) for c in eps_missing)
-                          + " -- partial backfill?)")
+                    miss = ("DFS-units ED: eps columns cover "
+                            f"{len(eps_cells)}/{len(d_cells)} density cells; "
+                            "missing "
+                            + ", ".join(_cell_tag(c) for c in eps_missing)
+                            + " -- partial backfill?")
+                    print(f"  ({miss})")
+                    eps_extra.append(miss)
                 aw_eps = _pbe_anchor_coverage_warning(
                     hd_rows, pbe_table, nn_key="density_eps_l1",
                     pbe_key="density_eps_l1_pbe")
                 if aw_eps:
                     print(f"  (DFS-units ED eps anchor: {aw_eps})")
+                    eps_extra.append(f"Eps anchor: {aw_eps}")
                 cw_eps = _density_cell_coverage_warning(
                     hd_rows, key="density_eps_l1")
                 if cw_eps:
                     print(f"  (DFS-units ED eps cells: {cw_eps})")
+                    eps_extra.append(f"Eps cells: {cw_eps}")
                 eps_counts = (_cell_counts(rows, "abs_error_nn_kcalmol"),
                               _cell_counts(hd_rows, "density_eps_l1"))
-                legs_main["wtmad2_eps_gamma_dfs"] = combined_ed_fixed_gamma(
+                dfs_summary = combined_ed_fixed_gamma(
                     wt_cells, e_pbe_wt, eps_cells, eps_pbe, _DFS_GAMMA_KCAL)
+                legs_main["wtmad2_eps_gamma_dfs"] = dfs_summary
                 counts_main["wtmad2_eps_gamma_dfs"] = eps_counts
                 fit = nonempirical_gamma(run_dir)
+                fit_summary = None
                 if fit and _is_num(fit.get("gamma")) and fit["gamma"] > 0.0:
-                    legs_main["wtmad2_eps_gamma_fit"] = (
-                        combined_ed_fixed_gamma(wt_cells, e_pbe_wt,
-                                                eps_cells, eps_pbe,
-                                                fit["gamma"]))
+                    fit_summary = combined_ed_fixed_gamma(
+                        wt_cells, e_pbe_wt, eps_cells, eps_pbe, fit["gamma"])
+                    legs_main["wtmad2_eps_gamma_fit"] = fit_summary
                     counts_main["wtmad2_eps_gamma_fit"] = eps_counts
-                    print(f"  (DFS-units ED: own-axes gamma = "
-                          f"{fit['gamma']:.6g} kcal/mol from "
-                          f"{fit['n_functionals']} nonempirical functionals"
-                          f" over {fit['n_species']} common species"
-                          + (f"; {fit['n_species_dropped']} species dropped "
-                             "for unequal support"
-                             if fit.get("n_species_dropped") else "")
-                          + ")")
+                    fit_msg = (f"own-axes gamma = {fit['gamma']:.6g} kcal/mol "
+                               f"from {fit['n_functionals']} nonempirical "
+                               f"functionals over {fit['n_species']} common "
+                               "species"
+                               + (f"; {fit['n_species_dropped']} species "
+                                  "dropped for unequal support"
+                                  if fit.get("n_species_dropped") else ""))
+                    print(f"  (DFS-units ED: {fit_msg})")
+                    eps_extra.append(fit_msg)
+                # DFS-units parity ED figures: the same panel bodies as the
+                # RMSE-channel ED figure, rendered from the fixed-gamma
+                # summaries (gamma_mode="fixed" keeps the self-calibration
+                # claims off the stamps/labels); panel C carries the
+                # own-axes-fit leg when the nonempirical pool cache resolves
+                # next to the run dir, a placeholder otherwise.
+                eps_prov = (
+                    "Energy legs: 2-subset WTMAD-2 (BH76+W4-11 labeled "
+                    "reweighting, NOT full GMTKN55) in BOTH line panels. "
+                    "Density leg: the Letter's Eq. 20 per-electron L1 vs "
+                    "CCSD references at matching basis/grid. CCSD (not "
+                    "CCSD(T)) references.")
+                written.append(plot_combined_energy_density(
+                    dfs_summary, fit_summary,
+                    outdir / "ablation_combined_energy_density_dfs_units.png",
+                    run_id, note="  ".join(eps_extra), provenance=eps_prov,
+                    caveat=_ED_DFS_UNITS_CAVEAT, dataset=ds,
+                    panel_titles=(
+                        "ED (DFS units), $\\gamma$ = "
+                        f"{_DFS_GAMMA_KCAL:g} (published)",
+                        "ED (DFS units), $\\gamma$ = own-axes "
+                        "nonempirical fit"),
+                    second_leg_placeholder=(
+                        "own-axes $\\gamma$ unavailable\n(no nonempirical "
+                        "pool cache next to the run dir)"),
+                    title="Combined ED in DFS units (Eq. 21 on Eq. 20 eps) "
+                          "-- held-out, NN vs PBE"))
+                written.append(plot_ed_decomposition(
+                    dfs_summary,
+                    outdir / "ablation_ed_decomposition_dfs_units.png",
+                    run_id, note="  ".join(eps_extra), provenance=eps_prov,
+                    caveat=_ED_DFS_UNITS_CAVEAT, dataset=ds,
+                    title="ED decomposition in DFS units (Eq. 21 on "
+                          "Eq. 20 eps) -- held-out, NN vs PBE"))
+            else:
+                print("  (no Eq. 20 eps columns / positive eps PBE anchor in "
+                      "this pull -- skipping the DFS-units ED legs and "
+                      "ablation_combined_energy_density_dfs_units.png / "
+                      "ablation_ed_decomposition_dfs_units.png; a stale file "
+                      "from a prior render persists, as with the holdout "
+                      "density figure)")
             csv_path = write_combined_ed_csv(
                 legs_main,
                 outdir / "ablation_combined_energy_density.csv",
@@ -4782,9 +4859,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             print(f"  (combined ED: {gtxt}; wrote {csv_path})")
         else:
             print("  (no NN held-out density and/or positive PBE anchors -- "
-                  "skipping ablation_combined_energy_density.png/.csv and "
-                  "ablation_ed_decomposition.png; a stale file from a prior "
-                  "render persists, as with the holdout density figure)")
+                  "skipping ablation_combined_energy_density.png/.csv, "
+                  "ablation_ed_decomposition.png, and their _dfs_units "
+                  "twins; a stale file from a prior render persists, as "
+                  "with the holdout density figure)")
         # Held-out overview composite: same gate as the holdout density figure
         # (renders whenever it does); panel F degrades to the "ED unavailable"
         # placeholder when the ED anchors above were missing (wt_summary None).
