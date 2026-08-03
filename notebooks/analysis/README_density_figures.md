@@ -13,7 +13,9 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 | `ablation_combined_energy_density.csv` | Machine-readable per-cell ED table (all energy legs) |
 | `ablation_combined_energy_density_dfs_units.png` | The ED parity in DFS units: Eq. 20 eps density leg, gamma fixed (published / own-axes fit); eps pulls only |
 | `ablation_density_energy_overview.png` | One-canvas held-out story: per-pool WTMAD-2 + density parity + iso-ED + ED |
+| `ablation_density_energy_overview_dfs_units.png` | The overview with panels D/E/F in DFS units (eps parity, published-gamma ED); eps pulls only |
 | `ablation_density_energy_3x3.png` (+ `.csv`) | Per-channel 3x3: WTMAD-2 / density parity / ED for BH76, W4-11, combined |
+| `ablation_density_energy_3x3_dfs_units.png` (+ `.csv`) | The 3x3 with eps parity and per-channel ED under ONE shared published gamma; eps pulls only |
 | `ablation_ed_decomposition.png` | The iso-ED decomposition as its own enriched canvas |
 | `ablation_ed_decomposition_dfs_units.png` | The enriched decomposition under the published DFS gamma (Eq. 20 eps units); eps pulls only |
 | `ablation_insample_overview.png` | One-canvas in-sample story: AE + density (training fit) |
@@ -139,18 +141,26 @@ the fitted one reproduces its procedure. Both legs are strictly additive -- pull
 the eps columns produce byte-identical CSVs, and the self-calibrated legs above remain the
 headline for relative-to-PBE claims.
 
-The DFS-units legs also render as figures: `ablation_combined_energy_density_dfs_units.png`
-(panel (a) the ED lines under the published gamma, (b) the (E, gamma*D) decomposition, (c)
-the own-axes-fit leg when the calibration cache sits in the run dir, a labeled placeholder
-otherwise) and `ablation_ed_decomposition_dfs_units.png` (the enriched decomposition under
-the published gamma). The panel bodies are the shared `gamma_mode`-aware ones, so the
-self-calibration claims (ED_PBE = E_PBE, PBE-on-y=x) never appear on these figures; the
-gamma stamp reads "(fixed, external)" and the caveat states the Eq. 20 units and both gamma
-sources. The eps coverage disclosures (partial-backfill cell listing, eps-anchor-vs-union,
-eps cell-species homogeneity) are stamped into the note band of BOTH figures in addition to
-the console -- on a partially-covered pull the missing cells are named on the figure itself.
-Pulls without the eps columns skip both figures with a console line carrying the suite's
-standard stale-file warning (a `_dfs_units` PNG left by a prior eps render persists).
+The DFS-units legs also render as figures -- four `_dfs_units` twins, one per ED surface:
+`ablation_combined_energy_density_dfs_units.png` (panel (a) the ED lines under the
+published gamma, (b) the (E, gamma*D) decomposition, (c) the own-axes-fit leg when the
+calibration cache sits in the run dir, a labeled placeholder otherwise),
+`ablation_ed_decomposition_dfs_units.png` (the enriched decomposition under the published
+gamma), `ablation_density_energy_overview_dfs_units.png` (the held-out overview with panel
+D's parity in eps units and E/F under the published gamma), and
+`ablation_density_energy_3x3_dfs_units.png` + `.csv` (the per-channel 3x3 with row 2 in
+eps units and row 3's ED under ONE shared published gamma -- so, unlike the
+self-calibrated original whose per-channel gammas forbid it, EDs DO compare across the
+BH76 | W4-11 | combined columns; the CSV legs are `<channel>_wtmad2_eps_gamma_dfs`).
+The panel bodies are the shared `gamma_mode`-aware ones, so the self-calibration claims
+(ED_PBE = E_PBE, PBE-on-y=x) never appear on these figures; the gamma stamp reads
+"(fixed, external)" and the caveats state the Eq. 20 units and the gamma source. The eps
+coverage disclosures (partial-backfill cell listing, eps-anchor-vs-union, eps
+cell-species homogeneity) are stamped into the note band of ALL four figures in addition
+to the console -- on a partially-covered pull the missing cells are named on the figure
+itself. Pulls without the eps columns skip the twins with a console line carrying the
+suite's standard stale-file warning (a `_dfs_units` file left by a prior eps render
+persists).
 
 Supporting rules, all fail-loud: cells lacking a finite value in either leg are excluded and
 named in the note band (`_ed_exclusion_note`, :2166); the PBE density anchor deduplicates

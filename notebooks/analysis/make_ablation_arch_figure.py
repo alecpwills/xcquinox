@@ -2297,20 +2297,29 @@ def _species_pools(rows: List[Dict[str, Any]]) -> Dict[str, set]:
 
 def channel_ed_summaries(rows: List[Dict[str, Any]],
                          hd_rows: List[Dict[str, Any]],
-                         pbe_table: Optional[Dict[str, Dict[str, float]]] = None
+                         pbe_table: Optional[Dict[str, Dict[str, float]]]
+                         = None, *,
+                         fixed_gamma: Optional[float] = None,
+                         density_key: str = "density_rmse",
+                         pbe_density_key: str = "density_rmse_pbe"
                          ) -> Dict[str, Optional[Dict[str, Any]]]:
     """Per-channel DFS Eq. 21 summaries for ``bh76`` / ``w411`` / ``combined``.
 
     Each channel filters the reaction rows by pool (its energy leg is then the
     one-bucket WTMAD-2 reduction; the combined channel is the genuine 2-subset
     form) and the density rows by species membership (``_species_pools``;
-    overlap species contribute to both channels). Each channel's gamma is
-    self-calibrated from ITS OWN pool-filtered PBE anchors, so EDs are
-    comparable within a channel, not across channels. A channel whose anchors
-    are missing/non-positive maps to None (callers render placeholders).
-    When a run-level ``pbe_table`` is given but carries no entries for a
-    channel's species, that channel's density anchor falls back to the inline
-    ``density_rmse_pbe`` columns (the ``pbe_density_baseline`` contract)."""
+    overlap species contribute to both channels). By default each channel's
+    gamma is self-calibrated from ITS OWN pool-filtered PBE anchors, so EDs
+    are comparable within a channel, not across channels. With ``fixed_gamma``
+    every channel shares that external gamma (``gamma_mode="fixed"``
+    summaries) -- EDs then DO compare across channels; the DFS-units twins
+    pass the published slope with ``density_key="density_eps_l1"`` /
+    ``pbe_density_key="density_eps_l1_pbe"`` so D is the Letter's Eq. 20
+    per-electron L1. A channel whose anchors are missing/non-positive maps to
+    None (callers render placeholders). When a run-level ``pbe_table`` is
+    given but carries no finite entries for the chosen key on a channel's
+    species, that channel's density anchor falls back to the inline PBE
+    columns (the ``pbe_density_baseline`` contract)."""
     pools_of = _species_pools(rows)
     out: Dict[str, Optional[Dict[str, Any]]] = {}
     for ch in ("bh76", "w411", "combined"):
@@ -2326,11 +2335,14 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
                           if ch in pools_of.get(m, ())}
         e_cells = wtmad2_by_arch_subset(ch_rows)
         e_pbe = wtmad2_pbe_baseline(ch_rows)
-        d_cells = holdout_density_by_arch_subset(ch_hd)
-        d_pbe = pbe_density_baseline(ch_hd, ch_tab)
+        d_cells = holdout_density_by_arch_subset(ch_hd, key=density_key)
+        d_pbe = pbe_density_baseline(ch_hd, ch_tab, key=pbe_density_key)
         if (e_cells and _is_num(e_pbe) and e_pbe > 0.0 and d_cells
                 and _is_num(d_pbe) and d_pbe > 0.0):
-            out[ch] = combined_ed_by_cell(e_cells, e_pbe, d_cells, d_pbe)
+            out[ch] = (combined_ed_fixed_gamma(e_cells, e_pbe, d_cells,
+                                               d_pbe, fixed_gamma)
+                       if fixed_gamma is not None else
+                       combined_ed_by_cell(e_cells, e_pbe, d_cells, d_pbe))
         else:
             out[ch] = None
     return out
@@ -2767,15 +2779,21 @@ def _holdout_density_lines_panel(ax, density_rows: List[Dict[str, Any]],
 
 
 def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
-                          pbe_mol: Dict[str, float]) -> None:
+                          pbe_mol: Dict[str, float], *,
+                          nn_key: str = "density_rmse",
+                          unit_label: str = "density RMSE") -> None:
     """Per-species NN-vs-PBE density parity (log-log; below the diagonal =
     the NN density is closer to CCSD than PBE is), with a PBE-only sorted
     strip as the fallback when no NN channel exists. Panel body shared by
-    ``plot_holdout_density_ccsd`` and ``plot_density_energy_overview``."""
+    ``plot_holdout_density_ccsd`` and ``plot_density_energy_overview``.
+    ``nn_key``/``unit_label`` select the error channel (defaults reproduce
+    the grid-weighted RMSE panel; the DFS-units twins pass
+    ``density_eps_l1`` with an eps label, and the caller supplies a
+    ``pbe_mol`` built on the matching PBE key)."""
     n_pairs = 0
     for r in density_rows:
         x = pbe_mol.get(r.get("molecule"))
-        y = r.get("density_rmse")
+        y = r.get(nn_key)
         if not (_is_num(x) and _is_num(y)):
             continue
         ax.scatter(x, y, s=14, alpha=0.6,
@@ -2794,10 +2812,10 @@ def _density_parity_panel(ax, density_rows: List[Dict[str, Any]],
         ax.scatter(range(len(vals)), vals, s=10, color="0.35")
         ax.set_yscale("log")
         ax.set_xlabel("species (sorted by PBE error)", fontsize=8)
-    ax.set_xlabel(ax.get_xlabel() or "PBE density RMSE vs CCSD",
+    ax.set_xlabel(ax.get_xlabel() or f"PBE {unit_label} vs CCSD",
                   fontsize=8)
-    ax.set_ylabel("NN density RMSE vs CCSD" if n_pairs
-                  else "PBE density RMSE vs CCSD", fontsize=8)
+    ax.set_ylabel(f"NN {unit_label} vs CCSD" if n_pairs
+                  else f"PBE {unit_label} vs CCSD", fontsize=8)
     ax.set_title(f"Per-species NN vs PBE (both vs CCSD; {n_pairs} points)"
                  if n_pairs else
                  f"PBE-vs-CCSD per species ({len(pbe_mol)} refs)",
@@ -3200,7 +3218,11 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                                  note: str = "",
                                  provenance: Optional[str] = None,
                                  caveat: Optional[str] = None,
-                                 dataset: Optional[str] = None) -> Path:
+                                 dataset: Optional[str] = None,
+                                 parity_nn_key: str = "density_rmse",
+                                 parity_pbe_key: str = "density_rmse_pbe",
+                                 parity_unit_label: str = "density RMSE",
+                                 title: Optional[str] = None) -> Path:
     """Held-out overview composite -- energy above, the energy-density TRADE
     below: (A)/(B) single-pool WTMAD-2 bars per (arch, subset_size) for BH76 /
     W4-11 (with one pool the WTMAD-2 sum collapses to
@@ -3214,8 +3236,14 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
     ``plot_holdout_density_ccsd``. Panel bodies are the same ax-level helpers
     the dedicated figures use, so the views cannot drift apart. No SCAN lines
     (no SCAN WTMAD-2 cache exists). Each top panel carries its own
-    pool-filtered PBE dashed line."""
-    pbe_mol = _pbe_density_map(hd_rows, pbe_table)
+    pool-filtered PBE dashed line.
+
+    ``parity_nn_key``/``parity_pbe_key``/``parity_unit_label`` select panel
+    D's density channel and ``title`` overrides the footer title; defaults
+    reproduce the historical figure exactly. The DFS-units twin passes a
+    ``combined_ed_fixed_gamma`` summary (panels E/F branch their stamps on
+    ``gamma_mode`` themselves) with the eps parity keys."""
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=parity_pbe_key)
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -3232,7 +3260,8 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                            pbe_line=wtmad2_pbe_baseline(rows),
                            title="(C) 2-subset WTMAD-2 (BH76+W4-11), "
                                  "per (arch, subset)")
-        _density_parity_panel(axD, hd_rows, pbe_mol)
+        _density_parity_panel(axD, hd_rows, pbe_mol, nn_key=parity_nn_key,
+                              unit_label=parity_unit_label)
         axD.set_title("(D) " + axD.get_title(), fontsize=9)
         if ed_summary and ed_summary.get("cells"):
             _ed_decomposition_panel(axE, ed_summary)
@@ -3262,7 +3291,8 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
             caveat=caveat or _HOLDOUT_OVERVIEW_CAVEAT, dataset=dataset,
-            title="Held-out overview: WTMAD-2 by pool + density vs CCSD + ED")
+            title=title or "Held-out overview: WTMAD-2 by pool + density "
+                           "vs CCSD + ED")
         fig.tight_layout(rect=(0, 0.10, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -3278,6 +3308,22 @@ _3X3_CAVEAT = (
     "channel and EDs never compare across channels. Overlap species appear "
     "in both density channels.")
 
+# DFS-units twins' caveats: one figtext line each (bbox="tight" widens the
+# canvas to the longest line -- keep near the RMSE twins' length)
+_3X3_DFS_UNITS_CAVEAT = (
+    "Columns are channels: BH76 | W4-11 | combined; A/B and the G/H ED legs "
+    "use the one-bucket WTMAD-2 reduction (only combined reweights; NOT full "
+    "GMTKN55). ED = 2/(1/E + 1/(gamma*D)); D = the Letter's Eq. 20 "
+    "per-electron L1; gamma = 1084.87 (published) SHARED by all channels -- "
+    "EDs compare across columns; ED_PBE != E_PBE. Parity row in eps units.")
+
+_HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT = (
+    "Single-pool 'WTMAD-2' (A, B) reduces to 56.84*MAD_pool/mean|ref|_pool "
+    "-- a scaled relative error, not a reweighting; only (C) reweights (NOT "
+    "full GMTKN55). E/F: ED = 2/(1/E + 1/(gamma*D)); D = the Letter's "
+    "Eq. 20 per-electron L1; gamma = 1084.87 (published, external) -- "
+    "ED_PBE != E_PBE, PBE off y=x. (D) parity in eps units.")
+
 
 def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                             hd_rows: List[Dict[str, Any]],
@@ -3289,20 +3335,31 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                             note: str = "",
                             provenance: Optional[str] = None,
                             caveat: Optional[str] = None,
-                            dataset: Optional[str] = None) -> Path:
+                            dataset: Optional[str] = None,
+                            parity_nn_key: str = "density_rmse",
+                            parity_pbe_key: str = "density_rmse_pbe",
+                            parity_unit_label: str = "density RMSE",
+                            ed_gamma_label: str = "own gamma",
+                            title: Optional[str] = None) -> Path:
     """Per-channel held-out story, one column per channel (BH76 | W4-11 |
     combined): row 1 = WTMAD-2 bars per (arch, subset_size) (A/B the
     one-bucket reduction, C the genuine 2-subset form); row 2 = per-species
     NN-vs-PBE density parity restricted to that channel's species (overlap
     species contribute to both, stated in the caveat); row 3 = the DFS
-    Eq. 21 ED metric per channel, each gamma self-calibrated from that
-    channel's own PBE anchors (grey placeholder when a channel's anchors are
-    missing). Panel bodies are the shared ax-level helpers, so the views
-    match the dedicated figures."""
+    Eq. 21 ED metric per channel, by default each gamma self-calibrated from
+    that channel's own PBE anchors (grey placeholder when a channel's
+    anchors are missing). Panel bodies are the shared ax-level helpers, so
+    the views match the dedicated figures.
+
+    The keyword overrides (parity keys/label, ``ed_gamma_label``, ``title``)
+    default to the historical figure exactly; the DFS-units twin passes
+    fixed-gamma ``ch_summaries`` (from ``channel_ed_summaries`` with
+    ``fixed_gamma``/eps keys), the eps parity keys, and its own row-3
+    gamma tag."""
     if ch_summaries is None:
         ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
     pools_of = _species_pools(rows)
-    pbe_mol = _pbe_density_map(hd_rows, pbe_table)
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=parity_pbe_key)
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -3329,13 +3386,14 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                          if ch in pools_of.get(r.get("molecule"), ())]
                 pbe_ch = {m: v for m, v in pbe_mol.items()
                           if ch in pools_of.get(m, ())}
-            _density_parity_panel(ax, hd_ch, pbe_ch)
+            _density_parity_panel(ax, hd_ch, pbe_ch, nn_key=parity_nn_key,
+                                  unit_label=parity_unit_label)
             ax.set_title(f"({letters[3 + j]}) {lab} species -- "
                          + ax.get_title(), fontsize=9)
         for j, (ch, lab) in enumerate(chans):
             ax = axes[2][j]
             s = ch_summaries.get(ch)
-            ttl = f"({letters[6 + j]}) ED, {lab} channel (own gamma)"
+            ttl = f"({letters[6 + j]}) ED, {lab} channel ({ed_gamma_label})"
             if s and s.get("cells"):
                 _ed_lines_panel(ax, s, ttl)
             else:
@@ -3358,8 +3416,8 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
             caveat=caveat or _3X3_CAVEAT, dataset=dataset,
-            title="Per-channel held-out story: WTMAD-2 | density parity | "
-                  "ED (BH76, W4-11, combined)")
+            title=title or "Per-channel held-out story: WTMAD-2 | density "
+                           "parity | ED (BH76, W4-11, combined)")
         fig.tight_layout(rect=(0, 0.085, 1, 0.90))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
@@ -4840,13 +4898,77 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     caveat=_ED_DFS_UNITS_CAVEAT, dataset=ds,
                     title="ED decomposition in DFS units (Eq. 21 on "
                           "Eq. 20 eps) -- held-out, NN vs PBE"))
+                # DFS-units twins of the composite ED surfaces: the held-out
+                # overview (E/F under the published gamma, D parity in eps
+                # units) and the per-channel 3x3 (row 3 under ONE shared
+                # gamma -- EDs compare across columns, unlike the
+                # self-calibrated original -- row 2 parity in eps units).
+                written.append(plot_density_energy_overview(
+                    rows, hd_rows,
+                    outdir / "ablation_density_energy_overview_dfs_units.png",
+                    run_id, pbe_table=pbe_table, ed_summary=dfs_summary,
+                    note="  ".join(eps_extra),
+                    provenance=(
+                        "Held-out overview, DFS units. A/B: one-bucket "
+                        "WTMAD-2 reduction per pool; C: 2-subset WTMAD-2. "
+                        "D: per-species Eq. 20 eps parity vs CCSD refs, PBE "
+                        "model-free. E/F: ED with the published gamma -- "
+                        "full diagnostics on "
+                        "ablation_combined_energy_density_dfs_units.png."),
+                    caveat=_HOLDOUT_OVERVIEW_DFS_UNITS_CAVEAT, dataset=ds,
+                    parity_nn_key="density_eps_l1",
+                    parity_pbe_key="density_eps_l1_pbe",
+                    parity_unit_label="Eq. 20 eps",
+                    title="Held-out overview (DFS units): WTMAD-2 by pool + "
+                          "eps density vs CCSD + ED"))
+                ch_summaries_eps = channel_ed_summaries(
+                    rows, hd_rows, pbe_table, fixed_gamma=_DFS_GAMMA_KCAL,
+                    density_key="density_eps_l1",
+                    pbe_density_key="density_eps_l1_pbe")
+                written.append(plot_density_energy_3x3(
+                    rows, hd_rows,
+                    outdir / "ablation_density_energy_3x3_dfs_units.png",
+                    run_id, pbe_table=pbe_table,
+                    ch_summaries=ch_summaries_eps,
+                    note="  ".join(eps_extra),
+                    provenance=(
+                        "Channels: pool-filtered reactions (energy legs) and "
+                        "species-membership-filtered densities (overlap "
+                        "species in both channels). Density leg: the "
+                        "Letter's Eq. 20 per-electron L1 vs CCSD; gamma = "
+                        "1084.87 published, shared by all channels."),
+                    caveat=_3X3_DFS_UNITS_CAVEAT, dataset=ds,
+                    parity_nn_key="density_eps_l1",
+                    parity_pbe_key="density_eps_l1_pbe",
+                    parity_unit_label="Eq. 20 eps",
+                    ed_gamma_label="shared published gamma",
+                    title="Per-channel held-out story (DFS units): WTMAD-2 "
+                          "| eps parity | ED (BH76, W4-11, combined)"))
+                pools_of_eps = _species_pools(rows)
+                legs3_eps: Dict[str, Optional[Dict[str, Any]]] = {}
+                counts3_eps: Dict[str, Tuple[Dict, Dict]] = {}
+                for ch, s in ch_summaries_eps.items():
+                    leg = f"{ch}_wtmad2_eps_gamma_dfs"
+                    legs3_eps[leg] = s
+                    ch_rows_ = rows if ch == "combined" else [
+                        r for r in rows if r.get("pool") == ch]
+                    ch_hd_ = hd_rows if ch == "combined" else [
+                        r for r in hd_rows
+                        if ch in pools_of_eps.get(r.get("molecule"), ())]
+                    counts3_eps[leg] = (
+                        _cell_counts(ch_rows_, "abs_error_nn_kcalmol"),
+                        _cell_counts(ch_hd_, "density_eps_l1"))
+                csv3_eps = write_combined_ed_csv(
+                    legs3_eps,
+                    outdir / "ablation_density_energy_3x3_dfs_units.csv",
+                    n_reactions={}, n_density={}, counts_by_leg=counts3_eps)
+                print(f"  (per-channel DFS-units ED: wrote {csv3_eps})")
             else:
                 print("  (no Eq. 20 eps columns / positive eps PBE anchor in "
-                      "this pull -- skipping the DFS-units ED legs and "
-                      "ablation_combined_energy_density_dfs_units.png / "
-                      "ablation_ed_decomposition_dfs_units.png; a stale file "
-                      "from a prior render persists, as with the holdout "
-                      "density figure)")
+                      "this pull -- skipping the DFS-units ED legs and the "
+                      "_dfs_units figure twins (combined ED, decomposition, "
+                      "overview, 3x3 + CSV); a stale file from a prior "
+                      "render persists, as with the holdout density figure)")
             csv_path = write_combined_ed_csv(
                 legs_main,
                 outdir / "ablation_combined_energy_density.csv",

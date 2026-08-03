@@ -1445,7 +1445,10 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     # (the fixture writes them)
     assert "ablation_combined_energy_density_dfs_units.png" in names2
     assert "ablation_ed_decomposition_dfs_units.png" in names2
-    assert len(names2) == 12
+    assert "ablation_density_energy_overview_dfs_units.png" in names2
+    assert "ablation_density_energy_3x3_dfs_units.png" in names2
+    assert len(names2) == 14
+    assert (out2 / "ablation_density_energy_3x3_dfs_units.csv").is_file()
     # the CSVs are written alongside but NEVER returned (return stays PNG-only)
     assert (out2 / "ablation_combined_energy_density.csv").is_file()
     assert (out2 / "ablation_density_energy_3x3.csv").is_file()
@@ -2197,6 +2200,10 @@ def test_build_dfs_units_png_absent_without_eps(tmp_path, capsys):
     assert not (out
                 / "ablation_combined_energy_density_dfs_units.png").exists()
     assert not (out / "ablation_ed_decomposition_dfs_units.png").exists()
+    assert not (out
+                / "ablation_density_energy_overview_dfs_units.png").exists()
+    assert not (out / "ablation_density_energy_3x3_dfs_units.png").exists()
+    assert not (out / "ablation_density_energy_3x3_dfs_units.csv").exists()
     printed = capsys.readouterr().out
     assert "skipping the DFS-units ED legs" in printed
     assert "a stale file from a prior render persists" in printed
@@ -2254,6 +2261,124 @@ def test_plot_combined_energy_density_dfs_units_renders(tmp_path):
         dfs_s, tmp_path / "dfs_units_decomp.png", "run_x",
         title="DFS-units decomposition")
     assert _png_ok(p3)
+
+
+def test_channel_ed_summaries_fixed_gamma_eps(tmp_path):
+    """The fixed-gamma variant: one shared external gamma on the Eq. 20 eps
+    channel across all three channels (gamma_mode="fixed"), D drawn from the
+    eps columns; an RMSE-only pbe_table falls back to the inline eps
+    columns. The no-kwargs call keeps the self-calibrated behavior."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    tab = fig.load_pbe_density_table(run)     # RMSE-only table: no eps keys
+    ch = fig.channel_ed_summaries(rows, hd, tab, fixed_gamma=1084.87,
+                                  density_key="density_eps_l1",
+                                  pbe_density_key="density_eps_l1_pbe")
+    assert set(ch) == {"bh76", "w411", "combined"}
+    assert all(s is not None for s in ch.values())
+    for s in ch.values():
+        assert s["gamma_mode"] == "fixed"
+        assert s["gamma"] == pytest.approx(1084.87)
+        # D from the eps columns (fixture: NN 2.5e-4, PBE 7e-4 inline)
+        assert s["d_pbe"] == pytest.approx(7e-4)
+        for c in s["cells"].values():
+            assert c["D"] == pytest.approx(2.5e-4)
+    # shared gamma -> ED_PBE identical across channels' density anchors only
+    # when E_PBE matches; the self-calibrated default is unchanged
+    ch_default = fig.channel_ed_summaries(rows, hd, tab)
+    assert ch_default["combined"]["gamma_mode"] == "self_calibrated"
+    assert ch_default["bh76"]["gamma"] != ch_default["w411"]["gamma"]
+
+
+def test_build_dfs_units_composite_twins(tmp_path, monkeypatch):
+    """The build site renders DFS-units twins of the held-out overview and
+    the per-channel 3x3: fixed-gamma summaries, eps parity keys, disclosure
+    note, DFS-units caveats -- while the originals keep their defaults. The
+    3x3 twin CSV carries the per-channel eps legs."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    ov_calls, x3_calls = [], []
+
+    def ov_spy(rows, hd_rows, out_path, run_id, **kw):
+        ov_calls.append((Path(out_path), kw))
+        Path(out_path).write_bytes(b"x" * 4096)
+        return Path(out_path)
+
+    def x3_spy(rows, hd_rows, out_path, run_id, **kw):
+        x3_calls.append((Path(out_path), kw))
+        Path(out_path).write_bytes(b"x" * 4096)
+        return Path(out_path)
+
+    monkeypatch.setattr(fig, "plot_density_energy_overview", ov_spy)
+    monkeypatch.setattr(fig, "plot_density_energy_3x3", x3_spy)
+    out = tmp_path / "f"
+    fig.build_density_energy_figures(run, out)
+    ov_twin = [kw for p, kw in ov_calls if p.name
+               == "ablation_density_energy_overview_dfs_units.png"]
+    x3_twin = [kw for p, kw in x3_calls if p.name
+               == "ablation_density_energy_3x3_dfs_units.png"]
+    assert len(ov_twin) == 1 and len(x3_twin) == 1
+    assert ov_twin[0]["ed_summary"]["gamma_mode"] == "fixed"
+    assert ov_twin[0]["parity_nn_key"] == "density_eps_l1"
+    # the D leg must be the EPS channel, not the RMSE one -- the published
+    # gamma is dimensionally valid only on Eq. 20 units (fixture: NN eps
+    # 2.5e-4 / PBE eps 7e-4, vs RMSE 2e-4 / 8e-4)
+    assert ov_twin[0]["ed_summary"]["d_pbe"] == pytest.approx(7e-4)
+    chs = x3_twin[0]["ch_summaries"]
+    assert all(s is not None and s["gamma_mode"] == "fixed"
+               and s["gamma"] == pytest.approx(1084.87)
+               for s in chs.values())
+    for s in chs.values():
+        assert s["d_pbe"] == pytest.approx(7e-4)
+        for c in s["cells"].values():
+            assert c["D"] == pytest.approx(2.5e-4)
+    assert x3_twin[0]["parity_nn_key"] == "density_eps_l1"
+    assert "shared published gamma" in x3_twin[0]["ed_gamma_label"]
+    # the ORIGINAL calls keep their defaults (no parity/gamma overrides)
+    ov_orig = [kw for p, kw in ov_calls if p.name
+               == "ablation_density_energy_overview.png"]
+    x3_orig = [kw for p, kw in x3_calls if p.name
+               == "ablation_density_energy_3x3.png"]
+    assert len(ov_orig) == 1 and "parity_nn_key" not in ov_orig[0]
+    assert len(x3_orig) == 1 and "parity_nn_key" not in x3_orig[0]
+    assert x3_orig[0]["ch_summaries"]["combined"]["gamma_mode"] == \
+        "self_calibrated"
+    # the twin CSV carries the per-channel eps legs at the shared gamma
+    with (out / "ablation_density_energy_3x3_dfs_units.csv").open() as fh:
+        rows_csv = list(csv.DictReader(fh))
+    legs = {r["leg"] for r in rows_csv}
+    assert legs == {"bh76_wtmad2_eps_gamma_dfs", "w411_wtmad2_eps_gamma_dfs",
+                    "combined_wtmad2_eps_gamma_dfs"}
+    assert all(float(r["gamma"]) == pytest.approx(1084.87) for r in rows_csv)
+    assert all(float(r["D_pbe_rmse"]) == pytest.approx(7e-4)
+               for r in rows_csv)
+    assert all(float(r["D_rmse"]) == pytest.approx(2.5e-4)
+               for r in rows_csv)
+
+
+def test_plot_composite_dfs_units_twins_render(tmp_path):
+    """Real renders of the two composite twins with the override kwargs."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    ch_eps = fig.channel_ed_summaries(rows, hd, None, fixed_gamma=1084.87,
+                                      density_key="density_eps_l1",
+                                      pbe_density_key="density_eps_l1_pbe")
+    p1 = fig.plot_density_energy_3x3(
+        rows, hd, tmp_path / "x3_dfs.png", "run_x",
+        ch_summaries=ch_eps, parity_nn_key="density_eps_l1",
+        parity_pbe_key="density_eps_l1_pbe", parity_unit_label="Eq. 20 eps",
+        ed_gamma_label="shared published gamma", title="3x3, DFS units")
+    assert _png_ok(p1)
+    p2 = fig.plot_density_energy_overview(
+        rows, hd, tmp_path / "ov_dfs.png", "run_x",
+        ed_summary=ch_eps["combined"], parity_nn_key="density_eps_l1",
+        parity_pbe_key="density_eps_l1_pbe", parity_unit_label="Eq. 20 eps",
+        title="Overview, DFS units")
+    assert _png_ok(p2)
 
 
 def test_pbe_anchor_coverage_warning_key_params():
