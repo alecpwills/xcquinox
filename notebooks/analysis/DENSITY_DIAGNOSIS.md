@@ -233,14 +233,36 @@ for base in ("/gpfs/scratch/awills/external_refs_dfs_6311ppg3df2pd_g3",
 EOF
 ```
 
-Expected if Sec. 3 is right: the stamps are all well-formed and IDENTICAL in kind between
-CH/NO and the healthy HO control -- i.e. nothing is wrong with the files, and the defect
-is that the lock does not force the SCF onto the reference's component for these two.
-That reading predicts a specific fix (lock the reference generation and the training SCF
-to the same component by construction, and verify per species rather than assuming), and
-predicts that regenerating the references without changing the lock would not help.
-If instead CH/NO show a different lock strength, a failed OEP, or a non-integer electron
-count, the files are at fault and regeneration is the fix.
+**The decisive field is whether the `orientation_lock_strength` key is PRESENT, not what
+its value is.** The wiring is correct by construction and is already guarded: the
+run-level `inputs.orientation_lock_strength` is authoritative and is threaded into the
+SolverConfig the training SCF reads (`cluster/spec_builder.py:283-287`, "Run-level
+inputs.orientation_lock_strength is authoritative (so the SCF matches the references)";
+consumed at `train.py:354` and `:498`), both sides call the same operator
+(`data.py` and `external_refs.py` both import `orientation_lock_bias`), and
+`data.py:124-134` RAISES when a reference's stamped strength disagrees with the
+consumer's. That guard did not fire on the production run, so "the two sides used
+different lock strengths" is already excluded.
+
+But the guard fires only when the reference carries the key -- its own comment says so:
+"Fires only when BOTH the ref carries the key and the caller passes a lock". A reference
+written before the stamp existed has no key and passes silently. Every reference in the
+local def2-svp cache is in exactly that state (CH, HO, NO, N2: key ABSENT), consistent
+with their pre-lock June generation.
+
+So the check has three outcomes:
+
+- **Key ABSENT on CH/NO** -- a locked SCF was trained against an unlocked reference, with
+  the guard structurally unable to see it. That is the defect: regenerate those
+  references, and extend the guard to treat a MISSING key as an error whenever the
+  consumer resolves a nonzero lock, so it cannot recur.
+- **Key PRESENT and equal to 3e-05 on CH/NO as on HO** -- the lock was applied
+  consistently on both sides and the mismatch has another cause: either the 3e-05 bias
+  does not split CH's and NO's manifolds the way it splits OH's (species-dependent
+  efficacy; the window was sized on OH/NO), or CH's CCSD reference is not a
+  single-component density any single-determinant SCF can match. Down-weighting is then
+  the right response rather than regeneration.
+- **Key PRESENT and different** -- impossible; the run would have aborted at the guard.
 
 ## 7. Remediation, ranked
 
