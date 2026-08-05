@@ -2729,7 +2729,10 @@ def test_lockfix_boundary_parses_partition(tmp_path):
                             in_flight=("spec_0003",),
                             post=("spec_0004", "spec_0005"))
     b = fig.lockfix_boundary(run)
-    assert b["pre"] == {0, 2, 3}          # complete + in flight
+    # in-flight specs are their OWN class: they trained on the old references
+    # but their eval re-reads the new ones, so they are neither side
+    assert b["pre"] == {0, 2}
+    assert b["mixed"] == {3}
     assert b["post"] == {4, 5}
     assert b["species"] == ["CH", "NO"]
     assert "2026-08-03" in b["swap_time"]
@@ -2753,8 +2756,25 @@ def test_lockfix_note_reports_only_plotted_cells(tmp_path):
     _write_lockfix_manifest(run, pre=(), post=("spec_0000", "spec_0001",
                                                "spec_0002", "spec_0003"))
     only_post = fig.lockfix_note(run)
-    assert "postdate the swap" in only_post
+    assert "post-swap" in only_post and "relocked references" in only_post
     assert "mix two reference sets" not in only_post
+
+
+def test_lockfix_note_flags_mid_training_cells_as_uninterpretable(tmp_path):
+    """A spec mid-training at the swap trained on the OLD references but its
+    eval re-read the NEW ones, so its density numbers belong to neither side
+    and the disclosure must say so rather than silently grouping it."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    _write_lockfix_manifest(run, pre=("spec_0000",),
+                            in_flight=("spec_0001", "spec_0002"),
+                            post=("spec_0003",))
+    msg = fig.lockfix_note(run)
+    assert "mid-training at the swap" in msg
+    assert "NOT interpretable" in msg
+    assert "spec 0001-0002" in msg
+    # and they are not counted into either side's cell tally
+    assert "1 cell(s) pre-swap" in msg and "1 post-swap" in msg
 
 
 def test_density_figures_stamp_the_lockfix_boundary(tmp_path, capsys):

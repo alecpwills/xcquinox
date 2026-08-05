@@ -287,13 +287,21 @@ def lockfix_boundary(run_dir: Path) -> Dict[str, Any]:
                 continue
         return out
 
-    pre = _idx(part.get("complete")) | _idx(part.get("in_flight"))
+    # Three classes, not two. A spec that was mid-TRAINING at the swap loaded
+    # its references at task start (old) but runs its EVAL afterwards, which
+    # re-reads them (new) -- so its density metrics are computed against
+    # references it did not train on. Confirmed on this run: specs 0020/0021
+    # were in flight at the swap and their eval reports the RELOCKED CH error
+    # (9.82e-03) while their training channel still shows the old frozen
+    # signature. Those cells are MIXED and cannot be read on the density axis.
+    pre = _idx(part.get("complete"))
+    mixed = _idx(part.get("in_flight"))
     post = _idx(part.get("not_started"))
-    if not (pre or post):
+    if not (pre or mixed or post):
         return {}
     return {"swap_time": man.get("swap_time_local", "unknown"),
             "species": sorted((man.get("species") or {}).keys()),
-            "pre": pre, "post": post}
+            "pre": pre, "mixed": mixed, "post": post}
 
 
 def lockfix_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
@@ -306,23 +314,34 @@ def lockfix_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
     plotted = {idx for idx, spec_dir in ccp._spec_dirs(Path(run_dir))
                if (spec_dir / eval_subdir / "per_molecule.json").is_file()}
     pre = sorted(plotted & b["pre"])
+    mixed = sorted(plotted & b.get("mixed", set()))
     post = sorted(plotted & b["post"])
     species = "/".join(b["species"]) or "degenerate-radical"
+
+    def _rng(ix):
+        return (f"spec {ix[0]:04d}" if len(ix) == 1
+                else f"spec {ix[0]:04d}-{ix[-1]:04d}")
+
     head = (f"DENSITY-REFERENCE BOUNDARY: {species} references were relocked "
             f"mid-run ({b['swap_time']}).")
-    if pre and post:
-        return (head + f" {len(pre)} plotted cell(s) trained against the OLD "
-                f"(unlocked) references [spec {pre[0]:04d}-{pre[-1]:04d}] and "
-                f"{len(post)} against the relocked ones "
-                f"[spec {post[0]:04d}-{post[-1]:04d}] -- density comparisons "
-                "across this boundary mix two reference sets.")
+    parts = []
     if pre:
-        return head + (f" All {len(pre)} plotted cells predate the swap "
-                       "(OLD unlocked references).")
+        parts.append(f"{len(pre)} cell(s) pre-swap [{_rng(pre)}], OLD "
+                     "unlocked references")
     if post:
-        return head + (f" All {len(post)} plotted cells postdate the swap "
-                       "(relocked references).")
-    return head
+        parts.append(f"{len(post)} post-swap [{_rng(post)}], relocked "
+                     "references")
+    if not parts:
+        return head
+    out = head + " " + "; ".join(parts) + "."
+    if pre and post:
+        out += " Density comparisons across the boundary mix two reference sets."
+    if mixed:
+        out += (f" {len(mixed)} cell(s) [{_rng(mixed)}] were mid-training at "
+                "the swap: they TRAINED on the old references but their eval "
+                "re-read the new ones, so their density numbers are NOT "
+                "interpretable and are excluded from either side.")
+    return out
 
 
 # ---------------------------------------------------------------------------
