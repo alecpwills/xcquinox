@@ -304,6 +304,46 @@ def lockfix_boundary(run_dir: Path) -> Dict[str, Any]:
             "pre": pre, "mixed": mixed, "post": post}
 
 
+def lockfix_cell_classes(run_dir: Path, eval_subdir: str = "eval_holdout"
+                         ) -> Dict[str, set]:
+    """``{"relocked": {cell...}, "mixed": {cell...}}`` for figure glyphs.
+
+    A cell is only classified when its TRAINING SET contains a relocked
+    species -- every other cell saw byte-identical references either side of
+    the swap and must carry no marker. ``relocked`` trained on the fixed
+    references; ``mixed`` was mid-training at the swap (trained old, evaluated
+    new) and is not interpretable on the density axis. Empty dicts for runs
+    with no swap, so their figures are unmarked.
+    """
+    b = lockfix_boundary(run_dir)
+    out: Dict[str, set] = {"relocked": set(), "mixed": set()}
+    if not b:
+        return out
+    swapped = set(b["species"])
+    cells = ccp._read_manifest_cells(Path(run_dir))
+    for idx, spec_dir in ccp._spec_dirs(Path(run_dir)):
+        if not (spec_dir / eval_subdir / "per_molecule.json").is_file():
+            continue
+        meta = spec_dir / "train_metadata.json"
+        cell = cells.get(idx) or {}
+        arch, ss = cell.get("arch"), cell.get("subset_size")
+        if not (meta.is_file() and arch is not None and ss is not None):
+            continue
+        try:
+            with meta.open() as fh:
+                mols = set(json.load(fh).get("molecules", []))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not (mols & swapped):
+            continue
+        key = (arch, int(ss))
+        if idx in b.get("mixed", set()):
+            out["mixed"].add(key)
+        elif idx in b["post"]:
+            out["relocked"].add(key)
+    return out
+
+
 def lockfix_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
     """Disclosure naming how the PLOTTED cells fall either side of a mid-run
     density-reference swap. Empty string when the run has no swap manifest, so
@@ -311,8 +351,31 @@ def lockfix_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
     b = lockfix_boundary(run_dir)
     if not b:
         return ""
-    plotted = {idx for idx, spec_dir in ccp._spec_dirs(Path(run_dir))
-               if (spec_dir / eval_subdir / "per_molecule.json").is_file()}
+    # Only cells whose TRAINING SET contains a relocked species are affected:
+    # for every other cell the references are byte-identical either side, so
+    # they stay fully comparable across the boundary and must not be warned
+    # about. (On this run CH enters at subset_size 6, so the whole ss<6 block
+    # is unaffected regardless of which side it fell on.)
+    swapped = set(b["species"])
+    plotted = set()
+    for idx, spec_dir in ccp._spec_dirs(Path(run_dir)):
+        if not (spec_dir / eval_subdir / "per_molecule.json").is_file():
+            continue
+        meta = spec_dir / "train_metadata.json"
+        if not meta.is_file():
+            continue
+        try:
+            with meta.open() as fh:
+                mols = set(json.load(fh).get("molecules", []))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if mols & swapped:
+            plotted.add(idx)
+    if not plotted:
+        return (f"DENSITY-REFERENCE BOUNDARY: {'/'.join(b['species'])} "
+                f"references were relocked mid-run ({b['swap_time']}), but no "
+                "plotted cell trains on those species, so every cell here is "
+                "unaffected and comparable across the boundary.")
     pre = sorted(plotted & b["pre"])
     mixed = sorted(plotted & b.get("mixed", set()))
     post = sorted(plotted & b["post"])
@@ -323,10 +386,11 @@ def lockfix_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
                 else f"spec {ix[0]:04d}-{ix[-1]:04d}")
 
     head = (f"DENSITY-REFERENCE BOUNDARY: {species} references were relocked "
-            f"mid-run ({b['swap_time']}).")
+            f"mid-run ({b['swap_time']}); only cells TRAINING on those species "
+            "are affected (all others are comparable across it).")
     parts = []
     if pre:
-        parts.append(f"{len(pre)} cell(s) pre-swap [{_rng(pre)}], OLD "
+        parts.append(f"{len(pre)} affected cell(s) pre-swap [{_rng(pre)}], OLD "
                      "unlocked references")
     if post:
         parts.append(f"{len(post)} post-swap [{_rng(post)}], relocked "
@@ -2615,7 +2679,9 @@ def _energy_arch_axis(rows: List[Dict[str, Any]]) -> List[str]:
 def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                        archs: List[str], subsets: List[int], *,
                        pbe_line: Optional[float] = None, title: str,
-                       scan_line: Optional[float] = None) -> None:
+                       scan_line: Optional[float] = None,
+                       relocked_cells: Optional[set] = None,
+                       mixed_cells: Optional[set] = None) -> None:
     """Grouped per-(arch, subset_size) bar panel: one bar group per arch
     (rung-ordered by the caller), x = subset_size, PBE dashed / SCAN dotted
     reference lines when finite, green beats-PBE markers on bars strictly
@@ -2625,14 +2691,45 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     bw = 0.8 / max(1, len(archs))
     beat_x: List[float] = []
     beat_h: List[float] = []
+    # Reference-provenance glyphs: cells trained on relocked degenerate-radical
+    # references, and cells whose references changed mid-training (not
+    # interpretable). Empty/None on every run without a mid-run swap.
+    relocked = relocked_cells or set()
+    mixed = mixed_cells or set()
+    relock_x: List[float] = []
+    relock_h: List[float] = []
+    mixed_x: List[float] = []
+    mixed_h: List[float] = []
     for j, a in enumerate(archs):
         xs = [i + (j - (len(archs) - 1) / 2) * bw
               for i in range(len(subsets))]
         hs = [metric.get((a, s), float("nan")) for s in subsets]
-        ax.bar(xs, hs, width=bw, color=ARCH_COLOR.get(a, "0.5"), edgecolor="k",
-               linewidth=0.3, label=a)
+        hatches = [("//" if (a, s) in mixed else None) for s in subsets]
+        if any(hatches):
+            for x, h, s, hatch in zip(xs, hs, subsets, hatches):
+                ax.bar([x], [h], width=bw, color=ARCH_COLOR.get(a, "0.5"),
+                       edgecolor="k", linewidth=0.3, hatch=hatch,
+                       label=a if s == subsets[0] else None)
+        else:
+            ax.bar(xs, hs, width=bw, color=ARCH_COLOR.get(a, "0.5"),
+                   edgecolor="k", linewidth=0.3, label=a)
+        for x, h, s in zip(xs, hs, subsets):
+            if not _is_num(h):
+                continue
+            if (a, s) in relocked:
+                relock_x.append(x); relock_h.append(h)
+            elif (a, s) in mixed:
+                mixed_x.append(x); mixed_h.append(h)
         for x, h in _beats_pbe_marks(xs, hs, pbe_line):
             beat_x.append(x); beat_h.append(h)
+    if relock_x:
+        ax.scatter(relock_x, relock_h, marker="*", s=70, color="#1f77b4",
+                   edgecolor="k", linewidths=0.4, zorder=7,
+                   label="relocked refs")
+    if mixed_x:
+        ax.scatter(mixed_x, mixed_h, marker="X", s=42, color="#d62728",
+                   edgecolor="k", linewidths=0.4, zorder=7,
+                   label="refs changed mid-training (not interpretable)")
     if _is_num(pbe_line):
         ax.axhline(pbe_line, ls="--", color="k", linewidth=1.0, label="PBE")
     if _is_num(scan_line):
@@ -3516,6 +3613,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                             density_pbe_key: str = "density_rmse_pbe",
                             density_unit_label: str = "density RMSE",
                             ed_gamma_label: str = "own gamma",
+                            lockfix_cells: Optional[Dict[str, set]] = None,
                             title: Optional[str] = None) -> Path:
     """Per-channel held-out story, ALL BARS, one column per channel
     (BH76 | W4-11 | combined): row 1 = WTMAD-2 bars per (arch, subset_size)
@@ -3538,6 +3636,10 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
         ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
     pools_of = _species_pools(rows)
     pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=density_pbe_key)
+    # reference-provenance glyphs; empty dict -> bars render exactly as before
+    _lf = ({"relocked_cells": (lockfix_cells or {}).get("relocked"),
+            "mixed_cells": (lockfix_cells or {}).get("mixed")}
+           if lockfix_cells else {})
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -3554,7 +3656,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                    "reduction (scaled relative error)")
             _grouped_arch_bars(axes[0][j], wtmad2_by_arch_subset(pr), archs,
                                subsets, pbe_line=wtmad2_pbe_baseline(pr),
-                               title=ttl)
+                               title=ttl, **_lf)
         for j, (ch, lab) in enumerate(chans):
             ax = axes[1][j]
             if ch == "combined":
@@ -3575,7 +3677,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                     ax, d_map, archs, subsets,
                     pbe_line=(d_pbe_ch if _is_num(d_pbe_ch)
                               and d_pbe_ch > 0.0 else None),
-                    title=ttl_d)
+                    title=ttl_d, **_lf)
                 ax.set_ylabel(f"{density_unit_label} vs CCSD", fontsize=8)
             else:
                 ax.text(0.5, 0.5, "density unavailable", ha="center",
@@ -3595,7 +3697,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                     ax, ed_map, archs, subsets,
                     pbe_line=(float(ed_pbe) if _is_num(ed_pbe)
                               and ed_pbe > 0.0 else None),
-                    title=ttl)
+                    title=ttl, **_lf)
                 ax.set_ylabel(f"{_ED_SYM} (kcal/mol)", fontsize=8)
                 _gamma_stamp(ax, s)
             else:
@@ -4970,6 +5072,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     # carry a density or ED panel). Empty for runs without a swap, so their
     # figures are unchanged.
     _lockfix = lockfix_note(run_dir, eval_subdir=eval_subdir)
+    lf_cells = lockfix_cell_classes(run_dir, eval_subdir=eval_subdir)
+    if not (lf_cells["relocked"] or lf_cells["mixed"]):
+        lf_cells = None          # no glyphs on runs without an affected cell
     if _lockfix:
         print(f"  ({_lockfix})")
         note = f"{note}  {_lockfix}" if note else _lockfix
@@ -5242,6 +5347,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     density_pbe_key="density_eps_l1_pbe",
                     density_unit_label=_EPS_N_SYM,
                     ed_gamma_label="",
+                    lockfix_cells=lf_cells,
                     title="Per-channel held-out story (DFS units): WTMAD-2 "
                           f"| {_EPS_N_SYM} | {_ED_N_SYM} "
                           "(BH76, W4-11, combined)"))
@@ -5332,7 +5438,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         written.append(plot_density_energy_3x3(
             rows, hd_rows, outdir / "ablation_density_energy_3x3.png",
             run_id, pbe_table=pbe_table, ch_summaries=ch_summaries,
-            note=note, provenance=prov_3x3, dataset=ds))
+            note=note, provenance=prov_3x3, dataset=ds,
+            lockfix_cells=lf_cells))
         pools_of = _species_pools(rows)
         legs3: Dict[str, Optional[Dict[str, Any]]] = {}
         counts3: Dict[str, Tuple[Dict, Dict]] = {}

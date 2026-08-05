@@ -2698,6 +2698,18 @@ def test_dfs_paper_notation_symbols():
     fig.plt.close(f1)
 
 
+def _train_on_ch(run_dir, *spec_names):
+    """Add CH to those specs' training molecules, so the relocked species is
+    actually in their training set (the boundary only applies to such cells)."""
+    for name in spec_names:
+        meta = run_dir / "checkpoints" / name / "train_metadata.json"
+        if not meta.is_file():
+            continue
+        md = json.loads(meta.read_text())
+        md["molecules"] = sorted(set(md.get("molecules", [])) | {"CH"})
+        meta.write_text(json.dumps(md))
+
+
 def _write_lockfix_manifest(run_dir, pre=("spec_0000",), in_flight=(),
                             post=("spec_0001",)):
     """The manifest hpcjobs/dfs6311_lockfix_swap.py writes into the run dir."""
@@ -2744,6 +2756,8 @@ def test_lockfix_note_reports_only_plotted_cells(tmp_path):
     run = _make_run_dir(tmp_path)
     _add_holdout_density(run)
     # the fixture evaluates specs 0-4; put 0-2 pre-swap and 3+ post
+    _train_on_ch(run, "spec_0000", "spec_0001", "spec_0002", "spec_0003",
+                 "spec_0004")
     _write_lockfix_manifest(run, pre=("spec_0000", "spec_0001", "spec_0002"),
                             post=("spec_0003", "spec_0004", "spec_0087"))
     msg = fig.lockfix_note(run)
@@ -2766,6 +2780,7 @@ def test_lockfix_note_flags_mid_training_cells_as_uninterpretable(tmp_path):
     and the disclosure must say so rather than silently grouping it."""
     run = _make_run_dir(tmp_path)
     _add_holdout_density(run)
+    _train_on_ch(run, "spec_0000", "spec_0001", "spec_0002", "spec_0003")
     _write_lockfix_manifest(run, pre=("spec_0000",),
                             in_flight=("spec_0001", "spec_0002"),
                             post=("spec_0003",))
@@ -2774,7 +2789,7 @@ def test_lockfix_note_flags_mid_training_cells_as_uninterpretable(tmp_path):
     assert "NOT interpretable" in msg
     assert "spec 0001-0002" in msg
     # and they are not counted into either side's cell tally
-    assert "1 cell(s) pre-swap" in msg and "1 post-swap" in msg
+    assert "1 affected cell(s) pre-swap" in msg and "1 post-swap" in msg
 
 
 def test_density_figures_stamp_the_lockfix_boundary(tmp_path, capsys):
@@ -2782,6 +2797,7 @@ def test_density_figures_stamp_the_lockfix_boundary(tmp_path, capsys):
     the console), so no density comparison can silently span it."""
     run = _make_run_dir(tmp_path)
     _add_holdout_density(run)
+    _train_on_ch(run, "spec_0000", "spec_0001", "spec_0002", "spec_0003")
     _write_lockfix_manifest(run, pre=("spec_0000", "spec_0001"),
                             post=("spec_0002", "spec_0003"))
     seen = []
@@ -2799,6 +2815,54 @@ def test_density_figures_stamp_the_lockfix_boundary(tmp_path, capsys):
         monkey.undo()
     assert seen and "DENSITY-REFERENCE BOUNDARY" in seen[0]
     assert "DENSITY-REFERENCE BOUNDARY" in capsys.readouterr().out
+
+
+def test_lockfix_cell_classes_only_marks_cells_training_on_swapped_species():
+    """Glyphs mark only cells whose TRAINING SET holds a relocked species; a
+    cell that never trains on CH/NO saw identical references either side and
+    must carry no marker."""
+    import tempfile
+    tmp = Path(tempfile.mkdtemp())
+    run = _make_run_dir(tmp)
+    _add_holdout_density(run)
+    # spec_0000 trains on HO only (fixture), spec_0003 gets CH added
+    meta3 = run / "checkpoints" / "spec_0003" / "train_metadata.json"
+    md = json.loads(meta3.read_text())
+    md["molecules"] = list(md.get("molecules", [])) + ["CH"]
+    meta3.write_text(json.dumps(md))
+    _write_lockfix_manifest(run, pre=("spec_0000",), in_flight=("spec_0001",),
+                            post=("spec_0002", "spec_0003"))
+    cls = fig.lockfix_cell_classes(run)
+    manifest_cells = fig.ccp._read_manifest_cells(run)
+    ch_cell = (manifest_cells[3]["arch"], manifest_cells[3]["subset_size"])
+    # only the CH-bearing post-swap cell is marked relocked
+    assert cls["relocked"] == {ch_cell}
+    # spec_0002 is post-swap but trains on no swapped species -> unmarked
+    no_ch = (manifest_cells[2]["arch"], manifest_cells[2]["subset_size"])
+    assert no_ch not in cls["relocked"] and no_ch not in cls["mixed"]
+
+
+def test_grouped_bars_draw_reference_provenance_glyphs():
+    """The bar panel draws a star on relocked cells and a hatched X on cells
+    whose references changed mid-training; unmarked runs are unchanged."""
+    metric = {("deep", 1): 1.0, ("deep", 2): 2.0, ("deep", 3): 3.0}
+    f0, ax0 = fig.plt.subplots()
+    fig._grouped_arch_bars(ax0, metric, ["deep"], [1, 2, 3], title="t")
+    base_collections = len(ax0.collections)
+    base_labels = set(ax0.get_legend_handles_labels()[1])
+    fig.plt.close(f0)
+    f1, ax1 = fig.plt.subplots()
+    fig._grouped_arch_bars(ax1, metric, ["deep"], [1, 2, 3], title="t",
+                           relocked_cells={("deep", 3)},
+                           mixed_cells={("deep", 2)})
+    labels = set(ax1.get_legend_handles_labels()[1])
+    assert "relocked refs" in labels
+    assert any("not interpretable" in lb for lb in labels)
+    assert len(ax1.collections) > base_collections
+    assert not (base_labels - labels)      # existing legend entries kept
+    hatched = [p for p in ax1.patches if p.get_hatch()]
+    assert len(hatched) == 1               # only the mid-training cell
+    fig.plt.close(f1)
 
 
 def test_pbe_anchor_coverage_warning_key_params():
