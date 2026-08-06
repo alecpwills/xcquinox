@@ -38,13 +38,16 @@ def test_inputs_density_fit_reads_config():
 
 def test_solver_config_from_named_threads_density_fit():
     from xcquinox.alec.cluster.spec_builder import _solver_config_from_named
+    from xcquinox.alec.cluster.grid_config import SolverNamed
 
-    class _Named:
-        mode = "FULL"
-        max_cycles = 3
-        feature_policy = None
-        scf_grad_checkpoint = False   # 2026-06-20: mirror SolverNamed (WS4 field)
+    # Build the REAL dataclass rather than a hand-written stand-in. A stub has
+    # to be updated by hand every time SolverNamed gains a field, and when it is
+    # not, the test fails on an AttributeError that says nothing about
+    # density-fit threading -- which is what happened when the 2026-06-24 mixer
+    # knobs (mixer_name / mixer_kwargs) landed. Constructing the dataclass keeps
+    # this test pinned to the thing it claims to exercise.
+    named = SolverNamed(mode="FULL", max_cycles=3)
 
-    sc = _solver_config_from_named(_Named(), density_fit=True,
+    sc = _solver_config_from_named(named, density_fit=True,
                                    auxbasis="def2-svp-jkfit")
     assert sc.density_fit is True and sc.auxbasis == "def2-svp-jkfit"
