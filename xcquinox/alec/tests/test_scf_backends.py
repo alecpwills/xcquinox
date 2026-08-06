@@ -429,10 +429,17 @@ def test_pyscfad_reassemble_policy_differs_from_frozen(monkeypatch):
     md_perturbed = dict(md)
     md_perturbed["dm_pbe"] = dm0 + perturb
 
-    cfg_frozen = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+    # Backend note (2026-08-06): this exercise moved from PYSCFAD to MANUAL.
+    # PYSCFAD now REFUSES a DM-dependent descriptor under REASSEMBLE, because
+    # its libxc-style per-point eval_xc callback cannot carry the
+    # de/dfeatures . dfeatures/dP term and would return a V_xc that is not the
+    # derivative of E_xc. MANUAL assembles that term exactly and is the backend
+    # the production sweep runs, so the policy comparison belongs there. The
+    # refusal itself is pinned by the test below.
+    cfg_frozen = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
                              feature_policy=FeaturePolicy.FROZEN, max_cycles=2,
                              conv_tol=1e-12)
-    cfg_reass = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FIXED_J,
+    cfg_reass = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FIXED_J,
                             feature_policy=FeaturePolicy.REASSEMBLE, max_cycles=2,
                             conv_tol=1e-12)
 
@@ -442,4 +449,43 @@ def test_pyscfad_reassemble_policy_differs_from_frozen(monkeypatch):
     # The two DMs should differ because REASSEMBLE updates features per cycle
     diff = float(np.max(np.abs(dm_frozen - dm_reass)))
     assert diff > 1e-8, f"REASSEMBLE gives same DM as FROZEN: diff={diff}"
+
+
+def test_pyscfad_refuses_dm_dependent_descriptors_under_reassemble(monkeypatch):
+    """A wrong potential must fail loudly rather than converge quietly.
+
+    ``eval_xc_alec_gga`` is a libxc-compatible per-point callback returning
+    ``(exc, vrho, vsigma)``; pyscf's numint builds the Fock matrix from those
+    three arrays alone, so there is no channel for the global
+    ``sum_g w_g (de/dfeatures)_g . dfeatures_g/dP`` term that any DM-dependent
+    descriptor contributes. Returning V_xc without it means the SCF converges a
+    density that does not minimise its own energy.
+
+    FROZEN is exempt: the features are constant in P, so the term is identically
+    zero and the existing callback is already exact.
+    """
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    import dataclasses
+    import pytest as _pytest
+    import xcquinox.alec as alec
+    from xcquinox.alec.solver_pyscfad import _reject_dm_dependent_descriptors
+    from xcquinox.alec.solver import FeaturePolicy
+
+    def _model(name):
+        arch = dataclasses.replace(alec.get_architecture(name),
+                                   zero_init_final_layer=False)
+        return alec.AlecGGAModel.from_arch(arch, seed=0)
+
+    for name in ("deep_dm", "deep_mgga_3x16", "deep_rung35_3x16"):
+        with _pytest.raises(NotImplementedError, match="pyscfad"):
+            _reject_dm_dependent_descriptors(_model(name),
+                                             FeaturePolicy.REASSEMBLE)
+        # FROZEN makes the missing term vanish, so it stays supported.
+        _reject_dm_dependent_descriptors(_model(name), FeaturePolicy.FROZEN)
+
+    # Geometry-only and descriptor-free architectures are unaffected: cusp is
+    # the only descriptor without a compute_from_dm.
+    for name in ("deep_3x16", "deep_attn_3x16", "deep_cusp_3x16"):
+        for policy in (FeaturePolicy.REASSEMBLE, FeaturePolicy.FROZEN):
+            _reject_dm_dependent_descriptors(_model(name), policy)
 

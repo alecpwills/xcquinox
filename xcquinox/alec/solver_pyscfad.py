@@ -565,6 +565,52 @@ def run_pyscfad_scf(config: SolverConfig, model, mol_data: dict) -> SCFResult:
         return _run_pyscfad_scf_impl(config, model, mol_data)
 
 
+def _reject_dm_dependent_descriptors(model, policy) -> None:
+    """Refuse to build a knowingly-wrong V_xc on the pyscfad backend.
+
+    For any descriptor whose features depend on the density matrix, the exact
+    potential carries a third chain-rule term,
+
+        V_xc += sum_g w_g (de_xc/dfeatures)_g . d features_g / dP,
+
+    which the MANUAL backend assembles (``oneshot.feature_response_vxc``). The
+    pyscfad backend cannot: ``eval_xc_alec_gga`` is a libxc-compatible per-point
+    callback returning ``(exc, vrho, vsigma)``, and pyscf's numint builds the
+    Fock matrix from those three arrays alone. There is no channel through that
+    interface for a GLOBAL matrix term, and ``_features_for_block`` chunks the
+    grid, so the term would additionally need cross-block accumulation.
+
+    Carrying it requires overriding ``get_veff`` instead of ``eval_xc``: compute
+    the per-point ``de/dfeatures`` while looping the blocks, accumulate
+    ``sum_g w_g (de/df)_g . df_g/dP`` across blocks in the AO basis, symmetrize,
+    and add the result to the veff numint returns. That override is deliberately
+    not built yet -- the DM-dependent descriptor it would serve is itself not
+    yet valid (``dm_entropy`` has no usable gradient at a converged density), so
+    building it now would check one unverified path against another.
+
+    Until then this raises rather than silently returning a potential that is
+    not the derivative of the energy. FROZEN policy is exempt: the features are
+    constant in P, the extra term is identically zero, and the existing
+    per-point callback is already exact.
+    """
+    if policy == FeaturePolicy.FROZEN:
+        return
+    offenders = [type(d).__name__ for d in model.descriptors
+                 if hasattr(type(d), "compute_from_dm")]
+    if not offenders:
+        return
+    raise NotImplementedError(
+        "run_pyscfad_scf: architecture carries density-matrix-dependent "
+        f"descriptor(s) {offenders} under {policy}, but the pyscfad backend "
+        "assembles V_xc through a per-point libxc-style eval_xc callback that "
+        "cannot carry the de/dfeatures . dfeatures/dP term. The returned V_xc "
+        "would not be the functional derivative of E_xc, so the SCF would "
+        "converge a density that does not minimise its own energy. Use "
+        "SolverBackend.MANUAL, which assembles this term exactly, or "
+        "FeaturePolicy.FROZEN, where the term vanishes by construction."
+    )
+
+
 def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFResult:
     from xcquinox.alec.descriptors import assemble_descriptor_features
 
@@ -572,6 +618,8 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
 
     policy = config.effective_feature_policy
     descriptors = model.descriptors
+
+    _reject_dm_dependent_descriptors(model, policy)
 
     # Prefer the Mole cached in mol_data by precompute (avoids Mole.build()
     # inside any jit-traced hot path). Fall back to rebuilding from metadata

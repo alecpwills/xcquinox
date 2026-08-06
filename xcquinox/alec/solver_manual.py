@@ -296,7 +296,9 @@ def run_manual_scf(config: SolverConfig, model, mol_data: dict,
 def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
                         forward_only: bool = False) -> SCFResult:
     from xcquinox.alec.descriptors import assemble_descriptor_features
-    from xcquinox.alec.oneshot import compute_vxc_nn
+    from xcquinox.alec.oneshot import (
+        compute_vxc_nn, feature_energy_derivative, feature_response_vxc,
+        has_dm_dependent_descriptor)
 
     policy = config.effective_feature_policy
     mode = config.mode
@@ -345,6 +347,29 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
         )
         return feats, rho_d, sigma_d, nabla_rho_d
 
+    # A DM-dependent descriptor makes E_xc depend on the density matrix through
+    # a third path (features) that the per-point v_rho / v_sigma JVPs do not
+    # carry, so V_xc is not dE_xc/dP without the extra term. FROZEN policy reuses
+    # the precompute features, which are constant in D, so the term is zero there
+    # by construction and the analytic assembly is already exact.
+    _needs_feature_response = (
+        policy != FeaturePolicy.FROZEN and has_dm_dependent_descriptor(model)
+    )
+
+    def _features_only(D):
+        return _features_and_rho(D)[0]
+
+    def _vxc_with_feature_response(D, rho_d, sigma_d, feats, nabla_rho_d):
+        vxc = compute_vxc_nn(
+            model, rho_d, sigma_d, feats, ao_grid, grid_weights,
+            nabla_rho=nabla_rho_d, ao_grad=ao_grid_deriv,
+        )
+        if not _needs_feature_response:
+            return vxc
+        dedf = feature_energy_derivative(model, rho_d, sigma_d, feats)
+        return vxc + feature_response_vxc(
+            dedf, grid_weights, _features_only, D)
+
     _coulomb = _resolve_coulomb(config, mol_data)
 
     def _j_for_cycle(D):
@@ -373,10 +398,8 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
     def body(state, _):
         D_cur = state.density_matrix
         features, rho_cur, sigma_cur, nabla_rho_cur = _features_and_rho(D_cur)
-        vxc_nn = compute_vxc_nn(
-            model, rho_cur, sigma_cur, features, ao_grid, grid_weights,
-            nabla_rho=nabla_rho_cur, ao_grad=ao_grid_deriv,
-        )
+        vxc_nn = _vxc_with_feature_response(
+            D_cur, rho_cur, sigma_cur, features, nabla_rho_cur)
         J_cycle = _j_for_cycle(D_cur)
         F = h_core + J_cycle + vxc_nn
         D_new = _diagonalize_roothaan(F, S, nocc)
@@ -445,7 +468,10 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
       7. Energy from D_mixed using ``_compute_total_energy_uks`` (spin-scaled XC)
     """
     from xcquinox.alec.descriptors import assemble_descriptor_features
-    from xcquinox.alec.oneshot import compute_vxc_nn, compute_vc_polarized_per_spin
+    from xcquinox.alec.oneshot import (
+        compute_vxc_nn, compute_vc_polarized_per_spin,
+        feature_energy_derivative, feature_response_vxc,
+        has_dm_dependent_descriptor, uks_zeta)
 
     policy = config.effective_feature_policy
     mode = config.mode
@@ -518,6 +544,43 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
             rung35_proj_ao=mol_data.get("rung35_proj_ao"),
             **mgga_kw,
         )
+
+    _needs_feature_response = (
+        policy != FeaturePolicy.FROZEN and has_dm_dependent_descriptor(model)
+    )
+
+    def _feature_response_uks(D_ab, features, rho_a, rho_b, sigma_aa, sigma_bb,
+                              sigma_tot):
+        """Per-spin V_xc contribution from the descriptors' DM dependence.
+
+        The SAME features enter all three terms of the split UKS energy, so
+        de/df is ACCUMULATED across them before a single contraction against
+        df/dP:
+
+            E_xc = 1/2 sum_g w_g [e_x(2 rho_a, 4 sigma_aa, f)
+                                  + e_x(2 rho_b, 4 sigma_bb, f)]
+                 +     sum_g w_g  e_c(rho_tot, sigma_tot, f [, zeta])
+
+        so de/df = 1/2 (de_x/df|_a + de_x/df|_b) + de_c/df, each evaluated at
+        its own spin-scaled arguments. Differentiating the shared ``P ->
+        features`` map once then yields both spin blocks at once, since the
+        descriptors consume the spin-resolved DM.
+        """
+        rho_tot = rho_a + rho_b
+        dedf = 0.5 * (
+            feature_energy_derivative(
+                model, 2.0 * rho_a, 4.0 * sigma_aa, features, part="x")
+            + feature_energy_derivative(
+                model, 2.0 * rho_b, 4.0 * sigma_bb, features, part="x")
+        )
+        if model.cnet.use_spin_polarization:
+            dedf = dedf + feature_energy_derivative(
+                model, rho_tot, sigma_tot, features, part="c",
+                zeta=uks_zeta(rho_a, rho_b))
+        else:
+            dedf = dedf + feature_energy_derivative(
+                model, rho_tot, sigma_tot, features, part="c")
+        return feature_response_vxc(dedf, grid_weights, _features_for, D_ab)
 
     def _vx_nn_spin(features, rho_s, sigma_ss, nabla_rho_s):
         """EXCHANGE-only spin-scaled V_x^NN for a single spin channel.
@@ -619,6 +682,11 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
             vc = _vc_nn_total(features, rho_a + rho_b, sigma_tot, nabla_rho_tot)
             vxc_nn_a = vx_a + vc
             vxc_nn_b = vx_b + vc
+        if _needs_feature_response:
+            v_feat = _feature_response_uks(
+                D_cur, features, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot)
+            vxc_nn_a = vxc_nn_a + v_feat[0]
+            vxc_nn_b = vxc_nn_b + v_feat[1]
         j_total = _j_total_for_cycle(D_cur)
         fock_a = h_core + j_total + vxc_nn_a
         fock_b = h_core + j_total + vxc_nn_b

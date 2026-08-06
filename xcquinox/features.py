@@ -111,13 +111,25 @@ def compute_dm_features(
     #     Use D_norm = D/2.
     #   - UKS: each spin DM is its own spin-orbital projector (Pople-Nesbet
     #     1954); D_σ S D_σ = D_σ. Use spin-resolved DMs separately and average.
+    # SQUARED Frobenius norm, not the norm itself. ||X||_F is not
+    # differentiable at X = 0, and X = D S D - D is IDENTICALLY zero for any
+    # idempotent density matrix -- i.e. at every converged SCF density, which is
+    # exactly where the descriptor is evaluated. Autodiff there returned
+    # -2.08e-03 against a finite difference of +4.50e-09. ||X||_F^2 = sum(X*X)
+    # is a polynomial: smooth at the origin, same zero set, still monotone in the
+    # deviation, and it restores agreement to 6.5e-15. This changes the feature's
+    # numeric scale (values were already ~0 on single-determinant densities, so
+    # the practical shift is negligible, but it is not byte-identical).
+    def _idempotency_sq(d, n):
+        x = d @ S @ d - d
+        return jnp.sum(x * x) / (n + 1e-12)
+
     if dm.ndim == 3:
         d_a, d_b = dm[0], dm[1]
         n_a = jnp.trace(d_a @ S)
         n_b = jnp.trace(d_b @ S)
-        err_a = jnp.linalg.norm(d_a @ S @ d_a - d_a, "fro") / (n_a + 1e-12)
-        err_b = jnp.linalg.norm(d_b @ S @ d_b - d_b, "fro") / (n_b + 1e-12)
-        idempotency_error = 0.5 * (err_a + err_b)
+        idempotency_error = 0.5 * (_idempotency_sq(d_a, n_a)
+                                   + _idempotency_sq(d_b, n_b))
         # Aggregate to total density for the remaining features.
         dm = d_a + d_b
         n_elec = n_a + n_b
@@ -126,9 +138,7 @@ def compute_dm_features(
         n_elec = jnp.trace(dm @ S)
         d_norm = 0.5 * dm
         n_norm = 0.5 * n_elec  # = Tr(P S) = N_e/2
-        idempotency_error = jnp.linalg.norm(
-            d_norm @ S @ d_norm - d_norm, "fro"
-        ) / (n_norm + 1e-12)
+        idempotency_error = _idempotency_sq(d_norm, n_norm)
 
     # Natural-orbital occupations = eigenvalues of D @ S, obtained from the
     # symmetric similarity transform S^{1/2} D S^{1/2}. The Löwdin transform
@@ -144,6 +154,26 @@ def compute_dm_features(
     # broadcasting molecule-size info to every grid point. The intensive form
     # (controlled by ``intensive`` flag) divides by ln(max(n_orb_eff, 2)) so the
     # feature is in [0, 1] and is a size-intensive correlation indicator.
+    #
+    # KNOWN DEFECT, deliberately left in place (see alec/HISTORY.md). This
+    # feature's gradient is wrong at every converged SCF density, and it is not
+    # repairable as formulated:
+    #   * the clip below puts ALL occupations on a boundary for a single
+    #     determinant (measured on H2O/def2-svp: 5 at exactly 2.0, 19 at
+    #     <= 1e-12), so the clip zeroes the entire gradient -- autodiff returns
+    #     exactly 0.0 against a finite difference of +5.97e-02;
+    #   * removing the clip does not help. 22 of 23 eigenvalue gaps are < 1e-10,
+    #     and eigenvector derivatives carry 1/(lam_i - lam_j), so the gradient is
+    #     ill-defined at ANY idempotent DM regardless of clipping.
+    # The participation ratio (Tr[DS])^2/Tr[(DS)^2] was evaluated as an
+    # eigh-free replacement and rejected: it equals N_occ exactly on the
+    # idempotent manifold, so every electron-count normalization that would make
+    # it size-intensive is identically constant there and carries no
+    # information. A genuine replacement is open work; changing this feature
+    # invalidates checkpoints trained on it (see below) and is gated on sign-off.
+    # Trigger condition: any architecture carrying the dm_statistics descriptor
+    # in a mode where features are recomputed from the live DM. No such
+    # architecture is in the dfs6311 sweep.
     occupations = jnp.clip(occupations, 1e-12, 2.0)  # physical bounds
     occ_normalized = occupations / (jnp.sum(occupations) + 1e-12)
     dm_entropy = -jnp.sum(occ_normalized * jnp.log(occ_normalized + 1e-12))
@@ -161,10 +191,30 @@ def compute_dm_features(
         # by 0 / NaN.
         dm_entropy = dm_entropy / jnp.log(jnp.maximum(n_orb_eff, 2.0))
 
-    # Off-diagonal norm (correlation indicator)
+    # Off-diagonal norm (correlation indicator).
+    #
+    # Guarded against the SAME zero-argument Frobenius-norm singularity as
+    # idempotency_error above, by the double-where trick rather than by
+    # squaring. d||X||_F/dX = X/||X||_F is 0/0 = NaN at X == 0, and the
+    # off-diagonal block is identically zero for any one-basis-function system
+    # (H or He in a minimal basis, nao == 1). The NaN then propagates through
+    # the array stack into the sibling feature columns -- 0 * NaN = NaN -- so a
+    # single degenerate system poisons the whole descriptor and, once the
+    # feature map is differentiated to build V_xc, the Fock matrix with it.
+    # Squaring is avoided here because, unlike idempotency_error (which is ~0 at
+    # every converged density either way), this feature is O(0.1-1) on real
+    # densities and squaring would rescale a quantity that trained checkpoints
+    # already consume. The guard leaves every value bit-identical and defines
+    # the gradient at the singular point as 0, the symmetric choice and the one
+    # the squared form would give.
     diag_dm = jnp.diag(jnp.diag(dm))
     off_diag = dm - diag_dm
-    off_diag_norm = jnp.linalg.norm(off_diag, 'fro') / (jnp.trace(dm) + 1e-12)
+    off_diag_sq = jnp.sum(off_diag * off_diag)
+    off_diag_nonzero = off_diag_sq > 0.0
+    safe_off_diag_sq = jnp.where(off_diag_nonzero, off_diag_sq, 1.0)
+    off_diag_norm = jnp.where(
+        off_diag_nonzero, jnp.sqrt(safe_off_diag_sq), 0.0
+    ) / (jnp.trace(dm) + 1e-12)
 
     return {
         'idempotency_error': idempotency_error,

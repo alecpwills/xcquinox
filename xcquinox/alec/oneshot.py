@@ -295,6 +295,137 @@ def _compute_vxc_nn_core(
     return V_rho + V_sigma
 
 
+def has_dm_dependent_descriptor(model) -> bool:
+    """True iff any descriptor's features change with the density matrix.
+
+    ``CuspDescriptor`` is geometry-only and is the sole descriptor without a
+    ``compute_from_dm``; every other descriptor (meta-GGA alpha, rung-3.5,
+    DM statistics) responds to the DM and therefore contributes the
+    ``de/df . df/dP`` term assembled by :func:`feature_response_vxc`.
+    """
+    return any(hasattr(type(d), "compute_from_dm") for d in model.descriptors)
+
+
+def uks_zeta(rho_a, rho_b):
+    """Spin polarization with the production guards, in ONE place.
+
+    The floor, the clip and the tail freeze must be IDENTICAL in the energy
+    (:func:`split_exc_energy_uks`), in the per-spin correlation potential
+    (:func:`compute_vc_polarized_per_spin`) and in the feature-derivative
+    accumulation, or v_c stops being the exact gradient of E_c. That invariant
+    used to be held by comments in three places; it is now held by this
+    function. See the ``_ZETA_BOUNDARY_EPS`` / ``_RHO_TOT_FLOOR`` notes for why
+    each guard exists.
+    """
+    rho_tot = rho_a + rho_b
+    safe_rho_tot = jnp.maximum(rho_tot, _RHO_TOT_FLOOR)
+    z_raw = jnp.clip((rho_a - rho_b) / safe_rho_tot,
+                     -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
+    return jnp.where(rho_tot > _RHO_TOT_FLOOR, z_raw,
+                     jax.lax.stop_gradient(z_raw))
+
+
+def feature_energy_derivative(model, rho, sigma, features, part="xc",
+                              zeta=None):
+    """``de/dfeatures`` per grid point, shape ``(n_grid, n_features)``.
+
+    Evaluated at the SAME sanitized inputs and under the SAME tail mask as the
+    ``v_rho`` JVP in :func:`_compute_vxc_nn_core`, so the three contributions to
+    dE_xc/dP are consistent point by point. Returning this separately (rather
+    than folding it into the JVP tuple) lets the UKS caller ACCUMULATE the
+    derivative across the spin-scaled exchange terms and the correlation term
+    before contracting once against ``df/dP`` -- the features are shared by all
+    three, so a single contraction is both correct and cheaper.
+    """
+    n_feat = features.shape[1] if features.ndim == 2 else 0
+    if n_feat == 0:
+        return jnp.zeros((rho.shape[0], 0), dtype=rho.dtype)
+    if zeta is None:
+        exc_single_point = _exc_scalar_for_part(model, part)
+    else:
+        # Polarized correlation: de_c/df must be taken at the SAME zeta the
+        # energy uses, or the accumulated derivative belongs to a different
+        # functional than the one being minimised.
+        if part != "c":
+            raise ValueError(
+                "feature_energy_derivative: zeta applies to the correlation "
+                f"term only (part='c'); got part={part!r}. Exchange is "
+                "spin-scaled per Oliver & Perdew and ignores zeta."
+            )
+        _ec_scalar = model.eval_ec_scalar
+
+        def exc_single_point(r, s, f, _z=None):
+            return _ec_scalar(r, s, f, zeta=_z)
+
+        dedf = jax.vmap(
+            lambda r, s, f, z: jax.grad(exc_single_point, argnums=2)(r, s, f, z)
+        )(
+            jnp.where(rho > 1e-10, rho, jnp.ones_like(rho)),
+            jnp.where((rho > 1e-10) & (sigma > 1e-30), sigma,
+                      jnp.ones_like(sigma)),
+            features, zeta,
+        )
+        return jnp.where((rho > 1e-10)[:, None], dedf, 0.0)
+    # Same guards as _compute_vxc_nn_core: keep 1/(2 sqrt(sigma)) off the tape
+    # at sigma == 0 while letting v_rho-like terms see the true rho.
+    rho_ok = rho > 1e-10
+    safe_rho = jnp.where(rho_ok, rho, jnp.ones_like(rho))
+    safe_sigma = jnp.where(rho_ok & (sigma > 1e-30), sigma, jnp.ones_like(sigma))
+    dedf = jax.vmap(jax.grad(exc_single_point, argnums=2))(
+        safe_rho, safe_sigma, features)
+    return jnp.where(rho_ok[:, None], dedf, 0.0)
+
+
+def feature_response_vxc(dedf, grid_weights, features_of_dm, dm):
+    """V_xc contribution ``sum_g w_g (de/df)_g . d f_g / dP``.
+
+    This is the term omitted by the per-point JVP formulation: ``v_rho`` and
+    ``v_sigma`` are partial derivatives at FIXED features, so for any descriptor
+    that depends on the density matrix the assembled V_xc is not dE_xc/dP and the
+    SCF minimises an energy whose gradient it does not have.
+
+    Only the ``P -> features`` map is differentiated here, so this returns
+    exactly the missing chain-rule term and nothing else -- the ``rho(P)`` and
+    ``sigma(P)`` paths stay with the existing analytic assembly, which keeps its
+    tail sanitization and leaves descriptor-free architectures on their existing
+    code path.
+
+    ``dedf`` arrives as a concrete array, already evaluated at the current P, so
+    the inner ``jax.grad`` treats it as a constant WITHOUT any masking: that is
+    just the product rule, `d/dP sum_g w_g e(...,f_g(P)) = ... + sum_g w_g
+    (de/df)_g df_g/dP`, with `de/df` taken at P and not differentiated twice.
+    It must NOT be wrapped in ``stop_gradient``. Doing so leaves the returned
+    V_xc bit-identical -- ``dedf`` does not depend on this function's ``dm``
+    argument, so the inner derivative cannot see the difference -- while
+    silently cutting every OUTER derivative that runs through it. The training
+    loop differentiates this Fock matrix with respect to the network parameters
+    at every step, and the freeze made that gradient wrong by 1-7% (measured: on
+    the SCF-predicted density matrix, the quantity the density channel is built
+    on, 5.4e-02 relative against a finite difference, versus 6.2e-10 without
+    it). A potential whose parameter gradient is not the gradient of the
+    potential is the same defect this function exists to remove.
+
+    ``features_of_dm`` must be the SAME closure the energy uses, so the potential
+    cannot drift from the functional. ``dm`` is (n_ao, n_ao) for RKS or
+    (2, n_ao, n_ao) spin-resolved for UKS; the result matches its shape.
+
+    The raw gradient is asymmetric by ~1e-3 because ``nabla_rho`` is contracted
+    with the one-sided ``2 * einsum("ij,dgi,gj->gd")`` shortcut, which is valid
+    only on symmetric density matrices. The antisymmetric part contracts to zero
+    against any symmetric perturbation, so symmetrizing is a gauge choice, not a
+    correction.
+    """
+    if dedf.shape[1] == 0:
+        return jnp.zeros_like(dm)
+    w_dedf = grid_weights[:, None] * dedf
+
+    def _weighted_features(P):
+        return jnp.sum(w_dedf * features_of_dm(P))
+
+    G = jax.grad(_weighted_features)(dm)
+    return 0.5 * (G + jnp.swapaxes(G, -1, -2))
+
+
 # Spin polarization zeta is held strictly INSIDE (-1, 1) by this margin. At full
 # polarization (one spin density 0) zeta -> +-1 EXACTLY; both the PW92 spin
 # interpolation f(zeta) ~ (1+-zeta)**(4/3) and the (rho_a-rho_b)/rho_tot chain
@@ -377,12 +508,8 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
             "this class of bug instead of degrading polarized eval."
         )
     if model.cnet.use_spin_polarization:
-        safe_rho_tot = jnp.maximum(rho_tot, _RHO_TOT_FLOOR)
-        _zeta_raw = jnp.clip((rho_a - rho_b) / safe_rho_tot,
-                             -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
-        zeta = jnp.where(rho_tot > _RHO_TOT_FLOOR, _zeta_raw,
-                         jax.lax.stop_gradient(_zeta_raw))
-        ec = model.eval_ec(rho_tot, sigma_tot, features, zeta=zeta)
+        ec = model.eval_ec(rho_tot, sigma_tot, features,
+                           zeta=uks_zeta(rho_a, rho_b))
     else:
         ec = model.eval_ec(rho_tot, sigma_tot, features)
     E_x = 0.5 * jnp.sum(grid_weights * (ex_a + ex_b))
@@ -591,16 +718,10 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
     # eps_c density as a function of the SPIN densities (rho_tot + zeta formed
     # internally with the SAME clip/floor the UKS energy uses).
     def ec_spin(ra, rb, s, f):
-        rt = ra + rb
-        # IDENTICAL to the energy path's zeta (above): floor rt at _RHO_TOT_FLOOR so
-        # its square cannot underflow in this jvp, and freeze the gradient on the
-        # non-physical rt <= floor tail. Without this, a negative rt from grid-tail
-        # noise makes max(rt,1e-300)^2 underflow -> 0*inf = NaN in the potential.
-        safe_rt = jnp.maximum(rt, _RHO_TOT_FLOOR)
-        z_raw = jnp.clip((ra - rb) / safe_rt,
-                         -1.0 + _ZETA_BOUNDARY_EPS, 1.0 - _ZETA_BOUNDARY_EPS)
-        z = jnp.where(rt > _RHO_TOT_FLOOR, z_raw, jax.lax.stop_gradient(z_raw))
-        return model.eval_ec_scalar(rt, s, f, zeta=z)
+        # zeta formed by the SHARED helper, so this jvp differentiates exactly
+        # the zeta the energy path evaluates -- the invariant that keeps v_c the
+        # exact gradient of E_c.
+        return model.eval_ec_scalar(ra + rb, s, f, zeta=uks_zeta(ra, rb))
 
     _V_SIGMA_THRESHOLD = 1e-30
     sigma_ok = sigma_tot > _V_SIGMA_THRESHOLD

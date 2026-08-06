@@ -556,12 +556,19 @@ def test_rung35_code_does_not_perturb_an_existing_arch():
 
 
 @pytest.mark.slow
-def test_rung35_full_scf_pyscfad_runs_no_nan():
-    """End-to-end smoke validating the Phase-3 threading: a deep_rung35
-    (cusp+rung35) model runs a FULL pyscfad SCF under REASSEMBLE -- A is computed
-    once on pyscfad's (pruned) grid and the occupancy is recomputed from the live
-    DM each cycle. Asserts finite energy + DM + features (no NaN through the
-    self-consistent loop)."""
+def test_rung35_full_scf_pyscfad_refuses_reassemble():
+    """The pyscfad backend must REFUSE rung-3.5 under REASSEMBLE.
+
+    This previously asserted that the same configuration ran to a finite energy.
+    It did -- but the V_xc it converged against was missing the
+    ``sum_g w_g (de/dfeatures)_g . dfeatures_g/dP`` term, because the rung-3.5
+    occupancy depends on the density matrix and pyscfad's libxc-style per-point
+    ``eval_xc`` callback returns only ``(exc, vrho, vsigma)``. Finite-and-wrong
+    is the failure mode this test was least able to catch, so the property being
+    pinned is now the refusal itself. The finiteness smoke lives in
+    ``test_rung35_full_scf_manual_runs_no_nan`` below, on the backend that
+    assembles the term exactly and that the production sweep actually uses.
+    """
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.models import AlecGGAModel
     from xcquinox.alec.data import (precompute_fixed_density_data,
@@ -576,10 +583,8 @@ def test_rung35_full_scf_pyscfad_runs_no_nan():
         required_keys=("cusp_features", "rung35_features"))
     cfg = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FULL,
                        feature_policy=FeaturePolicy.REASSEMBLE, max_cycles=10)
-    result = run_scf(cfg, model, data)
-    assert np.isfinite(float(result.total_energy)), "non-finite energy"
-    assert np.all(np.isfinite(np.asarray(result.density_matrix))), "non-finite DM"
-    assert np.all(np.isfinite(np.asarray(result.features_used))), "non-finite features"
+    with pytest.raises(NotImplementedError, match="pyscfad"):
+        run_scf(cfg, model, data)
 
 
 @pytest.mark.slow

@@ -294,6 +294,359 @@ def test_fd_energy_potential_consistency():
 
 
 # ---------------------------------------------------------------------------
+# V_xc == dE_xc/dP with features RECOMPUTED FROM THE PERTURBED DENSITY MATRIX,
+# across EVERY registered architecture, RKS and polarized UKS.
+#
+# The test above cannot see the defect these guard: it evaluates the descriptor
+# features once and holds them fixed inside the perturbed energy -- the same
+# assumption the per-point JVP assembly makes, so both share one blind spot --
+# and it builds its model from ``get_architecture("deep")``, which carries no
+# descriptors, so the DM-dependent path is never exercised at all.
+#
+# Two properties of the harness are load-bearing:
+#   * ``zero_init_final_layer=False``. A zero-init final layer makes the
+#     enhancement factor constant, so the features have no effect on the energy
+#     and the whole comparison passes vacuously.
+#   * on the OPEN-SHELL path, grid points whose guard status differs between the
+#     +eps and -eps evaluations are EXCLUDED. ``jnp.clip``/``jnp.maximum`` on
+#     zeta and the network tail mask redefine the functional; autodiff returns
+#     the true derivative of the redefined function, but a central difference
+#     that straddles one of those boundaries sees the average of two different
+#     slopes. Without the exclusion every architecture -- including the
+#     descriptor-free control -- reports ~7e-05 and the test is worthless.
+#     Zeroing a straddled point's WEIGHT removes it identically from the energy
+#     and from every potential term, since both are linear in the weights.
+# ---------------------------------------------------------------------------
+_FD_EPS = 1e-6
+
+# Bounds for architectures whose potential is now exact. Every figure quoted
+# here was measured with THIS module's own helpers at _FD_EPS, so a reader can
+# reproduce them by running this file rather than trusting a development
+# scratch harness with a different seed or grid.
+#
+# RKS controls: deep_3x16 1.93e-10, deep_attn_3x16 9.18e-11,
+# deep_cusp_3x16 2.15e-10, deep_notransform 2.02e-10. Fixed architectures land
+# with them: rung35 2.12e-10, rung35only 5.19e-10.
+#
+# The polarized UKS probe has a genuine floor set by the truncation/round-off
+# trade-off, and it is architecture-dependent. Sweeping eps on the
+# descriptor-free controls shows the expected V-shape (residual falls as eps^2,
+# then rises as round-off takes over):
+#
+#     eps            1e-4      1e-5      1e-6      1e-7
+#     deep_3x16      2.64e-06  1.74e-06  3.33e-08  1.65e-06
+#     notransform    8.79e-06  6.34e-06  1.79e-07  1.64e-06
+#
+# The minimum is at 1e-6, which is why _FD_EPS is 1e-6. A genuine V != dE/dP
+# inconsistency would not fall with eps at all -- that is what distinguishes
+# this floor from a defect. The untransformed-input architectures sit 5.4x
+# above the transformed ones (1.79e-07 vs 3.33e-08) because their higher
+# derivatives are larger, so the bound must clear 1.79e-07; 5e-7 gives 2.8x.
+# That is still four orders below the pre-fix residual on this path (rung-3.5
+# 8.69e-04), so the test stays strongly discriminating.
+_TOL_RKS = 1e-9
+_TOL_UKS = 5e-7
+
+# Some architectures remain bounded by a defect OUTSIDE this fix. Their bounds
+# are DERIVED from the descriptor set rather than listed by name, so a newly
+# registered architecture inherits the right bound instead of silently getting
+# the tight one (or, worse, being omitted from a hand-maintained list). These are
+# regression guards, not passes: each bound sits far below the pre-fix residual,
+# which is what shows the feature-derivative term landed, while staying honest
+# that what remains has a named, tracked cause.
+# Residuals with the feature-derivative term in place, pre-fix -> post-fix,
+# measured with this module's helpers at _FD_EPS (pre-fix = routing predicate
+# forced False, which is exactly the old code path):
+#
+#                          RKS                       UKS
+#   rung35          1.87e-03 -> 2.12e-10     8.69e-04 -> 3.54e-08   fixed
+#   rung35only      2.21e-03 -> 5.19e-10     1.61e-03 -> 3.55e-08   fixed
+#   mgga            5.33e-03 -> 3.13e-08     6.20e-03 -> 1.73e-05   metagga-bound
+#   mgga_attn       5.47e-03 -> 2.30e-08     6.20e-03 -> 1.52e-05   metagga-bound
+#   rung35_mgga     3.98e-03 -> 6.10e-08     5.27e-03 -> 1.40e-05   metagga-bound
+#   dm              1.04e-02 -> 1.04e-02     6.74e-03 -> 7.71e-03   dm_entropy-bound
+#   combined        1.27e-03 -> 1.25e-03     1.79e-03 -> 1.78e-03   dm_entropy-bound
+#
+# Bounds clear the worst measured value by ~3x. These quantities are round-off
+# dominated, so the bound exists to catch an order-of-magnitude regression, not
+# to certify precision; too tight and it goes flaky across machines.
+#
+# HONEST LIMIT, so the coverage is not overread: for the dm_statistics
+# architectures this test does NOT discriminate -- 1.04e-02 pre-fix against
+# 1.04e-02 post-fix -- because dm_entropy's broken gradient dominates the
+# residual and swamps the feature term. Those two rows are a regression guard
+# only. The archs that demonstrate the fix are the rung-3.5 pair, which move
+# four orders and are not blocked by anything else.
+_TOL_BLOCKED_DM = 3e-2       # dm_entropy: no valid gradient at any converged DM
+_TOL_BLOCKED_MGGA = (2e-7, 5e-5)   # metagga stop_gradient below the rho cutoff
+
+
+def _tolerances(model):
+    """(RKS, UKS) bounds for this architecture, and why."""
+    names = {type(d).__name__ for d in model.descriptors}
+    if "DMStatisticsDescriptor" in names:
+        # features.py dm_entropy is clipped onto its bounds at every converged
+        # density, so autodiff returns exactly zero there. Deliberately left in
+        # place (checkpoint-invalidating to change); see alec/HISTORY.md.
+        return _TOL_BLOCKED_DM, _TOL_BLOCKED_DM, "dm_entropy"
+    if "MetaGGAAlphaDescriptor" in names:
+        # metagga.py freezes the alpha gradient below _RHO_GRAD_CUTOFF. Removing
+        # it is gated on the production-basis 25-cycle diffuse-tail check, since
+        # the freeze suppresses a d alpha/d sigma channel the alpha clip does
+        # not catch (1.15e14 -> 2.20e31 on Li at 6-311++G(3df,2pd)).
+        return _TOL_BLOCKED_MGGA[0], _TOL_BLOCKED_MGGA[1], "metagga stop_gradient"
+    return _TOL_RKS, _TOL_UKS, None
+
+
+def _live_model(arch_name, seed=0):
+    """Production configuration: polarized correlation, non-degenerate init."""
+    import dataclasses
+    arch = dataclasses.replace(alec.get_architecture(arch_name),
+                               use_polarized_correlation=True,
+                               zero_init_final_layer=False)
+    xnet, cnet = alec.create_network_pair(arch, seed=seed)
+    return alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+
+def _md_with_descriptors(model, name, atom, basis, spin, composition,
+                         grid_level=2):
+    keys = tuple(sorted({k for d in model.descriptors
+                         for k in d.required_mol_keys} | {"eri"}))
+    return precompute_fixed_density_data(
+        MoleculeSpec(name=name, atom=atom, basis=basis, charge=0, spin=spin,
+                     atom_composition=composition, grid_level=grid_level),
+        required_keys=keys, descriptors=model.descriptors)
+
+
+def _live_features_fn(model, md):
+    """The exact ``P -> features`` map the solver uses, as a closure."""
+    from xcquinox.alec.solver import (
+        _reassemble_features, _contract_dm_to_grid_with_nabla)
+    ao_deriv = jnp.asarray(md["ao_grid_deriv"])
+    n_grid = int(np.asarray(md["grid_weights"]).shape[0])
+    s_matrix = jnp.asarray(md["s_matrix"])
+    cusp = md.get("cusp_features")
+    proj = md.get("rung35_proj_ao")
+    has_mgga = any(type(d).__name__ == "MetaGGAAlphaDescriptor"
+                   for d in model.descriptors)
+
+    def features_of(P):
+        if not model.descriptors:
+            return jnp.zeros((n_grid, 0))
+        kw = {}
+        if has_mgga:
+            total = P if P.ndim == 2 else P[0] + P[1]
+            rho_t, _nab, sigma_t = _contract_dm_to_grid_with_nabla(
+                total, ao_deriv)
+            kw = dict(ao_grad=ao_deriv[1:4], rho=rho_t, sigma=sigma_t)
+        return _reassemble_features(
+            descriptors=model.descriptors, dm=P, s_matrix=s_matrix,
+            cusp_features=cusp, n_grid=n_grid, rung35_proj_ao=proj, **kw)
+    return features_of
+
+
+def _symmetric_perturbation(shape, seed=20260806):
+    rng = np.random.default_rng(seed)
+    W = rng.standard_normal(shape)
+    return jnp.asarray(0.5 * (W + np.swapaxes(W, -1, -2)))
+
+
+@pytest.mark.parametrize("arch_name", sorted(alec.ARCHITECTURES))
+def test_fd_consistency_live_features_rks(arch_name):
+    """RKS: the assembled V_xc must be dE_xc/dP when the descriptors respond
+    to the density matrix."""
+    from xcquinox.alec.oneshot import (
+        compute_vxc_nn, feature_energy_derivative, feature_response_vxc,
+        has_dm_dependent_descriptor)
+    from xcquinox.alec.solver import _contract_dm_to_grid_with_nabla
+
+    model = _live_model(arch_name)
+    md = _md_with_descriptors(
+        model, "H2O", "O 0 0 0.117; H 0 0.757 -0.469; H 0 -0.757 -0.469",
+        "def2-svp", 0, (("O", 1), ("H", 2)))
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_deriv = jnp.asarray(md["ao_grid_deriv"])
+    weights = jnp.asarray(md["grid_weights"])
+    features_of = _live_features_fn(model, md)
+
+    dm = np.asarray(md["dm_pbe"])
+    P0 = jnp.asarray(dm.sum(axis=0) if dm.ndim == 3 else dm)
+
+    def energy(P):
+        rho, _nab, sigma = _contract_dm_to_grid_with_nabla(P, ao_deriv)
+        return jnp.sum(weights * model.eval_exc(rho, sigma, features_of(P)))
+
+    rho0, nabla0, sigma0 = _contract_dm_to_grid_with_nabla(P0, ao_deriv)
+    f0 = features_of(P0)
+    V = compute_vxc_nn(model, rho0, sigma0, f0, ao_grid, weights,
+                       nabla_rho=nabla0, ao_grad=ao_deriv)
+    if has_dm_dependent_descriptor(model):
+        V = V + feature_response_vxc(
+            feature_energy_derivative(model, rho0, sigma0, f0),
+            weights, features_of, P0)
+    assert bool(jnp.all(jnp.isfinite(V))), f"{arch_name}: V_xc has NaN/inf"
+
+    W = _symmetric_perturbation(P0.shape)
+    analytic = float(jnp.sum(V * W))
+    fd = float((energy(P0 + _FD_EPS * W) - energy(P0 - _FD_EPS * W))
+               / (2.0 * _FD_EPS))
+    rel = abs(fd - analytic) / max(abs(fd), abs(analytic), 1e-30)
+
+    tol, _uks_tol, blocked_by = _tolerances(model)
+    assert rel < tol, (
+        f"{arch_name}: V_xc is not dE_xc/dP with live features "
+        f"(FD={fd:.6e} analytic={analytic:.6e} rel={rel:.3e} > {tol:.0e}"
+        + (f", bound set by the known {blocked_by} defect)" if blocked_by
+           else ")")
+        + ". The missing term is sum_g w_g (de/dfeatures)_g . dfeatures_g/dP; "
+          "see oneshot.feature_response_vxc."
+    )
+
+
+@pytest.mark.parametrize("arch_name", sorted(alec.ARCHITECTURES))
+def test_fd_consistency_live_features_uks_polarized(arch_name):
+    """Open-shell, polarized correlation -- the production configuration.
+
+    Exercises BOTH feature-derivative sites: the spin-scaled exchange channel
+    and ``compute_vc_polarized_per_spin``, whose feature tangent was zeroed
+    independently of the RKS path.
+    """
+    from xcquinox.alec.oneshot import (
+        compute_vxc_nn, compute_vc_polarized_per_spin,
+        feature_energy_derivative, feature_response_vxc,
+        has_dm_dependent_descriptor, uks_zeta,
+        _ZETA_BOUNDARY_EPS, _RHO_TOT_FLOOR)
+    from xcquinox.alec.models import _NN_TAIL_THRESHOLD
+
+    model = _live_model(arch_name)
+    md = _md_with_descriptors(model, "Li", "Li 0 0 0", "def2-svp", 1,
+                              (("Li", 1),))
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_deriv = jnp.asarray(md["ao_grid_deriv"])
+    ao_xyz = ao_deriv[1:4]
+    features_of = _live_features_fn(model, md)
+
+    dm = np.asarray(md["dm_pbe"])
+    assert dm.ndim == 3, "Li spin=1 must precompute a spin-resolved DM"
+    P0 = jnp.asarray(dm)
+    W = _symmetric_perturbation(P0.shape)
+
+    def spin_quantities(D):
+        rho = jnp.einsum("ij,gi,gj->g", D, ao_grid, ao_grid)
+        nabla = 2.0 * jnp.einsum("ij,dgi,gj->gd", D, ao_xyz, ao_grid)
+        return rho, nabla, jnp.sum(nabla * nabla, axis=1)
+
+    def guard_status(P):
+        rho_a = np.asarray(spin_quantities(P[0])[0])
+        rho_b = np.asarray(spin_quantities(P[1])[0])
+        rho_tot = rho_a + rho_b
+        zeta = (rho_a - rho_b) / np.maximum(rho_tot, _RHO_TOT_FLOOR)
+        return np.stack([
+            np.abs(zeta) >= 1.0 - _ZETA_BOUNDARY_EPS,
+            rho_tot <= _RHO_TOT_FLOOR,
+            2.0 * rho_a <= _NN_TAIL_THRESHOLD,
+            2.0 * rho_b <= _NN_TAIL_THRESHOLD,
+            rho_a <= 1e-10, rho_b <= 1e-10, rho_tot <= 1e-10,
+        ])
+
+    keep = ~np.any(guard_status(P0 + _FD_EPS * W)
+                   != guard_status(P0 - _FD_EPS * W), axis=0)
+    assert keep.sum() > 0.9 * keep.size, (
+        "guard-straddle mask discarded more than 10% of the grid; the "
+        "perturbation is too large to probe the smooth part of the functional"
+    )
+    weights = jnp.asarray(md["grid_weights"]) * jnp.asarray(keep,
+                                                            dtype=jnp.float64)
+
+    def energy(P):
+        rho_a, nabla_a, sigma_aa = spin_quantities(P[0])
+        rho_b, nabla_b, sigma_bb = spin_quantities(P[1])
+        nabla_tot = nabla_a + nabla_b
+        return split_exc_energy_uks(
+            model, rho_a, rho_b, sigma_aa, sigma_bb,
+            jnp.sum(nabla_tot * nabla_tot, axis=1), features_of(P), weights)
+
+    rho_a, nabla_a, sigma_aa = spin_quantities(P0[0])
+    rho_b, nabla_b, sigma_bb = spin_quantities(P0[1])
+    nabla_tot = nabla_a + nabla_b
+    sigma_tot = jnp.sum(nabla_tot * nabla_tot, axis=1)
+    f0 = features_of(P0)
+
+    V_a = compute_vxc_nn(model, 2.0 * rho_a, 4.0 * sigma_aa, f0, ao_grid,
+                         weights, nabla_rho=2.0 * nabla_a, ao_grad=ao_deriv,
+                         part="x")
+    V_b = compute_vxc_nn(model, 2.0 * rho_b, 4.0 * sigma_bb, f0, ao_grid,
+                         weights, nabla_rho=2.0 * nabla_b, ao_grad=ao_deriv,
+                         part="x")
+    vc_a, vc_b = compute_vc_polarized_per_spin(
+        model, rho_a, rho_b, sigma_tot, f0, ao_grid, weights, nabla_tot,
+        ao_deriv)
+    V_a, V_b = V_a + vc_a, V_b + vc_b
+
+    if has_dm_dependent_descriptor(model):
+        # de/df accumulated over all three terms of the split energy before a
+        # single contraction against df/dP -- the features are shared.
+        dedf = 0.5 * (
+            feature_energy_derivative(model, 2.0 * rho_a, 4.0 * sigma_aa, f0,
+                                      part="x")
+            + feature_energy_derivative(model, 2.0 * rho_b, 4.0 * sigma_bb, f0,
+                                        part="x"))
+        dedf = dedf + feature_energy_derivative(
+            model, rho_a + rho_b, sigma_tot, f0, part="c",
+            zeta=uks_zeta(rho_a, rho_b))
+        v_feat = feature_response_vxc(dedf, weights, features_of, P0)
+        V_a, V_b = V_a + v_feat[0], V_b + v_feat[1]
+
+    assert bool(jnp.all(jnp.isfinite(V_a)) and jnp.all(jnp.isfinite(V_b))), (
+        f"{arch_name}: polarized UKS V_xc has NaN/inf")
+
+    analytic = float(jnp.sum(V_a * W[0]) + jnp.sum(V_b * W[1]))
+    fd = float((energy(P0 + _FD_EPS * W) - energy(P0 - _FD_EPS * W))
+               / (2.0 * _FD_EPS))
+    rel = abs(fd - analytic) / max(abs(fd), abs(analytic), 1e-30)
+
+    _rks_tol, tol, blocked_by = _tolerances(model)
+    assert rel < tol, (
+        f"{arch_name}: polarized UKS V_xc is not dE_xc/dP with live features "
+        f"(FD={fd:.6e} analytic={analytic:.6e} rel={rel:.3e} > {tol:.0e}"
+        + (f", bound set by the known {blocked_by} defect)" if blocked_by
+           else ")")
+    )
+
+
+def test_descriptor_free_archs_keep_the_analytic_path():
+    """The routing predicate must send only DM-dependent architectures down the
+    gradient path, so the sound architectures stay byte-identical."""
+    from xcquinox.alec.oneshot import has_dm_dependent_descriptor
+    expected_free = {"deep_3x16", "deep_attn_3x16", "deep_cusp_3x16"}
+    for name in expected_free:
+        assert not has_dm_dependent_descriptor(_live_model(name)), (
+            f"{name} must keep the analytic V_xc path")
+    for name in ("deep_mgga_3x16", "deep_rung35_3x16", "deep_dm_3x16"):
+        assert has_dm_dependent_descriptor(_live_model(name)), (
+            f"{name} carries a DM-dependent descriptor and needs the "
+            f"feature-response term")
+
+
+def test_uks_zeta_is_shared_by_energy_and_potential():
+    """The floor/clip/freeze must come from ONE definition.
+
+    Held by comments in three places previously; a drift between the energy's
+    zeta and the potential's zeta silently breaks v_c = dE_c/drho_sigma.
+    """
+    import inspect
+    from xcquinox.alec import oneshot
+    for fn in (oneshot.split_exc_energy_uks,
+               oneshot.compute_vc_polarized_per_spin):
+        src = inspect.getsource(fn)
+        assert "uks_zeta(" in src, (
+            f"{fn.__name__} must form zeta via oneshot.uks_zeta")
+        assert "_ZETA_BOUNDARY_EPS" not in src, (
+            f"{fn.__name__} re-derives the zeta clip instead of using "
+            f"uks_zeta; that is how the energy and potential drift apart")
+
+
+# ---------------------------------------------------------------------------
 # per-spin correlation potential for a spin-polarization-aware cnet.
 # When the cnet carries the zeta input feature and the model uses the
 # zeta-dependent PW92 baseline (Dick & Fernandez-Serra, PRB 104 L161109

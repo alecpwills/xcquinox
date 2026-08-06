@@ -184,11 +184,19 @@ def test_meta_gga_full_scf_is_differentiable_and_alpha_flows():
     assert any(bool(jnp.any(l != 0.0)) for l in leaves), "no gradient reached the net"
 
 
-def test_meta_gga_full_scf_pyscfad_runs_no_nan():
-    """pyscfad backend, FULL mode: a meta_gga arch reassembles the iso-orbital
-    alpha on pyscfad's pruned grid each cycle (mirroring rung-3.5, treating alpha as
-    a descriptor feature -- NOT native pyscfad MGGA -- for consistency with the
-    manual backend). Finite + no NaN == pyscfad reaches meta-GGA parity."""
+def test_meta_gga_full_scf_manual_runs_no_nan():
+    """FULL mode: a meta_gga arch reassembles the iso-orbital alpha each cycle
+    (treating alpha as a descriptor feature rather than native MGGA) and stays
+    finite.
+
+    Backend note (2026-08-06): this ran on PYSCFAD until that backend began
+    refusing DM-dependent descriptors under REASSEMBLE -- its per-point eval_xc
+    callback cannot carry the de/dfeatures . dfeatures/dP term, so it would
+    return a V_xc that is not the derivative of E_xc. The refusal is pinned in
+    test_scf_backends.py; the finiteness property this test exists for is
+    exercised on MANUAL, which assembles that term exactly and is the backend
+    the production sweep runs.
+    """
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.models import AlecGGAModel
     from xcquinox.alec.data import (precompute_fixed_density_data,
@@ -201,8 +209,11 @@ def test_meta_gga_full_scf_pyscfad_runs_no_nan():
     model = AlecGGAModel.from_arch(arch, seed=0)
     data = precompute_fixed_density_data(
         h2_molecule(), descriptors=arch.materialize_descriptors(),
-        required_keys=("metagga_features",))
-    cfg = SolverConfig(backend=SolverBackend.PYSCFAD, mode=SolverMode.FULL,
+        # "eri" is required by the MANUAL backend, which builds the Coulomb
+        # matrix itself; the pyscfad backend this test previously used got J
+        # from pyscf and did not need it in mol_data.
+        required_keys=("metagga_features", "eri"))
+    cfg = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
                        feature_policy=FeaturePolicy.REASSEMBLE, max_cycles=10)
     result = run_scf(cfg, model, data)
     assert np.isfinite(float(result.total_energy)), "non-finite energy"
