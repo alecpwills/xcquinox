@@ -41,15 +41,19 @@ _RHO_FLOOR: float = 1e-30
 # blows up (~1e28 in the deep tail), and the unrolled FULL-SCF backprop compounds
 # that XC kernel into a NaN training gradient -- the same failure class as the
 # polarized-correlation zeta clip in oneshot.py, which meta-GGA alpha re-introduced
-# by dividing by n. Fix: clip alpha to [0, _ALPHA_MAX] and freeze its gradient
-# below _RHO_GRAD_CUTOFF. This is energy-faithful NOT because alpha is small (it
-# isn't) but because (a) the DFS/SCAN enhancement gate has SATURATED by alpha~100
-# (tanh^2(log((100+1)/2)) = 0.998), and (b) the SAME [0, _ALPHA_MAX] clip is applied
-# to the pretrain-data alpha (subset_selection), so live and precomputed alpha
-# agree -- clipped points carry ~0 exchange-integrand mass, so the XC-energy change
-# is <=1e-9 relative. _RHO_GRAD_CUTOFF is 1e-6 (not 1e-8): a residual ~2e18 band
-# gradient sits just above 1e-8, so freezing to 1e-6 zeroes it at ppm energy cost.
-# See HISTORY Phase 17.
+# by dividing by n. Fix: clip alpha to [0, _ALPHA_MAX]. This is energy-faithful NOT
+# because alpha is small (it isn't) but because (a) the DFS/SCAN enhancement gate
+# has SATURATED by alpha~100 (tanh^2(log((100+1)/2)) = 0.998), and (b) the SAME
+# [0, _ALPHA_MAX] clip is applied to the pretrain-data alpha (subset_selection), so
+# live and precomputed alpha agree -- clipped points carry ~0 exchange-integrand
+# mass, so the XC-energy change is <=1e-9 relative. See HISTORY Phase 17.
+#
+# The companion tail-gradient FREEZE was removed 2026-08-06 (see compute_alpha):
+# it misreported the derivative of an energy ingredient and broke
+# V_xc = dE_xc/dP for every meta-GGA architecture. _RHO_GRAD_CUTOFF is retained
+# only as the documented threshold of the regime that motivated the freeze, and
+# as the density below which alpha is grid-tail noise carrying no integrand mass.
+# It no longer gates any gradient.
 _ALPHA_MAX: float = 100.0
 _RHO_GRAD_CUTOFF: float = 1e-6
 
@@ -95,11 +99,14 @@ def compute_alpha(rho, sigma, tau) -> jnp.ndarray:
     Returns
     -------
     array, shape (N,)
-        ``alpha`` clipped to ``[0, _ALPHA_MAX]`` and gradient-frozen where
-        ``rho < _RHO_GRAD_CUTOFF`` (grid-tail noise), matching
+        ``alpha`` clipped to ``[0, _ALPHA_MAX]``, matching
         :func:`subset_selection.compute_descriptor_triple`. Differentiable in
-        ``tau`` (hence in the DM); the clip + freeze keep both value and
-        reverse-mode gradient finite through the full differentiable SCF.
+        ``tau`` (hence in the DM); the clip keeps both value and reverse-mode
+        gradient finite through the full differentiable SCF.
+
+        The companion tail-gradient freeze below ``_RHO_GRAD_CUTOFF`` was
+        REMOVED 2026-08-06 -- it misreported the derivative of an energy
+        ingredient. See the note in the body.
     """
     rho_safe = jnp.maximum(rho, _RHO_FLOOR)
     tau_w = sigma / (8.0 * rho_safe)
@@ -107,8 +114,30 @@ def compute_alpha(rho, sigma, tau) -> jnp.ndarray:
     # Lower clamp (>= 0) is load-bearing: it guards the network gate
     # x3 = log((alpha+1)/2) from log(neg)=NaN. Upper clip bounds the astronomical
     # tail value (no forward inf) and zeroes the gradient of the worst tail points.
-    alpha = jnp.clip((tau - tau_w) / jnp.maximum(tau_unif, _RHO_FLOOR), 0.0, _ALPHA_MAX)
-    # Freeze the residual ~n^{-8/3} gradient on the negligible-density tail (alpha
-    # is ~0-weight noise there). where + stop_gradient is NaN-safe: both branches
-    # are finite, so no double-where hazard.
-    return jnp.where(rho < _RHO_GRAD_CUTOFF, jax.lax.stop_gradient(alpha), alpha)
+    # 2026-08-06: the tail gradient freeze was REMOVED. It read
+    #     jnp.where(rho < _RHO_GRAD_CUTOFF, jax.lax.stop_gradient(alpha), alpha)
+    # and it made autodiff return something that is not the derivative of this
+    # function wherever it was live. alpha is a descriptor feature, so that
+    # inconsistency propagates straight into V_xc = dE_xc/dP: with the freeze in
+    # place the meta-GGA architectures sat at 2.5e-08 on the energy/potential
+    # finite-difference test against ~1e-10 for every sound architecture, and
+    # removing it closes that gap. A stop_gradient inside an energy functional
+    # guarantees energy/potential inconsistency by construction; the remedy for a
+    # divergent tail derivative is to make the ENERGY well-behaved, never to
+    # misreport its derivative.
+    #
+    # What the clip does and does not do, measured rather than assumed: the
+    # [0, _ALPHA_MAX] clip bounds the VALUE and zeroes the derivative of points
+    # pinned at the ceiling, but it does NOT bound the derivative of points below
+    # it. Removing the freeze takes max|d alpha/d sigma| from 1.15e14 to 2.20e31
+    # on Li at 6-311++G(3df,2pd), so the freeze was load-bearing for the
+    # magnitude even though it was wrong for the derivative. The full-SCF
+    # training gradient nonetheless stays finite -- guarded by
+    # test_meta_gga_full_scf_gradient_finite_on_diffuse_tail, the regression test
+    # for the HISTORY Phase 17 bh76:HLi failure, which reaches rho_min ~ 6e-10 at
+    # the production basis. The 25-cycle pretrained-checkpoint case exceeds this
+    # workstation's memory and is checked by hpcjobs/dfs6311_nan_verify.
+    # If that returns non-finite, the fix is a smooth damping applied to the
+    # ENERGY -- not a reinstated stop_gradient.
+    return jnp.clip((tau - tau_w) / jnp.maximum(tau_unif, _RHO_FLOOR),
+                    0.0, _ALPHA_MAX)

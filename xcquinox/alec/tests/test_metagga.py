@@ -226,13 +226,20 @@ def test_meta_gga_full_scf_manual_runs_no_nan():
 # blowup. alpha = (tau - tau_W)/tau_unif divides by n / n^{5/3}; on a low-density
 # tail its VALUE reaches ~1e4-1e7 (even at normal bases -- alpha is NOT physically
 # O(1) here) and its GRADIENT ~1e28, which the unrolled full-SCF backprop compounds
-# toward a NaN meta-GGA training gradient. Fixed by clip [0, _ALPHA_MAX] + a
-# gradient freeze below _RHO_GRAD_CUTOFF, mirroring the oneshot.py zeta clip. (The
-# OTHER bh76:HLi singularity -- the polarized-correlation potential jvp NaN on the
-# negative-density tail -- lives in test_solv01_split_xc.py.)
+# toward a NaN meta-GGA training gradient. Fixed by the clip [0, _ALPHA_MAX].
+# (The OTHER bh76:HLi singularity -- the polarized-correlation potential jvp NaN on
+# the negative-density tail -- lives in test_solv01_split_xc.py.)
+#
+# 2026-08-06: the companion tail-gradient FREEZE was removed. This test previously
+# asserted `gs == 0.0 and gr == 0.0` below _RHO_GRAD_CUTOFF, i.e. it pinned the
+# very stop_gradient that made autodiff disagree with the function it
+# differentiates -- and, because alpha is an energy ingredient, made V_xc stop
+# being dE_xc/dP for every meta-GGA architecture. The property worth pinning is
+# FINITENESS across the whole tail, which the clip delivers on its own; a frozen
+# gradient is not a correctness property, it was a symptom mask.
 # ---------------------------------------------------------------------------
-def test_compute_alpha_bounded_and_tail_gradient_frozen():
-    from xcquinox.alec.metagga import compute_alpha, _ALPHA_MAX, _RHO_GRAD_CUTOFF
+def test_compute_alpha_bounded_and_tail_gradient_finite():
+    from xcquinox.alec.metagga import compute_alpha, _ALPHA_MAX
     for rho_v in (1e-20, 1e-12, 1e-8, 1e-6, 1e-3, 1e-2, 0.1, 1.0):
         rho = jnp.array([rho_v])
         sigma = jnp.array([max(rho_v ** 2 * 1e-2, 1e-40)])
@@ -242,8 +249,53 @@ def test_compute_alpha_bounded_and_tail_gradient_frozen():
         gs = float(jax.grad(lambda s: compute_alpha(rho, s, tau).sum())(sigma)[0])
         gr = float(jax.grad(lambda r: compute_alpha(r, sigma, tau).sum())(rho)[0])
         assert np.isfinite(gs) and np.isfinite(gr), f"non-finite alpha grad at rho={rho_v}"
-        if rho_v < _RHO_GRAD_CUTOFF:      # negligible-density tail -> gradient frozen
-            assert gs == 0.0 and gr == 0.0, f"tail gradient not frozen at rho={rho_v}"
+
+
+def test_compute_alpha_has_no_stop_gradient_on_the_energy_path():
+    """alpha feeds E_xc, so a frozen gradient anywhere in it breaks V_xc = dE_xc/dP.
+
+    Pinned two ways: the source carries no ``stop_gradient``, and autodiff agrees
+    with a finite difference in the tail regime where the freeze used to be live.
+    """
+    import inspect
+    from xcquinox.alec import metagga as MG
+
+    # Strip the docstring and every comment before scanning: the body carries a
+    # comment quoting the removed line verbatim, so a naive substring search
+    # matches the documentation of the fix rather than a regression.
+    src = inspect.getsource(MG.compute_alpha).split('"""')[-1]
+    code_only = "\n".join(
+        line.split("#", 1)[0] for line in src.splitlines()
+    )
+    assert "stop_gradient" not in code_only, (
+        "compute_alpha reintroduced a stop_gradient on the energy path")
+
+    # The probe must sit below the old _RHO_GRAD_CUTOFF (so the freeze WOULD have
+    # been live) AND below _ALPHA_MAX (so the clip is not legitimately zeroing the
+    # derivative on its own -- at rho = 1e-7 with an arbitrary tau, alpha pins at
+    # the ceiling and AD = FD = 0 for a reason that has nothing to do with the
+    # freeze). Choosing tau = tau_W + tau_unif puts alpha at exactly 1.
+    rho_v, sigma_v = 1e-7, 1e-16
+    tau_unif = 0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0) * rho_v ** (5.0 / 3.0)
+    tau_v = sigma_v / (8.0 * rho_v) + tau_unif
+    rho = jnp.array([rho_v])
+    sigma = jnp.array([sigma_v])
+    tau = jnp.array([tau_v])
+    assert rho_v < MG._RHO_GRAD_CUTOFF, "probe no longer in the formerly-frozen regime"
+    assert float(MG.compute_alpha(rho, sigma, tau)[0]) < MG._ALPHA_MAX - 1.0, (
+        "probe drifted onto the alpha ceiling, where the clip zeroes the "
+        "derivative for an unrelated reason")
+
+    ad = float(jax.grad(lambda t: MG.compute_alpha(rho, sigma, t).sum())(tau)[0])
+    eps = 1e-15
+    fd = (float(MG.compute_alpha(rho, sigma, tau + eps).sum())
+          - float(MG.compute_alpha(rho, sigma, tau - eps).sum())) / (2 * eps)
+    assert np.isfinite(ad) and np.isfinite(fd), "non-finite alpha derivative"
+    assert ad != 0.0, "alpha gradient is still frozen in the tail"
+    rel = abs(fd - ad) / max(abs(fd), abs(ad), 1e-30)
+    assert rel < 1e-5, (
+        f"autodiff disagrees with finite difference in the tail: "
+        f"FD={fd:.6e} AD={ad:.6e} rel={rel:.3e}")
 
 
 def test_compute_alpha_clip_is_noop_below_ceiling():

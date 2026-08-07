@@ -328,6 +328,16 @@ _FD_EPS = 1e-6
 # deep_cusp_3x16 2.15e-10, deep_notransform 2.02e-10. Fixed architectures land
 # with them: rung35 2.12e-10, rung35only 5.19e-10.
 #
+# These residuals are deterministic WITHIN a process but depend on evaluation
+# ORDER across architectures -- measured up to 4.8x movement (deep_rung35_mgga_3x16
+# reports 1.48e-10 when run first in a fresh process and 7.03e-10 under pytest's
+# alphabetical parametrization). Quote the parametrized-run values, since those
+# are what the assertions actually see. The worst observed margin against
+# _TOL_RKS is therefore deep_rung35_mgga_3x16 at 7.03e-10, and the pre-existing
+# worst was medium_attn / deep_notransform_attn_3x16 at 5.40e-10 -- so the bound
+# is set to clear the measured worst case by ~3x rather than the ~1.4x that
+# 1e-9 would have given, which would eventually go flaky on another machine.
+#
 # The polarized UKS probe has a genuine floor set by the truncation/round-off
 # trade-off, and it is architecture-dependent. Sweeping eps on the
 # descriptor-free controls shows the expected V-shape (residual falls as eps^2,
@@ -344,7 +354,7 @@ _FD_EPS = 1e-6
 # derivatives are larger, so the bound must clear 1.79e-07; 5e-7 gives 2.8x.
 # That is still four orders below the pre-fix residual on this path (rung-3.5
 # 8.69e-04), so the test stays strongly discriminating.
-_TOL_RKS = 1e-9
+_TOL_RKS = 2e-9
 _TOL_UKS = 5e-7
 
 # Some architectures remain bounded by a defect OUTSIDE this fix. Their bounds
@@ -361,11 +371,14 @@ _TOL_UKS = 5e-7
 #                          RKS                       UKS
 #   rung35          1.87e-03 -> 2.12e-10     8.69e-04 -> 3.54e-08   fixed
 #   rung35only      2.21e-03 -> 5.19e-10     1.61e-03 -> 3.55e-08   fixed
-#   mgga            5.33e-03 -> 3.13e-08     6.20e-03 -> 1.73e-05   metagga-bound
-#   mgga_attn       5.47e-03 -> 2.30e-08     6.20e-03 -> 1.52e-05   metagga-bound
-#   rung35_mgga     3.98e-03 -> 6.10e-08     5.27e-03 -> 1.40e-05   metagga-bound
+#   mgga            5.33e-03 -> 2.09e-10     6.20e-03 -> 3.86e-08   fixed (freeze removed)
+#   mgga_attn       5.47e-03 -> 1.12e-10     6.20e-03 -> 3.89e-08   fixed (freeze removed)
+#   rung35_mgga     3.98e-03 -> 7.03e-10     5.27e-03 -> 3.85e-08   fixed (freeze removed)
 #   dm              1.04e-02 -> 1.04e-02     6.74e-03 -> 7.71e-03   dm_entropy-bound
 #   combined        1.27e-03 -> 1.25e-03     1.79e-03 -> 1.78e-03   dm_entropy-bound
+#
+# The meta-GGA rows reached the control level only after the compute_alpha tail
+# gradient freeze was removed; with it in place they sat at ~3e-08 / ~1.7e-05.
 #
 # Bounds clear the worst measured value by ~3x. These quantities are round-off
 # dominated, so the bound exists to catch an order-of-magnitude regression, not
@@ -378,23 +391,28 @@ _TOL_UKS = 5e-7
 # only. The archs that demonstrate the fix are the rung-3.5 pair, which move
 # four orders and are not blocked by anything else.
 _TOL_BLOCKED_DM = 3e-2       # dm_entropy: no valid gradient at any converged DM
-_TOL_BLOCKED_MGGA = (2e-7, 5e-5)   # metagga stop_gradient below the rho cutoff
 
 
 def _tolerances(model):
-    """(RKS, UKS) bounds for this architecture, and why."""
+    """(RKS, UKS) bounds for this architecture, and why.
+
+    The meta-GGA branch was DELETED 2026-08-06 when the `compute_alpha` tail
+    gradient freeze was removed: those architectures now measure at the
+    descriptor-free control level (deep_mgga_3x16 2.09e-10 RKS / 3.86e-08 UKS
+    against the control's 1.93e-10 / 3.34e-08), so a loose bound would have made
+    the assertion pass vacuously. A tolerance branch that no longer reflects a
+    real defect is worse than no branch at all -- it hides the next one.
+
+    Checked, not assumed: monkeypatching the freeze back makes those three
+    architectures report 2.3e-08 to 6.1e-08 (RKS) and ~1.4-1.7e-05 (UKS), so the
+    tight bound fails them by one to two orders and cannot silently absorb a
+    reintroduction.
+    """
     names = {type(d).__name__ for d in model.descriptors}
     if "DMStatisticsDescriptor" in names:
         # features.py dm_entropy is clipped onto its bounds at every converged
-        # density, so autodiff returns exactly zero there. Deliberately left in
-        # place (checkpoint-invalidating to change); see alec/HISTORY.md.
+        # density, so autodiff returns exactly zero there. See alec/HISTORY.md.
         return _TOL_BLOCKED_DM, _TOL_BLOCKED_DM, "dm_entropy"
-    if "MetaGGAAlphaDescriptor" in names:
-        # metagga.py freezes the alpha gradient below _RHO_GRAD_CUTOFF. Removing
-        # it is gated on the production-basis 25-cycle diffuse-tail check, since
-        # the freeze suppresses a d alpha/d sigma channel the alpha clip does
-        # not catch (1.15e14 -> 2.20e31 on Li at 6-311++G(3df,2pd)).
-        return _TOL_BLOCKED_MGGA[0], _TOL_BLOCKED_MGGA[1], "metagga stop_gradient"
     return _TOL_RKS, _TOL_UKS, None
 
 
