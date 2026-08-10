@@ -541,6 +541,13 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         "use_dm": use_dm,
         # Shape-changing flag: polarized cnet input width +1.
         "use_polarized_correlation": bool(spec.arch.use_polarized_correlation),
+        # Architecture-shape keys the run validator cross-checks
+        # (validate_run.py); the step count is already recorded as
+        # "pretrain_steps" above. Absent from files written before
+        # 2026-08-06, which is why the validator treats their absence as a
+        # legacy warning rather than a failure.
+        "meta_gga": bool(spec.arch.meta_gga),
+        "n_extra_features": int(spec.arch.n_extra_features),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }
