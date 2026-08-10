@@ -53,7 +53,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import matplotlib
@@ -535,11 +535,59 @@ def _scan_energies(run_dir: Path, *, basis: Optional[str] = None,
             if isinstance(v, (int, float)) and math.isfinite(v)}
 
 
+# A SCAN reference drawn beside a PBE reference must average the SAME
+# reactions/species, or the comparison is between two different benchmarks. SCAN
+# can legitimately lose species (a meta-GGA SCF on a diffuse basis does not
+# always converge), so coverage is measured against what PBE achieved and the
+# line is qualified or withdrawn rather than silently drawn over a subset.
+_SCAN_COVERAGE_FLOOR = 0.9
+
+
+def _nan_baseline() -> Dict[str, Any]:
+    """All-NaN baseline with empty coverage -- what every SCAN loader returns
+    when its cache is absent, so the figures omit the line."""
+    return {"bh76": float("nan"), "w411": float("nan"),
+            "combined": float("nan"), "coverage": {}}
+
+
+def scan_coverage(baseline: Optional[Dict[str, Any]],
+                  key: str = "combined") -> Tuple[int, int]:
+    """``(n_used, n_reference)`` for one leg of a SCAN baseline -- how many
+    reactions/species SCAN averaged, against how many the PBE leg averaged.
+    ``(0, 0)`` when the baseline carries no coverage (absent cache)."""
+    cov = ((baseline or {}).get("coverage") or {}).get(key) or {}
+    return int(cov.get("used", 0)), int(cov.get("reference", 0))
+
+
+def scan_line_value(baseline: Optional[Dict[str, Any]], key: str = "combined"
+                    ) -> Tuple[Optional[float], str]:
+    """``(value, suffix)`` for drawing one SCAN reference line, or
+    ``(None, "")`` when it must not be drawn.
+
+    The line is withdrawn when SCAN covers less than
+    :data:`_SCAN_COVERAGE_FLOOR` of what PBE covers -- below that it is a
+    different benchmark, not a reference. Between the floor and full coverage it
+    is drawn with the covered count in its label, so a partial SCAN can never
+    read as a like-for-like comparison."""
+    val = (baseline or {}).get(key)
+    if not _is_num(val):
+        return None, ""
+    used, ref = scan_coverage(baseline, key)
+    if ref <= 0:
+        return float(val), ""
+    frac = used / ref
+    if frac < _SCAN_COVERAGE_FLOOR:
+        return None, ""
+    return float(val), ("" if used >= ref else f", {used}/{ref}")
+
+
 def scan_pool_baseline(run_dir: Path, *, basis: Optional[str] = None,
                        cache_dir: Optional[Path] = None, _loader=None,
-                       _energies: Optional[Dict[str, float]] = None
-                       ) -> Dict[str, float]:
-    """Full-pool SCAN reaction-energy MAE (kcal/mol): ``{bh76, w411, combined}``.
+                       _energies: Optional[Dict[str, float]] = None,
+                       _pbe_energies: Optional[Dict[str, float]] = None,
+                       eval_subdir: str = "eval_holdout") -> Dict[str, Any]:
+    """Full-pool SCAN reaction-energy MAE (kcal/mol): ``{bh76, w411, combined}``
+    plus a ``coverage`` map.
 
     The meta-GGA reference the ``_mgga`` archs clone, computed LIVE from a
     precomputed SCAN-energy cache (``scan_pool_energies_<basis>.json`` from
@@ -547,24 +595,168 @@ def scan_pool_baseline(run_dir: Path, *, basis: Optional[str] = None,
     :func:`pbe_pool_baseline`, so PBE and SCAN reference lines are directly
     comparable. Returns all-NaN (so figures OMIT the SCAN line) when the cache is
     absent -- older runs render exactly as before. MIRRORS
-    :func:`pbe_pool_baseline`; ``_loader`` / ``_energies`` are test seams."""
+    :func:`pbe_pool_baseline`.
+
+    ``coverage[pool] = {"used": n, "reference": m}`` records how many reactions
+    SCAN could score against how many PBE scored on the same list.
+    ``reaction_mae_kcalmol`` silently drops a reaction whose species energy is
+    missing, so without this the two lines could average different reaction sets
+    and still be drawn as a like-for-like pair. PBE's own numbers are NOT
+    restricted to SCAN's coverage -- the PBE reference must not move because a
+    SCAN species failed. ``_loader`` / ``_energies`` / ``_pbe_energies`` are test
+    seams."""
     scan = (_energies if _energies is not None
             else _scan_energies(run_dir, basis=basis, cache_dir=cache_dir))
-    nan = {"bh76": float("nan"), "w411": float("nan"), "combined": float("nan")}
     if not scan:
-        return nan          # no cache -> no SCAN line (no xcquinox import needed)
+        return _nan_baseline()   # no cache -> no SCAN line (no xcquinox import)
     if _loader is None:
         from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
         _loader = load_full_held_out_pools
     from xcquinox.alec.eval_holdout import reaction_mae_kcalmol
     _, full_rxns = _loader()
-    out: Dict[str, float] = {}
-    for pool in ("bh76", "w411"):
-        rx = [r for r in full_rxns if r.get("source_pool") == pool]
-        out[pool] = reaction_mae_kcalmol(scan, rx)[0] if rx else float("nan")
-    out["combined"] = (reaction_mae_kcalmol(scan, list(full_rxns))[0]
-                       if full_rxns else float("nan"))
+    pbe = (_pbe_energies if _pbe_energies is not None
+           else _first_pbe_energies(run_dir, eval_subdir=eval_subdir))
+    out: Dict[str, Any] = {}
+    cov: Dict[str, Dict[str, int]] = {}
+    legs = [("bh76", [r for r in full_rxns if r.get("source_pool") == "bh76"]),
+            ("w411", [r for r in full_rxns if r.get("source_pool") == "w411"]),
+            ("combined", list(full_rxns))]
+    for key, rx in legs:
+        if not rx:
+            out[key] = float("nan")
+            cov[key] = {"used": 0, "reference": 0}
+            continue
+        mae, n_used, _n_drop = reaction_mae_kcalmol(scan, rx)
+        out[key] = mae
+        cov[key] = {"used": int(n_used),
+                    "reference": int(reaction_mae_kcalmol(pbe, rx)[1])
+                    if pbe else len(rx)}
+    out["coverage"] = cov
     return out
+
+
+def _scan_density_cache_name(basis: str) -> str:
+    """Filename for the SCAN density cache at ``basis``
+    (``scan_pool_density_<basis>.json`` written by ``precompute_scan_pool.py``).
+    Same slug rule as :func:`_scan_cache_name`, so one basis label resolves the
+    energy and density caches together."""
+    b = (basis or "def2-svp").replace("+DF", "").strip() or "def2-svp"
+    safe = "".join(c if (c.isalnum() or c in "-.+") else "_" for c in b)
+    return f"scan_pool_density_{safe}.json"
+
+
+def _scan_density_records(run_dir: Path, *, basis: Optional[str] = None,
+                          cache_dir: Optional[Path] = None
+                          ) -> Dict[str, Dict[str, Any]]:
+    """``{molecule: {density_rmse_scan, density_eps_l1_scan}}`` from the cache
+    ``precompute_scan_pool.py --with-density`` writes. ``{}`` when absent, so the
+    SCAN density baseline degrades to all-NaN and the figures omit the line."""
+    try:
+        basis = basis or run_basis_label(run_dir)
+    except Exception:
+        basis = basis or "def2-svp"
+    base = Path(cache_dir) if cache_dir else Path(run_dir)
+    p = base / _scan_density_cache_name(basis)
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(v, dict)}
+
+
+#: SCAN twin of each PBE density column, so one selector drives both legs.
+_SCAN_DENSITY_KEY: Dict[str, str] = {
+    "density_rmse_pbe": "density_rmse_scan",
+    "density_l1_pbe": "density_l1_scan",
+    "density_eps_l1_pbe": "density_eps_l1_scan",
+}
+
+
+def scan_density_mean(records: Optional[Dict[str, Dict[str, Any]]],
+                      molecules, key: str = "density_rmse_pbe"
+                      ) -> Tuple[float, int, int]:
+    """``(mean, n_used, n_reference)`` of SCAN's density error over exactly
+    ``molecules`` -- the species set the PBE anchor beside it averages.
+
+    ONE rule for every SCAN density anchor on every panel, so a per-channel bar
+    row and the pooled line can never be averaged over different species sets.
+    ``(nan, 0, n)`` when the cache holds none of them."""
+    scan_key = _SCAN_DENSITY_KEY.get(key)
+    mols = sorted(molecules)
+    if not records or scan_key is None:
+        return float("nan"), 0, len(mols)
+    vals = [records[m][scan_key] for m in mols
+            if m in records and _is_num(records[m].get(scan_key))]
+    return (float(np.mean(vals)) if vals else float("nan"),
+            len(vals), len(mols))
+
+
+def scan_density_line(records: Optional[Dict[str, Dict[str, Any]]],
+                      molecules, key: str = "density_rmse_pbe"
+                      ) -> Optional[float]:
+    """The SCAN density value to draw beside a PBE anchor over ``molecules``,
+    or ``None`` when it must not be drawn (absent cache, or coverage below
+    :data:`_SCAN_COVERAGE_FLOOR` of the PBE anchor's species)."""
+    mean, used, ref = scan_density_mean(records, molecules, key=key)
+    if not (_is_num(mean) and mean > 0.0) or ref <= 0:
+        return None
+    return mean if (used / ref) >= _SCAN_COVERAGE_FLOOR else None
+
+
+def scan_density_baseline(hd_rows: List[Dict[str, Any]], run_dir: Path, *,
+                          pbe_table: Optional[Dict[str, Dict[str, float]]] = None,
+                          key: str = "density_rmse_pbe",
+                          basis: Optional[str] = None,
+                          cache_dir: Optional[Path] = None,
+                          _records: Optional[Dict[str, Dict[str, Any]]] = None
+                          ) -> Dict[str, Any]:
+    """Pooled SCAN density-vs-CCSD anchor ``D_SCAN``, the twin of
+    :func:`pbe_density_baseline`: ``{"value": float, "coverage": {...}}``.
+
+    Averaged over EXACTLY the molecules :func:`pbe_density_baseline` averages
+    for the same ``key`` -- taking SCAN's own mean over whatever the cache holds
+    would put two different species sets on one axis. ``key`` selects the PBE
+    column (grid-weighted RMSE by default, ``density_eps_l1_pbe`` for the DFS
+    Eq. 20 per-electron anchor) and :data:`_SCAN_DENSITY_KEY` maps it to SCAN's.
+    ``coverage["value"]`` counts how many of those molecules the SCAN cache
+    carries, so :func:`scan_line_value` can qualify or withdraw the line.
+    All-NaN when the cache is absent, so figures render unchanged without it.
+    ``_records`` is a test seam."""
+    recs = (_records if _records is not None
+            else _scan_density_records(run_dir, basis=basis,
+                                       cache_dir=cache_dir))
+    if not recs:
+        return {"value": float("nan"), "coverage": {}}
+    # The molecule set the PBE anchor averages -- same helper, same dedup.
+    pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=key)
+    mean, used, ref = scan_density_mean(recs, pbe_mol, key=key)
+    return {"value": mean,
+            "coverage": {"value": {"used": used, "reference": ref}}}
+
+
+def _report_scan_coverage(scan_baseline: Optional[Dict[str, Any]],
+                          scan_density: Optional[Dict[str, Any]] = None) -> None:
+    """Print the SCAN baseline + its coverage, or say the cache is absent.
+
+    A silent omission is how the SCAN line went unnoticed for so long: the
+    loader degrades to all-NaN and the figures simply drop the line, so the
+    console never mentions SCAN at all. This makes both states explicit."""
+    e_used, e_ref = scan_coverage(scan_baseline, "combined")
+    if not _is_num((scan_baseline or {}).get("combined")):
+        print("  (no SCAN cache next to the run -- SCAN reference lines omitted; "
+              "generate with notebooks/analysis/precompute_scan_pool.py)")
+        return
+    print(f"  SCAN baseline (full pool): "
+          f"BH76 {_fmt_mae((scan_baseline or {}).get('bh76'))} / "
+          f"W4-11 {_fmt_mae((scan_baseline or {}).get('w411'))} / "
+          f"combined {_fmt_mae((scan_baseline or {}).get('combined'))} "
+          f"[{e_used}/{e_ref} reactions]")
+    if scan_density is not None and _is_num(scan_density.get("value")):
+        d_used, d_ref = scan_coverage(scan_density, "value")
+        print(f"  SCAN density vs CCSD: {scan_density['value']:.3e} "
+              f"[{d_used}/{d_ref} species]")
 
 
 def _beats_pbe_marks(xs, heights, pbe_line) -> List[Tuple[float, float]]:
@@ -635,6 +827,131 @@ def _best_subset_per_arch(rows: List[Dict[str, Any]]) -> Dict[str, int]:
         if arch not in by_arch or ss > by_arch[arch]:
             by_arch[arch] = ss
     return by_arch
+
+
+# ---------------------------------------------------------------------------
+# Unequal training-depth coverage.
+#
+# A partial sweep fills the arch x subset_size grid column by column, so an arch
+# that entered late carries only its smallest subsets while the early archs have
+# reached the full pool. Figures that aggregate OVER subset_size (the per-arch
+# bars, the Jacob's-ladder rung summary) then place a shallowly-trained arch next
+# to a fully-trained one, and the difference reads as an architecture result when
+# it is a training-set-size result. These helpers identify that mismatch so the
+# affected bars can be marked on the figure itself.
+# ---------------------------------------------------------------------------
+
+# Visual channel for the mark, one definition shared by both figures. The
+# per-arch bars distinguish their series by COLOR and the rungs by background
+# band, leaving hatch free; the rung summary already spends hatch on the
+# BH76/W4-11 split and face color on rung identity, so it fades the face and
+# switches the edge instead.
+_SHALLOW_HATCH = "x"
+_SHALLOW_EDGE = "#d62728"
+# Thin the hatch stroke where the mark is drawn: at the default width an "x"
+# fill swamps the bar's series color and reads as "no data" rather than
+# "shallower depth". Applied per-figure, never globally.
+_SHALLOW_HATCH_RC = {"hatch.linewidth": 0.5}
+
+
+def _subset_coverage(rows: List[Dict[str, Any]]) -> Dict[str, Tuple[int, int]]:
+    """``{arch: (smallest, largest)}`` subset_size that actually carries rows --
+    the training depth each arch reached in this run."""
+    cov: Dict[str, Tuple[int, int]] = {}
+    for r in rows:
+        arch, ss = r.get("arch"), r.get("subset_size")
+        if arch is None or ss is None:
+            continue
+        ss = int(ss)
+        lo, hi = cov.get(arch, (ss, ss))
+        cov[arch] = (min(lo, ss), max(hi, ss))
+    return cov
+
+
+def _coverage_span(bounds: Tuple[int, int]) -> str:
+    """``(1, 26) -> "1-26"``, ``(1, 1) -> "1"`` -- compact axis/annotation tag."""
+    lo, hi = bounds
+    return str(lo) if lo == hi else f"{lo}-{hi}"
+
+
+def _shallow_archs(rows: List[Dict[str, Any]]) -> Tuple[Set[str], int]:
+    """``(archs trained less deeply than the run's deepest, that depth)``.
+
+    An arch is SHALLOW when its largest subset_size falls below the largest any
+    arch reached: its bars aggregate a smaller training set, so a difference
+    against an unmarked arch confounds architecture with training depth. Returns
+    an empty set when every arch reached the same depth, so a complete grid
+    renders exactly as it did before the mark existed.
+    """
+    cov = _subset_coverage(rows)
+    if not cov:
+        return set(), 0
+    deepest = max(hi for _lo, hi in cov.values())
+    return {a for a, (_lo, hi) in cov.items() if hi < deepest}, deepest
+
+
+def _shallow_rungs(rows: List[Dict[str, Any]]) -> Tuple[Set[str], int]:
+    """``(rungs whose DEEPEST arch is shallower than the run's, that depth)``.
+
+    Judged on the rung's best-covered arch, not its mean: a rung containing one
+    fully-trained arch has been probed at full depth and must not be marked just
+    because a sibling lags. Empty set when every rung reached the run's depth.
+    """
+    cov = _subset_coverage(rows)
+    if not cov:
+        return set(), 0
+    deepest = max(hi for _lo, hi in cov.values())
+    out: Set[str] = set()
+    for rung, archs in arch_style.by_rung(_archs_present(rows)).items():
+        his = [cov[a][1] for a in archs if a in cov]
+        if his and max(his) < deepest:
+            out.add(rung)
+    return out, deepest
+
+
+def _rung_coverage(rows: List[Dict[str, Any]]) -> Dict[str, Tuple[int, int]]:
+    """``{rung: (smallest, largest)}`` over the BEST subset_size of each of the
+    rung's archs -- the depths the rung summary's bars actually aggregate."""
+    best = _best_subset_per_arch(rows)
+    out: Dict[str, Tuple[int, int]] = {}
+    for rung, archs in arch_style.by_rung(_archs_present(rows)).items():
+        ss = [best[a] for a in archs if a in best]
+        if ss:
+            out[rung] = (min(ss), max(ss))
+    return out
+
+
+def _coverage_caveat(rows: List[Dict[str, Any]], by_rung: bool = False) -> str:
+    """Disclosure naming the architectures (or Jacob's-ladder rungs) whose bars
+    aggregate a shallower training depth than the run's deepest, so an unequal-
+    coverage gap is never read as an architecture result. Empty string when
+    coverage is level -- complete grids keep their original footer."""
+    if by_rung:
+        shallow, deepest = _shallow_rungs(rows)
+        cov = _rung_coverage(rows)
+        keys = [r for r in arch_style.RUNG_ORDER if r in shallow]
+        what = "rung"
+    else:
+        shallow, deepest = _shallow_archs(rows)
+        cov = _subset_coverage(rows)
+        keys = [a for a in _archs_present(rows) if a in shallow]
+        what = "architecture"
+    parts = [f"{k} at subset_size {_coverage_span(cov[k])}"
+             for k in keys if k in cov]
+    if not parts:
+        return ""
+    return ("UNEQUAL TRAINING DEPTH (marked on the bars): " + "; ".join(parts)
+            + f", against {deepest} for the deepest. A difference involving a "
+            f"marked {what} confounds it with training-set size.")
+
+
+def _fade(color: Any, frac: float = 0.55) -> Tuple[float, float, float]:
+    """``color`` blended ``frac`` of the way to white. Keeps the hue -- so a
+    faded bar is still identifiable as its rung -- while reading as provisional.
+    """
+    r, g, b = matplotlib.colors.to_rgb(color)
+    f = min(max(float(frac), 0.0), 1.0)
+    return (r + (1.0 - r) * f, g + (1.0 - g) * f, b + (1.0 - b) * f)
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +1117,12 @@ def plot_parity(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
                         title="per-arch NN-vs-ref MAE", baseline=pbe_vs_ref)
 
         # Shared arch legend below the panels.
-        handles = [Patch(facecolor=ARCH_COLOR[a], label=a) for a in archs]
+        # Each arch's representative is its own deepest spec, and archs enter
+        # the sweep at different depths -- so the cloud can mix a 1-molecule
+        # net with a full-pool one. The legend states which depth each is.
+        handles = [Patch(facecolor=ARCH_COLOR[a],
+                         label=f"{a} (ss {best[a]})" if a in best else a)
+                   for a in archs]
         handles.append(plt.Line2D([], [], marker="o", ls="", color="0.4",
                                    label="bh76 (●) / w411 (▲) by marker"))
         # Shared arch legend in its own reserved band below the panels -- the
@@ -985,13 +1307,26 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
     Archs are rung-ordered with Jacob's-ladder rung bands; a beats-PBE marker
     tags every held-out reaction bar below the PBE line; a dotted SCAN full-pool
     reference line is drawn when ``scan_baseline`` carries a finite combined MAE
-    (absent SCAN cache -> unchanged)."""
-    with plt.rc_context(_STYLE):
+    (absent SCAN cache -> unchanged).
+
+    Both bar statistics aggregate OVER subset_size, so an arch that has only
+    reached the small subsets is not comparable to one trained on the full pool.
+    Every bar of such an arch is hatched (:data:`_SHALLOW_HATCH`) and its
+    subset_size span is stated under the tick, with the mismatch named in a
+    footer line -- on a level grid no bar is hatched and the footer is
+    unchanged."""
+    with plt.rc_context({**_STYLE, **_SHALLOW_HATCH_RC}):
         rxn_map = reaction_mae_by_arch_subset(reaction_rows)
         ae_map = ae_mae_by_arch_subset(insample_rows)
         archs = arch_style.sort_by_rung([a for a in ARCH_ORDER
                  if any(k[0] == a for k in rxn_map)
                  or any(k[0] == a for k in ae_map)])
+        # Depth is judged over BOTH row sets, matching the arch axis above (an
+        # arch can carry in-sample AE cells without held-out reactions yet).
+        depth_rows = list(reaction_rows) + list(insample_rows)
+        shallow, _deepest = _shallow_archs(depth_rows)
+        ss_cov = _subset_coverage(depth_rows)
+        cov_caveat = _coverage_caveat(depth_rows)
 
         def _arch_stat(mp, arch, stat):
             vals = [v for (a, _ss), v in mp.items() if a == arch]
@@ -1012,12 +1347,22 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
         for _rg, _s, _e in arch_style.rung_bands(archs):
             ax.axvspan(_s - 0.5, _e - 0.5, color=arch_style.RUNG_BAND[_rg],
                        alpha=0.6, zorder=0)
-        ax.bar(xs - w, rxn_mean, w, label="held-out reaction MAE (mean)",
-               color="#4f81bd", edgecolor="k", linewidth=0.3)
-        ax.bar(xs, rxn_best, w, label="held-out reaction MAE (best subset-size)",
-               color="#9dc3e6", edgecolor="k", linewidth=0.3)
-        ax.bar(xs + w, ae_mean, w, label="in-sample AE MAE (mean)",
-               color="#c0504d", edgecolor="k", linewidth=0.3)
+        bars = [
+            ax.bar(xs - w, rxn_mean, w, label="held-out reaction MAE (mean)",
+                   color="#4f81bd", edgecolor="k", linewidth=0.3),
+            ax.bar(xs, rxn_best, w,
+                   label="held-out reaction MAE (best subset-size)",
+                   color="#9dc3e6", edgecolor="k", linewidth=0.3),
+            ax.bar(xs + w, ae_mean, w, label="in-sample AE MAE (mean)",
+                   color="#c0504d", edgecolor="k", linewidth=0.3),
+        ]
+        # Hatch every bar of an arch that has not been trained as deep as the
+        # deepest arch here. Set per-patch (not via bar(hatch=...)) so the mark
+        # does not depend on a matplotlib version that broadcasts the kwarg.
+        for cont in bars:
+            for patch, arch in zip(cont.patches, archs):
+                if arch in shallow:
+                    patch.set_hatch(_SHALLOW_HATCH)
 
         pbe_vs_ref = _mae([r["abs_error_pbe_kcalmol"] for r in reaction_rows])
         if pbe_vs_ref is not None:
@@ -1031,25 +1376,40 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
                 ax.scatter(mx, mh, marker="v", s=22, color="#2ca02c",
                            edgecolor="k", linewidths=0.3, zorder=6,
                            label="beats PBE")
-        scan_c = (scan_baseline or {}).get("combined")
-        if _is_num(scan_c):
+        scan_c, scan_cov = scan_line_value(scan_baseline, "combined")
+        if scan_c is not None:
             ax.axhline(scan_c, ls=":", color="#555555", linewidth=1.3,
-                       label=f"SCAN full-pool MAE ({scan_c:.1f})")
+                       label=f"SCAN full-pool MAE ({scan_c:.1f}{scan_cov})")
         ax.axhline(1.0, ls=":", color="green", linewidth=1.0,
                    label="chemical accuracy (1 kcal/mol)")
 
         ax.set_yscale("log")
         ax.set_xticks(xs)
-        ax.set_xticklabels(archs, rotation=30, ha="right", fontsize=8)
+        # Tick labels carry the subset_size span each arch's bars aggregate, so
+        # the depth behind a bar is readable without consulting the heatmap.
+        ax.set_xticklabels(
+            [f"{a}\n(ss {_coverage_span(ss_cov[a])})" if a in ss_cov else a
+             for a in archs], rotation=30, ha="right", fontsize=8)
         ax.set_ylabel("MAE (kcal/mol, log scale)")
         ax.set_title(f"Per-architecture error · {run_id}")
-        ax.legend(fontsize=7, ncol=2)
+        handles, _labels = ax.get_legend_handles_labels()
+        if shallow:
+            handles.append(Patch(facecolor="0.8", edgecolor="k",
+                                 hatch=_SHALLOW_HATCH,
+                                 label="shallower training depth (see footer)"))
+        ax.legend(handles=handles, fontsize=7, ncol=2)
         ax.grid(True, axis="y", which="both", alpha=0.3)
+        # Without a coverage caveat the footer stack is unchanged; with one the
+        # two lines are lifted to make room rather than overprinting.
+        y_note, rect_bottom = (0.045, 0.075) if cov_caveat else (0.028, 0.06)
         if note:
-            fig.text(0.5, 0.028, note, ha="center", fontsize=6.5, color="#a33")
+            fig.text(0.5, y_note, note, ha="center", fontsize=6.5, color="#a33")
+        if cov_caveat:
+            fig.text(0.5, 0.026, cov_caveat, ha="center", fontsize=6.0,
+                     color="#a33")
         fig.text(0.5, 0.006, provenance or _PROVENANCE_BASE, ha="center",
                  fontsize=6, color="#777777")
-        fig.tight_layout(rect=(0, 0.06, 1, 1))
+        fig.tight_layout(rect=(0, rect_bottom, 1, 1))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -1073,11 +1433,22 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
     (BH76 solid, W4-11 hatched ``//``) colored by :data:`arch_style.RUNG_ACCENT`,
     each value annotated. The full-pool PBE (dashed) and -- when a SCAN cache is
     present -- SCAN (dotted) combined baselines are drawn as labeled reference
-    lines. Absent SCAN -> no SCAN line (guarded, backward compatible)."""
+    lines. Absent SCAN -> no SCAN line (guarded, backward compatible).
+
+    A rung that entered the sweep late sits at a smaller subset_size than the
+    rungs before it, and the ladder difference would then be a training-set-size
+    difference. Hatch is already spent on the BH76/W4-11 split and face color on
+    rung identity, so under-trained rungs are marked by FADING the face toward
+    white (the rung hue survives) and switching to a dotted warning edge; the
+    subset_size each rung aggregates is annotated under every bar pair. On a
+    level grid nothing fades and the figure is unchanged."""
     with plt.rc_context(_STYLE):
         by_r = arch_style.by_rung(_archs_present(rows))
         rungs = [r for r in arch_style.RUNG_ORDER if r in by_r]
         best = _best_subset_per_arch(rows)
+        shallow_rungs, _deepest = _shallow_rungs(rows)
+        rung_cov = _rung_coverage(rows)
+        cov_caveat = _coverage_caveat(rows, by_rung=True)
         pool_mae = {p: reaction_mae_by_arch_subset(
                         [r for r in rows if r.get("pool") == p])
                     for p in ("bh76", "w411")}
@@ -1095,16 +1466,24 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
         w4 = [_rung_pool_mean(r, "w411") for r in rungs]
         xs = np.arange(len(rungs))
         w = 0.38
-        fig, ax = plt.subplots(figsize=(max(6.0, 1.9 * len(rungs) + 3.0), 5.4))
+        # A two-rung run makes a narrow canvas; widen it when the coverage
+        # disclosure has to fit, so the line is readable instead of wrapping
+        # into the provenance stamp.
+        fig_w = max(6.0, 1.9 * len(rungs) + 3.0)
+        if cov_caveat:
+            fig_w = max(fig_w, 10.0)
+        fig, ax = plt.subplots(figsize=(fig_w, 5.4))
         for i, rg in enumerate(rungs):
             c = arch_style.RUNG_ACCENT.get(rg, "0.5")
-            ax.bar(xs[i] - w / 2, bh[i], w, color=c, edgecolor="k", linewidth=0.4)
-            ax.bar(xs[i] + w / 2, w4[i], w, color=c, edgecolor="k", linewidth=0.4,
-                   hatch="//")
-            n_arch = len(by_r.get(rg, []))
-            ax.annotate(f"n={n_arch}", (xs[i], 0), xytext=(0, -14),
-                        textcoords="offset points", ha="center", va="top",
-                        fontsize=6, color="#555555")
+            is_shallow = rg in shallow_rungs
+            face = _fade(c) if is_shallow else c
+            edge = _SHALLOW_EDGE if is_shallow else "k"
+            elw = 1.4 if is_shallow else 0.4
+            els = ":" if is_shallow else "-"
+            ax.bar(xs[i] - w / 2, bh[i], w, color=face, edgecolor=edge,
+                   linewidth=elw, linestyle=els)
+            ax.bar(xs[i] + w / 2, w4[i], w, color=face, edgecolor=edge,
+                   linewidth=elw, linestyle=els, hatch="//")
             for xc, val in ((xs[i] - w / 2, bh[i]), (xs[i] + w / 2, w4[i])):
                 if _is_num(val):
                     ax.annotate(f"{val:.1f}", (xc, val), ha="center", va="bottom",
@@ -1114,29 +1493,44 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
         if _is_num(pbe_c):
             ax.axhline(pbe_c, ls="--", color="0.35", linewidth=1.4,
                        label=f"PBE (combined {pbe_c:.1f})")
-        scan_c = (scan_baseline or {}).get("combined")
-        if _is_num(scan_c):
+        scan_c, scan_cov = scan_line_value(scan_baseline, "combined")
+        if scan_c is not None:
             ax.axhline(scan_c, ls=":", color="#555555", linewidth=1.6,
-                       label=f"SCAN (combined {scan_c:.1f})")
-        # BH76/W4-11 hatch key + the reference lines.
+                       label=f"SCAN (combined {scan_c:.1f}{scan_cov})")
+        # BH76/W4-11 hatch key + the reference lines (+ the coverage key when
+        # some rung is shallower than the deepest one plotted).
         style_handles = [
             Patch(facecolor="0.75", edgecolor="k", label="BH76 barriers"),
             Patch(facecolor="0.75", edgecolor="k", hatch="//",
                   label="W4-11 atomization")]
+        if shallow_rungs:
+            style_handles.append(
+                Patch(facecolor=_fade("0.75"), edgecolor=_SHALLOW_EDGE,
+                      linewidth=1.4, linestyle=":",
+                      label="shallower training depth (see footer)"))
         ref_h, ref_l = ax.get_legend_handles_labels()
         ax.legend(handles=style_handles + ref_h, fontsize=7, ncol=2, loc="best",
                   framealpha=0.7)
         ax.set_xticks(xs)
-        ax.set_xticklabels(rungs, fontsize=9)
+        # The arch count and the subset_size span each rung aggregates both ride
+        # in the tick label (one text row, no collision with the axis label), and
+        # a shallow rung's label takes the warning color to match its bars.
+        ax.set_xticklabels(
+            [f"{r}\n(n={len(by_r.get(r, []))}"
+             + (f", ss {_coverage_span(rung_cov[r])})" if r in rung_cov else ")")
+             for r in rungs], fontsize=9)
+        for lbl, rg in zip(ax.get_xticklabels(), rungs):
+            if rg in shallow_rungs:
+                lbl.set_color(_SHALLOW_EDGE)
         ax.set_xlabel("Jacob's-ladder rung  (mean over the rung's architectures, "
                       "each at its best subset_size)", fontsize=8.5)
         ax.set_ylabel("held-out reaction-energy MAE (kcal/mol)", fontsize=9)
         ax.grid(True, axis="y", alpha=0.3)
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance, caveat=caveat,
-            dataset=dataset,
+            dataset=dataset, extra_note=cov_caveat or None,
             title="Jacob's-ladder rung summary -- held-out MAE (BH76 | W4-11)")
-        fig.tight_layout(rect=(0, 0.075, 1, 0.93))
+        fig.tight_layout(rect=(0, 0.075 if not cov_caveat else 0.115, 1, 0.93))
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
     return out_path
@@ -1326,7 +1720,12 @@ def plot_ae_parity(reaction_rows: List[Dict[str, Any]], out_path: Path,
         axb.set_ylabel("NN atomization energy  (kcal/mol)")
         axb.set_title("(b) held-out W4-11 AE vs reference -- by train-set size")
 
-        handles = [Patch(facecolor=ARCH_COLOR[a], label=a) for a in archs]
+        # Each arch's representative is its own deepest spec, and archs enter
+        # the sweep at different depths -- so the cloud can mix a 1-molecule
+        # net with a full-pool one. The legend states which depth each is.
+        handles = [Patch(facecolor=ARCH_COLOR[a],
+                         label=f"{a} (ss {best[a]})" if a in best else a)
+                   for a in archs]
         handles.append(plt.Line2D([], [], marker="x", ls="", color="0.4",
                                    label="PBE"))
         fig.legend(handles=handles, loc="lower center", ncol=5, fontsize=7,
@@ -1482,7 +1881,11 @@ def _arch_pbe_legend_handles(archs: List[str], *, pools: Optional[List[str]] = N
 
 def _stamp_parity_footer(fig, *, run_id: str, title: str, note: str,
                          provenance: Optional[str], caveat: Optional[str],
-                         dataset: Optional[str] = None) -> None:
+                         dataset: Optional[str] = None,
+                         extra_note: Optional[str] = None) -> None:
+    """``extra_note`` adds a SECOND red footer line above ``note`` (used for the
+    unequal-training-depth disclosure). Left None -- the default -- the footer
+    stack sits exactly where it did before the parameter existed."""
     fig.suptitle(f"{title}  ·  {run_id}", fontsize=11.5, y=0.997)
     if caveat:
         fig.text(0.5, 0.945, caveat, ha="center", fontsize=7.5, style="italic",
@@ -1492,9 +1895,12 @@ def _stamp_parity_footer(fig, *, run_id: str, title: str, note: str,
         # the axes; None (the default) renders every legacy figure unchanged
         fig.text(0.5, 0.922, dataset, ha="center", fontsize=5.6,
                  color="#555555")
+    if extra_note:
+        fig.text(0.5, 0.030, extra_note, ha="center", fontsize=5.6,
+                 color="#a33", wrap=True)
     if note:
-        fig.text(0.5, 0.032, note, ha="center", fontsize=5.6, color="#a33",
-                 wrap=True)
+        fig.text(0.5, 0.032 if not extra_note else 0.058, note, ha="center",
+                 fontsize=5.6, color="#a33", wrap=True)
     fig.text(0.5, 0.010, provenance or _PROVENANCE_BASE, ha="center",
              fontsize=5.6, color="#777777")
 
@@ -1873,6 +2279,62 @@ def wtmad2_pbe_baseline(rows: List[Dict[str, Any]], scale: float = _GMTKN55_SCAL
     return w if w is not None else float("nan")
 
 
+def scan_reaction_errors(run_dir: Path, *, basis: Optional[str] = None,
+                         cache_dir: Optional[Path] = None, _loader=None,
+                         _energies: Optional[Dict[str, float]] = None
+                         ) -> Dict[str, float]:
+    """``{reaction_name: |SCAN error| kcal/mol}`` from the SCAN energy cache.
+
+    The per-reaction form behind :func:`wtmad2_scan_baseline`, computed with the
+    same validated reaction math the NN/PBE legs use
+    (``eval_holdout.per_reaction_errors``). ``{}`` when the cache is absent."""
+    scan = (_energies if _energies is not None
+            else _scan_energies(run_dir, basis=basis, cache_dir=cache_dir))
+    if not scan:
+        return {}
+    if _loader is None:
+        from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+        _loader = load_full_held_out_pools
+    from xcquinox.alec.eval_holdout import per_reaction_errors
+    _, full_rxns = _loader()
+    out: Dict[str, float] = {}
+    for r in per_reaction_errors(scan, list(full_rxns)):
+        name, err = r.get("name"), r.get("abs_error_kcalmol")
+        if name is not None and _is_num(err):
+            out[str(name)] = float(err)
+    return out
+
+
+def wtmad2_scan_baseline(rows: List[Dict[str, Any]],
+                         scan_errors: Optional[Dict[str, float]],
+                         scale: float = _GMTKN55_SCALE
+                         ) -> Tuple[float, int, int]:
+    """``(WTMAD-2, n_used, n_reference)`` for SCAN over the SAME reactions
+    :func:`wtmad2_pbe_baseline` reduces.
+
+    The reaction set comes from ``rows`` (the deduped held-out eval), NOT from
+    the SCAN cache, so the two reference lines reduce the same benchmark; a
+    reaction SCAN could not score is counted as missing rather than quietly
+    shrinking the set. NaN when nothing usable."""
+    pools: Dict[str, List[Tuple[float, float]]] = {}
+    n_ref = 0
+    for r in _dedup_rows_by_name(rows):
+        pool = r.get("pool")
+        ref = r.get("ref_kcalmol")
+        if ref is None:
+            ref = r.get("reaction_energy_ref_kcalmol")
+        if pool is None or not _is_num(ref):
+            continue
+        n_ref += 1
+        e = (scan_errors or {}).get(str(r.get("name")))
+        if not _is_num(e):
+            continue
+        pools.setdefault(pool, []).append((abs(e), abs(ref)))
+    n_used = sum(len(v) for v in pools.values())
+    w = _wtmad2_over_pools(pools, scale)
+    return (w if w is not None else float("nan")), n_used, n_ref
+
+
 def collect_insample_density_rows(run_dir: Path) -> List[Dict[str, Any]]:
     """In-sample density-vs-CCSD errors from ``eval/per_molecule.json``: trained
     multi-atom species carrying a finite ``density_rmse`` (atoms are skipped at
@@ -2112,7 +2574,9 @@ def _harmonic_mean(a: float, b: float) -> float:
 def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
                         e_pbe: float,
                         density_by_cell: Dict[Tuple[str, int], float],
-                        d_pbe: float) -> Dict[str, Any]:
+                        d_pbe: float,
+                        e_scan: Optional[float] = None,
+                        d_scan: Optional[float] = None) -> Dict[str, Any]:
     """DFS Eq. 21 ED per (arch, subset_size) cell (kcal/mol), NN vs PBE.
 
     ``gamma = e_pbe / d_pbe`` (self-calibrated; see the section note above for
@@ -2121,7 +2585,14 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
     ``ED = 2/(1/E + 1/(gamma*D))`` shares the PBE kcal/mol scale. Only cells
     with a finite value in BOTH maps are emitted -- callers surface the
     excluded cells via ``_ed_exclusion_note``. Raises ValueError on
-    non-finite/non-positive anchors (no silent NaN ED)."""
+    non-finite/non-positive anchors (no silent NaN ED).
+
+    ``e_scan`` / ``d_scan`` add the meta-GGA comparator: ``ed_scan`` is the SAME
+    harmonic mean under the SAME gamma, so it is on the cells' scale and can be
+    drawn as a second reference. Unlike ``ed_pbe`` it is NOT equal to its energy
+    leg -- gamma is calibrated on PBE, not on SCAN, so SCAN's density leg moves
+    it. ``None`` when either SCAN leg is missing, so the figures omit the line.
+    """
     if not (_is_num(e_pbe) and e_pbe > 0.0):
         raise ValueError(
             f"PBE energy anchor must be finite and positive, got {e_pbe!r}")
@@ -2130,6 +2601,10 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
             f"PBE density anchor must be finite and positive, got {d_pbe!r}")
     gamma = float(e_pbe) / float(d_pbe)
     ed_pbe = _harmonic_mean(float(e_pbe), gamma * float(d_pbe))
+    ed_scan = None
+    if (_is_num(e_scan) and float(e_scan) > 0.0
+            and _is_num(d_scan) and float(d_scan) > 0.0):
+        ed_scan = _harmonic_mean(float(e_scan), gamma * float(d_scan))
     cells: Dict[Tuple[str, int], Dict[str, Any]] = {}
     for cell, e in energy_by_cell.items():
         d = density_by_cell.get(cell)
@@ -2138,10 +2613,15 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
         ed = _harmonic_mean(float(e), gamma * float(d))
         cells[cell] = {"E": float(e), "D": float(d),
                        "gammaD": gamma * float(d), "ED": ed,
-                       "beats_pbe": bool(ed < ed_pbe)}
+                       "beats_pbe": bool(ed < ed_pbe),
+                       "beats_scan": (bool(ed < ed_scan)
+                                      if ed_scan is not None else None)}
     return {"gamma": gamma, "gamma_mode": "self_calibrated",
             "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
-            "ed_pbe": ed_pbe, "cells": cells}
+            "ed_pbe": ed_pbe,
+            "e_scan": (float(e_scan) if _is_num(e_scan) else None),
+            "d_scan": (float(d_scan) if _is_num(d_scan) else None),
+            "ed_scan": ed_scan, "cells": cells}
 
 
 # The Letter's published conversion slope (kcal/mol per unit of its Eq. 20
@@ -2180,7 +2660,9 @@ def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
                             e_pbe: float,
                             density_by_cell: Dict[Tuple[str, int], float],
                             d_pbe: float, gamma: float, *,
-                            gamma_source: Optional[str] = None
+                            gamma_source: Optional[str] = None,
+                            e_scan: Optional[float] = None,
+                            d_scan: Optional[float] = None
                             ) -> Dict[str, Any]:
     """DFS Eq. 21 ED per cell with an EXTERNALLY FIXED gamma (the Letter's
     published 1084.87 on Eq. 20 units, or an own-axes regression slope from
@@ -2203,6 +2685,10 @@ def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
     if not (_is_num(gamma) and gamma > 0.0):
         raise ValueError(f"gamma must be finite and positive, got {gamma!r}")
     ed_pbe = _harmonic_mean(float(e_pbe), gamma * float(d_pbe))
+    ed_scan = None
+    if (_is_num(e_scan) and float(e_scan) > 0.0
+            and _is_num(d_scan) and float(d_scan) > 0.0):
+        ed_scan = _harmonic_mean(float(e_scan), gamma * float(d_scan))
     cells: Dict[Tuple[str, int], Dict[str, Any]] = {}
     for cell, e in energy_by_cell.items():
         d = density_by_cell.get(cell)
@@ -2211,10 +2697,15 @@ def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
         ed = _harmonic_mean(float(e), gamma * float(d))
         cells[cell] = {"E": float(e), "D": float(d),
                        "gammaD": gamma * float(d), "ED": ed,
-                       "beats_pbe": bool(ed < ed_pbe)}
+                       "beats_pbe": bool(ed < ed_pbe),
+                       "beats_scan": (bool(ed < ed_scan)
+                                      if ed_scan is not None else None)}
     out: Dict[str, Any] = {"gamma": float(gamma), "gamma_mode": "fixed",
                            "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
-                           "ed_pbe": ed_pbe, "cells": cells}
+                           "ed_pbe": ed_pbe,
+                           "e_scan": (float(e_scan) if _is_num(e_scan) else None),
+                           "d_scan": (float(d_scan) if _is_num(d_scan) else None),
+                           "ed_scan": ed_scan, "cells": cells}
     if gamma_source:
         out["gamma_source"] = gamma_source
     return out
@@ -2473,7 +2964,10 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
                          fixed_gamma: Optional[float] = None,
                          gamma_source: Optional[str] = None,
                          density_key: str = "density_rmse",
-                         pbe_density_key: str = "density_rmse_pbe"
+                         pbe_density_key: str = "density_rmse_pbe",
+                         scan_errors: Optional[Dict[str, float]] = None,
+                         scan_density_records: Optional[
+                             Dict[str, Dict[str, Any]]] = None
                          ) -> Dict[str, Optional[Dict[str, Any]]]:
     """Per-channel DFS Eq. 21 summaries for ``bh76`` / ``w411`` / ``combined``.
 
@@ -2509,13 +3003,26 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
         e_pbe = wtmad2_pbe_baseline(ch_rows)
         d_cells = holdout_density_by_arch_subset(ch_hd, key=density_key)
         d_pbe = pbe_density_baseline(ch_hd, ch_tab, key=pbe_density_key)
+        # SCAN comparator legs on THIS channel: its WTMAD-2 over the same
+        # reactions PBE reduced, and its density over the same species the PBE
+        # anchor averaged. Either missing (or too thinly covered) -> None, and
+        # the summary's ed_scan is None so the panels omit the line.
+        e_scan, e_used, e_ref = wtmad2_scan_baseline(ch_rows, scan_errors)
+        if not (e_ref and (e_used / e_ref) >= _SCAN_COVERAGE_FLOOR):
+            e_scan = None
+        d_scan = scan_density_line(
+            scan_density_records, _pbe_density_map(ch_hd, ch_tab,
+                                                   key=pbe_density_key),
+            key=pbe_density_key)
         if (e_cells and _is_num(e_pbe) and e_pbe > 0.0 and d_cells
                 and _is_num(d_pbe) and d_pbe > 0.0):
             out[ch] = (combined_ed_fixed_gamma(e_cells, e_pbe, d_cells,
                                                d_pbe, fixed_gamma,
-                                               gamma_source=gamma_source)
+                                               gamma_source=gamma_source,
+                                               e_scan=e_scan, d_scan=d_scan)
                        if fixed_gamma is not None else
-                       combined_ed_by_cell(e_cells, e_pbe, d_cells, d_pbe))
+                       combined_ed_by_cell(e_cells, e_pbe, d_cells, d_pbe,
+                                           e_scan=e_scan, d_scan=d_scan))
         else:
             out[ch] = None
     return out
@@ -2735,6 +3242,12 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     if _is_num(scan_line):
         ax.axhline(scan_line, ls=":", color="#555555", linewidth=1.3,
                    label="SCAN")
+        # A SCAN line above every bar otherwise lands flush against the top
+        # spine, where the gamma stamp sits on the ED rows. Give it headroom
+        # rather than letting the two overprint.
+        lo, hi = ax.get_ylim()
+        if float(scan_line) > 0.0:
+            ax.set_ylim(lo, max(hi, float(scan_line) * 1.14))
     if beat_x:
         ax.scatter(beat_x, beat_h, marker="v", s=16, color="#2ca02c",
                    edgecolor="k", linewidths=0.3, zorder=6,
@@ -2777,8 +3290,9 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
         fig, axes = plt.subplots(1, 2, figsize=(13, 7.8 if has_ts else 5.6),
                                  squeeze=False)
         # SCAN full-pool combined MAE only tracks panel (a) (there is no
-        # 2-subset SCAN WTMAD-2 to draw); guarded so absent SCAN changes nothing.
-        scan_c = (scan_baseline or {}).get("combined")
+        # 2-subset SCAN WTMAD-2 to draw); guarded so absent SCAN changes nothing,
+        # and withdrawn outright when SCAN covers too little of PBE's pool.
+        scan_c, _scan_cov = scan_line_value(scan_baseline, "combined")
         _grouped_arch_bars(
             axes[0][0], mae, archs, subsets, pbe_line=pbe_mae,
             title="Held-out reaction-energy MAE (combined), per (arch, subset)",
@@ -2950,10 +3464,16 @@ def plot_insample_density_ccsd(density_rows: List[Dict[str, Any]], out_path: Pat
 
 
 def _holdout_density_lines_panel(ax, density_rows: List[Dict[str, Any]],
-                                 pbe_mol: Dict[str, float]) -> None:
+                                 pbe_mol: Dict[str, float],
+                                 scan_records: Optional[
+                                     Dict[str, Dict[str, Any]]] = None) -> None:
     """Per-arch mean held-out density RMSE vs subset_size (n annotated) with
-    the grey dashed PBE pool-mean line. Panel body shared by
-    ``plot_holdout_density_ccsd`` and ``plot_density_energy_overview``."""
+    the grey dashed PBE pool-mean line, and -- when a SCAN density cache is
+    present -- the dotted SCAN meta-GGA line over the SAME species. Panel body
+    shared by ``plot_holdout_density_ccsd`` and
+    ``plot_density_energy_overview``. The SCAN line is the comparator the
+    ``_mgga`` archs are judged against (they pretrain to SCAN); absent cache ->
+    no line, panel unchanged."""
     for a in (_archs_present(density_rows) or []):
         by_s: Dict[int, List[float]] = {}
         for r in density_rows:
@@ -2974,6 +3494,10 @@ def _holdout_density_lines_panel(ax, density_rows: List[Dict[str, Any]],
         pbe_mean = float(np.mean(list(pbe_mol.values())))
         ax.axhline(pbe_mean, ls="--", color="0.35", lw=1.2,
                    label=f"PBE vs CCSD (pool mean {pbe_mean:.1e})")
+        scan_mean = scan_density_line(scan_records, pbe_mol)
+        if scan_mean is not None:
+            ax.axhline(scan_mean, ls=":", color="#555555", lw=1.4,
+                       label=f"SCAN vs CCSD (pool mean {scan_mean:.1e})")
     ax.set_yscale("log")
     ax.set_xlabel("training subset_size", fontsize=8)
     ax.set_ylabel("held-out density RMSE vs CCSD (grid, weighted-mean)",
@@ -3063,6 +3587,8 @@ def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
                               = None,
                               note: str = "",
                               provenance: Optional[str] = None,
+                              scan_density_records: Optional[
+                                  Dict[str, Dict[str, Any]]] = None,
                               dataset: Optional[str] = None) -> Path:
     """HELD-OUT density error vs CCSD on the W4-11+BH76 benchmark species:
     (left) per-arch weighted-mean grid RMSE vs subset_size with the grey
@@ -3079,7 +3605,8 @@ def plot_holdout_density_ccsd(density_rows: List[Dict[str, Any]],
     with plt.rc_context(_STYLE):
         archs = _archs_present(density_rows) or []
         fig, axes = plt.subplots(1, 2, figsize=(13, 5.2), squeeze=False)
-        _holdout_density_lines_panel(axes[0][0], density_rows, pbe_mol)
+        _holdout_density_lines_panel(axes[0][0], density_rows, pbe_mol,
+                                     scan_density_records)
         _density_parity_panel(axes[0][1], density_rows, pbe_mol)
 
         arch_handles = [Patch(facecolor=ARCH_COLOR[a], label=a)
@@ -3105,6 +3632,8 @@ def plot_holdout_density_per_arch(hd_rows: List[Dict[str, Any]],
                                   = None,
                                   note: str = "",
                                   provenance: Optional[str] = None,
+                                  scan_density_records: Optional[
+                                      Dict[str, Dict[str, Any]]] = None,
                                   dataset: Optional[str] = None) -> Path:
     """Standalone single-panel figure of the per-arch held-out density trend
     vs subset_size (grid weighted-mean RMSE vs CCSD, PBE pool-mean dashed) --
@@ -3118,7 +3647,8 @@ def plot_holdout_density_per_arch(hd_rows: List[Dict[str, Any]],
         # the panel's own axes legend identifies archs + the PBE line; a
         # bottom fig-level legend would duplicate it and collide with the
         # note band on a single-panel figure
-        _holdout_density_lines_panel(axes[0][0], hd_rows, pbe_mol)
+        _holdout_density_lines_panel(axes[0][0], hd_rows, pbe_mol,
+                                     scan_density_records)
         _stamp_parity_footer(
             fig, run_id=run_id, note=note, provenance=provenance,
             caveat=_HOLDOUT_DENSITY_CAVEAT, dataset=dataset,
@@ -3209,6 +3739,11 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
         ax.axhline(summary["ed_pbe"], ls="--", color="k", lw=1.0,
                    label=("PBE (ED = E by self-calibration)" if self_cal
                           else "PBE"))
+    # The meta-GGA comparator, on the same gamma as the cells. Absent SCAN
+    # legs leave ed_scan None and the panel is unchanged.
+    ed_scan = summary.get("ed_scan")
+    if _is_num(ed_scan) and ed_scan > 0.0:
+        ax.axhline(ed_scan, ls=":", color="#555555", lw=1.4, label="SCAN")
     beat = [(ss, c["ED"]) for (_, ss), c in cells.items()
             if c["beats_pbe"] and c["ED"] > 0.0]
     if beat:
@@ -3614,6 +4149,9 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                             density_unit_label: str = "density RMSE",
                             ed_gamma_label: str = "own gamma",
                             lockfix_cells: Optional[Dict[str, set]] = None,
+                            scan_density_records: Optional[
+                                Dict[str, Dict[str, Any]]] = None,
+                            scan_errors: Optional[Dict[str, float]] = None,
                             title: Optional[str] = None) -> Path:
     """Per-channel held-out story, ALL BARS, one column per channel
     (BH76 | W4-11 | combined): row 1 = WTMAD-2 bars per (arch, subset_size)
@@ -3654,9 +4192,14 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                    "per (arch, subset)" if ch == "combined" else
                    f"({letters[j]}) WTMAD-2, {lab} only -- one-bucket "
                    "reduction (scaled relative error)")
+            # SCAN's WTMAD-2 on this channel, reduced over the reactions the
+            # PBE leg reduced; None below the coverage floor or with no cache.
+            e_scan_ch, _u, _r = wtmad2_scan_baseline(pr, scan_errors)
+            if not (_r and (_u / _r) >= _SCAN_COVERAGE_FLOOR):
+                e_scan_ch = None
             _grouped_arch_bars(axes[0][j], wtmad2_by_arch_subset(pr), archs,
                                subsets, pbe_line=wtmad2_pbe_baseline(pr),
-                               title=ttl, **_lf)
+                               scan_line=e_scan_ch, title=ttl, **_lf)
         for j, (ch, lab) in enumerate(chans):
             ax = axes[1][j]
             if ch == "combined":
@@ -3673,10 +4216,13 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
             if d_map:
                 d_pbe_ch = (float(np.mean(list(pbe_ch.values())))
                             if pbe_ch else float("nan"))
+                # SCAN over the SAME channel species the PBE anchor averages.
                 _grouped_arch_bars(
                     ax, d_map, archs, subsets,
                     pbe_line=(d_pbe_ch if _is_num(d_pbe_ch)
                               and d_pbe_ch > 0.0 else None),
+                    scan_line=scan_density_line(scan_density_records, pbe_ch,
+                                                key=density_pbe_key),
                     title=ttl_d, **_lf)
                 ax.set_ylabel(f"{density_unit_label} vs CCSD", fontsize=8)
             else:
@@ -3693,10 +4239,13 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                 ed_map = {c: v["ED"] for c, v in s["cells"].items()
                           if _is_num(v.get("ED")) and v["ED"] > 0.0}
                 ed_pbe = s.get("ed_pbe")
+                ed_scan = s.get("ed_scan")
                 _grouped_arch_bars(
                     ax, ed_map, archs, subsets,
                     pbe_line=(float(ed_pbe) if _is_num(ed_pbe)
                               and ed_pbe > 0.0 else None),
+                    scan_line=(float(ed_scan) if _is_num(ed_scan)
+                               and ed_scan > 0.0 else None),
                     title=ttl, **_lf)
                 ax.set_ylabel(f"{_ED_SYM} (kcal/mol)", fontsize=8)
                 _gamma_stamp(ax, s)
@@ -4553,18 +5102,18 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
         r"   $x_5{=}\tanh(\ln(\sum_A Z_A/r_A)/5)$: $\sum_A Z_A/r_A$ = magnitude of the",
         r"     bare-nuclei electrostatic potential $={-}V_{ext}$ ($V_{ext}{=}{-}\sum_A Z_A/|r{-}R_A|$",
         r"     [12]); the $\ln,/5,\tanh$ map it to $(-1,1)$ (this work; log convention [4]).",
-        r"  _dm $(x_6,x_7,x_8)$ from the 1-particle density matrix $D$ ($D'{=}D/2$",
-        r"   RKS, $D_\sigma$ UKS):",
-        r"   $x_6{=}\|D'SD'{-}D'\|_F/\mathrm{Tr}(D'S)$: idempotency, $=0$ EXACTLY for one",
-        r"     Slater determinant ($PSP{=}P$ [10]).",
-        r"   $x_7{=}-\!\sum p_i\ln p_i/\ln\max(n_{orb}^{eff},2)$, $p_i$=normalized occupations",
-        r"     (eig $DS$ [9]): occupation-spread entropy, size-INTENSIVE $\in[0,1]$, used as a",
-        r"     multireference indicator [11].  Nonzero for one determinant.",
-        r"   $x_8{=}\|D_{off}\|_F/\mathrm{Tr}(D)$: relative off-diagonal weight of $D$.",
-        r"  _rung35 $(x_9,x_{10})$: per-spin localized-DM occupancy",
+        r"  _dm $(x_6,x_7)$ from the 1-particle density matrix $D$ ($D'{=}D/2$",
+        r"   RKS, $D_\sigma$ UKS; a 3rd feature, the occupation-spread entropy, was",
+        r"   removed 2026-08-06: its gradient vanishes identically at any converged",
+        r"   density, so it carried no trainable signal):",
+        r"   $x_6{=}\|D'SD'{-}D'\|_F^2/\mathrm{Tr}(D'S)$: idempotency, $=0$ EXACTLY for one",
+        r"     Slater determinant ($PSP{=}P$ [10]; squared norm, smooth at 0), $>0$ under",
+        r"     the fractional natural occupation of multireference states [11].",
+        r"   $x_7{=}\|D_{off}\|_F/\mathrm{Tr}(D)$: relative off-diagonal weight of $D$.",
+        r"  _rung35 $(x_8,x_9)$: per-spin localized-DM occupancy",
         r"   $n_\sigma(r){=}A(r)^T\!D^\sigma A(r)\in[0,1]$, $A_\mu{=}\langle\chi_\mu|\phi^G_r\rangle$",
         r"     a Gaussian projector (Rung-3.5 [21]; leak-free, replaces global _dm).",
-        r"  _mgga $(x_{11})$: iso-orbital $\alpha{=}(\tau{-}\tau_W)/\tau_{unif}$ [20]",
+        r"  _mgga $(x_{10})$: iso-orbital $\alpha{=}(\tau{-}\tau_W)/\tau_{unif}$ [20]",
         r"     (meta-GGA; $F_x$ ceiling 1.174 not 1.804; UEG gate on $(s,\alpha)$).",
         r"  _combined: cusp & DM;   _notransform: log-transform off.",
     ]
@@ -4594,13 +5143,19 @@ def _methods_references() -> List[str]:
 
 _DESCRIPTOR_X_LABELS: Dict[str, Tuple[str, ...]] = {
     # x-labels each descriptor group contributes, in feature order (col3 defines
-    # x_4,x_5 = cusp and x_6,x_7,x_8 = the 1-RDM statistics; x_9,x_10 = the rung-3.5
-    # per-spin localized-DM occupancies n_alpha, n_beta; x_11 = the meta-GGA
-    # iso-orbital alpha = (tau - tau_W)/tau_unif).
+    # x_4,x_5 = cusp and x_6,x_7 = the 1-RDM statistics; x_8,x_9 = the rung-3.5
+    # per-spin localized-DM occupancies n_alpha, n_beta; x_10 = the meta-GGA
+    # iso-orbital alpha = (tau - tau_W)/tau_unif; x_11..x_16 = the multi-width
+    # rung-3.5 occupancies, alpha-major then spin over 3 projector widths).
+    # dm_statistics went 3 -> 2 on 2026-08-06: dm_entropy was removed (no
+    # usable gradient at any converged density), so the labels here MUST track
+    # each descriptor's n_features -- pinned by
+    # test_descriptor_x_labels_match_registry_widths.
     "cusp": ("x_4", "x_5"),
-    "dm_statistics": ("x_6", "x_7", "x_8"),
-    "rung35": ("x_9", "x_10"),
-    "metagga": ("x_11",),
+    "dm_statistics": ("x_6", "x_7"),
+    "rung35": ("x_8", "x_9"),
+    "metagga": ("x_10",),
+    "rung35_multishell": ("x_11", "x_12", "x_13", "x_14", "x_15", "x_16"),
 }
 
 
@@ -4611,7 +5166,7 @@ def _arch_input_forms(arch_names: Tuple[str, ...] = ARCH_ORDER,
     in the arch's descriptor order -- exactly the order networks.py packs them
     (descriptors.py: ``concatenate([d.compute() for d in descriptors])``) -- so
     e.g. deep_combined (descriptors ``[dm_statistics, cusp]``) packs the DM block
-    x_6,x_7,x_8 BEFORE the cusp block x_4,x_5.  Both nets receive the same extras;
+    x_6,x_7 BEFORE the cusp block x_4,x_5.  Both nets receive the same extras;
     ``polarized`` reflects the run-wide ``use_polarized_correlation`` override
     (True for the bh76w411 runs), which adds x_1 to the C-net.  Source of truth:
     ``xcquinox.alec.config.ARCHITECTURES``."""
@@ -5087,11 +5642,28 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     # SCAN meta-GGA baseline: all-NaN (no line) unless a precomputed SCAN cache
     # sits by the run -- see scan_pool_baseline / precompute_scan_pool.py.
     try:
-        scan_baseline = scan_pool_baseline(run_dir)
+        scan_baseline = scan_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:
         print(f"  (SCAN baseline unavailable: {exc})")
-        scan_baseline = {"bh76": float("nan"), "w411": float("nan"),
-                         "combined": float("nan")}
+        scan_baseline = _nan_baseline()
+    # The SCAN caches are read ONCE here; each panel's anchor is then formed
+    # over the species/reactions THAT panel plots (held-out and in-sample are
+    # different sets), mirroring how pbe_density_baseline is called per figure.
+    try:
+        scan_dens_recs = _scan_density_records(run_dir)
+    except Exception as exc:
+        print(f"  (SCAN density cache unavailable: {exc})")
+        scan_dens_recs = {}
+    try:
+        scan_errs = scan_reaction_errors(run_dir)
+    except Exception as exc:
+        print(f"  (SCAN reaction errors unavailable: {exc})")
+        scan_errs = {}
+    _report_scan_coverage(
+        scan_baseline,
+        scan_density_baseline(collect_holdout_density_rows(
+            run_dir, eval_subdir=eval_subdir), run_dir,
+            _records=scan_dens_recs) if scan_dens_recs else None)
     prov = provenance_footer(baseline, scan_baseline)
     caveat = nn_vs_pbe_caveat(rows, baseline)
     dens_prov = ("In-sample density vs CCSD: grid weighted-mean RMSE/L1 on trained "
@@ -5131,10 +5703,12 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         ds = _holdout_eval_note(rows, hd_rows)
         written.append(plot_holdout_density_ccsd(
             hd_rows, outdir / "ablation_holdout_density_ccsd.png", run_id,
-            pbe_table=pbe_table, note=note, provenance=hd_prov, dataset=ds))
+            pbe_table=pbe_table, note=note, provenance=hd_prov, dataset=ds,
+            scan_density_records=scan_dens_recs))
         written.append(plot_holdout_density_per_arch(
             hd_rows, outdir / "ablation_holdout_density_per_arch.png", run_id,
-            pbe_table=pbe_table, note=note, provenance=hd_prov, dataset=ds))
+            pbe_table=pbe_table, note=note, provenance=hd_prov, dataset=ds,
+            scan_density_records=scan_dens_recs))
         # DFS Eq. 21 combined ED: needs the NN held-out density (finite
         # density_rmse rows) AND positive PBE anchors on both legs; a
         # pbe_table-only re-eval reaches here but cannot produce ED.
@@ -5323,12 +5897,16 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     rows, hd_rows, pbe_table, fixed_gamma=_DFS_GAMMA_KCAL,
                     gamma_source="DFS published",
                     density_key="density_eps_l1",
-                    pbe_density_key="density_eps_l1_pbe")
+                    pbe_density_key="density_eps_l1_pbe",
+                    scan_errors=scan_errs,
+                    scan_density_records=scan_dens_recs)
                 ch_eps_fit = (channel_ed_summaries(
                     rows, hd_rows, pbe_table, fixed_gamma=fit["gamma"],
                     gamma_source="own-axes fit",
                     density_key="density_eps_l1",
-                    pbe_density_key="density_eps_l1_pbe")
+                    pbe_density_key="density_eps_l1_pbe",
+                    scan_errors=scan_errs,
+                    scan_density_records=scan_dens_recs)
                     if fit_ok else None)
                 written.append(plot_density_energy_3x3(
                     rows, hd_rows,
@@ -5348,6 +5926,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     density_unit_label=_EPS_N_SYM,
                     ed_gamma_label="",
                     lockfix_cells=lf_cells,
+                    scan_density_records=scan_dens_recs,
+                    scan_errors=scan_errs,
                     title="Per-channel held-out story (DFS units): WTMAD-2 "
                           f"| {_EPS_N_SYM} | {_ED_N_SYM} "
                           "(BH76, W4-11, combined)"))
@@ -5429,7 +6009,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             provenance=ho_prov, dataset=ds))
         # Per-channel 3x3 + its CSV: renders whenever held-out density
         # exists; channels degrade individually inside the figure.
-        ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
+        ch_summaries = channel_ed_summaries(
+            rows, hd_rows, pbe_table, scan_errors=scan_errs,
+            scan_density_records=scan_dens_recs)
         prov_3x3 = ("Channels: pool-filtered reactions (energy legs) and "
                     "species-membership-filtered densities (membership from "
                     "reaction reactants+products; overlap species in both "
@@ -5439,7 +6021,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             rows, hd_rows, outdir / "ablation_density_energy_3x3.png",
             run_id, pbe_table=pbe_table, ch_summaries=ch_summaries,
             note=note, provenance=prov_3x3, dataset=ds,
-            lockfix_cells=lf_cells))
+            lockfix_cells=lf_cells, scan_density_records=scan_dens_recs,
+            scan_errors=scan_errs))
         pools_of = _species_pools(rows)
         legs3: Dict[str, Optional[Dict[str, Any]]] = {}
         counts3: Dict[str, Tuple[Dict, Dict]] = {}

@@ -8,6 +8,7 @@ Three layers, mirroring ``test_make_cluster_pulls_figure.py``:
 """
 from __future__ import annotations
 
+import contextlib
 import csv
 import importlib.util
 import json
@@ -749,20 +750,37 @@ def test_arch_input_forms_match_config():
     # base archs (polarized run): F_x(x_2), F_c(r_s, x_2, x_1)
     assert forms["deep"]["fx"] == ["x_2"]
     assert forms["deep"]["fc"] == ["r_s", "x_2", "x_1"]
-    # cusp adds x_4,x_5 to BOTH nets; dm adds x_6,x_7,x_8
+    # cusp adds x_4,x_5 to BOTH nets; dm adds x_6,x_7 (the occupation-spread
+    # entropy was removed 2026-08-06, so the DM block is 2 wide)
     assert forms["deep_cusp"]["fx"] == ["x_2", "x_4", "x_5"]
     assert forms["deep_cusp"]["fc"] == ["r_s", "x_2", "x_1", "x_4", "x_5"]
-    assert forms["deep_dm"]["fx"] == ["x_2", "x_6", "x_7", "x_8"]
-    # combined packs the DM block (x_6,x_7,x_8) BEFORE cusp (x_4,x_5) -- the
+    assert forms["deep_dm"]["fx"] == ["x_2", "x_6", "x_7"]
+    # combined packs the DM block (x_6,x_7) BEFORE cusp (x_4,x_5) -- the
     # networks.py concat order (descriptors=[dm_statistics, cusp])
-    assert forms["deep_combined"]["fx"] == ["x_2", "x_6", "x_7", "x_8", "x_4", "x_5"]
+    assert forms["deep_combined"]["fx"] == ["x_2", "x_6", "x_7", "x_4", "x_5"]
     assert forms["deep_combined"]["fc"] == [
-        "r_s", "x_2", "x_1", "x_6", "x_7", "x_8", "x_4", "x_5"]
+        "r_s", "x_2", "x_1", "x_6", "x_7", "x_4", "x_5"]
     # _attn shares its base's inputs; notransform shares deep's inputs but raw
     assert forms["deep_combined_attn"]["fx"] == forms["deep_combined"]["fx"]
     assert forms["deep_attn"]["attention"] is True
     assert forms["deep_notransform"]["fx"] == forms["deep"]["fx"]
     assert forms["deep_notransform"]["log_transform"] is False
+
+
+def test_descriptor_x_labels_match_registry_widths():
+    """The figure's x-label map must track each descriptor's n_features.
+
+    This map was once a hardcoded constant that silently kept a 3-wide DM
+    block after the descriptor shrank to 2 -- the methods column then printed
+    a definition for a feature that no longer existed. Deriving the check from
+    the registry makes that drift impossible to reintroduce quietly.
+    """
+    from xcquinox.alec.descriptors import make_descriptor
+    for name, labels in fig._DESCRIPTOR_X_LABELS.items():
+        n = make_descriptor(name).n_features
+        assert len(labels) == n, (
+            f"{name}: figure declares {len(labels)} x-labels but the "
+            f"descriptor has n_features={n}")
 
 
 def test_arch_forms_lines_cover_each_arch():
@@ -772,7 +790,7 @@ def test_arch_forms_lines_cover_each_arch():
         assert a in joined
     # explicit F_x / F_c forms appear verbatim
     assert "F_x(x_2, x_4, x_5)" in joined                                # cusp
-    assert "F_c(r_s, x_2, x_1, x_6, x_7, x_8, x_4, x_5)" in joined        # combined
+    assert "F_c(r_s, x_2, x_1, x_6, x_7, x_4, x_5)" in joined             # combined
     assert "raw" in joined.lower()           # notransform note
     # renders as valid mathtext
     import matplotlib
@@ -846,8 +864,9 @@ def test_methods_columns_lists_spin_and_descriptor_purposes():
     assert "3-cycle" in col2 and "one-shot" in col2           # rho SCF, vxc one-shot
     assert "W2-F12" in col2 and "CCSD(T)" not in col2         # GMTKN55-BH76 refs are W2-F12
     assert "[17]" in (col1 + col2 + col3)                     # W4-11 ref cited, not orphaned
-    # extended descriptors: x4-x8, V_ext defined, x7 intensive
-    assert "x_4" in col3 and "x_7" in col3 and "INTENSIVE" in col3
+    # extended descriptors: x4-x7, V_ext defined; the entropy feature (and its
+    # INTENSIVE normalization) was removed 2026-08-06
+    assert "x_4" in col3 and "x_7" in col3 and "INTENSIVE" not in col3
     assert "V_{ext}" in col3                                  # nuclear field defined
     # opaque shorthand + the corrected errors must be GONE
     assert "size-dependent" not in alltext
@@ -873,8 +892,6 @@ def test_methods_columns_lists_spin_and_descriptor_purposes():
     # (kind="bh76"), NOT the relative-AE channel
     assert "reaction energy" in col2 and "W4-11" in col2 and "[17]" in col2
     assert "not populated by this pool" in col2   # AE-relative + IP13 inactive here
-    # x7 probabilities are normalized before the entropy (features.py)
-    assert "normalized" in col3
     # attention equation now cited [19]; DFS acronym glossed on [4]
     assert "[19]" in col3 and "Vaswani" in refs
     assert "DFS" in refs
@@ -3223,10 +3240,551 @@ def test_arch_order_covers_v3_full25_sweep_archs():
         assert a in fig.ARCH_ORDER, f"{a} missing from ARCH_ORDER"
         assert fig.ARCH_COLOR.get(a) not in (None, "#333333"), f"{a} has no color"
     mgga_forms = fig._arch_input_forms(("deep_mgga_3x16", "deep_rung35_mgga_3x16"))
-    assert "x_11" in mgga_forms["deep_mgga_3x16"]["fx"], "metagga label x_11 missing"
+    assert "x_10" in mgga_forms["deep_mgga_3x16"]["fx"], "metagga label x_10 missing"
     assert all(lbl in mgga_forms["deep_rung35_mgga_3x16"]["fx"]
-               for lbl in ("x_4", "x_9", "x_11")), "combined mgga labels missing"
+               for lbl in ("x_4", "x_8", "x_9", "x_10")), "combined mgga labels missing"
     # _arch_input_forms must resolve the rung-3.5 descriptor labels (no KeyError)
     forms = fig._arch_input_forms(("deep_rung35_3x16", "deep_rung35only_3x16"))
-    assert all(lbl in forms["deep_rung35_3x16"]["fx"] for lbl in ("x_4", "x_9")), \
-        "deep_rung35 X-net inputs should carry cusp (x_4) + rung-3.5 (x_9) labels"
+    assert all(lbl in forms["deep_rung35_3x16"]["fx"] for lbl in ("x_4", "x_8", "x_9")), \
+        "deep_rung35 X-net inputs should carry cusp (x_4) + rung-3.5 (x_8,x_9) labels"
+
+
+# ---------------------------------------------------------------------------
+# Unequal training depth: a partial sweep fills the arch x subset_size grid
+# column by column, so an arch that entered late carries only its smallest
+# subsets. The figures that aggregate OVER subset_size must mark that, or the
+# coverage gap reads as an architecture result.
+# ---------------------------------------------------------------------------
+
+def _make_uneven_rung_rows():
+    """Held-out rows mirroring the real dfs6311 sweep at 32/88 cells: one GGA
+    arch at the full depth, a second GGA arch stopped part-way, and the single
+    meta-GGA arch present only at the smallest subset."""
+    plan = {"deep_3x16": (1, 26),
+            "deep_cusp_3x16": (1, 15),
+            "deep_mgga_3x16": (1,)}
+    rows = []
+    for i, (arch, sizes) in enumerate(plan.items()):
+        for ss in sizes:
+            for pool, err in (("bh76", 20.0 - 3.0 * i), ("w411", 30.0 - 2.0 * i)):
+                rows.append({"arch": arch, "subset_size": ss, "pool": pool,
+                             "name": f"{pool}_{arch}_{ss}",
+                             "reaction_energy_ref_kcalmol": 17.7,
+                             "abs_error_nn_kcalmol": err,
+                             "abs_error_pbe_kcalmol": 14.0})
+    return rows
+
+
+@contextlib.contextmanager
+def _captured_figures():
+    """Keep the figures the plot builders would close so their artists can be
+    inspected, then release them on exit.
+
+    A context manager rather than a monkeypatch helper for two reasons: the
+    real ``plt.close`` must come back before anything tries to close a figure
+    (calling the stand-in appends to the capture list instead of closing, which
+    turns a ``for f in seen: plt.close(f)`` loop into an infinite one), and the
+    figures must be released even when an assertion fails, or every test leaks
+    one into the session.
+    """
+    seen = []
+    real_close = fig.plt.close
+    fig.plt.close = lambda f=None: seen.append(f) if f is not None else None
+    try:
+        yield seen
+    finally:
+        fig.plt.close = real_close
+        real_close("all")
+
+
+def _bar_rects(ax):
+    """The bar Rectangles of ``ax``, ordered by x centre.
+
+    Read off ``ax.containers`` (the BarContainers ``ax.bar`` registers), NOT
+    ``ax.patches``: on matplotlib >= 3.8 ``axvspan`` also returns a Rectangle,
+    so the rung background bands are indistinguishable from bars by type.
+    """
+    rects = [p for cont in ax.containers for p in cont.patches]
+    return sorted(rects, key=lambda p: p.get_x())
+
+
+def test_subset_coverage_and_shallow_archs():
+    rows = _make_uneven_rung_rows()
+    assert fig._subset_coverage(rows) == {"deep_3x16": (1, 26),
+                                          "deep_cusp_3x16": (1, 15),
+                                          "deep_mgga_3x16": (1, 1)}
+    shallow, deepest = fig._shallow_archs(rows)
+    assert deepest == 26
+    assert shallow == {"deep_cusp_3x16", "deep_mgga_3x16"}
+    # A level grid marks nothing -- this is what keeps complete runs unchanged.
+    level, level_deep = fig._shallow_archs(_make_multirung_rows())
+    assert (level, level_deep) == (set(), 3)
+    assert fig._subset_coverage([]) == {}
+    assert fig._shallow_archs([]) == (set(), 0)
+
+
+def test_shallow_rungs_judged_on_the_rungs_deepest_arch():
+    """GGA holds both a full-depth arch and a stopped one; the rung has still
+    been probed at full depth and must NOT be marked. Judging a rung on its
+    mean, or on all of its archs, would flag GGA too."""
+    rows = _make_uneven_rung_rows()
+    shallow, deepest = fig._shallow_rungs(rows)
+    assert deepest == 26
+    assert shallow == {fig.arch_style.RUNG_MGGA}
+    assert fig.arch_style.RUNG_GGA not in shallow
+    assert fig._rung_coverage(rows) == {fig.arch_style.RUNG_GGA: (15, 26),
+                                        fig.arch_style.RUNG_MGGA: (1, 1)}
+    assert fig._shallow_rungs(_make_multirung_rows())[0] == set()
+
+
+def test_coverage_span_and_caveat_text():
+    assert fig._coverage_span((1, 26)) == "1-26"
+    assert fig._coverage_span((1, 1)) == "1"
+    rows = _make_uneven_rung_rows()
+    arch_cav = fig._coverage_caveat(rows)
+    assert "deep_mgga_3x16 at subset_size 1" in arch_cav
+    assert "deep_cusp_3x16 at subset_size 1-15" in arch_cav
+    assert "against 26" in arch_cav and "architecture" in arch_cav
+    rung_cav = fig._coverage_caveat(rows, by_rung=True)
+    assert fig.arch_style.RUNG_MGGA in rung_cav and "rung" in rung_cav
+    # RUNG_GGA ("GGA") is a SUBSTRING of RUNG_MGGA ("meta-GGA"), so a plain
+    # `not in` on the text cannot say whether the GGA rung was named. Assert on
+    # the entry count and on the classifier itself instead.
+    assert rung_cav.count("at subset_size") == 1
+    assert fig.arch_style.RUNG_GGA not in fig._shallow_rungs(rows)[0]
+    # Level coverage -> no disclosure at all (footers stay as they were).
+    assert fig._coverage_caveat(_make_multirung_rows()) == ""
+    assert fig._coverage_caveat(_make_multirung_rows(), by_rung=True) == ""
+
+
+def test_fade_keeps_hue_and_lightens():
+    faded = fig._fade("#1f77b4", 0.55)
+    raw = fig.matplotlib.colors.to_rgb("#1f77b4")
+    assert all(f > r for f, r in zip(faded, raw))       # lighter on every channel
+    assert all(f <= 1.0 for f in faded)
+    # ordering of the channels survives, so the rung stays identifiable
+    assert sorted(range(3), key=lambda i: raw[i]) == sorted(range(3),
+                                                            key=lambda i: faded[i])
+    assert fig._fade("#1f77b4", 0.0) == pytest.approx(raw)
+    assert fig._fade("#1f77b4", 1.0) == pytest.approx((1.0, 1.0, 1.0))
+
+
+def test_mae_by_arch_hatches_only_the_shallow_archs(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    rows = _make_uneven_rung_rows()
+    with _captured_figures() as seen:
+        out = fig.plot_mae_by_arch(rows, [], tmp_path / "mba.png", "run_x")
+        assert _png_ok(out)
+        ax = seen[-1].axes[0]
+        archs = [t.get_text() for t in ax.get_xticklabels()]
+        # tick labels state the depth each arch's bars aggregate
+        assert any("deep_mgga_3x16" in a and "(ss 1)" in a for a in archs)
+        assert any("deep_3x16" in a and "(ss 1-26)" in a for a in archs)
+        order = fig.arch_style.sort_by_rung(["deep_3x16", "deep_cusp_3x16",
+                                             "deep_mgga_3x16"])
+        hatched, plain = set(), set()
+        for p in _bar_rects(ax):
+            idx = int(round(p.get_x() + p.get_width() / 2.0))
+            if 0 <= idx < len(order):
+                (hatched if p.get_hatch() else plain).add(order[idx])
+        assert hatched == {"deep_cusp_3x16", "deep_mgga_3x16"}
+        assert plain == {"deep_3x16"}
+        assert any("shallower training depth" in t.get_text()
+                   for t in ax.get_legend().get_texts())
+
+
+def test_mae_by_arch_level_grid_has_no_mark(tmp_path):
+    """Byte-stability guard: a complete grid must render with no hatch, no
+    coverage legend key and no extra footer line."""
+    import matplotlib
+    matplotlib.use("Agg")
+    with _captured_figures() as seen:
+        assert _png_ok(fig.plot_mae_by_arch(_make_multirung_rows(), [],
+                                            tmp_path / "level.png", "run_x"))
+        ax = seen[-1].axes[0]
+        assert not any(p.get_hatch() for p in _bar_rects(ax))
+        assert not any("shallower training depth" in t.get_text()
+                       for t in ax.get_legend().get_texts())
+        assert not any("UNEQUAL TRAINING DEPTH" in t.get_text()
+                       for t in seen[-1].texts)
+
+
+def test_rung_summary_fades_the_shallow_rung(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    rows = _make_uneven_rung_rows()
+    with _captured_figures() as seen:
+        out = fig.plot_rung_summary(rows, tmp_path / "rs.png", "run_x",
+                                    pbe_baseline={"combined": 15.0})
+        assert _png_ok(out)
+        f = seen[-1]
+        ax = f.axes[0]
+        rungs = [r for r in fig.arch_style.RUNG_ORDER
+                 if r in fig.arch_style.by_rung(fig._archs_present(rows))]
+        assert rungs == [fig.arch_style.RUNG_GGA, fig.arch_style.RUNG_MGGA]
+        warn = fig.matplotlib.colors.to_rgba(fig._SHALLOW_EDGE)
+        black = fig.matplotlib.colors.to_rgba("k")
+        edges, faces = {}, {}
+        for p in _bar_rects(ax):
+            idx = int(round(p.get_x() + p.get_width() / 2.0))
+            if 0 <= idx < len(rungs):
+                edges.setdefault(rungs[idx], set()).add(tuple(p.get_edgecolor()))
+                faces.setdefault(rungs[idx], set()).add(
+                    tuple(p.get_facecolor()[:3]))
+        assert edges[fig.arch_style.RUNG_MGGA] == {tuple(warn)}
+        assert edges[fig.arch_style.RUNG_GGA] == {tuple(black)}
+        # The faded face keeps the rung hue rather than switching color.
+        # Compared element-wise -- a set of pytest.approx objects compares by
+        # hash, not tolerance, so `{approx(x)} == {y}` would never match.
+        for rung, want in (
+                (fig.arch_style.RUNG_MGGA,
+                 fig._fade(fig.arch_style.RUNG_ACCENT[fig.arch_style.RUNG_MGGA])),
+                (fig.arch_style.RUNG_GGA,
+                 fig.matplotlib.colors.to_rgb(
+                     fig.arch_style.RUNG_ACCENT[fig.arch_style.RUNG_GGA]))):
+            assert len(faces[rung]) == 1, faces[rung]
+            assert next(iter(faces[rung])) == pytest.approx(want)
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        assert any(t.startswith("meta-GGA") and "n=1" in t and "ss 1)" in t
+                   for t in labels)
+        assert any(t.startswith("GGA") and "n=2" in t and "ss 15-26)" in t
+                   for t in labels)
+        assert any("UNEQUAL TRAINING DEPTH" in t.get_text() for t in f.texts)
+
+
+def test_rung_summary_level_grid_unmarked(tmp_path):
+    """The level fixture keeps every bar at the plain black edge -- the guard
+    that a complete sweep renders as it did before the mark existed."""
+    import matplotlib
+    matplotlib.use("Agg")
+    with _captured_figures() as seen:
+        assert _png_ok(fig.plot_rung_summary(_make_multirung_rows(),
+                                             tmp_path / "rs_level.png", "run_x"))
+        f = seen[-1]
+        black = tuple(fig.matplotlib.colors.to_rgba("k"))
+        assert {tuple(p.get_edgecolor())
+                for p in _bar_rects(f.axes[0])} == {black}
+        assert not any("UNEQUAL TRAINING DEPTH" in t.get_text() for t in f.texts)
+
+
+def test_parity_legends_state_each_archs_subset_size(tmp_path):
+    """Both parity figures pick each arch's DEEPEST spec, which need not be the
+    same depth -- the legend has to say which, or the cloud mixes a 1-molecule
+    net with a full-pool one invisibly."""
+    import matplotlib
+    matplotlib.use("Agg")
+    run = _make_run_dir(tmp_path)
+    rows = fig.collect_holdout_reaction_rows(run)
+    best = fig._best_subset_per_arch(rows)
+    assert best, "fixture should carry held-out rows"
+    with _captured_figures() as seen:
+        assert _png_ok(fig.plot_parity(rows, tmp_path / "par.png", _STAMP))
+        assert _png_ok(fig.plot_ae_parity(rows, tmp_path / "aepar.png", _STAMP))
+        assert len(seen) == 2
+        for f in seen:
+            labels = [t.get_text() for t in f.legends[0].get_texts()]
+            named = [a for a in best if any(a in lbl for lbl in labels)]
+            assert named, labels
+            for arch in named:
+                assert f"{arch} (ss {best[arch]})" in labels, labels
+
+
+def test_coverage_marks_render_on_a_single_rung_and_single_cell(tmp_path):
+    """Degenerate shapes the partial sweep actually produces: one rung only,
+    and a rung whose single arch holds exactly one subset size."""
+    import matplotlib
+    matplotlib.use("Agg")
+    with _captured_figures():
+        one_rung = [r for r in _make_uneven_rung_rows()
+                    if r["arch"] != "deep_mgga_3x16"]
+        assert _png_ok(fig.plot_rung_summary(one_rung, tmp_path / "one.png",
+                                             "run_x"))
+        assert _png_ok(fig.plot_mae_by_arch(one_rung, [], tmp_path / "one_a.png",
+                                            "run_x"))
+        single = [r for r in _make_uneven_rung_rows() if r["subset_size"] == 1]
+        assert _png_ok(fig.plot_rung_summary(single, tmp_path / "sgl.png",
+                                             "run_x"))
+        assert _png_ok(fig.plot_mae_by_arch(single, [], tmp_path / "sgl_a.png",
+                                            "run_x"))
+
+
+# ---------------------------------------------------------------------------
+# SCAN meta-GGA reference. The _mgga archs pretrain to SCAN, so it is the
+# comparator they are judged against -- but a SCAN line drawn beside a PBE line
+# must reduce the SAME reactions/species, or the two are different benchmarks.
+# ---------------------------------------------------------------------------
+
+def _rxns(n: int, pool: str = "bh76"):
+    return [{"source_pool": pool, "name": f"r{i}", "reactants": [f"a{i}"],
+             "products": [f"b{i}"], "coeffs": [-1.0, 1.0],
+             "reaction_energy_ref": 10.0} for i in range(n)]
+
+
+def _energy_map(n: int, product: float):
+    out = {f"a{i}": 0.0 for i in range(n)}
+    out.update({f"b{i}": product for i in range(n)})
+    return out
+
+
+def test_scan_pool_baseline_without_a_cache_is_all_nan(tmp_path):
+    """The state every run has been in until now: no cache -> all-NaN, empty
+    coverage, and no line drawn. This is what keeps the change inert."""
+    b = fig.scan_pool_baseline(tmp_path)
+    assert all(math.isnan(b[k]) for k in ("bh76", "w411", "combined"))
+    assert b["coverage"] == {}
+    assert fig.scan_line_value(b) == (None, "")
+    assert fig.scan_coverage(b) == (0, 0)
+
+
+def test_scan_pool_baseline_counts_coverage_against_pbe():
+    """A reaction SCAN cannot score is silently dropped by
+    reaction_mae_kcalmol, so coverage is measured against what PBE scored on
+    the same list -- not against what SCAN happened to have."""
+    rx = _rxns(10)
+    pbe = _energy_map(10, 0.02)
+    full = fig.scan_pool_baseline(
+        Path("."), _loader=lambda: ({}, rx), _energies=_energy_map(10, 0.03),
+        _pbe_energies=pbe)
+    assert fig.scan_coverage(full, "bh76") == (10, 10)
+    val, suffix = fig.scan_line_value(full, "bh76")
+    assert val is not None and suffix == ""      # full coverage -> unqualified
+
+    partial = dict(_energy_map(10, 0.03))
+    del partial["b9"]                            # 9/10 = 90%, at the floor
+    p = fig.scan_pool_baseline(Path("."), _loader=lambda: ({}, rx),
+                               _energies=partial, _pbe_energies=pbe)
+    assert fig.scan_coverage(p, "bh76") == (9, 10)
+    val_p, suffix_p = fig.scan_line_value(p, "bh76")
+    assert val_p is not None and suffix_p == ", 9/10"   # drawn, but qualified
+
+
+def test_scan_line_is_withdrawn_below_the_coverage_floor():
+    """Below the floor SCAN is a different benchmark, not a reference."""
+    rx = _rxns(10)
+    pbe = _energy_map(10, 0.02)
+    thin = dict(_energy_map(10, 0.03))
+    for i in (7, 8, 9):
+        del thin[f"b{i}"]                        # 7/10 = 70%
+    b = fig.scan_pool_baseline(Path("."), _loader=lambda: ({}, rx),
+                               _energies=thin, _pbe_energies=pbe)
+    assert fig.scan_coverage(b, "bh76") == (7, 10)
+    assert math.isfinite(b["bh76"])              # the number exists ...
+    assert fig.scan_line_value(b, "bh76") == (None, "")   # ... but is not drawn
+
+
+def test_wtmad2_scan_baseline_reduces_the_same_reactions_as_pbe():
+    rows = [{"name": f"r{i}", "pool": "bh76", "ref_kcalmol": 20.0,
+             "abs_error_pbe_kcalmol": 2.0} for i in range(5)]
+    pbe = fig.wtmad2_pbe_baseline(rows)
+    scan, used, ref = fig.wtmad2_scan_baseline(rows, {f"r{i}": 4.0
+                                                      for i in range(5)})
+    assert (used, ref) == (5, 5)
+    assert scan == pytest.approx(2.0 * pbe)      # errors doubled -> WTMAD-2 doubles
+    # a reaction SCAN could not score shrinks `used`, never the reference count
+    scan_p, used_p, ref_p = fig.wtmad2_scan_baseline(
+        rows, {f"r{i}": 4.0 for i in range(3)})
+    assert (used_p, ref_p) == (3, 5)
+    assert math.isnan(fig.wtmad2_scan_baseline(rows, {})[0])
+
+
+def test_ed_scan_is_a_second_point_not_a_copy_of_its_energy_leg():
+    """gamma is calibrated on PBE, so ed_pbe == e_pbe by construction but
+    ed_scan does NOT equal e_scan -- SCAN's density leg moves it. A mutant
+    reusing the PBE anchor, or setting ed_scan = e_scan, fails here."""
+    s = fig.combined_ed_by_cell({("deep", 1): 8.0}, 10.0,
+                                {("deep", 1): 0.004}, 0.005,
+                                e_scan=9.0, d_scan=0.010)
+    assert s["ed_pbe"] == pytest.approx(s["e_pbe"])          # the identity
+    gamma = s["gamma"]
+    assert gamma == pytest.approx(10.0 / 0.005)
+    assert s["ed_scan"] == pytest.approx(
+        2.0 / (1.0 / 9.0 + 1.0 / (gamma * 0.010)))
+    assert s["ed_scan"] != pytest.approx(s["e_scan"])
+    assert s["cells"][("deep", 1)]["beats_scan"] is True
+
+
+def test_ed_scan_is_none_without_both_scan_legs():
+    """Either leg missing -> no SCAN ED, so the panels omit the line rather
+    than drawing a half-defined reference."""
+    base = ({("deep", 1): 8.0}, 10.0, {("deep", 1): 0.004}, 0.005)
+    assert fig.combined_ed_by_cell(*base)["ed_scan"] is None
+    assert fig.combined_ed_by_cell(*base, e_scan=9.0)["ed_scan"] is None
+    assert fig.combined_ed_by_cell(*base, d_scan=0.01)["ed_scan"] is None
+    assert fig.combined_ed_by_cell(*base, e_scan=9.0,
+                                   d_scan=0.01)["ed_scan"] is not None
+    # the fixed-gamma twin behaves identically
+    fixed = fig.combined_ed_fixed_gamma(*base, 2000.0)
+    assert fixed["ed_scan"] is None
+    assert fig.combined_ed_fixed_gamma(*base, 2000.0, e_scan=9.0,
+                                       d_scan=0.01)["ed_scan"] is not None
+
+
+def test_ed_summary_is_unchanged_when_no_scan_is_supplied():
+    """Byte-stability: adding the SCAN legs must not move a single PBE number."""
+    base = ({("deep", 1): 8.0, ("deep", 2): 6.0}, 10.0,
+            {("deep", 1): 0.004, ("deep", 2): 0.003}, 0.005)
+    a = fig.combined_ed_by_cell(*base)
+    b = fig.combined_ed_by_cell(*base, e_scan=9.0, d_scan=0.01)
+    for k in ("gamma", "e_pbe", "d_pbe", "ed_pbe"):
+        assert a[k] == pytest.approx(b[k])
+    for cell in a["cells"]:
+        for k in ("E", "D", "gammaD", "ED", "beats_pbe"):
+            assert a["cells"][cell][k] == b["cells"][cell][k]
+
+
+def test_scan_density_mean_uses_the_pbe_anchors_species():
+    """The PBE density anchor is a mean over the plotted species; SCAN's must
+    be over THOSE species. A mutant averaging the whole cache picks up species
+    the panel never plots."""
+    recs = {"H2O": {"density_rmse_scan": 1.0e-4},
+            "CH": {"density_rmse_scan": 3.0e-4},
+            "NotPlotted": {"density_rmse_scan": 9.9e-1}}
+    mean, used, ref = fig.scan_density_mean(recs, ["H2O", "CH"])
+    assert mean == pytest.approx(2.0e-4)          # excludes NotPlotted
+    assert (used, ref) == (2, 2)
+    assert fig.scan_density_line(recs, ["H2O", "CH"]) == pytest.approx(2.0e-4)
+    # a species the cache lacks counts against coverage
+    mean2, used2, ref2 = fig.scan_density_mean(recs, ["H2O", "CH", "Missing"])
+    assert (used2, ref2) == (2, 3)
+    assert fig.scan_density_line(recs, ["H2O", "CH", "Missing"]) is None
+    assert fig.scan_density_line({}, ["H2O"]) is None
+
+
+def test_scan_density_key_map_covers_every_pbe_density_column():
+    """Each PBE density column the figures select must have a SCAN twin, or the
+    selector silently yields no line on that channel."""
+    for pbe_key in ("density_rmse_pbe", "density_eps_l1_pbe"):
+        assert pbe_key in fig._SCAN_DENSITY_KEY
+        assert fig._SCAN_DENSITY_KEY[pbe_key].endswith("_scan")
+
+
+def test_scan_density_baseline_degrades_and_matches_the_pbe_species(tmp_path):
+    hd = [{"molecule": m, "density_rmse_pbe": 2.0e-4, "density_rmse": 3.0e-4}
+          for m in ("H2O", "CH")]
+    assert math.isnan(fig.scan_density_baseline(hd, tmp_path,
+                                                _records={})["value"])
+    b = fig.scan_density_baseline(
+        hd, tmp_path, _records={"H2O": {"density_rmse_scan": 1.0e-4},
+                                "CH": {"density_rmse_scan": 3.0e-4}})
+    assert b["value"] == pytest.approx(2.0e-4)
+    assert fig.scan_coverage(b, "value") == (2, 2)
+
+
+def test_rung_summary_draws_the_scan_line_only_with_coverage(tmp_path):
+    """End to end on the figure: full coverage draws an unqualified SCAN line,
+    thin coverage draws none, and no cache leaves the figure as it was."""
+    import matplotlib
+    matplotlib.use("Agg")
+    rows = _make_multirung_rows()
+
+    def _labels(scan_baseline):
+        with _captured_figures() as seen:
+            fig.plot_rung_summary(rows, tmp_path / "rs.png", "run_x",
+                                  pbe_baseline={"combined": 15.0},
+                                  scan_baseline=scan_baseline)
+            ax = seen[-1].axes[0]
+            return [t.get_text() for t in ax.get_legend().get_texts()]
+
+    full = {"combined": 9.0, "bh76": 9.0, "w411": 9.0,
+            "coverage": {"combined": {"used": 100, "reference": 100}}}
+    thin = {"combined": 9.0, "bh76": 9.0, "w411": 9.0,
+            "coverage": {"combined": {"used": 50, "reference": 100}}}
+    assert any("SCAN (combined 9.0)" in t for t in _labels(full))
+    assert not any("SCAN" in t for t in _labels(thin))
+    assert not any("SCAN" in t for t in _labels(fig._nan_baseline()))
+    part = {"combined": 9.0, "bh76": 9.0, "w411": 9.0,
+            "coverage": {"combined": {"used": 95, "reference": 100}}}
+    assert any("SCAN (combined 9.0, 95/100)" in t for t in _labels(part))
+
+
+# ---------------------------------------------------------------------------
+# meta-GGA enhancement factors. The meta-GGA archs pretrain to SCAN, not PBE,
+# and their zero-descriptor curve IS the alpha=0 (single-orbital) slice -- the
+# least representative point of the domain. Both facts have to survive in the
+# figure code or the meta-GGA family is read against the wrong reference at the
+# wrong point.
+# ---------------------------------------------------------------------------
+
+def test_scan_fx_curve_matches_libxc_at_known_points():
+    """SCAN's exchange enhancement, checked against values libxc produces --
+    the INDEPENDENT oracle (not this repo's SCAN path, which also feeds the
+    pretrain target, so a shared bug could not show up there)."""
+    pytest.importorskip("pyscf")
+    import numpy as np
+    s = np.array([0.0, 1.0, 4.0])
+    fx0 = ef.scan_fx_curve(s, alpha=0.0)
+    assert fx0 is not None
+    # alpha=0, s=0 is SCAN's single-orbital limit h_0x = 1.174.
+    assert fx0[0] == pytest.approx(1.174, abs=2e-3)
+    for a in (0.0, 1.0, 100.0):
+        curve = ef.scan_fx_curve(s, alpha=a)
+        assert np.all(curve <= 1.174 + 1e-6), (a, curve)
+    # F_x decreases with alpha at fixed s (iso-orbital -> UEG -> overlap);
+    # a mutant ignoring alpha collapses these onto one another.
+    at_s1 = [float(ef.scan_fx_curve(np.array([1.0]), alpha=a)[0])
+             for a in (0.0, 1.0, 5.0, 100.0)]
+    assert at_s1 == sorted(at_s1, reverse=True), at_s1
+    assert at_s1[0] - at_s1[-1] > 0.2      # a real spread, not numerical noise
+
+
+def test_alpha_panels_span_the_physical_range():
+    """The sweep must reach the uniform-gas point and the clip ceiling, or the
+    panel cannot show where the net leaves its target."""
+    assert 0.0 in ef._ALPHA_PANELS and 1.0 in ef._ALPHA_PANELS
+    assert max(ef._ALPHA_PANELS) == 100.0     # metagga.py clips alpha there
+    assert list(ef._ALPHA_PANELS) == sorted(ef._ALPHA_PANELS)
+
+
+def test_provenance_stamps_dm_entropy_caveat_only_on_pre_fix_runs():
+    """The caveat used to be stamped unconditionally, which printed a false
+    provenance claim on every run newer than the fix."""
+    old = ef._provenance(Path("run_20260529T165503Z"), False)
+    new = ef._provenance(Path("run_20260728T140018Z"), False)
+    assert "Pre-dm_entropy-fix" in old
+    assert "Pre-dm_entropy-fix" not in new
+    assert "extras=0" in new and "alpha" not in new
+    with_alpha = ef._provenance(Path("run_20260728T140018Z"), True)
+    assert "alpha=0 slice" in with_alpha
+
+
+#: The dfs6311 production pull is the only local run carrying a meta-GGA
+#: checkpoint (_REAL_RUN predates the meta-GGA archs entirely).
+_MGGA_RUN = (Path.home() / "Documents/Research/xcquinox-results/runs/dfs_step7"
+             / "dfs6311_grid3_v3/runs/run_20260728T140018Z")
+
+
+def test_model_fx_curve_alpha_moves_the_curve():
+    """``alpha=`` must reach the descriptor column the X-net reads. A mutant
+    that drops the kwarg (or writes the wrong column) returns the alpha=0
+    curve for every alpha, collapsing the panel to a single line."""
+    import numpy as np
+    reps = ef.representative_specs(_MGGA_RUN) if _MGGA_RUN.is_dir() else {}
+    mgga = [a for a in reps if "mgga" in a]
+    if not mgga:
+        pytest.skip("no meta-GGA checkpoint in the reference run")
+    _spec, model = ef.load_trained_model(_MGGA_RUN, reps[mgga[0]])
+    assert ef.is_meta_gga(model)
+    s = np.linspace(1e-3, 3.0, 40)
+    curves = {a: ef.model_fx_curve(model, s, alpha=a) for a in (0.0, 1.0, 100.0)}
+    for c in curves.values():
+        assert np.all(np.isfinite(c))
+    assert not np.allclose(curves[0.0], curves[1.0])
+    assert not np.allclose(curves[1.0], curves[100.0])
+    # alpha=None reproduces the historical zero-descriptor slice exactly
+    assert np.allclose(ef.model_fx_curve(model, s), curves[0.0])
+
+
+def test_gga_arch_is_not_meta_gga_and_ignores_alpha():
+    """Byte-stability for the GGA family: no alpha column, so the new kwarg
+    must not perturb their curves."""
+    import numpy as np
+    reps = ef.representative_specs(_MGGA_RUN) if _MGGA_RUN.is_dir() else {}
+    gga = [a for a in reps if "mgga" not in a and "rung35" not in a]
+    if not gga:
+        pytest.skip("no GGA checkpoint in the reference run")
+    _spec, model = ef.load_trained_model(_MGGA_RUN, reps[gga[0]])
+    assert not ef.is_meta_gga(model)
+    s = np.linspace(1e-3, 3.0, 40)
+    base = ef.model_fx_curve(model, s)
+    assert np.allclose(ef.model_fx_curve(model, s, alpha=None), base)
