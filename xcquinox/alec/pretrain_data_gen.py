@@ -319,8 +319,12 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
             "mesh": {"rs": list(MESH_RS), "s": list(MESH_S),
                      "alpha": list(MESH_ALPHA),
                      "weight_fraction": MESH_WEIGHT_FRACTION}}
-    with open(_pretrain_manifest_path(npz_path), "w") as f:
+    # Atomic for the same shared-dir reason as the npz write above.
+    mpath = _pretrain_manifest_path(npz_path)
+    tmp = f"{mpath}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
         json.dump(meta, f)
+    os.replace(tmp, mpath)
 
 
 def read_pretrain_manifest(npz_path):
@@ -496,7 +500,19 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     os.makedirs(out_dir, exist_ok=True)
     fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"
     out_path = os.path.join(out_dir, fname)
-    np.savez(out_path, **save_kwargs)
+    # ATOMIC write (tmp + os.replace): the data dir is SHARED across sweep
+    # runs, and two concurrently submitted runs whose datagen stages both see
+    # a stale file would otherwise race a plain in-place np.savez -- a torn
+    # zip that fails every reader. With the rename, concurrent regenerations
+    # merely duplicate compute (last writer wins, both logically identical)
+    # and a reader always sees a complete file. The tmp name is pid-tagged so
+    # two writers do not collide on the tmp path either.
+    tmp_path = f"{out_path}.tmp.{os.getpid()}"
+    np.savez(tmp_path, **save_kwargs)
+    # np.savez appends .npz to a name without it: normalize.
+    if not tmp_path.endswith(".npz") and os.path.isfile(tmp_path + ".npz"):
+        tmp_path = tmp_path + ".npz"
+    os.replace(tmp_path, out_path)
     _write_pretrain_manifest(
         out_path, basis=basis, grid_level=grid_level, density_fit=density_fit,
         auxbasis=_effective_auxbasis(basis, density_fit, auxbasis),

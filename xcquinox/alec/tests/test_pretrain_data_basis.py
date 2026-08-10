@@ -62,7 +62,12 @@ def test_manifest_round_trips_density_fit_flag(tmp_path):
         meta = json.load(f)
     assert meta == {"basis": "def2-tzvp", "grid_level": 2, "density_fit": True,
                     "auxbasis": "def2-universal-jkfit",
-                    "atoms": [[s, sp] for s, sp in pdg.DEFAULT_PRETRAIN_ATOMS]}
+                    "atoms": [[s, sp] for s, sp in pdg.DEFAULT_PRETRAIN_ATOMS],
+                    # The (s, alpha) parameter mesh record (2026-08-10): its
+                    # weight share is a deliberate choice the manifest states.
+                    "mesh": {"rs": list(pdg.MESH_RS), "s": list(pdg.MESH_S),
+                             "alpha": list(pdg.MESH_ALPHA),
+                             "weight_fraction": pdg.MESH_WEIGHT_FRACTION}}
 
 
 def test_manifest_auxbasis_defaults_none(tmp_path):
@@ -219,3 +224,41 @@ def test_parse_pretrain_atoms_forms():
     assert _parse_pretrain_atoms({"H": 1, "Na": 1}) == (("H", 1), ("Na", 1))
     # round-tripped resolved_config (lists of pairs)
     assert _parse_pretrain_atoms([["H", 1], ["O", 2]]) == (("H", 1), ("O", 2))
+
+
+def test_generator_writes_are_atomic(tmp_path, monkeypatch):
+    """The pretrain-data dir is SHARED across sweep runs; two concurrently
+    submitted runs can both reach a stale file and regenerate. Both the npz
+    and its manifest must land via tmp + os.replace so a reader never sees a
+    torn file -- concurrent regeneration then only duplicates compute."""
+    import numpy as np
+    import xcquinox.alec.pretrain_data_gen as pdg
+
+    def fake_cols(sym, spin, basis, grid_level, **kw):
+        return {k: np.ones(2) for k in ("rho", "sigma", "Fx", "Fc", "weights",
+                                        "zeta", "Fx_scan", "Fc_scan")} | {
+            "cusp": np.ones((2, 2)), "dm": np.ones((2, 2)),
+            "rung35": np.ones((2, 2)), "rung35ms": np.ones((2, 6)),
+            "metagga": np.ones((2, 1))}
+
+    monkeypatch.setattr(pdg, "_atom_columns", fake_cols)
+    replaces = []
+    real_replace = os.replace
+    monkeypatch.setattr(
+        pdg.os, "replace",
+        lambda src, dst: (replaces.append((src, dst)), real_replace(src, dst)))
+
+    out = pdg.generate_pretrain_data_npz(str(tmp_path), atoms=(("H", 1),),
+                                         basis="def2-svp", grid_level=1)
+    # Final artifacts valid and loadable.
+    d = np.load(out)
+    assert "rho_all" in d.files and "rho_mesh" in d.files
+    assert pdg.read_pretrain_manifest(out)["basis"] == "def2-svp"
+    # Both writes went through an atomic rename onto their final paths.
+    dsts = [dst for _s, dst in replaces]
+    assert out in dsts, "npz was not written via os.replace"
+    assert pdg._pretrain_manifest_path(out) in dsts, \
+        "manifest was not written via os.replace"
+    # No tmp remnants survive.
+    leftovers = [f for f in os.listdir(tmp_path) if ".tmp." in f]
+    assert leftovers == [], leftovers
