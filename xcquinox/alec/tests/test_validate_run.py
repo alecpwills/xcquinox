@@ -194,6 +194,15 @@ def test_pretrain_metadata_checks(tmp_path, patched_cfg):
     assert any("pretrain_steps" in f and "100" in f for f in failures), failures
     assert any("lacks 'meta_gga'" in w for w in warnings), warnings
 
+    # the (s, alpha) mesh flag: deep_3x16 is not a meta-GGA arch, so a
+    # checkpoint claiming mesh-augmented pretraining contradicts the
+    # registry-derived expectation and must fail.
+    with open(os.path.join(d, "pretrain_metadata.json"), "w") as f:
+        json.dump({"use_polarized_correlation": True,
+                   "pretrain_mesh": True}, f)
+    failures, _w, _n = vr.validate_run(run)
+    assert any("pretrain_mesh" in f for f in failures), failures
+
     # polarization mismatch in metadata -> failure.
     with open(os.path.join(d, "pretrain_metadata.json"), "w") as f:
         json.dump({"use_polarized_correlation": False}, f)

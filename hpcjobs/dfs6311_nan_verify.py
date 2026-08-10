@@ -207,7 +207,11 @@ def leg2_potential_effect(run_dir, grid_level, cycles, report):
 
 
 def leg3_convergence_behaviour(run_dir, grid_level, report,
-                               caps=(5, 10, 15, 20, 25)):
+                               caps=(3, 5, 10, 15, 20, 25)):
+    # cap 3 first: the sweep trains AND evals at 3 cycles (full_3), so the
+    # 3-cycle point is the one the production cells actually live at; the
+    # longer caps profile the instability regime the full_25 follow-up
+    # would enter.
     print("[leg3] convergence behaviour, corrected vs prior", flush=True)
     for arch_name in ARCHS:
         model = load_pretrained(run_dir, arch_name)

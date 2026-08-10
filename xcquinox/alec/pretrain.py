@@ -209,6 +209,61 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
 # Optimizer builder
 # ---------------------------------------------------------------------------
 
+def _append_pretrain_mesh(arch, pretrain_data, descriptors, descriptors_c,
+                          fx_target, fc_target):
+    """Append the ``(s, alpha)`` mesh rows to the pretrain inputs and targets.
+
+    Returns ``(descriptors, descriptors_c, Fx, Fc, rho_all, weights_all)`` with
+    the mesh concatenated onto each. The mesh rows are laid out in the SAME
+    column order :func:`_assemble_pretrain_descriptors` produces
+    (``[rho, sigma, (zeta,) *extras]``) so the two blocks are one array as far
+    as the network is concerned.
+
+    ``rho_all`` / ``weights_all`` are returned extended as well because the
+    integration weighting is computed from them -- appending inputs without
+    appending weights would silently give every mesh row zero influence, which
+    is precisely the failure this mesh exists to fix.
+
+    Only called for an arch whose descriptor set is exactly ``(metagga,)``; see
+    the gate in :func:`run_pretrain` for why.
+    """
+    n = pretrain_data["rho_mesh"].shape[0]
+    cols = [jnp.asarray(pretrain_data["rho_mesh"]),
+            jnp.asarray(pretrain_data["sigma_mesh"])]
+    cols_c = list(cols)
+    if arch.use_polarized_correlation:
+        zeta_mesh = pretrain_data.get("zeta_mesh")
+        cols_c.append(jnp.zeros(n) if zeta_mesh is None
+                      else jnp.asarray(zeta_mesh))
+    alpha = jnp.asarray(pretrain_data["metagga_mesh"]).reshape(-1)
+    cols.append(alpha)
+    cols_c.append(alpha)
+    mesh_x = jnp.stack(cols, axis=1)
+    mesh_c = jnp.stack(cols_c, axis=1)
+    if mesh_x.shape[1] != descriptors.shape[1]:
+        raise ValueError(
+            f"mesh X-net column count {mesh_x.shape[1]} != atomic "
+            f"{descriptors.shape[1]}; the mesh layout has drifted from "
+            "_assemble_pretrain_descriptors")
+    if mesh_c.shape[1] != descriptors_c.shape[1]:
+        raise ValueError(
+            f"mesh C-net column count {mesh_c.shape[1]} != atomic "
+            f"{descriptors_c.shape[1]}; the mesh layout has drifted from "
+            "_assemble_pretrain_descriptors")
+    return (
+        jnp.concatenate([descriptors, mesh_x], axis=0),
+        jnp.concatenate([descriptors_c, mesh_c], axis=0),
+        jnp.concatenate([jnp.asarray(fx_target).reshape(-1),
+                         jnp.asarray(pretrain_data["Fx_scan_mesh"]).reshape(-1)]),
+        jnp.concatenate([jnp.asarray(fc_target).reshape(-1),
+                         jnp.asarray(pretrain_data["Fc_scan_mesh"]).reshape(-1)]),
+        jnp.concatenate([jnp.asarray(pretrain_data["rho_all"]).reshape(-1),
+                         jnp.asarray(pretrain_data["rho_mesh"]).reshape(-1)]),
+        jnp.concatenate([jnp.asarray(pretrain_data["weights_all"]).reshape(-1),
+                         jnp.asarray(pretrain_data["weights_mesh"]).reshape(-1)]),
+    )
+
+
 def _build_optimizer(
     *,
     lr_start: float,
@@ -355,6 +410,48 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         Fx_target = pretrain_data["Fx_all"]
         Fc_target = pretrain_data["Fc_all"]
 
+    # (s, alpha) parameter mesh -- appended ONLY for a meta-GGA arch, and only
+    # when the mesh can define every descriptor that arch consumes.
+    #
+    # WHY: SCAN's F_c is 3-D in (r_s, s, alpha) and the atomic grids leave the
+    # alpha axis underdetermined -- the meta-GGA C-net was measured at up to
+    # 0.457 from SCAN away from alpha=1, where the GGA C-net (same atoms, same
+    # weighting, same optimizer) sits within 0.013 of PBE. The mesh determines
+    # that axis directly.
+    #
+    # WHY THE DESCRIPTOR GATE: a mesh node is a synthetic (rho, sigma, tau)
+    # triple with NO geometry, so it cannot define cusp or rung-3.5 occupancy.
+    # Appending it for an arch that consumes those would teach the net that
+    # fabricated descriptor values pair with real SCAN targets. Archs whose
+    # descriptor set is exactly (metagga,) -- deep_mgga_3x16,
+    # deep_mgga_attn_3x16 -- take the mesh; deep_rung35_mgga_3x16 does NOT and
+    # keeps the atoms-only seed until the mesh can carry its extras.
+    mesh_used = False
+    if bool(getattr(spec.arch, "meta_gga", False)):
+        desc_names = tuple(getattr(d, "name", None) for d in spec.arch.descriptors)
+        has_mesh = "Fx_scan_mesh" in pretrain_data
+        if desc_names == ("metagga",) and has_mesh:
+            (descriptors, descriptors_c, Fx_target, Fc_target,
+             mesh_rho_all, mesh_weights_all) = _append_pretrain_mesh(
+                spec.arch, pretrain_data, descriptors, descriptors_c,
+                Fx_target, Fc_target)
+            mesh_used = True
+            print(f"[pretrain] (s, alpha) mesh appended: "
+                  f"{pretrain_data['rho_mesh'].shape[0]} nodes "
+                  f"({100.0 * float(pretrain_data['weights_mesh'].sum()) / float(mesh_weights_all.sum()):.0f}% "
+                  "of the integration weight)", flush=True)
+        elif not has_mesh:
+            print("[pretrain] WARNING: pretrain data carries no (s, alpha) mesh; "
+                  "the meta-GGA alpha axis will be underdetermined (regenerate "
+                  "the pretrain data to add it).", flush=True)
+        else:
+            print(f"[pretrain] NOTE: {getattr(spec.arch, 'name', '?')} consumes "
+                  f"descriptors {desc_names}, which a geometry-free mesh node "
+                  "cannot define; pretraining on the atomic grids alone.",
+                  flush=True)
+    if not mesh_used:
+        mesh_rho_all = mesh_weights_all = None
+
     # --- Create network pair (or use the caller-supplied override) ---
     if networks is not None:
         xnet, cnet = networks
@@ -399,11 +496,15 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
 
     integration_weights_complete: bool | None = None  # set below for "integration" mode
     if spec.loss_weighting == "integration":
-        rho_all = pretrain_data["rho_all"]
+        # Mesh-extended when the mesh was appended, so the mesh rows carry
+        # their stated share of the loss instead of zero influence.
+        rho_all = (mesh_rho_all if mesh_rho_all is not None
+                   else pretrain_data["rho_all"])
         # Becke-Lebedev quadrature weights ``dr_i`` improve energy-density
         # calibration; older pretrain_data files don't carry them, fall back
         # with a warning and record the degradation in metadata.
-        grid_weights = pretrain_data.get("weights_all")
+        grid_weights = (mesh_weights_all if mesh_weights_all is not None
+                        else pretrain_data.get("weights_all"))
         if grid_weights is None:
             integration_weights_complete = False
             import warnings as _warn
@@ -548,6 +649,11 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         # legacy warning rather than a failure.
         "meta_gga": bool(spec.arch.meta_gga),
         "n_extra_features": int(spec.arch.n_extra_features),
+        # Whether the (s, alpha) parameter mesh was appended to this
+        # pretrain's inputs -- checkpoint provenance the run validator
+        # cross-checks (a meta-GGA checkpoint trained WITHOUT the mesh has
+        # the underdetermined-alpha clone this key exists to expose).
+        "pretrain_mesh": bool(mesh_used),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         "duration_seconds": round(duration, 1),
     }

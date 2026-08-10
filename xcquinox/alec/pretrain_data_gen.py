@@ -197,6 +197,98 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
     return cols
 
 
+# --------------------------------------------------------------------------- #
+# (s, alpha) parameter-space mesh -- the DFS-parity piece the atomic grids miss.
+#
+# WHY THIS EXISTS. PBE's F_c is a 2-D function of (r_s, s) and the atomic grids
+# determine it: the GGA C-net reproduces PBE to <= 0.013 everywhere tested.
+# SCAN's is 3-D in (r_s, s, alpha), and the SAME atomic data leaves the alpha
+# axis underdetermined -- the meta-GGA C-net was measured at up to 0.457 from
+# SCAN away from alpha=1 (it is exact AT alpha=1 only because the UEG gate pins
+# it there by construction). The module docstring above predicted this: the
+# deviation "is most consequential for the alpha-dependent meta-GGA / SCAN
+# targets, whose alpha coordinate is undersampled". A regular mesh determines
+# that axis directly instead of hoping the atomic grids happen to sample it.
+#
+# Analytic: (rho, sigma, tau) are synthesized to realize each (r_s, s, alpha)
+# node and pushed through the SAME libxc calls the atomic path uses. No SCF.
+# --------------------------------------------------------------------------- #
+
+#: Mesh nodes. r_s spans core (0.1) to the diffuse tail (10); s spans the UEG
+#: limit to the large-gradient tail; alpha spans single-orbital (0) through the
+#: uniform gas (1) to the overlap region. Chosen to bracket the exchange-weighted
+#: (r_s, s, alpha) region molecules actually occupy, measured on H2O/CH4.
+MESH_RS = (0.1, 0.3, 0.7, 1.5, 3.0, 5.0, 10.0)
+MESH_S = (0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0)
+MESH_ALPHA = (0.0, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0)
+#: The mesh's share of the TOTAL integration weight. Stated and recorded in the
+#: manifest rather than left emergent: the atomic rows carry physical quadrature
+#: weights, the mesh rows carry none, so their relative influence on the
+#: pretrain loss is a deliberate choice. 0.3 gives the alpha axis real pull
+#: without letting a synthetic mesh outvote the physical densities.
+MESH_WEIGHT_FRACTION = 0.3
+
+
+def _mesh_columns(*, rs_grid=MESH_RS, s_grid=MESH_S, alpha_grid=MESH_ALPHA):
+    """SCAN Fx/Fc on a regular ``(r_s, s, alpha)`` mesh.
+
+    Returns the same column dict shape as :func:`_atom_columns` (minus the
+    descriptor extras, which a mesh point has no geometry to define): ``rho``,
+    ``sigma``, ``Fx_scan``, ``Fc_scan``, ``metagga``, ``weights`` (unnormalized;
+    the caller rescales them to :data:`MESH_WEIGHT_FRACTION`).
+
+    Each node is realized as a physical ``(rho, sigma, tau)`` triple --
+    ``rho = 3/(4 pi r_s^3)``, ``sigma = (s * 2 k_F rho)^2``,
+    ``tau = alpha * tau_unif + tau_W`` -- so the mesh's alpha column is produced
+    by ``metagga.compute_alpha`` from the same triple the SCF would see. The
+    targets come from the SAME ``eval_xc("SCAN,")`` / ``eval_xc(",SCAN")`` calls
+    the atomic path uses, so mesh and atomic rows are the same quantity.
+    """
+    from pyscf import dft as _dft
+
+    from xcquinox.alec.metagga import compute_alpha
+
+    rs = np.asarray(rs_grid, dtype=float)[:, None, None]
+    s = np.asarray(s_grid, dtype=float)[None, :, None]
+    al = np.asarray(alpha_grid, dtype=float)[None, None, :]
+    rs, s, al = np.broadcast_arrays(rs, s, al)
+    rs, s, al = rs.ravel(), s.ravel(), al.ravel()
+
+    rho = 3.0 / (4.0 * np.pi * rs ** 3)
+    k_f = (3.0 * np.pi ** 2 * rho) ** (1.0 / 3.0)
+    sigma = (s * 2.0 * k_f * rho) ** 2
+    tau_w = sigma / (8.0 * rho)
+    tau_unif = 0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0) * rho ** (5.0 / 3.0)
+    tau = al * tau_unif + tau_w
+
+    ni = _dft.numint.NumInt()
+    grad = np.sqrt(sigma)
+    zeros = np.zeros_like(rho)
+    mgga = np.vstack([rho, grad, zeros, zeros, zeros, tau])
+    gga = np.vstack([rho, grad, zeros, zeros])
+    ex_scan = ni.eval_xc("SCAN,", mgga, spin=0)[0]
+    ec_scan = ni.eval_xc(",SCAN", mgga, spin=0)[0]
+    ex_lda = ni.eval_xc("LDA_X,", rho, spin=0)[0]
+    ec_lda = ni.eval_xc(",LDA_C_PW", rho, spin=0)[0]
+    ex_safe = np.where(np.abs(ex_lda) > 1e-12, ex_lda, 1e-12)
+    ec_safe = np.where(np.abs(ec_lda) > 1e-12, ec_lda, 1e-12)
+    del gga
+
+    # alpha recomputed through the SHARED helper (not reused from `al`) so a
+    # divergence between this mesh and the SCF descriptor would show up here.
+    alpha_col = np.asarray(compute_alpha(
+        jnp.asarray(rho), jnp.asarray(sigma), jnp.asarray(tau)))
+    return {
+        "rho": rho,
+        "sigma": sigma,
+        "Fx_scan": np.clip(ex_scan / ex_safe - 1.0, -5.0, 5.0),
+        "Fc_scan": np.clip(ec_scan / ec_safe - 1.0, -5.0, 5.0),
+        "metagga": alpha_col.reshape(-1, 1),
+        "weights": np.ones_like(rho),
+        "zeta": np.zeros_like(rho),
+    }
+
+
 def _pretrain_manifest_path(npz_path):
     """Sidecar manifest path for a pretrain-data ``.npz`` (``<npz>.manifest.json``)."""
     return str(npz_path) + ".manifest.json"
@@ -216,7 +308,14 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
     species change silently reused stale data."""
     meta = {"basis": basis, "grid_level": int(grid_level),
             "density_fit": bool(density_fit), "auxbasis": auxbasis,
-            "atoms": [[str(s), int(sp)] for s, sp in atoms]}
+            "atoms": [[str(s), int(sp)] for s, sp in atoms],
+            # The (s, alpha) mesh the meta-GGA archs additionally pretrain on.
+            # Recorded because its WEIGHT SHARE is a deliberate choice, not an
+            # emergent property of a quadrature: mesh rows carry no physical
+            # grid weight, so their pull on the pretrain loss is set here.
+            "mesh": {"rs": list(MESH_RS), "s": list(MESH_S),
+                     "alpha": list(MESH_ALPHA),
+                     "weight_fraction": MESH_WEIGHT_FRACTION}}
     with open(_pretrain_manifest_path(npz_path), "w") as f:
         json.dump(meta, f)
 
@@ -278,6 +377,15 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
     # only tests) are not spuriously flagged.
     if "Fx_all" in _keys and (
             "metagga_all" not in _keys or "Fx_scan_all" not in _keys):
+        return False
+    # A file written before the (s, alpha) parameter mesh lacks the *_mesh keys.
+    # Without them a meta_gga arch pretrains on the atomic grids alone, which
+    # leaves SCAN's alpha axis underdetermined -- measured at up to 0.457 error
+    # in F_c away from alpha=1, against <= 0.013 for the GGA archs on the same
+    # data. Force a regen so the mesh appears. Gated on Fx_all for the same
+    # reason as above (bare manifest-only stubs are not flagged).
+    if "Fx_all" in _keys and (
+            "metagga_mesh" not in _keys or "Fx_scan_mesh" not in _keys):
         return False
     return True
 
@@ -353,6 +461,26 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
         "metagga_all": np.concatenate([c["metagga"] for c in per_atom]),
         "weights_all": np.concatenate([c["weights"] for c in per_atom]),
     }
+    # (s, alpha) parameter-space mesh, stored under SEPARATE *_mesh keys so the
+    # atomic arrays every GGA arch reads stay byte-identical. pretrain.py
+    # concatenates these ONLY for a meta_gga arch whose descriptor set the mesh
+    # can actually define (see _mesh_columns).
+    mesh = _mesh_columns()
+    _w_atom = float(save_kwargs["weights_all"].sum())
+    _n_mesh = mesh["rho"].shape[0]
+    # Rescale the (weightless) mesh rows to a stated share of the total
+    # integration weight: w_mesh_total / (w_atom + w_mesh_total) = FRACTION.
+    _w_mesh_total = _w_atom * MESH_WEIGHT_FRACTION / (1.0 - MESH_WEIGHT_FRACTION)
+    save_kwargs.update({
+        "rho_mesh": mesh["rho"],
+        "sigma_mesh": mesh["sigma"],
+        "Fx_scan_mesh": mesh["Fx_scan"],
+        "Fc_scan_mesh": mesh["Fc_scan"],
+        "metagga_mesh": mesh["metagga"],
+        "weights_mesh": np.full(_n_mesh, _w_mesh_total / _n_mesh),
+    })
+    if polarized:
+        save_kwargs["zeta_mesh"] = mesh["zeta"]
     if polarized:
         save_kwargs["zeta_all"] = np.concatenate([c["zeta"] for c in per_atom])
     if descriptors:

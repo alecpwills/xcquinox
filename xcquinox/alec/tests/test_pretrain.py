@@ -451,7 +451,7 @@ def test_run_pretrain_metadata_json_all_fields(tiny_pretrain_data_dir):
         "arch_name", "pretrain_steps", "lr_start", "lr_end",
         "lr_decay_start", "grad_clip", "final_loss_x", "final_loss_c",
         "min_loss_x", "min_loss_c", "use_cusp", "use_dm",
-        "meta_gga", "n_extra_features",
+        "meta_gga", "n_extra_features", "pretrain_mesh",
         "timestamp", "duration_seconds",
     }
 
@@ -472,9 +472,11 @@ def test_run_pretrain_metadata_json_all_fields(tiny_pretrain_data_dir):
         assert md["arch_name"] == "t"
         assert md["pretrain_steps"] == 3
         # Shape keys the run validator cross-checks: must carry the arch's
-        # real values (this arch has no descriptors and no meta-GGA input).
+        # real values (this arch has no descriptors and no meta-GGA input,
+        # so the (s, alpha) mesh must not have been appended).
         assert md["meta_gga"] is False
         assert md["n_extra_features"] == 0
+        assert md["pretrain_mesh"] is False
 
 
 def test_run_pretrain_warmup_phase_and_progress_callback(tiny_pretrain_data_dir):

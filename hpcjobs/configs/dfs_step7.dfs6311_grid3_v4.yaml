@@ -1,59 +1,78 @@
 # =============================================================================
-# dfs_step7.dfs6311_grid3_v4.yaml -- corrected-V_xc re-sweep of the rung-3.5
-# families at DFS-paper-parity reference data.
+# dfs_step7.dfs6311_grid3_v4.yaml -- corrected-V_xc descriptor-ablation
+# re-sweep: every family the correction affects, at DFS-paper-parity data.
 #
 # WHY A v4: every v3 cell trained before the 2026-08-06 V_xc correction (the
 # feature-response term sum_g w_g (de/df)_g . df_g/dP was absent for
-# DM-dependent descriptors), and the v3 run's tail additionally straddled a
-# mid-flight library sync, so its not-yet-run cells had no clean provenance
-# class. This sweep re-runs ONLY the architectures the correction affects and
-# that are stable under it:
+# DM-dependent descriptors) from a SCAN-clone pretrain whose alpha axis the
+# atomic grids underdetermine, and the v3 array's tail additionally straddled
+# a mid-flight library sync, so its not-yet-run cells had no clean provenance
+# class. v3 closes as the pre-correction record (specs 0000-0047). This sweep
+# re-runs everything the correction touches -- only the GGA family is
+# excluded, because grid-local descriptors never had the missing term and the
+# completed deep/attn/cusp rows are already correct.
 #
-#   INCLUDED (rung-3.5 families; production-scale verification 2026-08-10,
-#   HISTORY entry of the same date): the corrected potential is stable on
-#   every tested deep_rung35_mgga configuration (worst energy-vs-cycle-cap
-#   late-step 1.6e-5 Ha, monotone), and the rung-3.5 descriptor is linear in
-#   the density matrix (no eigendecomposition, no tail-stiffness hazard).
+# SEVEN ARCHS, the descriptor-ablation grid ("what descriptors help"):
 #
-#   EXCLUDED, deliberately:
-#   - deep_3x16 / deep_attn_3x16 / deep_cusp_3x16: grid-local descriptors;
-#     the correction never touched their potential, so their completed v3
-#     cells are already correct -- re-running them buys nothing.
-#   - deep_mgga_3x16 / deep_mgga_attn_3x16: gated on TWO open items. (1) The
-#     corrected potential carries the iso-orbital alpha's tail stiffness into
-#     V_xc and oscillates on tail-dominated species under the production
-#     mixer (measured: H late-step 2.2e-1 Ha where the prior assembly
-#     converged; LiH 6.7e-2) -- SCF stabilization must land first. (2) Their
-#     SCAN-clone pretrain is unfaithful off the pretrain manifold (pretrained
-#     -only held-out MAE 42.65 kcal/mol vs actual SCAN 4.45 over the same
-#     164-reaction set; ~9.6x) -- the (s, alpha)-mesh pretrain augmentation
-#     must land first.
+#   arch                     descriptors              pretrain
+#   deep_mgga_3x16           metagga                  SCAN + (s,alpha) MESH
+#   deep_mgga_attn_3x16      metagga (+attention)     SCAN + (s,alpha) MESH
+#   deep_rung35only_3x16     rung35                   PBE-form
+#   deep_rung35_3x16         cusp+rung35              PBE-form
+#   deep_rung35_attn_3x16    cusp+rung35 (+attn)      PBE-form
+#   deep_rung35ms_3x16       cusp+rung35_multishell   PBE-form
+#   deep_rung35_mgga_3x16    cusp+rung35+metagga      SCAN, NO mesh (below)
 #
-# CAVEAT carried, not hidden: deep_rung35_mgga_3x16 is meta_gga=True and
-# pretrains to SCAN, so it shares the mgga families' clone protocol (though
-# not their SCF instability). It stays in this sweep because it is the
-# does-extra-richness-help headline and v3 never produced a single cell of
-# it; if its small-subset cells disappoint the way deep_mgga's did, the
-# mesh-pretrain follow-up covers it too.
+# Ablation chains: attention (rows 1v2, 4v5), cusp (3v4), multi-width
+# rung-3.5 (4v6), metagga stacking (4v7), rung-3 vs rung-3.5 (1v3/4), with
+# v3's valid GGA rows as the cross-run baseline.
+#
+# PRETRAIN-TARGET POLICY: each arch pretrains to the best functional its
+# inputs can EXACTLY represent. SCAN's enhancement factors are multivalued at
+# fixed (rho, sigma) -- they depend irreducibly on alpha -- so the GGA-based
+# rung-3.5 archs (no alpha input, by rung purity) keep PBE, which IS a GGA:
+# the clone is faithful (measured <= 0.013), SCF-safe, and the DFS paper's
+# own protocol (deviation D5). The alpha-bearing mgga archs pretrain to SCAN
+# with the (s, alpha) parameter mesh appended (2026-08-10): the atomic grids
+# alone leave SCAN's alpha axis underdetermined (measured up to 0.457 from
+# SCAN in F_c away from alpha=1; pretrained-only held-out MAE 42.65 kcal/mol
+# against SCAN's 4.45 on the same 164 reactions).
+#
+# CAVEATS carried, not hidden:
+# - deep_rung35_mgga_3x16 pretrains to SCAN WITHOUT the mesh: a mesh node is
+#   a synthetic (rho, sigma, tau) triple with no geometry, so it cannot
+#   define the cusp/rung-3.5 columns this arch consumes. Its initialization
+#   therefore remains the underdetermined-alpha clone; it stays as the
+#   stacking cell, and its small-subset cells read with that caveat.
+# - For the mgga families the cross-run v3 comparison is potential+pretrain
+#   JOINTLY (both were broken; two variables, unavoidable). The rung-3.5
+#   rows are a single-variable A/B (potential only).
+# - The 3-cycle corrected trajectory (the regime this sweep actually runs;
+#   training and eval are both full_3) is verified contracting for the mgga
+#   archs; the 25-cycle oscillation measured 2026-08-10 gates only the
+#   full_25 follow-up, not this sweep.
 #
 # Everything else -- subsets, solver, hyperparameters, reference data, basis,
-# grid, orientation lock -- is IDENTICAL to v3 for apples-to-apples against
-# the completed (and valid) v3 GGA rows and the pre-correction v3 mgga rows.
-# The reference/pretrain-data/subset-ledger dirs are shared with v3 on
-# purpose: they are input data keyed by species/basis/grid, complete, and on
-# the relocked CH/NO references throughout -- so this run has NO reference
-# boundary. A fresh output_root keeps the run additive; the v3 run dir is
-# untouched.
+# grid, orientation lock -- is IDENTICAL to v3. The reference/pretrain-data/
+# subset-ledger dirs are shared with v3 on purpose: input data keyed by
+# species/basis/grid, complete, and on the relocked CH/NO references
+# throughout -- so this run has NO reference boundary. A fresh output_root
+# keeps the run additive; the v3 run dir is untouched.
 # =============================================================================
 
 sweep:
-  # The rung-3.5 A/B under the corrected potential: base rung-3.5, +attention,
-  # +meta-GGA stacking (cusp + rung-3.5 + alpha). deep_cusp_3x16's completed
-  # v3 row remains the control (its physics is unchanged by the correction, so
-  # comparing across the two runs is legitimate for it).
+  # NOTE: expand_grid canonicalizes the arch axis ALPHABETICALLY regardless of
+  # the listing order here, so array task indices map as: 0-10 deep_mgga,
+  # 11-21 deep_mgga_attn, 22-32 deep_rung35, 33-43 deep_rung35_attn,
+  # 44-54 deep_rung35_mgga, 55-65 deep_rung35ms, 66-76 deep_rung35only.
+  # v3's completed GGA rows are the rung-2 baseline.
   arch:
+    - deep_mgga_3x16
+    - deep_mgga_attn_3x16
+    - deep_rung35only_3x16
     - deep_rung35_3x16
     - deep_rung35_attn_3x16
+    - deep_rung35ms_3x16
     - deep_rung35_mgga_3x16
   loss: [L5_gradnorm_vxc_step7]
   metric: [jsd]
@@ -144,7 +163,7 @@ pretrain:
   # the intervening commits), but it OVERWRITES v3's pretrain input -- back
   # up pretrain_data_polarized.npz first if the v3 file's exact bytes matter
   # for provenance. Seven atoms at this basis/grid fit the datagen window.
-  # The CHECKPOINTS are per-run: this run pretrains its three architectures
+  # The CHECKPOINTS are per-run: this run pretrains its seven architectures
   # fresh with the corrected code into its own pretrain/ dir, and the run
   # validator cross-checks the written meta_gga / n_extra_features /
   # pretrain_steps provenance keys against the specs that load them.
@@ -206,8 +225,8 @@ cluster:
   account: ""
   preflight_time: "12:00:00"
   # Compile-smoke gate: the preflight compiles the heaviest attention cell once
-  # (n_steps=1) on its exclusive node before the 33-task array; a host-OOM there
-  # blocks the array via the afterok dep -- one cheap failure instead of ~30.
+  # (n_steps=1) on its exclusive node before the 77-task array; a host-OOM there
+  # blocks the array via the afterok dep -- one cheap failure instead of ~70.
   preflight_compile_smoke: true
   eval_time: "02:00:00"
   pretrain_time: "12:00:00"

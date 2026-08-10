@@ -211,6 +211,15 @@ def validate_run(run_dir: str, config_path: str | None = None):
             continue
         provenance = (("meta_gga", bool(reg.meta_gga)),
                       ("n_extra_features", int(reg.n_extra_features)),
+                      # The (s, alpha) mesh is appended exactly for meta-GGA
+                      # archs whose descriptor set is (metagga,) -- derivable
+                      # from the registry, so a meta-GGA checkpoint trained
+                      # without it (the underdetermined-alpha clone) fails
+                      # here instead of surfacing as bad held-out numbers.
+                      ("pretrain_mesh", bool(
+                          reg.meta_gga
+                          and tuple(d.name for d in reg.descriptors)
+                          == ("metagga",))),
                       # The step count has always been written as
                       # "pretrain_steps", so it is checkable on legacy files
                       # that predate the shape keys.
