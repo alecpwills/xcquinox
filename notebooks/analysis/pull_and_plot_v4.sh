@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Pull the v4 campaign arms from the cluster and render every figure --
+# per-arm suites plus the merged cross-arm view. Safe to run at ANY level of
+# completion: partial grids render with the standard hatched-missing-cell
+# marks, arms not yet pulled are skipped, and re-running refreshes in place.
+#
+#     bash notebooks/analysis/pull_and_plot_v4.sh          # pull + plot
+#     bash notebooks/analysis/pull_and_plot_v4.sh --plot-only
+#
+# Requires $swpath in the environment (set in ~/.bashrc) for the pull step.
+# =============================================================================
+set -uo pipefail
+
+RESULTS_ROOT="$HOME/Documents/Research/xcquinox-results/runs/dfs_step7"
+CLUSTER_ROOT="/gpfs/scratch/awills/xcquinox_runs/dfs_step7"
+ARMS="dfs6311_grid3_v4 dfs6311_grid3_v4gga dfs6311_grid3_v4mgga2"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+
+if [ "${1:-}" != "--plot-only" ]; then
+  if [ -z "${swpath:-}" ]; then
+    echo "[pull-v4] FATAL: \$swpath is not set (needed for the pull); use --plot-only to skip"
+    exit 1
+  fi
+  for arm in $ARMS; do
+    mkdir -p "$RESULTS_ROOT/$arm"
+    # --ignore-missing-args: an arm not yet submitted simply is not there.
+    rsync -a --info=stats1 --ignore-missing-args \
+        "$swpath":"$CLUSTER_ROOT/$arm/runs" "$RESULTS_ROOT/$arm/" \
+      && echo "[pull-v4] pulled $arm" \
+      || echo "[pull-v4] NOTE: $arm not pulled (not on cluster yet, or transfer error)"
+  done
+fi
+
+cd "$REPO"
+
+# --- per-arm figure suites (final-step + val-best variants each) ------------
+for arm in $ARMS; do
+  if [ -d "$RESULTS_ROOT/$arm/runs" ]; then
+    JAX_PLATFORMS=cpu python notebooks/analysis/make_ablation_arch_figure.py \
+        --suite --domain dfs_step7 --bases "${arm#dfs6311_grid3_}" \
+        --outroot notebooks/analysis \
+      || echo "[pull-v4] WARNING: per-arm suite failed for $arm (see above)"
+  else
+    echo "[pull-v4] skip figures: $arm has no pulled runs"
+  fi
+done
+
+# --- merged cross-arm view: one directory of renumbered symlinks, then the
+#     full figure build on it (every collector works on the view unchanged) --
+JAX_PLATFORMS=cpu python notebooks/analysis/merge_v4_arms.py \
+    --results-root "$RESULTS_ROOT"
+RC=$?
+if [ "$RC" -eq 0 ]; then
+  JAX_PLATFORMS=cpu python - <<'EOF'
+import sys
+from pathlib import Path
+sys.path.insert(0, "notebooks/analysis")
+import make_ablation_arch_figure as fig
+
+view = Path.home() / "Documents/Research/xcquinox-results/runs/dfs_step7/merged_v4_arms"
+out = Path("notebooks/analysis/figures_dfs6311_v4_merged")
+written = fig.build_all(view, out)
+print(f"[pull-v4] merged view: {len(written)} figures -> {out}")
+EOF
+else
+  echo "[pull-v4] merged view skipped (no arm has pulled specs yet)"
+fi
+echo "[pull-v4] done"

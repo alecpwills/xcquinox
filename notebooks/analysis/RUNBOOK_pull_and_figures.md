@@ -1,5 +1,13 @@
 # Runbook: pull cluster trainings + regenerate figures (dfs_step7)
 
+**v4 campaign shortcut (2026-08-10):** the three-arm v4 flight has its own
+one-command wrapper -- `bash notebooks/analysis/pull_and_plot_v4.sh` pulls
+every arm that exists on the cluster, renders the per-arm figure suites, and
+builds the merged cross-arm view (`merge_v4_arms.py`: renumbered spec
+symlinks + a composed manifest, so every collector works unchanged) into
+`notebooks/analysis/figures_dfs6311_v4_merged/`. Safe at any level of
+completion; re-run it as more cells land. `--plot-only` skips the pull.
+
 **Purpose:** a step-by-step, copy-paste runbook -- you can follow it mechanically. Run the blocks in order; each step says how to verify it
 worked before moving on. The only step that can require a *code* change is the
 `ARCH_ORDER` guard (Step 2, "If it fails") -- that one, ask the author.
