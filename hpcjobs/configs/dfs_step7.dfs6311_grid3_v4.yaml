@@ -1,6 +1,12 @@
 # =============================================================================
-# dfs_step7.dfs6311_grid3_v4.yaml -- corrected-V_xc descriptor-ablation
-# re-sweep: every family the correction affects, at DFS-paper-parity data.
+# dfs_step7.dfs6311_grid3_v4.yaml -- the META-GGA ARM of the corrected-V_xc
+# descriptor-ablation re-sweep, at DFS-paper-parity data. The re-sweep runs
+# as TWO CONCURRENT ARMS on two queues: this file (3 alpha-bearing archs,
+# 33 cells, long-96core -- the metagga+attention cells are the heaviest and
+# get the 256 GB Milan nodes) and dfs6311_grid3_v4gga.yaml (the 6 GGA-based
+# archs, 66 cells, long-40core). Same methodology, same inputs, distinct
+# output roots; SUBMIT THIS ARM FIRST and the GGA arm after this arm's
+# datagen completes (shared pretrain npz, one-time regeneration).
 #
 # WHY A v4: every v3 cell trained before the 2026-08-06 V_xc correction (the
 # feature-response term sum_g w_g (de/df)_g . df_g/dP was absent for
@@ -12,20 +18,20 @@
 # excluded, because grid-local descriptors never had the missing term and the
 # completed deep/attn/cusp rows are already correct.
 #
-# SEVEN ARCHS, the descriptor-ablation grid ("what descriptors help"):
+# THE FULL RE-SWEEP GRID, across both arms ("what descriptors help"):
 #
 #   arch                     descriptors              pretrain
 #   deep_mgga_3x16           metagga                  SCAN + (s,alpha) MESH
 #   deep_mgga_attn_3x16      metagga (+attention)     SCAN + (s,alpha) MESH
-#   deep_rung35only_3x16     rung35                   PBE-form
 #   deep_rung35_3x16         cusp+rung35              PBE-form
 #   deep_rung35_attn_3x16    cusp+rung35 (+attn)      PBE-form
 #   deep_rung35ms_3x16       cusp+rung35_multishell   PBE-form
 #   deep_rung35_mgga_3x16    cusp+rung35+metagga      SCAN, NO mesh (below)
 #
-# Ablation chains: attention (rows 1v2, 4v5), cusp (3v4), multi-width
-# rung-3.5 (4v6), metagga stacking (4v7), rung-3 vs rung-3.5 (1v3/4), with
-# v3's valid GGA rows as the cross-run baseline.
+# This arm carries rows 1, 2 and the stacking cell; the GGA arm carries the
+# rest plus the re-done pure-GGA baseline (deep/deep_attn/deep_cusp), so the
+# whole 9-arch grid is ONE uniform methodology: corrected potential,
+# reaction-form AE, mesh pretrain where the descriptor set allows it.
 #
 # PRETRAIN-TARGET POLICY: each arch pretrains to the best functional its
 # inputs can EXACTLY represent. SCAN's enhancement factors are multivalued at
@@ -81,18 +87,11 @@
 # =============================================================================
 
 sweep:
-  # NOTE: expand_grid canonicalizes the arch axis ALPHABETICALLY regardless of
-  # the listing order here, so array task indices map as: 0-10 deep_mgga,
-  # 11-21 deep_mgga_attn, 22-32 deep_rung35, 33-43 deep_rung35_attn,
-  # 44-54 deep_rung35_mgga, 55-65 deep_rung35ms, 66-76 deep_rung35only.
-  # v3's completed GGA rows are the rung-2 baseline.
+  # expand_grid canonicalizes the arch axis alphabetically: task indices are
+  # 0-10 deep_mgga_3x16, 11-21 deep_mgga_attn_3x16, 22-32 deep_rung35_mgga_3x16.
   arch:
     - deep_mgga_3x16
     - deep_mgga_attn_3x16
-    - deep_rung35only_3x16
-    - deep_rung35_3x16
-    - deep_rung35_attn_3x16
-    - deep_rung35ms_3x16
     - deep_rung35_mgga_3x16
   loss: [L5_gradnorm_vxc_step7]
   metric: [jsd]

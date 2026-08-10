@@ -1,18 +1,25 @@
 # =============================================================================
-# dfs_step7.dfs6311_grid3_v4gga.yaml -- the GGA arm of the v4 re-sweep, on
-# the 40-core queue: deep / deep_attn / deep_cusp re-trained under the SAME
-# uniform methodology as the v4 7-arch sweep (corrected V_xc -- a no-op for
-# these grid-local architectures -- and the reaction-form AE channel, real
-# for the first time since the resolved-config serializer fix).
+# dfs_step7.dfs6311_grid3_v4gga.yaml -- the GGA-BASED ARM of the corrected-
+# V_xc re-sweep, on the 40-core queue: v3's non-meta-GGA architectures plus
+# the new multi-width density-matrix descriptor, all under the SAME uniform
+# methodology as the meta-GGA arm (dfs6311_grid3_v4.yaml, long-96core):
+# corrected V_xc (a no-op for the grid-local deep/attn/cusp; the real
+# correction for the rung-3.5 family) and the reaction-form AE channel,
+# real for the first time since the resolved-config serializer fix.
+# 6 archs x 11 subsets = 66 cells.
 #
 # WHY THIS ARM EXISTS: the v3 GGA rows are numerically valid, but they
 # trained with the fixed-anchor AE form (the serializer had dropped
-# ae_as_reactions), so as the ablation figure's rung-2 baseline they would
-# differ from every v4 row in the AE-channel form. Re-training them makes the
-# whole 10-arch grid one uniform methodology. BONUS MEASUREMENT: the GGA
-# potential is IDENTICAL pre/post the V_xc correction, so v4gga-vs-v3-GGA
-# isolates the AE-channel-form effect EXACTLY -- the single-variable
-# calibration that de-confounds the two-variable comparisons elsewhere.
+# ae_as_reactions), so as the ablation baseline they would differ from every
+# v4 row in the AE-channel form; and the rung-3.5 family additionally
+# trained under the pre-correction potential. Re-training everything makes
+# the whole 9-arch grid one uniform methodology. BONUS MEASUREMENT: the
+# pure-GGA potential is IDENTICAL pre/post the V_xc correction, so this
+# arm's deep/deep_attn/deep_cusp rows against v3's isolate the
+# AE-channel-form effect EXACTLY -- the single-variable calibration that
+# de-confounds the two-variable comparisons (potential + AE form) on the
+# rung-3.5 rows. deep_rung35ms (the multi-width descriptor, first
+# production outing) A/Bs against deep_rung35 for the multi-width question.
 #
 # QUEUE FIT (long-40core: 48 h max wall, 192 GB Skylake nodes, 3 simultaneous
 # jobs/user -> submit with --max-nodes 3): two measured risks, both mitigated
@@ -118,11 +125,16 @@ sweep: every family the correction affects, at DFS-paper-parity data.
 
 sweep:
   # expand_grid canonicalizes the arch axis alphabetically: task indices are
-  # 0-10 deep_3x16, 11-21 deep_attn_3x16, 22-32 deep_cusp_3x16.
+  # 0-10 deep_3x16, 11-21 deep_attn_3x16, 22-32 deep_cusp_3x16,
+  # 33-43 deep_rung35_3x16, 44-54 deep_rung35_attn_3x16,
+  # 55-65 deep_rung35ms_3x16.
   arch:
     - deep_3x16
     - deep_attn_3x16
     - deep_cusp_3x16
+    - deep_rung35_3x16
+    - deep_rung35_attn_3x16
+    - deep_rung35ms_3x16
   loss: [L5_gradnorm_vxc_step7]
   metric: [jsd]
   subset_size: [1, 2, 3, 4, 5, 6, 7, 12, 15, 18, 26]
