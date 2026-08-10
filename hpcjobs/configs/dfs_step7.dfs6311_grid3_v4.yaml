@@ -48,9 +48,12 @@
 #   JOINTLY (both were broken; two variables, unavoidable). The rung-3.5
 #   rows are a single-variable A/B (potential only).
 # - The 3-cycle corrected trajectory (the regime this sweep actually runs;
-#   training and eval are both full_3) is verified contracting for the mgga
-#   archs; the 25-cycle oscillation measured 2026-08-10 gates only the
-#   full_25 follow-up, not this sweep.
+#   training and eval are both full_3) is measured finite for the mgga archs
+#   with last-cycle steps within the absolute gate below, and no worse than
+#   the prior assembly the completed v3 cells trained through (measured at
+#   def2-svp/grid 1; the cap-3 leg of the concurrent verification job
+#   re-measures at production basis/grid). The 25-cycle oscillation recorded
+#   2026-08-10 gates only the full_25 follow-up, not this sweep.
 #
 # Everything else -- subsets, solver, hyperparameters, reference data, basis,
 # grid, orientation lock -- is IDENTICAL to v3. The reference/pretrain-data/

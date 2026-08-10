@@ -213,16 +213,16 @@ def _append_pretrain_mesh(arch, pretrain_data, descriptors, descriptors_c,
                           fx_target, fc_target):
     """Append the ``(s, alpha)`` mesh rows to the pretrain inputs and targets.
 
-    Returns ``(descriptors, descriptors_c, Fx, Fc, rho_all, weights_all)`` with
-    the mesh concatenated onto each. The mesh rows are laid out in the SAME
-    column order :func:`_assemble_pretrain_descriptors` produces
-    (``[rho, sigma, (zeta,) *extras]``) so the two blocks are one array as far
-    as the network is concerned.
-
-    ``rho_all`` / ``weights_all`` are returned extended as well because the
-    integration weighting is computed from them -- appending inputs without
-    appending weights would silently give every mesh row zero influence, which
-    is precisely the failure this mesh exists to fix.
+    Returns ``(descriptors, descriptors_c, Fx, Fc)`` with the mesh
+    concatenated onto each. The mesh rows are laid out in the SAME column
+    order :func:`_assemble_pretrain_descriptors` produces
+    (``[rho, sigma, (zeta,) *extras]``) so the two blocks are one array as
+    far as the network is concerned. The mesh rows' LOSS weights are NOT
+    handled here: under ``integration`` weighting the caller appends a flat
+    per-channel block normalized to ``MESH_WEIGHT_FRACTION`` of each
+    channel's total AFTER the ``|rho*eps_LDA|`` factor -- pushing the mesh's
+    synthesized densities through that factor was measured to hand the mesh
+    ~0.99997 of the loss.
 
     Only called for an arch whose descriptor set is exactly ``(metagga,)``; see
     the gate in :func:`run_pretrain` for why.
@@ -257,10 +257,6 @@ def _append_pretrain_mesh(arch, pretrain_data, descriptors, descriptors_c,
                          jnp.asarray(pretrain_data["Fx_scan_mesh"]).reshape(-1)]),
         jnp.concatenate([jnp.asarray(fc_target).reshape(-1),
                          jnp.asarray(pretrain_data["Fc_scan_mesh"]).reshape(-1)]),
-        jnp.concatenate([jnp.asarray(pretrain_data["rho_all"]).reshape(-1),
-                         jnp.asarray(pretrain_data["rho_mesh"]).reshape(-1)]),
-        jnp.concatenate([jnp.asarray(pretrain_data["weights_all"]).reshape(-1),
-                         jnp.asarray(pretrain_data["weights_mesh"]).reshape(-1)]),
     )
 
 
@@ -431,15 +427,17 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         desc_names = tuple(getattr(d, "name", None) for d in spec.arch.descriptors)
         has_mesh = "Fx_scan_mesh" in pretrain_data
         if desc_names == ("metagga",) and has_mesh:
-            (descriptors, descriptors_c, Fx_target, Fc_target,
-             mesh_rho_all, mesh_weights_all) = _append_pretrain_mesh(
+            (descriptors, descriptors_c, Fx_target,
+             Fc_target) = _append_pretrain_mesh(
                 spec.arch, pretrain_data, descriptors, descriptors_c,
                 Fx_target, Fc_target)
             mesh_used = True
+            from xcquinox.alec.pretrain_data_gen import MESH_WEIGHT_FRACTION
             print(f"[pretrain] (s, alpha) mesh appended: "
                   f"{pretrain_data['rho_mesh'].shape[0]} nodes "
-                  f"({100.0 * float(pretrain_data['weights_mesh'].sum()) / float(mesh_weights_all.sum()):.0f}% "
-                  "of the integration weight)", flush=True)
+                  f"({100.0 * MESH_WEIGHT_FRACTION:.0f}% effective "
+                  "loss-weight share per channel, by construction)",
+                  flush=True)
         elif not has_mesh:
             print("[pretrain] WARNING: pretrain data carries no (s, alpha) mesh; "
                   "the meta-GGA alpha axis will be underdetermined (regenerate "
@@ -449,9 +447,6 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
                   f"descriptors {desc_names}, which a geometry-free mesh node "
                   "cannot define; pretraining on the atomic grids alone.",
                   flush=True)
-    if not mesh_used:
-        mesh_rho_all = mesh_weights_all = None
-
     # --- Create network pair (or use the caller-supplied override) ---
     if networks is not None:
         xnet, cnet = networks
@@ -496,15 +491,14 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
 
     integration_weights_complete: bool | None = None  # set below for "integration" mode
     if spec.loss_weighting == "integration":
-        # Mesh-extended when the mesh was appended, so the mesh rows carry
-        # their stated share of the loss instead of zero influence.
-        rho_all = (mesh_rho_all if mesh_rho_all is not None
-                   else pretrain_data["rho_all"])
+        # The atomic rows carry the physical importance measure; the mesh
+        # rows (when appended) get a FLAT per-channel weight added AFTER the
+        # |rho*eps_LDA| factor, below.
+        rho_all = pretrain_data["rho_all"]
         # Becke-Lebedev quadrature weights ``dr_i`` improve energy-density
         # calibration; older pretrain_data files don't carry them, fall back
         # with a warning and record the degradation in metadata.
-        grid_weights = (mesh_weights_all if mesh_weights_all is not None
-                        else pretrain_data.get("weights_all"))
+        grid_weights = pretrain_data.get("weights_all")
         if grid_weights is None:
             integration_weights_complete = False
             import warnings as _warn
@@ -523,6 +517,25 @@ def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -
         else:
             integration_weights_complete = True
         w_x, w_c = _compute_integration_weights(rho_all, grid_weights)
+        if mesh_used:
+            # The |rho*eps_LDA| factor is a grid-importance measure for
+            # PHYSICAL densities. A mesh node carries no quadrature measure,
+            # and pushing its synthesized rho (up to ~2.4e2 a.u. at
+            # r_s = 0.1) through that factor hands the mesh ~0.99997 of the
+            # loss weight (measured on H+O data), burying the atomic rows at
+            # ~3e-5 -- the training then fits the synthetic mesh and forgets
+            # the physical densities. Integration weights are therefore
+            # computed on the ATOMIC block alone, and each channel's mesh
+            # block gets a FLAT weight normalized so the mesh's share of
+            # that channel's total loss weight is exactly
+            # MESH_WEIGHT_FRACTION, by construction.
+            from xcquinox.alec.pretrain_data_gen import MESH_WEIGHT_FRACTION
+            n_mesh = int(pretrain_data["rho_mesh"].shape[0])
+            scale = MESH_WEIGHT_FRACTION / (1.0 - MESH_WEIGHT_FRACTION)
+            w_x = jnp.concatenate(
+                [w_x, jnp.full(n_mesh, float(jnp.sum(w_x)) * scale / n_mesh)])
+            w_c = jnp.concatenate(
+                [w_c, jnp.full(n_mesh, float(jnp.sum(w_c)) * scale / n_mesh)])
         loss_fn_x = _PretrainLoss(weights=w_x)
         loss_fn_c = _PretrainLoss(weights=w_c)
     else:  # "unweighted": validated at construction

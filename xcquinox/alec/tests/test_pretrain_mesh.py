@@ -199,6 +199,45 @@ def test_mesh_rows_reach_only_the_pure_metagga_arch(tmp_path, monkeypatch):
     assert meta["pretrain_mesh"] is False
 
 
+def test_mesh_effective_loss_share_is_the_stated_fraction(tmp_path, monkeypatch):
+    """THE regression test for the weighting defect: under ``integration``
+    weighting the |rho*eps_LDA| factor must NOT touch the mesh rows.
+    Normalizing only the quadrature share let the mesh's dense r_s = 0.1
+    nodes take an EFFECTIVE 0.99997 of the loss (measured), burying the
+    physical atoms at ~3e-5. The mesh block's share of each channel's
+    actual loss weights must equal MESH_WEIGHT_FRACTION by construction."""
+    _write_synthetic(tmp_path, with_mesh=True)
+    captured = []
+
+    class _StubTrainer:
+        def __init__(self, *, model, loss=None, **_kw):
+            self.model = model
+            captured.append(getattr(loss, "weights", None))
+
+        def __call__(self, _epochs, _inputs, _targets, **_kw):
+            return self.model, [0.0]
+
+    import xcquinox.train
+    monkeypatch.setattr(xcquinox.train, "xcTrainer", _StubTrainer)
+
+    spec = PretrainSpec(arch=_mgga_arch("t_mgga_share"),
+                        data_dir=str(tmp_path),
+                        checkpoint_dir=str(tmp_path / "ck_share"),
+                        n_steps=2, seed=0, loss_weighting="integration")
+    run_pretrain(spec)
+    ws = [w for w in captured if w is not None]
+    assert len(ws) == 2, "expected captured w_x and w_c"
+    for w in ws:
+        w = np.asarray(w)
+        assert w.shape[0] == N_ATOMIC + N_MESH
+        share = float(w[N_ATOMIC:].sum() / w.sum())
+        np.testing.assert_allclose(share, pdg.MESH_WEIGHT_FRACTION,
+                                   rtol=1e-12)
+        # flat within the mesh block: no |rho*eps| shaping.
+        assert np.allclose(w[N_ATOMIC:], w[N_ATOMIC]), \
+            "mesh weights are not flat -- the density factor leaked in"
+
+
 def test_non_mesh_archs_byte_identical_with_and_without_mesh_keys(tmp_path):
     """The regression guard: for a GGA arch the trained checkpoint bytes must
     not depend on whether the npz carries mesh keys at all."""

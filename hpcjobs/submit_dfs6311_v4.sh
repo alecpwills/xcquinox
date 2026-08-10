@@ -36,10 +36,13 @@ echo "[submit-v4] partition=$PARTITION"
 # --- 1. one-time provenance backup (no-clobber) ------------------------------
 for f in "$NPZ" "$NPZ.manifest.json"; do
   if [ -f "$f" ]; then
-    if cp -n "$f" "$f.v3bak" 2>/dev/null; then
-      echo "[submit-v4] backed up $(basename "$f") -> $(basename "$f").v3bak"
-    else
+    # cp -n exits 0 whether it copied or skipped (GNU coreutils), so the
+    # branch is decided by an existence check, not the cp status.
+    if [ -e "$f.v3bak" ]; then
       echo "[submit-v4] backup exists, left untouched: $(basename "$f").v3bak"
+    else
+      cp -n "$f" "$f.v3bak" 2>/dev/null || true
+      echo "[submit-v4] backed up $(basename "$f") -> $(basename "$f").v3bak"
     fi
   else
     echo "[submit-v4] NOTE: $f absent (fresh datagen will create it)"
