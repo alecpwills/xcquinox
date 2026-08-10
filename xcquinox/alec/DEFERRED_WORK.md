@@ -1,0 +1,238 @@
+# xcquinox/alec -- deferred work
+
+`HISTORY.md` records what was done and why. This file records what was
+consciously NOT done: work items evaluated and set aside, each with the
+measurement or constraint that forced the deferral, what is already known (so
+paid-for numbers are not re-derived), and the trigger that should reopen it.
+Entries are removed when executed, with the closing change referenced in
+`HISTORY.md`.
+
+---
+
+## 1. Global bond-order / delocalization descriptors (dropped 2026-08-06)
+
+**What:** two candidate `dm_statistics`-style global descriptors, a mean Mayer
+bond order per atom (`B_AB = sum_{mu in A, nu in B} (PS)_{mu nu} (PS)_{nu mu}`;
+Mayer, *Chem. Phys. Lett.* **97**, 270 (1983)) and an interatomic
+delocalization fraction (inter-atomic share of `||PS||_F^2`), both per spin.
+
+**Why dropped:** measured non-size-consistency -- both are per-system averages,
+so a distant fragment moves the value at every grid point inside the fragment
+of interest: CO+H2 shifts the Mayer mean by a factor 0.6928, H2O+H2 by 0.9099,
+a three-fragment composite by 1.2242 (delocalization: 1.1719 / 1.2072 /
+1.0656). Both are also identically zero on every single-atom system, with zero
+gradient and zero assembled V_xc -- and atoms are the atomization-energy
+references, so the pair encodes a molecule-versus-atom label. This is the same
+global-scalar leak class as the removed `dm_entropy`. Additionally the
+atom-slice implementation cannot run inside the training kernel
+(`ConcretizationTypeError` under `filter_jit` for array-typed slices; a static
+tuple keys the compile by value) and the `(n_atom, 2)` slice array does not
+collapse to a common shape under `pad_group_to_common_shape`, reintroducing the
+per-molecule compile split of the 2026-07-17 mapping-exhaustion incident.
+
+**Already known (do not re-derive):** a same-atom boolean MASK formulation --
+`(n_ao, n_ao)` mask padded as a zero AO block, `n_atoms` traced like `nocc`,
+`mayer = 0.5 * sum(M * M.T * (1 - mask)) / n_at`, intra-block sums via
+`sum(M * M * mask)` -- reproduces the slice form to 2.78e-17, traces under
+`filter_jit`, and is exactly padding-neutral. Any future LOCAL reformulation of
+a bonding/covalency ingredient should start from that construction. The plain
+per-spin quantity implemented in the screen is exactly HALF Mayer's published
+spin-resolved bond order (verified against the known values H2 = 1.0, N2 = 3.0,
+CO = 2.594, H2O = 1.936); any revival must match the cited equation or state
+the deviation.
+
+**Trigger:** a design for a per-grid-point (not per-system) bonding descriptor;
+size consistency is the acceptance gate, tested with non-identical fragment
+pairs -- identical-fragment pairs cannot fail it.
+
+## 2. Angular channels for `rung35_multishell`
+
+**What:** the shipped descriptor is the RADIAL (`l = 0`) part of the
+NeuralXC-style localized density-matrix projection: `fakemol_for_charges`
+builds s-type projectors only, and with one m per shell the rotational
+invariant `sqrt(sum_m c_{nlm}^2)` collapses to the occupancy itself.
+
+**Why deferred:** `l > 0` channels need solid-harmonic fakemols (or an explicit
+auxiliary-basis overlap build), a new integral path rather than a parameter
+change.
+
+**Already known:** the per-shell-norm contraction and its differentiability
+argument carry over unchanged; the descriptor must not be described as "the
+DFS descriptor" until the angular channels exist.
+
+**Trigger:** evidence that the radial profile alone under-resolves bonding
+anisotropy (e.g. no improvement on systems where the single-width descriptor
+also fails), or a need for parity with the reference implementation.
+
+## 3. A local replacement for the removed `dm_entropy`
+
+**What:** a correlation-indicator feature to replace `dm_entropy`, which was
+removed because its gradient is ill-defined at every converged density.
+
+**Why deferred:** an impossibility result rules out the obvious candidates
+wholesale. For a single determinant the eigenvalues of `DS` are exactly
+{2,...,2,0,...,0}, so ANY function of the spectrum alone depends only on
+`N_occ` and is constant on the idempotent manifold -- measured:
+`Tr[(DS)^n]/N = 2^(n-1)` for H2, N2 and CO alike, and the participation ratio
+returns `N_occ`. A useful replacement must probe the eigenvectors (spatial and
+bonding structure), not the spectrum.
+
+**Already known:** the candidate screen and criteria are in
+`notebooks/analysis/DM_DESCRIPTOR_SPEC.md`; the local projector family
+(`rung35`, `rung35_multishell`) already supplies leak-free local
+density-matrix information, so the bar for a new GLOBAL scalar is high.
+
+**Trigger:** a candidate that varies between N2 and CO at fixed electron count,
+is size-intensive under the non-identical-fragment test, and has an exact
+gradient at an idempotent density matrix.
+
+## 4. Pointwise correlation-energy-density loss (Local Energy Loss)
+
+**What:** replace or augment the total-energy training loss with a pointwise
+real-space correlation-energy-density loss, targets from kappa-regularized MP2
+within the Moller-Plesset adiabatic connection (Polak, Zhao and Vuckovic,
+*Nat. Commun.* **16**, 11306 (2025), DOI 10.1038/s41467-025-66450-z).
+
+**Why deferred:** a loss-architecture change orthogonal to the descriptor and
+potential work; needs its own design record (target generation in PySCF, grid
+alignment, weighting against the existing channels).
+
+**Already known:** the claimed benefits -- each molecule's single scalar
+becomes thousands of grid targets, spatial error cancellation is penalized,
+unphysical dissociation curves from global losses avoided -- are consonant with
+this project's per-grid-point descriptor design; the citation above is
+verified against the publisher record (the article NUMBER is 11306; an earlier
+note carried the DOI suffix in its place).
+
+**Trigger:** the next loss-design iteration, or evidence that total-energy
+supervision is the binding constraint on functional quality.
+
+## 5. PYSCFAD `get_veff` override for DM-dependent descriptors
+
+**What:** the pyscfad backend RAISES for density-matrix-dependent descriptors
+outside FROZEN policy, because its libxc-style per-point `eval_xc` callback
+returns only `(exc, vrho, vsigma)` and cannot carry the global
+`sum_g w_g (de/df)_g . df_g/dP` term. The fix is a `get_veff` override:
+accumulate the term across grid blocks in the AO basis, symmetrize, add to the
+numint result.
+
+**Why deferred:** the design is specified in the raising function's docstring
+(`solver_pyscfad._reject_dm_dependent_descriptors`); the production sweep uses
+the MANUAL backend, so nothing running needs it.
+
+**Trigger:** a pyscfad-backend requirement for any `_mgga` / `_rung35` / `_dm`
+architecture under REASSEMBLE.
+
+## 6. Implicit-function-theorem SCF gradients
+
+**What:** replace reverse-mode differentiation of the unrolled `lax.scan` SCF
+with implicit (fixed-point) differentiation.
+
+**Why deferred:** it changes the cost profile of every heavy item at once and
+interacts with the deliberately-unconverged `full_3` production solver (an IFT
+gradient assumes a fixed point; `full_3` stops after 3 cycles by design).
+
+**Already known:** `full_25` reverse-mode grad-of-grad exhausts a 30 GB
+workstation without `scf_grad_checkpoint` and costs 1.6-5.6 GB with it, so
+checkpointing already contains the memory problem the IFT route would solve;
+the unrolled 25-cycle diffuse-basis H atom does not converge and its
+unconverged energy wanders under multithreaded BLAS (single-thread runs are
+bit-identical), so any IFT comparison must pin one BLAS thread.
+
+**Trigger:** solver depths beyond `full_25`, or a convergence-to-fixed-point
+training scheme where the IFT assumptions actually hold.
+
+## 7. Exact-constraint inventory (beyond those already enforced)
+
+**What:** additional exact constraints as architectural maps or losses.
+
+**Already enforced** (constrained output construction): the Lieb-Oxford bound
+`0 <= F_x <= 1.804`; the UEG limit `F_x = F_c = 1` at `s = 0` via
+`I_a(0) = 0`; uniform density scaling and the spin-scaling relation via the
+`x~2`-only dependence of `F_x`.
+
+**Open:** the Gell-Mann-Brueckner high-density correlation limit (distinct
+from the `s -> 0` UEG limit); the `-1/r` asymptotics of `v_x` and the
+`-alpha/2r^4` tail of `v_c` (now cheap to check, since the corrected potential
+is the true derivative and the autodiff `v_xc` is trustworthy); fractional
+charge/spin piecewise linearity (needs fractional-electron reference systems);
+the Sham-Schlueter consistency condition (needs a differentiable self-energy;
+out of reach of the current stack).
+
+**Trigger:** per constraint, the next functional-design iteration; the
+potential-asymptotics loss is the cheapest first candidate.
+
+## 8. FRG-DFT-to-ML data handoff
+
+**What:** using functional-renormalization-group DFT correlation-energy tables
+(Yokota and Naito line) as fit-free training anchors.
+
+**Why deferred:** FRG-DFT for real electrons is LDA/LSDA-level only, so a
+naive data handoff reproduces LDA; the survey-derived numbers (a 65,536-point
+correlation-energy table; 2.0%/9.9%/20% deviations from Monte Carlo across
+densities) are UNVERIFIED against the primary sources.
+
+**Trigger:** verification of the primary sources plus a use case where a
+QMC-independent anchor materially changes a conclusion.
+
+## 9. Unverified survey citations
+
+**What:** a batch of literature claims collected 2026-08-06 from a research
+survey, of which eight were checked: the physics and arithmetic held in every
+checked case, but three carried material citation errors (an attribution to a
+paper that does not contain the attributed claims; a DOI suffix reported as an
+article number; a one-sided account of the DM21 fractional-electron
+controversy that omitted the authors' published Response,
+DOI 10.1126/science.abq4282).
+
+**Already known:** the verified subset is recorded in
+`reports_local/latex/references.bib` with per-entry notes; everything else from
+that survey is unverified until checked against the publisher record.
+
+**Trigger:** any use of a survey-derived claim in a manuscript or docstring.
+
+## 10. `loss_vxc` remains on frozen precompute features
+
+**What:** `losses._vxc_term` and `oneshot._uks_spin_resolved_vxc` still
+assemble V_xc from features evaluated at `dm_pbe` (frozen), so the training
+channel compares a frozen-feature potential against the OEP reference while
+the SCF now builds the live-feature potential.
+
+**Why deferred:** each site is the exact derivative of its own frozen-feature
+energy, so nothing is inconsistent internally; changing the definition makes
+every historical `loss_vxc` value incomparable.
+
+**Trigger:** the retraining pass that the corrected potential already requires
+for the affected architectures -- change both together and re-baseline.
+
+## 11. `uks_zeta` gradient freeze on the deep negative-density tail
+
+**What:** `oneshot.uks_zeta` retains a `stop_gradient` where
+`rho_tot <= 1e-12` (the Phase-17 guard against `0*inf` on grid-tail noise that
+drives the total density non-positive). A `stop_gradient` inside an energy
+ingredient misreports the derivative wherever it is live -- the same class as
+the two defects already removed -- but this one is live only below the
+`1e-10` network tail mask, and toggling it changed the measured
+energy/potential residual by exactly nothing on the systems tested. The
+finite-difference suite cannot see it by construction (guard-straddling grid
+points are excluded).
+
+**Trigger:** any diffuse-basis system where grid-tail quadrature noise drives
+`rho_tot` non-positive AT points the network tail mask keeps live
+(`rho > 1e-10`); or the fallback design of a smooth energy-level damping for
+the zeta boundary, at which point this guard should be replaced in the same
+change and `split_exc_energy_uks` / `compute_vc_polarized_per_spin` must move
+together.
+
+## 12. Single-copy work must never live only in /tmp
+
+**What:** a working rule, recorded after the (s, alpha) pretrain-mesh
+implementation was parked as /tmp backups during a commit separation and a
+session restart wiped the directory. The work was rebuilt by replaying the
+recorded edit operations from the session transcript
+(`scratch/mesh_recovery/`, see its README), at the cost of a recovery pass
+that a durable parking spot would have made unnecessary.
+
+**Rule:** in-progress work separated out of a commit is parked under
+`scratch/` (untracked, real disk) or committed work-in-progress to a side
+branch -- never only under /tmp.
