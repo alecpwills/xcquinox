@@ -519,6 +519,24 @@ ARCHITECTURES = {
                               dm_entropy_intensive=True,
                               descriptor_log_transform=True,
                               zero_init_final_layer=True),
+    # The mgga stacking completions (2026-08-10, the third sweep arm):
+    # cusp+metagga isolates "does cusp help the meta-GGA rung" (the
+    # deep_cusp vs deep chain, lifted to rung 3); cusp+multishell+metagga is
+    # the multi-width A/B against deep_rung35_mgga at the same rung. Both
+    # pretrain to SCAN WITHOUT the (s, alpha) mesh -- a mesh node has no
+    # geometry, so it cannot define cusp or projection columns (the same
+    # documented caveat deep_rung35_mgga carries).
+    "deep_cusp_mgga_3x16":      ArchitectureConfig.from_spec("deep_cusp_mgga_3x16",     3, 16,
+                              descriptors=["cusp", "metagga"], meta_gga=True,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    "deep_rung35ms_mgga_3x16":  ArchitectureConfig.from_spec("deep_rung35ms_mgga_3x16", 3, 16,
+                              descriptors=["cusp", "rung35_multishell", "metagga"],
+                              meta_gga=True,
+                              dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
     "deep_notransform_3x16":       ArchitectureConfig.from_spec("deep_notransform_3x16",      3, 16,
                               dm_entropy_intensive=True,
                               descriptor_log_transform=False,

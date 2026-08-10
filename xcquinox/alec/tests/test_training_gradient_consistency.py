@@ -62,8 +62,14 @@ _FAMILIES = {
     "mgga": "deep_mgga_3x16",
     "rung35": "deep_rung35_3x16",
     "rung35_multishell": "deep_rung35ms_3x16",
+    # The mgga stacking completions (third sweep arm): cusp+metagga, and
+    # cusp+multishell+metagga -- the first arch that threads the multishell
+    # projector tensor AND the metagga ao_grid_deriv through one V_xc.
+    "cusp_mgga": "deep_cusp_mgga_3x16",
+    "rung35ms_mgga": "deep_rung35ms_mgga_3x16",
 }
-_DM_DEPENDENT = ("mgga", "rung35", "rung35_multishell")
+_DM_DEPENDENT = ("mgga", "rung35", "rung35_multishell",
+                 "cusp_mgga", "rung35ms_mgga")
 
 
 def _build(family, seed=0):

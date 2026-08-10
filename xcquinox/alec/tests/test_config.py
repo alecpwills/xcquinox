@@ -144,7 +144,7 @@ def test_architecture_config_field_validation(field, value, exc):
 # 2026-06-28: bumped to 25 by adding the 3 rung-3.5 localized-DM archs.
 def test_architectures_registry_key_set():
     from xcquinox.alec.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 29
+    assert len(ARCHITECTURES) == 31
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -167,6 +167,10 @@ def test_architectures_registry_key_set():
         # deep_rung35_mgga_3x16 (cusp+rung35+metagga) replaces deep_rung35only in
         # the dfs6311 sweep; deep_mgga_3x16 is the pure DFS meta-GGA.
         "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
+        # 2026-08-10: the mgga stacking completions (third sweep arm):
+        # cusp+metagga, and cusp+multishell+metagga (SCAN pretrain, no mesh
+        # -- geometry-free mesh nodes cannot define their extra columns).
+        "deep_cusp_mgga_3x16", "deep_rung35ms_mgga_3x16",
     }
     assert set(ARCHITECTURES.keys()) == expected_keys
 
@@ -183,7 +187,7 @@ def test_list_architectures_returns_sorted():
     from xcquinox.alec.config import list_architectures
     names = list_architectures()
     assert names == sorted(names)
-    assert len(names) == 29
+    assert len(names) == 31
 
 
 # §13.2 item (15)
@@ -394,7 +398,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 29  # +8 (2026-06-20) +3 rung-3.5 (2026-06-28) +3 meta-GGA (2026-07-02)
+    assert len(ARCHITECTURES) == 31  # +8 (2026-06-20) +3 rung-3.5 (2026-06-28) +3 meta-GGA (2026-07-02) +2 mgga stacks (2026-08-10)
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)
