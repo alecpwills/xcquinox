@@ -781,6 +781,23 @@ def test_descriptor_x_labels_match_registry_widths():
         assert len(labels) == n, (
             f"{name}: figure declares {len(labels)} x-labels but the "
             f"descriptor has n_features={n}")
+    # Every mapped label must also be DEFINED somewhere in the methods
+    # columns, else an architecture joining ARCH_ORDER would print symbols
+    # the figure never explains (x_11..x_16 had map entries but no
+    # definition until 2026-08-09). Ranges like "x_{11}..x_{16}" count as
+    # defining every label they span.
+    joined = " ".join(sum(fig._methods_columns(subsets=(2, 6)), []))
+    import re
+    for lo, hi in re.findall(r"x_\{(\d+)\}\.\.x_\{(\d+)\}", joined):
+        joined += " " + " ".join(
+            f"x_{{{i}}}" for i in range(int(lo), int(hi) + 1))
+    for labels in fig._DESCRIPTOR_X_LABELS.values():
+        for lbl in labels:
+            idx = lbl.split("_")[1]
+            token = f"x_{idx}" if len(idx) == 1 else f"x_{{{idx}}}"
+            assert token in joined, (
+                f"label {lbl} is mapped but never defined in the methods "
+                f"columns")
 
 
 def test_arch_forms_lines_cover_each_arch():

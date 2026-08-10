@@ -5108,13 +5108,17 @@ def _methods_columns(subsets: Dict[int, List[str]]) -> List[List[str]]:
         r"   density, so it carried no trainable signal):",
         r"   $x_6{=}\|D'SD'{-}D'\|_F^2/\mathrm{Tr}(D'S)$: idempotency, $=0$ EXACTLY for one",
         r"     Slater determinant ($PSP{=}P$ [10]; squared norm, smooth at 0), $>0$ under",
-        r"     the fractional natural occupation of multireference states [11].",
+        r"     the fractional natural occupation of multireference states [11]. On the",
+        r"     single-determinant KS densities evaluated here it is zero in value and",
+        r"     gradient; the block's live channel is $x_7$.",
         r"   $x_7{=}\|D_{off}\|_F/\mathrm{Tr}(D)$: relative off-diagonal weight of $D$.",
         r"  _rung35 $(x_8,x_9)$: per-spin localized-DM occupancy",
         r"   $n_\sigma(r){=}A(r)^T\!D^\sigma A(r)\in[0,1]$, $A_\mu{=}\langle\chi_\mu|\phi^G_r\rangle$",
         r"     a Gaussian projector (Rung-3.5 [21]; leak-free, replaces global _dm).",
         r"  _mgga $(x_{10})$: iso-orbital $\alpha{=}(\tau{-}\tau_W)/\tau_{unif}$ [20]",
         r"     (meta-GGA; $F_x$ ceiling 1.174 not 1.804; UEG gate on $(s,\alpha)$).",
+        r"  _rung35ms $(x_{11}..x_{16})$: the $x_8,x_9$ occupancy at projector widths",
+        r"     $\alpha_w{\in}\{0.05,0.2,0.8\}$, alpha-major then spin (rung35ms archs).",
         r"  _combined: cusp & DM;   _notransform: log-transform off.",
     ]
     return [col1, col2, col3]

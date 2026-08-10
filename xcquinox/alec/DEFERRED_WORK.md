@@ -81,6 +81,14 @@ bonding structure), not the spectrum.
 `notebooks/analysis/DM_DESCRIPTOR_SPEC.md`; the local projector family
 (`rung35`, `rung35_multishell`) already supplies leak-free local
 density-matrix information, so the bar for a new GLOBAL scalar is high.
+The retained `x_6` (idempotency defect) shares the dead-on-manifold property:
+on the single-determinant KS densities this pipeline evaluates it is zero in
+value AND gradient (measured 2.7e-31 in precompute, 2.9e-13 mid-SCF, gradient
+6.9e-17 at convergence -- twelve orders below the sibling `x_7`). The
+distinction from the removed entropy is that this zero is exact and smooth (a
+squared norm at its own minimum), not an autodiff artifact; but any
+replacement design should treat the whole `dm_statistics` block, since `x_7`
+is currently its only live channel.
 
 **Trigger:** a candidate that varies between N2 and CO at fixed electron count,
 is size-intensive under the non-identical-fragment test, and has an exact

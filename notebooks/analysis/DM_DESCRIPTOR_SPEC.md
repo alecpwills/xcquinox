@@ -88,14 +88,15 @@ local, leak-free member of the same family.
 Screened on the three criteria. "Varies" is the N2-vs-CO test at fixed electron count;
 "intensive" compares one H2 against two H2 molecules 100 A apart; "gradient" is autodiff against a
 central finite difference at a converged H2O density. The gradient column is a per-run noise
-floor: its digits move within an order of magnitude between runs with BLAS summation order (a
+floor: its digits move by orders of magnitude between runs with BLAS summation order and thread
+count (repeated draws of the spectral row alone spanned 4.4e-13 to 1.7e-10; a single-threaded
 re-run gave 2.6e-11 / 3.2e-12 / 6.4e-10 for the last three rows), so the recorded bound is what
-is reproducible, not the digits of any one draw. The candidate values themselves reproduce
-bit-for-bit.
+every observed draw satisfies, not the digits of any one draw. The candidate values themselves
+reproduce bit-for-bit.
 
 | candidate | varies | intensive | gradient | eigh-free |
 |---|---|---|---|---|
-| `Tr[(DS)^n]/N`, any n | **no** (2^(n-1) always) | yes | <1e-10 | yes |
+| `Tr[(DS)^n]/N`, any n | **no** (2^(n-1) always) | yes | <1e-9 | yes |
 | participation ratio | **no** (7.000000 both) | **no** (2.000x) | <1e-9 | yes |
 | Mayer bond order per atom | yes (1.376927 vs 1.278410) | yes (1.0000) | <1e-9 | yes |
 | charge dispersion | yes (0.000000 vs 0.139931) | **0/0 on homonuclear** | <1e-8 | yes |
