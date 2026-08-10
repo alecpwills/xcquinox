@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=40
 #SBATCH --output=/gpfs/scratch/awills/dfs6311_nan_verify_%j.out
 #SBATCH --mail-user=alec.wills@stonybrook.edu
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
 # =============================================================================
 # Corrected-V_xc verification on the meta-GGA path, at production scale.
 # Runs dfs6311_nan_verify.py (three legs) with the run's own PRETRAINED
@@ -42,6 +42,14 @@ REPO=/gpfs/projects/FernandezGroup/Alec/xcquinox
 RUN="${1:-/gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v3/runs/run_20260728T140018Z}"
 GRID="${2:-3}"
 CYCLES="${3:-25}"
+
+# --- email digest on every exit path (content, not just SLURM state): the
+#     rc, error-context lines, log tail and report tail are mailed so a
+#     failure can be diagnosed from the email alone -------------------------
+LOG="/gpfs/scratch/awills/dfs6311_nan_verify_${SLURM_JOB_ID:-manual}.out"
+source "$REPO/hpcjobs/job_digest.sh"
+job_digest_arm nan-verify alec.wills@stonybrook.edu "$LOG" \
+  "$RUN/nan_verify_report_grid*.json"
 
 T_START="$(date +%s)"
 echo "[nan-verify] ==================================================="

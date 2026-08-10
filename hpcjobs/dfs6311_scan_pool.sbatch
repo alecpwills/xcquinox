@@ -12,7 +12,7 @@
 #SBATCH --cpus-per-task=40
 #SBATCH --output=/gpfs/scratch/awills/scan_pool_%j.out
 #SBATCH --mail-user=alec.wills@stonybrook.edu
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
 
 # SCAN meta-GGA reference over the held-out BH76+W4-11 pool at the production
 # identity. 214 unique species, one SCAN KS-SCF each.
@@ -60,6 +60,12 @@ REPO=/gpfs/projects/FernandezGroup/Alec/xcquinox
 # these. Value copied from the production config's inputs.benchmark_refs_dir.
 REFS=/gpfs/scratch/awills/external_refs_bench_6311ppg3df2pd_g3
 OUT="${1:-/gpfs/scratch/awills/scan_pool_6311ppg3df2pd_g3}"
+
+# --- email digest on every exit path (content, not just SLURM state) --------
+LOG="/gpfs/scratch/awills/scan_pool_${SLURM_JOB_ID:-manual}.out"
+source "$REPO/hpcjobs/job_digest.sh"
+job_digest_arm scan-pool alec.wills@stonybrook.edu "$LOG" \
+  "$OUT/scan_pool_*.json"
 
 # Production identity -- mirrors dfs_step7.dfs6311_grid3_v3.yaml inputs exactly
 # (basis, grid_level 3, density_fit true, auxbasis unset -> auto,

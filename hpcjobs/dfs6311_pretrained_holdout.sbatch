@@ -11,7 +11,7 @@
 #SBATCH --cpus-per-task=40
 #SBATCH --output=/gpfs/scratch/awills/pretrained_holdout_%j.out
 #SBATCH --mail-user=alec.wills@stonybrook.edu
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
 
 # Held-out eval of the PRETRAINED (zero task training) meta-GGA network.
 #
@@ -53,6 +53,12 @@ RUN="${1:-/gpfs/scratch/awills/xcquinox_runs/dfs_step7/dfs6311_grid3_v3/runs/run
 # compared against. Its molecules list drives the in-sample-overlap reaction
 # filtering, so reusing it scores the pretrained net on the SAME reaction set.
 SPEC="${2:-34}"
+
+# --- email digest on every exit path (content, not just SLURM state) --------
+LOG="/gpfs/scratch/awills/pretrained_holdout_${SLURM_JOB_ID:-manual}.out"
+source "$REPO/hpcjobs/job_digest.sh"
+job_digest_arm pre-holdout alec.wills@stonybrook.edu "$LOG" \
+  "$RUN/checkpoints/$(printf 'spec_%04d' "$SPEC")/eval_holdout_pretrained/*.json"
 
 T_START="$(date +%s)"
 echo "[pre-holdout] ==================================================="
