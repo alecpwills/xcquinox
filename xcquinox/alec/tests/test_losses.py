@@ -1288,7 +1288,9 @@ def test_dm_term_normalizes_per_element_for_uks(monkeypatch):
     called ``_dm_term``: it just re-derived the arithmetic identity
     ``sum(ones**2) / n_elems == 1.0``, which would still pass if the
     UKS divisor regressed to ``n_ao**2``. This version monkey-patches
-    ``oneshot_dm_prediction_fast`` to a fixed stub and calls the real
+    ``dm_prediction_for_loss`` (the symbol ``_dm_term`` actually calls; the
+    older ``oneshot_dm_prediction_fast`` name is one wrapper deeper and is no
+    longer imported by ``losses``) to a fixed stub and calls the real
     ``_dm_term`` with a known prediction-target gap, then asserts the
     returned per-element MSE matches the analytical expectation under
     the (2 * n_ao * n_ao) UKS divisor. A regression to ``n_ao**2``
@@ -1307,7 +1309,7 @@ def test_dm_term_normalizes_per_element_for_uks(monkeypatch):
         del model, mol_data, solver_config
         return jnp.zeros_like(dm_target)
     monkeypatch.setattr(
-        losses_mod, "oneshot_dm_prediction_fast", _stub_predict,
+        losses_mod, "dm_prediction_for_loss", _stub_predict,
     )
     mol_data = [{"dm_target": dm_target}]
     # model is unused by the stub; pass any object.
@@ -1362,7 +1364,7 @@ def test_dm_term_n_elems_is_jit_safe(monkeypatch):
         del model, mol_data, solver_config
         return jnp.zeros_like(dm_target)
     monkeypatch.setattr(
-        losses_mod, "oneshot_dm_prediction_fast", _stub_predict,
+        losses_mod, "dm_prediction_for_loss", _stub_predict,
     )
 
     @eqx.filter_jit
