@@ -62,7 +62,8 @@ def test_species_table_is_wellformed():
         n_from_atom = len([a for a in atom.split(";") if a.strip()])
         assert n_from_comp == n_from_atom, (name, comp, atom)
         assert spin in (0, 1, 2)
-    assert set(nv.ARCHS) == {"deep_mgga_3x16", "deep_rung35_mgga_3x16"}
+    assert set(nv.ARCHS) == {"deep_mgga_3x16", "deep_rung35_mgga_3x16",
+                             "deep_rung35_3x16", "deep_rung35_attn_3x16"}
 
 
 def _stubbed(monkeypatch, finite=True):

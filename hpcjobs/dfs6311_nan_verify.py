@@ -73,7 +73,12 @@ import xcquinox.alec.oneshot as oneshot
 BASIS = "6-311++G(3df,2pd)"
 HARTREE_TO_KCAL = 627.5094740631
 
-ARCHS = ("deep_mgga_3x16", "deep_rung35_mgga_3x16")
+# The two pure rung-3.5 architectures joined 2026-08-10: the v4 sweep trains
+# them under the corrected potential, and until this job measures them their
+# stability rested on the linearity argument alone (n = A^T P A, no
+# eigendecomposition) rather than on production-scale evidence.
+ARCHS = ("deep_mgga_3x16", "deep_rung35_mgga_3x16",
+         "deep_rung35_3x16", "deep_rung35_attn_3x16")
 
 # The bh76:HLi failure species plus one closed-shell molecule for contrast.
 SPECIES = (

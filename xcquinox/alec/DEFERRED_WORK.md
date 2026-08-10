@@ -213,6 +213,15 @@ every historical `loss_vxc` value incomparable.
 **Trigger:** the retraining pass that the corrected potential already requires
 for the affected architectures -- change both together and re-baseline.
 
+**Decision 2026-08-10:** the v4 rung-3.5 re-sweep (`dfs6311_grid3_v4`) fired
+this trigger and the change was deliberately NOT taken. v4's purpose is a
+single-variable A/B against the pre-correction v3 cells -- the corrected SCF
+potential is the one change -- and redefining `loss_vxc` in the same run
+would confound it. The channel's weight in the composite is 0.1-3.6%
+(measured from v3 production `aux_log.pkl`), so the frozen definition does
+not distort the A/B. The trigger MOVES to the mesh-pretrain meta-GGA
+re-sweep, which re-baselines everything anyway.
+
 ## 11. `uks_zeta` gradient freeze on the deep negative-density tail
 
 **What:** `oneshot.uks_zeta` retains a `stop_gradient` where
