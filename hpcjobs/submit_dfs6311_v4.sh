@@ -33,6 +33,20 @@ NPZ="$DATA_DIR/pretrain_data_polarized.npz"
 
 echo "[submit-v4] partition=$PARTITION"
 
+# --- parity env (activation verified by EFFECT, not return code): the submit
+#     CLI imports xcquinox -> jax at module import, so running under the
+#     login shell's base env fails with ModuleNotFoundError before any
+#     argument parsing -----------------------------------------------------
+ENV_PREFIX=/gpfs/projects/FernandezGroup/Alec/conda_envs/xcquinox_j070
+source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh
+conda activate "$ENV_PREFIX" || true
+PYBIN="$(command -v python || true)"
+case "$PYBIN" in
+  "$ENV_PREFIX"/*) echo "[submit-v4] python=$PYBIN" ;;
+  *) echo "[submit-v4] FATAL: parity env python not active (got: ${PYBIN:-none})"
+     exit 1 ;;
+esac
+
 # --- 1. one-time provenance backup (no-clobber) ------------------------------
 for f in "$NPZ" "$NPZ.manifest.json"; do
   if [ -f "$f" ]; then

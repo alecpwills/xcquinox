@@ -26,6 +26,16 @@ def _run(tmp_path, *, args=(), python_rc=0, data_dir=None):
     sb.chmod(0o755)
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
     script = open(SCRIPT).read()
+    # Neutralize the cluster-only conda activation for local behavioral
+    # tests (no conda profile here); its presence and shape are pinned by
+    # test_activates_parity_env_by_effect below.
+    script = script.replace(
+        "source /gpfs/projects/FernandezGroup/Alec/miniconda3/etc/profile.d/conda.sh",
+        "true")
+    script = script.replace('conda activate "$ENV_PREFIX" || true', "true")
+    script = script.replace(
+        '"$ENV_PREFIX"/*) echo "[submit-v4] python=$PYBIN" ;;',
+        '*) echo "[submit-v4] python=$PYBIN" ;;')
     if data_dir is not None:
         script = script.replace(
             "DATA_DIR=/gpfs/scratch/awills/pretrain_data_dfs_6311ppg3df2pd_g3_allelem",
@@ -83,3 +93,17 @@ def test_partition_override(tmp_path):
     data.mkdir()
     _proc, calls = _run(tmp_path, args=("long-40core",), data_dir=str(data))
     assert "--partition long-40core" in calls.splitlines()[0]
+
+
+def test_activates_parity_env_by_effect():
+    """The submit CLI imports xcquinox -> jax at module import, so the script
+    must activate the parity env itself and verify by EFFECT (the resolved
+    python path), never by conda's return code -- running under the login
+    shell's base env produced ModuleNotFoundError: jax."""
+    text = open(SCRIPT).read()
+    assert "conda_envs/xcquinox_j070" in text
+    assert 'conda activate "$ENV_PREFIX" || true' in text
+    assert '"$ENV_PREFIX"/*)' in text, "activation-by-effect case missing"
+    assert "parity env python not active" in text
+    # The guard must run BEFORE the sweep submission.
+    assert text.index("parity env python not active")         < text.index("cluster submit")
