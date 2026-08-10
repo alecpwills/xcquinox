@@ -293,3 +293,107 @@
 %
 % =============================================================================
 
+
+% --- Added 2026-08-06: density-matrix descriptor literature. Gathered while
+%     establishing that dm_entropy cannot be repaired (see
+%     notebooks/analysis/DM_DESCRIPTOR_SPEC.md). Every entry verified against
+%     the publisher record; the two rung-3.5 sources were previously cited only
+%     in code comments (descriptors.py, rung35.py) and had no bib entry.
+@article{Mayer1983,
+  author = {Mayer, Istv\'{a}n},
+  title = {Charge, bond order and valence in the ab initio SCF theory},
+  journal = {Chem. Phys. Lett.},
+  volume = {97},
+  pages = {270--274},
+  year = {1983},
+  doi = {10.1016/0009-2614(83)80005-0},
+  note = {Bond order $B_{AB} = \sum_{\mu \in A} \sum_{\nu \in B} (PS)_{\mu\nu}
+          (PS)_{\nu\mu}$. Polynomial in the density matrix, so differentiable
+          and eigendecomposition-free; used as a candidate replacement for the
+          non-differentiable dm\_entropy feature.}
+}
+
+@article{DickFernandezSerra2020,
+  author = {Dick, Sebastian and Fernandez-Serra, Marivi},
+  title = {Machine learning accurate exchange and correlation functionals of the electronic density},
+  journal = {Nat. Commun.},
+  volume = {11},
+  pages = {3509},
+  year = {2020},
+  doi = {10.1038/s41467-020-17265-7},
+  note = {NeuralXC. Source of the density-matrix projection descriptor carried
+          in the vendored dpyscf code (net.py: coeff = contract('ij,ijlk->lk',
+          dm, ml\_ovlp), made rotationally invariant by a per-shell norm). The
+          later PRB Letter \citet{DickFernandezSerra2021} uses a SEMILOCAL
+          $(r_s, \zeta, \alpha, x^2)$ functional and does NOT use this
+          descriptor.}
+}
+
+@article{FabrizioBrilingCorminboeuf2022,
+  author = {Fabrizio, Alberto and Briling, Ksenia R. and Corminboeuf, Cl\'{e}mence},
+  title = {{SPAHM}: the spectrum of approximated {Hamiltonian} matrices representations},
+  journal = {Digital Discovery},
+  volume = {1},
+  pages = {286--294},
+  year = {2022},
+  doi = {10.1039/D1DD00050K},
+  note = {Representations built from EIGENVALUES of guess Hamiltonians.
+          Evaluated and not adopted here: an eigenvalue-based quantity
+          reintroduces the degeneracy-differentiability failure that makes
+          dm\_entropy unusable at a converged density.}
+}
+
+@article{MargrafReuter2021,
+  author = {Margraf, Johannes T. and Reuter, Karsten},
+  title = {Pure non-local machine-learned density functional theory for electron correlation},
+  journal = {Nat. Commun.},
+  volume = {12},
+  pages = {344},
+  year = {2021},
+  doi = {10.1038/s41467-020-20471-y},
+  note = {Rotationally invariant density representation (SOAP-style power
+          spectrum of the density). Differentiable, but a substantially larger
+          construction than the localized projection already available in the
+          rung-3.5 path.}
+}
+
+@article{Janesko2013,
+  author = {Janesko, Benjamin G.},
+  title = {Rung 3.5 density functionals: Another step on {Jacob's} ladder},
+  journal = {Int. J. Quantum Chem.},
+  volume = {113},
+  pages = {83--88},
+  year = {2013},
+  doi = {10.1002/qua.24256},
+  note = {Foundational rung-3.5 paper: a nonlocal ingredient built by
+          projecting the Kohn-Sham one-particle density matrix onto a localized
+          model density matrix.}
+}
+
+@misc{Janesko2022,
+  author = {Janesko, Benjamin G.},
+  title = {Unification of {Perdew-Zunger} Self-Interaction Correction, {DFT+U}, and Rung 3.5 Density Functionals},
+  year = {2022},
+  eprint = {2206.07118},
+  archivePrefix = {arXiv},
+  primaryClass = {physics.chem-ph},
+  note = {Eqs. 12--13 give the bounded local occupancy implemented as
+          DMRung35Descriptor in xcquinox/alec/rung35.py.}
+}
+
+@article{VermaEtAl2019,
+  author = {Verma, Pragya and Janesko, Benjamin G. and Wang, Ying and He, Xiao
+            and Scalmani, Giovanni and Frisch, Michael J. and Truhlar, Donald G.},
+  title = {{M11plus}: A Range-Separated Hybrid Meta Functional with Both Local
+           and Rung-3.5 Correlation Terms and High Across-the-Board Accuracy for
+           Chemical Applications},
+  journal = {J. Chem. Theory Comput.},
+  volume = {15},
+  number = {9},
+  pages = {4804--4815},
+  year = {2019},
+  doi = {10.1021/acs.jctc.9b00411},
+  note = {Source of the rung-3.5 kernel scale ($d^2 = 5\,a_0^2$) used as the
+          default Gaussian-projector width in rung35.py. Establishes the
+          rung-3.5 ingredient as a CORRELATION ingredient.}
+}
