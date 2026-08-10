@@ -179,8 +179,9 @@ def test_manifest_records_and_compares_atoms(tmp_path, monkeypatch):
         calls.append(sym)
         return {k: np.ones(2) for k in ("rho", "sigma", "Fx", "Fc", "weights",
                                         "zeta", "Fx_scan", "Fc_scan")} | {
-            "cusp": np.ones((2, 2)), "dm": np.ones((2, 3)),
-            "rung35": np.ones((2, 2)), "metagga": np.ones((2, 1))}
+            "cusp": np.ones((2, 2)), "dm": np.ones((2, 2)),
+            "rung35": np.ones((2, 2)), "rung35ms": np.ones((2, 6)),
+            "metagga": np.ones((2, 1))}
 
     monkeypatch.setattr(pdg, "_atom_columns", fake_cols)
     default_path = pdg.ensure_pretrain_data(str(tmp_path))
