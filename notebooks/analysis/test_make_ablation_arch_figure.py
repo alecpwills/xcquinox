@@ -800,6 +800,96 @@ def test_descriptor_x_labels_match_registry_widths():
                 f"columns")
 
 
+# ---------------------------------------------------------------------------
+# V_xc-consistency provenance: runs that predate the 2026-08-06 correction
+# hatch the architectures whose descriptors are DM-dependent (their training
+# potential was not the exact functional derivative); post-fix runs draw no
+# marks. Classification and rendering are both pinned here.
+# ---------------------------------------------------------------------------
+
+def test_vxc_predicate_keys_on_run_date():
+    assert fig._run_predates_vxc_fix("run_20260728T140018Z") is True
+    assert fig._run_predates_vxc_fix("run_20260806T000000Z") is False
+    assert fig._run_predates_vxc_fix("run_20260810T120000Z") is False
+    # ids without the stamp are conservatively unmarked
+    assert fig._run_predates_vxc_fix("synthetic") is False
+    assert fig._run_predates_vxc_fix("") is False
+
+
+def test_vxc_classification_matches_descriptor_dependence():
+    # DM-dependent families carry a class; grid-local families carry none.
+    for a in ("deep_mgga_3x16", "deep_mgga_attn_3x16"):
+        assert fig._vxc_hatch(a) == fig._VXC_HATCH_GATED, a
+    for a in ("deep_rung35_3x16", "deep_rung35_attn_3x16",
+              "deep_rung35_mgga_3x16"):
+        assert fig._vxc_hatch(a) == fig._VXC_HATCH_READY, a
+    for a in ("deep_3x16", "deep_attn_3x16", "deep_cusp_3x16"):
+        assert fig._vxc_hatch(a) is None, a
+    # The two hatches must be distinct from each other AND from the
+    # cell-level channels already in use (mixed "//", missing "//////").
+    assert fig._VXC_HATCH_GATED != fig._VXC_HATCH_READY
+    assert fig._VXC_HATCH_GATED not in ("//", "//////")
+    assert fig._VXC_HATCH_READY not in ("//", "//////")
+
+
+def _tiny_metric():
+    archs = ["deep_3x16", "deep_mgga_3x16", "deep_rung35_3x16"]
+    subsets = [2, 6]
+    metric = {(a, s): 1.0 + i for i, (a, s) in
+              enumerate((a, s) for a in archs for s in subsets)}
+    return archs, subsets, metric
+
+
+def test_vxc_hatch_lands_on_bars_and_legend():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    archs, subsets, metric = _tiny_metric()
+    f, ax = plt.subplots()
+    fig._grouped_arch_bars(ax, metric, archs, subsets, pbe_line=None,
+                           title="t", vxc_pre_fix=True)
+    by_arch = {}
+    for p in ax.patches:
+        if p.get_width() > 0:               # real bars, not legend proxies
+            by_arch.setdefault(round(p.get_width(), 6), []).append(p)
+    hatches = {p.get_hatch() for p in ax.patches if p.get_width() > 0}
+    assert fig._VXC_HATCH_GATED in hatches, "meta-GGA bars not hatched"
+    assert fig._VXC_HATCH_READY in hatches, "rung-3.5 bars not hatched"
+    assert None in hatches, "GGA bars must stay unhatched"
+    _h, labels = ax.get_legend_handles_labels()
+    assert any("gated on SCF stabilization" in l for l in labels)
+    assert any("safe to re-run" in l for l in labels)
+    plt.close(f)
+
+
+def test_vxc_marks_absent_on_post_fix_runs():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    archs, subsets, metric = _tiny_metric()
+    f, ax = plt.subplots()
+    fig._grouped_arch_bars(ax, metric, archs, subsets, pbe_line=None,
+                           title="t", vxc_pre_fix=False)
+    assert {p.get_hatch() for p in ax.patches} == {None}
+    _h, labels = ax.get_legend_handles_labels()
+    assert not any("pre-correction" in l for l in labels)
+    plt.close(f)
+
+
+def test_vxc_disclosure_stamped_by_footer_only_pre_fix():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    for run_id, expect in (("run_20260728T140018Z", True),
+                           ("run_20260810T000000Z", False)):
+        f = plt.figure()
+        fig._stamp_parity_footer(f, run_id=run_id, title="t", note="",
+                                 provenance=None, caveat=None)
+        texts = " ".join(t.get_text() for t in f.texts)
+        assert ("V_xc PROVENANCE" in texts) is expect, run_id
+        plt.close(f)
+
+
 def test_arch_forms_lines_cover_each_arch():
     lines = fig._arch_forms_lines()
     joined = " ".join(lines)

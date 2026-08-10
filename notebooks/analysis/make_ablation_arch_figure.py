@@ -853,6 +853,54 @@ _SHALLOW_EDGE = "#d62728"
 # "shallower depth". Applied per-figure, never globally.
 _SHALLOW_HATCH_RC = {"hatch.linewidth": 0.5}
 
+# ---------------------------------------------------------------------------
+# V_xc-consistency provenance. The 2026-08-06 correction added the
+# feature-response term sum_g w_g (de/df)_g . df_g/dP to V_xc for
+# DM-dependent descriptors; cells trained before it used a potential that was
+# not the exact functional derivative of the energy for those descriptors.
+# Grid-local architectures (GGA + cusp) never had the term, so their cells
+# are unaffected. Production measurement (HISTORY 2026-08-10): the
+# converged-energy effect is <= 0.34 kcal/mol on stable configurations, so
+# pre-correction ENERGIES remain interpretable, but the meta-GGA SCF
+# oscillates under the corrected potential on tail-dominated species -- so
+# those cells' re-runs wait on SCF stabilization, while rung-3.5 cells
+# re-run safely. Runs started after the fix date carry corrected code and
+# draw no marks.
+# ---------------------------------------------------------------------------
+_VXC_FIX_DATE = "20260806"
+_VXC_PRE_GATED = ("deep_mgga_3x16", "deep_mgga_attn_3x16")
+_VXC_PRE_READY = ("deep_rung35_3x16", "deep_rung35_attn_3x16",
+                  "deep_rung35_mgga_3x16")
+_VXC_HATCH_GATED = "\\\\"
+_VXC_HATCH_READY = ".."
+_VXC_DISCLOSURE = (
+    "V_xc PROVENANCE: this run predates the 2026-08-06 feature-response "
+    "correction; hatched architectures trained with a potential that was not "
+    "the exact functional derivative for their DM-dependent descriptors "
+    "(measured converged-energy effect <= 0.34 kcal/mol on stable "
+    "configurations). '\\\\' meta-GGA: re-run gated on SCF stabilization; "
+    "'..' rung-3.5: safe to re-run corrected. GGA/cusp architectures "
+    "unaffected.")
+
+
+def _run_predates_vxc_fix(run_id: str) -> bool:
+    """True when the run's encoded start date predates the V_xc correction.
+
+    Run directories encode their start as ``run_YYYYMMDDTHHMMSSZ``; an id
+    without that stamp is conservatively treated as post-fix (no marks) so
+    synthetic/test ids do not acquire provenance hatching."""
+    import re as _re
+    m = _re.search(r"run_(\d{8})T", str(run_id))
+    return bool(m) and m.group(1) < _VXC_FIX_DATE
+
+
+def _vxc_hatch(arch: str) -> Optional[str]:
+    if arch in _VXC_PRE_GATED:
+        return _VXC_HATCH_GATED
+    if arch in _VXC_PRE_READY:
+        return _VXC_HATCH_READY
+    return None
+
 
 def _subset_coverage(rows: List[Dict[str, Any]]) -> Dict[str, Tuple[int, int]]:
     """``{arch: (smallest, largest)}`` subset_size that actually carries rows --
@@ -1156,7 +1204,8 @@ def _heatmap_panel(ax, mae_map: Dict[Tuple[str, int], float], archs: List[str],
                    *, title: str, cbar_label: str,
                    center: Optional[float] = None,
                    subset_sizes: Optional[Sequence[int]] = None,
-                   rung_separators: bool = False) -> None:
+                   rung_separators: bool = False,
+                   vxc_pre_fix: bool = False) -> None:
     """arch x subset_size heatmap. Default: log-scaled viridis (raw MAE spanning
     decades). With ``center`` set (e.g. 1.0 for a MAE/PBE ratio): a diverging
     RdBu_r map about ``center`` -- below center is blue (better than the
@@ -1211,7 +1260,9 @@ def _heatmap_panel(ax, mae_map: Dict[Tuple[str, int], float], archs: List[str],
     ax.set_xticks(range(n_s))
     ax.set_xticklabels(ss_axis, fontsize=7)
     ax.set_yticks(range(n_a))
-    ax.set_yticklabels(archs, fontsize=7)
+    ylabels = ([a + " [pre-Vxc]" if _vxc_hatch(a) else a for a in archs]
+               if vxc_pre_fix else list(archs))
+    ax.set_yticklabels(ylabels, fontsize=7)
     ax.set_xlabel("training subset_size")
     ax.set_title(title, fontsize=10)
     # Rung gutter + separators (left of the grid, between the spine and column 0),
@@ -1270,14 +1321,15 @@ def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
         all_archs = _heatmap_arch_axis(reaction_rows, insample_rows)
         ss_axis = _heatmap_subset_axis(reaction_rows, insample_rows)
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.6))
+        _hm_vxc = _run_predates_vxc_fix(run_id)
         _heatmap_panel(ax1, reaction_mae_by_arch_subset(reaction_rows),
                        all_archs, title="Held-out reaction-energy MAE (NN)",
                        cbar_label="MAE (kcal/mol)", subset_sizes=ss_axis,
-                       rung_separators=True)
+                       rung_separators=True, vxc_pre_fix=_hm_vxc)
         _heatmap_panel(ax2, ae_mae_by_arch_subset(insample_rows), all_archs,
                        title="In-sample atomization-energy MAE",
                        cbar_label="MAE (kcal/mol)", subset_sizes=ss_axis,
-                       rung_separators=True)
+                       rung_separators=True, vxc_pre_fix=_hm_vxc)
         fig.suptitle(f"Architecture × subset_size error grid · {run_id}",
                      fontsize=11)
         fig.text(0.5, 0.028,
@@ -1886,6 +1938,10 @@ def _stamp_parity_footer(fig, *, run_id: str, title: str, note: str,
     """``extra_note`` adds a SECOND red footer line above ``note`` (used for the
     unequal-training-depth disclosure). Left None -- the default -- the footer
     stack sits exactly where it did before the parameter existed."""
+    if _run_predates_vxc_fix(run_id):
+        # Every figure of a pre-correction run carries the V_xc provenance,
+        # bar panels or not; post-fix runs stamp nothing.
+        note = (note + "  " if note else "") + _VXC_DISCLOSURE
     fig.suptitle(f"{title}  ·  {run_id}", fontsize=11.5, y=0.997)
     if caveat:
         fig.text(0.5, 0.945, caveat, ha="center", fontsize=7.5, style="italic",
@@ -3188,7 +3244,8 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                        pbe_line: Optional[float] = None, title: str,
                        scan_line: Optional[float] = None,
                        relocked_cells: Optional[set] = None,
-                       mixed_cells: Optional[set] = None) -> None:
+                       mixed_cells: Optional[set] = None,
+                       vxc_pre_fix: bool = False) -> None:
     """Grouped per-(arch, subset_size) bar panel: one bar group per arch
     (rung-ordered by the caller), x = subset_size, PBE dashed / SCAN dotted
     reference lines when finite, green beats-PBE markers on bars strictly
@@ -3211,7 +3268,11 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
         xs = [i + (j - (len(archs) - 1) / 2) * bw
               for i in range(len(subsets))]
         hs = [metric.get((a, s), float("nan")) for s in subsets]
-        hatches = [("//" if (a, s) in mixed else None) for s in subsets]
+        # Cell-level mixed-references hatch takes precedence over the
+        # arch-level V_xc-provenance hatch (a mixed cell is uninterpretable
+        # regardless of which potential trained it).
+        vh = _vxc_hatch(a) if vxc_pre_fix else None
+        hatches = [("//" if (a, s) in mixed else vh) for s in subsets]
         if any(hatches):
             for x, h, s, hatch in zip(xs, hs, subsets, hatches):
                 ax.bar([x], [h], width=bw, color=ARCH_COLOR.get(a, "0.5"),
@@ -3252,6 +3313,19 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
         ax.scatter(beat_x, beat_h, marker="v", s=16, color="#2ca02c",
                    edgecolor="k", linewidths=0.3, zorder=6,
                    label="beats PBE")
+    if vxc_pre_fix:
+        # Zero-size legend proxies, one per V_xc class actually on the panel
+        # (attached to the axes so get_legend_handles_labels sees them).
+        if any(a in _VXC_PRE_GATED for a in archs):
+            ax.add_patch(plt.Rectangle(
+                (0, 0), 0, 0, fill=False, edgecolor="0.25",
+                hatch=_VXC_HATCH_GATED * 2,
+                label="pre-correction V_xc (re-run gated on SCF stabilization)"))
+        if any(a in _VXC_PRE_READY for a in archs):
+            ax.add_patch(plt.Rectangle(
+                (0, 0), 0, 0, fill=False, edgecolor="0.25",
+                hatch=_VXC_HATCH_READY * 2,
+                label="pre-correction V_xc (safe to re-run)"))
     ax.set_xticks(range(len(subsets)))
     ax.set_xticklabels(subsets)
     ax.set_xlabel("training subset_size", fontsize=8)
@@ -3293,13 +3367,15 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
         # 2-subset SCAN WTMAD-2 to draw); guarded so absent SCAN changes nothing,
         # and withdrawn outright when SCAN covers too little of PBE's pool.
         scan_c, _scan_cov = scan_line_value(scan_baseline, "combined")
+        vxc_pre = _run_predates_vxc_fix(run_id)
         _grouped_arch_bars(
             axes[0][0], mae, archs, subsets, pbe_line=pbe_mae,
             title="Held-out reaction-energy MAE (combined), per (arch, subset)",
-            scan_line=scan_c)
+            scan_line=scan_c, vxc_pre_fix=vxc_pre)
         _grouped_arch_bars(
             axes[0][1], wt, archs, subsets, pbe_line=pbe_wt,
-            title="2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)")
+            title="2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)",
+            vxc_pre_fix=vxc_pre)
         handles, labels = axes[0][0].get_legend_handles_labels()
         if labels:
             fig.legend(handles, labels, loc="lower center",
@@ -4041,11 +4117,13 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
             _grouped_arch_bars(ax, wtmad2_by_arch_subset(pr), archs, subsets,
                                pbe_line=wtmad2_pbe_baseline(pr),
                                title=tag + " -- one-bucket reduction "
-                                     "(scaled relative error)")
+                                     "(scaled relative error)",
+                               vxc_pre_fix=_run_predates_vxc_fix(run_id))
         _grouped_arch_bars(axC, wtmad2_by_arch_subset(rows), archs, subsets,
                            pbe_line=wtmad2_pbe_baseline(rows),
                            title="(C) 2-subset WTMAD-2 (BH76+W4-11), "
-                                 "per (arch, subset)")
+                                 "per (arch, subset)",
+                           vxc_pre_fix=_run_predates_vxc_fix(run_id))
         _density_parity_panel(axD, hd_rows, pbe_mol, nn_key=parity_nn_key,
                               unit_label=parity_unit_label)
         axD.set_title("(D) " + axD.get_title(), fontsize=9)
@@ -4178,6 +4256,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
     _lf = ({"relocked_cells": (lockfix_cells or {}).get("relocked"),
             "mixed_cells": (lockfix_cells or {}).get("mixed")}
            if lockfix_cells else {})
+    _lf["vxc_pre_fix"] = _run_predates_vxc_fix(run_id)
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -4372,6 +4451,7 @@ def plot_insample_overview(ae_rows: List[Dict[str, Any]],
                            _energy_arch_axis(ae_rows),
                            _present_subsets(ae_rows) or [1],
                            pbe_line=None,
+                           vxc_pre_fix=_run_predates_vxc_fix(run_id),
                            title="(A) In-sample AE MAE per (arch, subset) -- "
                                  "NN only (no in-sample PBE AE)")
         axA.set_ylabel("in-sample AE MAE (kcal/mol)", fontsize=8)
@@ -4807,10 +4887,12 @@ def plot_capacity_trends(runs: List[Tuple[Path, str]], out_path: Path,
                            fig.add_subplot(gs[0, 2]))
         _heatmap_panel(axH1, _ratio_map("bh76_mae", "bh76_pbe", prim), archs,
                        title=f"BH76 barriers  MAE/PBE ({prim})",
-                       cbar_label="MAE / PBE", center=1.0, subset_sizes=ss_axis)
+                       cbar_label="MAE / PBE", center=1.0, subset_sizes=ss_axis,
+                       vxc_pre_fix=_run_predates_vxc_fix(run_id))
         _heatmap_panel(axH2, _ratio_map("w411_mae", "w411_pbe", prim), archs,
                        title=f"W4-11 atomization  MAE/PBE ({prim})",
-                       cbar_label="MAE / PBE", center=1.0, subset_sizes=ss_axis)
+                       cbar_label="MAE / PBE", center=1.0, subset_sizes=ss_axis,
+                       vxc_pre_fix=_run_predates_vxc_fix(run_id))
         # line plot: combined MAE/PBE vs subset_size, arch = color, basis = ls
         arch_color = {a: plt.get_cmap("tab10")(i % 10) for i, a in enumerate(archs)}
         ls_for = {b: ["-", "--", "-.", ":"][i % 4] for i, b in enumerate(bases)}
