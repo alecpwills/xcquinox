@@ -116,7 +116,9 @@ mkdir -p "$OUT" || { echo "[scan] FATAL: cannot create out-dir"; exit 1; }
 
 # --- generation --------------------------------------------------------------
 cd "$REPO" || { echo "[scan] FATAL: cannot cd $REPO"; exit 1; }
-python notebooks/analysis/precompute_scan_pool.py \
+# -u: unbuffered, so the digest's log tail carries every completed species
+# even when the job dies by signal (a buffered final block is discarded).
+python -u notebooks/analysis/precompute_scan_pool.py \
     --basis "$BASIS" \
     --grid "$GRID" \
     --density-fit \

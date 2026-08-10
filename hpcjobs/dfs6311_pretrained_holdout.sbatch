@@ -95,7 +95,9 @@ if [ ! -f "$RUN/pretrain/deep_mgga_3x16/xnet.eqx" ]; then
 fi
 
 cd "$REPO" || { echo "[pre-holdout] FATAL: cannot cd $REPO"; exit 1; }
-python hpcjobs/dfs6311_pretrained_holdout.py "$RUN" --spec "$SPEC"
+# -u: unbuffered, so the digest's log tail carries the last real progress
+# line even when the job dies by signal (a buffered final block is discarded).
+python -u hpcjobs/dfs6311_pretrained_holdout.py "$RUN" --spec "$SPEC"
 RC=$?
 
 T_END="$(date +%s)"
