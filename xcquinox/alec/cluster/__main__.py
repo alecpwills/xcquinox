@@ -150,6 +150,13 @@ def _config_to_raw_dict(cfg) -> dict:
         "domain_profile": cfg.domain_profile,
         "on_precompute_failure": cfg.on_precompute_failure,
         "bh76_mode": cfg.bh76_mode,
+        # ae_as_reactions MUST round-trip: its omission here silently
+        # reverted every run's AE channel to the fixed-anchor form the source
+        # YAML had turned off (the preflight re-reads resolved_config.yaml
+        # before building specs, so a dropped field never reaches spec
+        # assembly). Found 2026-08-10 against the v3 artifacts: 21 ae:<name>
+        # groups in aux_log.pkl where the reaction form would emit none.
+        "ae_as_reactions": cfg.ae_as_reactions,
         "use_polarized_correlation": cfg.use_polarized_correlation,
         "held_out_strict": cfg.held_out_strict,
         "defer_eval": cfg.defer_eval,

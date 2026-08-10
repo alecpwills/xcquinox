@@ -1600,3 +1600,29 @@ def test_status_tallies_incomplete_resumable_and_remedy(tmp_path, monkeypatch,
     # remedy mentions the resume checkpoint / continue.
     assert "resume checkpoint" in out
     assert "continue" in out
+
+
+def test_resolved_config_round_trip_preserves_every_field(tmp_path):
+    """EVERY GridConfig field must survive serialize -> resolved_config.yaml
+    -> load_grid_config. The preflight re-reads the resolved file before
+    building specs, so a field the serializer drops silently reverts to its
+    default for the whole run: ae_as_reactions was lost exactly this way,
+    and every production sweep trained the AE channel in the fixed-anchor
+    form its source YAML had turned off. Iterating dataclasses.fields keeps
+    this test binding on fields added later."""
+    import dataclasses
+
+    import yaml
+
+    cfg = cli.load_grid_config(
+        "hpcjobs/configs/dfs_step7.dfs6311_grid3_v4.yaml")
+    assert cfg.ae_as_reactions is True  # the field that was being dropped
+    p = tmp_path / "resolved_config.yaml"
+    with open(p, "w") as f:
+        yaml.safe_dump(cli._config_to_raw_dict(cfg), f)
+    cfg2 = cli.load_grid_config(str(p))
+    for fld in dataclasses.fields(type(cfg)):
+        a, b = getattr(cfg, fld.name), getattr(cfg2, fld.name)
+        assert a == b, (
+            f"GridConfig.{fld.name} does not survive the resolved-config "
+            f"round-trip: {a!r} -> {b!r}")

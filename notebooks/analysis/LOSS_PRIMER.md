@@ -117,13 +117,19 @@ BH76/IP13/vxc/rho residuals below are absolute.
     `sq / jnp.maximum(tgt ** 2, _DELTA_TGT_FLOOR_HA2)`, floor = (1 kcal/mol)^2 in Ha^2
     (`losses.py:32`). The floor exists because "Na2's 0.0273 Ha target inflated its
     channel ~1340x vs CO2-class targets" (`losses.py:257`).
-  - ON THESE RUNS THE FITTING TERM IS IDENTICALLY ZERO: `ae_as_reactions: true`
-    (`yaml:209`) converts every AE point into a BH76-channel REACTION trained against
-    the network's OWN atom energies (`xcquinox/alec/training_points.py:133`, "the
-    atomization energy becomes a reaction the L5 BH76 channel trains with the
-    NETWORK'S OWN atom energies"), with the names force-added to `aux_only_names`
-    (`cluster/spec_builder.py:527`) and stripped from the compound index
-    (`losses.py:1162-1165`).
+  - THE FITTING TERM'S REALIZED FORM DIFFERS BY RUN GENERATION. The source YAMLs
+    request `ae_as_reactions: true` (`yaml:209`), which converts every AE point into
+    a BH76-channel REACTION trained against the network's OWN atom energies
+    (`xcquinox/alec/training_points.py:133`), with the names force-added to
+    `aux_only_names` (`cluster/spec_builder.py:527`) and stripped from the compound
+    index (`losses.py:1162-1165`). BUT the resolved-config serializer dropped the
+    flag until 2026-08-10 (`cluster/__main__.py`, `_config_to_raw_dict`), and the
+    preflight re-reads `resolved_config.yaml` before building specs -- so the
+    v2/v3/v3_full25 runs REALIZED the fixed-anchor form above (verified on the v3
+    artifacts: `resolved_config.yaml` lacks the key, 21 `ae:<name>` groups are live
+    in `aux_log.pkl`, and `spec_0010` carries 3 BH76 reactions where the reaction
+    form yields 24). Runs submitted after the fix (v4 on) realize the reaction form
+    the YAML asks for.
   - What remains is `w_atomic * _atomic_reg` (`losses.py:223`): the relative squared
     deviation of the network's FREE-ATOM energies from tabulated anchors, restricted
     to H and Li (`domain.regularize_atom_syms`, threaded at
@@ -340,8 +346,14 @@ time (`losses.py:1111`), matching `pbe_anchor_weight: 0.0`.
 | Density residual | (1/N_e^2) int (n-n_ref)^2, per spin channel (dpyscf N_sigma^2) | Same form, spin-summed N_e^2 (`losses.py:364`) |
 | SCF depth + trajectory weights | 25 cycles; paper: w_j=((j-10)/15)^2, j=10..25; vendored code: last 10 steps of linspace(0,1,25)^2 | 3 cycles (`full_3`); tail weights [0, 0.25, 1.0] squared to [0, 0.0625, 1] |
 | BH76 targets | Barrier heights (SI Sec. I) | Reaction energies (`training_points.py:337`) |
-| AE supervision | AE targets vs tabulated atoms, weight 1 in L_RE | Reaction-form AE with the network's own atoms (`ae_as_reactions`); H/Li anchors regularized at 0.01 |
+| AE supervision | AE targets vs tabulated atoms, weight 1 in L_RE | v2/v3 runs: fixed-anchor relative AE (the resolved-config serializer dropped `ae_as_reactions` until 2026-08-10); v4 on: reaction-form with the network's own atoms; H/Li anchors regularized at 0.01 |
 | Validation / selection | Training loss with lambda_E=0, w_j=delta_j,25 (density-inclusive) | Reaction-energy MAE only (no density) -- measured density cost at val-best selection |
 | Optimizer | Adam 1e-4, plateau decay 0.1, coupled l2 1e-6, batch = one reaction | AdamW (decoupled wd 1e-4), grad clip, linear decay, one step per group per epoch |
 | References | CCSD(T)/6-311++G(3df,2pd) | CCSD, density fitting, same basis/grid (`yaml:27-35`) |
 | CH/OH degenerate radicals | lambda_n scaled by 0.01 for CH and OH | Orientation lock in the reference and training SCFs (`yaml:13-19`) |
+| SCF convergence freeze | None: all 25 cycles run unconditionally | `full_3` freezes the SCF state once the per-cycle |dE| < 1e-6 Ha (a theta-dependent branch; fires on 22.9% of v3 molecule-instances, 9.4% before the last cycle) |
+| SCF initialization | Randomized every optimization step: (1-beta) rho_atomic + beta rho_DFT, beta = (r+1)/2, r ~ U(0,1) (SI Sec. III A) | Converged PBE density matrix, deterministic |
+| Degenerate-eigenvalue guard | Random half-normal V_xc noise, std 1e-8, symmetrized (SI Sec. IV) | Deterministic SYM_BREAK_SHIFT 1e-6 diagonal (HISTORY Phase 33) |
+| Mixer schedule index | SI equation alpha_i = 0.3^i + 0.3; the vendored code no-ops the step-0 mix, so its first effective alpha is 0.6 | The SI equation verbatim: the first mix uses alpha_0 = 1.3 (one-step offset against the paper's own code) |
+| Pretrain mesh | SI: 2-D (s, alpha) at fixed rho = 1, exchange only, ~10100 nodes, equal weight per point | 3-D (r_s, s, alpha), exchange AND correlation, 560 nodes, flat 30% loss-weight share per channel |
+| Atomic densities | H and Li electron densities supervised (SI Sec. II) | Free-atom anchor groups carry no density/V_xc references (their density channels iterate over nothing) |

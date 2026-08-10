@@ -269,10 +269,16 @@ class LinearMixer(Mixer):
 class DecayingLinearMixer(Mixer):
     """DFS step-decaying linear mixer: ``alpha = base**step + floor``.
 
-    Dick & Fernandez-Serra 2021 (og_dpyscf ``torch_routines.py:174-178``) damps
-    the SCF with a per-step ``alpha = (0.3)**step + 0.3``: aggressive early
-    (step 0 -> 1.3, a mild over-relaxation), settling toward ``floor`` (0.3) as
-    the iteration proceeds. This damps the period-2 density oscillations a
+    Dick & Fernandez-Serra 2021 (SI Sec. III A; og_dpyscf
+    ``torch_routines.py:174-178``) damps the SCF with a per-step
+    ``alpha = (0.3)**step + 0.3``: aggressive early (step 0 -> 1.3, a mild
+    over-relaxation), settling toward ``floor`` (0.3) as the iteration
+    proceeds. INDEX NOTE: this implements the SI equation verbatim. The
+    paper's own code places the mix at the top of its loop where
+    ``dm == dm_old`` at step 0, so THEIR first effective mix uses
+    ``alpha_1 = 0.6`` -- a one-step schedule offset against the equation both
+    implement. At 25 cycles the difference is immaterial; at 3 cycles it is
+    not, and this repo deliberately follows the equation. This damps the period-2 density oscillations a
     constant linear mixer cannot, which is what lets a forced multi-cycle SCF
     converge for hard species (transition states, radicals). Unlike
     ``LinearMixer`` the alpha is intentionally NOT clamped to ``[0, 1]`` -- the

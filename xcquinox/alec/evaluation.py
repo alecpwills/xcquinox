@@ -518,12 +518,20 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
     # 6. Evaluate each molecule
     per_molecule = []
     for i, mol_spec in enumerate(spec.molecules):
+        # Forward the spec's DF auxbasis exactly as the held-out path does
+        # (eval_holdout.py): without it a CONFIGURED fitting basis silently
+        # differs between training and the inline eval (auto-select on this
+        # side). None when DF is off or the auxbasis is unset -> auto, which
+        # matches training's own auto-select.
+        _sc = spec.solver_config
         mol_data = precompute_fixed_density_data(
             mol_spec,
             required_keys=required_keys,
             descriptors=spec.arch.materialize_descriptors(),
+            auxbasis=(getattr(_sc, "auxbasis", None)
+                      if getattr(_sc, "density_fit", False) else None),
             orientation_lock_strength=getattr(
-                spec.solver_config, "orientation_lock_strength", 0.0),
+                _sc, "orientation_lock_strength", 0.0),
         )
         mol_result = {"molecule": mol_spec.name}
         for metric in metrics:

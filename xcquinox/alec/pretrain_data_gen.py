@@ -20,17 +20,20 @@ no-descriptor arch ignores them.
 
 DFS parity deviation (SI Sec. III)
 ----------------------------------
-DFS pretrains the exchange network on its 21 training molecules evaluated on
-their molecular grids, together with a regular ``(s, alpha)`` parameter-space
-grid, targeting SCAN for the meta-GGA architectures and PBE for the GGA
-architectures. The recipe here instead samples the ``Fx`` / ``Fc`` targets on
-the atomic grids of four single atoms (H, He, O, N; ``DEFAULT_PRETRAIN_ATOMS``)
-from per-atom PBE SCFs -- neither the 21-molecule molecular grids nor the
-``(s, alpha)`` parameter grid is reproduced. This atomic warm-start is
-subsequently refined by self-consistent training on the molecular pool, so the
-deviation affects only the pretraining seed. It is most consequential for the
-alpha-dependent meta-GGA / SCAN targets, whose ``alpha`` coordinate is
-undersampled by the four closed-/open-shell atoms.
+DFS pretrains on its training molecules evaluated on their molecular grids,
+augmented (SI Sec. III) for the EXCHANGE network by a regular 2-D
+``(s, alpha)`` parameter grid at fixed density, ~10100 nodes, equal weight
+per point. The recipe here samples the ``Fx`` / ``Fc`` targets on the atomic
+grids of single atoms (``DEFAULT_PRETRAIN_ATOMS``; production configs override
+with the pool's element set) from per-atom PBE SCFs -- the 21-molecule
+molecular grids are not reproduced -- and, since 2026-08-10, augments
+meta-GGA pretrains with the parameter-space mesh defined below. The mesh is a
+deliberate EXTENSION of the SI's: 3-D ``(r_s, s, alpha)`` rather than 2-D at
+fixed density, covering correlation as well as exchange, at a stated flat 30%
+loss-weight share per channel rather than equal weight per node (see
+LOSS_PRIMER Sec. 8 for the deviation row). The atomic warm-start plus mesh is
+subsequently refined by self-consistent training on the molecular pool, so
+the remaining deviation affects only the pretraining seed.
 """
 from __future__ import annotations
 

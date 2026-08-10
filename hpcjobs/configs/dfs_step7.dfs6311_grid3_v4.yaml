@@ -45,8 +45,25 @@
 #   therefore remains the underdetermined-alpha clone; it stays as the
 #   stacking cell, and its small-subset cells read with that caveat.
 # - For the mgga families the cross-run v3 comparison is potential+pretrain
-#   JOINTLY (both were broken; two variables, unavoidable). The rung-3.5
-#   rows are a single-variable A/B (potential only).
+#   JOINTLY (both were broken; two variables, unavoidable).
+# - ae_as_reactions: true is REAL for the first time on this run. The
+#   resolved-config serializer dropped the flag until 2026-08-10, so every
+#   earlier run (v2/v3/v3_full25) trained the AE channel in the FIXED-ANCHOR
+#   relative form despite the YAML -- verified on the v3 artifacts (21 live
+#   ae:<name> groups; 3 BH76 reactions in spec_0010 where the reaction form
+#   yields 24). v4 keeps the flag because the reaction form is the
+#   DFS-faithful one (dpyscf scores atomization against the network's own
+#   atom energies) and the fixed-anchor form is the documented Na2 blow-up
+#   source. CONSEQUENCE: the rung-3.5 rows' cross-run A/B against v3 carries
+#   the corrected potential AND the AE-channel form jointly (two variables),
+#   not the potential alone.
+# - The pretrain mesh is a documented EXTENSION of the SI protocol: 3-D
+#   (r_s, s, alpha) not the SI's 2-D (s, alpha) at fixed density, both
+#   channels not exchange-only, flat 30% loss-weight share not equal weight
+#   per node (LOSS_PRIMER Sec. 8).
+# - Deviation labels D2-D5 (v3 header) index the meta-GGA closures; the D1
+#   slot is the meta-GGA functional form itself, closed only by the
+#   alpha-bearing architectures in this sweep.
 # - The 3-cycle corrected trajectory (the regime this sweep actually runs;
 #   training and eval are both full_3) is measured finite for the mgga archs
 #   with last-cycle steps within the absolute gate below, and no worse than

@@ -213,14 +213,20 @@ every historical `loss_vxc` value incomparable.
 **Trigger:** the retraining pass that the corrected potential already requires
 for the affected architectures -- change both together and re-baseline.
 
-**Decision 2026-08-10:** the v4 rung-3.5 re-sweep (`dfs6311_grid3_v4`) fired
-this trigger and the change was deliberately NOT taken. v4's purpose is a
-single-variable A/B against the pre-correction v3 cells -- the corrected SCF
-potential is the one change -- and redefining `loss_vxc` in the same run
-would confound it. The channel's weight in the composite is 0.1-3.6%
-(measured from v3 production `aux_log.pkl`), so the frozen definition does
-not distort the A/B. The trigger MOVES to the mesh-pretrain meta-GGA
-re-sweep, which re-baselines everything anyway.
+**Decision 2026-08-10:** the v4 re-sweep (`dfs6311_grid3_v4`) fired this
+trigger and the change was deliberately NOT taken: redefining `loss_vxc` in
+the same run would confound the cross-run A/B, and the channel's DEFINITION
+is identical on both sides, which is what the A/B needs. NOTE (corrected
+same day): the original justification quoted a 0.1-3.6% composite share;
+that figure was the median over ALL updates, dominated by the ~25% of
+updates where the channel is identically zero. Measured over vxc-ACTIVE
+updates on the v3 `aux_log.pkl` (47 specs, 94,825 live rows), the per-spec
+median share reaches 48.15% on the `subset_size = 1` cells (spec_0000
+48.15%, spec_0022 46.74%, spec_0011 46.52%) and 19/47 specs exceed 3.6% --
+`loss_vxc` is a first-order term at the ablation curves' leftmost points.
+The deferral therefore stands on definition-consistency, not on smallness,
+and the frozen definition's influence must be kept in mind when reading the
+small-subset cells. The trigger MOVES to the re-baselining re-sweep.
 
 ## 11. `uks_zeta` gradient freeze on the deep negative-density tail
 
@@ -253,3 +259,57 @@ that a durable parking spot would have made unnecessary.
 **Rule:** in-progress work separated out of a commit is parked under
 `scratch/` (untracked, real disk) or committed work-in-progress to a side
 branch -- never only under /tmp.
+
+## 13. SCF convergence freeze: a theta-dependent branch with no DFS counterpart
+
+**What:** `solver_manual.py` freezes the SCF state (`jnp.where(already, ...)`)
+once the per-cycle |dE| < `conv_tol` = 1e-6 Ha. dpyscf runs all 25 cycles
+unconditionally, so the branch is a deviation, and it makes the loss a
+piecewise function of theta near the threshold.
+
+**Why deferred:** removing or retuning it mid-arc would change the solver
+behavior every completed run trained with, breaking cross-run comparability;
+the sweep pins `device: cpu`, where the loss and gradient are reproducible.
+
+**Already known:** fires on 22.9% of v3 molecule-instances (155/678), 9.4%
+before the last cycle (13 at cycle 1, 51 at cycle 2); most frequent: Li, H,
+Li+, HLi. A local probe sat 14-17% inside the tolerance. The density
+channel's value is backend-sensitive at the ~1e-4 relative level (CPU vs
+CUDA), while the energy channels reproduce bit-identically.
+
+**Trigger:** the next re-baselining sweep -- either raise `conv_tol` well
+above the per-cycle step or run all cycles unconditionally (DFS-faithful),
+and add a padding-neutrality fixture that sits NEAR the tolerance (the
+committed fixtures all sit far from it).
+
+## 14. H/Li atomic-density supervision (SI Sec. II)
+
+**What:** the Letter's SI states H and Li atomic electron densities were
+calculated and included; dpyscf routes them through density+energy losses.
+This pipeline's free-atom anchor groups carry no density/V_xc references --
+their density channels iterate over nothing (verified in production
+`aux_log.pkl`: `anchor:H`/`anchor:Li` have `loss_rho != 0` in 0 of 200 rows).
+
+**Why deferred:** adding references changes the training composition for
+every run; it belongs to a re-baselining sweep, not a mid-arc patch.
+
+**Trigger:** the same re-baselining sweep as item 13; the reference
+generator already produces atomic densities for the benchmark side.
+
+## 15. Full-composition finite-difference coverage for rung-3.5 and open-shell groups
+
+**What:** the 2026-08-10 workflow review FD-checked the complete production
+loss composition (tail + DF + lock + polarized + per_molecule) against
+central differences for `deep_mgga_3x16` (2.0e-8..3.0e-8 over three random
+directions; de-fused equal to fused at machine precision). The same
+composition on `deep_rung35_3x16` and on an open-shell UKS group exceeded
+the local resource budget (the OH group peaked at 12.5 GB and timed out).
+
+**Already known:** both families pass the committed
+`test_training_gradient_consistency.py` FD checks under a simplified solver
+config, and the rung-3.5 production training STEP descends with finite
+nonzero gradients (executed in the v4 batch review).
+
+**Trigger:** run the review's `scratch/review_train/m1a_full_loss_fd.py`
+harness for those two cases on a cluster node (RAM is the binding
+constraint, not correctness).
