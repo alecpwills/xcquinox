@@ -161,6 +161,7 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
     Raises KeyError if any declared descriptor's pretrain key is
     absent from pretrain_data, there is NO zero-array fallback.
     """
+    from xcquinox.alec.descriptors import make_descriptor
     cols = [pretrain_data["rho_all"], pretrain_data["sigma_all"]]
     if for_cnet and arch.use_polarized_correlation:
         zeta_all = pretrain_data.get("zeta_all")
@@ -169,7 +170,7 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
         cols.append(zeta_all)
     # Map descriptor.name -> key in pretrain_data.
     _key_map = {"dm_statistics": "dm_all", "cusp": "cusp_all", "rung35": "rung35_all",
-                "metagga": "metagga_all"}
+                "rung35_multishell": "rung35ms_all", "metagga": "metagga_all"}
     for spec in arch.descriptors:
         key = _key_map.get(spec.name)
         if key is None:
@@ -179,6 +180,23 @@ def _assemble_pretrain_descriptors(arch: ArchitectureConfig, pretrain_data: dict
                 f"_key_map in pretrain.py"
             )
         arr = pretrain_data[key]
+        # Width gate. A stale .npz written before a descriptor's feature count
+        # changed silently widens the network input instead of failing: a
+        # 3-column dm_all against the 2-feature dm_statistics (width dropped
+        # 2026-08-06 with the removal of dm_entropy) produced a 6-wide input
+        # where n_input_features was 5, which trains without complaint and is
+        # wrong. Fail loudly and name the regeneration.
+        n_cols = 1 if arr.ndim == 1 else arr.shape[1]
+        expected = make_descriptor(spec.name, **spec.as_kwargs()).n_features
+        if n_cols != expected:
+            raise ValueError(
+                f"_assemble_pretrain_descriptors: pretrain column {key!r} has "
+                f"{n_cols} column(s) but descriptor {spec.name!r} declares "
+                f"n_features={expected}. The pretrain .npz predates a change to "
+                f"this descriptor's width; regenerate it with "
+                f"pretrain_data_gen rather than training against a mismatched "
+                f"input layout."
+            )
         if arr.ndim == 1:
             cols.append(arr)
         else:

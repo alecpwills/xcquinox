@@ -229,6 +229,11 @@ class MoleculeData(TypedDict, total=True):
     # rung35_features is the one-shot per-spin occupancy A^T P_pbe A (N, 2).
     rung35_proj_ao: jnp.ndarray | None
     rung35_features: jnp.ndarray | None
+    # Multi-width rung-3.5 (DMRung35MultishellDescriptor). rung35ms_proj_ao is
+    # the constant projected-AO STACK (n_alpha, N, nao); rung35ms_features is
+    # the one-shot per-spin, per-width occupancy (N, 2 * n_alpha).
+    rung35ms_proj_ao: jnp.ndarray | None
+    rung35ms_features: jnp.ndarray | None
     # Meta-GGA iso-orbital alpha (metagga.py). One-shot alpha from the PBE DM (N, 1);
     # the FULL/REASSEMBLE SCF recomputes it self-consistently each cycle from the
     # live DM + the stored AO gradients (ao_grid_deriv).
@@ -265,15 +270,15 @@ def _precompute_cache_key(
     # step6's mid-notebook OEP rerun) invalidates stale cache entries.
     desc_key = tuple(
         (type(d).__name__, getattr(d, "n_features", None),
-         # include settings that affect descriptor compute so a
-         # DMStatisticsDescriptor(intensive=True) does not collide with
-         # DMStatisticsDescriptor(intensive=False) in the cache, and likewise
-         # for CuspDescriptor.log_transform.
-         getattr(d, "intensive", False),
+         # include settings that affect descriptor compute so e.g.
+         # CuspDescriptor(log_transform=True) does not collide with the
+         # untransformed variant in the cache. (The dm_statistics `intensive`
+         # flag left this tuple 2026-08-06 with the dm_entropy removal.)
          getattr(d, "log_transform", False),
          # rung-3.5 projector width: distinct alpha -> distinct projected-AO A,
          # so DMRung35Descriptor(alpha=...) variants must not collide in cache.
-         getattr(d, "alpha", None))
+         getattr(d, "alpha", None),
+         getattr(d, "alphas", None))
         for d in descriptors
     )
     ext_path = getattr(mol_spec, "external_data_path", None)
@@ -462,6 +467,8 @@ def precompute_fixed_density_data(
     dm_features = None
     rung35_proj_ao = None
     rung35_features = None
+    rung35ms_proj_ao = None
+    rung35ms_features = None
     metagga_features = None
 
     if "cusp_features" in all_needed:
@@ -492,18 +499,11 @@ def precompute_fixed_density_data(
         # terms D_a S D_b survive).
         dm_for_features = jnp.array(dm_pbe) if dm_pbe.ndim == 3 \
                          else jnp.array(dm_pbe_tot)
-        # pull the intensive flag from the DMStatisticsDescriptor instance
-        # so precompute matches what the descriptor.compute() consumer will
-        # expect. If multiple DMStatisticsDescriptor instances are present
-        # (shouldn't normally happen), use the first one's flag.
-        dm_intensive = False
-        for d in descriptors:
-            if type(d).__name__ == "DMStatisticsDescriptor":
-                dm_intensive = bool(getattr(d, "intensive", False))
-                break
+        # No descriptor flag to thread since dm_entropy (and with it the
+        # `intensive` normalization) was removed 2026-08-06; the remaining two
+        # features have no configurable form.
         dm_feat_global = compute_dm_features_array(
             dm_for_features, jnp.array(s_matrix),
-            intensive=dm_intensive,
         )
         dm_features = jnp.tile(dm_feat_global, (len(rho_pbe), 1))
 
@@ -525,6 +525,25 @@ def precompute_fixed_density_data(
         # SPIN-RESOLVED 3-D DM for UKS so the alpha/beta channels are correct;
         # for RKS the 2-D total DM is split evenly inside compute_rung35_occupancy.
         rung35_features = compute_rung35_occupancy(rung35_proj_ao, jnp.array(dm_pbe))
+
+    if "rung35ms_features" in all_needed:
+        from xcquinox.alec.rung35 import (
+            compute_projected_ao_multishell,
+            compute_rung35_multishell_occupancy,
+            DEFAULT_RUNG35_MULTISHELL_ALPHAS)
+        # Widths come from the descriptor instance so the precompute matches the
+        # consumer and the cache key (which includes `alphas`). First instance
+        # wins if several are present, mirroring the single-width branch.
+        ms_alphas = DEFAULT_RUNG35_MULTISHELL_ALPHAS
+        for d in descriptors:
+            if type(d).__name__ == "DMRung35MultishellDescriptor":
+                ms_alphas = tuple(getattr(d, "alphas",
+                                          DEFAULT_RUNG35_MULTISHELL_ALPHAS))
+                break
+        rung35ms_proj_ao = jnp.array(
+            compute_projected_ao_multishell(mol, coords, ms_alphas))
+        rung35ms_features = compute_rung35_multishell_occupancy(
+            rung35ms_proj_ao, jnp.array(dm_pbe))
 
     if "metagga_features" in all_needed:
         from xcquinox.alec.metagga import compute_tau_from_dm, compute_alpha
@@ -620,6 +639,8 @@ def precompute_fixed_density_data(
         dm_features=dm_features,
         rung35_proj_ao=rung35_proj_ao,
         rung35_features=rung35_features,
+        rung35ms_proj_ao=rung35ms_proj_ao,
+        rung35ms_features=rung35ms_features,
         metagga_features=metagga_features,
         eri=eri,
         cderi=cderi,

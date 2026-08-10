@@ -357,13 +357,10 @@ _FD_EPS = 1e-6
 _TOL_RKS = 2e-9
 _TOL_UKS = 5e-7
 
-# Some architectures remain bounded by a defect OUTSIDE this fix. Their bounds
-# are DERIVED from the descriptor set rather than listed by name, so a newly
-# registered architecture inherits the right bound instead of silently getting
-# the tight one (or, worse, being omitted from a hand-maintained list). These are
-# regression guards, not passes: each bound sits far below the pre-fix residual,
-# which is what shows the feature-derivative term landed, while staying honest
-# that what remains has a named, tracked cause.
+# Every architecture is held to the same two bounds. The per-descriptor
+# tolerance branches that once lived here are gone: the meta-GGA branch fell
+# with the compute_alpha tail-freeze removal, and the dm_statistics branch
+# fell with dm_entropy itself -- its dead gradient had been the residual.
 # Residuals with the feature-derivative term in place, pre-fix -> post-fix,
 # measured with this module's helpers at _FD_EPS (pre-fix = routing predicate
 # forced False, which is exactly the old code path):
@@ -374,8 +371,13 @@ _TOL_UKS = 5e-7
 #   mgga            5.33e-03 -> 2.09e-10     6.20e-03 -> 3.86e-08   fixed (freeze removed)
 #   mgga_attn       5.47e-03 -> 1.12e-10     6.20e-03 -> 3.89e-08   fixed (freeze removed)
 #   rung35_mgga     3.98e-03 -> 7.03e-10     5.27e-03 -> 3.85e-08   fixed (freeze removed)
-#   dm              1.04e-02 -> 1.04e-02     6.74e-03 -> 7.71e-03   dm_entropy-bound
-#   combined        1.27e-03 -> 1.25e-03     1.79e-03 -> 1.78e-03   dm_entropy-bound
+#   dm              1.04e-02 -> 2.05e-10     6.74e-03 -> <5e-07     fixed (dm_entropy removed)
+#   combined        1.27e-03 -> 4.16e-10     1.79e-03 -> <5e-07     fixed (dm_entropy removed)
+#
+# (RKS post-fix values for the dm family move between 7.1e-11 and 2.1e-10
+# with evaluation order, like every row here; the UKS cells record the bound
+# they pass rather than a single draw, since the open-shell probe's floor is
+# the bound itself.)
 #
 # The meta-GGA rows reached the control level only after the compute_alpha tail
 # gradient freeze was removed; with it in place they sat at ~3e-08 / ~1.7e-05.
@@ -384,35 +386,24 @@ _TOL_UKS = 5e-7
 # dominated, so the bound exists to catch an order-of-magnitude regression, not
 # to certify precision; too tight and it goes flaky across machines.
 #
-# HONEST LIMIT, so the coverage is not overread: for the dm_statistics
-# architectures this test does NOT discriminate -- 1.04e-02 pre-fix against
-# 1.04e-02 post-fix -- because dm_entropy's broken gradient dominates the
-# residual and swamps the feature term. Those two rows are a regression guard
-# only. The archs that demonstrate the fix are the rung-3.5 pair, which move
-# four orders and are not blocked by anything else.
-_TOL_BLOCKED_DM = 3e-2       # dm_entropy: no valid gradient at any converged DM
+# The dm_statistics rows were once capped near 1e-02 regardless of the
+# feature term, because dm_entropy's dead gradient dominated the residual;
+# with that feature removed (2026-08-06) they discriminate like every other
+# row.
 
 
 def _tolerances(model):
     """(RKS, UKS) bounds for this architecture, and why.
 
-    The meta-GGA branch was DELETED 2026-08-06 when the `compute_alpha` tail
-    gradient freeze was removed: those architectures now measure at the
-    descriptor-free control level (deep_mgga_3x16 2.09e-10 RKS / 3.86e-08 UKS
-    against the control's 1.93e-10 / 3.34e-08), so a loose bound would have made
-    the assertion pass vacuously. A tolerance branch that no longer reflects a
-    real defect is worse than no branch at all -- it hides the next one.
-
-    Checked, not assumed: monkeypatching the freeze back makes those three
-    architectures report 2.3e-08 to 6.1e-08 (RKS) and ~1.4-1.7e-05 (UKS), so the
-    tight bound fails them by one to two orders and cannot silently absorb a
-    reintroduction.
+    Both blocked branches are GONE as of 2026-08-06. The meta-GGA branch went
+    when the compute_alpha tail freeze was removed; the dm_statistics branch
+    went with dm_entropy, whose dead gradient had been dominating that
+    family's residual (1.04e-02 -> 2.05e-10 on its removal, under this file's
+    own parametrized ordering; a fresh-process draw gave 5.2e-03 pre-fix). Every
+    architecture is now held to the same measured floor. A tolerance branch
+    that no longer reflects a real defect is worse than no branch at all --
+    it silently absorbs the next one.
     """
-    names = {type(d).__name__ for d in model.descriptors}
-    if "DMStatisticsDescriptor" in names:
-        # features.py dm_entropy is clipped onto its bounds at every converged
-        # density, so autodiff returns exactly zero there. See alec/HISTORY.md.
-        return _TOL_BLOCKED_DM, _TOL_BLOCKED_DM, "dm_entropy"
     return _TOL_RKS, _TOL_UKS, None
 
 
@@ -445,6 +436,7 @@ def _live_features_fn(model, md):
     s_matrix = jnp.asarray(md["s_matrix"])
     cusp = md.get("cusp_features")
     proj = md.get("rung35_proj_ao")
+    proj_ms = md.get("rung35ms_proj_ao")
     has_mgga = any(type(d).__name__ == "MetaGGAAlphaDescriptor"
                    for d in model.descriptors)
 
@@ -459,7 +451,8 @@ def _live_features_fn(model, md):
             kw = dict(ao_grad=ao_deriv[1:4], rho=rho_t, sigma=sigma_t)
         return _reassemble_features(
             descriptors=model.descriptors, dm=P, s_matrix=s_matrix,
-            cusp_features=cusp, n_grid=n_grid, rung35_proj_ao=proj, **kw)
+            cusp_features=cusp, n_grid=n_grid, rung35_proj_ao=proj,
+            rung35ms_proj_ao=proj_ms, **kw)
     return features_of
 
 

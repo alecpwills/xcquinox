@@ -52,14 +52,15 @@ def test_precompute_cusp_descriptor_adds_cusp_features_shape_n_2():
     assert data["cusp_features"].shape == (n_grid, 2)
 
 
-# §13.2 item (3)
-def test_precompute_dm_descriptor_adds_dm_features_shape_n_3():
+# §13.2 item (3). Width 3 -> 2 on 2026-08-06: dm_entropy removed (no usable
+# gradient at any converged density).
+def test_precompute_dm_descriptor_adds_dm_features_shape_n_2():
     mol = h2_molecule()
     dm_desc = DMStatisticsDescriptor()
     data = precompute_fixed_density_data(mol, descriptors=(dm_desc,))
     assert data["dm_features"] is not None
     n_grid = data["rho_grid"].shape[0]
-    assert data["dm_features"].shape == (n_grid, 3)
+    assert data["dm_features"].shape == (n_grid, 2)
 
 
 # §13.2 item (4)
@@ -71,7 +72,7 @@ def test_precompute_both_descriptors_assembled_in_dm_before_cusp_order():
     assert data["dm_features"] is not None
     assert data["cusp_features"] is not None
     n_grid = data["rho_grid"].shape[0]
-    assert data["dm_features"].shape == (n_grid, 3)
+    assert data["dm_features"].shape == (n_grid, 2)
     assert data["cusp_features"].shape == (n_grid, 2)
 
 

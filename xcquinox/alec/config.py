@@ -261,8 +261,11 @@ class ArchitectureConfig:
         out = []
         for s in self.descriptors:
             kwargs = dict(s.as_kwargs())
-            if s.name == "dm_statistics" and "intensive" not in kwargs:
-                kwargs["intensive"] = self.dm_entropy_intensive
+            # dm_statistics no longer takes `intensive`: it only ever
+            # normalized dm_entropy, which was removed 2026-08-06. The
+            # ArchitectureConfig field is KEPT (frozen dataclass; the live
+            # cluster array's spec files carry it and must still unpickle) but
+            # is now inert.
             if s.name == "cusp" and "log_transform" not in kwargs:
                 kwargs["log_transform"] = self.descriptor_log_transform
             out.append(make_descriptor(s.name, **kwargs))
@@ -477,6 +480,14 @@ ARCHITECTURES = {
                               attention=True, num_heads=4,
                               descriptors=["cusp", "rung35"],
                               dm_entropy_intensive=True,
+                              descriptor_log_transform=True,
+                              zero_init_final_layer=True),
+    # Multi-width rung-3.5 (2026-08-06). ADDITIVE: the single-width entries
+    # above are untouched, so an in-flight array task still resolves them. The
+    # radial generalization of the localized DM projection; 3 widths x 2 spins
+    # = 6 features.
+    "deep_rung35ms_3x16":       ArchitectureConfig.from_spec("deep_rung35ms_3x16",     3, 16,
+                              descriptors=["cusp", "rung35_multishell"],
                               descriptor_log_transform=True,
                               zero_init_final_layer=True),
     "deep_rung35only_3x16":     ArchitectureConfig.from_spec("deep_rung35only_3x16",    3, 16,

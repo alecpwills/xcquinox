@@ -476,7 +476,8 @@ def test_pyscfad_refuses_dm_dependent_descriptors_under_reassemble(monkeypatch):
                                    zero_init_final_layer=False)
         return alec.AlecGGAModel.from_arch(arch, seed=0)
 
-    for name in ("deep_dm", "deep_mgga_3x16", "deep_rung35_3x16"):
+    for name in ("deep_dm", "deep_mgga_3x16", "deep_rung35_3x16",
+                 "deep_rung35ms_3x16"):
         with _pytest.raises(NotImplementedError, match="pyscfad"):
             _reject_dm_dependent_descriptors(_model(name),
                                              FeaturePolicy.REASSEMBLE)

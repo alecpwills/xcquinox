@@ -339,6 +339,7 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
             cusp_features=cusp_cached,
             n_grid=grid_weights.shape[0],
             rung35_proj_ao=mol_data.get("rung35_proj_ao"),
+            rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
             # meta-GGA alpha needs the live tau (AO gradients + DM) + rho/sigma;
             # RKS rho_d/sigma_d are the total density, already computed above.
             ao_grad=ao_grid_deriv[1:4],
@@ -542,6 +543,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
             cusp_features=cusp_cached,
             n_grid=grid_weights.shape[0],
             rung35_proj_ao=mol_data.get("rung35_proj_ao"),
+            rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
             **mgga_kw,
         )
 

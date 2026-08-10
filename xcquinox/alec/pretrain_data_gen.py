@@ -181,6 +181,19 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
         proj_ao = compute_projected_ao(mol, coords_v, DEFAULT_RUNG35_ALPHA)
         rung35_feat = compute_rung35_occupancy(jnp.asarray(proj_ao), dm_for_features)
         cols["rung35"] = np.asarray(rung35_feat)
+        # Multi-width twin at the descriptor's default widths, so a
+        # rung35_multishell arch has its pretrain column. Column order matches
+        # the descriptor exactly (alpha-major then spin), and
+        # _assemble_pretrain_descriptors width-gates the result, so any
+        # mismatch fails loudly rather than widening the network input.
+        from xcquinox.alec.rung35 import (
+            compute_projected_ao_multishell,
+            compute_rung35_multishell_occupancy,
+            DEFAULT_RUNG35_MULTISHELL_ALPHAS)
+        proj_ao_ms = compute_projected_ao_multishell(
+            mol, coords_v, DEFAULT_RUNG35_MULTISHELL_ALPHAS)
+        cols["rung35ms"] = np.asarray(compute_rung35_multishell_occupancy(
+            jnp.asarray(proj_ao_ms), dm_for_features))
     return cols
 
 
@@ -254,6 +267,10 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
     except Exception:
         return False
     if "cusp_all" in _keys and "rung35_all" not in _keys:
+        return False
+    # Same argument one generation later: a file written before the multi-width
+    # rung-3.5 support lacks ``rung35ms_all``.
+    if "rung35_all" in _keys and "rung35ms_all" not in _keys:
         return False
     # A real pretrain-data file (has Fx_all) written before meta-GGA support lacks
     # the SCAN targets + metagga alpha column; a meta_gga arch would KeyError. Force
@@ -342,6 +359,8 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
         save_kwargs["cusp_all"] = np.concatenate([c["cusp"] for c in per_atom])
         save_kwargs["dm_all"] = np.concatenate([c["dm"] for c in per_atom])
         save_kwargs["rung35_all"] = np.concatenate([c["rung35"] for c in per_atom])
+        save_kwargs["rung35ms_all"] = np.concatenate(
+            [c["rung35ms"] for c in per_atom])
 
     os.makedirs(out_dir, exist_ok=True)
     fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"

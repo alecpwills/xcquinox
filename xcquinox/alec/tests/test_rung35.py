@@ -608,3 +608,183 @@ def test_rung35_full_scf_manual_runs_no_nan():
     result = run_scf(cfg, model, data)
     assert np.isfinite(float(result.total_energy)), "non-finite energy"
     assert np.all(np.isfinite(np.asarray(result.density_matrix))), "non-finite DM"
+
+
+# ---------------------------------------------------------------------------
+# Multi-width rung-3.5 (DMRung35MultishellDescriptor), added 2026-08-06.
+#
+# The test set is shaped by the mutants that defeated an earlier draft of it:
+# a "multishell" that IGNORES its widths, an off-by-one atom slice, a factor of
+# two, a transposed spin axis, and a swapped column order all passed a battery
+# built only from bounds / finiteness / size-consistency checks. Distinctness
+# per width and an explicit pairing convention are therefore pinned directly.
+# ---------------------------------------------------------------------------
+def test_multishell_reduces_bitwise_to_single_width():
+    """alphas=(ALPHA,) must reproduce the shipped single-width occupancy EXACTLY.
+
+    This is what makes the generalization safe: the shipped descriptor is the
+    len(alphas) == 1 member, not an approximation of it.
+    """
+    from xcquinox.alec.rung35 import (
+        compute_projected_ao, compute_rung35_occupancy,
+        compute_projected_ao_multishell, compute_rung35_multishell_occupancy)
+    mol, dm, coords, _w = _h2()
+    ref = np.asarray(compute_rung35_occupancy(
+        jnp.asarray(compute_projected_ao(mol, coords, ALPHA)), jnp.asarray(dm)))
+    new = np.asarray(compute_rung35_multishell_occupancy(
+        jnp.asarray(compute_projected_ao_multishell(mol, coords, (ALPHA,))),
+        jnp.asarray(dm)))
+    assert new.shape == ref.shape, (new.shape, ref.shape)
+    assert np.array_equal(ref, new), (
+        f"single-width multishell is not bitwise identical to the shipped "
+        f"occupancy: max|d| = {np.max(np.abs(ref - new)):.3e}")
+
+
+def test_multishell_column_order_is_alpha_major_then_spin():
+    """Pin the pairing convention explicitly.
+
+    A spin-major implementation has the same shape, the same bounds and the
+    same per-column statistics up to permutation, so nothing else in this file
+    can distinguish it. Checked against both candidate orderings built from the
+    single-width primitive.
+    """
+    from xcquinox.alec.rung35 import (
+        compute_projected_ao, compute_rung35_occupancy,
+        compute_projected_ao_multishell, compute_rung35_multishell_occupancy)
+    alphas = (0.05, 0.2, 0.8)
+    mol, dm, coords, _w = _h2()
+    new = np.asarray(compute_rung35_multishell_occupancy(
+        jnp.asarray(compute_projected_ao_multishell(mol, coords, alphas)),
+        jnp.asarray(dm)))
+    per = [np.asarray(compute_rung35_occupancy(
+        jnp.asarray(compute_projected_ao(mol, coords, a)), jnp.asarray(dm)))
+        for a in alphas]
+    alpha_major = np.concatenate(per, axis=1)
+    spin_major = np.concatenate(
+        [np.stack([p[:, s] for p in per], axis=1) for s in (0, 1)], axis=1)
+    assert np.allclose(new, alpha_major, atol=1e-14), "not alpha-major"
+    assert not np.allclose(new, spin_major, atol=1e-8), (
+        "alpha-major and spin-major are indistinguishable on this system, so "
+        "this test has no power -- pick widths that separate them")
+
+
+def test_multishell_columns_are_distinct_per_width():
+    """The widths must actually do something.
+
+    A mutant that builds the stack but contracts every column against the SAME
+    projector passes bounds, finiteness, size-consistency and the single-width
+    reduction. It is caught only by requiring the per-width columns to differ.
+    """
+    from xcquinox.alec.rung35 import (
+        compute_projected_ao_multishell, compute_rung35_multishell_occupancy)
+    alphas = (0.05, 0.2, 0.8)
+    mol, dm, coords, _w = _h2()
+    occ = np.asarray(compute_rung35_multishell_occupancy(
+        jnp.asarray(compute_projected_ao_multishell(mol, coords, alphas)),
+        jnp.asarray(dm)))
+    means = [float(occ[:, i].mean()) for i in range(occ.shape[1])]
+    # Column pairs (0,1), (2,3), (4,5) are the alpha/beta of each width.
+    per_width = [means[0], means[2], means[4]]
+    for i in range(len(per_width)):
+        for j in range(i + 1, len(per_width)):
+            assert abs(per_width[i] - per_width[j]) > 1e-6, (
+                f"width columns {i} and {j} are not distinct ({per_width}); "
+                f"the projector widths are being ignored")
+    # No ordering is asserted: the mean occupancy is NOT monotonic in the
+    # projector width. Measured on H2/def2-svp it runs [0.254, 0.420, 0.253]
+    # for alpha = 0.05 / 0.2 / 0.8, peaking at the intermediate width -- a broad
+    # projector integrates a large volume of low density, a narrow one a tiny
+    # volume, and the product is largest in between.
+
+
+def test_multishell_bounded_and_finite_rks_and_uks():
+    """[0, 1] per channel and finite, on both spin paths."""
+    from pyscf import dft, gto
+    from xcquinox.alec.rung35 import (
+        compute_projected_ao_multishell, compute_rung35_multishell_occupancy)
+    for spin, label in ((0, "RKS H2O"), (2, "UKS O")):
+        atom = ("O 0 0 0.117; H 0 0.757 -0.469; H 0 -0.757 -0.469" if spin == 0
+                else "O 0 0 0")
+        mol = gto.M(atom=atom, basis="def2-svp", spin=spin, verbose=0)
+        mf = (dft.UKS if spin else dft.RKS)(mol)
+        mf.xc = "pbe"
+        mf.kernel()
+        coords = mf.grids.coords[:500]
+        occ = np.asarray(compute_rung35_multishell_occupancy(
+            jnp.asarray(compute_projected_ao_multishell(mol, coords)),
+            jnp.asarray(mf.make_rdm1())))
+        assert occ.shape[1] == 6, occ.shape
+        assert np.all(np.isfinite(occ)), f"{label}: non-finite occupancy"
+        assert occ.min() >= -1e-9, f"{label}: occupancy < 0 ({occ.min()})"
+        assert occ.max() <= 1.0 + 1e-6, f"{label}: occupancy > 1 ({occ.max()})"
+
+
+def test_multishell_closed_shell_reduction():
+    """For an RKS density the alpha and beta column of each width are equal."""
+    from xcquinox.alec.rung35 import (
+        compute_projected_ao_multishell, compute_rung35_multishell_occupancy)
+    mol, dm, coords, _w = _h2()
+    occ = np.asarray(compute_rung35_multishell_occupancy(
+        jnp.asarray(compute_projected_ao_multishell(mol, coords)),
+        jnp.asarray(dm)))
+    for w in range(3):
+        np.testing.assert_allclose(occ[:, 2 * w], occ[:, 2 * w + 1], atol=1e-14,
+                                   err_msg=f"width {w}: alpha != beta on RKS")
+
+
+def test_multishell_gradient_finite_wrt_dm():
+    """Linear in the DM, so the gradient must be finite everywhere."""
+    from xcquinox.alec.rung35 import compute_rung35_multishell_occupancy
+    rng = np.random.default_rng(0)
+    A = jnp.asarray(rng.standard_normal((3, 20, 6)))
+    f = lambda d: jnp.sum(compute_rung35_multishell_occupancy(A, d + d.T))  # noqa: E731
+    grad = jax.grad(f)(jnp.asarray(rng.standard_normal((6, 6))))
+    assert np.all(np.isfinite(np.asarray(grad))), "non-finite gradient wrt DM"
+
+
+def test_multishell_leak_free_size_consistent():
+    """A distant fragment must not change the occupancy near this one.
+
+    Same construction as the single-width test above: this is the property
+    whose ABSENCE disqualified the global bond-order / delocalization
+    candidates, so it is asserted for every width.
+    """
+    from pyscf import dft, gto
+    from xcquinox.alec.rung35 import (
+        compute_projected_ao_multishell, compute_rung35_multishell_occupancy)
+    mA = gto.M(atom="H 0 0 0; H 0 0 1.4", basis="def2-svp", unit="Bohr",
+               verbose=0)
+    mfA = dft.RKS(mA); mfA.xc = "pbe"; mfA.kernel()
+    mAB = gto.M(atom="H 0 0 0; H 0 0 1.4; H 0 0 20.0; H 0 0 21.4",
+                basis="def2-svp", unit="Bohr", verbose=0)
+    mfAB = dft.RKS(mAB); mfAB.xc = "pbe"; mfAB.kernel()
+    pts = np.array([[0., 0., 0.0], [0., 0., 0.7], [0., 0., 1.4], [0.5, 0., 0.7]])
+    nA = np.asarray(compute_rung35_multishell_occupancy(
+        jnp.asarray(compute_projected_ao_multishell(mA, pts)),
+        jnp.asarray(mfA.make_rdm1())))
+    nAB = np.asarray(compute_rung35_multishell_occupancy(
+        jnp.asarray(compute_projected_ao_multishell(mAB, pts)),
+        jnp.asarray(mfAB.make_rdm1())))
+    np.testing.assert_allclose(
+        nA, nAB, atol=1e-4, rtol=1e-3,
+        err_msg="multi-width occupancy near A changed when a distant fragment "
+                "B was added -> NOT leak-free / size-consistent")
+
+
+def test_multishell_descriptor_registration_and_guards():
+    """Registry contract, the n_features/alphas consistency rule, and the two
+    guards that a hand-written __post_init__ can silently break."""
+    from xcquinox.alec.descriptors import make_descriptor
+    d = make_descriptor("rung35_multishell")
+    assert d.n_features == 2 * len(d.alphas)
+    assert d.required_mol_keys == ("rung35ms_features",)
+    # A YAML-sourced list must be coerced to a tuple, else the precompute cache
+    # key (which contains `alphas`) is unhashable.
+    dl = make_descriptor("rung35_multishell", alphas=[0.05, 0.2], n_features=4)
+    assert isinstance(dl.alphas, tuple) and dl.alphas == (0.05, 0.2)
+    assert isinstance(hash((type(dl).__name__, dl.alphas)), int)
+    with pytest.raises(ValueError, match="must equal 2"):
+        make_descriptor("rung35_multishell", alphas=(0.2,))  # n_features=6
+    # The base-class guard must survive the subclass __post_init__.
+    with pytest.raises(TypeError):
+        make_descriptor("rung35_multishell", n_features=jnp.asarray(6))

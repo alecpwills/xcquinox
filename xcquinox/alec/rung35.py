@@ -120,3 +120,77 @@ def compute_rung35_occupancy(proj_ao: jnp.ndarray, dm: jnp.ndarray) -> jnp.ndarr
         dm_spin = dm                                     # (2, nao, nao)
     # n_sigma(r) = sum_{mn} A_{r,m} P^sigma_{mn} A_{r,n}
     return jnp.einsum("gm,smn,gn->gs", A, dm_spin, A)    # (N, 2)
+
+
+# Gaussian widths for the multi-shell projector, spanning the M11plus kernel
+# scale (DEFAULT_RUNG35_ALPHA = 0.2) by a factor of ~4 either side. A narrow
+# projector probes the density matrix close to the grid point, a wide one
+# samples further out, so the set gives a coarse RADIAL profile of the
+# one-particle density matrix around each point.
+DEFAULT_RUNG35_MULTISHELL_ALPHAS: tuple = (0.05, 0.2, 0.8)
+
+
+def compute_projected_ao_multishell(mol, coords,
+                                    alphas=DEFAULT_RUNG35_MULTISHELL_ALPHAS):
+    """Stack of projected-AO matrices, one per Gaussian width.
+
+    Parameters
+    ----------
+    mol : pyscf Mole
+    coords : array, shape (N, 3)
+        Grid points in Bohr.
+    alphas : sequence of float
+        Projector widths (a0^-2), each passed to :func:`compute_projected_ao`.
+
+    Returns
+    -------
+    array, shape (n_alpha, N, nao)
+        Slice ``i`` is exactly ``compute_projected_ao(mol, coords, alphas[i])``,
+        so the single-width descriptor is the ``len(alphas) == 1`` member by
+        construction. DM-independent, never differentiated.
+    """
+    return np.stack([compute_projected_ao(mol, coords, float(a))
+                     for a in alphas])
+
+
+def compute_rung35_multishell_occupancy(proj_ao_stack: jnp.ndarray,
+                                        dm: jnp.ndarray) -> jnp.ndarray:
+    """Per-spin, per-width local occupancies from a live density matrix.
+
+    This is the RADIAL generalization of the localized density-matrix
+    projection used by NeuralXC (Dick and Fernandez-Serra, *Nat. Commun.* 11,
+    3509 (2020)) and carried in the DFS reference implementation, where the
+    density matrix is projected onto a localized basis and contracted into
+    rotationally invariant per-shell norms. ``fakemol_for_charges`` builds
+    s-type projectors only, so this implements the radial channels (l = 0); with
+    a single m per shell the invariant ``sqrt(sum_m c_{nlm}^2)`` reduces to the
+    occupancy itself. Angular channels need solid-harmonic fakemols and are not
+    implemented -- see ``xcquinox/alec/DEFERRED_WORK.md``.
+
+    Parameters
+    ----------
+    proj_ao_stack : array, shape (n_alpha, N, nao)
+        From :func:`compute_projected_ao_multishell`.
+    dm : array, shape (nao, nao) or (2, nao, nao)
+        Live density matrix, same convention as
+        :func:`compute_rung35_occupancy`.
+
+    Returns
+    -------
+    array, shape (N, 2 * n_alpha)
+        Column order is ALPHA-MAJOR then spin:
+        ``[n_a(w0), n_b(w0), n_a(w1), n_b(w1), ...]``. Each entry lies in
+        ``[0, 1]`` by the same Bessel argument as the single-width form, and the
+        result is linear in ``dm``, so it is differentiable through the SCF and
+        needs no eigendecomposition.
+    """
+    A = jnp.asarray(proj_ao_stack)                       # (n_alpha, N, nao)
+    dm = jnp.asarray(dm)
+    if dm.ndim == 2:
+        half = 0.5 * dm
+        dm_spin = jnp.stack([half, half], axis=0)        # (2, nao, nao)
+    else:
+        dm_spin = dm                                     # (2, nao, nao)
+    # (n_alpha, N, 2) -> (N, n_alpha, 2) -> (N, 2 * n_alpha), alpha-major.
+    occ = jnp.einsum("agm,smn,agn->ags", A, dm_spin, A)
+    return jnp.transpose(occ, (1, 0, 2)).reshape(A.shape[1], -1)

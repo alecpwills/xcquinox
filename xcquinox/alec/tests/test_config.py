@@ -142,9 +142,9 @@ def test_architecture_config_field_validation(field, value, exc):
 # deep_notransform + deep_notransform_attn for the descriptor ablation sweep.
 # 2026-06-20: bumped to 22 by adding the 8 depth-3/width-16 dfs_step7 twins.
 # 2026-06-28: bumped to 25 by adding the 3 rung-3.5 localized-DM archs.
-def test_architectures_has_25_keys():
+def test_architectures_registry_key_set():
     from xcquinox.alec.config import ARCHITECTURES
-    assert len(ARCHITECTURES) == 28
+    assert len(ARCHITECTURES) == 29
     expected_keys = {
         "shallow", "shallow_attn", "medium", "medium_attn",
         "deep", "deep_attn", "deep_cusp", "deep_cusp_attn",
@@ -160,6 +160,8 @@ def test_architectures_has_25_keys():
         # = cusp+rung35 replaces deep_combined in the sweep, deep_rung35only_3x16
         # = rung35 alone replaces deep_dm; the leaky entries are kept for in-flight).
         "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
+        # 2026-08-06: multi-width rung-3.5 (radial NeuralXC-style projection).
+        "deep_rung35ms_3x16",
         # New 2026-07-02: DFS-faithful meta-GGA archs (meta_gga=True; iso-orbital
         # alpha descriptor + DFS (x2+tanh^2(x3)) gate + 1.174 LOB; pretrain to SCAN).
         # deep_rung35_mgga_3x16 (cusp+rung35+metagga) replaces deep_rung35only in
@@ -181,7 +183,7 @@ def test_list_architectures_returns_sorted():
     from xcquinox.alec.config import list_architectures
     names = list_architectures()
     assert names == sorted(names)
-    assert len(names) == 28
+    assert len(names) == 29
 
 
 # §13.2 item (15)
@@ -272,8 +274,9 @@ def test_architecture_n_input_features_arithmetic():
     two = get_architecture("deep_combined")
     assert zero.n_input_features == 2
     assert one_cusp.n_input_features == 2 + 2
-    assert one_dm.n_input_features == 2 + 3
-    assert two.n_input_features == 2 + 3 + 2
+    # dm_statistics is 2 wide since dm_entropy was removed 2026-08-06.
+    assert one_dm.n_input_features == 2 + 2
+    assert two.n_input_features == 2 + 2 + 2
 
 
 # §13.2 item (11)
@@ -391,7 +394,7 @@ def test_pretrainspec_describe_json_serializes_with_all_fields():
 def test_architectures_all_materialize_via_from_arch():
     from xcquinox.alec.config import ARCHITECTURES
     from xcquinox.alec.models import AlecGGAModel
-    assert len(ARCHITECTURES) == 28  # +8 (2026-06-20) +3 rung-3.5 (2026-06-28) +3 meta-GGA (2026-07-02)
+    assert len(ARCHITECTURES) == 29  # +8 (2026-06-20) +3 rung-3.5 (2026-06-28) +3 meta-GGA (2026-07-02)
     for arch_name, arch in ARCHITECTURES.items():
         try:
             model = AlecGGAModel.from_arch(arch, seed=0)

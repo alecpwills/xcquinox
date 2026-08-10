@@ -2096,7 +2096,7 @@ class GGA_FxNet_extended(eqx.Module):
     Input structure (per grid point):
     - Base: [rho, sigma] -> transformed to s
     - With Laplacian: [rho, sigma, laplacian] -> [s, q]
-    - With DM features: [rho, sigma, dm_feat1, dm_feat2, dm_feat3] -> [s, dm_feats...]
+    - With DM features: [rho, sigma, dm_feat1, dm_feat2] -> [s, dm_feats...]
     - With cusp: [rho, sigma, cusp_factor, log_weighted_Z] -> [s, cusp_feats...]
 
     All combinations are supported.
@@ -2123,7 +2123,7 @@ class GGA_FxNet_extended(eqx.Module):
                  use_laplacian: bool = False,
                  use_dm_features: bool = False,
                  use_cusp: bool = False,
-                 n_dm_features: int = 3):
+                 n_dm_features: int = 2):
         """
         Constructor for extended GGA exchange enhancement factor network.
 
@@ -2145,7 +2145,9 @@ class GGA_FxNet_extended(eqx.Module):
         :type use_dm_features: bool, optional
         :param use_cusp: Include cusp proximity features, defaults to False
         :type use_cusp: bool, optional
-        :param n_dm_features: Number of DM features if use_dm_features=True, defaults to 3
+        :param n_dm_features: Number of DM features if use_dm_features=True, defaults to 2
+            (was 3 until 2026-08-06, when the entropy feature was removed:
+            its gradient vanishes identically at any converged density)
         :type n_dm_features: int, optional
         """
         self.name = 'GGA_FxNet_extended'
@@ -2293,7 +2295,7 @@ class GGA_FcNet_extended(eqx.Module):
                  use_laplacian: bool = False,
                  use_dm_features: bool = False,
                  use_cusp: bool = False,
-                 n_dm_features: int = 3):
+                 n_dm_features: int = 2):
         """
         Constructor for extended GGA correlation enhancement factor network.
 
@@ -2315,7 +2317,9 @@ class GGA_FcNet_extended(eqx.Module):
         :type use_dm_features: bool, optional
         :param use_cusp: Include cusp proximity features, defaults to False
         :type use_cusp: bool, optional
-        :param n_dm_features: Number of DM features if use_dm_features=True, defaults to 3
+        :param n_dm_features: Number of DM features if use_dm_features=True, defaults to 2
+            (was 3 until 2026-08-06, when the entropy feature was removed:
+            its gradient vanishes identically at any converged density)
         :type n_dm_features: int, optional
         """
         self.name = 'GGA_FcNet_extended'
@@ -2461,7 +2465,7 @@ class GGA_FxNet_extended_transform(eqx.Module):
                  use_laplacian: bool = False,
                  use_dm_features: bool = False,
                  use_cusp: bool = False,
-                 n_dm_features: int = 3):
+                 n_dm_features: int = 2):
         """
         Constructor for extended GGA exchange network with log-transforms.
 
@@ -2609,7 +2613,7 @@ class GGA_FcNet_extended_transform(eqx.Module):
                  use_laplacian: bool = False,
                  use_dm_features: bool = False,
                  use_cusp: bool = False,
-                 n_dm_features: int = 3):
+                 n_dm_features: int = 2):
         """
         Constructor for extended GGA correlation network with log-transforms.
 

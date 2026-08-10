@@ -26,7 +26,8 @@ from xcquinox.alec.train import _build_model, run_training
 from xcquinox.alec.oneshot import scf_loss_tail_weights, total_energy_for_solver
 from xcquinox.alec.tests.fixtures.molecules import h_atom, o_atom, h2_molecule
 from xcquinox.alec.defused_grad import defused_value_and_grad, _energy_trajectory_jit
-from xcquinox.alec.padding import common_pad_target, canonicalize_mol_data
+from xcquinox.alec.padding import (common_pad_target, canonicalize_mol_data,
+                                   PadTarget)
 from xcquinox.alec.tests.test_defused_grad import _SC_FULL, _l5_group, _ARCH
 
 
@@ -212,3 +213,48 @@ def test_padded_training_generalizes_to_unpadded_forward_eval():
     e_pad = float(total_energy_for_solver(m_pad, md, _SC_FULL, forward_only=True))
     e_off = float(total_energy_for_solver(m_off, md, _SC_FULL, forward_only=True))
     assert abs(e_pad - e_off) < 1e-6, (e_pad, e_off)
+
+
+def test_padding_rung35_multishell_keys_axes_and_bit_identity():
+    """The multi-width rung-3.5 keys pad on the RIGHT axes and leave the real
+    block bit-identical.
+
+    ``rung35ms_proj_ao`` is a 3-D ``(n_alpha, N, nao)`` stack and must NOT take
+    the ``_PAD_AO_ON_GRID`` route (``grid_axis=0, ao_axis=1``), which would pad
+    the width axis as if it were the grid -- measured to inflate the array ~90x
+    and feed a shape mismatch into the occupancy einsum. The correct case pads
+    ``grid_axis=1, ao_axis=2``, mirroring ``ao_grid_deriv``.
+    ``rung35ms_features`` ``(N, 2*n_alpha)`` edge-pads its grid axis.
+    """
+    import numpy as _np
+    import jax.numpy as _jnp
+    md = precompute_fixed_density_data(h_atom(), required_keys=("eri",),
+                                       orientation_lock_strength=0.0)
+    n_grid = int(_np.asarray(md["grid_weights"]).shape[0])
+    nao = int(_np.asarray(md["s_matrix"]).shape[0])
+    n_alpha = 3
+    rng = _np.random.default_rng(0)
+    proj = _jnp.asarray(rng.standard_normal((n_alpha, n_grid, nao)))
+    feats = _jnp.asarray(rng.uniform(0.0, 1.0, size=(n_grid, 2 * n_alpha)))
+    md2 = dict(md)
+    md2["rung35ms_proj_ao"] = proj
+    md2["rung35ms_features"] = feats
+
+    target = PadTarget(n_ao=nao + 3, n_grid=n_grid + 7, naux=None)
+    padded = canonicalize_mol_data(md2, target)
+
+    a = _np.asarray(padded["rung35ms_proj_ao"])
+    assert a.shape == (n_alpha, n_grid + 7, nao + 3), (
+        f"projector stack padded to {a.shape}; the width axis must be "
+        f"PRESERVED at {n_alpha} -- shape[0] != n_alpha means the stack took "
+        f"the 2-D _PAD_AO_ON_GRID route with the wrong axes")
+    _np.testing.assert_array_equal(a[:, :n_grid, :nao], _np.asarray(proj))
+    assert _np.all(_np.isfinite(a))
+
+    f = _np.asarray(padded["rung35ms_features"])
+    assert f.shape == (n_grid + 7, 2 * n_alpha), f.shape
+    _np.testing.assert_array_equal(f[:n_grid], _np.asarray(feats))
+    # edge mode replicates the boundary row into the padded region; those rows
+    # carry zero grid weight, so replication is results-neutral and finite.
+    for row in f[n_grid:]:
+        _np.testing.assert_array_equal(row, f[n_grid - 1])

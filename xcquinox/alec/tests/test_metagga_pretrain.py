@@ -47,6 +47,32 @@ def test_staleness_forces_regen_when_metagga_column_absent(tmp_path):
         p, basis="def2-svp", grid_level=1, atoms=[("H", 1)]) is False
 
 
+def test_staleness_forces_regen_when_multishell_column_absent(tmp_path):
+    """A descriptor-bearing file written before multi-width rung-3.5 support
+    carries ``rung35_all`` but not ``rung35ms_all``; the manifest matches, but a
+    ``rung35_multishell`` arch would KeyError at pretrain time. Same argument as
+    the cusp -> rung35 gate one generation earlier."""
+    manifest = {"basis": "def2-svp", "grid_level": 1, "density_fit": False,
+                "auxbasis": None, "atoms": [["H", 1]]}
+    # stale: single-width column present, multi-width absent.
+    p = tmp_path / "pretrain_data.npz"
+    np.savez(p, rho_all=np.ones(3), sigma_all=np.ones(3),
+             cusp_all=np.ones(3), rung35_all=np.ones((3, 2)))
+    with open(str(p) + ".manifest.json", "w") as f:
+        json.dump(manifest, f)
+    assert pdg.pretrain_data_is_current(
+        p, basis="def2-svp", grid_level=1, atoms=[("H", 1)]) is False
+    # current: the multi-width column restores completeness.
+    p2 = tmp_path / "pretrain_data2.npz"
+    np.savez(p2, rho_all=np.ones(3), sigma_all=np.ones(3),
+             cusp_all=np.ones(3), rung35_all=np.ones((3, 2)),
+             rung35ms_all=np.ones((3, 6)))
+    with open(str(p2) + ".manifest.json", "w") as f:
+        json.dump(manifest, f)
+    assert pdg.pretrain_data_is_current(
+        p2, basis="def2-svp", grid_level=1, atoms=[("H", 1)]) is True
+
+
 # ---------------------------------------------------------------------------
 # M3 wiring: the emitted SCAN/alpha columns must actually reach the pretrain
 # network inputs at the layout the meta-GGA nets read, and run_pretrain must

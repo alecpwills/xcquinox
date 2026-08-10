@@ -115,6 +115,21 @@ def _maybe_rung35_proj_ao(descriptors: tuple, mol, grid_coords):
     return None
 
 
+def _maybe_rung35ms_proj_ao(descriptors: tuple, mol, grid_coords):
+    """Constant multi-width projected-AO STACK on ``grid_coords`` if a
+    DMRung35MultishellDescriptor is present (else ``None``). Same rationale as
+    the single-width twin: DM-independent, so computed once per SCF on
+    pyscfad's actual (pruned) grid rather than per cycle."""
+    from xcquinox.alec.descriptors import DMRung35MultishellDescriptor
+    for d in descriptors:
+        if isinstance(d, DMRung35MultishellDescriptor):
+            from xcquinox.alec.rung35 import compute_projected_ao_multishell
+            return jnp.asarray(
+                compute_projected_ao_multishell(mol, grid_coords,
+                                                tuple(d.alphas)))
+    return None
+
+
 def _maybe_metagga_ao_grad(descriptors: tuple, mol, grid_coords):
     """Constant deriv=1 AO ``[ao, d/dx, d/dy, d/dz] chi_mu`` (shape ``(4, N, nao)``)
     on ``grid_coords`` if a MetaGGAAlphaDescriptor is present (else ``None``). The AO
@@ -139,6 +154,7 @@ def _reassemble_features_on_grid(
     grid_coords: "jnp.ndarray",
     mol,
     rung35_proj_ao: "jnp.ndarray | None" = None,
+    rung35ms_proj_ao: "jnp.ndarray | None" = None,
     metagga_ao: "jnp.ndarray | None" = None,
 ) -> "jnp.ndarray":
     """Compute descriptor features from (dm, S) on a specific grid.
@@ -159,7 +175,7 @@ def _reassemble_features_on_grid(
     """
     from xcquinox.alec.descriptors import (
         CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
-        MetaGGAAlphaDescriptor)
+        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor)
     from xcquinox.features import compute_cusp_descriptor
 
     dm_arr = jnp.asarray(dm)
@@ -196,6 +212,13 @@ def _reassemble_features_on_grid(
                 A = jnp.asarray(compute_projected_ao(
                     mol, grid_coords, float(getattr(d, "alpha"))))
             cols.append(d.compute_from_dm(proj_ao=A, dm=dm_arr))
+        elif isinstance(d, DMRung35MultishellDescriptor):
+            A = rung35ms_proj_ao
+            if A is None:
+                from xcquinox.alec.rung35 import compute_projected_ao_multishell
+                A = jnp.asarray(compute_projected_ao_multishell(
+                    mol, grid_coords, tuple(d.alphas)))
+            cols.append(d.compute_from_dm(proj_ao_stack=A, dm=dm_arr))
         elif isinstance(d, MetaGGAAlphaDescriptor):
             # Meta-GGA iso-orbital alpha = (tau - tau_W)/tau_unif, treated as a
             # reassembled DESCRIPTOR feature (NOT native pyscfad MGGA) so the pyscfad
@@ -653,6 +676,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
     #         current DM on every cycle.
     feature_holder = None
     _rung35_proj_ao = None
+    _rung35ms_proj_ao = None
     _metagga_ao = None
     if descriptors:
         is_uks = bool(mol_data.get("is_unrestricted", False)) or int(getattr(mol, "spin", 0)) != 0
@@ -662,6 +686,8 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         # (pruned) grid, computed once and reused every cycle (None unless the arch
         # uses them). Geometry is fixed across the SCF, so both are cycle-invariant.
         _rung35_proj_ao = _maybe_rung35_proj_ao(descriptors, mol, mf.grids.coords)
+        _rung35ms_proj_ao = _maybe_rung35ms_proj_ao(descriptors, mol,
+                                                    mf.grids.coords)
         _metagga_ao = _maybe_metagga_ao_grad(descriptors, mol, mf.grids.coords)
         feature_holder = {
             "features_full": _reassemble_features_on_grid(
@@ -671,6 +697,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
                 grid_coords=jnp.asarray(mf.grids.coords),
                 mol=mol,
                 rung35_proj_ao=_rung35_proj_ao,
+            rung35ms_proj_ao=_rung35ms_proj_ao,
                 metagga_ao=_metagga_ao,
             ),
             "offset": 0,
@@ -716,6 +743,7 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
                     grid_coords=_grid_coords,
                     mol=mol_eff,
                     rung35_proj_ao=_rung35_proj_ao,
+            rung35ms_proj_ao=_rung35ms_proj_ao,
                     metagga_ao=_metagga_ao,
                 )
             feature_holder["offset"] = 0

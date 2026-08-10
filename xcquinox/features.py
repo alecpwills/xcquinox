@@ -2,7 +2,7 @@
 
 Computes:
 - density-matrix / correlation-indicator features (natural-orbital
-  occupations, idempotency error, DM entropy)
+  occupations, idempotency error)
 - cusp / nuclear-cusp quantities
 - Laplacian-based local descriptors
 """
@@ -63,9 +63,7 @@ def compute_dm_natural_occupations(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarr
     return jnp.linalg.eigvalsh(M)
 
 
-def compute_dm_features(
-    dm: jnp.ndarray, S: jnp.ndarray, *, intensive: bool = False,
-) -> Dict[str, float]:
+def compute_dm_features(dm: jnp.ndarray, S: jnp.ndarray) -> Dict[str, float]:
     """
     Extract correlation-sensitive features from the density matrix.
 
@@ -90,18 +88,6 @@ def compute_dm_features(
               (Pople-Nesbet 1954).
           Zero for any single-determinant (HF or KS) reference; nonzero
           for correlated natural-orbital DMs.
-        - 'dm_entropy': Shannon (von-Neumann-like) entropy
-          ``-sum_i p_i ln p_i`` of the natural-orbital occupations normalized to
-          a probability distribution ``p_i = n_i / sum_j n_j``, where the
-          occupations ``n_i`` are the eigenvalues of ``D S`` (see
-          ``compute_dm_natural_occupations``; Löwdin, Phys. Rev. 97, 1474, 1955).
-          Caveat: this quantity is *size-dependent* (it scales roughly
-          like ``ln(N_occ)``) and is nonzero even for an uncorrelated single
-          determinant, so it is NOT a clean electron-correlation indicator --
-          'idempotency_error' is the quantity that vanishes for a single
-          determinant. (The symmetric natural-occupation transform shifts this
-          feature's numeric value for ``S != I``; checkpoints trained on the
-          earlier values would, strictly, need re-evaluation.)
         - 'off_diag_norm': Frobenius norm of off-diagonal elements / trace.
         - 'trace': Tr(DM @ S) = number of electrons.
     :rtype: Dict[str, float]
@@ -140,56 +126,31 @@ def compute_dm_features(
         n_norm = 0.5 * n_elec  # = Tr(P S) = N_e/2
         idempotency_error = _idempotency_sq(d_norm, n_norm)
 
-    # Natural-orbital occupations = eigenvalues of D @ S, obtained from the
-    # symmetric similarity transform S^{1/2} D S^{1/2}. The Löwdin transform
-    # S^{-1/2} D S^{-1/2} yields eig(S^{-1} D), which are NOT the natural
-    # occupations when S != I.
-    occupations = compute_dm_natural_occupations(dm, S)
-
-    # Shannon (von-Neumann-like) entropy of the natural-orbital occupations,
-    # normalized to a probability distribution: -sum_i p_i ln p_i with
-    # p_i = n_i / sum_j n_j. The occupations are the correct natural occupations
-    # (eig(D S)). NOTE: the raw form is size-extensive -- in the
-    # single-determinant equal-occupation limit it collapses to ln(N_occ),
-    # broadcasting molecule-size info to every grid point. The intensive form
-    # (controlled by ``intensive`` flag) divides by ln(max(n_orb_eff, 2)) so the
-    # feature is in [0, 1] and is a size-intensive correlation indicator.
-    #
-    # KNOWN DEFECT, deliberately left in place (see alec/HISTORY.md). This
-    # feature's gradient is wrong at every converged SCF density, and it is not
-    # repairable as formulated:
-    #   * the clip below puts ALL occupations on a boundary for a single
-    #     determinant (measured on H2O/def2-svp: 5 at exactly 2.0, 19 at
-    #     <= 1e-12), so the clip zeroes the entire gradient -- autodiff returns
-    #     exactly 0.0 against a finite difference of +5.97e-02;
-    #   * removing the clip does not help. 22 of 23 eigenvalue gaps are < 1e-10,
+    # dm_entropy was REMOVED 2026-08-06. It had no usable gradient at any
+    # converged density and could not be repaired as formulated:
+    #   * the physical-bounds clip zeroed the entire gradient: for a single
+    #     determinant (H2O/def2-svp) every natural occupation sits ON a clip
+    #     boundary -- at 2.0 or at/below 1e-12 to within round-off (the exact
+    #     count at 2.0 varies between 2 and 5 with summation order) -- so
+    #     autodiff returned exactly 0.0 against a finite difference of
+    #     +5.97e-02;
+    #   * removing the clip made it worse. 22 of 23 eigenvalue gaps are < 1e-10
     #     and eigenvector derivatives carry 1/(lam_i - lam_j), so the gradient is
-    #     ill-defined at ANY idempotent DM regardless of clipping.
-    # The participation ratio (Tr[DS])^2/Tr[(DS)^2] was evaluated as an
-    # eigh-free replacement and rejected: it equals N_occ exactly on the
-    # idempotent manifold, so every electron-count normalization that would make
-    # it size-intensive is identically constant there and carries no
-    # information. A genuine replacement is open work; changing this feature
-    # invalidates checkpoints trained on it (see below) and is gated on sign-off.
-    # Trigger condition: any architecture carrying the dm_statistics descriptor
-    # in a mode where features are recomputed from the live DM. No such
-    # architecture is in the dfs6311 sweep.
-    occupations = jnp.clip(occupations, 1e-12, 2.0)  # physical bounds
-    occ_normalized = occupations / (jnp.sum(occupations) + 1e-12)
-    dm_entropy = -jnp.sum(occ_normalized * jnp.log(occ_normalized + 1e-12))
-    if intensive:
-        # Effective number of OCCUPIED ORBITALS (NOT electrons). For a clean
-        # RKS DM each occupied orbital has occupation ≈ 2 -> n_orb = N_e/2.
-        # For UKS / correlated DMs the max occupation may be different;
-        # dividing the sum of occupations by the largest single occupation
-        # gives the correct orbital count in both single-determinant limits.
-        # max_occ floored at 1e-12 to avoid divide-by-zero on null DMs.
-        max_occ = jnp.maximum(jnp.max(occupations), 1e-12)
-        n_orb_eff = jnp.sum(occupations) / max_occ
-        # The max(., 2) floor avoids ln(1) = 0 for single-electron systems
-        # (H atom, etc.) where 1 orbital is occupied; without it we'd divide
-        # by 0 / NaN.
-        dm_entropy = dm_entropy / jnp.log(jnp.maximum(n_orb_eff, 2.0))
+    #     ill-defined at ANY idempotent density matrix -- which is every
+    #     converged SCF density.
+    # No spectral invariant can replace it. For a single determinant the
+    # eigenvalues of DS are exactly {2,...,2,0,...,0}, so any function of the
+    # SPECTRUM alone depends only on N_occ and is CONSTANT on the idempotent
+    # manifold: measured, Tr[(DS)^n]/N returns 2^(n-1) for H2, N2 and CO alike,
+    # and the participation ratio (Tr[DS])^2/Tr[(DS)^2] returns N_occ. A useful
+    # replacement must probe the EIGENVECTORS -- the spatial and bonding
+    # structure -- not the spectrum. See notebooks/analysis/DM_DESCRIPTOR_SPEC.md
+    # for the candidates screened and xcquinox/alec/DEFERRED_WORK.md for what a
+    # local replacement has to satisfy.
+    #
+    # Removing it also repaired the dm_statistics architectures' energy/potential
+    # consistency: their finite-difference residual went from
+    # 1.04e-02 to 2.1e-10 under the committed test's own parametrized ordering (residuals move up to ~5x with evaluation order; a fresh-process measurement gave 5.2e-03 to the same floor), since the dead gradient had been dominating it.
 
     # Off-diagonal norm (correlation indicator).
     #
@@ -218,37 +179,36 @@ def compute_dm_features(
 
     return {
         'idempotency_error': idempotency_error,
-        'dm_entropy': dm_entropy,
         'off_diag_norm': off_diag_norm,
         'trace': n_elec,
     }
 
 
-def compute_dm_features_array(
-    dm: jnp.ndarray, S: jnp.ndarray, *, intensive: bool = False,
-) -> jnp.ndarray:
+def compute_dm_features_array(dm: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarray:
     """
     Compute density matrix features as a JAX array for use in networks.
 
     Returns features in a fixed order suitable for concatenation with
     grid-point descriptors.
 
+    Width went 3 -> 2 on 2026-08-06 with the removal of ``dm_entropy``; the
+    ``intensive`` argument went with it, since it only ever normalized that
+    feature. This changes the network input width for any architecture carrying
+    the dm_statistics descriptor and therefore invalidates checkpoints trained
+    on the 3-feature layout (the deep_dm / deep_combined families under
+    notebooks/checkpoints_v3b). No architecture in the dfs6311 sweep uses it --
+    verified against all 88 live spec files.
+
     :param dm: Density matrix in AO basis
     :type dm: jnp.ndarray
     :param S: Overlap matrix
     :type S: jnp.ndarray
-    :param intensive: When True, normalize ``dm_entropy`` by
-        ``ln(max(n_orb_eff, 2))`` (n_orb_eff = sum(occupations)/max_occ) so the
-        feature is size-intensive (default False = original size-extensive
-        ``ln(N_occ)`` form).
-    :type intensive: bool
-    :return: Array of shape (3,) containing [idempotency_error, dm_entropy, off_diag_norm]
+    :return: Array of shape (2,) containing [idempotency_error, off_diag_norm]
     :rtype: jnp.ndarray
     """
-    features = compute_dm_features(dm, S, intensive=intensive)
+    features = compute_dm_features(dm, S)
     return jnp.array([
         features['idempotency_error'],
-        features['dm_entropy'],
         features['off_diag_norm'],
     ])
 

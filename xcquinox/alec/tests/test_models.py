@@ -39,7 +39,8 @@ def test_from_arch_two_descriptors():
     arch = ArchitectureConfig.from_spec("t", 2, 8,
                                         descriptors=["dm_statistics", "cusp"])
     model = AlecGGAModel.from_arch(arch, seed=0)
-    assert model.xnet.n_extra_features == 5
+    # 2 (dm_statistics, since dm_entropy was removed 2026-08-06) + 2 (cusp).
+    assert model.xnet.n_extra_features == 4
 
 
 # §13.2 item (4)
@@ -86,7 +87,7 @@ def _synth_inputs(n=16, n_extra=0):
 def test_eval_fx_returns_correct_shape():
     arch = ArchitectureConfig.from_spec("t", 2, 8, descriptors=["dm_statistics", "cusp"])
     model = AlecGGAModel.from_arch(arch, seed=0)
-    rho, sigma, features = _synth_inputs(16, 5)
+    rho, sigma, features = _synth_inputs(16, arch.n_extra_features)
     assert model.eval_Fx(rho, sigma, features).shape == (16,)
 
 
@@ -94,7 +95,7 @@ def test_eval_fx_returns_correct_shape():
 def test_eval_fc_returns_correct_shape():
     arch = ArchitectureConfig.from_spec("t", 2, 8, descriptors=["dm_statistics", "cusp"])
     model = AlecGGAModel.from_arch(arch, seed=0)
-    rho, sigma, features = _synth_inputs(16, 5)
+    rho, sigma, features = _synth_inputs(16, arch.n_extra_features)
     assert model.eval_Fc(rho, sigma, features).shape == (16,)
 
 
@@ -382,7 +383,7 @@ def _build_polc_model(seed=0):
         "polc_test", 4, 32, attention=True, num_heads=4,
         descriptors=["dm_statistics", "cusp"], use_polarized_correlation=True)
     x, c = alec.create_network_pair(arch, seed=seed)
-    return alec.AlecGGAModel.from_arch(arch, xnet=x, cnet=c)
+    return alec.AlecGGAModel.from_arch(arch, xnet=x, cnet=c), arch
 
 
 def test_unpolarized_model_ignores_zeta():
@@ -394,7 +395,8 @@ def test_unpolarized_model_ignores_zeta():
     m = alec.AlecGGAModel.from_arch(arch, xnet=x, cnet=c)
     n = 5
     rho = jnp.linspace(0.1, 1.0, n); sig = jnp.linspace(0.01, 0.5, n)
-    feats = jnp.asarray(np.random.default_rng(0).standard_normal((n, 5)))
+    feats = jnp.asarray(np.random.default_rng(0).standard_normal(
+        (n, arch.n_extra_features)))
     assert jnp.allclose(m.eval_ec(rho, sig, feats, zeta=0.0),
                         m.eval_ec(rho, sig, feats, zeta=0.7))
 
@@ -402,10 +404,11 @@ def test_unpolarized_model_ignores_zeta():
 def test_polarized_model_split_exact_and_zeta_sensitive():
     """Polarized model: eval_exc == eval_ex + eval_ec (batched zeta array AND
     scalar), and eval_ec genuinely depends on zeta."""
-    m = _build_polc_model()
+    m, arch = _build_polc_model()
     n = 5
     rho = jnp.linspace(0.1, 1.0, n); sig = jnp.linspace(0.01, 0.5, n)
-    feats = jnp.asarray(np.random.default_rng(1).standard_normal((n, 5)))
+    feats = jnp.asarray(np.random.default_rng(1).standard_normal(
+        (n, arch.n_extra_features)))
     zeta = jnp.linspace(0.0, 0.8, n)
     exc = m.eval_exc(rho, sig, feats, zeta=zeta)
     split = m.eval_ex(rho, sig, feats) + m.eval_ec(rho, sig, feats, zeta=zeta)
@@ -426,7 +429,7 @@ def test_polarized_baseline_reduces_to_unpolarized_at_zeta0():
     so a polarized model's eval_ec(zeta=0) uses the same baseline (only the
     learned cnet differs)."""
     from xcquinox.utils import pw92c_unpolarized_scalar
-    m = _build_polc_model()
+    m, _arch = _build_polc_model()
     rho = jnp.linspace(0.1, 1.0, 5)
     base_pol0 = m._ec_baseline(rho, jnp.zeros_like(rho))
     assert jnp.allclose(base_pol0, pw92c_unpolarized_scalar(rho), atol=1e-12)
@@ -526,16 +529,26 @@ def test_descriptor_log_transform_propagates_arch_to_networks():
         assert model.cnet.descriptor_log_transform is flag
 
 
-def test_dm_entropy_intensive_propagates_to_dm_descriptor():
-    """``arch.dm_entropy_intensive`` rides through into the materialized
-    DMStatisticsDescriptor instance via ``materialize_descriptors``."""
+def test_dm_entropy_intensive_is_inert_but_still_accepted():
+    """``arch.dm_entropy_intensive`` is retained as an INERT field.
+
+    It only ever normalized dm_entropy, which was removed 2026-08-06, so it no
+    longer reaches the descriptor -- ``materialize_descriptors`` stopped
+    injecting it and DMStatisticsDescriptor no longer accepts it. The
+    ArchitectureConfig field is kept because it is a frozen-dataclass field
+    carried by the live cluster array's spec files, which must still unpickle;
+    dropping it would break them. Both halves are pinned here: the flag is
+    still accepted, and it does NOT reach the descriptor.
+    """
     arch = ArchitectureConfig.from_spec(
         "t", 2, 8, descriptors=["dm_statistics"],
         dm_entropy_intensive=True,
     )
+    assert arch.dm_entropy_intensive is True
     descriptors = arch.materialize_descriptors()
     assert len(descriptors) == 1
-    assert getattr(descriptors[0], "intensive", None) is True
+    assert not hasattr(descriptors[0], "intensive")
+    assert descriptors[0].n_features == 2
 
 
 def test_notransform_archs_in_registry_have_log_transform_false():

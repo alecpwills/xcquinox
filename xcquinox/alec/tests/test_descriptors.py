@@ -27,10 +27,12 @@ def test_cusp_n_features_value():
     assert CuspDescriptor().n_features == 2
 
 
-# §13.2 item (4): DMStatisticsDescriptor.n_features == 3
+# §13.2 item (4): DMStatisticsDescriptor.n_features == 2
 def test_dm_statistics_n_features_value():
     from xcquinox.alec.descriptors import DMStatisticsDescriptor
-    assert DMStatisticsDescriptor().n_features == 3
+    # 3 -> 2 on 2026-08-06: dm_entropy removed (no usable gradient at any
+    # converged density). This count sets the network input width.
+    assert DMStatisticsDescriptor().n_features == 2
 
 
 # §13.2 item (5): assemble_descriptor_features with empty tuple returns (N, 0)
@@ -186,11 +188,11 @@ def test_dm_statistics_compute_from_dm_matches_precomputed():
 
 
 def test_dm_statistics_compute_from_dm_output_shape():
-    """compute_from_dm returns (n_grid, 3) tiled features."""
+    """compute_from_dm returns (n_grid, 2) tiled features."""
     from xcquinox.alec.descriptors import DMStatisticsDescriptor
 
     desc = DMStatisticsDescriptor()
     dm = jnp.eye(2) * 0.5
     s = jnp.eye(2)
     features = desc.compute_from_dm(dm=dm, s_matrix=s, n_grid=17)
-    assert features.shape == (17, 3)
+    assert features.shape == (17, 2)

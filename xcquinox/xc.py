@@ -241,7 +241,7 @@ class RXCModel_GGA_Extended(eqx.Module):
     just [rho, sigma] inputs. It supports:
     - Basic: 2 features [rho, sigma]
     - Cusp: 4 features [rho, sigma, cusp_factor, log_weighted_Z]
-    - DM: 5 features [rho, sigma, dm_feat0, dm_feat1, dm_feat2]
+    - DM: 4 features [rho, sigma, dm_feat0, dm_feat1]
     - Combined: 7 features [rho, sigma, cusp_0, cusp_1, dm_0, dm_1, dm_2]
 
     The model stores configuration about which features are enabled and
@@ -253,7 +253,7 @@ class RXCModel_GGA_Extended(eqx.Module):
     use_dm_features: bool
     n_dm_features: int
 
-    def __init__(self, xnet, cnet, use_cusp=False, use_dm_features=False, n_dm_features=3):
+    def __init__(self, xnet, cnet, use_cusp=False, use_dm_features=False, n_dm_features=2):
         '''
         Initialize an extended GGA model with optional feature support.
 
@@ -261,7 +261,8 @@ class RXCModel_GGA_Extended(eqx.Module):
         :param cnet: The correlation enhancement factor network
         :param use_cusp: Whether the networks expect cusp features
         :param use_dm_features: Whether the networks expect DM features
-        :param n_dm_features: Number of DM features (default 3)
+        :param n_dm_features: Number of DM features (default 2; was 3 until
+            2026-08-06, when the entropy feature was removed)
         '''
         self.xnet = xnet
         self.cnet = cnet

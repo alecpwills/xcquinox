@@ -897,7 +897,7 @@ def eval_xc_nn_gga(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verb
             else:
                 if verbose:
                     print("Warning: use_dm_features=True but dm/overlap not provided")
-                dm_features = jnp.zeros((rho0.shape[0], 3))
+                dm_features = jnp.zeros((rho0.shape[0], 2))
 
         # Compute cusp features if requested
         cusp_features = None
@@ -987,7 +987,7 @@ def eval_xc_nn_gga(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verb
                 n_grid = rho0.shape[0]
                 dm_features = jnp.tile(dm_feat_array, (n_grid, 1))
             else:
-                dm_features = jnp.zeros((rho0.shape[0], 3))
+                dm_features = jnp.zeros((rho0.shape[0], 2))
 
         # Cusp features
         cusp_features = None

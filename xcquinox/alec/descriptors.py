@@ -10,7 +10,8 @@ import equinox as eqx
 import jax.numpy as jnp
 from typing import ClassVar
 
-from xcquinox.alec.rung35 import DEFAULT_RUNG35_ALPHA
+from xcquinox.alec.rung35 import (DEFAULT_RUNG35_ALPHA,
+                                  DEFAULT_RUNG35_MULTISHELL_ALPHAS)
 
 
 class Descriptor(eqx.Module, abc.ABC):
@@ -107,63 +108,54 @@ class CuspDescriptor(Descriptor):
 
 @register_descriptor("dm_statistics")
 class DMStatisticsDescriptor(Descriptor):
-    """Density-matrix correlation indicators. 3 features.
+    """Density-matrix correlation indicators. 2 features.
 
-    The 3 features (see ``xcquinox.features.compute_dm_features_array``) are,
+    The 2 features (see ``xcquinox.features.compute_dm_features_array``) are,
     in order:
-      0. ``idempotency_error``: normalized Frobenius deviation from the
-         single-determinant idempotency condition; ~0 for an HF/KS reference,
-         growing with correlation.
-      1. ``dm_entropy``: Shannon (von-Neumann-like) entropy of the natural-
-         orbital occupations normalized to a probability distribution
-         (``-sum_i p_i ln p_i`` with ``p_i = n_i / sum_j n_j``; the occupations
-         ``n_i`` are the eigenvalues of ``D S``: Löwdin, Phys. Rev. 97, 1474
-         (1955)). NOTE: this quantity is size-dependent (it scales
-         roughly like ``ln N_occ``) and is nonzero even for a single
-         determinant, so it is NOT a clean electron-correlation indicator,
-         ``idempotency_error`` is the quantity that vanishes for a single
-         determinant. See ``xcquinox.features.compute_dm_features`` for the
-         full discussion.
-      2. ``off_diag_norm``: Frobenius norm of the off-diagonal AO density-matrix
+      0. ``idempotency_error``: squared Frobenius deviation from the
+         single-determinant idempotency condition, normalized by the electron
+         count; ~0 for an HF/KS reference, growing with correlation.
+      1. ``off_diag_norm``: Frobenius norm of the off-diagonal AO density-matrix
          block, normalized by the trace.
 
-    ``idempotency_error`` and ``off_diag_norm`` grow with departure from a single
-    Slater determinant; ``dm_entropy`` is a size-dependent natural-occupation
-    entropy (see the caveat above), not a clean correlation indicator.
+    Both grow with departure from a single Slater determinant.
 
-    SIZE-CONSISTENCY / LOCALITY CAVEAT: these are GLOBAL, molecule-level
-    scalars that ``__call__`` ``jnp.tile``s identically to every grid point and
-    feeds into the per-point (semilocal) enhancement factor. Consequences:
-      * The per-point ε_xc then depends on whole-system quantities, so the
-        functional is NOT size-consistent, the XC energy density at a point in
-        fragment A shifts if a distant fragment B is added to the system.
-      * ``dm_entropy`` is extensive (~ln N_occ), so as a constant local feature
-        it largely encodes molecule identity/size (a label-leakage / overfitting
-        handle on a small training pool) rather than local correlation physics.
-    Making this defensible requires an ARCHITECTURE change (feed these as
-    size-INTENSIVE molecule-level conditioning, or normalize per electron), which
-    redefines the feature and invalidates checkpoints trained on the current
-    values: a deferred design decision requiring sign-off, NOT changed here.
+    ``dm_entropy`` was REMOVED 2026-08-06 (width 3 -> 2). It had no usable
+    gradient at any converged density -- the physical-bounds clip put every
+    natural occupation on a boundary, and without the clip the ``eigh``
+    eigenvector derivatives are ill-defined on the degenerate occupation
+    spectrum of any idempotent density matrix. No spectral invariant can
+    replace it: for a single determinant the eigenvalues of ``DS`` are exactly
+    {2,...,2,0,...,0}, so any function of the spectrum alone is constant on the
+    idempotent manifold. Removing it also took the dm_statistics architectures'
+    energy/potential finite-difference residual from
+    1.04e-02 to 2.1e-10 under the committed test's own parametrized ordering (residuals move up to ~5x with evaluation order; a fresh-process measurement gave 5.2e-03 to the same floor),
+    since the dead gradient had been dominating it. See
+    ``notebooks/analysis/DM_DESCRIPTOR_SPEC.md``.
+
+    SIZE-CONSISTENCY / LOCALITY CAVEAT, unchanged and still open: these are
+    GLOBAL, molecule-level scalars that ``__call__`` ``jnp.tile``s identically
+    to every grid point and feeds into the per-point (semilocal) enhancement
+    factor, so the XC energy density at a point in fragment A shifts if a
+    distant fragment B is added. :class:`DMRung35Descriptor` and
+    :class:`DMRung35MultishellDescriptor` are the leak-free members of this
+    family -- genuine per-grid-point contractions of the same density matrix.
+    Making the global form defensible requires an architecture change and is
+    recorded in ``xcquinox/alec/DEFERRED_WORK.md``.
     """
-    n_features: int = eqx.field(default=3, static=True)
-    # When True, divides dm_entropy by ln(max(n_orb_eff, 2)), where
-    # n_orb_eff = sum(occupations)/max_occ, so the feature is size-intensive
-    # (range [0, 1]). When False, keeps the size-extensive ln(N_occ) form
-    # (old checkpoints unpickle to this default).
-    intensive: bool = eqx.field(default=False, static=True)
+    n_features: int = eqx.field(default=2, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)
 
     @staticmethod
     def compute_from_dm(dm: jnp.ndarray, s_matrix: jnp.ndarray,
-                        n_grid: int, *, intensive: bool = False) -> jnp.ndarray:
-        """Pure kernel: compute 3-feature vector from (dm, S) and tile to grid.
+                        n_grid: int) -> jnp.ndarray:
+        """Pure kernel: compute the 2-feature vector from (dm, S), tiled to grid.
 
-        Mirrors the precompute path in data.py:229-234 but accepts a live DM
-        so the SCF REASSEMBLE policy can recompute features per cycle.
+        Mirrors the precompute path in data.py but accepts a live DM so the SCF
+        REASSEMBLE policy can recompute features per cycle.
         """
         from xcquinox.features import compute_dm_features_array
-        global_features = compute_dm_features_array(dm, s_matrix,
-                                                     intensive=intensive)
+        global_features = compute_dm_features_array(dm, s_matrix)
         return jnp.tile(global_features, (n_grid, 1))
 
     def compute(self, mol_data):
@@ -216,6 +208,65 @@ class DMRung35Descriptor(Descriptor):
 
     def compute(self, mol_data):
         return mol_data["rung35_features"]
+
+
+@register_descriptor("rung35_multishell")
+class DMRung35MultishellDescriptor(Descriptor):
+    """Multi-width rung-3.5 occupancy: per-spin, per-width local occupancies
+    ``n_sigma(r; w) = A_w(r)^T P^sigma A_w(r) in [0, 1]``.
+
+    The RADIAL generalization of the localized density-matrix projection used by
+    NeuralXC (Dick and Fernandez-Serra, *Nat. Commun.* 11, 3509 (2020)) and
+    carried in the DFS reference implementation, which projects the density
+    matrix onto a localized basis and contracts the coefficients into
+    rotationally invariant per-shell norms. Linear in the density matrix, so
+    differentiable through the SCF with no eigendecomposition and no degeneracy
+    hazard; bounded by the same Bessel argument as the single-width form.
+
+    LIMITATION, stated because the name invites the stronger claim:
+    ``fakemol_for_charges`` builds s-type projectors only, so this is the l = 0
+    (radial) part of that construction. With one m per shell the invariant
+    ``sqrt(sum_m c_{nlm}^2)`` collapses to the occupancy itself. Angular
+    channels require solid-harmonic fakemols and are NOT implemented, so this
+    should not be described as "the DFS descriptor" -- see
+    ``xcquinox/alec/DEFERRED_WORK.md``.
+
+    ``n_features`` is ``2 * len(alphas)`` (two spin channels per width) and the
+    column order is ALPHA-MAJOR then spin. Setting ``alphas`` to a single width
+    reproduces :class:`DMRung35Descriptor` bitwise.
+    """
+    n_features: int = eqx.field(default=6, static=True)
+    alphas: tuple = eqx.field(default=DEFAULT_RUNG35_MULTISHELL_ALPHAS,
+                              static=True)
+    required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35ms_features",)
+
+    def __post_init__(self):
+        # The base class rejects jax arrays in primitive-annotated fields; keep
+        # that guard by delegating rather than shadowing it.
+        super().__post_init__()
+        # A YAML-sourced `alphas` arrives as a LIST (FeatureSpec._thaw maps an
+        # untagged tuple back to a list by design), which makes the precompute
+        # cache key unhashable. Coerce here so both the registry and the cache
+        # see a tuple of plain floats.
+        object.__setattr__(self, "alphas",
+                           tuple(float(a) for a in self.alphas))
+        if self.n_features != 2 * len(self.alphas):
+            raise ValueError(
+                f"DMRung35MultishellDescriptor.n_features ({self.n_features}) "
+                f"must equal 2 * len(alphas) ({2 * len(self.alphas)}): two spin "
+                f"channels per projector width."
+            )
+
+    @staticmethod
+    def compute_from_dm(proj_ao_stack: jnp.ndarray,
+                        dm: jnp.ndarray) -> jnp.ndarray:
+        """Reassemble kernel: per-width occupancies from a LIVE DM and the
+        constant projected-AO stack."""
+        from xcquinox.alec.rung35 import compute_rung35_multishell_occupancy
+        return compute_rung35_multishell_occupancy(proj_ao_stack, dm)
+
+    def compute(self, mol_data):
+        return mol_data["rung35ms_features"]
 
 
 @register_descriptor("metagga")

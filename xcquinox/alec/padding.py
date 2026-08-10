@@ -37,9 +37,10 @@ for any of three reasons; the pass neutralizes the first two and leaves the thir
    collapse to one kernel per SPIN-TYPE -> two total (RKS + UKS, genuinely different
    code paths).
 
-The one field NOT analytically invariant under padding is
-``dm_statistics.dm_entropy`` (~1e-10, a ``clip``-to-1e-12 artifact on the padded
-zero-occupation eigenvalues); no active dfs6311 arch uses it (rung-3.5 replaced it).
+Every padded field is analytically invariant under the masks above. The one
+historical exception, ``dm_statistics.dm_entropy`` (a clip artifact on padded
+zero-occupation eigenvalues), was removed 2026-08-06; both surviving
+``dm_statistics`` features are exactly invariant.
 """
 from typing import NamedTuple, Optional
 
@@ -115,7 +116,7 @@ _PAD_AO_ZERO_BLOCK = ("dm_pbe", "j_matrix", "vxc_pbe", "dm_target", "vxc_ref")
 # grid-only fields holding FINITE per-point data (edge-padded, weight-0 rows)
 _PAD_GRID_EDGE = ("rho_grid", "sigma_grid", "nabla_rho_grid", "rho_ref_grid",
                   "cusp_features", "dm_features", "rung35_features",
-                  "metagga_features")
+                  "rung35ms_features", "metagga_features")
 # (n_grid, n_ao): edge-pad grid axis 0, zero-pad AO axis 1
 _PAD_AO_ON_GRID = ("ao_grid", "rung35_proj_ao")
 
@@ -166,6 +167,15 @@ def _pad_mol_data(mol_data, target: PadTarget):
         if present(k):
             out[k] = _pad_ao_on_grid(mol_data[k], n_grid_t, n_ao_t,
                                      grid_axis=0, ao_axis=1)
+    # (n_alpha, n_grid, n_ao): the multi-width projected-AO STACK. It must NOT
+    # go in _PAD_AO_ON_GRID, which is consumed with grid_axis=0, ao_axis=1 --
+    # wrong for a 3-D tensor, and measured to return (640, 500, 7) instead of
+    # (3, 640, 13), an ~90x element blow-up that becomes an OOM at production
+    # grid size rather than a clean error.
+    if present("rung35ms_proj_ao"):
+        out["rung35ms_proj_ao"] = _pad_ao_on_grid(
+            mol_data["rung35ms_proj_ao"], n_grid_t, n_ao_t,
+            grid_axis=1, ao_axis=2)
     if present("ao_grid_deriv"):  # (4, n_grid, n_ao)
         out["ao_grid_deriv"] = _pad_ao_on_grid(
             mol_data["ao_grid_deriv"], n_grid_t, n_ao_t, grid_axis=1, ao_axis=2)

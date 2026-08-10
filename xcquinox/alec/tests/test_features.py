@@ -97,11 +97,28 @@ def test_idempotency_error_nonzero_for_correlated_dm():
 
 
 def test_dm_features_array_shape_and_finite():
-    """compute_dm_features_array returns a length-3 finite jnp array."""
+    """compute_dm_features_array returns a length-2 finite jnp array.
+
+    Width went 3 -> 2 on 2026-08-06 with the removal of dm_entropy, which had
+    no usable gradient at any converged density. This count sets the network
+    input width for any dm_statistics architecture, so it is pinned here.
+    """
     D, S = _build_clean_rks_dm(nao=6, nocc=2, seed=0)
     arr = compute_dm_features_array(D, S)
-    assert arr.shape == (3,), arr.shape
+    assert arr.shape == (2,), arr.shape
     assert jnp.all(jnp.isfinite(arr)), arr
+
+
+def test_dm_features_has_no_entropy_key():
+    """dm_entropy is gone from the dict as well as the array.
+
+    Guards the halfway state where the array shrinks but the dict still
+    computes an eigendecomposition nothing consumes.
+    """
+    D, S = _build_clean_rks_dm(nao=6, nocc=2, seed=0)
+    out = compute_dm_features(D, S)
+    assert "dm_entropy" not in out, sorted(out)
+    assert sorted(out) == ["idempotency_error", "off_diag_norm", "trace"]
 
 
 def test_n_elec_trace_matches_density_matrix():
@@ -114,17 +131,18 @@ def test_n_elec_trace_matches_density_matrix():
 
 
 # ---------------------------------------------------------------------------
-# natural-orbital occupations must be eig(D @ S) (not eig(S^{-1} D))
-# dm_entropy must be a genuine correlation indicator (~0 for a
-#          single determinant, growing with fractional natural occupations)
+# natural-orbital occupations must be eig(D @ S) (not eig(S^{-1} D)).
+# compute_dm_natural_occupations is retained after the dm_entropy removal:
+# it is a correct, tested primitive, and any future replacement descriptor
+# built on the occupation spectrum will need it.
 # ---------------------------------------------------------------------------
 
 from xcquinox.features import compute_dm_natural_occupations
 
 
 def test_natural_occupations_equal_eig_DS():
-    """the natural-orbital occupations underlying dm_entropy must
-    equal sorted(eig(D @ S)) for a NON-identity overlap S.
+    """the natural-orbital occupations must equal sorted(eig(D @ S)) for a
+    NON-identity overlap S.
 
     Pre-fix code used the Lowdin transform S^{-1/2} D S^{-1/2}, whose
     eigenvalues are eig(S^{-1} D), NOT the natural occupations. The
@@ -138,104 +156,6 @@ def test_natural_occupations_equal_eig_DS():
     ref = np.sort(np.real(ref))
     occ_sorted = np.sort(occ)
     np.testing.assert_allclose(occ_sorted, ref, atol=1e-6)
-
-
-def test_natural_occupations_trace_preserved():
-    """sum of natural occupations == Tr(D S) == electron count."""
-    nocc = 3
-    D, S = _build_clean_rks_dm(nao=8, nocc=nocc, seed=0)
-    occ = np.asarray(compute_dm_natural_occupations(D, S))
-    assert abs(occ.sum() - 2 * nocc) < 1e-6, occ.sum()
-
-
-def test_natural_occupations_single_determinant_are_integers():
-    """A clean RKS single-determinant DM has occupations in {0, 2}."""
-    D, S = _build_clean_rks_dm(nao=8, nocc=3, seed=0)
-    occ = np.sort(np.asarray(compute_dm_natural_occupations(D, S)))
-    # 3 occupied (≈2), 5 virtual (≈0)
-    near0 = occ[occ < 1.0]
-    near2 = occ[occ >= 1.0]
-    assert np.allclose(near0, 0.0, atol=1e-6), near0
-    assert np.allclose(near2, 2.0, atol=1e-6), near2
-
-
-def test_dm_entropy_shannon_of_normalized_occupations():
-    """Reverted DESC-07 decision (2026-05-23 review): dm_entropy is the Shannon
-    entropy of the natural occupations normalized to a probability distribution
-    (the original functional form; only the DESC-11 occupation-transform
-    correctness fix was kept). For a clean RKS single determinant with ``nocc``
-    doubly-occupied orbitals (each n_i = 2, normalized p_i = 1/nocc) this equals
-    ``ln(nocc)``. It is therefore size-dependent and NOT a clean correlation
-    indicator: ``idempotency_error`` is the quantity that vanishes for a single
-    determinant (asserted here too)."""
-    nocc = 3
-    D, S = _build_clean_rks_dm(nao=8, nocc=nocc, seed=0)
-    out = compute_dm_features(D, S)
-    ent = float(out["dm_entropy"])
-    assert abs(ent - np.log(nocc)) < 1e-4, (ent, np.log(nocc))
-    # idempotency_error IS ~0 for a single determinant (the correct indicator).
-    assert abs(float(out["idempotency_error"])) < 1e-5
-
-
-def test_dm_entropy_larger_for_fractional_occupations():
-    """a DM with fractional natural occupations (correlated) must
-    give a strictly larger dm_entropy than a single determinant."""
-    D, S = _build_clean_rks_dm(nao=8, nocc=3, seed=0)
-    ent_single = float(compute_dm_features(D, S)["dm_entropy"])
-
-    # Build a correlated DM by mixing in fractional occupation of a virtual
-    # orbital: move 0.4 electrons from HOMO into LUMO. Work in the natural
-    # representation via S^{1/2}.
-    S_eigvals, S_eigvecs = np.linalg.eigh(np.asarray(S))
-    S_sqrt = S_eigvecs @ np.diag(np.sqrt(S_eigvals)) @ S_eigvecs.T
-    S_inv_sqrt = S_eigvecs @ np.diag(1.0 / np.sqrt(S_eigvals)) @ S_eigvecs.T
-    M = S_sqrt @ np.asarray(D) @ S_sqrt           # symmetric, eig = occupations
-    w, V = np.linalg.eigh(M)
-    order = np.argsort(w)
-    # indices: virtuals (~0) first, occupied (~2) last
-    homo = order[-1]
-    lumo = order[len(order) - 4]   # first virtual after 3 occupied
-    w[homo] -= 0.4
-    w[lumo] += 0.4
-    M_corr = V @ np.diag(w) @ V.T
-    D_corr = jnp.array(S_inv_sqrt @ M_corr @ S_inv_sqrt)
-    ent_corr = float(compute_dm_features(D_corr, S)["dm_entropy"])
-
-    assert ent_corr > ent_single + 1e-4, (
-        f"correlated (fractional-occupation) DM should give larger "
-        f"dm_entropy than single determinant: corr={ent_corr}, "
-        f"single={ent_single}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 2026-05-29 forensic fix: dm_entropy intensive flag
-# ---------------------------------------------------------------------------
-
-
-def test_dm_entropy_intensive_false_matches_extensive_form():
-    """Default ``intensive=False`` reproduces the extensive ln(N_occ) form
-    (pre-fix behavior; old checkpoints unpickle to this default)."""
-    nocc = 5
-    D, S = _build_clean_rks_dm(nao=10, nocc=nocc, seed=0)
-    ext = float(compute_dm_features(D, S, intensive=False)["dm_entropy"])
-    # ln(5) ≈ 1.6094: size-extensive
-    assert abs(ext - np.log(nocc)) < 1e-4, ext
-
-
-def test_dm_entropy_intensive_true_normalizes_to_unit_range():
-    """``intensive=True`` divides by ln(max(N_occ, 2)) so a clean RKS single
-    determinant gives ``dm_entropy ≈ 1`` regardless of system size."""
-    for nocc in (3, 5, 9):
-        D, S = _build_clean_rks_dm(nao=2 * nocc, nocc=nocc, seed=0)
-        intensive = float(
-            compute_dm_features(D, S, intensive=True)["dm_entropy"]
-        )
-        assert 0.95 < intensive < 1.05, (
-            f"intensive dm_entropy at nocc={nocc} should be ~1, got {intensive}"
-        )
-
-
 def test_cusp_descriptor_log_transform_off_skips_log():
     """``compute_cusp_descriptor(log_transform=False)`` feeds the raw
     weighted-Z value through tanh(·/5); ``=True`` applies the Dick XCDiff
@@ -254,22 +174,6 @@ def test_cusp_descriptor_log_transform_off_skips_log():
     assert not jnp.allclose(raw[:, 1], logd[:, 1], atol=1e-3), (
         raw[:, 1], logd[:, 1]
     )
-
-
-def test_dm_entropy_intensive_independent_of_system_size():
-    """Two clean RKS single determinants with different N_occ should give
-    the SAME intensive dm_entropy (≈ 1). Without the fix, the extensive form
-    gave a size-leaked label (ln(N_occ_a) vs ln(N_occ_b))."""
-    D_a, S_a = _build_clean_rks_dm(nao=6,  nocc=3, seed=0)
-    D_b, S_b = _build_clean_rks_dm(nao=14, nocc=7, seed=0)
-    int_a = float(compute_dm_features(D_a, S_a, intensive=True)["dm_entropy"])
-    int_b = float(compute_dm_features(D_b, S_b, intensive=True)["dm_entropy"])
-    assert abs(int_a - int_b) < 0.1, (
-        f"intensive dm_entropy should NOT depend on system size: "
-        f"nocc=3 -> {int_a}, nocc=7 -> {int_b}"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Fix: precompute_fixed_density_data passes spin-resolved DM
 # ---------------------------------------------------------------------------

@@ -401,6 +401,7 @@ def _reassemble_features(
     cusp_features: jnp.ndarray | None = None,
     n_grid: int | None = None,
     rung35_proj_ao: jnp.ndarray | None = None,
+    rung35ms_proj_ao: jnp.ndarray | None = None,
     ao_grad: jnp.ndarray | None = None,
     rho: jnp.ndarray | None = None,
     sigma: jnp.ndarray | None = None,
@@ -420,7 +421,7 @@ def _reassemble_features(
     """
     from xcquinox.alec.descriptors import (
         CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
-        MetaGGAAlphaDescriptor)
+        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor)
     if not descriptors:
         _ng = cusp_features.shape[0] if cusp_features is not None else (n_grid or 0)
         return jnp.zeros((_ng, 0))
@@ -448,6 +449,14 @@ def _reassemble_features(
                     "when descriptors include DMRung35Descriptor"
                 )
             cols.append(d.compute_from_dm(proj_ao=rung35_proj_ao, dm=dm))
+        elif isinstance(d, DMRung35MultishellDescriptor):
+            if rung35ms_proj_ao is None:
+                raise ValueError(
+                    "rung35ms_proj_ao (mol_data['rung35ms_proj_ao']) must be "
+                    "provided when descriptors include "
+                    "DMRung35MultishellDescriptor"
+                )
+            cols.append(d.compute_from_dm(proj_ao_stack=rung35ms_proj_ao, dm=dm))
         elif isinstance(d, MetaGGAAlphaDescriptor):
             if ao_grad is None or rho is None or sigma is None:
                 raise ValueError(
