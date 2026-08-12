@@ -36,7 +36,9 @@ ARCH_ORDER: Tuple[str, ...] = (
     "deep_combined_3x16", "deep_combined_attn_3x16",
     "deep_notransform_3x16", "deep_notransform_attn_3x16",
     "deep_rung35_3x16", "deep_rung35_attn_3x16", "deep_rung35only_3x16",
+    "deep_rung35ms_3x16",
     "deep_mgga_3x16", "deep_mgga_attn_3x16", "deep_rung35_mgga_3x16",
+    "deep_cusp_mgga_3x16", "deep_rung35ms_mgga_3x16",
 )
 
 _ARCH_TAB = plt.get_cmap("tab10")
@@ -52,6 +54,12 @@ ARCH_COLOR["deep_rung35only"] = "#393b79"
 ARCH_COLOR["deep_mgga"] = "#8c6d31"
 ARCH_COLOR["deep_mgga_attn"] = "#843c39"
 ARCH_COLOR["deep_rung35_mgga"] = "#7b4173"
+# v4-sweep base names (rung-3.5 multishell + the mgga stacking completions):
+# further tab20b-family hexes, each near its closest kin above (rung35only
+# blues / mgga golds / rung35_mgga purples).
+ARCH_COLOR["deep_rung35ms"] = "#6b6ecf"
+ARCH_COLOR["deep_cusp_mgga"] = "#bd9e39"
+ARCH_COLOR["deep_rung35ms_mgga"] = "#a55194"
 for _small in ARCH_ORDER[8:]:
     ARCH_COLOR[_small] = ARCH_COLOR.get(_small[: -len("_3x16")], "#333333")
 
@@ -98,7 +106,8 @@ def _arch_ingredients(arch: str) -> Tuple[bool, bool]:
         cfg = get_architecture(arch)
         names = {getattr(d, "name", None) for d in getattr(cfg, "descriptors", ())}
         has_meta = bool(getattr(cfg, "meta_gga", False)) or "metagga" in names
-        has_r35 = "rung35" in names
+        # by prefix: the registry names both `rung35` and `rung35_multishell`
+        has_r35 = any(n and n.startswith("rung35") for n in names)
         return has_meta, has_r35
     except Exception:
         return (("mgga" in arch) or ("metagga" in arch)), ("rung35" in arch)

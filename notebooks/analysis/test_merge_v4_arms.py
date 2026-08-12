@@ -68,3 +68,21 @@ def test_newest_run_wins(tmp_path):
     out = tmp_path / "merged"
     mv.build_view(tmp_path, out)
     assert (out / "checkpoints/spec_0000/completion.json").read_text() == "new"
+
+
+def test_wrapper_suite_call_uses_full_arm_basis_token():
+    """The per-arm suite call must pass the FULL arm name as its --bases token.
+
+    ``_newest_run_per_basis`` joins ``<results_root>/<domain>/<basis>/runs``
+    literally, and the wrapper's own pull target is ``$RESULTS_ROOT/$arm``
+    (full name), so a stripped token (``v4``) can never resolve -- and the
+    resulting FileNotFoundError is masked by the ``|| echo WARNING`` guard,
+    leaving every per-arm suite silently unrendered.
+    """
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "pull_and_plot_v4.sh")
+    with open(script) as fh:
+        text = fh.read()
+    suite_lines = [ln for ln in text.splitlines() if "--bases" in ln]
+    assert len(suite_lines) == 1, suite_lines
+    assert '--bases "$arm"' in suite_lines[0], suite_lines[0]

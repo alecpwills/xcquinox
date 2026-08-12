@@ -38,7 +38,7 @@ cd "$REPO"
 for arm in $ARMS; do
   if [ -d "$RESULTS_ROOT/$arm/runs" ]; then
     JAX_PLATFORMS=cpu python notebooks/analysis/make_ablation_arch_figure.py \
-        --suite --domain dfs_step7 --bases "${arm#dfs6311_grid3_}" \
+        --suite --domain dfs_step7 --bases "$arm" \
         --outroot notebooks/analysis \
       || echo "[pull-v4] WARNING: per-arm suite failed for $arm (see above)"
   else

@@ -27,12 +27,22 @@ import arch_style as A  # noqa: E402
     ("deep_mgga_3x16", A.RUNG_MGGA),         # iso-orbital alpha -> meta-GGA
     ("deep_mgga_attn_3x16", A.RUNG_MGGA),
     ("deep_rung35_mgga_3x16", A.RUNG_R35_MGGA),  # both ingredients -> combined top
+    # v4 additions; the multishell descriptor is registered as rung35_multishell,
+    # so these two pin the prefix (not exact-name) rung-3.5 detection
+    ("deep_rung35ms_3x16", A.RUNG_R35),
+    ("deep_cusp_mgga_3x16", A.RUNG_MGGA),
+    ("deep_rung35ms_mgga_3x16", A.RUNG_R35_MGGA),
     # legacy 4x32 base names (present in ARCH_ORDER, not separately registered)
     ("deep", A.RUNG_GGA),
     ("deep_combined", A.RUNG_GGA),
     ("deep_notransform", A.RUNG_GGA),
     ("deep_rung35", A.RUNG_R35),
     ("deep_mgga", A.RUNG_MGGA),
+    # v4 base names (ARCH_COLOR keys resolved via the name-token fallback);
+    # each must agree with its registered _3x16 twin above
+    ("deep_rung35ms", A.RUNG_R35),
+    ("deep_cusp_mgga", A.RUNG_MGGA),
+    ("deep_rung35ms_mgga", A.RUNG_R35_MGGA),
 ])
 def test_rung_of_expected(arch, rung):
     assert A.rung_of(arch) == rung
@@ -50,12 +60,16 @@ def test_rung_order_and_ranks():
 # Derivation matches the registry for EVERY registered arch (no stale map)
 # --------------------------------------------------------------------------- #
 def test_rung_of_matches_registry_for_all_registered_archs():
+    # Drift guard only: this recomputation mirrors the derivation, so the
+    # non-circular rung anchors are the explicit expectations in
+    # test_rung_of_expected above. rung-3.5 detection is by name PREFIX --
+    # the registry carries both `rung35` and `rung35_multishell`.
     from xcquinox.alec.config import get_architecture, list_architectures
     for name in list_architectures():
         cfg = get_architecture(name)
         desc = {getattr(d, "name", None) for d in getattr(cfg, "descriptors", ())}
         has_meta = bool(getattr(cfg, "meta_gga", False)) or "metagga" in desc
-        has_r35 = "rung35" in desc
+        has_r35 = any(n and n.startswith("rung35") for n in desc)
         expected = (A.RUNG_R35_MGGA if (has_meta and has_r35)
                     else A.RUNG_MGGA if has_meta
                     else A.RUNG_R35 if has_r35
@@ -138,6 +152,43 @@ def test_by_rung_partitions_input():
     flat = [a for r in groups for a in groups[r]]
     assert sorted(flat) == sorted(archs)
     assert groups[A.RUNG_GGA] == ["deep_3x16", "deep_cusp_3x16"]
+
+
+def test_v4_campaign_archs_all_in_arch_order_with_distinct_colors():
+    """Every arch of the three v4 sweep arms must be figure-renderable.
+
+    The suite guard (make_ablation_arch_figure.build_bh76w411_suite) raises on
+    any eval'd arch outside ARCH_ORDER, so each arm's archs must be listed with
+    a deliberate palette entry BEFORE its cells land. Arch axes quoted from
+    hpcjobs/configs/dfs_step7.dfs6311_grid3_v4{,gga,mgga2}.yaml.
+    """
+    expected_rung = {
+        # arm 1 (meta-GGA)
+        "deep_mgga_3x16": A.RUNG_MGGA,
+        "deep_mgga_attn_3x16": A.RUNG_MGGA,
+        "deep_rung35_mgga_3x16": A.RUNG_R35_MGGA,
+        # arm 2 (GGA-based)
+        "deep_3x16": A.RUNG_GGA,
+        "deep_attn_3x16": A.RUNG_GGA,
+        "deep_cusp_3x16": A.RUNG_GGA,
+        "deep_rung35_3x16": A.RUNG_R35,
+        "deep_rung35_attn_3x16": A.RUNG_R35,
+        "deep_rung35ms_3x16": A.RUNG_R35,
+        # arm 3 (mgga stacking completions)
+        "deep_cusp_mgga_3x16": A.RUNG_MGGA,
+        "deep_rung35ms_mgga_3x16": A.RUNG_R35_MGGA,
+    }
+    v4_archs = list(expected_rung)
+    assert len(v4_archs) == 11
+    for a in v4_archs:
+        assert a in A.ARCH_ORDER, a
+        assert a in A.ARCH_COLOR, a
+        # rung placement drives every rung-banded figure (gutters, spans,
+        # by_rung summaries), so the roster pins it explicitly
+        assert A.rung_of(a) == expected_rung[a], a
+    cols = [A.ARCH_COLOR[a] for a in v4_archs]
+    assert len(set(cols)) == len(cols), cols
+    assert "#333333" not in cols  # nothing fell through to the unknown-base default
 
 
 def test_rung_bands_contiguous_and_cover_all_indices():
