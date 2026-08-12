@@ -412,21 +412,45 @@ def lockfix_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
 # Live (non-hardcoded) footer baselines
 # ---------------------------------------------------------------------------
 
+# Above the ~2.5e-6 Ha cross-spec SCF noise, far below any physical artifact
+# (the c2 grid-drift class disagrees by 6e-2 Ha).
+_PBE_CONSISTENCY_TOL_HA = 1e-4
+
+
 def _first_pbe_energies(run_dir: Path,
                         eval_subdir: str = "eval_holdout") -> Dict[str, float]:
-    """PBE energy map (molecule -> Hartree) from the first spec that carries an
-    ``<eval_subdir>/per_molecule.json``. PBE is invariant to the trained NN (only
-    SCF noise ~2.5e-6 Ha across specs), so any spec serves as the baseline. The
-    best-checkpoint dir carries the SAME PBE energies, so the best figure set is
-    self-consistent reading its own subdir."""
+    """PBE energy map (molecule -> Hartree) pooled across every spec carrying
+    an ``<eval_subdir>/per_molecule.json``. PBE is invariant to the trained NN
+    (SCF noise ~2.5e-6 Ha across specs), so the specs must agree; a species
+    whose values spread beyond :data:`_PBE_CONSISTENCY_TOL_HA` indicates a
+    drifted reference (the c2 grid-drift class -- on a merged multi-arm view
+    the arms can disagree) and is EXCLUDED from the map with a printed
+    warning, so the reference baselines skip its reactions on every leg
+    instead of silently inheriting whichever spec sorts first. The
+    best-checkpoint dir carries the SAME PBE energies, so the best figure set
+    is self-consistent reading its own subdir."""
+    vals: Dict[str, List[float]] = {}
     for pm in sorted(Path(run_dir).glob(
             f"checkpoints/spec_*/{eval_subdir}/per_molecule.json")):
-        energies = {r["molecule"]: r["E_pbe"]
-                    for r in json.loads(pm.read_text())
-                    if isinstance(r.get("E_pbe"), (int, float))}
-        if energies:
-            return energies
-    return {}
+        for r in json.loads(pm.read_text()):
+            if isinstance(r.get("E_pbe"), (int, float)):
+                vals.setdefault(r["molecule"], []).append(float(r["E_pbe"]))
+    out: Dict[str, float] = {}
+    bad: Dict[str, Tuple[float, float]] = {}
+    for m, vv in vals.items():
+        lo, hi = min(vv), max(vv)
+        if hi - lo > _PBE_CONSISTENCY_TOL_HA:
+            bad[m] = (lo, hi)
+        else:
+            out[m] = vv[0]
+    if bad:
+        det = "; ".join(
+            f"{m}: {lo:.6f}..{hi:.6f} Ha "
+            f"({(hi - lo) * 627.5094740631:.2f} kcal/mol)"
+            for m, (lo, hi) in sorted(bad.items()))
+        print("  WARNING: PBE reference disagreement across specs -- excluded "
+              f"from the reference baselines pending reference repair: {det}")
+    return out
 
 
 def pbe_pool_baseline(run_dir: Path, *, eval_subdir: str = "eval_holdout",
@@ -621,16 +645,24 @@ def scan_pool_baseline(run_dir: Path, *, basis: Optional[str] = None,
     legs = [("bh76", [r for r in full_rxns if r.get("source_pool") == "bh76"]),
             ("w411", [r for r in full_rxns if r.get("source_pool") == "w411"]),
             ("combined", list(full_rxns))]
+    def _pbe_computable(rxns):
+        # Keep the SCAN and PBE legs averaging the SAME reactions: a species
+        # excluded from the PBE map (cross-spec disagreement in
+        # _first_pbe_energies) drops its reactions from BOTH legs.
+        return [r for r in rxns
+                if all(n in pbe for n in (list(r.get("reactants", []))
+                                          + list(r.get("products", []))))]
     for key, rx in legs:
-        if not rx:
+        rx_eff = _pbe_computable(rx) if pbe else rx
+        if not rx_eff:
             out[key] = float("nan")
             cov[key] = {"used": 0, "reference": 0}
             continue
-        mae, n_used, _n_drop = reaction_mae_kcalmol(scan, rx)
+        mae, n_used, _n_drop = reaction_mae_kcalmol(scan, rx_eff)
         out[key] = mae
         cov[key] = {"used": int(n_used),
-                    "reference": int(reaction_mae_kcalmol(pbe, rx)[1])
-                    if pbe else len(rx)}
+                    "reference": int(reaction_mae_kcalmol(pbe, rx_eff)[1])
+                    if pbe else len(rx_eff)}
     out["coverage"] = cov
     return out
 
@@ -1345,6 +1377,41 @@ def plot_arch_subset_heatmap(reaction_rows: List[Dict[str, Any]],
     return out_path
 
 
+def plot_arch_subset_heatmap_vs_pbe(reaction_rows: List[Dict[str, Any]],
+                                    out_path: Path, run_id: str, *,
+                                    note: str = "",
+                                    provenance: Optional[str] = None) -> Path:
+    """Figure B2 -- arch × subset_size NN/PBE MAE-ratio grid (held-out
+    reactions): diverging about 1.0, blue = the NN beats PBE on that cell's
+    strict held-out set, red = worse. The per-cell PBE MAE is computed on
+    exactly the reactions the NN was scored on, so every ratio is
+    like-for-like; missing cells stay hatched."""
+    with plt.rc_context(_STYLE):
+        archs = _heatmap_arch_axis(reaction_rows, [])
+        ss_axis = _heatmap_subset_axis(reaction_rows, [])
+        nn = reaction_mae_by_arch_subset(reaction_rows)
+        pbe = reaction_mae_by_arch_subset(reaction_rows,
+                                          key="abs_error_pbe_kcalmol")
+        ratio = {cell: nn[cell] / pbe[cell]
+                 for cell in nn if _is_num(pbe.get(cell)) and pbe[cell] > 0}
+        fig, ax = plt.subplots(figsize=(8.4, 5.6))
+        _heatmap_panel(ax, ratio, archs,
+                       title="Held-out reaction-energy MAE ratio NN/PBE "
+                             "(<1 = NN better)",
+                       cbar_label="MAE ratio NN/PBE", center=1.0,
+                       subset_sizes=ss_axis, rung_separators=True,
+                       vxc_pre_fix=_run_predates_vxc_fix(run_id))
+        fig.suptitle(f"NN-vs-PBE cell grid · {run_id}", fontsize=11)
+        fig.text(0.5, 0.028, provenance or _PROVENANCE_BASE, ha="center",
+                 fontsize=6.5, color="#777777")
+        if note:
+            fig.text(0.5, 0.006, note, ha="center", fontsize=6.5, color="#a33")
+        fig.tight_layout(rect=(0, 0.06, 1, 0.95))
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+    return out_path
+
+
 # ---------------------------------------------------------------------------
 # Figure C -- per-arch MAE bars
 # ---------------------------------------------------------------------------
@@ -1592,15 +1659,39 @@ def plot_rung_summary(rows: List[Dict[str, Any]], out_path: Path, run_id: str, *
 # Figure D (bonus) -- MAE vs subset_size, one line per arch
 # ---------------------------------------------------------------------------
 
+_RUNG_LS: Dict[str, str] = {
+    arch_style.RUNG_GGA: "-", arch_style.RUNG_MGGA: "--",
+    arch_style.RUNG_R35: "-.", arch_style.RUNG_R35_MGGA: ":",
+}
+
+
+def _rung_linestyles(archs: List[str]) -> Dict[str, str]:
+    """One linestyle per Jacob's-ladder rung (solid GGA through dotted
+    rung-3.5+meta-GGA) so a multi-rung frame separates the families without
+    leaning on color alone."""
+    return {a: _RUNG_LS.get(arch_style.rung_of(a), "-") for a in archs}
+
+
 def _mae_vs_subset_panel(ax, mae_map: Dict[Tuple[str, int], float],
-                         archs: List[str], *, title: str) -> None:
+                         archs: List[str], *, title: str,
+                         pbe_line: Optional[float] = None,
+                         scan_line: Optional[float] = None,
+                         scan_suffix: str = "",
+                         ls_for: Optional[Dict[str, str]] = None) -> None:
     for a in archs:
         pts = sorted((ss, v) for (aa, ss), v in mae_map.items() if aa == a)
         if not pts:
             continue
         xx, yy = zip(*pts)
-        ax.plot(xx, yy, marker="o", ms=4, linewidth=1.3, color=ARCH_COLOR[a],
-                label=a)
+        ax.plot(xx, yy, marker="o", ms=4, linewidth=1.3,
+                color=ARCH_COLOR.get(a, "0.5"),
+                ls=(ls_for or {}).get(a, "-"), label=a)
+    if pbe_line is not None and math.isfinite(pbe_line):
+        ax.axhline(pbe_line, ls="--", color="0.35", lw=1.2,
+                   label=f"PBE full-pool MAE ({pbe_line:.1f})")
+    if scan_line is not None and math.isfinite(scan_line):
+        ax.axhline(scan_line, ls=":", color="#555555", lw=1.4,
+                   label=f"SCAN full-pool MAE ({scan_line:.1f}{scan_suffix})")
     ax.set_yscale("log")
     ax.set_xlabel("training subset_size")
     ax.set_ylabel("MAE (kcal/mol, log)")
@@ -1611,17 +1702,30 @@ def _mae_vs_subset_panel(ax, mae_map: Dict[Tuple[str, int], float],
 def plot_mae_vs_subset(reaction_rows: List[Dict[str, Any]],
                        insample_rows: List[Dict[str, Any]],
                        out_path: Path, run_id: str, note: str = "",
-                       provenance: Optional[str] = None) -> Path:
-    """Figure D -- learning curves: MAE vs subset_size, one line per arch."""
+                       provenance: Optional[str] = None, *,
+                       pbe_baseline: Optional[Dict[str, Any]] = None,
+                       scan_baseline: Optional[Dict[str, Any]] = None) -> Path:
+    """Figure D -- learning curves: MAE vs subset_size, one line per arch,
+    rung-ordered with one linestyle per Jacob's-ladder rung. ``pbe_baseline``
+    / ``scan_baseline`` (pool-baseline dicts) draw the dashed-PBE and
+    dotted-SCAN full-pool reference lines on the held-out panel; the SCAN
+    line obeys the coverage gate (:func:`scan_line_value`)."""
     with plt.rc_context(_STYLE):
-        archs = [a for a in ARCH_ORDER
+        archs = [a for a in _heatmap_arch_axis(reaction_rows, insample_rows)
                  if a in _archs_present(reaction_rows)
                  or a in _archs_present(insample_rows)]
+        ls_for = _rung_linestyles(archs)
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.4))
+        pbe_c = (pbe_baseline or {}).get("combined")
+        held_pbe = float(pbe_c) if _is_num(pbe_c) else None
+        held_scan, held_scan_sfx = scan_line_value(scan_baseline, "combined")
         _mae_vs_subset_panel(ax1, reaction_mae_by_arch_subset(reaction_rows),
-                             archs, title="Held-out reaction-energy MAE")
+                             archs, title="Held-out reaction-energy MAE",
+                             pbe_line=held_pbe, scan_line=held_scan,
+                             scan_suffix=held_scan_sfx, ls_for=ls_for)
         _mae_vs_subset_panel(ax2, ae_mae_by_arch_subset(insample_rows),
-                             archs, title="In-sample atomization-energy MAE")
+                             archs, title="In-sample atomization-energy MAE",
+                             ls_for=ls_for)
         ax1.legend(fontsize=6, ncol=2)
         fig.suptitle(f"Error vs training-subset size · {run_id}", fontsize=11)
         if note:
@@ -6219,7 +6323,7 @@ def build_all(run_dir: Path, outdir: Path,
     # SCAN meta-GGA baseline: all-NaN (no SCAN line) unless a precomputed cache
     # sits by the run (precompute_scan_pool.py); older runs render as before.
     try:
-        scan_baseline = scan_pool_baseline(run_dir)
+        scan_baseline = scan_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:
         print(f"  (SCAN baseline unavailable: {exc})")
         scan_baseline = {"bh76": float("nan"), "w411": float("nan"),
@@ -6248,12 +6352,16 @@ def build_all(run_dir: Path, outdir: Path,
         reaction_rows, insample_rows, outdir / "ablation_arch_subset_heatmap.png",
         run_id, n_trained=n_trained, n_total=n_total, n_holdout=n_holdout,
         note=note, provenance=prov))
+    written.append(plot_arch_subset_heatmap_vs_pbe(
+        reaction_rows, outdir / "ablation_arch_subset_heatmap_vs_pbe.png",
+        run_id, note=note, provenance=prov))
     written.append(plot_mae_by_arch(
         reaction_rows, insample_rows, outdir / "ablation_mae_by_arch.png", run_id,
         note=note, provenance=prov, scan_baseline=scan_baseline))
     written.append(plot_mae_vs_subset(
         reaction_rows, insample_rows, outdir / "ablation_mae_vs_subset.png", run_id,
-        note=note, provenance=prov))
+        note=note, provenance=prov, pbe_baseline=baseline,
+        scan_baseline=scan_baseline))
     written.append(plot_ae_parity(
         reaction_rows, outdir / "ablation_ae_parity.png", run_id, note=note,
         provenance=prov))

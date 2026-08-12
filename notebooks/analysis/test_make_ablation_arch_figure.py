@@ -240,12 +240,117 @@ def test_plot_ae_parity_renders(tmp_path):
     assert _png_ok(out)
 
 
-def test_build_all_writes_five_figures(tmp_path):
+def test_build_all_writes_six_figures(tmp_path):
     run = _make_run_dir(tmp_path)
     written = fig.build_all(run, tmp_path / "out")
-    assert len(written) == 5
+    assert len(written) == 6
     assert all(_png_ok(p) for p in written)
     assert (tmp_path / "out" / "ablation_ae_parity.png").is_file()
+    # the NN/PBE ratio heatmap rides along with the raw-MAE grid
+    assert (tmp_path / "out" / "ablation_arch_subset_heatmap_vs_pbe.png").is_file()
+
+
+def test_mae_vs_subset_panel_draws_reference_lines():
+    import matplotlib.pyplot as plt
+    f, ax = plt.subplots()
+    fig._mae_vs_subset_panel(ax, {("deep", 1): 5.0}, ["deep"], title="t",
+                             pbe_line=11.5, scan_line=4.5, scan_suffix="")
+    labels = [ln.get_label() for ln in ax.lines]
+    assert any("PBE" in l for l in labels), labels
+    assert any("SCAN" in l for l in labels), labels
+    plt.close(f)
+
+
+def test_mae_vs_subset_accepts_baselines_and_renders(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rxn = fig.collect_holdout_reaction_rows(run)
+    ae = fig.collect_insample_ae_rows(run)
+    pbe = {"bh76": 8.0, "w411": 13.7, "combined": 11.8}
+    scan = {"bh76": 6.0, "w411": 3.8, "combined": 4.5,
+            "coverage": {"combined": {"used": 10, "reference": 10}}}
+    out = fig.plot_mae_vs_subset(rxn, ae, tmp_path / "curves.png", _STAMP,
+                                 pbe_baseline=pbe, scan_baseline=scan)
+    assert _png_ok(out)
+
+
+def test_rung_linestyles_one_style_per_rung():
+    ls = fig._rung_linestyles(["deep_3x16", "deep_cusp_3x16", "deep_mgga_3x16",
+                               "deep_rung35_3x16", "deep_rung35_mgga_3x16"])
+    assert ls["deep_3x16"] == ls["deep_cusp_3x16"]  # same rung -> same style
+    styles = {ls["deep_3x16"], ls["deep_mgga_3x16"], ls["deep_rung35_3x16"],
+              ls["deep_rung35_mgga_3x16"]}
+    assert len(styles) == 4  # distinct style per rung
+
+
+def test_build_all_passes_eval_subdir_to_scan_baseline(tmp_path, monkeypatch):
+    run = _make_run_dir(tmp_path)
+    seen = {}
+
+    def _rec(run_dir, **kw):
+        seen.update(kw)
+        return {"bh76": float("nan"), "w411": float("nan"),
+                "combined": float("nan")}
+
+    monkeypatch.setattr(fig, "scan_pool_baseline", _rec)
+    fig.build_all(run, tmp_path / "out")
+    assert seen.get("eval_subdir") == "eval_holdout"
+
+
+def test_heatmap_vs_pbe_renders(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rxn = fig.collect_holdout_reaction_rows(run)
+    out = fig.plot_arch_subset_heatmap_vs_pbe(rxn, tmp_path / "heat_ratio.png",
+                                              _STAMP)
+    assert _png_ok(out)
+
+
+def _write_pm(run, spec, entries, eval_subdir="eval_holdout"):
+    import json as _json
+    d = run / "checkpoints" / spec / eval_subdir
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "per_molecule.json").write_text(_json.dumps(entries))
+
+
+def test_pbe_energies_exclude_cross_spec_disagreement(tmp_path, capsys):
+    # The c2 class of artifact: one spec's (arm's) PBE reference drifted. The
+    # map must EXCLUDE the species (never silently inherit whichever spec
+    # sorts first) and say so.
+    run = tmp_path / "run_x"
+    _write_pm(run, "spec_0000", [{"molecule": "h2", "E_pbe": -1.17},
+                                 {"molecule": "c2", "E_pbe": -75.816711949}])
+    _write_pm(run, "spec_0001", [{"molecule": "h2", "E_pbe": -1.17},
+                                 {"molecule": "c2", "E_pbe": -75.757329256}])
+    pbe = fig._first_pbe_energies(run)
+    assert "h2" in pbe and "c2" not in pbe
+    assert "c2" in capsys.readouterr().out
+
+
+def test_pbe_energies_tolerate_scf_noise(tmp_path, capsys):
+    run = tmp_path / "run_x"
+    _write_pm(run, "spec_0000", [{"molecule": "h2", "E_pbe": -1.17}])
+    _write_pm(run, "spec_0001", [{"molecule": "h2", "E_pbe": -1.17 + 2.5e-6}])
+    pbe = fig._first_pbe_energies(run)
+    assert pbe["h2"] == pytest.approx(-1.17, abs=1e-5)
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_scan_baseline_pool_restricted_to_pbe_computable(tmp_path):
+    # A species excluded from the PBE map (cross-spec disagreement) must drop
+    # its reactions from BOTH legs, keeping the SCAN and PBE lines averaging
+    # the same reactions.
+    rxns = [
+        {"name": "r1", "reactants": ["a"], "products": ["b"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.01,
+         "source_pool": "w411"},
+        {"name": "r2", "reactants": ["c2"], "products": ["b"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.02,
+         "source_pool": "w411"},
+    ]
+    scan = {"a": -1.0, "b": -0.99, "c2": -75.8}
+    pbe = {"a": -1.0, "b": -0.985}
+    out = fig.scan_pool_baseline(tmp_path, _loader=lambda: (None, rxns),
+                                 _energies=scan, _pbe_energies=pbe)
+    assert out["coverage"]["combined"] == {"used": 1, "reference": 1}
 
 
 # ---------------------------------------------------------------------------

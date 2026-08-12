@@ -34,6 +34,21 @@ fi
 
 cd "$REPO"
 
+# --- seed each arm's newest run dir with the local SCAN caches --------------
+# The caches are model-independent constants for the production identity
+# (basis/grid/DF); the figure loaders search the run-dir root, and the merged
+# view propagates them from the arm runs. Canonical local copy mirrors the
+# cluster dir /gpfs/scratch/awills/scan_pool_6311ppg3df2pd_g3.
+SCAN_CACHE_DIR="$HOME/Documents/Research/xcquinox-results/scan_pool_6311ppg3df2pd_g3"
+if compgen -G "$SCAN_CACHE_DIR/scan_pool_*.json" > /dev/null; then
+  for arm in $ARMS; do
+    newest=$(ls -d "$RESULTS_ROOT/$arm/runs"/run_*/ 2>/dev/null | sort | tail -1)
+    [ -n "$newest" ] && cp -f "$SCAN_CACHE_DIR"/scan_pool_*.json "$newest/"
+  done
+else
+  echo "[pull-v4] NOTE: no SCAN caches under $SCAN_CACHE_DIR (SCAN lines will be omitted)"
+fi
+
 # --- per-arm figure suites (final-step + val-best variants each) ------------
 for arm in $ARMS; do
   if [ -d "$RESULTS_ROOT/$arm/runs" ]; then
@@ -47,7 +62,8 @@ for arm in $ARMS; do
 done
 
 # --- merged cross-arm view: one directory of renumbered symlinks, then the
-#     full figure build on it (every collector works on the view unchanged) --
+#     FULL figure families on it (incl. the SCAN-line set), final-step AND
+#     val-best variants -- the one-plot-all-arms primary output ---------------
 JAX_PLATFORMS=cpu python notebooks/analysis/merge_v4_arms.py \
     --results-root "$RESULTS_ROOT"
 RC=$?
@@ -61,6 +77,14 @@ import make_ablation_arch_figure as fig
 view = Path.home() / "Documents/Research/xcquinox-results/runs/dfs_step7/merged_v4_arms"
 out = Path("notebooks/analysis/figures_dfs6311_v4_merged")
 written = fig.build_all(view, out)
+written += fig.build_density_energy_figures(view, out)
+if fig.figure_cell_coverage(view, eval_subdir="eval_holdout_val_best")["n_cells"]:
+    outv = Path("notebooks/analysis/figures_dfs6311_v4_merged_val_best")
+    written += fig.build_all(view, outv, eval_subdir="eval_holdout_val_best")
+    written += fig.build_density_energy_figures(
+        view, outv, eval_subdir="eval_holdout_val_best")
+else:
+    print("[pull-v4] merged val-best skipped (no val-best eval coverage yet)")
 print(f"[pull-v4] merged view: {len(written)} figures -> {out}")
 EOF
 else

@@ -5,8 +5,14 @@ one-command wrapper -- `bash notebooks/analysis/pull_and_plot_v4.sh` pulls
 every arm that exists on the cluster, renders the per-arm figure suites, and
 builds the merged cross-arm view (`merge_v4_arms.py`: renumbered spec
 symlinks + a composed manifest, so every collector works unchanged) into
-`notebooks/analysis/figures_dfs6311_v4_merged/`. Safe at any level of
-completion; re-run it as more cells land. `--plot-only` skips the pull.
+`notebooks/analysis/figures_dfs6311_v4_merged/` (+ `_val_best/`), now with
+the full figure families -- the merged set is the primary one-plot-all-arms
+product, with PBE and SCAN reference lines on the energy figures. Safe at
+any level of completion; re-run it as more cells land. `--plot-only` skips
+the pull. SCAN reference lines need the SCAN caches in
+`~/Documents/Research/xcquinox-results/scan_pool_6311ppg3df2pd_g3/`
+(mirror of the cluster dir of the same name; the wrapper seeds each arm's
+newest run dir from there, and the merged view propagates them).
 
 **Purpose:** a step-by-step, copy-paste runbook -- you can follow it mechanically. Run the blocks in order; each step says how to verify it
 worked before moving on. The only step that can require a *code* change is the

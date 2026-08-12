@@ -313,3 +313,28 @@ nonzero gradients (executed in the v4 batch review).
 **Trigger:** run the review's `scratch/review_train/m1a_full_loss_fd.py`
 harness for those two cases on a cluster node (RAM is the binding
 constraint, not correctness).
+
+## 16. GGA-arm c2 PBE eval reference regeneration (drift detected 2026-08-12)
+
+**What:** the v4 GGA arm (`dfs6311_grid3_v4gga`, `run_20260810T202813Z`)
+carries a drifted c2 PBE reference energy in every completed spec's held-out
+eval: E_pbe(c2) = -75.757329256 Ha, vs -75.816711949 Ha in both the meta-GGA
+arm and the trusted post-repair v3 run (+37.26 kcal/mol; within-arm spread
+<= 3.6e-12 Ha). The c2 non-convergence pathology of the plain PBE kernel is
+the established mechanism (`hpcjobs/dfs6311_c2_ref_probe.py`); the drifted
+value entered whatever per-run PBE cache the arm's eval consumed. Affected:
+the arm's per_reaction/test_set PBE comparison columns on c2-containing
+reactions and the arm-local PBE baselines (NN energies untouched).
+
+**Already known:** no current cell's beats-PBE verdict flips (nearest cell
+0.58 kcal/mol from the affected band). The figure layer excludes c2 from the
+cross-arm reference baselines with a printed warning
+(`_first_pbe_energies` consistency check, 1e-4 Ha tolerance), and both the
+PBE and SCAN reference legs skip its reactions symmetrically, so merged
+figures are deterministic in the meantime.
+
+**Trigger:** when train array 2116743 drains, locate the arm's PBE eval
+cache for c2, delete it TOGETHER WITH its `_intermediates/` entries
+(deletion alone re-drifts; see the probe script header), re-run the affected
+specs' held-out evals, and confirm the figure-layer disagreement warning no
+longer fires on a fresh pull.

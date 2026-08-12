@@ -45,6 +45,21 @@ def newest_run(base_dir: Path) -> Path | None:
     return candidates[-1] if candidates else None
 
 
+_IDENTITY_KEYS = ("basis:", "density_fit:", "grid_level:")
+
+
+def _config_identity(cfg: Path):
+    """The production-identity lines of a resolved_config.yaml (basis /
+    density_fit / grid_level), or None when the file is absent/unreadable."""
+    try:
+        lines = cfg.read_text().splitlines()
+    except OSError:
+        return None
+    return tuple(next((ln.strip() for ln in lines
+                       if ln.strip().startswith(k)), None)
+                 for k in _IDENTITY_KEYS)
+
+
 def _arm_manifest_cells(run: Path) -> dict:
     """{original_index: cell} from the arm's manifest.json (empty if absent)."""
     mpath = run / "manifest.json"
@@ -93,6 +108,25 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
         # Keep one provenance breadcrumb per arm.
         with open(out_dir / "MERGED_ARMS.txt", "a") as f:
             f.write(f"{base}\t{run.name}\t{len(spec_dirs)} specs\n")
+        # Propagate the run-identity + SCAN-cache files the figure loaders
+        # resolve against the run-dir root (the arms share one production
+        # identity, so the first copy wins): without resolved_config.yaml the
+        # basis label degrades to "unknown" and the SCAN reference lines never
+        # draw on the merged figures. The view is wiped on every rebuild, so
+        # these must be copied here rather than dropped in by hand. Later arms
+        # are checked against the view's identity -- a mismatched arm would
+        # make the propagated caches/labels silently wrong for it.
+        arm_id = _config_identity(run / "resolved_config.yaml")
+        view_id = _config_identity(out_dir / "resolved_config.yaml")
+        if view_id is not None and arm_id is not None and arm_id != view_id:
+            print(f"[merge] WARNING: {base} {run.name} production identity "
+                  f"{arm_id} differs from the view's {view_id} -- the "
+                  "propagated SCAN caches/labels may not apply to this arm")
+        for src in [run / "resolved_config.yaml",
+                    *sorted(run.glob("scan_pool_*.json"))]:
+            dst = out_dir / src.name
+            if src.is_file() and not dst.exists():
+                shutil.copy2(src, dst)
     (out_dir / "manifest.json").write_text(json.dumps(
         {"n_specs": idx, "specs": merged_specs,
          "merged_from": [b for b, (r, _n) in report.items() if r]}, indent=1))
