@@ -722,6 +722,99 @@ def test_wtmad2_pbe_by_arch_subset_cell_restricted(tmp_path):
     assert by_cell[("deep", 1)] != pytest.approx(by_cell[("deep", 2)])
 
 
+def test_scan_by_cell_reductions_gate_per_cell():
+    # Per-cell SCAN anchors reduce exactly the cell's rows, with the 90%
+    # coverage floor applied PER CELL: a thinly-covered cell gets None.
+    rows = [
+        {"arch": "deep", "subset_size": 1, "pool": "bh76", "name": "r1",
+         "ref_kcalmol": 10.0, "abs_error_pbe_kcalmol": 2.0,
+         "abs_error_nn_kcalmol": 1.0},
+        {"arch": "deep", "subset_size": 2, "pool": "bh76", "name": "r1",
+         "ref_kcalmol": 10.0, "abs_error_pbe_kcalmol": 2.0,
+         "abs_error_nn_kcalmol": 1.0},
+        {"arch": "deep", "subset_size": 2, "pool": "bh76", "name": "r2",
+         "ref_kcalmol": 10.0, "abs_error_pbe_kcalmol": 2.0,
+         "abs_error_nn_kcalmol": 1.0},
+    ]
+    errs = {"r1": 3.0}      # r2 uncovered -> ss2 coverage 1/2 < 0.9
+    wt = fig.wtmad2_scan_by_cell(rows, errs)
+    assert wt[("deep", 1)] == pytest.approx(
+        fig.wtmad2_scan_baseline(rows[:1], errs)[0])
+    assert wt.get(("deep", 2)) is None or ("deep", 2) not in wt
+    mae = fig.scan_reaction_mae_by_cell(rows, errs)
+    assert mae[("deep", 1)] == pytest.approx(3.0)
+    assert ("deep", 2) not in mae
+
+
+def test_scan_density_by_cell_gates_per_cell():
+    hd = [
+        {"arch": "deep", "subset_size": 1, "molecule": "HO",
+         "density_rmse": 1e-4, "density_rmse_pbe": 8e-4},
+        {"arch": "deep", "subset_size": 2, "molecule": "HO",
+         "density_rmse": 1e-4, "density_rmse_pbe": 8e-4},
+        {"arch": "deep", "subset_size": 2, "molecule": "CH4",
+         "density_rmse": 2e-4, "density_rmse_pbe": 3e-4},
+    ]
+    recs = {"HO": {"density_rmse_scan": 2e-4}}   # CH4 uncovered
+    out = fig.scan_density_by_cell(hd, recs)
+    assert out[("deep", 1)] == pytest.approx(2e-4)
+    assert ("deep", 2) not in out
+
+
+def test_beats_scan_uses_cell_matched_anchor():
+    # Same misgrading class as the PBE anchors: a cell below the pooled SCAN
+    # ED but above its own-rows SCAN ED must not read "beats SCAN".
+    e_cells = {("deep", 26): 3.0}
+    d_cells = {("deep", 26): 2.0e-4}
+    s = fig.combined_ed_by_cell(
+        e_cells, 8.0, d_cells, 2.4e-4,
+        e_scan=6.0, d_scan=2.4e-4,
+        e_scan_by_cell={("deep", 26): 2.0},
+        d_scan_by_cell={("deep", 26): 1.5e-4})
+    c = s["cells"][("deep", 26)]
+    assert c["ED"] < s["ed_scan"]
+    assert fig._is_num(c.get("ed_scan_cell")) and c["ed_scan_cell"] < c["ED"]
+    assert c["beats_scan"] is False
+    # pooled fallback keeps prior semantics when no cell legs are given
+    s2 = fig.combined_ed_by_cell(e_cells, 8.0, d_cells, 2.4e-4,
+                                 e_scan=6.0, d_scan=2.4e-4)
+    assert s2["cells"][("deep", 26)]["beats_scan"] is True
+    assert s2["cells"][("deep", 26)]["ed_scan_cell"] is None
+
+
+def test_ed_csv_carries_scan_cell_anchor_column(tmp_path):
+    summary = {"gamma": 1000.0, "e_pbe": 8.0, "d_pbe": 2e-4, "ed_pbe": 8.0,
+               "e_scan": 4.0, "d_scan": 1.5e-4, "ed_scan": 3.5,
+               "cells": {("deep", 1): {"E": 5.0, "D": 2e-4, "gammaD": 0.2,
+                                       "ED": 4.0, "beats_pbe": False,
+                                       "beats_scan": False,
+                                       "ed_pbe_cell": 3.5,
+                                       "ed_scan_cell": 3.2}}}
+    out = fig.write_combined_ed_csv({"wtmad2": summary}, tmp_path / "ed.csv",
+                                    n_reactions={("deep", 1): 10},
+                                    n_density={("deep", 1): 5})
+    import csv as _csv
+    row = next(_csv.DictReader(out.open()))
+    assert row["ED_scan_cell_kcalmol"] == "3.2"
+
+
+def test_grouped_bars_scan_cell_ticks(tmp_path):
+    import matplotlib.pyplot as plt
+    metric = {("deep", 2): 5.0}
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, metric, ["deep"], [2],
+                               pbe_line=8.0, title="t",
+                               scan_line=6.0,
+                               scan_by_cell={("deep", 2): 4.5})
+        labels = {c.get_label() for c in ax.collections}
+        assert "SCAN (cell rows)" in labels, labels
+        lines = {ln.get_label() for ln in ax.lines}
+        assert "SCAN (pooled)" in lines, lines
+    finally:
+        plt.close(f)
+
+
 def test_beats_pbe_uses_cell_matched_anchor():
     # A cell below the pooled union anchor but above its own-rows anchor must
     # NOT read "beats PBE" (the deep_3x16 ss26 flip class). The verdict
@@ -2363,7 +2456,7 @@ def test_write_combined_ed_csv_columns_and_legs(tmp_path):
         "E_kcalmol", "D_rmse", "gamma", "gammaD_kcalmol", "ED_kcalmol",
         "E_pbe_kcalmol", "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
         "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol", "beats_scan",
-        "ED_pbe_cell_kcalmol"}
+        "ED_pbe_cell_kcalmol", "ED_scan_cell_kcalmol"}
     # absent SCAN legs write as EMPTY cells, never the string "None"
     assert all(r["ED_scan_kcalmol"] == "" and r["beats_scan"] == ""
                for r in rd)

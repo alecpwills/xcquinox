@@ -2751,6 +2751,78 @@ def scan_reaction_mae_baseline(rows: List[Dict[str, Any]],
             len(errs), n_ref)
 
 
+def wtmad2_scan_by_cell(rows: List[Dict[str, Any]],
+                        scan_errors: Optional[Dict[str, float]],
+                        scale: float = _GMTKN55_SCALE
+                        ) -> Dict[Tuple[str, int], float]:
+    """Per-cell SCAN 2-subset WTMAD-2 over exactly the reactions that cell
+    scored, coverage-gated PER CELL at :data:`_SCAN_COVERAGE_FLOOR` -- the
+    SCAN twin of :func:`wtmad2_pbe_by_arch_subset`. Cells whose surviving
+    rows the cache covers too thinly are absent (callers fall back to the
+    pooled comparator)."""
+    out: Dict[Tuple[str, int], float] = {}
+    by_cell: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+    for r in rows:
+        a, s = r.get("arch"), r.get("subset_size")
+        if a is None or s is None:
+            continue
+        by_cell.setdefault((a, s), []).append(r)
+    for cell, cell_rows in by_cell.items():
+        v, used, ref = wtmad2_scan_baseline(cell_rows, scan_errors, scale)
+        if _is_num(v) and ref and (used / ref) >= _SCAN_COVERAGE_FLOOR:
+            out[cell] = float(v)
+    return out
+
+
+def scan_reaction_mae_by_cell(rows: List[Dict[str, Any]],
+                              scan_errors: Optional[Dict[str, float]]
+                              ) -> Dict[Tuple[str, int], float]:
+    """Per-cell SCAN reaction MAE over exactly the cell's scored reactions,
+    coverage-gated per cell -- the MAE-leg twin of
+    :func:`wtmad2_scan_by_cell`."""
+    out: Dict[Tuple[str, int], float] = {}
+    by_cell: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+    for r in rows:
+        a, s = r.get("arch"), r.get("subset_size")
+        if a is None or s is None:
+            continue
+        by_cell.setdefault((a, s), []).append(r)
+    for cell, cell_rows in by_cell.items():
+        v, used, ref = scan_reaction_mae_baseline(cell_rows, scan_errors)
+        if _is_num(v) and ref and (used / ref) >= _SCAN_COVERAGE_FLOOR:
+            out[cell] = float(v)
+    return out
+
+
+def scan_density_by_cell(hd_rows: List[Dict[str, Any]],
+                         records: Optional[Dict[str, Dict[str, Any]]],
+                         pbe_table: Optional[Dict[str, Dict[str, float]]]
+                         = None, *, nn_key: str = "density_rmse",
+                         pbe_key: str = "density_rmse_pbe",
+                         _pbe_mol: Optional[Dict[str, float]] = None
+                         ) -> Dict[Tuple[str, int], float]:
+    """Per-cell SCAN density anchor over exactly the species each cell's PBE
+    density anchor averages (finite ``nn_key`` rows present in the PBE map),
+    coverage-gated per cell via :func:`scan_density_line` -- the SCAN twin
+    of :func:`pbe_density_by_cell`."""
+    pbe_mol = (_pbe_mol if _pbe_mol is not None
+               else _pbe_density_map(hd_rows, pbe_table, key=pbe_key))
+    by_cell: Dict[Tuple[str, int], set] = {}
+    for r in hd_rows:
+        a, s = r.get("arch"), r.get("subset_size")
+        if a is None or s is None or not _is_num(r.get(nn_key)):
+            continue
+        m = r.get("molecule")
+        if m in pbe_mol:
+            by_cell.setdefault((a, s), set()).add(m)
+    out: Dict[Tuple[str, int], float] = {}
+    for cell, mols in by_cell.items():
+        v = scan_density_line(records, mols, key=pbe_key)
+        if _is_num(v):
+            out[cell] = float(v)
+    return out
+
+
 def collect_insample_density_rows(run_dir: Path) -> List[Dict[str, Any]]:
     """In-sample density-vs-CCSD errors from ``eval/per_molecule.json``: trained
     multi-atom species carrying a finite ``density_rmse`` (atoms are skipped at
@@ -3071,26 +3143,28 @@ def _harmonic_mean(a: float, b: float) -> float:
     return 2.0 / (1.0 / a + 1.0 / b)
 
 
-def _cell_pbe_ed(cell: Tuple[str, int], gamma: float, ed_pbe: float,
-                 e_pbe_by_cell: Optional[Dict[Tuple[str, int], float]],
-                 d_pbe_by_cell: Optional[Dict[Tuple[str, int], float]]
-                 ) -> Tuple[float, Optional[float]]:
-    """``(verdict anchor, ed_pbe_cell-or-None)`` for one cell: the harmonic
-    ED of the CELL-MATCHED PBE anchors under the summary's gamma when both
-    legs are available and positive, else the pooled ``ed_pbe`` fallback.
-    Cells score training-subset-dependent reaction/species subsets, so a
-    beats-PBE verdict against the pooled anchor misgrades cells whose own
-    subset is easier or harder for PBE than the union."""
-    if e_pbe_by_cell is None or d_pbe_by_cell is None:
-        return ed_pbe, None
-    e_c = e_pbe_by_cell.get(cell)
-    d_c = d_pbe_by_cell.get(cell)
+def _cell_pbe_ed(cell: Tuple[str, int], gamma: float,
+                 ed_pooled: Optional[float],
+                 e_by_cell: Optional[Dict[Tuple[str, int], float]],
+                 d_by_cell: Optional[Dict[Tuple[str, int], float]]
+                 ) -> Tuple[Optional[float], Optional[float]]:
+    """``(verdict anchor, ed_cell-or-None)`` for one cell of a reference
+    functional: the harmonic ED of the CELL-MATCHED legs under the summary's
+    gamma when both are available and positive, else the pooled fallback
+    (which may itself be None -- comparator withdrawn). Cells score
+    training-subset-dependent reaction/species subsets, so a verdict against
+    the pooled anchor misgrades cells whose own subset is easier or harder
+    for the reference than the union. Shared by the PBE and SCAN legs."""
+    if e_by_cell is None or d_by_cell is None:
+        return ed_pooled, None
+    e_c = e_by_cell.get(cell)
+    d_c = d_by_cell.get(cell)
     if (_is_num(e_c) and float(e_c) > 0.0
             and _is_num(d_c) and float(d_c) > 0.0):
         ed_c = _harmonic_mean(float(e_c), gamma * float(d_c))
         if ed_c > 0.0:
             return ed_c, ed_c
-    return ed_pbe, None
+    return ed_pooled, None
 
 
 def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
@@ -3102,6 +3176,10 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
                         e_pbe_by_cell: Optional[
                             Dict[Tuple[str, int], float]] = None,
                         d_pbe_by_cell: Optional[
+                            Dict[Tuple[str, int], float]] = None,
+                        e_scan_by_cell: Optional[
+                            Dict[Tuple[str, int], float]] = None,
+                        d_scan_by_cell: Optional[
                             Dict[Tuple[str, int], float]] = None
                         ) -> Dict[str, Any]:
     """DFS Eq. 21 ED per (arch, subset_size) cell (kcal/mol), NN vs PBE.
@@ -3125,6 +3203,10 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
     ``beats_pbe`` verdict is then judged against ``ed_pbe_cell`` (stored on
     the cell, under the same gamma) instead of the pooled anchor, which over-
     or under-states PBE on cells whose scored subset differs from the union.
+    ``e_scan_by_cell`` / ``d_scan_by_cell`` are the SCAN twins behind
+    ``beats_scan`` / ``ed_scan_cell`` -- the pooled SCAN comparator carries
+    the same misgrading (on the current data it understates SCAN on every
+    cell's surviving set).
     """
     if not (_is_num(e_pbe) and e_pbe > 0.0):
         raise ValueError(
@@ -3146,12 +3228,15 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
         ed = _harmonic_mean(float(e), gamma * float(d))
         anchor, ed_pbe_cell = _cell_pbe_ed(cell, gamma, ed_pbe,
                                            e_pbe_by_cell, d_pbe_by_cell)
+        s_anchor, ed_scan_cell = _cell_pbe_ed(cell, gamma, ed_scan,
+                                              e_scan_by_cell, d_scan_by_cell)
         cells[cell] = {"E": float(e), "D": float(d),
                        "gammaD": gamma * float(d), "ED": ed,
                        "beats_pbe": bool(ed < anchor),
                        "ed_pbe_cell": ed_pbe_cell,
-                       "beats_scan": (bool(ed < ed_scan)
-                                      if ed_scan is not None else None)}
+                       "ed_scan_cell": ed_scan_cell,
+                       "beats_scan": (bool(ed < s_anchor)
+                                      if s_anchor is not None else None)}
     return {"gamma": gamma, "gamma_mode": "self_calibrated",
             "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
             "ed_pbe": ed_pbe,
@@ -3202,6 +3287,10 @@ def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
                             e_pbe_by_cell: Optional[
                                 Dict[Tuple[str, int], float]] = None,
                             d_pbe_by_cell: Optional[
+                                Dict[Tuple[str, int], float]] = None,
+                            e_scan_by_cell: Optional[
+                                Dict[Tuple[str, int], float]] = None,
+                            d_scan_by_cell: Optional[
                                 Dict[Tuple[str, int], float]] = None
                             ) -> Dict[str, Any]:
     """DFS Eq. 21 ED per cell with an EXTERNALLY FIXED gamma (the Letter's
@@ -3237,12 +3326,15 @@ def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
         ed = _harmonic_mean(float(e), gamma * float(d))
         anchor, ed_pbe_cell = _cell_pbe_ed(cell, float(gamma), ed_pbe,
                                            e_pbe_by_cell, d_pbe_by_cell)
+        s_anchor, ed_scan_cell = _cell_pbe_ed(cell, float(gamma), ed_scan,
+                                              e_scan_by_cell, d_scan_by_cell)
         cells[cell] = {"E": float(e), "D": float(d),
                        "gammaD": gamma * float(d), "ED": ed,
                        "beats_pbe": bool(ed < anchor),
                        "ed_pbe_cell": ed_pbe_cell,
-                       "beats_scan": (bool(ed < ed_scan)
-                                      if ed_scan is not None else None)}
+                       "ed_scan_cell": ed_scan_cell,
+                       "beats_scan": (bool(ed < s_anchor)
+                                      if s_anchor is not None else None)}
     out: Dict[str, Any] = {"gamma": float(gamma), "gamma_mode": "fixed",
                            "e_pbe": float(e_pbe), "d_pbe": float(d_pbe),
                            "ed_pbe": ed_pbe,
@@ -3555,11 +3647,15 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
         e_pbe = wtmad2_pbe_baseline(ch_rows)
         d_cells = holdout_density_by_arch_subset(ch_hd, key=density_key)
         d_pbe = pbe_density_baseline(ch_hd, ch_tab, key=pbe_density_key)
-        # cell-matched anchors for the beats-PBE verdicts, on this channel's
+        # cell-matched anchors for the beats verdicts, on this channel's
         # own reactions/species (same reductions as the pooled anchors above)
         e_pbe_cells = wtmad2_pbe_by_arch_subset(ch_rows)
         d_pbe_cells = pbe_density_by_cell(ch_hd, ch_tab, nn_key=density_key,
                                           pbe_key=pbe_density_key)
+        e_scan_cells = wtmad2_scan_by_cell(ch_rows, scan_errors)
+        d_scan_cells = scan_density_by_cell(ch_hd, scan_density_records,
+                                            ch_tab, nn_key=density_key,
+                                            pbe_key=pbe_density_key)
         # SCAN comparator legs on THIS channel: its WTMAD-2 over the same
         # reactions PBE reduced, and its density over the same species the PBE
         # anchor averaged. Either missing (or too thinly covered) -> None, and
@@ -3578,12 +3674,16 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
                                                gamma_source=gamma_source,
                                                e_scan=e_scan, d_scan=d_scan,
                                                e_pbe_by_cell=e_pbe_cells,
-                                               d_pbe_by_cell=d_pbe_cells)
+                                               d_pbe_by_cell=d_pbe_cells,
+                                               e_scan_by_cell=e_scan_cells,
+                                               d_scan_by_cell=d_scan_cells)
                        if fixed_gamma is not None else
                        combined_ed_by_cell(e_cells, e_pbe, d_cells, d_pbe,
                                            e_scan=e_scan, d_scan=d_scan,
                                            e_pbe_by_cell=e_pbe_cells,
-                                           d_pbe_by_cell=d_pbe_cells))
+                                           d_pbe_by_cell=d_pbe_cells,
+                                           e_scan_by_cell=e_scan_cells,
+                                           d_scan_by_cell=d_scan_cells))
             if out[ch].get("ed_scan") is not None:
                 out[ch]["scan_suffix"] = _scan_ed_suffix(e_used, e_ref,
                                                          d_used, d_ref)
@@ -3597,7 +3697,8 @@ _ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
                   "gammaD_kcalmol", "ED_kcalmol", "E_pbe_kcalmol",
                   "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
                   "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol",
-                  "beats_scan", "ED_pbe_cell_kcalmol"]
+                  "beats_scan", "ED_pbe_cell_kcalmol",
+                  "ED_scan_cell_kcalmol"]
 
 
 def _blank_if_none(x: Any) -> Any:
@@ -3650,10 +3751,12 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                     "D_scan_rmse": _blank_if_none(summary.get("d_scan")),
                     "ED_scan_kcalmol": _blank_if_none(summary.get("ed_scan")),
                     "beats_scan": _blank_if_none(c.get("beats_scan")),
-                    # cell-matched PBE anchor behind beats_pbe (blank when the
-                    # verdict fell back to the pooled ED_pbe_kcalmol)
+                    # cell-matched anchors behind the verdicts (blank when a
+                    # verdict fell back to its pooled column)
                     "ED_pbe_cell_kcalmol": _blank_if_none(
                         c.get("ed_pbe_cell")),
+                    "ED_scan_cell_kcalmol": _blank_if_none(
+                        c.get("ed_scan_cell")),
                 })
     return out_path
 
@@ -3769,6 +3872,8 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                        scan_suffix: str = "",
                        pbe_by_cell: Optional[
                            Dict[Tuple[str, int], float]] = None,
+                       scan_by_cell: Optional[
+                           Dict[Tuple[str, int], float]] = None,
                        relocked_cells: Optional[set] = None,
                        mixed_cells: Optional[set] = None,
                        vxc_pre_fix: bool = False) -> None:
@@ -3785,13 +3890,17 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     judged bar-by-bar against the cell's own anchor -- drawn as short black
     ticks -- while the dashed pooled line stays for cross-cell scale. Cells
     score training-subset-dependent subsets, so the pooled line alone over-
-    or under-states PBE on individual cells. Shared by
+    or under-states PBE on individual cells. ``scan_by_cell`` draws the SCAN
+    twins as grey ticks (coverage-gated per cell by the caller) and relabels
+    the pooled dotted line "SCAN (pooled)". Shared by
     ``plot_energy_wtmad_mae`` and the overview composites."""
     bw = 0.8 / max(1, len(archs))
     beat_x: List[float] = []
     beat_h: List[float] = []
     tick_x: List[float] = []
     tick_h: List[float] = []
+    stick_x: List[float] = []
+    stick_h: List[float] = []
     # Reference-provenance glyphs: cells trained on relocked degenerate-radical
     # references, and cells whose references changed mid-training (not
     # interpretable). Empty/None on every run without a mid-run swap.
@@ -3837,6 +3946,11 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
         else:
             for x, h in _beats_pbe_marks(xs, hs, pbe_line):
                 beat_x.append(x); beat_h.append(h)
+        if scan_by_cell is not None:
+            for x, s in zip(xs, subsets):
+                sa = scan_by_cell.get((a, s))
+                if _is_num(sa):
+                    stick_x.append(x); stick_h.append(float(sa))
     if relock_x:
         ax.scatter(relock_x, relock_h, marker="*", s=70, color="#1f77b4",
                    edgecolor="k", linewidths=0.4, zorder=7,
@@ -3852,9 +3966,14 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
         ax.scatter(tick_x, tick_h, marker="_", s=110, color="k",
                    linewidths=1.1, alpha=0.75, zorder=5,
                    label="PBE (cell rows)")
+    if stick_x:
+        ax.scatter(stick_x, stick_h, marker="_", s=110, color="#555555",
+                   linewidths=1.1, alpha=0.8, zorder=5,
+                   label="SCAN (cell rows)")
     if _is_num(scan_line):
         ax.axhline(scan_line, ls=":", color="#555555", linewidth=1.3,
-                   label=f"SCAN{scan_suffix}")
+                   label=(f"SCAN (pooled){scan_suffix}" if stick_x
+                          else f"SCAN{scan_suffix}"))
         # A SCAN line above every bar otherwise lands flush against the top
         # spine, where the gamma stamp sits on the ED rows. Give it headroom
         # rather than letting the two overprint.
@@ -3891,6 +4010,7 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
                           caveat: Optional[str] = None,
                           training_subsets: Optional[Dict[int, List[str]]] = None,
                           scan_baseline: Optional[Dict[str, float]] = None,
+                          scan_errors: Optional[Dict[str, float]] = None,
                           dataset: Optional[str] = None) -> Path:
     """Held-out energy: ONE bar per (arch, subset_size) cell -- combined
     reaction-energy MAE (panel a) and 2-subset WTMAD-2 (panel b) -- grouped by
@@ -3899,8 +4019,10 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
     fixed held-out set, so a within-sample spread would be arbitrary and
     cross-subset aggregation is invalid (the six subset models per arch are not
     comparable). The subset trend is the x-axis. WTMAD-2 here = 2-subset, NOT
-    full GMTKN55. A beats-PBE marker tags each bar below the PBE line; a dotted
-    SCAN full-pool reference line is added to the MAE panel when ``scan_baseline``
+    full GMTKN55. beats-PBE markers are judged against cell-matched PBE
+    reductions (black ticks); ``scan_errors`` (per-reaction SCAN errors)
+    additionally draws cell-matched SCAN ticks (grey), and a dotted SCAN
+    full-pool reference line is added to the MAE panel when ``scan_baseline``
     carries a finite combined MAE (absent SCAN cache -> unchanged)."""
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
@@ -3911,6 +4033,8 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
         pbe_wt = wtmad2_pbe_baseline(rows)
         mae_cell_anchors = pbe_reaction_mae_by_cell(rows)
         wt_cell_anchors = wtmad2_pbe_by_arch_subset(rows)
+        mae_scan_anchors = scan_reaction_mae_by_cell(rows, scan_errors)
+        wt_scan_anchors = wtmad2_scan_by_cell(rows, scan_errors)
         anote = _cell_anchor_note(wt_cell_anchors)
         if anote:
             note = (note + "  " + anote) if note else anote
@@ -3929,12 +4053,14 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
             axes[0][0], mae, archs, subsets, pbe_line=pbe_mae,
             title="Held-out reaction-energy MAE (combined), per (arch, subset)",
             scan_line=scan_c, vxc_pre_fix=vxc_pre,
-            pbe_by_cell=mae_cell_anchors)
+            pbe_by_cell=mae_cell_anchors,
+            scan_by_cell=(mae_scan_anchors or None))
         _grouped_arch_bars(
             axes[0][1], wt, archs, subsets, pbe_line=pbe_wt,
             title="2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)",
             vxc_pre_fix=vxc_pre,
-            pbe_by_cell=wt_cell_anchors)
+            pbe_by_cell=wt_cell_anchors,
+            scan_by_cell=(wt_scan_anchors or None))
         handles, labels = axes[0][0].get_legend_handles_labels()
         if labels:
             fig.legend(handles, labels, loc="lower center",
@@ -4865,6 +4991,8 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                                subsets, pbe_line=wtmad2_pbe_baseline(pr),
                                pbe_by_cell=wtmad2_pbe_by_arch_subset(pr),
                                scan_line=e_scan_ch,
+                               scan_by_cell=wtmad2_scan_by_cell(pr,
+                                                                scan_errors),
                                scan_suffix=(f", {_u}/{_r}"
                                             if e_scan_ch is not None
                                             and _u < _r else ""),
@@ -4896,6 +5024,10 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                         hd_ch, None, nn_key=density_nn_key,
                         pbe_key=density_pbe_key, _pbe_mol=pbe_ch),
                     scan_line=d_scan_ch,
+                    scan_by_cell=scan_density_by_cell(
+                        hd_ch, scan_density_records, None,
+                        nn_key=density_nn_key, pbe_key=density_pbe_key,
+                        _pbe_mol=pbe_ch),
                     scan_suffix=(f", {d_ch_u}/{d_ch_r}"
                                  if d_scan_ch is not None
                                  and d_ch_u < d_ch_r else ""),
@@ -4919,6 +5051,9 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                 ed_cell_anchors = {c: v["ed_pbe_cell"]
                                    for c, v in s["cells"].items()
                                    if _is_num(v.get("ed_pbe_cell"))}
+                ed_scan_anchors = {c: v["ed_scan_cell"]
+                                   for c, v in s["cells"].items()
+                                   if _is_num(v.get("ed_scan_cell"))}
                 _grouped_arch_bars(
                     ax, ed_map, archs, subsets,
                     pbe_line=(float(ed_pbe) if _is_num(ed_pbe)
@@ -4926,6 +5061,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                     pbe_by_cell=(ed_cell_anchors or None),
                     scan_line=(float(ed_scan) if _is_num(ed_scan)
                                and ed_scan > 0.0 else None),
+                    scan_by_cell=(ed_scan_anchors or None),
                     scan_suffix=(s.get("scan_suffix") or ""),
                     title=ttl, **_lf)
                 ax.set_ylabel(f"{_ED_SYM} (kcal/mol)", fontsize=8)
@@ -6365,7 +6501,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         plot_energy_wtmad_mae(rows, outdir / "ablation_energy_wtmad_mae.png",
                               run_id, note=note, provenance=prov, caveat=caveat,
                               training_subsets=tsubsets,
-                              scan_baseline=scan_baseline, dataset=ds_e),
+                              scan_baseline=scan_baseline,
+                              scan_errors=scan_errs, dataset=ds_e),
         plot_insample_density_ccsd(drows,
                                    outdir / "ablation_insample_density_ccsd.png",
                                    run_id, note=note, provenance=dens_prov),
@@ -6419,15 +6556,23 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 e_scan_mae = None
             d_scan, d_u, d_r = scan_density_line_counts(
                 scan_dens_recs, _pbe_density_map(hd_rows, pbe_table))
-            # cell-matched PBE anchors: verdicts compare same-set reductions
+            # cell-matched anchors: verdicts compare same-set reductions,
+            # for the PBE marks AND the SCAN comparator (the pooled SCAN
+            # value understates SCAN on the surviving per-cell sets)
             e_pbe_wt_cells = wtmad2_pbe_by_arch_subset(rows)
             e_pbe_mae_cells = pbe_reaction_mae_by_cell(rows)
             d_pbe_cells = pbe_density_by_cell(hd_rows, pbe_table)
+            e_scan_wt_cells = wtmad2_scan_by_cell(rows, scan_errs)
+            e_scan_mae_cells = scan_reaction_mae_by_cell(rows, scan_errs)
+            d_scan_cells = scan_density_by_cell(hd_rows, scan_dens_recs,
+                                                pbe_table)
             wt_summary = combined_ed_by_cell(wt_cells, e_pbe_wt,
                                              d_cells, d_pbe,
                                              e_scan=e_scan_wt, d_scan=d_scan,
                                              e_pbe_by_cell=e_pbe_wt_cells,
-                                             d_pbe_by_cell=d_pbe_cells)
+                                             d_pbe_by_cell=d_pbe_cells,
+                                             e_scan_by_cell=e_scan_wt_cells,
+                                             d_scan_by_cell=d_scan_cells)
             if wt_summary.get("ed_scan") is not None:
                 wt_summary["scan_suffix"] = _scan_ed_suffix(wt_u, wt_r,
                                                             d_u, d_r)
@@ -6438,7 +6583,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                                                e_scan=e_scan_mae,
                                                d_scan=d_scan,
                                                e_pbe_by_cell=e_pbe_mae_cells,
-                                               d_pbe_by_cell=d_pbe_cells)
+                                               d_pbe_by_cell=d_pbe_cells,
+                                               e_scan_by_cell=e_scan_mae_cells,
+                                               d_scan_by_cell=d_scan_cells)
                            if mae_cells and _is_num(e_pbe_mae)
                            and e_pbe_mae > 0.0 else None)
             if mae_summary and mae_summary.get("ed_scan") is not None:
@@ -6460,6 +6607,14 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                  if _is_num(v.get("ed_pbe_cell"))})
             if ed_anchor_note:
                 ed_prov += " " + ed_anchor_note
+            scan_cell_vals = [v["ed_scan_cell"]
+                              for v in wt_summary["cells"].values()
+                              if _is_num(v.get("ed_scan_cell"))]
+            if scan_cell_vals:
+                ed_prov += (" beats-SCAN verdicts likewise cell-matched "
+                            f"(anchors {min(scan_cell_vals):.3g}-"
+                            f"{max(scan_cell_vals):.3g} kcal/mol); the "
+                            "dotted line is the pooled SCAN.")
             extra = [note] if note else []
             excl = _ed_exclusion_note(wt_cells, d_cells)
             if excl:
@@ -6544,12 +6699,17 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 d_pbe_eps_cells = pbe_density_by_cell(
                     hd_rows, pbe_table, nn_key="density_eps_l1",
                     pbe_key="density_eps_l1_pbe")
+                d_scan_eps_cells = scan_density_by_cell(
+                    hd_rows, scan_dens_recs, pbe_table,
+                    nn_key="density_eps_l1", pbe_key="density_eps_l1_pbe")
                 dfs_summary = combined_ed_fixed_gamma(
                     wt_cells, e_pbe_wt, eps_cells, eps_pbe, _DFS_GAMMA_KCAL,
                     gamma_source="DFS published",
                     e_scan=e_scan_wt, d_scan=d_scan_eps,
                     e_pbe_by_cell=e_pbe_wt_cells,
-                    d_pbe_by_cell=d_pbe_eps_cells)
+                    d_pbe_by_cell=d_pbe_eps_cells,
+                    e_scan_by_cell=e_scan_wt_cells,
+                    d_scan_by_cell=d_scan_eps_cells)
                 if dfs_summary.get("ed_scan") is not None:
                     dfs_summary["scan_suffix"] = _scan_ed_suffix(
                         wt_u, wt_r, deps_u, deps_r)
@@ -6565,7 +6725,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                         gamma_source="own-axes fit",
                         e_scan=e_scan_wt, d_scan=d_scan_eps,
                         e_pbe_by_cell=e_pbe_wt_cells,
-                        d_pbe_by_cell=d_pbe_eps_cells)
+                        d_pbe_by_cell=d_pbe_eps_cells,
+                        e_scan_by_cell=e_scan_wt_cells,
+                        d_scan_by_cell=d_scan_eps_cells)
                     if fit_summary.get("ed_scan") is not None:
                         fit_summary["scan_suffix"] = _scan_ed_suffix(
                             wt_u, wt_r, deps_u, deps_r)
@@ -6609,6 +6771,15 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                      if _is_num(v.get("ed_pbe_cell"))})
                 if eps_anchor_note:
                     eps_prov += " " + eps_anchor_note
+                eps_scan_cell_vals = [v["ed_scan_cell"]
+                                      for v in dfs_summary["cells"].values()
+                                      if _is_num(v.get("ed_scan_cell"))]
+                if eps_scan_cell_vals:
+                    eps_prov += (" beats-SCAN verdicts likewise "
+                                 "cell-matched (anchors "
+                                 f"{min(eps_scan_cell_vals):.3g}-"
+                                 f"{max(eps_scan_cell_vals):.3g} kcal/mol); "
+                                 "the dotted line is the pooled SCAN.")
                 written.append(plot_combined_energy_density(
                     dfs_summary, fit_summary,
                     outdir / "ablation_combined_energy_density_dfs_units.png",

@@ -277,11 +277,17 @@ slope rather than `E_pbe/D_pbe`, and `ED_pbe_kcalmol` generally differs from
 | `E_scan_kcalmol` | SCAN energy comparator on the leg's own reduction (WTMAD-2 or MAE), over the same PBE-computable deduped reactions; blank when the SCAN energy cache is absent or under the 90% coverage floor |
 | `D_scan_rmse` | SCAN density comparator over the same species the PBE density anchor averages (eps units on the DFS-units legs); blank when the SCAN density cache is absent or under the floor |
 | `ED_scan_kcalmol` | SCAN's ED under the leg's gamma (harmonic of `E_scan_kcalmol` and `gamma * D_scan_rmse`); blank when either comparator leg is blank |
-| `beats_scan` | `True` iff `ED_kcalmol < ED_scan_kcalmol`; blank when `ED_scan_kcalmol` is blank |
+| `beats_scan` | `True` iff `ED_kcalmol < ED_scan_cell_kcalmol` when the cell-matched SCAN anchor resolves, else `< ED_scan_kcalmol` (pooled fallback); blank when neither comparator resolves |
 | `ED_pbe_cell_kcalmol` | The cell-matched PBE anchor behind `beats_pbe`: the harmonic ED of PBE reduced over EXACTLY that cell's scored reactions (energy leg) and species (density leg), under the leg's gamma. Cells score training-subset-dependent subsets, so the pooled `ED_pbe_kcalmol` over- or under-states PBE on individual cells; blank when the cell anchor could not be built (verdict then falls back to the pooled anchor) |
+| `ED_scan_cell_kcalmol` | The SCAN twin of `ED_pbe_cell_kcalmol` (SCAN reduced over the cell's own reactions/species, coverage-gated per cell at 90%); on the current data the pooled SCAN understates SCAN on every cell's surviving set, so pooled-only `beats_scan` verdicts were flattering the cells |
 
 The four SCAN columns are blank (empty string) whenever the comparator is withdrawn, so
 older pulls and cache-free renders produce the same rows as before with empty tails.
+
+On panels carrying cell-matched anchors, short black ticks are PBE over each cell's own
+scored set and short grey ticks the SCAN twin (per-cell coverage-gated); the dashed and
+dotted lines are the pooled reductions, relabeled "PBE (pooled)" / "SCAN (pooled)" when
+ticks are present.
 
 **Strict-holdout repairs on read (both printed with counts when they fire):** reaction and
 density rows containing a pool species physically identical to that spec's trained
