@@ -956,19 +956,34 @@ def _report_scan_coverage(scan_baseline: Optional[Dict[str, Any]],
               f"[{d_used}/{d_ref} species]")
 
 
+def arch_reference_kinds(archs) -> Dict[str, str]:
+    """``"pbe"`` for pure-GGA architectures, ``"scan"`` for any architecture
+    carrying beyond-GGA information (meta-GGA, rung-3.5, and their stacks).
+
+    The green beats marker claims improvement over the arch's OWN-RUNG
+    nonempirical reference; crediting a beyond-GGA architecture for merely
+    beating PBE overstates it. The rung-3.5 families have no same-rung
+    nonempirical reference (nonlocal DM information but no tau, so neither
+    PBE's nor SCAN's input set contains theirs); they are held to SCAN, the
+    conservative assignment."""
+    return {a: ("pbe" if arch_style.rung_of(a) == arch_style.RUNG_GGA
+                else "scan") for a in archs}
+
+
 def _cell_anchor_note(by_cell: Optional[Dict[Tuple[str, int], float]],
                       unit: str = "kcal/mol") -> str:
-    """Disclosure line for panels whose beats-PBE marks are judged against
-    cell-matched anchors: names the convention and the anchors' range so a
-    bar below the pooled dashed line without a mark is legible. Empty when
-    no cell anchor resolved (marks then fell back to the pooled line)."""
+    """Disclosure line for panels whose beats marks are judged against
+    cell-matched anchors: names the convention and the PBE anchors' range so
+    a bar below the pooled dashed line without a mark is legible. Empty when
+    no cell anchor resolved (marks then fell back to the pooled lines)."""
     vals = [float(v) for v in (by_cell or {}).values() if _is_num(v)]
     if not vals:
         return ""
-    return ("beats-PBE marks: judged against cell-matched PBE anchors "
-            "(PBE reduced over each cell's own scored set; black ticks; "
-            f"range {min(vals):.3g}-{max(vals):.3g} {unit}); the dashed "
-            "line is the pooled-set anchor.")
+    return ("beats marks: each bar against its own-rung reference's "
+            "cell-matched anchor (PBE for GGA architectures, SCAN for "
+            "meta-GGA/rung-3.5; black/grey ticks; PBE anchors "
+            f"{min(vals):.3g}-{max(vals):.3g} {unit}); dashed/dotted lines "
+            "are the pooled-set reductions.")
 
 
 def _beats_pbe_marks(xs, heights, pbe_line) -> List[Tuple[float, float]]:
@@ -1674,18 +1689,28 @@ def plot_mae_by_arch(reaction_rows: List[Dict[str, Any]],
                     patch.set_hatch(_SHALLOW_HATCH)
 
         pbe_vs_ref = _mae([r["abs_error_pbe_kcalmol"] for r in reaction_rows])
+        scan_c, scan_cov = scan_line_value(scan_baseline, "combined")
         if pbe_vs_ref is not None:
             ax.axhline(pbe_vs_ref, ls="--", color="k", linewidth=1.2,
                        label=f"PBE-vs-benchmark MAE ({pbe_vs_ref:.1f})")
-            # Mark every held-out reaction bar (mean + best-subset) below PBE.
-            marks = (_beats_pbe_marks(list(xs - w), rxn_mean, pbe_vs_ref)
-                     + _beats_pbe_marks(list(xs), rxn_best, pbe_vs_ref))
+            # Mark held-out reaction bars (mean + best-subset) below their
+            # OWN-RUNG reference: PBE for GGA archs, the SCAN full-pool MAE
+            # for beyond-GGA ones (unmarked when the SCAN cache is absent --
+            # a beyond-GGA arch is never credited for merely beating PBE).
+            kinds = arch_reference_kinds(archs)
+            marks = []
+            for i, arch in enumerate(archs):
+                ref = (scan_c if kinds.get(arch) == "scan" else pbe_vs_ref)
+                if ref is None:
+                    continue
+                for xpos, h in ((xs[i] - w, rxn_mean[i]), (xs[i], rxn_best[i])):
+                    if _is_num(h) and h < float(ref):
+                        marks.append((xpos, h))
             if marks:
                 mx, mh = zip(*marks)
                 ax.scatter(mx, mh, marker="v", s=22, color="#2ca02c",
                            edgecolor="k", linewidths=0.3, zorder=6,
-                           label="beats PBE")
-        scan_c, scan_cov = scan_line_value(scan_baseline, "combined")
+                           label="beats rung reference")
         if scan_c is not None:
             ax.axhline(scan_c, ls=":", color="#555555", linewidth=1.3,
                        label=f"SCAN full-pool MAE ({scan_c:.1f}{scan_cov})")
@@ -2758,8 +2783,8 @@ def wtmad2_scan_by_cell(rows: List[Dict[str, Any]],
     """Per-cell SCAN 2-subset WTMAD-2 over exactly the reactions that cell
     scored, coverage-gated PER CELL at :data:`_SCAN_COVERAGE_FLOOR` -- the
     SCAN twin of :func:`wtmad2_pbe_by_arch_subset`. Cells whose surviving
-    rows the cache covers too thinly are absent (callers fall back to the
-    pooled comparator)."""
+    rows the cache covers too thinly are absent (their marks are withdrawn;
+    the pooled comparator lines remain for scale only)."""
     out: Dict[Tuple[str, int], float] = {}
     by_cell: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
     for r in rows:
@@ -3874,14 +3899,15 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                            Dict[Tuple[str, int], float]] = None,
                        scan_by_cell: Optional[
                            Dict[Tuple[str, int], float]] = None,
+                       reference_by_arch: Optional[Dict[str, str]] = None,
                        relocked_cells: Optional[set] = None,
                        mixed_cells: Optional[set] = None,
                        vxc_pre_fix: bool = False) -> None:
     """Grouped per-(arch, subset_size) bar panel: one bar group per arch
     (rung-ordered by the caller), x = subset_size, PBE dashed / SCAN dotted
-    reference lines when finite, green beats-PBE markers on bars strictly
-    below the PBE reference. ``pbe_line=None`` silently draws no line and no
-    beats-PBE marks (the in-sample AE panel has no PBE baseline).
+    reference lines when finite, green beats markers on bars strictly below
+    their reference (see ``reference_by_arch``). ``pbe_line=None`` silently
+    draws no line and no marks (the in-sample AE panel has no baseline).
     ``scan_suffix`` qualifies a drawn-but-partially-covered SCAN line in its
     legend label (the ``", used/ref"`` convention).
 
@@ -3935,22 +3961,36 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
             elif (a, s) in mixed:
                 mixed_x.append(x); mixed_h.append(h)
         if pbe_by_cell is not None:
-            for x, h, s in zip(xs, hs, subsets):
+            for x, s in zip(xs, subsets):
                 anchor = pbe_by_cell.get((a, s))
                 if _is_num(anchor):
                     tick_x.append(x); tick_h.append(float(anchor))
-                else:
-                    anchor = pbe_line
-                if _is_num(h) and _is_num(anchor) and h < float(anchor):
-                    beat_x.append(x); beat_h.append(h)
-        else:
-            for x, h in _beats_pbe_marks(xs, hs, pbe_line):
-                beat_x.append(x); beat_h.append(h)
         if scan_by_cell is not None:
             for x, s in zip(xs, subsets):
                 sa = scan_by_cell.get((a, s))
                 if _is_num(sa):
                     stick_x.append(x); stick_h.append(float(sa))
+        # beats marks: each bar against its own-rung reference (PBE for GGA
+        # archs, SCAN for beyond-GGA ones when reference_by_arch is given).
+        # With a cell-anchor map present, a cell absent from it stays
+        # UNMARKED -- the cell-matched comparator was withdrawn (e.g. SCAN
+        # coverage under the per-cell floor), and falling back to the pooled
+        # line would reintroduce the different-set flattery the ticks
+        # eliminate. Only legacy callers with no map at all mark against the
+        # pooled line.
+        ref_kind = (reference_by_arch or {}).get(a, "pbe")
+        if ref_kind == "scan":
+            anchor_map, fallback = scan_by_cell, scan_line
+        else:
+            anchor_map, fallback = pbe_by_cell, pbe_line
+        if anchor_map is not None:
+            for x, h, s in zip(xs, hs, subsets):
+                anchor = anchor_map.get((a, s))
+                if _is_num(h) and _is_num(anchor) and h < float(anchor):
+                    beat_x.append(x); beat_h.append(h)
+        else:
+            for x, h in _beats_pbe_marks(xs, hs, fallback):
+                beat_x.append(x); beat_h.append(h)
     if relock_x:
         ax.scatter(relock_x, relock_h, marker="*", s=70, color="#1f77b4",
                    edgecolor="k", linewidths=0.4, zorder=7,
@@ -3983,7 +4023,8 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     if beat_x:
         ax.scatter(beat_x, beat_h, marker="v", s=16, color="#2ca02c",
                    edgecolor="k", linewidths=0.3, zorder=6,
-                   label="beats PBE")
+                   label=("beats rung reference" if reference_by_arch
+                          else "beats PBE"))
     if vxc_pre_fix:
         # Zero-size legend proxies, one per V_xc class actually on the panel
         # (attached to the axes so get_legend_handles_labels sees them).
@@ -4019,9 +4060,10 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
     fixed held-out set, so a within-sample spread would be arbitrary and
     cross-subset aggregation is invalid (the six subset models per arch are not
     comparable). The subset trend is the x-axis. WTMAD-2 here = 2-subset, NOT
-    full GMTKN55. beats-PBE markers are judged against cell-matched PBE
-    reductions (black ticks); ``scan_errors`` (per-reaction SCAN errors)
-    additionally draws cell-matched SCAN ticks (grey), and a dotted SCAN
+    full GMTKN55. Green beats markers are judged against each architecture's
+    OWN-RUNG reference's cell-matched anchor (PBE ticks for GGA archs,
+    SCAN ticks for meta-GGA/rung-3.5; ``scan_errors`` supplies the
+    per-reaction SCAN errors behind the grey ticks), and a dotted SCAN
     full-pool reference line is added to the MAE panel when ``scan_baseline``
     carries a finite combined MAE (absent SCAN cache -> unchanged)."""
     with plt.rc_context(_STYLE):
@@ -4054,13 +4096,15 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
             title="Held-out reaction-energy MAE (combined), per (arch, subset)",
             scan_line=scan_c, vxc_pre_fix=vxc_pre,
             pbe_by_cell=mae_cell_anchors,
-            scan_by_cell=(mae_scan_anchors or None))
+            scan_by_cell=(mae_scan_anchors or None),
+            reference_by_arch=arch_reference_kinds(archs))
         _grouped_arch_bars(
             axes[0][1], wt, archs, subsets, pbe_line=pbe_wt,
             title="2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)",
             vxc_pre_fix=vxc_pre,
             pbe_by_cell=wt_cell_anchors,
-            scan_by_cell=(wt_scan_anchors or None))
+            scan_by_cell=(wt_scan_anchors or None),
+            reference_by_arch=arch_reference_kinds(archs))
         handles, labels = axes[0][0].get_legend_handles_labels()
         if labels:
             fig.legend(handles, labels, loc="lower center",
@@ -4480,11 +4524,16 @@ def _gamma_stamp(ax, summary: Dict[str, Any]) -> None:
             fontsize=6, color="#444444", ha="right", va="top")
 
 
-def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
+def _ed_lines_panel(ax, summary: Dict[str, Any], title: str,
+                    reference_by_arch: Optional[Dict[str, str]] = None
+                    ) -> None:
     """Per-arch ED vs subset_size lines with the dashed PBE line at
     ``ed_pbe`` (== the energy anchor under gamma self-calibration; a plain
     PBE level under a fixed gamma -- labels and the gamma stamp branch on
-    ``gamma_mode``), green beats-PBE markers. Panel body shared by
+    ``gamma_mode``), green beats markers. With ``reference_by_arch`` each
+    arch's marker follows its OWN-RUNG reference verdict (``beats_pbe`` for
+    GGA archs, ``beats_scan`` for beyond-GGA ones); without it, the
+    beats-PBE verdict, as before. Panel body shared by
     ``plot_combined_energy_density`` and ``plot_density_energy_overview``."""
     cells = summary["cells"]
     archs = arch_style.sort_by_rung(sorted({a for a, _ in cells}))
@@ -4508,12 +4557,18 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
         sfx = summary.get("scan_suffix") or ""
         ax.axhline(ed_scan, ls=":", color="#555555", lw=1.4,
                    label=f"SCAN{sfx}")
-    beat = [(ss, c["ED"]) for (_, ss), c in cells.items()
-            if c["beats_pbe"] and c["ED"] > 0.0]
+    beat = []
+    for (aa, ss), c in cells.items():
+        kind = (reference_by_arch or {}).get(aa, "pbe")
+        verdict = (c.get("beats_scan") if kind == "scan"
+                   else c.get("beats_pbe"))
+        if verdict and c["ED"] > 0.0:
+            beat.append((ss, c["ED"]))
     if beat:
         ax.scatter([s for s, _ in beat], [e for _, e in beat], marker="v",
                    s=16, color="#2ca02c", edgecolor="k", linewidths=0.3,
-                   zorder=6, label="beats PBE")
+                   zorder=6, label=("beats rung reference"
+                                    if reference_by_arch else "beats PBE"))
     ax.set_yscale("log")
     ax.set_xlabel("training subset_size", fontsize=8)
     ax.set_ylabel(f"{_ED_SYM} (kcal/mol)", fontsize=8)
@@ -4725,13 +4780,17 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.6), squeeze=False)
         axA, axB, axC = axes[0]
-        _ed_lines_panel(axA, wt_summary, title_a)
+        _ed_lines_panel(axA, wt_summary, title_a,
+                        reference_by_arch=arch_reference_kinds(
+                            {a for a, _ in wt_summary['cells']}))
 
         # (b) decomposition: one point per cell in (E, gamma*D) space
         _ed_decomposition_panel(axB, wt_summary)
 
         if mae_summary and mae_summary.get("cells"):
-            _ed_lines_panel(axC, mae_summary, title_c)
+            _ed_lines_panel(axC, mae_summary, title_c,
+                            reference_by_arch=arch_reference_kinds(
+                                {a for a, _ in mae_summary['cells']}))
         else:
             axC.text(0.5, 0.5, second_leg_placeholder, ha="center",
                      va="center", transform=axC.transAxes, fontsize=9,
@@ -4826,12 +4885,14 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
             _grouped_arch_bars(ax, wtmad2_by_arch_subset(pr), archs, subsets,
                                pbe_line=wtmad2_pbe_baseline(pr),
                                pbe_by_cell=wtmad2_pbe_by_arch_subset(pr),
+                               reference_by_arch=arch_reference_kinds(archs),
                                title=tag + " -- one-bucket reduction "
                                      "(scaled relative error)",
                                vxc_pre_fix=_run_predates_vxc_fix(run_id))
         _grouped_arch_bars(axC, wtmad2_by_arch_subset(rows), archs, subsets,
                            pbe_line=wtmad2_pbe_baseline(rows),
                            pbe_by_cell=wtmad2_pbe_by_arch_subset(rows),
+                           reference_by_arch=arch_reference_kinds(archs),
                            title="(C) 2-subset WTMAD-2 (BH76+W4-11), "
                                  "per (arch, subset)",
                            vxc_pre_fix=_run_predates_vxc_fix(run_id))
@@ -4843,7 +4904,9 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
             axE.set_title("(E) " + axE.get_title(), fontsize=9)
             _ed_lines_panel(axF, ed_summary,
                             f"(F) {_ED_SYM}, energy leg = 2-subset "
-                            "WTMAD-2 (headline)")
+                            "WTMAD-2 (headline)",
+                            reference_by_arch=arch_reference_kinds(
+                                {a for a, _ in ed_summary['cells']}))
         else:
             axE.text(0.5, 0.5, f"{_ED_SYM} decomposition unavailable",
                      ha="center", va="center", transform=axE.transAxes,
@@ -4990,6 +5053,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
             _grouped_arch_bars(axes[0][j], wtmad2_by_arch_subset(pr), archs,
                                subsets, pbe_line=wtmad2_pbe_baseline(pr),
                                pbe_by_cell=wtmad2_pbe_by_arch_subset(pr),
+                               reference_by_arch=arch_reference_kinds(archs),
                                scan_line=e_scan_ch,
                                scan_by_cell=wtmad2_scan_by_cell(pr,
                                                                 scan_errors),
@@ -5023,6 +5087,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                     pbe_by_cell=pbe_density_by_cell(
                         hd_ch, None, nn_key=density_nn_key,
                         pbe_key=density_pbe_key, _pbe_mol=pbe_ch),
+                    reference_by_arch=arch_reference_kinds(archs),
                     scan_line=d_scan_ch,
                     scan_by_cell=scan_density_by_cell(
                         hd_ch, scan_density_records, None,
@@ -5059,6 +5124,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                     pbe_line=(float(ed_pbe) if _is_num(ed_pbe)
                               and ed_pbe > 0.0 else None),
                     pbe_by_cell=(ed_cell_anchors or None),
+                    reference_by_arch=arch_reference_kinds(archs),
                     scan_line=(float(ed_scan) if _is_num(ed_scan)
                                and ed_scan > 0.0 else None),
                     scan_by_cell=(ed_scan_anchors or None),
@@ -6948,9 +7014,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     "reaction reactants+products; overlap species in both "
                     "channels). Density leg: grid-weight-averaged RMSE vs "
                     "CCSD; per-channel gamma = that channel's E_PBE/D_PBE. "
-                    "beats-PBE marks: cell-matched anchors (black ticks; "
-                    "PBE reduced over each cell's own scored set, per "
-                    "channel); dashed lines = pooled anchors.")
+                    "beats marks: each arch vs its own-rung reference's "
+                    "cell-matched anchor, per channel (PBE for GGA archs, "
+                    "SCAN for meta-GGA/rung-3.5; black/grey ticks); "
+                    "dashed/dotted lines = pooled anchors.")
         written.append(plot_density_energy_3x3(
             rows, hd_rows, outdir / "ablation_density_energy_3x3.png",
             run_id, pbe_table=pbe_table, ch_summaries=ch_summaries,

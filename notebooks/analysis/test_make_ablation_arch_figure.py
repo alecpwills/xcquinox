@@ -815,6 +815,75 @@ def test_grouped_bars_scan_cell_ticks(tmp_path):
         plt.close(f)
 
 
+def test_arch_reference_kinds_by_rung():
+    # The green marker claims improvement over the arch's OWN-RUNG
+    # nonempirical reference: PBE for pure-GGA architectures, SCAN for any
+    # architecture carrying beyond-GGA information (meta-GGA, rung-3.5,
+    # stacked -- the rung-3.5 assignment is the conservative convention).
+    kinds = fig.arch_reference_kinds(
+        ["deep_3x16", "deep_attn_3x16", "deep_mgga_3x16",
+         "deep_rung35_3x16", "deep_rung35_mgga_3x16"])
+    assert kinds["deep_3x16"] == "pbe"
+    assert kinds["deep_attn_3x16"] == "pbe"
+    assert kinds["deep_mgga_3x16"] == "scan"
+    assert kinds["deep_rung35_3x16"] == "scan"
+    assert kinds["deep_rung35_mgga_3x16"] == "scan"
+
+
+def test_grouped_bars_rung_reference_marks(tmp_path):
+    # A meta-GGA bar below the PBE tick but above the SCAN tick must NOT be
+    # marked; a GGA bar in the same panel keeps its PBE grading; a
+    # SCAN-referenced arch with NO scan anchor gets no mark at all.
+    import matplotlib.pyplot as plt
+    metric = {("deep_3x16", 2): 5.0, ("deep_mgga_3x16", 2): 5.0,
+              ("deep_rung35_3x16", 2): 5.0}
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(
+            ax, metric, ["deep_3x16", "deep_mgga_3x16", "deep_rung35_3x16"],
+            [2], pbe_line=8.0, title="t", scan_line=6.0,
+            pbe_by_cell={("deep_3x16", 2): 6.0, ("deep_mgga_3x16", 2): 6.0,
+                         ("deep_rung35_3x16", 2): 6.0},
+            scan_by_cell={("deep_mgga_3x16", 2): 4.5},
+            reference_by_arch={"deep_3x16": "pbe", "deep_mgga_3x16": "scan",
+                               "deep_rung35_3x16": "scan"})
+        beat = [c for c in ax.collections if "beats" in str(c.get_label())]
+        # only the GGA bar (5.0 < its PBE tick 6.0) marks: the mgga bar is
+        # above its SCAN tick (4.5) and the rung35 bar has no SCAN anchor.
+        assert beat and len(beat[0].get_offsets()) == 1, [
+            (c.get_label(), len(c.get_offsets())) for c in ax.collections]
+    finally:
+        plt.close(f)
+
+
+def test_ed_lines_panel_marks_by_rung_reference():
+    # The ED line panel's green markers follow the per-arch reference:
+    # a meta-GGA cell that beats PBE but not SCAN is unmarked.
+    import matplotlib.pyplot as plt
+    cells = {
+        ("deep_3x16", 2): {"E": 5.0, "D": 2e-4, "gammaD": 5.0, "ED": 5.0,
+                           "beats_pbe": True, "beats_scan": False,
+                           "ed_pbe_cell": 6.0, "ed_scan_cell": 4.5},
+        ("deep_mgga_3x16", 2): {"E": 5.0, "D": 2e-4, "gammaD": 5.0,
+                                "ED": 5.0, "beats_pbe": True,
+                                "beats_scan": False,
+                                "ed_pbe_cell": 6.0, "ed_scan_cell": 4.5},
+    }
+    summary = {"gamma": 25000.0, "gamma_mode": "fixed", "e_pbe": 8.0,
+               "d_pbe": 2.4e-4, "ed_pbe": 7.0, "ed_scan": 5.5,
+               "cells": cells}
+    f, ax = plt.subplots()
+    try:
+        fig._ed_lines_panel(ax, summary, "t",
+                            reference_by_arch={"deep_3x16": "pbe",
+                                               "deep_mgga_3x16": "scan"})
+        beat = [c for c in ax.collections if "beats" in str(c.get_label())]
+        assert beat and len(beat[0].get_offsets()) == 1, [
+            (c.get_label(), len(c.get_offsets())) for c in ax.collections]
+    finally:
+        plt.close(f)
+
+
 def test_beats_pbe_uses_cell_matched_anchor():
     # A cell below the pooled union anchor but above its own-rows anchor must
     # NOT read "beats PBE" (the deep_3x16 ss26 flip class). The verdict

@@ -239,7 +239,7 @@ The DFS Eq. 21 ED figure, NN vs PBE, held-out.
 
 | Panel | Content |
 |---|---|
-| (a) | Headline ED (2-subset WTMAD-2 leg) vs subset_size per arch, log y; dashed PBE at `ED_PBE == E_PBE`; dotted SCAN at `ED_scan` when both SCAN caches resolve (coverage-gated at 90%; a partial-but-drawn line carries its counts in the label, e.g. `SCAN, E 210/216 D 195/199`); green beats-PBE marks; the self-calibrated gamma printed lower-left |
+| (a) | Headline ED (2-subset WTMAD-2 leg) vs subset_size per arch, log y; dashed PBE at `ED_PBE == E_PBE`; dotted SCAN at `ED_scan` when both SCAN caches resolve (coverage-gated at 90%; a partial-but-drawn line carries its counts in the label, e.g. `SCAN, E 210/216 D 195/199`); green beats marks, each architecture against its OWN-RUNG reference's cell-matched anchor (PBE for GGA archs, SCAN for meta-GGA/rung-3.5 -- a beyond-GGA arch is never credited for merely beating PBE); the self-calibrated gamma printed lower-left |
 | (b) | Per-cell decomposition in the (E, gamma*D) plane, log-log (`_ed_decomposition_panel`): dotted y=x is the self-calibration locus (PBE sits on it exactly, grey `x`); thin grey iso-ED harmonic contours at 0.5x, 1x, 2x the PBE ED; points below the locus are density-limited, above it energy-limited; small digits = subset_size |
 | (c) | Secondary ED with the reaction-MAE leg (its own gamma, its own SCAN comparator on the MAE energy leg) -- the leg-independence check; renders a grey placeholder when the MAE anchors are unavailable |
 
@@ -287,7 +287,12 @@ older pulls and cache-free renders produce the same rows as before with empty ta
 On panels carrying cell-matched anchors, short black ticks are PBE over each cell's own
 scored set and short grey ticks the SCAN twin (per-cell coverage-gated); the dashed and
 dotted lines are the pooled reductions, relabeled "PBE (pooled)" / "SCAN (pooled)" when
-ticks are present.
+ticks are present. The green beats marker is judged against each architecture's OWN-RUNG
+reference tick: PBE for GGA architectures, SCAN for meta-GGA and rung-3.5 (the rung-3.5
+families have no same-rung nonempirical reference -- nonlocal DM information but no tau --
+and are held to SCAN, the conservative assignment). A cell whose reference tick is
+withdrawn (SCAN coverage under the per-cell floor) stays unmarked; the CSVs keep BOTH
+verdicts (`beats_pbe`, `beats_scan`) regardless of which one the marker shows.
 
 **Strict-holdout repairs on read (both printed with counts when they fire):** reaction and
 density rows containing a pool species physically identical to that spec's trained
@@ -330,7 +335,7 @@ whenever the held-out density figure renders.
 | Row | Content |
 |---|---|
 | 1 (A/B/C) | WTMAD-2 bars per (arch, subset_size): A/B are the one-bucket reduction of Sec. 2.2 (titles say so), C the genuine 2-subset form -- the overview's energy row. Dotted SCAN line at that channel's WTMAD-2 (reduced over the same PBE-computable reactions) when the SCAN energy cache resolves; partial coverage in the label |
-| 2 (D/E/F) | Density-error BARS per (arch, subset_size): the cell-mean error on the figure's density channel (RMSE here; eps on the DFS-units twin) restricted to that channel's species, PBE dashed at the channel's deduplicated per-molecule anchor, dotted SCAN at its mean over the SAME species when the SCAN density cache resolves (partial coverage in the label), beats-PBE marks = lower error than PBE. Species-channel membership comes from the reactions' reactants+products (`_species_pools`); overlap species contribute to BOTH channels (stated in the caveat). The bar heights equal the ED legs' D column in the companion CSV |
+| 2 (D/E/F) | Density-error BARS per (arch, subset_size): the cell-mean error on the figure's density channel (RMSE here; eps on the DFS-units twin) restricted to that channel's species, PBE dashed at the channel's deduplicated per-molecule anchor, dotted SCAN at its mean over the SAME species when the SCAN density cache resolves (partial coverage in the label), green beats marks = below the arch's own-rung reference tick (PBE for GGA archs, SCAN otherwise). Species-channel membership comes from the reactions' reactants+products (`_species_pools`); overlap species contribute to BOTH channels (stated in the caveat). The bar heights equal the ED legs' D column in the companion CSV |
 | 3 (G/H/I) | The DFS Eq. 21 combined metric per channel as BARS (`channel_ed_summaries`): the energy leg is that channel's WTMAD-2 form, the density leg that channel's species, and the panel-title "own gamma" means gamma = E_PBE/D_PBE computed from THAT CHANNEL'S OWN PBE anchors (value stamped in each panel) -- so PBE's value == E_PBE per channel and the metric never compares across channels (the DFS-units twin's SHARED gamma does). Dotted SCAN at that channel's ED_scan (both SCAN legs on the channel's own reductions, under the same gamma; the summary's `scan_suffix` qualifies partial coverage) when both caches resolve. Grey placeholder when a channel's anchors are missing |
 
 The whole figure is bar charts; the per-species parity view lives in
