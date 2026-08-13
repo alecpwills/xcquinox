@@ -365,12 +365,22 @@ exclusions, so locally rendered figures already carry the verbatim-rule
 slices; density means keep the species-level exclusion (trained densities
 are verbatim training targets) and the c2 consistency guard.
 
-**Trigger:** when train array 2116743 (and the mgga arm 2116703) drain,
-rsync the updated `xcquinox/alec/eval_holdout.py` +
-`xcquinox/alec/species_matching.py` (and the current `train.py`, whose
-metadata now records the update scheme explicitly) to the cluster repo,
-re-run the completed specs' held-out evals so the cluster-side artifacts
-match the figure-layer repairs, and re-pull. The validation/test twin split
-itself is fixed for FUTURE runs by canonical reaction identity at split
-time; already-trained cells keep their split (the four twins simply stay
-excluded from reported test rows).
+**Deployment done (user rsync, 2026-08-13):** eval_holdout.py,
+species_matching.py, train.py, cluster/_eval_one_spec.py,
+cluster/_holdout_parallel.py are live on the cluster; in-flight and pending
+array tasks eval under the verbatim rule from that moment.
+
+**Remaining trigger -- refinalize the stale-rule specs:** specs whose eval
+completed BEFORE the deployment carry species-strict artifacts. MARKED SET
+(parity probe, 2026-08-13): v4gga spec_0000..0017 and v4mgga spec_0000..0006
+(all 50 pulled spec-channels report stale-rule, 0 value mismatches) plus the
+cluster-only v4gga spec_0018 (completed between the last pull and the
+deployment). Remedy: `sbatch hpcjobs/refinalize_verbatim_holdout.sbatch`
+(no SCF; rewrites per_reaction.json/test_set.csv from the existing
+per-species energies with one-time *.pre_verbatim.* backups; idempotent, so
+running it over whole run dirs is safe and its report is the ground-truth
+stale list). Safe alongside the running arrays (touches only completed
+specs' dirs) or at drain. Afterwards: re-pull and run
+`python notebooks/analysis/verify_holdout_parity.py <pulled run dirs>` --
+the closing state is all `parity`. Local figures already use the
+reconstructed verbatim slices either way.
