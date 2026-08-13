@@ -70,3 +70,11 @@ def test_refilter_spec_holdout_is_leakfree_and_backs_up(tmp_path):
     assert not any("nh3" in {x.casefold() for x in (set(r["reactants"]) | set(r["products"]))}
                    for r in pr)
     assert res["n_kept"] > 0.8 * len(full_rxns)  # only trained-molecule reactions dropped
+
+
+def test_main_refuses_without_legacy_flag(capsys):
+    """The species-strict rewriter is retired: without the explicit legacy
+    flag it must refuse rather than clobber verbatim-rule artifacts."""
+    import refilter_holdout_from_energies as rf
+    assert rf.main([]) == 2
+    assert "REFUSING" in capsys.readouterr().out

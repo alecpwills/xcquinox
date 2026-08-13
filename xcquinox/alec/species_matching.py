@@ -204,6 +204,137 @@ def _dfs_trained_geometry(name: str):
     return _TRAINED_GEOMETRY_CACHE.get(name)
 
 
+def canonical_species_keys(pool_specs: Mapping[str, Any],
+                           trained_names: Iterable[str] = (), *,
+                           _geometry_provider=None
+                           ) -> Dict[str, Tuple[str, ...]]:
+    """``{name: (canonical key, ...)}`` over pool names AND trained names --
+    the species vocabulary for cross-naming REACTION identity.
+
+    A key is ``"<composition>|<charge>|<spin>|g<class>"``. The geometry class
+    is 0 except within composition-degenerate pool families (same
+    composition+charge+spin: hcn/hnc, the carbene pair's spin already
+    separates), where each distinct pool geometry gets its own class so the
+    isomers' reactions stay distinct. A trained name maps to the key(s) of
+    the pool species it physically is: case-fold name match first, else
+    composition+charge+spin with the trained geometry (the pool builder's
+    G2/97 trajectory) resolving degenerate families; with no geometry the
+    trained name keeps EVERY candidate class (conservative: its reactions
+    then match all candidates' reactions). Names that resolve nowhere map to
+    a name-literal key (never equal to any pool key)."""
+    provider = (_geometry_provider if _geometry_provider is not None
+                else _dfs_trained_geometry)
+    base: Dict[str, Tuple[Composition, int, int]] = {}
+    for pn, spec in pool_specs.items():
+        pk = pool_species_key(spec)
+        if pk is not None:
+            base[str(pn)] = pk
+    groups: Dict[Tuple, list] = {}
+    for pn, pk in base.items():
+        groups.setdefault(pk, []).append(pn)
+    # Geometry classes within degenerate families: members are CLUSTERED by
+    # geometric identity (sorted for determinism), so the pool's case twins
+    # of one species (O/o, NH3/nh3 -- identical geometries) share a class
+    # while true isomers (hcn/hnc) split. A member whose geometry cannot be
+    # parsed gets its own class (cannot be proven identical to anything).
+    g_class: Dict[str, int] = {}
+    for pk, members in groups.items():
+        if len(members) == 1:
+            g_class[members[0]] = 0
+            continue
+        reps: list = []   # (signature-or-None, class index)
+        for pn in sorted(members):
+            get = (pool_specs[pn].get
+                   if isinstance(pool_specs[pn], Mapping)
+                   else lambda k, d=None, s=pool_specs[pn]: getattr(s, k, d))
+            parsed = _parse_atom_string(get("atom"))
+            sig = _distance_signature(*parsed) if parsed is not None else None
+            assigned = None
+            if sig is not None:
+                for rsig, ci in reps:
+                    if rsig is not None and geometries_match(sig, rsig):
+                        assigned = ci
+                        break
+            if assigned is None:
+                assigned = len(reps)
+                reps.append((sig, assigned))
+            g_class[pn] = assigned
+    def _key(pk, gc):
+        comp, charge, spin = pk
+        comp_s = "".join(f"{e}{n}" for e, n in comp)
+        return f"{comp_s}|{charge}|{spin}|g{gc}"
+    out: Dict[str, Tuple[str, ...]] = {}
+    for pn, pk in base.items():
+        out[pn] = (_key(pk, g_class[pn]),)
+    pool_cf = {str(n).casefold(): str(n) for n in base}
+    for t in trained_names:
+        t = str(t)
+        if t in out:
+            continue
+        cf = t.casefold()
+        if cf in pool_cf:
+            out[t] = out[pool_cf[cf]]
+            continue
+        tk = trained_species_key(t)
+        if tk is None:
+            out[t] = (f"name:{cf}",)
+            continue
+        t_comp, t_charge, t_spin = tk
+        cands = [pn for pn, (c, ch, sp) in base.items()
+                 if c == t_comp and ch == t_charge
+                 and (t_spin is None or sp == t_spin)]
+        if not cands:
+            out[t] = (f"name:{cf}",)
+            continue
+        if len(cands) > 1:
+            geo = provider(t)
+            if geo is not None:
+                t_sig = _distance_signature(*geo)
+                resolved = []
+                for pn in cands:
+                    get = (pool_specs[pn].get
+                           if isinstance(pool_specs[pn], Mapping)
+                           else lambda k, d=None, s=pool_specs[pn]:
+                           getattr(s, k, d))
+                    parsed = _parse_atom_string(get("atom"))
+                    if parsed is not None and geometries_match(
+                            t_sig, _distance_signature(*parsed)):
+                        resolved.append(pn)
+                if resolved:
+                    cands = resolved
+        out[t] = tuple(sorted({k for pn in cands for k in out[pn]}))
+    return out
+
+
+def reaction_identity_keys(rxn: Mapping[str, Any],
+                           key_map: Mapping[str, Tuple[str, ...]]
+                           ) -> Tuple[str, ...]:
+    """All canonical identities of one reaction under ``key_map`` (the
+    product over each species' candidate keys -- more than one only for
+    unresolved composition-degenerate trained species). An identity is the
+    serialized sorted (species key, coefficient) multiset over reactants and
+    products, so permuted-name twins and cross-vocabulary twins coincide.
+    Empty tuple when the species lists are missing."""
+    reac = rxn.get("reactants")
+    prod = rxn.get("products")
+    if not reac or not prod:
+        return ()
+    coeffs = rxn.get("coeffs") or []
+    n_r = len(reac)
+    def _side_opts(names, cs):
+        opts = [[]]
+        for i, n in enumerate(names):
+            keys = key_map.get(str(n)) or (f"name:{str(n).casefold()}",)
+            c = abs(float(cs[i])) if i < len(cs) else 1.0
+            opts = [o + [(k, c)] for o in opts for k in keys]
+        return [tuple(sorted(o)) for o in opts]
+    r_cs = coeffs[:n_r]
+    p_cs = coeffs[n_r:]
+    return tuple(sorted({repr((r, p))
+                         for r in _side_opts(reac, r_cs)
+                         for p in _side_opts(prod, p_cs)}))
+
+
 def trained_pool_aliases(training_names: Iterable[str],
                          pool_specs: Mapping[str, Any], *,
                          verbose: bool = True,

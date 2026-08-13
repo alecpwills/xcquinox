@@ -129,6 +129,20 @@ def _is_num(v: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 _POOL_SPECS_CACHE: Optional[Dict[str, Any]] = None
+_POOL_CACHE: Optional[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
+
+
+def _canonical_pool() -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """``(pool species specs, pool reactions)`` -- the canonical held-out
+    benchmark pool the cluster eval scores against. Lazy + cached (one load
+    per process); monkeypatchable test seam."""
+    global _POOL_CACHE
+    if _POOL_CACHE is None:
+        from xcquinox.alec.full_benchmark_pools import (
+            load_full_held_out_pools)
+        specs, rxns = load_full_held_out_pools()
+        _POOL_CACHE = (specs, list(rxns))
+    return _POOL_CACHE
 
 
 def _pool_specs_for_aliasing() -> Dict[str, Any]:
@@ -239,14 +253,36 @@ def collect_holdout_reaction_rows(run_dir: Path,
     validation-slice reaction (``_val_reaction_identities`` -- validation-best
     selection saw that barrier) are dropped."""
     cells = ccp._read_manifest_cells(run_dir)
-    val_ids = _val_reaction_identities(run_dir)
     rows: List[Dict[str, Any]] = []
+    # -- verbatim-holdout reconstruction (specs whose per_molecule carries the
+    #    per-species energies) --------------------------------------------
+    recon_stats = {"specs": 0, "verbatim": 0, "val": 0, "nan": 0}
+    legacy_specs: List[Tuple[int, Path]] = []
+    for idx, spec_dir in ccp._spec_dirs(run_dir):
+        got = _reconstruct_spec_rows(run_dir, idx, spec_dir, cells,
+                                     eval_subdir, recon_stats)
+        if got is None:
+            legacy_specs.append((idx, spec_dir))
+        else:
+            rows.extend(got)
+    if recon_stats["specs"]:
+        print(f"  (verbatim holdout: reconstructed {recon_stats['specs']} "
+              f"specs' test slices from per-species energies; excluded "
+              f"{recon_stats['verbatim']} verbatim-supervised and "
+              f"{recon_stats['val']} validation rows; "
+              f"{recon_stats['nan']} NaN-dropped)")
+    if not legacy_specs:
+        return rows
+    # -- legacy path: cluster-written per_reaction.json (pulls whose
+    #    per_molecule.json predates the energy columns), with the
+    #    species-alias and validation-twin repairs ------------------------
+    val_ids = _val_reaction_identities(run_dir)
     n_alias = 0
     alias_hits: set = set()
     n_twin = 0
     twin_hits: set = set()
     n_specs_alias = 0
-    for idx, spec_dir in ccp._spec_dirs(run_dir):
+    for idx, spec_dir in legacy_specs:
         rj_path = spec_dir / eval_subdir / "per_reaction.json"
         if not rj_path.is_file():
             continue
@@ -299,6 +335,143 @@ def collect_holdout_reaction_rows(run_dir: Path,
               f"reaction is a permuted-name twin of a validation reaction: "
               f"{sorted(twin_hits)})")
     return rows
+
+
+class _MetadataSpec:
+    """Duck-typed training-spec view over a pulled ``train_metadata.json``,
+    exposing exactly what ``trained_reaction_exclusion`` consumes."""
+    def __init__(self, meta: Dict[str, Any]):
+        self._lk = dict(meta.get("loss_kwargs") or {})
+    def loss_kwargs_dict(self) -> Dict[str, Any]:
+        return self._lk
+
+
+def _val_reaction_entries(run_dir: Path) -> List[Dict[str, Any]]:
+    """Raw ``validation/val_reactions.json`` entries, from ``run_dir`` and
+    every source run a merged symlink view resolves into (deduplicated by
+    file). Empty list when no validation record exists."""
+    cands = [Path(run_dir) / "validation" / "val_reactions.json"]
+    for _idx, sd in ccp._spec_dirs(run_dir):
+        if sd.is_symlink():
+            cands.append(sd.resolve().parent.parent / "validation"
+                         / "val_reactions.json")
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for p in cands:
+        try:
+            rp = p.resolve()
+        except OSError:
+            continue
+        if rp in seen or not p.is_file():
+            continue
+        seen.add(rp)
+        try:
+            with p.open() as f:
+                out.extend(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return out
+
+
+_VAL_IDENTITY_CACHE: Dict[Tuple[str, int], set] = {}
+_POOL_KEY_MAP_CACHE: Optional[Tuple[Any, Dict[str, Tuple[str, ...]]]] = None
+
+
+def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
+                           cells: Dict[int, Dict[str, Any]],
+                           eval_subdir: str,
+                           stats: Dict[str, int]
+                           ) -> Optional[List[Dict[str, Any]]]:
+    """One spec's VERBATIM-HOLDOUT test slice, reconstructed from its
+    per-species energies (``E_total_nn`` / ``E_pbe`` in
+    ``<eval_subdir>/per_molecule.json``) over the canonical pool with the
+    cluster's own reaction math (``eval_holdout.per_reaction_errors``).
+
+    Exclusions -- by canonical reaction identity -- are exactly the spec's
+    verbatim supervised reactions (``trained_reaction_exclusion`` over the
+    training record's reaction points) and the recorded validation slice;
+    a reaction merely containing a trained molecule STAYS. Rows require
+    finite NN AND PBE reaction energies. ``None`` when the spec's
+    per_molecule predates the energy columns (caller falls back to the
+    cluster-written per_reaction.json)."""
+    pm_path = spec_dir / eval_subdir / "per_molecule.json"
+    if not pm_path.is_file():
+        return None
+    try:
+        with pm_path.open() as f:
+            pm = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    e_nn = {str(r.get("molecule")): float(r["E_total_nn"]) for r in pm
+            if _is_num(r.get("E_total_nn"))}
+    e_pbe = {str(r.get("molecule")): float(r["E_pbe"]) for r in pm
+             if _is_num(r.get("E_pbe"))}
+    if not e_nn or not e_pbe:
+        return None
+    from xcquinox.alec.eval_holdout import (per_reaction_errors,
+                                            trained_reaction_exclusion)
+    from xcquinox.alec.species_matching import reaction_identity_keys
+    pool_specs, pool_rxns = _canonical_pool()
+    tm_path = spec_dir / "train_metadata.json"
+    meta: Dict[str, Any] = {}
+    if tm_path.is_file():
+        try:
+            with tm_path.open() as f:
+                meta = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            meta = {}
+    excl, key_map = trained_reaction_exclusion(_MetadataSpec(meta),
+                                               pool_specs)
+    # A pool-name key map always exists (pool-name keys are identical under
+    # any trained-name extension, so identities computed with either map
+    # coincide on pool reactions); the trained map is preferred when the
+    # spec records reaction points, since the exclusion set was built on it.
+    global _POOL_KEY_MAP_CACHE
+    if _POOL_KEY_MAP_CACHE is None or _POOL_KEY_MAP_CACHE[0] is not pool_specs:
+        from xcquinox.alec.species_matching import canonical_species_keys
+        _POOL_KEY_MAP_CACHE = (pool_specs,
+                               canonical_species_keys(pool_specs))
+    id_map = key_map or _POOL_KEY_MAP_CACHE[1]
+    cache_key = (str(Path(run_dir).resolve()), id(pool_rxns))
+    val_ids = _VAL_IDENTITY_CACHE.get(cache_key)
+    if val_ids is None:
+        val_ids = set()
+        for e in _val_reaction_entries(run_dir):
+            val_ids.update(reaction_identity_keys(
+                e, _POOL_KEY_MAP_CACHE[1]))
+        _VAL_IDENTITY_CACHE[cache_key] = val_ids
+    nn_err = per_reaction_errors(e_nn, pool_rxns)
+    pbe_err = per_reaction_errors(e_pbe, pool_rxns)
+    cell = cells.get(idx, {})
+    out: List[Dict[str, Any]] = []
+    for rxn, rn, rp in zip(pool_rxns, nn_err, pbe_err):
+        if not (_is_num(rn.get("abs_error_kcalmol"))
+                and _is_num(rp.get("abs_error_kcalmol"))):
+            stats["nan"] += 1
+            continue
+        ids = set(reaction_identity_keys(rxn, id_map))
+        if excl and ids & excl:
+            stats["verbatim"] += 1
+            continue
+        if val_ids and ids & val_ids:
+            stats["val"] += 1
+            continue
+        out.append({
+            "idx": idx,
+            "arch": cell.get("arch"),
+            "subset_size": cell.get("subset_size"),
+            "name": rxn.get("name"),
+            "pool": rxn.get("source_pool"),
+            "ref_kcalmol": rn.get("ref_kcalmol"),
+            "de_nn_kcalmol": rn.get("de_kcalmol"),
+            "de_pbe_kcalmol": rp.get("de_kcalmol"),
+            "abs_error_nn_kcalmol": rn.get("abs_error_kcalmol"),
+            "abs_error_pbe_kcalmol": rp.get("abs_error_kcalmol"),
+            "reactants": list(rxn.get("reactants") or []),
+            "products": list(rxn.get("products") or []),
+        })
+    stats["specs"] += 1
+    return out
 
 
 def collect_insample_ae_rows(run_dir: Path) -> List[Dict[str, Any]]:

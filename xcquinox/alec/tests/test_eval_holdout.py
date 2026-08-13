@@ -359,6 +359,124 @@ def test_training_molecule_names_excludes_atoms():
     assert set(eh.training_molecule_names(spec)) == {"hocn", "b2h6"}
 
 
+def _verbatim_pool():
+    pool = {
+        "hcn": {"atom_composition": (("C", 1), ("H", 1), ("N", 1)),
+                "charge": 0, "spin": 0,
+                "atom": "C 0 0 0; N 0 0 1.15; H 0 0 -1.06"},
+        "hnc": {"atom_composition": (("C", 1), ("H", 1), ("N", 1)),
+                "charge": 0, "spin": 0,
+                "atom": "N 0 0 0; C 0 0 1.17; H 0 0 -1.00"},
+        "co2": {"atom_composition": (("C", 1), ("O", 2)), "charge": 0,
+                "spin": 0, "atom": "C 0 0 0; O 0 0 1.16; O 0 0 -1.16"},
+        "h": {"atom_composition": (("H", 1),), "charge": 0, "spin": 1,
+              "atom": "H 0 0 0"},
+        "c": {"atom_composition": (("C", 1),), "charge": 0, "spin": 2,
+              "atom": "C 0 0 0"},
+        "n": {"atom_composition": (("N", 1),), "charge": 0, "spin": 3,
+              "atom": "N 0 0 0"},
+        "o": {"atom_composition": (("O", 1),), "charge": 0, "spin": 2,
+              "atom": "O 0 0 0"},
+    }
+    return pool
+
+
+class _VerbatimSpec:
+    """Training-spec stub: trained the CHN atomization (reaction form)."""
+    def loss_kwargs_dict(self):
+        return {"bh76_reactions": [
+            {"name": "CHN", "reactants": ["CHN"],
+             "products": ["C", "H", "N"],
+             "coeffs": [-1.0, 1.0, 1.0, 1.0]}]}
+    molecules = ()
+
+
+def test_trained_reaction_exclusion_identities():
+    excl, key_map = eh.trained_reaction_exclusion(_VerbatimSpec(),
+                                                  _verbatim_pool())
+    assert excl and key_map
+    from xcquinox.alec.species_matching import reaction_identity_keys
+    hcn_atom = {"name": "w411_hcn_atomization", "reactants": ["hcn"],
+                "products": ["h", "c", "n"],
+                "coeffs": [-1.0, 1.0, 1.0, 1.0]}
+    hnc_atom = {"name": "w411_hnc_atomization", "reactants": ["hnc"],
+                "products": ["h", "c", "n"],
+                "coeffs": [-1.0, 1.0, 1.0, 1.0]}
+    barrier = {"name": "bh76_hcn_to_hcnts", "reactants": ["hcn"],
+               "products": ["hnc"], "coeffs": [-1.0, 1.0]}
+    assert set(reaction_identity_keys(hcn_atom, key_map)) & excl
+    assert not set(reaction_identity_keys(hnc_atom, key_map)) & excl
+    assert not set(reaction_identity_keys(barrier, key_map)) & excl
+
+
+def test_trained_reaction_exclusion_reads_property_and_tuple_specs():
+    """The real TrainingSpec exposes loss_kwargs_dict as a PROPERTY and
+    loss_kwargs as a tuple of pairs; both shapes must resolve."""
+    rxn = {"name": "CHN", "reactants": ["CHN"], "products": ["C", "H", "N"],
+           "coeffs": [-1.0, 1.0, 1.0, 1.0]}
+
+    class _PropSpec:
+        @property
+        def loss_kwargs_dict(self):
+            return {"bh76_reactions": [rxn]}
+
+    class _TupleSpec:
+        loss_kwargs = (("bh76_reactions", [rxn]),)
+
+    for spec in (_PropSpec(), _TupleSpec()):
+        excl, km = eh.trained_reaction_exclusion(spec, _verbatim_pool())
+        assert excl and km, type(spec).__name__
+
+
+def test_finalize_warns_on_empty_exclusion_with_trained_molecules(
+        tmp_path, capsys):
+    """Strict mode with trained molecules but an empty verbatim-exclusion
+    set (a training record predating reaction-form points) must be loud."""
+    e = {"a": -1.0, "b": -0.5}
+    eh._finalize_holdout_outputs(
+        [{"name": "r1", "source_pool": "w411", "reactants": ["a"],
+          "products": ["b"], "coeffs": [-1.0, 2.0],
+          "reaction_energy_ref": 0.1}],
+        e, dict(e), mol_records=[], training_names=("X",), n_species=2,
+        out_dir=tmp_path, strict=True, excluded_identities=set(),
+        species_key_map={})
+    assert "EMPTY verbatim-exclusion" in capsys.readouterr().out
+
+
+def test_finalize_drops_verbatim_supervised_only(tmp_path):
+    """The strict eval drops the trained reaction's pool twin and NOTHING
+    else -- reactions merely containing the trained molecule stay."""
+    pool = _verbatim_pool()
+    spec = _VerbatimSpec()
+    excl, key_map = eh.trained_reaction_exclusion(spec, pool)
+    reactions = [
+        {"name": "w411_hcn_atomization", "source_pool": "w411",
+         "reactants": ["hcn"], "products": ["h", "c", "n"],
+         "coeffs": [-1.0, 1.0, 1.0, 1.0], "reaction_energy_ref": 0.5},
+        {"name": "w411_hnc_atomization", "source_pool": "w411",
+         "reactants": ["hnc"], "products": ["h", "c", "n"],
+         "coeffs": [-1.0, 1.0, 1.0, 1.0], "reaction_energy_ref": 0.52},
+        {"name": "bh76_hcn_to_hcnts", "source_pool": "bh76",
+         "reactants": ["hcn"], "products": ["hnc"],
+         "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.02},
+        {"name": "w411_co2_atomization", "source_pool": "w411",
+         "reactants": ["co2"], "products": ["c", "o"],
+         "coeffs": [-1.0, 1.0, 2.0], "reaction_energy_ref": 0.6},
+    ]
+    e = {"hcn": -93.0, "hnc": -92.98, "co2": -188.0, "h": -0.5,
+         "c": -37.8, "n": -54.5, "o": -75.0}
+    out = eh._finalize_holdout_outputs(
+        reactions, e, dict(e), mol_records=[], training_names=("CHN",),
+        n_species=len(e), out_dir=tmp_path, strict=True,
+        excluded_identities=excl, species_key_map=key_map)
+    import json as _json
+    rows = _json.loads((tmp_path / "per_reaction.json").read_text())
+    names = sorted(r["name"] for r in rows)
+    assert names == ["bh76_hcn_to_hcnts", "w411_co2_atomization",
+                     "w411_hnc_atomization"], names
+    assert out["n_dropped_overlap"] == 1
+
+
 def test_split_held_out_keeps_permuted_name_twins_together():
     """The pool's duplicate barriers (same physics, permuted-reactant names)
     must land on the SAME side of the val/test split -- the name-keyed hash

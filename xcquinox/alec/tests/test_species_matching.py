@@ -152,6 +152,90 @@ def test_unparseable_training_names_are_ignored(pool_specs):
                                    verbose=False) == set()
 
 
+def test_canonical_keys_separate_geometry_classes():
+    # hcn and hnc share (composition, charge, spin); their pool keys must
+    # differ by geometry class, and a trained CHN with a geometry resolves to
+    # hcn's key only.
+    pool = _iso_pool()
+    provider = (lambda name: (("C", "N", "H"),
+                              ((0.0, 0.0, 0.0), (0.0, 0.0, 1.16),
+                               (0.0, 0.0, -1.07)))
+                if name == "CHN" else None)
+    keys = sm.canonical_species_keys(pool, ["CHN"],
+                                     _geometry_provider=provider)
+    assert keys["hcn"] != keys["hnc"]
+    assert keys["CHN"] == keys["hcn"]
+    assert len(keys["CHN"]) == 1
+
+
+def test_canonical_keys_case_twins_share_class_isomers_split():
+    # The pool lists the same species twice under case-twin names (O/o,
+    # NH3/nh3): they share one geometry class. A true isomer in the same
+    # (composition, charge, spin) family gets its own class.
+    pool = dict(_iso_pool())          # hcn + hnc (isomers)
+    pool["HCN"] = dict(pool["hcn"])   # case twin of hcn
+    pool["o"] = {"atom_composition": (("O", 1),), "charge": 0, "spin": 2,
+                 "atom": "O 0 0 0"}
+    pool["O"] = {"atom_composition": (("O", 1),), "charge": 0, "spin": 2,
+                 "atom": "O 0 0 0"}
+    keys = sm.canonical_species_keys(pool, [],
+                                     _geometry_provider=lambda n: None)
+    assert keys["o"] == keys["O"]
+    assert keys["HCN"] == keys["hcn"]
+    assert keys["hcn"] != keys["hnc"]
+
+
+def test_canonical_keys_casefold_and_unresolved():
+    pool = {
+        "ch4": {"atom_composition": (("C", 1), ("H", 4)), "charge": 0,
+                "spin": 0, "atom": "C 0 0 0; H 1 0 0; H 0 1 0; H 0 0 1; "
+                                    "H -1 -1 -1"},
+    }
+    keys = sm.canonical_species_keys(pool, ["CH4", "methanol"],
+                                     _geometry_provider=lambda n: None)
+    assert keys["CH4"] == keys["ch4"]          # casefold twin shares the key
+    assert keys["methanol"] == ("name:methanol",)   # never matches a pool key
+
+
+def test_canonical_keys_unresolved_degenerate_keeps_all_candidates():
+    pool = _iso_pool()
+    keys = sm.canonical_species_keys(pool, ["CHN"],
+                                     _geometry_provider=lambda n: None)
+    assert set(keys["CHN"]) == set(keys["hcn"]) | set(keys["hnc"])
+
+
+def test_reaction_identity_keys_cross_vocabulary():
+    # The trained CHN atomization must share an identity with the pool's
+    # w411_hcn_atomization and NOT with w411_hnc_atomization; permuted
+    # reactant order must not matter.
+    pool = dict(_iso_pool())
+    for a in ("h", "c", "n"):
+        pool[a] = {"atom_composition": ((a.upper(), 1),), "charge": 0,
+                   "spin": 1 if a != "c" else 2,
+                   "atom": f"{a.upper()} 0 0 0"}
+    provider = (lambda name: (("C", "N", "H"),
+                              ((0.0, 0.0, 0.0), (0.0, 0.0, 1.16),
+                               (0.0, 0.0, -1.07)))
+                if name == "CHN" else None)
+    keys = sm.canonical_species_keys(pool, ["CHN", "H", "C", "N"],
+                                     _geometry_provider=provider)
+    trained = {"name": "CHN", "reactants": ["CHN"],
+               "products": ["C", "H", "N"],
+               "coeffs": [-1.0, 1.0, 1.0, 1.0]}
+    hcn_pool = {"name": "w411_hcn_atomization", "reactants": ["hcn"],
+                "products": ["h", "c", "n"],
+                "coeffs": [-1.0, 1.0, 1.0, 1.0]}
+    hnc_pool = {"name": "w411_hnc_atomization", "reactants": ["hnc"],
+                "products": ["h", "c", "n"],
+                "coeffs": [-1.0, 1.0, 1.0, 1.0]}
+    t = set(sm.reaction_identity_keys(trained, keys))
+    assert t & set(sm.reaction_identity_keys(hcn_pool, keys))
+    assert not t & set(sm.reaction_identity_keys(hnc_pool, keys))
+    # permuted product order coincides
+    perm = dict(hcn_pool, products=["n", "h", "c"])
+    assert set(sm.reaction_identity_keys(perm, keys)) & t
+
+
 def test_full_training_vocabulary_maps_cleanly(pool_specs):
     # Every Hill name in the DFS AE table parses, and its alias set contains
     # no pool species whose composition differs -- a parser regression on any

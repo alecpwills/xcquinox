@@ -121,6 +121,9 @@ def run_holdout_with_escalation(
     # molecule-level, else shared reference atoms (h, c, n, o, ...) drop nearly
     # the entire atomization held-out set. See eval_holdout.training_molecule_names.
     training_names = eval_holdout.training_molecule_names(training_spec)
+    excl, key_map = eval_holdout.trained_reaction_exclusion(
+        training_spec, full_specs)
     return eval_holdout._finalize_holdout_outputs(
         reactions, energies, pbe_energies, mol_records, training_names,
-        n_species=len(full_specs), out_dir=out_dir, strict=strict)
+        n_species=len(full_specs), out_dir=out_dir, strict=strict,
+        excluded_identities=excl, species_key_map=key_map)

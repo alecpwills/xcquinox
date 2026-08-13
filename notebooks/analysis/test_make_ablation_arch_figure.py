@@ -611,6 +611,107 @@ def _make_leak_run(root):
     return run
 
 
+_KCAL = 627.5094740631
+
+_RECON_POOL_SPECS = {
+    "hcn": {"atom_composition": (("C", 1), ("H", 1), ("N", 1)), "charge": 0,
+            "spin": 0, "atom": "C 0 0 0; N 0 0 1.15; H 0 0 -1.06"},
+    "hnc": {"atom_composition": (("C", 1), ("H", 1), ("N", 1)), "charge": 0,
+            "spin": 0, "atom": "N 0 0 0; C 0 0 1.17; H 0 0 -1.00"},
+    "co2": {"atom_composition": (("C", 1), ("O", 2)), "charge": 0, "spin": 0,
+            "atom": "C 0 0 0; O 0 0 1.16; O 0 0 -1.16"},
+    "o3": {"atom_composition": (("O", 3),), "charge": 0, "spin": 0,
+           "atom": "O 0 0 0; O 0 0 1.27; O 1.1 0 -0.6"},
+    "h": {"atom_composition": (("H", 1),), "charge": 0, "spin": 1,
+          "atom": "H 0 0 0"},
+    "c": {"atom_composition": (("C", 1),), "charge": 0, "spin": 2,
+          "atom": "C 0 0 0"},
+    "n": {"atom_composition": (("N", 1),), "charge": 0, "spin": 3,
+          "atom": "N 0 0 0"},
+    "o": {"atom_composition": (("O", 1),), "charge": 0, "spin": 2,
+          "atom": "O 0 0 0"},
+}
+
+_RECON_POOL_RXNS = [
+    {"name": "w411_hcn_atomization", "source_pool": "w411",
+     "reactants": ["hcn"], "products": ["h", "c", "n"],
+     "coeffs": [-1.0, 1.0, 1.0, 1.0], "reaction_energy_ref": 313.4},
+    {"name": "w411_hnc_atomization", "source_pool": "w411",
+     "reactants": ["hnc"], "products": ["h", "c", "n"],
+     "coeffs": [-1.0, 1.0, 1.0, 1.0], "reaction_energy_ref": 298.7},
+    {"name": "bh76_hcn_to_hcnts", "source_pool": "bh76",
+     "reactants": ["hcn"], "products": ["hnc"],
+     "coeffs": [-1.0, 1.0], "reaction_energy_ref": 15.0},
+    {"name": "w411_co2_atomization", "source_pool": "w411",
+     "reactants": ["co2"], "products": ["c", "o"],
+     "coeffs": [-1.0, 1.0, 2.0], "reaction_energy_ref": 390.0},
+    {"name": "w411_o3_atomization", "source_pool": "w411",
+     "reactants": ["o3"], "products": ["o"],
+     "coeffs": [-1.0, 3.0], "reaction_energy_ref": 147.0},
+]
+
+_RECON_E_NN = {"hcn": -93.30, "hnc": -93.27, "co2": -188.10,
+               "h": -0.50, "c": -37.80, "n": -54.50, "o": -75.00}
+_RECON_E_PBE = {k: v + 0.001 for k, v in _RECON_E_NN.items()}
+
+
+def _make_recon_run(root):
+    """Run whose per_molecule.json carries per-species energies: the
+    verbatim-holdout reconstruction path. Trained: the CHN atomization
+    (reaction form). Validation slice: the co2 atomization. o3 has no
+    energies -> its reaction NaN-drops."""
+    run = root / "recon/polarized/runs" / _STAMP
+    run.mkdir(parents=True)
+    manifest = {"n_specs": 1, "width": 4, "specs": [
+        {"index": 0, "spec_file": "spec_0000.spec", "sha256": "x" * 64,
+         "cell": {"arch": "deep", "subset_size": 2}}]}
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    (run / "validation").mkdir()
+    (run / "validation" / "val_reactions.json").write_text(json.dumps([
+        {"name": "w411_co2_atomization", "reactants": ["co2"],
+         "products": ["c", "o"], "coeffs": [-1.0, 1.0, 2.0],
+         "reaction_energy_ref": 390.0}]))
+    sd = run / "checkpoints" / "spec_0000"
+    (sd / "eval_holdout").mkdir(parents=True)
+    (sd / "train_metadata.json").write_text(json.dumps({
+        "molecules": ["CHN", "h", "c", "n"],
+        "loss_kwargs": {"bh76_reactions": [
+            {"name": "CHN", "reactants": ["CHN"],
+             "products": ["C", "H", "N"],
+             "coeffs": [-1.0, 1.0, 1.0, 1.0]}]}}))
+    pm = [{"molecule": m, "E_total_nn": _RECON_E_NN.get(m),
+           "E_pbe": _RECON_E_PBE.get(m)}
+          for m in list(_RECON_E_NN) + ["o3"]]
+    (sd / "eval_holdout" / "per_molecule.json").write_text(json.dumps(pm))
+    return run
+
+
+def test_reconstructed_rows_verbatim_holdout(tmp_path, monkeypatch, capsys):
+    # The full test slice is rebuilt from per-species energies over the
+    # canonical pool; ONLY the verbatim-trained reaction's pool twin and the
+    # validation slice leave; a species-sharing barrier STAYS; reactions
+    # with missing energies NaN-drop.
+    run = _make_recon_run(tmp_path)
+    monkeypatch.setattr(fig, "_canonical_pool",
+                        lambda: (dict(_RECON_POOL_SPECS),
+                                 list(_RECON_POOL_RXNS)))
+    rows = fig.collect_holdout_reaction_rows(run)
+    names = sorted(r["name"] for r in rows)
+    assert names == ["bh76_hcn_to_hcnts", "w411_hnc_atomization"], names
+    by = {r["name"]: r for r in rows}
+    de = (_RECON_E_NN["hnc"] - _RECON_E_NN["hcn"]) * _KCAL
+    assert by["bh76_hcn_to_hcnts"]["de_nn_kcalmol"] == pytest.approx(de)
+    assert by["bh76_hcn_to_hcnts"]["abs_error_nn_kcalmol"] == pytest.approx(
+        abs(de - 15.0))
+    de_hnc = ((_RECON_E_NN["h"] + _RECON_E_NN["c"] + _RECON_E_NN["n"]
+               - _RECON_E_NN["hnc"]) * _KCAL)
+    assert by["w411_hnc_atomization"]["de_nn_kcalmol"] == pytest.approx(de_hnc)
+    assert by["w411_hnc_atomization"]["pool"] == "w411"
+    assert by["w411_hnc_atomization"]["reactants"] == ["hnc"]
+    out = capsys.readouterr().out
+    assert "verbatim" in out and "validation" in out
+
+
 def test_holdout_rows_exclude_trained_alias_reactions(tmp_path, monkeypatch,
                                                       capsys):
     # The strict filter ran name-level on the cluster; the figure layer must

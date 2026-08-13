@@ -108,6 +108,20 @@ def refilter_spec(spec_dir: Path, full_rxns: List[Dict], neutral: Set[str]) -> D
 
 
 def main(argv=None) -> int:
+    print("REFUSING: this tool rewrites held-out artifacts under the "
+          "RETIRED species-level strict-overlap rule. Held-out exclusion is "
+          "now by VERBATIM supervised reaction (eval_holdout, 2026-08-13); "
+          "running this on current pulls would clobber verbatim-rule "
+          "artifacts with species-filtered ones. The figure layer "
+          "reconstructs test slices from per-species energies directly -- "
+          "no refilter step is needed. Pass --legacy-species-strict to run "
+          "anyway on pre-2026-08 artifacts.")
+    if "--legacy-species-strict" not in (argv if argv is not None
+                                         else __import__("sys").argv[1:]):
+        return 2
+    argv = [a for a in (argv if argv is not None
+                        else __import__("sys").argv[1:])
+            if a != "--legacy-species-strict"]
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--run-dir", required=True, help="pulled run dir")

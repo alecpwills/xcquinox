@@ -354,14 +354,16 @@ test slice (validation-best selection saw those four test barriers), and
 the `in_training_subset` per-molecule flag is false for the same
 naming-mismatch species.
 
-**Already done (local, 2026-08-13):** composition+charge+spin species
-identity with geometric isomer resolution in
-`xcquinox/alec/species_matching.py`; `eval_holdout.py` expands its strict
-filter names via `held_out_filter_names_with_aliases` (NOT yet deployed --
-the running array live-imports the cluster tree); the figure layer applies
-the same repairs on read (alias-leak drop, validation-twin drop,
-cross-spec-inconsistent PBE density reference exclusion), so locally
-rendered figures are already leak-free.
+**Already done (local, 2026-08-13; superseded the species-level rule the
+same day):** held-out exclusion is now by VERBATIM supervised reaction
+(canonical identities with geometric isomer classes,
+`xcquinox/alec/species_matching.py`; `eval_holdout.trained_reaction_exclusion`
++ identity drops in `_finalize_holdout_outputs`; recorded-validation
+exclusion by identity). The figure layer reconstructs each spec's full test
+slice from its per-species energies over the canonical pool with the same
+exclusions, so locally rendered figures already carry the verbatim-rule
+slices; density means keep the species-level exclusion (trained densities
+are verbatim training targets) and the c2 consistency guard.
 
 **Trigger:** when train array 2116743 (and the mgga arm 2116703) drain,
 rsync the updated `xcquinox/alec/eval_holdout.py` +

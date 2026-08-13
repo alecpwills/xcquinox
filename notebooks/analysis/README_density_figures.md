@@ -294,16 +294,20 @@ and are held to SCAN, the conservative assignment). A cell whose reference tick 
 withdrawn (SCAN coverage under the per-cell floor) stays unmarked; the CSVs keep BOTH
 verdicts (`beats_pbe`, `beats_scan`) regardless of which one the marker shows.
 
-**Strict-holdout repairs on read (both printed with counts when they fire):** reaction and
-density rows containing a pool species physically identical to that spec's trained
-molecules under a different name are dropped (Hill vs GMTKN55 naming; matching by
-composition + charge + spin with geometric isomer resolution,
-`xcquinox.alec.species_matching`), and the four test-side permuted-name twins of
-validation reactions are dropped (validation-best selection saw those barriers). Species
-whose model-free PBE density reference disagrees across specs beyond 5% (the c2
-reference-drift class) leave the density rows entirely -- anchors and cell means -- so no
-density anchor can drift with pull coverage. See `HOLDOUT_SET.md` for the name-by-name
-expansion.
+**Verbatim hold-out (energy rows):** each spec's test slice is RECONSTRUCTED from its
+per-species energies (`E_total_nn`/`E_pbe` in `per_molecule.json`) over the canonical
+pool with the cluster's own reaction math, excluding -- by canonical reaction identity
+(`xcquinox.alec.species_matching`; composition/charge/spin keys with geometric isomer
+classes) -- exactly the spec's VERBATIM supervised reactions (its AE-as-reaction points'
+`w411_*_atomization` twins; its trained barrier reactions) and the recorded validation
+slice. A reaction merely containing a trained molecule is a generalization target and
+STAYS. Per-run reconstruction counts are printed; pulls whose `per_molecule.json`
+predates the energy columns fall back to the cluster-written rows under the previous
+species-level repairs. DENSITY rows keep the species-level rule -- a trained molecule's
+density is itself a training target -- and species whose model-free PBE density
+reference disagrees across specs beyond 5% (the c2 reference-drift class) leave the
+density rows entirely, so no density anchor can drift with pull coverage. See
+`HOLDOUT_SET.md` for the name-by-name expansion.
 
 ### 4.6 `ablation_density_energy_overview.png` (`plot_density_energy_overview`, :3162)
 
