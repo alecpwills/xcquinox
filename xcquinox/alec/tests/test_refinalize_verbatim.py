@@ -208,3 +208,21 @@ def test_skipped_channels_are_printed(tmp_path, capsys):
 def test_main_flags_non_run_dir(tmp_path, capsys):
     assert rv.main([str(tmp_path / "nope")]) == 1
     assert "not a run dir" in capsys.readouterr().out
+
+
+def test_no_metadata_warning_for_channel_less_specs(tmp_path, capsys):
+    """Pending/untrained specs (no metadata AND no eval channels) skip
+    silently; the metadata warning is reserved for refinalizable specs."""
+    run = _mk_run(tmp_path)
+    sd = run / "checkpoints" / "spec_0001"
+    sd.mkdir()
+    rv.refinalize_run(run, channels=("eval_holdout",),
+                      _pool=(_POOL_SPECS, _POOL_RXNS))
+    out = capsys.readouterr().out
+    assert "spec_0001 has no readable" not in out
+    # a trained-but-metadata-less spec WITH a channel still warns
+    sd2 = run / "checkpoints" / "spec_0000"
+    (sd2 / "train_metadata.json").unlink()
+    rv.refinalize_run(run, channels=("eval_holdout",),
+                      _pool=(_POOL_SPECS, _POOL_RXNS))
+    assert "spec_0000 has no readable" in capsys.readouterr().out

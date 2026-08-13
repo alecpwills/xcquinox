@@ -149,9 +149,14 @@ def refinalize_spec(spec_dir: Path,
     spec_dir = Path(spec_dir)
     meta = _load_json(spec_dir / "train_metadata.json")
     if meta is None:
-        print(f"[refinalize] WARNING: {spec_dir.name} has no readable "
-              "train_metadata.json -- no verbatim exclusion can be built "
-              "for it (validation exclusion still applies)", flush=True)
+        # Only worth a warning when there is something to refinalize: a
+        # pending/untrained spec has neither metadata nor eval channels.
+        if any((spec_dir / ch / "per_molecule.json").is_file()
+               for ch in channels):
+            print(f"[refinalize] WARNING: {spec_dir.name} has no readable "
+                  "train_metadata.json -- no verbatim exclusion can be "
+                  "built for it (validation exclusion still applies)",
+                  flush=True)
         meta = {}
     excl, key_map = trained_reaction_exclusion(_MetadataSpec(meta),
                                                pool_specs)
