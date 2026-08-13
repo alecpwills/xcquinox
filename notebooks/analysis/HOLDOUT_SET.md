@@ -15,15 +15,25 @@ name-by-name expansion of that line.
 |---|---|---|
 | Canonical pool, reaction entries | 216 (76 BH76 + 140 W4-11) | the full benchmark pool the harness builds |
 | Canonical pool, unique reaction names | 212 | 4 BH76 entries share a name with another entry (Sec. 2) |
-| TEST slice (what `per_reaction.json` carries) | 165 names (52 BH76 + 113 W4-11) | every reported energy metric and figure runs on this slice |
+| TEST slice (what `per_reaction.json` carries) | 165 names (52 BH76 + 113 W4-11) | the reported metrics/figures run on this slice minus the four validation twins (161 names) and minus each cell's trained-alias drops (Sec. 2 repairs) |
 | Validation slice (early-stop / val-best selection) | 47 names (20 BH76 + 27 W4-11; 49 entries: 22+27) | withheld from every reported TEST metric |
-| Test/validation overlap | 0 | verified by name |
+| Test/validation overlap | 0 by name; 4 by physical identity | four BH76 barriers appear twice in the pool under permuted-reactant names, one copy per slice (`bh76_h_hf_to_hfhts`/`bh76_hf_h_to_hfhts` and the three analogous pairs); the figure layer drops the four test-side twins on read, since validation-best selection saw those barriers |
 | Pool species (molecules + atoms) | 214 | reactants/products of the 216 entries |
 | Species evaluated per spec (this run) | 213 | pool minus `c2` (Sec. 4) |
 | Density species (finite NN + PBE channels) | 198 | atoms are skipped by design (Sec. 4) |
 | Atomic species skipped for density | 15 | `O`, `al`, `b`, `be`, `c`, `cl`, `cl-`, `f`, `f-`, `h`, `n`, `o`, `p`, `s`, `si` |
 
 ## 2. How the split works
+
+Two strict-holdout repairs are applied when the figure layer reads the pulled rows (each
+printed to the console when it fires, with counts): (a) reactions containing a pool species
+physically identical to one of that spec's TRAINED molecules under a different name are
+dropped -- the training vocabulary is ASE Hill formulas (`CHN`, `H3N`, `HO`) while the pool
+uses GMTKN55-style names (`hcn`, `nh3`, `oh`), so the cluster-side name-based strict filter
+cannot see the identity (matching is by element composition + charge + spin, isomers
+resolved by geometry; `xcquinox.alec.species_matching`); (b) the four test-side twins of
+validation reactions (table above). Per-cell reaction counts on the figures reflect these
+drops.
 
 The canonical pool is the union of two GMTKN55-style subsets (sources in Sec. 5): the BH76
 barrier heights and the W4-11 atomization energies, 216 reaction entries over

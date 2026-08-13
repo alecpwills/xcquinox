@@ -359,6 +359,58 @@ def test_training_molecule_names_excludes_atoms():
     assert set(eh.training_molecule_names(spec)) == {"hocn", "b2h6"}
 
 
+def test_split_held_out_keeps_permuted_name_twins_together():
+    """The pool's duplicate barriers (same physics, permuted-reactant names)
+    must land on the SAME side of the val/test split -- the name-keyed hash
+    put one copy per slice, so validation-best selection saw four reported
+    test barriers."""
+    twins = [
+        {"name": "bh76_h_hf_to_hfhts", "reactants": ["h", "hf"],
+         "products": ["hfhts"], "reaction_energy_ref": 17.7},
+        {"name": "bh76_hf_h_to_hfhts", "reactants": ["hf", "h"],
+         "products": ["hfhts"], "reaction_energy_ref": 17.7},
+    ]
+    filler = [{"name": f"r{i}", "reactants": [f"a{i}"], "products": [f"b{i}"],
+               "reaction_energy_ref": 1.0} for i in range(20)]
+    val, test = eh.split_held_out(twins + filler, val_frac=0.5)
+    val_names = {r["name"] for r in val}
+    twin_names = {t["name"] for t in twins}
+    assert twin_names <= val_names or twin_names.isdisjoint(val_names)
+
+
+def test_held_out_filter_names_include_composition_aliases():
+    """A trained Hill-named molecule (CHN) must expand to its pool twin (hcn)
+    so the strict filter can drop the twin's reactions; name matching alone
+    left the trained reaction "held-out". Composition twins that are NOT
+    trained (co2) stay out of the filter set."""
+    from types import SimpleNamespace
+    spec = SimpleNamespace(molecules=[
+        _mol("CHN", (("C", 1), ("H", 1), ("N", 1))),
+        _mol("h", (("H", 1),)),
+    ])
+    pool = {
+        "hcn": {"atom_composition": (("C", 1), ("H", 1), ("N", 1)),
+                "charge": 0, "spin": 0,
+                "atom": "C 0 0 0; N 0 0 1.15; H 0 0 -1.06"},
+        "co2": {"atom_composition": (("C", 1), ("O", 2)),
+                "charge": 0, "spin": 0,
+                "atom": "C 0 0 0; O 0 0 1.16; O 0 0 -1.16"},
+    }
+    names = eh.held_out_filter_names_with_aliases(spec, pool)
+    assert "CHN" in names and "hcn" in names
+    assert "co2" not in names and "h" not in names
+    kept, dropped = eh.filter_reactions(
+        [{"name": "w411_hcn_atomization", "reactants": ["hcn"],
+          "products": ["h", "c", "n"], "coeffs": [1.0, -1.0, -1.0, -1.0],
+          "reaction_energy_ref": 0.5},
+         {"name": "w411_co2_atomization", "reactants": ["co2"],
+          "products": ["c", "o"], "coeffs": [1.0, -1.0, -2.0],
+          "reaction_energy_ref": 0.6}],
+        names, strict=True)
+    assert [r["name"] for r in kept] == ["w411_co2_atomization"]
+    assert [r["name"] for r in dropped] == ["w411_hcn_atomization"]
+
+
 def test_filter_reactions_molecule_level_keeps_atom_sharing_holdout():
     """An atomization whose ATOMS (not its MOLECULE) are trained must stay
     HELD-OUT. The old full-species list (atoms included) wrongly dropped every
@@ -601,8 +653,12 @@ def test_make_per_molecule_record_density_kwarg():
 # REPORTS. Must be stable (same partition every run/process/order) and a clean
 # partition, so val never leaks into the reported test metric.
 def _mk_rxns(n):
-    return [{"name": f"rxn_{i:03d}", "source_pool": "w411", "reactants": ["a"],
-             "products": ["b"], "coeffs": [1.0, -1.0],
+    # Distinct species per reaction: the split hashes the PHYSICAL identity
+    # (sorted species tuples), so a shared-species fixture would collapse to
+    # one identity and land every reaction on one side.
+    return [{"name": f"rxn_{i:03d}", "source_pool": "w411",
+             "reactants": [f"a{i:03d}"], "products": [f"b{i:03d}"],
+             "coeffs": [1.0, -1.0],
              "reaction_energy_ref": float(i)} for i in range(n)]
 
 

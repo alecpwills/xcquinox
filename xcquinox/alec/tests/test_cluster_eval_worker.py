@@ -327,7 +327,7 @@ def test_main_skips_best_held_out_eval_when_absent(run_dir, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _val_reactions(n=40):
-    return [{"name": f"r{i}", "reactants": ["A"], "products": ["B"],
+    return [{"name": f"r{i}", "reactants": [f"A{i}"], "products": [f"B{i}"],
              "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.0}
             for i in range(n)]
 
@@ -354,6 +354,33 @@ def test_test_slice_reactions_filters_to_test_when_validation_enabled():
     # disjoint from the val slice -> no leakage into the reported metric.
     assert kept_names.isdisjoint({r["name"] for r in val})
     assert len(kept) < len(reactions)        # the val slice was removed
+
+
+def test_test_slice_reactions_prefers_recorded_val_slice(tmp_path):
+    """A staged validation/val_reactions.json is what training's early-stop
+    actually consumed: the reported test slice must be its complement BY
+    PHYSICAL IDENTITY -- permuted-reactant twins of a val barrier are excluded
+    with it -- regardless of what the current split hash would compute."""
+    import json as _json
+    from xcquinox.alec.cluster._eval_one_spec import _test_slice_reactions
+    val_file = tmp_path / "val_reactions.json"
+    val_file.write_text(_json.dumps([
+        {"name": "bh76_hf_h_to_hfhts", "reactants": ["hf", "h"],
+         "products": ["hfhts"], "reaction_energy_ref": 17.7}]))
+
+    class _Spec:
+        validate_every = 2
+        val_frac = 0.2
+        validation_molecules = ("A", "B")
+        validation_reactions_path = str(val_file)
+    reactions = [
+        {"name": "bh76_h_hf_to_hfhts", "reactants": ["h", "hf"],
+         "products": ["hfhts"], "reaction_energy_ref": 17.7},   # twin of val
+        {"name": "w411_x_atomization", "reactants": ["x"],
+         "products": ["a", "b"], "reaction_energy_ref": 100.0},
+    ]
+    kept = _test_slice_reactions(reactions, _Spec())
+    assert [r["name"] for r in kept] == ["w411_x_atomization"]
 
 
 def test_test_slice_reactions_noop_when_validation_disabled():

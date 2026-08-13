@@ -263,7 +263,7 @@ slope rather than `E_pbe/D_pbe`, and `ED_pbe_kcalmol` generally differs from
 | `leg` | Energy leg: `wtmad2` (headline), `mae`, or -- eps columns present -- `wtmad2_eps_gamma_dfs` / `wtmad2_eps_gamma_fit` |
 | `arch` | Architecture (ARCH_ORDER-sorted within each leg) |
 | `subset_size` | Training subset size of the cell |
-| `n_reactions` | Finite-NN reaction rows in the cell behind E (equals the reaction count under the current one-spec-per-cell layout) |
+| `n_reactions` | Finite-NN reactions in the cell behind E, name-deduplicated (matching the deduped cell metrics; the pool's four duplicate-name entries count once) |
 | `n_density_species` | Finite-NN density rows in the cell behind D (counted on the leg's own channel: RMSE rows, or eps rows on the DFS-units legs) |
 | `E_kcalmol` | Cell energy error (2-subset WTMAD-2 or combined reaction MAE) |
 | `D_rmse` | Cell mean held-out density error vs CCSD: grid-weighted RMSE on the self-calibrated legs, per-electron L1 eps on the DFS-units legs |
@@ -273,14 +273,26 @@ slope rather than `E_pbe/D_pbe`, and `ED_pbe_kcalmol` generally differs from
 | `E_pbe_kcalmol` | Pooled PBE energy anchor (name-dedup) |
 | `D_pbe_rmse` | Pooled PBE density anchor (molecule-dedup, finite rows only; eps units on the DFS-units legs) |
 | `ED_pbe_kcalmol` | PBE's ED; equals `E_pbe_kcalmol` by construction on the self-calibrated legs, generally differs on the DFS-units legs |
-| `beats_pbe` | `True` iff `ED_kcalmol < ED_pbe_kcalmol` |
+| `beats_pbe` | `True` iff `ED_kcalmol < ED_pbe_cell_kcalmol` when the cell-matched anchor resolves, else `< ED_pbe_kcalmol` (pooled fallback) |
 | `E_scan_kcalmol` | SCAN energy comparator on the leg's own reduction (WTMAD-2 or MAE), over the same PBE-computable deduped reactions; blank when the SCAN energy cache is absent or under the 90% coverage floor |
 | `D_scan_rmse` | SCAN density comparator over the same species the PBE density anchor averages (eps units on the DFS-units legs); blank when the SCAN density cache is absent or under the floor |
 | `ED_scan_kcalmol` | SCAN's ED under the leg's gamma (harmonic of `E_scan_kcalmol` and `gamma * D_scan_rmse`); blank when either comparator leg is blank |
 | `beats_scan` | `True` iff `ED_kcalmol < ED_scan_kcalmol`; blank when `ED_scan_kcalmol` is blank |
+| `ED_pbe_cell_kcalmol` | The cell-matched PBE anchor behind `beats_pbe`: the harmonic ED of PBE reduced over EXACTLY that cell's scored reactions (energy leg) and species (density leg), under the leg's gamma. Cells score training-subset-dependent subsets, so the pooled `ED_pbe_kcalmol` over- or under-states PBE on individual cells; blank when the cell anchor could not be built (verdict then falls back to the pooled anchor) |
 
 The four SCAN columns are blank (empty string) whenever the comparator is withdrawn, so
 older pulls and cache-free renders produce the same rows as before with empty tails.
+
+**Strict-holdout repairs on read (both printed with counts when they fire):** reaction and
+density rows containing a pool species physically identical to that spec's trained
+molecules under a different name are dropped (Hill vs GMTKN55 naming; matching by
+composition + charge + spin with geometric isomer resolution,
+`xcquinox.alec.species_matching`), and the four test-side permuted-name twins of
+validation reactions are dropped (validation-best selection saw those barriers). Species
+whose model-free PBE density reference disagrees across specs beyond 5% (the c2
+reference-drift class) leave the density rows entirely -- anchors and cell means -- so no
+density anchor can drift with pull coverage. See `HOLDOUT_SET.md` for the name-by-name
+expansion.
 
 ### 4.6 `ablation_density_energy_overview.png` (`plot_density_energy_overview`, :3162)
 

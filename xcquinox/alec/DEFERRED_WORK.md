@@ -338,3 +338,37 @@ cache for c2, delete it TOGETHER WITH its `_intermediates/` entries
 (deletion alone re-drifts; see the probe script header), re-run the affected
 specs' held-out evals, and confirm the figure-layer disagreement warning no
 longer fires on a fresh pull.
+
+## 17. Cluster-side strict-holdout repair deployment + re-eval (found 2026-08-13)
+
+**What:** the cluster-side strict held-out filter is name-based and blind to
+the training-vs-pool species naming split (training uses ASE Hill formulas
+from the DFS pool builder -- `CHN`, `H3N`, `HO`, `CH2` -- while the
+benchmark pool names the same molecules `hcn`, `nh3`, `oh`, `ch2-trip`), so
+trained molecules' reactions and density species remained inside the
+"held-out" per_reaction/per_molecule rows of every affected spec (e.g.
+`w411_hcn_atomization` in every cell whose subset trains `CHN`). Two
+further set defects: the four BH76 barriers duplicated in the pool under
+permuted-reactant names sit one copy in the validation slice and one in the
+test slice (validation-best selection saw those four test barriers), and
+the `in_training_subset` per-molecule flag is false for the same
+naming-mismatch species.
+
+**Already done (local, 2026-08-13):** composition+charge+spin species
+identity with geometric isomer resolution in
+`xcquinox/alec/species_matching.py`; `eval_holdout.py` expands its strict
+filter names via `held_out_filter_names_with_aliases` (NOT yet deployed --
+the running array live-imports the cluster tree); the figure layer applies
+the same repairs on read (alias-leak drop, validation-twin drop,
+cross-spec-inconsistent PBE density reference exclusion), so locally
+rendered figures are already leak-free.
+
+**Trigger:** when train array 2116743 (and the mgga arm 2116703) drain,
+rsync the updated `xcquinox/alec/eval_holdout.py` +
+`xcquinox/alec/species_matching.py` (and the current `train.py`, whose
+metadata now records the update scheme explicitly) to the cluster repo,
+re-run the completed specs' held-out evals so the cluster-side artifacts
+match the figure-layer repairs, and re-pull. The validation/test twin split
+itself is fixed for FUTURE runs by canonical reaction identity at split
+time; already-trained cells keep their split (the four twins simply stay
+excluded from reported test rows).

@@ -128,6 +128,96 @@ def _is_num(v: Any) -> bool:
 # Data ingest
 # ---------------------------------------------------------------------------
 
+_POOL_SPECS_CACHE: Optional[Dict[str, Any]] = None
+
+
+def _pool_specs_for_aliasing() -> Dict[str, Any]:
+    """Benchmark-pool species specs for composition-level alias matching --
+    the figure-layer twin of the eval-side
+    ``held_out_filter_names_with_aliases`` expansion. Lazy + cached (one pool
+    load per process); monkeypatchable test seam."""
+    global _POOL_SPECS_CACHE
+    if _POOL_SPECS_CACHE is None:
+        from xcquinox.alec.full_benchmark_pools import (
+            load_full_held_out_pools)
+        _POOL_SPECS_CACHE = load_full_held_out_pools()[0]
+    return _POOL_SPECS_CACHE
+
+
+def _spec_alias_names(spec_dir: Path) -> set:
+    """Casefolded pool names physically identical to this spec's trained
+    molecules under a DIFFERENT name (Hill ``CHN`` vs pool ``hcn``) --
+    exactly the set the cluster-side name-level strict filter could not see.
+    Name-visible trained species were already dropped there, so only these
+    aliases need removing here. Empty set when metadata is absent."""
+    tm = spec_dir / "train_metadata.json"
+    if not tm.is_file():
+        return set()
+    try:
+        with tm.open() as f:
+            mols = json.load(f).get("molecules") or []
+    except (json.JSONDecodeError, OSError):
+        return set()
+    from xcquinox.alec.species_matching import (is_atomic,
+                                                parse_formula_name,
+                                                trained_pool_aliases)
+    mol_level = []
+    for n in mols:
+        parsed = parse_formula_name(str(n))
+        if parsed is not None and is_atomic(parsed[0]):
+            continue  # atoms are universal anchors, never held-out species
+        mol_level.append(str(n))
+    if not mol_level:
+        return set()
+    aliases = trained_pool_aliases(mol_level, _pool_specs_for_aliasing(),
+                                   verbose=False)
+    return {str(a).casefold() for a in aliases}
+
+
+def _reaction_identity(r: Dict[str, Any]) -> Optional[Tuple]:
+    """Order-invariant physical identity of a reaction row: the sorted
+    casefolded reactant and product name tuples. ``None`` when either side is
+    missing (older rows without species lists are never identity-matched)."""
+    reac = r.get("reactants")
+    prod = r.get("products")
+    if not reac or not prod:
+        return None
+    return (tuple(sorted(str(x).casefold() for x in reac)),
+            tuple(sorted(str(x).casefold() for x in prod)))
+
+
+def _val_reaction_identities(run_dir: Path) -> set:
+    """Identities of the run's validation-slice reactions, from
+    ``validation/val_reactions.json`` -- checked in ``run_dir`` itself and in
+    every source run a merged symlink view resolves into. Empty set when no
+    validation record exists (pre-validation runs render unchanged)."""
+    cands = [Path(run_dir) / "validation" / "val_reactions.json"]
+    for _idx, sd in ccp._spec_dirs(run_dir):
+        if sd.is_symlink():
+            cands.append(sd.resolve().parent.parent / "validation"
+                         / "val_reactions.json")
+    out: set = set()
+    seen_files: set = set()
+    for p in cands:
+        try:
+            rp = p.resolve()
+        except OSError:
+            continue
+        if rp in seen_files or not p.is_file():
+            continue
+        seen_files.add(rp)
+        try:
+            with p.open() as f:
+                entries = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        for e in entries:
+            ident = _reaction_identity(e)
+            if ident is not None:
+                out.add(ident)
+    return out
+
+
 def collect_holdout_reaction_rows(run_dir: Path,
                                   eval_subdir: str = "eval_holdout"
                                   ) -> List[Dict[str, Any]]:
@@ -140,9 +230,22 @@ def collect_holdout_reaction_rows(run_dir: Path,
     file (e.g. the 25 specs whose held-out eval did not run) are skipped.
     ``eval_subdir`` selects the checkpoint variant: ``eval_holdout`` (final-step
     weights, default) or ``eval_holdout_val_best`` (held-out validation-best weights).
-    """
+
+    Two strict-holdout repairs applied on read (each printed when it fires):
+    rows whose reaction contains a pool species physically identical to one of
+    that spec's trained molecules under a different name (``_spec_alias_names``
+    -- the cluster-side name filter is blind to the Hill-vs-pool naming split)
+    are dropped, and rows whose reaction is a permuted-name twin of a
+    validation-slice reaction (``_val_reaction_identities`` -- validation-best
+    selection saw that barrier) are dropped."""
     cells = ccp._read_manifest_cells(run_dir)
+    val_ids = _val_reaction_identities(run_dir)
     rows: List[Dict[str, Any]] = []
+    n_alias = 0
+    alias_hits: set = set()
+    n_twin = 0
+    twin_hits: set = set()
+    n_specs_alias = 0
     for idx, spec_dir in ccp._spec_dirs(run_dir):
         rj_path = spec_dir / eval_subdir / "per_reaction.json"
         if not rj_path.is_file():
@@ -153,7 +256,23 @@ def collect_holdout_reaction_rows(run_dir: Path,
         except (json.JSONDecodeError, OSError):
             continue
         cell = cells.get(idx, {})
+        aliases_cf = _spec_alias_names(spec_dir)
+        spec_had_alias_drop = False
         for r in payload:
+            species_cf = [str(x).casefold()
+                          for x in ((r.get("reactants") or [])
+                                    + (r.get("products") or []))]
+            if aliases_cf and any(s in aliases_cf for s in species_cf):
+                n_alias += 1
+                spec_had_alias_drop = True
+                alias_hits.update(s for s in species_cf if s in aliases_cf)
+                continue
+            if val_ids:
+                ident = _reaction_identity(r)
+                if ident is not None and ident in val_ids:
+                    n_twin += 1
+                    twin_hits.add(str(r.get("name")))
+                    continue
             rows.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
@@ -169,6 +288,16 @@ def collect_holdout_reaction_rows(run_dir: Path,
                 "reactants": r.get("reactants"),
                 "products": r.get("products"),
             })
+        if spec_had_alias_drop:
+            n_specs_alias += 1
+    if n_alias:
+        print(f"  (strict-holdout repair: dropped {n_alias} reaction rows "
+              f"across {n_specs_alias} specs containing trained species "
+              f"under pool names {sorted(alias_hits)})")
+    if n_twin:
+        print(f"  (validation-twin repair: dropped {n_twin} test rows whose "
+              f"reaction is a permuted-name twin of a validation reaction: "
+              f"{sorted(twin_hits)})")
     return rows
 
 
@@ -827,6 +956,21 @@ def _report_scan_coverage(scan_baseline: Optional[Dict[str, Any]],
               f"[{d_used}/{d_ref} species]")
 
 
+def _cell_anchor_note(by_cell: Optional[Dict[Tuple[str, int], float]],
+                      unit: str = "kcal/mol") -> str:
+    """Disclosure line for panels whose beats-PBE marks are judged against
+    cell-matched anchors: names the convention and the anchors' range so a
+    bar below the pooled dashed line without a mark is legible. Empty when
+    no cell anchor resolved (marks then fell back to the pooled line)."""
+    vals = [float(v) for v in (by_cell or {}).values() if _is_num(v)]
+    if not vals:
+        return ""
+    return ("beats-PBE marks: judged against cell-matched PBE anchors "
+            "(PBE reduced over each cell's own scored set; black ticks; "
+            f"range {min(vals):.3g}-{max(vals):.3g} {unit}); the dashed "
+            "line is the pooled-set anchor.")
+
+
 def _beats_pbe_marks(xs, heights, pbe_line) -> List[Tuple[float, float]]:
     """``(x, height)`` for every bar whose height is strictly BELOW ``pbe_line``
     -- the positions to stamp a beats-PBE marker. Empty when ``pbe_line`` is not
@@ -851,12 +995,22 @@ def reaction_mae_by_arch_subset(
     rows: List[Dict[str, Any]], *, key: str = "abs_error_nn_kcalmol",
 ) -> Dict[Tuple[str, int], float]:
     """``{(arch, subset_size): MAE}`` over held-out reactions for ``key``
-    (``abs_error_nn_kcalmol`` or ``abs_error_pbe_kcalmol``)."""
+    (``abs_error_nn_kcalmol`` or ``abs_error_pbe_kcalmol``). Deduplicated by
+    reaction name WITHIN each cell (first wins) -- the canonical pool lists
+    four reactions twice under one name, and the PBE baselines dedup, so an
+    un-deduped cell metric would double-count those rows against a deduped
+    reference line."""
     buckets: Dict[Tuple[str, int], List[float]] = {}
+    seen: set = set()
     for r in rows:
         arch, ss = r.get("arch"), r.get("subset_size")
         if arch is None or ss is None:
             continue
+        nm = r.get("name")
+        if nm is not None:
+            if (arch, ss, nm) in seen:
+                continue
+            seen.add((arch, ss, nm))
         if _is_num(r.get(key)):
             buckets.setdefault((arch, ss), []).append(r[key])
     return {k: float(np.mean(v)) for k, v in buckets.items() if v}
@@ -2436,8 +2590,12 @@ def wtmad2_by_arch_subset(rows: List[Dict[str, Any]], scale: float = _GMTKN55_SC
                           ) -> Dict[Tuple[str, int], float]:
     """2-subset (BH76/W4-11) WTMAD-2 per (arch, subset_size) cell, vs the
     benchmark ``reaction_energy_ref_kcalmol``. NOTE: only 2 GMTKN55 subsets are
-    present here, so this is a LABELED reweighting, not a full-GMTKN55 WTMAD-2."""
+    present here, so this is a LABELED reweighting, not a full-GMTKN55 WTMAD-2.
+    Deduplicated by reaction name WITHIN each cell (first wins), matching the
+    PBE baselines' convention -- the pool lists four reactions twice under one
+    name."""
     cells: Dict[Tuple[str, int], Dict[str, List[Tuple[float, float]]]] = {}
+    seen: set = set()
     for r in rows:
         a, s, pool = r.get("arch"), r.get("subset_size"), r.get("pool")
         e = r.get("abs_error_nn_kcalmol")
@@ -2446,6 +2604,11 @@ def wtmad2_by_arch_subset(rows: List[Dict[str, Any]], scale: float = _GMTKN55_SC
             ref = r.get("reaction_energy_ref_kcalmol")   # raw per_reaction.json key
         if a is None or s is None or pool is None:
             continue
+        nm = r.get("name")
+        if nm is not None:
+            if (a, s, nm) in seen:
+                continue
+            seen.add((a, s, nm))
         if not (_is_num(e) and _is_num(ref)):
             continue
         cells.setdefault((a, s), {}).setdefault(pool, []).append((abs(e), abs(ref)))
@@ -2455,6 +2618,35 @@ def wtmad2_by_arch_subset(rows: List[Dict[str, Any]], scale: float = _GMTKN55_SC
         if w is not None:
             out[cell] = w
     return out
+
+
+def wtmad2_pbe_by_arch_subset(rows: List[Dict[str, Any]],
+                              scale: float = _GMTKN55_SCALE
+                              ) -> Dict[Tuple[str, int], float]:
+    """Per-cell PBE 2-subset WTMAD-2 over EXACTLY the reactions that cell
+    scored -- the like-for-like anchor for beats-PBE verdicts. Cells score
+    training-subset-dependent reaction subsets (their own trained reactions
+    are excluded), so the pooled-union anchor over- or under-states PBE on a
+    given cell's set; the verdict must compare same-set reductions."""
+    out: Dict[Tuple[str, int], float] = {}
+    by_cell: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+    for r in rows:
+        a, s = r.get("arch"), r.get("subset_size")
+        if a is None or s is None:
+            continue
+        by_cell.setdefault((a, s), []).append(r)
+    for cell, cell_rows in by_cell.items():
+        w = wtmad2_pbe_baseline(cell_rows, scale)
+        if _is_num(w):
+            out[cell] = w
+    return out
+
+
+def pbe_reaction_mae_by_cell(rows: List[Dict[str, Any]]
+                             ) -> Dict[Tuple[str, int], float]:
+    """Per-cell PBE reaction MAE over exactly that cell's scored reactions
+    (name-dedup) -- the MAE-leg twin of :func:`wtmad2_pbe_by_arch_subset`."""
+    return reaction_mae_by_arch_subset(rows, key="abs_error_pbe_kcalmol")
 
 
 def wtmad2_pbe_baseline(rows: List[Dict[str, Any]], scale: float = _GMTKN55_SCALE
@@ -2598,6 +2790,35 @@ def collect_insample_density_rows(run_dir: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+# Cross-spec relative spread above which a species' PBE density reference is
+# reference-inconsistent (the c2 class: two arms carrying incompatible c2
+# references differ 11x; within-arm scatter is ~0). The energy-side twin of
+# this guard is _first_pbe_energies' absolute 1e-4 Ha tolerance.
+_PBE_DENSITY_CONSISTENCY_REL = 0.05
+
+
+def _inconsistent_pbe_density_species(raw_rows: List[Dict[str, Any]]
+                                      ) -> Dict[str, Tuple[float, float]]:
+    """``{molecule: (min, max)}`` for species whose model-free PBE density
+    reference disagrees across specs beyond
+    :data:`_PBE_DENSITY_CONSISTENCY_REL` on EITHER error channel (RMSE or
+    Eq. 20 eps). Such a species' reference is broken (the c2 drift class):
+    averaging it into anchors weights the candidates by pull coverage, and
+    its NN column is judged against whichever reference its arm carries."""
+    out: Dict[str, Tuple[float, float]] = {}
+    for key in ("density_rmse_pbe", "density_eps_l1_pbe"):
+        acc: Dict[str, List[float]] = {}
+        for r in raw_rows:
+            m = r.get("molecule")
+            if m and _is_num(r.get(key)):
+                acc.setdefault(str(m), []).append(float(r[key]))
+        for m, vals in acc.items():
+            lo, hi = min(vals), max(vals)
+            if hi > 0.0 and (hi - lo) / hi > _PBE_DENSITY_CONSISTENCY_REL:
+                out.setdefault(m, (lo, hi))
+    return out
+
+
 def collect_holdout_density_rows(run_dir: Path,
                                  eval_subdir: str = "eval_holdout"
                                  ) -> List[Dict[str, Any]]:
@@ -2605,9 +2826,20 @@ def collect_holdout_density_rows(run_dir: Path,
     (the un-stubbed NN ``density_rmse`` + model-free ``density_rmse_pbe``
     columns; both None until benchmark CCSD reference densities are wired),
     joined with the manifest arch/subset_size. Rows are kept when EITHER
-    channel is finite, so a PBE-only re-eval still produces the baseline."""
+    channel is finite, so a PBE-only re-eval still produces the baseline.
+
+    Two repairs applied on read (printed when they fire): rows for species
+    that are pool twins of the spec's trained molecules under a different
+    name are dropped (``_spec_alias_names`` -- the held-out density mean must
+    not average supervised species), and rows for species whose model-free
+    PBE reference disagrees across specs
+    (``_inconsistent_pbe_density_species``, the c2 reference-drift class) are
+    dropped entirely -- from the anchors AND the per-cell means -- so no
+    anchor can drift with pull coverage."""
     cells = ccp._read_manifest_cells(run_dir)
-    rows: List[Dict[str, Any]] = []
+    raw: List[Dict[str, Any]] = []
+    n_alias = 0
+    alias_hits: set = set()
     for idx, spec_dir in ccp._spec_dirs(run_dir):
         pm_path = spec_dir / eval_subdir / "per_molecule.json"
         if not pm_path.is_file():
@@ -2618,15 +2850,21 @@ def collect_holdout_density_rows(run_dir: Path,
         except (json.JSONDecodeError, OSError):
             continue
         cell = cells.get(idx, {})
+        aliases_cf = _spec_alias_names(spec_dir)
         for r in payload:
             if not (_is_num(r.get("density_rmse"))
                     or _is_num(r.get("density_rmse_pbe"))):
                 continue
-            rows.append({
+            mol = r.get("molecule")
+            if aliases_cf and str(mol).casefold() in aliases_cf:
+                n_alias += 1
+                alias_hits.add(str(mol))
+                continue
+            raw.append({
                 "idx": idx,
                 "arch": cell.get("arch"),
                 "subset_size": cell.get("subset_size"),
-                "molecule": r.get("molecule"),
+                "molecule": mol,
                 "density_rmse": r.get("density_rmse"),
                 "density_l1": r.get("density_l1"),
                 "density_rmse_pbe": r.get("density_rmse_pbe"),
@@ -2638,7 +2876,17 @@ def collect_holdout_density_rows(run_dir: Path,
                 "ref_density_method": r.get("ref_density_method"),
                 "from_training_subset": r.get("from_training_subset"),
             })
-    return rows
+    if n_alias:
+        print(f"  (strict-holdout repair: dropped {n_alias} density rows for "
+              f"trained species under pool names {sorted(alias_hits)})")
+    bad = _inconsistent_pbe_density_species(raw)
+    if bad:
+        detail = ", ".join(f"{m} ({lo:.6g}..{hi:.6g})"
+                           for m, (lo, hi) in sorted(bad.items()))
+        print("  (WARNING: cross-spec-inconsistent PBE density reference -- "
+              f"excluding from all density anchors and cell means: {detail})")
+        raw = [r for r in raw if str(r.get("molecule")) not in bad]
+    return raw
 
 
 def load_pbe_density_table(run_dir: Path) -> Dict[str, Dict[str, float]]:
@@ -2773,6 +3021,34 @@ def _pbe_anchor_coverage_warning(hd_rows: List[Dict[str, Any]],
             + "; ".join(parts) + ".")
 
 
+def pbe_density_by_cell(hd_rows: List[Dict[str, Any]],
+                        pbe_table: Optional[Dict[str, Dict[str, float]]]
+                        = None, *, nn_key: str = "density_rmse",
+                        pbe_key: str = "density_rmse_pbe",
+                        _pbe_mol: Optional[Dict[str, float]] = None
+                        ) -> Dict[Tuple[str, int], float]:
+    """Per-cell PBE density anchor over exactly the species that cell's NN
+    density mean averages (finite ``nn_key`` rows), from the same
+    per-molecule PBE map as the pooled anchor -- the density leg of the
+    cell-matched beats-PBE verdict. ``_pbe_mol`` injects a prebuilt
+    per-molecule map (the 3x3's channel-filtered map) so channel views reuse
+    exactly the map their pooled anchor averaged."""
+    pbe_mol = (_pbe_mol if _pbe_mol is not None
+               else _pbe_density_map(hd_rows, pbe_table, key=pbe_key))
+    by_cell: Dict[Tuple[str, int], set] = {}
+    for r in hd_rows:
+        a, s = r.get("arch"), r.get("subset_size")
+        if a is None or s is None or not _is_num(r.get(nn_key)):
+            continue
+        by_cell.setdefault((a, s), set()).add(r.get("molecule"))
+    out: Dict[Tuple[str, int], float] = {}
+    for cell, mols in by_cell.items():
+        vals = [pbe_mol[m] for m in mols if m in pbe_mol]
+        if vals:
+            out[cell] = float(np.mean(vals))
+    return out
+
+
 def pbe_reaction_mae_baseline(rows: List[Dict[str, Any]]) -> float:
     """Pooled PBE reaction MAE (kcal/mol) over the held-out rows, dedup by
     reaction name -- the MAE-leg anchor ``E_PBE``, the same arithmetic as the
@@ -2795,12 +3071,39 @@ def _harmonic_mean(a: float, b: float) -> float:
     return 2.0 / (1.0 / a + 1.0 / b)
 
 
+def _cell_pbe_ed(cell: Tuple[str, int], gamma: float, ed_pbe: float,
+                 e_pbe_by_cell: Optional[Dict[Tuple[str, int], float]],
+                 d_pbe_by_cell: Optional[Dict[Tuple[str, int], float]]
+                 ) -> Tuple[float, Optional[float]]:
+    """``(verdict anchor, ed_pbe_cell-or-None)`` for one cell: the harmonic
+    ED of the CELL-MATCHED PBE anchors under the summary's gamma when both
+    legs are available and positive, else the pooled ``ed_pbe`` fallback.
+    Cells score training-subset-dependent reaction/species subsets, so a
+    beats-PBE verdict against the pooled anchor misgrades cells whose own
+    subset is easier or harder for PBE than the union."""
+    if e_pbe_by_cell is None or d_pbe_by_cell is None:
+        return ed_pbe, None
+    e_c = e_pbe_by_cell.get(cell)
+    d_c = d_pbe_by_cell.get(cell)
+    if (_is_num(e_c) and float(e_c) > 0.0
+            and _is_num(d_c) and float(d_c) > 0.0):
+        ed_c = _harmonic_mean(float(e_c), gamma * float(d_c))
+        if ed_c > 0.0:
+            return ed_c, ed_c
+    return ed_pbe, None
+
+
 def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
                         e_pbe: float,
                         density_by_cell: Dict[Tuple[str, int], float],
                         d_pbe: float,
                         e_scan: Optional[float] = None,
-                        d_scan: Optional[float] = None) -> Dict[str, Any]:
+                        d_scan: Optional[float] = None,
+                        e_pbe_by_cell: Optional[
+                            Dict[Tuple[str, int], float]] = None,
+                        d_pbe_by_cell: Optional[
+                            Dict[Tuple[str, int], float]] = None
+                        ) -> Dict[str, Any]:
     """DFS Eq. 21 ED per (arch, subset_size) cell (kcal/mol), NN vs PBE.
 
     ``gamma = e_pbe / d_pbe`` (self-calibrated; see the section note above for
@@ -2816,6 +3119,12 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
     drawn as a second reference. Unlike ``ed_pbe`` it is NOT equal to its energy
     leg -- gamma is calibrated on PBE, not on SCAN, so SCAN's density leg moves
     it. ``None`` when either SCAN leg is missing, so the figures omit the line.
+
+    ``e_pbe_by_cell`` / ``d_pbe_by_cell`` supply CELL-MATCHED PBE reductions
+    (PBE over exactly the reactions/species each cell scored): the per-cell
+    ``beats_pbe`` verdict is then judged against ``ed_pbe_cell`` (stored on
+    the cell, under the same gamma) instead of the pooled anchor, which over-
+    or under-states PBE on cells whose scored subset differs from the union.
     """
     if not (_is_num(e_pbe) and e_pbe > 0.0):
         raise ValueError(
@@ -2835,9 +3144,12 @@ def combined_ed_by_cell(energy_by_cell: Dict[Tuple[str, int], float],
         if not (_is_num(e) and _is_num(d)):
             continue
         ed = _harmonic_mean(float(e), gamma * float(d))
+        anchor, ed_pbe_cell = _cell_pbe_ed(cell, gamma, ed_pbe,
+                                           e_pbe_by_cell, d_pbe_by_cell)
         cells[cell] = {"E": float(e), "D": float(d),
                        "gammaD": gamma * float(d), "ED": ed,
-                       "beats_pbe": bool(ed < ed_pbe),
+                       "beats_pbe": bool(ed < anchor),
+                       "ed_pbe_cell": ed_pbe_cell,
                        "beats_scan": (bool(ed < ed_scan)
                                       if ed_scan is not None else None)}
     return {"gamma": gamma, "gamma_mode": "self_calibrated",
@@ -2886,7 +3198,11 @@ def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
                             d_pbe: float, gamma: float, *,
                             gamma_source: Optional[str] = None,
                             e_scan: Optional[float] = None,
-                            d_scan: Optional[float] = None
+                            d_scan: Optional[float] = None,
+                            e_pbe_by_cell: Optional[
+                                Dict[Tuple[str, int], float]] = None,
+                            d_pbe_by_cell: Optional[
+                                Dict[Tuple[str, int], float]] = None
                             ) -> Dict[str, Any]:
     """DFS Eq. 21 ED per cell with an EXTERNALLY FIXED gamma (the Letter's
     published 1084.87 on Eq. 20 units, or an own-axes regression slope from
@@ -2919,9 +3235,12 @@ def combined_ed_fixed_gamma(energy_by_cell: Dict[Tuple[str, int], float],
         if not (_is_num(e) and _is_num(d)):
             continue
         ed = _harmonic_mean(float(e), gamma * float(d))
+        anchor, ed_pbe_cell = _cell_pbe_ed(cell, float(gamma), ed_pbe,
+                                           e_pbe_by_cell, d_pbe_by_cell)
         cells[cell] = {"E": float(e), "D": float(d),
                        "gammaD": gamma * float(d), "ED": ed,
-                       "beats_pbe": bool(ed < ed_pbe),
+                       "beats_pbe": bool(ed < anchor),
+                       "ed_pbe_cell": ed_pbe_cell,
                        "beats_scan": (bool(ed < ed_scan)
                                       if ed_scan is not None else None)}
     out: Dict[str, Any] = {"gamma": float(gamma), "gamma_mode": "fixed",
@@ -3121,12 +3440,21 @@ def _spearman(xs: Sequence[float], ys: Sequence[float]) -> float:
 def _cell_counts(rows: List[Dict[str, Any]], key: str
                  ) -> Dict[Tuple[str, int], int]:
     """``{(arch, subset_size): #rows with a finite key}`` -- the n_* columns
-    of the ED CSV."""
+    of the ED CSV. Rows carrying a reaction ``name`` are deduplicated by
+    name within each cell, matching the effective N of the deduped cell
+    metrics (the pool lists four reactions twice under one name); rows
+    without a ``name`` (the per-molecule density rows) count as before."""
     out: Dict[Tuple[str, int], int] = {}
+    seen: set = set()
     for r in rows:
         arch, ss = r.get("arch"), r.get("subset_size")
         if arch is None or ss is None or not _is_num(r.get(key)):
             continue
+        nm = r.get("name")
+        if nm is not None:
+            if (arch, ss, nm) in seen:
+                continue
+            seen.add((arch, ss, nm))
         out[(arch, ss)] = out.get((arch, ss), 0) + 1
     return out
 
@@ -3227,6 +3555,11 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
         e_pbe = wtmad2_pbe_baseline(ch_rows)
         d_cells = holdout_density_by_arch_subset(ch_hd, key=density_key)
         d_pbe = pbe_density_baseline(ch_hd, ch_tab, key=pbe_density_key)
+        # cell-matched anchors for the beats-PBE verdicts, on this channel's
+        # own reactions/species (same reductions as the pooled anchors above)
+        e_pbe_cells = wtmad2_pbe_by_arch_subset(ch_rows)
+        d_pbe_cells = pbe_density_by_cell(ch_hd, ch_tab, nn_key=density_key,
+                                          pbe_key=pbe_density_key)
         # SCAN comparator legs on THIS channel: its WTMAD-2 over the same
         # reactions PBE reduced, and its density over the same species the PBE
         # anchor averaged. Either missing (or too thinly covered) -> None, and
@@ -3243,10 +3576,14 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
             out[ch] = (combined_ed_fixed_gamma(e_cells, e_pbe, d_cells,
                                                d_pbe, fixed_gamma,
                                                gamma_source=gamma_source,
-                                               e_scan=e_scan, d_scan=d_scan)
+                                               e_scan=e_scan, d_scan=d_scan,
+                                               e_pbe_by_cell=e_pbe_cells,
+                                               d_pbe_by_cell=d_pbe_cells)
                        if fixed_gamma is not None else
                        combined_ed_by_cell(e_cells, e_pbe, d_cells, d_pbe,
-                                           e_scan=e_scan, d_scan=d_scan))
+                                           e_scan=e_scan, d_scan=d_scan,
+                                           e_pbe_by_cell=e_pbe_cells,
+                                           d_pbe_by_cell=d_pbe_cells))
             if out[ch].get("ed_scan") is not None:
                 out[ch]["scan_suffix"] = _scan_ed_suffix(e_used, e_ref,
                                                          d_used, d_ref)
@@ -3260,7 +3597,7 @@ _ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
                   "gammaD_kcalmol", "ED_kcalmol", "E_pbe_kcalmol",
                   "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
                   "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol",
-                  "beats_scan"]
+                  "beats_scan", "ED_pbe_cell_kcalmol"]
 
 
 def _blank_if_none(x: Any) -> Any:
@@ -3313,6 +3650,10 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                     "D_scan_rmse": _blank_if_none(summary.get("d_scan")),
                     "ED_scan_kcalmol": _blank_if_none(summary.get("ed_scan")),
                     "beats_scan": _blank_if_none(c.get("beats_scan")),
+                    # cell-matched PBE anchor behind beats_pbe (blank when the
+                    # verdict fell back to the pooled ED_pbe_kcalmol)
+                    "ED_pbe_cell_kcalmol": _blank_if_none(
+                        c.get("ed_pbe_cell")),
                 })
     return out_path
 
@@ -3426,20 +3767,31 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                        pbe_line: Optional[float] = None, title: str,
                        scan_line: Optional[float] = None,
                        scan_suffix: str = "",
+                       pbe_by_cell: Optional[
+                           Dict[Tuple[str, int], float]] = None,
                        relocked_cells: Optional[set] = None,
                        mixed_cells: Optional[set] = None,
                        vxc_pre_fix: bool = False) -> None:
     """Grouped per-(arch, subset_size) bar panel: one bar group per arch
     (rung-ordered by the caller), x = subset_size, PBE dashed / SCAN dotted
     reference lines when finite, green beats-PBE markers on bars strictly
-    below the PBE line. ``pbe_line=None`` silently draws no line and no
+    below the PBE reference. ``pbe_line=None`` silently draws no line and no
     beats-PBE marks (the in-sample AE panel has no PBE baseline).
     ``scan_suffix`` qualifies a drawn-but-partially-covered SCAN line in its
-    legend label (the ``", used/ref"`` convention). Shared by
+    legend label (the ``", used/ref"`` convention).
+
+    ``pbe_by_cell`` supplies CELL-MATCHED PBE reductions (PBE over exactly
+    the reactions/species each cell scored): the beats-PBE marks are then
+    judged bar-by-bar against the cell's own anchor -- drawn as short black
+    ticks -- while the dashed pooled line stays for cross-cell scale. Cells
+    score training-subset-dependent subsets, so the pooled line alone over-
+    or under-states PBE on individual cells. Shared by
     ``plot_energy_wtmad_mae`` and the overview composites."""
     bw = 0.8 / max(1, len(archs))
     beat_x: List[float] = []
     beat_h: List[float] = []
+    tick_x: List[float] = []
+    tick_h: List[float] = []
     # Reference-provenance glyphs: cells trained on relocked degenerate-radical
     # references, and cells whose references changed mid-training (not
     # interpretable). Empty/None on every run without a mid-run swap.
@@ -3473,8 +3825,18 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                 relock_x.append(x); relock_h.append(h)
             elif (a, s) in mixed:
                 mixed_x.append(x); mixed_h.append(h)
-        for x, h in _beats_pbe_marks(xs, hs, pbe_line):
-            beat_x.append(x); beat_h.append(h)
+        if pbe_by_cell is not None:
+            for x, h, s in zip(xs, hs, subsets):
+                anchor = pbe_by_cell.get((a, s))
+                if _is_num(anchor):
+                    tick_x.append(x); tick_h.append(float(anchor))
+                else:
+                    anchor = pbe_line
+                if _is_num(h) and _is_num(anchor) and h < float(anchor):
+                    beat_x.append(x); beat_h.append(h)
+        else:
+            for x, h in _beats_pbe_marks(xs, hs, pbe_line):
+                beat_x.append(x); beat_h.append(h)
     if relock_x:
         ax.scatter(relock_x, relock_h, marker="*", s=70, color="#1f77b4",
                    edgecolor="k", linewidths=0.4, zorder=7,
@@ -3484,7 +3846,12 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                    edgecolor="k", linewidths=0.4, zorder=7,
                    label="refs changed mid-training (not interpretable)")
     if _is_num(pbe_line):
-        ax.axhline(pbe_line, ls="--", color="k", linewidth=1.0, label="PBE")
+        ax.axhline(pbe_line, ls="--", color="k", linewidth=1.0,
+                   label=("PBE (pooled)" if tick_x else "PBE"))
+    if tick_x:
+        ax.scatter(tick_x, tick_h, marker="_", s=110, color="k",
+                   linewidths=1.1, alpha=0.75, zorder=5,
+                   label="PBE (cell rows)")
     if _is_num(scan_line):
         ax.axhline(scan_line, ls=":", color="#555555", linewidth=1.3,
                    label=f"SCAN{scan_suffix}")
@@ -3542,6 +3909,11 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
         wt = wtmad2_by_arch_subset(rows)
         pbe_mae = _mae([r["abs_error_pbe_kcalmol"] for r in _dedup_rows_by_name(rows)])
         pbe_wt = wtmad2_pbe_baseline(rows)
+        mae_cell_anchors = pbe_reaction_mae_by_cell(rows)
+        wt_cell_anchors = wtmad2_pbe_by_arch_subset(rows)
+        anote = _cell_anchor_note(wt_cell_anchors)
+        if anote:
+            note = (note + "  " + anote) if note else anote
         has_ts = bool(training_subsets)
         # Taller bottom band than the pre-rung layout: the rung-grouped legend
         # (ncol ~ #rungs) stacks into ~3 rows, which must clear the training-
@@ -3556,11 +3928,13 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
         _grouped_arch_bars(
             axes[0][0], mae, archs, subsets, pbe_line=pbe_mae,
             title="Held-out reaction-energy MAE (combined), per (arch, subset)",
-            scan_line=scan_c, vxc_pre_fix=vxc_pre)
+            scan_line=scan_c, vxc_pre_fix=vxc_pre,
+            pbe_by_cell=mae_cell_anchors)
         _grouped_arch_bars(
             axes[0][1], wt, archs, subsets, pbe_line=pbe_wt,
             title="2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)",
-            vxc_pre_fix=vxc_pre)
+            vxc_pre_fix=vxc_pre,
+            pbe_by_cell=wt_cell_anchors)
         handles, labels = axes[0][0].get_legend_handles_labels()
         if labels:
             fig.legend(handles, labels, loc="lower center",
@@ -4325,11 +4699,13 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
             pr = [r for r in rows if r.get("pool") == pool]
             _grouped_arch_bars(ax, wtmad2_by_arch_subset(pr), archs, subsets,
                                pbe_line=wtmad2_pbe_baseline(pr),
+                               pbe_by_cell=wtmad2_pbe_by_arch_subset(pr),
                                title=tag + " -- one-bucket reduction "
                                      "(scaled relative error)",
                                vxc_pre_fix=_run_predates_vxc_fix(run_id))
         _grouped_arch_bars(axC, wtmad2_by_arch_subset(rows), archs, subsets,
                            pbe_line=wtmad2_pbe_baseline(rows),
+                           pbe_by_cell=wtmad2_pbe_by_arch_subset(rows),
                            title="(C) 2-subset WTMAD-2 (BH76+W4-11), "
                                  "per (arch, subset)",
                            vxc_pre_fix=_run_predates_vxc_fix(run_id))
@@ -4487,6 +4863,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                 e_scan_ch = None
             _grouped_arch_bars(axes[0][j], wtmad2_by_arch_subset(pr), archs,
                                subsets, pbe_line=wtmad2_pbe_baseline(pr),
+                               pbe_by_cell=wtmad2_pbe_by_arch_subset(pr),
                                scan_line=e_scan_ch,
                                scan_suffix=(f", {_u}/{_r}"
                                             if e_scan_ch is not None
@@ -4515,6 +4892,9 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                     ax, d_map, archs, subsets,
                     pbe_line=(d_pbe_ch if _is_num(d_pbe_ch)
                               and d_pbe_ch > 0.0 else None),
+                    pbe_by_cell=pbe_density_by_cell(
+                        hd_ch, None, nn_key=density_nn_key,
+                        pbe_key=density_pbe_key, _pbe_mol=pbe_ch),
                     scan_line=d_scan_ch,
                     scan_suffix=(f", {d_ch_u}/{d_ch_r}"
                                  if d_scan_ch is not None
@@ -4536,10 +4916,14 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                           if _is_num(v.get("ED")) and v["ED"] > 0.0}
                 ed_pbe = s.get("ed_pbe")
                 ed_scan = s.get("ed_scan")
+                ed_cell_anchors = {c: v["ed_pbe_cell"]
+                                   for c, v in s["cells"].items()
+                                   if _is_num(v.get("ed_pbe_cell"))}
                 _grouped_arch_bars(
                     ax, ed_map, archs, subsets,
                     pbe_line=(float(ed_pbe) if _is_num(ed_pbe)
                               and ed_pbe > 0.0 else None),
+                    pbe_by_cell=(ed_cell_anchors or None),
                     scan_line=(float(ed_scan) if _is_num(ed_scan)
                                and ed_scan > 0.0 else None),
                     scan_suffix=(s.get("scan_suffix") or ""),
@@ -6035,9 +6419,15 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 e_scan_mae = None
             d_scan, d_u, d_r = scan_density_line_counts(
                 scan_dens_recs, _pbe_density_map(hd_rows, pbe_table))
+            # cell-matched PBE anchors: verdicts compare same-set reductions
+            e_pbe_wt_cells = wtmad2_pbe_by_arch_subset(rows)
+            e_pbe_mae_cells = pbe_reaction_mae_by_cell(rows)
+            d_pbe_cells = pbe_density_by_cell(hd_rows, pbe_table)
             wt_summary = combined_ed_by_cell(wt_cells, e_pbe_wt,
                                              d_cells, d_pbe,
-                                             e_scan=e_scan_wt, d_scan=d_scan)
+                                             e_scan=e_scan_wt, d_scan=d_scan,
+                                             e_pbe_by_cell=e_pbe_wt_cells,
+                                             d_pbe_by_cell=d_pbe_cells)
             if wt_summary.get("ed_scan") is not None:
                 wt_summary["scan_suffix"] = _scan_ed_suffix(wt_u, wt_r,
                                                             d_u, d_r)
@@ -6046,7 +6436,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             mae_summary = (combined_ed_by_cell(mae_cells, e_pbe_mae,
                                                d_cells, d_pbe,
                                                e_scan=e_scan_mae,
-                                               d_scan=d_scan)
+                                               d_scan=d_scan,
+                                               e_pbe_by_cell=e_pbe_mae_cells,
+                                               d_pbe_by_cell=d_pbe_cells)
                            if mae_cells and _is_num(e_pbe_mae)
                            and e_pbe_mae > 0.0 else None)
             if mae_summary and mae_summary.get("ed_scan") is not None:
@@ -6063,6 +6455,11 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 ed_prov += (" SCAN comparator legs (coverage-gated): "
                             f"WTMAD-2 over {wt_u}/{wt_r} reactions, density "
                             f"over {d_u}/{d_r} species.")
+            ed_anchor_note = _cell_anchor_note(
+                {c: v["ed_pbe_cell"] for c, v in wt_summary["cells"].items()
+                 if _is_num(v.get("ed_pbe_cell"))})
+            if ed_anchor_note:
+                ed_prov += " " + ed_anchor_note
             extra = [note] if note else []
             excl = _ed_exclusion_note(wt_cells, d_cells)
             if excl:
@@ -6144,10 +6541,15 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     _pbe_density_map(hd_rows, pbe_table,
                                      key="density_eps_l1_pbe"),
                     key="density_eps_l1_pbe")
+                d_pbe_eps_cells = pbe_density_by_cell(
+                    hd_rows, pbe_table, nn_key="density_eps_l1",
+                    pbe_key="density_eps_l1_pbe")
                 dfs_summary = combined_ed_fixed_gamma(
                     wt_cells, e_pbe_wt, eps_cells, eps_pbe, _DFS_GAMMA_KCAL,
                     gamma_source="DFS published",
-                    e_scan=e_scan_wt, d_scan=d_scan_eps)
+                    e_scan=e_scan_wt, d_scan=d_scan_eps,
+                    e_pbe_by_cell=e_pbe_wt_cells,
+                    d_pbe_by_cell=d_pbe_eps_cells)
                 if dfs_summary.get("ed_scan") is not None:
                     dfs_summary["scan_suffix"] = _scan_ed_suffix(
                         wt_u, wt_r, deps_u, deps_r)
@@ -6161,7 +6563,9 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     fit_summary = combined_ed_fixed_gamma(
                         wt_cells, e_pbe_wt, eps_cells, eps_pbe, fit["gamma"],
                         gamma_source="own-axes fit",
-                        e_scan=e_scan_wt, d_scan=d_scan_eps)
+                        e_scan=e_scan_wt, d_scan=d_scan_eps,
+                        e_pbe_by_cell=e_pbe_wt_cells,
+                        d_pbe_by_cell=d_pbe_eps_cells)
                     if fit_summary.get("ed_scan") is not None:
                         fit_summary["scan_suffix"] = _scan_ed_suffix(
                             wt_u, wt_r, deps_u, deps_r)
@@ -6199,6 +6603,12 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                                  f"WTMAD-2 over {wt_u}/{wt_r} reactions, "
                                  + _EPS_N_SYM +
                                  f" over {deps_u}/{deps_r} species.")
+                eps_anchor_note = _cell_anchor_note(
+                    {c: v["ed_pbe_cell"]
+                     for c, v in dfs_summary["cells"].items()
+                     if _is_num(v.get("ed_pbe_cell"))})
+                if eps_anchor_note:
+                    eps_prov += " " + eps_anchor_note
                 written.append(plot_combined_energy_density(
                     dfs_summary, fit_summary,
                     outdir / "ablation_combined_energy_density_dfs_units.png",
@@ -6348,11 +6758,15 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         # Held-out overview composite: same gate as the holdout density figure
         # (renders whenever it does); panel F degrades to the "ED unavailable"
         # placeholder when the ED anchors above were missing (wt_summary None).
+        ov_prov = _overview_provenance(wt_summary)
+        ov_anchor_note = _cell_anchor_note(wtmad2_pbe_by_arch_subset(rows))
+        if ov_anchor_note:
+            ov_prov += " " + ov_anchor_note
         written.append(plot_density_energy_overview(
             rows, hd_rows,
             outdir / "ablation_density_energy_overview.png", run_id,
             pbe_table=pbe_table, ed_summary=wt_summary, note=note,
-            provenance=_overview_provenance(wt_summary), dataset=ds))
+            provenance=ov_prov, dataset=ds))
         # Per-channel 3x3 + its CSV: renders whenever held-out density
         # exists; channels degrade individually inside the figure.
         ch_summaries = channel_ed_summaries(
@@ -6362,7 +6776,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     "species-membership-filtered densities (membership from "
                     "reaction reactants+products; overlap species in both "
                     "channels). Density leg: grid-weight-averaged RMSE vs "
-                    "CCSD; per-channel gamma = that channel's E_PBE/D_PBE.")
+                    "CCSD; per-channel gamma = that channel's E_PBE/D_PBE. "
+                    "beats-PBE marks: cell-matched anchors (black ticks; "
+                    "PBE reduced over each cell's own scored set, per "
+                    "channel); dashed lines = pooled anchors.")
         written.append(plot_density_energy_3x3(
             rows, hd_rows, outdir / "ablation_density_energy_3x3.png",
             run_id, pbe_table=pbe_table, ch_summaries=ch_summaries,

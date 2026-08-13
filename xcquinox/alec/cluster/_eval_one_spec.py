@@ -277,7 +277,26 @@ def _test_slice_reactions(reactions, training_spec):
     )
     if not validated:
         return reactions
-    from xcquinox.alec.eval_holdout import split_held_out
+    from xcquinox.alec.eval_holdout import (reaction_identity_key,
+                                            split_held_out)
+    # The RECORDED val slice governs when present: the staged
+    # validation/val_reactions.json is what training's early-stop actually
+    # consumed, so re-evals of existing runs keep their historical partition
+    # even after the split hash changed keys. Exclusion is by PHYSICAL
+    # identity, not name, so a pool duplicate of a val barrier under a
+    # permuted-reactant name (four BH76 entries) is excluded with it --
+    # validation-best selection saw that barrier regardless of its name.
+    val_path = getattr(training_spec, "validation_reactions_path", None)
+    if val_path and os.path.isfile(str(val_path)):
+        try:
+            with open(str(val_path)) as f:
+                val_rxns = json.load(f)
+            val_ids = {reaction_identity_key(r) for r in val_rxns}
+            if val_ids:
+                return [r for r in reactions
+                        if reaction_identity_key(r) not in val_ids]
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
     _val, test = split_held_out(
         reactions, val_frac=float(getattr(training_spec, "val_frac", 0.2)))
     return test

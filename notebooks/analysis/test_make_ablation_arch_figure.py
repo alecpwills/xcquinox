@@ -571,6 +571,219 @@ def test_suite_scan_console_reported_once(tmp_path, monkeypatch, capsys):
     assert "[216/216 reactions]" in out
 
 
+_STUB_POOL_SPECS = {
+    "hcn": {"atom_composition": (("C", 1), ("H", 1), ("N", 1)),
+            "charge": 0, "spin": 0,
+            "atom": "C 0 0 0; N 0 0 1.15; H 0 0 -1.06"},
+    "co2": {"atom_composition": (("C", 1), ("O", 2)), "charge": 0, "spin": 0,
+            "atom": "C 0 0 0; O 0 0 1.16; O 0 0 -1.16"},
+}
+
+
+def _make_leak_run(root):
+    """One spec trained on the Hill-named CHN whose pool twin hcn sits in the
+    'held-out' rows (the cluster-side name filter cannot see the identity),
+    plus a genuinely held-out co2 reaction."""
+    run = root / "leak/polarized/runs" / _STAMP
+    run.mkdir(parents=True)
+    manifest = {"n_specs": 1, "width": 4, "specs": [
+        {"index": 0, "spec_file": "spec_0000.spec", "sha256": "x" * 64,
+         "cell": {"arch": "deep", "subset_size": 2}}]}
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    sd = run / "checkpoints" / "spec_0000"
+    (sd / "eval_holdout").mkdir(parents=True)
+    (sd / "train_metadata.json").write_text(json.dumps(
+        {"molecules": ["CHN", "h", "c", "n"]}))
+    (sd / "eval_holdout" / "per_reaction.json").write_text(json.dumps([
+        {"name": "w411_hcn_atomization", "pool": "w411",
+         "reactants": ["hcn"], "products": ["h", "c", "n"],
+         "reaction_energy_ref_kcalmol": 313.4,
+         "abs_error_nn_kcalmol": 0.1, "abs_error_pbe_kcalmol": 13.7},
+        {"name": "w411_co2_atomization", "pool": "w411",
+         "reactants": ["co2"], "products": ["c", "o"],
+         "reaction_energy_ref_kcalmol": 390.0,
+         "abs_error_nn_kcalmol": 5.0, "abs_error_pbe_kcalmol": 9.0},
+    ]))
+    (sd / "eval_holdout" / "per_molecule.json").write_text(json.dumps([
+        {"molecule": "hcn", "density_rmse": 1e-4, "density_rmse_pbe": 4e-4},
+        {"molecule": "co2", "density_rmse": 2e-4, "density_rmse_pbe": 5e-4},
+    ]))
+    return run
+
+
+def test_holdout_rows_exclude_trained_alias_reactions(tmp_path, monkeypatch,
+                                                      capsys):
+    # The strict filter ran name-level on the cluster; the figure layer must
+    # close the naming blindness: reactions containing a pool twin of a
+    # trained molecule (CHN -> hcn) are not held-out evidence.
+    run = _make_leak_run(tmp_path)
+    monkeypatch.setattr(fig, "_pool_specs_for_aliasing",
+                        lambda: dict(_STUB_POOL_SPECS))
+    rows = fig.collect_holdout_reaction_rows(run)
+    names = sorted(r["name"] for r in rows)
+    assert names == ["w411_co2_atomization"], names
+    assert "hcn" in capsys.readouterr().out
+
+
+def test_holdout_density_rows_exclude_trained_alias_species(tmp_path,
+                                                            monkeypatch):
+    run = _make_leak_run(tmp_path)
+    monkeypatch.setattr(fig, "_pool_specs_for_aliasing",
+                        lambda: dict(_STUB_POOL_SPECS))
+    hd = fig.collect_holdout_density_rows(run)
+    assert {r["molecule"] for r in hd} == {"co2"}
+
+
+def test_holdout_rows_exclude_val_twin_reactions(tmp_path, monkeypatch):
+    # The same physical barrier can sit in the validation slice under a
+    # permuted-reactant name; val-best selection saw it, so its test-side
+    # twin is not held-out evidence either.
+    run = _make_run_dir(tmp_path)
+    (run / "validation").mkdir()
+    (run / "validation" / "val_reactions.json").write_text(json.dumps([
+        {"name": "bh76_HO_h_to_HOh_ts", "reactants": ["h", "HO"],
+         "products": ["HOh_ts"], "reaction_energy_ref": 17.7}]))
+    rows = fig.collect_holdout_reaction_rows(run)
+    # bh76_a (reactants HO,h -> HOh_ts) is the twin; w411_b survives.
+    assert {r["name"] for r in rows} == {"w411_b"}
+
+
+def test_holdout_density_rows_exclude_cross_spec_inconsistent_pbe(
+        tmp_path, capsys):
+    # The c2 class: two specs (arms) carrying incompatible PBE density
+    # references for one species. The species must leave the density rows
+    # entirely (anchor AND cell means), loudly.
+    run = tmp_path / "run_x"
+    for spec, val in (("spec_0000", 2.27e-4), ("spec_0001", 2.50e-3)):
+        d = run / "checkpoints" / spec / "eval_holdout"
+        d.mkdir(parents=True)
+        (d / "per_reaction.json").write_text("[]")
+        (d / "per_molecule.json").write_text(json.dumps([
+            {"molecule": "c2", "density_rmse": 3e-4,
+             "density_rmse_pbe": val},
+            {"molecule": "h2o", "density_rmse": 1e-4,
+             "density_rmse_pbe": 3e-4},
+        ]))
+    hd = fig.collect_holdout_density_rows(run)
+    assert {r["molecule"] for r in hd} == {"h2o"}
+    assert "c2" in capsys.readouterr().out
+
+
+def test_cell_metrics_dedup_duplicate_reaction_names(tmp_path):
+    # The pool carries four reactions twice under one name; the PBE baseline
+    # dedups but the cell metrics did not, double-counting those rows.
+    base = {"arch": "deep", "subset_size": 1, "pool": "bh76",
+            "ref_kcalmol": 10.0}
+    rows = [dict(base, name="dup", abs_error_nn_kcalmol=4.0,
+                 abs_error_pbe_kcalmol=1.0),
+            dict(base, name="dup", abs_error_nn_kcalmol=4.0,
+                 abs_error_pbe_kcalmol=1.0),
+            dict(base, name="other", abs_error_nn_kcalmol=1.0,
+                 abs_error_pbe_kcalmol=1.0)]
+    mae = fig.reaction_mae_by_arch_subset(rows)
+    assert mae[("deep", 1)] == pytest.approx((4.0 + 1.0) / 2)
+    wt = fig.wtmad2_by_arch_subset(rows)
+    wt_dedup = fig.wtmad2_by_arch_subset(rows[1:])
+    assert wt[("deep", 1)] == pytest.approx(wt_dedup[("deep", 1)])
+
+
+def test_cell_counts_dedup_named_rows():
+    # n_reactions must equal the deduped metric's effective N; unnamed
+    # (density) rows keep raw counting.
+    base = {"arch": "deep", "subset_size": 1, "abs_error_nn_kcalmol": 1.0}
+    rows = [dict(base, name="dup"), dict(base, name="dup"),
+            dict(base, name="other")]
+    assert fig._cell_counts(rows, "abs_error_nn_kcalmol") == {("deep", 1): 2}
+    dens = [{"arch": "deep", "subset_size": 1, "molecule": "m1",
+             "density_rmse": 1e-4},
+            {"arch": "deep", "subset_size": 1, "molecule": "m2",
+             "density_rmse": 2e-4}]
+    assert fig._cell_counts(dens, "density_rmse") == {("deep", 1): 2}
+
+
+def test_wtmad2_pbe_by_arch_subset_cell_restricted(tmp_path):
+    # Each cell's PBE anchor reduces exactly that cell's scored rows.
+    rows = [
+        {"arch": "deep", "subset_size": 1, "pool": "bh76", "name": "r1",
+         "ref_kcalmol": 10.0, "abs_error_nn_kcalmol": 1.0,
+         "abs_error_pbe_kcalmol": 2.0},
+        {"arch": "deep", "subset_size": 2, "pool": "bh76", "name": "r1",
+         "ref_kcalmol": 10.0, "abs_error_nn_kcalmol": 1.0,
+         "abs_error_pbe_kcalmol": 2.0},
+        {"arch": "deep", "subset_size": 2, "pool": "bh76", "name": "r2",
+         "ref_kcalmol": 10.0, "abs_error_nn_kcalmol": 1.0,
+         "abs_error_pbe_kcalmol": 8.0},
+    ]
+    by_cell = fig.wtmad2_pbe_by_arch_subset(rows)
+    assert by_cell[("deep", 1)] == pytest.approx(
+        fig.wtmad2_pbe_baseline(rows[:1]))
+    assert by_cell[("deep", 2)] == pytest.approx(
+        fig.wtmad2_pbe_baseline(rows[1:]))
+    assert by_cell[("deep", 1)] != pytest.approx(by_cell[("deep", 2)])
+
+
+def test_beats_pbe_uses_cell_matched_anchor():
+    # A cell below the pooled union anchor but above its own-rows anchor must
+    # NOT read "beats PBE" (the deep_3x16 ss26 flip class). The verdict
+    # anchor is the harmonic ED of the CELL-MATCHED PBE legs under the
+    # summary's (global) gamma.
+    e_cells = {("deep", 26): 6.8}
+    d_cells = {("deep", 26): 2.0e-4}
+    s = fig.combined_ed_by_cell(
+        e_cells, 8.78, d_cells, 2.4e-4,
+        e_pbe_by_cell={("deep", 26): 5.9},
+        d_pbe_by_cell={("deep", 26): 1.8e-4})
+    c = s["cells"][("deep", 26)]
+    # cell ED ~7.05 sits below the pooled ed_pbe (8.78) but above its
+    # cell-matched anchor (~6.22): the verdict must be False.
+    assert c["ED"] < s["ed_pbe"]
+    assert fig._is_num(c.get("ed_pbe_cell")) and c["ed_pbe_cell"] < c["ED"]
+    assert c["beats_pbe"] is False
+    # and a genuinely-beaten cell anchor still marks
+    s2 = fig.combined_ed_by_cell(
+        e_cells, 8.78, d_cells, 2.4e-4,
+        e_pbe_by_cell={("deep", 26): 8.5},
+        d_pbe_by_cell={("deep", 26): 2.4e-4})
+    assert s2["cells"][("deep", 26)]["beats_pbe"] is True
+    # without cell anchors the pooled fallback keeps the old semantics
+    s3 = fig.combined_ed_by_cell(e_cells, 8.78, d_cells, 2.4e-4)
+    assert s3["cells"][("deep", 26)]["beats_pbe"] is True
+    assert s3["cells"][("deep", 26)]["ed_pbe_cell"] is None
+
+
+def test_ed_csv_carries_cell_anchor_column(tmp_path):
+    summary = {"gamma": 1000.0, "e_pbe": 8.0, "d_pbe": 2e-4, "ed_pbe": 8.0,
+               "e_scan": None, "d_scan": None, "ed_scan": None,
+               "cells": {("deep", 1): {"E": 5.0, "D": 2e-4, "gammaD": 0.2,
+                                       "ED": 4.0, "beats_pbe": False,
+                                       "beats_scan": None,
+                                       "ed_pbe_cell": 3.5}}}
+    out = fig.write_combined_ed_csv({"wtmad2": summary}, tmp_path / "ed.csv",
+                                    n_reactions={("deep", 1): 10},
+                                    n_density={("deep", 1): 5})
+    import csv as _csv
+    row = next(_csv.DictReader(out.open()))
+    assert row["ED_pbe_cell_kcalmol"] == "3.5"
+
+
+def test_grouped_bars_cell_anchor_marks(tmp_path):
+    # With per-cell anchors, a bar below the pooled line but above its own
+    # anchor gets no beats-PBE mark; the cell anchors are drawn as ticks.
+    import matplotlib.pyplot as plt
+    metric = {("deep", 26): 6.8, ("deep", 2): 5.0}
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, metric, ["deep"], [2, 26],
+                               pbe_line=8.78, title="t",
+                               pbe_by_cell={("deep", 26): 5.9,
+                                            ("deep", 2): 8.9})
+        beat = [c for c in ax.collections
+                if c.get_label() == "beats PBE"]
+        assert beat and len(beat[0].get_offsets()) == 1  # only ss2 beats
+    finally:
+        plt.close(f)
+
+
 def test_suite_scan_console_absent_note_once(tmp_path, monkeypatch, capsys):
     # Guard for the consolidation: the loud absent-cache note still appears,
     # exactly once, when no SCAN cache resolves.
@@ -2149,7 +2362,8 @@ def test_write_combined_ed_csv_columns_and_legs(tmp_path):
         "leg", "arch", "subset_size", "n_reactions", "n_density_species",
         "E_kcalmol", "D_rmse", "gamma", "gammaD_kcalmol", "ED_kcalmol",
         "E_pbe_kcalmol", "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
-        "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol", "beats_scan"}
+        "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol", "beats_scan",
+        "ED_pbe_cell_kcalmol"}
     # absent SCAN legs write as EMPTY cells, never the string "None"
     assert all(r["ED_scan_kcalmol"] == "" and r["beats_scan"] == ""
                for r in rd)

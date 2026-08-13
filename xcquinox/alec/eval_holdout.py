@@ -125,6 +125,22 @@ def filter_reactions(
     return kept, dropped
 
 
+def reaction_identity_key(rxn: Dict[str, Any]) -> str:
+    """Order-invariant physical identity of a reaction: its sorted casefolded
+    reactant and product name tuples, serialized. The pool lists four BH76
+    barriers twice under permuted-reactant names (``bh76_h_hf_to_hfhts`` vs
+    ``bh76_hf_h_to_hfhts``); a NAME-keyed split can put one copy in the
+    validation slice and its twin in the test slice, so validation-best
+    selection sees a reported test barrier. Falls back to the name when the
+    species lists are absent."""
+    reac = rxn.get("reactants")
+    prod = rxn.get("products")
+    if not reac or not prod:
+        return f"name:{rxn.get('name')}"
+    return repr((tuple(sorted(str(x).casefold() for x in reac)),
+                 tuple(sorted(str(x).casefold() for x in prod))))
+
+
 def split_held_out(
     reactions: Sequence[Dict[str, Any]],
     val_frac: float = 0.2,
@@ -133,18 +149,21 @@ def split_held_out(
 
     The val slice (~``val_frac``) drives in-training early-stop and
     validation-best model selection; the test slice is what the held-out eval
-    REPORTS. Assignment is by a STABLE hash of ``reaction["name"]`` (hashlib,
-    not the salted builtin ``hash``), so the split is identical across runs,
-    processes and input order -- every spec sees the same val/test partition and
-    a reaction can never land in both (no val<->test leakage into the reported
-    metric). 2026-06-20 (WS3).
+    REPORTS. Assignment is by a STABLE hash (hashlib, not the salted builtin
+    ``hash``) of the reaction's PHYSICAL identity
+    (:func:`reaction_identity_key`), so the split is identical across runs,
+    processes and input order, a reaction can never land in both, and the
+    pool's permuted-name duplicate entries land on the SAME side (a name-keyed
+    hash put one twin per slice -- validation-best selection then saw four
+    reported test barriers). 2026-06-20 (WS3); identity-keyed 2026-08-13.
     """
     if not (0.0 < val_frac < 1.0):
         raise ValueError(f"val_frac must be in (0, 1), got {val_frac}")
     val: List[Dict[str, Any]] = []
     test: List[Dict[str, Any]] = []
     for rxn in reactions:
-        digest = hashlib.md5(str(rxn["name"]).encode("utf-8")).hexdigest()
+        digest = hashlib.md5(
+            reaction_identity_key(rxn).encode("utf-8")).hexdigest()
         frac = int(digest[:8], 16) / 0xFFFFFFFF   # deterministic [0, 1]
         (val if frac < val_frac else test).append(rxn)
     return val, test
@@ -183,6 +202,24 @@ def training_molecule_names(training_spec) -> Tuple[str, ...]:
         for m in getattr(training_spec, "molecules", ()) or ()
         if getattr(m, "name", None) is not None and not _spec_is_atom(m)
     )
+
+
+def held_out_filter_names_with_aliases(training_spec,
+                                       pool_specs) -> Tuple[str, ...]:
+    """:func:`training_molecule_names` plus the pool species physically
+    identical to a trained molecule under a different naming scheme.
+
+    The training vocabulary carries ASE Hill formulas (``CHN``, ``H3N``,
+    ``HO``) while the pools name the same molecules in GMTKN55 style
+    (``hcn``, ``nh3``, ``oh``); the name-based (even case-folded) overlap
+    test cannot connect them, so without this expansion the strict filter
+    keeps trained molecules' reactions in the "held-out" set. Identity is
+    matched on (element composition, charge, spin) via
+    ``species_matching.trained_pool_aliases``."""
+    from xcquinox.alec.species_matching import trained_pool_aliases
+    names = training_molecule_names(training_spec)
+    return tuple(sorted(set(names)
+                        | trained_pool_aliases(names, pool_specs)))
 
 
 def per_reaction_errors(
@@ -854,7 +891,11 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
     )
     # MOLECULE-level names (single atoms excluded) -- what the held-out OVERLAP
     # filter must use; atoms are universal anchors, not held-out molecules.
-    held_out_filter_names = training_molecule_names(training_spec)
+    # Expanded with the pool names physically identical to a trained molecule
+    # under a different naming scheme (Hill 'CHN' vs pool 'hcn'): name
+    # matching alone leaves those trained twins inside the "held-out" set.
+    held_out_filter_names = held_out_filter_names_with_aliases(
+        training_spec, mol_specs)
 
     if mol_data is None:
         mol_data = precompute_holdout_for_spec(training_spec, mol_specs)
@@ -876,8 +917,12 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
 
     # Case-insensitive, to match the case-insensitive reaction overlap: CH4
     # (BH76) and ch4 (W4-11) are the SAME molecule, so the descriptive
-    # in_training_subset flag must agree with the strict-drop filter.
-    training_cf = {str(t).casefold() for t in training_names}
+    # in_training_subset flag must agree with the strict-drop filter --
+    # including the composition-level aliases (Hill vs pool naming).
+    from xcquinox.alec.species_matching import trained_pool_aliases
+    flag_names = set(training_names) | trained_pool_aliases(
+        training_names, mol_specs, verbose=False)
+    training_cf = {str(t).casefold() for t in flag_names}
     mol_records: List[Dict[str, Any]] = []
     for name in sorted(mol_data):
         mol_records.append(make_per_molecule_record(
