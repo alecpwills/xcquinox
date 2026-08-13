@@ -725,16 +725,40 @@ def scan_density_mean(records: Optional[Dict[str, Dict[str, Any]]],
             len(vals), len(mols))
 
 
+def scan_density_line_counts(records: Optional[Dict[str, Dict[str, Any]]],
+                             molecules, key: str = "density_rmse_pbe"
+                             ) -> Tuple[Optional[float], int, int]:
+    """``(value, n_used, n_reference)`` behind :func:`scan_density_line` --
+    the same withdrawal rule, with the coverage counts kept so callers can
+    qualify a drawn-but-partial line (``_scan_ed_suffix``)."""
+    mean, used, ref = scan_density_mean(records, molecules, key=key)
+    if not (_is_num(mean) and mean > 0.0) or ref <= 0:
+        return None, used, ref
+    return ((mean if (used / ref) >= _SCAN_COVERAGE_FLOOR else None),
+            used, ref)
+
+
 def scan_density_line(records: Optional[Dict[str, Dict[str, Any]]],
                       molecules, key: str = "density_rmse_pbe"
                       ) -> Optional[float]:
     """The SCAN density value to draw beside a PBE anchor over ``molecules``,
     or ``None`` when it must not be drawn (absent cache, or coverage below
     :data:`_SCAN_COVERAGE_FLOOR` of the PBE anchor's species)."""
-    mean, used, ref = scan_density_mean(records, molecules, key=key)
-    if not (_is_num(mean) and mean > 0.0) or ref <= 0:
-        return None
-    return mean if (used / ref) >= _SCAN_COVERAGE_FLOOR else None
+    return scan_density_line_counts(records, molecules, key=key)[0]
+
+
+def _scan_ed_suffix(e_used: int, e_ref: int, d_used: int, d_ref: int) -> str:
+    """Label suffix qualifying a drawn-but-partially-covered SCAN ED
+    comparator, mirroring :func:`scan_line_value`'s ``", used/ref"``
+    convention leg-by-leg: ``""`` when both legs cover their full reference
+    sets, else the partial legs as ``", E 5/6 D 3/4"`` (E = reactions of the
+    energy leg, D = species of the density leg)."""
+    parts = []
+    if e_ref > 0 and 0 < e_used < e_ref:
+        parts.append(f"E {e_used}/{e_ref}")
+    if d_ref > 0 and 0 < d_used < d_ref:
+        parts.append(f"D {d_used}/{d_ref}")
+    return (", " + " ".join(parts)) if parts else ""
 
 
 def scan_density_baseline(hd_rows: List[Dict[str, Any]], run_dir: Path, *,
@@ -768,13 +792,25 @@ def scan_density_baseline(hd_rows: List[Dict[str, Any]], run_dir: Path, *,
             "coverage": {"value": {"used": used, "reference": ref}}}
 
 
+def _report_scan_density(scan_density: Optional[Dict[str, Any]]) -> None:
+    """Print the SCAN density anchor + its species coverage when it resolves
+    (the density half of ``_report_scan_coverage``); silent otherwise."""
+    if scan_density is not None and _is_num(scan_density.get("value")):
+        d_used, d_ref = scan_coverage(scan_density, "value")
+        print(f"  SCAN density vs CCSD: {scan_density['value']:.3e} "
+              f"[{d_used}/{d_ref} species]")
+
+
 def _report_scan_coverage(scan_baseline: Optional[Dict[str, Any]],
                           scan_density: Optional[Dict[str, Any]] = None) -> None:
     """Print the SCAN baseline + its coverage, or say the cache is absent.
 
     A silent omission is how the SCAN line went unnoticed for so long: the
     loader degrades to all-NaN and the figures simply drop the line, so the
-    console never mentions SCAN at all. This makes both states explicit."""
+    console never mentions SCAN at all. This makes both states explicit.
+    ``build_all`` owns the energy-side report; ``build_density_energy_figures``
+    reports only the density anchor (``_report_scan_density``), so a suite
+    pass prints each state exactly once."""
     e_used, e_ref = scan_coverage(scan_baseline, "combined")
     if not _is_num((scan_baseline or {}).get("combined")):
         print("  (no SCAN cache next to the run -- SCAN reference lines omitted; "
@@ -2475,7 +2511,13 @@ def wtmad2_scan_baseline(rows: List[Dict[str, Any]],
     The reaction set comes from ``rows`` (the deduped held-out eval), NOT from
     the SCAN cache, so the two reference lines reduce the same benchmark; a
     reaction SCAN could not score is counted as missing rather than quietly
-    shrinking the set. NaN when nothing usable."""
+    shrinking the set. Rows without a finite ``abs_error_pbe_kcalmol`` are
+    excluded entirely (from ``n_ref`` AND the average) -- they are not part
+    of the set :func:`wtmad2_pbe_baseline` reduces, and counting them in
+    ``n_ref`` alone would let unscored-by-both rows push the coverage
+    fraction under the floor while the MAE twin
+    (:func:`scan_reaction_mae_baseline`, which always had the gate) stays
+    above it. NaN when nothing usable."""
     pools: Dict[str, List[Tuple[float, float]]] = {}
     n_ref = 0
     for r in _dedup_rows_by_name(rows):
@@ -2485,6 +2527,8 @@ def wtmad2_scan_baseline(rows: List[Dict[str, Any]],
             ref = r.get("reaction_energy_ref_kcalmol")
         if pool is None or not _is_num(ref):
             continue
+        if not _is_num(r.get("abs_error_pbe_kcalmol")):
+            continue
         n_ref += 1
         e = (scan_errors or {}).get(str(r.get("name")))
         if not _is_num(e):
@@ -2493,6 +2537,26 @@ def wtmad2_scan_baseline(rows: List[Dict[str, Any]],
     n_used = sum(len(v) for v in pools.values())
     w = _wtmad2_over_pools(pools, scale)
     return (w if w is not None else float("nan")), n_used, n_ref
+
+
+def scan_reaction_mae_baseline(rows: List[Dict[str, Any]],
+                               scan_errors: Optional[Dict[str, float]]
+                               ) -> Tuple[float, int, int]:
+    """``(combined reaction MAE, n_used, n_reference)`` for SCAN over the SAME
+    deduped reactions :func:`pbe_reaction_mae_baseline` reduces -- the MAE-leg
+    twin of :func:`wtmad2_scan_baseline`, so the headline ED figure's mae leg
+    can carry a like-for-like SCAN comparator. NaN when nothing usable."""
+    errs: List[float] = []
+    n_ref = 0
+    for r in _dedup_rows_by_name(rows):
+        if not _is_num(r.get("abs_error_pbe_kcalmol")):
+            continue
+        n_ref += 1
+        e = (scan_errors or {}).get(str(r.get("name")))
+        if _is_num(e):
+            errs.append(abs(e))
+    return ((float(np.mean(errs)) if errs else float("nan")),
+            len(errs), n_ref)
 
 
 def collect_insample_density_rows(run_dir: Path) -> List[Dict[str, Any]]:
@@ -3170,7 +3234,7 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
         e_scan, e_used, e_ref = wtmad2_scan_baseline(ch_rows, scan_errors)
         if not (e_ref and (e_used / e_ref) >= _SCAN_COVERAGE_FLOOR):
             e_scan = None
-        d_scan = scan_density_line(
+        d_scan, d_used, d_ref = scan_density_line_counts(
             scan_density_records, _pbe_density_map(ch_hd, ch_tab,
                                                    key=pbe_density_key),
             key=pbe_density_key)
@@ -3183,6 +3247,9 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
                        if fixed_gamma is not None else
                        combined_ed_by_cell(e_cells, e_pbe, d_cells, d_pbe,
                                            e_scan=e_scan, d_scan=d_scan))
+            if out[ch].get("ed_scan") is not None:
+                out[ch]["scan_suffix"] = _scan_ed_suffix(e_used, e_ref,
+                                                         d_used, d_ref)
         else:
             out[ch] = None
     return out
@@ -3191,7 +3258,14 @@ def channel_ed_summaries(rows: List[Dict[str, Any]],
 _ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
                   "n_density_species", "E_kcalmol", "D_rmse", "gamma",
                   "gammaD_kcalmol", "ED_kcalmol", "E_pbe_kcalmol",
-                  "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe"]
+                  "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
+                  "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol",
+                  "beats_scan"]
+
+
+def _blank_if_none(x: Any) -> Any:
+    """Empty CSV cell for absent SCAN legs (cache not pulled / coverage-gated)."""
+    return "" if x is None else x
 
 
 def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
@@ -3235,6 +3309,10 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                     "D_pbe_rmse": summary["d_pbe"],
                     "ED_pbe_kcalmol": summary["ed_pbe"],
                     "beats_pbe": c["beats_pbe"],
+                    "E_scan_kcalmol": _blank_if_none(summary.get("e_scan")),
+                    "D_scan_rmse": _blank_if_none(summary.get("d_scan")),
+                    "ED_scan_kcalmol": _blank_if_none(summary.get("ed_scan")),
+                    "beats_scan": _blank_if_none(c.get("beats_scan")),
                 })
     return out_path
 
@@ -3347,6 +3425,7 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                        archs: List[str], subsets: List[int], *,
                        pbe_line: Optional[float] = None, title: str,
                        scan_line: Optional[float] = None,
+                       scan_suffix: str = "",
                        relocked_cells: Optional[set] = None,
                        mixed_cells: Optional[set] = None,
                        vxc_pre_fix: bool = False) -> None:
@@ -3354,7 +3433,9 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     (rung-ordered by the caller), x = subset_size, PBE dashed / SCAN dotted
     reference lines when finite, green beats-PBE markers on bars strictly
     below the PBE line. ``pbe_line=None`` silently draws no line and no
-    beats-PBE marks (the in-sample AE panel has no PBE baseline). Shared by
+    beats-PBE marks (the in-sample AE panel has no PBE baseline).
+    ``scan_suffix`` qualifies a drawn-but-partially-covered SCAN line in its
+    legend label (the ``", used/ref"`` convention). Shared by
     ``plot_energy_wtmad_mae`` and the overview composites."""
     bw = 0.8 / max(1, len(archs))
     beat_x: List[float] = []
@@ -3406,7 +3487,7 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
         ax.axhline(pbe_line, ls="--", color="k", linewidth=1.0, label="PBE")
     if _is_num(scan_line):
         ax.axhline(scan_line, ls=":", color="#555555", linewidth=1.3,
-                   label="SCAN")
+                   label=f"SCAN{scan_suffix}")
         # A SCAN line above every bar otherwise lands flush against the top
         # spine, where the gamma stamp sits on the ED rows. Give it headroom
         # rather than letting the two overprint.
@@ -3920,10 +4001,13 @@ def _ed_lines_panel(ax, summary: Dict[str, Any], title: str) -> None:
                    label=("PBE (ED = E by self-calibration)" if self_cal
                           else "PBE"))
     # The meta-GGA comparator, on the same gamma as the cells. Absent SCAN
-    # legs leave ed_scan None and the panel is unchanged.
+    # legs leave ed_scan None and the panel is unchanged; a partial (but
+    # floor-passing) coverage is named in the label via scan_suffix.
     ed_scan = summary.get("ed_scan")
     if _is_num(ed_scan) and ed_scan > 0.0:
-        ax.axhline(ed_scan, ls=":", color="#555555", lw=1.4, label="SCAN")
+        sfx = summary.get("scan_suffix") or ""
+        ax.axhline(ed_scan, ls=":", color="#555555", lw=1.4,
+                   label=f"SCAN{sfx}")
     beat = [(ss, c["ED"]) for (_, ss), c in cells.items()
             if c["beats_pbe"] and c["ED"] > 0.0]
     if beat:
@@ -4175,6 +4259,24 @@ def plot_combined_energy_density(wt_summary: Dict[str, Any],
     return out_path
 
 
+def _overview_provenance(ed_summary: Optional[Dict[str, Any]]) -> str:
+    """Footer for the held-out overview composite. The SCAN sentence tracks
+    what panel F actually draws -- the SCAN ED comparator appears exactly when
+    ``ed_summary`` carries a finite ``ed_scan`` (``_ed_lines_panel``), so a
+    fixed footer would contradict the panel in one of the two states."""
+    scan_part = ("SCAN: only panel F's ED comparator line (coverage-"
+                 "gated); A-E carry no SCAN references. "
+                 if _is_num((ed_summary or {}).get("ed_scan"))
+                 else "no SCAN lines (no SCAN WTMAD-2 cache). ")
+    return ("Held-out overview. A/B: one-bucket WTMAD-2 reduction "
+            "56.84*MAD/mean|ref| per pool; C: 2-subset WTMAD-2; "
+            + scan_part +
+            "D/E: grid-weight-averaged density RMSE vs CCSD (not CCSD(T)) "
+            "refs at matching basis/grid, PBE model-free on the same grid. "
+            "F: ED -- full diagnostics on "
+            "ablation_combined_energy_density.png.")
+
+
 def plot_density_energy_overview(rows: List[Dict[str, Any]],
                                  hd_rows: List[Dict[str, Any]],
                                  out_path: Path, run_id: str, *,
@@ -4200,9 +4302,12 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
     per-arch density-vs-subset trend lives in its own figure
     (``plot_holdout_density_per_arch``) and in the left panel of
     ``plot_holdout_density_ccsd``. Panel bodies are the same ax-level helpers
-    the dedicated figures use, so the views cannot drift apart. No SCAN lines
-    (no SCAN WTMAD-2 cache exists). Each top panel carries its own
-    pool-filtered PBE dashed line.
+    the dedicated figures use, so the views cannot drift apart. Panel F draws
+    the SCAN ED comparator line when ``ed_summary`` carries a finite
+    ``ed_scan`` (label coverage-qualified via ``scan_suffix``); panels A-E
+    never draw SCAN references, and ``_overview_provenance`` states which
+    state rendered. Each top panel carries its own pool-filtered PBE dashed
+    line.
 
     ``parity_nn_key``/``parity_pbe_key``/``parity_unit_label`` select panel
     D's density channel and ``title`` overrides the footer title; defaults
@@ -4382,7 +4487,11 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                 e_scan_ch = None
             _grouped_arch_bars(axes[0][j], wtmad2_by_arch_subset(pr), archs,
                                subsets, pbe_line=wtmad2_pbe_baseline(pr),
-                               scan_line=e_scan_ch, title=ttl, **_lf)
+                               scan_line=e_scan_ch,
+                               scan_suffix=(f", {_u}/{_r}"
+                                            if e_scan_ch is not None
+                                            and _u < _r else ""),
+                               title=ttl, **_lf)
         for j, (ch, lab) in enumerate(chans):
             ax = axes[1][j]
             if ch == "combined":
@@ -4400,12 +4509,16 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                 d_pbe_ch = (float(np.mean(list(pbe_ch.values())))
                             if pbe_ch else float("nan"))
                 # SCAN over the SAME channel species the PBE anchor averages.
+                d_scan_ch, d_ch_u, d_ch_r = scan_density_line_counts(
+                    scan_density_records, pbe_ch, key=density_pbe_key)
                 _grouped_arch_bars(
                     ax, d_map, archs, subsets,
                     pbe_line=(d_pbe_ch if _is_num(d_pbe_ch)
                               and d_pbe_ch > 0.0 else None),
-                    scan_line=scan_density_line(scan_density_records, pbe_ch,
-                                                key=density_pbe_key),
+                    scan_line=d_scan_ch,
+                    scan_suffix=(f", {d_ch_u}/{d_ch_r}"
+                                 if d_scan_ch is not None
+                                 and d_ch_u < d_ch_r else ""),
                     title=ttl_d, **_lf)
                 ax.set_ylabel(f"{density_unit_label} vs CCSD", fontsize=8)
             else:
@@ -4429,6 +4542,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                               and ed_pbe > 0.0 else None),
                     scan_line=(float(ed_scan) if _is_num(ed_scan)
                                and ed_scan > 0.0 else None),
+                    scan_suffix=(s.get("scan_suffix") or ""),
                     title=ttl, **_lf)
                 ax.set_ylabel(f"{_ED_SYM} (kcal/mol)", fontsize=8)
                 _gamma_stamp(ax, s)
@@ -5849,8 +5963,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     except Exception as exc:
         print(f"  (SCAN reaction errors unavailable: {exc})")
         scan_errs = {}
-    _report_scan_coverage(
-        scan_baseline,
+    _report_scan_density(
         scan_density_baseline(collect_holdout_density_rows(
             run_dir, eval_subdir=eval_subdir), run_dir,
             _records=scan_dens_recs) if scan_dens_recs else None)
@@ -5909,14 +6022,36 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         wt_summary: Optional[Dict[str, Any]] = None
         if (d_cells and _is_num(d_pbe) and d_pbe > 0.0 and wt_cells
                 and _is_num(e_pbe_wt) and e_pbe_wt > 0.0):
+            # SCAN comparator legs, coverage-gated exactly like the
+            # per-channel 3x3 path -- previously omitted here, so the
+            # headline ED figures never drew ed_scan even with both caches
+            # present.
+            e_scan_wt, wt_u, wt_r = wtmad2_scan_baseline(rows, scan_errs)
+            if not (wt_r and (wt_u / wt_r) >= _SCAN_COVERAGE_FLOOR):
+                e_scan_wt = None
+            e_scan_mae, mae_u, mae_r = scan_reaction_mae_baseline(rows,
+                                                                  scan_errs)
+            if not (mae_r and (mae_u / mae_r) >= _SCAN_COVERAGE_FLOOR):
+                e_scan_mae = None
+            d_scan, d_u, d_r = scan_density_line_counts(
+                scan_dens_recs, _pbe_density_map(hd_rows, pbe_table))
             wt_summary = combined_ed_by_cell(wt_cells, e_pbe_wt,
-                                             d_cells, d_pbe)
+                                             d_cells, d_pbe,
+                                             e_scan=e_scan_wt, d_scan=d_scan)
+            if wt_summary.get("ed_scan") is not None:
+                wt_summary["scan_suffix"] = _scan_ed_suffix(wt_u, wt_r,
+                                                            d_u, d_r)
             mae_cells = reaction_mae_by_arch_subset(rows)
             e_pbe_mae = pbe_reaction_mae_baseline(rows)
             mae_summary = (combined_ed_by_cell(mae_cells, e_pbe_mae,
-                                               d_cells, d_pbe)
+                                               d_cells, d_pbe,
+                                               e_scan=e_scan_mae,
+                                               d_scan=d_scan)
                            if mae_cells and _is_num(e_pbe_mae)
                            and e_pbe_mae > 0.0 else None)
+            if mae_summary and mae_summary.get("ed_scan") is not None:
+                mae_summary["scan_suffix"] = _scan_ed_suffix(mae_u, mae_r,
+                                                             d_u, d_r)
             ed_prov = ("Energy legs: 2-subset WTMAD-2 (BH76+W4-11 labeled "
                        "reweighting, NOT full GMTKN55) and combined reaction "
                        "MAE. Density leg: held-out grid-weight-averaged RMSE "
@@ -5924,6 +6059,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                        "SI Sec. VI: ranking largely metric-independent, SI "
                        "Eq. 8 R^2 = 0.98). CCSD (not CCSD(T)) references at "
                        "matching basis/grid.")
+            if wt_summary.get("ed_scan") is not None:
+                ed_prov += (" SCAN comparator legs (coverage-gated): "
+                            f"WTMAD-2 over {wt_u}/{wt_r} reactions, density "
+                            f"over {d_u}/{d_r} species.")
             extra = [note] if note else []
             excl = _ed_exclusion_note(wt_cells, d_cells)
             if excl:
@@ -5994,9 +6133,24 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     eps_extra.append(f"Eps cells: {cw_eps}")
                 eps_counts = (_cell_counts(rows, "abs_error_nn_kcalmol"),
                               _cell_counts(hd_rows, "density_eps_l1"))
+                # SCAN comparator legs for the DFS-units summaries: the SAME
+                # coverage-gated WTMAD-2 energy leg as the RMSE-channel
+                # headline, and the density leg re-anchored on the Eq. 20
+                # eps channel -- previously omitted here, so the same cell
+                # carried ED_scan in the 3x3 DFS-units CSV but a blank in
+                # ablation_combined_energy_density.csv.
+                d_scan_eps, deps_u, deps_r = scan_density_line_counts(
+                    scan_dens_recs,
+                    _pbe_density_map(hd_rows, pbe_table,
+                                     key="density_eps_l1_pbe"),
+                    key="density_eps_l1_pbe")
                 dfs_summary = combined_ed_fixed_gamma(
                     wt_cells, e_pbe_wt, eps_cells, eps_pbe, _DFS_GAMMA_KCAL,
-                    gamma_source="DFS published")
+                    gamma_source="DFS published",
+                    e_scan=e_scan_wt, d_scan=d_scan_eps)
+                if dfs_summary.get("ed_scan") is not None:
+                    dfs_summary["scan_suffix"] = _scan_ed_suffix(
+                        wt_u, wt_r, deps_u, deps_r)
                 legs_main["wtmad2_eps_gamma_dfs"] = dfs_summary
                 counts_main["wtmad2_eps_gamma_dfs"] = eps_counts
                 fit = nonempirical_gamma(run_dir)
@@ -6006,7 +6160,11 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 if fit_ok:
                     fit_summary = combined_ed_fixed_gamma(
                         wt_cells, e_pbe_wt, eps_cells, eps_pbe, fit["gamma"],
-                        gamma_source="own-axes fit")
+                        gamma_source="own-axes fit",
+                        e_scan=e_scan_wt, d_scan=d_scan_eps)
+                    if fit_summary.get("ed_scan") is not None:
+                        fit_summary["scan_suffix"] = _scan_ed_suffix(
+                            wt_u, wt_r, deps_u, deps_r)
                     legs_main["wtmad2_eps_gamma_fit"] = fit_summary
                     counts_main["wtmad2_eps_gamma_fit"] = eps_counts
                     fit_msg = (f"own-axes gamma = {fit['gamma']:.6g} kcal/mol "
@@ -6036,6 +6194,11 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     "Density leg: " + _EPS_N_SYM + " (DFS Eq. 20) vs "
                     "CCSD references at matching basis/grid. CCSD (not "
                     "CCSD(T)) references.")
+                if dfs_summary.get("ed_scan") is not None:
+                    eps_prov += (" SCAN comparator legs (coverage-gated): "
+                                 f"WTMAD-2 over {wt_u}/{wt_r} reactions, "
+                                 + _EPS_N_SYM +
+                                 f" over {deps_u}/{deps_r} species.")
                 written.append(plot_combined_energy_density(
                     dfs_summary, fit_summary,
                     outdir / "ablation_combined_energy_density_dfs_units.png",
@@ -6185,18 +6348,11 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         # Held-out overview composite: same gate as the holdout density figure
         # (renders whenever it does); panel F degrades to the "ED unavailable"
         # placeholder when the ED anchors above were missing (wt_summary None).
-        ho_prov = ("Held-out overview. A/B: one-bucket WTMAD-2 reduction "
-                   "56.84*MAD/mean|ref| per pool; C: 2-subset WTMAD-2; no "
-                   "SCAN lines (no SCAN WTMAD-2 cache). D/E: grid-weight-"
-                   "averaged density RMSE vs CCSD (not CCSD(T)) refs at "
-                   "matching basis/grid, PBE model-free on the same grid. "
-                   "F: ED -- full diagnostics on "
-                   "ablation_combined_energy_density.png.")
         written.append(plot_density_energy_overview(
             rows, hd_rows,
             outdir / "ablation_density_energy_overview.png", run_id,
             pbe_table=pbe_table, ed_summary=wt_summary, note=note,
-            provenance=ho_prov, dataset=ds))
+            provenance=_overview_provenance(wt_summary), dataset=ds))
         # Per-channel 3x3 + its CSV: renders whenever held-out density
         # exists; channels degrade individually inside the figure.
         ch_summaries = channel_ed_summaries(
@@ -6339,10 +6495,7 @@ def build_all(run_dir: Path, outdir: Path,
     print(f"  PBE baseline (full pool): BH76 {_fmt_mae(baseline['bh76'])} / "
           f"W4-11 {_fmt_mae(baseline['w411'])} / "
           f"combined {_fmt_mae(baseline['combined'])}")
-    if any(_is_num(scan_baseline.get(k)) for k in ("bh76", "w411", "combined")):
-        print(f"  SCAN baseline (full pool): BH76 {_fmt_mae(scan_baseline['bh76'])} "
-              f"/ W4-11 {_fmt_mae(scan_baseline['w411'])} / "
-              f"combined {_fmt_mae(scan_baseline['combined'])}")
+    _report_scan_coverage(scan_baseline)
 
     written: List[Path] = []
     written.append(plot_parity(

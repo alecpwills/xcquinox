@@ -334,6 +334,63 @@ def test_pbe_energies_tolerate_scf_noise(tmp_path, capsys):
     assert "WARNING" not in capsys.readouterr().out
 
 
+_SCAN_FIXTURE_RECORDS = {
+    "HO": {"density_rmse_scan": 2e-4, "density_eps_l1_scan": 6e-4},
+    "CH4": {"density_rmse_scan": 1e-4, "density_eps_l1_scan": 2e-4}}
+
+
+def test_headline_ed_receives_scan_legs(tmp_path, monkeypatch):
+    """EVERY combined_ed_by_cell AND combined_ed_fixed_gamma call in the
+    suite must carry the SCAN legs when the caches resolve -- the headline
+    (wt + mae) calls omitted them first, then the DFS-units fixed-gamma
+    calls did the same, so ablation_combined_energy_density* (and the
+    _dfs_units twin CSV) drew/recorded no ed_scan."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    errs = {str(r["name"]): 1.0 for r in rows}
+    monkeypatch.setattr(fig, "scan_reaction_errors", lambda *a, **k: errs)
+    monkeypatch.setattr(fig, "_scan_density_records",
+                        lambda *a, **k: dict(_SCAN_FIXTURE_RECORDS))
+    seen_self, seen_fixed = [], []
+    real_self = fig.combined_ed_by_cell
+    real_fixed = fig.combined_ed_fixed_gamma
+
+    def _rec_self(*a, **kw):
+        seen_self.append(kw)
+        return real_self(*a, **kw)
+
+    def _rec_fixed(*a, **kw):
+        seen_fixed.append(kw)
+        return real_fixed(*a, **kw)
+
+    monkeypatch.setattr(fig, "combined_ed_by_cell", _rec_self)
+    monkeypatch.setattr(fig, "combined_ed_fixed_gamma", _rec_fixed)
+    fig.build_density_energy_figures(run, tmp_path / "out")
+    assert seen_self, "ED summaries did not run on the density fixture"
+    assert all(fig._is_num(kw.get("e_scan")) and fig._is_num(kw.get("d_scan"))
+               for kw in seen_self), seen_self
+    assert seen_fixed, "fixed-gamma (DFS-units) ED summaries did not run"
+    assert all(fig._is_num(kw.get("e_scan")) and fig._is_num(kw.get("d_scan"))
+               for kw in seen_fixed), seen_fixed
+
+
+def test_ed_csv_carries_scan_columns(tmp_path):
+    summary = {"gamma": 1000.0, "e_pbe": 8.0, "d_pbe": 2e-4, "ed_pbe": 8.0,
+               "e_scan": 4.0, "d_scan": 1.5e-4, "ed_scan": 3.5,
+               "cells": {("deep", 1): {"E": 5.0, "D": 2e-4, "gammaD": 0.2,
+                                       "ED": 4.0, "beats_pbe": True,
+                                       "beats_scan": False}}}
+    out = fig.write_combined_ed_csv({"wtmad2": summary}, tmp_path / "ed.csv",
+                                    n_reactions={("deep", 1): 10},
+                                    n_density={("deep", 1): 5})
+    import csv as _csv
+    row = next(_csv.DictReader(out.open()))
+    assert row["E_scan_kcalmol"] == "4.0"
+    assert row["ED_scan_kcalmol"] == "3.5"
+    assert row["beats_scan"] == "False"
+
+
 def test_scan_baseline_pool_restricted_to_pbe_computable(tmp_path):
     # A species excluded from the PBE map (cross-spec disagreement) must drop
     # its reactions from BOTH legs, keeping the SCAN and PBE lines averaging
@@ -351,6 +408,181 @@ def test_scan_baseline_pool_restricted_to_pbe_computable(tmp_path):
     out = fig.scan_pool_baseline(tmp_path, _loader=lambda: (None, rxns),
                                  _energies=scan, _pbe_energies=pbe)
     assert out["coverage"]["combined"] == {"used": 1, "reference": 1}
+
+
+def test_wtmad2_scan_n_ref_counts_only_pbe_computable_rows():
+    # The docstring contract is "the SAME reactions wtmad2_pbe_baseline
+    # reduces" (pool + finite ref + finite PBE error). Rows PBE could not
+    # score must neither inflate n_ref (a spurious coverage-floor withdrawal)
+    # nor contribute SCAN errors to the average.
+    rows = [
+        {"name": "ok0", "pool": "bh76", "ref_kcalmol": 10.0,
+         "abs_error_pbe_kcalmol": 1.0, "abs_error_nn_kcalmol": 1.0},
+        {"name": "ok1", "pool": "bh76", "ref_kcalmol": 11.0,
+         "abs_error_pbe_kcalmol": 2.0, "abs_error_nn_kcalmol": 1.0},
+        {"name": "nopbe0", "pool": "w411", "ref_kcalmol": 20.0,
+         "abs_error_pbe_kcalmol": None, "abs_error_nn_kcalmol": 1.0},
+        {"name": "nopbe1", "pool": "w411", "ref_kcalmol": 21.0,
+         "abs_error_pbe_kcalmol": None, "abs_error_nn_kcalmol": 1.0},
+    ]
+    scan = {"ok0": 2.0, "ok1": 4.0, "nopbe0": 100.0}
+    val, used, ref = fig.wtmad2_scan_baseline(rows, scan)
+    assert (used, ref) == (2, 2)
+    # Excluding the no-PBE rows must equal restricting the input to them.
+    val_restricted, _, _ = fig.wtmad2_scan_baseline(rows[:2], scan)
+    assert val == pytest.approx(val_restricted)
+
+
+def test_overview_provenance_scan_sentence_branches():
+    # The overview footer must track panel F: it draws the SCAN ED comparator
+    # exactly when the summary carries a finite ed_scan, and the footer must
+    # never claim "no SCAN lines" over a drawn line.
+    with_scan = fig._overview_provenance({"ed_scan": 6.3})
+    assert "no SCAN lines" not in with_scan
+    assert "SCAN" in with_scan
+    for absent in (None, {}, {"ed_scan": None, "cells": {}}):
+        prov = fig._overview_provenance(absent)
+        assert "no SCAN lines" in prov, absent
+
+
+def test_overview_footer_matches_scan_state(tmp_path, monkeypatch):
+    # Integration form of the same contract: with both SCAN caches resolving,
+    # the rendered overview's provenance must not deny the line panel F draws.
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    errs = {str(r["name"]): 1.0 for r in rows}
+    monkeypatch.setattr(fig, "scan_reaction_errors", lambda *a, **k: errs)
+    monkeypatch.setattr(fig, "_scan_density_records",
+                        lambda *a, **k: dict(_SCAN_FIXTURE_RECORDS))
+    got = {}
+    real = fig.plot_density_energy_overview
+
+    def _cap(*a, **kw):
+        out_path = a[2] if len(a) > 2 else kw.get("out_path")
+        if "_dfs_units" not in str(out_path):
+            got["prov"] = kw.get("provenance")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(fig, "plot_density_energy_overview", _cap)
+    fig.build_density_energy_figures(run, tmp_path / "out")
+    assert got.get("prov"), "base overview did not render"
+    assert "no SCAN lines" not in got["prov"]
+    assert "SCAN" in got["prov"]
+
+
+def test_scan_ed_suffix_formats():
+    # Complete coverage -> no suffix; partial legs named compactly, mirroring
+    # scan_line_value's ", used/ref" convention.
+    assert fig._scan_ed_suffix(6, 6, 4, 4) == ""
+    assert fig._scan_ed_suffix(5, 6, 4, 4) == ", E 5/6"
+    assert fig._scan_ed_suffix(6, 6, 3, 4) == ", D 3/4"
+    assert fig._scan_ed_suffix(5, 6, 3, 4) == ", E 5/6 D 3/4"
+    assert fig._scan_ed_suffix(0, 0, 0, 0) == ""
+
+
+def test_ed_lines_panel_scan_label_carries_coverage_suffix():
+    # A partially-covered SCAN comparator must not read as like-for-like:
+    # the ED panel's legend label carries the summary's scan_suffix.
+    import matplotlib.pyplot as plt
+    cells = {("deep", 1): {"E": 5.0, "D": 2e-4, "gammaD": 0.2,
+                           "ED": 0.39, "beats_pbe": True,
+                           "beats_scan": True}}
+    base = {"gamma": 1000.0, "gamma_mode": "fixed", "e_pbe": 8.0,
+            "d_pbe": 2e-4, "ed_pbe": 7.0, "ed_scan": 5.0, "cells": cells}
+    for sfx, want in ((", E 5/6 D 3/4", "SCAN, E 5/6 D 3/4"), (None, "SCAN")):
+        summary = dict(base)
+        if sfx is not None:
+            summary["scan_suffix"] = sfx
+        f, ax = plt.subplots()
+        try:
+            fig._ed_lines_panel(ax, summary, "t")
+            labels = [ln.get_label() for ln in ax.lines]
+            assert want in labels, (sfx, labels)
+        finally:
+            plt.close(f)
+
+
+def test_channel_summaries_carry_scan_suffix(tmp_path, monkeypatch):
+    # Every channel summary whose ed_scan resolves exposes scan_suffix for
+    # the panels ("" at full coverage).
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd_rows = fig.collect_holdout_density_rows(run)
+    pbe_table = fig.load_pbe_density_table(run)
+    errs = {str(r["name"]): 1.0 for r in rows}
+    out = fig.channel_ed_summaries(rows, hd_rows, pbe_table,
+                                   scan_errors=errs,
+                                   scan_density_records=dict(
+                                       _SCAN_FIXTURE_RECORDS))
+    checked = 0
+    for ch, s in out.items():
+        if s is not None and s.get("ed_scan") is not None:
+            assert s.get("scan_suffix") == "", (ch, s.get("scan_suffix"))
+            checked += 1
+    assert checked, "no channel resolved a SCAN ED comparator"
+
+
+def test_dfs_units_ed_scan_consistent_across_csvs(tmp_path, monkeypatch):
+    # Decisive consistency check for the half-threaded fix: the same
+    # combined-channel cell must carry the SAME ED_scan in the headline
+    # DFS-units leg (ablation_combined_energy_density.csv) and the 3x3
+    # DFS-units CSV -- previously blank in one and populated in the other.
+    import csv as _csv
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    errs = {str(r["name"]): 1.0 for r in rows}
+    monkeypatch.setattr(fig, "scan_reaction_errors", lambda *a, **k: errs)
+    monkeypatch.setattr(fig, "_scan_density_records",
+                        lambda *a, **k: dict(_SCAN_FIXTURE_RECORDS))
+    outdir = tmp_path / "out"
+    fig.build_density_energy_figures(run, outdir)
+    with (outdir / "ablation_combined_energy_density.csv").open() as f:
+        main = [r for r in _csv.DictReader(f)
+                if r["leg"] == "wtmad2_eps_gamma_dfs"]
+    assert main, "headline DFS-units leg missing from the CSV"
+    assert all(r["ED_scan_kcalmol"] != "" for r in main), main
+    with (outdir / "ablation_density_energy_3x3_dfs_units.csv").open() as f:
+        chan = {(r["arch"], r["subset_size"]): r for r in _csv.DictReader(f)
+                if r["leg"] == "combined_wtmad2_eps_gamma_dfs"}
+    assert chan, "3x3 DFS-units combined leg missing from the CSV"
+    for r in main:
+        c = chan.get((r["arch"], r["subset_size"]))
+        assert c is not None, (r["arch"], r["subset_size"])
+        assert float(r["ED_scan_kcalmol"]) == pytest.approx(
+            float(c["ED_scan_kcalmol"])), (r, c)
+
+
+def test_suite_scan_console_reported_once(tmp_path, monkeypatch, capsys):
+    # One annotated SCAN baseline line per suite pass (build_all +
+    # build_density_energy_figures), not a bare duplicate followed by the
+    # annotated form.
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    base = {"bh76": 6.9, "w411": 3.8, "combined": 4.9,
+            "coverage": {"combined": {"used": 216, "reference": 216}}}
+    monkeypatch.setattr(fig, "scan_pool_baseline", lambda *a, **k: dict(base))
+    fig.build_all(run, tmp_path / "o1")
+    fig.build_density_energy_figures(run, tmp_path / "o2")
+    out = capsys.readouterr().out
+    assert out.count("SCAN baseline (full pool)") == 1, out
+    assert "[216/216 reactions]" in out
+
+
+def test_suite_scan_console_absent_note_once(tmp_path, monkeypatch, capsys):
+    # Guard for the consolidation: the loud absent-cache note still appears,
+    # exactly once, when no SCAN cache resolves.
+    run = _make_run_dir(tmp_path)
+    nan = float("nan")
+    monkeypatch.setattr(fig, "scan_pool_baseline",
+                        lambda *a, **k: {"bh76": nan, "w411": nan,
+                                         "combined": nan})
+    fig.build_all(run, tmp_path / "o1")
+    fig.build_density_energy_figures(run, tmp_path / "o2")
+    out = capsys.readouterr().out
+    assert out.count("no SCAN cache next to the run") == 1, out
 
 
 # ---------------------------------------------------------------------------
@@ -1916,7 +2148,11 @@ def test_write_combined_ed_csv_columns_and_legs(tmp_path):
     assert set(rd[0]) == {
         "leg", "arch", "subset_size", "n_reactions", "n_density_species",
         "E_kcalmol", "D_rmse", "gamma", "gammaD_kcalmol", "ED_kcalmol",
-        "E_pbe_kcalmol", "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe"}
+        "E_pbe_kcalmol", "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
+        "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol", "beats_scan"}
+    # absent SCAN legs write as EMPTY cells, never the string "None"
+    assert all(r["ED_scan_kcalmol"] == "" and r["beats_scan"] == ""
+               for r in rd)
     assert {r["leg"] for r in rd} == {"wtmad2", "mae"}
     for r in rd:
         # the self-calibration identity holds row-by-row

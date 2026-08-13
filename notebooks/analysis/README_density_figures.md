@@ -239,9 +239,13 @@ The DFS Eq. 21 ED figure, NN vs PBE, held-out.
 
 | Panel | Content |
 |---|---|
-| (a) | Headline ED (2-subset WTMAD-2 leg) vs subset_size per arch, log y; dashed PBE at `ED_PBE == E_PBE`; green beats-PBE marks; the self-calibrated gamma printed lower-left |
+| (a) | Headline ED (2-subset WTMAD-2 leg) vs subset_size per arch, log y; dashed PBE at `ED_PBE == E_PBE`; dotted SCAN at `ED_scan` when both SCAN caches resolve (coverage-gated at 90%; a partial-but-drawn line carries its counts in the label, e.g. `SCAN, E 210/216 D 195/199`); green beats-PBE marks; the self-calibrated gamma printed lower-left |
 | (b) | Per-cell decomposition in the (E, gamma*D) plane, log-log (`_ed_decomposition_panel`): dotted y=x is the self-calibration locus (PBE sits on it exactly, grey `x`); thin grey iso-ED harmonic contours at 0.5x, 1x, 2x the PBE ED; points below the locus are density-limited, above it energy-limited; small digits = subset_size |
-| (c) | Secondary ED with the reaction-MAE leg (its own gamma) -- the leg-independence check; renders a grey placeholder when the MAE anchors are unavailable |
+| (c) | Secondary ED with the reaction-MAE leg (its own gamma, its own SCAN comparator on the MAE energy leg) -- the leg-independence check; renders a grey placeholder when the MAE anchors are unavailable |
+
+When the SCAN comparator legs resolve, the grey provenance footer names their coverage
+(`SCAN comparator legs (coverage-gated): WTMAD-2 over u/r reactions, density over u/r
+species.`); with either cache absent the ED panels simply omit the line, as before.
 
 ### 4.5 `ablation_combined_energy_density.csv` (`write_combined_ed_csv`, :2341)
 
@@ -270,6 +274,13 @@ slope rather than `E_pbe/D_pbe`, and `ED_pbe_kcalmol` generally differs from
 | `D_pbe_rmse` | Pooled PBE density anchor (molecule-dedup, finite rows only; eps units on the DFS-units legs) |
 | `ED_pbe_kcalmol` | PBE's ED; equals `E_pbe_kcalmol` by construction on the self-calibrated legs, generally differs on the DFS-units legs |
 | `beats_pbe` | `True` iff `ED_kcalmol < ED_pbe_kcalmol` |
+| `E_scan_kcalmol` | SCAN energy comparator on the leg's own reduction (WTMAD-2 or MAE), over the same PBE-computable deduped reactions; blank when the SCAN energy cache is absent or under the 90% coverage floor |
+| `D_scan_rmse` | SCAN density comparator over the same species the PBE density anchor averages (eps units on the DFS-units legs); blank when the SCAN density cache is absent or under the floor |
+| `ED_scan_kcalmol` | SCAN's ED under the leg's gamma (harmonic of `E_scan_kcalmol` and `gamma * D_scan_rmse`); blank when either comparator leg is blank |
+| `beats_scan` | `True` iff `ED_kcalmol < ED_scan_kcalmol`; blank when `ED_scan_kcalmol` is blank |
+
+The four SCAN columns are blank (empty string) whenever the comparator is withdrawn, so
+older pulls and cache-free renders produce the same rows as before with empty tails.
 
 ### 4.6 `ablation_density_energy_overview.png` (`plot_density_energy_overview`, :3162)
 
@@ -287,8 +298,11 @@ whenever the held-out density figure renders. Same panel bodies as the dedicated
 | (F) | The ED headline (= panel (a) of 4.4); same placeholder degradation |
 
 The per-arch density trend that formerly occupied (D) lives in 4.3 (and in the left panel
-of 4.2). No SCAN lines anywhere on this figure: a SCAN energy cache exists only for the
-combined MAE, and no SCAN WTMAD-2 or SCAN density cache exists.
+of 4.2). SCAN appears only as panel (F)'s ED comparator line, drawn exactly when the ED
+summary's SCAN legs resolve (both caches present and above the 90% coverage floor; the
+label carries partial-coverage counts); panels (A)-(E) never draw SCAN references. The
+footer (`_overview_provenance`) states which of the two states rendered, so figure and
+footer cannot disagree.
 
 ### 4.7 `ablation_density_energy_3x3.png` + `.csv` (`plot_density_energy_3x3`, :3250)
 
@@ -297,9 +311,9 @@ whenever the held-out density figure renders.
 
 | Row | Content |
 |---|---|
-| 1 (A/B/C) | WTMAD-2 bars per (arch, subset_size): A/B are the one-bucket reduction of Sec. 2.2 (titles say so), C the genuine 2-subset form -- the overview's energy row |
-| 2 (D/E/F) | Density-error BARS per (arch, subset_size): the cell-mean error on the figure's density channel (RMSE here; eps on the DFS-units twin) restricted to that channel's species, PBE dashed at the channel's deduplicated per-molecule anchor, beats-PBE marks = lower error than PBE. Species-channel membership comes from the reactions' reactants+products (`_species_pools`); overlap species contribute to BOTH channels (stated in the caveat). The bar heights equal the ED legs' D column in the companion CSV |
-| 3 (G/H/I) | The DFS Eq. 21 combined metric per channel as BARS (`channel_ed_summaries`): the energy leg is that channel's WTMAD-2 form, the density leg that channel's species, and the panel-title "own gamma" means gamma = E_PBE/D_PBE computed from THAT CHANNEL'S OWN PBE anchors (value stamped in each panel) -- so PBE's value == E_PBE per channel and the metric never compares across channels (the DFS-units twin's SHARED gamma does). Grey placeholder when a channel's anchors are missing |
+| 1 (A/B/C) | WTMAD-2 bars per (arch, subset_size): A/B are the one-bucket reduction of Sec. 2.2 (titles say so), C the genuine 2-subset form -- the overview's energy row. Dotted SCAN line at that channel's WTMAD-2 (reduced over the same PBE-computable reactions) when the SCAN energy cache resolves; partial coverage in the label |
+| 2 (D/E/F) | Density-error BARS per (arch, subset_size): the cell-mean error on the figure's density channel (RMSE here; eps on the DFS-units twin) restricted to that channel's species, PBE dashed at the channel's deduplicated per-molecule anchor, dotted SCAN at its mean over the SAME species when the SCAN density cache resolves (partial coverage in the label), beats-PBE marks = lower error than PBE. Species-channel membership comes from the reactions' reactants+products (`_species_pools`); overlap species contribute to BOTH channels (stated in the caveat). The bar heights equal the ED legs' D column in the companion CSV |
+| 3 (G/H/I) | The DFS Eq. 21 combined metric per channel as BARS (`channel_ed_summaries`): the energy leg is that channel's WTMAD-2 form, the density leg that channel's species, and the panel-title "own gamma" means gamma = E_PBE/D_PBE computed from THAT CHANNEL'S OWN PBE anchors (value stamped in each panel) -- so PBE's value == E_PBE per channel and the metric never compares across channels (the DFS-units twin's SHARED gamma does). Dotted SCAN at that channel's ED_scan (both SCAN legs on the channel's own reductions, under the same gamma; the summary's `scan_suffix` qualifies partial coverage) when both caches resolve. Grey placeholder when a channel's anchors are missing |
 
 The whole figure is bar charts; the per-species parity view lives in
 `ablation_density_parity_by_channel[_dfs_units].png` (one shared square frame across the
