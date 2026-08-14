@@ -700,10 +700,10 @@ def test_main_no_coldstart_by_default(run_dir, monkeypatch):
 
 def test_run_held_out_eval_writes_provenance_stamp(run_dir, monkeypatch,
                                                    tmp_path):
-    from types import SimpleNamespace
     """Every channel writes eval_metadata.json (channel/model/coldstart +
     the solver describe()) on success; the failure path writes failure.json
     and NO stamp -- a channel with no rows carries no protocol stamp."""
+    from types import SimpleNamespace
     spec = _full_mode_spec()
     ckpt_dir = _write_model(run_dir, 0)
     cfg = SimpleNamespace(cluster=SimpleNamespace(eval_workers=1),
