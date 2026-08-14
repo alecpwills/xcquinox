@@ -8,12 +8,14 @@ it in one importable module means the meta-GGA-vs-SCAN / "does climbing Jacob's
 ladder help?" story reads consistently everywhere, instead of each script inventing
 its own colors.
 
-The RUNG of an arch is DERIVED from the architecture registry
-(``xcquinox.alec.config``): a ``metagga`` descriptor / ``meta_gga`` flag -> meta-GGA,
-a ``rung35`` descriptor -> rung-3.5, both -> the combined top arch, neither -> GGA.
-So a newly registered arch classifies automatically instead of needing a
-hand-maintained map that silently rots. A name-token fallback covers the legacy
-4x32 base names that appear in ``ARCH_ORDER`` but are not separately registered.
+The RUNG of an arch is DERIVED from the architecture registry, via the
+library taxonomy in ``xcquinox.alec.rungs`` (a ``metagga`` descriptor /
+``meta_gga`` flag -> meta-GGA, a ``rung35*`` descriptor -> rung-3.5, both ->
+the combined top arch, neither -> GGA). So a newly registered arch classifies
+automatically instead of needing a hand-maintained map that silently rots.
+This module adds only a name-token fallback covering the legacy 4x32 base
+names that appear in ``ARCH_ORDER`` but are not separately registered, plus
+the styling (colors, bands, ordering).
 """
 from __future__ import annotations
 
@@ -66,18 +68,18 @@ for _small in ARCH_ORDER[8:]:
 SUBSET_SIZES: Tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 12, 15, 18)
 
 # --------------------------------------------------------------------------- #
-# Jacob's-ladder rung taxonomy.
-# Order: GGA (rung 2) < meta-GGA (rung 3) < rung-3.5 (Janesko, "between meta-GGA
-# and hybrid") < the combined rung-3.5+meta-GGA arch (the most ingredients). The
-# combined arch carries both the meta-GGA iso-orbital alpha and the rung-3.5
-# localized-DM occupancy, so it sits at the top of what this repo trains.
+# Jacob's-ladder rung taxonomy -- imported from the library single source
+# (xcquinox.alec.rungs). Order: GGA (rung 2) < meta-GGA (rung 3) < rung-3.5
+# (Janesko, "between meta-GGA and hybrid") < the combined rung-3.5+meta-GGA
+# arch (the most ingredients: the meta-GGA iso-orbital alpha AND the rung-3.5
+# localized-DM occupancy).
 # --------------------------------------------------------------------------- #
-RUNG_GGA = "GGA"
-RUNG_MGGA = "meta-GGA"
-RUNG_R35 = "rung-3.5"
-RUNG_R35_MGGA = "rung-3.5+meta-GGA"
-RUNG_ORDER: Tuple[str, ...] = (RUNG_GGA, RUNG_MGGA, RUNG_R35, RUNG_R35_MGGA)
-_RUNG_RANK: Dict[str, int] = {r: i for i, r in enumerate(RUNG_ORDER)}
+from xcquinox.alec.rungs import (  # noqa: E402
+    RUNG_GGA, RUNG_MGGA, RUNG_R35, RUNG_R35_MGGA, RUNG_ORDER,
+    RUNG_RANK as _RUNG_RANK,
+    arch_ingredients as _registry_ingredients,
+    rung_from_ingredients as _rung_from_ingredients,
+)
 
 # Saturated accent per rung (per-rung summary bars, legend section swatches) and a
 # light background tint (axvspan rung bands behind per-arch bars).
@@ -102,27 +104,14 @@ def _arch_ingredients(arch: str) -> Tuple[bool, bool]:
     base names ``deep_rung35`` / ``deep_mgga`` that only exist as ARCH_COLOR keys).
     """
     try:
-        from xcquinox.alec.config import get_architecture
-        cfg = get_architecture(arch)
-        names = {getattr(d, "name", None) for d in getattr(cfg, "descriptors", ())}
-        has_meta = bool(getattr(cfg, "meta_gga", False)) or "metagga" in names
-        # by prefix: the registry names both `rung35` and `rung35_multishell`
-        has_r35 = any(n and n.startswith("rung35") for n in names)
-        return has_meta, has_r35
+        return _registry_ingredients(arch)
     except Exception:
         return (("mgga" in arch) or ("metagga" in arch)), ("rung35" in arch)
 
 
 def rung_of(arch: str) -> str:
     """Jacob's-ladder rung of ``arch`` (one of :data:`RUNG_ORDER`)."""
-    has_meta, has_r35 = _arch_ingredients(arch)
-    if has_meta and has_r35:
-        return RUNG_R35_MGGA
-    if has_meta:
-        return RUNG_MGGA
-    if has_r35:
-        return RUNG_R35
-    return RUNG_GGA
+    return _rung_from_ingredients(*_arch_ingredients(arch))
 
 
 def rung_rank(arch: str) -> int:

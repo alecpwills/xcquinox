@@ -204,3 +204,27 @@ def test_rung_bands_contiguous_and_cover_all_indices():
         assert all(A.rung_of(archs[k]) == r for k in range(s, e))
     # the two GGA archs form one band of width 2
     assert bands[0] == (A.RUNG_GGA, 0, 2)
+
+
+# --------------------------------------------------------------------------- #
+# Taxonomy is the LIBRARY's (xcquinox.alec.rungs); arch_style only adds the
+# name-token fallback for legacy unregistered display names + the styling.
+# --------------------------------------------------------------------------- #
+def test_taxonomy_delegates_to_library_rungs():
+    from xcquinox.alec import rungs
+    assert A.RUNG_GGA is rungs.RUNG_GGA
+    assert A.RUNG_MGGA is rungs.RUNG_MGGA
+    assert A.RUNG_R35 is rungs.RUNG_R35
+    assert A.RUNG_R35_MGGA is rungs.RUNG_R35_MGGA
+    assert A.RUNG_ORDER == rungs.RUNG_ORDER
+    # registered names agree between the strict library predicate and the
+    # fallback-carrying analysis one
+    for arch in ("deep_3x16", "deep_rung35_3x16", "deep_mgga_3x16",
+                 "deep_rung35ms_mgga_3x16"):
+        assert A.rung_of(arch) == rungs.rung_of(arch)
+    # the fallback remains: a legacy unregistered name resolves in
+    # arch_style but raises in the library
+    assert A.rung_of("deep_mgga") == A.RUNG_MGGA
+    import pytest as _pytest
+    with _pytest.raises(KeyError):
+        rungs.rung_of("deep_mgga")
