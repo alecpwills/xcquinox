@@ -23,40 +23,6 @@
 # shared in-flight input.
 # =============================================================================
 
-sweep: the meta-GGA STACKING COMPLETIONS. Submit on long-96core AFTER
-# the first meta-GGA arm (dfs6311_grid3_v4) completes -- it reuses that
-# arm's queue budget, and by then the shared pretrain npz is current so the
-# datagen stage skips in seconds.
-#
-# TWO NEW REGISTRY ARCHITECTURES (2026-08-10), 2 x 11 = 22 cells:
-#
-#   arch                     descriptors                    ablation role
-#   deep_cusp_mgga_3x16      cusp+metagga                   does cusp help rung 3?
-#                                                           (deep_cusp vs deep, lifted)
-#   deep_rung35ms_mgga_3x16  cusp+rung35_multishell+metagga multi-width A/B vs
-#                                                           deep_rung35_mgga (arm 1)
-#
-# Together with arms 1 and 2 the grid covers every descriptor stack at both
-# rungs: {none, cusp, cusp+rung35, cusp+rung35ms} x {GGA, meta-GGA} minus
-# the never-built bare-metagga+rung35ms-without-cusp cell.
-#
-# CAVEAT carried, not hidden: BOTH archs pretrain to SCAN WITHOUT the
-# (s, alpha) mesh -- a mesh node is a synthetic (rho, sigma, tau) triple
-# with no geometry, so it cannot define the cusp or projection columns
-# these archs consume. Their initializations are therefore the
-# underdetermined-alpha clone, the same documented caveat deep_rung35_mgga
-# carries in arm 1; their small-subset cells read with it. The derivative
-# wiring of both stacks -- including the first arch that threads the
-# multishell projector tensor AND the metagga ao_grid_deriv through one
-# V_xc -- is verified by the committed per-family consistency tests
-# (elementwise V_xc = dE/dP with the feature-response discriminator,
-# training-gradient FD for energy and density losses, calibrated descent).
-#
-# Everything else -- subsets, solver, hyperparameters, reference data,
-# basis, grid, orientation lock, ae_as_reactions (real) -- is IDENTICAL to
-# the other arms. Fresh output_root; nothing shared is written.
-# =============================================================================
-
 sweep:
   # expand_grid canonicalizes the arch axis alphabetically: task indices are
   # 0-10 deep_cusp_mgga_3x16, 11-21 deep_rung35ms_mgga_3x16.
