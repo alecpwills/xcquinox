@@ -696,3 +696,64 @@ def test_main_no_coldstart_by_default(run_dir, monkeypatch):
 
     assert ev.main([run_dir, "0"]) == 0
     assert calls == ["eval_holdout"]
+
+
+def test_run_held_out_eval_writes_provenance_stamp(run_dir, monkeypatch,
+                                                   tmp_path):
+    from types import SimpleNamespace
+    """Every channel writes eval_metadata.json (channel/model/coldstart +
+    the solver describe()) on success; the failure path writes failure.json
+    and NO stamp -- a channel with no rows carries no protocol stamp."""
+    spec = _full_mode_spec()
+    ckpt_dir = _write_model(run_dir, 0)
+    cfg = SimpleNamespace(cluster=SimpleNamespace(eval_workers=1),
+                          held_out_strict=False)
+
+    import xcquinox.alec.eval_holdout as eh
+    import xcquinox.alec.full_benchmark_pools as fbp
+    monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
+    monkeypatch.setattr(fbp, "load_full_held_out_pools",
+                        lambda basis=None, grid_level=None: ({}, []))
+    monkeypatch.setattr(ev, "_held_out_basis_grid",
+                        lambda cfg: ("sto-3g", 1))
+    monkeypatch.setattr(
+        eh, "run_full_holdout_eval",
+        lambda **kw: {"n_reactions": 0, "n_species": 0, "n_dropped_nan": 0,
+                      "n_dropped_overlap": 0})
+
+    model_path = os.path.join(ckpt_dir, "model.eqx")
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir, model_path, spec,
+                          holdout_subdir="eval_holdout", coldstart=False)
+    stamp_path = os.path.join(ckpt_dir, "eval_holdout", "eval_metadata.json")
+    with open(stamp_path) as f:
+        stamp = json.load(f)
+    assert stamp["channel"] == "eval_holdout"
+    assert stamp["model"] == "model.eqx"
+    assert stamp["coldstart"] is False
+    assert stamp["solver_config"]["seed_source"] == "pbe"
+    assert stamp["solver_config"]["max_cycles"] == 3
+
+    # coldstart pass: overridden describe() in the stamp
+    import dataclasses as _dc
+    cold_spec = _dc.replace(
+        spec, solver_config=eh.coldstart_solver_config(spec.solver_config))
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir, model_path, cold_spec,
+                          holdout_subdir="eval_holdout_coldstart",
+                          coldstart=True)
+    with open(os.path.join(ckpt_dir, "eval_holdout_coldstart",
+                           "eval_metadata.json")) as f:
+        cold = json.load(f)
+    assert cold["coldstart"] is True
+    assert cold["solver_config"]["seed_source"] == "minao"
+    assert cold["solver_config"]["max_cycles"] == 25
+
+    # failure path: no stamp, failure.json instead
+    def _boom(**kw):
+        raise RuntimeError("synthetic eval failure")
+    monkeypatch.setattr(eh, "run_full_holdout_eval", _boom)
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir, model_path, spec,
+                          holdout_subdir="eval_holdout_failing",
+                          coldstart=False)
+    fail_dir = os.path.join(ckpt_dir, "eval_holdout_failing")
+    assert os.path.isfile(os.path.join(fail_dir, "failure.json"))
+    assert not os.path.exists(os.path.join(fail_dir, "eval_metadata.json"))

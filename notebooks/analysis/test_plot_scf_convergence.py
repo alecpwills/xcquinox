@@ -67,3 +67,28 @@ def test_plot_spec_convergence_writes_png(tmp_path):
 def test_plot_spec_convergence_handles_empty(tmp_path):
     out = sc.plot_spec_convergence([], tmp_path / "empty.png", title="t")
     assert out.is_file()
+
+
+def test_eval_subdir_selects_channel(tmp_path):
+    """--eval-subdir reads the named channel: a coldstart-only run yields
+    traces via the flag and nothing via the default channel."""
+    run = tmp_path / "run"
+    d = run / "checkpoints" / "spec_0000" / "eval_holdout_coldstart"
+    d.mkdir(parents=True)
+    rec = {"molecule": "H2", "scf_energy_step_0": -1.0,
+           "scf_energy_residual_0": 0.1, "cycles_run": 1,
+           "scf_converged": False}
+    (d / "per_molecule.json").write_text(json.dumps([rec]))
+    assert sc._discover_specs_with_traces(run) == []
+    assert sc._discover_specs_with_traces(
+        run, eval_subdir="eval_holdout_coldstart") == [0]
+    assert sc.collect_spec_scf_traces(run, 0) == []
+    traces = sc.collect_spec_scf_traces(
+        run, 0, eval_subdir="eval_holdout_coldstart")
+    assert len(traces) == 1 and traces[0]["molecule"] == "H2"
+    # end-to-end through main: the flag produces a figure, the default none
+    out = tmp_path / "figs"
+    rc = sc.main(["--run-dir", str(run), "--outdir", str(out),
+                  "--eval-subdir", "eval_holdout_coldstart"])
+    assert rc == 0
+    assert list(out.glob("*.png"))

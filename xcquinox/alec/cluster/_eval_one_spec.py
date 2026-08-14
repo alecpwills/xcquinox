@@ -397,6 +397,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         # the cap), so each channel records the solver it actually ran.
         try:
             _sc = getattr(training_spec, "solver_config", None)
+            holdout_dir.mkdir(parents=True, exist_ok=True)
             with open(holdout_dir / "eval_metadata.json", "w") as f:
                 json.dump({
                     "channel": holdout_subdir,

@@ -121,7 +121,7 @@ def main(args=None):
         shard = compute_shard(parsed.run_dir, parsed.spec_idx, names,
                               parsed.basis, parsed.grid_level,
                               model_name=parsed.model_name,
-            coldstart=parsed.coldstart)
+                              coldstart=parsed.coldstart)
         with open(parsed.out_shard, "w") as f:
             json.dump(shard, f)
 
