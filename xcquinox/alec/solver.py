@@ -544,6 +544,13 @@ def run_scf(config: SolverConfig, model, mol_data: dict,
         from xcquinox.alec.solver_manual import run_manual_scf
         return run_manual_scf(config, model, mol_data, forward_only=forward_only)
     if config.backend == SolverBackend.PYSCFAD:
+        if getattr(config, "seed_source", "pbe") != "pbe":
+            raise NotImplementedError(
+                "per-rung seeding is manual-backend only: the pyscfad "
+                "backend prunes its internal grid on the seed density "
+                "(initialize_grids / kernel(dm0=...)), so a non-pbe seed "
+                "would move the grid and break grid-identity guarantees"
+            )
         from xcquinox.alec.solver_pyscfad import run_pyscfad_scf
         return run_pyscfad_scf(config, model, mol_data)
     raise ValueError(f"unknown solver backend: {config.backend}")

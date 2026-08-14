@@ -303,7 +303,7 @@ def _run_manual_scf_rks(config: SolverConfig, model, mol_data: dict,
     policy = config.effective_feature_policy
     mode = config.mode
 
-    D0 = mol_data["dm_pbe"]
+    D0 = mol_data["dm_seed"]
     h_core = mol_data["h_core"]
     S = mol_data["s_matrix"]
     nocc = mol_data["nocc"]  # int (default) or traced 0-d array (padded)
@@ -477,7 +477,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
     policy = config.effective_feature_policy
     mode = config.mode
 
-    D0 = mol_data["dm_pbe"]  # (2, nao, nao)
+    D0 = mol_data["dm_seed"]  # (2, nao, nao)
     h_core = mol_data["h_core"]
     S = mol_data["s_matrix"]
     nocc_a = mol_data["nocc_a"]  # int (default) or traced 0-d array (padded)
