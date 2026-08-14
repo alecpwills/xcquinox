@@ -384,3 +384,87 @@ specs' dirs) or at drain. Afterwards: re-pull and run
 `python notebooks/analysis/verify_holdout_parity.py <pulled run dirs>` --
 the closing state is all `parity`. Local figures already use the
 reconstructed verbatim slices either way.
+
+## 18. B-regime seed-blend campaign (Letter-faithful training seed)
+
+WHAT: a controlled comparison arm training gga/rung35/mgga archs from the
+Letter's randomized seed blend, dm_in = (1-m)*dm_seed + m*dm_minao with
+m ~ U(0.5, 1.0) redrawn per molecule visit, per the campaign decision
+record (phase 2 of the 2026-08-14 A/B). NOT a knob on the current
+protocol: at max_cycles=3 the tail-weighted loss puts 80% of its mass on
+cycle 3 (production weight power 2.0) with zero on cycle 1, so a
+majority-minao blend would score near-minao transients.
+KNOWN: the package couples blend + max_cycles ~15-25 + scf_grad_checkpoint
++ dm_minao as a second mol_data key (padding/cache-key entries) + a
+per-visit PRNG step index threaded train loop -> loss -> solver + the
+recorded 15-25-cycle mgga SCF oscillation gate + ~8x SCF walltime on
+cells already measured at 42 h + a seed_blend SolverConfig field with
+describe()/round-trip coverage.
+TRIGGER: after the v5 pure-seed arms land and the mgga oscillation gate
+resolves (arm-1 deep_mgga ss12/15/18 verdicts).
+
+## 19. SCAN-seeded rung-3.5 control arm
+
+WHAT: a small follow-up submission training the three pure rung-3.5 archs
+(deep_rung35 / deep_rung35_attn / deep_rung35ms, 3x16) with seed_xc
+forced to scan, against their PBE-seeded v4 rows -- the direct seed A/B
+for the rung whose baseline assignment is ambiguous (GGA functional form,
+beyond-GGA information content; the figures grade them against SCAN).
+KNOWN: one YAML (copy the v4gga arm, restrict the arch axis, seed_xc:
+scan, fresh output root); the rungs.seed_xc_for_arch "beyond_gga_scan"
+policy already exists for the auto route.
+TRIGGER: user's call after the v5 mgga arms report.
+
+## 20. DIIS mixer for a converged cold-start eval
+
+WHAT: the eval_holdout_coldstart channel is a trajectory diagnostic
+(linear/decaying-linear mixing, fixed 25 cycles); the Letter's benchmark
+protocol it approximates is a minao cold start run to CONVERGENCE under
+PySCF DIIS. A DIIS mixer in the manual solver (v2+ scope per the solver
+design record) would close that gap and make the channel a
+converged-eval replica.
+KNOWN: CRITERION_REGISTRY has only the energy-delta criterion; a DM-RMS
+criterion and a real early-exit (lax.while_loop or forward-only break)
+would land with it.
+TRIGGER: if the cold-start diagnostic proves informative enough to
+promote into a headline comparison.
+
+## 21. dm_target collocation experiment for the vxc channel
+
+WHAT: the L5 loss_vxc term evaluates V_xc^NN at the PBE density for all
+arms (kept deliberately in the 2026-08-14 protocol change; the Wu-Yang
+vxc_ref retains a PBE pairing in its weakly constrained directions). The
+stronger uniform alternative: collocate at dm_target (the CCSD density,
+already in mol_data) for ALL arms -- zero bias for an exact functional,
+one footing everywhere. Changes an active loss channel for every arch,
+so it is its own controlled experiment, not a rider.
+KNOWN: RKS branch reads stored rho_grid/sigma_grid (PBE) and would need
+the dm_target contraction; UKS already contracts from a dm. The
+descriptor-feature and feature-response parts of the potential must move
+with the density or the evaluation point is inconsistent (the round-1
+plan-review finding).
+TRIGGER: after the v5 arms establish the seeding effect in isolation.
+
+## 22. Consolidate the redundant per-molecule metric SCFs
+
+WHAT: under FULL mode the eval metric stack re-runs the identical SCF up
+to 4x per molecule (total_energy, atomization_energy, density_rmse,
+scf_convergence each call run_scf); the coldstart channel multiplies the
+cost. One shared SCFResult per (molecule, solver_config) handed to all
+metrics would cut eval wall-time ~4x.
+KNOWN: compile is cached, execution repeats; the metric ABC's
+solver_config seam is where a memo would live.
+TRIGGER: next eval-side refactor window, or if v5 eval walltime becomes
+the binding constraint.
+
+## 23. Diagnostic scripts must mirror the spec seed when replaying v5 specs
+
+WHAT: hpcjobs/dfs6311_nan_verify.py, hpcjobs/dfs6311_nan_isolate.py, and
+notebooks/analysis/multimode_constraint_eval.py construct fresh
+SolverConfig objects (seed_source defaults 'pbe') and precompute without
+seed threading; replaying a v5 SCAN-seeded spec through them silently
+evaluates a different protocol. local_reeval already mirrors the spec
+(fixed 2026-08-14).
+KNOWN: each needs the same two-line threading the production call sites
+got (seed fields from the spec's solver_config into precompute).
+TRIGGER: first v5-spec replay through any of these tools.
