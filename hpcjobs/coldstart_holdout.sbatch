@@ -10,6 +10,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
 #SBATCH --output=coldstart_holdout_%j.out
+#SBATCH --mail-user=alec.wills@stonybrook.edu
+#SBATCH --mail-type=BEGIN,END,FAIL
 
 # Retroactive cold-start channel (eval_holdout_coldstart) over the COMPLETED
 # specs of the v4 arms. Resumable: done specs are skipped, pending specs are

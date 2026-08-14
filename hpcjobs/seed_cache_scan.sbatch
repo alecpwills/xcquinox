@@ -6,6 +6,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
 #SBATCH --output=seed_cache_scan_%j.out
+#SBATCH --mail-user=alec.wills@stonybrook.edu
+#SBATCH --mail-type=BEGIN,END,FAIL
 
 # SCAN seed cache for the v5 TRAINING-side species: one converged SCAN
 # KS-SCF per species of the full training-point pool (enumerated
