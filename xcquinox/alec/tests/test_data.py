@@ -920,3 +920,145 @@ def test_load_external_data_accepts_density_fit_used_key(tmp_path):
         vxc_pbe_shape=(2, 2), mol_name="H2",
     )
     assert got[1] is not None  # rho_ref_grid loaded
+
+
+# --------------------------------------------------------------------------- #
+# dm_seed supply layer (per-rung SCF seeding)
+# --------------------------------------------------------------------------- #
+import os as _os
+
+from xcquinox.alec.data import clear_precompute_cache
+
+
+def _seed_env(monkeypatch, *, cache_dir=None, allow=False):
+    if cache_dir is None:
+        monkeypatch.delenv("XCQUINOX_SEED_CACHE_DIR", raising=False)
+    else:
+        monkeypatch.setenv("XCQUINOX_SEED_CACHE_DIR", str(cache_dir))
+    if allow:
+        monkeypatch.setenv("XCQUINOX_SEED_ALLOW_GENERATE", "1")
+    else:
+        monkeypatch.delenv("XCQUINOX_SEED_ALLOW_GENERATE", raising=False)
+
+
+def test_dm_seed_default_pbe_is_alias_of_dm_pbe():
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+    clear_precompute_cache()
+    md = precompute_fixed_density_data(h2_molecule())
+    assert md["dm_seed"] is md["dm_pbe"]
+
+
+def test_dm_seed_minao_differs_from_converged_and_leaves_rest_alone():
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+    clear_precompute_cache()
+    base = precompute_fixed_density_data(h2_molecule())
+    cold = precompute_fixed_density_data(h2_molecule(), seed_source="minao")
+    assert cold["dm_seed"].shape == cold["dm_pbe"].shape
+    assert not np.allclose(np.asarray(cold["dm_seed"]),
+                           np.asarray(cold["dm_pbe"]))
+    # grid + anchors untouched by the seed choice
+    assert np.allclose(np.asarray(cold["grid_weights"]),
+                       np.asarray(base["grid_weights"]))
+    assert cold["E_pbe"] == base["E_pbe"]
+    assert np.asarray(cold["dm_pbe"]).tolist() == \
+        np.asarray(base["dm_pbe"]).tolist()
+
+
+def test_dm_seed_minao_uks_shape():
+    from xcquinox.alec.tests.fixtures.molecules import o_atom
+    clear_precompute_cache()
+    cold = precompute_fixed_density_data(o_atom(), seed_source="minao")
+    assert np.asarray(cold["dm_seed"]).ndim == 3  # (2, nao, nao)
+    assert cold["dm_seed"].shape == cold["dm_pbe"].shape
+
+
+def test_dm_seed_scan_requires_cache_dir(monkeypatch):
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+    clear_precompute_cache()
+    _seed_env(monkeypatch)
+    with pytest.raises(RuntimeError, match="seed"):
+        precompute_fixed_density_data(h2_molecule(), seed_source="scan")
+
+
+def test_dm_seed_scan_missing_cache_fails_loud_without_generate(
+        tmp_path, monkeypatch):
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+    clear_precompute_cache()
+    _seed_env(monkeypatch)
+    with pytest.raises(RuntimeError, match="H2"):
+        precompute_fixed_density_data(
+            h2_molecule(), seed_source="scan",
+            seed_cache_dir=str(tmp_path), seed_allow_generate=False)
+
+
+def test_dm_seed_scan_generate_gated_on_env(tmp_path, monkeypatch):
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+    clear_precompute_cache()
+    # allow-generate kwarg WITHOUT the env flag still refuses
+    _seed_env(monkeypatch)
+    with pytest.raises(RuntimeError):
+        precompute_fixed_density_data(
+            h2_molecule(), seed_source="scan",
+            seed_cache_dir=str(tmp_path), seed_allow_generate=True)
+    # with the env flag it generates, caches, and seeds from the cached
+    # SCAN dm. (H2/sto-3g has ONE doubly-occupied symmetric MO, so the
+    # converged SCAN and PBE dms are numerically identical there -- the
+    # discriminating property is cache provenance, not numeric difference.)
+    _seed_env(monkeypatch, allow=True)
+    clear_precompute_cache()
+    md = precompute_fixed_density_data(
+        h2_molecule(), seed_source="scan",
+        seed_cache_dir=str(tmp_path), seed_allow_generate=True)
+    assert md["dm_seed"].shape == md["dm_pbe"].shape
+    assert md["dm_seed"] is not md["dm_pbe"]  # loaded, not aliased
+    cached = list((tmp_path / "_intermediates").glob("*_xcscan_scf.npz"))
+    assert len(cached) == 1
+    with np.load(cached[0]) as npz:
+        assert np.allclose(np.asarray(md["dm_seed"]), npz["dm"])
+    # and a second run LOADS (no generate flag needed once cached)
+    clear_precompute_cache()
+    _seed_env(monkeypatch)
+    md2 = precompute_fixed_density_data(
+        h2_molecule(), seed_source="scan", seed_cache_dir=str(tmp_path))
+    assert np.allclose(np.asarray(md2["dm_seed"]), np.asarray(md["dm_seed"]))
+
+
+def test_dm_seed_scan_rejects_wrong_geometry_cache(tmp_path, monkeypatch):
+    """The cache is filename-identified; a same-name species at a different
+    geometry must be rejected by the overlap-matrix fingerprint, not seeded
+    from the wrong dm."""
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+    clear_precompute_cache()
+    _seed_env(monkeypatch, allow=True)
+    precompute_fixed_density_data(
+        h2_molecule(), seed_source="scan",
+        seed_cache_dir=str(tmp_path), seed_allow_generate=True)
+    stretched = MoleculeSpec(
+        name="H2", atom="H 0 0 0; H 0 0 1.40", basis="sto-3g",
+        charge=0, spin=0, atom_composition=(("H", 2),))
+    clear_precompute_cache()
+    _seed_env(monkeypatch)
+    with pytest.raises(RuntimeError, match="overlap|fingerprint|geometry"):
+        precompute_fixed_density_data(
+            stretched, seed_source="scan", seed_cache_dir=str(tmp_path))
+
+
+def test_dm_seed_scan_uks_loads_spin_resolved(tmp_path, monkeypatch):
+    from xcquinox.alec.tests.fixtures.molecules import o_atom
+    clear_precompute_cache()
+    _seed_env(monkeypatch, allow=True)
+    md = precompute_fixed_density_data(
+        o_atom(), seed_source="scan",
+        seed_cache_dir=str(tmp_path), seed_allow_generate=True)
+    assert np.asarray(md["dm_seed"]).ndim == 3
+    assert md["dm_seed"].shape == md["dm_pbe"].shape
+
+
+def test_precompute_memo_distinguishes_seed_source():
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+    clear_precompute_cache()
+    warm = precompute_fixed_density_data(h2_molecule())
+    cold = precompute_fixed_density_data(h2_molecule(), seed_source="minao")
+    # a seed-blind memo key would hand back the warm record here
+    assert cold["dm_seed"] is not cold["dm_pbe"]
+    assert warm["dm_seed"] is warm["dm_pbe"]

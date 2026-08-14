@@ -531,6 +531,9 @@ def precompute_holdout(
     required_keys: Sequence[str] = (),
     auxbasis: str | None = None,
     orientation_lock_strength: float = 0.0,
+    seed_source: str = "pbe",
+    seed_cache_dir: str | None = None,
+    seed_density_fit: bool = False,
 ) -> Dict[str, Any]:
     """Run the PBE precompute over a held-out pool of species.
 
@@ -559,7 +562,9 @@ def precompute_holdout(
             out[name] = alec.precompute_fixed_density_data(
                 spec, descriptors=tuple(descriptors),
                 required_keys=tuple(required_keys), auxbasis=auxbasis,
-                orientation_lock_strength=orientation_lock_strength)
+                orientation_lock_strength=orientation_lock_strength,
+                seed_source=seed_source, seed_cache_dir=seed_cache_dir,
+                seed_density_fit=seed_density_fit)
         except Exception as exc:  # noqa: BLE001
             print(f"  [precompute {i}/{n}] {name}: FAILED ({exc})",
                   flush=True)
@@ -868,13 +873,18 @@ def precompute_holdout_for_spec(training_spec, mol_specs: Dict[str, Any]):
     auxbasis = (getattr(sc, "auxbasis", None)
                 if getattr(sc, "density_fit", False) else None)
     orientation_lock_strength = getattr(sc, "orientation_lock_strength", 0.0)
+    seed_source = getattr(sc, "seed_source", "pbe")
     print(f"[holdout] precomputing {len(mol_specs)} species "
           f"(descriptors: {[type(d).__name__ for d in descriptors] or 'none'}; "
-          f"solver: {mode_str}; extra precompute keys: "
+          f"solver: {mode_str}; seed: {seed_source}; extra precompute keys: "
           f"{list(required_keys) or 'none'}) ...", flush=True)
     return precompute_holdout(mol_specs, descriptors=descriptors,
                               required_keys=required_keys, auxbasis=auxbasis,
-                              orientation_lock_strength=orientation_lock_strength)
+                              orientation_lock_strength=orientation_lock_strength,
+                              seed_source=seed_source,
+                              seed_cache_dir=getattr(sc, "seed_cache_dir", None),
+                              seed_density_fit=bool(
+                                  getattr(sc, "density_fit", False)))
 
 
 def run_full_holdout_eval(

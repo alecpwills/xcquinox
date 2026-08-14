@@ -859,3 +859,51 @@ def test_evaluate_holdout_tail_off_reports_final_step(monkeypatch):
     )  # scf_loss_use_tail defaults False
     out = evaluate_holdout(None, {"X": {}}, solver_config=full_off)
     assert out["X"] == pytest.approx(-76.3, abs=1e-12)  # final step, unchanged
+
+
+def test_precompute_holdout_forwards_seed_fields(monkeypatch):
+    """The holdout precompute hands the spec's seed identity to the supply
+    layer for every pool species."""
+    import xcquinox.alec as alec
+    from xcquinox.alec import eval_holdout as eh
+
+    captured = {}
+
+    def _fake_precompute(spec, descriptors=(), required_keys=(),
+                         auxbasis=None, orientation_lock_strength=0.0, **kw):
+        captured.update(kw)
+        return {"name": spec.name}
+
+    monkeypatch.setattr(alec, "precompute_fixed_density_data",
+                        _fake_precompute)
+    from types import SimpleNamespace
+    specs = {"h2o": SimpleNamespace(name="h2o")}
+    eh.precompute_holdout(specs, seed_source="scan",
+                          seed_cache_dir="/seeds", seed_density_fit=True)
+    assert captured == {"seed_source": "scan", "seed_cache_dir": "/seeds",
+                        "seed_density_fit": True}
+
+
+def test_precompute_holdout_for_spec_derives_seed_from_solver_config(
+        monkeypatch):
+    from types import SimpleNamespace
+    from xcquinox.alec import eval_holdout as eh
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+
+    captured = {}
+
+    def _fake_holdout(mol_specs, descriptors=(), *, required_keys=(),
+                      auxbasis=None, orientation_lock_strength=0.0, **kw):
+        captured.update(kw)
+        return {}
+
+    monkeypatch.setattr(eh, "precompute_holdout", _fake_holdout)
+    sc = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
+                      seed_source="minao", density_fit=True)
+    spec = SimpleNamespace(
+        solver_config=sc,
+        arch=SimpleNamespace(materialize_descriptors=lambda: ()))
+    eh.precompute_holdout_for_spec(spec, {})
+    assert captured["seed_source"] == "minao"
+    assert captured["seed_cache_dir"] is None
+    assert captured["seed_density_fit"] is True

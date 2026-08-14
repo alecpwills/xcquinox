@@ -239,6 +239,30 @@ def write_local_per_reaction_json(
 # Per-spec orchestration
 # ---------------------------------------------------------------------------
 
+def _seed_precompute_kwargs(spec_solver_config):
+    """(extra_required, precompute kwargs) mirroring the training precompute.
+
+    The replay must match training exactly: DF specs precompute the 3-index
+    ``cderi`` (not the full ``eri``), the DF auxbasis and orientation lock
+    come from the spec, and the spec's seed fields reach the supply layer.
+    Pure so the derivation is unit-testable against duck-typed configs.
+    """
+    sc = spec_solver_config
+    needs_scf = (sc is not None and hasattr(sc, "mode")
+                 and sc.mode.value != "oneshot")
+    df = bool(getattr(sc, "density_fit", False))
+    extra_required = (("cderi",) if df else ("eri",)) if needs_scf else ()
+    kwargs = {
+        "auxbasis": getattr(sc, "auxbasis", None) if df else None,
+        "orientation_lock_strength": getattr(
+            sc, "orientation_lock_strength", 0.0),
+        "seed_source": getattr(sc, "seed_source", "pbe"),
+        "seed_cache_dir": getattr(sc, "seed_cache_dir", None),
+        "seed_density_fit": df,
+    }
+    return extra_required, kwargs
+
+
 def run_one_spec(
     run_dir: Path,
     spec_idx: int,
@@ -312,20 +336,21 @@ def run_one_spec(
     # 'eri' precompute is wasted overhead; only request it when the solver
     # mode is non-ONESHOT.
     spec_solver_config = getattr(training_spec, "solver_config", None)
-    needs_scf = (
-        spec_solver_config is not None
-        and hasattr(spec_solver_config, "mode")
-        and spec_solver_config.mode.value != "oneshot"
-    )
-    extra_required = ("eri",) if needs_scf else ()
+    # Replay must mirror the training precompute EXACTLY: DF specs need the
+    # 3-index cderi (not the full eri), the DF auxbasis must match training's,
+    # the orientation lock must reproduce the locked h_core/seed, and the
+    # spec's seed source must reach the supply layer. The earlier form passed
+    # none of these -- a silent replay drift for DF/locked/seeded specs.
+    extra_required, seed_kwargs = _seed_precompute_kwargs(spec_solver_config)
     print(f"[spec {spec_idx}] precomputing {n_to_eval} pool species "
           f"(training set had {len(training_names)}; "
           f"held-out pool: {len(held_names)}; "
           f"descriptors: {[type(d).__name__ for d in descriptors] or 'none'}; "
           f"extra precompute keys: {list(extra_required) or 'none'})",
           flush=True)
-    mol_data = precompute_holdout(pool_specs, descriptors=descriptors,
-                                   required_keys=extra_required)
+    mol_data = precompute_holdout(
+        pool_specs, descriptors=descriptors,
+        required_keys=extra_required, **seed_kwargs)
 
     # 2026-05-29: pass training_spec.solver_config so eval matches the
     # training V_xc / density supervision domain (full_3 → 3-iter SCF;

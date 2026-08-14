@@ -532,6 +532,9 @@ def run_test(spec: TestSpec, progress_callback=None) -> dict:
                       if getattr(_sc, "density_fit", False) else None),
             orientation_lock_strength=getattr(
                 _sc, "orientation_lock_strength", 0.0),
+            seed_source=getattr(_sc, "seed_source", "pbe"),
+            seed_cache_dir=getattr(_sc, "seed_cache_dir", None),
+            seed_density_fit=bool(getattr(_sc, "density_fit", False)),
         )
         mol_result = {"molecule": mol_spec.name}
         for metric in metrics:

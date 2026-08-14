@@ -360,6 +360,12 @@ def _build_batch(spec: TrainingSpec, loss) -> dict:
             descriptors=spec.arch.materialize_descriptors(),
             auxbasis=auxbasis,
             orientation_lock_strength=orientation_lock_strength,
+            seed_source=getattr(sc, "seed_source", "pbe"),
+            seed_cache_dir=getattr(sc, "seed_cache_dir", None),
+            seed_density_fit=bool(getattr(sc, "density_fit", False)),
+            # training-side identities may generate a missing SCAN seed on
+            # the cluster (double-gated with XCQUINOX_SEED_ALLOW_GENERATE)
+            seed_allow_generate=True,
         )
         for m in spec.molecules
     ]
@@ -498,12 +504,37 @@ def _build_validation_data(spec):
     orientation_lock_strength = getattr(sc, "orientation_lock_strength", 0.0)
     required_keys = tuple(required)
 
+    seed_source = getattr(sc, "seed_source", "pbe")
+    seed_cache_dir = getattr(sc, "seed_cache_dir", None)
+    seed_density_fit = bool(getattr(sc, "density_fit", False))
+    if seed_source == "scan":
+        # Coverage gate BEFORE the loop: val species are pool species whose
+        # SCAN seeds the pool cache must already hold (generation never
+        # applies to val identities), so a wrong/incomplete cache dir fails
+        # loud up front, not mid-training.
+        from xcquinox.alec.data import missing_seed_cache_files
+        cache_root = seed_cache_dir or os.environ.get(
+            "XCQUINOX_SEED_CACHE_DIR")
+        missing = (missing_seed_cache_files(
+            val_mols, seed_cache_dir=cache_root,
+            density_fit=seed_density_fit,
+            orientation_lock_strength=orientation_lock_strength)
+            if cache_root else [m.name for m in val_mols])
+        if missing:
+            raise RuntimeError(
+                "validation slice is missing cached SCAN seeds for "
+                f"{missing} under {cache_root!r} -- point seed_cache_dir at "
+                "the scan-pool cache (its _intermediates/ holds the pool "
+                "species) before training a scan-seeded spec")
     val_mol_data = {
         m.name: precompute_fixed_density_data(
             m, required_keys=required_keys,
             descriptors=spec.arch.materialize_descriptors(),
             auxbasis=auxbasis,
             orientation_lock_strength=orientation_lock_strength,
+            seed_source=seed_source,
+            seed_cache_dir=seed_cache_dir,
+            seed_density_fit=seed_density_fit,
         )
         for m in val_mols
     }

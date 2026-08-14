@@ -118,12 +118,13 @@ class SolverConfig:
                 "seed_source must be one of 'pbe'/'scan'/'minao', got "
                 f"{self.seed_source!r}"
             )
-        if self.seed_source != "pbe" and self.mode == SolverMode.ONESHOT:
+        if self.seed_source != "pbe" and self.mode != SolverMode.FULL:
             raise ValueError(
-                "a non-pbe seed_source is meaningless in ONESHOT mode: the "
-                "one-shot evaluates at the stored PBE density, so the seed "
-                "would be silently ignored (a protocol no-op). Use an SCF "
-                f"mode, got seed_source={self.seed_source!r}"
+                "a non-pbe seed_source requires mode=FULL: ONESHOT evaluates "
+                "at the stored PBE density (the seed would be silently "
+                "ignored), and FIXED_J pins the PBE-density Coulomb matrix "
+                "against a non-PBE D0 (a mixed-footing Fock). Got "
+                f"mode={self.mode} with seed_source={self.seed_source!r}"
             )
         if self.mode == SolverMode.ONESHOT and self.max_cycles != 0:
             raise ValueError(

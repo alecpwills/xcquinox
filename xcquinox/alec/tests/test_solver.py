@@ -491,12 +491,16 @@ def test_solver_config_seed_source_value_validated():
         SolverConfig(seed_source="b3lyp")
 
 
-def test_solver_config_non_pbe_seed_requires_scf_mode():
-    # A one-shot evaluates at the stored PBE density; a non-pbe seed there
-    # would be a silent protocol no-op, so it is rejected outright.
+def test_solver_config_non_pbe_seed_requires_full_mode():
+    # ONESHOT evaluates at the stored PBE density (seed silently ignored);
+    # FIXED_J pins the PBE-density J against a non-PBE D0 (mixed-footing
+    # Fock). Both are rejected outright; only FULL accepts a non-pbe seed.
     from xcquinox.alec.solver import SolverConfig
     with pytest.raises(ValueError):
         SolverConfig(mode=SolverMode.ONESHOT, seed_source="scan")
+    with pytest.raises(ValueError):
+        SolverConfig(mode=SolverMode.FIXED_J, max_cycles=3,
+                     seed_source="minao")
     cfg = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
                        seed_source="scan", seed_cache_dir="/seeds")
     assert cfg.seed_source == "scan"

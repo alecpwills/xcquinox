@@ -32,6 +32,7 @@ export MKL_NUM_THREADS="$$BLAS_THREADS"
 export OPENBLAS_NUM_THREADS="$$BLAS_THREADS"
 echo "[thread-caps] CORES=$$CORES -> OMP/MKL/OPENBLAS=$$BLAS_THREADS (idle in train_eval; XLA+LLVM keep the rest)"
 ${BENCH_REFS_ENV_LINE}
+${SEED_ENV_LINES}
 # --- glibc allocator -------------------------------------------------------
 # Cap malloc arenas at 2 (glibc default: 8 x cores = 768 on a 96-core node).
 # glibc parks freed heap on per-arena free lists instead of returning it to

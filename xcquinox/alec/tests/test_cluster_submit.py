@@ -918,3 +918,31 @@ def test_real_submit_bench_after_train_and_recorded(tmp_path, monkeypatch):
     assert len(bench) == 1
     assert bench[0]["array_job_id"] == "6005"
     assert bench[0]["indices"] == [0]
+
+
+# --------------------------------------------------------------------------- #
+# Seed-cache env wiring (fallback transport for retro/diagnostic runs)
+# --------------------------------------------------------------------------- #
+def test_seed_env_lines_rendered_in_task_templates(tmp_path):
+    """With inputs.seed_cache_dir set, every task template exports the cache
+    dir; the allow-generate flag is exported by cluster task scripts
+    unconditionally (the kwarg gate keeps eval paths from generating)."""
+    d = _base_config_dict()
+    d["inputs"]["seed_cache_dir"] = "/gpfs/scratch/x/seed_cache"
+    p = tmp_path / "grid.json"
+    p.write_text(json.dumps(d))
+    cfg = load_grid_config(str(p))
+    for kind in ("train", "eval", "train_eval_inline"):
+        text = render_sbatch(kind, cfg, str(tmp_path / "run"),
+                             array_max=_EXPECTED_ARRAY_MAX)
+        assert "export XCQUINOX_SEED_CACHE_DIR=/gpfs/scratch/x/seed_cache" \
+            in text, kind
+        assert "export XCQUINOX_SEED_ALLOW_GENERATE=1" in text, kind
+
+
+def test_seed_env_lines_without_cache_dir(tmp_path):
+    cfg = _make_cfg(tmp_path)
+    text = render_sbatch("train", cfg, str(tmp_path / "run"),
+                         array_max=_EXPECTED_ARRAY_MAX)
+    assert "XCQUINOX_SEED_CACHE_DIR" not in text
+    assert "export XCQUINOX_SEED_ALLOW_GENERATE=1" in text

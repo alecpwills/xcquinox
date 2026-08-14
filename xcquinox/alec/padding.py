@@ -112,7 +112,8 @@ def _pad_ao_on_grid(x, n_grid_t, n_ao_t, grid_axis, ao_axis):
 
 
 # (spin?, n_ao, n_ao) matrices padded with a zero block
-_PAD_AO_ZERO_BLOCK = ("dm_pbe", "j_matrix", "vxc_pbe", "dm_target", "vxc_ref")
+_PAD_AO_ZERO_BLOCK = ("dm_pbe", "dm_seed", "j_matrix", "vxc_pbe", "dm_target",
+                      "vxc_ref")
 # grid-only fields holding FINITE per-point data (edge-padded, weight-0 rows)
 _PAD_GRID_EDGE = ("rho_grid", "sigma_grid", "nabla_rho_grid", "rho_ref_grid",
                   "cusp_features", "dm_features", "rung35_features",

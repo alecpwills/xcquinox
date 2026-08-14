@@ -282,6 +282,14 @@ def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
     bench_dir = getattr(cfg.inputs, "benchmark_refs_dir", None)
     mapping["BENCH_REFS_ENV_LINE"] = (
         f"export XCQUINOX_BENCH_REFS_DIR={bench_dir}\n" if bench_dir else "")
+    # SCAN seed-cache wiring (fallback transport; the authoritative path is
+    # SolverConfig.seed_cache_dir riding the spec pickle). The allow-generate
+    # flag is exported by cluster task scripts ONLY -- the second gate that
+    # keeps local replays from silently starting production-basis SCAN SCFs.
+    seed_dir = getattr(cfg.inputs, "seed_cache_dir", None)
+    mapping["SEED_ENV_LINES"] = (
+        (f"export XCQUINOX_SEED_CACHE_DIR={seed_dir}\n" if seed_dir else "")
+        + "export XCQUINOX_SEED_ALLOW_GENERATE=1\n")
     if kind == "benchmark_refs":
         if not bench_dir:
             raise ValueError(

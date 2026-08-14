@@ -516,3 +516,41 @@ def test_main_auto_smoke_across_multiple_categories(tmp_path, monkeypatch):
         f"expected 4 successful outputs (5 - 1 simulated failure), "
         f"got {len(csv_files)}: {[str(p) for p in csv_files]}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Replay precompute mirrors the training identity (_seed_precompute_kwargs)
+# --------------------------------------------------------------------------- #
+def test_seed_precompute_kwargs_df_spec_requests_cderi_lock_and_seed():
+    from types import SimpleNamespace
+    lr = local_reeval
+    sc = SimpleNamespace(mode=SimpleNamespace(value="full"),
+                         density_fit=True, auxbasis="def2-tzvp-jkfit",
+                         orientation_lock_strength=3e-05,
+                         seed_source="scan", seed_cache_dir="/seeds")
+    extra, kw = lr._seed_precompute_kwargs(sc)
+    assert extra == ("cderi",)
+    assert kw == {"auxbasis": "def2-tzvp-jkfit",
+                  "orientation_lock_strength": 3e-05,
+                  "seed_source": "scan", "seed_cache_dir": "/seeds",
+                  "seed_density_fit": True}
+
+
+def test_seed_precompute_kwargs_legacy_full_eri_spec():
+    from types import SimpleNamespace
+    lr = local_reeval
+    sc = SimpleNamespace(mode=SimpleNamespace(value="full"))
+    extra, kw = lr._seed_precompute_kwargs(sc)
+    assert extra == ("eri",)
+    assert kw["auxbasis"] is None
+    assert kw["orientation_lock_strength"] == 0.0
+    assert kw["seed_source"] == "pbe"
+    assert kw["seed_density_fit"] is False
+
+
+def test_seed_precompute_kwargs_oneshot_requests_nothing():
+    from types import SimpleNamespace
+    lr = local_reeval
+    sc = SimpleNamespace(mode=SimpleNamespace(value="oneshot"))
+    extra, _kw = lr._seed_precompute_kwargs(sc)
+    assert extra == ()

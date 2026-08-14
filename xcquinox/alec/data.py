@@ -203,6 +203,12 @@ class MoleculeData(TypedDict, total=True):
     nocc_a: int | None
     nocc_b: int | None
     dm_pbe: jnp.ndarray
+    # The SCF seed D0 (per-rung seeding). For seed_source="pbe" this is the
+    # SAME array object as dm_pbe (alias, byte-identical protocol); "scan"
+    # loads a converged SCAN dm from the seed cache; "minao" is the
+    # functional-free superposition guess. The solver consumes this key
+    # unconditionally; only the supply here dispatches on seed_source.
+    dm_seed: jnp.ndarray
     s_matrix: jnp.ndarray
     h_core: jnp.ndarray
     j_matrix: jnp.ndarray
@@ -260,6 +266,9 @@ def _precompute_cache_key(
     descriptors: tuple[Descriptor, ...],
     auxbasis: str | None = None,
     orientation_lock_strength: float = 0.0,
+    seed_source: str = "pbe",
+    seed_cache_dir: str | None = None,
+    seed_density_fit: bool = False,
 ) -> tuple:
     # MoleculeSpec is a frozen dataclass and hashes by structural identity.
     # required_keys are sorted to canonicalize set-equivalence.
@@ -293,8 +302,116 @@ def _precompute_cache_key(
     # orientation_lock_strength is likewise part of the key: it perturbs h_core
     # (and thus the PBE seed), so a locked run must not reuse an unlocked cache
     # entry (or one locked at a different strength).
+    # The seed axis: a seed-blind key would hand a "pbe"-seeded record to a
+    # "scan"/"minao" caller (or vice versa). seed_cache_dir and the DF flag
+    # are part of the loaded file's identity, so they key too.
     return (mol_spec, tuple(sorted(required_keys)), desc_key, ext_key, auxbasis,
-            float(orientation_lock_strength))
+            float(orientation_lock_strength),
+            (str(seed_source), seed_cache_dir, bool(seed_density_fit)))
+
+
+def seed_cache_file(mol_spec: MoleculeSpec, *, seed_cache_dir: str,
+                    density_fit: bool = False,
+                    orientation_lock_strength: float = 0.0) -> str:
+    """Path of the cached SCAN seed npz for ``mol_spec`` (may not exist).
+
+    Mirrors ``external_refs._intermediate_cache_name`` at the seed identity:
+    (name, basis, grid level, DF tag, orientation lock, xc="scan"). A
+    ``grid_level`` of None on the spec normalizes to 3 (the PySCF default
+    the precompute SCF then runs at).
+    """
+    from xcquinox.alec.external_refs import _intermediate_cache_name
+    gl = mol_spec.grid_level if mol_spec.grid_level is not None else 3
+    fname = _intermediate_cache_name(
+        mol_spec.name, grid_level=gl, basis=mol_spec.basis,
+        density_fit=bool(density_fit), kind="scf",
+        orientation_lock_strength=float(orientation_lock_strength),
+        xc="scan")
+    return os.path.join(seed_cache_dir, "_intermediates", fname)
+
+
+def missing_seed_cache_files(mol_specs, *, seed_cache_dir: str,
+                             density_fit: bool = False,
+                             orientation_lock_strength: float = 0.0
+                             ) -> list[str]:
+    """Names of the specs in ``mol_specs`` with no cached SCAN seed on disk.
+
+    The cheap coverage gate run before a val/eval precompute loop, so a
+    wrong or incomplete cache dir fails loud up front instead of mid-run.
+    """
+    missing = []
+    for ms in mol_specs:
+        if not os.path.isfile(seed_cache_file(
+                ms, seed_cache_dir=seed_cache_dir, density_fit=density_fit,
+                orientation_lock_strength=orientation_lock_strength)):
+            missing.append(ms.name)
+    return missing
+
+
+def _load_scan_seed_dm(mol_spec: MoleculeSpec, *, s_live,
+                       seed_cache_dir: str | None,
+                       density_fit: bool, auxbasis: str | None,
+                       orientation_lock_strength: float,
+                       allow_generate: bool):
+    """Converged SCAN dm for ``mol_spec`` from the seed cache.
+
+    The dm comes from a SEPARATE mean-field (``run_scf_with_cache``), never
+    from this precompute's grid-owning kernel, so the integration grid is
+    untouched by the seed choice (grid-identity rule). Cache identity is
+    filename-only, so a loaded dm must pass the overlap-matrix fingerprint
+    against the live molecule (shape checks alone pass for isomers).
+    Generation on a cache miss is double-gated: the ``allow_generate``
+    kwarg (True only for training-side call sites) AND the
+    ``XCQUINOX_SEED_ALLOW_GENERATE=1`` environment flag (exported only by
+    cluster task scripts) -- local runs fail loud instead of silently
+    starting a production-basis SCAN SCF.
+    """
+    import numpy as np
+    cache_dir = seed_cache_dir or os.environ.get("XCQUINOX_SEED_CACHE_DIR")
+    if not cache_dir:
+        raise RuntimeError(
+            f"seed_source='scan' for {mol_spec.name!r} but no seed cache "
+            "dir is configured: set SolverConfig.seed_cache_dir (via "
+            "inputs.seed_cache_dir) or the XCQUINOX_SEED_CACHE_DIR "
+            "environment variable"
+        )
+    path = seed_cache_file(
+        mol_spec, seed_cache_dir=cache_dir, density_fit=density_fit,
+        orientation_lock_strength=orientation_lock_strength)
+    if not os.path.isfile(path):
+        env_ok = os.environ.get("XCQUINOX_SEED_ALLOW_GENERATE") == "1"
+        if not (allow_generate and env_ok):
+            raise RuntimeError(
+                f"no cached SCAN seed for {mol_spec.name!r} at {path} -- "
+                "run the seed-cache job over the training species, or point "
+                "seed_cache_dir at the scan-pool cache for pool species; "
+                "on-cluster training-side generation requires BOTH "
+                "seed_allow_generate and XCQUINOX_SEED_ALLOW_GENERATE=1"
+            )
+    from xcquinox.alec.benchmark_refs import _mol_spec_to_atoms
+    from xcquinox.alec.external_refs import SpeciesEntry, run_scf_with_cache
+    gl = mol_spec.grid_level if mol_spec.grid_level is not None else 3
+    entry = SpeciesEntry(name=mol_spec.name, charge=int(mol_spec.charge),
+                         spin=int(mol_spec.spin), source="seed")
+    rec = run_scf_with_cache(
+        entry, _mol_spec_to_atoms(mol_spec), cache_dir=cache_dir,
+        basis=mol_spec.basis, grid_level=gl, density_fit=bool(density_fit),
+        auxbasis=auxbasis,
+        orientation_lock_strength=float(orientation_lock_strength),
+        xc="scan")
+    dm = np.asarray(rec["dm"])
+    s_npz = rec.get("S")
+    s_live = np.asarray(s_live)
+    if (s_npz is None or np.asarray(s_npz).shape != s_live.shape
+            or not np.allclose(np.asarray(s_npz), s_live,
+                               rtol=1e-6, atol=1e-8)):
+        raise RuntimeError(
+            f"SCAN seed cache for {mol_spec.name!r} at {path} fails the "
+            "overlap-matrix fingerprint: the cached S does not match the "
+            "live molecule (geometry/basis mismatch behind a same-name "
+            "cache file)"
+        )
+    return dm
 
 
 def clear_precompute_cache() -> None:
@@ -318,6 +435,10 @@ def precompute_fixed_density_data(
     descriptors: tuple[Descriptor, ...] = (),
     auxbasis: str | None = None,
     orientation_lock_strength: float = 0.0,
+    seed_source: str = "pbe",
+    seed_cache_dir: str | None = None,
+    seed_density_fit: bool = False,
+    seed_allow_generate: bool = False,
 ) -> MoleculeData:
     """Run PBE SCF, extract grid data, return a MoleculeData dict.
 
@@ -333,12 +454,17 @@ def precompute_fixed_density_data(
     Disable via :func:`set_precompute_cache_enabled` if external_data on
     disk changes between calls.
     """
+    if seed_source not in ("pbe", "scan", "minao"):
+        raise ValueError(
+            f"seed_source must be one of 'pbe'/'scan'/'minao', got "
+            f"{seed_source!r}")
     cache_key = None
     if _PRECOMPUTE_CACHE_ENABLED:
         try:
             cache_key = _precompute_cache_key(
                 mol_spec, required_keys, descriptors, auxbasis,
-                orientation_lock_strength)
+                orientation_lock_strength, seed_source, seed_cache_dir,
+                seed_density_fit)
         except TypeError:
             cache_key = None  # mol_spec or descriptors not hashable
         if cache_key is not None and cache_key in _PRECOMPUTE_CACHE:
@@ -609,13 +735,32 @@ def precompute_fixed_density_data(
     except Exception:
         pyscfad_mol = None
 
+    # --- SCF seed supply (per-rung seeding). Single dispatch point; the
+    # solver consumes dm_seed unconditionally. "pbe" aliases the SAME array
+    # object as dm_pbe (not a copy) so the default protocol is byte- and
+    # identity-equal to the pre-seeding pipeline. The scan/minao seeds come
+    # from OUTSIDE the grid-owning kernel above, so the integration grid is
+    # identical across seed choices.
+    dm_pbe_arr = jnp.array(dm_pbe)
+    if seed_source == "minao":
+        dm_seed_arr = jnp.array(mf.get_init_guess())
+    elif seed_source == "scan":
+        dm_seed_arr = jnp.array(_load_scan_seed_dm(
+            mol_spec, s_live=s_matrix, seed_cache_dir=seed_cache_dir,
+            density_fit=seed_density_fit, auxbasis=auxbasis,
+            orientation_lock_strength=orientation_lock_strength,
+            allow_generate=seed_allow_generate))
+    else:
+        dm_seed_arr = dm_pbe_arr
+
     result = MoleculeData(
         name=mol_spec.name,
         is_unrestricted=is_unrestricted,
         nocc=nocc,
         nocc_a=nocc_a,
         nocc_b=nocc_b,
-        dm_pbe=jnp.array(dm_pbe),
+        dm_pbe=dm_pbe_arr,
+        dm_seed=dm_seed_arr,
         s_matrix=jnp.array(s_matrix),
         h_core=jnp.array(h_core),
         j_matrix=jnp.array(j_matrix),

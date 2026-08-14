@@ -2649,3 +2649,63 @@ def test_per_molecule_gc_default_on(training_batch_info, monkeypatch):
     # One collect per update at the default cadence (other in-process callers
     # can only add to the count, never subtract).
     assert calls["n"] >= len(steps)
+
+
+# --------------------------------------------------------------------------- #
+# Seed threading: the batch/validation builders forward the spec's seed
+# fields into the supply layer
+# --------------------------------------------------------------------------- #
+def test_build_batch_forwards_seed_fields(monkeypatch):
+    from types import SimpleNamespace
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+
+    captured = {}
+
+    def _fake_precompute(m, required_keys=(), descriptors=(), auxbasis=None,
+                         orientation_lock_strength=0.0, **kw):
+        captured.update(kw)
+        return {"name": m.name}
+
+    monkeypatch.setattr(train_mod, "precompute_fixed_density_data",
+                        _fake_precompute)
+    sc = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
+                      seed_source="scan", seed_cache_dir="/seeds",
+                      density_fit=True)
+    arch = SimpleNamespace(materialize_descriptors=lambda: ())
+    spec = SimpleNamespace(
+        arch=arch, molecules=(SimpleNamespace(name="H2"),),
+        solver_config=sc, loss_kwargs_dict={"solver_config": sc},
+        targets_dict={}, atom_energies_dict={})
+    loss = SimpleNamespace(required_mol_keys=())
+    train_mod._build_batch(spec, loss)
+    assert captured["seed_source"] == "scan"
+    assert captured["seed_cache_dir"] == "/seeds"
+    assert captured["seed_density_fit"] is True
+    # training-side identities may generate (double-gated by env at supply)
+    assert captured["seed_allow_generate"] is True
+
+
+def test_build_validation_data_gates_on_seed_cache_coverage(
+        tmp_path, monkeypatch):
+    """A scan-seeded spec whose val species have no cached SCAN seeds fails
+    loud BEFORE the precompute loop."""
+    import json as _json
+    from types import SimpleNamespace
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+
+    monkeypatch.delenv("XCQUINOX_SEED_CACHE_DIR", raising=False)
+    rxn_path = tmp_path / "val_reactions.json"
+    rxn_path.write_text(_json.dumps([]))
+    sc = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
+                      seed_source="scan", seed_cache_dir=str(tmp_path))
+    arch = SimpleNamespace(materialize_descriptors=lambda: ())
+    val_mol = SimpleNamespace(name="h2o", basis="sto-3g", grid_level=None)
+    spec = SimpleNamespace(
+        arch=arch, solver_config=sc,
+        loss_kwargs_dict={"solver_config": sc},
+        validate_every=5, validation_molecules=(val_mol,),
+        validation_reactions_path=str(rxn_path))
+    with pytest.raises(RuntimeError, match="h2o"):
+        train_mod._build_validation_data(spec)
