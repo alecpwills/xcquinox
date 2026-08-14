@@ -79,6 +79,20 @@ class SolverConfig:
     # generation so ref and functional lock the same component. Default 0.0 ->
     # off -> byte-identical to the pre-lock pipeline.
     orientation_lock_strength: float = 0.0
+    # Per-rung SCF seeding: which density matrix seeds D0 of the truncated
+    # SCF. "pbe" (default) -> the converged PBE dm from precompute
+    # (byte-identical to the pre-seeding protocol); "scan" -> a converged
+    # SCAN dm loaded from the seed cache at the run identity (basis, grid,
+    # DF, orientation lock); "minao" -> the functional-free superposition
+    # guess (cold start; eval diagnostics). The supply layer
+    # (data.precompute_fixed_density_data) is the single dispatch point;
+    # the solver consumes mol_data["dm_seed"] unconditionally.
+    seed_source: str = "pbe"
+    # Root directory of the SCAN seed cache (its ``_intermediates/`` holds
+    # the per-species npz files written by external_refs.run_scf_with_cache).
+    # None -> the XCQUINOX_SEED_CACHE_DIR environment fallback; "scan" with
+    # both unset fails loud at supply time.
+    seed_cache_dir: str | None = None
 
     def __post_init__(self):
         if self.max_cycles < 0:
@@ -98,6 +112,18 @@ class SolverConfig:
             raise ValueError(
                 "orientation_lock_strength must be >= 0, got "
                 f"{self.orientation_lock_strength}"
+            )
+        if self.seed_source not in ("pbe", "scan", "minao"):
+            raise ValueError(
+                "seed_source must be one of 'pbe'/'scan'/'minao', got "
+                f"{self.seed_source!r}"
+            )
+        if self.seed_source != "pbe" and self.mode == SolverMode.ONESHOT:
+            raise ValueError(
+                "a non-pbe seed_source is meaningless in ONESHOT mode: the "
+                "one-shot evaluates at the stored PBE density, so the seed "
+                "would be silently ignored (a protocol no-op). Use an SCF "
+                f"mode, got seed_source={self.seed_source!r}"
             )
         if self.mode == SolverMode.ONESHOT and self.max_cycles != 0:
             raise ValueError(
@@ -153,6 +179,8 @@ class SolverConfig:
             "scf_loss_tail": self.scf_loss_tail,
             "scf_loss_weight_power": self.scf_loss_weight_power,
             "orientation_lock_strength": self.orientation_lock_strength,
+            "seed_source": self.seed_source,
+            "seed_cache_dir": self.seed_cache_dir,
         }
 
 

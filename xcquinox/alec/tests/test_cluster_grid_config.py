@@ -1084,3 +1084,43 @@ def test_build_solvers_parses_scf_grad_checkpoint():
     })
     assert solvers["full_25"].scf_grad_checkpoint is True
     assert solvers["full_3"].scf_grad_checkpoint is False
+
+
+# ---------------------------------------------------------------------------
+# Per-rung SCF seeding knobs (inputs.seed_xc / seed_cache_dir) + eval_coldstart
+# ---------------------------------------------------------------------------
+
+def test_inputs_seed_defaults_keep_every_run_on_pbe(tmp_path):
+    """A config that never mentions the knobs parses to the pre-seeding
+    protocol: seed_xc 'pbe', no cache dir, no coldstart channel."""
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert cfg.inputs.seed_xc == "pbe"
+    assert cfg.inputs.seed_cache_dir is None
+    assert cfg.eval_coldstart is False
+
+
+def test_inputs_seed_xc_value_validated(tmp_path):
+    d = _base_config_dict()
+    d["inputs"]["seed_xc"] = "b3lyp"
+    with pytest.raises(ValueError):
+        load_grid_config(_write(tmp_path, "grid.yaml", d))
+
+
+def test_seed_and_coldstart_resolved_round_trip(tmp_path):
+    """seed_xc / seed_cache_dir / eval_coldstart survive asdict + yaml +
+    reload (the resolved_config.yaml path the preflight re-reads) -- the
+    ae_as_reactions silent-drop incident class."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    d = _base_config_dict()
+    d["inputs"]["seed_xc"] = "auto"
+    d["inputs"]["seed_cache_dir"] = "/gpfs/scratch/x/seed_cache"
+    d["eval_coldstart"] = True
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", d))
+    assert cfg.inputs.seed_xc == "auto"
+    assert cfg.inputs.seed_cache_dir == "/gpfs/scratch/x/seed_cache"
+    assert cfg.eval_coldstart is True
+    cfg2 = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.inputs.seed_xc == "auto"
+    assert cfg2.inputs.seed_cache_dir == "/gpfs/scratch/x/seed_cache"
+    assert cfg2.eval_coldstart is True

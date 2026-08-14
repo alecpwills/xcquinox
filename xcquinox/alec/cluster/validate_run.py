@@ -55,7 +55,8 @@ def _enum_name(value) -> str:
     return str(value).split(".")[-1].upper()
 
 
-def _check_solver(spec, named, inputs, idx, failures):
+def _check_solver(spec, named, inputs, arch_name, idx, failures):
+    from xcquinox.alec.cluster.spec_builder import resolve_seed_xc
     sc = spec.solver_config
     if sc is None:
         failures.append(f"spec {idx}: solver_config is None")
@@ -68,6 +69,13 @@ def _check_solver(spec, named, inputs, idx, failures):
         ("density_fit", bool(getattr(sc, "density_fit", False)),
          bool(inputs.density_fit)),
         ("auxbasis", getattr(sc, "auxbasis", None), inputs.auxbasis),
+        # seed compared against the RESOLVED per-cell expectation
+        # (inputs.seed_xc + arch rung), not the named solver, which carries
+        # no seed field; getattr defaults keep pre-seeding pickles green.
+        ("seed_source", getattr(sc, "seed_source", "pbe"),
+         resolve_seed_xc(inputs, arch_name)),
+        ("seed_cache_dir", getattr(sc, "seed_cache_dir", None),
+         getattr(inputs, "seed_cache_dir", None)),
     ]
     if named.feature_policy is not None:
         checks.append(("feature_policy",
@@ -187,7 +195,7 @@ def validate_run(run_dir: str, config_path: str | None = None):
                 f"spec {idx}: cell solver {cell.solver!r} not in config "
                 f"solvers {sorted(cfg.solvers)}")
         else:
-            _check_solver(spec, named, cfg.inputs, idx, failures)
+            _check_solver(spec, named, cfg.inputs, cell.arch, idx, failures)
 
     # --- pretrain metadata --------------------------------------------------
     for arch_name in sorted(set(cfg.sweep.arch)):

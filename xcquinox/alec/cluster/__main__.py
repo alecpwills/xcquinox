@@ -165,6 +165,10 @@ def _config_to_raw_dict(cfg) -> dict:
         # resolved_config.yaml: omitting it silently reverts an inline-eval run
         # to a separate eval array.
         "inline_eval": cfg.inline_eval,
+        # eval_coldstart MUST round-trip for the same reason: the eval stage
+        # re-reads resolved_config.yaml, and a dropped flag would silently
+        # skip the coldstart channel on every spec of the run.
+        "eval_coldstart": cfg.eval_coldstart,
     }
     return raw
 

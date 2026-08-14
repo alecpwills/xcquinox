@@ -1245,3 +1245,53 @@ def test_build_solvers_to_config_roundtrip_builds_dfs_mixer():
     cfg = _solver_config_from_named(s)
     assert MIXER_REGISTRY[cfg.mixer_name].__name__ == "DecayingLinearMixer"
     assert cfg.scf_loss_use_tail is True
+
+
+# --------------------------------------------------------------------------- #
+# Per-rung seed resolution (resolve_seed_xc) + SolverConfig carry-through
+# --------------------------------------------------------------------------- #
+class _SeedInputs:
+    """Duck-typed inputs view: only what resolve_seed_xc reads."""
+    def __init__(self, seed_xc=None):
+        if seed_xc is not None:
+            self.seed_xc = seed_xc
+
+
+def test_resolve_seed_xc_default_is_pbe_even_for_mgga():
+    """A config that never mentions seed_xc keeps EVERY arch on the PBE
+    seed -- the pending v4mgga2 arm must not silently convert on a
+    post-deployment resubmit."""
+    from xcquinox.alec.cluster.spec_builder import resolve_seed_xc
+    assert resolve_seed_xc(_SeedInputs(), "deep_mgga_3x16") == "pbe"
+    assert resolve_seed_xc(_SeedInputs(), "deep_3x16") == "pbe"
+
+
+def test_resolve_seed_xc_explicit_values_pass_through():
+    from xcquinox.alec.cluster.spec_builder import resolve_seed_xc
+    assert resolve_seed_xc(_SeedInputs("scan"), "deep_3x16") == "scan"
+    assert resolve_seed_xc(_SeedInputs("pbe"), "deep_mgga_3x16") == "pbe"
+
+
+def test_resolve_seed_xc_auto_derives_from_rung():
+    from xcquinox.alec.cluster.spec_builder import resolve_seed_xc
+    assert resolve_seed_xc(_SeedInputs("auto"), "deep_mgga_3x16") == "scan"
+    assert resolve_seed_xc(_SeedInputs("auto"),
+                           "deep_rung35_mgga_3x16") == "scan"
+    # phase-1 policy: pure rung-3.5 stays on the PBE seed (carries over)
+    assert resolve_seed_xc(_SeedInputs("auto"), "deep_rung35_3x16") == "pbe"
+    assert resolve_seed_xc(_SeedInputs("auto"), "deep_3x16") == "pbe"
+
+
+def test_resolve_seed_xc_rejects_unknown_value():
+    from xcquinox.alec.cluster.spec_builder import resolve_seed_xc
+    with pytest.raises(ValueError):
+        resolve_seed_xc(_SeedInputs("b3lyp"), "deep_3x16")
+
+
+def test_solver_config_from_named_carries_seed_fields():
+    from xcquinox.alec.cluster.spec_builder import _solver_config_from_named
+    sv = SolverNamed(mode="oneshot", max_cycles=0)
+    sc = _solver_config_from_named(sv, seed_source="pbe",
+                                   seed_cache_dir="/seeds")
+    assert sc.seed_source == "pbe"
+    assert sc.seed_cache_dir == "/seeds"

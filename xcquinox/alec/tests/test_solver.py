@@ -473,3 +473,41 @@ def test_solver_config_describe_includes_tail_knobs():
     assert d["scf_loss_tail"] == 10
     assert d["scf_loss_weight_power"] == 2.0
     assert json.dumps(d)  # still JSON-serializable
+
+
+# --------------------------------------------------------------------------- #
+# SCF seed source (per-rung seeding protocol)
+# --------------------------------------------------------------------------- #
+def test_solver_config_seed_defaults_are_pbe():
+    from xcquinox.alec.solver import SolverConfig
+    cfg = SolverConfig()
+    assert cfg.seed_source == "pbe"
+    assert cfg.seed_cache_dir is None
+
+
+def test_solver_config_seed_source_value_validated():
+    from xcquinox.alec.solver import SolverConfig
+    with pytest.raises(ValueError):
+        SolverConfig(seed_source="b3lyp")
+
+
+def test_solver_config_non_pbe_seed_requires_scf_mode():
+    # A one-shot evaluates at the stored PBE density; a non-pbe seed there
+    # would be a silent protocol no-op, so it is rejected outright.
+    from xcquinox.alec.solver import SolverConfig
+    with pytest.raises(ValueError):
+        SolverConfig(mode=SolverMode.ONESHOT, seed_source="scan")
+    cfg = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
+                       seed_source="scan", seed_cache_dir="/seeds")
+    assert cfg.seed_source == "scan"
+    assert cfg.seed_cache_dir == "/seeds"
+
+
+def test_solver_config_describe_includes_seed_fields():
+    from xcquinox.alec.solver import SolverConfig
+    d = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
+                     seed_source="minao").describe()
+    assert d["seed_source"] == "minao"
+    assert d["seed_cache_dir"] is None
+    d0 = SolverConfig().describe()
+    assert d0["seed_source"] == "pbe"

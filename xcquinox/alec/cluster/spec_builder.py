@@ -239,9 +239,32 @@ def _coerce_enum(enum_cls, token):
         )
 
 
+def resolve_seed_xc(inputs, arch_name: str) -> str:
+    """The per-cell SCF seed functional ("pbe" or "scan") for ``arch_name``.
+
+    ``inputs.seed_xc`` is authoritative: "pbe"/"scan" pass through verbatim
+    (the default "pbe" keeps every arch -- including a pending mgga arm
+    resubmitted after deployment -- on the pre-seeding protocol); "auto"
+    derives the rung baseline from the architecture registry
+    (rungs.seed_xc_for_arch: the meta-GGA family seeds SCAN, everything
+    else PBE). Shared by spec building and run validation so the two agree
+    by construction.
+    """
+    mode = getattr(inputs, "seed_xc", "pbe") or "pbe"
+    if mode == "auto":
+        from xcquinox.alec.rungs import seed_xc_for_arch
+        return seed_xc_for_arch(arch_name)
+    if mode not in ("pbe", "scan"):
+        raise ValueError(
+            f"inputs.seed_xc must be 'pbe'/'scan'/'auto', got {mode!r}")
+    return mode
+
+
 def _solver_config_from_named(named, *, density_fit: bool = False,
                               auxbasis: str | None = None,
-                              orientation_lock_strength: float | None = None
+                              orientation_lock_strength: float | None = None,
+                              seed_source: str = "pbe",
+                              seed_cache_dir: str | None = None
                               ) -> SolverConfig:
     """Materialize a :class:`SolverConfig` from a :class:`SolverNamed`.
 
@@ -285,6 +308,8 @@ def _solver_config_from_named(named, *, density_fit: bool = False,
         orientation_lock_strength=(
             orientation_lock_strength if orientation_lock_strength is not None
             else named.orientation_lock_strength),
+        seed_source=seed_source,
+        seed_cache_dir=seed_cache_dir,
         **mixer_overrides,
     )
 
@@ -546,6 +571,10 @@ def build_training_specs(points, subset_ledger, cfg, domain, run_dir, cells=None
             density_fit=cfg.inputs.density_fit,
             auxbasis=cfg.inputs.auxbasis,
             orientation_lock_strength=cfg.inputs.orientation_lock_strength,
+            # per-rung seeding: resolved per cell from the arch registry
+            # ("auto") or forced run-wide ("pbe"/"scan"); default "pbe"
+            seed_source=resolve_seed_xc(cfg.inputs, cell.arch),
+            seed_cache_dir=getattr(cfg.inputs, "seed_cache_dir", None),
         )
 
         loss_kwargs = {

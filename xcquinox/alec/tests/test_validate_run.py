@@ -209,3 +209,22 @@ def test_pretrain_metadata_checks(tmp_path, patched_cfg):
     failures, _w, _n = vr.validate_run(run)
     assert any("pretrain/deep_3x16: use_polarized_correlation" in f
                for f in failures), failures
+
+
+def test_seed_source_mismatch_flagged(tmp_path, patched_cfg):
+    """A spec whose recorded seed_source disagrees with the RESOLVED per-cell
+    expectation (inputs.seed_xc + arch rung) is a validation failure."""
+    patched_cfg.inputs.seed_xc = "scan"
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    failures, warnings, n = vr.validate_run(run)
+    assert any("seed_source" in f for f in failures), failures
+
+
+def test_seed_source_match_passes(tmp_path, patched_cfg):
+    """Default-config (no seed_xc attr) + default-spec ('pbe') validates
+    clean -- old configs and old pickles stay green."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    failures, warnings, n = vr.validate_run(run)
+    assert not any("seed" in f for f in failures), failures

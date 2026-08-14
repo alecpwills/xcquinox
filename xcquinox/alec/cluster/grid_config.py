@@ -213,6 +213,18 @@ class InputPaths:
     # validation-best selection. Mirrors ``benchmark_refs_dir``. None (default)
     # = no in-loop validation precompute.
     val_refs_dir: str | None = None
+    # Per-rung SCF seeding (2026-08-14). "pbe" (default) keeps every arch on
+    # the converged-PBE seed -- byte-identical to the pre-seeding protocol,
+    # and deliberately NOT "auto": an auto default would silently convert a
+    # pending arm (e.g. the v4 mgga stacks) to the new protocol on resubmit.
+    # "auto" = rung-derived per arch (rungs.seed_xc_for_arch: the meta-GGA
+    # family seeds from converged SCAN, everything else from PBE); "scan"
+    # forces SCAN for every arch (controlled experiments only).
+    seed_xc: str = "pbe"
+    # Root of the SCAN seed cache (run_scf_with_cache layout: the per-species
+    # npz files live under ``<seed_cache_dir>/_intermediates/``). Required
+    # when any cell resolves a "scan" seed.
+    seed_cache_dir: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +416,12 @@ class GridConfig:
     # eval, there IS no separate eval array to defer). Default False ->
     # byte-identical (eval as a separate array).
     inline_eval: bool = False
+    # ``eval_coldstart`` (2026-08-14): when True, each spec's held-out eval
+    # additionally writes the ``eval_holdout_coldstart`` channel -- the FINAL
+    # checkpoint re-evaluated under a cold-start trajectory diagnostic
+    # (seed_source="minao", max_cycles=25, conv_tol=1e-12; mode stays FULL).
+    # Default False -> byte-identical (three channels as before).
+    eval_coldstart: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +521,12 @@ def _parse_channel_weights(raw) -> tuple:
 
 def _build_inputs(d: dict) -> InputPaths:
     ctx = "inputs"
+    seed_xc = str(d.get("seed_xc", "pbe"))
+    if seed_xc not in ("pbe", "scan", "auto"):
+        raise ValueError(
+            f"{ctx}.seed_xc must be one of 'pbe'/'scan'/'auto', got "
+            f"{seed_xc!r}"
+        )
     return InputPaths(
         external_refs_dir=_require(d, "external_refs_dir", ctx),
         subset_ledger_path=_require(d, "subset_ledger_path", ctx),
@@ -514,6 +538,8 @@ def _build_inputs(d: dict) -> InputPaths:
         orientation_lock_strength=float(d.get("orientation_lock_strength", 0.0)),
         benchmark_refs_dir=d.get("benchmark_refs_dir"),
         val_refs_dir=d.get("val_refs_dir"),
+        seed_xc=seed_xc,
+        seed_cache_dir=d.get("seed_cache_dir"),
     )
 
 
@@ -696,6 +722,7 @@ def load_grid_config(path: str) -> GridConfig:
         held_out_strict=bool(raw.get("held_out_strict", False)),
         defer_eval=bool(raw.get("defer_eval", False)),
         inline_eval=bool(raw.get("inline_eval", False)),
+        eval_coldstart=bool(raw.get("eval_coldstart", False)),
     )
 
 
