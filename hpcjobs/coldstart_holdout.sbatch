@@ -13,46 +13,40 @@
 # resubmit after they drain. Walltime: the channel runs the full 25-cycle
 # trajectory for every one of ~200 pool species per spec (conv_tol 1e-12
 # never converges early under linear mixing), so budget ~8x a single
-# 3-cycle channel pass per spec; 8 h covers the currently-completed specs
-# with margin, and a resubmit picks up whatever remains.
+# 3-cycle channel pass per spec; resubmits pick up whatever remains.
+# Submit from a shell whose python resolves the xcquinox environment
+# (activation by effect, verified by the import probe).
 
 set -uo pipefail
 
-REPO=${REPO:-/gpfs/projects/FernandezGroup/Alec/xcquinox}
-SCRATCH_ROOT=${SCRATCH_ROOT:-/gpfs/scratch/awills/xcquinox_runs/dfs_step7}
-RUN_DIRS=${COLDSTART_RUN_DIRS:-}
-
-CONDA_PROFILE=${CONDA_PROFILE:-/gpfs/software/anaconda/etc/profile.d/conda.sh}
-CONDA_ENV=${CONDA_ENV:-/gpfs/projects/FernandezGroup/Alec/envs/xcq}
-if [ -f "${CONDA_PROFILE}" ]; then
-    # activation-by-effect: source + activate, then verify by import below
-    source "${CONDA_PROFILE}"
-    conda activate "${CONDA_ENV}" || true
-fi
-
-cd "${REPO}"
-export PYTHONPATH="${REPO}:${PYTHONPATH:-}"
-export JAX_PLATFORMS=cpu
-export JAX_ENABLE_X64=1
-
-python -c "import xcquinox.alec.cluster.coldstart_retro" || {
-    echo "FATAL: xcquinox import failed -- wrong env?"; exit 1; }
+REPO="${XCQ_REPO:-/gpfs/projects/FernandezGroup/Alec/xcquinox}"
+SCRATCH="${XCQ_SCRATCH:-/gpfs/scratch/awills/xcquinox_runs}"
+RUN_DIRS="${COLDSTART_RUN_DIRS:-}"
 
 if [ -z "${RUN_DIRS}" ]; then
-    # newest run per v4 arm (same discovery idiom as the refinalize job)
     for arm in dfs6311_grid3_v4 dfs6311_grid3_v4gga dfs6311_grid3_v4mgga2; do
-        latest=$(ls -1d "${SCRATCH_ROOT}/${arm}/runs"/run_* 2>/dev/null | sort | tail -1)
+        latest="$(ls -d "${SCRATCH}/dfs_step7/${arm}/runs"/run_* 2>/dev/null | sort | tail -1)"
         [ -n "${latest}" ] && RUN_DIRS="${RUN_DIRS} ${latest}"
     done
 fi
+
 if [ -z "${RUN_DIRS}" ]; then
-    echo "FATAL: no run dirs found under ${SCRATCH_ROOT} and COLDSTART_RUN_DIRS unset"
+    echo "FATAL: no run dirs found under ${SCRATCH}/dfs_step7/*/runs"
     exit 1
 fi
 
-echo "[coldstart] run dirs:${RUN_DIRS}"
-# shellcheck disable=SC2086 -- word splitting of RUN_DIRS is intended
-python -m xcquinox.alec.cluster.coldstart_retro ${RUN_DIRS}
-rc=$?
-echo "[coldstart] exit ${rc}"
-exit ${rc}
+# activation by effect: whatever python resolves must import the repo tree
+cd "${REPO}"
+export PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}"
+export JAX_PLATFORMS=cpu
+export JAX_ENABLE_X64=1
+
+python -c "import xcquinox.alec.cluster.coldstart_retro" \
+    || { echo "FATAL: repo import failed (env/activation)"; exit 1; }
+
+echo "[coldstart] targets:${RUN_DIRS}"
+rc=0
+# shellcheck disable=SC2086
+python -m xcquinox.alec.cluster.coldstart_retro ${RUN_DIRS} || rc=$?
+echo "[coldstart] DONE rc=${rc}"
+exit "${rc}"
