@@ -1026,24 +1026,79 @@ def test_dm_seed_scan_generate_gated_on_env(tmp_path, monkeypatch):
     assert np.allclose(np.asarray(md2["dm_seed"]), np.asarray(md["dm_seed"]))
 
 
-def test_dm_seed_scan_rejects_wrong_geometry_cache(tmp_path, monkeypatch):
-    """The cache is filename-identified; a same-name species at a different
-    geometry must be rejected by the overlap-matrix fingerprint, not seeded
-    from the wrong dm."""
+def test_seed_cache_file_is_geometry_qualified():
+    """Same species NAME at different geometries resolves to DIFFERENT cache
+    files (the training-vs-pool twin problem: filename-only identity cannot
+    host G2/97 H2O and BH76 H2O in one directory); identical geometry, name,
+    charge, and spin resolve to the SAME file regardless of the atom
+    string's formatting precision."""
+    from xcquinox.alec.data import seed_cache_file
+    a = MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74", basis="sto-3g",
+                     charge=0, spin=0, atom_composition=(("H", 2),))
+    b = MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 1.40", basis="sto-3g",
+                     charge=0, spin=0, atom_composition=(("H", 2),))
+    # same geometry, sloppier formatting -- canonicalization absorbs it
+    c = MoleculeSpec(name="H2",
+                     atom="H 0.0 0.0 0.0; H 0.000000 0.0 0.7400000",
+                     basis="sto-3g", charge=0, spin=0,
+                     atom_composition=(("H", 2),))
+    fa = seed_cache_file(a, seed_cache_dir="/x")
+    fb = seed_cache_file(b, seed_cache_dir="/x")
+    fc = seed_cache_file(c, seed_cache_dir="/x")
+    assert fa != fb
+    assert fa == fc
+    # charge/spin participate in the identity
+    cation = MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74",
+                          basis="sto-3g", charge=1, spin=1,
+                          atom_composition=(("H", 2),))
+    assert seed_cache_file(cation, seed_cache_dir="/x") != fa
+
+
+def test_dm_seed_scan_geometry_twins_get_distinct_files(tmp_path,
+                                                        monkeypatch):
+    """Same-name species at two geometries coexist in one cache dir: each
+    generates and loads its OWN seed, no cross-contamination."""
     from xcquinox.alec.tests.fixtures.molecules import h2_molecule
     clear_precompute_cache()
     _seed_env(monkeypatch, allow=True)
-    precompute_fixed_density_data(
+    md_a = precompute_fixed_density_data(
         h2_molecule(), seed_source="scan",
         seed_cache_dir=str(tmp_path), seed_allow_generate=True)
     stretched = MoleculeSpec(
         name="H2", atom="H 0 0 0; H 0 0 1.40", basis="sto-3g",
         charge=0, spin=0, atom_composition=(("H", 2),))
     clear_precompute_cache()
+    md_b = precompute_fixed_density_data(
+        stretched, seed_source="scan",
+        seed_cache_dir=str(tmp_path), seed_allow_generate=True)
+    files = sorted((tmp_path / "_intermediates").glob("*_xcscan_scf.npz"))
+    assert len(files) == 2
+    assert not np.allclose(np.asarray(md_a["dm_seed"]),
+                           np.asarray(md_b["dm_seed"]))
+
+
+def test_dm_seed_scan_fingerprint_belt_still_rejects_tampered_cache(
+        tmp_path, monkeypatch):
+    """The overlap fingerprint remains the belt behind the filename
+    identity: a wrong-S npz under the CORRECT qualified name is refused."""
+    from xcquinox.alec.tests.fixtures.molecules import h2_molecule
+    from xcquinox.alec.data import seed_cache_file
+    clear_precompute_cache()
+    _seed_env(monkeypatch, allow=True)
+    spec = h2_molecule()
+    precompute_fixed_density_data(
+        spec, seed_source="scan", seed_cache_dir=str(tmp_path),
+        seed_allow_generate=True)
+    path = seed_cache_file(spec, seed_cache_dir=str(tmp_path))
+    with np.load(path) as npz:
+        payload = {k: npz[k] for k in npz.files}
+    payload["S"] = payload["S"] + 1e-3
+    np.savez_compressed(path, **payload)
+    clear_precompute_cache()
     _seed_env(monkeypatch)
-    with pytest.raises(RuntimeError, match="overlap|fingerprint|geometry"):
+    with pytest.raises(RuntimeError, match="fingerprint"):
         precompute_fixed_density_data(
-            stretched, seed_source="scan", seed_cache_dir=str(tmp_path))
+            spec, seed_source="scan", seed_cache_dir=str(tmp_path))
 
 
 def test_dm_seed_scan_uks_loads_spin_resolved(tmp_path, monkeypatch):

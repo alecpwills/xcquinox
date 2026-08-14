@@ -51,21 +51,12 @@ if [ -z "${SEED_DIR}" ]; then
 fi
 mkdir -p "${SEED_DIR}/_intermediates"
 
-# Pool species: link the existing scan-pool intermediates in (idempotent;
-# ln -s refuses to overwrite an existing entry, which is the safe behavior).
-if [ -d "${SCAN_POOL_DIR}/_intermediates" ]; then
-    n_linked=0
-    for f in "${SCAN_POOL_DIR}"/_intermediates/*_xcscan_scf.npz; do
-        [ -e "${f}" ] || continue
-        ln -s "${f}" "${SEED_DIR}/_intermediates/" 2>/dev/null \
-            && n_linked=$((n_linked + 1))
-    done
-    echo "[seed-cache] linked ${n_linked} scan-pool intermediates from ${SCAN_POOL_DIR}"
-else
-    echo "[seed-cache] WARNING: ${SCAN_POOL_DIR}/_intermediates not found -- pool species not linked"
-fi
-
+# Pool species are linked by the driver's --link-pool phase, which re-keys
+# the scan-pool intermediates under GEOMETRY-QUALIFIED names computed from
+# the pool geometries (a bare name cannot identify a seed: the training set
+# and the pool both contain e.g. an H2O at different geometries).
 rc=0
-python -m xcquinox.alec.cluster.seed_cache "${CONFIG}" || rc=$?
+python -m xcquinox.alec.cluster.seed_cache "${CONFIG}" \
+    --link-pool "${SCAN_POOL_DIR}" || rc=$?
 echo "[seed-cache] DONE rc=${rc}"
 exit "${rc}"

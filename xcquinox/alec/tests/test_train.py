@@ -2701,7 +2701,9 @@ def test_build_validation_data_gates_on_seed_cache_coverage(
     sc = SolverConfig(mode=SolverMode.FULL, max_cycles=3,
                       seed_source="scan", seed_cache_dir=str(tmp_path))
     arch = SimpleNamespace(materialize_descriptors=lambda: ())
-    val_mol = SimpleNamespace(name="h2o", basis="sto-3g", grid_level=None)
+    val_mol = SimpleNamespace(name="h2o", atom="O 0 0 0; H 0 0 0.96",
+                              charge=0, spin=0, basis="sto-3g",
+                              grid_level=None)
     spec = SimpleNamespace(
         arch=arch, solver_config=sc,
         loss_kwargs_dict={"solver_config": sc},

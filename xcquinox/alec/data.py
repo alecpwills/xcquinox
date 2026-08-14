@@ -310,20 +310,51 @@ def _precompute_cache_key(
             (str(seed_source), seed_cache_dir, bool(seed_density_fit)))
 
 
+def seed_geometry_tag(atom: str, charge: int, spin: int) -> str:
+    """8-hex geometry/identity tag for seed cache filenames.
+
+    A species NAME alone cannot identify a seed: the training set and the
+    held-out pool both contain e.g. an ``H2O`` -- at DIFFERENT geometries --
+    and a filename-only cache would hand one the other's converged dm (the
+    overlap fingerprint then fails loud, but the cache could never hold
+    both). The tag hashes the CANONICALIZED atom string (symbols +
+    coordinates rounded to the ``atoms_to_pyscf_str`` 1e-6 Angstrom
+    precision, so formatting differences between producers hash
+    identically) together with charge and spin. Identical geometries
+    deduplicate to one file; twins separate.
+    """
+    import hashlib
+    parts = []
+    for tok in str(atom).split(";"):
+        p = tok.split()
+        if not p:
+            continue
+        parts.append(f"{p[0]} {float(p[1]):.6f} {float(p[2]):.6f} "
+                     f"{float(p[3]):.6f}")
+    key = "; ".join(parts) + f"|q{int(charge)}|s{int(spin)}"
+    return hashlib.sha1(key.encode()).hexdigest()[:8]
+
+
+def seed_qualified_name(mol_spec: MoleculeSpec) -> str:
+    """The geometry-qualified cache name for ``mol_spec``'s seed."""
+    return (f"{mol_spec.name}_gh"
+            f"{seed_geometry_tag(mol_spec.atom, mol_spec.charge, mol_spec.spin)}")
+
+
 def seed_cache_file(mol_spec: MoleculeSpec, *, seed_cache_dir: str,
                     density_fit: bool = False,
                     orientation_lock_strength: float = 0.0) -> str:
     """Path of the cached SCAN seed npz for ``mol_spec`` (may not exist).
 
     Mirrors ``external_refs._intermediate_cache_name`` at the seed identity:
-    (name, basis, grid level, DF tag, orientation lock, xc="scan"). A
-    ``grid_level`` of None on the spec normalizes to 3 (the PySCF default
-    the precompute SCF then runs at).
+    (geometry-qualified name, basis, grid level, DF tag, orientation lock,
+    xc="scan"). A ``grid_level`` of None on the spec normalizes to 3 (the
+    PySCF default the precompute SCF then runs at).
     """
     from xcquinox.alec.external_refs import _intermediate_cache_name
     gl = mol_spec.grid_level if mol_spec.grid_level is not None else 3
     fname = _intermediate_cache_name(
-        mol_spec.name, grid_level=gl, basis=mol_spec.basis,
+        seed_qualified_name(mol_spec), grid_level=gl, basis=mol_spec.basis,
         density_fit=bool(density_fit), kind="scf",
         orientation_lock_strength=float(orientation_lock_strength),
         xc="scan")
@@ -390,7 +421,10 @@ def _load_scan_seed_dm(mol_spec: MoleculeSpec, *, s_live,
     from xcquinox.alec.benchmark_refs import _mol_spec_to_atoms
     from xcquinox.alec.external_refs import SpeciesEntry, run_scf_with_cache
     gl = mol_spec.grid_level if mol_spec.grid_level is not None else 3
-    entry = SpeciesEntry(name=mol_spec.name, charge=int(mol_spec.charge),
+    # geometry-qualified cache identity: same-name species at different
+    # geometries (training vs pool twins) must resolve to distinct files
+    entry = SpeciesEntry(name=seed_qualified_name(mol_spec),
+                         charge=int(mol_spec.charge),
                          spin=int(mol_spec.spin), source="seed")
     rec = run_scf_with_cache(
         entry, _mol_spec_to_atoms(mol_spec), cache_dir=cache_dir,
