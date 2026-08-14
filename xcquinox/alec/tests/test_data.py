@@ -956,12 +956,15 @@ def test_dm_seed_minao_differs_from_converged_and_leaves_rest_alone():
     assert cold["dm_seed"].shape == cold["dm_pbe"].shape
     assert not np.allclose(np.asarray(cold["dm_seed"]),
                            np.asarray(cold["dm_pbe"]))
-    # grid + anchors untouched by the seed choice
+    # grid + anchors untouched by the seed choice. base and cold come from
+    # two INDEPENDENT SCF runs of the same inputs, so the assertion is tight
+    # tolerance, not bit-equality (which would ride the last-bit BLAS jitter
+    # of separate runs; the within-record alias pins stay exact elsewhere).
     assert np.allclose(np.asarray(cold["grid_weights"]),
                        np.asarray(base["grid_weights"]))
-    assert cold["E_pbe"] == base["E_pbe"]
-    assert np.asarray(cold["dm_pbe"]).tolist() == \
-        np.asarray(base["dm_pbe"]).tolist()
+    assert cold["E_pbe"] == pytest.approx(base["E_pbe"], abs=1e-10)
+    assert np.allclose(np.asarray(cold["dm_pbe"]),
+                       np.asarray(base["dm_pbe"]), rtol=0, atol=1e-10)
 
 
 def test_dm_seed_minao_uks_shape():
