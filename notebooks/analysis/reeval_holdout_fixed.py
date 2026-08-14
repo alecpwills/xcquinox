@@ -56,6 +56,12 @@ _DENSITY_STAMP_SUFFIX = "+density_refs_v4"
 
 #: Checkpoint files a spec may carry (written by train.save_checkpoint) and
 #: the cluster-convention eval subdir each one's re-eval lands in.
+# The eval_holdout_coldstart channel is OUT OF SCOPE here by design: this
+# script re-runs checkpoint variants under the TRAINED protocol, and the
+# name algebra below maps checkpoint basenames to channels. The cold-start
+# channel is not a checkpoint variant (same model.eqx, overridden solver);
+# it is produced by the eval task (eval_coldstart: true) or the
+# cluster.coldstart_retro driver.
 _CHECKPOINTS = ("model", "model_best", "model_val_best")
 
 

@@ -33,7 +33,7 @@ def _round_robin(names, k):
 def run_holdout_with_escalation(
     run_dir, spec_idx, training_spec, model, reactions, full_specs, out_dir, *,
     basis, grid_level, n_workers_top, total_cpus, strict=None,
-    model_name="model.eqx",
+    model_name="model.eqx", coldstart=False,
 ):
     """Run the held-out eval in parallel with adaptive degradation.
 
@@ -79,7 +79,7 @@ def run_holdout_with_escalation(
                 "--names-file", str(names_file), "--out-shard", str(out_shard),
                 "--basis", str(basis), "--grid-level", str(grid_level),
                 "--threads", str(threads), "--model-name", str(model_name),
-            ]
+            ] + (["--coldstart"] if coldstart else [])
             jobs.append(parallel.WorkerJob(
                 name=f"eval_t{tier_no}_s{si}", cmd=cmd,
                 progress_file=str(shard_dir / f"progress_t{tier_no}_s{si}.json"),

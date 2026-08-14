@@ -303,7 +303,8 @@ def _test_slice_reactions(reactions, training_spec):
 
 
 def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
-                       training_spec, holdout_subdir="eval_holdout") -> None:
+                       training_spec, holdout_subdir="eval_holdout",
+                       coldstart=False) -> None:
     """Full-pool held-out eval (BH76 + W4-11) for one trained spec.
 
     Parallelizes across molecule shards BY DEFAULT (adaptive degradation via
@@ -380,7 +381,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                     holdout_dir, basis=_hb, grid_level=_hg,
                     n_workers_top=n_top, total_cpus=detect_available_cpus(),
                     strict=bool(getattr(cfg, "held_out_strict", False)),
-                    model_name=model_name)
+                    model_name=model_name, coldstart=coldstart)
             except Exception as pexc:  # noqa: BLE001
                 _log(idx, f"held-out parallel path failed "
                           f"({type(pexc).__name__}: {pexc}); serial fallback")
@@ -390,6 +391,22 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                 training_spec=training_spec, model=model,
                 mol_specs=full_specs, reactions=full_rxns, out_dir=holdout_dir,
                 strict=bool(getattr(cfg, "held_out_strict", False)))
+
+        # Channel provenance stamp: per-row columns alone cannot distinguish
+        # a cold-start pass from a capped warm one (both report cycles_run at
+        # the cap), so each channel records the solver it actually ran.
+        try:
+            _sc = getattr(training_spec, "solver_config", None)
+            with open(holdout_dir / "eval_metadata.json", "w") as f:
+                json.dump({
+                    "channel": holdout_subdir,
+                    "model": model_name,
+                    "coldstart": bool(coldstart),
+                    "solver_config": (_sc.describe()
+                                      if _sc is not None else None),
+                }, f, indent=2, sort_keys=True)
+        except Exception as _mexc:  # noqa: BLE001
+            _log(idx, f"eval_metadata.json write failed ({_mexc}); non-fatal")
 
         elapsed_h = time.time() - t1
         _log(
@@ -551,6 +568,30 @@ def main(argv=None) -> int:
     else:
         _log(idx, "no model_val_best.eqx -- skipping validation-best held-out "
                   "eval (in-loop validation disabled or older run)")
+
+    # --- 2026-08-14: OPTIONAL cold-start channel (eval_coldstart: true) ------
+    # A 4th pass on the FINAL checkpoint under the cold-start trajectory
+    # diagnostic: the spec's solver is REPLACED HERE, before dispatch, so the
+    # in-process serial-leftover tier and the serial fallback inherit the
+    # override; the shard workers apply the SAME shared helper via
+    # --coldstart (they reload the spec pickle themselves). Only FULL-mode
+    # specs qualify (the override is undefined for one-shot protocols).
+    if bool(getattr(cfg, "eval_coldstart", False)):
+        _sc = getattr(training_spec, "solver_config", None)
+        if _sc is not None and getattr(getattr(_sc, "mode", None),
+                                       "value", None) == "full":
+            import dataclasses as _dc
+
+            from xcquinox.alec.eval_holdout import coldstart_solver_config
+            cold_spec = _dc.replace(
+                training_spec, solver_config=coldstart_solver_config(_sc))
+            _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
+                               cold_spec,
+                               holdout_subdir="eval_holdout_coldstart",
+                               coldstart=True)
+        else:
+            _log(idx, "eval_coldstart requested but the spec has no FULL-mode "
+                      "solver_config -- skipping the cold-start channel")
 
     return 0
 

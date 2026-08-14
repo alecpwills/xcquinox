@@ -45,6 +45,35 @@ KCAL_PER_HA: float = 627.5094740631
 # Pure helpers
 # ---------------------------------------------------------------------------
 
+# Cold-start trajectory diagnostic (the eval_holdout_coldstart channel).
+# 25 cycles = the DFS Letter's SCF step count; conv_tol far below any
+# per-cycle energy step so the latched |dE| freeze never masks the
+# trajectory (all cycles execute and are recorded).
+COLDSTART_MAX_CYCLES = 25
+COLDSTART_CONV_TOL = 1e-12
+
+
+def coldstart_solver_config(sc):
+    """The cold-start override of a trained FULL-mode solver config.
+
+    Functional-free minao seed, :data:`COLDSTART_MAX_CYCLES` cycles,
+    :data:`COLDSTART_CONV_TOL`; mode stays FULL (a ONESHOT-shaped config
+    would arm the dormant one-shot energy path and pin J) and every other
+    trained knob (mixer, tail loss, orientation lock, DF) is preserved.
+    Applied in ONE place by both the orchestrator (before the
+    parallel/serial dispatch, covering the in-process serial tiers) and
+    the shard workers (via ``--coldstart``, since they reload the spec
+    pickle themselves) -- a single source of truth for the channel's
+    protocol. Raises ``ValueError`` for a non-FULL solver (the
+    SolverConfig validation: a non-pbe seed requires FULL mode).
+    """
+    import dataclasses
+
+    return dataclasses.replace(
+        sc, seed_source="minao", max_cycles=COLDSTART_MAX_CYCLES,
+        conv_tol=COLDSTART_CONV_TOL, seed_cache_dir=None)
+
+
 def load_training_spec(spec_path: Path):
     """Read the harness's serialized ``spec_<NNNN>.spec`` file.
 

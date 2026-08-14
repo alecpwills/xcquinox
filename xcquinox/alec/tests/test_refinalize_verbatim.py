@@ -226,3 +226,9 @@ def test_no_metadata_warning_for_channel_less_specs(tmp_path, capsys):
     rv.refinalize_run(run, channels=("eval_holdout",),
                       _pool=(_POOL_SPECS, _POOL_RXNS))
     assert "spec_0000 has no readable" in capsys.readouterr().out
+
+
+def test_channels_include_coldstart():
+    """The verbatim-rule refinalizer must reach the cold-start channel too,
+    or its rows silently keep a stale hold-out rule forever."""
+    assert "eval_holdout_coldstart" in rv.CHANNELS

@@ -36,7 +36,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-CHANNELS = ("eval_holdout", "eval_holdout_best", "eval_holdout_val_best")
+CHANNELS = ("eval_holdout", "eval_holdout_best", "eval_holdout_val_best",
+            "eval_holdout_coldstart")
 
 
 class _MetadataSpec:

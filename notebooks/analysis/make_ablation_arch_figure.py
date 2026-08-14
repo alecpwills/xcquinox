@@ -6419,6 +6419,7 @@ def _ckpt_label(eval_subdir: str) -> str:
         "eval_holdout": "final-step",
         "eval_holdout_val_best": "val-best",
         "eval_holdout_best": "train-best",
+        "eval_holdout_coldstart": "cold-start",
     }.get(eval_subdir, "final-step")
 
 

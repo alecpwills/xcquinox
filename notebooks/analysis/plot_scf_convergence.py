@@ -63,10 +63,15 @@ def molecule_scf_trace(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def collect_spec_scf_traces(run_dir: Path, spec_idx: int,
-                            width: int = 4) -> List[Dict[str, Any]]:
-    """All per-molecule SCF traces for one spec (only molecules with a trace)."""
+                            width: int = 4,
+                            eval_subdir: str = "eval_holdout"
+                            ) -> List[Dict[str, Any]]:
+    """All per-molecule SCF traces for one spec (only molecules with a trace).
+
+    ``eval_subdir`` selects the channel; ``eval_holdout_coldstart`` carries
+    the 25-cycle cold-start trajectories this figure exists to display."""
     pm = (run_dir / "checkpoints" / f"spec_{spec_idx:0{width}d}"
-          / "eval_holdout" / "per_molecule.json")
+          / eval_subdir / "per_molecule.json")
     if not pm.is_file():
         return []
     try:
@@ -142,13 +147,15 @@ def _resolve_run_dir(run_dir: Optional[str]) -> Path:
     raise SystemExit(f"No run dir under {cand}; pass --run-dir.")
 
 
-def _discover_specs_with_traces(run_dir: Path, width: int = 4) -> List[int]:
+def _discover_specs_with_traces(run_dir: Path, width: int = 4,
+                                eval_subdir: str = "eval_holdout"
+                                ) -> List[int]:
     ck = run_dir / "checkpoints"
     out: List[int] = []
     if not ck.is_dir():
         return out
     for sd in sorted(ck.glob("spec_*")):
-        if (sd / "eval_holdout" / "per_molecule.json").is_file():
+        if (sd / eval_subdir / "per_molecule.json").is_file():
             try:
                 out.append(int(sd.name[len("spec_"):]))
             except ValueError:
@@ -163,6 +170,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--run-dir", default=None)
     p.add_argument("--specs", default=None,
                    help="comma-separated spec indices (default: all with data)")
+    p.add_argument("--eval-subdir", default="eval_holdout",
+                   help="channel to read traces from (eval_holdout / "
+                        "eval_holdout_coldstart)")
     p.add_argument("--outdir", default=str(
         Path(__file__).resolve().parent / "figures_ablation_notransform"
         / "scf_convergence"))
@@ -171,11 +181,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     run_dir = _resolve_run_dir(args.run_dir)
     outdir = Path(args.outdir).expanduser().resolve()
     specs = ([int(t) for t in args.specs.split(",") if t.strip()]
-             if args.specs else _discover_specs_with_traces(run_dir))
+             if args.specs else _discover_specs_with_traces(
+                 run_dir, eval_subdir=args.eval_subdir))
     print(f"run_dir: {run_dir}  specs: {specs}")
     n = 0
     for idx in specs:
-        traces = collect_spec_scf_traces(run_dir, idx)
+        traces = collect_spec_scf_traces(run_dir, idx,
+                                         eval_subdir=args.eval_subdir)
         out = plot_spec_convergence(
             traces, outdir / f"scf_convergence_spec_{idx:04d}.png",
             title=f"NN SCF convergence -- spec {idx} · {run_dir.name}")

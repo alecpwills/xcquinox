@@ -907,3 +907,35 @@ def test_precompute_holdout_for_spec_derives_seed_from_solver_config(
     assert captured["seed_source"] == "minao"
     assert captured["seed_cache_dir"] is None
     assert captured["seed_density_fit"] is True
+
+
+def test_coldstart_solver_config_override():
+    """The shared cold-start override: minao seed, the Letter's 25 cycles,
+    conv_tol far below any per-cycle step (the latched freeze never masks
+    the trajectory); mode stays FULL; everything else preserved."""
+    from xcquinox.alec.eval_holdout import coldstart_solver_config
+    from xcquinox.alec.solver import (SolverBackend, SolverConfig,
+                                      SolverMode)
+    sc = SolverConfig(backend=SolverBackend.MANUAL, mode=SolverMode.FULL,
+                      max_cycles=3, scf_loss_use_tail=True,
+                      orientation_lock_strength=3e-05,
+                      seed_cache_dir="/seeds")
+    cold = coldstart_solver_config(sc)
+    assert cold.seed_source == "minao"
+    assert cold.max_cycles == 25
+    assert cold.conv_tol == 1e-12
+    assert cold.mode == SolverMode.FULL
+    assert cold.scf_loss_use_tail is True
+    assert cold.orientation_lock_strength == 3e-05
+    # a minao seed needs no cache dir; the override clears it
+    assert cold.seed_cache_dir is None
+
+
+def test_coldstart_solver_config_rejects_non_full():
+    """A ONESHOT-trained solver cannot be cold-started (the override would
+    be a different protocol entirely); the constructor validation fires."""
+    from xcquinox.alec.eval_holdout import coldstart_solver_config
+    from xcquinox.alec.solver import SolverConfig, SolverMode
+    sc = SolverConfig(mode=SolverMode.ONESHOT, max_cycles=0)
+    with pytest.raises(ValueError):
+        coldstart_solver_config(sc)

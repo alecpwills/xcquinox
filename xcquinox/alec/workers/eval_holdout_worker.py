@@ -20,7 +20,8 @@ import traceback
 
 
 def compute_shard(run_dir, spec_idx, names, basis, grid_level,
-                  model_name="model.eqx"):
+                  model_name="model.eqx",
+                  coldstart=False):
     """Evaluate ``names`` (a held-out molecule subset) for spec ``spec_idx`` of
     ``run_dir``. Returns ``{energies, pbe_energies, mol_records}``.
 
@@ -46,6 +47,15 @@ def compute_shard(run_dir, spec_idx, names, basis, grid_level,
     model_path = os.path.join(checkpoint_dir, model_name)
 
     training_spec = _load_spec(spec_path)
+    if coldstart:
+        # Shard subprocesses reload the spec themselves, so the orchestrator's
+        # in-memory override cannot reach them; apply the SAME shared helper.
+        import dataclasses
+
+        from xcquinox.alec.eval_holdout import coldstart_solver_config
+        training_spec = dataclasses.replace(
+            training_spec,
+            solver_config=coldstart_solver_config(training_spec.solver_config))
     model = load_trained_model(training_spec, Path(model_path))
 
     full_specs, _full_rxns = load_full_held_out_pools(
@@ -74,6 +84,10 @@ def main(args=None):
     parser.add_argument("--model-name", default="model.eqx",
                         help="checkpoint filename in the spec dir to evaluate "
                              "(model.eqx final / model_best.eqx best)")
+    parser.add_argument("--coldstart", action="store_true",
+                        help="apply the cold-start override (minao seed, 25 "
+                             "cycles) to the reloaded spec's solver -- the "
+                             "eval_holdout_coldstart channel")
     parsed = parser.parse_args(args)
 
     # Pin thread env BEFORE any JAX import (one BLAS thread per worker by
@@ -106,7 +120,8 @@ def main(args=None):
 
         shard = compute_shard(parsed.run_dir, parsed.spec_idx, names,
                               parsed.basis, parsed.grid_level,
-                              model_name=parsed.model_name)
+                              model_name=parsed.model_name,
+            coldstart=parsed.coldstart)
         with open(parsed.out_shard, "w") as f:
             json.dump(shard, f)
 

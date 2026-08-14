@@ -59,6 +59,12 @@
 # eval_holdout/ siblings so the default figures-only pull has the data.
 + /checkpoints/spec_*/eval_holdout_val_best/
 + /checkpoints/spec_*/eval_holdout_val_best/***
+# Cold-start trajectory-diagnostic channel (2026-08-14): a FOURTH eval pass on
+# the FINAL checkpoint with the shared cold-start override (minao seed, 25
+# cycles) -- the per-cycle scf_energy_residual_<i> columns + eval_metadata.json
+# provenance stamp live here. Same small CSV/JSON artifacts, no *.eqx.
++ /checkpoints/spec_*/eval_holdout_coldstart/
++ /checkpoints/spec_*/eval_holdout_coldstart/***
 
 # --- pretrain metadata + loss curves (small, useful for diagnostics) -------
 + /pretrain/

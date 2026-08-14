@@ -648,6 +648,16 @@ def _materialize_fake_run(root: Path) -> Path:
         "test_set_held_out_combined,8.0,11.8,-3.800000\n")
     (spec / "eval_holdout_val_best" / "per_reaction.json").write_text("[]\n")
     (spec / "eval_holdout_val_best" / "per_molecule.json").write_text("[]\n")
+    # Cold-start trajectory-diagnostic channel (the 4th pass) + its
+    # provenance stamp -- must be pulled by summaries like its siblings.
+    (spec / "eval_holdout_coldstart").mkdir()
+    (spec / "eval_holdout_coldstart" / "test_set.csv").write_text(
+        "set,mae_nn_kcalmol,mae_pbe_kcalmol,delta_nn_minus_pbe\n"
+        "test_set_held_out_combined,15.0,11.8,3.200000\n")
+    (spec / "eval_holdout_coldstart" / "per_reaction.json").write_text("[]\n")
+    (spec / "eval_holdout_coldstart" / "per_molecule.json").write_text("[]\n")
+    (spec / "eval_holdout_coldstart" / "eval_metadata.json").write_text(
+        '{"channel": "eval_holdout_coldstart", "coldstart": true}\n')
     # Pretrain
     pre = run / "pretrain" / "deep_combined_attn"
     pre.mkdir(parents=True)
@@ -723,6 +733,10 @@ def test_summaries_filter_canary_against_real_rsync(tmp_path, fake_remote_root):
         "checkpoints/spec_0000/eval_holdout_val_best/test_set.csv",
         "checkpoints/spec_0000/eval_holdout_val_best/per_reaction.json",
         "checkpoints/spec_0000/eval_holdout_val_best/per_molecule.json",
+        "checkpoints/spec_0000/eval_holdout_coldstart/test_set.csv",
+        "checkpoints/spec_0000/eval_holdout_coldstart/per_reaction.json",
+        "checkpoints/spec_0000/eval_holdout_coldstart/per_molecule.json",
+        "checkpoints/spec_0000/eval_holdout_coldstart/eval_metadata.json",
         "pretrain/deep_combined_attn/pretrain_metadata.json",
         "pretrain/deep_combined_attn/losses_x.npy",
         "pretrain/deep_combined_attn/losses_c.npy",

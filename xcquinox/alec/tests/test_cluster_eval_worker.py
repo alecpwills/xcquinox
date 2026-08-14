@@ -583,3 +583,116 @@ def test_aggregate_per_molecule_excludes_nonfinite():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ---------------------------------------------------------------------------
+# Cold-start channel: 4th held-out pass on the FINAL checkpoint
+# ---------------------------------------------------------------------------
+
+def _enable_coldstart(run_dir):
+    import yaml
+    path = os.path.join(run_dir, "resolved_config.yaml")
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    cfg["eval_coldstart"] = True
+    with open(path, "w") as f:
+        yaml.safe_dump(cfg, f)
+
+
+def _full_mode_spec():
+    """A minimal REAL TrainingSpec with a FULL-mode solver, so the
+    orchestrator-side dataclasses.replace has something genuine to act on."""
+    import dataclasses as _dc
+
+    import xcquinox.alec as alec
+    from xcquinox.alec.config import MoleculeSpec, TrainingSpec
+    from xcquinox.alec.solver import (SolverBackend, SolverConfig,
+                                      SolverMode)
+    mol = MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74",
+                       basis="sto-3g", charge=0, spin=0,
+                       atom_composition=(("H", 2),))
+    spec = TrainingSpec.from_dicts(
+        arch=alec.get_architecture("deep_3x16"), molecules=(mol,),
+        targets={"H2": -1.0}, atom_energies={"H": -0.5},
+        loss_name="A_atomization", loss_kwargs={"vxc_weight": 0.0},
+        update_scheme="per_molecule", require_atom_anchors=False,
+        n_steps=1, lr_start=1e-3, lr_end=1e-5, lr_decay_start=0.0,
+        grad_clip=1.0, checkpoint_dir=None, seed=42)
+    solver = SolverConfig(backend=SolverBackend.MANUAL,
+                          mode=SolverMode.FULL, max_cycles=3,
+                          scf_loss_use_tail=True)
+    return _dc.replace(spec, solver_config=solver)
+
+
+def test_main_runs_coldstart_pass_when_enabled(run_dir, monkeypatch):
+    """eval_coldstart: true + FULL-mode spec -> a 4th pass on model.eqx into
+    eval_holdout_coldstart/ with the spec REPLACED orchestrator-side
+    (minao seed, 25 cycles, conv_tol 1e-12, mode stays FULL) and the
+    coldstart flag threaded toward the shard workers."""
+    _enable_coldstart(run_dir)
+    _write_spec(run_dir, 0, obj=_full_mode_spec())
+    ckpt_dir = _write_model(run_dir, 0)
+    _stub_insample(monkeypatch, os.path.join(ckpt_dir, "eval"))
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "_run_held_out_eval",
+        lambda rd, idx, cfg, ck, mp, ts, holdout_subdir="eval_holdout",
+        coldstart=False:
+            calls.append((os.path.basename(mp), holdout_subdir, ts,
+                          coldstart)))
+
+    assert ev.main([run_dir, "0"]) == 0
+    assert [(c[0], c[1]) for c in calls] == [
+        ("model.eqx", "eval_holdout"),
+        ("model.eqx", "eval_holdout_coldstart")]
+    warm_ts = calls[0][2]
+    cold_ts = calls[1][2]
+    assert calls[0][3] is False and calls[1][3] is True
+    # warm pass keeps the trained protocol
+    assert warm_ts.solver_config.seed_source == "pbe"
+    assert warm_ts.solver_config.max_cycles == 3
+    # cold pass: the shared override, applied BEFORE dispatch so the serial
+    # tiers inherit it too
+    sc = cold_ts.solver_config
+    assert sc.seed_source == "minao"
+    assert sc.max_cycles == 25
+    assert sc.conv_tol == 1e-12
+    assert sc.mode.value == "full"
+    # everything else preserved from the trained solver
+    assert sc.scf_loss_use_tail is True
+
+
+def test_main_coldstart_skips_specs_without_full_solver(run_dir, monkeypatch):
+    """eval_coldstart: true with a spec that has no FULL-mode solver_config
+    (legacy/sentinel) -> no 4th pass, no crash."""
+    _enable_coldstart(run_dir)
+    ckpt_dir = _write_model(run_dir, 0)
+    _stub_insample(monkeypatch, os.path.join(ckpt_dir, "eval"))
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "_run_held_out_eval",
+        lambda rd, idx, cfg, ck, mp, ts, holdout_subdir="eval_holdout",
+        coldstart=False:
+            calls.append(holdout_subdir))
+
+    assert ev.main([run_dir, "0"]) == 0
+    assert calls == ["eval_holdout"]
+
+
+def test_main_no_coldstart_by_default(run_dir, monkeypatch):
+    """Without the flag the channel set is byte-identical to before."""
+    _write_spec(run_dir, 0, obj=_full_mode_spec())
+    ckpt_dir = _write_model(run_dir, 0)
+    _stub_insample(monkeypatch, os.path.join(ckpt_dir, "eval"))
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "_run_held_out_eval",
+        lambda rd, idx, cfg, ck, mp, ts, holdout_subdir="eval_holdout",
+        coldstart=False:
+            calls.append(holdout_subdir))
+
+    assert ev.main([run_dir, "0"]) == 0
+    assert calls == ["eval_holdout"]

@@ -149,7 +149,8 @@ def test_worker_main_writes_shard_and_prints_success(tmp_path, monkeypatch, caps
     out_shard = tmp_path / "shard.json"
     monkeypatch.setattr(
         ehw, "compute_shard",
-        lambda rd, idx, names, basis, gl, model_name="model.eqx": {
+        lambda rd, idx, names, basis, gl, model_name="model.eqx",
+        coldstart=False: {
             "energies": {"h2": -1.17}, "pbe_energies": {"h2": -1.16},
             "mol_records": [{"molecule": "h2"}]})
 
@@ -170,7 +171,8 @@ def test_worker_main_forwards_model_name(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(
         ehw, "compute_shard",
-        lambda rd, idx, names, basis, gl, model_name="model.eqx": (
+        lambda rd, idx, names, basis, gl, model_name="model.eqx",
+        coldstart=False: (
             seen.append(model_name)
             or {"energies": {}, "pbe_energies": {}, "mol_records": []}))
 
@@ -571,3 +573,68 @@ def test_orchestrator_drives_real_worker_subprocesses(tmp_path, monkeypatch):
 
     assert summary["n_species"] == 4
     assert _molecules_in_per_molecule_json(out_dir) == {"a", "b", "c", "d"}
+
+
+def test_worker_main_forwards_coldstart_flag(tmp_path, monkeypatch):
+    """--coldstart reaches compute_shard so the worker applies the shared
+    override to its OWN spec reload (the orchestrator's in-memory replace
+    cannot reach shard subprocesses)."""
+    names_file = tmp_path / "names.json"
+    names_file.write_text(json.dumps(["h2"]))
+    seen = []
+    monkeypatch.setattr(
+        ehw, "compute_shard",
+        lambda rd, idx, names, basis, gl, model_name="model.eqx",
+        coldstart=False: (
+            seen.append(coldstart)
+            or {"energies": {}, "pbe_energies": {}, "mol_records": []}))
+    base = ["--run-dir", "/run", "--spec-idx", "0",
+            "--names-file", str(names_file),
+            "--out-shard", str(tmp_path / "s.json"),
+            "--basis", "def2-svp", "--grid-level", "1", "--threads", "1"]
+    assert ehw.main(base) == 0
+    assert ehw.main(base + ["--coldstart"]) == 0
+    assert seen == [False, True]
+
+
+def test_compute_shard_coldstart_applies_shared_override(monkeypatch):
+    """Under --coldstart the shard evaluates with the SAME override the
+    orchestrator applies (single source of truth): minao seed, 25 cycles,
+    conv_tol 1e-12, FULL mode."""
+    import dataclasses as _dc
+    from types import SimpleNamespace
+
+    from xcquinox.alec.solver import (SolverBackend, SolverConfig,
+                                      SolverMode)
+
+    @_dc.dataclass(frozen=True)
+    class _Spec:
+        solver_config: object
+
+    spec = _Spec(solver_config=SolverConfig(
+        backend=SolverBackend.MANUAL, mode=SolverMode.FULL, max_cycles=3))
+    # compute_shard resolves its collaborators via in-function imports, so
+    # the seams are the SOURCE modules, not worker module attributes.
+    import xcquinox.alec.cluster._eval_one_spec as ev_mod
+    import xcquinox.alec.eval_holdout as eh
+    import xcquinox.alec.full_benchmark_pools as fbp
+    monkeypatch.setattr(ev_mod, "_load_spec", lambda path: spec)
+    monkeypatch.setattr(ev_mod, "_read_width", lambda rd: 4)
+    monkeypatch.setattr(eh, "load_trained_model",
+                        lambda spec, path: "MODEL")
+    captured = {}
+
+    def _fake_compute(training_spec, model, subset, **kw):
+        captured["sc"] = training_spec.solver_config
+        return {"energies": {}, "pbe_energies": {}, "mol_records": []}
+
+    monkeypatch.setattr(eh, "compute_holdout_per_molecule", _fake_compute)
+    monkeypatch.setattr(
+        fbp, "load_full_held_out_pools",
+        lambda basis=None, grid_level=None:
+            ({"h2": SimpleNamespace(name="h2")}, []))
+    ehw.compute_shard("/run", 0, ["h2"], "def2-svp", 1, coldstart=True)
+    sc = captured["sc"]
+    assert sc.seed_source == "minao"
+    assert sc.max_cycles == 25
+    assert sc.conv_tol == 1e-12
