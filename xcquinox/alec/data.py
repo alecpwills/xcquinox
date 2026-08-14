@@ -366,7 +366,6 @@ def _load_scan_seed_dm(mol_spec: MoleculeSpec, *, s_live,
     cluster task scripts) -- local runs fail loud instead of silently
     starting a production-basis SCAN SCF.
     """
-    import numpy as np
     cache_dir = seed_cache_dir or os.environ.get("XCQUINOX_SEED_CACHE_DIR")
     if not cache_dir:
         raise RuntimeError(
