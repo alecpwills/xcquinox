@@ -1,7 +1,8 @@
 """Build a merged VIEW of the v4 campaign arms for cross-arm figures.
 
-The v4 re-sweep runs as separate arms (meta-GGA on 96-core, GGA-based on
-40-core, the mgga stacking completions later), each with its own run dir.
+The campaign runs as separate arms (the GGA/rung-3.5 v4 arm plus the two
+SCAN-seeded v5 mgga arms; the PBE-seeded v4 mgga arms are retired and
+excluded), each with its own run dir.
 The figure collectors scan ``<run_dir>/checkpoints/spec_*``, so a merged
 9-arch figure needs one directory whose spec dirs span every arm. This
 script builds exactly that: a view directory of RENUMBERED SYMLINKS to the
@@ -31,7 +32,12 @@ import shutil
 import sys
 from pathlib import Path
 
-ARM_BASES = ("dfs6311_grid3_v4", "dfs6311_grid3_v4gga", "dfs6311_grid3_v4mgga2")
+# v5 era (2026-08-14): the retired v4 mgga arms (PBE-seeded, cancelled
+# mid-array) are EXCLUDED; the roster is the still-valid GGA/rung-3.5 arm
+# plus the two SCAN-seeded v5 arms. Per-arch seed provenance is VALIDATED
+# against the rung-baseline policy before an arm enters the view.
+ARM_BASES = ("dfs6311_grid3_v4gga", "dfs6311_grid3_v5",
+             "dfs6311_grid3_v5mgga2")
 DEFAULT_ROOT = Path.home() / "Documents/Research/xcquinox-results/runs/dfs_step7"
 
 
@@ -73,6 +79,47 @@ def _arm_manifest_cells(run: Path) -> dict:
             for e in manifest.get("specs", []) if isinstance(e.get("index"), int)}
 
 
+def _validate_arm_seed_policy(run: Path, arch_names) -> None:
+    """Refuse an arm whose resolved seed diverges from the rung-baseline
+    policy for any REGISTRY arch it carries.
+
+    The grouped figures must only ever assemble correctly seeded data: a
+    PBE-seeded mgga arm (the retired v4 protocol) resolves seed 'pbe'
+    where the policy demands 'scan' and is rejected here, not silently
+    merged. Archs not in the registry (test fixtures, legacy names) have
+    no policy expectation and are skipped; a registry arch WITHOUT a
+    loadable resolved_config.yaml is unverifiable and also refused.
+    """
+    from xcquinox.alec.rungs import seed_xc_for_arch
+    registry_archs = {}
+    for a in arch_names:
+        if not a:
+            continue
+        try:
+            registry_archs[a] = seed_xc_for_arch(a)
+        except KeyError:
+            continue
+    if not registry_archs:
+        return
+    try:
+        from xcquinox.alec.cluster.grid_config import load_grid_config
+        from xcquinox.alec.cluster.spec_builder import resolve_seed_xc
+        cfg = load_grid_config(str(run / "resolved_config.yaml"))
+    except Exception as exc:  # noqa: BLE001 -- unverifiable = refused
+        raise SystemExit(
+            f"[merge] REFUSING {run}: cannot verify seed provenance for "
+            f"registry archs {sorted(registry_archs)} "
+            f"({type(exc).__name__}: {exc})")
+    for arch, expected in sorted(registry_archs.items()):
+        got = resolve_seed_xc(cfg.inputs, arch)
+        if got != expected:
+            raise SystemExit(
+                f"[merge] REFUSING {run}: arch {arch} resolves seed "
+                f"{got!r} but the rung-baseline policy demands "
+                f"{expected!r} -- a mis-seeded arm cannot enter the "
+                "grouped figures")
+
+
 def build_view(results_root: Path, out_dir: Path) -> dict:
     """(Re)build the merged view; returns {arm_base: (run_name, n_specs)}.
 
@@ -88,6 +135,7 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
 
     report: dict = {}
     merged_specs = []
+    seen_cells: dict = {}
     idx = 0
     for base in ARM_BASES:
         run = newest_run(results_root / base)
@@ -95,13 +143,25 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
             report[base] = (None, 0)
             continue
         cells = _arm_manifest_cells(run)
+        _validate_arm_seed_policy(
+            run, {c.get("arch") for c in cells.values()})
         spec_dirs = sorted((run / "checkpoints").glob("spec_*")) \
             if (run / "checkpoints").is_dir() else []
         for sd in spec_dirs:
             orig_idx = int(sd.name.split("_", 1)[1])
+            cell = cells.get(orig_idx, {})
+            cell_key = (cell.get("arch"), cell.get("subset_size"))
+            if all(v is not None for v in cell_key):
+                owner = seen_cells.get(cell_key)
+                if owner is not None and owner != base:
+                    raise SystemExit(
+                        f"[merge] REFUSING: cell {cell_key} arrives from "
+                        f"both {owner} and {base} -- a duplicate cell is a "
+                        "double-count, never a merge")
+                seen_cells[cell_key] = base
             (ck_out / f"spec_{idx:04d}").symlink_to(sd.resolve())
             merged_specs.append({"index": idx,
-                                 "cell": cells.get(orig_idx, {}),
+                                 "cell": cell,
                                  "arm": base, "arm_index": orig_idx})
             idx += 1
         report[base] = (run.name, len(spec_dirs))

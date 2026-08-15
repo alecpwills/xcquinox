@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Pull the v4 campaign arms from the cluster and render every figure --
+# Pull the campaign arms (v4gga + the SCAN-seeded v5 arms) and render every figure --
 # per-arm suites plus the merged cross-arm view. Safe to run at ANY level of
 # completion: partial grids render with the standard hatched-missing-cell
 # marks, arms not yet pulled are skipped, and re-running refreshes in place.
@@ -14,7 +14,10 @@ set -uo pipefail
 
 RESULTS_ROOT="$HOME/Documents/Research/xcquinox-results/runs/dfs_step7"
 CLUSTER_ROOT="/gpfs/scratch/awills/xcquinox_runs/dfs_step7"
-ARMS="dfs6311_grid3_v4 dfs6311_grid3_v4gga dfs6311_grid3_v4mgga2"
+# v5 era (2026-08-14): the retired v4 mgga arms are neither pulled nor
+# merged; the roster = the GGA/rung-3.5 v4 arm + the two SCAN-seeded v5
+# arms (merge_v4_arms validates per-arch seed provenance before merging).
+ARMS="dfs6311_grid3_v4gga dfs6311_grid3_v5 dfs6311_grid3_v5mgga2"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 
 if [ "${1:-}" != "--plot-only" ]; then
