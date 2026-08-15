@@ -329,6 +329,11 @@ def seed_geometry_tag(atom: str, charge: int, spin: int) -> str:
         p = tok.split()
         if not p:
             continue
+        if len(p) != 4:
+            raise ValueError(
+                f"seed_geometry_tag: malformed atom token {tok!r} (expected "
+                f"'Sym x y z'); a silently-partial hash could alias distinct "
+                f"geometries")
         parts.append(f"{p[0]} {float(p[1]):.6f} {float(p[2]):.6f} "
                      f"{float(p[3]):.6f}")
     key = "; ".join(parts) + f"|q{int(charge)}|s{int(spin)}"

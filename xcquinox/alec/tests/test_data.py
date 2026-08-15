@@ -1120,3 +1120,14 @@ def test_precompute_memo_distinguishes_seed_source():
     # a seed-blind memo key would hand back the warm record here
     assert cold["dm_seed"] is not cold["dm_pbe"]
     assert warm["dm_seed"] is warm["dm_pbe"]
+
+
+def test_seed_geometry_tag_rejects_malformed_tokens():
+    """A token that is not 'Sym x y z' must raise, never silently hash a
+    partial geometry (a newline-joined string would otherwise alias its
+    first atom)."""
+    from xcquinox.alec.data import seed_geometry_tag
+    with pytest.raises(ValueError, match="malformed"):
+        seed_geometry_tag("H 0 0 0\nH 0 0 0.74", 0, 0)
+    with pytest.raises(ValueError, match="malformed"):
+        seed_geometry_tag("H 0 0", 0, 0)
