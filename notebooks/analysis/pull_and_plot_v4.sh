@@ -91,6 +91,6 @@ else:
 print(f"[pull-v4] merged view: {len(written)} figures -> {out}")
 EOF
 else
-  echo "[pull-v4] merged view skipped (no arm has pulled specs yet)"
+  echo "[pull-v4] merged view skipped (no pulled specs, or an arm was REFUSED -- see the merge output above)"
 fi
 echo "[pull-v4] done"

@@ -421,6 +421,13 @@ beyond-GGA information content; the figures grade them against SCAN).
 KNOWN: one YAML (copy the v4gga arm, restrict the arch axis, seed_xc:
 scan, fresh output root); the rungs.seed_xc_for_arch "beyond_gga_scan"
 policy already exists for the auto route.
+Also KNOWN: the merged figure view will REFUSE this arm twice over -- its
+resolved seed diverges from the phase-1 rung-baseline policy the view
+validates, and its (arch, subset_size) cells duplicate the v4gga rows.
+That is correct: the merged view is single-protocol by construction; the
+control comparison belongs in per-arm / protocol-comparison figures (or,
+if a merged multi-protocol view is ever wanted, a per-arm-base policy map
+passing "beyond_gga_scan" into seed_xc_for_arch).
 TRIGGER: user's call after the v5 mgga arms report.
 
 ## 20. DIIS mixer for a converged cold-start eval
