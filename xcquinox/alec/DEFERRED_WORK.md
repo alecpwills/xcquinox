@@ -341,6 +341,14 @@ longer fires on a fresh pull.
 
 ## 17. Cluster-side strict-holdout repair deployment + re-eval (found 2026-08-13)
 
+**RESOLVED 2026-08-15.** Deployment (user rsync 2026-08-13) + refinalize job
+2120119 (COMPLETED 0:0, 21 + 57 channels rewritten with one-time backups,
+verified on the artifacts) + the closing parity probe on the repulled v4gga
+run: **54 parity, 0 stale-rule, 0 value-mismatch, max |delta| = 0.0 on every
+row** across 27 specs x 2 channels -- including the 8 specs evaluated
+natively under the deployed rule after the refinalize, proving cluster
+writes and the local reconstruction are one path. Nothing remains open.
+
 **What:** the cluster-side strict held-out filter is name-based and blind to
 the training-vs-pool species naming split (training uses ASE Hill formulas
 from the DFS pool builder -- `CHN`, `H3N`, `HO`, `CH2` -- while the
