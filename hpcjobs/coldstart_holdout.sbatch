@@ -46,11 +46,37 @@ cd "${REPO}"
 export PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}"
 export JAX_PLATFORMS=cpu
 export JAX_ENABLE_X64=1
+export MALLOC_ARENA_MAX=2
+CORES="${SLURM_CPUS_ON_NODE:-$(nproc --all)}"
+BLAS_THREADS=$(( CORES / 12 ))
+[ "${BLAS_THREADS}" -ge 1 ] || BLAS_THREADS=1
+export OMP_NUM_THREADS="${BLAS_THREADS}"
+export MKL_NUM_THREADS="${BLAS_THREADS}"
+export OPENBLAS_NUM_THREADS="${BLAS_THREADS}"
 
 python -c "import xcquinox.alec.cluster.coldstart_retro" \
     || { echo "FATAL: repo import failed (env/activation)"; exit 1; }
 
+# The benchmark reference densities resolve ONLY through this env var (the
+# rendered arm templates export it; nothing reads it from config at eval
+# time). Without it the channel writes null for every density column.
+if [ -z "${XCQUINOX_BENCH_REFS_DIR:-}" ]; then
+    for rd in ${RUN_DIRS}; do
+        cand="$(sed -n 's/^[[:space:]]*benchmark_refs_dir:[[:space:]]*//p' "${rd}/resolved_config.yaml" 2>/dev/null | head -1 | tr -d "'\"")"
+        if [ -n "${cand}" ]; then
+            XCQUINOX_BENCH_REFS_DIR="${cand}"
+            export XCQUINOX_BENCH_REFS_DIR
+            break
+        fi
+    done
+fi
+if [ -z "${XCQUINOX_BENCH_REFS_DIR:-}" ] || [ ! -d "${XCQUINOX_BENCH_REFS_DIR}" ]; then
+    echo "FATAL: benchmark refs dir unresolved (${XCQUINOX_BENCH_REFS_DIR:-unset}) -- refusing to write null density columns"
+    exit 1
+fi
+
 echo "[coldstart] targets:${RUN_DIRS}"
+echo "[coldstart] refs=${XCQUINOX_BENCH_REFS_DIR} blas=${BLAS_THREADS}"
 rc=0
 # shellcheck disable=SC2086
 python -m xcquinox.alec.cluster.coldstart_retro ${RUN_DIRS} || rc=$?
