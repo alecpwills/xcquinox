@@ -125,6 +125,85 @@ def test_view_builds_without_config_or_cache(tmp_path):
     assert not (out / "resolved_config.yaml").exists()
 
 
+def test_missing_manifest_warns_guard_skipped(tmp_path, capsys):
+    """An arm whose newest run lacks manifest.json merges its specs with no
+    arch/subset labels AND silently skips the seed-provenance guard -- that
+    state must be loud, never silent."""
+    run = tmp_path / "dfs6311_grid3_v5" / "runs" / "run_20260815T000000Z"
+    ck = run / "checkpoints"
+    (ck / "spec_0000").mkdir(parents=True)
+    (ck / "spec_0000" / "completion.json").write_text("x")
+    mv.build_view(tmp_path, tmp_path / "merged")
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "seed-provenance" in out
+    assert "dfs6311_grid3_v5" in out
+
+
+def test_merged_manifest_carries_spec_provenance(tmp_path):
+    """spec_file + sha256 + the source run name survive into the merged
+    manifest: the expected-hash record plus enough addressing
+    (<arm>/runs/<arm_run>/specs/<spec_file>) to verify a spec against the
+    arm run without guessing which run is newest."""
+    import json
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1,
+                 "arm2")
+    run = ck.parent
+    m = json.loads((run / "manifest.json").read_text())
+    m["specs"][0]["spec_file"] = "spec_0000.spec"
+    m["specs"][0]["sha256"] = "a" * 64
+    (run / "manifest.json").write_text(json.dumps(m))
+    out = tmp_path / "merged"
+    mv.build_view(tmp_path, out)
+    merged = json.loads((out / "manifest.json").read_text())
+    assert merged["specs"][0]["spec_file"] == "spec_0000.spec"
+    assert merged["specs"][0]["sha256"] == "a" * 64
+    assert merged["specs"][0]["arm_run"] == "run_20260810T202813Z"
+
+
+def test_partial_manifest_warns_unlabeled_specs(tmp_path, capsys):
+    """A readable manifest that covers only part of the on-disk spec dirs is
+    the same hazard as a missing one for the uncovered rest: those specs
+    merge with no labels, no duplicate-cell key, and no seed validation."""
+    import json
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1,
+                 "arm2")
+    for i in (1, 2):
+        d = ck / f"spec_{i:04d}"
+        d.mkdir()
+        (d / "completion.json").write_text("x")
+    mv.build_view(tmp_path, tmp_path / "merged")
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "lacks" in out
+    assert "2 on-disk spec dir(s)" in out
+
+
+def test_no_manifest_no_specs_is_note_not_warning(tmp_path, capsys):
+    """An arm that has not materialized anything yet (no manifest, no spec
+    dirs -- the state of a freshly submitted arm) gets a low-key note, not
+    the WARNING, so the loud message keeps its signal."""
+    run = tmp_path / "dfs6311_grid3_v5" / "runs" / "run_20260815T000000Z"
+    (run / "checkpoints").mkdir(parents=True)
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1, "a2")
+    mv.build_view(tmp_path, tmp_path / "merged")
+    out = capsys.readouterr().out
+    assert "no manifest yet" in out
+    assert not any("WARNING" in ln and "dfs6311_grid3_v5" in ln
+                   for ln in out.splitlines())
+
+
+def test_merged_arms_txt_counts_eval_coverage(tmp_path):
+    """A spec-dir count is not an eval-cell count (empty and mid-training
+    dirs inflate it); the breadcrumb carries both."""
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 2,
+                 "arm2")
+    eh = ck / "spec_0000" / "eval_holdout"
+    eh.mkdir()
+    (eh / "per_molecule.json").write_text("[]")
+    mv.build_view(tmp_path, tmp_path / "merged")
+    txt = (tmp_path / "merged" / "MERGED_ARMS.txt").read_text()
+    assert "2 specs" in txt and "1 eval_holdout" in txt
+
+
 def test_wrapper_merged_step_full_families_and_cache_copy():
     """The merged view must render the FULL figure families (incl. the
     SCAN-line set) in final AND val-best variants, and the wrapper must seed

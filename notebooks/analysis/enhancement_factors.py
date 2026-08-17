@@ -386,7 +386,10 @@ def plot_enhancement_factors(run_dir: Path, out_path: Path, *,
         cov = (f"Archs shown: {len(loaded)}/{len(ARCH_ORDER)} "
                f"({', '.join(loaded)}).")
         if missing:
-            cov += f"  NOT TRAINED in this run: {', '.join(missing)}."
+            # Weights-gated, not training-status-gated: an arch outside this
+            # run's sweep, one not started, and one mid-training (resume
+            # checkpoint only) all lack renderable weights equally.
+            cov += (f"  NO FINAL WEIGHTS in this run: {', '.join(missing)}.")
         if mgga_alpha:
             # Which oracle belongs to which arch. Reading a meta-GGA against PBE
             # mistakes SCAN's genuine flatness in s for a defect, so the split

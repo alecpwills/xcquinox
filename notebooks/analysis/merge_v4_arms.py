@@ -66,8 +66,10 @@ def _config_identity(cfg: Path):
                  for k in _IDENTITY_KEYS)
 
 
-def _arm_manifest_cells(run: Path) -> dict:
-    """{original_index: cell} from the arm's manifest.json (empty if absent)."""
+def _arm_manifest_entries(run: Path) -> dict:
+    """{original_index: full manifest entry} from the arm's manifest.json
+    (empty if absent/unreadable). Full entries so the merged manifest can
+    carry the spec_file/sha256 provenance fields through."""
     mpath = run / "manifest.json"
     if not mpath.is_file():
         return {}
@@ -75,7 +77,7 @@ def _arm_manifest_cells(run: Path) -> dict:
         manifest = json.loads(mpath.read_text())
     except (json.JSONDecodeError, OSError):
         return {}
-    return {e["index"]: (e.get("cell") or {})
+    return {e["index"]: e
             for e in manifest.get("specs", []) if isinstance(e.get("index"), int)}
 
 
@@ -142,14 +144,43 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
         if run is None:
             report[base] = (None, 0)
             continue
-        cells = _arm_manifest_cells(run)
-        _validate_arm_seed_policy(
-            run, {c.get("arch") for c in cells.values()})
+        entries = _arm_manifest_entries(run)
         spec_dirs = sorted((run / "checkpoints").glob("spec_*")) \
             if (run / "checkpoints").is_dir() else []
+        unlabeled = [int(sd.name.split("_", 1)[1]) for sd in spec_dirs
+                     if int(sd.name.split("_", 1)[1]) not in entries]
+        # A spec dir with no manifest entry merges with no arch/subset
+        # labels, no duplicate-cell key, and no seed validation -- exactly
+        # how a mis-seeded arm could slip in unlabeled. That state must be
+        # loud whenever specs are actually present; an arm that has not
+        # materialized anything yet only gets a low-key note, so the loud
+        # message stays meaningful.
+        if not entries:
+            if spec_dirs:
+                print(f"[merge] WARNING: {base} {run.name} has no usable "
+                      "manifest entries (missing, unreadable, or empty "
+                      "manifest.json) -- seed-provenance guard SKIPPED for "
+                      "this arm; its specs merge without arch/subset labels "
+                      "or duplicate-cell protection")
+            else:
+                print(f"[merge] note: {base} {run.name} has no manifest yet "
+                      "-- seed-provenance validation deferred until the arm "
+                      "materializes")
+        elif unlabeled:
+            shown = ", ".join(str(i) for i in unlabeled[:8])
+            more = ("" if len(unlabeled) <= 8
+                    else f", +{len(unlabeled) - 8} more")
+            print(f"[merge] WARNING: {base} {run.name} manifest lacks "
+                  f"entries for {len(unlabeled)} on-disk spec dir(s) "
+                  f"(indices {shown}{more}) -- they merge without arch/"
+                  "subset labels, duplicate-cell protection, or seed "
+                  "validation")
+        _validate_arm_seed_policy(
+            run, {(e.get("cell") or {}).get("arch") for e in entries.values()})
         for sd in spec_dirs:
             orig_idx = int(sd.name.split("_", 1)[1])
-            cell = cells.get(orig_idx, {})
+            entry = entries.get(orig_idx, {})
+            cell = entry.get("cell") or {}
             cell_key = (cell.get("arch"), cell.get("subset_size"))
             if all(v is not None for v in cell_key):
                 owner = seen_cells.get(cell_key)
@@ -160,14 +191,27 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
                         "double-count, never a merge")
                 seen_cells[cell_key] = base
             (ck_out / f"spec_{idx:04d}").symlink_to(sd.resolve())
-            merged_specs.append({"index": idx,
-                                 "cell": cell,
-                                 "arm": base, "arm_index": orig_idx})
+            rec = {"index": idx, "cell": cell,
+                   "arm": base, "arm_run": run.name, "arm_index": orig_idx}
+            # Carry the integrity provenance through: spec_file/sha256 are
+            # the expected hash record, and arm_run names the source run so
+            # a verifier can resolve <arm>/runs/<arm_run>/specs/<spec_file>
+            # without guessing the newest run (which moves as pulls land).
+            for k in ("spec_file", "sha256"):
+                if entry.get(k) is not None:
+                    rec[k] = entry[k]
+            merged_specs.append(rec)
             idx += 1
         report[base] = (run.name, len(spec_dirs))
-        # Keep one provenance breadcrumb per arm.
+        # Keep one provenance breadcrumb per arm; the eval count separates
+        # finished cells from empty/mid-training spec dirs.
+        n_eval = sum(
+            1 for sd in spec_dirs
+            if (sd / "eval_holdout" / "per_molecule.json").is_file()
+            or (sd / "eval_holdout" / "per_reaction.json").is_file())
         with open(out_dir / "MERGED_ARMS.txt", "a") as f:
-            f.write(f"{base}\t{run.name}\t{len(spec_dirs)} specs\n")
+            f.write(f"{base}\t{run.name}\t{len(spec_dirs)} specs"
+                    f"\t{n_eval} eval_holdout\n")
         # Propagate the run-identity + SCAN-cache files the figure loaders
         # resolve against the run-dir root (the arms share one production
         # identity, so the first copy wins): without resolved_config.yaml the

@@ -240,12 +240,13 @@ def test_plot_ae_parity_renders(tmp_path):
     assert _png_ok(out)
 
 
-def test_build_all_writes_six_figures(tmp_path):
+def test_build_all_writes_seven_figures(tmp_path):
     run = _make_run_dir(tmp_path)
     written = fig.build_all(run, tmp_path / "out")
-    assert len(written) == 6
+    assert len(written) == 7
     assert all(_png_ok(p) for p in written)
     assert (tmp_path / "out" / "ablation_ae_parity.png").is_file()
+    assert (tmp_path / "out" / "ablation_parity_by_class.png").is_file()
     # the NN/PBE ratio heatmap rides along with the raw-MAE grid
     assert (tmp_path / "out" / "ablation_arch_subset_heatmap_vs_pbe.png").is_file()
 
@@ -334,6 +335,67 @@ def test_pbe_energies_tolerate_scf_noise(tmp_path, capsys):
     assert "WARNING" not in capsys.readouterr().out
 
 
+def test_value_clusters_groups_within_tol():
+    # SCF noise merges into one cluster; a genuine outlier opens its own;
+    # ordering is largest-cluster-first (ties by value) so [0] is the
+    # majority candidate when one exists.
+    one = fig._value_clusters(
+        [("spec_0000", -1.17), ("spec_0001", -1.17 + 2.5e-6)], 1e-4)
+    assert len(one) == 1 and one[0][1] == ["spec_0000", "spec_0001"]
+    # cluster value is a reported value (the smallest member), never a mean
+    assert one[0][0] == pytest.approx(-1.17, abs=1e-12)
+    maj = fig._value_clusters(
+        [("spec_0000", 1.0), ("spec_0001", 1.00005), ("spec_0002", 2.0)], 1e-4)
+    assert [c[1] for c in maj] == [["spec_0000", "spec_0001"], ["spec_0002"]]
+    tie = fig._value_clusters([("b", 2.0), ("a", 1.0)], 1e-4)
+    assert [c[1] for c in tie] == [["a"], ["b"]]   # tie -> by value
+
+
+def test_outlier_clause_requires_strict_majority():
+    # A plurality is not a majority: 3-2-2 must read as a split (nobody is
+    # told to re-evaluate 4 of 7 evals against a 43% "reference"), and a
+    # single cluster reports agreement, never a split.
+    split_3_2_2 = fig._value_clusters(
+        [("a", 1.0), ("b", 1.0), ("c", 1.0),
+         ("d", 2.0), ("e", 2.0), ("f", 3.0), ("g", 3.0)], 1e-4)
+    clause = fig._outlier_clause(split_3_2_2)
+    assert "multi-spec split" in clause
+    assert "re-evaluate" not in clause
+    majority = fig._value_clusters(
+        [("a", 1.0), ("b", 1.0), ("c", 1.0), ("d", 2.0)], 1e-4)
+    assert "re-evaluate" in fig._outlier_clause(majority)
+    lone = fig._outlier_clause([(1.0, ["a", "b"])])
+    assert "agree" in lone and "split" not in lone
+
+
+def test_pbe_energies_warning_names_outlier_spec(tmp_path, capsys):
+    # The 42-vs-1 pattern (one degraded eval re-converged PBE elsewhere): the
+    # warning must name the outlier spec so the re-evaluation target is
+    # readable from the console, and must not claim a pending reference
+    # repair -- the majority reference is intact.
+    run = tmp_path / "run_x"
+    _write_pm(run, "spec_0000", [{"molecule": "c2", "E_pbe": -75.757329256}])
+    _write_pm(run, "spec_0001", [{"molecule": "c2", "E_pbe": -75.757329256}])
+    _write_pm(run, "spec_0002", [{"molecule": "c2", "E_pbe": -75.781328401}])
+    pbe = fig._first_pbe_energies(run)
+    out = capsys.readouterr().out
+    assert "c2" not in pbe
+    assert "spec_0002" in out and "2 specs" in out
+    assert "re-evaluate" in out
+    assert "pending reference repair" not in out
+
+
+def test_pbe_energies_warning_reports_multi_spec_split(tmp_path, capsys):
+    # With no majority there is no re-evaluation target: every side is named.
+    run = tmp_path / "run_x"
+    _write_pm(run, "spec_0000", [{"molecule": "c2", "E_pbe": -75.816711949}])
+    _write_pm(run, "spec_0001", [{"molecule": "c2", "E_pbe": -75.757329256}])
+    fig._first_pbe_energies(run)
+    out = capsys.readouterr().out
+    assert "multi-spec split" in out
+    assert "spec_0000" in out and "spec_0001" in out
+
+
 _SCAN_FIXTURE_RECORDS = {
     "HO": {"density_rmse_scan": 2e-4, "density_eps_l1_scan": 6e-4},
     "CH4": {"density_rmse_scan": 1e-4, "density_eps_l1_scan": 2e-4}}
@@ -407,7 +469,63 @@ def test_scan_baseline_pool_restricted_to_pbe_computable(tmp_path):
     pbe = {"a": -1.0, "b": -0.985}
     out = fig.scan_pool_baseline(tmp_path, _loader=lambda: (None, rxns),
                                  _energies=scan, _pbe_energies=pbe)
-    assert out["coverage"]["combined"] == {"used": 1, "reference": 1}
+    # reference = the UNRESTRICTED leg size, so a guard exclusion is visible
+    # as used < reference on every footer instead of shrinking both counts.
+    assert out["coverage"]["combined"] == {"used": 1, "reference": 2}
+
+
+def test_pbe_pool_baseline_reports_reduced_coverage(tmp_path):
+    # A species excluded by the cross-spec guard drops its reactions from the
+    # pooled PBE legs; the coverage dict must record that against the
+    # unrestricted leg size, or the reduction is invisible on every footer.
+    rxns = [
+        {"name": "r1", "source_pool": "w411", "reactants": ["a"],
+         "products": ["b"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.01},
+        {"name": "r2", "source_pool": "w411", "reactants": ["c2"],
+         "products": ["b"], "coeffs": [-1.0, 1.0], "reaction_energy_ref": 0.02},
+    ]
+    run = tmp_path / "run_x"
+    _write_pm(run, "spec_0000", [{"molecule": "a", "E_pbe": -1.0},
+                                 {"molecule": "b", "E_pbe": -0.99},
+                                 {"molecule": "c2", "E_pbe": -75.757329}])
+    _write_pm(run, "spec_0001", [{"molecule": "a", "E_pbe": -1.0},
+                                 {"molecule": "b", "E_pbe": -0.99},
+                                 {"molecule": "c2", "E_pbe": -75.781328}])
+    base = fig.pbe_pool_baseline(run, _loader=lambda: ({}, rxns))
+    assert base["coverage"]["w411"] == {"used": 1, "reference": 2}
+    assert base["coverage"]["combined"] == {"used": 1, "reference": 2}
+
+
+def test_pool_line_suffix():
+    reduced = {"combined": 4.79,
+               "coverage": {"combined": {"used": 215, "reference": 216}}}
+    assert fig.pool_line_suffix(reduced) == ", 215/216"
+    full = {"combined": 4.89,
+            "coverage": {"combined": {"used": 216, "reference": 216}}}
+    assert fig.pool_line_suffix(full) == ""
+    assert fig.pool_line_suffix({"combined": 4.89}) == ""      # legacy dict
+    assert fig.pool_line_suffix(None) == ""
+
+
+def test_provenance_footer_discloses_reduced_pbe_pool():
+    full = {"bh76": 8.15, "w411": 14.01, "combined": 11.95,
+            "coverage": {"combined": {"used": 216, "reference": 216}}}
+    legacy = {"bh76": 8.15, "w411": 14.01, "combined": 11.95}
+    # Full coverage renders byte-identically to a coverage-less baseline.
+    assert fig.provenance_footer(full) == fig.provenance_footer(legacy)
+    reduced = {"bh76": 8.15, "w411": 13.82, "combined": 11.82,
+               "coverage": {"combined": {"used": 215, "reference": 216}}}
+    s = fig.provenance_footer(reduced)
+    assert "[215/216 reactions]" in s
+    scan_reduced = {"bh76": 6.88, "w411": 3.65, "combined": 4.79,
+                    "coverage": {"combined": {"used": 215, "reference": 216}}}
+    s2 = fig.provenance_footer(legacy, scan_reduced)
+    assert s2.count("[215/216 reactions]") == 1
+    assert "SCAN (full pool):" in s2
+    # the realistic guard-exclusion case: BOTH legs reduced, each section
+    # carries its own bracket
+    s3 = fig.provenance_footer(reduced, scan_reduced)
+    assert s3.count("[215/216 reactions]") == 2
 
 
 def test_wtmad2_scan_n_ref_counts_only_pbe_computable_rows():
@@ -770,6 +888,24 @@ def test_holdout_density_rows_exclude_cross_spec_inconsistent_pbe(
     assert "c2" in capsys.readouterr().out
 
 
+def test_density_guard_names_outlier_spec(tmp_path, capsys):
+    # The density twin of the outlier attribution: the excluded species'
+    # warning names the disagreeing spec and the channel that tripped.
+    run = tmp_path / "run_x"
+    for spec, val in (("spec_0000", 2.50e-3), ("spec_0001", 2.50e-3),
+                      ("spec_0002", 2.00e-3)):
+        d = run / "checkpoints" / spec / "eval_holdout"
+        d.mkdir(parents=True)
+        (d / "per_molecule.json").write_text(json.dumps([
+            {"molecule": "c2", "density_rmse": 3e-4, "density_rmse_pbe": val},
+        ]))
+    fig.collect_holdout_density_rows(run)
+    out = capsys.readouterr().out
+    assert "outlier eval(s)" in out
+    assert "spec_0002" in out and "2 specs" in out
+    assert "[density_rmse_pbe]" in out
+
+
 def test_cell_metrics_dedup_duplicate_reaction_names(tmp_path):
     # The pool carries four reactions twice under one name; the PBE baseline
     # dedups but the cell metrics did not, double-counting those rows.
@@ -908,12 +1044,301 @@ def test_grouped_bars_scan_cell_ticks(tmp_path):
                                pbe_line=8.0, title="t",
                                scan_line=6.0,
                                scan_by_cell={("deep", 2): 4.5})
-        labels = {c.get_label() for c in ax.collections}
+        labels = {c.get_label() for c in ax.containers}
         assert "SCAN (cell rows)" in labels, labels
         lines = {ln.get_label() for ln in ax.lines}
         assert "SCAN (pooled)" in lines, lines
     finally:
         plt.close(f)
+
+
+def test_cell_rows_spans_are_capped_errorbars(tmp_path):
+    # The cell-rows comparator mark is a capped horizontal span (error-bar
+    # style: horizontal segment + vertical end caps demarking the group's
+    # extent), black PBE / grey SCAN, and the pooled PBE line is dash-dot
+    # (the thick dashed line read as another data element).
+    import matplotlib.pyplot as plt
+    metric = {("deep", 2): 5.0}
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, metric, ["deep"], [2],
+                               pbe_line=8.0, title="t", scan_line=6.0,
+                               pbe_by_cell={("deep", 2): 6.5},
+                               scan_by_cell={("deep", 2): 4.5})
+        for lbl in ("PBE (cell rows)", "SCAN (cell rows)"):
+            cont = next(c for c in ax.containers if c.get_label() == lbl)
+            _data, caplines, barcols = cont
+            assert len(caplines) == 2, lbl       # end caps on both sides
+            segs = barcols[0].get_segments()
+            assert len(segs) == 1, lbl
+            (x0, y0), (x1, y1) = segs[0]
+            assert y0 == y1                      # horizontal
+            assert x1 > x0                       # finite span
+        pooled = next(ln for ln in ax.lines
+                      if ln.get_label() == "PBE (pooled)")
+        assert pooled.get_linestyle() == "-."
+    finally:
+        plt.close(f)
+
+
+def test_cell_anchor_note_explains_glyph():
+    note = fig._cell_anchor_note({("deep", 2): 5.0})
+    low = note.lower()
+    assert "capped" in low and "span" in low
+    assert "pbe" in low and "scan" in low
+    # the ED line/scatter figures draw no glyphs: their note points at the
+    # CSV columns instead of describing glyphs they do not carry
+    flat = fig._cell_anchor_note({("deep", 2): 5.0}, glyphs=False)
+    assert "capped" not in flat.lower()
+    assert "CSV" in flat and "cell-matched" in flat.lower()
+    # the drawing docstrings describe the current mark, not the removed ones
+    assert "asterisk" not in (fig._grouped_arch_bars.__doc__ or "").lower()
+    assert "capped" in (fig._grouped_arch_bars.__doc__ or "").lower()
+    assert "capped" in (fig.plot_energy_wtmad_mae.__doc__ or "").lower()
+
+
+def test_mae_by_arch_note_explains_row_matched_lines(tmp_path, monkeypatch):
+    # Two numbers for one functional on one figure (row-matched line vs the
+    # full-pool footer) need the distinction stated where they are read.
+    import matplotlib.figure as mfig
+    seen = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        seen.extend(t.get_text() for t in self.texts)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    run = _make_run_dir(tmp_path)
+    rows = fig.collect_holdout_reaction_rows(run)
+    ins = fig.collect_insample_ae_rows(run)
+    errs = {str(r["name"]): 1.0 for r in rows}
+    fig.plot_mae_by_arch(rows, ins, tmp_path / "m.png", "run",
+                         scan_baseline={"bh76": 9.0, "w411": 9.0,
+                                        "combined": 9.0}, scan_errors=errs)
+    joined = " ".join(seen)
+    assert "own deduped held-out rows" in joined
+    assert "full-pool" in joined
+
+
+def test_wtmad_glyph_note_survives_poolless_rows(tmp_path, monkeypatch):
+    # Rows without pool labels empty the WTMAD-2 anchors while the MAE panel
+    # still draws glyphs -- the key must reach the figure from either map.
+    import matplotlib.figure as mfig
+    seen = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        seen.extend(t.get_text() for t in self.texts)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    rows = [{"arch": "deep", "subset_size": 1, "name": f"r{i}", "pool": None,
+             "ref_kcalmol": 10.0, "abs_error_nn_kcalmol": 1.0 + i,
+             "abs_error_pbe_kcalmol": 2.0 + i} for i in range(3)]
+    assert fig.wtmad2_pbe_by_arch_subset(rows) == {}
+    assert fig.pbe_reaction_mae_by_cell(rows)
+    fig.plot_energy_wtmad_mae(rows, tmp_path / "w.png", "run")
+    joined = " ".join(seen).lower()
+    assert "capped" in joined
+
+
+def test_cell_rows_spans_one_per_group(tmp_path):
+    # A subset-size group's cells score the same test slice, so their
+    # anchors agree to fp noise: the mark is ONE capped span across the
+    # whole group's bar cluster, not one per bar.
+    import matplotlib.pyplot as plt
+    metric = {("a1", 2): 5.0, ("a2", 2): 6.0}
+    agree = {("a1", 2): 7.0, ("a2", 2): 7.0 + 1e-9}
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, metric, ["a1", "a2"], [2],
+                               pbe_line=8.0, title="t", pbe_by_cell=agree)
+        cont = next(c for c in ax.containers
+                    if c.get_label() == "PBE (cell rows)")
+        segs = cont[2][0].get_segments()
+        assert len(segs) == 1
+        (x0, y0), (x1, y1) = segs[0]
+        assert y0 == pytest.approx(7.0) and y1 == pytest.approx(7.0)
+        # spans the full bar cluster (2 archs x bw 0.4 -> +-0.4 around the
+        # group center at x=0)
+        assert x0 == pytest.approx(-0.4) and x1 == pytest.approx(0.4)
+    finally:
+        plt.close(f)
+
+
+def test_cell_rows_spans_split_on_disagreement(tmp_path):
+    # A group whose cells genuinely disagree (a degraded eval scored a
+    # different row set) keeps per-bar spans so the divergence is visible.
+    import matplotlib.pyplot as plt
+    metric = {("a1", 2): 5.0, ("a2", 2): 6.0}
+    split = {("a1", 2): 7.0, ("a2", 2): 7.5}
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, metric, ["a1", "a2"], [2],
+                               pbe_line=8.0, title="t", pbe_by_cell=split)
+        cont = next(c for c in ax.containers
+                    if c.get_label() == "PBE (cell rows)")
+        segs = sorted(cont[2][0].get_segments(),
+                      key=lambda s: s[0][0])
+        assert len(segs) == 2
+        assert segs[0][0][1] == pytest.approx(7.0)     # a1's own value
+        assert segs[1][0][1] == pytest.approx(7.5)     # a2's own value
+        # bar-width spans (bw 0.4, shrunk 0.45*bw = 0.18) at bars -+0.2
+        assert segs[0][0][0] == pytest.approx(-0.38)
+        assert segs[0][1][0] == pytest.approx(-0.02)
+        assert segs[1][0][0] == pytest.approx(0.02)
+        assert segs[1][1][0] == pytest.approx(0.38)
+    finally:
+        plt.close(f)
+
+
+def test_density_parity_by_channel_has_legend(tmp_path, monkeypatch):
+    # The channel panels color every species point by architecture with no
+    # per-point labels; the figure must carry an arch legend.
+    import matplotlib.figure as mfig
+    cap = {}
+    real = mfig.Figure.savefig
+
+    def _c(self, *a, **k):
+        cap["labels"] = [t.get_text() for lg in self.legends
+                         for t in lg.get_texts()]
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _c)
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    fig.plot_density_parity_by_channel(rows, hd, tmp_path / "dp.png", "run")
+    assert cap.get("labels"), "no figure legend on the density parity"
+    assert "deep" in cap["labels"]
+
+
+def test_plot_parity_by_class_grid(tmp_path, monkeypatch):
+    # 2x3: AE | BH76 | total columns; by-architecture row over by-subset
+    # row; one figure legend and one shared subset colorbar.
+    import matplotlib.figure as mfig
+    cap = {}
+    real = mfig.Figure.savefig
+
+    def _c(self, *a, **k):
+        cap["titles"] = [ax.get_title() for ax in self.axes]
+        cap["n_legends"] = len(self.legends)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _c)
+    run = _make_run_dir(tmp_path)
+    rows = fig.collect_holdout_reaction_rows(run)
+    out = fig.plot_parity_by_class(rows, tmp_path / "pc.png", "run")
+    assert _png_ok(out)
+    titles = cap["titles"]
+    assert "W4-11" in titles[0] and "architecture" in titles[0]
+    assert "BH76" in titles[1]
+    assert "total" in titles[2]
+    assert "subset" in titles[3]
+    assert cap["n_legends"] >= 1
+
+
+def test_dfs_units_figures_carry_glyph_note(tmp_path, monkeypatch):
+    # Every figure drawing the cell-rows glyphs must explain them -- the
+    # DFS-units overview/3x3 twins included (they carried no glyph key).
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    errs = {str(r["name"]): 1.0 for r in rows}
+    monkeypatch.setattr(fig, "scan_reaction_errors", lambda *a, **k: errs)
+    monkeypatch.setattr(fig, "_scan_density_records",
+                        lambda *a, **k: dict(_SCAN_FIXTURE_RECORDS))
+    provs = {}
+    flat_provs = {}
+    for name in ("plot_density_energy_overview", "plot_density_energy_3x3"):
+        real = getattr(fig, name)
+
+        def _cap(*a, _real=real, _name=name, **kw):
+            out_path = a[2] if len(a) > 2 else kw.get("out_path")
+            provs[(_name, str(out_path))] = kw.get("provenance")
+            return _real(*a, **kw)
+
+        monkeypatch.setattr(fig, name, _cap)
+    # The ED line/scatter figures draw no glyphs: their provenance must NOT
+    # claim asterisks and must point at the CSV columns instead.
+    for name in ("plot_combined_energy_density", "plot_ed_decomposition"):
+        real = getattr(fig, name)
+
+        def _capf(*a, _real=real, _name=name, **kw):
+            flat_provs[_name] = kw.get("provenance")
+            return _real(*a, **kw)
+
+        monkeypatch.setattr(fig, name, _capf)
+    fig.build_density_energy_figures(run, tmp_path / "out")
+    dfs_units = {k: v for k, v in provs.items() if "_dfs_units" in k[1]}
+    assert dfs_units, "DFS-units figures did not render on the fixture"
+    for key, prov in provs.items():
+        assert prov and "capped" in prov.lower(), (key, prov)
+    assert flat_provs, "ED line figures did not render on the fixture"
+    for key, prov in flat_provs.items():
+        assert prov and "capped" not in prov.lower(), (key, prov)
+        assert "CSV" in prov, (key, prov)
+
+
+def test_pbe_density_by_cell_iterates_sorted_species():
+    # np.mean over a hash-ordered set permutes the fp summation between
+    # processes (PYTHONHASHSEED), moving the per-cell anchors by ulps
+    # between renders of identical data; the species must be visited
+    # sorted so regenerated CSVs are byte-reproducible.
+    class _Rec(dict):
+        def __init__(self, d):
+            super().__init__(d)
+            self.order = []
+
+        def __getitem__(self, k):
+            self.order.append(k)
+            return super().__getitem__(k)
+
+    names = [f"m{i:02d}" for i in range(12)]
+    rec = _Rec({n: 1.0 + i * 1e-3 for i, n in enumerate(names)})
+    rows = [{"arch": "deep", "subset_size": 1, "molecule": n,
+             "density_rmse": 1e-4} for n in reversed(names)]
+    out = fig.pbe_density_by_cell(rows, {}, _pbe_mol=rec)
+    assert ("deep", 1) in out
+    assert rec.order == sorted(rec.order)
+
+
+def test_scan_row_matched_ref_prefers_row_set():
+    rows = [
+        {"name": "r1", "pool": "bh76", "ref_kcalmol": 10.0,
+         "abs_error_nn_kcalmol": 1.0, "abs_error_pbe_kcalmol": 3.0},
+        {"name": "r2", "pool": "w411", "ref_kcalmol": 50.0,
+         "abs_error_nn_kcalmol": 2.0, "abs_error_pbe_kcalmol": 5.0},
+    ]
+    pooled = {"bh76": 9.0, "w411": 9.0, "combined": 9.0,
+              "coverage": {"combined": {"used": 2, "reference": 2}}}
+    # Full row coverage: the row-matched reduction wins over the pooled value.
+    val, label = fig.scan_row_matched_ref(rows, {"r1": 1.0, "r2": 3.0}, pooled)
+    assert val == pytest.approx(2.0)
+    assert "row-matched" in label
+    # Absent cache: the pooled line exactly as before.
+    val, label = fig.scan_row_matched_ref(rows, {}, pooled)
+    assert val == pytest.approx(9.0)
+    assert "full-pool" in label
+    # Cache below the coverage floor: pooled fallback, never a half-covered
+    # row reduction.
+    val, label = fig.scan_row_matched_ref(rows, {"r1": 1.0}, pooled)
+    assert val == pytest.approx(9.0)
+    assert "full-pool" in label
+
+
+def test_plot_mae_by_arch_renders_with_scan_errors(tmp_path):
+    run = _make_run_dir(tmp_path)
+    rows = fig.collect_holdout_reaction_rows(run)
+    ins = fig.collect_insample_ae_rows(run)
+    errs = {str(r["name"]): 1.0 for r in rows}
+    out = fig.plot_mae_by_arch(rows, ins, tmp_path / "mae.png", "run",
+                               scan_baseline={"bh76": 9.0, "w411": 9.0,
+                                              "combined": 9.0},
+                               scan_errors=errs)
+    assert _png_ok(out)
 
 
 def test_arch_reference_kinds_by_rung():
@@ -2090,6 +2515,25 @@ def test_arch_coverage_evaled_without_weights_not_untrained(tmp_path):
     assert cov["untrained"] == []     # eval'd -> trained, despite missing weights
     # coverage count must not collapse to model.eqx count (0 here): both eval'd
     assert fig.trained_spec_count(run) == 2
+
+
+def test_coverage_note_distinguishes_in_progress(tmp_path):
+    # A spec mid-training (resume checkpoint on disk, no final weights) is IN
+    # PROGRESS, not "NOT TRAINED" -- the roster note must say which, or a
+    # running array reads as absent.
+    run = _make_run_dir(tmp_path)
+    (run / "checkpoints" / "spec_0004" / "model.eqx").unlink()
+    (run / "checkpoints" / "spec_0005" / "resume_state.pkl").write_bytes(b"x")
+    cov = fig.arch_coverage(run)
+    assert "deep_attn" in cov["untrained"]     # no final weights anywhere
+    assert "deep_attn" in cov["in_progress"]
+    note = fig.coverage_note(run)
+    assert "IN PROGRESS" in note and "deep_attn" in note
+    assert "NOT TRAINED" not in note   # nothing purely not-started remains
+    # A completion sentinel beats leftover resume files: completed is not
+    # in-progress (matches the harness resume predicates).
+    (run / "checkpoints" / "spec_0005" / "completion.json").write_text("{}")
+    assert "deep_attn" not in fig.arch_coverage(run)["in_progress"]
 
 
 def test_newest_run_per_basis_picks_latest(tmp_path):
