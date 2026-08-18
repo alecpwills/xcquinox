@@ -251,12 +251,20 @@ def collect_holdout_reaction_rows(run_dir: Path,
     -- the cluster-side name filter is blind to the Hill-vs-pool naming split)
     are dropped, and rows whose reaction is a permuted-name twin of a
     validation-slice reaction (``_val_reaction_identities`` -- validation-best
-    selection saw that barrier) are dropped."""
+    selection saw that barrier) are dropped.
+
+    Rows require a finite comparator (PBE) leg only: reactions whose NN leg
+    is NaN are kept with NaN NN columns on BOTH ingest paths (the cluster
+    rows already carry them; the reconstruction now emits them too), so
+    per-cell comparator reductions cover each cell's full test slice while
+    NN reducers skip the unscored rows via their per-key finiteness
+    filters."""
     cells = ccp._read_manifest_cells(run_dir)
     rows: List[Dict[str, Any]] = []
     # -- verbatim-holdout reconstruction (specs whose per_molecule carries the
     #    per-species energies) --------------------------------------------
-    recon_stats = {"specs": 0, "verbatim": 0, "val": 0, "nan": 0}
+    recon_stats = {"specs": 0, "verbatim": 0, "val": 0, "nan_pbe": 0,
+                   "nan_nn": 0}
     legacy_specs: List[Tuple[int, Path]] = []
     for idx, spec_dir in ccp._spec_dirs(run_dir):
         got = _reconstruct_spec_rows(run_dir, idx, spec_dir, cells,
@@ -270,7 +278,9 @@ def collect_holdout_reaction_rows(run_dir: Path,
               f"specs' test slices from per-species energies; excluded "
               f"{recon_stats['verbatim']} verbatim-supervised and "
               f"{recon_stats['val']} validation rows; "
-              f"{recon_stats['nan']} NaN-dropped)")
+              f"{recon_stats['nan_pbe']} comparator-NaN-dropped; "
+              f"{recon_stats['nan_nn']} NN-NaN rows kept "
+              f"(comparator leg only))")
     if not legacy_specs:
         return rows
     # -- legacy path: cluster-written per_reaction.json (pulls whose
@@ -390,10 +400,13 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
     Exclusions -- by canonical reaction identity -- are exactly the spec's
     verbatim supervised reactions (``trained_reaction_exclusion`` over the
     training record's reaction points) and the recorded validation slice;
-    a reaction merely containing a trained molecule STAYS. Rows require
-    finite NN AND PBE reaction energies. ``None`` when the spec's
-    per_molecule predates the energy columns (caller falls back to the
-    cluster-written per_reaction.json)."""
+    a reaction merely containing a trained molecule STAYS. Rows require a
+    finite COMPARATOR (PBE) leg only: reactions the NN failed to score are
+    kept with NaN NN columns, so comparator reductions cover the cell's
+    full test slice regardless of NN convergence (the cluster-written
+    per_reaction.json carries the same convention). ``None`` when the
+    spec's per_molecule predates the energy columns (caller falls back to
+    the cluster-written per_reaction.json)."""
     pm_path = spec_dir / eval_subdir / "per_molecule.json"
     if not pm_path.is_file():
         return None
@@ -445,9 +458,8 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
     cell = cells.get(idx, {})
     out: List[Dict[str, Any]] = []
     for rxn, rn, rp in zip(pool_rxns, nn_err, pbe_err):
-        if not (_is_num(rn.get("abs_error_kcalmol"))
-                and _is_num(rp.get("abs_error_kcalmol"))):
-            stats["nan"] += 1
+        if not _is_num(rp.get("abs_error_kcalmol")):
+            stats["nan_pbe"] += 1     # comparator leg undefined: not in slice
             continue
         ids = set(reaction_identity_keys(rxn, id_map))
         if excl and ids & excl:
@@ -456,6 +468,8 @@ def _reconstruct_spec_rows(run_dir: Path, idx: int, spec_dir: Path,
         if val_ids and ids & val_ids:
             stats["val"] += 1
             continue
+        if not _is_num(rn.get("abs_error_kcalmol")):
+            stats["nan_nn"] += 1      # NN leg NaN: row kept, NN columns NaN
         out.append({
             "idx": idx,
             "arch": cell.get("arch"),
@@ -1276,23 +1290,27 @@ def arch_reference_kinds(archs) -> Dict[str, str]:
 
 # The cell-rows comparator mark: ONE capped horizontal span per subset-size
 # group (error-bar style: a horizontal segment with small vertical end caps
-# demarking the group's extent) at the group's cell-matched value -- the
-# group's cells score the same test slice, so their anchors agree to fp
-# noise; a disagreeing group falls back to per-bar spans. Every figure
-# drawing it must carry _CELL_ROWS_GLYPH_NOTE.
+# demarking the group's extent) at the group's cell-slice value -- the
+# group's cells share one test slice and the comparator reduces it
+# independent of NN convergence, so their anchors agree to fp noise; a
+# disagreeing group falls back to per-bar spans. Every figure drawing it
+# must carry _CELL_ROWS_GLYPH_NOTE.
 _CELL_ROWS_GLYPH_NOTE = (
     "Capped horizontal spans across each subset-size group mark the "
-    "group's cell-matched reference value (black = PBE, grey = SCAN, "
-    "reduced over exactly the rows that group's cells scored); a group "
-    "whose cells disagree (a degraded eval) shows per-bar spans instead. "
-    "The dash-dot (PBE) / dotted (SCAN) lines are the pooled-set "
-    "reductions.")
+    "group's cell-slice reference value (black = PBE, grey = SCAN, "
+    "reduced over the cell's full test slice -- every slice reaction "
+    "with a finite comparator leg, independent of NN convergence); a "
+    "group whose cells disagree (a degraded comparator) shows per-bar "
+    "spans instead. Starred bars: the NN scored fewer reactions than "
+    "the slice (named in the note band). The dash-dot (PBE) / dotted "
+    "(SCAN) lines are the pooled-set reductions.")
 
-# A subset-size group's cells score the same test slice, so their
-# cell-matched anchors agree to fp summation noise (~1e-15 relative); a
-# genuinely different row set (a degraded eval's cell) moves the anchor by
-# >= 1e-3 relative. 1e-6 separates the two regimes by three decades each
-# way.
+# A subset-size group's cells share one test slice, and the comparator
+# anchors reduce that slice independent of NN convergence, so present
+# cells agree to fp summation noise (~1e-15 relative); a genuinely
+# different slice (a degraded comparator leg: a NaN or drifted E_pbe)
+# moves the anchor by >= 1e-3 relative. 1e-6 separates the two regimes
+# by three decades each way.
 _GROUP_ANCHOR_REL_TOL = 1e-6
 
 
@@ -1338,7 +1356,7 @@ def _group_span_points(by_cell: Optional[Dict[Tuple[str, int], float]],
 def _cell_anchor_note(by_cell: Optional[Dict[Tuple[str, int], float]],
                       unit: str = "kcal/mol", glyphs: bool = True) -> str:
     """Disclosure line for panels whose beats marks are judged against
-    cell-matched anchors: names the convention, the PBE anchors' range, and
+    cell-slice anchors: names the convention, the PBE anchors' range, and
     -- on figures that actually draw the capped spans -- the mark's key.
     ``glyphs=False`` is for the ED line/scatter figures, whose verdicts are
     cell-matched but which draw no bars: they point at the CSV columns
@@ -1348,12 +1366,12 @@ def _cell_anchor_note(by_cell: Optional[Dict[Tuple[str, int], float]],
     if not vals:
         return ""
     head = ("beats marks: each bar against its own-rung reference's "
-            "cell-matched anchor (PBE for GGA architectures, SCAN for "
+            "cell-slice anchor (PBE for GGA architectures, SCAN for "
             "meta-GGA/rung-3.5; PBE anchors "
             f"{min(vals):.3g}-{max(vals):.3g} {unit}). ")
     if glyphs:
         return head + _CELL_ROWS_GLYPH_NOTE
-    return (head + "Cell-matched anchor values are recorded in the CSV "
+    return (head + "Cell-slice anchor values are recorded in the CSV "
             "(ED_pbe_cell/ED_scan_cell columns); the dashed/dotted lines "
             "are the pooled-set reductions.")
 
@@ -2909,7 +2927,10 @@ def plot_parity_errbars_by_subset(rows: List[Dict[str, Any]], out_path: Path,
             for a in archs:
                 for pool in pools:
                     cell = [r for r in rows if r.get("subset_size") == s
-                            and r.get("arch") == a and r.get("pool") == pool]
+                            and r.get("arch") == a and r.get("pool") == pool
+                            # x=mean(ref) and y=mean(de_nn) must average the
+                            # SAME rows; NN-NaN slice rows stay out of both
+                            and _is_num(r.get("de_nn_kcalmol"))]
                     refs = [r["ref_kcalmol"] for r in cell if _is_num(r.get("ref_kcalmol"))]
                     des = [r["de_nn_kcalmol"] for r in cell if _is_num(r.get("de_nn_kcalmol"))]
                     maes = [r["abs_error_nn_kcalmol"] for r in cell
@@ -3123,11 +3144,13 @@ def wtmad2_by_arch_subset(rows: List[Dict[str, Any]], scale: float = _GMTKN55_SC
 def wtmad2_pbe_by_arch_subset(rows: List[Dict[str, Any]],
                               scale: float = _GMTKN55_SCALE
                               ) -> Dict[Tuple[str, int], float]:
-    """Per-cell PBE 2-subset WTMAD-2 over EXACTLY the reactions that cell
-    scored -- the like-for-like anchor for beats-PBE verdicts. Cells score
-    training-subset-dependent reaction subsets (their own trained reactions
-    are excluded), so the pooled-union anchor over- or under-states PBE on a
-    given cell's set; the verdict must compare same-set reductions."""
+    """Per-cell PBE 2-subset WTMAD-2 over the cell's FULL TEST SLICE (every
+    slice reaction with a finite PBE leg, independent of NN convergence) --
+    the anchor for beats-PBE verdicts. Cells score training-subset-dependent
+    slices (their own trained reactions are excluded), so the pooled-union
+    anchor over- or under-states PBE on a given cell's slice; and a
+    reference reduction never follows a single arch's NN-scored subset --
+    an NN SCF failure must not move the reference."""
     out: Dict[Tuple[str, int], float] = {}
     by_cell: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
     for r in rows:
@@ -3144,8 +3167,9 @@ def wtmad2_pbe_by_arch_subset(rows: List[Dict[str, Any]],
 
 def pbe_reaction_mae_by_cell(rows: List[Dict[str, Any]]
                              ) -> Dict[Tuple[str, int], float]:
-    """Per-cell PBE reaction MAE over exactly that cell's scored reactions
-    (name-dedup) -- the MAE-leg twin of :func:`wtmad2_pbe_by_arch_subset`."""
+    """Per-cell PBE reaction MAE over that cell's full test slice
+    (name-dedup; finite PBE legs, independent of NN convergence) -- the
+    MAE-leg twin of :func:`wtmad2_pbe_by_arch_subset`."""
     return reaction_mae_by_arch_subset(rows, key="abs_error_pbe_kcalmol")
 
 
@@ -3282,11 +3306,12 @@ def wtmad2_scan_by_cell(rows: List[Dict[str, Any]],
                         scan_errors: Optional[Dict[str, float]],
                         scale: float = _GMTKN55_SCALE
                         ) -> Dict[Tuple[str, int], float]:
-    """Per-cell SCAN 2-subset WTMAD-2 over exactly the reactions that cell
-    scored, coverage-gated PER CELL at :data:`_SCAN_COVERAGE_FLOOR` -- the
-    SCAN twin of :func:`wtmad2_pbe_by_arch_subset`. Cells whose surviving
-    rows the cache covers too thinly are absent (their marks are withdrawn;
-    the pooled comparator lines remain for scale only)."""
+    """Per-cell SCAN 2-subset WTMAD-2 over the cell's full test slice,
+    coverage-gated PER CELL at :data:`_SCAN_COVERAGE_FLOOR` (the floor now
+    measures the cache's coverage of the slice) -- the SCAN twin of
+    :func:`wtmad2_pbe_by_arch_subset`. Cells whose slice the cache covers
+    too thinly are absent (their marks are withdrawn; the pooled comparator
+    lines remain for scale only)."""
     out: Dict[Tuple[str, int], float] = {}
     by_cell: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
     for r in rows:
@@ -3304,7 +3329,7 @@ def wtmad2_scan_by_cell(rows: List[Dict[str, Any]],
 def scan_reaction_mae_by_cell(rows: List[Dict[str, Any]],
                               scan_errors: Optional[Dict[str, float]]
                               ) -> Dict[Tuple[str, int], float]:
-    """Per-cell SCAN reaction MAE over exactly the cell's scored reactions,
+    """Per-cell SCAN reaction MAE over the cell's full test slice,
     coverage-gated per cell -- the MAE-leg twin of
     :func:`wtmad2_scan_by_cell`."""
     out: Dict[Tuple[str, int], float] = {}
@@ -3329,15 +3354,18 @@ def scan_density_by_cell(hd_rows: List[Dict[str, Any]],
                          _pbe_mol: Optional[Dict[str, float]] = None
                          ) -> Dict[Tuple[str, int], float]:
     """Per-cell SCAN density anchor over exactly the species each cell's PBE
-    density anchor averages (finite ``nn_key`` rows present in the PBE map),
-    coverage-gated per cell via :func:`scan_density_line` -- the SCAN twin
-    of :func:`pbe_density_by_cell`."""
+    density anchor averages (the comparator species set -- membership in the
+    PBE map, independent of the NN leg), coverage-gated per cell via
+    :func:`scan_density_line` -- the SCAN twin of
+    :func:`pbe_density_by_cell`. ``nn_key`` is kept for call-site symmetry
+    but no longer keys the set."""
+    del nn_key  # comparator coverage is NN-independent
     pbe_mol = (_pbe_mol if _pbe_mol is not None
                else _pbe_density_map(hd_rows, pbe_table, key=pbe_key))
     by_cell: Dict[Tuple[str, int], set] = {}
     for r in hd_rows:
         a, s = r.get("arch"), r.get("subset_size")
-        if a is None or s is None or not _is_num(r.get(nn_key)):
+        if a is None or s is None:
             continue
         m = r.get("molecule")
         if m in pbe_mol:
@@ -3661,20 +3689,26 @@ def pbe_density_by_cell(hd_rows: List[Dict[str, Any]],
                         pbe_key: str = "density_rmse_pbe",
                         _pbe_mol: Optional[Dict[str, float]] = None
                         ) -> Dict[Tuple[str, int], float]:
-    """Per-cell PBE density anchor over exactly the species that cell's NN
-    density mean averages (finite ``nn_key`` rows), from the same
-    per-molecule PBE map as the pooled anchor -- the density leg of the
-    cell-matched beats-PBE verdict. ``_pbe_mol`` injects a prebuilt
-    per-molecule map (the 3x3's channel-filtered map) so channel views reuse
-    exactly the map their pooled anchor averaged."""
+    """Per-cell PBE density anchor over the cell's comparator species set --
+    every held-out species present in the per-molecule PBE map, independent
+    of the NN density leg (the PBE column is model-free, so an NN-failed
+    species still belongs to the slice) -- from the same per-molecule PBE
+    map as the pooled anchor: the density leg of the cell-slice beats-PBE
+    verdict. ``nn_key`` is kept for call-site symmetry with the NN means but
+    no longer keys the set. ``_pbe_mol`` injects a prebuilt per-molecule map
+    (the 3x3's channel-filtered map) so channel views reuse exactly the map
+    their pooled anchor averaged."""
+    del nn_key  # comparator coverage is NN-independent
     pbe_mol = (_pbe_mol if _pbe_mol is not None
                else _pbe_density_map(hd_rows, pbe_table, key=pbe_key))
     by_cell: Dict[Tuple[str, int], set] = {}
     for r in hd_rows:
         a, s = r.get("arch"), r.get("subset_size")
-        if a is None or s is None or not _is_num(r.get(nn_key)):
+        if a is None or s is None:
             continue
-        by_cell.setdefault((a, s), set()).add(r.get("molecule"))
+        m = r.get("molecule")
+        if m in pbe_mol:
+            by_cell.setdefault((a, s), set()).add(m)
     out: Dict[Tuple[str, int], float] = {}
     for cell, mols in by_cell.items():
         # Sorted species order: np.mean over a hash-ordered set permutes the
@@ -3715,12 +3749,12 @@ def _cell_pbe_ed(cell: Tuple[str, int], gamma: float,
                  d_by_cell: Optional[Dict[Tuple[str, int], float]]
                  ) -> Tuple[Optional[float], Optional[float]]:
     """``(verdict anchor, ed_cell-or-None)`` for one cell of a reference
-    functional: the harmonic ED of the CELL-MATCHED legs under the summary's
+    functional: the harmonic ED of the CELL-SLICE legs under the summary's
     gamma when both are available and positive, else the pooled fallback
     (which may itself be None -- comparator withdrawn). Cells score
-    training-subset-dependent reaction/species subsets, so a verdict against
-    the pooled anchor misgrades cells whose own subset is easier or harder
-    for the reference than the union. Shared by the PBE and SCAN legs."""
+    training-subset-dependent slices, so a verdict against the pooled
+    anchor misgrades cells whose own slice is easier or harder for the
+    reference than the union. Shared by the PBE and SCAN legs."""
     if e_by_cell is None or d_by_cell is None:
         return ed_pooled, None
     e_c = e_by_cell.get(cell)
@@ -4079,6 +4113,57 @@ def _density_cell_coverage_warning(hd_rows: List[Dict[str, Any]],
             f"(n={len(union)}): {frag}.")
 
 
+def _incomplete_energy_cells(rows: List[Dict[str, Any]]
+                             ) -> Dict[Tuple[str, int],
+                                       Tuple[int, int, List[str]]]:
+    """``{(arch, subset_size): (n_scored, n_slice, missing_names)}`` for
+    cells whose NN-scored reaction names are a PROPER subset of the cell's
+    test slice (the finite-comparator rows). Per-cell, within-cell: energy
+    slices legitimately differ across subset sizes (each excludes its own
+    trained reactions), so no cross-cell union is implied -- unlike
+    :func:`_density_cell_coverage_warning`. Name-level sets: a name counts
+    as scored when any of its rows carries a finite NN leg, mirroring
+    :func:`_cell_counts`."""
+    slice_names: Dict[Tuple[str, int], set] = {}
+    nn_names: Dict[Tuple[str, int], set] = {}
+    for r in rows:
+        a, s, nm = r.get("arch"), r.get("subset_size"), r.get("name")
+        if a is None or s is None or nm is None:
+            continue
+        if _is_num(r.get("abs_error_pbe_kcalmol")):
+            slice_names.setdefault((a, s), set()).add(nm)
+        if _is_num(r.get("abs_error_nn_kcalmol")):
+            nn_names.setdefault((a, s), set()).add(nm)
+    out: Dict[Tuple[str, int], Tuple[int, int, List[str]]] = {}
+    for cell, sl in slice_names.items():
+        nn = nn_names.get(cell, set())
+        missing = sorted(str(m) for m in (sl - nn))
+        if missing:
+            out[cell] = (len(nn & sl), len(sl), missing)
+    return out
+
+
+def _energy_cell_coverage_warning(rows: List[Dict[str, Any]], *,
+                                  max_names: int = 6) -> str:
+    """'' when every cell's NN scored its whole test slice; otherwise names
+    each shortfall cell with scored/slice counts and the missing reaction
+    names (capped at ``max_names``). NN-side only by construction: a missing
+    COMPARATOR leg changes the slice itself, which the per-bar span fallback
+    and the cross-spec PBE consistency guard surface -- not this warning."""
+    bad = _incomplete_energy_cells(rows)
+    if not bad:
+        return ""
+    frags = []
+    for cell, (n_scored, n_slice, missing) in sorted(bad.items()):
+        shown = ", ".join(missing[:max_names])
+        if len(missing) > max_names:
+            shown += f" (+{len(missing) - max_names} more)"
+        frags.append(f"{_cell_tag(cell)} {n_scored}/{n_slice} "
+                     f"(missing: {shown})")
+    return ("incomplete hold-out eval (NN leg unscored on part of the "
+            "slice) -- " + "; ".join(frags) + ".")
+
+
 def _spearman(xs: Sequence[float], ys: Sequence[float]) -> float:
     """Spearman rank correlation via double argsort + Pearson on the ranks.
     NaN for n < 2, length mismatch, or a constant series; ties are not
@@ -4264,7 +4349,7 @@ _ED_CSV_FIELDS = ["leg", "arch", "subset_size", "n_reactions",
                   "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
                   "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol",
                   "beats_scan", "ED_pbe_cell_kcalmol",
-                  "ED_scan_cell_kcalmol"]
+                  "ED_scan_cell_kcalmol", "n_reactions_slice"]
 
 
 def _blank_if_none(x: Any) -> Any:
@@ -4276,17 +4361,24 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                           out_path: Path, *,
                           n_reactions: Dict[Tuple[str, int], int],
                           n_density: Dict[Tuple[str, int], int],
+                          n_reactions_slice: Optional[
+                              Dict[Tuple[str, int], int]] = None,
                           counts_by_leg: Optional[Dict[str, Tuple[
-                              Dict[Tuple[str, int], int],
-                              Dict[Tuple[str, int], int]]]] = None) -> Path:
+                              Dict[Tuple[str, int], int], ...]]] = None
+                          ) -> Path:
     """Per-cell ED table for the given energy legs, alongside the figure --
     the machine-readable source for a paper table. One row per (leg, cell),
     cells in ARCH_ORDER-then-subset order; None legs skipped.
+    ``n_reactions`` counts the cell's NN-scored deduped reactions;
+    ``n_reactions_slice`` the cell's full test slice (finite-comparator
+    rows) -- ``n_reactions < n_reactions_slice`` is the machine-readable
+    incomplete-eval condition behind the figures' starred bars.
     ``counts_by_leg`` optionally overrides the flat count maps per leg
     (the per-channel 3x3 CSV, where each channel counts only its own pool's
-    rows/species). The CSV path is NOT appended to the figure list returned
-    by ``build_density_energy_figures`` (that return contract stays
-    PNG-only)."""
+    rows/species); 2-tuples (older call shape) leave the slice column
+    blank, 3-tuples carry it. The CSV path is NOT appended to the figure
+    list returned by ``build_density_energy_figures`` (that return contract
+    stays PNG-only)."""
     order = {a: i for i, a in enumerate(ARCH_ORDER)}
     out_path = Path(out_path)
     with out_path.open("w", newline="") as fh:
@@ -4296,8 +4388,11 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
             if not summary:
                 continue
             nr, nd = n_reactions, n_density
+            ns = n_reactions_slice or {}
             if counts_by_leg and leg in counts_by_leg:
-                nr, nd = counts_by_leg[leg]
+                cl = counts_by_leg[leg]
+                nr, nd = cl[0], cl[1]
+                ns = cl[2] if len(cl) > 2 else {}
             cells = sorted(summary["cells"].items(),
                            key=lambda kv: (order.get(kv[0][0], len(order)),
                                            kv[0][0], kv[0][1]))
@@ -4323,6 +4418,7 @@ def write_combined_ed_csv(legs: Dict[str, Optional[Dict[str, Any]]],
                         c.get("ed_pbe_cell")),
                     "ED_scan_cell_kcalmol": _blank_if_none(
                         c.get("ed_scan_cell")),
+                    "n_reactions_slice": ns.get((arch, ss), ""),
                 })
     return out_path
 
@@ -4443,6 +4539,7 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                        reference_by_arch: Optional[Dict[str, str]] = None,
                        relocked_cells: Optional[set] = None,
                        mixed_cells: Optional[set] = None,
+                       incomplete_cells: Optional[set] = None,
                        vxc_pre_fix: bool = False) -> None:
     """Grouped per-(arch, subset_size) bar panel: one bar group per arch
     (rung-ordered by the caller), x = subset_size, PBE dashed / SCAN dotted
@@ -4452,18 +4549,22 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     ``scan_suffix`` qualifies a drawn-but-partially-covered SCAN line in its
     legend label (the ``", used/ref"`` convention).
 
-    ``pbe_by_cell`` supplies CELL-MATCHED PBE reductions (PBE over exactly
-    the reactions/species each cell scored): the beats-PBE marks are judged
-    bar-by-bar against the cell's own anchor, and ONE black capped
+    ``pbe_by_cell`` supplies CELL-SLICE PBE reductions (PBE over the cell's
+    full test slice -- every slice reaction/species with a finite
+    comparator leg, independent of NN convergence): the beats-PBE marks are
+    judged bar-by-bar against the cell's own anchor, and ONE black capped
     horizontal span per subset-size group -- spanning the group's bar
     cluster via :func:`_group_span_points`, per-bar only when the group's
     cells disagree -- shows the anchor while the dash-dot pooled line stays
-    for cross-cell scale. Cells score training-subset-dependent subsets, so
+    for cross-cell scale. Cells score training-subset-dependent slices, so
     the pooled line alone over- or under-states PBE on individual cells.
     ``scan_by_cell`` draws the SCAN twins as grey capped spans
     (coverage-gated per cell by the caller) and relabels the pooled dotted
-    line "SCAN (pooled)". Shared by ``plot_energy_wtmad_mae`` and the
-    overview composites."""
+    line "SCAN (pooled)". Bars whose cell is in ``incomplete_cells`` (the
+    NN scored fewer reactions than the cell's slice) carry a star above the
+    bar -- a disclosure of the incomplete hold-out eval, not a grading
+    change: the spans and beats anchors are slice reductions regardless.
+    Shared by ``plot_energy_wtmad_mae`` and the overview composites."""
     bw = 0.8 / max(1, len(archs))
     beat_x: List[float] = []
     beat_h: List[float] = []
@@ -4472,10 +4573,13 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     # interpretable). Empty/None on every run without a mid-run swap.
     relocked = relocked_cells or set()
     mixed = mixed_cells or set()
+    incomplete = incomplete_cells or set()
     relock_x: List[float] = []
     relock_h: List[float] = []
     mixed_x: List[float] = []
     mixed_h: List[float] = []
+    inc_x: List[float] = []
+    inc_h: List[float] = []
     for j, a in enumerate(archs):
         xs = [i + (j - (len(archs) - 1) / 2) * bw
               for i in range(len(subsets))]
@@ -4500,6 +4604,8 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                 relock_x.append(x); relock_h.append(h)
             elif (a, s) in mixed:
                 mixed_x.append(x); mixed_h.append(h)
+            if (a, s) in incomplete:
+                inc_x.append(x); inc_h.append(h)
         # beats marks: each bar against its own-rung reference (PBE for GGA
         # archs, SCAN for beyond-GGA ones when reference_by_arch is given).
         # With a cell-anchor map present, a cell absent from it stays
@@ -4533,6 +4639,15 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
         ax.scatter(mixed_x, mixed_h, marker="X", s=42, color="#d62728",
                    edgecolor="k", linewidths=0.4, zorder=7,
                    label="refs changed mid-training (not interpretable)")
+    # Incomplete-eval star: a text annotation, NOT a star scatter marker --
+    # the relocked-refs glyph above already owns marker="*".
+    for x, h in zip(inc_x, inc_h):
+        ax.annotate("*", (x, h), xytext=(0, 1.5),
+                    textcoords="offset points", ha="center", va="bottom",
+                    fontsize=10, color="k", zorder=8)
+    if inc_x:
+        ax.plot([], [], ls="", marker="$*$", color="k",
+                label="* incomplete hold-out eval (NN scored < cell slice)")
     if _is_num(pbe_line):
         ax.axhline(pbe_line, ls="-.", color="k", linewidth=1.0,
                    label=("PBE (pooled)" if tick_x else "PBE"))
@@ -4596,12 +4711,13 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
     cross-subset aggregation is invalid (the six subset models per arch are not
     comparable). The subset trend is the x-axis. WTMAD-2 here = 2-subset, NOT
     full GMTKN55. Green beats markers are judged against each architecture's
-    OWN-RUNG reference's cell-matched anchor (black capped spans for GGA
+    OWN-RUNG reference's cell-slice anchor (black capped spans for GGA
     archs' PBE anchors, grey spans for meta-GGA/rung-3.5's SCAN anchors;
     ``scan_errors`` supplies the per-reaction SCAN errors behind the grey
-    spans), and a dotted SCAN full-pool reference line is added to the MAE
-    panel when ``scan_baseline`` carries a finite combined MAE (absent SCAN
-    cache -> unchanged)."""
+    spans; bars whose NN scored fewer reactions than the cell's slice carry
+    the incomplete-eval star), and a dotted SCAN full-pool reference line is
+    added to the MAE panel when ``scan_baseline`` carries a finite combined
+    MAE (absent SCAN cache -> unchanged)."""
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -4613,6 +4729,7 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
         wt_cell_anchors = wtmad2_pbe_by_arch_subset(rows)
         mae_scan_anchors = scan_reaction_mae_by_cell(rows, scan_errors)
         wt_scan_anchors = wtmad2_scan_by_cell(rows, scan_errors)
+        inc_cells = set(_incomplete_energy_cells(rows))
         # Either panel drawing glyphs obliges the key: rows without pool
         # labels empty the WTMAD-2 anchors while the MAE anchors survive.
         anote = _cell_anchor_note(wt_cell_anchors or mae_cell_anchors)
@@ -4635,14 +4752,16 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
             scan_line=scan_c, scan_suffix=scan_sfx, vxc_pre_fix=vxc_pre,
             pbe_by_cell=mae_cell_anchors,
             scan_by_cell=(mae_scan_anchors or None),
-            reference_by_arch=arch_reference_kinds(archs))
+            reference_by_arch=arch_reference_kinds(archs),
+            incomplete_cells=inc_cells)
         _grouped_arch_bars(
             axes[0][1], wt, archs, subsets, pbe_line=pbe_wt,
             title="2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)",
             vxc_pre_fix=vxc_pre,
             pbe_by_cell=wt_cell_anchors,
             scan_by_cell=(wt_scan_anchors or None),
-            reference_by_arch=arch_reference_kinds(archs))
+            reference_by_arch=arch_reference_kinds(archs),
+            incomplete_cells=inc_cells)
         handles, labels = axes[0][0].get_legend_handles_labels()
         if labels:
             fig.legend(handles, labels, loc="lower center",
@@ -5424,6 +5543,8 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                                pbe_line=wtmad2_pbe_baseline(pr),
                                pbe_by_cell=wtmad2_pbe_by_arch_subset(pr),
                                reference_by_arch=arch_reference_kinds(archs),
+                               incomplete_cells=set(
+                                   _incomplete_energy_cells(pr)),
                                title=tag + " -- one-bucket reduction "
                                      "(scaled relative error)",
                                vxc_pre_fix=_run_predates_vxc_fix(run_id))
@@ -5431,6 +5552,8 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                            pbe_line=wtmad2_pbe_baseline(rows),
                            pbe_by_cell=wtmad2_pbe_by_arch_subset(rows),
                            reference_by_arch=arch_reference_kinds(archs),
+                           incomplete_cells=set(
+                               _incomplete_energy_cells(rows)),
                            title="(C) 2-subset WTMAD-2 (BH76+W4-11), "
                                  "per (arch, subset)",
                            vxc_pre_fix=_run_predates_vxc_fix(run_id))
@@ -5576,9 +5699,14 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
         chans = (("bh76", "BH76"), ("w411", "W4-11"),
                  ("combined", "combined"))
         letters = "ABCDEFGHI"
+        # Row-1 incomplete-eval star sets, per channel; row 3's ED bars
+        # reuse them (their energy leg is the incomplete one; the density
+        # row has complete coverage and its own union check).
+        inc_by_ch: Dict[str, set] = {}
         for j, (ch, lab) in enumerate(chans):
             pr = rows if ch == "combined" else [
                 r for r in rows if r.get("pool") == ch]
+            inc_by_ch[ch] = set(_incomplete_energy_cells(pr))
             ttl = (f"({letters[j]}) 2-subset WTMAD-2 (BH76+W4-11), "
                    "per (arch, subset)" if ch == "combined" else
                    f"({letters[j]}) WTMAD-2, {lab} only -- one-bucket "
@@ -5592,6 +5720,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                                subsets, pbe_line=wtmad2_pbe_baseline(pr),
                                pbe_by_cell=wtmad2_pbe_by_arch_subset(pr),
                                reference_by_arch=arch_reference_kinds(archs),
+                               incomplete_cells=inc_by_ch[ch],
                                scan_line=e_scan_ch,
                                scan_by_cell=wtmad2_scan_by_cell(pr,
                                                                 scan_errors),
@@ -5663,6 +5792,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                               and ed_pbe > 0.0 else None),
                     pbe_by_cell=(ed_cell_anchors or None),
                     reference_by_arch=arch_reference_kinds(archs),
+                    incomplete_cells=inc_by_ch.get(ch),
                     scan_line=(float(ed_scan) if _is_num(ed_scan)
                                and ed_scan > 0.0 else None),
                     scan_by_cell=(ed_scan_anchors or None),
@@ -7075,6 +7205,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     if _lockfix:
         print(f"  ({_lockfix})")
         note = f"{note}  {_lockfix}" if note else _lockfix
+    ecw = _energy_cell_coverage_warning(rows)
+    if ecw:
+        print(f"  ({ecw})")
+        note = f"{note}  {ecw}" if note else ecw
     try:
         baseline = pbe_pool_baseline(run_dir, eval_subdir=eval_subdir)
     except Exception as exc:
@@ -7263,7 +7397,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 dataset=ds))
             legs_main: Dict[str, Optional[Dict[str, Any]]] = {
                 "wtmad2": wt_summary, "mae": mae_summary}
-            counts_main: Dict[str, Tuple[Dict, Dict]] = {}
+            counts_main: Dict[str, Tuple[Dict, ...]] = {}
             # DFS-units ED legs: when the pulled data carries the Eq. 20 eps
             # columns, the SAME WTMAD-2 energy cells are re-scored with
             # D = per-cell mean eps and gamma = the Letter's published
@@ -7303,7 +7437,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     print(f"  (DFS-units ED eps cells: {cw_eps})")
                     eps_extra.append(f"Eps cells: {cw_eps}")
                 eps_counts = (_cell_counts(rows, "abs_error_nn_kcalmol"),
-                              _cell_counts(hd_rows, "density_eps_l1"))
+                              _cell_counts(hd_rows, "density_eps_l1"),
+                              _cell_counts(rows, "abs_error_pbe_kcalmol"))
                 # SCAN comparator legs for the DFS-units summaries: the SAME
                 # coverage-gated WTMAD-2 energy leg as the RMSE-channel
                 # headline, and the density leg re-anchored on the Eq. 20
@@ -7504,7 +7639,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                           "channel (DFS units) -- held-out, NN vs PBE"))
                 pools_of_eps = _species_pools(rows)
                 legs3_eps: Dict[str, Optional[Dict[str, Any]]] = {}
-                counts3_eps: Dict[str, Tuple[Dict, Dict]] = {}
+                counts3_eps: Dict[str, Tuple[Dict, ...]] = {}
                 for ch in ch_eps_dfs:
                     ch_rows_ = rows if ch == "combined" else [
                         r for r in rows if r.get("pool") == ch]
@@ -7513,7 +7648,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                         if ch in pools_of_eps.get(r.get("molecule"), ())]
                     ch_counts = (
                         _cell_counts(ch_rows_, "abs_error_nn_kcalmol"),
-                        _cell_counts(ch_hd_, "density_eps_l1"))
+                        _cell_counts(ch_hd_, "density_eps_l1"),
+                        _cell_counts(ch_rows_, "abs_error_pbe_kcalmol"))
                     legs3_eps[f"{ch}_wtmad2_eps_gamma_dfs"] = ch_eps_dfs[ch]
                     counts3_eps[f"{ch}_wtmad2_eps_gamma_dfs"] = ch_counts
                     if ch_eps_fit is not None:
@@ -7537,6 +7673,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 outdir / "ablation_combined_energy_density.csv",
                 n_reactions=_cell_counts(rows, "abs_error_nn_kcalmol"),
                 n_density=_cell_counts(hd_rows, "density_rmse"),
+                n_reactions_slice=_cell_counts(rows,
+                                               "abs_error_pbe_kcalmol"),
                 counts_by_leg=counts_main or None)
             gtxt = f"gamma_wt = {wt_summary['gamma']:.4g}"
             if mae_summary:
@@ -7581,7 +7719,7 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
             scan_errors=scan_errs))
         pools_of = _species_pools(rows)
         legs3: Dict[str, Optional[Dict[str, Any]]] = {}
-        counts3: Dict[str, Tuple[Dict, Dict]] = {}
+        counts3: Dict[str, Tuple[Dict, ...]] = {}
         for ch, s in ch_summaries.items():
             leg = f"{ch}_wtmad2"
             legs3[leg] = s
@@ -7591,7 +7729,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 r for r in hd_rows
                 if ch in pools_of.get(r.get("molecule"), ())]
             counts3[leg] = (_cell_counts(ch_rows, "abs_error_nn_kcalmol"),
-                            _cell_counts(ch_hd, "density_rmse"))
+                            _cell_counts(ch_hd, "density_rmse"),
+                            _cell_counts(ch_rows, "abs_error_pbe_kcalmol"))
         csv3 = write_combined_ed_csv(
             legs3, outdir / "ablation_density_energy_3x3.csv",
             n_reactions={}, n_density={}, counts_by_leg=counts3)
@@ -7626,6 +7765,10 @@ def build_per_run_diagnostics(run_dir: Path, outdir: Path,
     run_id = f"{run_dir.name} · {_ckpt_label(eval_subdir)}"
     note = coverage_note(run_dir, eval_subdir=eval_subdir)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
+    ecw = _energy_cell_coverage_warning(rows)
+    if ecw:
+        print(f"  ({ecw})")
+        note = f"{note}  {ecw}" if note else ecw
     written: List[Path] = []
     # Capacity ladder at the smallest available subset_size: added capacity
     # steepens the per-atom (size-consistency) error, clearest at small ss.
@@ -7678,6 +7821,10 @@ def build_all(run_dir: Path, outdir: Path,
     n_holdout = len({r["idx"] for r in reaction_rows})
     note = coverage_note(run_dir, eval_subdir=eval_subdir)
     print(f"  coverage: {note}")
+    ecw = _energy_cell_coverage_warning(reaction_rows)
+    if ecw:
+        print(f"  ({ecw})")
+        note = f"{note}  {ecw}" if note else ecw
 
     # Live, non-hardcoded footers (degrade to "n/a" if the pool can't be loaded).
     try:

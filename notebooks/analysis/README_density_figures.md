@@ -194,6 +194,7 @@ plotting-only script).
 | Black dashed horizontal line | PBE baseline of that panel's metric (energy panels; ED panels) |
 | Grey dashed line | PBE-vs-CCSD DENSITY baseline (pool-mean line in held-out density; per-subset line in in-sample density) |
 | Green triangle-down | "beats PBE": the value sits strictly below that panel's PBE line (`_beats_pbe_marks`, :419) |
+| Black `*` above a bar | Incomplete hold-out eval: the NN scored fewer reactions than the cell's test slice (its own SCF failures); the red note band names the cell with scored/slice counts and the missing reactions. The comparator spans and beats anchors reduce the full slice regardless, so the star is a disclosure, not a grading change |
 | Grey `x` marker | PBE value (per molecule in strips; the PBE point in the ED decomposition) |
 | `n=...` annotations | Number of species behind that mean point |
 | Italic line under the title | The panel-family caveat (what the metric is and is not) |
@@ -263,7 +264,7 @@ slope rather than `E_pbe/D_pbe`, and `ED_pbe_kcalmol` generally differs from
 | `leg` | Energy leg: `wtmad2` (headline), `mae`, or -- eps columns present -- `wtmad2_eps_gamma_dfs` / `wtmad2_eps_gamma_fit` |
 | `arch` | Architecture (ARCH_ORDER-sorted within each leg) |
 | `subset_size` | Training subset size of the cell |
-| `n_reactions` | Finite-NN reactions in the cell behind E, name-deduplicated (matching the deduped cell metrics; the pool's four duplicate-name entries count once) |
+| `n_reactions` | Finite-NN reactions in the cell behind E, name-deduplicated (matching the deduped cell metrics; the pool's four duplicate-name entries count once). `n_reactions < n_reactions_slice` is the machine-readable incomplete-eval condition behind the figures' starred bars |
 | `n_density_species` | Finite-NN density rows in the cell behind D (counted on the leg's own channel: RMSE rows, or eps rows on the DFS-units legs) |
 | `E_kcalmol` | Cell energy error (2-subset WTMAD-2 or combined reaction MAE) |
 | `D_rmse` | Cell mean held-out density error vs CCSD: grid-weighted RMSE on the self-calibrated legs, per-electron L1 eps on the DFS-units legs |
@@ -273,26 +274,32 @@ slope rather than `E_pbe/D_pbe`, and `ED_pbe_kcalmol` generally differs from
 | `E_pbe_kcalmol` | Pooled PBE energy anchor (name-dedup) |
 | `D_pbe_rmse` | Pooled PBE density anchor (molecule-dedup, finite rows only; eps units on the DFS-units legs) |
 | `ED_pbe_kcalmol` | PBE's ED; equals `E_pbe_kcalmol` by construction on the self-calibrated legs, generally differs on the DFS-units legs |
-| `beats_pbe` | `True` iff `ED_kcalmol < ED_pbe_cell_kcalmol` when the cell-matched anchor resolves, else `< ED_pbe_kcalmol` (pooled fallback) |
+| `beats_pbe` | `True` iff `ED_kcalmol < ED_pbe_cell_kcalmol` when the cell-slice anchor resolves, else `< ED_pbe_kcalmol` (pooled fallback) |
 | `E_scan_kcalmol` | SCAN energy comparator on the leg's own reduction (WTMAD-2 or MAE), over the same PBE-computable deduped reactions; blank when the SCAN energy cache is absent or under the 90% coverage floor |
 | `D_scan_rmse` | SCAN density comparator over the same species the PBE density anchor averages (eps units on the DFS-units legs); blank when the SCAN density cache is absent or under the floor |
 | `ED_scan_kcalmol` | SCAN's ED under the leg's gamma (harmonic of `E_scan_kcalmol` and `gamma * D_scan_rmse`); blank when either comparator leg is blank |
-| `beats_scan` | `True` iff `ED_kcalmol < ED_scan_cell_kcalmol` when the cell-matched SCAN anchor resolves, else `< ED_scan_kcalmol` (pooled fallback); blank when neither comparator resolves |
-| `ED_pbe_cell_kcalmol` | The cell-matched PBE anchor behind `beats_pbe`: the harmonic ED of PBE reduced over EXACTLY that cell's scored reactions (energy leg) and species (density leg), under the leg's gamma. Cells score training-subset-dependent subsets, so the pooled `ED_pbe_kcalmol` over- or under-states PBE on individual cells; blank when the cell anchor could not be built (verdict then falls back to the pooled anchor) |
-| `ED_scan_cell_kcalmol` | The SCAN twin of `ED_pbe_cell_kcalmol` (SCAN reduced over the cell's own reactions/species, coverage-gated per cell at 90%); on the current data the pooled SCAN understates SCAN on every cell's surviving set, so pooled-only `beats_scan` verdicts were flattering the cells |
+| `beats_scan` | `True` iff `ED_kcalmol < ED_scan_cell_kcalmol` when the cell-slice SCAN anchor resolves, else `< ED_scan_kcalmol` (pooled fallback); blank when neither comparator resolves |
+| `ED_pbe_cell_kcalmol` | The cell-slice PBE anchor behind `beats_pbe`: the harmonic ED of PBE reduced over that cell's FULL test slice -- every slice reaction with a finite PBE leg (energy) and every comparator-mapped species (density), independent of NN convergence -- under the leg's gamma. Cells score training-subset-dependent slices, so the pooled `ED_pbe_kcalmol` over- or under-states PBE on individual cells; a reference reduction never follows a single arch's NN-scored subset, matching the cluster `test_set.csv` convention (`mae_pbe` over the finite-PBE set). Blank when the cell anchor could not be built (verdict then falls back to the pooled anchor) |
+| `ED_scan_cell_kcalmol` | The SCAN twin of `ED_pbe_cell_kcalmol` (SCAN reduced over the cell's slice, coverage-gated per cell at 90%); on the current data the pooled SCAN understates SCAN on every cell's slice, so pooled-only `beats_scan` verdicts were flattering the cells |
+| `n_reactions_slice` | The cell's full test slice size: finite-PBE reactions after the verbatim/validation exclusions, name-deduplicated. Equals `n_reactions` for a complete eval; larger exactly when the NN failed part of the slice (the starred bars). Blank on rows written by older 2-tuple per-leg counts |
 
 The four SCAN columns are blank (empty string) whenever the comparator is withdrawn, so
 older pulls and cache-free renders produce the same rows as before with empty tails.
 
-On panels carrying cell-matched anchors, short black ticks are PBE over each cell's own
-scored set and short grey ticks the SCAN twin (per-cell coverage-gated); the dashed and
-dotted lines are the pooled reductions, relabeled "PBE (pooled)" / "SCAN (pooled)" when
-ticks are present. The green beats marker is judged against each architecture's OWN-RUNG
-reference tick: PBE for GGA architectures, SCAN for meta-GGA and rung-3.5 (the rung-3.5
-families have no same-rung nonempirical reference -- nonlocal DM information but no tau --
-and are held to SCAN, the conservative assignment). A cell whose reference tick is
-withdrawn (SCAN coverage under the per-cell floor) stays unmarked; the CSVs keep BOTH
-verdicts (`beats_pbe`, `beats_scan`) regardless of which one the marker shows.
+On panels carrying cell-slice anchors, capped black spans are PBE over each cell's full
+test slice and grey spans the SCAN twin (per-cell coverage-gated): one span per
+subset-size group when its cells agree (they share one slice, so agreement to fp noise
+is the healthy state), per-bar spans when a cell's COMPARATOR data genuinely diverged (a
+degraded eval). The dash-dot and dotted lines are the pooled reductions, relabeled
+"PBE (pooled)" / "SCAN (pooled)" when spans are present. Slice reductions are
+independent of NN convergence -- a bar whose NN failed part of its slice carries the
+incomplete-eval star instead of moving the reference. The green beats marker is judged
+against each architecture's OWN-RUNG reference anchor: PBE for GGA architectures, SCAN
+for meta-GGA and rung-3.5 (the rung-3.5 families have no same-rung nonempirical
+reference -- nonlocal DM information but no tau -- and are held to SCAN, the
+conservative assignment). A cell whose reference anchor is withdrawn (SCAN coverage
+under the per-cell floor) stays unmarked; the CSVs keep BOTH verdicts (`beats_pbe`,
+`beats_scan`) regardless of which one the marker shows.
 
 **Verbatim hold-out (energy rows):** each spec's test slice is RECONSTRUCTED from its
 per-species energies (`E_total_nn`/`E_pbe` in `per_molecule.json`) over the canonical
@@ -301,9 +308,14 @@ pool with the cluster's own reaction math, excluding -- by canonical reaction id
 classes) -- exactly the spec's VERBATIM supervised reactions (its AE-as-reaction points'
 `w411_*_atomization` twins; its trained barrier reactions) and the recorded validation
 slice. A reaction merely containing a trained molecule is a generalization target and
-STAYS. Per-run reconstruction counts are printed; pulls whose `per_molecule.json`
-predates the energy columns fall back to the cluster-written rows under the previous
-species-level repairs. DENSITY rows keep the species-level rule -- a trained molecule's
+STAYS. Rows require a finite COMPARATOR (PBE) leg only: reactions the NN failed to
+score are kept with NaN NN columns, so every per-cell comparator reduction covers the
+cell's full slice regardless of NN convergence -- the same accounting the cluster's own
+`test_set.csv` uses (`mae_pbe` over the finite-PBE set, `n_reactions` counting the
+NN-scored rows, drops disclosed). Per-run reconstruction counts are printed (the
+NaN-drop count now split into comparator-leg drops and NN-NaN rows kept); pulls whose
+`per_molecule.json` predates the energy columns fall back to the cluster-written rows
+under the previous species-level repairs (those rows always carried NaN NN legs). DENSITY rows keep the species-level rule -- a trained molecule's
 density is itself a training target -- and species whose model-free PBE density
 reference disagrees across specs beyond 5% (the c2 reference-drift class) leave the
 density rows entirely, so no density anchor can drift with pull coverage. See

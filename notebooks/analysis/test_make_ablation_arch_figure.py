@@ -830,6 +830,275 @@ def test_reconstructed_rows_verbatim_holdout(tmp_path, monkeypatch, capsys):
     assert "verbatim" in out and "validation" in out
 
 
+_NAN_RECON_E_NN = dict(_RECON_E_NN, o3=-225.10)
+_NAN_RECON_E_PBE = {k: v + 0.001 for k, v in _NAN_RECON_E_NN.items()}
+
+
+def _make_nan_recon_run(root, *, drop_pbe_too: bool = False):
+    """Two-spec reconstruction run isolating NN-leg failures from the
+    comparator: spec_0000 (deep) carries every species' energies; spec_0001
+    (deep_attn) lacks o3's E_total_nn (and, with ``drop_pbe_too``, its E_pbe
+    as well -- the comparator-degradation variant). Trained: the CHN
+    atomization; validation slice: the co2 atomization; so each cell's test
+    slice is {hnc atomization, hcn->hcnts barrier, o3 atomization}."""
+    run = root / "recon/polarized/runs" / _STAMP
+    run.mkdir(parents=True)
+    manifest = {"n_specs": 2, "width": 4, "specs": [
+        {"index": 0, "spec_file": "spec_0000.spec", "sha256": "x" * 64,
+         "cell": {"arch": "deep", "subset_size": 2}},
+        {"index": 1, "spec_file": "spec_0001.spec", "sha256": "y" * 64,
+         "cell": {"arch": "deep_attn", "subset_size": 2}}]}
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    (run / "validation").mkdir()
+    (run / "validation" / "val_reactions.json").write_text(json.dumps([
+        {"name": "w411_co2_atomization", "reactants": ["co2"],
+         "products": ["c", "o"], "coeffs": [-1.0, 1.0, 2.0],
+         "reaction_energy_ref": 390.0}]))
+    meta = {"molecules": ["CHN", "h", "c", "n"],
+            "loss_kwargs": {"bh76_reactions": [
+                {"name": "CHN", "reactants": ["CHN"],
+                 "products": ["C", "H", "N"],
+                 "coeffs": [-1.0, 1.0, 1.0, 1.0]}]}}
+    for idx, nn_skip in ((0, set()), (1, {"o3"})):
+        sd = run / "checkpoints" / f"spec_{idx:04d}"
+        (sd / "eval_holdout").mkdir(parents=True)
+        (sd / "train_metadata.json").write_text(json.dumps(meta))
+        pm = []
+        for m in _NAN_RECON_E_NN:
+            e_nn = None if m in nn_skip else _NAN_RECON_E_NN[m]
+            e_pbe = (None if (m in nn_skip and drop_pbe_too)
+                     else _NAN_RECON_E_PBE[m])
+            pm.append({"molecule": m, "E_total_nn": e_nn, "E_pbe": e_pbe})
+        (sd / "eval_holdout" / "per_molecule.json").write_text(json.dumps(pm))
+    return run
+
+
+def _nan_recon_rows(tmp_path, monkeypatch, **kw):
+    run = _make_nan_recon_run(tmp_path, **kw)
+    monkeypatch.setattr(fig, "_canonical_pool",
+                        lambda: (dict(_RECON_POOL_SPECS),
+                                 list(_RECON_POOL_RXNS)))
+    return fig.collect_holdout_reaction_rows(run)
+
+
+def test_reconstruct_keeps_comparator_leg_on_nn_nan(tmp_path, monkeypatch,
+                                                    capsys):
+    # An NN SCF failure must not shrink the cell's comparator row set: the
+    # o3 row survives with a finite PBE leg and NaN NN columns.
+    rows = _nan_recon_rows(tmp_path, monkeypatch)
+    attn = {r["name"]: r for r in rows if r["arch"] == "deep_attn"}
+    assert sorted(attn) == ["bh76_hcn_to_hcnts", "w411_hnc_atomization",
+                            "w411_o3_atomization"]
+    o3 = attn["w411_o3_atomization"]
+    assert fig._is_num(o3["abs_error_pbe_kcalmol"])
+    assert math.isnan(o3["de_nn_kcalmol"])
+    assert math.isnan(o3["abs_error_nn_kcalmol"])
+    out = capsys.readouterr().out
+    assert "NN-NaN" in out and "verbatim" in out and "validation" in out
+
+
+def test_comparator_anchor_invariant_to_nn_coverage(tmp_path, monkeypatch):
+    # Both cells share one test slice; the deep_attn NN failing o3 must not
+    # move the cell's PBE anchor off the group's shared value.
+    rows = _nan_recon_rows(tmp_path, monkeypatch)
+    mae = fig.pbe_reaction_mae_by_cell(rows)
+    assert mae[("deep", 2)] == mae[("deep_attn", 2)]
+    wt = fig.wtmad2_pbe_by_arch_subset(rows)
+    assert wt[("deep", 2)] == wt[("deep_attn", 2)]
+
+
+def test_nn_metrics_exclude_nan_rows(tmp_path, monkeypatch):
+    rows = _nan_recon_rows(tmp_path, monkeypatch)
+    mae = fig.reaction_mae_by_arch_subset(rows)
+    de_ts = (_NAN_RECON_E_NN["hnc"] - _NAN_RECON_E_NN["hcn"]) * _KCAL
+    de_hnc = ((_NAN_RECON_E_NN["h"] + _NAN_RECON_E_NN["c"]
+               + _NAN_RECON_E_NN["n"] - _NAN_RECON_E_NN["hnc"]) * _KCAL)
+    expect = (abs(de_ts - 15.0) + abs(de_hnc - 298.7)) / 2.0
+    assert mae[("deep_attn", 2)] == pytest.approx(expect)
+
+
+def test_group_span_single_after_nn_nan(tmp_path, monkeypatch):
+    rows = _nan_recon_rows(tmp_path, monkeypatch)
+    anchors = fig.pbe_reaction_mae_by_cell(rows)
+    xs, ys, hw = fig._group_span_points(anchors, ["deep", "deep_attn"],
+                                        [2], 0.4)
+    assert len(xs) == 1
+    assert ys[0] == anchors[("deep", 2)]
+
+
+def test_energy_cell_coverage_warning_names_cell(tmp_path, monkeypatch):
+    rows = _nan_recon_rows(tmp_path, monkeypatch)
+    w = fig._energy_cell_coverage_warning(rows)
+    assert "incomplete hold-out eval" in w
+    assert "deep_attn/ss2" in w and "2/3" in w
+    assert "w411_o3_atomization" in w
+    clean = [r for r in rows if r["arch"] == "deep"]
+    assert fig._energy_cell_coverage_warning(clean) == ""
+
+
+def test_span_fallback_fires_on_comparator_divergence(tmp_path, monkeypatch):
+    # A missing COMPARATOR leg is a genuinely different slice: the group
+    # splits into per-bar spans (the degraded-comparator detector), and the
+    # NN-coverage warning stays silent -- each NN scored its own full slice.
+    rows = _nan_recon_rows(tmp_path, monkeypatch, drop_pbe_too=True)
+    anchors = fig.pbe_reaction_mae_by_cell(rows)
+    assert anchors[("deep", 2)] != anchors[("deep_attn", 2)]
+    xs, ys, hw = fig._group_span_points(anchors, ["deep", "deep_attn"],
+                                        [2], 0.4)
+    assert len(xs) == 2
+    assert fig._energy_cell_coverage_warning(rows) == ""
+
+
+def test_grouped_bars_star_marks_incomplete_cells(tmp_path):
+    import matplotlib.pyplot as plt
+    metric = {("a1", 2): 5.0}
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, metric, ["a1"], [2],
+                               pbe_line=8.0, title="t",
+                               pbe_by_cell={("a1", 2): 6.5},
+                               incomplete_cells={("a1", 2)})
+        assert any(t.get_text() == "*" for t in ax.texts)
+        labels = {ln.get_label() for ln in ax.lines}
+        assert any(l.startswith("* incomplete hold-out eval") for l in labels)
+        # the beats verdict is NOT withheld: bar 5.0 < slice anchor 6.5
+        marks = {c.get_label() for c in ax.collections}
+        assert "beats PBE" in marks
+    finally:
+        plt.close(f)
+    f2, ax2 = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax2, metric, ["a1"], [2],
+                               pbe_line=8.0, title="t",
+                               pbe_by_cell={("a1", 2): 6.5})
+        assert not any(t.get_text() == "*" for t in ax2.texts)
+    finally:
+        plt.close(f2)
+
+
+def test_ed_csv_carries_slice_count_column(tmp_path):
+    summary = {"gamma": 1000.0, "e_pbe": 8.0, "d_pbe": 2e-4, "ed_pbe": 8.0,
+               "cells": {("deep", 1): {"E": 5.0, "D": 2e-4, "gammaD": 0.2,
+                                       "ED": 4.0, "beats_pbe": False}}}
+    out = fig.write_combined_ed_csv(
+        {"wtmad2": summary}, tmp_path / "ed.csv",
+        n_reactions={("deep", 1): 10}, n_density={("deep", 1): 5},
+        n_reactions_slice={("deep", 1): 12})
+    import csv as _csv
+    row = next(_csv.DictReader(out.open()))
+    assert row["n_reactions"] == "10"
+    assert row["n_reactions_slice"] == "12"
+    # 2-tuple counts_by_leg (older call shape) still accepted: blank column
+    out2 = fig.write_combined_ed_csv(
+        {"wtmad2": summary}, tmp_path / "ed2.csv",
+        n_reactions={}, n_density={},
+        counts_by_leg={"wtmad2": ({("deep", 1): 7}, {("deep", 1): 3})})
+    row2 = next(_csv.DictReader(out2.open()))
+    assert row2["n_reactions"] == "7"
+    assert row2["n_reactions_slice"] == ""
+    # 3-tuple counts_by_leg carries the per-leg slice count
+    out3 = fig.write_combined_ed_csv(
+        {"wtmad2": summary}, tmp_path / "ed3.csv",
+        n_reactions={}, n_density={},
+        counts_by_leg={"wtmad2": ({("deep", 1): 7}, {("deep", 1): 3},
+                                  {("deep", 1): 9})})
+    row3 = next(_csv.DictReader(out3.open()))
+    assert row3["n_reactions_slice"] == "9"
+
+
+def test_pbe_density_by_cell_keys_on_comparator_slice():
+    # A species whose NN density leg failed still belongs to the cell's
+    # comparator set (the PBE column is model-free).
+    hd = [
+        {"arch": "a", "subset_size": 1, "molecule": "m1",
+         "density_rmse": 1e-4, "density_rmse_pbe": 2e-4},
+        {"arch": "a", "subset_size": 1, "molecule": "m2",
+         "density_rmse": None, "density_rmse_pbe": 4e-4},
+    ]
+    out = fig.pbe_density_by_cell(hd)
+    assert out[("a", 1)] == pytest.approx(3e-4)
+
+
+def test_parity_errbars_pair_ref_with_scored_rows(tmp_path, monkeypatch):
+    # The subset-aggregate parity point averages ref and de_nn over the SAME
+    # rows: an NN-NaN row (huge ref) must not enter the x mean.
+    import matplotlib.axes
+    recorded = []
+    real = matplotlib.axes.Axes.errorbar
+
+    def _rec(self, x, y, *a, **k):
+        recorded.append((x, y))
+        return real(self, x, y, *a, **k)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "errorbar", _rec)
+    rows = [
+        {"arch": "deep", "subset_size": 1, "pool": "bh76", "name": "r1",
+         "ref_kcalmol": 10.0, "de_nn_kcalmol": 11.0,
+         "abs_error_nn_kcalmol": 1.0, "abs_error_pbe_kcalmol": 2.0},
+        {"arch": "deep", "subset_size": 1, "pool": "bh76", "name": "r2",
+         "ref_kcalmol": 20.0, "de_nn_kcalmol": 21.0,
+         "abs_error_nn_kcalmol": 1.0, "abs_error_pbe_kcalmol": 2.0},
+        {"arch": "deep", "subset_size": 1, "pool": "bh76", "name": "r3",
+         "ref_kcalmol": 1.0e6, "de_nn_kcalmol": float("nan"),
+         "abs_error_nn_kcalmol": float("nan"),
+         "abs_error_pbe_kcalmol": 2.0},
+    ]
+    fig.plot_parity_errbars_by_subset(rows, tmp_path / "p.png", _STAMP)
+    xs = [x for x, _y in recorded if fig._is_num(x)]
+    assert 15.0 in xs                    # mean over the two scored rows
+    assert not any(x > 1e5 for x in xs)  # the NaN-NN row's ref stays out
+
+
+_V4_RUN = (Path.home() / "Documents/Research/xcquinox-results/runs/dfs_step7"
+           / "dfs6311_grid3_v4gga/runs/run_20260810T202813Z")
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not _V4_RUN.is_dir(), reason="v4gga run not present")
+def test_full_slice_anchor_matches_cluster_testset():
+    # Independent oracle: the cluster-side test_set.csv reduces mae_pbe over
+    # the finite-PBE set regardless of NN convergence. The local full-slice
+    # anchors must (i) agree across every subset-size group and (ii) match
+    # the cluster values on spec_0044 (deep_rung35_attn_3x16/ss1), whose NN
+    # failed 9 species -- W4-11 directly; BH76 after restricting the cluster
+    # rows to the local slice (the cluster set keeps validation-twin
+    # barriers the local reconstruction excludes by identity).
+    rows = fig.collect_holdout_reaction_rows(_V4_RUN)
+    anchors = fig.pbe_reaction_mae_by_cell(rows)
+    by_ss = {}
+    for (a, s), v in anchors.items():
+        by_ss.setdefault(s, []).append(v)
+    # Each spec's eval re-converged its own PBE SCF, so per-spec E_pbe agree
+    # only to SCF-tolerance ulps: measured cross-spec anchor spread is
+    # ~2e-12 relative. 1e-10 sits four decades under the figure's 1e-6 span
+    # tolerance while still failing loudly on a degraded slice (>= 1e-3).
+    for s, vals in sorted(by_ss.items()):
+        lo, hi = min(vals), max(vals)
+        assert (hi - lo) <= 1e-10 * max(abs(lo), abs(hi)), (s, lo, hi)
+    assert anchors[("deep_3x16", 1)] == pytest.approx(12.034743071213333,
+                                                      rel=1e-9)
+    cell_rows = [r for r in rows
+                 if r["arch"] == "deep_rung35_attn_3x16"
+                 and r["subset_size"] == 1]
+    w411 = fig._mae([r["abs_error_pbe_kcalmol"] for r in cell_rows
+                     if r["pool"] == "w411"])
+    import csv as _csv
+    ts = {r["set"]: r for r in _csv.DictReader(
+        (_V4_RUN / "checkpoints/spec_0044/eval_holdout/test_set.csv").open())}
+    assert w411 == pytest.approx(
+        float(ts["test_set_w411"]["mae_pbe_kcalmol"]), abs=5e-7)
+    with (_V4_RUN / "checkpoints/spec_0044/eval_holdout"
+          / "per_reaction.json").open() as fh:
+        cluster = json.load(fh)
+    local_bh76 = {r["name"] for r in cell_rows if r["pool"] == "bh76"}
+    cl_bh76 = [r for r in cluster if r.get("pool") == "bh76"
+               and r.get("name") in local_bh76]
+    cl_mae = fig._mae([r.get("abs_error_pbe_kcalmol") for r in cl_bh76])
+    loc_mae = fig._mae([r["abs_error_pbe_kcalmol"] for r in cell_rows
+                        if r["pool"] == "bh76"])
+    assert loc_mae == pytest.approx(cl_mae, rel=1e-9)
+
+
 def test_holdout_rows_exclude_trained_alias_reactions(tmp_path, monkeypatch,
                                                       capsys):
     # The strict filter ran name-level on the cluster; the figure layer must
@@ -1086,13 +1355,15 @@ def test_cell_anchor_note_explains_glyph():
     low = note.lower()
     assert "capped" in low and "span" in low
     assert "pbe" in low and "scan" in low
+    assert "slice" in low
     # the ED line/scatter figures draw no glyphs: their note points at the
     # CSV columns instead of describing glyphs they do not carry
     flat = fig._cell_anchor_note({("deep", 2): 5.0}, glyphs=False)
     assert "capped" not in flat.lower()
-    assert "CSV" in flat and "cell-matched" in flat.lower()
-    # the drawing docstrings describe the current mark, not the removed ones
-    assert "asterisk" not in (fig._grouped_arch_bars.__doc__ or "").lower()
+    assert "CSV" in flat and "slice" in flat.lower()
+    # the drawing docstrings describe the current marks, the incomplete-eval
+    # star included
+    assert "incomplete" in (fig._grouped_arch_bars.__doc__ or "").lower()
     assert "capped" in (fig._grouped_arch_bars.__doc__ or "").lower()
     assert "capped" in (fig.plot_energy_wtmad_mae.__doc__ or "").lower()
 
@@ -3070,7 +3341,7 @@ def test_write_combined_ed_csv_columns_and_legs(tmp_path):
         "E_kcalmol", "D_rmse", "gamma", "gammaD_kcalmol", "ED_kcalmol",
         "E_pbe_kcalmol", "D_pbe_rmse", "ED_pbe_kcalmol", "beats_pbe",
         "E_scan_kcalmol", "D_scan_rmse", "ED_scan_kcalmol", "beats_scan",
-        "ED_pbe_cell_kcalmol", "ED_scan_cell_kcalmol"}
+        "ED_pbe_cell_kcalmol", "ED_scan_cell_kcalmol", "n_reactions_slice"}
     # absent SCAN legs write as EMPTY cells, never the string "None"
     assert all(r["ED_scan_kcalmol"] == "" and r["beats_scan"] == ""
                for r in rd)

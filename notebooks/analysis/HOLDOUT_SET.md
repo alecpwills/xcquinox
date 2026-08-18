@@ -15,7 +15,7 @@ name-by-name expansion of that line.
 |---|---|---|
 | Canonical pool, reaction entries | 216 (76 BH76 + 140 W4-11) | the full benchmark pool the harness builds |
 | Canonical pool, unique reaction names | 212 | 4 BH76 entries share a name with another entry (Sec. 2) |
-| TEST slice (what `per_reaction.json` carries) | 165 names (52 BH76 + 113 W4-11) | the reported metrics/figures run on this slice minus the four validation twins (identity exclusion) and minus each cell's VERBATIM supervised reactions (Sec. 2; about 162 surviving names at ss1, 147 at ss26) |
+| TEST slice (what `per_reaction.json` carries) | 165 names (52 BH76 + 113 W4-11) | the reported metrics/figures run on this slice minus the four validation twins (identity exclusion) and minus each cell's VERBATIM supervised reactions (Sec. 2; about 162 surviving names at ss1, 147 at ss26). NN metrics reduce the SCORED subset of a cell's slice (reactions with finite NN energies; incomplete cells are starred on the figures and named in the note band); every PBE/SCAN comparator, pooled and per-cell, reduces the full slice regardless of NN convergence |
 | Validation slice (early-stop / val-best selection) | 47 names (20 BH76 + 27 W4-11; 49 entries: 22+27) | withheld from every reported TEST metric |
 | Test/validation overlap | 0 by name; 4 by physical identity | four BH76 barriers appear twice in the pool under permuted-reactant names, one copy per slice (`bh76_h_hf_to_hfhts`/`bh76_hf_h_to_hfhts` and the three analogous pairs); the figure layer drops the four test-side twins on read, since validation-best selection saw those barriers |
 | Pool species (molecules + atoms) | 214 | reactants/products of the 216 entries |
@@ -38,6 +38,16 @@ formulas -- `CHN`, `H3N`, `HO` -- while the pool uses GMTKN55-style names -- `hc
 isomer classes, `xcquinox.alec.species_matching`). Per-cell reaction counts on the
 figures reflect exactly these exclusions, so they are near-uniform across subset sizes
 (about 162 at ss1, 147 at ss26).
+
+A slice row needs a finite COMPARATOR (PBE) leg only: reactions whose NN energy is NaN
+(the model's own SCF failures) stay in the slice with NaN NN columns, so reference
+reductions never follow a single arch's NN-scored subset -- at a fixed subset size every
+arch shares one slice and hence one comparator anchor. NN metrics reduce the scored
+subset; the shortfall is starred on the figures, named with scored/slice counts in the
+note band, and recorded as `n_reactions` vs `n_reactions_slice` in the ED CSVs. On the
+2026-08-18 v4gga pull three cells are affected, pending re-evaluation:
+`deep_rung35_3x16`/ss18 (final checkpoint only) and `deep_rung35_attn_3x16`/ss1 and ss2
+(both channels).
 
 The canonical pool is the union of two GMTKN55-style subsets (sources in Sec. 5): the BH76
 barrier heights and the W4-11 atomization energies, 216 reaction entries over
