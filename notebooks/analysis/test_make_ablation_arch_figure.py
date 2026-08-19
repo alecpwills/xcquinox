@@ -951,14 +951,18 @@ def test_span_fallback_fires_on_comparator_divergence(tmp_path, monkeypatch):
 
 def test_grouped_bars_star_marks_incomplete_cells(tmp_path):
     import matplotlib.pyplot as plt
-    metric = {("a1", 2): 5.0}
+    # a2's metric is NaN: an incomplete cell with no finite bar height
+    # cannot carry the star (nothing to attach it to); the callers' footer
+    # warning still names such cells.
+    metric = {("a1", 2): 5.0, ("a2", 2): float("nan")}
     f, ax = plt.subplots()
     try:
-        fig._grouped_arch_bars(ax, metric, ["a1"], [2],
+        fig._grouped_arch_bars(ax, metric, ["a1", "a2"], [2],
                                pbe_line=8.0, title="t",
                                pbe_by_cell={("a1", 2): 6.5},
-                               incomplete_cells={("a1", 2)})
-        assert any(t.get_text() == "*" for t in ax.texts)
+                               incomplete_cells={("a1", 2), ("a2", 2)})
+        stars = [t for t in ax.texts if t.get_text() == "*"]
+        assert len(stars) == 1
         labels = {ln.get_label() for ln in ax.lines}
         assert any(l.startswith("* incomplete hold-out eval") for l in labels)
         # the beats verdict is NOT withheld: bar 5.0 < slice anchor 6.5
@@ -1062,11 +1066,12 @@ def test_reaction_mae_dedup_prefers_finite_rows():
     finrow = dict(base, name="r", abs_error_nn_kcalmol=4.0,
                   abs_error_pbe_kcalmol=3.0)
     for rows in ([nanrow, finrow], [finrow, nanrow]):
+        order = "NaN-first" if rows[0] is nanrow else "finite-first"
         mae = fig.reaction_mae_by_arch_subset(rows)
-        assert mae[("a", 1)] == pytest.approx(4.0), rows[0] is nanrow
+        assert mae[("a", 1)] == pytest.approx(4.0), order
         wt = fig.wtmad2_by_arch_subset(rows)
         assert wt[("a", 1)] == pytest.approx(
-            fig._GMTKN55_SCALE * 4.0 / 10.0)
+            fig._GMTKN55_SCALE * 4.0 / 10.0), order
 
 
 _V4_RUN = (Path.home() / "Documents/Research/xcquinox-results/runs/dfs_step7"
@@ -1092,8 +1097,9 @@ def test_full_slice_anchor_matches_cluster_testset():
     # Each spec's eval re-converged its own PBE SCF, so per-spec E_pbe agree
     # only to SCF-tolerance ulps: measured cross-spec anchor spread reaches
     # 1.1e-11 relative (merged view, BH76 leg). A degraded slice moves an
-    # anchor by >= 1e-3 relative (2.6e-2 measured on the pre-fix data), so
-    # 1e-8 keeps three decades above the noise and five below the signal.
+    # anchor by >= 6e-4 relative (2.5e-2 max measured on the pre-fix data),
+    # so 1e-8 keeps three decades above the noise and nearly five below
+    # the signal.
     for s, vals in sorted(by_ss.items()):
         lo, hi = min(vals), max(vals)
         assert (hi - lo) <= 1e-8 * max(abs(lo), abs(hi)), (s, lo, hi)
