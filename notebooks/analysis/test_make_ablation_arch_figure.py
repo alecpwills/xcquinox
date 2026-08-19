@@ -1049,6 +1049,26 @@ def test_parity_errbars_pair_ref_with_scored_rows(tmp_path, monkeypatch):
     assert not any(x > 1e5 for x in xs)  # the NaN-NN row's ref stays out
 
 
+def test_reaction_mae_dedup_prefers_finite_rows():
+    # The pool lists four reactions twice under one name; a NaN first
+    # instance must not consume the dedup name slot for a finite twin --
+    # per-key finiteness precedes the seen-bookkeeping, matching
+    # _cell_counts and _incomplete_energy_cells, so the reduction is
+    # row-order independent when exactly one twin is finite.
+    base = {"arch": "a", "subset_size": 1, "pool": "bh76",
+            "ref_kcalmol": 10.0}
+    nanrow = dict(base, name="r", abs_error_nn_kcalmol=float("nan"),
+                  abs_error_pbe_kcalmol=2.0)
+    finrow = dict(base, name="r", abs_error_nn_kcalmol=4.0,
+                  abs_error_pbe_kcalmol=3.0)
+    for rows in ([nanrow, finrow], [finrow, nanrow]):
+        mae = fig.reaction_mae_by_arch_subset(rows)
+        assert mae[("a", 1)] == pytest.approx(4.0), rows[0] is nanrow
+        wt = fig.wtmad2_by_arch_subset(rows)
+        assert wt[("a", 1)] == pytest.approx(
+            fig._GMTKN55_SCALE * 4.0 / 10.0)
+
+
 _V4_RUN = (Path.home() / "Documents/Research/xcquinox-results/runs/dfs_step7"
            / "dfs6311_grid3_v4gga/runs/run_20260810T202813Z")
 
@@ -1060,21 +1080,23 @@ def test_full_slice_anchor_matches_cluster_testset():
     # the finite-PBE set regardless of NN convergence. The local full-slice
     # anchors must (i) agree across every subset-size group and (ii) match
     # the cluster values on spec_0044 (deep_rung35_attn_3x16/ss1), whose NN
-    # failed 9 species -- W4-11 directly; BH76 after restricting the cluster
-    # rows to the local slice (the cluster set keeps validation-twin
-    # barriers the local reconstruction excludes by identity).
+    # failed 9 species -- W4-11 directly; BH76 as the raw-row mean (the
+    # local slice and the cluster file carry the identical row multiset),
+    # with the figure's name-deduplicated anchor reconciling to the csv by
+    # exactly the two duplicated BH76 pool entries (48 names over 50 rows).
     rows = fig.collect_holdout_reaction_rows(_V4_RUN)
     anchors = fig.pbe_reaction_mae_by_cell(rows)
     by_ss = {}
     for (a, s), v in anchors.items():
         by_ss.setdefault(s, []).append(v)
     # Each spec's eval re-converged its own PBE SCF, so per-spec E_pbe agree
-    # only to SCF-tolerance ulps: measured cross-spec anchor spread is
-    # ~2e-12 relative. 1e-10 sits four decades under the figure's 1e-6 span
-    # tolerance while still failing loudly on a degraded slice (>= 1e-3).
+    # only to SCF-tolerance ulps: measured cross-spec anchor spread reaches
+    # 1.1e-11 relative (merged view, BH76 leg). A degraded slice moves an
+    # anchor by >= 1e-3 relative (2.6e-2 measured on the pre-fix data), so
+    # 1e-8 keeps three decades above the noise and five below the signal.
     for s, vals in sorted(by_ss.items()):
         lo, hi = min(vals), max(vals)
-        assert (hi - lo) <= 1e-10 * max(abs(lo), abs(hi)), (s, lo, hi)
+        assert (hi - lo) <= 1e-8 * max(abs(lo), abs(hi)), (s, lo, hi)
     assert anchors[("deep_3x16", 1)] == pytest.approx(12.034743071213333,
                                                       rel=1e-9)
     cell_rows = [r for r in rows
@@ -1087,16 +1109,31 @@ def test_full_slice_anchor_matches_cluster_testset():
         (_V4_RUN / "checkpoints/spec_0044/eval_holdout/test_set.csv").open())}
     assert w411 == pytest.approx(
         float(ts["test_set_w411"]["mae_pbe_kcalmol"]), abs=5e-7)
+    # BH76: same row multiset as the cluster file (the validation twins
+    # never reach per_reaction.json), so the raw-row mean equals the csv;
+    # the deduped figure anchor reconciles by the two duplicate rows.
     with (_V4_RUN / "checkpoints/spec_0044/eval_holdout"
           / "per_reaction.json").open() as fh:
         cluster = json.load(fh)
-    local_bh76 = {r["name"] for r in cell_rows if r["pool"] == "bh76"}
-    cl_bh76 = [r for r in cluster if r.get("pool") == "bh76"
-               and r.get("name") in local_bh76]
-    cl_mae = fig._mae([r.get("abs_error_pbe_kcalmol") for r in cl_bh76])
-    loc_mae = fig._mae([r["abs_error_pbe_kcalmol"] for r in cell_rows
-                        if r["pool"] == "bh76"])
-    assert loc_mae == pytest.approx(cl_mae, rel=1e-9)
+    bh_rows = [r for r in cell_rows if r["pool"] == "bh76"]
+    assert (sorted(r["name"] for r in bh_rows)
+            == sorted(str(r.get("name")) for r in cluster
+                      if r.get("pool") == "bh76"))
+    raw = [abs(r["abs_error_pbe_kcalmol"]) for r in bh_rows]
+    csv_bh76 = float(ts["test_set_bh76"]["mae_pbe_kcalmol"])
+    assert sum(raw) / len(raw) == pytest.approx(csv_bh76, abs=5e-7)
+    dedup_mae = fig.reaction_mae_by_arch_subset(
+        bh_rows, key="abs_error_pbe_kcalmol")[("deep_rung35_attn_3x16", 1)]
+    seen: set = set()
+    extras = []
+    for r in bh_rows:
+        if r["name"] in seen:
+            extras.append(abs(r["abs_error_pbe_kcalmol"]))
+        seen.add(r["name"])
+    assert len(extras) == 2
+    n_dedup = len(raw) - len(extras)
+    assert ((n_dedup * dedup_mae + sum(extras)) / len(raw)
+            == pytest.approx(csv_bh76, abs=5e-7))
 
 
 def test_holdout_rows_exclude_trained_alias_reactions(tmp_path, monkeypatch,

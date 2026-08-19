@@ -1401,23 +1401,24 @@ def reaction_mae_by_arch_subset(
 ) -> Dict[Tuple[str, int], float]:
     """``{(arch, subset_size): MAE}`` over held-out reactions for ``key``
     (``abs_error_nn_kcalmol`` or ``abs_error_pbe_kcalmol``). Deduplicated by
-    reaction name WITHIN each cell (first wins) -- the canonical pool lists
-    four reactions twice under one name, and the PBE baselines dedup, so an
-    un-deduped cell metric would double-count those rows against a deduped
-    reference line."""
+    reaction name WITHIN each cell (first FINITE value per key wins) -- the
+    canonical pool lists four reactions twice under one name, and the PBE
+    baselines dedup, so an un-deduped cell metric would double-count those
+    rows against a deduped reference line. Finiteness is tested BEFORE the
+    name slot is consumed (matching ``_cell_counts``): a NaN first instance
+    of a duplicated name cannot discard its finite twin."""
     buckets: Dict[Tuple[str, int], List[float]] = {}
     seen: set = set()
     for r in rows:
         arch, ss = r.get("arch"), r.get("subset_size")
-        if arch is None or ss is None:
+        if arch is None or ss is None or not _is_num(r.get(key)):
             continue
         nm = r.get("name")
         if nm is not None:
             if (arch, ss, nm) in seen:
                 continue
             seen.add((arch, ss, nm))
-        if _is_num(r.get(key)):
-            buckets.setdefault((arch, ss), []).append(r[key])
+        buckets.setdefault((arch, ss), []).append(r[key])
     return {k: float(np.mean(v)) for k, v in buckets.items() if v}
 
 
@@ -3112,9 +3113,11 @@ def wtmad2_by_arch_subset(rows: List[Dict[str, Any]], scale: float = _GMTKN55_SC
     """2-subset (BH76/W4-11) WTMAD-2 per (arch, subset_size) cell, vs the
     benchmark ``reaction_energy_ref_kcalmol``. NOTE: only 2 GMTKN55 subsets are
     present here, so this is a LABELED reweighting, not a full-GMTKN55 WTMAD-2.
-    Deduplicated by reaction name WITHIN each cell (first wins), matching the
-    PBE baselines' convention -- the pool lists four reactions twice under one
-    name."""
+    Deduplicated by reaction name WITHIN each cell (first FINITE pair wins,
+    finiteness tested before the name slot is consumed -- a NaN first
+    instance of a duplicated name cannot discard its finite twin), matching
+    the PBE baselines' convention -- the pool lists four reactions twice
+    under one name."""
     cells: Dict[Tuple[str, int], Dict[str, List[Tuple[float, float]]]] = {}
     seen: set = set()
     for r in rows:
@@ -3125,13 +3128,13 @@ def wtmad2_by_arch_subset(rows: List[Dict[str, Any]], scale: float = _GMTKN55_SC
             ref = r.get("reaction_energy_ref_kcalmol")   # raw per_reaction.json key
         if a is None or s is None or pool is None:
             continue
+        if not (_is_num(e) and _is_num(ref)):
+            continue
         nm = r.get("name")
         if nm is not None:
             if (a, s, nm) in seen:
                 continue
             seen.add((a, s, nm))
-        if not (_is_num(e) and _is_num(ref)):
-            continue
         cells.setdefault((a, s), {}).setdefault(pool, []).append((abs(e), abs(ref)))
     out: Dict[Tuple[str, int], float] = {}
     for cell, pools in cells.items():
@@ -4563,8 +4566,10 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     line "SCAN (pooled)". Bars whose cell is in ``incomplete_cells`` (the
     NN scored fewer reactions than the cell's slice) carry a star above the
     bar -- a disclosure of the incomplete hold-out eval, not a grading
-    change: the spans and beats anchors are slice reductions regardless.
-    Shared by ``plot_energy_wtmad_mae`` and the overview composites."""
+    change: the spans and beats anchors are slice reductions regardless. A
+    cell with no finite bar height cannot carry the star; the callers'
+    footer warning still names it with its scored/slice counts. Shared by
+    ``plot_energy_wtmad_mae`` and the overview composites."""
     bw = 0.8 / max(1, len(archs))
     beat_x: List[float] = []
     beat_h: List[float] = []
