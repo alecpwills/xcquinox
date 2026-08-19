@@ -261,6 +261,125 @@ def test_worker_tag_unique_per_chunk():
     assert a.startswith("s0045_model_")
 
 
+def test_patch_records_aborts_without_controls():
+    # An empty control list means the identity was never confirmed: the
+    # channel must abort, never write. Covers both --controls 0 and the
+    # silent route (every finite species in the channel is a
+    # training-subset row, so pick_controls returns []).
+    new, rep = bf.patch_records(_base_records(), _good_payload(),
+                                controls=[], gate_nn=1e-6, gate_pbe=1e-6)
+    assert rep["aborted"] and "control" in rep["abort_reason"]
+    assert new is None
+
+
+def test_cli_rejects_low_control_count(tmp_path):
+    with pytest.raises(SystemExit):
+        bf.main([str(tmp_path), "--controls", "1"])
+
+
+def test_ledger_gate_rejected_target_falls_through_to_compute(tmp_path):
+    # A ledger that covers a target only with a gate-rejected value must
+    # not deadlock the channel as nothing-to-do: the channel recomputes.
+    ch = _channel_dir(tmp_path, _base_records())
+    bad = _good_payload()
+    bad["pbe_energies"]["mm_nan"] = -30.0 + 5e-4     # will gate-skip
+    bad["pbe_energies"]["pp_nan"] = -40.0 + 5e-4     # will gate-skip
+    bf.save_ledger(ch, bad)
+    calls = []
+
+    def _fake_compute(names):
+        calls.append(sorted(names))
+        return _good_payload()          # fresh run: mm_nan passes the gate
+
+    rep = bf.process_channel_records(ch, controls=["aa_ctl", "bb_ctl"],
+                                     gate_nn=1e-6, gate_pbe=1e-6,
+                                     compute_fn=_fake_compute)
+    assert calls, "compute must be reached when the ledger cannot patch"
+    assert rep["source"] == "compute"
+    assert "mm_nan" in rep["patched"]
+    assert "pp_nan" in rep["skipped"]           # still gated on fresh data
+    assert (ch / "backfill_meta.json").is_file()
+
+
+def test_stamp_merges_across_passes(tmp_path):
+    # A retry pass must extend the stamp, not erase the earlier pass's
+    # per-species outcomes; a later patch clears the same species from
+    # the skipped/unresolved buckets.
+    ch = _channel_dir(tmp_path, _base_records())
+
+    def _first(names):
+        p = _good_payload()
+        # mm_nan patches; pp_nan gate-skips (payload pbe 5e-4 off)
+        return p
+
+    bf.process_channel_records(ch, controls=["aa_ctl", "bb_ctl"],
+                               gate_nn=1e-6, gate_pbe=1e-6,
+                               compute_fn=_first)
+    s1 = json.loads((ch / "backfill_meta.json").read_text())
+    assert "mm_nan" in s1["patched"] and "pp_nan" in s1["skipped"]
+
+    def _second(names):
+        p = _good_payload()
+        p["pbe_energies"]["pp_nan"] = -40.0     # now reproduces exactly
+        return p
+
+    # drop the stale ledger so the retry recomputes pp_nan
+    (ch / "backfill_ledger.json").unlink()
+    bf.process_channel_records(ch, controls=["aa_ctl", "bb_ctl"],
+                               gate_nn=1e-6, gate_pbe=1e-6,
+                               compute_fn=_second)
+    s2 = json.loads((ch / "backfill_meta.json").read_text())
+    assert "mm_nan" in s2["patched"]            # first pass survives
+    assert "pp_nan" in s2["patched"]            # second pass added
+    assert "pp_nan" not in s2["skipped"]        # resolved names leave
+
+
+def test_patch_records_unresolved_when_record_missing():
+    # energies carries the name but mol_records does not: refusing beats
+    # writing a schema-incomplete row (no cycles_run/scf_converged).
+    payload = _good_payload()
+    payload["mol_records"] = [r for r in payload["mol_records"]
+                              if r["molecule"] != "mm_nan"]
+    new, rep = bf.patch_records(_base_records(), payload,
+                                controls=["aa_ctl", "bb_ctl"],
+                                gate_nn=1e-6, gate_pbe=1e-6)
+    assert "mm_nan" in rep["unresolved"]
+    by = {r["molecule"]: r for r in new}
+    assert by["mm_nan"]["E_total_nn"] is None
+    assert by["mm_nan"]["cycles_run"] == 0      # row untouched
+
+
+def _make_mini_run(tmp_path):
+    run = tmp_path / "mini/runs/run_x"
+    (run / "checkpoints/spec_0001/eval_holdout").mkdir(parents=True)
+    (run / "manifest.json").write_text(json.dumps(
+        {"n_specs": 2, "width": 4, "specs": []}))
+    (run / "resolved_config.yaml").write_text(
+        "inputs:\n  basis: def2-svp\n  grid_level: 1\n")
+    with (run / "checkpoints/spec_0001/eval_holdout"
+          / "per_molecule.json").open("w") as f:
+        json.dump(_base_records(), f, indent=2)
+    return run
+
+
+def test_main_exit_code_flags_unresolved(tmp_path, monkeypatch):
+    run = _make_mini_run(tmp_path)
+    payload = _good_payload()
+    # worker returns nothing at all for pp_nan
+    for k in ("energies", "pbe_energies"):
+        payload[k].pop("pp_nan")
+    payload["mol_records"] = [r for r in payload["mol_records"]
+                              if r["molecule"] != "pp_nan"]
+    monkeypatch.setattr(bf, "run_worker",
+                        lambda *a, **k: payload)
+    rc = bf.main([str(run), "--specs", "1", "--channels", "eval_holdout",
+                  "--no-refinalize"])
+    assert rc == 1                              # unresolved -> non-zero
+    recs = json.loads((run / "checkpoints/spec_0001/eval_holdout"
+                       / "per_molecule.json").read_text())
+    assert {r["molecule"]: r for r in recs}["mm_nan"]["E_total_nn"] == -30.1
+
+
 def test_patch_records_idempotent_when_no_targets():
     recs = [_rec("aa_ctl", -10.0, -9.9)]
     new, rep = bf.patch_records(recs, {"energies": {}, "pbe_energies": {},
@@ -325,11 +444,15 @@ def test_process_channel_ledger_reapply_needs_no_compute(tmp_path):
     assert {r["molecule"]: r for r in recs}["mm_nan"]["E_total_nn"] == -30.1
     stamp = json.loads((ch / "backfill_meta.json").read_text())
     assert stamp["patched"] and stamp["gates"]["gate_pbe"] == 1e-6
-    # second call: nothing left that the ledger can fix -> no-op
-    rep2 = bf.process_channel_records(ch, controls=["aa_ctl", "bb_ctl"],
-                                      gate_nn=1e-6, gate_pbe=1e-6,
-                                      compute_fn=_boom)
-    assert rep2["status"] == "nothing-to-do"
+    # second call: the ledger covers the remaining target only with a
+    # gate-rejected value, so the channel RECOMPUTES rather than
+    # reporting nothing-to-do (the deadlock the ledger short-circuit
+    # would otherwise create); the seam raising proves compute is
+    # reached.
+    with pytest.raises(AssertionError, match="compute called"):
+        bf.process_channel_records(ch, controls=["aa_ctl", "bb_ctl"],
+                                   gate_nn=1e-6, gate_pbe=1e-6,
+                                   compute_fn=_boom)
 
 
 def test_process_channel_computes_when_ledger_missing(tmp_path):

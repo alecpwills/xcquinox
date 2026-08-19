@@ -158,6 +158,16 @@ def patch_records(records: Sequence[Dict[str, Any]],
     report: Dict[str, Any] = {"patched": {}, "skipped": {}, "diverged": [],
                               "unresolved": [], "controls": {},
                               "aborted": False, "abort_reason": None}
+    has_targets = any(not _is_finite(r.get("E_total_nn")) for r in records)
+    if has_targets and not controls:
+        # No finite held-out control species (or an explicit zero): the
+        # replay identity was never confirmed against the recorded eval,
+        # so nothing may be written to the canonical record. (Without
+        # targets there is nothing to write and no identity to confirm.)
+        report["aborted"] = True
+        report["abort_reason"] = ("no control species available -- "
+                                  "identity unconfirmed, refusing to patch")
+        return None, report
     for c in controls:
         old = by_old.get(c) or {}
         e_nn, e_pbe = energies.get(c), pbe_energies.get(c)
@@ -187,15 +197,17 @@ def patch_records(records: Sequence[Dict[str, Any]],
             out.append(r)
             continue
         new_rec = _payload_record(payload, name)
-        if name not in energies and new_rec is None:
-            # The payload carries nothing for this target (a worker can
-            # drop a species on a per-species precompute failure): name
-            # it, never let it fall through silently.
+        if new_rec is None:
+            # No per-molecule record for this target -- either the worker
+            # dropped the species entirely (a per-species precompute
+            # failure) or the payload is inconsistent. Patching from the
+            # energies map alone would write a row without its SCF
+            # bookkeeping fields: refuse and name it.
             report["unresolved"].append(name)
             out.append(r)
             continue
         e_nn = energies.get(name)
-        if e_nn is None and new_rec is not None:
+        if e_nn is None:
             e_nn = new_rec.get("E_total_nn")
         if not _is_finite(e_nn):
             report["diverged"].append(name)
@@ -276,11 +288,51 @@ def save_ledger(channel_dir: Path, payload: Dict[str, Any]) -> None:
     os.replace(tmp, Path(channel_dir) / LEDGER_NAME)
 
 
+def _merge_stamp(old: Optional[Dict[str, Any]],
+                 new: Dict[str, Any]) -> Dict[str, Any]:
+    """Union of two passes' per-species outcomes: a retry extends the
+    stamp instead of erasing the earlier pass. Per species the newer
+    classification wins, and a patched species leaves every other
+    bucket."""
+    if not old:
+        return new
+    merged = dict(new)
+    merged["patched"] = {**(old.get("patched") or {}),
+                         **(new.get("patched") or {})}
+    merged["controls"] = {**(old.get("controls") or {}),
+                          **(new.get("controls") or {})}
+    newly_classified = (set(new.get("patched") or {})
+                        | set(new.get("skipped") or {})
+                        | set(new.get("diverged") or [])
+                        | set(new.get("unresolved") or []))
+    skipped = {k: v for k, v in (old.get("skipped") or {}).items()
+               if k not in newly_classified}
+    skipped.update(new.get("skipped") or {})
+    merged["skipped"] = {k: v for k, v in skipped.items()
+                         if k not in merged["patched"]}
+    for key in ("diverged", "unresolved"):
+        names = set(old.get(key) or []) - newly_classified
+        names |= set(new.get(key) or [])
+        merged[key] = sorted(n for n in names
+                             if n not in merged["patched"]
+                             and n not in merged["skipped"])
+    return merged
+
+
 def _write_stamp(channel_dir: Path, stamp: Dict[str, Any]) -> None:
+    old = None
+    p = Path(channel_dir) / STAMP_NAME
+    if p.is_file():
+        try:
+            with p.open() as f:
+                old = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            old = None
+    stamp = _merge_stamp(old, stamp)
     tmp = Path(channel_dir) / f".tmp.{STAMP_NAME}"
     with tmp.open("w") as f:
         json.dump(stamp, f, indent=2, sort_keys=True)
-    os.replace(tmp, Path(channel_dir) / STAMP_NAME)
+    os.replace(tmp, p)
 
 
 def process_channel_records(channel_dir: Path, *,
@@ -300,8 +352,14 @@ def process_channel_records(channel_dir: Path, *,
     if not targets:
         return {"status": "nothing-to-do", "targets": [], "patched": {}}
 
+    # Ledger first (instant re-apply after a pull clobber) -- but the
+    # ledger attempt only stands when it actually patches something; a
+    # ledger whose coverage is stale, partial, or entirely gate-rejected
+    # falls through to a fresh computation, so a channel can never
+    # deadlock as nothing-to-do while non-finite entries remain.
     led = load_ledger(channel_dir)
-    payload: Optional[Dict[str, Any]] = None
+    new_records = None
+    report: Optional[Dict[str, Any]] = None
     source = None
     if led is not None:
         covered = {n for n in targets if _is_finite(
@@ -309,30 +367,32 @@ def process_channel_records(channel_dir: Path, *,
         ctl_ok = all(_is_finite((led.get("energies") or {}).get(c))
                      for c in controls)
         if covered and ctl_ok:
-            payload, source = led, "ledger"
-    if payload is None:
+            cand_records, cand = patch_records(
+                records, led, controls=controls,
+                gate_nn=gate_nn, gate_pbe=gate_pbe)
+            if not cand["aborted"] and cand["patched"]:
+                new_records, report, source = cand_records, cand, "ledger"
+    if report is None:
         names = sorted(set(targets) | set(controls))
         payload = compute_fn(names)
         source = "compute"
         if not dry_run:
             save_ledger(channel_dir, payload)
-
-    new_records, report = patch_records(records, payload,
-                                        controls=controls,
-                                        gate_nn=gate_nn, gate_pbe=gate_pbe)
+        new_records, report = patch_records(records, payload,
+                                            controls=controls,
+                                            gate_nn=gate_nn,
+                                            gate_pbe=gate_pbe)
     report["targets"] = targets
     report["source"] = source
     if report["aborted"]:
         report["status"] = "aborted"
         return report
-    if not report["patched"] and source == "ledger":
-        # the ledger cannot fix what remains (all skipped/diverged before)
-        report["status"] = "nothing-to-do"
-        return report
     if dry_run:
-        report["status"] = "would-patch"
+        report["status"] = ("would-patch" if report["patched"]
+                            else "no-species-patched")
         return report
-    write_patched(channel_dir, new_records)
+    if report["patched"]:
+        write_patched(channel_dir, new_records)
     _write_stamp(channel_dir, {
         "tool": "backfill_holdout_nans",
         "timestamp": datetime.datetime.now(
@@ -345,7 +405,8 @@ def process_channel_records(channel_dir: Path, *,
         "diverged": report["diverged"],
         "unresolved": report["unresolved"],
     })
-    report["status"] = "patched"
+    report["status"] = ("patched" if report["patched"]
+                        else "no-species-patched")
     return report
 
 
@@ -445,7 +506,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "with a NaN in a requested channel)")
     p.add_argument("--channels", nargs="+", default=list(CHANNEL_MODELS),
                    choices=list(CHANNEL_MODELS))
-    p.add_argument("--controls", type=int, default=3)
+
+    def _controls_count(v: str) -> int:
+        n = int(v)
+        if n < 2:
+            raise argparse.ArgumentTypeError(
+                "at least 2 control species are required -- a patch "
+                "without confirmed identity must not enter the record")
+        return n
+
+    p.add_argument("--controls", type=_controls_count, default=3)
     p.add_argument("--gate-nn", type=float, default=DEFAULT_GATE_NN)
     p.add_argument("--gate-pbe", type=float, default=DEFAULT_GATE_PBE)
     p.add_argument("--threads", type=int, default=6)
@@ -570,7 +640,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                   + (f" {unres}" if unres else "")
                   + (f" ({report['abort_reason']})"
                      if report.get("abort_reason") else ""), flush=True)
-            if report["status"] == "aborted":
+            if report["status"] == "aborted" or unres:
+                # An unresolved target is a tool failure (retryable),
+                # unlike a gate skip or a measured local divergence,
+                # which are documented terminal outcomes.
                 rc = 1
             if report["status"] == "patched":
                 any_patched = True
