@@ -483,3 +483,17 @@ evaluates a different protocol. local_reeval already mirrors the spec
 KNOWN: each needs the same two-line threading the production call sites
 got (seed fields from the spec's solver_config into precompute).
 TRIGGER: first v5-spec replay through any of these tools.
+
+## 24. Per-architecture tier-1 worker cap for the held-out eval (found 2026-08-20)
+
+WHAT: the held-out eval ladder starts every architecture at 40 workers x 1 thread per node;
+the DM-projector architectures (rung35ms: `(3, N_grid, nao)` projector stack, rung35_attn)
+lose 153 / 68 tier-1 shards to worker death and, before the Phase 39 repair, 147 / 70 species
+to swallowed per-species exceptions, against 0-5 for every other architecture.
+WHY DEFERRED: the per-worker RSS of those architectures at the production identity has not
+been measured on the cluster (the task logs carry no per-shard memory line; training in the
+same array task peaked at 98.8 GB RSS on a 40-core --mem=0 node); the cap should be set from
+`sacct` MaxRSS / `seff` on array 2116743 tasks 50 and 55-61 against tasks 0-10, not guessed.
+KNOWN: `cluster.eval_workers` (null today) already caps the top of the ladder; the Phase 39
+re-queue means a too-high cap now costs time (tier-2 retries), not records.
+TRIGGER: the sacct numbers for 2116743, or the next submission of a DM-projector arm.

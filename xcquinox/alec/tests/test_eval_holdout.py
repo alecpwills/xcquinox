@@ -261,6 +261,110 @@ def test_make_per_molecule_record_skips_nonfinite_trace_steps():
     assert "scf_energy_step_1" not in rec
 
 
+def test_make_per_molecule_record_failure_row_reports_no_scf():
+    """A species whose evaluation raised must NOT claim a converged zero-cycle
+    SCF; the honest row is null/null and names the error."""
+    rec = make_per_molecule_record(
+        "X", {"E_pbe": -10.0}, e_nn_ha=float("nan"), in_training_subset=False,
+        scf={"eval_error": "RuntimeError: alloc failed"})
+    assert rec["E_total_nn"] is None
+    assert rec["cycles_run"] is None
+    assert rec["scf_converged"] is None
+    assert rec["eval_error"] == "RuntimeError: alloc failed"
+    assert "scf_total_energy" not in rec
+    assert "scf_energy_step_0" not in rec
+
+
+def test_make_per_molecule_record_nonfinite_without_scf_info_is_null():
+    """No SCF info AND no energy: nothing ran that could have converged, so
+    the one-shot sentinels would be a false statement."""
+    rec = make_per_molecule_record(
+        "X", {"E_pbe": -10.0}, e_nn_ha=float("nan"), in_training_subset=False)
+    assert rec["E_total_nn"] is None
+    assert rec["cycles_run"] is None
+    assert rec["scf_converged"] is None
+    assert "eval_error" not in rec
+
+
+def test_make_per_molecule_record_finite_scf_row_is_unchanged():
+    """A finite SCF row keeps exactly the historical key set and values."""
+    scf = {"cycles_run": 3, "converged": True, "total_energy": -76.40,
+           "energy_trace": [-76.30, -76.38, -76.40]}
+    rec = make_per_molecule_record(
+        "H2O", {"E_pbe": -76.27}, e_nn_ha=-76.40, in_training_subset=False,
+        scf=scf)
+    assert set(rec) == {
+        "molecule", "E_total_nn", "E_pbe", "AE_nn", "AE_error_kcalmol",
+        "density_rmse", "density_l1", "density_rmse_pbe", "density_l1_pbe",
+        "density_eps_l1", "density_eps_l1_pbe", "n_electrons",
+        "grid_weight_sum", "ref_density_method", "cycles_run",
+        "scf_converged", "from_training_subset", "scf_total_energy",
+        "scf_energy_step_0", "scf_energy_step_1", "scf_energy_step_2",
+        "scf_energy_residual_0", "scf_energy_residual_1",
+        "scf_energy_residual_2"}
+    assert rec["molecule"] == "H2O"
+    assert rec["E_total_nn"] == pytest.approx(-76.40)
+    assert rec["E_pbe"] == pytest.approx(-76.27)
+    assert rec["AE_nn"] == pytest.approx(-76.40 - (-76.27))
+    assert rec["AE_error_kcalmol"] is None
+    assert all(rec[k] is None for k in (
+        "density_rmse", "density_l1", "density_rmse_pbe", "density_l1_pbe",
+        "density_eps_l1", "density_eps_l1_pbe", "n_electrons",
+        "grid_weight_sum", "ref_density_method"))
+    assert rec["cycles_run"] == 3
+    assert rec["scf_converged"] is True
+    assert rec["from_training_subset"] is False
+    assert rec["scf_total_energy"] == pytest.approx(-76.40)
+    assert rec["scf_energy_step_1"] == pytest.approx(-76.38)
+    assert rec["scf_energy_residual_1"] == pytest.approx(0.02)
+
+
+def test_evaluate_holdout_records_eval_error_and_prints_every_failure(
+        monkeypatch, capsys):
+    """Every species whose SCF raises leaves a NAMED failure in
+    ``scf_info_out`` (an ABSENT entry reads downstream as a converged
+    zero-cycle SCF) and every failure reaches stderr, not only the first."""
+    import types
+
+    from xcquinox.alec import solver as solver_mod
+
+    class _Result:
+        total_energy = -1.17
+        energy_trace = (-1.18, -1.172, -1.17)
+        cycles_run = 3
+        converged = True
+
+    def _fake_run_scf(cfg, model, md, **kw):
+        if md["tag"].startswith("bad"):
+            raise RuntimeError(f"alloc failed for {md['tag']}")
+        return _Result()
+
+    monkeypatch.setattr(solver_mod, "run_scf", _fake_run_scf)
+    cfg = types.SimpleNamespace(mode=solver_mod.SolverMode.FULL,
+                                scf_loss_use_tail=False)
+    mol_data = {n: {"tag": n} for n in ("bad1", "good", "bad2")}
+    scf_info: dict = {}
+    out = eh.evaluate_holdout(object(), mol_data, solver_config=cfg,
+                              scf_info_out=scf_info)
+
+    assert math.isnan(out["bad1"]) and math.isnan(out["bad2"])
+    assert out["good"] == pytest.approx(-1.17)
+    for bad in ("bad1", "bad2"):
+        assert scf_info[bad]["eval_error"].startswith("RuntimeError:")
+        assert f"alloc failed for {bad}" in scf_info[bad]["eval_error"]
+    # The finite species' entry is untouched by the failure handling.
+    assert "eval_error" not in scf_info["good"]
+    assert scf_info["good"]["cycles_run"] == 3
+    assert scf_info["good"]["converged"] is True
+    assert scf_info["good"]["total_energy"] == pytest.approx(-1.17)
+
+    failed_lines = [ln for ln in capsys.readouterr().err.splitlines()
+                    if "FAILED:" in ln]
+    assert len(failed_lines) == 2
+    assert any("bad1" in ln for ln in failed_lines)
+    assert any("bad2" in ln for ln in failed_lines)
+
+
 def test_make_per_reaction_records_pairs_nn_pbe_and_marks_overlap():
     rxns = [{
         "name": "r1", "source_pool": "test",

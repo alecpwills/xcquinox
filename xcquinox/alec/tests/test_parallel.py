@@ -1,6 +1,8 @@
 """Tests for xcquinox.alec.parallel.
 
-Implements THE SPEC section 13.2 test_parallel.py items (1)-(15).
+Implements THE SPEC section 13.2 test_parallel.py items (1)-(15), plus
+(16)-(17) for the held-out eval shard path: the stall-watchdog opt-out and
+worker stream capture.
 All tests use mock subprocesses or tiny helper scripts -- no real worker
 processes, no jax/equinox/optax imports.
 """
@@ -536,3 +538,96 @@ def test_concurrency_bound_never_exceeded(tmp_path):
         max_concurrent = int(f.read().strip())
     assert max_concurrent <= 3, f"max concurrent was {max_concurrent}, expected <= 3"
     assert max_concurrent >= 1, "at least one job should have run"
+
+
+# ---------------------------------------------------------------------------
+# (16) Stall watchdog opt-out for workers that write no progress file
+# ---------------------------------------------------------------------------
+
+def test_stall_watchdog_skipped_when_no_progress_file(tmp_path, monkeypatch,
+                                                      capsys):
+    """A job with no progress file opts OUT of the watchdog (the held-out eval
+    shards write none, so every one of them 'stalled' every STALL_WARN_SEC for
+    its whole runtime); a job that names one keeps its watchdog."""
+    monkeypatch.setattr("xcquinox.alec.parallel.STALL_WARN_SEC", 0.15)
+    script = _write_worker_script(tmp_path, "sleeper", """\
+        import json, time
+        time.sleep(0.6)
+        print(json.dumps({"done": True}))
+    """)
+    jobs = [
+        WorkerJob(name="no_prog", cmd=[sys.executable, script],
+                  progress_file=None),
+        WorkerJob(name="with_prog", cmd=[sys.executable, script],
+                  progress_file=str(tmp_path / "never_written.json")),
+    ]
+    results = run_workers(jobs, max_parallel=2, poll_interval=0.05)
+    assert all(r.status == "success" for r in results)
+    err = capsys.readouterr().err
+    assert "with_prog" in err and "stalled" in err
+    assert "no_prog" not in err
+
+
+# ---------------------------------------------------------------------------
+# (17) Worker stream capture: per-job log file, and drainage of BOTH pipes
+# ---------------------------------------------------------------------------
+
+def test_worker_log_file_captures_both_streams(tmp_path):
+    """A job that names a log_file gets BOTH captured streams written there;
+    the result JSON is still taken from the last stdout line, and the raw
+    stdout is available on the result for the caller to scan."""
+    script = _write_worker_script(tmp_path, "noisy", """\
+        import json, sys
+        print("compiling shard 0")
+        print("  eval[c2] FAILED: RuntimeError: alloc failed", file=sys.stderr)
+        print(json.dumps({"status": "success", "n_done": 7}))
+    """)
+    log = tmp_path / "worker_t1_s0.log"
+    job = WorkerJob(
+        name="noisy", cmd=[sys.executable, script],
+        progress_file=str(tmp_path / "p.json"), log_file=str(log),
+    )
+    results = run_workers([job], max_parallel=1, poll_interval=0.05)
+    assert results[0].status == "success"
+    assert results[0].payload["n_done"] == 7
+    text = log.read_text()
+    assert "compiling shard 0" in text                       # stdout
+    assert "eval[c2] FAILED: RuntimeError" in text           # stderr
+    assert "compiling shard 0" in results[0].stdout
+    assert "eval[c2] FAILED" in results[0].stderr
+
+
+def test_worker_without_log_file_writes_nothing(tmp_path):
+    """log_file is opt-in: the training-side jobs that omit it are unaffected."""
+    script = _write_worker_script(tmp_path, "quiet", """\
+        import json
+        print(json.dumps({"status": "success"}))
+    """)
+    job = WorkerJob(name="quiet", cmd=[sys.executable, script],
+                    progress_file=str(tmp_path / "p.json"))
+    results = run_workers([job], max_parallel=1, poll_interval=0.05)
+    assert results[0].payload["status"] == "success"
+    assert job.log_file is None
+    assert not list(tmp_path.glob("*.log"))
+
+
+def test_large_stdout_does_not_block_worker(tmp_path):
+    """A worker writing far more than one pipe buffer (~1 MB here vs the 64 kB
+    Linux default) to stdout must still exit: BOTH pipes are drained while it
+    runs. The worker self-terminates if the parent stops reading, so a
+    regression fails this test instead of hanging the suite."""
+    script = _write_worker_script(tmp_path, "chatty", """\
+        import json, os, threading
+        _guard = threading.Timer(45.0, lambda: os._exit(3))
+        _guard.daemon = True
+        _guard.start()
+        for i in range(20000):
+            print("filler line %d 0123456789012345678901234567890123456789" % i)
+        print(json.dumps({"status": "success"}))
+    """)
+    job = WorkerJob(name="chatty", cmd=[sys.executable, script],
+                    progress_file=str(tmp_path / "p.json"))
+    results = run_workers([job], max_parallel=1, poll_interval=0.05)
+    assert results[0].returncode == 0, "worker blocked on a full stdout pipe"
+    assert results[0].status == "success"
+    assert results[0].payload["status"] == "success"

@@ -78,9 +78,12 @@ DEFAULT_GATE_NN = 1e-6
 
 # Fields owned by the energy/SCF recomputation; everything else in a
 # record is preserved verbatim (density block, quadrature bookkeeping,
-# from_training_subset, and the recorded E_pbe).
+# from_training_subset, and the recorded E_pbe). ``eval_error`` names the
+# exception that produced the NaN row, so it belongs to the superseded
+# evaluation and is dropped with the rest when a species is patched.
 _SCF_PREFIXES = ("scf_energy_step_", "scf_energy_residual_")
-_SCF_SCALARS = ("cycles_run", "scf_converged", "scf_total_energy")
+_SCF_SCALARS = ("cycles_run", "scf_converged", "scf_total_energy",
+                "eval_error")
 
 
 def _is_finite(x: Any) -> bool:

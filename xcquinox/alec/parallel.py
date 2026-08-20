@@ -28,8 +28,16 @@ from dataclasses import dataclass, field
 class WorkerJob:
     name: str
     cmd: list[str]
-    progress_file: str
+    # Path the worker updates as it advances, polled for the progress callback
+    # and the stall watchdog. None for workers that write none (the held-out
+    # eval shards), which opts them out of both.
+    progress_file: str | None
     thread_env: dict[str, str] = field(default_factory=dict)
+    # Optional path for this worker's captured stdout+stderr, written once it
+    # exits. A worker's own diagnostics otherwise die with the pipe: run_workers
+    # keeps only the parsed result line, so a per-species failure inside an
+    # otherwise-successful worker leaves no trace on disk.
+    log_file: str | None = None
 
 
 @dataclass
@@ -40,6 +48,7 @@ class WorkerResult:
     payload: dict         # parsed JSON from stdout (or synthetic error)
     stderr: str
     duration: float
+    stdout: str = ""      # raw stdout (result line + whatever the worker logged)
 
 
 def worker_script_path(name: str) -> str:
@@ -78,6 +87,29 @@ def _read_progress(progress_file: str) -> dict | None:
 STALL_WARN_SEC = 60.0
 
 
+def _write_worker_log(path: str | None, name: str,
+                      stdout: str, stderr: str) -> None:
+    """Persist one worker's captured streams to ``path`` (no-op when unset).
+
+    The two pipes are separate, so the streams are written in labelled blocks
+    rather than interleaved. A log-write failure is reported but never fails
+    the job the log describes.
+    """
+    if not path:
+        return
+    try:
+        with open(path, "w") as f:
+            f.write(f"# worker: {name}\n# ---- stdout ----\n")
+            f.write(stdout if stdout.endswith("\n") or not stdout
+                    else stdout + "\n")
+            f.write("# ---- stderr ----\n")
+            f.write(stderr if stderr.endswith("\n") or not stderr
+                    else stderr + "\n")
+    except OSError as e:
+        print(f"WARNING: could not write worker log {path}: {e}",
+              file=sys.stderr)
+
+
 def run_workers(
     jobs: list[WorkerJob],
     max_parallel: int = 4,
@@ -92,20 +124,23 @@ def run_workers(
 
     Algorithm:
       1. Fixed-size slot dict mapping job-index to slot state.
-      2. Background stderr drainer thread per worker.
+      2. Background stdout AND stderr drainer threads per worker.
       3. Poll loop: read progress, check proc.poll(), parse stdout JSON.
       4. Handle: crash, malformed JSON, empty stdout, missing progress,
          stall detection (STALL_WARN_SEC warning).
       5. Popen failure recorded as synthetic WorkerResult.
+      6. Both captured streams written to ``job.log_file`` when it is set.
     """
     results: list[WorkerResult | None] = [None] * len(jobs)
     pending: deque[tuple[int, WorkerJob]] = deque(enumerate(jobs))
     running: dict[int, dict] = {}
 
-    def _drain_stderr(proc, lines: list[str]) -> None:
-        """Background drainer: append each stderr line as it arrives."""
+    def _drain(stream, lines: list[str]) -> None:
+        """Background drainer: append each line as it arrives. BOTH pipes are
+        drained while the worker runs -- a worker that fills either 64 kB pipe
+        buffer blocks in write() and never exits otherwise."""
         try:
-            for line in proc.stderr:
+            for line in stream:
                 lines.append(line)
         except (ValueError, OSError):
             pass
@@ -131,19 +166,26 @@ def run_workers(
                 duration=0.0,
             )
             return
+        stdout_lines: list[str] = []
         stderr_lines: list[str] = []
-        drainer = threading.Thread(
-            target=_drain_stderr, args=(proc, stderr_lines), daemon=True
+        out_drainer = threading.Thread(
+            target=_drain, args=(proc.stdout, stdout_lines), daemon=True
         )
-        drainer.start()
+        err_drainer = threading.Thread(
+            target=_drain, args=(proc.stderr, stderr_lines), daemon=True
+        )
+        out_drainer.start()
+        err_drainer.start()
         running[idx] = {
             "proc": proc,
             "job": job,
             "start": time.time(),
             "last_progress": None,
             "last_progress_time": time.time(),
+            "stdout_lines": stdout_lines,
             "stderr_lines": stderr_lines,
-            "stderr_thread": drainer,
+            "stdout_thread": out_drainer,
+            "stderr_thread": err_drainer,
         }
 
     # Seed the pool.
@@ -156,25 +198,37 @@ def run_workers(
         finished_indices = []
         for idx, slot in list(running.items()):
             job = slot["job"]
-            # Progress poll.
-            prog = _read_progress(job.progress_file)
-            if prog is not None and prog != slot["last_progress"]:
-                slot["last_progress"] = prog
-                slot["last_progress_time"] = time.time()
-                if on_progress is not None:
-                    on_progress(job, prog)
-            elif time.time() - slot["last_progress_time"] > STALL_WARN_SEC:
-                print(
-                    f"WARNING: {job.name} stalled "
-                    f"(no progress update for {STALL_WARN_SEC:.0f}s)",
-                    file=sys.stderr,
-                )
-                slot["last_progress_time"] = time.time()  # debounce
+            # Progress poll. A job with no progress_file opts OUT of both the
+            # poll and the watchdog: for a worker that never writes one the
+            # warning fires every STALL_WARN_SEC for the worker's whole
+            # lifetime and says nothing about its health.
+            if job.progress_file:
+                prog = _read_progress(job.progress_file)
+                if prog is not None and prog != slot["last_progress"]:
+                    slot["last_progress"] = prog
+                    slot["last_progress_time"] = time.time()
+                    if on_progress is not None:
+                        on_progress(job, prog)
+                elif time.time() - slot["last_progress_time"] > STALL_WARN_SEC:
+                    print(
+                        f"WARNING: {job.name} stalled "
+                        f"(no progress update for {STALL_WARN_SEC:.0f}s)",
+                        file=sys.stderr,
+                    )
+                    slot["last_progress_time"] = time.time()  # debounce
             # Completion poll.
             if slot["proc"].poll() is not None:
-                stdout, _ = slot["proc"].communicate()
+                slot["stdout_thread"].join(timeout=1.0)
                 slot["stderr_thread"].join(timeout=1.0)
+                stdout = "".join(slot["stdout_lines"])
                 stderr_joined = "".join(slot["stderr_lines"])
+                for stream in (slot["proc"].stdout, slot["proc"].stderr):
+                    try:
+                        stream.close()
+                    except (OSError, ValueError):
+                        pass
+                _write_worker_log(job.log_file, job.name, stdout,
+                                  stderr_joined)
                 stdout_stripped = stdout.strip() if stdout else ""
                 if stdout_stripped:
                     try:
@@ -199,6 +253,7 @@ def run_workers(
                     payload=payload,
                     stderr=stderr_joined,
                     duration=time.time() - slot["start"],
+                    stdout=stdout,
                 )
                 finished_indices.append(idx)
         for idx in finished_indices:

@@ -9,6 +9,7 @@ These tests use synthetic data + monkeypatched run_workers (no real SCF /
 subprocess) except the explicitly-slow end-to-end smoke.
 """
 import json
+import math
 import os
 
 import pytest
@@ -361,6 +362,106 @@ def test_graceful_total_fallback_to_serial(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Non-finite species are re-queued (a shard that WROTE a NaN energy is not done)
+# ---------------------------------------------------------------------------
+
+def _make_recording_run_workers(energy_for):
+    """run_workers stub whose shards always write a JSON payload, with the
+    per-species energy taken from ``energy_for(call_no, name)`` (None / NaN
+    model the silently-failed species). Records the sorted name list handed to
+    each tier so a retry can be observed."""
+    state = {"calls": 0, "names": []}
+
+    def _fake(jobs, max_parallel=4, **kw):
+        state["calls"] += 1
+        tier_names = []
+        results = []
+        for job in jobs:
+            names = json.loads(open(_cmd_arg(job.cmd, "--names-file")).read())
+            tier_names.extend(names)
+            energies = {n: energy_for(state["calls"], n) for n in names}
+            with open(_cmd_arg(job.cmd, "--out-shard"), "w") as f:
+                json.dump({
+                    "energies": energies,
+                    "pbe_energies": {n: -0.9 for n in names},
+                    "mol_records": [
+                        {"molecule": n,
+                         "E_total_nn": (energies[n]
+                                        if isinstance(energies[n], float)
+                                        and math.isfinite(energies[n])
+                                        else None)}
+                        for n in names],
+                }, f)
+            results.append(par.WorkerResult(
+                job=job, status="success", returncode=0, payload={}, stderr="",
+                duration=0.01))
+        state["names"].append(sorted(tier_names))
+        return results
+    return _fake, state
+
+
+def test_escalation_requeues_nonfinite_species_to_next_tier(tmp_path, monkeypatch):
+    """A tier-1 shard that completes but writes a null energy for one species
+    leaves that species UNFINISHED: it must reach the lower-parallelism tier,
+    where the finite retry wins."""
+    from xcquinox.alec.cluster import _holdout_parallel as hp
+    full_specs = {n: object() for n in ("a", "b", "c", "d")}
+
+    def energy_for(call_no, name):
+        return None if (name == "d" and call_no == 1) else -1.0
+    fake, state = _make_recording_run_workers(energy_for)
+    monkeypatch.setattr(par, "run_workers", fake)
+    monkeypatch.setattr(eh, "compute_holdout_per_molecule",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("serial fallback should not run")))
+
+    out_dir = tmp_path / "eval_holdout"
+    hp.run_holdout_with_escalation(
+        "/run", 0, _FakeSpec(), object(), [], full_specs, out_dir,
+        basis="def2-svp", grid_level=1, n_workers_top=4, total_cpus=4)
+
+    assert state["names"][0] == ["a", "b", "c", "d"]
+    assert len(state["names"]) == 2
+    assert state["names"][1] == ["d"]         # only the null species retried
+    pm = json.loads((out_dir / eh.DEFAULT_PER_MOLECULE_NAME).read_text())
+    by = {r["molecule"]: r for r in pm}
+    assert len(pm) == 4                       # one row per species, not two
+    assert by["d"]["E_total_nn"] == pytest.approx(-1.0)
+
+
+def test_escalation_accepts_and_names_species_failing_every_tier(
+        tmp_path, monkeypatch, capsys):
+    """A species that is non-finite in every tier AND in the serial sweep is
+    accepted (its last payload lands in per_molecule.json) and named once."""
+    from xcquinox.alec.cluster import _holdout_parallel as hp
+    full_specs = {n: object() for n in ("a", "b", "d")}
+
+    fake, state = _make_recording_run_workers(
+        lambda call_no, name: float("nan") if name == "d" else -1.0)
+    monkeypatch.setattr(par, "run_workers", fake)
+
+    def _serial(training_spec, model, subset):
+        return {"energies": {n: float("nan") for n in subset},
+                "pbe_energies": {n: -0.9 for n in subset},
+                "mol_records": [{"molecule": n, "E_total_nn": None}
+                                for n in subset]}
+    monkeypatch.setattr(eh, "compute_holdout_per_molecule", _serial)
+
+    out_dir = tmp_path / "eval_holdout"
+    summary = hp.run_holdout_with_escalation(
+        "/run", 0, _FakeSpec(), object(), [], full_specs, out_dir,
+        basis="def2-svp", grid_level=1, n_workers_top=4, total_cpus=4)
+
+    assert len(state["names"]) == 2 and state["names"][1] == ["d"]
+    named = [ln for ln in capsys.readouterr().out.splitlines()
+             if "failed in every tier" in ln]
+    assert len(named) == 1
+    assert "1 species failed in every tier: d" in named[0]
+    assert summary["n_species"] == 3
+    assert _molecules_in_per_molecule_json(out_dir) == {"a", "b", "d"}
+
+
+# ---------------------------------------------------------------------------
 # _eval_one_spec wiring (parallel-by-default + graceful fallback)
 # ---------------------------------------------------------------------------
 
@@ -476,6 +577,73 @@ def test_merge_holdout_shards_tolerates_missing_keys():
 
 
 # ---------------------------------------------------------------------------
+# merge_holdout_shards precedence (a re-queued species appears in >1 payload)
+# ---------------------------------------------------------------------------
+
+def _one_name_shard(name, e_nn, e_pbe, tag):
+    """One shard payload for a single species, shaped like the worker's."""
+    finite = isinstance(e_nn, float) and math.isfinite(e_nn)
+    return {
+        "energies": {name: e_nn},
+        "pbe_energies": {name: e_pbe},
+        "mol_records": [{"molecule": name,
+                         "E_total_nn": e_nn if finite else None,
+                         "tag": tag}],
+    }
+
+
+def test_merge_precedence_nan_then_finite_takes_finite():
+    energies, pbe, recs = eh.merge_holdout_shards([
+        _one_name_shard("d", float("nan"), None, "t1"),
+        _one_name_shard("d", -1.0, -0.95, "t2"),
+    ])
+    assert energies["d"] == pytest.approx(-1.0)
+    assert pbe["d"] == pytest.approx(-0.95)
+    assert [r["tag"] for r in recs] == ["t2"]
+
+
+def test_merge_precedence_finite_then_nan_keeps_finite():
+    energies, pbe, recs = eh.merge_holdout_shards([
+        _one_name_shard("d", -1.0, -0.95, "t1"),
+        _one_name_shard("d", float("nan"), None, "t2"),
+    ])
+    assert energies["d"] == pytest.approx(-1.0)
+    assert pbe["d"] == pytest.approx(-0.95)
+    assert [r["tag"] for r in recs] == ["t1"]
+
+
+def test_merge_precedence_both_finite_later_tier_wins():
+    energies, pbe, recs = eh.merge_holdout_shards([
+        _one_name_shard("d", -1.0, -0.90, "t1"),
+        _one_name_shard("d", -1.5, -0.95, "t2"),
+    ])
+    assert energies["d"] == pytest.approx(-1.5)
+    assert pbe["d"] == pytest.approx(-0.95)
+    assert [r["tag"] for r in recs] == ["t2"]
+
+
+def test_merge_precedence_both_nonfinite_keeps_last_payload():
+    energies, pbe, recs = eh.merge_holdout_shards([
+        _one_name_shard("d", None, None, "t1"),
+        _one_name_shard("d", float("nan"), None, "t2"),
+    ])
+    assert not (isinstance(energies["d"], float)
+                and math.isfinite(energies["d"]))
+    assert [r["tag"] for r in recs] == ["t2"]        # last payload accepted
+
+
+def test_merge_dedupes_records_by_molecule_name():
+    """A re-queued species has one record per payload; per_molecule.json must
+    still carry exactly one row for it."""
+    _e, _p, recs = eh.merge_holdout_shards([
+        _one_name_shard("d", float("nan"), None, "t1"),
+        _one_name_shard("d", -1.0, -0.95, "t2"),
+        _one_name_shard("a", -2.0, -1.95, "t1"),
+    ])
+    assert [r["molecule"] for r in recs] == ["a", "d"]
+
+
+# ---------------------------------------------------------------------------
 # _finalize_holdout_outputs
 # ---------------------------------------------------------------------------
 
@@ -573,6 +741,55 @@ def test_orchestrator_drives_real_worker_subprocesses(tmp_path, monkeypatch):
 
     assert summary["n_species"] == 4
     assert _molecules_in_per_molecule_json(out_dir) == {"a", "b", "c", "d"}
+
+
+_NOISY_FAKE_WORKER = '''\
+import argparse, json, sys
+p = argparse.ArgumentParser()
+for f in ("--run-dir", "--spec-idx", "--names-file", "--out-shard",
+          "--basis", "--grid-level", "--threads", "--model-name"):
+    p.add_argument(f)
+a = p.parse_args()
+names = json.load(open(a.names_file))
+print("[worker] precompute done")
+print("  eval[%s] FAILED: RuntimeError: stdout side" % names[0])
+print("  eval[%s] FAILED: RuntimeError: stderr side" % names[0],
+      file=sys.stderr)
+json.dump({"energies": {n: -1.0 for n in names},
+           "pbe_energies": {n: -0.9 for n in names},
+           "mol_records": [{"molecule": n, "E_total_nn": -1.0} for n in names]},
+          open(a.out_shard, "w"))
+print(json.dumps({"status": "success", "n_done": len(names)}))
+'''
+
+
+def test_orchestrator_persists_worker_logs_and_forwards_failed_lines(
+        tmp_path, monkeypatch, capsys):
+    """Worker diagnostics survive the subprocess boundary: both streams land in
+    a per-shard log next to the shard JSON, and the per-species FAILED lines
+    are echoed into the task log so a silent shard cannot go unnoticed."""
+    from xcquinox.alec.cluster import _holdout_parallel as hp
+
+    worker = tmp_path / "noisy_worker.py"
+    worker.write_text(_NOISY_FAKE_WORKER)
+    monkeypatch.setattr(par, "worker_script_path", lambda name: str(worker))
+
+    out_dir = tmp_path / "eval_holdout"
+    summary = hp.run_holdout_with_escalation(
+        "/run", 0, _FakeSpec(), object(), [], {"a": object()}, out_dir,
+        basis="def2-svp", grid_level=1, n_workers_top=2, total_cpus=2)
+
+    assert summary["n_species"] == 1          # the JSON result is still parsed
+    log = out_dir / "_shards" / "worker_t1_s0.log"
+    assert log.is_file()
+    text = log.read_text()
+    assert "[worker] precompute done" in text                 # stdout
+    assert "FAILED: RuntimeError: stderr side" in text        # stderr
+    forwarded = [ln for ln in capsys.readouterr().err.splitlines()
+                 if "[holdout-parallel] worker t1/s0:" in ln]
+    assert len(forwarded) == 2                # both streams are scanned
+    assert any("stdout side" in ln for ln in forwarded)
+    assert any("stderr side" in ln for ln in forwarded)
 
 
 def test_worker_main_forwards_coldstart_flag(tmp_path, monkeypatch):

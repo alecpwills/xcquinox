@@ -3,8 +3,10 @@
 Parallelizes a spec's held-out eval (full BH76 + W4-11, ~200+ molecules) across
 molecule-shard worker subprocesses (``workers/eval_holdout_worker.py`` via
 ``parallel.run_workers``), descending a parallelism ladder and **retrying only
-the molecules whose shard failed** at lower parallelism (more memory per worker),
-then finishing any stragglers in-process serial. The per-molecule physics is the
+the molecules that did not finish** at lower parallelism (more memory per
+worker), then finishing any stragglers in-process serial. Not finishing covers
+both a shard that wrote no JSON and a species the shard wrote with a null/NaN
+energy, i.e. one whose own evaluation raised. The per-molecule physics is the
 SAME ``eval_holdout.compute_holdout_per_molecule`` the serial driver uses, so the
 result is identical to serial; only the work distribution differs.
 
@@ -22,6 +24,23 @@ from xcquinox.alec import parallel
 
 def _log(msg: str) -> None:
     print(f"[holdout-parallel] {msg}", flush=True)
+
+
+def _forward_failed_lines(tier_no, si, res) -> None:
+    """Echo a worker's per-species failure lines into the task log.
+
+    The full captured streams are on disk (``<shard_dir>/worker_t*_s*.log``);
+    only the ``FAILED:`` lines are repeated here so a 40-shard tier stays
+    readable while a silently-failing species still shows up in the task log.
+    Both streams are scanned -- the worker's own failure line has moved to
+    stderr, but stdout is where older workers put it. Lines are truncated: a
+    shard-level crash puts its whole traceback on one JSON line."""
+    for stream in (getattr(res, "stdout", "") or "",
+                   getattr(res, "stderr", "") or ""):
+        for line in stream.splitlines():
+            if "FAILED:" in line:
+                print(f"[holdout-parallel] worker t{tier_no}/s{si}: "
+                      f"{line.strip()[:400]}", file=sys.stderr, flush=True)
 
 
 def _round_robin(names, k):
@@ -82,12 +101,17 @@ def run_holdout_with_escalation(
             ] + (["--coldstart"] if coldstart else [])
             jobs.append(parallel.WorkerJob(
                 name=f"eval_t{tier_no}_s{si}", cmd=cmd,
-                progress_file=str(shard_dir / f"progress_t{tier_no}_s{si}.json"),
+                # The shard worker writes no progress file, so the watchdog
+                # would report a "stall" every STALL_WARN_SEC for the whole run.
+                progress_file=None,
+                log_file=str(shard_dir / f"worker_t{tier_no}_s{si}.log"),
                 thread_env=parallel._thread_env(threads)))
 
         _log(f"tier {tier_no}: {k} workers x {threads} thread(s) over "
              f"{len(remaining)} molecules")
         results = parallel.run_workers(jobs, max_parallel=n_workers)
+        for si, res in enumerate(results):
+            _forward_failed_lines(tier_no, si, res)
 
         done = set()
         for res, out_shard in zip(results, out_shards):
@@ -98,7 +122,15 @@ def run_holdout_with_escalation(
             except (OSError, ValueError):
                 continue
             shard_payloads.append(payload)
-            done.update(payload.get("energies", {}).keys())
+            # A species counts as DONE only when its shard energy is finite.
+            # A completed shard can still carry a null/NaN energy for a species
+            # whose evaluation raised (transient host-allocation / compile
+            # failures under tier-1 memory pressure), and treating the mere
+            # PRESENCE of the name as completion retired those species without
+            # ever retrying them at lower parallelism.
+            for name, e in (payload.get("energies") or {}).items():
+                if eval_holdout.is_finite_energy(e):
+                    done.add(name)
         remaining = [n for n in remaining if n not in done]
         if remaining:
             _log(f"tier {tier_no} left {len(remaining)} molecules unfinished; "
@@ -117,6 +149,15 @@ def run_holdout_with_escalation(
 
     energies, pbe_energies, mol_records = eval_holdout.merge_holdout_shards(
         shard_payloads)
+    # Every tier (workers + the serial sweep) has now had a go; a species still
+    # non-finite is accepted with its last payload, but is NAMED so the operator
+    # sees it instead of a silent NaN column in per_molecule.json.
+    failed_everywhere = sorted(
+        n for n in full_specs
+        if not eval_holdout.is_finite_energy(energies.get(n)))
+    if failed_everywhere:
+        _log(f"{len(failed_everywhere)} species failed in every tier: "
+             f"{', '.join(failed_everywhere)}")
     # MOLECULE-level names (single atoms excluded): held-out overlap is
     # molecule-level, else shared reference atoms (h, c, n, o, ...) drop nearly
     # the entire atomization held-out set. See eval_holdout.training_molecule_names.

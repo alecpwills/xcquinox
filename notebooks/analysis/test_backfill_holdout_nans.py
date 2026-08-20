@@ -168,6 +168,41 @@ def test_patch_records_backfills_energy_and_preserves_density():
     assert "mm_nan" in rep["patched"]
 
 
+def test_patch_records_drops_stale_eval_error():
+    """A NaN row written by the cluster eval names the exception that produced
+    it (``eval_error``). Once the species is recomputed successfully that text
+    describes an evaluation the row no longer holds, so it must go with the
+    other recomputation-owned fields."""
+    recs = _base_records()
+    for r in recs:
+        if r["molecule"] == "mm_nan":
+            r["eval_error"] = "XlaRuntimeError: RESOURCE_EXHAUSTED"
+            r["cycles_run"] = None
+            r["scf_converged"] = None
+    new, rep = bf.patch_records(recs, _good_payload(),
+                                controls=["aa_ctl", "bb_ctl"],
+                                gate_nn=1e-6, gate_pbe=1e-6)
+    assert "mm_nan" in rep["patched"]
+    by = {r["molecule"]: r for r in new}
+    assert "eval_error" not in by["mm_nan"]
+    assert by["mm_nan"]["cycles_run"] == 3
+    assert by["mm_nan"]["E_total_nn"] == -30.1
+
+
+def test_patch_records_keeps_eval_error_on_unpatched_row():
+    """The failure text stays on a row the driver refuses to patch."""
+    recs = _base_records()
+    for r in recs:
+        if r["molecule"] == "pp_nan":            # PBE mismatch -> skipped
+            r["eval_error"] = "XlaRuntimeError: RESOURCE_EXHAUSTED"
+    new, rep = bf.patch_records(recs, _good_payload(),
+                                controls=["aa_ctl", "bb_ctl"],
+                                gate_nn=1e-6, gate_pbe=1e-6)
+    assert "pp_nan" in rep["skipped"]
+    by = {r["molecule"]: r for r in new}
+    assert by["pp_nan"]["eval_error"].startswith("XlaRuntimeError:")
+
+
 def test_patch_records_gates_species_on_pbe_mismatch():
     # pp_nan's local PBE landed 5e-4 Ha away (a c2-class multi-solution):
     # the species is skipped, left NaN, and named with its delta.

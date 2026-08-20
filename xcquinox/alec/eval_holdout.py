@@ -31,6 +31,7 @@ import json
 import math
 import os
 import pickle  # noqa: S403 -- trusted local .spec files, written by this codebase
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -462,6 +463,15 @@ def make_per_molecule_record(
     ``scf_energy_residual_<i>`` (``|E_i - E_final|``), the per-molecule,
     per-SCF-step convergence trace. ``cycles_run`` / ``scf_converged`` /
     ``scf_total_energy`` reflect the actual SCF (vs the one-shot sentinels).
+
+    Failure rows: when ``scf`` carries an ``eval_error`` (the species' forward
+    pass raised, see :func:`evaluate_holdout`), or when ``scf`` is absent AND
+    ``e_nn_ha`` is non-finite, no SCF ran and the (0, True) sentinels would
+    assert a convergence that never happened -- ``cycles_run`` and
+    ``scf_converged`` are then ``None``, and the ``eval_error`` text is carried
+    on the record when it is known. A no-SCF row with a FINITE energy is the
+    ONESHOT/FIXED_J case and keeps the historical sentinels, matching
+    ``evaluation.SCFConvergenceMetric``.
     """
     e_pbe = mol_data.get("E_pbe")
     e_pbe_f = float(e_pbe) if e_pbe is not None else None
@@ -489,7 +499,21 @@ def make_per_molecule_record(
     if density is not None:
         for k in _DENSITY_RECORD_KEYS:
             record[k] = density.get(k)
-    if scf is not None:
+    eval_error = scf.get("eval_error") if scf is not None else None
+    if eval_error:
+        # The species' evaluation raised: no SCF ran, so the sentinels would
+        # assert a converged zero-cycle SCF that never happened. Null out the
+        # convergence pair and carry the exception text instead.
+        record["cycles_run"] = None
+        record["scf_converged"] = None
+        record["eval_error"] = str(eval_error)
+    elif scf is None and not math.isfinite(e_nn_ha):
+        # No SCF info and no energy either (a failure recorded without an
+        # ``scf_info_out`` map, or a species missing from the energy map):
+        # same false statement, same null pair.
+        record["cycles_run"] = None
+        record["scf_converged"] = None
+    elif scf is not None:
         record["cycles_run"] = int(scf.get("cycles_run", 0))
         record["scf_converged"] = bool(scf.get("converged", False))
         e_final = scf.get("total_energy")
@@ -629,10 +653,13 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     per species, the per-molecule, per-SCF-step convergence trace that
     :func:`make_per_molecule_record` turns into ``scf_energy_step_<i>`` /
     ``scf_energy_residual_<i>`` columns. Captures even when the final energy
-    is non-finite (so a diverged SCF's trace is still recorded).
+    is non-finite (so a diverged SCF's trace is still recorded). A species
+    whose evaluation RAISES gets ``{name: {"eval_error": "<Type>: <msg>"}}``
+    instead, so the failure survives into the per-molecule record rather than
+    reading as an SCF that was never attempted.
 
     NaN on exception. When ``verbose_first_failure`` is True (default),
-    the FIRST exception in a batch is printed with its full message so
+    EVERY exception in a batch is printed to stderr with its full message so
     the operator sees real errors instead of a silent column of NaNs.
     """
     import xcquinox.alec as alec
@@ -640,7 +667,6 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     from xcquinox.alec.oneshot import tail_weighted_mean_energy
     import numpy as _np
     out: Dict[str, float] = {}
-    first_err_shown = False
     n_failed = 0
     # FULL -> self-consistent run_scf energy (+ trace); else one-shot. Matches
     # oneshot.total_energy_for_solver so train == in-sample-eval == held-out-eval.
@@ -681,16 +707,26 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
             else:
                 e = float(alec.fixed_density_total_energy(model, md))
         except Exception as exc:  # noqa: BLE001
-            if verbose_first_failure and not first_err_shown:
+            # EVERY failure is named, on stderr: one shard can silently lose
+            # dozens of species to transient allocation/compile faults, and a
+            # single first-failure line on stdout hides the rest (stdout also
+            # carries the worker's JSON status line).
+            if verbose_first_failure:
                 print(f"  eval[{name}] FAILED: {type(exc).__name__}: {exc}",
-                      flush=True)
-                first_err_shown = True
+                      file=sys.stderr, flush=True)
+            if scf_info_out is not None:
+                # An ABSENT scf_info entry is indistinguishable downstream from
+                # a one-shot eval, which is how a raised species came to be
+                # written as a converged zero-cycle SCF; record the failure.
+                scf_info_out[name] = {
+                    "eval_error": f"{type(exc).__name__}: {exc}"}
             n_failed += 1
             e = float("nan")
         out[name] = e if math.isfinite(e) else float("nan")
     if n_failed:
         print(f"  eval: {n_failed}/{len(mol_data)} species failed "
-              "(NaN energy; see first error above)", flush=True)
+              "(NaN energy; see the eval[...] FAILED lines on stderr)",
+              flush=True)
     return out
 
 
@@ -1044,23 +1080,60 @@ def compute_holdout_per_molecule(training_spec, model, mol_specs: Dict[str, Any]
     }
 
 
+def is_finite_energy(value: Any) -> bool:
+    """True only for a real, finite number. ``None`` (an absent shard entry)
+    and ``NaN`` (a species whose evaluation raised) are both non-finite, so
+    the two failure representations are handled by one predicate."""
+    return (isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value)))
+
+
 def merge_holdout_shards(shard_payloads: Sequence[Dict[str, Any]]
                          ) -> Tuple[Dict[str, float], Dict[str, float],
                                     List[Dict[str, Any]]]:
     """Merge per-shard ``{energies, pbe_energies, mol_records}`` payloads into
     the combined maps the finalize stage consumes.
 
-    Molecule names are a partition of the held-out set (each shard owns a
-    disjoint subset), so the dict-unions are collision-free. ``mol_records`` are
-    concatenated and re-sorted by molecule name to match the serial ordering."""
+    A species evaluated in ONE shard only (the common case) passes through
+    unchanged. A species that was RE-QUEUED to a lower-parallelism tier appears
+    in several payloads, so the union is resolved by precedence: a finite value
+    beats a non-finite one (the retry that succeeded is the result), and among
+    equally-finite (or equally non-finite) values the LAST payload wins, i.e.
+    the lowest-parallelism tier that ran it. ``mol_records`` follow the same
+    rule on their ``E_total_nn`` and are de-duplicated by molecule name, so
+    per_molecule.json keeps exactly one row per species; the records are
+    re-sorted by name to match the serial ordering."""
     energies: Dict[str, float] = {}
     pbe_energies: Dict[str, float] = {}
-    mol_records: List[Dict[str, Any]] = []
+    records_by_name: Dict[str, Dict[str, Any]] = {}
+    unnamed_records: List[Dict[str, Any]] = []
+
+    def _accept(dest: Dict[str, Any], key: str, value: Any) -> None:
+        if key in dest and not is_finite_energy(value) \
+                and is_finite_energy(dest[key]):
+            return                             # keep the finite earlier value
+        dest[key] = value
+
     for payload in shard_payloads:
-        energies.update(payload.get("energies", {}))
-        pbe_energies.update(payload.get("pbe_energies", {}))
-        mol_records.extend(payload.get("mol_records", []))
-    mol_records.sort(key=lambda r: r.get("molecule", ""))
+        for name, e in (payload.get("energies") or {}).items():
+            _accept(energies, name, e)
+        for name, e in (payload.get("pbe_energies") or {}).items():
+            _accept(pbe_energies, name, e)
+        for rec in payload.get("mol_records") or []:
+            name = rec.get("molecule")
+            if name is None:
+                unnamed_records.append(rec)
+                continue
+            prev = records_by_name.get(name)
+            if prev is not None \
+                    and not is_finite_energy(rec.get("E_total_nn")) \
+                    and is_finite_energy(prev.get("E_total_nn")):
+                continue
+            records_by_name[name] = rec
+
+    mol_records = list(records_by_name.values()) + unnamed_records
+    mol_records.sort(key=lambda r: str(r.get("molecule") or ""))
     return energies, pbe_energies, mol_records
 
 
