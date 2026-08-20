@@ -162,11 +162,20 @@ the pulled `eval_holdout*/per_molecule.json` carries the NN + PBE density
 columns -- skipped with a console note otherwise, in which case a stale file
 from an earlier render may persist).
 
+Every grouped-bar figure lands twice: the linear file and a `_logy` sibling
+carrying the SAME data on a logarithmic y axis, for reading panels in which one
+architecture's bars run hundreds of kcal/mol and squash the rest. The linear
+files and every CSV are unchanged. The five siblings are
+`ablation_energy_wtmad_mae_logy.png`,
+`ablation_density_energy_overview[_dfs_units]_logy.png`, and
+`ablation_density_energy_3x3[_dfs_units]_logy.png`.
+
 Each per-basis dir also gets two overview composites plus a standalone density
 trend: `ablation_density_energy_overview.png` (per-pool + 2-subset WTMAD-2
 bars over the NN-vs-PBE density parity, the iso-ED decomposition, and the ED
 headline; rendered whenever the held-out density figure renders, with
-placeholder panels when the ED anchors are missing),
+placeholder panels when the ED anchors are missing, and its log-y sibling
+`ablation_density_energy_overview_logy.png` alongside),
 `ablation_holdout_density_per_arch.png` (the per-arch held-out density trend
 vs subset_size as its own figure; same gate), and
 `ablation_insample_overview.png` (in-sample AE + density; always rendered;
@@ -174,7 +183,8 @@ final-checkpoint data, so its panels are identical in the final and val-best
 dirs). The per-channel 3x3 `ablation_density_energy_3x3.png` rides the same
 held-out-density gate (WTMAD-2 / density parity / ED as columns
 BH76 | W4-11 | combined, each channel's ED gamma self-calibrated from its own
-PBE anchors, with `ablation_density_energy_3x3.csv` alongside), and the
+PBE anchors, with `ablation_density_energy_3x3.csv` and the log-y sibling
+`ablation_density_energy_3x3_logy.png` alongside), and the
 enriched combined-channel standalone `ablation_ed_decomposition.png` (iso-ED
 contour family, beats-PBE shading, per-arch subset trajectories) rides the
 stricter ED-anchor gate of the ED figure; the standalone per-channel parity
@@ -183,8 +193,8 @@ three channel panels in one shared frame) rides the same gate. When the
 pull additionally carries the Eq. 20 eps columns (Sec. 4), both dirs gain
 the DFS-units twins -- `ablation_combined_energy_density_dfs_units.png`,
 `ablation_ed_decomposition_dfs_units.png`,
-`ablation_density_energy_overview_dfs_units.png`,
-`ablation_density_energy_3x3_dfs_units.png` + `.csv` (ALL BARS: eps
+`ablation_density_energy_overview_dfs_units.png` (+ `_logy`),
+`ablation_density_energy_3x3_dfs_units.png` + `.csv` (+ `_logy`; ALL BARS: eps
 density-error row + combined-metric row under one shared gamma, stamped
 in-panel), and `ablation_density_parity_by_channel_dfs_units.png`;
 coverage disclosures stamped in the note bands; the 3x3 twin's shared
@@ -270,7 +280,8 @@ own-axes-fit panel when the cache resolves, placeholder otherwise),
 `ablation_density_energy_3x3_dfs_units.png` + `.csv` (all bars; per-channel
 eps legs under one shared gamma -- the own-axes fit when the calibration
 cache resolves, the published slope otherwise, stamped in-panel; the CSV
-carries both), and `ablation_density_parity_by_channel_dfs_units.png`
+carries both; both bar figures also in their `_logy` form), and
+`ablation_density_parity_by_channel_dfs_units.png`
 (per-species eps parity, shared frame) -- each with the eps coverage
 disclosures stamped in its note band (partially-covered pulls name the
 missing cells on the figure). Pulls without the columns produce

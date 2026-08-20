@@ -13,14 +13,24 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 | `ablation_combined_energy_density.csv` | Machine-readable per-cell ED table (all energy legs) |
 | `ablation_combined_energy_density_dfs_units.png` | The ED parity in DFS units: Eq. 20 eps density leg, gamma fixed (published / own-axes fit); eps pulls only |
 | `ablation_density_energy_overview.png` | One-canvas held-out story: per-pool WTMAD-2 + density parity + iso-ED + ED |
+| `ablation_density_energy_overview_logy.png` | The same overview with the bar panels on a logarithmic y axis |
 | `ablation_density_energy_overview_dfs_units.png` | The overview with panels D/E/F in DFS units (eps parity, ED under the operative gamma stamped in-panel); eps pulls only |
+| `ablation_density_energy_overview_dfs_units_logy.png` | The DFS-units overview with the bar panels on a logarithmic y axis; eps pulls only |
 | `ablation_density_energy_3x3.png` (+ `.csv`) | Per-channel 3x3, ALL BARS: WTMAD-2 / density RMSE / ED for BH76, W4-11, combined |
+| `ablation_density_energy_3x3_logy.png` | The same 3x3 with all nine panels on a logarithmic y axis |
 | `ablation_density_energy_3x3_dfs_units.png` (+ `.csv`) | The all-bars 3x3 in DFS units: eps density bars + per-channel ED bars under ONE shared gamma (stamped in-panel); eps pulls only |
+| `ablation_density_energy_3x3_dfs_units_logy.png` | The DFS-units 3x3 with all nine panels on a logarithmic y axis; eps pulls only |
 | `ablation_density_parity_by_channel.png` | Per-species NN-vs-PBE density-RMSE parity by channel (one shared frame) -- the 3x3's former parity row |
 | `ablation_density_parity_by_channel_dfs_units.png` | The per-channel parity in eps units (shared frame); eps pulls only |
 | `ablation_ed_decomposition.png` | The iso-ED decomposition as its own enriched canvas |
 | `ablation_ed_decomposition_dfs_units.png` | The enriched decomposition under the operative DFS-units gamma (Eq. 20 eps units, stamped in-panel); eps pulls only |
 | `ablation_insample_overview.png` | One-canvas in-sample story: AE + density (training fit) |
+
+Every grouped-bar figure is written twice: the linear file listed above and a `_logy`
+sibling holding the SAME data on a logarithmic y axis (`ablation_energy_wtmad_mae_logy.png`
+alongside the energy figure, and the four density/energy composites above). The log view is
+for panels where one architecture's bars run hundreds of kcal/mol and squash the rest; the
+linear file is unchanged, and no CSV is affected.
 
 The intended use mirrors the multimode figure glossary: open the figure on one screen and
 this file on the other. The `figures_*` directories are regenerated outputs and are never
@@ -149,7 +159,9 @@ published gamma, (b) the (E, gamma*D) decomposition, (c) the own-axes-fit leg wh
 calibration cache sits in the run dir, a labeled placeholder otherwise),
 `ablation_ed_decomposition_dfs_units.png` (the enriched decomposition under the operative
 gamma), `ablation_density_energy_overview_dfs_units.png` (the held-out overview with panel
-D's parity in eps units and E/F under the operative gamma, stamped in-panel), and
+D's parity in eps units and E/F under the operative gamma, stamped in-panel; the bar
+panels also on a logarithmic y axis in
+`ablation_density_energy_overview_dfs_units_logy.png`), and
 `ablation_density_energy_3x3_dfs_units.png` + `.csv` (the per-channel 3x3 with row 2 in
 eps units and row 3's ED under ONE shared gamma -- so, unlike the self-calibrated
 original whose per-channel gammas forbid it, EDs DO compare across the
@@ -164,7 +176,8 @@ combined-metric bars; its caveat line 1 spells out the single-pool "one-bucket"
 reduction, 56.84*MAD_pool/mean|dE_ref|_pool, and line 2 the metric and density-error
 equations in the paper's notation. The per-species parity view lives in
 `ablation_density_parity_by_channel_dfs_units.png` -- three channel panels in ONE shared
-square frame (own-data envelopes remain on the single-panel parity figures)).
+square frame (own-data envelopes remain on the single-panel parity figures); the log-y
+sibling of the twin is `ablation_density_energy_3x3_dfs_units_logy.png`).
 The panel bodies are the shared `gamma_mode`-aware ones, so the self-calibration claims
 (ED_PBE = E_PBE, PBE-on-y=x) never appear on these figures; the gamma stamp reads
 "(fixed, external)" and the caveats state the Eq. 20 units and the gamma source. The eps
@@ -336,6 +349,10 @@ whenever the held-out density figure renders. Same panel bodies as the dedicated
 | (E) | The per-cell (E, gamma*D) iso-ED decomposition (= panel (b) of 4.4); grey "ED decomposition unavailable" placeholder when the ED anchors are missing |
 | (F) | The ED headline (= panel (a) of 4.4); same placeholder degradation |
 
+`ablation_density_energy_overview_logy.png` is the same canvas with panels (A)-(C) on a
+logarithmic y axis (the parity and ED panels are unchanged); its bar y labels read
+"kcal/mol (log)".
+
 The per-arch density trend that formerly occupied (D) lives in 4.3 (and in the left panel
 of 4.2). SCAN appears only as panel (F)'s ED comparator line, drawn exactly when the ED
 summary's SCAN legs resolve (both caches present and above the 90% coverage floor; the
@@ -356,7 +373,9 @@ whenever the held-out density figure renders.
 
 The whole figure is bar charts; the per-species parity view lives in
 `ablation_density_parity_by_channel[_dfs_units].png` (one shared square frame across the
-three channel panels, so the channels are directly comparable).
+three channel panels, so the channels are directly comparable). Being all bars, the whole
+canvas has a log-y sibling: `ablation_density_energy_3x3_logy.png` renders the same nine
+panels on a logarithmic y axis, with "(log)" appended to each panel's y label.
 
 The companion `ablation_density_energy_3x3.csv` reuses the Sec. 4.5 schema with legs
 `bh76_wtmad2` / `w411_wtmad2` / `combined_wtmad2` and per-channel `n_reactions` /

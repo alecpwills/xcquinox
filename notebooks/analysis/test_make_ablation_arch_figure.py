@@ -1393,6 +1393,83 @@ def test_cell_rows_spans_are_capped_errorbars(tmp_path):
         plt.close(f)
 
 
+def test_grouped_bars_logy_axis_limits_span_everything_drawn():
+    # Log-y sibling of the grouped-bar panels: with one arch hundreds of
+    # kcal/mol above the rest, the linear panel flattens the small bars.
+    # Under yscale="log" the limits are set explicitly from every finite
+    # positive quantity DRAWN -- bars, pooled lines, cell-row spans -- so
+    # nothing is clipped and the comparator artists are unchanged.
+    import matplotlib.pyplot as plt
+    metric = {("deep", 1): 0.9, ("deep", 3): 40.0,
+              ("deep_notransform", 1): 400.0}
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, metric, ["deep", "deep_notransform"],
+                               [1, 3], pbe_line=12.0, title="t",
+                               scan_line=8.0,
+                               pbe_by_cell={("deep", 1): 11.0},
+                               scan_by_cell={("deep", 1): 7.0},
+                               yscale="log")
+        assert ax.get_yscale() == "log"
+        drawn = [0.9, 40.0, 400.0, 12.0, 8.0, 11.0, 7.0]
+        lo, hi = ax.get_ylim()
+        assert lo > 0.0                       # a log axis admits no zero floor
+        assert lo < min(drawn), (lo, min(drawn))
+        assert hi > max(drawn), (hi, max(drawn))
+        assert ax.get_ylabel().endswith("(log)"), ax.get_ylabel()
+        labels = {c.get_label() for c in ax.containers}
+        assert {"PBE (cell rows)", "SCAN (cell rows)"} <= labels, labels
+    finally:
+        plt.close(f)
+
+
+def test_grouped_bars_default_axis_stays_linear():
+    # Regression pin on the linear original: the default call keeps the
+    # zero baseline and the bare unit label the paper figures carry.
+    import matplotlib.pyplot as plt
+    metric = {("deep", 2): 5.0}
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, metric, ["deep"], [2],
+                               pbe_line=8.0, title="t", scan_line=6.0,
+                               pbe_by_cell={("deep", 2): 6.5})
+        assert ax.get_yscale() == "linear"
+        assert ax.get_ylim()[0] == 0.0
+        assert ax.get_ylabel() == "kcal/mol"
+    finally:
+        plt.close(f)
+
+
+def test_grouped_bars_logy_empty_panel_still_draws(tmp_path):
+    # A channel with no data (all-NaN bars, no comparator line) leaves a log
+    # axis with nothing positive to frame: autoscaling it lands on a range
+    # around zero and the log locator raises at DRAW time, which would take
+    # the whole composite down. The empty panel gets a bare decade instead.
+    import matplotlib.pyplot as plt
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, {("deep", 1): float("nan")}, ["deep"],
+                               [1], title="t", yscale="log")
+        assert ax.get_ylim()[0] > 0.0
+        f.savefig(tmp_path / "empty_log.png", dpi=60)
+        assert (tmp_path / "empty_log.png").is_file()
+    finally:
+        plt.close(f)
+
+
+def test_grouped_bars_rejects_unknown_yscale():
+    # Only the two rendered scales exist; a typo must not silently fall
+    # back to a linear panel written to a _logy path.
+    import matplotlib.pyplot as plt
+    f, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError):
+            fig._grouped_arch_bars(ax, {("deep", 1): 1.0}, ["deep"], [1],
+                                   title="t", yscale="bogus")
+    finally:
+        plt.close(f)
+
+
 def test_cell_anchor_note_explains_glyph():
     note = fig._cell_anchor_note({("deep", 2): 5.0})
     low = note.lower()
@@ -3116,9 +3193,11 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     run = _make_run_dir(tmp_path)
     out1 = tmp_path / "f1"
     names1 = {p.name for p in fig.build_density_energy_figures(run, out1)}
-    # refs-free run: only the four unconditional figures
+    # refs-free run: only the unconditional figures (the energy panel is
+    # rendered twice -- linear + its log-y sibling)
     assert names1 == {"ablation_rung_summary.png",
                       "ablation_energy_wtmad_mae.png",
+                      "ablation_energy_wtmad_mae_logy.png",
                       "ablation_insample_density_ccsd.png",
                       "ablation_insample_overview.png"}
     assert "ablation_holdout_density_ccsd.png" not in names1
@@ -3145,7 +3224,14 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     # the 3x3s' former parity rows as standalone per-channel figures
     assert "ablation_density_parity_by_channel.png" in names2
     assert "ablation_density_parity_by_channel_dfs_units.png" in names2
-    assert len(names2) == 16
+    # every grouped-bar figure also ships its log-y sibling, same data
+    for logy in ("ablation_energy_wtmad_mae_logy.png",
+                 "ablation_density_energy_overview_logy.png",
+                 "ablation_density_energy_overview_dfs_units_logy.png",
+                 "ablation_density_energy_3x3_logy.png",
+                 "ablation_density_energy_3x3_dfs_units_logy.png"):
+        assert logy in names2, logy
+    assert len(names2) == 21
     assert (out2 / "ablation_density_energy_3x3_dfs_units.csv").is_file()
     # the CSVs are written alongside but NEVER returned (return stays PNG-only)
     assert (out2 / "ablation_combined_energy_density.csv").is_file()
@@ -3178,15 +3264,17 @@ def test_plot_size_consistency_diagnostic_renders(tmp_path):
     assert _png_ok(out)
 
 
-def test_build_density_energy_figures_writes_four(tmp_path):
+def test_build_density_energy_figures_writes_five(tmp_path):
     run = _make_run_dir(tmp_path)
     written = fig.build_density_energy_figures(run, tmp_path / "out")
-    # headline rung summary + energy + in-sample density + in-sample overview
-    # (no SCAN cache -> no SCAN line; refs-free run -> no holdout/ED family)
-    assert len(written) == 4
+    # headline rung summary + energy (linear + log-y) + in-sample density +
+    # in-sample overview (no SCAN cache -> no SCAN line; refs-free run -> no
+    # holdout/ED family)
+    assert len(written) == 5
     assert all(_png_ok(p) for p in written)
     assert {p.name for p in written} == {"ablation_rung_summary.png",
                                          "ablation_energy_wtmad_mae.png",
+                                         "ablation_energy_wtmad_mae_logy.png",
                                          "ablation_insample_density_ccsd.png",
                                          "ablation_insample_overview.png"}
 
@@ -3909,6 +3997,12 @@ def test_build_dfs_units_png_absent_without_eps(tmp_path, capsys):
                 / "ablation_density_energy_overview_dfs_units.png").exists()
     assert not (out / "ablation_density_energy_3x3_dfs_units.png").exists()
     assert not (out / "ablation_density_energy_3x3_dfs_units.csv").exists()
+    # the log-y siblings ride inside the same gate -- absent eps columns,
+    # neither the linear twin nor its _logy version is written
+    assert not (out / "ablation_density_energy_overview_dfs_units_logy.png"
+                ).exists()
+    assert not (out / "ablation_density_energy_3x3_dfs_units_logy.png"
+                ).exists()
     assert not (out
                 / "ablation_density_parity_by_channel_dfs_units.png"
                 ).exists()
@@ -4347,6 +4441,41 @@ def test_3x3_density_bar_row_values(tmp_path, monkeypatch):
         assert kw["pbe_line"] == pytest.approx(want_pbe), ch
     # nine bar panels in total: 3 energy + 3 density + 3 ED
     assert len(calls) == 9
+
+
+def test_3x3_logy_panels_are_log_axes(tmp_path, monkeypatch):
+    """The 3x3's log-y sibling: every populated bar panel renders on a log
+    axis with a positive bottom limit and a "(log)"-suffixed y label -- rows
+    2 and 3 set their own labels after the panel body, so the suffix has to
+    survive those overrides. The default call leaves all panels linear."""
+    import matplotlib.figure as mfig
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    seen = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        # bar panels only: the unpopulated channels are text placeholders
+        seen.append([(ax.get_yscale(), ax.get_ylim(), ax.get_ylabel())
+                     for ax in self.axes if ax.containers])
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    fig.plot_density_energy_3x3(rows, hd, tmp_path / "x3_log.png", "run_x",
+                                yscale="log")
+    assert seen and seen[0], "no populated bar panel rendered"
+    for scale, (lo, _hi), ylab in seen[0]:
+        assert scale == "log"
+        assert lo > 0.0
+        assert ylab.endswith("(log)"), ylab
+    seen.clear()
+    fig.plot_density_energy_3x3(rows, hd, tmp_path / "x3_lin.png", "run_x")
+    assert seen and seen[0]
+    for scale, (lo, _hi), ylab in seen[0]:
+        assert scale == "linear"
+        assert not ylab.endswith("(log)"), ylab
 
 
 def test_3x3_caveats_define_reduction_and_gamma():

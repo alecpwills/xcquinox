@@ -4543,7 +4543,8 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                        relocked_cells: Optional[set] = None,
                        mixed_cells: Optional[set] = None,
                        incomplete_cells: Optional[set] = None,
-                       vxc_pre_fix: bool = False) -> None:
+                       vxc_pre_fix: bool = False,
+                       yscale: str = "linear") -> None:
     """Grouped per-(arch, subset_size) bar panel: one bar group per arch
     (rung-ordered by the caller), x = subset_size, PBE dashed / SCAN dotted
     reference lines when finite, green beats markers on bars strictly below
@@ -4569,7 +4570,19 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     change: the spans and beats anchors are slice reductions regardless. A
     cell with no finite bar height cannot carry the star; the callers'
     footer warning still names it with its scored/slice counts. Shared by
-    ``plot_energy_wtmad_mae`` and the overview composites."""
+    ``plot_energy_wtmad_mae`` and the overview composites.
+
+    ``yscale`` selects the y axis: ``"linear"`` (the default, the panel as
+    the paper figures carry it) or ``"log"`` for the ``_logy`` sibling
+    figures, where a single arch running hundreds of kcal/mol otherwise
+    flattens the rest of the panel. Every plotted quantity is a strictly
+    positive error measure, so the log panel loses no bar; its limits are
+    set explicitly from what was drawn (bars, comparator lines, cell-row
+    spans) rather than left to autoscaling, which a zero-height legend
+    proxy would otherwise drag down."""
+    if yscale not in ("linear", "log"):
+        raise ValueError(
+            f"yscale must be 'linear' or 'log', got {yscale!r}")
     bw = 0.8 / max(1, len(archs))
     beat_x: List[float] = []
     beat_h: List[float] = []
@@ -4671,10 +4684,13 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
                           else f"SCAN{scan_suffix}"))
         # A SCAN line above every bar otherwise lands flush against the top
         # spine, where the gamma stamp sits on the ED rows. Give it headroom
-        # rather than letting the two overprint.
-        lo, hi = ax.get_ylim()
-        if float(scan_line) > 0.0:
-            ax.set_ylim(lo, max(hi, float(scan_line) * 1.14))
+        # rather than letting the two overprint. Linear axis only: the log
+        # panel sets both limits explicitly below, SCAN line included, and
+        # rewriting a limit read off an autoscaled log axis would fight it.
+        if yscale == "linear":
+            lo, hi = ax.get_ylim()
+            if float(scan_line) > 0.0:
+                ax.set_ylim(lo, max(hi, float(scan_line) * 1.14))
     if beat_x:
         ax.scatter(beat_x, beat_h, marker="v", s=16, color="#2ca02c",
                    edgecolor="k", linewidths=0.3, zorder=6,
@@ -4696,9 +4712,29 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     ax.set_xticks(range(len(subsets)))
     ax.set_xticklabels(subsets)
     ax.set_xlabel("training subset_size", fontsize=8)
-    ax.set_ylabel("kcal/mol", fontsize=8)
+    if yscale == "log":
+        ax.set_yscale("log")
+        # Limits from the drawn quantities only. The 1.6 floor divisor keeps
+        # the smallest bar visibly tall; the 1.5 ceiling factor leaves room
+        # for the incomplete-eval star above the tallest bar and for the
+        # in-panel gamma stamp on the ED rows.
+        drawn = [metric.get((a, s)) for a in archs for s in subsets]
+        drawn += [pbe_line, scan_line, *tick_h, *stick_h]
+        vals = [float(v) for v in drawn if _is_num(v) and float(v) > 0.0]
+        if vals:
+            ax.set_ylim(min(vals) / 1.6, max(vals) * 1.5)
+        else:
+            # Nothing positive was drawn -- an empty channel, or a cell set
+            # whose bars are all NaN. Autoscaling then lands on a range
+            # around zero and the log locator raises at draw time
+            # ("Data has no positive values"), taking the whole figure with
+            # it, so the empty panel is framed on one bare decade instead.
+            ax.set_ylim(0.1, 10.0)
+    ax.set_ylabel("kcal/mol" + (" (log)" if yscale == "log" else ""),
+                  fontsize=8)
     ax.set_title(title, fontsize=9)
-    ax.grid(True, axis="y", alpha=0.3)
+    ax.grid(True, axis="y", which=("both" if yscale == "log" else "major"),
+            alpha=0.3)
 
 
 def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: str,
@@ -4707,7 +4743,8 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
                           training_subsets: Optional[Dict[int, List[str]]] = None,
                           scan_baseline: Optional[Dict[str, float]] = None,
                           scan_errors: Optional[Dict[str, float]] = None,
-                          dataset: Optional[str] = None) -> Path:
+                          dataset: Optional[str] = None,
+                          yscale: str = "linear") -> Path:
     """Held-out energy: ONE bar per (arch, subset_size) cell -- combined
     reaction-energy MAE (panel a) and 2-subset WTMAD-2 (panel b) -- grouped by
     arch (rung-ordered) within each subset_size on the x-axis. NO error bars:
@@ -4722,7 +4759,8 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
     spans; bars whose NN scored fewer reactions than the cell's slice carry
     the incomplete-eval star), and a dotted SCAN full-pool reference line is
     added to the MAE panel when ``scan_baseline`` carries a finite combined
-    MAE (absent SCAN cache -> unchanged)."""
+    MAE (absent SCAN cache -> unchanged). ``yscale="log"`` renders the
+    ``_logy`` sibling of the figure -- same data, logarithmic y axis."""
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -4758,7 +4796,7 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
             pbe_by_cell=mae_cell_anchors,
             scan_by_cell=(mae_scan_anchors or None),
             reference_by_arch=arch_reference_kinds(archs),
-            incomplete_cells=inc_cells)
+            incomplete_cells=inc_cells, yscale=yscale)
         _grouped_arch_bars(
             axes[0][1], wt, archs, subsets, pbe_line=pbe_wt,
             title="2-subset WTMAD-2 (BH76+W4-11), per (arch, subset)",
@@ -4766,7 +4804,7 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
             pbe_by_cell=wt_cell_anchors,
             scan_by_cell=(wt_scan_anchors or None),
             reference_by_arch=arch_reference_kinds(archs),
-            incomplete_cells=inc_cells)
+            incomplete_cells=inc_cells, yscale=yscale)
         handles, labels = axes[0][0].get_legend_handles_labels()
         if labels:
             fig.legend(handles, labels, loc="lower center",
@@ -5511,7 +5549,8 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                                  parity_nn_key: str = "density_rmse",
                                  parity_pbe_key: str = "density_rmse_pbe",
                                  parity_unit_label: str = "density RMSE",
-                                 title: Optional[str] = None) -> Path:
+                                 title: Optional[str] = None,
+                                 yscale: str = "linear") -> Path:
     """Held-out overview composite -- energy above, the energy-density TRADE
     below: (A)/(B) single-pool WTMAD-2 bars per (arch, subset_size) for BH76 /
     W4-11 (with one pool the WTMAD-2 sum collapses to
@@ -5534,7 +5573,9 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
     D's density channel and ``title`` overrides the footer title; defaults
     reproduce the historical figure exactly. The DFS-units twin passes a
     ``combined_ed_fixed_gamma`` summary (panels E/F branch their stamps on
-    ``gamma_mode`` themselves) with the eps parity keys."""
+    ``gamma_mode`` themselves) with the eps parity keys. ``yscale="log"``
+    renders the ``_logy`` sibling: the grouped-bar panels (A)-(C) on a
+    logarithmic y axis, same data; the parity and ED panels are unaffected."""
     pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=parity_pbe_key)
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
@@ -5552,7 +5593,8 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                                    _incomplete_energy_cells(pr)),
                                title=tag + " -- one-bucket reduction "
                                      "(scaled relative error)",
-                               vxc_pre_fix=_run_predates_vxc_fix(run_id))
+                               vxc_pre_fix=_run_predates_vxc_fix(run_id),
+                               yscale=yscale)
         _grouped_arch_bars(axC, wtmad2_by_arch_subset(rows), archs, subsets,
                            pbe_line=wtmad2_pbe_baseline(rows),
                            pbe_by_cell=wtmad2_pbe_by_arch_subset(rows),
@@ -5561,7 +5603,8 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
                                _incomplete_energy_cells(rows)),
                            title="(C) 2-subset WTMAD-2 (BH76+W4-11), "
                                  "per (arch, subset)",
-                           vxc_pre_fix=_run_predates_vxc_fix(run_id))
+                           vxc_pre_fix=_run_predates_vxc_fix(run_id),
+                           yscale=yscale)
         _density_parity_panel(axD, hd_rows, pbe_mol, nn_key=parity_nn_key,
                               unit_label=parity_unit_label)
         axD.set_title("(D) " + axD.get_title(), fontsize=9)
@@ -5670,7 +5713,8 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                             scan_density_records: Optional[
                                 Dict[str, Dict[str, Any]]] = None,
                             scan_errors: Optional[Dict[str, float]] = None,
-                            title: Optional[str] = None) -> Path:
+                            title: Optional[str] = None,
+                            yscale: str = "linear") -> Path:
     """Per-channel held-out story, ALL BARS, one column per channel
     (BH76 | W4-11 | combined): row 1 = WTMAD-2 bars per (arch, subset_size)
     (A/B the one-bucket reduction, C the genuine 2-subset form); row 2 =
@@ -5687,7 +5731,10 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
     ``title``) default to the grid-weighted-RMSE original; the DFS-units
     twin passes fixed-gamma ``ch_summaries`` (from ``channel_ed_summaries``
     with ``fixed_gamma``/eps keys), the eps density keys, the
-    ``$\\varepsilon_{|n|}$`` unit label, and a clean row-3 gamma tag."""
+    ``$\\varepsilon_{|n|}$`` unit label, and a clean row-3 gamma tag.
+    ``yscale="log"`` renders the ``_logy`` sibling -- all nine panels on a
+    logarithmic y axis, same data, the row-2/row-3 unit labels marked
+    ``(log)`` like the panel bodies' own."""
     if ch_summaries is None:
         ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
     pools_of = _species_pools(rows)
@@ -5697,6 +5744,10 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
             "mixed_cells": (lockfix_cells or {}).get("mixed")}
            if lockfix_cells else {})
     _lf["vxc_pre_fix"] = _run_predates_vxc_fix(run_id)
+    _lf["yscale"] = yscale
+    # rows 2 and 3 label their own axes after the panel body; the suffix has
+    # to follow the scale there too
+    _ylog = " (log)" if yscale == "log" else ""
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -5769,7 +5820,8 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                                  if d_scan_ch is not None
                                  and d_ch_u < d_ch_r else ""),
                     title=ttl_d, **_lf)
-                ax.set_ylabel(f"{density_unit_label} vs CCSD", fontsize=8)
+                ax.set_ylabel(f"{density_unit_label} vs CCSD{_ylog}",
+                              fontsize=8)
             else:
                 ax.text(0.5, 0.5, "density unavailable", ha="center",
                         va="center", transform=ax.transAxes, fontsize=9,
@@ -5803,7 +5855,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
                     scan_by_cell=(ed_scan_anchors or None),
                     scan_suffix=(s.get("scan_suffix") or ""),
                     title=ttl, **_lf)
-                ax.set_ylabel(f"{_ED_SYM} (kcal/mol)", fontsize=8)
+                ax.set_ylabel(f"{_ED_SYM} (kcal/mol){_ylog}", fontsize=8)
                 _gamma_stamp(ax, s)
             else:
                 ax.text(0.5, 0.5, f"{_ED_SYM} unavailable", ha="center",
@@ -7191,7 +7243,10 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     are missing; the enriched ``ablation_ed_decomposition.png`` renders with
     the ED figure. The held-out figures carry a ``dataset`` footer line
     stating what the held-out eval is (live reaction/species counts from
-    ``_holdout_eval_note``)."""
+    ``_holdout_eval_note``). Every grouped-bar figure is written twice --
+    the linear original and an ``_logy`` sibling holding the same data on a
+    logarithmic y axis -- so a cell hundreds of kcal/mol above the rest
+    cannot flatten the remaining bars; the CSVs are unaffected."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
@@ -7250,16 +7305,23 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                  "species (atoms excluded).")
     tsubsets = training_subsets_by_size(run_dir)
     ds_e = _holdout_eval_note(rows, [])
+    # Every grouped-bar figure is rendered twice from ONE set of arguments:
+    # the linear original and its "_logy" sibling (same data, logarithmic y
+    # axis), so a cell running hundreds of kcal/mol cannot flatten the rest
+    # of the panel out of readability.
+    wtmad_kw = dict(note=note, provenance=prov, caveat=caveat,
+                    training_subsets=tsubsets, scan_baseline=scan_baseline,
+                    scan_errors=scan_errs, dataset=ds_e)
     written = [
         plot_rung_summary(rows, outdir / "ablation_rung_summary.png", run_id,
                           pbe_baseline=baseline, scan_baseline=scan_baseline,
                           note=note, provenance=prov, caveat=caveat,
                           dataset=ds_e),
         plot_energy_wtmad_mae(rows, outdir / "ablation_energy_wtmad_mae.png",
-                              run_id, note=note, provenance=prov, caveat=caveat,
-                              training_subsets=tsubsets,
-                              scan_baseline=scan_baseline,
-                              scan_errors=scan_errs, dataset=ds_e),
+                              run_id, **wtmad_kw),
+        plot_energy_wtmad_mae(rows,
+                              outdir / "ablation_energy_wtmad_mae_logy.png",
+                              run_id, yscale="log", **wtmad_kw),
         plot_insample_density_ccsd(drows,
                                    outdir / "ablation_insample_density_ccsd.png",
                                    run_id, note=note, provenance=dens_prov),
@@ -7568,10 +7630,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                 # gamma -- EDs compare across columns, unlike the
                 # self-calibrated original -- row 2 parity in eps units,
                 # one row-shared frame).
-                written.append(plot_density_energy_overview(
-                    rows, hd_rows,
-                    outdir / "ablation_density_energy_overview_dfs_units.png",
-                    run_id, pbe_table=pbe_table, ed_summary=op_summary,
+                ov_dfs_kw = dict(
+                    pbe_table=pbe_table, ed_summary=op_summary,
                     note="  ".join(eps_extra),
                     provenance=(
                         "Held-out overview, DFS units. A/B: one-bucket "
@@ -7587,7 +7647,16 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     parity_pbe_key="density_eps_l1_pbe",
                     parity_unit_label=_EPS_N_SYM,
                     title="Held-out overview (DFS units): WTMAD-2 by pool "
-                          f"+ {_EPS_N_SYM} vs CCSD + {_ED_N_SYM}"))
+                          f"+ {_EPS_N_SYM} vs CCSD + {_ED_N_SYM}")
+                written.append(plot_density_energy_overview(
+                    rows, hd_rows,
+                    outdir / "ablation_density_energy_overview_dfs_units.png",
+                    run_id, **ov_dfs_kw))
+                written.append(plot_density_energy_overview(
+                    rows, hd_rows,
+                    outdir
+                    / "ablation_density_energy_overview_dfs_units_logy.png",
+                    run_id, yscale="log", **ov_dfs_kw))
                 ch_eps_dfs = channel_ed_summaries(
                     rows, hd_rows, pbe_table, fixed_gamma=_DFS_GAMMA_KCAL,
                     gamma_source="DFS published",
@@ -7603,10 +7672,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     scan_errors=scan_errs,
                     scan_density_records=scan_dens_recs)
                     if fit_ok else None)
-                written.append(plot_density_energy_3x3(
-                    rows, hd_rows,
-                    outdir / "ablation_density_energy_3x3_dfs_units.png",
-                    run_id, pbe_table=pbe_table,
+                x3_dfs_kw = dict(
+                    pbe_table=pbe_table,
                     ch_summaries=(ch_eps_fit if fit_ok else ch_eps_dfs),
                     note="  ".join(eps_extra),
                     provenance=(
@@ -7626,7 +7693,15 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     scan_errors=scan_errs,
                     title="Per-channel held-out story (DFS units): WTMAD-2 "
                           f"| {_EPS_N_SYM} | {_ED_N_SYM} "
-                          "(BH76, W4-11, combined)"))
+                          "(BH76, W4-11, combined)")
+                written.append(plot_density_energy_3x3(
+                    rows, hd_rows,
+                    outdir / "ablation_density_energy_3x3_dfs_units.png",
+                    run_id, **x3_dfs_kw))
+                written.append(plot_density_energy_3x3(
+                    rows, hd_rows,
+                    outdir / "ablation_density_energy_3x3_dfs_units_logy.png",
+                    run_id, yscale="log", **x3_dfs_kw))
                 written.append(plot_density_parity_by_channel(
                     rows, hd_rows,
                     outdir
@@ -7698,11 +7773,16 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         ov_anchor_note = _cell_anchor_note(wtmad2_pbe_by_arch_subset(rows))
         if ov_anchor_note:
             ov_prov += " " + ov_anchor_note
+        ov_kw = dict(pbe_table=pbe_table, ed_summary=wt_summary, note=note,
+                     provenance=ov_prov, dataset=ds)
         written.append(plot_density_energy_overview(
             rows, hd_rows,
             outdir / "ablation_density_energy_overview.png", run_id,
-            pbe_table=pbe_table, ed_summary=wt_summary, note=note,
-            provenance=ov_prov, dataset=ds))
+            **ov_kw))
+        written.append(plot_density_energy_overview(
+            rows, hd_rows,
+            outdir / "ablation_density_energy_overview_logy.png", run_id,
+            yscale="log", **ov_kw))
         # Per-channel 3x3 + its CSV: renders whenever held-out density
         # exists; channels degrade individually inside the figure.
         ch_summaries = channel_ed_summaries(
@@ -7716,12 +7796,17 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                     "beats marks: each arch vs its own-rung reference's "
                     "cell-matched anchor, per channel (PBE for GGA archs, "
                     "SCAN for meta-GGA/rung-3.5). " + _CELL_ROWS_GLYPH_NOTE)
+        x3_kw = dict(pbe_table=pbe_table, ch_summaries=ch_summaries,
+                     note=note, provenance=prov_3x3, dataset=ds,
+                     lockfix_cells=lf_cells,
+                     scan_density_records=scan_dens_recs,
+                     scan_errors=scan_errs)
         written.append(plot_density_energy_3x3(
             rows, hd_rows, outdir / "ablation_density_energy_3x3.png",
-            run_id, pbe_table=pbe_table, ch_summaries=ch_summaries,
-            note=note, provenance=prov_3x3, dataset=ds,
-            lockfix_cells=lf_cells, scan_density_records=scan_dens_recs,
-            scan_errors=scan_errs))
+            run_id, **x3_kw))
+        written.append(plot_density_energy_3x3(
+            rows, hd_rows, outdir / "ablation_density_energy_3x3_logy.png",
+            run_id, yscale="log", **x3_kw))
         pools_of = _species_pools(rows)
         legs3: Dict[str, Optional[Dict[str, Any]]] = {}
         counts3: Dict[str, Tuple[Dict, ...]] = {}
