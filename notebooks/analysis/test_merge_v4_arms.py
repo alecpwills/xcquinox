@@ -9,11 +9,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import merge_v4_arms as mv
 
 
-def _mk_arm(root, base, run_name, n_specs, payload="x"):
+def _mk_arm(root, base, run_name, n_specs, payload="x", arch=None,
+            certified=True, verdict="PASS", identity=None, cert_text=None):
+    """An arm on disk. ``arch`` names the manifest architecture (default: a
+    non-registry fixture name); ``certified`` writes a pretraining-fidelity
+    certificate for it under ``<run>/pretrain/<arch>``.
+
+    A named ``arch`` also gets a resolved_config.yaml: the seed-provenance
+    guard refuses a REGISTRY arch whose config cannot be loaded, and that
+    refusal would pre-empt the certificate guard under test. ``seed_xc: auto``
+    resolves each arch's own rung baseline, so the seed guard passes and the
+    certificate is what decides the arm's fate.
+    """
     import json
     run = root / base / "runs" / run_name
     ck = run / "checkpoints"
     ck.mkdir(parents=True)
+    arch_name = arch or f"{payload}_arch"
     for i in range(n_specs):
         d = ck / f"spec_{i:04d}"
         d.mkdir()
@@ -21,8 +33,20 @@ def _mk_arm(root, base, run_name, n_specs, payload="x"):
     (run / "manifest.json").write_text(json.dumps({
         "n_specs": n_specs,
         "specs": [{"index": i,
-                   "cell": {"arch": f"{payload}_arch", "subset_size": i + 1}}
+                   "cell": {"arch": arch_name, "subset_size": i + 1}}
                   for i in range(n_specs)]}))
+    if arch is not None:
+        (run / "resolved_config.yaml").write_text(_full_config_yaml("auto"))
+    if certified or cert_text is not None:
+        d = run / "pretrain" / arch_name
+        d.mkdir(parents=True)
+        payload_json = {"verdict": verdict, "arch": arch_name,
+                        "summary": {"max_atom_mHa": 0.1,
+                                    "max_dAE_kcalmol": 0.2}}
+        if identity is not None:
+            payload_json["identity"] = identity
+        (d / "fidelity_certificate.json").write_text(
+            cert_text if cert_text is not None else json.dumps(payload_json))
     return ck
 
 
@@ -250,7 +274,13 @@ def _full_config_yaml(seed_xc=None):
 
 
 def _mk_registry_arm(root, base, run_name, arch, seed_xc=None,
-                     subset_sizes=(1,)):
+                     subset_sizes=(1,), certified=True):
+    """An arm carrying a REGISTRY architecture.
+
+    ``certified`` writes the arch's PASS fidelity certificate. It defaults on
+    because an uncertified registry arch is refused before the seed-policy and
+    duplicate-cell behaviour under test can be reached.
+    """
     import json
     run = root / base / "runs" / run_name
     ck = run / "checkpoints"
@@ -264,6 +294,12 @@ def _mk_registry_arm(root, base, run_name, arch, seed_xc=None,
         "specs": [{"index": i, "cell": {"arch": arch, "subset_size": ss}}
                   for i, ss in enumerate(subset_sizes)]}))
     (run / "resolved_config.yaml").write_text(_full_config_yaml(seed_xc))
+    if certified:
+        d = run / "pretrain" / arch
+        d.mkdir(parents=True)
+        (d / "fidelity_certificate.json").write_text(json.dumps(
+            {"verdict": "PASS", "arch": arch,
+             "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2}}))
     return run
 
 
@@ -280,8 +316,14 @@ def test_view_refuses_mis_seeded_registry_arch(tmp_path):
     must be REFUSED, not silently merged into the grouped figures."""
     _mk_registry_arm(tmp_path, "dfs6311_grid3_v5", "run_20260814T000000Z",
                      "deep_mgga_3x16", seed_xc=None)
-    with pytest.raises(SystemExit, match="seed"):
+    with pytest.raises(SystemExit, match="seed") as exc:
         mv.build_view(tmp_path, tmp_path / "merged")
+    # The tmp_path basename carries the test name, so the bare pattern above
+    # can also match the path any refusal embeds; pin the seed guard's own
+    # wording, and the arch it resolved for.
+    msg = str(exc.value)
+    assert "rung-baseline policy demands" in msg
+    assert "'scan'" in msg and "'pbe'" in msg
 
 
 def test_view_accepts_policy_consistent_seeds(tmp_path):
@@ -301,8 +343,9 @@ def test_view_refuses_duplicate_cells_across_arms(tmp_path):
     _mk_registry_arm(tmp_path, "dfs6311_grid3_v5mgga2",
                      "run_20260814T000001Z",
                      "deep_mgga_3x16", seed_xc="auto", subset_sizes=(2,))
-    with pytest.raises(SystemExit, match="duplicate"):
+    with pytest.raises(SystemExit, match="duplicate") as exc:
         mv.build_view(tmp_path, tmp_path / "merged")
+    assert "double-count" in str(exc.value)
 
 
 def _mark_sliced(ck, spec="spec_0000", chan="eval_holdout",
@@ -428,3 +471,211 @@ def test_guard_import_stays_lazy_in_the_analysis_scripts(name):
     assert loaded == [], (
         f"{name}.py imports {loaded} at module scope; the guard's import "
         "belongs inside the function that calls it")
+
+
+# --------------------------------------------------------------------------- #
+# Pretraining-fidelity certificates: an uncertified arm never enters the view
+# --------------------------------------------------------------------------- #
+def _cert_path(root, base, run_name, arch):
+    return (root / base / "runs" / run_name / "pretrain" / arch
+            / "fidelity_certificate.json")
+
+
+def test_merge_refuses_a_registry_arch_with_no_certificate(tmp_path):
+    """A registry architecture that was never certified cannot enter the
+    grouped figures: its pretrained networks may be arbitrarily far from the
+    parent functional every number on the figure is compared against."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", certified=False)
+    with pytest.raises(SystemExit, match="fidelity") as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    assert "-- MISSING at" in str(exc.value)
+
+
+def test_merge_refuses_a_registry_arch_whose_certificate_failed(tmp_path):
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", certified=True, verdict="FAIL")
+    with pytest.raises(SystemExit, match="fidelity") as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    assert "has no PASS pretraining-fidelity certificate -- FAIL" in str(
+        exc.value)
+
+
+def test_merge_refuses_an_unenforced_failure(tmp_path):
+    """``fidelity.enforce: false`` releases the ON-NODE gates only; the merge
+    is a record layer and refuses a FAIL regardless."""
+    import json
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", certified=True, verdict="FAIL")
+    cert = _cert_path(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z",
+                      "deep_3x16")
+    payload = json.loads(cert.read_text())
+    payload["enforced"] = False
+    payload["tolerances"] = {"override_reason": "workflow verification"}
+    cert.write_text(json.dumps(payload))
+    # The same certificate releases the on-node gate it was written for, so
+    # the refusal below is the record layer's own rule and not a side effect
+    # of an incomplete waiver.
+    from xcquinox.alec.cluster.fidelity import gate_certificate
+    run = tmp_path / "dfs6311_grid3_v5" / "runs" / "run_20260810T193206Z"
+    allowed, _msg = gate_certificate(str(run), "deep_3x16")
+    assert allowed is True
+    with pytest.raises(SystemExit, match="fidelity") as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    assert "has no PASS pretraining-fidelity certificate -- FAIL" in str(
+        exc.value)
+
+
+def test_merge_refuses_an_unreadable_certificate(tmp_path):
+    """A certificate that records no verdict this module recognises states no
+    outcome that can be acted on, and an unverifiable arm is refused."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", cert_text='{"arch": "deep_3x16"}')
+    with pytest.raises(SystemExit, match="fidelity") as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    assert "-- UNREADABLE at" in str(exc.value)
+
+
+def test_merge_refuses_a_certificate_from_another_run_identity(tmp_path):
+    """A PASS measured at a different basis/grid/Coulomb identity does not
+    certify THIS arm's networks: the certificate's energies were computed on
+    another SCF than the one the arm's held-out numbers come from."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16",
+            identity={"basis": "def2-svp", "grid_level": 1,
+                      "density_fit": True, "auxbasis": None,
+                      "orientation_lock_strength": 0.0})
+    with pytest.raises(SystemExit, match="identity") as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "fidelity" in msg
+    assert "basis" in msg and "def2-svp" in msg
+
+
+def test_merge_accepts_a_certificate_matching_the_run_identity(tmp_path):
+    """The identity check compares the recorded identity against the arm's
+    own resolved_config.yaml, so a certificate measured at the arm's identity
+    passes it."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16",
+            identity={"basis": "6-311++G(3df,2pd)", "grid_level": 3,
+                      "density_fit": True, "auxbasis": None,
+                      "orientation_lock_strength": 0.0})
+    report = mv.build_view(tmp_path, tmp_path / "merged")
+    assert report["dfs6311_grid3_v5"] == ("run_20260810T193206Z", 1)
+
+
+def test_merge_refusal_names_arm_spec_arch_certificate_and_status(tmp_path):
+    """The refusal has to be actionable without a second search: which arm,
+    which spec dirs, which architecture, which file, and what it said."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 2,
+            "a", arch="deep_3x16", certified=False)
+    with pytest.raises(SystemExit) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "dfs6311_grid3_v5" in msg
+    assert "run_20260810T193206Z" in msg
+    assert "deep_3x16" in msg
+    assert "MISSING" in msg
+    assert str(_cert_path(tmp_path, "dfs6311_grid3_v5",
+                          "run_20260810T193206Z", "deep_3x16")) in msg
+    assert "spec_0000" in msg and "spec_0001" in msg
+
+
+def test_merge_accepts_a_certified_registry_arch(tmp_path):
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", certified=True)
+    report = mv.build_view(tmp_path, tmp_path / "merged")
+    assert report["dfs6311_grid3_v5"] == ("run_20260810T193206Z", 1)
+
+
+def test_merge_skips_non_registry_archs(tmp_path):
+    """Test fixtures and legacy display names carry no certificate
+    expectation, matching the seed-policy guard."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "legacy", arch="not_a_registry_arch", certified=False)
+    report = mv.build_view(tmp_path, tmp_path / "merged")
+    assert report["dfs6311_grid3_v5"] == ("run_20260810T193206Z", 1)
+
+
+def test_merged_view_carries_the_arms_pretrain_certificates(tmp_path):
+    """The merged directory has no pretrain stage of its own, so the figure
+    layer would read every arch as uncertified unless the arms' certificates
+    travel with the merge."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16")
+    out = tmp_path / "merged"
+    mv.build_view(tmp_path, out)
+    cert = out / "pretrain" / "deep_3x16" / "fidelity_certificate.json"
+    assert cert.is_file()
+    import json
+    assert json.loads(cert.read_text())["verdict"] == "PASS"
+
+
+def test_merged_view_records_the_certificate_status_per_spec(tmp_path):
+    """The merged manifest is the view's own record: each spec carries the
+    status its architecture's certificate was admitted under, and archs with
+    no certificate expectation are labelled as such rather than left blank."""
+    import json
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16")
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1,
+            "legacy", arch="not_a_registry_arch", certified=False)
+    out = tmp_path / "merged"
+    mv.build_view(tmp_path, out)
+    m = json.loads((out / "manifest.json").read_text())
+    by_arch = {s["cell"]["arch"]: s["fidelity_status"] for s in m["specs"]}
+    assert by_arch["deep_3x16"] == "PASS"
+    assert by_arch["not_a_registry_arch"] == "NOT_IN_REGISTRY"
+    fid = m["fidelity"]
+    assert fid["by_arm"]["dfs6311_grid3_v5"] == {"deep_3x16": "PASS"}
+    assert fid["by_arm"]["dfs6311_grid3_v4gga"] == {}
+    # No status other than PASS can reach a built view, so the waiver count
+    # is a recorded zero rather than an unstated assumption.
+    assert fid["n_waived"] == 0
+    txt = (out / "MERGED_ARMS.txt").read_text()
+    assert "deep_3x16=PASS" in txt
+
+
+def test_unlabeled_specs_record_no_certificate_status(tmp_path):
+    """A spec dir with no manifest entry has no architecture to certify; the
+    record says so instead of implying a PASS."""
+    import json
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1,
+                 "arm2")
+    d = ck / "spec_0001"
+    d.mkdir()
+    (d / "completion.json").write_text("x")
+    out = tmp_path / "merged"
+    mv.build_view(tmp_path, out)
+    m = json.loads((out / "manifest.json").read_text())
+    assert m["specs"][1]["fidelity_status"] == "UNLABELED"
+
+
+def test_view_warns_when_two_arms_carry_the_same_arch_certificate(tmp_path):
+    """One arch name, two arms, one pretrain slot in the view: the figure
+    layer will read the first arm's certificate for both, so the collision is
+    named rather than resolved silently."""
+    import json
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1,
+            "a", arch="deep_3x16")
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 2,
+                 "b", arch="deep_3x16")
+    # Distinct subset sizes: the same arch in two arms is the case under
+    # test, the same CELL in two arms is a double-count refused elsewhere.
+    run2 = ck.parent
+    m = json.loads((run2 / "manifest.json").read_text())
+    for k, e in enumerate(m["specs"]):
+        e["cell"]["subset_size"] = 10 + k
+    (run2 / "manifest.json").write_text(json.dumps(m))
+    out = tmp_path / "merged"
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mv.build_view(tmp_path, out)
+    printed = buf.getvalue()
+    assert "WARNING" in printed and "deep_3x16" in printed
+    assert (out / "pretrain" / "deep_3x16").resolve() == (
+        tmp_path / "dfs6311_grid3_v4gga" / "runs" / "run_20260810T202813Z"
+        / "pretrain" / "deep_3x16").resolve()
