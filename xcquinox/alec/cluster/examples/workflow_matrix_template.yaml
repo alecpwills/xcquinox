@@ -134,12 +134,27 @@ use_polarized_correlation: true
 # stages.
 inline_eval: false
 defer_eval: false
-# The certificate section is left OUT, which loads it at its binding defaults.
-# Tolerances and the enforcement bypass live in the YAML `fidelity` block
-# (grid_config.FidelityConfig): tol_AE = 1.0 kcal/mol and tol_atom = 1.0 mHa are
-# the binding values, a tolerance above the 2.0 / 2.0 ceiling requires a written
-# `override_reason`, and `enforce: false` -- which downgrades the on-node gates
-# to logging while the certificate still records its true verdict -- requires
-# that reason as well. There is no environment-variable bypass. Whether the tiny
-# identity's 50-step pretrain needs a recorded override is a decision for the
-# certificate stage, not for this template.
+# Certificate tolerances stay at their binding defaults (tol_AE = 1.0 kcal/mol,
+# tol_atom = 1.0 mHa, grid_config.FidelityConfig), so the certificate is
+# computed at the production identity and its verdict is the real one. What this
+# block waives is the ENFORCEMENT, and only that: 50 pretraining steps on two
+# atoms cannot reproduce the parent functional to 1.0 kcal/mol, so FAIL is the
+# EXPECTED verdict here. With `enforce: false` the certificate is still computed
+# and written with that FAIL on record, and the on-node gates -- the preflight
+# sweep (cluster/_preflight.py) and the train task (cluster/_train_task.py),
+# both through `fidelity.gate_certificate` -- log the waiver and continue
+# instead of blocking, which is the only way this configuration reaches the
+# train and eval stages it exists to exercise. A MISSING certificate is not
+# waived by anything: the gates refuse it, because there is then no record of
+# what was measured.
+#
+# `enforce: false` is accepted only with a non-empty prose `override_reason`
+# (grid_config.validate_grid_semantics and _build_fidelity), which is copied
+# verbatim into every certificate the run writes and re-checked there by the
+# gates. The waiver reaches the on-node gates and nothing else: validate_run,
+# merge_v4_arms and the figure loaders require a PASS certificate regardless of
+# this flag, so a run rendered from this template can never become a
+# quantitative result. There is no environment-variable bypass.
+fidelity:
+  enforce: false
+  override_reason: "workflow matrix: wiring check at a 50-step pretrain, never a campaign"
