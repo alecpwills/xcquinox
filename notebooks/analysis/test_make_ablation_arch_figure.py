@@ -3373,36 +3373,44 @@ def test_build_threads_log_scale_to_every_logy_write(tmp_path, monkeypatch):
     seen = {}
     for name in ("plot_energy_wtmad_mae", "plot_insample_overview",
                  "plot_density_energy_overview", "plot_density_energy_3x3"):
-        real = getattr(fig, name)
 
-        def _spy(*a, _real=real, **kw):
-            # out_path is the only Path among the positional arguments
+        def _spy(*a, _name=name, **kw):
+            # out_path is the only Path among the positional arguments; the
+            # spy records which plotter was called under which y scale
             out = Path(next(x for x in a if isinstance(x, Path)))
-            seen[out.name] = kw.get("yscale", "linear")
-            out.write_bytes(b"x" * 4096)     # stub: the scaling is the subject
+            seen[out.name] = (_name, kw.get("yscale", "linear"))
+            out.write_bytes(b"x" * 4096)     # stub: no figure is rendered
             return out
 
         monkeypatch.setattr(fig, name, _spy)
     fig.build_density_energy_figures(run, tmp_path / "out")
+    # (linear name, _logy name, the plotter that must produce BOTH of them)
     pairs = [
         ("ablation_energy_wtmad_mae.png",
-         "ablation_energy_wtmad_mae_logy.png"),
+         "ablation_energy_wtmad_mae_logy.png",
+         "plot_energy_wtmad_mae"),
         ("ablation_insample_overview.png",
-         "ablation_insample_overview_logy.png"),
+         "ablation_insample_overview_logy.png",
+         "plot_insample_overview"),
         ("ablation_density_energy_overview.png",
-         "ablation_density_energy_overview_logy.png"),
+         "ablation_density_energy_overview_logy.png",
+         "plot_density_energy_overview"),
         ("ablation_density_energy_overview_dfs_units.png",
-         "ablation_density_energy_overview_dfs_units_logy.png"),
+         "ablation_density_energy_overview_dfs_units_logy.png",
+         "plot_density_energy_overview"),
         ("ablation_density_energy_3x3.png",
-         "ablation_density_energy_3x3_logy.png"),
+         "ablation_density_energy_3x3_logy.png",
+         "plot_density_energy_3x3"),
         ("ablation_density_energy_3x3_dfs_units.png",
-         "ablation_density_energy_3x3_dfs_units_logy.png"),
+         "ablation_density_energy_3x3_dfs_units_logy.png",
+         "plot_density_energy_3x3"),
     ]
-    for lin, logy in pairs:
-        assert seen.get(lin) == "linear", (lin, seen.get(lin))
-        assert seen.get(logy) == "log", (logy, seen.get(logy))
+    for lin, logy, plotter in pairs:
+        assert seen.get(lin) == (plotter, "linear"), (lin, seen.get(lin))
+        assert seen.get(logy) == (plotter, "log"), (logy, seen.get(logy))
     # and no other write of these four plotters asks for a log axis
-    assert {n for n, ys in seen.items() if ys == "log"} == {p[1] for p in pairs}
+    assert ({n for n, (_p, ys) in seen.items() if ys == "log"}
+            == {p[1] for p in pairs})
 
 
 # ---------------------------------------------------------------------------
