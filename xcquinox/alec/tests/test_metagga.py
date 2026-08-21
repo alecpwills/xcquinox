@@ -55,7 +55,12 @@ def test_tau_from_doubled_spin_dm_is_twice_the_channel_tau():
         tau_ref = mf._numint.eval_rho(mol, ao, dm[s], xctype="MGGA")[5]
         tau_doubled = np.asarray(compute_tau_from_dm(
             jnp.asarray(ao[1:4]), doubled_spin_dm(jnp.asarray(dm), s)))
-        assert np.allclose(tau_doubled, 2.0 * tau_ref, atol=1e-9)
+        # Purely relative: tau spans 2.6e-13 to 8.1e+03 Ha/bohr^3 on this grid,
+        # so an absolute floor would leave the tail untested and a default
+        # rtol of 1e-5 would admit ~8e-2 at the peak. The two evaluations
+        # differ only by summation order and agree to 1.0e-15 relative.
+        np.testing.assert_allclose(tau_doubled, 2.0 * tau_ref,
+                                   rtol=1e-12, atol=0.0)
 
 
 def test_alpha_matches_repo_scan_formula():

@@ -5,6 +5,7 @@ network input features beyond (rho, sigma).
 """
 import abc
 import dataclasses
+import numbers
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -14,15 +15,62 @@ from xcquinox.alec.rung35 import (DEFAULT_RUNG35_ALPHA,
                                   DEFAULT_RUNG35_MULTISHELL_ALPHAS)
 
 
+def _validated_spin_channel(spin_channel) -> int:
+    """Return the spin channel as the integer 0 (alpha) or 1 (beta).
+
+    The channel selects an array index and a key slot, so only an integral
+    scalar is admissible, and membership in ``(0, 1)`` is not by itself
+    sufficient: ``True == 1`` and ``1.0 == 1`` both satisfy it. A boolean
+    indexes a JAX array as a MASK rather than along the spin axis --
+    ``jnp.zeros((2, 2, 2))[True]`` has shape ``(1, 2, 2, 2)`` and
+    ``[False]`` shape ``(0, 2, 2, 2)`` -- so a Python bool would leave the
+    ``(2, nao, nao)`` contract of :func:`doubled_spin_dm` without raising,
+    while ``np.bool_(True)`` returned the beta block and ``np.bool_(False)``
+    the alpha block. Floats passed the same membership test and were then
+    either taken as a channel by accident or tripped the array indexer with an
+    opaque TypeError. Each case is refused here instead.
+    """
+    is_boolean = (isinstance(spin_channel, bool)
+                  or getattr(spin_channel, "dtype", None) == bool)
+    if is_boolean or not isinstance(spin_channel, numbers.Integral):
+        raise ValueError(
+            "spin_channel must be an integral scalar, 0 (alpha) or 1 (beta); "
+            f"got {spin_channel!r} of type {type(spin_channel).__name__}."
+        )
+    if spin_channel not in (0, 1):
+        raise ValueError(
+            f"spin_channel must be 0 (alpha) or 1 (beta); got {spin_channel!r}."
+        )
+    return int(spin_channel)
+
+
 class Descriptor(eqx.Module, abc.ABC):
     """Base class for all descriptors. Subclasses provide extra input features."""
     registry_name: ClassVar[str] = ""
     required_mol_keys: ClassVar[tuple[str, ...]] = ()
     # Per-spin-channel precompute keys, (alpha, beta), holding this descriptor's
     # features for the symmetric doubled density diag(P_sigma, P_sigma). Empty
-    # for a geometry-only descriptor, whose per-channel block is the shared one.
+    # only for a geometry-only descriptor, whose per-channel block is the shared
+    # one; __init_subclass__ enforces that pairing.
     spin_mol_keys: ClassVar[tuple[str, ...]] = ()
+    # Whether the features depend on the density matrix, and therefore differ
+    # between the physical density and the doubled density of a spin channel.
+    # Declared rather than inferred from spin_mol_keys: an omitted key tuple on
+    # a density-matrix descriptor would otherwise read as "geometry-only" and
+    # reinstate the physical-density features in both exchange channels.
+    density_matrix_dependent: ClassVar[bool] = False
     n_features: int = eqx.field(static=True)
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.density_matrix_dependent and not cls.spin_mol_keys:
+            raise TypeError(
+                f"{cls.__name__} declares density_matrix_dependent = True but "
+                "leaves spin_mol_keys empty, so its per-channel exchange block "
+                "would fall back to the features of the physical density -- the "
+                "defect that evaluating on diag(P_sigma, P_sigma) removes. "
+                "Declare the (alpha, beta) precompute key names."
+            )
 
     @abc.abstractmethod
     def compute(self, mol_data: dict) -> jnp.ndarray:
@@ -40,18 +88,21 @@ class Descriptor(eqx.Module, abc.ABC):
         Phys. Rev. A 20, 397 (1979)) evaluates each channel on the fictitious
         spin-unpolarized system whose two spin blocks both hold ``P_sigma``.
         That system, not the physical one, is where a density-matrix descriptor
-        must be evaluated for the relation to stay exact. A geometry-only
-        descriptor has no density-matrix dependence, so its per-channel block is
-        the shared block.
+        must be evaluated for the relation to stay exact. A descriptor that
+        declares ``density_matrix_dependent = False`` carries no such
+        dependence, so its per-channel block is the shared block.
         """
-        if isinstance(spin_channel, bool) or spin_channel not in (0, 1):
-            raise ValueError(
-                "spin_channel must be 0 (alpha) or 1 (beta); got "
-                f"{spin_channel!r}."
-            )
+        channel = _validated_spin_channel(spin_channel)
         if not self.spin_mol_keys:
+            if self.density_matrix_dependent:
+                raise TypeError(
+                    f"{type(self).__name__} is density-matrix dependent but its "
+                    "spin_mol_keys are empty, so no per-channel block exists; "
+                    "returning the shared block here would evaluate exchange at "
+                    "the physical density in both channels."
+                )
             return self.compute(mol_data)
-        key = self.spin_mol_keys[int(spin_channel)]
+        key = self.spin_mol_keys[channel]
         value = mol_data.get(key)
         if value is None:
             raise KeyError(
@@ -134,16 +185,7 @@ def doubled_spin_dm(dm: jnp.ndarray, spin_channel: int) -> jnp.ndarray:
             "doubled_spin_dm requires a spin-resolved (2, nao, nao) density "
             f"matrix; got shape {tuple(p.shape)}."
         )
-    # A bool satisfies `in (0, 1)` (True == 1) but indexes an array as a MASK:
-    # jnp.zeros((2, 2, 2))[True] has shape (1, 2, 2, 2), so admitting one would
-    # break the (2, nao, nao) return contract without raising. Numeric channels
-    # that pass the membership test are taken through int() so an integer-valued
-    # float indexes the spin axis rather than tripping the array indexer.
-    if isinstance(spin_channel, bool) or spin_channel not in (0, 1):
-        raise ValueError(
-            f"spin_channel must be 0 (alpha) or 1 (beta); got {spin_channel!r}."
-        )
-    block = p[int(spin_channel)]
+    block = p[_validated_spin_channel(spin_channel)]
     return jnp.stack([block, block], axis=0)
 
 
@@ -223,6 +265,7 @@ class DMStatisticsDescriptor(Descriptor):
     n_features: int = eqx.field(default=2, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)
     spin_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features_a", "dm_features_b")
+    density_matrix_dependent: ClassVar[bool] = True
 
     @staticmethod
     def compute_from_dm(dm: jnp.ndarray, s_matrix: jnp.ndarray,
@@ -275,6 +318,7 @@ class DMRung35Descriptor(Descriptor):
     required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35_features",)
     spin_mol_keys: ClassVar[tuple[str, ...]] = ("rung35_features_a",
                                                 "rung35_features_b")
+    density_matrix_dependent: ClassVar[bool] = True
 
     @staticmethod
     def compute_from_dm(proj_ao: jnp.ndarray, dm: jnp.ndarray) -> jnp.ndarray:
@@ -321,6 +365,7 @@ class DMRung35MultishellDescriptor(Descriptor):
     required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35ms_features",)
     spin_mol_keys: ClassVar[tuple[str, ...]] = ("rung35ms_features_a",
                                                 "rung35ms_features_b")
+    density_matrix_dependent: ClassVar[bool] = True
 
     def __post_init__(self):
         # The base class rejects jax arrays in primitive-annotated fields; keep
@@ -378,6 +423,7 @@ class MetaGGAAlphaDescriptor(Descriptor):
     required_mol_keys: ClassVar[tuple[str, ...]] = ("metagga_features",)
     spin_mol_keys: ClassVar[tuple[str, ...]] = ("metagga_features_a",
                                                 "metagga_features_b")
+    density_matrix_dependent: ClassVar[bool] = True
 
     @staticmethod
     def compute_from_dm(ao_grad, rho, sigma, dm):

@@ -304,15 +304,218 @@ def test_assemble_descriptor_features_empty_descriptors_ignores_spin_channel():
     assert assemble_descriptor_features((), mol_data, spin_channel=1).shape == (5, 0)
 
 
-def test_doubled_spin_dm_refuses_a_boolean_channel():
-    # True satisfies `in (0, 1)` yet indexes an array as a mask: before the
-    # isinstance guard, doubled_spin_dm(p, True) returned shape (2, 1, 2, 2, 2)
-    # and doubled_spin_dm(p, False) shape (2, 0, 2, 2, 2) on a (2, 2, 2) input,
-    # neither of which is the (2, nao, nao) return contract.
+def test_doubled_spin_dm_refuses_a_non_integral_channel():
+    """Only an integral scalar selects a spin channel.
+
+    Each value below satisfies ``spin_channel in (0, 1)`` without being an
+    integral channel, and each was admitted before the guard: a Python ``True``
+    indexed the array as a MASK, giving shape (2, 1, 2, 2, 2) on a (2, 2, 2)
+    input and (2, 0, 2, 2, 2) for ``False``; ``np.bool_(True)`` returned the
+    beta block and ``np.bool_(False)`` the alpha block; ``1.0`` and
+    ``np.float64(1.0)`` were accepted outright.
+    """
     from xcquinox.alec.descriptors import doubled_spin_dm, DMRung35Descriptor
-    for bad in (True, False):
+    d = DMRung35Descriptor()
+    mol_data = {"rung35_features": jnp.zeros((3, 2)),
+                "rung35_features_a": jnp.full((3, 2), 0.25),
+                "rung35_features_b": jnp.full((3, 2), 0.75)}
+    for bad in (True, False, np.bool_(True), np.bool_(False),
+                1.0, 0.0, np.float64(1.0), "1", None):
         with pytest.raises(ValueError, match="spin_channel"):
             doubled_spin_dm(jnp.zeros((2, 2, 2)), bad)
         with pytest.raises(ValueError, match="spin_channel"):
-            DMRung35Descriptor().compute_for_spin_channel(
-                {"rung35_features_a": jnp.zeros((3, 2))}, bad)
+            d.compute_for_spin_channel(mol_data, bad)
+
+
+def test_doubled_spin_dm_accepts_a_numpy_integer_channel():
+    """The guard rejects non-integral scalars without rejecting numpy integers."""
+    from xcquinox.alec.descriptors import doubled_spin_dm, DMRung35Descriptor
+    p = jnp.asarray(np.arange(8.0).reshape(2, 2, 2))
+    out = doubled_spin_dm(p, np.int64(1))
+    assert out.shape == (2, 2, 2)
+    assert bool(jnp.all(out[0] == p[1])) and bool(jnp.all(out[1] == p[1]))
+    got = DMRung35Descriptor().compute_for_spin_channel(
+        {"rung35_features_a": jnp.full((3, 2), 0.25),
+         "rung35_features_b": jnp.full((3, 2), 0.75)}, np.int64(1))
+    assert float(got[0, 0]) == 0.75
+
+
+# ---------------------------------------------------------------------------
+# Density-matrix dependence is declared, not inferred from the key tuple.
+# ---------------------------------------------------------------------------
+
+def test_density_matrix_dependence_flags_match_the_descriptor_family():
+    from xcquinox.alec.descriptors import (
+        CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
+        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor)
+    assert CuspDescriptor.density_matrix_dependent is False
+    for cls in (DMStatisticsDescriptor, DMRung35Descriptor,
+                DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor):
+        assert cls.density_matrix_dependent is True, cls.__name__
+        assert len(cls.spin_mol_keys) == 2, cls.__name__
+
+
+def test_dm_dependent_descriptor_without_spin_keys_is_refused_at_definition():
+    """A density-matrix descriptor that declares no per-spin keys would silently
+    fall back to the shared block, which is the defect the doubled density
+    removes; the class must not be definable."""
+    from xcquinox.alec.descriptors import Descriptor
+    with pytest.raises(TypeError, match="_UndeclaredSpinKeys"):
+        class _UndeclaredSpinKeys(Descriptor):
+            density_matrix_dependent: ClassVar[bool] = True
+            n_features: int = eqx.field(default=1, static=True)
+
+            def compute(self, mol_data):
+                return jnp.zeros((1, 1))
+
+
+def test_dm_dependent_descriptor_with_cleared_spin_keys_raises_at_use():
+    """The same condition reached by post-definition mutation raises at use
+    rather than returning the shared block."""
+    from xcquinox.alec.descriptors import DMRung35Descriptor
+    d = DMRung35Descriptor()
+    original = DMRung35Descriptor.spin_mol_keys
+    DMRung35Descriptor.spin_mol_keys = ()
+    try:
+        with pytest.raises(TypeError, match="spin_mol_keys"):
+            d.compute_for_spin_channel({"rung35_features": jnp.zeros((3, 2))}, 0)
+    finally:
+        DMRung35Descriptor.spin_mol_keys = original
+    assert DMRung35Descriptor.spin_mol_keys == ("rung35_features_a",
+                                                "rung35_features_b")
+
+
+def test_geometry_only_descriptor_is_definable_without_spin_keys():
+    from xcquinox.alec.descriptors import Descriptor
+
+    class _GeometryOnly(Descriptor):
+        n_features: int = eqx.field(default=1, static=True)
+
+        def compute(self, mol_data):
+            return mol_data["geom_features"]
+
+    assert _GeometryOnly.density_matrix_dependent is False
+    block = _GeometryOnly().compute_for_spin_channel(
+        {"geom_features": jnp.full((3, 1), 4.0)}, 1)
+    assert bool(jnp.all(block == 4.0))
+
+
+# ---------------------------------------------------------------------------
+# What the descriptor kernels return when handed diag(P_sigma, P_sigma).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def o_atom_uks():
+    """O atom (sto-3g, UKS/PBE, grid level 1): a spin-resolved DM with
+    P_alpha != P_beta, so a per-channel claim cannot pass by symmetry."""
+    from pyscf import gto, dft
+    from xcquinox.alec.tests.fixtures.molecules import o_atom
+    spec = o_atom()
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.UKS(mol)
+    mf.xc = "pbe"
+    mf.grids.level = 1
+    mf.kernel()
+    dm = jnp.asarray(mf.make_rdm1())
+    assert float(jnp.abs(dm[0] - dm[1]).max()) > 1e-3
+    return mol, mf.grids.coords, dm
+
+
+def test_doubled_dm_rung35_occupancy_carries_one_channel_in_both_slots(o_atom_uks):
+    """n(diag(P_s, P_s)) = [n_s, n_s], the rung-3.5 ingredient of the
+    spin-unpolarized system the Oliver-Perdew relation refers to."""
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    from xcquinox.alec.rung35 import (compute_projected_ao,
+                                      compute_rung35_occupancy)
+    mol, coords, dm = o_atom_uks
+    proj = compute_projected_ao(mol, coords)
+    occ_phys = np.asarray(compute_rung35_occupancy(proj, dm))
+    for s in (0, 1):
+        occ_d = np.asarray(compute_rung35_occupancy(proj, doubled_spin_dm(dm, s)))
+        assert occ_d.shape == occ_phys.shape
+        # measured deviation 2.22e-16 in both channels, on 4328 grid points
+        np.testing.assert_allclose(occ_d[:, 0], occ_phys[:, s], rtol=0.0, atol=1e-12)
+        np.testing.assert_allclose(occ_d[:, 1], occ_phys[:, s], rtol=0.0, atol=1e-12)
+        # Bessel bound preserved: measured range [3.96e-04, 7.49e-01] (alpha)
+        # and [1.28e-04, 7.49e-01] (beta)
+        assert occ_d.min() >= 0.0 and occ_d.max() <= 1.0
+
+
+def test_doubled_dm_multishell_occupancy_keeps_the_alpha_major_layout(o_atom_uks):
+    """Per width w, the doubled block holds [n_s(w), n_s(w)] in the
+    alpha-major-then-spin column order of the physical block."""
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    from xcquinox.alec.rung35 import (compute_projected_ao_multishell,
+                                      compute_rung35_multishell_occupancy,
+                                      DEFAULT_RUNG35_MULTISHELL_ALPHAS)
+    mol, coords, dm = o_atom_uks
+    n_w = len(DEFAULT_RUNG35_MULTISHELL_ALPHAS)
+    proj = compute_projected_ao_multishell(mol, coords)
+    ms_phys = np.asarray(compute_rung35_multishell_occupancy(proj, dm))
+    assert ms_phys.shape[1] == 2 * n_w
+    for s in (0, 1):
+        ms_d = np.asarray(compute_rung35_multishell_occupancy(
+            proj, doubled_spin_dm(dm, s)))
+        assert ms_d.shape == ms_phys.shape
+        for w in range(n_w):
+            for slot in (0, 1):
+                # measured deviation 2.22e-16 over every width and slot
+                np.testing.assert_allclose(ms_d[:, 2 * w + slot],
+                                           ms_phys[:, 2 * w + s],
+                                           rtol=0.0, atol=1e-12)
+        # measured range [2.45e-07, 9.54e-01] (alpha), [3.23e-08, 9.49e-01] (beta)
+        assert ms_d.min() >= 0.0 and ms_d.max() <= 1.0
+
+
+def _fractional_occupation_dm(mol):
+    """A NON-idempotent spin-resolved DM with natural occupations strictly
+    inside (0, 1), built as ``P_sigma = C diag(f_sigma) C^T`` on orbitals
+    orthonormal in the AO metric (``C = S^{-1/2} Q``, Q orthogonal). ``P`` is
+    invariant under column sign flips of ``Q``, so it is reproducible across
+    LAPACK sign conventions."""
+    s_matrix = np.asarray(mol.intor("int1e_ovlp"))
+    w, u = np.linalg.eigh(s_matrix)
+    x = u @ np.diag(w ** -0.5) @ u.T
+    q, _ = np.linalg.qr(np.random.default_rng(20260821).standard_normal(
+        (s_matrix.shape[0], s_matrix.shape[0])))
+    c = x @ q
+    occ_a = np.array([0.95, 0.85, 0.60, 0.45, 0.30])
+    occ_b = np.array([0.90, 0.70, 0.50, 0.35, 0.15])
+    dm = np.stack([c @ np.diag(occ_a) @ c.T, c @ np.diag(occ_b) @ c.T])
+    return dm, s_matrix, occ_a, occ_b
+
+
+def test_doubled_dm_statistics_are_the_channel_statistics(o_atom_uks):
+    """The dm_statistics block of diag(P_s, P_s) is the pair (per-spin
+    idempotency error of P_s, off-diagonal norm of P_s); the factor 2 in the
+    aggregated total cancels between the off-diagonal norm and its trace."""
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    from xcquinox.features import compute_dm_features_array
+    mol, _, _ = o_atom_uks
+    dm, s_matrix, occ_a, occ_b = _fractional_occupation_dm(mol)
+    w, u = np.linalg.eigh(s_matrix)
+    root_s = u @ np.diag(np.sqrt(w)) @ u.T
+    for s, occ in ((0, occ_a), (1, occ_b)):
+        nat = np.linalg.eigvalsh(root_s @ dm[s] @ root_s)
+        np.testing.assert_allclose(nat, np.sort(occ), rtol=1e-12, atol=0.0)
+        assert nat.min() > 0.0 and nat.max() < 1.0
+
+    # measured on this construction: the doubled-DM block against the per-spin
+    # oracle agrees to 6.0e-16 / 2.0e-16 relative (idempotency) and
+    # 1.5e-13 / 1.8e-13 relative (off-diagonal norm)
+    expected = {0: (5.7828803759233306e-02, 1.7604057570571247e-01),
+                1: (7.0508386631186415e-02, 2.2526539629454820e-01)}
+    for s in (0, 1):
+        block = np.asarray(compute_dm_features_array(
+            doubled_spin_dm(jnp.asarray(dm), s), jnp.asarray(s_matrix)))
+        p_s = dm[s]
+        residual = p_s @ s_matrix @ p_s - p_s
+        idempotency = float((residual * residual).sum()
+                            / (np.trace(p_s @ s_matrix) + 1e-12))
+        off = p_s - np.diag(np.diag(p_s))
+        off_diag_norm = float(np.sqrt((off * off).sum()) / np.trace(p_s))
+        assert idempotency > 1e-3, "the reference DM must not be idempotent"
+        np.testing.assert_allclose(block, [idempotency, off_diag_norm],
+                                   rtol=1e-12, atol=0.0)
+        np.testing.assert_allclose(block, expected[s], rtol=1e-12, atol=0.0)
