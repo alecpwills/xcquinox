@@ -133,10 +133,20 @@ certificate's table is rendered into the figure provenance footer.
 
 ### 3.4 Per-architecture workflow verification (before any YAML is rendered)
 
-For every architecture in `ARCHITECTURES`: datagen -> pretrain -> certificate -> train (a
-handful of steps on two cells) -> eval, at a small basis locally and at the production
-identity for the certificate step, with the oracles O1-O4 inside; results recorded in
-HISTORY as the baseline matrix every later change is measured against.
+For every architecture in `ARCHITECTURES` (30 entries; the figure layer's `ARCH_ORDER` renders
+25 of them -- the matrix exercises all 30, the figure layer is not one of its assertions):
+datagen -> pretrain -> certificate -> preflight -> train (n_steps 3 on two cells, subset sizes
+1 and 2) -> eval, driven through the harness stage modules as plain Python (`cluster submit`
+in its default dry-run to create the run directory and resolved configuration, then
+`_datagen`, `_pretrain`, the certificate, `_preflight`, `_train_task`, `_eval_one_spec`,
+`validate_run`), at def2-svp / grid level 1 with the repository's cached subset ledger and
+CCSD references (`notebooks/checkpoints_step7/`), the certificate step at the production
+identity; the held-out evaluation is exercised on a six-species slice of the pool (the full
+pool is hours per cell and not narrowable from the configuration). Assertions per
+architecture: every stage exits zero, the expected artefacts exist, the certificate verdict
+is recorded, the in-sample `eval_df.csv` and the sliced held-out channel are written, and the
+oracle tests O1-O4 pass for the architecture. Results are recorded in HISTORY as the
+baseline matrix every later change is measured against.
 
 ### 3.5 Campaign v6
 
