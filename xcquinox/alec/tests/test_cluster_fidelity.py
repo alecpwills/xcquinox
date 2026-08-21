@@ -87,14 +87,44 @@ _CHEAP_XCQ_MODULES = frozenset({
     "xcquinox.alec.cluster.materialize",
 })
 
+# Upper bound on the modules present in sys.modules after the file is executed
+# with the package __init__ modules stubbed (the closure test below). The
+# committed tree measures 122, of which 78 are the interpreter's own startup
+# set. A module-body ``import pyscf`` measures 799 (numpy, scipy, pyscf) and an
+# ``import jax`` in grid_config's body measures 612 (numpy, jax, jaxlib), so any
+# bound between 122 and 612 discriminates; 300 leaves the readers room to grow a
+# stdlib import without a test edit.
+_CLOSURE_MODULE_BOUND = 300
+
 
 def _module_body_imports(path, package):
-    """Absolute module names imported by ONE file's module body."""
+    """Absolute module names imported by ONE file's module body, at any
+    statement depth.
+
+    The walk descends through every compound statement -- ``try``, ``if``,
+    ``with``, ``for``, ``while`` -- because an import nested in one of those
+    executes on import exactly as a top-level one does, while iterating
+    ``tree.body`` alone cannot see it: ``if True:\\n    import pyscf`` in
+    fidelity.py's body left the depth-1 form of this test passing with the
+    module's measured closure at 799 modules.
+
+    Function, async-function, class and lambda subtrees are PRUNED. A
+    function-local import is what the contract asks for, so it must not
+    register; a class body does execute on import, and is caught by the
+    closure measurement below rather than by this walk.
+    """
     import ast
-    with open(path) as f:
+    assert path is not None, (
+        "no source file to read for a module body in package %r" % (package,))
+    with open(path, encoding="utf-8") as f:
         tree = ast.parse(f.read())
     out = []
-    for node in tree.body:
+    stack = list(reversed(tree.body))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef, ast.Lambda)):
+            continue
         if isinstance(node, ast.Import):
             out += [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom):
@@ -104,6 +134,8 @@ def _module_body_imports(path, package):
                 out.append(base + "." + node.module if node.module else base)
             else:
                 out.append(node.module or "")
+        else:
+            stack.extend(reversed(list(ast.iter_child_nodes(node))))
     return out
 
 
@@ -124,9 +156,14 @@ def test_fidelity_module_body_carries_no_heavy_import():
     not to. A name is therefore admitted only while its own body stays within
     the same prohibition.
 
-    Checked on the source: importing any cluster module already executes the
-    package's own jax-carrying __init__, so sys.modules cannot distinguish
-    this file's cost from the package's."""
+    It is also transitive in STATEMENT depth: an import nested in a ``try``,
+    an ``if`` or a ``with`` at module level runs on import, so it registers
+    here as a top-level one does, while imports inside a function body do not.
+
+    Checked on the source; the companion test below measures the same
+    prohibition on the bindings, which is what catches an import this walk
+    cannot see in the source (a class body) or reaches through a path it does
+    not resolve."""
     import importlib.util
     import inspect
     queue = [("xcquinox.alec.cluster.fidelity", inspect.getsourcefile(fid))]
@@ -139,20 +176,92 @@ def test_fidelity_module_body_carries_no_heavy_import():
         seen.add(name)
         package = name.rsplit(".", 1)[0]
         imports = _module_body_imports(path, package)
-        assert imports, "%s imports nothing at all" % name
+        assert imports, (
+            "%s (%s) has a module body carrying no import at all; the file "
+            "measured is not the module the walk names" % (name, path))
         for imported in imports:
             closure.append(imported)
             root = imported.split(".")[0]
             assert root not in _HEAVY_IMPORT_ROOTS, (name, imported)
             if root == "xcquinox":
                 assert imported in _CHEAP_XCQ_MODULES, (name, imported)
-                origin = importlib.util.find_spec(imported).origin
-                queue.append((imported, origin))
+                spec = importlib.util.find_spec(imported)
+                assert spec is not None, (
+                    "%s imports %s, which resolves to no module at all"
+                    % (name, imported))
+                assert spec.origin is not None, (
+                    "%s imports %s, which resolves to a namespace package "
+                    "with no source file, so the transitive walk cannot read "
+                    "its body" % (name, imported))
+                queue.append((imported, spec.origin))
     for deferred in ("xcquinox.alec.rungs", "xcquinox.alec.config",
                      "xcquinox.alec.full_benchmark_pools",
                      "xcquinox.alec.dfs_pretrain_set",
                      "xcquinox.alec.training_points"):
         assert deferred not in closure, deferred
+
+
+def test_fidelity_module_body_loads_no_heavy_stack_when_executed():
+    """The same prohibition measured on the BINDINGS rather than the source.
+
+    The walk above reads statements; this one executes the file and counts
+    what reaches ``sys.modules``, so a heavy import is caught whatever shape
+    it was written in -- nested in a ``try`` or an ``if``, run from a class
+    body, or pulled in by one of the cheap readers the walk whitelists.
+
+    Measured with the three package ``__init__`` modules stubbed. Importing
+    ``xcquinox.alec.cluster`` normally executes the package's own jax-carrying
+    ``__init__``, which would load the whole stack before this module's body
+    ran and mask its cost entirely; the stubs keep the real package
+    ``__path__``, so ``domain``, ``grid_config`` and ``materialize`` still
+    resolve to the real files and their bodies execute here too.
+
+    The committed tree measures 122 modules loaded, of which 78 are the
+    interpreter's own startup set, and pulls exactly the three cheap readers
+    out of ``xcquinox`` -- so the deferred model, config and pool modules are
+    pinned absent by binding and not only by name.
+    """
+    path = os.path.abspath(fid.__file__)
+    cluster_dir = os.path.dirname(path)
+    alec_dir = os.path.dirname(cluster_dir)
+    xcq_dir = os.path.dirname(alec_dir)
+    probe = """
+import importlib.util, json, sys, types
+paths = {"xcquinox": %r, "xcquinox.alec": %r, "xcquinox.alec.cluster": %r}
+for name, path in paths.items():
+    stub = types.ModuleType(name)
+    stub.__path__ = [path]
+    sys.modules[name] = stub
+base = len(sys.modules)
+spec = importlib.util.spec_from_file_location(
+    "xcquinox.alec.cluster.fidelity", %r)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+print(json.dumps({"base": base, "after": len(sys.modules),
+                  "modules": sorted(sys.modules),
+                  "filename": module.CERTIFICATE_FILENAME,
+                  "ha_to_kcal": module.HA_TO_KCAL}))
+""" % (xcq_dir, alec_dir, cluster_dir, path)
+    out = subprocess.run([sys.executable, "-c", probe],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    loaded = set(result["modules"])
+    heavy = sorted(root for root in _HEAVY_IMPORT_ROOTS if root in loaded)
+    assert not heavy, (heavy, result["after"])
+    assert result["after"] < _CLOSURE_MODULE_BOUND, (
+        result["after"], result["base"])
+    # Exactly the three whitelisted readers, and the stubs the probe installed
+    # itself: no deferred xcquinox module is reached through any route.
+    assert {m for m in loaded if m.split(".")[0] == "xcquinox"} == (
+        set(_CHEAP_XCQ_MODULES) | {"xcquinox", "xcquinox.alec",
+                                   "xcquinox.alec.cluster",
+                                   "xcquinox.alec.cluster.fidelity"})
+    # The module really executed under the stubs, so the counts above are the
+    # cost of a complete import and not of a failed one.
+    assert result["filename"] == fid.CERTIFICATE_FILENAME
+    assert result["ha_to_kcal"] == fid.HA_TO_KCAL
 
 
 def test_fidelity_imports_in_a_fresh_interpreter():
