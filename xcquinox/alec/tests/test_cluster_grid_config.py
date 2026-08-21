@@ -1124,3 +1124,125 @@ def test_seed_and_coldstart_resolved_round_trip(tmp_path):
     assert cfg2.inputs.seed_xc == "auto"
     assert cfg2.inputs.seed_cache_dir == "/gpfs/scratch/x/seed_cache"
     assert cfg2.eval_coldstart is True
+
+
+# ---------------------------------------------------------------------------
+# FidelityConfig: the per-architecture physics-certificate tolerances
+# ---------------------------------------------------------------------------
+
+def test_fidelity_defaults_to_the_binding_tolerances(tmp_path):
+    """A config with no fidelity block carries tol_AE = 1.0 kcal/mol and
+    tol_atom = 1.0 mHa, so every YAML written before the certificate existed
+    loads at the binding tolerances rather than at no tolerance."""
+    from xcquinox.alec.cluster.grid_config import FidelityConfig
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", _base_config_dict()))
+    assert isinstance(cfg.fidelity, FidelityConfig)
+    assert cfg.fidelity.tol_AE == 1.0
+    assert cfg.fidelity.tol_atom == 1.0
+    assert cfg.fidelity.override_reason is None
+    assert cfg.fidelity.enforce is True
+
+
+def test_fidelity_block_parses(tmp_path):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 0.5, "tol_atom": 0.25,
+                       "override_reason": None}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    assert cfg.fidelity.tol_AE == 0.5
+    assert cfg.fidelity.tol_atom == 0.25
+
+
+def test_fidelity_block_must_be_a_mapping(tmp_path):
+    raw = _base_config_dict()
+    raw["fidelity"] = [1.0, 1.0]
+    with pytest.raises(ValueError, match="fidelity"):
+        load_grid_config(_write(tmp_path, "grid.yaml", raw))
+
+
+def test_fidelity_resolved_round_trip(tmp_path):
+    """The resolved config is re-read by the pretrain, preflight and eval
+    stages; a dropped fidelity block would silently revert a documented
+    override to the binding tolerances mid-run."""
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 2.5, "tol_atom": 2.5,
+                       "override_reason": "rung-3.5 control arm"}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    cfg2 = load_grid_config(
+        _write(tmp_path, "resolved.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.fidelity == cfg.fidelity
+
+
+def test_validate_rejects_a_loose_tolerance_without_an_override_reason(tmp_path):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 3.0, "tol_atom": 1.0}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    with pytest.raises(ValueError, match="override_reason"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_rejects_a_loose_atom_tolerance_without_an_override_reason(
+        tmp_path):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 2.5,
+                       "override_reason": "   "}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    with pytest.raises(ValueError, match="override_reason"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_accepts_a_loose_tolerance_with_an_override_reason(tmp_path):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 3.0, "tol_atom": 3.0,
+                       "override_reason": "descriptor-free control arm, "
+                                          "documented in HISTORY 2026-08-21"}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_accepts_the_ceiling_without_an_override_reason(tmp_path):
+    """2.0 / 2.0 is the ceiling, not past it."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 2.0, "tol_atom": 2.0}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_rejects_disabled_enforcement_without_a_reason(tmp_path):
+    """Turning the on-node gates off is a documented decision or it does not
+    happen: the reason is copied into every certificate the run writes."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0, "enforce": False}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    with pytest.raises(ValueError, match="override_reason"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_accepts_disabled_enforcement_with_a_reason(tmp_path):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0, "enforce": False,
+                       "override_reason": "workflow-verification matrix, "
+                                          "50-step pretrain"}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+    assert cfg.fidelity.enforce is False
+
+
+def test_fidelity_enforce_round_trips(tmp_path):
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0, "enforce": False,
+                       "override_reason": "workflow matrix"}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    cfg2 = load_grid_config(
+        _write(tmp_path, "resolved2.yaml", _config_to_raw_dict(cfg)))
+    assert cfg2.fidelity.enforce is False
+    assert cfg2.fidelity == cfg.fidelity
+
+
+def test_validate_rejects_a_nonpositive_tolerance(tmp_path):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 0.0, "tol_atom": 1.0}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    with pytest.raises(ValueError, match="tol_AE must be > 0"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))

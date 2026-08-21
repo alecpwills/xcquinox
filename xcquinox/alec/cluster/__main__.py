@@ -146,6 +146,11 @@ def _config_to_raw_dict(cfg) -> dict:
         "hyperparams": dataclasses.asdict(cfg.hyperparams),
         "inputs": dataclasses.asdict(cfg.inputs),
         "pretrain": dataclasses.asdict(cfg.pretrain),
+        # fidelity MUST round-trip for the same reason ae_as_reactions and
+        # inline_eval do: the pretrain worker re-reads resolved_config.yaml to
+        # get its tolerances, so a dropped block would silently certify at the
+        # defaults instead of at the run's documented override.
+        "fidelity": dataclasses.asdict(cfg.fidelity),
         "cluster": dataclasses.asdict(cfg.cluster),
         "domain_profile": cfg.domain_profile,
         "on_precompute_failure": cfg.on_precompute_failure,

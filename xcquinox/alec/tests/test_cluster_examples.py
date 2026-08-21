@@ -20,6 +20,7 @@ from xcquinox.alec.cluster.grid_config import (
     InputPaths,
     PretrainConfig,
     ClusterResources,
+    FidelityConfig,
     load_grid_config,
     expand_grid,
     validate_grid_semantics,
@@ -155,6 +156,7 @@ def test_example_structural_completeness():
     _assert_fields_covered(InputPaths, raw.get("inputs"), "inputs")
     _assert_fields_covered(PretrainConfig, raw.get("pretrain"), "pretrain")
     _assert_fields_covered(ClusterResources, raw.get("cluster"), "cluster")
+    _assert_fields_covered(FidelityConfig, raw.get("fidelity"), "fidelity")
     # every named solver covers SolverNamed's fields
     solvers = raw.get("solvers") or {}
     assert solvers, "example has no 'solvers' section"
@@ -244,3 +246,21 @@ def test_example_has_no_real_credentials():
         else None
     assert cfg.cluster.mail_user == "CHANGE_ME@example.com"
     assert cfg.cluster.account == "CHANGE_ME"
+
+
+def test_example_ships_the_binding_certificate_tolerances():
+    """The shipped template must carry the program's binding tolerances --
+    tol_AE = 1.0 kcal/mol, tol_atom = 1.0 mHa -- explicitly, so a copy-me user
+    sees them rather than inheriting an invisible default."""
+    pytest.importorskip("yaml")
+    raw = _raw_yaml(_example_path())
+    assert raw.get("fidelity") is not None, (
+        "grid_step7.yaml must ship a 'fidelity' block")
+    assert raw["fidelity"]["tol_AE"] == 1.0
+    assert raw["fidelity"]["tol_atom"] == 1.0
+    assert raw["fidelity"]["override_reason"] is None
+    assert raw["fidelity"]["enforce"] is True
+    cfg = load_grid_config(_example_path())
+    assert cfg.fidelity.tol_AE == 1.0
+    assert cfg.fidelity.tol_atom == 1.0
+    assert cfg.fidelity.enforce is True

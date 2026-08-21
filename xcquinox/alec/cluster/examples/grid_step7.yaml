@@ -164,3 +164,24 @@ bh76_mode: reaction_energy
 # generate it with `python scripts/generate_polarized_pretrain_data.py
 # --out-dir <pretrain.data_dir>`.
 use_polarized_correlation: false
+
+# --- pretraining-fidelity certificate --------------------------------------
+# Before the train array may start, every distinct architecture must carry a
+# PASS certificate at <run_dir>/pretrain/<arch>/fidelity_certificate.json: its
+# pretrained networks reproduce their parent functional (PBE for a GGA-rung
+# architecture, SCAN for a meta-GGA one) in energy units on frozen parent
+# densities at this run's identity. PASS requires
+#   max |dE_xc| over free atoms         <= tol_atom  (mHa)
+#   max |dAE|   over atomization energies <= tol_AE  (kcal/mol)
+# Neither may exceed 2.0 without a non-empty override_reason, which is copied
+# into every certificate the run writes.
+# `enforce: false` (which REQUIRES a non-empty override_reason) still computes
+# and writes the certificate with its true verdict, but lets the pretrain
+# stage, the train tasks and the preflight continue past a FAIL. It exists for
+# workflow verification only: validate_run, merge_v4_arms and the figure suite
+# refuse such a run regardless, so it can never become a quantitative result.
+fidelity:
+  tol_AE: 1.0               # kcal/mol
+  tol_atom: 1.0             # mHa
+  override_reason: null
+  enforce: true

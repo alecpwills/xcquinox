@@ -19,7 +19,7 @@ Design note, the ``domain`` dependency:
     the domain object is received as a parameter; we depend only on it
     exposing an integer ``pool_size`` attribute. See the function docstring.
 """
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from itertools import product
 import os
 import warnings
@@ -228,6 +228,43 @@ class InputPaths:
 
 
 # ---------------------------------------------------------------------------
+# Pretraining-fidelity certificate config
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class FidelityConfig:
+    """Tolerances for the per-architecture physics certificate.
+
+    Every architecture's pretrained networks must reproduce their parent
+    functional (PBE for a GGA-rung architecture, SCAN for a meta-GGA one) in
+    energy units before the run may train: the certificate
+    (``cluster/fidelity.py``) requires max |dE_xc| over free atoms <=
+    ``tol_atom`` mHa AND max |dAE| over atomization energies <= ``tol_AE``
+    kcal/mol on frozen parent densities at the run's identity.
+
+    The defaults are the program's binding decision (1.0 kcal/mol and 1.0
+    mHa). ``validate_grid_semantics`` refuses either tolerance above 2.0
+    unless ``override_reason`` is non-empty, so a run can only be loosened
+    deliberately and with the reason on the record: the string is copied into
+    every certificate the run writes.
+    """
+    tol_AE: float = 1.0          # kcal/mol, atomization-energy offset
+    tol_atom: float = 1.0        # mHa, free-atom E_xc offset
+    override_reason: str | None = None
+    # When False the certificate is still computed and written with its TRUE
+    # verdict, but the ON-NODE gates (the pretrain worker's exit code, the
+    # train task, the preflight sweep) log the verdict and continue instead of
+    # refusing. Permitted only with a non-empty ``override_reason``. It exists
+    # for the per-architecture workflow-verification matrix, whose short
+    # pretraining runs cannot meet the tolerance yet must exercise the train
+    # and eval wiring with the physics on record. The RECORD layers
+    # (``validate_run``, ``merge_v4_arms``, the figure loaders) ignore this
+    # field and require PASS regardless, so a non-enforcing run can never
+    # become a quantitative result.
+    enforce: bool = True
+
+
+# ---------------------------------------------------------------------------
 # Pretrain stage config
 # ---------------------------------------------------------------------------
 
@@ -422,6 +459,10 @@ class GridConfig:
     # (seed_source="minao", max_cycles=25, conv_tol=1e-12; mode stays FULL).
     # Default False -> byte-identical (three channels as before).
     eval_coldstart: bool = False
+    # Pretraining-fidelity certificate tolerances. Optional in the YAML: a
+    # config written before the certificate existed loads at the binding
+    # 1.0 kcal/mol / 1.0 mHa defaults rather than at no tolerance.
+    fidelity: FidelityConfig = field(default_factory=FidelityConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +596,27 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         seed=d.get("seed", 42),
         loss_weighting=d.get("loss_weighting", "integration"),
         atoms=_parse_pretrain_atoms(d.get("atoms")),
+    )
+
+
+def _build_fidelity(d) -> FidelityConfig:
+    """Build FidelityConfig from a raw dict; ``None`` -> the defaults.
+
+    The ``fidelity`` section is OPTIONAL so every YAML authored before the
+    certificate existed still loads, at the binding tolerances.
+    """
+    if d is None:
+        return FidelityConfig()
+    if not isinstance(d, dict):
+        raise ValueError(
+            f"grid config section 'fidelity' must be a mapping, got "
+            f"{type(d).__name__}")
+    reason = d.get("override_reason")
+    return FidelityConfig(
+        tol_AE=float(d.get("tol_AE", 1.0)),
+        tol_atom=float(d.get("tol_atom", 1.0)),
+        override_reason=None if reason is None else str(reason),
+        enforce=bool(d.get("enforce", True)),
     )
 
 
@@ -723,6 +785,7 @@ def load_grid_config(path: str) -> GridConfig:
         defer_eval=bool(raw.get("defer_eval", False)),
         inline_eval=bool(raw.get("inline_eval", False)),
         eval_coldstart=bool(raw.get("eval_coldstart", False)),
+        fidelity=_build_fidelity(raw.get("fidelity")),
     )
 
 
@@ -1003,6 +1066,32 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
             f"pretrain.loss_weighting must be 'unweighted' or "
             f"'integration', got {pt.loss_weighting!r}"
         )
+
+    # --- certificate tolerance bounds --------------------------------------
+    # The program's binding decision is tol_AE = 1.0 kcal/mol and tol_atom =
+    # 1.0 mHa for every architecture. A looser run is possible but never
+    # silent: above 2.0 / 2.0 the config must carry a non-empty
+    # override_reason, which the certificate copies into its own record.
+    fid = cfg.fidelity
+    if fid.tol_AE <= 0:
+        raise ValueError(f"fidelity.tol_AE must be > 0, got {fid.tol_AE}")
+    if fid.tol_atom <= 0:
+        raise ValueError(f"fidelity.tol_atom must be > 0, got {fid.tol_atom}")
+    _override = (fid.override_reason or "").strip()
+    if (fid.tol_AE > 2.0 or fid.tol_atom > 2.0) and not _override:
+        raise ValueError(
+            f"fidelity.tol_AE={fid.tol_AE} kcal/mol / "
+            f"fidelity.tol_atom={fid.tol_atom} mHa exceed the 2.0 / 2.0 "
+            "ceiling; a certificate tolerance above that ceiling requires a "
+            "non-empty fidelity.override_reason, which is recorded in every "
+            "certificate the run writes")
+    if not fid.enforce and not _override:
+        raise ValueError(
+            "fidelity.enforce=false disables the on-node certificate gates, "
+            "so it requires a non-empty fidelity.override_reason; the reason "
+            "is recorded in every certificate the run writes. Such a run is "
+            "still refused by validate_run, merge_v4_arms and the figure "
+            "suite, so it can only be used for workflow verification")
 
     # --- resource bounds ----------------------------------------------------
     cl = cfg.cluster
