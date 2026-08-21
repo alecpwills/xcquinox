@@ -244,6 +244,27 @@ class MoleculeData(TypedDict, total=True):
     # the FULL/REASSEMBLE SCF recomputes it self-consistently each cycle from the
     # live DM + the stored AO gradients (ao_grid_deriv).
     metagga_features: jnp.ndarray | None
+    # Per-spin-channel descriptor blocks: this descriptor's features for the
+    # symmetric doubled density diag(P_sigma, P_sigma), the spin-unpolarized
+    # system the exact exchange spin-scaling relation refers to (Oliver and
+    # Perdew, Phys. Rev. A 20, 397 (1979)). Layout matches the total-density
+    # twin above column for column. None for a closed-shell molecule, whose
+    # rho_a = rho_b makes the per-channel block identical to the total one, and
+    # None for a descriptor the architecture does not carry.
+    dm_features_a: jnp.ndarray | None
+    dm_features_b: jnp.ndarray | None
+    rung35_features_a: jnp.ndarray | None
+    rung35_features_b: jnp.ndarray | None
+    rung35ms_features_a: jnp.ndarray | None
+    rung35ms_features_b: jnp.ndarray | None
+    metagga_features_a: jnp.ndarray | None
+    metagga_features_b: jnp.ndarray | None
+    # Per-spin positive kinetic-energy density tau_sigma on the grid, (n_grid,).
+    # The doubled system's tau is 2 tau_sigma. Stored alongside the meta-GGA
+    # blocks so the open-shell exchange ingredients are inspectable without
+    # recontracting the density matrix.
+    tau_spin_a: jnp.ndarray | None
+    tau_spin_b: jnp.ndarray | None
     eri: jnp.ndarray | None
     cderi: jnp.ndarray | None
     atom_composition: tuple[tuple[str, int], ...]
@@ -718,6 +739,77 @@ def precompute_fixed_density_data(
         metagga_features = compute_alpha(
             jnp.array(rho_pbe), jnp.array(sigma_pbe), _tau_pbe).reshape(-1, 1)
 
+    # --- Per-spin-channel descriptor blocks (open shells only) --------------
+    # Every UKS exchange evaluation is posed on the symmetric doubled density
+    # diag(P_sigma, P_sigma) (Oliver and Perdew, Phys. Rev. A 20, 397 (1979)):
+    # density 2 rho_sigma, gradient invariant 4 sigma_sigma_sigma,
+    # kinetic-energy density 2 tau_sigma. The blocks below are that system's
+    # descriptor features, one per channel; they are what the exchange term
+    # consumes, while correlation keeps the total density and the total block.
+    # A closed-shell molecule has rho_a = rho_b, so its per-channel block IS the
+    # total block and these keys stay None.
+    dm_features_a = None
+    dm_features_b = None
+    rung35_features_a = None
+    rung35_features_b = None
+    rung35ms_features_a = None
+    rung35ms_features_b = None
+    metagga_features_a = None
+    metagga_features_b = None
+    tau_spin_a = None
+    tau_spin_b = None
+    if is_unrestricted:
+        from xcquinox.alec.descriptors import doubled_spin_dm
+        dm_pbe_spin = jnp.array(dm_pbe)
+        doubled = [doubled_spin_dm(dm_pbe_spin, s) for s in (0, 1)]
+        rho_doubled = []
+        sigma_doubled = []
+        for s in (0, 1):
+            d_s = np.asarray(dm_pbe[s])
+            r_s = np.einsum("pi,ij,pj->p", ao[0], d_s, ao[0])
+            gx_s = 2 * np.einsum("pi,ij,pj->p", ao[1], d_s, ao[0])
+            gy_s = 2 * np.einsum("pi,ij,pj->p", ao[2], d_s, ao[0])
+            gz_s = 2 * np.einsum("pi,ij,pj->p", ao[3], d_s, ao[0])
+            rho_doubled.append(2.0 * r_s)
+            sigma_doubled.append(4.0 * (gx_s ** 2 + gy_s ** 2 + gz_s ** 2))
+        if dm_features is not None:
+            from xcquinox.features import compute_dm_features_array
+            dm_features_a, dm_features_b = [
+                jnp.tile(compute_dm_features_array(d, jnp.array(s_matrix)),
+                         (len(rho_pbe), 1))
+                for d in doubled
+            ]
+        if rung35_features is not None:
+            from xcquinox.alec.rung35 import compute_rung35_occupancy
+            # [n_sigma, n_sigma]: the channel's occupancy in BOTH spin slots,
+            # each still inside the Bessel bound [0, 1].
+            rung35_features_a, rung35_features_b = [
+                compute_rung35_occupancy(rung35_proj_ao, d) for d in doubled
+            ]
+        if rung35ms_features is not None:
+            from xcquinox.alec.rung35 import compute_rung35_multishell_occupancy
+            # Column order stays ALPHA-MAJOR then spin, as in the total block.
+            rung35ms_features_a, rung35ms_features_b = [
+                compute_rung35_multishell_occupancy(rung35ms_proj_ao, d)
+                for d in doubled
+            ]
+        if metagga_features is not None:
+            from xcquinox.alec.metagga import compute_tau_from_dm, compute_alpha
+            ao_grad_j = jnp.array(ao[1:4])
+            tau_spin_a, tau_spin_b = [
+                compute_tau_from_dm(ao_grad_j, jnp.array(dm_pbe[s]))
+                for s in (0, 1)
+            ]
+            # compute_tau_from_dm sums the two spin slots of a 3-D density
+            # matrix, so the doubled matrix supplies tau = 2 tau_sigma directly.
+            metagga_features_a, metagga_features_b = [
+                compute_alpha(jnp.array(rho_doubled[s]),
+                              jnp.array(sigma_doubled[s]),
+                              compute_tau_from_dm(ao_grad_j, doubled[s])
+                              ).reshape(-1, 1)
+                for s in (0, 1)
+            ]
+
     eri = None
     if "eri" in all_needed:
         eri = jnp.array(mol.intor("int2e", aosym="s1"))
@@ -825,6 +917,16 @@ def precompute_fixed_density_data(
         rung35ms_proj_ao=rung35ms_proj_ao,
         rung35ms_features=rung35ms_features,
         metagga_features=metagga_features,
+        dm_features_a=dm_features_a,
+        dm_features_b=dm_features_b,
+        rung35_features_a=rung35_features_a,
+        rung35_features_b=rung35_features_b,
+        rung35ms_features_a=rung35ms_features_a,
+        rung35ms_features_b=rung35ms_features_b,
+        metagga_features_a=metagga_features_a,
+        metagga_features_b=metagga_features_b,
+        tau_spin_a=tau_spin_a,
+        tau_spin_b=tau_spin_b,
         eri=eri,
         cderi=cderi,
         atom_composition=mol_spec.atom_composition,

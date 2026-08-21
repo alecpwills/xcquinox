@@ -117,7 +117,17 @@ _PAD_AO_ZERO_BLOCK = ("dm_pbe", "dm_seed", "j_matrix", "vxc_pbe", "dm_target",
 # grid-only fields holding FINITE per-point data (edge-padded, weight-0 rows)
 _PAD_GRID_EDGE = ("rho_grid", "sigma_grid", "nabla_rho_grid", "rho_ref_grid",
                   "cusp_features", "dm_features", "rung35_features",
-                  "rung35ms_features", "metagga_features")
+                  "rung35ms_features", "metagga_features",
+                  # Per-spin-channel blocks of diag(P_sigma, P_sigma). Same
+                  # (n_grid, k) grid-major layout as their total-density twins,
+                  # so the same edge pad applies; padded rows carry zero grid
+                  # weight and contribute nothing to energy or Fock.
+                  "dm_features_a", "dm_features_b",
+                  "rung35_features_a", "rung35_features_b",
+                  "rung35ms_features_a", "rung35ms_features_b",
+                  "metagga_features_a", "metagga_features_b",
+                  # Per-spin kinetic-energy density, (n_grid,).
+                  "tau_spin_a", "tau_spin_b")
 # (n_grid, n_ao): edge-pad grid axis 0, zero-pad AO axis 1
 _PAD_AO_ON_GRID = ("ao_grid", "rung35_proj_ao")
 
