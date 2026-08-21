@@ -258,3 +258,24 @@ def test_padding_rung35_multishell_keys_axes_and_bit_identity():
     # carry zero grid weight, so replication is results-neutral and finite.
     for row in f[n_grid:]:
         _np.testing.assert_array_equal(row, f[n_grid - 1])
+
+
+def test_padding_strips_the_reference_xc_provenance_string():
+    """`reference_xc` is run-level provenance the energy kernel never reads.
+    Leaving a string leaf in the padded pytree would add a static leaf to the
+    per-molecule JIT key for no benefit, so the pad pass strips it -- exactly
+    as it strips `name` and `atom_composition`."""
+    from xcquinox.alec.padding import (_STRIP_KEYS, _pad_mol_data,
+                                        canonicalize_mol_data, PadTarget)
+    import jax.numpy as jnp
+    assert "reference_xc" in _STRIP_KEYS
+    md = {"reference_xc": "scan",
+          "s_matrix": jnp.eye(2),
+          "grid_weights": jnp.ones(3)}
+    target = PadTarget(n_ao=2, n_grid=3, naux=None)
+    # _pad_mol_data is the shape stage only and keeps every key; the strip
+    # happens in the full pass, which is what the de-fuse calls.
+    assert "reference_xc" in _pad_mol_data(md, target)
+    out = canonicalize_mol_data(md, target)
+    assert "reference_xc" not in out
+    assert "s_matrix" in out and "grid_weights" in out

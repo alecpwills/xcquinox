@@ -133,7 +133,10 @@ _PAD_AO_ON_GRID = ("ao_grid", "rung35_proj_ao")
 
 # Molecule-identifying leaves the manual-backend energy never reads (verified
 # energy-neutral); stripping them stops them keying the per-molecule compile.
-_STRIP_KEYS = ("_pyscfad_mol", "name", "atom_composition")
+# ``reference_xc`` joins them as run-level provenance: the energy kernel never
+# reads it, and a string leaf in the padded pytree would key the compile for
+# nothing.
+_STRIP_KEYS = ("_pyscfad_mol", "name", "atom_composition", "reference_xc")
 # Precomputed scalar PBE energies stored as Python floats -> distinct static
 # leaves; traced so their values stop keying the compile.
 _TRACE_SCALARS = ("E_pbe", "E_xc_pbe", "E_non_xc", "e_nuc")

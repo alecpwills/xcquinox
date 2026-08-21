@@ -196,7 +196,18 @@ def _load_external_data(
 
 class MoleculeData(TypedDict, total=True):
     """Pre-computed training/test data for one molecule.
-    Every key is always present; unused keys are None."""
+    Every key is always present; unused keys are None.
+
+    REFERENCE-SCF FIELDS. ``dm_pbe``, ``rho_grid``, ``sigma_grid``,
+    ``nabla_rho_grid``, ``vxc_pbe``, ``E_pbe``, ``E_xc_pbe``, ``E_non_xc`` and
+    every descriptor block hold quantities of the REFERENCE self-consistent
+    field, whose functional is recorded in ``reference_xc``. The names carry
+    ``pbe`` because PBE was the only reference the precompute could produce
+    when they were introduced; they are kept so no consumer has to be rewritten
+    for a naming change that carries no physics. A consumer that depends on the
+    reference being a particular functional asserts ``reference_xc`` rather than
+    reading the name.
+    """
     name: str
     is_unrestricted: bool
     nocc: int | None
@@ -265,6 +276,13 @@ class MoleculeData(TypedDict, total=True):
     # recontracting the density matrix.
     tau_spin_a: jnp.ndarray | None
     tau_spin_b: jnp.ndarray | None
+    # The functional of the reference SCF that produced every quantity above:
+    # the density matrix, the grid quantities, the total and per-spin
+    # descriptor blocks, and E_pbe / E_xc_pbe / E_non_xc. "pbe" for the whole
+    # training and evaluation pipeline; the pretraining-fidelity certificate
+    # requests "scan" for a meta-GGA architecture, whose parent functional is
+    # SCAN, so the network is measured on the density it must reproduce.
+    reference_xc: str
     eri: jnp.ndarray | None
     cderi: jnp.ndarray | None
     atom_composition: tuple[tuple[str, int], ...]
@@ -290,6 +308,7 @@ def _precompute_cache_key(
     seed_source: str = "pbe",
     seed_cache_dir: str | None = None,
     seed_density_fit: bool = False,
+    reference_xc: str = "pbe",
 ) -> tuple:
     # MoleculeSpec is a frozen dataclass and hashes by structural identity.
     # required_keys are sorted to canonicalize set-equivalence.
@@ -326,9 +345,14 @@ def _precompute_cache_key(
     # The seed axis: a seed-blind key would hand a "pbe"-seeded record to a
     # "scan"/"minao" caller (or vice versa). seed_cache_dir and the DF flag
     # are part of the loaded file's identity, so they key too.
+    # reference_xc keys for the same reason and a stronger one: it selects the
+    # SCF that produced the density EVERY field is built from, so a blind key
+    # would hand a PBE record to a SCAN caller and the fidelity certificate
+    # would silently measure a meta-GGA network against the wrong density.
     return (mol_spec, tuple(sorted(required_keys)), desc_key, ext_key, auxbasis,
             float(orientation_lock_strength),
-            (str(seed_source), seed_cache_dir, bool(seed_density_fit)))
+            (str(seed_source), seed_cache_dir, bool(seed_density_fit)),
+            str(reference_xc))
 
 
 def seed_geometry_tag(atom: str, charge: int, spin: int) -> str:
@@ -498,8 +522,23 @@ def precompute_fixed_density_data(
     seed_cache_dir: str | None = None,
     seed_density_fit: bool = False,
     seed_allow_generate: bool = False,
+    reference_xc: str = "pbe",
 ) -> MoleculeData:
-    """Run PBE SCF, extract grid data, return a MoleculeData dict.
+    """Run the reference SCF, extract grid data, return a MoleculeData dict.
+
+    ``reference_xc`` selects the functional of that SCF, and therefore the
+    density every grid quantity, every descriptor block (total-density and
+    per-spin-channel) and ``E_pbe`` / ``E_xc_pbe`` / ``E_non_xc`` are built
+    from. It is recorded in the result as ``reference_xc``. The default
+    ``"pbe"`` is the whole training and evaluation pipeline; the
+    pretraining-fidelity certificate requests ``"scan"`` for a meta-GGA
+    architecture, because SCAN is the parent functional those networks were
+    pretrained against and the certificate must measure them on the density
+    they have to reproduce. This is deliberately a parameter of this one
+    construction rather than a second construction elsewhere: the density
+    determines eighteen separate fields, and two code paths building them
+    would have to be kept identical by hand. Pure (semilocal) functionals only
+    -- see the hybrid refusal below.
 
     Baseline keys are always populated. Reference/descriptor keys are computed
     on-demand based on required_keys and descriptor.required_mol_keys.
@@ -507,7 +546,7 @@ def precompute_fixed_density_data(
 
     Results are memoized in a process-level dict keyed on
     ``(mol_spec, sorted(required_keys), descriptor_classes)``. The
-    precompute is pure (PBE SCF on a frozen geometry), so caching is
+    precompute is pure (the reference SCF on a frozen geometry), so caching is
     correctness-preserving and gives O(N_specs) speedup when the notebook
     sweep evaluates the same molecule under many trained models.
     Disable via :func:`set_precompute_cache_enabled` if external_data on
@@ -517,19 +556,41 @@ def precompute_fixed_density_data(
         raise ValueError(
             f"seed_source must be one of 'pbe'/'scan'/'minao', got "
             f"{seed_source!r}")
+    if not isinstance(reference_xc, str) or not reference_xc.strip():
+        raise ValueError(
+            f"reference_xc must be a non-empty pyscf/libxc functional string, "
+            f"got {reference_xc!r}")
     cache_key = None
     if _PRECOMPUTE_CACHE_ENABLED:
         try:
             cache_key = _precompute_cache_key(
                 mol_spec, required_keys, descriptors, auxbasis,
                 orientation_lock_strength, seed_source, seed_cache_dir,
-                seed_density_fit)
+                seed_density_fit, reference_xc)
         except TypeError:
             cache_key = None  # mol_spec or descriptors not hashable
         if cache_key is not None and cache_key in _PRECOMPUTE_CACHE:
             return _PRECOMPUTE_CACHE[cache_key]
 
     from pyscf import dft, gto
+    from pyscf.dft import libxc
+
+    # A hybrid reference would break the E_xc / E_non_xc split this record is
+    # built on: pyscf reports only the SEMILOCAL part of the XC energy in
+    # veff.exc and books the exact-exchange piece with the Coulomb term, so
+    # E_non_xc = E_tot - E_xc would silently absorb it and every trained
+    # functional would sit on top of a hidden exact-exchange term. Measured:
+    # libxc.hybrid_coeff is 0.2 for b3lyp, 0.25 for pbe0 and 1.0 for the
+    # range-separated wb97x, against 0.0 for pbe and scan.
+    _hyb = float(libxc.hybrid_coeff(reference_xc))
+    _omega = float(libxc.rsh_coeff(reference_xc)[0])
+    if _hyb != 0.0 or _omega != 0.0:
+        raise ValueError(
+            f"reference_xc={reference_xc!r} is a hybrid functional "
+            f"(hybrid_coeff={_hyb}, rsh omega={_omega}); the reference SCF "
+            "must be a pure (semilocal) functional, because E_xc_pbe / "
+            "E_non_xc split the total energy at the semilocal XC term and an "
+            "exact-exchange contribution would be booked as non-XC.")
 
     # Build pyscf molecule
     mol = gto.M(
@@ -540,13 +601,13 @@ def precompute_fixed_density_data(
         verbose=0,
     )
 
-    # Run PBE SCF
+    # Run the reference SCF (reference_xc; "pbe" for the training pipeline)
     is_unrestricted = mol_spec.spin != 0
     if is_unrestricted:
         mf = dft.UKS(mol)
     else:
         mf = dft.RKS(mol)
-    mf.xc = "pbe"
+    mf.xc = reference_xc
     # Pin grid level when the spec requires it (e.g., external rho_ref_grid
     # was generated on a non-default grid). Setting .level must happen before
     # the first kernel call so .build() picks it up.
@@ -621,14 +682,37 @@ def precompute_fixed_density_data(
     # v_sigma term V_xc_ij += 2 * integral v_sigma nabla_rho . nabla(phi_i phi_j) dr.
     nabla_rho_pbe = np.stack([drho_x, drho_y, drho_z], axis=-1)
 
-    # PBE XC energy and E_non_xc
+    # Reference XC energy and E_non_xc
+    _xctype = libxc.xc_type(reference_xc)
     if dm_pbe.ndim == 3:  # UKS
-        # Use pyscf's veff.exc which already has correct spin-resolved PBE evaluation.
-        # The `veff` object was computed above (mf.get_veff(mol, dm_pbe)); reuse its .exc.
+        # Use pyscf's veff.exc which already has the correct spin-resolved
+        # evaluation. The `veff` object was computed above
+        # (mf.get_veff(mol, dm_pbe)); reuse its .exc.
         E_xc_pbe = float(veff.exc)
-    else:  # RKS
-        rho_for_xc = mf._numint.eval_rho(mol, ao, dm_pbe_tot, xctype="GGA")
-        exc_pbe, _, _, _ = mf._numint.eval_xc("pbe", rho_for_xc, spin=0)
+    elif _xctype == "MGGA":
+        # A meta-GGA needs the kinetic-energy density, which the GGA row set
+        # below cannot carry (eval_xc refuses the 4-row GGA set for a meta-GGA
+        # outright: "cannot reshape array of size 4N into shape (1,5,N)"), so
+        # the closed-shell meta-GGA reference reads the XC energy pyscf already
+        # accumulated on this grid. The two routes are one quantity, not two:
+        # on H2O/sto-3g/grid 1 veff.exc agrees with the point-wise route to
+        # 3.6e-15 Ha for the GGA reference, and to 0.0 Ha (bitwise) against a
+        # point-wise meta-GGA evaluation for the SCAN reference.
+        E_xc_pbe = float(veff.exc)
+    else:  # RKS, LDA or GGA reference
+        # The row set is the one libxc demands for the reference functional's
+        # rung: 4 rows (value + gradient) for a GGA, 1 for an LDA, and the AO
+        # table to match -- eval_rho takes the deriv-1 stack for a GGA and the
+        # bare table for an LDA. A fixed "GGA" row set is refused for an LDA
+        # reference (measured on H2O/sto-3g/grid 1: ValueError, cannot reshape
+        # array of size 36352 into shape (1,1,9088)), and the deriv-1 stack
+        # with xctype="LDA" is refused in turn (ValueError, too many values to
+        # unpack). xc_type("pbe") is "GGA", so the training pipeline's default
+        # passes exactly the arguments it always did.
+        ao_for_xc = ao if _xctype == "GGA" else ao_no_deriv
+        rho_for_xc = mf._numint.eval_rho(mol, ao_for_xc, dm_pbe_tot,
+                                         xctype=_xctype)
+        exc_pbe, _, _, _ = mf._numint.eval_xc(reference_xc, rho_for_xc, spin=0)
         E_xc_pbe = float(np.sum(rho_pbe * exc_pbe * weights))
     E_non_xc = E_pbe - E_xc_pbe
 
@@ -927,6 +1011,7 @@ def precompute_fixed_density_data(
         metagga_features_b=metagga_features_b,
         tau_spin_a=tau_spin_a,
         tau_spin_b=tau_spin_b,
+        reference_xc=reference_xc,
         eri=eri,
         cderi=cderi,
         atom_composition=mol_spec.atom_composition,

@@ -1131,3 +1131,402 @@ def test_seed_geometry_tag_rejects_malformed_tokens():
         seed_geometry_tag("H 0 0 0\nH 0 0 0.74", 0, 0)
     with pytest.raises(ValueError, match="malformed"):
         seed_geometry_tag("H 0 0", 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# reference_xc: the functional whose self-consistent density the record holds
+# ---------------------------------------------------------------------------
+# Reproducibility note, measured on this machine before these tests were
+# written: two INDEPENDENT SCF runs of the same closed-shell system agree to
+# ~5e-14 Ha in energy but only to ~5e-8 in the dimensionless meta-GGA alpha (a
+# ratio that amplifies round-off in sigma), and two runs of a DEGENERATE
+# open-shell radical (OH) can converge to different orientations of the singly
+# occupied pi orbital, differing by O(100) in sigma_grid point-wise. So the
+# "unchanged default" pin below is an OBJECT-IDENTITY pin through the memo
+# cache plus the untouched existing suite, not a bitwise comparison of two
+# separate SCF runs, which no SCF in this library would pass.
+
+_H2O_ATOM = ("O 0.0000000000 0.0000000000 0.0000000000; "
+             "H 0.0000000000 0.7570000000 0.5870000000; "
+             "H 0.0000000000 -0.7570000000 0.5870000000")
+
+
+def _h2o_spec():
+    from xcquinox.alec.config import MoleculeSpec
+    return MoleculeSpec(name="H2O_refxc", atom=_H2O_ATOM, basis="sto-3g",
+                        charge=0, spin=0,
+                        atom_composition=(("H", 2), ("O", 1)), grid_level=1)
+
+
+def _oh_spec():
+    from xcquinox.alec.config import MoleculeSpec
+    return MoleculeSpec(name="OH_refxc", atom="O 0 0 0; H 0 0 0.97",
+                        basis="sto-3g", charge=0, spin=1,
+                        atom_composition=(("H", 1), ("O", 1)), grid_level=1)
+
+
+def test_reference_xc_defaults_to_pbe_and_is_recorded():
+    """The record states which functional's density it holds, so a consumer
+    can assert it instead of assuming PBE."""
+    from xcquinox.alec.data import precompute_fixed_density_data
+    md = precompute_fixed_density_data(_h2o_spec())
+    assert md["reference_xc"] == "pbe"
+
+
+def test_explicit_pbe_is_the_same_record_as_the_default():
+    """`reference_xc="pbe"` and the default are ONE cache entry and one SCF:
+    the default path is unchanged, and no consumer silently pays for a second
+    reference SCF by spelling the default out."""
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data,
+                                    set_precompute_cache_enabled)
+    set_precompute_cache_enabled(True)
+    clear_precompute_cache()
+    spec = _h2o_spec()
+    a = precompute_fixed_density_data(spec)
+    b = precompute_fixed_density_data(spec, reference_xc="pbe")
+    assert a is b
+
+
+def test_reference_xc_scan_reproduces_a_standalone_pyscf_scan_scf():
+    """The record's total energy IS the reference functional's SCF energy: a
+    SCAN record must reproduce a plain PySCF SCAN calculation of the same
+    molecule on the same grid."""
+    import numpy as np
+    from pyscf import dft, gto
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data)
+    clear_precompute_cache()
+    spec = _h2o_spec()
+    md = precompute_fixed_density_data(spec, reference_xc="scan")
+    assert md["reference_xc"] == "scan"
+
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.RKS(mol)
+    mf.xc = "scan"
+    mf.grids.level = spec.grid_level
+    mf.kernel()
+    assert mf.converged
+    assert abs(float(md["E_pbe"]) - float(mf.e_tot)) < 1e-8
+    assert np.allclose(np.asarray(md["dm_pbe"]), np.asarray(mf.make_rdm1()),
+                       atol=1e-7)
+
+
+def test_reference_xc_scan_moves_the_density_and_the_energy():
+    """A SCAN record is not a relabelled PBE record. H2O/sto-3g has real
+    variational freedom (5 occupied orbitals in a 7-function basis); H2 and the
+    H atom do NOT -- their densities are fixed by symmetry and normalization,
+    so they cannot serve as this pin."""
+    import numpy as np
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data)
+    clear_precompute_cache()
+    spec = _h2o_spec()
+    pbe = precompute_fixed_density_data(spec, reference_xc="pbe")
+    scan = precompute_fixed_density_data(spec, reference_xc="scan")
+    assert np.max(np.abs(np.asarray(pbe["dm_pbe"])
+                         - np.asarray(scan["dm_pbe"]))) > 1e-4
+    assert np.max(np.abs(np.asarray(pbe["rho_grid"])
+                         - np.asarray(scan["rho_grid"]))) > 1e-5
+    assert abs(float(pbe["E_pbe"]) - float(scan["E_pbe"])) > 1e-3
+
+
+def test_reference_xc_scan_rebuilds_every_grid_quantity_from_that_density():
+    """Every grid quantity in the record is a contraction of the record's own
+    density matrix with its own AO table -- for any reference functional."""
+    import numpy as np
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data)
+    clear_precompute_cache()
+    md = precompute_fixed_density_data(_h2o_spec(), reference_xc="scan")
+    ao = np.asarray(md["ao_grid_deriv"])
+    dm = np.asarray(md["dm_pbe"])
+    dm_tot = dm if dm.ndim == 2 else dm[0] + dm[1]
+    rho = np.einsum("pi,ij,pj->p", ao[0], dm_tot, ao[0])
+    gx = 2 * np.einsum("pi,ij,pj->p", ao[1], dm_tot, ao[0])
+    gy = 2 * np.einsum("pi,ij,pj->p", ao[2], dm_tot, ao[0])
+    gz = 2 * np.einsum("pi,ij,pj->p", ao[3], dm_tot, ao[0])
+    assert np.allclose(np.asarray(md["rho_grid"]), rho, atol=1e-12)
+    assert np.allclose(np.asarray(md["sigma_grid"]),
+                       gx ** 2 + gy ** 2 + gz ** 2, atol=1e-10)
+    # E_non_xc is the reference SCF's total minus its own XC energy.
+    assert abs(float(md["E_non_xc"])
+               - (float(md["E_pbe"]) - float(md["E_xc_pbe"]))) < 1e-12
+
+
+def test_reference_xc_scan_populates_the_per_spin_blocks_by_the_same_path():
+    """The per-spin-channel blocks follow the reference density with no
+    special-casing: they are built from the record's own density matrix in the
+    one open-shell branch, whatever functional produced it."""
+    import numpy as np
+    from xcquinox.alec.config import ArchitectureConfig
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data)
+    arch = ArchitectureConfig.from_spec(
+        "refxc_probe", 3, 16,
+        descriptors=["cusp", "dm_statistics", "rung35",
+                     "rung35_multishell", "metagga"],
+        meta_gga=True)
+    desc = arch.materialize_descriptors()
+    req = tuple(sorted({k for d in desc for k in d.required_mol_keys}))
+    clear_precompute_cache()
+    md = precompute_fixed_density_data(_oh_spec(), required_keys=req,
+                                       descriptors=desc, reference_xc="scan")
+    assert md["reference_xc"] == "scan"
+    for key in ("dm_features_a", "dm_features_b",
+                "rung35_features_a", "rung35_features_b",
+                "rung35ms_features_a", "rung35ms_features_b",
+                "metagga_features_a", "metagga_features_b",
+                "tau_spin_a", "tau_spin_b"):
+        assert md[key] is not None, key
+        assert np.all(np.isfinite(np.asarray(md[key]))), key
+    # The per-spin tau contracts the record's OWN spin-resolved density matrix.
+    from xcquinox.alec.metagga import compute_tau_from_dm
+    import jax.numpy as jnp
+    dm = jnp.asarray(md["dm_pbe"])
+    for slot, key in ((0, "tau_spin_a"), (1, "tau_spin_b")):
+        want = compute_tau_from_dm(md["ao_grid_deriv"][1:4], dm[slot])
+        assert np.allclose(np.asarray(md[key]), np.asarray(want), atol=1e-12)
+
+
+def test_cache_key_separates_reference_xc():
+    from xcquinox.alec.data import _precompute_cache_key
+    spec = _h2o_spec()
+    a = _precompute_cache_key(spec, (), (), None, 0.0, "pbe", None, False,
+                              reference_xc="pbe")
+    b = _precompute_cache_key(spec, (), (), None, 0.0, "pbe", None, False,
+                              reference_xc="scan")
+    assert a != b
+
+
+def test_cache_never_hands_a_pbe_record_to_a_scan_caller():
+    """The failure a reference_xc-blind cache key would cause: a SCAN
+    certificate silently measured against the PBE density."""
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data,
+                                    set_precompute_cache_enabled)
+    set_precompute_cache_enabled(True)
+    clear_precompute_cache()
+    spec = _h2o_spec()
+    pbe = precompute_fixed_density_data(spec, reference_xc="pbe")
+    scan = precompute_fixed_density_data(spec, reference_xc="scan")
+    assert scan is not pbe
+    assert scan["reference_xc"] == "scan"
+    assert abs(float(pbe["E_pbe"]) - float(scan["E_pbe"])) > 1e-3
+
+
+def test_reference_xc_must_be_a_non_empty_string():
+    import pytest
+    from xcquinox.alec.data import precompute_fixed_density_data
+    with pytest.raises(ValueError, match="reference_xc"):
+        precompute_fixed_density_data(_h2o_spec(), reference_xc="")
+
+
+def _h2_spec():
+    from xcquinox.alec.config import MoleculeSpec
+    return MoleculeSpec(name="H2_refxc", atom="H 0 0 0; H 0 0 0.74",
+                        basis="sto-3g", charge=0, spin=0,
+                        atom_composition=(("H", 2),), grid_level=1)
+
+
+def test_reference_xc_moves_the_per_spin_block_of_an_open_shell_record():
+    """The per-spin blocks are contractions of the record's OWN density
+    matrix, so a SCAN record carries SCAN's alpha_sigma, not PBE's.
+
+    Measured on OH / sto-3g / grid 1 (standalone PySCF densities, library
+    descriptor definitions): max|alpha_a(SCAN) - alpha_a(PBE)| = 5.88, against
+    5.98e-6 between two independent PBE runs of the same radical -- six orders
+    of magnitude between the signal and the run-to-run floor, so the 1e-2
+    threshold below cannot be met by convergence noise. The ALPHA channel is
+    used, not beta: OH is a degenerate 2-Pi radical whose beta channel carries
+    the pi hole, and two independent PBE runs of it were measured 9.48 apart in
+    alpha_b (an orientation of the singly occupied pi, not a moved density).
+    The exact leg below is the load-bearing one either way: it pins the block
+    to alpha of the doubled density diag(P_a, P_a) built from the record's own
+    density matrix, which no orientation can satisfy accidentally.
+    """
+    import numpy as np
+    import jax.numpy as jnp
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data)
+    from xcquinox.alec.descriptors import MetaGGAAlphaDescriptor
+    from xcquinox.alec.metagga import compute_alpha, compute_tau_from_dm
+    desc = (MetaGGAAlphaDescriptor(),)
+    req = tuple(sorted({k for d in desc for k in d.required_mol_keys}))
+    clear_precompute_cache()
+    spec = _oh_spec()
+    pbe = precompute_fixed_density_data(spec, required_keys=req,
+                                        descriptors=desc, reference_xc="pbe")
+    scan = precompute_fixed_density_data(spec, required_keys=req,
+                                         descriptors=desc, reference_xc="scan")
+    a_pbe = np.asarray(pbe["metagga_features_a"])
+    a_scan = np.asarray(scan["metagga_features_a"])
+    assert a_pbe.shape == a_scan.shape
+    assert np.max(np.abs(a_scan - a_pbe)) > 1e-2
+
+    # alpha_a of the SCAN record IS alpha of diag(P_a, P_a) for the record's
+    # own density matrix: rho -> 2 rho_a, sigma -> 4 sigma_aa, tau -> 2 tau_a.
+    ao = np.asarray(scan["ao_grid_deriv"])
+    dm_a = np.asarray(scan["dm_pbe"])[0]
+    r = np.einsum("pi,ij,pj->p", ao[0], dm_a, ao[0])
+    gx = 2 * np.einsum("pi,ij,pj->p", ao[1], dm_a, ao[0])
+    gy = 2 * np.einsum("pi,ij,pj->p", ao[2], dm_a, ao[0])
+    gz = 2 * np.einsum("pi,ij,pj->p", ao[3], dm_a, ao[0])
+    tau_a = compute_tau_from_dm(jnp.asarray(ao[1:4]), jnp.asarray(dm_a))
+    want = np.asarray(compute_alpha(
+        jnp.asarray(2.0 * r), jnp.asarray(4.0 * (gx ** 2 + gy ** 2 + gz ** 2)),
+        2.0 * tau_a)).reshape(-1, 1)
+    assert np.allclose(a_scan, want, rtol=0, atol=1e-10)
+    # and the stored per-spin tau is the same contraction, undoubled.
+    assert np.allclose(np.asarray(scan["tau_spin_a"]), np.asarray(tau_a),
+                       rtol=0, atol=1e-12)
+
+
+def test_reference_xc_leaves_a_symmetry_fixed_closed_shell_density_alone():
+    """H2 / sto-3g has one doubly occupied MO fixed by symmetry and
+    normalization, so it has no variational freedom: PBE and SCAN converge to
+    the SAME density, and only the energy evaluated on it moves. Measured with
+    standalone PySCF (grid level 1): max|dm_scan - dm_pbe| = 0.0 and
+    max|rho_scan - rho_pbe| = 0.0 exactly, against |E_pbe - E_scan| =
+    5.392555e-03 Ha. This is the counterpart of the H2O pin: reference_xc must
+    change the record only where the physics changes it, which is why H2 (and
+    the H atom) cannot serve as the density-moved test.
+    """
+    import numpy as np
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data)
+    clear_precompute_cache()
+    spec = _h2_spec()
+    pbe = precompute_fixed_density_data(spec, reference_xc="pbe")
+    scan = precompute_fixed_density_data(spec, reference_xc="scan")
+    assert np.max(np.abs(np.asarray(pbe["dm_pbe"])
+                         - np.asarray(scan["dm_pbe"]))) < 1e-12
+    assert np.max(np.abs(np.asarray(pbe["rho_grid"])
+                         - np.asarray(scan["rho_grid"]))) < 1e-12
+    assert np.max(np.abs(np.asarray(pbe["sigma_grid"])
+                         - np.asarray(scan["sigma_grid"]))) < 1e-12
+    assert abs(float(pbe["E_pbe"]) - float(scan["E_pbe"])) > 1e-3
+
+
+def test_reference_xc_scan_xc_energy_matches_a_point_wise_meta_gga_evaluation():
+    """The meta-GGA arm of the reference XC energy reads the value pyscf
+    accumulated on the grid; that value must be the same quantity the
+    point-wise route returns, evaluated with the kinetic-energy density the
+    GGA row set cannot carry. Measured on H2O / sto-3g / grid 1: the two agree
+    to 0.0 Ha (bitwise), and the GGA row set is refused outright by eval_xc for
+    a meta-GGA (ValueError: cannot reshape ... into shape (1,5,N)), which is
+    why the arm exists.
+    """
+    import numpy as np
+    from pyscf import dft, gto
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data)
+    clear_precompute_cache()
+    spec = _h2o_spec()
+    md = precompute_fixed_density_data(spec, reference_xc="scan")
+
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.RKS(mol)
+    mf.xc = "scan"
+    mf.grids.level = spec.grid_level
+    mf.kernel()
+    assert mf.converged
+    dm = mf.make_rdm1()
+    ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=1)
+    rho_m = mf._numint.eval_rho(mol, ao, dm, xctype="MGGA", with_lapl=False)
+    # libxc's meta-GGA row set is (rho, dx, dy, dz, lapl, tau); SCAN does not
+    # use the Laplacian, so the unused row is zero.
+    rho6 = np.vstack([rho_m[:4], np.zeros_like(rho_m[0]), rho_m[4]])
+    exc, _, _, _ = mf._numint.eval_xc("scan", rho6, spin=0)
+    rho_grid = np.einsum("pi,ij,pj->p", ao[0], dm, ao[0])
+    e_xc_pointwise = float(np.sum(rho_grid * exc * mf.grids.weights))
+    assert abs(float(md["E_xc_pbe"]) - e_xc_pointwise) < 1e-9
+    assert abs(float(md["E_non_xc"])
+               - (float(md["E_pbe"]) - e_xc_pointwise)) < 1e-9
+
+
+def test_reference_xc_refuses_a_hybrid_functional():
+    """A hybrid's exact-exchange piece is not in the semilocal XC energy pyscf
+    reports (measured: libxc.hybrid_coeff('b3lyp') = 0.2, ('pbe0') = 0.25,
+    ('pbe') = 0.0), so E_xc would omit it and E_non_xc would absorb it -- the
+    trained functional would then be fitted on top of a hidden exact-exchange
+    term. The reference is restricted to pure functionals, of which the two the
+    program uses (pbe, scan) are examples."""
+    import pytest
+    from xcquinox.alec.data import precompute_fixed_density_data
+    with pytest.raises(ValueError, match="hybrid"):
+        precompute_fixed_density_data(_h2o_spec(), reference_xc="b3lyp")
+
+
+def _li_spec():
+    from xcquinox.alec.config import MoleculeSpec
+    return MoleculeSpec(name="Li_refxc", atom="Li 0 0 0", basis="sto-3g",
+                        charge=0, spin=1, atom_composition=(("Li", 1),),
+                        grid_level=1)
+
+
+def test_reference_xc_scan_uks_reproduces_a_standalone_pyscf_scan_scf():
+    """The open-shell branch takes the reference XC energy from the SCF's own
+    veff, so it follows reference_xc with no further dispatch -- the property
+    the certificate's ATOMIC E_xc numbers rest on. The pin uses the Li atom
+    (2-S, non-degenerate) rather than a 2-Pi radical: OH's pi degeneracy is
+    split only by the integration grid, and two independent SCAN runs of it
+    were measured 1.4e-5 Ha apart, which would make the threshold a statement
+    about the grid rather than about the reference functional. A
+    reference_xc-blind precompute returns the PBE energy, 1.97e-2 Ha away.
+    """
+    import numpy as np
+    from pyscf import dft, gto
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data)
+    clear_precompute_cache()
+    spec = _li_spec()
+    md = precompute_fixed_density_data(spec, reference_xc="scan")
+
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.UKS(mol)
+    mf.xc = "scan"
+    mf.grids.level = spec.grid_level
+    mf.kernel()
+    assert mf.converged
+    assert np.asarray(md["dm_pbe"]).ndim == 3
+    assert abs(float(md["E_pbe"]) - float(mf.e_tot)) < 1e-8
+    veff = mf.get_veff(mol, mf.make_rdm1())
+    assert abs(float(md["E_xc_pbe"]) - float(veff.exc)) < 1e-8
+    assert abs(float(md["E_non_xc"])
+               - (float(mf.e_tot) - float(veff.exc))) < 1e-8
+
+
+def test_reference_xc_lda_uses_its_own_rung_row_set():
+    """The closed-shell point-wise arm builds the density row set libxc
+    demands for the reference functional's RUNG. An LDA reference fed the
+    4-row GGA set is refused outright (measured: ValueError, cannot reshape
+    array of size 36352 into shape (1,1,9088) on H2O/sto-3g/grid 1), so the
+    row set follows libxc.xc_type rather than a fixed 'GGA'. For a GGA
+    reference -- the whole training pipeline -- xc_type returns 'GGA' and the
+    argument is unchanged."""
+    import numpy as np
+    from pyscf import dft, gto
+    from xcquinox.alec.data import (clear_precompute_cache,
+                                    precompute_fixed_density_data)
+    clear_precompute_cache()
+    spec = _h2o_spec()
+    md = precompute_fixed_density_data(spec, reference_xc="lda,vwn")
+    assert md["reference_xc"] == "lda,vwn"
+
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.RKS(mol)
+    mf.xc = "lda,vwn"
+    mf.grids.level = spec.grid_level
+    mf.kernel()
+    assert mf.converged
+    veff = mf.get_veff(mol, mf.make_rdm1())
+    assert abs(float(md["E_pbe"]) - float(mf.e_tot)) < 1e-8
+    # the point-wise arm must land on pyscf's own accumulated XC energy
+    assert abs(float(md["E_xc_pbe"]) - float(veff.exc)) < 1e-8
+    assert np.allclose(np.asarray(md["dm_pbe"]), np.asarray(mf.make_rdm1()),
+                       atol=1e-7)
