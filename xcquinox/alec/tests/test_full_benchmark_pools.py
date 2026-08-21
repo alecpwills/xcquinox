@@ -386,8 +386,10 @@ def test_slice_held_out_pools_preserves_the_requested_order():
 def test_the_matrix_six_species_slice_spans_both_pools():
     """The workflow matrix's slice: six species of the real pool that close
     three reactions, one BH76 barrier and two W4-11 atomizations, over both
-    spin types (RKS h2/n2o, UKS h/o/oh/n2ohts). A slice of six molecules with
-    no atoms closes NO reaction and would leave the reaction math untested."""
+    spin types (RKS h2/n2o, UKS h/o/oh/n2ohts). The W4-11 leg is atomization
+    energies, so every one of its reactions carries single-atom legs: a slice
+    holding no atom closes only BH76 barriers (41 of the 216 reactions need no
+    atom, all of them BH76) and would not span both pools."""
     from xcquinox.alec.full_benchmark_pools import (
         load_full_held_out_pools, slice_held_out_pools)
     mols, rxns = load_full_held_out_pools(basis="def2-svp", grid_level=1)
@@ -408,3 +410,55 @@ def test_resolve_species_slice_refuses_separators_naming_no_species():
         HELDOUT_SPECIES_SLICE_ENV, resolve_species_slice)
     with pytest.raises(ValueError, match="names no species"):
         resolve_species_slice({HELDOUT_SPECIES_SLICE_ENV: " , , "})
+
+
+def test_slice_held_out_pools_error_names_the_case_sensitivity():
+    """Pool keys are case-sensitive, so the refusal message must say so. The
+    W4-11 leg is lower case throughout (0 of its 152 names carry a capital);
+    BH76 capitalises 33 of its 79, and 11 species -- 'H2', 'H2O', 'CH4',
+    'NH3', 'NH2', 'C2H6', 'O', 'PH3', 'H2S', 'HS', 'NH' -- exist under both
+    forms as separate pool entries closing different reactions. A message
+    calling the names lower case invites a mis-cased slice that resolves
+    silently to the wrong species.
+    """
+    from xcquinox.alec.full_benchmark_pools import slice_held_out_pools
+    with pytest.raises(ValueError) as excinfo:
+        slice_held_out_pools({"h2": 1, "H2": 2}, [], ("h2", "hydrogen"))
+    assert "case-sensitive" in str(excinfo.value)
+
+
+def test_slice_held_out_pools_refuses_a_slice_closing_no_reaction():
+    """A slice closing no reaction would leave the sliced channel averaging an
+    empty reaction set, which reads on disk as a completed evaluation carrying
+    no reaction data. An empty reaction pool is the separate, legitimate case:
+    there is no reaction to lose, and it stays accepted (exercised by the
+    order-preserving and absent-species tests, which pass no reactions).
+    """
+    from xcquinox.alec.full_benchmark_pools import slice_held_out_pools
+    rxns = [{"name": "open", "reactants": ["a"], "products": ["c"]}]
+    with pytest.raises(ValueError, match="closes no reaction"):
+        slice_held_out_pools({"a": 1, "b": 2, "c": 3}, rxns, ("a", "b"))
+
+
+def test_slice_held_out_pools_refuses_a_repeated_name():
+    """A repeated name collapses in the species dict: ``("a", "a")`` yields one
+    species for a two-name request, so the slice evaluated is not the slice
+    asked for. The repeat is refused, as it is in the variable parser.
+    """
+    from xcquinox.alec.full_benchmark_pools import slice_held_out_pools
+    with pytest.raises(ValueError, match="repeats"):
+        slice_held_out_pools({"a": 1, "b": 2}, [], ("a", "a"))
+
+
+def test_resolve_species_slice_prefers_an_explicit_mapping(monkeypatch):
+    """An explicit ``env`` is the whole environment for that call. Merging the
+    process environment underneath it would let a variable set in the shell
+    slice a caller that passed its own mapping, so the empty mapping resolves
+    to the full pool even while the variable is set.
+    """
+    from xcquinox.alec.full_benchmark_pools import (
+        HELDOUT_SPECIES_SLICE_ENV, resolve_species_slice)
+    monkeypatch.setenv(HELDOUT_SPECIES_SLICE_ENV, "h,h2")
+    assert resolve_species_slice({}) is None
+    assert resolve_species_slice(
+        {HELDOUT_SPECIES_SLICE_ENV: "o,oh"}) == ("o", "oh")

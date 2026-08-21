@@ -556,8 +556,9 @@ def load_full_held_out_pools(
 #: same loaders (cluster/inputs.py, cluster/spec_builder.py,
 #: training_points.py), and a slice reaching them would silently shrink
 #: training. Only the held-out evaluation channel honours it
-#: (cluster/_eval_one_spec._run_held_out_eval), and a channel evaluated under a
-#: slice is marked on disk so it cannot be read as a full-pool channel.
+#: (cluster/_eval_one_spec._apply_species_slice, called from
+#: _run_held_out_eval), and a channel evaluated under a slice is marked on disk
+#: so it cannot be read as a full-pool channel.
 HELDOUT_SPECIES_SLICE_ENV = "XCQUINOX_HELDOUT_SPECIES_SLICE"
 
 
@@ -598,14 +599,33 @@ def slice_held_out_pools(
     would put an undefined term in the pool MAE. The returned species dict
     preserves the order of ``species`` so the slice reads the same way in the
     log line and in the provenance stamp.
+
+    Three malformed slices are refused rather than silently reduced: a repeated
+    name (it collapses in the species dict, so fewer species are evaluated than
+    were asked for), a name absent from the pool, and -- when ``reactions`` is
+    non-empty -- a slice under which no reaction closes, which would leave the
+    channel averaging an empty reaction set. An empty ``reactions`` argument is
+    not that case: there is no reaction to lose, and the empty closure is
+    returned.
     """
     wanted = tuple(species)
+    repeated = sorted({n for n in wanted if wanted.count(n) > 1})
+    if repeated:
+        raise ValueError(
+            f"held-out species slice {wanted} repeats a species name: "
+            f"{repeated}. Each species is evaluated once, so the repeat would "
+            "collapse and the slice evaluated would hold fewer species than "
+            "the slice requested."
+        )
     missing = [n for n in wanted if n not in mol_specs]
     if missing:
         raise ValueError(
             f"held-out species slice names {missing}, absent from the pool of "
-            f"{len(mol_specs)} species. Pool names are lower case Hill-like "
-            "strings, e.g. 'h', 'h2', 'oh', 'n2o', 'n2ohts'."
+            f"{len(mol_specs)} species. Pool names are case-sensitive: the "
+            "W4-11 leg is lower case throughout ('h2', 'o', 'ch4') while BH76 "
+            "capitalises many of its species ('H2', 'O', 'CH4'), and 11 names "
+            "exist in both forms as separate entries closing different "
+            "reactions."
         )
     kept_names = set(wanted)
     kept_specs = {n: mol_specs[n] for n in wanted}
@@ -613,4 +633,11 @@ def slice_held_out_pools(
         r for r in reactions
         if set(r["reactants"]) | set(r["products"]) <= kept_names
     ]
+    if reactions and not kept_rxns:
+        raise ValueError(
+            f"held-out species slice {wanted} closes no reaction of the "
+            f"{len(reactions)}-reaction pool: every reaction has at least one "
+            "leg outside the slice, so the sliced channel would average an "
+            "empty set. Widen the slice until it closes a reaction."
+        )
     return kept_specs, kept_rxns
