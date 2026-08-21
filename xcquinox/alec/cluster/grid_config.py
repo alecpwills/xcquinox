@@ -529,8 +529,27 @@ _SEXAGESIMAL_INT_RE = re.compile(r"^[1-9][0-9_]*(?::[0-5]?[0-9])+$")
 #: they are refused rather than guessed at. Quoting is no protection and
 #: therefore not the criterion: ``time: "30"`` loads as a string and reaches
 #: ``#SBATCH --time=30`` exactly as the unquoted ``time: 30`` does.
+#:
+#: Matching the shape is not sufficient, and the two further rules are checked
+#: against the captured fields rather than by more regex: the wall must be a
+#: NON-ZERO duration (``--time=0`` is SLURM for no limit, the opposite of the
+#: bound a ``0:00:00`` looks like), and the hours field of the days form is a
+#: time of day, 0-23 (``1-99:00:00`` is 99 hours into a day; the hours belong
+#: in the days field rather than left to SLURM's normalisation).
 _WALLTIME_RE = re.compile(
-    r"^(?:[0-9]+-[0-9]{1,2}|[0-9]+):[0-5][0-9]:[0-5][0-9]$")
+    r"^(?:(?P<days>[0-9]+)-(?P<day_hours>[0-9]{1,2})|(?P<hours>[0-9]+))"
+    r":(?P<minutes>[0-5][0-9]):(?P<seconds>[0-5][0-9])$")
+
+#: Upper bound of the hours field in ``D-HH:MM:SS``: a time of day, not a count.
+_MAX_DAY_HOURS = 23
+
+
+def _walltime_seconds(match) -> int:
+    """Duration of a matched walltime, in seconds."""
+    days = int(match.group("days") or 0)
+    hours = int(match.group("day_hours") or match.group("hours") or 0)
+    return ((days * 24 + hours) * 60 + int(match.group("minutes"))) * 60 \
+        + int(match.group("seconds"))
 
 
 def _sexagesimal_seconds(token: str):
@@ -550,42 +569,82 @@ def _sexagesimal_seconds(token: str):
     return total
 
 
-def _cluster_block(text: str) -> str:
-    """The body of the top-level ``cluster:`` mapping in ``text``.
+#: The top-level ``cluster:`` header, in the spellings a hand-written config
+#: uses: bare, quoted either way, and with a YAML anchor and/or a trailing
+#: comment. A header this does NOT match yields no block, and the walltime is
+#: refused -- scanning the rest of the document instead would let an unrelated
+#: section supply the literal, which is the misreading this module exists to
+#: prevent rather than a lenient fallback.
+_CLUSTER_HEADER_RE = re.compile(
+    r"""^(?P<q>["']?)cluster(?P=q):[ \t]*(?:&[^\s#]+[ \t]*)?(?:\#.*)?$""",
+    re.M)
+
+
+def _cluster_block(text: str):
+    """The body of the top-level ``cluster:`` mapping in ``text``, or None.
 
     Restricting the literal scan to that block keeps it from reaching an
-    identically named key in another section. Falls back to the whole document
-    when there is no such top-level key.
+    identically named key in another section: with a decoy ``time: 8:00:00``
+    elsewhere in the document, a document-wide scan accepts it as the literal
+    behind an authored ``time: 28800`` -- 28800 minutes rendered as an 8-hour
+    wall. None (rather than the whole text) is therefore returned when no
+    header is recognised.
     """
-    match = re.search(r"^cluster:[ \t]*(?:#.*)?$", text, re.M)
+    match = _CLUSTER_HEADER_RE.search(text)
     if match is None:
-        return text
+        return None
     rest = text[match.end():]
     end = re.search(r"^\S", rest, re.M)
     return rest[:end.start()] if end else rest
 
 
-def _literal_token(text: str, key: str):
-    """The scalar written for ``<key>:`` in ``text``, or None if absent.
+def _block_indent(block: str):
+    """Indent of the block's own keys: that of its first key line, or None."""
+    for line in block.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        return len(line) - len(line.lstrip(" \t"))
+    return None
+
+
+def _literal_tokens(block: str, key: str) -> list:
+    """Every scalar written for ``<key>:`` at the block's own indent level.
 
     Only reached for a value that did NOT load as a string, so the scalar was
-    unquoted and a ``#`` at a word boundary opens a YAML comment. The required
-    leading indent keeps ``time`` from matching ``pretrain_time``.
+    unquoted and a ``#`` at a word boundary opens a YAML comment. Two rules
+    make the match the key that was actually loaded rather than any line that
+    reads like it: the indent must equal the block's first-key indent, so a
+    ``time:`` nested one level deeper (under a ``notes:`` sub-mapping, say)
+    supplies nothing, and the leading indent keeps ``time`` from matching
+    ``pretrain_time``. Duplicates are returned rather than collapsed: YAML
+    keeps the LAST of two identical keys while a scan reads the first, and
+    ``8:00:00`` and ``480:00`` share the base-60 value 28800, so the two cannot
+    be told apart by the value they loaded as.
     """
-    match = re.search(rf"^[ \t]+{re.escape(key)}:[ \t]*(.*)$",
-                      _cluster_block(text), re.M)
-    if match is None:
-        return None
-    return re.split(r"(?:^|\s)#", match.group(1), maxsplit=1)[0].strip()
+    indent = _block_indent(block)
+    if indent is None:
+        return []
+    pattern = re.compile(
+        rf"^[ \t]{{{indent}}}{re.escape(key)}:[ \t]*(.*)$", re.M)
+    return [re.split(r"(?:^|\s)#", raw, maxsplit=1)[0].strip()
+            for raw in pattern.findall(block)]
 
 
-def _walltime_defect(key: str, value, source: str, detail: str) -> ValueError:
-    """The refusal for one walltime field, naming the key and what was read."""
+def _walltime_defect(key: str, value, source: str, detail: str, *,
+                     advise_quoting: bool = True) -> ValueError:
+    """The refusal for one walltime field, naming the key and what was read.
+
+    ``advise_quoting`` is dropped for the refusals where the FORM is already
+    right and the duration is what is wrong (a zero wall, an out-of-range
+    days-hours field): telling the author to quote a value that is quoted and
+    correctly shaped points at the wrong thing.
+    """
     where = f" in {source}" if source else ""
+    advice = (' Write it QUOTED, as "HH:MM:SS" (or "D-HH:MM:SS").'
+              if advise_quoting else "")
     return ValueError(
         f"cluster.{key}{where} is {value!r}, which is not a usable SLURM "
-        f"walltime: {detail}. Write it QUOTED, as \"HH:MM:SS\" (or "
-        f"\"D-HH:MM:SS\")."
+        f"walltime: {detail}.{advice}"
     )
 
 
@@ -601,9 +660,24 @@ def _restored_clock(value: int, key: str, text: str, source: str) -> str:
     is no such literal (a JSON config, or a genuinely bare integer) the field is
     refused instead of guessed at.
     """
-    token = _literal_token(text, key) if text else None
-    if token is not None and _sexagesimal_seconds(token) == value:
-        return token
+    block = _cluster_block(text) if text else None
+    if text and block is None:
+        raise _walltime_defect(
+            key, value, source,
+            "the top-level cluster: block could not be located, so the literal "
+            "this number was written as cannot be recovered from the document "
+            "(the rest of the document is deliberately NOT searched: another "
+            "section's clock-shaped value would supply a wall nobody wrote)")
+    tokens = _literal_tokens(block, key) if block is not None else []
+    if len(tokens) > 1:
+        raise _walltime_defect(
+            key, value, source,
+            f"it is written {len(tokens)} times in the cluster block "
+            f"({', '.join(repr(t) for t in tokens)}); YAML keeps the last, "
+            "and spellings of one wall that differ in shape can share a "
+            "base-60 value, so which was meant cannot be established")
+    if tokens and _sexagesimal_seconds(tokens[0]) == value:
+        return tokens[0]
     raise _walltime_defect(
         key, value, source,
         "SLURM reads a bare number as MINUTES while this field is documented "
@@ -642,13 +716,26 @@ def _walltime_string(value, key: str, text: str, source: str):
         raise _walltime_defect(
             key, value, source,
             f"a {type(value).__name__} is not a wall clock")
-    if not _WALLTIME_RE.match(candidate):
+    match = _WALLTIME_RE.match(candidate)
+    if match is None:
         detail = 'the accepted shapes are "H:MM:SS" and "D-HH:MM:SS"'
         if candidate != value:
             # A restored literal: name it, or the message reports only the
             # base-60 integer the loader made of it.
             detail = f"it was written as {candidate!r} and " + detail
         raise _walltime_defect(key, value, source, detail)
+    day_hours = match.group("day_hours")
+    if day_hours is not None and int(day_hours) > _MAX_DAY_HOURS:
+        raise _walltime_defect(
+            key, value, source,
+            f"the hours field of D-HH:MM:SS is a time of day, "
+            f"0-{_MAX_DAY_HOURS}, not {int(day_hours)}; carry the excess in "
+            "the days field", advise_quoting=False)
+    if _walltime_seconds(match) == 0:
+        raise _walltime_defect(
+            key, value, source,
+            "a zero wall is not a short wall: SLURM reads --time=0 as NO "
+            "LIMIT", advise_quoting=False)
     return candidate
 
 

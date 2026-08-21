@@ -137,7 +137,7 @@ def _train_template_kind(cfg) -> str:
 
 
 def render_sbatch(kind: str, cfg, run_dir: str, array_max=None) -> str:
-    """Render the sbatch script for ``kind`` ∈ {pretrain, preflight, train, eval}.
+    """Render the sbatch script for ``kind`` in {pretrain, preflight, train, eval}.
 
     Args:
         kind: ``"pretrain"``, ``"preflight"``, ``"train"`` or ``"eval"``. For

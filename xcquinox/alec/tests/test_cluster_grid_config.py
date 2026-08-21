@@ -1618,22 +1618,197 @@ def test_walltime_literal_not_taken_from_another_section(tmp_path):
     assert cfg.cluster.time == "12:00:00"
 
 
-def test_shipped_configs_carry_valid_walltimes():
-    """Every checked-in campaign config and the shipped example still load."""
-    import glob
+#: The campaign configs under version control. ``hpcjobs/.gitignore`` excludes
+#: ``configs/*.local.yaml`` (personal cluster-filled copies), so a fresh clone,
+#: a git worktree and the cluster checkout carry only these; counting whatever
+#: ``*.yaml`` happens to be on disk would make this file red wherever the
+#: untracked copies are absent.
+_TRACKED_CONFIGS = (
+    "bh76w411_repr.svp_grid2.yaml",
+    "bh76w411_repr.tzvpd_grid2_df.yaml",
+    "dfs_step7.dfs6311_grid3_v3.yaml",
+    "dfs_step7.dfs6311_grid3_v4.yaml",
+    "dfs_step7.dfs6311_grid3_v4gga.yaml",
+    "dfs_step7.dfs6311_grid3_v4mgga2.yaml",
+    "dfs_step7.dfs6311_grid3_v5.yaml",
+    "dfs_step7.dfs6311_grid3_v5mgga2.yaml",
+    "dfs_step7.svp_grid2.yaml",
+    "dfs_step7.svp_grid2_v2.yaml",
+    "dfs_step7.svp_grid2_v3.yaml",
+    "dfs_step7.svp_grid2_v3_full25.yaml",
+    "dfs_step7.svp_grid2_v3_rung35ab.yaml",
+    "dfs_step7.tzvpd_grid2_df.yaml",
+    "step7.yaml",
+)
+
+
+def _config_tree():
+    """(config dir, shipped example) of this checkout, or None when absent."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parents[3]
-    paths = sorted(glob.glob(str(root / "hpcjobs" / "configs" / "*.yaml")))
+    cfg_dir = root / "hpcjobs" / "configs"
     example = root / "xcquinox" / "alec" / "cluster" / "examples" / \
         "grid_step7.yaml"
-    if not paths or not example.is_file():
+    if not cfg_dir.is_dir() or not example.is_file():
+        return None
+    return cfg_dir, example
+
+
+def _assert_walltimes_are_strings(path):
+    cfg = load_grid_config(str(path))
+    for key in _WALLTIME_KEYS:
+        value = getattr(cfg.cluster, key)
+        assert value is None or isinstance(value, str), (
+            f"{path}: cluster.{key} loaded as {type(value).__name__}"
+        )
+    return cfg
+
+
+def test_tracked_configs_carry_valid_walltimes():
+    """Every version-controlled campaign config and the shipped example load.
+
+    The tracked set is listed by name rather than globbed: the count is then a
+    property of the repository, not of which untracked ``*.local.yaml`` copies
+    happen to sit in the working tree.
+    """
+    tree = _config_tree()
+    if tree is None:
         pytest.skip("cluster config tree not present in this checkout")
-    paths.append(str(example))
-    for path in paths:
-        cfg = load_grid_config(path)
-        for key in _WALLTIME_KEYS:
-            value = getattr(cfg.cluster, key)
-            assert value is None or isinstance(value, str), (
-                f"{path}: cluster.{key} loaded as {type(value).__name__}"
-            )
-    assert len(paths) == 22, f"config count changed: {len(paths)}"
+    cfg_dir, example = tree
+    for name in _TRACKED_CONFIGS:
+        path = cfg_dir / name
+        assert path.is_file(), f"tracked config missing: {path}"
+        _assert_walltimes_are_strings(path)
+    _assert_walltimes_are_strings(example)
+    assert len(_TRACKED_CONFIGS) + 1 == 16, "tracked config count changed"
+
+
+def test_untracked_local_configs_carry_valid_walltimes():
+    """The gitignored ``*.local.yaml`` copies are validated when present and
+    skipped when they are not, so this checkout's extras are covered without
+    the tracked set's coverage depending on them."""
+    tree = _config_tree()
+    if tree is None:
+        pytest.skip("cluster config tree not present in this checkout")
+    cfg_dir, _ = tree
+    local = sorted(cfg_dir.glob("*.local.yaml"))
+    if not local:
+        pytest.skip("no *.local.yaml copies in this checkout")
+    for path in local:
+        _assert_walltimes_are_strings(path)
+
+
+# ---------------------------------------------------------------------------
+# Literal recovery: the cluster block has to be located, and only its own
+# top-level keys may supply a literal
+# ---------------------------------------------------------------------------
+
+def _write_cluster_header_yaml(tmp_path, header, key_lines, decoy=True):
+    """Write a config whose ``cluster:`` header is spelled ``header``.
+
+    ``key_lines`` is appended inside the block. A decoy section carrying a
+    clock-shaped ``time:`` is placed FIRST, so any scan that is not confined to
+    the cluster block finds it before the authored value.
+    """
+    yaml = pytest.importorskip("yaml")
+    raw = _base_config_dict()
+    cluster = raw.pop("cluster")
+    cluster.pop("time", None)
+    block = yaml.safe_dump({"cluster": cluster})
+    body = block[len("cluster:\n"):]
+    text = ("decoy:\n  time: 8:00:00\n" if decoy else "")
+    text += yaml.safe_dump(raw) + header + "\n" + body + key_lines
+    p = tmp_path / "grid.yaml"
+    p.write_text(text)
+    return str(p)
+
+
+@pytest.mark.parametrize("header", [
+    "cluster:",
+    "cluster: &cl",
+    "cluster:  # per-stage SLURM resources",
+    "cluster: &cl  # per-stage SLURM resources",
+    '"cluster":',
+    "'cluster':",
+])
+def test_cluster_block_located_for_every_header_spelling(tmp_path, header):
+    """The literal comes from the cluster block whichever way its key is
+    written. An anchored or quoted header that is not recognised sends the scan
+    over the whole document, where the decoy's ``8:00:00`` (28800 s) would be
+    accepted for an authored ``28800`` -- 28800 MINUTES, a 60-fold error in the
+    direction this check exists to prevent."""
+    path = _write_cluster_header_yaml(tmp_path, header, "  time: 12:00:00\n")
+    assert load_grid_config(path).cluster.time == "12:00:00"
+
+
+def test_unlocatable_cluster_block_refuses_rather_than_scanning_the_document(
+        tmp_path):
+    """With no recognisable header there is no block to recover a literal from,
+    so the number is refused; falling back to the whole document would let an
+    unrelated section supply it."""
+    path = _write_cluster_header_yaml(tmp_path, "cluster: !!map", "  time: 28800\n")
+    with pytest.raises(ValueError, match=re.escape("cluster.time")):
+        load_grid_config(path)
+
+
+def test_nested_mapping_inside_the_cluster_block_supplies_no_literal(tmp_path):
+    """Only the block's own top-level keys are read. A nested ``time:`` one
+    level deeper carries 28800 as well, so without the indent rule an authored
+    ``480:00`` (minutes:seconds, refusable) is accepted as ``8:00:00``."""
+    path = _write_cluster_header_yaml(
+        tmp_path, "cluster:", "  notes:\n    time: 8:00:00\n  time: 480:00\n")
+    with pytest.raises(ValueError, match=re.escape("cluster.time")):
+        load_grid_config(path)
+
+
+def test_nested_mapping_does_not_shadow_a_valid_top_level_wall(tmp_path):
+    """The reverse ordering: a nested decoy must not make a correctly written
+    top-level wall unrecoverable."""
+    path = _write_cluster_header_yaml(
+        tmp_path, "cluster:", "  notes:\n    time: 480:00\n  time: 8:00:00\n")
+    assert load_grid_config(path).cluster.time == "8:00:00"
+
+
+def test_duplicated_walltime_key_is_refused(tmp_path):
+    """YAML keeps the LAST of two duplicated keys while a first-match scan takes
+    the first. ``8:00:00`` and ``480:00`` share the base-60 value 28800, so the
+    consistency check cannot separate them and the authored ``480:00`` would be
+    accepted as ``8:00:00``. Two spellings of one wall is a config defect."""
+    path = _write_cluster_header_yaml(
+        tmp_path, "cluster:", "  time: 8:00:00\n  time: 480:00\n")
+    with pytest.raises(ValueError, match=re.escape("cluster.time")):
+        load_grid_config(path)
+
+
+# ---------------------------------------------------------------------------
+# Durations: zero is not a wall, and D-HH is a time of day
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("literal", ['"0:00:00"', '"00:00:00"',
+                                     '"0-00:00:00"', '"000:00:00"'])
+@pytest.mark.parametrize("key", _WALLTIME_KEYS)
+def test_zero_walltime_refused(tmp_path, key, literal):
+    """``#SBATCH --time=0`` is NO LIMIT to SLURM, so a zero-duration wall is
+    the opposite of the bound it looks like."""
+    with pytest.raises(ValueError, match=re.escape(f"cluster.{key}")):
+        load_grid_config(_write_walltime_yaml(tmp_path, key, literal))
+
+
+@pytest.mark.parametrize("literal,expected", [
+    ('"1-99:00:00"', None),
+    ('"1-24:00:00"', None),
+    ('"0-24:00:00"', None),
+    ('"1-23:59:59"', "1-23:59:59"),
+    ('"0-00:00:01"', "0-00:00:01"),
+])
+@pytest.mark.parametrize("key", _WALLTIME_KEYS)
+def test_days_hours_field_is_a_time_of_day(tmp_path, key, literal, expected):
+    """In ``D-HH:MM:SS`` the hours field is 0-23; hours beyond that belong in
+    the days field, and SLURM's own normalisation of an out-of-range one is not
+    something to rely on."""
+    path = _write_walltime_yaml(tmp_path, key, literal)
+    if expected is None:
+        with pytest.raises(ValueError, match=re.escape(f"cluster.{key}")):
+            load_grid_config(path)
+    else:
+        assert getattr(load_grid_config(path).cluster, key) == expected
