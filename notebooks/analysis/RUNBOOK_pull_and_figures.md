@@ -165,10 +165,12 @@ from an earlier render may persist).
 Every grouped-bar figure lands twice: the linear file and a `_logy` sibling
 carrying the SAME data on a logarithmic y axis, for reading panels in which one
 architecture's bars run hundreds of kcal/mol and squash the rest. The linear
-files and every CSV are unchanged. The five siblings are
-`ablation_energy_wtmad_mae_logy.png`,
+files and every CSV are unchanged. The six siblings are
+`ablation_energy_wtmad_mae_logy.png`, `ablation_insample_overview_logy.png`,
 `ablation_density_energy_overview[_dfs_units]_logy.png`, and
-`ablation_density_energy_3x3[_dfs_units]_logy.png`.
+`ablation_density_energy_3x3[_dfs_units]_logy.png`. On the log panels only the
+top edge of a bar carries its value -- a logarithmic axis has no zero, so the
+bars stand on the frame floor rather than on zero and their areas mean nothing.
 
 Each per-basis dir also gets two overview composites plus a standalone density
 trend: `ablation_density_energy_overview.png` (per-pool + 2-subset WTMAD-2
@@ -178,7 +180,8 @@ placeholder panels when the ED anchors are missing, and its log-y sibling
 `ablation_density_energy_overview_logy.png` alongside),
 `ablation_holdout_density_per_arch.png` (the per-arch held-out density trend
 vs subset_size as its own figure; same gate), and
-`ablation_insample_overview.png` (in-sample AE + density; always rendered;
+`ablation_insample_overview.png` (in-sample AE + density; always rendered,
+with its log-y sibling `ablation_insample_overview_logy.png`;
 final-checkpoint data, so its panels are identical in the final and val-best
 dirs). The per-channel 3x3 `ablation_density_energy_3x3.png` rides the same
 held-out-density gate (WTMAD-2 / density parity / ED as columns

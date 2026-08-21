@@ -14,6 +14,7 @@ import importlib.util
 import json
 import math
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -1414,11 +1415,63 @@ def test_grouped_bars_logy_axis_limits_span_everything_drawn():
         drawn = [0.9, 40.0, 400.0, 12.0, 8.0, 11.0, 7.0]
         lo, hi = ax.get_ylim()
         assert lo > 0.0                       # a log axis admits no zero floor
-        assert lo < min(drawn), (lo, min(drawn))
-        assert hi > max(drawn), (hi, max(drawn))
+        # the frame itself, not merely "wider than the data": floor = the
+        # smallest drawn value / 1.6, ceiling = the largest * 1.5
+        assert (lo, hi) == pytest.approx((min(drawn) / 1.6, max(drawn) * 1.5),
+                                         rel=1e-12)
         assert ax.get_ylabel().endswith("(log)"), ax.get_ylabel()
         labels = {c.get_label() for c in ax.containers}
         assert {"PBE (cell rows)", "SCAN (cell rows)"} <= labels, labels
+    finally:
+        plt.close(f)
+
+
+def test_grouped_bars_logy_frame_follows_span_extremes():
+    # The cell-rows spans are drawn quantities too: a SCAN span below every
+    # bar sets the floor and a PBE span above every bar sets the ceiling, so
+    # neither comparator can fall outside the frame.
+    import matplotlib.pyplot as plt
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, {("deep", 1): 40.0}, ["deep"], [1],
+                               title="t", scan_by_cell={("deep", 1): 4.5},
+                               yscale="log")
+        assert ax.get_ylim() == pytest.approx((4.5 / 1.6, 40.0 * 1.5),
+                                              rel=1e-12)
+    finally:
+        plt.close(f)
+    f, ax = plt.subplots()
+    try:
+        fig._grouped_arch_bars(ax, {("deep", 1): 40.0}, ["deep"], [1],
+                               title="t", pbe_by_cell={("deep", 1): 900.0},
+                               yscale="log")
+        assert ax.get_ylim() == pytest.approx((40.0 / 1.6, 900.0 * 1.5),
+                                              rel=1e-12)
+    finally:
+        plt.close(f)
+
+
+def test_grouped_bars_logy_warns_on_nonpositive_bar():
+    # Every quantity these panels plot is an error measure, hence positive.
+    # A finite bar at or below zero would silently vanish from a log axis,
+    # so the premise is checked rather than assumed -- and the linear panel,
+    # which draws such a bar perfectly well, stays silent.
+    import matplotlib.pyplot as plt
+    metric = {("deep", 1): 5.0, ("deep", 3): 0.0}
+    f, ax = plt.subplots()
+    try:
+        with pytest.warns(RuntimeWarning, match="non-positive") as rec:
+            fig._grouped_arch_bars(ax, metric, ["deep"], [1, 3], title="t",
+                                   yscale="log")
+        msg = str(rec[0].message)
+        assert "deep" in msg and "3" in msg, msg
+    finally:
+        plt.close(f)
+    f, ax = plt.subplots()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            fig._grouped_arch_bars(ax, metric, ["deep"], [1, 3], title="t")
     finally:
         plt.close(f)
 
@@ -1468,6 +1521,31 @@ def test_grouped_bars_rejects_unknown_yscale():
                                    title="t", yscale="bogus")
     finally:
         plt.close(f)
+
+
+def test_plotters_reject_unknown_yscale(tmp_path, monkeypatch):
+    # The panel body's check only runs for panels that are actually drawn: a
+    # composite whose channels all degrade to placeholders would otherwise be
+    # written to a _logy path as a linear figure. Each plotter checks its own
+    # argument BEFORE drawing anything -- sabotaging the panel body shows the
+    # refusal comes first.
+    def _boom(*a, **k):
+        raise AssertionError("panel body reached before the yscale check")
+
+    monkeypatch.setattr(fig, "_grouped_arch_bars", _boom)
+    for call in (
+            lambda: fig.plot_energy_wtmad_mae([], tmp_path / "a.png", "run",
+                                              yscale="bogus"),
+            lambda: fig.plot_density_energy_overview([], [],
+                                                     tmp_path / "b.png",
+                                                     "run", yscale="bogus"),
+            lambda: fig.plot_density_energy_3x3([], [], tmp_path / "c.png",
+                                                "run", yscale="bogus"),
+            lambda: fig.plot_insample_overview([], [], tmp_path / "d.png",
+                                               "run", yscale="bogus")):
+        with pytest.raises(ValueError):
+            call()
+    assert not list(tmp_path.glob("*.png"))    # nothing written on refusal
 
 
 def test_cell_anchor_note_explains_glyph():
@@ -3199,7 +3277,8 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
                       "ablation_energy_wtmad_mae.png",
                       "ablation_energy_wtmad_mae_logy.png",
                       "ablation_insample_density_ccsd.png",
-                      "ablation_insample_overview.png"}
+                      "ablation_insample_overview.png",
+                      "ablation_insample_overview_logy.png"}
     assert "ablation_holdout_density_ccsd.png" not in names1
     # the combined-ED family is gated on the same holdout density columns,
     # and so is the held-out overview composite
@@ -3226,12 +3305,13 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     assert "ablation_density_parity_by_channel_dfs_units.png" in names2
     # every grouped-bar figure also ships its log-y sibling, same data
     for logy in ("ablation_energy_wtmad_mae_logy.png",
+                 "ablation_insample_overview_logy.png",
                  "ablation_density_energy_overview_logy.png",
                  "ablation_density_energy_overview_dfs_units_logy.png",
                  "ablation_density_energy_3x3_logy.png",
                  "ablation_density_energy_3x3_dfs_units_logy.png"):
         assert logy in names2, logy
-    assert len(names2) == 21
+    assert len(names2) == 22
     assert (out2 / "ablation_density_energy_3x3_dfs_units.csv").is_file()
     # the CSVs are written alongside but NEVER returned (return stays PNG-only)
     assert (out2 / "ablation_combined_energy_density.csv").is_file()
@@ -3264,19 +3344,21 @@ def test_plot_size_consistency_diagnostic_renders(tmp_path):
     assert _png_ok(out)
 
 
-def test_build_density_energy_figures_writes_five(tmp_path):
+def test_build_density_energy_figures_writes_six(tmp_path):
     run = _make_run_dir(tmp_path)
     written = fig.build_density_energy_figures(run, tmp_path / "out")
-    # headline rung summary + energy (linear + log-y) + in-sample density +
-    # in-sample overview (no SCAN cache -> no SCAN line; refs-free run -> no
-    # holdout/ED family)
-    assert len(written) == 5
+    # headline rung summary + energy + in-sample density + in-sample overview,
+    # the two bar figures each with their log-y sibling (no SCAN cache -> no
+    # SCAN line; refs-free run -> no holdout/ED family)
+    assert len(written) == 6
     assert all(_png_ok(p) for p in written)
-    assert {p.name for p in written} == {"ablation_rung_summary.png",
-                                         "ablation_energy_wtmad_mae.png",
-                                         "ablation_energy_wtmad_mae_logy.png",
-                                         "ablation_insample_density_ccsd.png",
-                                         "ablation_insample_overview.png"}
+    assert {p.name for p in written} == {
+        "ablation_rung_summary.png",
+        "ablation_energy_wtmad_mae.png",
+        "ablation_energy_wtmad_mae_logy.png",
+        "ablation_insample_density_ccsd.png",
+        "ablation_insample_overview.png",
+        "ablation_insample_overview_logy.png"}
 
 
 # ---------------------------------------------------------------------------

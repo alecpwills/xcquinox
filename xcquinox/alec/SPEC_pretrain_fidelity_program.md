@@ -148,7 +148,7 @@ remain as the documented failure record.
 ## 4. Verification of this program
 
 - Every code change: tests first (RED shown against the archived tree), oracle tests
-  executed, `py_compile`, and TWO independent refute-stance reviews per commit that execute
+  executed, `py_compile`, and TWO independent reviews per commit, each required to execute
   the oracles themselves (one on the physics, one on the workflow end to end).
 - The rendered sbatch scripts and YAMLs for v6 get the same two reviews before the
   submission commands are handed over.

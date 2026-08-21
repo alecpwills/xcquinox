@@ -25,12 +25,17 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 | `ablation_ed_decomposition.png` | The iso-ED decomposition as its own enriched canvas |
 | `ablation_ed_decomposition_dfs_units.png` | The enriched decomposition under the operative DFS-units gamma (Eq. 20 eps units, stamped in-panel); eps pulls only |
 | `ablation_insample_overview.png` | One-canvas in-sample story: AE + density (training fit) |
+| `ablation_insample_overview_logy.png` | The same in-sample canvas with panel (A) on a logarithmic y axis |
 
 Every grouped-bar figure is written twice: the linear file listed above and a `_logy`
-sibling holding the SAME data on a logarithmic y axis (`ablation_energy_wtmad_mae_logy.png`
-alongside the energy figure, and the four density/energy composites above). The log view is
-for panels where one architecture's bars run hundreds of kcal/mol and squash the rest; the
-linear file is unchanged, and no CSV is affected.
+sibling holding the SAME data on a logarithmic y axis. Six siblings in all --
+`ablation_energy_wtmad_mae_logy.png` alongside the energy figure,
+`ablation_insample_overview_logy.png` (panel (A) is that canvas's only bar panel), and the
+four density/energy composites above. The log view is for panels where one architecture's
+bars run hundreds of kcal/mol and squash the rest; the linear file is unchanged, and no CSV
+is affected. Read the log panels by the TOP EDGE of each bar only: a logarithmic axis has no
+zero, so a bar's baseline is the frame floor (the smallest drawn value / 1.6) rather than
+zero, and bar AREAS carry no meaning there.
 
 The intended use mirrors the multimode figure glossary: open the figure on one screen and
 this file on the other. The `figures_*` directories are regenerated outputs and are never

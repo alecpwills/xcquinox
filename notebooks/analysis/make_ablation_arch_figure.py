@@ -52,6 +52,7 @@ import importlib.util
 import json
 import math
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -122,6 +123,18 @@ _PROVENANCE_BASE = (
 def _is_num(v: Any) -> bool:
     """True iff v is a real, finite number."""
     return isinstance(v, (int, float)) and math.isfinite(v)
+
+
+def _check_yscale(yscale: str) -> None:
+    """Guard for the ``yscale`` switch the bar figures carry: a panel renders
+    on a linear or on a logarithmic y axis and on nothing else. Called at the
+    top of every plotter that takes it as well as in the panel body, so a
+    typo cannot reach a ``_logy`` output path as a silently linear figure --
+    a composite whose channels all degrade to placeholders draws no bar panel
+    at all, and the body's own check would never run."""
+    if yscale not in ("linear", "log"):
+        raise ValueError(
+            f"yscale must be 'linear' or 'log', got {yscale!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -4580,9 +4593,7 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     set explicitly from what was drawn (bars, comparator lines, cell-row
     spans) rather than left to autoscaling, which a zero-height legend
     proxy would otherwise drag down."""
-    if yscale not in ("linear", "log"):
-        raise ValueError(
-            f"yscale must be 'linear' or 'log', got {yscale!r}")
+    _check_yscale(yscale)
     bw = 0.8 / max(1, len(archs))
     beat_x: List[float] = []
     beat_h: List[float] = []
@@ -4715,12 +4726,29 @@ def _grouped_arch_bars(ax, metric: Dict[Tuple[str, int], float],
     if yscale == "log":
         ax.set_yscale("log")
         # Limits from the drawn quantities only. The 1.6 floor divisor keeps
-        # the smallest bar visibly tall; the 1.5 ceiling factor leaves room
-        # for the incomplete-eval star above the tallest bar and for the
-        # in-panel gamma stamp on the ED rows.
+        # the smallest bar visibly tall. The 1.5 ceiling factor clears the
+        # incomplete-eval star, which is stamped at a fixed point offset
+        # above the tallest bar, and -- on the sub-decade ED rows, where a
+        # factor of 1.5 is around a fifth of the axis -- the in-panel gamma
+        # stamp; over several decades the same factor is a thin strip, which
+        # the star (in points, not data units) still clears.
         drawn = [metric.get((a, s)) for a in archs for s in subsets]
         drawn += [pbe_line, scan_line, *tick_h, *stick_h]
         vals = [float(v) for v in drawn if _is_num(v) and float(v) > 0.0]
+        # Every quantity these panels plot is an error measure and is
+        # strictly positive; a finite bar at or below zero would vanish from
+        # a log axis without trace, so the premise is policed rather than
+        # assumed.
+        nonpos = [(a, s, float(metric[(a, s)]))
+                  for a in archs for s in subsets
+                  if _is_num(metric.get((a, s)))
+                  and float(metric[(a, s)]) <= 0.0]
+        if nonpos:
+            warnings.warn(
+                "log y axis cannot draw non-positive bar height(s): "
+                + ", ".join(f"{a}/subset_size {s} = {v:g}"
+                            for a, s, v in nonpos),
+                RuntimeWarning, stacklevel=2)
         if vals:
             ax.set_ylim(min(vals) / 1.6, max(vals) * 1.5)
         else:
@@ -4761,6 +4789,7 @@ def plot_energy_wtmad_mae(rows: List[Dict[str, Any]], out_path: Path, run_id: st
     added to the MAE panel when ``scan_baseline`` carries a finite combined
     MAE (absent SCAN cache -> unchanged). ``yscale="log"`` renders the
     ``_logy`` sibling of the figure -- same data, logarithmic y axis."""
+    _check_yscale(yscale)
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
         subsets = _present_subsets(rows) or [1]
@@ -5576,6 +5605,7 @@ def plot_density_energy_overview(rows: List[Dict[str, Any]],
     ``gamma_mode`` themselves) with the eps parity keys. ``yscale="log"``
     renders the ``_logy`` sibling: the grouped-bar panels (A)-(C) on a
     logarithmic y axis, same data; the parity and ED panels are unaffected."""
+    _check_yscale(yscale)
     pbe_mol = _pbe_density_map(hd_rows, pbe_table, key=parity_pbe_key)
     with plt.rc_context(_STYLE):
         archs = _energy_arch_axis(rows)
@@ -5735,6 +5765,7 @@ def plot_density_energy_3x3(rows: List[Dict[str, Any]],
     ``yscale="log"`` renders the ``_logy`` sibling -- all nine panels on a
     logarithmic y axis, same data, the row-2/row-3 unit labels marked
     ``(log)`` like the panel bodies' own."""
+    _check_yscale(yscale)
     if ch_summaries is None:
         ch_summaries = channel_ed_summaries(rows, hd_rows, pbe_table)
     pools_of = _species_pools(rows)
@@ -5974,7 +6005,8 @@ def plot_insample_overview(ae_rows: List[Dict[str, Any]],
                            out_path: Path, run_id: str, *,
                            note: str = "",
                            provenance: Optional[str] = None,
-                           caveat: Optional[str] = None) -> Path:
+                           caveat: Optional[str] = None,
+                           yscale: str = "linear") -> Path:
     """In-sample companion composite (training fit, final checkpoint):
     (A) in-sample AE MAE bars per (arch, subset_size) -- NN only, no PBE line
     (the in-sample per_molecule.json has no PBE AE column, which is also why
@@ -5985,7 +6017,10 @@ def plot_insample_overview(ae_rows: List[Dict[str, Any]],
     ``eval/`` has no val-best variant, so the panels are identical in the
     final-step and val-best output dirs -- only the title's checkpoint stamp
     differs (stated in the caveat). Panel bodies are the same ax-level
-    helpers ``plot_insample_density_ccsd`` uses."""
+    helpers ``plot_insample_density_ccsd`` uses. ``yscale="log"`` renders the
+    ``_logy`` sibling: panel (A), the composite's only bar panel, on a
+    logarithmic y axis; (B)-(D) are unaffected."""
+    _check_yscale(yscale)
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(2, 2, figsize=(13, 9.6), squeeze=False)
         (axA, axB), (axC, axD) = axes
@@ -5995,8 +6030,12 @@ def plot_insample_overview(ae_rows: List[Dict[str, Any]],
                            pbe_line=None,
                            vxc_pre_fix=_run_predates_vxc_fix(run_id),
                            title="(A) In-sample AE MAE per (arch, subset) -- "
-                                 "NN only (no in-sample PBE AE)")
-        axA.set_ylabel("in-sample AE MAE (kcal/mol)", fontsize=8)
+                                 "NN only (no in-sample PBE AE)",
+                           yscale=yscale)
+        # panel (A) labels its own axis after the body, so the scale tag
+        # follows it here
+        axA.set_ylabel("in-sample AE MAE (kcal/mol)"
+                       + (" (log)" if yscale == "log" else ""), fontsize=8)
         _insample_ae_strip_panel(axB, ae_rows)
         axB.set_title("(B) " + axB.get_title(), fontsize=9)
         _insample_density_lines_panel(axC, density_rows)
@@ -6606,7 +6645,6 @@ def _broken_bar_panel(fig, subplot_spec, series, labels, pbe_lines, title, ylab,
     for j, (label, y) in enumerate(pbe_lines):
         if _is_num(y):
             ax.axhline(y, ls="--", lw=1.0, color=colors[j % len(colors)], alpha=0.8)
-    import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         bottom.set_xticks(range(n))
@@ -7243,10 +7281,12 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     are missing; the enriched ``ablation_ed_decomposition.png`` renders with
     the ED figure. The held-out figures carry a ``dataset`` footer line
     stating what the held-out eval is (live reaction/species counts from
-    ``_holdout_eval_note``). Every grouped-bar figure is written twice --
-    the linear original and an ``_logy`` sibling holding the same data on a
-    logarithmic y axis -- so a cell hundreds of kcal/mol above the rest
-    cannot flatten the remaining bars; the CSVs are unaffected."""
+    ``_holdout_eval_note``). Every figure carrying a grouped-bar panel is
+    written twice -- the linear original and an ``_logy`` sibling holding the
+    same data on a logarithmic y axis -- so a cell hundreds of kcal/mol above
+    the rest cannot flatten the remaining bars. Six such pairs: the energy
+    figure, the in-sample overview (panel (A)), and the four density/energy
+    composites. The CSVs are unaffected."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
@@ -7305,13 +7345,19 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                  "species (atoms excluded).")
     tsubsets = training_subsets_by_size(run_dir)
     ds_e = _holdout_eval_note(rows, [])
-    # Every grouped-bar figure is rendered twice from ONE set of arguments:
-    # the linear original and its "_logy" sibling (same data, logarithmic y
-    # axis), so a cell running hundreds of kcal/mol cannot flatten the rest
-    # of the panel out of readability.
+    # Every figure with a grouped-bar panel is rendered twice from ONE set of
+    # arguments: the linear original and its "_logy" sibling (same data,
+    # logarithmic y axis), so a cell running hundreds of kcal/mol cannot
+    # flatten the rest of the panel out of readability.
     wtmad_kw = dict(note=note, provenance=prov, caveat=caveat,
                     training_subsets=tsubsets, scan_baseline=scan_baseline,
                     scan_errors=scan_errs, dataset=ds_e)
+    ins_ov_kw = dict(note=note,
+                     provenance=("In-sample AE + density vs CCSD from "
+                                 "eval/per_molecule.json (atoms excluded); "
+                                 "density RMSE grid-weight-averaged, NOT "
+                                 "N_e-normalized; AE vs benchmark reference "
+                                 "atomization energies."))
     written = [
         plot_rung_summary(rows, outdir / "ablation_rung_summary.png", run_id,
                           pbe_baseline=baseline, scan_baseline=scan_baseline,
@@ -7327,11 +7373,11 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                                    run_id, note=note, provenance=dens_prov),
         plot_insample_overview(
             ae_rows, drows, outdir / "ablation_insample_overview.png", run_id,
-            note=note,
-            provenance=("In-sample AE + density vs CCSD from "
-                        "eval/per_molecule.json (atoms excluded); density "
-                        "RMSE grid-weight-averaged, NOT N_e-normalized; AE "
-                        "vs benchmark reference atomization energies.")),
+            **ins_ov_kw),
+        plot_insample_overview(
+            ae_rows, drows,
+            outdir / "ablation_insample_overview_logy.png", run_id,
+            yscale="log", **ins_ov_kw),
     ]
     # Held-out density family: only renderable once benchmark CCSD reference
     # densities exist (eval_holdout density columns and/or the run-level
