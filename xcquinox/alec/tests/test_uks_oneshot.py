@@ -72,7 +72,11 @@ def test_uks_oneshot_fock_alpha_differs_from_beta():
     from xcquinox.alec.descriptors import assemble_descriptor_features
     spec, md, model = _build_o_atom_uks()
     features = assemble_descriptor_features(model.descriptors, md)
-    vxc_a, vxc_b = _uks_spin_resolved_vxc(model, md, features)
+    vxc_a, vxc_b = _uks_spin_resolved_vxc(
+        model, md,
+        assemble_descriptor_features(model.descriptors, md, spin_channel=0),
+        assemble_descriptor_features(model.descriptors, md, spin_channel=1),
+        features)
     h_core = np.asarray(md["h_core"])
     j = np.asarray(md["j_matrix"])
     j_total = j[0] + j[1]

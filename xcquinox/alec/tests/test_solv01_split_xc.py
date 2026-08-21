@@ -72,35 +72,43 @@ def _grid_quantities(D, ao_grid, ao_xyz):
     return rho, nabla_rho, sigma
 
 
-def _uks_split_energy(model, D_a, D_b, features, ao_grid, ao_xyz, grid_weights):
-    """SOLV-01 split UKS XC energy from a spin-DM pair."""
+def _uks_split_energy(model, D_a, D_b, features_a, features_b, features_tot,
+                      ao_grid, ao_xyz, grid_weights):
+    """SOLV-01 split UKS XC energy from a spin-DM pair.
+
+    ``features_a`` / ``features_b`` are the blocks of the symmetric doubled
+    densities diag(P_a, P_a) and diag(P_b, P_b); ``features_tot`` is the
+    physical block the correlation term consumes.
+    """
     rho_a, nra, sig_aa = _grid_quantities(D_a, ao_grid, ao_xyz)
     rho_b, nrb, sig_bb = _grid_quantities(D_b, ao_grid, ao_xyz)
     nr_tot = nra + nrb
     sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
     return split_exc_energy_uks(
-        model, rho_a, rho_b, sig_aa, sig_bb, sig_tot, features, grid_weights,
+        model, rho_a, rho_b, sig_aa, sig_bb, sig_tot,
+        features_a, features_b, features_tot, grid_weights,
     )
 
 
-def _uks_split_vxc(model, D_a, D_b, features, ao_grid, ao_xyz, ao_grad,
-                   grid_weights):
+def _uks_split_vxc(model, D_a, D_b, features_a, features_b, features_tot,
+                   ao_grid, ao_xyz, ao_grad, grid_weights):
     """SOLV-01 split UKS V_xc pair (V_a, V_b) from a spin-DM pair: per-spin
-    spin-scaled exchange + shared total-density correlation."""
+    spin-scaled exchange at each channel's own doubled-density block + shared
+    total-density correlation at ``features_tot``."""
     rho_a, nra, sig_aa = _grid_quantities(D_a, ao_grid, ao_xyz)
     rho_b, nrb, sig_bb = _grid_quantities(D_b, ao_grid, ao_xyz)
     nr_tot = nra + nrb
     sig_tot = jnp.sum(nr_tot * nr_tot, axis=1)
     vx_a = compute_vxc_nn(
-        model, 2.0 * rho_a, 4.0 * sig_aa, features, ao_grid, grid_weights,
+        model, 2.0 * rho_a, 4.0 * sig_aa, features_a, ao_grid, grid_weights,
         nabla_rho=2.0 * nra, ao_grad=ao_grad, part="x",
     )
     vx_b = compute_vxc_nn(
-        model, 2.0 * rho_b, 4.0 * sig_bb, features, ao_grid, grid_weights,
+        model, 2.0 * rho_b, 4.0 * sig_bb, features_b, ao_grid, grid_weights,
         nabla_rho=2.0 * nrb, ao_grad=ao_grad, part="x",
     )
     vc = compute_vxc_nn(
-        model, rho_a + rho_b, sig_tot, features, ao_grid, grid_weights,
+        model, rho_a + rho_b, sig_tot, features_tot, ao_grid, grid_weights,
         nabla_rho=nr_tot, ao_grad=ao_grad, part="c",
     )
     return vx_a + vc, vx_b + vc
@@ -127,8 +135,11 @@ def test_closed_shell_reduction_energy_and_vxc():
     D_b = 0.5 * D_rks
 
     # --- Energy ---
+    # The `deep` architecture carries no descriptors, so `features` is the empty
+    # (n_grid, 0) array and the three per-channel blocks are that same array.
     E_uks = _uks_split_energy(
-        model, D_a, D_b, features, ao_grid, ao_xyz, grid_weights)
+        model, D_a, D_b, features, features, features,
+        ao_grid, ao_xyz, grid_weights)
     rho_rks, nr_rks, sig_rks = _grid_quantities(D_rks, ao_grid, ao_xyz)
     E_rks = compute_exc_nn(model, rho_rks, sig_rks, features, grid_weights)
     e_resid = float(abs(E_uks - E_rks))
@@ -142,7 +153,8 @@ def test_closed_shell_reduction_energy_and_vxc():
     # = 2 V_rks because dE_rks/dD = (dE_uks/dD_a + dE_uks/dD_b)/2 at the
     # closed-shell point; the per-spin potential V_a is the RKS one.)
     V_a, V_b = _uks_split_vxc(
-        model, D_a, D_b, features, ao_grid, ao_xyz, ao_grad, grid_weights)
+        model, D_a, D_b, features, features, features,
+        ao_grid, ao_xyz, ao_grad, grid_weights)
     V_rks = compute_vxc_nn(
         model, rho_rks, sig_rks, features, ao_grid, grid_weights,
         nabla_rho=nr_rks, ao_grad=ao_grad, part="xc",
@@ -181,7 +193,12 @@ def _exact_vxc_unmasked(model, rho, sigma, nabla_rho, features, ao_grid,
 
 def _uks_split_vxc_exact(model, D_a, D_b, features, ao_grid, ao_xyz,
                          grid_weights):
-    """SOLV-01 split V_xc pair built from the UNMASKED exact assembler."""
+    """SOLV-01 split V_xc pair built from the UNMASKED exact assembler.
+
+    Single ``features`` argument: this helper is used only with the
+    descriptor-free ``deep`` architecture, where the three per-channel blocks
+    are the same empty array.
+    """
     rho_a, nra, sig_aa = _grid_quantities(D_a, ao_grid, ao_xyz)
     rho_b, nrb, sig_bb = _grid_quantities(D_b, ao_grid, ao_xyz)
     nr_tot = nra + nrb
@@ -236,9 +253,12 @@ def test_fd_energy_potential_consistency():
     # below the 1e-5 target while staying well above f64 round-off.
     eps = 1e-5
 
+    # The `deep` architecture carries no descriptors, so `features` is the empty
+    # (n_grid, 0) array and the three per-channel blocks are that same array.
     def E(Da, Db):
         return _uks_split_energy(
-            model, Da, Db, features, ao_grid, ao_xyz, grid_weights)
+            model, Da, Db, features, features, features,
+            ao_grid, ao_xyz, grid_weights)
 
     E_plus = E(D_a + eps * dDa, D_b + eps * dDb)
     E_minus = E(D_a - eps * dDa, D_b - eps * dDb)
@@ -282,7 +302,8 @@ def test_fd_energy_potential_consistency():
     # threshold zeroed a finite, energy-significant v_sigma over ~49% of a
     # diffuse open-shell channel, giving a 0.92 residual, fixed 2026-05-23.)
     V_a, V_b = _uks_split_vxc(
-        model, D_a, D_b, features, ao_grid, ao_xyz, ao_grad, grid_weights)
+        model, D_a, D_b, features, features, features,
+        ao_grid, ao_xyz, ao_grad, grid_weights)
     prod_contract = float(jnp.einsum("ij,ij->", V_a, dDa)
                           + jnp.einsum("ij,ij->", V_b, dDb))
     rel_prod = abs(fd - prod_contract) / max(abs(prod_contract), 1e-12)
@@ -379,6 +400,20 @@ _TOL_UKS = 5e-7
 # they pass rather than a single draw, since the open-shell probe's floor is
 # the bound itself.)
 #
+# The UKS column above was measured on the Li atom with ONE feature block
+# feeding both exchange channels. With each exchange channel on the block of
+# its own doubled density diag(P_sigma, P_sigma), Li's one-electron beta
+# channel puts the meta-GGA indicator on its clip kink (see the UKS test's
+# docstring) and the probe moved to the O atom. O-atom residuals at _FD_EPS
+# with the three-block potential, measured with this module's helpers, fresh
+# process, grid level 2: deep_3x16 4.69e-11, notransform 1.06e-10,
+# cusp 1.37e-11, dm 2.09e-10, combined 2.29e-10, rung35 2.25e-10,
+# rung35only 1.05e-10, rung35ms 3.41e-11, mgga 4.45e-12 (1.7e-10 and 5.5e-11
+# in two other draws), mgga_attn 2.54e-10, cusp_mgga 1.73e-10,
+# rung35_mgga 2.74e-10, rung35ms_mgga 9.07e-11 -- every row at the control
+# level, three orders below the bound; the clip-status guard discarded at
+# most 0.01% of the grid (cusp_mgga), 0 points for the other rows.
+#
 # The meta-GGA rows reached the control level only after the compute_alpha tail
 # gradient freeze was removed; with it in place they sat at ~3e-08 / ~1.7e-05.
 #
@@ -428,7 +463,7 @@ def _md_with_descriptors(model, name, atom, basis, spin, composition,
 
 
 def _live_features_fn(model, md):
-    """The exact ``P -> features`` map the solver uses, as a closure."""
+    """The exact ``P -> features`` map the RKS solver uses, as a closure."""
     from xcquinox.alec.solver import (
         _reassemble_features, _contract_dm_to_grid_with_nabla)
     ao_deriv = jnp.asarray(md["ao_grid_deriv"])
@@ -454,6 +489,33 @@ def _live_features_fn(model, md):
             cusp_features=cusp, n_grid=n_grid, rung35_proj_ao=proj,
             rung35ms_proj_ao=proj_ms, **kw)
     return features_of
+
+
+def _live_uks_features_fns(model, md):
+    """The three ``P_ab -> features`` maps the UKS solver uses."""
+    from xcquinox.alec.solver import make_uks_feature_fns
+    return make_uks_feature_fns(
+        descriptors=model.descriptors,
+        ao_deriv=jnp.asarray(md["ao_grid_deriv"]),
+        s_matrix=jnp.asarray(md["s_matrix"]),
+        n_grid=int(np.asarray(md["grid_weights"]).shape[0]),
+        cusp_features=md.get("cusp_features"),
+        rung35_proj_ao=md.get("rung35_proj_ao"),
+        rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+    )
+
+
+def _alpha_columns(model):
+    """Column indices of the clipped iso-orbital indicator in the feature
+    block (declaration order; the block has the same width in all three spin
+    channels)."""
+    from xcquinox.alec.descriptors import MetaGGAAlphaDescriptor
+    cols, offset = [], 0
+    for d in model.descriptors:
+        if isinstance(d, MetaGGAAlphaDescriptor):
+            cols.extend(range(offset, offset + d.n_features))
+        offset += d.n_features
+    return cols
 
 
 def _symmetric_perturbation(shape, seed=20260806):
@@ -520,7 +582,24 @@ def test_fd_consistency_live_features_uks_polarized(arch_name):
 
     Exercises BOTH feature-derivative sites: the spin-scaled exchange channel
     and ``compute_vc_polarized_per_spin``, whose feature tangent was zeroed
-    independently of the RKS path.
+    independently of the RKS path. Each exchange channel is evaluated at the
+    block of its own doubled density diag(P_sigma, P_sigma), so the
+    feature-response term is three contractions, one per block.
+
+    The probe species is the O atom (5 alpha, 3 beta electrons). A channel
+    holding ONE electron cannot serve: its doubled block is a single orbital,
+    for which tau = tau_W identically, so the iso-orbital indicator of that
+    block sits ON the lower clip of ``metagga.compute_alpha`` (Li beta
+    channel, def2-svp: |alpha_raw| <= 1.2e-9 over the resolved grid, 46% of
+    the points negative). Autodiff then returns whichever one-sided
+    derivative the rounding sign selects at each point while the central
+    difference returns their mean, and the meta-GGA architectures read
+    3e-2 to 1e-1 relative with a correct potential. On the O atom every
+    block stays >= 6.6e-4 above the clip, 660x the step. The clip status of
+    each block also enters the straddle mask below, so an isolated crossing
+    is discarded rather than averaged (B atom, whose beta channel is nearly
+    one-orbital: 4.0e-6 relative without the guard, 1.2e-10 with it, at the
+    cost of 17% of the grid -- which is why B is not the probe either).
     """
     from xcquinox.alec.oneshot import (
         compute_vxc_nn, compute_vc_polarized_per_spin,
@@ -528,19 +607,22 @@ def test_fd_consistency_live_features_uks_polarized(arch_name):
         has_dm_dependent_descriptor, uks_zeta,
         _ZETA_BOUNDARY_EPS, _RHO_TOT_FLOOR)
     from xcquinox.alec.models import _NN_TAIL_THRESHOLD
+    from xcquinox.alec.metagga import _ALPHA_MAX
 
     model = _live_model(arch_name)
-    md = _md_with_descriptors(model, "Li", "Li 0 0 0", "def2-svp", 1,
-                              (("Li", 1),))
+    md = _md_with_descriptors(model, "O", "O 0 0 0", "def2-svp", 2,
+                              (("O", 1),))
     ao_grid = jnp.asarray(md["ao_grid"])
     ao_deriv = jnp.asarray(md["ao_grid_deriv"])
     ao_xyz = ao_deriv[1:4]
-    features_of = _live_features_fn(model, md)
+    features_a_of, features_b_of, features_tot_of = _live_uks_features_fns(
+        model, md)
 
     dm = np.asarray(md["dm_pbe"])
-    assert dm.ndim == 3, "Li spin=1 must precompute a spin-resolved DM"
+    assert dm.ndim == 3, "O spin=2 must precompute a spin-resolved DM"
     P0 = jnp.asarray(dm)
     W = _symmetric_perturbation(P0.shape)
+    alpha_cols = _alpha_columns(model)
 
     def spin_quantities(D):
         rho = jnp.einsum("ij,gi,gj->g", D, ao_grid, ao_grid)
@@ -552,13 +634,23 @@ def test_fd_consistency_live_features_uks_polarized(arch_name):
         rho_b = np.asarray(spin_quantities(P[1])[0])
         rho_tot = rho_a + rho_b
         zeta = (rho_a - rho_b) / np.maximum(rho_tot, _RHO_TOT_FLOOR)
-        return np.stack([
+        rows = [
             np.abs(zeta) >= 1.0 - _ZETA_BOUNDARY_EPS,
             rho_tot <= _RHO_TOT_FLOOR,
             2.0 * rho_a <= _NN_TAIL_THRESHOLD,
             2.0 * rho_b <= _NN_TAIL_THRESHOLD,
             rho_a <= 1e-10, rho_b <= 1e-10, rho_tot <= 1e-10,
-        ])
+        ]
+        # The iso-orbital indicator is clipped to [0, _ALPHA_MAX] in every
+        # block; a clip active on one side of the step only is a kink of the
+        # functional, across which the central difference is not a
+        # derivative. The clipped column is exactly 0.0 or _ALPHA_MAX there.
+        for block in (features_a_of(P), features_b_of(P), features_tot_of(P)):
+            for j in alpha_cols:
+                col = np.asarray(block[:, j])
+                rows.append(col <= 0.0)
+                rows.append(col >= _ALPHA_MAX)
+        return np.stack(rows)
 
     keep = ~np.any(guard_status(P0 + _FD_EPS * W)
                    != guard_status(P0 - _FD_EPS * W), axis=0)
@@ -575,37 +667,44 @@ def test_fd_consistency_live_features_uks_polarized(arch_name):
         nabla_tot = nabla_a + nabla_b
         return split_exc_energy_uks(
             model, rho_a, rho_b, sigma_aa, sigma_bb,
-            jnp.sum(nabla_tot * nabla_tot, axis=1), features_of(P), weights)
+            jnp.sum(nabla_tot * nabla_tot, axis=1),
+            features_a_of(P), features_b_of(P), features_tot_of(P), weights)
 
     rho_a, nabla_a, sigma_aa = spin_quantities(P0[0])
     rho_b, nabla_b, sigma_bb = spin_quantities(P0[1])
     nabla_tot = nabla_a + nabla_b
     sigma_tot = jnp.sum(nabla_tot * nabla_tot, axis=1)
-    f0 = features_of(P0)
+    f0_a, f0_b, f0_tot = features_a_of(P0), features_b_of(P0), features_tot_of(P0)
 
-    V_a = compute_vxc_nn(model, 2.0 * rho_a, 4.0 * sigma_aa, f0, ao_grid,
+    V_a = compute_vxc_nn(model, 2.0 * rho_a, 4.0 * sigma_aa, f0_a, ao_grid,
                          weights, nabla_rho=2.0 * nabla_a, ao_grad=ao_deriv,
                          part="x")
-    V_b = compute_vxc_nn(model, 2.0 * rho_b, 4.0 * sigma_bb, f0, ao_grid,
+    V_b = compute_vxc_nn(model, 2.0 * rho_b, 4.0 * sigma_bb, f0_b, ao_grid,
                          weights, nabla_rho=2.0 * nabla_b, ao_grad=ao_deriv,
                          part="x")
     vc_a, vc_b = compute_vc_polarized_per_spin(
-        model, rho_a, rho_b, sigma_tot, f0, ao_grid, weights, nabla_tot,
+        model, rho_a, rho_b, sigma_tot, f0_tot, ao_grid, weights, nabla_tot,
         ao_deriv)
     V_a, V_b = V_a + vc_a, V_b + vc_b
 
     if has_dm_dependent_descriptor(model):
-        # de/df accumulated over all three terms of the split energy before a
-        # single contraction against df/dP -- the features are shared.
-        dedf = 0.5 * (
-            feature_energy_derivative(model, 2.0 * rho_a, 4.0 * sigma_aa, f0,
-                                      part="x")
-            + feature_energy_derivative(model, 2.0 * rho_b, 4.0 * sigma_bb, f0,
-                                        part="x"))
-        dedf = dedf + feature_energy_derivative(
-            model, rho_a + rho_b, sigma_tot, f0, part="c",
-            zeta=uks_zeta(rho_a, rho_b))
-        v_feat = feature_response_vxc(dedf, weights, features_of, P0)
+        # f_a, f_b and f_tot are three different maps of P, so the chain-rule
+        # term is three contractions rather than one accumulated de/df. Each
+        # per-channel map depends on P only through its own P_sigma, so its
+        # contraction lands in that spin block.
+        v_feat = feature_response_vxc(
+            0.5 * feature_energy_derivative(
+                model, 2.0 * rho_a, 4.0 * sigma_aa, f0_a, part="x"),
+            weights, features_a_of, P0)
+        v_feat = v_feat + feature_response_vxc(
+            0.5 * feature_energy_derivative(
+                model, 2.0 * rho_b, 4.0 * sigma_bb, f0_b, part="x"),
+            weights, features_b_of, P0)
+        v_feat = v_feat + feature_response_vxc(
+            feature_energy_derivative(
+                model, rho_a + rho_b, sigma_tot, f0_tot, part="c",
+                zeta=uks_zeta(rho_a, rho_b)),
+            weights, features_tot_of, P0)
         V_a, V_b = V_a + v_feat[0], V_b + v_feat[1]
 
     assert bool(jnp.all(jnp.isfinite(V_a)) and jnp.all(jnp.isfinite(V_b))), (
@@ -623,6 +722,42 @@ def test_fd_consistency_live_features_uks_polarized(arch_name):
         + (f", bound set by the known {blocked_by} defect)" if blocked_by
            else ")")
     )
+
+
+def test_one_electron_channel_block_is_the_iso_orbital_limit():
+    """A spin channel holding one electron has a doubled block diag(P_s, P_s)
+    that is a single orbital, for which tau = tau_W, so the SCAN indicator of
+    that block vanishes identically (alpha = 0 for any one-orbital density:
+    Sun, Ruzsinszky, Perdew, PRL 115, 036402 (2015)); the alpha and total
+    blocks of the same atom are two-orbital densities and stay away from
+    zero. This is the property that makes a one-electron channel unusable as
+    a finite-difference probe (see the UKS test above), and it separates the
+    per-channel block from the physical one: with the total block in its
+    place the beta column would carry the physical indicator (median 1.5e-2
+    on the beta-resolved grid), and with sigma_ss left undoubled it would
+    read the clip ceiling. A block with tau_s or rho_s left undoubled is
+    negative before the clip and is NOT distinguished here; that convention
+    is pinned against the stored per-spin tau and against libxc elsewhere.
+    """
+    model = _live_model("deep_mgga_3x16")
+    md = _md_with_descriptors(model, "Li", "Li 0 0 0", "def2-svp", 1,
+                              (("Li", 1),))
+    col = _alpha_columns(model)[0]
+    f_a = np.asarray(assemble_descriptor_features(model.descriptors, md,
+                                                  spin_channel=0))[:, col]
+    f_b = np.asarray(assemble_descriptor_features(model.descriptors, md,
+                                                  spin_channel=1))[:, col]
+    f_tot = np.asarray(assemble_descriptor_features(model.descriptors, md))[:, col]
+    dm = np.asarray(md["dm_pbe"])
+    ao = np.asarray(md["ao_grid"])
+    resolved = np.einsum("ij,gi,gj->g", dm[1], ao, ao) > 1e-8
+    # Measured 2.5e-11 and 6.2e-10 (two independent PBE solutions) after the
+    # clip: the rounding of tau - tau_W divided by tau_unif. 1e-8 clears the
+    # worse draw by 16x and refuses the total block by six orders.
+    assert f_b[resolved].max() <= 1e-8, float(f_b[resolved].max())
+    # Two-orbital blocks: measured medians 7.3e-3 (alpha) and 1.5e-2 (total).
+    assert np.median(f_a[resolved]) > 1e-3, float(np.median(f_a[resolved]))
+    assert np.median(f_tot[resolved]) > 1e-3, float(np.median(f_tot[resolved]))
 
 
 def test_descriptor_free_archs_keep_the_analytic_path():
@@ -883,9 +1018,12 @@ def test_polarized_full_split_vxc_fd_consistency():
     D_a, D_b = dm[0], dm[1]
     nao = D_a.shape[0]
 
+    # The `deep` architecture carries no descriptors, so `features` is the empty
+    # (n_grid, 0) array and the three per-channel blocks are that same array.
     def E(Da, Db):
         return _uks_split_energy(
-            model, Da, Db, features, ao_grid, ao_xyz, grid_weights)
+            model, Da, Db, features, features, features,
+            ao_grid, ao_xyz, grid_weights)
 
     # Full per-spin V_xc = spin-scaled exchange + per-spin correlation.
     rho_a, nra, sig_aa = _grid_quantities(D_a, ao_grid, ao_xyz)
@@ -1121,16 +1259,22 @@ def test_spin_swap_symmetry():
     dm = jnp.asarray(md["dm_pbe"])
     D_a, D_b = dm[0], dm[1]
 
+    # The `deep` architecture carries no descriptors, so `features` is the empty
+    # (n_grid, 0) array and the three per-channel blocks are that same array.
     E_orig = _uks_split_energy(
-        model, D_a, D_b, features, ao_grid, ao_xyz, grid_weights)
+        model, D_a, D_b, features, features, features,
+        ao_grid, ao_xyz, grid_weights)
     E_swap = _uks_split_energy(
-        model, D_b, D_a, features, ao_grid, ao_xyz, grid_weights)
+        model, D_b, D_a, features, features, features,
+        ao_grid, ao_xyz, grid_weights)
     assert float(abs(E_orig - E_swap)) < 1e-10, "E_xc must be spin-swap invariant"
 
     V_a, V_b = _uks_split_vxc(
-        model, D_a, D_b, features, ao_grid, ao_xyz, ao_grad, grid_weights)
+        model, D_a, D_b, features, features, features,
+        ao_grid, ao_xyz, ao_grad, grid_weights)
     V_a_sw, V_b_sw = _uks_split_vxc(
-        model, D_b, D_a, features, ao_grid, ao_xyz, ao_grad, grid_weights)
+        model, D_b, D_a, features, features, features,
+        ao_grid, ao_xyz, ao_grad, grid_weights)
     # Swapping inputs must swap the outputs.
     assert float(jnp.max(jnp.abs(V_a - V_b_sw))) < 1e-10
     assert float(jnp.max(jnp.abs(V_b - V_a_sw))) < 1e-10
@@ -1140,7 +1284,22 @@ def test_spin_swap_symmetry():
 # P2-02: descriptor features and the exchange spin-scaling relation.
 # ---------------------------------------------------------------------------
 def _build_descriptor_model():
-    arch = alec.get_architecture("deep_combined_attn")  # cusp + dm_statistics
+    """A descriptor-carrying model whose enhancement factors actually respond to
+    the feature block.
+
+    ``zero_init_final_layer=False`` is load-bearing, not a style choice. The
+    warm-start initialization zeroes the final layer, which pins F_x and F_c at
+    1 with zero input-gradients, so every feature column is ignored and any
+    assertion about which block reaches which term is satisfied identically.
+    Measured on the six-point probe below: with the default zero init, swapping
+    the two channel blocks moves the energy by 0.0 exactly and the correlation
+    block contributes 0.0; with a live final layer the same swap moves it by
+    2.554e-05 Ha and the correlation block by 6.149e-06 Ha.
+    """
+    import dataclasses
+    arch = dataclasses.replace(
+        alec.get_architecture("deep_combined_attn"),  # cusp + dm_statistics
+        zero_init_final_layer=False)
     xnet, cnet = alec.create_network_pair(arch, seed=0)
     return alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
 
@@ -1157,16 +1316,20 @@ def test_split_energy_closed_shell_reduction_with_descriptors():
     feats = jnp.asarray(rng.standard_normal((6, n_feat)))
     gw = jnp.ones(6)
     # closed shell: rho_b = rho_a, nabla_rho_b = nabla_rho_a => sigma_tot = 4 sigma_aa
+    # rho_a = rho_b makes the three per-channel blocks the same array, which is
+    # exactly the closed-shell case the reduction refers to.
     E_split = split_exc_energy_uks(
-        model, rho_a, rho_a, sigma_aa, sigma_aa, 4.0 * sigma_aa, feats, gw)
+        model, rho_a, rho_a, sigma_aa, sigma_aa, 4.0 * sigma_aa,
+        feats, feats, feats, gw)
     E_rks = float(jnp.sum(gw * model.eval_exc(2.0 * rho_a, 4.0 * sigma_aa, feats)))
     assert abs(float(E_split) - E_rks) < 1e-9, (float(E_split), E_rks)
 
 
-def test_split_energy_openshell_passes_same_features_both_exchange_terms():
-    """P2-02 (documented approximation): for open-shell the SAME molecular
-    features feed BOTH doubled-spin exchange evaluations (descriptor features
-    have no doubled-spin-density transform). Pin that exact contract."""
+def test_split_energy_openshell_uses_the_per_channel_feature_block():
+    """Exact spin scaling: each doubled-spin exchange evaluation receives ITS
+    OWN channel's feature block -- the block of diag(P_sigma, P_sigma) -- and
+    correlation receives the total-density block. Supersedes the pinned
+    approximation in which one molecular block fed both exchange terms."""
     model = _build_descriptor_model()
     n_feat = sum(d.n_features for d in model.descriptors)
     rng = np.random.default_rng(1)
@@ -1175,16 +1338,54 @@ def test_split_energy_openshell_passes_same_features_both_exchange_terms():
     sigma_aa = jnp.asarray(rng.uniform(0.01, 0.5, 6))
     sigma_bb = jnp.asarray(rng.uniform(0.01, 0.3, 6))
     sigma_tot = jnp.asarray(rng.uniform(0.02, 0.9, 6))
-    feats = jnp.asarray(rng.standard_normal((6, n_feat)))
+    f_a = jnp.asarray(rng.standard_normal((6, n_feat)))
+    f_b = jnp.asarray(rng.standard_normal((6, n_feat)))
+    f_tot = jnp.asarray(rng.standard_normal((6, n_feat)))
     gw = jnp.ones(6)
     got = float(split_exc_energy_uks(
-        model, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot, feats, gw))
-    # expected with the SAME `feats` in both exchange terms (the approximation):
-    ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, feats)
-    ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, feats)
-    ec = model.eval_ec(rho_a + rho_b, sigma_tot, feats)
+        model, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot,
+        f_a, f_b, f_tot, gw))
+    ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, f_a)
+    ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, f_b)
+    ec = model.eval_ec(rho_a + rho_b, sigma_tot, f_tot)
     expected = float(0.5 * jnp.sum(gw * (ex_a + ex_b)) + jnp.sum(gw * ec))
+    # Same operations in the same order on both sides, so the residual is
+    # bitwise 0.0 as measured; 1e-12 leaves room for a reassociation.
     assert abs(got - expected) < 1e-12
+    # The three blocks are genuinely distinguished: exchanging the two channel
+    # blocks changes the energy, which the superseded contract could not see.
+    # Measured separation 2.554e-05 Ha on this probe, so the 1e-8 floor clears
+    # it by 2.6e3 and still fails immediately if either block stops reaching
+    # its own exchange term.
+    swapped = float(split_exc_energy_uks(
+        model, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot,
+        f_b, f_a, f_tot, gw))
+    assert abs(swapped - got) > 1e-8
+
+
+def test_split_energy_openshell_correlation_ignores_the_channel_blocks():
+    """Correlation is spin-interpolated, not spin-scaled, so it must depend on
+    the total block alone (von Barth and Hedin, J. Phys. C 5, 1629 (1972))."""
+    model = _build_descriptor_model()
+    n_feat = sum(d.n_features for d in model.descriptors)
+    rng = np.random.default_rng(2)
+    args = (jnp.asarray(rng.uniform(0.05, 1.0, 6)),
+            jnp.asarray(rng.uniform(0.01, 0.4, 6)),
+            jnp.asarray(rng.uniform(0.01, 0.5, 6)),
+            jnp.asarray(rng.uniform(0.01, 0.3, 6)),
+            jnp.asarray(rng.uniform(0.02, 0.9, 6)))
+    f_tot = jnp.asarray(rng.standard_normal((6, n_feat)))
+    zeros = jnp.zeros((6, n_feat))
+    gw = jnp.ones(6)
+    with_tot = float(split_exc_energy_uks(model, *args, zeros, zeros, f_tot, gw))
+    with_zero = float(split_exc_energy_uks(model, *args, zeros, zeros, zeros, gw))
+    ec_tot = float(jnp.sum(gw * model.eval_ec(args[0] + args[1], args[4], f_tot)))
+    ec_zero = float(jnp.sum(gw * model.eval_ec(args[0] + args[1], args[4], zeros)))
+    # The exchange term is identical in both evaluations, so the difference of
+    # totals is the correlation difference up to the cancellation floor of the
+    # ~3 Ha total: measured residual 2.220e-16 against a correlation signal of
+    # 6.149e-06 Ha, i.e. one double-precision ulp of the energy.
+    assert abs((with_tot - with_zero) - (ec_tot - ec_zero)) < 1e-12
 
 
 def test_split_exc_energy_uks_raises_when_cnet_lacks_polarization_flag():
@@ -1218,4 +1419,5 @@ def test_split_exc_energy_uks_raises_when_cnet_lacks_polarization_flag():
 
     with pytest.raises(AttributeError, match="use_spin_polarization"):
         split_exc_energy_uks(_ModelNoFlag(model), rho_a, rho_b,
-                             sig_aa, sig_bb, sig_tot, features, grid_weights)
+                             sig_aa, sig_bb, sig_tot,
+                             features, features, features, grid_weights)

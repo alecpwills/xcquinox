@@ -332,10 +332,14 @@ def feature_energy_derivative(model, rho, sigma, features, part="xc",
     Evaluated at the SAME sanitized inputs and under the SAME tail mask as the
     ``v_rho`` JVP in :func:`_compute_vxc_nn_core`, so the three contributions to
     dE_xc/dP are consistent point by point. Returning this separately (rather
-    than folding it into the JVP tuple) lets the UKS caller ACCUMULATE the
-    derivative across the spin-scaled exchange terms and the correlation term
-    before contracting once against ``df/dP`` -- the features are shared by all
-    three, so a single contraction is both correct and cheaper.
+    than folding it into the JVP tuple) lets the UKS caller contract each term
+    against the derivative of ITS OWN feature map: the two spin-scaled exchange
+    terms see the blocks of diag(P_a, P_a) and diag(P_b, P_b) (evaluated at the
+    doubled arguments ``2 rho_sigma``, ``4 sigma_sigma_sigma``, with the 1/2 of
+    the spin-scaling relation applied by the caller), the correlation term sees
+    the total block; three maps of P, three contractions through
+    :func:`feature_response_vxc`. In the closed-shell case the three maps
+    coincide and the three contractions sum to the single one of the RKS path.
     """
     n_feat = features.shape[1] if features.ndim == 2 else 0
     if n_feat == 0:
@@ -456,43 +460,56 @@ _RHO_TOT_FLOOR = 1e-12
 
 
 def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
-                         sigma_tot, features, grid_weights):
+                         sigma_tot, features_a, features_b, features_tot,
+                         grid_weights):
     """Integrated UKS XC energy using the SOLV-01 split (exchange spin-scaled,
     correlation on the total density).
 
-        E_xc = 1/2 sum_g w_g [eps_x(2 rho_a, 4 sigma_aa)
-                              + eps_x(2 rho_b, 4 sigma_bb)]
-             +     sum_g w_g  eps_c(rho_tot, sigma_tot)
+        E_xc = 1/2 sum_g w_g [eps_x(2 rho_a, 4 sigma_aa, f_a)
+                              + eps_x(2 rho_b, 4 sigma_bb, f_b)]
+             +     sum_g w_g  eps_c(rho_tot, sigma_tot, f_tot)
 
     where eps_x = model.eval_ex, eps_c = model.eval_ec (the exact split of
-    eval_exc with identical tail masking). Exchange spin-scaling: Oliver &
-    Perdew, Phys. Rev. A 20, 397 (1979). Correlation on the TOTAL density
-    (zeta=0): von Barth & Hedin, J. Phys. C 5, 1629 (1972); PW92, Phys. Rev.
-    B 45, 13244 (1992). This is the energy whose functional derivative
-    is the split V_xc built by ``_uks_spin_resolved_vxc`` / the manual solver
-    (the FD-consistency test C guards this).
+    eval_exc with identical tail masking). Exchange spin-scaling: Oliver and
+    Perdew, Phys. Rev. A 20, 397 (1979). Correlation on the TOTAL density:
+    von Barth and Hedin, J. Phys. C 5, 1629 (1972); Perdew and Wang, Phys. Rev.
+    B 45, 13244 (1992). This is the energy whose functional derivative is the
+    split V_xc built by ``_uks_spin_resolved_vxc`` / the manual solver (the
+    finite-difference consistency test guards this).
 
-    LIMITATION (descriptor features), P2-02: the EXACT exchange spin-scaling
-    relation holds for an F_x that depends only on (rho, sigma). When descriptor
-    features (cusp, DM-statistics) are active, the SAME molecular ``features``
-    are passed into BOTH the (2*rho_a) and (2*rho_b) exchange evaluations below
-    -- those features encode molecular/structural context that has no
-    doubled-spin-density transform -- so for OPEN-SHELL systems the relation is
-    an APPROXIMATION (the features are evaluated at the physical density, not at
-    the fictitious doubled-spin density). The closed-shell reduction to RKS
-    remains EXACT because rho_a = rho_b gives identical features in both terms.
+    EXACT SPIN SCALING FOR DESCRIPTOR FEATURES. The relation above is an
+    identity for an F_x of any ingredient set, provided each channel is
+    evaluated on the FICTITIOUS SPIN-UNPOLARIZED SYSTEM the relation refers to:
+    the symmetric doubled density ``diag(P_sigma, P_sigma)``, with density
+    ``2 rho_sigma``, gradient invariant ``4 sigma_sigma_sigma`` and
+    kinetic-energy density ``2 tau_sigma``. ``features_sigma`` is that system's
+    descriptor block, so the meta-GGA indicator is
+    ``alpha(2 rho_sigma, 4 sigma_sigma_sigma, 2 tau_sigma)``, the rung-3.5
+    single and multishell occupancies are the channel's occupancy in BOTH spin
+    slots (alpha-major-then-spin column order preserved), and the density-matrix
+    statistics are those of ``diag(P_sigma, P_sigma)``; the nuclear-cusp
+    proximity feature is geometry-only and identical in all three blocks.
+    Correlation is spin-interpolated rather than spin-scaled, so it keeps the
+    total density and ``features_tot``.
 
-    when the cnet is spin-polarization-aware
-    (``cnet.use_spin_polarization``), correlation is evaluated with the real
-    zeta = (rho_a-rho_b)/rho_tot and the zeta-dependent PW92 baseline (Dick &
-    Fernandez-Serra, PRB 104 L161109 (2021)); this is the energy whose per-spin
-    functional derivative ``compute_vc_polarized_per_spin`` builds. Flag False
-    keeps the zeta=0 total-density correlation. ``rho_tot = rho_a + rho_b`` is
-    implied by ``sigma_tot``.
+    Callers build the three blocks with
+    ``descriptors.assemble_descriptor_features(..., spin_channel=0 / 1 / None)``
+    on precomputed data, or with ``solver.make_uks_feature_fns`` on a live
+    density matrix. Passing one block three times is the CLOSED-SHELL case and
+    nothing else: at ``rho_a = rho_b`` the three blocks are identical, so RKS
+    and every closed-shell UKS number is unchanged byte for byte.
+
+    When the cnet is spin-polarization-aware (``cnet.use_spin_polarization``),
+    correlation is evaluated with the real zeta = (rho_a-rho_b)/rho_tot and the
+    zeta-dependent PW92 baseline (Dick and Fernandez-Serra, Phys. Rev. B 104,
+    L161109 (2021)); this is the energy whose per-spin functional derivative
+    ``compute_vc_polarized_per_spin`` builds. Flag False keeps the zeta=0
+    total-density correlation. ``rho_tot = rho_a + rho_b`` is implied by
+    ``sigma_tot``.
     """
     rho_tot = rho_a + rho_b
-    ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, features)
-    ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, features)
+    ex_a = model.eval_ex(2.0 * rho_a, 4.0 * sigma_aa, features_a)
+    ex_b = model.eval_ex(2.0 * rho_b, 4.0 * sigma_bb, features_b)
     # Explicit attribute read instead of getattr(..., False) silent fallback.
     # A polarized model.eqx that loses use_spin_polarization during
     # (de)serialization would silently drop zeta on the open-shell path,
@@ -504,14 +521,14 @@ def split_exc_energy_uks(model, rho_a, rho_b, sigma_aa, sigma_bb,
             "model.cnet has no `use_spin_polarization` attribute. This "
             "indicates a model built outside the standard "
             "AlecGGA_CNet / create_network_pair path; the silent-False "
-            "fallback at oneshot.py:328 was removed 2026-05-29 to surface "
-            "this class of bug instead of degrading polarized eval."
+            "fallback was removed 2026-05-29 to surface this class of bug "
+            "instead of degrading polarized eval."
         )
     if model.cnet.use_spin_polarization:
-        ec = model.eval_ec(rho_tot, sigma_tot, features,
+        ec = model.eval_ec(rho_tot, sigma_tot, features_tot,
                            zeta=uks_zeta(rho_a, rho_b))
     else:
-        ec = model.eval_ec(rho_tot, sigma_tot, features)
+        ec = model.eval_ec(rho_tot, sigma_tot, features_tot)
     E_x = 0.5 * jnp.sum(grid_weights * (ex_a + ex_b))
     E_c = jnp.sum(grid_weights * ec)
     return E_x + E_c
@@ -523,14 +540,21 @@ def fixed_density_total_energy(model, mol_data) -> float:
     E_total = E_non_xc + E_xc^NN[rho_PBE]
     Used by A, D1 losses and all energy-based evaluation metrics.
 
-    the UKS branch uses the SPLIT XC energy (exchange spin-scaled
-    per Oliver & Perdew PRA 20, 397 (1979); correlation on the total density
-    at zeta=0 per von Barth & Hedin 1972 / PW92 1992) so that this energy is
-    consistent with the split V_xc used by the SCF solvers. RKS is unchanged
-    (combined eval_exc on the total density).
+    the UKS branch uses the SPLIT XC energy (exchange spin-scaled per Oliver and
+    Perdew, Phys. Rev. A 20, 397 (1979), each channel on its own doubled density
+    diag(P_sigma, P_sigma); correlation on the total density per von Barth and
+    Hedin 1972 / PW92 1992) so that this energy is consistent with the split
+    V_xc used by the SCF solvers. RKS is unchanged (combined eval_exc on the
+    total density).
     """
     features = assemble_descriptor_features(model.descriptors, mol_data)
     if mol_data["is_unrestricted"]:
+        # Each exchange channel is evaluated on its own doubled density
+        # diag(P_sigma, P_sigma); correlation keeps the total block.
+        features_a = assemble_descriptor_features(model.descriptors, mol_data,
+                                                  spin_channel=0)
+        features_b = assemble_descriptor_features(model.descriptors, mol_data,
+                                                  spin_channel=1)
         dm_pbe = mol_data["dm_pbe"]  # (2, nao, nao)
         ao_grid = mol_data["ao_grid"]
         ao_xyz = mol_data["ao_grid_deriv"][1:4]
@@ -545,7 +569,7 @@ def fixed_density_total_energy(model, mol_data) -> float:
         sigma_tot = jnp.sum(nabla_rho_tot * nabla_rho_tot, axis=1)
         exc_integrated = split_exc_energy_uks(
             model, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot,
-            features, grid_weights,
+            features_a, features_b, features, grid_weights,
         )
         return mol_data["E_non_xc"] + exc_integrated
     exc_integrated = compute_exc_nn(
@@ -714,6 +738,10 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
     high-symmetry / custom grids do; using ``safe_sigma`` matches the sibling
     ``compute_vxc_nn`` (which also evaluates v_rho at safe_sigma) and is
     byte-identical at every physical sigma > 1e-30.
+
+    ``features`` is the TOTAL-density block: correlation is spin-interpolated,
+    not spin-scaled, so it never sees the per-channel blocks of
+    ``diag(P_sigma, P_sigma)``.
     """
     # eps_c density as a function of the SPIN densities (rho_tot + zeta formed
     # internally with the SAME clip/floor the UKS energy uses).
@@ -761,7 +789,8 @@ def compute_vc_polarized_per_spin(model, rho_a, rho_b, sigma_tot, features,
     return V_rho_a + V_sigma, V_rho_b + V_sigma
 
 
-def _uks_spin_resolved_vxc(model, mol_data, features):
+def _uks_spin_resolved_vxc(model, mol_data, features_a, features_b,
+                           features_tot):
     """Build spin-resolved V_xc^NN_a, V_xc^NN_b for the SOLV-01 split energy.
 
     SOLV-01 physics. The XC energy is split into exchange + correlation:
@@ -799,13 +828,15 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
     with vc computed exactly ONCE; (flag TRUE) vc is replaced by the per-spin
     vc_a, vc_b.
 
-    LIMITATION (descriptor features), P2-02: the exchange spin-scaling is EXACT
-    only for a feature-free (rho, sigma) F_x. With descriptor features active the
-    same molecular ``features`` feed both doubled-spin exchange terms, so the
-    open-shell relation is an approximation (closed-shell -> RKS stays exact).
-    See ``split_exc_energy_uks`` for the full discussion; the V_xc here is the
-    exact functional derivative of that (approximate-for-open-shell) energy.
-
+    EXACT SPIN SCALING FOR DESCRIPTOR FEATURES. Each exchange channel is
+    evaluated at its OWN feature block ``features_sigma``, the block of the
+    symmetric doubled density ``diag(P_sigma, P_sigma)`` that the Oliver-Perdew
+    relation refers to; correlation is evaluated at ``features_tot``. Since the
+    blocks arrive as concrete arrays here (this is the fixed-density one-shot
+    path, whose features are frozen at the precompute density matrix), the
+    ``de/df . df/dP`` chain-rule term does not enter; the self-consistent path in
+    ``solver_manual`` differentiates each channel's ``P -> f_sigma(P)`` map and
+    adds it.
     """
     dm_pbe = mol_data["dm_pbe"]  # (2, nao, nao)
     ao_grid = mol_data["ao_grid"]
@@ -826,13 +857,13 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
     nabla_rho_tot = nabla_rho_a + nabla_rho_b
     sigma_tot = jnp.sum(nabla_rho_tot * nabla_rho_tot, axis=1)
 
-    # Exchange: per-spin, spin-scaled (part="x").
+    # Exchange: per-spin, spin-scaled (part="x"), each at its own channel block.
     vx_a = compute_vxc_nn(
-        model, 2.0 * rho_a, 4.0 * sigma_aa, features, ao_grid, grid_weights,
+        model, 2.0 * rho_a, 4.0 * sigma_aa, features_a, ao_grid, grid_weights,
         nabla_rho=2.0 * nabla_rho_a, ao_grad=ao_grid_deriv, part="x",
     )
     vx_b = compute_vxc_nn(
-        model, 2.0 * rho_b, 4.0 * sigma_bb, features, ao_grid, grid_weights,
+        model, 2.0 * rho_b, 4.0 * sigma_bb, features_b, ao_grid, grid_weights,
         nabla_rho=2.0 * nabla_rho_b, ao_grad=ao_grid_deriv, part="x",
     )
     # Correlation. P2-03: a spin-polarization-aware cnet makes V_c PER-SPIN
@@ -847,12 +878,12 @@ def _uks_spin_resolved_vxc(model, mol_data, features):
         )
     if model.cnet.use_spin_polarization:
         vc_a, vc_b = compute_vc_polarized_per_spin(
-            model, rho_a, rho_b, sigma_tot, features, ao_grid, grid_weights,
-            nabla_rho_tot, ao_grid_deriv,
+            model, rho_a, rho_b, sigma_tot, features_tot, ao_grid,
+            grid_weights, nabla_rho_tot, ao_grid_deriv,
         )
         return vx_a + vc_a, vx_b + vc_b
     vc = compute_vxc_nn(
-        model, rho_tot, sigma_tot, features, ao_grid, grid_weights,
+        model, rho_tot, sigma_tot, features_tot, ao_grid, grid_weights,
         nabla_rho=nabla_rho_tot, ao_grad=ao_grid_deriv, part="c",
     )
     return vx_a + vc, vx_b + vc
@@ -888,8 +919,16 @@ def oneshot_dm_prediction_fast(model, mol_data, solver_config=None) -> jnp.ndarr
         nocc_a = mol_data["nocc_a"]
         nocc_b = mol_data["nocc_b"]
 
-        # Spin-resolved V_xc^NN (spin-scaled approximation; see helper docstring).
-        vxc_nn_a, vxc_nn_b = _uks_spin_resolved_vxc(model, mol_data, features)
+        # Spin-resolved V_xc^NN: each exchange channel at its own doubled-density
+        # block, correlation at the total block.
+        vxc_nn_a, vxc_nn_b = _uks_spin_resolved_vxc(
+            model, mol_data,
+            assemble_descriptor_features(model.descriptors, mol_data,
+                                         spin_channel=0),
+            assemble_descriptor_features(model.descriptors, mol_data,
+                                         spin_channel=1),
+            features,
+        )
 
         # UKS: j_pbe has shape (2, n_ao, n_ao); J_total = J[dm_a] + J[dm_b]
         # enters both spin Fock matrices identically (Coulomb is spin-blind).

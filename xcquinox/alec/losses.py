@@ -404,8 +404,9 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
 
     Supports both RKS references (shape ``(n_ao, n_ao)``) and UKS references
     (shape ``(2, n_ao, n_ao)``). For UKS, the NN's spin-resolved V_xc is
-    constructed via :func:`_uks_spin_resolved_vxc` (spin-scaled approximation)
-    and the squared error is summed across both spin channels.
+    constructed via :func:`_uks_spin_resolved_vxc` with the per-channel feature
+    blocks of diag(P_sigma, P_sigma), and the squared error is summed across
+    both spin channels.
     """
     terms = []
     n_skipped = 0
@@ -420,8 +421,15 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
         features = assemble_descriptor_features(model.descriptors, mol_data[i])
 
         if vxc_ref_arr.ndim == 3:  # UKS: (2, n_ao, n_ao)
+            # Exchange channels take the block of their own doubled density
+            # diag(P_sigma, P_sigma); correlation takes the total block.
             vxc_nn_a, vxc_nn_b = _uks_spin_resolved_vxc(
-                model, mol_data[i], features
+                model, mol_data[i],
+                assemble_descriptor_features(model.descriptors, mol_data[i],
+                                             spin_channel=0),
+                assemble_descriptor_features(model.descriptors, mol_data[i],
+                                             spin_channel=1),
+                features,
             )
             err = jnp.sum((vxc_nn_a - vxc_ref_arr[0]) ** 2) \
                 + jnp.sum((vxc_nn_b - vxc_ref_arr[1]) ** 2)

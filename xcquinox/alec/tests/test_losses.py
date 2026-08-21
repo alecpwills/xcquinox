@@ -1032,7 +1032,11 @@ def test_vxc_term_uks_zero_when_nn_equals_ref():
     # Build the exact V_xc the NN would produce
     from xcquinox.alec.descriptors import assemble_descriptor_features
     features = assemble_descriptor_features(model.descriptors, md)
-    vxc_a, vxc_b = _uks_spin_resolved_vxc(model, md, features)
+    vxc_a, vxc_b = _uks_spin_resolved_vxc(
+        model, md,
+        assemble_descriptor_features(model.descriptors, md, spin_channel=0),
+        assemble_descriptor_features(model.descriptors, md, spin_channel=1),
+        features)
     md["vxc_ref"] = jnp.stack([vxc_a, vxc_b], axis=0)
 
     val = _vxc_term(model, [md], [0])
