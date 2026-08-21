@@ -15,11 +15,18 @@
 # the file loads with ``load_grid_config`` and fails ``validate_grid_semantics``
 # on the placeholder architecture, so an unedited copy cannot be submitted.
 #
-# Identity, fixed by the spec: def2-svp, grid level 1, the repository's cached
-# subset ledger (notebooks/checkpoints_step7/alpha_on/subset_index_log.json)
-# and its cached CCSD external references, which the renderer COPIES into the
-# work root -- ``external_refs.precompute_all`` writes a run log into its cache
-# directory on every call, and the repository copy is tracked.
+# Identity, fixed by the spec: def2-svp, grid level 1, the cached subset ledger
+# (notebooks/checkpoints_step7/alpha_on/subset_index_log.json) and the cached
+# CCSD external references, which the renderer COPIES into the work root. The
+# cache must never be the working copy: ``external_refs.precompute_all`` writes
+# a ``_run_log_<UTC>.json`` into its cache directory on every call and
+# ``run_oep_cascade`` may rewrite a species npz, so a run working in the cache
+# would edit the inputs of the next one.
+#
+# PREREQUISITE: both cached inputs are UNTRACKED -- .gitignore excludes
+# notebooks/checkpoints_step7/ -- so a fresh clone, a git worktree and the
+# cluster checkout carry neither of them. That directory has to be staged into
+# the tree, from a machine that holds it, before the matrix can run.
 # =============================================================================
 
 # One architecture, two grid cells: subset sizes 1 and 2 of the JSD ledger
@@ -86,8 +93,15 @@ pretrain:
 
 # SLURM fields are rendered but never submitted: the matrix runs `submit` in
 # its default dry-run to create the run directory and resolved config, then
-# invokes each stage module directly. No mail address is carried, because a
-# script this file renders is never queued.
+# invokes each stage module directly.
+#
+# mail_user and mail_type are deliberately BLANK. This is a recorded deviation
+# from the standing rule that every cluster job script carries the Stony Brook
+# address on BEGIN/END/FAIL: no script rendered from this file is ever queued,
+# so there is no submission, completion or failure to report, and a blank mail
+# block keeps a matrix config from being mistaken for a production one. A
+# shipped example carrying a real address would also mail that person from
+# anybody's copy of the repository.
 cluster:
   partition: ""
   time: "00:30:00"
@@ -120,8 +134,12 @@ use_polarized_correlation: true
 # stages.
 inline_eval: false
 defer_eval: false
-# The certificate's tolerances and the enforcement bypass are NOT configured
-# here: the certificate (SPEC 3.4 / 3.3) runs at the production identity and
-# records its own verdict, and the workflow matrix passes
-# XCQUINOX_FIDELITY_OVERRIDE_REASON in the environment because a 50-step
-# pretrain on two atoms cannot meet tol_AE = 1.0 kcal/mol by construction.
+# The certificate section is left OUT, which loads it at its binding defaults.
+# Tolerances and the enforcement bypass live in the YAML `fidelity` block
+# (grid_config.FidelityConfig): tol_AE = 1.0 kcal/mol and tol_atom = 1.0 mHa are
+# the binding values, a tolerance above the 2.0 / 2.0 ceiling requires a written
+# `override_reason`, and `enforce: false` -- which downgrades the on-node gates
+# to logging while the certificate still records its true verdict -- requires
+# that reason as well. There is no environment-variable bypass. Whether the tiny
+# identity's 50-step pretrain needs a recorded override is a decision for the
+# certificate stage, not for this template.

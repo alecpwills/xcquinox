@@ -133,8 +133,8 @@ certificate's table is rendered into the figure provenance footer.
 
 ### 3.4 Per-architecture workflow verification (before any YAML is rendered)
 
-For every architecture in `ARCHITECTURES` (30 entries; the figure layer's `ARCH_ORDER` renders
-25 of them -- the matrix exercises all 30, the figure layer is not one of its assertions):
+For every architecture in `ARCHITECTURES` (31 entries; the figure layer's `ARCH_ORDER` renders
+25 of them -- the matrix exercises all 31, the figure layer is not one of its assertions):
 datagen -> pretrain -> certificate -> preflight -> train (n_steps 3 on two cells, subset sizes
 1 and 2) -> eval, driven through the harness stage modules as plain Python (`cluster submit`
 in its default dry-run to create the run directory and resolved configuration, then
