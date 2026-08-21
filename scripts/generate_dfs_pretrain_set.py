@@ -16,8 +16,10 @@ Usage:
     python scripts/generate_dfs_pretrain_set.py [--traj PATH] [--out PATH]
 """
 import argparse
+import json
 import os
 import sys
+import tempfile
 
 # G2/97 trajectory indices, in the order the DFS notebook lists them.
 G2_97_INDICES = (2, 113, 25, 18, 11, 17, 114, 121, 101, 0, 20, 26, 29, 67,
@@ -50,6 +52,48 @@ def _composition(symbols):
     return [[s, counts[s]] for s in sorted(counts)]
 
 
+def _write_json_atomic(payload, path):
+    """Write ``payload`` as pretty JSON through mkstemp + os.replace.
+
+    A reader can never observe a half-written file. mkstemp creates at mode
+    0600, so the result is set to 0644: the data is read from a group-shared
+    project tree and an owner-only file would be unreadable to the rest of
+    the group.
+    """
+    out_dir = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-dfs-pretrain-", dir=out_dir)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp_name, path)
+        tmp_name = None
+    finally:
+        if tmp_name is not None and os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+    os.chmod(path, 0o644)
+
+
+def _check_name_matches_geometry(record):
+    """Reject a record whose name and geometry disagree.
+
+    The names and the trajectory indices are two parallel hand-written lists
+    and the composition is derived from the geometry the index selected, so a
+    swapped or shifted index produces a fully self-consistent record under
+    the wrong name. The formula the name spells out is the independent
+    statement, and it is checked before anything is written.
+    """
+    from xcquinox.alec.dfs_pretrain_set import formula_from_name
+    declared = formula_from_name(record["name"])
+    found = tuple(sorted((str(s), int(n))
+                         for s, n in record["atom_composition"]))
+    if declared != found:
+        raise ValueError(
+            f"record {record['name']!r} (g2_97 index "
+            f"{record['g2_97_index']}) has geometry {found}, but its name "
+            f"spells {declared}")
+
+
 def build(traj_path):
     from ase.io import read
     frames = read(traj_path, ":")
@@ -69,6 +113,8 @@ def build(traj_path):
             "atom_composition": _composition(symbols),
             "g2_97_index": int(idx),
         })
+    for record in atoms + molecules:
+        _check_name_matches_geometry(record)
     return {
         "source": {
             "protocol": "Dick and Fernandez-Serra, Phys. Rev. B 104, "
@@ -88,13 +134,14 @@ def main(argv=None):
     parser.add_argument("--traj", default=DEFAULT_TRAJ)
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
+    if not os.path.exists(args.traj):
+        parser.error(f"trajectory not found: {args.traj}")
     out = args.out
     if out is None:
         import xcquinox.alec
         out = os.path.join(os.path.dirname(os.path.abspath(
             xcquinox.alec.__file__)), "data", "dfs_pretrain_set.json")
     payload = build(args.traj)
-    from xcquinox.alec.cluster.materialize import _write_json_atomic
     _write_json_atomic(payload, out)
     sys.stdout.write(
         f"wrote {len(payload['atoms'])} atom(s) + "

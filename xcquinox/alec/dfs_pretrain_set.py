@@ -19,17 +19,51 @@ from __future__ import annotations
 
 import copy
 import json
-import os
+import re
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:                      # import cost stays out of the run path
+    from xcquinox.alec.config import MoleculeSpec
 
 LEVELS: tuple[str, ...] = ("gga", "mgga")
 # The meta-GGA variant of the DFS pretraining notebook omits these two.
 MGGA_EXCLUDED: tuple[str, ...] = ("H2", "N2")
 
-_DATA_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "data",
-    "dfs_pretrain_set.json")
+_DATA_DIR = Path(__file__).parent / "data"
+_DATA_PATH = _DATA_DIR / "dfs_pretrain_set.json"
 
 _CACHE: dict | None = None
+
+# One element symbol with an optional count: an upper-case letter, any
+# lower-case letters, then digits. Anchored matching of the whole name rejects
+# anything that is not a concatenated formula.
+_ELEMENT_TERM = re.compile(r"([A-Z][a-z]*)(\d*)")
+_FORMULA = re.compile(r"(?:[A-Z][a-z]*\d*)+\Z")
+
+
+def formula_from_name(name: str) -> tuple[tuple[str, int], ...]:
+    """Element counts implied by a species name written as a formula.
+
+    The set's names are concatenated element symbols with optional counts
+    ("CH4", "AlCl3", "SiCH6"), which is the only statement of what a record
+    is supposed to be that does not come from the geometry itself: a record's
+    composition is derived from the coordinates the trajectory index selected,
+    so name and composition disagree exactly when the index is wrong. Symbols
+    are read syntactically -- "CO" is carbon and oxygen, not cobalt, which is
+    the reading the set requires. Returns sorted (symbol, count) pairs, the
+    ``MoleculeSpec.atom_composition`` form. Raises ValueError on a name that
+    is not such a formula, or that carries a zero count.
+    """
+    if not isinstance(name, str) or not _FORMULA.match(name):
+        raise ValueError(f"not a chemical formula: {name!r}")
+    counts: dict[str, int] = {}
+    for symbol, digits in _ELEMENT_TERM.findall(name):
+        count = int(digits) if digits else 1
+        if count < 1:
+            raise ValueError(f"zero count in formula: {name!r}")
+        counts[symbol] = counts.get(symbol, 0) + count
+    return tuple(sorted(counts.items()))
 
 
 def _load() -> dict:
@@ -62,20 +96,25 @@ def dfs_pretrain_records(level: str = "gga") -> list[dict]:
 
 def dfs_pretrain_systems(level: str = "gga", *,
                          basis: str = "6-311++G(3df,2pd)",
-                         grid_level: int | None = 3) -> list:
+                         grid_level: int | None = 3) -> list["MoleculeSpec"]:
     """The set as :class:`~xcquinox.alec.config.MoleculeSpec` objects.
 
     ``basis`` / ``grid_level`` default to the production identity of the
     campaign (6-311++G(3df,2pd), grid level 3); pass a smaller pair for a
     local probe.
+
+    The composition is sorted here rather than trusted from the file:
+    MoleculeSpec is frozen and hashes every field, so an out-of-order
+    composition would produce a spec that compares unequal to an otherwise
+    identical one and misses in a jit cache keyed on it.
     """
     from xcquinox.alec.config import MoleculeSpec
     return [
         MoleculeSpec(
             name=r["name"], atom=r["atom"], basis=basis,
             charge=int(r["charge"]), spin=int(r["spin"]),
-            atom_composition=tuple((str(s), int(n))
-                                   for s, n in r["atom_composition"]),
+            atom_composition=tuple(sorted((str(s), int(n))
+                                          for s, n in r["atom_composition"])),
             grid_level=grid_level,
         )
         for r in dfs_pretrain_records(level)
