@@ -158,9 +158,10 @@ def test_metagga_per_channel_alpha_uses_the_doubled_ingredients():
     # single-orbital (iso-orbital) density: tau = tau_W and alpha vanishes
     # identically; what is stored is the cancellation residue of tau - tau_W
     # divided by tau_unif in the density tail. Measured max alpha_b between
-    # 8.0e-08 and 1.13e-07 over 12 processes (1.07e-07, reproducible to the
-    # bit, under single-thread BLAS), so the 1e-6 bound sits ~9x above that
-    # ceiling, while the alpha channel reaches 6.24; the bound therefore also
+    # 5.8e-08 and 2.05e-07 over multi-threaded processes (1.07e-07,
+    # reproducible to the bit, under single-thread BLAS), so the 1e-6 bound
+    # sits ~4.9x above that ceiling, while the alpha channel reaches 6.24;
+    # the bound therefore also
     # refuses a beta block built from the physical total density.
     assert float(np.max(np.asarray(md["metagga_features_b"]))) < 1e-6
     assert float(np.max(np.asarray(md["metagga_features_a"]))) > 1.0

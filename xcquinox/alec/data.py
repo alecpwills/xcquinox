@@ -1064,10 +1064,12 @@ def precompute_fixed_density_data(
             # matrix-linear blocks above take the doubled density matrix
             # directly. The contraction is kept unoptimized on purpose:
             # optimize=True routes it through a matmul whose different
-            # summation order moves rho_sigma by up to 1e-15 relative (more
-            # than half of the grid points), and alpha's tail amplification
+            # summation order moves rho_sigma by 1e-15 relative on roughly
+            # half of the grid points (47 percent on Li/grid 3, the beta tail
+            # reaching 3e-13 relative), and alpha's tail amplification
             # tau/tau_unif (up to 9e7 on Li's beta channel) turns that into
-            # O(1e-8) changes of the stored indicator.
+            # O(1e-7) changes of the stored indicator (measured maxima
+            # 1.6e-7 at grid level 1 and 2.7e-7 at grid level 3).
             rho_doubled = []
             sigma_doubled = []
             for s in (0, 1):
