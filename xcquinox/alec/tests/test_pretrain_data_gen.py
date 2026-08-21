@@ -123,8 +123,11 @@ def test_spin_channel_rows_reproduce_the_parent_open_shell_exchange_energy():
                        * (rho_a_gga[0] + rho_b_gga[0]) * eps))
     # The residual is the rho floor that drops the deep tail from the row set
     # plus the +-5 clip on the stored enhancement factor; both carry negligible
-    # exchange mass at this basis and grid.
-    assert abs(got - ref) < 1e-6, (got, ref)
+    # exchange mass at this basis and grid. Measured over six O draws (two with
+    # single-threaded BLAS, four at four threads): 2.56e-12 to 3.34e-12 Ha. The
+    # gate below sits ~300x above that floor, tight enough to reject a 1e-9
+    # relative error in the row weights, which moves the sum by 8.2e-09 Ha.
+    assert abs(got - ref) < 1e-9, (got, ref)
 
 
 def test_spin_channel_rows_match_the_dfs_zeroed_channel_recipe():
@@ -147,8 +150,13 @@ def test_spin_channel_rows_match_the_dfs_zeroed_channel_recipe():
     fx_dfs = np.clip(ex_ref / safe - 1.0, -5.0, 5.0)
     keep = 2.0 * rho_a_gga[0] > 1e-10
     n_a = int(keep.sum())
+    # The two evaluations are the same identity taken through different libxc
+    # calls, so the deviation is round-off on an O(1) enhancement factor:
+    # 1.11e-15 over four four-thread O draws, 1.55e-15 single-threaded. The
+    # gate sits ~600x above that, tight enough to reject a 1e-11 shift of the
+    # stored column.
     np.testing.assert_allclose(rows["Fx"][:n_a], fx_dfs[keep],
-                               rtol=0, atol=1e-9)
+                               rtol=0, atol=1e-12)
 
 
 def test_spin_channel_rows_skip_the_empty_channel_of_h():
@@ -219,6 +227,176 @@ def test_spin_channel_rows_rung35_block_is_the_channel_in_both_slots():
                                    rtol=0, atol=1e-14)
 
 
+def test_spin_channel_rows_sigma_is_the_doubled_gradient_invariant():
+    """``sigma`` is the gradient invariant of the DOUBLED density,
+    ``|grad(2 rho_sigma)|^2 = 4 |grad rho_sigma|^2``, not the physical channel's
+    ``|grad rho_sigma|^2``: the factor of four is what the exact spin-scaling
+    relation hands the enhancement factor alongside ``2 rho_sigma`` (Oliver and
+    Perdew, Phys. Rev. A 20, 397 (1979)).
+
+    Oracle: PySCF's ``eval_rho`` on the doubled density matrix ``2 P_sigma``,
+    whose density is that of ``diag(P_sigma, P_sigma)``. Scaling by two is exact
+    in binary, so the oracle, the closed form ``4 |grad rho_sigma|^2`` and the
+    stored column are the same floating-point number -- measured deviation 0.0
+    on both channels over six O draws. The comparison is held at 1e-15 relative,
+    a few ulp, against a halved column that would sit 5e-01 away.
+    """
+    from xcquinox.alec.pretrain_data_gen import spin_channel_exchange_rows
+    mol, mf, ao, dm_ab = _open_shell_scf()
+    rows = spin_channel_exchange_rows(mol, mf, ao, dm_ab, descriptors=False)
+    start = 0
+    for s in (0, 1):
+        rho_s = mf._numint.eval_rho(mol, ao, dm_ab[s], xctype="GGA", hermi=True)
+        rho_doubled = mf._numint.eval_rho(mol, ao, 2.0 * np.asarray(dm_ab[s]),
+                                          xctype="GGA", hermi=True)
+        sigma_ref = (rho_doubled[1:4] ** 2).sum(axis=0)
+        np.testing.assert_allclose(sigma_ref,
+                                   4.0 * (rho_s[1:4] ** 2).sum(axis=0),
+                                   rtol=1e-15, atol=0)
+        keep = 2.0 * rho_s[0] > 1e-10
+        n_s = int(keep.sum())
+        np.testing.assert_allclose(rows["sigma"][start:start + n_s],
+                                   sigma_ref[keep], rtol=1e-15, atol=0)
+        start += n_s
+    assert start == rows["sigma"].shape[0]
+
+
+def test_spin_channel_rows_fx_scan_is_scan_at_the_doubled_inputs():
+    """``Fx_scan`` -- the meta-GGA pretraining target -- is SCAN's
+    spin-unpolarized enhancement at the DOUBLED inputs
+    ``(2 rho_sigma, 4 sigma_sigma_sigma, 2 tau_sigma)`` over
+    ``eps_x^LDA(2 rho_sigma)``.
+
+    Oracle: libxc reached by a second, independent path. The meta-GGA row comes
+    from PySCF's ``eval_rho`` on the doubled density matrix, so ``tau`` does NOT
+    come from the ``metagga.compute_tau_from_dm`` the row builder uses, and the
+    denominator comes from libxc's own ``LDA_X`` rather than the analytic
+    coefficient (the two agree exactly here, 0.0 relative). Worst measured
+    deviation 3.4e-13 over six O draws, set by the 2.7e-12 to 4.5e-12 spread
+    between the two tau paths; the gate keeps ~300x headroom. Evaluating SCAN
+    at the physical channel density instead moves this column by 0.276 at worst
+    and 0.221 on average, which is the error the pin exists to catch.
+    """
+    from xcquinox.alec.pretrain_data_gen import spin_channel_exchange_rows
+    mol, mf, ao, dm_ab = _open_shell_scf()
+    rows = spin_channel_exchange_rows(mol, mf, ao, dm_ab, descriptors=False)
+    start = 0
+    for s in (0, 1):
+        rho_d = mf._numint.eval_rho(mol, ao, 2.0 * np.asarray(dm_ab[s]),
+                                    xctype="MGGA", hermi=True, with_lapl=False)
+        mgga_row = np.vstack([rho_d[:4], np.zeros_like(rho_d[0]), rho_d[4]])
+        ex_scan = np.asarray(mf._numint.eval_xc("SCAN,", mgga_row, spin=0)[0])
+        ex_lda = np.asarray(mf._numint.eval_xc("LDA_X,", rho_d[0], spin=0)[0])
+        keep = rho_d[0] > 1e-10
+        n_s = int(keep.sum())
+        np.testing.assert_allclose(rows["Fx_scan"][start:start + n_s],
+                                   (ex_scan / ex_lda - 1.0)[keep],
+                                   rtol=0, atol=1e-10)
+        start += n_s
+    assert start == rows["Fx_scan"].shape[0]
+    # The comparison above is against the UNCLIPPED ratio, which is legitimate
+    # only because no row reaches the +-5 clip: max |Fx_scan| = 0.909 on O.
+    assert float(np.max(np.abs(rows["Fx_scan"]))) < 5.0
+
+
+def test_spin_channel_rows_cusp_block_is_the_geometry_only_total_density_block():
+    """``cusp`` is a function of the grid coordinates and the nuclei alone, so
+    doubling a spin channel cannot change it: each channel's block must be the
+    total-density path's block at the points that channel keeps, in the
+    production log-compressed convention (``_atom_columns`` builds its cusp
+    column from the same ``features.compute_cusp_descriptor`` call with
+    ``log_transform=cusp_log_transform``, default True).
+
+    Oracle: that descriptor on the FULL grid, sliced by each channel's own
+    retention mask. Measured deviation 0.0 over six O draws; the 1e-15 gate is
+    a few ulp on features bounded in [-1, 1], while running the descriptor with
+    the flag flipped moves them by 0.534.
+    """
+    from xcquinox.alec.pretrain_data_gen import spin_channel_exchange_rows
+    from xcquinox.features import compute_cusp_descriptor
+    mol, mf, ao, dm_ab = _open_shell_scf()
+    rows = spin_channel_exchange_rows(mol, mf, ao, dm_ab, descriptors=True)
+    cusp_grid = np.asarray(compute_cusp_descriptor(
+        jnp.asarray(mf.grids.coords), jnp.asarray(mol.atom_coords()),
+        jnp.asarray(mol.atom_charges()), log_transform=True))
+    spans, start = [], 0
+    for s in (0, 1):
+        rho_s = mf._numint.eval_rho(mol, ao, dm_ab[s], xctype="GGA", hermi=True)
+        keep = 2.0 * rho_s[0] > 1e-10
+        n_s = int(keep.sum())
+        np.testing.assert_allclose(rows["cusp"][start:start + n_s],
+                                   cusp_grid[keep], rtol=0, atol=1e-15)
+        spans.append((keep, start, n_s))
+        start += n_s
+    assert start == rows["cusp"].shape[0]
+    # ... and, being geometry-only, the two channels carry identical values at
+    # every point both of them keep.
+    (keep_a, start_a, n_a), (keep_b, start_b, n_b) = spans
+    both = keep_a & keep_b
+    assert int(both.sum()) > 0
+    np.testing.assert_array_equal(
+        rows["cusp"][start_a:start_a + n_a][both[keep_a]],
+        rows["cusp"][start_b:start_b + n_b][both[keep_b]])
+
+
+def test_spin_channel_rows_dm_block_is_the_doubled_density_matrix():
+    """``dm`` is the density-matrix feature block of ``diag(P_sigma, P_sigma)``
+    tiled down the channel's rows -- not the block of the physical spin density
+    matrix, and not the block of the total one.
+
+    Oracle: ``features.compute_dm_features_array`` on
+    ``descriptors.doubled_spin_dm(P, sigma)``; measured deviation 0.0 over six O
+    draws. The pin discriminates because the three candidate matrices give
+    measurably different blocks on O: the doubled matrix takes the per-spin
+    idempotency branch and returns 5.7e-31 there, while the physical spin matrix
+    is read as a restricted one and returns 7.7e-02; the total matrix agrees on
+    idempotency but differs in the off-diagonal norm (0.2523 against 0.2454 for
+    the alpha channel). The smallest of those separations, 6.9e-03, sets the
+    1e-3 floor asserted below; the alpha and beta blocks themselves differ by
+    8.0e-02.
+    """
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    from xcquinox.alec.pretrain_data_gen import spin_channel_exchange_rows
+    from xcquinox.features import compute_dm_features_array
+    mol, mf, ao, dm_ab = _open_shell_scf()
+    rows = spin_channel_exchange_rows(mol, mf, ao, dm_ab, descriptors=True)
+    s_matrix = jnp.asarray(mol.intor("int1e_ovlp"))
+    blocks, start = [], 0
+    for s in (0, 1):
+        rho_s = mf._numint.eval_rho(mol, ao, dm_ab[s], xctype="GGA", hermi=True)
+        n_s = int(np.sum(2.0 * rho_s[0] > 1e-10))
+        ref = np.asarray(compute_dm_features_array(
+            doubled_spin_dm(jnp.asarray(dm_ab), s), s_matrix))
+        got = rows["dm"][start:start + n_s]
+        # one global feature vector per channel, tiled over that channel's rows
+        np.testing.assert_array_equal(got, np.tile(got[0], (n_s, 1)))
+        np.testing.assert_allclose(got[0], ref, rtol=1e-15, atol=0)
+        # the two matrices the block could otherwise have come from are not it
+        for other in (compute_dm_features_array(jnp.asarray(dm_ab[s]),
+                                                s_matrix),
+                      compute_dm_features_array(jnp.asarray(dm_ab), s_matrix)):
+            assert float(np.max(np.abs(np.asarray(other) - ref))) > 1e-3
+        blocks.append(ref)
+        start += n_s
+    assert start == rows["dm"].shape[0]
+    assert float(np.max(np.abs(blocks[0] - blocks[1]))) > 1e-3
+
+
+def test_spin_channel_rows_refuse_a_restricted_density_matrix():
+    """A restricted ``(nao, nao)`` density matrix carries no spin resolution, so
+    there is no channel to double: it is refused (the guard lives in
+    ``descriptors.doubled_spin_dm``) rather than read as though its two leading
+    rows were the two spin channels, or silently halved into both.
+    """
+    from xcquinox.alec.pretrain_data_gen import spin_channel_exchange_rows
+    mol, mf, ao, dm_ab = _open_shell_scf(symbol="H", spin=1)
+    dm_restricted = np.asarray(dm_ab[0] + dm_ab[1])
+    assert dm_restricted.ndim == 2
+    with pytest.raises(ValueError, match="spin-resolved"):
+        spin_channel_exchange_rows(mol, mf, ao, dm_restricted,
+                                   descriptors=False)
+
+
 def test_atom_columns_default_footing_is_unchanged():
     from xcquinox.alec.pretrain_data_gen import _atom_columns
     cols = _atom_columns("O", 2, "def2-svp", 1, polarized=True,
@@ -230,14 +408,23 @@ def _shared_scf_dft_module(monkeypatch, module):
     """Point ``module`` at a pyscf.dft stand-in that hands every call the SAME
     converged UKS object, so two column builds share one density.
 
-    The O-atom UKS solution has a degenerate 2p hole whose orientation within
-    the p subspace is fixed by rounding noise rather than by the energy: two
-    independent SCFs of the same atom under the same settings land on
-    ``e_tot`` values 5.9e-08 Ha apart but on density matrices differing by
-    3.5e-01, which propagates to 3.4e-01 in rho and 5.5e+03 in sigma at
-    individual grid points. That scatter is a property of the atom, not of the
-    row footing, and it swamps an exact column comparison. With one SCF behind
-    both builds the comparison is exact.
+    Two independent SCFs of the same atom under identical settings are not
+    bit-reproducible for ANY of the pretraining atoms once BLAS runs
+    multi-threaded, since the reduction order of a threaded dot product varies
+    between calls and the converged density with it. At four threads the
+    difference stays at rounding level in the density for H, He and N (max
+    ``|dP|`` of order 1e-19 to 1e-15) but amplifies through the ``tau - tau_W``
+    cancellation in alpha to order 1e-10 in the ``metagga`` column, and to order
+    1e-09 in ``sigma`` on N. On O it is not a rounding effect at all: the 2p
+    hole is orbitally degenerate and rounding noise -- not the energy -- picks
+    its orientation within the p subspace, so two runs land on the same energy
+    solution (order 1e-07 Ha apart) with density matrices order 1e-01 apart,
+    which propagates to order 1e-01 in rho and 1e+03 in sigma at individual grid
+    points. Every figure here is order-of-magnitude and moves from draw to draw;
+    the same comparison with BLAS pinned to one thread reproduces exactly. The
+    scatter is a property of the atoms and of threaded linear algebra, not of
+    the row footing, and it swamps an exact column comparison. With one SCF
+    behind both builds the comparison is exact.
     """
     from pyscf import dft as pyscf_dft
     converged = {}
