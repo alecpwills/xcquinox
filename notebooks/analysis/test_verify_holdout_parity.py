@@ -3,6 +3,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 _HERE = Path(__file__).resolve().parent
 
 
@@ -58,3 +60,40 @@ def test_one_side_finite_is_a_mismatch_not_parity():
     b = [dict(_R, de_nn_kcalmol=None)]
     rep = vp.compare_spec(a, b)
     assert rep["verdict"] == "value-mismatch"
+
+
+class _StubFig:
+    """Stands in for the figure module's reconstruction loader, so the parity
+    probe's OWN read of the cluster ``per_reaction.json`` is what is tested."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def collect_holdout_reaction_rows(self, run_dir, eval_subdir="eval_holdout"):
+        return list(self._rows)
+
+
+def test_verify_run_refuses_a_sliced_channel(tmp_path):
+    """The probe compares a channel's cluster file against a reconstruction;
+    on a sliced channel both legs describe a handful of species, and a
+    "parity" verdict would read as evidence about the pool."""
+    import json
+
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+
+    run = tmp_path / "run_20260821T000000Z"
+    chan = run / "checkpoints" / "spec_0000" / "eval_holdout"
+    chan.mkdir(parents=True)
+    (chan / "per_reaction.json").write_text(json.dumps([dict(_R)]))
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2", "o", "oh", "n2o", "n2ohts"],
+         "n_species": 6, "n_reactions": 1,
+         "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"}))
+    stub = _StubFig([dict(_R, idx=0)])
+    with pytest.raises(SlicedChannelError) as exc:
+        vp.verify_run(run, channels=["eval_holdout"], _fig=stub)
+    msg = str(exc.value)
+    assert "run_20260821T000000Z" in msg
+    assert "spec_0000" in msg
+    assert "eval_holdout" in msg
+    assert "'n2ohts'" in msg

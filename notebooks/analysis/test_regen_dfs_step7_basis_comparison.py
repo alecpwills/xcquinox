@@ -69,3 +69,37 @@ def test_main_refuses_and_reports_when_missing(tmp_path: Path, capsys) -> None:
     assert rc == 1
     err = capsys.readouterr().err
     assert "NOT generated" in err and "tzvpd_grid2_df" in err
+
+
+def _mark_sliced(root: Path, basis: str,
+                 stamp: str = "run_20260611T000000Z") -> None:
+    """Write the pre-eval slice marker into that basis run's only channel."""
+    import json
+    chan = (root / "dfs_step7" / basis / "runs" / stamp / "checkpoints"
+            / "spec_0010" / "eval_holdout")
+    chan.mkdir(parents=True, exist_ok=True)
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2", "o", "oh", "n2o", "n2ohts"],
+         "n_species": 6, "n_reactions": 1,
+         "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"}))
+
+
+def test_basis_has_eval_refuses_a_sliced_channel(tmp_path: Path) -> None:
+    """The presence guard decides whether the whole comparison suite is
+    rendered; a six-species workflow slice is not held-out coverage of the
+    pool, and reading it as such would put slice MAEs on the basis figures."""
+    import pytest
+
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+
+    _add_basis(tmp_path, "svp_grid2")
+    _mark_sliced(tmp_path, "svp_grid2")
+    with pytest.raises(SlicedChannelError) as exc:
+        regen.basis_has_eval(tmp_path, "svp_grid2")
+    msg = str(exc.value)
+    assert "run_20260611T000000Z" in msg
+    assert "spec_0010" in msg
+    assert "eval_holdout" in msg
+    assert "'n2ohts'" in msg
+    with pytest.raises(SlicedChannelError):
+        regen.missing_bases(tmp_path)

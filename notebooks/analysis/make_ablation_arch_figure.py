@@ -248,42 +248,24 @@ def _val_reaction_identities(run_dir: Path) -> set:
 def assert_channel_not_sliced(spec_dir: Path, eval_subdir: str) -> None:
     """Refuse a held-out channel evaluated on a species slice.
 
-    A slice covers a handful of species named for a workflow test
-    (``XCQUINOX_HELDOUT_SPECIES_SLICE``, SPEC_pretrain_fidelity_program.md
-    3.4), not the 216-reaction BH76 + W4-11 pool the architectures are compared
-    on; its MAE is a different quantity and averaging one into a figure would
-    redefine the metric silently. ``cluster/_eval_one_spec`` marks a sliced
-    channel twice -- ``sliced_eval.json`` written before the energies and a
-    ``species_slice`` entry in ``eval_metadata.json`` written after them -- and
-    either mark is fatal here, so an interrupted sliced evaluation is caught as
-    surely as a complete one. An unparseable stamp is not a slice signal and is
-    left to the readers below.
+    Delegates to :func:`xcquinox.alec.eval_holdout.assert_channel_not_sliced`,
+    the library home of the predicate: a slice covers a handful of species
+    named for a workflow test (``XCQUINOX_HELDOUT_SPECIES_SLICE``,
+    SPEC_pretrain_fidelity_program.md 3.4) rather than the 216-reaction
+    BH76 + W4-11 pool the architectures are compared on, so its MAE is a
+    different quantity and averaging one into a figure would redefine the
+    metric silently. Every reader of a held-out channel -- this suite, the
+    merge / parity / re-eval drivers, the diagnosis scripts -- honours the
+    same two on-disk marks through that one implementation, and the two
+    loaders below call this before their first read of a channel.
+
+    The import is deferred to call time: this directory is loaded by path
+    rather than as a package, and imports the training package lazily
+    throughout. Raises ``eval_holdout.SlicedChannelError``, a
+    ``RuntimeError``.
     """
-    channel = spec_dir / eval_subdir
-    marker = channel / "sliced_eval.json"
-    if marker.is_file():
-        raise RuntimeError(
-            f"{marker} marks {spec_dir.name}/{eval_subdir} as a SLICED "
-            "held-out channel (a workflow-verification slice of the pool). "
-            "The figure layer reports full-pool channels only; drop the run or "
-            "re-evaluate the channel without "
-            "XCQUINOX_HELDOUT_SPECIES_SLICE."
-        )
-    stamp = channel / "eval_metadata.json"
-    if not stamp.is_file():
-        return
-    try:
-        with stamp.open() as f:
-            payload = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return
-    if payload.get("species_slice"):
-        raise RuntimeError(
-            f"{stamp} records species_slice={payload['species_slice']!r} for "
-            f"{spec_dir.name}/{eval_subdir}: a SLICED held-out channel, not "
-            "the full BH76 + W4-11 pool. The figure layer reports full-pool "
-            "channels only."
-        )
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced as _impl
+    _impl(spec_dir, eval_subdir)
 
 
 def collect_holdout_reaction_rows(run_dir: Path,

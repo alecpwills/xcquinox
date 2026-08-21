@@ -27,7 +27,18 @@ from typing import List, Optional, Sequence
 
 def spec_status(checkpoint_dir: str) -> str:
     """``pending`` (no final checkpoint) | ``done`` (channel written) |
-    ``ready`` (completed, channel missing)."""
+    ``ready`` (completed, channel missing).
+
+    A cold-start channel evaluated on a species slice is neither: reported
+    ``done`` it would stand as this spec's trajectory over a handful of
+    workflow-test species, and reported ``ready`` the retro pass would write
+    pool rows beside a marker saying otherwise. It is refused before the
+    channel is inspected (``eval_holdout.SlicedChannelError``). Imported
+    here, as everything else in this module is, so ``python -m`` startup
+    does not pull the training package in.
+    """
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+    assert_channel_not_sliced(checkpoint_dir, "eval_holdout_coldstart")
     if not os.path.isfile(os.path.join(checkpoint_dir, "model.eqx")):
         return "pending"
     if os.path.isfile(os.path.join(

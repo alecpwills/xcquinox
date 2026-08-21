@@ -146,8 +146,15 @@ def refinalize_spec(spec_dir: Path,
     ``{spec, channel, status, n_old, n_new}`` with status ``rewritten``,
     ``unchanged``, ``would-rewrite`` (dry-run), or ``skipped-<reason>``."""
     from xcquinox.alec.eval_holdout import (_finalize_holdout_outputs,
+                                            assert_channel_not_sliced,
                                             trained_reaction_exclusion)
     spec_dir = Path(spec_dir)
+    # Every channel is checked before the first read and long before the
+    # in-place rewrite: this stage re-selects a test slice from the FULL
+    # pool, so a sliced channel would be handed full-pool-shaped artifacts
+    # over a handful of species' energies while its marker says otherwise.
+    for ch in channels:
+        assert_channel_not_sliced(spec_dir, ch)
     meta = _load_json(spec_dir / "train_metadata.json")
     if meta is None:
         # Only worth a warning when there is something to refinalize: a

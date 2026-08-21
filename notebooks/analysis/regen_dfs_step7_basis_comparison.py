@@ -22,6 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+
 DOMAIN = "dfs_step7"
 BASES = ("svp_grid2", "tzvpd_grid2_df")
 _DEFAULT_RESULTS_ROOT = "~/Documents/Research/xcquinox-results/runs"
@@ -37,7 +39,15 @@ def basis_has_eval(results_root: Path, basis: str) -> bool:
     for run_dir in sorted(runs.glob("run_*"), reverse=True):
         if not run_dir.is_dir():
             continue
-        if any((run_dir / "checkpoints").glob("spec_*/eval_holdout/per_reaction.json")):
+        # Every spec is checked before the verdict, not just up to the first
+        # hit: a six-species workflow slice is not held-out coverage of the
+        # pool, and this predicate is what releases the figure suite.
+        found = False
+        for sd in sorted((run_dir / "checkpoints").glob("spec_*")):
+            assert_channel_not_sliced(sd, "eval_holdout")
+            if (sd / "eval_holdout" / "per_reaction.json").is_file():
+                found = True
+        if found:
             return True
     return False
 

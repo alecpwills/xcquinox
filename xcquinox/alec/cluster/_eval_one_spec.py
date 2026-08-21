@@ -402,6 +402,7 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         full_specs, full_rxns = load_full_held_out_pools(
             basis=_hb, grid_level=_hg,
         )
+        n_pool = len(full_rxns)
         full_specs, full_rxns, _slice_names = _apply_species_slice(
             idx, full_specs, full_rxns, holdout_dir)
 
@@ -417,6 +418,25 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                       f"({len(full_rxns)}/{n_before} reactions; val slice "
                       f"excluded, validate_every="
                       f"{getattr(training_spec, 'validate_every', 0)})")
+
+        # An empty reaction set has no MAE. The filter above runs AFTER the
+        # species slice and can take everything the slice left (a slice
+        # closing few reactions, all of them recorded in the val slice), so
+        # the emptiness is checked here, before any energy is computed, and
+        # the channel is failed rather than stamped over an average of
+        # nothing. A pool that arrived empty is a different fault and is left
+        # to the loader.
+        if n_pool and not full_rxns:
+            _slice_desc = (", ".join(_slice_names) if _slice_names
+                           else "no slice")
+            raise RuntimeError(
+                f"held-out channel {holdout_subdir} for spec {idx} would "
+                f"average NO reactions: the {n_pool}-reaction pool reduced "
+                f"to {n_before} under the species slice ({_slice_desc}) and "
+                f"to 0 under the validation-complement filter "
+                f"(validate_every="
+                f"{getattr(training_spec, 'validate_every', 0)}). An empty "
+                "reaction set has no MAE.")
 
         # Parallelize the ~200-molecule held-out loop across the node's CPUs by
         # default (queue-agnostic auto-detect), with adaptive degradation to

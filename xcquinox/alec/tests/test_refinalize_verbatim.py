@@ -232,3 +232,48 @@ def test_channels_include_coldstart():
     """The verbatim-rule refinalizer must reach the cold-start channel too,
     or its rows silently keep a stale hold-out rule forever."""
     assert "eval_holdout_coldstart" in rv.CHANNELS
+
+
+def test_refinalize_refuses_a_sliced_channel(tmp_path):
+    """The refinalize stage re-selects a channel's test slice from the FULL
+    pool. On a sliced channel it would write full-pool-shaped artifacts over
+    a handful of species' energies -- and the marker beside them would still
+    say the channel is a slice."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    run = _mk_run(tmp_path)
+    sd = run / "checkpoints" / "spec_0000" / "eval_holdout"
+    (sd / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2", "o", "oh", "n2o", "n2ohts"],
+         "n_species": 6, "n_reactions": 1,
+         "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"}))
+    before = (sd / "per_reaction.json").read_text()
+    with pytest.raises(SlicedChannelError) as exc:
+        rv.refinalize_run(run, channels=("eval_holdout",),
+                          _pool=(_POOL_SPECS, _POOL_RXNS))
+    msg = str(exc.value)
+    assert "run_x" in msg
+    assert "spec_0000" in msg
+    assert "eval_holdout" in msg
+    assert "'n2ohts'" in msg
+    # nothing rewritten, no backup taken
+    assert (sd / "per_reaction.json").read_text() == before
+    assert not (sd / "per_reaction.pre_verbatim.json").exists()
+    assert (sd / "test_set.csv").read_text() == "old\n"
+
+
+def test_refinalize_refuses_a_sliced_channel_it_would_only_have_skipped(
+        tmp_path):
+    """The guard precedes every read, including the channel-existence probe
+    behind the missing-metadata warning: an interrupted sliced evaluation has
+    the marker and no energies at all."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    run = _mk_run(tmp_path)
+    sd = run / "checkpoints" / "spec_0000" / "eval_holdout"
+    (sd / "per_molecule.json").unlink()
+    (sd / "per_reaction.json").unlink()
+    (run / "checkpoints" / "spec_0000" / "train_metadata.json").unlink()
+    (sd / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2"], "n_species": 2, "n_reactions": 1}))
+    with pytest.raises(SlicedChannelError):
+        rv.refinalize_run(run, channels=("eval_holdout",),
+                          _pool=(_POOL_SPECS, _POOL_RXNS))

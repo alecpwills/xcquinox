@@ -23,6 +23,8 @@ from pathlib import Path
 
 import numpy as np
 
+from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+
 # The effective per-channel weights of the per-molecule loop
 # (train._DEFAULT_CHANNEL_WEIGHTS); see notebooks/analysis/LOSS_PRIMER.md.
 CHANNEL_WEIGHTS = {"loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0,
@@ -203,9 +205,19 @@ def insample_density(run: Path, specs=("spec_0006",)) -> None:
                   f"{pbe:11.4e} {nn / pbe:7.3f}{flag}")
 
 
+HELDOUT_CHANNELS = ("eval_holdout", "eval_holdout_best",
+                    "eval_holdout_val_best")
+
+
 def heldout_summary(run: Path) -> None:
     """Held-out density: contamination check and checkpoint comparison."""
     print("\n[5] Held-out density")
+    # Every channel this function pools is checked before the first read: a
+    # species slice covers a handful of species for a workflow test, so its
+    # ratios are not the pool's and must not enter the medians below.
+    for d in sorted((run / "checkpoints").glob("spec_*")):
+        for sub in HELDOUT_CHANNELS:
+            assert_channel_not_sliced(d, sub)
     pbe_all: dict[str, list] = {}
     for d in sorted((run / "checkpoints").glob("spec_*")):
         p = d / "eval_holdout_val_best" / "per_molecule.json"
@@ -291,6 +303,9 @@ def outcome_correlates(run: Path) -> None:
     cells = {f"spec_{s['index']:04d}": s["cell"] for s in manifest["specs"]}
     rows = []
     for d in sorted((run / "checkpoints").glob("spec_*")):
+        # Both legs of the correlate below are held-out quantities; on a
+        # sliced channel both describe a handful of species.
+        assert_channel_not_sliced(d, "eval_holdout")
         pm = d / "eval_holdout" / "per_molecule.json"
         pr = d / "eval_holdout" / "per_reaction.json"
         tm = d / "train_metadata.json"
@@ -333,6 +348,16 @@ def outcome_correlates(run: Path) -> None:
     cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
     sx = sum((x - mx) ** 2 for x in xs) ** 0.5
     sy = sum((y - my) ** 2 for y in ys) ** 0.5
+    # r = cov / (sx * sy) is undefined when either sample has zero variance
+    # (one evaluated spec, or several with identical ratios); the table above
+    # is still worth having, so the coefficient is reported as undefined.
+    if sx == 0.0 or sy == 0.0:
+        print(f"    Pearson r(energy ratio, density ratio) over {n} specs = "
+              "undefined (zero spread on "
+              + ("both axes" if sx == 0.0 and sy == 0.0
+                 else "the energy axis" if sx == 0.0 else "the density axis")
+              + ")")
+        return
     print(f"    Pearson r(energy ratio, density ratio) over {n} specs = "
           f"{cov / (sx * sy):.3f}   "
           "(negative would mean better energies cost densities)")

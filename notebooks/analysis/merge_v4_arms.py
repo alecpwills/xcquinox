@@ -32,6 +32,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+
 # v5 era (2026-08-14): the retired v4 mgga arms (PBE-seeded, cancelled
 # mid-array) are EXCLUDED; the roster is the still-valid GGA/rung-3.5 arm
 # plus the two SCAN-seeded v5 arms. Per-arch seed provenance is VALIDATED
@@ -178,6 +180,11 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
         _validate_arm_seed_policy(
             run, {(e.get("cell") or {}).get("arch") for e in entries.values()})
         for sd in spec_dirs:
+            # A workflow-verification slice covers a handful of species, not
+            # the held-out pool; merged into the view it would average into a
+            # cell as though it were a full-pool eval. Refused before the
+            # channel is counted or linked (see eval_holdout, spec 3.4).
+            assert_channel_not_sliced(sd, "eval_holdout")
             orig_idx = int(sd.name.split("_", 1)[1])
             entry = entries.get(orig_idx, {})
             cell = entry.get("cell") or {}

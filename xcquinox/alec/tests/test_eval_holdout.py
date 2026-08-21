@@ -1057,3 +1057,168 @@ def test_coldstart_solver_config_rejects_non_full():
     sc = SolverConfig(mode=SolverMode.ONESHOT, max_cycles=0)
     with pytest.raises(ValueError):
         coldstart_solver_config(sc)
+
+
+# ---------------------------------------------------------------------------
+# assert_channel_not_sliced -- a sliced held-out channel is not a pool channel
+# ---------------------------------------------------------------------------
+
+def _slice_marked_channel(tmp_path, spec="spec_0000", chan="eval_holdout"):
+    """``(run_dir, spec_dir, channel_dir)`` in the canonical pull layout."""
+    run = tmp_path / "run_20260821T000000Z"
+    spec_dir = run / "checkpoints" / spec
+    channel = spec_dir / chan
+    channel.mkdir(parents=True)
+    return run, spec_dir, channel
+
+
+def test_sliced_channel_error_is_a_runtime_error():
+    """Callers catch the refusal by type; the pre-existing figure-suite tests
+    catch ``RuntimeError``, so the subclass relation is part of the contract."""
+    assert issubclass(eh.SlicedChannelError, RuntimeError)
+
+
+def test_assert_channel_not_sliced_passes_an_absent_channel_directory(tmp_path):
+    """Specs whose held-out eval never ran carry no channel at all."""
+    spec_dir = tmp_path / "run" / "checkpoints" / "spec_0000"
+    spec_dir.mkdir(parents=True)
+    eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_assert_channel_not_sliced_passes_an_unmarked_channel(tmp_path):
+    """Every pull predating the slice mechanism has neither mark."""
+    _run, spec_dir, _chan = _slice_marked_channel(tmp_path)
+    eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_assert_channel_not_sliced_passes_a_full_pool_stamp(tmp_path):
+    """``species_slice: null`` is what a full-pool evaluation writes."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": None}))
+    eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_assert_channel_not_sliced_passes_an_unparseable_stamp(tmp_path):
+    """An unreadable stamp is not a slice signal; the readers below already
+    tolerate malformed JSON and must keep deciding for themselves."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "eval_metadata.json").write_text("{not json")
+    eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+@pytest.mark.parametrize("payload", ['["h", "h2"]', '"h,h2"', "3"])
+def test_assert_channel_not_sliced_passes_a_non_object_stamp(tmp_path,
+                                                             payload):
+    """Valid JSON that is not an object carries no ``species_slice`` key, so
+    it is not a slice signal either -- and must not abort with an
+    ``AttributeError`` from a mapping lookup on a list or a string."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "eval_metadata.json").write_text(payload)
+    eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_assert_channel_not_sliced_refuses_the_pre_eval_marker(tmp_path):
+    """The marker is written before any energy, so an interrupted sliced
+    evaluation is refused as surely as a complete one."""
+    run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2"], "n_species": 2, "n_reactions": 1,
+         "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"}))
+    with pytest.raises(eh.SlicedChannelError) as exc:
+        eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+    msg = str(exc.value)
+    assert str(run) in msg                      # run directory
+    assert "spec_0000" in msg                   # spec
+    assert "eval_holdout" in msg                # channel
+    assert "'h', 'h2'" in msg                   # the slice itself
+    assert "sliced_eval.json" in msg            # which mark fired
+    assert "XCQUINOX_HELDOUT_SPECIES_SLICE" in msg
+    assert "BH76 + W4-11" in msg                # why it is not a pool number
+
+
+def test_assert_channel_not_sliced_refuses_a_sliced_stamp(tmp_path):
+    run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": ["h", "h2"],
+         "n_species": 2, "n_reactions": 1}))
+    with pytest.raises(eh.SlicedChannelError) as exc:
+        eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+    msg = str(exc.value)
+    assert str(run) in msg
+    assert "spec_0000" in msg
+    assert "eval_holdout" in msg
+    assert "'h', 'h2'" in msg
+    assert "eval_metadata.json" in msg
+    assert "XCQUINOX_HELDOUT_SPECIES_SLICE" in msg
+    assert "BH76 + W4-11" in msg
+
+
+def test_assert_channel_not_sliced_names_the_slice_when_both_marks_are_present(
+        tmp_path):
+    """Both marks present: the marker decides, and the slice is still named."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["n2o", "n2ohts"], "n_species": 2,
+         "n_reactions": 1}))
+    (chan / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": ["n2o", "n2ohts"]}))
+    with pytest.raises(eh.SlicedChannelError) as exc:
+        eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+    assert "'n2o', 'n2ohts'" in str(exc.value)
+
+
+def test_assert_channel_not_sliced_names_the_slice_of_a_stale_marker(tmp_path):
+    """A stale marker beside a full-pool stamp -- an earlier sliced pass whose
+    channel was later re-evaluated in place. The marker still decides, and the
+    slice it names is what the message must report."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["oh", "o"], "n_species": 2, "n_reactions": 1}))
+    (chan / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": None}))
+    with pytest.raises(eh.SlicedChannelError) as exc:
+        eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+    msg = str(exc.value)
+    assert "'oh', 'o'" in msg
+    assert "sliced_eval.json" in msg
+
+
+@pytest.mark.parametrize("payload", ["{not json", '["h"]', "{}"])
+def test_assert_channel_not_sliced_reports_an_unreadable_marker_slice_as_unknown(
+        tmp_path, payload):
+    """The marker's own presence is the signal; when its contents cannot be
+    read the refusal still fires and reports the slice as unknown."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "sliced_eval.json").write_text(payload)
+    with pytest.raises(eh.SlicedChannelError) as exc:
+        eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+    msg = str(exc.value)
+    assert "unknown" in msg
+    assert "spec_0000" in msg
+
+
+def test_assert_channel_not_sliced_refuses_before_any_energy_is_written(
+        tmp_path):
+    """The position-independent contract: the refusal keys on the marks alone,
+    so a channel whose energies never landed -- the very state the pre-eval
+    marker exists for -- refuses rather than reading as an empty channel."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2"], "n_species": 2, "n_reactions": 1}))
+    assert not (chan / "per_molecule.json").exists()
+    assert not (chan / "per_reaction.json").exists()
+    with pytest.raises(eh.SlicedChannelError):
+        eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_assert_channel_not_sliced_is_per_channel(tmp_path):
+    """A slice marks ONE channel; its siblings under the same spec are
+    untouched (each held-out pass writes its own directory)."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2"], "n_species": 2, "n_reactions": 1}))
+    (spec_dir / "eval_holdout_val_best").mkdir()
+    eh.assert_channel_not_sliced(spec_dir, "eval_holdout_val_best")
+    with pytest.raises(eh.SlicedChannelError):
+        eh.assert_channel_not_sliced(spec_dir, "eval_holdout")

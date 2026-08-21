@@ -103,3 +103,70 @@ def test_verdict_ignores_cells_other_than_the_deciding_one():
     v = ev.mgga_verdict({1: 33.0, 2: 26.0, 5: ev.MGGA_PERSIST_ABOVE + 1.0,
                          26: 6.0})
     assert "PERSISTS" in v
+
+
+# ---------------------------------------------------------------------------
+# Held-out readers refuse a sliced channel
+# ---------------------------------------------------------------------------
+
+_SLICE = ["h", "h2", "o", "oh", "n2o", "n2ohts"]
+
+
+def _make_run(tmp_path: Path) -> Path:
+    """One completed cell with both held-out artifacts and its manifest."""
+    import json
+    run = tmp_path / "run_20260821T000000Z"
+    sd = run / "checkpoints" / "spec_0000"
+    (sd / "eval_holdout").mkdir(parents=True)
+    (run / "manifest.json").write_text(json.dumps(
+        {"specs": [{"index": 0,
+                    "cell": {"arch": "deep_mgga_3x16", "subset_size": 1}}]}))
+    (sd / "eval_holdout" / "per_reaction.json").write_text(json.dumps(
+        [{"name": "w411_a", "error_nn_kcalmol": 3.0,
+          "error_pbe_kcalmol": 4.0}]))
+    (sd / "eval_holdout" / "per_molecule.json").write_text(json.dumps(
+        [{"molecule": "h2o", "scf_converged": True,
+          "scf_energy_step_1": -76.0, "scf_energy_step_2": -76.001}]))
+    return run
+
+
+def _mark_sliced(run: Path, spec: str = "spec_0000") -> None:
+    import json
+    chan = run / "checkpoints" / spec / "eval_holdout"
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": list(_SLICE), "n_species": len(_SLICE),
+         "n_reactions": 1, "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"}))
+
+
+def test_holdout_readers_pass_an_unmarked_run(tmp_path):
+    """The guards are a no-op on an unmarked run."""
+    run = _make_run(tmp_path)
+    assert ev.holdout_table(run)[("deep_mgga_3x16", 1)]["n_rxn"] == 1
+    assert ev.scf_stats(run, 0)["n"] == 1
+
+
+def test_holdout_table_refuses_a_sliced_channel(tmp_path):
+    """The learning-curve verdict is read off this table; a six-species slice
+    MAE entering one cell would move the curve it is compared against."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    run = _make_run(tmp_path)
+    _mark_sliced(run)
+    with pytest.raises(SlicedChannelError) as exc:
+        ev.holdout_table(run)
+    msg = str(exc.value)
+    assert "run_20260821T000000Z" in msg
+    assert "spec_0000" in msg
+    assert "eval_holdout" in msg
+    assert "'n2ohts'" in msg
+
+
+def test_scf_stats_refuses_a_sliced_channel(tmp_path):
+    """The convergence statistics describe the pool's molecules, not a
+    workflow slice's."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    run = _make_run(tmp_path)
+    _mark_sliced(run)
+    with pytest.raises(SlicedChannelError) as exc:
+        ev.scf_stats(run, 0)
+    assert "spec_0000" in str(exc.value)
+    assert "'n2ohts'" in str(exc.value)

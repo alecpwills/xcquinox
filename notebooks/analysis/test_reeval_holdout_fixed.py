@@ -433,3 +433,30 @@ def test_pbe_density_table_fast_path_uses_stored_pbe_grid(tmp_path):
     assert payload["errors"]["h2o"]["n_electrons"] == pytest.approx(7.0)
     assert payload["errors"]["h2o"]["grid_weight_sum"] == pytest.approx(4.0)
     assert not payload["failures"]
+
+
+def test_run_refuses_a_sliced_channel_before_re_evaluating_it(tmp_path):
+    """The driver regenerates a channel's artifacts over the FULL pool. On a
+    sliced channel that silently promotes a workflow slice to a pool eval --
+    and the stale marker would then contradict the artifacts beside it -- so
+    the channel is refused before the stamp is even read."""
+    import pytest
+
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+
+    run = _make_run(tmp_path, trained=(0, 1), untrained=())
+    chan = run / "checkpoints" / "spec_0001" / "eval_holdout"
+    chan.mkdir(parents=True)
+    (chan / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout",
+         "species_slice": ["h", "h2", "o", "oh", "n2o", "n2ohts"],
+         "n_species": 6, "n_reactions": 1}))
+    calls: list = []
+    with pytest.raises(SlicedChannelError) as exc:
+        rh.run(run, clock=lambda: 0.0, **_stub_inject(calls))
+    msg = str(exc.value)
+    assert "spec_0001" in msg
+    assert "eval_holdout" in msg
+    assert "'n2ohts'" in msg
+    assert calls == []           # no spec was evaluated
+    assert rh.read_stamp(run / "checkpoints" / "spec_0000") is None

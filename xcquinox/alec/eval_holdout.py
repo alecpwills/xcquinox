@@ -731,6 +731,116 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
 
 
 # ---------------------------------------------------------------------------
+# Channel integrity: a sliced channel is not a full-pool channel
+# ---------------------------------------------------------------------------
+
+#: Slice marker, written by ``cluster/_eval_one_spec._apply_species_slice``
+#: into the channel directory BEFORE any energy is computed, so an
+#: interrupted or failed sliced evaluation stays unmistakable.
+SLICED_MARKER_NAME = "sliced_eval.json"
+#: Channel provenance stamp, written by
+#: ``cluster/_eval_one_spec._run_held_out_eval`` AFTER the evaluation; its
+#: ``species_slice`` entry is None for the full pool and a list otherwise.
+EVAL_METADATA_NAME = "eval_metadata.json"
+
+
+class SlicedChannelError(RuntimeError):
+    """A held-out channel evaluated on a species slice, read as a full pool.
+
+    Subclasses ``RuntimeError`` so a caller that only wants "this channel is
+    unusable" can keep catching the broader type.
+    """
+
+
+def _sliced_channel_message(mark: Path, mark_note: str, spec_dir: Path,
+                            eval_subdir: str, slice_names) -> str:
+    """The refusal text: which mark fired, where, on what slice, and why a
+    sliced channel cannot stand in for a full-pool one."""
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    # <run>/checkpoints/spec_NNNN is the layout every pull uses; a spec dir
+    # placed anywhere else still names its own parent.
+    run_dir = (spec_dir.parent.parent if spec_dir.parent.name == "checkpoints"
+               else spec_dir.parent)
+    named = ("unknown" if not slice_names
+             else ", ".join(repr(str(n)) for n in slice_names))
+    return (
+        f"{mark} marks a SLICED held-out channel ({mark_note}): "
+        f"run {run_dir}, spec {spec_dir.name}, channel {eval_subdir}, "
+        f"species_slice={named}. A slice covers only the species named in "
+        f"{HELDOUT_SPECIES_SLICE_ENV} for a workflow test, so this channel "
+        "averages a different reaction set than the full BH76 + W4-11 "
+        "held-out pool and its MAE is not a pool MAE; re-evaluate the "
+        "channel without the variable, or drop the run."
+    )
+
+
+def _read_json_or_none(path: Path):
+    """Parsed JSON, or None when the file is unreadable or malformed."""
+    try:
+        with path.open() as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+
+
+def assert_channel_not_sliced(spec_dir: Path, eval_subdir: str) -> None:
+    """Refuse a held-out channel evaluated on a species slice.
+
+    A slice covers the handful of species named for a workflow test
+    (``XCQUINOX_HELDOUT_SPECIES_SLICE``, SPEC_pretrain_fidelity_program.md
+    3.4), not the 216-reaction BH76 + W4-11 pool the architectures are
+    compared on; its MAE is a different quantity, so a reader that averages
+    one into a full-pool number redefines the metric with no visible signal.
+    Every reader of a held-out channel calls this before its first read of
+    that channel, and every writer that rewrites one calls it before the
+    rewrite.
+
+    ``cluster/_eval_one_spec`` marks a sliced channel TWICE --
+    :data:`SLICED_MARKER_NAME` written before the energies and a
+    ``species_slice`` entry in :data:`EVAL_METADATA_NAME` written after them
+    -- and either mark is fatal here, so an interrupted sliced evaluation and
+    a stale marker left by an earlier sliced pass are refused as surely as a
+    complete one. The refusal keys on the MARKS only, never on reaction
+    counts: the two files' counts differ by construction (the marker records
+    the slice's own counts, the stamp records what survived the
+    validation-complement filter), so a count comparison would be a false
+    signal.
+
+    Passing states: no channel directory, no mark, ``species_slice: null``
+    (what a full-pool evaluation writes), an unparseable stamp, and a stamp
+    that is valid JSON but not an object -- none is a slice signal, and the
+    malformed cases are left to the readers below, which already tolerate
+    unreadable JSON. The marker's own presence is the signal regardless of
+    its contents; when those cannot be read the slice is reported as
+    unknown.
+
+    Raises:
+        SlicedChannelError: the channel carries either mark.
+    """
+    spec_dir = Path(spec_dir)
+    channel = spec_dir / eval_subdir
+    marker = channel / SLICED_MARKER_NAME
+    if marker.is_file():
+        payload = _read_json_or_none(marker)
+        names = (payload.get("species_slice")
+                 if isinstance(payload, dict) else None)
+        raise SlicedChannelError(_sliced_channel_message(
+            marker, "written before the energies", spec_dir, eval_subdir,
+            names))
+    stamp = channel / EVAL_METADATA_NAME
+    if not stamp.is_file():
+        return
+    payload = _read_json_or_none(stamp)
+    if not isinstance(payload, dict):
+        return
+    names = payload.get("species_slice")
+    if names:
+        raise SlicedChannelError(_sliced_channel_message(
+            stamp, "written after the evaluation", spec_dir, eval_subdir,
+            names))
+
+
+# ---------------------------------------------------------------------------
 # Output writers
 # ---------------------------------------------------------------------------
 

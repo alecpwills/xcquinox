@@ -105,3 +105,43 @@ def test_main_dry_run_reports_without_running(tmp_path, monkeypatch, capsys):
 def test_main_flags_non_run_dir(tmp_path, capsys):
     assert cr.main([str(tmp_path / "nope")]) == 1
     assert "not a run dir" in capsys.readouterr().out
+
+
+_SLICE_MARK = json.dumps(
+    {"species_slice": ["h", "h2", "o", "oh", "n2o", "n2ohts"],
+     "n_species": 6, "n_reactions": 1,
+     "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"})
+
+
+def test_spec_status_refuses_a_sliced_channel_reported_done(tmp_path):
+    """A sliced cold-start channel must not read as "done": the retro pass
+    would leave a six-species workflow slice standing as this spec's
+    cold-start trajectory, and every later reader would take it for the
+    pool's."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    run, (_pending, _ready, done) = _mk_run(tmp_path)
+    (done / "model.eqx").write_bytes(b"x")
+    chan = done / "eval_holdout_coldstart"
+    chan.mkdir()
+    (chan / "per_reaction.json").write_text("[]")
+    (chan / "sliced_eval.json").write_text(_SLICE_MARK)
+    with pytest.raises(SlicedChannelError) as exc:
+        cr.spec_status(str(done))
+    msg = str(exc.value)
+    assert "spec_0002" in msg
+    assert "eval_holdout_coldstart" in msg
+    assert "'n2ohts'" in msg
+
+
+def test_spec_status_refuses_an_interrupted_sliced_channel(tmp_path):
+    """Marker present, energies never written: without the refusal the spec
+    reads "ready" and the retro pass silently writes pool rows beside a
+    marker that says the channel is a slice."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    run, (_pending, ready, _done) = _mk_run(tmp_path)
+    (ready / "model.eqx").write_bytes(b"x")
+    chan = ready / "eval_holdout_coldstart"
+    chan.mkdir()
+    (chan / "sliced_eval.json").write_text(_SLICE_MARK)
+    with pytest.raises(SlicedChannelError):
+        cr.spec_status(str(ready))

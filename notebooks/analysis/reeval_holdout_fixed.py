@@ -297,6 +297,15 @@ def run(
     def _spec_dir(idx: int) -> Path:
         return run_dir / "checkpoints" / f"spec_{idx:0{width}d}"
 
+    # A sliced channel is refused before its stamp is read and long before it
+    # is rewritten: the re-eval below runs the FULL pool, so it would promote
+    # a workflow-verification slice to a pool eval while the slice marker
+    # beside it still says otherwise. Imported here, not at module scope,
+    # because this driver keeps the training package out of import time.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+    for i in trained:
+        assert_channel_not_sliced(_spec_dir(i), subdir)
+
     todo = [i for i in trained
             if needs_reeval(_spec_dir(i), version=version, force=force,
                             checkpoint=checkpoint)]

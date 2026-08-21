@@ -78,3 +78,30 @@ def test_main_refuses_without_legacy_flag(capsys):
     import refilter_holdout_from_energies as rf
     assert rf.main([]) == 2
     assert "REFUSING" in capsys.readouterr().out
+
+
+def test_refilter_spec_refuses_a_sliced_channel(tmp_path):
+    """A sliced channel must be refused BEFORE the rewrite: regenerating its
+    per_reaction.json / test_set.csv from the full pool would produce
+    full-pool-shaped artifacts backed by a handful of species' energies, and
+    the marker would still be there claiming otherwise."""
+    import pytest
+
+    specs, full_rxns = load_full_held_out_pools()
+    neutral = R.neutral_atom_names(specs)
+    sd = _make_spec_dir(tmp_path, ["f-", "cl-", "nh3", "h", "c"])
+    (sd / "eval_holdout" / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2", "o", "oh", "n2o", "n2ohts"],
+         "n_species": 6, "n_reactions": 1,
+         "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"}))
+    before = (sd / "eval_holdout" / "per_reaction.json").read_text()
+    with pytest.raises(eh.SlicedChannelError) as exc:
+        R.refilter_spec(sd, full_rxns, neutral)
+    msg = str(exc.value)
+    assert "spec_0000" in msg
+    assert "eval_holdout" in msg
+    assert "'n2ohts'" in msg
+    # nothing was rewritten and no backup was taken
+    assert (sd / "eval_holdout" / "per_reaction.json").read_text() == before
+    assert not (sd / "eval_holdout" / "per_reaction.cluster_buggy.json").exists()
+    assert not (sd / "eval_holdout" / "test_set.csv").exists()

@@ -941,3 +941,96 @@ def test_sliced_eval_leaves_the_pool_objects_untouched(run_dir, monkeypatch):
     # ... and the pool the loader returned is bit-for-bit what it was.
     assert (cached_specs, cached_rxns) == before
     assert sorted(cached_specs) == ["c2h6", "h", "h2", "o"]
+
+
+# ---------------------------------------------------------------------------
+# An empty post-split reaction set is refused, not averaged
+# ---------------------------------------------------------------------------
+
+def _validating_spec(tmp_path, val_rxns):
+    """``_full_mode_spec`` with in-loop validation genuinely enabled and the
+    recorded val slice on disk -- the three conditions ``_test_slice_reactions``
+    gates on."""
+    import dataclasses as _dc
+    val_path = os.path.join(str(tmp_path), "val_reactions.json")
+    with open(val_path, "w") as f:
+        json.dump(val_rxns, f)
+    spec = _full_mode_spec()
+    return _dc.replace(spec, validate_every=1,
+                       validation_molecules=spec.molecules,
+                       validation_reactions_path=val_path)
+
+
+def test_empty_post_split_reaction_set_fails_the_channel(run_dir, monkeypatch,
+                                                         tmp_path):
+    """The validation-complement filter can remove every reaction it was
+    handed. An empty set has no MAE, so the channel must fail rather than
+    write a stamp over an average of nothing."""
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    monkeypatch.delenv(HELDOUT_SPECIES_SLICE_ENV, raising=False)
+    _spec, cfg, ckpt_dir, seen = _slice_fixture(monkeypatch, run_dir)
+    spec = _validating_spec(tmp_path, [
+        {"name": "w411_h2_atomization", "reactants": ["h2"],
+         "products": ["h"]},
+        {"name": "w411_c2h6_atomization", "reactants": ["c2h6"],
+         "products": ["h", "c"]},
+    ])
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+    chan = os.path.join(ckpt_dir, "eval_holdout")
+    with open(os.path.join(chan, "failure.json")) as f:
+        payload = json.load(f)
+    assert payload["exception_type"] == "RuntimeError"
+    msg = payload["exception_message"]
+    assert "spec 0" in msg
+    assert "eval_holdout" in msg
+    assert "no slice" in msg
+    assert "2" in msg                       # the pool count is reported
+    # nothing was evaluated and no provenance stamp was written
+    assert "reactions" not in seen
+    assert not os.path.exists(os.path.join(chan, "eval_metadata.json"))
+
+
+def test_empty_post_split_reaction_set_names_the_slice(run_dir, monkeypatch,
+                                                       tmp_path):
+    """Same refusal on a sliced channel, where it is likeliest: the slice
+    closes one reaction and the recorded val slice takes it."""
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    monkeypatch.setenv(HELDOUT_SPECIES_SLICE_ENV, "h,h2")
+    _spec, cfg, ckpt_dir, seen = _slice_fixture(monkeypatch, run_dir)
+    spec = _validating_spec(tmp_path, [
+        {"name": "w411_h2_atomization", "reactants": ["h2"],
+         "products": ["h"]},
+    ])
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+    chan = os.path.join(ckpt_dir, "eval_holdout")
+    with open(os.path.join(chan, "failure.json")) as f:
+        payload = json.load(f)
+    assert payload["exception_type"] == "RuntimeError"
+    msg = payload["exception_message"]
+    assert "h, h2" in msg                   # the slice is named
+    assert "eval_holdout" in msg
+    assert "reactions" not in seen
+    # the pre-eval marker still stands: the channel IS a sliced one
+    assert os.path.isfile(os.path.join(chan, "sliced_eval.json"))
+
+
+def test_non_empty_post_split_reaction_set_still_evaluates(run_dir, monkeypatch,
+                                                           tmp_path):
+    """The refusal is confined to the empty case: a filter that removes SOME
+    reactions leaves the channel evaluating the remainder."""
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    monkeypatch.delenv(HELDOUT_SPECIES_SLICE_ENV, raising=False)
+    _spec, cfg, ckpt_dir, seen = _slice_fixture(monkeypatch, run_dir)
+    spec = _validating_spec(tmp_path, [
+        {"name": "w411_c2h6_atomization", "reactants": ["c2h6"],
+         "products": ["h", "c"]},
+    ])
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+    assert [r["name"] for r in seen["reactions"]] == ["w411_h2_atomization"]
+    chan = os.path.join(ckpt_dir, "eval_holdout")
+    assert not os.path.exists(os.path.join(chan, "failure.json"))
+    with open(os.path.join(chan, "eval_metadata.json")) as f:
+        assert json.load(f)["n_reactions"] == 1

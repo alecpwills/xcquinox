@@ -5847,3 +5847,23 @@ def test_collect_holdout_density_rows_refuses_a_sliced_run(tmp_path):
         {"channel": "eval_holdout", "species_slice": ["h", "h2"]}))
     with pytest.raises(RuntimeError, match="species_slice"):
         fig.collect_holdout_density_rows(run)
+
+
+def test_holdout_loaders_refuse_a_sliced_channel_before_reading_it(tmp_path):
+    """The guard precedes the channel-file existence check in both loaders.
+
+    An interrupted sliced evaluation -- the state the pre-eval marker exists
+    for -- has the marker and no energies at all. A guard placed after the
+    existence check would skip that spec and return rows for the rest of the
+    run, reporting a sliced run as a partially-covered full-pool one.
+    """
+    run = _make_run_dir(tmp_path)
+    chan = run / "checkpoints" / "spec_0000" / "eval_holdout"
+    (chan / "per_reaction.json").unlink()
+    assert not (chan / "per_molecule.json").exists()
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2"], "n_species": 2, "n_reactions": 1}))
+    with pytest.raises(RuntimeError, match="spec_0000"):
+        fig.collect_holdout_reaction_rows(run)
+    with pytest.raises(RuntimeError, match="spec_0000"):
+        fig.collect_holdout_density_rows(run)

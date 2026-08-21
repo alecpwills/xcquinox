@@ -45,6 +45,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+
 DEFAULT_RUN = (Path.home() / "Documents/Research/xcquinox-results/runs/dfs_step7"
                / "dfs6311_grid3_v3/runs/run_20260728T140018Z")
 HA_TO_KCAL = 627.509474
@@ -104,6 +106,10 @@ def holdout_table(run: Path) -> Dict[Tuple[str, int], Dict[str, Any]]:
     """``{(arch, ss): {nn, pbe, n_rxn, idx}}`` over every completed cell."""
     out: Dict[Tuple[str, int], Dict[str, Any]] = {}
     for idx, cell in sorted(_cells(run).items()):
+        # The learning-curve verdict is read off this table: a six-species
+        # workflow slice averaged into one cell would move the curve.
+        assert_channel_not_sliced(run / "checkpoints" / f"spec_{idx:04d}",
+                                  "eval_holdout")
         rec = _read_json(run / "checkpoints" / f"spec_{idx:04d}"
                          / "eval_holdout" / "per_reaction.json")
         if not rec:
@@ -134,6 +140,9 @@ def scf_stats(run: Path, idx: int) -> Optional[Dict[str, Any]]:
     final recorded cycle, so reading it would report perfect convergence for
     every spec.
     """
+    # These statistics describe the pool's molecules, not a workflow slice's.
+    assert_channel_not_sliced(run / "checkpoints" / f"spec_{idx:04d}",
+                              "eval_holdout")
     rec = _read_json(run / "checkpoints" / f"spec_{idx:04d}" / "eval_holdout"
                      / "per_molecule.json")
     if not rec:

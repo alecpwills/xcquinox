@@ -33,6 +33,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+
 _HERE = Path(__file__).resolve().parent
 
 
@@ -100,6 +102,11 @@ def verify_run(run_dir: Path, *, channels: Sequence[str],
             by_idx.setdefault(r["idx"], []).append(r)
         for idx in sorted(by_idx):
             sd = run_dir / "checkpoints" / f"spec_{idx:04d}"
+            # The cluster file is read directly here, so this reader carries
+            # its own refusal rather than relying on the loader above: on a
+            # sliced channel both legs describe a handful of species and a
+            # "parity" verdict would read as evidence about the pool.
+            assert_channel_not_sliced(sd, ch)
             p = sd / ch / "per_reaction.json"
             cluster = None
             if p.is_file():

@@ -28,8 +28,9 @@ from typing import Dict, List, Set
 
 from xcquinox.alec import eval_holdout as eh
 from xcquinox.alec.eval_holdout import (
-    filter_reactions, make_per_reaction_records, per_reaction_errors,
-    reaction_mae_kcalmol, write_per_reaction_json, write_test_set_csv)
+    assert_channel_not_sliced, filter_reactions, make_per_reaction_records,
+    per_reaction_errors, reaction_mae_kcalmol, write_per_reaction_json,
+    write_test_set_csv)
 from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
 
 
@@ -54,6 +55,11 @@ def training_molecule_names_from_meta(meta_names: List[str],
 def refilter_spec(spec_dir: Path, full_rxns: List[Dict], neutral: Set[str]) -> Dict:
     """Regenerate one spec's corrected ``eval_holdout/{per_reaction.json,
     test_set.csv}`` (+ a provenance stamp); back up the cluster originals once."""
+    # A sliced channel is refused BEFORE anything is read or rewritten: the
+    # regeneration below runs over the FULL pool, so it would hand a sliced
+    # channel full-pool-shaped artifacts backed by a handful of species'
+    # energies while the slice marker still says otherwise.
+    assert_channel_not_sliced(spec_dir, "eval_holdout")
     eh_dir = spec_dir / "eval_holdout"
     pm = json.loads((eh_dir / "per_molecule.json").read_text())
     nn = {r["molecule"]: r["E_total_nn"] for r in pm

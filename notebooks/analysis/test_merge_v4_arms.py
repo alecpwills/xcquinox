@@ -303,3 +303,33 @@ def test_view_refuses_duplicate_cells_across_arms(tmp_path):
                      "deep_mgga_3x16", seed_xc="auto", subset_sizes=(2,))
     with pytest.raises(SystemExit, match="duplicate"):
         mv.build_view(tmp_path, tmp_path / "merged")
+
+
+def _mark_sliced(ck, spec="spec_0000", chan="eval_holdout",
+                 names=("h", "h2", "o", "oh", "n2o", "n2ohts")):
+    """Write the pre-eval slice marker into one arm spec's channel."""
+    import json
+    d = ck / spec / chan
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": list(names), "n_species": len(names),
+         "n_reactions": 1,
+         "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"}))
+    return d
+
+
+def test_merged_view_refuses_a_sliced_arm_channel(tmp_path):
+    """A workflow-verification slice must never be merged into a cross-arm
+    view: every figure built on the view would average its handful of species
+    into a cell as though it were the full pool."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 2,
+                 "arm2")
+    _mark_sliced(ck)
+    with pytest.raises(SlicedChannelError) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "run_20260810T202813Z" in msg
+    assert "spec_0000" in msg
+    assert "eval_holdout" in msg
+    assert "'n2ohts'" in msg
