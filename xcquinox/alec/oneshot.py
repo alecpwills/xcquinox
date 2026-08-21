@@ -1173,15 +1173,25 @@ def _nn_fx_local_uks(model, rho_alpha: jnp.ndarray,
 
     where ``sigma_sigma_eff = (1 +/- zeta)**2 * sigma_tot``,
     ``zeta = (ra-rb)/(ra+rb)``, and ``sigma_tot = (2*kF(rho_tot)*s*rho_tot^(4/3))^2``.
-    This is the SAME per-spin effective sigma that
-    ``_uks_spin_resolved_vxc`` feeds into ``compute_vxc_nn`` during SCF:
-    nabla_rho_sigma = (1 +/- zeta)/2 * nabla_rho_tot spatially, so
-    ``4 * sigma_sigma_sigma = (1 +/- zeta)**2 * sigma_tot``: exactly
-    ``sigma_sigma_eff`` above.
+    This is the per-spin sigma that ``_uks_spin_resolved_vxc`` feeds into
+    ``compute_vxc_nn`` during SCF, ``4 * sigma_sigma_sigma``, written for a
+    synthetic row: such a row carries no gradient direction, so its zeta has
+    no spatial variation, nabla_rho_sigma = (1 +/- zeta)/2 * nabla_rho_tot,
+    and ``4 * sigma_sigma_sigma = (1 +/- zeta)**2 * sigma_tot``: exactly
+    ``sigma_sigma_eff`` above. (On a molecular grid nabla zeta != 0 and the
+    SCF uses the channel's own gradient; the anchor never evaluates there.)
 
-    Uses zero extras (no descriptor features). The anchor probes the bare
-    functional form at synthetic (rho, s) points, no molecular grid
-    visits them, so there is no physical descriptor value to feed in.
+    Uses zero extras (no descriptor features), and is FEATURE-FREE by
+    construction. The exact spin scaling gives each channel the descriptor block
+    of its own doubled density diag(P_sigma, P_sigma); a synthetic
+    (rho_alpha, rho_beta, s) point has no density matrix, so no such block
+    exists and the zero row is a fixed slice of the feature space rather than
+    the block of any system (for the raw alpha column it is the single-orbital
+    limit alpha = 0, which only a one-electron spin channel reaches).
+    ``losses._anchor_term`` therefore refuses a descriptor-carrying architecture
+    at non-zero weight, and this helper is reached only for the descriptor-free
+    ones, where ``[rho, sigma]`` is the network's whole input and the row above
+    is the footing of ``split_exc_energy_uks`` itself.
     """
     n_extra = model.xnet.n_extra_features
     kF_tot = (3.0 * jnp.pi ** 2) ** (1.0 / 3.0)

@@ -1,4 +1,5 @@
 """Tests for xcquinox.alec.pbe_anchor: PBE-anchor regularization."""
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -290,3 +291,177 @@ def test_pbe_anchor_canonical_values():
     expected_2 = 1.0 + 0.804 - 0.804 / (1.0 + 0.21951 * 4.0 / 0.804)
     assert abs(fx2 - expected_2) < 1e-12, (fx2, expected_2)
     assert abs(fx_inf - 1.804) < 1e-6, fx_inf
+
+
+# ---------------------------------------------------------------------------
+# The anchor and the per-channel feature blocks.
+# ---------------------------------------------------------------------------
+
+def _anchor_model(arch_name, seed=0):
+    import dataclasses
+    import xcquinox.alec as alec
+    arch = dataclasses.replace(alec.get_architecture(arch_name),
+                               zero_init_final_layer=False)
+    xnet, cnet = alec.create_network_pair(arch, seed=seed)
+    return alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+
+def test_anchor_term_refuses_a_descriptor_architecture_at_non_zero_weight():
+    """A synthetic (rho_alpha, rho_beta, s) point has no density matrix, so the
+    per-channel block of diag(P_sigma, P_sigma) is undefined there and the
+    zero-extras row is a fixed slice of the feature space, not the block the
+    network is evaluated on for any system."""
+    from xcquinox.alec.losses import _anchor_term
+    from xcquinox.alec.pbe_anchor import build_pbe_anchor_sample
+    sample = build_pbe_anchor_sample(n_points=8, seed=3)
+    model = _anchor_model("deep_rung35_mgga_3x16")
+    with pytest.raises(ValueError, match="pbe_anchor_weight"):
+        _anchor_term(model, sample, 1e-3)
+
+
+def test_anchor_term_refusal_names_the_weight_and_the_descriptors():
+    """The refusal carries the offending weight and the registry names of the
+    descriptors, the two facts a configuration needs to act on it."""
+    from xcquinox.alec.losses import _anchor_term
+    from xcquinox.alec.pbe_anchor import build_pbe_anchor_sample
+    sample = build_pbe_anchor_sample(n_points=8, seed=3)
+    model = _anchor_model("deep_rung35_mgga_3x16")
+    with pytest.raises(ValueError) as excinfo:
+        _anchor_term(model, sample, 2.5e-4)
+    message = str(excinfo.value)
+    assert "pbe_anchor_weight=0.00025" in message
+    for name in ("cusp", "rung35", "metagga"):
+        assert f"'{name}'" in message
+
+
+def test_anchor_term_is_inert_at_zero_weight_for_a_descriptor_architecture():
+    """Production weight is 0.0, so the guard changes no production behavior."""
+    from xcquinox.alec.losses import _anchor_term
+    from xcquinox.alec.pbe_anchor import build_pbe_anchor_sample
+    sample = build_pbe_anchor_sample(n_points=8, seed=3)
+    model = _anchor_model("deep_rung35_mgga_3x16")
+    assert float(_anchor_term(model, sample, 0.0)) == 0.0
+
+
+def test_anchor_term_still_evaluates_for_a_descriptor_free_architecture():
+    from xcquinox.alec.losses import _anchor_term
+    from xcquinox.alec.pbe_anchor import build_pbe_anchor_sample
+    sample = build_pbe_anchor_sample(n_points=8, seed=3)
+    model = _anchor_model("deep_3x16")
+    value = float(_anchor_term(model, sample, 1e-3))
+    assert np.isfinite(value) and value >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# The anchor's footing: PBE exchange through the anchor path is round-off.
+# ---------------------------------------------------------------------------
+
+class _LibxcPBEExchangeXNet(eqx.Module):
+    """libxc GGA_X_PBE behind the xnet interface: a 1-D row [rho, sigma]
+    -> scalar F_x = eps_x / eps_x^LDA, evaluated spin-unpolarized at the row's
+    own (rho, sigma), which is what the network receives for each channel of
+    the doubled density. libxc runs inside ``jax.pure_callback`` so the vmap
+    of ``_nn_fx_local_uks`` batches the rows."""
+    n_extra_features: int = eqx.field(static=True, default=0)
+
+    @staticmethod
+    def _fx_np(rho, sigma):
+        from pyscf.dft import libxc
+        rho = np.asarray(rho, dtype=np.float64)
+        shape = rho.shape
+        rho1 = np.atleast_1d(rho)
+        sig1 = np.atleast_1d(np.asarray(sigma, dtype=np.float64))
+        rows = np.zeros((4, rho1.shape[0]))
+        rows[0] = rho1
+        rows[1] = np.sqrt(np.clip(sig1, 0.0, None))
+        ex_per_e = libxc.eval_xc("GGA_X_PBE", rows, spin=0, deriv=0)[0]
+        ex_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0) * np.cbrt(rho1)
+        return np.asarray(ex_per_e / ex_lda).reshape(shape)
+
+    def __call__(self, inputs):
+        rho, sigma = inputs[0], inputs[1]
+        out = jax.ShapeDtypeStruct(jnp.shape(rho), jnp.float64)
+        return jax.pure_callback(self._fx_np, out, rho, sigma,
+                                 vmap_method="expand_dims")
+
+
+def _grid_anchor_sample(mol_data):
+    """The (rho_alpha, rho_beta, s_tot) rows of a precomputed record, reduced
+    exactly as ``oneshot.fixed_density_total_energy`` reduces the density
+    matrix; rows below the energy path's tail threshold (1e-10) are dropped."""
+    from xcquinox.alec.pbe_anchor import _pbe_fx_libxc
+    w_all = np.asarray(mol_data["grid_weights"])
+    if mol_data["is_unrestricted"]:
+        dm = np.asarray(mol_data["dm_pbe"])
+        ao = np.asarray(mol_data["ao_grid"])
+        ao_xyz = np.asarray(mol_data["ao_grid_deriv"])[1:4]
+        rho_a = np.einsum("ij,gi,gj->g", dm[0], ao, ao)
+        rho_b = np.einsum("ij,gi,gj->g", dm[1], ao, ao)
+        g_t = 2.0 * (np.einsum("ij,dgi,gj->gd", dm[0], ao_xyz, ao)
+                     + np.einsum("ij,dgi,gj->gd", dm[1], ao_xyz, ao))
+        sigma_tot = np.sum(g_t * g_t, axis=1)
+    else:
+        rho_a = rho_b = 0.5 * np.asarray(mol_data["rho_grid"])
+        sigma_tot = np.asarray(mol_data["sigma_grid"])
+    rho_tot = rho_a + rho_b
+    keep = rho_tot > 1e-10
+    kF = (3.0 * np.pi ** 2) ** (1.0 / 3.0)
+    s_tot = np.sqrt(sigma_tot[keep]) / (2.0 * kF * rho_tot[keep] ** (4.0 / 3.0))
+    ra, rb, s = (jnp.asarray(rho_a[keep]), jnp.asarray(rho_b[keep]),
+                 jnp.asarray(s_tot))
+    return PBEAnchorSample(rho_alpha=ra, rho_beta=rb, s=s,
+                           Fx_target=_pbe_fx_libxc(ra, rb, s)), int(w_all.shape[0])
+
+
+@pytest.fixture(scope="module")
+def _def2svp_grid1_records():
+    """PBE records of the O atom (spin 2) and H2 at def2-svp / grid level 1."""
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    specs = {
+        "O": MoleculeSpec(name="O", atom="O 0 0 0", basis="def2-svp", spin=2,
+                          atom_composition=(("O", 1),), grid_level=1),
+        "H2": MoleculeSpec(name="H2", atom="H 0 0 0; H 0 0 0.74",
+                           basis="def2-svp", spin=0,
+                           atom_composition=(("H", 2),), grid_level=1),
+    }
+    return {name: precompute_fixed_density_data(spec)
+            for name, spec in specs.items()}
+
+
+@pytest.mark.parametrize("system", ["O", "H2"])
+def test_anchor_is_round_off_with_pbe_exchange_through_the_anchor_path(
+        _def2svp_grid1_records, system):
+    """With libxc PBE exchange in place of the xnet, ``_anchor_term`` on the
+    grid rows of an open-shell atom (O, 5 alpha / 3 beta electrons) and of a
+    closed shell (H2) at def2-svp / grid 1 is round-off: the anchor evaluates
+    each channel on its doubled density ``(2 rho_sigma, sigma_sigma_eff)``,
+    the footing of ``split_exc_energy_uks``, on both sides of the difference.
+    An anchor that fed the network the total density, the undoubled channel
+    density or a differently scaled sigma would differ from the PBE target by
+    O(1e-2) or more.
+
+    Measured: the difference is exactly 0.0 on every row (O: 4504 rows, H2:
+    4616 rows; also OH 6848 and H2O 9146 rows, and the 200-point production
+    sample). The bound admits a one-ulp disagreement between the XLA and the
+    numpy power in the sigma surrogate (sensitivity of F_x below 1 in
+    relative terms, hence < 1e-15 in F_x) with three orders of margin, and
+    sits thirteen orders below the 0.19 a random descriptor-free network
+    gives on the same rows.
+    """
+    import dataclasses
+    import xcquinox.alec as alec
+    from xcquinox.alec.losses import _anchor_term
+    from xcquinox.alec.oneshot import _nn_fx_local_uks
+    sample, n_grid = _grid_anchor_sample(_def2svp_grid1_records[system])
+    assert sample.s.shape[0] >= 0.9 * n_grid
+    arch = dataclasses.replace(alec.get_architecture("deep_3x16"),
+                               zero_init_final_layer=False)
+    _xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = alec.AlecGGAModel.from_arch(arch, xnet=_LibxcPBEExchangeXNet(),
+                                        cnet=cnet)
+    fx = np.asarray(_nn_fx_local_uks(model, sample.rho_alpha, sample.rho_beta,
+                                     sample.s))
+    assert np.all(np.isfinite(fx))
+    assert np.max(np.abs(fx - np.asarray(sample.Fx_target))) < 1e-13
+    assert float(_anchor_term(model, sample, 1.0)) < 1e-26

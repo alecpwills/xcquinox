@@ -468,9 +468,40 @@ def _vxc_term(model, mol_data, iter_idx, relative=False):
 
 
 def _anchor_term(model, sample, weight: float) -> jnp.ndarray:
-    """PBE-anchor loss: weight * mean((F_x_nn - F_x_PBE)^2) on a fixed sample."""
+    """PBE-anchor loss: weight * mean((F_x_nn - F_x_PBE)^2) on a fixed sample.
+
+    The anchor probes the network's F_x SHAPE at synthetic
+    (rho_alpha, rho_beta, s) points with ZERO descriptor extras
+    (:func:`oneshot._nn_fx_local_uks`), each channel on its doubled density
+    ``(2 rho_sigma, sigma_sigma_eff)`` -- the footing of the exchange energy
+    (``split_exc_energy_uks``: ``F_x(2 rho_sigma, 4 sigma_sigma_sigma)``),
+    so with PBE exchange in place of the network the term is round-off. A
+    synthetic point carries no density matrix, so the symmetric doubled
+    density diag(P_sigma, P_sigma) that defines every per-channel descriptor
+    block (Oliver and Perdew, Phys. Rev. A 20, 397 (1979)) is undefined there:
+    the zero row is one fixed slice of the feature space, not the block the
+    network is evaluated on for any system (for the raw alpha column it is the
+    single-orbital limit alpha = 0, which only a one-electron spin channel
+    reaches; the O atom's channels stay above 6e-4). The anchor is therefore
+    refused for a descriptor-carrying architecture instead of being left to
+    pin an arbitrary feature slice; it stays exact for the descriptor-free
+    architectures, whose F_x takes no extras. Production weight is 0.0, so
+    the refusal is inert on every current configuration.
+    """
     if sample is None or weight == 0.0:
         return jnp.array(0.0)
+    if model.descriptors:
+        raise ValueError(
+            f"PBE anchor requested at pbe_anchor_weight={weight!r} for an "
+            "architecture carrying descriptors "
+            f"{tuple(type(d).registry_name for d in model.descriptors)!r}. The "
+            "anchor evaluates F_x at synthetic (rho_alpha, rho_beta, s) points "
+            "with zero descriptor extras; a synthetic point has no density "
+            "matrix, so the per-channel feature block of diag(P_sigma, P_sigma) "
+            "is undefined there and the zero row is a fixed slice of the "
+            "feature space, not the block the network is evaluated on for any "
+            "system. Set pbe_anchor_weight=0.0 for descriptor architectures."
+        )
     from xcquinox.alec.pbe_anchor import pbe_anchor_loss
     from xcquinox.alec.oneshot import _nn_fx_local_uks
     def _nn_fx(m, rho_alpha, rho_beta, s_vals):
