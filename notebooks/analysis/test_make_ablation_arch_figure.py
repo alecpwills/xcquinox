@@ -5788,3 +5788,62 @@ def test_gga_arch_is_not_meta_gga_and_ignores_alpha():
     s = np.linspace(1e-3, 3.0, 40)
     base = ef.model_fx_curve(model, s)
     assert np.allclose(ef.model_fx_curve(model, s, alpha=None), base)
+
+
+# ---------------------------------------------------------------------------
+# A sliced held-out channel is not a pool channel and never enters a figure
+# ---------------------------------------------------------------------------
+
+def test_assert_channel_not_sliced_passes_an_unmarked_channel(tmp_path):
+    spec_dir = tmp_path / "spec_0000"
+    (spec_dir / "eval_holdout").mkdir(parents=True)
+    fig.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_assert_channel_not_sliced_passes_a_full_pool_stamp(tmp_path):
+    spec_dir = tmp_path / "spec_0000"
+    chan = spec_dir / "eval_holdout"
+    chan.mkdir(parents=True)
+    (chan / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": None}))
+    fig.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_assert_channel_not_sliced_refuses_the_pre_eval_marker(tmp_path):
+    spec_dir = tmp_path / "spec_0000"
+    chan = spec_dir / "eval_holdout"
+    chan.mkdir(parents=True)
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2"], "n_species": 2, "n_reactions": 1}))
+    with pytest.raises(RuntimeError, match="sliced_eval.json"):
+        fig.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_assert_channel_not_sliced_refuses_a_sliced_stamp(tmp_path):
+    spec_dir = tmp_path / "spec_0000"
+    chan = spec_dir / "eval_holdout"
+    chan.mkdir(parents=True)
+    (chan / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": ["h", "h2"]}))
+    with pytest.raises(RuntimeError, match="species_slice"):
+        fig.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_collect_holdout_reaction_rows_refuses_a_sliced_run(tmp_path):
+    run = _make_run_dir(tmp_path)
+    marked = run / "checkpoints" / "spec_0000" / "eval_holdout"
+    (marked / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": ["h", "h2"], "n_species": 2, "n_reactions": 1}))
+    with pytest.raises(RuntimeError, match="spec_0000"):
+        fig.collect_holdout_reaction_rows(run)
+
+
+def test_collect_holdout_density_rows_refuses_a_sliced_run(tmp_path):
+    run = _make_run_dir(tmp_path)
+    marked = run / "checkpoints" / "spec_0000" / "eval_holdout"
+    (marked / "per_molecule.json").write_text(json.dumps(
+        [{"molecule": "h2", "density_rmse": 1e-3, "density_rmse_pbe": 2e-3}]))
+    (marked / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": ["h", "h2"]}))
+    with pytest.raises(RuntimeError, match="species_slice"):
+        fig.collect_holdout_density_rows(run)
