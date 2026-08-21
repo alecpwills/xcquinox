@@ -169,9 +169,9 @@ hundreds of kcal/mol and squash the rest. The linear files and every CSV are
 unchanged. The six siblings are `ablation_energy_wtmad_mae_logy.png`,
 `ablation_insample_overview_logy.png`,
 `ablation_density_energy_overview[_dfs_units]_logy.png`, and
-`ablation_density_energy_3x3[_dfs_units]_logy.png`. Two bar figures stay
-single-file, as before: `ablation_rung_summary.png` (two per-rung series, not
-per-cell bars) is linear only and `ablation_mae_by_arch.png` is log only. On the
+`ablation_density_energy_3x3[_dfs_units]_logy.png`. Among the single-file bar
+figures, `ablation_rung_summary.png` (two per-rung series, not per-cell bars)
+keeps its linear file and `ablation_mae_by_arch.png` keeps its log file. On the
 log panels only the top edge of a bar carries its value -- a logarithmic axis
 has no zero, so the bars stand on the frame floor rather than on zero and their
 areas mean nothing.

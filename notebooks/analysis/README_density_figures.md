@@ -31,13 +31,14 @@ The six figures whose bars come from the shared per-(arch, subset_size) panel he
 written in BOTH scalings: the linear file listed above and a `_logy` sibling holding the
 SAME data on a logarithmic y axis -- `ablation_energy_wtmad_mae_logy.png` alongside the
 energy figure, `ablation_insample_overview_logy.png` (panel (A) is that canvas's only bar
-panel), and the four density/energy composites above. Two other bar figures are single-file
-by design and unchanged here: `ablation_rung_summary.png`, whose bars are two per-rung
-series rather than per-cell, is linear only, and `ablation_mae_by_arch.png` is log only. The
-log view is for panels where one architecture's bars run hundreds of kcal/mol and squash the
-rest; the linear file is unchanged, and no CSV is affected. Read the log panels by the TOP EDGE of each bar only: a logarithmic axis has no
-zero, so a bar's baseline is the frame floor (the smallest drawn value / 1.6) rather than
-zero, and bar AREAS carry no meaning there.
+panel), and the four density/energy composites above. Among the single-file bar figures,
+`ablation_rung_summary.png` -- whose bars are two per-rung series rather than per-cell --
+keeps its linear file and `ablation_mae_by_arch.png` keeps its log file; neither is drawn by
+that helper. The log view is for panels where one architecture's bars run hundreds of
+kcal/mol and squash the rest; the linear file is unchanged, and no CSV is affected. Read the
+log panels by the TOP EDGE of each bar only: a logarithmic axis has no zero, so a bar's
+baseline is the frame floor (the smallest drawn value / 1.6) rather than zero, and bar AREAS
+carry no meaning there.
 
 The intended use mirrors the multimode figure glossary: open the figure on one screen and
 this file on the other. The `figures_*` directories are regenerated outputs and are never

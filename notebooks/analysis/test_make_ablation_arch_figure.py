@@ -1524,11 +1524,11 @@ def test_grouped_bars_rejects_unknown_yscale():
 
 
 def test_plotters_reject_unknown_yscale(tmp_path, monkeypatch):
-    # The panel body's check only runs for panels that are actually drawn: a
-    # composite whose channels all degrade to placeholders would otherwise be
-    # written to a _logy path as a linear figure. Each plotter checks its own
-    # argument BEFORE drawing anything -- sabotaging the panel body shows the
-    # refusal comes first.
+    # Fail fast: each plotter refuses an unknown value before any artist is
+    # drawn and before any file is written, rather than leaving the refusal to
+    # the panel body it happens to reach first. Sabotaging the panel body
+    # shows which check fires, and the file assertion below shows that nothing
+    # was written on the way out.
     def _boom(*a, **k):
         raise AssertionError("panel body reached before the yscale check")
 
@@ -3303,7 +3303,8 @@ def test_build_density_energy_figures_emits_holdout_density_when_present(tmp_pat
     # the 3x3s' former parity rows as standalone per-channel figures
     assert "ablation_density_parity_by_channel.png" in names2
     assert "ablation_density_parity_by_channel_dfs_units.png" in names2
-    # every grouped-bar figure also ships its log-y sibling, same data
+    # the six figures drawn by the shared per-(arch, subset_size) bar
+    # helper each ship a log-y sibling carrying the same data
     for logy in ("ablation_energy_wtmad_mae_logy.png",
                  "ablation_insample_overview_logy.png",
                  "ablation_density_energy_overview_logy.png",
@@ -3359,6 +3360,49 @@ def test_build_density_energy_figures_writes_six(tmp_path):
         "ablation_insample_density_ccsd.png",
         "ablation_insample_overview.png",
         "ablation_insample_overview_logy.png"}
+
+
+def test_build_threads_log_scale_to_every_logy_write(tmp_path, monkeypatch):
+    """Builder-level pin on the argument, not just on the file name: each
+    ``_logy`` path is produced by the SAME plotter as its linear sibling,
+    called with ``yscale="log"``, and each linear path with the default. A
+    write site that lost the argument would put a linear figure under a
+    ``_logy`` name, which no per-figure test can see."""
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    seen = {}
+    for name in ("plot_energy_wtmad_mae", "plot_insample_overview",
+                 "plot_density_energy_overview", "plot_density_energy_3x3"):
+        real = getattr(fig, name)
+
+        def _spy(*a, _real=real, **kw):
+            # out_path is the only Path among the positional arguments
+            out = Path(next(x for x in a if isinstance(x, Path)))
+            seen[out.name] = kw.get("yscale", "linear")
+            out.write_bytes(b"x" * 4096)     # stub: the scaling is the subject
+            return out
+
+        monkeypatch.setattr(fig, name, _spy)
+    fig.build_density_energy_figures(run, tmp_path / "out")
+    pairs = [
+        ("ablation_energy_wtmad_mae.png",
+         "ablation_energy_wtmad_mae_logy.png"),
+        ("ablation_insample_overview.png",
+         "ablation_insample_overview_logy.png"),
+        ("ablation_density_energy_overview.png",
+         "ablation_density_energy_overview_logy.png"),
+        ("ablation_density_energy_overview_dfs_units.png",
+         "ablation_density_energy_overview_dfs_units_logy.png"),
+        ("ablation_density_energy_3x3.png",
+         "ablation_density_energy_3x3_logy.png"),
+        ("ablation_density_energy_3x3_dfs_units.png",
+         "ablation_density_energy_3x3_dfs_units_logy.png"),
+    ]
+    for lin, logy in pairs:
+        assert seen.get(lin) == "linear", (lin, seen.get(lin))
+        assert seen.get(logy) == "log", (logy, seen.get(logy))
+    # and no other write of these four plotters asks for a log axis
+    assert {n for n, ys in seen.items() if ys == "log"} == {p[1] for p in pairs}
 
 
 # ---------------------------------------------------------------------------
