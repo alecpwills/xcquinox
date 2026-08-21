@@ -10,7 +10,6 @@ and the per-spin kinetic-energy density itself.
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 jax.config.update("jax_enable_x64", True)
 
@@ -84,14 +83,26 @@ def test_rung35_multishell_per_channel_block_keeps_alpha_major_then_spin():
     md = _precompute("Li", "Li 0 0 0", 1, (("Li", 1),),
                      (DMRung35MultishellDescriptor(),))
     tot = np.asarray(md["rung35ms_features"])
-    block = np.asarray(md["rung35ms_features_a"])
-    assert block.shape[1] == 6
-    for w in range(3):
-        # alpha-major then spin: columns (2 w, 2 w + 1) are one projector width.
-        np.testing.assert_allclose(block[:, 2 * w], block[:, 2 * w + 1],
-                                   rtol=0, atol=1e-14)
-        np.testing.assert_allclose(block[:, 2 * w], tot[:, 2 * w],
-                                   rtol=0, atol=1e-14)
+    for s, suffix in ((0, "_a"), (1, "_b")):
+        block = np.asarray(md["rung35ms_features" + suffix])
+        assert block.shape[1] == 6, suffix
+        for w in range(3):
+            # Alpha-major then spin: columns (2 w, 2 w + 1) are the two spin
+            # slots of one projector width. On diag(P_sigma, P_sigma) both
+            # slots hold the channel's own occupancy, which is slot 2 w + s of
+            # the total-density block: measured 0.0 for the alpha block
+            # against slot 2 w, 1.4e-17 for the beta block against slot
+            # 2 w + 1, and up to 2.2e-16 between the two slots of one block.
+            # Li carries two alpha electrons against one beta, so the two
+            # channels differ by 0.93, 0.33 and 0.053 at the three widths and
+            # a beta block copied from the alpha one lands on slot 2 w instead.
+            np.testing.assert_allclose(block[:, 2 * w], block[:, 2 * w + 1],
+                                       rtol=0, atol=1e-14, err_msg=suffix)
+            np.testing.assert_allclose(block[:, 2 * w], tot[:, 2 * w + s],
+                                       rtol=0, atol=1e-14, err_msg=suffix)
+    a = np.asarray(md["rung35ms_features_a"])
+    b = np.asarray(md["rung35ms_features_b"])
+    assert float(np.max(np.abs(a - b))) > 1e-3
 
 
 def test_metagga_per_channel_alpha_uses_the_doubled_ingredients():
@@ -145,8 +156,12 @@ def test_metagga_per_channel_alpha_uses_the_doubled_ingredients():
         np.testing.assert_allclose(got[keep], expect[keep], rtol=0, atol=1e-9)
     # Li's beta channel holds one orbital, so its doubled system is a
     # single-orbital (iso-orbital) density: tau = tau_W and alpha vanishes
-    # identically. Measured max 1.2e-07 against 6.24 for the alpha channel, so
-    # this also refuses a beta block built from the physical total density.
+    # identically; what is stored is the cancellation residue of tau - tau_W
+    # divided by tau_unif in the density tail. Measured max alpha_b between
+    # 8.0e-08 and 1.13e-07 over 12 processes (1.07e-07, reproducible to the
+    # bit, under single-thread BLAS), so the 1e-6 bound sits ~9x above that
+    # ceiling, while the alpha channel reaches 6.24; the bound therefore also
+    # refuses a beta block built from the physical total density.
     assert float(np.max(np.asarray(md["metagga_features_b"]))) < 1e-6
     assert float(np.max(np.asarray(md["metagga_features_a"]))) > 1.0
 

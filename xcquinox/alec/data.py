@@ -846,16 +846,6 @@ def precompute_fixed_density_data(
         from xcquinox.alec.descriptors import doubled_spin_dm
         dm_pbe_spin = jnp.array(dm_pbe)
         doubled = [doubled_spin_dm(dm_pbe_spin, s) for s in (0, 1)]
-        rho_doubled = []
-        sigma_doubled = []
-        for s in (0, 1):
-            d_s = np.asarray(dm_pbe[s])
-            r_s = np.einsum("pi,ij,pj->p", ao[0], d_s, ao[0])
-            gx_s = 2 * np.einsum("pi,ij,pj->p", ao[1], d_s, ao[0])
-            gy_s = 2 * np.einsum("pi,ij,pj->p", ao[2], d_s, ao[0])
-            gz_s = 2 * np.einsum("pi,ij,pj->p", ao[3], d_s, ao[0])
-            rho_doubled.append(2.0 * r_s)
-            sigma_doubled.append(4.0 * (gx_s ** 2 + gy_s ** 2 + gz_s ** 2))
         if dm_features is not None:
             from xcquinox.features import compute_dm_features_array
             dm_features_a, dm_features_b = [
@@ -879,6 +869,27 @@ def precompute_fixed_density_data(
             ]
         if metagga_features is not None:
             from xcquinox.alec.metagga import compute_tau_from_dm, compute_alpha
+            # Doubled-system density 2 rho_sigma and gradient invariant
+            # 4 sigma_sigma_sigma, from the contraction the total-density
+            # branch uses for rho_pbe / sigma_pbe. Only the iso-orbital
+            # indicator consumes them, so they are built only here; the
+            # matrix-linear blocks above take the doubled density matrix
+            # directly. The contraction is kept unoptimized on purpose:
+            # optimize=True routes it through a matmul whose different
+            # summation order moves rho_sigma by up to 1e-15 relative (more
+            # than half of the grid points), and alpha's tail amplification
+            # tau/tau_unif (up to 9e7 on Li's beta channel) turns that into
+            # O(1e-8) changes of the stored indicator.
+            rho_doubled = []
+            sigma_doubled = []
+            for s in (0, 1):
+                d_s = np.asarray(dm_pbe[s])
+                r_s = np.einsum("pi,ij,pj->p", ao[0], d_s, ao[0])
+                gx_s = 2 * np.einsum("pi,ij,pj->p", ao[1], d_s, ao[0])
+                gy_s = 2 * np.einsum("pi,ij,pj->p", ao[2], d_s, ao[0])
+                gz_s = 2 * np.einsum("pi,ij,pj->p", ao[3], d_s, ao[0])
+                rho_doubled.append(2.0 * r_s)
+                sigma_doubled.append(4.0 * (gx_s ** 2 + gy_s ** 2 + gz_s ** 2))
             ao_grad_j = jnp.array(ao[1:4])
             tau_spin_a, tau_spin_b = [
                 compute_tau_from_dm(ao_grad_j, jnp.array(dm_pbe[s]))
