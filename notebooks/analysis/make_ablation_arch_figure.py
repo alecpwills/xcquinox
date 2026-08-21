@@ -128,10 +128,10 @@ def _is_num(v: Any) -> bool:
 def _check_yscale(yscale: str) -> None:
     """Guard for the ``yscale`` switch the bar figures carry: a panel renders
     on a linear or on a logarithmic y axis and on nothing else. Called at the
-    top of every plotter that takes it as well as in the panel body, so a
-    typo cannot reach a ``_logy`` output path as a silently linear figure --
-    a composite whose channels all degrade to placeholders draws no bar panel
-    at all, and the body's own check would never run."""
+    top of every plotter that takes it, not only in the panel body, so an
+    unknown value is refused before any artist is drawn and before any file
+    is written -- the failure is immediate and no half-rendered or silently
+    linear figure reaches a ``_logy`` output path."""
     if yscale not in ("linear", "log"):
         raise ValueError(
             f"yscale must be 'linear' or 'log', got {yscale!r}")
@@ -7281,12 +7281,16 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
     are missing; the enriched ``ablation_ed_decomposition.png`` renders with
     the ED figure. The held-out figures carry a ``dataset`` footer line
     stating what the held-out eval is (live reaction/species counts from
-    ``_holdout_eval_note``). Every figure carrying a grouped-bar panel is
-    written twice -- the linear original and an ``_logy`` sibling holding the
-    same data on a logarithmic y axis -- so a cell hundreds of kcal/mol above
-    the rest cannot flatten the remaining bars. Six such pairs: the energy
-    figure, the in-sample overview (panel (A)), and the four density/energy
-    composites. The CSVs are unaffected."""
+    ``_holdout_eval_note``). Every figure whose bars come from the shared
+    per-(arch, subset_size) panel helper :func:`_grouped_arch_bars` is written
+    in BOTH scalings -- the linear original and an ``_logy`` sibling holding
+    the same data on a logarithmic y axis -- so a cell hundreds of kcal/mol
+    above the rest cannot flatten the remaining bars. Six such pairs: the
+    energy figure, the in-sample overview (panel (A)), and the four
+    density/energy composites. ``ablation_rung_summary.png`` is NOT one of
+    them: its bars are two per-rung series, not per-cell, and it keeps its
+    single linear file (as ``ablation_mae_by_arch.png``, written by
+    :func:`build_all`, keeps its single log file). The CSVs are unaffected."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     rows = collect_holdout_reaction_rows(run_dir, eval_subdir=eval_subdir)
@@ -7345,10 +7349,12 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
                  "species (atoms excluded).")
     tsubsets = training_subsets_by_size(run_dir)
     ds_e = _holdout_eval_note(rows, [])
-    # Every figure with a grouped-bar panel is rendered twice from ONE set of
-    # arguments: the linear original and its "_logy" sibling (same data,
-    # logarithmic y axis), so a cell running hundreds of kcal/mol cannot
-    # flatten the rest of the panel out of readability.
+    # Each figure whose bars come from _grouped_arch_bars is rendered twice
+    # from ONE set of arguments: the linear original and its "_logy" sibling
+    # (same data, logarithmic y axis), so a cell running hundreds of kcal/mol
+    # cannot flatten the rest of the panel out of readability. The rung
+    # summary below is not one of them -- its bars are per-rung series drawn
+    # by its own body -- and stays linear-only.
     wtmad_kw = dict(note=note, provenance=prov, caveat=caveat,
                     training_subsets=tsubsets, scan_baseline=scan_baseline,
                     scan_errors=scan_errs, dataset=ds_e)

@@ -162,15 +162,19 @@ the pulled `eval_holdout*/per_molecule.json` carries the NN + PBE density
 columns -- skipped with a console note otherwise, in which case a stale file
 from an earlier render may persist).
 
-Every grouped-bar figure lands twice: the linear file and a `_logy` sibling
-carrying the SAME data on a logarithmic y axis, for reading panels in which one
-architecture's bars run hundreds of kcal/mol and squash the rest. The linear
-files and every CSV are unchanged. The six siblings are
-`ablation_energy_wtmad_mae_logy.png`, `ablation_insample_overview_logy.png`,
+The six figures whose bars come from the shared per-(arch, subset_size) panel
+helper land twice: the linear file and a `_logy` sibling carrying the SAME data
+on a logarithmic y axis, for reading panels in which one architecture's bars run
+hundreds of kcal/mol and squash the rest. The linear files and every CSV are
+unchanged. The six siblings are `ablation_energy_wtmad_mae_logy.png`,
+`ablation_insample_overview_logy.png`,
 `ablation_density_energy_overview[_dfs_units]_logy.png`, and
-`ablation_density_energy_3x3[_dfs_units]_logy.png`. On the log panels only the
-top edge of a bar carries its value -- a logarithmic axis has no zero, so the
-bars stand on the frame floor rather than on zero and their areas mean nothing.
+`ablation_density_energy_3x3[_dfs_units]_logy.png`. Two bar figures stay
+single-file, as before: `ablation_rung_summary.png` (two per-rung series, not
+per-cell bars) is linear only and `ablation_mae_by_arch.png` is log only. On the
+log panels only the top edge of a bar carries its value -- a logarithmic axis
+has no zero, so the bars stand on the frame floor rather than on zero and their
+areas mean nothing.
 
 Each per-basis dir also gets two overview composites plus a standalone density
 trend: `ablation_density_energy_overview.png` (per-pool + 2-subset WTMAD-2

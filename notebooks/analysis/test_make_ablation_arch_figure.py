@@ -4560,6 +4560,60 @@ def test_3x3_logy_panels_are_log_axes(tmp_path, monkeypatch):
         assert not ylab.endswith("(log)"), ylab
 
 
+@pytest.mark.parametrize("plotter", ["energy_wtmad", "overview", "insample"])
+def test_helper_bar_panels_are_log_in_logy_siblings(tmp_path, monkeypatch,
+                                                    plotter):
+    """The other three log siblings, pinned on real axes state: every panel
+    built from the shared bar helper reports a log scale, a positive bottom
+    limit and a "(log)"-suffixed y label, and the default call leaves those
+    panels linear. Without the argument threaded to the panel call, the figure
+    would render linear under a _logy file name."""
+    import matplotlib.container as mcont
+    import matplotlib.figure as mfig
+    run = _make_run_dir(tmp_path)
+    _add_holdout_density(run)
+    rows = fig.collect_holdout_reaction_rows(run)
+    hd = fig.collect_holdout_density_rows(run)
+    ae = fig.collect_insample_ae_rows(run)
+    dens = fig.collect_insample_density_rows(run)
+    draw = {
+        "energy_wtmad":
+            lambda out, **kw: fig.plot_energy_wtmad_mae(rows, out, "run_x",
+                                                        **kw),
+        "overview":
+            lambda out, **kw: fig.plot_density_energy_overview(rows, hd, out,
+                                                               "run_x", **kw),
+        "insample":
+            lambda out, **kw: fig.plot_insample_overview(ae, dens, out,
+                                                         "run_x", **kw),
+    }[plotter]
+    seen = []
+    real = mfig.Figure.savefig
+
+    def _cap(self, *a, **k):
+        # bar panels only: the parity, ED and per-molecule strip panels are
+        # scatter/line artists and carry no BarContainer
+        seen.append([(ax.get_yscale(), ax.get_ylim(), ax.get_ylabel())
+                     for ax in self.axes
+                     if any(isinstance(c, mcont.BarContainer)
+                            for c in ax.containers)])
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(mfig.Figure, "savefig", _cap)
+    draw(tmp_path / f"{plotter}_log.png", yscale="log")
+    assert seen and seen[0], "no bar panel rendered"
+    for scale, (lo, _hi), ylab in seen[0]:
+        assert scale == "log"
+        assert lo > 0.0
+        assert ylab.endswith("(log)"), ylab
+    seen.clear()
+    draw(tmp_path / f"{plotter}_linear.png")
+    assert seen and seen[0]
+    for scale, (lo, _hi), ylab in seen[0]:
+        assert scale == "linear"
+        assert not ylab.endswith("(log)"), ylab
+
+
 def test_3x3_caveats_define_reduction_and_gamma():
     """Both 3x3 caveats spell out the one-bucket reduction formula on the
     figure; the DFS-units caveat states the published gamma value and its

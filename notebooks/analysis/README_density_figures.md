@@ -27,13 +27,15 @@ figures the ablation suite writes into `figures_dfs_step7_<alias>/` and
 | `ablation_insample_overview.png` | One-canvas in-sample story: AE + density (training fit) |
 | `ablation_insample_overview_logy.png` | The same in-sample canvas with panel (A) on a logarithmic y axis |
 
-Every grouped-bar figure is written twice: the linear file listed above and a `_logy`
-sibling holding the SAME data on a logarithmic y axis. Six siblings in all --
-`ablation_energy_wtmad_mae_logy.png` alongside the energy figure,
-`ablation_insample_overview_logy.png` (panel (A) is that canvas's only bar panel), and the
-four density/energy composites above. The log view is for panels where one architecture's
-bars run hundreds of kcal/mol and squash the rest; the linear file is unchanged, and no CSV
-is affected. Read the log panels by the TOP EDGE of each bar only: a logarithmic axis has no
+The six figures whose bars come from the shared per-(arch, subset_size) panel helper are
+written in BOTH scalings: the linear file listed above and a `_logy` sibling holding the
+SAME data on a logarithmic y axis -- `ablation_energy_wtmad_mae_logy.png` alongside the
+energy figure, `ablation_insample_overview_logy.png` (panel (A) is that canvas's only bar
+panel), and the four density/energy composites above. Two other bar figures are single-file
+by design and unchanged here: `ablation_rung_summary.png`, whose bars are two per-rung
+series rather than per-cell, is linear only, and `ablation_mae_by_arch.png` is log only. The
+log view is for panels where one architecture's bars run hundreds of kcal/mol and squash the
+rest; the linear file is unchanged, and no CSV is affected. Read the log panels by the TOP EDGE of each bar only: a logarithmic axis has no
 zero, so a bar's baseline is the frame floor (the smallest drawn value / 1.6) rather than
 zero, and bar AREAS carry no meaning there.
 
