@@ -143,10 +143,12 @@ in its default dry-run to create the run directory and resolved configuration, t
 CCSD references (`notebooks/checkpoints_step7/`), the certificate step at the production
 identity; the held-out evaluation is exercised on a six-species slice of the pool (the full
 pool is hours per cell and not narrowable from the configuration). Assertions per
-architecture: every stage exits zero, the expected artefacts exist, the certificate verdict
-is recorded, the in-sample `eval_df.csv` and the sliced held-out channel are written, and the
-oracle tests O1-O4 pass for the architecture. Results are recorded in HISTORY as the
-baseline matrix every later change is measured against.
+architecture: every stage completes with its expected outcome; under the matrix waiver
+validate_run's expected outcome is the certificate refusal and nothing else; the expected
+artefacts exist, the certificate verdict is recorded, the in-sample `eval_df.csv` and the
+sliced held-out channel are written, and the oracle tests O1-O4 pass for the architecture.
+Results are recorded in HISTORY as the baseline matrix every later change is measured
+against.
 
 ### 3.5 Campaign v6
 

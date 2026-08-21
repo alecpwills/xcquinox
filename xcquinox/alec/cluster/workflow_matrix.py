@@ -463,6 +463,16 @@ HELDOUT_SPECIES_SLICE = "h,h2,o,oh,n2o,n2ohts"
 #: :func:`_slice_check` compares against.
 SLICE_CLOSED_REACTIONS = 3
 
+#: Prefix ``cluster/validate_run.main`` prints one failure line under, before
+#: its count line and its exit 1. It is the only machine-readable form that
+#: module offers: the validator writes no JSON, so the expected-refusal test
+#: below reads these lines.
+_VALIDATE_FAIL_PREFIX = "[validate_run] FAIL: "
+
+#: What the report records for a ``validate_run`` that refused the run for the
+#: one reason this identity expects.
+VALIDATE_RUN_EXPECTED_DETAIL = "refused the waived certificate as expected"
+
 #: Return code recorded for a certificate stage that wrote no certificate.
 #: The template's waiver (``fidelity.enforce: false``) covers a FAIL VERDICT,
 #: which is the expected outcome of a 50-step pretrain, and nothing else: an
@@ -738,6 +748,83 @@ def _certificate_record(run_dir, arch) -> dict:
     }
 
 
+def _validate_run_failures(log_path):
+    """The failures ``validate_run`` printed, in order, without their prefix."""
+    try:
+        text = Path(log_path).read_text(errors="replace")
+    except OSError:
+        return []
+    return [line.strip()[len(_VALIDATE_FAIL_PREFIX):].strip()
+            for line in text.splitlines()
+            if line.strip().startswith(_VALIDATE_FAIL_PREFIX)]
+
+
+def _is_certificate_refusal(failure, arch) -> bool:
+    """True for ``validate_run``'s certificate-VERDICT refusal of ``arch``.
+
+    The validator writes
+    ``pretrain/<arch>: fidelity certificate verdict <v>, expected 'PASS' ...``
+    for that one check and a differently-shaped line for each of its others
+    (identity block, named architecture, parent functional, code version,
+    checkpoint digests), so matching the shape identifies the check without a
+    machine-readable report to key on.
+    """
+    return (failure.startswith(f"pretrain/{arch}: fidelity certificate "
+                               "verdict ")
+            and "expected 'PASS'" in failure)
+
+
+def _validate_run_outcome(log_path, rc, arch, certificate) -> dict:
+    """Whether ``validate_run`` ended the way this identity requires.
+
+    ``validate_run`` is a RECORD layer and stays strict: it requires
+    ``verdict == "PASS"`` and ignores the certificate's ``enforced`` field by
+    design, so a run carrying the matrix's waived FAIL certificate MUST be
+    refused by it -- and refused for exactly that reason. Three outcomes are
+    therefore distinguished, and only the first is expected:
+
+    * one failure, the certificate-verdict refusal of the architecture under
+      test: the record layer did its job and the matrix's own assertions are
+      unaffected;
+    * a zero exit: the record layer accepted a run whose certificate is a
+      recorded FAIL, which is the guarantee that keeps a workflow run out of
+      the results;
+    * anything else it refused: a second failure would otherwise hide behind
+      the expected one, since both produce the same exit code.
+
+    With no waiver in play (a PASS certificate) the ordinary contract applies:
+    exit zero is the expected outcome.
+    """
+    failures = _validate_run_failures(log_path)
+    waived = (certificate.get("verdict") == "FAIL"
+              and certificate.get("enforced") is False)
+    if not waived:
+        return {"expected": rc == 0, "rc": rc, "failures": failures,
+                "detail": ("clean" if rc == 0 else
+                           f"exited {rc} with {len(failures)} failure(s): "
+                           + "; ".join(failures))}
+    if rc == 0:
+        return {"expected": False, "rc": rc, "failures": failures,
+                "detail": ("validate_run exited 0 on a run whose certificate "
+                           "records a FAIL under the matrix waiver; the record "
+                           "layer requires verdict PASS and ignores the "
+                           "waiver, so a clean exit means that requirement is "
+                           "no longer imposed")}
+    if len(failures) == 1 and _is_certificate_refusal(failures[0], arch):
+        return {"expected": True, "rc": rc, "failures": failures,
+                "detail": VALIDATE_RUN_EXPECTED_DETAIL}
+    if not failures:
+        return {"expected": False, "rc": rc, "failures": failures,
+                "detail": (f"validate_run exited {rc} but printed no "
+                           f"{_VALIDATE_FAIL_PREFIX!r} line, so what it "
+                           "refused cannot be read")}
+    others = [f for f in failures if not _is_certificate_refusal(f, arch)]
+    return {"expected": False, "rc": rc, "failures": failures,
+            "detail": (f"validate_run reported {len(failures)} failures, "
+                       f"{len(others)} of them not the certificate refusal "
+                       f"for {arch}: " + "; ".join(failures))}
+
+
 # ---------------------------------------------------------------------------
 # Held-out channel: a sliced evaluation has to be MARKED as one
 # ---------------------------------------------------------------------------
@@ -930,6 +1017,10 @@ def run_arch(arch, work_root, *, runner=subprocess.run,
     verdict under the template's ``fidelity.enforce: false`` waiver is the
     expected outcome at this identity and is recorded, while a stage that
     wrote no certificate is a stage failure (:data:`CERTIFICATE_MISSING_RC`).
+    ``validate_run`` is judged on its REPORT rather than on its exit code: it
+    is a record layer, it stays strict, and under the waiver its expected
+    outcome is the certificate refusal and nothing else
+    (:func:`_validate_run_outcome`).
 
     ``submit`` runs in its default DRY-RUN, which creates the run directory,
     writes ``resolved_config.yaml`` and renders every sbatch script without
@@ -971,6 +1062,8 @@ def run_arch(arch, work_root, *, runner=subprocess.run,
                      "'submit: run dir = ' line\n")
 
     certificate = _certificate_record(run_dir, arch)
+    validate = {"expected": None, "rc": None, "failures": [],
+                "detail": "validate_run did not run"}
     if run_dir is not None and stages[0]["rc"] == 0:
         for stage in stage_plan(run_dir, species_slice=species_slice):
             stage_env = dict(env)
@@ -995,6 +1088,10 @@ def run_arch(arch, work_root, *, runner=subprocess.run,
                                  f"wrote no readable {_CERTIFICATE_FILENAME} "
                                  f"at {certificate['path']}; "
                                  f"{certificate['gate_message']}\n")
+            if stage.name == "validate_run":
+                validate = _validate_run_outcome(
+                    log_path, stages[-1]["rc"], arch, certificate)
+                tolerated = tolerated or validate["expected"]
             if stages[-1]["rc"] != 0 and not tolerated:
                 break
 
@@ -1019,6 +1116,7 @@ def run_arch(arch, work_root, *, runner=subprocess.run,
         "artefacts": artefacts,
         "certificate": certificate,
         "certificate_verdict": certificate["verdict"],
+        "validate_run": validate,
         "slice_check": (_slice_check(run_dir, species_slice=species_slice,
                                      evaluated=evaluated) if run_dir else
                         {"checked": False, "ok": None, "channels": [],
@@ -1158,9 +1256,21 @@ def arch_row(result) -> dict:
     fingerprint of the run and two matrices diff line by line.
     """
     by_name = {s["name"]: s["rc"] for s in result.get("stages", ())}
-    stages_rc = ".".join(
-        "-" if name not in by_name else str(by_name[name])
-        for name in STAGE_ORDER)
+    validate = result.get("validate_run") or {}
+    # A validate_run refusal the matrix expects is not a failed stage, and the
+    # fingerprint has to say so: two matrices are diffed on this column, and a
+    # bare 1 there would read as the run having broken.
+    expected_refusal = bool(validate.get("expected"))
+
+    def _cell(name):
+        if name not in by_name:
+            return "-"
+        rc = by_name[name]
+        if name == "validate_run" and expected_refusal and rc != 0:
+            return f"{rc}w"
+        return str(rc)
+
+    stages_rc = ".".join(_cell(name) for name in STAGE_ORDER)
     oracles = result.get("oracle_tests") or {}
     if oracles.get("rc") is None:
         oracle_cell = "skipped"
@@ -1189,7 +1299,9 @@ def arch_row(result) -> dict:
 def _is_clean(result) -> bool:
     """True iff this architecture met every acceptance item of spec 3.4.
 
-    Every stage ran and exited zero, the certificate exists, the held-out
+    Every stage ran and ended the way this identity requires -- exit zero, or,
+    for ``validate_run`` under the waiver, the certificate refusal and nothing
+    else -- the certificate exists, the held-out
     channel is marked as the slice it was evaluated on, and the oracles passed
     (or were not asked for). The certificate's VERDICT is exempt and is not
     read here: spec 3.4 records the verdict, it does not require a PASS from a
@@ -1203,9 +1315,17 @@ def _is_clean(result) -> bool:
         return False
     if len(result.get("stages", ())) != len(STAGE_ORDER):
         return False
+    validate = result.get("validate_run") or {}
     for stage in result["stages"]:
-        if stage["name"] != "certificate" and stage["rc"] != 0:
+        if stage["name"] == "certificate":
+            continue
+        if (stage["name"] == "validate_run" and validate.get("expected")
+                and stage["rc"] != 0):
+            continue
+        if stage["rc"] != 0:
             return False
+    if validate.get("expected") is False:
+        return False
     if (result.get("slice_check") or {}).get("ok") is False:
         return False
     rc = (result.get("oracle_tests") or {}).get("rc")
@@ -1254,12 +1374,15 @@ def write_matrix_report(results, path) -> Path:
         "by validate_run, merge_v4_arms and the figure loaders regardless of "
         "the waiver, so it can never become a quantitative result.",
         "",
-        "Stage order of the `stages rc` column (`-` = never reached; the "
-        "certificate's non-zero exit does not stop the sequence, its verdict "
-        "is recorded): " + ", ".join(STAGE_ORDER) + ".",
+        "Stage order of the `stages rc` column (`-` = never reached; `<rc>w` = "
+        "a non-zero exit the matrix expects, i.e. validate_run refusing the "
+        "waived certificate; the certificate's own non-zero exit does not stop "
+        "the sequence, its verdict is recorded): "
+        + ", ".join(STAGE_ORDER) + ".",
         "",
         f"{clean} of {len(results)} architectures completed every stage with "
-        "exit 0, a held-out channel marked sliced, and passing oracles.",
+        "its expected outcome, a held-out channel marked sliced, and passing "
+        "oracles.",
         "",
         "| arch | stages rc | certificate | oracles | wall |",
         "|---|---|---|---|---|",
@@ -1281,6 +1404,21 @@ def write_matrix_report(results, path) -> Path:
         if check.get("ok") is False:
             findings.append(f"- {record['arch']}: held-out channel not marked "
                             f"sliced -- {check.get('detail', '')}")
+        validate = record.get("validate_run") or {}
+        if validate.get("expected") is False:
+            findings.append(f"- {record['arch']}: validate_run -- "
+                            f"{validate.get('detail', '')}")
+    expected = [f"- {record['arch']}: validate_run: "
+                f"{VALIDATE_RUN_EXPECTED_DETAIL}"
+                for record in results
+                if (record.get("validate_run") or {}).get("expected")
+                and (record.get("validate_run") or {}).get("rc")]
+    if expected:
+        lines += ["", "## Expected outcomes", "",
+                  "validate_run is a record layer and stays strict: it "
+                  "requires a PASS certificate and ignores the waiver, so it "
+                  "MUST refuse a run rendered from this template, and only "
+                  "that one refusal is expected of it."] + [""] + expected
     if findings:
         lines += ["", "## Findings", ""] + findings
     lines.append("")

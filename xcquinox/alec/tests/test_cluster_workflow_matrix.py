@@ -1622,8 +1622,11 @@ def test_run_arch_carries_the_certificate_verdict_and_its_waiver(tmp_path):
     architecture a failed one.
     """
     run_dir = tmp_path / "deep" / "runs" / "run_20260821T000000Z"
-    result, _fake = _run_arch(tmp_path,
-                              fake=SliceMarkingRunner(run_dir, verdict="FAIL"))
+    # validate_run must REFUSE such a run -- it requires a PASS verdict and
+    # ignores the waiver -- so the fake refuses it for that one reason; a
+    # validate_run that exited 0 here would itself be the matrix's failure.
+    result, _fake = _run_arch(tmp_path, fake=ValidateRunRunner(
+        run_dir, verdict="FAIL", failures=(_certificate_refusal(),)))
     assert [s["name"] for s in result["stages"]] == list(wm.STAGE_ORDER)
     certificate = result["certificate"]
     assert certificate["present"] is True
@@ -1694,3 +1697,149 @@ def test_write_matrix_report_names_a_missing_certificate(tmp_path):
     # The waiver is stated where a reader meets the certificate column.
     assert "fidelity.enforce: false" in text
     assert "EXPECTED" in text
+
+
+# ---------------------------------------------------------------------------
+# validate_run: a record layer that MUST refuse this identity's run
+# ---------------------------------------------------------------------------
+
+def _certificate_refusal(arch="deep", verdict="FAIL") -> str:
+    """The failure ``cluster/validate_run`` reports for the certificate
+    verdict, in the shape that module writes it."""
+    return (f"pretrain/{arch}: fidelity certificate verdict {verdict!r}, "
+            "expected 'PASS' (summary: None)")
+
+
+class ValidateRunRunner(SliceMarkingRunner):
+    """A fake runner whose validate_run stage writes what that module writes.
+
+    ``cluster/validate_run.main`` prints a checked-count line, one
+    ``[validate_run] FAIL: <text>`` per failure and a count line, then exits 1;
+    with no failure it prints its clean line and exits 0. The matrix reads
+    those lines, so the fake produces them rather than a bare exit code.
+    """
+
+    def __init__(self, run_dir, *, failures=(), validate_rc=1, **kwargs):
+        super().__init__(run_dir, **kwargs)
+        self.failures = tuple(failures)
+        self.validate_rc = validate_rc
+
+    def __call__(self, argv, **kwargs):
+        argv_s = [str(a) for a in argv]
+        if FakeRunner._stage_of(argv_s) != "validate_run":
+            return super().__call__(argv, **kwargs)
+        self.calls.append((argv_s, dict(kwargs.get("env") or {})))
+        stream = kwargs.get("stdout")
+        stream.write("[fake] validate_run\n")
+        stream.write(f"[validate_run] checked 2 spec(s) under {self.run_dir}\n")
+        for failure in self.failures:
+            stream.write(f"[validate_run] FAIL: {failure}\n")
+        if self.failures:
+            stream.write(f"[validate_run] {len(self.failures)} failure(s), "
+                         "0 warning(s)\n")
+        else:
+            stream.write("[validate_run] clean (0 warning(s))\n")
+
+        class _Completed:
+            returncode = self.validate_rc
+
+        return _Completed()
+
+
+def _validate_run_arch(tmp_path, **kwargs):
+    """One architecture through the sequence with a waived FAIL certificate."""
+    run_dir = tmp_path / "deep" / "runs" / "run_20260821T000000Z"
+    fake = ValidateRunRunner(run_dir, verdict="FAIL", **kwargs)
+    return _run_arch(tmp_path, fake=fake)[0]
+
+
+def test_run_arch_accepts_the_expected_validate_run_refusal(tmp_path):
+    """``validate_run`` is a record layer and stays strict: it requires a PASS
+    certificate and ignores the waiver, so it MUST refuse a run rendered from
+    this template. That refusal, alone, is the expected outcome of the stage
+    and does not make the architecture a failed one.
+    """
+    result = _validate_run_arch(tmp_path,
+                                failures=(_certificate_refusal(),))
+    assert [s["name"] for s in result["stages"]] == list(wm.STAGE_ORDER)
+    assert result["validate_run"]["expected"] is True
+    assert result["validate_run"]["detail"] == wm.VALIDATE_RUN_EXPECTED_DETAIL
+    assert result["validate_run"]["rc"] == 1
+    # The fingerprint says "expected non-zero", not "broken".
+    assert wm.arch_row(result)["stages_rc"].endswith(".1w")
+    assert wm.matrix_exit_code([result]) == 0
+    text = wm.write_matrix_report([result], tmp_path / "matrix.md").read_text()
+    assert "validate_run: refused the waived certificate as expected" in text
+    assert "1 of 1" in text
+
+
+def test_run_arch_refuses_a_validate_run_that_accepted_the_waived_run(
+        tmp_path):
+    """A zero exit would mean the record layer had stopped refusing a run whose
+    certificate records a FAIL -- the guarantee that keeps a workflow-matrix
+    run out of the results."""
+    result = _validate_run_arch(tmp_path, failures=(), validate_rc=0)
+    assert result["validate_run"]["expected"] is False
+    assert "exited 0" in result["validate_run"]["detail"]
+    assert wm.matrix_exit_code([result]) == 1
+    text = wm.write_matrix_report([result], tmp_path / "matrix.md").read_text()
+    assert "0 of 1" in text
+    assert "validate_run --" in text
+
+
+def test_run_arch_refuses_a_second_validate_run_failure(tmp_path):
+    """A second failure produces the same exit code as the expected one, so
+    without reading the report it would hide behind it."""
+    other = "specs/spec_0000.spec: arch 'deep' has n_extra_features 3, expected 4"
+    result = _validate_run_arch(
+        tmp_path, failures=(_certificate_refusal(), other))
+    assert result["validate_run"]["expected"] is False
+    assert result["validate_run"]["failures"] == [_certificate_refusal(), other]
+    assert "n_extra_features" in result["validate_run"]["detail"]
+    assert wm.matrix_exit_code([result]) == 1
+    assert wm.arch_row(result)["stages_rc"].endswith(".1")
+
+
+def test_run_arch_refuses_a_refusal_naming_another_architecture(tmp_path):
+    """The refusal has to be the one for the architecture under test: a
+    certificate refusal of a DIFFERENT architecture means the run directory
+    carries a sweep this matrix did not render."""
+    result = _validate_run_arch(
+        tmp_path, failures=(_certificate_refusal(arch="shallow"),))
+    assert result["validate_run"]["expected"] is False
+    assert wm.matrix_exit_code([result]) == 1
+
+
+def test_run_arch_expects_a_clean_validate_run_without_the_waiver(tmp_path):
+    """With a PASS certificate no waiver is in play and the ordinary contract
+    applies: exit zero is the expected outcome and carries no marker."""
+    result, _fake = _run_arch(tmp_path)      # default fake: PASS certificate
+    assert result["certificate"]["verdict"] == "PASS"
+    assert result["validate_run"]["expected"] is True
+    assert result["validate_run"]["rc"] == 0
+    assert wm.arch_row(result)["stages_rc"].endswith(".0")
+
+
+def test_the_certificate_runs_at_the_rendered_identity(tmp_path):
+    """The certificate is computed at the RUN's identity, not at a separate
+    production one: ``fidelity.run_identity`` reads the config's own basis,
+    grid level and Coulomb backend, and ``build_oracle_set`` builds every
+    oracle system at those values. ``validate_run`` in turn refuses a
+    certificate whose identity block differs from the config's, so the two
+    cannot drift. At the matrix identity that is def2-svp / grid level 1 --
+    the cost of the certificate stage is a def2-svp calculation, not a
+    6-311++G(3df,2pd) one.
+    """
+    from xcquinox.alec.cluster import fidelity
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    cfg = load_grid_config(str(wm.write_matrix_yaml(
+        "deep", tmp_path / "deep", repo_root=wm.repo_root_path(),
+        external_refs_dir=_fake_staged_refs(tmp_path / "refs"))))
+    identity = fidelity.run_identity(cfg)
+    assert identity["basis"] == cfg.inputs.basis == "def2-svp"
+    assert identity["grid_level"] == cfg.inputs.grid_level == 1
+    assert identity["density_fit"] is False
+    systems = fidelity.build_oracle_set(cfg, "deep")
+    assert systems
+    assert {s.basis for s in systems} == {"def2-svp"}
+    assert {s.grid_level for s in systems} == {1}
