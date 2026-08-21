@@ -389,6 +389,54 @@ def test_spin_mol_keys_of_the_wrong_width_are_refused_at_definition():
         assert "spin_mol_keys" in str(excinfo.value)
 
 
+def test_spin_mol_keys_must_be_a_tuple_of_names():
+    """A width check alone admits declarations that are not name tuples.
+    Measured before the type rule: a two-name LIST defined and served both
+    channels; a two-character STRING defined and silently supplied its
+    characters as the two key names; a two-element SET defined and raised
+    "'set' object is not subscriptable" at the first per-channel evaluation; a
+    tuple carrying a non-string entry defined and reached the beta channel as a
+    KeyError on mol_data[3]; and None was refused only by "object of type
+    'NoneType' has no len()", which does not name the offending class."""
+    from xcquinox.alec.descriptors import Descriptor
+    for keys in (["a_key", "b_key"], "ab", {"a_key", "b_key"}, None,
+                 ("a_key", 3)):
+        with pytest.raises(TypeError, match="_MalformedSpinKeys") as excinfo:
+            class _MalformedSpinKeys(Descriptor):
+                density_matrix_dependent: ClassVar[bool] = True
+                spin_mol_keys: ClassVar[tuple[str, ...]] = keys
+                n_features: int = eqx.field(default=1, static=True)
+
+                def compute(self, mol_data):
+                    return jnp.zeros((1, 1))
+
+        assert "spin_mol_keys" in str(excinfo.value)
+
+
+def test_malformed_spin_keys_raise_at_use_on_a_geometry_only_descriptor():
+    """The use-time check does not consult the declared dependence: before it
+    was made unconditional, a geometry-only descriptor mutated to a one-name
+    tuple served channel 0 and raised IndexError on channel 1."""
+    from xcquinox.alec.descriptors import CuspDescriptor
+    d = CuspDescriptor()
+    mol_data = {"cusp_features": jnp.ones((3, 2)),
+                "a_key": jnp.ones((3, 2)), "b_key": jnp.ones((3, 2))}
+    original = CuspDescriptor.spin_mol_keys
+    for bad in (("cusp_features",), "ab", ["a_key", "b_key"]):
+        CuspDescriptor.spin_mol_keys = bad
+        try:
+            for channel in (0, 1):
+                with pytest.raises(TypeError, match="CuspDescriptor") as excinfo:
+                    d.compute_for_spin_channel(mol_data, channel)
+                assert "spin_mol_keys" in str(excinfo.value)
+        finally:
+            CuspDescriptor.spin_mol_keys = original
+    assert CuspDescriptor.spin_mol_keys == ()
+    # the descriptor still reaches its shared block once the declaration is sound
+    assert bool(jnp.all(d.compute_for_spin_channel(mol_data, 1)
+                        == mol_data["cusp_features"]))
+
+
 def test_dm_dependent_descriptor_with_cleared_spin_keys_raises_at_use():
     """The same condition reached by post-definition mutation raises at use
     rather than returning the shared block."""
@@ -492,13 +540,15 @@ def test_doubled_dm_multishell_occupancy_keeps_the_alpha_major_layout(o_atom_uks
                 np.testing.assert_allclose(ms_d[:, 2 * w + slot],
                                            ms_phys[:, 2 * w + s],
                                            rtol=0.0, atol=1e-12)
-        # Bessel bound preserved. The alpha range reproduced as
-        # [2.45e-07, 9.54e-01] across four initial guesses, and the beta minimum
-        # as 3.23e-08; the beta MAXIMUM does not reproduce -- the singly occupied
-        # beta 2p of the O atom is orientation-degenerate, so the converged
-        # solution selects an arbitrary member of that set and the narrowest
-        # projector reports a peak anywhere in 0.949-0.954. Only the bound is
-        # asserted, which is why the spread does not weaken the test.
+        # Bessel bound preserved. The alpha range reproduced exactly as
+        # [2.449495e-07, 9.544290e-01] over five runs (the default initial guess
+        # plus minao, 1e, atom and huckel). NEITHER beta extreme reproduces: the
+        # singly occupied beta 2p of the O atom is orientation-degenerate, so the
+        # converged solution selects an arbitrary member of that set. Over the
+        # same five runs the beta maximum, carried by the narrowest projector
+        # (alpha = 0.8), moved over 0.949-0.954 and the beta minimum over
+        # 3.228e-08 to 3.234e-08. Only the bound is asserted, which is why the
+        # spread does not weaken the test.
         assert ms_d.min() >= 0.0 and ms_d.max() <= 1.0
 
 

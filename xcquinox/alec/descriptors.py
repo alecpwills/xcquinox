@@ -49,6 +49,44 @@ def _validated_spin_channel(spin_channel) -> int:
     return int(spin_channel)
 
 
+def _validated_spin_mol_keys(keys, owner: str,
+                             density_matrix_dependent: bool) -> tuple:
+    """Return ``keys`` as a validated per-spin precompute key declaration.
+
+    The declaration carries one precompute name per spin channel, so it is
+    either empty -- a geometry-only descriptor, whose per-channel block is the
+    shared block -- or a tuple of exactly two strings, ``(alpha, beta)``.
+    Checking the length alone admitted declarations that are not name tuples: a
+    two-name LIST defined and served both channels; a two-character STRING
+    defined and silently supplied its characters as the two key names; a
+    two-element SET defined and raised "'set' object is not subscriptable" at
+    the first per-channel evaluation; a tuple carrying a non-string entry
+    reached the beta channel as a KeyError on the non-name; and ``None`` was
+    refused only by "object of type 'NoneType' has no len()", which names
+    neither the attribute nor the class.
+
+    The same rule applies at class definition and at every per-channel call, so
+    an attribute rewritten after definition is refused on the same terms instead
+    of surfacing as an IndexError on the beta channel.
+    """
+    if (not isinstance(keys, tuple) or len(keys) not in (0, 2)
+            or not all(isinstance(k, str) for k in keys)):
+        raise TypeError(
+            f"{owner} declares spin_mol_keys = {keys!r}; the declaration must "
+            "be a tuple of precompute names, either empty (geometry-only) or "
+            "exactly two, (alpha, beta), one name per spin channel."
+        )
+    if density_matrix_dependent and not keys:
+        raise TypeError(
+            f"{owner} declares density_matrix_dependent = True but leaves "
+            "spin_mol_keys empty, so its per-channel exchange block would fall "
+            "back to the features of the physical density -- the defect that "
+            "evaluating on diag(P_sigma, P_sigma) removes. Declare the "
+            "(alpha, beta) precompute key names."
+        )
+    return keys
+
+
 class Descriptor(eqx.Module, abc.ABC):
     """Base class for all descriptors. Subclasses provide extra input features."""
     registry_name: ClassVar[str] = ""
@@ -68,23 +106,8 @@ class Descriptor(eqx.Module, abc.ABC):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        if len(cls.spin_mol_keys) not in (0, 2):
-            raise TypeError(
-                f"{cls.__name__} declares spin_mol_keys = "
-                f"{cls.spin_mol_keys!r}; the tuple holds one precompute name per "
-                "spin channel, so it must be either empty (geometry-only) or "
-                "(alpha, beta). A one-name tuple defines without complaint and "
-                "raises IndexError only when the beta channel is first "
-                "requested."
-            )
-        if cls.density_matrix_dependent and not cls.spin_mol_keys:
-            raise TypeError(
-                f"{cls.__name__} declares density_matrix_dependent = True but "
-                "leaves spin_mol_keys empty, so its per-channel exchange block "
-                "would fall back to the features of the physical density -- the "
-                "defect that evaluating on diag(P_sigma, P_sigma) removes. "
-                "Declare the (alpha, beta) precompute key names."
-            )
+        _validated_spin_mol_keys(cls.spin_mol_keys, cls.__name__,
+                                 cls.density_matrix_dependent)
 
     @abc.abstractmethod
     def compute(self, mol_data: dict) -> jnp.ndarray:
@@ -107,15 +130,9 @@ class Descriptor(eqx.Module, abc.ABC):
         dependence, so its per-channel block is the shared block.
         """
         channel = _validated_spin_channel(spin_channel)
-        keys = self.spin_mol_keys
-        if self.density_matrix_dependent and len(keys) != 2:
-            raise TypeError(
-                f"{type(self).__name__} is density-matrix dependent but its "
-                f"spin_mol_keys are {keys!r}, not one name per spin channel, so "
-                "no per-channel block exists; returning the shared block here "
-                "would evaluate exchange at the physical density in both "
-                "channels."
-            )
+        keys = _validated_spin_mol_keys(self.spin_mol_keys,
+                                        type(self).__name__,
+                                        self.density_matrix_dependent)
         if not keys:
             return self.compute(mol_data)
         key = keys[channel]
