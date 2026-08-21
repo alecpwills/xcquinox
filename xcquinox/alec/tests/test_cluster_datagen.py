@@ -133,3 +133,99 @@ def test_main_generation_failure_returns_1(monkeypatch, tmp_path):
 
     monkeypatch.setattr(_datagen, "_ensure_pretrain_data", _boom)
     assert _datagen.main([str(run_dir)]) == 1
+
+
+# ---------------------------------------------------------------------------
+# JAX precision routing: the datagen node must compute in float64
+# ---------------------------------------------------------------------------
+
+def test_datagen_routes_jax_to_double_precision(monkeypatch):
+    """The generator's descriptor, tau and alpha columns are JAX computations,
+    and the parent density arrives as a jnp array. Without this the datagen node
+    computes them in single precision while every test computes them in double,
+    so the file the cluster writes is not the file the tests describe."""
+    import os
+    monkeypatch.delenv("JAX_ENABLE_X64", raising=False)
+    _datagen._route_jax_env()
+    assert os.environ["JAX_ENABLE_X64"] == "1"
+
+
+def test_datagen_routes_before_anything_that_imports_jax():
+    """The switch is only honored before the first jax import, so the routing
+    call must precede every other statement of main() and the module must not
+    import the generator at module scope."""
+    import inspect
+    src = inspect.getsource(_datagen.main)
+    assert src.index("_route_jax_env()") < src.index("argv = sys.argv")
+    assert src.index("_route_jax_env()") < src.index("load_grid_config")
+    module_src = inspect.getsource(_datagen)
+    head = module_src.split("def _route_jax_env")[0]
+    assert "import pretrain_data_gen" not in head, (
+        "importing the generator at module scope pulls in jax.numpy before "
+        "_route_jax_env can set the precision flag")
+
+
+def test_datagen_routing_switches_a_live_jax_to_double_precision():
+    """``python -m xcquinox.alec.cluster._datagen`` runs the package
+    initializers first, and ``import xcquinox`` already imports jax, so by the
+    time this module's body runs the environment variable is read too late.
+    The routing must therefore also flip the live configuration; the
+    observable is the dtype a float64 host array keeps on entering JAX."""
+    import numpy as np
+    import jax
+    import jax.numpy as jnp
+    jax.config.update("jax_enable_x64", False)
+    try:
+        assert jnp.asarray(np.ones(1)).dtype == np.float32
+        _datagen._route_jax_env()
+        assert bool(jax.config.jax_enable_x64) is True
+        assert jnp.asarray(np.ones(1)).dtype == np.float64
+    finally:
+        jax.config.update("jax_enable_x64", True)
+
+
+def test_require_x64_reports_single_precision():
+    """The guarantee must not rest on a third-party import side effect
+    (pyscfad enables x64 when imported); the worker checks the live dtype and
+    names the defect when it is absent."""
+    import jax
+    jax.config.update("jax_enable_x64", False)
+    try:
+        problem = _datagen._require_x64()
+    finally:
+        jax.config.update("jax_enable_x64", True)
+    assert problem is not None
+    assert "float64" in problem
+    assert _datagen._require_x64() is None
+
+
+def test_main_refuses_to_generate_without_double_precision(monkeypatch, tmp_path):
+    """A refused precision check exits non-zero BEFORE any generation call, so
+    the pretrain ``afterok:datagen`` dependency blocks instead of consuming a
+    single-precision file."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "resolved_config.yaml").write_text("dummy: 1\n")
+    monkeypatch.setattr(_datagen, "load_grid_config",
+                        lambda p: _cfg(["deep"], True))
+    calls = []
+    monkeypatch.setattr(_datagen, "_ensure_pretrain_data",
+                        lambda *a, **k: calls.append((a, k)) or "x.npz")
+    monkeypatch.setattr(_datagen, "_require_x64",
+                        lambda: "JAX is computing in float32")
+    assert _datagen.main([str(run_dir)]) == 1
+    assert calls == []
+
+
+def test_main_binds_the_generator_seam_when_unbound(monkeypatch):
+    """The seam is bound lazily in ``main`` (importing the generator pulls in
+    jax.numpy); an unbound seam must resolve to the real generator, and a
+    patched one must be left alone."""
+    from xcquinox.alec import pretrain_data_gen
+    monkeypatch.setattr(_datagen, "_ensure_pretrain_data", None)
+    assert _datagen.main([]) == 1  # no argv: exits before any generation
+    assert _datagen._ensure_pretrain_data is pretrain_data_gen.ensure_pretrain_data
+    sentinel = object()
+    monkeypatch.setattr(_datagen, "_ensure_pretrain_data", sentinel)
+    assert _datagen.main([]) == 1
+    assert _datagen._ensure_pretrain_data is sentinel

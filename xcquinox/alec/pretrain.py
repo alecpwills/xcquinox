@@ -310,11 +310,15 @@ def _pretrain_data_filename(arch) -> str:
 
     A spin-polarization-aware arch uses the zeta-aware
     ``pretrain_data_polarized.npz`` (carrying a per-grid-point ``zeta_all``
-    column); the default unpolarized arch uses ``pretrain_data.npz``. Pure so it
+    column); the default unpolarized arch uses ``pretrain_data.npz``. The name
+    itself comes from ``pretrain_data_gen.pretrain_data_filename``, the single
+    naming function the generator and the datagen stage write through, so the
+    two ends of the hand-off cannot drift; its parent-density qualifier stays
+    at the PBE default until ``run_pretrain`` resolves its parent. Pure so it
     can be unit-tested without touching disk."""
-    if getattr(arch, "use_polarized_correlation", False):
-        return "pretrain_data_polarized.npz"
-    return "pretrain_data.npz"
+    from xcquinox.alec.pretrain_data_gen import pretrain_data_filename
+    return pretrain_data_filename(
+        bool(getattr(arch, "use_polarized_correlation", False)))
 
 
 def run_pretrain(spec: PretrainSpec, progress_callback=None, *, networks=None) -> dict:

@@ -43,7 +43,7 @@ from collections import namedtuple
 
 import numpy as np
 import jax.numpy as jnp
-from pyscf import gto, dft
+from pyscf import gto, dft, scf
 
 import xcquinox.features as _features
 from xcquinox.alec.df_jk import default_auxbasis
@@ -237,9 +237,11 @@ def resolve_parent_density(arch, parent_density):
     pinned by test.
 
     The meta-GGA rung is read the way ``rungs.arch_ingredients`` reads it -- the
-    ``meta_gga`` flag OR a ``"metagga"`` descriptor. ``ArchitectureConfig``
-    rejects only the other direction (the flag without the descriptor), so an
-    architecture assembled outside the registry can carry the descriptor alone,
+    ``meta_gga`` flag OR a ``"metagga"`` descriptor. The guard in
+    ``ArchitectureConfig.from_spec`` rejects only the other direction (the flag
+    without the descriptor); the dataclass constructor accepts either alone,
+    so an architecture assembled outside ``from_spec`` can carry the descriptor
+    alone,
     and resolving that one to PBE would pretrain a meta-GGA network on a density
     its own SCF never visits.
     """
@@ -342,7 +344,8 @@ def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
     reproduces the parent's open-shell exchange energy exactly.
 
     Returns 1-D columns (2-D for the descriptor blocks), alpha channel first
-    then beta, with points below ``rho_floor`` in the DOUBLED density dropped. A
+    then beta, with points at or below ``rho_floor`` in the DOUBLED density
+    dropped. A
     channel with no electron (the beta channel of H) contributes no rows.
     Correlation is untouched: it is spin-interpolated rather than spin-scaled
     and keeps the total density with zeta.
@@ -424,47 +427,228 @@ def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
     return {k: np.concatenate(v, axis=0) for k, v in parts.items()}
 
 
-def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
-                  density_fit=False, auxbasis=None, cusp_log_transform=True,
-                  exchange_footing="total"):
-    """Per-atom pretrain columns. Returns a dict of equal-length 1-D arrays
-    (rho, sigma, Fx, Fc, weights[, zeta][, cusp (N,2)][, dm (N,D)]).
+def _scf_gradient_norm(mol_data):
+    """pyscf's SCF orbital-gradient norm, rebuilt from a stored density record.
 
-    ``density_fit`` density-fits the Coulomb build of the per-atom PBE SCF
-    (auxbasis from :func:`df_jk.default_auxbasis`). The Fx/Fc targets are a
-    property of the converged density, so DF only changes them within DF error;
-    it is wired here so the pretrain data can be regenerated at a large basis
-    without the full ERI blowing up RAM (negligible cost for single atoms, but
-    keeps the whole pipeline on one Coulomb backend).
+    ``precompute_fixed_density_data`` keeps the pieces of the Fock matrix at the
+    density it returns -- ``h_core``, ``j_matrix`` (per spin for UKS),
+    ``vxc_pbe`` -- together with ``dm_pbe`` and ``s_matrix``, and a
+    self-consistent density is the one whose Fock matrix commutes with
+    ``P S``. In the orthonormal MO basis ``C`` (``C^T S C = 1``) the commutator
+    ``F P S - S P F`` has the occupied-virtual block ``n_occ F_ai`` and its
+    negative transpose, so ``||S^-1/2 (F P S - S P F) S^-1/2||_F / sqrt(2)`` is
+    exactly the norm pyscf's ``scf.hf.get_grad`` / ``scf.uhf.get_grad`` return
+    (the factor of 2 in the restricted gradient is the occupation; the two
+    unrestricted channels add in quadrature). ``S^-1/2`` stands in for the MO
+    coefficients the record does not carry, the Frobenius norm being invariant
+    under the orthogonal map between the two bases. Measured against
+    ``np.linalg.norm(mf.get_grad(...))`` on H2O and OH, converged and stopped
+    after one cycle: <= 6e-8 relative wherever the norm is above round-off.
+    """
+    s_matrix = np.asarray(mol_data["s_matrix"])
+    dm = np.asarray(mol_data["dm_pbe"])
+    h_core = np.asarray(mol_data["h_core"])
+    j_matrix = np.asarray(mol_data["j_matrix"])
+    vxc = np.asarray(mol_data["vxc_pbe"])
+    evals, evecs = np.linalg.eigh(s_matrix)
+    s_mhalf = (evecs / np.sqrt(evals)) @ evecs.T
+    if dm.ndim == 3:
+        j_total = j_matrix.sum(axis=0)
+        pairs = ((h_core + j_total + vxc[0], dm[0]),
+                 (h_core + j_total + vxc[1], dm[1]))
+    else:
+        pairs = ((h_core + j_matrix + vxc, dm),)
+    total = 0.0
+    for fock, dm_s in pairs:
+        comm = fock @ dm_s @ s_matrix - s_matrix @ dm_s @ fock
+        comm = s_mhalf @ comm @ s_mhalf
+        total += float(np.sum(comm * comm))
+    return float(np.sqrt(total / 2.0))
+
+
+#: Electron-count tolerance, per electron, for :func:`_require_sane_density`.
+#: The quadrature error of the integrated density was measured at <= 5.3e-6 per
+#: electron on level-1 grids (H2O/def2-SVP, the worst of H, He, N, O, F-, H2O,
+#: NH3) and at 1.3e-3 per electron on the level-0 grid of H2/STO-3G, the
+#: coarsest grid the tests use; the defects the check exists for (a lost
+#: electron, a density matrix on another molecule's grid) are O(1).
+_N_ELECTRON_TOL = 1e-2
+
+
+def _require_sane_density(mol_data, system, reference_xc, basis, grid_level,
+                          n_electrons):
+    """Raise unless the parent density is a converged density on this grid.
+
+    The Fx / Fc targets and the per-system energies are properties of the
+    CONVERGED parent density; an unconverged one is not a functional's density
+    at all and enters the fit as noise no later stage can tell from a fit error.
+    Three tests, none needing more than the record the precompute always
+    returns:
+
+    * an ``scf_converged`` flag of ``False`` is honored when a record carries
+      one (the installed precompute records none);
+    * the quadrature of the stored density against the electron count, which
+      catches a grid too coarse to resolve a diffuse density and a density
+      matrix that does not belong to the stored grid -- but NOT a stalled SCF,
+      whose density matrix still integrates to N electrons;
+    * the SCF orbital gradient rebuilt from the stored Fock pieces
+      (:func:`_scf_gradient_norm`), held to pyscf's own convergence criterion
+      ``conv_tol_grad = sqrt(conv_tol)`` (``pyscf/scf/hf.py``; 3.2e-5 at the
+      default ``conv_tol`` of 1e-9). Measured on converged records: <= 4.2e-6
+      (O/def2-SVP level 1); an SCF stopped after one cycle sits at 2e-3 (He)
+      to 1 (F-), and an oxygen-atom SCAN run pyscf reported unconverged at
+      6.7e-5. The energy-change half of pyscf's criterion needs the iteration
+      history, which the record does not carry.
+    """
+    if mol_data.get("scf_converged") is False:
+        raise RuntimeError(
+            f"the {reference_xc} SCF for pretraining system {system.name!r} "
+            f"(geometry {system.atom!r}, charge {system.charge}, 2S "
+            f"{system.spin}, basis {basis}, grid level {grid_level}) did not "
+            "converge"
+        )
+    rho = np.asarray(mol_data["rho_grid"])
+    weights = np.asarray(mol_data["grid_weights"])
+    n_grid = float(np.sum(weights * rho))
+    tol = _N_ELECTRON_TOL * max(1.0, float(n_electrons))
+    if not abs(n_grid - float(n_electrons)) < tol:
+        raise RuntimeError(
+            f"the {reference_xc} density of pretraining system "
+            f"{system.name!r} integrates to {n_grid:.6f} electrons on its own "
+            f"grid, against {n_electrons} expected (basis {basis}, grid level "
+            f"{grid_level}); the grid does not resolve this density or the "
+            "density matrix does not belong to it"
+        )
+    grad_norm = _scf_gradient_norm(mol_data)
+    grad_tol = float(np.sqrt(scf.hf.SCF.conv_tol))
+    if not grad_norm < grad_tol:
+        raise RuntimeError(
+            f"the {reference_xc} SCF for pretraining system {system.name!r} "
+            f"(geometry {system.atom!r}, charge {system.charge}, 2S "
+            f"{system.spin}, basis {basis}, grid level {grid_level}) did not "
+            f"converge: the orbital gradient of its stored density is "
+            f"{grad_norm:.3e}, against pyscf's criterion {grad_tol:.1e}"
+        )
+
+
+def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
+                    descriptors, density_fit=False, auxbasis=None,
+                    cusp_log_transform=True, exchange_footing="total"):
+    """Pretrain columns for ONE system on the parent functional's own density.
+
+    The general case of :func:`_atom_columns`: an arbitrary geometry, charge and
+    spin, and a parent functional that is PBE (the GGA rung's baseline) or SCAN
+    (the meta-GGA rung's). The density is NOT computed here: it comes from
+    ``data.precompute_fixed_density_data(mol_spec, reference_xc=...)``, the one
+    place this library produces a frozen parent density. Training builds its
+    features from that function's output and the Section 3.3 certificate
+    measures ``E_xc^NN - E_xc^parent`` on it, so obtaining the pretraining rows
+    the same way makes "the same density on the same grid" structural instead of
+    a coincidence that has to be re-argued whenever the pipeline moves.
+
+    Both the PBE and the SCAN enhancement targets are evaluated on whichever
+    density the file was built at, exactly as the single-atom path has always
+    done, so the column layout does not depend on the parent; the manifest
+    records the ``reference_xc`` and ``run_pretrain`` refuses a file whose
+    parent does not match the architecture's rung.
+
+    Returns a dict of column arrays sharing one leading length (the descriptor
+    blocks are 2-D; ``x_rows`` has its own row set): ``rho``, ``sigma``, ``Fx``,
+    ``Fc``, ``Fx_scan``, ``Fc_scan``, ``metagga``, ``weights``, ``e_lda_x``,
+    ``e_lda_c``, optionally ``zeta``, optionally ``cusp`` / ``dm`` / ``rung35``
+    / ``rung35ms``, and under the ``spin_channel`` footing ``x_rows``. Points
+    with a total density at or below ``_RHO_FLOOR`` are dropped.
+
+    ``e_lda_x`` and ``e_lda_c`` are the LDA energy DENSITIES ``rho eps_x^LDA``
+    and ``rho eps_c^PW92`` in the EXACT convention the ``Fx`` / ``Fc`` ratios
+    were formed in (libxc ``spin=1`` for an open shell, ``spin=0`` for a closed
+    one). Multiplying a stored enhancement factor by them returns Hartree per
+    unit volume, which is what makes the per-system energy term integrate the
+    same quantity the point-wise term fits: summed against ``weights`` they
+    reproduce pyscf's own integrated exchange and correlation on the same
+    density to <= 3.3e-11 Ha (the energy of the floored points; measured on N
+    and H2O at def2-SVP level 1).
 
     ``exchange_footing`` selects how OPEN-SHELL exchange rows are posed.
-    ``"total"`` (default) is unchanged: one row per grid point at the total
-    density with spin-resolved libxc targets. ``"spin_channel"`` additionally
-    returns ``x_rows``, the per-channel rows of
-    :func:`spin_channel_exchange_rows` -- ``(2 rho_sigma, 4 sigma_sigma_sigma,
-    features of diag(P_sigma, P_sigma))`` with the parent's spin-unpolarized
-    enhancement factor at those inputs as the target, which is what the exact
-    spin scaling evaluates at SCF time. ``x_rows`` is ``None`` for a
-    closed-shell atom, whose total-density rows already are that footing.
+    ``"total"`` is unchanged: one row per grid point at the total density with
+    spin-resolved libxc targets. ``"spin_channel"`` additionally returns
+    ``x_rows``, the per-channel rows of :func:`spin_channel_exchange_rows` --
+    ``(2 rho_sigma, 4 sigma_sigma_sigma, features of diag(P_sigma, P_sigma))``
+    with the parent's spin-unpolarized enhancement factor at those inputs as the
+    target, which is what the exact spin scaling evaluates at SCF time (Oliver
+    and Perdew, Phys. Rev. A 20, 397 (1979)). ``x_rows`` is ``None`` for a
+    closed-shell system, whose total-density rows already are that footing.
     Correlation rows are untouched under either setting: correlation is
     spin-interpolated rather than spin-scaled and keeps the total density with
-    zeta. The composition of the pretraining SET is not decided here."""
+    zeta.
+
+    ``density_fit`` is recorded in the manifest but no longer changes the parent
+    SCF: the density is the precompute's, whose PBE / SCAN baseline is
+    deliberately full-ERI so it is a fixed reference-quality anchor shared with
+    training. ``auxbasis`` is forwarded for the same identity bookkeeping.
+    """
+    if reference_xc not in ("pbe", "scan"):
+        raise ValueError(
+            f"reference_xc must be 'pbe' or 'scan'; got {reference_xc!r}.")
     if exchange_footing not in ("total", "spin_channel"):
         raise ValueError(
             "exchange_footing must be 'total' or 'spin_channel'; got "
             f"{exchange_footing!r}."
         )
-    mol = gto.M(atom=f"{symbol} 0 0 0", basis=basis, charge=0, spin=spin, verbose=0)
-    mf = dft.UKS(mol) if spin else dft.RKS(mol)
-    if density_fit:
-        aux = auxbasis if auxbasis is not None else default_auxbasis(basis)
-        mf = mf.density_fit(auxbasis=aux)
-    mf.xc = "pbe"
-    mf.grids.level = grid_level
-    mf.kernel()
+    system = normalize_system(system)
+    from xcquinox.alec.data import precompute_fixed_density_data
 
-    ao = mf._numint.eval_ao(mol, mf.grids.coords, deriv=1)
-    dm_ab = mf.make_rdm1()
+    mol_spec = _mol_spec_for(system, basis, grid_level)
+    # No descriptors and no reference keys are requested: the descriptor columns
+    # below are built by the same calls the single-atom path has always used, so
+    # an existing file's numbers do not move, and the precompute's own blocks
+    # (which it would build at the same values) are not paid for twice.
+    mol_data = precompute_fixed_density_data(
+        mol_spec, required_keys=(), descriptors=(), auxbasis=auxbasis,
+        reference_xc=reference_xc)
+
+    mol = gto.M(atom=system.atom, basis=basis, charge=int(system.charge),
+                spin=int(system.spin), verbose=0)
+    # A mean field for its integration grid and its libxc handle ONLY: the
+    # kernel is never run here. The record's grid is the one the SCF settled
+    # on, and pyscf does not integrate on the bare Becke-Lebedev grid: at its
+    # first ``get_veff`` call ``initialize_grids`` builds the grid and drops
+    # the points where the INITIAL-GUESS density is negligible
+    # (``prune_small_rho_grids_``: ``rho w <= small_rho_cutoff / n_points``,
+    # 1e-7 by default; on H2/STO-3G level 0 this removes points, on a single
+    # H it removes none). Replaying that method with the same initial guess
+    # -- the same deterministic function of the geometry, the level and the
+    # minao density -- reproduces the stored quadrature exactly, and the guard
+    # refuses to continue if it does not, which turns "the same grid" from an
+    # assumption into a check. The weights are compared exactly (one code path
+    # builds both); the coordinates are pinned through the AO table the
+    # precompute stored, which the same libcint kernels reproduce to round-off
+    # against O(1) differences for a foreign grid.
+    mf = dft.UKS(mol) if system.spin else dft.RKS(mol)
+    if grid_level is not None:
+        mf.grids.level = grid_level
+    mf.initialize_grids(mol, mf.get_init_guess(mol, mf.init_guess,
+                                               s1e=mf.get_ovlp(mol)))
+    weights = np.asarray(mol_data["grid_weights"])
+    coords = mf.grids.coords
+    ao = np.asarray(mol_data["ao_grid_deriv"])
+    same_grid = (
+        np.asarray(mf.grids.weights).shape == weights.shape
+        and np.array_equal(np.asarray(mf.grids.weights), weights)
+        and np.allclose(mf._numint.eval_ao(mol, coords, deriv=0), ao[0],
+                        rtol=0.0, atol=1e-10)
+    )
+    if not same_grid:
+        raise RuntimeError(
+            f"the rebuilt integration grid for pretraining system "
+            f"{system.name!r} is not the one precompute_fixed_density_data "
+            "used; the pretrain rows and the training features would be "
+            "quadratures of different grids"
+        )
+    _require_sane_density(mol_data, system, reference_xc, basis, grid_level,
+                          int(mol.nelectron))
+
+    dm_ab = np.asarray(mol_data["dm_pbe"])
     is_uks = (dm_ab.ndim == 3)
 
     if is_uks:
@@ -498,6 +682,13 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
     ec_safe = np.where(np.abs(ec_lda) > 1e-12, ec_lda, 1e-12)
     fx = np.clip(ex_pbe / ex_safe - 1.0, -5.0, 5.0)
     fc = np.clip(ec_pbe / ec_safe - 1.0, -5.0, 5.0)
+    # LDA energy densities in the SAME convention the ratios above were formed
+    # in: ``ex_safe`` / ``ec_safe`` are the denominators the clips divided by,
+    # so ``e_lda * (1 + F)`` returns the parent's energy density exactly
+    # wherever the +-5 clip is inactive. These are the columns the per-system
+    # energy term contracts with the quadrature weights.
+    e_lda_x = rho * ex_safe
+    e_lda_c = rho * ec_safe
 
     # Meta-GGA (SCAN) pretrain targets + iso-orbital alpha column, computed
     # unconditionally so the shared pretrain data always supports meta_gga archs (a
@@ -535,12 +726,14 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
         "Fx_scan": fx_scan[valid],
         "Fc_scan": fc_scan[valid],
         "metagga": alpha_col[valid].reshape(-1, 1),
-        "weights": np.asarray(mf.grids.weights)[valid],
+        "weights": weights[valid],
+        "e_lda_x": e_lda_x[valid],
+        "e_lda_c": e_lda_c[valid],
     }
     if polarized:
         cols["zeta"] = zeta[valid]
     if descriptors:
-        coords_v = mf.grids.coords[valid]
+        coords_v = coords[valid]
         # Match training: every cusp-using arch sets descriptor_log_transform=
         # True, and data.py computes the training cusp with that flag. The raw
         # default (False) saturates near nuclei, so a False pretrain cusp would
@@ -589,6 +782,44 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
             if is_uks else None
         )
     return cols
+
+
+def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
+                  density_fit=False, auxbasis=None, cusp_log_transform=True,
+                  exchange_footing="total"):
+    """Per-atom pretrain columns: the single-nucleus case of
+    :func:`_system_columns` on the PBE density.
+
+    Kept as a named entry point because the historical pretraining set is a list
+    of free atoms and because the atomic rows are the ones every pre-existing
+    ``.npz`` was built from; the geometry spelling ``"<Sym> 0 0 0"`` is the one
+    those files were generated with.
+    """
+    return _system_columns(
+        PretrainSystem(name=str(symbol), atom=f"{symbol} 0 0 0", charge=0,
+                       spin=int(spin)),
+        basis, grid_level, reference_xc="pbe", polarized=polarized,
+        descriptors=descriptors, density_fit=density_fit, auxbasis=auxbasis,
+        cusp_log_transform=cusp_log_transform,
+        exchange_footing=exchange_footing)
+
+
+def _molecule_columns(mol_spec, reference_xc, basis, grid_level, *, polarized,
+                      descriptors, density_fit=False, auxbasis=None,
+                      cusp_log_transform=True, exchange_footing="total"):
+    """Pretrain columns for one molecule of the set, on the parent's density.
+
+    ``mol_spec`` is anything :func:`normalize_system` accepts: a
+    ``PretrainSystem``, the mapping form the DFS inventory and the pool JSON
+    use, or a ``config.MoleculeSpec``. The basis and grid level come from the
+    run's production identity, not from the spec, so every system in a file
+    shares one integration identity.
+    """
+    return _system_columns(
+        mol_spec, basis, grid_level, reference_xc=reference_xc,
+        polarized=polarized, descriptors=descriptors, density_fit=density_fit,
+        auxbasis=auxbasis, cusp_log_transform=cusp_log_transform,
+        exchange_footing=exchange_footing)
 
 
 # --------------------------------------------------------------------------- #
@@ -808,8 +1039,7 @@ def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     the cluster harness so a basis OR fitting-basis change forces a regen instead
     of training on stale data."""
     eff_aux = _effective_auxbasis(basis, density_fit, auxbasis)
-    fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"
-    out_path = os.path.join(data_dir, fname)
+    out_path = os.path.join(data_dir, pretrain_data_filename(polarized))
     if pretrain_data_is_current(out_path, basis=basis, grid_level=grid_level,
                                 auxbasis=eff_aux, atoms=atoms):
         return out_path
@@ -889,8 +1119,7 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
             [c["rung35ms"] for c in per_atom])
 
     os.makedirs(out_dir, exist_ok=True)
-    fname = "pretrain_data_polarized.npz" if polarized else "pretrain_data.npz"
-    out_path = os.path.join(out_dir, fname)
+    out_path = os.path.join(out_dir, pretrain_data_filename(polarized))
     # ATOMIC write (tmp + os.replace): the data dir is SHARED across sweep
     # runs, and two concurrently submitted runs whose datagen stages both see
     # a stale file would otherwise race a plain in-place np.savez -- a torn
