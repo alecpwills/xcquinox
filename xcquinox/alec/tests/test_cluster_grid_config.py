@@ -1246,3 +1246,145 @@ def test_validate_rejects_a_nonpositive_tolerance(tmp_path):
     cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
     with pytest.raises(ValueError, match="tol_AE must be > 0"):
         validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_rejects_a_nonpositive_atom_tolerance(tmp_path):
+    """Mirror of the tol_AE floor on the free-atom leg. Both legs are
+    independent gates of the certificate, so a zero or negative tol_atom is a
+    config error in its own right: no measurement satisfies |dE_xc| <= 0."""
+    for bad in (0.0, -0.5):
+        raw = _base_config_dict()
+        raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": bad}
+        cfg = load_grid_config(_write(tmp_path, f"grid_{bad}.yaml", raw))
+        with pytest.raises(ValueError, match="tol_atom must be > 0"):
+            validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+def test_validate_rejects_a_negative_ae_tolerance(tmp_path):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": -1.0, "tol_atom": 1.0}
+    cfg = load_grid_config(_write(tmp_path, "grid.yaml", raw))
+    with pytest.raises(ValueError, match="tol_AE must be > 0"):
+        validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+@pytest.mark.parametrize("bad", [False, True, 0, 1, 2.5, [1.0], {"why": "x"}])
+def test_fidelity_override_reason_must_be_a_string(tmp_path, bad):
+    """A non-string override_reason is refused at load rather than coerced.
+
+    ``str(False)`` is the non-empty string ``'False'``, so coercing whatever
+    the YAML carried would let ``override_reason: false`` (and its YAML
+    synonym ``no``, and a bare ``0``) authorise a loosened tolerance -- the
+    opposite of what the author wrote. The reason is prose copied verbatim
+    into every certificate the run writes, so only a string is one."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0, "override_reason": bad}
+    with pytest.raises(ValueError, match="override_reason"):
+        load_grid_config(_write(tmp_path, "grid.json", raw))
+
+
+def test_fidelity_override_reason_false_does_not_authorise_a_loosening(tmp_path):
+    """The exploit the string coercion opened, end to end: a YAML boolean
+    ``false`` next to a 3.0 kcal/mol tolerance must not reach
+    validate_grid_semantics as the reason 'False'."""
+    yaml = pytest.importorskip("yaml")
+    raw = _base_config_dict()
+    path = tmp_path / "grid.yaml"
+    path.write_text(
+        yaml.safe_dump(raw)
+        + "fidelity:\n  tol_AE: 3.0\n  tol_atom: 1.0\n"
+          "  override_reason: false\n"
+    )
+    with pytest.raises(ValueError, match="override_reason"):
+        load_grid_config(str(path))
+
+
+def test_fidelity_override_reason_yaml_no_is_refused(tmp_path):
+    """``no`` is YAML 1.1 for the boolean False, so an author writing
+    ``override_reason: no`` (meaning 'no reason') must not have it coerced to
+    the authorising string 'False'."""
+    yaml = pytest.importorskip("yaml")
+    raw = _base_config_dict()
+    path = tmp_path / "grid.yaml"
+    path.write_text(
+        yaml.safe_dump(raw)
+        + "fidelity:\n  tol_AE: 3.0\n  tol_atom: 1.0\n"
+          "  override_reason: no\n"
+    )
+    with pytest.raises(ValueError, match="override_reason"):
+        load_grid_config(str(path))
+
+
+def test_fidelity_override_reason_accepts_a_string(tmp_path):
+    """The guard refuses only non-strings; a real reason still loads."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 3.0, "tol_atom": 3.0,
+                       "override_reason": "descriptor-free control arm"}
+    cfg = load_grid_config(_write(tmp_path, "grid.json", raw))
+    assert cfg.fidelity.override_reason == "descriptor-free control arm"
+    validate_grid_semantics(cfg, _StubDomain(pool_size=100))
+
+
+@pytest.mark.parametrize("key", ["tol_AE", "tol_atom"])
+@pytest.mark.parametrize("bad", [True, False, None, [1.0], {"v": 1.0}])
+def test_fidelity_tolerances_must_be_numbers(tmp_path, key, bad):
+    """A tolerance is a measured energy bound, so a boolean, a null or a
+    container is a config error named at load. ``float(True)`` is 1.0 and
+    ``float(None)`` raises TypeError past every ValueError handler, so neither
+    may reach FidelityConfig."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0, key: bad}
+    with pytest.raises(ValueError, match=f"fidelity.{key}"):
+        load_grid_config(_write(tmp_path, "grid.json", raw))
+
+
+@pytest.mark.parametrize("good,expected", [(2, 2.0), (0.5, 0.5), ("1.5", 1.5)])
+def test_fidelity_tolerances_accept_numeric_yaml_scalars(tmp_path, good,
+                                                         expected):
+    """An integer, a float and a quoted number all remain valid tolerances."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": good, "tol_atom": good,
+                       "override_reason": "control arm"}
+    cfg = load_grid_config(_write(tmp_path, "grid.json", raw))
+    assert cfg.fidelity.tol_AE == expected
+    assert cfg.fidelity.tol_atom == expected
+
+
+@pytest.mark.parametrize("bad", [None, 0, 1, "false", "true", [], {}])
+def test_fidelity_enforce_must_be_a_boolean(tmp_path, bad):
+    """A non-boolean enforce is refused rather than coerced.
+
+    ``bool(None)`` is False, so an empty ``enforce:`` (a null in YAML) would
+    otherwise DISABLE the on-node certificate gates in a config that never
+    asked for it; ``bool("false")`` is True, which silently contradicts the
+    author the other way. Only a YAML boolean sets this field."""
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0, "enforce": bad,
+                       "override_reason": "control arm"}
+    with pytest.raises(ValueError, match="fidelity.enforce"):
+        load_grid_config(_write(tmp_path, "grid.json", raw))
+
+
+def test_fidelity_enforce_null_does_not_disable_the_gates(tmp_path):
+    """The path that made this reachable in a live config: a documented
+    override_reason satisfies the enforce-needs-a-reason rule, so an empty
+    ``enforce:`` next to it would have disabled the gates unremarked."""
+    yaml = pytest.importorskip("yaml")
+    raw = _base_config_dict()
+    path = tmp_path / "grid.yaml"
+    path.write_text(
+        yaml.safe_dump(raw)
+        + "fidelity:\n  tol_AE: 1.0\n  tol_atom: 1.0\n"
+          "  override_reason: rung-3.5 control arm\n  enforce:\n"
+    )
+    with pytest.raises(ValueError, match="fidelity.enforce"):
+        load_grid_config(str(path))
+
+
+@pytest.mark.parametrize("good", [True, False])
+def test_fidelity_enforce_accepts_booleans(tmp_path, good):
+    raw = _base_config_dict()
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0, "enforce": good,
+                       "override_reason": "control arm"}
+    cfg = load_grid_config(_write(tmp_path, "grid.json", raw))
+    assert cfg.fidelity.enforce is good

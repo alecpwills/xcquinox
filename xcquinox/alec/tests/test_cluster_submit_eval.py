@@ -128,3 +128,35 @@ def test_submit_deferred_eval_surfaces_sbatch_error(tmp_path, monkeypatch):
         _sde(rd)
     # No eval record written when sbatch is rejected.
     assert [r for r in jt.read_job_records(rd) if r["kind"] == "eval"] == []
+
+
+def test_submit_deferred_eval_refuses_an_unreasoned_enforce_false_config(
+        tmp_path, monkeypatch):
+    """``resolved_config.yaml`` is an ordinary file that outlives the
+    ``submit`` which validated it, and this path re-reads it, can RE-RENDER
+    ``eval_array.sbatch`` from it, and then submits. A config edited to
+    ``enforce: false`` with no ``override_reason`` -- which disables the
+    on-node certificate gates -- must be refused here as it is at ``submit``,
+    before either the render or the sbatch.
+    """
+    yaml = pytest.importorskip("yaml")
+    rd = _make_run_dir(tmp_path)
+    cfg_path = os.path.join(rd, "resolved_config.yaml")
+    with open(cfg_path) as f:
+        raw = yaml.safe_load(f)
+    raw["fidelity"] = {"tol_AE": 1.0, "tol_atom": 1.0, "enforce": False}
+    with open(cfg_path, "w") as f:
+        yaml.safe_dump(raw, f)
+    # Drop the eval script so the re-render branch is the next thing that
+    # would run: its absence afterwards is what proves nothing was rendered.
+    eval_script = os.path.join(rd, "scripts", "eval_array.sbatch")
+    os.unlink(eval_script)
+    fake = _fake_slurm(["999"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    with pytest.raises(ValueError, match="override_reason"):
+        _sde(rd)
+
+    assert fake.calls == []
+    assert not os.path.exists(eval_script)
+    assert [r for r in jt.read_job_records(rd) if r["kind"] == "eval"] == []

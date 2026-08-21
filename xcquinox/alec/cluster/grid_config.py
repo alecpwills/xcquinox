@@ -599,6 +599,29 @@ def _build_pretrain(d: dict) -> PretrainConfig:
     )
 
 
+def _fidelity_tolerance(d, key: str) -> float:
+    """Read one certificate tolerance out of a raw ``fidelity`` mapping.
+
+    A tolerance is an energy bound, so a boolean or a container is a config
+    error rather than something to coerce: ``float(True)`` is 1.0 (silently
+    the binding tolerance) and ``float(None)`` raises ``TypeError``, which
+    passes every ``except ValueError`` handler in the load path. Integers,
+    floats and numeric strings remain valid.
+    """
+    v = d.get(key, 1.0)
+    if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+        raise ValueError(
+            f"grid config key 'fidelity.{key}' must be a number (kcal/mol for "
+            f"tol_AE, mHa for tol_atom), got {type(v).__name__} ({v!r})")
+    try:
+        return float(v)
+    except ValueError:
+        raise ValueError(
+            f"grid config key 'fidelity.{key}' must be a number (kcal/mol for "
+            f"tol_AE, mHa for tol_atom), got {type(v).__name__} "
+            f"({v!r})") from None
+
+
 def _build_fidelity(d) -> FidelityConfig:
     """Build FidelityConfig from a raw dict; ``None`` -> the defaults.
 
@@ -612,11 +635,34 @@ def _build_fidelity(d) -> FidelityConfig:
             f"grid config section 'fidelity' must be a mapping, got "
             f"{type(d).__name__}")
     reason = d.get("override_reason")
+    # A non-string reason is REFUSED, never coerced. str(False) is the
+    # non-empty string 'False', so coercion would let `override_reason: false`
+    # -- and its YAML 1.1 synonym `no`, and a bare `0` -- satisfy the
+    # non-empty-reason test in validate_grid_semantics and authorise a
+    # loosened tolerance, the opposite of what such an author wrote. The
+    # reason is prose copied verbatim into every certificate the run writes.
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError(
+            f"grid config key 'fidelity.override_reason' must be a string or "
+            f"null, got {type(reason).__name__} ({reason!r}); a boolean or a "
+            "number is not a reason. The value authorises a loosened "
+            "certificate tolerance (or disabled on-node gates) and is "
+            "recorded in every certificate the run writes")
+    # enforce is likewise refused rather than coerced: bool(None) is False, so
+    # an empty `enforce:` (a YAML null) would DISABLE the on-node gates in a
+    # config that never asked for it -- unremarked whenever an override_reason
+    # is present for some other purpose -- and bool("false") is True, which
+    # contradicts the author the other way.
+    enforce = d.get("enforce", True)
+    if not isinstance(enforce, bool):
+        raise ValueError(
+            f"grid config key 'fidelity.enforce' must be a boolean "
+            f"(true/false), got {type(enforce).__name__} ({enforce!r})")
     return FidelityConfig(
-        tol_AE=float(d.get("tol_AE", 1.0)),
-        tol_atom=float(d.get("tol_atom", 1.0)),
-        override_reason=None if reason is None else str(reason),
-        enforce=bool(d.get("enforce", True)),
+        tol_AE=_fidelity_tolerance(d, "tol_AE"),
+        tol_atom=_fidelity_tolerance(d, "tol_atom"),
+        override_reason=reason,
+        enforce=enforce,
     )
 
 

@@ -1609,14 +1609,33 @@ def test_resolved_config_round_trip_preserves_every_field(tmp_path):
     default for the whole run: ae_as_reactions was lost exactly this way,
     and every production sweep trained the AE channel in the fixed-anchor
     form its source YAML had turned off. Iterating dataclasses.fields keeps
-    this test binding on fields added later."""
+    this test binding on fields added later.
+
+    A field is guarded here ONLY while the config under test carries a
+    NON-DEFAULT value for it: a field the serializer drops reloads at its
+    default, which equals the value under test whenever the fixture YAML
+    leaves that field alone, and the comparison then passes against a
+    serializer that never wrote it. The fixture predates the fidelity block,
+    so that block is injected below with all four of its fields off their
+    defaults; a field added later needs the same treatment here."""
     import dataclasses
 
     import yaml
 
+    from xcquinox.alec.cluster.grid_config import FidelityConfig
+
     cfg = cli.load_grid_config(
         "hpcjobs/configs/dfs_step7.dfs6311_grid3_v4.yaml")
     assert cfg.ae_as_reactions is True  # the field that was being dropped
+    cfg = dataclasses.replace(cfg, fidelity=FidelityConfig(
+        tol_AE=0.5, tol_atom=0.25,
+        override_reason="round-trip fixture", enforce=False))
+    _fid_default = FidelityConfig()
+    for fld in dataclasses.fields(FidelityConfig):
+        assert getattr(cfg.fidelity, fld.name) != getattr(
+            _fid_default, fld.name), (
+            f"FidelityConfig.{fld.name} is at its default in this fixture, so "
+            "the round trip is NOT guarded for it")
     p = tmp_path / "resolved_config.yaml"
     with open(p, "w") as f:
         yaml.safe_dump(cli._config_to_raw_dict(cfg), f)
@@ -1626,3 +1645,86 @@ def test_resolved_config_round_trip_preserves_every_field(tmp_path):
         assert a == b, (
             f"GridConfig.{fld.name} does not survive the resolved-config "
             f"round-trip: {a!r} -> {b!r}")
+
+
+# ===========================================================================
+# Certificate-config validation on every command that loads a config
+# ===========================================================================
+
+def _handedit_resolved_fidelity(run_dir, **fidelity):
+    """Rewrite ``<run_dir>/resolved_config.yaml`` with a given fidelity block.
+
+    Models the exposure these tests pin: ``resolved_config.yaml`` is a plain
+    file that outlives the ``submit`` that validated it, so its certificate
+    settings can be edited afterwards. Every command that reloads it must
+    re-run the same semantic validation.
+    """
+    import yaml
+
+    p = os.path.join(run_dir, cli._RESOLVED_CONFIG_FILENAME)
+    with open(p) as f:
+        raw = yaml.safe_load(f)
+    raw["fidelity"] = dict(fidelity)
+    with open(p, "w") as f:
+        yaml.safe_dump(raw, f)
+    return p
+
+
+def test_prepare_refuses_a_resolved_config_with_unreasoned_enforce_false(
+        tmp_path, monkeypatch):
+    """`prepare` takes any grid config, a run's resolved_config.yaml included.
+    An un-reasoned enforce=false must be refused before any input is staged."""
+    rd = _make_run_dir(tmp_path, manifest=False)
+    cfg_path = _handedit_resolved_fidelity(
+        rd, tol_AE=1.0, tol_atom=1.0, enforce=False)
+    monkeypatch.setenv("SLURM_JOB_ID", "987654")
+    called = {}
+
+    def _fake_prepare(cfg, *, recompute_refs=True):
+        called["ran"] = True
+        raise AssertionError("prepare_inputs must not run on a refused config")
+
+    monkeypatch.setattr(cli, "prepare_inputs", _fake_prepare)
+    with pytest.raises(ValueError, match="override_reason"):
+        main(["prepare", cfg_path, "--no-recompute-refs"])
+    assert "ran" not in called
+
+
+def test_resubmit_refuses_a_resolved_config_with_unreasoned_enforce_false(
+        tmp_path, monkeypatch):
+    """`resubmit` re-renders and re-submits train+eval arrays from the run's
+    resolved_config.yaml, so it must re-validate that config: refusal happens
+    before any sbatch, and the harness lock is released on the way out."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    open(os.path.join(_spec_dir(rd, 0), "model.eqx"), "wb").close()
+    for i in (3, 4, 5):
+        with open(os.path.join(_spec_dir(rd, i), "failure.json"), "w") as f:
+            json.dump({"classification": "value_error"}, f)
+    train_rows = "\n".join([
+        "1000_1|OUT_OF_MEMORY|0:125",
+        "1000_2|OUT_OF_MEMORY|0:125",
+    ])
+    fake = _fake_slurm(ids=["7001", "7002"], sacct_rows={"1000": train_rows})
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    _handedit_resolved_fidelity(rd, tol_AE=1.0, tol_atom=1.0, enforce=False)
+
+    with pytest.raises(ValueError, match="override_reason"):
+        main(["resubmit", rd, "--submit"])
+    assert [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"] == []
+    assert not os.path.exists(os.path.join(rd, cli._LOCK_FILENAME))
+
+
+def test_resubmit_preflight_refuses_a_resolved_config_with_unreasoned_enforce_false(
+        tmp_path, monkeypatch):
+    """`resubmit-preflight` re-submits the whole pretrain->eval graph from the
+    resolved config, so the same refusal applies before any SLURM call."""
+    run_dir = _make_run_dir(tmp_path, manifest=False)
+    jt.append_job_record(run_dir, "train", "200", list(range(_N)))
+    _handedit_resolved_fidelity(
+        run_dir, tol_AE=1.0, tol_atom=1.0, enforce=False)
+    fake = _fake_slurm(ids=["400", "401", "402", "403", "404"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+
+    with pytest.raises(ValueError, match="override_reason"):
+        main(["resubmit-preflight", run_dir, "--submit"])
+    assert fake.calls == []

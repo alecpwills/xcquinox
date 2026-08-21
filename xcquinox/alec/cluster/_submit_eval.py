@@ -27,7 +27,12 @@ import os
 import subprocess
 import sys
 
-from xcquinox.alec.cluster.grid_config import load_grid_config, expand_grid
+from xcquinox.alec.cluster.grid_config import (
+    load_grid_config,
+    expand_grid,
+    validate_grid_semantics,
+)
+from xcquinox.alec.cluster.domain import get_domain_profile
 from xcquinox.alec.cluster import job_tracking
 
 
@@ -108,6 +113,12 @@ def submit_deferred_eval(run_dir: str, *, force: bool = False) -> dict:
     indices = list(train_rec["indices"])
 
     cfg = load_grid_config(os.path.join(run_dir, _RESOLVED_CONFIG))
+    # resolved_config.yaml is an ordinary file that outlives the `submit`
+    # which validated it, and the branch below can RE-RENDER
+    # eval_array.sbatch from it. The same semantic validation `submit` runs
+    # is therefore re-run here, before the render and before sbatch, rather
+    # than trusting whatever last wrote the file.
+    validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
     n_specs = len(expand_grid(cfg))
     array_max = n_specs - 1
 

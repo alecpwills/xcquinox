@@ -658,6 +658,11 @@ def cmd_prepare(args) -> int:
     login node.
     """
     cfg = load_grid_config(args.grid)
+    # Same semantic validation `submit` runs. `prepare` accepts any grid
+    # config, a run's already-written resolved_config.yaml included, so the
+    # certificate bounds (and every other semantic bound) are re-checked here
+    # rather than trusted from whatever wrote the file.
+    validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
     recompute_refs = not args.no_recompute_refs
 
     if recompute_refs and _on_login_node():
@@ -1232,6 +1237,11 @@ def cmd_resubmit(args) -> int:
         cfg = load_grid_config(
             os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
         )
+        # resolved_config.yaml is an ordinary file that outlives the `submit`
+        # which validated it; this command re-renders and re-submits train +
+        # eval arrays from it, so it re-runs the same semantic validation
+        # before anything is submitted rather than trusting the file.
+        validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
         cl = cfg.cluster
 
         # Group retryable indices by failure class so each class can be
@@ -1409,6 +1419,11 @@ def cmd_resubmit_preflight(args) -> int:
              "the grid. Use a fresh run dir (`submit`).")
         return 1
     cfg = load_grid_config(cfg_path)
+    # This command re-submits the whole pretrain -> preflight -> train -> eval
+    # graph from the resolved config, so that config is re-validated here for
+    # the same reason `resubmit` re-validates it: the file can be edited after
+    # the `submit` that validated it.
+    validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
     n_cells = len(expand_grid(cfg))
 
     lock_path = None
