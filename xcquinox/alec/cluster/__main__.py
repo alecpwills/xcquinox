@@ -51,6 +51,7 @@ from xcquinox.alec.cluster import sync as _sync
 from xcquinox.alec.cluster.grid_config import (
     expand_grid,
     load_grid_config,
+    normalize_cluster_walltimes,
     pretrain_checkpoint_dir,
     validate_grid_semantics,
 )
@@ -808,21 +809,36 @@ def _apply_time_overrides(cfg, args):
     ``cl.time`` directly; the others render ``cl.<stage>_time or cl.time``, so
     each resolved per-stage time is written explicitly to make the override a
     no-fallback. The resolved times ride into ``resolved_config.yaml``.
+
+    Each resolved wall goes through ``grid_config.normalize_cluster_walltimes``,
+    the same check the config fields get on load. ``dataclasses.replace`` writes
+    straight onto the frozen ``ClusterResources``, so without it a CLI wall
+    reached ``#SBATCH --time=`` unchecked and an unusable one -- ``--time 30``,
+    which SLURM reads as 30 MINUTES where the flag documents HH:MM:SS -- was
+    caught only when a later stage re-read ``resolved_config.yaml``, long after
+    the array was queued. The refusal names the flag and is raised here, before
+    ``validate_grid_semantics``, the run directory and any ``sbatch``.
     """
-    base = args.time
-    train_t = args.train_time or base
-    eval_t = args.eval_time or base
-    preflight_t = args.preflight_time or base
-    pretrain_t = args.pretrain_time or base
     changes = {}
-    if train_t is not None:
-        changes["time"] = train_t
-    if eval_t is not None:
-        changes["eval_time"] = eval_t
-    if preflight_t is not None:
-        changes["preflight_time"] = preflight_t
-    if pretrain_t is not None:
-        changes["pretrain_time"] = pretrain_t
+    for key, stage_value, stage_flag in (
+            ("time", args.train_time, "--train-time"),
+            ("eval_time", args.eval_time, "--eval-time"),
+            ("preflight_time", args.preflight_time, "--preflight-time"),
+            ("pretrain_time", args.pretrain_time, "--pretrain-time")):
+        value = stage_value or args.time
+        if value is None:
+            continue
+        flag = stage_flag if stage_value else "--time"
+        try:
+            changes[key] = normalize_cluster_walltimes({key: value})[key]
+        except ValueError as exc:
+            raise ValueError(
+                f"submit: {flag} {value!r} is not a usable SLURM wall "
+                'clock. The accepted shapes are "H:MM:SS" and "D-HH:MM:SS"; '
+                "the ones left out (a bare number, MM:SS, D-HH, D-HH:MM) are "
+                "legal SLURM but mean something other than the HH:MM:SS this "
+                "flag documents."
+            ) from exc
     if not changes:
         return cfg
     cluster = dataclasses.replace(cfg.cluster, **changes)
@@ -2017,7 +2033,7 @@ def _build_parser() -> argparse.ArgumentParser:
              "spec_* dir is excluded. Combine with --profile full to "
              "surgically pull just the model.eqx files for those specs "
              "(use for the local test-set re-evaluation workflow described "
-             "in hpcjobs/SEAWULF_RUNBOOK.md §10.5).")
+             "in hpcjobs/SEAWULF_RUNBOOK.md section 10.5).")
     p_pull.add_argument(
         "--dry-run", action="store_true",
         help="pass --dry-run to rsync: report what would transfer, copy nothing")

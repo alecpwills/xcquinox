@@ -501,8 +501,12 @@ def _require(d: dict, key: str, ctx: str):
 #
 # Every walltime field is therefore restored (when the loader mangled it) and
 # checked against the shapes this harness accepts, before ``ClusterResources``
-# is built. ``workflow_matrix`` carries the same rule on its own load path, for
-# the template it reads before any GridConfig exists.
+# is built. The check is exposed as ``normalize_cluster_walltimes`` so the
+# paths that do not go through ``load_grid_config`` share it rather than
+# restate it: ``workflow_matrix._restore_clock_strings`` applies it to the
+# matrix template, which is read before any GridConfig exists, and
+# ``__main__._apply_time_overrides`` applies it to the CLI ``--time`` walls,
+# which reach ``cfg.cluster`` by ``dataclasses.replace``.
 # ---------------------------------------------------------------------------
 
 #: ``ClusterResources`` fields holding a SLURM wall clock. Derived from the
@@ -524,8 +528,7 @@ _SEXAGESIMAL_INT_RE = re.compile(r"^[1-9][0-9_]*(?::[0-5]?[0-9])+$")
 #: than the HH:MM:SS every walltime field of this harness is documented as, so
 #: they are refused rather than guessed at. Quoting is no protection and
 #: therefore not the criterion: ``time: "30"`` loads as a string and reaches
-#: ``#SBATCH --time=30`` exactly as the unquoted ``time: 30`` does. Kept
-#: character-identical to ``workflow_matrix._WALLTIME_RE``.
+#: ``#SBATCH --time=30`` exactly as the unquoted ``time: 30`` does.
 _WALLTIME_RE = re.compile(
     r"^(?:[0-9]+-[0-9]{1,2}|[0-9]+):[0-5][0-9]:[0-5][0-9]$")
 

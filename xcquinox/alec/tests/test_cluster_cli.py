@@ -1211,6 +1211,97 @@ def test_submit_without_time_keeps_config(tmp_path, monkeypatch):
     assert _script_time(run_dir, "train_array.sbatch") == "12:00:00"
 
 
+# ---------------------------------------------------------------------------
+# --time overrides: the same walltime rule as the config fields they replace
+# ---------------------------------------------------------------------------
+
+#: Every stage script a ``--time`` base override reaches.
+_TIME_SCRIPTS = ("pretrain.sbatch", "preflight.sbatch",
+                 "train_array.sbatch", "eval_array.sbatch")
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--time", "30"),            # SLURM minutes; the flag documents HH:MM:SS
+    ("--time", "30:00"),         # minutes:seconds
+    ("--time", "1-12"),          # days-hours
+    ("--time", "1-12:00"),       # days-hours:minutes
+    ("--time", "8:60:00"),       # 60 minutes is out of range
+    ("--time", "8h"),
+    ("--time", "later"),
+    ("--train-time", "30"),
+    ("--eval-time", "45:00"),
+    ("--preflight-time", "0"),
+    ("--pretrain-time", "8h"),
+])
+def test_submit_refuses_a_bad_time_override(tmp_path, monkeypatch, flag, value):
+    """A CLI wall is checked exactly as the config field it overrides.
+
+    ``_apply_time_overrides`` writes the override onto ``cfg.cluster`` by
+    ``dataclasses.replace``, which does not pass through the loader, so an
+    unusable wall would otherwise reach ``#SBATCH --time=`` and be caught only
+    when a later stage re-reads ``resolved_config.yaml``. The refusal names the
+    flag and lands before the run directory exists, so a rejected submission
+    leaves nothing behind.
+    """
+    grid = _write_grid(tmp_path)
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    with pytest.raises(ValueError, match=flag):
+        main(["submit", grid, "--run-root", str(run_root),
+              "--partition", "short-28core", flag, value])
+    assert not (run_root / "runs").exists(), "a refused submit left a run dir"
+    assert not [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+
+
+@pytest.mark.parametrize("value", ["8:00:00", "1-12:00:00", "00:30:00"])
+def test_submit_accepts_the_two_walltime_shapes(tmp_path, monkeypatch, value):
+    """``H:MM:SS`` and ``D-HH:MM:SS`` pass through to every stage script."""
+    grid = _write_grid(tmp_path)
+    monkeypatch.setattr(jt, "_run_slurm", _fake_slurm())
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core", "--time", value])
+    assert rc == 0
+    run_dir = str(run_root / "runs" / os.listdir(run_root / "runs")[0])
+    for name in _TIME_SCRIPTS:
+        assert _script_time(run_dir, name) == value
+
+
+def test_submit_time_override_round_trips_through_resolved_config(
+        tmp_path, monkeypatch):
+    """The resolved wall survives ``resolved_config.yaml``, which the recovery
+    subcommands re-render from. ``8:00:00`` is the case that matters: written
+    unquoted it would re-read as the integer 28800."""
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    grid = _write_grid(tmp_path)
+    monkeypatch.setattr(jt, "_run_slurm", _fake_slurm())
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core", "--time", "8:00:00"])
+    assert rc == 0
+    run_dir = str(run_root / "runs" / os.listdir(run_root / "runs")[0])
+    reloaded = load_grid_config(os.path.join(run_dir, "resolved_config.yaml"))
+    assert reloaded.cluster.time == "8:00:00"
+    assert reloaded.cluster.eval_time == "8:00:00"
+
+
+def test_submit_time_override_is_stripped(tmp_path, monkeypatch):
+    """Surrounding whitespace would render ``#SBATCH --time= 8:00:00``."""
+    grid = _write_grid(tmp_path)
+    monkeypatch.setattr(jt, "_run_slurm", _fake_slurm())
+    run_root = tmp_path / "out"
+    run_root.mkdir()
+    rc = main(["submit", grid, "--run-root", str(run_root),
+               "--partition", "short-28core", "--time", "  8:00:00  "])
+    assert rc == 0
+    run_dir = str(run_root / "runs" / os.listdir(run_root / "runs")[0])
+    assert _script_time(run_dir, "train_array.sbatch") == "8:00:00"
+
+
 def test_results_subcommand_prints_table_and_writes_csv(tmp_path):
     """`results <run_dir>` returns 0, and --csv writes a file."""
     run_dir = _make_run_dir(tmp_path)
