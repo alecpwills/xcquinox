@@ -1,7 +1,5 @@
 # Pretraining That Delivers the Parent -- Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Replace the four-atom-plus-mesh pretraining set with the set Section 7 of the spec binds -- the DFS pretraining set in its entirety, every single-atom species of the BH76 and W4-11 pools, and the synthetic mesh as a regularizer -- generated at the production identity on the PARENT functional's own self-consistent density, posed on the exact-spin-scaling exchange footing for every open shell, fit with a per-system energy term in Hartree beside the point-wise enhancement-factor term, stopped on a held-out-system validation criterion, and recorded in the pretrain metadata the Section 3.3 certificate and HISTORY read. Every new knob defaults to today's value, so an old YAML reproduces today's data and today's loss.
 
 **Architecture:** One composition layer and one column builder carry the whole change. `resolve_pretrain_systems` turns the config flags into an ordered, de-duplicated tuple of `PretrainSystem(name, atom, charge, spin)`; `_system_columns` runs the parent SCF for ONE such system and returns the same column dict `_atom_columns` always returned, plus the two LDA energy-density columns that turn a row of enhancement factors back into Hartrees. `_atom_columns` becomes the single-atom wrapper of `_system_columns`, so the atomic and molecular rows are the same quantity by construction rather than by inspection. The `.npz` grows a per-row `system_all` segment index, a per-system energy table, and -- when the footing is `spin_channel` -- a SECOND row block `*_x` holding the exchange rows, because per-channel exchange rows and total-density correlation rows are no longer the same rows. `_PretrainLoss` gains a `jax.ops.segment_sum` over that index: `w_E * mean_s (sum_{i in s} w_i e_LDA_i F^NN_i - E_parent_s)^2`, exactly zero when the network reproduces the stored targets. Validation holds out MOLECULES (never an atom -- every pool atom is a system the certificate bounds at `tol_atom`), and the validated path runs its own full-batch loop so the optimizer state and the learning-rate schedule survive across validations, which `xcTrainer`'s API cannot express; the unvalidated path still goes through `xcTrainer` unchanged, which is what makes the default byte-identical.
@@ -4502,7 +4500,7 @@ v6 YAMLs and rendered scripts (Section 3.5).
     stored array into JAX with `jnp.array`, which refuses a unicode array, so
     the system NAMES, the footing and the parent live in the JSON manifest
     sidecar and only numeric arrays go in the `.npz`. That also makes the
-    provenance human-readable, which the certificate's audit trail wants.
+    provenance human-readable, which the certificate's provenance record wants.
 13. **Where the certificate call belongs.** Section 3.2's fourth bullet puts
     acceptance "inside the pretrain stage" while Section 3.3 owns
     `fidelity_certificate`. Resolved by scope: the Section 3.3 plan adds the
