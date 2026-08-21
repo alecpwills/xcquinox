@@ -255,7 +255,10 @@ def _apply_species_slice(idx, full_specs, full_rxns, holdout_dir):
     Returns ``(mol_specs, reactions, slice_names)``; ``slice_names`` is None
     when no slice is named, in which case the pool is returned untouched and
     the channel carries no mark -- the full 216-reaction BH76 + W4-11 pool
-    (214 species, measured 2026-08-20) stays the default.
+    (214 species, measured 2026-08-20) stays the default. ``holdout_dir`` is
+    the channel directory as a :class:`pathlib.Path`, not a string: the mark
+    is written through ``mkdir`` and the ``/`` operator, and the directory is
+    created here if the evaluation has not yet made it.
 
     A sliced channel is marked TWICE. ``sliced_eval.json`` is written here,
     before any energy is computed, so an interrupted or failed sliced
@@ -264,9 +267,11 @@ def _apply_species_slice(idx, full_specs, full_rxns, holdout_dir):
     either mark, because a slice covers a handful of species chosen for a
     workflow test and its MAE is not the pool MAE the architectures are
     compared on. The counts in ``sliced_eval.json`` are the species slice's
-    own; the counts in ``eval_metadata.json`` are what was evaluated, i.e.
-    after :func:`_test_slice_reactions` has also dropped the validation
+    own; ``n_reactions`` in ``eval_metadata.json`` is what was evaluated,
+    i.e. after :func:`_test_slice_reactions` has also dropped the validation
     complement, so the two reaction counts differ for a spec that validated.
+    ``n_species`` agrees between the two files: that filter drops reactions
+    only, never species.
 
     The sliced containers are new objects (``slice_held_out_pools`` rebuilds
     the species dict and the reaction list); the reaction dicts and
