@@ -67,6 +67,9 @@ where = ["."]
 xcquinox = [
     "py.typed"
 ]
+"xcquinox.alec" = [
+    "data/*.json"
+]
 "xcquinox.alec.cluster" = [
     "templates/*.sbatch.tmpl",
     "examples/*.yaml",
