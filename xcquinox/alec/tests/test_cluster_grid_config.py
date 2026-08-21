@@ -1,5 +1,6 @@
 """Tests for xcquinox.alec.cluster.grid_config: the HPC harness config layer."""
 import json
+import re
 
 import pytest
 
@@ -1414,3 +1415,225 @@ def test_fidelity_tolerances_must_be_finite(tmp_path, key, token):
     )
     with pytest.raises(ValueError, match=f"fidelity.{key}"):
         load_grid_config(str(path))
+
+
+# ---------------------------------------------------------------------------
+# cluster walltimes: sexagesimal restoration + SLURM shape validation
+# ---------------------------------------------------------------------------
+
+#: Walltime field -> the (render kind, array_max) whose ``#SBATCH --time``
+#: directive that field feeds. ``preflight`` takes no array index.
+_WALLTIME_RENDER = {
+    "time": ("train", 1),
+    "preflight_time": ("preflight", None),
+    "eval_time": ("eval", 1),
+    "pretrain_time": ("pretrain", 0),
+}
+
+#: Every walltime field of ClusterResources. The four in ``_WALLTIME_RENDER``
+#: are the ones an sbatch stage renders directly; the remaining three are
+#: fallback/retry walls and are exposed to the same YAML resolver.
+_WALLTIME_KEYS = tuple(_WALLTIME_RENDER) + (
+    "datagen_time", "timeout_retry_time", "benchmark_refs_time")
+
+#: Base wall used for the non-``time`` fields, distinct from every literal
+#: under test so a rendered directive identifies which field it came from
+#: (every per-stage wall falls back to ``cluster.time`` when unset).
+_OTHER_BASE_TIME = "01:00:00"
+
+
+def _write_walltime_yaml(tmp_path, key, literal, name="grid.yaml"):
+    """Write a config whose ``cluster.<key>`` carries the RAW YAML token
+    ``literal``.
+
+    The token is appended to a dumped ``cluster:`` block instead of being
+    routed through ``yaml.safe_dump``, which quotes any string that would
+    otherwise re-resolve to a non-string -- precisely the quoting a
+    hand-written config may omit.
+    """
+    yaml = pytest.importorskip("yaml")
+    raw = _base_config_dict()
+    cluster = raw.pop("cluster")
+    cluster.pop(key, None)
+    if key != "time":
+        cluster["time"] = _OTHER_BASE_TIME
+    p = tmp_path / name
+    p.write_text(yaml.safe_dump(raw) + yaml.safe_dump({"cluster": cluster})
+                 + f"  {key}: {literal}\n")
+    return str(p)
+
+
+def _rendered_time_lines(cfg, run_dir, key):
+    """The ``#SBATCH --time=`` lines of the stage script ``key`` feeds."""
+    from xcquinox.alec.cluster.submit import render_sbatch
+    kind, array_max = _WALLTIME_RENDER[key]
+    text = render_sbatch(kind, cfg, run_dir, array_max=array_max)
+    return [ln for ln in text.splitlines() if ln.startswith("#SBATCH --time=")]
+
+
+@pytest.mark.parametrize("literal", ["8:00:00", "12:00:00"])
+@pytest.mark.parametrize("key", sorted(_WALLTIME_RENDER))
+def test_unquoted_sexagesimal_walltime_restored_and_rendered(
+        tmp_path, key, literal):
+    """An unquoted ``H:MM:SS`` reaches SLURM as the wall that was written.
+
+    YAML 1.1's implicit int resolver reads an unquoted sexagesimal literal in
+    base 60, so ``8:00:00`` loads as 28800 and ``12:00:00`` as 43200. SLURM
+    reads a bare integer as MINUTES, which turns an 8-hour request into 20
+    days without any diagnostic. The literal is restored on load, so the
+    rendered directive is the author's wall.
+    """
+    yaml = pytest.importorskip("yaml")
+    path = _write_walltime_yaml(tmp_path, key, literal)
+    with open(path) as fh:
+        assert isinstance(yaml.safe_load(fh)["cluster"][key], int), (
+            f"{literal} no longer resolves to an integer; the resolver this "
+            "test pins has changed"
+        )
+    cfg = load_grid_config(path)
+    assert getattr(cfg.cluster, key) == literal
+    assert _rendered_time_lines(cfg, str(tmp_path / "run"), key) == [
+        f"#SBATCH --time={literal}"]
+
+
+@pytest.mark.parametrize("literal,expected", [
+    ('"8:00:00"', "8:00:00"),
+    ('"00:30:00"', "00:30:00"),
+    ('"1-12:00:00"', "1-12:00:00"),
+    ("1-12:00:00", "1-12:00:00"),
+    ('"48:00:00"', "48:00:00"),
+])
+@pytest.mark.parametrize("key", _WALLTIME_KEYS)
+def test_walltime_accepted_shapes(tmp_path, key, literal, expected):
+    """``H:MM:SS`` and ``D-HH:MM:SS`` are the accepted walltime shapes."""
+    cfg = load_grid_config(_write_walltime_yaml(tmp_path, key, literal))
+    assert getattr(cfg.cluster, key) == expected
+
+
+@pytest.mark.parametrize("literal", [
+    "30",            # bare integer: SLURM minutes, the field is HH:MM:SS
+    '"30"',          # same, quoted -- a string, still a bare-minutes request
+    "30:00",         # minutes:seconds, resolves to the integer 1800
+    '"30:00"',
+    "480:00",        # 28800 as minutes:seconds; the same integer as 8:00:00
+    '"1-12"',        # days-hours
+    '"1-12:00"',     # days-hours:minutes
+    '"8h"',
+    '"soon"',
+    '"8:60:00"',     # 60 minutes is out of range
+    '"-8:00:00"',
+    "-8:00:00",      # resolves to -28800
+    "8:00:00.5",     # sexagesimal FLOAT, 28800.5
+    "1.5",
+    "true",
+])
+@pytest.mark.parametrize("key", _WALLTIME_KEYS)
+def test_walltime_bad_shapes_refused(tmp_path, key, literal):
+    """Anything outside the two accepted shapes is refused, naming the key."""
+    with pytest.raises(ValueError, match=re.escape(f"cluster.{key}")):
+        load_grid_config(_write_walltime_yaml(tmp_path, key, literal))
+
+
+@pytest.mark.parametrize("value", [30, 28800, 1800])
+@pytest.mark.parametrize("key", _WALLTIME_KEYS)
+def test_walltime_integer_in_json_refused(tmp_path, key, value):
+    """JSON has no sexagesimal resolver, so an integer there was written as an
+    integer and is a bare-minutes request, not a mangled clock string."""
+    raw = _base_config_dict()
+    raw["cluster"][key] = value
+    with pytest.raises(ValueError, match=re.escape(f"cluster.{key}")):
+        load_grid_config(_write(tmp_path, "grid.json", raw))
+
+
+def test_walltime_unset_fields_keep_their_fallback_sentinels(tmp_path):
+    """An absent per-stage wall stays unset (falls back to ``cluster.time``);
+    an explicit YAML null does the same rather than being refused."""
+    yaml = pytest.importorskip("yaml")
+    raw = _base_config_dict()
+    cluster = raw.pop("cluster")
+    p = tmp_path / "grid.yaml"
+    p.write_text(yaml.safe_dump(raw) + yaml.safe_dump({"cluster": cluster})
+                 + "  pretrain_time:\n  eval_time: ''\n")
+    cfg = load_grid_config(str(p))
+    assert cfg.cluster.pretrain_time is None
+    assert cfg.cluster.eval_time == ""
+    assert cfg.cluster.preflight_time == ""
+    assert cfg.cluster.datagen_time is None
+
+
+@pytest.mark.parametrize("literal", ['""', ""])
+def test_empty_base_walltime_refused(tmp_path, literal):
+    """``cluster.time`` is the wall every per-stage field falls back TO, so an
+    empty one has nothing behind it and renders a bare ``#SBATCH --time=``.
+    The per-stage fields keep the opposite reading (see the sentinel test):
+    ``_config_to_raw_dict`` writes ``eval_time: ''`` into every
+    ``resolved_config.yaml`` the later stages re-read."""
+    with pytest.raises(ValueError, match=re.escape("cluster.time")):
+        load_grid_config(_write_walltime_yaml(tmp_path, "time", literal))
+
+
+def test_walltime_refusal_message_carries_the_offending_value(tmp_path):
+    """The message names both the key and what was read, so a mangled
+    sexagesimal is recognisable from the integer it became."""
+    with pytest.raises(ValueError) as exc:
+        load_grid_config(_write_walltime_yaml(tmp_path, "time", "30"))
+    assert "cluster.time" in str(exc.value)
+    assert "30" in str(exc.value)
+
+
+def test_walltime_refusal_names_the_restored_literal(tmp_path):
+    """A ``minutes:seconds`` literal is refused by shape, and the message
+    carries the literal as well as the base-60 integer it loaded as -- the two
+    are far apart (``480:00`` -> 28800) and only the literal is searchable in
+    the config."""
+    with pytest.raises(ValueError) as exc:
+        load_grid_config(_write_walltime_yaml(tmp_path, "time", "480:00"))
+    assert "480:00" in str(exc.value)
+    assert "28800" in str(exc.value)
+
+
+@pytest.mark.parametrize("suffix", ["", "   # bumped for the r=26 full-pool cell"])
+def test_walltime_literal_recovered_past_a_trailing_comment(tmp_path, suffix):
+    """Several campaign configs annotate the wall on the same line, so the
+    literal scan has to stop at the YAML comment rather than miss the line."""
+    cfg = load_grid_config(
+        _write_walltime_yaml(tmp_path, "time", "16:00:00" + suffix))
+    assert cfg.cluster.time == "16:00:00"
+
+
+def test_walltime_literal_not_taken_from_another_section(tmp_path):
+    """The scan is confined to the ``cluster:`` block: an identically named key
+    elsewhere in the document must not supply the restoration."""
+    yaml = pytest.importorskip("yaml")
+    raw = _base_config_dict()
+    cluster = raw.pop("cluster")
+    cluster.pop("time")
+    p = tmp_path / "grid.yaml"
+    # An earlier section carrying a clock-shaped `time:` whose base-60 value
+    # (28800) differs from the cluster block's (43200).
+    p.write_text("decoy:\n  time: 8:00:00\n"
+                 + yaml.safe_dump(raw) + yaml.safe_dump({"cluster": cluster})
+                 + "  time: 12:00:00\n")
+    cfg = load_grid_config(str(p))
+    assert cfg.cluster.time == "12:00:00"
+
+
+def test_shipped_configs_carry_valid_walltimes():
+    """Every checked-in campaign config and the shipped example still load."""
+    import glob
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[3]
+    paths = sorted(glob.glob(str(root / "hpcjobs" / "configs" / "*.yaml")))
+    example = root / "xcquinox" / "alec" / "cluster" / "examples" / \
+        "grid_step7.yaml"
+    if not paths or not example.is_file():
+        pytest.skip("cluster config tree not present in this checkout")
+    paths.append(str(example))
+    for path in paths:
+        cfg = load_grid_config(path)
+        for key in _WALLTIME_KEYS:
+            value = getattr(cfg.cluster, key)
+            assert value is None or isinstance(value, str), (
+                f"{path}: cluster.{key} loaded as {type(value).__name__}"
+            )
+    assert len(paths) == 22, f"config count changed: {len(paths)}"

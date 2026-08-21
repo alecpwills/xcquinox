@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, fields
 from itertools import product
 import math
 import os
+import re
 import warnings
 
 
@@ -485,6 +486,196 @@ def _require(d: dict, key: str, ctx: str):
     return d[key]
 
 
+# ---------------------------------------------------------------------------
+# Cluster walltimes
+#
+# A wall clock written into a hand-edited YAML does not survive the load
+# unaided. ``yaml.safe_load`` applies the YAML 1.1 implicit resolvers, and an
+# unquoted ``8:00:00`` matches the sexagesimal INTEGER resolver: it arrives as
+# the base-60 integer 28800, is carried through ``ClusterResources.time``, and
+# is substituted into ``#SBATCH --time=${TIME}`` by ``submit.render_sbatch``.
+# SLURM reads a bare integer as MINUTES, so an 8-hour request is submitted as a
+# 20-day one, with nothing anywhere reporting a problem. ``00:30:00`` survives
+# only by accident -- the resolver requires a leading 1-9 -- so the defect is
+# invisible in exactly the short-wall configs that are cheapest to test with.
+#
+# Every walltime field is therefore restored (when the loader mangled it) and
+# checked against the shapes this harness accepts, before ``ClusterResources``
+# is built. ``workflow_matrix`` carries the same rule on its own load path, for
+# the template it reads before any GridConfig exists.
+# ---------------------------------------------------------------------------
+
+#: ``ClusterResources`` fields holding a SLURM wall clock. Derived from the
+#: dataclass, so a wall added there later is covered without a second edit.
+WALLTIME_FIELDS = tuple(
+    f.name for f in fields(ClusterResources)
+    if f.name == "time" or f.name.endswith("_time")
+)
+
+#: PyYAML's implicit resolver for a sexagesimal ``tag:yaml.org,2002:int``,
+#: unsigned branch. A signed literal resolves too but is refused downstream, a
+#: negative wall being no wall at all.
+_SEXAGESIMAL_INT_RE = re.compile(r"^[1-9][0-9_]*(?::[0-5]?[0-9])+$")
+
+#: The two shapes accepted as a wall clock: ``H:MM:SS`` (the hours field is
+#: unbounded, so ``48:00:00`` is two days) and ``D-HH:MM:SS``. ``sbatch --time``
+#: also accepts ``minutes``, ``minutes:seconds``, ``days-hours`` and
+#: ``days-hours:minutes``; each is legal SLURM and each means something other
+#: than the HH:MM:SS every walltime field of this harness is documented as, so
+#: they are refused rather than guessed at. Quoting is no protection and
+#: therefore not the criterion: ``time: "30"`` loads as a string and reaches
+#: ``#SBATCH --time=30`` exactly as the unquoted ``time: 30`` does. Kept
+#: character-identical to ``workflow_matrix._WALLTIME_RE``.
+_WALLTIME_RE = re.compile(
+    r"^(?:[0-9]+-[0-9]{1,2}|[0-9]+):[0-5][0-9]:[0-5][0-9]$")
+
+
+def _sexagesimal_seconds(token: str):
+    """Base-60 value of a YAML sexagesimal integer literal, or None.
+
+    Reproduces the colon branch of PyYAML's ``construct_yaml_int``. Every field
+    after the first is bounded at 59 by the resolver, so the value is the
+    literal read as SECONDS whichever shape it was written in: ``8:00:00`` and
+    ``480:00`` both give 28800. That coincidence is why the loaded integer on
+    its own cannot say which literal produced it (see :func:`_restored_clock`).
+    """
+    if not _SEXAGESIMAL_INT_RE.match(token):
+        return None
+    total = 0
+    for part in token.replace("_", "").split(":"):
+        total = total * 60 + int(part)
+    return total
+
+
+def _cluster_block(text: str) -> str:
+    """The body of the top-level ``cluster:`` mapping in ``text``.
+
+    Restricting the literal scan to that block keeps it from reaching an
+    identically named key in another section. Falls back to the whole document
+    when there is no such top-level key.
+    """
+    match = re.search(r"^cluster:[ \t]*(?:#.*)?$", text, re.M)
+    if match is None:
+        return text
+    rest = text[match.end():]
+    end = re.search(r"^\S", rest, re.M)
+    return rest[:end.start()] if end else rest
+
+
+def _literal_token(text: str, key: str):
+    """The scalar written for ``<key>:`` in ``text``, or None if absent.
+
+    Only reached for a value that did NOT load as a string, so the scalar was
+    unquoted and a ``#`` at a word boundary opens a YAML comment. The required
+    leading indent keeps ``time`` from matching ``pretrain_time``.
+    """
+    match = re.search(rf"^[ \t]+{re.escape(key)}:[ \t]*(.*)$",
+                      _cluster_block(text), re.M)
+    if match is None:
+        return None
+    return re.split(r"(?:^|\s)#", match.group(1), maxsplit=1)[0].strip()
+
+
+def _walltime_defect(key: str, value, source: str, detail: str) -> ValueError:
+    """The refusal for one walltime field, naming the key and what was read."""
+    where = f" in {source}" if source else ""
+    return ValueError(
+        f"cluster.{key}{where} is {value!r}, which is not a usable SLURM "
+        f"walltime: {detail}. Write it QUOTED, as \"HH:MM:SS\" (or "
+        f"\"D-HH:MM:SS\")."
+    )
+
+
+def _restored_clock(value: int, key: str, text: str, source: str) -> str:
+    """The literal that a sexagesimal-resolved integer was written as.
+
+    The integer alone does not determine it. PyYAML reads every colon-separated
+    field in base 60, so ``8:00:00`` and ``480:00`` both arrive as 28800, and a
+    deliberately bare ``28800`` -- which SLURM would read as 28800 minutes -- is
+    indistinguishable from either. The literal is therefore read back out of the
+    document and accepted only when its own base-60 value reproduces the loaded
+    integer, which makes the restoration exact rather than inferred; where there
+    is no such literal (a JSON config, or a genuinely bare integer) the field is
+    refused instead of guessed at.
+    """
+    token = _literal_token(text, key) if text else None
+    if token is not None and _sexagesimal_seconds(token) == value:
+        return token
+    raise _walltime_defect(
+        key, value, source,
+        "SLURM reads a bare number as MINUTES while this field is documented "
+        "as HH:MM:SS (an unquoted 8:00:00 also arrives here as a number: "
+        "YAML 1.1 resolves it in base 60, to 28800)")
+
+
+def _walltime_string(value, key: str, text: str, source: str):
+    """One walltime field: restored if the loader mangled it, then checked.
+
+    ``None`` and ``""`` pass through untouched on the per-stage walls: they are
+    the unset sentinels those fields fall back from (to ``cluster.time``,
+    resolved in ``submit.render_sbatch``), and ``_config_to_raw_dict`` writes
+    them into every ``resolved_config.yaml`` the later stages re-read. On
+    ``cluster.time`` there is nothing to fall back to -- an empty base wall
+    renders a bare ``#SBATCH --time=`` -- so it is refused instead.
+    """
+    if value is None or value == "":
+        if key == "time":
+            raise _walltime_defect(
+                key, value, source,
+                "the base wall has no fallback (every per-stage wall falls "
+                "back TO it)")
+        return value
+    if isinstance(value, str):
+        candidate = value.strip()
+    elif isinstance(value, bool):
+        # bool is an int subclass; ``time: yes`` must not reach the arithmetic.
+        raise _walltime_defect(key, value, source,
+                               "a boolean is not a wall clock")
+    elif isinstance(value, int):
+        candidate = _restored_clock(value, key, text, source)
+    else:
+        # A sexagesimal FLOAT (``8:00:00.5`` -> 28800.5) lands here alongside a
+        # plain float; neither has an accepted shape to be restored to.
+        raise _walltime_defect(
+            key, value, source,
+            f"a {type(value).__name__} is not a wall clock")
+    if not _WALLTIME_RE.match(candidate):
+        detail = 'the accepted shapes are "H:MM:SS" and "D-HH:MM:SS"'
+        if candidate != value:
+            # A restored literal: name it, or the message reports only the
+            # base-60 integer the loader made of it.
+            detail = f"it was written as {candidate!r} and " + detail
+        raise _walltime_defect(key, value, source, detail)
+    return candidate
+
+
+def normalize_cluster_walltimes(cluster: dict, *, text: str = "",
+                                source: str = "") -> dict:
+    """Return a copy of ``cluster`` whose walltime fields are checked strings.
+
+    Args:
+        cluster: the raw ``cluster`` mapping as parsed.
+        text: the document it was parsed from, when there is one. A wall the
+            YAML loader resolved to a number is restored from its literal
+            there; without the text such a value is refused.
+        source: the file named in a refusal message.
+
+    Raises:
+        ValueError: naming the key and the value read, for any field that is
+            neither unset nor one of the accepted walltime shapes.
+    """
+    if not isinstance(cluster, dict):
+        raise ValueError(
+            f"grid config section 'cluster' must be a mapping, got "
+            f"{type(cluster).__name__}"
+        )
+    out = dict(cluster)
+    for key in WALLTIME_FIELDS:
+        if key in out:
+            out[key] = _walltime_string(out[key], key, text, source)
+    return out
+
+
 def _build_sweep(d: dict) -> SweepAxes:
     """Build SweepAxes from a raw dict; list fields become tuples."""
     return SweepAxes(
@@ -729,8 +920,18 @@ def _parse_pretrain_atoms(raw) -> tuple:
     return tuple((str(pair[0]), int(pair[1])) for pair in raw)
 
 
-def _build_cluster(d: dict) -> ClusterResources:
+def _build_cluster(d: dict, *, text: str = "",
+                   source: str = "") -> ClusterResources:
+    """Build ClusterResources from a raw ``cluster`` mapping.
+
+    ``text``/``source`` are the document the mapping was parsed from and its
+    path; they let :func:`normalize_cluster_walltimes` restore a wall clock the
+    YAML loader resolved to a number. Both default to empty, so a caller
+    holding only a mapping (a JSON config, a test) still gets the shape check,
+    with any number refused rather than restored.
+    """
     ctx = "cluster"
+    d = normalize_cluster_walltimes(d, text=text, source=source)
     return ClusterResources(
         partition=_require(d, "partition", ctx),
         time=_require(d, "time", ctx),
@@ -808,6 +1009,7 @@ def load_grid_config(path: str) -> GridConfig:
         ImportError: if a ``.yaml`` file is loaded but PyYAML is not installed.
     """
     lower = path.lower()
+    text = ""
     if lower.endswith((".yaml", ".yml")):
         try:
             import yaml
@@ -816,8 +1018,11 @@ def load_grid_config(path: str) -> GridConfig:
                 "loading a YAML grid config requires PyYAML, "
                 "install it with `pip install pyyaml`"
             ) from exc
+        # The document text is kept: a walltime the YAML 1.1 resolvers turned
+        # into a base-60 integer is restored from its literal (_build_cluster).
         with open(path) as f:
-            raw = yaml.safe_load(f)
+            text = f.read()
+        raw = yaml.safe_load(text)
     elif lower.endswith(".json"):
         import json
         with open(path) as f:
@@ -840,7 +1045,8 @@ def load_grid_config(path: str) -> GridConfig:
         hyperparams=_build_hyperparams(_require(raw, "hyperparams", "<root>")),
         inputs=_build_inputs(_require(raw, "inputs", "<root>")),
         pretrain=_build_pretrain(_require(raw, "pretrain", "<root>")),
-        cluster=_build_cluster(_require(raw, "cluster", "<root>")),
+        cluster=_build_cluster(_require(raw, "cluster", "<root>"),
+                               text=text, source=path),
         domain_profile=_require(raw, "domain_profile", "<root>"),
         on_precompute_failure=raw.get("on_precompute_failure", "abort"),
         bh76_mode=raw.get("bh76_mode", "reaction_energy"),
