@@ -32,8 +32,6 @@ import shutil
 import sys
 from pathlib import Path
 
-from xcquinox.alec.eval_holdout import assert_channel_not_sliced
-
 # v5 era (2026-08-14): the retired v4 mgga arms (PBE-seeded, cancelled
 # mid-array) are EXCLUDED; the roster is the still-valid GGA/rung-3.5 arm
 # plus the two SCAN-seeded v5 arms. Per-arch seed provenance is VALIDATED
@@ -132,6 +130,10 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
     rows against it for the arch/subset labels, so without it every row
     would carry ``arch=None`` and the merged figures would be empty.
     """
+    # Imported here, not at module scope: this script is filesystem work and
+    # runs without the training package otherwise.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+
     if out_dir.exists():
         shutil.rmtree(out_dir)
     ck_out = out_dir / "checkpoints"
@@ -182,9 +184,15 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
         for sd in spec_dirs:
             # A workflow-verification slice covers a handful of species, not
             # the held-out pool; merged into the view it would average into a
-            # cell as though it were a full-pool eval. Refused before the
-            # channel is counted or linked (see eval_holdout, spec 3.4).
-            assert_channel_not_sliced(sd, "eval_holdout")
+            # cell as though it were a full-pool eval. The WHOLE spec dir is
+            # symlinked below, so every held-out channel it carries enters
+            # the view -- the channel set is read off disk rather than
+            # fixed here, so a channel added later is covered by
+            # construction. Refused before anything is counted or linked
+            # (see eval_holdout, spec 3.4).
+            for chan in sorted(p.name for p in sd.glob("eval_holdout*")
+                               if p.is_dir()):
+                assert_channel_not_sliced(sd, chan)
             orig_idx = int(sd.name.split("_", 1)[1])
             entry = entries.get(orig_idx, {})
             cell = entry.get("cell") or {}

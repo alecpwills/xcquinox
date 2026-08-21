@@ -333,3 +333,98 @@ def test_merged_view_refuses_a_sliced_arm_channel(tmp_path):
     assert "spec_0000" in msg
     assert "eval_holdout" in msg
     assert "'n2ohts'" in msg
+
+
+def test_merged_view_refuses_a_sliced_non_default_channel(tmp_path):
+    """build_view symlinks the WHOLE spec dir, so every held-out channel it
+    carries enters the view -- not just the final-step one. A slice in the
+    validation-best channel is as unusable there as one in eval_holdout."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 2,
+                 "arm2")
+    _mark_sliced(ck, chan="eval_holdout_val_best")
+    with pytest.raises(SlicedChannelError) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "run_20260810T202813Z" in msg
+    assert "spec_0000" in msg
+    assert "eval_holdout_val_best" in msg
+    assert "'n2ohts'" in msg
+
+
+def test_merged_view_refuses_a_sliced_coldstart_channel(tmp_path):
+    """Same for the cold-start channel: the guard covers every eval_holdout*
+    directory the spec dir carries, not a fixed pair."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 2,
+                 "arm2")
+    _mark_sliced(ck, spec="spec_0001", chan="eval_holdout_coldstart")
+    with pytest.raises(SlicedChannelError) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    assert "eval_holdout_coldstart" in str(exc.value)
+    assert "spec_0001" in str(exc.value)
+
+
+def test_merged_view_still_builds_with_unmarked_channels(tmp_path):
+    """The widened guard is a no-op on unmarked channels: a spec carrying
+    every channel with no mark merges exactly as before."""
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 2,
+                 "arm2")
+    for ch in ("eval_holdout", "eval_holdout_best", "eval_holdout_val_best",
+               "eval_holdout_coldstart"):
+        d = ck / "spec_0000" / ch
+        d.mkdir(parents=True)
+        (d / "per_reaction.json").write_text("[]")
+    out = tmp_path / "merged"
+    report = mv.build_view(tmp_path, out)
+    assert report["dfs6311_grid3_v4gga"] == ("run_20260810T202813Z", 2)
+    assert (out / "checkpoints/spec_0000/eval_holdout/per_reaction.json"
+            ).is_file()
+
+
+# ---------------------------------------------------------------------------
+# The guard's import must stay lazy in the analysis scripts
+# ---------------------------------------------------------------------------
+
+#: Analysis scripts that call ``eval_holdout.assert_channel_not_sliced``.
+#: None of them imported the training package before the guard landed, and
+#: importing it drags jax / pyscf / equinox in (measured: ~1 s and ~1575
+#: extra modules), which a merge or a plot has no use for. The import
+#: therefore lives at the guard, inside the function. Covered here in one
+#: place because the property and its fix are identical across the six.
+_GUARDED_ANALYSIS_SCRIPTS = (
+    "merge_v4_arms",
+    "verify_holdout_parity",
+    "regen_dfs_step7_basis_comparison",
+    "density_diagnosis_evidence",
+    "mgga_diagnosis_evidence",
+    "plot_scf_convergence",
+)
+
+
+@pytest.mark.parametrize("name", _GUARDED_ANALYSIS_SCRIPTS)
+def test_guard_import_stays_lazy_in_the_analysis_scripts(name):
+    import subprocess
+    import sys
+    import textwrap
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        f"{name}.py")
+    code = textwrap.dedent(f"""
+        import importlib.util, sys
+        spec = importlib.util.spec_from_file_location("_probe", {path!r})
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["_probe"] = mod
+        spec.loader.exec_module(mod)
+        print(",".join(sorted(
+            n for n in ("xcquinox", "jax", "pyscf", "equinox")
+            if n in sys.modules)))
+    """)
+    env = dict(os.environ, MPLBACKEND="Agg", JAX_PLATFORMS="cpu")
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, env=env, timeout=180)
+    assert proc.returncode == 0, proc.stderr
+    loaded = [t for t in proc.stdout.strip().split(",") if t]
+    assert loaded == [], (
+        f"{name}.py imports {loaded} at module scope; the guard's import "
+        "belongs inside the function that calls it")

@@ -33,8 +33,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from xcquinox.alec.eval_holdout import assert_channel_not_sliced
-
 _HERE = Path(__file__).resolve().parent
 
 
@@ -92,6 +90,10 @@ def compare_spec(cluster_rows: Optional[List[Dict[str, Any]]],
 
 def verify_run(run_dir: Path, *, channels: Sequence[str],
                tol: float = 1e-9, _fig=None) -> List[Dict[str, Any]]:
+    # Imported at the guard, not at module scope: this script has no
+    # other use for the training package and importing it here would
+    # pull jax / pyscf / equinox into every invocation.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
     fig = _fig if _fig is not None else _load_fig_module()
     run_dir = Path(run_dir)
     reports: List[Dict[str, Any]] = []

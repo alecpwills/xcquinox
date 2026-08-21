@@ -761,8 +761,17 @@ def _sliced_channel_message(mark: Path, mark_note: str, spec_dir: Path,
     # placed anywhere else still names its own parent.
     run_dir = (spec_dir.parent.parent if spec_dir.parent.name == "checkpoints"
                else spec_dir.parent)
-    named = ("unknown" if not slice_names
-             else ", ".join(repr(str(n)) for n in slice_names))
+    # Only a list/tuple is a species list. Any other value is reported as
+    # unknown WITH the value itself: iterating it would render a string per
+    # character and a mapping as its keys -- either reads as a species list
+    # that was never there -- and a number or bool would raise TypeError out
+    # of the guard instead of the refusal the caller is written against.
+    if isinstance(slice_names, (list, tuple)) and slice_names:
+        named = ", ".join(repr(str(n)) for n in slice_names)
+    elif slice_names is None:
+        named = "unknown"
+    else:
+        named = f"unknown ({slice_names!r})"
     return (
         f"{mark} marks a SLICED held-out channel ({mark_note}): "
         f"run {run_dir}, spec {spec_dir.name}, channel {eval_subdir}, "
@@ -813,6 +822,16 @@ def assert_channel_not_sliced(spec_dir: Path, eval_subdir: str) -> None:
     unreadable JSON. The marker's own presence is the signal regardless of
     its contents; when those cannot be read the slice is reported as
     unknown.
+
+    The two marks therefore part company on an EMPTY species list: a stamp
+    carrying ``species_slice: []`` loads, because an empty slice restricts
+    nothing, while a marker carrying it still refuses, with the slice
+    reported unknown, because the marker is a slice signal by its presence
+    alone. Neither state is reachable from the writer, which records None
+    for the full pool and a non-empty list otherwise. A ``species_slice``
+    that is neither null nor a list -- a number, a bool, a string, a mapping
+    -- refuses on either mark and is reported as unknown beside its own
+    value, never iterated.
 
     Raises:
         SlicedChannelError: the channel carries either mark.

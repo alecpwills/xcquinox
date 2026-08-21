@@ -25,8 +25,6 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from xcquinox.alec.eval_holdout import assert_channel_not_sliced
-
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -73,6 +71,10 @@ def collect_spec_scf_traces(run_dir: Path, spec_idx: int,
 
     ``eval_subdir`` selects the channel; ``eval_holdout_coldstart`` carries
     the 25-cycle cold-start trajectories this figure exists to display."""
+    # Imported at the guard, not at module scope: this script has no
+    # other use for the training package and importing it here would
+    # pull jax / pyscf / equinox into every invocation.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
     # --specs names a spec directly, bypassing discovery, so this reader
     # carries its own refusal: an SCF trajectory over the handful of species
     # named for a workflow test is not the pool's.
@@ -126,7 +128,7 @@ def plot_spec_convergence(traces: List[Dict[str, Any]], out_path: Path,
         n_conv = sum(1 for t in traces if t["converged"])
         ax.legend(loc="upper right", fontsize=8)
         ax.text(0.02, 0.02,
-                f"{len(traces)} molecules - {n_conv} converged - "
+                f"{len(traces)} molecules | {n_conv} converged | "
                 f"{max_step + 1} SCF cycles",
                 transform=ax.transAxes, fontsize=7, color="#555555")
     ax.set_xlabel("SCF cycle index  i")
@@ -157,6 +159,10 @@ def _resolve_run_dir(run_dir: Optional[str]) -> Path:
 def _discover_specs_with_traces(run_dir: Path, width: int = 4,
                                 eval_subdir: str = "eval_holdout"
                                 ) -> List[int]:
+    # Imported at the guard, not at module scope: this script has no
+    # other use for the training package and importing it here would
+    # pull jax / pyscf / equinox into every invocation.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
     ck = run_dir / "checkpoints"
     out: List[int] = []
     if not ck.is_dir():
@@ -202,7 +208,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                                          eval_subdir=args.eval_subdir)
         out = plot_spec_convergence(
             traces, outdir / f"scf_convergence_spec_{idx:04d}.png",
-            title=f"NN SCF convergence -- spec {idx} - {run_dir.name}")
+            title=f"NN SCF convergence -- spec {idx}, {run_dir.name}")
         print(f"  wrote {out}  ({len(traces)} molecule traces)")
         n += 1
     if not n:

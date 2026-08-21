@@ -22,8 +22,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from xcquinox.alec.eval_holdout import assert_channel_not_sliced
-
 DOMAIN = "dfs_step7"
 BASES = ("svp_grid2", "tzvpd_grid2_df")
 _DEFAULT_RESULTS_ROOT = "~/Documents/Research/xcquinox-results/runs"
@@ -33,6 +31,10 @@ _SUITE_SCRIPT = Path(__file__).resolve().parent / "make_ablation_arch_figure.py"
 def basis_has_eval(results_root: Path, basis: str) -> bool:
     """True if the newest-or-any run for ``<results_root>/dfs_step7/<basis>`` has at
     least one ``checkpoints/spec_*/eval_holdout/per_reaction.json`` (held-out coverage)."""
+    # Imported at the guard, not at module scope: this script has no
+    # other use for the training package and importing it here would
+    # pull jax / pyscf / equinox into every invocation.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
     runs = Path(results_root) / DOMAIN / basis / "runs"
     if not runs.is_dir():
         return False

@@ -1184,7 +1184,7 @@ def test_assert_channel_not_sliced_names_the_slice_of_a_stale_marker(tmp_path):
     assert "sliced_eval.json" in msg
 
 
-@pytest.mark.parametrize("payload", ["{not json", '["h"]', "{}"])
+@pytest.mark.parametrize("payload", ["{not json", '["h"]', "{}", "[]"])
 def test_assert_channel_not_sliced_reports_an_unreadable_marker_slice_as_unknown(
         tmp_path, payload):
     """The marker's own presence is the signal; when its contents cannot be
@@ -1222,3 +1222,60 @@ def test_assert_channel_not_sliced_is_per_channel(tmp_path):
     eh.assert_channel_not_sliced(spec_dir, "eval_holdout_val_best")
     with pytest.raises(eh.SlicedChannelError):
         eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+#: ``species_slice`` values that are truthy but not a species list. None can
+#: be produced by ``cluster/_eval_one_spec`` (it writes ``list(names)`` or
+#: None), so each stands for a hand-edited or corrupted mark. The refusal must
+#: still be a SlicedChannelError -- a mark is a mark -- and must not iterate
+#: the value: a string would render per character and a mapping its keys,
+#: either of which reads as a species list that was never there.
+_NON_LIST_SLICE_VALUES = ["3", "1.5", "true", '"h,h2"', '{"h": 1}']
+
+
+@pytest.mark.parametrize("mark", ["marker", "stamp"])
+@pytest.mark.parametrize("raw", _NON_LIST_SLICE_VALUES)
+def test_assert_channel_not_sliced_reports_a_non_list_slice_as_unknown(
+        tmp_path, mark, raw):
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    if mark == "marker":
+        (chan / "sliced_eval.json").write_text(
+            '{"species_slice": %s, "n_species": 1, "n_reactions": 1}' % raw)
+    else:
+        (chan / "eval_metadata.json").write_text(
+            '{"channel": "eval_holdout", "species_slice": %s}' % raw)
+    with pytest.raises(eh.SlicedChannelError) as exc:
+        eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+    msg = str(exc.value)
+    assert "unknown" in msg
+    assert repr(json.loads(raw)) in msg      # the value itself, verbatim
+    assert "spec_0000" in msg
+    assert "eval_holdout" in msg
+    # not iterated: a string must not come back as one quoted character per
+    # element, and a mapping must not come back as its keys
+    assert "'h', ','" not in msg
+
+
+def test_assert_channel_not_sliced_passes_a_stamp_with_an_empty_slice(
+        tmp_path):
+    """An empty species list restricts nothing, so the stamp is not a slice
+    signal. Unreachable from the writer, which records None for a full pool
+    and a non-empty list otherwise."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": []}))
+    eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+
+
+def test_assert_channel_not_sliced_refuses_a_marker_with_an_empty_slice(
+        tmp_path):
+    """The other half of the empty-list contract: the marker is a slice
+    signal by its presence, so an empty list there still refuses -- with the
+    slice reported unknown. Unreachable from the writer, which only writes
+    the marker for a non-empty slice."""
+    _run, spec_dir, chan = _slice_marked_channel(tmp_path)
+    (chan / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": [], "n_species": 0, "n_reactions": 0}))
+    with pytest.raises(eh.SlicedChannelError) as exc:
+        eh.assert_channel_not_sliced(spec_dir, "eval_holdout")
+    assert "unknown" in str(exc.value)

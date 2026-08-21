@@ -23,8 +23,6 @@ from pathlib import Path
 
 import numpy as np
 
-from xcquinox.alec.eval_holdout import assert_channel_not_sliced
-
 # The effective per-channel weights of the per-molecule loop
 # (train._DEFAULT_CHANNEL_WEIGHTS); see notebooks/analysis/LOSS_PRIMER.md.
 CHANNEL_WEIGHTS = {"loss_AE": 1.0, "loss_BH76": 1.0, "loss_IP13": 1.0,
@@ -212,6 +210,10 @@ HELDOUT_CHANNELS = ("eval_holdout", "eval_holdout_best",
 def heldout_summary(run: Path) -> None:
     """Held-out density: contamination check and checkpoint comparison."""
     print("\n[5] Held-out density")
+    # Imported at the guard, not at module scope: this script has no
+    # other use for the training package and importing it here would
+    # pull jax / pyscf / equinox into every invocation.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
     # Every channel this function pools is checked before the first read: a
     # species slice covers a handful of species for a workflow test, so its
     # ratios are not the pool's and must not enter the medians below.
@@ -299,6 +301,10 @@ def outcome_correlates(run: Path) -> None:
     """What the held-out density outcome tracks: CH presence, architecture,
     and the energy ratio (the trade-off test)."""
     print("\n[6] Held-out density vs CH presence, architecture, and energy")
+    # Imported at the guard, not at module scope: this script has no
+    # other use for the training package and importing it here would
+    # pull jax / pyscf / equinox into every invocation.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
     manifest = json.load(open(run / "manifest.json"))
     cells = {f"spec_{s['index']:04d}": s["cell"] for s in manifest["specs"]}
     rows = []
