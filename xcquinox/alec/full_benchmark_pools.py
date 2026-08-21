@@ -541,3 +541,76 @@ def load_full_held_out_pools(
             continue
         merged_mols[sp_name] = ms
     return merged_mols, list(bh76_rxns) + list(w411_rxns)
+
+
+# ---------------------------------------------------------------------------
+# Held-out species slice
+# ---------------------------------------------------------------------------
+
+#: Environment variable naming a comma-separated species slice of the held-out
+#: pool. The slice exists for workflow verification
+#: (SPEC_pretrain_fidelity_program.md 3.4): the full pool is 216 reactions over
+#: 214 species and hours of SCF per grid cell, which is not narrowable from the
+#: grid config. It is NEVER applied by default and NEVER applied to the pool
+#: loaders themselves -- the training-point pool and the spec builder read the
+#: same loaders (cluster/inputs.py, cluster/spec_builder.py,
+#: training_points.py), and a slice reaching them would silently shrink
+#: training. Only the held-out evaluation channel honours it
+#: (cluster/_eval_one_spec._run_held_out_eval), and a channel evaluated under a
+#: slice is marked on disk so it cannot be read as a full-pool channel.
+HELDOUT_SPECIES_SLICE_ENV = "XCQUINOX_HELDOUT_SPECIES_SLICE"
+
+
+def resolve_species_slice(env: Dict[str, str] | None = None
+                          ) -> Tuple[str, ...] | None:
+    """The species slice named by ``env``, or ``None`` for the full pool.
+
+    ``env`` defaults to ``os.environ``. An absent or blank variable is the full
+    pool: a slice applies only when it is asked for by name.
+    """
+    source = os.environ if env is None else env
+    raw = (source.get(HELDOUT_SPECIES_SLICE_ENV) or "").strip()
+    if not raw:
+        return None
+    names = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not names:
+        raise ValueError(
+            f"{HELDOUT_SPECIES_SLICE_ENV}={raw!r} names no species; unset the "
+            "variable to evaluate the full held-out pool."
+        )
+    if len(set(names)) != len(names):
+        raise ValueError(
+            f"{HELDOUT_SPECIES_SLICE_ENV}={raw!r} repeats a species name: "
+            f"{names}"
+        )
+    return names
+
+
+def slice_held_out_pools(
+    mol_specs: Dict[str, MoleculeSpec],
+    reactions: Sequence[Dict[str, Any]],
+    species: Sequence[str],
+) -> Tuple[Dict[str, MoleculeSpec], List[Dict[str, Any]]]:
+    """Restrict a held-out pool to ``species`` and the reactions closed under it.
+
+    A reaction survives only when every reactant and product is inside the
+    slice; a reaction with a missing leg has no defined energy, so keeping it
+    would put an undefined term in the pool MAE. The returned species dict
+    preserves the order of ``species`` so the slice reads the same way in the
+    log line and in the provenance stamp.
+    """
+    wanted = tuple(species)
+    missing = [n for n in wanted if n not in mol_specs]
+    if missing:
+        raise ValueError(
+            f"held-out species slice names {missing}, absent from the pool of "
+            f"{len(mol_specs)} species. Pool names are lower case Hill-like "
+            "strings, e.g. 'h', 'h2', 'oh', 'n2o', 'n2ohts'."
+        )
+    kept_names = set(wanted)
+    kept_specs = {n: mol_specs[n] for n in wanted}
+    kept_rxns = [
+        r for r in reactions
+        if set(r["reactants"]) | set(r["products"]) <= kept_names
+    ]
+    return kept_specs, kept_rxns

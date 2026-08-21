@@ -318,3 +318,93 @@ def test_refs_dir_env_var_fallback(tmp_path, monkeypatch):
     mols2, _ = fbp.load_full_bh76(basis="def2-svp", grid_level=2,
                                   refs_dir=other)
     assert mols2["h"].external_data_path is None   # no h.npz under other/
+
+
+# ---------------------------------------------------------------------------
+# Held-out species slice: an explicitly named handful of the pool, for
+# workflow verification only (SPEC_pretrain_fidelity_program.md 3.4).
+# ---------------------------------------------------------------------------
+
+def test_resolve_species_slice_is_none_without_the_variable():
+    from xcquinox.alec.full_benchmark_pools import resolve_species_slice
+    assert resolve_species_slice({}) is None
+
+
+def test_resolve_species_slice_is_none_for_an_empty_variable():
+    from xcquinox.alec.full_benchmark_pools import (
+        HELDOUT_SPECIES_SLICE_ENV, resolve_species_slice)
+    assert resolve_species_slice({HELDOUT_SPECIES_SLICE_ENV: ""}) is None
+    assert resolve_species_slice({HELDOUT_SPECIES_SLICE_ENV: "   "}) is None
+
+
+def test_resolve_species_slice_parses_and_strips():
+    from xcquinox.alec.full_benchmark_pools import (
+        HELDOUT_SPECIES_SLICE_ENV, resolve_species_slice)
+    got = resolve_species_slice(
+        {HELDOUT_SPECIES_SLICE_ENV: " h , h2,o ,oh,n2o,n2ohts "})
+    assert got == ("h", "h2", "o", "oh", "n2o", "n2ohts")
+
+
+def test_resolve_species_slice_refuses_a_repeated_name():
+    from xcquinox.alec.full_benchmark_pools import (
+        HELDOUT_SPECIES_SLICE_ENV, resolve_species_slice)
+    with pytest.raises(ValueError, match="repeats"):
+        resolve_species_slice({HELDOUT_SPECIES_SLICE_ENV: "h,h2,h"})
+
+
+def test_resolve_species_slice_reads_the_process_environment(monkeypatch):
+    from xcquinox.alec.full_benchmark_pools import (
+        HELDOUT_SPECIES_SLICE_ENV, resolve_species_slice)
+    monkeypatch.setenv(HELDOUT_SPECIES_SLICE_ENV, "h,h2")
+    assert resolve_species_slice() == ("h", "h2")
+
+
+def test_slice_held_out_pools_keeps_only_closed_reactions():
+    from xcquinox.alec.full_benchmark_pools import slice_held_out_pools
+    mols = {"a": 1, "b": 2, "c": 3}
+    rxns = [
+        {"name": "closed", "reactants": ["a"], "products": ["b"]},
+        {"name": "open", "reactants": ["a"], "products": ["c"]},
+    ]
+    kept_mols, kept_rxns = slice_held_out_pools(mols, rxns, ("a", "b"))
+    assert kept_mols == {"a": 1, "b": 2}
+    assert [r["name"] for r in kept_rxns] == ["closed"]
+
+
+def test_slice_held_out_pools_refuses_a_species_absent_from_the_pool():
+    from xcquinox.alec.full_benchmark_pools import slice_held_out_pools
+    with pytest.raises(ValueError, match="nosuchspecies"):
+        slice_held_out_pools({"a": 1}, [], ("a", "nosuchspecies"))
+
+
+def test_slice_held_out_pools_preserves_the_requested_order():
+    from xcquinox.alec.full_benchmark_pools import slice_held_out_pools
+    kept, _ = slice_held_out_pools({"a": 1, "b": 2, "c": 3}, [], ("c", "a"))
+    assert list(kept) == ["c", "a"]
+
+
+def test_the_matrix_six_species_slice_spans_both_pools():
+    """The workflow matrix's slice: six species of the real pool that close
+    three reactions, one BH76 barrier and two W4-11 atomizations, over both
+    spin types (RKS h2/n2o, UKS h/o/oh/n2ohts). A slice of six molecules with
+    no atoms closes NO reaction and would leave the reaction math untested."""
+    from xcquinox.alec.full_benchmark_pools import (
+        load_full_held_out_pools, slice_held_out_pools)
+    mols, rxns = load_full_held_out_pools(basis="def2-svp", grid_level=1)
+    names = ("h", "h2", "o", "oh", "n2o", "n2ohts")
+    kept_mols, kept_rxns = slice_held_out_pools(mols, rxns, names)
+    assert len(kept_mols) == 6
+    assert sorted(r["name"] for r in kept_rxns) == [
+        "bh76_h_n2o_to_n2ohts", "w411_h2_atomization", "w411_oh_atomization"]
+    assert {r["source_pool"] for r in kept_rxns} == {"bh76", "w411"}
+
+
+def test_resolve_species_slice_refuses_separators_naming_no_species():
+    """A variable holding only separators is a typo, not the full pool: the
+    full pool is requested by unsetting the variable, so a value that survives
+    the blank check yet names nothing is refused rather than silently widened.
+    """
+    from xcquinox.alec.full_benchmark_pools import (
+        HELDOUT_SPECIES_SLICE_ENV, resolve_species_slice)
+    with pytest.raises(ValueError, match="names no species"):
+        resolve_species_slice({HELDOUT_SPECIES_SLICE_ENV: " , , "})
