@@ -757,3 +757,187 @@ def test_run_held_out_eval_writes_provenance_stamp(run_dir, monkeypatch,
     fail_dir = os.path.join(ckpt_dir, "eval_holdout_failing")
     assert os.path.isfile(os.path.join(fail_dir, "failure.json"))
     assert not os.path.exists(os.path.join(fail_dir, "eval_metadata.json"))
+
+
+# ---------------------------------------------------------------------------
+# Held-out species slice (SPEC_pretrain_fidelity_program.md 3.4)
+# ---------------------------------------------------------------------------
+
+def _slice_fixture(monkeypatch, run_dir):
+    """Wire the held-out seams so _run_held_out_eval runs no SCF.
+
+    The pool stub is the six-species matrix slice plus one species outside it,
+    so a slice that is applied is distinguishable from one that is not.
+    """
+    from types import SimpleNamespace
+    import xcquinox.alec.eval_holdout as eh
+    import xcquinox.alec.full_benchmark_pools as fbp
+    spec = _full_mode_spec()
+    ckpt_dir = _write_model(run_dir, 0)
+    cfg = SimpleNamespace(cluster=SimpleNamespace(eval_workers=1),
+                          held_out_strict=False)
+    pool = {n: f"spec_{n}" for n in
+            ("h", "h2", "o", "oh", "n2o", "n2ohts", "c2h6")}
+    rxns = [
+        {"name": "w411_h2_atomization", "reactants": ["h2"], "products": ["h"]},
+        {"name": "w411_c2h6_atomization", "reactants": ["c2h6"],
+         "products": ["h", "c"]},
+    ]
+    seen = {}
+    monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
+    monkeypatch.setattr(fbp, "load_full_held_out_pools",
+                        lambda basis=None, grid_level=None: (dict(pool),
+                                                             list(rxns)))
+    monkeypatch.setattr(ev, "_held_out_basis_grid", lambda cfg: ("def2-svp", 1))
+
+    def _capture(**kw):
+        seen["mol_specs"] = dict(kw["mol_specs"])
+        seen["reactions"] = list(kw["reactions"])
+        return {"n_reactions": len(kw["reactions"]),
+                "n_species": len(kw["mol_specs"]),
+                "n_dropped_nan": 0, "n_dropped_overlap": 0}
+
+    monkeypatch.setattr(eh, "run_full_holdout_eval", _capture)
+    return spec, cfg, ckpt_dir, seen
+
+
+def test_held_out_eval_is_the_full_pool_without_the_slice_variable(
+        run_dir, monkeypatch):
+    """No variable, no slice: the channel carries every pool species and no
+    slice mark. The full pool must stay the default on the cluster."""
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    monkeypatch.delenv(HELDOUT_SPECIES_SLICE_ENV, raising=False)
+    spec, cfg, ckpt_dir, seen = _slice_fixture(monkeypatch, run_dir)
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+    assert len(seen["mol_specs"]) == 7
+    assert len(seen["reactions"]) == 2
+    chan = os.path.join(ckpt_dir, "eval_holdout")
+    assert not os.path.exists(os.path.join(chan, "sliced_eval.json"))
+    with open(os.path.join(chan, "eval_metadata.json")) as f:
+        assert json.load(f)["species_slice"] is None
+
+
+def test_held_out_eval_applies_the_named_species_slice(run_dir, monkeypatch):
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    monkeypatch.setenv(HELDOUT_SPECIES_SLICE_ENV, "h,h2,o,oh,n2o,n2ohts")
+    spec, cfg, ckpt_dir, seen = _slice_fixture(monkeypatch, run_dir)
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+    assert sorted(seen["mol_specs"]) == ["h", "h2", "n2o", "n2ohts", "o", "oh"]
+    # c2h6's atomization leaves the slice, so its reaction is not scored.
+    assert [r["name"] for r in seen["reactions"]] == ["w411_h2_atomization"]
+
+
+def test_sliced_channel_is_marked_before_the_evaluation_runs(run_dir,
+                                                             monkeypatch):
+    """The mark must survive an evaluation that dies: it is written before the
+    energies, so an interrupted sliced channel is still unmistakable."""
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    import xcquinox.alec.eval_holdout as eh
+    monkeypatch.setenv(HELDOUT_SPECIES_SLICE_ENV, "h,h2")
+    spec, cfg, ckpt_dir, _seen = _slice_fixture(monkeypatch, run_dir)
+
+    def _boom(**kw):
+        raise RuntimeError("synthetic eval failure")
+
+    monkeypatch.setattr(eh, "run_full_holdout_eval", _boom)
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+    chan = os.path.join(ckpt_dir, "eval_holdout")
+    assert os.path.isfile(os.path.join(chan, "failure.json"))
+    assert not os.path.exists(os.path.join(chan, "eval_metadata.json"))
+    with open(os.path.join(chan, "sliced_eval.json")) as f:
+        mark = json.load(f)
+    assert mark["species_slice"] == ["h", "h2"]
+    assert mark["env_var"] == HELDOUT_SPECIES_SLICE_ENV
+
+
+def test_sliced_channel_stamp_records_the_slice_and_the_counts(run_dir,
+                                                               monkeypatch):
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    monkeypatch.setenv(HELDOUT_SPECIES_SLICE_ENV, "h,h2,o,oh,n2o,n2ohts")
+    spec, cfg, ckpt_dir, _seen = _slice_fixture(monkeypatch, run_dir)
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+    with open(os.path.join(ckpt_dir, "eval_holdout",
+                           "eval_metadata.json")) as f:
+        stamp = json.load(f)
+    assert stamp["species_slice"] == ["h", "h2", "o", "oh", "n2o", "n2ohts"]
+    assert stamp["n_species"] == 6
+    assert stamp["n_reactions"] == 1
+    assert stamp["channel"] == "eval_holdout"
+
+
+def test_unknown_sliced_species_fails_the_channel_not_the_task(run_dir,
+                                                               monkeypatch):
+    """A misspelt slice must not silently evaluate a different set: the channel
+    records failure.json (held-out failure is non-fatal by contract)."""
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    monkeypatch.setenv(HELDOUT_SPECIES_SLICE_ENV, "h,nosuchspecies")
+    spec, cfg, ckpt_dir, _seen = _slice_fixture(monkeypatch, run_dir)
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+    with open(os.path.join(ckpt_dir, "eval_holdout", "failure.json")) as f:
+        payload = json.load(f)
+    assert payload["exception_type"] == "ValueError"
+    assert "nosuchspecies" in payload["exception_message"]
+
+
+def test_sliced_eval_leaves_the_pool_objects_untouched(run_dir, monkeypatch):
+    """The pool loaders hand out cached objects by reference: the reaction
+    dicts and MoleculeSpec values returned by ``load_full_held_out_pools``
+    live in ``full_benchmark_pools._BH76_CACHE`` / ``_W411_CACHE`` and are
+    handed to every later caller in the same process, the training-point
+    builder among them. A slice that stamped a mark into a reaction, or that
+    dropped species in place, would therefore shrink or relabel the pool for
+    the rest of the process. The pool the loader returned is compared against
+    a snapshot taken before the sliced evaluation ran.
+    """
+    import copy
+    from types import SimpleNamespace
+    import xcquinox.alec.eval_holdout as eh
+    import xcquinox.alec.full_benchmark_pools as fbp
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    monkeypatch.setenv(HELDOUT_SPECIES_SLICE_ENV, "h,h2")
+    spec = _full_mode_spec()
+    ckpt_dir = _write_model(run_dir, 0)
+    cfg = SimpleNamespace(cluster=SimpleNamespace(eval_workers=1),
+                          held_out_strict=False)
+    cached_specs = {n: {"name": n} for n in ("h", "h2", "o", "c2h6")}
+    cached_rxns = [
+        {"name": "w411_h2_atomization", "reactants": ["h2"],
+         "products": ["h"]},
+        {"name": "w411_c2h6_atomization", "reactants": ["c2h6"],
+         "products": ["h", "o"]},
+    ]
+    before = copy.deepcopy((cached_specs, cached_rxns))
+    seen = {}
+
+    def _capture(**kw):
+        seen["mol_specs"] = dict(kw["mol_specs"])
+        seen["reactions"] = list(kw["reactions"])
+        return {"n_reactions": len(kw["reactions"]),
+                "n_species": len(kw["mol_specs"]),
+                "n_dropped_nan": 0, "n_dropped_overlap": 0}
+
+    monkeypatch.setattr(eh, "load_trained_model", lambda ts, mp: "MODEL")
+    # The stub hands back the cached containers themselves, so an in-place
+    # edit anywhere on the slice path is visible to this test.
+    monkeypatch.setattr(fbp, "load_full_held_out_pools",
+                        lambda basis=None, grid_level=None: (cached_specs,
+                                                             cached_rxns))
+    monkeypatch.setattr(ev, "_held_out_basis_grid", lambda cfg: ("def2-svp", 1))
+    monkeypatch.setattr(eh, "run_full_holdout_eval", _capture)
+
+    ev._run_held_out_eval(run_dir, 0, cfg, ckpt_dir,
+                          os.path.join(ckpt_dir, "model.eqx"), spec)
+
+    # The slice really applied (otherwise an untouched pool proves nothing).
+    assert sorted(seen["mol_specs"]) == ["h", "h2"]
+    assert [r["name"] for r in seen["reactions"]] == ["w411_h2_atomization"]
+    assert os.path.isfile(os.path.join(ckpt_dir, "eval_holdout",
+                                       "sliced_eval.json"))
+    # ... and the pool the loader returned is bit-for-bit what it was.
+    assert (cached_specs, cached_rxns) == before
+    assert sorted(cached_specs) == ["c2h6", "h", "h2", "o"]

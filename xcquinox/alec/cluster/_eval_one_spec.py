@@ -249,6 +249,53 @@ def _write_skipped_json(checkpoint_dir, reason):
 # main
 # ---------------------------------------------------------------------------
 
+def _apply_species_slice(idx, full_specs, full_rxns, holdout_dir):
+    """Restrict the held-out pool to the environment's species slice.
+
+    Returns ``(mol_specs, reactions, slice_names)``; ``slice_names`` is None
+    when no slice is named, in which case the pool is returned untouched and
+    the channel carries no mark -- the full 216-reaction BH76 + W4-11 pool
+    (214 species, measured 2026-08-20) stays the default.
+
+    A sliced channel is marked TWICE. ``sliced_eval.json`` is written here,
+    before any energy is computed, so an interrupted or failed sliced
+    evaluation is still unmistakable; ``eval_metadata.json`` carries the same
+    slice after the evaluation. The figure layer refuses a channel bearing
+    either mark, because a slice covers a handful of species chosen for a
+    workflow test and its MAE is not the pool MAE the architectures are
+    compared on. The counts in ``sliced_eval.json`` are the species slice's
+    own; the counts in ``eval_metadata.json`` are what was evaluated, i.e.
+    after :func:`_test_slice_reactions` has also dropped the validation
+    complement, so the two reaction counts differ for a spec that validated.
+
+    The sliced containers are new objects (``slice_held_out_pools`` rebuilds
+    the species dict and the reaction list); the reaction dicts and
+    MoleculeSpec values inside them are the pool loaders' cached objects, so
+    nothing here writes into them.
+    """
+    from xcquinox.alec.full_benchmark_pools import (
+        HELDOUT_SPECIES_SLICE_ENV, resolve_species_slice,
+        slice_held_out_pools)
+    names = resolve_species_slice()
+    if names is None:
+        return full_specs, full_rxns, None
+    sliced_specs, sliced_rxns = slice_held_out_pools(
+        full_specs, full_rxns, names)
+    holdout_dir.mkdir(parents=True, exist_ok=True)
+    with open(holdout_dir / "sliced_eval.json", "w") as f:
+        json.dump({
+            "species_slice": list(names),
+            "n_species": len(sliced_specs),
+            "n_reactions": len(sliced_rxns),
+            "env_var": HELDOUT_SPECIES_SLICE_ENV,
+        }, f, indent=2, sort_keys=True)
+        f.write("\n")
+    _log(idx, f"held-out eval SLICED by {HELDOUT_SPECIES_SLICE_ENV} to "
+              f"{len(sliced_specs)} species / {len(sliced_rxns)} reactions "
+              f"({', '.join(names)}) -- this channel is NOT the full pool")
+    return sliced_specs, sliced_rxns, names
+
+
 def _test_slice_reactions(reactions, training_spec):
     """Return the held-out reactions to REPORT. WS3.
 
@@ -350,6 +397,8 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
         full_specs, full_rxns = load_full_held_out_pools(
             basis=_hb, grid_level=_hg,
         )
+        full_specs, full_rxns, _slice_names = _apply_species_slice(
+            idx, full_specs, full_rxns, holdout_dir)
 
         # WS3: report ONLY the TEST slice when in-loop validation ran (the val
         # slice drove early-stop and must not leak into the reported metric); the
@@ -405,6 +454,13 @@ def _run_held_out_eval(run_dir, idx, cfg, checkpoint_dir, model_path,
                     "coldstart": bool(coldstart),
                     "solver_config": (_sc.describe()
                                       if _sc is not None else None),
+                    # None for the full pool. A list names the species the
+                    # channel actually covers, so a sliced channel cannot be
+                    # read as a full-pool one.
+                    "species_slice": (list(_slice_names)
+                                      if _slice_names else None),
+                    "n_species": len(full_specs),
+                    "n_reactions": len(full_rxns),
                 }, f, indent=2, sort_keys=True)
         except Exception as _mexc:  # noqa: BLE001
             _log(idx, f"eval_metadata.json write failed ({_mexc}); non-fatal")
