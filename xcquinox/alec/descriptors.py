@@ -29,6 +29,11 @@ def _validated_spin_channel(spin_channel) -> int:
     the alpha block. Floats passed the same membership test and were then
     either taken as a channel by accident or tripped the array indexer with an
     opaque TypeError. Each case is refused here instead.
+
+    Only a CONCRETE integral scalar is accepted -- a Python ``int`` or a numpy
+    integer. A 0-d JAX integer array and a tracer are refused by design: both
+    selections above resolve at trace time, so a caller under ``jit`` passes the
+    channel as a static argument rather than as a traced value.
     """
     is_boolean = (isinstance(spin_channel, bool)
                   or getattr(spin_channel, "dtype", None) == bool)
@@ -63,6 +68,15 @@ class Descriptor(eqx.Module, abc.ABC):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
+        if len(cls.spin_mol_keys) not in (0, 2):
+            raise TypeError(
+                f"{cls.__name__} declares spin_mol_keys = "
+                f"{cls.spin_mol_keys!r}; the tuple holds one precompute name per "
+                "spin channel, so it must be either empty (geometry-only) or "
+                "(alpha, beta). A one-name tuple defines without complaint and "
+                "raises IndexError only when the beta channel is first "
+                "requested."
+            )
         if cls.density_matrix_dependent and not cls.spin_mol_keys:
             raise TypeError(
                 f"{cls.__name__} declares density_matrix_dependent = True but "
@@ -93,16 +107,18 @@ class Descriptor(eqx.Module, abc.ABC):
         dependence, so its per-channel block is the shared block.
         """
         channel = _validated_spin_channel(spin_channel)
-        if not self.spin_mol_keys:
-            if self.density_matrix_dependent:
-                raise TypeError(
-                    f"{type(self).__name__} is density-matrix dependent but its "
-                    "spin_mol_keys are empty, so no per-channel block exists; "
-                    "returning the shared block here would evaluate exchange at "
-                    "the physical density in both channels."
-                )
+        keys = self.spin_mol_keys
+        if self.density_matrix_dependent and len(keys) != 2:
+            raise TypeError(
+                f"{type(self).__name__} is density-matrix dependent but its "
+                f"spin_mol_keys are {keys!r}, not one name per spin channel, so "
+                "no per-channel block exists; returning the shared block here "
+                "would evaluate exchange at the physical density in both "
+                "channels."
+            )
+        if not keys:
             return self.compute(mol_data)
-        key = self.spin_mol_keys[channel]
+        key = keys[channel]
         value = mol_data.get(key)
         if value is None:
             raise KeyError(

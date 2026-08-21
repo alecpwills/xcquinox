@@ -53,6 +53,13 @@ def test_tau_from_doubled_spin_dm_is_twice_the_channel_tau():
     mol, mf, ao, dm = _scf("O 0 0 0; H 0 0 0.97", 1)
     for s in (0, 1):
         tau_ref = mf._numint.eval_rho(mol, ao, dm[s], xctype="MGGA")[5]
+        # A purely relative criterion demands exact equality wherever the
+        # reference vanishes, so the absence of a hard zero is asserted rather
+        # than assumed: the smallest reference value 2 tau_sigma measured on
+        # this grid is 2.6e-13 (alpha) and 4.3e-13 (beta). A grid or basis
+        # change that produces an exact zero fails here instead of silently
+        # tightening the comparison to bit equality.
+        assert np.all(tau_ref > 0.0)
         tau_doubled = np.asarray(compute_tau_from_dm(
             jnp.asarray(ao[1:4]), doubled_spin_dm(jnp.asarray(dm), s)))
         # Purely relative: tau spans 2.6e-13 to 8.1e+03 Ha/bohr^3 on this grid,

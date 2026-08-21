@@ -369,6 +369,26 @@ def test_dm_dependent_descriptor_without_spin_keys_is_refused_at_definition():
                 return jnp.zeros((1, 1))
 
 
+def test_spin_mol_keys_of_the_wrong_width_are_refused_at_definition():
+    """One name per spin channel. Under an emptiness-only check a one-name tuple
+    defined without complaint and raised ``IndexError: tuple index out of range``
+    when the beta channel was requested (measured), so the width belongs to the
+    declaration rather than to the first call that trips over it."""
+    from xcquinox.alec.descriptors import Descriptor
+    for keys in (("rung35_features_a",),
+                 ("a_key", "b_key", "extra_key")):
+        with pytest.raises(TypeError, match="_WrongWidthSpinKeys") as excinfo:
+            class _WrongWidthSpinKeys(Descriptor):
+                density_matrix_dependent: ClassVar[bool] = True
+                spin_mol_keys: ClassVar[tuple[str, ...]] = keys
+                n_features: int = eqx.field(default=1, static=True)
+
+                def compute(self, mol_data):
+                    return jnp.zeros((1, 1))
+
+        assert "spin_mol_keys" in str(excinfo.value)
+
+
 def test_dm_dependent_descriptor_with_cleared_spin_keys_raises_at_use():
     """The same condition reached by post-definition mutation raises at use
     rather than returning the shared block."""
@@ -405,21 +425,27 @@ def test_geometry_only_descriptor_is_definable_without_spin_keys():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def o_atom_uks():
-    """O atom (sto-3g, UKS/PBE, grid level 1): a spin-resolved DM with
-    P_alpha != P_beta, so a per-channel claim cannot pass by symmetry."""
-    from pyscf import gto, dft
+def o_atom_mol():
+    """O atom (sto-3g) from the shared fixture spec, with no SCF."""
+    from pyscf import gto
     from xcquinox.alec.tests.fixtures.molecules import o_atom
     spec = o_atom()
-    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
-                spin=spec.spin, verbose=0)
-    mf = dft.UKS(mol)
+    return gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                 spin=spec.spin, verbose=0)
+
+
+@pytest.fixture(scope="module")
+def o_atom_uks(o_atom_mol):
+    """O atom (sto-3g, UKS/PBE, grid level 1): a spin-resolved DM with
+    P_alpha != P_beta, so a per-channel claim cannot pass by symmetry."""
+    from pyscf import dft
+    mf = dft.UKS(o_atom_mol)
     mf.xc = "pbe"
     mf.grids.level = 1
     mf.kernel()
     dm = jnp.asarray(mf.make_rdm1())
     assert float(jnp.abs(dm[0] - dm[1]).max()) > 1e-3
-    return mol, mf.grids.coords, dm
+    return o_atom_mol, mf.grids.coords, dm
 
 
 def test_doubled_dm_rung35_occupancy_carries_one_channel_in_both_slots(o_atom_uks):
@@ -437,8 +463,10 @@ def test_doubled_dm_rung35_occupancy_carries_one_channel_in_both_slots(o_atom_uk
         # measured deviation 2.22e-16 in both channels, on 4328 grid points
         np.testing.assert_allclose(occ_d[:, 0], occ_phys[:, s], rtol=0.0, atol=1e-12)
         np.testing.assert_allclose(occ_d[:, 1], occ_phys[:, s], rtol=0.0, atol=1e-12)
-        # Bessel bound preserved: measured range [3.96e-04, 7.49e-01] (alpha)
-        # and [1.28e-04, 7.49e-01] (beta)
+        # Bessel bound preserved. At this projector width the occupancy is
+        # dominated by the 1s core and the measured ranges reproduced to the
+        # digits shown across four initial guesses (minao, 1e, atom, huckel):
+        # [3.96e-04, 7.49e-01] alpha and [1.28e-04, 7.49e-01] beta.
         assert occ_d.min() >= 0.0 and occ_d.max() <= 1.0
 
 
@@ -464,7 +492,13 @@ def test_doubled_dm_multishell_occupancy_keeps_the_alpha_major_layout(o_atom_uks
                 np.testing.assert_allclose(ms_d[:, 2 * w + slot],
                                            ms_phys[:, 2 * w + s],
                                            rtol=0.0, atol=1e-12)
-        # measured range [2.45e-07, 9.54e-01] (alpha), [3.23e-08, 9.49e-01] (beta)
+        # Bessel bound preserved. The alpha range reproduced as
+        # [2.45e-07, 9.54e-01] across four initial guesses, and the beta minimum
+        # as 3.23e-08; the beta MAXIMUM does not reproduce -- the singly occupied
+        # beta 2p of the O atom is orientation-degenerate, so the converged
+        # solution selects an arbitrary member of that set and the narrowest
+        # projector reports a peak anywhere in 0.949-0.954. Only the bound is
+        # asserted, which is why the spread does not weaken the test.
         assert ms_d.min() >= 0.0 and ms_d.max() <= 1.0
 
 
@@ -486,14 +520,13 @@ def _fractional_occupation_dm(mol):
     return dm, s_matrix, occ_a, occ_b
 
 
-def test_doubled_dm_statistics_are_the_channel_statistics(o_atom_uks):
+def test_doubled_dm_statistics_are_the_channel_statistics(o_atom_mol):
     """The dm_statistics block of diag(P_s, P_s) is the pair (per-spin
     idempotency error of P_s, off-diagonal norm of P_s); the factor 2 in the
     aggregated total cancels between the off-diagonal norm and its trace."""
     from xcquinox.alec.descriptors import doubled_spin_dm
     from xcquinox.features import compute_dm_features_array
-    mol, _, _ = o_atom_uks
-    dm, s_matrix, occ_a, occ_b = _fractional_occupation_dm(mol)
+    dm, s_matrix, occ_a, occ_b = _fractional_occupation_dm(o_atom_mol)
     w, u = np.linalg.eigh(s_matrix)
     root_s = u @ np.diag(np.sqrt(w)) @ u.T
     for s, occ in ((0, occ_a), (1, occ_b)):
