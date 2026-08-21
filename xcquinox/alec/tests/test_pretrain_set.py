@@ -38,9 +38,39 @@ def test_pool_atom_names_are_unique_and_mark_the_anions():
 def test_pool_atoms_sit_at_the_origin_like_the_free_atom_path():
     """A free atom's geometry is a single nucleus at the origin, spelled the
     same way the historical atom path spells it, so a pool atom and a
-    ``pretrain.atoms`` entry for the same element deduplicate to one system."""
+    ``pretrain.atoms`` entry for the same element deduplicate to one system.
+
+    This pins the OUTPUT spelling only; that the spelling is faithful to the
+    pool is pinned on the input by the test below."""
     for s in pdg.pool_atom_systems():
         assert s.atom.split()[1:] == ["0", "0", "0"], s.atom
+
+
+def test_the_pools_own_single_atom_species_sit_at_the_origin():
+    """``pool_atom_systems`` writes the free-atom geometry itself
+    (``"<Sym> 0 0 0"``) rather than carrying the pool's coordinates through, so
+    "the geometry is the pool's own" is a claim about the INPUT: a single-atom
+    species displaced from the origin in the committed pool JSON -- a nucleus
+    left at a fragment position by a regeneration from the GMTKN55 source --
+    would be silently moved to the origin, and the pretraining atom would then
+    be a different system from the pool species the certificate bounds.
+
+    Fifteen species by name, not fourteen: the union spells atomic oxygen both
+    ``O`` (BH76) and ``o`` (W4-11), and the two collapse only downstream, on
+    (symbol, charge, 2S)."""
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+    mol_specs, _reactions = load_full_held_out_pools()
+    singles = {name: ms for name, ms in mol_specs.items()
+               if sum(n for _sym, n in ms.atom_composition) == 1}
+    assert len(singles) == 15, sorted(singles)
+    for name, ms in sorted(singles.items()):
+        chunks = [c for c in str(ms.atom).replace("\n", ";").split(";")
+                  if c.split()]
+        assert len(chunks) == 1, (name, ms.atom)
+        fields = chunks[0].split()
+        assert len(fields) == 4, (name, ms.atom)
+        assert [float(v) for v in fields[1:]] == [0.0, 0.0, 0.0], (name,
+                                                                   ms.atom)
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +185,35 @@ def test_resolve_deduplicates_by_geometry_charge_and_spin():
     assert len(got) == 14
 
 
+def test_resolve_deduplicates_two_spellings_of_one_molecule():
+    """The de-duplication key is the GEOMETRY, not the name. The three
+    inventories name the same molecule independently -- the DFS records carry
+    G2/97 labels, the pool JSON carries GMTKN55 directory names, and
+    ``pretrain.atoms`` carries whatever the YAML wrote -- so a name-keyed
+    collapse would pretrain the same water twice under two labels, doubling its
+    weight in the loss. Here the two records differ in name, in nucleus
+    ordering, in the ``";"``/newline separator and in the number of trailing
+    zeros, and agree only in the structure."""
+    a = {"name": "water_a",
+         "atom": "O 0 0 0.117; H 0 0.757 -0.469; H 0 -0.757 -0.469",
+         "charge": 0, "spin": 0}
+    b = {"name": "water_b",
+         "atom": "H 0 -0.757 -0.469\nH 0 0.7570000 -0.469\nO 0.0 0.0 0.1170",
+         "charge": 0, "spin": 0}
+    assert len(pdg.resolve_pretrain_systems(atoms=(a, b))) == 1
+
+
+def test_resolve_deduplicates_a_renamed_pool_atom():
+    """The cross-inventory case of the same rule: an explicit ``pretrain.atoms``
+    entry naming a pool atom under a different label is still that pool atom.
+    The pool spells hydrogen ``H``; a YAML that spells it ``hydrogen`` must not
+    add a fifteenth system."""
+    got = pdg.resolve_pretrain_systems(
+        atoms=(pdg.PretrainSystem("hydrogen", "H 0 0 0", 0, 1),),
+        pool_atoms=True)
+    assert len(got) == 14, [s.name for s in got]
+
+
 def test_resolve_keeps_an_ion_beside_its_neutral_atom():
     """Same geometry, different charge: two physical systems, both kept."""
     got = pdg.resolve_pretrain_systems(pool_atoms=True)
@@ -253,16 +312,35 @@ def test_resolve_parent_density_auto_is_the_rung_baseline():
 def test_resolve_parent_density_auto_reads_the_meta_gga_ingredient():
     """The rung is carried by the meta-GGA INGREDIENT, which
     ``rungs.arch_ingredients`` reads as the ``meta_gga`` flag OR a "metagga"
-    descriptor. ``ArchitectureConfig`` rejects only the other direction (the
-    flag without the descriptor), so an architecture assembled outside the
-    registry can carry the descriptor alone -- a case the registry sweep above
-    cannot reach, and one that would pretrain a meta-GGA network on a PBE
-    density its own SCF never visits."""
+    descriptor. The pairing of the two is enforced in
+    ``ArchitectureConfig.from_spec`` alone (``config.py``, "meta_gga=True
+    requires a 'metagga' descriptor"), and only in that direction; the
+    dataclass constructor used below enforces neither, so an architecture
+    assembled outside ``from_spec`` can carry the descriptor alone -- a case
+    the registry sweep above cannot reach, and one that would pretrain a
+    meta-GGA network on a PBE density its own SCF never visits."""
     from xcquinox.alec.config import ArchitectureConfig, FeatureSpec
     arch = ArchitectureConfig(name="ad_hoc_metagga", depth=3, nodes=16,
                               descriptors=(FeatureSpec(name="metagga"),))
     assert arch.meta_gga is False
     assert pdg.resolve_parent_density(arch, "auto") == "scan"
+
+
+def test_lda_exchange_coefficient_is_the_one_libxc_returns():
+    """``_LDA_X_C`` is the denominator the stored enhancement factors are
+    formed against in ``spin_channel_exchange_rows``, so it has to be libxc's
+    own LDA exchange constant and not an independent transcription of it that
+    happens to agree.
+
+    The anchor is the constant's defining relation: eps_x^LDA(rho) =
+    _LDA_X_C rho^(1/3), so at rho = 1 libxc's ``LDA_X,`` returns the constant
+    itself. ``abs=1e-15`` admits no more than the last few bits of a double at
+    this magnitude (spacing 1.11e-16 at 0.739); the measured difference is
+    0.0."""
+    import numpy as np
+    from pyscf.dft.libxc import eval_xc
+    exc, _vxc, _fxc, _kxc = eval_xc("LDA_X,", np.array([1.0]), spin=0)
+    assert pdg._LDA_X_C == pytest.approx(float(exc[0]), abs=1e-15)
 
 
 def test_pretrain_data_filename_keeps_the_two_historical_names():
