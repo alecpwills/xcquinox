@@ -544,10 +544,20 @@ def make_uks_feature_fns(descriptors: tuple,
     ``f_a``, ``f_b`` and ``f_tot`` are three different maps of ``P``.
 
     ``ao_deriv`` is the ``(4, n_grid, n_ao)`` ``eval_ao(deriv=1)`` tensor.
-    At ``rho_a = rho_b`` all three closures return the SAME array bit for bit:
-    doubling either channel of ``[D/2, D/2]`` reproduces the matrix itself, and
-    ``2 rho_a`` / ``4 sigma_aa`` are then ``rho_tot`` / ``sigma_tot``. That is
-    why the change leaves every closed-shell number untouched.
+    At ``rho_a = rho_b`` the three closures return the same array: doubling
+    either channel of ``[D/2, D/2]`` reproduces the matrix itself, and
+    ``2 rho_a`` / ``4 sigma_aa`` are then ``rho_tot`` / ``sigma_tot``, exact
+    binary scalings. That is why the change leaves every closed-shell number
+    untouched. Evaluated eagerly the collapse is bit for bit. Under ``jax.jit``
+    the three closures are three different programs whose reductions XLA may
+    fuse and order differently, and the agreement is then at the rounding
+    level and depends on the process configuration (``JAX_PLATFORMS`` set or
+    not): measured on H2O and O at def2-svp, the density-matrix-linear columns
+    agree to one ulp (5.6e-17 in the off-diagonal norm; bitwise on H2O) and
+    the iso-orbital indicator to the ingredient rounding times its
+    amplification ``tau/tau_unif`` (bitwise to 6.0e-10 absolute in the density
+    tail, 1e-15 relative to that factor), which is the bound the closed-shell
+    collapse test asserts.
     """
     if not descriptors:
         empty = jnp.zeros((n_grid, 0))
@@ -562,13 +572,20 @@ def make_uks_feature_fns(descriptors: tuple,
     # contraction is skipped for every other architecture, matching the cost of
     # the pre-existing UKS feature assembly.
     needs_rho = any(isinstance(d, MetaGGAAlphaDescriptor) for d in descriptors)
-    ao0 = ao_deriv[0]
     ao_grad = ao_deriv[1:4]
 
     def _rho_sigma(D):
-        rho = jnp.einsum("ij,gi,gj->g", D, ao0, ao0)
-        nabla = 2.0 * jnp.einsum("ij,dgi,gj->gd", D, ao_grad, ao0)
-        return rho, jnp.sum(nabla * nabla, axis=1)
+        # The kernel the manual solvers contract with (the total block of
+        # ``_run_manual_scf_uks`` goes through it), so the block built here and
+        # the block the solver assembles for the correlation term are the same
+        # operations on the same arrays. The reduction matters at the bit
+        # level: summing the squared gradient components with ``jnp.sum``
+        # instead of the kernel's einsum rounds differently on 16-24% of the
+        # grid under ``JAX_PLATFORMS=cpu`` (2.2e-16 to 2.9e-16 relative in
+        # sigma; 4.3e-12 in the iso-orbital indicator on O/def2-svp once the
+        # ``tau/tau_unif`` amplification is applied).
+        rho, _nabla, sigma = _contract_dm_to_grid_with_nabla(D, ao_deriv)
+        return rho, sigma
 
     def _call(dm, rho, sigma, spin_channel):
         return _reassemble_features(

@@ -285,10 +285,11 @@ def test_live_uks_feature_closures_reproduce_the_precomputed_blocks():
         gap = np.abs(live[:, -1] - ref[:, -1])
         # Resolved density (rho_total > 2e-8, i.e. rho_sigma > 1e-8 for a
         # channel -- the cut the stored blocks are already pinned against):
-        # 7.8e-11 measured worst over four runs, against indicator values
-        # reaching 9.05, so the bound sits 12.9x above the floor. It refuses a
-        # block taken from the wrong channel or from the physical density,
-        # which differ here by 6.2 and 9.0.
+        # 2.4e-11 to 7.8e-11 measured worst over eight processes (the PBE
+        # reference density moves between them), against indicator values
+        # reaching 9.05, so the bound sits at least 12.9x above the floor. It
+        # refuses a block taken from the wrong channel or from the physical
+        # density, which differ here by 6.2 and 9.0.
         resolved = rho_total > 2e-8
         assert int(resolved.sum()) > n // 2, (label, int(resolved.sum()))
         assert float(gap[resolved].max()) < 1e-9, (label,
@@ -297,8 +298,8 @@ def test_live_uks_feature_closures_reproduce_the_precomputed_blocks():
         # ingredient rounding times the amplification. tau/tau_unif is the
         # amplification factor of alpha = (tau - tau_W)/tau_unif (SCAN,
         # PRL 115, 036402 (2015), Eq. 2); floored at 1 so a well-conditioned
-        # point is held to 1e-12 absolute. Measured worst ratio 3.1e-14 over
-        # four runs, 32x under the bound.
+        # point is held to 1e-12 absolute. Measured worst ratio 1.1e-14 to
+        # 3.9e-14 over eight processes, at least 26x under the bound.
         tau = np.asarray(compute_tau_from_dm(ao_grad, dm_doubled))
         tau_unif = (0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0)
                     * np.maximum(rho_total, 1e-30) ** (5.0 / 3.0))
@@ -309,7 +310,8 @@ def test_live_uks_feature_closures_reproduce_the_precomputed_blocks():
 
 def test_live_uks_feature_closures_collapse_at_a_closed_shell_density():
     """rho_a = rho_b makes the three blocks identical -- the structural reason
-    every closed-shell number is unchanged by the exact spin scaling."""
+    every closed-shell number is unchanged by the exact spin scaling. Bitwise
+    in eager evaluation; under jax.jit to the stated rounding bound."""
     from xcquinox.alec.solver import make_uks_feature_fns
     md = _precompute("H2O", "O 0 0 0.117; H 0 0.757 -0.469; H 0 -0.757 -0.469",
                      0, (("O", 1), ("H", 2)), _ALL_DM_DESCRIPTORS)
@@ -322,11 +324,47 @@ def test_live_uks_feature_closures_collapse_at_a_closed_shell_density():
         rung35_proj_ao=md.get("rung35_proj_ao"),
         rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
     )
-    half = 0.5 * jnp.asarray(md["dm_pbe"])
+    from xcquinox.alec.metagga import compute_tau_from_dm
+    D = jnp.asarray(md["dm_pbe"])
+    half = 0.5 * D
     P0 = jnp.stack([half, half], axis=0)
+    # Eager evaluation: exact by construction. 0.5 * D and half + half are
+    # exact binary scalings, so diag(P_sigma, P_sigma) reproduces the matrix and
+    # 2 rho_a / 4 sigma_aa reproduce rho_tot / sigma_tot bit for bit.
     a, b, t = np.asarray(fa(P0)), np.asarray(fb(P0)), np.asarray(ft(P0))
     np.testing.assert_allclose(a, b, rtol=0, atol=0)
     np.testing.assert_allclose(a, t, rtol=0, atol=0)
+    # Under jax.jit the three closures are three different programs, and XLA
+    # may fuse and order their reductions differently, so bitwise agreement is
+    # not guaranteed there, and what is measured depends on the process
+    # configuration. On this molecule the three jitted blocks agree bitwise
+    # with and without JAX_PLATFORMS set; jit against eager, the
+    # density-matrix-linear columns agree to 8.8e-47 (idempotency error) here
+    # and to one ulp, 5.6e-17 in off_diag_norm, on the O atom, and the
+    # indicator is bitwise under JAX_PLATFORMS=cpu but differs by 1.4e-11 to
+    # 2.0e-11 where the density is resolved and 5.4e-10 to 6.0e-10 in the tail
+    # without it, i.e. 9.5e-16 after dividing by its amplification
+    # tau/tau_unif -- the same ingredient rounding, and the same bounds, as
+    # the precompute comparison above.
+    assert isinstance(_ALL_DM_DESCRIPTORS[-1], MetaGGAAlphaDescriptor)
+    n_linear = sum(d.n_features for d in _ALL_DM_DESCRIPTORS[:-1])
+    rho = np.asarray(md["rho_grid"])
+    tau = np.asarray(compute_tau_from_dm(jnp.asarray(md["ao_grid_deriv"])[1:4], D))
+    tau_unif = (0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0)
+                * np.maximum(rho, 1e-30) ** (5.0 / 3.0))
+    amplification = tau / np.maximum(tau_unif, 1e-30)
+    resolved = rho > 2e-8
+    assert int(resolved.sum()) > rho.shape[0] // 2
+    ja, jb, jt = (np.asarray(jax.jit(f)(P0)) for f in (fa, fb, ft))
+    for label, x, y in (("jit a vs b", ja, jb), ("jit a vs t", ja, jt),
+                        ("jit a vs eager a", ja, a), ("jit b vs eager b", jb, b),
+                        ("jit t vs eager t", jt, t)):
+        np.testing.assert_allclose(x[:, :n_linear], y[:, :n_linear],
+                                   rtol=0, atol=1e-15, err_msg=label)
+        gap = np.abs(x[:, -1] - y[:, -1])
+        assert float(gap[resolved].max()) < 1e-9, (label, float(gap[resolved].max()))
+        ratio = float((gap / np.maximum(amplification, 1.0)).max())
+        assert ratio < 1e-12, (label, ratio)
 
 
 def test_live_uks_feature_closures_are_empty_for_a_descriptor_free_model():
@@ -354,3 +392,187 @@ def test_reassemble_features_spin_channel_doubles_the_density_matrix():
     explicit = _reassemble_features(dm=doubled_spin_dm(P0, 0), **kw)
     np.testing.assert_allclose(np.asarray(channelled), np.asarray(explicit),
                                rtol=0, atol=0)
+
+
+def test_live_uks_total_closure_is_the_manual_uks_assembly(monkeypatch):
+    """features_tot_of is the total-block assembly of the manual UKS solver,
+    operation for operation: _contract_dm_to_grid_with_nabla on P_a + P_b for
+    rho and sigma, then _reassemble_features on the physical matrix, so the
+    block the correlation term sees is the same array in both places, eagerly
+    and under jax.jit; the per-channel closures take rho_sigma and
+    sigma_sigma_sigma from the same kernel on P_sigma. The kernel is pinned by
+    recording its calls and the assembly by an exact comparison. The
+    distinction is not academic: a closure that reduced sigma with jnp.sum over
+    the gradient axis instead of the kernel's einsum agreed with the kernel
+    bitwise without JAX_PLATFORMS set and differed under JAX_PLATFORMS=cpu --
+    the configuration of this test session and of the cluster evaluation entry
+    point -- on 16-24% of the grid: 2.2e-16 to 2.9e-16 relative in sigma,
+    4.3e-12 in the indicator of this atom once a one-ulp sigma difference is
+    amplified by tau/tau_unif."""
+    import xcquinox.alec.solver as solver
+    md = _precompute("O", "O 0 0 0", 2, (("O", 1),), _ALL_DM_DESCRIPTORS)
+    n = int(np.asarray(md["grid_weights"]).shape[0])
+    ao_deriv = jnp.asarray(md["ao_grid_deriv"])
+    kw = dict(descriptors=_ALL_DM_DESCRIPTORS,
+              s_matrix=jnp.asarray(md["s_matrix"]), n_grid=n,
+              cusp_features=md.get("cusp_features"),
+              rung35_proj_ao=md.get("rung35_proj_ao"),
+              rung35ms_proj_ao=md.get("rung35ms_proj_ao"))
+    P = jnp.asarray(md["dm_pbe"])
+    assert P.ndim == 3
+    fa, fb, ft = solver.make_uks_feature_fns(ao_deriv=ao_deriv, **kw)
+
+    def manual(P_ab):
+        # _run_manual_scf_uks._features_for, verbatim.
+        rho_t, _nab_t, sigma_t = solver._contract_dm_to_grid_with_nabla(
+            P_ab[0] + P_ab[1], ao_deriv)
+        return solver._reassemble_features(
+            dm=P_ab, ao_grad=ao_deriv[1:4], rho=rho_t, sigma=sigma_t, **kw)
+
+    np.testing.assert_allclose(np.asarray(ft(P)), np.asarray(manual(P)),
+                               rtol=0, atol=0)
+    np.testing.assert_allclose(np.asarray(jax.jit(ft)(P)),
+                               np.asarray(jax.jit(manual)(P)), rtol=0, atol=0)
+
+    kernel = solver._contract_dm_to_grid_with_nabla
+    calls = []
+
+    def recording(D, ao):
+        calls.append((np.asarray(D), np.asarray(ao)))
+        return kernel(D, ao)
+
+    monkeypatch.setattr(solver, "_contract_dm_to_grid_with_nabla", recording)
+    for fn, expected in ((ft, P[0] + P[1]), (fa, P[0]), (fb, P[1])):
+        calls.clear()
+        fn(P)
+        assert len(calls) == 1, len(calls)
+        np.testing.assert_array_equal(calls[0][0], np.asarray(expected))
+        np.testing.assert_array_equal(calls[0][1], np.asarray(ao_deriv))
+
+
+def test_live_uks_feature_closures_follow_the_density_matrix():
+    """The closures are maps of the live density matrix, not lookups of the
+    stored blocks. At two matrices the precompute never saw -- 0.6 dm_pbe and
+    the matrix after one PySCF UKS cycle from the atomic guess -- every block is
+    rebuilt here from scratch on diag(P_s, P_s): numpy contractions for each
+    column linear in the density matrix (the rung-3.5 occupancies against the
+    stored projected-AO matrices, the statistics of the doubled matrix) and the
+    SCAN indicator from PySCF's eval_rho on the doubled total density 2 P_s.
+    The closures are evaluated at dm_pbe first, as the solver's seed cycle does,
+    so a closure that kept serving that first block is caught by every later
+    assertion: the stored blocks are left behind by O(1)."""
+    from pyscf import gto, dft
+    from xcquinox.alec.solver import (_contract_dm_to_grid_with_nabla,
+                                      _reassemble_features, make_uks_feature_fns)
+    md = _precompute("Li", "Li 0 0 0", 1, (("Li", 1),), _ALL_DM_DESCRIPTORS)
+    n = int(np.asarray(md["grid_weights"]).shape[0])
+    ao_deriv = jnp.asarray(md["ao_grid_deriv"])
+    kw = dict(descriptors=_ALL_DM_DESCRIPTORS,
+              s_matrix=jnp.asarray(md["s_matrix"]), n_grid=n,
+              cusp_features=md.get("cusp_features"),
+              rung35_proj_ao=md.get("rung35_proj_ao"),
+              rung35ms_proj_ao=md.get("rung35ms_proj_ao"))
+    fa, fb, ft = make_uks_feature_fns(ao_deriv=ao_deriv, **kw)
+    closures = {0: fa, 1: fb, None: ft}
+    assert isinstance(_ALL_DM_DESCRIPTORS[-1], MetaGGAAlphaDescriptor)
+    n_linear = sum(d.n_features for d in _ALL_DM_DESCRIPTORS[:-1])
+
+    # The oracle grid is the precompute's: the precompute's own eval_ao call,
+    # repeated here, must return the stored AO tensor bit for bit, which fixes
+    # grid, basis and geometry at once.
+    mol = gto.M(atom="Li 0 0 0", basis="def2-svp", spin=1, verbose=0)
+    mf = dft.UKS(mol)
+    mf.xc = "pbe"
+    mf.grids.level = 1
+    mf.max_cycle = 1
+    mf.kernel()
+    ao1 = mf._numint.eval_ao(mol, mf.grids.coords, deriv=1)
+    assert np.array_equal(ao1, np.asarray(md["ao_grid_deriv"]))
+    P0 = np.asarray(md["dm_pbe"])
+    S = np.asarray(md["s_matrix"])
+    A = np.asarray(md["rung35_proj_ao"])
+    A_ms = np.asarray(md["rung35ms_proj_ao"])
+
+    def oracle(P_ab, s):
+        """(block, rho, tau/tau_unif) of diag(P_s, P_s); of P_ab for s=None."""
+        d_a, d_b = (P_ab[0], P_ab[1]) if s is None else (P_ab[s], P_ab[s])
+        d_tot = d_a + d_b
+
+        def idempotency_sq(d):
+            x = d @ S @ d - d
+            return np.sum(x * x) / (np.trace(d @ S) + 1e-12)
+
+        off = d_tot - np.diag(np.diag(d_tot))
+        stats = np.array([0.5 * (idempotency_sq(d_a) + idempotency_sq(d_b)),
+                          np.sqrt(np.sum(off * off)) / (np.trace(d_tot) + 1e-12)])
+        occ = [np.einsum("gm,mn,gn->g", A, d, A) for d in (d_a, d_b)]
+        occ_ms = [np.einsum("gm,mn,gn->g", A_ms[w], d, A_ms[w])
+                  for w in range(A_ms.shape[0]) for d in (d_a, d_b)]
+        rho, gx, gy, gz, tau = mf._numint.eval_rho(mol, ao1, d_tot, xctype="MGGA",
+                                                   with_lapl=False)
+        sigma = gx ** 2 + gy ** 2 + gz ** 2
+        rho_safe = np.maximum(rho, 1e-30)
+        tau_unif = 0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0) * rho_safe ** (5.0 / 3.0)
+        alpha = np.clip((tau - sigma / (8.0 * rho_safe)) / tau_unif, 0.0, 100.0)
+        block = np.concatenate([np.tile(stats, (n, 1)),
+                                np.stack(occ + occ_ms, axis=1),
+                                alpha[:, None]], axis=1)
+        return block, rho, tau / tau_unif
+
+    def check(live, ref, rho, amplification, label):
+        assert live.shape == ref.shape == (n, n_linear + 1), label
+        # numpy and JAX order the same contractions differently: 3.3e-16
+        # measured worst over two processes, three matrices and three channels
+        # on columns of magnitude <= 1, 30x under the bound.
+        np.testing.assert_allclose(live[:, :n_linear], ref[:, :n_linear],
+                                   rtol=0, atol=1e-14, err_msg=label)
+        gap = np.abs(live[:, -1] - ref[:, -1])
+        resolved = rho > 2e-8
+        assert int(resolved.sum()) > n // 2, (label, int(resolved.sum()))
+        # PySCF's tau and rho against the JAX contractions, through the
+        # indicator: 4.5e-11 measured worst where the density is resolved (the
+        # beta channel of 0.6 dm_pbe), 22x under the bound; pointwise, the
+        # ingredient rounding times tau/tau_unif, 7.2e-15 measured worst --
+        # the same two bounds as the precompute comparison above.
+        assert float(gap[resolved].max()) < 1e-9, (label, float(gap[resolved].max()))
+        ratio = float((gap / np.maximum(amplification, 1.0)).max())
+        assert ratio < 1e-12, (label, ratio)
+
+    stored = {s: np.asarray(assemble_descriptor_features(_ALL_DM_DESCRIPTORS, md,
+                                                         spin_channel=s))
+              for s in (0, 1, None)}
+    # Seed cycle first. At dm_pbe the closures return the stored blocks (pinned
+    # above); here that block is the one a lookup would keep serving.
+    for s, fn in closures.items():
+        np.testing.assert_allclose(np.asarray(fn(jnp.asarray(P0)))[:, :n_linear],
+                                   stored[s][:, :n_linear], rtol=0, atol=0)
+
+    one_cycle = np.asarray(mf.make_rdm1())
+    assert one_cycle.shape == P0.shape
+    assert float(np.max(np.abs(one_cycle - P0))) > 0.05   # measured 0.102
+    # Margins by which the stored block is left behind: the rung-3.5
+    # occupancies are linear in P, so at 0.6 dm_pbe the live block is 0.4 times
+    # the stored occupancy away (0.398 / 0.322 / 0.398 for alpha / beta /
+    # total); after one UKS cycle the block moves 0.31 / 4.8e-3 / 0.42, the
+    # beta channel least because its single 1s-like orbital is already close to
+    # converged from the atomic guess.
+    for label, P, margin in (("0.6 dm_pbe", 0.6 * P0, 0.1),
+                             ("one UKS cycle", one_cycle, 1e-3)):
+        P_j = jnp.asarray(P)
+        for s, fn in closures.items():
+            tag = f"{label}, channel {s}"
+            live = np.asarray(fn(P_j))
+            ref, rho, amplification = oracle(P, s)
+            check(live, ref, rho, amplification, tag)
+            assert float(np.max(np.abs(live - stored[s]))) > margin, tag
+            if s is None:
+                continue
+            # The lower-level entry point at the same matrix: the closure is
+            # this call with the doubled ingredients of the same kernel, so the
+            # two agree bitwise, and the oracle holds for it on its own.
+            rho_s, _, sigma_ss = _contract_dm_to_grid_with_nabla(P_j[s], ao_deriv)
+            direct = np.asarray(_reassemble_features(
+                dm=P_j, spin_channel=s, ao_grad=ao_deriv[1:4],
+                rho=2.0 * rho_s, sigma=4.0 * sigma_ss, **kw))
+            check(direct, ref, rho, amplification, tag + " (_reassemble_features)")
+            np.testing.assert_allclose(direct, live, rtol=0, atol=0, err_msg=tag)
