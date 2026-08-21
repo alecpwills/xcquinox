@@ -1,0 +1,127 @@
+# =============================================================================
+# workflow_matrix_template.yaml -- the one-architecture tiny identity of the
+# per-architecture workflow matrix (SPEC_pretrain_fidelity_program.md 3.4)
+# =============================================================================
+#
+# NOT a campaign config. This grid exists to run the harness stage sequence
+# (submit dry-run -> datagen -> pretrain -> certificate -> preflight -> train
+# -> eval -> validate_run) end to end, per architecture, in minutes, so a
+# wiring defect is found before any YAML of a real campaign is rendered.
+# Nothing it produces is a physics result: 3 training steps and 50 pretraining
+# steps on two atoms fit nothing.
+#
+# Rendered by ``cluster.workflow_matrix.write_matrix_yaml``, which replaces the
+# CHANGE_ME values programmatically (arch, the three path fields). As shipped,
+# the file loads with ``load_grid_config`` and fails ``validate_grid_semantics``
+# on the placeholder architecture, so an unedited copy cannot be submitted.
+#
+# Identity, fixed by the spec: def2-svp, grid level 1, the repository's cached
+# subset ledger (notebooks/checkpoints_step7/alpha_on/subset_index_log.json)
+# and its cached CCSD external references, which the renderer COPIES into the
+# work root -- ``external_refs.precompute_all`` writes a run log into its cache
+# directory on every call, and the repository copy is tracked.
+# =============================================================================
+
+# One architecture, two grid cells: subset sizes 1 and 2 of the JSD ledger
+# (jsd/1 = H2O; jsd/2 = HLi + the OH+N2 -> H+N2O barrier), so the matrix covers
+# a pure atomization cell and a mixed atomization/barrier cell. Solver oneshot:
+# a single non-self-consistent pass, the cheapest path that still exercises the
+# whole spec/eval plumbing.
+sweep:
+  arch: [CHANGE_ME_ARCH]
+  loss: [L5_gradnorm_vxc_step7]
+  metric: [jsd]
+  subset_size: [1, 2]
+  solver: [oneshot]
+
+solvers:
+  oneshot:
+    mode: ONESHOT
+    max_cycles: 0
+
+# 3 optimization steps. validate_every 0 keeps the held-out validation slice
+# out of the run (it would need inputs.val_refs_dir and a staged density-only
+# slice); checkpoint_every 0 keeps the resume machinery out of it.
+hyperparams:
+  n_steps: 3
+  lr_start: 0.01
+  lr_end: 0.00001
+  lr_decay_start: 0.2
+  grad_clip: 1.0
+  gradnorm_alpha: 1.5
+  vxc_weight: 0.01
+  density_weight: 0.1
+  pbe_anchor_weight: 0.0
+  require_atom_anchors: false
+  validate_every: 0
+  checkpoint_every: 0
+  seed: 42
+
+# benchmark_refs_dir and val_refs_dir stay UNSET: the first would submit a
+# standalone CCSD reference job for the held-out pool, the second would stage a
+# validation slice. Neither is part of the workflow assertion.
+inputs:
+  external_refs_dir: /nonexistent/CHANGE_ME/external_refs
+  subset_ledger_path: /nonexistent/CHANGE_ME/subset_index_log.json
+  basis: def2-svp
+  grid_level: 1
+  output_root: /nonexistent/CHANGE_ME/runs
+
+# 50 pretraining steps on H (2S = 1) and O (2S = 2): one spin-1 and one spin-2
+# open shell, enough for the generator to write every descriptor column
+# (cusp, dm, rung35, rung35 multishell, meta-GGA alpha) plus the (s, alpha)
+# mesh, so one data file serves every architecture in the registry.
+pretrain:
+  data_dir: /nonexistent/CHANGE_ME/pretrain_data
+  n_steps: 50
+  lr_start: 0.01
+  lr_end: 0.00001
+  lr_decay_start: 0.2
+  grad_clip: 1.0
+  seed: 42
+  loss_weighting: integration
+  atoms:
+    H: 1
+    O: 2
+
+# SLURM fields are rendered but never submitted: the matrix runs `submit` in
+# its default dry-run to create the run directory and resolved config, then
+# invokes each stage module directly. No mail address is carried, because a
+# script this file renders is never queued.
+cluster:
+  partition: ""
+  time: "00:30:00"
+  cpus_per_task: 4
+  array_throttle: 1
+  eval_array_throttle: 1
+  max_concurrent_tasks: 2
+  max_array_size: 1000
+  device: cpu
+  conda_env: ""
+  conda_profile: ""
+  mail_user: ""
+  mail_type: NONE
+  account: ""
+  # Serial held-out eval: the sliced pool is six species, and the matrix runs
+  # several architectures at once, so a worker ladder would oversubscribe.
+  eval_workers: 1
+  preflight_time: "00:30:00"
+  eval_time: "00:30:00"
+  pretrain_time: "00:30:00"
+
+domain_profile: dfs_step7
+on_precompute_failure: abort
+bh76_mode: reaction_energy
+# Matches the production arms: the polarized cnet, and therefore the
+# zeta-carrying pretrain_data_polarized.npz that datagen generates.
+use_polarized_correlation: true
+# The separate eval array is rendered rather than folded into the train script,
+# so `submit` produces the same five scripts the matrix executes as five
+# stages.
+inline_eval: false
+defer_eval: false
+# The certificate's tolerances and the enforcement bypass are NOT configured
+# here: the certificate (SPEC 3.4 / 3.3) runs at the production identity and
+# records its own verdict, and the workflow matrix passes
+# XCQUINOX_FIDELITY_OVERRIDE_REASON in the environment because a 50-step
+# pretrain on two atoms cannot meet tol_AE = 1.0 kcal/mol by construction.
