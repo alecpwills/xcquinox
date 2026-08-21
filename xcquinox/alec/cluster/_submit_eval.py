@@ -19,8 +19,11 @@ The core ``submit_deferred_eval`` is idempotent: if a non-superseded ``eval``
 record already exists it is a no-op, so the launcher and a manual run can never
 double-submit -- whichever fires first wins.
 
-This module is jax-free (it only renders/sbatches a script and reads/writes
-``jobs.json``), so it is cheap to import in the launcher job.
+Its own work is light -- it renders/sbatches a script, validates the resolved
+config and reads/writes ``jobs.json`` -- but importing it is NOT light: the
+``xcquinox`` package ``__init__`` chain pulls in jax, jaxlib, equinox, optax,
+pyscf and ase, 0.75-0.94 s in a fresh interpreter. The launcher job must
+therefore be sized for a full jax import rather than for a bare-stdlib one.
 """
 import argparse
 import os

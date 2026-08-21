@@ -21,6 +21,7 @@ Design note, the ``domain`` dependency:
 """
 from dataclasses import dataclass, field, fields
 from itertools import product
+import math
 import os
 import warnings
 
@@ -607,6 +608,16 @@ def _fidelity_tolerance(d, key: str) -> float:
     the binding tolerance) and ``float(None)`` raises ``TypeError``, which
     passes every ``except ValueError`` handler in the load path. Integers,
     floats and numeric strings remain valid.
+
+    The value must also be FINITE. NaN escapes the bounds in
+    ``validate_grid_semantics`` outright -- ``nan <= 0`` and ``nan > 2.0`` are
+    both False, so a NaN tolerance loads with no override_reason and no
+    complaint -- and every downstream comparison against it is False too, so
+    the certificate verdict it produces is whatever the sense of that
+    comparison happens to be rather than a measurement. The infinities are
+    caught downstream (``-inf`` by the positivity floor, ``+inf`` by the 2.0
+    ceiling) and are refused here for the same reason: a tolerance is a finite
+    energy bound.
     """
     v = d.get(key, 1.0)
     if isinstance(v, bool) or not isinstance(v, (int, float, str)):
@@ -614,12 +625,20 @@ def _fidelity_tolerance(d, key: str) -> float:
             f"grid config key 'fidelity.{key}' must be a number (kcal/mol for "
             f"tol_AE, mHa for tol_atom), got {type(v).__name__} ({v!r})")
     try:
-        return float(v)
+        out = float(v)
     except ValueError:
         raise ValueError(
             f"grid config key 'fidelity.{key}' must be a number (kcal/mol for "
             f"tol_AE, mHa for tol_atom), got {type(v).__name__} "
             f"({v!r})") from None
+    if not math.isfinite(out):
+        raise ValueError(
+            f"grid config key 'fidelity.{key}' must be a FINITE number "
+            f"(kcal/mol for tol_AE, mHa for tol_atom), got {v!r}; a NaN "
+            "tolerance satisfies neither the positivity floor nor the 2.0 "
+            "ceiling and turns every certificate comparison against it into "
+            "the sense of that comparison rather than a measurement")
+    return out
 
 
 def _build_fidelity(d) -> FidelityConfig:

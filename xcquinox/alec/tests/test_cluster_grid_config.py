@@ -1388,3 +1388,29 @@ def test_fidelity_enforce_accepts_booleans(tmp_path, good):
                        "override_reason": "control arm"}
     cfg = load_grid_config(_write(tmp_path, "grid.json", raw))
     assert cfg.fidelity.enforce is good
+
+
+@pytest.mark.parametrize("key", ["tol_AE", "tol_atom"])
+@pytest.mark.parametrize("token", [".nan", ".NaN", "'nan'", ".inf", "-.inf",
+                                   "'-inf'", "1e309"])
+def test_fidelity_tolerances_must_be_finite(tmp_path, key, token):
+    """A non-finite tolerance is refused at load.
+
+    NaN escapes the bounds in ``validate_grid_semantics`` entirely: both
+    ``nan <= 0`` and ``nan > 2.0`` are False, so a NaN tolerance loads with no
+    override_reason and no complaint, and every downstream ``<= tol``
+    comparison against it is False -- a certificate that can never fail. The
+    infinities are caught downstream (``-.inf`` by the positivity floor,
+    ``.inf`` by the 2.0 ceiling) but are refused here for the same reason: a
+    tolerance is a finite energy bound.
+    """
+    yaml = pytest.importorskip("yaml")
+    raw = _base_config_dict()
+    other = "tol_atom" if key == "tol_AE" else "tol_AE"
+    path = tmp_path / "grid.yaml"
+    path.write_text(
+        yaml.safe_dump(raw)
+        + f"fidelity:\n  {key}: {token}\n  {other}: 1.0\n"
+    )
+    with pytest.raises(ValueError, match=f"fidelity.{key}"):
+        load_grid_config(str(path))
