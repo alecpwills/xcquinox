@@ -11,8 +11,11 @@ so the whole file runs in seconds.
 """
 from __future__ import annotations
 
+import keyword
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -274,3 +277,184 @@ def test_every_registered_architecture_renders_a_valid_grid(arch, tmp_path):
         arch, tmp_path / arch, repo_root=wm.repo_root_path(),
         external_refs_dir=tmp_path / "refs")))
     validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
+
+
+# ---------------------------------------------------------------------------
+# Oracle selector
+# ---------------------------------------------------------------------------
+
+def _compile_k(expression_text: str):
+    """Compile a ``-k`` expression with pytest's own parser.
+
+    The parser is the oracle for whether ``-k`` accepts an expression, and its
+    evaluator is the oracle for what the expression then selects; matching it
+    by hand would share the selector's own assumptions. It is private API, so
+    the import is local: a rename in a future pytest breaks the tests that
+    call it rather than the collection of the whole file.
+    """
+    from _pytest.mark.expression import Expression
+    return Expression.compile(expression_text)
+
+
+def _item_names(node_id: str, module: str | None = None) -> set:
+    """The names pytest matches a ``-k`` term against for one collected test.
+
+    ``KeywordMatcher.from_item`` gathers the name of the item and of each of
+    its parents except the session and the root directory: for a test in
+    ``<repo>/xcquinox/alec/tests/<module>`` that is the three directory
+    components below the root, the module file name, and the test name
+    carrying its parametrisation id.
+    """
+    module = f"{wm.ORACLE_MODULE}.py" if module is None else module
+    return {"xcquinox", "alec", "tests", module, node_id}
+
+
+def _k_matcher(names):
+    """pytest's ``-k`` matching rule: a term matches when it is a
+    case-insensitive substring of any of the item's names
+    (``KeywordMatcher.__call__``)."""
+    def matcher(ident, /, **kwargs):
+        assert not kwargs, f"unexpected call parameters on {ident!r}"
+        return any(ident.lower() in name.lower() for name in names)
+    return matcher
+
+
+def _oracle_node_ids(arch: str) -> tuple:
+    """Node ids one architecture contributes to the spec-3.1 oracle module.
+
+    Three shapes: the architecture-only parametrisation, and a species x
+    architecture one in both id orders. Which order a stacked ``parametrize``
+    produces is decided by the order the decorators are applied -- the one
+    closest to the function supplies the leading id component -- so the
+    selector has to hold for ``[Li-<arch>]`` and ``[<arch>-Li]`` alike.
+    """
+    return (f"test_o1_uniform_scaling[{arch}]",
+            f"test_o3_spin_scaling_open_shell[Li-{arch}]",
+            f"test_o4_spin_scaling_relation[{arch}-Li]")
+
+
+def test_oracle_selector_names_the_module_and_the_architecture():
+    got = wm.oracle_selector("deep_rung35_mgga_3x16")
+    assert got.startswith("test_spin_scaling_oracles and ")
+    assert " and deep_rung35_mgga_3x16" in got
+
+
+def test_oracle_selector_excludes_names_that_contain_this_one():
+    """pytest -k matches SUBSTRINGS of the node id, so a bare 'deep_cusp'
+    selects deep_cusp_3x16 and deep_cusp_mgga_3x16 as well. Every longer
+    registry name containing this one is excluded explicitly."""
+    got = wm.oracle_selector("deep_cusp",
+                             archs=["deep_cusp", "deep_cusp_3x16",
+                                    "deep_cusp_mgga_3x16", "deep_dm"])
+    assert got == ("test_spin_scaling_oracles and deep_cusp "
+                   "and not deep_cusp_3x16 and not deep_cusp_mgga_3x16")
+
+
+def test_oracle_selector_excludes_a_name_it_is_embedded_in():
+    """Containment is not the same rule as prefixing: -k matches anywhere in
+    the id, so a registry name sitting in the MIDDLE of a longer one has to be
+    excluded as well. Every containment in the registry as it stands is also a
+    prefix, so the general rule is pinned on an injected registry instead --
+    a later entry named ``mgga`` would otherwise carry every ``*_mgga_*``
+    architecture's oracles into its own selection.
+    """
+    got = wm.oracle_selector("mgga", archs=["mgga", "deep_mgga_3x16"])
+    assert got == "test_spin_scaling_oracles and mgga and not deep_mgga_3x16"
+    expr = _compile_k(got)
+    assert expr.evaluate(_k_matcher(
+        _item_names("test_o1_uniform_scaling[mgga]")))
+    assert not expr.evaluate(_k_matcher(
+        _item_names("test_o1_uniform_scaling[deep_mgga_3x16]")))
+
+
+def test_oracle_selector_adds_no_exclusion_when_the_name_is_unique():
+    got = wm.oracle_selector("deep_dm_3x16",
+                             archs=["deep_dm", "deep_dm_3x16"])
+    assert got == "test_spin_scaling_oracles and deep_dm_3x16"
+
+
+def test_oracle_selector_refuses_an_unregistered_architecture():
+    with pytest.raises(ValueError, match="not a registered architecture"):
+        wm.oracle_selector("no_such_arch")
+
+
+@pytest.mark.parametrize("arch", sorted(ARCHITECTURES))
+def test_oracle_selector_is_a_valid_k_expression(arch):
+    """Every term must be a single pytest expression identifier. ``-k`` is
+    lexed on whitespace with ``and``/``or``/``not`` reserved as operators, so a
+    term carrying a space, a comma, an ``=``, a quote or a parenthesis is read
+    as several tokens and the expression fails to parse; a bare Python
+    identifier that is not a keyword carries none of those characters, which
+    makes it the conservative form of the condition. Compiling with pytest's
+    parser is what settles it.
+    """
+    selector = wm.oracle_selector(arch)
+    for token in selector.split():
+        if token in ("and", "not"):
+            continue
+        assert token.isidentifier() and not keyword.iskeyword(token), token
+    _compile_k(selector)
+
+
+@pytest.mark.parametrize("arch", sorted(ARCHITECTURES))
+def test_oracle_selector_matches_this_architecture_and_no_other(arch):
+    """The registry holds 31 names and several are substrings of others
+    (``deep`` of ``deep_attn``, ``deep_cusp`` of ``deep_cusp_mgga_3x16``,
+    ``medium`` of ``medium_attn``, ``shallow`` of ``shallow_attn``), so a
+    bare name would report a sibling architecture's oracles as this one's.
+    Each architecture's expression is evaluated against every
+    architecture's node ids under pytest's own matching rule: it must accept
+    its own three and reject the other 90.
+    """
+    expr = _compile_k(wm.oracle_selector(arch))
+    for other in sorted(ARCHITECTURES):
+        for node_id in _oracle_node_ids(other):
+            got = expr.evaluate(_k_matcher(_item_names(node_id)))
+            assert got == (other == arch), (
+                f"selector for {arch!r} {'accepted' if got else 'rejected'} "
+                f"{node_id!r}")
+
+
+@pytest.mark.parametrize("arch", sorted(ARCHITECTURES))
+def test_oracle_selector_rejects_the_same_architecture_elsewhere(arch):
+    """ORACLE_TEST_TARGET is the tests DIRECTORY, so collection offers every
+    module in it. This file parametrises over the registry as well, so without
+    the module term its cases would be selected as oracles.
+    """
+    expr = _compile_k(wm.oracle_selector(arch))
+    node_id = f"test_every_registered_architecture_renders_a_valid_grid[{arch}]"
+    names = _item_names(node_id, module="test_cluster_workflow_matrix.py")
+    assert not expr.evaluate(_k_matcher(names)), node_id
+
+
+def test_oracle_selector_selects_this_architecture_only(tmp_path):
+    """Contract with the spec-3.1 oracle module: the selector must resolve to a
+    non-empty set of collected tests, all of them this architecture's. Skipped
+    until that module is installed, so this plan is executable on its own."""
+    module = (wm.repo_root_path() / "xcquinox" / "alec" / "tests"
+              / f"{wm.ORACLE_MODULE}.py")
+    if not module.is_file():
+        pytest.skip(f"{module} not installed yet (spec 3.1)")
+    arch = "deep_cusp" if "deep_cusp" in ARCHITECTURES else sorted(ARCHITECTURES)[0]
+    log = tmp_path / "collect.log"
+    with log.open("w") as fh:
+        rc = subprocess.run(
+            [sys.executable, "-m", "pytest", wm.ORACLE_TEST_TARGET,
+             "--collect-only", "-q", "-p", "no:randomly",
+             "-k", wm.oracle_selector(arch)],
+            cwd=str(wm.repo_root_path()), stdout=fh,
+            stderr=subprocess.STDOUT, check=False).returncode
+    text = log.read_text()
+    assert rc == 0, text
+    node_ids = [ln for ln in text.splitlines() if "::" in ln]
+    assert node_ids, text
+    for node in node_ids:
+        # The architecture is checked as a PARAMETER of the id, not as a
+        # suffix of it: stacked parametrisation puts the architecture either
+        # first or last in the bracket depending on the decorator order, and a
+        # collected oracle carrying no architecture parameter at all would mean
+        # the expression had matched something other than a parametrisation.
+        name = node.split("::")[-1]
+        assert "[" in name and name.endswith("]"), node
+        params = name[name.index("[") + 1:name.rindex("]")].split("-")
+        assert arch in params, node

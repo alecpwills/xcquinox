@@ -298,3 +298,50 @@ def write_matrix_yaml(arch, out_dir, *, repo_root,
         yaml.dump(raw, f, Dumper=_quoting_dumper(),
                   default_flow_style=False, sort_keys=True)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Oracle selection
+# ---------------------------------------------------------------------------
+
+#: Test module of the spin-scaling oracles O1-O4
+#: (SPEC_pretrain_fidelity_program.md 3.1). Its architecture-carrying oracles
+#: are parametrized over ``sorted(ARCHITECTURES)``, so a node id ends in
+#: ``[<arch>]`` (or ``[<species>-<arch>]``) and one architecture's oracles are
+#: selectable with ``-k``.
+ORACLE_MODULE = "test_spin_scaling_oracles"
+
+#: Collection target for the oracle run. A directory rather than the module
+#: path so the module name in the selector is what pins the module; pytest
+#: matches ``-k`` against the module name as well as the test name.
+ORACLE_TEST_TARGET = "xcquinox/alec/tests"
+
+
+def oracle_selector(arch, archs=None) -> str:
+    """A pytest ``-k`` expression selecting one architecture's oracles.
+
+    ``-k`` matches SUBSTRINGS of the node id, and the registry contains names
+    that are prefixes of others (``deep`` of ``deep_attn``, ``deep_cusp`` of
+    ``deep_cusp_mgga_3x16``, ``shallow`` of ``shallow_attn``), so a bare name
+    would silently pull in a sibling architecture's cases and report them as
+    this one's. Every longer registry name containing this one is therefore
+    excluded explicitly. Every registry name is a Python identifier, so each
+    term lexes as a single term of pytest's expression grammar rather than as
+    several.
+
+    The exclusions are exact only while the oracle module's test names carry no
+    architecture name of their own: ``-k`` matches the function name as well as
+    the parametrisation id, so a test called ``test_deep_scaling`` would answer
+    to every ``deep*`` term. ``test_oracle_selector_selects_this_architecture_only``
+    checks the collected set against that once the module is installed.
+    """
+    names = sorted(ARCHITECTURES) if archs is None else sorted(archs)
+    if arch not in names:
+        raise ValueError(
+            f"{arch!r} is not a registered architecture; "
+            f"valid names: {names}"
+        )
+    terms = [ORACLE_MODULE, arch]
+    terms += [f"not {other}" for other in names
+              if other != arch and arch in other]
+    return " and ".join(terms)
