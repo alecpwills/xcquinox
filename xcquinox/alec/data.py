@@ -282,6 +282,11 @@ class MoleculeData(TypedDict, total=True):
     # training and evaluation pipeline; the pretraining-fidelity certificate
     # requests "scan" for a meta-GGA architecture, whose parent functional is
     # SCAN, so the network is measured on the density it must reproduce.
+    # Always the canonical spelling (canonical_reference_xc): stripped,
+    # lower-cased, and "pbe" / "scan" for any spelling libxc parses to those
+    # functionals. mol_metadata repeats it beside reference_scf_converged,
+    # reference_scf_cycles and reference_scf_solver, the reference SCF's
+    # convergence stamp.
     reference_xc: str
     eri: jnp.ndarray | None
     cderi: jnp.ndarray | None
@@ -297,6 +302,132 @@ class MoleculeData(TypedDict, total=True):
 
 _PRECOMPUTE_CACHE: dict = {}
 _PRECOMPUTE_CACHE_ENABLED: bool = True
+
+
+class ReferenceSCFNotConverged(RuntimeError):
+    """The reference SCF of a fixed-density record did not converge.
+
+    Raised by :func:`precompute_fixed_density_data` instead of returning a
+    record: every field of the record is a property of the reference
+    functional's SELF-CONSISTENT density, and an SCF stopped short of it is
+    not that functional's density (measured on H2O / sto-3g / grid 1 with
+    SCAN stopped after one cycle: +7.2e-2 Ha in the total energy and 0.315 in
+    the density matrix against the converged values, with ``mf.converged``
+    False). ``cycles`` carries the number of SCF cycles pyscf ran.
+    """
+
+    def __init__(self, message: str, *, cycles: int | None = None):
+        super().__init__(message)
+        self.cycles = cycles
+
+
+# The spellings under which the program's two reference functionals are
+# recorded, memoized and compared (cluster.fidelity and
+# pretrain_data_gen.dfs_level_for_reference_xc test ``reference_xc`` with
+# ``==``). A request is canonicalized to one of these exactly when libxc
+# parses it to the same functional -- the same (hybrid, alpha, omega) triple
+# and the same (functional id, factor) list. Measured with pyscf 2.11:
+# "PBE", "pbe,pbe" and "gga_x_pbe,gga_c_pbe" parse identically to "pbe"
+# (((0, 0, 0), ((101, 1), (130, 1)))); "SCAN", " scan" and "scan,scan"
+# identically to "scan" (((0, 0, 0), ((263, 1), (267, 1)))); "blyp" parses
+# to ((106, 1), (131, 1)) and is not PBE.
+_CANONICAL_REFERENCE_XC = ("pbe", "scan")
+
+
+def canonical_reference_xc(reference_xc) -> str:
+    """The one spelling a reference functional is keyed, run and recorded under.
+
+    ``reference_xc`` is stripped and lower-cased (libxc's parser is case- and
+    whitespace-insensitive, so these spellings are one functional and must
+    not own separate SCFs or memo entries), validated against libxc -- an
+    unknown name raises ``ValueError`` naming the argument here, rather than
+    libxc's ``KeyError`` out of a later coefficient lookup -- and mapped onto
+    one of :data:`_CANONICAL_REFERENCE_XC` when libxc parses it to that
+    functional. Any other recognized functional is returned in its stripped,
+    lower-cased form.
+    """
+    if not isinstance(reference_xc, str) or not reference_xc.strip():
+        raise ValueError(
+            f"reference_xc must be a non-empty pyscf/libxc functional string, "
+            f"got {reference_xc!r}")
+    from pyscf.dft import libxc
+    name = reference_xc.strip().lower()
+    try:
+        parsed = libxc.parse_xc(name)
+    except (KeyError, ValueError) as exc:
+        # libxc: "LibXCFunctional: name 'X' not found."
+        detail = exc.args[0] if exc.args else exc
+        raise ValueError(
+            f"reference_xc={reference_xc!r} is not a functional libxc "
+            f"recognizes ({detail})") from exc
+    for canonical in _CANONICAL_REFERENCE_XC:
+        if name != canonical and parsed == libxc.parse_xc(canonical):
+            return canonical
+    return name
+
+
+# Cycle cap of the reference SCF's DIIS stage (pyscf's default is 50).
+# Measured on the O atom (3P) at def2-SVP / grid level 1 under the
+# orientation lock, the one recipe that stalls on this machine: PBE DIIS runs
+# from the minao guess that did converge took 38, 48 and 53 cycles -- one of
+# them past pyscf's cap -- while a run that has stalled does not recover with
+# more cycles (|g| 3.2e-4 to 6.2e-4 at 50 cycles, 3.8e-4 at 100, 8.3e-5 at
+# 200, against the 3.2e-5 criterion). 100 covers the slowest converging run
+# with margin and bounds what a stalled run spends before the second-order
+# stage takes over. A run that converges within pyscf's 50 cycles is
+# unaffected: the DIIS loop breaks at convergence and the cap never enters the
+# iterates.
+_REFERENCE_SCF_MAX_CYCLE = 100
+# Macro-iteration cap of the second-order stage (pyscf's own SOSCF default).
+# Measured: 7 macro-iterations on the locked PBE O-atom stall, 2 to 4 on
+# H2O / SCAN started from a one- to three-cycle DIIS density.
+_REFERENCE_SCF_NEWTON_MAX_CYCLE = 50
+
+
+def _converge_reference_scf(mf):
+    """Run ``mf`` to pyscf's convergence criterion: DIIS first, then the
+    second-order solver (SOSCF) from the DIIS end point if DIIS stalls.
+
+    Returns ``(mf_out, cycles, solver)``: the object whose ``e_tot``,
+    ``make_rdm1()`` and ``get_veff`` hold the solution -- ``mf`` itself after a
+    DIIS convergence, the SOSCF wrapper (which shares ``mf``'s grids, numint
+    and instance-level ``get_hcore``, so an orientation lock stays applied)
+    after the second stage -- the SCF cycles run in total (DIIS cycles plus
+    second-order macro-iterations), and ``"diis"`` or ``"diis+newton"``. The
+    caller reads ``converged`` from the returned object.
+
+    Both stages test the same criterion, |g| < sqrt(conv_tol) and
+    dE < conv_tol (``scf.hf.kernel``; ``soscf.newton_ah.kernel`` derives its
+    ``conv_tol_grad`` from ``conv_tol`` the same way), so the second stage
+    changes the minimizer, not the bar. The reference SCF always starts from
+    the minao guess: a start from a converged PBE density of the same system
+    was measured and rejected -- on the unlocked O atom at def2-SVP / grid
+    level 1 it stalled in 1 of 3 processes against 0 of 3 for the minao
+    start; under the orientation lock it carried the PBE orientation into the
+    SCAN run and converged to a stationary point 1.7e-4 Ha above the lock's
+    minimum in 2 of 3 processes, which the minao start reached in 9 of 9; and
+    for a closed shell it changes the pruned grid (9088 -> 9080 points on
+    H2O / sto-3g) unless the grid is pre-initialized with the minao guess.
+    The second stage starts from the DIIS end point, not from the guess, for
+    the same reason: SOSCF from the minao guess converged the locked SCAN O
+    atom to a point 8e-5 Ha above the DIIS solution, whereas from the DIIS
+    end point it reproduces the DIIS energy to 2e-10 Ha (SCAN, converged
+    case) and lands within 4e-9 Ha of converged DIIS attempts (PBE stall).
+    """
+    mf.max_cycle = _REFERENCE_SCF_MAX_CYCLE
+    mf.kernel()
+    cycles = int(mf.cycles)
+    if mf.converged:
+        return mf, cycles, "diis"
+    so = mf.newton()
+    so.max_cycle = _REFERENCE_SCF_NEWTON_MAX_CYCLE
+    macro = []
+    # newton_ah.kernel calls back with its locals after every macro-iteration
+    # and once more after the loop; the last imacro is the count minus one.
+    so.callback = lambda envs: macro.append(int(envs["imacro"]))
+    so.kernel(dm0=mf.make_rdm1())
+    newton_cycles = (macro[-1] + 1) if macro else 0
+    return so, cycles + newton_cycles, "diis+newton"
 
 
 def _precompute_cache_key(
@@ -349,10 +480,12 @@ def _precompute_cache_key(
     # SCF that produced the density EVERY field is built from, so a blind key
     # would hand a PBE record to a SCAN caller and the fidelity certificate
     # would silently measure a meta-GGA network against the wrong density.
+    # The slot holds the CANONICAL spelling (canonical_reference_xc), so
+    # "SCAN", " scan" and "scan,scan" are one entry and one SCF, not three.
     return (mol_spec, tuple(sorted(required_keys)), desc_key, ext_key, auxbasis,
             float(orientation_lock_strength),
             (str(seed_source), seed_cache_dir, bool(seed_density_fit)),
-            str(reference_xc))
+            canonical_reference_xc(reference_xc))
 
 
 def seed_geometry_tag(atom: str, charge: int, spin: int) -> str:
@@ -537,8 +670,20 @@ def precompute_fixed_density_data(
     they have to reproduce. This is deliberately a parameter of this one
     construction rather than a second construction elsewhere: the density
     determines eighteen separate fields, and two code paths building them
-    would have to be kept identical by hand. Pure (semilocal) functionals only
-    -- see the hybrid refusal below.
+    would have to be kept identical by hand.
+
+    The name is canonicalized first (:func:`canonical_reference_xc`: stripped,
+    lower-cased, and resolved to ``"pbe"`` / ``"scan"`` when libxc parses it
+    to that functional), so every spelling of one functional is one memo
+    entry, one SCF and one recorded name. Pure semilocal functionals only: a
+    hybrid or a non-local-correlation (VV10) functional is refused, see
+    below. The reference SCF must converge: DIIS from the minao guess first,
+    the second-order solver from the DIIS end point if DIIS stalls
+    (:func:`_converge_reference_scf`), and an SCF unconverged after both
+    raises :class:`ReferenceSCFNotConverged` instead of producing a record.
+    The record's ``mol_metadata`` carries ``reference_xc``,
+    ``reference_scf_converged``, ``reference_scf_cycles`` and
+    ``reference_scf_solver``.
 
     Baseline keys are always populated. Reference/descriptor keys are computed
     on-demand based on required_keys and descriptor.required_mol_keys.
@@ -556,10 +701,10 @@ def precompute_fixed_density_data(
         raise ValueError(
             f"seed_source must be one of 'pbe'/'scan'/'minao', got "
             f"{seed_source!r}")
-    if not isinstance(reference_xc, str) or not reference_xc.strip():
-        raise ValueError(
-            f"reference_xc must be a non-empty pyscf/libxc functional string, "
-            f"got {reference_xc!r}")
+    # Canonical spelling before the key, the SCF and the record: "SCAN",
+    # " scan" and "scan,scan" are one functional to libxc and are one record
+    # here. Validates the name (ValueError) before anything is paid for.
+    reference_xc = canonical_reference_xc(reference_xc)
     cache_key = None
     if _PRECOMPUTE_CACHE_ENABLED:
         try:
@@ -591,6 +736,22 @@ def precompute_fixed_density_data(
             "must be a pure (semilocal) functional, because E_xc_pbe / "
             "E_non_xc split the total energy at the semilocal XC term and an "
             "exact-exchange contribution would be booked as non-XC.")
+    # A non-local-correlation reference breaks the same split from the other
+    # side: pyscf evaluates the VV10 kernel inside get_veff and books its
+    # energy in veff.exc, where no point-wise semilocal consumer of the record
+    # (the functional being trained, the certificate's numint route) can see
+    # it. Measured on H2O / sto-3g / grid 1: veff.exc for b97m-v sits 4.3e-2
+    # Ha from the semilocal numint value of the same functional on the same
+    # density, 1.3e-2 Ha for scan_vv10. pyscf also reads the hyphen in
+    # "scan-vv10" as a subtraction (SCAN minus the VV10 semilocal part; total
+    # energy -65.83 Ha against SCAN's -75.29 Ha), and libxc.is_nlc flags that
+    # string too.
+    if bool(libxc.is_nlc(reference_xc)):
+        raise ValueError(
+            f"reference_xc={reference_xc!r} carries a non-local correlation "
+            "(VV10) term; the reference SCF must be a semilocal functional, "
+            "because pyscf books the non-local energy inside veff.exc where "
+            "no point-wise consumer of this record can evaluate it.")
 
     # Build pyscf molecule
     mol = gto.M(
@@ -625,7 +786,32 @@ def precompute_fixed_density_data(
         _base_hcore = np.asarray(mf.get_hcore())
         _locked_hcore = _base_hcore + orientation_lock_bias_mat
         mf.get_hcore = lambda *a, **k: _locked_hcore
-    mf.kernel()
+    # The record is a set of properties of the reference functional's
+    # SELF-CONSISTENT density. pyscf returns from kernel() with mf.converged
+    # False when max_cycle runs out, and nothing downstream can tell such a
+    # record from a converged one: measured on H2O / sto-3g / grid 1 with
+    # SCAN stopped after one cycle, the total energy is +7.2e-2 Ha off the
+    # converged value and the density matrix 0.315 off at its maximum. A DIIS
+    # stall is handed to the second-order solver first (see
+    # _converge_reference_scf); what is still unconverged after that is
+    # refused. No caller runs a deliberately short reference SCF, so the
+    # refusal is unconditional; the stamps go into mol_metadata for the
+    # consumers that check provenance (cluster.fidelity reads them).
+    mf, reference_scf_cycles, reference_scf_solver = _converge_reference_scf(mf)
+    reference_scf_converged = bool(mf.converged)
+    if not reference_scf_converged:
+        raise ReferenceSCFNotConverged(
+            f"the reference {reference_xc} SCF for {mol_spec.name!r} did not "
+            f"converge: converged={reference_scf_converged}, "
+            f"cycles={reference_scf_cycles} (DIIS max_cycle="
+            f"{_REFERENCE_SCF_MAX_CYCLE}, second-order max_cycle="
+            f"{_REFERENCE_SCF_NEWTON_MAX_CYCLE}, conv_tol={mf.conv_tol:g}); "
+            f"geometry {mol_spec.atom!r}, charge {mol_spec.charge}, 2S "
+            f"{mol_spec.spin}, basis {mol_spec.basis!r}, grid level "
+            f"{mol_spec.grid_level}. A fixed-density record is a set of "
+            "properties of the self-consistent density, so none is written "
+            "for an unconverged reference SCF.",
+            cycles=reference_scf_cycles)
 
     # Overlap conditioning gate
     s_matrix = mf.get_ovlp()
@@ -696,8 +882,10 @@ def precompute_fixed_density_data(
         # the closed-shell meta-GGA reference reads the XC energy pyscf already
         # accumulated on this grid. The two routes are one quantity, not two:
         # on H2O/sto-3g/grid 1 veff.exc agrees with the point-wise route to
-        # 3.6e-15 Ha for the GGA reference, and to 0.0 Ha (bitwise) against a
-        # point-wise meta-GGA evaluation for the SCAN reference.
+        # round-off -- 1.8e-15 Ha for the PBE reference, and 1.8e-15 Ha for
+        # the SCAN reference against a point-wise meta-GGA evaluation: one ulp
+        # of an E_xc of magnitude 9 Ha, with repeated measurements spanning 0
+        # to 2 ulp.
         E_xc_pbe = float(veff.exc)
     else:  # RKS, LDA or GGA reference
         # The row set is the one libxc demands for the reference functional's
@@ -1037,6 +1225,16 @@ def precompute_fixed_density_data(
             # backend can add it to its internally-built get_hcore without
             # recomputing intor on a traced pyscfad Mole. None when off.
             "orientation_lock_bias": orientation_lock_bias_mat,
+            # Provenance of the reference SCF, beside the record-level
+            # reference_xc: the canonical functional name, pyscf's convergence
+            # flag (True in every record this function returns -- an
+            # unconverged reference raises instead), the cycle count (DIIS
+            # cycles plus any second-order macro-iterations) and which stages
+            # ran ("diis", or "diis+newton" when DIIS stalled).
+            "reference_xc": reference_xc,
+            "reference_scf_converged": reference_scf_converged,
+            "reference_scf_cycles": reference_scf_cycles,
+            "reference_scf_solver": reference_scf_solver,
         },
         _pyscfad_mol=pyscfad_mol,
     )

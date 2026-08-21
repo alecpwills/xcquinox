@@ -1387,11 +1387,13 @@ def test_reference_xc_leaves_a_symmetry_fixed_closed_shell_density_alone():
     """H2 / sto-3g has one doubly occupied MO fixed by symmetry and
     normalization, so it has no variational freedom: PBE and SCAN converge to
     the SAME density, and only the energy evaluated on it moves. Measured with
-    standalone PySCF (grid level 1): max|dm_scan - dm_pbe| = 0.0 and
-    max|rho_scan - rho_pbe| = 0.0 exactly, against |E_pbe - E_scan| =
-    5.392555e-03 Ha. This is the counterpart of the H2O pin: reference_xc must
-    change the record only where the physics changes it, which is why H2 (and
-    the H atom) cannot serve as the density-moved test.
+    standalone PySCF (grid level 1): max|dm_scan - dm_pbe| is at round-off,
+    0.0 to 2.2e-16 across repeated measurements (two ulp of the density
+    matrix's 0.60 maximum), and max|rho_scan - rho_pbe| = 0.0, against
+    |E_pbe - E_scan| = 5.392555e-03 Ha; the 1e-12 bounds below are round-off
+    bounds, not equalities. This is the counterpart of the H2O pin:
+    reference_xc must change the record only where the physics changes it,
+    which is why H2 (and the H atom) cannot serve as the density-moved test.
     """
     import numpy as np
     from xcquinox.alec.data import (clear_precompute_cache,
@@ -1414,9 +1416,11 @@ def test_reference_xc_scan_xc_energy_matches_a_point_wise_meta_gga_evaluation():
     accumulated on the grid; that value must be the same quantity the
     point-wise route returns, evaluated with the kinetic-energy density the
     GGA row set cannot carry. Measured on H2O / sto-3g / grid 1: the two agree
-    to 0.0 Ha (bitwise), and the GGA row set is refused outright by eval_xc for
-    a meta-GGA (ValueError: cannot reshape ... into shape (1,5,N)), which is
-    why the arm exists.
+    to round-off -- 1.8e-15 Ha, one ulp of |E_xc| = 9.4 Ha, with repeated
+    measurements spanning 0 to 2 ulp -- against the 1e-9 bound asserted here,
+    and the GGA row set is refused outright by eval_xc for a meta-GGA
+    (ValueError: cannot reshape ... into shape (1,5,N)), which is why the arm
+    exists.
     """
     import numpy as np
     from pyscf import dft, gto
@@ -1530,3 +1534,260 @@ def test_reference_xc_lda_uses_its_own_rung_row_set():
     assert abs(float(md["E_xc_pbe"]) - float(veff.exc)) < 1e-8
     assert np.allclose(np.asarray(md["dm_pbe"]), np.asarray(mf.make_rdm1()),
                        atol=1e-7)
+
+
+# ---------------------------------------------------------------------------
+# reference_xc: canonical spelling, up-front validation, and the convergence
+# of the reference SCF
+# ---------------------------------------------------------------------------
+# libxc's parser is case- and whitespace-insensitive and resolves synonyms:
+# measured with pyscf 2.11, "scan", "SCAN", "Scan", " scan" and "scan,scan" all
+# parse to ((0, 0, 0), ((263, 1), (267, 1))), and "pbe", "PBE", "pbe,pbe" and
+# "gga_x_pbe,gga_c_pbe" to ((0, 0, 0), ((101, 1), (130, 1))), while "blyp"
+# parses to ((106, 1), (131, 1)). Spellings libxc treats as one functional are
+# one functional here: one SCF, one memo entry, one recorded name -- the short
+# spelling the consumers compare against with ``==``.
+
+def test_reference_xc_spellings_share_one_scf_one_entry_and_one_name():
+    """"SCAN" lands in the "scan" entry (the same object, so the same SCF), and
+    the record reads "scan" whatever the caller typed. Before the
+    canonicalization each spelling ran its own SCF and stored its own entry,
+    and ``md["reference_xc"] == "scan"`` was False for the "SCAN" record."""
+    from xcquinox.alec.data import (_PRECOMPUTE_CACHE, clear_precompute_cache,
+                                    precompute_fixed_density_data,
+                                    set_precompute_cache_enabled)
+    set_precompute_cache_enabled(True)
+    clear_precompute_cache()
+    spec = _h2o_spec()
+    base = precompute_fixed_density_data(spec, reference_xc="scan")
+    for spelling in ("SCAN", "Scan", " scan", "scan ", "scan,scan"):
+        md = precompute_fixed_density_data(spec, reference_xc=spelling)
+        assert md is base, spelling
+        assert md["reference_xc"] == "scan", spelling
+        assert md["mol_metadata"]["reference_xc"] == "scan", spelling
+    assert len(_PRECOMPUTE_CACHE) == 1
+
+
+def test_reference_xc_canonical_form_follows_libxc_parse_identity():
+    """A spelling canonicalizes to one of the program's two reference names
+    exactly when libxc parses it to the same functional -- the same
+    (hybrid, alpha, omega) triple and the same (functional id, factor) list --
+    so "pbe,pbe" IS "pbe" and shares the default record, while a functional
+    outside the two keeps its lower-cased, stripped form and "blyp" is not
+    mistaken for PBE."""
+    from xcquinox.alec.data import (canonical_reference_xc,
+                                    clear_precompute_cache,
+                                    precompute_fixed_density_data,
+                                    set_precompute_cache_enabled)
+    assert canonical_reference_xc("pbe") == "pbe"
+    assert canonical_reference_xc("PBE") == "pbe"
+    assert canonical_reference_xc("pbe,pbe") == "pbe"
+    assert canonical_reference_xc("gga_x_pbe,gga_c_pbe") == "pbe"
+    assert canonical_reference_xc("scan,scan") == "scan"
+    assert canonical_reference_xc(" Scan ") == "scan"
+    assert canonical_reference_xc("LDA,VWN") == "lda,vwn"
+    assert canonical_reference_xc("blyp") == "blyp"
+    assert canonical_reference_xc("B3LYP") == "b3lyp"
+    set_precompute_cache_enabled(True)
+    clear_precompute_cache()
+    spec = _h2o_spec()
+    default = precompute_fixed_density_data(spec)
+    twin = precompute_fixed_density_data(spec, reference_xc="pbe,pbe")
+    assert twin is default
+    assert twin["reference_xc"] == "pbe"
+
+
+def test_cache_key_is_canonical_in_reference_xc():
+    """The memo key sees the canonical name even when it is called directly,
+    so no spelling of one functional can own a second entry."""
+    from xcquinox.alec.data import _precompute_cache_key
+    args = (_h2o_spec(), (), (), None, 0.0, "pbe", None, False)
+    assert (_precompute_cache_key(*args, reference_xc="SCAN")
+            == _precompute_cache_key(*args, reference_xc="scan"))
+    assert (_precompute_cache_key(*args, reference_xc="pbe,pbe")
+            == _precompute_cache_key(*args, reference_xc="pbe"))
+    assert (_precompute_cache_key(*args, reference_xc="scan")
+            != _precompute_cache_key(*args, reference_xc="pbe"))
+
+
+def test_reference_xc_unknown_functional_is_refused_up_front():
+    """An unknown name is a bad argument and is reported as one -- a
+    ValueError naming ``reference_xc`` and the string, before any SCF -- rather
+    than as libxc's KeyError ("LibXCFunctional: name 'X' not found.") out of
+    the hybrid-coefficient lookup several frames down."""
+    from xcquinox.alec.data import (canonical_reference_xc,
+                                    precompute_fixed_density_data)
+    with pytest.raises(ValueError, match="reference_xc") as info:
+        precompute_fixed_density_data(_h2o_spec(),
+                                      reference_xc="notafunctional")
+    assert not isinstance(info.value, KeyError)
+    assert "'notafunctional'" in str(info.value)
+    with pytest.raises(ValueError, match="reference_xc"):
+        canonical_reference_xc("pbex")
+    with pytest.raises(ValueError, match="reference_xc"):
+        canonical_reference_xc(None)
+
+
+def test_reference_xc_refuses_a_non_local_correlation_functional():
+    """pyscf books the VV10 non-local correlation energy inside ``veff.exc``,
+    where no point-wise semilocal consumer of the record can see it: measured
+    on H2O / sto-3g / grid 1, ``veff.exc`` for b97m-v sits 4.3e-2 Ha from the
+    semilocal numint value of the same functional on the same density
+    (1.3e-2 Ha for scan_vv10). "scan-vv10" is not SCAN-VV10 to pyscf's parser
+    at all: the hyphen is a subtraction, giving SCAN minus the VV10 semilocal
+    part (total energy -65.83 Ha against SCAN's -75.29 Ha). ``libxc.is_nlc``
+    flags all three, and the reference is refused the way a hybrid is."""
+    from xcquinox.alec.data import precompute_fixed_density_data
+    for name in ("b97m-v", "scan-vv10", "scan_vv10"):
+        with pytest.raises(ValueError, match="non-local correlation"):
+            precompute_fixed_density_data(_h2o_spec(), reference_xc=name)
+
+
+def test_reference_scf_convergence_is_stamped_in_the_metadata():
+    """The record states that its reference SCF converged, and in how many
+    cycles, beside the functional's canonical name -- in ``mol_metadata``,
+    the part of the record the certificate reads. The cycle count is pinned to
+    an independent pyscf run of the same recipe, not to a literal."""
+    from pyscf import dft, gto
+    from xcquinox.alec.data import precompute_fixed_density_data
+    spec = _h2o_spec()
+    md = precompute_fixed_density_data(spec, reference_xc="SCAN")
+    meta = md["mol_metadata"]
+    assert meta["reference_xc"] == "scan"
+    assert meta["reference_scf_converged"] is True
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.RKS(mol)
+    mf.xc = "scan"
+    mf.grids.level = spec.grid_level
+    mf.kernel()
+    assert mf.converged
+    assert isinstance(meta["reference_scf_cycles"], int)
+    assert meta["reference_scf_cycles"] >= 1
+    assert meta["reference_scf_cycles"] == int(mf.cycles)
+    # DIIS converged, so the second-order stage never ran.
+    assert meta["reference_scf_solver"] == "diis"
+
+
+def test_non_converged_reference_scf_is_refused_not_recorded(monkeypatch):
+    """Every field of the record is a property of the SELF-CONSISTENT density
+    of the reference functional; an SCF stopped short of it is nobody's
+    density. Measured on H2O / sto-3g / grid 1 with SCAN stopped after one
+    cycle: the total energy is +7.2e-2 Ha off the converged value, the density
+    matrix 0.315 off at its maximum, and ``mf.converged`` is False -- a record
+    that was written silently before this check. No caller of the precompute
+    runs a deliberately short reference SCF (the pretrain-systems tests build
+    their short-SCF records outside it), so the refusal is unconditional and
+    nothing is memoized. Both stages are driven to their caps here: one DIIS
+    cycle, then one second-order macro-iteration (H2O / SCAN needs six DIIS
+    cycles, or four second-order macro-iterations from the one-cycle
+    density, measured), so the total cycle count the refusal reports is 2."""
+    import xcquinox.alec.data as data_mod
+    from xcquinox.alec.data import (_PRECOMPUTE_CACHE,
+                                    ReferenceSCFNotConverged,
+                                    precompute_fixed_density_data,
+                                    set_precompute_cache_enabled)
+    set_precompute_cache_enabled(True)
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_MAX_CYCLE", 1)
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_NEWTON_MAX_CYCLE", 1)
+    with pytest.raises(ReferenceSCFNotConverged) as info:
+        precompute_fixed_density_data(_h2o_spec(), reference_xc="scan")
+    assert isinstance(info.value, RuntimeError)
+    msg = str(info.value)
+    for needle in ("'H2O_refxc'", "scan", "cycles=2", "converged=False",
+                   "max_cycle=1"):
+        assert needle in msg, needle
+    assert info.value.cycles == 2
+    assert len(_PRECOMPUTE_CACHE) == 0
+
+
+def test_reference_scf_second_stage_converges_a_stalled_diis_run(monkeypatch):
+    """A DIIS run that reaches its cycle cap unconverged is not refused
+    outright: the second-order solver (pyscf SOSCF, the same |g| < sqrt(conv_tol)
+    and dE < conv_tol criterion) is started from the DIIS end point, and the
+    record is written only if THAT converges. The DIIS cap is lowered to two
+    cycles here so the stage is exercised deterministically on H2O / SCAN
+    (six DIIS cycles to converge, measured). Measured agreement between the
+    second-order solution from a two-cycle DIIS density and the DIIS-converged
+    one: 8.5e-14 Ha in the energy (1e-11 from a three-cycle density) and
+    6.2e-7 in the density matrix (6.0e-6 from three cycles) -- both stationary
+    points of the same functional within the criterion's slack. The real
+    stall this stage exists for is the orientation-locked PBE O atom at
+    def2-SVP / grid level 1, where DIIS from the minao guess failed in 2 of 3
+    attempts at 50 cycles and 1 of 3 at 100 (|g| 3.2e-4 to 6.2e-4), and the
+    second-order stage converged every time (7 macro-iterations, to the
+    DIIS-converged energy within 4e-9 Ha)."""
+    import xcquinox.alec.data as data_mod
+    from pyscf import dft, gto
+    from xcquinox.alec.data import precompute_fixed_density_data
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_MAX_CYCLE", 2)
+    spec = _h2o_spec()
+    md = precompute_fixed_density_data(spec, reference_xc="scan")
+    meta = md["mol_metadata"]
+    assert meta["reference_scf_converged"] is True
+    assert meta["reference_scf_solver"] == "diis+newton"
+    assert 2 < meta["reference_scf_cycles"] <= 2 + data_mod._REFERENCE_SCF_NEWTON_MAX_CYCLE
+
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.RKS(mol)
+    mf.xc = "scan"
+    mf.grids.level = spec.grid_level
+    mf.kernel()
+    assert mf.converged and mf.cycles > 2
+    assert abs(float(md["E_pbe"]) - float(mf.e_tot)) < 1e-9
+    assert np.max(np.abs(np.asarray(md["dm_pbe"]) - mf.make_rdm1())) < 1e-5
+    # The record is still assembled from the converged object: E_non_xc is
+    # its total minus its own XC energy, and the grid is the one DIIS built.
+    assert abs(float(md["E_non_xc"])
+               - (float(md["E_pbe"]) - float(md["E_xc_pbe"]))) < 1e-12
+    assert np.asarray(md["grid_weights"]).shape == mf.grids.weights.shape
+    assert np.array_equal(np.asarray(md["grid_weights"]), mf.grids.weights)
+
+
+def test_locked_oxygen_scan_reference_converges_and_matches_pyscf():
+    """The certificate's own recipe for a degenerate free atom: the SCAN UKS
+    reference of the O atom (3P) at def2-SVP / grid level 1 under the
+    orientation lock. Measured here: DIIS from the minao guess converged in
+    14 cycles in 9 of 9 runs (three processes, three precompute calls each)
+    to -74.9739766967 Ha, reproducible to 1e-10 Ha; the PBE-seeded start, by
+    contrast, converged to a stationary point 1.7e-4 Ha higher in 2 of 3
+    processes, and the second-order solver from the minao guess to one 8e-5 Ha
+    higher -- which is why the reference SCF is started from the minao guess
+    and the second stage only ever starts from the DIIS end point. The oracle
+    below is the same protocol written with pyscf primitives: DIIS, then SOSCF
+    from the DIIS end point if DIIS stalls; the 1e-8 Ha bound is 100x the
+    measured run-to-run spread and 10x pyscf's conv_tol."""
+    from pyscf import dft, gto
+    from xcquinox.alec.config import MoleculeSpec
+    import xcquinox.alec.data as data_mod
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.orientation_lock import (DEFAULT_STRENGTH,
+                                                orientation_lock_bias)
+    spec = MoleculeSpec(name="O_refxc_locked", atom="O 0 0 0", basis="def2-svp",
+                        charge=0, spin=2, atom_composition=(("O", 1),),
+                        grid_level=1)
+    lock = float(DEFAULT_STRENGTH)
+    md = precompute_fixed_density_data(spec, reference_xc="scan",
+                                       orientation_lock_strength=lock)
+    meta = md["mol_metadata"]
+    assert meta["reference_xc"] == "scan"
+    assert meta["reference_scf_converged"] is True
+    assert meta["reference_scf_solver"] in ("diis", "diis+newton")
+
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.UKS(mol)
+    mf.xc = "scan"
+    mf.grids.level = spec.grid_level
+    locked = np.asarray(mf.get_hcore()) + orientation_lock_bias(mol, lock)
+    mf.get_hcore = lambda *a, **k: locked
+    mf.max_cycle = data_mod._REFERENCE_SCF_MAX_CYCLE
+    mf.kernel()
+    if not mf.converged:
+        so = mf.newton()
+        so.kernel(dm0=mf.make_rdm1())
+        assert so.converged
+        mf = so
+    assert abs(float(md["E_pbe"]) - float(mf.e_tot)) < 1e-8
+    assert np.asarray(md["dm_pbe"]).ndim == 3
