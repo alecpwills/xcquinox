@@ -63,11 +63,15 @@ ATOMIC_ENERGIES_CHAKRAVORTY = {
 
 # Dick atom-regularizer element set. The DFS training-point pool only ever
 # anchors single-atom MoleculeSpecs for these elements (see
-# ``training_points.DICK_ATOM_REGULARIZER_SYMS``); imported below so the value
-# stays in lockstep with the canonical definition.
-from xcquinox.alec.training_points import (
-    DICK_ATOM_REGULARIZER_SYMS as DICK_ATOM_REGULARIZER_SYMS,
-)
+# ``training_points.DICK_ATOM_REGULARIZER_SYMS``, where the value is derived
+# and cited to Dick and Fernandez-Serra 2021 SI section I). Stated here as a
+# literal rather than imported from that module, which imports ASE at its own
+# module body: this module is read by the harness CLI and by the certificate
+# predicates on a login node, so importing it must not pull the ASE / numpy /
+# scipy chain -- the same reason DFS_POOL_SIZE below is a fixed integer
+# instead of ``len(build_dfs_pool_points())``. The lockstep with the canonical
+# definition is held by the test suite instead of by an import.
+DICK_ATOM_REGULARIZER_SYMS: tuple[str, ...] = ("H", "Li")
 
 
 # Size of the canonical DFS training-point pool: 26 = 21 AE + 3 BH76 + 2 IP13

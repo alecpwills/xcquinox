@@ -271,3 +271,71 @@ def test_bh76w411_pool_elements_covered_by_atom_energies():
     )
     # The 6 heavier elements whose absence triggered the original failure.
     assert {"Be", "B", "Al", "Si", "P", "Cl"} <= set(prof.atom_energies)
+
+
+# ---------------------------------------------------------------------------
+# Import weight: the physics tables are read on a login node
+# ---------------------------------------------------------------------------
+
+def test_dick_atom_regularizer_syms_track_the_canonical_definition():
+    """The set is stated in domain.py as a literal so that module's import
+    stays stdlib-only; ``training_points`` is where the value is derived and
+    cited (Dick and Fernandez-Serra 2021 SI section I). The literal is held to
+    that definition here, which is what the import used to do -- the same
+    arrangement DFS_POOL_SIZE already has."""
+    from xcquinox.alec.training_points import (
+        DICK_ATOM_REGULARIZER_SYMS as CANONICAL)
+    assert DICK_ATOM_REGULARIZER_SYMS == CANONICAL
+
+
+def test_domain_module_body_does_not_pull_the_ase_chain():
+    """domain.py holds the harness physics tables and is read by the
+    certificate predicates and the harness CLI, which run on a login node and
+    want no numeric stack. Its module body must therefore stay stdlib-only:
+    ``training_points`` imports ASE unconditionally at its own body, so a
+    module-body import of it here loads ASE, numpy and scipy through every
+    reader of this file -- which is why DFS_POOL_SIZE is a hard-coded integer
+    rather than ``len(build_dfs_pool_points())``.
+
+    Measured with the three package ``__init__`` modules stubbed. Importing
+    ``xcquinox.alec.cluster`` normally executes the package's own jax-carrying
+    ``__init__``, which would load the whole stack before this module's body
+    ran and mask its cost entirely; the stubs keep the real package
+    ``__path__`` so submodule imports still resolve to the real files.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from xcquinox.alec.cluster import domain as domain_module
+    domain_path = os.path.abspath(domain_module.__file__)
+    cluster_dir = os.path.dirname(domain_path)
+    alec_dir = os.path.dirname(cluster_dir)
+    xcq_dir = os.path.dirname(alec_dir)
+    probe = """
+import importlib.util, json, sys, types
+paths = {"xcquinox": %r, "xcquinox.alec": %r, "xcquinox.alec.cluster": %r}
+for name, path in paths.items():
+    stub = types.ModuleType(name)
+    stub.__path__ = [path]
+    sys.modules[name] = stub
+base = sorted(sys.modules)
+spec = importlib.util.spec_from_file_location(
+    "xcquinox.alec.cluster.domain", %r)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+print(json.dumps({"base": len(base), "after": len(sys.modules),
+                  "modules": sorted(sys.modules),
+                  "syms": list(module.DICK_ATOM_REGULARIZER_SYMS)}))
+""" % (xcq_dir, alec_dir, cluster_dir, domain_path)
+    out = subprocess.run([sys.executable, "-c", probe],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    loaded = set(result["modules"])
+    for heavy in ("ase", "numpy", "scipy", "pyscf", "jax"):
+        assert heavy not in loaded, (heavy, result["after"])
+    # The tables themselves are still complete under the stubs.
+    assert result["syms"] == ["H", "Li"]

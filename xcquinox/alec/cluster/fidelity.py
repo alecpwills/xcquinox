@@ -45,11 +45,14 @@ result.
 IMPORT WEIGHT (a contract, pinned by an AST test on this file's source): the
 MODULE BODY carries no jax / equinox / pyscf / numpy import and no
 ``xcquinox`` import outside the cheap cluster readers (``grid_config``,
-``domain``, ``materialize``, each stdlib-only in its own body). Every jax /
-equinox / pyscf / ``xcquinox.alec.data`` import happens INSIDE a function, so
-the login node CLI, the run validator, the train task's parent process and the
-analysis layer read a certificate without this file pulling a model or an SCF
-stack.
+``domain``, ``materialize``). The test walks those readers' own module bodies
+TRANSITIVELY, so a name is admitted only while its body stays under the same
+prohibition: a whitelist checked one level deep forbids nothing, since a
+reader that grew a heavy import would load it through this file unremarked.
+Every jax / equinox / pyscf / ``xcquinox.alec.data`` import happens INSIDE a
+function, so the login node CLI, the run validator, the train task's parent
+process and the analysis layer read a certificate without this file pulling a
+model or an SCF stack.
 """
 from __future__ import annotations
 
@@ -230,7 +233,7 @@ def gate_certificate(run_dir: str, arch: str) -> tuple[bool, str]:
     """``(allowed, message)`` for an ON-NODE gate.
 
     ``allowed`` is True when the certificate PASSes, and also when it exists,
-    FAILs, records ``enforced: false`` AND names a non-empty
+    FAILs, records ``enforced: false`` AND names a non-empty STRING
     ``tolerances.override_reason`` -- the workflow-verification matrix, whose
     short pretraining runs cannot meet the tolerance yet must exercise the
     train and eval wiring with the real verdict written down. A MISSING or
@@ -239,8 +242,11 @@ def gate_certificate(run_dir: str, arch: str) -> tuple[bool, str]:
 
     The reason is required here and not only in the configuration.
     ``validate_grid_semantics`` refuses ``fidelity.enforce: false`` without a
-    non-empty ``fidelity.override_reason``, and this gate re-imposes the same
-    invariant on the certificate it reads, so a hand-edited certificate or
+    non-empty ``fidelity.override_reason`` and ``_build_fidelity`` refuses a
+    non-string one -- ``str(False)`` is the non-empty string 'False', so a
+    coerced boolean or number would pass a strip-only test and authorise
+    disabled gates no author asked for. This gate re-imposes both rules on the
+    certificate it reads, so a hand-edited certificate or
     ``resolved_config.yaml`` on a compute node cannot release a stage with no
     reason on the record.
 
@@ -261,14 +267,19 @@ def gate_certificate(run_dir: str, arch: str) -> tuple[bool, str]:
     if not isinstance(tolerances, dict):
         tolerances = {}
     recorded = tolerances.get("override_reason")
-    override = "" if recorded is None else str(recorded).strip()
+    # Prose or nothing: a non-string is refused rather than coerced, matching
+    # grid_config._build_fidelity. str(False) is the non-empty string 'False',
+    # so coercion would let `override_reason: false` -- or a bare 0 -- state a
+    # reason it does not state.
+    override = recorded.strip() if isinstance(recorded, str) else ""
     if not override:
         return False, (
             f"{reason}; the certificate records enforced=false but its "
-            "tolerances.override_reason is empty, so the waiver states no "
-            "reason. Disabling the on-node gates requires a non-empty "
-            "fidelity.override_reason, which validate_grid_semantics imposes "
-            "on the configuration and this gate re-checks on the certificate.")
+            f"tolerances.override_reason ({recorded!r}) is not a non-empty "
+            "string, so the waiver states no reason. Disabling the on-node "
+            "gates requires a non-empty prose fidelity.override_reason, which "
+            "validate_grid_semantics and _build_fidelity impose on the "
+            "configuration and this gate re-checks on the certificate.")
     return True, (
         f"{reason}; enforcement is OFF for this run "
         f"(fidelity.enforce=false, override_reason: {override}) so the "

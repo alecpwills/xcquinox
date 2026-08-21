@@ -81,6 +81,25 @@ _CHEAP_XCQ_MODULES = frozenset({
 })
 
 
+def _module_body_imports(path, package):
+    """Absolute module names imported by ONE file's module body."""
+    import ast
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    out = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            out += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                parts = package.split(".")
+                base = ".".join(parts[:len(parts) - node.level + 1])
+                out.append(base + "." + node.module if node.module else base)
+            else:
+                out.append(node.module or "")
+    return out
+
+
 def test_fidelity_module_body_carries_no_heavy_import():
     """`cluster status`, validate_run, merge and the train task's PARENT
     process all read certificates. fidelity.py's module BODY must therefore
@@ -91,28 +110,42 @@ def test_fidelity_module_body_carries_no_heavy_import():
     node entry point adds whatever stdlib modules it needs without touching
     this test, while no numeric or model stack may appear in the body and the
     only xcquinox modules allowed there are the cheap cluster readers.
+
+    The walk is TRANSITIVE over those readers' own module bodies. A whitelist
+    checked at depth 1 forbids nothing: `import domain` would satisfy it while
+    domain's body pulled ASE, and this file would load the chain it promises
+    not to. A name is therefore admitted only while its own body stays within
+    the same prohibition.
+
     Checked on the source: importing any cluster module already executes the
     package's own jax-carrying __init__, so sys.modules cannot distinguish
     this file's cost from the package's."""
-    import ast
+    import importlib.util
     import inspect
-    tree = ast.parse(inspect.getsource(fid))
-    top = []
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            top += [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            top.append(node.module or "")
-    assert top, "the module body imports nothing at all"
-    for name in top:
-        root = name.split(".")[0]
-        assert root not in _HEAVY_IMPORT_ROOTS, name
-        if root == "xcquinox":
-            assert name in _CHEAP_XCQ_MODULES, name
+    queue = [("xcquinox.alec.cluster.fidelity", inspect.getsourcefile(fid))]
+    seen = set()
+    closure = []
+    while queue:
+        name, path = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        package = name.rsplit(".", 1)[0]
+        imports = _module_body_imports(path, package)
+        assert imports, "%s imports nothing at all" % name
+        for imported in imports:
+            closure.append(imported)
+            root = imported.split(".")[0]
+            assert root not in _HEAVY_IMPORT_ROOTS, (name, imported)
+            if root == "xcquinox":
+                assert imported in _CHEAP_XCQ_MODULES, (name, imported)
+                origin = importlib.util.find_spec(imported).origin
+                queue.append((imported, origin))
     for deferred in ("xcquinox.alec.rungs", "xcquinox.alec.config",
                      "xcquinox.alec.full_benchmark_pools",
-                     "xcquinox.alec.dfs_pretrain_set"):
-        assert deferred not in top, deferred
+                     "xcquinox.alec.dfs_pretrain_set",
+                     "xcquinox.alec.training_points"):
+        assert deferred not in closure, deferred
 
 
 def test_fidelity_imports_in_a_fresh_interpreter():
@@ -309,6 +342,32 @@ def test_the_gate_refuses_a_waiver_that_records_no_reason(tmp_path,
                        **extra)
     allowed, message = fid.gate_certificate(str(tmp_path), "deep_3x16")
     assert allowed is False, tolerances
+    assert "override_reason" in message
+
+
+@pytest.mark.parametrize("recorded", [
+    pytest.param(False, id="false"),
+    pytest.param(True, id="true"),
+    pytest.param(0, id="zero"),
+    pytest.param(7, id="seven"),
+    pytest.param([], id="empty-list"),
+    pytest.param({}, id="empty-dict"),
+])
+def test_the_gate_refuses_a_waiver_whose_reason_is_not_prose(tmp_path,
+                                                             recorded):
+    """The reason is prose or it is nothing. ``grid_config._build_fidelity``
+    refuses a non-string ``fidelity.override_reason`` rather than coercing it,
+    because ``str(False)`` is the non-empty string 'False' and a boolean, a
+    number or a container would then satisfy a strip-only test and authorise
+    disabled gates that no author asked for. The certificate carries whatever
+    was recorded, so the gate applies the same rule to the file it reads."""
+    _write_certificate(str(tmp_path), "deep_3x16", verdict="FAIL",
+                       enforced=False,
+                       tolerances={"override_reason": recorded},
+                       summary={"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7})
+    allowed, message = fid.gate_certificate(str(tmp_path), "deep_3x16")
+    assert allowed is False, recorded
     assert "override_reason" in message
 
 
