@@ -26,6 +26,15 @@ For one architecture index it:
     worker that reports success but wrote no checkpoint exits non-zero (mirrors
     ``_train_task``'s silent-no-checkpoint guard) so SLURM ``afterok`` correctly
     blocks the train array.
+  - Runs the per-architecture fidelity certificate
+    (``cluster.fidelity.fidelity_certificate``, behind the
+    :data:`_fidelity_certificate` seam) on the checkpoint it just wrote and
+    exits non-zero unless the architecture reproduces its parent functional
+    within ``cfg.fidelity``. The certificate is computed here, on this node,
+    where the checkpoint is hot and the run identity is available, so the
+    train array's ``afterok`` dependency blocks on an uncertified
+    architecture without a further job kind. A run configured with
+    ``fidelity.enforce: false`` records the verdict and continues.
 
 Exit code: 0 on success, non-zero on any failure.
 
@@ -45,6 +54,7 @@ import sys
 import time
 
 from xcquinox.alec.config import get_architecture
+from xcquinox.alec.cluster import fidelity
 from xcquinox.alec.cluster.grid_config import (
     load_grid_config, _canon_axis, pretrain_checkpoint_dir,
 )
@@ -188,6 +198,16 @@ def _run_pretrain(spec, progress_callback=None):
 
 
 # ---------------------------------------------------------------------------
+# fidelity_certificate seam
+# ---------------------------------------------------------------------------
+# Bound at module level -- the same test-seam pattern as _run_pretrain above --
+# so a unit test can monkeypatch it and avoid the real SCF sweep. The call
+# writes <run_dir>/pretrain/<arch>/fidelity_certificate.json and returns its
+# payload.
+_fidelity_certificate = fidelity.fidelity_certificate
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -318,6 +338,52 @@ def main(argv=None) -> int:
             f"(missing: {missing})",
         )
         return 1
+
+    # --- pretraining-fidelity gate -----------------------------------------
+    # The checkpoint is on disk; whether it is USABLE is a physics question.
+    # The certificate answers it here, on this node, with the checkpoint hot
+    # and the production identity available, and gates this job's exit code --
+    # so the train array's afterok dependency blocks on an uncertified
+    # architecture with no extra job kind and no extra scheduling round trip.
+    t_cert = time.time()
+    _log(arch_name,
+         "running the per-architecture fidelity certificate against parent "
+         f"{fidelity.resolve_parent(arch_name).upper()} ...")
+    try:
+        certificate = _fidelity_certificate(cfg, run_dir, arch_name)
+    except Exception as exc:  # any failure must produce a non-zero exit
+        _log(arch_name,
+             f"fidelity certificate RAISED after "
+             f"{_fmt_secs(time.time() - t_cert)}: {type(exc).__name__}: {exc}")
+        return 1
+    summary = certificate.get("summary") or {}
+    line = (f"max_atom={summary.get('max_atom_mHa')} mHa, "
+            f"max_dAE={summary.get('max_dAE_kcalmol')} kcal/mol over "
+            f"{summary.get('n_systems')} system(s) "
+            f"({summary.get('n_atoms')} atom(s), "
+            f"{summary.get('n_atomizations')} atomization(s)) in "
+            f"{_fmt_secs(time.time() - t_cert)}")
+    if certificate.get("verdict") != fidelity.VERDICT_PASS:
+        _log(arch_name, f"fidelity certificate FAILED: {line}")
+        for reason in summary.get("failure_reasons") or ():
+            _log(arch_name, f"  reason: {reason}")
+        # The enforcement flag is read back out of the certificate that was
+        # just written, so the worker, the train task and the preflight all
+        # decide from the same recorded statement rather than from three
+        # readings of the config.
+        if not certificate.get("enforced", True):
+            _reason = (certificate.get("tolerances") or {}).get(
+                "override_reason")
+            _log(arch_name,
+                 "fidelity enforcement is OFF for this run "
+                 f"(fidelity.enforce=false, override_reason: {_reason!r}); "
+                 "the verdict is on record and the stage continues. This run "
+                 "cannot enter validate_run, merge_v4_arms or the figure "
+                 "suite.")
+        else:
+            return 1
+    else:
+        _log(arch_name, f"fidelity certificate PASSED: {line}")
 
     _log(
         arch_name,

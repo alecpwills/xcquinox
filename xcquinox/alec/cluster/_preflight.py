@@ -34,14 +34,23 @@ read-only. Its job is, on a compute node, before the train array starts:
      n_steps=1). A host-OOM at that epoch-0 compile exits non-zero so the whole
      train array is blocked -- one cheap failure instead of every large-basis
      task OOMing at XLA/LLVM compile time.
+  7. Sweep the per-architecture pretraining-fidelity certificates
+     (``<run_dir>/pretrain/<arch>/fidelity_certificate.json``) through
+     ``fidelity.gate_certificate``. Every distinct architecture of the sweep
+     must carry one that releases the gate; the uncertified ones are named and
+     the preflight exits non-zero, so an architecture pretrained under another
+     submission, a deleted certificate, or a partial pretrain array SLURM
+     reported as complete all block the train array here.
 
 If anything is incomplete, :func:`main` returns a non-zero exit code so the
 train array's ``afterok:<preflight>`` dependency correctly blocks.
 
 The pretrained checkpoint is a harness PRODUCT of the pretrain stage (written
 to ``<run_dir>/pretrain/<arch>/`` before the preflight runs); the preflight does
-not pre-stage or validate it, ``TrainingSpec.validate()`` only checks the
-path when the directory exists.
+not pre-stage it and does not re-check its shape, ``TrainingSpec.validate()``
+only checks the path when the directory exists. What the preflight does check
+is the certificate the pretrain stage wrote beside it (step 7): whether those
+networks were shown to reproduce their parent functional.
 
 on_precompute_failure policy
 ----------------------------
@@ -77,6 +86,7 @@ import subprocess
 import sys
 
 from xcquinox.alec import parallel
+from xcquinox.alec.cluster.fidelity import gate_certificate
 from xcquinox.alec.cluster.grid_config import load_grid_config
 from xcquinox.alec.cluster.domain import get_domain_profile
 from xcquinox.alec.cluster._train_task import (
@@ -641,6 +651,33 @@ def main(argv=None) -> int:
             _log("ERROR: compile-smoke gate FAILED -- blocking the train array")
             return 1
         _log("compile-smoke gate PASSED")
+
+    # --- 9. per-architecture fidelity certificates -------------------------
+    # The preflight is submitted afterok on the pretrain array, so by this
+    # point every distinct architecture has been certified on its own node.
+    # This sweep is the run-level cross-check: it catches an architecture that
+    # was pretrained under a different submission, a certificate that was
+    # deleted, and a partial pretrain array that SLURM reported as complete.
+    # ``gate_certificate`` honours a run configured with
+    # ``fidelity.enforce: false`` (the workflow-verification matrix), which
+    # ``validate_run``, ``merge_v4_arms`` and the figure suite still refuse.
+    archs = sorted(set(cfg.sweep.arch))
+    uncertified = []
+    for arch in archs:
+        allowed, message = gate_certificate(run_dir, arch)
+        if allowed:
+            _log(f"fidelity gate for arch {arch}: {message}")
+            continue
+        uncertified.append(arch)
+        _log(f"ERROR: fidelity certificate for arch {arch} does not release "
+             f"the gate: {message}")
+    if uncertified:
+        _log(f"ERROR: fidelity gate FAILED for {len(uncertified)}/"
+             f"{len(archs)} architecture(s) ({', '.join(uncertified)}) -- "
+             "blocking the train array")
+        return 1
+    _log(f"fidelity gate PASSED: {len(archs)}/{len(archs)} architecture "
+         "certificate(s) released the gate")
 
     _log(f"preflight SUCCEEDED: {n} specs staged + verified")
     return 0

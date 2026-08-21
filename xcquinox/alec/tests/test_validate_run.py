@@ -69,16 +69,62 @@ def _spec_for(arch_name, *, polarized=True, n_steps=200, seed=42,
     return dataclasses.replace(spec, solver_config=solver)
 
 
-def _write_run(tmp_path, specs):
+_VERSION = "test-version"
+
+
+def _write_certificate(run_dir, arch, *, verdict="PASS", identity=None,
+                       version=_VERSION, arch_field=None, parent="pbe",
+                       checkpoint=None):
+    d = os.path.join(run_dir, "pretrain", arch)
+    os.makedirs(d, exist_ok=True)
+    payload = {
+        "verdict": verdict,
+        "arch": arch if arch_field is None else arch_field,
+        "parent": parent,
+        "xcquinox_version": version,
+        "identity": identity if identity is not None else {
+            "basis": _BASIS, "grid_level": 1, "density_fit": False,
+            "auxbasis": None, "orientation_lock_strength": 0.0},
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": None},
+        "per_system": [], "per_atomization": [],
+        "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2,
+                    "n_systems": 2, "failure_reasons": []},
+    }
+    if checkpoint is not None:
+        payload["checkpoint"] = checkpoint
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump(payload, f)
+    return os.path.join(d, "fidelity_certificate.json")
+
+
+def _write_checkpoint_files(run_dir, arch, xnet=b"xnet-bytes",
+                            cnet=b"cnet-bytes"):
+    """Write the two pretrained network files and return their digests."""
+    import hashlib
+    d = os.path.join(run_dir, "pretrain", arch)
+    os.makedirs(d, exist_ok=True)
+    digests = {}
+    for name, blob in (("xnet.eqx", xnet), ("cnet.eqx", cnet)):
+        with open(os.path.join(d, name), "wb") as f:
+            f.write(blob)
+        digests[name] = hashlib.sha256(blob).hexdigest()
+    return digests
+
+
+def _write_run(tmp_path, specs, certificates=True):
     run = tmp_path / "run"
     (run / "specs").mkdir(parents=True)
     (run / "resolved_config.yaml").write_text("placeholder: true\n")
     with open(run / "manifest.json", "w") as f:
-        json.dump({"width": 4}, f)
+        json.dump({"width": 4, "xcquinox_version": _VERSION}, f)
     ser = importlib.import_module("pi" + "ckle")
     for i, spec in enumerate(specs):
         with open(run / "specs" / f"spec_{i:04d}.spec", "wb") as f:
             ser.dump(spec, f)
+    if certificates:
+        for arch in _ARCHS:
+            _write_certificate(str(run), arch)
     return str(run)
 
 
@@ -170,7 +216,8 @@ def test_pretrain_metadata_checks(tmp_path, patched_cfg):
                                 _spec_for("deep_attn_3x16")])
     # legacy file: polarized flag only -> provenance WARNINGS, no failure.
     d = os.path.join(run, "pretrain", "deep_3x16")
-    os.makedirs(d)
+    # _write_run already created the dir for the arch's certificate.
+    os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "pretrain_metadata.json"), "w") as f:
         json.dump({"use_polarized_correlation": True}, f)
     failures, warnings, _n = vr.validate_run(run)
@@ -228,3 +275,174 @@ def test_seed_source_match_passes(tmp_path, patched_cfg):
                                 _spec_for("deep_attn_3x16")])
     failures, warnings, n = vr.validate_run(run)
     assert not any("seed" in f for f in failures), failures
+
+
+# ---------------------------------------------------------------------------
+# Pretraining-fidelity certificates
+# ---------------------------------------------------------------------------
+
+def test_missing_certificate_is_a_failure(tmp_path, patched_cfg):
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")],
+                     certificates=False)
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("no fidelity_certificate.json" in f for f in failures)
+    assert sum("fidelity_certificate" in f for f in failures) == 2
+
+
+def test_failed_certificate_is_a_failure(tmp_path, patched_cfg):
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", verdict="FAIL")
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("verdict 'FAIL'" in f for f in failures)
+
+
+def test_unreadable_certificate_is_a_failure(tmp_path, patched_cfg):
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    path = os.path.join(run, "pretrain", "deep_3x16",
+                        "fidelity_certificate.json")
+    with open(path, "w") as f:
+        f.write("{truncated")
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("not readable JSON" in f for f in failures)
+
+
+def test_identity_mismatch_is_a_failure(tmp_path, patched_cfg):
+    """A certificate computed at a different basis or grid says nothing about
+    this run: the energy differences it bounds are not this run's."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", identity={
+        "basis": "def2-tzvpd", "grid_level": 3, "density_fit": True,
+        "auxbasis": "def2-universal-jkfit",
+        "orientation_lock_strength": 0.02})
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("identity basis=" in f for f in failures)
+    assert any("identity grid_level=" in f for f in failures)
+    assert any("identity density_fit=" in f for f in failures)
+    assert any("identity auxbasis=" in f for f in failures)
+    assert any("identity orientation_lock_strength=" in f for f in failures)
+
+
+def test_unenforced_failure_is_still_a_validation_failure(tmp_path,
+                                                          patched_cfg):
+    """`fidelity.enforce: false` releases the ON-NODE gates only. A run whose
+    certificate reads FAIL can never enter the record, whatever it recorded
+    about enforcement."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", verdict="FAIL")
+    path = os.path.join(run, "pretrain", "deep_3x16",
+                        "fidelity_certificate.json")
+    with open(path) as f:
+        payload = json.load(f)
+    payload["enforced"] = False
+    payload["tolerances"]["override_reason"] = "workflow matrix"
+    with open(path, "w") as f:
+        json.dump(payload, f)
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("verdict 'FAIL'" in f for f in failures)
+
+
+def test_version_mismatch_is_a_failure(tmp_path, patched_cfg):
+    """The certificate stands in for the O1-O4 oracles: it certifies the
+    installed code. A certificate from other code certifies nothing here."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", version="some-other-build")
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("xcquinox_version" in f and "manifest" in f for f in failures)
+
+
+def test_manifest_without_a_version_warns_rather_than_fails(tmp_path,
+                                                            patched_cfg):
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    with open(os.path.join(run, "manifest.json"), "w") as f:
+        json.dump({"width": 4}, f)
+    failures, warnings, _n = vr.validate_run(run)
+    assert not any("xcquinox_version" in f for f in failures)
+    assert any("xcquinox_version" in w for w in warnings)
+
+
+def test_certificate_naming_another_arch_is_a_failure(tmp_path, patched_cfg):
+    """The certificate is located by directory; the arch it NAMES must agree,
+    so a file copied from another architecture's pretrain dir is caught."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", arch_field="deep_attn_3x16")
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("certificate names arch" in f for f in failures)
+
+
+def test_wrong_parent_functional_is_a_failure(tmp_path, patched_cfg):
+    """The parent is a property of the architecture's rung. A certificate
+    measured against another functional does not bound this arch's offsets."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", parent="scan")
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("parent" in f and "'scan'" in f for f in failures)
+
+
+def test_checkpoint_digest_mismatch_is_a_failure(tmp_path, patched_cfg):
+    """A checkpoint rewritten after certification is not the one measured."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    digests = _write_checkpoint_files(run, "deep_3x16")
+    _write_certificate(run, "deep_3x16", checkpoint={
+        "dir": os.path.join(run, "pretrain", "deep_3x16"),
+        "xnet_sha256": "0" * 64,
+        "cnet_sha256": digests["cnet.eqx"]})
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("xnet.eqx" in f and "certificate measured" in f
+               for f in failures)
+    # the cnet digest agrees, so only the perturbed file is reported
+    assert not any("cnet.eqx" in f for f in failures)
+
+
+def test_matching_checkpoint_digests_validate(tmp_path, patched_cfg):
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    digests = _write_checkpoint_files(run, "deep_3x16")
+    _write_certificate(run, "deep_3x16", checkpoint={
+        "dir": os.path.join(run, "pretrain", "deep_3x16"),
+        "xnet_sha256": digests["xnet.eqx"],
+        "cnet_sha256": digests["cnet.eqx"]})
+    failures, _warnings, _n = vr.validate_run(run)
+    assert failures == [], failures
+
+
+def test_certified_checkpoint_gone_is_a_failure(tmp_path, patched_cfg):
+    """The verdict refers to two files; if they are not in the run, nothing
+    ties the certificate to what the train stage would load."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", checkpoint={
+        "dir": os.path.join(run, "pretrain", "deep_3x16"),
+        "xnet_sha256": "a" * 64, "cnet_sha256": "b" * 64})
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("no such file is present" in f and "xnet.eqx" in f
+               for f in failures)
+
+
+def test_uncertified_checkpoint_files_are_a_failure(tmp_path, patched_cfg):
+    """Networks present that the certificate does not name cannot be the ones
+    it measured."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_checkpoint_files(run, "deep_3x16")
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("records no xnet_sha256" in f for f in failures)
+
+
+def test_absent_digests_and_absent_checkpoints_warn(tmp_path, patched_cfg):
+    """The synthetic run carries neither; that is reported as uncheckable,
+    not as a disagreement."""
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    failures, warnings, _n = vr.validate_run(run)
+    assert failures == [], failures
+    assert any("xnet_sha256" in w for w in warnings)

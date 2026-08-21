@@ -123,7 +123,25 @@ def _write_resolved_config(run_dir, extra=None, cluster_extra=None):
     path = run_dir / "resolved_config.yaml"
     with open(path, "w") as f:
         yaml.safe_dump(cfg, f)
+    for arch in cfg["sweep"]["arch"]:
+        _write_pass_certificate(run_dir, arch)
     return path
+
+
+def _write_pass_certificate(run_dir, arch="shallow", verdict="PASS"):
+    """Write a PASS fidelity certificate for ``arch`` under ``run_dir``.
+
+    The preflight runs afterok on the pretrain array, so by preflight time
+    every architecture already carries one; these fixtures describe that
+    state, and the gate's own tests remove or downgrade it.
+    """
+    d = os.path.join(str(run_dir), "pretrain", arch)
+    os.makedirs(d, exist_ok=True)
+    payload = {"verdict": verdict, "arch": arch,
+               "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2}}
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump(payload, f)
+    return d
 
 
 def _two_cells():
@@ -635,3 +653,80 @@ def test_compile_smoke_probe_blas_cap_scales_with_node(
     assert env["OMP_NUM_THREADS"] == expected
     assert env["MKL_NUM_THREADS"] == expected
     assert env["OPENBLAS_NUM_THREADS"] == expected
+
+
+# ---------------------------------------------------------------------------
+# The per-architecture fidelity gate
+# ---------------------------------------------------------------------------
+
+def test_preflight_blocks_the_array_on_a_missing_certificate(tmp_path,
+                                                             patched, capsys):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_resolved_config(run_dir)
+    os.remove(os.path.join(str(run_dir), "pretrain", "shallow",
+                           "fidelity_certificate.json"))
+    assert main([str(run_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "fidelity gate FAILED" in out
+    assert "shallow" in out
+
+
+def test_preflight_blocks_the_array_on_a_failed_certificate(tmp_path,
+                                                            patched, capsys):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_resolved_config(run_dir)
+    _write_pass_certificate(run_dir, "shallow", verdict="FAIL")
+    assert main([str(run_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "fidelity gate FAILED" in out
+
+
+def test_preflight_reports_the_gate_when_every_arch_certifies(tmp_path,
+                                                              patched,
+                                                              capsys):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_resolved_config(run_dir)
+    assert main([str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "fidelity gate PASSED" in out
+    assert "1/1 architecture certificate(s) released the gate" in out
+    assert "preflight SUCCEEDED" in out
+
+
+def test_preflight_releases_an_unenforced_failure(tmp_path, patched, capsys):
+    """A workflow-verification run must reach its train array with the FAIL on
+    record; the preflight log says the gate was not enforced."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_resolved_config(run_dir)
+    d = os.path.join(str(run_dir), "pretrain", "shallow")
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump({"verdict": "FAIL", "arch": "shallow", "enforced": False,
+                   "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                  "override_reason": "workflow matrix"},
+                   "summary": {"max_atom_mHa": 13.7,
+                               "max_dAE_kcalmol": 25.7}}, f)
+    assert main([str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "enforcement is OFF" in out
+    assert "preflight SUCCEEDED" in out
+
+
+def test_preflight_checks_every_distinct_arch(tmp_path, patched, capsys):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    path = _write_resolved_config(run_dir)
+    import yaml
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    cfg["sweep"]["arch"] = ["shallow", "medium"]
+    with open(path, "w") as f:
+        yaml.safe_dump(cfg, f)
+    _write_pass_certificate(run_dir, "shallow")
+    # "medium" has no certificate: the sweep must catch it.
+    assert main([str(run_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "medium" in out

@@ -122,6 +122,28 @@ def run_dir(tmp_path):
     return str(d)
 
 
+@pytest.fixture(autouse=True)
+def stub_certificate(request, monkeypatch):
+    """Stub the fidelity certificate at its seam for every test in this file.
+
+    The certificate loads the checkpoint and runs PySCF SCFs at the run's
+    identity; the pretrain-worker tests are about worker orchestration, so
+    they get a PASS payload for free. The tests that exercise the gate
+    override this with their own seam. A test whose name ends in
+    ``_unstubbed`` opts out entirely, which is how the seam-identity test can
+    observe the real module-level binding.
+    """
+    if request.node.name.endswith("_unstubbed"):
+        return
+    monkeypatch.setattr(pt, "_fidelity_certificate", lambda cfg, rd, arch: {
+        "verdict": "PASS", "enforced": True,
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": None},
+        "summary": {"max_atom_mHa": 0.12, "max_dAE_kcalmol": 0.34,
+                    "n_systems": 40, "n_atoms": 16, "n_atomizations": 24,
+                    "failure_reasons": []}})
+
+
 # ---------------------------------------------------------------------------
 # distinct-arch derivation + spec construction
 # ---------------------------------------------------------------------------
@@ -391,6 +413,124 @@ def test_pretrain_arch_polarized_when_flag_set(tmp_path, monkeypatch):
 
     assert pt.main([str(d), "1"]) == 0
     assert captured["spec"].arch.use_polarized_correlation is True
+
+
+# ---------------------------------------------------------------------------
+# The on-node fidelity gate
+# ---------------------------------------------------------------------------
+
+def _stub_pretrain_writes_checkpoint(monkeypatch):
+    def fake_run_pretrain(spec, progress_callback=None):
+        os.makedirs(spec.checkpoint_dir, exist_ok=True)
+        open(os.path.join(spec.checkpoint_dir, "xnet.eqx"), "wb").close()
+        open(os.path.join(spec.checkpoint_dir, "cnet.eqx"), "wb").close()
+        return {}
+    monkeypatch.setattr(pt, "_run_pretrain", fake_run_pretrain)
+
+
+def test_pretrain_runs_the_certificate_for_its_own_arch(run_dir, monkeypatch):
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    seen = {}
+
+    def fake_cert(cfg, rd, arch):
+        seen["args"] = (rd, arch)
+        seen["tol"] = (cfg.fidelity.tol_AE, cfg.fidelity.tol_atom)
+        return {"verdict": "PASS", "enforced": True,
+                "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                               "override_reason": None},
+                "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2,
+                            "n_systems": 2, "n_atoms": 1, "n_atomizations": 1,
+                            "failure_reasons": []}}
+
+    monkeypatch.setattr(pt, "_fidelity_certificate", fake_cert)
+    assert pt.main([run_dir, "1"]) == 0
+    assert seen["args"] == (os.path.abspath(run_dir), "medium")
+    assert seen["tol"] == (1.0, 1.0)
+
+
+def test_pretrain_exits_nonzero_on_a_failed_certificate(run_dir, monkeypatch,
+                                                        capsys):
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    monkeypatch.setattr(pt, "_fidelity_certificate", lambda cfg, rd, arch: {
+        "verdict": "FAIL", "enforced": True,
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": None},
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7,
+                    "n_systems": 40, "n_atoms": 16, "n_atomizations": 24,
+                    "failure_reasons": ["max |dE_xc| over free atoms 13.7000 "
+                                        "mHa exceeds tol_atom 1.0 mHa"]}})
+    assert pt.main([run_dir, "1"]) == 1
+    out = capsys.readouterr().out
+    assert "fidelity certificate FAILED" in out
+    assert "13.7" in out and "25.7" in out
+    assert "tol_atom" in out
+
+
+def test_pretrain_continues_past_a_failure_when_enforcement_is_off(
+        run_dir, monkeypatch, capsys):
+    """Workflow-verification runs must reach the train stage with a FAIL on
+    record; the worker says so in the log and exits 0."""
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    monkeypatch.setattr(pt, "_fidelity_certificate", lambda cfg, rd, arch: {
+        "verdict": "FAIL", "enforced": False,
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": "workflow matrix: 50-step "
+                                          "pretrain"},
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7,
+                    "n_systems": 40, "n_atoms": 16, "n_atomizations": 24,
+                    "failure_reasons": ["max_atom_mHa"]}})
+    assert pt.main([run_dir, "1"]) == 0
+    out = capsys.readouterr().out
+    assert "fidelity certificate FAILED" in out
+    assert "enforcement is OFF" in out
+    assert "workflow matrix" in out
+    assert "pretrain SUCCEEDED" in out
+
+
+def test_pretrain_exits_nonzero_when_the_certificate_raises(run_dir,
+                                                            monkeypatch,
+                                                            capsys):
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+
+    def boom(cfg, rd, arch):
+        raise RuntimeError("libxc unavailable")
+
+    monkeypatch.setattr(pt, "_fidelity_certificate", boom)
+    assert pt.main([run_dir, "1"]) == 1
+    out = capsys.readouterr().out
+    assert "fidelity certificate RAISED" in out
+    assert "libxc unavailable" in out
+
+
+def test_pretrain_logs_the_passing_summary(run_dir, monkeypatch, capsys):
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    assert pt.main([run_dir, "1"]) == 0
+    out = capsys.readouterr().out
+    assert "fidelity certificate PASSED" in out
+    assert "pretrain SUCCEEDED" in out
+    # The certificate line precedes the SUCCEEDED line: the job only reports
+    # success after the physics has been checked.
+    assert out.index("fidelity certificate PASSED") < out.index(
+        "pretrain SUCCEEDED")
+
+
+def test_pretrain_does_not_certify_when_the_checkpoint_is_missing(
+        run_dir, monkeypatch):
+    """A worker that wrote no checkpoint fails at the existing guard; the
+    certificate must not be attempted against an absent xnet.eqx."""
+    monkeypatch.setattr(pt, "_run_pretrain", lambda spec, progress_callback=None: {})
+    called = []
+    monkeypatch.setattr(pt, "_fidelity_certificate",
+                        lambda *a, **k: called.append(1))
+    assert pt.main([run_dir, "1"]) == 1
+    assert called == []
+
+
+def test_fidelity_certificate_seam_is_the_library_function_unstubbed():
+    """One implementation of the certificate, bound as a seam -- not a wrapper
+    that could drift from what the library actually runs."""
+    from xcquinox.alec.cluster import fidelity
+    assert pt._fidelity_certificate is fidelity.fidelity_certificate
 
 
 if __name__ == "__main__":

@@ -31,6 +31,22 @@ Checks
   (files written before those keys existed cannot be cross-checked and should
   be regenerated when convenient). ``pretrain_steps`` has been written since
   the writer existed, so it is checked even on legacy files.
+* fidelity certificate: every swept architecture must carry
+  ``pretrain/<arch>/fidelity_certificate.json`` with ``verdict == "PASS"``.
+  The certificate's ``enforced`` field releases the ON-NODE gates only and is
+  deliberately ignored here: a workflow-verification run must never be
+  mistaken for a result. Required with it: the ``arch`` and ``parent`` the
+  certificate names, an ``identity`` block equal to the config's basis / grid
+  level / density fitting / auxiliary basis / orientation-lock strength, an
+  ``xcquinox_version`` equal to the manifest's, and ``checkpoint`` SHA-256
+  digests equal to the ``xnet.eqx`` / ``cnet.eqx`` present in the run. The
+  certificate is what stands in for the spin-scaling oracles on the installed
+  code, so a certificate from a different build, a different identity, a
+  different architecture or a different pair of network files certifies
+  nothing about this run. A manifest with no recorded version, and a
+  certificate with neither recorded digests nor checkpoint files to compare
+  them against, are warnings (they cannot be cross-checked); everything else
+  is a failure.
 
 Usage::
 
@@ -46,6 +62,9 @@ import os
 import sys
 
 from xcquinox.alec.cluster.grid_config import expand_grid, load_grid_config
+from xcquinox.alec.cluster.fidelity import (CERTIFICATE_FILENAME, VERDICT_PASS,
+                                            resolve_parent)
+from xcquinox.alec.cluster.materialize import _sha256_file
 from xcquinox.alec.cluster._eval_one_spec import (_load_spec, _read_width,
                                                   _spec_path)
 
@@ -101,6 +120,16 @@ def validate_run(run_dir: str, config_path: str | None = None):
     cfg = load_grid_config(config_path)
     cells = expand_grid(cfg)
     width = _read_width(run_dir)
+
+    # The manifest's version is the run's code identity; a certificate must
+    # have been produced by the same build, since the certificate is what
+    # stands in for the spin-scaling oracles on the installed code.
+    manifest_version = None
+    try:
+        with open(os.path.join(run_dir, "manifest.json")) as f:
+            manifest_version = json.load(f).get("xcquinox_version")
+    except (OSError, ValueError):
+        manifest_version = None
 
     # --- spec-file completeness --------------------------------------------
     spec_dir = os.path.join(run_dir, "specs")
@@ -199,6 +228,136 @@ def validate_run(run_dir: str, config_path: str | None = None):
 
     # --- pretrain metadata --------------------------------------------------
     for arch_name in sorted(set(cfg.sweep.arch)):
+        # --- fidelity certificate ------------------------------------------
+        # First in the loop body: the pretrain-metadata checks below ``continue``
+        # on a missing metadata file, and a run may not skip the certificate
+        # because an unrelated file is absent.
+        pretrain_dir = os.path.join(run_dir, "pretrain", arch_name)
+        cert_path = os.path.join(pretrain_dir, CERTIFICATE_FILENAME)
+        if not os.path.isfile(cert_path):
+            failures.append(
+                f"pretrain/{arch_name}: no {CERTIFICATE_FILENAME} -- the "
+                "architecture was never shown to reproduce its parent "
+                "functional")
+        else:
+            cert = None
+            try:
+                with open(cert_path) as f:
+                    cert = json.load(f)
+            except ValueError as exc:
+                failures.append(
+                    f"pretrain/{arch_name}: {CERTIFICATE_FILENAME} is not "
+                    f"readable JSON ({exc})")
+            if isinstance(cert, dict):
+                if cert.get("verdict") != VERDICT_PASS:
+                    failures.append(
+                        f"pretrain/{arch_name}: fidelity certificate verdict "
+                        f"{cert.get('verdict')!r}, expected {VERDICT_PASS!r} "
+                        f"(summary: {cert.get('summary')})")
+                # The certificate is located by DIRECTORY; the architecture it
+                # names must agree, or a file copied from another arch's
+                # pretrain dir would certify this one.
+                if cert.get("arch") != arch_name:
+                    failures.append(
+                        f"pretrain/{arch_name}: certificate names arch "
+                        f"{cert.get('arch')!r} -- it does not certify this "
+                        "architecture")
+                # The parent functional is a property of the arch's rung
+                # (PBE for GGA, SCAN for meta-GGA); a certificate measured
+                # against the other one bounds nothing here.
+                try:
+                    expected_parent = resolve_parent(arch_name)
+                except KeyError:
+                    expected_parent = None
+                    failures.append(
+                        f"pretrain/{arch_name}: arch is not in the registry, "
+                        "so the parent functional its certificate must be "
+                        "measured against cannot be resolved")
+                if (expected_parent is not None
+                        and cert.get("parent") != expected_parent):
+                    failures.append(
+                        f"pretrain/{arch_name}: certificate parent "
+                        f"{cert.get('parent')!r}, but this architecture's rung "
+                        f"is pretrained against {expected_parent!r}")
+                identity = cert.get("identity") or {}
+                expected_identity = {
+                    "basis": cfg.inputs.basis,
+                    "grid_level": int(cfg.inputs.grid_level),
+                    "density_fit": bool(
+                        getattr(cfg.inputs, "density_fit", False)),
+                    "auxbasis": getattr(cfg.inputs, "auxbasis", None),
+                    "orientation_lock_strength": float(
+                        getattr(cfg.inputs, "orientation_lock_strength", 0.0)),
+                }
+                for key, want in expected_identity.items():
+                    got = identity.get(key)
+                    if got is not None and key == "grid_level":
+                        got = int(got)
+                    if got is not None and key == "orientation_lock_strength":
+                        got = float(got)
+                    if got != want:
+                        failures.append(
+                            f"pretrain/{arch_name}: certificate identity "
+                            f"{key}={got!r} but the config says {want!r} -- "
+                            "the certificate was not computed at this run's "
+                            "identity")
+                cert_version = cert.get("xcquinox_version")
+                if manifest_version is None:
+                    warnings.append(
+                        f"pretrain/{arch_name}: manifest.json records no "
+                        "xcquinox_version, so the certificate's code version "
+                        f"({cert_version!r}) cannot be cross-checked")
+                elif cert_version != manifest_version:
+                    failures.append(
+                        f"pretrain/{arch_name}: certificate xcquinox_version "
+                        f"{cert_version!r} != manifest {manifest_version!r} "
+                        "-- the certificate was produced by different code "
+                        "than the run")
+                # The verdict refers to two specific files. Comparing their
+                # digests is what ties it to the networks the train stage
+                # loads: a checkpoint rewritten (or re-pretrained) after
+                # certification is not the one that was measured.
+                recorded = cert.get("checkpoint")
+                if not isinstance(recorded, dict):
+                    recorded = {}
+                for fname, key in (("xnet.eqx", "xnet_sha256"),
+                                   ("cnet.eqx", "cnet_sha256")):
+                    ck_path = os.path.join(pretrain_dir, fname)
+                    want = recorded.get(key)
+                    on_disk = os.path.isfile(ck_path)
+                    if want is None and not on_disk:
+                        warnings.append(
+                            f"pretrain/{arch_name}: the certificate records "
+                            f"no {key} and no {fname} is present, so the "
+                            "certified networks cannot be cross-checked "
+                            "against the ones the run trains from")
+                        continue
+                    if want is None:
+                        failures.append(
+                            f"pretrain/{arch_name}: {fname} is present but "
+                            f"the certificate records no {key}, so the file "
+                            "cannot be tied to the verdict")
+                        continue
+                    if not on_disk:
+                        failures.append(
+                            f"pretrain/{arch_name}: the certificate measured "
+                            f"{fname} (sha256 {str(want)[:12]}...) but no "
+                            "such file is present in the run")
+                        continue
+                    try:
+                        got_digest = _sha256_file(ck_path)
+                    except OSError as exc:  # report, never crash the scan
+                        failures.append(
+                            f"pretrain/{arch_name}: {fname} could not be read "
+                            f"to check it against the certificate ({exc})")
+                        continue
+                    if got_digest != want:
+                        failures.append(
+                            f"pretrain/{arch_name}: {fname} sha256 "
+                            f"{got_digest[:12]}... is not the file the "
+                            f"certificate measured ({str(want)[:12]}...) -- "
+                            "the checkpoint changed after it was certified")
+
         meta_path = os.path.join(run_dir, "pretrain", arch_name,
                                  "pretrain_metadata.json")
         if not os.path.isfile(meta_path):

@@ -22,15 +22,30 @@ from xcquinox.alec.cluster import _train_task as tt
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
-def _write_manifest(run_dir, width=4, n_specs=4):
+def _write_manifest(run_dir, width=4, n_specs=4, arch="deep_3x16"):
     payload = {
         "xcquinox_version": "test",
         "python_version": "3.x",
         "width": width,
         "n_specs": n_specs,
+        "specs": [{"index": i, "spec_file": f"spec_{i:0{width}d}.spec",
+                   "sha256": "x" * 64,
+                   "cell": {"arch": arch, "loss": "l2", "metric": "l2",
+                            "subset_size": 1, "solver": "oneshot"}}
+                  for i in range(n_specs)],
     }
     with open(os.path.join(run_dir, "manifest.json"), "w") as f:
         json.dump(payload, f)
+
+
+def _write_pass_certificate(run_dir, arch="deep_3x16", verdict="PASS"):
+    d = os.path.join(run_dir, "pretrain", arch)
+    os.makedirs(d, exist_ok=True)
+    payload = {"verdict": verdict, "arch": arch,
+               "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2}}
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump(payload, f)
+    return d
 
 
 def _write_spec(run_dir, idx, width=4):
@@ -61,6 +76,9 @@ def run_dir(tmp_path):
     d.mkdir()
     _write_manifest(str(d))
     _write_spec(str(d), 0)
+    # Every orchestration test in this file describes a run whose architecture
+    # certified; the gate's own tests remove or downgrade the certificate.
+    _write_pass_certificate(str(d))
     return str(d)
 
 
@@ -470,6 +488,131 @@ def test_run_worker_heartbeat_omits_rss_when_absent(monkeypatch):
     rc, _tail = tt._run_worker("/tmp/x.spec", "auto")
     assert rc == 0
     assert emitted and not any("rss=" in line for line in emitted)
+
+
+# ---------------------------------------------------------------------------
+# The pretraining-fidelity gate
+# ---------------------------------------------------------------------------
+
+def test_missing_certificate_refuses_before_the_worker_runs(run_dir,
+                                                            monkeypatch):
+    os.remove(os.path.join(run_dir, "pretrain", "deep_3x16",
+                           "fidelity_certificate.json"))
+    calls = []
+    monkeypatch.setattr(tt, "_run_worker",
+                        lambda s, d: calls.append(1) or (0, "ok"))
+    assert tt.main([run_dir, "0"]) == 3
+    assert calls == []          # the node is never spent on an uncertified spec
+    failure = _read_failure(run_dir, 0)
+    assert failure["classification"] == "fidelity_certificate_missing"
+    assert failure["rc"] == 3
+    assert failure["arch"] == "deep_3x16"
+    assert "fidelity_certificate.json" in failure["log_excerpt"]
+
+
+def test_failed_certificate_refuses_with_its_own_classification(run_dir,
+                                                                monkeypatch):
+    _write_pass_certificate(run_dir, verdict="FAIL")
+    monkeypatch.setattr(tt, "_run_worker", lambda s, d: (0, "ok"))
+    assert tt.main([run_dir, "0"]) == 3
+    failure = _read_failure(run_dir, 0)
+    assert failure["classification"] == "fidelity_certificate_failed"
+    assert failure["arch"] == "deep_3x16"
+
+
+def test_unreadable_certificate_is_treated_as_missing(run_dir, monkeypatch):
+    path = os.path.join(run_dir, "pretrain", "deep_3x16",
+                        "fidelity_certificate.json")
+    with open(path, "w") as f:
+        f.write("{truncated")
+    monkeypatch.setattr(tt, "_run_worker", lambda s, d: (0, "ok"))
+    assert tt.main([run_dir, "0"]) == 3
+    assert _read_failure(run_dir, 0)["classification"] == \
+        "fidelity_certificate_missing"
+
+
+def test_manifest_without_a_cell_arch_is_refused_not_waved_through(tmp_path,
+                                                                   monkeypatch):
+    """A manifest with no arch for this index makes the certificate
+    unresolvable; an unresolvable certificate is a refusal, never a pass."""
+    d = tmp_path / "run"
+    d.mkdir()
+    with open(d / "manifest.json", "w") as f:
+        json.dump({"width": 4, "n_specs": 1}, f)
+    _write_spec(str(d), 0)
+    monkeypatch.setattr(tt, "_run_worker", lambda s, dev: (0, "ok"))
+    assert tt.main([str(d), "0"]) == 3
+    failure = _read_failure(str(d), 0)
+    assert failure["classification"] == "fidelity_certificate_missing"
+    assert failure["arch"] is None
+
+
+def test_unenforced_failure_lets_the_worker_run(run_dir, monkeypatch,
+                                                capsys):
+    """A workflow-verification run reaches the train stage with its FAIL on
+    record; the log says so."""
+    d = os.path.join(run_dir, "pretrain", "deep_3x16")
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump({"verdict": "FAIL", "arch": "deep_3x16", "enforced": False,
+                   "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                  "override_reason": "workflow matrix"},
+                   "summary": {"max_atom_mHa": 13.7,
+                               "max_dAE_kcalmol": 25.7}}, f)
+
+    def fake_worker(spec_path, device):
+        _write_model(run_dir, 0)
+        return 0, "ok"
+
+    monkeypatch.setattr(tt, "_run_worker", fake_worker)
+    assert tt.main([run_dir, "0"]) == 0
+    out = capsys.readouterr().out
+    assert "enforcement is OFF" in out
+
+
+def test_unenforced_but_MISSING_certificate_is_still_refused(run_dir,
+                                                             monkeypatch):
+    """Enforcement can only be waived by a certificate that exists to record
+    the waiver; an absent one waives nothing."""
+    os.remove(os.path.join(run_dir, "pretrain", "deep_3x16",
+                           "fidelity_certificate.json"))
+    monkeypatch.setattr(tt, "_run_worker", lambda s, d: (0, "ok"))
+    assert tt.main([run_dir, "0"]) == 3
+
+
+def test_passing_certificate_lets_the_worker_run(run_dir, monkeypatch):
+    def fake_worker(spec_path, device):
+        _write_model(run_dir, 0)
+        return 0, "ok"
+    monkeypatch.setattr(tt, "_run_worker", fake_worker)
+    assert tt.main([run_dir, "0"]) == 0
+
+
+def test_precompute_failed_species_marker_still_wins(run_dir, monkeypatch):
+    """The preflight's precise diagnosis is preserved: it exits 0 BEFORE the
+    fidelity gate, so a spec already marked unbuildable is not relabelled."""
+    ck = os.path.join(run_dir, "checkpoints", "spec_0000")
+    os.makedirs(ck, exist_ok=True)
+    with open(os.path.join(ck, "failure.json"), "w") as f:
+        json.dump({"classification": "precompute_failed_species", "rc": 0}, f)
+    os.remove(os.path.join(run_dir, "pretrain", "deep_3x16",
+                           "fidelity_certificate.json"))
+    monkeypatch.setattr(tt, "_run_worker", lambda s, d: (0, "ok"))
+    assert tt.main([run_dir, "0"]) == 0
+    assert _read_failure(run_dir, 0)["classification"] == \
+        "precompute_failed_species"
+
+
+def test_read_cell_arch_resolves_the_index(run_dir):
+    assert tt._read_cell_arch(run_dir, 0) == "deep_3x16"
+    assert tt._read_cell_arch(run_dir, 99) is None
+
+
+def test_certificate_classifications_are_deterministic_not_retryable():
+    """A blind resubmit cannot make an absent or failed certificate pass, so
+    neither classification may enter the retry set."""
+    from xcquinox.alec.cluster.__main__ import _RETRYABLE
+    assert "fidelity_certificate_missing" not in _RETRYABLE
+    assert "fidelity_certificate_failed" not in _RETRYABLE
 
 
 if __name__ == "__main__":

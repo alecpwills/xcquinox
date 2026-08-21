@@ -10,6 +10,12 @@ It is the thin harness layer between SLURM and the existing per-spec worker
   - Locate this task's spec file (``<run_dir>/specs/spec_<idx>.spec``, pad
     ``width`` read from ``manifest.json``) and its checkpoint directory
     (``<run_dir>/checkpoints/spec_<idx>/``).
+  - Refuse the spec when the architecture its grid cell names carries no
+    PASS pretraining-fidelity certificate
+    (``<run_dir>/pretrain/<arch>/fidelity_certificate.json``): exit 3 with a
+    ``fidelity_certificate_missing`` / ``fidelity_certificate_failed``
+    ``failure.json`` instead of spending a node training against networks that
+    were never shown to reproduce their parent functional.
   - Run the worker as a subprocess (``_run_worker``: the single test seam),
     consuming its JSON progress stream and emitting a throttled human
     readable progress line to our stdout (which IS the SLURM ``.out`` log).
@@ -134,6 +140,29 @@ def _read_width(run_dir):
     with open(path) as f:
         manifest = json.load(f)
     return int(manifest["width"])
+
+
+def _read_cell_arch(run_dir, idx):
+    """The architecture name grid cell ``idx`` carries, from ``manifest.json``.
+
+    ``None`` when the manifest records no cell for the index (a truncated or
+    pre-``specs``-entry manifest). The caller treats an unresolvable
+    architecture as an unverifiable certificate: a spec whose pretraining
+    provenance cannot be established does not train.
+    """
+    path = os.path.join(run_dir, _MANIFEST_FILENAME)
+    try:
+        with open(path) as f:
+            manifest = json.load(f)
+    except (OSError, ValueError):
+        return None
+    for entry in manifest.get("specs") or ():
+        try:
+            if int(entry.get("index", -1)) == int(idx):
+                return (entry.get("cell") or {}).get("arch")
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _spec_path(run_dir, idx, width):
@@ -460,6 +489,55 @@ def main(argv=None) -> int:
                   "failed to precompute); skipping the worker and preserving the "
                   "marker.")
         return 0
+
+    # --- pretraining-fidelity gate -----------------------------------------
+    # A spec may not train against networks that were never shown to reproduce
+    # their parent functional: the pre-certificate checkpoints were off by 2.3
+    # to 56 kcal/mol in atomization energies (SPEC_pretrain_fidelity_program.md
+    # Section 2), larger than every effect the training is meant to measure.
+    # Neither classification is in ``__main__._RETRYABLE``, so ``resubmit``
+    # treats both as deterministic -- a blind retry cannot make an absent or
+    # failed certificate pass. ``gate_certificate`` (not ``certificate_status``)
+    # is the predicate here: a run configured with ``fidelity.enforce: false``
+    # records the FAIL and is allowed through, because the workflow-verification
+    # matrix must reach the train stage with a short pretrain that cannot meet
+    # the tolerance. Such a run is still refused by ``validate_run``,
+    # ``merge_v4_arms`` and the figure suite.
+    #
+    # Imported inside main deliberately: this module carries no xcquinox import
+    # in its body, so the train task's parent process stays a thin SLURM
+    # wrapper around the worker subprocess.
+    from xcquinox.alec.cluster.fidelity import (
+        CERTIFICATE_FILENAME, certificate_status, gate_certificate)
+    arch = _read_cell_arch(run_dir, idx)
+    if arch is None:
+        excerpt = (
+            f"manifest.json in {run_dir} records no cell architecture for "
+            f"index {idx}, so this spec's {CERTIFICATE_FILENAME} cannot be "
+            "located")
+        _log(idx, f"REFUSING to train: {excerpt}")
+        _write_failure_json(checkpoint_dir, {
+            "classification": "fidelity_certificate_missing",
+            "rc": 3,
+            "arch": None,
+            "log_excerpt": excerpt,
+        })
+        return 3
+    allowed, message = gate_certificate(run_dir, arch)
+    if not allowed:
+        status, _reason = certificate_status(run_dir, arch)
+        classification = ("fidelity_certificate_failed"
+                          if status == "FAIL"
+                          else "fidelity_certificate_missing")
+        _log(idx, f"REFUSING to train arch {arch!r}: {message}")
+        _write_failure_json(checkpoint_dir, {
+            "classification": classification,
+            "rc": 3,
+            "arch": arch,
+            "log_excerpt": message,
+        })
+        return 3
+    _log(idx, f"fidelity gate for arch {arch!r}: {message}")
 
     if not os.path.exists(spec_path):
         _log(idx, f"spec file not found: {spec_path}")
