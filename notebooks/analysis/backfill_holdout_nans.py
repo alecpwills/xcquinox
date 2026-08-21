@@ -349,6 +349,14 @@ def process_channel_records(channel_dir: Path, *,
     gate, patch, stamp. Returns the report dict (``status`` one of
     ``nothing-to-do`` / ``patched`` / ``would-patch`` / ``aborted``)."""
     channel_dir = Path(channel_dir)
+    # The backfill recomputes species under the PRODUCTION eval identity and
+    # patches them in beside the channel's existing energies. On a channel
+    # evaluated over a workflow-verification species slice that identity does
+    # not hold -- the surrounding energies came from a different reaction set
+    # -- so the channel is refused before it is read, let alone rewritten.
+    # Imported here, as refinalize_run is below, rather than at module scope.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+    assert_channel_not_sliced(channel_dir.parent, channel_dir.name)
     with (channel_dir / "per_molecule.json").open() as f:
         records = json.load(f)
     targets = nonfinite_species(records)
@@ -543,6 +551,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     workdir = run_dir / "backfill_work"
     print(f"[backfill] {run_dir.name}: basis={basis} grid_level={grid_level}"
           f" gates: dE_pbe<={args.gate_pbe:g} dE_nn<={args.gate_nn:g}")
+
+    # Every channel of every spec dir is checked before the discovery probe
+    # below and before the per-channel read further down: --measure-only and
+    # --dry-run read the channel without ever reaching
+    # process_channel_records, and a sliced channel whose energies never
+    # landed would not be discovered at all -- skipped silently rather than
+    # refused. Imported here, as refinalize_run is below, rather than at
+    # module scope.
+    from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+    for _d in sorted((run_dir / "checkpoints").glob("spec_*")):
+        for _ch in args.channels:
+            assert_channel_not_sliced(_d, _ch)
 
     if args.specs:
         indices = [int(s) for s in args.specs.split(",")]

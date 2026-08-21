@@ -542,3 +542,78 @@ def test_channel_models_cover_the_three_channels():
         "eval_holdout_best": "model_best.eqx",
         "eval_holdout_val_best": "model_val_best.eqx",
     }
+
+
+# ---------------------------------------------------------------------------
+# A sliced channel is refused before any read or rewrite
+# ---------------------------------------------------------------------------
+
+_SLICE = ["h", "h2", "o", "oh", "n2o", "n2ohts"]
+
+
+def _sliced_marker(ch):
+    (ch / "sliced_eval.json").write_text(json.dumps(
+        {"species_slice": list(_SLICE), "n_species": len(_SLICE),
+         "n_reactions": 1, "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"}))
+
+
+def _sliced_stamp(ch):
+    (ch / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": list(_SLICE),
+         "n_species": len(_SLICE), "n_reactions": 1}))
+
+
+@pytest.mark.parametrize("mark", [_sliced_marker, _sliced_stamp])
+def test_process_channel_records_refuses_a_sliced_channel(tmp_path, mark):
+    """The backfill recomputes species under the PRODUCTION eval identity and
+    patches them into the channel. On a channel evaluated over a
+    workflow-verification species slice that identity does not hold -- the
+    energies beside the patched ones came from a different reaction set -- so
+    the channel is refused before it is read, let alone rewritten."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    ch = _channel_dir(tmp_path, _base_records())
+    mark(ch)
+    before = (ch / "per_molecule.json").read_bytes()
+    calls = []
+
+    def _fake_compute(names):
+        calls.append(sorted(names))
+        return _good_payload()
+
+    with pytest.raises(SlicedChannelError) as exc:
+        bf.process_channel_records(ch, controls=["aa_ctl", "bb_ctl"],
+                                   gate_nn=1e-6, gate_pbe=1e-6,
+                                   compute_fn=_fake_compute)
+    msg = str(exc.value)
+    assert "spec_0007" in msg
+    assert "eval_holdout" in msg
+    assert "'n2ohts'" in msg
+    # nothing computed, nothing read into a rewrite, nothing written
+    assert calls == []
+    assert (ch / "per_molecule.json").read_bytes() == before
+    assert not (ch / "per_molecule.pre_backfill.json").exists()
+    assert not (ch / "backfill_ledger.json").exists()
+    assert not (ch / "backfill_meta.json").exists()
+
+
+def test_process_channel_records_refuses_a_sliced_channel_dry_run(tmp_path):
+    """--dry-run reads the channel too; the refusal precedes that read."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    ch = _channel_dir(tmp_path, _base_records())
+    _sliced_marker(ch)
+    with pytest.raises(SlicedChannelError):
+        bf.process_channel_records(ch, controls=["aa_ctl", "bb_ctl"],
+                                   gate_nn=1e-6, gate_pbe=1e-6,
+                                   compute_fn=lambda names: _good_payload(),
+                                   dry_run=True)
+
+
+def test_process_channel_records_passes_a_full_pool_stamp(tmp_path):
+    """The guard is a no-op on the mark a full-pool evaluation writes."""
+    ch = _channel_dir(tmp_path, _base_records())
+    (ch / "eval_metadata.json").write_text(json.dumps(
+        {"channel": "eval_holdout", "species_slice": None}))
+    rep = bf.process_channel_records(ch, controls=["aa_ctl", "bb_ctl"],
+                                     gate_nn=1e-6, gate_pbe=1e-6,
+                                     compute_fn=lambda names: _good_payload())
+    assert rep["status"] == "patched"

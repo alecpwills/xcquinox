@@ -4,7 +4,7 @@
 After ``reeval_holdout_fixed.py`` (v2) runs, each spec's
 ``checkpoints/spec_<NNNN>/eval_holdout/per_molecule.json`` carries, per
 molecule, the NN self-consistent-field energy at every cycle of the training
-solver (``full_3`` → 3 cycles) as ``scf_energy_step_<i>`` plus the residual
+solver (``full_3`` -> 3 cycles) as ``scf_energy_step_<i>`` plus the residual
 ``scf_energy_residual_<i> = |E_i - E_final|``. This script visualizes that
 convergence: for each spec, residual-vs-SCF-step with one (faint) line per
 molecule and the median overlaid, so you can see at a glance how the NN
@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+from xcquinox.alec.eval_holdout import assert_channel_not_sliced
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -70,8 +73,12 @@ def collect_spec_scf_traces(run_dir: Path, spec_idx: int,
 
     ``eval_subdir`` selects the channel; ``eval_holdout_coldstart`` carries
     the 25-cycle cold-start trajectories this figure exists to display."""
-    pm = (run_dir / "checkpoints" / f"spec_{spec_idx:0{width}d}"
-          / eval_subdir / "per_molecule.json")
+    # --specs names a spec directly, bypassing discovery, so this reader
+    # carries its own refusal: an SCF trajectory over the handful of species
+    # named for a workflow test is not the pool's.
+    spec_dir = run_dir / "checkpoints" / f"spec_{spec_idx:0{width}d}"
+    assert_channel_not_sliced(spec_dir, eval_subdir)
+    pm = spec_dir / eval_subdir / "per_molecule.json"
     if not pm.is_file():
         return []
     try:
@@ -113,13 +120,13 @@ def plot_spec_convergence(traces: List[Dict[str, Any]], out_path: Path,
                     and math.isfinite(t["residuals"][t["steps"].index(s)])]
             med.append(np.median(vals) if vals else np.nan)
         ax.plot(range(max_step + 1), med, color="#c0504d", linewidth=2.2,
-                marker="s", ms=5, label="median |E_i − E_final|")
+                marker="s", ms=5, label="median |E_i - E_final|")
         ax.set_yscale("log")
         ax.set_xticks(range(max_step + 1))
         n_conv = sum(1 for t in traces if t["converged"])
         ax.legend(loc="upper right", fontsize=8)
         ax.text(0.02, 0.02,
-                f"{len(traces)} molecules · {n_conv} converged · "
+                f"{len(traces)} molecules - {n_conv} converged - "
                 f"{max_step + 1} SCF cycles",
                 transform=ax.transAxes, fontsize=7, color="#555555")
     ax.set_xlabel("SCF cycle index  i")
@@ -155,6 +162,11 @@ def _discover_specs_with_traces(run_dir: Path, width: int = 4,
     if not ck.is_dir():
         return out
     for sd in sorted(ck.glob("spec_*")):
+        # Before the existence probe, not after: discovery keys on
+        # per_molecule.json alone, so an interrupted sliced channel (marker
+        # written, energies never landed) would drop out of the list
+        # silently instead of being refused.
+        assert_channel_not_sliced(sd, eval_subdir)
         if (sd / eval_subdir / "per_molecule.json").is_file():
             try:
                 out.append(int(sd.name[len("spec_"):]))
@@ -190,7 +202,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                                          eval_subdir=args.eval_subdir)
         out = plot_spec_convergence(
             traces, outdir / f"scf_convergence_spec_{idx:04d}.png",
-            title=f"NN SCF convergence -- spec {idx} · {run_dir.name}")
+            title=f"NN SCF convergence -- spec {idx} - {run_dir.name}")
         print(f"  wrote {out}  ({len(traces)} molecule traces)")
         n += 1
     if not n:

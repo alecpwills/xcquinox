@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location(
     "plot_scf_convergence", _HERE / "plot_scf_convergence.py")
@@ -92,3 +94,89 @@ def test_eval_subdir_selects_channel(tmp_path):
                   "--eval-subdir", "eval_holdout_coldstart"])
     assert rc == 0
     assert list(out.glob("*.png"))
+
+
+# ---------------------------------------------------------------------------
+# A sliced channel is refused, never silently skipped
+# ---------------------------------------------------------------------------
+
+_SLICE = ["h", "h2", "o", "oh", "n2o", "n2ohts"]
+
+
+def _mark_sliced(run_dir: Path, idx: int = 0,
+                 eval_subdir: str = "eval_holdout", *, stamp: bool = False):
+    chan = (run_dir / "checkpoints" / f"spec_{idx:04d}" / eval_subdir)
+    chan.mkdir(parents=True, exist_ok=True)
+    if stamp:
+        (chan / "eval_metadata.json").write_text(json.dumps(
+            {"channel": eval_subdir, "species_slice": list(_SLICE),
+             "n_species": len(_SLICE), "n_reactions": 1}))
+    else:
+        (chan / "sliced_eval.json").write_text(json.dumps(
+            {"species_slice": list(_SLICE), "n_species": len(_SLICE),
+             "n_reactions": 1,
+             "env_var": "XCQUINOX_HELDOUT_SPECIES_SLICE"}))
+    return chan
+
+
+def test_discovery_refuses_a_sliced_channel_with_no_energies(tmp_path):
+    """The interrupted-slice state: the pre-eval marker is on disk and the
+    energies never landed. Discovery probes only for per_molecule.json, so
+    without the refusal the spec is not discovered at all -- skipped in
+    silence rather than reported."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    run = tmp_path / "run_20260821T000000Z"
+    chan = _mark_sliced(run)
+    assert not (chan / "per_molecule.json").exists()
+    with pytest.raises(SlicedChannelError) as exc:
+        sc._discover_specs_with_traces(run)
+    msg = str(exc.value)
+    assert "run_20260821T000000Z" in msg
+    assert "spec_0000" in msg
+    assert "eval_holdout" in msg
+    assert "'n2ohts'" in msg
+
+
+def test_discovery_refuses_a_sliced_stamp(tmp_path):
+    run = tmp_path / "run"
+    _write_pm(run, 0, [{"molecule": "H2", "scf_energy_step_0": -1.0,
+                        "scf_energy_residual_0": 0.1, "cycles_run": 1,
+                        "scf_converged": False}])
+    _mark_sliced(run, stamp=True)
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    with pytest.raises(SlicedChannelError):
+        sc._discover_specs_with_traces(run)
+
+
+def test_collect_spec_scf_traces_refuses_a_sliced_channel(tmp_path):
+    """--specs names a spec directly, bypassing discovery, so the trace
+    reader carries its own refusal: an SCF trajectory over six workflow
+    species is not the pool's."""
+    from xcquinox.alec.eval_holdout import SlicedChannelError
+    run = tmp_path / "run"
+    _write_pm(run, 0, [{"molecule": "H2", "scf_energy_step_0": -1.0,
+                        "scf_energy_residual_0": 0.1, "cycles_run": 1,
+                        "scf_converged": False}])
+    _mark_sliced(run)
+    with pytest.raises(SlicedChannelError) as exc:
+        sc.collect_spec_scf_traces(run, 0)
+    assert "spec_0000" in str(exc.value)
+    assert "'n2ohts'" in str(exc.value)
+
+
+def test_sliced_channel_does_not_taint_a_sibling_channel(tmp_path):
+    """A slice marks ONE channel; the cold-start channel beside it is read
+    exactly as before."""
+    run = tmp_path / "run"
+    d = run / "checkpoints" / "spec_0000" / "eval_holdout_coldstart"
+    d.mkdir(parents=True)
+    (d / "per_molecule.json").write_text(json.dumps(
+        [{"molecule": "H2", "scf_energy_step_0": -1.0,
+          "scf_energy_residual_0": 0.1, "cycles_run": 1,
+          "scf_converged": False}]))
+    _mark_sliced(run)
+    assert sc._discover_specs_with_traces(
+        run, eval_subdir="eval_holdout_coldstart") == [0]
+    traces = sc.collect_spec_scf_traces(
+        run, 0, eval_subdir="eval_holdout_coldstart")
+    assert len(traces) == 1 and traces[0]["molecule"] == "H2"
