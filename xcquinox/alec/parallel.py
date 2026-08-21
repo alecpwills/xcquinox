@@ -86,6 +86,12 @@ def _read_progress(progress_file: str) -> dict | None:
 # can monkeypatch it to a small value without waiting 60s.
 STALL_WARN_SEC = 60.0
 
+# Bound on how long a finished worker's stream drainers are waited on. The
+# pipes are at EOF the moment the worker exits, so this is only reached when a
+# grandchild inherited one and holds it open; the wait must stay bounded
+# because the poll loop that reaches it also drives every other running worker.
+STREAM_JOIN_SEC = 1.0
+
 
 def _write_worker_log(path: str | None, name: str,
                       stdout: str, stderr: str) -> None:
@@ -218,11 +224,29 @@ def run_workers(
                     slot["last_progress_time"] = time.time()  # debounce
             # Completion poll.
             if slot["proc"].poll() is not None:
-                slot["stdout_thread"].join(timeout=1.0)
-                slot["stderr_thread"].join(timeout=1.0)
-                stdout = "".join(slot["stdout_lines"])
-                stderr_joined = "".join(slot["stderr_lines"])
-                for stream in (slot["proc"].stdout, slot["proc"].stderr):
+                # Drain to EOF. The worker has exited, so both pipes normally
+                # see EOF at once; the bound covers the case where a grandchild
+                # inherited a pipe and holds it open, which would otherwise
+                # park a drainer (and, with an unbounded join, this poll loop
+                # and every other running worker with it). A drainer left alive
+                # costs a truncated capture, never a stalled parent.
+                for thread in (slot["stdout_thread"], slot["stderr_thread"]):
+                    thread.join(timeout=STREAM_JOIN_SEC)
+                # Snapshot before joining the text: a drainer that outlived the
+                # bound above is still appending to these lists.
+                stdout = "".join(list(slot["stdout_lines"]))
+                stderr_joined = "".join(list(slot["stderr_lines"]))
+                for thread, stream in ((slot["stdout_thread"],
+                                        slot["proc"].stdout),
+                                       (slot["stderr_thread"],
+                                        slot["proc"].stderr)):
+                    if thread.is_alive():
+                        # close() waits on the buffered-reader lock the parked
+                        # drainer holds, so it would block the parent for as
+                        # long as the pipe stays open (measured: still blocked
+                        # after 3 s, returning only when the grandchild exited).
+                        # The fd is released with the Popen object instead.
+                        continue
                     try:
                         stream.close()
                     except (OSError, ValueError):

@@ -22,6 +22,13 @@ from pathlib import Path
 from xcquinox.alec import parallel
 
 
+#: Character cap on a forwarded worker line. A shard-level crash puts its whole
+#: traceback on one JSON line, and 500 is the excerpt width this subsystem
+#: already uses for worker output (parallel.run_workers' ``raw`` and
+#: ``stderr_tail`` payload fields, backfill_holdout_nans' worker-failure text).
+FORWARD_LINE_CHARS = 500
+
+
 def _log(msg: str) -> None:
     print(f"[holdout-parallel] {msg}", flush=True)
 
@@ -33,14 +40,15 @@ def _forward_failed_lines(tier_no, si, res) -> None:
     only the ``FAILED:`` lines are repeated here so a 40-shard tier stays
     readable while a silently-failing species still shows up in the task log.
     Both streams are scanned -- the worker's own failure line has moved to
-    stderr, but stdout is where older workers put it. Lines are truncated: a
-    shard-level crash puts its whole traceback on one JSON line."""
+    stderr, but stdout is where older workers put it. Lines are truncated to
+    ``FORWARD_LINE_CHARS``."""
     for stream in (getattr(res, "stdout", "") or "",
                    getattr(res, "stderr", "") or ""):
         for line in stream.splitlines():
             if "FAILED:" in line:
                 print(f"[holdout-parallel] worker t{tier_no}/s{si}: "
-                      f"{line.strip()[:400]}", file=sys.stderr, flush=True)
+                      f"{line.strip()[:FORWARD_LINE_CHARS]}",
+                      file=sys.stderr, flush=True)
 
 
 def _round_robin(names, k):

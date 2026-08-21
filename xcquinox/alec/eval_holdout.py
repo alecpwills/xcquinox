@@ -631,7 +631,7 @@ def precompute_holdout(
 
 def evaluate_holdout(model, mol_data: Dict[str, Any],
                      *, solver_config=None,
-                     verbose_first_failure: bool = True,
+                     verbose_failures: bool = True,
                      scf_info_out: Optional[Dict[str, Dict[str, Any]]] = None,
                      ) -> Dict[str, float]:
     """Per-species total energy.
@@ -658,9 +658,9 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
     instead, so the failure survives into the per-molecule record rather than
     reading as an SCF that was never attempted.
 
-    NaN on exception. When ``verbose_first_failure`` is True (default),
-    EVERY exception in a batch is printed to stderr with its full message so
-    the operator sees real errors instead of a silent column of NaNs.
+    NaN on exception. When ``verbose_failures`` is True (default), EVERY
+    exception in a batch is printed to stderr with its full message so the
+    operator sees real errors instead of a silent column of NaNs.
     """
     import xcquinox.alec as alec
     from xcquinox.alec.solver import run_scf, SolverMode
@@ -711,7 +711,7 @@ def evaluate_holdout(model, mol_data: Dict[str, Any],
             # dozens of species to transient allocation/compile faults, and a
             # single first-failure line on stdout hides the rest (stdout also
             # carries the worker's JSON status line).
-            if verbose_first_failure:
+            if verbose_failures:
                 print(f"  eval[{name}] FAILED: {type(exc).__name__}: {exc}",
                       file=sys.stderr, flush=True)
             if scf_info_out is not None:

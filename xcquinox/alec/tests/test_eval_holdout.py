@@ -75,7 +75,7 @@ def test_run_full_holdout_eval_orchestration_no_compute(tmp_path, monkeypatch):
                         lambda specs, **kw: dict(mol_data))
 
     def _fake_eval(model, md, *, solver_config=None,
-                   verbose_first_failure=True, scf_info_out=None):
+                   verbose_failures=True, scf_info_out=None):
         energies = {"h2": -1.17, "h": -0.50}
         if scf_info_out is not None:
             for n in md:
@@ -287,36 +287,50 @@ def test_make_per_molecule_record_nonfinite_without_scf_info_is_null():
 
 
 def test_make_per_molecule_record_finite_scf_row_is_unchanged():
-    """A finite SCF row keeps exactly the historical key set and values."""
+    """A finite SCF row keeps exactly the historical key set AND every value.
+
+    The literals below are the pre-change output for this input, so any drift
+    in a key, a value, or a value's type (int vs bool, float vs None) fails
+    here rather than silently changing a cluster per_molecule.json column."""
     scf = {"cycles_run": 3, "converged": True, "total_energy": -76.40,
            "energy_trace": [-76.30, -76.38, -76.40]}
     rec = make_per_molecule_record(
         "H2O", {"E_pbe": -76.27}, e_nn_ha=-76.40, in_training_subset=False,
         scf=scf)
-    assert set(rec) == {
-        "molecule", "E_total_nn", "E_pbe", "AE_nn", "AE_error_kcalmol",
-        "density_rmse", "density_l1", "density_rmse_pbe", "density_l1_pbe",
-        "density_eps_l1", "density_eps_l1_pbe", "n_electrons",
-        "grid_weight_sum", "ref_density_method", "cycles_run",
-        "scf_converged", "from_training_subset", "scf_total_energy",
-        "scf_energy_step_0", "scf_energy_step_1", "scf_energy_step_2",
-        "scf_energy_residual_0", "scf_energy_residual_1",
-        "scf_energy_residual_2"}
-    assert rec["molecule"] == "H2O"
-    assert rec["E_total_nn"] == pytest.approx(-76.40)
-    assert rec["E_pbe"] == pytest.approx(-76.27)
-    assert rec["AE_nn"] == pytest.approx(-76.40 - (-76.27))
-    assert rec["AE_error_kcalmol"] is None
-    assert all(rec[k] is None for k in (
-        "density_rmse", "density_l1", "density_rmse_pbe", "density_l1_pbe",
-        "density_eps_l1", "density_eps_l1_pbe", "n_electrons",
-        "grid_weight_sum", "ref_density_method"))
-    assert rec["cycles_run"] == 3
-    assert rec["scf_converged"] is True
-    assert rec["from_training_subset"] is False
-    assert rec["scf_total_energy"] == pytest.approx(-76.40)
-    assert rec["scf_energy_step_1"] == pytest.approx(-76.38)
-    assert rec["scf_energy_residual_1"] == pytest.approx(0.02)
+    expected = {
+        "molecule": "H2O",
+        "E_total_nn": -76.40,
+        "E_pbe": -76.27,
+        "AE_nn": -0.13,                    # e_nn - e_pbe
+        "AE_error_kcalmol": None,
+        "density_rmse": None,
+        "density_l1": None,
+        "density_rmse_pbe": None,
+        "density_l1_pbe": None,
+        "density_eps_l1": None,
+        "density_eps_l1_pbe": None,
+        "n_electrons": None,
+        "grid_weight_sum": None,
+        "ref_density_method": None,
+        "cycles_run": 3,
+        "scf_converged": True,
+        "from_training_subset": False,
+        "scf_total_energy": -76.40,
+        "scf_energy_step_0": -76.30,       # energy_trace, verbatim
+        "scf_energy_step_1": -76.38,
+        "scf_energy_step_2": -76.40,
+        "scf_energy_residual_0": 0.10,     # |E_i - E_final|
+        "scf_energy_residual_1": 0.02,
+        "scf_energy_residual_2": 0.0,
+    }
+    assert set(rec) == set(expected)
+    for key, want in expected.items():
+        got = rec[key]
+        if isinstance(want, float):
+            assert got == pytest.approx(want, abs=1e-12), key
+        else:
+            # value AND type: True == 1 would otherwise pass for a bool column
+            assert got == want and type(got) is type(want), key
 
 
 def test_evaluate_holdout_records_eval_error_and_prints_every_failure(

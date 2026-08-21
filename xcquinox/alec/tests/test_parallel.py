@@ -631,3 +631,26 @@ def test_large_stdout_does_not_block_worker(tmp_path):
     assert results[0].returncode == 0, "worker blocked on a full stdout pipe"
     assert results[0].status == "success"
     assert results[0].payload["status"] == "success"
+
+
+def test_grandchild_holding_pipe_does_not_stall_the_parent(tmp_path, monkeypatch):
+    """A worker whose grandchild inherits stdout leaves the drainer parked on a
+    pipe that never reaches EOF after the worker exits. Retiring that job must
+    stay bounded: the poll loop also drives every other running worker, so a
+    truncated capture is the acceptable outcome and a stalled parent is not.
+    The grandchild outlives the assertion window, so an unbounded wait (or a
+    close() that waits on the parked drainer's buffer lock) fails here."""
+    monkeypatch.setattr("xcquinox.alec.parallel.STREAM_JOIN_SEC", 0.2)
+    script = _write_worker_script(tmp_path, "leaky", """\
+        import json, subprocess, sys
+        print(json.dumps({"status": "success"}), flush=True)
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+    """)
+    job = WorkerJob(name="leaky", cmd=[sys.executable, script],
+                    progress_file=str(tmp_path / "p.json"))
+    t0 = time.time()
+    results = run_workers([job], max_parallel=1, poll_interval=0.05)
+    elapsed = time.time() - t0
+    assert results[0].status == "success"
+    assert results[0].payload["status"] == "success"
+    assert elapsed < 5.0, f"parent waited {elapsed:.1f}s on a held-open pipe"
