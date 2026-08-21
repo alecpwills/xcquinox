@@ -2,11 +2,14 @@
 certificate.
 
 The cheap layer (the certificate predicate, the parent resolution, the oracle
-set) is tested directly. The certificate itself is tested twice: once with the
+set) is tested directly. The certificate itself is tested three ways: with the
 per-system evaluation monkeypatched at the ``evaluate`` seam, so the verdict
-arithmetic and the JSON schema are exercised with no SCF at all, and once for
-REAL on H and H2 at sto-3g with networks built in the test, so the energy path,
-the libxc parent route and the atomization fold are pinned against physics.
+arithmetic and the JSON schema are exercised with no SCF at all; for REAL on H
+and H2 at sto-3g with networks built in the test, so the energy path, the three
+parent routes and the atomization fold are pinned against physics; and with the
+exact parent functional (PBE, SCAN through libxc) presented behind the model
+interface on O, H and H2O, so the whole path is shown to be an identity when the
+network is its parent and to report a known per-electron offset exactly.
 """
 import json
 import os
@@ -14,6 +17,10 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from xcquinox.alec.cluster import fidelity as fid
@@ -702,3 +709,1117 @@ def test_the_dfs_molecules_keep_their_own_geometries():
         assert systems[name].atom == record["atom"], name
         checked += 1
     assert checked >= 18
+
+
+# ---------------------------------------------------------------------------
+# Anti-fork guard: no second construction of a precompute quantity
+# ---------------------------------------------------------------------------
+
+def test_fidelity_never_rebuilds_a_precompute_field():
+    """Every grid quantity and every descriptor block reaches the certificate
+    through data.precompute_fixed_density_data(..., reference_xc=...). A second
+    construction here would have to be kept identical to data.py by hand
+    forever, which is the failure class this certificate exists to remove.
+
+    Assembling libxc's own input rows inside _parent_exc_on_stored_grid is not
+    a construction of a mol_data field and is deliberately not listed."""
+    import inspect
+    src = inspect.getsource(fid)
+    for forbidden in ("compute_rung35_occupancy",
+                      "compute_rung35_multishell_occupancy",
+                      "compute_dm_features_array",
+                      "compute_alpha",
+                      "doubled_spin_dm",
+                      "nabla_rho_grid",
+                      "rung35_proj_ao",
+                      "rung35ms_proj_ao"):
+        assert forbidden not in src, (
+            f"fidelity.py references {forbidden!r}: the parent density's grid "
+            "quantities and descriptor blocks must come from "
+            "precompute_fixed_density_data(..., reference_xc=...), not from a "
+            "second construction in this module")
+
+
+# ---------------------------------------------------------------------------
+# Model construction and the parent-density request
+# ---------------------------------------------------------------------------
+
+def test_build_certified_model_loads_the_checkpoint_not_the_skeleton(tmp_path):
+    """The skeleton's seed fixes the tree SHAPE only; every array leaf comes
+    from the checkpoint. A builder that returned the skeleton would certify a
+    randomly initialised network -- exactly the state the gate exists to
+    catch."""
+    import equinox as eqx
+    import jax
+    import jax.numpy as jnp
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.networks import create_network_pair
+
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir, "deep_3x16", seed=7)
+    arch = get_architecture("deep_3x16")
+    _built, model = fid.build_certified_model(_cfg(pretrain_seed=99), run_dir,
+                                              "deep_3x16")
+    from_checkpoint, _ = create_network_pair(arch, seed=7)
+    from_skeleton, _ = create_network_pair(arch, seed=99)
+    got = jax.tree_util.tree_leaves(eqx.filter(model.xnet, eqx.is_array))
+    want = jax.tree_util.tree_leaves(eqx.filter(from_checkpoint, eqx.is_array))
+    other = jax.tree_util.tree_leaves(eqx.filter(from_skeleton, eqx.is_array))
+    assert len(got) == len(want) == len(other)
+    assert all(bool(jnp.allclose(a, b)) for a, b in zip(got, want))
+    # The two seeds really do differ, so the assertion above has content.
+    assert any(not bool(jnp.allclose(a, b)) for a, b in zip(want, other))
+
+
+def test_evaluate_system_requests_the_parent_functionals_density(monkeypatch):
+    """The certificate asks the library's one construction path for a record
+    built on the PARENT functional's self-consistent density, and forwards the
+    run's Coulomb backend and orientation lock unchanged."""
+    import xcquinox.alec.data as data_mod
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.models import AlecGGAModel
+
+    seen = {}
+    original = data_mod.precompute_fixed_density_data
+
+    def _spy(mol_spec, **kwargs):
+        seen.update(kwargs)
+        return original(mol_spec, **kwargs)
+
+    monkeypatch.setattr(data_mod, "precompute_fixed_density_data", _spy)
+    arch = get_architecture("deep_3x16")
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    rec = fid.evaluate_system(model, arch.materialize_descriptors(),
+                              _tiny_oracle_set()[0], parent="pbe",
+                              auxbasis=None, orientation_lock_strength=0.0)
+    assert seen["reference_xc"] == "pbe"
+    assert seen["orientation_lock_strength"] == 0.0
+    assert rec["reference_xc"] == "pbe"
+    assert rec["is_atom"] is True
+
+
+def test_evaluate_system_refuses_a_record_built_on_another_functional(
+        monkeypatch):
+    """A record whose reference_xc is not the parent would measure the network
+    against the wrong density; that raises rather than entering the table."""
+    import xcquinox.alec.data as data_mod
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.models import AlecGGAModel
+
+    original = data_mod.precompute_fixed_density_data
+
+    def _mislabel(mol_spec, **kwargs):
+        md = dict(original(mol_spec, **kwargs))
+        md["reference_xc"] = "lda,vwn"
+        return md
+
+    monkeypatch.setattr(data_mod, "precompute_fixed_density_data", _mislabel)
+    arch = get_architecture("deep_3x16")
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    with pytest.raises(ValueError, match="reference_xc"):
+        fid.evaluate_system(model, arch.materialize_descriptors(),
+                            _tiny_oracle_set()[0], parent="pbe")
+
+
+def test_meta_gga_architecture_is_certified_against_scan(tmp_path, monkeypatch):
+    """End to end for the rung that motivated reference_xc: a meta-GGA
+    architecture's certificate must be computed against SCAN, on SCAN's own
+    density."""
+    import xcquinox.alec.data as data_mod
+    seen = []
+    original = data_mod.precompute_fixed_density_data
+
+    def _spy(mol_spec, **kwargs):
+        seen.append(kwargs.get("reference_xc"))
+        return original(mol_spec, **kwargs)
+
+    monkeypatch.setattr(data_mod, "precompute_fixed_density_data", _spy)
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir, "deep_mgga_3x16", seed=0)
+    payload = fid.fidelity_certificate(
+        _cfg(arch=("deep_mgga_3x16",), pretrain_seed=0), run_dir,
+        "deep_mgga_3x16", oracle_set=_tiny_oracle_set())
+    assert payload["parent"] == "scan"
+    assert set(seen) == {"scan"}
+    assert all(r["reference_xc"] == "scan" for r in payload["per_system"])
+
+
+# ---------------------------------------------------------------------------
+# The certificate, with the per-system evaluation mocked at the seam
+# ---------------------------------------------------------------------------
+
+def _fake_evaluate(table):
+    """Build an ``evaluate`` seam returning canned dE_xc (mHa) per name."""
+    def _evaluate(model, descriptors, mol_spec, *, parent,
+                  auxbasis=None, orientation_lock_strength=0.0):
+        d = table[mol_spec.name]
+        return {"name": mol_spec.name, "spin": int(mol_spec.spin),
+                "charge": int(mol_spec.charge),
+                "is_atom": fid.is_atom_system(mol_spec),
+                "n_grid": 10, "reference_xc": parent,
+                "E_xc_nn": -1.0 + d / fid.HA_TO_MHA, "E_xc_parent": -1.0,
+                "E_xc_parent_numint": -1.0, "E_xc_parent_record": -1.0,
+                "parent_grid_diff_Ha": 0.0, "parent_record_diff_Ha": 0.0,
+                "dE_xc_mHa": d, "duration_s": 0.0}
+    return _evaluate
+
+
+def _tiny_oracle_set(basis="sto-3g", grid_level=1):
+    from xcquinox.alec.config import MoleculeSpec
+    return (
+        MoleculeSpec(name="atom_H", atom="H 0.0 0.0 0.0", basis=basis, spin=1,
+                     atom_composition=(("H", 1),), grid_level=grid_level),
+        MoleculeSpec(name="H2", atom="H 0 0 0.371395; H 0 0 -0.371395",
+                     basis=basis, spin=0, atom_composition=(("H", 2),),
+                     grid_level=grid_level),
+    )
+
+
+def _stub_checkpoint(run_dir, arch_name="deep_3x16", seed=42):
+    """Write a real xnet.eqx + cnet.eqx pair for ``arch_name``."""
+    import equinox as eqx
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.networks import create_network_pair
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+    arch = get_architecture(arch_name)
+    xnet, cnet = create_network_pair(arch, seed=seed)
+    d = pretrain_checkpoint_dir(run_dir, arch_name)
+    os.makedirs(d, exist_ok=True)
+    eqx.tree_serialise_leaves(os.path.join(d, "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(os.path.join(d, "cnet.eqx"), cnet)
+    return d
+
+
+def test_certificate_passes_within_tolerance_and_writes_the_schema(tmp_path):
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    cfg = _cfg()
+    payload = fid.fidelity_certificate(
+        cfg, run_dir, "deep_3x16",
+        oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 0.5, "H2": 1.0}))
+
+    assert payload["verdict"] == "PASS"
+    assert payload["arch"] == "deep_3x16"
+    assert payload["parent"] == "pbe"
+    assert payload["identity"] == fid.run_identity(cfg)
+    assert payload["tolerances"] == {"tol_AE": 1.0, "tol_atom": 1.0,
+                                     "override_reason": None}
+    assert payload["enforced"] is True
+    assert isinstance(payload["xcquinox_version"], str)
+    assert payload["timestamp"].endswith("Z")
+    assert payload["duration_s"] >= 0.0
+    assert [r["name"] for r in payload["per_system"]] == ["atom_H", "H2"]
+    assert [r["name"] for r in payload["per_atomization"]] == ["H2"]
+    s = payload["summary"]
+    assert s["n_systems"] == 2 and s["n_atoms"] == 1
+    assert s["n_atomizations"] == 1 and s["n_failed_systems"] == 0
+    assert s["max_parent_grid_diff_Ha"] == pytest.approx(0.0)
+    assert s["max_parent_record_diff_Ha"] == pytest.approx(0.0)
+    assert s["max_atom_mHa"] == pytest.approx(0.5)
+    # dAE = dE_xc(H2) - 2 dE_xc(H) = 1.0 - 1.0 = 0 mHa.
+    assert s["max_dAE_kcalmol"] == pytest.approx(0.0, abs=1e-12)
+    assert s["failure_reasons"] == []
+
+    on_disk = json.loads(
+        open(fid.certificate_path(run_dir, "deep_3x16")).read())
+    assert on_disk == payload
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "PASS"
+
+
+def test_certificate_fails_on_the_atom_tolerance(tmp_path):
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 13.7, "H2": 27.4}))
+    assert payload["verdict"] == "FAIL"
+    assert payload["summary"]["max_atom_mHa"] == pytest.approx(13.7)
+    assert any("tol_atom" in r for r in payload["summary"]["failure_reasons"])
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "FAIL"
+
+
+def test_certificate_fails_on_the_atomization_tolerance(tmp_path):
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    # dAE(H2) = (1.0 - 2 * 0.1) mHa = 0.8 mHa = 0.502 kcal/mol -> passes at
+    # 1.0; scale it up until it does not.
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 0.1, "H2": 5.0}))
+    assert payload["verdict"] == "FAIL"
+    assert payload["summary"]["max_atom_mHa"] == pytest.approx(0.1)
+    assert payload["summary"]["max_dAE_kcalmol"] == pytest.approx(
+        (5.0 - 0.2) / fid.HA_TO_MHA * fid.HA_TO_KCAL)
+    assert any("tol_AE" in r for r in payload["summary"]["failure_reasons"])
+
+
+def test_certificate_honours_configured_tolerances(tmp_path):
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    cfg = _cfg(tol_AE=2.0, tol_atom=2.0,
+               override_reason=None)
+    payload = fid.fidelity_certificate(
+        cfg, run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 1.5, "H2": 3.0}))
+    assert payload["verdict"] == "PASS"
+    assert payload["tolerances"]["tol_atom"] == 2.0
+
+
+def test_certificate_records_the_override_reason(tmp_path):
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    cfg = _cfg(tol_AE=5.0, tol_atom=5.0,
+               override_reason="rung-3.5 control arm, documented in HISTORY")
+    payload = fid.fidelity_certificate(
+        cfg, run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 4.0, "H2": 8.0}))
+    assert payload["verdict"] == "PASS"
+    assert payload["tolerances"]["override_reason"] == (
+        "rung-3.5 control arm, documented in HISTORY")
+
+
+def test_certificate_records_the_enforcement_flag(tmp_path):
+    """A non-enforcing run still writes the TRUE verdict; only the gates
+    change behaviour, and they read the flag out of the certificate."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    cfg = _cfg(enforce=False,
+               override_reason="workflow matrix: 50-step pretrain")
+    payload = fid.fidelity_certificate(
+        cfg, run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 13.7, "H2": 27.4}))
+    assert payload["verdict"] == "FAIL"
+    assert payload["enforced"] is False
+    assert payload["tolerances"]["override_reason"] == (
+        "workflow matrix: 50-step pretrain")
+    # The record layers still see a FAIL ...
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "FAIL"
+    # ... while an on-node gate is allowed to continue.
+    allowed, message = fid.gate_certificate(run_dir, "deep_3x16")
+    assert allowed is True
+    assert "enforcement is OFF" in message
+
+
+def test_certificate_records_a_system_that_raised_and_fails(tmp_path):
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+
+    def _evaluate(model, descriptors, mol_spec, *, parent,
+                  auxbasis=None, orientation_lock_strength=0.0):
+        if mol_spec.name == "H2":
+            raise RuntimeError("SCF blew up")
+        return _fake_evaluate({"atom_H": 0.1})(
+            model, descriptors, mol_spec, parent=parent)
+
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_evaluate)
+    assert payload["verdict"] == "FAIL"
+    failed = [r for r in payload["per_system"] if "error" in r]
+    assert [r["name"] for r in failed] == ["H2"]
+    assert "SCF blew up" in failed[0]["error"]
+    assert payload["summary"]["n_failed_systems"] == 1
+    assert any("could not be evaluated" in r
+               for r in payload["summary"]["failure_reasons"])
+
+
+def test_certificate_fails_when_the_two_parent_grid_routes_disagree(tmp_path):
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+
+    def _evaluate(model, descriptors, mol_spec, *, parent,
+                  auxbasis=None, orientation_lock_strength=0.0):
+        rec = _fake_evaluate({"atom_H": 0.1, "H2": 0.2})(
+            model, descriptors, mol_spec, parent=parent)
+        rec["parent_grid_diff_Ha"] = 1e-3
+        return rec
+
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_evaluate)
+    assert payload["verdict"] == "FAIL"
+    assert any("grid" in r for r in payload["summary"]["failure_reasons"])
+
+
+def test_certificate_fails_when_the_record_route_disagrees(tmp_path):
+    """The third parent route -- the XC energy the reference SCF itself
+    accumulated -- is bounded by the same PARENT_GRID_TOL_HA. A disagreement
+    is a failure of the certificate's own consistency: it is reported as such
+    and never averaged into the parent energy."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+
+    def _evaluate(model, descriptors, mol_spec, *, parent,
+                  auxbasis=None, orientation_lock_strength=0.0):
+        rec = _fake_evaluate({"atom_H": 0.1, "H2": 0.2})(
+            model, descriptors, mol_spec, parent=parent)
+        rec["parent_record_diff_Ha"] = 1e-3
+        return rec
+
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_evaluate)
+    assert payload["verdict"] == "FAIL"
+    assert payload["summary"]["max_parent_record_diff_Ha"] == pytest.approx(
+        1e-3)
+    assert payload["summary"]["max_parent_grid_diff_Ha"] == pytest.approx(0.0)
+    assert any("accumulated" in r for r in payload["summary"]["failure_reasons"])
+    # The two tolerance checks themselves still pass; the consistency failure
+    # is the only reason on record.
+    assert len(payload["summary"]["failure_reasons"]) == 1
+
+
+def test_certificate_records_the_checkpoint_digests(tmp_path):
+    """The certificate names the exact networks it measured: the SHA-256 of
+    xnet.eqx and cnet.eqx, so a checkpoint rewritten after certification can
+    be told apart from the one the verdict refers to."""
+    from xcquinox.alec.cluster.materialize import _sha256_file
+    run_dir = str(tmp_path / "run")
+    d = _stub_checkpoint(run_dir)
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 0.5, "H2": 1.0}))
+    assert payload["checkpoint"] == {
+        "dir": d,
+        "xnet_sha256": _sha256_file(os.path.join(d, "xnet.eqx")),
+        "cnet_sha256": _sha256_file(os.path.join(d, "cnet.eqx")),
+    }
+    assert len(payload["checkpoint"]["xnet_sha256"]) == 64
+
+
+@pytest.mark.parametrize("enabled_before", [True, False])
+def test_certificate_leaves_the_precompute_cache_as_it_found_it(
+        tmp_path, enabled_before):
+    """The certificate disables the precompute memo for its own loop (dozens of
+    production-basis grids would exhaust a node) and restores the caller's
+    setting afterwards, whichever it was."""
+    import xcquinox.alec.data as data_mod
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    data_mod.set_precompute_cache_enabled(enabled_before)
+    try:
+        fid.fidelity_certificate(
+            _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+            evaluate=_fake_evaluate({"atom_H": 0.5, "H2": 1.0}))
+        assert data_mod._PRECOMPUTE_CACHE_ENABLED is enabled_before
+    finally:
+        data_mod.set_precompute_cache_enabled(True)
+
+
+def test_certificate_applies_the_polarized_correlation_patch(tmp_path):
+    """The pretrain worker builds a polarized cnet when the run is polarized;
+    the certificate must load the checkpoint with the SAME architecture or the
+    deserialise would fail on the cnet input width."""
+    import dataclasses
+    from xcquinox.alec.config import get_architecture
+    run_dir = str(tmp_path / "run")
+    arch = dataclasses.replace(get_architecture("deep_3x16"),
+                               use_polarized_correlation=True)
+    import equinox as eqx
+    from xcquinox.alec.networks import create_network_pair
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+    xnet, cnet = create_network_pair(arch, seed=42)
+    d = pretrain_checkpoint_dir(run_dir, "deep_3x16")
+    os.makedirs(d, exist_ok=True)
+    eqx.tree_serialise_leaves(os.path.join(d, "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(os.path.join(d, "cnet.eqx"), cnet)
+
+    built_arch, model = fid.build_certified_model(
+        _cfg(polarized=True), run_dir, "deep_3x16")
+    assert built_arch.use_polarized_correlation is True
+    assert model is not None
+
+
+# ---------------------------------------------------------------------------
+# REAL physics: H and H2 at sto-3g, networks built in the test (seconds)
+# ---------------------------------------------------------------------------
+
+def test_certificate_real_physics_on_h_and_h2_at_sto3g(tmp_path):
+    """The whole energy path, for real, on two tiny systems.
+
+    ``deep_3x16`` is built with ``zero_init_final_layer=True``, so a freshly
+    seeded network has Fx = Fc = 1 exactly and its E_xc is the LDA exchange
+    plus PW92 correlation. Against PBE on the same frozen PBE density that is
+    a large, definite offset, so this pins the sign, the magnitude, the
+    atomization fold and the FAIL branch at once. Every number the certificate
+    reports is re-derived in the test from an independent PySCF route.
+    """
+    import numpy as np
+    from pyscf import dft, gto
+    from pyscf.dft import numint
+
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir, "deep_3x16", seed=0)
+    cfg = _cfg(pretrain_seed=0)
+    systems = _tiny_oracle_set()
+
+    payload = fid.fidelity_certificate(cfg, run_dir, "deep_3x16",
+                                       oracle_set=systems)
+
+    by_name = {r["name"]: r for r in payload["per_system"]}
+    assert set(by_name) == {"atom_H", "H2"}
+    assert by_name["atom_H"]["is_atom"] is True
+    assert by_name["H2"]["is_atom"] is False
+    assert by_name["atom_H"]["spin"] == 1 and by_name["H2"]["spin"] == 0
+
+    # (1) Every record was built on the PARENT's own self-consistent density,
+    #     and the parent energy is that functional on that density, on the
+    #     SAME grid PySCF's own nr_rks / nr_uks uses.
+    assert all(r["reference_xc"] == "pbe" for r in by_name.values())
+    for ms in systems:
+        rec = by_name[ms.name]
+        mol = gto.M(atom=ms.atom, basis=ms.basis, charge=ms.charge,
+                    spin=ms.spin, verbose=0)
+        mf = dft.UKS(mol) if ms.spin else dft.RKS(mol)
+        mf.xc = "pbe"
+        mf.grids.level = ms.grid_level
+        mf.kernel()
+        grids = dft.Grids(mol)
+        grids.level = ms.grid_level
+        grids.build()
+        ni = numint.NumInt()
+        dm = mf.make_rdm1()
+        if ms.spin:
+            _v, exc, _ = ni.nr_uks(mol, grids, "PBE", dm)
+        else:
+            _v, exc, _ = ni.nr_rks(mol, grids, "PBE", dm)
+        assert rec["E_xc_parent"] == pytest.approx(float(exc), abs=1e-8)
+        assert rec["E_xc_parent_numint"] == pytest.approx(float(exc), abs=1e-8)
+        assert abs(rec["parent_grid_diff_Ha"]) < fid.PARENT_GRID_TOL_HA
+        # Third independent route: the XC energy PySCF accumulated during the
+        # reference SCF itself, carried on the record as E_xc_pbe.
+        assert abs(rec["parent_record_diff_Ha"]) < fid.PARENT_GRID_TOL_HA
+
+    # (2) dE_xc is exactly the difference the record carries, in mHa.
+    for rec in by_name.values():
+        assert rec["dE_xc_mHa"] == pytest.approx(
+            (rec["E_xc_nn"] - rec["E_xc_parent"]) * fid.HA_TO_MHA, rel=1e-12)
+
+    # (3) The atomization offset is the molecule minus its atoms, in kcal/mol.
+    dae = {r["name"]: r["dAE_kcalmol"] for r in payload["per_atomization"]}
+    expected = ((by_name["H2"]["dE_xc_mHa"] - 2 * by_name["atom_H"]["dE_xc_mHa"])
+                / fid.HA_TO_MHA * fid.HA_TO_KCAL)
+    assert dae["H2"] == pytest.approx(expected, rel=1e-12)
+
+    # (4) An LDA-limit network is nowhere near PBE, so the certificate FAILS
+    #     at the binding 1.0 mHa / 1.0 kcal/mol tolerances.
+    assert payload["verdict"] == "FAIL"
+    assert payload["summary"]["max_atom_mHa"] > 1.0
+    assert abs(dae["H2"]) > 1.0
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "FAIL"
+
+
+def test_certificate_real_physics_passes_at_a_loosened_tolerance(tmp_path):
+    """The PASS branch on real numbers: the same two systems under a
+    deliberately loosened tolerance carrying its override reason."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir, "deep_3x16", seed=0)
+    cfg = _cfg(tol_AE=100.0, tol_atom=100.0, pretrain_seed=0,
+               override_reason="unit test: pins the PASS branch on real "
+                               "sto-3g numbers")
+    payload = fid.fidelity_certificate(cfg, run_dir, "deep_3x16",
+                                       oracle_set=_tiny_oracle_set())
+    assert payload["verdict"] == "PASS"
+    assert payload["summary"]["failure_reasons"] == []
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "PASS"
+
+
+def test_scan_parent_routes_agree_on_h_and_h2_at_sto3g():
+    """The meta-GGA parent through the three routes: the point-wise libxc
+    evaluation on the stored grid (which must assemble tau for SCAN), PySCF's
+    own nr_uks / nr_rks on a fresh grid, and the XC energy the SCAN reference
+    SCF accumulated. All three agree within PARENT_GRID_TOL_HA on an open and
+    a closed shell, and the point-wise number is re-derived here from an
+    independent SCF."""
+    from pyscf import dft, gto
+    from pyscf.dft import numint
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.models import AlecGGAModel
+
+    arch = get_architecture("deep_mgga_3x16")
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    for ms in _tiny_oracle_set():
+        rec = fid.evaluate_system(model, arch.materialize_descriptors(), ms,
+                                  parent="scan")
+        assert rec["reference_xc"] == "scan"
+        assert abs(rec["parent_grid_diff_Ha"]) < fid.PARENT_GRID_TOL_HA
+        assert abs(rec["parent_record_diff_Ha"]) < fid.PARENT_GRID_TOL_HA
+        mol = gto.M(atom=ms.atom, basis=ms.basis, charge=ms.charge,
+                    spin=ms.spin, verbose=0)
+        mf = dft.UKS(mol) if ms.spin else dft.RKS(mol)
+        mf.xc = "scan"
+        mf.grids.level = ms.grid_level
+        mf.kernel()
+        grids = dft.Grids(mol)
+        grids.level = ms.grid_level
+        grids.build()
+        ni = numint.NumInt()
+        dm = mf.make_rdm1()
+        if ms.spin:
+            _nelec, exc, _vmat = ni.nr_uks(mol, grids, "SCAN", dm)
+        else:
+            _nelec, exc, _vmat = ni.nr_rks(mol, grids, "SCAN", dm)
+        assert rec["E_xc_parent"] == pytest.approx(float(exc), abs=1e-8)
+
+
+# ---------------------------------------------------------------------------
+# The parent functional presented as the model: exactness of the energy path
+# ---------------------------------------------------------------------------
+
+class _ParentCNet(eqx.Module):
+    """The one cnet attribute the UKS energy path reads."""
+    use_spin_polarization: bool = eqx.field(static=True)
+
+
+class _LibxcParentModel(eqx.Module):
+    """The exact parent functional behind the model interface.
+
+    ``fixed_density_total_energy`` reads ``descriptors``,
+    ``cnet.use_spin_polarization``, ``eval_exc`` (closed shell) and
+    ``eval_ex`` / ``eval_ec`` (open shell: exchange spin-scaled on the doubled
+    channel densities, correlation on the total density with the production
+    ``uks_zeta``). Each evaluation hands libxc exactly the rows that interface
+    carries -- the density, the gradient invariant, the descriptor block and,
+    through a polarization-aware cnet, zeta -- so the number that comes back
+    is the parent's own energy density on the same points the network is
+    integrated on. libxc runs inside ``jax.pure_callback`` because
+    ``compute_exc_nn`` is jitted.
+
+    GGA parent (``alpha_column < 0``): rows (rho, |grad rho|, 0, 0). PBE
+    correlation depends on the spin densities and the TOTAL gradient only
+    (Perdew, Burke, Ernzerhof, PRL 77, 3865 (1996), Eq. 7-8), so the
+    per-spin gradient split proportional to the spin densities is exact.
+
+    Meta-GGA parent (``alpha_column >= 0``): the interface carries no tau,
+    only the descriptor's clamped iso-orbital alpha, so tau is recovered as
+    ``alpha tau_unif + sigma / (8 rho)`` (``metagga.compute_alpha`` inverted;
+    exact wherever the [0, 100] clamp was inactive). The doubled exchange
+    channels invert to ``2 tau_sigma`` directly. SCAN's correlation depends on
+    the total density, total gradient, total tau and zeta only (Sun,
+    Ruzsinszky, Perdew, PRL 115, 036402 (2015): alpha with d_s(zeta)), so the
+    proportional per-spin split of tau is exact on physical data -- measured
+    2.1e-18 Ha on the O-atom SCAN record against the true per-spin rows.
+
+    ``offset_per_electron`` adds a constant ``c`` to the energy per electron,
+    ``E_xc -> E_xc + c N``: the known offset the O-B oracle measures.
+    """
+    xc: str = eqx.field(static=True)
+    descriptors: tuple = eqx.field(static=True)
+    polarized: bool = eqx.field(static=True)
+    offset_per_electron: float = eqx.field(static=True)
+    alpha_column: int = eqx.field(static=True, default=-1)
+
+    @property
+    def cnet(self):
+        return _ParentCNet(use_spin_polarization=self.polarized)
+
+    def _tau(self, rho, sigma, alpha):
+        rho_safe = np.maximum(rho, 1e-30)
+        tau_unif = (0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0)
+                    * rho_safe ** (5.0 / 3.0))
+        return alpha * tau_unif + sigma / (8.0 * rho_safe)
+
+    def _rows(self, rho, sigma, alpha):
+        zero = np.zeros_like(rho)
+        rows = [rho, np.sqrt(np.maximum(sigma, 0.0)), zero, zero]
+        if self.alpha_column >= 0:
+            rows.append(self._tau(rho, sigma, alpha))
+        return np.vstack(rows)
+
+    def _x(self, rho, sigma, alpha):
+        from pyscf.dft import numint
+        exc = numint.NumInt().eval_xc(f"{self.xc},",
+                                      self._rows(rho, sigma, alpha), spin=0)[0]
+        return rho * exc
+
+    def _c(self, rho, sigma, alpha, zeta):
+        from pyscf.dft import numint
+        ni = numint.NumInt()
+        if self.polarized:
+            g = np.sqrt(np.maximum(sigma, 0.0))
+            zero = np.zeros_like(rho)
+            wa, wb = 0.5 * (1.0 + zeta), 0.5 * (1.0 - zeta)
+            rows_a = [rho * wa, g * wa, zero, zero]
+            rows_b = [rho * wb, g * wb, zero, zero]
+            if self.alpha_column >= 0:
+                tau = self._tau(rho, sigma, alpha)
+                rows_a.append(tau * wa)
+                rows_b.append(tau * wb)
+            exc = ni.eval_xc(f",{self.xc}",
+                             (np.vstack(rows_a), np.vstack(rows_b)), spin=1)[0]
+        else:
+            exc = ni.eval_xc(f",{self.xc}", self._rows(rho, sigma, alpha),
+                             spin=0)[0]
+        return rho * (exc + self.offset_per_electron)
+
+    def _alpha(self, rho, features):
+        if self.alpha_column >= 0:
+            return features[:, self.alpha_column]
+        return jnp.zeros_like(rho)
+
+    def _callback(self, fn, rho, *args):
+        out = jax.ShapeDtypeStruct(rho.shape, rho.dtype)
+        return jax.pure_callback(fn, out, rho, *args)
+
+    def eval_ex(self, rho, sigma, features):
+        return self._callback(lambda r, s, a: np.asarray(self._x(r, s, a)),
+                              rho, sigma, self._alpha(rho, features))
+
+    def eval_ec(self, rho, sigma, features, zeta=0.0):
+        zeta = jnp.broadcast_to(jnp.asarray(zeta, dtype=rho.dtype), rho.shape)
+        return self._callback(
+            lambda r, s, a, z: np.asarray(self._c(r, s, a, z)),
+            rho, sigma, self._alpha(rho, features), zeta)
+
+    def eval_exc(self, rho, sigma, features, zeta=0.0):
+        return self.eval_ex(rho, sigma, features) + self.eval_ec(
+            rho, sigma, features, zeta=zeta)
+
+
+def _parent_oracle_set(basis="sto-3g", grid_level=1):
+    """O, H and H2O: the two free atoms H2O dissociates into, so the
+    atomization fold is exercised on a real molecule."""
+    from xcquinox.alec.config import MoleculeSpec
+    return (
+        MoleculeSpec(name="atom_H", atom="H 0.0 0.0 0.0", basis=basis, spin=1,
+                     atom_composition=(("H", 1),), grid_level=grid_level),
+        MoleculeSpec(name="atom_O", atom="O 0.0 0.0 0.0", basis=basis, spin=2,
+                     atom_composition=(("O", 1),), grid_level=grid_level),
+        MoleculeSpec(name="H2O",
+                     atom="O 0.0 0.0 0.1173; H 0.0 0.7572 -0.4692; "
+                          "H 0.0 -0.7572 -0.4692",
+                     basis=basis, spin=0,
+                     atom_composition=(("H", 2), ("O", 1)),
+                     grid_level=grid_level),
+    )
+
+
+# (arch, libxc parent code, alpha column of the descriptor block)
+_PARENT_DOUBLES = {
+    "pbe": ("deep_3x16", "PBE", -1),
+    "scan": ("deep_mgga_3x16", "SCAN", 0),
+}
+
+
+def _certify_with_parent_as_model(tmp_path, monkeypatch, parent, offset):
+    from xcquinox.alec.config import get_architecture
+    arch_name, xc, alpha_column = _PARENT_DOUBLES[parent]
+    run_dir = str(tmp_path / f"run_{parent}_{offset:g}")
+    _stub_checkpoint(run_dir, arch_name, seed=0)
+    arch = get_architecture(arch_name)
+    double = _LibxcParentModel(xc=xc, descriptors=arch.materialize_descriptors(),
+                               polarized=True, offset_per_electron=offset,
+                               alpha_column=alpha_column)
+    monkeypatch.setattr(fid, "build_certified_model",
+                        lambda cfg, rd, name: (arch, double))
+    payload = fid.fidelity_certificate(
+        _cfg(arch=(arch_name,), pretrain_seed=0), run_dir, arch_name,
+        oracle_set=_parent_oracle_set())
+    assert payload["parent"] == parent
+    return payload, {r["name"]: r for r in payload["per_system"]}
+
+
+# Bounds on |E_xc_nn - E_xc_parent| with the parent behind the model
+# interface, anchored to the sto-3g / grid 1 measurements quoted in the test
+# below: (O and H2O, H atom), in Ha.
+_PARENT_AS_MODEL_BOUNDS = {
+    "pbe": (1e-10, 5e-6),
+    "scan": (1e-8, 5e-6),
+}
+
+
+@pytest.mark.parametrize("parent", ["pbe", "scan"])
+def test_certificate_is_exact_when_the_model_is_the_parent_functional(
+        tmp_path, monkeypatch, parent):
+    """O-A. With the parent itself behind the model interface, the
+    certificate's E_xc_nn - E_xc_parent on the O atom and on H2O is round-off
+    and the verdict is PASS: the model path and the point-wise parent route
+    reduce the same density, on the same points and weights, through the same
+    libxc, the one in JAX and the other in numpy.
+
+    Measured at sto-3g / grid 1. PBE: 3.6e-15 Ha (O), 0.0 Ha (H2O, bitwise).
+    SCAN: 2.0e-10 Ha (O), 1.6e-9 Ha (H2O) -- the meta-GGA interface carries
+    the clamped alpha, not tau, and the 572 (O) / 627 (H2O) tail points
+    clamped at alpha = 100 carry 1.5e-4 / 5.6e-4 electrons whose tau the
+    double cannot recover; both bounds sit more than five orders inside
+    tol_atom. The per-spin meta-GGA blocks are on trial here as much as the
+    energy path: a wrong doubled-channel alpha would move the O atom by mHa.
+
+    The H atom is pinned separately: the production path clips zeta to
+    1 - 1e-6 (oneshot._ZETA_BOUNDARY_EPS) where the parent sees zeta = 1
+    exactly, and the one-electron atom's correlation is not zero
+    (self-correlation), so the double carries the zeta-derivative of
+    rho eps_c across that clip -- 8.0e-7 Ha for PBE and 7.7e-8 Ha for SCAN,
+    more than two orders inside tol_atom."""
+    bound_heavy, bound_h = _PARENT_AS_MODEL_BOUNDS[parent]
+    payload, by_name = _certify_with_parent_as_model(tmp_path, monkeypatch,
+                                                     parent, 0.0)
+    for name in ("atom_O", "H2O"):
+        rec = by_name[name]
+        assert abs(rec["E_xc_nn"] - rec["E_xc_parent"]) < bound_heavy, (
+            name, rec)
+        assert abs(rec["parent_grid_diff_Ha"]) < fid.PARENT_GRID_TOL_HA
+        assert abs(rec["parent_record_diff_Ha"]) < fid.PARENT_GRID_TOL_HA
+    assert abs(by_name["atom_H"]["E_xc_nn"]
+               - by_name["atom_H"]["E_xc_parent"]) < bound_h
+    assert payload["verdict"] == "PASS"
+    assert payload["summary"]["failure_reasons"] == []
+    assert payload["summary"]["max_atom_mHa"] < 1e-2
+    assert payload["summary"]["max_dAE_kcalmol"] < 1e-2
+
+
+def test_certificate_measures_a_known_per_electron_offset(tmp_path,
+                                                          monkeypatch):
+    """O-B. The parent plus a constant c = 0.5 mHa per electron must move
+    every dE_xc by exactly c N_grid, N_grid the electron count the record's
+    quadrature carries (the shift against the c = 0 certificate is compared,
+    so the H atom's zeta-clip residual of the previous test drops out); the O
+    atom (N = 8) then exceeds tol_atom by the predicted 4.0 mHa while the
+    atomization fold cancels the offset to c (N_grid(H2O) - N_grid(O) -
+    2 N_grid(H)), the quadrature residual. That is why the certificate carries
+    an atomic tolerance beside the atomization one: a per-electron offset is
+    invisible to dAE. Measured shift minus prediction: 6.8e-12 mHa (O),
+    1.4e-12 mHa (H2O) at sto-3g / grid 1."""
+    import numpy as np
+    from xcquinox.alec.data import precompute_fixed_density_data
+    c_mha = 0.5
+    _payload0, base = _certify_with_parent_as_model(tmp_path, monkeypatch,
+                                                    "pbe", 0.0)
+    payload, by_name = _certify_with_parent_as_model(
+        tmp_path, monkeypatch, "pbe", c_mha / fid.HA_TO_MHA)
+    n_grid = {}
+    for ms in _parent_oracle_set():
+        # The record the certificate measured: the O atom is degenerate and
+        # carries the certificate's orientation lock, the others none.
+        md = precompute_fixed_density_data(
+            ms, reference_xc="pbe",
+            orientation_lock_strength=by_name[ms.name][
+                "orientation_lock_strength"])
+        n_grid[ms.name] = float(np.sum(np.asarray(md["grid_weights"])
+                                       * np.asarray(md["rho_grid"])))
+    assert by_name["atom_O"]["orientation_lock_strength"] == (
+        fid.atom_orientation_lock_strength())
+    assert by_name["atom_H"]["orientation_lock_strength"] == 0.0
+    assert n_grid["atom_O"] == pytest.approx(8.0, abs=1e-3)
+    for name, rec in by_name.items():
+        shift = rec["dE_xc_mHa"] - base[name]["dE_xc_mHa"]
+        assert shift == pytest.approx(c_mha * n_grid[name], abs=1e-7), name
+    for name in ("atom_O", "H2O"):
+        assert by_name[name]["dE_xc_mHa"] == pytest.approx(
+            c_mha * n_grid[name], abs=1e-6), name
+    assert payload["verdict"] == "FAIL"
+    assert payload["summary"]["max_atom_mHa"] == pytest.approx(
+        c_mha * n_grid["atom_O"], abs=1e-6)
+    assert any("tol_atom" in r for r in payload["summary"]["failure_reasons"])
+    predicted_dae = (c_mha * (n_grid["H2O"] - n_grid["atom_O"]
+                              - 2 * n_grid["atom_H"])
+                     / fid.HA_TO_MHA * fid.HA_TO_KCAL)
+    dae = {r["name"]: r["dAE_kcalmol"] for r in payload["per_atomization"]}
+    dae0 = {r["name"]: r["dAE_kcalmol"] for r in _payload0["per_atomization"]}
+    assert dae["H2O"] - dae0["H2O"] == pytest.approx(predicted_dae, abs=1e-7)
+    assert abs(dae["H2O"]) < 1.0
+    assert not any("tol_AE" in r for r in payload["summary"]["failure_reasons"])
+
+
+# ---------------------------------------------------------------------------
+# The reference SCF must have converged
+# ---------------------------------------------------------------------------
+
+def _stamped(record, **stamp):
+    """A copy of ``record`` whose metadata carries ``stamp``."""
+    md = dict(record)
+    md["mol_metadata"] = dict(md["mol_metadata"] or {}, **stamp)
+    return md
+
+
+def test_evaluate_system_refuses_an_unconverged_reference_record(monkeypatch):
+    """A record whose metadata reports an unconverged reference SCF is not the
+    parent's density (measured on H2O / SCAN at max_cycle=1: +7.2e-2 Ha in
+    the total energy, 0.315 in the density matrix); the network is never
+    measured on it."""
+    import xcquinox.alec.data as data_mod
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.models import AlecGGAModel
+
+    original = data_mod.precompute_fixed_density_data
+    monkeypatch.setattr(
+        data_mod, "precompute_fixed_density_data",
+        lambda mol_spec, **kw: _stamped(original(mol_spec, **kw),
+                                        reference_scf_converged=False,
+                                        reference_scf_cycles=1))
+    arch = get_architecture("deep_3x16")
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    with pytest.raises(fid.ReferenceNotConverged, match="did not converge") \
+            as info:
+        fid.evaluate_system(model, arch.materialize_descriptors(),
+                            _tiny_oracle_set()[0], parent="pbe")
+    assert info.value.cycles == 1
+    assert isinstance(info.value, ValueError)
+
+
+def test_evaluate_system_copies_the_convergence_stamp_and_the_lock(
+        monkeypatch):
+    """The stamp the precompute wrote (converged flag and cycle count) and the
+    orientation-lock strength the system was evaluated at are carried on the
+    record; a record written without the stamp carries None and is not
+    refused."""
+    import xcquinox.alec.data as data_mod
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.models import AlecGGAModel
+
+    arch = get_architecture("deep_3x16")
+    model = AlecGGAModel.from_arch(arch, seed=0)
+    descriptors = arch.materialize_descriptors()
+    original = data_mod.precompute_fixed_density_data
+
+    monkeypatch.setattr(
+        data_mod, "precompute_fixed_density_data",
+        lambda mol_spec, **kw: _stamped(original(mol_spec, **kw),
+                                        reference_scf_converged=True,
+                                        reference_scf_cycles=9))
+    rec = fid.evaluate_system(model, descriptors, _tiny_oracle_set()[0],
+                              parent="pbe", orientation_lock_strength=0.0)
+    assert rec["reference_scf_converged"] is True
+    assert rec["reference_scf_cycles"] == 9
+    assert rec["orientation_lock_strength"] == 0.0
+
+    def _unstamped(mol_spec, **kw):
+        md = dict(original(mol_spec, **kw))
+        meta = dict(md["mol_metadata"] or {})
+        meta.pop("reference_scf_converged", None)
+        meta.pop("reference_scf_cycles", None)
+        md["mol_metadata"] = meta
+        return md
+
+    monkeypatch.setattr(data_mod, "precompute_fixed_density_data", _unstamped)
+    rec = fid.evaluate_system(model, descriptors, _tiny_oracle_set()[0],
+                              parent="pbe", orientation_lock_strength=3e-5)
+    assert rec["reference_scf_converged"] is None
+    assert rec["reference_scf_cycles"] is None
+    assert rec["orientation_lock_strength"] == 3e-5
+
+
+def test_certificate_fails_by_name_when_a_reference_scf_did_not_converge(
+        tmp_path):
+    """An unconverged reference is a named consistency failure of its own:
+    the per-system entry carries the stamp, the summary counts it, and the
+    reason names the system -- it is never folded into the generic
+    'could not be evaluated' bucket and can never PASS."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+
+    def _evaluate(model, descriptors, mol_spec, *, parent,
+                  auxbasis=None, orientation_lock_strength=0.0):
+        if mol_spec.name == "H2":
+            raise fid.ReferenceNotConverged(
+                "the reference PBE SCF for 'H2' did not converge", cycles=50)
+        return _fake_evaluate({"atom_H": 0.1})(
+            model, descriptors, mol_spec, parent=parent)
+
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_evaluate)
+    assert payload["verdict"] == "FAIL"
+    entry = [r for r in payload["per_system"] if r["name"] == "H2"][0]
+    assert entry["reference_scf_converged"] is False
+    assert entry["reference_scf_cycles"] == 50
+    assert "did not converge" in entry["error"]
+    s = payload["summary"]
+    assert s["n_reference_unconverged"] == 1
+    assert s["n_failed_systems"] == 1
+    assert any("did not converge" in r and "H2" in r
+               for r in s["failure_reasons"])
+    assert not any("could not be evaluated" in r for r in s["failure_reasons"])
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "FAIL"
+
+
+# ---------------------------------------------------------------------------
+# Degenerate free atoms are evaluated on an orientation-locked density
+# ---------------------------------------------------------------------------
+
+def _free_atom(symbol, charge=0, spin=0):
+    from xcquinox.alec.config import MoleculeSpec
+    return MoleculeSpec(name=fid.atom_system_name(symbol, charge),
+                        atom=f"{symbol} 0 0 0", basis="sto-3g", charge=charge,
+                        spin=spin, atom_composition=((symbol, 1),))
+
+
+def test_degenerate_atoms_are_the_open_p_shell_ones():
+    """A P term (1, 2, 4 or 5 p electrons) is spatially degenerate; s-shell,
+    half-filled and closed-shell atoms are spherical."""
+    for symbol in ("B", "C", "O", "F", "Al", "Si", "S", "Cl"):
+        assert fid.is_degenerate_atom(_free_atom(symbol)) is True, symbol
+    for symbol in ("H", "Li", "Be", "N", "Na", "Mg", "P"):
+        assert fid.is_degenerate_atom(_free_atom(symbol)) is False, symbol
+    # Ions follow their electron count, not their element.
+    assert fid.is_degenerate_atom(_free_atom("F", charge=-1)) is False
+    assert fid.is_degenerate_atom(_free_atom("Cl", charge=-1)) is False
+    assert fid.is_degenerate_atom(_free_atom("O", charge=-1)) is True
+    assert fid.is_degenerate_atom(_free_atom("Na", charge=1)) is False
+    # Molecules never are, whatever their atoms.
+    assert fid.is_degenerate_atom(_tiny_oracle_set()[1]) is False
+    with pytest.raises(ValueError, match="beyond argon"):
+        fid.is_degenerate_atom(_free_atom("Kr"))
+
+
+def test_every_pool_free_atom_is_classified():
+    """The predicate must answer for every free atom the oracle set can carry
+    (the pools' twelve elements plus Li and Na), with no refusal."""
+    systems = fid.build_oracle_set(_cfg(), "deep_3x16")
+    degenerate = {ms.name for ms in systems if fid.is_degenerate_atom(ms)}
+    assert degenerate == {"atom_B", "atom_C", "atom_O", "atom_F", "atom_Al",
+                          "atom_Si", "atom_S", "atom_Cl"}
+
+
+def test_atom_lock_strength_is_the_production_default():
+    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
+    assert fid.atom_orientation_lock_strength() == DEFAULT_STRENGTH == 3e-5
+
+
+def _lock_spy(seen):
+    def _evaluate(model, descriptors, mol_spec, *, parent,
+                  auxbasis=None, orientation_lock_strength=0.0):
+        seen[mol_spec.name] = orientation_lock_strength
+        return _fake_evaluate({"atom_H": 0.1, "atom_O": 0.2, "H2": 0.3})(
+            model, descriptors, mol_spec, parent=parent)
+    return _evaluate
+
+
+def test_certificate_locks_degenerate_atoms_when_the_run_lock_is_off(tmp_path):
+    """With inputs.orientation_lock_strength = 0 the degenerate O atom is
+    evaluated at the default lock; H (s shell) and H2 (a molecule) are not,
+    and the payload names what was locked."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    systems = _tiny_oracle_set() + (_free_atom("O", spin=2),)
+    seen = {}
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=systems,
+        evaluate=_lock_spy(seen))
+    assert seen == {"atom_H": 0.0, "H2": 0.0,
+                    "atom_O": fid.atom_orientation_lock_strength()}
+    lock = payload["atom_orientation_lock"]
+    assert lock["applied_to"] == ["atom_O"]
+    assert lock["strength"] == fid.atom_orientation_lock_strength()
+    assert lock["run_orientation_lock_strength"] == 0.0
+    assert "orientation" in lock["note"]
+    assert payload["identity"]["orientation_lock_strength"] == 0.0
+
+
+def test_certificate_keeps_the_runs_own_lock_when_it_is_on(tmp_path):
+    """A run that locks orientations itself applies its strength to every
+    system, degenerate atom or not; the certificate adds nothing."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    cfg = _cfg()
+    cfg.inputs.orientation_lock_strength = 0.02
+    systems = _tiny_oracle_set() + (_free_atom("O", spin=2),)
+    seen = {}
+    payload = fid.fidelity_certificate(
+        cfg, run_dir, "deep_3x16", oracle_set=systems,
+        evaluate=_lock_spy(seen))
+    assert seen == {"atom_H": 0.02, "H2": 0.02, "atom_O": 0.02}
+    lock = payload["atom_orientation_lock"]
+    assert lock["applied_to"] == []
+    assert lock["strength"] == 0.0
+    assert lock["run_orientation_lock_strength"] == 0.02
+    assert payload["identity"]["orientation_lock_strength"] == 0.02
+
+
+# ---------------------------------------------------------------------------
+# main()
+# ---------------------------------------------------------------------------
+
+def test_main_selects_the_arch_by_index_and_returns_zero_on_pass(
+        tmp_path, monkeypatch):
+    import yaml
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    raw = _minimal_raw_config(archs=["deep", "medium", "shallow"])
+    with open(run_dir / "resolved_config.yaml", "w") as f:
+        yaml.safe_dump(raw, f)
+
+    seen = {}
+
+    def _fake(cfg, rd, arch_name, **kwargs):
+        seen["arch"] = arch_name
+        return {"verdict": "PASS", "enforced": True,
+                "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                               "override_reason": None},
+                "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2,
+                            "n_systems": 2, "n_atoms": 1,
+                            "n_atomizations": 1,
+                            "failure_reasons": []}}
+
+    monkeypatch.setattr(fid, "fidelity_certificate", _fake)
+    assert fid.main([str(run_dir), "1"]) == 0
+    assert seen["arch"] == "medium"
+
+
+def test_main_returns_zero_on_a_failed_but_unenforced_certificate(
+        tmp_path, monkeypatch):
+    import yaml
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    with open(run_dir / "resolved_config.yaml", "w") as f:
+        yaml.safe_dump(_minimal_raw_config(archs=["deep"]), f)
+    monkeypatch.setattr(fid, "fidelity_certificate", lambda *a, **k: {
+        "verdict": "FAIL", "enforced": False,
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": "workflow matrix"},
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7,
+                    "n_systems": 2, "n_atoms": 1, "n_atomizations": 1,
+                    "failure_reasons": ["max_atom_mHa"]}})
+    assert fid.main([str(run_dir), "0"]) == 0
+
+
+def test_main_returns_one_on_a_failed_certificate(tmp_path, monkeypatch):
+    import yaml
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    with open(run_dir / "resolved_config.yaml", "w") as f:
+        yaml.safe_dump(_minimal_raw_config(archs=["deep"]), f)
+    monkeypatch.setattr(fid, "fidelity_certificate", lambda *a, **k: {
+        "verdict": "FAIL", "enforced": True,
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": None},
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7,
+                    "n_systems": 2, "n_atoms": 1, "n_atomizations": 1,
+                    "failure_reasons": ["max_atom_mHa"]}})
+    assert fid.main([str(run_dir), "0"]) == 1
+
+
+def test_main_rejects_an_out_of_range_arch_index(tmp_path):
+    import yaml
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    with open(run_dir / "resolved_config.yaml", "w") as f:
+        yaml.safe_dump(_minimal_raw_config(archs=["deep"]), f)
+    assert fid.main([str(run_dir), "7"]) == 1
+
+
+def test_main_reports_a_missing_config(tmp_path):
+    assert fid.main([str(tmp_path), "0"]) == 1
+
+
+def _minimal_raw_config(archs):
+    """A complete-but-minimal raw config dict load_grid_config accepts."""
+    return {
+        "sweep": {"arch": list(archs), "loss": ["l2"], "metric": ["l2"],
+                  "subset_size": [1], "solver": ["oneshot"]},
+        "solvers": {"oneshot": {"mode": "oneshot", "max_cycles": 1}},
+        "hyperparams": {"n_steps": 1, "lr_start": 1e-3, "lr_end": 1e-4,
+                        "lr_decay_start": 0.5, "grad_clip": 1.0,
+                        "gradnorm_alpha": 1.0, "vxc_weight": 1.0,
+                        "density_weight": 1.0},
+        "inputs": {"external_refs_dir": "/tmp/refs",
+                   "subset_ledger_path": "/tmp/ledger.json",
+                   "basis": "sto-3g", "grid_level": 1,
+                   "output_root": "/tmp/out"},
+        "pretrain": {"data_dir": "/tmp/pretrain_data"},
+        "cluster": {"partition": "short", "time": "01:00:00", "mem": "8G",
+                    "cpus_per_task": 1, "array_throttle": 1,
+                    "eval_array_throttle": 1, "max_concurrent_tasks": 10},
+        "domain_profile": "dfs_step7",
+    }

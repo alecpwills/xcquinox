@@ -17,10 +17,18 @@ PASS requires max |dE_xc| over the free atoms <= tol_atom (mHa) AND max |dAE|
 <= tol_AE (kcal/mol) AND the oracle tests O1-O4 passing on the installed code
 (SPEC_pretrain_fidelity_program.md Section 3.3, item 4). The parent is PBE for
 a GGA-rung architecture and SCAN for a meta-GGA one (rungs.seed_xc_for_arch),
-which is what each rung was pretrained against.
+which is what each rung was pretrained against. The parent's E_xc on each
+record is computed three independent ways (point-wise libxc on the stored
+grid, PySCF numint on a fresh grid, the reference SCF's own accumulated
+value) and a disagreement above PARENT_GRID_TOL_HA, a reference SCF that did
+not converge, or a system that could not be evaluated each FAIL the
+certificate by name. Degenerate free atoms (open p shell) are evaluated on an
+orientation-locked reference density when the run carries no lock of its own,
+so the atomic numbers do not depend on the orientation the SCF converged to.
 
-The verdict, every number, the run identity and the installed code version go
-to ``<run_dir>/pretrain/<arch>/fidelity_certificate.json``. The pretrain
+The verdict, every number, the run identity, the SHA-256 digests of the two
+checkpoint files measured and the installed code version go to
+``<run_dir>/pretrain/<arch>/fidelity_certificate.json``. The pretrain
 worker, the train task, the preflight, the in-process model builder, the run
 validator, the cross-arm merge and the figure suite all read that file through
 :func:`certificate_status`, so the gate cannot drift between sites.
@@ -56,13 +64,18 @@ model or an SCF stack.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import sys
+import time
+import traceback
 
 from xcquinox.alec.cluster.domain import KCAL_PER_HA
 from xcquinox.alec.cluster.grid_config import (
-    _canon_axis, pretrain_checkpoint_dir,
+    _canon_axis, load_grid_config, pretrain_checkpoint_dir,
 )
+from xcquinox.alec.cluster.materialize import _sha256_file, _write_json_atomic
 
 
 CERTIFICATE_FILENAME = "fidelity_certificate.json"
@@ -77,16 +90,19 @@ VERDICT_FAIL = "FAIL"
 HA_TO_KCAL = KCAL_PER_HA
 HA_TO_MHA = 1000.0
 
-# The parent XC energy is computed two independent ways per system: point-wise
-# on the stored precompute grid (the grid the network is integrated on, so the
-# comparison is grid-exact) and through PySCF's own nr_rks / nr_uks on a
-# freshly built grid of the same level. At sto-3g grid level 1 the two routes
-# agree to 2.6e-11 Ha on OH and 6.2e-11 Ha on H2O, for PBE and SCAN alike, and
-# at the production identity to 2.0e-10 Ha (recorded in
+# The parent XC energy is computed three independent ways per system:
+# point-wise on the stored precompute grid (the grid the network is integrated
+# on, so the comparison is grid-exact), through PySCF's own nr_rks / nr_uks on
+# a freshly built grid of the same level, and as the XC energy the reference
+# SCF itself accumulated (the record's E_xc field). At sto-3g grid level 1 the
+# routes agree to 2.6e-11 Ha on OH and 6.2e-11 Ha on H2O, for PBE and SCAN
+# alike, and at the production identity to 2.0e-10 Ha (recorded in
 # notebooks/analysis/NOTES_v5_mgga_vs_scan.md, Section 5). The bound below is
 # more than three orders of magnitude above that spread and three below
 # tol_atom = 1.0 mHa, so it fires when the stored grid and the molecule no
-# longer describe the same system and never on integration noise.
+# longer describe the same system and never on integration noise. A
+# disagreement is a FAIL of the certificate's own consistency, reported as
+# such; the routes are never averaged.
 PARENT_GRID_TOL_HA = 1e-6
 
 # libxc names of the two parents.
@@ -368,6 +384,56 @@ def is_atom_system(mol_spec) -> bool:
     return len(comp) == 1 and int(comp[0][1]) == 1
 
 
+def is_degenerate_atom(mol_spec) -> bool:
+    """True for a free atom whose ground state is spatially degenerate.
+
+    An open p shell holding 1, 2, 4 or 5 electrons is a P term, and a
+    self-consistent field can converge to any orientation of its hole: B, C,
+    O, F, Al, Si, S, Cl and their ions with those p counts. The energy of the
+    exact functional is orientation-invariant, but the quadrature on a fixed
+    real-space grid is not, and the meta-GGA parent feels it most: the SCAN
+    E_xc of the free O atom spread by 0.26 mHa over three independent
+    unconstrained SCFs at def2-svp / grid 3 (0.21 mHa for F at sto-3g /
+    grid 1), against 1.6e-3 mHa for PBE, so an unlocked certificate number
+    for such an atom depends on which orientation the SCF happened to
+    reach. Half-filled (N, P), closed (Be, Mg, F-, Cl-) and s-shell (H, Li,
+    Na) atoms are spherical and excluded. Elements beyond argon are refused:
+    the rule covers the shells the oracle set can contain.
+    """
+    if not is_atom_system(mol_spec):
+        return False
+    from pyscf import gto
+    symbol = str(mol_spec.atom_composition[0][0])
+    n_electrons = int(gto.charge(symbol)) - int(mol_spec.charge)
+    if n_electrons <= 4:            # 1s and 2s only
+        n_p = 0
+    elif n_electrons <= 10:         # 2p^1 .. 2p^6
+        n_p = n_electrons - 4
+    elif n_electrons <= 12:         # 3s
+        n_p = 0
+    elif n_electrons <= 18:         # 3p^1 .. 3p^6
+        n_p = n_electrons - 12
+    else:
+        raise ValueError(
+            f"free atom {symbol} (charge {mol_spec.charge}) carries "
+            f"{n_electrons} electrons, beyond argon; the certificate's "
+            "degeneracy rule covers the first three rows only")
+    return n_p in (1, 2, 4, 5)
+
+
+def atom_orientation_lock_strength() -> float:
+    """The orientation-lock strength applied to degenerate free atoms when
+    the run's own lock is off.
+
+    ``orientation_lock.DEFAULT_STRENGTH`` (3e-5, the value the production
+    configurations carry), imported at call time because that module's body
+    carries numpy. Two independent locked SCFs of O and F agreed to 3.4e-11
+    mHa in E_xc at def2-svp / grid 3, against the 0.26 mHa unlocked spread.
+    """
+    from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
+    return float(DEFAULT_STRENGTH)
+
+
 def build_oracle_set(cfg, arch_name: str) -> tuple:
     """The certificate's systems for ``arch_name``, in a byte-stable order.
 
@@ -486,3 +552,616 @@ def build_oracle_set(cfg, arch_name: str) -> tuple:
 
     return (tuple(atoms[k] for k in sorted(atoms))
             + tuple(molecules[k] for k in sorted(molecules)))
+
+
+# ---------------------------------------------------------------------------
+# Model construction -- the production builder, not a second one
+# ---------------------------------------------------------------------------
+
+def _build_model(arch, pretrain_dir: str, *, seed: int):
+    """Load a pretrained xnet/cnet pair through the production model builder.
+
+    Mirrors ``train._build_model``: ``create_network_pair`` supplies a
+    skeleton whose every array leaf ``eqx.tree_deserialise_leaves`` overwrites
+    from the checkpoint, so the skeleton's seed never reaches the certified
+    model; only the architecture (depth, width, attention, descriptor count)
+    has to match, and it does by construction.
+    """
+    import equinox as eqx
+    from xcquinox.alec.models import AlecGGAModel
+    from xcquinox.alec.networks import create_network_pair
+    xnet_skeleton, cnet_skeleton = create_network_pair(arch, seed=seed)
+    xnet = eqx.tree_deserialise_leaves(
+        os.path.join(pretrain_dir, "xnet.eqx"), xnet_skeleton)
+    cnet = eqx.tree_deserialise_leaves(
+        os.path.join(pretrain_dir, "cnet.eqx"), cnet_skeleton)
+    return AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+
+def build_certified_model(cfg, run_dir: str, arch_name: str):
+    """``(arch, model)`` for ``arch_name`` as the run itself would build them.
+
+    The registry entry is patched with the run-level polarized-correlation
+    override exactly as ``cluster._pretrain`` patches it before pretraining,
+    so the cnet input width matches the checkpoint on disk.
+    """
+    import dataclasses
+    from xcquinox.alec.config import get_architecture
+    arch = get_architecture(arch_name)
+    if getattr(cfg, "use_polarized_correlation", False):
+        arch = dataclasses.replace(arch, use_polarized_correlation=True)
+    pretrain_dir = pretrain_checkpoint_dir(run_dir, arch_name)
+    return arch, _build_model(arch, pretrain_dir, seed=cfg.pretrain.seed)
+
+
+# ---------------------------------------------------------------------------
+# The parent's exchange-correlation energy on the record's own density
+# ---------------------------------------------------------------------------
+
+def _parent_xc_code(parent: str) -> str:
+    """The libxc code of a parent, refusing an unknown one loudly."""
+    try:
+        return _PARENT_XC[parent]
+    except KeyError:
+        raise ValueError(
+            f"unknown parent functional {parent!r}; the certificate knows "
+            f"{sorted(_PARENT_XC)}") from None
+
+
+def _parent_exc_on_stored_grid(mol_data, parent: str) -> float:
+    """E_xc^parent on the SAME grid and density the network is evaluated on.
+
+    Built from ``mol_data``'s stored AO derivative table, density matrix and
+    grid weights, so the parent and the network see byte-identical quadrature
+    with no Grids object in between. Assembling libxc's input rows here is an
+    EVALUATION of the parent functional, not a second construction of a
+    ``mol_data`` field: nothing computed in this function is ever stored back.
+
+    The row set is the one libxc demands for the parent's rung, as in the
+    precompute's own closed-shell reference route: the density alone for an
+    LDA, the density and its gradient for a GGA, and for a meta-GGA the
+    positive kinetic-energy density ``tau = 1/2 sum_ij P_ij grad chi_i . grad
+    chi_j`` besides (PySCF passes no Laplacian to libxc; SCAN needs none).
+    For an open shell the rows are per spin channel and libxc is called with
+    ``spin=1``; the exchange-correlation energy density it returns is per
+    electron of the TOTAL density, so the integral is
+    ``sum_g w_g rho_g eps_g``.
+    """
+    import numpy as np
+    from pyscf.dft import libxc, numint
+    xc = _parent_xc_code(parent)
+    xctype = libxc.xc_type(xc)
+    if xctype not in ("LDA", "GGA", "MGGA"):
+        raise ValueError(
+            f"parent {parent!r} ({xc}) is of libxc type {xctype!r}; the "
+            "certificate evaluates semilocal parents only")
+    ao = np.asarray(mol_data["ao_grid_deriv"])        # (4, n_grid, nao)
+    dm = np.asarray(mol_data["dm_pbe"])
+    weights = np.asarray(mol_data["grid_weights"])
+    unrestricted = bool(mol_data["is_unrestricted"])
+    if unrestricted != (dm.ndim == 3):
+        raise ValueError(
+            f"record {mol_data['name']!r} is_unrestricted={unrestricted} but "
+            f"carries a density matrix of shape {dm.shape}")
+
+    def _rows(d):
+        out = [np.einsum("gi,ij,gj->g", ao[0], d, ao[0])]
+        if xctype in ("GGA", "MGGA"):
+            out += [2.0 * np.einsum("gi,ij,gj->g", ao[k], d, ao[0])
+                    for k in (1, 2, 3)]
+        if xctype == "MGGA":
+            out.append(0.5 * np.einsum("dgi,ij,dgj->g", ao[1:4], d, ao[1:4]))
+        return np.vstack(out)
+
+    ni = numint.NumInt()
+    if unrestricted:
+        rows_a, rows_b = _rows(dm[0]), _rows(dm[1])
+        rho_total = rows_a[0] + rows_b[0]
+        exc = ni.eval_xc(xc, (rows_a, rows_b), spin=1)[0]
+    else:
+        rows = _rows(dm)
+        rho_total = rows[0]
+        exc = ni.eval_xc(xc, rows, spin=0)[0]
+    return float(np.sum(weights * rho_total * exc))
+
+
+def _parent_exc_numint(mol_spec, parent: str, dm) -> float:
+    """Independent E_xc^parent through PySCF's own ``nr_rks`` / ``nr_uks``.
+
+    Cross-check of :func:`_parent_exc_on_stored_grid` on a freshly built grid
+    of the same level, from a freshly built molecule and the record's density
+    matrix. The reference SCF prunes its grid on the initial density
+    (``small_rho_cutoff``, a bound of 1e-7 electrons on what is dropped), so
+    the two point counts differ; the integrals agree to 2.6e-11 Ha on OH at
+    sto-3g and 2.0e-10 Ha at the production identity. The difference is
+    recorded per system and bounded by :data:`PARENT_GRID_TOL_HA`.
+    """
+    import numpy as np
+    from pyscf import dft, gto
+    from pyscf.dft import numint
+    xc = _parent_xc_code(parent)
+    mol = gto.M(atom=mol_spec.atom, basis=mol_spec.basis,
+                charge=mol_spec.charge, spin=mol_spec.spin, verbose=0)
+    grids = dft.Grids(mol)
+    if mol_spec.grid_level is not None:
+        grids.level = int(mol_spec.grid_level)
+    grids.build()
+    ni = numint.NumInt()
+    dm = np.asarray(dm)
+    if dm.ndim == 3:
+        _nelec, exc, _vmat = ni.nr_uks(mol, grids, xc, dm)
+    else:
+        _nelec, exc, _vmat = ni.nr_rks(mol, grids, xc, dm)
+    return float(exc)
+
+
+# ---------------------------------------------------------------------------
+# Per-system evaluation -- the seam the mocked tests replace
+# ---------------------------------------------------------------------------
+
+class ReferenceNotConverged(ValueError):
+    """The record's reference SCF did not converge, so the network is not
+    measured on it.
+
+    Raised by :func:`evaluate_system` when the record's metadata reports
+    ``reference_scf_converged: False``; :func:`fidelity_certificate` turns it
+    into a named consistency failure rather than a generic evaluation error.
+    ``cycles`` carries the recorded ``reference_scf_cycles`` (or ``None``).
+    """
+
+    def __init__(self, message, *, cycles=None):
+        super().__init__(message)
+        self.cycles = cycles
+
+
+def evaluate_system(model, descriptors, mol_spec, *, parent: str,
+                    auxbasis=None, orientation_lock_strength: float = 0.0
+                    ) -> dict:
+    """dE_xc for one system, on the parent's own density at the run identity.
+
+    The record comes from the library's ONE construction path with
+    ``reference_xc=parent``, so its density matrix, grid quantities and every
+    descriptor block -- total-density and per-spin-channel -- are the parent
+    functional's, built by exactly the code the training pipeline uses. This
+    module constructs none of them. A record whose ``reference_xc`` is not
+    the parent is refused rather than measured, and so is one whose metadata
+    reports an unconverged reference SCF (:class:`ReferenceNotConverged`);
+    the convergence stamp and cycle count are copied into the record.
+
+    ``E_xc_nn`` is ``oneshot.fixed_density_total_energy(model, mol_data)
+    - mol_data["E_non_xc"]``: the production energy path, minus a term that
+    cancels identically (``fixed_density_total_energy`` returns
+    ``E_non_xc + E_xc^NN``, so whatever ``E_non_xc`` holds drops out).
+    ``E_xc_parent`` is libxc on the same stored grid and density, cross-checked
+    against a fresh-grid ``nr_rks``/``nr_uks`` (``parent_grid_diff_Ha``) and
+    against the XC energy the reference SCF itself accumulated
+    (``parent_record_diff_Ha``). Neither difference is averaged into the
+    parent energy: both are recorded, and the certificate FAILS when either
+    exceeds :data:`PARENT_GRID_TOL_HA`.
+
+    ``seed_source`` is deliberately left at its default: ``dm_seed`` is the SCF
+    starting guess, which the fixed-density energy path never reads, and
+    requesting the SCAN seed would demand a seed cache the certificate does not
+    need -- the parent density here comes from ``reference_xc``, not from the
+    seed axis.
+    """
+    import numpy as np
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.oneshot import fixed_density_total_energy
+
+    t0 = time.time()
+    required = tuple(sorted({k for d in descriptors
+                             for k in d.required_mol_keys}))
+    mol_data = precompute_fixed_density_data(
+        mol_spec, required_keys=required, descriptors=descriptors,
+        auxbasis=auxbasis,
+        orientation_lock_strength=orientation_lock_strength,
+        reference_xc=parent)
+    got_reference = mol_data["reference_xc"]
+    if got_reference != parent:
+        raise ValueError(
+            f"the precompute returned a record with reference_xc="
+            f"{got_reference!r} for {mol_spec.name!r} but the certificate "
+            f"asked for {parent!r}; the network would be measured against a "
+            "density its parent functional did not produce")
+
+    # The reference SCF's convergence stamp, written by the precompute into
+    # the record's metadata. A record that reports an unconverged reference is
+    # refused outright: an SCF stopped short of self-consistency is not the
+    # parent's density (measured on H2O / SCAN at max_cycle=1: +7.2e-2 Ha in
+    # the total energy, 0.315 in the density matrix), and the certificate
+    # would otherwise compare the network against a density no functional
+    # produced. A record carrying no stamp (written before the stamp existed)
+    # records ``None`` and is not refused here; the precompute itself refuses
+    # an unconverged reference once it stamps the record.
+    meta = mol_data.get("mol_metadata") or {}
+    scf_converged = meta.get("reference_scf_converged")
+    scf_cycles = meta.get("reference_scf_cycles")
+    if scf_converged is False:
+        raise ReferenceNotConverged(
+            f"the reference {parent.upper()} SCF for {mol_spec.name!r} did "
+            f"not converge (reference_scf_cycles={scf_cycles}); the network "
+            "is not measured on an unconverged density", cycles=scf_cycles)
+
+    dm = np.asarray(mol_data["dm_pbe"])
+    e_xc_nn = (float(fixed_density_total_energy(model, mol_data))
+               - float(mol_data["E_non_xc"]))
+    e_xc_parent = _parent_exc_on_stored_grid(mol_data, parent)
+    e_xc_parent_numint = _parent_exc_numint(mol_spec, parent, dm)
+    # The XC energy PySCF accumulated during the reference SCF itself. Free,
+    # and a third independent route to the same number.
+    e_xc_parent_record = float(mol_data["E_xc_pbe"])
+    n_grid = int(np.asarray(mol_data["grid_weights"]).shape[0])
+    del mol_data
+
+    return {
+        "name": mol_spec.name,
+        "spin": int(mol_spec.spin),
+        "charge": int(mol_spec.charge),
+        "is_atom": is_atom_system(mol_spec),
+        "n_grid": n_grid,
+        "reference_xc": got_reference,
+        "reference_scf_converged": scf_converged,
+        "reference_scf_cycles": scf_cycles,
+        "orientation_lock_strength": float(orientation_lock_strength),
+        "E_xc_nn": e_xc_nn,
+        "E_xc_parent": e_xc_parent,
+        "E_xc_parent_numint": e_xc_parent_numint,
+        "E_xc_parent_record": e_xc_parent_record,
+        "parent_grid_diff_Ha": e_xc_parent - e_xc_parent_numint,
+        "parent_record_diff_Ha": e_xc_parent - e_xc_parent_record,
+        "dE_xc_mHa": (e_xc_nn - e_xc_parent) * HA_TO_MHA,
+        "duration_s": time.time() - t0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# The certificate
+# ---------------------------------------------------------------------------
+
+def _fmt_secs(seconds) -> str:
+    """Compact h:mm:ss / m:ss formatting for elapsed time and ETA."""
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
+                         oracle_set=None, evaluate=None, log=None) -> dict:
+    """Certify one architecture and write its certificate; return the payload.
+
+    ``oracle_set`` overrides :func:`build_oracle_set` (a short list for a
+    probe or a test); ``evaluate`` overrides :func:`evaluate_system` (the seam
+    the schema tests replace so no SCF runs); ``log`` is an optional callable
+    given one progress line per system, so a node log shows the sweep moving
+    through dozens of production-basis SCFs rather than falling silent.
+
+    The verdict is PASS only when every system was evaluated on a converged
+    reference SCF, the free-atom and atomization tolerances of
+    ``cfg.fidelity`` hold, and the three parent routes agree within
+    :data:`PARENT_GRID_TOL_HA` on every system. An unconverged reference is a
+    named failure of its own, never folded into the generic evaluation
+    errors.
+
+    Degenerate free atoms (:func:`is_degenerate_atom`) are evaluated on an
+    orientation-locked reference density at
+    :func:`atom_orientation_lock_strength` whenever the run's own
+    ``inputs.orientation_lock_strength`` is zero, and the payload names them
+    under ``atom_orientation_lock``; a run that carries its own lock applies
+    it to every system unchanged. Without the lock the SCAN E_xc of the free O
+    atom moved by 0.26 mHa between independent SCFs at def2-svp / grid 3 --
+    a quarter of ``tol_atom`` decided by BLAS scheduling -- and with it two
+    independent runs agree to 3.4e-11 mHa.
+
+    The
+    tolerances actually applied, the override reason (copied verbatim) and
+    the enforcement flag are recorded beside the verdict, as are the run
+    identity and the SHA-256 digests of the two checkpoint files the verdict
+    refers to.
+    """
+    import xcquinox
+
+    t0 = time.time()
+    parent = resolve_parent(arch_name)
+    arch, model = build_certified_model(cfg, run_dir, arch_name)
+    pretrain_dir = pretrain_checkpoint_dir(run_dir, arch_name)
+    checkpoint = {
+        "dir": pretrain_dir,
+        "xnet_sha256": _sha256_file(os.path.join(pretrain_dir, "xnet.eqx")),
+        "cnet_sha256": _sha256_file(os.path.join(pretrain_dir, "cnet.eqx")),
+    }
+    descriptors = arch.materialize_descriptors()
+    systems = tuple(oracle_set) if oracle_set is not None \
+        else build_oracle_set(cfg, arch_name)
+    run = evaluate if evaluate is not None else evaluate_system
+    say = log if log is not None else (lambda message: None)
+
+    # The precompute memoizes on (spec, keys, descriptors, ...); dozens of
+    # production-basis grids would exhaust a node's memory long before the
+    # sweep finished, and each system is visited exactly once. The caller's
+    # setting is restored afterwards, whichever it was.
+    import xcquinox.alec.data as data_mod
+    cache_was_enabled = bool(getattr(data_mod, "_PRECOMPUTE_CACHE_ENABLED",
+                                     True))
+    data_mod.set_precompute_cache_enabled(False)
+    data_mod.clear_precompute_cache()
+
+    inputs = cfg.inputs
+    # The run's own orientation lock governs every system when it is on. When
+    # it is off, a degenerate free atom (open p shell) is still evaluated on
+    # an orientation-LOCKED reference density, so the certificate's atomic
+    # E_xc does not depend on which orientation of the hole the SCF happened
+    # to converge to; molecules and spherical atoms keep the run's setting.
+    run_lock = float(getattr(inputs, "orientation_lock_strength", 0.0))
+    atom_lock = atom_orientation_lock_strength() if run_lock == 0.0 else 0.0
+    locked_atoms = []
+    per_system = []
+    unconverged = []
+    n_systems = len(systems)
+    try:
+        for index, mol_spec in enumerate(systems, start=1):
+            t_sys = time.time()
+            lock = run_lock
+            if run_lock == 0.0 and is_degenerate_atom(mol_spec):
+                lock = atom_lock
+                locked_atoms.append(mol_spec.name)
+            try:
+                rec = run(
+                    model, descriptors, mol_spec, parent=parent,
+                    auxbasis=getattr(inputs, "auxbasis", None),
+                    orientation_lock_strength=lock)
+            except ReferenceNotConverged as exc:
+                per_system.append({
+                    "name": mol_spec.name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "reference_scf_converged": False,
+                    "reference_scf_cycles": exc.cycles})
+                unconverged.append(mol_spec.name)
+                say(f"[{index}/{n_systems}] {mol_spec.name}: REFUSED {exc}")
+                continue
+            except Exception as exc:  # noqa: BLE001 -- recorded, not raised
+                per_system.append({
+                    "name": mol_spec.name,
+                    "error": f"{type(exc).__name__}: {exc}"})
+                say(f"[{index}/{n_systems}] {mol_spec.name}: FAILED "
+                    f"{type(exc).__name__}: {exc}")
+                continue
+            per_system.append(rec)
+            elapsed = time.time() - t0
+            say(f"[{index}/{n_systems}] {mol_spec.name}: "
+                f"dE_xc={rec['dE_xc_mHa']:+.4f} mHa "
+                f"(parent routes {rec['parent_grid_diff_Ha']:.1e}/"
+                f"{rec['parent_record_diff_Ha']:.1e} Ha; "
+                f"{time.time() - t_sys:.1f} s; elapsed {_fmt_secs(elapsed)}; "
+                f"ETA {_fmt_secs(elapsed / index * (n_systems - index))})")
+    finally:
+        data_mod.set_precompute_cache_enabled(cache_was_enabled)
+        data_mod.clear_precompute_cache()
+
+    ok = {r["name"]: r for r in per_system if "error" not in r}
+
+    per_atomization = []
+    for mol_spec in systems:
+        if is_atom_system(mol_spec) or mol_spec.name not in ok:
+            continue
+        atom_terms = []
+        missing = None
+        for symbol, count in mol_spec.atom_composition:
+            atom_name = atom_system_name(symbol, 0)
+            if atom_name not in ok:
+                missing = atom_name
+                break
+            atom_terms.append(int(count) * ok[atom_name]["dE_xc_mHa"])
+        if missing is not None:
+            per_atomization.append({
+                "name": mol_spec.name, "dAE_kcalmol": None,
+                "error": f"free atom {missing} is missing from the oracle set"})
+            continue
+        d_ae_mha = ok[mol_spec.name]["dE_xc_mHa"] - sum(atom_terms)
+        per_atomization.append({
+            "name": mol_spec.name,
+            "dAE_kcalmol": d_ae_mha / HA_TO_MHA * HA_TO_KCAL})
+
+    atom_dev = [abs(r["dE_xc_mHa"]) for r in ok.values() if r["is_atom"]]
+    ae_dev = [abs(r["dAE_kcalmol"]) for r in per_atomization
+              if r.get("dAE_kcalmol") is not None]
+    grid_dev = [abs(r["parent_grid_diff_Ha"]) for r in ok.values()]
+    record_dev = [abs(r["parent_record_diff_Ha"]) for r in ok.values()]
+    n_failed = sum(1 for r in per_system if "error" in r)
+
+    fid_cfg = cfg.fidelity
+    tol_atom = float(fid_cfg.tol_atom)
+    tol_ae = float(fid_cfg.tol_AE)
+    max_atom = max(atom_dev) if atom_dev else None
+    max_ae = max(ae_dev) if ae_dev else None
+    max_grid = max(grid_dev) if grid_dev else None
+    max_record = max(record_dev) if record_dev else None
+
+    reasons = []
+    if unconverged:
+        reasons.append(
+            f"the reference SCF did not converge for {len(unconverged)} "
+            f"system(s): " + ", ".join(unconverged)
+            + "; the certificate never measures a network on an unconverged "
+            "density")
+    other_failed = [r["name"] for r in per_system
+                    if "error" in r and r["name"] not in unconverged]
+    if other_failed:
+        reasons.append(
+            f"{len(other_failed)} system(s) could not be evaluated: "
+            + ", ".join(other_failed))
+    if not atom_dev:
+        reasons.append("no free atom was evaluated, so tol_atom is untested")
+    elif max_atom > tol_atom:
+        reasons.append(
+            f"max |dE_xc| over free atoms {max_atom:.4f} mHa exceeds "
+            f"tol_atom {tol_atom} mHa")
+    if not ae_dev:
+        reasons.append(
+            "no atomization offset could be formed, so tol_AE is untested")
+    elif max_ae > tol_ae:
+        reasons.append(
+            f"max |dAE| {max_ae:.4f} kcal/mol exceeds tol_AE "
+            f"{tol_ae} kcal/mol")
+    if max_grid is not None and max_grid > PARENT_GRID_TOL_HA:
+        reasons.append(
+            f"the point-wise and fresh-grid parent routes disagree by "
+            f"{max_grid:.3e} Ha, above the {PARENT_GRID_TOL_HA:.0e} Ha bound")
+    if max_record is not None and max_record > PARENT_GRID_TOL_HA:
+        reasons.append(
+            f"the point-wise parent energy and the reference SCF's own "
+            f"accumulated E_xc disagree by {max_record:.3e} Ha, above the "
+            f"{PARENT_GRID_TOL_HA:.0e} Ha bound")
+
+    payload = {
+        "verdict": VERDICT_FAIL if reasons else VERDICT_PASS,
+        "arch": arch_name,
+        "parent": parent,
+        "xcquinox_version": getattr(xcquinox, "__version__", "unknown"),
+        "identity": run_identity(cfg),
+        "checkpoint": checkpoint,
+        "atom_orientation_lock": {
+            "run_orientation_lock_strength": run_lock,
+            "strength": atom_lock,
+            "applied_to": locked_atoms,
+            "note": (
+                "degenerate free atoms (open p shell) are evaluated on an "
+                "orientation-locked reference density when the run's own "
+                "lock is off, so their E_xc does not depend on the "
+                "orientation the SCF converged to; the lock is "
+                "orientation_lock.DEFAULT_STRENGTH and the run identity is "
+                "otherwise unchanged"),
+        },
+        "tolerances": {"tol_AE": tol_ae, "tol_atom": tol_atom,
+                       "override_reason": fid_cfg.override_reason},
+        # Whether this run's ON-NODE gates act on the verdict. False belongs
+        # to the workflow-verification matrix only; the record layers ignore
+        # it and require PASS regardless.
+        "enforced": bool(getattr(fid_cfg, "enforce", True)),
+        "per_system": per_system,
+        "per_atomization": per_atomization,
+        "summary": {
+            "max_atom_mHa": max_atom,
+            "max_dAE_kcalmol": max_ae,
+            "n_systems": len(per_system),
+            "n_atoms": len(atom_dev),
+            "n_atomizations": len(ae_dev),
+            "n_failed_systems": n_failed,
+            "n_reference_unconverged": len(unconverged),
+            "max_parent_grid_diff_Ha": max_grid,
+            "max_parent_record_diff_Ha": max_record,
+            "failure_reasons": reasons,
+        },
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "duration_s": time.time() - t0,
+    }
+    _write_json_atomic(payload, certificate_path(run_dir, arch_name))
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+def _route_jax_env():
+    """Pin JAX to fp64 for the certificate process.
+
+    The ``xcquinox`` package imports jax while this module is being imported,
+    so the ``JAX_ENABLE_X64`` environment variable alone cannot switch the
+    already-initialised library; the runtime config update is the effective
+    switch and runs before any network or grid array exists. The variable is
+    set as well so any child process inherits it. ``JAX_PLATFORMS`` is left
+    untouched so the certificate runs on whichever device the sbatch script
+    requested (mirrors ``cluster._pretrain``).
+    """
+    os.environ["JAX_ENABLE_X64"] = "1"
+    import jax
+    jax.config.update("jax_enable_x64", True)
+
+
+def _log(arch, message):
+    """One tagged harness log line to stdout -- the SLURM log."""
+    sys.stdout.write(f"[harness fidelity arch={arch}] {message}\n")
+    sys.stdout.flush()
+
+
+def main(argv=None) -> int:
+    """Certificate entrypoint. Returns 0 on PASS, non-zero otherwise."""
+    _route_jax_env()
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("run_dir", help="The materialized run directory.")
+    parser.add_argument("arch_idx", type=int,
+                        help="Index into the sorted distinct-architecture "
+                             "list (the same selector the pretrain array "
+                             "uses).")
+    args = parser.parse_args(argv)
+    run_dir = os.path.abspath(args.run_dir)
+
+    cfg_path = os.path.join(run_dir, "resolved_config.yaml")
+    if not os.path.isfile(cfg_path):
+        json_path = os.path.join(run_dir, "resolved_config.json")
+        if not os.path.isfile(json_path):
+            sys.stdout.write(
+                f"[harness fidelity] ERROR: no resolved config at "
+                f"{cfg_path}\n")
+            sys.stdout.flush()
+            return 1
+        cfg_path = json_path
+    try:
+        cfg = load_grid_config(cfg_path)
+    except (ValueError, ImportError, OSError) as exc:
+        sys.stdout.write(
+            f"[harness fidelity] ERROR: failed to load resolved config: "
+            f"{exc}\n")
+        sys.stdout.flush()
+        return 1
+
+    archs = _distinct_archs(cfg)
+    if not (0 <= args.arch_idx < len(archs)):
+        sys.stdout.write(
+            f"[harness fidelity] ERROR: arch_idx {args.arch_idx} is out of "
+            f"range; the config has {len(archs)} distinct architecture(s) "
+            f"(valid indices 0..{len(archs) - 1}): {archs}\n")
+        sys.stdout.flush()
+        return 1
+    arch_name = archs[args.arch_idx]
+
+    _log(arch_name, f"certifying against parent "
+                    f"{resolve_parent(arch_name).upper()} at "
+                    f"{run_identity(cfg)}")
+    try:
+        payload = fidelity_certificate(
+            cfg, run_dir, arch_name,
+            log=lambda message: _log(arch_name, message))
+    except Exception as exc:  # noqa: BLE001 -- the node log carries it
+        _log(arch_name, f"ERROR: the certificate could not be computed: "
+                        f"{type(exc).__name__}: {exc}")
+        sys.stdout.write(traceback.format_exc())
+        sys.stdout.flush()
+        return 1
+    summary = payload["summary"]
+    _log(arch_name,
+         f"verdict={payload['verdict']} "
+         f"max_atom={summary['max_atom_mHa']} mHa "
+         f"max_dAE={summary['max_dAE_kcalmol']} kcal/mol over "
+         f"{summary['n_systems']} system(s) "
+         f"({summary['n_atoms']} atom(s), {summary['n_atomizations']} "
+         f"atomization(s))")
+    if payload["verdict"] != VERDICT_PASS:
+        for reason in summary["failure_reasons"]:
+            _log(arch_name, f"FAIL: {reason}")
+        if not payload["enforced"]:
+            _log(arch_name,
+                 "enforcement is OFF for this run (fidelity.enforce=false, "
+                 f"override_reason: "
+                 f"{payload['tolerances']['override_reason']!r}); the verdict "
+                 "is on record and the stage continues. This run cannot enter "
+                 "validate_run, merge_v4_arms or the figure suite.")
+            return 0
+        return 1
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via subprocess
+    sys.exit(main())
