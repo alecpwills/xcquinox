@@ -33,11 +33,29 @@ def test_tau_from_dm_matches_pyscf_rks():
 
 
 def test_tau_from_dm_matches_pyscf_uks_total():
-    # OH doublet: the meta-GGA iso-orbital tau is the TOTAL kinetic energy density.
+    # OH doublet. compute_tau_from_dm sums the two spin slots of a 3-D density
+    # matrix, so on the PHYSICAL matrix it returns the total kinetic-energy
+    # density -- the iso-orbital ingredient of the total density. The same
+    # summation on the symmetric doubled matrix diag(P_sigma, P_sigma) returns
+    # 2 tau_sigma, the ingredient of the channel the exact exchange spin
+    # scaling evaluates (test below).
     mol, mf, ao, dm = _scf("O 0 0 0; H 0 0 0.97", 1)
     tau_ref = mf._numint.eval_rho(mol, ao, dm[0] + dm[1], xctype="MGGA")[5]
     tau = np.asarray(compute_tau_from_dm(jnp.asarray(ao[1:4]), jnp.asarray(dm)))
     assert np.allclose(tau, tau_ref, atol=1e-9)
+
+
+def test_tau_from_doubled_spin_dm_is_twice_the_channel_tau():
+    """tau(diag(P_sigma, P_sigma)) = 2 tau_sigma -- the meta-GGA ingredient of
+    the spin-unpolarized system the Oliver-Perdew relation refers to (Phys. Rev.
+    A 20, 397 (1979))."""
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    mol, mf, ao, dm = _scf("O 0 0 0; H 0 0 0.97", 1)
+    for s in (0, 1):
+        tau_ref = mf._numint.eval_rho(mol, ao, dm[s], xctype="MGGA")[5]
+        tau_doubled = np.asarray(compute_tau_from_dm(
+            jnp.asarray(ao[1:4]), doubled_spin_dm(jnp.asarray(dm), s)))
+        assert np.allclose(tau_doubled, 2.0 * tau_ref, atol=1e-9)
 
 
 def test_alpha_matches_repo_scan_formula():

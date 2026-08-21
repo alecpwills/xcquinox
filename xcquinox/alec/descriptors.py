@@ -18,6 +18,10 @@ class Descriptor(eqx.Module, abc.ABC):
     """Base class for all descriptors. Subclasses provide extra input features."""
     registry_name: ClassVar[str] = ""
     required_mol_keys: ClassVar[tuple[str, ...]] = ()
+    # Per-spin-channel precompute keys, (alpha, beta), holding this descriptor's
+    # features for the symmetric doubled density diag(P_sigma, P_sigma). Empty
+    # for a geometry-only descriptor, whose per-channel block is the shared one.
+    spin_mol_keys: ClassVar[tuple[str, ...]] = ()
     n_features: int = eqx.field(static=True)
 
     @abc.abstractmethod
@@ -26,6 +30,38 @@ class Descriptor(eqx.Module, abc.ABC):
 
     def describe(self) -> str:
         return f"{type(self).__name__}({self.registry_name}, n={self.n_features})"
+
+    def compute_for_spin_channel(self, mol_data: dict,
+                                 spin_channel: int) -> jnp.ndarray:
+        """Features of the symmetric doubled density ``diag(P_sigma, P_sigma)``.
+
+        The exact exchange spin-scaling relation
+        ``E_x[n_a, n_b] = (E_x[2 n_a] + E_x[2 n_b]) / 2`` (Oliver and Perdew,
+        Phys. Rev. A 20, 397 (1979)) evaluates each channel on the fictitious
+        spin-unpolarized system whose two spin blocks both hold ``P_sigma``.
+        That system, not the physical one, is where a density-matrix descriptor
+        must be evaluated for the relation to stay exact. A geometry-only
+        descriptor has no density-matrix dependence, so its per-channel block is
+        the shared block.
+        """
+        if isinstance(spin_channel, bool) or spin_channel not in (0, 1):
+            raise ValueError(
+                "spin_channel must be 0 (alpha) or 1 (beta); got "
+                f"{spin_channel!r}."
+            )
+        if not self.spin_mol_keys:
+            return self.compute(mol_data)
+        key = self.spin_mol_keys[int(spin_channel)]
+        value = mol_data.get(key)
+        if value is None:
+            raise KeyError(
+                f"{type(self).__name__}.compute_for_spin_channel requires "
+                f"mol_data[{key!r}], which is absent or None. Open-shell "
+                "precompute populates the per-channel blocks; a closed-shell "
+                "molecule has rho_a = rho_b and therefore one block, which is "
+                "reached with spin_channel=None."
+            )
+        return value
 
     def __post_init__(self):
         _PRIMITIVE_TYPES = (int, float, bool, str)
@@ -68,6 +104,47 @@ def make_descriptor(name: str, **kwargs) -> Descriptor:
 def list_descriptors() -> list[str]:
     """Return sorted list of registered descriptor names."""
     return sorted(DESCRIPTOR_REGISTRY.keys())
+
+
+def doubled_spin_dm(dm: jnp.ndarray, spin_channel: int) -> jnp.ndarray:
+    """The symmetric doubled density matrix ``diag(P_sigma, P_sigma)``.
+
+    The exact exchange spin-scaling relation (Oliver and Perdew, Phys. Rev. A
+    20, 397 (1979)) refers each spin channel to the spin-unpolarized system
+    built by placing ``P_sigma`` in BOTH spin slots. That system has total
+    density ``2 rho_sigma``, gradient invariant ``4 sigma_sigma_sigma`` and
+    kinetic-energy density ``2 tau_sigma``, and it is the system whose
+    density-matrix descriptors define the channel's feature block: the
+    iso-orbital indicator becomes
+    ``alpha(2 rho_sigma, 4 sigma_sigma_sigma, 2 tau_sigma)``, the rung-3.5
+    occupancy becomes ``[n_sigma, n_sigma]`` (still inside the Bessel bound
+    ``[0, 1]``), and the density-matrix statistics become those of
+    ``diag(P_sigma, P_sigma)``.
+
+    Every descriptor kernel already produces the right quantity when handed
+    this matrix: ``metagga.compute_tau_from_dm`` sums the two spin slots of a
+    3-D density matrix, ``rung35.compute_rung35_occupancy`` contracts each slot
+    separately, and ``features.compute_dm_features`` takes its per-spin
+    idempotency branch on a 3-D argument. So this one transform carries the
+    whole convention.
+    """
+    p = jnp.asarray(dm)
+    if p.ndim != 3 or p.shape[0] != 2:
+        raise ValueError(
+            "doubled_spin_dm requires a spin-resolved (2, nao, nao) density "
+            f"matrix; got shape {tuple(p.shape)}."
+        )
+    # A bool satisfies `in (0, 1)` (True == 1) but indexes an array as a MASK:
+    # jnp.zeros((2, 2, 2))[True] has shape (1, 2, 2, 2), so admitting one would
+    # break the (2, nao, nao) return contract without raising. Numeric channels
+    # that pass the membership test are taken through int() so an integer-valued
+    # float indexes the spin axis rather than tripping the array indexer.
+    if isinstance(spin_channel, bool) or spin_channel not in (0, 1):
+        raise ValueError(
+            f"spin_channel must be 0 (alpha) or 1 (beta); got {spin_channel!r}."
+        )
+    block = p[int(spin_channel)]
+    return jnp.stack([block, block], axis=0)
 
 
 @register_descriptor("cusp")
@@ -145,6 +222,7 @@ class DMStatisticsDescriptor(Descriptor):
     """
     n_features: int = eqx.field(default=2, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features",)
+    spin_mol_keys: ClassVar[tuple[str, ...]] = ("dm_features_a", "dm_features_b")
 
     @staticmethod
     def compute_from_dm(dm: jnp.ndarray, s_matrix: jnp.ndarray,
@@ -195,6 +273,8 @@ class DMRung35Descriptor(Descriptor):
     # then linear in the live DM.
     alpha: float = eqx.field(default=DEFAULT_RUNG35_ALPHA, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35_features",)
+    spin_mol_keys: ClassVar[tuple[str, ...]] = ("rung35_features_a",
+                                                "rung35_features_b")
 
     @staticmethod
     def compute_from_dm(proj_ao: jnp.ndarray, dm: jnp.ndarray) -> jnp.ndarray:
@@ -239,6 +319,8 @@ class DMRung35MultishellDescriptor(Descriptor):
     alphas: tuple = eqx.field(default=DEFAULT_RUNG35_MULTISHELL_ALPHAS,
                               static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("rung35ms_features",)
+    spin_mol_keys: ClassVar[tuple[str, ...]] = ("rung35ms_features_a",
+                                                "rung35ms_features_b")
 
     def __post_init__(self):
         # The base class rejects jax arrays in primitive-annotated fields; keep
@@ -294,6 +376,8 @@ class MetaGGAAlphaDescriptor(Descriptor):
     """
     n_features: int = eqx.field(default=1, static=True)
     required_mol_keys: ClassVar[tuple[str, ...]] = ("metagga_features",)
+    spin_mol_keys: ClassVar[tuple[str, ...]] = ("metagga_features_a",
+                                                "metagga_features_b")
 
     @staticmethod
     def compute_from_dm(ao_grad, rho, sigma, dm):
@@ -310,8 +394,22 @@ class MetaGGAAlphaDescriptor(Descriptor):
 
 
 def assemble_descriptor_features(descriptors: tuple[Descriptor, ...],
-                                 mol_data: dict) -> jnp.ndarray:
-    """Concatenate descriptor outputs left-to-right in declaration order."""
+                                 mol_data: dict,
+                                 spin_channel: int | None = None) -> jnp.ndarray:
+    """Concatenate descriptor outputs left-to-right in declaration order.
+
+    ``spin_channel=None`` returns the block of the physical (total) density,
+    which the correlation term consumes. ``spin_channel=0`` / ``1`` returns the
+    block of the symmetric doubled density ``diag(P_sigma, P_sigma)``, which is
+    what the exact exchange spin scaling evaluates for the alpha / beta channel
+    (Oliver and Perdew, Phys. Rev. A 20, 397 (1979)). Column order and width are
+    identical in all three blocks.
+    """
     if not descriptors:
         return jnp.zeros((mol_data["rho_grid"].shape[0], 0))
-    return jnp.concatenate([d.compute(mol_data) for d in descriptors], axis=1)
+    if spin_channel is None:
+        return jnp.concatenate([d.compute(mol_data) for d in descriptors], axis=1)
+    return jnp.concatenate(
+        [d.compute_for_spin_channel(mol_data, spin_channel) for d in descriptors],
+        axis=1,
+    )

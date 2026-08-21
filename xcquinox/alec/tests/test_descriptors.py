@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import jax
 import jax.numpy as jnp
@@ -164,7 +165,6 @@ def test_register_descriptor_rejects_non_static_field():
 def test_dm_statistics_compute_from_dm_matches_precomputed():
     """compute_from_dm should produce the same tiled features as the
     precompute path for identical (dm, S) inputs."""
-    import numpy as np
     from xcquinox.alec.descriptors import DMStatisticsDescriptor
     from xcquinox.alec.data import precompute_fixed_density_data
     from xcquinox.alec.tests.fixtures.molecules import h2_molecule
@@ -196,3 +196,123 @@ def test_dm_statistics_compute_from_dm_output_shape():
     s = jnp.eye(2)
     features = desc.compute_from_dm(dm=dm, s_matrix=s, n_grid=17)
     assert features.shape == (17, 2)
+
+
+# ---------------------------------------------------------------------------
+# Per-spin-channel feature blocks: the symmetric doubled density
+# diag(P_sigma, P_sigma) (Oliver and Perdew, Phys. Rev. A 20, 397 (1979)).
+# ---------------------------------------------------------------------------
+
+def test_doubled_spin_dm_places_the_channel_in_both_slots():
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    rng = np.random.default_rng(20260821)
+    p = jnp.asarray(rng.standard_normal((2, 4, 4)))
+    for s in (0, 1):
+        d = doubled_spin_dm(p, s)
+        assert d.shape == (2, 4, 4)
+        assert bool(jnp.all(d[0] == p[s]))
+        assert bool(jnp.all(d[1] == p[s]))
+
+
+def test_doubled_spin_dm_refuses_a_total_density_matrix():
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    with pytest.raises(ValueError, match="spin-resolved"):
+        doubled_spin_dm(jnp.zeros((4, 4)), 0)
+
+
+def test_doubled_spin_dm_refuses_an_out_of_range_channel():
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    with pytest.raises(ValueError, match="spin_channel"):
+        doubled_spin_dm(jnp.zeros((2, 4, 4)), 2)
+
+
+def test_cusp_per_channel_block_equals_the_shared_block():
+    from xcquinox.alec.descriptors import CuspDescriptor
+    d = CuspDescriptor()
+    mol_data = {"cusp_features": jnp.arange(6.0).reshape(3, 2),
+                "rho_grid": jnp.ones(3)}
+    for s in (0, 1):
+        got = d.compute_for_spin_channel(mol_data, s)
+        assert bool(jnp.all(got == mol_data["cusp_features"]))
+
+
+def test_rung35_per_channel_block_reads_its_own_spin_key():
+    from xcquinox.alec.descriptors import DMRung35Descriptor
+    d = DMRung35Descriptor()
+    mol_data = {"rung35_features": jnp.zeros((3, 2)),
+                "rung35_features_a": jnp.full((3, 2), 0.25),
+                "rung35_features_b": jnp.full((3, 2), 0.75),
+                "rho_grid": jnp.ones(3)}
+    assert float(d.compute_for_spin_channel(mol_data, 0)[0, 0]) == 0.25
+    assert float(d.compute_for_spin_channel(mol_data, 1)[0, 0]) == 0.75
+
+
+def test_metagga_and_dm_statistics_declare_their_spin_keys():
+    from xcquinox.alec.descriptors import (
+        DMStatisticsDescriptor, DMRung35MultishellDescriptor,
+        MetaGGAAlphaDescriptor, CuspDescriptor)
+    assert DMStatisticsDescriptor.spin_mol_keys == (
+        "dm_features_a", "dm_features_b")
+    assert DMRung35MultishellDescriptor.spin_mol_keys == (
+        "rung35ms_features_a", "rung35ms_features_b")
+    assert MetaGGAAlphaDescriptor.spin_mol_keys == (
+        "metagga_features_a", "metagga_features_b")
+    assert CuspDescriptor.spin_mol_keys == ()
+
+
+def test_per_channel_block_refuses_an_absent_spin_key():
+    from xcquinox.alec.descriptors import DMRung35Descriptor
+    d = DMRung35Descriptor()
+    with pytest.raises(KeyError, match="rung35_features_a"):
+        d.compute_for_spin_channel(
+            {"rung35_features": jnp.zeros((3, 2)), "rung35_features_a": None}, 0)
+
+
+def test_assemble_descriptor_features_spin_channel_preserves_column_order():
+    from xcquinox.alec.descriptors import (
+        assemble_descriptor_features, CuspDescriptor, DMRung35Descriptor)
+    descriptors = (CuspDescriptor(), DMRung35Descriptor())
+    mol_data = {
+        "rho_grid": jnp.ones(3),
+        "cusp_features": jnp.full((3, 2), 7.0),
+        "rung35_features": jnp.zeros((3, 2)),
+        "rung35_features_a": jnp.full((3, 2), 0.25),
+        "rung35_features_b": jnp.full((3, 2), 0.75),
+    }
+    out = assemble_descriptor_features(descriptors, mol_data, spin_channel=0)
+    assert out.shape == (3, 4)
+    assert bool(jnp.all(out[:, :2] == 7.0))
+    assert bool(jnp.all(out[:, 2:] == 0.25))
+
+
+def test_assemble_descriptor_features_defaults_to_the_total_block():
+    from xcquinox.alec.descriptors import (
+        assemble_descriptor_features, DMRung35Descriptor)
+    mol_data = {
+        "rho_grid": jnp.ones(3),
+        "rung35_features": jnp.full((3, 2), 0.5),
+        "rung35_features_a": jnp.full((3, 2), 0.25),
+        "rung35_features_b": jnp.full((3, 2), 0.75),
+    }
+    out = assemble_descriptor_features((DMRung35Descriptor(),), mol_data)
+    assert bool(jnp.all(out == 0.5))
+
+
+def test_assemble_descriptor_features_empty_descriptors_ignores_spin_channel():
+    from xcquinox.alec.descriptors import assemble_descriptor_features
+    mol_data = {"rho_grid": jnp.ones(5)}
+    assert assemble_descriptor_features((), mol_data, spin_channel=1).shape == (5, 0)
+
+
+def test_doubled_spin_dm_refuses_a_boolean_channel():
+    # True satisfies `in (0, 1)` yet indexes an array as a mask: before the
+    # isinstance guard, doubled_spin_dm(p, True) returned shape (2, 1, 2, 2, 2)
+    # and doubled_spin_dm(p, False) shape (2, 0, 2, 2, 2) on a (2, 2, 2) input,
+    # neither of which is the (2, nao, nao) return contract.
+    from xcquinox.alec.descriptors import doubled_spin_dm, DMRung35Descriptor
+    for bad in (True, False):
+        with pytest.raises(ValueError, match="spin_channel"):
+            doubled_spin_dm(jnp.zeros((2, 2, 2)), bad)
+        with pytest.raises(ValueError, match="spin_channel"):
+            DMRung35Descriptor().compute_for_spin_channel(
+                {"rung35_features_a": jnp.zeros((3, 2))}, bad)
