@@ -245,7 +245,10 @@ def run_workers(
                         # drainer holds, so it would block the parent for as
                         # long as the pipe stays open (measured: still blocked
                         # after 3 s, returning only when the grandchild exited).
-                        # The fd is released with the Popen object instead.
+                        # The fd is released when the parked drainer thread
+                        # exits -- once the grandchild lets go of the pipe --
+                        # and drops its reference to the stream (measured: no
+                        # pipe fd outlives that point).
                         continue
                     try:
                         stream.close()
