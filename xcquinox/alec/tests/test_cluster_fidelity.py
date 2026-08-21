@@ -52,19 +52,48 @@ def _write_certificate(run_dir, arch, verdict="PASS", **extra):
     return d
 
 
+def _write_payload(run_dir, arch, payload):
+    """Write an arbitrary certificate payload, including one that carries no
+    ``verdict`` key at all."""
+    d = os.path.join(run_dir, "pretrain", arch)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, fid.CERTIFICATE_FILENAME), "w") as f:
+        json.dump(payload, f)
+    return d
+
+
 # ---------------------------------------------------------------------------
 # Import weight: the module body stays a pure reader
 # ---------------------------------------------------------------------------
 
-def test_fidelity_module_body_imports_only_cheap_modules():
+# The stacks a certificate reader must never pull in, and the only xcquinox
+# modules cheap enough for the module body: grid_config supplies the run
+# layout, domain the kcal/mol conversion, materialize the atomic JSON writer
+# the certificate writer uses. Each is stdlib-only in its own body.
+_HEAVY_IMPORT_ROOTS = frozenset({
+    "jax", "jaxlib", "equinox", "optax", "numpy", "scipy", "pyscf", "pyscfad",
+    "ase", "pandas", "matplotlib", "torch", "h5py",
+})
+_CHEAP_XCQ_MODULES = frozenset({
+    "xcquinox.alec.cluster.grid_config",
+    "xcquinox.alec.cluster.domain",
+    "xcquinox.alec.cluster.materialize",
+})
+
+
+def test_fidelity_module_body_carries_no_heavy_import():
     """`cluster status`, validate_run, merge and the train task's PARENT
     process all read certificates. fidelity.py's module BODY must therefore
     stay a pure reader -- path helpers, the certificate predicates, constants
     -- with every jax / pyscf / xcquinox.alec.data import inside a function,
     so a reader never triggers a model import or an SCF-capable stack it does
-    not use. Checked on the source: importing any cluster module already
-    executes the package's own jax-carrying __init__, so sys.modules cannot
-    distinguish this file's cost from the package's."""
+    not use. The PROHIBITION is what is pinned, not a frozen import list: the
+    node entry point adds whatever stdlib modules it needs without touching
+    this test, while no numeric or model stack may appear in the body and the
+    only xcquinox modules allowed there are the cheap cluster readers.
+    Checked on the source: importing any cluster module already executes the
+    package's own jax-carrying __init__, so sys.modules cannot distinguish
+    this file's cost from the package's."""
     import ast
     import inspect
     tree = ast.parse(inspect.getsource(fid))
@@ -74,11 +103,16 @@ def test_fidelity_module_body_imports_only_cheap_modules():
             top += [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom):
             top.append(node.module or "")
-    assert sorted(top) == [
-        "__future__", "argparse", "json", "os", "sys", "time",
-        "xcquinox.alec.cluster.grid_config",
-        "xcquinox.alec.cluster.materialize",
-    ], sorted(top)
+    assert top, "the module body imports nothing at all"
+    for name in top:
+        root = name.split(".")[0]
+        assert root not in _HEAVY_IMPORT_ROOTS, name
+        if root == "xcquinox":
+            assert name in _CHEAP_XCQ_MODULES, name
+    for deferred in ("xcquinox.alec.rungs", "xcquinox.alec.config",
+                     "xcquinox.alec.full_benchmark_pools",
+                     "xcquinox.alec.dfs_pretrain_set"):
+        assert deferred not in top, deferred
 
 
 def test_fidelity_imports_in_a_fresh_interpreter():
@@ -123,6 +157,42 @@ def test_certificate_status_unreadable(tmp_path):
     assert "JSON" in reason
 
 
+_UNACTIONABLE_VERDICTS = [
+    pytest.param({"arch": "deep_3x16"}, id="no-verdict-key"),
+    pytest.param({"arch": "deep_3x16", "verdict": "pass"}, id="wrong-case"),
+    pytest.param({"arch": "deep_3x16", "verdict": None}, id="null"),
+    pytest.param({"arch": "deep_3x16", "verdict": 1}, id="integer"),
+]
+
+
+@pytest.mark.parametrize("payload", _UNACTIONABLE_VERDICTS)
+def test_an_absent_or_unrecognised_verdict_is_unreadable(tmp_path, payload):
+    """A certificate that records no verdict, or one the module does not
+    recognise, states no outcome that can be acted on. Classifying it FAIL
+    would make it waivable by ``enforced: false``, so a truncated or
+    schema-less file would release an on-node gate; UNREADABLE never is."""
+    d = _write_payload(str(tmp_path), "deep_3x16", payload)
+    status, reason = fid.certificate_status_in(d)
+    assert status == "UNREADABLE", payload
+    assert status != fid.VERDICT_PASS
+    assert "verdict" in reason
+    assert fid.certificate_status(str(tmp_path), "deep_3x16")[0] != \
+        fid.VERDICT_PASS
+
+
+@pytest.mark.parametrize("payload", _UNACTIONABLE_VERDICTS)
+def test_an_absent_or_unrecognised_verdict_never_releases_the_gate(tmp_path,
+                                                                   payload):
+    """The same certificates, carrying the fullest waiver a run can write:
+    the gate still refuses, because only a recognised FAIL is waivable."""
+    payload = dict(payload, enforced=False,
+                   tolerances={"tol_AE": 1.0, "tol_atom": 1.0,
+                               "override_reason": "workflow matrix"})
+    _write_payload(str(tmp_path), "deep_3x16", payload)
+    allowed, _message = fid.gate_certificate(str(tmp_path), "deep_3x16")
+    assert allowed is False, payload
+
+
 def test_certificate_status_by_run_dir_and_arch_uses_the_harness_layout(tmp_path):
     from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
     _write_certificate(str(tmp_path), "deep_3x16")
@@ -155,6 +225,35 @@ def test_certificate_enforced_reads_the_recorded_flag(tmp_path):
     assert fid.certificate_enforced_in(d) is False
 
 
+@pytest.mark.parametrize("extra, enforced", [
+    pytest.param({}, True, id="absent"),
+    pytest.param({"enforced": None}, True, id="null"),
+    pytest.param({"enforced": True}, True, id="true"),
+    pytest.param({"enforced": False}, False, id="false"),
+    pytest.param({"enforced": "false"}, True, id="string"),
+    pytest.param({"enforced": 0}, True, id="integer"),
+])
+def test_only_an_explicit_false_waives_enforcement(tmp_path, extra, enforced):
+    """The waiver is the JSON literal ``false`` and nothing else. A truthiness
+    test reads ``null`` -- the value a certificate written without the field
+    populated carries -- as a waiver, and would release a FAIL on a node with
+    no run ever having asked for it."""
+    d = _write_certificate(str(tmp_path), "deep_3x16", verdict="FAIL", **extra)
+    assert fid.certificate_enforced_in(d) is enforced
+
+
+def test_the_gate_refuses_a_failure_whose_enforced_flag_is_null(tmp_path):
+    """The on-node consequence of the rule above, with a complete waiver
+    record otherwise: ``enforced: null`` is not a waiver."""
+    _write_certificate(str(tmp_path), "deep_3x16", verdict="FAIL",
+                       enforced=None,
+                       tolerances={"override_reason": "workflow matrix"},
+                       summary={"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7})
+    allowed, _message = fid.gate_certificate(str(tmp_path), "deep_3x16")
+    assert allowed is False
+
+
 def test_gate_allows_a_passing_certificate(tmp_path):
     _write_certificate(str(tmp_path), "deep_3x16", verdict="PASS")
     allowed, message = fid.gate_certificate(str(tmp_path), "deep_3x16")
@@ -185,6 +284,44 @@ def test_gate_allows_a_recorded_failure_when_enforcement_is_off(tmp_path):
     allowed, message = fid.gate_certificate(str(tmp_path), "deep_3x16")
     assert allowed is True
     assert "enforcement is OFF" in message
+    assert "workflow matrix" in message
+
+
+@pytest.mark.parametrize("tolerances", [
+    pytest.param(None, id="no-tolerances-block"),
+    pytest.param({"tol_AE": 1.0, "tol_atom": 1.0}, id="no-reason-field"),
+    pytest.param({"override_reason": None}, id="null"),
+    pytest.param({"override_reason": ""}, id="empty"),
+    pytest.param({"override_reason": "   "}, id="whitespace"),
+])
+def test_the_gate_refuses_a_waiver_that_records_no_reason(tmp_path,
+                                                          tolerances):
+    """``validate_grid_semantics`` refuses ``fidelity.enforce: false`` without
+    a non-empty ``fidelity.override_reason``. The on-node gate imposes the
+    same invariant on the certificate itself, so a hand-edited certificate or
+    resolved_config.yaml on a node cannot release a FAIL with no reason on the
+    record."""
+    extra = {} if tolerances is None else {"tolerances": tolerances}
+    _write_certificate(str(tmp_path), "deep_3x16", verdict="FAIL",
+                       enforced=False,
+                       summary={"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7},
+                       **extra)
+    allowed, message = fid.gate_certificate(str(tmp_path), "deep_3x16")
+    assert allowed is False, tolerances
+    assert "override_reason" in message
+
+
+def test_a_waiver_reason_is_accepted_with_surrounding_whitespace(tmp_path):
+    """Emptiness is judged on the stripped string, so a reason a human typed
+    with padding is a reason; the refusal above is for the empty ones only."""
+    _write_certificate(str(tmp_path), "deep_3x16", verdict="FAIL",
+                       enforced=False,
+                       tolerances={"override_reason": "  workflow matrix  "},
+                       summary={"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7})
+    allowed, message = fid.gate_certificate(str(tmp_path), "deep_3x16")
+    assert allowed is True
     assert "workflow matrix" in message
 
 
@@ -235,6 +372,22 @@ def test_distinct_archs_matches_the_pretrain_workers_selector():
 
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+def test_ha_to_kcal_is_the_harness_conversion_constant():
+    """The certificate reports atomization offsets in kcal/mol and the harness
+    reports its benchmark errors in kcal/mol; both must divide by one number.
+    The constant is therefore taken from the domain table rather than restated
+    here, where a truncated copy would put the certificate's tolerance and the
+    campaign's error metric on slightly different scales."""
+    from xcquinox.alec.cluster.domain import KCAL_PER_HA
+    assert fid.HA_TO_KCAL == KCAL_PER_HA
+    assert fid.HA_TO_KCAL is KCAL_PER_HA
+    assert fid.HA_TO_MHA == 1000.0
+
+
+# ---------------------------------------------------------------------------
 # Run identity
 # ---------------------------------------------------------------------------
 
@@ -258,6 +411,15 @@ def test_atom_system_names_are_canonical():
     assert fid.atom_system_name("F", -1) == "atom_F-"
     assert fid.atom_system_name("Na", 1) == "atom_Na+"
     assert fid.atom_system_name("O", -2) == "atom_O-2"
+
+
+def test_build_oracle_set_returns_a_tuple():
+    """The declared return type. Callers iterate the set more than once (the
+    certificate's per-system loop, then the atomization fold), so a generator
+    would silently be empty the second time."""
+    systems = fid.build_oracle_set(_cfg(), "deep_3x16")
+    assert isinstance(systems, tuple)
+    assert list(systems) == list(systems)
 
 
 def test_oracle_set_puts_atoms_first_then_molecules_each_sorted():
@@ -287,7 +449,7 @@ def test_oracle_set_carries_every_pool_free_atom_with_its_pool_spin():
     assert seen >= 14
 
 
-def test_oracle_set_carries_the_dfs_molecules_and_the_fixed_three():
+def test_oracle_set_carries_the_dfs_molecules_and_the_unconditional_three():
     systems = {ms.name for ms in fid.build_oracle_set(_cfg(), "deep_3x16")}
     for name in ("H2", "LiF", "AlCl3", "C4H6", "SiH4"):
         assert name in systems
@@ -295,10 +457,10 @@ def test_oracle_set_carries_the_dfs_molecules_and_the_fixed_three():
         assert name in systems
 
 
-def test_meta_gga_oracle_set_drops_h2_but_keeps_n2_from_the_fixed_three():
-    """The meta-GGA DFS variant omits H2 and N2; the fixed molecule set
-    restores N2, so every architecture is measured on a common N2 / H2O / CH4
-    core whatever its rung."""
+def test_meta_gga_oracle_set_drops_h2_but_keeps_n2_among_the_unconditional():
+    """The meta-GGA DFS variant omits H2 and N2; the three unconditional
+    molecules carry N2 for every rung, so every architecture is measured on a
+    common N2 / H2O / CH4 core whatever its rung."""
     gga = {ms.name for ms in fid.build_oracle_set(_cfg(), "deep_3x16")}
     mgga = {ms.name for ms in fid.build_oracle_set(_cfg(), "deep_mgga_3x16")}
     assert "H2" in gga and "H2" not in mgga
@@ -320,27 +482,10 @@ def test_oracle_set_adds_lithium_and_sodium_which_no_pool_carries():
     assert "atom_Li" in names and "atom_Na" in names
 
 
-def test_a_dfs_record_wins_over_the_fixed_molecule_of_the_same_name():
-    """A name the DFS set carries is certified at the DFS geometry, which is
-    the geometry the networks were pretrained on. N2 therefore comes from the
-    DFS record for a GGA rung and from the fixed set only for a meta-GGA one,
-    whose DFS variant drops it; CH4's two geometries are identical; H2O is in
-    neither DFS variant and always comes from the fixed set."""
-    from xcquinox.alec.dfs_pretrain_set import dfs_pretrain_records
-    dfs = {r["name"]: r for r in dfs_pretrain_records("gga")}
-    gga = {ms.name: ms for ms in fid.build_oracle_set(_cfg(), "deep_3x16")}
-    mgga = {ms.name: ms
-            for ms in fid.build_oracle_set(_cfg(), "deep_mgga_3x16")}
-    fixed = {name: atom for name, atom, _c, _s in fid._FIXED_MOLECULES}
-    assert gga["N2"].atom == dfs["N2"]["atom"] != fixed["N2"]
-    assert gga["CH4"].atom == dfs["CH4"]["atom"] == fixed["CH4"]
-    assert mgga["N2"].atom == fixed["N2"]
-    assert gga["H2O"].atom == mgga["H2O"].atom == fixed["H2O"]
-
-
-def test_a_fixed_molecule_composition_counts_every_nucleus():
+def test_an_unconditional_molecule_composition_counts_every_nucleus():
     """The atomization fold weights each free atom's offset by its count, so
-    a fixed molecule's composition carries counts, not just the element set."""
+    an unconditional molecule's composition carries counts, not just the
+    element set."""
     gga = {ms.name: ms for ms in fid.build_oracle_set(_cfg(), "deep_3x16")}
     mgga = {ms.name: ms
             for ms in fid.build_oracle_set(_cfg(), "deep_mgga_3x16")}
@@ -348,15 +493,39 @@ def test_a_fixed_molecule_composition_counts_every_nucleus():
     assert mgga["N2"].atom_composition == (("N", 2),)
 
 
-def test_an_element_with_no_ground_state_spin_is_refused(tmp_path,
-                                                         monkeypatch):
+def test_an_element_with_no_ground_state_spin_is_refused(monkeypatch):
     """A molecule whose element has no recorded ground-state spin has no
     atomization reference; the oracle set refuses it instead of silently
     dropping the free atom the fold needs."""
-    monkeypatch.setattr(fid, "_FIXED_MOLECULES",
-                        (("KrH", "Kr 0 0 0; H 0 0 1.4", 0, 1),))
+    import xcquinox.alec.dfs_pretrain_set as dfs_set
+    records = dfs_set.dfs_pretrain_records("gga")
+    records.append({"name": "KrH", "kind": "molecule",
+                    "atom": "Kr 0.0 0.0 0.0; H 0.0 0.0 1.4",
+                    "charge": 0, "spin": 1,
+                    "atom_composition": [["H", 1], ["Kr", 1]]})
+    monkeypatch.setattr(dfs_set, "dfs_pretrain_records",
+                        lambda level: records)
     with pytest.raises(ValueError, match="ground-state spin"):
         fid.build_oracle_set(_cfg(), "deep_3x16")
+
+
+def test_a_dfs_records_composition_is_sorted_into_its_spec(monkeypatch):
+    """``dfs_pretrain_systems`` sorts the composition it reads from the file
+    rather than trusting the file's order, because MoleculeSpec is frozen and
+    hashes every field: two orderings of one molecule are two different specs
+    and two precompute-cache entries. The oracle set is built from the same
+    records and sorts identically, so the certificate and the pretraining
+    pipeline cannot disagree about a molecule's identity."""
+    import xcquinox.alec.dfs_pretrain_set as dfs_set
+    records = dfs_set.dfs_pretrain_records("gga")
+    records.append({"name": "OH_probe", "kind": "molecule",
+                    "atom": "O 0.0 0.0 0.0; H 0.0 0.0 0.97",
+                    "charge": 0, "spin": 1,
+                    "atom_composition": [["O", 1], ["H", 1]]})
+    monkeypatch.setattr(dfs_set, "dfs_pretrain_records",
+                        lambda level: records)
+    systems = {ms.name: ms for ms in fid.build_oracle_set(_cfg(), "deep_3x16")}
+    assert systems["OH_probe"].atom_composition == (("H", 1), ("O", 1))
 
 
 def test_sources_that_disagree_on_a_free_atom_spin_are_refused(monkeypatch):
@@ -405,3 +574,72 @@ def test_is_atom_system():
                        spin=1, atom_composition=(("H", 1), ("O", 1)))
     assert fid.is_atom_system(atom)
     assert not fid.is_atom_system(mol)
+
+
+# ---------------------------------------------------------------------------
+# The three unconditional molecules are ONE molecule for every rung
+# ---------------------------------------------------------------------------
+
+def test_unconditional_molecules_are_identical_across_rungs():
+    """dAE(H2O), dAE(N2) and dAE(CH4) are the certificate's headline numbers
+    and the ones spec Section 2 tabulates. They are comparable between a
+    GGA-rung and a meta-GGA architecture only if both are computed on the SAME
+    molecule, so all three come from the pools whatever the rung."""
+    gga = {ms.name: ms for ms in fid.build_oracle_set(_cfg(), "deep_3x16")}
+    mgga = {ms.name: ms
+            for ms in fid.build_oracle_set(_cfg(), "deep_mgga_3x16")}
+    for name in ("H2O", "N2", "CH4"):
+        assert name in gga and name in mgga, name
+        assert gga[name].atom == mgga[name].atom, name
+        assert gga[name].spin == mgga[name].spin, name
+        assert gga[name].charge == mgga[name].charge, name
+        assert gga[name].atom_composition == mgga[name].atom_composition, name
+
+
+def test_unconditional_molecules_carry_the_pool_geometry():
+    """The pool species are the ones the held-out atomization energies are
+    scored on, so the certificate measures the functional on the geometry the
+    campaign reports."""
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+    pool, _rxns = load_full_held_out_pools(basis="sto-3g", grid_level=1)
+    systems = {ms.name: ms for ms in fid.build_oracle_set(_cfg(), "deep_3x16")}
+    assert fid._FIXED_MOLECULE_POOL_NAMES == (
+        ("H2O", "H2O"), ("N2", "n2"), ("CH4", "CH4"))
+    for name, pool_key in fid._FIXED_MOLECULE_POOL_NAMES:
+        source = pool[pool_key]
+        assert systems[name].atom == source.atom, name
+        assert systems[name].spin == source.spin, name
+        assert systems[name].charge == source.charge, name
+        # The pool spec may carry a benchmark reference path; the certificate's
+        # copy must not, or the precompute would try to load and shape-check it.
+        assert systems[name].external_data_path is None, name
+
+
+def test_a_dfs_record_never_overrides_an_unconditional_molecule():
+    """The DFS pretraining set carries N2 (at its GGA level only) and CH4 at
+    its own geometries. Neither may win, or the same architecture family is
+    certified on two different N2 molecules depending on its rung."""
+    from xcquinox.alec.dfs_pretrain_set import dfs_pretrain_records
+    dfs = {r["name"]: r for r in dfs_pretrain_records("gga")}
+    systems = {ms.name: ms for ms in fid.build_oracle_set(_cfg(), "deep_3x16")}
+    for name in ("N2", "CH4"):
+        assert name in dfs, f"the DFS set no longer carries {name}"
+        assert systems[name].atom != dfs[name]["atom"], (
+            f"{name} resolved to the DFS geometry; the pool geometry must win")
+
+
+def test_the_dfs_molecules_keep_their_own_geometries():
+    """Only the three unconditional names are overridden. Every other DFS
+    molecule is still certified at the geometry it was pretrained on."""
+    from xcquinox.alec.dfs_pretrain_set import dfs_pretrain_records
+    dfs = {r["name"]: r for r in dfs_pretrain_records("gga")
+           if r["kind"] == "molecule"}
+    systems = {ms.name: ms for ms in fid.build_oracle_set(_cfg(), "deep_3x16")}
+    overridden = {name for name, _key in fid._FIXED_MOLECULE_POOL_NAMES}
+    checked = 0
+    for name, record in dfs.items():
+        if name in overridden:
+            continue
+        assert systems[name].atom == record["atom"], name
+        checked += 1
+    assert checked >= 18

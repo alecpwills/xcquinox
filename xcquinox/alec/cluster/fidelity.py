@@ -7,15 +7,17 @@ functional in ENERGY units. For one architecture the certificate evaluates
 
 through the production energy path, on the parent's own self-consistent
 density, at the run's SCF identity, for every free atom of the BH76 / W4-11
-pools, the DFS pretraining molecules and a fixed molecule set; the molecular
-differences are folded against the free atoms into atomization-energy offsets
+pools, the DFS pretraining molecules and three common molecules taken from the
+pools; the molecular differences are folded against the free atoms into
+atomization-energy offsets
 
     dAE(mol) = dE_xc(mol) - sum_atoms n_atom * dE_xc(atom).
 
 PASS requires max |dE_xc| over the free atoms <= tol_atom (mHa) AND max |dAE|
-<= tol_AE (kcal/mol). The parent is PBE for a GGA-rung architecture and SCAN
-for a meta-GGA one (rungs.seed_xc_for_arch), which is what each rung was
-pretrained against.
+<= tol_AE (kcal/mol) AND the oracle tests O1-O4 passing on the installed code
+(SPEC_pretrain_fidelity_program.md Section 3.3, item 4). The parent is PBE for
+a GGA-rung architecture and SCAN for a meta-GGA one (rungs.seed_xc_for_arch),
+which is what each rung was pretrained against.
 
 The verdict, every number, the run identity and the installed code version go
 to ``<run_dir>/pretrain/<arch>/fidelity_certificate.json``. The pretrain
@@ -41,36 +43,35 @@ unconditionally, so a non-enforcing run can never become a quantitative
 result.
 
 IMPORT WEIGHT (a contract, pinned by an AST test on this file's source): the
-MODULE BODY imports only ``__future__``, ``argparse``, ``json``, ``os``,
-``sys``, ``time``, ``grid_config`` and ``materialize``. Every jax / equinox /
-pyscf / ``xcquinox.alec.data`` import happens INSIDE a function, so the login
-node CLI, the run validator, the train task's parent process and the analysis
-layer read a certificate without this file pulling a model or an SCF stack.
+MODULE BODY carries no jax / equinox / pyscf / numpy import and no
+``xcquinox`` import outside the cheap cluster readers (``grid_config``,
+``domain``, ``materialize``, each stdlib-only in its own body). Every jax /
+equinox / pyscf / ``xcquinox.alec.data`` import happens INSIDE a function, so
+the login node CLI, the run validator, the train task's parent process and the
+analysis layer read a certificate without this file pulling a model or an SCF
+stack.
 """
 from __future__ import annotations
 
-# argparse, sys and time, together with ``load_grid_config`` and
-# ``_write_json_atomic``, are the certificate writer's and its node CLI's;
-# they are listed here because the import-weight contract above fixes this
-# file's whole module-body import set, not because the readers below use them.
-import argparse
 import json
 import os
-import sys
-import time
 
+from xcquinox.alec.cluster.domain import KCAL_PER_HA
 from xcquinox.alec.cluster.grid_config import (
-    _canon_axis, load_grid_config, pretrain_checkpoint_dir,
+    _canon_axis, pretrain_checkpoint_dir,
 )
-from xcquinox.alec.cluster.materialize import _write_json_atomic
 
 
 CERTIFICATE_FILENAME = "fidelity_certificate.json"
 VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
 
-# CODATA-consistent conversions, matching the harness domain tables.
-HA_TO_KCAL = 627.509474
+# One Hartree in kcal/mol, taken from the harness domain table rather than
+# restated here (domain.KCAL_PER_HA, CODATA-2018, cited at its definition).
+# The certificate's atomization offsets and the campaign's benchmark errors
+# are read against the same kcal/mol tolerances, so a locally truncated copy
+# would put the two on slightly different scales.
+HA_TO_KCAL = KCAL_PER_HA
 HA_TO_MHA = 1000.0
 
 # The parent XC energy is computed two independent ways per system: point-wise
@@ -101,27 +102,28 @@ _ATOM_GROUND_SPIN: dict[str, int] = {
     "Na": 1, "Mg": 0, "Al": 1, "Si": 2, "P": 3, "S": 2, "Cl": 1,
 }
 
-# Molecules the certificate always carries, on top of the pools' free atoms
-# and the DFS molecules: the three systems the pre-certificate offsets were
-# measured on (SPEC_pretrain_fidelity_program.md Section 2), so every
-# architecture is measured on the same three molecular names whatever its
-# rung. A DFS record of the same name wins, being the geometry the networks
-# were pretrained on, so at the GGA level only H2O is taken from here; a
-# meta-GGA rung, whose DFS variant drops N2, takes N2 from here as well, at
-# r = 1.0977 A against the DFS record's r = 1.0988 A. CH4 is the G2/97 entry
-# and is byte-identical to the DFS record. Geometry in Angstrom; the H2O
-# structure is r = 0.9579 A with a 104.42 degree bond angle.
-_FIXED_MOLECULES: tuple[tuple[str, str, int, int], ...] = (
-    ("H2O", "O 0.0000000000 0.0000000000 0.0000000000; "
-            "H 0.0000000000 0.7570000000 0.5870000000; "
-            "H 0.0000000000 -0.7570000000 0.5870000000", 0, 0),
-    ("N2", "N 0.0000000000 0.0000000000 0.0000000000; "
-           "N 0.0000000000 0.0000000000 1.0977000000", 0, 0),
-    ("CH4", "C 0.0000000000 0.0000000000 0.0000000000; "
-            "H 0.6303820000 0.6303820000 0.6303820000; "
-            "H -0.6303820000 -0.6303820000 0.6303820000; "
-            "H 0.6303820000 -0.6303820000 -0.6303820000; "
-            "H -0.6303820000 0.6303820000 -0.6303820000", 0, 0),
+# The three molecules the pre-certificate offsets were measured on
+# (SPEC_pretrain_fidelity_program.md Section 2). Every certificate carries all
+# three, whatever the architecture's rung, at the BH76 / W4-11 POOL geometry --
+# mapped here from the pool's own species key to the certificate's canonical
+# name. Resolving them from the pool rather than from a literal table is what
+# makes dAE(H2O), dAE(N2) and dAE(CH4) one physical quantity across rungs: the
+# DFS pretraining set carries N2 only at its GGA level and at a different bond
+# length (1.0987920 A against the pool's 1.0971114 A) and CH4 at a different
+# r(CH) (1.0918537 A against 1.0874456 A), so a DFS record of one of these
+# three names must never win. The three are therefore certified at the pool
+# geometry, not at the DFS pretraining geometry; the pool species are also the
+# ones the held-out atomization energies are scored on. All three keys resolve
+# to BH76 entries -- "H2O" and "CH4" exist only there, and "n2" is in both
+# sets, where the merge keeps BH76 (load_full_held_out_pools) -- so the three
+# come from one benchmark's geometries and the certificate does not invent a
+# second merge policy. The lower-case W4-11 twins ("h2o", "ch4") carry the
+# same molecules at other geometries and are deliberately not used. Pool H2O
+# is r = 0.9569131 A with a 104.5169 degree bond angle.
+_FIXED_MOLECULE_POOL_NAMES: tuple[tuple[str, str], ...] = (
+    ("H2O", "H2O"),
+    ("N2", "n2"),
+    ("CH4", "CH4"),
 )
 
 
@@ -154,9 +156,16 @@ def certificate_status_in(pretrain_dir: str) -> tuple[str, str]:
     """``(status, reason)`` for the certificate in ``pretrain_dir``.
 
     ``status`` is ``"PASS"``, ``"FAIL"``, ``"MISSING"`` (no file) or
-    ``"UNREADABLE"`` (file present but not a JSON object). Only ``"PASS"``
-    releases a gate: an unreadable certificate is unverifiable, and an
-    unverifiable certificate is refused.
+    ``"UNREADABLE"`` (file present but not a JSON object, or recording no
+    verdict this module recognises). Only ``"PASS"`` releases a gate: an
+    unreadable certificate is unverifiable, and an unverifiable certificate is
+    refused.
+
+    ``"FAIL"`` is returned only for a certificate that literally records
+    ``"FAIL"``. An absent, misspelt or mis-cased verdict is UNREADABLE and not
+    FAIL, because FAIL is the one status a run can waive through
+    ``enforced: false``: reading an unrecognised verdict as FAIL would let a
+    truncated or schema-less file be waived through an on-node gate.
     """
     path = certificate_path_in(pretrain_dir)
     if not os.path.isfile(path):
@@ -174,6 +183,11 @@ def certificate_status_in(pretrain_dir: str) -> tuple[str, str]:
     verdict = payload.get("verdict")
     if verdict == VERDICT_PASS:
         return VERDICT_PASS, "fidelity certificate PASS"
+    if verdict != VERDICT_FAIL:
+        return "UNREADABLE", (
+            f"{path} records verdict {verdict!r}, which is neither "
+            f"{VERDICT_PASS!r} nor {VERDICT_FAIL!r}: the file states no "
+            "outcome that can be acted on")
     summary = payload.get("summary") or {}
     return VERDICT_FAIL, (
         f"fidelity certificate verdict {verdict!r} at {path} "
@@ -199,22 +213,36 @@ def certificate_enforced_in(pretrain_dir: str) -> bool:
     ``"enforced": false``. Absent, unreadable, or written before the field
     existed -> ``True``: enforcement can only be waived by a certificate that
     exists to record the waiver.
+
+    The waiver is the JSON literal ``false`` and nothing else. A truthiness
+    test would read ``"enforced": null`` -- the value a writer that left the
+    field unpopulated emits -- as a waiver, so a certificate no run ever asked
+    to be non-enforcing would release a FAIL. A value of any other type is
+    likewise not a waiver.
     """
     payload = read_certificate(pretrain_dir)
     if not payload:
         return True
-    return bool(payload.get("enforced", True))
+    return payload.get("enforced", True) is not False
 
 
 def gate_certificate(run_dir: str, arch: str) -> tuple[bool, str]:
     """``(allowed, message)`` for an ON-NODE gate.
 
     ``allowed`` is True when the certificate PASSes, and also when it exists,
-    FAILs, and records ``enforced: false`` -- the workflow-verification
-    matrix, whose short pretraining runs cannot meet the tolerance yet must
-    exercise the train and eval wiring with the real verdict written down. A
-    MISSING or UNREADABLE certificate is never allowed: there is then no
-    record of what was measured or of any waiver.
+    FAILs, records ``enforced: false`` AND names a non-empty
+    ``tolerances.override_reason`` -- the workflow-verification matrix, whose
+    short pretraining runs cannot meet the tolerance yet must exercise the
+    train and eval wiring with the real verdict written down. A MISSING or
+    UNREADABLE certificate is never allowed: there is then no record of what
+    was measured or of any waiver.
+
+    The reason is required here and not only in the configuration.
+    ``validate_grid_semantics`` refuses ``fidelity.enforce: false`` without a
+    non-empty ``fidelity.override_reason``, and this gate re-imposes the same
+    invariant on the certificate it reads, so a hand-edited certificate or
+    ``resolved_config.yaml`` on a compute node cannot release a stage with no
+    reason on the record.
 
     The record layers do NOT call this. ``validate_run``, ``merge_v4_arms``
     and the figure loaders require PASS through :func:`certificate_status`, so
@@ -229,8 +257,18 @@ def gate_certificate(run_dir: str, arch: str) -> tuple[bool, str]:
     if certificate_enforced_in(pretrain_dir):
         return False, reason
     payload = read_certificate(pretrain_dir) or {}
-    override = ((payload.get("tolerances") or {}).get("override_reason")
-                or "(no reason recorded)")
+    tolerances = payload.get("tolerances")
+    if not isinstance(tolerances, dict):
+        tolerances = {}
+    recorded = tolerances.get("override_reason")
+    override = "" if recorded is None else str(recorded).strip()
+    if not override:
+        return False, (
+            f"{reason}; the certificate records enforced=false but its "
+            "tolerances.override_reason is empty, so the waiver states no "
+            "reason. Disabling the on-node gates requires a non-empty "
+            "fidelity.override_reason, which validate_grid_semantics imposes "
+            "on the configuration and this gate re-checks on the certificate.")
     return True, (
         f"{reason}; enforcement is OFF for this run "
         f"(fidelity.enforce=false, override_reason: {override}) so the "
@@ -319,15 +357,6 @@ def is_atom_system(mol_spec) -> bool:
     return len(comp) == 1 and int(comp[0][1]) == 1
 
 
-def _composition_from_atom_string(atom: str):
-    """Sorted ``((symbol, count), ...)`` from a PySCF geometry string."""
-    counts: dict[str, int] = {}
-    for field in atom.split(";"):
-        symbol = field.strip().split()[0]
-        counts[symbol] = counts.get(symbol, 0) + 1
-    return tuple((s, counts[s]) for s in sorted(counts))
-
-
 def build_oracle_set(cfg, arch_name: str) -> tuple:
     """The certificate's systems for ``arch_name``, in a byte-stable order.
 
@@ -339,11 +368,25 @@ def build_oracle_set(cfg, arch_name: str) -> tuple:
         and spin (the species the held-out atomization energies are built from);
       * the DFS pretraining set at the level matching the architecture's
         parent (30 systems for a GGA rung, 28 for a meta-GGA one);
-      * H2O, N2 and CH4, the three molecules the pre-certificate offsets were
-        measured on, unless the DFS set already carries the name;
+      * H2O, N2 and CH4 -- the three molecules the pre-certificate offsets were
+        measured on -- at the POOL geometry, for every rung, overriding any DFS
+        record of the same name so the three headline atomization offsets are
+        the same physical quantity across architectures;
       * one neutral ground-state free atom for every element any molecule
         dissociates into (Li and Na appear in the DFS molecules but in neither
         pool), so every atomization offset can be formed.
+
+    ELEMENT COVERAGE. Spec Section 3.3 item 2 describes the common molecules
+    as "spanning the pool's elements"; the program's decision (Section 2) is
+    the three molecules whose offsets were measured, and those span only H, C,
+    N and O. B, Be and S are therefore free atoms of the oracle set that no
+    oracle molecule contains: for those three elements the networks are
+    certified as free atoms and never in a molecular environment, so no dAE
+    constrains them. The divergence is deliberate -- the atomization tolerance
+    is stated on the three molecules Section 2 tabulates offsets for, and a B-,
+    Be- or S-bearing molecule would enter the verdict with no measured
+    baseline behind it. Widening the molecular set is a change to the program,
+    not to this function.
     """
     from xcquinox.alec.config import MoleculeSpec
     from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
@@ -378,20 +421,35 @@ def build_oracle_set(cfg, arch_name: str) -> tuple:
             _add_atom(record["atom_composition"][0][0], record["charge"],
                       record["spin"], "DFS pretraining set")
             continue
+        # The composition is sorted rather than trusted from the record, as
+        # dfs_pretrain_systems sorts it: MoleculeSpec is frozen and hashes
+        # every field, so two orderings of one molecule are two unequal specs
+        # and two precompute-cache entries.
         molecules[record["name"]] = MoleculeSpec(
             name=record["name"], atom=record["atom"], basis=basis,
             charge=int(record["charge"]), spin=int(record["spin"]),
-            atom_composition=tuple((str(s), int(n))
-                                   for s, n in record["atom_composition"]),
+            atom_composition=tuple(sorted((str(s), int(n))
+                                          for s, n in
+                                          record["atom_composition"])),
             grid_level=grid_level)
 
-    for name, atom, charge, spin in _FIXED_MOLECULES:
-        if name in molecules:
-            continue
+    # The three common molecules override any DFS record of the same name, so
+    # every rung's certificate measures the same H2O, N2 and CH4. The DFS
+    # molecules that are not among the three keep their own geometries, which
+    # are the geometries their pretraining rows were generated at.
+    for name, pool_key in _FIXED_MOLECULE_POOL_NAMES:
+        source = pool_specs.get(pool_key)
+        if source is None:
+            raise ValueError(
+                f"the BH76 / W4-11 pools carry no species {pool_key!r}, so "
+                f"the certificate's unconditional molecule {name!r} cannot be "
+                "resolved to a pool geometry")
         molecules[name] = MoleculeSpec(
-            name=name, atom=atom, basis=basis, charge=int(charge),
-            spin=int(spin),
-            atom_composition=_composition_from_atom_string(atom),
+            name=name, atom=source.atom, basis=basis,
+            charge=int(source.charge), spin=int(source.spin),
+            atom_composition=tuple(sorted((str(s), int(n))
+                                          for s, n in
+                                          source.atom_composition)),
             grid_level=grid_level)
 
     for ms in molecules.values():
