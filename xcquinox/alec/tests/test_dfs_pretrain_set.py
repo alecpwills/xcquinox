@@ -7,6 +7,7 @@ trajectory (Theor. Chem. Acc. 131, 1112 (2012)), all molecules run closed
 shell. These tests pin the count, the names, the spins and two geometries so
 a regenerated JSON that silently changes the set is caught.
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -185,6 +186,28 @@ def test_committed_json_equals_a_fresh_export_from_the_trajectory():
     assert exporter.build(exporter.DEFAULT_TRAJ) == committed
 
 
+_COMMITTED_SHA256 = \
+    "d1599b796ea344e25b4f6cad5dd628115bc01c643e2662a1066bb818bd9b6900"
+
+
+def test_committed_json_bytes_carry_the_pinned_digest():
+    """The committed data file hashes to the digest pinned above.
+
+    The pin is a deliberate change detector, not a checksum of convenience:
+    it fires on any edit of the bytes -- a single coordinate moved by
+    0.05 A included -- and it fires everywhere, whereas
+    ``test_committed_json_equals_a_fresh_export_from_the_trajectory`` skips
+    wherever the exporter script, the trajectory or ASE is absent (installed
+    wheels, compute nodes). Any regeneration of the set must therefore update
+    the literal above in the same change; the regeneration test, where it
+    runs, is what establishes that the new bytes are a faithful export of the
+    trajectory rather than an accepted corruption.
+    """
+    from xcquinox.alec.dfs_pretrain_set import _DATA_PATH
+    digest = hashlib.sha256(Path(_DATA_PATH).read_bytes()).hexdigest()
+    assert digest == _COMMITTED_SHA256, _DATA_PATH
+
+
 # ---------------------------------------------------------------------------
 # Name against geometry
 #
@@ -226,11 +249,17 @@ def test_parser_reproduces_every_committed_name():
 
 
 def test_every_record_name_matches_its_geometry():
-    """The formula the name declares equals the composition of the geometry.
+    """The formula the name declares equals the record's stored composition.
 
     This is the check that fails when a trajectory index is swapped between
     two records or shifted by one: the record keeps its name while carrying
-    another species' coordinates.
+    another species' coordinates, and the composition exported alongside them
+    spells that other species. The stored composition is tied to the geometry
+    string itself by
+    ``test_atom_composition_matches_the_geometry_for_every_record`` and, by
+    atom count, by ``test_parser_reproduces_every_committed_name``; the three
+    together close the loop from name to coordinates, which no one of them
+    closes alone.
     """
     for r in dfs_pretrain_records("gga"):
         assert formula_from_name(r["name"]) == _pairs(r["atom_composition"]), \
