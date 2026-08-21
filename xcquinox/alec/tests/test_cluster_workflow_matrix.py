@@ -14,6 +14,7 @@ from __future__ import annotations
 import keyword
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -156,6 +157,46 @@ def test_stage_cached_inputs_repairs_a_partial_stage(tmp_path):
     assert not list(refs.parent.glob("external_refs.partial-*"))
 
 
+def test_stage_cached_inputs_never_publishes_an_interrupted_copy(tmp_path,
+                                                                  monkeypatch):
+    """An interrupted copy must stay under its ``.partial-<pid>`` name.
+
+    The copy is built beside the destination and moved in with ``os.replace``
+    only after the manifest is written, so a copy that dies part-way (a full
+    filesystem, a killed job) leaves nothing at the destination path. Copying
+    into the destination directly and writing the manifest at the end would
+    leave a half-populated directory that the next call has to repair; here
+    there is nothing to repair.
+    """
+    real_copy2 = shutil.copy2
+    state = {"n": 0, "fail_after": 20}
+
+    def counting_copy2(src, dst, *args, **kwargs):
+        state["n"] += 1
+        if state["n"] > state["fail_after"]:
+            raise OSError(28, "No space left on device")
+        return real_copy2(src, dst, *args, **kwargs)
+    monkeypatch.setattr(shutil, "copy2", counting_copy2)
+
+    with pytest.raises(shutil.Error):
+        wm.stage_cached_inputs(tmp_path, repo_root=wm.repo_root_path())
+    refs = tmp_path / "_inputs" / "external_refs"
+    assert not refs.exists(), (
+        "an interrupted copy was published at the destination path")
+    partial = refs.parent / f"external_refs.partial-{os.getpid()}"
+    assert partial.is_dir(), "the interrupted copy is kept under its own name"
+    assert not (partial / wm.STAGE_MARKER).exists(), (
+        "the manifest is written before the rename, not before the copy")
+
+    state["fail_after"] = float("inf")
+    staged = wm.stage_cached_inputs(tmp_path, repo_root=wm.repo_root_path())
+    assert Path(staged["external_refs_dir"]) == refs
+    # 165 files at the measured cache size.
+    assert _staged_relpaths(refs) == _cached_relpaths()
+    assert not partial.exists(), (
+        "this process's partial copy must be cleared, not accumulated")
+
+
 def test_stage_cached_inputs_names_the_missing_cache(tmp_path):
     """``notebooks/checkpoints_step7/`` is untracked (.gitignore), so a fresh
     clone, a worktree or the cluster repository has neither the references nor
@@ -167,15 +208,76 @@ def test_stage_cached_inputs_names_the_missing_cache(tmp_path):
                                repo_root=tmp_path / "empty_repo")
 
 
+def _fake_staged_refs(path) -> Path:
+    """A directory carrying what a staged reference copy carries.
+
+    A supplied ``external_refs_dir`` is checked for the staging manifest or a
+    species ``.npz``, so a test that needs only a supplied PATH (rather than
+    the 74 MB of references behind it) builds one here instead of staging.
+    """
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "H2O.npz").write_bytes(b"")
+    return path
+
+
 def test_write_matrix_yaml_checks_the_ledger_on_the_shared_refs_path(tmp_path):
     """With ``external_refs_dir`` supplied the staging branch is skipped, so
     the ledger check has to stand on its own: otherwise a wrong ``repo_root``
     renders a config whose ``subset_ledger_path`` does not exist, and
-    ``validate_grid_semantics`` (which does not stat that path) accepts it."""
+    ``validate_grid_semantics`` (which does not stat that path) accepts it.
+    The references are supplied intact so the ledger is the only defect."""
     with pytest.raises(wm.CachedInputsMissing, match="subset_index_log.json"):
         wm.write_matrix_yaml("deep", tmp_path / "deep",
                              repo_root=tmp_path / "empty_repo",
-                             external_refs_dir=tmp_path / "refs")
+                             external_refs_dir=_fake_staged_refs(
+                                 tmp_path / "refs"))
+
+
+def test_write_matrix_yaml_refuses_a_supplied_refs_dir_that_is_absent(tmp_path):
+    """A supplied ``external_refs_dir`` is an INPUT -- the shared copy an
+    earlier ``stage_cached_inputs`` wrote -- so a mistyped path has to be
+    refused rather than created. ``validate_grid_semantics`` never stats
+    ``inputs.external_refs_dir`` (only ``pretrain.data_dir`` and the parent of
+    ``inputs.output_root`` are checked, both advisory), so an empty directory
+    created here passes the login-node gate and moves the failure to a compute
+    node, at the first reference read."""
+    absent = tmp_path / "mistyped_refs"
+    with pytest.raises(wm.CachedInputsMissing,
+                       match=re.escape(os.path.realpath(absent))):
+        wm.write_matrix_yaml("deep", tmp_path / "deep",
+                             repo_root=wm.repo_root_path(),
+                             external_refs_dir=absent)
+    assert not absent.exists(), (
+        "a supplied external_refs_dir is an input; the renderer must not "
+        "create it")
+
+
+def test_write_matrix_yaml_refuses_an_empty_supplied_refs_dir(tmp_path):
+    """Existence is not the criterion. A directory holding neither the staging
+    manifest nor a species ``.npz`` carries no references, so accepting it
+    would defer the same failure to a compute node."""
+    empty = tmp_path / "empty_refs"
+    empty.mkdir()
+    with pytest.raises(wm.CachedInputsMissing,
+                       match=re.escape(os.path.realpath(empty))):
+        wm.write_matrix_yaml("deep", tmp_path / "deep",
+                             repo_root=wm.repo_root_path(),
+                             external_refs_dir=empty)
+
+
+def test_write_matrix_yaml_accepts_a_staged_supplied_refs_dir(tmp_path):
+    """The acceptance criterion is what the staging actually writes: the
+    output of ``stage_cached_inputs`` is accepted unchanged, which is the
+    shared-directory case the matrix runs (one copy per shard)."""
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    staged = Path(wm.stage_cached_inputs(
+        tmp_path / "shard",
+        repo_root=wm.repo_root_path())["external_refs_dir"])
+    cfg = load_grid_config(str(wm.write_matrix_yaml(
+        "deep", tmp_path / "deep", repo_root=wm.repo_root_path(),
+        external_refs_dir=staged)))
+    assert cfg.inputs.external_refs_dir == str(staged.resolve())
 
 
 def test_rendered_walltimes_are_quoted_and_reload_as_strings(tmp_path,
@@ -199,13 +301,71 @@ def test_rendered_walltimes_are_quoted_and_reload_as_strings(tmp_path,
 
     path = wm.write_matrix_yaml("deep", tmp_path / "deep",
                                 repo_root=wm.repo_root_path(),
-                                external_refs_dir=tmp_path / "refs")
+                                external_refs_dir=_fake_staged_refs(
+                                    tmp_path / "refs"))
     assert "time: '8:00:00'" in path.read_text()
     cfg = load_grid_config(str(path))
     for field in ("time", "preflight_time", "eval_time", "pretrain_time"):
         value = getattr(cfg.cluster, field)
         assert isinstance(value, str), (field, value, type(value).__name__)
         assert value == "8:00:00", (field, value)
+
+
+def _template_with_walltime(tmp_path, monkeypatch, token) -> Path:
+    """The shipped template with every ``"00:30:00"`` walltime replaced."""
+    mutant = tmp_path / "walltime_template.yaml"
+    mutant.write_text(
+        wm.template_path().read_text().replace('"00:30:00"', token))
+    monkeypatch.setattr(wm, "template_path", lambda: mutant)
+    return mutant
+
+
+@pytest.mark.parametrize("token,loads_as", [
+    ('"30"', "30"),
+    ("30", 30),
+    ('"30:00"', "30:00"),
+    ("30:00", 1800),
+    ('"8:00"', "8:00"),
+])
+def test_walltime_that_is_not_a_clock_is_refused(tmp_path, monkeypatch,
+                                                 token, loads_as):
+    """Quoting is not the criterion, the SHAPE is.
+
+    SLURM reads a bare integer as MINUTES and ``MM:SS`` as minutes and seconds,
+    while every walltime field of this harness is documented as HH:MM:SS. A
+    quoted ``"30"`` loads as a string and would reach ``#SBATCH --time=30`` --
+    half an hour where thirty hours were meant -- exactly as the unquoted 30
+    does, so the shape is checked on the loaded string as well as on the source
+    token.
+    """
+    import yaml
+    mutant = _template_with_walltime(tmp_path, monkeypatch, token)
+    assert yaml.safe_load(mutant.read_text())["cluster"]["time"] == loads_as, (
+        "the mutant must be the case under test")
+    with pytest.raises(ValueError, match="HH:MM:SS"):
+        wm.write_matrix_yaml("deep", tmp_path / "deep",
+                             repo_root=wm.repo_root_path(),
+                             external_refs_dir=_fake_staged_refs(
+                                 tmp_path / "refs"))
+
+
+@pytest.mark.parametrize("token,value", [
+    ('"8:00:00"', "8:00:00"),
+    ("8:00:00", "8:00:00"),
+    ('"48:00:00"', "48:00:00"),
+    ('"1-00:00:00"', "1-00:00:00"),
+])
+def test_walltime_accepts_the_slurm_clock_forms(tmp_path, monkeypatch,
+                                                token, value):
+    """``H:MM:SS`` and ``D-HH:MM:SS`` are the two forms SLURM reads as a wall
+    clock rather than as minutes; both survive the round trip."""
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    _template_with_walltime(tmp_path, monkeypatch, token)
+    cfg = load_grid_config(str(wm.write_matrix_yaml(
+        "deep", tmp_path / "deep", repo_root=wm.repo_root_path(),
+        external_refs_dir=_fake_staged_refs(tmp_path / "refs"))))
+    for field in ("time", "preflight_time", "eval_time", "pretrain_time"):
+        assert getattr(cfg.cluster, field) == value, field
 
 
 def test_write_matrix_yaml_renders_one_arch_and_two_cells(tmp_path):
@@ -232,33 +392,36 @@ def test_write_matrix_yaml_paths_are_absolute_and_outside_the_repository(
     out = tmp_path / "deep"
     cfg = load_grid_config(str(wm.write_matrix_yaml(
         "deep", out, repo_root=wm.repo_root_path())))
-    repo = str(wm.repo_root_path())
+    # Real paths on both sides: the rendered paths are resolved, so a repository
+    # reached through a symlink (or a cache directory that is one, as it is on
+    # cluster scratch) would otherwise make a string prefix answer a question
+    # about identity.
+    repo = os.path.realpath(wm.repo_root_path())
     for value in (cfg.inputs.external_refs_dir, cfg.inputs.output_root,
                   cfg.pretrain.data_dir):
         assert os.path.isabs(value), value
-        assert not value.startswith(repo), value
+        assert not os.path.realpath(value).startswith(repo + os.sep), value
     # The ledger is READ-ONLY (only the JSON is read; no subset.traj is
-    # opened), so it is consumed in place from the repository.
-    assert cfg.inputs.subset_ledger_path.startswith(repo)
+    # opened), so it is consumed in place: the rendered path is the cached
+    # ledger itself, not a copy of it under the work root.
+    assert os.path.realpath(cfg.inputs.subset_ledger_path) == os.path.realpath(
+        wm.repo_root_path() / wm.CACHED_LEDGER_RELPATH)
     assert os.path.isfile(cfg.inputs.subset_ledger_path)
 
 
 def test_write_matrix_yaml_honours_shared_directories(tmp_path):
     from xcquinox.alec.cluster.grid_config import load_grid_config
-    shared_refs = tmp_path / "shared_refs"
+    shared_refs = _fake_staged_refs(tmp_path / "shared_refs")
     shared_data = tmp_path / "shared_pretrain_data"
     cfg = load_grid_config(str(wm.write_matrix_yaml(
         "deep", tmp_path / "deep", repo_root=wm.repo_root_path(),
         external_refs_dir=shared_refs, pretrain_data_dir=shared_data)))
     assert cfg.inputs.external_refs_dir == str(shared_refs)
     assert cfg.pretrain.data_dir == str(shared_data)
-    # Both staged directories are created, not just the pretrain one: datagen
-    # writes into data_dir and the reference precompute writes into
-    # external_refs_dir, and validate_grid_semantics reports a missing
-    # directory the same way for either.
+    # pretrain.data_dir is an OUTPUT -- datagen writes the pretraining set into
+    # it, and validate_grid_semantics warns when it is missing -- so it is
+    # created here. external_refs_dir is an INPUT and is only checked.
     assert shared_data.is_dir(), "pretrain.data_dir must exist before datagen"
-    assert shared_refs.is_dir(), (
-        "inputs.external_refs_dir must exist before the reference precompute")
 
 
 def test_write_matrix_yaml_refuses_an_unregistered_architecture(tmp_path):
@@ -275,7 +438,7 @@ def test_every_registered_architecture_renders_a_valid_grid(arch, tmp_path):
                                                    validate_grid_semantics)
     cfg = load_grid_config(str(wm.write_matrix_yaml(
         arch, tmp_path / arch, repo_root=wm.repo_root_path(),
-        external_refs_dir=tmp_path / "refs")))
+        external_refs_dir=_fake_staged_refs(tmp_path / "refs"))))
     validate_grid_semantics(cfg, get_domain_profile(cfg.domain_profile))
 
 

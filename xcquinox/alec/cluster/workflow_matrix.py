@@ -28,6 +28,7 @@ import re
 import shutil
 from pathlib import Path
 
+from xcquinox.alec.cluster.grid_config import normalize_cluster_walltimes
 from xcquinox.alec.config import ARCHITECTURES
 
 #: Cached inputs of the tiny identity, relative to the repository root.
@@ -46,9 +47,10 @@ STAGE_MARKER = "_stage_complete"
 #: A YAML 1.1 sexagesimal token. An unquoted ``8:00:00`` resolves to the base-60
 #: integer 28800, which ``submit.render_sbatch`` would substitute into
 #: ``#SBATCH --time=${TIME}``; SLURM reads a bare integer as MINUTES, so the
-#: 8-hour wall would become 20 days. Both the load side
-#: (``_restore_clock_strings``) and the dump side (``_quoting_dumper``) key off
-#: this pattern.
+#: 8-hour wall would become 20 days. The DUMP side keys off this pattern, so
+#: that a walltime leaves this module quoted whatever it arrived as; what
+#: counts as a walltime on the LOAD side is ``grid_config``'s rule, applied
+#: through :func:`_restore_clock_strings`.
 _CLOCK_RE = re.compile(r"^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?$")
 
 #: Lazily built YAML dumper (the ``yaml`` import stays function-local, matching
@@ -180,8 +182,11 @@ def stage_cached_inputs(dest_root, *, repo_root) -> dict:
         partial = refs_dst.parent / f"{refs_dst.name}.partial-{os.getpid()}"
         if partial.exists():
             shutil.rmtree(partial)
+        # copy_function is passed rather than left to the default, which
+        # copytree binds at definition time: the per-file copy is then the one
+        # shutil holds at call time, so a caller can substitute it.
         shutil.copytree(
-            refs_src, partial,
+            refs_src, partial, copy_function=shutil.copy2,
             ignore=shutil.ignore_patterns("_run_log_*.json"))
         _write_stage_manifest(partial, refs_src)
         os.replace(partial, refs_dst)
@@ -189,34 +194,61 @@ def stage_cached_inputs(dest_root, *, repo_root) -> dict:
             "subset_ledger_path": str(ledger)}
 
 
+def staged_refs_dir(refs_dir) -> Path:
+    """A SUPPLIED ``external_refs_dir``, checked as an input.
+
+    The matrix passes one shared reference copy per shard, so a supplied
+    directory is the output of an earlier :func:`stage_cached_inputs` and is an
+    INPUT here: it must already hold the references, and it is never created.
+    ``grid_config.validate_grid_semantics`` does not stat
+    ``inputs.external_refs_dir`` -- only ``pretrain.data_dir`` and the parent of
+    ``inputs.output_root`` are checked, and both only advisorily -- so a
+    mistyped path created empty at this point would pass the login-node gate
+    and surface on a compute node, at the first reference read of a queued job.
+
+    The criterion is what the staging writes: its completion manifest, or the
+    per-species ``.npz`` files it copies (55 of them at the measured cache
+    size, beside the ``_intermediates`` directory). Either one distinguishes a
+    staged directory from an empty or wrong one.
+    """
+    refs = Path(refs_dir).resolve()
+    if not refs.is_dir():
+        detail = "does not exist"
+    elif not (refs / STAGE_MARKER).is_file() and not any(refs.glob("*.npz")):
+        detail = (f"holds neither the staging manifest ({STAGE_MARKER}) nor "
+                  "any species .npz, so it carries no references")
+    else:
+        return refs
+    raise CachedInputsMissing(
+        f"supplied external_refs_dir {refs} {detail}. It is an INPUT -- the "
+        "shared copy stage_cached_inputs writes, one per work root -- and is "
+        "not created here: pass the directory an earlier stage_cached_inputs "
+        "wrote, or omit external_refs_dir to stage a fresh one.")
+
+
 def _restore_clock_strings(text: str, raw: dict) -> None:
-    """Keep the template's walltimes as the strings they were written as.
+    """Restore and check the template's walltimes, in place.
 
     ``yaml.safe_load`` applies the YAML 1.1 implicit resolvers, so an UNQUOTED
     ``8:00:00`` arrives as the integer 28800 and would be rendered into
-    ``#SBATCH --time=28800`` -- 28800 minutes to SLURM, not 8 hours. Every
-    ``cluster`` walltime that did not load as a string is restored from the
-    literal token in the template text when that token is clock-shaped, and
-    refused otherwise: a bare number is ambiguous (SLURM reads it as minutes
-    while the field is documented as HH:MM:SS), so it is a template defect
-    rather than something to guess at.
+    ``#SBATCH --time=28800`` -- 28800 minutes to SLURM, not 8 hours. The
+    template is read here, before any :class:`GridConfig` exists, so the rule
+    that applies to a loaded config is applied to the template through
+    ``grid_config.normalize_cluster_walltimes``: a wall the loader resolved to
+    a number is restored from its literal, and every field is then checked
+    against the accepted shapes (``H:MM:SS`` and ``D-HH:MM:SS``).
+
+    Sharing that function rather than restating the rule is what keeps the two
+    load paths from drifting; the shapes it refuses -- a bare number, ``MM:SS``
+    -- are legal SLURM meaning MINUTES, and the quoting is no protection, since
+    ``time: "30"`` loads as a string and renders ``--time=30`` exactly as
+    ``time: 30`` does.
     """
     cluster = raw.get("cluster")
     if not isinstance(cluster, dict):
         return
-    for key, value in list(cluster.items()):
-        name = str(key)
-        if value is None or isinstance(value, str) or not name.endswith("time"):
-            continue
-        match = re.search(rf"^\s+{re.escape(name)}:\s*(\S+)\s*$", text, re.M)
-        token = match.group(1) if match else ""
-        if _CLOCK_RE.match(token):
-            cluster[key] = token
-        else:
-            raise ValueError(
-                f"cluster.{name} in {template_path()} loaded as {value!r} "
-                f"({type(value).__name__}) rather than a walltime string; "
-                'write it quoted, as "HH:MM:SS"')
+    raw["cluster"] = normalize_cluster_walltimes(
+        cluster, text=text, source=str(template_path()))
 
 
 def _quoting_dumper():
@@ -255,8 +287,14 @@ def write_matrix_yaml(arch, out_dir, *, repo_root,
     ``pretrain_data_dir`` default to per-architecture directories under
     ``out_dir``; the matrix passes shared ones so the 74 MB reference copy and
     the pretrain-data generation are paid once per shard instead of once per
-    architecture. Both directories are created here, whether defaulted or
-    supplied.
+    architecture.
+
+    The two behave differently because they are not the same kind of path.
+    ``pretrain_data_dir`` is an OUTPUT -- datagen writes the pretraining set
+    into it -- and is created here whether defaulted or supplied. A supplied
+    ``external_refs_dir`` is an INPUT and is only checked, by
+    :func:`staged_refs_dir`; creating it empty would hide a mistyped path from
+    the login-node validation and surface it on a compute node.
     """
     import yaml
 
@@ -276,15 +314,12 @@ def write_matrix_yaml(arch, out_dir, *, repo_root,
         refs = Path(staged["external_refs_dir"])
         ledger = staged["subset_ledger_path"]
     else:
-        refs = Path(external_refs_dir).resolve()
         ledger = str(cached_ledger_path(repo_root))
+        refs = staged_refs_dir(external_refs_dir)
     data_dir = Path(pretrain_data_dir).resolve() if pretrain_data_dir \
         else out_dir / "pretrain_data"
-    # Both input directories exist before any stage runs: datagen writes the
-    # pretraining data into data_dir, the reference precompute writes into
-    # external_refs_dir, and validate_grid_semantics reports a missing
-    # directory the same way for either.
-    refs.mkdir(parents=True, exist_ok=True)
+    # data_dir is an output and exists before datagen runs; external_refs_dir
+    # is an input, already checked above and never created here.
     data_dir.mkdir(parents=True, exist_ok=True)
 
     raw["sweep"]["arch"] = [arch]
