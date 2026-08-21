@@ -161,9 +161,51 @@ remain as the documented failure record.
 4. Workflow matrix (3.4); HISTORY baseline.
 5. v6 YAMLs + rendered scripts; two reviews; handover.
 
-## 6. DFS pretraining protocol (replicated verbatim)
+## 6. DFS pretraining protocol (from the vendored dpyscf source) and the deviations adopted
 
-Filled from the vendored dpyscf source inventory before sign-off.
+Source: the pretraining notebook of the DFS code (`~/Documents/Research/xcdiff/notebooks/
+.ipynb_checkpoints/pretrain-checkpoint.ipynb`, meta-GGA exchange variant; the GGA correlation
+variant in `~/Documents/Research/ogdpyscf/notebooks/pretrain.ipynb`; model and descriptor
+definitions in `xcdiff/dpyscf/net.py`). Protocol as shipped:
+
+- Data set, built in memory: eight free atoms with explicit spins -- P (2S=3), N (3), H (1),
+  Li (1), O (2), Cl (1), Al (1), S (2) -- plus 22 G2/97 molecules taken from
+  `xcdiff/data/haunschild_g2/g2_97.traj` at indices [2, 113, 25, 18, 11, 17, 114, 121, 101,
+  0, 20, 26, 29, 67, 28, 110, 125, 10, 115, 89, 105, 50] = H2, N2, LiF, HCN, CO2, Cl2, F2, O2,
+  C2H2, CO, HCl, LiH, Na2, AlCl3, PH3, Si2, C4H6, CH4, SiCH6, C3H8, CH2, SiH4, all run as
+  spin 0 (the meta-GGA variant drops H2 and N2). 30 systems for the GGA, 28 for the meta-GGA.
+- Footing: `scf.UKS`, `xc = PBE`, grid level 1, basis 6-311++G** (optionally a symmetrised
+  radial/angular grid); both rungs pretrained on PBE densities.
+- Targets, per grid point: exchange F_x^sigma - 1 = e_x^ref(rho_sigma, 0) / e_x^LDA(rho_sigma, 0)
+  - 1 with libxc spin=1 and the other channel zeroed -- one spin channel at a time, with the
+  channel's descriptors built from (2 rho_sigma, 4 gamma_sigma, 2 tau_sigma): the exact
+  spin-scaling footing; alpha and beta blocks concatenated for open shells, alpha only for
+  closed shells and H. Correlation F_c - 1 = e_c^ref(rho_a, rho_b) / e_c^PW92(rho_a, rho_b) - 1
+  on the total density with zeta in the descriptor. Points with rho_tot > 1e-6 and finite
+  descriptors only.
+- Objective: unweighted `MSELoss` over all retained points (no grid weights, no density
+  weighting, no per-system term), full batch, Adam, weight decay 0, learning rate 1e-3 / 1e-4,
+  up to 1e5 steps with no schedule, validation or stop criterion (interrupted by hand near
+  MSE 1e-6 for the GGA correlation and 3e-8 for the meta-GGA exchange); exchange and
+  correlation networks trained separately, warm-started from the previous weights.
+- Acceptance: none automated; `train.py --testrun` prints, per training molecule, the
+  pretrained functional's 25-step SCF energy against the baseline SCF energy ("Pretraining
+  error") with no threshold, and the flag is off in the archived run configurations.
+
+Deviations adopted here (each a strengthening, recorded so the method text can state them):
+1. Set: the DFS 30 systems (28 for the meta-GGA) plus every atom of the BH76 / W4-11 pools
+   (14 elements, all open shells with their production spins), at the production identity
+   (6-311++G(3df,2pd), grid level 3, density fitting) on the parent functional's own
+   self-consistent densities (PBE for GGA-rung, SCAN for meta-GGA; DFS used PBE for both).
+   The synthetic mesh is kept as a regularizer only.
+2. Footing: identical to DFS for the exchange rows (per channel, doubled-spin ingredients;
+   this is the correction of D2) and extended to every density-matrix feature through the
+   symmetric doubled density diag(P_sigma, P_sigma) of Section 3.1.
+3. Objective: the point-wise residual is integration-weighted (as today) AND a per-system
+   energy term E_xc^NN - E_xc^parent in Hartree is added, so the H atom and every molecule
+   carry an energy of their own; validation on held-out systems and a stop criterion replace
+   the hand interruption.
+4. Acceptance: the certificate of Section 3.3 with a hard threshold, instead of a printout.
 
 ## 7. Decisions (2026-08-21)
 
