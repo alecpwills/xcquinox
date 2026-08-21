@@ -204,3 +204,138 @@ def test_every_per_spin_grid_key_is_declared_and_padded():
     assert len(per_spin) == 10, sorted(per_spin)
     missing = sorted(per_spin - set(_PAD_GRID_EDGE))
     assert not missing, f"padding._PAD_GRID_EDGE is missing {missing}"
+
+
+# ---------------------------------------------------------------------------
+# The live per-channel closures: the single place the doubled-density
+# convention is implemented for a density matrix that is not the precompute's.
+# ---------------------------------------------------------------------------
+
+def test_live_uks_feature_closures_reproduce_the_precomputed_blocks():
+    """The live map P -> f_sigma(P) evaluated at the PBE density matrix must
+    return what precompute stored, or the potential belongs to a different
+    functional than the energy.
+
+    Agreement is BITWISE for every column linear in the density matrix -- the
+    density-matrix statistics and both rung-3.5 occupancies, 0 differing
+    elements of 4864 x 10 in each of the three blocks. The iso-orbital
+    indicator is not linear: precompute contracts rho and sigma with numpy and
+    the live closure with JAX, two summation orders of the same contraction
+    that differ by at most 4.7e-16 relative (2 ulp), and
+    alpha = (tau - sigma/(8 rho))/tau_unif divides that perturbation by
+    tau_unif, amplifying it by tau/tau_unif -- 3.8e6 (alpha channel), 9.0e7
+    (beta) and 6.0e6 (total) at the outermost grid points, where the density
+    has decayed to rho_sigma ~ 1e-14 and the numerator cancels completely. The
+    indicator column is therefore checked where the density is resolved, and
+    everywhere against that amplification.
+    """
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    from xcquinox.alec.metagga import compute_tau_from_dm
+    from xcquinox.alec.solver import make_uks_feature_fns
+    md = _precompute("Li", "Li 0 0 0", 1, (("Li", 1),), _ALL_DM_DESCRIPTORS)
+    n = int(np.asarray(md["grid_weights"]).shape[0])
+    fa, fb, ft = make_uks_feature_fns(
+        descriptors=_ALL_DM_DESCRIPTORS,
+        ao_deriv=jnp.asarray(md["ao_grid_deriv"]),
+        s_matrix=jnp.asarray(md["s_matrix"]),
+        n_grid=n,
+        cusp_features=md.get("cusp_features"),
+        rung35_proj_ao=md.get("rung35_proj_ao"),
+        rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+    )
+    P0 = jnp.asarray(md["dm_pbe"])
+    # Column layout: the iso-orbital indicator is the single trailing column,
+    # everything before it is linear in the density matrix.
+    assert isinstance(_ALL_DM_DESCRIPTORS[-1], MetaGGAAlphaDescriptor)
+    assert _ALL_DM_DESCRIPTORS[-1].n_features == 1
+    n_linear = sum(d.n_features for d in _ALL_DM_DESCRIPTORS[:-1])
+    ao_grad = jnp.asarray(md["ao_grid_deriv"])[1:4]
+    cases = (
+        ("alpha", np.asarray(fa(P0)),
+         np.asarray(assemble_descriptor_features(_ALL_DM_DESCRIPTORS, md,
+                                                 spin_channel=0)),
+         doubled_spin_dm(P0, 0), 2.0 * _spin_grid(md, 0)[0]),
+        ("beta", np.asarray(fb(P0)),
+         np.asarray(assemble_descriptor_features(_ALL_DM_DESCRIPTORS, md,
+                                                 spin_channel=1)),
+         doubled_spin_dm(P0, 1), 2.0 * _spin_grid(md, 1)[0]),
+        ("total", np.asarray(ft(P0)),
+         np.asarray(assemble_descriptor_features(_ALL_DM_DESCRIPTORS, md)),
+         P0, np.asarray(md["rho_grid"])),
+    )
+    for label, live, ref, dm_doubled, rho_total in cases:
+        assert live.shape == (n, n_linear + 1), label
+        np.testing.assert_allclose(live[:, :n_linear], ref[:, :n_linear],
+                                   rtol=0, atol=0, err_msg=label)
+        gap = np.abs(live[:, -1] - ref[:, -1])
+        # Resolved density (rho_total > 2e-8, i.e. rho_sigma > 1e-8 for a
+        # channel -- the cut the stored blocks are already pinned against):
+        # 7.8e-11 measured worst over four runs, against indicator values
+        # reaching 9.05, so the bound sits 12.9x above the floor. It refuses a
+        # block taken from the wrong channel or from the physical density,
+        # which differ here by 6.2 and 9.0.
+        resolved = rho_total > 2e-8
+        assert int(resolved.sum()) > n // 2, (label, int(resolved.sum()))
+        assert float(gap[resolved].max()) < 1e-9, (label,
+                                                   float(gap[resolved].max()))
+        # Everywhere, including the exponential tail: the residual is the
+        # ingredient rounding times the amplification. tau/tau_unif is the
+        # amplification factor of alpha = (tau - tau_W)/tau_unif (SCAN,
+        # PRL 115, 036402 (2015), Eq. 2); floored at 1 so a well-conditioned
+        # point is held to 1e-12 absolute. Measured worst ratio 3.1e-14 over
+        # four runs, 32x under the bound.
+        tau = np.asarray(compute_tau_from_dm(ao_grad, dm_doubled))
+        tau_unif = (0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0)
+                    * np.maximum(rho_total, 1e-30) ** (5.0 / 3.0))
+        amplification = tau / np.maximum(tau_unif, 1e-30)
+        ratio = float((gap / np.maximum(amplification, 1.0)).max())
+        assert ratio < 1e-12, (label, ratio)
+
+
+def test_live_uks_feature_closures_collapse_at_a_closed_shell_density():
+    """rho_a = rho_b makes the three blocks identical -- the structural reason
+    every closed-shell number is unchanged by the exact spin scaling."""
+    from xcquinox.alec.solver import make_uks_feature_fns
+    md = _precompute("H2O", "O 0 0 0.117; H 0 0.757 -0.469; H 0 -0.757 -0.469",
+                     0, (("O", 1), ("H", 2)), _ALL_DM_DESCRIPTORS)
+    fa, fb, ft = make_uks_feature_fns(
+        descriptors=_ALL_DM_DESCRIPTORS,
+        ao_deriv=jnp.asarray(md["ao_grid_deriv"]),
+        s_matrix=jnp.asarray(md["s_matrix"]),
+        n_grid=int(np.asarray(md["grid_weights"]).shape[0]),
+        cusp_features=md.get("cusp_features"),
+        rung35_proj_ao=md.get("rung35_proj_ao"),
+        rung35ms_proj_ao=md.get("rung35ms_proj_ao"),
+    )
+    half = 0.5 * jnp.asarray(md["dm_pbe"])
+    P0 = jnp.stack([half, half], axis=0)
+    a, b, t = np.asarray(fa(P0)), np.asarray(fb(P0)), np.asarray(ft(P0))
+    np.testing.assert_allclose(a, b, rtol=0, atol=0)
+    np.testing.assert_allclose(a, t, rtol=0, atol=0)
+
+
+def test_live_uks_feature_closures_are_empty_for_a_descriptor_free_model():
+    from xcquinox.alec.solver import make_uks_feature_fns
+    fa, fb, ft = make_uks_feature_fns(
+        descriptors=(), ao_deriv=jnp.zeros((4, 7, 3)),
+        s_matrix=jnp.eye(3), n_grid=7)
+    P0 = jnp.zeros((2, 3, 3))
+    for fn in (fa, fb, ft):
+        assert fn(P0).shape == (7, 0)
+
+
+def test_reassemble_features_spin_channel_doubles_the_density_matrix():
+    """_reassemble_features with a spin channel must feed diag(P_sigma, P_sigma)
+    to every density-matrix descriptor, so it equals the same call made with an
+    explicitly doubled matrix and no channel."""
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    from xcquinox.alec.solver import _reassemble_features
+    md = _precompute("Li", "Li 0 0 0", 1, (("Li", 1),), (DMRung35Descriptor(),))
+    P0 = jnp.asarray(md["dm_pbe"])
+    kw = dict(descriptors=(DMRung35Descriptor(),), s_matrix=jnp.asarray(md["s_matrix"]),
+              n_grid=int(np.asarray(md["grid_weights"]).shape[0]),
+              rung35_proj_ao=md.get("rung35_proj_ao"))
+    channelled = _reassemble_features(dm=P0, spin_channel=0, **kw)
+    explicit = _reassemble_features(dm=doubled_spin_dm(P0, 0), **kw)
+    np.testing.assert_allclose(np.asarray(channelled), np.asarray(explicit),
+                               rtol=0, atol=0)

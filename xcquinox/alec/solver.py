@@ -440,6 +440,7 @@ def _reassemble_features(
     ao_grad: jnp.ndarray | None = None,
     rho: jnp.ndarray | None = None,
     sigma: jnp.ndarray | None = None,
+    spin_channel: int | None = None,
 ) -> jnp.ndarray:
     """Recompute descriptor features from the live (dm, S) + cached cusp.
 
@@ -453,13 +454,22 @@ def _reassemble_features(
 
     ``n_grid`` supplies the grid size for DMStatisticsDescriptor when no
     CuspDescriptor (and therefore no cusp_features) is present.
+
+    ``spin_channel`` selects the per-channel block of the symmetric doubled
+    density ``diag(P_sigma, P_sigma)`` (Oliver and Perdew, Phys. Rev. A 20, 397
+    (1979)) instead of the physical block: the density matrix is doubled here,
+    and ``rho`` / ``sigma`` must ALREADY be that system's ``2 rho_sigma`` and
+    ``4 sigma_sigma_sigma``. :func:`make_uks_feature_fns` is the one place that
+    forms them, so callers should go through it rather than doubling by hand.
     """
     from xcquinox.alec.descriptors import (
         CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
-        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor)
+        DMRung35MultishellDescriptor, MetaGGAAlphaDescriptor, doubled_spin_dm)
     if not descriptors:
         _ng = cusp_features.shape[0] if cusp_features is not None else (n_grid or 0)
         return jnp.zeros((_ng, 0))
+    if spin_channel is not None:
+        dm = doubled_spin_dm(dm, spin_channel)
     cols = []
     n_grid_hint = cusp_features.shape[0] if cusp_features is not None else n_grid
     for d in descriptors:
@@ -504,6 +514,99 @@ def _reassemble_features(
                 f"_reassemble_features does not yet know how to recompute {type(d).__name__}"
             )
     return jnp.concatenate(cols, axis=1)
+
+
+def make_uks_feature_fns(descriptors: tuple,
+                         ao_deriv: jnp.ndarray,
+                         s_matrix: jnp.ndarray,
+                         n_grid: int,
+                         cusp_features: jnp.ndarray | None = None,
+                         rung35_proj_ao: jnp.ndarray | None = None,
+                         rung35ms_proj_ao: jnp.ndarray | None = None):
+    """Three closures ``P_ab -> (n_grid, n_features)``: alpha block, beta block,
+    total block.
+
+    The per-channel closures evaluate every density-matrix descriptor on the
+    symmetric doubled density ``diag(P_sigma, P_sigma)``, the spin-unpolarized
+    system the exact exchange spin-scaling relation refers to (Oliver and
+    Perdew, Phys. Rev. A 20, 397 (1979)): density ``2 rho_sigma``, gradient
+    invariant ``4 sigma_sigma_sigma``, kinetic-energy density ``2 tau_sigma``.
+    The total closure is the physical block and feeds the correlation term,
+    which is spin-interpolated rather than spin-scaled (von Barth and Hedin,
+    J. Phys. C 5, 1629 (1972); Perdew and Wang, Phys. Rev. B 45, 13244 (1992))
+    and therefore stays on the total density.
+
+    This is the single implementation of the doubled-density convention for a
+    live density matrix. The UKS energy, the UKS potential and the
+    feature-response term all consume these closures, so the potential cannot
+    drift from the functional; the same closures are what
+    :func:`oneshot.feature_response_vxc` differentiates, one per channel, since
+    ``f_a``, ``f_b`` and ``f_tot`` are three different maps of ``P``.
+
+    ``ao_deriv`` is the ``(4, n_grid, n_ao)`` ``eval_ao(deriv=1)`` tensor.
+    At ``rho_a = rho_b`` all three closures return the SAME array bit for bit:
+    doubling either channel of ``[D/2, D/2]`` reproduces the matrix itself, and
+    ``2 rho_a`` / ``4 sigma_aa`` are then ``rho_tot`` / ``sigma_tot``. That is
+    why the change leaves every closed-shell number untouched.
+    """
+    if not descriptors:
+        empty = jnp.zeros((n_grid, 0))
+
+        def _empty(_P_ab):
+            return empty
+
+        return _empty, _empty, _empty
+
+    from xcquinox.alec.descriptors import MetaGGAAlphaDescriptor
+    # rho / sigma are consumed only by the meta-GGA iso-orbital indicator; the
+    # contraction is skipped for every other architecture, matching the cost of
+    # the pre-existing UKS feature assembly.
+    needs_rho = any(isinstance(d, MetaGGAAlphaDescriptor) for d in descriptors)
+    ao0 = ao_deriv[0]
+    ao_grad = ao_deriv[1:4]
+
+    def _rho_sigma(D):
+        rho = jnp.einsum("ij,gi,gj->g", D, ao0, ao0)
+        nabla = 2.0 * jnp.einsum("ij,dgi,gj->gd", D, ao_grad, ao0)
+        return rho, jnp.sum(nabla * nabla, axis=1)
+
+    def _call(dm, rho, sigma, spin_channel):
+        return _reassemble_features(
+            descriptors=descriptors,
+            dm=dm,
+            s_matrix=s_matrix,
+            cusp_features=cusp_features,
+            n_grid=n_grid,
+            rung35_proj_ao=rung35_proj_ao,
+            rung35ms_proj_ao=rung35ms_proj_ao,
+            ao_grad=ao_grad,
+            rho=rho,
+            sigma=sigma,
+            spin_channel=spin_channel,
+        )
+
+    def _features_spin(P_ab, spin_channel):
+        if needs_rho:
+            rho_s, sigma_ss = _rho_sigma(P_ab[spin_channel])
+            rho, sigma = 2.0 * rho_s, 4.0 * sigma_ss
+        else:
+            rho, sigma = None, None
+        return _call(P_ab, rho, sigma, spin_channel)
+
+    def features_a_of(P_ab):
+        return _features_spin(P_ab, 0)
+
+    def features_b_of(P_ab):
+        return _features_spin(P_ab, 1)
+
+    def features_tot_of(P_ab):
+        if needs_rho:
+            rho, sigma = _rho_sigma(P_ab[0] + P_ab[1])
+        else:
+            rho, sigma = None, None
+        return _call(P_ab, rho, sigma, None)
+
+    return features_a_of, features_b_of, features_tot_of
 
 
 def _oneshot_result(model, mol_data: dict) -> "SCFResult":
