@@ -59,8 +59,111 @@ DEFAULT_GRID_LEVEL = 1
 _RHO_FLOOR = 1e-10  # strict > threshold for kept grid points
 
 
+def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
+                               cusp_log_transform=True, rho_floor=_RHO_FLOOR):
+    """Open-shell exchange rows on the exact-spin-scaling footing.
+
+    The production UKS exchange evaluates, per spin channel, the symmetric
+    doubled density diag(P_sigma, P_sigma) (Oliver and Perdew, Phys. Rev. A 20,
+    397 (1979)): density ``2 rho_sigma``, gradient invariant
+    ``4 sigma_sigma_sigma``, kinetic-energy density ``2 tau_sigma``, and the
+    descriptor features of that density matrix. Those are the inputs the network
+    sees at SCF time on an open shell, so those are the inputs its exchange rows
+    must be posed at, with the parent's SPIN-UNPOLARIZED enhancement factor at
+    the same inputs as the target -- ``eval_xc(..., spin=0)`` on the doubled
+    density, not the spin-polarized call on the physical one.
+
+    Each row carries HALF the grid weight, because
+    ``E_x = 1/2 (E_x[2 rho_a] + E_x[2 rho_b])``: summing
+    ``w_row rho_row eps_x^LDA(rho_row) (1 + Fx_row)`` over both channels then
+    reproduces the parent's open-shell exchange energy exactly.
+
+    Returns 1-D columns (2-D for the descriptor blocks), alpha channel first
+    then beta, with points below ``rho_floor`` in the DOUBLED density dropped. A
+    channel with no electron (the beta channel of H) contributes no rows.
+    Correlation is untouched: it is spin-interpolated rather than spin-scaled
+    and keeps the total density with zeta.
+
+    Parameters
+    ----------
+    mol, mf, ao : the converged parent calculation and its ``deriv=1`` AO
+        values on ``mf.grids.coords``.
+    dm_ab : array, shape (2, nao, nao). The parent's spin-resolved density
+        matrix.
+    """
+    from xcquinox.alec.descriptors import doubled_spin_dm
+    from xcquinox.alec.metagga import compute_alpha, compute_tau_from_dm
+    from xcquinox.alec.rung35 import (
+        DEFAULT_RUNG35_ALPHA, DEFAULT_RUNG35_MULTISHELL_ALPHAS,
+        compute_projected_ao, compute_projected_ao_multishell,
+        compute_rung35_multishell_occupancy, compute_rung35_occupancy)
+
+    dm_j = jnp.asarray(dm_ab)
+    ao_grad = jnp.asarray(ao[1:4])
+    s_matrix = jnp.asarray(mol.intor("int1e_ovlp"))
+    weights = np.asarray(mf.grids.weights)
+    c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
+
+    names = ["rho", "sigma", "Fx", "Fx_scan", "metagga", "weights"]
+    if descriptors:
+        names += ["cusp", "dm", "rung35", "rung35ms"]
+    parts = {k: [] for k in names}
+
+    for s in (0, 1):
+        dm_doubled = doubled_spin_dm(dm_j, s)
+        rho_gga_s = mf._numint.eval_rho(mol, ao, np.asarray(dm_ab[s]),
+                                        xctype="GGA", hermi=True)
+        rho_d = 2.0 * rho_gga_s[0]
+        grad_d = 2.0 * rho_gga_s[1:4]
+        sigma_d = (grad_d ** 2).sum(axis=0)
+        tau_d = np.asarray(compute_tau_from_dm(ao_grad, dm_doubled))
+        keep = rho_d > rho_floor
+        if not bool(keep.any()):
+            continue
+        gga_row = np.vstack([rho_d, grad_d])
+        mgga_row = np.vstack([gga_row, np.zeros_like(rho_d), tau_d])
+        # The parent's SPIN-UNPOLARIZED enhancement at the doubled inputs: this
+        # is exactly what the spin-scaling relation asks the functional for.
+        ex_pbe = mf._numint.eval_xc("PBE,", gga_row, spin=0)[0]
+        ex_scan = mf._numint.eval_xc("SCAN,", mgga_row, spin=0)[0]
+        ex_lda = c_lda * np.cbrt(np.clip(rho_d, 1e-300, None))
+        ex_safe = np.where(np.abs(ex_lda) > 1e-12, ex_lda, 1e-12)
+        parts["rho"].append(rho_d[keep])
+        parts["sigma"].append(sigma_d[keep])
+        parts["Fx"].append(np.clip(ex_pbe / ex_safe - 1.0, -5.0, 5.0)[keep])
+        parts["Fx_scan"].append(
+            np.clip(ex_scan / ex_safe - 1.0, -5.0, 5.0)[keep])
+        parts["metagga"].append(np.asarray(compute_alpha(
+            jnp.asarray(rho_d), jnp.asarray(sigma_d),
+            jnp.asarray(tau_d)))[keep].reshape(-1, 1))
+        # Half the grid weight per channel: E_x = 1/2 (E_x[2 rho_a] + E_x[2 rho_b]).
+        parts["weights"].append(0.5 * weights[keep])
+        if descriptors:
+            coords_v = mf.grids.coords[keep]
+            parts["cusp"].append(np.asarray(_features.compute_cusp_descriptor(
+                jnp.asarray(coords_v),
+                jnp.asarray(mol.atom_coords()),
+                jnp.asarray(mol.atom_charges()),
+                log_transform=cusp_log_transform,
+            )))
+            dm_global = _features.compute_dm_features_array(dm_doubled, s_matrix)
+            parts["dm"].append(np.tile(np.asarray(dm_global),
+                                       (int(keep.sum()), 1)))
+            proj = compute_projected_ao(mol, coords_v, DEFAULT_RUNG35_ALPHA)
+            parts["rung35"].append(np.asarray(compute_rung35_occupancy(
+                jnp.asarray(proj), dm_doubled)))
+            proj_ms = compute_projected_ao_multishell(
+                mol, coords_v, DEFAULT_RUNG35_MULTISHELL_ALPHAS)
+            parts["rung35ms"].append(np.asarray(
+                compute_rung35_multishell_occupancy(jnp.asarray(proj_ms),
+                                                    dm_doubled)))
+
+    return {k: np.concatenate(v, axis=0) for k, v in parts.items()}
+
+
 def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
-                  density_fit=False, auxbasis=None, cusp_log_transform=True):
+                  density_fit=False, auxbasis=None, cusp_log_transform=True,
+                  exchange_footing="total"):
     """Per-atom pretrain columns. Returns a dict of equal-length 1-D arrays
     (rho, sigma, Fx, Fc, weights[, zeta][, cusp (N,2)][, dm (N,D)]).
 
@@ -69,7 +172,25 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
     property of the converged density, so DF only changes them within DF error;
     it is wired here so the pretrain data can be regenerated at a large basis
     without the full ERI blowing up RAM (negligible cost for single atoms, but
-    keeps the whole pipeline on one Coulomb backend)."""
+    keeps the whole pipeline on one Coulomb backend).
+
+    ``exchange_footing`` selects how OPEN-SHELL exchange rows are posed.
+    ``"total"`` (default) is unchanged: one row per grid point at the total
+    density with spin-resolved libxc targets. ``"spin_channel"`` additionally
+    returns ``x_rows``, the per-channel rows of
+    :func:`spin_channel_exchange_rows` -- ``(2 rho_sigma, 4 sigma_sigma_sigma,
+    features of diag(P_sigma, P_sigma))`` with the parent's spin-unpolarized
+    enhancement factor at those inputs as the target, which is what the exact
+    spin scaling evaluates at SCF time. ``x_rows`` is ``None`` for a
+    closed-shell atom, whose total-density rows already are that footing.
+    Correlation rows are untouched under either setting: correlation is
+    spin-interpolated rather than spin-scaled and keeps the total density with
+    zeta. The composition of the pretraining SET is not decided here."""
+    if exchange_footing not in ("total", "spin_channel"):
+        raise ValueError(
+            "exchange_footing must be 'total' or 'spin_channel'; got "
+            f"{exchange_footing!r}."
+        )
     mol = gto.M(atom=f"{symbol} 0 0 0", basis=basis, charge=0, spin=spin, verbose=0)
     mf = dft.UKS(mol) if spin else dft.RKS(mol)
     if density_fit:
@@ -197,6 +318,13 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
             mol, coords_v, DEFAULT_RUNG35_MULTISHELL_ALPHAS)
         cols["rung35ms"] = np.asarray(compute_rung35_multishell_occupancy(
             jnp.asarray(proj_ao_ms), dm_for_features))
+    if exchange_footing == "spin_channel":
+        cols["x_rows"] = (
+            spin_channel_exchange_rows(
+                mol, mf, ao, dm_ab, descriptors=bool(descriptors),
+                cusp_log_transform=cusp_log_transform)
+            if is_uks else None
+        )
     return cols
 
 
