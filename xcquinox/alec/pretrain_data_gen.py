@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import namedtuple
 
 import numpy as np
 import jax.numpy as jnp
@@ -57,6 +58,268 @@ DEFAULT_PRETRAIN_ATOMS = (("H", 1), ("He", 0), ("O", 2), ("N", 3))
 DEFAULT_BASIS = "def2-svp"
 DEFAULT_GRID_LEVEL = 1
 _RHO_FLOOR = 1e-10  # strict > threshold for kept grid points
+
+#: LDA exchange coefficient, ``eps_x^LDA(rho) = _LDA_X_C rho^(1/3)``. The same
+#: constant libxc's ``LDA_X,`` returns at spin=0 and the same one
+#: :func:`spin_channel_exchange_rows` divides by, kept here so the per-system
+#: energy targets and the stored enhancement factors share one denominator.
+_LDA_X_C = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
+
+#: One pretraining system: a geometry, a charge and a PySCF 2S spin. ``atom`` is
+#: a PySCF geometry string in Angstrom. Free atoms are spelled
+#: ``"<Sym> 0 0 0"`` so a pool atom and a ``pretrain.atoms`` entry for the same
+#: element are one system rather than two.
+PretrainSystem = namedtuple("PretrainSystem", ("name", "atom", "charge", "spin"))
+
+
+def _system_name(symbol, charge):
+    """Canonical system name for a free atom: the symbol, with the ion charge
+    appended as a run of ``+`` or ``-`` (``F-``, ``Cl-``). Names are labels for
+    provenance and for the validation split's record; the physics is carried by
+    (geometry, charge, spin)."""
+    if charge == 0:
+        return str(symbol)
+    sign = "+" if charge > 0 else "-"
+    return f"{symbol}{sign * abs(int(charge))}"
+
+
+def _geometry_key(atom_str):
+    """Canonical hashable geometry: ``(symbol, x, y, z)`` per nucleus, rounded
+    to 1e-8 angstrom and sorted.
+
+    Two spellings of the same structure ("H 0 0 0" and "H 0.0 0.0 0.0", or two
+    orderings of the same nuclei) collapse to one key, so the DFS inventory and
+    the pool inventory deduplicate against each other and against an explicit
+    ``pretrain.atoms`` entry without depending on how each source spells its
+    geometry.
+    """
+    items = []
+    for chunk in str(atom_str).replace("\n", ";").split(";"):
+        parts = chunk.split()
+        if not parts:
+            continue
+        if len(parts) != 4:
+            raise ValueError(
+                f"malformed PySCF geometry chunk {chunk!r} in {atom_str!r}: "
+                "expected '<symbol> <x> <y> <z>' per nucleus."
+            )
+        items.append((parts[0].capitalize(), round(float(parts[1]), 8),
+                      round(float(parts[2]), 8), round(float(parts[3]), 8)))
+    if not items:
+        raise ValueError(f"empty PySCF geometry {atom_str!r}.")
+    return tuple(sorted(items))
+
+
+def _n_atoms(atom_str):
+    """Number of nuclei in a PySCF geometry string."""
+    return len(_geometry_key(atom_str))
+
+
+def _composition_from_atom(atom_str):
+    """``((symbol, count), ...)``, sorted, for a PySCF geometry string.
+
+    Derived from the geometry rather than trusted from a record, so a pool
+    entry, a DFS entry and a ``(symbol, 2S)`` pair produce the same composition
+    for the same molecule and therefore the same MoleculeSpec.
+    """
+    counts = {}
+    for symbol, _x, _y, _z in _geometry_key(atom_str):
+        counts[symbol] = counts.get(symbol, 0) + 1
+    return tuple(sorted(counts.items()))
+
+
+def normalize_system(obj):
+    """Coerce a pretraining-system descriptor into a :class:`PretrainSystem`.
+
+    Accepts a ``PretrainSystem``; a mapping carrying ``name``/``atom``/
+    ``charge``/``spin`` (the schema of the committed pool JSON and of
+    ``dfs_pretrain_set.dfs_pretrain_records``, whose extra ``kind``,
+    ``atom_composition`` and ``g2_97_index`` entries are ignored); any object
+    exposing those four attributes (``config.MoleculeSpec``); or a
+    ``(symbol, 2S)`` pair, the historical ``pretrain.atoms`` form, which names a
+    neutral free atom at the origin. Keeping the coercion in one place is what
+    lets the set be assembled from three inventories written independently.
+    """
+    if isinstance(obj, PretrainSystem):
+        return obj
+    if isinstance(obj, dict):
+        return PretrainSystem(name=str(obj["name"]), atom=str(obj["atom"]),
+                              charge=int(obj.get("charge", 0)),
+                              spin=int(obj.get("spin", 0)))
+    if isinstance(obj, (tuple, list)) and len(obj) == 2:
+        symbol, spin = obj
+        return PretrainSystem(name=str(symbol), atom=f"{symbol} 0 0 0",
+                              charge=0, spin=int(spin))
+    if all(hasattr(obj, a) for a in ("name", "atom", "charge", "spin")):
+        return PretrainSystem(name=str(obj.name), atom=str(obj.atom),
+                              charge=int(obj.charge), spin=int(obj.spin))
+    raise TypeError(
+        f"cannot read {obj!r} as a pretraining system: expected a "
+        "PretrainSystem, a mapping with name/atom/charge/spin, an object with "
+        "those attributes, or a (symbol, 2S) pair."
+    )
+
+
+def _mol_spec_for(system, basis, grid_level):
+    """The :class:`~xcquinox.alec.config.MoleculeSpec` for one pretraining
+    system at the run's identity.
+
+    This is the spec :func:`data.precompute_fixed_density_data` receives, so the
+    pretraining rows and the training features of the same molecule are built
+    from the same object.
+    """
+    from xcquinox.alec.config import MoleculeSpec
+    system = normalize_system(system)
+    return MoleculeSpec(
+        name=system.name, atom=system.atom, basis=basis,
+        charge=int(system.charge), spin=int(system.spin),
+        atom_composition=_composition_from_atom(system.atom),
+        grid_level=grid_level)
+
+
+def pool_atom_systems():
+    """Every single-atom species of the BH76 and W4-11 pools, de-duplicated.
+
+    Fourteen distinct (symbol, charge, 2S) triples: the twelve neutral elements
+    the two pools span -- Al, B, Be, C, Cl, F, H, N, O, P, S, Si, with their
+    Hund's-rule ground-state spins -- plus the two closed-shell anions F- and
+    Cl-, which are reactants of BH76 barrier heights and therefore systems the
+    Section 3.3 certificate bounds at tol_atom. All of them are free atoms at
+    the origin, so the geometry is the pool's own.
+
+    Read from the committed pool JSON through ``full_benchmark_pools`` rather
+    than transcribed, so a pool edit propagates here.
+    """
+    from xcquinox.alec.full_benchmark_pools import load_full_held_out_pools
+    mol_specs, _reactions = load_full_held_out_pools()
+    seen = {}
+    for ms in mol_specs.values():
+        composition = dict(ms.atom_composition)
+        if sum(composition.values()) != 1:
+            continue
+        seen.setdefault((str(next(iter(composition))), int(ms.charge),
+                         int(ms.spin)), None)
+    return tuple(
+        PretrainSystem(name=_system_name(symbol, charge),
+                       atom=f"{symbol} 0 0 0", charge=charge, spin=spin)
+        for symbol, charge, spin in sorted(seen)
+    )
+
+
+def dfs_level_for_reference_xc(reference_xc):
+    """Which DFS pretraining inventory a parent density's file uses.
+
+    The DFS notebook ships two variants (spec Section 6): the GGA one with 22
+    G2/97 molecules and the meta-GGA one with 20, the difference being H2 and N2
+    (``dfs_pretrain_set.MGGA_EXCLUDED``). The parent functional and the
+    inventory are the same rung choice, so one maps onto the other.
+    """
+    if reference_xc == "pbe":
+        return "gga"
+    if reference_xc == "scan":
+        return "mgga"
+    raise ValueError(
+        f"reference_xc must be 'pbe' or 'scan'; got {reference_xc!r}.")
+
+
+def resolve_parent_density(arch, parent_density):
+    """The ``reference_xc`` whose self-consistent density ``arch`` pretrains on.
+
+    ``pretrain.parent_density`` is the YAML knob; this is where its value becomes
+    the ``reference_xc`` keyword of
+    :func:`data.precompute_fixed_density_data`. ``"pbe"`` / ``"scan"`` pass
+    through. ``"auto"`` is the rung baseline: SCAN for the meta-GGA rung, PBE
+    otherwise (spec Section 1, "PBE for GGA-rung architectures, SCAN for
+    meta-GGA architectures"). That is the map ``rungs.seed_xc_for_arch`` applies
+    under its production ``"mgga_scan"`` policy, computed from the architecture
+    OBJECT rather than a registry name so an architecture built ad hoc resolves
+    too; the agreement with ``seed_xc_for_arch`` over the whole registry is
+    pinned by test.
+
+    The meta-GGA rung is read the way ``rungs.arch_ingredients`` reads it -- the
+    ``meta_gga`` flag OR a ``"metagga"`` descriptor. ``ArchitectureConfig``
+    rejects only the other direction (the flag without the descriptor), so an
+    architecture assembled outside the registry can carry the descriptor alone,
+    and resolving that one to PBE would pretrain a meta-GGA network on a density
+    its own SCF never visits.
+    """
+    if parent_density in ("pbe", "scan"):
+        return parent_density
+    if parent_density != "auto":
+        raise ValueError(
+            "parent_density must be 'pbe', 'scan' or 'auto'; got "
+            f"{parent_density!r}."
+        )
+    descriptor_names = {getattr(d, "name", None)
+                        for d in getattr(arch, "descriptors", ())}
+    has_meta_gga = (bool(getattr(arch, "meta_gga", False))
+                    or "metagga" in descriptor_names)
+    return "scan" if has_meta_gga else "pbe"
+
+
+def _dfs_pretrain_records(level):
+    """The DFS pretraining inventory for ``level`` ("gga" / "mgga").
+
+    A named seam so the composition layer can be tested without the inventory
+    and so an import failure names the module that supplies it. The RECORD form
+    is read rather than ``dfs_pretrain_systems``: the composition layer is
+    basis-free, and the basis and grid level are applied later by
+    :func:`_mol_spec_for` at the run's own identity.
+    """
+    try:
+        from xcquinox.alec.dfs_pretrain_set import dfs_pretrain_records
+    except ImportError as exc:  # pragma: no cover - exercised when absent
+        raise ImportError(
+            "the DFS pretraining inventory lives in "
+            "xcquinox.alec.dfs_pretrain_set (dfs_pretrain_records(level)); "
+            "pretrain.dfs_set cannot be honored without it"
+        ) from exc
+    return dfs_pretrain_records(level)
+
+
+def resolve_pretrain_systems(*, atoms=None, dfs_set=False, pool_atoms=False,
+                             reference_xc="pbe"):
+    """The ordered, de-duplicated pretraining set.
+
+    Order is DFS inventory, then pool atoms, then the explicit ``atoms`` list,
+    with the first occurrence of a (geometry, charge, spin) winning. ``atoms`` of
+    ``None`` means the historical four-atom default when neither inventory is
+    requested and NOTHING when one is: the set Section 7 binds is stated exactly
+    ("the DFS pretraining set in its entirety, plus every atom of the BH76 /
+    W4-11 pools"), and He belongs to neither.
+    """
+    if atoms is None:
+        atoms = () if (dfs_set or pool_atoms) else DEFAULT_PRETRAIN_ATOMS
+    ordered = []
+    if dfs_set:
+        ordered.extend(_dfs_pretrain_records(
+            dfs_level_for_reference_xc(reference_xc)))
+    if pool_atoms:
+        ordered.extend(pool_atom_systems())
+    ordered.extend(atoms)
+    out = []
+    seen = set()
+    for entry in ordered:
+        system = normalize_system(entry)
+        key = (_geometry_key(system.atom), int(system.charge), int(system.spin))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(system)
+    return tuple(out)
+
+
+def pretrain_data_filename(polarized, reference_xc="pbe"):
+    """Canonical pretrain-data filename.
+
+    ``reference_xc="pbe"`` reproduces the two historical names. The SCAN-density
+    file carries its own suffix because it is built at a DIFFERENT
+    self-consistent density (spec Section 6 deviation 1) and its rows are not
+    interchangeable with the PBE file's.
+    """
+    base = "pretrain_data_polarized" if polarized else "pretrain_data"
+    return (f"{base}.npz" if reference_xc == "pbe"
+            else f"{base}_{reference_xc}.npz")
 
 
 def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
@@ -102,7 +365,7 @@ def spin_channel_exchange_rows(mol, mf, ao, dm_ab, *, descriptors=True,
     ao_grad = jnp.asarray(ao[1:4])
     s_matrix = jnp.asarray(mol.intor("int1e_ovlp"))
     weights = np.asarray(mf.grids.weights)
-    c_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
+    c_lda = _LDA_X_C
 
     names = ["rho", "sigma", "Fx", "Fx_scan", "metagga", "weights"]
     if descriptors:
