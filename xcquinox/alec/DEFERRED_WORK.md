@@ -497,3 +497,81 @@ same array task peaked at 98.8 GB RSS on a 40-core --mem=0 node); the cap should
 KNOWN: `cluster.eval_workers` (null today) already caps the top of the ladder; the Phase 39
 re-queue means a too-high cap now costs time (tier-2 retries), not records.
 TRIGGER: the sacct numbers for 2116743, or the next submission of a DM-projector arm.
+
+## 25. Meta-GGA open-shell exchange: the alpha feature is not spin-scaled in the production path (found 2026-08-20)
+
+WHAT: `oneshot.split_exc_energy_uks` (:493-495) and `_uks_spin_resolved_vxc` (:764) implement
+the exact exchange spin-scaling relation (Oliver and Perdew, Phys. Rev. A 20, 397 (1979)) by
+doubling rho and quadrupling sigma per spin channel while passing the descriptor feature vector
+unchanged into both channel evaluations; the P2-02 note documents that as an approximation for
+context features without a doubled-spin transform. The meta-GGA alpha feature HAS an exact
+transform, alpha_sigma = alpha(2 rho_sigma, 4 sigma_sigma, 2 tau_sigma) (libxc's spin-polarized
+SCAN exchange equals two unpolarized evaluations at those ingredients to <1e-12 Ha on the O-atom
+grid), so for the meta-GGA architectures the production energy and potential of every
+open-shell species are evaluated at a feature the functional never sees for polarized
+densities. Measured 2026-08-20 on frozen PBE densities: the pretrained deep_mgga_3x16 over-binds
+H2O / N2 / CH4 by 30.5 / 55.9 / 20.8 kcal/mol relative to SCAN; transforming alpha per spin
+channel and nothing else leaves -7.6 / -7.9 / -7.6 (atomic exchange offsets Li / C / N / O from
++7.6 / +19.2 / +32.9 / +28.2 mHa to +2.7 / -1.8 / -5.4 / -8.3 mHa). Secondary: the open-shell
+pretraining rows store spin-resolved SCAN targets against total-density inputs
+(`pretrain_data_gen._atom_columns`); undoing the substitution there changes the offsets by
++1.0 / +7.3 / -2.0 kcal/mol only. The GGA architectures without descriptors are exempt
+(deep_3x16 vs PBE: -2.5 / -4.2 / -2.4 kcal/mol); whether the rung-3.5 per-spin occupancy
+features need an analogous transform is an open question (the occupancy is linear in the
+spin density matrix).
+WHY DEFERRED: the correction needs the per-spin kinetic-energy density on the grid in both the
+energy and the Fock-build paths (and in the descriptor reassembly of the manual solver), plus
+the pretraining rows posed per spin channel; it changes the trained and evaluated energies of
+every open-shell species for the meta-GGA architectures and therefore invalidates the v5
+meta-GGA cells (trained and evaluated under the frozen-alpha scaling) and the v5 pretrain
+checkpoints. A campaign decision with the v5 results in hand, not a patch under a running array.
+KNOWN: acceptance oracle = libxc SCAN spin=1 reproduced by the spin-scaled evaluation to
+numerical precision; acceptance test = the Section 5 table of
+notebooks/analysis/NOTES_v5_mgga_vs_scan.md collapsing to the corrected values (-7.6 / -7.9 /
+-7.6 kcal/mol or better); probe + independent re-derivation run in about a minute locally
+(scratch/probe_pretrain_vs_scan.py, scratch/mgga_spin_scaling_check/indep.py).
+TRIGGER: the decision to re-run the meta-GGA arms, or any new meta-GGA training at the
+production identity.
+AFFECTED SPECS (to be retrained after the correction; every architecture carrying the
+meta-GGA alpha descriptor, i.e. every cell trained and evaluated under the frozen-alpha
+spin scaling):
+- dfs6311_grid3_v5 / run_20260815T034818Z: spec_0000-0010 deep_mgga_3x16 (0000-0006
+  evaluated 2026-08-20, 0007-0010 in flight), spec_0011-0021 deep_mgga_attn_3x16 and
+  spec_0022-0032 deep_rung35_mgga_3x16 (queued/in flight on array 2120759) -- all 33;
+- dfs6311_grid3_v5mgga2 / run_20260815T034822Z: spec_0000-0010 deep_cusp_mgga_3x16 and
+  spec_0011-0021 deep_rung35ms_mgga_3x16 (array 2120764) -- all 22;
+- their five pretrain checkpoints (pretrain/<arch>/ in both runs) and the pretrain data
+  set (open-shell rows re-posed); the SCAN seed cache is unaffected (PySCF SCAN SCFs).
+Not affected by THIS defect: the GGA-rung arms (dfs6311_grid3_v4gga, array 2116743).
+deep_3x16 and deep_attn_3x16 carry no descriptor feature (exact spin scaling; 2.3-4.2
+kcal/mol pretrain offset vs PBE). deep_cusp / deep_rung35 / deep_rung35_attn / deep_rung35ms:
+the cusp feature is pure geometry (exact under spin scaling) and the rung-3.5 occupancy has no
+in-domain doubled-spin evaluation (values up to 1.9 against its [0, 1] bound; energies 40-80x
+worse), so their frozen-feature convention stands; their 13-56 kcal/mol pretrain offsets are a
+pretraining-protocol gap, recorded as #26.
+
+## 26. Descriptor-carrying architectures do not start fine-tuning at their parent functional (found 2026-08-20)
+
+WHAT: on frozen PBE densities at the production identity, the v4gga pretrained networks
+deviate from PBE in atomization energy (H2O / N2 / CH4, kcal/mol; every value re-derived
+independently to 0.001): deep_3x16 -2.5 / -4.2 / -2.4 and deep_attn_3x16 -2.3 / -4.1 / -3.1
+(descriptor-free, acceptable); deep_cusp_3x16 -13.2 / -4.2 / -25.7; deep_rung35_3x16
+-13.5 / -3.5 / -29.1; deep_rung35_attn_3x16 -29.5 / -20.4 / -56.1; deep_rung35ms_3x16
+-22.0 / -30.9 / -42.8. Two causes, neither a spin-scaling defect: (a) the H-atom
+pretraining error of every cusp-carrying network (+13.7 mHa against +0.8 for the
+descriptor-free control), multiplied by the hydrogen count; (b) molecular extrapolation of
+density-matrix features that the atoms-plus-mesh pretraining set never constrained (the
+molecular offsets of rung35_attn and rung35ms flip sign, -6.5 / -0.3 / -12.8 and
+-7.3 / -12.8 / -14.1 mHa). The pretraining loss is blind to both: deep_rung35_attn_3x16 has
+the lowest exchange residual of the six (2.1e-6) and the largest offset. The meta-GGA
+pretrains carry the same gap on top of the alpha defect (#25): -7.6 / -7.9 / -7.6 kcal/mol
+remain after the alpha correction.
+WHY DEFERRED: a remedy changes the pretraining protocol (molecular rows with density-matrix
+features in the pretraining set, an explicit H-atom / per-atom energy term or reweighting,
+or a parent-reproduction constraint during pretraining) and therefore the starting point of
+every descriptor-carrying cell; it is part of the campaign decision in #25 and must be taken
+together with the preflight gate that measures it.
+KNOWN: acceptance test = the dAE table above within a stated tolerance (order 1 kcal/mol
+on AEs, the descriptor-free level) for every architecture; the probe runs in under a minute
+per architecture (scratch/probe_pretrain_gga_rungs.py, scratch/mgga_spin_scaling_check/indep2.py).
+TRIGGER: the next pretraining of any descriptor-carrying architecture; the preflight gate.
