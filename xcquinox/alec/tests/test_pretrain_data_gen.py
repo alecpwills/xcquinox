@@ -397,9 +397,19 @@ def test_spin_channel_rows_refuse_a_restricted_density_matrix():
                                    descriptors=False)
 
 
+# The O-atom column builds below run at grid level 3, the production level:
+# the parent density now carries the training orientation lock
+# (pretrain_data_gen.PRETRAIN_ORIENTATION_LOCK_STRENGTH), and on the coarse
+# level-1 atomic grid the lock's 2p splitting competes with the grid's own
+# angular anisotropy, so the locked PBE SCF of O stalls there under pyscf's
+# defaults (2 of 10 draws converge at level 1, 5 of 10 at level 2, 10 of 10 at
+# level 3 and at the production 6-311++G(3df,2pd) / level 3 identity).
+_O_GRID_LEVEL = 3
+
+
 def test_atom_columns_default_footing_is_unchanged():
     from xcquinox.alec.pretrain_data_gen import _atom_columns
-    cols = _atom_columns("O", 2, "def2-svp", 1, polarized=True,
+    cols = _atom_columns("O", 2, "def2-svp", _O_GRID_LEVEL, polarized=True,
                          descriptors=True)
     assert "x_rows" not in cols
 
@@ -455,10 +465,10 @@ def _shared_scf_dft_module(monkeypatch, module):
 def test_atom_columns_spin_channel_footing_only_adds_x_rows(monkeypatch):
     from xcquinox.alec import pretrain_data_gen as pdg
     _shared_scf_dft_module(monkeypatch, pdg)
-    base = pdg._atom_columns("O", 2, "def2-svp", 1, polarized=True,
+    base = pdg._atom_columns("O", 2, "def2-svp", _O_GRID_LEVEL, polarized=True,
                              descriptors=True)
-    extended = pdg._atom_columns("O", 2, "def2-svp", 1, polarized=True,
-                                 descriptors=True,
+    extended = pdg._atom_columns("O", 2, "def2-svp", _O_GRID_LEVEL,
+                                 polarized=True, descriptors=True,
                                  exchange_footing="spin_channel")
     assert set(extended) - set(base) == {"x_rows"}
     for key in base:

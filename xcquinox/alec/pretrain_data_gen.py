@@ -1,18 +1,31 @@
 """Generate a pretrain-data ``.npz`` for xcquinox.alec network pretraining.
 
 This is the canonical, importable version of the recipe the step-4/5/6 notebooks
-emit inline: for each pretraining atom, run a PBE SCF on a coarse grid and store
-the per-grid-point exchange/correlation enhancement targets
+emit inline: for each pretraining system -- a free atom or a molecule of the
+set :func:`resolve_pretrain_systems` assembles -- take the parent functional's
+self-consistent density from ``data.precompute_fixed_density_data`` (PBE for
+the GGA rung, SCAN for the meta-GGA rung, at the training orientation lock) and
+store the per-grid-point exchange/correlation enhancement targets
 ``Fx = F_x^PBE - 1`` and ``Fc = F_c^PBE - 1`` (stored as ``F - 1``,
-the network convention), with spin-RESOLVED libxc ``spin=1`` evaluation for
-open-shell atoms (PBE 1996 §III spin-scaling, the ``spin=0`` total-density call
-is wrong for open-shell).
+the network convention) beside their SCAN counterparts, with spin-RESOLVED
+libxc ``spin=1`` evaluation for open shells (PBE 1996 Sec. III spin-scaling,
+the ``spin=0`` total-density call is wrong for an open shell). Under the
+``spin_channel`` exchange footing the open-shell exchange rows are posed per
+spin channel at the doubled density (the footing the production UKS exchange
+evaluates) and written as a second row block; a per-row system index and a
+per-system table of parent energies carry the energy term of the pretraining
+objective. The schema is declared in :func:`pretrain_npz_keys` and closed in
+both directions (:func:`_validate_pretrain_arrays`,
+:func:`load_pretrain_data_npz`), and a sidecar manifest records the identity
+the file was built at (:func:`pretrain_data_is_current`).
 
 The SPIN-POLARIZED variant additionally writes a ``zeta_all`` column
-(ζ = (ρ_a - ρ_b)/ρ per grid point) so a spin-polarization-aware cnet
-(``use_polarized_correlation``) is pretrained on the real ζ rather than a ζ=0
-warm-start. ``run_pretrain`` auto-selects ``pretrain_data_polarized.npz`` for a
-polarized architecture (see ``pretrain._pretrain_data_filename``).
+(zeta = (rho_a - rho_b)/rho per grid point) so a spin-polarization-aware cnet
+(``use_polarized_correlation``) is pretrained on the real zeta rather than a
+zeta = 0 warm-start. ``run_pretrain`` auto-selects
+``pretrain_data_polarized.npz`` for a polarized architecture (see
+``pretrain._pretrain_data_filename``, which reads
+:func:`pretrain_data_filename`).
 
 Descriptor columns ``cusp_all`` / ``dm_all`` are included by default so the file
 works for descriptor architectures (deep_cusp / deep_dm / deep_combined ...); a
@@ -42,11 +55,13 @@ import os
 from collections import namedtuple
 
 import numpy as np
+import jax
 import jax.numpy as jnp
 from pyscf import gto, dft, scf
 
 import xcquinox.features as _features
 from xcquinox.alec.df_jk import default_auxbasis
+from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH as _LOCK_STRENGTH
 
 
 # Same pretraining atoms / basis / grid as the step-6 notebook generator.
@@ -58,6 +73,19 @@ DEFAULT_PRETRAIN_ATOMS = (("H", 1), ("He", 0), ("O", 2), ("N", 3))
 DEFAULT_BASIS = "def2-svp"
 DEFAULT_GRID_LEVEL = 1
 _RHO_FLOOR = 1e-10  # strict > threshold for kept grid points
+
+#: Orientation-lock strength the parent density is computed at: the coefficient
+#: on the traceless-quadrupole ``h_core`` bias of ``orientation_lock.py`` that
+#: makes a degenerate open shell's density reproducible (OH / NO / CH 2-Pi, the
+#: 3P / 2P free atoms of the pools). It is ``orientation_lock.DEFAULT_STRENGTH``
+#: and the ``inputs.orientation_lock_strength`` every production configuration
+#: trains at (3e-5 in the six dfs6311 YAMLs that set one), so the rows a
+#: network is fit on sit on the SAME component of the degenerate manifold the
+#: training SCF and the fidelity certificate see. Without it the O-atom rows
+#: of two four-thread builds differ by 0.44 in rho on 99 percent of the grid
+#: (the threaded-BLAS lottery of the 2p hole); with it they agree to
+#: round-off. Part of the data identity (``pretrain_data_is_current``).
+PRETRAIN_ORIENTATION_LOCK_STRENGTH = _LOCK_STRENGTH
 
 #: LDA exchange coefficient, ``eps_x^LDA(rho) = _LDA_X_C rho^(1/3)``. The same
 #: constant libxc's ``LDA_X,`` returns at spin=0 and the same one
@@ -482,30 +510,52 @@ def _require_sane_density(mol_data, system, reference_xc, basis, grid_level,
     The Fx / Fc targets and the per-system energies are properties of the
     CONVERGED parent density; an unconverged one is not a functional's density
     at all and enters the fit as noise no later stage can tell from a fit error.
-    Three tests, none needing more than the record the precompute always
-    returns:
+    Three tests, none needing more than the record the precompute returns:
 
-    * an ``scf_converged`` flag of ``False`` is honored when a record carries
-      one (the installed precompute records none);
+    * the precompute's convergence stamp,
+      ``mol_metadata["reference_scf_converged"]``, beside
+      ``reference_scf_cycles`` and ``reference_scf_solver`` (``"diis"`` or
+      ``"diis+newton"``). The precompute writes ``True`` in every record it
+      returns and raises ``data.ReferenceSCFNotConverged`` otherwise, so a
+      stamp of ``False`` or an ABSENT stamp (a record assembled elsewhere, or
+      one predating the stamp) is refused: a density whose convergence was
+      never asserted is not trusted. The stamp's ``reference_xc`` must also
+      be the requested parent, so a record of the other functional cannot be
+      integrated under this one's name;
     * the quadrature of the stored density against the electron count, which
       catches a grid too coarse to resolve a diffuse density and a density
       matrix that does not belong to the stored grid -- but NOT a stalled SCF,
       whose density matrix still integrates to N electrons;
     * the SCF orbital gradient rebuilt from the stored Fock pieces
-      (:func:`_scf_gradient_norm`), held to pyscf's own convergence criterion
-      ``conv_tol_grad = sqrt(conv_tol)`` (``pyscf/scf/hf.py``; 3.2e-5 at the
-      default ``conv_tol`` of 1e-9). Measured on converged records: <= 4.2e-6
-      (O/def2-SVP level 1); an SCF stopped after one cycle sits at 2e-3 (He)
-      to 1 (F-), and an oxygen-atom SCAN run pyscf reported unconverged at
-      6.7e-5. The energy-change half of pyscf's criterion needs the iteration
-      history, which the record does not carry.
+      (:func:`_scf_gradient_norm`), the second line behind the stamp: held to
+      pyscf's own convergence criterion ``conv_tol_grad = sqrt(conv_tol)``
+      (``pyscf/scf/hf.py``; 3.2e-5 at the default ``conv_tol`` of 1e-9).
+      Measured on converged records: <= 4.2e-6 (O/def2-SVP level 1); an SCF
+      stopped after one cycle sits at 2e-3 (He) to 1 (F-), and an oxygen-atom
+      SCAN run pyscf reported unconverged at 6.7e-5. The energy-change half of
+      pyscf's criterion needs the iteration history, which the record does not
+      carry.
     """
-    if mol_data.get("scf_converged") is False:
+    where = (f"pretraining system {system.name!r} (geometry {system.atom!r}, "
+             f"charge {system.charge}, 2S {system.spin}, basis {basis}, grid "
+             f"level {grid_level})")
+    stamp = mol_data.get("mol_metadata") or {}
+    converged = stamp.get("reference_scf_converged")
+    if converged is not True:
+        detail = (f"{converged!r} after {stamp.get('reference_scf_cycles')} "
+                  f"cycles ({stamp.get('reference_scf_solver')})"
+                  if "reference_scf_converged" in stamp
+                  else "absent: the record carries no convergence stamp")
         raise RuntimeError(
-            f"the {reference_xc} SCF for pretraining system {system.name!r} "
-            f"(geometry {system.atom!r}, charge {system.charge}, 2S "
-            f"{system.spin}, basis {basis}, grid level {grid_level}) did not "
-            "converge"
+            f"the {reference_xc} SCF for {where} is not stamped converged: "
+            f"mol_metadata['reference_scf_converged'] is {detail}; only a "
+            "record the precompute returned as converged is integrated"
+        )
+    stamped_xc = stamp.get("reference_xc")
+    if stamped_xc is not None and str(stamped_xc) != str(reference_xc):
+        raise RuntimeError(
+            f"the record for {where} is stamped as the {stamped_xc!r} "
+            f"density, but the {reference_xc!r} parent was requested"
         )
     rho = np.asarray(mol_data["rho_grid"])
     weights = np.asarray(mol_data["grid_weights"])
@@ -523,17 +573,16 @@ def _require_sane_density(mol_data, system, reference_xc, basis, grid_level,
     grad_tol = float(np.sqrt(scf.hf.SCF.conv_tol))
     if not grad_norm < grad_tol:
         raise RuntimeError(
-            f"the {reference_xc} SCF for pretraining system {system.name!r} "
-            f"(geometry {system.atom!r}, charge {system.charge}, 2S "
-            f"{system.spin}, basis {basis}, grid level {grid_level}) did not "
-            f"converge: the orbital gradient of its stored density is "
-            f"{grad_norm:.3e}, against pyscf's criterion {grad_tol:.1e}"
+            f"the {reference_xc} SCF for {where} did not converge: the "
+            f"orbital gradient of its stored density is {grad_norm:.3e}, "
+            f"against pyscf's criterion {grad_tol:.1e}"
         )
 
 
 def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
                     descriptors, density_fit=False, auxbasis=None,
-                    cusp_log_transform=True, exchange_footing="total"):
+                    cusp_log_transform=True, exchange_footing="total",
+                    orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH):
     """Pretrain columns for ONE system on the parent functional's own density.
 
     The general case of :func:`_atom_columns`: an arbitrary geometry, charge and
@@ -586,6 +635,14 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
     SCF: the density is the precompute's, whose PBE / SCAN baseline is
     deliberately full-ERI so it is a fixed reference-quality anchor shared with
     training. ``auxbasis`` is forwarded for the same identity bookkeeping.
+
+    ``orientation_lock_strength`` is handed to the precompute unchanged and
+    defaults to the training lock (:data:`PRETRAIN_ORIENTATION_LOCK_STRENGTH`).
+    A degenerate open shell (the O atom, OH) relaxes to whichever component of
+    its degenerate manifold rounding picks, and two unlocked builds of the same
+    atom differ by order one in rho at individual grid points while sharing one
+    energy; locked, the rows are the ones the training SCF produces for the
+    same species. On an s-only basis the bias vanishes identically.
     """
     if reference_xc not in ("pbe", "scan"):
         raise ValueError(
@@ -605,7 +662,8 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
     # (which it would build at the same values) are not paid for twice.
     mol_data = precompute_fixed_density_data(
         mol_spec, required_keys=(), descriptors=(), auxbasis=auxbasis,
-        reference_xc=reference_xc)
+        reference_xc=reference_xc,
+        orientation_lock_strength=float(orientation_lock_strength))
 
     mol = gto.M(atom=system.atom, basis=basis, charge=int(system.charge),
                 spin=int(system.spin), verbose=0)
@@ -786,7 +844,8 @@ def _system_columns(system, basis, grid_level, *, reference_xc, polarized,
 
 def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
                   density_fit=False, auxbasis=None, cusp_log_transform=True,
-                  exchange_footing="total"):
+                  exchange_footing="total",
+                  orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH):
     """Per-atom pretrain columns: the single-nucleus case of
     :func:`_system_columns` on the PBE density.
 
@@ -801,12 +860,14 @@ def _atom_columns(symbol, spin, basis, grid_level, *, polarized, descriptors,
         basis, grid_level, reference_xc="pbe", polarized=polarized,
         descriptors=descriptors, density_fit=density_fit, auxbasis=auxbasis,
         cusp_log_transform=cusp_log_transform,
-        exchange_footing=exchange_footing)
+        exchange_footing=exchange_footing,
+        orientation_lock_strength=orientation_lock_strength)
 
 
 def _molecule_columns(mol_spec, reference_xc, basis, grid_level, *, polarized,
                       descriptors, density_fit=False, auxbasis=None,
-                      cusp_log_transform=True, exchange_footing="total"):
+                      cusp_log_transform=True, exchange_footing="total",
+                      orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH):
     """Pretrain columns for one molecule of the set, on the parent's density.
 
     ``mol_spec`` is anything :func:`normalize_system` accepts: a
@@ -819,7 +880,74 @@ def _molecule_columns(mol_spec, reference_xc, basis, grid_level, *, polarized,
         mol_spec, basis, grid_level, reference_xc=reference_xc,
         polarized=polarized, descriptors=descriptors, density_fit=density_fit,
         auxbasis=auxbasis, cusp_log_transform=cusp_log_transform,
-        exchange_footing=exchange_footing)
+        exchange_footing=exchange_footing,
+        orientation_lock_strength=orientation_lock_strength)
+
+
+def _x_block_lda(block):
+    """``rho eps_x^LDA`` for one exchange block, in the block's own convention.
+
+    A closed-shell system's exchange block IS its total-density block, which
+    already carries the libxc-derived ``e_lda_x`` (a spin=0 call there, so the
+    unpolarized LDA at the total density). An open shell's per-channel block
+    carries no LDA column: its denominator is the analytic unpolarized LDA at
+    the DOUBLED density ``2 rho_sigma``, a function of the stored ``rho``
+    alone, and the expression here is the one :func:`spin_channel_exchange_rows`
+    divided by (its floor and clip are inactive on every kept row, where
+    ``rho > 1e-10`` puts ``|eps_x^LDA|`` above 3e-4). One expression serves the
+    per-system target and the stored ``e_lda_x_x`` column, so the loss
+    multiplies the network's enhancement factor by the same floating-point
+    number the target was built from.
+    """
+    if "e_lda_x" in block:
+        return np.asarray(block["e_lda_x"])
+    rho = np.asarray(block["rho"])
+    return rho * (_LDA_X_C * np.cbrt(rho))
+
+
+def _system_energy_targets(cols, x_cols):
+    """Per-system parent energies in Hartree: ``(e_x, e_c, e_x_scan, e_c_scan)``.
+
+    Each is the ROW QUADRATURE over the rows this file stores,
+    ``sum_i w_i e_LDA_i (1 + F_i)``, not libxc's full-grid integral. That
+    choice is what makes the per-system energy term measure the fit and nothing
+    else: the network's own energy on the same rows is
+    ``sum_i w_i e_LDA_i F^NN_i``, so the residual vanishes exactly when the
+    network reproduces the stored enhancement factors. The two integrals differ
+    only by the rows the density floor drops and by the +-5 clip on the stored
+    ratio, and the floor is the model's own tail threshold
+    (``models._NN_TAIL_THRESHOLD`` = 1e-10), below which the model clamps F to 1
+    and the network cannot move the energy at all -- the dropped rows are
+    exactly the rows pretraining could not have fitted. Measured against libxc
+    on the same density: zero on the O atom at def2-SVP / grid level 1 (pyscf's
+    pruning leaves no point under the floor), 4.8e-12 Ha on OH/STO-3G level 0,
+    <= 3.3e-11 Ha on N and H2O at def2-SVP level 1 -- six orders of magnitude
+    under the certificate's tol_atom = 1.0 mHa. Summed by rung the targets
+    reproduce the record's ``E_xc_pbe`` and, with ``E_non_xc``, its total SCF
+    energy to the same floors.
+
+    ``x_cols`` is the per-channel exchange block of
+    :func:`spin_channel_exchange_rows`, or ``None`` when the exchange rows ARE
+    the total-density rows (a closed-shell system, or the ``"total"`` footing).
+    Its LDA denominator comes from :func:`_x_block_lda`. The correlation
+    targets always come from the total-density rows: correlation is
+    spin-interpolated rather than spin-scaled.
+    """
+    if x_cols is None:
+        e_x = float(np.sum(cols["weights"] * cols["e_lda_x"]
+                           * (1.0 + cols["Fx"])))
+        e_x_scan = float(np.sum(cols["weights"] * cols["e_lda_x"]
+                                * (1.0 + cols["Fx_scan"])))
+    else:
+        e_lda_x = _x_block_lda(x_cols)
+        e_x = float(np.sum(x_cols["weights"] * e_lda_x
+                           * (1.0 + x_cols["Fx"])))
+        e_x_scan = float(np.sum(x_cols["weights"] * e_lda_x
+                                * (1.0 + x_cols["Fx_scan"])))
+    e_c = float(np.sum(cols["weights"] * cols["e_lda_c"] * (1.0 + cols["Fc"])))
+    e_c_scan = float(np.sum(cols["weights"] * cols["e_lda_c"]
+                            * (1.0 + cols["Fc_scan"])))
+    return e_x, e_c, e_x_scan, e_c_scan
 
 
 # --------------------------------------------------------------------------- #
@@ -920,27 +1048,63 @@ def _pretrain_manifest_path(npz_path):
 
 
 def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
-                             auxbasis=None, atoms=DEFAULT_PRETRAIN_ATOMS):
-    """Record the basis/grid_level/density_fit/auxbasis/atoms a pretrain
-    ``.npz`` was built at.
+                             auxbasis=None, atoms=DEFAULT_PRETRAIN_ATOMS,
+                             systems=None, reference_xc="pbe",
+                             exchange_footing="total",
+                             mesh_fraction=MESH_WEIGHT_FRACTION,
+                             orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH):
+    """Record the identity a pretrain ``.npz`` was built at.
 
-    Written as a sidecar so the ``.npz`` array payload stays byte-identical to the
-    pre-manifest format (legacy loaders that ignore the sidecar are unaffected).
-    ``auxbasis`` is the EFFECTIVE DF fitting basis (``None`` when density_fit is
-    off) so a fitting-basis change forces a regen. ``atoms`` is recorded so an
-    ATOM-SET change (e.g. extending pretraining coverage to every pool element)
-    also forces a regen -- previously the manifest keyed only basis+grid and a
-    species change silently reused stale data."""
+    Written as a sidecar so the ``.npz`` array payload stays byte-identical to
+    the pre-manifest format (legacy loaders that ignore the sidecar are
+    unaffected). Every key here is something a change of which changes the
+    stored VALUES, so :func:`pretrain_data_is_current` treats all of them as
+    the file's identity:
+
+    - ``basis`` / ``grid_level`` / ``auxbasis``: the integration identity
+      (``auxbasis`` is the EFFECTIVE DF fitting basis, ``None`` when DF is
+      off, so a fitting-basis change forces a regeneration).
+    - ``atoms``: the legacy projection ``[[name, 2S], ...]`` of the set, kept
+      so a reader written before the set became a system list still resolves.
+    - ``systems``: the set itself, ``[[name, geometry, charge, 2S], ...]``. A
+      geometry change is a different physical system and must force a
+      regeneration, which the atom-name projection cannot see.
+    - ``reference_xc``: the functional whose SELF-CONSISTENT density the rows
+      sit on (PBE for the GGA rung, SCAN for the meta-GGA rung).
+    - ``exchange_footing``: ``"total"`` or ``"spin_channel"``. The open-shell
+      exchange rows are a different row set under the two, so a footing change
+      is a data change.
+    - ``orientation_lock_strength``: the lock the parent density was computed
+      at (:data:`PRETRAIN_ORIENTATION_LOCK_STRENGTH`). A degenerate open
+      shell's rows are a different component of its manifold under a
+      different lock, and an unlocked build is not reproducible at all.
+    - ``x64``: whether JAX computed in double precision when the file was
+      written (the generator refuses to write a single-precision column, so a
+      file it wrote carries ``True``; recorded so a file from another writer
+      declares its precision).
+    - ``mesh.weight_fraction``: the share of the total integration weight the
+      synthetic mesh carries. Recorded because it is a deliberate choice, not
+      an emergent property of a quadrature: mesh rows carry no physical grid
+      weight, so their pull on the pretrain loss is set here.
+
+    The writer's defaults are the PRODUCTION identity the generator and
+    :func:`ensure_pretrain_data` use; a manifest key absent from a legacy file
+    is read back as the HISTORICAL value (no lock, PBE, total footing, double
+    precision) by :func:`pretrain_data_is_current`.
+    """
     meta = {"basis": basis, "grid_level": int(grid_level),
             "density_fit": bool(density_fit), "auxbasis": auxbasis,
             "atoms": [[str(s), int(sp)] for s, sp in atoms],
-            # The (s, alpha) mesh the meta-GGA archs additionally pretrain on.
-            # Recorded because its WEIGHT SHARE is a deliberate choice, not an
-            # emergent property of a quadrature: mesh rows carry no physical
-            # grid weight, so their pull on the pretrain loss is set here.
+            "systems": (None if systems is None else
+                        [[str(s.name), str(s.atom), int(s.charge),
+                          int(s.spin)] for s in systems]),
+            "reference_xc": str(reference_xc),
+            "exchange_footing": str(exchange_footing),
+            "orientation_lock_strength": float(orientation_lock_strength),
+            "x64": bool(jax.config.jax_enable_x64),
             "mesh": {"rs": list(MESH_RS), "s": list(MESH_S),
                      "alpha": list(MESH_ALPHA),
-                     "weight_fraction": MESH_WEIGHT_FRACTION}}
+                     "weight_fraction": float(mesh_fraction)}}
     # Atomic for the same shared-dir reason as the npz write above.
     mpath = _pretrain_manifest_path(npz_path)
     tmp = f"{mpath}.tmp.{os.getpid()}"
@@ -958,32 +1122,90 @@ def read_pretrain_manifest(npz_path):
         return json.load(f)
 
 
+def _legacy_atom_rows(systems):
+    """The ``[[symbol, 2S], ...]`` projection of a system list, or ``None``
+    when some system is not a neutral free atom at the origin -- the only kind
+    of system the legacy generator could write, so the only kind a manifest
+    without a system list can be shown to hold."""
+    rows = []
+    for s in systems:
+        key = _geometry_key(s.atom)
+        if (int(s.charge) != 0 or len(key) != 1
+                or key[0][1:] != (0.0, 0.0, 0.0) or key[0][0] != str(s.name)):
+            return None
+        rows.append([str(s.name), int(s.spin)])
+    return rows
+
+
+def _composition_matches(meta, systems):
+    """Does the manifest's set equal ``systems``? A manifest with a system
+    list is compared on every field; one without (written before the set
+    became a system list) is compared through its atom projection, which
+    identifies exactly the neutral free atoms at the origin, in order."""
+    want = [[str(s.name), str(s.atom), int(s.charge), int(s.spin)]
+            for s in systems]
+    have = meta.get("systems")
+    if have is not None:
+        return [list(row) for row in have] == want
+    legacy = _legacy_atom_rows(systems)
+    if legacy is None:
+        return False
+    return meta.get(
+        "atoms", [[str(s), int(sp)] for s, sp in DEFAULT_PRETRAIN_ATOMS]
+    ) == legacy
+
+
 def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
-                             atoms=DEFAULT_PRETRAIN_ATOMS):
-    """True iff ``npz_path`` exists AND its manifest's
-    basis+grid_level+auxbasis+atoms match.
+                             atoms=DEFAULT_PRETRAIN_ATOMS, systems=None,
+                             reference_xc="pbe", exchange_footing="total",
+                             mesh_fraction=MESH_WEIGHT_FRACTION,
+                             orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH,
+                             x64=True):
+    """True iff ``npz_path`` exists AND its manifest matches the requested
+    identity.
 
     A missing file OR a missing/mismatched manifest returns ``False`` so the
     harness regenerates rather than silently reusing data built at a different
-    basis (the stale-reuse bug Task 9 closes). Legacy manifest-less files
-    therefore regenerate once, then carry a manifest thereafter. ``auxbasis`` is
-    the EFFECTIVE DF fitting basis (``None`` when DF is off); a legacy manifest
-    without an ``auxbasis`` key reads as ``None``, so the full-ERI path stays
-    current without a spurious regen. A legacy manifest without an ``atoms``
-    key reads as the historical DEFAULT_PRETRAIN_ATOMS, so existing default
-    data stays current while any non-default atom set forces a regen."""
+    identity. The identity is the full set :func:`_write_pretrain_manifest`
+    records: basis, grid level, effective DF fitting basis, the system list
+    (name, geometry, charge, spin of every system, in order), the parent
+    functional, the exchange footing, the mesh share, the orientation-lock
+    strength and the precision flag. A manifest key absent from a legacy file
+    reads as the value the historical generator used -- PBE, the ``total``
+    footing, the default mesh share, NO orientation lock, double precision
+    (the production files were measured float64), ``auxbasis`` ``None``, the
+    historical default atoms -- so a legacy directory is current for a request
+    at that identity and stale for the production one, whose lock its
+    degenerate-atom rows were not computed at.
+
+    ``systems`` is the resolved pretraining set. When given it replaces the
+    ``atoms`` comparison (``atoms`` is otherwise resolved into systems the
+    same way); a manifest without a system list is compared through its atom
+    projection (:func:`_composition_matches`).
+    """
     if not os.path.isfile(npz_path):
         return False
     meta = read_pretrain_manifest(npz_path)
     if meta is None:
         return False
-    want_atoms = [[str(s), int(sp)] for s, sp in atoms]
-    have_atoms = meta.get(
-        "atoms", [[str(s), int(sp)] for s, sp in DEFAULT_PRETRAIN_ATOMS])
+    if systems is None:
+        systems = resolve_pretrain_systems(atoms=atoms)
+    else:
+        systems = tuple(normalize_system(s) for s in systems)
     manifest_ok = (meta.get("basis") == basis
                    and int(meta.get("grid_level", -1)) == int(grid_level)
                    and meta.get("auxbasis") == auxbasis
-                   and have_atoms == want_atoms)
+                   and _composition_matches(meta, systems)
+                   and str(meta.get("reference_xc", "pbe"))
+                   == str(reference_xc)
+                   and str(meta.get("exchange_footing", "total"))
+                   == str(exchange_footing)
+                   and float(meta.get("mesh", {}).get(
+                       "weight_fraction", MESH_WEIGHT_FRACTION))
+                   == float(mesh_fraction)
+                   and float(meta.get("orientation_lock_strength", 0.0))
+                   == float(orientation_lock_strength)
+                   and bool(meta.get("x64", True)) == bool(x64))
     if not manifest_ok:
         return False
     # A descriptor-bearing file written before rung-3.5 support lacks the
@@ -1027,99 +1249,504 @@ def _effective_auxbasis(basis, density_fit, auxbasis):
     return auxbasis if auxbasis is not None else default_auxbasis(basis)
 
 
-def ensure_pretrain_data(data_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
-                         basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
-                         polarized=True, descriptors=True, density_fit=False,
-                         auxbasis=None, cusp_log_transform=True, progress=False):
+def ensure_pretrain_data(data_dir, *, atoms=None, basis=DEFAULT_BASIS,
+                         grid_level=DEFAULT_GRID_LEVEL, polarized=True,
+                         descriptors=True, density_fit=False, auxbasis=None,
+                         cusp_log_transform=True, progress=False,
+                         dfs_set=False, pool_atoms=False, reference_xc="pbe",
+                         exchange_footing="total",
+                         mesh_fraction=MESH_WEIGHT_FRACTION,
+                         orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH):
     """Skip-if-current driver for staged pretrain data.
 
-    Returns the canonical ``.npz`` path, (re)generating it ONLY when the file is
-    absent or its manifest's basis/grid_level/auxbasis differs from the requested
-    values. Idempotent, a second call at the same settings is a no-op. Used by
-    the cluster harness so a basis OR fitting-basis change forces a regen instead
-    of training on stale data."""
+    Returns the canonical ``.npz`` path, (re)generating it ONLY when the file
+    is absent or its manifest's identity differs from the requested one.
+    Idempotent: a second call at the same settings is a no-op. The set is
+    resolved ONCE here and handed to both the currency check and the
+    generator, so the file that is checked and the file that is written can
+    never be built from different lists. ``atoms`` of ``None`` is the
+    historical four-atom default unless ``dfs_set`` / ``pool_atoms`` supply
+    the set (:func:`resolve_pretrain_systems`).
+    """
+    _check_generator_arguments(reference_xc, exchange_footing, mesh_fraction)
     eff_aux = _effective_auxbasis(basis, density_fit, auxbasis)
-    out_path = os.path.join(data_dir, pretrain_data_filename(polarized))
+    systems = resolve_pretrain_systems(atoms=atoms, dfs_set=dfs_set,
+                                       pool_atoms=pool_atoms,
+                                       reference_xc=reference_xc)
+    out_path = os.path.join(data_dir,
+                            pretrain_data_filename(polarized, reference_xc))
     if pretrain_data_is_current(out_path, basis=basis, grid_level=grid_level,
-                                auxbasis=eff_aux, atoms=atoms):
+                                auxbasis=eff_aux, systems=systems,
+                                reference_xc=reference_xc,
+                                exchange_footing=exchange_footing,
+                                mesh_fraction=mesh_fraction,
+                                orientation_lock_strength=orientation_lock_strength):
         return out_path
     return generate_pretrain_data_npz(
-        data_dir, atoms=atoms, basis=basis, grid_level=grid_level,
-        polarized=polarized, descriptors=descriptors, density_fit=density_fit,
-        auxbasis=auxbasis, cusp_log_transform=cusp_log_transform, progress=progress)
+        data_dir, atoms=atoms, systems=systems, basis=basis,
+        grid_level=grid_level, polarized=polarized, descriptors=descriptors,
+        density_fit=density_fit, auxbasis=auxbasis,
+        cusp_log_transform=cusp_log_transform, progress=progress,
+        reference_xc=reference_xc, exchange_footing=exchange_footing,
+        mesh_fraction=mesh_fraction,
+        orientation_lock_strength=orientation_lock_strength)
 
 
-def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
-                               basis=DEFAULT_BASIS, grid_level=DEFAULT_GRID_LEVEL,
-                               polarized=True, descriptors=True,
-                               density_fit=False, auxbasis=None,
-                               cusp_log_transform=True, progress=False):
-    """Generate the pretrain-data ``.npz`` in ``out_dir`` and return its path.
+# --------------------------------------------------------------------------- #
+# The .npz schema: two row blocks, a system table, the mesh, one scalar.
+#
+# Every key the file can carry is declared here, so the writer can refuse a
+# column it has no slot for instead of dropping it silently (the historical
+# writer selected explicit keys and would have dropped a nested ``x_rows``) and
+# the reader can refuse a file with a missing block or an unknown key.
+# --------------------------------------------------------------------------- #
 
-    ``polarized=True`` writes ``pretrain_data_polarized.npz`` with a ``zeta_all``
-    column (the spin-polarized run's data); ``polarized=False`` writes
-    ``pretrain_data.npz`` (the unpolarized data). Both carry the same
-    spin-resolved Fx/Fc targets and the same molecules, they differ only by the
-    presence of ``zeta_all``.
+#: Column stems of the total-density block (``<stem>_all``): the historical
+#: columns every file carries ...
+_ALL_CORE = ("rho", "sigma", "Fx", "Fc", "Fx_scan", "Fc_scan", "metagga",
+             "weights")
+#: ... and the columns the pretraining protocol added beside them (the
+#: per-row system index and the LDA energy densities of the energy term).
+_ALL_PROTOCOL = ("system", "e_lda_x", "e_lda_c")
+#: Descriptor columns, present iff the file was written with ``descriptors``.
+_DESCRIPTOR_STEMS = ("cusp", "dm", "rung35", "rung35ms")
+#: The exchange block (``<stem>_x``), present iff the file was written on the
+#: ``spin_channel`` footing: the per-channel rows of every open shell and the
+#: total-density rows of every closed shell, with their own system index and
+#: their own LDA column (:func:`_x_block_lda`).
+_X_CORE = ("rho", "sigma", "Fx", "Fx_scan", "metagga", "weights", "system",
+           "e_lda_x")
+#: The synthetic (r_s, s, alpha) mesh (``<stem>_mesh``).
+_MESH_CORE = ("rho", "sigma", "Fx_scan", "Fc_scan", "metagga", "weights")
+#: Per-system table: the parent energies in Hartree and the nucleus count.
+_SYSTEM_TABLE = ("e_x_parent_sys", "e_c_parent_sys", "e_x_parent_scan_sys",
+                 "e_c_parent_scan_sys", "system_natoms")
+#: 0-d scalars.
+_SCALARS = ("mesh_weight_fraction",)
+#: Integer columns; everything else is float64.
+_INT_KEYS = frozenset({"system_all", "system_x", "system_natoms"})
+#: Trailing shape of the 2-D columns (the leading axis is the block's rows);
+#: ``dm`` is 2-D with a width the descriptor defines.
+_COLUMN_WIDTHS = {"metagga": (1,), "cusp": (2,), "rung35": (2,),
+                  "rung35ms": (6,)}
+_TWO_D_STEMS = ("metagga",) + _DESCRIPTOR_STEMS
 
-    ``density_fit`` density-fits the per-atom SCF Coulomb build (so the data can
-    be regenerated at a large basis without the full ERI exhausting RAM). A
-    sidecar ``<npz>.manifest.json`` records the basis/grid_level/density_fit so
-    :func:`pretrain_data_is_current` can detect a basis change and force a regen."""
-    per_atom = []
-    for _i, (sym, spin) in enumerate(atoms, 1):
-        if progress:
-            print(f"  pretrain data: atom {_i}/{len(atoms)} {sym} (PBE SCF @ {basis}) ...",
-                  flush=True)
-        per_atom.append(_atom_columns(
-            sym, spin, basis, grid_level,
-            polarized=polarized, descriptors=descriptors,
-            density_fit=density_fit, auxbasis=auxbasis,
-            cusp_log_transform=cusp_log_transform))
-    save_kwargs = {
-        "rho_all": np.concatenate([c["rho"] for c in per_atom]),
-        "sigma_all": np.concatenate([c["sigma"] for c in per_atom]),
-        "Fx_all": np.concatenate([c["Fx"] for c in per_atom]),
-        "Fc_all": np.concatenate([c["Fc"] for c in per_atom]),
-        # SCAN (meta-GGA) targets + iso-orbital alpha column, always present so
-        # meta_gga archs pretrain to SCAN (pretrain.py routes the target by the
-        # arch's meta_gga flag); GGA archs ignore these keys.
-        "Fx_scan_all": np.concatenate([c["Fx_scan"] for c in per_atom]),
-        "Fc_scan_all": np.concatenate([c["Fc_scan"] for c in per_atom]),
-        "metagga_all": np.concatenate([c["metagga"] for c in per_atom]),
-        "weights_all": np.concatenate([c["weights"] for c in per_atom]),
+
+def _stems_all(polarized, descriptors):
+    stems = _ALL_CORE + _ALL_PROTOCOL
+    if polarized:
+        stems += ("zeta",)
+    if descriptors:
+        stems += _DESCRIPTOR_STEMS
+    return stems
+
+
+def _stems_x(descriptors):
+    return _X_CORE + (_DESCRIPTOR_STEMS if descriptors else ())
+
+
+def _stems_mesh(polarized):
+    return _MESH_CORE + (("zeta",) if polarized else ())
+
+
+def pretrain_npz_keys(*, polarized, descriptors, exchange_footing):
+    """The exact key set a pretrain ``.npz`` written at this configuration
+    carries."""
+    keys = {f"{s}_all" for s in _stems_all(polarized, descriptors)}
+    keys |= {f"{s}_mesh" for s in _stems_mesh(polarized)}
+    keys |= set(_SYSTEM_TABLE) | set(_SCALARS)
+    if exchange_footing == "spin_channel":
+        keys |= {f"{s}_x" for s in _stems_x(descriptors)}
+    return keys
+
+
+#: Every key any configuration can carry: the reader's universe.
+_KNOWN_KEYS = frozenset(
+    pretrain_npz_keys(polarized=True, descriptors=True,
+                      exchange_footing="spin_channel"))
+
+
+def pretrain_npz_layout(keys):
+    """Which blocks a key set carries, and that it is a consistent schema.
+
+    Returns ``{"polarized", "descriptors", "exchange_footing", "system_table",
+    "mesh"}``. A key outside the schema is refused, and so is a file whose
+    blocks are incomplete: a file carrying the protocol's system table must
+    carry EXACTLY the key set of its configuration (:func:`pretrain_npz_keys`),
+    an exchange block cannot appear without the system table, and a legacy
+    file (no system table, written before the protocol) must carry the
+    historical core of the total-density block plus whatever newer optional
+    columns it has, nothing else. An existing production file is therefore
+    still readable for the point-wise loss; a torn or foreign file is not.
+    """
+    keys = set(keys)
+    unknown = sorted(keys - _KNOWN_KEYS)
+    if unknown:
+        raise ValueError(
+            f"pretrain data carries keys outside the schema: {unknown}")
+    layout = {
+        "polarized": "zeta_all" in keys,
+        "descriptors": "cusp_all" in keys,
+        "exchange_footing": ("spin_channel" if "rho_x" in keys else "total"),
+        "system_table": "system_all" in keys,
+        "mesh": "rho_mesh" in keys,
     }
+    if layout["system_table"]:
+        want = pretrain_npz_keys(polarized=layout["polarized"],
+                                 descriptors=layout["descriptors"],
+                                 exchange_footing=layout["exchange_footing"])
+        missing = sorted(want - keys)
+        if missing:
+            raise ValueError(
+                f"pretrain data is missing {missing} for its layout {layout}")
+        extra = sorted(keys - want)
+        if extra:
+            raise ValueError(
+                f"pretrain data carries {extra}, which its layout {layout} "
+                "does not declare")
+        return layout
+    protocol = sorted(k for k in keys if k.endswith("_x")
+                      or k in _SYSTEM_TABLE or k in _SCALARS
+                      or k in ("e_lda_x_all", "e_lda_c_all"))
+    if protocol:
+        raise ValueError(
+            f"pretrain data carries the protocol columns {protocol} without "
+            "the per-row system index 'system_all': a torn file")
+    missing = sorted(f"{s}_all" for s in ("rho", "sigma", "Fx", "Fc", "weights")
+                     if f"{s}_all" not in keys)
+    if missing:
+        raise ValueError(
+            f"pretrain data is missing the total-density columns {missing}")
+    if layout["mesh"]:
+        missing = sorted(f"{s}_mesh" for s in _MESH_CORE
+                         if f"{s}_mesh" not in keys)
+        if missing:
+            raise ValueError(f"pretrain data is missing the mesh columns "
+                             f"{missing}")
+    return layout
+
+
+def _validate_pretrain_arrays(arrays, *, expected=None):
+    """Check a key -> array mapping against the schema and return its layout.
+
+    ``expected`` (the writer's configuration, ``polarized`` / ``descriptors``
+    / ``exchange_footing``) demands the exact key set of that configuration.
+    Every array must be float64 -- a float32 column was computed in single
+    precision and casting it up recovers nothing -- except the int32 system
+    indices and nucleus counts; the rows of one block share one length, the
+    2-D columns carry their declared widths, the scalars are 0-d, the system
+    table is one row per system and every row index points into it.
+    """
+    keys = set(arrays)
+    if expected is not None:
+        want = pretrain_npz_keys(**expected)
+        missing, extra = sorted(want - keys), sorted(keys - want)
+        if missing or extra:
+            raise ValueError(
+                "the pretrain data columns do not match the declared schema "
+                f"for {expected}: missing {missing}, unexpected {extra}")
+    layout = pretrain_npz_layout(keys)
+    for key, arr in arrays.items():
+        want_dtype = np.int32 if key in _INT_KEYS else np.float64
+        if arr.dtype != want_dtype:
+            raise ValueError(
+                f"pretrain data column {key!r} is {arr.dtype}, not "
+                f"{np.dtype(want_dtype).name}")
+    for key in _SCALARS:
+        if key in arrays and arrays[key].shape != ():
+            raise ValueError(f"{key!r} must be a 0-d scalar, got shape "
+                             f"{arrays[key].shape}")
+    n_sys = None
+    if layout["system_table"]:
+        n_sys = int(arrays["system_natoms"].shape[0])
+        for key in _SYSTEM_TABLE:
+            if arrays[key].shape != (n_sys,):
+                raise ValueError(
+                    f"system table column {key!r} has shape "
+                    f"{arrays[key].shape}; expected ({n_sys},)")
+    for suffix in ("_all", "_x", "_mesh"):
+        block = {k: v for k, v in arrays.items() if k.endswith(suffix)}
+        if not block:
+            continue
+        n_rows = int(block[f"rho{suffix}"].shape[0])
+        for key, arr in block.items():
+            stem = key[:-len(suffix)]
+            if arr.ndim == 0 or arr.shape[0] != n_rows:
+                raise ValueError(
+                    f"pretrain data column {key!r} has {arr.shape} rows; the "
+                    f"{suffix} block has {n_rows}")
+            if stem in _TWO_D_STEMS:
+                width = _COLUMN_WIDTHS.get(stem)
+                if arr.ndim != 2 or (width is not None
+                                     and arr.shape[1:] != width):
+                    raise ValueError(
+                        f"pretrain data column {key!r} has shape {arr.shape}; "
+                        f"expected ({n_rows}, {width[0] if width else 'k'})")
+            elif arr.ndim != 1:
+                raise ValueError(
+                    f"pretrain data column {key!r} has shape {arr.shape}; "
+                    "expected a 1-D column")
+        index_key = f"system{suffix}"
+        if index_key in block and n_sys is not None and n_rows:
+            idx = block[index_key]
+            if int(idx.min()) < 0 or int(idx.max()) >= n_sys:
+                raise ValueError(
+                    f"pretrain data index {index_key!r} spans "
+                    f"[{int(idx.min())}, {int(idx.max())}] but the system "
+                    f"table has {n_sys} systems")
+    return layout
+
+
+def load_pretrain_data_npz(npz_path):
+    """Read a pretrain ``.npz`` into ``{key: ndarray}`` after checking it
+    against the schema (:func:`_validate_pretrain_arrays`): an unknown key, a
+    missing block, a single-precision or misaligned column is refused rather
+    than handed to the trainer. Every array is materialized, so the file
+    handle is closed on return."""
+    with np.load(npz_path) as z:
+        arrays = {k: np.array(z[k]) for k in z.files}
+    _validate_pretrain_arrays(arrays)
+    return arrays
+
+
+def _check_generator_arguments(reference_xc, exchange_footing, mesh_fraction):
+    """Refuse a bad parent, footing or mesh share before any SCF is paid for."""
+    if reference_xc not in ("pbe", "scan"):
+        raise ValueError(
+            f"reference_xc must be 'pbe' or 'scan'; got {reference_xc!r}.")
+    if exchange_footing not in ("total", "spin_channel"):
+        raise ValueError(
+            "exchange_footing must be 'total' or 'spin_channel'; got "
+            f"{exchange_footing!r}."
+        )
+    mesh_fraction = float(mesh_fraction)
+    if not (0.0 < mesh_fraction < 1.0):
+        raise ValueError(
+            "mesh_fraction is the mesh's share of the total integration "
+            "weight, w_mesh / (w_atom + w_mesh), and must lie strictly "
+            f"between 0 and 1; got {mesh_fraction!r}."
+        )
+
+
+def _exchange_block(cols):
+    """The exchange rows of one system in the ``_x`` stems: the per-channel
+    rows of an open shell (``x_rows``), the total-density rows of a closed
+    shell, whose ``rho_a = rho_b`` makes the two the same rows (that block
+    keeps its libxc ``e_lda_x``; the per-channel block carries none)."""
+    x_rows = cols.get("x_rows")
+    if x_rows is not None:
+        return dict(x_rows)
+    keep = set(_X_CORE + _DESCRIPTOR_STEMS) - {"system"}
+    return {k: cols[k] for k in cols if k in keep}
+
+
+def _check_block_columns(name, block, want_stems, suffix):
+    """One system's column dict against the stems its block declares: a
+    missing column, a column with no slot, and a column whose leading length
+    is not the block's row count are refused by name."""
+    have = frozenset(block)
+    missing = sorted(f"{k}{suffix}" for k in want_stems - have)
+    extra = sorted(f"{k}{suffix}" for k in have - want_stems)
+    if missing or extra:
+        raise ValueError(
+            f"the columns of pretraining system {name!r} do not match the "
+            f"schema: missing {missing}, without a slot {extra}")
+    n_rows = int(np.asarray(block["rho"]).shape[0])
+    for k in sorted(have):
+        arr = np.asarray(block[k])
+        if arr.ndim == 0 or arr.shape[0] != n_rows:
+            raise ValueError(
+                f"column {k + suffix!r} of pretraining system {name!r} has "
+                f"shape {arr.shape} against {n_rows} rows")
+    return n_rows
+
+
+def _assemble_blocks(per_system, systems, *, polarized, descriptors,
+                     exchange_footing, mesh_fraction):
+    """Concatenate the per-system column dicts into the file's arrays.
+
+    Every column a builder returned is mapped to a slot -- ``<stem>_all`` for
+    the total-density rows, ``<stem>_x`` for the exchange rows -- and a column
+    with no slot is refused rather than dropped, a missing or misaligned one
+    by name, before any arithmetic is done on them. The per-row system
+    indices, the exchange block's LDA column, the system table, the mesh and
+    the mesh share are added here.
+    """
+    want_all = frozenset(_stems_all(polarized, descriptors)) - {"system"}
+    for system, cols in zip(systems, per_system):
+        _check_block_columns(
+            system.name, {k: v for k, v in cols.items() if k != "x_rows"},
+            want_all, "_all")
+    arrays = {f"{k}_all": np.concatenate([np.asarray(c[k]) for c in per_system])
+              for k in sorted(want_all)}
+    arrays["system_all"] = np.concatenate(
+        [np.full(np.asarray(c["rho"]).shape[0], i, dtype=np.int32)
+         for i, c in enumerate(per_system)])
+    if exchange_footing == "spin_channel":
+        # One exchange block over EVERY system: the per-channel rows of an
+        # open shell, and the total-density rows of a closed shell, which ARE
+        # the per-channel rows there. The LDA column is computed per block
+        # (:func:`_x_block_lda`) rather than carried, because only the
+        # closed-shell blocks come with one.
+        want_x = frozenset(_stems_x(descriptors)) - {"system", "e_lda_x"}
+        x_blocks, x_lda = [], []
+        for system, cols in zip(systems, per_system):
+            block = _exchange_block(cols)
+            lda = _x_block_lda(block)
+            block = {k: v for k, v in block.items() if k != "e_lda_x"}
+            _check_block_columns(system.name, block, want_x, "_x")
+            x_blocks.append(block)
+            x_lda.append(lda)
+        for k in sorted(want_x):
+            arrays[f"{k}_x"] = np.concatenate(
+                [np.asarray(b[k]) for b in x_blocks])
+        arrays["e_lda_x_x"] = np.concatenate(x_lda)
+        arrays["system_x"] = np.concatenate(
+            [np.full(np.asarray(b["rho"]).shape[0], i, dtype=np.int32)
+             for i, b in enumerate(x_blocks)])
+        targets = [_system_energy_targets(c, c.get("x_rows"))
+                   for c in per_system]
+    else:
+        targets = [_system_energy_targets(c, None) for c in per_system]
+    # Per-system parent energies, Hartree. Both the PBE and the SCAN targets,
+    # for the same reason the Fx / Fx_scan columns are both present: the file's
+    # density is the parent's, the target is the rung's.
+    arrays.update({
+        "e_x_parent_sys": np.array([t[0] for t in targets], dtype=np.float64),
+        "e_c_parent_sys": np.array([t[1] for t in targets], dtype=np.float64),
+        "e_x_parent_scan_sys": np.array([t[2] for t in targets],
+                                        dtype=np.float64),
+        "e_c_parent_scan_sys": np.array([t[3] for t in targets],
+                                        dtype=np.float64),
+        # Nuclei per system: the validation split holds out MOLECULES only.
+        "system_natoms": np.array([_n_atoms(s.atom) for s in systems],
+                                  dtype=np.int32),
+    })
     # (s, alpha) parameter-space mesh, stored under SEPARATE *_mesh keys so the
     # atomic arrays every GGA arch reads stay byte-identical. pretrain.py
     # concatenates these ONLY for a meta_gga arch whose descriptor set the mesh
     # can actually define (see _mesh_columns).
     mesh = _mesh_columns()
-    _w_atom = float(save_kwargs["weights_all"].sum())
-    _n_mesh = mesh["rho"].shape[0]
+    w_rows = float(arrays["weights_all"].sum())
+    n_mesh = mesh["rho"].shape[0]
     # Rescale the (weightless) mesh rows to a stated share of the total
-    # integration weight: w_mesh_total / (w_atom + w_mesh_total) = FRACTION.
-    _w_mesh_total = _w_atom * MESH_WEIGHT_FRACTION / (1.0 - MESH_WEIGHT_FRACTION)
-    save_kwargs.update({
+    # integration weight: w_mesh_total / (w_rows + w_mesh_total) = FRACTION.
+    w_mesh_total = w_rows * mesh_fraction / (1.0 - mesh_fraction)
+    arrays.update({
         "rho_mesh": mesh["rho"],
         "sigma_mesh": mesh["sigma"],
         "Fx_scan_mesh": mesh["Fx_scan"],
         "Fc_scan_mesh": mesh["Fc_scan"],
         "metagga_mesh": mesh["metagga"],
-        "weights_mesh": np.full(_n_mesh, _w_mesh_total / _n_mesh),
+        "weights_mesh": np.full(n_mesh, w_mesh_total / n_mesh),
+        # Stored beside the weights it produced so the loss reads the share the
+        # DATA was built at rather than a constant that may have moved.
+        "mesh_weight_fraction": np.asarray(float(mesh_fraction)),
     })
     if polarized:
-        save_kwargs["zeta_mesh"] = mesh["zeta"]
-    if polarized:
-        save_kwargs["zeta_all"] = np.concatenate([c["zeta"] for c in per_atom])
-    if descriptors:
-        save_kwargs["cusp_all"] = np.concatenate([c["cusp"] for c in per_atom])
-        save_kwargs["dm_all"] = np.concatenate([c["dm"] for c in per_atom])
-        save_kwargs["rung35_all"] = np.concatenate([c["rung35"] for c in per_atom])
-        save_kwargs["rung35ms_all"] = np.concatenate(
-            [c["rung35ms"] for c in per_atom])
+        arrays["zeta_mesh"] = mesh["zeta"]
+    return arrays
+
+
+def generate_pretrain_data_npz(out_dir, *, atoms=None, basis=DEFAULT_BASIS,
+                               grid_level=DEFAULT_GRID_LEVEL,
+                               polarized=True, descriptors=True,
+                               density_fit=False, auxbasis=None,
+                               cusp_log_transform=True, progress=False,
+                               dfs_set=False, pool_atoms=False,
+                               reference_xc="pbe",
+                               exchange_footing="total",
+                               mesh_fraction=MESH_WEIGHT_FRACTION,
+                               systems=None,
+                               orientation_lock_strength=PRETRAIN_ORIENTATION_LOCK_STRENGTH):
+    """Generate the pretrain-data ``.npz`` in ``out_dir`` and return its path.
+
+    ``polarized=True`` writes the zeta-carrying file; ``reference_xc="scan"``
+    writes the SCAN-density file under its own name
+    (:func:`pretrain_data_filename`). The set is
+    ``resolve_pretrain_systems(atoms=..., dfs_set=..., pool_atoms=...,
+    reference_xc=...)`` unless ``systems`` supplies an already-resolved tuple,
+    which is how :func:`ensure_pretrain_data` guarantees the currency check
+    and the generation see the same list. The parent density of every system
+    is computed at ``orientation_lock_strength`` (the training lock by
+    default, see :data:`PRETRAIN_ORIENTATION_LOCK_STRENGTH`).
+
+    TWO ROW BLOCKS. The historical ``*_all`` block is the total-density block:
+    it carries the correlation rows always, and the exchange rows too under the
+    default ``"total"`` footing. Under ``exchange_footing="spin_channel"`` a
+    second ``*_x`` block carries the exchange rows on the exact-spin-scaling
+    footing -- per channel at ``(2 rho_sigma, 4 sigma_sigma_sigma, features of
+    diag(P_sigma, P_sigma))`` for an open shell (Oliver and Perdew, Phys. Rev. A
+    20, 397 (1979)), and the total-density rows for a closed shell, where
+    rho_a = rho_b makes the two the same rows. The two blocks have different
+    lengths on an open shell, which is why they cannot share one set of names,
+    and the exchange block carries its own LDA column ``e_lda_x_x``, because
+    an open shell's total-density ``e_lda_x_all`` is the SPIN-POLARIZED LDA
+    while the per-channel ratio was formed against the unpolarized LDA at the
+    doubled density.
+
+    THE SYSTEM TABLE. ``system_all`` / ``system_x`` index each row into the
+    system it came from, and ``e_{x,c}_parent[_scan]_sys`` hold that system's
+    parent energy in Hartree as the row quadrature (see
+    :func:`_system_energy_targets`). Together they are the per-system energy
+    term of the pretraining objective: a network can no longer lower the
+    point-wise residual while missing a system's energy.
+
+    THE SCHEMA IS CLOSED. Every column a builder returns is written under its
+    slot or refused (:func:`_assemble_blocks`), the written key set must be
+    exactly :func:`pretrain_npz_keys` of the configuration, every column is
+    float64 except the int32 indices, and the arrays are written only after
+    they pass :func:`_validate_pretrain_arrays` -- the check
+    :func:`load_pretrain_data_npz` repeats on the way back in.
+
+    A sidecar ``<npz>.manifest.json`` records the identity the data was built
+    at so :func:`pretrain_data_is_current` can force a regeneration.
+    """
+    from xcquinox.alec.data import clear_precompute_cache
+    _check_generator_arguments(reference_xc, exchange_footing, mesh_fraction)
+    systems = (tuple(normalize_system(s) for s in systems)
+               if systems is not None
+               else resolve_pretrain_systems(atoms=atoms, dfs_set=dfs_set,
+                                             pool_atoms=pool_atoms,
+                                             reference_xc=reference_xc))
+    if not systems:
+        raise ValueError(
+            "the pretraining set is empty: pass atoms=..., or turn on "
+            "dfs_set / pool_atoms."
+        )
+    per_system = []
+    for _i, system in enumerate(systems, 1):
+        if progress:
+            print(f"  pretrain data: system {_i}/{len(systems)} "
+                  f"{system.name} ({reference_xc.upper()} density @ "
+                  f"{basis}) ...",
+                  flush=True)
+        per_system.append(_system_columns(
+            system, basis, grid_level, reference_xc=reference_xc,
+            polarized=polarized,
+            descriptors=descriptors, density_fit=density_fit,
+            auxbasis=auxbasis, cusp_log_transform=cusp_log_transform,
+            exchange_footing=exchange_footing,
+            orientation_lock_strength=orientation_lock_strength))
+        # precompute_fixed_density_data memoizes its MoleculeData in a
+        # process-level dict, and each one holds the (4, n_grid, n_ao) AO
+        # derivative tensor -- of order 0.8 GB for a ten-nucleus molecule at
+        # 6-311++G(3df,2pd) and grid level 3. Retaining one per system would
+        # exhaust the node long before the set is generated, and nothing here
+        # revisits a system, so the cache is dropped as each system's columns
+        # are extracted.
+        clear_precompute_cache()
+    save_kwargs = _assemble_blocks(
+        per_system, systems, polarized=polarized, descriptors=descriptors,
+        exchange_footing=exchange_footing, mesh_fraction=mesh_fraction)
+    _validate_pretrain_arrays(
+        save_kwargs, expected=dict(polarized=bool(polarized),
+                                   descriptors=bool(descriptors),
+                                   exchange_footing=exchange_footing))
 
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, pretrain_data_filename(polarized))
+    out_path = os.path.join(out_dir,
+                            pretrain_data_filename(polarized, reference_xc))
     # ATOMIC write (tmp + os.replace): the data dir is SHARED across sweep
     # runs, and two concurrently submitted runs whose datagen stages both see
     # a stale file would otherwise race a plain in-place np.savez -- a torn
@@ -1136,5 +1763,8 @@ def generate_pretrain_data_npz(out_dir, *, atoms=DEFAULT_PRETRAIN_ATOMS,
     _write_pretrain_manifest(
         out_path, basis=basis, grid_level=grid_level, density_fit=density_fit,
         auxbasis=_effective_auxbasis(basis, density_fit, auxbasis),
-        atoms=atoms)
+        atoms=tuple((s.name, s.spin) for s in systems), systems=systems,
+        reference_xc=reference_xc, exchange_footing=exchange_footing,
+        mesh_fraction=mesh_fraction,
+        orientation_lock_strength=orientation_lock_strength)
     return out_path

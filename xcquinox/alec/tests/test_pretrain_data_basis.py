@@ -63,6 +63,15 @@ def test_manifest_round_trips_density_fit_flag(tmp_path):
     assert meta == {"basis": "def2-tzvp", "grid_level": 2, "density_fit": True,
                     "auxbasis": "def2-universal-jkfit",
                     "atoms": [[s, sp] for s, sp in pdg.DEFAULT_PRETRAIN_ATOMS],
+                    # The pretraining-protocol identity: the system list (None
+                    # when the writer was handed atoms only), the parent
+                    # functional, the exchange footing, the orientation lock
+                    # the parent density was computed at, and the precision.
+                    "systems": None, "reference_xc": "pbe",
+                    "exchange_footing": "total",
+                    "orientation_lock_strength":
+                        pdg.PRETRAIN_ORIENTATION_LOCK_STRENGTH,
+                    "x64": True,
                     # The (s, alpha) parameter mesh record (2026-08-10): its
                     # weight share is a deliberate choice the manifest states.
                     "mesh": {"rs": list(pdg.MESH_RS), "s": list(pdg.MESH_S),
@@ -86,12 +95,17 @@ def test_legacy_manifest_without_auxbasis_stays_current(tmp_path):
     p = os.path.join(tmp_path, "pretrain_data.npz")
     _touch_npz(p)
     # Old-format manifest: basis + grid_level + density_fit, NO auxbasis key.
+    # Such a file was also built without the orientation lock, so its identity
+    # is asked for at lock 0.0 (the production default would regenerate it).
     with open(pdg._pretrain_manifest_path(p), "w") as f:
         json.dump({"basis": "def2-svp", "grid_level": 1, "density_fit": False}, f)
-    assert pdg.pretrain_data_is_current(p, basis="def2-svp", grid_level=1) is True
+    assert pdg.pretrain_data_is_current(
+        p, basis="def2-svp", grid_level=1,
+        orientation_lock_strength=0.0) is True
     # A DF run (effective auxbasis set) correctly sees it as stale.
     assert pdg.pretrain_data_is_current(
-        p, basis="def2-svp", grid_level=1, auxbasis="def2-svp-jkfit") is False
+        p, basis="def2-svp", grid_level=1, auxbasis="def2-svp-jkfit",
+        orientation_lock_strength=0.0) is False
 
 
 # --- ensure-driver: skip-if-current, regen on basis change -----------------
@@ -180,15 +194,18 @@ def test_manifest_records_and_compares_atoms(tmp_path, monkeypatch):
 
     calls = []
 
-    def fake_cols(sym, spin, basis, grid_level, **kw):
-        calls.append(sym)
+    def fake_cols(system, basis, grid_level, **kw):
+        calls.append(system.name)
         return {k: np.ones(2) for k in ("rho", "sigma", "Fx", "Fc", "weights",
-                                        "zeta", "Fx_scan", "Fc_scan")} | {
+                                        "zeta", "Fx_scan", "Fc_scan",
+                                        "e_lda_x", "e_lda_c")} | {
             "cusp": np.ones((2, 2)), "dm": np.ones((2, 2)),
             "rung35": np.ones((2, 2)), "rung35ms": np.ones((2, 6)),
             "metagga": np.ones((2, 1))}
 
-    monkeypatch.setattr(pdg, "_atom_columns", fake_cols)
+    # The generator builds every system through _system_columns (the atom
+    # wrapper is a named entry point for callers, not the generator's seam).
+    monkeypatch.setattr(pdg, "_system_columns", fake_cols)
     default_path = pdg.ensure_pretrain_data(str(tmp_path))
     assert calls == [s for s, _ in pdg.DEFAULT_PRETRAIN_ATOMS]
     meta = json.loads(open(default_path + ".manifest.json").read())
@@ -204,10 +221,12 @@ def test_manifest_records_and_compares_atoms(tmp_path, monkeypatch):
     pdg.ensure_pretrain_data(str(tmp_path), atoms=full)
     assert calls == [s for s, _ in full]
 
-    # legacy manifest without 'atoms' key == DEFAULT (no spurious regen) but
-    # stale for a non-default set
+    # legacy manifest without 'atoms' key (and without the system list that
+    # now accompanies it) == DEFAULT (no spurious regen) but stale for a
+    # non-default set
     meta2 = json.loads(open(default_path + ".manifest.json").read())
     meta2.pop("atoms")
+    meta2.pop("systems")
     open(default_path + ".manifest.json", "w").write(json.dumps(meta2))
     assert pdg.pretrain_data_is_current(
         default_path, basis=pdg.DEFAULT_BASIS,
@@ -234,14 +253,15 @@ def test_generator_writes_are_atomic(tmp_path, monkeypatch):
     import numpy as np
     import xcquinox.alec.pretrain_data_gen as pdg
 
-    def fake_cols(sym, spin, basis, grid_level, **kw):
+    def fake_cols(system, basis, grid_level, **kw):
         return {k: np.ones(2) for k in ("rho", "sigma", "Fx", "Fc", "weights",
-                                        "zeta", "Fx_scan", "Fc_scan")} | {
+                                        "zeta", "Fx_scan", "Fc_scan",
+                                        "e_lda_x", "e_lda_c")} | {
             "cusp": np.ones((2, 2)), "dm": np.ones((2, 2)),
             "rung35": np.ones((2, 2)), "rung35ms": np.ones((2, 6)),
             "metagga": np.ones((2, 1))}
 
-    monkeypatch.setattr(pdg, "_atom_columns", fake_cols)
+    monkeypatch.setattr(pdg, "_system_columns", fake_cols)
     replaces = []
     real_replace = os.replace
     monkeypatch.setattr(

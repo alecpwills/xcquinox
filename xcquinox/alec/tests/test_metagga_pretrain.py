@@ -69,8 +69,11 @@ def test_staleness_forces_regen_when_multishell_column_absent(tmp_path):
              rung35ms_all=np.ones((3, 6)))
     with open(str(p2) + ".manifest.json", "w") as f:
         json.dump(manifest, f)
+    # A legacy manifest carries no orientation-lock key, so its identity is
+    # the unlocked one; it is asked for at lock 0.0.
     assert pdg.pretrain_data_is_current(
-        p2, basis="def2-svp", grid_level=1, atoms=[("H", 1)]) is True
+        p2, basis="def2-svp", grid_level=1, atoms=[("H", 1)],
+        orientation_lock_strength=0.0) is True
 
 
 # ---------------------------------------------------------------------------

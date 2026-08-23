@@ -82,8 +82,11 @@ def test_staleness_forces_regen_when_mesh_absent(tmp_path):
              Fx_scan_mesh=np.ones(4), Fc_scan_mesh=np.ones(4),
              metagga_mesh=np.ones((4, 1)), weights_mesh=np.ones(4))
     _manifest(p2)
+    # A legacy manifest carries no orientation-lock key, so its identity is
+    # the unlocked one; it is asked for at lock 0.0.
     assert pdg.pretrain_data_is_current(
-        p2, basis="def2-svp", grid_level=1, atoms=[("H", 1)]) is True
+        p2, basis="def2-svp", grid_level=1, atoms=[("H", 1)],
+        orientation_lock_strength=0.0) is True
 
 
 @pytest.mark.slow
