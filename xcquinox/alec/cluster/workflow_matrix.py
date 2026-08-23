@@ -1433,3 +1433,152 @@ def write_matrix_report(results, path) -> Path:
                    "results": results}, fh, indent=2, sort_keys=True)
         fh.write("\n")
     return path
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _resolve_archs(spec):
+    """``all`` or a comma-separated list -> a validated architecture list.
+
+    An unregistered name is refused here rather than at the first stage that
+    cannot find it: the matrix exists to run the WHOLE registry, so a typo in a
+    subset selection has to name the registry it was checked against.
+    """
+    if spec.strip() == "all":
+        return sorted(ARCHITECTURES)
+    names = [part.strip() for part in spec.split(",") if part.strip()]
+    if not names:
+        raise ValueError(
+            "--archs names no architecture; pass 'all' for the whole registry "
+            "or a comma-separated list of registered names")
+    unknown = [n for n in names if n not in ARCHITECTURES]
+    if unknown:
+        raise ValueError(
+            f"--archs names {unknown}, which are not registered "
+            f"architectures; valid names: {sorted(ARCHITECTURES)}"
+        )
+    return names
+
+
+def _refuse_repo_work_root(work_root, repo_root):
+    """Keep every byte the matrix writes out of the tracked tree.
+
+    The stages write run directories, a copy of the CCSD reference cache and
+    pretrain data; the reference copy in particular receives a
+    ``_run_log_<UTC>.json`` from every preflight.
+    """
+    work = Path(work_root).resolve()
+    repo = Path(repo_root).resolve()
+    if work == repo or repo in work.parents:
+        raise ValueError(
+            f"--work-root {work} is inside the repository {repo}; the matrix "
+            "writes run directories, a copy of the CCSD reference cache and "
+            "pretrain data, none of which belong in the tree. Use a path "
+            "outside it (e.g. /tmp/xcq-workflow-matrix)."
+        )
+
+
+def main(argv=None, *, runner=subprocess.run) -> int:
+    """Run the matrix and write its report. Returns a process exit code.
+
+    The status is :func:`matrix_exit_code` over the collected records, read
+    once and not re-derived here, so it cannot disagree with the ``exit_code``
+    the JSON sidecar carries: zero iff every architecture completed every stage
+    with its expected outcome, wrote a certificate, marked its held-out channel
+    as sliced and passed its oracles. The certificate's VERDICT does not enter
+    it -- spec 3.4 records the verdict, it does not require a PASS from a
+    50-step pretrain on two atoms (SPEC_pretrain_fidelity_program.md 3.4) --
+    and neither does ``validate_run``'s refusal of that waived certificate,
+    which is the expected outcome of the stage at this identity.
+
+    Nothing run from here reaches SLURM and nothing mails: the submit stage
+    runs in its dry-run, which creates the run directory and renders the sbatch
+    scripts without queueing them, and the template carries a blank mail block.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m xcquinox.alec.cluster.workflow_matrix",
+        description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--archs", default="all",
+        help="'all' (every registered architecture) or a comma-separated list")
+    parser.add_argument(
+        "--list", action="store_true", dest="list_archs",
+        help="print the registered architecture names, one per line, and exit "
+             "without running anything")
+    parser.add_argument(
+        "--work-root", default=None,
+        help="directory for run dirs, logs and staged inputs; must be outside "
+             "the repository. Required unless --list is given")
+    parser.add_argument(
+        "--shards", type=int, default=1,
+        help=f"architectures run concurrently (1..{MAX_SHARDS}); each shard "
+             "runs one SCF-heavy stage at a time")
+    parser.add_argument(
+        "--report", default=None,
+        help="markdown report path (default <work-root>/workflow_matrix.md; "
+             "the JSON sidecar sits beside it)")
+    parser.add_argument(
+        "--timeout-s", type=int, default=DEFAULT_STAGE_TIMEOUT_S,
+        help="per-stage wall-clock cap in seconds")
+    parser.add_argument(
+        "--species-slice", default=HELDOUT_SPECIES_SLICE,
+        help="comma-separated held-out species slice for the eval stages")
+    parser.add_argument(
+        "--external-refs-dir", default=None,
+        help="an already staged copy of the CCSD reference cache (default: "
+             "copy the repository cache into <work-root>/_inputs/"
+             "external_refs, which needs the untracked step-7 cache in the "
+             "tree; CachedInputsMissing names it when it is absent)")
+    parser.add_argument(
+        "--no-oracles", action="store_true",
+        help="skip the per-architecture spin-scaling oracle run")
+    args = parser.parse_args(argv)
+
+    if args.list_archs:
+        print("\n".join(sorted(ARCHITECTURES)))
+        return 0
+    if args.work_root is None:
+        parser.error("--work-root is required (it is optional only for "
+                     "--list)")
+
+    root = repo_root_path()
+    archs = _resolve_archs(args.archs)
+    _refuse_repo_work_root(args.work_root, root)
+    work_root = Path(args.work_root).resolve()
+    report_path = Path(args.report) if args.report \
+        else work_root / "workflow_matrix.md"
+
+    print(f"[workflow-matrix] {len(archs)} architectures, "
+          f"{args.shards} shard(s), work root {work_root}", flush=True)
+    # With more than one shard the hook is called from several threads, so the
+    # counter is a list append (one C-level operation, exact under threads)
+    # rather than a read-modify-write of an integer, which can lose an update
+    # and understate how far a long pass has got.
+    done = []
+
+    def _progress(result):
+        done.append(result["arch"])
+        row = arch_row(result)
+        print(f"[workflow-matrix] {len(done)}/{len(archs)} {row['arch']}: "
+              f"stages {row['stages_rc']} certificate {row['certificate']} "
+              f"oracles {row['oracles']} wall {row['wall']}", flush=True)
+
+    results = run_matrix(
+        archs, work_root, shards=args.shards, runner=runner,
+        timeout_s=args.timeout_s, repo_root=root,
+        external_refs_dir=args.external_refs_dir,
+        species_slice=args.species_slice, run_oracles=not args.no_oracles,
+        progress=_progress)
+    write_matrix_report(results, report_path)
+    clean = sum(1 for r in results if _is_clean(r))
+    print(f"[workflow-matrix] {clean}/{len(results)} clean; report "
+          f"{report_path}", flush=True)
+    return matrix_exit_code(results)
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through the CLI
+    sys.exit(main())

@@ -1251,6 +1251,35 @@ class MatrixFakeRunner:
                 "fidelity_certificate.json"
             cert.parent.mkdir(parents=True, exist_ok=True)
             cert.write_text(json.dumps(_certificate_payload(self.verdict)))
+        elif stage == "eval":
+            # ``cluster/_eval_one_spec`` marks a sliced held-out channel twice
+            # -- ``sliced_eval.json`` before any energy is computed, a
+            # ``species_slice`` entry in ``eval_metadata.json`` after them --
+            # and ``_slice_check`` reads both, so the fake writes both for the
+            # slice the stage was actually handed. The reaction closure is
+            # known here for the default slice only; any other slice is
+            # recorded without one, which the channel check reports as the
+            # mismatch it is.
+            from xcquinox.alec.full_benchmark_pools import (
+                HELDOUT_SPECIES_SLICE_ENV,
+            )
+            default = [part.strip() for part
+                       in wm.HELDOUT_SPECIES_SLICE.split(",") if part.strip()]
+            names = [part.strip() for part in
+                     (kwargs.get("env") or {}).get(
+                         HELDOUT_SPECIES_SLICE_ENV, "").split(",")
+                     if part.strip()] or default
+            channel = (Path(argv[3]) / "checkpoints"
+                       / f"spec_{int(argv[4]):04d}" / "eval_holdout")
+            channel.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "species_slice": names, "n_species": len(names),
+                "n_reactions": (wm.SLICE_CLOSED_REACTIONS
+                                if names == default else None),
+                "env_var": HELDOUT_SPECIES_SLICE_ENV}
+            (channel / "sliced_eval.json").write_text(json.dumps(payload))
+            (channel / "eval_metadata.json").write_text(
+                json.dumps(dict(payload, channel="eval_holdout")))
         elif stage == "oracles":
             stream.write("7 passed in 2.0s\n")
 
@@ -1843,3 +1872,196 @@ def test_the_certificate_runs_at_the_rendered_identity(tmp_path):
     assert systems
     assert {s.basis for s in systems} == {"def2-svp"}
     assert {s.grid_level for s in systems} == {1}
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def test_main_runs_the_named_architectures_and_writes_the_report(
+        tmp_path, shared_refs, capsys):
+    rc = wm.main(["--archs", "deep,shallow", "--work-root", str(tmp_path),
+                  "--external-refs-dir", str(shared_refs),
+                  "--report", str(tmp_path / "matrix.md")],
+                 runner=MatrixFakeRunner())
+    assert rc == 0
+    text = (tmp_path / "matrix.md").read_text()
+    assert "| deep |" in text and "| shallow |" in text
+    assert (tmp_path / "matrix.json").is_file()
+    out = capsys.readouterr().out
+    assert "deep" in out and "shallow" in out
+
+
+def test_main_defaults_the_report_into_the_work_root(tmp_path, shared_refs):
+    assert wm.main(["--archs", "deep", "--work-root", str(tmp_path),
+                    "--external-refs-dir", str(shared_refs)],
+                   runner=MatrixFakeRunner()) == 0
+    assert (tmp_path / "workflow_matrix.md").is_file()
+    assert (tmp_path / "workflow_matrix.json").is_file()
+
+
+def test_main_all_selects_every_registered_architecture(tmp_path,
+                                                        shared_refs):
+    wm.main(["--archs", "all", "--work-root", str(tmp_path),
+             "--external-refs-dir", str(shared_refs), "--no-oracles"],
+            runner=MatrixFakeRunner())
+    sidecar = json.loads((tmp_path / "workflow_matrix.json").read_text())
+    assert [r["arch"] for r in sidecar["results"]] == sorted(ARCHITECTURES)
+
+
+def test_main_returns_non_zero_when_a_stage_failed(tmp_path, shared_refs):
+    rc = wm.main(["--archs", "deep,shallow", "--work-root", str(tmp_path),
+                  "--external-refs-dir", str(shared_refs)],
+                 runner=MatrixFakeRunner(rc_by_arch={"shallow": 1}))
+    assert rc == 1
+    text = (tmp_path / "workflow_matrix.md").read_text()
+    assert "| shallow | 0.0.0.0.1.-.-.-.-.- |" in text
+
+
+def test_main_refuses_a_work_root_inside_the_repository():
+    inside = wm.repo_root_path() / "notebooks" / "matrix_scratch"
+    with pytest.raises(ValueError, match="inside the repository"):
+        wm.main(["--archs", "deep", "--work-root", str(inside)],
+                runner=MatrixFakeRunner())
+
+
+def test_main_refuses_an_unknown_architecture(tmp_path):
+    with pytest.raises(ValueError, match="no_such_arch"):
+        wm.main(["--archs", "no_such_arch", "--work-root", str(tmp_path)],
+                runner=MatrixFakeRunner())
+
+
+def test_main_passes_the_slice_and_the_oracle_switch_through(tmp_path,
+                                                             shared_refs):
+    from xcquinox.alec.full_benchmark_pools import HELDOUT_SPECIES_SLICE_ENV
+    fake = MatrixFakeRunner()
+    wm.main(["--archs", "deep", "--work-root", str(tmp_path),
+             "--external-refs-dir", str(shared_refs),
+             "--species-slice", "h,h2", "--no-oracles"], runner=fake)
+    eval_envs = [env for argv, env in fake.calls
+                 if "_eval_one_spec" in " ".join(argv)]
+    assert eval_envs and all(env[HELDOUT_SPECIES_SLICE_ENV] == "h,h2"
+                             for env in eval_envs)
+    assert not any("-m pytest" in " ".join(argv) for argv, _e in fake.calls)
+
+
+def test_main_refuses_an_archs_list_that_names_nothing(tmp_path):
+    """An empty selection is a typo, not a request to run the whole registry:
+    ``all`` is how the registry is asked for."""
+    with pytest.raises(ValueError, match="no architecture"):
+        wm.main(["--archs", " , ", "--work-root", str(tmp_path)],
+                runner=MatrixFakeRunner())
+
+
+def test_main_lists_the_registry_without_running_anything(capsys):
+    """``--list`` answers what ``--archs`` accepts, and needs neither a work
+    root nor a staged cache to do it."""
+    fake = MatrixFakeRunner()
+    assert wm.main(["--list"], runner=fake) == 0
+    assert capsys.readouterr().out.split() == sorted(ARCHITECTURES)
+    assert fake.calls == []
+
+
+def test_main_requires_a_work_root_before_it_runs(capsys):
+    """``--work-root`` is dispensable only for ``--list``: a run has to put its
+    run directories, logs and staged inputs somewhere."""
+    with pytest.raises(SystemExit) as caught:
+        wm.main(["--archs", "deep"], runner=MatrixFakeRunner())
+    assert caught.value.code == 2
+    assert "--work-root" in capsys.readouterr().err
+
+
+def test_main_returns_the_exit_predicate_the_report_records(tmp_path,
+                                                            shared_refs):
+    """The process exit status and the sidecar's ``exit_code`` are one
+    predicate (:func:`matrix_exit_code`) read twice. A CLI deriving its own
+    would be free to disagree with the report it had just written, and the
+    report is what a reader has afterwards.
+    """
+    for name, rc_by_arch in (("clean", {}), ("failed", {"shallow": 1})):
+        root = tmp_path / name
+        rc = wm.main(["--archs", "deep,shallow", "--work-root", str(root),
+                      "--external-refs-dir", str(shared_refs), "--no-oracles"],
+                     runner=MatrixFakeRunner(rc_by_arch=rc_by_arch))
+        sidecar = json.loads((root / "workflow_matrix.json").read_text())
+        assert rc == sidecar["exit_code"] == (1 if rc_by_arch else 0)
+
+
+class _TimeoutRecordingRunner(MatrixFakeRunner):
+    """Records the wall-clock cap every stage was launched under."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.timeouts = []
+
+    def __call__(self, argv, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        return super().__call__(argv, **kwargs)
+
+
+def test_main_caps_every_stage_at_the_requested_wall(tmp_path, shared_refs):
+    """The cap is a hang detector, so it applies to every stage alike; left
+    unset it is the runner's own default rather than no cap at all."""
+    default = _TimeoutRecordingRunner()
+    wm.main(["--archs", "deep", "--work-root", str(tmp_path / "default"),
+             "--external-refs-dir", str(shared_refs), "--no-oracles"],
+            runner=default)
+    assert default.timeouts
+    assert set(default.timeouts) == {wm.DEFAULT_STAGE_TIMEOUT_S}
+    asked = _TimeoutRecordingRunner()
+    wm.main(["--archs", "deep", "--work-root", str(tmp_path / "asked"),
+             "--external-refs-dir", str(shared_refs), "--no-oracles",
+             "--timeout-s", "7"], runner=asked)
+    assert set(asked.timeouts) == {7}
+
+
+def test_main_deals_the_architectures_into_the_requested_shards(tmp_path,
+                                                                shared_refs):
+    """Each shard gets its own pretrain-data directory: the generator writes a
+    fixed filename and two concurrent datagen stages would race on it."""
+    import yaml
+    wm.main(["--archs", "deep,shallow", "--work-root", str(tmp_path),
+             "--external-refs-dir", str(shared_refs), "--shards", "2",
+             "--no-oracles"], runner=MatrixFakeRunner())
+    dirs = {arch: yaml.safe_load(
+        (tmp_path / arch / "grid.yaml").read_text())["pretrain"]["data_dir"]
+        for arch in ("deep", "shallow")}
+    assert dirs["deep"].endswith("pretrain_data_shard0")
+    assert dirs["shallow"].endswith("pretrain_data_shard1")
+
+
+def test_main_never_asks_for_a_submission(tmp_path, shared_refs):
+    """Nothing the matrix runs reaches SLURM: the submit stage runs in its
+    dry-run, which creates the run directory and renders the scripts without
+    queueing them, and the matrix invokes the stage modules itself."""
+    fake = MatrixFakeRunner()
+    wm.main(["--archs", "deep", "--work-root", str(tmp_path),
+             "--external-refs-dir", str(shared_refs), "--no-oracles"],
+            runner=fake)
+    submits = [argv for argv, _env in fake.calls
+               if "xcquinox.alec.cluster" in " ".join(argv)
+               and "submit" in argv]
+    assert len(submits) == 1
+    assert "--submit" not in submits[0]
+    assert not any("--submit" in argv for argv, _env in fake.calls)
+
+
+def test_main_reads_the_public_exit_predicate(tmp_path, shared_refs,
+                                              monkeypatch):
+    """The status comes from :func:`matrix_exit_code` rather than from a second
+    copy of its rule inside the CLI. Two copies are free to drift, and the
+    record a reader has afterwards is the report, whose sidecar carries the
+    same predicate.
+    """
+    seen = []
+
+    def _exit_code(results):
+        seen.append([r["arch"] for r in results])
+        return 7
+
+    monkeypatch.setattr(wm, "matrix_exit_code", _exit_code)
+    rc = wm.main(["--archs", "deep", "--work-root", str(tmp_path),
+                  "--external-refs-dir", str(shared_refs), "--no-oracles"],
+                 runner=MatrixFakeRunner())
+    assert rc == 7
+    assert seen and seen[-1] == ["deep"]
