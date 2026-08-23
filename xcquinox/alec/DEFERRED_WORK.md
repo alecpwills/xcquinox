@@ -575,3 +575,27 @@ KNOWN: acceptance test = the dAE table above within a stated tolerance (order 1 
 on AEs, the descriptor-free level) for every architecture; the probe runs in under a minute
 per architecture (scratch/probe_pretrain_gga_rungs.py, scratch/mgga_spin_scaling_check/indep2.py).
 TRIGGER: the next pretraining of any descriptor-carrying architecture; the preflight gate.
+
+## #27 -- compute_alpha clip kink on one-electron spin channels (2026-08-21)
+
+**WHAT:** with the per-channel doubled-density footing, a one-electron spin channel (H alpha,
+Li beta) has tau = tau_W identically, so the iso-orbital indicator alpha is zero up to rounding
+and sits on the lower bound of the `jnp.clip(alpha_raw, 0, 100)` in `metagga.compute_alpha`.
+The clip's one-sided derivative makes the feature-response contribution to the self-consistent
+Fock matrix rounding-selected there: measured on Li with `deep_mgga_3x16`, the beta-channel
+`feature_response_vxc` term reaches 1.4e-1 Ha and moves by 6.1e-2 Ha under a 1e-14 relative
+change of the density matrix (on O: 5.9e-3 Ha, stable to 7e-18). Energies and the one-shot
+path are unaffected (frozen features); the finite-difference potential check passes away from
+the kink and the O-atom probe covers the smooth region.
+
+**WHY IT MATTERS:** free H and Li are atomization-energy anchors, and the self-consistent
+UKS loop evaluates the response term each cycle; a rounding-selected Fock contribution can
+make the SCF fixed point of those species draw-dependent for meta-GGA architectures.
+
+**KNOWN:** the solver-backend work measures fixed-point stability on H and Li across
+independent runs and damps or masks the response term on one-electron channels if unstable.
+
+**TRIGGER for closing:** replace the hard clip with a smooth positive part in the ENERGY
+expression of `compute_alpha` (never a modified derivative alone), re-verify against libxc
+spin=1 SCAN (the energy is insensitive: the affected rows carry |alpha_raw| <= 1e-9), and
+re-run the one-electron FD probes.
