@@ -647,7 +647,7 @@ def _spec_dir(run_dir, idx, width):
 def _polarized_data(grid_path, arch) -> bool:
     """Whether datagen writes the POLARIZED pretraining file for this run.
 
-    Mirrors ``cluster/_datagen._required_polarization_flags``: a run-level
+    Mirrors ``cluster/_datagen._required_polarized_flags``: a run-level
     ``use_polarized_correlation`` forces the polarized file for every
     architecture, and otherwise the architecture's own flag decides. Read out
     of the rendered YAML rather than through ``load_grid_config`` because one
@@ -1173,6 +1173,16 @@ def run_matrix(archs, work_root, *, shards=1, runner=subprocess.run,
             f"run_matrix: {unknown} are not registered architectures; "
             f"valid names: {sorted(ARCHITECTURES)}"
         )
+    repeated = sorted({a for a in archs if archs.count(a) > 1})
+    if repeated:
+        raise ValueError(
+            f"run_matrix: {repeated} appear more than once. Everything one row "
+            "owns is derived from <work_root>/<arch>, so two rows for one "
+            "architecture render the same grid.yaml into the same directory "
+            "and -- dealt into different shards -- do it while the other row "
+            "is reading it; the second run directory then replaces the first "
+            "and both rows report on one run. Name each architecture once."
+        )
     shards = int(shards)
     if not 1 <= shards <= MAX_SHARDS:
         raise ValueError(
@@ -1339,8 +1349,52 @@ def matrix_exit_code(results) -> int:
     verdict is carried by the exit status rather than by an early stop: a
     caller (a shell, a later job) sees one number for the whole pass and the
     report carries which architecture failed what.
+
+    An EMPTY record list is refused rather than answered. ``all(())`` is True,
+    so a pass that ran no architecture at all -- the one case where nothing was
+    established -- would otherwise return the same zero as a pass over the
+    whole registry. :func:`run_matrix` refuses an empty architecture list for
+    the same reason.
     """
+    results = list(results)
+    if not results:
+        raise ValueError(
+            "matrix_exit_code: no architecture records. An empty pass "
+            "establishes nothing, and all(()) would report it as a clean "
+            "matrix; run_matrix refuses an empty architecture list."
+        )
     return 0 if all(_is_clean(record) for record in results) else 1
+
+
+def _stage_record(result, name):
+    """One named stage of this architecture, or None if it never ran."""
+    for stage in result.get("stages", ()):
+        if stage.get("name") == name:
+            return stage
+    return None
+
+
+def _unexpected_stage_failure(result):
+    """The first stage whose non-zero exit this identity does not expect.
+
+    This is :func:`_is_clean`'s rule read stage by stage, so the report can
+    NAME the stage rather than only score the architecture: the certificate is
+    exempt here (its verdict is recorded, not required, and a certificate that
+    was never written is reported as the artefact failure it is, with the same
+    stage's return code and log), and ``validate_run`` is exempt while its
+    refusal is the expected one. Anything else that exited non-zero stopped the
+    sequence, and every stage after it is missing because of it.
+    """
+    validate = result.get("validate_run") or {}
+    for stage in result.get("stages", ()):
+        if stage.get("rc", 0) == 0:
+            continue
+        if stage.get("name") == "certificate":
+            continue
+        if stage.get("name") == "validate_run" and validate.get("expected"):
+            continue
+        return stage
+    return None
 
 
 def write_matrix_report(results, path) -> Path:
@@ -1362,7 +1416,11 @@ def write_matrix_report(results, path) -> Path:
         "",
         "Identity: def2-svp, grid level 1, solver oneshot, 2 cells "
         "(subset sizes 1 and 2), 3 training steps, 50 pretraining steps on "
-        "H and O; certificate at the production identity; held-out eval on "
+        "H and O; the certificate is computed at that same RENDERED identity "
+        "-- def2-svp, grid level 1, since `fidelity.run_identity` and "
+        "`build_oracle_set` both read `cfg.inputs` -- so its verdict is the "
+        "real one there and not one measured at the campaign's "
+        "6-311++G(3df,2pd) / grid 3; held-out eval on "
         f"the species slice {HELDOUT_SPECIES_SLICE} "
         f"({SLICE_CLOSED_REACTIONS} closed reactions).",
         "",
@@ -1394,12 +1452,39 @@ def write_matrix_report(results, path) -> Path:
         if record.get("error"):
             findings.append(f"- {record['arch']}: the sequence did not run "
                             f"({record['error']}).")
-        certificate = record.get("certificate") or {}
-        if certificate and not certificate.get("present", True):
+        # The stage the architecture died at, first: every other finding
+        # describes an artefact, and an artefact is missing BECAUSE a stage
+        # failed. Without this line a run stopped at, say, the preflight
+        # produced no finding at all, and one stopped at the datagen produced
+        # only the certificate's absence -- a stage that had never run.
+        failed = _unexpected_stage_failure(record)
+        if failed is not None:
             findings.append(
-                f"- {record['arch']}: the certificate stage wrote no "
-                f"certificate at {certificate.get('path')} -- "
-                f"{certificate.get('gate_message', '')}")
+                f"- {record['arch']}: stage {failed['name']} exited "
+                f"{failed['rc']}; the stages after it did not run. Log: "
+                f"{failed.get('log')}")
+        certificate = record.get("certificate") or {}
+        certificate_stage = _stage_record(record, "certificate")
+        if certificate_stage is not None:
+            if not certificate.get("present", True):
+                findings.append(
+                    f"- {record['arch']}: the certificate stage exited "
+                    f"{certificate_stage['rc']} and wrote no certificate at "
+                    f"{certificate.get('path')} -- "
+                    f"{certificate.get('gate_message', '')}. Log: "
+                    f"{certificate_stage.get('log')}")
+            elif certificate.get("gate_released") is False:
+                # A FAIL the run's own waiver covers is the expected outcome
+                # here and is not a finding; a FAIL nothing waives is the
+                # on-node gates refusing the run, and the certificate column
+                # renders the two alike.
+                findings.append(
+                    f"- {record['arch']}: the certificate verdict "
+                    f"{certificate.get('verdict')!r} is ENFORCED -- the "
+                    "rendered config carries no `fidelity.enforce: false` "
+                    "waiver, so the on-node gates (the preflight sweep and "
+                    "the train task) refuse this run: "
+                    f"{certificate.get('gate_message', '')}")
         check = record.get("slice_check") or {}
         if check.get("ok") is False:
             findings.append(f"- {record['arch']}: held-out channel not marked "
@@ -1408,6 +1493,16 @@ def write_matrix_report(results, path) -> Path:
         if validate.get("expected") is False:
             findings.append(f"- {record['arch']}: validate_run -- "
                             f"{validate.get('detail', '')}")
+        # The oracles are not one of STAGE_ORDER, so the stage finding cannot
+        # reach them, and a failing oracle is one of the ways _is_clean refuses
+        # an architecture: without this line that architecture is scored
+        # non-clean with nothing below the table to say why.
+        oracles = record.get("oracle_tests") or {}
+        if oracles.get("rc") not in (0, None):
+            findings.append(
+                f"- {record['arch']}: the oracles exited {oracles['rc']} "
+                f"({oracles.get('summary_line', '')}). Log: "
+                f"{oracles.get('log')}")
     expected = [f"- {record['arch']}: validate_run: "
                 f"{VALIDATE_RUN_EXPECTED_DETAIL}"
                 for record in results
@@ -1458,6 +1553,15 @@ def _resolve_archs(spec):
         raise ValueError(
             f"--archs names {unknown}, which are not registered "
             f"architectures; valid names: {sorted(ARCHITECTURES)}"
+        )
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        raise ValueError(
+            f"--archs names {repeated} more than once. Two rows for one "
+            "architecture share <work-root>/<arch>: they render one grid.yaml "
+            "and one run directory between them, so the matrix would report "
+            "two lines for a single run. Name each architecture once, or pass "
+            "'all'."
         )
     return names
 

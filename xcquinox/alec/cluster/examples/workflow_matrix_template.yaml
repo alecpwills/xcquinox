@@ -135,8 +135,13 @@ use_polarized_correlation: true
 inline_eval: false
 defer_eval: false
 # Certificate tolerances stay at their binding defaults (tol_AE = 1.0 kcal/mol,
-# tol_atom = 1.0 mHa, grid_config.FidelityConfig), so the certificate is
-# computed at the production identity and its verdict is the real one. What this
+# tol_atom = 1.0 mHa, grid_config.FidelityConfig), so the certificate is a real
+# measurement with a real verdict. It is computed at the identity THIS FILE
+# renders -- def2-svp, grid level 1, no density fitting -- because
+# `fidelity.run_identity` and `fidelity.build_oracle_set` both read
+# `cfg.inputs`, and `validate_run` refuses a certificate whose identity block
+# differs from the config's; the verdict therefore belongs to that identity and
+# not to the campaign's 6-311++G(3df,2pd) / grid 3. What this
 # block waives is the ENFORCEMENT, and only that: 50 pretraining steps on two
 # atoms cannot reproduce the parent functional to 1.0 kcal/mol, so FAIL is the
 # EXPECTED verdict here. With `enforce: false` the certificate is still computed

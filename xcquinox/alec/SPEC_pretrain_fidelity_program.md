@@ -140,9 +140,12 @@ datagen -> pretrain -> certificate -> preflight -> train (n_steps 3 on two cells
 in its default dry-run to create the run directory and resolved configuration, then
 `_datagen`, `_pretrain`, the certificate, `_preflight`, `_train_task`, `_eval_one_spec`,
 `validate_run`), at def2-svp / grid level 1 with the repository's cached subset ledger and
-CCSD references (`notebooks/checkpoints_step7/`), the certificate step at the production
-identity; the held-out evaluation is exercised on a six-species slice of the pool (the full
-pool is hours per cell and not narrowable from the configuration). Assertions per
+CCSD references (`notebooks/checkpoints_step7/`), the certificate step at that same rendered
+identity (`fidelity.run_identity` and `build_oracle_set` both read `cfg.inputs`, so it is
+def2-svp / grid level 1 here and the verdict is the real one there, not one measured at the
+campaign's 6-311++G(3df,2pd) / grid 3); the held-out evaluation is exercised on a six-species
+slice of the pool (the full pool is hours per cell and not narrowable from the
+configuration). Assertions per
 architecture: every stage completes with its expected outcome; under the matrix waiver
 validate_run's expected outcome is the certificate refusal and nothing else; the expected
 artefacts exist, the certificate verdict is recorded, the in-sample `eval_df.csv` and the

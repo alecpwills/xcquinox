@@ -92,12 +92,17 @@ def test_template_is_the_tiny_identity_the_spec_fixes():
     assert raw["cluster"]["device"] == "cpu"
     assert "benchmark_refs_dir" not in raw["inputs"]
     assert "val_refs_dir" not in raw["inputs"]
-    # The certificate runs at the production identity and its verdict is the
-    # real one; what the template waives is the ENFORCEMENT, without which the
+    # The certificate is computed at the identity this template renders --
+    # def2-svp / grid level 1, since fidelity.run_identity and
+    # build_oracle_set both read cfg.inputs -- and its verdict is the real one
+    # there; what the template waives is the ENFORCEMENT, without which the
     # on-node gates (cluster/_preflight.py, cluster/_train_task.py, both through
     # fidelity.gate_certificate) would block every architecture at a FAIL that
     # 50 pretraining steps on two atoms cannot avoid. The tolerances are NOT
     # written here: they stay at the program's binding defaults.
+    assert "production identity" not in wm.template_path().read_text(), (
+        "the certificate runs at the RENDERED identity (def2-svp, grid level "
+        "1), which test_the_certificate_runs_at_the_rendered_identity measures")
     assert raw["fidelity"]["enforce"] is False
     assert raw["fidelity"]["override_reason"] == (
         "workflow matrix: wiring check at a 50-step pretrain, never a campaign")
@@ -1132,15 +1137,26 @@ def test_run_arch_refuses_a_channel_whose_stamp_carries_no_slice(tmp_path):
     assert "species_slice" in check["detail"]
 
 
+@pytest.mark.parametrize("recorded", [0, 2, 4, None, "3"])
 def test_run_arch_refuses_a_slice_that_closed_the_wrong_reaction_count(
-        tmp_path):
+        tmp_path, recorded):
     """The six species close three reactions. A channel reporting another
-    count evaluated a different pool than the one the matrix asked for."""
+    count evaluated a different pool than the one the matrix asked for.
+
+    The count is checked for EQUALITY with :data:`SLICE_CLOSED_REACTIONS`, so
+    every near miss is refused and not only an obviously empty one: a count
+    below it (0) or above it (4), the off-by-one that a single dropped species
+    produces (2), an absent or null field (``None``, which a channel written by
+    an older eval stage carries), and the string ``"3"``, which compares
+    unequal to the integer and would otherwise let a JSON schema change pass
+    unnoticed.
+    """
     run_dir = tmp_path / "deep" / "runs" / "run_20260821T000000Z"
     result, _fake = _run_arch(
-        tmp_path, fake=SliceMarkingRunner(run_dir, n_reactions=1))
+        tmp_path, fake=SliceMarkingRunner(run_dir, n_reactions=recorded))
     check = result["slice_check"]
     assert check["ok"] is False
+    assert f"n_reactions={recorded!r}" in check["detail"]
     assert str(wm.SLICE_CLOSED_REACTIONS) in check["detail"]
 
 
@@ -1366,6 +1382,22 @@ def test_run_matrix_refuses_an_unregistered_architecture(tmp_path,
                       external_refs_dir=shared_refs)
 
 
+def test_run_matrix_refuses_a_repeated_architecture(tmp_path, shared_refs):
+    """One architecture named twice is two rows over ONE working directory.
+
+    ``run_arch`` derives everything from ``<work_root>/<arch>``: both rows
+    write the same ``grid.yaml`` and, dealt into different shards, write it
+    concurrently while the other row's submit stage reads it, so the second run
+    directory replaces the first and the two rows report on one run. The report
+    would show two independent-looking lines for it.
+    """
+    with pytest.raises(ValueError, match="more than once"):
+        wm.run_matrix(["deep", "shallow", "deep"], tmp_path,
+                      runner=MatrixFakeRunner(),
+                      repo_root=wm.repo_root_path(),
+                      external_refs_dir=shared_refs)
+
+
 def test_run_matrix_calls_the_progress_hook_once_per_arch(tmp_path,
                                                           shared_refs):
     seen = []
@@ -1528,6 +1560,17 @@ def test_matrix_exit_code_is_zero_only_for_a_matrix_that_met_every_item():
         "gate_message": "no certificate"})]) == 1
 
 
+def test_matrix_exit_code_refuses_an_empty_matrix():
+    """``all(())`` is True, so an empty record list would report a clean pass
+    of a matrix that ran nothing -- the one answer that must never be reached
+    by accident, since a pass that died before its first architecture produces
+    exactly that list. ``run_matrix`` refuses an empty architecture list for
+    the same reason, and the predicate refuses the empty result of one.
+    """
+    with pytest.raises(ValueError, match="no architecture records"):
+        wm.matrix_exit_code([])
+
+
 def test_write_matrix_report_counts_an_unmarked_channel_as_not_clean(tmp_path):
     """The held-out assertion is part of the acceptance list, so a run whose
     stages all exited zero but whose channel carries no slice mark is not a
@@ -1566,6 +1609,138 @@ def test_write_matrix_report_keeps_every_stage_record_in_the_sidecar(tmp_path):
     assert sidecar["results"][0]["certificate_verdict"] == "PASS"
     assert sidecar["results"][0]["slice_check"]["ok"] is True
     assert sidecar["n_clean"] == 1
+
+
+def test_write_matrix_report_states_the_identity_the_certificate_ran_at(
+        tmp_path):
+    """The verdict is only interpretable against the identity it was measured
+    at, and that identity is the RENDERED one: ``fidelity.run_identity`` and
+    ``build_oracle_set`` both read ``cfg.inputs``, which this template sets to
+    def2-svp / grid level 1 (measured by
+    ``test_the_certificate_runs_at_the_rendered_identity``), not the campaign's
+    6-311++G(3df,2pd) / grid 3.
+    """
+    text = wm.write_matrix_report([_clean_result()],
+                                  tmp_path / "matrix.md").read_text()
+    assert "production identity" not in text
+    assert "def2-svp" in text
+    assert "grid level 1" in text
+
+
+def _findings_of(text):
+    """The findings block of a rendered report, or None when it has none."""
+    parts = text.split("## Findings", 1)
+    return parts[1] if len(parts) == 2 else None
+
+
+def test_write_matrix_report_names_the_stage_that_failed(tmp_path):
+    """A datagen failure stops the sequence four stages before the certificate,
+    so the record carries none -- but the certificate is not what failed, and a
+    findings block naming only the absent certificate points the reader at the
+    wrong stage. The first non-zero exit this identity does not expect is named
+    with its return code and its log, and the certificate finding is withheld
+    while that stage never ran.
+    """
+    run_dir = tmp_path / "deep" / "runs" / "run_20260821T000000Z"
+    result, _fake = _run_arch(
+        tmp_path, fake=FakeRunner(run_dir, rc_by_stage={"datagen": 1}))
+    assert [s["name"] for s in result["stages"]] == ["submit", "datagen"]
+    assert result["certificate"]["present"] is False
+    text = wm.write_matrix_report([result], tmp_path / "matrix.md").read_text()
+    findings = _findings_of(text)
+    assert findings is not None, text
+    assert "datagen" in findings
+    assert "exited 1" in findings
+    assert result["stages"][-1]["log"] in findings
+    # The header explains that an absent certificate IS a stage failure; what
+    # must not appear is that finding against this architecture, whose
+    # certificate stage never ran.
+    assert "wrote no certificate" not in findings
+
+
+def test_write_matrix_report_names_a_failure_after_the_certificate(tmp_path):
+    """An architecture stopped at the preflight wrote its certificate and
+    marked no held-out channel, so no existing finding applies to it: the
+    return-code column was the only record that anything had gone wrong, and a
+    report with no findings block reads as a clean pass.
+    """
+    run_dir = tmp_path / "deep" / "runs" / "run_20260821T000000Z"
+    result, _fake = _run_arch(
+        tmp_path, fake=FakeRunner(run_dir, rc_by_stage={"preflight": 1}))
+    assert result["certificate"]["present"] is True
+    assert result["slice_check"]["ok"] is None
+    assert wm.matrix_exit_code([result]) == 1
+    text = wm.write_matrix_report([result], tmp_path / "matrix.md").read_text()
+    findings = _findings_of(text)
+    assert findings is not None, text
+    assert "preflight" in findings
+    assert "exited 1" in findings
+    assert result["stages"][-1]["log"] in findings
+
+
+def test_write_matrix_report_names_an_enforced_failing_certificate(tmp_path):
+    """With no waiver in the rendered config a FAIL verdict is what the on-node
+    gates REFUSE (``gate_released`` False), and that is a different outcome
+    from the waived FAIL this template expects. The column renders both as
+    ``FAIL``, so the un-waived case has to name itself below the table.
+    """
+    text = wm.write_matrix_report([_clean_result(certificate={
+        "present": True, "verdict": "FAIL", "enforced": True,
+        "override_reason": None, "gate_released": False,
+        "path": "/w/deep/pretrain/deep/fidelity_certificate.json",
+        "gate_message": "pretrain/deep: fidelity certificate verdict 'FAIL', "
+                        "expected 'PASS'"})],
+        tmp_path / "matrix.md").read_text()
+    findings = _findings_of(text)
+    assert findings is not None, text
+    assert "ENFORCED" in findings
+    assert "'FAIL'" in findings
+    # A certificate that exists but is refused is not a certificate that was
+    # never written, and the two findings must not be confused.
+    assert "wrote no certificate" not in findings
+
+
+def test_write_matrix_report_names_every_architecture_it_scores_non_clean(
+        tmp_path):
+    """The findings block is the whole of what a reader has below the table,
+    so no architecture may be scored non-clean in silence.
+
+    One record is built for each way ``_is_clean`` can refuse one -- the
+    sequence raising, a stage exiting non-zero, no certificate, an unmarked
+    held-out channel, a ``validate_run`` that accepted the waived run, and a
+    failing oracle (which is not one of ``STAGE_ORDER`` and so is reachable by
+    no stage finding) -- and each must appear by name. The clean record is the
+    control: it must produce no findings block at all.
+    """
+    cases = {
+        "sequence raised": _clean_result(
+            stages=[], error="RuntimeError: stage launch failed"),
+        "stage failed": _clean_result(stages=[
+            {"name": "submit", "rc": 0, "log": "/w/deep/logs/submit.log"},
+            {"name": "datagen", "rc": 1, "log": "/w/deep/logs/datagen.log"}]),
+        "no certificate": _clean_result(certificate={
+            "present": False, "verdict": None, "enforced": None,
+            "override_reason": None, "gate_released": False,
+            "path": "/w/deep/pretrain/deep/fidelity_certificate.json",
+            "gate_message": "no fidelity certificate"}),
+        "unmarked channel": _clean_result(slice_check={
+            "checked": True, "ok": False, "n_reactions": None,
+            "channels": [], "detail": "no readable sliced_eval.json"}),
+        "validate_run accepted": _clean_result(validate_run={
+            "expected": False, "rc": 0, "failures": [],
+            "detail": "validate_run exited 0 on a waived FAIL certificate"}),
+        "oracles failed": _clean_result(oracle_tests={
+            "rc": 1, "summary_line": "1 failed, 11 passed in 4.2s",
+            "log": "/w/deep/logs/oracles.log"}),
+    }
+    for label, record in cases.items():
+        assert wm.matrix_exit_code([record]) == 1, label
+        findings = _findings_of(wm.write_matrix_report(
+            [record], tmp_path / "matrix.md").read_text())
+        assert findings is not None, f"{label}: no findings block"
+        assert record["arch"] in findings, label
+    assert _findings_of(wm.write_matrix_report(
+        [_clean_result()], tmp_path / "clean.md").read_text()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1691,6 +1866,13 @@ def test_run_arch_fails_the_certificate_stage_when_none_was_written(tmp_path):
     assert wm.matrix_exit_code([result]) == 1
     log = Path(result["stages"][-1]["log"]).read_text()
     assert "fidelity_certificate.json" in log
+    # The findings block carries the stage's return code and log path, so the
+    # reader reaches the evidence without opening the JSON sidecar.
+    findings = _findings_of(wm.write_matrix_report(
+        [result], tmp_path / "matrix.md").read_text())
+    assert findings is not None
+    assert f"exited {wm.CERTIFICATE_MISSING_RC}" in findings
+    assert result["stages"][-1]["log"] in findings
 
 
 def test_run_arch_reports_an_unreadable_certificate_as_missing(tmp_path):
@@ -1950,6 +2132,17 @@ def test_main_refuses_an_archs_list_that_names_nothing(tmp_path):
     ``all`` is how the registry is asked for."""
     with pytest.raises(ValueError, match="no architecture"):
         wm.main(["--archs", " , ", "--work-root", str(tmp_path)],
+                runner=MatrixFakeRunner())
+
+
+def test_main_refuses_an_archs_list_that_repeats_a_name(tmp_path):
+    """A repeated name is a typo in a comma-separated list, and it costs more
+    than a duplicated row: both rows drive ``<work-root>/<arch>``, so they
+    render one ``grid.yaml`` and one run directory between them. It is refused
+    at the flag, where the name the user typed can be quoted back.
+    """
+    with pytest.raises(ValueError, match="more than once"):
+        wm.main(["--archs", "deep,shallow,deep", "--work-root", str(tmp_path)],
                 runner=MatrixFakeRunner())
 
 
