@@ -170,13 +170,33 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
     No waiver is accepted here, so no status other than PASS can reach a built
     view.
 
-    The certificate's own ``identity`` record is re-checked against the arm's
-    ``resolved_config.yaml`` on the fields ``fidelity.run_identity`` defines
-    (basis, grid level, the Coulomb backend, the orientation-lock strength):
-    a PASS measured at another SCF identity does not describe the SCF the
-    arm's held-out numbers come from. A certificate that records no identity
-    object makes no claim to contradict and is not read as agreement --
-    ``validate_run`` is the layer that imposes the identity on the run itself.
+Four further records on a PASS certificate are re-checked against the
+    arm on disk, because ``validate_run`` -- which imposes them on the
+    cluster -- is not part of the pull pipeline, so on pulled data this is
+    the only place they are read:
+
+    * ``arch``: the certificate is located by DIRECTORY, so a file copied
+      from another architecture's pretrain dir would otherwise certify this
+      one.
+    * ``parent``: the functional an architecture must reproduce follows its
+      RUNG (``fidelity.resolve_parent``); a certificate measured against the
+      other one bounds nothing here.
+    * ``checkpoint.xnet_sha256`` / ``cnet_sha256``: the digests of the two
+      files the verdict refers to, recomputed with the writer's own
+      ``materialize._sha256_file``. A checkpoint rewritten or re-pretrained
+      after certification is not the one that was measured.
+    * ``identity``: the fields ``fidelity.run_identity`` defines (basis, grid
+      level, the Coulomb backend, the orientation-lock strength), compared
+      against the arm's ``resolved_config.yaml``. A PASS measured at another
+      SCF identity does not describe the SCF the arm's held-out numbers come
+      from.
+
+    Each comparison is made over the keys the certificate ITSELF records: the
+    writer emits all four (and all five identity fields), so a real
+    certificate is fully compared, while a record that is absent states
+    nothing to contradict and is not read as agreement. ``validate_run`` is
+    stricter on its own run -- it treats an absent identity key as a mismatch,
+    since there the config is the authority on what must have been measured.
     An arm whose config cannot be loaded is already refused above for every
     registry architecture by :func:`_validate_arm_seed_policy`.
 
@@ -184,9 +204,10 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
     case a refusal names the spec directories the architecture owns.
     """
     from xcquinox.alec.cluster.fidelity import (VERDICT_PASS, read_certificate,
-                                                run_identity)
+                                                resolve_parent, run_identity)
     from xcquinox.alec.cluster.grid_config import (load_grid_config,
                                                    pretrain_checkpoint_dir)
+    from xcquinox.alec.cluster.materialize import _sha256_file
     statuses = _arm_certificate_statuses(run, arch_names)
     if not statuses:
         return
@@ -204,42 +225,212 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
             f"({reason}) -- an uncertified arm cannot enter the grouped "
             "figures")
     try:
-        expected = run_identity(
+        expected_identity = run_identity(
             load_grid_config(str(run / "resolved_config.yaml")))
     except Exception:  # noqa: BLE001 -- refused above where it matters
-        return
+        expected_identity = None
+
+    def refuse(arch, path, detail):
+        """Refuse the arm over one architecture's record; never returns."""
+        raise SystemExit(
+            f"[merge] REFUSING {label}: the pretraining-fidelity certificate "
+            f"for arch {arch} at {path} {detail}")
+
     for arch, (_status, _reason, path) in statuses.items():
-        recorded = (read_certificate(pretrain_checkpoint_dir(str(run), arch))
-                    or {}).get("identity")
-        if not isinstance(recorded, dict):
+        pretrain_dir = pretrain_checkpoint_dir(str(run), arch)
+        payload = read_certificate(pretrain_dir) or {}
+        named = payload.get("arch")
+        if named is not None and named != arch:
+            refuse(arch, path,
+                   f"names arch {named!r} -- it does not certify this "
+                   "architecture; the certificate is located by directory, "
+                   "so a file copied from another arch's pretrain dir would "
+                   "otherwise pass as this one's")
+        recorded_parent = payload.get("parent")
+        if recorded_parent is not None:
+            wanted_parent = resolve_parent(arch)
+            if recorded_parent != wanted_parent:
+                refuse(arch, path,
+                       f"records parent {recorded_parent!r}, but this "
+                       f"architecture's rung is pretrained against "
+                       f"{wanted_parent!r} -- a certificate measured against "
+                       "the other functional bounds nothing about the "
+                       "distance this one had to close")
+        checkpoint = payload.get("checkpoint")
+        if isinstance(checkpoint, dict):
+            for field, fname in (("xnet_sha256", "xnet.eqx"),
+                                 ("cnet_sha256", "cnet.eqx")):
+                want = checkpoint.get(field)
+                if not isinstance(want, str) or not want:
+                    continue
+                fpath = os.path.join(pretrain_dir, fname)
+                try:
+                    got = _sha256_file(fpath)
+                except OSError as exc:
+                    refuse(arch, path,
+                           f"records {field} for {fname}, which cannot be "
+                           f"read from the pretrain directory "
+                           f"({type(exc).__name__}: {exc}) -- the verdict "
+                           "refers to a file that is not there")
+                else:
+                    if got != want:
+                        refuse(arch, path,
+                               f"records {field} {want} for {fname}, but "
+                               f"the file on disk hashes to {got} -- the "
+                               "checkpoint was rewritten or re-pretrained "
+                               "after certification, so the verdict does not "
+                               "refer to the networks the train stage loads")
+        recorded = payload.get("identity")
+        if expected_identity is None or not isinstance(recorded, dict):
             continue
-        differing = {k: (v, expected[k]) for k, v in recorded.items()
-                     if k in expected and v != expected[k]}
+        differing = {k: (v, expected_identity[k]) for k, v in recorded.items()
+                     if k in expected_identity and v != expected_identity[k]}
         if differing:
             shown = ", ".join(f"{k}: certificate {c!r} vs run {r!r}"
                               for k, (c, r) in sorted(differing.items()))
+            refuse(arch, path,
+                   f"was measured at a different run identity than the arm "
+                   f"itself ({shown}) -- its energies do not describe this "
+                   "arm's SCF")
+
+
+def _carry_arm_certificates(run: Path, view_dir: Path, arch_names,
+                            arm: str) -> None:
+    """Link the arm's GATED pretrain directories into ``<view_dir>/pretrain``.
+
+    The merged directory runs no pretrain stage, so the arms' per-arch
+    certificates travel with the merge: the figure layer resolves them through
+    the same ``<run_dir>/pretrain/<arch>`` layout it uses for a single-arm run.
+
+    Only the architectures the arm's manifest names AND the gate cleared are
+    carried. ``<run>/pretrain`` can also hold directories no cell of this run
+    references -- an architecture from an earlier submission, one whose specs
+    were dropped, one pretrained before the sweep was cut down -- and those
+    were never gated: linking one would put an unchecked, possibly FAILED
+    certificate in the view under a name the figure layer reads, and would
+    take the slot of the arm that actually ran that architecture. Each
+    directory's own certificate is re-read here as the link-time precondition,
+    so what the view exposes is verified at the point of exposure and not only
+    inferred from the gate above.
+
+    The view has ONE slot per architecture name. When a second arm brings the
+    same name, the two certificates are compared: differing verdicts or
+    differing recorded identities are refused, since neither record can stand
+    for the other. Agreeing certificates still describe SEPARATELY pretrained
+    networks, so the first arm's is kept and the collision is reported --
+    the numbers and checkpoint digests the figure layer reads are that arm's.
+    """
+    from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
+                                                certificate_status_in,
+                                                read_certificate)
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+    if not arch_names:
+        return
+    pt_out = view_dir / "pretrain"
+    pt_out.mkdir(exist_ok=True)
+    for arch in sorted(arch_names):
+        src = Path(pretrain_checkpoint_dir(str(run), arch))
+        status, reason = certificate_status_in(str(src))
+        if status != VERDICT_PASS:
             raise SystemExit(
-                f"[merge] REFUSING {label}: the pretraining-fidelity "
-                f"certificate for arch {arch} at {path} was measured at a "
-                f"different run identity than the arm itself ({shown}) -- "
-                "its energies do not describe this arm's SCF")
+                f"[merge] REFUSING {arm} {run.name}: the pretrain directory "
+                f"{src} does not hold a PASS pretraining-fidelity "
+                f"certificate ({status}: {reason}) -- only a certified "
+                "directory is carried into the view")
+        dst = pt_out / arch
+        # is_symlink() as well as exists(): a link whose target went away
+        # mid-build reports False from exists() alone, and symlink_to would
+        # then raise on it.
+        if not (dst.exists() or dst.is_symlink()):
+            dst.symlink_to(src.resolve())
+            continue
+        incumbent = dst.resolve()
+        if incumbent == src.resolve():
+            continue
+        inc_status, inc_reason = certificate_status_in(str(incumbent))
+        if inc_status != status:
+            raise SystemExit(
+                f"[merge] REFUSING {arm} {run.name}: arch {arch} is carried "
+                f"by more than one arm and the two certificates disagree "
+                f"({incumbent}: {inc_status}; {src}: {status} -- "
+                f"{inc_reason}) -- the view has one pretrain slot per arch, "
+                "so one arm's specs would be read against the other's record")
+        inc_identity = (read_certificate(str(incumbent)) or {}).get("identity")
+        new_identity = (read_certificate(str(src)) or {}).get("identity")
+        if (isinstance(inc_identity, dict) and isinstance(new_identity, dict)
+                and inc_identity != new_identity):
+            keys = sorted(set(inc_identity) | set(new_identity))
+            shown = ", ".join(
+                f"{k}: {inc_identity.get(k)!r} vs {new_identity.get(k)!r}"
+                for k in keys if inc_identity.get(k) != new_identity.get(k))
+            raise SystemExit(
+                f"[merge] REFUSING {arm} {run.name}: arch {arch} is certified "
+                f"in more than one arm at DIFFERENT run identities "
+                f"({incumbent} vs {src}: {shown}) -- neither certificate "
+                "stands for the other, and the view has one pretrain slot "
+                "per arch")
+        print(f"[merge] WARNING: arch {arch} is certified in more than one "
+              f"arm; the view links {incumbent} and not {src} -- the two "
+              "verdicts agree, but the certificate numbers and checkpoint "
+              "digests the figure layer reads are the first arm's")
 
 
 def build_view(results_root: Path, out_dir: Path) -> dict:
     """(Re)build the merged view; returns {arm_base: (run_name, n_specs)}.
 
+    The view is rebuilt from scratch on every invocation, and every guard --
+    seed provenance, the fidelity certificates, the sliced-channel predicate,
+    the duplicate-cell rule -- can refuse part way through an arm. The rebuild
+    is therefore STAGED in a sibling ``<name>.building`` directory and swapped
+    in only once every arm has passed: a refusal leaves the view already on
+    disk exactly as it was, instead of destroying the last good one (the live
+    merged view carries the whole campaign's spec links, and the figure suite
+    reads it). The swap moves the old view aside before renaming the new one
+    into place, so an interruption leaves ``<name>.previous`` to recover from
+    rather than nothing at all.
+
+    The staged directory is removed on refusal, so no half-populated view is
+    left for a later figure run to read as complete.
+    """
+    out_dir = Path(out_dir)
+    staging = out_dir.parent / f"{out_dir.name}.building"
+    if staging.exists():
+        shutil.rmtree(staging)
+    try:
+        report = _build_view_into(results_root, staging)
+    except BaseException:
+        # SystemExit included: a refusal must not leave the staged tree.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    previous = None
+    if out_dir.exists() or out_dir.is_symlink():
+        previous = out_dir.parent / f"{out_dir.name}.previous"
+        if previous.exists():
+            shutil.rmtree(previous)
+        out_dir.rename(previous)
+    staging.rename(out_dir)
+    if previous is not None:
+        shutil.rmtree(previous)
+    return report
+
+
+def _build_view_into(results_root: Path, view_dir: Path) -> dict:
+    """Populate ``view_dir``; returns {arm_base: (run_name, n_specs)}.
+
     Alongside the renumbered spec symlinks a merged ``manifest.json`` is
     composed from the arms' own manifests -- the figure collectors join
     rows against it for the arch/subset labels, so without it every row
     would carry ``arch=None`` and the merged figures would be empty.
+
+    Every guard here raises before :func:`build_view` swaps the directory
+    into place, so a refused rebuild leaves the view already on disk
+    untouched.
     """
     # Imported here, not at module scope: this script is filesystem work and
     # runs without the training package otherwise.
     from xcquinox.alec.eval_holdout import assert_channel_not_sliced
 
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    ck_out = out_dir / "checkpoints"
+    ck_out = view_dir / "checkpoints"
     ck_out.mkdir(parents=True)
 
     report: dict = {}
@@ -258,22 +449,29 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
         unlabeled = [int(sd.name.split("_", 1)[1]) for sd in spec_dirs
                      if int(sd.name.split("_", 1)[1]) not in entries]
         # A spec dir with no manifest entry merges with no arch/subset
-        # labels, no duplicate-cell key, and no seed validation -- exactly
-        # how a mis-seeded arm could slip in unlabeled. That state must be
-        # loud whenever specs are actually present; an arm that has not
-        # materialized anything yet only gets a low-key note, so the loud
-        # message stays meaningful.
+        # labels, no duplicate-cell key, and no seed or certificate
+        # validation. With NO entries at all that is the whole arm: its
+        # architectures are unknown, so neither gate can be applied to a
+        # single spec, while the view's own record would report the arm as
+        # fully covered (an empty by_arm map beside a policy line asserting
+        # universal PASS coverage). A pull interrupted mid-rsync reaches
+        # exactly this state, so it is refused. An arm that has not
+        # materialized anything yet -- no manifest AND no spec dirs, the
+        # state of a freshly submitted arm -- has nothing to gate and gets a
+        # low-key note.
         if not entries:
             if spec_dirs:
-                print(f"[merge] WARNING: {base} {run.name} has no usable "
-                      "manifest entries (missing, unreadable, or empty "
-                      "manifest.json) -- seed-provenance guard SKIPPED for "
-                      "this arm; its specs merge without arch/subset labels "
-                      "or duplicate-cell protection")
-            else:
-                print(f"[merge] note: {base} {run.name} has no manifest yet "
-                      "-- seed-provenance validation deferred until the arm "
-                      "materializes")
+                raise SystemExit(
+                    f"[merge] REFUSING {base} {run.name}: "
+                    f"{len(spec_dirs)} spec dir(s) on disk but manifest.json "
+                    "yields no usable entries (missing, unreadable, or "
+                    "empty) -- their architectures are unknown, so neither "
+                    "the seed-provenance nor the pretraining-fidelity gate "
+                    "can be applied to them, and an ungated arm cannot enter "
+                    "the grouped figures")
+            print(f"[merge] note: {base} {run.name} has no manifest yet "
+                  "-- seed-provenance validation deferred until the arm "
+                  "materializes")
         elif unlabeled:
             shown = ", ".join(str(i) for i in unlabeled[:8])
             more = ("" if len(unlabeled) <= 8
@@ -294,34 +492,7 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
         cert_status = {a: st for a, (st, _reason, _path)
                        in _arm_certificate_statuses(run, arch_specs).items()}
         fidelity_by_arm[base] = cert_status
-        # The merged directory runs no pretrain stage, so the arms' per-arch
-        # certificates travel with the merge: the figure layer resolves them
-        # through the same <run_dir>/pretrain/<arch> layout it uses for a
-        # single-arm run. Every architecture here is PASS-certified (refused
-        # above otherwise), so a name arriving from two arms is a collision of
-        # equally valid records -- the first arm's is kept and the second is
-        # named, since the certificate NUMBERS the figure layer reads then
-        # belong to the first arm's run.
-        arm_pretrain = run / "pretrain"
-        if arm_pretrain.is_dir():
-            pt_out = out_dir / "pretrain"
-            pt_out.mkdir(exist_ok=True)
-            for src in sorted(arm_pretrain.iterdir()):
-                if not src.is_dir():
-                    continue
-                dst = pt_out / src.name
-                # is_symlink() as well as exists(): a link whose target went
-                # away mid-build reports False from exists() alone, and
-                # symlink_to would then raise on it.
-                if dst.exists() or dst.is_symlink():
-                    if dst.resolve() != src.resolve():
-                        print(f"[merge] WARNING: arch {src.name} carries a "
-                              f"pretrain dir in more than one arm; the view "
-                              f"keeps {dst.resolve()} and drops "
-                              f"{src.resolve()} -- both certificates PASS, "
-                              "but the recorded numbers are the first arm's")
-                    continue
-                dst.symlink_to(src.resolve())
+        _carry_arm_certificates(run, view_dir, cert_status, base)
         for sd in spec_dirs:
             # A workflow-verification slice covers a handful of species, not
             # the held-out pool; merged into the view it would average into a
@@ -376,7 +547,7 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
             or (sd / "eval_holdout" / "per_reaction.json").is_file())
         cert_note = (", ".join(f"{a}={s}" for a, s in cert_status.items())
                      if cert_status else "no registry archs")
-        with open(out_dir / "MERGED_ARMS.txt", "a") as f:
+        with open(view_dir / "MERGED_ARMS.txt", "a") as f:
             f.write(f"{base}\t{run.name}\t{len(spec_dirs)} specs"
                     f"\t{n_eval} eval_holdout\tfidelity: {cert_note}\n")
         # Propagate the run-identity + SCAN-cache files the figure loaders
@@ -388,17 +559,17 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
         # are checked against the view's identity -- a mismatched arm would
         # make the propagated caches/labels silently wrong for it.
         arm_id = _config_identity(run / "resolved_config.yaml")
-        view_id = _config_identity(out_dir / "resolved_config.yaml")
+        view_id = _config_identity(view_dir / "resolved_config.yaml")
         if view_id is not None and arm_id is not None and arm_id != view_id:
             print(f"[merge] WARNING: {base} {run.name} production identity "
                   f"{arm_id} differs from the view's {view_id} -- the "
                   "propagated SCAN caches/labels may not apply to this arm")
         for src in [run / "resolved_config.yaml",
                     *sorted(run.glob("scan_pool_*.json"))]:
-            dst = out_dir / src.name
+            dst = view_dir / src.name
             if src.is_file() and not dst.exists():
                 shutil.copy2(src, dst)
-    (out_dir / "manifest.json").write_text(json.dumps(
+    (view_dir / "manifest.json").write_text(json.dumps(
         {"n_specs": idx, "specs": merged_specs,
          "merged_from": [b for b, (r, _n) in report.items() if r],
          "fidelity": {

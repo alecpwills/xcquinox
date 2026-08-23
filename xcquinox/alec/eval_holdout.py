@@ -830,8 +830,10 @@ def assert_channel_not_sliced(spec_dir: Path, eval_subdir: str) -> None:
     alone. Neither state is reachable from the writer, which records None
     for the full pool and a non-empty list otherwise. A ``species_slice``
     that is neither null nor a list -- a number, a bool, a string, a mapping
-    -- refuses on either mark and is reported as unknown beside its own
-    value, never iterated.
+    -- refuses on the MARKER whatever its value, and on the stamp only when
+    it is truthy (the stamp branch tests the value, so ``0``, ``false`` and
+    ``""`` load there, as the empty list does), and is reported as unknown
+    beside its own value, never iterated.
 
     Raises:
         SlicedChannelError: the channel carries either mark.

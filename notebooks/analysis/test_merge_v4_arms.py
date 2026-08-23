@@ -10,7 +10,8 @@ import merge_v4_arms as mv
 
 
 def _mk_arm(root, base, run_name, n_specs, payload="x", arch=None,
-            certified=True, verdict="PASS", identity=None, cert_text=None):
+            certified=True, verdict="PASS", identity=None, cert_text=None,
+            cert_extra=None):
     """An arm on disk. ``arch`` names the manifest architecture (default: a
     non-registry fixture name); ``certified`` writes a pretraining-fidelity
     certificate for it under ``<run>/pretrain/<arch>``.
@@ -45,6 +46,8 @@ def _mk_arm(root, base, run_name, n_specs, payload="x", arch=None,
                                     "max_dAE_kcalmol": 0.2}}
         if identity is not None:
             payload_json["identity"] = identity
+        if cert_extra:
+            payload_json.update(cert_extra)
         (d / "fidelity_certificate.json").write_text(
             cert_text if cert_text is not None else json.dumps(payload_json))
     return ck
@@ -149,18 +152,33 @@ def test_view_builds_without_config_or_cache(tmp_path):
     assert not (out / "resolved_config.yaml").exists()
 
 
-def test_missing_manifest_warns_guard_skipped(tmp_path, capsys):
-    """An arm whose newest run lacks manifest.json merges its specs with no
-    arch/subset labels AND silently skips the seed-provenance guard -- that
-    state must be loud, never silent."""
+def test_missing_manifest_refuses_the_arm(tmp_path):
+    """An arm whose newest run holds spec dirs but no usable manifest entries
+    (missing, unreadable, or empty manifest.json -- the state of a mid-rsync
+    pull) has no architecture names, so neither the seed-provenance nor the
+    fidelity gate can be applied to a single one of its specs. Merging them
+    unlabelled would put ungated cells in a view whose own record asserts
+    universal certificate coverage."""
     run = tmp_path / "dfs6311_grid3_v5" / "runs" / "run_20260815T000000Z"
     ck = run / "checkpoints"
     (ck / "spec_0000").mkdir(parents=True)
     (ck / "spec_0000" / "completion.json").write_text("x")
-    mv.build_view(tmp_path, tmp_path / "merged")
-    out = capsys.readouterr().out
-    assert "WARNING" in out and "seed-provenance" in out
-    assert "dfs6311_grid3_v5" in out
+    with pytest.raises(SystemExit) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "dfs6311_grid3_v5" in msg and "run_20260815T000000Z" in msg
+    assert "1 spec dir" in msg
+    assert "manifest" in msg
+
+
+def test_unreadable_manifest_refuses_the_arm(tmp_path):
+    """Same state reached through a truncated manifest rather than a missing
+    one: an arm mid-transfer must not merge ungated."""
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260815T000000Z", 1, "a")
+    (ck.parent / "manifest.json").write_text('{"specs": [{"index"')
+    with pytest.raises(SystemExit) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    assert "manifest" in str(exc.value)
 
 
 def test_merged_manifest_carries_spec_provenance(tmp_path):
@@ -679,3 +697,211 @@ def test_view_warns_when_two_arms_carry_the_same_arch_certificate(tmp_path):
     assert (out / "pretrain" / "deep_3x16").resolve() == (
         tmp_path / "dfs6311_grid3_v4gga" / "runs" / "run_20260810T202813Z"
         / "pretrain" / "deep_3x16").resolve()
+
+
+# --------------------------------------------------------------------------- #
+# Certificate <-> checkpoint binding, multi-arm coverage, view durability
+# --------------------------------------------------------------------------- #
+def _renumber_subsets(run, start):
+    """Move an arm's cells to distinct subset sizes (the duplicate-cell guard
+    is a separate rule and would otherwise pre-empt the case under test)."""
+    import json
+    m = json.loads((run / "manifest.json").read_text())
+    for k, e in enumerate(m["specs"]):
+        e["cell"]["subset_size"] = start + k
+    (run / "manifest.json").write_text(json.dumps(m))
+
+
+def _add_checkpoint_digests(root, base, run_name, arch,
+                            xnet=b"xnet-weights", cnet=b"cnet-weights"):
+    """Write the two checkpoint files and record their digests in the arch's
+    certificate, as the certificate writer does."""
+    import json
+    from xcquinox.alec.cluster.materialize import _sha256_file
+    d = root / base / "runs" / run_name / "pretrain" / arch
+    (d / "xnet.eqx").write_bytes(xnet)
+    (d / "cnet.eqx").write_bytes(cnet)
+    cert = d / "fidelity_certificate.json"
+    payload = json.loads(cert.read_text())
+    payload["checkpoint"] = {
+        "dir": str(d),
+        "xnet_sha256": _sha256_file(str(d / "xnet.eqx")),
+        "cnet_sha256": _sha256_file(str(d / "cnet.eqx"))}
+    cert.write_text(json.dumps(payload))
+    return d
+
+
+def test_merge_refuses_an_uncertified_arm_after_a_certified_one(tmp_path):
+    """The gate is per ARM: a certified first arm must not license the rest.
+    Only a check that runs on every arm can catch the arm that lands later."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1,
+            "a", arch="deep_3x16")
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260815T034818Z", 1,
+            "b", arch="deep_mgga_3x16", certified=False)
+    with pytest.raises(SystemExit) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "dfs6311_grid3_v5" in msg and "run_20260815T034818Z" in msg
+    assert "deep_mgga_3x16" in msg and "-- MISSING at" in msg
+
+
+def test_view_links_only_the_gated_archs_pretrain_dirs(tmp_path):
+    """<run>/pretrain can hold directories no cell of the run references (an
+    arch from an earlier submission, an arch whose specs were dropped). Those
+    were never gated, so linking one would put an ungated -- here FAILED --
+    certificate in the view under a name the figure layer reads, and would
+    take the slot of the arm that really ran that arch."""
+    import json
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1,
+            "a", arch="deep_3x16")
+    stale = (tmp_path / "dfs6311_grid3_v4gga" / "runs"
+             / "run_20260810T202813Z" / "pretrain" / "deep_mgga_3x16")
+    stale.mkdir(parents=True)
+    (stale / "fidelity_certificate.json").write_text(json.dumps(
+        {"verdict": "FAIL", "arch": "deep_mgga_3x16",
+         "summary": {"max_atom_mHa": 99.0, "max_dAE_kcalmol": 99.0}}))
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260815T034818Z", 1,
+            "b", arch="deep_mgga_3x16")
+    out = tmp_path / "merged"
+    mv.build_view(tmp_path, out)
+    linked = out / "pretrain" / "deep_mgga_3x16"
+    assert linked.resolve() == (
+        tmp_path / "dfs6311_grid3_v5" / "runs" / "run_20260815T034818Z"
+        / "pretrain" / "deep_mgga_3x16").resolve()
+    assert json.loads(
+        (linked / "fidelity_certificate.json").read_text())["verdict"] == "PASS"
+
+
+def test_view_refuses_the_same_arch_certified_at_two_identities(tmp_path):
+    """One arch, two arms, one pretrain slot in the view. Certificates that
+    agree can be represented by either; certificates measured at DIFFERENT
+    SCF identities cannot, so the collision is refused rather than resolved
+    by arm order."""
+    import yaml
+    ident_a = {"basis": "6-311++G(3df,2pd)", "grid_level": 3,
+               "density_fit": True, "auxbasis": None,
+               "orientation_lock_strength": 0.0}
+    ident_b = dict(ident_a, basis="def2-svp")
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1,
+            "a", arch="deep_3x16", identity=ident_a)
+    ck = _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260815T034818Z", 1,
+                 "b", arch="deep_3x16", identity=ident_b)
+    run_b = ck.parent
+    cfg = yaml.safe_load(_full_config_yaml("auto"))
+    cfg["inputs"]["basis"] = "def2-svp"
+    (run_b / "resolved_config.yaml").write_text(yaml.safe_dump(cfg))
+    _renumber_subsets(run_b, 10)
+    with pytest.raises(SystemExit) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "deep_3x16" in msg
+    assert "def2-svp" in msg
+    assert "identit" in msg
+
+
+def test_merge_refuses_a_certificate_naming_another_arch(tmp_path):
+    """The certificate is located by DIRECTORY; a file copied from another
+    arch's pretrain dir would otherwise certify this one."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16",
+            cert_extra={"arch": "deep_mgga_3x16"})
+    with pytest.raises(SystemExit) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "names arch" in msg
+    assert "deep_mgga_3x16" in msg and "deep_3x16" in msg
+
+
+def test_merge_refuses_a_certificate_measured_against_the_wrong_parent(
+        tmp_path):
+    """The parent functional follows the arch's RUNG (PBE for a GGA arch,
+    SCAN for a meta-GGA one). A certificate measured against the other one
+    bounds nothing about the distance this arch was pretrained to close."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", cert_extra={"parent": "scan"})
+    with pytest.raises(SystemExit) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "parent" in msg
+    assert "'scan'" in msg and "'pbe'" in msg
+
+
+def test_merge_refuses_a_certificate_whose_checkpoint_moved(tmp_path):
+    """The verdict refers to two specific files. A checkpoint rewritten or
+    re-pretrained after certification is not the one that was measured, and
+    the digests are what tie the verdict to the networks on disk."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16")
+    d = _add_checkpoint_digests(tmp_path, "dfs6311_grid3_v5",
+                                "run_20260810T193206Z", "deep_3x16")
+    (d / "xnet.eqx").write_bytes(b"xnet-weightt")   # one byte changed
+    with pytest.raises(SystemExit) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    msg = str(exc.value)
+    assert "xnet.eqx" in msg
+    assert "sha256" in msg or "digest" in msg
+
+
+def test_merge_refuses_a_certificate_whose_checkpoint_is_gone(tmp_path):
+    """A digest recorded for a file that is not there certifies nothing."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16")
+    d = _add_checkpoint_digests(tmp_path, "dfs6311_grid3_v5",
+                                "run_20260810T193206Z", "deep_3x16")
+    (d / "cnet.eqx").unlink()
+    with pytest.raises(SystemExit) as exc:
+        mv.build_view(tmp_path, tmp_path / "merged")
+    assert "cnet.eqx" in str(exc.value)
+
+
+def test_merge_accepts_matching_checkpoint_digests(tmp_path):
+    """The binding is a comparison, not a requirement that the field be
+    absent: an untouched checkpoint pair passes."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260810T193206Z", 1,
+            "a", arch="deep_3x16", cert_extra={"parent": "pbe"})
+    _add_checkpoint_digests(tmp_path, "dfs6311_grid3_v5",
+                            "run_20260810T193206Z", "deep_3x16")
+    report = mv.build_view(tmp_path, tmp_path / "merged")
+    assert report["dfs6311_grid3_v5"] == ("run_20260810T193206Z", 1)
+
+
+def test_a_refused_rebuild_leaves_the_previous_view_intact(tmp_path):
+    """The view is rebuilt from scratch on every invocation, and every guard
+    can refuse mid-build. Wiping the directory first would make one refusal
+    destroy the last good view, so the rebuild is staged and swapped in only
+    once every arm has passed."""
+    import json
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 2,
+            "a", arch="deep_3x16")
+    out = tmp_path / "merged"
+    mv.build_view(tmp_path, out)
+    specs_before = sorted(os.listdir(out / "checkpoints"))
+    manifest_before = (out / "manifest.json").read_text()
+    assert specs_before == ["spec_0000", "spec_0001"]
+    # An uncertified arm lands and the rebuild is refused.
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260815T034818Z", 1,
+            "b", arch="deep_mgga_3x16", certified=False)
+    with pytest.raises(SystemExit):
+        mv.build_view(tmp_path, out)
+    assert sorted(os.listdir(out / "checkpoints")) == specs_before
+    assert (out / "manifest.json").read_text() == manifest_before
+    assert (out / "checkpoints" / "spec_0000" / "completion.json"
+            ).read_text() == "a"
+    assert json.loads(manifest_before)["n_specs"] == 2
+    # and no half-built directory is left behind
+    assert not (tmp_path / "merged.building").exists()
+    assert not (tmp_path / "merged.previous").exists()
+
+
+def test_a_refused_first_build_leaves_no_view(tmp_path):
+    """With no previous view to protect, a refused build must not leave a
+    half-populated directory that a later figure run would read as complete."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 1,
+            "a", arch="deep_3x16")
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260815T034818Z", 1,
+            "b", arch="deep_mgga_3x16", certified=False)
+    out = tmp_path / "merged"
+    with pytest.raises(SystemExit):
+        mv.build_view(tmp_path, out)
+    assert not out.exists()
+    assert not (tmp_path / "merged.building").exists()
