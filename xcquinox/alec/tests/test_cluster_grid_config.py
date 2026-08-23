@@ -1812,3 +1812,137 @@ def test_days_hours_field_is_a_time_of_day(tmp_path, key, literal, expected):
             load_grid_config(path)
     else:
         assert getattr(load_grid_config(path).cluster, key) == expected
+
+
+# ---------------------------------------------------------------------------
+# PretrainConfig: pretraining-protocol fields
+# ---------------------------------------------------------------------------
+
+def test_pretrain_config_protocol_defaults_are_todays_behavior():
+    from xcquinox.alec.cluster.grid_config import PretrainConfig
+    pt = PretrainConfig(data_dir="/d")
+    assert pt.dfs_set is False
+    assert pt.pool_atoms is False
+    assert pt.parent_density == "pbe"
+    assert pt.exchange_footing == "total"
+    assert pt.mesh_fraction == 0.3
+    assert pt.energy_term_weight == 0.0
+    assert pt.validation_fraction == 0.0
+    assert pt.validation_seed == 0
+    assert pt.validate_every == 50
+    assert pt.patience == 0
+
+
+def test_pretrain_config_mesh_fraction_default_matches_the_generator():
+    """grid_config imports neither JAX nor PySCF, so the default is written as
+    a literal; this pins it against the constant it must equal."""
+    from xcquinox.alec.cluster.grid_config import PretrainConfig
+    from xcquinox.alec.pretrain_data_gen import MESH_WEIGHT_FRACTION
+    assert PretrainConfig(data_dir="/d").mesh_fraction == MESH_WEIGHT_FRACTION
+
+
+def test_build_pretrain_parses_every_protocol_field():
+    """A field missing from _build_pretrain silently reverts to its default on
+    every stage that re-reads resolved_config.yaml."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    pt = _build_pretrain({
+        "data_dir": "/d", "dfs_set": True, "pool_atoms": True,
+        "parent_density": "auto", "exchange_footing": "spin_channel",
+        "mesh_fraction": 0.25, "energy_term_weight": 1.0,
+        "validation_fraction": 0.2, "validation_seed": 11,
+        "validate_every": 25, "patience": 8,
+    })
+    assert pt.dfs_set is True and pt.pool_atoms is True
+    assert pt.parent_density == "auto"
+    assert pt.exchange_footing == "spin_channel"
+    assert pt.mesh_fraction == 0.25
+    assert pt.energy_term_weight == 1.0
+    assert pt.validation_fraction == 0.2
+    assert pt.validation_seed == 11
+    assert pt.validate_every == 25
+    assert pt.patience == 8
+
+
+def test_config_to_raw_dict_round_trips_every_protocol_field(tmp_path):
+    """The resolved_config.yaml round trip is what datagen, pretrain, preflight
+    and eval all read; a dropped field is a silently reverted run."""
+    import dataclasses
+    from xcquinox.alec.cluster.__main__ import _config_to_raw_dict
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    protocol = {
+        "dfs_set": True, "pool_atoms": True,
+        "parent_density": "auto", "exchange_footing": "spin_channel",
+        "mesh_fraction": 0.25, "energy_term_weight": 1.0,
+        "validation_fraction": 0.2, "validation_seed": 11,
+        "validate_every": 25, "patience": 8,
+    }
+    pt = _build_pretrain(dict(protocol, data_dir="/d"))
+    raw = dataclasses.asdict(pt)
+    assert _build_pretrain(raw) == pt
+    for f in dataclasses.fields(pt):
+        assert f.name in raw, f.name
+    # An unknown key is IGNORED by _build_pretrain, so the equality above holds
+    # vacuously for a field the dataclass does not carry; name the protocol
+    # keys outright.
+    for key, value in protocol.items():
+        assert raw.get(key) == value, (key, raw.get(key), value)
+    # ... and the same dict is what the serializer puts under "pretrain". A
+    # field is guarded here ONLY while the fixture carries a NON-DEFAULT value
+    # for it: a field the parser drops reloads at its default, which equals the
+    # value under test whenever the fixture leaves that field alone, and the
+    # comparison then passes against a parser that never read it. So every
+    # field is taken off its default below, and the guard is asserted.
+    every = _build_pretrain(dict(
+        raw, n_steps=7, lr_start=3e-2, lr_end=3e-6, lr_decay_start=0.4,
+        grad_clip=2.5, seed=1234, loss_weighting="unweighted",
+        atoms=[["Li", 1], ["C", 2]]))
+    default = PretrainConfig(data_dir="/d")
+    for f in dataclasses.fields(every):
+        if f.name == "data_dir":
+            continue
+        assert getattr(every, f.name) != getattr(default, f.name), (
+            f"PretrainConfig.{f.name} is at its default in this fixture, so "
+            "the round trip is NOT guarded for it")
+    cfg = dataclasses.replace(_cfg(), pretrain=every)
+    serialized = _config_to_raw_dict(cfg)["pretrain"]
+    assert serialized == dataclasses.asdict(every)
+    assert _build_pretrain(serialized) == every
+
+
+def test_validate_grid_semantics_bounds_the_protocol_fields():
+    import dataclasses
+    from xcquinox.alec.cluster.grid_config import validate_grid_semantics
+    cfg = _cfg()                       # the module's GridConfig builder
+    domain = _StubDomain(pool_size=40)  # as in test_validate_ok
+    for field, value, message in (
+            ("parent_density", "blyp", "parent_density"),
+            ("exchange_footing", "per_orbital", "exchange_footing"),
+            ("mesh_fraction", 1.0, "mesh_fraction"),
+            ("energy_term_weight", -1.0, "energy_term_weight"),
+            ("validation_fraction", 1.0, "validation_fraction"),
+            ("validate_every", 0, "validate_every"),
+            ("patience", -1, "patience"),
+    ):
+        bad = dataclasses.replace(
+            cfg, pretrain=dataclasses.replace(cfg.pretrain, **{field: value}))
+        with pytest.raises(ValueError, match=message):
+            validate_grid_semantics(bad, domain)
+
+
+@pytest.mark.parametrize("field", ["mesh_fraction", "energy_term_weight",
+                                   "validation_fraction"])
+@pytest.mark.parametrize("literal", ["nan", "inf", "-inf"])
+def test_validate_grid_semantics_refuses_a_non_finite_protocol_weight(
+        field, literal):
+    """NaN escapes an ordinary bound in whichever direction the comparison is
+    written -- ``nan < 0`` and ``nan >= 1.0`` are both False -- so a NaN weight
+    would load with no complaint and every downstream comparison against it
+    would be False as well. The certificate tolerances are refused on the same
+    grounds."""
+    import dataclasses
+    from xcquinox.alec.cluster.grid_config import validate_grid_semantics
+    bad = dataclasses.replace(
+        _cfg(), pretrain=dataclasses.replace(
+            _cfg().pretrain, **{field: float(literal)}))
+    with pytest.raises(ValueError, match=field):
+        validate_grid_semantics(bad, _StubDomain(pool_size=40))

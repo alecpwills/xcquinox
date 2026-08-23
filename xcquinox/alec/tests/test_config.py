@@ -793,3 +793,60 @@ def test_validate_bool_in_atom_energies_rejected():
         )
         with pytest.raises((ValueError, TypeError)):
             spec.validate()
+
+
+# ---------------------------------------------------------------------------
+# PretrainSpec: pretraining-protocol fields (spec Sections 3.2, 6, 7)
+# ---------------------------------------------------------------------------
+
+def test_pretrain_spec_protocol_defaults_reproduce_the_historical_run(tmp_path):
+    from xcquinox.alec.config import PretrainSpec, get_architecture
+    spec = PretrainSpec(arch=get_architecture("deep_3x16"),
+                        data_dir=str(tmp_path),
+                        checkpoint_dir=str(tmp_path / "ck"))
+    assert spec.parent_density == "pbe"
+    assert spec.energy_term_weight == 0.0
+    assert spec.validation_fraction == 0.0
+    assert spec.validation_seed == 0
+    assert spec.validate_every == 50
+    assert spec.patience == 0
+
+
+def test_pretrain_spec_rejects_an_unknown_parent_density(tmp_path):
+    from xcquinox.alec.config import PretrainSpec, get_architecture
+    with pytest.raises(ValueError, match="parent_density"):
+        PretrainSpec(arch=get_architecture("deep_3x16"),
+                     data_dir=str(tmp_path),
+                     checkpoint_dir=str(tmp_path / "ck"),
+                     parent_density="blyp")
+
+
+def test_pretrain_spec_validate_bounds_the_protocol_fields(tmp_path):
+    from xcquinox.alec.config import PretrainSpec, get_architecture
+    base = dict(arch=get_architecture("deep_3x16"), data_dir=str(tmp_path),
+                checkpoint_dir=str(tmp_path / "ck"))
+    with pytest.raises(ValueError, match="energy_term_weight"):
+        PretrainSpec(**base, energy_term_weight=-1.0).validate()
+    with pytest.raises(ValueError, match="validation_fraction"):
+        PretrainSpec(**base, validation_fraction=1.5).validate()
+    with pytest.raises(ValueError, match="validate_every"):
+        PretrainSpec(**base, validate_every=0).validate()
+    with pytest.raises(ValueError, match="patience"):
+        PretrainSpec(**base, patience=-1).validate()
+
+
+def test_pretrain_spec_validate_refuses_a_non_finite_protocol_weight(tmp_path):
+    """A NaN weight escapes an ordinary bound -- ``nan < 0`` is False -- and
+    every subsequent comparison against it is False too, so the objective it
+    produces is whatever the sense of that comparison happens to be rather
+    than a measurement. Same rule the certificate tolerances follow."""
+    import math
+
+    from xcquinox.alec.config import PretrainSpec, get_architecture
+    base = dict(arch=get_architecture("deep_3x16"), data_dir=str(tmp_path),
+                checkpoint_dir=str(tmp_path / "ck"))
+    for value in (math.nan, math.inf):
+        with pytest.raises(ValueError, match="energy_term_weight"):
+            PretrainSpec(**base, energy_term_weight=value).validate()
+    with pytest.raises(ValueError, match="validation_fraction"):
+        PretrainSpec(**base, validation_fraction=math.nan).validate()

@@ -264,3 +264,22 @@ def test_example_ships_the_binding_certificate_tolerances():
     assert cfg.fidelity.tol_AE == 1.0
     assert cfg.fidelity.tol_atom == 1.0
     assert cfg.fidelity.enforce is True
+
+
+def test_example_sets_every_pretraining_protocol_field():
+    """The shipped template names each pretraining-protocol knob explicitly at
+    its default, with the v6 value in a comment, so a copy of it is a complete
+    statement of the protocol rather than a set of invisible defaults."""
+    pytest.importorskip("yaml")
+    raw = _raw_yaml(_example_path())["pretrain"]
+    for key, value in (("dfs_set", False), ("pool_atoms", False),
+                       ("parent_density", "pbe"),
+                       ("exchange_footing", "total"),
+                       ("mesh_fraction", 0.3), ("energy_term_weight", 0.0),
+                       ("validation_fraction", 0.0), ("validation_seed", 0),
+                       ("validate_every", 50), ("patience", 0)):
+        assert key in raw, f"grid_step7.yaml is missing pretrain.{key}"
+        assert raw[key] == value, (key, raw[key], value)
+    cfg = load_grid_config(_example_path())
+    assert cfg.pretrain.dfs_set is False
+    assert cfg.pretrain.parent_density == "pbe"

@@ -312,6 +312,39 @@ class PretrainConfig:
     # of the training pool (e.g. +Li, C, F, Na for dfs_step7) forces a
     # pretrain-data regen via the data manifest's "atoms" key.
     atoms: tuple = ()
+    # --- Pretraining protocol (spec Sections 3.2, 6, 7) -------------------
+    # The set. ``dfs_set`` adds the DFS pretraining inventory in its entirety
+    # (8 free atoms and 22 G2/97 molecules for the GGA rung, 20 for the
+    # meta-GGA rung); ``pool_atoms`` adds every single-atom species of the
+    # BH76 and W4-11 pools with its production charge and spin. Turning either
+    # on REPLACES the historical four-atom default, which ``atoms`` can still
+    # extend. Both default False, so an existing YAML is unchanged.
+    dfs_set: bool = False
+    pool_atoms: bool = False
+    # The density the targets sit on: "pbe", "scan", or "auto" for the
+    # architecture's rung baseline. "pbe" is every file written before this
+    # change; "auto" splits a mixed-rung sweep across two data files.
+    parent_density: str = "pbe"
+    # How OPEN-SHELL exchange rows are posed. "spin_channel" is the exact
+    # spin-scaling footing the production UKS exchange evaluates, per channel
+    # at (2 rho_sigma, 4 sigma_sigma_sigma, features of diag(P_sigma,
+    # P_sigma)); "total" is the historical total-density footing. The footing
+    # is part of the data's identity, so a change regenerates the file.
+    exchange_footing: str = "total"
+    # Share of the total integration weight carried by the synthetic
+    # (r_s, s, alpha) mesh, which is kept as a regularizer only. Must equal
+    # pretrain_data_gen.MESH_WEIGHT_FRACTION's historical 0.3 to reproduce
+    # existing data; written as a literal because this module deliberately
+    # imports neither JAX nor PySCF.
+    mesh_fraction: float = 0.3
+    # The objective. energy_term_weight is the weight of the per-system energy
+    # term in inverse Hartree^2; 0.0 is the point-wise objective alone.
+    energy_term_weight: float = 0.0
+    # Validation and the stop criterion.
+    validation_fraction: float = 0.0
+    validation_seed: int = 0
+    validate_every: int = 50
+    patience: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +911,16 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         seed=d.get("seed", 42),
         loss_weighting=d.get("loss_weighting", "integration"),
         atoms=_parse_pretrain_atoms(d.get("atoms")),
+        dfs_set=bool(d.get("dfs_set", False)),
+        pool_atoms=bool(d.get("pool_atoms", False)),
+        parent_density=str(d.get("parent_density", "pbe")),
+        exchange_footing=str(d.get("exchange_footing", "total")),
+        mesh_fraction=float(d.get("mesh_fraction", 0.3)),
+        energy_term_weight=float(d.get("energy_term_weight", 0.0)),
+        validation_fraction=float(d.get("validation_fraction", 0.0)),
+        validation_seed=int(d.get("validation_seed", 0)),
+        validate_every=int(d.get("validate_every", 50)),
+        patience=int(d.get("patience", 0)),
     )
 
 
@@ -1426,6 +1469,48 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         raise ValueError(
             f"pretrain.loss_weighting must be 'unweighted' or "
             f"'integration', got {pt.loss_weighting!r}"
+        )
+
+    # --- pretraining-protocol bounds ----------------------------------------
+    # The numeric knobs are refused when NON-FINITE for the reason the
+    # certificate tolerances are: NaN satisfies neither sense of an ordinary
+    # bound (nan < 0 and nan >= 1.0 are both False), so it would load with no
+    # complaint and every comparison against it downstream would be False as
+    # well. mesh_fraction and validation_fraction are bounded on both sides,
+    # which already catches the infinities; energy_term_weight is bounded from
+    # below only, so its finiteness is checked outright.
+    if pt.parent_density not in ("pbe", "scan", "auto"):
+        raise ValueError(
+            f"pretrain.parent_density must be 'pbe', 'scan' or 'auto', got "
+            f"{pt.parent_density!r}"
+        )
+    if pt.exchange_footing not in ("total", "spin_channel"):
+        raise ValueError(
+            f"pretrain.exchange_footing must be 'total' or 'spin_channel', "
+            f"got {pt.exchange_footing!r}"
+        )
+    if not (0.0 <= pt.mesh_fraction < 1.0):
+        raise ValueError(
+            f"pretrain.mesh_fraction must be in [0, 1), got "
+            f"{pt.mesh_fraction}"
+        )
+    if not math.isfinite(pt.energy_term_weight) or pt.energy_term_weight < 0:
+        raise ValueError(
+            f"pretrain.energy_term_weight must be a FINITE number >= 0, got "
+            f"{pt.energy_term_weight}"
+        )
+    if not (0.0 <= pt.validation_fraction < 1.0):
+        raise ValueError(
+            f"pretrain.validation_fraction must be in [0, 1), got "
+            f"{pt.validation_fraction}"
+        )
+    if pt.validate_every <= 0:
+        raise ValueError(
+            f"pretrain.validate_every must be > 0, got {pt.validate_every}"
+        )
+    if pt.patience < 0:
+        raise ValueError(
+            f"pretrain.patience must be >= 0, got {pt.patience}"
         )
 
     # --- certificate tolerance bounds --------------------------------------

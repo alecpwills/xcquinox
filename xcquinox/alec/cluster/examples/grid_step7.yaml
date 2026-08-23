@@ -90,6 +90,39 @@ pretrain:
   grad_clip: 1.0
   seed: 42
   loss_weighting: integration
+  # --- pretraining protocol ------------------------------------------------
+  # Every value below is the pre-protocol default, so this template reproduces
+  # the step-7 pretraining exactly. The campaign-v6 value follows each one.
+  #
+  # The SET. dfs_set adds the DFS pretraining inventory in its entirety;
+  # pool_atoms adds every single-atom species of the BH76 and W4-11 pools with
+  # its production charge and spin. Either one replaces the historical
+  # four-atom default, which `atoms` can still extend.
+  dfs_set: false            # v6: true
+  pool_atoms: false         # v6: true
+  # The DENSITY the targets sit on. "auto" gives each architecture its rung
+  # baseline (SCAN for the meta-GGA rung, PBE otherwise) and splits a
+  # mixed-rung sweep across two data files.
+  parent_density: pbe       # v6: auto
+  # The open-shell exchange FOOTING. "spin_channel" poses each channel at
+  # (2 rho_sigma, 4 sigma_sigma_sigma, features of diag(P_sigma, P_sigma)),
+  # which is what the production UKS exchange evaluates.
+  exchange_footing: total   # v6: spin_channel
+  # The synthetic (r_s, s, alpha) mesh's share of the total integration
+  # weight. Kept as a regularizer only.
+  mesh_fraction: 0.3        # v6: 0.3
+  # The OBJECTIVE. energy_term_weight weights the per-system energy term
+  # mean_s (E_xc^NN_s - E_xc^parent_s)^2 in inverse Hartree^2, beside the
+  # point-wise enhancement-factor residual.
+  energy_term_weight: 0.0   # v6: see HISTORY (chosen by measured sweep)
+  # VALIDATION and the stop criterion: a seeded fraction of the multi-nucleus
+  # systems is withheld and scored every validate_every steps; training stops
+  # after `patience` validations without improvement and keeps the best
+  # weights.
+  validation_fraction: 0.0  # v6: 0.2
+  validation_seed: 0        # v6: 0
+  validate_every: 50        # v6: 50
+  patience: 0               # v6: 10
 
 # --- SLURM resource requests + submission knobs (SeaWulf defaults) ---------
 cluster:

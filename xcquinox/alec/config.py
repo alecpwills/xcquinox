@@ -706,6 +706,33 @@ class PretrainSpec:
     # Loss weighting scheme used by the pretraining loop. Validated at
     # construction so mistypes surface immediately rather than deep in training.
     loss_weighting: str = "unweighted"
+    # --- Pretraining protocol (spec Sections 3.2, 6, 7) -------------------
+    # Every default reproduces the pre-protocol run exactly, so an existing
+    # spec is unchanged and the new behavior is opt-in per YAML.
+    #
+    # The parent functional whose SELF-CONSISTENT density the pretrain data
+    # sits on. "auto" resolves to the architecture's rung baseline (SCAN for
+    # the meta-GGA rung, PBE otherwise); "pbe" keeps every architecture on the
+    # PBE-density file, which is what every file written before this change
+    # is.
+    parent_density: str = "pbe"
+    # Weight of the per-system energy term, in inverse Hartree^2. The term is
+    # mean_s (E_xc^NN_s - E_xc^parent_s)^2, so w_E = 1 makes a 1 mHa mean
+    # energy error worth 1e-6, the order of the converged point-wise residual.
+    # 0.0 = the point-wise objective alone, byte-identical to the prior loss.
+    energy_term_weight: float = 0.0
+    # Fraction of the MULTI-NUCLEUS systems withheld from the fit and scored
+    # between optimizer steps. 0.0 = no split and no stop criterion.
+    validation_fraction: float = 0.0
+    # Seed of the held-out permutation. Separate from ``seed`` (the network
+    # initialization) so every architecture in a sweep holds out the same
+    # systems and their validation numbers are comparable.
+    validation_seed: int = 0
+    # Optimizer steps between validations.
+    validate_every: int = 50
+    # Validations without improvement before training stops. 0 = no early
+    # stop; the best weights are still the ones kept.
+    patience: int = 0
 
     def __post_init__(self) -> None:
         if self.loss_weighting not in ("unweighted", "integration"):
@@ -713,13 +740,26 @@ class PretrainSpec:
                 f"loss_weighting must be 'unweighted' or 'integration', "
                 f"got {self.loss_weighting!r}"
             )
+        if self.parent_density not in ("pbe", "scan", "auto"):
+            raise ValueError(
+                f"parent_density must be 'pbe', 'scan' or 'auto', got "
+                f"{self.parent_density!r}"
+            )
 
     def validate(self) -> None:
         """Raise ValueError if spec is inconsistent."""
         import math
         if self.n_steps <= 0:
             raise ValueError(f"n_steps must be > 0, got {self.n_steps}")
-        for field_name in ("lr_start", "lr_end", "lr_decay_start", "grad_clip"):
+        # energy_term_weight and validation_fraction join the finiteness sweep
+        # for the reason the certificate tolerances do: NaN satisfies neither
+        # sense of an ordinary bound (nan < 0 and nan >= 1.0 are both False),
+        # so it would pass every check below and then make every comparison
+        # against it False downstream. An infinite loss weight is refused on
+        # the same grounds, since the objective it defines is not a measurable
+        # quantity.
+        for field_name in ("lr_start", "lr_end", "lr_decay_start", "grad_clip",
+                           "energy_term_weight", "validation_fraction"):
             value = getattr(self, field_name)
             if not math.isfinite(value):
                 raise ValueError(f"{field_name} must be finite, got {value}")
@@ -729,6 +769,19 @@ class PretrainSpec:
             raise ValueError(f"lr_start ({self.lr_start}) must be >= lr_end ({self.lr_end})")
         if self.grad_clip <= 0:
             raise ValueError(f"grad_clip must be > 0, got {self.grad_clip}")
+        if self.energy_term_weight < 0:
+            raise ValueError(
+                f"energy_term_weight must be >= 0, got "
+                f"{self.energy_term_weight}")
+        if not (0.0 <= self.validation_fraction < 1.0):
+            raise ValueError(
+                f"validation_fraction must be in [0, 1), got "
+                f"{self.validation_fraction}")
+        if self.validate_every <= 0:
+            raise ValueError(
+                f"validate_every must be > 0, got {self.validate_every}")
+        if self.patience < 0:
+            raise ValueError(f"patience must be >= 0, got {self.patience}")
         if not os.path.isdir(self.data_dir):
             raise ValueError(f"data_dir does not exist: {self.data_dir}")
         if os.path.exists(self.checkpoint_dir) and not os.path.isdir(self.checkpoint_dir):
