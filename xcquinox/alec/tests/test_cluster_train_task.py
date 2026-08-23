@@ -520,15 +520,65 @@ def test_failed_certificate_refuses_with_its_own_classification(run_dir,
     assert failure["arch"] == "deep_3x16"
 
 
-def test_unreadable_certificate_is_treated_as_missing(run_dir, monkeypatch):
+def test_unreadable_certificate_is_treated_as_missing(run_dir, monkeypatch,
+                                                      capsys):
+    """A file that states no usable verdict leaves the spec uncertified.
+
+    The classification vocabulary has two values, and everything that is not a
+    literal FAIL joins the absent case: there is no verdict to act on either
+    way. The record layer's own word for the state is carried into the log and
+    the failure record, so a truncated certificate is not reported in the
+    language of a deleted one.
+    """
     path = os.path.join(run_dir, "pretrain", "deep_3x16",
                         "fidelity_certificate.json")
     with open(path, "w") as f:
         f.write("{truncated")
     monkeypatch.setattr(tt, "_run_worker", lambda s, d: (0, "ok"))
     assert tt.main([run_dir, "0"]) == 3
+    failure = _read_failure(run_dir, 0)
+    assert failure["classification"] == "fidelity_certificate_missing"
+    assert failure["certificate_status"] == "UNREADABLE"
+    assert "UNREADABLE" in capsys.readouterr().out
+
+
+def test_a_verdict_less_certificate_is_refused_as_unreadable(run_dir,
+                                                             monkeypatch):
+    """A certificate recording no recognised verdict cannot be waived.
+
+    FAIL is the only status ``enforced: false`` releases, so a schema-less
+    payload carrying that flag must not be read as a FAIL.
+    """
+    d = os.path.join(run_dir, "pretrain", "deep_3x16")
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump({"arch": "deep_3x16", "enforced": False,
+                   "tolerances": {"override_reason": "workflow matrix"}}, f)
+    monkeypatch.setattr(tt, "_run_worker", lambda s, d: (0, "ok"))
+    assert tt.main([run_dir, "0"]) == 3
+    failure = _read_failure(run_dir, 0)
+    assert failure["classification"] == "fidelity_certificate_missing"
+    assert failure["certificate_status"] == "UNREADABLE"
+
+
+@pytest.mark.parametrize("reason", (None, "", "   ", False, 0))
+def test_a_waiver_that_states_no_reason_does_not_release_the_train_task(
+        run_dir, monkeypatch, reason):
+    """Disabling the on-node gates requires a written reason on the record.
+
+    ``enforced: false`` alone is not a waiver: the reason is prose, refused
+    rather than coerced, since ``str(False)`` is the non-empty string 'False'.
+    """
+    d = os.path.join(run_dir, "pretrain", "deep_3x16")
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump({"verdict": "FAIL", "arch": "deep_3x16", "enforced": False,
+                   "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                  "override_reason": reason},
+                   "summary": {"max_atom_mHa": 13.7,
+                               "max_dAE_kcalmol": 25.7}}, f)
+    monkeypatch.setattr(tt, "_run_worker", lambda s, d: (0, "ok"))
+    assert tt.main([run_dir, "0"]) == 3
     assert _read_failure(run_dir, 0)["classification"] == \
-        "fidelity_certificate_missing"
+        "fidelity_certificate_failed"
 
 
 def test_manifest_without_a_cell_arch_is_refused_not_waved_through(tmp_path,

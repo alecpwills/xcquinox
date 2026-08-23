@@ -33,8 +33,13 @@ For one architecture index it:
     within ``cfg.fidelity``. The certificate is computed here, on this node,
     where the checkpoint is hot and the run identity is available, so the
     train array's ``afterok`` dependency blocks on an uncertified
-    architecture without a further job kind. A run configured with
-    ``fidelity.enforce: false`` records the verdict and continues.
+    architecture without a further job kind. The verdict is then read back
+    off the written certificate through ``fidelity.gate_certificate`` -- the
+    same predicate the train task and the preflight apply -- so this job's
+    exit code and their decisions come from one statement and one
+    implementation of the release rule. A run configured with
+    ``fidelity.enforce: false`` AND a non-empty ``override_reason`` records
+    the verdict and continues.
 
 Exit code: 0 on success, non-zero on any failure.
 
@@ -356,34 +361,47 @@ def main(argv=None) -> int:
              f"fidelity certificate RAISED after "
              f"{_fmt_secs(time.time() - t_cert)}: {type(exc).__name__}: {exc}")
         return 1
-    summary = certificate.get("summary") or {}
+    if not isinstance(certificate, dict):
+        _log(arch_name,
+             "fidelity certificate RETURNED "
+             f"{type(certificate).__name__} rather than a certificate payload "
+             f"after {_fmt_secs(time.time() - t_cert)}; there is no verdict to "
+             "report")
+        return 1
+    summary = certificate.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
     line = (f"max_atom={summary.get('max_atom_mHa')} mHa, "
             f"max_dAE={summary.get('max_dAE_kcalmol')} kcal/mol over "
             f"{summary.get('n_systems')} system(s) "
             f"({summary.get('n_atoms')} atom(s), "
             f"{summary.get('n_atomizations')} atomization(s)) in "
             f"{_fmt_secs(time.time() - t_cert)}")
-    if certificate.get("verdict") != fidelity.VERDICT_PASS:
-        _log(arch_name, f"fidelity certificate FAILED: {line}")
+    # The verdict and any waiver are read back off the certificate FILE
+    # through the shared predicate rather than re-derived from the returned
+    # payload. That file is what the train task and the preflight gate on, so
+    # this job's exit code is decided by exactly the statement they will read,
+    # by one implementation of the release rule. Two consequences: a waiver
+    # needs here what gate_certificate requires everywhere -- a recorded
+    # enforced=false AND a non-empty prose override_reason, which the config
+    # loader does not impose, since main never calls validate_grid_semantics
+    # and a fidelity block may carry enforce=false with no reason; and a
+    # payload that never reached disk stops the stage here rather than leaving
+    # the later stages to refuse a run whose pretrain job is recorded as
+    # successful.
+    status, _status_reason = fidelity.certificate_status(run_dir, arch_name)
+    allowed, gate_message = fidelity.gate_certificate(run_dir, arch_name)
+    label = {fidelity.VERDICT_PASS: "PASSED",
+             fidelity.VERDICT_FAIL: "FAILED"}.get(status, status)
+    _log(arch_name, f"fidelity certificate {label}: {line}")
+    if status != fidelity.VERDICT_PASS:
         for reason in summary.get("failure_reasons") or ():
             _log(arch_name, f"  reason: {reason}")
-        # The enforcement flag is read back out of the certificate that was
-        # just written, so the worker, the train task and the preflight all
-        # decide from the same recorded statement rather than from three
-        # readings of the config.
-        if not certificate.get("enforced", True):
-            _reason = (certificate.get("tolerances") or {}).get(
-                "override_reason")
-            _log(arch_name,
-                 "fidelity enforcement is OFF for this run "
-                 f"(fidelity.enforce=false, override_reason: {_reason!r}); "
-                 "the verdict is on record and the stage continues. This run "
-                 "cannot enter validate_run, merge_v4_arms or the figure "
-                 "suite.")
-        else:
-            return 1
-    else:
-        _log(arch_name, f"fidelity certificate PASSED: {line}")
+    if not allowed:
+        _log(arch_name, f"REFUSING to report success: {gate_message}")
+        return 1
+    if status != fidelity.VERDICT_PASS:
+        _log(arch_name, f"fidelity gate: {gate_message}")
 
     _log(
         arch_name,

@@ -122,6 +122,44 @@ def run_dir(tmp_path):
     return str(d)
 
 
+def _stub_certificate_seam(monkeypatch, payload, *, write=True, record=None):
+    """Replace the certificate seam with one that writes ``payload`` and
+    returns it -- what :func:`fidelity.fidelity_certificate` itself does.
+
+    The file matters: the worker's gate reads the certificate back through the
+    shared predicate, so a stub that only returned a payload would describe a
+    run the train task and the preflight could not reproduce. ``write=False``
+    stubs a certificate call that returns a payload without leaving one on
+    disk. ``record`` is an optional dict the call's arguments are stored in.
+    """
+    def fake_certificate(cfg, run_dir, arch):
+        if record is not None:
+            record["args"] = (run_dir, arch)
+            record["tol"] = (cfg.fidelity.tol_AE, cfg.fidelity.tol_atom)
+        if write:
+            d = os.path.join(run_dir, "pretrain", arch)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+                json.dump(payload, f)
+        return payload
+
+    monkeypatch.setattr(pt, "_fidelity_certificate", fake_certificate)
+    return fake_certificate
+
+
+def _pass_payload(**overrides):
+    payload = {
+        "verdict": "PASS", "enforced": True,
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": None},
+        "summary": {"max_atom_mHa": 0.12, "max_dAE_kcalmol": 0.34,
+                    "n_systems": 40, "n_atoms": 16, "n_atomizations": 24,
+                    "failure_reasons": []},
+    }
+    payload.update(overrides)
+    return payload
+
+
 @pytest.fixture(autouse=True)
 def stub_certificate(request, monkeypatch):
     """Stub the fidelity certificate at its seam for every test in this file.
@@ -135,13 +173,7 @@ def stub_certificate(request, monkeypatch):
     """
     if request.node.name.endswith("_unstubbed"):
         return
-    monkeypatch.setattr(pt, "_fidelity_certificate", lambda cfg, rd, arch: {
-        "verdict": "PASS", "enforced": True,
-        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
-                       "override_reason": None},
-        "summary": {"max_atom_mHa": 0.12, "max_dAE_kcalmol": 0.34,
-                    "n_systems": 40, "n_atoms": 16, "n_atomizations": 24,
-                    "failure_reasons": []}})
+    _stub_certificate_seam(monkeypatch, _pass_payload())
 
 
 # ---------------------------------------------------------------------------
@@ -428,21 +460,24 @@ def _stub_pretrain_writes_checkpoint(monkeypatch):
     monkeypatch.setattr(pt, "_run_pretrain", fake_run_pretrain)
 
 
+def _fail_payload(**overrides):
+    payload = {
+        "verdict": "FAIL", "enforced": True,
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": None},
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7,
+                    "n_systems": 40, "n_atoms": 16, "n_atomizations": 24,
+                    "failure_reasons": ["max |dE_xc| over free atoms 13.7000 "
+                                        "mHa exceeds tol_atom 1.0 mHa"]},
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_pretrain_runs_the_certificate_for_its_own_arch(run_dir, monkeypatch):
     _stub_pretrain_writes_checkpoint(monkeypatch)
     seen = {}
-
-    def fake_cert(cfg, rd, arch):
-        seen["args"] = (rd, arch)
-        seen["tol"] = (cfg.fidelity.tol_AE, cfg.fidelity.tol_atom)
-        return {"verdict": "PASS", "enforced": True,
-                "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
-                               "override_reason": None},
-                "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2,
-                            "n_systems": 2, "n_atoms": 1, "n_atomizations": 1,
-                            "failure_reasons": []}}
-
-    monkeypatch.setattr(pt, "_fidelity_certificate", fake_cert)
+    _stub_certificate_seam(monkeypatch, _pass_payload(), record=seen)
     assert pt.main([run_dir, "1"]) == 0
     assert seen["args"] == (os.path.abspath(run_dir), "medium")
     assert seen["tol"] == (1.0, 1.0)
@@ -451,14 +486,7 @@ def test_pretrain_runs_the_certificate_for_its_own_arch(run_dir, monkeypatch):
 def test_pretrain_exits_nonzero_on_a_failed_certificate(run_dir, monkeypatch,
                                                         capsys):
     _stub_pretrain_writes_checkpoint(monkeypatch)
-    monkeypatch.setattr(pt, "_fidelity_certificate", lambda cfg, rd, arch: {
-        "verdict": "FAIL", "enforced": True,
-        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
-                       "override_reason": None},
-        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7,
-                    "n_systems": 40, "n_atoms": 16, "n_atomizations": 24,
-                    "failure_reasons": ["max |dE_xc| over free atoms 13.7000 "
-                                        "mHa exceeds tol_atom 1.0 mHa"]}})
+    _stub_certificate_seam(monkeypatch, _fail_payload())
     assert pt.main([run_dir, "1"]) == 1
     out = capsys.readouterr().out
     assert "fidelity certificate FAILED" in out
@@ -471,20 +499,91 @@ def test_pretrain_continues_past_a_failure_when_enforcement_is_off(
     """Workflow-verification runs must reach the train stage with a FAIL on
     record; the worker says so in the log and exits 0."""
     _stub_pretrain_writes_checkpoint(monkeypatch)
-    monkeypatch.setattr(pt, "_fidelity_certificate", lambda cfg, rd, arch: {
-        "verdict": "FAIL", "enforced": False,
-        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
-                       "override_reason": "workflow matrix: 50-step "
-                                          "pretrain"},
-        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7,
-                    "n_systems": 40, "n_atoms": 16, "n_atomizations": 24,
-                    "failure_reasons": ["max_atom_mHa"]}})
+    _stub_certificate_seam(monkeypatch, _fail_payload(
+        enforced=False,
+        tolerances={"tol_AE": 1.0, "tol_atom": 1.0,
+                    "override_reason": "workflow matrix: 50-step pretrain"}))
     assert pt.main([run_dir, "1"]) == 0
     out = capsys.readouterr().out
     assert "fidelity certificate FAILED" in out
     assert "enforcement is OFF" in out
     assert "workflow matrix" in out
     assert "pretrain SUCCEEDED" in out
+
+
+@pytest.mark.parametrize("reason", (None, "", "   ", False, 0))
+def test_pretrain_refuses_a_waiver_that_states_no_reason(run_dir, monkeypatch,
+                                                         capsys, reason):
+    """Only a waiver with a written reason releases the worker's exit code.
+
+    Disabling the on-node gates requires a non-empty prose
+    ``fidelity.override_reason``. ``load_grid_config`` accepts a ``fidelity``
+    block whose ``enforce`` is false with no reason -- ``main`` never calls
+    ``validate_grid_semantics`` -- so the rule is imposed on the certificate
+    itself, where a truthiness test on ``enforced`` alone would let a run with
+    no reason on record report success. A boolean or a number is not a reason:
+    ``str(False)`` is the non-empty string 'False'.
+    """
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    _stub_certificate_seam(monkeypatch, _fail_payload(
+        enforced=False,
+        tolerances={"tol_AE": 1.0, "tol_atom": 1.0,
+                    "override_reason": reason}))
+    assert pt.main([run_dir, "1"]) == 1
+    out = capsys.readouterr().out
+    assert "override_reason" in out
+    assert "pretrain SUCCEEDED" not in out
+
+
+def test_pretrain_refuses_a_certificate_that_records_no_verdict(
+        run_dir, monkeypatch, capsys):
+    """A verdict-less certificate is UNREADABLE, and never waivable.
+
+    FAIL is the one status a run can waive, so a file that states no
+    recognised verdict must not be read as one: a truncated or schema-less
+    certificate with ``enforced: false`` would otherwise release the stage.
+    The stage names the status the record layer gives it.
+    """
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    _stub_certificate_seam(monkeypatch, _fail_payload(
+        verdict=None, enforced=False,
+        tolerances={"tol_AE": 1.0, "tol_atom": 1.0,
+                    "override_reason": "workflow matrix"}))
+    assert pt.main([run_dir, "1"]) == 1
+    out = capsys.readouterr().out
+    assert "UNREADABLE" in out
+    assert "pretrain SUCCEEDED" not in out
+
+
+def test_pretrain_refuses_a_payload_that_is_not_a_certificate(run_dir,
+                                                              monkeypatch,
+                                                              capsys):
+    """A certificate call that returns something other than a payload is a
+    diagnosed refusal, not an exception out of ``main``."""
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    monkeypatch.setattr(pt, "_fidelity_certificate",
+                        lambda cfg, rd, arch: ["not", "a", "certificate"])
+    assert pt.main([run_dir, "1"]) == 1
+    out = capsys.readouterr().out
+    assert "fidelity certificate" in out
+    assert "pretrain SUCCEEDED" not in out
+
+
+def test_pretrain_refuses_when_no_certificate_reached_disk(run_dir,
+                                                           monkeypatch,
+                                                           capsys):
+    """The gate reads the FILE, which is what the later stages read.
+
+    The train task and the preflight decide from
+    ``pretrain/<arch>/fidelity_certificate.json``; a worker that reported
+    success on an in-memory payload that never landed would hand them a run
+    they refuse, with the pretrain job recorded as successful.
+    """
+    _stub_pretrain_writes_checkpoint(monkeypatch)
+    _stub_certificate_seam(monkeypatch, _pass_payload(), write=False)
+    assert pt.main([run_dir, "1"]) == 1
+    out = capsys.readouterr().out
+    assert "pretrain SUCCEEDED" not in out
 
 
 def test_pretrain_exits_nonzero_when_the_certificate_raises(run_dir,

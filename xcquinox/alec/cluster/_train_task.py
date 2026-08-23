@@ -15,7 +15,10 @@ It is the thin harness layer between SLURM and the existing per-spec worker
     (``<run_dir>/pretrain/<arch>/fidelity_certificate.json``): exit 3 with a
     ``fidelity_certificate_missing`` / ``fidelity_certificate_failed``
     ``failure.json`` instead of spending a node training against networks that
-    were never shown to reproduce their parent functional.
+    were never shown to reproduce their parent functional. The record layer's
+    status for the file (PASS / FAIL / MISSING / UNREADABLE) is written beside
+    the classification, which has only the two values, so a certificate that
+    states no verdict is distinguishable from one that was never written.
   - Run the worker as a subprocess (``_run_worker``: the single test seam),
     consuming its JSON progress stream and emitting a throttled human
     readable progress line to our stdout (which IS the SLURM ``.out`` log).
@@ -504,11 +507,17 @@ def main(argv=None) -> int:
     # the tolerance. Such a run is still refused by ``validate_run``,
     # ``merge_v4_arms`` and the figure suite.
     #
-    # Imported inside main deliberately: this module carries no xcquinox import
-    # in its body, so the train task's parent process stays a thin SLURM
-    # wrapper around the worker subprocess.
+    # Imported inside main deliberately, matching this module's body, which
+    # carries only the standard library. It buys no process weight: running
+    # this module as ``python -m`` imports the xcquinox package first, and
+    # ``xcquinox/__init__`` pulls jax, equinox and pyscf in (measured: all
+    # three are in sys.modules after importing this module, 0.67 s). What it
+    # keeps is the import-order discipline the file is written to -- the
+    # parent process orchestrates a worker SUBPROCESS and reaches for library
+    # code only where it uses it.
     from xcquinox.alec.cluster.fidelity import (
-        CERTIFICATE_FILENAME, certificate_status, gate_certificate)
+        CERTIFICATE_FILENAME, VERDICT_FAIL, certificate_status,
+        gate_certificate)
     arch = _read_cell_arch(run_dir, idx)
     if arch is None:
         excerpt = (
@@ -525,15 +534,23 @@ def main(argv=None) -> int:
         return 3
     allowed, message = gate_certificate(run_dir, arch)
     if not allowed:
+        # The classification vocabulary has two values, so everything that is
+        # not a literal FAIL joins the absent case: MISSING and UNREADABLE
+        # alike leave no verdict to act on. The record layer's own word for
+        # the state is carried into the log line and the failure record, so a
+        # certificate that states nothing is not reported in the language of a
+        # deleted one.
         status, _reason = certificate_status(run_dir, arch)
         classification = ("fidelity_certificate_failed"
-                          if status == "FAIL"
+                          if status == VERDICT_FAIL
                           else "fidelity_certificate_missing")
-        _log(idx, f"REFUSING to train arch {arch!r}: {message}")
+        _log(idx, f"REFUSING to train arch {arch!r} (certificate {status}): "
+                  f"{message}")
         _write_failure_json(checkpoint_dir, {
             "classification": classification,
             "rc": 3,
             "arch": arch,
+            "certificate_status": status,
             "log_excerpt": message,
         })
         return 3

@@ -715,18 +715,69 @@ def test_preflight_releases_an_unenforced_failure(tmp_path, patched, capsys):
     assert "preflight SUCCEEDED" in out
 
 
+def _set_sweep_archs(config_path, archs):
+    """Rewrite the resolved config's arch axis and return the new list."""
+    import yaml
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    cfg["sweep"]["arch"] = list(archs)
+    with open(config_path, "w") as f:
+        yaml.safe_dump(cfg, f)
+    return list(archs)
+
+
 def test_preflight_checks_every_distinct_arch(tmp_path, patched, capsys):
+    """The sweep covers the whole arch axis, not its first entry.
+
+    The uncertified architecture is the LAST in sorted order ("shallow" after
+    "medium"), so a sweep that stopped early would release the array on a run
+    with an uncertified architecture in it.
+    """
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     path = _write_resolved_config(run_dir)
-    import yaml
-    with open(path) as f:
-        cfg = yaml.safe_load(f)
-    cfg["sweep"]["arch"] = ["shallow", "medium"]
-    with open(path, "w") as f:
-        yaml.safe_dump(cfg, f)
-    _write_pass_certificate(run_dir, "shallow")
-    # "medium" has no certificate: the sweep must catch it.
+    _set_sweep_archs(path, ["shallow", "medium"])
+    _write_pass_certificate(run_dir, "medium")
+    os.remove(os.path.join(str(run_dir), "pretrain", "shallow",
+                           "fidelity_certificate.json"))
     assert main([str(run_dir)]) == 1
     out = capsys.readouterr().out
-    assert "medium" in out
+    assert "fidelity gate FAILED for 1/2 architecture(s) (shallow)" in out
+    assert "fidelity gate for arch medium" in out
+
+
+def test_preflight_counts_every_certified_arch(tmp_path, patched, capsys):
+    """The released count names the whole axis, so a partial sweep is visible
+    in the log of a run that passed."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    path = _write_resolved_config(run_dir)
+    _set_sweep_archs(path, ["shallow", "medium"])
+    _write_pass_certificate(run_dir, "medium")
+    assert main([str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "2/2 architecture certificate(s) released the gate" in out
+
+
+@pytest.mark.parametrize("reason", (None, "", "   ", False, 0))
+def test_preflight_refuses_a_waiver_that_states_no_reason(tmp_path, patched,
+                                                          capsys, reason):
+    """A non-enforcing run releases the array only with a written reason.
+
+    ``enforced: false`` alone is not a waiver, and a boolean or a number is
+    not a reason: ``str(False)`` is the non-empty string 'False'.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_resolved_config(run_dir)
+    d = os.path.join(str(run_dir), "pretrain", "shallow")
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump({"verdict": "FAIL", "arch": "shallow", "enforced": False,
+                   "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                  "override_reason": reason},
+                   "summary": {"max_atom_mHa": 13.7,
+                               "max_dAE_kcalmol": 25.7}}, f)
+    assert main([str(run_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "fidelity gate FAILED" in out
+    assert "override_reason" in out

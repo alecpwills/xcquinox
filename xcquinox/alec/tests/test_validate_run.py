@@ -74,7 +74,7 @@ _VERSION = "test-version"
 
 def _write_certificate(run_dir, arch, *, verdict="PASS", identity=None,
                        version=_VERSION, arch_field=None, parent="pbe",
-                       checkpoint=None):
+                       checkpoint=None, enforced=None, override_reason=None):
     d = os.path.join(run_dir, "pretrain", arch)
     os.makedirs(d, exist_ok=True)
     payload = {
@@ -86,13 +86,15 @@ def _write_certificate(run_dir, arch, *, verdict="PASS", identity=None,
             "basis": _BASIS, "grid_level": 1, "density_fit": False,
             "auxbasis": None, "orientation_lock_strength": 0.0},
         "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
-                       "override_reason": None},
+                       "override_reason": override_reason},
         "per_system": [], "per_atomization": [],
         "summary": {"max_atom_mHa": 0.1, "max_dAE_kcalmol": 0.2,
                     "n_systems": 2, "failure_reasons": []},
     }
     if checkpoint is not None:
         payload["checkpoint"] = checkpoint
+    if enforced is not None:
+        payload["enforced"] = enforced
     with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
         json.dump(payload, f)
     return os.path.join(d, "fidelity_certificate.json")
@@ -446,3 +448,141 @@ def test_absent_digests_and_absent_checkpoints_warn(tmp_path, patched_cfg):
     failures, warnings, _n = vr.validate_run(run)
     assert failures == [], failures
     assert any("xnet_sha256" in w for w in warnings)
+
+
+@pytest.mark.parametrize("body", ("[]", "null", '"nope"', "0"))
+def test_a_certificate_that_is_not_an_object_is_a_named_failure(
+        tmp_path, patched_cfg, body):
+    """A document that PARSES but is not a certificate states no verdict.
+
+    A JSON array, null, string or number satisfies ``json.load`` and carries
+    none of the fields the checks below read, so a reader that only guards the
+    parse and then tests the payload's type reports nothing at all for that
+    architecture -- the one outcome a gate may never produce. The record layer
+    calls such a file UNREADABLE, and an unverifiable certificate is refused.
+    """
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    path = os.path.join(run, "pretrain", "deep_3x16",
+                        "fidelity_certificate.json")
+    with open(path, "w") as f:
+        f.write(body)
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("pretrain/deep_3x16" in f and "fidelity_certificate.json" in f
+               for f in failures), failures
+
+
+def test_a_certificate_that_cannot_be_opened_is_a_named_failure(tmp_path,
+                                                                patched_cfg):
+    """An unreadable file is a reported failure, not an exception.
+
+    ``validate_run`` is report-only: a certificate whose permissions deny the
+    read is as unverifiable as a truncated one, and must be listed beside the
+    other findings rather than abort the scan.
+    """
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    path = os.path.join(run, "pretrain", "deep_3x16",
+                        "fidelity_certificate.json")
+    os.chmod(path, 0o000)
+    if os.access(path, os.R_OK):  # pragma: no cover -- privileged environment
+        os.chmod(path, 0o600)
+        pytest.skip("the running user can read a mode-000 file")
+    try:
+        failures, _warnings, _n = vr.validate_run(run)
+    finally:
+        os.chmod(path, 0o600)
+    assert any("pretrain/deep_3x16" in f and "fidelity_certificate.json" in f
+               for f in failures), failures
+
+
+def test_an_identity_field_the_run_does_not_state_is_reported(tmp_path,
+                                                              patched_cfg):
+    """The identity comparison covers the UNION of the two key sets.
+
+    The expected identity comes from ``fidelity.run_identity``; a certificate
+    that carries a further identity field states a condition this run does not
+    match, and a comparison that iterates only the expected keys would pass it
+    silently -- as it would a sixth field added to the shared builder.
+    """
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", identity={
+        "basis": _BASIS, "grid_level": 1, "density_fit": False,
+        "auxbasis": None, "orientation_lock_strength": 0.0,
+        "seed_xc": "scan"})
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("seed_xc" in f for f in failures), failures
+
+
+def test_a_malformed_identity_value_is_a_mismatch_not_a_crash(tmp_path,
+                                                              patched_cfg):
+    """A non-numeric grid level is a disagreement, and the scan continues.
+
+    Coercing the recorded value to the config's type is how ``"1"`` and ``1``
+    are read as the same grid; a value that cannot be coerced disagrees with
+    the config and is reported as such. Raising instead would discard every
+    failure accumulated before it -- here the FAIL verdict of the
+    alphabetically earlier architecture.
+    """
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", verdict="FAIL")
+    _write_certificate(run, "deep_attn_3x16", identity={
+        "basis": _BASIS, "grid_level": "abc", "density_fit": False,
+        "auxbasis": None, "orientation_lock_strength": 0.0})
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("deep_attn_3x16" in f and "grid_level" in f
+               for f in failures), failures
+    assert any("deep_3x16:" in f and "verdict" in f
+               for f in failures), failures
+
+
+def test_the_report_names_a_recorded_waiver(tmp_path, patched_cfg):
+    """A run refused for a deliberately non-enforcing certificate says so.
+
+    ``fidelity.enforce: false`` releases the on-node gates only, so a
+    workflow-verification run reaches validation with a FAIL on record. The
+    verdict is still a failure, but the report carries the recorded reason and
+    the flag, so that run is distinguishable from one whose physics simply did
+    not certify.
+    """
+    run = _write_run(tmp_path, [_spec_for("deep_3x16"),
+                                _spec_for("deep_attn_3x16")])
+    _write_certificate(run, "deep_3x16", verdict="FAIL", enforced=False,
+                       override_reason="workflow matrix: 50-step pretrain")
+    failures, _warnings, _n = vr.validate_run(run)
+    assert any("verdict 'FAIL'" in f
+               and "workflow matrix: 50-step pretrain" in f
+               and "enforced" in f for f in failures), failures
+
+
+def _code_string_constants(func):
+    """Every string literal in a function's code object.
+
+    Constant dict keys are compiled into a single tuple constant rather than
+    separate string constants, so nested tuples are flattened.
+    """
+    out = set()
+    for const in func.__code__.co_consts:
+        if isinstance(const, str):
+            out.add(const)
+        elif isinstance(const, tuple):
+            out.update(c for c in const if isinstance(c, str))
+    return out
+
+
+def test_the_checkpoint_digest_names_come_from_the_writer():
+    """The two sides of the digest comparison read one table of names.
+
+    ``validate_run`` compares the digests ``fidelity_certificate`` recorded,
+    so the network file names and the payload keys are taken from
+    ``fidelity.CHECKPOINT_DIGEST_KEYS`` instead of being restated: a rename in
+    the writer would otherwise leave the validator comparing keys nothing
+    writes, which reads as a clean run.
+    """
+    from xcquinox.alec.cluster import fidelity
+    written = _code_string_constants(fidelity.fidelity_certificate)
+    for filename, digest_key in fidelity.CHECKPOINT_DIGEST_KEYS:
+        assert filename in written
+        assert digest_key in written
