@@ -13,14 +13,26 @@ The generator is idempotent (``ensure_pretrain_data`` skips a file whose manifes
 already matches the requested basis/grid_level), so a re-submit is a cheap no-op.
 
 It produces EVERY pretrain-data file the sweep's architectures require: the set
-of required files is the set of distinct polarization flags of the swept archs
-(after applying the run-level ``use_polarized_correlation`` patch exactly as
-``spec_builder`` does), each named through
+of required files is the set of distinct ``(polarized, reference_xc)`` pairs of
+the swept archs (after applying the run-level ``use_polarized_correlation``
+patch exactly as ``spec_builder`` does), each named through
 ``pretrain_data_gen.pretrain_data_filename`` -- the one naming function
-``run_pretrain`` also reads through. ``descriptors=True`` writes the
-``cusp_all`` / ``dm_all`` columns the descriptor archs (deep_cusp / deep_dm /
-deep_combined*) need, so one file serves base, attn, cusp, dm, combined, and
-notransform archs.
+``run_pretrain`` also reads through. The polarization flag decides whether the
+file carries the zeta column; the parent (``pretrain.parent_density``) decides
+which functional's self-consistent density its rows sit on, so under ``auto`` a
+sweep that mixes GGA-rung and meta-GGA-rung architectures needs two files.
+``descriptors=True`` writes the ``cusp_all`` / ``dm_all`` columns the descriptor
+archs (deep_cusp / deep_dm / deep_combined*) need, so one file serves base,
+attn, cusp, dm, combined, and notransform archs.
+
+The remaining pretraining-protocol knobs (``dfs_set``, ``pool_atoms``,
+``exchange_footing``, ``mesh_fraction``, ``atoms``) change the file's CONTENT
+rather than its name and reach the generator as keywords; each is part of the
+data manifest's identity, so a changed knob regenerates the file instead of
+being served a stale one. Only a knob that DIFFERS from the generator's default
+is passed, so a configuration written before the protocol change reaches the
+generator with exactly the keyword set it always did and its existing file
+stays current.
 
 JAX precision
 -------------
@@ -102,6 +114,23 @@ def _log(msg: str) -> None:
     print(f"[datagen] {msg}", flush=True)
 
 
+def _swept_architectures(cfg):
+    """The sweep's architecture objects, patched the way ``spec_builder`` does.
+
+    The run-level ``use_polarized_correlation`` is applied to each swept arch
+    before anything is read off it, so the polarization flag and the parent
+    density derived here are the ones the train specs will carry. One
+    implementation of the patch, so the two required-file derivations below can
+    never disagree about which architecture they are describing.
+    """
+    run_polarized = bool(getattr(cfg, "use_polarized_correlation", False))
+    for name in cfg.sweep.arch:
+        arch = get_architecture(name)
+        if run_polarized:
+            arch = dataclasses.replace(arch, use_polarized_correlation=True)
+        yield arch
+
+
 def _required_polarized_flags(cfg) -> list[bool]:
     """The distinct ``polarized`` flags the sweep's archs actually consume.
 
@@ -115,15 +144,66 @@ def _required_polarized_flags(cfg) -> list[bool]:
     file), normally ``[True]`` or ``[False]`` since the polarization flag is
     run-level, but a future per-arch/mixed sweep yields both.
     """
-    run_polarized = bool(getattr(cfg, "use_polarized_correlation", False))
     flags: dict[bool, None] = {}
-    for name in cfg.sweep.arch:
-        arch = get_architecture(name)
-        if run_polarized:
-            arch = dataclasses.replace(arch, use_polarized_correlation=True)
+    for arch in _swept_architectures(cfg):
         flags.setdefault(
             bool(getattr(arch, "use_polarized_correlation", False)), None)
     return sorted(flags)  # deterministic: [False] < [True] < [False, True]
+
+
+def _required_data_specs(cfg):
+    """The distinct ``(polarized, reference_xc)`` pretrain-data files needed.
+
+    The polarization flag decides whether the file carries the zeta column; the
+    parent decides which functional's SELF-CONSISTENT density the rows sit on.
+    Under ``pretrain.parent_density: auto`` the parent is the architecture's
+    rung baseline, so a sweep that mixes GGA-rung and meta-GGA-rung
+    architectures needs BOTH files -- they are different densities, not two
+    views of one. The parent is resolved through
+    ``pretrain_data_gen.resolve_parent_density``, the same function the
+    pretraining data layer resolves it with, so the file datagen writes is the
+    file the pretrain worker opens.
+
+    The polarization flag is read off the architecture rather than parsed back
+    out of a filename suffix, for the reason
+    :func:`_required_polarized_flags` states: the name now carries a second
+    qualifier (the parent-density suffix), so a suffix test on the name reports
+    the SCAN-density polarized file as unpolarized. Returns a deterministic
+    sorted list of distinct pairs.
+    """
+    from xcquinox.alec.pretrain_data_gen import resolve_parent_density
+
+    requested = getattr(cfg.pretrain, "parent_density", "pbe")
+    specs: dict[tuple, None] = {}
+    for arch in _swept_architectures(cfg):
+        polarized = bool(getattr(arch, "use_polarized_correlation", False))
+        specs.setdefault(
+            (polarized, resolve_parent_density(arch, requested)), None)
+    return sorted(specs)
+
+
+def _protocol_keywords(pt):
+    """The generator keywords a pretraining-protocol config adds, if any.
+
+    Only a knob that DIFFERS from the generator's own default is returned, so a
+    configuration written before the protocol change produces an EMPTY mapping
+    and reaches the generator with exactly the keyword set it always did --
+    which keeps its existing data file current instead of regenerating it under
+    a manifest that now names extra keys. Read through ``getattr`` so a
+    namespace reloaded from a pre-protocol ``resolved_config.yaml`` resolves.
+    """
+    extra = {}
+    if getattr(pt, "atoms", ()):
+        extra["atoms"] = tuple(tuple(a) for a in pt.atoms)
+    if getattr(pt, "dfs_set", False):
+        extra["dfs_set"] = True
+    if getattr(pt, "pool_atoms", False):
+        extra["pool_atoms"] = True
+    if getattr(pt, "exchange_footing", "total") != "total":
+        extra["exchange_footing"] = str(pt.exchange_footing)
+    if float(getattr(pt, "mesh_fraction", 0.3)) != 0.3:
+        extra["mesh_fraction"] = float(pt.mesh_fraction)
+    return extra
 
 
 def main(argv=None) -> int:
@@ -163,15 +243,28 @@ def main(argv=None) -> int:
         return 1
 
     data_dir = cfg.pretrain.data_dir
-    flags = _required_polarized_flags(cfg)
-    required = [_pdg.pretrain_data_filename(p) for p in flags]
+    specs = _required_data_specs(cfg)
+    required = [_pdg.pretrain_data_filename(p, ref) for p, ref in specs]
+    # An empty config tuple leaves the generator on its DEFAULT_PRETRAIN_ATOMS,
+    # and every other unset knob leaves it on its own default.
+    extra = _protocol_keywords(cfg.pretrain)
     _log(
         f"archs={list(cfg.sweep.arch)} -> required: {required} | "
         f"basis={cfg.inputs.basis} grid_level={cfg.inputs.grid_level} "
-        f"density_fit={cfg.inputs.density_fit} data_dir={data_dir}"
+        f"density_fit={cfg.inputs.density_fit} data_dir={data_dir} | "
+        f"protocol={extra}"
     )
     try:
-        for polarized in flags:
+        for polarized, reference_xc in specs:
+            # Per-iteration copy: mutating ``extra`` in the loop would leak one
+            # iteration's reference_xc into the next, which on a mixed-rung
+            # sweep builds the SCAN file twice and never builds the PBE one.
+            call = dict(extra)
+            # The reference density is named only when the call is not the
+            # historical one, so a pre-protocol configuration reaches the
+            # generator with exactly the keyword set it always did.
+            if call or reference_xc != "pbe":
+                call["reference_xc"] = reference_xc
             path = _ensure_pretrain_data(
                 data_dir,
                 basis=cfg.inputs.basis,
@@ -180,13 +273,21 @@ def main(argv=None) -> int:
                 auxbasis=cfg.inputs.auxbasis,
                 polarized=polarized,
                 descriptors=True,
-                # empty config tuple -> the generator's DEFAULT_PRETRAIN_ATOMS
-                **({"atoms": tuple(tuple(a) for a in cfg.pretrain.atoms)}
-                   if getattr(cfg.pretrain, "atoms", ()) else {}),
+                **call,
             )
-            _log(f"ensured pretrain data (polarized={polarized}): {path}")
+            _log(f"ensured pretrain data (polarized={polarized}, "
+                 f"reference_xc={reference_xc}): {path}")
     except Exception as exc:  # noqa: BLE001, fail the stage loudly + non-zero.
-        _log(f"ERROR: pretrain-data generation failed: {type(exc).__name__}: {exc}")
+        # Includes data.ReferenceSCFNotConverged: an unconverged reference SCF
+        # is a named stage failure with a non-zero exit, never a traceback that
+        # leaves the pretrain array's afterok dependency free to run. Its cycle
+        # count is read duck-typed (naming the class here would import the
+        # heavy data module for a message).
+        cycles = getattr(exc, "cycles", None)
+        detail = ("" if cycles is None
+                  else f" (reference SCF ran {cycles} cycle(s))")
+        _log(f"ERROR: pretrain-data generation failed: "
+             f"{type(exc).__name__}: {exc}{detail}")
         return 1
 
     _log("datagen complete, all required pretrain-data files present.")

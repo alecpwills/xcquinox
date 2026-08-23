@@ -632,5 +632,68 @@ def test_fidelity_certificate_seam_is_the_library_function_unstubbed():
     assert pt._fidelity_certificate is fidelity.fidelity_certificate
 
 
+def test_pretrain_spec_carries_the_protocol_fields(tmp_path, monkeypatch):
+    """A field the worker forgets to thread is a knob the YAML sets and the run
+    silently ignores."""
+    from xcquinox.alec.cluster import _pretrain as pretrain_mod
+    d = tmp_path / "run"
+    d.mkdir()
+    data_dir = tmp_path / "pretrain_data"
+    data_dir.mkdir()
+    cfg = _config_dict(data_dir=str(data_dir))
+    cfg["pretrain"].update({
+        "parent_density": "auto", "energy_term_weight": 1.0,
+        "validation_fraction": 0.2, "validation_seed": 11,
+        "validate_every": 25, "patience": 8})
+    _write_config(str(d), cfg)
+    captured = {}
+
+    def _fake(spec, progress_callback=None):
+        captured["spec"] = spec
+        return {}
+
+    monkeypatch.setattr(pretrain_mod, "_run_pretrain", _fake)
+    pretrain_mod.main([str(d), "0"])
+    spec = captured["spec"]
+    assert spec.parent_density == "auto"
+    assert spec.energy_term_weight == 1.0
+    assert spec.validation_fraction == 0.2
+    assert spec.validation_seed == 11
+    assert spec.validate_every == 25
+    assert spec.patience == 8
+
+
+def test_pretrain_log_line_states_every_protocol_knob(tmp_path, monkeypatch,
+                                                      capsys):
+    """The run record must show what the job trained with. A knob that is set
+    in the YAML and absent from the log leaves no way to attribute a
+    checkpoint to the configuration that produced it."""
+    from xcquinox.alec.cluster import _pretrain as pretrain_mod
+    d = tmp_path / "run"
+    d.mkdir()
+    data_dir = tmp_path / "pretrain_data"
+    data_dir.mkdir()
+    cfg = _config_dict(data_dir=str(data_dir))
+    cfg["pretrain"].update({
+        "parent_density": "scan", "energy_term_weight": 2.5,
+        "validation_fraction": 0.2, "validation_seed": 11,
+        "validate_every": 25, "patience": 8, "dfs_set": True,
+        "pool_atoms": True, "exchange_footing": "spin_channel",
+        "mesh_fraction": 0.25})
+    _write_config(str(d), cfg)
+    monkeypatch.setattr(pretrain_mod, "_run_pretrain",
+                        lambda spec, progress_callback=None: {})
+    pretrain_mod.main([str(d), "0"])
+    line = [ln for ln in capsys.readouterr().out.splitlines()
+            if "running run_pretrain" in ln]
+    assert len(line) == 1
+    for stated in ("parent_density='scan'", "energy_term_weight=2.5",
+                   "validation_fraction=0.2", "validation_seed=11",
+                   "validate_every=25", "patience=8", "dfs_set=True",
+                   "pool_atoms=True", "exchange_footing='spin_channel'",
+                   "mesh_fraction=0.25"):
+        assert stated in line[0], stated
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

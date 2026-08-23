@@ -307,11 +307,34 @@ def main(argv=None) -> int:
         grad_clip=pt.grad_clip,
         seed=pt.seed,
         loss_weighting=pt.loss_weighting,
+        # --- pretraining protocol ------------------------------------------
+        # Read through getattr with the pre-protocol default, so a
+        # resolved_config.yaml written before these knobs existed still loads
+        # here -- which is what the recovery and resubmit paths replay.
+        parent_density=getattr(pt, "parent_density", "pbe"),
+        energy_term_weight=getattr(pt, "energy_term_weight", 0.0),
+        validation_fraction=getattr(pt, "validation_fraction", 0.0),
+        validation_seed=getattr(pt, "validation_seed", 0),
+        validate_every=getattr(pt, "validate_every", 50),
+        patience=getattr(pt, "patience", 0),
     )
+    # Every protocol knob the YAML can set is stated in the run record, so the
+    # log says what the job trained with rather than what its defaults are.
     _log(
         arch_name,
         f"running run_pretrain: n_steps={pt.n_steps}, "
-        f"loss_weighting={pt.loss_weighting!r}, checkpoint_dir={checkpoint_dir}",
+        f"loss_weighting={pt.loss_weighting!r}, "
+        f"parent_density={getattr(pt, 'parent_density', 'pbe')!r}, "
+        f"energy_term_weight={getattr(pt, 'energy_term_weight', 0.0)}, "
+        f"validation_fraction={getattr(pt, 'validation_fraction', 0.0)}, "
+        f"validation_seed={getattr(pt, 'validation_seed', 0)}, "
+        f"validate_every={getattr(pt, 'validate_every', 50)}, "
+        f"patience={getattr(pt, 'patience', 0)}, "
+        f"dfs_set={getattr(pt, 'dfs_set', False)}, "
+        f"pool_atoms={getattr(pt, 'pool_atoms', False)}, "
+        f"exchange_footing={getattr(pt, 'exchange_footing', 'total')!r}, "
+        f"mesh_fraction={getattr(pt, 'mesh_fraction', 0.3)}, "
+        f"checkpoint_dir={checkpoint_dir}",
     )
 
     # --- run pretraining behind the seam -----------------------------------

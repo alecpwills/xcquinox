@@ -342,17 +342,34 @@ def prepare_inputs(
         # rather than silently training on stale def2-svp data. Density-fit the
         # per-atom SCF when the run does, so the whole pipeline shares one
         # Coulomb backend and a large basis stays within node RAM.
-        _ensure_pretrain_data(
-            cfg.pretrain.data_dir,
-            basis=cfg.inputs.basis,
-            grid_level=cfg.inputs.grid_level,
-            density_fit=cfg.inputs.density_fit,
-            auxbasis=cfg.inputs.auxbasis,
-            polarized=cfg.use_polarized_correlation,
-            # empty config tuple -> the generator's DEFAULT_PRETRAIN_ATOMS
-            **({"atoms": tuple(tuple(a) for a in cfg.pretrain.atoms)}
-               if getattr(cfg.pretrain, "atoms", ()) else {}),
-        )
+        #
+        # Which files are required and which protocol keywords they are built
+        # with are taken from the datagen stage's own derivations rather than
+        # restated here: the preflight and the datagen stage then agree on the
+        # set of files by construction, including the two-parent split a
+        # mixed-rung sweep gets under ``pretrain.parent_density: auto``. The
+        # historical call passed the run-level polarization flag alone, which
+        # cannot express that split.
+        from xcquinox.alec.cluster._datagen import (_protocol_keywords,
+                                                    _required_data_specs)
+        _extra = _protocol_keywords(cfg.pretrain)
+        for _polarized, _reference_xc in _required_data_specs(cfg):
+            _call = dict(_extra)
+            # The reference density is named only when the call is not the
+            # historical one, so a pre-protocol configuration reaches the
+            # generator with exactly the keyword set it always did and its
+            # existing data file stays current.
+            if _call or _reference_xc != "pbe":
+                _call["reference_xc"] = _reference_xc
+            _ensure_pretrain_data(
+                cfg.pretrain.data_dir,
+                basis=cfg.inputs.basis,
+                grid_level=cfg.inputs.grid_level,
+                density_fit=cfg.inputs.density_fit,
+                auxbasis=cfg.inputs.auxbasis,
+                polarized=_polarized,
+                **_call,
+            )
 
     # --- 5. stage the held-out VALIDATION slice (WS3, option a) -------------
     # Only when a val_refs_dir is configured AND a run_dir is given (the

@@ -229,3 +229,115 @@ def test_main_binds_the_generator_seam_when_unbound(monkeypatch):
     monkeypatch.setattr(_datagen, "_ensure_pretrain_data", sentinel)
     assert _datagen.main([]) == 1
     assert _datagen._ensure_pretrain_data is sentinel
+
+
+# ---------------------------------------------------------------------------
+# Pretraining-protocol plumbing
+# ---------------------------------------------------------------------------
+
+def _cfg2(archs, polarized, **pretrain_kw):
+    pt = dict(data_dir="/d/pt", atoms=(), dfs_set=False, pool_atoms=False,
+              parent_density="pbe", exchange_footing="total",
+              mesh_fraction=0.3)
+    pt.update(pretrain_kw)
+    return _ns(
+        sweep=_ns(arch=list(archs)),
+        use_polarized_correlation=polarized,
+        pretrain=_ns(**pt),
+        inputs=_ns(basis="def2-svp", grid_level=3, density_fit=False,
+                   auxbasis=None),
+    )
+
+
+def test_required_data_specs_single_parent():
+    cfg = _cfg2(["deep_3x16", "deep_mgga_3x16"], True)
+    assert _datagen._required_data_specs(cfg) == [(True, "pbe")]
+
+
+def test_required_data_specs_auto_splits_a_mixed_rung_sweep():
+    """With parent_density: auto a GGA-rung arch wants the PBE-density file and
+    a meta-GGA-rung arch wants the SCAN-density file, so datagen builds both."""
+    cfg = _cfg2(["deep_3x16", "deep_mgga_3x16"], True, parent_density="auto")
+    assert _datagen._required_data_specs(cfg) == [(True, "pbe"),
+                                                  (True, "scan")]
+
+
+def test_required_data_specs_auto_single_rung():
+    cfg = _cfg2(["deep_mgga_3x16"], True, parent_density="auto")
+    assert _datagen._required_data_specs(cfg) == [(True, "scan")]
+
+
+def test_main_threads_every_protocol_knob(monkeypatch, tmp_path):
+    cfg = _cfg2(["deep_3x16"], True, dfs_set=True, pool_atoms=True,
+                exchange_footing="spin_channel", mesh_fraction=0.25)
+    rc, calls = _run_main(monkeypatch, tmp_path, cfg)
+    assert rc == 0
+    assert len(calls) == 1
+    _dd, kw = calls[0]
+    assert kw["dfs_set"] is True
+    assert kw["pool_atoms"] is True
+    assert kw["reference_xc"] == "pbe"
+    assert kw["exchange_footing"] == "spin_channel"
+    assert kw["mesh_fraction"] == 0.25
+
+
+def test_main_default_call_is_unchanged(monkeypatch, tmp_path):
+    """A YAML written before the protocol change must reach the generator with
+    exactly the keyword set it always did, so its data file is not
+    regenerated."""
+    cfg = _cfg(["deep", "deep_attn"], True, basis="def2-svp", grid=2,
+               df=False, data_dir="/d/svp")
+    rc, calls = _run_main(monkeypatch, tmp_path, cfg)
+    assert rc == 0
+    assert calls[0][1] == {"basis": "def2-svp", "grid_level": 2,
+                           "density_fit": False, "auxbasis": None,
+                           "polarized": True, "descriptors": True}
+
+
+def test_main_names_an_unconverged_reference_scf_and_exits_nonzero(
+        monkeypatch, tmp_path):
+    """The reference SCF behind a SCAN parent can stall. The stage must report
+    the refusal by name and exit non-zero, so the pretrain array's
+    ``afterok:datagen`` dependency blocks rather than the traceback being
+    swallowed into a successful-looking job."""
+    from xcquinox.alec.data import ReferenceSCFNotConverged
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "resolved_config.yaml").write_text("dummy: 1\n")
+    monkeypatch.setattr(
+        _datagen, "load_grid_config",
+        lambda p: _cfg2(["deep_mgga_3x16"], True, parent_density="auto"))
+
+    def _stalled(*a, **k):
+        raise ReferenceSCFNotConverged("SCAN reference SCF did not converge",
+                                       cycles=150)
+
+    monkeypatch.setattr(_datagen, "_ensure_pretrain_data", _stalled)
+    printed = []
+    monkeypatch.setattr(_datagen, "_log", printed.append)
+    assert _datagen.main([str(run_dir)]) == 1
+    failure = [line for line in printed if line.startswith("ERROR:")]
+    assert len(failure) == 1
+    assert "ReferenceSCFNotConverged" in failure[0]
+    assert "150 cycle(s)" in failure[0]
+
+
+def test_main_logs_the_protocol_knobs_it_generates_with(monkeypatch, tmp_path):
+    """The run record must state which knobs produced the data file, so a file
+    on disk can be attributed to the configuration that built it."""
+    cfg = _cfg2(["deep_3x16"], True, dfs_set=True,
+                exchange_footing="spin_channel", mesh_fraction=0.25)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "resolved_config.yaml").write_text("dummy: 1\n")
+    monkeypatch.setattr(_datagen, "load_grid_config", lambda p: cfg)
+    monkeypatch.setattr(_datagen, "_ensure_pretrain_data",
+                        lambda data_dir, **kw: f"{data_dir}/x.npz")
+    printed = []
+    monkeypatch.setattr(_datagen, "_log", printed.append)
+    assert _datagen.main([str(run_dir)]) == 0
+    text = "\n".join(printed)
+    assert "'dfs_set': True" in text
+    assert "'exchange_footing': 'spin_channel'" in text
+    assert "'mesh_fraction': 0.25" in text
+    assert "pretrain_data_polarized.npz" in text
