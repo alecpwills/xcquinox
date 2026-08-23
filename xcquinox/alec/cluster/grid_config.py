@@ -899,6 +899,97 @@ def _build_inputs(d: dict) -> InputPaths:
     )
 
 
+# The pretraining-protocol string knobs' allowed sets, named once for the
+# parser and for the semantic check below. ``PretrainSpec.__post_init__``
+# carries the parent-density set independently: ``xcquinox.alec.config`` is not
+# imported here, so the harness parser stays free of JAX and PySCF.
+_PARENT_DENSITIES = ("pbe", "scan", "auto")
+_EXCHANGE_FOOTINGS = ("total", "spin_channel")
+
+
+def _pretrain_bool(d, key: str, default: bool) -> bool:
+    """Read one pretraining switch; a non-boolean is a config error.
+
+    Refused rather than coerced, as ``fidelity.enforce`` is: ``bool("false")``
+    is True -- and so are the quoted forms of YAML 1.1's ``no`` and ``0`` --
+    so coercion turns the switch ON in a config whose author wrote it OFF,
+    while ``bool(None)`` (an empty ``dfs_set:``) reads as OFF without remark.
+    Both switches select the pretraining SYSTEM SET, so either misreading
+    changes what the run fits.
+    """
+    v = d.get(key, default)
+    if not isinstance(v, bool):
+        raise ValueError(
+            f"grid config key 'pretrain.{key}' must be a boolean "
+            f"(true/false), got {type(v).__name__} ({v!r})")
+    return v
+
+
+def _pretrain_number(d, key: str, default, whole: bool = False):
+    """Read one pretraining number out of a raw ``pretrain`` mapping.
+
+    The reasoning of ``_fidelity_tolerance``: a boolean or a container is a
+    config error rather than something to coerce -- ``float(True)`` is 1.0 and
+    ``int(True)`` is 1 (silently a weight of one, or one validation every
+    step), and ``float(None)`` raises ``TypeError``, which passes every
+    ``except ValueError`` handler in the load path and surfaces as a crash
+    naming no key. Integers, floats and numeric strings remain valid.
+
+    Non-finite values are refused for the reason the certificate tolerances
+    are: NaN escapes an ordinary bound in whichever direction it is written,
+    so the value would load with no complaint and every comparison against it
+    downstream would be False as well.
+
+    With ``whole=True`` the value must be an exact integer: ``int(2.5)``
+    truncates to 2, which is a validation or early-stopping schedule other
+    than the one written.
+    """
+    v = d.get(key, default)
+    kind = "a whole number" if whole else "a number"
+    if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+        raise ValueError(
+            f"grid config key 'pretrain.{key}' must be {kind}, got "
+            f"{type(v).__name__} ({v!r})")
+    try:
+        out = float(v)
+    except ValueError:
+        raise ValueError(
+            f"grid config key 'pretrain.{key}' must be {kind}, got "
+            f"{type(v).__name__} ({v!r})") from None
+    if not math.isfinite(out):
+        raise ValueError(
+            f"grid config key 'pretrain.{key}' must be a FINITE number, got "
+            f"{v!r}; a NaN value satisfies neither side of the bound it is "
+            "checked against and turns every comparison against it into the "
+            "sense of that comparison rather than a measurement")
+    if whole:
+        if out != int(out):
+            raise ValueError(
+                f"grid config key 'pretrain.{key}' must be a whole number, "
+                f"got {v!r}; int() would truncate it to {int(out)} and run a "
+                "schedule other than the one written")
+        return int(out)
+    return out
+
+
+def _pretrain_choice(d, key: str, default: str, allowed) -> str:
+    """Read one pretraining string knob and test it against its allowed set.
+
+    ``str(None)`` is the non-empty string ``'None'`` and ``str(True)`` is
+    ``'True'``, so coercion carries an empty key or a typo past the parse. The
+    member test lives here as well as in ``validate_grid_semantics`` so that
+    ``load_grid_config`` refuses an unknown value whether or not the semantic
+    check is reached.
+    """
+    v = d.get(key, default)
+    if not isinstance(v, str) or v not in allowed:
+        raise ValueError(
+            f"grid config key 'pretrain.{key}' must be one of "
+            f"{', '.join(repr(a) for a in allowed)}, got "
+            f"{type(v).__name__} ({v!r})")
+    return v
+
+
 def _build_pretrain(d: dict) -> PretrainConfig:
     ctx = "pretrain"
     return PretrainConfig(
@@ -911,16 +1002,18 @@ def _build_pretrain(d: dict) -> PretrainConfig:
         seed=d.get("seed", 42),
         loss_weighting=d.get("loss_weighting", "integration"),
         atoms=_parse_pretrain_atoms(d.get("atoms")),
-        dfs_set=bool(d.get("dfs_set", False)),
-        pool_atoms=bool(d.get("pool_atoms", False)),
-        parent_density=str(d.get("parent_density", "pbe")),
-        exchange_footing=str(d.get("exchange_footing", "total")),
-        mesh_fraction=float(d.get("mesh_fraction", 0.3)),
-        energy_term_weight=float(d.get("energy_term_weight", 0.0)),
-        validation_fraction=float(d.get("validation_fraction", 0.0)),
-        validation_seed=int(d.get("validation_seed", 0)),
-        validate_every=int(d.get("validate_every", 50)),
-        patience=int(d.get("patience", 0)),
+        dfs_set=_pretrain_bool(d, "dfs_set", False),
+        pool_atoms=_pretrain_bool(d, "pool_atoms", False),
+        parent_density=_pretrain_choice(
+            d, "parent_density", "pbe", _PARENT_DENSITIES),
+        exchange_footing=_pretrain_choice(
+            d, "exchange_footing", "total", _EXCHANGE_FOOTINGS),
+        mesh_fraction=_pretrain_number(d, "mesh_fraction", 0.3),
+        energy_term_weight=_pretrain_number(d, "energy_term_weight", 0.0),
+        validation_fraction=_pretrain_number(d, "validation_fraction", 0.0),
+        validation_seed=_pretrain_number(d, "validation_seed", 0, whole=True),
+        validate_every=_pretrain_number(d, "validate_every", 50, whole=True),
+        patience=_pretrain_number(d, "patience", 0, whole=True),
     )
 
 
@@ -1479,12 +1572,12 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
     # well. mesh_fraction and validation_fraction are bounded on both sides,
     # which already catches the infinities; energy_term_weight is bounded from
     # below only, so its finiteness is checked outright.
-    if pt.parent_density not in ("pbe", "scan", "auto"):
+    if pt.parent_density not in _PARENT_DENSITIES:
         raise ValueError(
             f"pretrain.parent_density must be 'pbe', 'scan' or 'auto', got "
             f"{pt.parent_density!r}"
         )
-    if pt.exchange_footing not in ("total", "spin_channel"):
+    if pt.exchange_footing not in _EXCHANGE_FOOTINGS:
         raise ValueError(
             f"pretrain.exchange_footing must be 'total' or 'spin_channel', "
             f"got {pt.exchange_footing!r}"

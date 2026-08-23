@@ -1946,3 +1946,102 @@ def test_validate_grid_semantics_refuses_a_non_finite_protocol_weight(
             _cfg().pretrain, **{field: float(literal)}))
     with pytest.raises(ValueError, match=field):
         validate_grid_semantics(bad, _StubDomain(pool_size=40))
+
+
+# ---------------------------------------------------------------------------
+# _build_pretrain: coercion hardening (the fidelity block's house pattern)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key", ["dfs_set", "pool_atoms"])
+@pytest.mark.parametrize("value", ["false", "no", "0", "", None, 0, 1])
+def test_build_pretrain_refuses_a_non_boolean_switch(key, value):
+    """``bool("false")`` is True, so a hand-quoted switch would turn the DFS
+    set (or the pool atoms) ON in a config that wrote it OFF, and ``bool(None)``
+    -- an empty ``dfs_set:`` -- would read as OFF without remark. The fidelity
+    block refuses ``enforce`` on the same grounds rather than coercing it."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", key: value})
+    assert f"pretrain.{key}" in str(exc.value)
+    assert repr(value) in str(exc.value)
+
+
+@pytest.mark.parametrize("key", ["mesh_fraction", "energy_term_weight",
+                                 "validation_fraction", "validation_seed",
+                                 "validate_every", "patience"])
+@pytest.mark.parametrize("value", [True, False, None, "abc", "", [0.1],
+                                   {"a": 1}])
+def test_build_pretrain_refuses_a_non_numeric_protocol_value(key, value):
+    """``float(True)`` is 1.0 and ``int(True)`` is 1 -- silently a weight of
+    one, or one validation every step -- while ``float(None)`` raises
+    TypeError, which passes every ``except ValueError`` handler in the load
+    path and surfaces as a crash naming no key."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", key: value})
+    assert f"pretrain.{key}" in str(exc.value)
+    assert repr(value) in str(exc.value)
+
+
+@pytest.mark.parametrize("key", ["validation_seed", "validate_every",
+                                 "patience"])
+def test_build_pretrain_refuses_a_fractional_step_count(key):
+    """``int(2.5)`` truncates to 2: a schedule silently different from the one
+    written. A count is a whole number or a config error."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", key: 2.5})
+    assert f"pretrain.{key}" in str(exc.value)
+    assert "2.5" in str(exc.value)
+
+
+@pytest.mark.parametrize("key", ["mesh_fraction", "energy_term_weight",
+                                 "validation_fraction"])
+@pytest.mark.parametrize("literal", ["nan", "inf", "-inf"])
+def test_build_pretrain_refuses_a_non_finite_protocol_number(key, literal):
+    """Refused at the parse, as ``_fidelity_tolerance`` refuses a non-finite
+    tolerance: a NaN weight escapes the bounds in validate_grid_semantics in
+    whichever direction they are written, and turns every comparison against
+    it into the sense of that comparison rather than a measurement."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", key: float(literal)})
+    assert f"pretrain.{key}" in str(exc.value)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("parent_density", "blyp"), ("parent_density", "PBE"),
+    ("parent_density", None), ("parent_density", True),
+    ("exchange_footing", "per_orbital"), ("exchange_footing", "Total"),
+    ("exchange_footing", None), ("exchange_footing", ["total"]),
+])
+def test_build_pretrain_refuses_an_unknown_string_knob(key, value):
+    """``str(None)`` is the non-empty string 'None' and ``str(True)`` is
+    'True', so coercion carries a typo or an empty key past the parse; the
+    member test lives here so ``load_grid_config`` refuses it whether or not
+    ``validate_grid_semantics`` is reached."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", key: value})
+    assert f"pretrain.{key}" in str(exc.value)
+    assert repr(value) in str(exc.value)
+
+
+def test_build_pretrain_still_accepts_numeric_strings_and_real_booleans():
+    """The hardening refuses types, not the YAML idioms that already worked:
+    an unquoted true/false and a quoted number both remain valid, as they do
+    for the certificate tolerances."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    pt = _build_pretrain({
+        "data_dir": "/d", "dfs_set": True, "pool_atoms": False,
+        "mesh_fraction": "0.25", "energy_term_weight": "1",
+        "validation_fraction": "0.2", "validation_seed": "11",
+        "validate_every": "25", "patience": "8",
+    })
+    assert pt.dfs_set is True and pt.pool_atoms is False
+    assert pt.mesh_fraction == 0.25 and pt.energy_term_weight == 1.0
+    assert pt.validation_fraction == 0.2
+    assert (pt.validation_seed, pt.validate_every, pt.patience) == (11, 25, 8)
+    assert isinstance(pt.validation_seed, int)
+    assert isinstance(pt.validate_every, int)
+    assert isinstance(pt.patience, int)
