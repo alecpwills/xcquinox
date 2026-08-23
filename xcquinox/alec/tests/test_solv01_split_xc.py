@@ -590,12 +590,16 @@ def test_fd_consistency_live_features_uks_polarized(arch_name):
     holding ONE electron cannot serve: its doubled block is a single orbital,
     for which tau = tau_W identically, so the iso-orbital indicator of that
     block sits ON the lower clip of ``metagga.compute_alpha`` (Li beta
-    channel, def2-svp: |alpha_raw| <= 1.2e-9 over the resolved grid, 46% of
-    the points negative). Autodiff then returns whichever one-sided
-    derivative the rounding sign selects at each point while the central
-    difference returns their mean, and the meta-GGA architectures read
-    3e-2 to 1e-1 relative with a correct potential. On the O atom every
-    block stays >= 6.6e-4 above the clip, 660x the step. The clip status of
+    channel, def2-svp: |alpha_raw| <= 5.0e-11 to 1.2e-9 over the resolved
+    grid, 38 to 46% of the points negative -- the figures are draw-dependent
+    because the reference solution differs at the 1e-15 level between runs
+    and that flips the rounding signs, so they are quoted as the range over
+    two independent solutions rather than as one draw). Autodiff then returns
+    whichever one-sided derivative the rounding sign selects at each point
+    while the central difference returns their mean, and the meta-GGA
+    architectures read 3e-2 to 1e-1 relative with a correct potential. On the
+    O atom every block stays >= 6.59e-4 above the clip (6.5875e-4 and 6.6e-4
+    in two independent solutions), 660x the step. The clip status of
     each block also enters the straddle mask below, so an isolated crossing
     is discarded rather than averaged (B atom, whose beta channel is nearly
     one-orbital: 4.0e-6 relative without the guard, 1.2e-10 with it, at the
@@ -1421,3 +1425,324 @@ def test_split_exc_energy_uks_raises_when_cnet_lacks_polarization_flag():
         split_exc_energy_uks(_ModelNoFlag(model), rho_a, rho_b,
                              sig_aa, sig_bb, sig_tot,
                              features, features, features, grid_weights)
+
+
+# ---------------------------------------------------------------------------
+# PRODUCTION WIRING of the three feature blocks.
+#
+# The tests above pin the CONTRACT of ``split_exc_energy_uks`` and of the
+# potential builders when the three blocks are handed to them explicitly. They
+# cannot see which block each production entry point actually passes: every
+# other open-shell test in this suite (and in ``test_uks_oneshot.py`` /
+# ``test_losses.py`` / ``test_oneshot.py``) runs the descriptor-free ``deep``
+# architecture, whose three blocks are the same empty (n_grid, 0) array, so a
+# caller that reverted to feeding one block into all three slots leaves every
+# one of them green.
+#
+# The tests below drive the four production entry points --
+# ``fixed_density_total_energy``, ``_uks_spin_resolved_vxc``,
+# ``oneshot_dm_prediction_fast`` and ``losses._vxc_term`` -- on a record whose
+# three blocks are genuinely different arrays and separate the three-block
+# wiring from the one-block one by a measured margin. Probe: O atom (5 alpha,
+# 3 beta), def2-svp, grid level 1, ``deep_mgga_3x16``; in the iso-orbital
+# column max|f_a - f_tot| = 43.5 and max|f_b - f_tot| = 94.6, and the record is
+# the same one the finite-difference test uses, so its blocks are away from the
+# clip.
+#
+# ``zero_init_final_layer=False`` is load-bearing for the same reason as in
+# ``_build_descriptor_model``: the warm-start zero init pins F_x and F_c at 1
+# with zero input-gradients, and every separation quoted below is then exactly
+# 0.0, i.e. each assertion would be satisfied by a one-block wiring.
+# ---------------------------------------------------------------------------
+def _wiring_model(polarized: bool, seed: int = 0):
+    """``deep_mgga_3x16`` with a live final layer.
+
+    ``polarized`` selects the correlation branch of
+    ``_uks_spin_resolved_vxc``: per-spin V_c through
+    ``compute_vc_polarized_per_spin`` when True, the shared zeta=0
+    total-density V_c through ``compute_vxc_nn(part="c")`` when False. Both
+    branches are production paths and both consume the TOTAL block, so both are
+    exercised.
+    """
+    import dataclasses
+    arch = dataclasses.replace(alec.get_architecture("deep_mgga_3x16"),
+                               use_polarized_correlation=polarized,
+                               zero_init_final_layer=False)
+    xnet, cnet = alec.create_network_pair(arch, seed=seed)
+    return alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+
+
+@pytest.fixture(scope="module")
+def wiring_md():
+    """The O-atom record shared by the wiring tests.
+
+    Module-scoped so the group pays for one reference SCF rather than one per
+    test; the tests only read it (the two that need an extra key copy the dict
+    first). The descriptor set is the same for both correlation branches, so
+    one record serves every case.
+    """
+    return _md_with_descriptors(_wiring_model(True), "O", "O 0 0 0",
+                                "def2-svp", 2, (("O", 1),), grid_level=1)
+
+
+def _wiring_blocks(model, md):
+    """(alpha, beta, total) descriptor blocks of the record."""
+    return (assemble_descriptor_features(model.descriptors, md, spin_channel=0),
+            assemble_descriptor_features(model.descriptors, md, spin_channel=1),
+            assemble_descriptor_features(model.descriptors, md))
+
+
+def _wiring_grid(md):
+    """Per-spin grid quantities of the record's reference density matrix, built
+    with the same contractions ``fixed_density_total_energy`` and
+    ``_uks_spin_resolved_vxc`` use."""
+    dm = jnp.asarray(md["dm_pbe"])
+    ao_grid = jnp.asarray(md["ao_grid"])
+    ao_grad = jnp.asarray(md["ao_grid_deriv"])
+    rho_a, nabla_a, sigma_aa = _grid_quantities(dm[0], ao_grid, ao_grad[1:4])
+    rho_b, nabla_b, sigma_bb = _grid_quantities(dm[1], ao_grid, ao_grad[1:4])
+    nabla_tot = nabla_a + nabla_b
+    return dict(
+        ao_grid=ao_grid, ao_grad=ao_grad,
+        weights=jnp.asarray(md["grid_weights"]),
+        rho_a=rho_a, rho_b=rho_b, nabla_a=nabla_a, nabla_b=nabla_b,
+        sigma_aa=sigma_aa, sigma_bb=sigma_bb, nabla_tot=nabla_tot,
+        sigma_tot=jnp.sum(nabla_tot * nabla_tot, axis=1),
+    )
+
+
+def _max_abs_diff(A, B):
+    return float(jnp.max(jnp.abs(jnp.asarray(A) - jnp.asarray(B))))
+
+
+def test_wiring_fixed_density_total_energy_uses_the_channel_blocks(wiring_md):
+    """``fixed_density_total_energy`` must build the two exchange terms on the
+    blocks of diag(P_a, P_a) / diag(P_b, P_b) and correlation on the total
+    block.
+
+    The reference is assembled from ``model.eval_ex`` / ``model.eval_ec``
+    directly, so it shares no code with ``split_exc_energy_uks`` and an error in
+    either the split function or the caller's block routing shows up. Measured
+    residual exactly 0.0 (the same operations in the same order); 1e-12 leaves
+    room for a reassociation of a -74.455 Ha total. The superseded one-block
+    evaluation -- the total block in both exchange channels -- sits 8.85e-04 Ha
+    away on this record (8.8475e-04 and 8.8497e-04 in two independent reference
+    solutions; the reference SCF differs at round-off level between runs, which
+    moves every figure in this group in the fourth significant digit), 88x the
+    1e-5 separation floor, so a caller that reverted to one block cannot
+    satisfy both bounds.
+    """
+    from xcquinox.alec.oneshot import fixed_density_total_energy, uks_zeta
+    model = _wiring_model(True)
+    f_a, f_b, f_tot = _wiring_blocks(model, wiring_md)
+    g = _wiring_grid(wiring_md)
+    w = g["weights"]
+
+    got = float(fixed_density_total_energy(model, wiring_md))
+
+    ex_a = model.eval_ex(2.0 * g["rho_a"], 4.0 * g["sigma_aa"], f_a)
+    ex_b = model.eval_ex(2.0 * g["rho_b"], 4.0 * g["sigma_bb"], f_b)
+    ec = model.eval_ec(g["rho_a"] + g["rho_b"], g["sigma_tot"], f_tot,
+                       zeta=uks_zeta(g["rho_a"], g["rho_b"]))
+    expected = float(wiring_md["E_non_xc"]) + float(
+        0.5 * jnp.sum(w * (ex_a + ex_b)) + jnp.sum(w * ec))
+    assert abs(got - expected) < 1e-12, (
+        f"fixed_density_total_energy is not E_non_xc + spin-scaled exchange on "
+        f"the channel blocks + correlation on the total block: got {got!r} "
+        f"expected {expected!r} (diff {abs(got - expected):.3e})")
+
+    one_block = float(wiring_md["E_non_xc"]) + float(split_exc_energy_uks(
+        model, g["rho_a"], g["rho_b"], g["sigma_aa"], g["sigma_bb"],
+        g["sigma_tot"], f_tot, f_tot, f_tot, w))
+    gap = abs(got - one_block)
+    assert gap > 1e-5, (
+        f"the three-block and one-block energies are indistinguishable on this "
+        f"record ({gap:.6e} Ha); the probe no longer discriminates")
+
+
+def test_wiring_vxc_loss_term_uses_the_three_block_potential(wiring_md):
+    """The V_xc loss term must score the network against the potential built
+    from the three blocks.
+
+    Scored against its own three-block potential the term is exactly 0.0 (the
+    two matrices are bit-identical), and against the one-block potential it is
+    1.7375e-08 in the n_ao^2-normalized units the loss returns (n_ao = 14;
+    1.73755e-08 and 1.73769e-08 in two independent reference solutions), 174x
+    the 1e-10 floor. A caller that reverted to one block turns the first figure
+    into the second.
+    """
+    from xcquinox.alec.losses import _vxc_term
+    from xcquinox.alec.oneshot import _uks_spin_resolved_vxc
+    model = _wiring_model(True)
+    f_a, f_b, f_tot = _wiring_blocks(model, wiring_md)
+
+    vxc_ref = jnp.stack(_uks_spin_resolved_vxc(model, wiring_md,
+                                               f_a, f_b, f_tot))
+    vxc_one = jnp.stack(_uks_spin_resolved_vxc(model, wiring_md,
+                                               f_tot, f_tot, f_tot))
+    md_three = dict(wiring_md)
+    md_three["vxc_ref"] = vxc_ref
+    md_one = dict(wiring_md)
+    md_one["vxc_ref"] = vxc_one
+
+    against_three = float(_vxc_term(model, [md_three], [0]))
+    assert against_three == 0.0, (
+        f"_vxc_term does not build the NN potential from the three blocks: "
+        f"scored {against_three:.6e} against that very potential")
+    against_one = float(_vxc_term(model, [md_one], [0]))
+    assert against_one > 1e-10, (
+        f"the three-block and one-block potentials are indistinguishable to "
+        f"the loss ({against_one:.6e}); the probe no longer discriminates")
+
+
+def test_wiring_oneshot_fock_build_uses_the_channel_blocks(wiring_md,
+                                                           monkeypatch):
+    """The one-shot Fock build must assemble V_xc^NN from the three blocks.
+
+    The predicted density matrix is compared with the one obtained by forcing
+    the block triple at the ``_uks_spin_resolved_vxc`` seam: identical
+    (max|dP| = 0.0) for the three-block triple, and 2.106e-04 away from the
+    one-block triple (2.1062e-04 and 2.1064e-04 in two independent reference
+    solutions) on a density matrix whose largest entry is 1.08, i.e. 210x the
+    1e-6 floor. Forcing the triple at the seam rather than rebuilding the
+    eigenproblem keeps the comparison on the production Cholesky/eigh path.
+    """
+    from xcquinox.alec import oneshot as _oneshot
+    from xcquinox.alec.oneshot import oneshot_dm_prediction_fast
+    model = _wiring_model(True)
+    f_a, f_b, f_tot = _wiring_blocks(model, wiring_md)
+    unpatched = _oneshot._uks_spin_resolved_vxc
+
+    def _dm_with_blocks(block_a, block_b, block_tot):
+        def _forced(model_arg, mol_data_arg, *_ignored_blocks):
+            return unpatched(model_arg, mol_data_arg,
+                             block_a, block_b, block_tot)
+        monkeypatch.setattr(_oneshot, "_uks_spin_resolved_vxc", _forced)
+        try:
+            return np.asarray(oneshot_dm_prediction_fast(model, wiring_md))
+        finally:
+            monkeypatch.setattr(_oneshot, "_uks_spin_resolved_vxc", unpatched)
+
+    dm_production = np.asarray(oneshot_dm_prediction_fast(model, wiring_md))
+    dm_three = _dm_with_blocks(f_a, f_b, f_tot)
+    dm_one = _dm_with_blocks(f_tot, f_tot, f_tot)
+
+    resid = float(np.max(np.abs(dm_production - dm_three)))
+    assert resid == 0.0, (
+        f"the one-shot Fock build does not feed the three blocks to "
+        f"_uks_spin_resolved_vxc: max|dP| = {resid:.6e} against the forced "
+        f"three-block build")
+    separation = float(np.max(np.abs(dm_three - dm_one)))
+    assert separation > 1e-6, (
+        f"the three-block and one-block Fock builds give the same density "
+        f"matrix ({separation:.6e}); the probe no longer discriminates")
+
+
+@pytest.mark.parametrize("polarized", [True, False])
+def test_wiring_uks_potential_routes_each_block_to_its_own_term(wiring_md,
+                                                                polarized):
+    """Each argument of ``_uks_spin_resolved_vxc`` must reach exactly one term.
+
+    Substituting the total block into one slot at a time and reading which
+    channel moves is a routing measurement that no single-matrix comparison can
+    fake: the alpha slot may move the alpha channel only, the beta slot the beta
+    channel only, and the total slot must move BOTH, because correlation is
+    spin-interpolated on the total density and enters each spin Fock matrix.
+
+    A channel that does not consume a block is bit-independent of it, so the
+    two null responses are exactly 0.0 rather than small. Measured responses
+    (Ha): alpha slot 5.697e-04 / 0.0, beta slot 0.0 / 7.330e-04, total slot
+    9.49e-05 and 2.855e-04 with per-spin correlation, 4.966e-05 in both
+    channels with the shared zeta=0 correlation -- the smallest non-null
+    response is 50x the 1e-6 floor. Two independent reference solutions agree
+    on the non-null figures to better than 0.2% and on the null ones exactly.
+    """
+    from xcquinox.alec.oneshot import _uks_spin_resolved_vxc
+    model = _wiring_model(polarized)
+    f_a, f_b, f_tot = _wiring_blocks(model, wiring_md)
+
+    V_a, V_b = _uks_spin_resolved_vxc(model, wiring_md, f_a, f_b, f_tot)
+    alpha_slot = _uks_spin_resolved_vxc(model, wiring_md, f_tot, f_b, f_tot)
+    beta_slot = _uks_spin_resolved_vxc(model, wiring_md, f_a, f_tot, f_tot)
+    total_slot = _uks_spin_resolved_vxc(model, wiring_md, f_a, f_b, f_a)
+
+    assert _max_abs_diff(V_a, alpha_slot[0]) > 1e-6, (
+        "the alpha exchange term does not consume the alpha channel block")
+    assert _max_abs_diff(V_b, alpha_slot[1]) == 0.0, (
+        f"the beta channel responds to the alpha block "
+        f"({_max_abs_diff(V_b, alpha_slot[1]):.6e}); the two exchange channels "
+        f"are crossed or correlation is reading a channel block")
+    assert _max_abs_diff(V_b, beta_slot[1]) > 1e-6, (
+        "the beta exchange term does not consume the beta channel block")
+    assert _max_abs_diff(V_a, beta_slot[0]) == 0.0, (
+        f"the alpha channel responds to the beta block "
+        f"({_max_abs_diff(V_a, beta_slot[0]):.6e}); the two exchange channels "
+        f"are crossed or correlation is reading a channel block")
+    assert _max_abs_diff(V_a, total_slot[0]) > 1e-6, (
+        "the alpha channel does not respond to the total block; correlation "
+        "is not being evaluated there")
+    assert _max_abs_diff(V_b, total_slot[1]) > 1e-6, (
+        "the beta channel does not respond to the total block; correlation "
+        "is not being evaluated there")
+
+
+@pytest.mark.parametrize("polarized", [True, False])
+def test_wiring_correlation_potential_is_built_on_the_total_block(wiring_md,
+                                                                  polarized):
+    """Correlation is spin-interpolated, not spin-scaled, so its POTENTIAL is
+    the total-block one in both spin channels (von Barth and Hedin, J. Phys. C
+    5, 1629 (1972)).
+
+    The reference is assembled here from ``compute_vxc_nn(part="x")`` on the
+    two channel blocks plus the correlation potential on the TOTAL block, and
+    reproduces the production pair bit for bit (measured 0.0 in both channels
+    and in both correlation branches). The control that makes the equality
+    non-vacuous is the same correlation term evaluated on the alpha channel
+    block: 9.49e-05 / 2.855e-04 Ha away per spin with the per-spin correlation
+    and 4.966e-05 Ha with the shared one (two independent reference solutions
+    agree to better than 0.2%), 50x the 1e-6 floor, so a correlation potential
+    moved onto a channel block cannot pass.
+    """
+    from xcquinox.alec.oneshot import (
+        _uks_spin_resolved_vxc, compute_vc_polarized_per_spin)
+    model = _wiring_model(polarized)
+    f_a, f_b, f_tot = _wiring_blocks(model, wiring_md)
+    g = _wiring_grid(wiring_md)
+    ao_grid, ao_grad, w = g["ao_grid"], g["ao_grad"], g["weights"]
+
+    vx_a = compute_vxc_nn(model, 2.0 * g["rho_a"], 4.0 * g["sigma_aa"], f_a,
+                          ao_grid, w, nabla_rho=2.0 * g["nabla_a"],
+                          ao_grad=ao_grad, part="x")
+    vx_b = compute_vxc_nn(model, 2.0 * g["rho_b"], 4.0 * g["sigma_bb"], f_b,
+                          ao_grid, w, nabla_rho=2.0 * g["nabla_b"],
+                          ao_grad=ao_grad, part="x")
+    if polarized:
+        def _vc(block):
+            return compute_vc_polarized_per_spin(
+                model, g["rho_a"], g["rho_b"], g["sigma_tot"], block, ao_grid,
+                w, g["nabla_tot"], ao_grad)
+    else:
+        def _vc(block):
+            shared = compute_vxc_nn(
+                model, g["rho_a"] + g["rho_b"], g["sigma_tot"], block, ao_grid,
+                w, nabla_rho=g["nabla_tot"], ao_grad=ao_grad, part="c")
+            return shared, shared
+
+    vc_a, vc_b = _vc(f_tot)
+    V_a, V_b = _uks_spin_resolved_vxc(model, wiring_md, f_a, f_b, f_tot)
+    assert _max_abs_diff(V_a, vx_a + vc_a) == 0.0, (
+        f"alpha V_xc is not (spin-scaled exchange on the alpha block + "
+        f"correlation on the total block): "
+        f"{_max_abs_diff(V_a, vx_a + vc_a):.6e}")
+    assert _max_abs_diff(V_b, vx_b + vc_b) == 0.0, (
+        f"beta V_xc is not (spin-scaled exchange on the beta block + "
+        f"correlation on the total block): "
+        f"{_max_abs_diff(V_b, vx_b + vc_b):.6e}")
+
+    vc_a_channel, vc_b_channel = _vc(f_a)
+    assert _max_abs_diff(vc_a, vc_a_channel) > 1e-6, (
+        "the correlation potential does not depend on which block it is given; "
+        "the equality above is vacuous")
+    assert _max_abs_diff(vc_b, vc_b_channel) > 1e-6, (
+        "the correlation potential does not depend on which block it is given; "
+        "the equality above is vacuous")
