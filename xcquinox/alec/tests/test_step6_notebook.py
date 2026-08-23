@@ -58,6 +58,50 @@ def test_cell_03_contains_step6_constants():
         assert tok in src, f"expected {tok!r} in constants cell"
 
 
+def test_pbe_anchor_weight_is_off_for_descriptor_architectures():
+    """The anchor evaluates F_x at synthetic (rho_alpha, rho_beta, s) points
+    with zero descriptor extras, and ``losses._anchor_term`` refuses a
+    descriptor-carrying architecture at non-zero weight: a synthetic point has
+    no density matrix, so the per-channel block of diag(P_sigma, P_sigma) is
+    undefined there and the zero-extras row pins one fixed slice of the
+    feature space rather than the block the exchange energy evaluates. Both
+    step-6 architectures carry descriptors (dm_statistics, cusp), so the
+    constants cell keeps the weight at 0.0; at the 1e-3 the notebook carried
+    until 2026-08-23 the L2/L4 cells raise instead of training.
+    """
+    import dataclasses
+    import re
+
+    import xcquinox.alec as alec
+    from xcquinox.alec.losses import _anchor_term
+    from xcquinox.alec.pbe_anchor import build_pbe_anchor_sample
+
+    gen = load_generator()
+    carriers = [name for name in gen.DEFAULT_ARCH_NAMES
+                if alec.get_architecture(name).materialize_descriptors()]
+    if not carriers:
+        pytest.skip("no descriptor-carrying architecture in DEFAULT_ARCH_NAMES")
+
+    nb = gen.main(output_path="/tmp/_step6_anchor_weight.ipynb")
+    cell = nb.cells[2]
+    src = "".join(cell.source) if isinstance(cell.source, list) else cell.source
+    match = re.search(r"^PBE_ANCHOR_WEIGHT\s*=\s*(\S+)\s*$", src, re.M)
+    assert match is not None, "constants cell does not set PBE_ANCHOR_WEIGHT"
+    assert float(match.group(1)) == 0.0, (
+        f"PBE_ANCHOR_WEIGHT={match.group(1)} with the descriptor-carrying "
+        f"architectures {carriers}; _anchor_term refuses that combination")
+
+    # The reason, executed rather than asserted: the guard fires for the
+    # architectures this notebook trains.
+    arch = dataclasses.replace(alec.get_architecture(carriers[0]),
+                               zero_init_final_layer=False)
+    xnet, cnet = alec.create_network_pair(arch, seed=0)
+    model = alec.AlecGGAModel.from_arch(arch, xnet=xnet, cnet=cnet)
+    sample = build_pbe_anchor_sample(n_points=8, seed=3)
+    with pytest.raises(ValueError, match="pbe_anchor_weight"):
+        _anchor_term(model, sample, 1e-3)
+
+
 def test_main_output_is_deterministic_byte_identical():
     import hashlib
     gen = load_generator()

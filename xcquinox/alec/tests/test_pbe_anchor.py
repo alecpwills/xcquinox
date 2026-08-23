@@ -361,7 +361,14 @@ class _LibxcPBEExchangeXNet(eqx.Module):
     -> scalar F_x = eps_x / eps_x^LDA, evaluated spin-unpolarized at the row's
     own (rho, sigma), which is what the network receives for each channel of
     the doubled density. libxc runs inside ``jax.pure_callback`` so the vmap
-    of ``_nn_fx_local_uks`` batches the rows."""
+    of ``_nn_fx_local_uks`` batches the rows.
+
+    The LDA denominator is built with the same
+    ``np.power(np.clip(rho, 1e-300, None), 1/3)`` construction the target
+    ``pbe_anchor._pbe_fx_libxc`` uses, so both sides form the ratio out of the
+    same bits; ``np.cbrt(rho)`` differs from it in the last place and leaves a
+    residual of order 1e-15 on roughly two thirds of the grid rows (63-68
+    percent on O, OH, H2 and H2O at def2-svp / grid 1)."""
     n_extra_features: int = eqx.field(static=True, default=0)
 
     @staticmethod
@@ -375,7 +382,8 @@ class _LibxcPBEExchangeXNet(eqx.Module):
         rows[0] = rho1
         rows[1] = np.sqrt(np.clip(sig1, 0.0, None))
         ex_per_e = libxc.eval_xc("GGA_X_PBE", rows, spin=0, deriv=0)[0]
-        ex_lda = -(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0) * np.cbrt(rho1)
+        ex_lda = (-(3.0 / 4.0) * (3.0 / np.pi) ** (1.0 / 3.0)
+                  * np.power(np.clip(rho1, 1e-300, None), 1.0 / 3.0))
         return np.asarray(ex_per_e / ex_lda).reshape(shape)
 
     def __call__(self, inputs):
@@ -434,20 +442,34 @@ def test_anchor_is_round_off_with_pbe_exchange_through_the_anchor_path(
         _def2svp_grid1_records, system):
     """With libxc PBE exchange in place of the xnet, ``_anchor_term`` on the
     grid rows of an open-shell atom (O, 5 alpha / 3 beta electrons) and of a
-    closed shell (H2) at def2-svp / grid 1 is round-off: the anchor evaluates
-    each channel on its doubled density ``(2 rho_sigma, sigma_sigma_eff)``,
-    the footing of ``split_exc_energy_uks``, on both sides of the difference.
-    An anchor that fed the network the total density, the undoubled channel
-    density or a differently scaled sigma would differ from the PBE target by
-    O(1e-2) or more.
+    closed shell (H2) at def2-svp / grid 1 vanishes: both sides of the
+    difference put PBE on the ANCHOR's own footing -- each channel evaluated
+    on its doubled density ``(2 rho_sigma, sigma_sigma_eff)`` with the
+    surrogate ``sigma_sigma_eff = (1 +/- zeta)^2 sigma_tot``.
 
-    Measured: the difference is exactly 0.0 on every row (O: 4504 rows, H2:
-    4616 rows; also OH 6848 and H2O 9146 rows, and the 200-point production
-    sample). The bound admits a one-ulp disagreement between the XLA and the
-    numpy power in the sigma surrogate (sensitivity of F_x below 1 in
-    relative terms, hence < 1e-15 in F_x) with three orders of margin, and
-    sits thirteen orders below the 0.19 a random descriptor-free network
-    gives on the same rows.
+    That surrogate is the exchange energy's per-channel ``4 sigma_sigma_sigma``
+    only where zeta has no spatial variation (``oneshot._nn_fx_local_uks``),
+    which is the case for a synthetic anchor row and for a closed shell
+    (measured on H2: the two agree exactly on every row) but not for an
+    open-shell molecular grid (measured on O: median relative gap 1.4e-2
+    alpha / 6.1e-2 beta, up to 0.86). What is pinned here is therefore the
+    anchor's own footing -- the doubled channel density and the surrogate,
+    with the PBE target built by the identical construction -- not the energy
+    path's per-channel sigma. An anchor that fed the network the total
+    density, the undoubled channel density or a differently scaled sigma would
+    differ from the PBE target by O(1e-2) or more.
+
+    Measured: the difference is exactly 0.0 on every row (O 4504, H2 4616;
+    also OH 6846 and H2O 9146 grid rows and the 200-point production sample).
+    The agreement is exact rather than round-off because the two sides call
+    the same libxc kernel on bitwise identical ``(2 rho_sigma,
+    sigma_sigma_eff)`` rows -- the XLA-formed rows of ``_nn_fx_local_uks``
+    match the numpy-formed rows of ``_pbe_fx_libxc`` bit for bit on all 25,112
+    grid rows and on the synthetic sample -- and divide by the same
+    ``np.power`` LDA denominator. The 1e-13 bound is the durable form of that
+    agreement: it sits thirteen orders below the 0.79 max abs(dF_x) (anchor
+    0.197 at weight 1) that a random descriptor-free network gives on the same
+    O rows.
     """
     import dataclasses
     import xcquinox.alec as alec
@@ -463,5 +485,12 @@ def test_anchor_is_round_off_with_pbe_exchange_through_the_anchor_path(
     fx = np.asarray(_nn_fx_local_uks(model, sample.rho_alpha, sample.rho_beta,
                                      sample.s))
     assert np.all(np.isfinite(fx))
-    assert np.max(np.abs(fx - np.asarray(sample.Fx_target))) < 1e-13
+    diff = np.abs(fx - np.asarray(sample.Fx_target))
+    assert np.max(diff) < 1e-13
+    n_differing = int(np.count_nonzero(diff))
+    assert n_differing == 0, (
+        f"{n_differing} of {diff.size} rows differ, max abs(dF_x) = "
+        f"{float(np.max(diff)):.3e}; the two sides are expected to agree to "
+        "the bit (same libxc call, bitwise identical channel rows, same "
+        "np.power LDA denominator)")
     assert float(_anchor_term(model, sample, 1.0)) < 1e-26

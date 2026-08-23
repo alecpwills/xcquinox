@@ -485,8 +485,10 @@ def _anchor_term(model, sample, weight: float) -> jnp.ndarray:
     reaches; the O atom's channels stay above 6e-4). The anchor is therefore
     refused for a descriptor-carrying architecture instead of being left to
     pin an arbitrary feature slice; it stays exact for the descriptor-free
-    architectures, whose F_x takes no extras. Production weight is 0.0, so
-    the refusal is inert on every current configuration.
+    architectures, whose F_x takes no extras. The production weight is 0.0 in
+    every shipped configuration and, since 2026-08-21, in the step-6 notebook
+    builder (it had requested 1e-3 for two descriptor-carrying architectures),
+    so the refusal is inert on every current configuration.
     """
     if sample is None or weight == 0.0:
         return jnp.array(0.0)

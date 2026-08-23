@@ -46,10 +46,16 @@ on CH4) plus an overfitting diagnostic.
 | Loss | Kind | V_xc? | PBE-anchor? | Balancing |
 |---|---|---|---|---|
 | L1 | B_atomization_plus_dm | -- | -- | static |
-| L2 | C_atomization_plus_grid | -- | yes | static |
+| L2 | C_atomization_plus_grid | -- | off (weight 0.0) | static |
 | L3 | balanced + V_xc | yes | -- | LossNorm (step-0) |
-| L4 | balanced + V_xc + anchor | yes | yes | LossNorm (step-0) |
+| L4 | balanced + V_xc + anchor | yes | off (weight 0.0) | LossNorm (step-0) |
 | L5 | gradnorm + V_xc | yes | -- | GradNorm (dynamic) |
+
+The PBE anchor is off (`PBE_ANCHOR_WEIGHT = 0.0`, see the constants cell): it
+evaluates F_x on synthetic points with zero descriptor extras, and both
+architectures here carry descriptors, so the anchor would pin a fixed feature
+slice rather than the per-channel block the exchange energy evaluates. The
+L3-vs-L4 anchor-effect panel is therefore flat by construction.
 
 | Group | Data | Phase length |
 |---|---|---|
@@ -221,7 +227,22 @@ TRAIN_N_STEPS_SHORT      = 100
 TRAIN_N_STEPS_LONG       = 250
 TRAIN_SKIP_IF_EXISTS     = True
 RERUN_EVAL               = False
-PBE_ANCHOR_WEIGHT        = 1e-3
+# PBE anchor OFF (was 1e-3). Both step-6 architectures carry descriptors
+# (deep_combined / deep_combined_attn: dm_statistics + cusp), and the anchor
+# evaluates F_x at synthetic (rho_alpha, rho_beta, s) points with zero
+# descriptor extras. A synthetic point has no density matrix, so the
+# per-channel block of diag(P_sigma, P_sigma) that the exchange energy feeds
+# the network is undefined there and the zero-extras row pins one fixed slice
+# of the feature space instead: for the meta-GGA rung's parent functional that
+# slice is 0.40-0.45 Ha of exchange away from the physical blocks of O and OH.
+# losses._anchor_term therefore refuses a descriptor-carrying architecture at
+# non-zero weight, which is exactly the configuration these cells requested.
+# Consequence for the analysis cells: with the weight at 0.0 the L2/L4 arms
+# differ from L1/L3 only in their base loss, so the L3-vs-L4 anchor-effect
+# panel compares two identical configurations and is flat by construction. A
+# meaningful anchor arm needs either a descriptor-free architecture or an
+# anchor sample carrying per-channel feature blocks.
+PBE_ANCHOR_WEIGHT        = 0.0
 PBE_ANCHOR_N_POINTS      = 200
 PBE_ANCHOR_SEED          = 20260421
 # Case-study memory budget: a heavier (def2-tzvp, GRID_LEVEL=3) pairing
@@ -1023,11 +1044,12 @@ def build_cell_17_training_md():
 | 2 | H2O + C2H2 | short=TRAIN_N_STEPS_SHORT | 30 |
 | 3 | H2O + C2H2 | long=TRAIN_N_STEPS_LONG | 30 |
 
-Losses:
+Losses (the PBE anchor carries `PBE_ANCHOR_WEIGHT = 0.0` -- off for these
+descriptor-carrying architectures; see the constants cell):
 - L1_B: B_atomization_plus_dm (control)
-- L2_C_anchor: C_atomization_plus_grid + PBE-anchor
+- L2_C_anchor: C_atomization_plus_grid + PBE-anchor (weight 0.0)
 - L3_balanced_vxc: B_atomization_plus_dm + V_xc, LossNormConfig balancing (step-0)
-- L4_balanced_vxc_anchor: L3 + PBE-anchor
+- L4_balanced_vxc_anchor: L3 + PBE-anchor (weight 0.0)
 - L5_gradnorm_vxc: B_atomization_plus_dm + V_xc, GradNormConfig (Chen 2018)
                    keeps V_xc gradient-magnitude on par with AE/DM during
                    training, not just at step 0
@@ -2195,6 +2217,11 @@ def build_cell_28_anchor_effect():
 # per (arch, solver, group). Positive (green) -> anchor regularizer
 # helps; negative (red) -> anchor hurts. Single proxy legend below
 # explains the colors.
+# NOTE: PBE_ANCHOR_WEIGHT = 0.0 (the anchor is refused for the
+# descriptor-carrying architectures used here), so L3 and L4 are the same
+# configuration and the bars are zero up to run-to-run noise. The panel is
+# kept so the comparison is in place for a descriptor-free architecture or an
+# anchor sample carrying per-channel feature blocks.
 import matplotlib.patches as _mpatches
 fig, axes = plt.subplots(len(ARCH_NAMES), 3, figsize=(14, 4 * len(ARCH_NAMES)),
                          squeeze=False)

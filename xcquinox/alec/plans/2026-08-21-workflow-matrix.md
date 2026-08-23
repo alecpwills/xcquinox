@@ -985,7 +985,7 @@ use_polarized_correlation: true
 inline_eval: false
 defer_eval: false
 # The certificate's tolerances and the enforcement bypass are NOT configured
-# here: the certificate (SPEC 3.4 / 3.3) runs at the production identity and
+# here: the certificate (SPEC 3.4 / 3.3) runs at the identity the rendered config carries (def2-svp, grid level 1 for the matrix) and
 # records its own verdict, and the workflow matrix passes
 # XCQUINOX_FIDELITY_OVERRIDE_REASON in the environment because a 50-step
 # pretrain on two atoms cannot meet tol_AE = 1.0 kcal/mol by construction.
@@ -2324,7 +2324,7 @@ def write_matrix_report(results, path) -> Path:
         "",
         "Identity: def2-svp, grid level 1, solver oneshot, 2 cells "
         "(subset sizes 1 and 2), 3 training steps, 50 pretraining steps on "
-        "H and O; certificate at the production identity; held-out eval on "
+        "H and O; certificate at the rendered identity (def2-svp, grid level 1 for the matrix; the campaign identity for a campaign run); held-out eval on "
         f"the species slice {HELDOUT_SPECIES_SLICE}.",
         "",
         "Stage order of the `stages rc` column (`-` = never reached; the "
