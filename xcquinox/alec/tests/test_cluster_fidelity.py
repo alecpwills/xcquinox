@@ -1581,15 +1581,17 @@ def test_certificate_is_exact_when_the_model_is_the_parent_functional(
 def test_certificate_measures_a_known_per_electron_offset(tmp_path,
                                                           monkeypatch):
     """O-B. The parent plus a constant c = 0.5 mHa per electron must move
-    every dE_xc by exactly c N_grid, N_grid the electron count the record's
-    quadrature carries (the shift against the c = 0 certificate is compared,
-    so the H atom's zeta-clip residual of the previous test drops out); the O
-    atom (N = 8) then exceeds tol_atom by the predicted 4.0 mHa while the
-    atomization fold cancels the offset to c (N_grid(H2O) - N_grid(O) -
-    2 N_grid(H)), the quadrature residual. That is why the certificate carries
-    an atomic tolerance beside the atomization one: a per-electron offset is
-    invisible to dAE. Measured shift minus prediction: 6.8e-12 mHa (O),
-    1.4e-12 mHa (H2O) at sto-3g / grid 1."""
+    every dE_xc by exactly c N_e_grid, N_e_grid the ELECTRON count the
+    record's quadrature carries -- named to keep it apart from the payload's
+    n_grid, the number of grid points -- (the shift against the c = 0
+    certificate is compared, so the H atom's zeta-clip residual of the
+    previous test drops out); the O atom (N_e = 8) then exceeds tol_atom by
+    the predicted 4.0 mHa while the atomization fold cancels the offset to
+    c (N_e_grid(H2O) - N_e_grid(O) - 2 N_e_grid(H)), the quadrature residual.
+    That is why the certificate carries an atomic tolerance beside the
+    atomization one: a per-electron offset is invisible to dAE. Measured
+    shift minus prediction: 6.8e-12 mHa (O), 1.4e-12 mHa (H2O) at sto-3g /
+    grid 1."""
     import numpy as np
     from xcquinox.alec.data import precompute_fixed_density_data
     c_mha = 0.5
@@ -1597,7 +1599,7 @@ def test_certificate_measures_a_known_per_electron_offset(tmp_path,
                                                     "pbe", 0.0)
     payload, by_name = _certify_with_parent_as_model(
         tmp_path, monkeypatch, "pbe", c_mha / fid.HA_TO_MHA)
-    n_grid = {}
+    n_e_grid = {}
     for ms in _parent_oracle_set():
         # The record the certificate measured: the O atom is degenerate and
         # carries the certificate's orientation lock, the others none.
@@ -1605,24 +1607,24 @@ def test_certificate_measures_a_known_per_electron_offset(tmp_path,
             ms, reference_xc="pbe",
             orientation_lock_strength=by_name[ms.name][
                 "orientation_lock_strength"])
-        n_grid[ms.name] = float(np.sum(np.asarray(md["grid_weights"])
-                                       * np.asarray(md["rho_grid"])))
+        n_e_grid[ms.name] = float(np.sum(np.asarray(md["grid_weights"])
+                                         * np.asarray(md["rho_grid"])))
     assert by_name["atom_O"]["orientation_lock_strength"] == (
         fid.atom_orientation_lock_strength())
     assert by_name["atom_H"]["orientation_lock_strength"] == 0.0
-    assert n_grid["atom_O"] == pytest.approx(8.0, abs=1e-3)
+    assert n_e_grid["atom_O"] == pytest.approx(8.0, abs=1e-3)
     for name, rec in by_name.items():
         shift = rec["dE_xc_mHa"] - base[name]["dE_xc_mHa"]
-        assert shift == pytest.approx(c_mha * n_grid[name], abs=1e-7), name
+        assert shift == pytest.approx(c_mha * n_e_grid[name], abs=1e-7), name
     for name in ("atom_O", "H2O"):
         assert by_name[name]["dE_xc_mHa"] == pytest.approx(
-            c_mha * n_grid[name], abs=1e-6), name
+            c_mha * n_e_grid[name], abs=1e-6), name
     assert payload["verdict"] == "FAIL"
     assert payload["summary"]["max_atom_mHa"] == pytest.approx(
-        c_mha * n_grid["atom_O"], abs=1e-6)
+        c_mha * n_e_grid["atom_O"], abs=1e-6)
     assert any("tol_atom" in r for r in payload["summary"]["failure_reasons"])
-    predicted_dae = (c_mha * (n_grid["H2O"] - n_grid["atom_O"]
-                              - 2 * n_grid["atom_H"])
+    predicted_dae = (c_mha * (n_e_grid["H2O"] - n_e_grid["atom_O"]
+                              - 2 * n_e_grid["atom_H"])
                      / fid.HA_TO_MHA * fid.HA_TO_KCAL)
     dae = {r["name"]: r["dAE_kcalmol"] for r in payload["per_atomization"]}
     dae0 = {r["name"]: r["dAE_kcalmol"] for r in _payload0["per_atomization"]}
@@ -1932,3 +1934,259 @@ def _minimal_raw_config(archs):
                     "eval_array_throttle": 1, "max_concurrent_tasks": 10},
         "domain_profile": "dfs_step7",
     }
+
+
+# ---------------------------------------------------------------------------
+# A non-finite measurement can satisfy no tolerance
+# ---------------------------------------------------------------------------
+
+def _strict_json(path):
+    """Parse ``path`` under RFC 8259 rules: a NaN / Infinity token is refused
+    (python's default json.load would silently accept the bare tokens its own
+    default dump emits)."""
+    def _refuse(token):
+        raise AssertionError(f"non-RFC-8259 token in certificate: {token}")
+    with open(path) as f:
+        return json.load(f, parse_constant=_refuse)
+
+
+def _two_atom_set():
+    return (_free_atom("H", spin=1), _free_atom("O", spin=2))
+
+
+@pytest.mark.parametrize("order", ["nan-first", "nan-last"])
+def test_certificate_fails_on_a_nan_measurement_wherever_it_sits(tmp_path,
+                                                                 order):
+    """``nan > tol`` is False and ``max()`` returns NaN or swallows it
+    depending on its slot, so an unguarded gate PASSes a NaN and its verdict
+    depends on the oracle-set order. A non-finite measurement must be a named
+    failure BEFORE any comparison, and the finite 500 mHa atom must still be
+    caught whichever side of the NaN it sits on."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    systems = _two_atom_set()
+    if order == "nan-last":
+        systems = tuple(reversed(systems))
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=systems,
+        evaluate=_fake_evaluate({"atom_H": float("nan"), "atom_O": 500.0}))
+    assert payload["verdict"] == "FAIL"
+    by_name = {r["name"]: r for r in payload["per_system"]}
+    assert by_name["atom_H"]["non_finite"] == ["E_xc_nn", "dE_xc_mHa"]
+    assert by_name["atom_H"]["E_xc_nn"] is None
+    assert by_name["atom_H"]["dE_xc_mHa"] is None
+    assert "non_finite" not in by_name["atom_O"]
+    s = payload["summary"]
+    # The NaN never entered max(): the finite atom's 500 mHa is the maximum.
+    assert s["max_atom_mHa"] == pytest.approx(500.0)
+    assert s["n_non_finite_systems"] == 1
+    reasons = s["failure_reasons"]
+    assert any("non-finite" in r and "atom_H" in r and "E_xc_nn" in r
+               and "dE_xc_mHa" in r for r in reasons), reasons
+    assert any("tol_atom" in r and "500.0" in r for r in reasons), reasons
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "FAIL"
+    _strict_json(fid.certificate_path(run_dir, "deep_3x16"))
+
+
+def test_certificate_fails_on_a_nan_route_difference(tmp_path):
+    """The route-consistency check is as blind to NaN as the tolerances:
+    a non-finite route difference is the same named failure, and the finite
+    routes still report their true maximum."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+
+    def _evaluate(model, descriptors, mol_spec, *, parent,
+                  auxbasis=None, orientation_lock_strength=0.0):
+        rec = _fake_evaluate({"atom_H": 0.1, "H2": 0.2})(
+            model, descriptors, mol_spec, parent=parent)
+        if mol_spec.name == "H2":
+            rec["parent_grid_diff_Ha"] = float("nan")
+        return rec
+
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_evaluate)
+    assert payload["verdict"] == "FAIL"
+    by_name = {r["name"]: r for r in payload["per_system"]}
+    assert by_name["H2"]["non_finite"] == ["parent_grid_diff_Ha"]
+    assert by_name["H2"]["parent_grid_diff_Ha"] is None
+    s = payload["summary"]
+    assert s["max_parent_grid_diff_Ha"] == pytest.approx(0.0)
+    assert any("non-finite" in r and "H2" in r and "parent_grid_diff_Ha" in r
+               for r in s["failure_reasons"])
+    assert not any("fresh-grid" in r for r in s["failure_reasons"])
+    _strict_json(fid.certificate_path(run_dir, "deep_3x16"))
+
+
+def test_certificate_with_a_nan_weight_checkpoint_fails_and_writes_strict_json(
+        tmp_path):
+    """The production shape of the defect: a diverged pretraining leaves NaN
+    weights in the checkpoint, every E_xc_nn is NaN, and an unguarded
+    certificate would PASS it and emit a bare NaN token no RFC 8259 parser
+    accepts. The real path must FAIL by name and the written file must parse
+    strictly."""
+    import equinox as eqx
+    from xcquinox.alec.config import get_architecture
+    from xcquinox.alec.networks import create_network_pair
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+
+    run_dir = str(tmp_path / "run")
+    arch = get_architecture("deep_3x16")
+    xnet, cnet = create_network_pair(arch, seed=0)
+    params, static = eqx.partition(xnet, eqx.is_inexact_array)
+    params = jax.tree_util.tree_map(lambda a: jnp.full_like(a, jnp.nan),
+                                    params)
+    d = pretrain_checkpoint_dir(run_dir, "deep_3x16")
+    os.makedirs(d, exist_ok=True)
+    eqx.tree_serialise_leaves(os.path.join(d, "xnet.eqx"),
+                              eqx.combine(params, static))
+    eqx.tree_serialise_leaves(os.path.join(d, "cnet.eqx"), cnet)
+
+    payload = fid.fidelity_certificate(_cfg(pretrain_seed=0), run_dir,
+                                       "deep_3x16",
+                                       oracle_set=_tiny_oracle_set())
+    assert payload["verdict"] == "FAIL"
+    for rec in payload["per_system"]:
+        assert "E_xc_nn" in rec["non_finite"], rec["name"]
+        assert "dE_xc_mHa" in rec["non_finite"], rec["name"]
+        assert rec["E_xc_nn"] is None
+        # The parent side is untouched by the network's NaN.
+        assert rec["E_xc_parent"] is not None
+        assert abs(rec["parent_grid_diff_Ha"]) < fid.PARENT_GRID_TOL_HA
+    s = payload["summary"]
+    assert s["n_non_finite_systems"] == 2
+    assert s["max_atom_mHa"] is None
+    assert any("non-finite" in r and "atom_H" in r and "H2" in r
+               for r in s["failure_reasons"])
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "FAIL"
+    allowed, _message = fid.gate_certificate(run_dir, "deep_3x16")
+    assert allowed is False
+    _strict_json(fid.certificate_path(run_dir, "deep_3x16"))
+
+
+# ---------------------------------------------------------------------------
+# The producer's own non-convergence refusal is counted by name
+# ---------------------------------------------------------------------------
+
+def test_certificate_counts_a_reference_the_producer_refused(tmp_path,
+                                                             monkeypatch):
+    """``precompute_fixed_density_data`` raises data.ReferenceSCFNotConverged
+    (a RuntimeError) instead of returning an unconverged record. The
+    certificate must land it on the SAME branch as its own stamped-record
+    refusal -- converged flag, cycle count, n_reference_unconverged and the
+    named reason -- not in the generic 'could not be evaluated' bucket.
+    Driven through the REAL producer with the SCF cycle budgets forced to
+    exhaustion."""
+    import xcquinox.alec.data as data_mod
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_MAX_CYCLE", 1)
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_NEWTON_MAX_CYCLE", 0)
+    h2 = _tiny_oracle_set()[1]
+    with pytest.raises(data_mod.ReferenceSCFNotConverged) as info:
+        data_mod.precompute_fixed_density_data(h2, reference_xc="pbe")
+    expected_cycles = info.value.cycles
+    assert expected_cycles is not None
+
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir, "deep_3x16", seed=0)
+    payload = fid.fidelity_certificate(_cfg(pretrain_seed=0), run_dir,
+                                       "deep_3x16", oracle_set=(h2,))
+    assert payload["verdict"] == "FAIL"
+    entry = payload["per_system"][0]
+    assert entry["name"] == "H2"
+    assert "did not converge" in entry["error"]
+    assert entry["reference_scf_converged"] is False
+    assert entry["reference_scf_cycles"] == expected_cycles
+    s = payload["summary"]
+    assert s["n_reference_unconverged"] == 1
+    assert any("did not converge" in r and "H2" in r
+               for r in s["failure_reasons"])
+    assert not any("could not be evaluated" in r for r in s["failure_reasons"])
+    _strict_json(fid.certificate_path(run_dir, "deep_3x16"))
+
+
+# ---------------------------------------------------------------------------
+# Per-system containment, diagnostics and config hygiene
+# ---------------------------------------------------------------------------
+
+def test_a_beyond_argon_atom_is_a_per_system_failure_not_an_abort(tmp_path):
+    """The degeneracy rule refuses elements beyond argon; that refusal must
+    be a per-system failure with the certificate still written, not an abort
+    that leaves no file (an absent certificate says nothing about the systems
+    that were evaluable)."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    systems = (_free_atom("Kr"),) + _tiny_oracle_set()
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=systems,
+        evaluate=_fake_evaluate({"atom_H": 0.1, "H2": 0.2}))
+    assert payload["verdict"] == "FAIL"
+    by_name = {r["name"]: r for r in payload["per_system"]}
+    assert "beyond argon" in by_name["atom_Kr"]["error"]
+    assert by_name["atom_H"]["dE_xc_mHa"] == pytest.approx(0.1)
+    assert by_name["H2"]["dE_xc_mHa"] == pytest.approx(0.2)
+    assert any("could not be evaluated" in r and "atom_Kr" in r
+               for r in payload["summary"]["failure_reasons"])
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "FAIL"
+
+
+def test_certificate_reports_the_boundary_value_at_full_precision(tmp_path):
+    """1.0000000000000002 mHa exceeds tol_atom = 1.0 by one ulp; a reason
+    printed at four decimals would read '1.0000 mHa exceeds tol_atom 1.0',
+    an apparent contradiction. The raw value is printed."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_fake_evaluate({"atom_H": 1.0000000000000002, "H2": 0.5}))
+    assert payload["verdict"] == "FAIL"
+    assert any("tol_atom" in r and "1.0000000000000002" in r
+               for r in payload["summary"]["failure_reasons"]), \
+        payload["summary"]["failure_reasons"]
+
+
+@pytest.mark.parametrize("enforce", ["false", 0, 1, None])
+def test_certificate_refuses_a_non_boolean_enforce(tmp_path, enforce):
+    """``bool("false")`` is True and ``bool(None)`` is False: a coerced
+    ``enforced`` field would record an enforcement state no configuration
+    asked for, on the one flag that decides whether a FAIL releases a gate.
+    Only a real boolean is recorded; anything else is refused before any
+    system is evaluated and no certificate is written."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+    seen = {}
+    with pytest.raises(ValueError, match="enforce"):
+        fid.fidelity_certificate(
+            _cfg(enforce=enforce), run_dir, "deep_3x16",
+            oracle_set=_tiny_oracle_set(), evaluate=_lock_spy(seen))
+    assert seen == {}
+    assert fid.certificate_status(run_dir, "deep_3x16")[0] == "MISSING"
+
+
+def test_route_disagreement_reasons_name_the_system(tmp_path):
+    """A route inconsistency is actionable only if the reason says WHERE:
+    each offending system is named with its raw difference, per route."""
+    run_dir = str(tmp_path / "run")
+    _stub_checkpoint(run_dir)
+
+    def _evaluate(model, descriptors, mol_spec, *, parent,
+                  auxbasis=None, orientation_lock_strength=0.0):
+        rec = _fake_evaluate({"atom_H": 0.1, "H2": 0.2})(
+            model, descriptors, mol_spec, parent=parent)
+        if mol_spec.name == "atom_H":
+            rec["parent_grid_diff_Ha"] = 2e-6
+        if mol_spec.name == "H2":
+            rec["parent_record_diff_Ha"] = 3e-6
+        return rec
+
+    payload = fid.fidelity_certificate(
+        _cfg(), run_dir, "deep_3x16", oracle_set=_tiny_oracle_set(),
+        evaluate=_evaluate)
+    assert payload["verdict"] == "FAIL"
+    reasons = payload["summary"]["failure_reasons"]
+    grid = [r for r in reasons if "fresh-grid" in r]
+    record = [r for r in reasons if "accumulated" in r]
+    assert len(grid) == 1 and len(record) == 1, reasons
+    assert "atom_H" in grid[0] and "2e-06" in grid[0]
+    assert "H2" not in grid[0]
+    assert "H2" in record[0] and "3e-06" in record[0]
+    assert "atom_H" not in record[0]

@@ -21,8 +21,8 @@ which is what each rung was pretrained against. The parent's E_xc on each
 record is computed three independent ways (point-wise libxc on the stored
 grid, PySCF numint on a fresh grid, the reference SCF's own accumulated
 value) and a disagreement above PARENT_GRID_TOL_HA, a reference SCF that did
-not converge, or a system that could not be evaluated each FAIL the
-certificate by name. Degenerate free atoms (open p shell) are evaluated on an
+not converge, a non-finite measurement, or a system that could not be
+evaluated each FAIL the certificate by name. Degenerate free atoms (open p shell) are evaluated on an
 orientation-locked reference density when the run carries no lock of its own,
 so the atomic numbers do not depend on the orientation the SCF converged to.
 
@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -81,6 +82,17 @@ from xcquinox.alec.cluster.materialize import _sha256_file, _write_json_atomic
 CERTIFICATE_FILENAME = "fidelity_certificate.json"
 VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
+
+# The two pretrained network files a verdict refers to, paired with the keys
+# :func:`fidelity_certificate` records their SHA-256 digests under in the
+# certificate's ``checkpoint`` block. One table for the writer and for
+# ``validate_run``'s cross-check of the files present in a run: a rename on one
+# side alone would leave the validator comparing a key nothing writes, which
+# reads as a clean run rather than as a check that stopped working.
+CHECKPOINT_DIGEST_KEYS: tuple[tuple[str, str], ...] = (
+    ("xnet.eqx", "xnet_sha256"),
+    ("cnet.eqx", "cnet_sha256"),
+)
 
 # One Hartree in kcal/mol, taken from the harness domain table rather than
 # restated here (domain.KCAL_PER_HA, CODATA-2018, cited at its definition).
@@ -392,9 +404,10 @@ def is_degenerate_atom(mol_spec) -> bool:
     O, F, Al, Si, S, Cl and their ions with those p counts. The energy of the
     exact functional is orientation-invariant, but the quadrature on a fixed
     real-space grid is not, and the meta-GGA parent feels it most: the SCAN
-    E_xc of the free O atom spread by 0.26 mHa over three independent
-    unconstrained SCFs at def2-svp / grid 3 (0.21 mHa for F at sto-3g /
-    grid 1), against 1.6e-3 mHa for PBE, so an unlocked certificate number
+    E_xc of the free O atom spreads by of order 0.1 mHa between independent
+    unconstrained SCFs at def2-svp / grid 3 (0.26 mHa over one triple of
+    runs, 0.084 mHa over another; 0.21 mHa for F at sto-3g / grid 1),
+    against 1.6e-3 mHa for PBE, so an unlocked certificate number
     for such an atom depends on which orientation the SCF happened to
     reach. Half-filled (N, P), closed (Be, Mg, F-, Cl-) and s-shell (H, Li,
     Na) atoms are spherical and excluded. Elements beyond argon are refused:
@@ -428,7 +441,10 @@ def atom_orientation_lock_strength() -> float:
     ``orientation_lock.DEFAULT_STRENGTH`` (3e-5, the value the production
     configurations carry), imported at call time because that module's body
     carries numpy. Two independent locked SCFs of O and F agreed to 3.4e-11
-    mHa in E_xc at def2-svp / grid 3, against the 0.26 mHa unlocked spread.
+    mHa in E_xc at def2-svp / grid 3, against an unlocked spread of order
+    0.1 mHa. That locked agreement is identity-specific: at def2-svp /
+    grid 1 the locked PBE O atom still spread 2.5e-3 mHa between
+    second-order SCF landings.
     """
     from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH
     return float(DEFAULT_STRENGTH)
@@ -707,6 +723,12 @@ class ReferenceNotConverged(ValueError):
     ``reference_scf_converged: False``; :func:`fidelity_certificate` turns it
     into a named consistency failure rather than a generic evaluation error.
     ``cycles`` carries the recorded ``reference_scf_cycles`` (or ``None``).
+
+    The producer's own refusal -- ``data.ReferenceSCFNotConverged``, a
+    RuntimeError raised by ``precompute_fixed_density_data`` before any
+    record exists -- is caught on the same certificate branch; this class
+    remains for a record that arrives already stamped unconverged (a cache or
+    another producer).
     """
 
     def __init__(self, message, *, cycles=None):
@@ -771,9 +793,10 @@ def evaluate_system(model, descriptors, mol_spec, *, parent: str,
     # parent's density (measured on H2O / SCAN at max_cycle=1: +7.2e-2 Ha in
     # the total energy, 0.315 in the density matrix), and the certificate
     # would otherwise compare the network against a density no functional
-    # produced. A record carrying no stamp (written before the stamp existed)
-    # records ``None`` and is not refused here; the precompute itself refuses
-    # an unconverged reference once it stamps the record.
+    # produced. The precompute itself raises data.ReferenceSCFNotConverged
+    # before returning such a record, so this check guards records that
+    # arrive stamped from elsewhere; a record carrying no stamp records
+    # ``None`` and is not refused here.
     meta = mol_data.get("mol_metadata") or {}
     scf_converged = meta.get("reference_scf_converged")
     scf_cycles = meta.get("reference_scf_cycles")
@@ -827,6 +850,59 @@ def _fmt_secs(seconds) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+# The per-record quantities that must be finite for the certificate to act on
+# the record. E_xc_parent and its two cross-checks are included beside the
+# network-side numbers: a non-finite parent makes every derived difference
+# meaningless, and nulling it keeps the written file strict JSON.
+_FINITE_RECORD_KEYS = ("E_xc_nn", "E_xc_parent", "E_xc_parent_numint",
+                       "E_xc_parent_record", "dE_xc_mHa",
+                       "parent_grid_diff_Ha", "parent_record_diff_Ha")
+
+
+def _null_non_finite(rec) -> list:
+    """Null every non-finite measurement in ``rec``; return the key names.
+
+    ``nan > tol`` is False for every tolerance and ``max()`` either returns
+    NaN or swallows it depending on its position in the sequence, so a
+    non-finite number must never reach a comparison: the value is recorded as
+    ``None`` (JSON null -- the bare ``NaN`` token json.dump would emit is not
+    RFC 8259 JSON), the affected keys are listed under ``non_finite`` and the
+    certificate fails by name before any tolerance is consulted. A
+    non-numeric value is treated the same way.
+    """
+    bad = []
+    for key in _FINITE_RECORD_KEYS:
+        value = rec.get(key)
+        if value is None:
+            continue
+        try:
+            finite = math.isfinite(float(value))
+        except (TypeError, ValueError):
+            finite = False
+        if not finite:
+            bad.append(key)
+    for key in bad:
+        rec[key] = None
+    if bad:
+        rec["non_finite"] = bad
+    return bad
+
+
+def _write_certificate_payload(payload: dict, path: str) -> None:
+    """Atomically write the certificate, refusing any non-finite float.
+
+    ``json.dump``'s default serializer emits bare ``NaN`` / ``Infinity``
+    tokens, which RFC 8259 does not define: a strict reader refuses the file
+    and a lenient one round-trips a value no tolerance can act on. The
+    payload is serialized with ``allow_nan=False`` first -- a ``ValueError``
+    here means a non-finite number escaped the per-record nulling, a bug to
+    surface, not a verdict to write -- and only then handed to the shared
+    atomic writer, which serializes the identical value set.
+    """
+    json.dumps(payload, allow_nan=False)
+    _write_json_atomic(payload, path)
+
+
 def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
                          oracle_set=None, evaluate=None, log=None) -> dict:
     """Certify one architecture and write its certificate; return the payload.
@@ -838,11 +914,15 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     through dozens of production-basis SCFs rather than falling silent.
 
     The verdict is PASS only when every system was evaluated on a converged
-    reference SCF, the free-atom and atomization tolerances of
-    ``cfg.fidelity`` hold, and the three parent routes agree within
-    :data:`PARENT_GRID_TOL_HA` on every system. An unconverged reference is a
-    named failure of its own, never folded into the generic evaluation
-    errors.
+    reference SCF, every recorded measurement is finite, the free-atom and
+    atomization tolerances of ``cfg.fidelity`` hold, and the three parent
+    routes agree within :data:`PARENT_GRID_TOL_HA` on every system, each
+    offending system named in the reason. An unconverged reference (the
+    producer's ``data.ReferenceSCFNotConverged`` or a record stamped
+    unconverged) and a non-finite measurement are each a named failure of
+    their own, never folded into the generic evaluation errors; a non-finite
+    value is nulled before any maximum or comparison is formed, so a NaN can
+    neither pass a gate nor mask a finite excess elsewhere in the set.
 
     Degenerate free atoms (:func:`is_degenerate_atom`) are evaluated on an
     orientation-locked reference density at
@@ -850,9 +930,12 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     ``inputs.orientation_lock_strength`` is zero, and the payload names them
     under ``atom_orientation_lock``; a run that carries its own lock applies
     it to every system unchanged. Without the lock the SCAN E_xc of the free O
-    atom moved by 0.26 mHa between independent SCFs at def2-svp / grid 3 --
-    a quarter of ``tol_atom`` decided by BLAS scheduling -- and with it two
-    independent runs agree to 3.4e-11 mHa.
+    atom moves of order 0.1 mHa between independent SCFs at def2-svp /
+    grid 3 (0.26 mHa over one triple of runs, 0.084 mHa over another) -- a
+    meaningful fraction of ``tol_atom`` decided by BLAS scheduling -- and
+    with it two independent runs agreed to 3.4e-11 mHa at that identity (at
+    def2-svp / grid 1 the locked PBE O atom still spread 2.5e-3 mHa between
+    second-order SCF landings).
 
     The
     tolerances actually applied, the override reason (copied verbatim) and
@@ -863,6 +946,18 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     import xcquinox
 
     t0 = time.time()
+    fid_cfg = cfg.fidelity
+    # The one flag that decides whether a recorded FAIL releases an on-node
+    # gate. bool("false") is True and bool(None) is False, so a coerced value
+    # would record an enforcement state no configuration asked for; only a
+    # real boolean is recorded (grid_config._build_fidelity imposes the same
+    # rule on the YAML; this re-imposes it on any hand-built cfg), refused
+    # before any system is evaluated so no certificate is written.
+    enforce = getattr(fid_cfg, "enforce", True)
+    if not isinstance(enforce, bool):
+        raise ValueError(
+            f"cfg.fidelity.enforce must be a real boolean, got "
+            f"{type(enforce).__name__} ({enforce!r})")
     parent = resolve_parent(arch_name)
     arch, model = build_certified_model(cfg, run_dir, arch_name)
     pretrain_dir = pretrain_checkpoint_dir(run_dir, arch_name)
@@ -898,25 +993,35 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     locked_atoms = []
     per_system = []
     unconverged = []
+    non_finite = []
     n_systems = len(systems)
     try:
         for index, mol_spec in enumerate(systems, start=1):
             t_sys = time.time()
-            lock = run_lock
-            if run_lock == 0.0 and is_degenerate_atom(mol_spec):
-                lock = atom_lock
-                locked_atoms.append(mol_spec.name)
             try:
+                # Inside the try: the degeneracy rule can itself refuse (an
+                # element beyond argon), and that is a per-system failure
+                # like any other, not an abort that leaves no certificate.
+                lock = run_lock
+                if run_lock == 0.0 and is_degenerate_atom(mol_spec):
+                    lock = atom_lock
+                    locked_atoms.append(mol_spec.name)
                 rec = run(
                     model, descriptors, mol_spec, parent=parent,
                     auxbasis=getattr(inputs, "auxbasis", None),
                     orientation_lock_strength=lock)
-            except ReferenceNotConverged as exc:
+            except (ReferenceNotConverged,
+                    data_mod.ReferenceSCFNotConverged) as exc:
+                # One branch for both spellings of the same physics: the
+                # producer refused to build the record
+                # (data.ReferenceSCFNotConverged), or a record arrived
+                # already stamped unconverged (ReferenceNotConverged). Both
+                # carry the cycle count.
                 per_system.append({
                     "name": mol_spec.name,
                     "error": f"{type(exc).__name__}: {exc}",
                     "reference_scf_converged": False,
-                    "reference_scf_cycles": exc.cycles})
+                    "reference_scf_cycles": getattr(exc, "cycles", None)})
                 unconverged.append(mol_spec.name)
                 say(f"[{index}/{n_systems}] {mol_spec.name}: REFUSED {exc}")
                 continue
@@ -927,7 +1032,13 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
                 say(f"[{index}/{n_systems}] {mol_spec.name}: FAILED "
                     f"{type(exc).__name__}: {exc}")
                 continue
+            bad = _null_non_finite(rec)
             per_system.append(rec)
+            if bad:
+                non_finite.append((mol_spec.name, bad))
+                say(f"[{index}/{n_systems}] {mol_spec.name}: NON-FINITE "
+                    f"measurement ({', '.join(bad)})")
+                continue
             elapsed = time.time() - t0
             say(f"[{index}/{n_systems}] {mol_spec.name}: "
                 f"dE_xc={rec['dE_xc_mHa']:+.4f} mHa "
@@ -947,30 +1058,52 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
             continue
         atom_terms = []
         missing = None
+        unusable = (mol_spec.name
+                    if ok[mol_spec.name]["dE_xc_mHa"] is None else None)
         for symbol, count in mol_spec.atom_composition:
             atom_name = atom_system_name(symbol, 0)
             if atom_name not in ok:
                 missing = atom_name
                 break
+            if ok[atom_name]["dE_xc_mHa"] is None:
+                unusable = unusable or atom_name
+                continue
             atom_terms.append(int(count) * ok[atom_name]["dE_xc_mHa"])
         if missing is not None:
             per_atomization.append({
                 "name": mol_spec.name, "dAE_kcalmol": None,
                 "error": f"free atom {missing} is missing from the oracle set"})
             continue
+        if unusable is not None:
+            # A nulled (non-finite) dE_xc cannot enter the fold; the
+            # non-finite reason already names the offending system.
+            per_atomization.append({
+                "name": mol_spec.name, "dAE_kcalmol": None,
+                "error": f"dE_xc of {unusable} is not finite"})
+            continue
         d_ae_mha = ok[mol_spec.name]["dE_xc_mHa"] - sum(atom_terms)
+        d_ae_kcal = d_ae_mha / HA_TO_MHA * HA_TO_KCAL
+        if not math.isfinite(d_ae_kcal):
+            non_finite.append((mol_spec.name, ["dAE_kcalmol"]))
+            per_atomization.append({
+                "name": mol_spec.name, "dAE_kcalmol": None,
+                "error": "the atomization offset is not finite"})
+            continue
         per_atomization.append({
             "name": mol_spec.name,
-            "dAE_kcalmol": d_ae_mha / HA_TO_MHA * HA_TO_KCAL})
+            "dAE_kcalmol": d_ae_kcal})
 
-    atom_dev = [abs(r["dE_xc_mHa"]) for r in ok.values() if r["is_atom"]]
+    # A nulled non-finite value never enters a max() or a comparison.
+    atom_dev = [abs(r["dE_xc_mHa"]) for r in ok.values()
+                if r["is_atom"] and r["dE_xc_mHa"] is not None]
     ae_dev = [abs(r["dAE_kcalmol"]) for r in per_atomization
               if r.get("dAE_kcalmol") is not None]
-    grid_dev = [abs(r["parent_grid_diff_Ha"]) for r in ok.values()]
-    record_dev = [abs(r["parent_record_diff_Ha"]) for r in ok.values()]
+    grid_dev = [abs(r["parent_grid_diff_Ha"]) for r in ok.values()
+                if r["parent_grid_diff_Ha"] is not None]
+    record_dev = [abs(r["parent_record_diff_Ha"]) for r in ok.values()
+                  if r["parent_record_diff_Ha"] is not None]
     n_failed = sum(1 for r in per_system if "error" in r)
 
-    fid_cfg = cfg.fidelity
     tol_atom = float(fid_cfg.tol_atom)
     tol_ae = float(fid_cfg.tol_AE)
     max_atom = max(atom_dev) if atom_dev else None
@@ -979,6 +1112,14 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     max_record = max(record_dev) if record_dev else None
 
     reasons = []
+    if non_finite:
+        reasons.append(
+            f"a non-finite measurement was recorded for {len(non_finite)} "
+            "system(s): "
+            + "; ".join(f"{name} ({', '.join(keys)})"
+                        for name, keys in non_finite)
+            + " -- NaN satisfies no tolerance, so the verdict fails before "
+            "any comparison")
     if unconverged:
         reasons.append(
             f"the reference SCF did not converge for {len(unconverged)} "
@@ -994,25 +1135,39 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
     if not atom_dev:
         reasons.append("no free atom was evaluated, so tol_atom is untested")
     elif max_atom > tol_atom:
+        # repr: the shortest digit string that round-trips, so a one-ulp
+        # excess never prints as equal to the tolerance it exceeds.
         reasons.append(
-            f"max |dE_xc| over free atoms {max_atom:.4f} mHa exceeds "
-            f"tol_atom {tol_atom} mHa")
+            f"max |dE_xc| over free atoms {max_atom!r} mHa exceeds "
+            f"tol_atom {tol_atom!r} mHa")
     if not ae_dev:
         reasons.append(
             "no atomization offset could be formed, so tol_AE is untested")
     elif max_ae > tol_ae:
         reasons.append(
-            f"max |dAE| {max_ae:.4f} kcal/mol exceeds tol_AE "
-            f"{tol_ae} kcal/mol")
-    if max_grid is not None and max_grid > PARENT_GRID_TOL_HA:
+            f"max |dAE| {max_ae!r} kcal/mol exceeds tol_AE "
+            f"{tol_ae!r} kcal/mol")
+    grid_offenders = [
+        (r["name"], r["parent_grid_diff_Ha"]) for r in ok.values()
+        if r["parent_grid_diff_Ha"] is not None
+        and abs(r["parent_grid_diff_Ha"]) > PARENT_GRID_TOL_HA]
+    if grid_offenders:
         reasons.append(
-            f"the point-wise and fresh-grid parent routes disagree by "
-            f"{max_grid:.3e} Ha, above the {PARENT_GRID_TOL_HA:.0e} Ha bound")
-    if max_record is not None and max_record > PARENT_GRID_TOL_HA:
+            "the point-wise and fresh-grid parent routes disagree above the "
+            f"{PARENT_GRID_TOL_HA:.0e} Ha bound on: "
+            + ", ".join(f"{name} ({value!r} Ha)"
+                        for name, value in grid_offenders))
+    record_offenders = [
+        (r["name"], r["parent_record_diff_Ha"]) for r in ok.values()
+        if r["parent_record_diff_Ha"] is not None
+        and abs(r["parent_record_diff_Ha"]) > PARENT_GRID_TOL_HA]
+    if record_offenders:
         reasons.append(
-            f"the point-wise parent energy and the reference SCF's own "
-            f"accumulated E_xc disagree by {max_record:.3e} Ha, above the "
-            f"{PARENT_GRID_TOL_HA:.0e} Ha bound")
+            "the point-wise parent energy and the reference SCF's own "
+            f"accumulated E_xc disagree above the {PARENT_GRID_TOL_HA:.0e} "
+            "Ha bound on: "
+            + ", ".join(f"{name} ({value!r} Ha)"
+                        for name, value in record_offenders))
 
     payload = {
         "verdict": VERDICT_FAIL if reasons else VERDICT_PASS,
@@ -1037,8 +1192,8 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
                        "override_reason": fid_cfg.override_reason},
         # Whether this run's ON-NODE gates act on the verdict. False belongs
         # to the workflow-verification matrix only; the record layers ignore
-        # it and require PASS regardless.
-        "enforced": bool(getattr(fid_cfg, "enforce", True)),
+        # it and require PASS regardless. Validated a real boolean above.
+        "enforced": enforce,
         "per_system": per_system,
         "per_atomization": per_atomization,
         "summary": {
@@ -1049,6 +1204,7 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
             "n_atomizations": len(ae_dev),
             "n_failed_systems": n_failed,
             "n_reference_unconverged": len(unconverged),
+            "n_non_finite_systems": len(non_finite),
             "max_parent_grid_diff_Ha": max_grid,
             "max_parent_record_diff_Ha": max_record,
             "failure_reasons": reasons,
@@ -1056,7 +1212,7 @@ def fidelity_certificate(cfg, run_dir: str, arch_name: str, *,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "duration_s": time.time() - t0,
     }
-    _write_json_atomic(payload, certificate_path(run_dir, arch_name))
+    _write_certificate_payload(payload, certificate_path(run_dir, arch_name))
     return payload
 
 
