@@ -905,6 +905,13 @@ def _build_inputs(d: dict) -> InputPaths:
 # imported here, so the harness parser stays free of JAX and PySCF.
 _PARENT_DENSITIES = ("pbe", "scan", "auto")
 _EXCHANGE_FOOTINGS = ("total", "spin_channel")
+_LOSS_WEIGHTINGS = ("unweighted", "integration")
+# jax.random.PRNGKey wraps modulo 2**32 instead of raising, so a seed outside
+# that range silently ALIASES another run's initialization (measured:
+# PRNGKey(-1) == PRNGKey(2**32 - 1), PRNGKey(2**32) == PRNGKey(0)) while the
+# metadata records the number that was written. create_network_pair keys cnet
+# at seed + 1, so the top of the range is excluded too.
+_MAX_SEED = 2 ** 32 - 2
 
 
 def _pretrain_bool(d, key: str, default: bool) -> bool:
@@ -925,7 +932,8 @@ def _pretrain_bool(d, key: str, default: bool) -> bool:
     return v
 
 
-def _pretrain_number(d, key: str, default, whole: bool = False):
+def _pretrain_number(d, key: str, default, whole: bool = False,
+                     minimum=None, maximum=None, minimum_open: bool = False):
     """Read one pretraining number out of a raw ``pretrain`` mapping.
 
     The reasoning of ``_fidelity_tolerance``: a boolean or a container is a
@@ -943,6 +951,10 @@ def _pretrain_number(d, key: str, default, whole: bool = False):
     With ``whole=True`` the value must be an exact integer: ``int(2.5)``
     truncates to 2, which is a validation or early-stopping schedule other
     than the one written.
+
+    ``minimum`` / ``maximum`` (with ``minimum_open`` for a strict lower bound)
+    carry the range the CONSUMER needs, so a value that would make the run a
+    no-op is refused at load rather than at step 1 of a queued job.
     """
     v = d.get(key, default)
     kind = "a whole number" if whole else "a number"
@@ -962,14 +974,21 @@ def _pretrain_number(d, key: str, default, whole: bool = False):
             f"{v!r}; a NaN value satisfies neither side of the bound it is "
             "checked against and turns every comparison against it into the "
             "sense of that comparison rather than a measurement")
-    if whole:
-        if out != int(out):
-            raise ValueError(
-                f"grid config key 'pretrain.{key}' must be a whole number, "
-                f"got {v!r}; int() would truncate it to {int(out)} and run a "
-                "schedule other than the one written")
-        return int(out)
-    return out
+    if whole and out != int(out):
+        raise ValueError(
+            f"grid config key 'pretrain.{key}' must be a whole number, "
+            f"got {v!r}; int() would truncate it to {int(out)} and run a "
+            "schedule other than the one written")
+    if minimum is not None and (out <= minimum if minimum_open
+                                else out < minimum):
+        raise ValueError(
+            f"grid config key 'pretrain.{key}' must be "
+            f"{'>' if minimum_open else '>='} {minimum}, got {v!r}")
+    if maximum is not None and out > maximum:
+        raise ValueError(
+            f"grid config key 'pretrain.{key}' must be <= {maximum}, "
+            f"got {v!r}")
+    return int(out) if whole else out
 
 
 def _pretrain_choice(d, key: str, default: str, allowed) -> str:
@@ -994,13 +1013,27 @@ def _build_pretrain(d: dict) -> PretrainConfig:
     ctx = "pretrain"
     return PretrainConfig(
         data_dir=_require(d, "data_dir", ctx),
-        n_steps=d.get("n_steps", 1000),
-        lr_start=d.get("lr_start", 1e-2),
-        lr_end=d.get("lr_end", 1e-5),
-        lr_decay_start=d.get("lr_decay_start", 0.2),
-        grad_clip=d.get("grad_clip", 1.0),
-        seed=d.get("seed", 42),
-        loss_weighting=d.get("loss_weighting", "integration"),
+        n_steps=_pretrain_number(d, "n_steps", 1000, whole=True, minimum=0,
+                                 minimum_open=True),
+        # A non-positive Adam rate is a no-op (0) or an ascent (< 0), so the
+        # start is strictly positive; lr_end may be 0, which is a linear
+        # anneal to zero and a legitimate schedule.
+        lr_start=_pretrain_number(d, "lr_start", 1e-2, minimum=0,
+                                  minimum_open=True),
+        lr_end=_pretrain_number(d, "lr_end", 1e-5, minimum=0),
+        # A FRACTION of n_steps, not a step count: decay_start_step =
+        # int(lr_decay_start * n_steps).
+        lr_decay_start=_pretrain_number(d, "lr_decay_start", 0.2, minimum=0,
+                                        maximum=1),
+        # optax.clip_by_global_norm(0.0) zeroes every gradient and (-1.0)
+        # reverses it; neither is a run, and the consumer has no None branch
+        # (a None reaches the update and raises there, not at load).
+        grad_clip=_pretrain_number(d, "grad_clip", 1.0, minimum=0,
+                                   minimum_open=True),
+        seed=_pretrain_number(d, "seed", 42, whole=True, minimum=0,
+                              maximum=_MAX_SEED),
+        loss_weighting=_pretrain_choice(
+            d, "loss_weighting", "integration", _LOSS_WEIGHTINGS),
         atoms=_parse_pretrain_atoms(d.get("atoms")),
         dfs_set=_pretrain_bool(d, "dfs_set", False),
         pool_atoms=_pretrain_bool(d, "pool_atoms", False),
@@ -1558,7 +1591,7 @@ def validate_grid_semantics(cfg: GridConfig, domain) -> None:
         raise ValueError(
             f"pretrain.grad_clip must be > 0, got {pt.grad_clip}"
         )
-    if pt.loss_weighting not in ("unweighted", "integration"):
+    if pt.loss_weighting not in _LOSS_WEIGHTINGS:
         raise ValueError(
             f"pretrain.loss_weighting must be 'unweighted' or "
             f"'integration', got {pt.loss_weighting!r}"

@@ -2045,3 +2045,127 @@ def test_build_pretrain_still_accepts_numeric_strings_and_real_booleans():
     assert isinstance(pt.validation_seed, int)
     assert isinstance(pt.validate_every, int)
     assert isinstance(pt.patience, int)
+
+
+# ---------------------------------------------------------------------------
+# _build_pretrain: the pre-protocol keys, same typed parsing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key", ["n_steps", "lr_start", "lr_end",
+                                 "lr_decay_start", "grad_clip", "seed"])
+@pytest.mark.parametrize("value", [True, None, "abc", "", [1], {"a": 1}])
+def test_build_pretrain_refuses_a_non_numeric_pre_protocol_value(key, value):
+    """These keys were passed through with no coercion at all, so a mistyped
+    value reached optax and jax.random -- ``clip_by_global_norm(None)`` raises
+    a TypeError inside the update, thousands of steps into a cluster job,
+    naming no key."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", key: value})
+    assert f"pretrain.{key}" in str(exc.value)
+    assert repr(value) in str(exc.value)
+
+
+@pytest.mark.parametrize("key", ["n_steps", "seed"])
+def test_build_pretrain_refuses_a_fractional_pre_protocol_count(key):
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", key: 2.5})
+    assert f"pretrain.{key}" in str(exc.value)
+    assert "2.5" in str(exc.value)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("n_steps", 0), ("n_steps", -1),
+    ("lr_start", 0.0), ("lr_start", -1e-3),
+    ("lr_end", -1e-6),
+    ("grad_clip", 0.0), ("grad_clip", -1.0),
+])
+def test_build_pretrain_refuses_a_non_positive_rate_or_clip(key, value):
+    """Measured on the consumers: ``clip_by_global_norm(0.0)`` zeroes every
+    gradient and ``clip_by_global_norm(-1.0)`` reverses its direction (the
+    same |g| = 5 gradient comes back as [0.6, 0.8, 0] clipped at 1.0 and
+    [-0.6, -0.8, -0] at -1.0), and a non-positive Adam rate is a no-op or an
+    ascent. None of the three is a run."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", key: value})
+    assert f"pretrain.{key}" in str(exc.value)
+
+
+def test_build_pretrain_accepts_an_anneal_to_zero():
+    """``lr_end: 0`` is a linear anneal to zero, a legitimate schedule, so the
+    floor is >= 0 while ``lr_start`` must be strictly positive."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    pt = _build_pretrain({"data_dir": "/d", "lr_end": 0.0})
+    assert pt.lr_end == 0.0
+
+
+@pytest.mark.parametrize("value", [-1, 2**32 - 1, 2**32, 2**40])
+def test_build_pretrain_refuses_a_seed_outside_the_key_range(value):
+    """Measured: ``jax.random.PRNGKey`` wraps modulo 2**32 rather than
+    raising -- PRNGKey(-1) and PRNGKey(2**32 - 1) are the same key, and
+    PRNGKey(2**32) is PRNGKey(0) -- so an out-of-range seed silently ALIASES
+    another run's initialization while the metadata records the number
+    written. ``create_network_pair`` keys cnet at ``seed + 1``, so the top of
+    the range is excluded as well."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", "seed": value})
+    assert "pretrain.seed" in str(exc.value)
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.5])
+def test_build_pretrain_refuses_an_out_of_range_decay_onset(value):
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", "lr_decay_start": value})
+    assert "pretrain.lr_decay_start" in str(exc.value)
+
+
+def test_build_pretrain_keeps_lr_decay_start_a_fraction():
+    """lr_decay_start is a FRACTION of n_steps (``decay_start_step =
+    int(lr_decay_start * n_steps)``), not a step count: 0.2 -- the default and
+    the value every shipped config writes -- must parse as 0.2."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    assert _build_pretrain({"data_dir": "/d"}).lr_decay_start == 0.2
+    assert _build_pretrain(
+        {"data_dir": "/d", "lr_decay_start": 0.35}).lr_decay_start == 0.35
+
+
+@pytest.mark.parametrize("value", ["Integration", "l2", "", None, True, 1])
+def test_build_pretrain_refuses_an_unknown_loss_weighting(value):
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    with pytest.raises(ValueError) as exc:
+        _build_pretrain({"data_dir": "/d", "loss_weighting": value})
+    assert "pretrain.loss_weighting" in str(exc.value)
+    assert repr(value) in str(exc.value)
+
+
+@pytest.mark.parametrize("value", ["unweighted", "integration"])
+def test_build_pretrain_accepts_both_loss_weightings(value):
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    assert _build_pretrain(
+        {"data_dir": "/d", "loss_weighting": value}).loss_weighting == value
+
+
+def test_build_pretrain_still_accepts_the_shipped_pre_protocol_values():
+    """The values every shipped config writes, and the quoted forms, stay
+    valid: the hardening refuses types and ranges, not the YAML in the tree."""
+    from xcquinox.alec.cluster.grid_config import _build_pretrain
+    pt = _build_pretrain({
+        "data_dir": "/d", "n_steps": 2500, "lr_start": 0.01, "lr_end": 1e-05,
+        "lr_decay_start": 0.2, "grad_clip": 1.0, "seed": 42,
+        "loss_weighting": "integration",
+    })
+    assert pt.n_steps == 2500 and isinstance(pt.n_steps, int)
+    assert (pt.lr_start, pt.lr_end) == (0.01, 1e-05)
+    assert pt.lr_decay_start == 0.2 and pt.grad_clip == 1.0
+    assert pt.seed == 42 and isinstance(pt.seed, int)
+    quoted = _build_pretrain({
+        "data_dir": "/d", "n_steps": "2500", "lr_start": "1e-2",
+        "lr_end": "1e-05", "lr_decay_start": "0.2", "grad_clip": "1.0",
+        "seed": "42",
+    })
+    assert quoted.n_steps == 2500 and quoted.seed == 42
+    assert quoted.lr_start == 0.01 and quoted.grad_clip == 1.0
