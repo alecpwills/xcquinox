@@ -905,3 +905,57 @@ def test_a_refused_first_build_leaves_no_view(tmp_path):
         mv.build_view(tmp_path, out)
     assert not out.exists()
     assert not (tmp_path / "merged.building").exists()
+
+
+def test_view_swaps_through_a_symlinked_out_dir(tmp_path):
+    """The view path itself can be a SYMLINK (a view parked on another
+    filesystem and reached through a link). ``shutil.rmtree`` refuses a
+    symbolic link, so the swap has to unlink one: otherwise a build that
+    SUCCEEDED raises after it has already swapped, and the leftover
+    ``<name>.previous`` link makes every later build raise before the swap,
+    accumulating ``<name>.building`` directories."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 2,
+            "a", arch="deep_3x16")
+    target = tmp_path / "view_on_another_disk"
+    target.mkdir()
+    out = tmp_path / "merged"
+    out.symlink_to(target)
+    rc = mv.main(["--results-root", str(tmp_path), "--out", str(out)])
+    assert rc == 0
+    assert sorted(os.listdir(out / "checkpoints")) == ["spec_0000",
+                                                       "spec_0001"]
+    for litter in ("merged.previous", "merged.building"):
+        assert not (tmp_path / litter).exists()
+        assert not (tmp_path / litter).is_symlink()
+    # The link's target is left where it was, never deleted.
+    assert target.is_dir()
+    # A second build over the swapped-in view still succeeds and still
+    # leaves nothing behind.
+    report = mv.build_view(tmp_path, out)
+    assert report["dfs6311_grid3_v4gga"] == ("run_20260810T202813Z", 2)
+    for litter in ("merged.previous", "merged.building"):
+        assert not (tmp_path / litter).exists()
+        assert not (tmp_path / litter).is_symlink()
+
+
+def test_a_refused_rebuild_through_a_symlink_leaves_the_target_intact(
+        tmp_path):
+    """Refusing through a symlinked view path must not touch what the link
+    points at, nor replace the link."""
+    _mk_arm(tmp_path, "dfs6311_grid3_v4gga", "run_20260810T202813Z", 2,
+            "a", arch="deep_3x16")
+    target = tmp_path / "view_on_another_disk"
+    mv.build_view(tmp_path, target)
+    specs_before = sorted(os.listdir(target / "checkpoints"))
+    manifest_before = (target / "manifest.json").read_text()
+    out = tmp_path / "merged"
+    out.symlink_to(target)
+    _mk_arm(tmp_path, "dfs6311_grid3_v5", "run_20260815T034818Z", 1,
+            "b", arch="deep_mgga_3x16", certified=False)
+    with pytest.raises(SystemExit):
+        mv.build_view(tmp_path, out)
+    assert out.is_symlink() and out.resolve() == target.resolve()
+    assert sorted(os.listdir(target / "checkpoints")) == specs_before
+    assert (target / "manifest.json").read_text() == manifest_before
+    assert not (tmp_path / "merged.building").exists()
+    assert not (tmp_path / "merged.previous").is_symlink()

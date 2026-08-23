@@ -170,7 +170,7 @@ def _validate_arm_fidelity_certificates(run: Path, arch_names,
     No waiver is accepted here, so no status other than PASS can reach a built
     view.
 
-Four further records on a PASS certificate are re-checked against the
+    Four further records on a PASS certificate are re-checked against the
     arm on disk, because ``validate_run`` -- which imposes them on the
     cluster -- is not part of the pull pipeline, so on pulled data this is
     the only place they are read:
@@ -294,6 +294,22 @@ Four further records on a PASS certificate are re-checked against the
                    "arm's SCF")
 
 
+def _remove_path(path: Path) -> None:
+    """Remove a directory tree, or just the LINK when ``path`` is a symlink.
+
+    ``shutil.rmtree`` refuses a symbolic link outright, and the view path can
+    be one (a view parked on another filesystem and reached through a link).
+    Unlinking removes the link and never touches what it points at, which is
+    the right outcome for both: the staged tree is ours to delete, and the
+    displaced view is the user's to keep. A path that is neither is left
+    alone, so the call is safe to make unconditionally.
+    """
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
 def _carry_arm_certificates(run: Path, view_dir: Path, arch_names,
                             arm: str) -> None:
     """Link the arm's GATED pretrain directories into ``<view_dir>/pretrain``.
@@ -391,26 +407,32 @@ def build_view(results_root: Path, out_dir: Path) -> dict:
 
     The staged directory is removed on refusal, so no half-populated view is
     left for a later figure run to read as complete.
+
+    A view path that is itself a SYMLINK is displaced by the swap like any
+    other: the link is moved aside and then unlinked (never followed into a
+    tree deletion), so the directory it pointed at survives untouched and the
+    path becomes the real view directory.
     """
     out_dir = Path(out_dir)
     staging = out_dir.parent / f"{out_dir.name}.building"
-    if staging.exists():
-        shutil.rmtree(staging)
+    _remove_path(staging)
     try:
         report = _build_view_into(results_root, staging)
     except BaseException:
         # SystemExit included: a refusal must not leave the staged tree.
-        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            _remove_path(staging)
+        except OSError:
+            pass
         raise
     previous = None
     if out_dir.exists() or out_dir.is_symlink():
         previous = out_dir.parent / f"{out_dir.name}.previous"
-        if previous.exists():
-            shutil.rmtree(previous)
+        _remove_path(previous)
         out_dir.rename(previous)
     staging.rename(out_dir)
     if previous is not None:
-        shutil.rmtree(previous)
+        _remove_path(previous)
     return report
 
 
