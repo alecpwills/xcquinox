@@ -307,10 +307,78 @@ def _train_step(model, opt_state, batch, loss_fn, optimizer):
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Escape hatch for the in-process pretraining-fidelity gate. Set to "1" to
+# train from a checkpoint that carries no PASS certificate (local probes,
+# unit tests, deliberate pre-certificate reproductions). Read from the
+# environment rather than the spec so it is visible in the job script.
+_ALLOW_UNCERTIFIED_ENV = "XCQUINOX_ALLOW_UNCERTIFIED"
+
+
+def _require_fidelity_certificate(pretrain_checkpoint: str) -> None:
+    """Refuse a pretrain checkpoint with no PASS fidelity certificate.
+
+    The certificate (``xcquinox.alec.cluster.fidelity``) is the only
+    machine-checked statement that a pretrained xnet/cnet pair reproduces its
+    parent functional (PBE for a GGA-rung architecture, SCAN for a meta-GGA
+    one). Pre-certificate checkpoints were 2.3 to 56 kcal/mol away from their
+    parent in atomization energies (recorded in
+    ``xcquinox/alec/SPEC_pretrain_fidelity_program.md`` Section 2), larger than
+    every effect the training is meant to resolve, so a training run started
+    from one measures the pretraining error rather than the architecture.
+
+    The cluster path already refuses at the array-task level; this in-process
+    check also covers notebooks, probes and any direct ``run_training`` call.
+
+    A checkpoint that sits at the harness layout ``<run_dir>/pretrain/<arch>``
+    is judged by ``fidelity.gate_certificate``, the same ON-NODE predicate
+    ``cluster/_train_task`` and ``cluster/_preflight`` use, so this check
+    cannot refuse what the spec's own array task just admitted: a run
+    configured ``fidelity.enforce: false`` with a non-empty
+    ``override_reason`` records its FAIL and proceeds (the workflow-
+    verification matrix pretrains for 50 steps on two atoms, so its verdict
+    FAILs by construction), while the RECORD layers -- ``validate_run``,
+    ``merge_v4_arms``, the figure suite -- still require PASS. Any other
+    layout carries no run configuration to read a waiver from and is held to
+    PASS.
+    """
+    if os.environ.get(_ALLOW_UNCERTIFIED_ENV) == "1":
+        return
+    from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
+                                                certificate_status_in,
+                                                gate_certificate)
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+    ckpt = os.path.abspath(pretrain_checkpoint)
+    arch = os.path.basename(ckpt)
+    run_dir = os.path.dirname(os.path.dirname(ckpt))
+    # The round trip through the layout helper is the test for "this is a
+    # harness checkpoint": it holds only when the parent directory is the
+    # run's ``pretrain/``, which is what makes (run_dir, arch) the key
+    # gate_certificate is defined on.
+    if arch and pretrain_checkpoint_dir(run_dir, arch) == ckpt:
+        allowed, reason = gate_certificate(run_dir, arch)
+        if allowed:
+            return
+    else:
+        status, reason = certificate_status_in(pretrain_checkpoint)
+        if status == VERDICT_PASS:
+            return
+    raise ValueError(
+        f"refusing to train from pretrain_checkpoint "
+        f"{pretrain_checkpoint!r}: {reason}. Produce one with `python -m "
+        f"xcquinox.alec.cluster.fidelity <run_dir> <arch_idx>`, or set "
+        f"{_ALLOW_UNCERTIFIED_ENV}=1 to train from an uncertified checkpoint "
+        "deliberately.")
+
+
 def _build_model(spec: TrainingSpec) -> AlecGGAModel:
-    """Build model from scratch or pretrain checkpoint."""
+    """Build model from scratch or pretrain checkpoint.
+
+    A pretrain checkpoint must carry a PASS fidelity certificate; see
+    :func:`_require_fidelity_certificate`.
+    """
     if spec.pretrain_checkpoint is None:
         return AlecGGAModel.from_arch(spec.arch, seed=spec.seed)
+    _require_fidelity_certificate(spec.pretrain_checkpoint)
     xnet_skeleton, cnet_skeleton = create_network_pair(spec.arch, seed=spec.seed)
     xnet_path = os.path.join(spec.pretrain_checkpoint, "xnet.eqx")
     cnet_path = os.path.join(spec.pretrain_checkpoint, "cnet.eqx")

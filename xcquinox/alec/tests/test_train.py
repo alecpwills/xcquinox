@@ -1127,6 +1127,12 @@ def test_pretrain_checkpoint_lower_initial_loss(training_batch_info):
         eqx.tree_serialise_leaves(
             os.path.join(pretrain_dir, "cnet.eqx"), model_trained.cnet
         )
+        # train._build_model refuses an uncertified pretrain checkpoint; this
+        # one is synthesised by the test, so it carries the PASS certificate a
+        # real pretrain job would have written beside the networks.
+        with open(os.path.join(pretrain_dir,
+                               "fidelity_certificate.json"), "w") as f:
+            json.dump({"verdict": "PASS", "arch": arch.name}, f)
 
         # Now train from pretrain checkpoint
         ckdir_pretrained = os.path.join(tmpdir, "pretrained")
@@ -2711,3 +2717,162 @@ def test_build_validation_data_gates_on_seed_cache_coverage(
         validation_reactions_path=str(rxn_path))
     with pytest.raises(RuntimeError, match="h2o"):
         train_mod._build_validation_data(spec)
+
+
+# ---------------------------------------------------------------------------
+# In-process pretraining-fidelity gate
+# ---------------------------------------------------------------------------
+
+def test_build_model_refuses_an_uncertified_pretrain_checkpoint(tmp_path,
+                                                                monkeypatch):
+    """A checkpoint with no certificate is refused with an actionable message.
+
+    The pre-certificate checkpoints were 2.3 to 56 kcal/mol away from their
+    parent in atomization energies; training from one silently measures that
+    offset instead of the architecture."""
+    import equinox as eqx
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.networks import create_network_pair
+
+    monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
+    arch = _make_arch()
+    xnet, cnet = create_network_pair(arch, seed=0)
+    d = tmp_path / "pretrain_ckpt"
+    d.mkdir()
+    eqx.tree_serialise_leaves(str(d / "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(str(d / "cnet.eqx"), cnet)
+
+    spec = _make_training_spec(pretrain_checkpoint=str(d))
+    with pytest.raises(ValueError, match="fidelity"):
+        train_mod._build_model(spec)
+
+
+def test_build_model_accepts_a_passing_certificate(tmp_path, monkeypatch):
+    import equinox as eqx
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.networks import create_network_pair
+
+    monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
+    arch = _make_arch()
+    xnet, cnet = create_network_pair(arch, seed=0)
+    d = tmp_path / "pretrain_ckpt"
+    d.mkdir()
+    eqx.tree_serialise_leaves(str(d / "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(str(d / "cnet.eqx"), cnet)
+    with open(d / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "PASS", "arch": arch.name}, f)
+
+    spec = _make_training_spec(pretrain_checkpoint=str(d))
+    assert train_mod._build_model(spec) is not None
+
+
+def test_build_model_refuses_a_failed_certificate(tmp_path, monkeypatch):
+    import equinox as eqx
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.networks import create_network_pair
+
+    monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
+    arch = _make_arch()
+    xnet, cnet = create_network_pair(arch, seed=0)
+    d = tmp_path / "pretrain_ckpt"
+    d.mkdir()
+    eqx.tree_serialise_leaves(str(d / "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(str(d / "cnet.eqx"), cnet)
+    with open(d / "fidelity_certificate.json", "w") as f:
+        json.dump({"verdict": "FAIL", "arch": arch.name,
+                   "summary": {"max_atom_mHa": 13.7,
+                               "max_dAE_kcalmol": 25.7}}, f)
+
+    spec = _make_training_spec(pretrain_checkpoint=str(d))
+    with pytest.raises(ValueError, match="FAIL"):
+        train_mod._build_model(spec)
+
+
+def test_env_escape_hatch_allows_an_uncertified_checkpoint(tmp_path,
+                                                           monkeypatch):
+    """Probes and one-off experiments opt out explicitly, in the environment,
+    where it is visible in the job script."""
+    import equinox as eqx
+    from xcquinox.alec import train as train_mod
+    from xcquinox.alec.networks import create_network_pair
+
+    monkeypatch.setenv(train_mod._ALLOW_UNCERTIFIED_ENV, "1")
+    arch = _make_arch()
+    xnet, cnet = create_network_pair(arch, seed=0)
+    d = tmp_path / "pretrain_ckpt"
+    d.mkdir()
+    eqx.tree_serialise_leaves(str(d / "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(str(d / "cnet.eqx"), cnet)
+
+    spec = _make_training_spec(pretrain_checkpoint=str(d))
+    assert train_mod._build_model(spec) is not None
+
+
+def test_from_scratch_models_are_untouched_by_the_gate(monkeypatch):
+    from xcquinox.alec import train as train_mod
+    monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
+    spec = _make_training_spec()
+    assert spec.pretrain_checkpoint is None
+    assert train_mod._build_model(spec) is not None
+
+
+def _write_harness_pretrain_dir(tmp_path, arch, payload):
+    """A checkpoint at the harness's ``<run_dir>/pretrain/<arch>`` layout,
+    carrying ``payload`` as its certificate."""
+    import equinox as eqx
+    from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+    from xcquinox.alec.networks import create_network_pair
+
+    run_dir = tmp_path / "run_20260821T000000Z"
+    d = pretrain_checkpoint_dir(str(run_dir), arch.name)
+    os.makedirs(d, exist_ok=True)
+    xnet, cnet = create_network_pair(arch, seed=0)
+    eqx.tree_serialise_leaves(os.path.join(d, "xnet.eqx"), xnet)
+    eqx.tree_serialise_leaves(os.path.join(d, "cnet.eqx"), cnet)
+    with open(os.path.join(d, "fidelity_certificate.json"), "w") as f:
+        json.dump(payload, f)
+    return d
+
+
+def test_build_model_honours_the_on_node_waiver(tmp_path, monkeypatch):
+    """A run configured ``fidelity.enforce: false`` reaches training.
+
+    The workflow-verification matrix pretrains for 50 steps on two atoms, so
+    its certificate FAILs by construction and its ``enforce: false`` waiver is
+    what carries the sequence past the on-node gates with the verdict on
+    record. ``_train_task`` releases such a spec through
+    ``fidelity.gate_certificate``; this in-process check reads the same
+    predicate for a checkpoint at the harness layout, or the worker
+    subprocess would refuse what its own array task just admitted.
+    """
+    from xcquinox.alec import train as train_mod
+
+    monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
+    arch = _make_arch()
+    d = _write_harness_pretrain_dir(tmp_path, arch, {
+        "verdict": "FAIL", "arch": arch.name, "enforced": False,
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": "workflow-verification matrix"},
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7}})
+
+    spec = _make_training_spec(pretrain_checkpoint=d)
+    assert train_mod._build_model(spec) is not None
+
+
+def test_build_model_refuses_a_waiver_that_states_no_reason(tmp_path,
+                                                            monkeypatch):
+    """``enforced: false`` alone is not a waiver: the reason is required on
+    the certificate, matching ``fidelity.gate_certificate``."""
+    from xcquinox.alec import train as train_mod
+
+    monkeypatch.delenv(train_mod._ALLOW_UNCERTIFIED_ENV, raising=False)
+    arch = _make_arch()
+    d = _write_harness_pretrain_dir(tmp_path, arch, {
+        "verdict": "FAIL", "arch": arch.name, "enforced": False,
+        "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                       "override_reason": "   "},
+        "summary": {"max_atom_mHa": 13.7, "max_dAE_kcalmol": 25.7}})
+
+    spec = _make_training_spec(pretrain_checkpoint=d)
+    with pytest.raises(ValueError, match="override_reason"):
+        train_mod._build_model(spec)

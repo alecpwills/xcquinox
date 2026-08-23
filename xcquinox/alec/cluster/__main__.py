@@ -59,6 +59,8 @@ from xcquinox.alec.cluster.domain import get_domain_profile
 from xcquinox.alec.cluster.inputs import prepare_inputs
 from xcquinox.alec.cluster.submit import submit_jobs
 from xcquinox.alec.cluster.materialize import write_manifest
+from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
+                                            certificate_status_in)
 
 
 # ---------------------------------------------------------------------------
@@ -992,6 +994,11 @@ def _pretrain_status(run_dir: str) -> str | None:
     report how many of those checkpoint pairs are present. The path MUST be
     derived through the same helper the pretrain worker uses, or this check
     looks in the wrong directory and reports a false ``0/N``.
+
+    Alongside the checkpoint-pair count the line reports how many
+    architectures carry a PASS fidelity certificate: the pretrain array can
+    finish and still leave the campaign blocked, because the train array is
+    gated on the certificate, not on the checkpoint files.
     """
     cfg_path = os.path.join(run_dir, _RESOLVED_CONFIG_FILENAME)
     if not os.path.exists(cfg_path):
@@ -1002,12 +1009,17 @@ def _pretrain_status(run_dir: str) -> str | None:
         return None
     archs = sorted(set(cfg.sweep.arch))
     done = 0
+    certified = 0
     for arch in archs:
         d = pretrain_checkpoint_dir(run_dir, arch)
         if (os.path.exists(os.path.join(d, "xnet.eqx"))
                 and os.path.exists(os.path.join(d, "cnet.eqx"))):
             done += 1
-    return f"{done}/{len(archs)} architecture checkpoint pair(s) present"
+        status, _reason = certificate_status_in(d)
+        if status == VERDICT_PASS:
+            certified += 1
+    return (f"{done}/{len(archs)} architecture checkpoint pair(s) present, "
+            f"{certified}/{len(archs)} architecture certificate(s) PASS")
 
 
 def cmd_status(args) -> int:

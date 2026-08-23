@@ -566,13 +566,74 @@ def _spec_in_progress(spec_dir: Path) -> bool:
             or any(spec_dir.glob("resume_*.eqx")))
 
 
+def _arch_uncertified(run_dir: Path, arch: str) -> bool:
+    """True when ``arch`` has no PASS fidelity certificate under ``run_dir``.
+
+    Registry architectures only: a name the registry does not know (legacy
+    display name, test fixture) carries no certificate expectation, matching
+    ``merge_v4_arms._validate_arm_fidelity_certificates``. This is a RECORD
+    layer: it requires PASS and ignores the certificate's ``enforced`` field,
+    which releases the on-node gates of a workflow-verification run only. A
+    merged view resolves the same ``<run_dir>/pretrain/<arch>`` layout because
+    ``merge_v4_arms.build_view`` links each arm's pretrain directory into it.
+    """
+    try:
+        from xcquinox.alec.config import get_architecture
+        from xcquinox.alec.cluster.fidelity import (VERDICT_PASS,
+                                                    certificate_status)
+    except ImportError:      # the analysis layer runs without the package
+        return False
+    try:
+        get_architecture(arch)
+    except KeyError:
+        return False
+    status, _reason = certificate_status(str(run_dir), arch)
+    return status != VERDICT_PASS
+
+
+def fidelity_summary(run_dir: Path,
+                     archs=None) -> Optional[Dict[str, Any]]:
+    """Worst per-architecture certificate numbers over ``archs``, or ``None``.
+
+    ``{"n_archs", "max_atom_mHa", "max_dAE_kcalmol"}`` -- the largest free-atom
+    E_xc offset (mHa) and the largest atomization-energy offset (kcal/mol) any
+    certified architecture of the run carries. ``archs=None`` reads every
+    architecture in the run's manifest grid. ``None`` when no architecture has
+    a readable certificate, which keeps the provenance footer of every
+    pre-gate figure byte-identical.
+    """
+    try:
+        from xcquinox.alec.cluster.fidelity import read_certificate
+        from xcquinox.alec.cluster.grid_config import pretrain_checkpoint_dir
+    except ImportError:
+        return None
+    if archs is None:
+        cells = ccp._read_manifest_cells(run_dir)
+        archs = sorted({c.get("arch") for c in cells.values() if c.get("arch")})
+    atom_devs, ae_devs, n = [], [], 0
+    for arch in archs:
+        cert = read_certificate(pretrain_checkpoint_dir(str(run_dir), arch))
+        if not cert:
+            continue
+        n += 1
+        summary = cert.get("summary") or {}
+        if _is_num(summary.get("max_atom_mHa")):
+            atom_devs.append(abs(float(summary["max_atom_mHa"])))
+        if _is_num(summary.get("max_dAE_kcalmol")):
+            ae_devs.append(abs(float(summary["max_dAE_kcalmol"])))
+    if not n or not atom_devs or not ae_devs:
+        return None
+    return {"n_archs": n, "max_atom_mHa": max(atom_devs),
+            "max_dAE_kcalmol": max(ae_devs)}
+
+
 def arch_coverage(run_dir: Path,
                   eval_subdir: str = "eval_holdout") -> Dict[str, List[str]]:
     """Per-arch coverage of this (partial) run, computed from disk.
 
     Returns ``{"trained": [...], "holdout": [...], "insample": [...],
-    "untrained": [...], "in_progress": [...]}`` -- arch names in
-    ``ARCH_ORDER`` order. ``trained`` = has ``model.eqx``; ``holdout`` = has
+    "untrained": [...], "in_progress": [...], "uncertified": [...]}`` -- arch
+    names in ``ARCH_ORDER`` order. ``trained`` = has ``model.eqx``; ``holdout`` = has
     ``<eval_subdir>/per_reaction.json``; ``insample`` = has
     ``eval/per_molecule.json``; ``untrained`` = arch in the manifest grid with
     no trained spec at all; ``in_progress`` = arch with at least one spec
@@ -580,7 +641,9 @@ def arch_coverage(run_dir: Path,
     independent evidence, not a training-status verdict: an arch can be in
     ``in_progress`` and ``trained`` at once (finished cells plus a resuming
     one). Only ``coverage_note`` intersects it with ``untrained`` to decide
-    the IN PROGRESS wording.
+    the IN PROGRESS wording. ``uncertified`` = registry arch in the manifest
+    grid with no PASS pretraining-fidelity certificate
+    (:func:`_arch_uncertified`).
     """
     cells = ccp._read_manifest_cells(run_dir)
     trained: set = set()
@@ -588,6 +651,7 @@ def arch_coverage(run_dir: Path,
     insample: set = set()
     in_progress: set = set()
     grid_archs: set = {c.get("arch") for c in cells.values() if c.get("arch")}
+    uncertified: set = {a for a in grid_archs if _arch_uncertified(run_dir, a)}
     for idx, spec_dir in ccp._spec_dirs(run_dir):
         arch = cells.get(idx, {}).get("arch")
         if arch is None:
@@ -613,6 +677,10 @@ def arch_coverage(run_dir: Path,
         # NOT untrained even when its model.eqx was not pulled (eval-only sync).
         "untrained": _ordered(grid_archs - trained - holdout - insample),
         "in_progress": _ordered(in_progress),
+        # Architectures whose pretrained networks were never shown to
+        # reproduce their parent functional. Their held-out numbers are not
+        # comparable with the parent baselines the figures draw.
+        "uncertified": _ordered(uncertified),
     }
 
 
@@ -638,6 +706,9 @@ def coverage_note(run_dir: Path, eval_subdir: str = "eval_holdout") -> str:
     if trained_no_holdout:
         parts.append(f"Trained but no held-out eval: "
                      f"{', '.join(trained_no_holdout)}.")
+    if cov.get("uncertified"):
+        parts.append("UNCERTIFIED (no PASS fidelity certificate): "
+                     f"{', '.join(cov['uncertified'])}.")
     return "  ".join(parts)
 
 
@@ -959,14 +1030,20 @@ def _pool_cov_bracket(baseline: Optional[Dict[str, Any]],
 
 
 def provenance_footer(baseline: Dict[str, float],
-                      scan_baseline: Optional[Dict[str, float]] = None) -> str:
+                      scan_baseline: Optional[Dict[str, float]] = None,
+                      fidelity: Optional[Dict[str, Any]] = None) -> str:
     """Static methodology banner + the LIVE full-pool PBE baseline, and -- when a
     SCAN-energy cache is present (``scan_baseline`` carries a finite value) -- the
     parallel full-pool SCAN meta-GGA baseline. Absent SCAN -> the string is
     byte-identical to the PBE-only footer (backward compatible). A baseline
     whose combined leg averaged fewer reactions than the canonical pool (a
     consistency-guard exclusion) carries a ``[u/r reactions]`` bracket, so a
-    reduced pool is visible on-figure; full coverage renders unchanged."""
+    reduced pool is visible on-figure; full coverage renders unchanged.
+
+    ``fidelity`` (from :func:`fidelity_summary`) appends the worst
+    per-architecture pretraining-fidelity numbers of the run, so the figure
+    states how close the pretrained networks are to their parent functional.
+    ``None`` -> the string is byte-identical to the pre-certificate footer."""
     s = (_PROVENANCE_BASE + " PBE (full pool):"
          f" BH76 {_fmt_mae(baseline.get('bh76'))}"
          f" / W4-11 {_fmt_mae(baseline.get('w411'))}"
@@ -979,6 +1056,10 @@ def provenance_footer(baseline: Dict[str, float],
               f" / W4-11 {_fmt_mae(scan_baseline.get('w411'))}"
               f" / combined {_fmt_mae(scan_baseline.get('combined'))}"
               f"{_pool_cov_bracket(scan_baseline)}.")
+    if fidelity:
+        s += (f" Pretraining fidelity (worst of {fidelity['n_archs']} arch):"
+              f" |dE_xc| atom <= {fidelity['max_atom_mHa']:.2f} mHa"
+              f" / |dAE| <= {fidelity['max_dAE_kcalmol']:.2f} kcal/mol.")
     return s
 
 
@@ -1557,6 +1638,36 @@ def _run_predates_vxc_fix(run_id: str) -> bool:
     import re as _re
     m = _re.search(r"run_(\d{8})T", str(run_id))
     return bool(m) and m.group(1) < _VXC_FIX_DATE
+
+
+# ---------------------------------------------------------------------------
+# Pretraining-fidelity disclosure. Runs started before the per-architecture
+# physics certificate existed were never checked against their parent
+# functional; the offsets measured on those checkpoints span 2.3 to 56
+# kcal/mol in atomization energies (recorded in
+# xcquinox/alec/SPEC_pretrain_fidelity_program.md Section 2), larger than the
+# architecture differences the figures resolve. Runs started after the gate
+# date carry a PASS certificate for every architecture (enforced by
+# build_bh76w411_suite) and draw no disclosure.
+# ---------------------------------------------------------------------------
+_FIDELITY_GATE_DATE = "20260821"
+_FIDELITY_DISCLOSURE = (
+    "PRETRAINING FIDELITY: this run predates the per-architecture physics "
+    "certificate; its pretrained networks were never checked against their "
+    "parent functional (PBE for GGA-rung, SCAN for meta-GGA). Atomization-"
+    "energy offsets measured on pre-certificate checkpoints span 2.3 to 56 "
+    "kcal/mol.")
+
+
+def _run_predates_fidelity_gate(run_id: str) -> bool:
+    """True when the run's encoded start date predates the certificate gate.
+
+    Run directories encode their start as ``run_YYYYMMDDTHHMMSSZ``; an id
+    without that stamp is conservatively treated as post-gate (no disclosure)
+    so synthetic and test ids do not acquire one."""
+    import re as _re
+    m = _re.search(r"run_(\d{8})T", str(run_id))
+    return bool(m) and m.group(1) < _FIDELITY_GATE_DATE
 
 
 def _vxc_hatch(arch: str) -> Optional[str]:
@@ -2788,6 +2899,10 @@ def _stamp_parity_footer(fig, *, run_id: str, title: str, note: str,
     """``extra_note`` adds a SECOND red footer line above ``note`` (used for the
     unequal-training-depth disclosure). Left None -- the default -- the footer
     stack sits exactly where it did before the parameter existed."""
+    if _run_predates_fidelity_gate(run_id):
+        # Leads the footer: it bounds every number on the figure, so it must
+        # be read before the V_xc provenance and before the panel note.
+        note = _FIDELITY_DISCLOSURE + ("  " + note if note else "")
     if _run_predates_vxc_fix(run_id):
         # Every figure of a pre-correction run carries the V_xc provenance,
         # bar panels or not; post-fix runs stamp nothing.
@@ -3082,7 +3197,7 @@ def build_parity_variants(run_dir: Path, outdir: Path,
         print(f"  (PBE baseline unavailable: {exc})")
         baseline = {"bh76": float("nan"), "w411": float("nan"),
                     "combined": float("nan")}
-    prov = provenance_footer(baseline)
+    prov = provenance_footer(baseline, None, fidelity_summary(run_dir))
     caveat = nn_vs_pbe_caveat(rows, baseline)
     ds_e = _holdout_eval_note(rows, [])
     variants = [
@@ -7368,7 +7483,8 @@ def build_density_energy_figures(run_dir: Path, outdir: Path,
         scan_density_baseline(collect_holdout_density_rows(
             run_dir, eval_subdir=eval_subdir), run_dir,
             _records=scan_dens_recs) if scan_dens_recs else None)
-    prov = provenance_footer(baseline, scan_baseline)
+    prov = provenance_footer(baseline, scan_baseline,
+                             fidelity_summary(run_dir))
     caveat = nn_vs_pbe_caveat(rows, baseline)
     dens_prov = ("In-sample density vs CCSD: grid weighted-mean RMSE/L1 on trained "
                  "species (atoms excluded).")
@@ -8016,7 +8132,8 @@ def build_all(run_dir: Path, outdir: Path,
     except Exception as exc:
         print(f"  (SCAN per-reaction errors unavailable: {exc})")
         scan_errs = {}
-    prov = provenance_footer(baseline, scan_baseline)
+    prov = provenance_footer(baseline, scan_baseline,
+                             fidelity_summary(run_dir))
     # These five figures stamp their footers with bespoke fig.text stacks (no
     # _stamp_parity_footer dataset slot), so the dataset sentence rides the
     # grey provenance line instead of a dedicated line.
@@ -8167,6 +8284,16 @@ def build_bh76w411_suite(results_root: Optional[Path] = None,
                     f"{cov['archs_not_in_order']}; add them to ARCH_ORDER/"
                     "ARCH_COLOR (and the per-arch F_x/F_c forms) before "
                     "regenerating, else they are dropped from the figures.")
+            uncertified = cov["coverage"]["uncertified"]
+            if uncertified:
+                raise ValueError(
+                    f"{basis} {cov['run']} carries architectures with no PASS "
+                    f"pretraining-fidelity certificate {uncertified}; their "
+                    "pretrained networks were never shown to reproduce their "
+                    "parent functional, so their held-out numbers cannot be "
+                    "read against the parent baselines these figures draw. "
+                    "Run `python -m xcquinox.alec.cluster.fidelity <run_dir> "
+                    "<arch_idx>` for each and resubmit the arm.")
             if cov["archs_missing"]:
                 print(f"   (incomplete -- ARCH_ORDER archs with no held-out eval "
                       f"cell yet: {cov['archs_missing']})")

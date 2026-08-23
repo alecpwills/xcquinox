@@ -1048,7 +1048,40 @@ def test_status_pretrain_checkpoint_uses_run_scoped_path(tmp_path):
     assert ck == os.path.join(os.path.abspath(str(run_dir)), "pretrain", arch)
 
     line = cli._pretrain_status(str(run_dir))
-    assert line == "1/1 architecture checkpoint pair(s) present"
+    assert line == ("1/1 architecture checkpoint pair(s) present, "
+                    "0/1 architecture certificate(s) PASS")
+
+
+def test_pretrain_status_counts_passing_certificates(tmp_path):
+    """A checkpoint pair on disk is not the same as a certified architecture:
+    `status` must show both counts so an operator can see the pretrain array
+    finished but the physics gate did not."""
+    import json
+    from xcquinox.alec.cluster.grid_config import (
+        load_grid_config, pretrain_checkpoint_dir,
+    )
+    run_dir = tmp_path / "run_TESTID"
+    run_dir.mkdir()
+    d = _base_config_dict()
+    d["sweep"]["arch"] = ["medium", "shallow"]
+    gp = tmp_path / "_g.json"
+    gp.write_text(json.dumps(d))
+    cfg = load_grid_config(str(gp))
+    cli._write_resolved_config(cfg, str(run_dir))
+
+    for arch in sorted(set(cfg.sweep.arch)):
+        ck = pretrain_checkpoint_dir(str(run_dir), arch)
+        os.makedirs(ck, exist_ok=True)
+        open(os.path.join(ck, "xnet.eqx"), "wb").close()
+        open(os.path.join(ck, "cnet.eqx"), "wb").close()
+    # Only one of the two certified.
+    ck = pretrain_checkpoint_dir(str(run_dir), "medium")
+    with open(os.path.join(ck, "fidelity_certificate.json"), "w") as f:
+        json.dump({"verdict": "PASS", "arch": "medium"}, f)
+
+    assert cli._pretrain_status(str(run_dir)) == (
+        "2/2 architecture checkpoint pair(s) present, "
+        "1/2 architecture certificate(s) PASS")
 
 
 def test_classify_failure_treats_killed_by_signal_as_timeout(tmp_path):

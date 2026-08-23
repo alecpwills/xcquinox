@@ -67,6 +67,17 @@ def _make_run_dir(root: Path) -> Path:
     (run_dir / "manifest.json").write_text(json.dumps(manifest))
     (run_dir / "specs").mkdir()
 
+    # Every architecture of a real run carries a PASS fidelity certificate;
+    # the figure fixtures describe that state, and the gate's own tests
+    # remove or downgrade one.
+    for arch in sorted({c["arch"] for c in specs}):
+        pd = run_dir / "pretrain" / arch
+        pd.mkdir(parents=True, exist_ok=True)
+        (pd / "fidelity_certificate.json").write_text(json.dumps(
+            {"verdict": "PASS", "arch": arch,
+             "summary": {"max_atom_mHa": 0.31, "max_dAE_kcalmol": 0.62,
+                         "n_systems": 40, "failure_reasons": []}}))
+
     for i, cell in enumerate(specs):
         sd = run_dir / "checkpoints" / f"spec_{i:04d}"
         sd.mkdir(parents=True)
@@ -3122,6 +3133,16 @@ def _make_dfs_results(tmp_path):
     (run_dir / "specs").mkdir()
     (run_dir / "resolved_config.yaml").write_text(
         "basis: def2-svp\ndensity_fit: false\n")
+    # Certified, like every run the suite is allowed to build for; an arch
+    # still pretraining (deep_cusp here) is certified before its first train
+    # cell, so an in-progress run is not an uncertified one.
+    for arch in sorted({c["arch"] for c in specs}):
+        pd = run_dir / "pretrain" / arch
+        pd.mkdir(parents=True, exist_ok=True)
+        (pd / "fidelity_certificate.json").write_text(json.dumps(
+            {"verdict": "PASS", "arch": arch,
+             "summary": {"max_atom_mHa": 0.31, "max_dAE_kcalmol": 0.62,
+                         "n_systems": 40, "failure_reasons": []}}))
     for i, cell in enumerate(specs):
         sd = run_dir / "checkpoints" / f"spec_{i:04d}"
         sd.mkdir(parents=True)
@@ -5867,3 +5888,158 @@ def test_holdout_loaders_refuse_a_sliced_channel_before_reading_it(tmp_path):
         fig.collect_holdout_reaction_rows(run)
     with pytest.raises(RuntimeError, match="spec_0000"):
         fig.collect_holdout_density_rows(run)
+
+
+# ---------------------------------------------------------------------------
+# Pretraining-fidelity certificates in the figure layer
+# ---------------------------------------------------------------------------
+
+def test_arch_coverage_reports_no_uncertified_arch_for_a_certified_run(
+        tmp_path):
+    run = _make_run_dir(tmp_path)
+    assert fig.arch_coverage(run)["uncertified"] == []
+
+
+def test_arch_coverage_flags_a_missing_certificate(tmp_path):
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").unlink()
+    assert fig.arch_coverage(run)["uncertified"] == ["deep"]
+
+
+def test_arch_coverage_flags_a_failed_certificate(tmp_path):
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "deep",
+                    "summary": {"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7}}))
+    assert "deep" in fig.arch_coverage(run)["uncertified"]
+
+
+def test_arch_coverage_flags_an_unenforced_failure(tmp_path):
+    """The figure layer is a record layer: `enforced: false` does not make a
+    FAIL acceptable on a figure."""
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "FAIL", "arch": "deep", "enforced": False,
+                    "tolerances": {"tol_AE": 1.0, "tol_atom": 1.0,
+                                   "override_reason": "workflow matrix"},
+                    "summary": {"max_atom_mHa": 13.7,
+                                "max_dAE_kcalmol": 25.7}}))
+    assert "deep" in fig.arch_coverage(run)["uncertified"]
+
+
+def test_arch_coverage_ignores_non_registry_arch_names(tmp_path):
+    """Legacy display names carry no certificate expectation, matching the
+    merge guard, or every historical figure would read as uncertified."""
+    run = tmp_path / "r"
+    run.mkdir()
+    (run / "manifest.json").write_text(json.dumps(
+        {"n_specs": 1, "width": 4,
+         "specs": [{"index": 0, "spec_file": "spec_0000.spec",
+                    "sha256": "x" * 64,
+                    "cell": {"arch": "legacy_display_name",
+                             "subset_size": 1}}]}))
+    (run / "specs").mkdir()
+    assert fig.arch_coverage(run)["uncertified"] == []
+
+
+def test_coverage_note_names_the_uncertified_archs(tmp_path):
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep" / "fidelity_certificate.json").unlink()
+    note = fig.coverage_note(run)
+    assert "UNCERTIFIED (no PASS fidelity certificate)" in note
+    assert "deep" in note
+
+
+def test_coverage_note_is_silent_when_every_arch_is_certified(tmp_path):
+    run = _make_run_dir(tmp_path)
+    assert "UNCERTIFIED" not in fig.coverage_note(run)
+
+
+def test_pre_gate_runs_carry_the_fidelity_disclosure_first(tmp_path):
+    import matplotlib.pyplot as plt
+    assert fig._run_predates_fidelity_gate("run_20260810T202813Z") is True
+    assert fig._run_predates_fidelity_gate("run_20260901T000000Z") is False
+    assert fig._run_predates_fidelity_gate("synthetic-id") is False
+    f = plt.figure()
+    fig._stamp_parity_footer(f, run_id="run_20260810T202813Z", title="t",
+                             note="base note", provenance=None, caveat=None)
+    texts = [t.get_text() for t in f.texts]
+    stamped = [t for t in texts if fig._FIDELITY_DISCLOSURE in t]
+    assert stamped, texts
+    assert stamped[0].startswith(fig._FIDELITY_DISCLOSURE)
+    assert "base note" in stamped[0]
+    plt.close(f)
+
+
+def test_post_gate_runs_carry_no_fidelity_disclosure(tmp_path):
+    import matplotlib.pyplot as plt
+    f = plt.figure()
+    fig._stamp_parity_footer(f, run_id="run_20260901T000000Z", title="t",
+                             note="base note", provenance=None, caveat=None)
+    assert not any(fig._FIDELITY_DISCLOSURE in t.get_text() for t in f.texts)
+    plt.close(f)
+
+
+def test_fidelity_summary_reads_the_worst_certificate_numbers(tmp_path):
+    run = _make_run_dir(tmp_path)
+    (run / "pretrain" / "deep_attn" / "fidelity_certificate.json").write_text(
+        json.dumps({"verdict": "PASS", "arch": "deep_attn",
+                    "summary": {"max_atom_mHa": 0.9,
+                                "max_dAE_kcalmol": 0.85}}))
+    got = fig.fidelity_summary(run, ["deep", "deep_notransform", "deep_attn"])
+    assert got["n_archs"] == 3
+    assert got["max_atom_mHa"] == pytest.approx(0.9)
+    assert got["max_dAE_kcalmol"] == pytest.approx(0.85)
+
+
+def test_fidelity_summary_is_none_without_certificates(tmp_path):
+    run = _make_run_dir(tmp_path)
+    for arch in ("deep", "deep_notransform", "deep_attn"):
+        (run / "pretrain" / arch / "fidelity_certificate.json").unlink()
+    assert fig.fidelity_summary(run, ["deep"]) is None
+
+
+def test_provenance_footer_is_byte_identical_without_a_fidelity_argument():
+    baseline = {"bh76": 8.0, "w411": 12.0, "combined": 10.0}
+    assert fig.provenance_footer(baseline) == fig.provenance_footer(
+        baseline, None, None)
+
+
+def test_provenance_footer_carries_the_certificate_numbers():
+    baseline = {"bh76": 8.0, "w411": 12.0, "combined": 10.0}
+    s = fig.provenance_footer(baseline, None,
+                              {"n_archs": 7, "max_atom_mHa": 0.42,
+                               "max_dAE_kcalmol": 0.71})
+    assert "Pretraining fidelity" in s
+    assert "7 arch" in s
+    assert "0.42 mHa" in s
+    assert "0.71 kcal/mol" in s
+
+
+def test_build_bh76w411_suite_refuses_an_uncertified_run(tmp_path):
+    root, runs = _make_bh76w411_results(tmp_path)
+    (runs["svp_grid2"] / "pretrain" / "deep"
+     / "fidelity_certificate.json").unlink()
+    with pytest.raises(ValueError, match="fidelity certificate"):
+        fig.build_bh76w411_suite(results_root=root, outroot=tmp_path / "f")
+
+
+def test_build_parity_variants_stamps_the_certificate_numbers(tmp_path,
+                                                              monkeypatch):
+    """The wiring: a certified run's figures carry its worst certificate
+    numbers on the grey provenance line."""
+    run = _make_run_dir(tmp_path)
+    seen = []
+    real = fig.provenance_footer
+
+    def _spy(baseline, scan_baseline=None, fidelity=None):
+        seen.append(fidelity)
+        return real(baseline, scan_baseline, fidelity)
+
+    monkeypatch.setattr(fig, "provenance_footer", _spy)
+    fig.build_parity_variants(run, tmp_path / "out")
+    assert seen, "provenance_footer was never called"
+    assert seen[0] is not None
+    assert seen[0]["max_atom_mHa"] == pytest.approx(0.31)
+    assert seen[0]["max_dAE_kcalmol"] == pytest.approx(0.62)
