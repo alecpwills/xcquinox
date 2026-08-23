@@ -156,6 +156,7 @@ def _reassemble_features_on_grid(
     rung35_proj_ao: "jnp.ndarray | None" = None,
     rung35ms_proj_ao: "jnp.ndarray | None" = None,
     metagga_ao: "jnp.ndarray | None" = None,
+    spin_channel: "int | None" = None,
 ) -> "jnp.ndarray":
     """Compute descriptor features from (dm, S) on a specific grid.
 
@@ -172,6 +173,10 @@ def _reassemble_features_on_grid(
     alpha+beta into a 2-D total DM and routing UKS through the RKS
     idempotency branch would instead produce a non-zero,
     physically-meaningless idempotency_error.
+
+    ``spin_channel`` selects the per-channel block of diag(P_sigma, P_sigma)
+    instead of the physical block. It is the block the exact exchange spin
+    scaling evaluates; correlation keeps ``spin_channel=None``.
     """
     from xcquinox.alec.descriptors import (
         CuspDescriptor, DMStatisticsDescriptor, DMRung35Descriptor,
@@ -179,6 +184,15 @@ def _reassemble_features_on_grid(
     from xcquinox.features import compute_cusp_descriptor
 
     dm_arr = jnp.asarray(dm)
+    if spin_channel is not None:
+        # Per-channel block: every density-matrix descriptor is evaluated on the
+        # symmetric doubled density diag(P_sigma, P_sigma) (Oliver and Perdew,
+        # Phys. Rev. A 20, 397 (1979)). Doubling here is sufficient for every
+        # branch below: the meta-GGA branch derives rho, sigma and tau from
+        # dm_arr itself, so it reads 2 rho_sigma, 4 sigma_sigma_sigma and
+        # 2 tau_sigma without further change.
+        from xcquinox.alec.descriptors import doubled_spin_dm
+        dm_arr = doubled_spin_dm(dm_arr, spin_channel)
     # Keep dm_arr's ndim intact; compute_dm_features dispatches on it.
 
     n_grid = int(grid_coords.shape[0])
@@ -259,9 +273,13 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
     The holder carries:
       - ``"features_full"``: jnp.ndarray of shape (n_grid, n_features),
         the descriptor features on pyscfad's actual grid assembled from
-        the current DM.
+        the current DM (the physical block; correlation consumes it).
+      - ``"features_full_a"`` / ``"features_full_b"``: the per-channel blocks
+        of the symmetric doubled densities diag(P_a, P_a) / diag(P_b, P_b) on
+        the same grid, which the spin-scaled exchange terms consume; ``None``
+        on a closed-shell (RKS) run, where the UKS callback is never entered.
       - ``"offset"``: int, running offset into the full-grid feature
-        array. Reset to 0 at the start of each ``get_veff`` call and
+        arrays. Reset to 0 at the start of each ``get_veff`` call and
         advanced by ``block_size`` each time ``eval_xc`` is invoked.
 
     The callback handles both RKS (spin=0) and UKS (spin=1) pyscf/pyscfad
@@ -271,16 +289,19 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
         vsigma (n_grid, 3) in (uu, ud, dd) ordering.
 
     UKS uses the SOLV-01 split (see alec.oneshot `_uks_spin_resolved_vxc`):
-        E_xc^UKS = 0.5 (E_x[2 rho_a, 4 sigma_aa] + E_x[2 rho_b, 4 sigma_bb])
-                 +      E_c[rho_tot, sigma_tot]
+        E_xc^UKS = 0.5 (E_x[2 rho_a, 4 sigma_aa, f_a] + E_x[2 rho_b, 4 sigma_bb, f_b])
+                 +      E_c[rho_tot, sigma_tot, f_tot]
     EXCHANGE obeys the exact spin-scaling relation (Oliver & Perdew, Phys.
-    Rev. A 20, 397 (1979)); CORRELATION does NOT and is evaluated once on the
-    TOTAL density (zeta=0), because the baseline ``pw92c_unpolarized_scalar``
-    is spin-unpolarized (von Barth & Hedin, J. Phys. C 5, 1629 (1972); PW92,
-    Phys. Rev. B 45, 13244 (1992)). The per-spin libxc derivatives are then
-        vrho_s   = v_rho^x(2 rho_s, 4 sigma_ss) + v_rho^c(rho_tot, sigma_tot)
-        vsigma_uu = 2 v_sigma^x(2 rho_a, 4 sigma_aa) + v_sigma^c(rho_tot)
-        vsigma_dd = 2 v_sigma^x(2 rho_b, 4 sigma_bb) + v_sigma^c(rho_tot)
+    Rev. A 20, 397 (1979)), each channel evaluated at the descriptor block
+    ``f_sigma`` of its OWN doubled density diag(P_sigma, P_sigma);
+    CORRELATION does NOT and is evaluated once on the TOTAL density with the
+    physical block ``f_tot`` (zeta=0 on the default path), because the
+    baseline ``pw92c_unpolarized_scalar`` is spin-unpolarized (von Barth &
+    Hedin, J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45, 13244 (1992)).
+    The per-spin libxc derivatives are then
+        vrho_s   = v_rho^x(2 rho_s, 4 sigma_ss, f_s) + v_rho^c(rho_tot, sigma_tot, f_tot)
+        vsigma_uu = 2 v_sigma^x(2 rho_a, 4 sigma_aa, f_a) + v_sigma^c(rho_tot)
+        vsigma_dd = 2 v_sigma^x(2 rho_b, 4 sigma_bb, f_b) + v_sigma^c(rho_tot)
         vsigma_ud = 2 v_sigma^c(rho_tot)
     The non-zero ``ud`` term comes entirely from the total-density
     correlation (sigma_tot = sigma_uu + 2 sigma_ud + sigma_dd).
@@ -296,68 +317,76 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
     features_frozen = assemble_descriptor_features(descriptors, mol_data)
     n_features = features_frozen.shape[1]
 
-    def _features_for_block(block_size: int) -> jnp.ndarray:
-        """Return features sized for a single block of ``block_size`` points.
+    def _slice_block(features_full, offset: int, block_size: int) -> jnp.ndarray:
+        """One block of a full-grid feature array, zero-padded on the tail.
 
-        pyscfad's ``block_loop`` splits the grid into chunks (default
-        ~224 points) under ``jax.grad`` / traced execution, and may keep
-        the whole grid as one block under eager execution. The block
-        loop iterates sequentially through the grid.
+        pyscfad's ``block_loop`` may emit non-uniform block sizes, the last
+        block of an unpadded grid is smaller than NBLK, and ``non0tab`` pruning
+        can skip blocks entirely while still advancing the internal cursor. Both
+        cases produce a short slice. Padded grid points carry zero weight in the
+        downstream numint summation, so the padding value never reaches the
+        energy or the Fock matrix; only the shape contract matters.
+        """
+        features_slice = features_full[offset:offset + block_size]
+        slice_n = features_slice.shape[0]
+        if slice_n < block_size:
+            pad = jnp.zeros((block_size - slice_n, features_slice.shape[1]),
+                            dtype=features_slice.dtype)
+            features_slice = jnp.concatenate([features_slice, pad], axis=0)
+        elif slice_n > block_size:
+            # Cannot happen from a Python slice; defensive only.
+            raise ValueError(
+                "Feature slice oversized: offset="
+                f"{offset}, block_size={block_size}, slice={slice_n}, "
+                f"full grid={features_full.shape[0]}. This indicates a bug in "
+                "the slicing logic."
+            )
+        return features_slice
 
-        When a ``feature_holder`` is supplied (descriptor-ful
-        architecture on pyscfad's actual grid), we slice
-        ``features_full`` at the current offset and advance the counter.
-        The holder is refreshed per-cycle under REASSEMBLE and stays at
-        the dm_pbe features under FROZEN.
+    def _features_for_block(block_size: int):
+        """Return ``(features_tot, features_a, features_b)`` for one grid block.
 
-        When no holder is supplied (empty descriptors or legacy
-        FROZEN-on-precompute-grid), we fall back to the precompute
-        features.
+        ``features_a`` / ``features_b`` are the descriptor features of the
+        symmetric doubled densities diag(P_a, P_a) and diag(P_b, P_b), which the
+        spin-scaled exchange terms evaluate (Oliver and Perdew, Phys. Rev. A 20,
+        397 (1979)); ``features_tot`` is the physical block the spin-interpolated
+        correlation term consumes. On a closed-shell (RKS) run the per-channel
+        blocks are ``None`` and the RKS branch uses the total block alone.
+
+        pyscfad's ``block_loop`` splits the grid into chunks (default ~224
+        points) under ``jax.grad`` / traced execution, and may keep the whole
+        grid as one block under eager execution. The grid offset advances ONCE
+        per call, so a caller that needs more than one block must take them
+        from a single call. The holder is refreshed per cycle under REASSEMBLE
+        and stays at the seed-density blocks under FROZEN.
+
+        When no holder is supplied (empty descriptors or the legacy
+        FROZEN-on-precompute-grid path), the precompute features are returned
+        as the total block; that path has no per-channel blocks.
         """
         if n_features == 0:
-            return jnp.zeros((block_size, 0), dtype=features_frozen.dtype)
+            empty = jnp.zeros((block_size, 0), dtype=features_frozen.dtype)
+            return empty, empty, empty
 
         if feature_holder is not None:
-            features_full = feature_holder["features_full"]
             offset = int(feature_holder["offset"])
-            features_slice = features_full[offset:offset + block_size]
-            # pyscfad's block_loop may emit non-uniform
-            # block sizes, the last block of an unpadded grid is smaller
-            # than NBLK, and `non0tab` pruning can skip blocks entirely
-            # while still advancing block_loop's internal cursor. Both
-            # cases produce ``features_slice.shape[0] != block_size``.
-            #
-            # When the slice is shorter than the requested block (last-
-            # block tail / pruned overshoot), zero-pad the trailing rows.
-            # Those grid points have zero weight in pyscfad's downstream
-            # numint summation (the corresponding ``rho``/``weights``
-            # arrays are zero), so padded feature rows contribute nothing
-            # to the energy/Fock, the value of the padding is irrelevant
-            # so long as the shape contract is satisfied.
-            slice_n = features_slice.shape[0]
-            if slice_n < block_size:
-                pad_n = block_size - slice_n
-                pad = jnp.zeros(
-                    (pad_n, features_slice.shape[1]),
-                    dtype=features_slice.dtype,
-                )
-                features_slice = jnp.concatenate([features_slice, pad], axis=0)
-            elif slice_n > block_size:
-                # Cannot happen from a Python slice; defensive only.
-                raise ValueError(
-                    "Feature slice oversized: offset="
-                    f"{offset}, block_size={block_size}, slice="
-                    f"{slice_n}, full grid={features_full.shape[0]}. "
-                    "This indicates a bug in the slicing logic."
-                )
+            tot = _slice_block(feature_holder["features_full"], offset,
+                               block_size)
+            per_spin = []
+            for key in ("features_full_a", "features_full_b"):
+                full = feature_holder.get(key)
+                per_spin.append(None if full is None
+                                else _slice_block(full, offset, block_size))
             feature_holder["offset"] = offset + block_size
-            return features_slice
+            return tot, per_spin[0], per_spin[1]
 
-        # Legacy path: use precompute features directly. Works only when
-        # the block loop returns the whole grid as one block AND
-        # pyscfad's grid matches the precompute grid.
+        # Legacy path: use precompute features directly. Reached only when the
+        # block loop returns the whole grid as one block AND pyscfad's grid
+        # matches the precompute grid; the holder is installed for every
+        # descriptor-carrying architecture, so no per-channel block is needed
+        # here (the UKS branch refuses to proceed without them).
         if block_size == features_frozen.shape[0]:
-            return features_frozen
+            return features_frozen, None, None
         raise ValueError(
             "pyscfad backend with FROZEN features requires block_loop to "
             "return the full grid as one block, but got block_size="
@@ -417,26 +446,42 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
             sigma_tot = sigma_aa + 2.0 * sigma_ab + sigma_bb
 
             # SOLV-01 split. EXCHANGE obeys the exact spin-scaling relation
-            # (Oliver & Perdew, Phys. Rev. A 20, 397 (1979)):
+            # (Oliver and Perdew, Phys. Rev. A 20, 397 (1979)):
             #   E_x = 0.5 (E_x[2 rho_a, 4 sigma_aa] + E_x[2 rho_b, 4 sigma_bb]),
-            # evaluated per spin. CORRELATION does NOT, it is evaluated ONCE
-            # on the TOTAL density (zeta=0) on the default fast path, because
-            # the baseline pw92c_unpolarized_scalar is spin-unpolarized (von
-            # Barth & Hedin, J. Phys. C 5, 1629 (1972); PW92, Phys. Rev. B 45,
-            # 13244 (1992)). When cnet.use_spin_polarization is set,
-            # correlation instead uses the zeta-dependent PW92 baseline and a
-            # per-spin vrho_c (Dick & Fernandez-Serra, PRB 104 L161109 (2021)).
+            # evaluated per spin, each channel at the descriptor block of its
+            # OWN doubled density diag(P_sigma, P_sigma). CORRELATION does not
+            # obey it: it is spin-interpolated and evaluated ONCE on the TOTAL
+            # density with the total block (von Barth and Hedin, J. Phys. C 5,
+            # 1629 (1972); Perdew and Wang, Phys. Rev. B 45, 13244 (1992)). When
+            # cnet.use_spin_polarization is set, correlation uses the
+            # zeta-dependent PW92 baseline and a per-spin vrho_c (Dick and
+            # Fernandez-Serra, Phys. Rev. B 104, L161109 (2021)).
             #
             # Use a block-sized features slice since pyscfad chunks the grid
-            # under jax.grad / jit tracing.
-            features_blk = _features_for_block(int(rho_a.shape[0]))
+            # under jax.grad / jit tracing; one call yields all three blocks and
+            # advances the grid offset exactly once.
+            features_blk, features_blk_a, features_blk_b = _features_for_block(
+                int(rho_a.shape[0]))
+            if features_blk_a is None or features_blk_b is None:
+                # Only the holder-less legacy path lacks per-channel blocks.
+                # Falling back to the total block in both exchange channels
+                # would silently reinstate the superseded two-block evaluation
+                # on an open shell, so the path is refused instead.
+                raise ValueError(
+                    "UKS eval_xc without per-channel feature blocks: the "
+                    "spin-scaled exchange terms need the descriptor blocks of "
+                    "diag(P_a, P_a) and diag(P_b, P_b) (feature_holder keys "
+                    "'features_full_a' / 'features_full_b'); the holder-less "
+                    "legacy path cannot supply them."
+                )
             rho_tot = rho_a + rho_b
-            # Exchange: per-spin, at the spin-scaled (2 rho_s, 4 sigma_ss).
+            # Exchange: per-spin, at the spin-scaled (2 rho_s, 4 sigma_ss) and
+            # the channel's own block.
             ex_a_density, vrho_x_a, vsigma_x_a = _eval_part(
-                eval_single_x, 2.0 * rho_a, 4.0 * sigma_aa, features_blk,
+                eval_single_x, 2.0 * rho_a, 4.0 * sigma_aa, features_blk_a,
             )
             ex_b_density, vrho_x_b, vsigma_x_b = _eval_part(
-                eval_single_x, 2.0 * rho_b, 4.0 * sigma_bb, features_blk,
+                eval_single_x, 2.0 * rho_b, 4.0 * sigma_bb, features_blk_b,
             )
             # Correlation. When the cnet is spin-polarization-aware,
             # eps_c depends on rho_a/rho_b through BOTH rho_tot AND
@@ -515,8 +560,9 @@ def _make_alec_eval_xc(model, descriptors, mol_data, policy,
         dx, dy, dz = jnp.asarray(rho[1]), jnp.asarray(rho[2]), jnp.asarray(rho[3])
         sigma = dx * dx + dy * dy + dz * dz
         # Pyscfad splits the grid into blocks under jax.grad / jit
-        # tracing, so size the features slice to the current block.
-        features_blk = _features_for_block(int(rho0.shape[0]))
+        # tracing, so size the features slice to the current block. A closed
+        # shell has one block; the per-channel slots are unused here.
+        features_blk = _features_for_block(int(rho0.shape[0]))[0]
         exc_density, vrho, vsigma = _eval_rks(rho0, sigma, features_blk)
         # Same low-rho JVP guard as the UKS path above.
         _RHO_EPS = 1e-12
@@ -689,17 +735,39 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
         _rung35ms_proj_ao = _maybe_rung35ms_proj_ao(descriptors, mol,
                                                     mf.grids.coords)
         _metagga_ao = _maybe_metagga_ao_grad(descriptors, mol, mf.grids.coords)
-        feature_holder = {
-            "features_full": _reassemble_features_on_grid(
+        _s_matrix = jnp.asarray(mol_data["s_matrix"])
+        _grid_coords = jnp.asarray(mf.grids.coords)
+
+        def _blocks_on_grid(dm_value, mol_value):
+            """Total block plus, for an open shell, the two per-channel blocks
+            of the symmetric doubled densities diag(P_a, P_a) / diag(P_b, P_b),
+            all on pyscfad's actual grid. The grid, the overlap and the three
+            cached constant precomputes are fixed across the SCF."""
+            common = dict(
                 descriptors=descriptors,
-                dm=mol_data["dm_pbe"],
-                s_matrix=jnp.asarray(mol_data["s_matrix"]),
-                grid_coords=jnp.asarray(mf.grids.coords),
-                mol=mol,
+                s_matrix=_s_matrix,
+                grid_coords=_grid_coords,
+                mol=mol_value,
                 rung35_proj_ao=_rung35_proj_ao,
-            rung35ms_proj_ao=_rung35ms_proj_ao,
+                rung35ms_proj_ao=_rung35ms_proj_ao,
                 metagga_ao=_metagga_ao,
-            ),
+            )
+            total = _reassemble_features_on_grid(dm=dm_value, **common)
+            if not is_uks:
+                return total, None, None
+            return (
+                total,
+                _reassemble_features_on_grid(dm=dm_value, spin_channel=0,
+                                             **common),
+                _reassemble_features_on_grid(dm=dm_value, spin_channel=1,
+                                             **common),
+            )
+
+        _tot0, _a0, _b0 = _blocks_on_grid(mol_data["dm_pbe"], mol)
+        feature_holder = {
+            "features_full": _tot0,
+            "features_full_a": _a0,
+            "features_full_b": _b0,
             "offset": 0,
         }
 
@@ -717,13 +785,11 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
 
     # Wrap get_veff so the block offset is reset to 0 before pyscfad's
     # numint enters block_loop (each get_veff call == one full pass over
-    # the grid). For REASSEMBLE, additionally refresh features_full from
-    # the current DM. For FROZEN with a holder, only the offset reset
-    # runs; features_full stays at its initial (dm_pbe) value.
+    # the grid). For REASSEMBLE, additionally refresh the three full-grid
+    # blocks from the current DM. For FROZEN with a holder, only the offset
+    # reset runs; the blocks stay at their initial (dm_pbe) values.
     if feature_holder is not None:
         original_get_veff = mf.get_veff
-        _s_matrix = jnp.asarray(mol_data["s_matrix"])
-        _grid_coords = jnp.asarray(mf.grids.coords)
 
         def _holder_get_veff(mol_=None, dm=None, *args, **kwargs):
             # Pass the caller-supplied ``mol_`` through
@@ -736,16 +802,10 @@ def _run_pyscfad_scf_impl(config: SolverConfig, model, mol_data: dict) -> SCFRes
             # ``mol`` only when the caller passes ``None``.
             mol_eff = mol_ if mol_ is not None else mol
             if policy == FeaturePolicy.REASSEMBLE and dm is not None:
-                feature_holder["features_full"] = _reassemble_features_on_grid(
-                    descriptors=descriptors,
-                    dm=dm,
-                    s_matrix=_s_matrix,
-                    grid_coords=_grid_coords,
-                    mol=mol_eff,
-                    rung35_proj_ao=_rung35_proj_ao,
-            rung35ms_proj_ao=_rung35ms_proj_ao,
-                    metagga_ao=_metagga_ao,
-                )
+                (feature_holder["features_full"],
+                 feature_holder["features_full_a"],
+                 feature_holder["features_full_b"]) = _blocks_on_grid(
+                    dm, mol_eff)
             feature_holder["offset"] = 0
             return original_get_veff(mol_eff, dm, *args, **kwargs)
 

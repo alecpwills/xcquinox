@@ -156,7 +156,9 @@ def _compute_total_energy_uks(
     sigma_aa: jnp.ndarray,
     sigma_bb: jnp.ndarray,
     sigma_tot: jnp.ndarray,
-    features: jnp.ndarray,
+    features_a: jnp.ndarray,
+    features_b: jnp.ndarray,
+    features_tot: jnp.ndarray,
     grid_weights: jnp.ndarray,
     h_core: jnp.ndarray,
     J_total: jnp.ndarray,
@@ -166,9 +168,9 @@ def _compute_total_energy_uks(
 
     E_total = e_nuc + Tr[h·(D_a+D_b)] + 0.5·Tr[J_total·(D_a+D_b)] + E_xc^NN
 
-    E_xc^NN = 0.5 * sum_g w_g [eps_x(2·rho_a, 4·sigma_aa)
-                              + eps_x(2·rho_b, 4·sigma_bb)]
-            +       sum_g w_g  eps_c(rho_tot, sigma_tot)
+    E_xc^NN = 0.5 * sum_g w_g [eps_x(2 rho_a, 4 sigma_aa, f_a)
+                              + eps_x(2 rho_b, 4 sigma_bb, f_b)]
+            +       sum_g w_g  eps_c(rho_tot, sigma_tot, f_tot)
 
     Only EXCHANGE obeys the spin-scaling relation (Oliver & Perdew, Phys.
     Rev. A 20, 397 (1979)). CORRELATION is evaluated ONCE on the TOTAL
@@ -182,11 +184,14 @@ def _compute_total_energy_uks(
     guards. ``sigma_tot`` must be |nabla rho_tot|^2 = sigma_aa + 2 sigma_ab
     + sigma_bb computed by the caller from nabla_rho_a + nabla_rho_b.
 
-    LIMITATION (descriptor features), P2-02: the exchange spin-scaling is
-    EXACT only for a feature-free (rho, sigma) F_x. With descriptor features
-    active, the same molecular features feed both doubled-spin exchange evals,
-    so the open-shell relation is an approximation (closed-shell -> RKS stays
-    exact). See ``oneshot.split_exc_energy_uks`` for the full discussion.
+    EXACT SPIN SCALING FOR DESCRIPTOR FEATURES. ``features_a`` and
+    ``features_b`` are the descriptor blocks of the symmetric doubled densities
+    diag(P_a, P_a) and diag(P_b, P_b) -- the spin-unpolarized systems the
+    Oliver-Perdew relation refers to -- so the relation stays exact with
+    density-matrix descriptors active. ``features_tot`` is the physical block
+    that the spin-interpolated correlation term consumes. At rho_a = rho_b the
+    three coincide and this reduces to the RKS functional exactly. See
+    ``oneshot.split_exc_energy_uks``.
 
     ``split_exc_energy_uks`` evaluates correlation with the real
     zeta-dependent PW92 baseline when ``cnet.use_spin_polarization`` is set
@@ -200,7 +205,7 @@ def _compute_total_energy_uks(
     E_coul = 0.5 * jnp.einsum("ij,ij->", J_total, D_tot)
     E_xc_nn = split_exc_energy_uks(
         model, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot,
-        features, grid_weights,
+        features_a, features_b, features_tot, grid_weights,
     )
     return e_nuc + E_one + E_coul + E_xc_nn
 
@@ -460,7 +465,8 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
 
     Per-cycle:
       1. rho_a/rho_b, nabla_rho_a/nabla_rho_b, sigma_aa/sigma_bb from (D_a, D_b)
-      2. features assembled from total density (D_tot = D_a + D_b)
+      2. three descriptor blocks: the alpha and beta blocks of
+         diag(P_sigma, P_sigma) for exchange, the total block for correlation
       3. V_xc^NN_s via the Task 10 spin-scaling relation
          (compute_vxc_nn called with (2 rho_s, 4 sigma_ss, 2 nabla_rho_s))
       4. J_total = J[D_a] + J[D_b] (FULL) or pinned (FIXED_J)
@@ -468,7 +474,9 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
       6. Stack (D_a, D_b) and apply the linear mixer elementwise
       7. Energy from D_mixed using ``_compute_total_energy_uks`` (spin-scaled XC)
     """
-    from xcquinox.alec.descriptors import assemble_descriptor_features
+    from xcquinox.alec.descriptors import (
+        MetaGGAAlphaDescriptor, assemble_descriptor_features)
+    from xcquinox.alec.solver import make_uks_feature_fns
     from xcquinox.alec.oneshot import (
         compute_vxc_nn, compute_vc_polarized_per_spin,
         feature_energy_derivative, feature_response_vxc,
@@ -493,6 +501,39 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
     s_matrix = mol_data["s_matrix"]
 
     features_initial = assemble_descriptor_features(model.descriptors, mol_data)
+    if not model.descriptors:
+        features_initial_a = features_initial
+        features_initial_b = features_initial
+    elif policy == FeaturePolicy.FROZEN:
+        # Frozen per-channel blocks: the descriptor features of the symmetric
+        # doubled densities diag(P_a, P_a) and diag(P_b, P_b) at the precompute
+        # density matrix. Freezing one block and reusing it for all three would
+        # reinstate the approximation this evaluation removes. Built only under
+        # FROZEN: REASSEMBLE never reads them (the live closures below supply
+        # every block), so a record without stored per-spin blocks still runs
+        # self-consistently.
+        features_initial_a = assemble_descriptor_features(
+            model.descriptors, mol_data, spin_channel=0)
+        features_initial_b = assemble_descriptor_features(
+            model.descriptors, mol_data, spin_channel=1)
+    else:
+        features_initial_a = None
+        features_initial_b = None
+
+    # The three live ``P_ab -> block`` maps. ``make_uks_feature_fns`` is the
+    # one implementation of the doubled-density convention for a live density
+    # matrix; the energy, the potential and the feature-response term all
+    # consume these same closures, so the potential cannot drift from the
+    # functional.
+    _features_a_of, _features_b_of, _features_tot_of = make_uks_feature_fns(
+        descriptors=model.descriptors,
+        ao_deriv=ao_grid_deriv,
+        s_matrix=s_matrix,
+        n_grid=grid_weights.shape[0],
+        cusp_features=cusp_cached,
+        rung35_proj_ao=mol_data.get("rung35_proj_ao"),
+        rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
+    )
 
     def _spin_resolved_rho(D_ab):
         D_a = D_ab[0]
@@ -501,102 +542,148 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         rho_b = jnp.einsum("ij,gi,gj->g", D_b, ao_grid, ao_grid)
         nabla_rho_a = 2.0 * jnp.einsum("ij,dgi,gj->gd", D_a, ao_xyz, ao_grid)
         nabla_rho_b = 2.0 * jnp.einsum("ij,dgi,gj->gd", D_b, ao_xyz, ao_grid)
-        sigma_aa = jnp.sum(nabla_rho_a * nabla_rho_a, axis=1)
-        sigma_bb = jnp.sum(nabla_rho_b * nabla_rho_b, axis=1)
+        # The gradient invariants are reduced with the kernel's einsum
+        # (``_contract_dm_to_grid_with_nabla``), the reduction the live
+        # per-channel closures use for the same channel, so ``4 sigma_ss`` here
+        # and the ``4 sigma_ss`` inside the channel's feature block are the same
+        # array. Under JAX_PLATFORMS=cpu a ``jnp.sum(nabla * nabla, axis=1)``
+        # reduction differs from the einsum by 2-3e-16 relative on 13-23% of
+        # the grid points (O and Li, def2-svp), which the meta-GGA indicator
+        # amplifies to 5e-11 in the resolved region and 5e-10 in the tail.
+        sigma_aa = jnp.einsum("gd,gd->g", nabla_rho_a, nabla_rho_a)
+        sigma_bb = jnp.einsum("gd,gd->g", nabla_rho_b, nabla_rho_b)
         # total-density gradient for the correlation piece (zeta=0).
         # nabla_rho_tot = nabla_rho_a + nabla_rho_b, sigma_tot = |nabla_rho_tot|^2
         # = sigma_aa + 2 sigma_ab + sigma_bb.
         nabla_rho_tot = nabla_rho_a + nabla_rho_b
-        sigma_tot = jnp.sum(nabla_rho_tot * nabla_rho_tot, axis=1)
+        sigma_tot = jnp.einsum("gd,gd->g", nabla_rho_tot, nabla_rho_tot)
         return (rho_a, rho_b, nabla_rho_a, nabla_rho_b,
                 sigma_aa, sigma_bb, nabla_rho_tot, sigma_tot)
 
     def _features_for(D_ab):
-        """Assemble descriptor features from the current DM pair.
+        """The three descriptor blocks for the current DM pair.
 
-        CuspDescriptor is geometry-only. DMStatisticsDescriptor receives
-        the SPIN-RESOLVED 3-D DM (Pople-Nesbet 1954: D_sigma S D_sigma =
-        D_sigma per spin) so the per-spin idempotency-projector branch
-        of compute_dm_features fires. Summing alpha+beta into a 2-D total
-        DM would instead route UKS through the RKS branch and produce a
-        non-zero physically-meaningless idempotency_error. FROZEN policy
-        reuses the initial features.
+        Returns ``(features_a, features_b, features_tot)``. The per-channel
+        blocks are the features of the symmetric doubled densities
+        diag(P_a, P_a) and diag(P_b, P_b), which is what the spin-scaled
+        exchange terms evaluate (Oliver and Perdew, Phys. Rev. A 20, 397
+        (1979)); the total block is the physical one the spin-interpolated
+        correlation term consumes. Every density-matrix descriptor receives the
+        SPIN-RESOLVED 3-D density matrix, so DMStatisticsDescriptor keeps its
+        per-spin idempotency-projector branch (Pople-Nesbet 1954: D_sigma S
+        D_sigma = D_sigma per spin) rather than the RKS branch, whose
+        idempotency_error would be non-zero and physically meaningless.
+        FROZEN policy reuses the initial blocks.
         """
-        if policy == FeaturePolicy.FROZEN:
-            return features_initial
-        if not model.descriptors:
-            return features_initial
-        # meta-GGA alpha is a TOTAL-density quantity: recompute the total rho/sigma
-        # from the summed spin DM only when a meta-GGA descriptor is present (no
-        # cost for non-meta-GGA UKS archs).
-        # metagga_features is populated by precompute iff a meta-GGA descriptor is
-        # present -> the natural flag (no descriptor-type import needed here).
-        mgga_kw = {}
-        if mol_data.get("metagga_features") is not None:
-            rho_t, _nab_t, sigma_t = _contract_dm_to_grid_with_nabla(
-                D_ab[0] + D_ab[1], ao_grid_deriv)
-            mgga_kw = dict(ao_grad=ao_grid_deriv[1:4], rho=rho_t, sigma=sigma_t)
-        return _reassemble_features(
-            descriptors=model.descriptors,
-            dm=D_ab,                        # 3-D spin-resolved
-            s_matrix=s_matrix,
-            cusp_features=cusp_cached,
-            n_grid=grid_weights.shape[0],
-            rung35_proj_ao=mol_data.get("rung35_proj_ao"),
-            rung35ms_proj_ao=mol_data.get("rung35ms_proj_ao"),
-            **mgga_kw,
-        )
+        if policy == FeaturePolicy.FROZEN or not model.descriptors:
+            return features_initial_a, features_initial_b, features_initial
+        return (_features_a_of(D_ab), _features_b_of(D_ab),
+                _features_tot_of(D_ab))
 
     _needs_feature_response = (
         policy != FeaturePolicy.FROZEN and has_dm_dependent_descriptor(model)
     )
 
-    def _feature_response_uks(D_ab, features, rho_a, rho_b, sigma_aa, sigma_bb,
-                              sigma_tot):
+    # Column indices of the iso-orbital indicator within the feature block
+    # (declaration order; the same width in all three blocks).
+    _alpha_cols = []
+    _col_offset = 0
+    for _d in model.descriptors:
+        if isinstance(_d, MetaGGAAlphaDescriptor):
+            _alpha_cols.extend(range(_col_offset, _col_offset + _d.n_features))
+        _col_offset += _d.n_features
+    _alpha_cols = tuple(_alpha_cols)
+
+    def _drop_one_orbital_indicator_response(dedf, n_electrons):
+        """Zero the iso-orbital-indicator columns of ``de/df`` for a block
+        built on a ONE-ELECTRON density (a channel's doubled density when
+        n_s = 1, e.g. Li beta or H alpha; the total density when N = 1, the
+        H atom).
+
+        A one-electron density is a single orbital, for which tau = tau_W
+        pointwise (the von Weizsacker bound is an equality for one orbital),
+        so the indicator alpha = (tau - tau_W)/tau_unif of that block is
+        identically ZERO along the loop's own manifold -- the Roothaan step
+        always returns an idempotent aufbau matrix of fixed rank -- and the
+        exact response of the column vanishes. Autodiff cannot see the
+        manifold: alpha_raw is a 0/0 whose clip at 0 is active on the
+        rounding-selected half of the grid, and the contraction returns
+        whichever side the rounding picks. Measured (deep_mgga_3x16,
+        def2-svp, grid level 1, 1e-14 relative change of the density
+        matrix): Li's beta-channel term is 1.13 Ha and moves by 0.93 Ha; H's
+        alpha-channel and total-block terms move by 3.4e-3 and 7.6e-4 Ha;
+        every multi-electron block is stable to 4e-16. Zeroing the columns
+        implements the exact value; free H and Li atoms are atomization
+        anchors, so the Fock must be a function of the density there, not of
+        the rounding. n = 0 (an empty channel) is vacuous -- ``de/df`` is
+        already zeroed by the density-tail mask of
+        ``feature_energy_derivative`` -- and is included in the gate only for
+        uniformity. Other descriptor columns are smooth in P and stay live.
+        """
+        if not _alpha_cols:
+            return dedf
+        keep = jnp.where(jnp.asarray(n_electrons) <= 1, 0.0, 1.0)
+        col_scale = jnp.ones((dedf.shape[1],), dtype=dedf.dtype)
+        col_scale = col_scale.at[jnp.asarray(_alpha_cols)].set(
+            keep.astype(dedf.dtype))
+        return dedf * col_scale[None, :]
+
+    def _feature_response_uks(D_ab, features_a, features_b, features_tot,
+                              rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot):
         """Per-spin V_xc contribution from the descriptors' DM dependence.
 
-        The SAME features enter all three terms of the split UKS energy, so
-        de/df is ACCUMULATED across them before a single contraction against
-        df/dP:
+        Each term of the split UKS energy carries its OWN feature block,
 
-            E_xc = 1/2 sum_g w_g [e_x(2 rho_a, 4 sigma_aa, f)
-                                  + e_x(2 rho_b, 4 sigma_bb, f)]
-                 +     sum_g w_g  e_c(rho_tot, sigma_tot, f [, zeta])
+            E_xc = 1/2 sum_g w_g [e_x(2 rho_a, 4 sigma_aa, f_a(P))
+                                  + e_x(2 rho_b, 4 sigma_bb, f_b(P))]
+                 +     sum_g w_g  e_c(rho_tot, sigma_tot, f_tot(P) [, zeta]),
 
-        so de/df = 1/2 (de_x/df|_a + de_x/df|_b) + de_c/df, each evaluated at
-        its own spin-scaled arguments. Differentiating the shared ``P ->
-        features`` map once then yields both spin blocks at once, since the
-        descriptors consume the spin-resolved DM.
+        and f_a, f_b, f_tot are three DIFFERENT maps of P, so the chain-rule
+        term is three contractions rather than one accumulated de/df followed by
+        a single contraction. f_sigma is the block of diag(P_sigma, P_sigma) and
+        therefore depends on P only through P_sigma, so its contraction lands
+        entirely in that spin block; the total block couples both.
         """
         rho_tot = rho_a + rho_b
-        dedf = 0.5 * (
-            feature_energy_derivative(
-                model, 2.0 * rho_a, 4.0 * sigma_aa, features, part="x")
-            + feature_energy_derivative(
-                model, 2.0 * rho_b, 4.0 * sigma_bb, features, part="x")
-        )
+        v = feature_response_vxc(
+            _drop_one_orbital_indicator_response(
+                0.5 * feature_energy_derivative(
+                    model, 2.0 * rho_a, 4.0 * sigma_aa, features_a, part="x"),
+                nocc_a),
+            grid_weights, _features_a_of, D_ab)
+        v = v + feature_response_vxc(
+            _drop_one_orbital_indicator_response(
+                0.5 * feature_energy_derivative(
+                    model, 2.0 * rho_b, 4.0 * sigma_bb, features_b, part="x"),
+                nocc_b),
+            grid_weights, _features_b_of, D_ab)
         if model.cnet.use_spin_polarization:
-            dedf = dedf + feature_energy_derivative(
-                model, rho_tot, sigma_tot, features, part="c",
+            dedf_c = feature_energy_derivative(
+                model, rho_tot, sigma_tot, features_tot, part="c",
                 zeta=uks_zeta(rho_a, rho_b))
         else:
-            dedf = dedf + feature_energy_derivative(
-                model, rho_tot, sigma_tot, features, part="c")
-        return feature_response_vxc(dedf, grid_weights, _features_for, D_ab)
+            dedf_c = feature_energy_derivative(
+                model, rho_tot, sigma_tot, features_tot, part="c")
+        dedf_c = _drop_one_orbital_indicator_response(dedf_c, nocc_a + nocc_b)
+        return v + feature_response_vxc(dedf_c, grid_weights,
+                                        _features_tot_of, D_ab)
 
-    def _vx_nn_spin(features, rho_s, sigma_ss, nabla_rho_s):
+    def _vx_nn_spin(features_s, rho_s, sigma_ss, nabla_rho_s):
         """EXCHANGE-only spin-scaled V_x^NN for a single spin channel.
 
         Functional derivative of 0.5 (E_x[2 rho_a] + E_x[2 rho_b]) w.r.t. the
         spin DM (Oliver & Perdew, Phys. Rev. A 20, 397 (1979)). The shared
         correlation potential vc (computed once on the total density) is
         added separately by the caller.
+
+        ``features_s`` is the channel's own block, the descriptor features of
+        diag(P_sigma, P_sigma).
         """
         return compute_vxc_nn(
             model,
             2.0 * rho_s,
             4.0 * sigma_ss,
-            features,
+            features_s,
             ao_grid,
             grid_weights,
             nabla_rho=2.0 * nabla_rho_s,
@@ -604,7 +691,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
             part="x",
         )
 
-    def _vc_nn_total(features, rho_tot, sigma_tot, nabla_rho_tot):
+    def _vc_nn_total(features_tot, rho_tot, sigma_tot, nabla_rho_tot):
         """CORRELATION V_c^NN on the TOTAL density, computed ONCE.
 
         Correlation does not obey the exchange spin-scaling relation; it is
@@ -615,12 +702,15 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         this SAME matrix enters BOTH spin Fock matrices. This is the
         ``use_spin_polarization=False`` fast path; the zeta-dependent per-spin
         path uses ``compute_vc_polarized_per_spin`` in the SCF body.
+
+        ``features_tot`` is the physical block; correlation never sees the
+        per-channel blocks.
         """
         return compute_vxc_nn(
             model,
             rho_tot,
             sigma_tot,
-            features,
+            features_tot,
             ao_grid,
             grid_weights,
             nabla_rho=nabla_rho_tot,
@@ -638,11 +728,12 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
     # Initial energy at D0 = D_PBE.
     (rho_a0, rho_b0, nabla_rho_a0, nabla_rho_b0,
      sigma_aa0, sigma_bb0, _nabla_tot0, sigma_tot0) = _spin_resolved_rho(D0)
-    features_0 = _features_for(D0)
+    features_0_a, features_0_b, features_0_tot = _features_for(D0)
     J_total_0 = _j_total_for_cycle(D0)
     E0 = _compute_total_energy_uks(
         model, D0[0], D0[1], rho_a0, rho_b0, sigma_aa0, sigma_bb0, sigma_tot0,
-        features_0, grid_weights, h_core, J_total_0, e_nuc,
+        features_0_a, features_0_b, features_0_tot,
+        grid_weights, h_core, J_total_0, e_nuc,
     )
 
     mixer = _build_mixer(config)
@@ -660,12 +751,13 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         D_cur = state.density_matrix  # (2, nao, nao)
         (rho_a, rho_b, nabla_rho_a, nabla_rho_b,
          sigma_aa, sigma_bb, nabla_rho_tot, sigma_tot) = _spin_resolved_rho(D_cur)
-        features = _features_for(D_cur)
-        # V_xc^s = vx_s (exchange spin-scaled) + correlation.
-        # a spin-polarization-aware cnet makes correlation PER-SPIN
-        # (zeta couples the channels); otherwise vc is shared (the fast path).
-        vx_a = _vx_nn_spin(features, rho_a, sigma_aa, nabla_rho_a)
-        vx_b = _vx_nn_spin(features, rho_b, sigma_bb, nabla_rho_b)
+        features_a, features_b, features_tot = _features_for(D_cur)
+        # V_xc^s = vx_s (exchange spin-scaled, at the channel's own block)
+        # + correlation (at the total block). A spin-polarization-aware cnet
+        # makes correlation PER-SPIN (zeta couples the channels); otherwise vc
+        # is shared (the fast path).
+        vx_a = _vx_nn_spin(features_a, rho_a, sigma_aa, nabla_rho_a)
+        vx_b = _vx_nn_spin(features_b, rho_b, sigma_bb, nabla_rho_b)
         if not hasattr(model.cnet, "use_spin_polarization"):
             raise AttributeError(
                 "model.cnet has no `use_spin_polarization` attribute (model "
@@ -675,18 +767,20 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
             )
         if model.cnet.use_spin_polarization:
             vc_a, vc_b = compute_vc_polarized_per_spin(
-                model, rho_a, rho_b, sigma_tot, features, ao_grid,
+                model, rho_a, rho_b, sigma_tot, features_tot, ao_grid,
                 grid_weights, nabla_rho_tot, ao_grid_deriv,
             )
             vxc_nn_a = vx_a + vc_a
             vxc_nn_b = vx_b + vc_b
         else:
-            vc = _vc_nn_total(features, rho_a + rho_b, sigma_tot, nabla_rho_tot)
+            vc = _vc_nn_total(features_tot, rho_a + rho_b, sigma_tot,
+                              nabla_rho_tot)
             vxc_nn_a = vx_a + vc
             vxc_nn_b = vx_b + vc
         if _needs_feature_response:
             v_feat = _feature_response_uks(
-                D_cur, features, rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot)
+                D_cur, features_a, features_b, features_tot,
+                rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot)
             vxc_nn_a = vxc_nn_a + v_feat[0]
             vxc_nn_b = vxc_nn_b + v_feat[1]
         j_total = _j_total_for_cycle(D_cur)
@@ -702,11 +796,12 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         # RKS path, avoids a hybrid D_cur/D_mixed energy).
         (rho_a_m, rho_b_m, _nra_m, _nrb_m,
          sig_aa_m, sig_bb_m, _ntot_m, sig_tot_m) = _spin_resolved_rho(D_mixed)
-        features_m = _features_for(D_mixed)
+        features_m_a, features_m_b, features_m_tot = _features_for(D_mixed)
         j_total_m = _j_total_for_cycle(D_mixed)
         E_new = _compute_total_energy_uks(
             model, D_mixed[0], D_mixed[1], rho_a_m, rho_b_m, sig_aa_m, sig_bb_m,
-            sig_tot_m, features_m, grid_weights, h_core, j_total_m, e_nuc,
+            sig_tot_m, features_m_a, features_m_b, features_m_tot,
+            grid_weights, h_core, j_total_m, e_nuc,
         )
         is_conv = criterion.is_converged_from_energies(state.energy, E_new)
         already = state.converged
@@ -730,7 +825,10 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
 
     final_state, energy_trace = _iterate_scf(config, body, init_state, forward_only)
 
-    features_final = _features_for(final_state.density_matrix)
+    # SCFResult.features_used records the PHYSICAL descriptor block; the two
+    # per-channel blocks are internal to the exchange spin scaling.
+    _features_final_a, _features_final_b, features_final = _features_for(
+        final_state.density_matrix)
 
     return SCFResult(
         density_matrix=final_state.density_matrix,
