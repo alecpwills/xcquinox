@@ -384,7 +384,7 @@ _REFERENCE_SCF_MAX_CYCLE = 100
 _REFERENCE_SCF_NEWTON_MAX_CYCLE = 50
 
 
-def _converge_reference_scf(mf):
+def _converge_reference_scf(mf, label="the reference SCF"):
     """Run ``mf`` to pyscf's convergence criterion: DIIS first, then the
     second-order solver (SOSCF) from the DIIS end point if DIIS stalls.
 
@@ -394,38 +394,83 @@ def _converge_reference_scf(mf):
     and instance-level ``get_hcore``, so an orientation lock stays applied)
     after the second stage -- the SCF cycles run in total (DIIS cycles plus
     second-order macro-iterations), and ``"diis"`` or ``"diis+newton"``. The
-    caller reads ``converged`` from the returned object.
+    caller reads ``converged`` from the returned object. ``label`` names the
+    SCF in refusal messages. A second stage that cannot run (the empty
+    rotation space below) or that raises inside pyscf is reported as
+    :class:`ReferenceSCFNotConverged` carrying the DIIS cycle count -- never
+    as the bare pyscf exception.
 
     Both stages test the same criterion, |g| < sqrt(conv_tol) and
     dE < conv_tol (``scf.hf.kernel``; ``soscf.newton_ah.kernel`` derives its
     ``conv_tol_grad`` from ``conv_tol`` the same way), so the second stage
     changes the minimizer, not the bar. The reference SCF always starts from
     the minao guess: a start from a converged PBE density of the same system
-    was measured and rejected -- on the unlocked O atom at def2-SVP / grid
-    level 1 it stalled in 1 of 3 processes against 0 of 3 for the minao
-    start; under the orientation lock it carried the PBE orientation into the
-    SCAN run and converged to a stationary point 1.7e-4 Ha above the lock's
-    minimum in 2 of 3 processes, which the minao start reached in 9 of 9; and
-    for a closed shell it changes the pruned grid (9088 -> 9080 points on
-    H2O / sto-3g) unless the grid is pre-initialized with the minao guess.
-    The second stage starts from the DIIS end point, not from the guess, for
-    the same reason: SOSCF from the minao guess converged the locked SCAN O
-    atom to a point 8e-5 Ha above the DIIS solution, whereas from the DIIS
-    end point it reproduces the DIIS energy to 2e-10 Ha (SCAN, converged
-    case) and lands within 4e-9 Ha of converged DIIS attempts (PBE stall).
+    was measured and rejected, not because the minao start cannot stall -- it
+    can, on both functionals (unlocked SCAN O atom at def2-SVP / grid level
+    1: 2 of 12 processes stalled, one at a final gradient of 8.98e-5, with
+    another run converging at 46 of 50 cycles; the stalled draw is exactly
+    what the second stage rescues, measured 106 total cycles, diis+newton) --
+    but because the seed adds hazards with no return: under the orientation
+    lock it carried the PBE orientation into the SCAN run and converged to a
+    stationary point 1.7e-4 Ha above the lock's minimum in 2 of 3 processes
+    (the minao start reached the minimum in 9 of 9), unlocked it stalled in 1
+    of 3 processes itself, and it changes the pruned grid (9088 -> 9080
+    points on H2O / sto-3g) unless the grid is pre-initialized with the minao
+    guess. The second stage starts from the DIIS end point, not from the
+    guess, for the same reason: SOSCF from the minao guess converged the
+    locked SCAN O atom to a point 8e-5 Ha above the DIIS solution, whereas
+    from the DIIS end point it reproduces the DIIS energy to 2e-10 Ha (SCAN,
+    converged case) and lands within 1e-6 Ha of converged DIIS attempts
+    (PBE stall: 4e-9 Ha on one draw, 2.3e-8 to 9.8e-7 Ha over five further
+    rescued draws -- the flat-direction slack the 3.2e-5 gradient criterion
+    leaves).
     """
     mf.max_cycle = _REFERENCE_SCF_MAX_CYCLE
     mf.kernel()
     cycles = int(mf.cycles)
     if mf.converged:
         return mf, cycles, "diis"
-    so = mf.newton()
-    so.max_cycle = _REFERENCE_SCF_NEWTON_MAX_CYCLE
-    macro = []
-    # newton_ah.kernel calls back with its locals after every macro-iteration
-    # and once more after the loop; the last imacro is the count minus one.
-    so.callback = lambda envs: macro.append(int(envs["imacro"]))
-    so.kernel(dm0=mf.make_rdm1())
+    # The measured crash class of the second stage: an UNRESTRICTED system
+    # whose orbital-rotation space is empty in both spin channels -- the H
+    # atom in a minimal basis (alpha 1 occupied, 0 virtual; beta 0 occupied,
+    # 1 virtual; zero occupied-virtual pairs) -- makes pyscf's SOSCF pack a
+    # scalar in place of the rotation vector and die in newton_ah.rotate_mo
+    # with TypeError: 'float' object is not subscriptable. The electron count
+    # is not the trigger: H at def2-svp (same nelec (1, 0), four alpha
+    # pairs) runs the stage, and the restricted zero-pair case (He at
+    # sto-3g) converges in it. Refused by name here so the certificate sees
+    # a convergence refusal, not a pyscf internal.
+    occ = np.asarray(mf.mo_occ)
+    channels = occ if occ.ndim == 2 else occ[None]
+    rotation_pairs = sum(
+        int(np.count_nonzero(o > 0)) * int(np.count_nonzero(o == 0))
+        for o in channels)
+    if occ.ndim == 2 and rotation_pairs == 0:
+        n_occ = [int(np.count_nonzero(o > 0)) for o in channels]
+        raise ReferenceSCFNotConverged(
+            f"{label} did not converge in the DIIS stage (converged=False, "
+            f"cycles={cycles}, max_cycle={_REFERENCE_SCF_MAX_CYCLE}), and "
+            "the second-order stage cannot run it: the unrestricted "
+            "orbital-rotation space is empty in both spin channels "
+            f"(occupied per channel {n_occ} of {int(channels.shape[1])} "
+            "orbitals, no occupied-virtual pairs), which pyscf's SOSCF "
+            "cannot represent.",
+            cycles=cycles)
+    try:
+        so = mf.newton()
+        so.max_cycle = _REFERENCE_SCF_NEWTON_MAX_CYCLE
+        macro = []
+        # newton_ah.kernel calls back with its locals after every
+        # macro-iteration and once more after the loop; the last imacro is
+        # the count minus one.
+        so.callback = lambda envs: macro.append(int(envs["imacro"]))
+        so.kernel(dm0=mf.make_rdm1())
+    except Exception as exc:
+        raise ReferenceSCFNotConverged(
+            f"{label}: the second-order stage raised "
+            f"{type(exc).__name__}: {exc} after the DIIS stage "
+            f"(cycles={cycles}, max_cycle={_REFERENCE_SCF_MAX_CYCLE}).",
+            cycles=cycles) from exc
     newton_cycles = (macro[-1] + 1) if macro else 0
     return so, cycles + newton_cycles, "diis+newton"
 
@@ -797,7 +842,8 @@ def precompute_fixed_density_data(
     # refused. No caller runs a deliberately short reference SCF, so the
     # refusal is unconditional; the stamps go into mol_metadata for the
     # consumers that check provenance (cluster.fidelity reads them).
-    mf, reference_scf_cycles, reference_scf_solver = _converge_reference_scf(mf)
+    mf, reference_scf_cycles, reference_scf_solver = _converge_reference_scf(
+        mf, label=f"the reference {reference_xc} SCF for {mol_spec.name!r}")
     reference_scf_converged = bool(mf.converged)
     if not reference_scf_converged:
         raise ReferenceSCFNotConverged(

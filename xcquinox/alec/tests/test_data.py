@@ -1715,8 +1715,10 @@ def test_reference_scf_second_stage_converges_a_stalled_diis_run(monkeypatch):
     stall this stage exists for is the orientation-locked PBE O atom at
     def2-SVP / grid level 1, where DIIS from the minao guess failed in 2 of 3
     attempts at 50 cycles and 1 of 3 at 100 (|g| 3.2e-4 to 6.2e-4), and the
-    second-order stage converged every time (7 macro-iterations, to the
-    DIIS-converged energy within 4e-9 Ha)."""
+    second-order stage converged every time (7 macro-iterations; 4e-9 Ha from
+    the DIIS-converged energy on that draw, 2.3e-8 to 9.8e-7 Ha over five
+    further rescued draws -- the flat-direction slack the 3.2e-5 gradient
+    criterion leaves)."""
     import xcquinox.alec.data as data_mod
     from pyscf import dft, gto
     from xcquinox.alec.data import precompute_fixed_density_data
@@ -1791,3 +1793,103 @@ def test_locked_oxygen_scan_reference_converges_and_matches_pyscf():
         mf = so
     assert abs(float(md["E_pbe"]) - float(mf.e_tot)) < 1e-8
     assert np.asarray(md["dm_pbe"]).ndim == 3
+
+
+def test_one_electron_reference_forced_through_second_stage_is_refused(
+        monkeypatch):
+    """pyscf's SOSCF cannot represent an orbital-rotation step for an
+    UNRESTRICTED system whose rotation space is empty in both channels: the H
+    atom in a minimal basis has one AO per channel (alpha 1 occupied, 0
+    virtual; beta 0 occupied, 1 virtual; zero occupied-virtual pairs), the
+    packed rotation vector degenerates to a scalar, and newton_ah.rotate_mo
+    dies with TypeError: 'float' object is not subscriptable (measured).
+    Forced through the second stage (both caps at 1), the precompute must
+    refuse with ReferenceSCFNotConverged naming the stage, the system and the
+    cycle count -- never surface pyscf's TypeError. The guard is the measured
+    crash class, not the electron count: H at def2-svp (same nelec (1, 0),
+    four alpha pairs) runs the stage, and the restricted zero-pair case (He
+    at sto-3g) converges in it."""
+    import xcquinox.alec.data as data_mod
+    from xcquinox.alec.data import (_PRECOMPUTE_CACHE,
+                                    ReferenceSCFNotConverged,
+                                    precompute_fixed_density_data,
+                                    set_precompute_cache_enabled)
+    from xcquinox.alec.tests.fixtures.molecules import h_atom
+    set_precompute_cache_enabled(True)
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_MAX_CYCLE", 1)
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_NEWTON_MAX_CYCLE", 1)
+    with pytest.raises(ReferenceSCFNotConverged) as info:
+        precompute_fixed_density_data(h_atom(), reference_xc="scan")
+    assert not isinstance(info.value, TypeError)
+    msg = str(info.value)
+    for needle in ("'H'", "scan", "second-order", "cycles=1"):
+        assert needle in msg, needle
+    assert info.value.cycles == 1
+    assert len(_PRECOMPUTE_CACHE) == 0
+
+
+def test_second_stage_exception_is_wrapped_into_the_refusal(monkeypatch):
+    """Whatever pyscf raises inside the second-order stage surfaces as the
+    convergence refusal carrying the original error text and the DIIS cycle
+    count -- never as the bare exception, which would reach the certificate
+    as a stray TypeError instead of a refusal it can record per system. The
+    stage entry point (scf.hf.SCF.newton resolves soscf.newton_ah.newton at
+    call time) is replaced here with one that raises, which stands in for any
+    in-stage pyscf failure."""
+    import xcquinox.alec.data as data_mod
+    from pyscf.soscf import newton_ah
+    from xcquinox.alec.data import (ReferenceSCFNotConverged,
+                                    precompute_fixed_density_data)
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_MAX_CYCLE", 2)
+
+    def _raise(mf):
+        raise ValueError("synthetic second-order failure")
+
+    monkeypatch.setattr(newton_ah, "newton", _raise)
+    with pytest.raises(ReferenceSCFNotConverged) as info:
+        precompute_fixed_density_data(_h2o_spec(), reference_xc="scan")
+    msg = str(info.value)
+    for needle in ("'H2O_refxc'", "second-order", "ValueError",
+                   "synthetic second-order failure", "cycles=2"):
+        assert needle in msg, needle
+    assert info.value.cycles == 2
+
+
+def test_locked_oxygen_fallback_rescues_a_cut_diis_stage(monkeypatch):
+    """The second-order stage must deliver the certificate's locked O atom
+    when DIIS runs out, and must not be caught by the rotation-space guard
+    (the O atom has occupied-virtual pairs in both channels). With the DIIS
+    stage cut to 5 cycles (14 are needed, measured), the record converges
+    through "diis+newton" in 3 macro-iterations -- 8 cycles in total -- and
+    lands on the same locked solution: total energy 2.3e-11 Ha from the
+    full-DIIS run, in 3 of 3 measured attempts. Green before the round-2
+    guard by construction: it pins what the guard must not break."""
+    import xcquinox.alec.data as data_mod
+    from pyscf import dft, gto
+    from xcquinox.alec.config import MoleculeSpec
+    from xcquinox.alec.data import precompute_fixed_density_data
+    from xcquinox.alec.orientation_lock import (DEFAULT_STRENGTH,
+                                                orientation_lock_bias)
+    monkeypatch.setattr(data_mod, "_REFERENCE_SCF_MAX_CYCLE", 5)
+    spec = MoleculeSpec(name="O_refxc_fallback", atom="O 0 0 0",
+                        basis="def2-svp", charge=0, spin=2,
+                        atom_composition=(("O", 1),), grid_level=1)
+    lock = float(DEFAULT_STRENGTH)
+    md = precompute_fixed_density_data(spec, reference_xc="scan",
+                                       orientation_lock_strength=lock)
+    meta = md["mol_metadata"]
+    assert meta["reference_scf_converged"] is True
+    assert meta["reference_scf_solver"] == "diis+newton"
+    assert 5 < meta["reference_scf_cycles"] \
+        <= 5 + data_mod._REFERENCE_SCF_NEWTON_MAX_CYCLE
+
+    mol = gto.M(atom=spec.atom, basis=spec.basis, charge=spec.charge,
+                spin=spec.spin, verbose=0)
+    mf = dft.UKS(mol)
+    mf.xc = "scan"
+    mf.grids.level = spec.grid_level
+    locked = np.asarray(mf.get_hcore()) + orientation_lock_bias(mol, lock)
+    mf.get_hcore = lambda *a, **k: locked
+    mf.kernel()
+    assert mf.converged
+    assert abs(float(md["E_pbe"]) - float(mf.e_tot)) < 1e-8
