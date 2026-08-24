@@ -453,6 +453,26 @@ def _campaign_config_path(name):
     return path if os.path.isfile(path) else None
 
 
+def _campaign_configs_dir():
+    """Absolute path to ``hpcjobs/configs/``, or None when it is absent.
+
+    The directory's presence is what separates "this checkout has no
+    deployment tree" (nothing to pin) from "a configuration file was
+    deleted" (a campaign that no longer covers what it claims).
+    """
+    import xcquinox.alec.cluster as cluster_pkg
+    pkg_dir = os.path.dirname(os.path.abspath(cluster_pkg.__file__))
+    path = os.path.normpath(os.path.join(
+        pkg_dir, "..", "..", "..", "hpcjobs", "configs"))
+    return path if os.path.isdir(path) else None
+
+
+def _missing_campaign_files(names, configs_dir):
+    """Those of ``names`` with no file under ``configs_dir``."""
+    return [n for n in names
+            if not os.path.isfile(os.path.join(configs_dir, n))]
+
+
 def _campaign_config(name):
     """The loaded configuration ``name``, skipping when the deployment tree is
     absent."""
@@ -889,9 +909,13 @@ def test_v6_train_wall_covers_the_four_channel_inline_eval():
     never ran (its three attention architectures were all 3x16), so the
     margin above 50.1 h is carrying real unmeasured load.
 
-    ``timeout_retry_time`` makes the recovery automatic rather than a manual
-    resubmit per cell: a wall-killed task is relaunched at the longer wall and
-    resumes from its WS5 checkpoint. ``timeout_retry_partition`` stays unset
+    ``timeout_retry_time`` is the wall a cell wall-killed BEFORE its first
+    resume checkpoint is relaunched at: that one restarts from step zero, so
+    a whole run has to fit inside one window. A cell that DID checkpoint is
+    continued at the wall above instead, by the same
+    ``cluster resubmit <run_dir> --submit`` -- the classifier gives the
+    checkpoint precedence over the wall-kill record, and nothing requeues
+    unattended. ``timeout_retry_partition`` stays unset
     for the reason v5 states for ``oom_retry_partition`` -- the submit
     partition is already the largest reachable node, so a re-route buys
     nothing and the wall is the only lever.
@@ -919,8 +943,9 @@ def test_v6_train_wall_covers_the_four_channel_inline_eval():
     assert train_h == 72.0, path
     # The automatic recovery is longer than the wall it recovers from.
     assert cfg.cluster.timeout_retry_time is not None, (
-        f"{path}: without timeout_retry_time a wall-killed cell is a manual "
-        "resubmit, repeated across the large-subset attention cells")
+        f"{path}: without timeout_retry_time a cell wall-killed before its "
+        "first checkpoint restarts from zero on the wall it has already been "
+        "shown to exceed")
     assert _hours(cfg.cluster.timeout_retry_time) > train_h, path
     assert cfg.cluster.timeout_retry_partition is None, path
     # The arithmetic is in the file, not only here.
@@ -997,6 +1022,40 @@ _V6_FILES = (_V6_REFERENCE,) + _V6_GROUP_FILES
 #: The subset-size axis every file shares, so a cell count is a claim about the
 #: architecture axis alone.
 _V6_SUBSET_SIZES = 11
+
+
+def test_every_v6_campaign_file_is_present_in_the_deployment_tree():
+    """All six campaign files exist wherever ``hpcjobs/configs/`` exists.
+
+    Presence has to be its own assertion because every other pin in this
+    section reaches its file through ``_campaign_config``, which SKIPS an
+    absent one -- reasonable for a source or wheel checkout that carries no
+    deployment tree at all, and exactly wrong for a group file that was
+    deleted or never synced: nineteen pins describing that group would go
+    quiet together and the run would still submit as a four-group campaign.
+    The directory rather than any one file is the discriminator, so deleting
+    the reference as well cannot make the check disappear.
+    """
+    configs_dir = _campaign_configs_dir()
+    if configs_dir is None:
+        pytest.skip("no hpcjobs/configs/ deployment tree in this checkout")
+    missing = _missing_campaign_files(_V6_FILES, configs_dir)
+    assert not missing, (
+        f"{configs_dir} is missing {missing}: the campaign is submitted as "
+        f"{len(_V6_GROUP_FILES)} group files against the reference, and every "
+        "pin that names a missing one would otherwise skip rather than fail")
+
+
+def test_a_deleted_group_file_fails_rather_than_skipping(tmp_path):
+    """The predicate behind the pin above, driven on a directory a file was
+    removed from -- so the pin is known to detect the deletion rather than
+    merely to pass on a complete tree."""
+    for name in _V6_FILES:
+        (tmp_path / name).write_text("")
+    assert _missing_campaign_files(_V6_FILES, str(tmp_path)) == []
+    deleted = _V6_GROUP_FILES[3]
+    os.unlink(str(tmp_path / deleted))
+    assert _missing_campaign_files(_V6_FILES, str(tmp_path)) == [deleted]
 
 
 def _v6_group_row(name):
@@ -1377,6 +1436,25 @@ def test_v6_group_differs_from_the_reference_in_exactly_what_it_claims(name):
                      "cluster.time"]
     assert len(keys) == 135, len(keys)
     assert differing == sorted(expected), (path, ref_path, differing)
+    # The header makes the same claim in prose, and that is where an operator
+    # reads it. What is asserted is the EXCEPT clause -- the list of fields
+    # the file says it does not inherit -- because a clause naming fewer
+    # differences than the file carries reads as an inheritance that can be
+    # relied on. The 40-core groups ship 48 h where the reference carries
+    # 72 h, so `cluster.time` belongs in that list.
+    lines = open(path).read().splitlines()
+    start = next(i for i, ln in enumerate(lines)
+                 if ln.startswith("# Every field except"))
+    end = next(i for i, ln in enumerate(lines[start:], start)
+               if "is dfs_step7.dfs6311_grid3_v6.yaml's" in ln)
+    except_clause = "\n".join(lines[start:end + 1])
+    for field in ("architecture axis", "roots"):
+        assert field in except_clause, (path, field)
+    if not is_mgga:
+        assert "cluster.time" in except_clause, (
+            f"{path}: the header's inheritance paragraph must name the train "
+            "wall among the fields NOT inherited -- this file ships 48 h "
+            f"against the reference's 72 h. It reads:\n{except_clause}")
 
 
 @pytest.mark.parametrize("name", _V6_GROUP_FILES)

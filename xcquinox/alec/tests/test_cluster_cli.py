@@ -626,11 +626,22 @@ def test_status_missing_manifest_directs_to_repair(tmp_path):
 # ===========================================================================
 
 def _make_resubmit_run(tmp_path, monkeypatch, spec_bytes=b"SPEC"):
-    """Build a run dir whose specs/ + manifest hashes are consistent."""
+    """Build a run dir whose specs/ + manifest hashes are consistent.
+
+    The captured ``scripts/train_array.sbatch`` + ``eval_array.sbatch`` are
+    written too: ``resubmit`` refuses a run dir carrying no train script rather
+    than handing ``sbatch`` a path that does not exist, so a run dir without
+    them is not a run dir a resubmit can act on.
+    """
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     rd = str(run_dir)
     _write_resolved_config(rd)
+    scripts_dir = os.path.join(rd, "scripts")
+    os.makedirs(scripts_dir)
+    for name in ("train_array.sbatch", "eval_array.sbatch"):
+        with open(os.path.join(scripts_dir, name), "w") as f:
+            f.write("#!/bin/bash\n#SBATCH --time=12:00:00\n")
 
     # Materialize real spec files + record their hashes in the manifest.
     specs_dir = os.path.join(rd, "specs")
@@ -1915,3 +1926,269 @@ def test_resubmit_preflight_refuses_a_resolved_config_with_unreasoned_enforce_fa
     with pytest.raises(ValueError, match="override_reason"):
         main(["resubmit-preflight", run_dir, "--submit"])
     assert fake.calls == []
+
+
+# ===========================================================================
+# Inline-eval recovery: resubmit into the SAME run dir, and the wall semantics
+#
+# A run submitted with ``inline_eval: true`` renders ONE
+# ``scripts/train_eval_inline.sbatch`` (train and eval in the same task) and no
+# ``train_array.sbatch``/``eval_array.sbatch`` pair. ``resubmit`` used to refuse
+# such a run outright, which left a wall-killed train cell with no recovery at
+# all: a fresh ``submit`` opens a NEW timestamped run directory and never sees
+# the checkpoints under the old one. These pins drive ``cmd_resubmit`` on
+# synthetic run dirs, one per recovery path.
+# ===========================================================================
+
+def _write_scripts(run_dir, names):
+    """Create ``scripts/<name>`` for each name; drop any other sbatch script."""
+    scripts = os.path.join(run_dir, "scripts")
+    os.makedirs(scripts, exist_ok=True)
+    for existing in os.listdir(scripts):
+        if existing.endswith(".sbatch"):
+            os.unlink(os.path.join(scripts, existing))
+    for name in names:
+        with open(os.path.join(scripts, name), "w") as f:
+            f.write("#!/bin/bash\n#SBATCH --time=48:00:00\n")
+    return scripts
+
+
+def _rewrite_resolved(tmp_path, run_dir, mutate, tag):
+    """Rewrite ``run_dir``'s resolved_config.yaml from a mutated base dict."""
+    from xcquinox.alec.cluster.grid_config import load_grid_config
+    d = _base_config_dict()
+    mutate(d)
+    p = tmp_path / f"_cfg_{tag}.json"
+    p.write_text(json.dumps(d))
+    cli._write_resolved_config(load_grid_config(str(p)), run_dir)
+
+
+def _make_inline_resubmit_run(tmp_path, monkeypatch, *, retry_knobs=True):
+    """A resubmit-ready run dir rendered the way an inline-eval submit renders:
+    ``inline_eval: true`` in the resolved config and ONLY
+    ``scripts/train_eval_inline.sbatch`` on disk."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+
+    def _mutate(d):
+        d["inline_eval"] = True
+        if retry_knobs:
+            d["cluster"]["timeout_retry_partition"] = "long-96core"
+            d["cluster"]["timeout_retry_time"] = "96:00:00"
+            d["cluster"]["oom_retry_partition"] = "long-96core"
+            d["cluster"]["oom_retry_mem"] = "512G"
+
+    _rewrite_resolved(tmp_path, rd, _mutate, "inline")
+    _write_scripts(rd, ["train_eval_inline.sbatch"])
+    return rd
+
+
+def _sbatch_calls(fake):
+    return [c for c in fake.calls if os.path.basename(c[0]) == "sbatch"]
+
+
+def test_resubmit_inline_eval_checkpointed_timeout_resumes_same_resources(
+        tmp_path, monkeypatch):
+    """A wall-killed inline-eval train cell WITH a resume checkpoint is
+    resubmitted into the SAME run directory, at the SAME partition and wall.
+
+    This is the recovery the 48 h GGA groups rely on: the cell continues from
+    ``resume_state.pkl`` inside its existing spec dir, so a ~50 h cell finishes
+    inside a second window of the same wall. Escalating instead would be wrong
+    twice over -- it restarts nothing (the work is on disk) and it moves the
+    cell to a queue it does not need.
+    """
+    rd = _make_inline_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    # index 1: wall-grace SIGTERM AND a mid-run checkpoint.
+    _write_resume_state(rd, 1)
+    with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
+        json.dump({"classification": "killed_by_signal"}, f)
+
+    fake = _fake_slurm(ids=["6100"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+
+    sbatch = _sbatch_calls(fake)
+    # ONE array: the inline script runs train and eval in the same task, so
+    # there is no separate eval array and no aftercorr dependency.
+    assert len(sbatch) == 1, sbatch
+    cmd = sbatch[0]
+    assert cmd[-1] == os.path.join(rd, "scripts", "train_eval_inline.sbatch")
+    assert not any(t.startswith("--dependency=") for t in cmd), cmd
+    # SAME resources: the checkpointed timeout resumes where it was.
+    assert not any(t.startswith("--partition=") for t in cmd), cmd
+    assert not any(t.startswith("--time=") for t in cmd), cmd
+    assert not any(t.startswith("--mem=") for t in cmd), cmd
+    # SAME run dir: the checkpoint survives, unarchived, where the relaunched
+    # task will read it.
+    spec1 = _spec_dir(rd, 1)
+    assert os.path.exists(os.path.join(spec1, "resume_state.pkl"))
+    assert not os.path.exists(os.path.join(spec1, "resume_state.pkl.gen0"))
+    # Only a train record is appended (gen0 train + gen0 eval came from setup).
+    records = jt.read_job_records(rd)
+    assert len([r for r in records if r["kind"] == "train"]) == 2
+    assert len([r for r in records if r["kind"] == "eval"]) == 1
+    attempts = json.load(open(os.path.join(rd, "attempts.json")))
+    assert attempts.get("1") == 1
+
+
+def test_resubmit_inline_eval_uncheckpointed_timeout_escalates(tmp_path,
+                                                               monkeypatch):
+    """A wall-killed inline-eval cell with NO checkpoint restarts from scratch,
+    so it takes the escalated ``timeout_retry_partition``/``timeout_retry_time``
+    -- the whole run has to fit in the retry window."""
+    rd = _make_inline_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
+        json.dump({"classification": "killed_by_signal"}, f)
+
+    fake = _fake_slurm(ids=["6200"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+
+    sbatch = _sbatch_calls(fake)
+    assert len(sbatch) == 1, sbatch
+    cmd = sbatch[0]
+    assert cmd[-1] == os.path.join(rd, "scripts", "train_eval_inline.sbatch")
+    assert "--partition=long-96core" in cmd, cmd
+    assert "--time=96:00:00" in cmd, cmd
+
+
+def test_resubmit_no_longer_refuses_an_inline_eval_run(tmp_path, monkeypatch,
+                                                       capsys):
+    """The blanket inline-eval refusal is gone.
+
+    It returned 1 for every inline run, which is every v6 group submission, so
+    a wall-killed cell had no recovery path at all.
+    """
+    rd = _make_inline_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    _write_resume_state(rd, 1)
+
+    fake = _fake_slurm(ids=["6300"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    out = capsys.readouterr().out
+    assert "does not support inline" not in out, out
+    assert rc == 0
+    assert len(_sbatch_calls(fake)) == 1
+
+
+def test_resubmit_inline_eval_oom_keeps_its_escalation(tmp_path, monkeypatch):
+    """An OOM-killed inline cell with no checkpoint keeps the existing OOM
+    escalation (partition + memory), on the inline script."""
+    rd = _make_inline_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
+        json.dump({"classification": "oom"}, f)
+
+    fake = _fake_slurm(ids=["6400"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+    cmd = _sbatch_calls(fake)[0]
+    assert cmd[-1] == os.path.join(rd, "scripts", "train_eval_inline.sbatch")
+    assert "--partition=long-96core" in cmd
+    assert "--mem=512G" in cmd
+
+
+def test_resubmit_inline_eval_dry_run_names_the_inline_script(tmp_path,
+                                                              monkeypatch,
+                                                              capsys):
+    """The dry run prints the single inline sbatch line and makes no call."""
+    rd = _make_inline_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    _write_resume_state(rd, 1)
+
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd])
+    assert rc == 0
+    assert _sbatch_calls(fake) == []
+    out = capsys.readouterr().out
+    assert "train_eval_inline.sbatch" in out
+    assert "aftercorr" not in out, out
+
+
+def test_resubmit_checkpointed_timeout_keeps_partition_and_wall(tmp_path,
+                                                                monkeypatch):
+    """The same wall semantics on a NON-inline run, with the retry knobs set so
+    the assertion is not vacuous: a checkpointed timeout draws neither the
+    escalated partition nor the escalated wall."""
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+
+    def _mutate(d):
+        d["cluster"]["timeout_retry_partition"] = "long-96core"
+        d["cluster"]["timeout_retry_time"] = "96:00:00"
+
+    _rewrite_resolved(tmp_path, rd, _mutate, "arr_to")
+    _write_scripts(rd, ["train_array.sbatch", "eval_array.sbatch"])
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    _write_resume_state(rd, 1)
+    with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
+        json.dump({"classification": "killed_by_signal"}, f)
+
+    fake = _fake_slurm(ids=["6500", "6501"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 0
+    sbatch = _sbatch_calls(fake)
+    assert len(sbatch) == 2  # train + eval arrays, the non-inline shape.
+    train_cmd = sbatch[0]
+    assert not any(t.startswith("--partition=") for t in train_cmd), train_cmd
+    assert not any(t.startswith("--time=") for t in train_cmd), train_cmd
+
+
+def test_resubmit_refuses_when_no_train_script_was_captured(tmp_path,
+                                                            monkeypatch,
+                                                            capsys):
+    """A run dir carrying neither script is refused before any SLURM call.
+
+    This is what the former inline refusal actually protected against: handing
+    ``sbatch`` a path that does not exist. It is now checked directly, so it
+    covers a pruned run dir as well as an inline one.
+    """
+    rd = _make_resubmit_run(tmp_path, monkeypatch)
+    _write_scripts(rd, [])
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    with open(os.path.join(_spec_dir(rd, 1), "failure.json"), "w") as f:
+        json.dump({"classification": "oom"}, f)
+
+    fake = _fake_slurm()
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    rc = main(["resubmit", rd, "--submit"])
+    assert rc == 1
+    assert _sbatch_calls(fake) == []
+    assert "train_array.sbatch" in capsys.readouterr().out
+
+
+def test_status_remedy_for_an_inline_run_is_a_resubmit_that_works(
+        tmp_path, monkeypatch, capsys):
+    """``status`` recommends ``resubmit`` for a resumable inline-eval run, and
+    that command succeeds on the same run dir.
+
+    The two used to disagree: status printed the remedy and resubmit returned 1
+    on every inline run.
+    """
+    rd = _make_inline_resubmit_run(tmp_path, monkeypatch)
+    for i in (0, 2, 3, 4, 5):
+        open(os.path.join(_spec_dir(rd, i), "model.eqx"), "wb").close()
+    _write_resume_state(rd, 1)
+
+    fake = _fake_slurm(ids=["6600"])
+    monkeypatch.setattr(jt, "_run_slurm", fake)
+    assert main(["status", rd]) == 0
+    out = capsys.readouterr().out
+    assert "resubmit --submit <run_dir>" in out, out
+    assert "resume checkpoint" in out, out
+    assert main(["resubmit", rd, "--submit"]) == 0
+    assert len(_sbatch_calls(fake)) == 1

@@ -942,11 +942,23 @@ which the whole-registry file leaves unset and `v6g2_families_mgga` also leaves 
 -- the two retry partitions, the 48 h wall against the reference's 72 h, the axis and the two
 roots -- and 3 for the meta-GGA group). The asymmetry is the pinned design, not a
 disagreement: the four GGA groups mirror the v4gga arm's live retry routing (a 40-core submit
-whose out-of-memory or wall-killed cells re-route onto the larger 96-core class at the longer
-wall), while the meta-GGA group mirrors the v5 arms' absence of the keys because it already
-submits on that class, and the test suite asserts each group matches its own historical arm
-and that the two arms differ. The retry partition must remain valid on the login instance the
-job is submitted from.
+whose out-of-memory cells, and whose wall-killed cells that had not yet written a resume
+checkpoint, re-route onto the larger 96-core class at the longer wall), while the meta-GGA
+group mirrors the v5 arms' absence of the keys because it already submits on that class, and
+the test suite asserts each group matches its own historical arm and that the two arms
+differ. The retry partition must remain valid on the login instance the job is submitted
+from.
+
+The 48 h wall the four GGA groups ship is below the 48.1-50.1 h reading of the measured
+attention cell, deliberately: those cells wall-kill and are recovered by
+`python -m xcquinox.alec.cluster resubmit <run_dir> --submit`, which relaunches each one
+from its WS5 checkpoint into a second window of the SAME wall on the SAME partition, in the
+SAME run directory. The checkpoint takes precedence over the wall-kill record in the
+harness's failure classifier, so a checkpointed cell is continued rather than escalated;
+the retry keys above apply to the other case, a cell killed before its first checkpoint,
+which restarts from step zero and therefore needs the longer wall. Nothing requeues
+unattended -- no `--requeue` is rendered -- and a fresh `submit` is the wrong recovery: it
+opens a new run directory that cannot see the checkpoints.
 
 
 ## 4. Cross-checks executed

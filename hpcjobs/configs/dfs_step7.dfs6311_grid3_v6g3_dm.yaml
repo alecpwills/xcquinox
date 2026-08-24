@@ -30,8 +30,10 @@
 # is not itself submitted.
 #
 # INHERITED FROM THE REFERENCE FILE, UNCHANGED.
-# Every field except the architecture axis, the two roots and the two
-# retry-partition keys the 40-core scheme engages
+# Every field except the architecture axis, the two roots, the two
+# retry-partition keys the 40-core scheme engages and the train wall
+# (`cluster.time`: 48 h here against the reference's 72 h -- see the block at
+# the key)
 # is dfs_step7.dfs6311_grid3_v6.yaml's: the production identity (basis, grid
 # level, density fitting, `auxbasis` unset, the calibrated orientation lock,
 # the per-rung SCF seed), the pretraining protocol (the DFS set, the pool
@@ -39,7 +41,9 @@
 # mesh share, the validation block), the enforced 1.0 kcal/mol / 1.0 mHa
 # certificate, the weight-zero objective placeholder that refuses submission,
 # every hyperparameter, both solver blocks, the subset ledger, the three
-# reference-cache roots, the walls and the job mail. The reference file's
+# reference-cache roots, every other wall (the eval budget, the pretrain,
+# preflight, datagen and benchmark-refs stages, and the 96 h timeout retry)
+# and the job mail. The reference file's
 # header carries the method and its measured 13-field diff against v5; this
 # file states only what it adds.
 #
@@ -51,9 +55,10 @@
 # risks that routing covers: deep_attn peaked at 142.8 GB RSS, inside a
 # 192 GB Skylake node but with modest headroom, and deep_attn r=26 measured
 # 42.14 h on 96 Milan cores, which on 40 Skylake cores can exceed the
-# queue's wall. The walls themselves are the reference file's, not v4gga's:
-# 72 h train and a 96 h timeout retry, sized to the four-channel inline
-# evaluation (see cluster.time).
+# queue's wall. The train wall is v4gga's own recorded 40-core figure, 48 h;
+# the 96 h timeout retry and every other stage wall are the reference file's,
+# sized to the four-channel inline evaluation. cluster.time states what
+# becomes of the cells that exceed 48 h.
 #
 # +-------------------------------------------------------------------------+
 # | THIS FILE IS REFUSED AT SUBMIT AS IT SHIPS. pretrain.energy_term_weight  |
@@ -359,9 +364,11 @@ pretrain:
 
 cluster:
   partition: ""
-  # 72 h, NOT v5's 48: `inline_eval: true` runs the eval INSIDE the train
-  # task, so this one wall has to hold both, and v6's eval is four channels
-  # where v3's was three.
+  # 48 h, the recorded long-40core cap: `inline_eval: true` runs the eval
+  # INSIDE the train task, so this one wall has to hold both, and v6's eval
+  # is four channels where v3's was three. The arithmetic below puts the
+  # large-subset attention cells above this wall deliberately; what happens
+  # to them is under QUEUE ADMISSIBILITY.
   #
   # THE ARITHMETIC, from v3's own measurement at this exact basis, grid and
   # solver: deep_attn_3x16 at subset 26 took 42.14 h (attention is 2.3-2.9x
@@ -372,9 +379,10 @@ cluster:
   # The same cell is then
   #     42.14 - 2 + 8 = 48.1 h   if the 42.14 h already contained a 2 h eval
   #     42.14     + 8 = 50.1 h   if it was train time alone
-  # and both exceed 48 h, so a 48 h wall wall-kills the large-subset
-  # attention cells rather than the 24 h one v5 was protecting against. The
-  # larger reading is the one carried: 72 h is 1.44x it.
+  # and both exceed 48 h, so this wall DOES wall-kill the large-subset
+  # attention cells; 50.1 h is the reading to plan against, and the 40-core
+  # class admits no wall above 48 h. Those cells are recovered rather than
+  # prevented -- see QUEUE ADMISSIBILITY below.
   # This group's one attention cell is `deep_combined_attn_3x16`, the
   # measured shape with four descriptor columns added.
   # The corrected potential also adds a feature-response derivative per SCF
@@ -389,10 +397,23 @@ cluster:
   # v4gga campaign ran at on this queue -- because an over-cap --time is
   # rejected at submit, and 72 h would refuse every task if 48 h is the cap.
   # The ~50.1 h large-subset attention cells therefore wall-kill BY DESIGN
-  # into the timeout retry below, which routes onto the 96-core queue at
-  # 96 h and resumes from the checkpoint (checkpoint_every: 10 above); if
-  # sinfo shows a cap of 72 h or more, --time=72:00:00 at submit avoids the
-  # retry hop for those cells.
+  # and are RESUBMITTED FROM THEIR CHECKPOINT (checkpoint_every: 10 above)
+  # into a second window of this SAME wall on this SAME partition, in the
+  # SAME run directory:
+  #     python -m xcquinox.alec.cluster resubmit <run_dir> --submit
+  # Each killed cell picks up where it stopped, so ~50 h of work completes
+  # across two 48 h windows. The resume checkpoint outranks the wall-kill
+  # record in the classifier, which is why a checkpointed cell is CONTINUED
+  # and does NOT draw the retry keys below; those cover the other case, a
+  # cell killed before its first checkpoint, which restarts from step zero
+  # and is escalated onto the 96-core class at 96 h where a whole run fits in
+  # one window. `cluster status <run_dir>` reports which case each index is
+  # in and names the same command. The recovery is operator-driven: no
+  # --requeue is rendered and nothing resubmits unattended.
+  # If sinfo shows a cap of 72 h or more, `--train-time 72:00:00` at submit
+  # sizes the train array to the larger reading up front and avoids the
+  # wall-kill entirely -- `--train-time`, NOT the base `--time`, which raises
+  # EVERY stage's wall including the 12 h pretrain and preflight jobs.
   #
   # Peak measured RSS is 142.8 GB: a 192 GB Skylake node holds it with modest
   # headroom, and an OOM routes onto the 256 GB Milan nodes (see the retry keys
@@ -413,18 +434,26 @@ cluster:
   # from): CPU XLA/LLVM *compile* OOMs classify as "oom" rather than
   # "deterministic" (HISTORY Phase 15), so an OOM'd cell resubmits onto the
   # larger-per-node-memory 96-core Milan nodes (~256 GB, against the 40-core
-  # queue's 192 GB) and resumes from its checkpoint. The partition must exist
+  # queue's 192 GB) and restarts there from step zero. An OOM'd cell that had
+  # already written a resume checkpoint is CONTINUED from it instead, at this
+  # file's own resources -- the checkpoint outranks the failure record, so the
+  # bigger node and the resume are alternatives, never one relaunch.
+  # The partition must exist
   # on the login instance the submission is made from or the retry sbatch is
   # rejected -- verify the spelling with the sinfo call above (the runbook
   # names `long-96core-shared`; v4gga carries bare `long-96core`, which is the
   # value inherited here).
   oom_retry_partition: long-96core
-  # TIMEOUT auto-retry, ENGAGED, and on the 40-core scheme it carries a
-  # PARTITION as well as a wall: a wall-killed cell is relaunched on the
-  # larger, longer-wall queue and continues from its WS5 resume checkpoint.
-  # That is v4gga's recovery for this scheme's measured wall risk. Without the
-  # keys the recovery is a manual `cluster resubmit` plus a separate re-eval,
-  # repeated across every large-subset attention cell. VERIFY 96 h against the
+  # TIMEOUT retry keys, ENGAGED, and on the 40-core scheme they carry a
+  # PARTITION as well as a wall. They apply to ONE case: a cell wall-killed
+  # before it wrote its first resume checkpoint. That cell restarts from step
+  # zero, so `cluster resubmit` relaunches it on the larger, longer-wall queue
+  # where a full run fits in one window. A cell that DID checkpoint is
+  # continued at this file's own partition and wall instead (see the wall
+  # block above); the two are exclusive and the checkpoint wins. Without these
+  # keys the second case would restart from zero on a wall it has already been
+  # shown to exceed. Both cases are the same operator command; neither is
+  # unattended. VERIFY 96 h against the
   # retry queue's cap with the same sinfo call as the wall above -- an over-cap
   # retry is rejected days later, during recovery, rather than at submit.
   timeout_retry_partition: long-96core

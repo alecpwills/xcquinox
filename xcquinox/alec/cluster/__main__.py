@@ -449,6 +449,15 @@ def _classify_failure(run_dir: str, idx: int, width: int, outcomes: dict) -> str
     A no-evidence sacct state (:data:`_NO_EVIDENCE_OUTCOMES`) with no
     failure.json and no resume checkpoint -> ``'no_evidence'`` (a bounded fresh
     relaunch); any other value collapses to ``'deterministic'``.
+
+    The order decides the RESOURCES a wall-kill is retried at, which is why it
+    is stated here as well as in :func:`_retry_resource_flags`: a checkpointed
+    wall-kill is ``'resume'`` and continues at the same partition and wall,
+    while an uncheckpointed one is ``'timeout'`` and takes the escalated
+    ``timeout_retry_*`` pair because it restarts from zero. An OOM that
+    checkpointed is likewise continued rather than given more memory; the
+    per-index attempt cap bounds it if the continuation OOMs again at the same
+    step.
     """
     # WS6: a resumable mid-run checkpoint outranks everything else (incl. the
     # killed_by_signal failure.json the SIGTERM path also wrote).
@@ -483,8 +492,22 @@ def _retry_resource_flags(cls: str, cl) -> list[str]:
 
     These override the rendered train script's baked ``#SBATCH`` directives so
     a retry actually gets different resources:
+
       - ``oom``     -> ``--partition=oom_retry_partition`` / ``--mem=oom_retry_mem``
-      - ``timeout`` -> ``--partition=timeout_retry_partition`` / ``--time=timeout_retry_time``
+        (plus the GPU-release pair under ``oom_retry_force_cpu``).
+      - ``timeout`` -> ``--partition=timeout_retry_partition`` / ``--time=timeout_retry_time``.
+        This class is reached only by a wall-killed task that left NO resume
+        checkpoint, so it restarts from step zero and the WHOLE run has to fit
+        inside the retry window -- which is what the escalated partition and
+        the longer wall are for.
+      - ``resume`` -> ``[]``, deliberately. A wall-killed task that DID
+        checkpoint continues from ``resume_state.pkl``, so it needs neither a
+        bigger queue nor a longer wall: it needs another window of the SAME
+        wall on the SAME partition. A cell measured at ~50 h therefore
+        finishes inside a second 48 h window rather than being re-routed, and
+        an escalation here would move a cell to a queue it does not need while
+        buying it nothing (the completed steps are already on disk).
+
     Each flag is emitted only when its knob is set; an unset class falls back to
     the script's defaults (returns ``[]``).
     """
@@ -519,6 +542,66 @@ def _sparse_array_spec(indices: list[int], throttle: int | None = None) -> str:
     if throttle is not None:
         body = f"{body}%{int(throttle)}"
     return body
+
+
+#: Basenames ``submit_jobs`` renders under ``<run_dir>/scripts/``: an
+#: inline-eval run writes ``train_eval_inline.sbatch`` ALONE (train and eval in
+#: one task); every other run writes the ``train_array``/``eval_array`` pair.
+_INLINE_TRAIN_SCRIPT = "train_eval_inline.sbatch"
+_ARRAY_TRAIN_SCRIPT = "train_array.sbatch"
+_ARRAY_EVAL_SCRIPT = "eval_array.sbatch"
+
+
+def _resolve_train_scripts(run_dir: str, cfg=None) -> tuple[str, str | None]:
+    """The captured train (and eval) sbatch scripts a resubmit must replay.
+
+    Returns ``(train_script, eval_script)``; ``eval_script`` is ``None`` for an
+    inline-eval run, where the ONE ``train_eval_inline.sbatch`` runs the eval in
+    the same task and no separate eval array is submitted (nor recorded --
+    :func:`submit_jobs` does the same at first submission).
+
+    The on-disk scripts are authoritative rather than ``cfg.inline_eval``:
+    ``sbatch`` runs the file, not the configuration. ``cfg`` is used only to
+    report a disagreement, which means the run directory was assembled by hand
+    or the configuration was edited after submission.
+
+    Raises :class:`FileNotFoundError` when neither train script is present.
+    That is the hazard the former blanket inline-eval refusal was standing in
+    for (HISTORY 2026-07-11): ``cmd_resubmit`` hard-coded the array pair, so an
+    inline run pointed ``sbatch`` at a path that does not exist. Checking the
+    path directly covers a pruned or partially-synced run directory too, and
+    lets an inline run recover instead of being refused.
+    """
+    scripts = os.path.join(run_dir, "scripts")
+    inline_path = os.path.join(scripts, _INLINE_TRAIN_SCRIPT)
+    train_path = os.path.join(scripts, _ARRAY_TRAIN_SCRIPT)
+    eval_path = os.path.join(scripts, _ARRAY_EVAL_SCRIPT)
+    inline = os.path.exists(inline_path) and not os.path.exists(train_path)
+    if inline:
+        train_script, eval_script = inline_path, None
+    else:
+        train_script, eval_script = train_path, eval_path
+    if not os.path.exists(train_script):
+        raise FileNotFoundError(
+            f"{run_dir}/scripts carries neither {_ARRAY_TRAIN_SCRIPT} nor "
+            f"{_INLINE_TRAIN_SCRIPT}: there is no captured train script to "
+            "resubmit. Relaunch with a fresh `submit` (which re-renders the "
+            "current templates into a new run directory)."
+        )
+    if eval_script is not None and not os.path.exists(eval_script):
+        raise FileNotFoundError(
+            f"{run_dir}/scripts carries {_ARRAY_TRAIN_SCRIPT} but no "
+            f"{_ARRAY_EVAL_SCRIPT}: the eval array cannot be resubmitted. "
+            "Relaunch with a fresh `submit`."
+        )
+    if cfg is not None:
+        declared = bool(getattr(cfg, "inline_eval", False))
+        if declared != inline:
+            _log(f"resubmit: WARNING resolved_config.yaml says inline_eval="
+                 f"{declared} but scripts/ hold "
+                 f"{'the inline script' if inline else 'the train+eval array pair'}"
+                 "; the scripts on disk are what sbatch runs and are used.")
+    return train_script, eval_script
 
 
 def _train_generation(run_dir: str, idx: int) -> int:
@@ -1022,6 +1105,20 @@ def _pretrain_status(run_dir: str) -> str | None:
             f"{certified}/{len(archs)} architecture certificate(s) PASS")
 
 
+def _resume_remedy(n_resumable: int) -> str:
+    """The ``status`` remedy line for tasks holding a resume checkpoint.
+
+    It states the resources the continuation actually gets, because that is
+    what :func:`cmd_resubmit` does with them and it is not the same as the
+    uncheckpointed retry: the task picks up from ``resume_state.pkl`` on the
+    partition and wall it was killed on, so a cell that over-ran its wall
+    finishes inside a second window of that same wall.
+    """
+    return (f"  remedy: `resubmit --submit <run_dir>`: {n_resumable} task(s) "
+            "have a resume checkpoint and will continue from it, in this run "
+            "directory, at the SAME partition and wall.")
+
+
 def cmd_status(args) -> int:
     """``status``: read-only per-index outcome report (no lock taken).
 
@@ -1109,14 +1206,14 @@ def cmd_status(args) -> int:
              "appears to have failed (no train task ran).")
     elif train_failed > 0:
         _log("  remedy: `resubmit <run_dir>`: re-run the failed train "
-             "task(s).")
+             "task(s) IN THIS run directory. A wall-kill with no checkpoint "
+             "restarts from zero and takes the escalated timeout_retry_* "
+             "resources; an OOM takes oom_retry_*.")
         if train_resumable > 0:
-            _log(f"  remedy: `resubmit --submit <run_dir>`: {train_resumable} "
-                 "task(s) have a resume checkpoint and will continue from it.")
+            _log(_resume_remedy(train_resumable))
     elif train_resumable > 0:
         # WS6: no hard failures, but mid-run-killed tasks can be CONTINUED.
-        _log(f"  remedy: `resubmit --submit <run_dir>`: {train_resumable} "
-             "task(s) have a resume checkpoint and will continue from it.")
+        _log(_resume_remedy(train_resumable))
     else:
         _log("  remedy: none, no failed train tasks detected.")
     return 0
@@ -1207,11 +1304,30 @@ def cmd_resubmit(args) -> int:
     See the module/plan docstring for the full contract. Summary:
       - scan for train indices with no ``model.eqx``;
       - classify each (failure.json, else sacct fallback);
-      - keep retryable (oom/timeout) indices below the attempt cap;
+      - keep retryable (oom/timeout/resume/no_evidence) indices below the
+        attempt cap;
       - re-verify spec hashes, archive stale ``*.gen<g>`` artifacts;
       - submit a sparse train array + a byte-identical sparse eval array
         (``aftercorr``), dry-run unless ``--submit``;
       - best-effort rollback if the eval ``sbatch`` fails post-train.
+
+    Everything is resubmitted into the SAME run directory, which is the whole
+    point of the command: the mid-run checkpoints live under
+    ``<run_dir>/checkpoints/spec_<i>/`` and a fresh ``submit`` opens a NEW
+    timestamped directory that cannot see them.
+
+    Both submission shapes are supported. An inline-eval run
+    (``inline_eval: true``) carries ONE ``train_eval_inline.sbatch``, which is
+    resubmitted alone -- its eval runs in the same task, so no eval array is
+    submitted and none is recorded. Every other run carries the
+    ``train_array``/``eval_array`` pair and gets both. The scripts are replayed
+    as captured at submit time in both cases, so a template change made since
+    then is picked up only by a fresh ``submit``.
+
+    Resources follow the failure class (see :func:`_retry_resource_flags`): a
+    wall-kill that left a resume checkpoint continues at the SAME partition and
+    wall, one that left none takes the escalated ``timeout_retry_*`` pair, and
+    an OOM takes ``oom_retry_*``.
     """
     run_dir = os.path.abspath(args.run_dir)
     manifest = _try_read_manifest(run_dir)
@@ -1305,22 +1421,26 @@ def cmd_resubmit(args) -> int:
         # Re-verify spec content hashes before reusing specs/.
         _verify_spec_hashes(run_dir, manifest, retry)
 
-        train_script = os.path.join(run_dir, "scripts", "train_array.sbatch")
-        eval_script = os.path.join(run_dir, "scripts", "eval_array.sbatch")
-
-        # Inline-eval runs write a single `train_eval_inline.sbatch` (no
-        # train_array/eval_array script), so resubmit's separate train+eval array
-        # submission cannot apply -- and replaying a captured script would in any
-        # case miss a template fix. Fail loudly rather than handing sbatch a
-        # non-existent file; the run must be relaunched with a fresh `submit`.
-        if (os.path.exists(os.path.join(run_dir, "scripts",
-                                        "train_eval_inline.sbatch"))
-                and not os.path.exists(train_script)):
-            _log("resubmit: this run used inline-eval "
-                 "(train_eval_inline.sbatch); resubmit does not support inline "
-                 "runs. Relaunch with a fresh `submit` (which re-renders the "
-                 "current template).")
+        # Which scripts this run actually carries. An inline-eval run has ONE
+        # train_eval_inline.sbatch and no eval array; every other run has the
+        # train+eval pair. Both are replayed as captured, so a template fix
+        # made after this run was submitted is NOT picked up -- said out loud
+        # below, because it is the one thing a fresh `submit` does that a
+        # resubmit cannot, and it is now a judgement for the operator rather
+        # than a blanket refusal.
+        try:
+            train_script, eval_script = _resolve_train_scripts(run_dir, cfg)
+        except FileNotFoundError as exc:
+            _log(f"resubmit: {exc}")
             return 1
+        inline = eval_script is None
+        if inline:
+            _log("resubmit: inline-eval run -- resubmitting "
+                 f"{os.path.basename(train_script)} into THIS run directory "
+                 "(the eval runs in the same task; no separate eval array).")
+        _log("resubmit: the captured sbatch script(s) are replayed as-is; a "
+             "template change made since this run was submitted is picked up "
+             "only by a fresh `submit`.")
 
         # WS6: "resume" indices are RELAUNCHED to CONTINUE from their mid-run
         # checkpoint, so their stale artifacts (incl. the killed_by_signal
@@ -1347,10 +1467,12 @@ def cmd_resubmit(args) -> int:
             for cls in sorted(retry_by_class):
                 idxs = sorted(retry_by_class[cls])
                 ta = _sparse_array_spec(idxs, cl.array_throttle)
-                ea = _sparse_array_spec(idxs, cl.eval_array_throttle)
                 ov = " ".join(_retry_resource_flags(cls, cl))
                 _log(f"  [{cls}] sbatch --parsable --array={ta} {ov} "
                      f"{train_script}".replace("  ", " "))
+                if inline:
+                    continue
+                ea = _sparse_array_spec(idxs, cl.eval_array_throttle)
                 _log(f"  [{cls}] sbatch --parsable --array={ea} "
                      f"--dependency=aftercorr:<TRAIN_ID> {eval_script}")
             _log("resubmit: no SLURM call made; pass --submit to submit.")
@@ -1377,9 +1499,6 @@ def cmd_resubmit(args) -> int:
         for cls in sorted(retry_by_class):
             idxs = sorted(retry_by_class[cls])
             train_array = _sparse_array_spec(idxs, cl.array_throttle)
-            eval_array = _sparse_array_spec(idxs, cl.eval_array_throttle)
-            # aftercorr requires byte-identical index lists (throttle aside).
-            assert train_array.split("%", 1)[0] == eval_array.split("%", 1)[0]
             overrides = _retry_resource_flags(cls, cl)
 
             # Train carries the class's retry resource overrides (sbatch CLI
@@ -1392,6 +1511,23 @@ def cmd_resubmit(args) -> int:
             proc = job_tracking._run_slurm(train_cmd)
             train_id = _parse_job_id(proc)
 
+            if inline:
+                # The eval runs inside the train task, so there is no eval
+                # array to submit and none to record (submit_jobs does the
+                # same at first submission: an eval record here would be read
+                # as a stage that never reported).
+                job_tracking.append_job_record(run_dir, "train", train_id, idxs)
+                for idx in idxs:
+                    attempts[str(idx)] = int(attempts.get(str(idx), 0)) + 1
+                _write_attempts(run_dir, attempts)
+                _log(f"resubmit: [{cls}] SUBMITTED train+eval inline="
+                     f"{train_id} for indices {idxs}"
+                     + (f" with overrides {overrides}" if overrides else ""))
+                continue
+
+            eval_array = _sparse_array_spec(idxs, cl.eval_array_throttle)
+            # aftercorr requires byte-identical index lists (throttle aside).
+            assert train_array.split("%", 1)[0] == eval_array.split("%", 1)[0]
             eval_cmd = [
                 "sbatch", "--parsable", f"--array={eval_array}",
                 f"--dependency=aftercorr:{train_id}", eval_script,

@@ -390,9 +390,15 @@ cluster:
   # state a number for the queue this group submits to. Check it with
   #     sinfo -o "%20P %10l" -p long-96core-shared
   # An over-cap --time is rejected at submit (cheap, and immediate). If the
-  # cap is below 72 h, submit at the cap with --time and expect the
-  # large-subset attention cells to requeue from their checkpoints
-  # (checkpoint_every: 10 above).
+  # cap is below 72 h, submit at the cap with `--train-time` -- the base
+  # `--time` raises every stage's wall, the 12 h pretrain and preflight jobs
+  # included -- and expect the large-subset attention cells to wall-kill.
+  # They are recovered by
+  #     python -m xcquinox.alec.cluster resubmit <run_dir> --submit
+  # which relaunches each one from its checkpoint (checkpoint_every: 10
+  # above) into a second window of the SAME wall, in the SAME run directory.
+  # Nothing requeues on its own: no --requeue is rendered, and a fresh
+  # `submit` would open a new run directory that cannot see the checkpoints.
   #
   # Peak measured RSS is 142.8 GB: submit to a ~256 GB partition
   # (long-96core-shared), never a 128 GB one.
@@ -415,11 +421,14 @@ cluster:
   # --xla_llvm_disable_expensive_passes trim in the train template is the
   # no-bigger-node lever there.
   # oom_retry_partition: long-96core-shared
-  # TIMEOUT auto-retry, ENGAGED. A cell that still hits the wall above is
-  # relaunched at this longer one and continues from its WS5 resume
-  # checkpoint; without the key the recovery is a manual `cluster resubmit`
-  # plus a separate re-eval, repeated across every large-subset attention
-  # cell. `timeout_retry_partition` stays UNSET for the reason v5 gives for
+  # TIMEOUT retry wall, ENGAGED, for ONE case: a cell that hits the wall
+  # above before writing its first resume checkpoint. That cell restarts from
+  # step zero, so `cluster resubmit` relaunches it at this longer wall, where
+  # a whole run fits in one window. A cell that DID checkpoint is continued at
+  # the wall above instead -- the checkpoint outranks the wall-kill record --
+  # and no separate re-eval is submitted either way, because `inline_eval`
+  # runs the eval inside the train task.
+  # `timeout_retry_partition` stays UNSET for the reason v5 gives for
   # leaving oom_retry_partition unset: the submit partition is already the
   # largest reachable node, so a re-route buys nothing and the wall is the
   # only lever. VERIFY 96 h against the queue cap with the same sinfo call
