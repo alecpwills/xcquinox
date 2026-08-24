@@ -402,34 +402,37 @@ _TOL_UKS = 5e-7
 #
 # The UKS column above was measured on the Li atom with ONE feature block
 # feeding both exchange channels. With each exchange channel on the block of
-# its own doubled density diag(P_sigma, P_sigma), Li's one-electron beta
-# channel puts the meta-GGA indicator on its clip kink, which is why
-# ``_uks_fd_path`` displaces such a channel along its own rank-one manifold
-# instead of linearly. Oracle O2 then runs the probe on all four open-shell
-# atoms of the pools; ``test_spin_scaling_oracles`` parametrizes it over
-# 31 architectures x {H, Li, N, O} and the case below is the O atom of that
-# set. Residuals at _FD_EPS with the three-block potential and the manifold
-# path, measured through THIS module's ``_assert_uks_fd_consistency`` over the
-# full 124-cell grid, def2-svp, grid level 2:
+# its own doubled density diag(P_sigma, P_sigma), the probe of ``_uks_fd_path``
+# displaces every populated channel along its own aufbau manifold
+# (rank-preserving rotations), the directions the Roothaan step moves on, so
+# no channel's indicator leaves the physical domain. Oracle O2 runs the probe
+# on all four open-shell atoms of the pools; ``test_spin_scaling_oracles``
+# parametrizes it over 31 architectures x {H, Li, N, O} and the case below is
+# the O atom of that set. Residuals at _FD_EPS with the three-block potential
+# and the rotation path, measured through THIS module's
+# ``_assert_uks_fd_consistency`` over the full 124-cell grid, def2-svp, grid
+# level 2:
 #
 #   species  worst rel   architecture                 best rel   mask
-#   H        7.44e-10    deep_cusp                    1.16e-11   100% kept
-#   Li       2.50e-10    deep_cusp_3x16               1.22e-10   100% kept
-#   N        9.18e-11    shallow_attn                 1.74e-12   78.1% kept
-#   O        8.29e-11    deep_notransform_attn        1.54e-13   100% kept
+#   H        6.12e-10    deep_combined                2.81e-11   100% kept
+#   Li       3.61e-08    deep_notransform_attn_3x16   2.43e-08   100% kept
+#   N        6.61e-08    deep_cusp_attn               3.08e-10   100% kept
+#   O        9.00e-09    shallow                      1.82e-10   100% kept
 #
-# Worst cell 7.44e-10 against _TOL_UKS = 5e-7, a margin of 670x; no cell above
-# 1e-9. The N rows are the only ones the straddle mask touches: on the
-# meta-GGA architectures it removes 2106 of 9616 tail points carrying 1.84e-3
-# of the electron density (the beta channel holds two electrons and its outer
-# orbital dominates the tail, so the block's indicator reaches its clip
-# there), and those rows are the ones with the SMALLEST residuals.
+# Worst cell 6.61e-08 against _TOL_UKS = 5e-7, a margin of 7.6x; the mask
+# removed zero points in all 124 cells (the Li and N figures sit above the
+# H and O ones because the net derivative along a rotation of the reference
+# density is small on those atoms while the harness states its residual
+# against the net). The pre-closure table (linear displacements, the
+# indicator's clip-state rows masking 2106 of N's 9616 points) read 7.4e-10
+# worst; the two probes agree on the statement, on different directions.
 #
 # At the production identity (6-311++G(3df,2pd), grid level 3, O atom, the
-# ``slow``-marked case) every architecture lands between 1.5e-9
-# (deep_3x16) and 7.5e-8 (deep_mgga_3x16), a margin of 6.7x; the mask keeps
-# 99.6% of the grid. The floor is an order above the def2-svp one because the
-# basis carries 39 functions and the grid 13344 points with a wider dynamic
+# ``slow``-marked case) the figures on record -- every architecture between
+# 1.5e-9 (deep_3x16) and 7.5e-8 (deep_mgga_3x16), the mask keeping 99.6% of
+# the grid -- were taken on the superseded linear probe (DEFERRED_WORK.md
+# entry 28 re-measures on the cluster). The def2-svp floor is tighter because
+# the basis carries 39 functions and the grid 13344 points with a wider dynamic
 # range, not because a term is missing: the descriptor-free control holds
 # 6.2e-9 at every step from 1e-4 to 1e-8, i.e. it is round-off rather than
 # truncation, and the meta-GGA rows fall with eps on a record whose mask does
@@ -609,133 +612,104 @@ _UKS_FD_SPECIES = {
 
 
 # Straddle-mask acceptance for the open-shell finite-difference probe. The mask
-# removes grid points whose guard status differs between the two displaced
-# density matrices, and what has to stay bounded is the INTEGRAND mass it
-# removes rather than the point count: the discarded points sit in the density
-# tail, where a fifth of the grid can carry a thousandth of the charge.
+# removes grid points whose guard status -- the density-tail and zeta-clip
+# thresholds of the network evaluation, which are hard steps of the functional
+# -- differs between the two displaced density matrices, and what has to stay
+# bounded is the INTEGRAND mass it removes rather than the point count: the
+# discarded points sit in the density tail.
 #
-# Measured over the 31 architectures x {H, Li, N, O} at def2-svp / grid level 2
-# and over the same architectures on the O atom at 6-311++G(3df,2pd) / grid
-# level 3 (scratch measurements through this very helper):
+# The iso-orbital indicator no longer enters the mask. Its lower bound is a
+# smooth positive part (metagga.compute_alpha), so it has no clip state at
+# zero to straddle, and the probe below displaces every populated channel
+# along its own aufbau manifold (rank-preserving orbital rotations), on which
+# the raw indicator never leaves the physical domain; the ceiling at
+# _ALPHA_MAX is a hard step of the functional but the rotation path was
+# measured not to cross it on any of the four atoms at def2-svp (the
+# residuals below were taken with no indicator row at all).
 #
-#   admitted, worst  N / def2-svp / meta-GGA rung: 2106 of 9616 points, 1.84e-3
-#                    of the electron density, residual 1.7e-12 to 9.2e-11
-#   admitted, next   O / production identity: 0.4% of the points, 6.3e-7 of the
-#                    density, residual 1.5e-9 to 7.5e-8
-#   every other case 0 points, 0.0 mass
-#   REFUSED          N / production identity / meta-GGA rung: 4842 of 13344
-#                    points and 6.29e-2 of the density -- the diffuse tail of a
-#                    two-electron beta channel is one-orbital-like over a third
-#                    of the resolved grid, so the indicator sits on its clip
-#                    there and the retained domain moves with the step size
-#                    (the residual runs 1.5e-7 to 5.7e-6 and does not fall with
-#                    eps, while the descriptor-free control on the same record
-#                    holds 6.2e-9 at every step). That probe is not measuring
-#                    the functional it names, which is why the production case
-#                    below is the O atom.
+# Measured with the rotation path over the 124 harness cells (31
+# architectures x {H, Li, N, O}, def2-svp, grid level 2): every cell inside
+# 6.61e-08 of _TOL_UKS's 5e-7 with the mask removing zero points; on the
+# solver's own Fock pair at grid level 1 (deep_mgga_3x16, the
+# absolute-contribution footing of test_spin_scaling_solver_manual):
+# 2.9e-11 (H), 2.4e-10 (Li), 9.8e-11 (N), 5.5e-11 (O) at the 1e-5 step.
+# The same Fock pair along an UNRESTRICTED random symmetric direction, which
+# leaves the cone of positive semidefinite matrices, reads 3.7e-8 (H, falling
+# to 3.8e-10 at the 1e-7 step), 5.2e-2 (Li) and 6.0e-6 (N), the latter two
+# flat in the step: the descriptor's tail response (d alpha / dP ~ n^{-5/3},
+# 4e10 on Li's outermost shell) makes a 1e-6 step move the raw indicator by
+# 1e3-1e5 there, beyond any linear regime of the energy, whatever the width
+# of the smooth positive part (DEFERRED_WORK.md entry 30). That is a property
+# of the probe direction, not of the potential.
 #
-# 1e-2 admits the worst kept case by 5.4x and refuses the N production case by
-# 6.3x. The point-count floor is the second, cruder guard: it exists for the
-# failure mode in which the mask eats the grid outright (the linear
-# displacement of a one-electron channel, which ``_uks_fd_path`` replaces,
-# kept 0.03% of Li's grid and 2.7% of H's), and 0.5 clears the worst admitted
-# 0.781 by 1.6x.
+# 1e-2 admits every measured case (the mask removed 0 points on every atom
+# at def2-svp / grid level 2 with the rotation path) and is kept as the guard
+# against a displacement that walks the tail across the network's thresholds.
 _MASK_MAX_DROPPED_MASS = 1e-2
 _MASK_MIN_KEPT_POINTS = 0.5
 
 
-def _rank_one_orbital(P_s, s_matrix):
-    """The S-orthonormal orbital c of a one-electron spin density matrix
-    P_s = c c^T (an aufbau matrix of rank one)."""
-    k = int(np.argmax(np.diag(P_s)))
-    c = P_s[:, k] / np.sqrt(P_s[k, k])
-    assert float(np.max(np.abs(P_s - np.outer(c, c)))) < 1e-10, "not rank one"
-    assert abs(float(c @ s_matrix @ c) - 1.0) < 1e-8, "not S-normalized"
-    return c
+def _orthonormalizers(s_matrix):
+    """``(S^{1/2}, S^{-1/2})`` of the overlap, for rotations in the metric."""
+    ev, evec = np.linalg.eigh(np.asarray(s_matrix))
+    s_half = evec @ np.diag(np.sqrt(ev)) @ evec.T
+    s_inv_half = evec @ np.diag(1.0 / np.sqrt(ev)) @ evec.T
+    return s_half, s_inv_half
 
 
 def _uks_fd_path(P0, md, eps=_FD_EPS, seed=20260821):
     """The two displaced density matrices of the central difference and the
     direction ``W = (P_plus - P_minus) / (2 eps)`` it probes, per channel.
 
+    Every populated channel is displaced along its own aufbau manifold: with
+    ``S^{1/2}`` the metric's square root and ``K`` a random antisymmetric
+    generator of unit Frobenius norm, ``P_s(eps) = U(eps) P_s U(eps)^T`` with
+    ``U(eps) = S^{-1/2} expm(eps K) S^{1/2}``, a rotation of the occupied
+    orbitals in the S-metric that keeps the block idempotent, positive
+    semidefinite and of fixed rank at every eps. The tangent direction is a
+    random symmetric matrix in both channels, and the path is the one the
+    Roothaan step moves on: every density matrix an SCF cycle visits is an
+    aufbau matrix of the block's rank, so the derivative that governs the
+    iteration is the derivative along this manifold.
+
+    A linear displacement ``P_s +- eps W`` leaves the cone of positive
+    semidefinite matrices whenever the block is rank-deficient (every atom's
+    channel here), and there the von Weizsacker bound ``tau >= tau_W`` fails:
+    the raw iso-orbital indicator turns negative on one side of the step, and
+    in the density tail -- where ``d alpha / dP ~ n^{-5/3}`` reaches 4e10 on
+    Li's outermost shell -- a 1e-6 step moves it by 1e3-1e5, beyond any
+    linear regime of the energy. Measured with the linear form on
+    deep_mgga_3x16 (def2-svp, grid 1, no mask): 5.2e-2 (Li) and 6.0e-6 (N),
+    flat between the 1e-5 and 1e-7 steps; the rotation path keeps every grid
+    point and lands between 1.8e-10 and 6.6e-8 over the 124 harness cells at
+    grid level 2 (the residual stated against the net derivative, which a
+    rotation of a reference fixed point keeps small). The smooth positive part of the indicator
+    (metagga.compute_alpha) makes the energy differentiable across
+    ``alpha_raw = 0`` -- H, whose tail carries no such response, reads
+    3.8e-10 along the linear form at the 1e-7 step, against 7.4e-4 with the
+    hard clip -- but it cannot make a step of 1e-6 small against a response
+    of 1e10 (DEFERRED_WORK.md entry 30).
+
     A channel with no electron carries an identically zero density matrix
     that the SCF never populates, so its Fock block is not part of the
     functional's domain; it is left unperturbed and drops out of both sides
     of the comparison.
-
-    A channel with ONE electron is a single orbital, P_s = c c^T. Its doubled
-    block diag(P_s, P_s) is a one-orbital density, for which tau = tau_W
-    identically, so the iso-orbital indicator of that block is zero up to
-    rounding and sits ON the lower clip of ``metagga.compute_alpha`` (Li beta
-    channel, def2-svp: |alpha_raw| <= 5.0e-11 to 1.2e-9 over the resolved
-    grid, 38 to 46% of the points negative -- draw-dependent, because the
-    reference solution differs at the 1e-15 level between runs and that
-    flips the rounding signs). A linear displacement P_s +- eps W leaves the
-    rank-one manifold: tau - tau_W becomes O(eps) with a sign that follows
-    the sign of eps, the clip is active on one side of the step at almost
-    every point, and the straddle mask discards the grid (measured with the
-    linear form on the meta-GGA architectures: 2.7% of the grid kept on H,
-    0.03% on Li, residuals 4e-5 to 1.7e-3 -- the average of two one-sided
-    slopes, not a derivative). The SCF never leaves the manifold (the
-    Roothaan step returns an aufbau matrix of fixed rank), so the derivative
-    that governs it is the one along the manifold. A one-electron channel is
-    therefore displaced along the orbital-rotation path
-    ``C(eps) C(eps)^T`` with ``C(eps) = (c + eps d) / sqrt(1 + eps^2 d S d)``
-    and ``d`` a random direction S-orthogonal to ``c``: the path is a
-    rank-one aufbau matrix at every eps, its O(eps^2) curvature term is even
-    in eps and cancels in the central difference, and its tangent
-    ``(c d^T + d c^T) / (1 + eps^2 d S d)`` is exactly
-    ``(P_plus - P_minus) / (2 eps)``. Along it the block's indicator stays at
-    the clipped rounding residue (H alpha: at most 1.1e-9; Li beta: at most
-    5.4e-8, in the density tail), a value the energy sees at the 1e-14 Ha
-    level. Multi-electron channels take the linear displacement, along which
-    every block stays away from the clip (O: >= 6.59e-4 above it, 660x the
-    step).
     """
-    W = np.array(_symmetric_perturbation(P0.shape, seed=seed))
+    from scipy.linalg import expm
+    s_half, s_inv_half = _orthonormalizers(md["s_matrix"])
+    rng = np.random.default_rng(seed)
     P_plus, P_minus = np.array(P0), np.array(P0)
-    S = np.asarray(md["s_matrix"])
-    rng = np.random.default_rng(seed + 1)
     for s, key in ((0, "nocc_a"), (1, "nocc_b")):
-        n = int(md[key])
-        if n == 0:
-            W[s] = 0.0
-        elif n == 1:
-            c = _rank_one_orbital(np.asarray(P0[s]), S)
-            d = rng.standard_normal(c.shape[0])
-            d -= c * float(c @ S @ d)
-            d /= np.sqrt(float(d @ S @ d))
-            for sign, target in ((1.0, P_plus), (-1.0, P_minus)):
-                v = c + sign * eps * d
-                v /= np.sqrt(float(v @ S @ v))
-                target[s] = np.outer(v, v)
-            W[s] = (P_plus[s] - P_minus[s]) / (2.0 * eps)
-        else:
-            P_plus[s] = P0[s] + eps * W[s]
-            P_minus[s] = P0[s] - eps * W[s]
+        if int(md[key]) == 0:
+            continue
+        K = rng.standard_normal(P_plus[s].shape)
+        K = K - K.T
+        K /= np.linalg.norm(K)
+        for sign, target in ((1.0, P_plus), (-1.0, P_minus)):
+            U = s_inv_half @ expm(sign * eps * K) @ s_half
+            target[s] = U @ np.asarray(P0[s]) @ U.T
+    W = (P_plus - P_minus) / (2.0 * eps)
     return jnp.asarray(P_plus), jnp.asarray(P_minus), jnp.asarray(W)
-
-
-def _one_electron_blocks(md):
-    """Whether the alpha, beta and total blocks are built on a density of at
-    most one electron -- the blocks whose iso-orbital indicator is identically
-    zero on the SCF's manifold."""
-    n_a, n_b = int(md["nocc_a"]), int(md["nocc_b"])
-    return (n_a <= 1, n_b <= 1, n_a + n_b <= 1)
-
-
-def _drop_one_orbital_indicator_response(dedf, one_electron, alpha_cols):
-    """The manual solver's gate (``solver_manual._run_manual_scf_uks``): the
-    indicator columns of a one-electron block's de/df are zeroed before the
-    feature-response contraction. A one-electron density is one orbital, tau
-    = tau_W identically, so the column is constantly zero on every density
-    the SCF can visit and its exact response vanishes; autodiff at the clip
-    returns a rounding-selected 0/0 instead (Li beta, deep_mgga_3x16: a 1.13
-    Ha term moving by 0.93 Ha under a 1e-14 change of the density matrix).
-    Multi-electron blocks pass through unchanged."""
-    if one_electron and alpha_cols:
-        dedf = dedf.at[:, jnp.asarray(alpha_cols)].set(0.0)
-    return dedf
 
 
 def _assert_uks_fd_consistency(model, md, arch_name, label, eps=_FD_EPS):
@@ -746,15 +720,15 @@ def _assert_uks_fd_consistency(model, md, arch_name, label, eps=_FD_EPS):
     channels, each at the block of its own doubled density diag(P_sigma,
     P_sigma), and ``compute_vc_polarized_per_spin`` on the total block, plus
     the three chain-rule contractions that differentiate the three P -> f
-    maps, gated on one-electron blocks the way the manual solver gates them.
+    maps, every column live in every block (the manual solver's one-electron
+    gate on the indicator's response is retired; DEFERRED_WORK.md entry 27).
 
-    Grid points whose guard status differs between the two displaced
+    Grid points whose guard status -- the density-tail and zeta-clip
+    thresholds of the network evaluation -- differs between the two displaced
     matrices are excluded (zeroing a point's weight removes it identically
-    from the energy and from every potential term). The clip status of the
-    iso-orbital indicator enters that mask for multi-electron blocks only: a
-    one-electron block's column is the rounding residue of an identically
-    zero quantity, so its clip status is a coin toss on both sides of the
-    step and carries no information about the functional.
+    from the energy and from every potential term). The iso-orbital indicator
+    enters no mask: its lower bound is smooth and the rotation path does not
+    reach its ceiling.
     """
     from xcquinox.alec.oneshot import (
         compute_vxc_nn, compute_vc_polarized_per_spin,
@@ -762,7 +736,6 @@ def _assert_uks_fd_consistency(model, md, arch_name, label, eps=_FD_EPS):
         has_dm_dependent_descriptor, uks_zeta,
         _ZETA_BOUNDARY_EPS, _RHO_TOT_FLOOR)
     from xcquinox.alec.models import _NN_TAIL_THRESHOLD
-    from xcquinox.alec.metagga import _ALPHA_MAX
 
     ao_grid = jnp.asarray(md["ao_grid"])
     ao_deriv = jnp.asarray(md["ao_grid_deriv"])
@@ -773,8 +746,6 @@ def _assert_uks_fd_consistency(model, md, arch_name, label, eps=_FD_EPS):
     assert dm.ndim == 3, f"{label} must precompute a spin-resolved DM"
     P0 = jnp.asarray(dm)
     P_plus, P_minus, W = _uks_fd_path(P0, md, eps=eps)
-    one_electron = _one_electron_blocks(md)
-    alpha_cols = _alpha_columns(model)
 
     def spin_quantities(D):
         rho = jnp.einsum("ij,gi,gj->g", D, ao_grid, ao_grid)
@@ -786,26 +757,13 @@ def _assert_uks_fd_consistency(model, md, arch_name, label, eps=_FD_EPS):
         rho_b = np.asarray(spin_quantities(P[1])[0])
         rho_tot = rho_a + rho_b
         zeta = (rho_a - rho_b) / np.maximum(rho_tot, _RHO_TOT_FLOOR)
-        rows = [
+        return np.stack([
             np.abs(zeta) >= 1.0 - _ZETA_BOUNDARY_EPS,
             rho_tot <= _RHO_TOT_FLOOR,
             2.0 * rho_a <= _NN_TAIL_THRESHOLD,
             2.0 * rho_b <= _NN_TAIL_THRESHOLD,
             rho_a <= 1e-10, rho_b <= 1e-10, rho_tot <= 1e-10,
-        ]
-        # The iso-orbital indicator is clipped to [0, _ALPHA_MAX] in every
-        # block; a clip active on one side of the step only is a kink of the
-        # functional, across which the central difference is not a
-        # derivative. The clipped column is exactly 0.0 or _ALPHA_MAX there.
-        blocks = (features_a_of(P), features_b_of(P), features_tot_of(P))
-        for block, single in zip(blocks, one_electron):
-            if single:
-                continue
-            for j in alpha_cols:
-                col = np.asarray(block[:, j])
-                rows.append(col <= 0.0)
-                rows.append(col >= _ALPHA_MAX)
-        return np.stack(rows)
+        ])
 
     keep = ~np.any(guard_status(P_plus) != guard_status(P_minus), axis=0)
     grid_w = np.asarray(md["grid_weights"])
@@ -859,23 +817,17 @@ def _assert_uks_fd_consistency(model, md, arch_name, label, eps=_FD_EPS):
         # per-channel map depends on P only through its own P_sigma, so its
         # contraction lands in that spin block.
         v_feat = feature_response_vxc(
-            _drop_one_orbital_indicator_response(
-                0.5 * feature_energy_derivative(
-                    model, 2.0 * rho_a, 4.0 * sigma_aa, f0_a, part="x"),
-                one_electron[0], alpha_cols),
+            0.5 * feature_energy_derivative(
+                model, 2.0 * rho_a, 4.0 * sigma_aa, f0_a, part="x"),
             weights, features_a_of, P0)
         v_feat = v_feat + feature_response_vxc(
-            _drop_one_orbital_indicator_response(
-                0.5 * feature_energy_derivative(
-                    model, 2.0 * rho_b, 4.0 * sigma_bb, f0_b, part="x"),
-                one_electron[1], alpha_cols),
+            0.5 * feature_energy_derivative(
+                model, 2.0 * rho_b, 4.0 * sigma_bb, f0_b, part="x"),
             weights, features_b_of, P0)
         v_feat = v_feat + feature_response_vxc(
-            _drop_one_orbital_indicator_response(
-                feature_energy_derivative(
-                    model, rho_a + rho_b, sigma_tot, f0_tot, part="c",
-                    zeta=uks_zeta(rho_a, rho_b)),
-                one_electron[2], alpha_cols),
+            feature_energy_derivative(
+                model, rho_a + rho_b, sigma_tot, f0_tot, part="c",
+                zeta=uks_zeta(rho_a, rho_b)),
             weights, features_tot_of, P0)
         V_a, V_b = V_a + v_feat[0], V_b + v_feat[1]
 
@@ -902,10 +854,10 @@ def _assert_uks_fd_consistency(model, md, arch_name, label, eps=_FD_EPS):
 @pytest.mark.parametrize("arch_name", sorted(alec.ARCHITECTURES))
 def test_fd_consistency_live_features_uks_polarized(arch_name):
     """Open-shell, polarized correlation -- the production configuration --
-    on the O atom (5 alpha, 3 beta electrons; every block >= 6.59e-4 above
-    the indicator's clip, 660x the step). The four open-shell atoms of the
-    pools, H and Li included, are probed by oracle O2 in
-    ``test_spin_scaling_oracles`` through the same helper.
+    on the O atom (5 alpha, 3 beta electrons), along the rotation path of
+    ``_uks_fd_path``. The four open-shell atoms of the pools, H and Li
+    included, are probed by oracle O2 in ``test_spin_scaling_oracles``
+    through the same helper.
     """
     atom, spin, composition = _UKS_FD_SPECIES["O"]
     model = _live_model(arch_name)
@@ -925,20 +877,18 @@ def test_fd_consistency_uks_polarized_production_identity(arch_name):
     same statement that the assembled Fock matrices are the derivative of the
     assembled energy.
 
-    The probe is the O atom (5 alpha, 3 beta). The N atom serves at def2-svp
-    but not here: its beta channel holds two electrons, and once diffuse
-    functions and a level-3 grid resolve the tail, the outer orbital dominates
-    it over a third of the grid, so the beta block's iso-orbital indicator
-    sits on the clip of ``metagga.compute_alpha`` there. The straddle mask
-    then removes 4842 of 13344 points carrying 6.3e-2 of the electron density
-    and the retained domain moves with the step, which the mask guard refuses
-    (the measured residual on that record is 1.5e-7 to 5.7e-6 and does not
-    fall with eps, while the descriptor-free control on the same record holds
-    6.2e-9 at every step -- the probe, not the potential, is at fault). On the
-    O atom the mask keeps 99.6% of the grid at the same identity and every
-    architecture lands at 1.5e-9 to 7.5e-8. This is the same reason the
-    def2-svp probe moved off Li in the previous task, one electron further
-    along.
+    The probe is the O atom (5 alpha, 3 beta). The figures on record for
+    this case (every architecture at 1.5e-9 to 7.5e-8, the mask keeping
+    99.6% of the grid) were taken with the linear displacement and the
+    indicator's clip-state straddle rows, before the indicator's lower bound
+    became a smooth positive part and the probe moved onto the rotation
+    manifold of ``_uks_fd_path``; the N atom was excluded then because the
+    linear displacement drove its two-electron beta channel's tail indicator
+    across the clip on a third of the grid (6.3e-2 of the density). The
+    rotation path never leaves the physical domain, so N is no longer
+    special on that account, but this production case keeps the O atom
+    until the re-measurement is run on the cluster (DEFERRED_WORK.md
+    entry 28).
     """
     model = _live_model(arch_name)
     md = _md_with_descriptors(model, "O", "O 0 0 0", "6-311++G(3df,2pd)", 2,
@@ -953,13 +903,16 @@ def test_one_electron_channel_block_is_the_iso_orbital_limit():
     Sun, Ruzsinszky, Perdew, PRL 115, 036402 (2015)); the alpha and total
     blocks of the same atom are two-orbital densities and stay away from
     zero. This is the property that makes a one-electron channel unusable as
-    a finite-difference probe (see the UKS test above), and it separates the
-    per-channel block from the physical one: with the total block in its
-    place the beta column would carry the physical indicator (median 1.5e-2
-    on the beta-resolved grid), and with sigma_ss left undoubled it would
-    read the clip ceiling. A block with tau_s or rho_s left undoubled is
-    negative before the clip and is NOT distinguished here; that convention
-    is pinned against the stored per-spin tau and against libxc elsewhere.
+    a finite-difference probe along a linear displacement (see
+    ``_uks_fd_path``), and it separates the per-channel block from the
+    physical one: with the total block in its place the beta column would
+    carry the physical indicator (median 1.5e-2 on the beta-resolved grid),
+    and with sigma_ss left undoubled it would read the clip ceiling. A block
+    with tau_s or rho_s left undoubled is negative before the smoothing and
+    is NOT distinguished here; that convention is pinned against the stored
+    per-spin tau and against libxc elsewhere. The stored column of the
+    one-orbital channel is the smooth positive part's floor, width / 2 =
+    5e-6, plus the rounding residue of tau - tau_W.
     """
     model = _live_model("deep_mgga_3x16")
     md = _md_with_descriptors(model, "Li", "Li 0 0 0", "def2-svp", 1,
@@ -973,10 +926,14 @@ def test_one_electron_channel_block_is_the_iso_orbital_limit():
     dm = np.asarray(md["dm_pbe"])
     ao = np.asarray(md["ao_grid"])
     resolved = np.einsum("ij,gi,gj->g", dm[1], ao, ao) > 1e-8
-    # Measured 2.5e-11 and 6.2e-10 (two independent PBE solutions) after the
-    # clip: the rounding of tau - tau_W divided by tau_unif. 1e-8 clears the
-    # worse draw by 16x and refuses the total block by six orders.
-    assert f_b[resolved].max() <= 1e-8, float(f_b[resolved].max())
+    # The raw residue measured 2.5e-11 and 6.2e-10 (two independent PBE
+    # solutions): the rounding of tau - tau_W divided by tau_unif, on which
+    # the smoothing puts its floor. 1e-8 above the floor clears the worse
+    # draw by 16x and refuses the total block by six orders.
+    from xcquinox.alec.metagga import _ALPHA_SMOOTHING_WIDTH
+    floor = 0.5 * _ALPHA_SMOOTHING_WIDTH
+    assert np.abs(f_b[resolved] - floor).max() <= 1e-8, (
+        float(np.abs(f_b[resolved] - floor).max()))
     # Two-orbital blocks: measured medians 7.3e-3 (alpha) and 1.5e-2 (total).
     assert np.median(f_a[resolved]) > 1e-3, float(np.median(f_a[resolved]))
     assert np.median(f_tot[resolved]) > 1e-3, float(np.median(f_tot[resolved]))

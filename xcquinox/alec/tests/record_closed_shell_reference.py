@@ -7,9 +7,10 @@ must leave every closed-shell number untouched. This script computes those
 numbers so the SAME script, run against an archived tree and against the working
 tree, produces two records that can be compared digit for digit.
 
-Reference values for the fixture are produced against the tree at ae204537e,
-extracted read-only with ``git archive``. This script is not in that tree
-(it postdates it), so it is copied in and run FROM the archive directory::
+Two fixtures are kept. ``closed_shell_reference_ae204537e.json`` was produced
+against the tree at ae204537e, extracted read-only with ``git archive``; this
+script is not in that tree (it postdates it), so it is copied in and run FROM
+the archive directory::
 
     git archive ae204537e | tar -x -C <archive-dir>
     cp xcquinox/alec/tests/record_closed_shell_reference.py \\
@@ -25,6 +26,16 @@ then names ``<repo>/xcquinox/__init__.py``), and the fixture would be a copy of
 the tree it is supposed to be compared against. The header line printed on
 stderr names the loaded package; it must point into the archive before the
 output is accepted.
+
+``closed_shell_reference_smooth_alpha.json`` was produced by the same script
+run from the repository root against the tree in which the iso-orbital
+indicator's lower bound became a smooth positive part (``metagga.compute_alpha``,
+width 1e-5; DEFERRED_WORK.md entry 27), which moves the five meta-GGA
+architectures' closed-shell numbers by the indicator's footprint (at most
+1.7e-10 on this record) and nothing else. It is the fixture the live tree is
+held to bitwise; the ae204537e fixture is kept and the comparison against it
+carries the measured footprint as its tolerance
+(``test_closed_shell_byte_identity._SMOOTH_ALPHA_DELTA``).
 
 The record is computed inside :func:`_reproducible_pyscf`, which pins the two
 pieces of PySCF state the reference SCF's LAST DIGITS depend on. Both were

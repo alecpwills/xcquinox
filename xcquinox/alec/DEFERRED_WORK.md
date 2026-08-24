@@ -576,44 +576,93 @@ on AEs, the descriptor-free level) for every architecture; the probe runs in und
 per architecture (scratch/probe_pretrain_gga_rungs.py, scratch/mgga_spin_scaling_check/indep2.py).
 TRIGGER: the next pretraining of any descriptor-carrying architecture; the preflight gate.
 
-## 27. compute_alpha clip kink on one-electron spin channels (2026-08-21)
+## 27. compute_alpha clip kink on one-electron spin channels (2026-08-21) -- CLOSED 2026-08-24 (<hash>)
 
 **WHAT:** with the per-channel doubled-density footing, a one-electron spin channel (H alpha,
 Li beta) has tau = tau_W identically, so the iso-orbital indicator alpha is zero up to rounding
-and sits on the lower bound of the `jnp.clip(alpha_raw, 0, 100)` in `metagga.compute_alpha`.
-The clip's one-sided derivative makes the feature-response contribution to the self-consistent
+and sat on the lower bound of the `jnp.clip(alpha_raw, 0, 100)` in `metagga.compute_alpha`.
+The clip's one-sided derivative made the feature-response contribution to the self-consistent
 Fock matrix rounding-selected there: measured on Li with `deep_mgga_3x16`, the beta-channel
-`feature_response_vxc` term reaches 1.4e-1 Ha and moves by 6.1e-2 Ha under a 1e-14 relative
-change of the density matrix (on O: 5.9e-3 Ha, stable to 7e-18). Energies and the one-shot
-path are unaffected (frozen features); the finite-difference potential check passes away from
-the kink and the O-atom probe covers the smooth region.
+`feature_response_vxc` term reached 1.4e-1 Ha and moved by 6.1e-2 Ha under a 1e-14 relative
+change of the density matrix (on O: 5.9e-3 Ha, stable to 7e-18); on H the Fock pair moved by
+4.2e-3 (alpha) and 7.1e-4 (total) Ha. The manual UKS loop hid the one-electron case behind an
+occupancy-keyed gate (`_drop_one_orbital_indicator_response`, exact at the fixed point and a
+real dropped term along the iteration), and oracle O2 hid the rest behind a straddle mask on
+the clip state.
 
-**WHY IT MATTERS:** free H and Li are atomization-energy anchors, and the self-consistent
-UKS loop evaluates the response term each cycle; a rounding-selected Fock contribution can
-make the SCF fixed point of those species draw-dependent for meta-GGA architectures.
+**CLOSURE:** the lower bound of the indicator is a smooth positive part in the ENERGY,
+`alpha = min(p(alpha_raw), 100)` with `p(x) = (x + sqrt(x^2 + w^2))/2` and `w =
+metagga._ALPHA_SMOOTHING_WIDTH = 1e-5` in indicator units (in kinetic-energy-density units the
+width is `w tau_unif(n)`, so the construction is invariant under the uniform density scaling
+alpha is invariant under; `p(x) - p(-x) = x` exactly, `p(0) = w/2`, `p'(0) = 1/2`, and the
+exact inverse `x = p - w^2/(4p)` is exposed for readers of a stored column). Anchor of the
+width, measured on H and Li at def2-svp / grid 1, def2-tzvp / grid 2 and 6-311++G(3df,2pd) /
+grid 3: (a) the rounding residue of the raw indicator on a one-orbital channel is at most 6.6e-10
+on every point with 2 rho_sigma > 1e-8 (all but ~1e-6 of the channel's electron), and its response
+to a 1e-14 relative change of the density matrix is below 1.05e-8 on 2 rho_sigma > 1e-6, so 1e-5
+exceeds both by three orders there; on the points the energy reads below that (down to the
+network's mask at 2 rho_sigma = 1e-10) the residue reaches 1.6e-7 (def2-svp), 1.8e-6 (def2-tzvp)
+and 3.7e-8 (production), and 1e-5 is the first decade above the largest of them; below the mask
+it reaches 5.5e-2 (Li beta, production, rho ~ 1e-12), which no width could dominate and none
+needs to. (b) The largest change of E_x^SCAN the smoothing induces through the library's own
+path (parent adapter, libxc MGGA_X_SCAN at the kinetic-energy density the column encodes)
+against libxc at the true tau is +1.17e-7 Ha on the H atom -- one orbital everywhere, so the
+column sits at w/2 on every point -- identically at the three identities, and +3.1e-7 Ha on
+Li's beta channel; the shift is linear in the width (0.0117 Ha per unit width on H), so the
+1e-12 Ha level would need a width of 1e-10, below the residue it has to dominate. With the
+adapter's inversion undoing the smoothing exactly, O1 reproduces libxc at the true tau as
+before. (c) The certificate's atomic tolerance, 1.0 mHa, is 8.5e3 above (b).
 
-**KNOWN:** the solver-backend work measures fixed-point stability on H and Li across
-independent runs and damps or masks the response term on one-electron channels if unstable.
-Shipped state (commits 7d30cdb9e and 200a06d02): the manual UKS loop drops the indicator's
-response columns on a one-electron channel (`_drop_one_orbital_indicator_response`); the gate is
-exact at the fixed point, where the channel is a single orbital and the clip is a 0/0, and along
-the iteration it removes a real term of the mixer output's derivative (indicator up to 2.6 on
-Li's beta channel at the mixer output; Fock norms 0.4 percent apart at cycle 5; converged
-energies 8e-15 Ha apart), so the path changes and the fixed point does not (H/Li fixed points
-reproducible to 1e-15 Ha; the gated Fock reproduces dE/dtheta along a rank-preserving rotation
-to 7.8e-10 on H and 8.7e-8 on Li). The kink is NOT confined to one-electron channels: any
-channel whose raw indicator hugs the lower clip is affected -- N's beta channel (1s, 2s only)
-has a raw-indicator median of 3.2e-3 against O's 0.58, and a random symmetric density step
-flips the clip state on 431 (h = 1e-6) to 710 (h = 1e-5) of its 4098 resolved points, which a
-finite-difference check reads as a 6.0e-5 relative residual (element-wise directions flip
-none). A closure must therefore be a smooth positive part in the ENERGY of `compute_alpha`
-applied to every channel, not a one-electron special case, and the occupancy-keyed gate is then
-retired together with it.
+**MEASURED DELTAS (def2-svp / grid 1 unless stated):** E_xc of the five meta-GGA architectures
+on the O3 closed-shell set moves by 1.3e-8 to 1.7e-8 Ha (H2, one orbital everywhere), 3.5e-11
+to 4.2e-11 (H2O), 4.7e-11 to 5.5e-11 (CH4), 8.1e-11 to 9.6e-11 (N2), and on the four open-shell
+atoms by 8.1e-9 to 9.8e-9 (H), 2.8e-8 to 3.2e-8 (Li), 1.2e-10 to 1.4e-10 (N), 4.9e-11 to
+5.7e-11 (O); worst 3.2e-8 Ha (Li, deep_mgga_attn_3x16), 3e4 below the certificate. The
+indicator column moves by 5.0e-6 on one-orbital blocks and by at most 3.8e-8 (O beta) on every
+other. The closed-shell byte-identity record (H2O, grid 1) is bitwise on the 26 architectures
+without an indicator column and moves by at most 4.2e-11 Ha (energies), 2.2e-11 (potential
+traces) and 1.7e-10 (potential squares) on the five with one; a second fixture
+(`closed_shell_reference_smooth_alpha.json`) pins the new tree bitwise and the ae204537e fixture
+is kept with those deltas as its tolerance. The pretraining alpha column of the default set
+moves by 5.0e-6 on 4144 of 13086 rows (one-orbital rows: 1200 of 1200 rows of the H atom in the
+recorded sto-3g fixture, from 0.0 to 5.0e-6) and the mesh's alpha = 0 nodes by 5.0e-6; every
+other column is bit-identical. The definition of the indicator is now part of the
+pretraining-data manifest identity (`metagga.ALPHA_DEFINITION`), so a file written under the
+hard clip is stale. The certificate's parent-as-model control (sto-3g / grid 1, measured through the
+certificate itself) reads PBE +1.8e-15 Ha (O), +1.8e-15 (H2O) and +8.0e-7 (H, the recorded zeta
+clip, unchanged) and SCAN +2.4e-9 (O), -3.4e-10 (H2O) and +4.4e-8 Ha (H), verdict PASS on both;
+the SCAN figures sit where the recorded ones did (2.0e-10 / 1.6e-9 / 7.7e-8) inside the same
+1e-8 / 5e-6 bounds -- the certificate's own inversion does not undo the smoothing, so the floor
+enters its tau at the 1e-9-Ha level. The pyscfad backend shares `compute_alpha` (grep:
+`solver_pyscfad.py` imports it) and its tests pass (10 passed).
 
-**TRIGGER for closing:** replace the hard clip with a smooth positive part in the ENERGY
-expression of `compute_alpha` (never a modified derivative alone), re-verify against libxc
-spin=1 SCAN (the energy is insensitive: the affected rows carry |alpha_raw| <= 1e-9), and
-re-run the one-electron FD probes.
+**DERIVATIVE, PROVEN AND RETIRED GATE:** with every column live, the H atom's Fock pair moves by
+3.6e-12 Ha under a 1e-14 relative change of the density matrix (4.2e-3 with the clip; 3.6e-11
+at width 1e-6, 3.5e-10 at 1e-7, the sensitivity falling as 1/width) and reproduces a central
+difference of the energy along an UNRESTRICTED random symmetric direction to 3.8e-10 to 6.2e-10
+relative at the 1e-7 step (9.3e-7 and 3.7e-8 at 1e-5 and 1e-6, falling as a derivative must;
+7.4e-4 flat in the step with the clip). Along random directions tangent to the SCF's own manifold
+(random orbital rotations of every populated channel, rank-preserving and positive semidefinite
+at every step) the solver's Fock pair reproduces the energy on all four open-shell atoms with no
+mask and no gate: 2.9e-11 (H), 2.4e-10 (Li), 9.8e-11 (N), 5.5e-11 (O) at the 1e-5 step, stated
+on the probe's absolute-contribution scale (the net derivative is small, the reference being a
+PBE fixed point),
+and at Li's own fixed point the SCF-manifold rotation is stationary to the convergence floor
+(-6.6e-9 against -6.9e-9, the vanishing of the converged Fock's occupied-virtual blocks with every
+column live) while the two-channel direction that is nonstationary -- the alpha block moved
+linearly, the beta block along its rank-one manifold -- reproduces dE/dP at the constrained
+direction's floor, where the gated loop read 5.5e-2. The occupancy gate and the O2 straddle rows on the clip state are retired;
+O2's probe is the rotation path for every channel; H and Li fixed points reproduce across
+seeds 1e-14 apart to 0.0 and 1.9e-14 Ha -- the Li figure of the order of the seed separation
+itself, a continuous map's response and not a draw; the loop converges Li in 20 cycles against
+the gated loop's 21, to a fixed point 3.0e-8 Ha away, which is the smoothing's own energy shift
+on Li (2.8e-8 to 3.2e-8 measured at fixed density), not a path effect. What the
+smoothing does NOT close is entry 30: along a direction that leaves the positive semidefinite
+cone the descriptor's tail response makes the energy non-linearizable at any usable step on Li
+(5.2e-2 relative, flat from 1e-5 to 1e-7) and N (6.0e-6), the same with the clip and at every
+width from 1e-9 to 1e-5, and Li's beta Fock still moves by 0.37 Ha in its virtual-virtual block
+under the 1e-14 probe (annihilating the occupied orbital to 2e-13, so the fixed point is
+unaffected).
 
 ## 28. Production-basis energy/potential check for the three-block UKS Fock (2026-08-23)
 
@@ -650,9 +699,13 @@ potential defect. Single-element directions cross the clip on zero points at bot
 
 **TRIGGER:** run on the cluster, either as a slow-marked test (`-m slow`) or as a cell of the
 workflow matrix, before the next production UKS campaign on the meta-GGA rungs, and whenever the
-three-block potential or the feature-response contraction is changed. Closing #27 (a smooth
-positive part in the energy of `compute_alpha`) also changes what the check measures on the
-one-electron channels and should be paired with it.
+three-block potential or the feature-response contraction is changed. #27 is closed (the smooth
+positive part in the energy of `compute_alpha`, the retired gate, and O2's probe moved onto the
+rotation manifold of every populated channel), so the figures in KNOWN above were taken on the
+superseded probe: the def2-svp residuals must be re-read from the current O2 run and the
+production case re-measured with the rotation path -- on which the N atom is no longer a
+clip-boundary pathology, so it can rejoin the production set; the descriptor's tail response
+(entry 30) still rules out the linear displacement there.
 
 ## 29. Reference SCF quadrature order depends on process memory (2026-08-23) -- CLOSED 2026-08-24 (<hash>)
 
@@ -701,14 +754,20 @@ objects replace `get_veff` by J plus a fixed potential and take only the integra
 (CH4), 158 MB at nao = 315 (C5H8 / RKT22, the largest species of the BH76 and W4-11 pools at that
 basis, 13 atoms) -- under 200 MB per worker everywhere; every small system stays one block (O at
 def2-svp / grid 3: 11904 pruned points; the closed-shell fixture's H2O at grid 1: 9304), so its
-summation order is the one a clean process already had, and the production level-3 grids take 3
-(N2, 26616 points) to 11 (C5H8, 131584) blocks where PySCF took 1 to 2. Wall time of the reference SCF (fifteen repeats on an idle box, medians, four threads): the
-locked O atom at def2-svp / grid 3 is unchanged (0.059 s to 0.058 s, one block in both
-cases); H2O at def2-svp / grid 3 goes from 0.131 s to 0.145 s (three blocks against one; +10
-percent of the median, the fastest repeats equal at 0.122 s; +6 percent of the 0.21 s
-precompute; a five-repeat run under load had given +19 percent); at the production identity
-the pinned SCF is faster, 0.357 s to 0.339 s on H2O (32128 points, 3 blocks against 1) and
-0.564 s to 0.460 s on CH4 (49408 points, 4 blocks against 1), the smaller blocks fitting the
+summation order is the one a clean process already had. That is a def2-svp statement: at the
+production basis even a bare atom exceeds one block (the O atom's pruned level-3 grid at
+6-311++G(3df,2pd) is 13504 points, two blocks), so every production reference -- atoms included --
+shifts once at the 1e-13 level when the pin first lands and is held fixed thereafter; the v6
+campaign regenerates every production reference under the pin. The production level-3 grids take 2
+(O, 13504 points) to 11 (C5H8, 131584) blocks where PySCF took 1 to 2.
+Wall time of the reference SCF (31 alternated repeats, medians, four threads; the pruning pass
+runs on the UNPRUNED grid, so the O atom's 14088 unpruned points split 12544 + 1544 under the
+pin while the post-pruning SCF loop is one block either way): the locked O atom at def2-svp /
+grid 3 is 0.055 s to 0.056 s here, with an independent measurement on a loaded box reaching +15
+percent on the fastest repeats; H2O at def2-svp / grid 3 goes from 0.127 s to 0.134 s (three
+blocks against one, per-block call overhead on a 24-function system); at the production identity
+the pinned SCF is faster, 0.342 s to 0.291 s on H2O (32128 points, 3 blocks against 1) and
+0.555 s to 0.474 s on CH4 (49408 points, 4 blocks against 1), the smaller blocks fitting the
 caches better than PySCF's whole-grid block.
 
 **Measured with both pins, one PySCF thread:** a clean process, one holding 3.6 GiB (above the
@@ -724,11 +783,22 @@ requires the caller to run PySCF at one thread (the cluster job scripts export `
 so a production record is reproducible only up to its thread count). Every record carries
 `reference_xc_blksize`, `reference_blas_threads` (PySCF's OpenMP count) and `reference_eri_path`
 in `mol_metadata` (precompute) or the SCF cache payload (`external_refs`) so a mismatch is
-visible. What is left unpinned, by measurement: the exchange loop of a density-fitted
-Hartree-Fock object (the DF HF-for-CCSD) is sized from process memory too; it moved the HF
-density of the O atom by 4.2e-15 and the CCSD density on it by 4.8e-15 (rho on the grid 1.7e-13)
-between the two memory histories, below the CCSD convergence floor and every consumer's
-tolerance.
+visible. The density-fitted auxiliary loops are pinned as well (found in review: `df_jk.get_jk` sizes its
+Coulomb and exchange aux blocks from `dfobj.max_memory - lib.current_memory()`, a dependence the
+def2-svp fitting bases cannot expose -- naux 49-113 against blockdim 240 -- while the production
+basis can: CH4 naux 288, C5H8 888): `pin_eri_path` on a density-fitted object holds
+`with_df.blockdim` at 240 (PySCF's own default) and `with_df.max_memory` at a sentinel, so the
+aux sums run over fixed 240-vector blocks and the fitted tensor builds in memory in one pass
+(354 MB at the largest pool species), stamped `"df-aux240"`. Proven on CH4 at the production
+basis (the smallest case whose aux loop exceeds one block), one thread: unpinned, a clean process
+and one holding 3.6 GiB differ on the DF-PBE dm and e_tot and on the DF Hartree-Fock determinant
+(-40.21286479375725 against ...2); pinned, all four agree exactly (hf dm fb2d9313..., e_tot
+-40.46264253036452). Before this pin the unpinned exchange loop moved the O-atom HF density by
+4.2e-15 and the CCSD density on it by 4.8e-15 (rho on the grid 1.7e-13) between the two memory
+histories -- below the CCSD convergence floor and every consumer's tolerance, the scale that keeps
+the stamps out of the CCSD cache identity. A stale integral-path decision cannot survive a
+`reset` to a different system (the pinned predicate raises), and a pinned mean-field does not
+pickle (deepcopy and `mf.copy()` preserve the pins; no reference path pickles one).
 
 **Cache identities:** none of the stamps enters an identity -- not the `external_refs` cache
 filenames (a CCSD reference is hours per species at the production identity, and a 1e-13 change in
@@ -736,7 +806,71 @@ the HF seed does not move a CCSD density above its own floor), not the pretraini
 not the precompute memo. Existing caches load unchanged and report the stamps as None
 (`test_run_scf_with_cache_records_the_pins_and_keeps_an_older_cache`); the closed-shell fixture
 of O3 reproduces on all keys (its probe is one block and incore under both its own pins and
-these). Tests: `tests/test_pyscf_determinism.py` (32: the seam on `NumInt.block_loop` and
-`_is_mem_enough`, the wrappers, the bound against the pools, the metadata, the OEP objects, and a
-four-process end-to-end test that requires bit-identical records across memory histories with the
-pins and different ones without).
+these). Tests: `tests/test_pyscf_determinism.py` (38: the seams on `NumInt.block_loop`,
+`_is_mem_enough` and the DF aux loops, the wrappers, the escalation-tier and HF-meanfield pins,
+the bound against the pools, the metadata and cache stamps, the OEP objects, the reset guard and
+the pickling contract, and two multi-process end-to-end tests -- def2-svp and DF-CH4 at the
+production basis -- that require bit-identical records across memory histories with the pins and
+different ones without).
+
+## 30. The iso-orbital indicator's tail response makes the meta-GGA Fock hyper-sensitive off the SCF manifold (found 2026-08-24)
+
+**WHAT:** `alpha = (tau - tau_W)/tau_unif` divides by `n^{5/3}`, so its derivative with respect
+to the density matrix, `d alpha / dP ~ |grad chi_i . grad chi_j| / n^{5/3}`, grows without bound
+into the density tail wherever a diffuse basis function is large relative to the occupied
+orbital. Measured on Li's beta channel (`deep_mgga_3x16`, def2-svp, grid 1): on the outermost
+radial shell (rho_beta = 1.0e-9, 898 points) the raw indicator moves by 4e-4 under a 1e-14
+relative change of the density matrix (`d alpha_raw / dP ~ 4e10`), by 1.25e-6 at 2 rho_sigma =
+1e-8 to 1e-7, 1.05e-8 at 1e-6 to 1e-4 and 9.4e-10 above 1e-4; each of those 898 points
+contributes 2.9e-3 Ha to one element of the feature-response Fock term (0.57 Ha over the shell)
+while the energy they carry is 1e-8 Ha at most (their weight times the indicator's ceiling).
+Consequences, all measured: (i) that channel's Fock matrix moves by 0.37 Ha in its
+virtual-virtual block under the 1e-14 probe with the smooth positive part of entry 27 in place
+(0.93 with the hard clip; 0.2-0.5 at every width from 1e-9 to 1e-5 -- no width in indicator
+units can be large against 4e-4 without an alpha floor of the same order); (ii) a
+finite-difference probe of the Fock against the energy along a direction that leaves the cone
+of positive semidefinite matrices is not a derivative estimate at any usable step: a 1e-6 step
+moves the raw indicator by 1e3 to 1e5 on those points, beyond the ceiling, and the residual
+reads 5.2e-2 (Li) and 6.0e-6 (N) flat from the 1e-5 to the 1e-7 step, on the hard clip and on
+the smoothing alike, while a density cut at rho_sigma > 1e-8 on the probe only takes Li to
+2.5e-3 because the response is still 1e6 to 1e8 a decade or two above that; (iii) H is exempt
+(its basis has no function more diffuse than its orbital; the same probe reads 3.8e-10 at the
+1e-7 step), O is exempt (every block's raw indicator is >= 6.6e-4 on the resolved grid), and
+N's beta channel (1s and 2s, one-orbital-like in its tail) is the multi-electron case.
+
+**WHAT IT DOES NOT AFFECT:** the raw indicator is stationary along every rank-preserving
+rotation of a one-orbital block, so the response annihilates that block's occupied orbital
+exactly (measured: F_beta c moves by 2e-13 while the matrix moves by 0.37 Ha) and the fixed
+point of the manual loop does not depend on the rounding (H and Li reproduce from seeds 1e-14
+apart to 0.0 and 1.9e-14 Ha, the Li figure of the order of the seed separation itself). Along
+the SCF's own manifold -- random orbital rotations of every populated channel, positive
+semidefinite at every step -- the Fock pair reproduces the energy to 2.9e-11 (H), 2.4e-10 (Li),
+9.8e-11 (N) and 5.5e-11 (O) of the probe's absolute-contribution scale at the 1e-5 step with no
+mask and no gate, which is the derivative the Roothaan step needs. The energy is unaffected
+(the tail's integrand mass is nil).
+
+**WHY DEFERRED:** the only remedy is a change of the descriptor's tail behaviour in the ENERGY --
+a smooth damping of the indicator's dependence on the density matrix below a density scale
+(the network already masks 2 rho_sigma <= 1e-10 with a hard step), or a bounded reformulation of
+the `n^{-5/3}` amplification -- which redefines the descriptor for every meta-GGA checkpoint and
+pretraining file and needs an explicit decision; a rescaling of the width in indicator units
+cannot do it (the width would have to reach the alpha scale of the tail response, 1e-2 or more,
+against a physical floor that must stay below 1e-5), and a stop-gradient is excluded by the
+2026-08-06 rule that the derivative must be the derivative of the energy.
+
+**KNOWN:** the probe geometry that is valid -- rank-preserving rotations (`_rotation_path` in
+`test_spin_scaling_solver_manual.py`, `_uks_fd_path` in `test_solv01_split_xc.py`) -- and the
+one that is not (linear symmetric displacements of a rank-deficient channel), with the numbers
+above; the per-point decomposition script pattern (contribution of each grid point to one Fock
+element via a JVP of the block closure along a unit matrix direction) that located the shell.
+What is NOT known: whether the virtual-block noise reaches a trained model through the
+differentiable SCF's eigensolver derivative (the training gradient of a FULL-mode meta-GGA fit
+on a one-orbital channel visits densities within 1e-14 of rank one only in its last cycles) --
+to be measured on Li with two seeds 1e-14 apart before the meta-GGA rungs are trained in FULL
+mode; and the size of the response at the production identity, where `d alpha / d sigma`
+reaches 2.2e31 (entry 27's measurement) and the outermost shells are diffuse.
+
+**TRIGGER:** a FULL-mode meta-GGA training campaign on the open-shell atoms (measure the
+gradient's determinism first), or any finite-difference check of the meta-GGA potential that
+must probe directions off the SCF manifold.
+

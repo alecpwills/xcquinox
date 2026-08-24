@@ -71,7 +71,11 @@ def test_tau_from_doubled_spin_dm_is_twice_the_channel_tau():
 
 
 def test_alpha_matches_repo_scan_formula():
+    """Against the numpy twin (hard clip): the two agree to the smoothing's
+    own footprint ``width^2 / (4 |alpha_raw|)`` wherever the raw indicator is
+    away from zero, and to ``width / 2`` at most anywhere."""
     from xcquinox.alec.subset_selection import compute_descriptor_triple
+    from xcquinox.alec.metagga import _ALPHA_SMOOTHING_WIDTH as c
     rng = np.random.default_rng(0)
     rho = np.abs(rng.normal(1.0, 0.5, 64)) + 1e-3
     sigma = np.abs(rng.normal(0.5, 0.3, 64))
@@ -79,15 +83,139 @@ def test_alpha_matches_repo_scan_formula():
     ref = compute_descriptor_triple(rho, sigma, tau)["alpha"]
     got = np.asarray(compute_alpha(jnp.asarray(rho), jnp.asarray(sigma),
                                    jnp.asarray(tau)))
-    assert np.allclose(got, ref, atol=1e-10)
+    raw = tau - sigma / (8 * rho)
+    raw = raw / (0.3 * (3 * np.pi ** 2) ** (2 / 3) * rho ** (5 / 3))
+    assert np.all(np.abs(got - ref) <= c ** 2 / (4 * np.abs(raw)) * (1 + 1e-6)
+                  + 1e-15)
+    assert np.all(np.abs(got - ref) <= 0.5 * c)
+    # This draw stays away from alpha = 0 (smallest |raw| measured 7.7e-4), so
+    # the agreement is 3.3e-8 or better and the comparison is not vacuous.
+    assert np.min(np.abs(raw)) > 5e-4
+    assert np.allclose(got, ref, atol=1e-7)
 
 
 def test_alpha_uniform_gas_limit_is_one():
-    # For the uniform electron gas sigma=0 (tau_W=0) and tau=tau_unif -> alpha=1.
+    # For the uniform electron gas sigma=0 (tau_W=0) and tau=tau_unif -> alpha=1
+    # up to the smoothing's footprint width^2/4 = 2.5e-11 at alpha = 1.
     rho = jnp.array([1.0, 2.0, 0.5])
     tau_unif = (3.0 / 10.0) * (3.0 * jnp.pi**2) ** (2.0 / 3.0) * rho ** (5.0 / 3.0)
     alpha = np.asarray(compute_alpha(rho, jnp.zeros_like(rho), tau_unif))
     assert np.allclose(alpha, 1.0, atol=1e-10)
+
+
+def test_alpha_one_orbital_floor_is_half_the_width():
+    """A one-orbital density has tau = tau_W exactly, so the raw indicator is
+    zero and the smoothed one sits at width / 2 -- the same value at every
+    density, since the width is a multiple of tau_unif (scale invariance)."""
+    from xcquinox.alec.metagga import _ALPHA_SMOOTHING_WIDTH as c
+    rho = jnp.array([1e-8, 1e-4, 0.1, 1.0, 10.0])
+    sigma = jnp.array([1e-17, 1e-9, 0.05, 0.3, 40.0])
+    tau_w = sigma / (8.0 * rho)
+    alpha = np.asarray(compute_alpha(rho, sigma, tau_w))
+    np.testing.assert_allclose(alpha, 0.5 * c, rtol=1e-12, atol=0.0)
+
+
+def test_smooth_positive_part_properties():
+    """The construction behind the lower bound: strictly positive, C-infinity,
+    max(x, 0) up to width^2/(4|x|) away from zero, slope 1/2 at zero, exact
+    odd part ``p(x) - p(-x) = x`` (so a central difference across zero
+    reproduces the derivative), an exact inverse, and degree-one homogeneity
+    in (x, width), which is what makes the indicator's smoothing invariant
+    under the uniform density scaling alpha is invariant under."""
+    from xcquinox.alec.metagga import (
+        invert_smooth_positive_part, smooth_positive_part)
+    c = 1e-5
+    x = jnp.array([-1e3, -1.0, -1e-3, -3e-5, -1e-5, -1e-7, 0.0, 1e-7, 1e-5,
+                   3e-5, 1e-3, 1.0, 1e3, 1e7])
+    p = np.asarray(smooth_positive_part(x, c))
+    assert np.all(p > 0.0)
+    assert float(smooth_positive_part(jnp.array(0.0), c)) == 0.5 * c
+    assert float(jax.grad(lambda t: smooth_positive_part(t, c))(0.0)) == 0.5
+    footprint = np.abs(p - np.maximum(np.asarray(x), 0.0))
+    # The footprint is resolvable in double precision only while it is large
+    # against the rounding of x itself (width^2/(4|x|) >> 1e-16 |x|, i.e.
+    # |x| << 2.5e-3 / 1e-8 ~ 1e2): checked on 3e-5 <= |x| <= 1.
+    away = (np.abs(np.asarray(x)) >= 3e-5) & (np.abs(np.asarray(x)) <= 1.0)
+    np.testing.assert_allclose(footprint[away],
+                               c ** 2 / (4 * np.abs(np.asarray(x)[away])),
+                               rtol=0.3, atol=1e-30)
+    assert np.all(footprint <= 0.5 * c + 1e-30)
+    odd = np.asarray(smooth_positive_part(x, c) - smooth_positive_part(-x, c))
+    np.testing.assert_allclose(odd, np.asarray(x), rtol=0.0, atol=1e-16 * 1e7)
+    # derivative continuous and monotone in (0, 1): finite differences of the
+    # autodiff derivative across zero at the width scale
+    grid = jnp.linspace(-5e-5, 5e-5, 2001)
+    dp = np.asarray(jax.vmap(jax.grad(lambda t: smooth_positive_part(t, c)))(grid))
+    assert np.all(dp > 0.0) and np.all(dp < 1.0)
+    assert np.all(np.diff(dp) > 0.0)
+    # max |p''| = 1/(2 width) = 5e4, so adjacent grid points (step 5e-8)
+    # differ by at most 2.5e-3 (measured exactly that); a jump would read 0.5.
+    assert np.max(np.abs(np.diff(dp))) < 3e-3, "derivative jumps at the width scale"
+    # Exact inverse, on the domain where the value determines x at double
+    # precision: for x < 0 the value is the footprint c^2/(4|x|), whose
+    # relative rounding eps x^2/c^2 exceeds 1e-9 beyond |x| ~ 2e-2 (at
+    # x = -1e3 the sqrt's argument x^2 + c^2 rounds to x^2 and the value to
+    # 5.7e-14, carrying no x at all); every stored indicator column is
+    # positive-side, where the round-trip holds to 1e-9 at any magnitude.
+    dom = np.asarray(x) >= -2e-2
+    back = np.asarray(invert_smooth_positive_part(smooth_positive_part(x, c), c))
+    np.testing.assert_allclose(back[dom], np.asarray(x)[dom],
+                               rtol=1e-9, atol=1e-13)
+    # Homogeneity p(s x; s c) = s p(x; c), exact in exact arithmetic; in
+    # floating point the NEGATIVE branch's value is the footprint
+    # width^2/(4|x|), realized through the cancellation x + sqrt(x^2 + c^2)
+    # whose relative rounding eps x^2/c^2 is not scale-invariant, so the
+    # bitwise-tight comparison is made where that rounding is below 1e-14
+    # (x >= -3e-5 for this width; the positive branch is exact at every
+    # magnitude and is fully covered).
+    s = 3.7e4
+    dom = np.asarray(x) >= -3e-5
+    np.testing.assert_allclose(
+        np.asarray(smooth_positive_part(s * x, s * c))[dom], (s * p)[dom],
+        rtol=1e-14, atol=0.0)
+
+
+def test_compute_alpha_is_invariant_under_uniform_density_scaling():
+    """alpha(n_lambda) = alpha(n) for n_lambda(r) = lambda^3 n(lambda r): rho,
+    sigma and tau scale as lambda^3, lambda^8 and lambda^5, and the smoothing
+    width, a multiple of tau_unif ~ lambda^5, scales with them. Checked on
+    points at, near and away from the one-orbital limit."""
+    rho = jnp.array([0.3, 0.3, 0.3, 0.3, 2.0])
+    sigma = jnp.array([0.2, 0.2, 0.2, 0.0, 1.0])
+    tau_w = sigma / (8.0 * rho)
+    tau_unif = 0.3 * (3.0 * jnp.pi ** 2) ** (2.0 / 3.0) * rho ** (5.0 / 3.0)
+    tau = tau_w + tau_unif * jnp.array([0.0, 2e-6, 0.4, 1.0, 3.0])
+    base = np.asarray(compute_alpha(rho, sigma, tau))
+    for lam in (1e-3, 0.5, 7.0, 1e2):
+        scaled = np.asarray(compute_alpha(lam ** 3 * rho, lam ** 8 * sigma,
+                                          lam ** 5 * tau))
+        np.testing.assert_allclose(scaled, base, rtol=1e-11, atol=0.0)
+
+
+def test_compute_alpha_derivative_is_continuous_across_the_one_orbital_limit():
+    """The reason for the smoothing: autodiff through compute_alpha at
+    tau = tau_W +- epsilon must vary continuously with epsilon (the hard clip
+    returned 0 on one side and the full response on the other). Central
+    differences of the energy-like scalar sum(alpha) agree with autodiff on
+    both sides of the limit and AT it, where the clip's derivative was a
+    rounding-selected 0/0."""
+    from xcquinox.alec.metagga import _ALPHA_SMOOTHING_WIDTH as c
+    rho = jnp.array([0.7]); sigma = jnp.array([0.9])
+    tau_w = sigma / (8.0 * rho)
+    tau_unif = 0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0) * rho ** (5.0 / 3.0)
+    f = lambda t: compute_alpha(rho, sigma, t).sum()
+    slopes = []
+    for eps_alpha in (-10 * c, -c, -0.1 * c, 0.0, 0.1 * c, c, 10 * c):
+        t = tau_w + eps_alpha * tau_unif
+        ad = float(jax.grad(f)(t)[0])
+        h = 1e-9 * float(tau_unif[0])
+        fd = (float(f(t + h)) - float(f(t - h))) / (2 * h)
+        assert abs(ad - fd) < 1e-6 * abs(ad), (eps_alpha, ad, fd)
+        slopes.append(ad * float(tau_unif[0]))
+    # d alpha / d alpha_raw runs from ~0 to ~1 through exactly 1/2 at the limit
+    assert slopes[3] == 0.5
+    assert np.all(np.diff(slopes) > 0.0)
+    assert slopes[0] < 3e-3 and slopes[-1] > 1.0 - 3e-3
 
 
 def test_tau_is_differentiable_in_dm():
@@ -328,27 +456,33 @@ def test_compute_alpha_has_no_stop_gradient_on_the_energy_path():
         f"FD={fd:.6e} AD={ad:.6e} rel={rel:.3e}")
 
 
-def test_compute_alpha_clip_is_noop_below_ceiling():
-    """The clip is a no-op wherever raw alpha < _ALPHA_MAX and rho > cutoff:
-    such points are byte-identical to the pre-fix formula. (Note: real molecular
-    grids DO have alpha > _ALPHA_MAX at rho > 1e-8 -- those points ARE clipped;
-    the fix is energy-faithful via gate saturation, not via leaving alpha
-    untouched. This test only pins the no-op-below-ceiling property.)"""
-    from xcquinox.alec.metagga import compute_alpha
-    def old(rho, sigma, tau):
+def test_compute_alpha_ceiling_is_noop_below_it_and_smoothing_is_its_footprint():
+    """Below the ceiling the only difference from the bare formula is the
+    smooth positive part's footprint width^2/(4 alpha_raw), which at these
+    resolved points (alpha_raw >= 0.044) is at most 5.7e-10; the ceiling itself
+    is a no-op there. (Real molecular grids DO have alpha > _ALPHA_MAX at
+    rho > 1e-8 -- those points ARE clipped; the ceiling is energy-faithful via
+    gate saturation, not via leaving alpha untouched.)"""
+    from xcquinox.alec.metagga import compute_alpha, _ALPHA_SMOOTHING_WIDTH as c
+    def bare(rho, sigma, tau):
         rs = jnp.maximum(rho, 1e-30)
         tw = sigma / (8.0 * rs)
         tu = (3.0 / 10.0) * (3.0 * jnp.pi ** 2) ** (2.0 / 3.0) * rs ** (5.0 / 3.0)
-        return jnp.maximum((tau - tw) / jnp.maximum(tu, 1e-30), 0.0)
+        return (tau - tw) / jnp.maximum(tu, 1e-30)
     rho = jnp.array([0.05, 0.1, 0.3, 1.0, 3.0])
     sigma = jnp.array([0.01, 0.02, 0.05, 0.1, 0.2])
-    tau = jnp.array([0.02, 0.05, 0.1, 0.3, 0.8])
-    assert float(jnp.max(jnp.abs(
-        compute_alpha(rho, sigma, tau) - old(rho, sigma, tau)))) == 0.0
+    tau = jnp.array([0.03, 0.05, 0.1, 0.3, 0.8])
+    raw = np.asarray(bare(rho, sigma, tau))
+    assert np.min(raw) > 0.04, raw
+    gap = np.asarray(compute_alpha(rho, sigma, tau)) - raw
+    np.testing.assert_allclose(gap, c ** 2 / (4.0 * raw), rtol=1e-6, atol=0.0)
 
 
 def test_subset_selection_alpha_clip_matches_metagga():
-    """The numpy twin clips to the same ceiling so precomputed and live alpha agree."""
+    """The numpy twin clips to the same ceiling so precomputed and live alpha
+    agree at the top; at the bottom it keeps the hard clip (a selection
+    heuristic, never differentiated) and differs from the live indicator by
+    at most width / 2 = 5e-6 there."""
     from xcquinox.alec.subset_selection import compute_descriptor_triple
     from xcquinox.alec.metagga import _ALPHA_MAX
     out = compute_descriptor_triple(  # a low-density point that blows up unclipped

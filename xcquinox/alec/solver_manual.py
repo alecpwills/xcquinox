@@ -474,8 +474,7 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
       6. Stack (D_a, D_b) and apply the linear mixer elementwise
       7. Energy from D_mixed using ``_compute_total_energy_uks`` (spin-scaled XC)
     """
-    from xcquinox.alec.descriptors import (
-        MetaGGAAlphaDescriptor, assemble_descriptor_features)
+    from xcquinox.alec.descriptors import assemble_descriptor_features
     from xcquinox.alec.solver import make_uks_feature_fns
     from xcquinox.alec.oneshot import (
         compute_vxc_nn, compute_vc_polarized_per_spin,
@@ -596,83 +595,6 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         policy != FeaturePolicy.FROZEN and has_dm_dependent_descriptor(model)
     )
 
-    # Column indices of the iso-orbital indicator within the feature block
-    # (declaration order; the same width in all three blocks).
-    _alpha_cols = []
-    _col_offset = 0
-    for _d in model.descriptors:
-        if isinstance(_d, MetaGGAAlphaDescriptor):
-            _alpha_cols.extend(range(_col_offset, _col_offset + _d.n_features))
-        _col_offset += _d.n_features
-    _alpha_cols = tuple(_alpha_cols)
-
-    def _drop_one_orbital_indicator_response(dedf, n_electrons):
-        """Zero the iso-orbital-indicator columns of ``de/df`` for a block
-        built on a ONE-ELECTRON density (a channel's doubled density when
-        n_s = 1, e.g. Li beta or H alpha; the total density when N = 1, the
-        H atom).
-
-        SCOPE. The gate is exact AT THE FIXED POINT and only there. The fixed
-        point of a one-electron block is a single orbital whatever the
-        round-off does, because the Roothaan step returns an idempotent aufbau
-        matrix of the block's own rank; for one orbital the von Weizsacker
-        bound is an equality, tau = tau_W pointwise, so the indicator
-        alpha = (tau - tau_W)/tau_unif is a 0/0 there and its clip at 0 is
-        active on the rounding-selected half of the grid. Autodiff returns
-        whichever side the rounding picks: measured (deep_mgga_3x16, def2-svp,
-        grid level 1, 1e-14 relative change of the density matrix), Li's
-        beta-channel term is 1.13 Ha and MOVES BY 0.93 Ha, and H's
-        alpha-channel and total-block terms move by 3.4e-3 and 7.6e-4 Ha,
-        while every multi-electron block is stable to 4e-16. Free H and Li are
-        atomization anchors, so the Fock the loop diagonalizes there must be a
-        function of the density and not of the rounding.
-
-        ALONG THE ITERATION the dropped response is a REAL term, not a
-        rounding artefact. The loop builds its features and its Fock at the
-        MIXER output (1-a) D_cur + a D_new, a convex combination of two
-        different rank-nocc projectors and hence rank 2 for a one-electron
-        block, where tau > tau_W and the indicator is an ordinary smooth
-        column: measured on the densities the loop visits, up to 2.60 on Li's
-        beta channel (mean 0.44) and 1.7e-3 on H's alpha channel, halving each
-        cycle as the mixer contracts. Zeroing its response there changes the
-        map -- the gate-live and gate-disabled Fock matrices differ by 0.33
-        (Li beta) to 0.44 (H alpha) per cent in norm at cycle 5 -- so the gate
-        alters the PATH, not the fixed point: the converged energies agree to
-        8e-15 Ha (Li) and the 25-cycle energies to 1.3e-14 Ha (H) and 1.0e-15
-        Ha (Li). Consequently the assembled Fock is the exact derivative of
-        the three-block energy along directions that keep the block a single
-        orbital, and is not along directions that leave that manifold
-        (measured 5.5e-2 relative on Li's converged density; see
-        test_manual_uks_gated_fock_at_the_li_fixed_point). Dropping the gate
-        is not the better alternative on that same direction: the Fock is
-        built at the converged density, where the block IS a single orbital
-        and the ungated response is the rounding-selected side of the 0/0,
-        giving -2.61 against a finite difference of -0.32 (0.88 relative)
-        instead of -0.2987 against -0.3163.
-
-        WHY THE CONDITION IS THE OCCUPANCY. ``n_electrons`` is the block's
-        integer electron count, so the gate fires on exactly the blocks whose
-        FIXED POINT carries the 0/0, and nothing it reads can be perturbed by
-        round-off. Keying instead on the clip state of ``metagga.compute_alpha``
-        or on tau - tau_W against tau_unif would fire only where the 0/0 has
-        already happened -- but which points those are, and which side of the
-        clip they land on, is precisely the rounding-selected quantity the
-        gate exists to remove, so the condition would inherit the instability
-        it is meant to cure. The durable fix is a smooth positive part in the
-        ENERGY of ``compute_alpha``, which retires the gate altogether
-        (DEFERRED_WORK #27). n = 0 (an empty channel) is vacuous -- ``de/df``
-        is already zeroed by the density-tail mask of
-        ``feature_energy_derivative`` -- and is included only for uniformity.
-        Other descriptor columns are smooth in P and stay live.
-        """
-        if not _alpha_cols:
-            return dedf
-        keep = jnp.where(jnp.asarray(n_electrons) <= 1, 0.0, 1.0)
-        col_scale = jnp.ones((dedf.shape[1],), dtype=dedf.dtype)
-        col_scale = col_scale.at[jnp.asarray(_alpha_cols)].set(
-            keep.astype(dedf.dtype))
-        return dedf * col_scale[None, :]
-
     def _feature_response_uks(D_ab, features_a, features_b, features_tot,
                               rho_a, rho_b, sigma_aa, sigma_bb, sigma_tot):
         """Per-spin V_xc contribution from the descriptors' DM dependence.
@@ -690,25 +612,25 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         entirely in that spin block; the total block couples both.
         """
         rho_tot = rho_a + rho_b
-        # ``_drop_one_orbital_indicator_response`` below is keyed on each
-        # block's integer electron count. It is the exact response at the
-        # FIXED POINT of a one-electron block and a real dropped term away
-        # from it (the loop evaluates at the mixer output, which is rank 2 for
-        # one electron); it therefore changes the iteration path and not the
-        # converged density. Scope, measured magnitudes and the reason the
-        # condition is the occupancy rather than the clip state: the helper's
-        # docstring.
+        # Every descriptor column stays live in every block, including the
+        # iso-orbital indicator of a one-electron block. The occupancy-keyed
+        # gate that once zeroed that column's response (exact at the fixed
+        # point, where the hard clip of the indicator made autodiff return a
+        # rounding-selected side, and a real dropped term along the iteration)
+        # was retired when the clip became a smooth positive part
+        # (metagga.compute_alpha; DEFERRED_WORK.md entry 27). The response of a
+        # one-orbital block annihilates that block's occupied orbital exactly
+        # -- the raw indicator is stationary along every rank-preserving
+        # rotation -- so the fixed point never depended on it, and it is now a
+        # continuous function of the density matrix wherever the density is
+        # resolved; its size in the density tail is entry 30.
         v = feature_response_vxc(
-            _drop_one_orbital_indicator_response(
-                0.5 * feature_energy_derivative(
-                    model, 2.0 * rho_a, 4.0 * sigma_aa, features_a, part="x"),
-                nocc_a),
+            0.5 * feature_energy_derivative(
+                model, 2.0 * rho_a, 4.0 * sigma_aa, features_a, part="x"),
             grid_weights, _features_a_of, D_ab)
         v = v + feature_response_vxc(
-            _drop_one_orbital_indicator_response(
-                0.5 * feature_energy_derivative(
-                    model, 2.0 * rho_b, 4.0 * sigma_bb, features_b, part="x"),
-                nocc_b),
+            0.5 * feature_energy_derivative(
+                model, 2.0 * rho_b, 4.0 * sigma_bb, features_b, part="x"),
             grid_weights, _features_b_of, D_ab)
         if model.cnet.use_spin_polarization:
             dedf_c = feature_energy_derivative(
@@ -717,7 +639,6 @@ def _run_manual_scf_uks(config: SolverConfig, model, mol_data: dict,
         else:
             dedf_c = feature_energy_derivative(
                 model, rho_tot, sigma_tot, features_tot, part="c")
-        dedf_c = _drop_one_orbital_indicator_response(dedf_c, nocc_a + nocc_b)
         return v + feature_response_vxc(dedf_c, grid_weights,
                                         _features_tot_of, D_ab)
 

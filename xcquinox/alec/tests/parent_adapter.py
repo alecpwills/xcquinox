@@ -54,18 +54,26 @@ def _row_from_sigma(rho, sigma, n_components) -> np.ndarray:
 
 
 def tau_from_alpha(rho, sigma, alpha) -> np.ndarray:
-    """Invert the iso-orbital indicator: ``tau = alpha tau_unif + tau_W``.
+    """Invert the stored iso-orbital indicator to the kinetic-energy density it
+    encodes: ``tau = alpha_raw tau_unif + tau_W`` with ``alpha_raw`` the exact
+    inverse of the smooth positive part ``metagga.compute_alpha`` applies
+    (``alpha_raw = alpha - width^2 / (4 alpha)``).
 
-    ``alpha = (tau - tau_W) / tau_unif`` with ``tau_W = sigma / (8 rho)`` and
-    ``tau_unif = (3/10) (3 pi^2)^{2/3} rho^{5/3}`` (Sun, Ruzsinszky and Perdew,
-    Phys. Rev. Lett. 115, 036402 (2015), Eq. 2). Inverting rather than
-    recontracting the density matrix keeps the descriptor's value clip out of a
-    comparison: whatever alpha the library assembled, this is the kinetic-energy
-    density that alpha stands for.
+    ``alpha_raw = (tau - tau_W) / tau_unif`` with ``tau_W = sigma / (8 rho)``
+    and ``tau_unif = (3/10) (3 pi^2)^{2/3} rho^{5/3}`` (Sun, Ruzsinszky and
+    Perdew, Phys. Rev. Lett. 115, 036402 (2015), Eq. 2). Inverting rather than
+    recontracting the density matrix keeps the descriptor's value ceiling out
+    of a comparison: whatever alpha the library assembled below the ceiling,
+    this is the kinetic-energy density that alpha stands for, the smoothing
+    included, so a parent evaluated here reads the same tau the raw indicator
+    was built from (on a one-orbital point, tau_W itself).
     """
+    from xcquinox.alec.metagga import (
+        _ALPHA_SMOOTHING_WIDTH, invert_smooth_positive_part)
     r = np.maximum(np.asarray(rho, dtype=np.float64), 1e-300)
     s = np.asarray(sigma, dtype=np.float64)
-    a = np.asarray(alpha, dtype=np.float64)
+    a = np.asarray(invert_smooth_positive_part(
+        np.asarray(alpha, dtype=np.float64), _ALPHA_SMOOTHING_WIDTH))
     tau_unif = (3.0 / 10.0) * (3.0 * np.pi ** 2) ** (2.0 / 3.0) * r ** (5.0 / 3.0)
     return a * tau_unif + s / (8.0 * r)
 

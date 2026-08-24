@@ -242,7 +242,8 @@ def test_manual_uks_reassemble_feeds_the_live_blocks_of_the_current_density(
     # linear in the density matrix; the iso-orbital indicator differs by up to
     # 1.4e-9 in the alpha/total blocks (the einsum-vs-PySCF tail floor of the
     # closures) and by up to 4.7e-8 in the beta block, whose one electron makes
-    # tau - tau_W vanish identically so both columns are rounding residues.
+    # tau - tau_W vanish identically so both columns are the smooth positive
+    # part of a rounding residue.
     # The later calls are at moved densities whose blocks must differ from the
     # stored ones by far more than those residues.
     dm_seed = np.asarray(md["dm_seed"])
@@ -318,46 +319,36 @@ def test_manual_uks_closed_shell_density_gives_three_identical_blocks():
                                rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("name,atom,composition", [
-    ("Li", "Li 0 0 0", (("Li", 1),)), ("H", "H 0 0 0", (("H", 1),))])
-def test_manual_uks_one_electron_block_fock_is_rounding_stable(
-        name, atom, composition, monkeypatch):
-    """A one-electron density is a single orbital, for which tau = tau_W
-    pointwise, so the iso-orbital indicator of the block built on it (the
-    doubled density of a one-electron CHANNEL -- Li beta, H alpha -- or the
-    TOTAL density of the H atom) is a 0/0 sitting on the lower clip of
-    ``metagga.compute_alpha`` wherever that block is idempotent, which the
-    seed density and the fixed point both are. Autodiff there returns the
-    rounding-selected side: without the gate, the beta-channel
-    feature-response term of Li/deep_mgga_3x16 is 1.13 Ha and MOVES BY
-    0.93 Ha under a 1e-14 relative change of the density matrix (H: 3.4e-3
-    alpha channel, 7.6e-4 total block; every multi-electron block is stable
-    to 4e-16). Free H and Li are atomization anchors; the Fock the loop
-    diagonalizes there must be a function of the density, not of the
-    rounding. With the indicator columns of a one-electron block's de/df
-    zeroed, the measured movement is (6.1e-16, 4.8e-11) on Li and
-    (1.5e-15, 1.9e-15) on H: the 4.8e-11 residual is the VALUE of the beta
-    block's indicator column -- a cancellation residue bounded by 4.7e-8 in
-    the tail -- wobbling through the fixed-feature JVPs, not a derivative
-    term. The bound is 100x the measured worst and 1.8e7 below the ungated
-    signal.
-
-    The seed probed here is idempotent, so what the gate drops IS the exact
-    response. That is not true of the mixed densities the loop visits between
-    cycles, where the block is rank 2 and the indicator is an ordinary O(1)
-    column; the scope of the gate, and what it costs off that manifold, is in
-    the docstring of ``solver_manual._drop_one_orbital_indicator_response``
-    and pinned by ``test_manual_uks_gated_fock_at_the_li_fixed_point``."""
-    model = _model("deep_mgga_3x16")
-    md = _md(model, name, atom, 1, composition)
-    P0 = np.asarray(md["dm_pbe"])
-    rng = np.random.default_rng(7)
+def _perturbed_seed(P0, scale=1e-14, seed=7):
+    """``P0`` moved by ``scale`` in relative Frobenius norm along a fixed
+    random symmetric direction."""
+    rng = np.random.default_rng(seed)
     N = rng.standard_normal(P0.shape)
     N = 0.5 * (N + np.swapaxes(N, -1, -2))
-    P1 = P0 + 1e-14 * np.linalg.norm(P0) / np.linalg.norm(N) * N
+    return P0 + scale * np.linalg.norm(P0) / np.linalg.norm(N) * N
 
+
+def test_manual_uks_h_atom_fock_is_rounding_stable_without_the_gate(
+        monkeypatch):
+    """The H atom's density is one orbital everywhere, so tau = tau_W
+    pointwise and the raw iso-orbital indicator of its alpha block and of its
+    total block is the rounding residue of that cancellation. With the hard
+    clip at zero, autodiff returned the rounding-selected side of the kink and
+    the Fock pair the loop diagonalizes moved by 4.2e-3 (alpha) and 7.1e-4
+    (total) Ha under a 1e-14 relative change of the density matrix -- the
+    reason the loop once zeroed the indicator's response on a one-electron
+    block. With the smooth positive part of ``metagga.compute_alpha`` (width
+    1e-5) the same probe, every column live, moves the pair by 3.6e-12 and
+    1.3e-12 Ha (measured on deep_mgga_3x16, def2-svp, grid 1; 3.6e-11 at
+    width 1e-6 and 3.5e-10 at 1e-7 -- the derivative's rounding sensitivity
+    falls as 1/width). The bound is the one the gated loop was held to and
+    clears the measurement by 1.4e3.
+    """
+    model = _model("deep_mgga_3x16")
+    md = _md(model, "H", "H 0 0 0", 1, (("H", 1),))
+    P0 = np.asarray(md["dm_pbe"])
     focks = _record_fock_matrices(monkeypatch)
-    for seed in (P0, P1):
+    for seed in (P0, _perturbed_seed(P0)):
         md_run = dict(md)
         md_run["dm_seed"] = jnp.asarray(seed)
         run_scf(_config(FeaturePolicy.REASSEMBLE, max_cycles=1,
@@ -366,9 +357,103 @@ def test_manual_uks_one_electron_block_fock_is_rounding_stable(
     move_a = float(np.max(np.abs(focks[2] - focks[0])))
     move_b = float(np.max(np.abs(focks[3] - focks[1])))
     assert max(move_a, move_b) < 5e-9, (
-        f"{name}: the Fock pair moved by ({move_a:.3e}, {move_b:.3e}) under a "
-        f"1e-14 relative density change; a rounding-selected clip-kink "
-        f"response is reaching the eigensolver")
+        f"H: the Fock pair moved by ({move_a:.3e}, {move_b:.3e}) under a "
+        f"1e-14 relative density change; a rounding-selected response is "
+        f"reaching the eigensolver")
+
+
+def test_manual_uks_li_beta_response_annihilates_the_occupied_orbital(
+        monkeypatch):
+    """Li's beta channel is one orbital c (rank one, tau = tau_W). The
+    indicator response of that channel's block is a continuous function of
+    the density matrix now, but its size is set by the descriptor's tail
+    amplification d alpha / dP ~ n^{-5/3}: on this record the outermost
+    radial shell (rho_beta = 1.0e-9, 898 points) contributes 2.9e-3 Ha per
+    point to F_beta[1, 2] with d alpha_raw / dP ~ 4e10 there, so a 1e-14
+    relative change of the density matrix moves the raw indicator by 4e-4 --
+    40 widths -- and the beta Fock by 0.37 Ha (measured; 0.93 with the hard
+    clip, 0.2-0.5 at every width from 1e-9 to 1e-5; DEFERRED_WORK.md entry
+    30). What that movement can and cannot do is pinned here:
+
+    * it never touches the occupied orbital. The raw indicator is stationary
+      along every rank-preserving rotation of a one-orbital block, so the
+      response annihilates c exactly, V_resp c = 0, and F_beta c is the same
+      vector to rounding under the perturbation (measured 2e-13 against
+      F_beta c of order 1 and the 0.37 Ha movement of the matrix). With
+      dF c = 0 and dF symmetric, every matrix element of the movement that
+      pairs with c -- the occupied-occupied element c^T dF c and the
+      occupied-virtual row c^T dF d -- is bounded by |dF c|, so the movement
+      lives entirely in the virtual-virtual block of the fixed channel;
+    * the alpha channel, a two-orbital block, is stable to 1e-15.
+
+    The fixed point of the loop therefore does not depend on the rounding
+    (``test_manual_uks_fixed_points_are_reproducible_without_the_gate``).
+    """
+    model = _model("deep_mgga_3x16")
+    md = _md(model, "Li", "Li 0 0 0", 1, (("Li", 1),))
+    P0 = np.asarray(md["dm_pbe"])
+    S = np.asarray(md["s_matrix"])
+    c = _rank_one_orbital(P0[1], S)
+    focks = _record_fock_matrices(monkeypatch)
+    for seed in (P0, _perturbed_seed(P0)):
+        md_run = dict(md)
+        md_run["dm_seed"] = jnp.asarray(seed)
+        run_scf(_config(FeaturePolicy.REASSEMBLE, max_cycles=1,
+                        conv_tol=1e-14), model, md_run, forward_only=True)
+    F_a0, F_b0, F_a1, F_b1 = focks
+    assert float(np.max(np.abs(F_a1 - F_a0))) < 1e-12
+    dF = F_b1 - F_b0
+    move = float(np.max(np.abs(dF)))
+    # The virtual-block movement is the documented tail response; the pin is
+    # that it exists (a vanishing movement would mean the response term is no
+    # longer live) and that it stays in the class measured.
+    assert 1e-3 < move < 5.0, move
+    action = np.abs(dF @ c).max()
+    assert action < 1e-10, (action, move)
+    # dF is symmetric, so |c^T dF d| <= |dF c| |d| for every d: the movement
+    # carries no occupied-occupied and no occupied-virtual component beyond
+    # the rounding of dF c, i.e. it sits in the virtual-virtual block.
+    assert float(np.abs(c @ dF @ c)) < 1e-10
+    assert float(np.max(np.abs(c @ dF))) < 1e-10
+
+
+@pytest.mark.parametrize("name,atom,composition", [
+    ("Li", "Li 0 0 0", (("Li", 1),)), ("H", "H 0 0 0", (("H", 1),))])
+def test_manual_uks_fixed_points_are_reproducible_without_the_gate(
+        name, atom, composition):
+    """H and Li converge to the same energy from two seeds 1e-14 apart, with
+    every column live: the tail response of the one-orbital channel sits in
+    the virtual-virtual block of its Fock and cannot move the occupied
+    orbital, so the fixed point is a continuous function of the seed with no
+    rounding selection. Measured differences 0.0 (H) and 1.9e-14 Ha (Li) at
+    conv_tol 1e-10 (20 cycles on Li) -- the Li figure is of the order of the
+    seed separation itself (1e-14 relative of a 7.3 Ha energy), i.e. the
+    response of a continuous map to the moved input, not a draw. The bound
+    is 5e-14 Ha, 2.7x the measured worse.
+    """
+    model = _model("deep_mgga_3x16")
+    md = _md(model, name, atom, 1, composition)
+    P0 = np.asarray(md["dm_pbe"])
+    energies = []
+    for seed in (P0, _perturbed_seed(P0)):
+        md_run = dict(md)
+        md_run["dm_seed"] = jnp.asarray(seed)
+        result = run_scf(_config(FeaturePolicy.REASSEMBLE, max_cycles=40,
+                                 conv_tol=1e-10), model, md_run,
+                         forward_only=True)
+        assert bool(result.converged), name
+        energies.append(float(result.total_energy))
+    assert abs(energies[0] - energies[1]) < 5e-14, energies
+
+
+def _rank_one_orbital(P_s, s_matrix):
+    """The S-orthonormal orbital c of a one-electron spin density matrix
+    P_s = c c^T."""
+    k = int(np.argmax(np.diag(P_s)))
+    c = P_s[:, k] / np.sqrt(P_s[k, k])
+    assert float(np.max(np.abs(P_s - np.outer(c, c)))) < 1e-10, "not rank one"
+    assert abs(float(c @ s_matrix @ c) - 1.0) < 1e-8, "not S-normalized"
+    return c
 
 
 @pytest.mark.parametrize("arch_name", ["deep_rung35_3x16", "deep_mgga_3x16",
@@ -380,11 +465,13 @@ def test_manual_uks_fock_is_the_derivative_of_the_three_block_energy(
     -- the solver's own matrices, captured on their way to the eigensolver,
     against a central difference of the solver's own energy helper.
 
-    Probe: the O atom (5 alpha, 3 beta electrons). A one-electron channel
-    (Li beta) is a single orbital whose doubled-block iso-orbital indicator
-    sits on the lower clip of ``metagga.compute_alpha``, where a central
-    difference is not a derivative; on O every block stays >= 6.6e-4 above the
-    clip at the 1e-6 step (see test_solv01_split_xc).
+    Probe: the O atom (5 alpha, 3 beta electrons) along an unrestricted
+    random symmetric direction in both channels. Every block of O keeps a
+    raw indicator >= 6.6e-4 on the resolved grid, so the 1e-6 step moves it
+    by a small fraction of its value everywhere that carries integrand mass
+    and the linear displacement is a valid probe; on the one-orbital
+    channels of H and Li, and on N's beta channel, it is not (the tail
+    response of the indicator; see ``_rotation_path`` and the tests below).
     """
     model = _model(arch_name)
     md = _md(model, "O", "O 0 0 0", 2, (("O", 1),))
@@ -528,40 +615,28 @@ def _one_orbital_rotation(s_matrix, P_s, seed=7):
 @pytest.mark.parametrize("name,atom,composition,channel,tol", [
     ("H", "H 0 0 0", (("H", 1),), 0, 1e-7),
     ("Li", "Li 0 0 0", (("Li", 1),), 1, 1e-5)])
-def test_manual_uks_gated_fock_is_the_derivative_along_a_one_orbital_rotation(
+def test_manual_uks_fock_is_the_derivative_along_a_one_orbital_rotation(
         name, atom, composition, channel, tol, monkeypatch):
-    """On a ONE-ELECTRON spin channel -- where the iso-orbital-indicator gate
-    of ``solver_manual`` fires -- the gated Fock pair must still be the
-    derivative of the three-block energy along the manifold of single-orbital
-    densities.
+    """On a ONE-ELECTRON spin channel the Fock pair, every column live, is
+    the derivative of the three-block energy along the manifold of
+    single-orbital densities.
 
-    The probe is a rank-preserving rotation of that channel's occupied orbital
-    (H alpha, Li beta), taken at the PBE seed rather than at the fixed point,
-    where every orbital rotation is stationary and the check would be vacuous.
-    ``tau = tau_W`` holds identically along such a path, so the indicator is a
-    rounding residue (8.3e-11 on H's channel block) and the response the gate
-    drops is the clip's 0/0; the gradient of every other ingredient is
-    untouched, so the gated Fock must reproduce dE/dtheta exactly. Measured
-    (``deep_mgga_3x16``, def2-svp, grid level 1, 1e-5 step): dE/dtheta =
-    -6.869811e-3 with a relative residual 7.8e-10 (H) and -6.807988e-3 with
-    5.9e-10 absolute, 8.7e-8 relative (Li, whose beta indicator column carries
-    a larger cancellation residue). The residual falls as h^2 from the 1e-3
-    step (5.5e-6 / 2.5e-5), so the quantity being reproduced is the
-    derivative and not a coincidence of one step. The bounds are 128x and
-    115x the measured floors.
-
-    What this check does NOT do, measured rather than assumed: with the gate
-    disabled the same probe reads 7.5e-11 (H) and 8.6e-8 (Li), so it does not
-    discriminate against removing the gate. At an exactly idempotent
-    one-orbital block the response the gate drops is numerically orthogonal to
-    a rank-preserving rotation, which is the same statement as the check
-    passing. Gate removal is caught by
-    ``test_manual_uks_one_electron_block_fock_is_rounding_stable`` (the
-    ungated Fock moves by 0.93 Ha under a 1e-14 relative density change) and
-    by ``test_manual_uks_gated_fock_at_the_li_fixed_point`` (the unconstrained
-    direction reads 0.88 relative ungated against 5.5e-2 gated). What this
-    check adds is the spec's energy/potential oracle on the species where the
-    gate fires: the shipped O-atom check runs only where it does not.
+    The probe is a rank-preserving rotation of that channel's occupied
+    orbital (H alpha, Li beta), taken at the PBE seed rather than at the
+    fixed point, where every orbital rotation is stationary and the check
+    would be vacuous. ``tau = tau_W`` holds identically along such a path,
+    so the raw indicator is a rounding residue (8.3e-11 on H's channel
+    block) sitting at the smoothing's floor, and its response along the
+    path vanishes at first order; the gradient of every other ingredient is
+    untouched. Measured (``deep_mgga_3x16``, def2-svp, grid level 1, 1e-5
+    step): dE/dtheta = -6.869811e-3 with a relative residual 7.5e-11 (H) and
+    -6.807988e-3 with 8.6e-8 relative (Li, whose beta indicator column
+    carries a larger cancellation residue), the same figures the gated loop
+    gave (7.8e-10 and 8.7e-8), as they must be: at an exactly idempotent
+    one-orbital block the response is numerically orthogonal to a
+    rank-preserving rotation. The residual falls as h^2 from the 1e-3 step
+    (5.5e-6 / 2.5e-5), so the quantity being reproduced is the derivative
+    and not a coincidence of one step.
     """
     model = _model("deep_mgga_3x16")
     md = _md(model, name, atom, 1, composition)
@@ -592,33 +667,165 @@ def test_manual_uks_gated_fock_is_the_derivative_along_a_one_orbital_rotation(
         f"vanishing analytic derivative cannot discriminate")
     rel = abs(fd - analytic) / max(abs(fd), abs(analytic), 1e-30)
     assert rel < tol, (
-        f"{name}: the gated Fock pair is not dE/dtheta along the one-orbital "
+        f"{name}: the Fock pair is not dE/dtheta along the one-orbital "
         f"manifold (FD={fd:.10e} analytic={analytic:.10e} rel={rel:.3e})")
 
 
-def test_manual_uks_gated_fock_at_the_li_fixed_point(monkeypatch):
-    """Li at its own fixed point, with the gate live on the beta channel.
+def _rotation_path(P0, s_matrix, seed=20260824):
+    """``eps -> P(eps)``: every populated channel of ``P0`` rotated by
+    ``expm(eps K_s)`` in the S-metric, ``K_s`` a random antisymmetric
+    generator of unit Frobenius norm -- the manifold of aufbau density
+    matrices the Roothaan step moves on (rank, idempotency and positive
+    semidefiniteness preserved at every eps). The tangent at eps = 0 is a
+    random symmetric matrix in both channels."""
+    from scipy.linalg import expm
+    ev, evec = np.linalg.eigh(np.asarray(s_matrix))
+    s_half = evec @ np.diag(np.sqrt(ev)) @ evec.T
+    s_inv_half = evec @ np.diag(1.0 / np.sqrt(ev)) @ evec.T
+    rng = np.random.default_rng(seed)
+    generators = []
+    for s in range(P0.shape[0]):
+        K = rng.standard_normal(P0[s].shape)
+        K = K - K.T
+        generators.append(K / np.linalg.norm(K))
 
-    Directions that keep the beta channel a SINGLE ORBITAL are the ones the
-    gate's justification covers, and there the converged Fock pair is the
-    derivative of the three-block energy: an alpha-channel perturbation (the
-    beta block untouched, hence still rank 1) reproduces dE/dP to 5.0e-10
-    relative on a derivative of 1.183, and a rank-preserving rotation of the
-    beta orbital reproduces the stationarity of the fixed point (both sides
-    6.6e-9, agreeing to 9.2e-10).
+    def P_of(eps):
+        out = np.array(P0)
+        for s, K in enumerate(generators):
+            if float(np.max(np.abs(P0[s]))) == 0.0:
+                continue
+            U = s_inv_half @ expm(eps * K) @ s_half
+            out[s] = U @ np.asarray(P0[s]) @ U.T
+        return out
 
-    An UNCONSTRAINED direction does not, and by design: it takes the beta
-    block off the one-orbital manifold, where the indicator is a smooth
-    O(1) column of the mixed density rather than a 0/0, so the response the
-    gate drops is a real term of the energy's derivative. Measured 5.55e-2
-    relative (h = 1e-5 and 1e-6 agree to three digits, so this is a genuine
-    gap and not finite-difference noise). The fixed point itself is unchanged
-    -- gate-live and gate-disabled loops converge Li to within 8e-15 Ha -- and
-    the gap is the scope statement of
-    ``solver_manual._drop_one_orbital_indicator_response``. Closing
-    DEFERRED_WORK #27 (a smooth positive part in the ENERGY of
-    ``metagga.compute_alpha``, which retires the gate) is expected to close
-    this gap; the lower bound below is what will report it.
+    return P_of
+
+
+_SCF_MANIFOLD_CASES = [
+    ("H", "H 0 0 0", 1, (("H", 1),)), ("Li", "Li 0 0 0", 1, (("Li", 1),)),
+    ("N", "N 0 0 0", 3, (("N", 1),)), ("O", "O 0 0 0", 2, (("O", 1),))]
+
+
+@pytest.mark.parametrize("name,atom,spin,composition", _SCF_MANIFOLD_CASES,
+                         ids=[c[0] for c in _SCF_MANIFOLD_CASES])
+def test_manual_uks_fock_is_the_derivative_along_the_scf_manifold(
+        name, atom, spin, composition, monkeypatch):
+    """The Fock pair, every column live, is the derivative of the three-block
+    energy along a RANDOM direction tangent to the SCF's own manifold in
+    BOTH channels, on all four open-shell atoms -- no gate, no mask.
+
+    The direction is the tangent of a random orbital rotation of every
+    populated channel (``_rotation_path``), i.e. a random symmetric matrix
+    per channel restricted to the directions along which the density matrix
+    stays an aufbau matrix. The NET derivative along such a direction can be
+    small -- the reference density is a PBE fixed point, near-stationary
+    under rotations for any functional close to it: measured nets of 8e-3
+    (H), 2e-3 (Li), 9e-4 (N) and of order 1e-3 on O (draw-dependent, the O
+    record carrying the 2p-hole orientation) against absolute contributions
+    summing to 0.13 (H), 0.57 (Li), 6.9 (N) and 9.6 (O) -- so the residual
+    is taken relative to the sum of ABSOLUTE contributions sum |F . W| per
+    channel, the scale the finite difference and the contraction are
+    actually computed at, with that scale required to be above 0.1.
+    Measured residuals on that footing with the solver's own Fock pair
+    (``deep_mgga_3x16``, def2-svp, grid level 1, 1e-5 step): 2.9e-11 (H),
+    2.4e-10 (Li), 9.8e-11 (N), 5.5e-11 (O); the bound of 5e-9 clears the
+    worst by 21x.
+
+    What an UNRESTRICTED random symmetric direction reads on the same Fock
+    pair, for the record: 3.7e-8 on H at the 1e-6 step, falling to 3.8e-10
+    at 1e-7 (the H atom is where the clip's kink used to give 7.4e-4 flat
+    in the step, the closure of DEFERRED_WORK.md entry 27), but 5.2e-2 on
+    Li and 6.0e-6 on N, flat between the 1e-5 and 1e-7 steps. Such a
+    direction leaves the cone of positive semidefinite matrices, where the
+    von Weizsacker bound fails and the raw indicator turns negative; in the
+    density tail its response d alpha / dP ~ n^{-5/3} reaches 4e10 (Li's
+    outermost shell), so a 1e-6 step moves the raw indicator by 1e3-1e5
+    there, beyond any linear regime of the energy at any width of the
+    smooth positive part (entry 30). The manifold direction is the one the
+    Roothaan step needs, and on it the potential is the derivative.
+    """
+    model = _model("deep_mgga_3x16")
+    md = _md(model, name, atom, spin, composition)
+    P0 = np.asarray(md["dm_pbe"])
+    P_of = _rotation_path(P0, md["s_matrix"])
+    focks = _record_fock_matrices(monkeypatch)
+    F_a, F_b = _fock_pair_at(model, md, P0, focks)
+    energy = _energy_helper(model, md)
+    step = 1e-5
+    dP = (P_of(step) - P_of(-step)) / (2.0 * step)
+    analytic = float(np.sum(F_a * dP[0]) + np.sum(F_b * dP[1]))
+    scale = float(np.sum(np.abs(F_a * dP[0])) + np.sum(np.abs(F_b * dP[1])))
+    assert scale > 0.1, (name, scale)
+    fd = (energy(P_of(step)) - energy(P_of(-step))) / (2.0 * step)
+    rel = abs(fd - analytic) / scale
+    assert rel < 5e-9, (
+        f"{name}: the UKS Fock pair is not dE/dP along the SCF manifold "
+        f"(FD={fd:.10e} analytic={analytic:.10e} scale={scale:.3e} "
+        f"rel={rel:.3e})")
+
+
+def test_manual_uks_h_atom_fock_is_the_derivative_along_an_unrestricted_direction(
+        monkeypatch):
+    """The clip's kink, closed: on the H atom -- one orbital everywhere, so
+    every grid point sat on the indicator's lower clip -- a central
+    difference along an UNRESTRICTED random symmetric direction read 7.4e-4
+    relative at every step from 1e-5 to 1e-7 with the hard clip (the average
+    of two one-sided slopes). With the smooth positive part the same probe
+    reads 9.3e-7, 3.7e-8 and 3.8e-10 to 6.2e-10 at the 1e-5, 1e-6 and 1e-7
+    steps (three reference solutions), i.e. it falls with the step as a
+    derivative must. The 1e-7 step is used; the bound clears the worst
+    measurement by 16x and refuses the clip by 1e5.
+    """
+    model = _model("deep_mgga_3x16")
+    md = _md(model, "H", "H 0 0 0", 1, (("H", 1),))
+    P0 = np.asarray(md["dm_pbe"])
+    rng = np.random.default_rng(20260821)
+    W = rng.standard_normal(P0.shape)
+    W = 0.5 * (W + np.swapaxes(W, -1, -2))
+    W[1] = 0.0                                  # the beta channel is empty
+    focks = _record_fock_matrices(monkeypatch)
+    F_a, F_b = _fock_pair_at(model, md, P0, focks)
+    energy = _energy_helper(model, md)
+    analytic = float(np.sum(F_a * W[0]) + np.sum(F_b * W[1]))
+    step = 1e-7
+    fd = (energy(P0 + step * W) - energy(P0 - step * W)) / (2.0 * step)
+    rel = abs(fd - analytic) / max(abs(fd), abs(analytic), 1e-30)
+    assert rel < 1e-8, (
+        f"H: FD={fd:.10e} analytic={analytic:.10e} rel={rel:.3e}")
+
+
+def test_manual_uks_fock_at_the_li_fixed_point(monkeypatch):
+    """Li at its own fixed point, every column live.
+
+    Four directions at the converged density. An alpha-channel perturbation
+    (the beta block untouched) reproduces dE/dP to 2e-10 relative on a
+    derivative of 1.183; a rank-preserving rotation of the beta orbital
+    reproduces the stationarity of the fixed point (both sides below 1e-6,
+    agreeing to 1e-7); a random rotation of BOTH channels -- the SCF's own
+    manifold -- is likewise stationary at the model's own fixed point (both
+    sides at -7e-9, agreeing to 3e-10: the occupied-virtual blocks of the
+    converged Fock vanish, which is itself the SCF condition and holds with
+    every column live); and the direction the gated loop could not be
+    checked on -- BOTH channels moving, the alpha block linearly and the
+    beta block along its rotation manifold, so the probe is nonstationary
+    while the beta block stays rank one -- reproduces dE/dP at the same
+    floor as the constrained direction (measured 3.8e-10 relative on a
+    derivative of 1.183 at the 1e-5 step). That last statement is what
+    closing DEFERRED_WORK.md entry 27 changed: with the occupancy gate live
+    the two-channel probes read 5.5e-2, the response the gate dropped off
+    the single-orbital manifold.
+
+    What is deliberately NOT asserted to be at the floor: an unrestricted
+    random symmetric direction, which reads 0.88 relative here (analytic
+    -2.58 against a finite difference of -0.316, flat between the 1e-5 and
+    1e-6 steps) with the clip and with the smoothing alike. The beta block
+    is one orbital; a linear displacement takes it out of the cone of
+    positive semidefinite matrices and drives the raw indicator of its
+    outermost shell (rho_beta = 1e-9, d alpha / dP ~ 4e10) by 1e4-1e5 per
+    step, so the energy is not linearizable over any usable step there and
+    the probe measures the descriptor's tail response, not the potential
+    (entry 30). That figure is pinned as a lower bound so a change of the
+    descriptor's tail behaviour is noticed.
     """
     model = _model("deep_mgga_3x16")
     md = _md(model, "Li", "Li 0 0 0", 1, (("Li", 1),))
@@ -636,6 +843,7 @@ def test_manual_uks_gated_fock_at_the_li_fixed_point(monkeypatch):
     W_a = 0.5 * (W_a + W_a.T)
     W_full = rng.standard_normal(P_c.shape)
     W_full = 0.5 * (W_full + np.swapaxes(W_full, -1, -2))
+    manifold = _rotation_path(P_c, md["s_matrix"])
 
     def alpha_only(theta):
         out = np.array(P_c)
@@ -647,7 +855,7 @@ def test_manual_uks_gated_fock_at_the_li_fixed_point(monkeypatch):
         out[1] = rotate(theta)
         return out
 
-    def unconstrained(theta):
+    def unrestricted(theta):
         return P_c + theta * W_full
 
     focks = _record_fock_matrices(monkeypatch)
@@ -671,21 +879,40 @@ def test_manual_uks_gated_fock_at_the_li_fixed_point(monkeypatch):
     fd_b, an_b = probe(beta_rotation)
     # An occupied-virtual rotation at a stationary point has zero gradient;
     # the pin is that BOTH sides report it, to 1e-7 absolute (measured
-    # 6.6e-9 analytic against 7.6e-9, difference 9.2e-10).
+    # 6.7e-9 analytic against 7.5e-9, difference 8e-10).
     assert abs(an_b) < 1e-6 and abs(fd_b) < 1e-6, (fd_b, an_b)
     assert abs(fd_b - an_b) < 1e-7, (fd_b, an_b)
 
-    fd_u, an_u = probe(unconstrained)
+    fd_m, an_m = probe(manifold)
+    # Stationarity along the SCF manifold at the model's own fixed point:
+    # the converged Fock's occupied-virtual blocks vanish, so both sides are
+    # zero to the convergence floor and agree.
+    assert abs(an_m) < 1e-6 and abs(fd_m) < 1e-6, (fd_m, an_m)
+    assert abs(fd_m - an_m) < 1e-7, (fd_m, an_m)
+
+    def combined(theta):
+        out = np.array(P_c)
+        out[0] = P_c[0] + theta * W_a
+        out[1] = rotate(theta)
+        return out
+
+    fd_c, an_c = probe(combined)
+    assert abs(an_c) > 1e-2, an_c
+    rel_c = abs(fd_c - an_c) / max(abs(fd_c), abs(an_c), 1e-30)
+    assert rel_c < 1e-6, (
+        f"both channels moving, beta on its rank-one manifold: "
+        f"FD={fd_c:.10e} analytic={an_c:.10e} rel={rel_c:.3e}; the Fock "
+        f"pair is not the derivative along the SCF's own directions at the "
+        f"fixed point")
+
+    fd_u, an_u = probe(unrestricted)
     rel_u = abs(fd_u - an_u) / max(abs(fd_u), abs(an_u), 1e-30)
-    assert 1e-3 < rel_u < 5e-1, (
-        f"the unconstrained direction reads rel={rel_u:.3e} (FD={fd_u:.10e} "
-        f"analytic={an_u:.10e}); the measured 5.55e-2 is the indicator "
-        f"response the one-electron gate drops off the single-orbital "
-        f"manifold. Above the upper bound the beta Fock is rounding-selected "
-        f"again (the gate disabled reads 0.88, analytic -2.61 against an FD "
-        f"of -0.32). Below the lower bound the gate no longer drops a real "
-        f"term -- re-anchor this test and the scope paragraph of "
-        f"_drop_one_orbital_indicator_response")
+    assert rel_u > 1e-2, (
+        f"the unrestricted direction reads rel={rel_u:.3e} (FD={fd_u:.10e} "
+        f"analytic={an_u:.10e}); the measured 0.88 is the descriptor's tail "
+        f"response off the positive semidefinite cone (DEFERRED_WORK.md "
+        f"entry 30). Below this bound the tail behaviour of the indicator "
+        f"has changed -- re-anchor this test and entry 30")
 
 
 @pytest.mark.parametrize("arch_name", ["deep_rung35_3x16", "deep_mgga_3x16",
@@ -697,29 +924,36 @@ def test_manual_uks_fock_is_the_derivative_on_a_spherical_open_shell(
     is spherical and carries none of O's 2p-hole orientation degeneracy), and
     resolved element by element rather than along one random direction.
 
-    Both channels are multi-electron, so the one-electron indicator gate does
-    NOT fire: this is the derivative check of the ungated three-block
-    potential on the spec's remaining open-shell species. Directions: the
-    diagonal element P[s][0,0] and two off-diagonal element pairs of EACH
-    channel (a direction whose analytic derivative vanishes by symmetry
-    proves nothing, so each is required to carry a derivative above 1).
-    Measured relative residuals at the 1e-5 step, over the three
-    architectures: 3.8e-13 to 6.6e-11; the bound is 1.5e3 times the worst and
-    16x below the smallest defect signal, the superseded two-block evaluation
-    (the total block in both exchange channels), which reads 1.6e-6
-    (deep_rung35_3x16), 1.0e-4 (deep_mgga_3x16) and 1.6e-6 (deep_dm_3x16) on
-    the alpha diagonal of this same probe.
+    Directions: the diagonal element P[s][0,0] and two off-diagonal element
+    pairs of EACH channel (a direction whose analytic derivative vanishes by
+    symmetry proves nothing, so each is required to carry a derivative above
+    1), and a random rotation of both channels along the SCF's manifold
+    (``_rotation_path``; the net derivative there is small, the reference
+    being a PBE fixed point, so its residual is taken against the sum of
+    absolute contributions). Measured residuals at the 1e-5 step, over the
+    three architectures: 3.8e-13 to 6.6e-11 on the element directions and
+    5.6e-11 to 1.1e-10 of the contribution scale (6.9) on the manifold
+    direction, bounded at 1e-9; the element bound is
+    1.5e3 times the worst element residual and 16x below the smallest defect
+    signal, the superseded two-block evaluation (the total block in both
+    exchange channels), which reads 1.6e-6 (deep_rung35_3x16), 1.0e-4
+    (deep_mgga_3x16) and 1.6e-6 (deep_dm_3x16) on the alpha diagonal of this
+    same probe.
 
-    A random symmetric direction, which the O-atom test uses, is NOT usable
-    here. N's beta channel holds 1s and 2s only, so tau - tau_W is small over
-    most of space: the raw iso-orbital indicator of its doubled block has
-    median 3.2e-3 and minimum 7.7e-9 against O's median 0.58 and minimum
-    6.6e-4. A random symmetric step then crosses the lower clip of
-    ``metagga.compute_alpha`` on 431 (h = 1e-6) to 710 (h = 1e-5) of the 4098
-    resolved beta points and the central difference reads 6.0e-5 relative on
-    ``deep_mgga_3x16``, a one-sided-derivative artefact of the clip
-    (DEFERRED_WORK #27), not a potential defect. The element directions used
-    here cross the clip on zero points at both steps.
+    An UNRESTRICTED random symmetric direction, which the O-atom test uses,
+    is not a valid probe here. N's beta channel holds 1s and 2s only, so
+    tau - tau_W is small over most of space: the raw iso-orbital indicator
+    of its doubled block has median 3.2e-3 and minimum 7.7e-9 against O's
+    median 0.58 and minimum 6.6e-4, and the descriptor's tail response
+    d alpha / dP ~ n^{-5/3} lets a 1e-6 step move it by orders of magnitude
+    on hundreds of resolved points (once read as 431 to 710 clip crossings
+    at the 1e-6 and 1e-5 steps). The central difference then reads 6.0e-6
+    relative on ``deep_mgga_3x16`` at the 1e-6 step with the smooth positive
+    part in place, exactly as with the hard clip, and flat from 1e-5 to
+    1e-7 -- the descriptor's tail response along a direction off the
+    positive semidefinite cone (DEFERRED_WORK.md entry 30), not a potential
+    defect. The element directions and the manifold direction do not reach
+    that regime.
     """
     model = _model(arch_name)
     md = _md(model, "N", "N 0 0 0", 3, (("N", 1),))
@@ -750,6 +984,17 @@ def test_manual_uks_fock_is_the_derivative_on_a_spherical_open_shell(
             f"{arch_name} {label}: the UKS Fock pair is not dE/dP of the "
             f"three-block energy (FD={fd:.10e} analytic={analytic:.10e} "
             f"rel={rel:.3e})")
+
+    P_of = _rotation_path(P0, md["s_matrix"])
+    dP = (P_of(step) - P_of(-step)) / (2.0 * step)
+    analytic = float(np.sum(F_a * dP[0]) + np.sum(F_b * dP[1]))
+    scale = float(np.sum(np.abs(F_a * dP[0])) + np.sum(np.abs(F_b * dP[1])))
+    assert scale > 1.0, (arch_name, scale)
+    fd = (energy(P_of(step)) - energy(P_of(-step))) / (2.0 * step)
+    rel = abs(fd - analytic) / scale
+    assert rel < 1e-9, (
+        f"{arch_name} SCF-manifold direction: FD={fd:.10e} "
+        f"analytic={analytic:.10e} scale={scale:.3e} rel={rel:.3e}")
 
 
 @pytest.mark.parametrize("name,atom,spin,composition", [

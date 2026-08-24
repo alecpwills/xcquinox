@@ -62,6 +62,12 @@ from pyscf import gto, dft, scf
 import xcquinox.features as _features
 from xcquinox.alec.df_jk import default_auxbasis
 from xcquinox.alec.orientation_lock import DEFAULT_STRENGTH as _LOCK_STRENGTH
+from xcquinox.alec.metagga import ALPHA_DEFINITION as _ALPHA_DEFINITION
+
+#: The indicator definition a manifest WITHOUT an ``alpha_definition`` key was
+#: written under: every file predating the key carries the hard-clipped
+#: indicator ``clip((tau - tau_W)/tau_unif, 0, 100)``.
+_LEGACY_ALPHA_DEFINITION = "hard_clip"
 
 
 # Same pretraining atoms / basis / grid as the step-6 notebook generator.
@@ -1097,11 +1103,21 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
       synthetic mesh carries. Recorded because it is a deliberate choice, not
       an emergent property of a quadrature: mesh rows carry no physical grid
       weight, so their pull on the pretrain loss is set here.
+    - ``alpha_definition``: the definition of the iso-orbital indicator the
+      ``metagga`` columns were computed with (``metagga.ALPHA_DEFINITION``,
+      which names the smooth positive part and its width). The indicator is
+      a stored column, so a change of its definition changes the file's
+      values on every one-orbital row (the hard clip wrote 0.0 where the
+      smooth positive part writes width / 2, on 1200 of 1200 rows of the
+      default set's H atom and on the mesh's alpha = 0 nodes) without
+      changing any other key; a file written under another definition is
+      therefore stale, exactly as one built at another lock is.
 
     The writer's defaults are the PRODUCTION identity the generator and
     :func:`ensure_pretrain_data` use; a manifest key absent from a legacy file
     is read back as the HISTORICAL value (no lock, PBE, total footing, double
-    precision) by :func:`pretrain_data_is_current`.
+    precision, the hard-clipped indicator) by
+    :func:`pretrain_data_is_current`.
     """
     meta = {"basis": basis, "grid_level": int(grid_level),
             "density_fit": bool(density_fit), "auxbasis": auxbasis,
@@ -1115,6 +1131,7 @@ def _write_pretrain_manifest(npz_path, *, basis, grid_level, density_fit,
             "allow_irreproducible_degenerate":
                 bool(allow_irreproducible_degenerate),
             "x64": bool(jax.config.jax_enable_x64),
+            "alpha_definition": str(_ALPHA_DEFINITION),
             "mesh": {"rs": list(MESH_RS), "s": list(MESH_S),
                      "alpha": list(MESH_ALPHA),
                      "weight_fraction": float(mesh_fraction)}}
@@ -1183,13 +1200,17 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
     records: basis, grid level, effective DF fitting basis, the system list
     (name, geometry, charge, spin of every system, in order), the parent
     functional, the exchange footing, the mesh share, the orientation-lock
-    strength and the precision flag. A manifest key absent from a legacy file
-    reads as the value the historical generator used -- PBE, the ``total``
-    footing, the default mesh share, NO orientation lock, double precision
-    (the production files were measured float64), ``auxbasis`` ``None``, the
-    historical default atoms -- so a legacy directory is current for a request
-    at that identity and stale for the production one, whose lock its
-    degenerate-atom rows were not computed at.
+    strength, the precision flag and the definition of the iso-orbital
+    indicator (``metagga.ALPHA_DEFINITION``, the one constant the live
+    generator writes its ``metagga`` columns with). A manifest key absent
+    from a legacy file reads as the value the historical generator used --
+    PBE, the ``total`` footing, the default mesh share, NO orientation lock,
+    double precision (the production files were measured float64),
+    ``auxbasis`` ``None``, the historical default atoms, the hard-clipped
+    indicator -- so a legacy directory is current for a request at that
+    identity and stale for the production one, whose lock its
+    degenerate-atom rows were not computed at and whose indicator
+    definition its alpha rows were not written under.
 
     ``systems`` is the resolved pretraining set. When given it replaces the
     ``atoms`` comparison (``atoms`` is otherwise resolved into systems the
@@ -1236,7 +1257,10 @@ def pretrain_data_is_current(npz_path, *, basis, grid_level, auxbasis=None,
                    == float(mesh_fraction)
                    and float(meta.get("orientation_lock_strength", 0.0))
                    == float(orientation_lock_strength)
-                   and bool(meta.get("x64", True)) == bool(x64))
+                   and bool(meta.get("x64", True)) == bool(x64)
+                   and str(meta.get("alpha_definition",
+                                    _LEGACY_ALPHA_DEFINITION))
+                   == str(_ALPHA_DEFINITION))
     if not manifest_ok:
         return False
     # A descriptor-bearing file written before rung-3.5 support lacks the

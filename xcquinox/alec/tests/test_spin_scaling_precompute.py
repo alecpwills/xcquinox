@@ -155,15 +155,20 @@ def test_metagga_per_channel_alpha_uses_the_doubled_ingredients():
         keep = rho_s > 1e-8
         np.testing.assert_allclose(got[keep], expect[keep], rtol=0, atol=1e-9)
     # Li's beta channel holds one orbital, so its doubled system is a
-    # single-orbital (iso-orbital) density: tau = tau_W and alpha vanishes
-    # identically; what is stored is the cancellation residue of tau - tau_W
-    # divided by tau_unif in the density tail. Measured max alpha_b between
+    # single-orbital (iso-orbital) density: tau = tau_W and the raw indicator
+    # vanishes identically; what is stored is the smooth positive part
+    # (width 1e-5, floor 5e-6) of the cancellation residue of tau - tau_W
+    # divided by tau_unif in the density tail. Measured max residue between
     # 5.8e-08 and 2.05e-07 over multi-threaded processes (1.07e-07,
-    # reproducible to the bit, under single-thread BLAS), so the 1e-6 bound
-    # sits ~4.9x above that ceiling, while the alpha channel reaches 6.24;
-    # the bound therefore also
-    # refuses a beta block built from the physical total density.
-    assert float(np.max(np.asarray(md["metagga_features_b"]))) < 1e-6
+    # reproducible to the bit, under single-thread BLAS), so the stored
+    # column is at most 5e-6 + 1.1e-7 and the 6e-6 bound sits ~5x above the
+    # residue's contribution, while the alpha channel reaches 6.24; the bound
+    # therefore also refuses a beta block built from the physical total
+    # density.
+    from xcquinox.alec.metagga import _ALPHA_SMOOTHING_WIDTH
+    assert float(np.max(np.asarray(md["metagga_features_b"]))) < (
+        0.5 * _ALPHA_SMOOTHING_WIDTH + 1e-6)
+    assert float(np.min(np.asarray(md["metagga_features_b"]))) > 0.0
     assert float(np.max(np.asarray(md["metagga_features_a"]))) > 1.0
 
 
@@ -514,7 +519,15 @@ def test_live_uks_feature_closures_follow_the_density_matrix():
         sigma = gx ** 2 + gy ** 2 + gz ** 2
         rho_safe = np.maximum(rho, 1e-30)
         tau_unif = 0.3 * (3.0 * np.pi ** 2) ** (2.0 / 3.0) * rho_safe ** (5.0 / 3.0)
-        alpha = np.clip((tau - sigma / (8.0 * rho_safe)) / tau_unif, 0.0, 100.0)
+        # The indicator's lower bound is the smooth positive part of
+        # metagga.compute_alpha (width 1e-5), applied here to PySCF's
+        # ingredients; the ceiling is the hard one.
+        from xcquinox.alec.metagga import (
+            _ALPHA_SMOOTHING_WIDTH, smooth_positive_part)
+        raw = (tau - sigma / (8.0 * rho_safe)) / tau_unif
+        alpha = np.minimum(
+            np.asarray(smooth_positive_part(jnp.asarray(raw),
+                                            _ALPHA_SMOOTHING_WIDTH)), 100.0)
         block = np.concatenate([np.tile(stats, (n, 1)),
                                 np.stack(occ + occ_ms, axis=1),
                                 alpha[:, None]], axis=1)

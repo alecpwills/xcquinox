@@ -297,12 +297,18 @@ def _assert_block_tau_is_the_channel_tau(ing):
     O(1): reading alpha(rho_s, sigma_ss, tau_s) and inverting at the doubled
     arguments returns ``tau_W + 2^{2/3} (tau_s - tau_W)``, i.e. 0.59 of the
     channel's own (tau - tau_W) too much.
+
+    The inversion (``parent_adapter.tau_from_alpha``) undoes the smooth
+    positive part of ``metagga.compute_alpha`` exactly, so a one-orbital
+    channel, whose stored column is the smoothing's floor ``width / 2``, is
+    read back as tau_W plus the rounding residue and is included here (the
+    H atom's alpha channel among them); only the ceiling excludes a point.
     """
     from xcquinox.alec.metagga import _ALPHA_MAX
     for s in (0, 1):
         rho_s = ing.rho_a if s == 0 else ing.rho_b
         column = np.asarray(ing.f_a if s == 0 else ing.f_b)[:, ing.alpha_column]
-        interior = (column > 0.0) & (column < _ALPHA_MAX) & (rho_s > 1e-8)
+        interior = (column < _ALPHA_MAX) & (rho_s > 1e-8)
         if not interior.any():
             continue
         got = ing.channel_tau_from_block(s)[interior]
@@ -497,15 +503,16 @@ def test_o2_fock_pair_is_the_derivative_of_the_energy_on_the_open_shell_atoms(
     along its own rank-one manifold, the others linearly; def2-svp, grid
     level 2.
 
-    Measured through this very helper over the 124 cases, worst relative
-    residual per species against ``_TOL_UKS = 5e-7``: H 7.44e-10
-    (deep_cusp), Li 2.50e-10 (deep_cusp_3x16), N 9.18e-11 (shallow_attn),
-    O 8.29e-11 (deep_notransform_attn) -- a margin of 670x on the worst cell,
-    with no cell above 1e-9. The straddle mask keeps the whole grid on H, Li
-    and O; on N it removes 2106 of 9616 tail points from the five meta-GGA
-    architectures, 1.84e-3 of the electron density, because that atom's
-    two-electron beta channel is one-orbital-like in the tail and its block's
-    indicator reaches the clip there.
+    Measured through this very helper over the 124 cases with the rotation
+    path, worst relative residual per species against ``_TOL_UKS = 5e-7``:
+    H 6.12e-10 (deep_combined), Li 3.61e-8 (deep_notransform_attn_3x16),
+    N 6.61e-8 (deep_cusp_attn), O 9.00e-9 (shallow) -- a margin of 7.6x on
+    the worst cell, the mask removing zero points in every cell (the
+    residual is stated against the net derivative, which a rotation of the
+    reference fixed point keeps small on Li and N). The indicator enters no
+    mask: its lower bound is the smooth positive part of
+    ``metagga.compute_alpha`` and the rotation path stays on the physical
+    manifold (DEFERRED_WORK.md entries 27 and 30).
     """
     atom, spin, composition = _UKS_FD_SPECIES[species]
     model = _live_model(arch_name)
@@ -544,17 +551,30 @@ def test_o4_h_atom_alpha_is_zero_at_every_grid_point():
     """diag(P_a, P_a) is a two-electron single-orbital system, so tau = tau_W
     exactly and the iso-orbital indicator vanishes identically (Sun, Ruzsinszky
     and Perdew, Phys. Rev. Lett. 115, 036402 (2015): alpha = 0 marks a single
-    orbital). The stored column is the clipped rounding residue of tau -
-    tau_W divided by tau_unif, so its size is draw-dependent: the reference
-    solution differs at round-off between runs and that moves the residue.
-    Measured maximum 8.3e-11 and 1.7e-10 over the 2336-point grid in two
-    independent solutions (1589 and 1732 of the points exactly 0.0); 1e-8
-    clears the worse draw by 60x and refuses a two-orbital block (the Li
-    alpha block's median is 1.81e-2) by six orders.
+    orbital). The raw indicator the stored column encodes is the rounding
+    residue of tau - tau_W divided by tau_unif, so its size is
+    draw-dependent: the reference solution differs at round-off between runs
+    and that moves the residue. Measured maximum 8.3e-11, 1.7e-10 and 1.1e-10
+    over the 2336-point grid in three independent solutions (1589 and 1732 of
+    the points exactly 0.0 in the first two); 1e-8 clears the worst draw by
+    60x and refuses a two-orbital block (the Li alpha block's median is
+    1.81e-2) by six orders.
+
+    The stored column itself is the smooth positive part of that residue
+    (``metagga.compute_alpha``): ``width / 2 = 5e-6`` on every point, to the
+    residue's own half. Both statements are made: the column sits at the
+    floor, and the raw indicator read back through the exact inverse is
+    zero to 1e-8.
     """
+    from xcquinox.alec.metagga import (
+        _ALPHA_SMOOTHING_WIDTH, invert_smooth_positive_part)
     md = _precompute("H", 1, (MetaGGAAlphaDescriptor(),))
     alpha_a = np.asarray(md["metagga_features_a"])[:, 0]
-    assert float(np.max(np.abs(alpha_a))) < 1e-8, float(np.max(np.abs(alpha_a)))
+    floor = 0.5 * _ALPHA_SMOOTHING_WIDTH
+    assert float(np.max(np.abs(alpha_a - floor))) < 1e-8, (
+        float(np.max(np.abs(alpha_a - floor))))
+    raw = np.asarray(invert_smooth_positive_part(alpha_a, _ALPHA_SMOOTHING_WIDTH))
+    assert float(np.max(np.abs(raw))) < 1e-8, float(np.max(np.abs(raw)))
 
 
 def test_o4_h_atom_rung35_block_is_the_doubled_single_orbital():
@@ -593,8 +613,8 @@ def test_o4_h_atom_exchange_equals_the_spin_scaled_unpolarized_evaluation(
     assemble, so the H-atom exchange energy is exactly half the model's
     spin-unpolarized evaluation on that system. The beta channel is empty and
     contributes only the model's rho_cutoff floor. Evaluated at the block the
-    library assembles, where alpha is zero exactly, and not through a
-    difference across the indicator's clip (DEFERRED_WORK #27).
+    library assembles, where the indicator sits at the smoothing's floor
+    ``width / 2`` (its raw value is zero; DEFERRED_WORK #27).
 
     Bounds: the block identity is measured bitwise on all 31 architectures
     (doubling a density matrix is a binary scaling, so every contraction of
