@@ -1684,13 +1684,13 @@ def test_write_matrix_report_names_an_enforced_failing_certificate(tmp_path):
     from the waived FAIL this template expects. The column renders both as
     ``FAIL``, so the un-waived case has to name itself below the table.
     """
-    text = wm.write_matrix_report([_clean_result(certificate={
+    record = _clean_result(certificate={
         "present": True, "verdict": "FAIL", "enforced": True,
         "override_reason": None, "gate_released": False,
         "path": "/w/deep/pretrain/deep/fidelity_certificate.json",
         "gate_message": "pretrain/deep: fidelity certificate verdict 'FAIL', "
-                        "expected 'PASS'"})],
-        tmp_path / "matrix.md").read_text()
+                        "expected 'PASS'"})
+    text = wm.write_matrix_report([record], tmp_path / "matrix.md").read_text()
     findings = _findings_of(text)
     assert findings is not None, text
     assert "ENFORCED" in findings
@@ -1698,6 +1698,33 @@ def test_write_matrix_report_names_an_enforced_failing_certificate(tmp_path):
     # A certificate that exists but is refused is not a certificate that was
     # never written, and the two findings must not be confused.
     assert "wrote no certificate" not in findings
+    # The finding and the count above the table are one judgement. A row the
+    # on-node gates refuse must not be counted among the clean ones while the
+    # block below the table says the gates refuse it.
+    assert wm.matrix_exit_code([record]) == 1
+    assert "0 of 1" in text
+
+
+def test_write_matrix_report_names_a_stage_list_that_ended_short(tmp_path):
+    """``_is_clean`` requires one stage record per :data:`STAGE_ORDER` entry,
+    whatever the return codes are: the acceptance item is that the whole
+    sequence RAN. Through ``run_arch`` a short list always carries the non-zero
+    exit that truncated it and that stage is named above, so this record --
+    short, every return code zero -- is the one way of being scored non-clean
+    that no other finding reaches. The invariant is asserted outright rather
+    than left to hold by the caller's construction.
+    """
+    short = [{"name": name, "rc": 0, "seconds": 1.0,
+              "log": f"/w/deep/logs/{name}.log"}
+             for name in wm.STAGE_ORDER[:4]]
+    record = _clean_result(stages=short)
+    assert wm.matrix_exit_code([record]) == 1
+    findings = _findings_of(wm.write_matrix_report(
+        [record], tmp_path / "matrix.md").read_text())
+    assert findings is not None, "a short stage list scored in silence"
+    assert record["arch"] in findings
+    for name in wm.STAGE_ORDER[4:]:
+        assert name in findings, name
 
 
 def test_write_matrix_report_names_every_architecture_it_scores_non_clean(
@@ -1732,6 +1759,14 @@ def test_write_matrix_report_names_every_architecture_it_scores_non_clean(
         "oracles failed": _clean_result(oracle_tests={
             "rc": 1, "summary_line": "1 failed, 11 passed in 4.2s",
             "log": "/w/deep/logs/oracles.log"}),
+        "certificate enforced": _clean_result(certificate={
+            "present": True, "verdict": "FAIL", "enforced": True,
+            "override_reason": None, "gate_released": False,
+            "path": "/w/deep/pretrain/deep/fidelity_certificate.json",
+            "gate_message": "verdict FAIL and nothing waives it"}),
+        "stage list short": _clean_result(stages=[
+            {"name": name, "rc": 0, "log": f"/w/deep/logs/{name}.log"}
+            for name in wm.STAGE_ORDER[:2]]),
     }
     for label, record in cases.items():
         assert wm.matrix_exit_code([record]) == 1, label
@@ -1830,7 +1865,8 @@ def test_run_arch_carries_the_certificate_verdict_and_its_waiver(tmp_path):
     # ignores the waiver -- so the fake refuses it for that one reason; a
     # validate_run that exited 0 here would itself be the matrix's failure.
     result, _fake = _run_arch(tmp_path, fake=ValidateRunRunner(
-        run_dir, verdict="FAIL", failures=(_certificate_refusal(),)))
+        run_dir, verdict="FAIL",
+        failures=(_certificate_refusal(tmp_path),)))
     assert [s["name"] for s in result["stages"]] == list(wm.STAGE_ORDER)
     certificate = result["certificate"]
     assert certificate["present"] is True
@@ -1914,11 +1950,40 @@ def test_write_matrix_report_names_a_missing_certificate(tmp_path):
 # validate_run: a record layer that MUST refuse this identity's run
 # ---------------------------------------------------------------------------
 
-def _certificate_refusal(arch="deep", verdict="FAIL") -> str:
-    """The failure ``cluster/validate_run`` reports for the certificate
-    verdict, in the shape that module writes it."""
-    return (f"pretrain/{arch}: fidelity certificate verdict {verdict!r}, "
-            "expected 'PASS' (summary: None)")
+def _certificate_refusal(tmp_path, arch="deep", verdict="FAIL") -> str:
+    """``cluster/validate_run``'s OWN certificate-verdict refusal of ``arch``.
+
+    The line is not spelled a second time here. A run directory carrying the
+    waived certificate this identity produces is handed to
+    ``validate_run.validate_run``, and the failure it returns is what the
+    matrix's parser is then given. A hand-written copy drifts, and had: the
+    validator appends a waiver clause for a certificate recording
+    ``enforced: false`` -- the matrix's own case, every run of it -- and the
+    copy carried only the verdict clause, so the parser was exercised on text
+    no run produces.
+
+    The synthetic run directory holds the certificate and a manifest and
+    nothing else, so the validator also reports the absent specs and the
+    certificate's absent identity block; the verdict refusal is selected out of
+    them and there is exactly one of it.
+    """
+    from xcquinox.alec.cluster import validate_run as validate_run_module
+
+    root = Path(tmp_path) / "_validate_run_text" / f"{arch}_{verdict}"
+    grid = wm.write_matrix_yaml(
+        arch, root / "render", repo_root=wm.repo_root_path(),
+        external_refs_dir=_fake_staged_refs(root / "refs"))
+    run_dir = root / "run"
+    pretrain_dir = run_dir / "pretrain" / arch
+    pretrain_dir.mkdir(parents=True, exist_ok=True)
+    (pretrain_dir / "fidelity_certificate.json").write_text(
+        json.dumps(_certificate_payload(verdict)))
+    (run_dir / "manifest.json").write_text(json.dumps({"width": 4}))
+    failures, _warnings, _n_specs = validate_run_module.validate_run(
+        str(run_dir), str(grid))
+    verdicts = [f for f in failures if "fidelity certificate verdict" in f]
+    assert len(verdicts) == 1, failures
+    return verdicts[0]
 
 
 class ValidateRunRunner(SliceMarkingRunner):
@@ -1970,8 +2035,8 @@ def test_run_arch_accepts_the_expected_validate_run_refusal(tmp_path):
     this template. That refusal, alone, is the expected outcome of the stage
     and does not make the architecture a failed one.
     """
-    result = _validate_run_arch(tmp_path,
-                                failures=(_certificate_refusal(),))
+    result = _validate_run_arch(
+        tmp_path, failures=(_certificate_refusal(tmp_path),))
     assert [s["name"] for s in result["stages"]] == list(wm.STAGE_ORDER)
     assert result["validate_run"]["expected"] is True
     assert result["validate_run"]["detail"] == wm.VALIDATE_RUN_EXPECTED_DETAIL
@@ -2001,11 +2066,11 @@ def test_run_arch_refuses_a_validate_run_that_accepted_the_waived_run(
 def test_run_arch_refuses_a_second_validate_run_failure(tmp_path):
     """A second failure produces the same exit code as the expected one, so
     without reading the report it would hide behind it."""
+    refusal = _certificate_refusal(tmp_path)
     other = "specs/spec_0000.spec: arch 'deep' has n_extra_features 3, expected 4"
-    result = _validate_run_arch(
-        tmp_path, failures=(_certificate_refusal(), other))
+    result = _validate_run_arch(tmp_path, failures=(refusal, other))
     assert result["validate_run"]["expected"] is False
-    assert result["validate_run"]["failures"] == [_certificate_refusal(), other]
+    assert result["validate_run"]["failures"] == [refusal, other]
     assert "n_extra_features" in result["validate_run"]["detail"]
     assert wm.matrix_exit_code([result]) == 1
     assert wm.arch_row(result)["stages_rc"].endswith(".1")
@@ -2016,9 +2081,37 @@ def test_run_arch_refuses_a_refusal_naming_another_architecture(tmp_path):
     certificate refusal of a DIFFERENT architecture means the run directory
     carries a sweep this matrix did not render."""
     result = _validate_run_arch(
-        tmp_path, failures=(_certificate_refusal(arch="shallow"),))
+        tmp_path,
+        failures=(_certificate_refusal(tmp_path, arch="shallow"),))
     assert result["validate_run"]["expected"] is False
     assert wm.matrix_exit_code([result]) == 1
+
+
+def test_the_expected_refusal_is_read_from_validate_runs_own_text(tmp_path):
+    """The matrix's parser is exercised on the text ``validate_run`` writes for
+    the case the matrix actually produces: a FAIL certificate recording
+    ``enforced: false``. For that certificate the validator appends a waiver
+    clause after the verdict clause, quoting the run's own override reason, so
+    the refusal does not end where a reading of the verdict check alone would
+    put its end. One such line is still exactly one failure, and the expected
+    one.
+    """
+    from xcquinox.alec.cluster.fidelity import VERDICT_PASS
+
+    line = _certificate_refusal(tmp_path)
+    head = f"expected {VERDICT_PASS!r}"
+    assert head in line
+    assert not line.endswith(head), (
+        "validate_run appends a waiver clause for a certificate recording "
+        "enforced: false; a line ending at the verdict clause is not the text "
+        "this identity produces")
+    assert _template_fidelity()["override_reason"] in line
+
+    result = _validate_run_arch(tmp_path, failures=(line,))
+    assert result["validate_run"]["failures"] == [line]
+    assert result["validate_run"]["expected"] is True
+    assert result["validate_run"]["detail"] == wm.VALIDATE_RUN_EXPECTED_DETAIL
+    assert wm.matrix_exit_code([result]) == 0
 
 
 def test_run_arch_expects_a_clean_validate_run_without_the_waiver(tmp_path):
@@ -2100,17 +2193,98 @@ def test_main_returns_non_zero_when_a_stage_failed(tmp_path, shared_refs):
     assert "| shallow | 0.0.0.0.1.-.-.-.-.- |" in text
 
 
-def test_main_refuses_a_work_root_inside_the_repository():
+def test_main_refuses_a_work_root_inside_the_repository(capsys):
+    """Exit 2, not a traceback. Exit 1 out of this CLI means the matrix found a
+    defect in the code it drove -- it is :func:`matrix_exit_code`'s answer --
+    and a path typed wrongly is not that; argparse's own status for a bad
+    command line is 2, and the refusal still names the flag, the path and the
+    repository it is inside.
+    """
     inside = wm.repo_root_path() / "notebooks" / "matrix_scratch"
-    with pytest.raises(ValueError, match="inside the repository"):
+    with pytest.raises(SystemExit) as caught:
         wm.main(["--archs", "deep", "--work-root", str(inside)],
                 runner=MatrixFakeRunner())
+    assert caught.value.code == 2
+    err = capsys.readouterr().err
+    assert "--work-root" in err
+    assert "inside the repository" in err
+    assert not inside.exists()
 
 
-def test_main_refuses_an_unknown_architecture(tmp_path):
-    with pytest.raises(ValueError, match="no_such_arch"):
-        wm.main(["--archs", "no_such_arch", "--work-root", str(tmp_path)],
+def test_main_refuses_a_report_inside_the_repository(tmp_path, capsys):
+    """The work-root rule is that every byte the matrix writes stays out of the
+    tracked tree, and the report is one of those bytes: ``--report`` names a
+    markdown table and a JSON sidecar beside it. A report path under the
+    repository writes the run's own output into the tree it is measuring.
+    """
+    inside = wm.repo_root_path() / "notebooks" / "_matrix_report_refusal" / \
+        "matrix.md"
+    with pytest.raises(SystemExit) as caught:
+        wm.main(["--archs", "deep", "--work-root", str(tmp_path),
+                 "--external-refs-dir", str(_fake_staged_refs(
+                     tmp_path / "refs")),
+                 "--no-oracles", "--report", str(inside)],
                 runner=MatrixFakeRunner())
+    assert caught.value.code == 2
+    err = capsys.readouterr().err
+    assert "--report" in err
+    assert "inside the repository" in err
+    assert not inside.parent.exists(), (
+        "the refusal must precede the report writer, which creates the "
+        "directory it is given")
+
+
+def test_main_refuses_an_external_refs_dir_inside_the_repository(tmp_path,
+                                                                 capsys):
+    """The reference directory is a WRITE target as much as the work root:
+    every preflight stage drops a ``_run_log_<UTC>.json`` beside the references
+    it reads, which is why ``stage_cached_inputs`` copies the cache out of the
+    tree instead of pointing at it. The repository's own cached copy is the
+    path most likely to be typed here, and it is the one that must be refused.
+    """
+    inside = wm.repo_root_path() / wm.CACHED_REFS_RELPATH
+    with pytest.raises(SystemExit) as caught:
+        wm.main(["--archs", "deep", "--work-root", str(tmp_path),
+                 "--no-oracles", "--external-refs-dir", str(inside)],
+                runner=MatrixFakeRunner())
+    assert caught.value.code == 2
+    err = capsys.readouterr().err
+    assert "--external-refs-dir" in err
+    assert "inside the repository" in err
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_main_refuses_a_non_positive_stage_timeout(tmp_path, capsys, value):
+    """The cap is handed to every stage as ``subprocess.run``'s own
+    ``timeout``, which treats a non-positive value as ALREADY expired --
+    ``/bin/true`` under ``timeout=0`` raises ``TimeoutExpired`` in about two
+    milliseconds. Accepted, it would kill every stage of every architecture at
+    launch and fill the report with 124s, which reads as a stuck machine
+    rather than as a mistyped flag.
+    """
+    fake = MatrixFakeRunner()
+    with pytest.raises(SystemExit) as caught:
+        wm.main(["--archs", "deep", "--work-root", str(tmp_path),
+                 "--external-refs-dir", str(_fake_staged_refs(
+                     tmp_path / "refs")),
+                 "--no-oracles", "--timeout-s", value], runner=fake)
+    assert caught.value.code == 2
+    assert "--timeout-s" in capsys.readouterr().err
+    assert fake.calls == [], "no stage may be launched under a refused cap"
+
+
+def _usage_error(capsys, phrase, argv):
+    """``main`` refuses a bad flag the way argparse does: exit status 2 with
+    the reason on stderr, so exit 1 keeps its meaning of a defect found."""
+    with pytest.raises(SystemExit) as excinfo:
+        wm.main(argv, runner=MatrixFakeRunner())
+    assert excinfo.value.code == 2
+    assert phrase in capsys.readouterr().err
+
+
+def test_main_refuses_an_unknown_architecture(tmp_path, capsys):
+    _usage_error(capsys, "no_such_arch",
+                 ["--archs", "no_such_arch", "--work-root", str(tmp_path)])
 
 
 def test_main_passes_the_slice_and_the_oracle_switch_through(tmp_path,
@@ -2127,23 +2301,45 @@ def test_main_passes_the_slice_and_the_oracle_switch_through(tmp_path,
     assert not any("-m pytest" in " ".join(argv) for argv, _e in fake.calls)
 
 
-def test_main_refuses_an_archs_list_that_names_nothing(tmp_path):
+def test_main_refuses_an_archs_list_that_names_nothing(tmp_path, capsys):
     """An empty selection is a typo, not a request to run the whole registry:
     ``all`` is how the registry is asked for."""
-    with pytest.raises(ValueError, match="no architecture"):
-        wm.main(["--archs", " , ", "--work-root", str(tmp_path)],
-                runner=MatrixFakeRunner())
+    _usage_error(capsys, "no architecture",
+                 ["--archs", " , ", "--work-root", str(tmp_path)])
 
 
-def test_main_refuses_an_archs_list_that_repeats_a_name(tmp_path):
+def test_main_refuses_an_archs_list_that_repeats_a_name(tmp_path, capsys):
     """A repeated name is a typo in a comma-separated list, and it costs more
     than a duplicated row: both rows drive ``<work-root>/<arch>``, so they
     render one ``grid.yaml`` and one run directory between them. It is refused
     at the flag, where the name the user typed can be quoted back.
     """
+    _usage_error(capsys, "more than once",
+                 ["--archs", "deep,shallow,deep", "--work-root", str(tmp_path)])
+
+
+def test_the_archs_flag_refuses_a_repeated_name_before_the_matrix_runs(
+        tmp_path, monkeypatch, capsys):
+    """Both layers refuse a repeated name with the same words -- the flag
+    resolver and ``run_matrix`` -- so a test that only calls ``main`` cannot
+    tell which one answered, and the flag-level rule can be deleted with the
+    suite still green. It is pinned here directly: the resolver is called on
+    its own, and ``main`` is driven with ``run_matrix`` replaced by a hook that
+    must never be reached. The flag layer is where the name the user typed can
+    still be quoted back, before a work root is resolved or a reference copy
+    staged.
+    """
     with pytest.raises(ValueError, match="more than once"):
-        wm.main(["--archs", "deep,shallow,deep", "--work-root", str(tmp_path)],
-                runner=MatrixFakeRunner())
+        wm._resolve_archs("deep,shallow,deep")
+
+    def _never_runs(*args, **kwargs):
+        raise AssertionError(
+            "run_matrix was reached: the repeated name was not refused at "
+            "the flag")
+
+    monkeypatch.setattr(wm, "run_matrix", _never_runs)
+    _usage_error(capsys, "more than once",
+                 ["--archs", "deep,deep", "--work-root", str(tmp_path)])
 
 
 def test_main_lists_the_registry_without_running_anything(capsys):

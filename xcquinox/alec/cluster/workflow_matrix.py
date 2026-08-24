@@ -1354,13 +1354,25 @@ def _is_clean(result) -> bool:
     (or were not asked for). The certificate's VERDICT is exempt and is not
     read here: spec 3.4 records the verdict, it does not require a PASS from a
     50-step pretrain on two atoms. Its EXISTENCE is not exempt -- a run with no
-    certificate has no record of what its networks reproduce.
+    certificate has no record of what its networks reproduce -- and neither is
+    the run's own treatment of that verdict: a FAIL the rendered config does
+    not waive is one the ON-NODE gates refuse (``gate_released`` False), which
+    the report names below the table. A live run stopped by those gates is
+    already non-clean through the preflight stage's return code; scoring the
+    RECORD on the same field keeps the count above the table and the findings
+    below it from disagreeing about a record that reached this function by any
+    other route.
     """
     if result.get("error"):
         return False
     record = result.get("certificate")
-    if record is not None and not record.get("present", True):
-        return False
+    if record is not None:
+        if not record.get("present", True):
+            return False
+        # The certificate record always states whether the gate released;
+        # a record that does not is not one the certificate stage wrote.
+        if record.get("gate_released") is not True:
+            return False
     if len(result.get("stages", ())) != len(STAGE_ORDER):
         return False
     validate = result.get("validate_run") or {}
@@ -1523,6 +1535,21 @@ def write_matrix_report(results, path) -> Path:
                     "waiver, so the on-node gates (the preflight sweep and "
                     "the train task) refuse this run: "
                     f"{certificate.get('gate_message', '')}")
+        # Defensive: _is_clean requires one record per STAGE_ORDER entry.
+        # Every reachable way of ending short already has a finding above -- a
+        # sequence that raised, a stage that exited non-zero -- so a record
+        # that is short with every return code zero would be scored non-clean
+        # with nothing below the table to say why.
+        stage_records = list(record.get("stages", ()))
+        if (not record.get("error") and failed is None
+                and len(stage_records) != len(STAGE_ORDER)):
+            ran = [stage.get("name") for stage in stage_records]
+            missing = [name for name in STAGE_ORDER if name not in ran]
+            findings.append(
+                f"- {record['arch']}: {len(stage_records)} stage record(s), "
+                f"{len(STAGE_ORDER)} expected, none of them a failure -- "
+                f"missing {missing or 'nothing named in the stage order'}; "
+                f"recorded: {ran}")
         check = record.get("slice_check") or {}
         if check.get("ok") is False:
             findings.append(f"- {record['arch']}: held-out channel not marked "
@@ -1604,22 +1631,42 @@ def _resolve_archs(spec):
     return names
 
 
-def _refuse_repo_work_root(work_root, repo_root):
-    """Keep every byte the matrix writes out of the tracked tree.
+#: What each CLI path the matrix writes through puts into the directory it
+#: names. Three of the flags are write targets, so one rule guards all three:
+#: ``--work-root`` receives the run directories, ``--report`` the table and its
+#: sidecar, and ``--external-refs-dir`` -- read as an input -- receives a
+#: ``_run_log_<UTC>.json`` from every preflight stage that reads it, which is
+#: why an in-repository reference copy is refused as well.
+_REPO_PATH_WRITES = {
+    "--work-root": "the matrix writes run directories there, a copy of the "
+                   "CCSD reference cache and the pretrain data",
+    "--report": "the matrix writes the markdown table and its JSON sidecar "
+                "there",
+    "--external-refs-dir": "every preflight stage writes a "
+                           "_run_log_<UTC>.json into the reference directory "
+                           "it reads",
+}
 
-    The stages write run directories, a copy of the CCSD reference cache and
-    pretrain data; the reference copy in particular receives a
-    ``_run_log_<UTC>.json`` from every preflight.
+
+def _repo_path_refusal(path, repo_root, *, flag):
+    """Refusal message for a CLI path inside the repository, or ``None``.
+
+    Keep every byte the matrix writes out of the tracked tree. The rule is one
+    rule for the three flags of :data:`_REPO_PATH_WRITES`: a run directory, a
+    report or a reference copy inside the repository writes the run's own
+    output into the tree the run is measuring, and the reference directory is a
+    write target as much as the other two -- the preflight drops a
+    ``_run_log_<UTC>.json`` beside the references it reads.
     """
-    work = Path(work_root).resolve()
+    resolved = Path(path).resolve()
     repo = Path(repo_root).resolve()
-    if work == repo or repo in work.parents:
-        raise ValueError(
-            f"--work-root {work} is inside the repository {repo}; the matrix "
-            "writes run directories, a copy of the CCSD reference cache and "
-            "pretrain data, none of which belong in the tree. Use a path "
-            "outside it (e.g. /tmp/xcq-workflow-matrix)."
-        )
+    if resolved != repo and repo not in resolved.parents:
+        return None
+    return (
+        f"{flag} {resolved} is inside the repository {repo}: "
+        f"{_REPO_PATH_WRITES[flag]}. Nothing the matrix writes belongs in the "
+        "tree. Use a path outside it (e.g. /tmp/xcq-workflow-matrix)."
+    )
 
 
 def main(argv=None, *, runner=subprocess.run) -> int:
@@ -1687,9 +1734,38 @@ def main(argv=None, *, runner=subprocess.run) -> int:
         parser.error("--work-root is required (it is optional only for "
                      "--list)")
 
+    if args.timeout_s <= 0:
+        # The cap reaches every stage as subprocess.run's own ``timeout``,
+        # which treats a non-positive value as already expired: /bin/true
+        # under timeout=0 raises TimeoutExpired in 2 ms. Every stage of every
+        # architecture would be killed at launch and the matrix would report
+        # TIMEOUT_RC throughout, which reads as a hung box rather than as a
+        # mistyped flag.
+        parser.error(
+            f"--timeout-s must be a positive number of seconds, got "
+            f"{args.timeout_s}; a non-positive cap has every stage killed at "
+            f"launch and reported as {TIMEOUT_RC}")
+
     root = repo_root_path()
-    archs = _resolve_archs(args.archs)
-    _refuse_repo_work_root(args.work_root, root)
+    try:
+        archs = _resolve_archs(args.archs)
+    except ValueError as exc:
+        # An unknown, empty or repeated architecture list is a usage
+        # error of the flag: exit 2 like every other refused flag, so
+        # exit 1 keeps its meaning of a defect the matrix found.
+        parser.error(str(exc))
+    for flag, value in (("--work-root", args.work_root),
+                        ("--report", args.report),
+                        ("--external-refs-dir", args.external_refs_dir)):
+        if value is None:
+            continue
+        # parser.error, not a raised exception: exit 2 is "the command line
+        # was wrong" and exit 1 is reserved for the matrix having found a
+        # defect in the code it drove. A traceback here would report a typo
+        # with the status of a failed architecture.
+        refusal = _repo_path_refusal(value, root, flag=flag)
+        if refusal is not None:
+            parser.error(refusal)
     work_root = Path(args.work_root).resolve()
     report_path = Path(args.report) if args.report \
         else work_root / "workflow_matrix.md"
